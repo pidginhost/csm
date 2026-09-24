@@ -291,7 +291,7 @@ auto_response:
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"block_ips":true,"http_scanner_action":"block","netblock_threshold":5,"max_blocks_per_hour":75}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -381,7 +381,7 @@ auto_response:
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"netblock":true}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 	if postW.Code != http.StatusUnprocessableEntity {
@@ -449,7 +449,7 @@ integrity:
 	}
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"netblock":true}}`)
 	postReq.Header.Set("If-Match", getW.Header().Get("ETag"))
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 	if postW.Code != http.StatusUnprocessableEntity {
@@ -593,7 +593,7 @@ auto_response:
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"http_scanner_action":"captcha"}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -654,7 +654,7 @@ auto_response:
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"block_ips":true}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 	if postW.Code != 200 {
@@ -709,7 +709,7 @@ confd:
 	s.apiSettingsGet(getW, settingsAuthedReq("GET", "/api/v1/settings/auto_response", "tok", ""))
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"block_ips":true}}`)
 	postReq.Header.Set("If-Match", getW.Header().Get("ETag"))
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 	if postW.Code != http.StatusOK {
@@ -762,7 +762,7 @@ auto_response:
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"block_ips":true}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 	if postW.Code != http.StatusPreconditionFailed {
@@ -804,7 +804,7 @@ challenge:
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/challenge", "tok", `{"changes":{"enabled":true,"difficulty":3}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -850,7 +850,7 @@ alerts:
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/alerts", "tok", `{"changes":{"max_per_hour":50}}`)
 	postReq.Header.Set("If-Match", "sha256:stale")
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -871,7 +871,7 @@ alerts:
 `
 	s, _ := newSettingsTestServer(t, "tok", body)
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/alerts", "tok", `{"changes":{}}`)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 	if postW.Code != 400 {
@@ -897,7 +897,7 @@ alerts:
 	// Remove the recipient list: email enabled + empty To is a Validate error.
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/alerts", "tok", `{"changes":{"email.to":[]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -935,7 +935,7 @@ auto_response:
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"verdict_callback.enabled":true,"verdict_callback.url":"https://panel.example.com/api/csm/verdict"}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -980,7 +980,7 @@ auto_response:
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"block_ips":null}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1013,7 +1013,7 @@ auto_response:
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"block_ips":true}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1045,7 +1045,7 @@ reputation:
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/reputation", "tok", `{"changes":{"abuseipdb_key":"***REDACTED***","whitelist":["10.0.0.2"]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1085,7 +1085,7 @@ sentry:
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/sentry", "tok", `{"changes":{"dsn":""}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1119,7 +1119,7 @@ reputation:
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/reputation", "tok", `{"changes":{"abuseipdb_key":"new-secret"}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1165,18 +1165,21 @@ func TestSettingsRestartEndpointSchedulesRestart(t *testing.T) {
 	}
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/restart", "tok", "")
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsRestart(postW, postReq)
 
 	if postW.Code != 202 {
 		t.Errorf("code = %d, want 202", postW.Code)
 	}
-	var body map[string]string
+	var body map[string]interface{}
 	if err := json.Unmarshal(postW.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["started_at_token"] == "" {
+	if body["ok"] != true {
+		t.Errorf("ok = %v, want true", body["ok"])
+	}
+	if tok, _ := body["started_at_token"].(string); tok == "" {
 		t.Fatal("restart response missing started_at_token")
 	}
 	select {
@@ -1200,18 +1203,21 @@ func TestSettingsRestartAcknowledgesEvenWhenRestartErrors(t *testing.T) {
 	}
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/restart", "tok", "")
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsRestart(postW, postReq)
 
 	if postW.Code != 202 {
 		t.Fatalf("code = %d, want 202 (restart is async; a self-termination error must not become a 500)", postW.Code)
 	}
-	var body map[string]string
+	var body map[string]interface{}
 	if err := json.Unmarshal(postW.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["started_at_token"] == "" {
+	if body["ok"] != true {
+		t.Errorf("ok = %v, want true", body["ok"])
+	}
+	if tok, _ := body["started_at_token"].(string); tok == "" {
 		t.Fatal("restart response missing started_at_token")
 	}
 	select {
@@ -1233,13 +1239,16 @@ func TestSettingsRestartResponseUsesStatusStartToken(t *testing.T) {
 	}
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/restart", "tok", "")
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsRestart(postW, postReq)
 
-	var body map[string]string
+	var body map[string]interface{}
 	if err := json.Unmarshal(postW.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
+	}
+	if body["ok"] != true {
+		t.Errorf("ok = %v, want true", body["ok"])
 	}
 	if got, want := body["started_at_token"], daemonStartToken(started); got != want {
 		t.Fatalf("started_at_token = %q, want status token %q", got, want)
@@ -1277,7 +1286,7 @@ disabled_checks: []
 
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/disabled_checks", "tok", `{"changes":{"":["waf_status","waf_rules"]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1318,7 +1327,7 @@ disabled_checks: []
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/disabled_checks", "tok",
 		`{"changes":{"":["waf_status","totally_bogus_check_xyz"]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1354,7 +1363,7 @@ disabled_checks: []
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/disabled_checks", "tok",
 		`{"changes":{"":["php_content"]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1391,7 +1400,7 @@ disabled_checks: []
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/disabled_checks", "tok",
 		`{"changes":{"":[" php_content ","php_content","","   "]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1455,7 +1464,7 @@ infra_ips:
 	// infra_ips schema field has YAMLPath "" -- the POST body uses "" as the key.
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/infra_ips", "tok", `{"changes":{"":["10.0.0.1","10.0.0.2","2001:db8::/64"]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1492,7 +1501,7 @@ performance:
 	// Send as JSON number
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/performance", "tok", `{"changes":{"load_high_multiplier":1.75}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 	if postW.Code != 200 {
@@ -1511,7 +1520,7 @@ performance:
 
 	postReq2 := settingsAuthedReq("POST", "/api/v1/settings/performance", "tok", `{"changes":{"load_critical_multiplier":"3.25"}}`)
 	postReq2.Header.Set("If-Match", resp.NewETag)
-	postReq2.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq2)
 	postW2 := httptest.NewRecorder()
 	s.apiSettingsPost(postW2, postReq2)
 	if postW2.Code != 200 {
@@ -1590,7 +1599,7 @@ alerts:
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/alerts", "tok",
 		`{"changes":{"email.disabled_checks":["webshell","nonexistent_check"]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1697,7 +1706,7 @@ alerts:
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/alerts", "tok",
 		`{"changes":{"email.disabled_checks":["webshell","perf_memory"]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1736,7 +1745,7 @@ mail_logs:
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/mail_logs", "tok",
 		`{"changes":{"source":"kafka"}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1769,7 +1778,7 @@ alerts:
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/thresholds", "tok",
 		`{"changes":{"mail_brute_account_key":"regex:user=([^,\\s]+)"}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1807,7 +1816,7 @@ thresholds:
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/thresholds", "tok",
 		`{"changes":{"xmlrpc_threshold":0}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1850,7 +1859,7 @@ alerts:
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/thresholds", "tok",
 		`{"changes":{"smtp_bruteforce_slow_threshold":0,"mail_bruteforce_slow_threshold":0}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1887,7 +1896,7 @@ alerts:
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/thresholds", "tok",
 		`{"changes":{"mail_brute_account_key":"regex:user=[^,\\s]+"}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1948,7 +1957,7 @@ func TestSettingsPOSTFirewallIntArrayDedupAndSorts(t *testing.T) {
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall", "tok",
 		`{"changes":{"tcp_in":[443, 9443, 80, 443, 9443]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -1980,7 +1989,7 @@ func TestSettingsPOSTRestartResponseNamesPendingSections(t *testing.T) {
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall", "tok",
 		`{"changes":{"tcp_in":[80,443,9443,2083]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -2043,7 +2052,7 @@ func TestSettingsPOSTRestartResponseNamesPendingSections(t *testing.T) {
 	thresholdsPostReq := settingsAuthedReq("POST", "/api/v1/settings/thresholds", "tok",
 		`{"changes":{"mail_queue_warn":42}}`)
 	thresholdsPostReq.Header.Set("If-Match", thresholdsETag)
-	thresholdsPostReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, thresholdsPostReq)
 	thresholdsPostW := httptest.NewRecorder()
 	s.apiSettingsPost(thresholdsPostW, thresholdsPostReq)
 	if thresholdsPostW.Code != 200 {
@@ -2075,7 +2084,7 @@ func TestSettingsPOSTFirewallIntArrayRejectsOutOfRange(t *testing.T) {
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall", "tok",
 		`{"changes":{"tcp_in":[80, 443, 70000]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -2098,7 +2107,7 @@ func TestSettingsPOSTFirewallIntArrayRejectsMalformedToken(t *testing.T) {
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall", "tok",
 		`{"changes":{"tcp_in":["80", "443x"]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -2121,7 +2130,7 @@ func TestSettingsPOSTFirewallLockoutWarning(t *testing.T) {
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall", "tok",
 		`{"changes":{"enabled":true,"tcp_in":[80, 443]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 
@@ -2156,7 +2165,7 @@ func TestSettingsPOSTDisabledFirewallHasNoLockoutWarning(t *testing.T) {
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall", "tok",
 		`{"changes":{"tcp_in":[80, 443]}}`)
 	postReq.Header.Set("If-Match", etag)
-	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, postReq)
 	postW := httptest.NewRecorder()
 	s.apiSettingsPost(postW, postReq)
 	if postW.Code != 200 {

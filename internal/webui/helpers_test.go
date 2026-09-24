@@ -822,17 +822,48 @@ func TestFlushCphulkIPsRevalidatesAndBatches(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CSM_TEST_MARKER", marker)
 
-	flushCphulkIPs([]string{"203.0.113.5;touch /tmp/pwned"})
+	if err := flushCphulkIPs([]string{"203.0.113.5;touch /tmp/pwned"}); err != nil {
+		t.Fatalf("no valid address must mean no call, got %v", err)
+	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("invalid IP executed whmapi1, stat err = %v", err)
 	}
 
-	flushCphulkIPs([]string{" 203.0.113.5 ", "invalid", "2001:0db8:0:0:0:0:0:5"})
+	if err := flushCphulkIPs([]string{" 203.0.113.5 ", "invalid", "2001:0db8:0:0:0:0:0:5"}); err != nil {
+		t.Fatal(err)
+	}
 	got, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(got), "flush_cphulk_login_history_for_ips\nip=203.0.113.5\nip-1=2001:db8::5") {
 		t.Fatalf("whmapi1 args = %q", string(got))
+	}
+}
+
+// A restore path that names a restore root itself, spelled with a trailing
+// separator, is the root and not a file under it.
+func TestQuarantineRestoreTargetRejectsTheRootItself(t *testing.T) {
+	root := t.TempDir()
+	for _, path := range []string{root, root + "/", root + "/."} {
+		if target, err := openQuarantineRestoreTarget(path, []string{root}, false); err == nil {
+			target.Close()
+			t.Errorf("openQuarantineRestoreTarget(%q) accepted the restore root itself", path)
+		}
+	}
+}
+
+// Findings about CSM's own work (what it already blocked or answered, a check
+// that timed out, its health) are not listed as findings to act on.
+func TestOperatorFacingCheck(t *testing.T) {
+	for _, check := range []string{"auto_response", "auto_block", "check_timeout", "health"} {
+		if operatorFacingCheck(check) {
+			t.Errorf("%s is listed as a finding to act on", check)
+		}
+	}
+	for _, check := range []string{"webshell", "brute_force", "healthcheck", ""} {
+		if !operatorFacingCheck(check) {
+			t.Errorf("%q is hidden from the finding lists", check)
+		}
 	}
 }

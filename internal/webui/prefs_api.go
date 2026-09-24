@@ -195,7 +195,16 @@ func (s *Server) handlePutUserPrefs(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Store error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, clean)
+	// The stored preferences, with the action's ok flag next to them.
+	stored := map[string]interface{}{
+		"density":      clean.Density,
+		"timezone":     clean.Timezone,
+		"auto_refresh": clean.AutoRefresh,
+	}
+	if len(clean.TableColumns) > 0 {
+		stored["table_columns"] = clean.TableColumns
+	}
+	writeOK(w, stored)
 }
 
 // savedView represents one user-named filter combination for a page.
@@ -204,6 +213,15 @@ type savedView struct {
 	Page    string            `json:"page"`
 	Params  map[string]string `json:"params"`
 	Updated int64             `json:"updated"`
+}
+
+// savedViewResponse is a saved view as the API sends it. The store keeps
+// updated as Unix seconds; the API sends it as an instant like every time.
+type savedViewResponse struct {
+	Name    string            `json:"name"`
+	Page    string            `json:"page"`
+	Params  map[string]string `json:"params"`
+	Updated time.Time         `json:"updated,omitzero"`
 }
 
 const maxSavedViewsPerOperator = 200
@@ -265,14 +283,18 @@ func (s *Server) handleListSavedViews(w http.ResponseWriter, r *http.Request) {
 	}
 	page := strings.TrimSpace(r.URL.Query().Get("page"))
 	views := s.loadSavedViews(opkey)
-	out := make([]savedView, 0, len(views))
+	out := make([]savedViewResponse, 0, len(views))
 	for _, v := range views {
 		if page != "" && v.Page != page {
 			continue
 		}
-		out = append(out, v)
+		view := savedViewResponse{Name: v.Name, Page: v.Page, Params: v.Params}
+		if v.Updated > 0 {
+			view.Updated = time.Unix(v.Updated, 0).UTC()
+		}
+		out = append(out, view)
 	}
-	writeJSON(w, out)
+	writeAll(w, out)
 }
 
 func (s *Server) handlePutSavedView(w http.ResponseWriter, r *http.Request) {
@@ -344,7 +366,7 @@ func (s *Server) handlePutSavedView(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Store error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]string{"status": "ok"})
+	writeOK(w, nil)
 }
 
 func (s *Server) handleDeleteSavedView(w http.ResponseWriter, r *http.Request) {
@@ -379,7 +401,7 @@ func (s *Server) handleDeleteSavedView(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Store error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]string{"status": "ok"})
+	writeOK(w, nil)
 }
 
 func isPrintableLabel(s string) bool {

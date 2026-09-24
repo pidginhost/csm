@@ -207,10 +207,8 @@ func TestAPIEmailQuarantineListWithQuarantine(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	// Should return empty array since quarantine dir has no messages
-	if w.Body.String() != "[]" && !strings.HasPrefix(w.Body.String(), "[") {
-		t.Errorf("expected JSON array, got: %s", w.Body.String())
-	}
+	// Should return empty items since quarantine dir has no messages
+	assertEmptyItems(t, w.Body.Bytes())
 }
 
 func TestAPIEmailQuarantineActionMissingMsgID(t *testing.T) {
@@ -302,8 +300,8 @@ func TestAPIEmailQuarantineActionDeleteSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete = %d, body = %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "deleted") {
-		t.Error("expected 'deleted' in response")
+	if !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Error("expected ok in response")
 	}
 }
 
@@ -389,8 +387,8 @@ func TestAPIFirewallAllowIPSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "allowed") {
-		t.Error("expected 'allowed' in response")
+	if !strings.Contains(w.Body.String(), `"ok":true`) || !strings.Contains(w.Body.String(), `"temporary":false`) {
+		t.Errorf("expected a permanent allow, got %s", w.Body.String())
 	}
 	if fb.allowed["203.0.113.5"] != "testing" {
 		t.Error("IP not in allowed map")
@@ -411,8 +409,8 @@ func TestAPIFirewallAllowIPTempDuration(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "temp_allowed") {
-		t.Error("expected 'temp_allowed' in response")
+	if !strings.Contains(w.Body.String(), `"temporary":true`) {
+		t.Errorf("expected a temporary allow, got %s", w.Body.String())
 	}
 }
 
@@ -512,8 +510,8 @@ func TestAPIFirewallRemoveAllowSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "removed") {
-		t.Error("expected 'removed' in response")
+	if !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Error("expected ok in response")
 	}
 }
 
@@ -559,9 +557,7 @@ func TestAPIFirewallAuditWithActionFilter(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var result []json.RawMessage
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &result)
 	if len(result) != 1 {
 		t.Errorf("filtered count = %d, want 1", len(result))
 	}
@@ -666,8 +662,8 @@ func TestAPIFirewallDenySubnetSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "blocked") {
-		t.Error("expected 'blocked' in response")
+	if !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Error("expected ok in response")
 	}
 	if fb.subnetsBlocked["198.51.100.0/24"] != "abuse" {
 		t.Error("subnet not in blocked map")
@@ -745,8 +741,8 @@ func TestAPIFirewallRemoveSubnetSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "removed") {
-		t.Error("expected 'removed' in response")
+	if !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Error("expected ok in response")
 	}
 }
 
@@ -814,6 +810,7 @@ func TestAPIFirewallFlushCphulkInvalidIP(t *testing.T) {
 
 func TestAPIFirewallFlushCphulkSuccess(t *testing.T) {
 	s := newTestServerWithFirewall(t, "tok")
+	fakeWhmapi1(t, 0)
 	w := httptest.NewRecorder()
 	body := `{"ip":"203.0.113.5"}`
 	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
@@ -822,8 +819,8 @@ func TestAPIFirewallFlushCphulkSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "flushed") {
-		t.Error("expected 'flushed' in response")
+	if !strings.Contains(w.Body.String(), `"ok":true`) {
+		t.Error("expected ok in response")
 	}
 }
 
@@ -831,12 +828,7 @@ func TestAPIFirewallCheckInvalidIP(t *testing.T) {
 	s := newTestServerWithFirewall(t, "tok")
 	w := httptest.NewRecorder()
 	s.apiFirewallCheck(w, httptest.NewRequest("GET", "/?ip=not-an-ip", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), `"success": false`) {
-		t.Error("expected success=false for invalid IP")
-	}
+	assertJSONError(t, "invalid IP", w, http.StatusBadRequest)
 }
 
 func TestAPIFirewallCheckWithBlockedState(t *testing.T) {
@@ -925,12 +917,7 @@ func TestAPIFirewallUnbanMissingIP(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiFirewallUnban(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), `"success": false`) {
-		t.Error("expected success=false for missing IP")
-	}
+	assertJSONError(t, "missing IP", w, http.StatusBadRequest)
 }
 
 func TestAPIFirewallUnbanInvalidIP(t *testing.T) {
@@ -940,12 +927,7 @@ func TestAPIFirewallUnbanInvalidIP(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiFirewallUnban(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), `"success": false`) {
-		t.Error("expected success=false for invalid IP")
-	}
+	assertJSONError(t, "invalid IP", w, http.StatusBadRequest)
 }
 
 func TestAPIFirewallUnbanSuccess(t *testing.T) {
@@ -963,7 +945,7 @@ func TestAPIFirewallUnbanSuccess(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), `"success": true`) {
+	if !strings.Contains(w.Body.String(), `"success":true`) {
 		t.Error("expected success=true")
 	}
 }
@@ -1162,11 +1144,13 @@ func TestAPISuppressionsAddAndDelete(t *testing.T) {
 		t.Fatalf("add status = %d, body = %s", w.Code, w.Body.String())
 	}
 
-	var addResp map[string]string
+	var addResp struct {
+		ID string `json:"id"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &addResp); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	ruleID := addResp["id"]
+	ruleID := addResp.ID
 	if ruleID == "" {
 		t.Fatal("expected non-empty rule ID")
 	}
@@ -1190,9 +1174,15 @@ func TestAPISuppressionsAddAndDelete(t *testing.T) {
 	if w3.Code != http.StatusOK {
 		t.Fatalf("delete status = %d, body = %s", w3.Code, w3.Body.String())
 	}
-	if !strings.Contains(w3.Body.String(), "deleted") {
-		t.Error("expected 'deleted' in response")
+	if !strings.Contains(w3.Body.String(), `"ok":true`) {
+		t.Error("expected ok in response")
 	}
+	// The rule is gone: deleting it again is an unknown id.
+	w4 := httptest.NewRecorder()
+	again := httptest.NewRequest("DELETE", "/", strings.NewReader(delBody))
+	again.Header.Set("Content-Type", "application/json")
+	s.apiSuppressions(w4, again)
+	assertJSONError(t, "second delete", w4, http.StatusNotFound)
 }
 
 // =========================================================================
@@ -1238,9 +1228,7 @@ func TestAPIModSecBlocksWithFindings(t *testing.T) {
 	}
 	// Should return valid JSON array
 	var result []modsecBlockView
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &result)
 }
 
 func TestAPIModSecEventsWithLimit(t *testing.T) {
@@ -1274,9 +1262,7 @@ func TestAPIModSecEventsWithLimit(t *testing.T) {
 	}
 
 	var result []modsecEventView
-	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &result)
 	if len(result) > 1 {
 		t.Errorf("events count = %d, want <= 1", len(result))
 	}

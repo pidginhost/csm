@@ -5,7 +5,7 @@
     };
     var categoryIcons = {
         ssh: 'ti-terminal-2', php: 'ti-brand-php', webserver: 'ti-world',
-        mail: 'ti-mail', cpanel: 'ti-server', os: 'ti-cpu', firewall: 'ti-firewall'
+        mail: 'ti-mail', cpanel: 'ti-server', os: 'ti-cpu', firewall: 'ti-firewall-check'
     };
     // Status icons use innerHTML but only with hardcoded icon markup (no user data)
     var statusIcons = {
@@ -48,7 +48,7 @@
         var typeLabel = { cpanel: 'cPanel', cloudlinux: 'CloudLinux + cPanel', bare: 'Bare Server' };
         document.getElementById('score-server-type').textContent = '(' + (typeLabel[report.server_type] || report.server_type) + ')';
         if (report.timestamp) {
-            document.getElementById('audit-timestamp').textContent = 'Last run: ' + new Date(report.timestamp).toLocaleString();
+            document.getElementById('audit-timestamp').textContent = 'Last run: ' + CSM.fmtDate(report.timestamp, { tz: true });
         }
 
         var cats = {};
@@ -159,16 +159,14 @@
     }
 
     function loadReport() {
-        // silent:true so CSM.request does not toast; the page owns its own
-        // messaging. The empty-state ("no audit run yet") stays visible as the
-        // recovery path, but a swallowed failure would read as "nothing has run"
-        // rather than "the load failed", so surface it.
+        // silent:true so CSM.request does not toast; the failure shows in
+        // place of the report. The "no audit results" message is hidden with
+        // it, or a failed load would read as "nothing has run".
         CSM.get('/api/v1/hardening', { silent: true })
             .then(renderReport)
             .catch(function(err) {
-                var msg = 'Failed to load hardening report';
-                if (err && err.message) msg += ': ' + err.message;
-                CSM.toast(msg, 'error');
+                document.getElementById('empty-state').classList.add('d-none');
+                CSM.loadError(document.getElementById('categories-container'), loadReport, { title: 'Failed to load hardening report', error: err });
             });
     }
 
@@ -222,4 +220,6 @@
     });
 
     loadReport();
+    // Refresh re-reads the stored report; it does not run a new audit.
+    if (CSM.refresh) CSM.refresh.onRefresh(loadReport);
 })();

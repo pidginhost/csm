@@ -82,7 +82,9 @@ func ReadOverridesRaw(path string) []byte {
 func RestoreOverrides(path string, content []byte) error {
 	if content == nil {
 		// File didn't exist before - remove it
-		os.Remove(path)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing overrides during rollback: %w", err)
+		}
 		return nil
 	}
 	tmpPath := path + ".tmp"

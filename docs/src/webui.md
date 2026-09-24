@@ -1,6 +1,12 @@
 # Web UI
 
-HTTPS dashboard with polling-based live updates (10s feed, 60s stats). Dark/light theme toggle.
+HTTPS dashboard that updates live from the finding event stream (see
+[Live updates](#live-updates)). Dark/light theme toggle.
+
+Static assets use content-versioned URLs. Only a URL matching the served file
+receives immutable caching; older or unversioned URLs must revalidate. Replacing
+a file changes its version even when its size and modification time are preserved.
+Text assets use gzip when accepted by the client, except for byte-range requests.
 
 ## Navigation
 
@@ -9,60 +15,156 @@ groups only reorder visibility:
 
 - **Overview** - Dashboard
 - **Triage** - Incidents, Findings (Active and History tabs)
-- **Response** - Firewall, Quarantine, Cleanup, Email, ModSecurity, Verified Bots, Threat Intel
-- **Operations** - Performance, Hardening, Rules, ModSec Rules, Audit
-- **Configuration** - Settings
+- **Response** - Firewall, Quarantine, Cleanup History, Email Security, ModSecurity, Threat Intelligence
+- **Operations** - Performance, Server Hardening, Audit Log
+- **Configuration** - Rules, ModSecurity Rules, Verified Bots, Settings
+
+A page has the same name in the sidebar, the browser tab and its heading.
+The old `/blocked` address redirects to `/firewall`.
 
 Sidebar group expand/collapse state is saved in the browser. On
 viewports under 992px the sidebar collapses into a top-bar drawer
-toggled from the hamburger button. Account detail (`/account`) is
-hidden from the sidebar; it is reached from finding rows, incident
-detail, and Threat Intel result panels. Browser logins require administrator
+toggled from the hamburger button. Account detail (`/account?name=<account>`) is
+not in the sidebar; the finding detail, account groups on Findings, incident
+detail, the accounts targeted in a Threat Intel lookup and the dashboard's
+accounts-at-risk card link to it, and the command palette opens an account
+typed by name. The palette also lists Sessions. Browser logins require administrator
 scope. The header links to session management.
 
 ## Pages
 
 | Page | URL | Purpose |
 |------|-----|---------|
-| **Dashboard** | `/dashboard` | Triage queue, daemon status strip, Components matrix, system posture, 24h stats, recent activity, accounts at risk, auto-response summary, brute-force summary, timeline charts |
-| **Findings** | `/findings` | Active findings with search, check/account filters, header grouping toggle, detail panel, fix/dismiss/suppress actions, sticky bulk operations, modal account scan |
-| **Findings > History** | `/findings?tab=history` | Paginated archive of all findings with date range and severity filters, CSV export |
-| **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |
-| **Cleanup** | `/cleanup-history` | File pre-clean backups and DB-object backups with preview and restore controls |
-| **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/lookup/blocks/allow/config/audit/danger`): blocked IPs/subnets with GeoIP, bulk unblock of selected rows (with undo), whitelist management, search, audit log; destructive actions live under the Danger tab |
-| **ModSecurity** | `/modsec` | WAF workbench: status strip, Active WAF pressure summary list (top attackers by hits), top rules / domains side panel, and Blocked IPs / Events / Rules tabs. Block detail panels show first-seen, top URIs, sample events, and direct links to Threat Intel, Firewall lookup, and rule management |
-| **ModSec Rules** | `/modsec/rules` | Per-rule management, overrides, escalation control |
-| **Email** | `/email` | Mail queue and AV status, grouped account/auth/queue/malware findings, quarantine, senders, forwarders, provider deferrals, and PHP-relay abuse. Queue actions distinguish real mail from frozen null-sender backscatter; held external forward copies can be released or deleted without affecting the local delivery. |
+| **Dashboard** | `/dashboard` | Triage queue, daemon status strip, Components matrix, system posture, 24h stats, accounts at risk, auto-response summary, brute-force summary, timeline charts. A queued finding opens its own detail, and each 24h severity count opens the History tab for the last 24 hours at that severity |
+| **Findings** | `/findings` | Active findings with search, check/account filters, header grouping toggle, detail panel, fix/dismiss/suppress actions, a permanent Block for findings that report an attacker address, sticky bulk operations (fix, dismiss, suppress), modal account scan. The open finding is kept in the URL as `?key=<finding key>`, so the link reopens it |
+| **Findings > History** | `/findings?tab=history` | Paginated archive of all findings, newest first, with date range and severity filters, 25 to 200 rows per page (`hperpage`), CSV export; `window=24h` (1 to 720 hours) shows a rolling window instead of calendar days |
+| **Quarantine** | `/quarantine` | Every file backup: quarantined files and cleaners' pre-clean backups, with type, live state of the original path, content preview, restore and delete; filters by account, detector, type and date |
+| **Cleanup History** | `/cleanup-history` | DB-object backups with preview and restore controls; file backups are on the Quarantine page |
+| **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/blocks/allow/config/audit/danger`; `?ip=<address>` opens the lookup for that address): blocked IPs/subnets with GeoIP, bulk unblock of selected rows (with undo), the whitelist and allow rules (Allow Rules tab), search, audit log; the lookup links to Threat Intel for the same address; destructive actions live under the Danger tab |
+| **ModSecurity** | `/modsec` | WAF workbench: status strip, Active WAF pressure summary list (top attackers by hits), top rules / domains side panel, Blocked IPs / Events tabs, and a Manage Rules link to ModSecurity Rules. Block detail panels show first-seen, top URIs, sample events, and direct links to Threat Intel, Firewall lookup, and rule management |
+| **ModSecurity Rules** | `/modsec/rules` | Enable or disable CSM rules (applied with one reload) and firewall escalation exclusions; the exclusion list works even when rule management is not configured |
+| **Email Security** | `/email` | Mail queue and AV status, grouped account/auth/queue/malware findings, quarantine, senders, forwarders, provider deferrals, and PHP-relay abuse. Queue actions distinguish real mail from frozen null-sender backscatter; held external forward copies can be released or deleted without affecting the local delivery. |
 | **Verified Bots** | `/verified-bots` | Editor for the verified-crawler allowlist (`reputation.verified_bots`): UA, reverse-DNS suffix, and IP-range identities, plus auto-update posture, with apply-and-reload. Admin scope |
-| **Threat Intel** | `/threat` | IP lookup with scoring/GeoIP/ASN, 24 hour and permanent block actions (single and bulk), top attackers, attack type charts, trends |
-| **Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
-| **Incidents** | `/incident` | Correlated incident list with detail panel plus forensic timeline search by IP or account |
+| **Threat Intelligence** | `/threat` | IP lookup with scoring/GeoIP/ASN (`?ip=<address>` runs it on load), 24 hour and permanent block and whitelist actions (single and bulk), top attackers, attack type charts, trends; the lookup links to Firewall for the same address, and the whitelist itself is kept under Firewall > Allow Rules |
+| **Server Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
+| **Incidents** | `/incident` | Correlated incident list and grouped view, both filterable by every status, with detail panel and bulk status changes (contained, resolved, dismissed) for the selected incidents on the page, plus forensic timeline search by IP or account |
 | **Rules** | `/rules` | YAML/YARA rule management, suppressions, state export/import, test alerts |
-| **Account** | `/account` | Per-account analysis: findings, quarantine, history, on-demand scan |
-| **Audit** | `/audit` | System-wide action log with search, action and date filters, URL state, and export |
+| **Account** | `/account` | Per-account analysis: findings, quarantine and history. An on-demand account scan runs from the Findings page |
+| **Audit Log** | `/audit` | Every operator action in the Web UI and API, including logins, logouts and session revocations, with the credential that acted, search, action and date filters, URL state, and export. Failed logins go to the daemon log instead |
 | **Performance** | `/performance` | Server load, PHP processes, MySQL, Redis, WordPress metrics |
-| **Settings** | `/settings` | Searchable config editor with grouped large sections, field-level validation errors, restart notices, redacted secret updates, and firewall tentative apply with rollback timer |
-| **Sessions** | `/sessions` | Active browser logins, individual revocation and logout of every session |
+| **Settings** | `/settings` | Searchable config editor with grouped large sections, field-level validation errors, restart notices, redacted secret updates, and firewall tentative apply with rollback timer. Commands, file paths, sockets and environment variable names are shown read-only and change only in `csm.yaml`; changing the rspamd or upstream address requires entering its credential again |
+| **Sessions** | `/sessions` | Active browser logins, individual revocation and logout of every session (confirmed first) |
+
+Audit attribution is captured when the action is authorized and remains available
+if the browser session expires or is revoked while the action runs.
+
+Account views use the recorded finding owner when available, with account paths
+as a fallback. They also recognize resolved paths under linked account roots,
+including files already moved into quarantine.
+
+## Dates and time zones
+
+Every page shows dates in the time zone chosen under Preferences: the browser's,
+the server's, or a named zone. Date filters pick whole days in that zone.
+Changing the zone reloads the page so dates already on screen follow it, provided
+the browser can save and read back the preference. If browser storage is
+unavailable, new renders use the preference without forcing a reload.
+Days with a midnight clock change start at the first valid time of that day;
+a repeated midnight uses its first occurrence.
+
+## Live updates
+
+The Web UI keeps an event stream open (`/api/v1/events`) and shows a Live
+indicator while it is connected. Findings are batched for up to a couple
+of seconds before pages update:
+
+- Findings shows the "new findings" banner at once instead of on its next check
+- Dashboard sends desktop notifications and refreshes the 24h counts and the triage queue
+- Incidents reloads the current list, unless incidents are selected for a bulk change
+
+While the stream is connected, the checks those pages run on a timer slow down
+to once a minute as a safety net; when it drops they return to their normal
+pace. Pausing auto-refresh also pauses live updates.
+
+Desktop notifications handle findings that arrive out of order within a
+batch or share a timestamp, without repeating them on the next history poll.
+
+## Refresh
+
+The header shows when the page's data was last loaded ("Updated N ago"). It
+moves when the page loads its data, on each automatic refresh and on the
+Refresh button; an action or a detail lookup does not change it. The pause
+button appears only on pages that refresh on a timer, and pauses that
+refreshing in this browser.
+
+Refresh reloads the page's data in place, keeping filters, scroll and open
+panels. On a page with unsaved edits (Settings, Verified Bots, staged ModSec
+rule changes) it asks before discarding them. Hardening's Refresh reloads the
+stored report and does not run a new audit. Pages rendered by the server,
+such as Sessions, reload.
+
+A panel that fails to load says what failed and why, with a Retry button that
+loads only that panel again. The panel's earlier content returns once a later
+load succeeds.
+
+The visible History tab refreshes with its current filters and page size.
+Editors wait for an ongoing save or load before accepting another refresh;
+Verified Bots keeps edits made while a reload is pending. ModSecurity
+exclusion controls wait for the exclusion list to load, and a failed load
+stays visible instead of appearing as an empty list. Late responses cannot
+replace a newer account tab, settings section, history page, or finding
+detail, or reopen a finding detail that was closed.
+
+## Notifications
+
+Success and information notices fade after five seconds. An error stays
+until you close it, and the same error is not shown twice while it is on
+screen.
+
+## Confirmations
+
+A confirmation for an action that deletes data, blocks traffic, turns
+protection off or ends sessions names the action on a red button, such as
+Delete or Block, and starts with Cancel focused, so pressing Enter does not
+carry it out. Logging out every browser session asks first.
+Cancel keeps focus after the dialog finishes opening. A later text prompt
+uses its own normal OK button, and bulk actions keep one confirmation open
+at a time.
 
 ## Bulk file actions
 
-Quarantine and Cleanup delete large file selections in sequential batches.
+Select-all and every bulk action reach only the rows the table currently
+shows. Rows on other pages or hidden by a search or filter are never selected
+or acted on; set the page size to All to act on every row.
+Quarantine selection counts and buttons are refreshed whenever the visible rows change.
+
+A failed file restore cleans up its own destination copy while retaining the
+quarantined evidence. A replacement created by another writer is preserved.
+
+Quarantine deletes large file selections in sequential batches.
 If a request fails, later batches are not sent; the page reports the confirmed
 deletion count and refreshes the list. File restore and delete controls stay
-disabled until the operation and refresh finish.
+disabled until the operation and refresh finish, and Refresh waits for them.
 
 Threat Intel bulk block and whitelist actions accept up to 100 selected IPs
 and retain one undo action. Larger selections must be narrowed before sending.
-Findings bulk fix and quarantine actions also ask for a smaller selection when
-the request would exceed the API body-size limit, which includes finding details.
+Findings bulk fix also asks for a smaller selection when the request would
+exceed the API body-size limit, which includes finding details.
+
+Findings bulk suppress creates one path rule per selected file, up to 100
+files, with the file name matched literally. Selected findings that name no
+file are skipped; a rule for a whole check is made from one finding. Rules are
+saved one at a time, and a failure stops the rest and reports how many were
+saved.
 
 ## Security
 
 - **Authentication** - API bearer tokens in the header; opaque server-side browser sessions in HttpOnly/Secure/SameSite=Strict cookies
-- **CSRF** - HMAC-derived token on cookie-authenticated POST, PUT, PATCH, and DELETE requests
-- **Headers** - X-Frame-Options DENY, Content-Security-Policy, HSTS, nosniff
-- **TLS** - Auto-generated self-signed certificate
-- **Rate limiting** - 5 login attempts/min, 600 API requests/min per IP
+- **CSRF** - HMAC-derived token bound to the browser session on cookie-authenticated POST, PUT, PATCH, and DELETE requests; a form sends it in the body, never the query string
+- **Headers** - X-Frame-Options DENY, Content-Security-Policy (scripts, styles and forms from the Web UI only; no plugins, `<base>` or framing), HSTS, nosniff, and the legacy XSS auditor turned off
+- **TLS** - Auto-generated self-signed certificate, renewed automatically within 30 days of expiry and picked up without a restart; a certificate you install is never replaced, and replacing its files takes effect on the next connection. Renewal keeps the existing private key, so a failed certificate write leaves the working pair intact; explicitly configured certificate and key files must already exist
+- **Rate limiting** - 5 login attempts/min, 600 API and `/metrics` requests/min per IPv4 address or IPv6 /64
+- **Token length** - tokens shorter than 32 characters are reported as warnings at startup and by `csm validate` and `csm doctor`; they keep working
 - **Bearer auth** skips CSRF (for API-to-API calls)
 
 ## Browser sessions
@@ -88,8 +190,13 @@ webui:
 
 Both durations require a restart. Lifetime must be between one second and
 30 days; idle timeout must be at least one second and no longer than lifetime. Zero does
-not disable expiry. Idle time means time without authenticated HTTP requests,
-including dashboard polling. Activity is committed at bounded intervals, so
+not disable expiry. Idle time means time without operator activity: page loads
+and API requests made within a minute of keyboard, pointer or scroll input.
+Background polling by an open page does not count, including metrics scrapes,
+HTML page fetches and event-stream connections. Browser navigation to a page
+counts as a page load; fetching that page on a timer does not. The activity
+marker is recalculated when each API request is sent, so a dashboard left
+open still logs out after the idle timeout. Activity is committed at bounded intervals, so
 idle expiry can occur slightly early, never late. Passive event-stream
 heartbeats do not extend the session; streams check revocation and expiry
 before each event and heartbeat.
@@ -142,16 +249,30 @@ for the security principles behind opaque identifiers, expiry and revocation.
 
 | Key | Action |
 |-----|--------|
-| `j / k` | Move selection down/up |
+| `j / k` | Move selection down/up (focus moves to the row) |
+| `o` / `Enter` | Open selected finding |
 | `d` | Dismiss selected finding |
 | `f` | Fix selected finding |
+
+Finding and incident rows, finding group headers and sortable table headers
+also work from the keyboard: Tab to them and press Enter or Space. A sorted
+header reports its order to screen readers. Closing the detail panel or a
+dialog returns focus to what opened it, and a dialog opened from the detail
+panel keeps Tab and Escape to itself. If a refresh removes the opener, focus
+returns to the open detail panel or main content. Shortcuts act on the focused
+finding and stay inactive while a dialog or detail panel is open.
 
 Each finding row offers up to four actions: **Fix** (apply the automated
 remediation, shown only when one exists), **Re-check** (re-evaluate the finding
 against the live filesystem and clear it if the condition is gone, useful after
 fixing something by hand instead of waiting for the next scan), **Dismiss**
-(hide it; restorable), and **Suppress** (create a rule to hide similar
-findings).
+(stop alerts for it while it stays unchanged; a later scan that still finds it
+lists it again, and undo is offered for 30 seconds), and **Suppress** (create a
+rule to hide similar findings for good).
+
+Dismissal undo preserves later dismissals, successful re-checks and baseline resets.
+Findings first received in real time stop alerting when dismissed, even before
+the next scheduled scan records them.
 
 Re-check appears only when CSM can test a current condition again. Supported
 targets include file permissions and content, phishing and `.htaccess` files,
@@ -174,4 +295,4 @@ aggregates and dependency findings require a new account or full scan.
 
 CSM installs a WHM plugin (`addon_csm.cgi`) that redirects operators from WHM to the daemon Web UI. After the redirect, API calls are same-origin requests to the daemon.
 
-API requests that carry a browser `Origin` header are accepted from `https://<hostname>:<port>` (the configured `hostname` and `webui.listen` port), from any https loopback origin such as `https://localhost:9443` over an SSH tunnel, and from every origin listed in `webui.allowed_origins` (bare `https://host[:port]` entries, hot-reloadable). Any other origin gets `403 Cross-origin request blocked`, which shows up as a read-only UI: pages load but every action fails. The request's `Host` header is never used for this decision.
+API requests that carry a browser `Origin` header are accepted from `https://<hostname>:<port>` (the configured `hostname` and `webui.listen` port), from an https loopback origin such as `https://localhost:9443` over an SSH tunnel on any local port, and from every origin listed in `webui.allowed_origins` (bare `https://host[:port]` entries, hot-reloadable). A loopback origin is accepted only when it is the origin the request was sent to (its `Host`): another local service in the same browser shares the Web UI's cookies, which ignore the port, and is refused. Any other origin gets `403 Cross-origin request blocked`, which shows up as a read-only UI: pages load but every action fails. The `Host` header is used only for this loopback comparison; it never admits a non-loopback origin.

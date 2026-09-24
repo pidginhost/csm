@@ -1,47 +1,40 @@
 // CSM.ui - Shared rendering primitives (no modal/confirm logic - that stays in toast.js)
 var CSM = CSM || {};
 
-// Severity badge HTML
-var _sevTitles = {
-    2: 'Critical: immediate action required',
-    1: 'High: should be addressed promptly',
-    0: 'Warning: low-risk issue to review'
-};
-CSM.severityBadge = function(severity) {
-    var cls = 'secondary', label = 'UNKNOWN';
-    if (severity === 2) { cls = 'critical'; label = 'CRITICAL'; }
-    else if (severity === 1) { cls = 'high'; label = 'HIGH'; }
-    else if (severity === 0) { cls = 'warning'; label = 'WARNING'; }
-    var title = _sevTitles[severity] || 'Unknown severity value';
-    return '<span class="badge badge-' + cls + '" title="' + title + '">' + label + '</span>';
-};
+(function() {
 
-// Severity class name from numeric severity
-CSM.severityClass = function(severity) {
-    if (severity === 2) return 'critical';
-    if (severity === 1) return 'high';
-    if (severity === 0) return 'warning';
-    return 'secondary';
-};
-
-// Severity class name from a string label (CRITICAL/HIGH/WARNING, any case).
-// Centralizes the label->class mapping so pages that carry the severity as a
-// text label render the same token-backed .badge-* color as the numeric paths,
-// instead of inventing their own Bootstrap/Tabler color scale.
-CSM.severityClassFromLabel = function(label) {
-    switch (String(label || '').trim().toUpperCase()) {
-        case 'CRITICAL': return 'critical';
-        case 'HIGH': return 'high';
-        case 'WARNING': return 'warning';
+// The severity table. Findings carry a numeric level (0-2) and some APIs a
+// label; CSM.severity accepts either, in any case, and returns the label, the
+// token-backed .badge-* class, the level and a sort rank. Anything else is
+// UNKNOWN with the neutral class, never a guessed severity.
+var _severities = [
+    { level: 0, label: 'WARNING', cls: 'warning', title: 'Warning: low-risk issue to review' },
+    { level: 1, label: 'HIGH', cls: 'high', title: 'High: should be addressed promptly' },
+    { level: 2, label: 'CRITICAL', cls: 'critical', title: 'Critical: immediate action required' }
+];
+CSM.severity = function(value) {
+    var found = null;
+    if (typeof value === 'number') {
+        found = _severities[value] || null;
+    } else if (typeof value === 'string') {
+        var label = value.trim().toUpperCase();
+        for (var i = 0; i < _severities.length; i++) {
+            if (_severities[i].label === label) found = _severities[i];
+        }
     }
-    return 'secondary';
+    if (!found) return { level: -1, rank: 0, label: 'UNKNOWN', cls: 'secondary', title: 'Unknown severity value' };
+    return { level: found.level, rank: found.level + 1, label: found.label, cls: found.cls, title: found.title };
 };
 
-// Centralized severity map: numeric level → { label, cls }
-CSM.sevMap = {
-    2: { label: 'CRITICAL', cls: 'critical' },
-    1: { label: 'HIGH', cls: 'high' },
-    0: { label: 'WARNING', cls: 'warning' }
+// Severity badge HTML
+CSM.severityBadge = function(severity) {
+    var s = CSM.severity(severity);
+    return '<span class="badge badge-' + s.cls + '" title="' + s.title + '">' + s.label + '</span>';
+};
+
+// Severity badge class name
+CSM.severityClass = function(severity) {
+    return CSM.severity(severity).cls;
 };
 
 // Empty state placeholder HTML
@@ -77,7 +70,206 @@ CSM.makeClickable = function(el) {
     });
 };
 
-// fmtDateTime removed - use CSM.fmtDate(ts) instead (defined in csrf.js)
+// fmtDateTime removed - use CSM.fmtDate(ts) instead (defined in csm-format.js)
+
+// A server-rendered form with data-csm-confirm asks before it submits. The
+// page scripts cannot use inline handlers under the CSP, so one listener
+// serves every such form. form.submit() does not fire submit again.
+document.addEventListener('submit', function(e) {
+    var form = e.target;
+    var message = form && form.getAttribute && form.getAttribute('data-csm-confirm');
+    if (!message) return;
+    e.preventDefault();
+    CSM.confirm(message, {
+        danger: form.hasAttribute('data-csm-confirm-danger'),
+        okLabel: form.getAttribute('data-csm-confirm-ok') || ''
+    }).then(function() { form.submit(); }, function() { /* cancelled */ });
+});
+
+// enrichGeoIP fills every .geo-cell in container (data-ip holds the address)
+// from /api/v1/geoip/batch. Each address is looked up once, in chunks of
+// 250: the endpoint caps a request at 500, and a per-address fallback would
+// trip the API rate limit. opts.format(geo) returns the cell HTML, or '' to
+// leave the cell as it is; opts.failText, when set, replaces the cells of a
+// chunk that failed.
+CSM.GEOIP_CHUNK = 250;
+CSM.enrichGeoIP = function(container, opts) {
+    opts = opts || {};
+    var cells = container ? container.querySelectorAll('.geo-cell') : [];
+    var byIP = {};
+    for (var i = 0; i < cells.length; i++) {
+        var ip = cells[i].dataset.ip;
+        if (ip) (byIP[ip] = byIP[ip] || []).push(cells[i]);
+    }
+    var ips = Object.keys(byIP);
+    function paint(results) {
+        Object.keys(results).forEach(function(ip) {
+            var html = byIP[ip] ? opts.format(results[ip] || {}) : '';
+            if (!html) return;
+            byIP[ip].forEach(function(cell) { cell.innerHTML = html; });
+        });
+    }
+    function fail(chunk) {
+        if (opts.failText == null) return;
+        chunk.forEach(function(ip) {
+            byIP[ip].forEach(function(cell) { cell.textContent = opts.failText; });
+        });
+    }
+    for (var s = 0; s < ips.length; s += CSM.GEOIP_CHUNK) {
+        (function(chunk) {
+            CSM.post('/api/v1/geoip/batch', { ips: chunk })
+                .then(function(data) { paint((data && data.results) || {}); })
+                .catch(function() { fail(chunk); });
+        })(ips.slice(s, s + CSM.GEOIP_CHUNK));
+    }
+};
+
+// chartTheme gives the chart colours for the current theme; applyChartTheme
+// repaints every chart, tooltips included, when the theme changes.
+CSM.chartTheme = function() {
+    var dark = document.documentElement.classList.contains('theme-dark');
+    var textColor = dark ? '#94a3b8' : '#64748b';
+    return {
+        dark: dark,
+        grid: dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)',
+        text: textColor,
+        tooltip: {
+            backgroundColor: dark ? '#1e293b' : '#ffffff',
+            titleColor: dark ? '#c8d3e0' : '#1a2234',
+            bodyColor: dark ? '#c8d3e0' : '#1a2234',
+            borderColor: dark ? '#2d3a4e' : '#e6e8eb'
+        }
+    };
+};
+
+CSM.applyChartTheme = function() {
+    if (typeof Chart === 'undefined') return;
+    var theme = CSM.chartTheme();
+    Chart.defaults.color = theme.text;
+    Chart.defaults.borderColor = theme.grid;
+    Object.keys(Chart.instances || {}).forEach(function(id) {
+        var chart = Chart.instances[id];
+        var scales = chart.options.scales || {};
+        Object.keys(scales).forEach(function(axis) {
+            if (scales[axis].grid) scales[axis].grid.color = theme.grid;
+            if (scales[axis].ticks) scales[axis].ticks.color = theme.text;
+        });
+        var tooltip = chart.options.plugins && chart.options.plugins.tooltip;
+        if (tooltip) Object.assign(tooltip, theme.tooltip);
+        chart.update('none');
+    });
+};
+
+// accountURL returns the Account page URL for a hosting account name, or ''
+// when the value is not one (a placeholder, a mailbox, a path). The rule is
+// the server's account name check.
+CSM.accountURL = function(name) {
+    name = String(name || '');
+    return /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) ? '/account?name=' + encodeURIComponent(name) : '';
+};
+
+// pager renders the footer of a server-paged list into footer: a summary
+// and first/previous/next/last buttons around a page indicator. o.total,
+// o.offset and o.limit describe the list, o.count the rows on this page, and
+// o.onOffset(offset) loads another page. An empty list hides the footer.
+CSM.pager = function(footer, o) {
+    if (!footer) return;
+    var total = Math.max(0, o.total || 0);
+    var limit = Math.max(1, o.limit || 1);
+    var offset = Math.max(0, o.offset || 0);
+    var count = o.count == null ? Math.min(limit, total - offset) : o.count;
+    footer.replaceChildren();
+    footer.classList.toggle('d-none', total === 0);
+    if (total === 0) return;
+    var pages = Math.max(1, Math.ceil(total / limit));
+    var atStart = offset === 0;
+    var atEnd = offset + limit >= total;
+    var row = document.createElement('div');
+    row.className = 'd-flex align-items-center justify-content-between flex-wrap gap-2 w-100';
+    var summary = document.createElement('div');
+    summary.className = 'text-muted small';
+    summary.textContent = 'Showing ' + (offset + 1) + '-' + Math.min(offset + count, total) + ' of ' + total;
+    row.appendChild(summary);
+    var list = document.createElement('ul');
+    list.className = 'pagination pagination-sm m-0';
+    function item(name, label, icon, target, disabled) {
+        var li = document.createElement('li');
+        li.className = 'page-item' + (disabled ? ' disabled' : '');
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'page-link';
+        b.setAttribute('data-pager', name);
+        b.setAttribute('aria-label', label);
+        b.disabled = disabled;
+        var i = document.createElement('i');
+        i.className = 'ti ' + icon;
+        i.setAttribute('aria-hidden', 'true');
+        b.appendChild(i);
+        b.addEventListener('click', function() { if (!b.disabled) o.onOffset(target); });
+        li.appendChild(b);
+        list.appendChild(li);
+    }
+    item('first', 'First page', 'ti-chevrons-left', 0, atStart);
+    item('prev', 'Previous page', 'ti-chevron-left', Math.max(0, offset - limit), atStart);
+    var here = document.createElement('li');
+    here.className = 'page-item active';
+    var indicator = document.createElement('span');
+    indicator.className = 'page-link';
+    indicator.setAttribute('data-pager', 'indicator');
+    indicator.textContent = (Math.floor(offset / limit) + 1) + ' / ' + pages;
+    here.appendChild(indicator);
+    list.appendChild(here);
+    item('next', 'Next page', 'ti-chevron-right', offset + limit, atEnd);
+    item('last', 'Last page', 'ti-chevrons-right', (pages - 1) * limit, atEnd);
+    row.appendChild(list);
+    footer.appendChild(row);
+};
+
+// statusChip builds one chip of a page's status strip. The value and label
+// are set as text.
+CSM.statusChip = function(opts) {
+    var span = document.createElement('span');
+    span.className = 'csm-status-strip__chip' + (opts.cls ? ' ' + opts.cls : '');
+    if (opts.title) span.title = opts.title;
+    var icon = document.createElement('i');
+    icon.className = 'ti ' + (opts.icon || 'ti-circle');
+    span.appendChild(icon);
+    var val = document.createElement('span');
+    val.className = 'csm-status-strip__chip-value';
+    val.textContent = opts.value;
+    span.appendChild(val);
+    var lbl = document.createElement('span');
+    lbl.className = 'csm-status-strip__chip-label';
+    lbl.textContent = opts.label;
+    span.appendChild(lbl);
+    return span;
+};
+
+// emptyStateNode is CSM.emptyStateBlock as an element, for pages that build
+// their lists with the DOM; title and reason are set as text.
+CSM.emptyStateNode = function(icon, title, reason) {
+    var wrap = document.createElement('div');
+    wrap.className = 'csm-empty';
+    var i = document.createElement('div');
+    i.className = 'csm-empty__icon';
+    var ie = document.createElement('i');
+    ie.className = 'ti ti-' + icon;
+    i.appendChild(ie);
+    wrap.appendChild(i);
+    if (title) {
+        var t = document.createElement('div');
+        t.className = 'csm-empty__title';
+        t.textContent = title;
+        wrap.appendChild(t);
+    }
+    if (reason) {
+        var r = document.createElement('div');
+        r.className = 'csm-empty__reason';
+        r.textContent = reason;
+        wrap.appendChild(r);
+    }
+    return wrap;
+};
 
 // Standard empty state block (non-table). Tables still use CSM.emptyState.
 //
@@ -104,7 +296,7 @@ CSM.emptyStateBlock = function(opts) {
 // Returns an HTMLElement; caller appends and may bind a click handler.
 //
 //   CSM.summaryItem({
-//       severity: 2,                      // 0=warn, 1=high, 2=crit (optional)
+//       severity: 'CRITICAL',             // label or 0-2 level (optional)
 //       title: 'jane@example.com',
 //       meta: '54 auth failures from 3 IPs',
 //       count: 54,                         // optional badge value
@@ -119,9 +311,10 @@ CSM.summaryItem = function(opts) {
     var tag = opts.href ? 'a' : 'div';
     var el = document.createElement(tag);
     el.className = 'csm-summary-list__item';
-    if (opts.severity === 2) el.classList.add('csm-summary-list__item--crit');
-    else if (opts.severity === 1) el.classList.add('csm-summary-list__item--high');
-    else if (opts.severity === 0) el.classList.add('csm-summary-list__item--warn');
+    var level = CSM.severity(opts.severity).level;
+    if (level === 2) el.classList.add('csm-summary-list__item--crit');
+    else if (level === 1) el.classList.add('csm-summary-list__item--high');
+    else if (level === 0) el.classList.add('csm-summary-list__item--warn');
     if (opts.href) {
         el.setAttribute('href', opts.href);
     }
@@ -129,7 +322,7 @@ CSM.summaryItem = function(opts) {
     el.tabIndex = 0;
 
     var sevHTML = '';
-    if (typeof opts.severity === 'number') {
+    if (level >= 0) {
         sevHTML = '<span class="csm-summary-list__sev">' + CSM.severityBadge(opts.severity) + '</span>';
     }
     var titleHTML = '<div class="csm-summary-list__title">' + (opts.titleHTML || CSM.esc(opts.title || '')) + '</div>';
@@ -299,13 +492,22 @@ CSM.bulk = function(opts) {
             var b = buttons[i];
             if (!b || !b.el) continue;
             if (b.labelTemplate) {
-                b.el.textContent = b.labelTemplate.replace(/\{n\}/g, n);
+                setButtonLabel(b.el, b.labelTemplate.replace(/\{n\}/g, n));
             }
             b.el.disabled = (n === 0);
             b.el.classList.toggle('d-none', n === 0);
         }
         var values = sel.map(function(cb) { return cb.getAttribute(valueAttr); });
         changeCb(n, values);
+    }
+
+    // setButtonLabel writes the count into a button and keeps its icon.
+    function setButtonLabel(btn, text) {
+        var icon = btn.querySelector('i.ti');
+        btn.textContent = text;
+        if (!icon) return;
+        icon.classList.add('me-1');
+        btn.insertBefore(icon, btn.firstChild);
     }
 
     function bindRowListeners() {
@@ -336,6 +538,9 @@ CSM.bulk = function(opts) {
             return checked().map(function(cb) { return cb.getAttribute(valueAttr); });
         },
         selectedCount: function() { return checked().length; },
+        // selectedElements returns the checked, visible checkboxes, for pages
+        // that act on the rows rather than on one attribute.
+        selectedElements: function() { return checked(); },
         clear: function() {
             all().forEach(function(cb) { cb.checked = false; });
             var selectAll = resolveSelectAll();
@@ -388,6 +593,27 @@ CSM.focusTrap = function(container, e) {
     }
 };
 
+// Capture a return point before an overlay takes focus. Refreshes can remove
+// the opener, so fall back to its still-open panel or the main landmark.
+CSM.captureFocus = function() {
+    var opener = document.activeElement;
+    var panel = opener && opener.closest ? opener.closest('.offcanvas') : null;
+    return function() {
+        var candidates = [opener, panel, document.getElementById('csm-main')];
+        for (var i = 0; i < candidates.length; i++) {
+            var el = candidates[i];
+            if (!el || el === document.body || !document.contains(el) || el.disabled) continue;
+            if (el.closest('[hidden], .d-none, [aria-hidden="true"]')) continue;
+            var overlay = el.closest('.offcanvas, .modal');
+            if (overlay && !overlay.classList.contains('show')) continue;
+            if (typeof el.focus === 'function') {
+                el.focus();
+                if (document.activeElement === el) return;
+            }
+        }
+    };
+};
+
 // Detail panel helper. Thin wrapper around the Bootstrap offcanvas that
 // ships with Tabler. Mounts a single shared offcanvas element on first use
 // so callers do not need page-specific markup.
@@ -403,6 +629,38 @@ CSM.detailPanel = (function() {
     var panelEl  = null;
     var dismissBound = false;
     var api = null;
+    // onClose of the content on show; runs once when the panel closes.
+    var currentOnClose = null;
+    var closing = false;
+    var hidingOnClose = null;
+    var pendingShow = false;
+    var showing = false;
+    var pendingHide = false;
+    // returnFocus is what had focus when the panel opened; closing puts
+    // focus back there, so a keyboard user stays in place in the list.
+    var returnFocus = null;
+
+    function restoreFocus() {
+        var restore = returnFocus;
+        returnFocus = null;
+        if (restore) restore();
+    }
+
+    function fireClose() {
+        var fn = currentOnClose;
+        currentOnClose = null;
+        if (fn) fn();
+    }
+
+    function showPanel() {
+        if (window.bootstrap && window.bootstrap.Offcanvas) {
+            instance = window.bootstrap.Offcanvas.getOrCreateInstance(panelEl);
+            instance.show();
+        } else {
+            panelEl.classList.add('show');
+        }
+        bindDismissShortcuts();
+    }
 
     function isOpen() {
         return panelEl && panelEl.classList.contains('show');
@@ -410,6 +668,8 @@ CSM.detailPanel = (function() {
 
     function onKey(e) {
         if (!isOpen()) return;
+        // A dialog opened from the panel owns the keyboard while it is shown.
+        if (document.querySelector('.modal.show, .modal.csm-dialog-active')) return;
         if (e.key === 'Escape' || e.key === 'Esc' || e.keyCode === 27) {
             e.preventDefault();
             api.close();
@@ -495,7 +755,37 @@ CSM.detailPanel = (function() {
         // hidden.bs.offcanvas runs after the backdrop click handler so we
         // can lean on it to drop the global listeners even when the close
         // happens through Bootstrap's own backdrop or ESC path.
-        panelEl.addEventListener('hidden.bs.offcanvas', unbindDismissShortcuts);
+        panelEl.addEventListener('show.bs.offcanvas', function() { showing = true; });
+        panelEl.addEventListener('shown.bs.offcanvas', function() {
+            showing = false;
+            if (pendingHide) {
+                pendingHide = false;
+                api.close();
+            }
+        });
+        panelEl.addEventListener('hide.bs.offcanvas', function() {
+            closing = true;
+            hidingOnClose = currentOnClose;
+            currentOnClose = null;
+        });
+        panelEl.addEventListener('hidden.bs.offcanvas', function() {
+            unbindDismissShortcuts();
+            if (closing) {
+                var fn = hidingOnClose;
+                hidingOnClose = null;
+                if (fn) fn();
+            } else {
+                fireClose();
+            }
+            closing = false;
+            // Bootstrap finishes hiding before a replacement can be shown.
+            if (pendingShow) {
+                pendingShow = false;
+                showPanel();
+            } else {
+                restoreFocus();
+            }
+        });
         return panelEl;
     }
 
@@ -503,6 +793,10 @@ CSM.detailPanel = (function() {
         open: function(opts) {
             var el = ensureMount();
             opts = opts || {};
+            if (!returnFocus) returnFocus = CSM.captureFocus();
+            currentOnClose = typeof opts.onClose === 'function' ? opts.onClose : null;
+            var active = document.activeElement;
+            var focusInside = el.contains(active);
             var titleEl = el.querySelector('.csm-detail-panel__title');
             var bodyEl  = el.querySelector('.csm-detail-panel__body');
             var footEl  = el.querySelector('.csm-detail-panel__footer');
@@ -526,20 +820,24 @@ CSM.detailPanel = (function() {
                 footEl.hidden = true;
             }
 
-            if (window.bootstrap && window.bootstrap.Offcanvas) {
-                instance = window.bootstrap.Offcanvas.getOrCreateInstance(el);
-                instance.show();
-            } else {
-                el.classList.add('show');
+            if (focusInside && !el.contains(active)) el.focus();
+            if (closing) pendingShow = true;
+            else {
+                pendingHide = false;
+                showPanel();
             }
-            bindDismissShortcuts();
         },
         close: function() {
+            pendingShow = false;
             unbindDismissShortcuts();
-            if (instance) {
+            fireClose();
+            if (showing) {
+                pendingHide = true;
+            } else if (instance) {
                 instance.hide();
             } else if (panelEl) {
                 panelEl.classList.remove('show');
+                restoreFocus();
             }
         },
         element: function() { return panelEl; }
@@ -565,3 +863,53 @@ CSM.filePreview = function(title, subhead, text) {
     body.appendChild(pre);
     CSM.detailPanel.open({ title: title || 'File preview', bodyNode: body });
 };
+
+// truncationNote tells the operator a list shows only some of the matches the
+// server returned within its budget, instead of letting a capped list read as
+// the complete answer.
+CSM.truncationNote = function(container, truncated, what) {
+    if (!container || !truncated) return;
+    var note = document.createElement('div');
+    note.className = 'csm-truncation-note text-muted small px-3 py-2';
+    note.textContent = 'Showing only some ' + what + ' in this range; narrow the date range to see more.';
+    container.appendChild(note);
+};
+
+// Suppression scope. A rule without a path pattern hides every finding of its
+// check and stops that check's remediation, so it is only ever built from an
+// explicit "all paths" choice; a blank pattern is refused rather than widened.
+// suppressionRequest returns the API body, or {error} when the choice is
+// incomplete. suppressionSummary states what the rule will cover.
+CSM.suppressionRequest = function(check, scope, pattern, reason, defaultReason) {
+    var body = { check: check, reason: (reason || '').trim() || defaultReason || 'Suppressed from the web UI' };
+    if (scope === 'all') {
+        body.all_paths = true;
+        return body;
+    }
+    pattern = (pattern || '').trim();
+    if (!pattern) return { error: 'Enter a path or pattern, or choose every finding of this check.' };
+    body.path_pattern = pattern;
+    return body;
+};
+
+CSM.suppressionSummary = function(check, scope, pattern) {
+    if (scope === 'all') {
+        return 'Hides every ' + check + ' finding on this server, stops its alerts, and stops file, process and account remediation for it. IP blocking and challenges are not affected.';
+    }
+    pattern = (pattern || '').trim();
+    if (!pattern) return 'Enter the path or glob pattern this rule should cover.';
+    return 'Hides ' + check + ' findings whose path matches ' + pattern + ', stops their alerts, and stops file, process and account remediation for them.';
+};
+
+// suppressionSaved reports a created rule. The server warns when no known
+// check has the rule's name, since such a rule matches nothing.
+CSM.suppressionSaved = function(resp) {
+    if (resp && resp.warning) {
+        CSM.toast('Suppression rule created. ' + resp.warning, 'warning');
+        return;
+    }
+    CSM.toast('Suppression rule created', 'success');
+};
+// End suppression scope.
+
+})();

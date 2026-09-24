@@ -11,6 +11,65 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- Web UI severity filters, date sorting and live notifications now follow the updated API contract. Failed actions and encoding errors return errors, and capped lists report missing results.
+- Web UI tables, desktop notifications, the incident timeline and merged IP reputation findings now compare times as instants instead of as text, which misordered entries from different time zones or within the same second.
+- The incident timeline, UI audit log, threat event, top attacker and ModSecurity event APIs now say when entries were left out, and the incident timeline no longer reports its page size as the total.
+- Importing an exported state bundle works again, temporary whitelist entries stay temporary, and clearing cPHulk login history reports a failure instead of claiming success.
+- Icons that showed blank, on the ModSecurity and Hardening firewall links and a Settings header, now display.
+- Shared Web UI formatting helpers no longer pass an unreadable time or a non-number through as raw text, and a zero value is no longer shown as blank.
+- Email Security findings with details now have an expand button that shows them; the details rows were built but could never be opened.
+- A panel that fails to load now shows what failed, why, and a Retry button on every page. Retry on the Rules stats, firewall status and Threat Intel panels reloads them in place instead of breaking the panel or reloading the page.
+- Threat Intel now names every attack type in its lookup badges, such as Reconnaissance and Known Malicious IP, using the same labels as the dashboard chart.
+- An unrecognised severity now shows as Unknown on every Web UI page instead of being labelled Warning on some of them.
+- The Web UI live-updates indicator now keeps saying Reconnecting while it retries after a dropped connection, instead of switching back to Connecting on each attempt.
+- Web UI keyboard focus now survives refreshes and dialog transitions, and finding shortcuts follow the focused row without acting behind dialogs. Warning text, dashboard indicators and command palette hints are readable in both themes, and the skip link keeps a visible focus indicator.
+- On a phone the Web UI header now wraps instead of running off the screen, and on a desktop the ModSecurity apply bar no longer covers the sidebar.
+- Web UI widgets now report their role and state to screen readers: Firewall subviews are keyboard-navigable tabs, dashboard charts carry text descriptions, History expand buttons say whether details are open, and the connection-lost banner can be dismissed until the next outage.
+- Every Web UI page now starts with a Skip to content link, and section headings follow the page title in order so screen reader users can move through the page outline.
+- The light theme now covers the login page, the command palette, the undo banner and chart tooltips, and the chosen theme still applies when the browser blocks site storage.
+- Status text, badges, toasts and chart labels in the Web UI now meet the WCAG AA contrast ratio in the light theme; orange, yellow and green were hard to read on white.
+- Screen readers no longer read whole lists and the refresh clock aloud every time a Web UI page refreshes; only short status messages such as errors and connection changes are announced.
+- Row checkboxes, rule switches, icon-only buttons and search fields in the Web UI now have names that screen readers announce, instead of relying on placeholders or icons.
+- Closing the detail panel or a dialog now returns focus to what opened it, a dialog opened from the detail panel keeps the keyboard to itself, and the prompt dialog closes with Escape and keeps Tab inside.
+- Refreshing pages now preserves ongoing edits and actions, keeps ModSecurity exclusions consistent, and updates the visible history and refresh timestamp. Detail panels ignore stale responses, and confirmation dialogs retain safe focus and button labels.
+- A suppression created from a finding whose file name contains glob characters such as brackets now matches that file; the pre-filled pattern treated them as wildcards and hid nothing.
+- Web UI caches now notice replaced assets and history changes, and compressed files respect client encoding preferences and header-only requests. History searches keep matching records, and limited findings stay ordered by severity even when every row fits.
+- Table date filters no longer slow down on long lists, because each date is converted to the preferred time zone once instead of once per row.
+- Web UI date filters now handle midnight clock changes and server time-zone overrides correctly, and preference saves reload only when the browser can retain them. Account views follow recorded owners and linked roots, limited email lists report omissions, refresh timers keep their deadlines, and performance fixes use current targets without overlapping.
+- Importing a settings bundle now skips suppression rules whose check is not a check name or whose path pattern is not a valid glob, as the suppression form does.
+- Suppression rules now refuse a check field that holds a pattern or free text, and warn when the check name matches no known check, since such a rule hides nothing.
+- A hardening audit that runs longer than three minutes now returns its report instead of failing after saving it.
+- Block, allow, remove-allow, cPHulk clear and unban now record an IPv6 address typed in any spelling under its canonical form, so audit entries and incident records match the firewall state.
+- The scan jobs API now rejects request bodies with unknown fields or more than a few kilobytes, so a misspelt option no longer starts a scan without it.
+- The History CSV export now applies the date range, severity and search shown on the History tab, so narrowing the filters reaches entries older than the newest 5,000. The button no longer claims to export the full history.
+- The history API now reports truncated as true when more matching findings exist past the returned page. It was always false.
+- Findings, dashboard account counts and the findings API now attribute a finding to the account its check recorded before guessing from paths in the message, so mail relay findings count against the sending account.
+- The Account page and the scan account list now find accounts under every account root of the platform, including Plesk vhosts, and the Account page lists quarantined files from the configured quarantine directory.
+- The incident groups API now filters by a status given in any letter case. Before, a status such as Open was accepted but matched no incidents.
+- The dashboard now shows a scan in progress for every scan the daemon runs, including scheduled scans, command-line checks and scan jobs, not only scans started from the web UI.
+- The health API and dashboard now count log watchers that start after the web UI, such as one waiting for a log file to appear, instead of the count at startup.
+- Date filters on the Findings history, Email, Audit, Quarantine, Account and Threat Intel pages now mean days in the time zone preference. The history and email APIs accept an RFC 3339 range end as exclusive and reject a date they cannot read with 400 instead of ignoring it.
+- Dates on the Firewall, Hardening and Browser sessions pages now follow the time zone preference. The firewall audit API reports its timestamps as RFC 3339 instants in UTC.
+- Dates now use the saved time zone preference from the first render of a page, and changing the time zone re-renders the page. Before, a page could show dates in the browser zone until it was reloaded.
+- The "Server time" display preference now shows the server's own time zone. It always showed UTC because the page was never told the server's zone.
+- Pages opened in a background tab no longer double their refresh traffic when first shown, returning to a tab no longer reloads everything while auto-refresh is paused, and the Dashboard idle watcher list stays open across refreshes.
+- Grouped findings stay grouped while searching, filtering or sorting, and a collapsed group stays collapsed. The group headers used to pile up at the top of the table after a search.
+- On the Performance page an open Bulk fix menu no longer closes by itself every few seconds, and a fix that is still running cannot be started a second time.
+- The Firewall and Threat Intel links from a ModSecurity block now open the lookup for that address instead of an unfiltered page.
+- A failed incident status change or incident block now tells the operator why instead of failing silently.
+- Searching or filtering the firewall audit log now covers the whole log. Filters ran only over the newest page of entries, so an address blocked earlier was reported as never blocked.
+- The Email page action groups, auth-failure clusters and outbound relay abuse no longer come back empty or incomplete on a busy server. Unrelated findings, or findings newer than the chosen dates, used up the scan budget before the matching ones were reached, and a list that is cut short now says so.
+- An expired or revoked browser session now returns the page to the login form instead of showing Unauthorized errors. The connection-lost banner appears only when the daemon cannot be reached, and a daemon restart no longer floods the page with repeated error messages.
+- Tables that reload their data, such as the rules, ModSecurity and incident lists, no longer show stale duplicate rows after a reload, an apply or a filter change.
+- Dates in the Web UI no longer turn into "3h ago" a minute after a page loads. Only times shown as relative are refreshed, so absolute dates, account history rows and exports keep their content, and an expiry still ahead reads "in 3h" instead of "just now".
+- Undoing a dismissal preserves later operator decisions and restores alerting for findings first received in real time.
+- Cleanup file selection counts and controls now follow pagination and filtering.
+- Failed ModSecurity rollbacks are reported as failures in both the response and audit history.
+- Suppression rules added, removed or imported at the same moment are all kept. Each change rewrote the whole rule set, so simultaneous changes silently dropped each other while every one reported success.
+- A quarantined file that bulk delete cannot remove now stays listed and the page says so. Its metadata used to be removed anyway, which hid the file from the list so it could neither be deleted again nor restored.
+- A quarantine restore that fails partway, for example because the account is over quota, no longer leaves a partial root-owned copy at the original path. That copy hid the entry from the quarantine list and made every retry fail.
+- Dismissing a finding no longer claims it can be restored. The Findings page now says a dismissal stops alerts while the finding is unchanged and that a later scan can list it again, offers undo for 30 seconds, and dismisses a bulk selection as one action that one undo reverses.
+- Select-all on the Cleanup file backups and the Threat Intel attackers table no longer reaches rows on other pages or hidden by a search, so a permanent delete, permanent block or whitelist acts only on the rows on screen.
 - The deep scan no longer sends every file it reads to the PHP analysis worker. Files that cannot hold a remote-code flow are ruled out in the daemon, so images and plain text no longer queue behind real analyses, start the worker, or count as unexamined while it is unavailable.
 - Deciding whether a written file sits under an account or document root, which the real-time monitor does for every watched write, is much cheaper.
 - A rules download or package upgrade that leaves the rules unchanged no longer queues a full rescan of every file on the host. On hosts with a rules download URL set, the unchanged download rewrote the installed rules daily and after each restart, each time queuing a full rescan and a warning finding.
@@ -24,13 +83,84 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Security
 
+- Web UI activity tracking and request checks now keep idle sessions from lingering while preserving normal operator actions. Certificate renewal preserves working keys and operator-managed files, and IPv6 rate limits handle scoped addresses consistently.
+- The self-signed Web UI certificate is now renewed automatically before it expires and served without a restart; a certificate installed by the operator is never replaced, and replacing its files takes effect without a restart.
+- The Web UI's Content-Security-Policy now also forbids plugins, <base> tags, framing and form posts to other sites, and the legacy browser XSS auditor, which could be abused to disable page scripts, is turned off.
+- CSRF tokens are now bound to the browser session instead of shared by every browser until the daemon restarts, and a form token is accepted only from the request body, not the query string.
+- A loopback origin such as https://localhost:9443 is now trusted only when it is the origin the request was sent to, so another local web service in the same browser can no longer make authenticated requests to the Web UI.
+- Startup, csm validate and csm doctor now warn about Web UI and metrics tokens shorter than 32 characters, since they can be guessed; such tokens keep working.
+- A flood of requests from many new addresses no longer makes each request scan the whole rate-limit table; a full table is trimmed once for many new addresses.
+- Login and API rate limits now count an IPv6 client by its /64 prefix, so rotating addresses inside one prefix no longer multiplies the allowed attempts.
+- The /metrics endpoint is now rate limited per client address like the API, so its token cannot be guessed at unlimited speed.
+- Background polling by an open page no longer extends a browser session, so a dashboard left open now logs out after the idle timeout; page loads and requests that follow operator input still count as activity.
+- The incident timeline CSV export now writes cells that start a spreadsheet formula as text, like every other export.
+- Settings validate the effective credentials from configuration drop-ins before changing a service address.
+- Failed quarantine restores preserve files replaced by another writer and remain retryable after storage or destination changes.
+- Audit entries retain the administrator who authorized an action even when a session ends before completion. Large bulk actions no longer hide later audit entries.
+- The UI audit log now names the credential behind each action and records actions it used to miss: email quarantine release and delete, database object restores, ModSecurity rule changes, subnet blocks, allow-rule removals, cPHulk clears, bulk fixes, incident status changes, scans, logins, logouts and session revocations. An audit entry that cannot be written is now reported in the daemon log, and log rotation no longer loses history under concurrent writes.
+- The Settings page can no longer set the ModSecurity reload command, the rules and overrides file paths, the WP-Cron PHP binary, the clamd socket, the mail log and country database paths, or any environment variable name. A web UI session could use them to run commands or write files as root; they are now shown read-only and change only in csm.yaml.
+- A suppression rule that hides every finding of a check now has to be chosen explicitly. Leaving the path empty on the Findings or Rules page, or in an API request, used to create such a rule silently and stop all remediation for that check; a malformed path pattern, which never matched, is now refused as well.
+- Changing the rspamd or upstream threat-intel address in Settings now requires entering its credential again, so a web UI session cannot send the stored credential to an address it chose.
 - The scheduled PHP content scan no longer skips a file that was edited in place with its size kept and its modification time set back; the change time, which cannot be set that way, is now compared as well. After upgrading, each PHP file is read again the next time the scan visits it.
 - Cron findings containing known persistence patterns now retain their severity during maintenance, including when the payload is encoded.
 - Control-panel provenance now requires a resolved executable even when process details come from the cache. Live cron writes containing persistence tokens retain their original severity during maintenance.
 
 ### Changed
 
+- **Breaking:** API severities are now labels (`CRITICAL`, `HIGH`, `WARNING`) everywhere, including findings, history, the event stream and attack events, and the CSS class that came with some of them is gone. Severity filters also take the label in any case.
+- **Breaking:** an empty list or map anywhere in an API response is now `[]` or `{}` instead of null.
+- **Breaking:** API times are now RFC 3339 instants in UTC with sub-second precision, left out when not set, and durations are seconds in keys ending in `_seconds`. Relative ages, clock times without a date and duplicate `_iso` fields are gone, and hourly timeline buckets carry their start instant.
+- **Breaking:** API routes that return a list now answer an object with the list under `items`, next to `total` and, where the list is paged or capped, `offset`, `limit` and `truncated`, instead of a bare array or a route-specific key. An empty list is `[]`, never null, and `/api/v1/incidents` always answers one page with its total.
+- **Breaking:** API actions now answer `"ok": true` with their fields instead of `status` verbs or `success` flags (`success` stays on the firewall check and unban routes for existing callers). An action that did not happen, such as a fix that did not apply, an undeliverable test alert, a failed rule reload, a batch where nothing changed or an unknown rule or session, answers with an error status instead of 200.
+- **Breaking:** read-only API routes that ran for any HTTP method now answer 405 to anything but GET.
+- **Breaking:** every API failure, including CSRF, origin, rate-limit and wrong-method refusals, now answers with a JSON `{"error": ...}` body, and an unknown `/api/` path answers 404 instead of the dashboard page. Changing the status of an unknown incident answers 404.
+- Whitelist and temporary whitelist now list the cPanel login history flush they perform, as Unblock & Clear already did.
+- The Web UI server now checks at build time that the firewall offers every action the pages use, so a renamed firewall method can no longer turn an action into an error or a skipped step.
+- The Web UI now ships Chart.js 4.5.1, Tabler 1.5.1 and Tabler Icons 3.48.0, with the icon font in WOFF2 only and no references to source maps it does not ship.
+- The Web UI's shared script is split by purpose and every script keeps its helpers to itself, so scripts can no longer clash over names; scripts stay within ES2019.
+- Removed unused Web UI and Web UI server code, including a read-only sidebar variant that no page could show, since every page needs an admin credential.
+- Quarantine is now the one list of file backups: it shows pre-clean backups with their type and the live state of the original path, and filters by type. Cleanup History keeps the database object backups and links to it.
+- The History tab now pages with the same first, previous, next and last controls and summary as the Incidents lists.
+- The Findings select-all box now shows a partial state when only some visible findings are selected, as the other bulk tables do.
+- Web UI layout fixes: stat cards and incident filters size to their content, whitelist and allow buttons use the warning colour, grouped incidents filter on every status, and the History tab offers 25 to 200 rows per page.
+- Web UI pages now carry the same name in the sidebar, the browser tab and the heading, the product is named Continuous Security Monitor throughout, the Firewall page calls its whitelist mode Whitelist, and the old /blocked address redirects to the Firewall page.
+- The Refresh button now reloads each page's data in place instead of reloading the whole page on some of them, and asks before discarding unsaved Settings, Verified Bots or staged ModSec rule changes.
+- The Web UI header now says when the page's data was last loaded instead of when any request last succeeded, and shows the auto-refresh pause button only on pages that refresh on a timer.
+- Web UI error notices now stay until closed instead of fading after five seconds, the same error is not stacked, and failure messages no longer read Error: Error:.
+- Dashboard triage entries now open the finding they list, and the 24h severity counts open the History tab for exactly the last 24 hours; an open finding is kept in the page URL so the link reopens it.
+- Confirmations for actions that delete data, block traffic, turn protection off or end sessions now show a red button named for the action and start on Cancel, and logging out every browser session asks first.
+- The Web UI sidebar now groups Rules, ModSec Rules and Verified Bots with Settings under Configuration, and the ModSecurity page drops its tab that only linked to the rule manager.
+- ModSecurity escalation exclusions are now managed only on the ModSec Rules page, which lists and edits them even when rule management is not configured, and each change affects one rule instead of rewriting the whole list.
+- The whitelist is now managed only on the Firewall page under Allow Rules; Threat Intel keeps its whitelist actions and links there, and the two IP lookups link to each other.
+- Filtered history requests, including the Email findings tab, now skip stored entries that cannot match the severity, check or search filter before decoding them, which makes them much faster on large histories.
+- The list of saved database object backups now sorts in linear-logarithmic time, so hosts with many backups load Cleanup History faster.
+- The scan job findings API now returns 500 findings per page by default and at most 5000, and reports when more pages exist, instead of every finding of a large job in one response.
+- The ModSecurity blocks view no longer slows down sharply when many escalated addresses and many block rows coincide.
+- Web UI API responses are sent as compact JSON, which makes large lists such as findings and history noticeably smaller.
+- The audit page and incident timelines now read the UI audit log from the end and stop once they have the entries they show, instead of parsing the whole log each time.
+- The quarantine list no longer hashes every quarantined file and its live copy on each request; a pair is compared again only when either file changes.
+- Filtering, sorting and searching long tables no longer slows down with the number of rows squared.
+- The dashboard now receives only the findings it shows, most severe first, and the Findings page checks for changes with a short version string every 15 seconds instead of downloading the full list.
+- Web UI pages now link scripts and styles with a content version, so browsers cache them for a year and still load the new files after an upgrade; text files are sent gzip-compressed.
+- Dashboard statistics, the findings timeline and the email workbench lists are now computed once per history change and shared by every open page, instead of reading a day of history on each refresh.
+- The dashboard component list now reads when each watcher last reported from a small index kept with history, instead of decoding up to a week of history on every refresh, and keeps that time after history retention removes the finding.
+- The status API no longer reads the whole daemon binary on every request to report its hash; it hashes the binary again only when the file changes.
+- The web UI now samples host metrics only when the Performance page asks for them, at most once every ten seconds, instead of every ten seconds for as long as the daemon runs.
 - The roadmap clarifies planned response safeguards, capacity validation and operator visibility when automatic action cannot safely proceed. Existing response controls remain unchanged.
+
+### Added
+
+- Findings, Dashboard and Incidents now react to new findings as they are dispatched, over the Web UI's event stream, and their timed checks slow to a once-a-minute safety net while the stream is connected.
+- Finding and incident rows, finding group headers and sortable table headers now work from the keyboard, sorted headers report their order to screen readers, and on Findings o or Enter opens the finding selected with j and k.
+- Correlated incidents can now be selected and marked contained, resolved or dismissed together; the change stops at the first failure and reports how many were updated.
+- A finding that reports an attacker address, such as a brute-force source, can now be blocked from its detail panel, as an incident can; other findings do not offer Block.
+- Findings can now suppress a selection at once, creating one rule per selected file; findings that name no file are skipped so a check-wide rule is never created in bulk.
+- The account page is now linked from the finding detail, account groups on Findings, incident detail and the accounts targeted in a Threat Intel lookup, and the command palette opens an account typed by name and lists Sessions.
+
+### Removed
+
+- **Breaking:** `POST /api/v1/rules/modsec-escalation`, which replaced the whole escalation exclusion list without checking rule IDs, is removed. Use `POST /api/v1/modsec/rules/escalation` to change one rule at a time.
+
 
 ## [3.43.0] - 2026-09-22
 

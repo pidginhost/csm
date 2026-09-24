@@ -3,7 +3,7 @@
 {{define "content"}}
 <div class="csm-page-header mb-3">
     <div class="csm-page-header__main">
-        <h1 class="csm-page-header__title"><i class="ti ti-list-check"></i>&nbsp;ModSecurity Rule Configuration</h1>
+        <h1 class="csm-page-header__title"><i class="ti ti-list-check"></i>&nbsp;ModSecurity Rules</h1>
     </div>
     <div class="csm-page-header__actions">
         <div class="btn-group">
@@ -39,15 +39,15 @@
 <div id="modsec-rules-content" class="d-none">
     <!-- Stats -->
     <div class="row row-deck row-cards mb-3">
-        <div class="col-sm-4"><div class="card"><div class="card-body"><div class="subheader">Total CSM Rules</div><div class="h1 mb-0" id="stat-total">--</div></div></div></div>
-        <div class="col-sm-4"><div class="card"><div class="card-body"><div class="subheader">Active Rules</div><div class="h1 mb-0" id="stat-active">--</div></div></div></div>
-        <div class="col-sm-4"><div class="card"><div class="card-body"><div class="subheader">Escalation Excluded</div><div class="h1 mb-0" id="stat-no-escalate">--</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card"><div class="card-body"><div class="subheader">Total CSM Rules</div><div class="h1 mb-0" id="stat-total">--</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card"><div class="card-body"><div class="subheader">Active Rules</div><div class="h1 mb-0" id="stat-active">--</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card"><div class="card-body"><div class="subheader">Escalation Excluded</div><div class="h1 mb-0" id="stat-no-escalate">--</div></div></div></div>
     </div>
 
     <!-- Rules Table -->
     <div class="card mb-3">
         <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-shield"></i>&nbsp;CSM Custom Rules (900xxx)</h3>
+            <h2 class="card-title"><i class="ti ti-shield"></i>&nbsp;CSM Custom Rules (900xxx)</h2>
         </div>
         <div class="csm-toolbar">
             <input type="text" id="rules-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search by ID or description..." aria-label="Search rules">
@@ -92,6 +92,26 @@
 
 </div>
 
+<!-- Escalation exclusions: the daemon applies them with or without rule management configured. -->
+<div class="card mt-3" id="escalation-card">
+    <div class="card-header">
+        <h2 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Escalation Exclusions</h2>
+    </div>
+    <div class="card-body">
+        <p class="text-muted small mb-3">CSM custom rules (900000-900999) escalate to a firewall block after repeated denies. An excluded rule still denies the request (403), but CSM does not block the IP in the firewall.</p>
+        <form id="escalation-form" class="row g-2 align-items-end mb-3">
+            <div class="col-auto">
+                <label class="form-label" for="escalation-rule-id">Rule ID</label>
+                <input type="number" class="form-control" id="escalation-rule-id" placeholder="e.g. 900112" min="900000" max="900999" required>
+            </div>
+            <div class="col-auto">
+                <button type="submit" class="btn btn-primary" id="escalation-add-btn"><i class="ti ti-plus"></i>&nbsp;Exclude from escalation</button>
+            </div>
+        </form>
+        <div id="escalation-list"></div>
+    </div>
+</div>
+
 <!-- Sticky Apply Bar -->
 <div id="apply-bar" class="csm-apply-bar d-none">
     <span><strong id="pending-count">0</strong> changes pending</span>
@@ -102,6 +122,6 @@
 </div>
 {{end}}
 {{define "scripts"}}
-<script src="/static/js/modsec-rules.js"></script>
+<script src="{{asset "js/modsec-rules.js"}}"></script>
 {{end}}
 {{template "layout" .}}

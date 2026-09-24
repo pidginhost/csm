@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,7 +103,7 @@ func cookiePost(t *testing.T, s *Server, adminTok, path string, withCSRF bool, b
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(testBrowserCookie(t, s, adminTok))
 	if withCSRF {
-		req.Header.Set("X-CSRF-Token", s.csrfToken())
+		setSessionCSRF(s, req)
 	}
 	s.httpSrv.Handler.ServeHTTP(w, req)
 	return w
@@ -186,7 +188,7 @@ func TestScanJobsList_ReadScopeAllowed(t *testing.T) {
 	}
 
 	var resp struct {
-		Jobs []store.ScanJobRecord `json:"jobs"`
+		Jobs []store.ScanJobRecord `json:"items"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -211,7 +213,7 @@ func TestScanJobsList_EmptyWhenNoJobs(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	var resp struct {
-		Jobs []store.ScanJobRecord `json:"jobs"`
+		Jobs []store.ScanJobRecord `json:"items"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -279,11 +281,11 @@ func TestScanJobsRouter_Findings_Pagination(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		JobID    string          `json:"job_id"`
-		Findings []alert.Finding `json:"findings"`
-		Total    int             `json:"total"`
-		Offset   int             `json:"offset"`
-		Limit    int             `json:"limit"`
+		JobID    string       `json:"job_id"`
+		Findings []apiFinding `json:"items"`
+		Total    int          `json:"total"`
+		Offset   int          `json:"offset"`
+		Limit    int          `json:"limit"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -305,6 +307,52 @@ func TestScanJobsRouter_Findings_Pagination(t *testing.T) {
 	}
 }
 
+// A full-server scan job can record tens of thousands of findings. Without a
+// limit the endpoint returns one page, not the whole job, and says more exist.
+func TestScanJobsRouter_Findings_DefaultPageIsBounded(t *testing.T) {
+	s, tok := newTestServerWithReadToken(t)
+	const jobID = "job-big"
+	seedJob(t, jobID, "done", time.Now())
+	findings := make([]alert.Finding, scanJobFindingsDefaultLimit+5)
+	for i := range findings {
+		findings[i] = alert.Finding{Check: "webshell", Severity: alert.Warning, Message: "test finding"}
+	}
+	if err := store.Global().AppendScanJobFindings(jobID, 0, findings); err != nil {
+		t.Fatal(err)
+	}
+	get := func(query string) (n, total, limit int, truncated bool) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/scan-jobs/"+jobID+"/findings"+query, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		s.requireRead(http.HandlerFunc(s.apiScanJobsRouter)).ServeHTTP(w, req)
+		var resp struct {
+			Findings  []apiFinding `json:"items"`
+			Total     int          `json:"total"`
+			Limit     int          `json:"limit"`
+			Truncated bool         `json:"truncated"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal: %v: %s", err, w.Body.String())
+		}
+		return len(resp.Findings), resp.Total, resp.Limit, resp.Truncated
+	}
+	if n, total, limit, truncated := get(""); n != scanJobFindingsDefaultLimit || total != len(findings) || limit != scanJobFindingsDefaultLimit || !truncated {
+		t.Fatalf("default page: n=%d total=%d limit=%d truncated=%v", n, total, limit, truncated)
+	}
+	if n, _, limit, _ := get("?limit=999999"); limit != scanJobFindingsMaxLimit || n > scanJobFindingsMaxLimit {
+		t.Fatalf("oversized limit: n=%d limit=%d, want at most %d", n, limit, scanJobFindingsMaxLimit)
+	}
+	if n, _, _, truncated := get("?offset=" + strconv.Itoa(scanJobFindingsDefaultLimit)); n != 5 || truncated {
+		t.Fatalf("last page: n=%d truncated=%v", n, truncated)
+	}
+	// A negative or non-numeric offset or limit falls back to the defaults.
+	for _, q := range []string{"?offset=-5&limit=-1", "?offset=x&limit=y", "?limit=0"} {
+		if n, _, limit, truncated := get(q); n != scanJobFindingsDefaultLimit || limit != scanJobFindingsDefaultLimit || !truncated {
+			t.Fatalf("%s: n=%d limit=%d truncated=%v, want the default first page", q, n, limit, truncated)
+		}
+	}
+}
+
 func TestScanJobsRouter_Findings_NilBecomesEmpty(t *testing.T) {
 	s, tok := newTestServerWithReadToken(t)
 	const jobID = "job-empty-findings"
@@ -320,7 +368,7 @@ func TestScanJobsRouter_Findings_NilBecomesEmpty(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	var resp struct {
-		Findings []alert.Finding `json:"findings"`
+		Findings []apiFinding `json:"items"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -443,7 +491,7 @@ func TestScanJobsEnqueue_AdminCookieMissingCSRF_403(t *testing.T) {
 	}
 }
 
-// Test 3: POST enqueue with admin bearer + valid body → 200, job_id returned,
+// Test 3: POST enqueue with admin bearer + valid body → 202, job_id returned,
 // fake controller receives correct scope/target/opts/quarantine.
 func TestScanJobsEnqueue_AdminBearer_Success(t *testing.T) {
 	s, _, _, fc := newTestServerWithFakeScanJobs(t)
@@ -454,8 +502,8 @@ func TestScanJobsEnqueue_AdminBearer_Success(t *testing.T) {
 		"respect_ignores": true,
 		"quarantine":      false,
 	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
 		JobID string `json:"job_id"`
@@ -503,6 +551,25 @@ func TestScanJobsEnqueue_AllScopeWithQuarantine_400(t *testing.T) {
 	}
 }
 
+// A misspelt option ("quarantin") must not start a scan that silently runs
+// without it; oversized and multi-value bodies are refused too.
+func TestScanJobsEnqueue_RejectsMalformedBodies(t *testing.T) {
+	s, _, _, fake := newTestServerWithFakeScanJobs(t)
+	fake.enqueueID = "sj-test"
+	for name, body := range map[string]any{
+		"unknown field": map[string]any{"scope": "account", "target": "alice", "quarantin": true},
+		"oversized":     map[string]any{"scope": "account", "target": "alice", "pad": strings.Repeat("x", 128*1024)},
+	} {
+		w := adminPost(s, "/api/v1/scan-jobs", body)
+		if w.Code != http.StatusBadRequest && w.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("%s: status = %d, want 400 or 413", name, w.Code)
+		}
+	}
+	if fake.lastScope != "" {
+		t.Fatalf("a malformed body enqueued a %q scan", fake.lastScope)
+	}
+}
+
 // Test 5: POST enqueue scope="account" with invalid target → 400.
 func TestScanJobsEnqueue_AccountScopeInvalidTarget_400(t *testing.T) {
 	s, _, _, _ := newTestServerWithFakeScanJobs(t)
@@ -531,8 +598,8 @@ func TestScanJobsCancel_AdminBearer_Success(t *testing.T) {
 	s, _, _, fc := newTestServerWithFakeScanJobs(t)
 
 	w := adminPost(s, "/api/v1/scan-jobs/sj-test-001/cancel", nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body: %s", w.Code, w.Body.String())
 	}
 	var resp struct {
 		JobID string `json:"job_id"`

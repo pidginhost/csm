@@ -22,7 +22,7 @@ func vbotsGet(t *testing.T, s *Server, token string) (string, []map[string]any) 
 		t.Fatalf("GET code=%d body=%s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		Bots []map[string]any `json:"bots"`
+		Bots []map[string]any `json:"items"`
 		Etag string           `json:"etag"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {

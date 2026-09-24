@@ -36,6 +36,16 @@ type SettingsField struct {
 	// ports / Rate limits / Logging). Empty string means the field
 	// renders ungrouped under the section's flat grid.
 	FieldGroup string `json:"field_group,omitempty"`
+	// FileOnly fields are shown but can only be changed in csm.yaml. They
+	// name a command, executable, path, socket or environment variable the
+	// root daemon acts on, so a browser session must not be able to set them.
+	FileOnly bool `json:"file_only,omitempty"`
+	// CredentialField and CredentialEnvField name the secret this URL field
+	// sends to its address. A web UI change of the URL must re-enter that
+	// secret, so a session cannot point a stored credential at a host of its
+	// choosing; a secret read from the environment can only move in csm.yaml.
+	CredentialField    string `json:"-"`
+	CredentialEnvField string `json:"-"`
 }
 
 // SettingsSection groups the fields of one top-level Config sub-tree.
@@ -119,7 +129,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "webhook.url", Type: "string", Label: "Webhook URL"},
 			{YAMLPath: "webhook.type", Type: "enum", Label: "Webhook type", Options: []string{"slack", "discord", "generic", "phpanel"}},
 			{YAMLPath: "webhook.hmac_secret", Type: "string", Label: "Webhook HMAC secret", Secret: true},
-			{YAMLPath: "webhook.hmac_secret_env", Type: "string", Label: "Webhook HMAC secret env"},
+			{YAMLPath: "webhook.hmac_secret_env", Type: "string", Label: "Webhook HMAC secret env", FileOnly: true},
 			{YAMLPath: "webhook.per_finding", Type: "bool", Label: "Per-finding webhook delivery"},
 			{YAMLPath: "heartbeat.enabled", Type: "bool", Label: "Heartbeat enabled"},
 			{YAMLPath: "heartbeat.url", Type: "string", Label: "Heartbeat URL"},
@@ -201,7 +211,7 @@ var settingsSections = []SettingsSection{
 		Restart:  true,
 		Fields: []SettingsField{
 			{YAMLPath: "source", Type: "enum", Label: "Log source", Options: []string{"auto", "file", "journal"}, Help: "auto: try platform default file then fall back to journal. file: require log file. journal: read systemd-journald (needs journal build tag)."},
-			{YAMLPath: "file", Type: "string", Label: "Log file override", Placeholder: "/var/log/maillog", Help: "Override the platform-default file path. Leave blank to keep the default."},
+			{YAMLPath: "file", Type: "string", Label: "Log file override", Placeholder: "/var/log/maillog", Help: "Override the platform-default file path. Leave blank to keep the default.", FileOnly: true},
 			{YAMLPath: "units", Type: "[]string", Label: "Journal units", Help: "Systemd units to match when source=journal. One per line (e.g. postfix, dovecot)."},
 		},
 	},
@@ -253,7 +263,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "verdict_callback.enabled", Type: "bool", Label: "Verdict callback hook"},
 			{YAMLPath: "verdict_callback.url", Type: "string", Label: "Verdict callback URL"},
 			{YAMLPath: "verdict_callback.hmac_secret", Type: "string", Label: "Verdict callback HMAC secret", Secret: true},
-			{YAMLPath: "verdict_callback.hmac_secret_env", Type: "string", Label: "Verdict callback HMAC secret env"},
+			{YAMLPath: "verdict_callback.hmac_secret_env", Type: "string", Label: "Verdict callback HMAC secret env", FileOnly: true},
 			{YAMLPath: "verdict_callback.allow_unsigned", Type: "bool", Label: "Allow unsigned verdict callback"},
 			{YAMLPath: "verdict_callback.require_response_signature", Type: "bool", Label: "Require signed verdict response"},
 			{YAMLPath: "verdict_callback.timeout_sec", Type: "int", Label: "Verdict callback timeout (sec)", Min: int64p(1), Max: int64p(30)},
@@ -271,13 +281,15 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "whitelist", Type: "[]string", Label: "Whitelisted IPs", Help: "Never flagged as malicious"},
 			{YAMLPath: "bot_verify_enabled", Type: "bool", Label: "Verify search-engine bots via rDNS", Nullable: true},
 			{YAMLPath: "rspamd.enabled", Type: "bool", Label: "Rspamd threat-intel"},
-			{YAMLPath: "rspamd.url", Type: "string", Label: "Rspamd controller URL"},
+			// #nosec G101 -- names of the config fields that hold the credential, not a credential.
+			{YAMLPath: "rspamd.url", Type: "string", Label: "Rspamd controller URL", CredentialField: "rspamd.token", CredentialEnvField: "rspamd.token_env"},
 			{YAMLPath: "rspamd.token", Type: "string", Label: "Rspamd controller password", Secret: true},
-			{YAMLPath: "rspamd.token_env", Type: "string", Label: "Rspamd password env var"},
+			{YAMLPath: "rspamd.token_env", Type: "string", Label: "Rspamd password env var", FileOnly: true},
 			{YAMLPath: "upstream.enabled", Type: "bool", Label: "Upstream threat-intel cache"},
-			{YAMLPath: "upstream.url", Type: "string", Label: "Upstream URL"},
+			// #nosec G101 -- names of the config fields that hold the credential, not a credential.
+			{YAMLPath: "upstream.url", Type: "string", Label: "Upstream URL", CredentialField: "upstream.token", CredentialEnvField: "upstream.token_env"},
 			{YAMLPath: "upstream.token", Type: "string", Label: "Upstream bearer token", Secret: true},
-			{YAMLPath: "upstream.token_env", Type: "string", Label: "Upstream token env var"},
+			{YAMLPath: "upstream.token_env", Type: "string", Label: "Upstream token env var", FileOnly: true},
 			{YAMLPath: "upstream.cache_ttl_min", Type: "int", Label: "Upstream cache TTL (min)", Min: int64p(1), Max: int64p(1440)},
 			{YAMLPath: "upstream.timeout_sec", Type: "int", Label: "Upstream request timeout (sec)", Min: int64p(1), Max: int64p(60)},
 
@@ -287,7 +299,7 @@ var settingsSections = []SettingsSection{
 
 			{YAMLPath: "central.enabled", Type: "bool", Label: "Consume central abuse database", FieldGroup: FieldGroupCentralDB},
 			{YAMLPath: "central.set_url", Type: "string", Label: "Scored-set URL", FieldGroup: FieldGroupCentralDB},
-			{YAMLPath: "central.pubkey_env", Type: "string", Label: "Central public-key env var", FieldGroup: FieldGroupCentralDB},
+			{YAMLPath: "central.pubkey_env", Type: "string", Label: "Central public-key env var", FieldGroup: FieldGroupCentralDB, FileOnly: true},
 			{YAMLPath: "central.action", Type: "string", Label: "Action on listed IPs", Help: "off | challenge | block_if_local_corroborated", FieldGroup: FieldGroupCentralDB},
 			{YAMLPath: "central.block_threshold", Type: "int", Label: "Block score threshold", Min: int64p(0), Max: int64p(100), FieldGroup: FieldGroupCentralDB},
 			{YAMLPath: "central.refresh_interval", Type: "string", Label: "Refresh interval", Help: "e.g. 6h", FieldGroup: FieldGroupCentralDB},
@@ -363,7 +375,7 @@ var settingsSections = []SettingsSection{
 		Restart:  true,
 		Fields: []SettingsField{
 			{YAMLPath: "enabled", Type: "bool", Label: "Email AV enabled"},
-			{YAMLPath: "clamd_socket", Type: "string", Label: "clamd socket"},
+			{YAMLPath: "clamd_socket", Type: "string", Label: "clamd socket", FileOnly: true},
 			{YAMLPath: "scan_timeout", Type: "string", Label: "Scan timeout", Placeholder: "30s"},
 			{YAMLPath: "max_attachment_size", Type: "int", Label: "Max attachment bytes", Min: int64p(1024)},
 			{YAMLPath: "max_archive_depth", Type: "int", Label: "Max archive depth", Min: int64p(0)},
@@ -381,9 +393,9 @@ var settingsSections = []SettingsSection{
 		Group:    SectionGroupDetection,
 		Restart:  true,
 		Fields: []SettingsField{
-			{YAMLPath: "rules_file", Type: "string", Label: "Rules file path"},
-			{YAMLPath: "overrides_file", Type: "string", Label: "Overrides file path"},
-			{YAMLPath: "reload_command", Type: "string", Label: "Reload command"},
+			{YAMLPath: "rules_file", Type: "string", Label: "Rules file path", FileOnly: true},
+			{YAMLPath: "overrides_file", Type: "string", Label: "Overrides file path", FileOnly: true},
+			{YAMLPath: "reload_command", Type: "string", Label: "Reload command", FileOnly: true},
 		},
 	},
 	{
@@ -409,7 +421,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "wp_transient_warn_mb", Type: "int", Label: "WP transient warn (MB)", Min: int64p(1)},
 			{YAMLPath: "wp_transient_critical_mb", Type: "int", Label: "WP transient critical (MB)", Min: int64p(1)},
 			{YAMLPath: "wp_cron_fix.interval_minutes", Type: "int", Label: "WP-Cron fix: system cron interval (min)", Min: int64p(1), Max: int64p(60), Help: "How often the installed system cron runs wp-cron.php. Only bounds task latency; WordPress keeps its own event schedule. Default 15."},
-			{YAMLPath: "wp_cron_fix.php_bin", Type: "string", Label: "WP-Cron fix: PHP binary", Placeholder: "/usr/local/bin/php", Help: "Overrides the cron interpreter for every site. Leave empty to use the unambiguous cPanel MultiPHP version, then auto-detect."},
+			{YAMLPath: "wp_cron_fix.php_bin", Type: "string", Label: "WP-Cron fix: PHP binary", Placeholder: "/usr/local/bin/php", Help: "Overrides the cron interpreter for every site. Leave empty to use the unambiguous cPanel MultiPHP version, then auto-detect.", FileOnly: true},
 		},
 	},
 	{
@@ -513,7 +525,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "deny_temp_ip_limit", Type: "int", Label: "Temporary block cap", Min: int64p(0), Max: int64p(1000000), FieldGroup: FieldGroupLimits},
 
 			{YAMLPath: "country_block", Type: "[]string", Label: "Country block (ISO-3166)", Help: "Two-letter codes, one per line.", FieldGroup: FieldGroupGeoDynDNS},
-			{YAMLPath: "country_db_path", Type: "string", Label: "Country DB path override", Placeholder: "(default: <state_path>/geoip)", FieldGroup: FieldGroupGeoDynDNS},
+			{YAMLPath: "country_db_path", Type: "string", Label: "Country DB path override", Placeholder: "(default: <state_path>/geoip)", FieldGroup: FieldGroupGeoDynDNS, FileOnly: true},
 			{YAMLPath: "dyndns_hosts", Type: "[]string", Label: "DynDNS hosts", Help: "Resolved every 5 minutes and merged into the trusted set.", FieldGroup: FieldGroupGeoDynDNS},
 
 			{YAMLPath: "smtp_block", Type: "bool", Label: "Block outbound SMTP", Help: "When enabled, only smtp_allow_users may originate outbound mail. Verify allow list first.", FieldGroup: FieldGroupSMTPControls},

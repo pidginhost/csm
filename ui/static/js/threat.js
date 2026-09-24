@@ -1,5 +1,7 @@
 // CSM Threat Intelligence page
 
+(function() {
+
 var fmtDate = CSM.fmtDate;
 
 var _threatAttackerData = [];
@@ -10,6 +12,7 @@ var _threatAttackerData = [];
 // a re-render can tear down the previous instance, and the date-filter and URL
 // bindings are wired once to avoid stacking listeners across re-renders.
 var _attackersTable = null;
+var _attackerBulk = null;
 var _attackerURLUnbind = null;
 var _attackerDateListenersBound = false;
 var _attackersLoadSeq = 0;
@@ -22,7 +25,7 @@ function verdictBadge(v,score){
     return '<span class="badge '+cls+'">'+score+'/100</span>';
 }
 
-var _checkNames = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.checkNames) || {};
+var _attackTypes = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.attackTypes) || {};
 
 // blockStatusRows renders the Block Status rows of the IP lookup card. An IP
 // that is no longer blocked but still carries permanent threat evidence keeps
@@ -49,6 +52,12 @@ function blockStatusRows(intel){
     return html+'<tr><td class="text-muted">Block Status</td><td>'+CSM.esc(note)+'</td></tr>';
 }
 
+// accountHTML links a targeted account to its page; other values stay text.
+function accountHTML(name){
+    var url=CSM.accountURL(name);
+    return url?'<a href="'+CSM.attr(url)+'">'+CSM.esc(name)+'</a>':CSM.esc(name);
+}
+
 function typeBadges(counts){
     if(!counts)return '-';
     var html='';
@@ -57,25 +66,11 @@ function typeBadges(counts){
     for(var i=0;i<order.length;i++){
         var t=order[i];
         if(counts[t]&&counts[t]>0){
-            var label = _checkNames[t] || t.replace('_',' ');
+            var label = _attackTypes[t] || t.replace(/_/g,' ');
             html+='<span class="badge bg-'+( colors[t]||'secondary')+'-lt me-1">'+label+': '+counts[t]+'</span>';
         }
     }
     return html||'-';
-}
-
-function threatLocalDateMillis(value, endExclusive) {
-    if (!value) return null;
-    var parts = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!parts) return null;
-    var year = Number(parts[1]);
-    var month = Number(parts[2]) - 1;
-    var day = Number(parts[3]);
-    var d = new Date(year, month, day);
-    if (isNaN(d.getTime())) return null;
-    if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return null;
-    if (endExclusive) d.setDate(d.getDate() + 1);
-    return d.getTime();
 }
 
 function attackerURLInputs(countrySel, fromEl, toEl) {
@@ -106,10 +101,7 @@ function _bindAttackerDateFilters(fromEl, toEl) {
 }
 
 function resetAttackerSelection() {
-    document.querySelectorAll('.bulk-ip-cb').forEach(function(cb) { cb.checked = false; });
-    var selectAll = document.getElementById('select-all-attackers');
-    if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
-    updateBulkButtons();
+    attackerBulk().clear();
 }
 
 function resetThreatHourlyChart(message) {
@@ -229,11 +221,7 @@ function loadThreatStats() {
                 maintainAspectRatio:false,
                 plugins:{
                     legend:{display:false},
-                    tooltip:{
-                        backgroundColor:isDark?'#1e293b':'#fff',
-                        titleColor:isDark?'#c8d3e0':'#1a2234',
-                        bodyColor:isDark?'#c8d3e0':'#1a2234',
-                        borderColor:isDark?'#2d3a4e':'#e6e8eb',
+                    tooltip:Object.assign({}, CSM.chartTheme().tooltip, {
                         borderWidth:1,
                         callbacks:{
                             title:function(items){
@@ -242,7 +230,7 @@ function loadThreatStats() {
                             },
                             label:function(ctx){return ctx.parsed.y+' events';}
                         }
-                    }
+                    })
                 },
                 scales:{
                     x:{
@@ -264,7 +252,7 @@ function loadThreatStats() {
             }
         });
     }
-}).catch(function(err){ if (seq !== _threatStatsLoadSeq) return; console.error('threat stats:', err); CSM.loadError(document.getElementById('chart-types'), function(){ location.reload(); }); });
+}).catch(function(err){ if (seq !== _threatStatsLoadSeq) return; console.error('threat stats:', err); CSM.loadError(document.getElementById('chart-types'), loadThreatStats, { title: 'Failed to load attack statistics', error: err }); });
 }
 
 // Load top attackers
@@ -272,7 +260,8 @@ function loadTopAttackers() {
     var seq = ++_attackersLoadSeq;
     if (_attackersTable) { _attackersTable.destroy(); _attackersTable = null; }
     resetAttackerSelection();
-    CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
+    CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(resp){
+    var data = resp.items;
     if (seq !== _attackersLoadSeq) return;
     var tbody=document.getElementById('attackers-tbody');
     var fromEl = document.getElementById('attackers-from');
@@ -295,7 +284,7 @@ function loadTopAttackers() {
                         r.in_threat_db?'<span class="badge bg-warning text-dark">Threat DB</span>':
                         '<span class="text-muted">\u2014</span>';
         html+='<tr class="ip-row feed-item" data-ip="'+CSM.esc(r.ip)+'" data-country="'+CSM.attr((r.country||'').toUpperCase())+'" data-verdict="'+CSM.attr((r.verdict||'').toLowerCase())+'" data-last-seen="'+CSM.attr(r.last_seen||'')+'">';
-        html+='<td><input type="checkbox" class="form-check-input bulk-ip-cb" data-ip="'+CSM.esc(r.ip)+'"></td>';
+        html+='<td><input type="checkbox" class="form-check-input bulk-ip-cb" data-ip="'+CSM.esc(r.ip)+'" aria-label="Select '+CSM.attr(r.ip)+'"></td>';
         html+='<td><code class="font-monospace csm-copy" title="Click to copy">'+CSM.esc(r.ip)+'</code></td>';
         html+='<td class="text-nowrap">'+(r.country?countryFlag(r.country)+' '+CSM.esc(r.country):'')+(r.as_org?' <span class="text-muted small">'+CSM.esc(r.as_org)+'</span>':'')+'</td>';
         html+='<td>'+verdictBadge(r.verdict,r.unified_score)+'</td>';
@@ -307,10 +296,10 @@ function loadTopAttackers() {
         html+='<td>'+statusBadge+'</td>';
         html+='<td class="text-nowrap">';
         if(!r.currently_blocked){
-            html+='<button class="btn btn-ghost-danger btn-sm quick-block-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block 24h"><i class="ti ti-shield-lock"></i></button>';
+            html+='<button class="btn btn-ghost-danger btn-sm quick-block-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block 24h" aria-label="Block '+CSM.attr(r.ip)+' for 24 hours"><i class="ti ti-shield-lock"></i></button>';
         }
-        html+='<button class="btn btn-ghost-danger btn-sm quick-block-perm-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block permanently"><i class="ti ti-lock"></i></button>';
-        html+='<button class="btn btn-ghost-success btn-sm quick-wl-btn" data-ip="'+CSM.esc(r.ip)+'" title="Whitelist"><i class="ti ti-shield-check"></i></button>';
+        html+='<button class="btn btn-ghost-danger btn-sm quick-block-perm-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block permanently" aria-label="Block '+CSM.attr(r.ip)+' permanently"><i class="ti ti-lock"></i></button>';
+        html+='<button class="btn btn-ghost-warning btn-sm quick-wl-btn" data-ip="'+CSM.esc(r.ip)+'" title="Whitelist" aria-label="Whitelist '+CSM.attr(r.ip)+'"><i class="ti ti-shield-check"></i></button>';
         html+='</td>';
         html+='</tr>';
     }
@@ -320,8 +309,8 @@ function loadTopAttackers() {
         if (!raw) return true;
         var ts = CSM.parseTimestamp(raw);
         if (isNaN(ts)) return true;
-        var from = fromEl ? threatLocalDateMillis(fromEl.value, false) : null;
-        var to = toEl ? threatLocalDateMillis(toEl.value, true) : null;
+        var from = fromEl ? CSM.prefs.dayBoundary(fromEl.value, false) : null;
+        var to = toEl ? CSM.prefs.dayBoundary(toEl.value, true) : null;
         if (from !== null && ts < from) return false;
         if (to !== null && ts >= to) return false;
         return true;
@@ -337,7 +326,9 @@ function loadTopAttackers() {
             { id: 'attackers-country', attr: 'data-country' },
             { id: 'attackers-verdict', attr: 'data-verdict' }
         ],
-        rowFilter: _attackerInRange
+        rowFilter: _attackerInRange,
+        // Paging and filtering hide rows; recount what bulk actions will reach.
+        onRender: updateBulkButtons
     });
     _bindAttackerDateFilters(fromEl, toEl);
     // WEB_ROADMAP P2.1 / P3.5: persist all filter state to URL.
@@ -368,19 +359,21 @@ function loadTopAttackers() {
             whitelistIP(this.getAttribute('data-ip'));
         });
     });
-    // Bulk selection: show/hide buttons on checkbox change
-    updateBulkButtons();
+    // Bulk selection: a checkbox click must not also trigger the row lookup.
     document.querySelectorAll('.bulk-ip-cb').forEach(function(cb){
         cb.addEventListener('click', function(e) { e.stopPropagation(); });
-        cb.addEventListener('change', updateBulkButtons);
     });
     resetAttackerSelection();
-}).catch(function(err){ if (seq !== _attackersLoadSeq) return; console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, function(){ location.reload(); }); });
+}).catch(function(err){ if (seq !== _attackersLoadSeq) return; console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody'), loadTopAttackers, { title: 'Failed to load top attackers', error: err }); });
 }
 
 // Initial load (re-run in place after bulk block/whitelist).
 loadThreatStats();
 loadTopAttackers();
+if (CSM.refresh) CSM.refresh.onRefresh(function() {
+    loadThreatStats();
+    loadTopAttackers();
+});
 
 // IP Lookup
 document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
@@ -396,7 +389,7 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
         getJSONAllowError('/api/v1/threat/ip?ip='+encodeURIComponent(ip)),
         getJSONAllowError('/api/v1/threat/events?ip='+encodeURIComponent(ip)+'&limit=20')
     ]).then(function(results){
-        var intel=results[0], events=results[1];
+        var intel=results[0], events=results[1].items;
         if(intel.error){status.textContent=intel.error;status.className='text-danger small';return;}
         status.textContent='';
         result.classList.remove('d-none');
@@ -422,7 +415,7 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
             var rec=intel.attack_record;
             html+='<tr><td class="text-muted">Events</td><td>'+rec.event_count+'</td></tr>';
             html+='<tr><td class="text-muted">Attack Types</td><td>'+typeBadges(rec.attack_counts)+'</td></tr>';
-            html+='<tr><td class="text-muted">Accounts Targeted</td><td>'+(rec.accounts?Object.keys(rec.accounts).map(CSM.esc).join(', '):'-')+'</td></tr>';
+            html+='<tr><td class="text-muted">Accounts Targeted</td><td>'+(rec.accounts?Object.keys(rec.accounts).map(accountHTML).join(', '):'-')+'</td></tr>';
             html+='<tr><td class="text-muted">First Seen</td><td>'+fmtDate(rec.first_seen)+'</td></tr>';
             html+='<tr><td class="text-muted">Last Seen</td><td>'+fmtDate(rec.last_seen)+'</td></tr>';
         }
@@ -436,14 +429,15 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
         }
         html+='<button class="btn btn-outline-primary btn-sm clear-ip-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Unblock IP and remove from all threat databases"><i class="ti ti-eraser"></i>&nbsp;Unblock &amp; Clear</button>';
         html+='<button class="btn btn-outline-warning btn-sm temp-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Temporarily allow this IP for a set number of hours"><i class="ti ti-clock"></i>&nbsp;Temp Whitelist (24h)</button>';
-        html+='<button class="btn btn-success btn-sm perm-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Permanently allow this IP - never block or flag it again"><i class="ti ti-shield-check"></i>&nbsp;Permanent Whitelist</button>';
+        html+='<button class="btn btn-outline-warning btn-sm perm-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Permanently allow this IP - never block or flag it again"><i class="ti ti-shield-check"></i>&nbsp;Permanent Whitelist</button>';
+        html+='<a class="btn btn-ghost-secondary btn-sm" href="/firewall?ip='+encodeURIComponent(intel.ip)+'" title="Firewall state and actions for this IP"><i class="ti ti-firewall-check"></i>&nbsp;Firewall</a>';
         html+='</div>';
         html+='</div></div></div>';
         html+='</div>';
 
         // Events timeline
         if(events&&events.length>0){
-            html+='<div class="card mt-2"><div class="card-header"><h3 class="card-title">Recent Events</h3></div>';
+            html+='<div class="card mt-2"><div class="card-header"><h2 class="card-title">Recent Events</h2></div>';
             html+='<div class="table-responsive"><table class="table table-sm table-vcenter card-table">';
             html+='<thead><tr><th>Time</th><th>Type</th><th>Check</th><th>Account</th><th>Message</th></tr></thead><tbody>';
             for(var i=0;i<events.length;i++){
@@ -469,52 +463,8 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
         if(tempBtn) tempBtn.addEventListener('click',function(){tempWhitelistIP(this.getAttribute('data-ip'));});
         var permBtn=result.querySelector('.perm-wl-btn');
         if(permBtn) permBtn.addEventListener('click',function(){whitelistIP(this.getAttribute('data-ip'));});
-    }).catch(function(e){status.textContent='Error: '+e;status.className='text-danger small'});
+    }).catch(function(e){status.textContent=CSM.errorText(e);status.className='text-danger small'});
 });
-
-// --- Whitelist management ---
-function loadWhitelist() {
-    CSM.get('/api/v1/threat/whitelist').then(function(entries){
-        var tbody=document.getElementById('wl-tbody');
-        if(!entries||entries.length===0){
-            tbody.innerHTML='<tr><td colspan="3" class="text-center text-muted">No whitelisted IPs</td></tr>';
-            return;
-        }
-        var html='';
-        for(var i=0;i<entries.length;i++){
-            var e=entries[i];
-            var typeBadge=e.configured?'<span class="badge bg-blue-lt">Configured</span>':
-                (e.permanent?'<span class="badge bg-success-lt">Permanent</span>':
-                '<span class="badge bg-warning-lt">Expires '+fmtDate(e.expires_at)+'</span>');
-            html+='<tr><td><code class="font-monospace">'+CSM.esc(e.ip)+'</code></td>';
-            html+='<td>'+typeBadge+'</td>';
-            html+='<td>'+(e.configured?'<span class="text-muted small">Edit csm.yaml</span>':
-                '<button class="btn btn-ghost-danger btn-sm remove-wl-btn" data-ip="'+CSM.esc(e.ip)+'" title="Remove IP from whitelist - it may be blocked again if it triggers detections"><i class="ti ti-x"></i>&nbsp;Remove</button>')+'</td></tr>';
-        }
-        tbody.innerHTML=html;
-        // Bind remove buttons after DOM insertion
-        tbody.querySelectorAll('.remove-wl-btn').forEach(function(btn){
-            btn.addEventListener('click',function(){removeWhitelist(this.getAttribute('data-ip'));});
-        });
-    }).catch(function(){ CSM.loadError(document.getElementById('wl-tbody').parentElement.parentElement, loadWhitelist); });
-}
-loadWhitelist();
-
-document.getElementById('add-wl-form').addEventListener('submit',function(e){
-    e.preventDefault();
-    var ip=document.getElementById('add-wl-ip').value.trim();
-    if(!ip)return;
-    whitelistIP(ip);
-});
-
-function removeWhitelist(ip) {
-    CSM.confirm('Remove '+ip+' from whitelist?\n\nThis IP will be subject to threat detection and auto-blocking again.').then(function() {
-        CSM.post('/api/v1/threat/unwhitelist-ip',{ip:ip}).then(function(data){
-            if(data.error){CSM.toast('Error: '+data.error,'error');return;}
-            loadWhitelist();
-        }).catch(function(e){CSM.toast('Error: '+e,'error')});
-    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
-}
 
 // blockIP blocks for 24 hours by default. A permanent block is a separate,
 // explicitly confirmed operator action: it never expires in the firewall and
@@ -525,12 +475,12 @@ function blockIP(ip, permanent) {
         'Block '+ip+' permanently?\n\nThe firewall block never expires and the IP stays in the threat database until you clear it.':
         'Block '+ip+' for 24 hours?\n\nThis will block the IP in the firewall and add it to the threat database for the same 24 hours.';
     var done=permanent?'IP '+ip+' blocked permanently.':'IP '+ip+' blocked for 24h.';
-    return CSM.confirm(question).then(function() {
+    return CSM.confirm(question, { danger: true, okLabel: 'Block' }).then(function() {
         return CSM.post(url,{ip:ip}).then(function(data){
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast(done+'\n\nActions: '+(data.actions||[]).join(', '),'success');
             document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
-        }).catch(function(e){CSM.toast('Error: '+e,'error')});
+        }).catch(function(e){CSM.toast(CSM.errorText(e),'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -540,7 +490,7 @@ function clearIP(ip) {
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast('IP '+ip+' cleared.\n\nActions: '+(data.actions||[]).join(', '),'success');
             document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
-        }).catch(function(e){CSM.toast('Error: '+e,'error')});
+        }).catch(function(e){CSM.toast(CSM.errorText(e),'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -550,60 +500,57 @@ function tempWhitelistIP(ip) {
         if(isNaN(hours)||hours<1){CSM.toast('Invalid number of hours','warning');return;}
         CSM.post('/api/v1/threat/temp-whitelist-ip',{ip:ip,hours:hours}).then(function(data){
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
-            CSM.toast('IP '+ip+' temp-whitelisted for '+data.hours+'h.\n\nActions: '+(data.actions||[]).join(', '),'success');
-            loadWhitelist();
+            CSM.toast('IP '+ip+' temp-whitelisted for '+CSM.formatDuration(data.duration_seconds)+'.\n\nActions: '+(data.actions||[]).join(', '),'success');
             document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
-        }).catch(function(e){CSM.toast('Error: '+e,'error')});
+        }).catch(function(e){CSM.toast(CSM.errorText(e),'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
 function whitelistIP(ip) {
-    CSM.confirm('Permanently whitelist '+ip+'?\n\nUse this only for static IPs (offices, dedicated servers).\nFor dynamic IPs, use "Temp Whitelist" instead.\n\nThis will:\n- Unblock from firewall\n- Add to permanent allow list\n- Remove from all threat databases\n- Never flag this IP again').then(function() {
+    CSM.confirm('Permanently whitelist '+ip+'?\n\nUse this only for static IPs (offices, dedicated servers).\nFor dynamic IPs, use "Temp Whitelist" instead.\n\nThis will:\n- Unblock from firewall\n- Add to permanent allow list\n- Remove from all threat databases\n- Never flag this IP again', { danger: true, okLabel: 'Whitelist' }).then(function() {
         CSM.post('/api/v1/threat/whitelist-ip',{ip:ip}).then(function(data){
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast('IP '+ip+' permanently whitelisted.\n\nActions: '+(data.actions||[]).join(', '),'success');
-            loadWhitelist();
             document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
-        }).catch(function(e){CSM.toast('Error: '+e,'error')});
+        }).catch(function(e){CSM.toast(CSM.errorText(e),'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
+// Other pages link here with ?ip= to look one address up.
+(function() {
+    var ip = (new URLSearchParams(window.location.search).get('ip') || '').trim();
+    if (!CSM.validateIP(ip)) return;
+    document.getElementById('tr-lookup-ip').value = ip;
+    document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
+})();
+
 // --- Bulk operations ---
+// CSM.bulk limits select-all and every bulk action to rows the table shows,
+// so a permanent block or whitelist never reaches rows on other pages or
+// hidden by a filter.
+function attackerBulk() {
+    if (!_attackerBulk) {
+        _attackerBulk = CSM.bulk({
+            rowCheckboxSelector: '.bulk-ip-cb',
+            selectAllEl: document.getElementById('select-all-attackers'),
+            valueAttr: 'data-ip',
+            buttons: [
+                { el: document.getElementById('bulk-block-btn'), labelTemplate: 'Block 24h ({n})' },
+                { el: document.getElementById('bulk-block-perm-btn'), labelTemplate: 'Block Permanently ({n})' },
+                { el: document.getElementById('bulk-whitelist-btn'), labelTemplate: 'Whitelist Selected ({n})' }
+            ]
+        });
+    }
+    return _attackerBulk;
+}
+
 function getSelectedIPs() {
-    var ips = [];
-    document.querySelectorAll('.bulk-ip-cb:checked').forEach(function(cb) {
-        ips.push(cb.getAttribute('data-ip'));
-    });
-    return ips;
+    return attackerBulk().selectedValues();
 }
 
 function updateBulkButtons() {
-    var count = document.querySelectorAll('.bulk-ip-cb:checked').length;
-    var blockBtn = document.getElementById('bulk-block-btn');
-    var blockPermBtn = document.getElementById('bulk-block-perm-btn');
-    var wlBtn = document.getElementById('bulk-whitelist-btn');
-    if (count > 0) {
-        blockBtn.classList.remove('d-none');
-        blockPermBtn.classList.remove('d-none');
-        wlBtn.classList.remove('d-none');
-        blockBtn.textContent = 'Block 24h (' + count + ')';
-        blockPermBtn.textContent = 'Block Permanently (' + count + ')';
-        wlBtn.textContent = 'Whitelist Selected (' + count + ')';
-    } else {
-        blockBtn.classList.add('d-none');
-        blockPermBtn.classList.add('d-none');
-        wlBtn.classList.add('d-none');
-    }
+    attackerBulk().refresh();
 }
-
-// Select-all checkbox
-document.getElementById('select-all-attackers').addEventListener('change', function() {
-    var checked = this.checked;
-    document.querySelectorAll('.bulk-ip-cb').forEach(function(cb) {
-        cb.checked = checked;
-    });
-    updateBulkButtons();
-});
 
 // Bulk block. The permanent variant is its own button and its own confirm so
 // a 24h block is never turned into a permanent one by a stray click.
@@ -618,7 +565,7 @@ function bulkBlock(permanent) {
         'Block ' + ips.length + ' IP(s) permanently?\n\nThe firewall blocks never expire and the IPs stay in the threat database until you clear them.' :
         'Block ' + ips.length + ' IP(s) for 24 hours?\n\nThis will block them in the firewall and add them to the threat database for the same 24 hours. Permanent and longer blocks are skipped; unblock them explicitly before changing their lifetime.';
     var label = permanent ? 'Permanently blocked ' : 'Blocked ';
-    return CSM.confirm(question).then(function() {
+    return CSM.confirm(question, { danger: true, okLabel: 'Block' }).then(function() {
         return CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: permanent ? 'block_permanent' : 'block' }).then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
             if (data.count > 0) CSM.toast(data.count + ' IP(s) blocked successfully', 'success');
@@ -626,7 +573,7 @@ function bulkBlock(permanent) {
             if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: label + data.count + ' IP(s)' });
             loadThreatStats();
             loadTopAttackers();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -646,14 +593,15 @@ document.getElementById('bulk-whitelist-btn').addEventListener('click', function
         CSM.toast('Too many IPs selected (' + ips.length + '); the bulk limit is ' + CSM.THREAT_BULK_MAX + '. Narrow the selection and repeat.', 'error');
         return;
     }
-    CSM.confirm('Permanently whitelist ' + ips.length + ' IP(s)?\n\nThis will unblock from firewall, add to allow list, and remove from all threat databases.').then(function() {
+    CSM.confirm('Permanently whitelist ' + ips.length + ' IP(s)?\n\nThis will unblock from firewall, add to allow list, and remove from all threat databases.', { danger: true, okLabel: 'Whitelist' }).then(function() {
         CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: 'whitelist' }).then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
             CSM.toast(data.count + ' IP(s) whitelisted successfully', 'success');
+            if (data.warnings && data.warnings.length) CSM.toast(data.warnings.join('\n'), 'warning');
             if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: 'Whitelisted ' + data.count + ' IP(s)' });
             loadThreatStats();
             loadTopAttackers();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 });
 
@@ -674,24 +622,9 @@ document.getElementById('bulk-whitelist-btn').addEventListener('click', function
     });
 })();
 
-// --- Theme reactivity: update chart colors when dark/light mode toggles ---
-function updateChartTheme() {
-    var isDark = document.documentElement.classList.contains('theme-dark');
-    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
-    var textColor = isDark ? '#94a3b8' : '#64748b';
-    Chart.defaults.color = textColor;
-    Chart.defaults.borderColor = gridColor;
-    Object.values(Chart.instances).forEach(function(chart) {
-        if (chart.options.scales) {
-            Object.keys(chart.options.scales).forEach(function(axis) {
-                if (chart.options.scales[axis].grid) chart.options.scales[axis].grid.color = gridColor;
-                if (chart.options.scales[axis].ticks) chart.options.scales[axis].ticks.color = textColor;
-            });
-        }
-        chart.update('none');
-    });
-}
-
+// --- Theme reactivity: repaint charts, tooltips included, on a theme change ---
 new MutationObserver(function(mutations) {
-    mutations.forEach(function(m) { if (m.attributeName === 'class') updateChartTheme(); });
+    mutations.forEach(function(m) { if (m.attributeName === 'class') CSM.applyChartTheme(); });
 }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+
+})();

@@ -12,6 +12,7 @@ import (
 
 func TestAPIStatusFields(t *testing.T) {
 	s := newTestServer(t, "tok")
+	s.store.SetLatestFindings(nil) // a finished scan sets the last scan time
 	w := httptest.NewRecorder()
 	s.apiStatus(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusOK {
@@ -21,7 +22,7 @@ func TestAPIStatusFields(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	for _, key := range []string{"hostname", "uptime", "started_at", "rules_loaded", "scan_running", "last_scan_time"} {
+	for _, key := range []string{"hostname", "uptime_seconds", "started_at", "rules_loaded", "scan_running", "last_scan_time"} {
 		if _, ok := data[key]; !ok {
 			t.Errorf("missing field %q", key)
 		}
@@ -41,7 +42,7 @@ func TestAPIHealthFields(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	for _, key := range []string{"daemon_mode", "uptime", "rules_loaded"} {
+	for _, key := range []string{"daemon_mode", "uptime_seconds", "rules_loaded"} {
 		if _, ok := data[key]; !ok {
 			t.Errorf("missing field %q", key)
 		}
@@ -105,9 +106,7 @@ func TestAPIStatsTrendHonoursDaysParam(t *testing.T) {
 			t.Fatalf("%s: status = %d", tc.query, w.Code)
 		}
 		var got []map[string]interface{}
-		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-			t.Fatalf("%s: bad JSON: %v", tc.query, err)
-		}
+		decodeItems(t, w.Body.Bytes(), &got)
 		if len(got) != tc.wantLen {
 			t.Errorf("%s: len = %d, want %d", tc.query, len(got), tc.wantLen)
 		}

@@ -3,7 +3,6 @@
     'use strict';
 
     var _intervals = [];
-    var _pollers = [];
 
     function _trackInterval(handle) { _intervals.push(handle); return handle; }
     function _stopIntervals() {
@@ -11,26 +10,12 @@
         _intervals = [];
     }
 
-    function _cleanup() {
-        _stopIntervals();
-        for (var j = 0; j < _pollers.length; j++) _pollers[j].stop();
-        _pollers = [];
-    }
-
-    window.addEventListener('beforeunload', _cleanup);
-    document.addEventListener('visibilitychange', function() {
-        if (document.hidden) {
-            _stopIntervals();
-        } else {
-            // Restart intervals on visibility restore
-            _startPolling();
-        }
-    });
+    window.addEventListener('beforeunload', _stopIntervals);
 
     // --- Chart.js global defaults for dark/light theme ---
     var isDark = document.documentElement.classList.contains('theme-dark');
     var gridColor = isDark ? 'rgba(45,58,78,0.6)' : 'rgba(230,232,235,0.8)';
-    var textColor = isDark ? '#6b7a8d' : '#9da9b5';
+    var textColor = CSM.chartTheme().text;
 
     Chart.defaults.color = textColor;
     Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
@@ -47,6 +32,8 @@
         function updateNotifIcon() {
             var icon = notifBtn.querySelector('i');
             var isActive = Notification.permission === 'granted' && notifPref === 'on';
+            notifBtn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+            notifBtn.setAttribute('aria-label', isActive ? 'Disable desktop alerts' : 'Enable desktop alerts');
             if (Notification.permission === 'denied') {
                 notifBtn.classList.add('d-none');
             } else if (isActive) {
@@ -78,11 +65,13 @@
     // Desktop critical-finding notifications. Polls /api/v1/history and
     // fires browser Notifications for new severity=2 entries; the dashboard
     // no longer renders a live feed but the alert path stays useful.
-    var lastNotifTimestamp = '';
+    // Newest finding time seen, in epoch millis; NaN until the first poll.
+    var lastNotifAt = NaN;
+    var lastNotifKeys = new Set();
     var notifInternalChecks = { auto_response: 1, auto_block: 1, check_timeout: 1, health: 1 };
 
     function _maybeNotify(f) {
-        if (f.severity !== 2) return;
+        if (CSM.severity(f.severity).level !== 2) return;
         if (!('Notification' in window)) return;
         if (Notification.permission !== 'granted') return;
         if (localStorage.getItem('csm-notif') !== 'on') return;
@@ -92,38 +81,33 @@
         });
     }
 
-    function pollFindings() {
-        CSM.get('/api/v1/history?limit=10&offset=0')
-            .then(function(data) {
-                var findings = data.findings || [];
-                var maxTs = lastNotifTimestamp;
-                for (var i = findings.length - 1; i >= 0; i--) {
-                    var f = findings[i];
-                    var ts = f.timestamp || '';
-                    if (ts > maxTs) maxTs = ts;
-                    if (lastNotifTimestamp !== '' && ts > lastNotifTimestamp && !notifInternalChecks[f.check]) {
-                        _maybeNotify(f);
-                    }
-                }
-                lastNotifTimestamp = maxTs;
-            })
-            .catch(function(err) { console.error('pollFindings:', err); });
+    function notifyFindings(findings, live) {
+        var initial = isNaN(lastNotifAt);
+        // A burst may arrive newest first. Compare every member to the
+        // previous batch, and retain identities at the boundary so two
+        // findings within the same millisecond both notify, once each.
+        var cutoff = initial ? -Infinity : lastNotifAt;
+        var maxAt = cutoff;
+        var newestKeys = new Set(lastNotifKeys);
+        var batchKeys = new Set();
+        findings.forEach(function(f) {
+            var at = CSM.parseTimestamp(f.timestamp);
+            if (isNaN(at) || at < cutoff) return;
+            var key = JSON.stringify([f.timestamp, f.check, f.message, f.details]);
+            if (batchKeys.has(key) || (at === cutoff && lastNotifKeys.has(key))) return;
+            batchKeys.add(key);
+            if ((live || !initial) && !notifInternalChecks[f.check]) _maybeNotify(f);
+            if (at > maxAt) { maxAt = at; newestKeys.clear(); }
+            if (at === maxAt) newestKeys.add(key);
+        });
+        lastNotifAt = maxAt;
+        lastNotifKeys = newestKeys;
     }
 
-        // Centralised empty/error-state renderer for the three summary cards.
-    // Cards that fail to load get a visible error instead of a permanent
-    // "Loading..." spinner.
-    function renderCardError(id, msg) {
-        var el = document.getElementById(id);
-        if (!el) return;
-        el.textContent = '';
-        var box = document.createElement('div');
-        box.className = 'text-center text-muted py-3';
-        var ic = document.createElement('i');
-        ic.className = 'ti ti-alert-circle me-1 text-warning';
-        box.appendChild(ic);
-        box.appendChild(document.createTextNode(msg));
-        el.appendChild(box);
+    function pollFindings() {
+        CSM.get('/api/v1/history?limit=10&offset=0')
+            .then(function(data) { notifyFindings(data.items, false); })
+            .catch(function(err) { console.error('pollFindings:', err); });
     }
 
     // --- System health pill (top of page) ---
@@ -181,7 +165,8 @@
             var openParts = [];
             if (bySev.critical) openParts.push(bySev.critical + ' critical');
             if (bySev.high) openParts.push(bySev.high + ' high');
-            var title = 'Uptime: ' + (status.uptime || health.uptime || '?') +
+            var uptime = status.uptime_seconds != null ? status.uptime_seconds : health.uptime_seconds;
+            var title = 'Uptime: ' + (CSM.formatDuration(uptime) || '?') +
                 '\nRules: ' + (health.rules_loaded || 0) +
                 '\nWatchers: ' + (health.log_watchers || 0) +
                 (status.scan_running ? '\nScan: in progress' : '') +
@@ -203,17 +188,16 @@
                 setText('stat-critical', s.critical);
                 setText('stat-high', s.high);
                 setText('stat-warning', s.warning);
-                // Keep text and data-timestamp aligned so CSM.initTimeAgo ticks
+                // Keep text and data-time-ago aligned so CSM.initTimeAgo ticks
                 // against the correct baseline when a fresh critical arrives.
                 var lastCritEl = document.getElementById('stat-last-critical');
                 if (lastCritEl) {
-                    if (data.last_critical_iso) {
-                        lastCritEl.setAttribute('data-timestamp', data.last_critical_iso);
+                    if (data.last_critical) {
+                        lastCritEl.setAttribute('data-time-ago', data.last_critical);
+                        lastCritEl.textContent = CSM.timeAgo(data.last_critical);
                     } else {
-                        lastCritEl.removeAttribute('data-timestamp');
-                    }
-                    if (data.last_critical_ago) {
-                        lastCritEl.textContent = data.last_critical_ago;
+                        lastCritEl.removeAttribute('data-time-ago');
+                        lastCritEl.textContent = 'None';
                     }
                 }
                 renderAccountsAtRisk(data.accounts_at_risk || []);
@@ -222,14 +206,12 @@
             })
             .catch(function(err) {
                 console.error('refreshStats:', err);
-                renderCardError('accounts-at-risk', 'Failed to load');
-                renderCardError('auto-response-summary', 'Failed to load');
-                renderCardError('brute-force-summary', 'Failed to load');
+                ['accounts-at-risk', 'auto-response-summary', 'brute-force-summary'].forEach(function(id) {
+                    CSM.loadError(document.getElementById(id), refreshStats, { title: 'Failed to load dashboard stats', error: err });
+                });
             });
     }
 
-    var sevClasses = {}; for (var sk in CSM.sevMap) sevClasses[sk] = CSM.sevMap[sk].cls;
-    var sevLabelsMap = {}; for (var sl in CSM.sevMap) sevLabelsMap[sl] = CSM.sevMap[sl].label;
 
     function renderAccountsAtRisk(accounts) {
         var el = document.getElementById('accounts-at-risk');
@@ -246,14 +228,14 @@
         list.className = 'list-group list-group-flush';
         for (var i = 0; i < accounts.length; i++) {
             var a = accounts[i];
-            var cls = sevClasses[a.severity] || 'warning';
+            var cls = CSM.severity(a.severity).cls;
             var item = document.createElement('div');
             item.className = 'list-group-item';
             var flex = document.createElement('div');
             flex.className = 'd-flex align-items-center';
             var badge = document.createElement('span');
             badge.className = 'badge badge-' + cls + ' me-2';
-            badge.textContent = sevLabelsMap[a.severity] || '?';
+            badge.textContent = CSM.severity(a.severity).label;
             var link = document.createElement('a');
             link.href = '/account?name=' + encodeURIComponent(a.account);
             link.className = 'font-monospace';
@@ -424,7 +406,8 @@
             try { pollFindings(); } catch(e) { console.error('fastPoll:', e); }
         }
         fastPoll();
-        _trackInterval(CSM.refresh.interval(fastPoll, 10000));
+        // Live updates notify as findings arrive; the poll is a safety net then.
+        _trackInterval(CSM.refresh.interval(fastPoll, 10000, { whileLive: 60000 }));
 
         // Slow cadence (60s): stats + health pill + challenge summary
         function loadChallengeSummary() {
@@ -435,11 +418,11 @@
                 var scanner = byCheck['http_scanner_profile'] || 0;
                 var total = Object.keys(byCheck).reduce(function(s, k) { return s + (byCheck[k] || 0); }, 0);
                 function stat(label, val, cls) {
-                    return '<div class="col-6 col-md-3">' +
+                    return '<div class="col-6 col-md-auto me-md-4">' +
                         '<div class="h1 m-0 ' + cls + '">' + (val || 0) + '</div>' +
                         '<div class="subheader">' + label + '</div></div>';
                 }
-                el.innerHTML = '<div class="row g-3 text-center">' +
+                el.innerHTML = '<div class="row g-3">' +
                     stat('Pending now', d.pending, '') +
                     stat('Escalated to block', d.escalated, (d.escalated ? 'text-danger' : '')) +
                     stat('Scanner routed', scanner, '') +
@@ -458,6 +441,13 @@
         }, 60000));
     }
     _startPolling();
+
+    // A finding dispatched while the page is open notifies at once and
+    // refreshes the 24h counts, instead of waiting for the next poll.
+    if (CSM.live) CSM.live.onFinding(function(items) {
+        notifyFindings(items, true);
+        refreshStats();
+    });
 })();
 
 // ============================================================================
@@ -487,18 +477,13 @@
     }
 
     function buildTooltipStyle() {
-        var isDark = document.documentElement.classList.contains('theme-dark');
-        return {
-            backgroundColor: isDark ? '#1e293b' : '#fff',
-            titleColor: isDark ? '#c8d3e0' : '#1a2234',
-            bodyColor: isDark ? '#c8d3e0' : '#1a2234',
-            borderColor: isDark ? '#2d3a4e' : '#e6e8eb',
+        return Object.assign({}, CSM.chartTheme().tooltip, {
             borderWidth: 1,
             cornerRadius: 6,
             padding: 10,
             displayColors: true,
             boxPadding: 4
-        };
+        });
     }
 
     function buildGridColor() {
@@ -518,16 +503,17 @@
         if (!canvas) return;
 
         CSM.get('/api/v1/stats/timeline')
-            .then(function(hours) {
+            .then(function(data) {
+                var hours = data.items;
+                CSM.clearLoadError(canvas.parentElement);
                 if (!hours || !hours.length) return;
-                var prevErr = canvas.parentElement && canvas.parentElement.querySelector('.chart-error');
-                if (prevErr) { prevErr.remove(); canvas.style.display = ''; }
 
                 var labels = [];
                 var critData = [], highData = [], warnData = [];
 
                 for (var i = 0; i < hours.length; i++) {
-                    labels.push(hours[i].hour);
+                    // "HH:MM" of the hour's start in the operator's zone.
+                    labels.push(CSM.fmtDate(hours[i].start).slice(11));
                     critData.push(hours[i].critical);
                     highData.push(hours[i].high);
                     warnData.push(hours[i].warning);
@@ -635,14 +621,7 @@
             })
             .catch(function(err) {
                 console.error('loadTimeline:', err);
-                var parent = canvas.parentElement;
-                if (parent && !parent.querySelector('.chart-error')) {
-                    var msg = document.createElement('div');
-                    msg.className = 'text-muted text-center py-3 chart-error';
-                    msg.textContent = 'Failed to load timeline data';
-                    parent.appendChild(msg);
-                    canvas.style.display = 'none';
-                }
+                CSM.loadError(canvas.parentElement, loadTimeline, { title: 'Failed to load timeline data', error: err });
             });
     }
 
@@ -662,20 +641,8 @@
         other:        '#6b7a8d'
     };
 
-    var attackLabelsMap = {
-        brute_force:  'Brute Force',
-        waf_block:    'WAF Block',
-        webshell:     'Webshell',
-        phishing:     'Phishing',
-        c2:           'C2 / Callback',
-        recon:        'Recon / Scan',
-        spam:         'Spam',
-        cpanel_login: 'cPanel Login',
-        file_upload:  'File Upload',
-        auth_success: 'Authenticated Activity',
-        reputation:   'Known Malicious IP',
-        other:        'Other'
-    };
+    // Attack type labels come from the server with the page config.
+    var attackLabelsMap = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.attackTypes) || {};
 
     var attackChart = null;
     function loadAttackTypes() {
@@ -684,8 +651,7 @@
 
         CSM.get('/api/v1/threat/stats')
             .then(function(data) {
-                var prevErr = canvas.parentElement && canvas.parentElement.querySelector('.chart-error');
-                if (prevErr) { prevErr.remove(); canvas.style.display = ''; }
+                CSM.clearLoadError(canvas.parentElement);
                 // Prefer the 24h-scoped map so this card matches the adjacent
                 // "Findings Timeline (24h)". Fall back to lifetime `by_type`
                 // to stay compatible with older daemons during rollout.
@@ -778,14 +744,7 @@
             })
             .catch(function(err) {
                 console.error('loadAttackTypes:', err);
-                var parent = canvas.parentElement;
-                if (parent && !parent.querySelector('.chart-error')) {
-                    var msg = document.createElement('div');
-                    msg.className = 'text-muted text-center py-3 chart-error';
-                    msg.textContent = 'Failed to load attack-type data';
-                    parent.appendChild(msg);
-                    canvas.style.display = 'none';
-                }
+                CSM.loadError(canvas.parentElement, loadAttackTypes, { title: 'Failed to load attack-type data', error: err });
             });
     }
 
@@ -835,10 +794,10 @@
         if (title) title.textContent = days + '-Day Trend';
 
         CSM.get('/api/v1/stats/trend?days=' + days)
-            .then(function(rows) {
+            .then(function(data) {
+                var rows = data.items;
+                CSM.clearLoadError(canvas.parentElement);
                 if (!rows || !rows.length) return;
-                var prevErr = canvas.parentElement && canvas.parentElement.querySelector('.chart-error');
-                if (prevErr) { prevErr.remove(); canvas.style.display = ''; }
                 renderStatDeltas(rows);
 
                 var labels = [], critData = [], highData = [], warnData = [];
@@ -952,14 +911,7 @@
             })
             .catch(function(err) {
                 console.error('loadTrend:', err);
-                var parent = canvas.parentElement;
-                if (parent && !parent.querySelector('.chart-error')) {
-                    var msg = document.createElement('div');
-                    msg.className = 'text-muted text-center py-3 chart-error';
-                    msg.textContent = 'Failed to load trend data';
-                    parent.appendChild(msg);
-                    canvas.style.display = 'none';
-                }
+                CSM.loadError(canvas.parentElement, loadTrend, { title: 'Failed to load trend data', error: err });
             });
     }
 
@@ -1043,42 +995,10 @@
     }
 
     window.addEventListener('beforeunload', _cleanupCharts);
-    document.addEventListener('visibilitychange', function() {
-        if (document.hidden) {
-            _stopChartIntervals();
-        } else {
-            // Restart refresh intervals (charts survive tab switches);
-            // _startChartIntervals stops the prior set before re-adding.
-            _startChartIntervals();
-            // Immediate refresh on return
-            try { loadTimeline(); } catch(e) {}
-            try { loadAttackTypes(); } catch(e) {}
-            try { loadTrend(); } catch(e) {}
-            try { loadPriorityQueue(); } catch(e) {}
-            try { loadComponents(); } catch(e) {}
-        }
-    });
 
     // --- Theme reactivity: update chart colors when dark/light mode toggles ---
-    function updateChartTheme() {
-        var dark = document.documentElement.classList.contains('theme-dark');
-        var newGridColor = dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
-        var newTextColor = dark ? '#94a3b8' : '#64748b';
-        Chart.defaults.color = newTextColor;
-        Chart.defaults.borderColor = newGridColor;
-        Object.values(Chart.instances).forEach(function(chart) {
-            if (chart.options.scales) {
-                Object.keys(chart.options.scales).forEach(function(axis) {
-                    if (chart.options.scales[axis].grid) chart.options.scales[axis].grid.color = newGridColor;
-                    if (chart.options.scales[axis].ticks) chart.options.scales[axis].ticks.color = newTextColor;
-                });
-            }
-            chart.update('none');
-        });
-    }
-
     new MutationObserver(function(mutations) {
-        mutations.forEach(function(m) { if (m.attributeName === 'class') updateChartTheme(); });
+        mutations.forEach(function(m) { if (m.attributeName === 'class') CSM.applyChartTheme(); });
     }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
 
 
@@ -1102,7 +1022,7 @@
         html += '<div class="csm-queue-item__title">' + kindBadge + CSM.esc(item.title || '') + '</div>';
         if (item.summary) html += '<div class="csm-queue-item__summary">' + CSM.esc(item.summary) + '</div>';
         html += '</span>';
-        if (ageText) html += '<span class="csm-queue-item__age" data-timestamp="' + CSM.attr(ageISO) + '">' + CSM.esc(ageText) + '</span>';
+        if (ageText) html += '<span class="csm-queue-item__age" data-time-ago="' + CSM.attr(ageISO) + '">' + CSM.esc(ageText) + '</span>';
         html += actionHTML;
         html += '</a>';
         return html;
@@ -1140,17 +1060,9 @@
         return 'unknown';
     }
 
-    function _sevForIncident(s) {
-        if (s === 'CRITICAL') return { sevClass: 'critical', sevLabel: 'CRITICAL' };
-        if (s === 'HIGH')     return { sevClass: 'high',     sevLabel: 'HIGH' };
-        return { sevClass: 'warning', sevLabel: 'WARNING' };
-    }
-
-    function _sevForFinding(severity) {
-        var s = String(severity || '').toUpperCase();
-        if (s === 'CRITICAL') return { sevClass: 'critical', sevLabel: 'CRITICAL' };
-        if (s === 'HIGH')     return { sevClass: 'high',     sevLabel: 'HIGH' };
-        return { sevClass: 'warning', sevLabel: 'WARNING' };
+    function _sev(severity) {
+        var s = CSM.severity(severity);
+        return { sevClass: s.cls, sevLabel: s.label };
     }
 
     function _updateSubtitle(activeIncidents, critFindings, highFindings) {
@@ -1172,8 +1084,7 @@
             var findData = results[1];
             var statsData = results[2];
             var incidents = [];
-            if (incData && Array.isArray(incData.items)) incidents = incData.items;
-            else if (Array.isArray(incData)) incidents = incData;
+            if (incData) incidents = incData.items;
 
             // incidents is only the first page (limit=5) used to render the
             // queue. The subtitle count must be the true active-incident total
@@ -1181,12 +1092,7 @@
             // reads "5 active incidents" while hundreds are open or contained.
             var activeTotal = (incData && typeof incData.total === 'number') ? incData.total : incidents.length;
 
-            var findings = [];
-            if (findData && Array.isArray(findData.findings)) {
-                findings = findData.findings;
-            } else if (Array.isArray(findData)) {
-                findings = findData;
-            }
+            var findings = findData ? findData.items : [];
 
             // The subtitle is labelled "(24h)", so its critical/high counts must
             // come from /stats (genuinely 24h-windowed). The findings/enriched
@@ -1201,7 +1107,7 @@
             var items = [];
             for (var i = 0; i < Math.min(incidents.length, 5); i++) {
                 var inc = incidents[i];
-                var sevInfo = _sevForIncident(inc.severity);
+                var sevInfo = _sev(inc.severity);
                 var owner = _incidentOwner(inc);
                 items.push({
                     sevClass: sevInfo.sevClass,
@@ -1225,7 +1131,7 @@
             }
             for (var k = 0; k < critHighFindings.length; k++) {
                 var fi = critHighFindings[k];
-                var fSev = _sevForFinding(fi.severity);
+                var fSev = _sev(fi.severity);
                 items.push({
                     sevClass: fSev.sevClass,
                     sevLabel: fSev.sevLabel,
@@ -1234,7 +1140,7 @@
                     summary: fi.message || '',
                     ageISO: fi.last_seen || fi.first_seen || '',
                     action: 'Review',
-                    href: '/findings'
+                    href: '/findings?key=' + encodeURIComponent(fi.key || '')
                 });
             }
 
@@ -1289,10 +1195,10 @@
     }
 
     function _componentRow(row) {
-        var since = row.changed_ago ? row.changed_ago : '-';
-        var sinceISO = row.changed_at_iso ? ' title="' + CSM.attr(row.changed_at_iso) + '"' : '';
-        var lastEvent = row.last_event_ago ? row.last_event_ago : '-';
-        var lastEventTitle = row.last_event_iso ? row.last_event_iso : '';
+        var since = row.changed_at ? CSM.timeAgo(row.changed_at) : '-';
+        var sinceISO = row.changed_at ? ' title="' + CSM.attr(CSM.fmtDate(row.changed_at)) + '"' : '';
+        var lastEvent = row.last_event_at ? CSM.timeAgo(row.last_event_at) : '-';
+        var lastEventTitle = row.last_event_at ? CSM.fmtDate(row.last_event_at) : '';
         if (lastEventTitle && row.last_event_check) {
             lastEventTitle += ' (' + row.last_event_check + ')';
         }
@@ -1309,7 +1215,8 @@
         var el = document.getElementById('components-matrix');
         if (!el) return;
         CSM.get('/api/v1/components', { silent: true })
-            .then(function(rows) {
+            .then(function(data) {
+                var rows = data.items;
                 if (!rows || rows.length === 0) {
                     el.innerHTML = '<div class="csm-empty py-3"><div class="csm-empty__reason text-muted text-center">No watchers registered</div></div>';
                     return;
@@ -1333,6 +1240,10 @@
                     }
                 });
 
+                // The idle list is rebuilt on every refresh; keep it open if
+                // the operator opened it.
+                var prevIdle = el.querySelector('details.csm-idle-watchers');
+                var idleOpen = !!(prevIdle && prevIdle.open);
                 var html = '';
                 if (nonIdle.length > 0) {
                     html += '<div class="table-responsive"><table class="table table-sm card-table mb-0">' +
@@ -1348,7 +1259,7 @@
                 if (idle.length > 0) {
                     var label = CSM.esc(String(idle.length)) + ' watcher' + (idle.length === 1 ? '' : 's') +
                         ' idle <span class="text-muted small">&middot; no events in 7 days</span>';
-                    var idleHTML = '<details class="csm-idle-watchers small mt-2">' +
+                    var idleHTML = '<details class="csm-idle-watchers small mt-2"' + (idleOpen ? ' open' : '') + '>' +
                         '<summary class="text-muted py-2">' + label + '</summary>' +
                         '<div class="table-responsive"><table class="table table-sm card-table mb-0">' +
                             '<thead><tr>' +
@@ -1381,4 +1292,7 @@
     try { loadComponents(); } catch (e) {}
 
     _startChartPolling();
+
+    // New findings can join the triage queue; reload it when they arrive.
+    if (CSM.live) CSM.live.onFinding(function() { loadPriorityQueue(); });
 })();

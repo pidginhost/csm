@@ -36,11 +36,12 @@ func (s *Server) apiHardeningRun(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.releaseScan()
 
-	// Extend write deadline for this long-running request
+	// The audit can outlast the server's WriteTimeout; extend, never shorten.
 	rc := http.NewResponseController(w)
-	_ = rc.SetWriteDeadline(time.Now().Add(3 * time.Minute))
+	_ = rc.SetWriteDeadline(time.Now().Add(longRequestTimeout))
 
 	report := checks.RunHardeningAudit(s.liveCfg())
+	s.auditLog(r, "hardening_run", "server", "hardening audit run")
 
 	if db := store.Global(); db != nil {
 		if err := db.SaveHardeningReport(report); err != nil {
@@ -49,10 +50,14 @@ func (s *Server) apiHardeningRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, report)
+	// The fresh report, with the action's ok flag next to its fields.
+	writeJSON(w, struct {
+		OK bool `json:"ok"`
+		*store.AuditReport
+	}{true, report})
 }
 
 // handleHardening renders the hardening audit page.
-func (s *Server) handleHardening(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "hardening.html", nil)
+func (s *Server) handleHardening(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "hardening.html", nil)
 }

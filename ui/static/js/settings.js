@@ -18,16 +18,13 @@
     let initialValues = {};
     let dirty = false;
     let saving = false;
+    let sectionLoading = false;
+    let sectionLoadSeq = 0;
     const dirtySections = new Set();
     let pendingLeaveConfirm = null;
     let pendingPopstateSection = null;
     let popstateConfirmOpen = false;
     let busyDisabledControls = null;
-
-    function csrfToken() {
-        const meta = document.querySelector('meta[name="csrf-token"]');
-        return meta ? meta.content : "";
-    }
 
     function byId(id) { return document.getElementById(id); }
     function clearNode(el) { while (el && el.firstChild) el.removeChild(el.firstChild); }
@@ -45,10 +42,6 @@
         b.appendChild(iconEl("ti-" + iconName, "me-1"));
         b.appendChild(document.createTextNode(text));
         return b;
-    }
-
-    function toast(msg, type) {
-        if (window.CSM && CSM.toast) { CSM.toast(msg, type || "info"); }
     }
 
     // Lock the whole section form while a save/apply round-trip is in
@@ -218,7 +211,7 @@
     function confirmLeaveIfDirty() {
         if (!dirty) return Promise.resolve();
         if (pendingLeaveConfirm) return pendingLeaveConfirm;
-        pendingLeaveConfirm = CSM.confirm("You have unsaved changes in this section. Discard them?")
+        pendingLeaveConfirm = CSM.confirm("You have unsaved changes in this section. Discard them?", { danger: true, okLabel: "Discard" })
             .then(function () {
                 pendingLeaveConfirm = null;
             }, function (err) {
@@ -311,6 +304,8 @@
     // ---- Section loader --------------------------------------------------
     async function loadSection(id, opts) {
         opts = opts || {};
+        const seq = ++sectionLoadSeq;
+        sectionLoading = true;
         setActiveNav(id);
         updateSectionURL(id, opts.urlMode || "replace");
 
@@ -329,12 +324,20 @@
         // so a single catch is enough — no separate resp.ok branch.
         let data;
         try {
-            const resp = await CSM.request("/api/v1/settings/" + encodeURIComponent(id), {headers: {Accept: "application/json"}});
+            const resp = await CSM.request("/api/v1/settings/" + encodeURIComponent(id), {headers: {Accept: "application/json"}, refresh: opts.refresh});
             data = await resp.json();
         } catch (e) {
-            renderError("Failed to load: " + (e && e.message ? e.message : "request failed"));
+            if (seq !== sectionLoadSeq) return;
+            sectionLoading = false;
+            // The URL already names this section; Retry must not add a
+            // history entry for it again.
+            renderError("Failed to load this settings section", e, function () {
+                loadSection(id, {urlMode: "replace", refresh: opts.refresh});
+            });
             return;
         }
+        if (seq !== sectionLoadSeq) return;
+        sectionLoading = false;
         currentSection = id;
         currentETag = data.etag;
         currentSchema = data.section;
@@ -345,13 +348,10 @@
         renderForm(data);
     }
 
-    function renderError(msg) {
+    function renderError(title, err, retry) {
         const panel = byId("settings-panel");
         clearNode(panel);
-        const alert = document.createElement("div");
-        alert.className = "alert alert-danger m-3";
-        alert.textContent = msg;
-        panel.appendChild(alert);
+        CSM.loadError(panel, retry, {title: title, error: err});
     }
 
     // ---- Form rendering --------------------------------------------------
@@ -362,7 +362,7 @@
         // Header
         const header = document.createElement("div");
         header.className = "settings-panel-header";
-        const h = document.createElement("h3");
+        const h = document.createElement("h2");
         h.className = "settings-panel-title";
         h.appendChild(iconEl("ti-" + (sectionMeta(data.section.id).icon || "settings")));
         h.appendChild(document.createTextNode(" " + data.section.title));
@@ -598,6 +598,10 @@
             }
         }
         wrapper.appendChild(inp);
+        if (field.file_only) {
+            inp.readOnly = true;
+            appendHint(wrapper, "Set in csm.yaml. The web UI cannot change this setting.");
+        }
         if (field.secret) {
             const secretBtn = btnWithIcon("Set new value", "key", "btn btn-outline-secondary btn-sm mt-2 settings-secret-set");
             secretBtn.addEventListener("click", function () {
@@ -914,6 +918,7 @@
         const out = {};
         if (!currentSchema) return out;
         currentSchema.fields.forEach(function (field) {
+            if (field.file_only) return;
             const nv = readFieldValue(field);
             const ov = lookupValue(initialValues, field.yaml_path);
             if (field.secret && nv === "") return;
@@ -929,7 +934,7 @@
         const changes = computeChanges();
         clearValidationErrors();
         if (Object.keys(changes).length === 0) {
-            toast("No changes to save.", "info");
+            CSM.toast("No changes to save.", "info");
             return;
         }
         saving = true;
@@ -942,30 +947,30 @@
                     headers: {
                         "Content-Type": "application/json",
                         "If-Match": currentETag,
-                        "X-CSRF-Token": csrfToken()
+                        "X-CSRF-Token": CSM.csrfToken
                     },
                     body: JSON.stringify({changes: changes}),
                     allowNonOK: true,
                     silent: true
                 });
             } catch (e) {
-                toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
+                CSM.toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
                 return;
             }
             if (resp.status === 412) {
-                toast("Config changed externally; reloading…", "warning");
+                CSM.toast("Config changed externally; reloading…", "warning");
                 loadSection(currentSection, {urlMode: "replace"});
                 return;
             }
             if (resp.status === 422) {
                 const data = await resp.json().catch(function () { return {}; });
                 showValidationErrors(data.errors || []);
-                toast("Validation errors. Review the highlighted fields.", "error");
+                CSM.toast("Validation errors. Review the highlighted fields.", "error");
                 return;
             }
             if (!resp.ok) {
                 const data = await resp.json().catch(function () { return {}; });
-                toast(data.error || ("Save failed: " + resp.status), "error");
+                CSM.toast(data.error || ("Save failed: " + resp.status), "error");
                 return;
             }
             const data = await resp.json();
@@ -976,9 +981,9 @@
             if (data.pending_restart) {
                 const pendingSections = pendingSectionNames(data.pending_sections).length ? data.pending_sections : currentSectionSummary();
                 showRestartBanner(pendingSections);
-                toast("Saved on disk. Restart required.", "warning");
+                CSM.toast("Saved on disk. Restart required.", "warning");
             } else {
-                toast("Saved. Applied live.", "success");
+                CSM.toast("Saved. Applied live.", "success");
             }
             loadSection(currentSection, {urlMode: "replace"});
         } finally {
@@ -1023,7 +1028,7 @@
         try {
             const resp = await CSM.request("/api/v1/settings/restart", {
                 method: "POST",
-                headers: {"X-CSRF-Token": csrfToken()},
+                headers: {"X-CSRF-Token": CSM.csrfToken},
                 allowNonOK: true,
                 silent: true
             });
@@ -1106,7 +1111,7 @@
         try {
             const changes = computeChanges();
             if (Object.keys(changes).length === 0) {
-                toast("No changes to apply.", "info");
+                CSM.toast("No changes to apply.", "info");
                 return;
             }
             let minutesStr;
@@ -1117,7 +1122,7 @@
             }
             const minutes = parseInt(minutesStr, 10);
             if (isNaN(minutes) || minutes < 1 || minutes > 30) {
-                toast("Timeout must be 1-30 minutes.", "error");
+                CSM.toast("Timeout must be 1-30 minutes.", "error");
                 return;
             }
             const confirmMsg = "Apply firewall changes with a " + minutes + "-minute rollback timer?\n\n"
@@ -1136,25 +1141,25 @@
                     headers: {
                         "Content-Type": "application/json",
                         "If-Match": currentETag,
-                        "X-CSRF-Token": csrfToken()
+                        "X-CSRF-Token": CSM.csrfToken
                     },
                     body: JSON.stringify({changes: changes, timeout_min: minutes}),
                     allowNonOK: true,
                     silent: true
                 });
             } catch (e) {
-                toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
+                CSM.toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
                 return;
             }
-            if (resp.status === 412) { toast("Config changed externally; reloading…", "warning"); loadSection(currentSection); return; }
+            if (resp.status === 412) { CSM.toast("Config changed externally; reloading…", "warning"); loadSection(currentSection); return; }
             if (resp.status === 422) {
                 const data = await resp.json().catch(function () { return {}; });
                 showValidationErrors(data.errors || []);
-                toast("Validation errors. Review the highlighted fields.", "error");
+                CSM.toast("Validation errors. Review the highlighted fields.", "error");
                 return;
             }
-            if (resp.status === 409) { toast("A rollback is already pending. Confirm or revert it first.", "warning"); return; }
-            if (!resp.ok) { toast("Tentative apply failed: " + resp.status, "error"); return; }
+            if (resp.status === 409) { CSM.toast("A rollback is already pending. Confirm or revert it first.", "warning"); return; }
+            if (!resp.ok) { CSM.toast("Tentative apply failed: " + resp.status, "error"); return; }
             const data = await resp.json();
             currentETag = data.new_etag;
             dirty = false;
@@ -1175,7 +1180,7 @@
         banner.classList.remove("d-none");
         banner.classList.remove("alert-warning");
         banner.classList.add("alert-warning");
-        const iconWrap = iconEl("ti-shield-half-filled", "me-2");
+        const iconWrap = iconEl("ti-shield-half", "me-2");
         banner.appendChild(iconWrap);
         const textNode = document.createElement("strong");
         textNode.textContent = "Firewall changes pending confirmation. ";
@@ -1238,7 +1243,7 @@
                 if (resp.ok) {
                     const data = await resp.json();
                     if (!data.pending) {
-                        toast("Firewall rollback expired; previous config restored.", "warning");
+                        CSM.toast("Firewall rollback expired; previous config restored.", "warning");
                         window.location.reload();
                         return;
                     }
@@ -1252,7 +1257,7 @@
     async function confirmRollback() {
         const resp = await CSM.request("/api/v1/settings/firewall/confirm", {
             method: "POST",
-            headers: {"X-CSRF-Token": csrfToken()},
+            headers: {"X-CSRF-Token": CSM.csrfToken},
             allowNonOK: true,
             silent: true
         });
@@ -1263,10 +1268,10 @@
             const banner = byId("settings-banner");
             clearNode(banner);
             banner.classList.add("d-none");
-            toast("Firewall changes confirmed.", "success");
+            CSM.toast("Firewall changes confirmed.", "success");
             loadSection(currentSection);
         } else {
-            toast("Confirm failed: " + resp.status, "error");
+            CSM.toast("Confirm failed: " + resp.status, "error");
         }
     }
 
@@ -1281,7 +1286,7 @@
             }
             const resp = await CSM.request("/api/v1/settings/firewall/revert", {
                 method: "POST",
-                headers: {"X-CSRF-Token": csrfToken()},
+                headers: {"X-CSRF-Token": CSM.csrfToken},
                 allowNonOK: true,
                 silent: true
             });
@@ -1292,7 +1297,7 @@
                 await pollHealth();
                 window.location.reload();
             } else {
-                toast("Revert failed: " + resp.status, "error");
+                CSM.toast("Revert failed: " + resp.status, "error");
             }
         } finally {
             revertRollbackRunning = false;
@@ -1346,8 +1351,17 @@
             }
             const target = isKnown(qsSection) ? qsSection
                 : (isKnown(hash) ? hash : first);
-            loadSection(target, {urlMode: "replace"});
+            loadSection(target, {urlMode: "replace", refresh: true});
             checkPendingRollbackOnLoad();
+            // Refresh reloads the open section; unsaved edits get the same
+            // discard question as leaving the section.
+            if (CSM.refresh) CSM.refresh.onRefresh(function () {
+                if (!currentSection || sectionLoading || saving || tentativeApplyRunning) return;
+                confirmLeaveIfDirty().then(function () {
+                    if (sectionLoading || saving || tentativeApplyRunning) return;
+                    loadSection(currentSection, {urlMode: "none", refresh: true});
+                }, function () { /* kept */ });
+            });
             // Back/forward changes the visible section without a full page
             // reload, but dirty fields still get the same discard prompt as
             // sidebar navigation.
@@ -1383,7 +1397,8 @@
                 }
             });
         }).catch(function (e) {
-            renderError("Failed to load settings metadata: " + (e && e.message ? e.message : "request failed"));
+            // The page is built from this list, so Retry starts it over.
+            renderError("Failed to load settings", e, function () { window.location.reload(); });
         });
     });
 })();

@@ -3,21 +3,31 @@ package webui
 import (
 	"bytes"
 	"fmt"
+	"html/template"
 	"net/http"
 	"os"
 	"time"
 
-	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 )
 
-func (s *Server) renderTemplate(w http.ResponseWriter, name string, data interface{}) {
-	tmpl := s.templates[name]
-	if tmpl == nil {
+func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request, name string, data interface{}) {
+	base := s.templates[name]
+	if base == nil {
 		fmt.Fprintf(os.Stderr, "[webui] template %s missing\n", name)
 		http.Error(w, "template not found", http.StatusInternalServerError)
 		return
 	}
+	// The CSRF token belongs to the browser session loading the page, so
+	// each render binds it on a clone of the parsed template.
+	tmpl, err := base.Clone()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[webui] template %s clone error: %v\n", name, err)
+		http.Error(w, "template render error", http.StatusInternalServerError)
+		return
+	}
+	token := s.csrfTokenFor(r)
+	tmpl.Funcs(template.FuncMap{"csrfToken": func() string { return token }})
 	// Render into a buffer first so an execution error can still surface as a
 	// 500 — html/template streams directly to its writer, and once any byte
 	// has been flushed the status header is locked in.
@@ -74,77 +84,52 @@ type quarantineEntry struct {
 	Reason       string
 }
 
-func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
-	last24h := time.Now().Add(-24 * time.Hour)
-	findings := s.store.ReadHistorySince(last24h)
+func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	sum := s.statsSummary24h()
 
-	var recent []historyEntry
-	critical, high, warning := 0, 0, 0
-
-	for _, f := range findings {
-		// Count all findings by severity
-		switch f.Severity {
-		case alert.Critical:
-			critical++
-		case alert.High:
-			high++
-		case alert.Warning:
-			warning++
-		}
-
-		// Skip internal checks from the live feed
-		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
-			continue
-		}
-
-		if len(recent) < 10 {
-			recent = append(recent, historyEntry{
-				Severity:     severityLabel(f.Severity),
-				SevClass:     severityClass(f.Severity),
-				Check:        f.Check,
-				Message:      f.Message,
-				Details:      f.Details,
-				Timestamp:    f.Timestamp.Format("15:04:05"),
-				TimestampISO: f.Timestamp.Format(time.RFC3339),
-				TimeAgo:      timeAgo(f.Timestamp),
-				HasFix:       checks.HasFix(f.Check),
-				FixDesc:      checks.FixDescription(f.Check, f.Message, f.FilePath),
-				Key:          f.Key(),
-			})
-		}
+	recent := make([]historyEntry, 0, len(sum.recent))
+	for _, f := range sum.recent {
+		recent = append(recent, historyEntry{
+			Severity:     severityLabel(f.Severity),
+			SevClass:     severityClass(f.Severity),
+			Check:        f.Check,
+			Message:      f.Message,
+			Details:      f.Details,
+			Timestamp:    f.Timestamp.Format("15:04:05"),
+			TimestampISO: f.Timestamp.Format(time.RFC3339),
+			TimeAgo:      timeAgo(f.Timestamp),
+			HasFix:       checks.HasFix(f.Check),
+			FixDesc:      checks.FixDescription(f.Check, f.Message, f.FilePath),
+			Key:          f.Key(),
+		})
 	}
 
-	// Find most recent critical finding (findings are newest-first)
-	lastCriticalAgo := "None"
-	lastCriticalISO := ""
-	for _, f := range findings {
-		if f.Severity == alert.Critical {
-			lastCriticalAgo = timeAgo(f.Timestamp)
-			lastCriticalISO = f.Timestamp.Format(time.RFC3339)
-			break
-		}
+	lastCriticalAgo, lastCriticalISO := "None", ""
+	if !sum.lastCritical.IsZero() {
+		lastCriticalAgo = timeAgo(sum.lastCritical)
+		lastCriticalISO = sum.lastCritical.Format(time.RFC3339)
 	}
 
 	data := dashboardData{
 		Hostname:        s.cfg.Hostname,
 		Uptime:          time.Since(s.startTime).Round(time.Second).String(),
-		Critical:        critical,
-		High:            high,
-		Warning:         warning,
-		Total:           critical + high + warning,
+		Critical:        sum.critical,
+		High:            sum.high,
+		Warning:         sum.warning,
+		Total:           sum.critical + sum.high + sum.warning,
 		SigCount:        s.signatureCount(),
-		FanotifyActive:  s.fanotifyActive,
-		LogWatchers:     s.logWatcherCount,
+		FanotifyActive:  s.fanotifyRunning(),
+		LogWatchers:     s.logWatchersRunning(),
 		LastCriticalAgo: lastCriticalAgo,
 		LastCriticalISO: lastCriticalISO,
 		RecentFindings:  recent,
 	}
-	s.renderTemplate(w, "dashboard.html", data)
+	s.renderTemplate(w, r, "dashboard.html", data)
 }
 
-func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleFindings(w http.ResponseWriter, r *http.Request) {
 	// Findings page is now JS-driven - enriched API provides data
-	s.renderTemplate(w, "findings.html", map[string]string{
+	s.renderTemplate(w, r, "findings.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
@@ -160,32 +145,43 @@ func (s *Server) handleHistoryRedirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusFound)
 }
 
-func (s *Server) handleQuarantine(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "quarantine.html", quarantineData{
+// handleBlockedRedirect sends the Firewall page's old address to the page.
+func (s *Server) handleBlockedRedirect(w http.ResponseWriter, r *http.Request) {
+	target := "/firewall"
+	if qs := r.URL.RawQuery; qs != "" {
+		target += "?" + qs
+	}
+	// #nosec G710 -- target always starts with the fixed same-origin
+	// /firewall path; the incoming query can only add parameters.
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+func (s *Server) handleQuarantine(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "quarantine.html", quarantineData{
 		Hostname: s.cfg.Hostname,
 	})
 }
 
-func (s *Server) handleCleanupHistory(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "cleanup-history.html", map[string]string{
+func (s *Server) handleCleanupHistory(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "cleanup-history.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
 
-func (s *Server) handleFirewall(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "firewall.html", map[string]string{
+func (s *Server) handleFirewall(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "firewall.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
 
-func (s *Server) handleEmail(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "email.html", map[string]string{
+func (s *Server) handleEmail(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "email.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
 
-func (s *Server) handleSettings(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "settings.html", map[string]string{
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "settings.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }

@@ -14,6 +14,17 @@ import (
 	"github.com/pidginhost/csm/internal/incident"
 )
 
+// incidentGroupsPage is the groups route's answer: the groups under items
+// plus the paging keys.
+type incidentGroupsPage struct {
+	Groups           []incident.Group `json:"items"`
+	Total            int              `json:"total"`
+	Offset           int              `json:"offset"`
+	Limit            int              `json:"limit"`
+	ScannedIncidents int              `json:"scanned_incidents"`
+	Truncated        bool             `json:"truncated"`
+}
+
 func seedSprayIncidents(t *testing.T, c *incident.Correlator, ip string, count int) {
 	t.Helper()
 	now := time.Now()
@@ -56,7 +67,7 @@ func TestAPIIncidentGroupsBucketsByIP(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	var resp incident.GroupsResponse
+	var resp incidentGroupsPage
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v\nbody: %s", err, w.Body.String())
 	}
@@ -68,6 +79,28 @@ func TestAPIIncidentGroupsBucketsByIP(t *testing.T) {
 	}
 	if resp.Groups[1].SourceKind != "ip" || resp.Groups[1].Source != "192.0.2.2" || resp.Groups[1].IncidentCount != 1 {
 		t.Fatalf("second group = %+v, want 192.0.2.2 with 1 incident", resp.Groups[1])
+	}
+}
+
+// The status is accepted in any case; it must also filter in any case, not
+// pass validation and then match nothing.
+func TestAPIIncidentGroupsStatusIsCaseInsensitive(t *testing.T) {
+	c := incident.NewCorrelator(incident.CorrelatorConfig{})
+	seedSprayIncidents(t, c, "192.0.2.1", 2)
+	srv := newTestServerWithIncidentCorrelator(t, c)
+	for _, status := range []string{"open", "Open", "%20OPEN%20"} {
+		w := httptest.NewRecorder()
+		srv.apiIncidentGroups(w, httptest.NewRequest(http.MethodGet, "/api/v1/incidents/groups?status="+status, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%s: code %d, body %s", status, w.Code, w.Body.String())
+		}
+		var resp incidentGroupsPage
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Groups) != 1 || resp.Groups[0].IncidentCount != 2 {
+			t.Errorf("status=%s: groups = %+v, want the open group", status, resp.Groups)
+		}
 	}
 }
 
@@ -116,15 +149,40 @@ func TestAPIIncidentGroupsHonorsOffset(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	var resp incident.GroupsResponse
+	var resp incidentGroupsPage
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v\nbody: %s", err, w.Body.String())
 	}
-	if resp.TotalGroups != 3 {
-		t.Fatalf("TotalGroups = %d, want 3 (pre-pagination)", resp.TotalGroups)
+	if resp.Total != 3 {
+		t.Fatalf("total = %d, want 3 (pre-pagination)", resp.Total)
 	}
 	if len(resp.Groups) != 1 || resp.Groups[0].Source != "192.0.2.2" {
 		t.Fatalf("offset=1 limit=1 returned %+v, want single group .2", resp.Groups)
+	}
+}
+
+func TestIncidentPagesReportRemainingMatches(t *testing.T) {
+	c := incident.NewCorrelator(incident.CorrelatorConfig{})
+	seedSprayIncidents(t, c, "192.0.2.1", 1)
+	seedSprayIncidents(t, c, "192.0.2.2", 1)
+	srv := newTestServerWithIncidentCorrelator(t, c)
+	for _, route := range []struct {
+		path    string
+		handler http.HandlerFunc
+	}{
+		{"/api/v1/incidents", srv.apiIncidentList},
+		{"/api/v1/incidents/groups", srv.apiIncidentGroups},
+	} {
+		for offset := 0; offset < 3; offset++ {
+			t.Run(route.path+strconv.Itoa(offset), func(t *testing.T) {
+				w := httptest.NewRecorder()
+				route.handler(w, httptest.NewRequest(http.MethodGet, route.path+"?limit=1&offset="+strconv.Itoa(offset), nil))
+				body := decodeCapped(t, route.path, w)
+				if *body.Truncated != (offset == 0) || body.Total == nil || *body.Total != 2 {
+					t.Fatalf("incorrect page metadata: %s", w.Body.String())
+				}
+			})
+		}
 	}
 }
 
@@ -145,7 +203,7 @@ func TestAPIIncidentGroupsActiveFilterDefault(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	var resp incident.GroupsResponse
+	var resp incidentGroupsPage
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	for _, g := range resp.Groups {
 		if g.ResolvedCount > 0 {

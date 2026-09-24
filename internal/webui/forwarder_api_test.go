@@ -142,9 +142,7 @@ func TestApiEmailForwardersEmptyWhenNoSource(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	// forwarders must serialize as [] not null so the UI can iterate.
-	if got := w.Body.String(); !jsonHasEmptyArray(t, got, "forwarders") {
-		t.Errorf("forwarders not an empty array: %s", got)
-	}
+	assertEmptyItems(t, w.Body.Bytes())
 	resp := decodeForwarders(t, w.Body.Bytes())
 	if resp.Summary.Total != 0 {
 		t.Errorf("summary total = %d, want 0", resp.Summary.Total)
@@ -161,9 +159,7 @@ func TestApiEmailForwardersEmptySource(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
-	if got := w.Body.String(); !jsonHasEmptyArray(t, got, "forwarders") {
-		t.Errorf("forwarders not an empty array: %s", got)
-	}
+	assertEmptyItems(t, w.Body.Bytes())
 	resp := decodeForwarders(t, w.Body.Bytes())
 	if len(resp.Forwarders) != 0 || resp.Summary.Total != 0 {
 		t.Errorf("EmptySource produced data: %+v", resp)

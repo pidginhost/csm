@@ -10,17 +10,19 @@ import (
 )
 
 type relayAbuseResponse struct {
-	Entries   []relayAbuseEntry `json:"entries"`
-	From      string            `json:"from"`
-	To        string            `json:"to"`
-	Matched   int               `json:"matched"`
+	Entries   []relayAbuseEntry `json:"items"`
+	Total     int               `json:"total"`
+	Offset    int               `json:"offset"`
+	Limit     int               `json:"limit"`
+	From      time.Time         `json:"from"`
+	To        time.Time         `json:"to"`
 	Truncated bool              `json:"truncated"`
 }
 
 type relayAbuseEntry struct {
 	Path         string           `json:"path"`
 	PathLabel    string           `json:"path_label"`
-	Severity     int              `json:"severity"`
+	Severity     string           `json:"severity"`
 	SourceIP     string           `json:"source_ip,omitempty"`
 	CPUser       string           `json:"cp_user,omitempty"`
 	TriggerCount int              `json:"trigger_count"`
@@ -73,38 +75,41 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	from := parseEmailGroupDate(q.Get("from"), now.Add(-24*time.Hour), false)
-	to := parseEmailGroupDate(q.Get("to"), now, true)
+	from, to, ok := historyRangeQuery(w, q, now.Add(-24*time.Hour), now)
+	if !ok {
+		return
+	}
 	if to.Before(from) {
 		from, to = to, from
 	}
 
+	writeJSON(w, s.emailMemo("relay?"+q.Encode(), func() any {
+		return s.buildRelayAbuseResponse(from, to, limit)
+	}))
+}
+
+func (s *Server) buildRelayAbuseResponse(from, to time.Time, limit int) relayAbuseResponse {
 	resp := relayAbuseResponse{
 		Entries: []relayAbuseEntry{},
-		From:    from.UTC().Format(time.RFC3339),
-		To:      to.UTC().Format(time.RFC3339),
+		Limit:   limit,
+		From:    from.UTC(),
+		To:      to.UTC(),
 	}
 	if s.store == nil {
-		writeJSON(w, resp)
-		return
+		return resp
 	}
 
-	// Bound the scan, not the match count: read newest-first history since
-	// from, cap the rows inspected (same scan budget as /email/groups), then
-	// filter. truncated means the inspected cap was hit, so older matches may
-	// exist beyond the window we looked at.
-	history := s.store.ReadHistorySince(from)
-	if len(history) > emailGroupsScanCap {
-		history = history[:emailGroupsScanCap]
+	// Filter while walking newest-first history and cap the matches, so
+	// unrelated findings and findings newer than the range never hide a
+	// match. Truncation covers both this budget and the result limit below.
+	rows := s.store.SearchHistorySince(from, emailGroupsScanCap+1, func(f alert.Finding) bool {
+		return f.Check == "email_php_relay_abuse" && f.Timestamp.Before(to)
+	})
+	if len(rows) > emailGroupsScanCap {
+		rows = rows[:emailGroupsScanCap]
 		resp.Truncated = true
 	}
-	var rows []alert.Finding
-	for _, f := range history {
-		if f.Check == "email_php_relay_abuse" && !f.Timestamp.Before(from) && !f.Timestamp.After(to) {
-			rows = append(rows, f)
-		}
-	}
-	resp.Matched = len(rows)
+	resp.Total = len(rows)
 
 	sort.SliceStable(rows, func(i, j int) bool {
 		if !rows[i].Timestamp.Equal(rows[j].Timestamp) {
@@ -120,19 +125,20 @@ func (s *Server) apiEmailRelayAbuse(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if len(rows) > limit {
+		resp.Truncated = true
 		rows = rows[:limit]
 	}
 	for _, f := range rows {
 		resp.Entries = append(resp.Entries, toRelayAbuseEntry(f))
 	}
-	writeJSON(w, resp)
+	return resp
 }
 
 func toRelayAbuseEntry(f alert.Finding) relayAbuseEntry {
 	e := relayAbuseEntry{
 		Path:         f.Path,
 		PathLabel:    relayPathLabel(f.Path),
-		Severity:     int(f.Severity),
+		Severity:     f.Severity.String(),
 		SourceIP:     f.SourceIP,
 		CPUser:       f.CPUser,
 		TriggerCount: relayTriggerCount(f),

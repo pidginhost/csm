@@ -30,6 +30,8 @@
  */
 var CSM = CSM || {};
 
+(function() {
+
 CSM._tableInstances = CSM._tableInstances || [];
 
 CSM.printTables = CSM.printTables || (function() {
@@ -86,6 +88,14 @@ CSM.Table = function(opts) {
 
     this.tbody = this.table.querySelector('tbody');
     if (!this.tbody) return;
+
+    // A page that reloads its data refills the same table and wraps it again.
+    // The earlier instance still holds the old rows and listens to the same
+    // controls, so it would append stale rows back; retire it first.
+    for (var p = CSM._tableInstances.length - 1; p >= 0; p--) {
+        var prev = CSM._tableInstances[p];
+        if (prev !== this && prev.opts && prev.opts.tableId === opts.tableId) prev.destroy();
+    }
 
     this.perPage = typeof opts.perPage === 'number' ? opts.perPage : 25;
     this.currentPage = 1;
@@ -237,6 +247,9 @@ CSM.Table = function(opts) {
 
                 header.style.cursor = 'pointer';
                 header.title = 'Click to sort';
+                // Sortable from the keyboard too; aria-sort says the order.
+                header.setAttribute('tabindex', '0');
+                header.setAttribute('aria-sort', 'none');
                 csmTableListen(tbl, header, 'click', function() {
                     if (tbl.sortColumn === idx) {
                         tbl.sortAsc = !tbl.sortAsc;
@@ -248,11 +261,18 @@ CSM.Table = function(opts) {
                     var allHeaders = tbl.table.querySelectorAll('thead th');
                     for (var j = 0; j < allHeaders.length; j++) {
                         allHeaders[j].classList.remove('sort-asc', 'sort-desc');
+                        if (allHeaders[j].hasAttribute('aria-sort')) allHeaders[j].setAttribute('aria-sort', 'none');
                     }
                     header.classList.add(tbl.sortAsc ? 'sort-asc' : 'sort-desc');
+                    header.setAttribute('aria-sort', tbl.sortAsc ? 'ascending' : 'descending');
                     tbl.applySort();
                     tbl.render();
                     tbl._saveState();
+                });
+                csmTableListen(tbl, header, 'keydown', function(e) {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    header.click();
                 });
             })(h, headers[h], this);
         }
@@ -364,6 +384,10 @@ CSM.Table.prototype.applySort = function() {
             var tsA = tsElA.getAttribute('data-timestamp');
             var tsB = tsElB.getAttribute('data-timestamp');
             if (tsA && tsB) {
+                // Compare instants: sub-second digits vary in length, so
+                // the text does not sort in time order.
+                var tA = CSM.parseTimestamp(tsA), tB = CSM.parseTimestamp(tsB);
+                if (!isNaN(tA) && !isNaN(tB)) return asc ? tA - tB : tB - tA;
                 return asc ? tsA.localeCompare(tsB) : tsB.localeCompare(tsA);
             }
         }
@@ -398,9 +422,11 @@ CSM.Table.prototype.render = function() {
     }
     this._orderRows();
 
-    // Show only current page rows
+    // Show only current page rows. A details row follows its row; the
+    // stylesheet keeps it closed until its expand button opens it.
     for (var j = start; j < end; j++) {
         this.filteredRows[j].row.style.display = '';
+        if (this.filteredRows[j].detail) this.filteredRows[j].detail.style.display = '';
     }
 
     // Empty-state placeholder when filteredRows is empty
@@ -421,10 +447,12 @@ CSM.Table.prototype._orderRows = function() {
     if (!this.tbody || !this.allRows) return;
     this._removeEmptyState();
     var fragment = document.createDocumentFragment();
-    var seen = [];
+    // A Set, not an array: a membership scan per row made reordering
+    // quadratic in the number of rows.
+    var seen = new Set();
     var appendItem = function(item) {
-        if (!item || seen.indexOf(item) >= 0) return;
-        seen.push(item);
+        if (!item || seen.has(item)) return;
+        seen.add(item);
         fragment.appendChild(item.row);
         if (item.detail) fragment.appendChild(item.detail);
     };
@@ -555,16 +583,22 @@ CSM.Table.prototype._removeEmptyState = function() {
     if (row) row.remove();
 };
 
-// Expand/collapse detail rows (for history page)
-CSM.Table.prototype.toggleDetail = function(row) {
-    var item = null;
-    for (var i = 0; i < this.filteredRows.length; i++) {
-        if (this.filteredRows[i].row === row) { item = this.filteredRows[i]; break; }
-    }
-    if (item && item.detail) {
-        item.detail.style.display = item.detail.style.display === 'none' ? '' : 'none';
-    }
+// toggleDetailRow opens or closes the details row under an expand button's
+// row. One document handler serves every table, CSM.Table or not.
+CSM.toggleDetailRow = function(btn) {
+    var row = btn.closest('tr');
+    var next = row ? row.nextElementSibling : null;
+    if (!next || !next.classList.contains('details-row')) return;
+    var showing = next.classList.toggle('show');
+    btn.classList.toggle('expanded', showing);
+    btn.setAttribute('aria-expanded', showing ? 'true' : 'false');
+    btn.setAttribute('aria-label', showing ? 'Collapse details' : 'Expand details');
 };
+
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest ? e.target.closest('.expand-btn') : null;
+    if (btn) CSM.toggleDetailRow(btn);
+});
 
 // Persistent table state - save to localStorage
 CSM.Table.prototype._saveState = function() {
@@ -608,6 +642,9 @@ CSM.Table.prototype._restoreState = function(opts) {
             var headers = this.table.querySelectorAll('thead th');
             if (headers[state.sortCol]) {
                 headers[state.sortCol].classList.add(this.sortAsc ? 'sort-asc' : 'sort-desc');
+                if (headers[state.sortCol].hasAttribute('aria-sort')) {
+                    headers[state.sortCol].setAttribute('aria-sort', this.sortAsc ? 'ascending' : 'descending');
+                }
             }
         }
         if (state.search && opts.search !== false && opts.searchId) {
@@ -637,3 +674,5 @@ CSM.Table.prototype._syncPerPageSelect = function(opts) {
     var perPageEl = document.getElementById(opts.perPageSelectId);
     if (perPageEl) perPageEl.value = String(this.perPage || 0);
 };
+
+})();

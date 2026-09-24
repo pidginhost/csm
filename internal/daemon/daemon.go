@@ -61,6 +61,7 @@ type Daemon struct {
 	store      *state.Store
 	lock       *state.LockFile
 	binaryPath string
+	binaryHash binaryHashCache
 
 	logWatchers      []*LogWatcher
 	logWatchersMu    sync.Mutex
@@ -1575,11 +1576,6 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// response set while applying their rules before notification fanout.
 	newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 
-	// Broadcast findings (no-op; dashboard uses polling)
-	if d.webServer != nil {
-		d.webServer.Broadcast(newFindings)
-	}
-
 	// Apply notification policy after the phpanel stream and passive
 	// observers receive the findings, so muting email does not lose evidence.
 	auditSources = append(auditSources, responseFindings...)
@@ -2458,10 +2454,7 @@ func (d *Daemon) startWebUI() {
 	// Push web-UI verified_bots edits into the live registry + verifier so they
 	// take effect without a restart, the same path SIGHUP uses.
 	srv.SetVerifiedBotsReloader(func() error { d.reconcileVerifiedBots(); return nil })
-	d.logWatchersMu.Lock()
-	numWatchers := len(d.logWatchers)
-	d.logWatchersMu.Unlock()
-	srv.SetHealthInfo(d.getFileMonitor() != nil, numWatchers)
+	srv.SetHealthInfo(d.FanotifyActive, d.LogWatcherCount)
 	if d.fwEngine != nil {
 		srv.SetIPBlocker(d.fwEngine)
 	}

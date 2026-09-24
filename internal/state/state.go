@@ -2,6 +2,7 @@ package state
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -70,14 +71,19 @@ type Store struct {
 	latestDigest    [sha256.Size]byte // digest of the last persisted latest_findings.json
 	latestDigestSet bool
 	latestScanTime  time.Time
+
+	// suppressMu makes each change to the suppression rules one
+	// read-modify-write, so concurrent edits do not overwrite each other.
+	suppressMu sync.Mutex
 }
 
 type Entry struct {
-	Hash       string    `json:"hash"`
-	FirstSeen  time.Time `json:"first_seen"`
-	LastSeen   time.Time `json:"last_seen"`
-	AlertSent  time.Time `json:"alert_sent"`
-	IsBaseline bool      `json:"is_baseline"`
+	Hash        string    `json:"hash"`
+	FirstSeen   time.Time `json:"first_seen"`
+	LastSeen    time.Time `json:"last_seen"`
+	AlertSent   time.Time `json:"alert_sent"`
+	IsBaseline  bool      `json:"is_baseline"`
+	DismissalID string    `json:"dismissal_id,omitempty"`
 }
 
 func Open(path string) (*Store, error) {
@@ -700,8 +706,8 @@ func (s *Store) ReadHistory(limit, offset int) ([]alert.Finding, int) {
 }
 
 // ReadHistoryFiltered reads matching history entries newest-first.
-// Date strings that are not YYYY-MM-DD are ignored before they reach the
-// lexicographic bbolt key filter.
+// Bounds accept server-local calendar days or RFC 3339 instants. Invalid
+// bounds are ignored before they reach the lexicographic bbolt key filter.
 func (s *Store) ReadHistoryFiltered(limit, offset int, from, to string, severity int, search string) ([]alert.Finding, int) {
 	return s.ReadHistoryFilteredWithChecks(limit, offset, from, to, severity, search, nil)
 }
@@ -715,20 +721,17 @@ func (s *Store) ReadHistoryFilteredWithChecks(
 	search string,
 	checks map[string]bool,
 ) ([]alert.Finding, int) {
-	var fromDate, toDate time.Time
+	// An unreadable bound is dropped; the web UI rejects one before it gets
+	// here. toEnd is exclusive.
+	fromDate, fromErr := store.ParseHistoryBound(from, false)
+	toEnd, toErr := store.ParseHistoryBound(to, true)
 	fromFilter := ""
 	toFilter := ""
-	if from != "" {
-		if t, err := time.ParseInLocation("2006-01-02", from, time.Local); err == nil {
-			fromDate = t
-			fromFilter = from
-		}
+	if fromErr == nil {
+		fromFilter = from
 	}
-	if to != "" {
-		if t, err := time.ParseInLocation("2006-01-02", to, time.Local); err == nil {
-			toDate = t.Add(24*time.Hour - time.Nanosecond)
-			toFilter = to
-		}
+	if toErr == nil {
+		toFilter = to
 	}
 
 	if db := store.Global(); db != nil {
@@ -743,7 +746,7 @@ func (s *Store) ReadHistoryFilteredWithChecks(
 		if !fromDate.IsZero() && f.Timestamp.Before(fromDate) {
 			continue
 		}
-		if !toDate.IsZero() && f.Timestamp.After(toDate) {
+		if !toEnd.IsZero() && !f.Timestamp.Before(toEnd) {
 			continue
 		}
 		if severity >= 0 && int(f.Severity) != severity {
@@ -781,6 +784,35 @@ func (s *Store) ReadHistorySince(since time.Time) []alert.Finding {
 	for _, f := range all {
 		if !f.Timestamp.Before(since) {
 			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// HistoryMark changes whenever history does. The JSONL fallback uses the
+// history file's size and modification time.
+func (s *Store) HistoryMark() string {
+	if db := store.Global(); db != nil {
+		return db.HistoryMark()
+	}
+	info, err := os.Stat(filepath.Join(s.path, "history.jsonl"))
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d|%d", info.Size(), info.ModTime().UnixNano())
+}
+
+// LatestByCheck returns the timestamp of the newest history entry of every
+// check. The bbolt store keeps an index; the JSONL fallback reads history.
+func (s *Store) LatestByCheck() map[string]time.Time {
+	if db := store.Global(); db != nil {
+		return db.LatestByCheck()
+	}
+	out := map[string]time.Time{}
+	all, _ := s.ReadHistory(1<<30, 0)
+	for _, f := range all {
+		if f.Check != "" && f.Timestamp.After(out[f.Check]) {
+			out[f.Check] = f.Timestamp
 		}
 	}
 	return out
@@ -1376,6 +1408,7 @@ func (s *Store) DismissFindingIfLatest(expected alert.Finding) bool {
 		s.mu.Lock()
 		if entry, exists := s.entries[expected.Key()]; exists {
 			entry.IsBaseline = true
+			entry.DismissalID = ""
 			s.dirty = true
 		}
 		s.mu.Unlock()
@@ -1448,8 +1481,91 @@ func (s *Store) DismissFinding(key string) {
 
 	if entry, exists := s.entries[key]; exists {
 		entry.IsBaseline = true
+		entry.DismissalID = ""
 		s.dirty = true
 	}
+}
+
+// DismissUndo records what DismissFindingWithUndo changed, so UndoDismiss can
+// return the finding to the state it had before the operator dismissed it.
+type DismissUndo struct {
+	Key string `json:"key"`
+	// Identity and hash prevent an old undo from reversing a later decision
+	// or changing alert state for newer evidence under the same key.
+	DismissalID   string          `json:"dismissal_id"`
+	Hash          string          `json:"hash"`
+	ClearBaseline bool            `json:"clear_baseline,omitempty"`
+	CreatedEntry  bool            `json:"created_entry,omitempty"`
+	Removed       []alert.Finding `json:"removed,omitempty"`
+}
+
+// DismissFindingWithUndo marks a finding as baseline and removes it from the
+// latest list as one operation. Latest-only findings also need alert state:
+// realtime findings can reach the UI before the next scan updates dedup state.
+func (s *Store) DismissFindingWithUndo(key string) DismissUndo {
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u := DismissUndo{Key: key}
+	var kept []alert.Finding
+	for _, f := range s.latestFindings {
+		if f.Key() == key {
+			u.Removed = append(u.Removed, f)
+			continue
+		}
+		kept = append(kept, f)
+	}
+	entry := s.entries[key]
+	if entry == nil && len(u.Removed) > 0 {
+		now := time.Now()
+		entry = &Entry{Hash: findingHash(u.Removed[0]), FirstSeen: now, LastSeen: now}
+		s.entries[key] = entry
+		u.CreatedEntry = true
+	}
+	if entry != nil {
+		u.ClearBaseline = !entry.IsBaseline
+		entry.IsBaseline = true
+		entry.DismissalID = rand.Text()
+		u.DismissalID, u.Hash = entry.DismissalID, entry.Hash
+		s.dirty = true
+	}
+	s.latestFindings = kept
+	s.persistLatestLocked()
+	return u
+}
+
+// UndoDismiss reverses only the dismissal that still owns the entry. A copy
+// reported by a scan in the meantime is newer evidence and remains listed.
+func (s *Store) UndoDismiss(u DismissUndo) bool {
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry := s.entries[u.Key]
+	if u.DismissalID == "" || entry == nil || entry.DismissalID != u.DismissalID || entry.Hash != u.Hash {
+		return false
+	}
+	entry.DismissalID = ""
+	if u.CreatedEntry {
+		delete(s.entries, u.Key)
+	} else if u.ClearBaseline {
+		entry.IsBaseline = false
+	}
+	s.dirty = true
+	if len(u.Removed) > 0 {
+		merged := findingsByKey(s.latestFindings)
+		for _, f := range u.Removed {
+			if _, present := merged[f.Key()]; !present {
+				merged[f.Key()] = f
+			}
+		}
+		s.latestFindings = orderAndCapLatest(merged)
+		s.persistLatestLocked()
+	}
+	return true
 }
 
 // ParseKey splits a state key "check:message" into its components.
@@ -1487,8 +1603,21 @@ func (s *Store) LoadSuppressions() []SuppressionRule {
 }
 
 // SaveSuppressions writes suppression rules to disk atomically with fsync.
+// Callers that change the existing rules use UpdateSuppressions instead.
 func (s *Store) SaveSuppressions(rules []SuppressionRule) error {
 	return atomicio.AtomicWriteJSON(filepath.Join(s.path, "suppressions.json"), 0o600, rules)
+}
+
+// UpdateSuppressions applies fn to the stored rules and saves what it returns
+// as one step. An error from fn leaves the stored rules unchanged.
+func (s *Store) UpdateSuppressions(fn func([]SuppressionRule) ([]SuppressionRule, error)) error {
+	s.suppressMu.Lock()
+	defer s.suppressMu.Unlock()
+	rules, err := fn(s.LoadSuppressions())
+	if err != nil {
+		return err
+	}
+	return s.SaveSuppressions(rules)
 }
 
 // IsSuppressed checks if a finding matches any loaded suppression rule.

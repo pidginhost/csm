@@ -309,3 +309,25 @@ func TestRecordFinding_HTTPDistributedFloodNotRecordedWithoutIP(t *testing.T) {
 		t.Errorf("TotalIPs = %d, want 0 (aggregate finding has no source IP)", n)
 	}
 }
+
+// Every attack type has one display label, shared by the Web UI pages that
+// chart or badge attack types.
+func TestAttackTypeLabelsCoverEveryType(t *testing.T) {
+	all := []AttackType{AttackBruteForce, AttackWAFBlock, AttackWebshell, AttackPhishing, AttackC2, AttackRecon,
+		AttackSPAM, AttackCPanelLogin, AttackFileUpload, AttackAuthSuccess, AttackReputation, AttackOther}
+	labels := AttackTypeLabels()
+	if len(labels) != len(all) {
+		t.Fatalf("%d labels for %d attack types", len(labels), len(all))
+	}
+	seen := map[string]AttackType{}
+	for _, typ := range all {
+		label := labels[string(typ)]
+		if label == "" || label == string(typ) {
+			t.Errorf("%s has no display label", typ)
+		}
+		if prev, dup := seen[label]; dup {
+			t.Errorf("%s and %s share the label %q", typ, prev, label)
+		}
+		seen[label] = typ
+	}
+}

@@ -3,7 +3,7 @@
 {{define "content"}}
     <div class="csm-page-header mb-3">
         <div class="csm-page-header__main">
-            <h1 class="csm-page-header__title"><i class="ti ti-alert-triangle"></i>&nbsp;Security Findings</h1>
+            <h1 class="csm-page-header__title"><i class="ti ti-alert-triangle"></i>&nbsp;Findings</h1>
             <div class="csm-page-header__subtitle">
                 <span id="findings-count" class="text-muted"></span>
                 <span id="severity-badges" class="ms-2"></span>
@@ -85,6 +85,7 @@
                 <div id="findings-loading" class="card-body text-center text-muted py-4">
                     <span class="spinner-border spinner-border-sm"></span> Loading findings...
                 </div>
+                <div id="findings-error"></div>
                 <div id="findings-empty" class="d-none">
                     <div class="csm-empty">
                         <div class="csm-empty__icon"><i class="ti ti-circle-check"></i></div>
@@ -121,13 +122,20 @@
                         <option value="0">Warning</option>
                     </select>
                     <div class="d-flex gap-1 align-items-center">
+                        <span id="history-window" class="badge bg-azure-lt d-none" title="A rolling window; set dates or clear it to change"></span>
                         <input type="date" id="date-from" class="form-control form-control-sm csm-input-sm" title="Show findings from this date" aria-label="From date">
                         <span class="text-muted small">to</span>
                         <input type="date" id="date-to" class="form-control form-control-sm csm-input-sm" title="Show findings up to this date" aria-label="To date">
                         <button type="button" class="btn btn-primary btn-sm" id="date-filter-btn" title="Apply date range filter" aria-label="Apply date filter"><i class="ti ti-filter"></i></button>
                         <button type="button" class="btn btn-ghost-secondary btn-sm d-none" id="date-clear-btn" title="Clear date filter" aria-label="Clear date filter"><i class="ti ti-x"></i></button>
                     </div>
-                    <a href="/api/v1/history/csv" class="btn btn-ghost-secondary btn-sm" title="Download full history as CSV"><i class="ti ti-download"></i>&nbsp;CSV</a>
+                    <select id="history-per-page" class="form-select form-select-sm csm-auto-width" aria-label="Rows per page">
+                        <option value="25">25 / page</option>
+                        <option value="50" selected>50 / page</option>
+                        <option value="100">100 / page</option>
+                        <option value="200">200 / page</option>
+                    </select>
+                    <a href="/api/v1/history/csv" id="history-csv" class="btn btn-ghost-secondary btn-sm" title="Download the newest 5,000 entries matching these filters as CSV"><i class="ti ti-download"></i>&nbsp;CSV</a>
                 </div>
                 <div id="history-content">
                     <div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
@@ -145,6 +153,9 @@
         </button>
         <button type="button" id="bulk-dismiss-btn" class="btn btn-sm btn-ghost-secondary" title="Dismiss all selected findings">
             <i class="ti ti-x"></i>&nbsp;Dismiss
+        </button>
+        <button type="button" id="bulk-suppress-btn" class="btn btn-sm btn-ghost-secondary" title="Create a suppression rule for the file of each selected finding">
+            <i class="ti ti-eye-off"></i>&nbsp;Suppress
         </button>
         <button type="button" id="bulk-cancel-btn" class="btn btn-sm btn-ghost-secondary" title="Clear selection">
             Cancel
@@ -178,9 +189,43 @@
             </div>
         </div>
     </div>
+
+    <!-- Suppress finding modal -->
+    <div class="modal fade" id="suppress-finding-modal" tabindex="-1" aria-hidden="true" aria-labelledby="suppress-finding-title">
+        <div class="modal-dialog modal-dialog-centered">
+            <form class="modal-content" id="suppress-finding-form" novalidate>
+                <div class="modal-header">
+                    <h5 class="modal-title" id="suppress-finding-title"><i class="ti ti-eye-off"></i>&nbsp;Suppress findings</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="mb-3">Check: <code id="suppress-finding-check"></code></p>
+                    <fieldset class="mb-3">
+                        <legend class="form-label">Which findings to hide</legend>
+                        <label class="form-check">
+                            <input class="form-check-input" type="radio" name="suppress-finding-scope" id="suppress-finding-scope-path" value="path" checked>
+                            <span class="form-check-label">Only findings whose path matches</span>
+                        </label>
+                        <input type="text" class="form-control font-monospace mb-2" id="suppress-finding-pattern" aria-label="Path or glob pattern" placeholder="/home/user/site/crud/*" autocomplete="off">
+                        <label class="form-check">
+                            <input class="form-check-input" type="radio" name="suppress-finding-scope" id="suppress-finding-scope-all" value="all">
+                            <span class="form-check-label">Every finding of this check, on every path</span>
+                        </label>
+                    </fieldset>
+                    <label class="form-label" for="suppress-finding-reason">Reason</label>
+                    <input type="text" class="form-control" id="suppress-finding-reason" placeholder="e.g. False positive - vendor library" autocomplete="off">
+                    <div class="alert alert-warning mt-3 mb-0" id="suppress-finding-summary" role="status"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-ghost-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-warning" id="suppress-finding-submit"><i class="ti ti-eye-off"></i>&nbsp;Create rule</button>
+                </div>
+            </form>
+        </div>
+    </div>
 {{end}}
 {{define "scripts"}}
-<script src="/static/js/findings.js"></script>
-<script src="/static/js/history.js"></script>
+<script src="{{asset "js/findings.js"}}"></script>
+<script src="{{asset "js/history.js"}}"></script>
 {{end}}
 {{template "layout" .}}

@@ -18,31 +18,31 @@
 
     <!-- Subview navigation. Phases 5+ use ?view=<name> for deep links. -->
     <div class="btn-group mb-3 flex-wrap" role="tablist" aria-label="Firewall subviews" id="fw-subview-nav">
-        <button type="button" class="btn btn-ghost-secondary active" data-fw-nav="overview" aria-pressed="true" title="Status cards and coverage chips">
+        <button type="button" class="btn btn-ghost-secondary active" data-fw-nav="overview" role="tab" id="fw-tab-overview" aria-controls="fw-view-overview" aria-selected="true" tabindex="0" title="Status cards and coverage chips">
             <i class="ti ti-layout-dashboard"></i>&nbsp;Overview
         </button>
-        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="blocks" aria-pressed="false" title="Blocked IPs and subnets">
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="blocks" role="tab" id="fw-tab-blocks" aria-controls="fw-view-blocks" aria-selected="false" tabindex="-1" title="Blocked IPs and subnets">
             <i class="ti ti-shield-off"></i>&nbsp;Blocks
         </button>
-        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="allow" aria-pressed="false" title="Allow rules, trusted IPs, port exceptions">
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="allow" role="tab" id="fw-tab-allow" aria-controls="fw-view-allow" aria-selected="false" tabindex="-1" title="Allow rules, whitelisted IPs, port exceptions">
             <i class="ti ti-shield-up"></i>&nbsp;Allow Rules
         </button>
-        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="config" aria-pressed="false" title="Read-only firewall configuration summary">
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="config" role="tab" id="fw-tab-config" aria-controls="fw-view-config" aria-selected="false" tabindex="-1" title="Read-only firewall configuration summary">
             <i class="ti ti-settings"></i>&nbsp;Configuration
         </button>
-        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="audit" aria-pressed="false" title="Recent firewall actions">
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="audit" role="tab" id="fw-tab-audit" aria-controls="fw-view-audit" aria-selected="false" tabindex="-1" title="Recent firewall actions">
             <i class="ti ti-history"></i>&nbsp;Audit
         </button>
-        <button type="button" class="btn btn-ghost-secondary text-danger" data-fw-nav="danger" aria-pressed="false" title="Destructive actions">
+        <button type="button" class="btn btn-ghost-secondary text-danger" data-fw-nav="danger" role="tab" id="fw-tab-danger" aria-controls="fw-view-danger" aria-selected="false" tabindex="-1" title="Destructive actions">
             <i class="ti ti-alert-triangle"></i>&nbsp;Danger
         </button>
     </div>
 
     <!-- Overview --------------------------------------------------------- -->
-    <section data-fw-view="overview">
+    <section data-fw-view="overview" id="fw-view-overview" role="tabpanel" aria-labelledby="fw-tab-overview">
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-search"></i>&nbsp;Inspect IP</h3>
+                <h2 class="card-title"><i class="ti ti-search"></i>&nbsp;Inspect IP</h2>
             </div>
             <div class="card-body">
                 <form id="lookup-form" class="row g-2 align-items-end mb-3">
@@ -112,7 +112,7 @@
 
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-layout-grid"></i>&nbsp;Coverage</h3>
+                <h2 class="card-title"><i class="ti ti-layout-grid"></i>&nbsp;Coverage</h2>
             </div>
             <div class="card-body">
                 <div class="d-flex flex-wrap gap-2" id="fw-highlights"></div>
@@ -121,10 +121,10 @@
 
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Challenges</h3>
+                <h2 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Challenges</h2>
                 <div class="card-actions text-muted small">Proof-of-work gate &middot; counts since restart</div>
             </div>
-            <div class="card-body">
+            <div class="card-body" id="fw-chal-body">
                 <div class="row">
                     <div class="col-sm-6 col-md-3">
                         <div class="subheader">Pending now</div>
@@ -151,10 +151,10 @@
     </section>
 
     <!-- Blocks ----------------------------------------------------------- -->
-    <section data-fw-view="blocks" hidden>
+    <section data-fw-view="blocks" id="fw-view-blocks" role="tabpanel" aria-labelledby="fw-tab-blocks" hidden>
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Block Address</h3>
+                <h2 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Block Address</h2>
             </div>
             <div class="card-body">
                 <form id="block-form" class="row g-2 align-items-end">
@@ -187,10 +187,10 @@
 
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Blocked IPs</h3>
+                <h2 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Blocked IPs</h2>
                 <div class="card-actions d-flex gap-2 flex-wrap">
                     <button type="button" id="blocked-bulk-unblock-btn" class="btn btn-outline-danger btn-sm d-none">Unblock selected</button>
-                    <input type="text" id="blocked-search" class="form-control form-control-sm csm-input-md" placeholder="Search blocked IPs">
+                    <input type="text" id="blocked-search" class="form-control form-control-sm csm-input-md" placeholder="Search blocked IPs" aria-label="Search blocked IPs">
                     <div class="dropdown">
                         <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-label="Export current view">
                             <i class="ti ti-download"></i>&nbsp;Export
@@ -246,9 +246,9 @@
 
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-network"></i>&nbsp;Blocked Subnets</h3>
+                <h2 class="card-title"><i class="ti ti-network"></i>&nbsp;Blocked Subnets</h2>
                 <div class="card-actions">
-                    <input type="text" id="subnet-search" class="form-control form-control-sm csm-input-md" placeholder="Search blocked subnets">
+                    <input type="text" id="subnet-search" class="form-control form-control-sm csm-input-md" placeholder="Search blocked subnets" aria-label="Search blocked subnets">
                 </div>
             </div>
             <div id="subnet-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
@@ -256,10 +256,10 @@
     </section>
 
     <!-- Allow Rules ------------------------------------------------------ -->
-    <section data-fw-view="allow" hidden>
+    <section data-fw-view="allow" id="fw-view-allow" role="tabpanel" aria-labelledby="fw-tab-allow" hidden>
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Trust IP</h3>
+                <h2 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Allow or Whitelist an IP</h2>
             </div>
             <div class="card-body">
                 <form id="trust-form" class="row g-2 align-items-end">
@@ -271,7 +271,7 @@
                         <label class="form-label mb-1" for="trust-mode">Mode</label>
                         <select id="trust-mode" class="form-select">
                             <option value="firewall">Firewall allow rule only</option>
-                            <option value="trusted">Trusted IP</option>
+                            <option value="trusted">Whitelist</option>
                         </select>
                     </div>
                     <div class="col-lg-3">
@@ -284,7 +284,7 @@
                         </select>
                     </div>
                     <div class="col-lg-2 d-grid">
-                        <button type="submit" class="btn btn-success" id="trust-submit-btn">
+                        <button type="submit" class="btn btn-warning" id="trust-submit-btn">
                             <i class="ti ti-shield-up"></i>&nbsp;Add allow rule
                         </button>
                     </div>
@@ -301,9 +301,9 @@
 
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-shield-up"></i>&nbsp;Allow Rules &amp; Port Exceptions</h3>
+                <h2 class="card-title"><i class="ti ti-shield-up"></i>&nbsp;Allow Rules &amp; Port Exceptions</h2>
                 <div class="card-actions">
-                    <input type="text" id="allowed-search" class="form-control form-control-sm csm-input-md" placeholder="Search allow rules">
+                    <input type="text" id="allowed-search" class="form-control form-control-sm csm-input-md" placeholder="Search allow rules" aria-label="Search allow rules">
                 </div>
             </div>
             <div id="allowed-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
@@ -311,9 +311,9 @@
 
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-user-shield"></i>&nbsp;Whitelisted IPs</h3>
+                <h2 class="card-title"><i class="ti ti-user-shield"></i>&nbsp;Whitelisted IPs</h2>
                 <div class="card-actions">
-                    <input type="text" id="whitelist-search" class="form-control form-control-sm csm-input-md" placeholder="Search whitelist">
+                    <input type="text" id="whitelist-search" class="form-control form-control-sm csm-input-md" placeholder="Search whitelist" aria-label="Search whitelist">
                 </div>
             </div>
             <div class="card-body pb-0">
@@ -324,10 +324,10 @@
     </section>
 
     <!-- Configuration ---------------------------------------------------- -->
-    <section data-fw-view="config" hidden>
+    <section data-fw-view="config" id="fw-view-config" role="tabpanel" aria-labelledby="fw-tab-config" hidden>
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-settings"></i>&nbsp;Configuration</h3>
+                <h2 class="card-title"><i class="ti ti-settings"></i>&nbsp;Configuration</h2>
                 <div class="card-actions">
                     <a href="/settings?section=firewall" class="btn btn-primary btn-sm" title="Edit firewall configuration in Settings">
                         <i class="ti ti-pencil"></i>&nbsp;Edit in Settings
@@ -346,10 +346,10 @@
     </section>
 
     <!-- Audit ----------------------------------------------------------- -->
-    <section data-fw-view="audit" hidden>
+    <section data-fw-view="audit" id="fw-view-audit" role="tabpanel" aria-labelledby="fw-tab-audit" hidden>
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-history"></i>&nbsp;Recent Firewall Activity</h3>
+                <h2 class="card-title"><i class="ti ti-history"></i>&nbsp;Recent Firewall Activity</h2>
             </div>
             <div class="card-body border-bottom py-3">
                 <div class="row g-2 align-items-end">
@@ -395,7 +395,7 @@
     </section>
 
     <!-- Danger zone ------------------------------------------------------ -->
-    <section data-fw-view="danger" hidden>
+    <section data-fw-view="danger" id="fw-view-danger" role="tabpanel" aria-labelledby="fw-tab-danger" hidden>
         <div class="csm-danger-zone mb-3">
             <div class="csm-danger-zone__title"><i class="ti ti-alert-triangle"></i>&nbsp;Destructive actions</div>
             <p class="text-muted small mb-3">These operations affect many entries at once. Read the warning before clicking.</p>
@@ -411,6 +411,6 @@
     </section>
 {{end}}
 {{define "scripts"}}
-<script src="/static/js/firewall.js"></script>
+<script src="{{asset "js/firewall.js"}}"></script>
 {{end}}
 {{template "layout" .}}

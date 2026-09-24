@@ -5,20 +5,25 @@
         <div class="csm-page-header__main">
             <h1 class="csm-page-header__title"><i class="ti ti-file-code"></i>&nbsp;Rules</h1>
         </div>
+        <div class="csm-page-header__actions">
+            <a href="/modsec/rules" class="btn btn-ghost-secondary btn-sm" title="ModSecurity rules and firewall escalation exclusions">
+                <i class="ti ti-list-check"></i>&nbsp;ModSecurity Rules
+            </a>
+        </div>
     </div>
 
     <!-- Stats Cards -->
     <div class="row row-deck row-cards mb-3">
-        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">YAML Rules</div><div class="h1 mb-0" id="stat-yaml">-</div></div></div></div>
-        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">YARA Rules</div><div class="h1 mb-0" id="stat-yara">-</div></div></div></div>
-        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Rules Version</div><div class="h1 mb-0" id="stat-version">-</div></div></div></div>
-        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Auto-update</div><div class="h1 mb-0" id="stat-autoupdate">-</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card"><div class="card-body"><div class="subheader">YAML Rules</div><div class="h1 mb-0" id="stat-yaml">-</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card"><div class="card-body"><div class="subheader">YARA Rules</div><div class="h1 mb-0" id="stat-yara">-</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card"><div class="card-body"><div class="subheader">Rules Version</div><div class="h1 mb-0" id="stat-version">-</div></div></div></div>
+        <div class="col-6 col-lg"><div class="card"><div class="card-body"><div class="subheader">Auto-update</div><div class="h1 mb-0" id="stat-autoupdate">-</div></div></div></div>
     </div>
 
     <!-- Actions -->
     <div class="card mb-3">
         <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-refresh"></i>&nbsp;Actions</h3>
+            <h2 class="card-title"><i class="ti ti-refresh"></i>&nbsp;Actions</h2>
         </div>
         <div class="card-body">
             <div class="row align-items-center">
@@ -45,7 +50,7 @@
 
     <!-- Rule Files Table -->
     <div class="card">
-        <div class="card-header"><h3 class="card-title"><i class="ti ti-file-code"></i>&nbsp;Rule Files</h3></div>
+        <div class="card-header"><h2 class="card-title"><i class="ti ti-file-code"></i>&nbsp;Rule Files</h2></div>
         <div class="csm-toolbar">
             <input type="text" id="rule-files-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search by file name..." aria-label="Search rule files">
             <select id="rule-files-type-filter" class="form-select form-select-sm csm-auto-width" aria-label="Type">
@@ -72,33 +77,13 @@
         </div>
     </div>
 
-    <!-- ModSecurity Escalation Settings -->
-    <div class="card mt-3">
-        <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;ModSecurity Escalation</h3>
-        </div>
-        <div class="card-body">
-            <p class="text-muted small mb-3">CSM custom ModSecurity rules (900000-900999) can escalate to nftables firewall blocks after repeated denies. Add rule IDs here to disable escalation - the ModSecurity deny (403) still applies, but CSM won't block the IP at the firewall level.</p>
-            <form id="modsec-escalation-form" class="row g-2 align-items-end mb-3">
-                <div class="col-auto">
-                    <label class="form-label" for="modsec-rule-id">Rule ID</label>
-                    <input type="number" class="form-control" id="modsec-rule-id" placeholder="e.g. 900112" min="900000" max="900999" required>
-                </div>
-                <div class="col-auto">
-                    <button type="submit" class="btn btn-primary"><i class="ti ti-plus"></i>&nbsp;Exclude from Escalation</button>
-                </div>
-            </form>
-            <div id="modsec-escalation-list"></div>
-        </div>
-    </div>
-
     <!-- Suppression Rules -->
     <div class="card mt-3">
         <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-eye-off"></i>&nbsp;Suppression Rules</h3>
+            <h2 class="card-title"><i class="ti ti-eye-off"></i>&nbsp;Suppression Rules</h2>
         </div>
         <div class="card-body">
-            <p class="text-muted small mb-3">Suppression rules hide matching findings, stop their email/webhook alerts, and stop file, process and account remediation for them. They do not stop IP blocking or challenges; allowlist an address on the Threat page instead. Rules are stored in state, not in rule files, so they survive rule updates.</p>
+            <p class="text-muted small mb-3">Suppression rules hide matching findings, stop their email/webhook alerts, and stop file, process and account remediation for them. They do not stop IP blocking or challenges; whitelist an address under <a href="/firewall?view=allow">Firewall, Allow Rules</a> instead. Rules are stored in state, not in rule files, so they survive rule updates.</p>
             <form id="suppression-form" class="row g-2 align-items-end">
                 <div class="col-sm-3">
                     <label class="form-label" for="suppress-check">Check Type</label>
@@ -106,8 +91,12 @@
                     <datalist id="check-types"></datalist>
                 </div>
                 <div class="col-sm-4">
-                    <label class="form-label" for="suppress-path">Path Pattern <span class="text-muted">(optional)</span></label>
+                    <label class="form-label" for="suppress-path">Path Pattern</label>
                     <input type="text" class="form-control font-monospace" id="suppress-path" placeholder="e.g. /home/user/site/crud/*">
+                    <label class="form-check mt-1 mb-0">
+                        <input class="form-check-input" type="checkbox" id="suppress-all-paths">
+                        <span class="form-check-label small">Every finding of this check, on every path</span>
+                    </label>
                 </div>
                 <div class="col-sm-3">
                     <label class="form-label" for="suppress-reason">Reason <span class="text-muted">(optional)</span></label>
@@ -122,6 +111,6 @@
     </div>
 {{end}}
 {{define "scripts"}}
-<script src="/static/js/rules.js"></script>
+<script src="{{asset "js/rules.js"}}"></script>
 {{end}}
 {{template "layout" .}}

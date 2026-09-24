@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"encoding/json"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -9,6 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/queuehealth"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 type stubComponentsProvider struct {
@@ -71,9 +71,7 @@ func decodeComponentRows(t *testing.T, s *Server) []componentRow {
 		t.Fatalf("status %d", w.Code)
 	}
 	var rows []componentRow
-	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &rows)
 	return rows
 }
 
@@ -156,8 +154,8 @@ func TestAPIComponents_RealtimeChecksAttributeToWatcher(t *testing.T) {
 			if rows[0].LastEventCheck != tc.check {
 				t.Errorf("expected last_event_check %q, got %q", tc.check, rows[0].LastEventCheck)
 			}
-			if rows[0].LastEventISO == "" {
-				t.Errorf("expected last_event_iso populated, got empty")
+			if rows[0].LastEventAt.IsZero() {
+				t.Errorf("expected last_event_at populated, got none")
 			}
 		})
 	}
@@ -198,7 +196,7 @@ func TestAPIComponents_NonUniqueCheckFindingsDoNotAttributeToWatcher(t *testing.
 			if len(rows) != 1 {
 				t.Fatalf("expected 1 row, got %d", len(rows))
 			}
-			if rows[0].LastEventISO != "" {
+			if !rows[0].LastEventAt.IsZero() {
 				t.Errorf("non-unique finding leaked into last_event: %+v", rows[0])
 			}
 			if rows[0].Status != "idle" {
@@ -222,7 +220,7 @@ func TestAPIComponents_StaleLatestFindingDoesNotAttributeToWatcher(t *testing.T)
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	if rows[0].LastEventISO != "" {
+	if !rows[0].LastEventAt.IsZero() {
 		t.Errorf("stale latest finding leaked into last_event: %+v", rows[0])
 	}
 	if rows[0].Status != "idle" {
@@ -230,13 +228,13 @@ func TestAPIComponents_StaleLatestFindingDoesNotAttributeToWatcher(t *testing.T)
 	}
 }
 
-func TestAPIComponents_NoProviderReturnsEmptyArray(t *testing.T) {
+func TestAPIComponents_NoProviderReturnsEmptyItems(t *testing.T) {
 	s := newTestServer(t, "tok")
 	s.provider = nil
 
 	rows := decodeComponentRows(t, s)
 	if len(rows) != 0 {
-		t.Errorf("expected empty array, got %+v", rows)
+		t.Errorf("expected empty items, got %+v", rows)
 	}
 }
 
@@ -245,5 +243,30 @@ func TestAPIComponents_YaraWorkerHasFriendlyLabel(t *testing.T) {
 	rows := decodeComponentRows(t, s)
 	if len(rows) != 1 || rows[0].Status != "degraded" || rows[0].Label != "YARA-X worker" {
 		t.Fatalf("yara_worker row = %+v, want degraded with friendly label", rows)
+	}
+}
+
+// A watcher's last event comes from the per-check index, not from decoding up
+// to a week of history on every dashboard poll, so it also survives history
+// retention dropping the finding that reported it.
+func TestAPIComponents_LastEventSurvivesHistoryRetention(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	now := time.Now()
+	s.provider = &stubComponentsProvider{
+		statuses: map[string]bool{"fanotify": true},
+		changed:  map[string]time.Time{"fanotify": now.Add(-time.Hour)},
+	}
+	at := now.Add(-2 * time.Hour).Truncate(time.Second)
+	s.store.AppendHistory([]alert.Finding{{Check: "webshell_realtime", Severity: alert.High, Message: "event", Timestamp: at}})
+	if _, err := store.Global().SweepHistoryOlderThan(now); err != nil {
+		t.Fatal(err)
+	}
+
+	rows := decodeComponentRows(t, s)
+	if len(rows) != 1 || rows[0].LastEventCheck != "webshell_realtime" {
+		t.Fatalf("rows = %+v, want fanotify's last event", rows)
+	}
+	if got := rows[0].LastEventAt; !got.Equal(at) {
+		t.Fatalf("last event = %s, want %s", got, at)
 	}
 }

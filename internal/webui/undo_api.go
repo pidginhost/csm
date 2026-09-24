@@ -8,10 +8,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -23,6 +25,7 @@ const (
 	undoInverseThreatWhitelist   = "threat_bulk_unwhitelist"
 	undoInverseThreatUnwhitelist = "threat_bulk_whitelist"
 	undoInverseFirewallUnblock   = "firewall_bulk_reblock"
+	undoInverseFindingUndismiss  = "finding_undismiss"
 )
 
 // maxUndoPayloadSize bounds decompression of persisted data while leaving
@@ -42,6 +45,9 @@ type undoPayloadIPs struct {
 	// RestoreThreats carries the threat-DB rows a bulk action removed so the
 	// matching undo can put them back exactly.
 	RestoreThreats []undoThreatRow `json:"restore_threats,omitempty"`
+	// Dismissals carries what a finding dismissal changed so its undo can
+	// list the finding again and re-arm its alerts.
+	Dismissals []state.DismissUndo `json:"dismissals,omitempty"`
 }
 
 // undoThreatRow captures a removed threat-DB row's identity so undo can
@@ -77,7 +83,7 @@ func (s *Server) recordUndoEntry(r *http.Request, action, inverse, summary strin
 		return ""
 	}
 	entry, err := sdb.AppendUndoEntry(opkey, store.UndoEntry{
-		Targets: payload.IPs,
+		Targets: undoTargets(payload),
 		Action:  action,
 		Inverse: inverse,
 		Payload: raw,
@@ -88,6 +94,19 @@ func (s *Server) recordUndoEntry(r *http.Request, action, inverse, summary strin
 		return ""
 	}
 	return entry.ID
+}
+
+// undoTargets names what an undo entry acts on: its IPs, or the finding keys
+// of a dismissal.
+func undoTargets(payload undoPayloadIPs) []string {
+	if len(payload.IPs) > 0 {
+		return payload.IPs
+	}
+	keys := make([]string, 0, len(payload.Dismissals))
+	for _, d := range payload.Dismissals {
+		keys = append(keys, d.Key)
+	}
+	return keys
 }
 
 func encodeUndoPayload(payload undoPayloadIPs) ([]byte, error) {
@@ -192,7 +211,7 @@ type undoRunRequest struct {
 }
 
 type undoRunResponse struct {
-	Status  string `json:"status"`
+	OK      bool   `json:"ok"`
 	Action  string `json:"action"`
 	Inverse string `json:"inverse"`
 	Count   int    `json:"count"`
@@ -246,12 +265,16 @@ func (s *Server) apiUndoRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	targets := strings.Join(entry.Targets, ", ")
 	resp, runErr := s.runUndoEntry(r, entry)
 	if runErr != nil {
+		// The entry is consumed and the inverse may have run part way, so the
+		// attempt is recorded even though it failed.
+		s.auditLog(r, "undo_"+entry.Action+"_failed", targets, entry.Summary+": "+runErr.Error())
 		writeJSONError(w, runErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.auditLog(r, "undo_"+entry.Action, fmt.Sprintf("%d items", resp.Count), entry.Summary)
+	s.auditLog(r, "undo_"+entry.Action, fmt.Sprintf("%d items", resp.Count), entry.Summary+": "+targets)
 	writeJSON(w, resp)
 }
 
@@ -263,7 +286,7 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 		}
 	}
 	resp := undoRunResponse{
-		Status:  "ok",
+		OK:      true,
 		Action:  entry.Action,
 		Inverse: entry.Inverse,
 	}
@@ -321,6 +344,12 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 		}
 		restoreUndoThreatRows(payload.RestoreThreats)
 		resp.Count = count
+	case undoInverseFindingUndismiss:
+		for _, d := range payload.Dismissals {
+			if s.store.UndoDismiss(d) {
+				resp.Count++
+			}
+		}
 	default:
 		return undoRunResponse{}, fmt.Errorf("unknown inverse action %q", entry.Inverse)
 	}
@@ -412,7 +441,7 @@ func (s *Server) undoBulkBlock(payload undoPayloadIPs) (int, error) {
 			tdb.RemovePermanent(ip)
 		}
 		restoreUndoThreatRows(threatRowsForIP(payload.RestoreThreats, ip))
-		flushCphulk(ip)
+		_ = flushCphulk(ip) // best effort
 		count++
 	}
 	return count, nil
@@ -447,7 +476,7 @@ func (s *Server) undoBulkWhitelist(payload undoPayloadIPs) int {
 		// The bulk whitelist added a firewall allow rule; leaving it lets a
 		// mis-whitelisted attacker bypass every future block indefinitely.
 		if s.blocker != nil {
-			if remover, ok := s.blocker.(interface{ RemoveAllowIP(string) error }); ok {
+			if remover, ok := s.blocker.(allowRemover); ok {
 				_ = remover.RemoveAllowIP(ip)
 			}
 		}

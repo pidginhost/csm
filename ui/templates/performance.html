@@ -1,9 +1,9 @@
-{{define "title"}}Performance Monitor{{end}}
+{{define "title"}}Performance{{end}}
 {{define "page"}}performance{{end}}
 {{define "content"}}
     <div class="csm-page-header mb-3">
         <div class="csm-page-header__main">
-            <h1 class="csm-page-header__title"><i class="ti ti-activity"></i>&nbsp;Performance Monitor</h1>
+            <h1 class="csm-page-header__title"><i class="ti ti-activity"></i>&nbsp;Performance</h1>
         </div>
         <div class="csm-page-header__actions">
             <div class="btn-group">
@@ -78,7 +78,7 @@
         <div class="col-lg-5">
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-brand-php"></i>&nbsp;Top PHP Consumers</h3>
+                    <h2 class="card-title"><i class="ti ti-brand-php"></i>&nbsp;Top PHP Consumers</h2>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-vcenter card-table table-sm">
@@ -86,7 +86,7 @@
                             <tr>
                                 <th>User</th>
                                 <th>Processes</th>
-                                <th></th>
+                                <th><span class="visually-hidden">Actions</span></th>
                             </tr>
                         </thead>
                         <tbody id="php-consumers">
@@ -100,11 +100,11 @@
         <div class="col-lg-7">
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-activity"></i>&nbsp;Performance Findings</h3>
+                    <h2 class="card-title"><i class="ti ti-activity"></i>&nbsp;Performance Findings</h2>
                     <div class="card-actions" id="perf-bulk-actions"></div>
                 </div>
                 <div class="card-body p-0">
-                    <div class="list-group list-group-flush" id="perf-findings" aria-busy="true" aria-live="polite">
+                    <div class="list-group list-group-flush" id="perf-findings" aria-busy="true">
                         <div class="list-group-item text-muted"><span class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading</span></span> Loading...</div>
                     </div>
                 </div>
@@ -113,6 +113,6 @@
     </div>
 {{end}}
 {{define "scripts"}}
-<script src="/static/js/performance.js"></script>
+<script src="{{asset "js/performance.js"}}"></script>
 {{end}}
 {{template "layout" .}}

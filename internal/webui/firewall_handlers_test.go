@@ -170,7 +170,7 @@ func TestAPIBlockIPWarnsWhenCloudflareCovered(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("block = %d, body %s", w.Code, w.Body.String())
 	}
-	var body map[string]string
+	var body map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestAPIBlockIPNoWarningWithoutCloudflareCoverage(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("block = %d, body %s", w.Code, w.Body.String())
 	}
-	var body map[string]string
+	var body map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
@@ -311,13 +311,7 @@ func TestAPIFirewallCheckMissingIP(t *testing.T) {
 	s := newTestServerWithFirewall(t, "tok")
 	w := httptest.NewRecorder()
 	s.apiFirewallCheck(w, httptest.NewRequest("GET", "/", nil))
-	// Returns 200 with success=false rather than 400.
-	if w.Code != http.StatusOK {
-		t.Errorf("missing IP = %d, want 200", w.Code)
-	}
-	if !strings.Contains(w.Body.String(), "false") {
-		t.Error("expected success=false in body")
-	}
+	assertJSONError(t, "missing IP", w, http.StatusBadRequest)
 }
 
 func TestAPIFirewallCheckValidIP(t *testing.T) {

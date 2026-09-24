@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,9 +34,7 @@ func TestAPIFindingsWithData(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data []interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &data)
 	if len(data) == 0 {
 		t.Error("expected findings in response")
 	}

@@ -498,7 +498,7 @@ func TestPermanentBlockRouteRequiresAdminAndCSRF(t *testing.T) {
 				req.AddCookie(cookie)
 			}
 			if tc.csrf {
-				req.Header.Set("X-CSRF-Token", s.csrfToken())
+				setSessionCSRF(s, req)
 			}
 			rec := httptest.NewRecorder()
 			s.httpSrv.Handler.ServeHTTP(rec, req)

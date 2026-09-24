@@ -1,12 +1,10 @@
 package webui
 
 import (
-	"encoding/json"
+	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
-	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/store"
@@ -33,10 +31,7 @@ func (s *Server) apiScanJobsList(w http.ResponseWriter, _ *http.Request) {
 		writeJSONError(w, "failed to list scan jobs: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if jobs == nil {
-		jobs = []store.ScanJobRecord{}
-	}
-	writeJSON(w, map[string]any{"jobs": jobs})
+	writeAll(w, jobs)
 }
 
 // apiScanJobsRouter handles /api/v1/scan-jobs/{id} and
@@ -95,16 +90,23 @@ func (s *Server) apiScanJobDetail(w http.ResponseWriter, _ *http.Request, db *st
 	writeJSON(w, map[string]any{"job": rec})
 }
 
+// A full-server scan job can record tens of thousands of findings, so the
+// findings endpoint pages them.
+const (
+	scanJobFindingsDefaultLimit = 500
+	scanJobFindingsMaxLimit     = 5000
+)
+
 // apiScanJobFindings handles GET /api/v1/scan-jobs/{id}/findings.
-// Query params: offset (default 0), limit (default 0 = all).
+// Query params: offset (default 0), limit (default 500, at most 5000).
 func (s *Server) apiScanJobFindings(w http.ResponseWriter, r *http.Request, db *store.DB, id string) {
-	offset := parseQueryInt(r, "offset", 0)
-	if offset < 0 {
-		offset = 0
+	offset := queryInt(r, "offset", 0)
+	limit := queryInt(r, "limit", scanJobFindingsDefaultLimit)
+	if limit <= 0 {
+		limit = scanJobFindingsDefaultLimit
 	}
-	limit := parseQueryInt(r, "limit", 0)
-	if limit < 0 {
-		limit = 0
+	if limit > scanJobFindingsMaxLimit {
+		limit = scanJobFindingsMaxLimit
 	}
 
 	findings, total, err := db.ListScanJobFindings(id, offset, limit)
@@ -112,15 +114,12 @@ func (s *Server) apiScanJobFindings(w http.ResponseWriter, r *http.Request, db *
 		writeJSONError(w, "failed to list findings: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if findings == nil {
-		findings = []alert.Finding{}
-	}
-	writeJSON(w, map[string]any{
-		"job_id":   id,
-		"findings": findings,
-		"total":    total,
-		"offset":   offset,
-		"limit":    limit,
+	writeItems(w, toAPIFindings(findings), map[string]any{
+		"job_id":    id,
+		"total":     total,
+		"offset":    offset,
+		"limit":     limit,
+		"truncated": offset+len(findings) < total,
 	})
 }
 
@@ -141,7 +140,7 @@ func (s *Server) apiScanJobsEnqueue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body scanJobEnqueueBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeJSONBodyLimited(w, r, 4*1024, &body); err != nil {
 		writeJSONError(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -164,7 +163,9 @@ func (s *Server) apiScanJobsEnqueue(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, msg, status)
 			return
 		}
-		writeJSON(w, map[string]any{"job_id": id, "state": "queued"})
+		s.auditLog(r, "scan_job_enqueue", body.Target, fmt.Sprintf("job %s, account scan, quarantine=%v", id, body.Quarantine))
+		// The scan runs after the response: 202 with the job to poll.
+		writeOKStatus(w, http.StatusAccepted, map[string]interface{}{"job_id": id, "state": "queued"})
 
 	case "all":
 		if body.Quarantine {
@@ -181,7 +182,9 @@ func (s *Server) apiScanJobsEnqueue(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, msg, status)
 			return
 		}
-		writeJSON(w, map[string]any{"job_id": id, "state": "queued"})
+		s.auditLog(r, "scan_job_enqueue", "all", fmt.Sprintf("job %s, full scan", id))
+		// The scan runs after the response: 202 with the job to poll.
+		writeOKStatus(w, http.StatusAccepted, map[string]interface{}{"job_id": id, "state": "queued"})
 
 	default:
 		writeJSONError(w, "unsupported scope: must be \"account\" or \"all\"", http.StatusBadRequest)
@@ -219,19 +222,7 @@ func (s *Server) apiScanJobsCancel(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "cancel failed: "+msg, status)
 		return
 	}
-	writeJSON(w, map[string]any{"job_id": id, "state": "canceling"})
-}
-
-// parseQueryInt parses a query parameter as int. Returns def on missing or
-// non-numeric values.
-func parseQueryInt(r *http.Request, key string, def int) int {
-	raw := r.URL.Query().Get(key)
-	if raw == "" {
-		return def
-	}
-	v, err := strconv.Atoi(raw)
-	if err != nil {
-		return def
-	}
-	return v
+	s.auditLog(r, "scan_job_cancel", id, "cancel requested")
+	// The job stops after the response: 202 with its state.
+	writeOKStatus(w, http.StatusAccepted, map[string]interface{}{"job_id": id, "state": "canceling"})
 }

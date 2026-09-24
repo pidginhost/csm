@@ -1,10 +1,12 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/alert"
 	bolt "go.etcd.io/bbolt"
@@ -36,6 +38,9 @@ func (db *DB) AppendHistory(findings []alert.Finding) error {
 			if err := incrStatsDaily(tx, f.Timestamp, f.Severity); err != nil {
 				return err
 			}
+			if err := bumpLatestByCheck(tx, f.Check, f.Timestamp); err != nil {
+				return err
+			}
 		}
 
 		writer.settle()
@@ -48,6 +53,9 @@ func (db *DB) AppendHistory(findings []alert.Finding) error {
 		// (rather than on a timer) so the daily-aggregate path has a
 		// single owner.
 		if len(findings) > 0 {
+			if err := bumpHistoryRevision(tx); err != nil {
+				return err
+			}
 			if err := pruneStatsDaily(tx, time.Now()); err != nil {
 				return err
 			}
@@ -92,6 +100,21 @@ func nextHistoryKey(b *bolt.Bucket, timestamp time.Time, start int) string {
 	}
 }
 
+func bumpHistoryRevision(tx *bolt.Tx) error {
+	return incrCounter(tx, "history:revision", 1)
+}
+
+// HistoryMark changes with history mutations, even when retention and a later
+// append reuse the same keys or a migration changes only interior keys.
+func (db *DB) HistoryMark() string {
+	var mark string
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		mark = string(tx.Bucket([]byte("meta")).Get([]byte("history:revision")))
+		return nil
+	})
+	return mark
+}
+
 // ReadHistory reads findings from the history bucket, newest-first.
 // It returns up to limit findings starting at offset, plus the total count.
 func (db *DB) ReadHistory(limit, offset int) ([]alert.Finding, int) {
@@ -125,12 +148,59 @@ func (db *DB) ReadHistory(limit, offset int) ([]alert.Finding, int) {
 
 // ReadHistoryFiltered reads findings with optional filtering.
 // Parameters:
-//   - from, to: date strings "YYYY-MM-DD" for time-range filtering (empty to skip)
+//   - from, to: calendar dates or RFC 3339 instants (empty to skip)
 //   - severity: filter by severity level (-1 for no filter)
 //   - search: case-insensitive substring match on check/message/details (empty to skip)
 func (db *DB) ReadHistoryFiltered(limit, offset int, from, to string, severity int, search string) ([]alert.Finding, int) {
 	return db.ReadHistoryFilteredWithChecks(limit, offset, from, to, severity, search, nil)
 }
+
+// ParseHistoryBound reads one end of a history date range. A calendar date
+// (YYYY-MM-DD) names a server-local day: as a start it is that day's
+// midnight, as an end the next day's, so the whole day is included. An RFC
+// 3339 instant is used as given; as an end it is exclusive. An empty bound
+// is the zero time.
+func ParseHistoryBound(s string, end bool) (time.Time, error) {
+	return parseHistoryBoundIn(s, end, time.Local)
+}
+
+func parseHistoryBoundIn(s string, end bool, loc *time.Location) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	// Parse the calendar in UTC so a missing local midnight cannot normalize
+	// the date into the preceding day before we choose the exclusive end.
+	day, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("date %q is neither YYYY-MM-DD nor RFC 3339", s)
+	}
+	if end {
+		day = day.AddDate(0, 0, 1)
+	}
+	// Walk the surrounding zone intervals to find the earliest instant of
+	// the day. A repeated midnight uses its first occurrence; a skipped
+	// midnight (or date) starts at the transition into the next valid time.
+	for at := day.Add(-48 * time.Hour).In(loc); ; {
+		_, offset := at.Zone()
+		candidate := day.Add(-time.Duration(offset) * time.Second).In(loc)
+		if candidate.Before(at) {
+			candidate = at
+		}
+		_, zoneEnd := at.ZoneBounds()
+		if zoneEnd.IsZero() || candidate.Before(zoneEnd) {
+			return candidate, nil
+		}
+		at = zoneEnd
+	}
+}
+
+// decodeHistoryEntry decodes one stored finding; a var so tests can count
+// decodes.
+var decodeHistoryEntry = func(v []byte, f *alert.Finding) error { return json.Unmarshal(v, f) }
 
 // ReadHistoryFilteredWithChecks reads findings with optional filters, including
 // an exact check-name set when checks is non-nil.
@@ -144,20 +214,22 @@ func (db *DB) ReadHistoryFilteredWithChecks(
 	var results []alert.Finding
 	matched := 0
 	searchLower := strings.ToLower(search)
+	from, to = strings.TrimSpace(from), strings.TrimSpace(to)
+	mayMatch := historyPrefilter(severity, searchLower, checks)
 
 	var fromPrefix, toPrefix string
 	if from != "" {
-		if fromTime, err := time.ParseInLocation("2006-01-02", from, time.Local); err == nil {
+		if fromTime, err := ParseHistoryBound(from, false); err == nil {
 			fromPrefix = timeKeyLowerBound(fromTime)
 		} else {
 			fromPrefix = ParseTimeKeyPrefix(from)
 		}
 	}
 	if to != "" {
-		if toTime, err := time.ParseInLocation("2006-01-02", to, time.Local); err == nil {
-			// Use the following local midnight as an exclusive upper bound.
-			// AddDate preserves calendar-day semantics across DST changes.
-			toPrefix = timeKeyLowerBound(toTime.AddDate(0, 0, 1))
+		if toTime, err := ParseHistoryBound(to, true); err == nil {
+			// An exclusive upper bound: the next local midnight for a
+			// date, the instant itself for an RFC 3339 end.
+			toPrefix = timeKeyLowerBound(toTime)
 		} else {
 			toPrefix = ParseTimeKeyPrefix(to) + "99"
 		}
@@ -196,8 +268,11 @@ func (db *DB) ReadHistoryFilteredWithChecks(
 				break
 			}
 
+			if !mayMatch(v) {
+				continue
+			}
 			var f alert.Finding
-			if err := json.Unmarshal(v, &f); err != nil {
+			if err := decodeHistoryEntry(v, &f); err != nil {
 				continue
 			}
 
@@ -230,7 +305,117 @@ func (db *DB) ReadHistoryFilteredWithChecks(
 	return results, matched
 }
 
-// containsLower checks if s contains substr using case-insensitive matching.
+// historyPrefilter returns a test on a stored entry's JSON that is false only
+// when the entry cannot pass the severity, check or search filter, so the
+// walk that counts matches decodes only plausible entries. Each part applies
+// only when the text it looks for is stored verbatim: JSON escapes quotes,
+// backslashes, control characters, <, > and &, so a search for those is
+// left to the decoded check.
+func historyPrefilter(severity int, searchLower string, checks map[string]bool) func([]byte) bool {
+	var sevNeedles [][]byte
+	if severity >= 0 {
+		sevNeedles = [][]byte{
+			[]byte(fmt.Sprintf(`"severity":%d,`, severity)),
+			[]byte(fmt.Sprintf(`"severity":%d}`, severity)),
+		}
+	}
+	var checkNeedles [][]byte
+	activeChecks := 0
+	for _, enabled := range checks {
+		if enabled {
+			activeChecks++
+		}
+	}
+	if checks != nil && activeChecks == 0 {
+		return func([]byte) bool { return false }
+	}
+	for name, enabled := range checks {
+		if !enabled {
+			continue
+		}
+		// The empty check also matches an absent or null field.
+		if name == "" || !storedVerbatim(name) {
+			checkNeedles = nil
+			break
+		}
+		checkNeedles = append(checkNeedles, []byte(`"check":"`+name+`"`))
+	}
+	var searchNeedle []byte
+	if searchLower != "" && storedVerbatim(searchLower) {
+		searchNeedle = []byte(searchLower)
+	}
+	return func(v []byte) bool {
+		if sevNeedles != nil && !bytes.Contains(v, sevNeedles[0]) && !bytes.Contains(v, sevNeedles[1]) {
+			// Zero also accepts omitted/null fields and negative zero. Keep
+			// the fast rejection for ordinary nonzero severity values.
+			if severity == 0 && (!bytes.Contains(v, []byte(`"severity":`)) ||
+				bytes.Contains(v, []byte(`"severity":null`)) || bytes.Contains(v, []byte(`"severity":-0`))) {
+				return true
+			}
+			return !plainHistoryJSON(v)
+		}
+		if checks != nil && checkNeedles != nil && !containsAnyBytes(v, checkNeedles) {
+			return !plainHistoryJSON(v)
+		}
+		if searchNeedle != nil && !bytes.Contains(bytes.ToLower(v), searchNeedle) {
+			return !plainHistoryJSON(v)
+		}
+		return true
+	}
+}
+
+// Raw needles are conclusive only for unescaped compact JSON with canonical
+// field names. Other valid encodings (including case-insensitive JSON keys)
+// are left to the decoder. This is an eligibility check, not a JSON validator.
+func plainHistoryJSON(v []byte) bool {
+	if len(v) < 2 || v[0] != '{' || v[len(v)-1] != '}' {
+		return false
+	}
+	start := -1
+	for i, b := range v {
+		if b == '\\' {
+			return false
+		}
+		if b == '"' {
+			if start < 0 {
+				start = i + 1
+			} else {
+				if i+1 < len(v) && v[i+1] == ':' {
+					for _, c := range v[start:i] {
+						if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
+							return false
+						}
+					}
+				}
+				start = -1
+			}
+		} else if start < 0 && (b == ' ' || b == '\t' || b == '\n' || b == '\r') {
+			return false
+		}
+	}
+	return true
+}
+
+// storedVerbatim reports whether encoding/json writes s unchanged inside a
+// JSON string.
+func storedVerbatim(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == '"' || r == '\\' || r == '<' || r == '>' || r == '&' || r == '\u2028' || r == '\u2029' || r == utf8.RuneError {
+			return false
+		}
+	}
+	return true
+}
+
+func containsAnyBytes(v []byte, needles [][]byte) bool {
+	for _, n := range needles {
+		if bytes.Contains(v, n) {
+			return true
+		}
+	}
+	return false
+}
+
 // substr must already be lowercase.
 func containsLower(s, substr string) bool {
 	return strings.Contains(strings.ToLower(s), substr)

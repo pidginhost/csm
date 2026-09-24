@@ -39,6 +39,32 @@ const (
 	AttackOther       AttackType = "other"
 )
 
+// attackTypeLabels is how the Web UI names each attack type.
+var attackTypeLabels = map[AttackType]string{
+	AttackBruteForce:  "Brute Force",
+	AttackWAFBlock:    "WAF Block",
+	AttackWebshell:    "Web Shell",
+	AttackPhishing:    "Phishing",
+	AttackC2:          "C2 Communication",
+	AttackRecon:       "Reconnaissance",
+	AttackSPAM:        "Spam",
+	AttackCPanelLogin: "cPanel Login",
+	AttackFileUpload:  "File Upload",
+	AttackAuthSuccess: "Authenticated Activity",
+	AttackReputation:  "Known Malicious IP",
+	AttackOther:       "Other",
+}
+
+// AttackTypeLabels returns the display label of every attack type, keyed
+// by the type's string value.
+func AttackTypeLabels() map[string]string {
+	out := make(map[string]string, len(attackTypeLabels))
+	for typ, label := range attackTypeLabels {
+		out[string(typ)] = label
+	}
+	return out
+}
+
 // checkToAttack maps alert.Finding.Check values to attack types.
 var checkToAttack = map[string]AttackType{
 	// Brute force
@@ -174,9 +200,9 @@ type IPRecord struct {
 	AuthSuccessAccounts   map[string]int     `json:"auth_success_accounts,omitempty"`
 	ThreatScore           int                `json:"threat_score"`
 	AutoBlocked           bool               `json:"auto_blocked"`
-	BruteForceWindowStart time.Time          `json:"brute_force_window_start,omitempty"`
+	BruteForceWindowStart time.Time          `json:"brute_force_window_start,omitzero"`
 	BruteForceWindowCount int                `json:"brute_force_window_count,omitempty"`
-	BruteForceSustainedAt time.Time          `json:"brute_force_sustained_at,omitempty"`
+	BruteForceSustainedAt time.Time          `json:"brute_force_sustained_at,omitzero"`
 }
 
 // DB is the in-memory attack database backed by JSON files.

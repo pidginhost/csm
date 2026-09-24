@@ -1,6 +1,8 @@
 package webui
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -22,6 +24,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 var reIPReputation = regexp.MustCompile(`Known malicious IP accessing server: (\S+) \((.+)\)`)
@@ -36,44 +39,40 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	s.scanMu.Lock()
 	scanning := s.scanRunning
 	s.scanMu.Unlock()
+	if s.scanInProgress != nil && s.scanInProgress() {
+		scanning = true
+	}
 
 	if provider == nil {
 		// No daemon-side provider installed (test harness). Fall back to
 		// the legacy minimal payload so existing UI code keeps working.
-		lastScan := ""
-		if s.store != nil {
-			lastScan = s.store.LatestScanTime().Format(time.RFC3339)
-		}
-		writeJSON(w, map[string]interface{}{
+		resp := map[string]interface{}{
 			"hostname":         s.cfg.Hostname,
-			"uptime":           time.Since(s.startTime).String(),
-			"started_at":       s.startTime.Format(time.RFC3339),
+			"uptime_seconds":   int64(time.Since(s.startTime).Seconds()),
+			"started_at":       s.startTime.UTC(),
 			"started_at_token": daemonStartToken(s.startTime),
 			"rules_loaded":     s.signatureCount(),
 			"scan_running":     scanning,
-			"last_scan_time":   lastScan,
 			"status":           "down",
-		})
+		}
+		if s.store != nil {
+			if last := s.store.LatestScanTime(); !last.IsZero() {
+				resp["last_scan_time"] = last.UTC()
+			}
+		}
+		writeJSON(w, resp)
 		return
 	}
 
 	snap := health.Build(provider, s.version, health.Capabilities())
 	resp := map[string]interface{}{
-		"hostname":         snap.Hostname,
-		"version":          snap.Version,
-		"uptime":           time.Duration(snap.UptimeSec * int64(time.Second)).String(),
-		"uptime_sec":       snap.UptimeSec,
-		"started_at":       snap.StartedAt.Format(time.RFC3339),
-		"started_at_token": daemonStartToken(snap.StartedAt),
-		"rules_loaded":     s.signatureCount(),
-		"scan_running":     scanning,
-		// last_scan_time is the legacy key kept for older clients
-		// (cphulk dashboard, status_check.go). latest_scan mirrors the
-		// health.Snapshot JSON tag and is the canonical name for new
-		// clients. Drop last_scan_time once the legacy consumers move.
-		"last_scan_time":         snap.LatestScan.Format(time.RFC3339),
-		"latest_scan":            formatRFC3339OrEmpty(snap.LatestScan),
-		"baseline_at":            formatRFC3339OrEmpty(snap.BaselineAt),
+		"hostname":               snap.Hostname,
+		"version":                snap.Version,
+		"uptime_seconds":         snap.UptimeSec,
+		"started_at":             snap.StartedAt.UTC(),
+		"started_at_token":       daemonStartToken(snap.StartedAt),
+		"rules_loaded":           s.signatureCount(),
+		"scan_running":           scanning,
 		"blocklist_size":         snap.BlocklistSize,
 		"incidents_open":         snap.IncidentsOpen,
 		"bpf_enforcement_active": snap.BPFEnforcementActive,
@@ -89,6 +88,16 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 		"automation":             snap.Automation,
 		"mode":                   snap.Mode,
 		"status":                 snap.OverallStatus(),
+	}
+	// latest_scan mirrors the health.Snapshot JSON tag and is the canonical
+	// name; last_scan_time is the legacy key kept for older clients (the
+	// cPHulk dashboard). A time that is not set is left out.
+	if !snap.LatestScan.IsZero() {
+		resp["latest_scan"] = snap.LatestScan.UTC()
+		resp["last_scan_time"] = snap.LatestScan.UTC()
+	}
+	if !snap.BaselineAt.IsZero() {
+		resp["baseline_at"] = snap.BaselineAt.UTC()
 	}
 
 	// security_posture is the threat-aware badge signal, distinct from
@@ -163,13 +172,6 @@ func securityPosture(opProblems, openCritical, openHigh int) string {
 	return "healthy"
 }
 
-func formatRFC3339OrEmpty(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	return t.Format(time.RFC3339)
-}
-
 // apiCapabilities returns the static feature-flag list for this build.
 func (s *Server) apiCapabilities(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]interface{}{
@@ -183,20 +185,20 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 	latest := s.store.LatestFindings()
 
 	type entryView struct {
-		Severity  int    `json:"severity"`
-		Check     string `json:"check"`
-		Message   string `json:"message"`
-		Details   string `json:"details,omitempty"`
-		Time      string `json:"time"`
-		FirstSeen string `json:"first_seen"`
-		LastSeen  string `json:"last_seen"`
-		HasFix    bool   `json:"has_fix"`
+		Severity  string    `json:"severity"`
+		Check     string    `json:"check"`
+		Message   string    `json:"message"`
+		Details   string    `json:"details,omitempty"`
+		Time      time.Time `json:"time"`
+		FirstSeen time.Time `json:"first_seen"`
+		LastSeen  time.Time `json:"last_seen"`
+		HasFix    bool      `json:"has_fix"`
 	}
 
 	suppressions := s.store.LoadSuppressions()
 	var result []entryView
 	for _, f := range latest {
-		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
+		if !operatorFacingCheck(f.Check) {
 			continue
 		}
 		// Skip suppressed findings
@@ -210,35 +212,37 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 			lastSeen = entry.LastSeen
 		}
 		result = append(result, entryView{
-			Severity:  int(f.Severity),
+			Severity:  f.Severity.String(),
 			Check:     f.Check,
 			Message:   f.Message,
 			Details:   f.Details,
-			Time:      f.Timestamp.Format(time.RFC3339),
-			FirstSeen: firstSeen.Format(time.RFC3339),
-			LastSeen:  lastSeen.Format(time.RFC3339),
+			Time:      f.Timestamp.UTC(),
+			FirstSeen: firstSeen.UTC(),
+			LastSeen:  lastSeen.UTC(),
 			HasFix:    checks.HasFix(f.Check),
 		})
 	}
-	writeJSON(w, result)
+	writeAll(w, result)
 }
 
 // enrichedFinding is the JSON response type for the enriched findings endpoint.
 type enrichedFinding struct {
-	Key           string `json:"key"`
-	Severity      string `json:"severity"`
-	SevClass      string `json:"sev_class"`
-	Check         string `json:"check"`
-	Message       string `json:"message"`
-	Details       string `json:"details,omitempty"`
-	FilePath      string `json:"file_path,omitempty"`
-	Account       string `json:"account,omitempty"`
-	FirstSeen     string `json:"first_seen"`
-	LastSeen      string `json:"last_seen"`
-	HasFix        bool   `json:"has_fix"`
-	HasVerify     bool   `json:"has_verify"`
-	FixDesc       string `json:"fix_desc,omitempty"`
-	ContentSHA256 string `json:"content_sha256,omitempty"`
+	Key           string    `json:"key"`
+	Severity      string    `json:"severity"`
+	Check         string    `json:"check"`
+	Message       string    `json:"message"`
+	Details       string    `json:"details,omitempty"`
+	FilePath      string    `json:"file_path,omitempty"`
+	Account       string    `json:"account,omitempty"`
+	FirstSeen     time.Time `json:"first_seen"`
+	LastSeen      time.Time `json:"last_seen"`
+	HasFix        bool      `json:"has_fix"`
+	HasVerify     bool      `json:"has_verify"`
+	FixDesc       string    `json:"fix_desc,omitempty"`
+	ContentSHA256 string    `json:"content_sha256,omitempty"`
+	// BlockIP is the attacker address an operator may block from this
+	// finding; empty for checks that do not report one.
+	BlockIP string `json:"block_ip,omitempty"`
 }
 
 // dedupIPReputation groups ip_reputation findings by IP, merging sources and
@@ -265,15 +269,14 @@ func dedupIPReputation(items []enrichedFinding) []enrichedFinding {
 		ip, source := m[1], m[2]
 		if g, ok := ipGroups[ip]; ok {
 			g.sources = append(g.sources, source)
-			if item.FirstSeen < g.entry.FirstSeen {
+			if item.FirstSeen.Before(g.entry.FirstSeen) {
 				g.entry.FirstSeen = item.FirstSeen
 			}
-			if item.LastSeen > g.entry.LastSeen {
+			if item.LastSeen.After(g.entry.LastSeen) {
 				g.entry.LastSeen = item.LastSeen
 			}
 			if severityRank(item.Severity) > severityRank(g.entry.Severity) {
 				g.entry.Severity = item.Severity
-				g.entry.SevClass = item.SevClass
 			}
 		} else {
 			ipGroups[ip] = &ipGroup{
@@ -293,13 +296,13 @@ func dedupIPReputation(items []enrichedFinding) []enrichedFinding {
 }
 
 // apiFindingsEnriched returns findings with IP dedup, account extraction, and severity counts.
-func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) apiFindingsEnriched(w http.ResponseWriter, r *http.Request) {
 	latest := s.store.LatestFindings()
 	suppressions := s.store.LoadSuppressions()
 
 	items := make([]enrichedFinding, 0)
 	for _, f := range latest {
-		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
+		if !operatorFacingCheck(f.Check) {
 			continue
 		}
 		if s.store.IsSuppressed(f, suppressions) {
@@ -314,22 +317,27 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 		items = append(items, enrichedFinding{
 			Key:           f.Key(),
 			Severity:      severityLabel(f.Severity),
-			SevClass:      severityClass(f.Severity),
 			Check:         f.Check,
 			Message:       f.Message,
 			Details:       f.Details,
 			FilePath:      f.FilePath,
 			Account:       extractAccountFromFinding(f),
-			FirstSeen:     firstSeen.Format(time.RFC3339),
-			LastSeen:      lastSeen.Format(time.RFC3339),
+			FirstSeen:     firstSeen.UTC(),
+			LastSeen:      lastSeen.UTC(),
 			HasFix:        checks.HasFix(f.Check),
 			HasVerify:     checks.CanVerify(f.Check),
 			FixDesc:       checks.FixDescription(f.Check, f.Message, f.FilePath),
 			ContentSHA256: f.ContentSHA256,
+			BlockIP:       checks.ManualBlockIP(f),
 		})
 	}
 
 	items = dedupIPReputation(items)
+	version := enrichedFindingsVersion(items)
+	if r.URL.Query().Get("fields") == "version" {
+		writeJSON(w, map[string]interface{}{"version": version, "total": len(items)})
+		return
+	}
 
 	var critCount, highCount, warnCount int
 	for _, item := range items {
@@ -362,19 +370,59 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 	}
 	sort.Strings(accounts)
 
-	writeJSON(w, map[string]interface{}{
-		"findings":       items,
+	extra := map[string]interface{}{
 		"check_types":    checkTypes,
 		"accounts":       accounts,
 		"critical_count": critCount,
 		"high_count":     highCount,
 		"warning_count":  warnCount,
-		"total":          len(items),
+		"version":        version,
+	}
+	if limit := queryInt(r, "limit", 0); limit > 0 {
+		sortEnrichedBySeverity(items)
+		writeCapped(w, items, len(items), limit, extra)
+		return
+	}
+	extra["total"] = len(items)
+	writeItems(w, items, extra)
+}
+
+// sortEnrichedBySeverity orders findings most severe first, newest first
+// within a severity, so a limited list keeps the ones that matter.
+func sortEnrichedBySeverity(items []enrichedFinding) {
+	rank := map[string]int{"CRITICAL": 3, "HIGH": 2}
+	sort.SliceStable(items, func(i, j int) bool {
+		if ri, rj := rank[items[i].Severity], rank[items[j].Severity]; ri != rj {
+			return ri > rj
+		}
+		return items[i].LastSeen.After(items[j].LastSeen)
 	})
 }
 
+// enrichedFindingsVersion changes when the listed findings or their
+// severities do. A client that polls only to learn whether the list changed
+// asks for ?fields=version and compares. ip_reputation rows are identified by
+// their message, which carries the merged sources.
+func enrichedFindingsVersion(items []enrichedFinding) string {
+	ids := make([]string, 0, len(items))
+	for _, f := range items {
+		id := f.Key
+		if f.Check == "ip_reputation" {
+			id = f.Check + ":" + f.Message
+		}
+		ids = append(ids, id+"|"+f.Severity)
+	}
+	sort.Strings(ids)
+	h := sha256.New()
+	for _, id := range ids {
+		h.Write([]byte(id))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
 // apiHistory returns paginated finding history.
-// Supports optional filtering via "from", "to" (YYYY-MM-DD), and "severity" (0/1/2) query params.
+// Supports optional filtering via "from", "to" (YYYY-MM-DD or RFC 3339), and "severity" (a label or 0/1/2) query params.
 func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	limit := queryInt(r, "limit", 50)
 	if limit > 5000 {
@@ -382,75 +430,126 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := queryInt(r, "offset", 0)
 
-	fromStr := r.URL.Query().Get("from")
-	toStr := r.URL.Query().Get("to")
-	sevStr := r.URL.Query().Get("severity")
-
-	searchStr := r.URL.Query().Get("search")
-
-	checksStr := r.URL.Query().Get("checks")
-	var checksFilter map[string]bool
-	if checksStr != "" {
-		checksFilter = make(map[string]bool)
-		for _, c := range strings.Split(checksStr, ",") {
-			c = strings.TrimSpace(c)
-			if c != "" {
-				checksFilter[c] = true
-			}
-		}
-	}
-
-	// If no filters, use simple paginated read
-	if fromStr == "" && toStr == "" && sevStr == "" && searchStr == "" && checksStr == "" {
-		findings, total := s.store.ReadHistory(limit, offset)
-		writeJSON(w, map[string]interface{}{
-			"findings": withAccountIP(findings),
-			"total":    total,
-			"limit":    limit,
-			"offset":   offset,
-		})
+	q, ok := parseHistoryQuery(w, r)
+	if !ok {
 		return
 	}
-
-	sevFilter := -1
-	if sevStr != "" {
-		sevFilter = queryInt(r, "severity", -1)
-	}
-
-	findings, total := s.store.ReadHistoryFilteredWithChecks(
-		limit,
-		offset,
-		fromStr,
-		toStr,
-		sevFilter,
-		searchStr,
-		checksFilter,
-	)
-	writeJSON(w, map[string]interface{}{
-		"findings":  withAccountIP(findings),
+	findings, total := s.readHistoryPage(q, limit, offset)
+	writeItems(w, withAccountIP(findings), map[string]interface{}{
 		"total":     total,
 		"limit":     limit,
 		"offset":    offset,
-		"truncated": false,
+		"truncated": historyPageTruncated(total, offset, len(findings)),
 	})
 }
 
-// historyFinding decorates a stored finding with the normalized account and
-// remote IP so clients render structured fields instead of regex-scraping the
-// human-readable message. The embedded Finding promotes its own JSON fields, so
-// existing consumers see the same shape plus account/ip.
+// historyQuery is the filter set /api/v1/history and its CSV export share.
+type historyQuery struct {
+	from, to, search string
+	severity         int // -1 for any
+	checks           map[string]bool
+}
+
+func (q historyQuery) filtered() bool {
+	return q.from != "" || q.to != "" || q.severity >= 0 || q.search != "" || q.checks != nil
+}
+
+// parseHistoryQuery reads the history filters. An unreadable date is a 400,
+// written here, and ok is false.
+func parseHistoryQuery(w http.ResponseWriter, r *http.Request) (historyQuery, bool) {
+	v := r.URL.Query()
+	if _, _, ok := historyRangeQuery(w, v, time.Time{}, time.Time{}); !ok {
+		return historyQuery{}, false
+	}
+	q := historyQuery{from: v.Get("from"), to: v.Get("to"), search: v.Get("search"), severity: -1}
+	if sev, ok := parseSeverity(v.Get("severity")); ok {
+		q.severity = int(sev)
+	}
+	if checksStr := v.Get("checks"); checksStr != "" {
+		q.checks = make(map[string]bool)
+		for _, c := range strings.Split(checksStr, ",") {
+			if c = strings.TrimSpace(c); c != "" {
+				q.checks[c] = true
+			}
+		}
+	}
+	return q, true
+}
+
+func (s *Server) readHistoryPage(q historyQuery, limit, offset int) ([]alert.Finding, int) {
+	if !q.filtered() {
+		return s.store.ReadHistory(limit, offset)
+	}
+	return s.store.ReadHistoryFilteredWithChecks(limit, offset, q.from, q.to, q.severity, q.search, q.checks)
+}
+
+// historyPageTruncated reports whether matches exist past the returned page.
+// total counts every match, so a client can page on through offset.
+func historyPageTruncated(total, offset, returned int) bool {
+	return total > offset+returned
+}
+
+// apiFinding is a stored finding as the API sends it: its severity, and the
+// one it was demoted from, are labels. The embedded Finding promotes its
+// other JSON fields; these shallower fields take the severity keys.
+type apiFinding struct {
+	alert.Finding
+	Severity    string `json:"severity"`
+	DemotedFrom string `json:"demoted_from,omitempty"`
+}
+
+func toAPIFinding(f alert.Finding) apiFinding {
+	a := apiFinding{Finding: f, Severity: f.Severity.String()}
+	// Demotion only lowers a severity, so WARNING, the zero level, is never
+	// the one a finding was demoted from.
+	if f.DemotedFrom > alert.Warning {
+		a.DemotedFrom = f.DemotedFrom.String()
+	}
+	return a
+}
+
+func toAPIFindings(findings []alert.Finding) []apiFinding {
+	out := make([]apiFinding, len(findings))
+	for i, f := range findings {
+		out[i] = toAPIFinding(f)
+	}
+	return out
+}
+
+// historyFinding is an apiFinding with the normalized account and remote IP,
+// so clients render structured fields instead of regex-scraping the
+// human-readable message. It embeds the exported Finding, not apiFinding:
+// apiValue cannot reach into an unexported embedded struct.
 type historyFinding struct {
 	alert.Finding
-	Account string `json:"account,omitempty"`
-	IP      string `json:"ip,omitempty"`
+	Severity    string `json:"severity"`
+	DemotedFrom string `json:"demoted_from,omitempty"`
+	Account     string `json:"account,omitempty"`
+	IP          string `json:"ip,omitempty"`
 }
 
 func withAccountIP(findings []alert.Finding) []historyFinding {
 	out := make([]historyFinding, len(findings))
 	for i, f := range findings {
-		out[i] = historyFinding{Finding: f, Account: findingAccount(f), IP: findingIP(f)}
+		a := toAPIFinding(f)
+		out[i] = historyFinding{Finding: f, Severity: a.Severity, DemotedFrom: a.DemotedFrom,
+			Account: findingAccount(f), IP: findingIP(f)}
 	}
 	return out
+}
+
+// parseSeverity reads a severity filter: a label in any case, or the 0/1/2
+// level older callers send. ok is false for anything else.
+func parseSeverity(text string) (alert.Severity, bool) {
+	switch strings.ToUpper(strings.TrimSpace(text)) {
+	case "WARNING", "0":
+		return alert.Warning, true
+	case "HIGH", "1":
+		return alert.High, true
+	case "CRITICAL", "2":
+		return alert.Critical, true
+	}
+	return 0, false
 }
 
 // findingAccount returns the account/mailbox attribution for a finding,
@@ -606,11 +705,10 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 		Kind            string    `json:"kind"`
 		OriginalPath    string    `json:"original_path"`
 		Size            int64     `json:"size"`
-		QuarantineAt    string    `json:"quarantined_at"`
+		QuarantineAt    time.Time `json:"quarantined_at,omitzero"`
 		Reason          string    `json:"reason"`
 		LiveState       string    `json:"live_state"`
 		OriginalModTime time.Time `json:"original_mtime,omitzero"`
-		quarantinedAt   time.Time
 	}
 
 	var entries []quarantineEntry
@@ -641,169 +739,53 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 			kind = "pre_clean"
 		}
 
-		var timestamp string
-		if !meta.QuarantineAt.IsZero() {
-			timestamp = meta.QuarantineAt.UTC().Format(time.RFC3339Nano)
-		}
 		entries = append(entries, quarantineEntry{
 			ID:              quarantineEntryID(metaFile),
 			Kind:            kind,
 			OriginalPath:    meta.OriginalPath,
 			Size:            meta.Size,
-			QuarantineAt:    timestamp,
+			QuarantineAt:    meta.QuarantineAt.UTC(),
 			Reason:          meta.Reason,
 			LiveState:       liveState,
-			OriginalModTime: meta.OriginalModTime,
-			quarantinedAt:   meta.QuarantineAt,
+			OriginalModTime: meta.OriginalModTime.UTC(),
 		})
 	}
 
 	// Sort newest first
 	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].quarantinedAt.Equal(entries[j].quarantinedAt) {
+		if entries[i].QuarantineAt.Equal(entries[j].QuarantineAt) {
 			return entries[i].ID < entries[j].ID
 		}
-		return entries[i].quarantinedAt.After(entries[j].quarantinedAt)
+		return entries[i].QuarantineAt.After(entries[j].QuarantineAt)
 	})
 
-	writeJSON(w, entries)
+	writeAll(w, entries)
 }
 
-// apiStats returns severity counts and per-check breakdown.
+// apiStats returns severity counts and per-check breakdown for the last 24
+// hours. The summary is shared with the dashboard page and recomputed only
+// when history changes.
 func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
-	last24h := time.Now().Add(-24 * time.Hour)
-	findings := s.store.ReadHistorySince(last24h)
-
-	critical, high, warning := 0, 0, 0
-	byCheck := make(map[string]int)
-
-	for _, f := range findings {
-		switch f.Severity {
-		case alert.Critical:
-			critical++
-		case alert.High:
-			high++
-		case alert.Warning:
-			warning++
-		}
-		byCheck[f.Check]++
-	}
-
-	// Find most recent critical finding for "time since last critical"
-	// (findings are newest-first from ReadHistorySince)
-	lastCriticalAgo := "None"
-	lastCriticalISO := ""
-	for _, f := range findings {
-		if f.Severity == alert.Critical {
-			lastCriticalAgo = timeAgo(f.Timestamp)
-			lastCriticalISO = f.Timestamp.Format(time.RFC3339)
-			break
-		}
-	}
-
-	// Compute accounts at risk: accounts with critical/high findings in 24h
-	accountRisk := make(map[string]int) // account -> highest severity
-	// Auto-response summary: count actions by type in 24h
-	autoBlocked, autoQuarantined, autoKilled := 0, 0, 0
-	// Top targeted accounts
-	accountHits := make(map[string]int)
-	// Brute force summary
-	bruteForceIPs := make(map[string]int)   // IP -> total attempts
-	bruteForceTypes := make(map[string]int) // "wp-login" / "xmlrpc" -> count
-
-	for _, f := range findings {
-		// Extract account from finding path/message
-		acct := extractAccountFromFinding(f)
-		if acct != "" {
-			accountHits[acct]++
-			sev := int(f.Severity)
-			if prev, ok := accountRisk[acct]; !ok || sev > prev {
-				accountRisk[acct] = sev
-			}
-		}
-		// Count auto-response actions
-		switch f.Check {
-		case "auto_block":
-			autoBlocked++
-		case "auto_response":
-			if strings.Contains(f.Message, "quarantin") {
-				autoQuarantined++
-			} else if strings.Contains(f.Message, "kill") || strings.Contains(f.Message, "Kill") {
-				autoKilled++
-			}
-		case "wp_login_bruteforce":
-			bruteForceTypes["wp-login"]++
-			if ip := checks.ExtractIPFromFinding(f); ip != "" {
-				bruteForceIPs[ip]++
-			}
-		case "xmlrpc_abuse":
-			bruteForceTypes["xmlrpc"]++
-			if ip := checks.ExtractIPFromFinding(f); ip != "" {
-				bruteForceIPs[ip]++
-			}
-		case "modsec_block_escalation", "modsec_csm_block_escalation":
-			if strings.Contains(f.Message, "xmlrpc") || strings.Contains(f.Message, "900006") || strings.Contains(f.Message, "900007") {
-				bruteForceTypes["xmlrpc-modsec"]++
-			}
-		}
-	}
-
-	// Accounts at risk: those with critical or high severity
-	var atRisk []map[string]interface{}
-	for acct, sev := range accountRisk {
-		if sev >= int(alert.High) {
-			atRisk = append(atRisk, map[string]interface{}{
-				"account":  acct,
-				"severity": sev,
-				"findings": accountHits[acct],
-			})
-		}
-	}
-	// Sort by severity desc, then findings desc
-	sort.Slice(atRisk, func(i, j int) bool {
-		if atRisk[i]["severity"].(int) != atRisk[j]["severity"].(int) {
-			return atRisk[i]["severity"].(int) > atRisk[j]["severity"].(int)
-		}
-		return atRisk[i]["findings"].(int) > atRisk[j]["findings"].(int)
-	})
-	if len(atRisk) > 50 {
-		atRisk = atRisk[:50]
-	}
-
-	// Top targeted accounts (by finding count)
-	type acctCount struct {
-		Account string `json:"account"`
-		Count   int    `json:"count"`
-	}
-	var topAccounts []acctCount
-	for acct, count := range accountHits {
-		topAccounts = append(topAccounts, acctCount{acct, count})
-	}
-	sort.Slice(topAccounts, func(i, j int) bool {
-		return topAccounts[i].Count > topAccounts[j].Count
-	})
-	if len(topAccounts) > 5 {
-		topAccounts = topAccounts[:5]
-	}
-
+	sum := s.statsSummary24h()
 	result := map[string]interface{}{
 		"last_24h": map[string]interface{}{
-			"critical": critical,
-			"high":     high,
-			"warning":  warning,
-			"total":    critical + high + warning,
+			"critical": sum.critical,
+			"high":     sum.high,
+			"warning":  sum.warning,
+			"total":    sum.critical + sum.high + sum.warning,
 		},
-		"by_check":          byCheck,
-		"last_critical_ago": lastCriticalAgo,
-		"last_critical_iso": lastCriticalISO,
-		"accounts_at_risk":  atRisk,
+		"by_check":         sum.byCheck,
+		"accounts_at_risk": sum.atRisk,
 		"auto_response": map[string]int{
-			"blocked":     autoBlocked,
-			"quarantined": autoQuarantined,
-			"killed":      autoKilled,
+			"blocked":     sum.autoBlocked,
+			"quarantined": sum.autoQuarantined,
+			"killed":      sum.autoKilled,
 		},
-		"top_accounts": topAccounts,
-		"brute_force":  buildBruteForceSummary(bruteForceIPs, bruteForceTypes),
+		"top_accounts": sum.topAccounts,
+		"brute_force":  sum.bruteForce,
+	}
+	if !sum.lastCritical.IsZero() {
+		result["last_critical"] = sum.lastCritical.UTC()
 	}
 	writeJSON(w, result)
 }
@@ -849,31 +831,42 @@ func (s *Server) apiStatsTrend(w http.ResponseWriter, r *http.Request) {
 			days = n
 		}
 	}
-	writeJSON(w, s.store.AggregateByDayN(days))
+	writeAll(w, s.store.AggregateByDayN(days))
 }
 
 // apiStatsTimeline returns 24 hourly buckets for the findings timeline chart.
 // Uses efficient bbolt cursor seeking instead of loading all findings into memory.
 func (s *Server) apiStatsTimeline(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, s.store.AggregateByHour())
+	buckets, _ := s.timelineMemo.get(s.store.HistoryMark(), func() any {
+		return s.store.AggregateByHour()
+	}).([]store.HourBucket)
+	writeAll(w, buckets)
 }
 
 // apiHealth returns daemon health status.
 func (s *Server) apiHealth(w http.ResponseWriter, _ *http.Request) {
 	health := map[string]interface{}{
 		"daemon_mode":    true,
-		"uptime":         time.Since(s.startTime).String(),
 		"uptime_seconds": int(time.Since(s.startTime).Seconds()),
 		"rules_loaded":   s.signatureCount(),
-		"fanotify":       s.fanotifyActive,
-		"log_watchers":   s.logWatcherCount,
+		"fanotify":       s.fanotifyRunning(),
+		"log_watchers":   s.logWatchersRunning(),
 	}
 	writeJSON(w, health)
 }
 
-// apiHistoryCSV exports history as CSV download.
-func (s *Server) apiHistoryCSV(w http.ResponseWriter, _ *http.Request) {
-	findings, _ := s.store.ReadHistory(5000, 0)
+// historyCSVMax bounds one CSV export; the history filters narrow it to reach
+// older entries.
+const historyCSVMax = 5000
+
+// apiHistoryCSV exports the newest history entries matching the History
+// filters as a CSV download.
+func (s *Server) apiHistoryCSV(w http.ResponseWriter, r *http.Request) {
+	q, ok := parseHistoryQuery(w, r)
+	if !ok {
+		return
+	}
+	findings, _ := s.readHistoryPage(q, historyCSVMax, 0)
 
 	w.Header().Set("Content-Type", "text/csv")
 	w.Header().Set("Content-Disposition", "attachment; filename=csm-history.csv")
@@ -957,7 +950,7 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	result := checks.ApplyFix(r.Context(), req.Check, message, details, filePath)
+	result := s.applyFix(r.Context(), req.Check, message, details, filePath)
 
 	// If fix succeeded, dismiss from both alert state and latest findings.
 	if result.Success {
@@ -966,7 +959,7 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 		s.auditLog(r, "fix", req.Check, result.Action)
 	}
 
-	writeJSON(w, result)
+	writeRemediation(w, result)
 }
 
 // apiVerifyFinding re-checks whether a finding's condition still holds against
@@ -989,7 +982,7 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 
 	in, key, stored, found := s.verifyFindingInput(req)
 	in.Context = r.Context()
-	response := verifyFindingResponse{VerifyResult: s.verifyFinding(in)}
+	response := verifyFindingResponse{OK: true, VerifyResult: s.verifyFinding(in)}
 	switch {
 	case response.Checked && response.Resolved:
 		if key == "" {
@@ -1021,6 +1014,7 @@ func (s *Server) apiVerifyFinding(w http.ResponseWriter, r *http.Request) {
 // true for an already-demoted finding or after a concurrent scan replaced the
 // snapshot, neither of which means this request changed the stored severity.
 type verifyFindingResponse struct {
+	OK bool `json:"ok"`
 	checks.VerifyResult
 	SeverityChange string `json:"severity_change,omitempty"`
 }
@@ -1097,73 +1091,82 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+	if len(reqs) == 0 {
+		writeJSONError(w, "At least one fix is required", http.StatusBadRequest)
+		return
+	}
 
-	var results []checks.RemediationResult
+	results := make([]bulkFixItem, 0, len(reqs))
 	for _, req := range reqs {
 		if !checks.HasFix(req.Check) {
-			results = append(results, checks.RemediationResult{
-				Error: fmt.Sprintf("no fix for %s", req.Check),
-			})
+			results = append(results, bulkFixItem{Check: req.Check, Error: fmt.Sprintf("no fix for %s", req.Check)})
 			continue
 		}
 		message, details, filePath, dismissKey, err := s.fixTargetFromStore(req.Key, req.Check, req.Message, req.Details, req.FilePath)
 		if err != nil {
-			results = append(results, checks.RemediationResult{Error: err.Error()})
+			results = append(results, bulkFixItem{Check: req.Check, Error: err.Error()})
 			continue
 		}
-		result := checks.ApplyFix(r.Context(), req.Check, message, details, filePath)
+		result := s.applyFix(r.Context(), req.Check, message, details, filePath)
 		if result.Success {
 			s.store.DismissFinding(dismissKey)
 			s.store.DismissLatestFinding(dismissKey)
+			s.auditLog(r, "fix", req.Check, result.Action)
 		}
-		results = append(results, result)
+		results = append(results, bulkFixItem{
+			Check: req.Check, OK: result.Success, Action: result.Action,
+			Description: result.Description, Error: result.Error, Reverted: result.Reverted,
+		})
 	}
 
 	succeeded := 0
-	for _, r := range results {
-		if r.Success {
+	for _, item := range results {
+		if item.OK {
 			succeeded++
 		}
 	}
-
-	writeJSON(w, map[string]interface{}{
+	fields := map[string]interface{}{
 		"results":   results,
 		"total":     len(results),
 		"succeeded": succeeded,
 		"failed":    len(results) - succeeded,
-	})
+	}
+	if succeeded == 0 {
+		fields["error"] = "No fix applied"
+		writeJSONStatus(w, http.StatusUnprocessableEntity, fields)
+		return
+	}
+	writeOK(w, fields)
 }
 
-// apiFixPreview returns what a fix would do without applying it.
-// GET /api/v1/fix-preview?check=...&message=...
-// apiAccounts returns a list of cPanel account usernames for the scan dropdown.
+// bulkFixItem is one fix of a bulk request: which check, whether it applied,
+// and what it did or why it did not.
+type bulkFixItem struct {
+	Check       string `json:"check"`
+	OK          bool   `json:"ok"`
+	Action      string `json:"action,omitempty"`
+	Description string `json:"description,omitempty"`
+	Error       string `json:"error,omitempty"`
+	Reverted    bool   `json:"reverted,omitempty"`
+}
+
+// bulkItemFailure names one item of a batch that did not apply and why.
+type bulkItemFailure struct {
+	Item  string `json:"item"`
+	Error string `json:"error"`
+}
+
+// apiAccounts returns the account names for the scan dropdown: the accounts a
+// server-wide scan covers.
 //
 //nolint:unused // registered via mux.Handle in server.go
 func (s *Server) apiAccounts(w http.ResponseWriter, _ *http.Request) {
-	entries, err := os.ReadDir("/home")
+	accounts, err := s.scanAccounts(s.liveCfg())
 	if err != nil {
-		writeJSON(w, []string{})
+		writeJSONError(w, "Could not list accounts", http.StatusInternalServerError)
 		return
 	}
-
-	var accounts []string
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		// Skip system/hidden directories
-		if strings.HasPrefix(name, ".") || name == "virtfs" || name == "cPanelInstall" ||
-			name == "cpanelsolr" || name == "lost+found" {
-			continue
-		}
-		// Must have public_html to be a real cPanel account
-		if _, err := os.Stat(filepath.Join("/home", name, "public_html")); err == nil {
-			accounts = append(accounts, name)
-		}
-	}
-
-	writeJSON(w, accounts)
+	writeAll(w, accounts)
 }
 
 // --- Action endpoints ---
@@ -1196,10 +1199,13 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if _, err := parseAndValidateIP(req.IP); err != nil {
+	parsedIP, err := parseAndValidateIP(req.IP)
+	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Audit, incident and threat records key on the canonical spelling.
+	req.IP = parsedIP.String()
 	if req.Reason == "" {
 		req.Reason = "Blocked via CSM Web UI"
 	}
@@ -1231,13 +1237,13 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 				safeLogString(incidentID), err)
 		}
 	}
-	resp := map[string]string{"status": "blocked", "ip": req.IP}
+	resp := map[string]interface{}{"ip": req.IP}
 	// The input chain accepts Cloudflare edges on 80/443 before the blocked
 	// drop, so a block of a covered IP does not stop its web traffic.
-	if cc, ok := s.blocker.(interface{ CloudflareCovers(string) bool }); ok && cc.CloudflareCovers(req.IP) {
+	if cc, ok := s.blocker.(cloudflareChecker); ok && cc.CloudflareCovers(req.IP) {
 		resp["warning"] = firewall.CloudflareCoverageWarning
 	}
-	writeJSON(w, resp)
+	writeOK(w, resp)
 }
 
 // apiUnblockIP removes an IP from the firewall + cphulk.
@@ -1276,11 +1282,12 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 	}
 	dropAutoBlockThreatRow(req.IP)
 
-	// Also flush from cphulk (cPanel brute force detector)
-	flushCphulk(req.IP)
+	// Also flush from cphulk (cPanel brute force detector); best effort,
+	// the unblock is what was asked.
+	_ = flushCphulk(req.IP)
 
 	s.auditLog(r, "unblock_ip", req.IP, "manual unblock via UI")
-	writeJSON(w, map[string]string{"status": "unblocked", "ip": req.IP})
+	writeOK(w, map[string]interface{}{"ip": req.IP})
 }
 
 // apiUnblockBulk unblocks multiple IPs at once.
@@ -1316,10 +1323,12 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 
 	succeeded := 0
 	unblocked := make([]string, 0, len(req.IPs))
+	failed := []bulkItemFailure{}
 	removedThreats := make([]undoThreatRow, 0, len(req.IPs))
 	for _, ip := range req.IPs {
 		parsed, err := parseAndValidateIP(ip)
 		if err != nil {
+			failed = append(failed, bulkItemFailure{Item: ip, Error: err.Error()})
 			continue
 		}
 		ip = parsed.String()
@@ -1330,6 +1339,7 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 
 		before, err := s.unblockIPForUndo(ip)
 		if err != nil {
+			failed = append(failed, bulkItemFailure{Item: ip, Error: err.Error()})
 			continue
 		}
 		if before != nil {
@@ -1343,7 +1353,7 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 		unblocked = append(unblocked, ip)
 		succeeded++
 	}
-	flushCphulkIPs(unblocked)
+	_ = flushCphulkIPs(unblocked) // best effort: the unblocks are what was asked
 
 	var undoToken string
 	if succeeded > 0 {
@@ -1357,12 +1367,20 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 			})
 	}
 
-	writeJSON(w, map[string]interface{}{
-		"status":     "completed",
-		"total":      len(req.IPs),
-		"succeeded":  succeeded,
-		"undo_token": undoToken,
-	})
+	fields := map[string]interface{}{
+		"total":     len(req.IPs),
+		"succeeded": succeeded,
+		"failed":    failed,
+	}
+	if succeeded == 0 {
+		fields["error"] = "No address was unblocked"
+		writeJSONStatus(w, http.StatusUnprocessableEntity, fields)
+		return
+	}
+	if undoToken != "" {
+		fields["undo_token"] = undoToken
+	}
+	writeOK(w, fields)
 }
 
 // blockedEntry is a raw blocked IP record from firewall state.
@@ -1375,12 +1393,12 @@ type blockedEntry struct {
 }
 
 type blockedView struct {
-	IP        string `json:"ip"`
-	Reason    string `json:"reason"`
-	Source    string `json:"source"`
-	BlockedAt string `json:"blocked_at"`
-	ExpiresAt string `json:"expires_at"`
-	ExpiresIn string `json:"expires_in"`
+	IP        string    `json:"ip"`
+	Reason    string    `json:"reason"`
+	Source    string    `json:"source"`
+	BlockedAt time.Time `json:"blocked_at,omitzero"`
+	// ExpiresAt is left out for a permanent block.
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
 func formatBlockedView(b blockedEntry) (blockedView, bool) {
@@ -1391,17 +1409,11 @@ func formatBlockedView(b blockedEntry) (blockedView, bool) {
 		IP:        b.IP,
 		Reason:    b.Reason,
 		Source:    b.Source,
-		BlockedAt: b.BlockedAt.Format(time.RFC3339),
+		BlockedAt: b.BlockedAt.UTC(),
+		ExpiresAt: b.ExpiresAt.UTC(),
 	}
 	if view.Source == "" {
 		view.Source = firewall.InferProvenance("block", b.Reason)
-	}
-	if !b.ExpiresAt.IsZero() {
-		remaining := time.Until(b.ExpiresAt)
-		view.ExpiresAt = b.ExpiresAt.Format(time.RFC3339)
-		view.ExpiresIn = fmt.Sprintf("%dh%dm", int(remaining.Hours()), int(remaining.Minutes())%60)
-	} else {
-		view.ExpiresIn = "permanent"
 	}
 	return view, true
 }
@@ -1412,7 +1424,14 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 
 	fwFile := filepath.Join(s.cfg.StatePath, "firewall", "state.json")
 	_, fwStatErr := os.Stat(fwFile) // #nosec G304 -- filepath.Join under operator-configured StatePath.
-	if fwState, err := firewall.LoadState(s.cfg.StatePath); err == nil && fwState != nil {
+	fwState, fwErr := firewall.LoadState(s.cfg.StatePath)
+	if fwErr != nil && fwStatErr == nil {
+		// The engine state exists but cannot be read: an empty list would
+		// tell the operator nothing is blocked.
+		writeJSONError(w, "Firewall state unavailable", http.StatusInternalServerError)
+		return
+	}
+	if fwErr == nil && fwState != nil {
 		for _, entry := range fwState.Blocked {
 			b := blockedEntry{
 				IP:        entry.IP,
@@ -1428,7 +1447,7 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 		// A present engine state file wins even when empty. blocked_ips.json
 		// is only a legacy fallback when the engine file does not exist.
 		if fwStatErr == nil || len(fwState.Blocked) > 0 {
-			writeJSON(w, result)
+			writeAll(w, result)
 			return
 		}
 	}
@@ -1437,8 +1456,12 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 	stateFile := filepath.Join(s.cfg.StatePath, "blocked_ips.json")
 	// #nosec G304 -- filepath.Join under operator-configured StatePath.
 	data, err := os.ReadFile(stateFile)
+	if os.IsNotExist(err) {
+		writeAll(w, result)
+		return
+	}
 	if err != nil {
-		writeJSON(w, []interface{}{})
+		writeJSONError(w, "Firewall state unavailable", http.StatusInternalServerError)
 		return
 	}
 
@@ -1446,7 +1469,7 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 		IPs []blockedEntry `json:"ips"`
 	}
 	if err := json.Unmarshal(data, &blockState); err != nil {
-		writeJSON(w, []interface{}{})
+		writeJSONError(w, "Firewall state unavailable", http.StatusInternalServerError)
 		return
 	}
 
@@ -1455,11 +1478,15 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 			result = append(result, view)
 		}
 	}
-	writeJSON(w, result)
+	writeAll(w, result)
 }
 
 // apiDismissFinding marks a finding as baseline (acknowledged/dismissed).
 // POST /api/v1/dismiss  body: {"key": "check:message"}
+// dismissBulkMax bounds one dismiss request. The whole request is one undo
+// entry, so a larger selection must be narrowed rather than split.
+const dismissBulkMax = 500
+
 func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1467,17 +1494,58 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Key string `json:"key"`
+		Key  string   `json:"key"`
+		Keys []string `json:"keys"`
 	}
-	if err := decodeJSONBodyLimited(w, r, 16*1024, &req); err != nil || req.Key == "" {
-		writeJSONError(w, "Key is required", http.StatusBadRequest)
+	if err := decodeJSONBodyLimited(w, r, 1<<20, &req); err != nil {
+		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
+	keys := req.Keys
+	switch {
+	case req.Key != "" && len(req.Keys) > 0:
+		writeJSONError(w, "Send key or keys, not both", http.StatusBadRequest)
+		return
+	case req.Key != "":
+		keys = []string{req.Key}
+	case len(keys) == 0:
+		writeJSONError(w, "Key is required", http.StatusBadRequest)
+		return
+	case len(keys) > dismissBulkMax:
+		writeJSONError(w, fmt.Sprintf("At most %d findings per request", dismissBulkMax), http.StatusBadRequest)
+		return
+	}
+	uniqueKeys := make([]string, 0, len(keys))
+	seenKeys := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if key == "" {
+			writeJSONError(w, "Key is required", http.StatusBadRequest)
+			return
+		}
+		if !seenKeys[key] {
+			seenKeys[key] = true
+			uniqueKeys = append(uniqueKeys, key)
+		}
+	}
+	keys = uniqueKeys
 
-	s.store.DismissFinding(req.Key)
-	s.store.DismissLatestFinding(req.Key)
-	s.auditLog(r, "dismiss", req.Key, "")
-	writeJSON(w, map[string]string{"status": "dismissed", "key": req.Key})
+	undos := make([]state.DismissUndo, 0, len(keys))
+	for _, key := range keys {
+		undos = append(undos, s.store.DismissFindingWithUndo(key))
+		s.auditLog(r, "dismiss", key, "")
+	}
+	resp := map[string]interface{}{"count": len(keys)}
+	summary := fmt.Sprintf("Dismissed %d findings", len(keys))
+	if len(keys) == 1 {
+		resp["key"] = keys[0]
+		check, _ := state.ParseKey(keys[0])
+		summary = "Dismissed " + check + " finding"
+	}
+	if token := s.recordUndoEntry(r, "dismiss", undoInverseFindingUndismiss, summary,
+		undoPayloadIPs{Dismissals: undos}); token != "" {
+		resp["undo_token"] = token
+	}
+	writeOK(w, resp)
 }
 
 // apiQuarantinePreview returns the first 8KB of a quarantined file for inspection.
@@ -1520,6 +1588,10 @@ func (s *Server) apiQuarantinePreview(w http.ResponseWriter, r *http.Request) {
 const quarantineBulkDeleteMax = 100
 
 // apiQuarantineBulkDelete permanently removes quarantined files and their metadata.
+// removeQuarantineItem deletes one quarantined file or directory. Tests
+// replace it to exercise a deletion the filesystem refuses.
+var removeQuarantineItem = os.RemoveAll
+
 func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1538,24 +1610,44 @@ func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request)
 	}
 
 	count := 0
+	deleted := []string{}
+	failed := []string{}
 	for _, id := range req.IDs {
 		entry, err := resolveQuarantineEntry(id)
 		if err != nil || !quarantineEntryDeletable(entry) {
+			failed = append(failed, id)
 			continue
 		}
 		if _, statErr := os.Lstat(entry.ItemPath); statErr == nil {
-			if err := os.RemoveAll(entry.ItemPath); err == nil {
-				count++
+			if err := removeQuarantineItem(entry.ItemPath); err != nil {
+				// Keep the sidecar: the list is built from sidecars, so the
+				// archive stays visible and the delete can be retried.
+				log.Printf("webui: failed to delete quarantined %s: %v", safeLogString(entry.ItemPath), err)
+				failed = append(failed, id)
+				continue
 			}
+			count++
 		} else if !os.IsNotExist(statErr) {
+			failed = append(failed, id)
 			continue
 		}
 		if err := os.Remove(entry.MetaPath); err != nil && !os.IsNotExist(err) {
 			log.Printf("webui: failed to remove quarantine meta %s: %v", safeLogString(entry.MetaPath), err)
 		}
+		deleted = append(deleted, id)
 	}
-	s.auditLog(r, "quarantine_bulk_delete", fmt.Sprintf("%d files", count), "")
-	writeJSON(w, map[string]interface{}{"ok": true, "count": count})
+	details := "deleted: " + strings.Join(deleted, ", ")
+	if len(failed) > 0 {
+		details += "; failed: " + strings.Join(failed, ", ")
+	}
+	s.auditLog(r, "quarantine_bulk_delete", fmt.Sprintf("%d files", count), details)
+	if len(deleted) == 0 {
+		writeJSONStatus(w, http.StatusUnprocessableEntity, map[string]interface{}{
+			"error": "No file was deleted", "count": 0, "failed": failed,
+		})
+		return
+	}
+	writeOK(w, map[string]interface{}{"count": count, "failed": failed})
 }
 
 // apiTestAlert sends a test finding through all configured alert channels.
@@ -1573,11 +1665,12 @@ func (s *Server) apiTestAlert(w http.ResponseWriter, r *http.Request) {
 	}}
 	err := alert.Dispatch(s.liveCfg(), testFinding)
 	if err != nil {
-		writeJSON(w, map[string]interface{}{"status": "error", "error": err.Error()})
+		// The request was fine; the alert channel behind the daemon failed.
+		writeJSONError(w, "Alert delivery failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	s.auditLog(r, "test_alert", "notification", "sent test alert")
-	writeJSON(w, map[string]interface{}{"status": "sent"})
+	writeOK(w, nil)
 }
 
 // apiScanAccount runs an on-demand scan for a single cPanel account.
@@ -1609,21 +1702,21 @@ func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
 	defer s.releaseScan()
 
 	// Extend the write deadline for this long-running request.
-	// Account scans can take several minutes; the default WriteTimeout (300s)
+	// Account scans can take several minutes; the default WriteTimeout
 	// causes ERR_HTTP2_PROTOCOL_ERROR in browsers when it fires mid-stream.
 	rc := http.NewResponseController(w)
-	_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Minute))
+	_ = rc.SetWriteDeadline(time.Now().Add(longRequestTimeout))
 
 	start := time.Now()
 	findings := checks.RunAccountScan(s.liveCfg(), s.store, req.Account)
 	elapsed := time.Since(start).Round(time.Millisecond)
+	s.auditLog(r, "scan_account", req.Account, fmt.Sprintf("%d findings in %s", len(findings), elapsed))
 
-	result := map[string]interface{}{
-		"account": req.Account,
-		"count":   len(findings),
-		"elapsed": elapsed.String(),
-	}
-	writeJSON(w, result)
+	writeOK(w, map[string]interface{}{
+		"account":         req.Account,
+		"count":           len(findings),
+		"elapsed_seconds": elapsed.Seconds(),
+	})
 }
 
 // parseModeString converts a permission string like "-rw-r--r--" to os.FileMode.
@@ -1661,13 +1754,15 @@ func parseModeString(s string) os.FileMode {
 // re-validates as defense-in-depth so a future caller that forgets cannot
 // expose a shell-execution surface even if exec.Command itself does not
 // invoke a shell.
-func flushCphulk(ip string) {
-	flushCphulkIPs([]string{ip})
+func flushCphulk(ip string) error {
+	return flushCphulkIPs([]string{ip})
 }
 
 // flushCphulkIPs uses the WHM API's indexed array arguments so a bulk
 // firewall action starts one whmapi1 process instead of one per address.
-func flushCphulkIPs(ips []string) {
+// It returns whmapi1's failure, including whmapi1 not being installed, so
+// a caller reports the flush only when it ran.
+func flushCphulkIPs(ips []string) error {
 	args := []string{"flush_cphulk_login_history_for_ips"}
 	valid := 0
 	for _, ip := range ips {
@@ -1683,11 +1778,14 @@ func flushCphulkIPs(ips []string) {
 		valid++
 	}
 	if valid == 0 {
-		return
+		return nil
 	}
 	// #nosec G204 -- whmapi1 is fixed and every argument value is parsed as
 	// an IP above. exec.Command passes arguments directly without a shell.
-	_, _ = exec.Command("whmapi1", args...).Output()
+	if _, err := exec.Command("whmapi1", args...).Output(); err != nil {
+		return fmt.Errorf("whmapi1: %w", err)
+	}
+	return nil
 }
 
 // apiExport returns a JSON bundle of exportable state.
@@ -1708,7 +1806,7 @@ func (s *Server) apiExport(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	bundle := map[string]interface{}{
-		"exported_at":  time.Now().Format(time.RFC3339),
+		"exported_at":  time.Now().UTC(),
 		"hostname":     s.cfg.Hostname,
 		"suppressions": suppressions,
 		"whitelist":    whitelist,
@@ -1725,47 +1823,59 @@ func (s *Server) apiImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The bundle is what /api/v1/export writes; the decoder refuses unknown
+	// fields, so every field the export carries is named here.
 	var bundle struct {
+		ExportedAt   string                  `json:"exported_at"`
+		Hostname     string                  `json:"hostname"`
 		Suppressions []state.SuppressionRule `json:"suppressions"`
-		Whitelist    []struct {
-			IP string `json:"ip"`
-		} `json:"whitelist"`
+		Whitelist    []checks.WhitelistIP    `json:"whitelist"`
 	}
 	if err := decodeJSONBodyLimited(w, r, 512*1024, &bundle); err != nil {
 		writeJSONError(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
 
-	imported := 0
+	imported, skipped := 0, 0
+	warning := ""
 
 	// Merge suppressions (dedup by ID)
 	if len(bundle.Suppressions) > 0 {
-		existing := s.store.LoadSuppressions()
-		existingIDs := make(map[string]bool)
-		for _, rule := range existing {
-			existingIDs[rule.ID] = true
-		}
-		for _, rule := range bundle.Suppressions {
-			// Same contract as a rule added through the UI: a check is
-			// required (a rule without one suppresses nothing and only
-			// clutters the list), and every rule needs an ID or it can
-			// never be deleted from the UI.
-			if strings.TrimSpace(rule.Check) == "" {
-				continue
-			}
-			if rule.ID == "" {
-				rule.ID = newSuppressionID()
-			}
-			if rule.CreatedAt.IsZero() {
-				rule.CreatedAt = time.Now()
-			}
-			if !existingIDs[rule.ID] {
+		err := s.store.UpdateSuppressions(func(existing []state.SuppressionRule) ([]state.SuppressionRule, error) {
+			existingIDs := make(map[string]bool)
+			for _, rule := range existing {
 				existingIDs[rule.ID] = true
-				existing = append(existing, rule)
-				imported++
 			}
-		}
-		if err := s.store.SaveSuppressions(existing); err != nil {
+			for _, rule := range bundle.Suppressions {
+				// Same contract as a rule added through the UI: a check name
+				// and a valid glob are required (otherwise the rule
+				// suppresses nothing and only clutters the list), and every
+				// rule needs an ID or it can never be deleted from the UI.
+				if !suppressionCheckName.MatchString(rule.Check) {
+					skipped++
+					continue
+				}
+				if rule.PathPattern != "" {
+					if _, err := filepath.Match(rule.PathPattern, ""); err != nil {
+						skipped++
+						continue
+					}
+				}
+				if rule.ID == "" {
+					rule.ID = newSuppressionID()
+				}
+				if rule.CreatedAt.IsZero() {
+					rule.CreatedAt = time.Now()
+				}
+				if !existingIDs[rule.ID] {
+					existingIDs[rule.ID] = true
+					existing = append(existing, rule)
+					imported++
+				}
+			}
+			return existing, nil
+		})
+		if err != nil {
 			writeJSONError(w, fmt.Sprintf("failed to save suppressions: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -1773,37 +1883,50 @@ func (s *Server) apiImport(w http.ResponseWriter, r *http.Request) {
 
 	// Merge whitelist IPs
 	if len(bundle.Whitelist) > 0 {
-		if tdb := checks.GetThreatDB(); tdb != nil {
-			existingWL := tdb.WhitelistedIPs()
+		tdb := checks.GetThreatDB()
+		if tdb == nil {
+			skipped += len(bundle.Whitelist)
+			warning = "The threat database is not available; whitelist entries were not imported."
+		} else {
 			existingSet := make(map[string]bool)
-			for _, w := range existingWL {
+			for _, w := range tdb.WhitelistedIPs() {
 				existingSet[w.IP] = true
 			}
+			now := time.Now()
 			for _, entry := range bundle.Whitelist {
 				// Validate imported IPs like every interactive route does: an
 				// unvalidated bundle could otherwise poison the threat DB /
 				// firewall allow-list with malformed or attacker-chosen entries
 				// (whitelisting bypasses blocking). Use the canonical form.
 				ip, err := parseAndValidateIP(entry.IP)
-				if err != nil {
+				// Entries from the configuration file are managed there, and an
+				// expired temporary entry has nothing left to import.
+				if err != nil || entry.Configured || (entry.ExpiresAt != nil && !entry.ExpiresAt.After(now)) {
+					skipped++
 					continue
 				}
 				canonical := ip.String()
-				if !existingSet[canonical] {
-					tdb.AddWhitelist(canonical)
-					existingSet[canonical] = true
-					imported++
+				if existingSet[canonical] {
+					continue
 				}
+				// A temporary entry stays temporary, with its remaining time.
+				if entry.ExpiresAt != nil {
+					tdb.TempWhitelist(canonical, entry.ExpiresAt.Sub(now))
+				} else {
+					tdb.AddWhitelist(canonical)
+				}
+				existingSet[canonical] = true
+				imported++
 			}
 		}
 	}
 
-	s.auditLog(r, "import", "state", fmt.Sprintf("imported %d items", imported))
-	writeJSON(w, map[string]interface{}{
-		"status":   "imported",
-		"imported": imported,
-		"summary":  fmt.Sprintf("%d items imported", imported),
-	})
+	s.auditLog(r, "import", "state", fmt.Sprintf("imported %d items, skipped %d", imported, skipped))
+	resp := map[string]interface{}{"imported": imported, "skipped": skipped}
+	if warning != "" {
+		resp["warning"] = warning
+	}
+	writeOK(w, resp)
 }
 
 // apiFindingDetail returns detail about a specific finding including related actions.
@@ -1825,10 +1948,10 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get state entry for this finding (first/last seen)
-	var firstSeen, lastSeen string
+	var firstSeen, lastSeen time.Time
 	if entry, ok := s.store.EntryForKey(key); ok {
-		firstSeen = entry.FirstSeen.Format(time.RFC3339)
-		lastSeen = entry.LastSeen.Format(time.RFC3339)
+		firstSeen = entry.FirstSeen.UTC()
+		lastSeen = entry.LastSeen.UTC()
 	}
 
 	// Search audit log for related actions
@@ -1837,10 +1960,10 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 	// Search history for related findings (same check type, last 50)
 	allHistory, _ := s.store.ReadHistory(2000, 0)
 	type histEntry struct {
-		Severity  int    `json:"severity"`
-		Check     string `json:"check"`
-		Message   string `json:"message"`
-		Timestamp string `json:"timestamp"`
+		Severity  string    `json:"severity"`
+		Check     string    `json:"check"`
+		Message   string    `json:"message"`
+		Timestamp time.Time `json:"timestamp"`
 	}
 	var related []histEntry
 	for _, f := range allHistory {
@@ -1849,33 +1972,42 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		if f.Check == check {
 			related = append(related, histEntry{
-				Severity:  int(f.Severity),
+				Severity:  f.Severity.String(),
 				Check:     f.Check,
 				Message:   f.Message,
-				Timestamp: f.Timestamp.Format(time.RFC3339),
+				Timestamp: f.Timestamp.UTC(),
 			})
 		}
 	}
 
-	writeJSON(w, map[string]interface{}{
-		"check":      check,
-		"message":    message,
-		"first_seen": firstSeen,
-		"last_seen":  lastSeen,
-		"actions":    actions,
-		"related":    related,
-	})
+	detail := map[string]interface{}{
+		"check":   check,
+		"message": message,
+		"actions": actions,
+		"related": related,
+	}
+	if !firstSeen.IsZero() {
+		detail["first_seen"] = firstSeen
+		detail["last_seen"] = lastSeen
+	}
+	writeJSON(w, detail)
 }
 
-// extractAccountFromFinding extracts a cPanel account name from a finding
-// by checking the message, details, and file path for /home/{user}/ patterns
-// or "Account: " / "user: " in the details field (used by login checks).
+// extractAccountFromFinding returns the cPanel account a finding belongs to:
+// the owner the check recorded (TenantID, or CPUser for mail relay), else a
+// /home/{user}/ path in the message, details or file path, else "Account: "
+// / "user: " in the details field (used by login checks).
 func extractAccountFromFinding(f alert.Finding) string {
+	for _, owner := range []string{f.TenantID, f.CPUser} {
+		if owner = strings.TrimSpace(owner); owner != "" {
+			return owner
+		}
+	}
 	if f.FilePath == "" && (f.Check == "wp_core_unverified" || f.Check == "wp_plugin_inventory_unverified") {
 		// Collapsed coverage warnings carry an account only when every
 		// installation shares it. Their bounded path sample cannot establish
 		// ownership, even when it happens to show just one account.
-		return f.TenantID
+		return ""
 	}
 	for _, s := range []string{f.Message, f.Details, f.FilePath} {
 		if idx := strings.Index(s, "/home/"); idx >= 0 {
@@ -1901,18 +2033,142 @@ func extractAccountFromFinding(f alert.Finding) string {
 }
 
 func writeJSONError(w http.ResponseWriter, message string, code int) {
+	writeJSONStatus(w, code, map[string]string{"error": message})
+}
+
+// writeJSON sends compact JSON: indentation added about a third to large
+// lists such as findings and history, and nothing reads it but code.
+func writeJSON(w http.ResponseWriter, data interface{}) {
+	writeJSONStatus(w, http.StatusOK, data)
+}
+
+// writeJSONStatus sends data as JSON with the given status code.
+func writeJSONStatus(w http.ResponseWriter, code int, data interface{}) {
+	body, err := apiValue(data)
+	var encoded []byte
+	if err == nil {
+		encoded, err = json.Marshal(body)
+	}
+	if err != nil {
+		code = http.StatusInternalServerError
+		encoded, _ = json.Marshal(map[string]string{"error": err.Error()})
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+	_, _ = w.Write(append(encoded, '\n'))
 }
 
-func writeJSON(w http.ResponseWriter, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(data)
+// durationSeconds reads Go duration text such as "24h" as seconds. ok is
+// false when the text is empty or not a duration.
+func durationSeconds(text string) (float64, bool) {
+	d, err := time.ParseDuration(text)
+	if err != nil {
+		return 0, false
+	}
+	return d.Seconds(), true
 }
 
+// writeItems answers a collection: {"items": [...]} plus extra, which holds
+// "total" when the handler counted the matches, the paging keys and side
+// data. A nil list goes out as [] so an empty collection is never null.
+func writeItems[T any](w http.ResponseWriter, items []T, extra map[string]interface{}) {
+	if items == nil {
+		items = []T{}
+	}
+	body := make(map[string]interface{}, len(extra)+1)
+	for k, v := range extra {
+		body[k] = v
+	}
+	body["items"] = items
+	writeJSON(w, body)
+}
+
+// writeAll answers a collection that holds every match, with their count.
+func writeAll[T any](w http.ResponseWriter, items []T) {
+	writeItems(w, items, map[string]interface{}{"total": len(items)})
+}
+
+// writeCapped answers a collection cut to limit items out of total matches.
+func writeCapped[T any](w http.ResponseWriter, items []T, total, limit int, extra map[string]interface{}) {
+	if extra == nil {
+		extra = map[string]interface{}{}
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	extra["total"] = total
+	extra["offset"] = 0
+	extra["limit"] = limit
+	extra["truncated"] = total > len(items) || extra["truncated"] == true
+	writeItems(w, items, extra)
+}
+
+// writeOK answers a successful action: "ok": true plus the action's fields.
+func writeOK(w http.ResponseWriter, fields map[string]interface{}) {
+	writeOKStatus(w, http.StatusOK, fields)
+}
+
+// writeOKStatus is writeOK with another 2xx status, such as 202 for work
+// that continues after the response.
+func writeOKStatus(w http.ResponseWriter, code int, fields map[string]interface{}) {
+	body := make(map[string]interface{}, len(fields)+1)
+	for k, v := range fields {
+		body[k] = v
+	}
+	body["ok"] = true
+	writeJSONStatus(w, code, body)
+}
+
+// writeRemediation answers one fix. A fix that did not apply is an error:
+// 422 when the target was not eligible and left unchanged, 500 when applying
+// it failed.
+func writeRemediation(w http.ResponseWriter, res checks.RemediationResult) {
+	if !res.Success {
+		msg := res.Error
+		if msg == "" {
+			msg = "The fix did not apply"
+		}
+		code := http.StatusInternalServerError
+		if res.Refused {
+			code = http.StatusUnprocessableEntity
+		}
+		body := map[string]interface{}{"error": msg}
+		if res.Action != "" {
+			body["action"] = res.Action
+		}
+		writeJSONStatus(w, code, body)
+		return
+	}
+	fields := map[string]interface{}{"action": res.Action, "description": res.Description}
+	if res.Reverted {
+		fields["reverted"] = true
+	}
+	writeOK(w, fields)
+}
+
+// writeRequestError answers a failure from middleware that guards both API
+// and page routes: JSON under /api/, plain text elsewhere.
+func writeRequestError(w http.ResponseWriter, r *http.Request, msg string, code int) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeJSONError(w, msg, code)
+		return
+	}
+	http.Error(w, msg, code)
+}
+
+// apiNotFound answers every /api/ path no route matches. Without it the
+// page catch-all served the dashboard HTML with 200 to API clients.
+// Unauthenticated callers get 401, as for a real route.
+func (s *Server) apiNotFound(w http.ResponseWriter, r *http.Request) {
+	if !s.tokenHasScope(r, "read") {
+		writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	writeJSONError(w, "Not found", http.StatusNotFound)
+}
+
+// queryInt reads a non-negative integer query parameter. A missing, negative
+// or non-numeric value gives defaultVal.
 func queryInt(r *http.Request, key string, defaultVal int) int {
 	val := r.URL.Query().Get(key)
 	if val == "" {

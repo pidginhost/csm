@@ -65,23 +65,8 @@
 
     // ---------- Status strip ----------
 
-    function chip(opts) {
-        var span = document.createElement('span');
-        span.className = 'csm-status-strip__chip' + (opts.cls ? ' ' + opts.cls : '');
-        if (opts.title) span.title = opts.title;
-        var icon = document.createElement('i');
-        icon.className = 'ti ' + (opts.icon || 'ti-circle');
-        span.appendChild(icon);
-        var val = document.createElement('span');
-        val.className = 'csm-status-strip__chip-value';
-        val.textContent = opts.value;
-        span.appendChild(val);
-        var lbl = document.createElement('span');
-        lbl.className = 'csm-status-strip__chip-label';
-        lbl.textContent = opts.label;
-        span.appendChild(lbl);
-        return span;
-    }
+    // Shared builders; see csm-ui.js.
+    var chip = CSM.statusChip;
 
     var _strip = { stats: null, latest: '' };
 
@@ -95,7 +80,7 @@
                 title: 'Total ModSecurity blocks matching the current filters' }));
             el.appendChild(chip({ icon: 'ti-network', value: String(s.unique_ips || 0), label: 'unique IPs' }));
             if ((s.escalated || 0) > 0) {
-                el.appendChild(chip({ icon: 'ti-firewall', value: String(s.escalated), label: 'escalated',
+                el.appendChild(chip({ icon: 'ti-firewall-check', value: String(s.escalated), label: 'escalated',
                     cls: 'csm-status-strip__chip--crit', title: 'Blocks escalated to firewall' }));
             }
             if (s.top_rule && s.top_rule !== '--') {
@@ -129,29 +114,7 @@
 
     // ---------- Active WAF pressure (csm-summary-list) + side summaries ----------
 
-    function buildEmpty(icon, title, reason) {
-        var wrap = document.createElement('div');
-        wrap.className = 'csm-empty';
-        var i = document.createElement('div');
-        i.className = 'csm-empty__icon';
-        var ie = document.createElement('i');
-        ie.className = 'ti ti-' + icon;
-        i.appendChild(ie);
-        wrap.appendChild(i);
-        if (title) {
-            var t = document.createElement('div');
-            t.className = 'csm-empty__title';
-            t.textContent = title;
-            wrap.appendChild(t);
-        }
-        if (reason) {
-            var r = document.createElement('div');
-            r.className = 'csm-empty__reason';
-            r.textContent = reason;
-            wrap.appendChild(r);
-        }
-        return wrap;
-    }
+    var buildEmpty = CSM.emptyStateNode;
 
     function statusFor(block) {
         return block.escalated ? 'escalated' : 'waf';
@@ -219,6 +182,13 @@
         return 0;
     }
 
+    // sortInstant is a time's sort key: epoch millis, which the table
+    // compares as numbers, so sub-second order survives.
+    function sortInstant(iso) {
+        var ms = CSM.parseTimestamp(iso);
+        return isNaN(ms) ? '' : String(ms);
+    }
+
     function ageLabel(iso, fallback) {
         if (iso && CSM.timeAgo) return CSM.timeAgo(iso);
         return fallback || '';
@@ -264,7 +234,7 @@
                 titleHTML: titleHTML,
                 meta: meta,
                 count: b.hits,
-                age: ageLabel(b.last_seen_iso, b.last_seen),
+                age: ageLabel(b.last_seen),
                 statusHTML: statusBadgeHTML(b),
                 onClick: (function(block) { return function() { openBlockDetail(block); }; })(b),
             });
@@ -345,7 +315,7 @@
         bodyHTML += '<dt class="col-4 text-muted">Hits</dt><dd class="col-8">' + b.hits + '</dd>';
         bodyHTML += '<dt class="col-4 text-muted">Status</dt><dd class="col-8">' + statusBadgeHTML(b) + '</dd>';
         if (b.first_seen) bodyHTML += '<dt class="col-4 text-muted">First seen</dt><dd class="col-8">' + CSM.fmtDate(b.first_seen) + '</dd>';
-        if (b.last_seen_iso) bodyHTML += '<dt class="col-4 text-muted">Last seen</dt><dd class="col-8">' + CSM.fmtDate(b.last_seen_iso) + '</dd>';
+        if (b.last_seen) bodyHTML += '<dt class="col-4 text-muted">Last seen</dt><dd class="col-8">' + CSM.fmtDate(b.last_seen) + '</dd>';
         if (b.domain_count != null) bodyHTML += '<dt class="col-4 text-muted">Domains</dt><dd class="col-8">' + b.domain_count + '</dd>';
         bodyHTML += '</dl>';
 
@@ -375,7 +345,7 @@
 
         var footerHTML = '';
         footerHTML += '<a class="btn btn-ghost-secondary btn-sm" href="/threat?ip=' + encodeURIComponent(b.ip) + '"><i class="ti ti-radar"></i>&nbsp;Threat Intel</a>';
-        footerHTML += '<a class="btn btn-ghost-secondary btn-sm" href="/firewall?view=lookup&ip=' + encodeURIComponent(b.ip) + '"><i class="ti ti-firewall"></i>&nbsp;Firewall</a>';
+        footerHTML += '<a class="btn btn-ghost-secondary btn-sm" href="/firewall?ip=' + encodeURIComponent(b.ip) + '"><i class="ti ti-firewall-check"></i>&nbsp;Firewall</a>';
         footerHTML += '<a class="btn btn-ghost-secondary btn-sm" href="/modsec/rules?rule=' + encodeURIComponent(b.rule_id || '') + '"><i class="ti ti-settings"></i>&nbsp;Rule</a>';
 
         CSM.detailPanel.open({
@@ -390,21 +360,17 @@
 
     function loadBlocked() {
         CSM.get('/api/v1/modsec/blocks' + modsecQuery())
-            .then(function(blocks) {
-                _modsecBlocks = blocks || [];
+            .then(function(data) {
+                _modsecBlocks = data.items;
                 populateCountryFilter('modsec-country-filter', _modsecBlocks);
                 renderActiveWAFPressure(_modsecBlocks);
                 renderSideSummaries(_modsecBlocks);
                 renderBlockedTable(_modsecBlocks);
             })
-            .catch(function(e) {
-                document.getElementById('modsec-content').innerHTML = '<div class="card-body text-center text-danger py-3">Failed to load blocks</div>';
+            .catch(function(err) {
+                CSM.loadError(document.getElementById('modsec-content'), loadBlocked, { title: 'Failed to load blocks', error: err });
                 resetModSecBulkButton();
-                var p = document.getElementById('modsec-pressure');
-                if (p) {
-                    p.replaceChildren();
-                    p.appendChild(buildEmpty('alert-circle', 'Could not load WAF pressure', 'Retry from the refresh button.'));
-                }
+                CSM.loadError(document.getElementById('modsec-pressure'), loadBlocked, { title: 'Failed to load WAF pressure', error: err });
             });
     }
 
@@ -444,7 +410,7 @@
             h += '<td data-label="Description">' + CSM.esc(b.description || '') + '</td>';
             h += '<td data-label="Domains">' + CSM.esc(domains) + '</td>';
             h += '<td data-label="Hits"><strong>' + b.hits + '</strong></td>';
-            h += '<td data-label="Last Seen" data-sort="' + CSM.attr(b.last_seen_iso || '') + '">' + CSM.esc(CSM.fmtDate(b.last_seen_iso)) + '</td>';
+            h += '<td data-label="Last Seen" data-sort="' + CSM.attr(sortInstant(b.last_seen)) + '">' + CSM.esc(CSM.fmtDate(b.last_seen)) + '</td>';
             h += '<td data-label="Status">' + statusBadgeHTML(b) + '</td>';
             h += '</tr>';
         }
@@ -496,7 +462,7 @@
                 modsecBulkBtn.addEventListener('click', function() {
                     var rules = selectedModSecRuleIDs();
                     if (rules.length === 0) return;
-                    CSM.confirm('Disable ' + rules.length + ' ModSecurity rule(s)?\n\nThis writes the override and reloads ModSecurity.').then(function() {
+                    CSM.confirm('Disable ' + rules.length + ' ModSecurity rule(s)?\n\nThis writes the override and reloads ModSecurity.', { danger: true, okLabel: 'Disable' }).then(function() {
                         modsecBulkBtn.disabled = true;
                         CSM.get('/api/v1/modsec/rules', { silent: true })
                             .then(function(data) {
@@ -504,7 +470,7 @@
                                     throw new Error('ModSecurity rule management is not configured');
                                 }
                                 var disabledSet = Object.create(null);
-                                (data.rules || []).forEach(function(rule) {
+                                data.items.forEach(function(rule) {
                                     var id = modsecRuleID(rule.id);
                                     if (id !== null && rule.enabled === false) disabledSet[id] = true;
                                 });
@@ -541,17 +507,16 @@
         if (eventsLoaded) return;
         eventsLoaded = true;
         CSM.get('/api/v1/modsec/events' + modsecQuery() + '&limit=100')
-            .then(function(events) {
-                _modsecEvents = events || [];
+            .then(function(data) {
+                _modsecEvents = data.items;
                 populateCountryFilter('events-country-filter', _modsecEvents);
-                _strip.latest = _modsecEvents.length > 0 ? _modsecEvents[0].time : '';
+                _strip.latest = _modsecEvents.length > 0 ? CSM.timeAgo(_modsecEvents[0].time) : '';
                 refreshStatusStrip();
                 renderEvents(_modsecEvents);
             })
-            .catch(function() {
-                var el = document.getElementById('modsec-events');
-                if (el) el.innerHTML = '<div class="card-body text-center text-danger py-3">Failed to load events</div>';
+            .catch(function(err) {
                 eventsLoaded = false;
+                CSM.loadError(document.getElementById('modsec-events'), loadEvents, { title: 'Failed to load events', error: err });
             });
     }
 
@@ -574,9 +539,9 @@
         h += '</tr></thead><tbody>';
         for (var i = 0; i < events.length; i++) {
             var e = events[i];
-            var sevClass = CSM.severityClassFromLabel(e.severity);
+            var sevClass = CSM.severity(e.severity).cls;
             h += '<tr>';
-            h += '<td class="text-nowrap" data-sort="' + CSM.attr(e.time_iso || '') + '">' + CSM.esc(CSM.fmtDate(e.time_iso)) + '</td>';
+            h += '<td class="text-nowrap" data-sort="' + CSM.attr(sortInstant(e.time)) + '">' + CSM.esc(CSM.fmtDate(e.time)) + '</td>';
             h += '<td><code>' + CSM.esc(e.ip) + '</code></td>';
             h += '<td data-label="Location">' + (e.country ? CSM.countryFlag(e.country) + ' ' + CSM.esc(e.country) : '<span class="text-muted">--</span>') + '</td>';
             h += '<td><code>' + CSM.esc(e.rule_id) + '</code></td>';
@@ -604,42 +569,15 @@
         if (CSM.applyTruncateMiddle) CSM.applyTruncateMiddle(el);
     }
 
-    // /api/v1/geoip/batch caps each request at 500 IPs, so chunk the call;
-    // hosts with thousands of unique attackers otherwise see HTTP 400.
-    var GEOIP_CHUNK = 250;
-
+    // The server already put the country it knows into each cell; the batch
+    // lookup adds the network, and a failure leaves the cell as it was.
     function enrichGeoIP(container) {
-        var cells = container.querySelectorAll('.geo-cell');
-        if (cells.length === 0) return;
-        // Map IP -> [cell, ...] so chunked responses paint every matching cell.
-        var byIP = {};
-        for (var i = 0; i < cells.length; i++) {
-            var ip = cells[i].dataset.ip;
-            if (!ip) continue;
-            (byIP[ip] = byIP[ip] || []).push(cells[i]);
-        }
-        var uniqueIPs = Object.keys(byIP);
-        if (uniqueIPs.length === 0) return;
-
-        function paint(results) {
-            for (var ip in results) {
-                if (!Object.prototype.hasOwnProperty.call(results, ip)) continue;
-                var matched = byIP[ip];
-                if (!matched) continue;
-                var g = results[ip];
-                if (!g || !g.country) continue;
-                var html = CSM.countryFlag(g.country) + ' ' + CSM.esc(g.country);
-                if (g.as_org) html += '<br><small class="text-muted">' + CSM.esc(g.as_org) + '</small>';
-                for (var k = 0; k < matched.length; k++) matched[k].innerHTML = html;
-            }
-        }
-
-        for (var s = 0; s < uniqueIPs.length; s += GEOIP_CHUNK) {
-            var slice = uniqueIPs.slice(s, s + GEOIP_CHUNK);
-            CSM.post('/api/v1/geoip/batch', { ips: slice })
-                .then(function(data) { paint(data.results || {}); })
-                .catch(function() { /* non-fatal */ });
-        }
+        CSM.enrichGeoIP(container, { format: function(g) {
+            if (!g.country) return '';
+            var html = CSM.countryFlag(g.country) + ' ' + CSM.esc(g.country);
+            if (g.as_org) html += '<br><small class="text-muted">' + CSM.esc(g.as_org) + '</small>';
+            return html;
+        } });
     }
 
     // ---------- Tab activation + filters ----------

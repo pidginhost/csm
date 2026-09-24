@@ -13,6 +13,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
+	"github.com/pidginhost/csm/internal/mailfwd/intel"
 	"github.com/pidginhost/csm/internal/systemdrun"
 	"github.com/pidginhost/csm/internal/yara"
 )
@@ -21,11 +22,13 @@ type emailStatsResponse struct {
 	QueueSize int `json:"queue_size"`
 	// QueueUnavailable marks queue_size as meaningless because the depth could
 	// not be read. Without it a failed probe looks like an empty queue.
-	QueueUnavailable bool             `json:"queue_unavailable"`
-	QueueWarn        int              `json:"queue_warn"`
-	QueueCrit        int              `json:"queue_crit"`
-	FrozenCount      int              `json:"frozen_count"`
-	OldestAge        string           `json:"oldest_age"`
+	QueueUnavailable bool `json:"queue_unavailable"`
+	QueueWarn        int  `json:"queue_warn"`
+	QueueCrit        int  `json:"queue_crit"`
+	FrozenCount      int  `json:"frozen_count"`
+	// OldestAgeSeconds is the age of the oldest queued message; left out
+	// when the queue is empty or could not be read.
+	OldestAgeSeconds *int             `json:"oldest_age_seconds,omitempty"`
 	SMTPBlock        bool             `json:"smtp_block"`
 	SMTPAllowUsers   []string         `json:"smtp_allow_users"`
 	SMTPPorts        []int            `json:"smtp_ports"`
@@ -37,7 +40,7 @@ type portFloodEntry struct {
 	Port    int    `json:"port"`
 	Proto   string `json:"proto"`
 	Hits    int    `json:"hits"`
-	Seconds int    `json:"seconds"`
+	Seconds int    `json:"window_seconds"`
 }
 
 type senderEntry struct {
@@ -56,7 +59,12 @@ func (s *Server) apiEmailStats(w http.ResponseWriter, _ *http.Request) {
 	var queueKnown bool
 	resp.QueueSize, queueKnown = eximQueueSize()
 	resp.QueueUnavailable = !queueKnown
-	resp.FrozenCount, resp.OldestAge = eximQueueDetails()
+	var oldestAge string
+	resp.FrozenCount, oldestAge = eximQueueDetails()
+	if oldestAge != "" {
+		secs := intel.AgeToSeconds(oldestAge)
+		resp.OldestAgeSeconds = &secs
+	}
 
 	// Firewall config
 	fw := cfg.Firewall
@@ -104,7 +112,7 @@ func (s *Server) apiEmailQuarantineList(w http.ResponseWriter, r *http.Request) 
 	}
 	quarantine := s.emailQuarantineHandle()
 	if quarantine == nil {
-		writeJSON(w, []emailav.QuarantineMetadata{})
+		writeAll(w, []emailav.QuarantineMetadata{})
 		return
 	}
 	msgs, err := quarantine.ListMessages()
@@ -112,10 +120,7 @@ func (s *Server) apiEmailQuarantineList(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, "Failed to list quarantine", http.StatusInternalServerError)
 		return
 	}
-	if msgs == nil {
-		msgs = []emailav.QuarantineMetadata{}
-	}
-	writeJSON(w, msgs)
+	writeAll(w, msgs)
 }
 
 // apiEmailQuarantineAction handles GET, POST (release), and DELETE operations on
@@ -168,7 +173,8 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 			writeJSONError(w, "Failed to release message: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, map[string]string{"status": "released", "message_id": msgID})
+		s.auditLog(r, "email_quarantine_release", msgID, "released to the mail queue")
+		writeOK(w, map[string]interface{}{"message_id": msgID})
 
 	case http.MethodDelete:
 		if action != "" {
@@ -179,7 +185,8 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 			writeJSONError(w, "Failed to delete message: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, map[string]string{"status": "deleted", "message_id": msgID})
+		s.auditLog(r, "email_quarantine_delete", msgID, "deleted permanently")
+		writeOK(w, map[string]interface{}{"message_id": msgID})
 
 	default:
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)

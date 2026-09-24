@@ -22,7 +22,10 @@
         return active ? active.getAttribute('data-hours') : '72';
     }
 
+    var activeTab = 'incidents';
+
     function switchTab(name) {
+        activeTab = name;
         var tabs = [
             { tab: 'incidents-tab', panel: 'incidents-panel', name: 'incidents' },
             { tab: 'grouped-tab',   panel: 'grouped-panel',   name: 'grouped' },
@@ -66,11 +69,6 @@
         return k;
     }
 
-    function severityNumber(label) {
-        if (label === 'CRITICAL') return 2;
-        if (label === 'HIGH') return 1;
-        return 0;
-    }
 
     function incidentSourceIP(inc) {
         if (!inc) return '';
@@ -116,7 +114,7 @@
         CSM.get('/api/v1/firewall/check?ip=' + encodeURIComponent(ip))
             .then(function(r) {
                 var target = document.getElementById(targetID);
-                if (!r || r.success === false) {
+                if (!r) {
                     setFirewallStatus(target, requestedIP, 'lookup failed', 'muted');
                     return;
                 }
@@ -160,8 +158,8 @@
         if (kind) qs += '&kind=' + encodeURIComponent(kind);
         CSM.get('/api/v1/incidents/groups?' + qs)
             .then(function(data) {
-                groupedPageTotal = (data && typeof data.total_groups === 'number') ? data.total_groups : 0;
-                groupedPageReturned = (data && Array.isArray(data.groups)) ? data.groups.length : 0;
+                groupedPageTotal = data.total;
+                groupedPageReturned = data.items.length;
                 if (groupedPageTotal > 0 && groupedPageReturned === 0 && groupedPageOffset >= groupedPageTotal) {
                     groupedPageOffset = lastGroupedPageOffset();
                     loadGroups();
@@ -170,15 +168,11 @@
                 renderGroups(data, content, footer);
                 renderGroupedPagination();
             })
-            .catch(function() {
+            .catch(function(err) {
                 groupedPageTotal = 0;
                 groupedPageReturned = 0;
                 content.replaceChildren();
-                var empty = document.createElement('div');
-                empty.className = 'csm-empty';
-                empty.innerHTML = '<div class="csm-empty__icon"><i class="ti ti-alert-circle"></i></div>'
-                    + '<div class="csm-empty__reason">Could not load groups.</div>';
-                content.appendChild(empty);
+                CSM.loadError(content, loadGroups, { title: 'Failed to load incident groups', error: err });
                 if (footer) footer.textContent = '';
                 renderGroupedPagination();
             });
@@ -196,31 +190,15 @@
     }
 
     function renderGroupedPagination() {
-        var footer = document.getElementById('grouped-pagination');
-        if (!footer) return;
-        var limit = currentGroupedPageSize();
-        if (groupedPageTotal <= 0) {
-            footer.classList.add('d-none');
-            return;
-        }
-        footer.classList.remove('d-none');
-        var pageNum = Math.floor(groupedPageOffset / limit) + 1;
-        var totalPages = Math.max(1, Math.ceil(groupedPageTotal / limit));
-        var first = groupedPageOffset + 1;
-        var last = Math.min(groupedPageOffset + groupedPageReturned, groupedPageTotal);
-        var summary = document.getElementById('grouped-page-summary');
-        if (summary) summary.textContent = 'Showing ' + first + '-' + last + ' of ' + groupedPageTotal;
-        var indicator = document.getElementById('grouped-page-indicator');
-        if (indicator) indicator.textContent = pageNum + ' / ' + totalPages;
-        var pf = document.getElementById('grouped-page-first'); if (pf) pf.disabled = groupedPageOffset === 0;
-        var pp = document.getElementById('grouped-page-prev');  if (pp) pp.disabled = groupedPageOffset === 0;
-        var pn = document.getElementById('grouped-page-next');  if (pn) pn.disabled = groupedPageOffset + limit >= groupedPageTotal;
-        var pl = document.getElementById('grouped-page-last');  if (pl) pl.disabled = groupedPageOffset + limit >= groupedPageTotal;
+        CSM.pager(document.getElementById('grouped-pagination'), {
+            total: groupedPageTotal, offset: groupedPageOffset, limit: currentGroupedPageSize(),
+            count: groupedPageReturned, onOffset: setGroupedPageOffset
+        });
     }
 
     function renderGroups(data, content, footer) {
         content.replaceChildren();
-        var groups = (data && data.groups) || [];
+        var groups = data.items;
         if (groups.length === 0) {
             var empty = document.createElement('div');
             empty.className = 'csm-empty';
@@ -246,7 +224,7 @@
             if (g.contained_count) meta += ', ' + g.contained_count + ' contained';
             if (g.resolved_count) meta += ', ' + g.resolved_count + ' resolved';
             var item = CSM.summaryItem({
-                severity: severityNumber(g.severity_max),
+                severity: CSM.severity(g.severity_max).level,
                 titleHTML: titleHTML,
                 meta: meta,
                 count: g.incident_count,
@@ -256,9 +234,9 @@
             content.appendChild(item);
         }
         if (footer) {
-            var summary = data.total_groups + ' group' + (data.total_groups === 1 ? '' : 's')
+            var summary = data.total + ' group' + (data.total === 1 ? '' : 's')
                 + ' from ' + data.scanned_incidents + ' incident' + (data.scanned_incidents === 1 ? '' : 's');
-            if (data.truncated) summary += ' (scan capped)';
+            if (data.scan_truncated) summary += ' (scan capped)';
             footer.textContent = summary;
         }
     }
@@ -351,18 +329,9 @@
         params += '&status=' + encodeURIComponent(statusParam);
         CSM.get('/api/v1/incidents?' + params)
             .then(function(data) {
-                if (data && Array.isArray(data.items)) {
-                    incidents = data.items;
-                    pageTotal = typeof data.total === 'number' ? data.total : data.items.length;
-                    pageOffset = typeof data.offset === 'number' ? data.offset : pageOffset;
-                } else if (Array.isArray(data)) {
-                    incidents = data;
-                    pageTotal = data.length;
-                    pageOffset = 0;
-                } else {
-                    incidents = [];
-                    pageTotal = 0;
-                }
+                incidents = data.items;
+                pageTotal = data.total;
+                pageOffset = data.offset;
                 if (pageTotal > 0 && incidents.length === 0 && pageOffset >= pageTotal) {
                     pageOffset = lastPageOffset();
                     selectedID = '';
@@ -372,31 +341,14 @@
                 renderIncidentList();
                 renderPagination();
             })
-            .catch(function() { CSM.loadError(container, loadIncidents); });
+            .catch(function(err) { CSM.loadError(container, loadIncidents, { title: 'Failed to load incidents', error: err }); });
     }
 
     function renderPagination() {
-        var footer = document.getElementById('incidents-pagination');
-        if (!footer) return;
-        var limit = currentPageSize();
-        if (pageTotal <= 0) {
-            footer.classList.add('d-none');
-            return;
-        }
-        footer.classList.remove('d-none');
-        var pageNum = Math.floor(pageOffset / limit) + 1;
-        var totalPages = Math.max(1, Math.ceil(pageTotal / limit));
-        var first = pageOffset + 1;
-        var last = Math.min(pageOffset + incidents.length, pageTotal);
-        document.getElementById('incidents-page-summary').textContent =
-            'Showing ' + first + '-' + last + ' of ' + pageTotal;
-        document.getElementById('incidents-page-indicator').textContent =
-            pageNum + ' / ' + totalPages;
-
-        document.getElementById('incidents-page-first').disabled = pageOffset === 0;
-        document.getElementById('incidents-page-prev').disabled = pageOffset === 0;
-        document.getElementById('incidents-page-next').disabled = pageOffset + limit >= pageTotal;
-        document.getElementById('incidents-page-last').disabled = pageOffset + limit >= pageTotal;
+        CSM.pager(document.getElementById('incidents-pagination'), {
+            total: pageTotal, offset: pageOffset, limit: currentPageSize(),
+            count: incidents.length, onOffset: setPageOffset
+        });
     }
 
     function setPageOffset(off) {
@@ -416,6 +368,7 @@
         var rows = incidents;
         if (rows.length === 0) {
             container.innerHTML = '<div class="card-body text-center text-muted py-4">No incidents match the current filter.</div>';
+            incidentBulk().refresh();
             if (pendingIncidentID) {
                 var pending = pendingIncidentID;
                 pendingIncidentID = '';
@@ -427,18 +380,19 @@
         }
 
         var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="incidents-correlated-table">';
-        html += '<thead><tr><th>Status</th><th>Severity</th><th>Kind</th><th>Owner</th><th>Findings</th><th>Updated</th></tr></thead><tbody>';
+        html += '<thead><tr><th class="w-1"><input type="checkbox" class="form-check-input" id="incidents-select-all" aria-label="Select all incidents on this page"></th><th>Status</th><th>Severity</th><th>Kind</th><th>Owner</th><th>Findings</th><th>Updated</th></tr></thead><tbody>';
         for (var i = 0; i < rows.length; i++) {
             var inc = rows[i];
             var owner = inc.mailbox || inc.domain || inc.account || keySummary(inc.correlation_key) || 'unknown';
             var active = inc.id === selectedID ? ' class="table-active"' : '';
-            html += '<tr data-incident-id="' + CSM.attr(inc.id) + '"' + active + '>';
+            html += '<tr data-incident-id="' + CSM.attr(inc.id) + '" tabindex="0"' + active + '>';
+            html += '<td><input type="checkbox" class="form-check-input incident-cb" data-incident-id="' + CSM.attr(inc.id) + '" aria-label="Select incident ' + CSM.attr(labelize(inc.kind) + ' ' + owner) + '"></td>';
             html += '<td><span class="badge bg-' + (statusClasses[inc.status] || 'secondary') + '-lt">' + CSM.esc(inc.status) + '</span></td>';
-            html += '<td data-sort="' + severityNumber(inc.severity) + '"><span class="badge badge-' + CSM.severityClassFromLabel(inc.severity) + '">' + CSM.esc(inc.severity || 'UNKNOWN') + '</span></td>';
+            html += '<td data-sort="' + CSM.severity(inc.severity).rank + '"><span class="badge badge-' + CSM.severity(inc.severity).cls + '">' + CSM.esc(inc.severity || 'UNKNOWN') + '</span></td>';
             html += '<td>' + CSM.esc(labelize(inc.kind)) + '</td>';
             html += '<td><span class="text-truncate d-inline-block csm-tw-260">' + CSM.esc(owner) + '</span></td>';
             html += '<td>' + ((inc.findings || []).length) + '</td>';
-            html += '<td class="text-muted text-nowrap" data-timestamp="' + CSM.attr(inc.updated_at) + '">' + CSM.esc(CSM.timeAgo(inc.updated_at)) + '</td>';
+            html += '<td class="text-muted text-nowrap" data-timestamp="' + CSM.attr(inc.updated_at) + '" data-time-ago="' + CSM.attr(inc.updated_at) + '">' + CSM.esc(CSM.timeAgo(inc.updated_at)) + '</td>';
             html += '</tr>';
         }
         html += '</tbody></table></div>';
@@ -448,7 +402,8 @@
             perPage: 0,
             search: false,
             sortable: true,
-            stateKey: 'csm-incidents-correlated',
+            // v2: a checkbox column now comes first, shifting saved sort columns.
+            stateKey: 'csm-incidents-correlated-v2',
             controls: false,
             persistPerPage: false,
             mobileRowCard: true
@@ -457,10 +412,17 @@
 
         var trs = container.querySelectorAll('tr[data-incident-id]');
         trs.forEach(function(tr) {
-            tr.addEventListener('click', function() {
+            tr.addEventListener('click', function(e) {
+                if (e.target.closest('input')) return;
+                openIncident(this.getAttribute('data-incident-id'), true);
+            });
+            tr.addEventListener('keydown', function(e) {
+                if (e.target !== this || (e.key !== 'Enter' && e.key !== ' ')) return;
+                e.preventDefault();
                 openIncident(this.getAttribute('data-incident-id'), true);
             });
         });
+        incidentBulk().refresh();
 
         if (pendingIncidentID) {
             var pending = pendingIncidentID;
@@ -507,6 +469,10 @@
             html += '<div class="col-sm-6 col-lg-3"><div class="subheader">Firewall</div><div class="h3 m-0 text-muted" id="csm-incident-fw-status">Checking...</div><div class="text-muted small font-monospace">' + CSM.esc(incSourceIP) + '</div></div>';
         }
         html += '</div>';
+        var accountURL = CSM.accountURL(inc.account || (inc.correlation_key && inc.correlation_key.account));
+        if (accountURL) {
+            html += '<div class="mb-3"><a class="btn btn-ghost-secondary btn-sm" href="' + CSM.attr(accountURL) + '"><i class="ti ti-user"></i>&nbsp;Account page</a></div>';
+        }
         html += '<div class="timeline-list">';
         var events = (inc.timeline || []).slice().sort(function(a, b) {
             return new Date(b.time).getTime() - new Date(a.time).getTime();
@@ -561,7 +527,7 @@
     // attacker walk in the first place.
     function blockIncidentIP(id, ip, btn) {
         if (!ip) return;
-        return CSM.confirm('Block ' + ip + ' permanently?').then(function() {
+        return CSM.confirm('Block ' + ip + ' permanently?', { danger: true, okLabel: 'Block' }).then(function() {
             if (btn) btn.disabled = true;
             return CSM.post('/api/v1/block-ip', {
                 ip: ip,
@@ -576,10 +542,11 @@
                 }
                 attachFirewallStatus('csm-incident-fw-status', ip);
                 loadIncidentDetail(id);
+            }).catch(function(err) {
+                if (btn) btn.disabled = false;
+                CSM.toast('Block failed: ' + (err && err.message ? err.message : 'request failed'), 'error');
             });
-        }).catch(function() {
-            if (btn) btn.disabled = false;
-        });
+        }, function() { /* cancelled */ });
     }
 
     function statusButton(inc, status, icon) {
@@ -588,8 +555,66 @@
             '<i class="ti ti-' + CSM.attr(icon) + '"></i></button>';
     }
 
+    // incidentBulk drives the selection on the correlated list. It resolves
+    // the select-all box by selector because each render replaces the table.
+    var _incidentBulk = null;
+    var _incidentBulkInFlight = false;
+    function incidentBulk() {
+        if (!_incidentBulk) {
+            _incidentBulk = CSM.bulk({
+                rowCheckboxSelector: '.incident-cb',
+                selectAllSelector: '#incidents-select-all',
+                valueAttr: 'data-incident-id',
+                onChange: function(n) {
+                    var bar = document.getElementById('incidents-bulk-bar');
+                    if (bar) bar.hidden = n === 0;
+                    var count = document.getElementById('incidents-selected-count');
+                    if (count) count.textContent = String(n);
+                }
+            });
+        }
+        return _incidentBulk;
+    }
+
+    // bulkSetStatus changes each selected incident in turn and stops at the
+    // first failure, so the report says exactly which part was applied.
+    function bulkSetStatus(status) {
+        if (_incidentBulkInFlight) return;
+        var ids = incidentBulk().selectedValues();
+        if (ids.length === 0) return;
+        _incidentBulkInFlight = true;
+        CSM.confirm('Mark ' + ids.length + ' incident(s) ' + status + '?').then(function() {
+            var done = 0;
+            function next() {
+                if (done >= ids.length) return Promise.resolve();
+                return CSM.post('/api/v1/incidents/' + encodeURIComponent(ids[done]) + '/status', {
+                    status: status,
+                    details: 'web-ui'
+                }).then(function() {
+                    done++;
+                    return next();
+                });
+            }
+            return next().then(function() {
+                CSM.toast('Marked ' + done + ' incident(s) ' + status, 'success');
+            }, function(err) {
+                CSM.toast('Updated ' + done + ' of ' + ids.length + ' incident(s); the rest were not sent: ' + (err && err.message ? err.message : 'request failed'), 'error');
+            }).then(function() {
+                _incidentBulkInFlight = false;
+                incidentBulk().clear();
+                loadIncidents();
+            });
+        }, function() { _incidentBulkInFlight = false; });
+    }
+
+    document.querySelectorAll('#incidents-bulk-bar [data-bulk-status]').forEach(function(btn) {
+        btn.addEventListener('click', function() { bulkSetStatus(this.getAttribute('data-bulk-status')); });
+    });
+    var bulkCancel = document.getElementById('incidents-bulk-cancel');
+    if (bulkCancel) bulkCancel.addEventListener('click', function() { incidentBulk().clear(); });
+
     function setIncidentStatus(id, status) {
-        CSM.post('/api/v1/incidents/' + encodeURIComponent(id) + '/status', {
+        return CSM.post('/api/v1/incidents/' + encodeURIComponent(id) + '/status', {
             status: status,
             details: 'web-ui'
         }).then(function() {
@@ -597,6 +622,8 @@
             pendingIncidentID = id;
             loadIncidents();
             loadIncidentDetail(id);
+        }).catch(function(err) {
+            CSM.toast('Incident not updated: ' + (err && err.message ? err.message : 'request failed'), 'error');
         });
     }
 
@@ -612,7 +639,7 @@
         if (e.remote_ip) bits.push(e.remote_ip);
         if (e.path) bits.push(e.path);
         return '<div class="d-flex mb-2 align-items-start">' +
-            '<div class="text-nowrap me-3 text-muted small csm-mw-80" data-timestamp="' + CSM.attr(e.time) + '">' + CSM.esc(CSM.timeAgo(e.time)) + '</div>' +
+            '<div class="text-nowrap me-3 text-muted small csm-mw-80" data-timestamp="' + CSM.attr(e.time) + '" data-time-ago="' + CSM.attr(e.time) + '">' + CSM.esc(CSM.timeAgo(e.time)) + '</div>' +
             '<div class="me-2"><span class="badge bg-azure-lt">Finding</span></div>' +
             '<div class="csm-break-word"><div class="fw-semibold">' + CSM.esc(e.check || e.kind || 'finding') + '</div>' +
             '<div>' + CSM.esc(e.message || '') + '</div>' +
@@ -622,7 +649,7 @@
 
     function actionHTML(a) {
         return '<div class="d-flex mb-2 align-items-start">' +
-            '<div class="text-nowrap me-3 text-muted small csm-mw-80" data-timestamp="' + CSM.attr(a.time) + '">' + CSM.esc(CSM.timeAgo(a.time)) + '</div>' +
+            '<div class="text-nowrap me-3 text-muted small csm-mw-80" data-timestamp="' + CSM.attr(a.time) + '" data-time-ago="' + CSM.attr(a.time) + '">' + CSM.esc(CSM.timeAgo(a.time)) + '</div>' +
             '<div class="me-2"><span class="badge bg-green-lt">Action</span></div>' +
             '<div class="csm-break-word"><div class="fw-semibold">' + CSM.esc(a.action || 'action') + '</div>' +
             '<div>' + CSM.esc(a.result || '') + '</div>' +
@@ -653,12 +680,12 @@
 
         CSM.get(url)
             .then(function(data) { renderTimeline(data); })
-            .catch(function() { CSM.loadError(container, loadTimeline); });
+            .catch(function(err) { CSM.loadError(container, loadTimeline, { title: 'Failed to load the timeline', error: err }); });
     }
 
     function renderTimeline(data) {
         var container = document.getElementById('incident-content');
-        var events = data.events || [];
+        var events = data.items;
         if (events.length === 0) {
             container.innerHTML = '<div class="card-body text-center text-muted py-4">No events found for this query.</div>';
             return;
@@ -671,13 +698,15 @@
 
         for (var i = 0; i < events.length; i++) {
             var e = events[i];
-            var sevClass = CSM.sevMap[e.severity] ? CSM.sevMap[e.severity].cls : 'info';
-            var sevLabel = CSM.sevMap[e.severity] ? CSM.sevMap[e.severity].label : 'INFO';
+            // Timeline entries without a severity are actions, shown as INFO.
+            var evSev = CSM.severity(e.severity);
+            var sevClass = evSev.level < 0 ? 'info' : evSev.cls;
+            var sevLabel = evSev.level < 0 ? 'INFO' : evSev.label;
             var typeLabel = e.type === 'finding' ? 'Finding' : e.type === 'action' ? 'Action' : 'Event';
             var ago = CSM.timeAgo(e.timestamp);
 
             html += '<div class="d-flex mb-2 align-items-start">';
-            html += '<div class="text-nowrap me-3 text-muted small csm-mw-80" data-timestamp="' + CSM.esc(e.timestamp) + '">' + CSM.esc(ago) + '</div>';
+            html += '<div class="text-nowrap me-3 text-muted small csm-mw-80" data-timestamp="' + CSM.esc(e.timestamp) + '" data-time-ago="' + CSM.esc(e.timestamp) + '">' + CSM.esc(ago) + '</div>';
             html += '<div class="me-2"><span class="badge badge-' + sevClass + '">' + sevLabel + '</span></div>';
             html += '<div class="me-2"><span class="badge bg-azure-lt">' + CSM.esc(typeLabel) + '</span></div>';
             html += '<div class="csm-break-word">' + CSM.esc(e.summary);
@@ -694,23 +723,22 @@
         var exportBtn = document.getElementById('incident-export');
         if (exportBtn) {
             exportBtn.addEventListener('click', function() {
-                var lines = ['Timestamp,Severity,Type,Summary,Details'];
-                for (var j = 0; j < events.length; j++) {
-                    var ev = events[j];
-                    lines.push([
-                        '"' + (ev.timestamp || '').replace(/"/g, '""') + '"',
-                        '"' + ((CSM.sevMap[ev.severity] ? CSM.sevMap[ev.severity].label : 'WARNING')).replace(/"/g, '""') + '"',
-                        '"' + (ev.type || '').replace(/"/g, '""') + '"',
-                        '"' + (ev.summary || '').replace(/"/g, '""') + '"',
-                        '"' + (ev.details || '').replace(/"/g, '""') + '"'
-                    ].join(','));
-                }
-                var blob = new Blob([lines.join('\n')], {type: 'text/csv'});
-                var url = URL.createObjectURL(blob);
-                var a = document.createElement('a');
-                a.href = url; a.download = 'csm-incident-' + new Date().toISOString().slice(0,10) + '.csv';
-                document.body.appendChild(a); a.click(); document.body.removeChild(a);
-                URL.revokeObjectURL(url);
+                var rows = events.map(function(ev) {
+                    return {
+                        timestamp: ev.timestamp || '',
+                        severity: CSM.severity(ev.severity).label,
+                        type: ev.type || '',
+                        summary: ev.summary || '',
+                        details: ev.details || ''
+                    };
+                });
+                CSM.exportTable(rows, [
+                    { key: 'timestamp', label: 'Timestamp' },
+                    { key: 'severity', label: 'Severity' },
+                    { key: 'type', label: 'Type' },
+                    { key: 'summary', label: 'Summary' },
+                    { key: 'details', label: 'Details' }
+                ], 'csv', 'csm-incident-' + new Date().toISOString().slice(0, 10));
             });
         }
     }
@@ -727,14 +755,6 @@
     if (groupedKind) groupedKind.addEventListener('change', function() { groupedPageOffset = 0; loadGroups(); });
     var groupedPageSize = document.getElementById('grouped-page-size');
     if (groupedPageSize) groupedPageSize.addEventListener('change', function() { groupedPageOffset = 0; loadGroups(); });
-    var gpf = document.getElementById('grouped-page-first');
-    if (gpf) gpf.addEventListener('click', function() { setGroupedPageOffset(0); });
-    var gpp = document.getElementById('grouped-page-prev');
-    if (gpp) gpp.addEventListener('click', function() { setGroupedPageOffset(groupedPageOffset - currentGroupedPageSize()); });
-    var gpn = document.getElementById('grouped-page-next');
-    if (gpn) gpn.addEventListener('click', function() { setGroupedPageOffset(groupedPageOffset + currentGroupedPageSize()); });
-    var gpl = document.getElementById('grouped-page-last');
-    if (gpl) gpl.addEventListener('click', function() { setGroupedPageOffset(lastGroupedPageOffset()); });
     document.getElementById('incidents-refresh-btn').addEventListener('click', loadIncidents);
     document.getElementById('incident-status-filter').addEventListener('change', function() {
         selectedID = '';
@@ -748,14 +768,6 @@
             loadIncidents();
         });
     }
-    var pf = document.getElementById('incidents-page-first');
-    if (pf) pf.addEventListener('click', function() { setPageOffset(0); });
-    var pp = document.getElementById('incidents-page-prev');
-    if (pp) pp.addEventListener('click', function() { setPageOffset(pageOffset - currentPageSize()); });
-    var pn = document.getElementById('incidents-page-next');
-    if (pn) pn.addEventListener('click', function() { setPageOffset(pageOffset + currentPageSize()); });
-    var pl = document.getElementById('incidents-page-last');
-    if (pl) pl.addEventListener('click', function() { setPageOffset(lastPageOffset()); });
     document.getElementById('incident-search-btn').addEventListener('click', loadTimeline);
     document.getElementById('incident-query').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') loadTimeline();
@@ -780,6 +792,21 @@
         selectedID = pendingIncidentID;
         loadIncidents();
     }
+
+    // A new finding can open or grow an incident. Reload the list, but not
+    // under a selection the operator is building for a bulk change.
+    if (CSM.live) CSM.live.onFinding(function() {
+        if (_incidentBulkInFlight || incidentBulk().selectedCount() > 0) return;
+        if (activeTab === 'grouped') loadGroups();
+        else if (activeTab === 'incidents') loadIncidents();
+    });
+
+    if (CSM.refresh) CSM.refresh.onRefresh(function() {
+        if (activeTab === 'grouped') loadGroups();
+        else if (activeTab === 'timeline') {
+            if (document.getElementById('incident-query').value.trim()) loadTimeline();
+        } else loadIncidents();
+    });
 
     window.addEventListener('hashchange', function() {
         var id = incidentIDFromHash();

@@ -41,7 +41,7 @@ func (s *Server) apiEmailHeldList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.forwardHeld == nil {
-		writeJSON(w, []quarantine.HeldMessage{})
+		writeAll(w, []quarantine.HeldMessage{})
 		return
 	}
 	msgs, err := s.forwardHeld.List()
@@ -49,10 +49,7 @@ func (s *Server) apiEmailHeldList(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Failed to list held forwards", http.StatusInternalServerError)
 		return
 	}
-	if msgs == nil {
-		msgs = []quarantine.HeldMessage{}
-	}
-	writeJSON(w, msgs)
+	writeAll(w, msgs)
 }
 
 // apiEmailHeldAction handles POST /api/v1/email/held/{id}/release (re-inject the
@@ -92,7 +89,7 @@ func (s *Server) apiEmailHeldAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.auditLog(r, "email_held_release", id, "re-injected held forward copy to its external recipient")
-		writeJSON(w, map[string]string{"status": "released", "id": id})
+		writeOK(w, map[string]interface{}{"id": id})
 
 	case http.MethodDelete:
 		if action != "" {
@@ -104,7 +101,7 @@ func (s *Server) apiEmailHeldAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.auditLog(r, "email_held_delete", id, "deleted held forward copy")
-		writeJSON(w, map[string]string{"status": "deleted", "id": id})
+		writeOK(w, map[string]interface{}{"id": id})
 
 	default:
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)

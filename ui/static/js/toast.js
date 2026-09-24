@@ -14,22 +14,25 @@
      * @param {string} message - The message to display.
      * @param {string} type    - 'success' | 'error' | 'warning' | 'info'
      */
+    // An error stays until closed; other toasts fade after five seconds. An
+    // error already on screen is not shown twice.
     CSM.toast = function(message, type) {
         type = type || 'info';
         var container = document.getElementById('csm-toasts');
         if (!container) return;
+        var key = type + '\u0000' + message;
+        if (type === 'error') {
+            var shown = container.children;
+            for (var s = 0; s < shown.length; s++) {
+                if (shown[s]._csmKey === key && !shown[s]._csmRemoved) return;
+            }
+        }
 
-        var bgClass = {
-            success: 'bg-success',
-            error:   'bg-danger',
-            warning: 'bg-warning',
-            info:    'bg-info'
-        }[type] || 'bg-info';
-
-        var textClass = (type === 'warning') ? 'text-dark' : 'text-white';
+        if (type !== 'success' && type !== 'error' && type !== 'warning') type = 'info';
 
         var toast = document.createElement('div');
-        toast.className = 'alert ' + bgClass + ' ' + textClass + ' d-flex align-items-center mb-2';
+        toast._csmKey = key;
+        toast.className = 'alert csm-toast--' + type + ' d-flex align-items-center mb-2';
         // WEB_ROADMAP P4.2: errors interrupt with assertive so screen
         // readers announce them immediately; success/warning/info use
         // polite so they don't preempt the user mid-utterance.
@@ -60,9 +63,9 @@
             });
         });
 
-        // Auto-dismiss after 5 seconds
-        var timer = setTimeout(function() { removeToast(toast); }, 5000);
-        toast._csmTimer = timer;
+        if (type !== 'error') {
+            toast._csmTimer = setTimeout(function() { removeToast(toast); }, 5000);
+        }
     };
 
     ['success', 'error', 'warning', 'info'].forEach(function(type) {
@@ -84,6 +87,58 @@
     // ---- Confirm modal ----
 
     var activeDialogCancel = null;
+    var dialogReturnFocus = null;
+    var dialogShowing = false;
+    var dialogClosing = false;
+    var dialogHidePending = false;
+    var dialogPendingShow = null;
+    var dialogModal = null;
+
+    // Bootstrap ignores hide during show and show during hide. Retain the
+    // return point across replacements and finish both transitions in order.
+    function showDialog(modal, bsModal) {
+        modal.classList.add('csm-dialog-active');
+        if (dialogModal !== modal) {
+            dialogModal = modal;
+            modal.addEventListener('show.bs.modal', function() { dialogShowing = true; });
+            modal.addEventListener('shown.bs.modal', function() {
+                dialogShowing = false;
+                if (dialogHidePending) {
+                    dialogHidePending = false;
+                    bsModal.hide();
+                }
+            });
+            modal.addEventListener('hide.bs.modal', function() { dialogClosing = true; });
+            modal.addEventListener('hidden.bs.modal', function() {
+                dialogClosing = false;
+                if (dialogPendingShow) {
+                    var show = dialogPendingShow;
+                    dialogPendingShow = null;
+                    show();
+                } else {
+                    modal.classList.remove('csm-dialog-active');
+                    restoreDialogFocus();
+                }
+            });
+        }
+        if (dialogClosing || dialogHidePending) {
+            dialogPendingShow = function() { bsModal.show(); };
+        } else {
+            bsModal.show();
+        }
+    }
+
+    function hideDialog(bsModal) {
+        dialogPendingShow = null;
+        if (dialogShowing) dialogHidePending = true;
+        else if (!dialogClosing) bsModal.hide();
+    }
+
+    function restoreDialogFocus() {
+        var restore = dialogReturnFocus;
+        dialogReturnFocus = null;
+        if (restore) restore();
+    }
 
     function cancelActiveDialog() {
         if (!activeDialogCancel) return;
@@ -111,19 +166,31 @@
      * @param  {string} message - The confirmation message (newlines preserved).
      * @return {Promise}        - Resolves on OK, rejects on Cancel.
      */
-    CSM.confirm = function(message) {
+    // opts.danger marks an action that deletes data, blocks traffic, turns
+    // protection off or ends sessions: the confirm button turns red, reads
+    // opts.okLabel (the action's verb) and focus starts on Cancel so a stray
+    // Enter does not carry it out.
+    CSM.confirm = function(message, opts) {
+        opts = opts || {};
+        var danger = !!opts.danger;
         return new Promise(function(resolve, reject) {
             cancelActiveDialog();
+            if (!dialogReturnFocus) dialogReturnFocus = CSM.captureFocus();
             var modal = document.getElementById('csm-confirm-modal');
             var body  = document.getElementById('csm-confirm-body');
             var okBtn = document.getElementById('csm-confirm-ok');
             var noBtn = document.getElementById('csm-confirm-cancel');
 
             if (!modal || !body || !okBtn || !noBtn) {
+                dialogReturnFocus = null;
                 // Fallback to native confirm if DOM elements are missing
                 if (confirm(message)) { resolve(); } else { reject(); }
                 return;
             }
+
+            okBtn.textContent = opts.okLabel || 'OK';
+            okBtn.classList.toggle('btn-danger', danger);
+            okBtn.classList.toggle('btn-primary', !danger);
 
             body.textContent = '';
             // Preserve newlines by splitting into text nodes with <br>
@@ -138,7 +205,7 @@
             if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
                 bsModal = bootstrap.Modal.getOrCreateInstance(modal, { backdrop: 'static', keyboard: false });
                 restoreAlertDialogRoleAfterShow(modal);
-                bsModal.show();
+                showDialog(modal, bsModal);
                 restoreAlertDialogRole(modal);
             } else {
                 modal.style.display = 'block';
@@ -152,19 +219,26 @@
             }
 
             var settled = false;
+            function focusConfirm() {
+                if (!settled && !dialogClosing && !dialogHidePending) (danger ? noBtn : okBtn).focus();
+            }
+            // Bootstrap focuses the modal when its transition finishes.
+            modal.addEventListener('shown.bs.modal', focusConfirm);
 
             function cleanup() {
+                modal.removeEventListener('shown.bs.modal', focusConfirm);
                 if (activeDialogCancel === cancelSelf) activeDialogCancel = null;
                 okBtn.removeEventListener('click', onOk);
                 noBtn.removeEventListener('click', onCancel);
                 if (bsModal) {
-                    bsModal.hide();
+                    hideDialog(bsModal);
                 } else {
                     modal.style.display = 'none';
                     modal.classList.remove('show');
                     document.body.classList.remove('modal-open');
                     var bd = document.getElementById('csm-confirm-backdrop');
                     if (bd && bd.parentNode) bd.parentNode.removeChild(bd);
+                    restoreDialogFocus();
                 }
             }
 
@@ -190,14 +264,14 @@
                         e.preventDefault(); noBtn.focus();
                     }
                 }
-                if (e.key === 'Escape') { onCancel(); }
+                if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); onCancel(); }
             }
 
             okBtn.addEventListener('click', onOk);
             noBtn.addEventListener('click', onCancel);
             document.addEventListener('keydown', onKeydown);
             activeDialogCancel = cancelSelf;
-            okBtn.focus();
+            focusConfirm();
 
             var _origCleanup = cleanup;
             cleanup = function() {
@@ -216,17 +290,23 @@
     CSM.prompt = function(message, defaultValue) {
         return new Promise(function(resolve, reject) {
             cancelActiveDialog();
+            if (!dialogReturnFocus) dialogReturnFocus = CSM.captureFocus();
             var modal  = document.getElementById('csm-confirm-modal');
             var body   = document.getElementById('csm-confirm-body');
             var okBtn  = document.getElementById('csm-confirm-ok');
             var noBtn  = document.getElementById('csm-confirm-cancel');
 
             if (!modal || !body || !okBtn || !noBtn) {
+                dialogReturnFocus = null;
                 // Fallback
                 var val = prompt(message, defaultValue || '');
                 if (val !== null) { resolve(val); } else { reject(); }
                 return;
             }
+
+            okBtn.textContent = 'OK';
+            okBtn.classList.remove('btn-danger');
+            okBtn.classList.add('btn-primary');
 
             body.textContent = '';
             var lines = message.split('\n');
@@ -237,6 +317,7 @@
             var input = document.createElement('input');
             input.type = 'text';
             input.className = 'form-control form-control-sm mt-2';
+            input.setAttribute('aria-label', message);
             input.value = defaultValue || '';
             body.appendChild(input);
 
@@ -244,7 +325,7 @@
             if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
                 bsModal = bootstrap.Modal.getOrCreateInstance(modal, { backdrop: 'static', keyboard: false });
                 restoreAlertDialogRoleAfterShow(modal);
-                bsModal.show();
+                showDialog(modal, bsModal);
                 restoreAlertDialogRole(modal);
             } else {
                 modal.style.display = 'block';
@@ -256,23 +337,29 @@
                 document.body.appendChild(backdrop);
             }
 
-            setTimeout(function() { input.focus(); input.select(); }, 100);
-
             var settled = false;
+            function focusPrompt() {
+                if (!settled && !dialogClosing && !dialogHidePending) { input.focus(); input.select(); }
+            }
+            modal.addEventListener('shown.bs.modal', focusPrompt);
+            focusPrompt();
 
             function cleanup() {
                 if (activeDialogCancel === cancelSelf) activeDialogCancel = null;
                 okBtn.removeEventListener('click', onOk);
                 noBtn.removeEventListener('click', onCancel);
+                modal.removeEventListener('shown.bs.modal', focusPrompt);
                 input.removeEventListener('keydown', onKey);
+                document.removeEventListener('keydown', onDocKey);
                 if (bsModal) {
-                    bsModal.hide();
+                    hideDialog(bsModal);
                 } else {
                     modal.style.display = 'none';
                     modal.classList.remove('show');
                     document.body.classList.remove('modal-open');
                     var bd = document.getElementById('csm-confirm-backdrop');
                     if (bd && bd.parentNode) bd.parentNode.removeChild(bd);
+                    restoreDialogFocus();
                 }
             }
 
@@ -287,6 +374,12 @@
                 settle(function() { reject(); });
             }
 
+            // Escape cancels and Tab stays inside, as in the confirm dialog.
+            function onDocKey(e) {
+                if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); cancelSelf(); return; }
+                if (e.key === 'Tab') CSM.focusTrap(modal.querySelector('.modal-content') || modal, e);
+            }
+
             function onOk() {
                 var value = input.value;
                 settle(function() { resolve(value); });
@@ -297,6 +390,7 @@
             okBtn.addEventListener('click', onOk);
             noBtn.addEventListener('click', onCancel);
             input.addEventListener('keydown', onKey);
+            document.addEventListener('keydown', onDocKey);
             activeDialogCancel = cancelSelf;
         });
     };

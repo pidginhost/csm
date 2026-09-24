@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -12,12 +13,12 @@ import (
 )
 
 type timelineEvent struct {
-	Timestamp string `json:"timestamp"`
-	Type      string `json:"type"`     // "finding", "action", "block"
-	Severity  int    `json:"severity"` // 0=info, 1=high, 2=critical
-	Summary   string `json:"summary"`
-	Details   string `json:"details,omitempty"`
-	Source    string `json:"source"` // "history", "audit", "firewall"
+	Timestamp time.Time `json:"timestamp"`
+	Type      string    `json:"type"`               // "finding", "action", "block"
+	Severity  string    `json:"severity,omitempty"` // a finding's label; actions have none
+	Summary   string    `json:"summary"`
+	Details   string    `json:"details,omitempty"`
+	Source    string    `json:"source"` // "history", "audit", "firewall"
 }
 
 const incidentTimelineEventLimit = 200
@@ -32,8 +33,8 @@ const incidentTimelineEventLimit = 200
 // 1000-incident ceiling) but bounds worst-case wall time and memory.
 const incidentSnapshotScanCap = 1000
 
-func (s *Server) handleIncident(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "incident.html", map[string]string{
+func (s *Server) handleIncident(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "incident.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
@@ -91,13 +92,21 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 	// Search newest-first and stop once the timeline has enough matching
 	// history rows. Busy hosts can retain large 30-day windows, so response
 	// size alone is not a safe bound for the read path.
-	allHistory := s.store.SearchHistorySince(cutoff, incidentTimelineEventLimit, matchesHistoryQuery)
+	allHistory := s.store.SearchHistorySince(cutoff, incidentTimelineEventLimit+1, matchesHistoryQuery)
+	historyCapped := len(allHistory) > incidentTimelineEventLimit
+	if historyCapped {
+		// The extra row only tells that more exist; forget it so an
+		// incident event it duplicates is still listed.
+		dropped := allHistory[incidentTimelineEventLimit]
+		delete(dedup, dedupKey(dropped.Timestamp, dropped.Check+": "+dropped.Message))
+		allHistory = allHistory[:incidentTimelineEventLimit]
+	}
 	for _, f := range allHistory {
 		summary := f.Check + ": " + f.Message
 		events = append(events, timelineEvent{
-			Timestamp: f.Timestamp.Format(time.RFC3339),
+			Timestamp: f.Timestamp.UTC(),
 			Type:      "finding",
-			Severity:  int(f.Severity),
+			Severity:  f.Severity.String(),
 			Summary:   summary,
 			Details:   f.Details,
 			Source:    "history",
@@ -110,10 +119,10 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 	// incident object still carries the full timeline. Walk every
 	// incident, match by RemoteIP for IP queries or by Account / Mailbox /
 	// Domain for account queries, and emit each matching timeline event.
-	truncated := false
+	truncated := historyCapped
 	if s.incidentCorrelator != nil {
 		snap, totalIncidents := s.incidentCorrelator.SnapshotPageStatuses(nil, 0, incidentSnapshotScanCap)
-		truncated = totalIncidents > len(snap)
+		truncated = truncated || totalIncidents > len(snap)
 		for _, inc := range snap {
 			incMatches := incidentMatchesAccount(inc, account)
 			for _, ev := range inc.Timeline {
@@ -143,9 +152,9 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 				}
 				dedup[key] = struct{}{}
 				events = append(events, timelineEvent{
-					Timestamp: ev.Time.Format(time.RFC3339),
+					Timestamp: ev.Time.UTC(),
 					Type:      "finding",
-					Severity:  int(inc.Severity),
+					Severity:  inc.Severity.String(),
 					Summary:   summary,
 					Details:   "From incident " + inc.ID + " (" + string(inc.Kind) + ", " + string(inc.Status) + ")",
 					Source:    "incident:" + inc.ID,
@@ -155,7 +164,12 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Search UI audit log
-	auditEntries := readUIAuditLog(s.cfg.StatePath, 500)
+	const auditScanLimit = 500
+	auditEntries := readUIAuditLog(s.cfg.StatePath, auditScanLimit+1)
+	if len(auditEntries) > auditScanLimit {
+		truncated = true
+		auditEntries = auditEntries[:auditScanLimit]
+	}
 	for _, a := range auditEntries {
 		if a.Timestamp.Before(cutoff) {
 			continue
@@ -171,21 +185,21 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		events = append(events, timelineEvent{
-			Timestamp: a.Timestamp.Format(time.RFC3339),
+			Timestamp: a.Timestamp.UTC(),
 			Type:      "action",
-			Severity:  0,
 			Summary:   a.Action + ": " + a.Target,
 			Details:   a.Details,
 			Source:    "audit",
 		})
 	}
 
-	// Sort by timestamp descending (newest first)
-	sort.Slice(events, func(i, j int) bool {
-		return events[i].Timestamp > events[j].Timestamp
+	// Newest first, compared as instants.
+	sort.SliceStable(events, func(i, j int) bool {
+		return events[i].Timestamp.After(events[j].Timestamp)
 	})
 
-	if len(events) > incidentTimelineEventLimit {
+	total := len(events)
+	if total > incidentTimelineEventLimit {
 		events = events[:incidentTimelineEventLimit]
 		truncated = true
 	}
@@ -193,13 +207,14 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 	if truncated {
 		w.Header().Set("X-CSM-Truncated", "1")
 	}
-	writeJSON(w, map[string]interface{}{
-		"events":        events,
-		"total":         len(events),
-		"query_ip":      ip,
-		"query_account": account,
-		"hours":         hours,
-		"truncated":     truncated,
+	writeItems(w, events, map[string]interface{}{
+		"total":          total,
+		"offset":         0,
+		"limit":          incidentTimelineEventLimit,
+		"query_ip":       ip,
+		"query_account":  account,
+		"window_seconds": hours * 3600,
+		"truncated":      truncated,
 	})
 }
 
@@ -219,22 +234,14 @@ func incidentMatchesAccount(inc incident.Incident, account string) bool {
 // below this; the ceiling exists for defense in depth.
 const maxIncidentPageSize = 500
 
-// defaultIncidentPageSize is applied when the client requests a paged
-// shape (any of limit/offset/status set) but does not pass an explicit
+// defaultIncidentPageSize is the page size when the client passes no
 // limit. Tuned to fit comfortably on one screen.
 const defaultIncidentPageSize = 50
 
-// apiIncidentList serves GET /api/v1/incidents.
-//
-// Default (no query parameters): returns the full Snapshot as a bare
-// JSON array, preserving the wire shape the existing API consumers
-// (phpanel, SIEM tooling) decode against.
-//
-// When the client passes any of ?limit=, ?offset=, ?status=, the
-// response switches to an envelope: {"items":[...], "total":N,
-// "offset":N, "limit":N, "status":"..."}. Servers that pass the
-// envelope must always include all five fields so the client can
-// render an accurate page header without a second probe.
+// apiIncidentList serves GET /api/v1/incidents as one page:
+// {"items":[...], "total":N, "offset":N, "limit":N, "status":"..."}.
+// limit defaults to defaultIncidentPageSize; total counts every incident
+// the status filter matches, so a client pages on through offset.
 //
 // status accepts the four spec values (open/contained/resolved/dismissed)
 // plus the UI-only convenience "active" that means
@@ -242,20 +249,7 @@ const defaultIncidentPageSize = 50
 // rejected with 400 Bad Request rather than silently widening to all,
 // which would hide a typo like ?status=opn.
 func (s *Server) apiIncidentList(w http.ResponseWriter, r *http.Request) {
-	if s.incidentCorrelator == nil {
-		writeJSON(w, []incident.Incident{})
-		return
-	}
-
-	q := r.URL.Query()
-	hasPagingParams := q.Has("limit") || q.Has("offset") || q.Has("status")
-
-	if !hasPagingParams {
-		writeJSON(w, s.incidentCorrelator.Snapshot())
-		return
-	}
-
-	statusParam := q.Get("status")
+	statusParam := r.URL.Query().Get("status")
 	statuses, err := parseIncidentStatusFilter(statusParam)
 	if err != nil {
 		writeJSONError(w, err.Error(), http.StatusBadRequest)
@@ -274,13 +268,17 @@ func (s *Server) apiIncidentList(w http.ResponseWriter, r *http.Request) {
 		offset = 0
 	}
 
-	items, total := s.incidentPage(statuses, offset, limit)
-	writeJSON(w, map[string]any{
-		"items":  items,
-		"total":  total,
-		"offset": offset,
-		"limit":  limit,
-		"status": statusParam,
+	var items []incident.Incident
+	total := 0
+	if s.incidentCorrelator != nil {
+		items, total = s.incidentPage(statuses, offset, limit)
+	}
+	writeItems(w, items, map[string]any{
+		"total":     total,
+		"offset":    offset,
+		"limit":     limit,
+		"status":    statusParam,
+		"truncated": historyPageTruncated(total, offset, len(items)),
 	})
 }
 
@@ -314,12 +312,12 @@ func (s *Server) apiIncidentShow(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/incidents/")
 	id = strings.TrimSuffix(id, "/")
 	if id == "" || s.incidentCorrelator == nil {
-		http.NotFound(w, r)
+		writeJSONError(w, "Incident not found", http.StatusNotFound)
 		return
 	}
 	inc, ok := s.incidentCorrelator.Get(id)
 	if !ok {
-		http.NotFound(w, r)
+		writeJSONError(w, "Incident not found", http.StatusNotFound)
 		return
 	}
 	writeJSON(w, inc)
@@ -338,19 +336,23 @@ func (s *Server) apiIncidentStatus(w http.ResponseWriter, r *http.Request) {
 	// Cap the request body like every other mutating handler; a bare
 	// json.NewDecoder(r.Body) would buffer an unbounded body into memory.
 	if err := decodeJSONBodyLimited(w, r, 16*1024, &body); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
+		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 	if s.incidentCorrelator == nil {
-		http.Error(w, "incidents not enabled", http.StatusServiceUnavailable)
+		writeJSONError(w, "Incidents are not enabled", http.StatusServiceUnavailable)
 		return
 	}
 	if err := s.incidentCorrelator.SetStatus(id, incident.Status(body.Status), body.Details); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		code := http.StatusBadRequest
+		if errors.Is(err, incident.ErrIncidentNotFound) {
+			code = http.StatusNotFound
+		}
+		writeJSONError(w, err.Error(), code)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{"ok":true}`))
+	s.auditLog(r, "incident_status", id, strings.TrimSpace(body.Status+" "+body.Details))
+	writeJSON(w, map[string]interface{}{"ok": true})
 }
 
 // apiIncidentRouter dispatches /api/v1/incidents/<id>[...] sub-paths.

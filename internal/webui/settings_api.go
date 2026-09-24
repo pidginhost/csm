@@ -363,6 +363,17 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	effectiveClone.ConfigFile = s.cfg.ConfigFile
+	// Drop-ins can replace the entered credential. Validate the actual
+	// destination/credential pair before either disk or live config changes.
+	rebindErrs, err := credentialRebindErrors(section, effectiveDisk, effectiveClone, body.Changes)
+	if err != nil {
+		writeJSONError(w, "read merged settings: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if len(rebindErrs) > 0 {
+		writeValidationErrors(w, rebindErrs)
+		return
+	}
 
 	validationResults := append(config.Validate(effectiveClone), config.ValidateDeepSection(effectiveClone, section.ID)...)
 	fieldErrors, warnings := splitValidationResults(validationResults)
@@ -415,18 +426,28 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		config.SetActive(&livePatched)
 	}
 
-	var applied []string
+	applied := []string{}
 	for _, c := range diff {
 		applied = append(applied, c.Field)
 	}
 
 	s.auditLog(r, "settings-save", sectionID, auditDetailsFor(section, body.Changes))
 
-	writeJSON(w, map[string]interface{}{
+	if restartFields == nil {
+		restartFields = []string{}
+	}
+	if warnings == nil {
+		warnings = []fieldError{}
+	}
+	pending := pendingRestartSections(config.Active(), effectiveClone)
+	if pending == nil {
+		pending = []pendingSettingsSection{}
+	}
+	writeOK(w, map[string]interface{}{
 		"applied":          applied,
 		"requires_restart": restartFields,
 		"pending_restart":  len(restartFields) > 0,
-		"pending_sections": pendingRestartSections(config.Active(), effectiveClone),
+		"pending_sections": pending,
 		"warnings":         warnings,
 		"new_etag":         newETag,
 	})
@@ -482,10 +503,84 @@ func localizeValidationFields(results []fieldError, section string) {
 	}
 }
 
+// writeValidationErrors answers 422 with the one error message every
+// failure carries and the per-field problems next to it.
 func writeValidationErrors(w http.ResponseWriter, errs []fieldError) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnprocessableEntity)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{"errors": errs})
+	msg := "Invalid values"
+	if len(errs) == 1 {
+		msg = errs[0].Field + ": " + errs[0].Message
+	}
+	writeJSONStatus(w, http.StatusUnprocessableEntity, map[string]interface{}{"error": msg, "errors": errs})
+}
+
+const fileOnlyFieldMessage = "Change this in csm.yaml. The web UI cannot set commands, file paths, sockets or environment variable names."
+
+// credentialRebindErrors refuses a URL change that would send the stored
+// credential of that URL to a new address unless the same save enters the
+// credential again. A credential read from an environment variable cannot be
+// re-entered here, so its address can only change in csm.yaml.
+func credentialRebindErrors(section SettingsSection, current, candidate *config.Config, changes map[string]json.RawMessage) ([]fieldError, error) {
+	var errs []fieldError
+	var before, after map[string]interface{}
+	for _, field := range section.Fields {
+		if field.CredentialField == "" {
+			continue
+		}
+		if before == nil {
+			var err error
+			before, err = extractSectionEffectiveValues(current, section)
+			if err != nil {
+				return nil, err
+			}
+			after, err = extractSectionEffectiveValues(candidate, section)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if settingsStringAt(before, field.YAMLPath) == settingsStringAt(after, field.YAMLPath) {
+			continue
+		}
+		if env := settingsStringAt(after, field.CredentialEnvField); env != "" {
+			errs = append(errs, fieldError{Field: field.YAMLPath, Message: "The credential for this address is read from environment variable " + env + ". Change the address in csm.yaml."})
+			continue
+		}
+		secret := settingsStringAt(after, field.CredentialField)
+		if secret == "" {
+			continue
+		}
+		if entered := enteredSecret(changes[field.CredentialField]); entered == "" || entered != secret {
+			errs = append(errs, fieldError{Field: field.YAMLPath, Message: "Enter the effective credential again when changing this address. If a conf.d drop-in overrides it, change the address and credential in the configuration files."})
+		}
+	}
+	return errs, nil
+}
+
+// settingsStringAt returns the string at a dotted path inside a section's
+// effective values, or "" when the path is absent or not a string.
+func settingsStringAt(values map[string]interface{}, dotted string) string {
+	var cur interface{} = values
+	for _, part := range strings.Split(dotted, ".") {
+		m, ok := cur.(map[string]interface{})
+		if !ok {
+			return ""
+		}
+		cur = m[part]
+	}
+	s, _ := cur.(string)
+	return s
+}
+
+// enteredSecret returns a secret the request actually supplies: absent, empty
+// and the redaction placeholder all mean "keep the stored value".
+func enteredSecret(raw json.RawMessage) string {
+	if raw == nil {
+		return ""
+	}
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil || v == config.RedactedValue || strings.TrimSpace(v) == "" {
+		return ""
+	}
+	return v
 }
 
 func buildChangeSet(section SettingsSection, clone *config.Config, changes map[string]json.RawMessage) ([]config.YAMLChange, []fieldError) {
@@ -498,9 +593,13 @@ func buildChangeSet(section SettingsSection, clone *config.Config, changes map[s
 			errs = append(errs, fieldError{Field: key, Message: "unknown field"})
 			continue
 		}
+		if field.FileOnly {
+			errs = append(errs, fieldError{Field: key, Message: fileOnlyFieldMessage})
+			continue
+		}
 		if field.Secret {
 			var sv string
-			if err := json.Unmarshal(raw, &sv); err == nil && sv == "***REDACTED***" {
+			if err := json.Unmarshal(raw, &sv); err == nil && sv == config.RedactedValue {
 				continue
 			}
 		}
@@ -883,10 +982,7 @@ func (s *Server) apiSettingsRestart(w http.ResponseWriter, r *http.Request) {
 
 	s.auditLog(r, "settings-restart", "daemon", "")
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"status":           "restart issued",
+	writeOKStatus(w, http.StatusAccepted, map[string]interface{}{
 		"started_at_token": s.daemonStartToken(),
 	})
 	if flusher, ok := w.(http.Flusher); ok {

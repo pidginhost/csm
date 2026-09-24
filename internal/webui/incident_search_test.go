@@ -42,7 +42,7 @@ func TestAPIIncidentSearchSurfacesIncidentTimelineEvent(t *testing.T) {
 	}
 
 	var resp struct {
-		Events []timelineEvent `json:"events"`
+		Events []timelineEvent `json:"items"`
 		Total  int             `json:"total"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
@@ -91,7 +91,7 @@ func TestAPIIncidentSearchAccountMatchesIncidentIdentity(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var resp struct {
-		Events []timelineEvent `json:"events"`
+		Events []timelineEvent `json:"items"`
 		Total  int             `json:"total"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
@@ -181,7 +181,7 @@ func TestAPIIncidentSearchReportsSnapshotCap(t *testing.T) {
 		t.Fatalf("X-CSM-Truncated = %q, want 1 when incident snapshot scan cap is hit", got)
 	}
 	var resp struct {
-		Events    []timelineEvent `json:"events"`
+		Events    []timelineEvent `json:"items"`
 		Total     int             `json:"total"`
 		Truncated bool            `json:"truncated"`
 	}

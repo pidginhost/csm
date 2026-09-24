@@ -40,3 +40,26 @@ func TestImportValidatesSuppressionRules(t *testing.T) {
 		}
 	}
 }
+
+// An import applies the rules the suppressions route enforces: a check that
+// is a pattern rather than a name, or an invalid glob, would be saved as a
+// rule that matches nothing.
+func TestImportSkipsSuppressionsTheRouteWouldRefuse(t *testing.T) {
+	s := newTestServer(t, "tok")
+	body := `{"suppressions":[
+		{"id":"good","check":"webshell","path_pattern":"/home/a/*"},
+		{"id":"glob-check","check":"webshell*","path_pattern":"/home/a/*"},
+		{"id":"bad-glob","check":"webshell","path_pattern":"/home/a/[bad"}
+	]}`
+	req := httptest.NewRequest("POST", "/api/v1/import", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiImport(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("import = %d: %s", w.Code, w.Body.String())
+	}
+	rules := s.store.LoadSuppressions()
+	if len(rules) != 1 || rules[0].ID != "good" {
+		t.Fatalf("stored %+v, want only the valid rule", rules)
+	}
+}

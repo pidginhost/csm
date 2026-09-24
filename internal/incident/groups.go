@@ -33,7 +33,8 @@ type Group struct {
 	SampleIDs      []string       `json:"sample_ids"`
 }
 
-// GroupsResponse is the wire shape for /api/v1/incidents/groups.
+// GroupsResponse is what BuildGroups returns. /api/v1/incidents/groups
+// sends Groups as its items, with the counts next to them.
 type GroupsResponse struct {
 	Groups           []Group `json:"groups"`
 	TotalGroups      int     `json:"total_groups"`

@@ -285,6 +285,24 @@ func TestExtractAccountFromDetailsUserPrefixTerminal(t *testing.T) {
 	}
 }
 
+// Checks that know the owning account record it; that beats scraping text,
+// which names whatever path a message mentions.
+func TestExtractAccountPrefersStructuredOwner(t *testing.T) {
+	cases := []struct {
+		f    alert.Finding
+		want string
+	}{
+		{alert.Finding{TenantID: "alice", Message: "Include of /home/bob/public_html/x.php"}, "alice"},
+		{alert.Finding{Check: "email_php_relay_abuse", CPUser: "carol", Message: "Relay via /home/dave/mail.php"}, "carol"},
+		{alert.Finding{Check: "email_php_relay_abuse", CPUser: "carol"}, "carol"},
+	}
+	for _, tc := range cases {
+		if got := extractAccountFromFinding(tc.f); got != tc.want {
+			t.Errorf("extractAccountFromFinding(%+v) = %q, want %q", tc.f, got, tc.want)
+		}
+	}
+}
+
 func TestExtractAccountNoMatchReturnsEmpty(t *testing.T) {
 	f := alert.Finding{
 		Message: "SSH brute force from 1.2.3.4",
@@ -315,7 +333,7 @@ func TestAPIFindingsEnrichedCountsAndAccounts(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Findings      []enrichedFinding `json:"findings"`
+		Findings      []enrichedFinding `json:"items"`
 		CheckTypes    []string          `json:"check_types"`
 		Accounts      []string          `json:"accounts"`
 		CriticalCount int               `json:"critical_count"`
@@ -437,20 +455,7 @@ func TestAPIBulkFixEmptyArray(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(`[]`))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiBulkFix(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
-	}
-	var data struct {
-		Total     int `json:"total"`
-		Succeeded int `json:"succeeded"`
-		Failed    int `json:"failed"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
-	if data.Total != 0 {
-		t.Errorf("total = %d, want 0", data.Total)
-	}
+	assertJSONError(t, "empty fix batch", w, http.StatusBadRequest)
 }
 
 func TestAPIBulkFixInvalidBody(t *testing.T) {
@@ -471,7 +476,8 @@ func TestAPIBulkFixWithUnfixableCheck(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiBulkFix(w, req)
-	if w.Code != http.StatusOK {
+	// No item applied: an error status that still lists each item.
+	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
@@ -527,14 +533,14 @@ func TestAPIImportWithSuppressionsAndDedup(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var data struct {
-		Status   string `json:"status"`
-		Imported int    `json:"imported"`
+		OK       bool `json:"ok"`
+		Imported int  `json:"imported"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if data.Status != "imported" {
-		t.Errorf("status = %q, want imported", data.Status)
+	if !data.OK {
+		t.Errorf("ok = false, want true")
 	}
 	if data.Imported != 1 {
 		t.Errorf("imported = %d, want 1", data.Imported)
@@ -634,10 +640,10 @@ func TestAPIIncidentWithAccount(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Events       []timelineEvent `json:"events"`
-		Total        int             `json:"total"`
-		QueryAccount string          `json:"query_account"`
-		Hours        int             `json:"hours"`
+		Events        []timelineEvent `json:"items"`
+		Total         int             `json:"total"`
+		QueryAccount  string          `json:"query_account"`
+		WindowSeconds int             `json:"window_seconds"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
@@ -649,8 +655,8 @@ func TestAPIIncidentWithAccount(t *testing.T) {
 	if data.Total != 1 {
 		t.Errorf("total = %d, want 1 (only frank's finding)", data.Total)
 	}
-	if data.Hours != 72 {
-		t.Errorf("hours = %d, want 72 (default)", data.Hours)
+	if data.WindowSeconds != 72*3600 {
+		t.Errorf("window_seconds = %d, want %d", data.WindowSeconds, 72*3600)
 	}
 }
 
@@ -662,13 +668,13 @@ func TestAPIIncidentHoursParam(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Hours int `json:"hours"`
+		WindowSeconds int `json:"window_seconds"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if data.Hours != 24 {
-		t.Errorf("hours = %d, want 24", data.Hours)
+	if data.WindowSeconds != 24*3600 {
+		t.Errorf("window_seconds = %d, want %d", data.WindowSeconds, 24*3600)
 	}
 }
 
@@ -680,13 +686,13 @@ func TestAPIIncidentHoursMaxCapped(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Hours int `json:"hours"`
+		WindowSeconds int `json:"window_seconds"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if data.Hours != 720 {
-		t.Errorf("hours = %d, want 720 (max capped)", data.Hours)
+	if data.WindowSeconds != 720*3600 {
+		t.Errorf("window_seconds = %d, want %d", data.WindowSeconds, 720*3600)
 	}
 }
 
@@ -783,24 +789,20 @@ func TestAPIFindingsEnrichedFieldsPopulated(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	var data struct {
-		Findings []enrichedFinding `json:"findings"`
+	var items []enrichedFinding
+	decodeItems(t, w.Body.Bytes(), &items)
+	if len(items) != 1 {
+		t.Fatalf("findings = %d, want 1", len(items))
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
-	if len(data.Findings) != 1 {
-		t.Fatalf("findings = %d, want 1", len(data.Findings))
-	}
-	f := data.Findings[0]
+	f := items[0]
 	if f.Key == "" {
 		t.Error("enriched finding key should not be empty")
 	}
 	if f.Severity != "CRITICAL" {
 		t.Errorf("severity = %q, want CRITICAL", f.Severity)
 	}
-	if f.SevClass == "" {
-		t.Error("sev_class should not be empty")
+	if strings.Contains(w.Body.String(), "sev_class") {
+		t.Error("sev_class sent; the page derives its CSS class from the severity label")
 	}
 	if f.Account != "alice" {
 		t.Errorf("account = %q, want alice", f.Account)
@@ -811,14 +813,38 @@ func TestAPIFindingsEnrichedFieldsPopulated(t *testing.T) {
 	if f.Details != "Path: /home/alice/public_html\nRule: test" {
 		t.Errorf("details = %q, want stored finding details", f.Details)
 	}
-	if f.FirstSeen == "" {
+	if f.FirstSeen.IsZero() {
 		t.Error("first_seen should not be empty")
 	}
-	if f.LastSeen == "" {
+	if f.LastSeen.IsZero() {
 		t.Error("last_seen should not be empty")
 	}
 	if !f.HasFix {
 		t.Error("webshell should have has_fix=true")
+	}
+}
+
+// block_ip offers Block in the finding detail only for attacker evidence.
+func TestAPIFindingsEnrichedBlockIP(t *testing.T) {
+	s := newTestServer(t, "tok")
+	now := time.Now()
+	s.store.SetLatestFindings([]alert.Finding{
+		{Severity: alert.High, Check: "wp_login_bruteforce", Message: "WordPress brute force from 203.0.113.5", Timestamp: now},
+		{Severity: alert.High, Check: "webshell", Message: "shell uploaded from 203.0.113.6", FilePath: "/home/alice/public_html/s.php", Timestamp: now},
+	})
+	w := httptest.NewRecorder()
+	s.apiFindingsEnriched(w, httptest.NewRequest("GET", "/", nil))
+	var items []enrichedFinding
+	decodeItems(t, w.Body.Bytes(), &items)
+	got := map[string]string{}
+	for _, f := range items {
+		got[f.Check] = f.BlockIP
+	}
+	if got["wp_login_bruteforce"] != "203.0.113.5" {
+		t.Errorf("brute force block_ip = %q", got["wp_login_bruteforce"])
+	}
+	if got["webshell"] != "" {
+		t.Errorf("webshell block_ip = %q, want none", got["webshell"])
 	}
 }
 
@@ -837,14 +863,10 @@ func TestAPIFindingsEnrichedHasVerify(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	var data struct {
-		Findings []enrichedFinding `json:"findings"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	var items []enrichedFinding
+	decodeItems(t, w.Body.Bytes(), &items)
 	byCheck := map[string]enrichedFinding{}
-	for _, f := range data.Findings {
+	for _, f := range items {
 		byCheck[f.Check] = f
 	}
 	if !byCheck["webshell"].HasVerify {
@@ -877,9 +899,7 @@ func TestAPIFindingsSkipsInternalChecks(t *testing.T) {
 	var data []struct {
 		Check string `json:"check"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &data)
 	if len(data) != 1 {
 		t.Errorf("findings count = %d, want 1 (only webshell)", len(data))
 	}

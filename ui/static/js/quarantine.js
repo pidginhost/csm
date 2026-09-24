@@ -1,5 +1,7 @@
 // CSM Quarantine page
 
+(function() {
+
 var _quarTable = null;
 var _quarURLUnbind = null;
 var _quarDateListenersBound = false;
@@ -25,18 +27,32 @@ function _quarDetectorFromReason(reason) {
     return (c > 0 ? s.slice(0, c) : s).trim();
 }
 
-function _quarLocalDateMillis(value, endExclusive) {
-    if (!value) return null;
-    var parts = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!parts) return null;
-    var year = Number(parts[1]);
-    var month = Number(parts[2]) - 1;
-    var day = Number(parts[3]);
-    var d = new Date(year, month, day);
-    if (isNaN(d.getTime())) return null;
-    if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return null;
-    if (endExclusive) d.setDate(d.getDate() + 1);
-    return d.getTime();
+// A cleaner's pre-clean backup is listed with the quarantined files; both
+// restore through the same endpoint.
+function _quarKindLabel(kind) {
+    return kind === 'pre_clean' ? 'Pre-clean backup' : 'Quarantine';
+}
+
+// _quarStateBadge says how the original path compares with the archive now.
+function _quarStateBadge(state) {
+    var label = 'Review';
+    var cls = 'bg-secondary-lt';
+    if (state === 'original_missing') {
+        label = 'Original missing';
+        cls = 'bg-warning-lt';
+    } else if (state === 'live_differs') {
+        label = 'Live differs';
+        cls = 'bg-orange-lt';
+    } else if (state === 'original_not_file') {
+        label = 'Original not file';
+        cls = 'bg-warning-lt';
+    } else if (state === 'archive_missing' || state === 'archive_not_file') {
+        label = 'Archive issue';
+        cls = 'bg-danger-lt';
+    } else if (state === 'unknown') {
+        label = 'Unknown';
+    }
+    return '<span class="badge ' + cls + '">' + label + '</span>';
 }
 
 function _quarURLInputs(fromEl, toEl) {
@@ -44,6 +60,7 @@ function _quarURLInputs(fromEl, toEl) {
         q: document.getElementById('quarantine-search'),
         account: document.getElementById('quarantine-account-filter'),
         source: document.getElementById('quarantine-source-filter'),
+        kind: document.getElementById('quarantine-kind-filter'),
         from: fromEl,
         to: toEl
     };
@@ -104,7 +121,8 @@ function _populateQuarFilterOptions(files) {
 }
 
 function loadQuarantine() {
-    return CSM.get('/api/v1/quarantine').then(function(files){
+    return CSM.get('/api/v1/quarantine').then(function(data){
+        var files = data.items;
         var el = document.getElementById('quarantine-content');
         var fromEl = document.getElementById('quarantine-from');
         var toEl = document.getElementById('quarantine-to');
@@ -118,15 +136,16 @@ function loadQuarantine() {
             updateBulkRestore();
             return;
         }
-        var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="quarantine-table"><thead><tr><th><input type="checkbox" class="form-check-input" id="q-select-all"></th><th>Original Path</th><th>Size</th><th>Quarantined</th><th>Reason</th><th>Action</th></tr></thead><tbody>';
+        var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="quarantine-table"><thead><tr><th><input type="checkbox" class="form-check-input" id="q-select-all" aria-label="Select all visible quarantined files"></th><th>Type</th><th>Original Path</th><th>Size</th><th>Quarantined</th><th>State</th><th>Reason</th><th>Action</th></tr></thead><tbody>';
         for (var i = 0; i < files.length; i++) {
             var f = files[i];
             var acct = _quarAccountFromPath(f.original_path);
             var det = _quarDetectorFromReason(f.reason);
+            var kind = f.kind === 'pre_clean' ? 'pre_clean' : 'quarantine';
             var size = Number(f.size || 0);
             if (!isFinite(size)) size = 0;
-            html += '<tr data-path="' + CSM.attr(f.original_path || '') + '" data-account="' + CSM.attr(acct) + '" data-source="' + CSM.attr(det) + '" data-quar-ts="' + CSM.attr(f.quarantined_at || '') + '">';
-            html += '<td><input type="checkbox" class="form-check-input q-cb" data-id="'+CSM.esc(f.id)+'"></td><td><code>'+CSM.esc(f.original_path)+'</code></td><td data-sort="'+size+'">'+formatSize(f.size)+'</td><td class="text-nowrap" data-sort="'+CSM.attr(f.quarantined_at || '')+'"><span class="text-muted small">'+CSM.esc(CSM.fmtDate(f.quarantined_at))+'</span></td><td class="small">'+CSM.esc(f.reason)+'</td><td><button class="btn btn-sm btn-ghost-secondary me-1 view-btn" data-id="'+CSM.esc(f.id)+'" data-path="'+CSM.esc(f.original_path)+'">View</button><button class="btn btn-sm btn-warning restore-btn" data-id="'+CSM.esc(f.id)+'">Restore</button></td></tr>';
+            html += '<tr data-path="' + CSM.attr(f.original_path || '') + '" data-account="' + CSM.attr(acct) + '" data-source="' + CSM.attr(det) + '" data-kind="' + kind + '" data-quar-ts="' + CSM.attr(f.quarantined_at || '') + '">';
+            html += '<td><input type="checkbox" class="form-check-input q-cb" data-id="'+CSM.esc(f.id)+'" aria-label="Select '+CSM.attr(f.original_path || f.id)+'"></td><td><span class="badge bg-azure-lt">'+_quarKindLabel(kind)+'</span></td><td><code>'+CSM.esc(f.original_path)+'</code></td><td data-sort="'+size+'">'+formatSize(f.size)+'</td><td class="text-nowrap" data-timestamp="'+CSM.attr(f.quarantined_at || '')+'"><span class="text-muted small">'+CSM.esc(CSM.fmtDate(f.quarantined_at))+'</span></td><td>'+_quarStateBadge(f.live_state)+'</td><td class="small">'+CSM.esc(f.reason)+'</td><td><button class="btn btn-sm btn-ghost-secondary me-1 view-btn" data-id="'+CSM.esc(f.id)+'" data-path="'+CSM.esc(f.original_path)+'">View</button><button class="btn btn-sm btn-warning restore-btn" data-id="'+CSM.esc(f.id)+'">Restore</button></td></tr>';
         }
         html += '</tbody></table></div>';
         el.innerHTML = html;
@@ -135,8 +154,8 @@ function loadQuarantine() {
             if (!raw) return true;
             var ts = CSM.parseTimestamp(raw);
             if (isNaN(ts)) return true;
-            var from = fromEl ? _quarLocalDateMillis(fromEl.value, false) : null;
-            var to = toEl ? _quarLocalDateMillis(toEl.value, true) : null;
+            var from = fromEl ? CSM.prefs.dayBoundary(fromEl.value, false) : null;
+            var to = toEl ? CSM.prefs.dayBoundary(toEl.value, true) : null;
             if (from !== null && ts < from) return false;
             if (to !== null && ts >= to) return false;
             return true;
@@ -151,7 +170,8 @@ function loadQuarantine() {
             stateKey: 'csm-quarantine-table',
             filters: [
                 { id: 'quarantine-account-filter', attr: 'data-account' },
-                { id: 'quarantine-source-filter',  attr: 'data-source' }
+                { id: 'quarantine-source-filter',  attr: 'data-source' },
+                { id: 'quarantine-kind-filter',    attr: 'data-kind' }
             ],
             rowFilter: _inRange,
             onRender: function() {
@@ -171,7 +191,7 @@ function loadQuarantine() {
         // CSM.bulk owns the select-all and per-row checkbox listeners
         // (re-bind is idempotent via the data-csm-bulk-bound flag).
         updateBulkRestore();
-    }).catch(function(){ CSM.loadError(document.getElementById('quarantine-content'), loadQuarantine); });
+    }).catch(function(err){ CSM.loadError(document.getElementById('quarantine-content'), loadQuarantine, { title: 'Failed to load quarantined files', error: err }); });
 }
 function restoreFile(id) {
     if (_quarMutationBusy) return;
@@ -180,7 +200,7 @@ function restoreFile(id) {
             return CSM.post('/api/v1/quarantine-restore', {id: id}).then(function(data){
                 if (data.error) { CSM.toast('Error: ' + data.error, 'error'); }
                 else { CSM.toast('Restored: ' + data.path, 'success'); }
-            }).catch(function(e){ CSM.toast('Error: ' + e, 'error'); }).then(loadQuarantine);
+            }).catch(function(e){ CSM.toast(CSM.errorText(e), 'error'); }).then(loadQuarantine);
         });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
@@ -188,10 +208,10 @@ function viewFile(id, path) {
     CSM.get('/api/v1/quarantine-preview?id=' + encodeURIComponent(id), { allowNonOK: true, silent: true })
         .then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
-            var info = data.truncated ? 'first 8KB of ' + formatSize(data.total_size) : '';
+            var info = data.truncated ? 'first 8KB of ' + formatSize(data.total_size) : formatSize(data.total_size);
             CSM.filePreview(path, info, data.preview);
         })
-        .catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        .catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
 }
 var formatSize = CSM.formatSize;
 
@@ -213,12 +233,19 @@ function syncQuarantineMutationButtons() {
     });
 }
 
-function withQuarantineMutation(fn) {
+// withQuarantineMutation runs one restore or delete at a time. busy, when
+// given, names the bulk button that shows progress ({id, html}); its own
+// markup, icon included, comes back when the list has reloaded.
+function withQuarantineMutation(fn, busy) {
     if (_quarMutationBusy) return Promise.resolve();
     _quarMutationBusy = true;
+    var busyBtn = busy ? document.getElementById(busy.id) : null;
+    var idleHTML = busyBtn ? busyBtn.innerHTML : '';
+    if (busyBtn) busyBtn.innerHTML = busy.html;
     syncQuarantineMutationButtons();
     return Promise.resolve().then(fn).finally(function() {
         _quarMutationBusy = false;
+        if (busyBtn) busyBtn.innerHTML = idleHTML;
         updateBulkRestore();
     });
 }
@@ -270,7 +297,7 @@ if (bulkRestoreBtn) {
                 return chain.then(function() {
                     CSM.toast('Restored ' + succeeded + ' of ' + (succeeded + failed) + ' file(s)', failed > 0 ? 'warning' : 'success');
                 }).then(loadQuarantine);
-            });
+            }, { id: 'bulk-restore-btn', html: '<i class="ti ti-restore me-1"></i>Restoring...' });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     });
 }
@@ -281,23 +308,32 @@ if (bulkDeleteBtn) {
         if (!_quarBulk || _quarMutationBusy) return;
         var ids = _quarBulk.selectedValues();
         if (ids.length === 0) return;
-        CSM.confirm('Permanently delete ' + ids.length + ' quarantined file(s)?').then(function() {
+        CSM.confirm('Permanently delete ' + ids.length + ' quarantined file(s)?', { danger: true, okLabel: 'Delete' }).then(function() {
             return withQuarantineMutation(function() {
-                var deleted = 0;
+                var deleted = 0, undeletable = 0;
                 return CSM.postBatches('/api/v1/quarantine/bulk-delete', ids, CSM.QUARANTINE_BULK_MAX,
                     function(batch) { return { ids: batch }; },
-                    function(data) { deleted += data.count || 0; }
+                    function(data) { deleted += data.count || 0; undeletable += (data.failed || []).length; }
                 ).then(function() {
-                    CSM.toast('Deleted ' + deleted + ' file(s)', 'success');
+                    if (undeletable > 0) {
+                        CSM.toast('Deleted ' + deleted + ' file(s); ' + undeletable + ' could not be deleted and stay listed', 'warning');
+                    } else {
+                        CSM.toast('Deleted ' + deleted + ' file(s)', 'success');
+                    }
                 }).catch(function(err) {
                     CSM.toast('Deleted ' + deleted + ' file(s), then failed: ' + (err.message || 'request failed'), 'error');
                 }).then(loadQuarantine);
-            });
+            }, { id: 'bulk-delete-btn', html: '<i class="ti ti-trash me-1"></i>Deleting...' });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     });
 }
 
 loadQuarantine();
+// A restore or delete in flight reloads the list itself when it ends.
 if (CSM.refresh && typeof CSM.refresh.onRefresh === 'function') {
-    CSM.refresh.onRefresh(loadQuarantine);
+    CSM.refresh.onRefresh(function() {
+        if (!_quarMutationBusy) loadQuarantine();
+    });
 }
+
+})();

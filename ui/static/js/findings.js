@@ -6,20 +6,15 @@
 // --- State ---
 var findingsTable = null;
 var _findingsLoadSeq = 0;
+// Set by the grouping section. Every table render re-appends the filtered
+// rows, so grouping is laid out again after each render, whatever caused it.
+var _layoutFindingGroups = null;
 
-// Numeric severity rank for column sorting (mirrors the webui severityRank).
-// Derived from the already-promoted label so a dedup severity bump sorts right.
-function severityRank(label) {
-    if (label === 'CRITICAL') return 3;
-    if (label === 'HIGH') return 2;
-    if (label === 'WARNING') return 1;
-    return 0;
-}
 
 // --- Fetch and render findings from enriched API ---
-function loadFindings() {
+function loadFindings(options) {
     var seq = ++_findingsLoadSeq;
-    CSM.get('/api/v1/findings/enriched')
+    CSM.get('/api/v1/findings/enriched', options)
         .then(function(data) {
             if (seq !== _findingsLoadSeq) return;
             if (data.error) throw new Error(data.error);
@@ -29,30 +24,45 @@ function loadFindings() {
             if (seq !== _findingsLoadSeq) return;
             var loading = document.getElementById('findings-loading');
             if (loading) loading.classList.add('d-none');
-            var card = document.getElementById('findings-card');
-            if (!card) return;
-            // Show error with retry - insert into card rather than replacing it
-            var errDiv = document.getElementById('findings-error');
-            if (!errDiv) {
-                errDiv = document.createElement('div');
-                errDiv.id = 'findings-error';
-                errDiv.className = 'card-body text-center py-4';
-                card.appendChild(errDiv);
-            }
-            errDiv.innerHTML = '<div class="text-danger"><i class="ti ti-alert-triangle"></i> Failed to load findings: ' +
-                CSM.esc(err.message || 'unknown error') + '</div>' +
-                '<button class="btn btn-sm btn-primary mt-2" id="findings-retry">Retry</button>';
-            document.getElementById('findings-retry').addEventListener('click', function() {
-                errDiv.remove();
-                var newLoading = document.getElementById('findings-loading');
-                if (newLoading) newLoading.classList.remove('d-none');
+            // The error goes above the table, so rows from an earlier load
+            // stay readable.
+            CSM.loadError(document.getElementById('findings-error'), function() {
+                var retryLoading = document.getElementById('findings-loading');
+                if (retryLoading) retryLoading.classList.remove('d-none');
                 loadFindings();
-            });
+            }, { title: 'Failed to load findings', error: err });
         });
 }
 
+// openLinkedFinding opens the finding named by ?key= once, after the first
+// render. The table holds rows on every page, so a finding past the first
+// page opens too.
+var _linkedKeyHandled = false;
+function openLinkedFinding() {
+    if (_linkedKeyHandled) return;
+    _linkedKeyHandled = true;
+    var key = CSM.urlState.get('key');
+    if (!key || !findingsTable) {
+        if (key) linkedFindingGone();
+        return;
+    }
+    var rows = findingsTable.allRows || [];
+    for (var i = 0; i < rows.length; i++) {
+        if (rows[i].row.getAttribute('data-key') === key) {
+            toggleFindingDetail(rows[i].row);
+            return;
+        }
+    }
+    linkedFindingGone();
+}
+
+function linkedFindingGone() {
+    CSM.urlState.set({ key: '' });
+    CSM.toast('That finding is no longer active. The History tab keeps past findings.', 'info');
+}
+
 function renderFindings(data) {
-    var findings = data.findings || [];
+    var findings = data.items;
     var checkTypes = data.check_types || [];
     var accounts = data.accounts || [];
     var total = data.total || 0;
@@ -65,8 +75,7 @@ function renderFindings(data) {
     // listeners/controls), clear a prior error or a stale "new findings" banner,
     // and rebuild the filter option lists from scratch rather than appending.
     if (findingsTable) { findingsTable.destroy(); findingsTable = null; }
-    var prevError = document.getElementById('findings-error');
-    if (prevError) prevError.remove();
+    CSM.clearLoadError(document.getElementById('findings-error'));
     var refreshBanner = document.getElementById('refresh-banner');
     if (refreshBanner) refreshBanner.classList.add('d-none');
     // The header select-all persists across renders; the rebuilt rows are all
@@ -113,13 +122,14 @@ function renderFindings(data) {
     }
 
     // Start auto-refresh polling regardless of whether we have findings
-    initAutoRefresh(findings);
+    initAutoRefresh(data.version);
 
     if (findings.length === 0) {
         if (tbody) tbody.innerHTML = '';
         document.getElementById('findings-empty').classList.remove('d-none');
         document.getElementById('findings-table-wrap').classList.add('d-none');
         updateSelection();
+        openLinkedFinding();
         return;
     }
     // Non-empty: a prior render may have shown the empty state.
@@ -129,18 +139,19 @@ function renderFindings(data) {
     var html = '';
     for (var k = 0; k < findings.length; k++) {
         var f = findings[k];
-        html += '<tr class="finding-row feed-item"' +
+        html += '<tr class="finding-row feed-item" tabindex="0"' +
             ' data-key="' + CSM.esc(f.key || (f.check + ':' + f.message)) + '"' +
             ' data-check="' + CSM.esc(f.check) + '"' +
             ' data-message="' + CSM.esc(f.message) + '"' +
             ' data-details="' + CSM.esc(f.details || '') + '"' +
             ' data-filepath="' + CSM.esc(f.file_path || '') + '"' +
             ' data-account="' + CSM.esc(f.account || '') + '"' +
+            ' data-block-ip="' + CSM.esc(f.block_ip || '') + '"' +
             ' data-hasFix="' + (f.has_fix ? 'true' : 'false') + '"' +
             ' data-hasVerify="' + (f.has_verify ? 'true' : 'false') + '"' +
             ' data-fixdesc="' + CSM.esc(f.fix_desc || '') + '">' +
-            '<td><input type="checkbox" class="form-check-input row-checkbox"></td>' +
-            '<td data-sort="' + severityRank(f.severity) + '"><span class="badge badge-' + CSM.esc(f.sev_class) + '">' + CSM.esc(f.severity) + '</span></td>' +
+            '<td><input type="checkbox" class="form-check-input row-checkbox" aria-label="Select finding ' + CSM.attr(f.check + ': ' + f.message) + '"></td>' +
+            '<td data-sort="' + CSM.severity(f.severity).rank + '"><span class="badge badge-' + CSM.esc(CSM.severity(f.severity).cls) + '">' + CSM.esc(f.severity) + '</span></td>' +
             '<td><code>' + CSM.esc(f.check) + '</code></td>' +
             '<td class="text-secondary csm-break-all">' + CSM.esc(f.message) + '</td>' +
             '<td class="text-nowrap"><span class="font-monospace small" data-timestamp="' + CSM.esc(f.first_seen) + '">' + CSM.fmtDate(f.first_seen) + '</span></td>' +
@@ -159,16 +170,16 @@ function renderFindings(data) {
         buildActionButtons(rows[r]);
     }
 
-    // Bind row checkboxes
-    var checkboxes = tbody.querySelectorAll('.row-checkbox');
-    for (var c = 0; c < checkboxes.length; c++) {
-        checkboxes[c].addEventListener('change', updateSelection);
-    }
 
-    // Bind click-to-expand on rows
+    // Bind click-to-expand on rows; a focused row opens with Enter or Space.
     for (var rx = 0; rx < rows.length; rx++) {
         rows[rx].addEventListener('click', function(e) {
             if (e.target.closest('button') || e.target.closest('input')) return;
+            toggleFindingDetail(this);
+        });
+        rows[rx].addEventListener('keydown', function(e) {
+            if (e.target !== this || (e.key !== 'Enter' && e.key !== ' ')) return;
+            e.preventDefault();
             toggleFindingDetail(this);
         });
     }
@@ -185,11 +196,15 @@ function renderFindings(data) {
             { id: 'account-filter', attr: 'data-account' }
         ],
         stateKey: 'csm-findings-table',
-        onRender: function() { updateSelection(); }
+        onRender: function() {
+            if (_layoutFindingGroups) _layoutFindingGroups();
+            updateSelection();
+        }
     });
 
     // Restore filter state from URL params (after table init)
     restoreURLParams();
+    openLinkedFinding();
 }
 
 // --- Build action buttons for a row ---
@@ -205,7 +220,7 @@ function buildActionButtons(row) {
     if (hasVerify) {
         btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 verify-btn" title="Re-check whether this finding is still present" aria-label="Re-check finding"><i class="ti ti-refresh"></i></button>';
     }
-    btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 dismiss-btn" title="Dismiss this finding (can be restored)" aria-label="Dismiss finding"><i class="ti ti-x"></i></button>';
+    btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 dismiss-btn" title="Dismiss: stop alerts for this finding while it stays unchanged. A later scan can list it again; use Suppress to hide it for good." aria-label="Dismiss finding"><i class="ti ti-x"></i></button>';
     btnHtml += '<button class="btn btn-ghost-secondary btn-sm suppress-btn" title="Create a suppression rule to hide similar findings" aria-label="Suppress finding"><i class="ti ti-eye-off"></i></button>';
     cell.innerHTML = btnHtml;
 
@@ -320,46 +335,43 @@ if (perPageEl) perPageEl.addEventListener('change', function() {
 });
 
 // --- Selection management ---
-function getVisibleRows() {
-    return Array.from(document.querySelectorAll('.finding-row')).filter(function(r) {
-        return r.style.display !== 'none';
-    });
+// The shared bulk helper counts only rows the operator can see: rows on
+// other pages, filtered out, or in a collapsed group are never selected.
+var _findingsBulk = null;
+function findingsBulk() {
+    if (!_findingsBulk) {
+        _findingsBulk = CSM.bulk({
+            rowCheckboxSelector: '.finding-row .row-checkbox',
+            selectAllSelector: '#select-all',
+            valueAttr: 'aria-label',
+            onChange: paintSelection
+        });
+    }
+    return _findingsBulk;
 }
 
 function getSelectedRows() {
-    return getVisibleRows().filter(function(r) {
-        var cb = r.querySelector('.row-checkbox');
-        return cb && cb.checked;
-    });
+    if (!_findingsBulk) return [];
+    return _findingsBulk.selectedElements().map(function(cb) { return cb.closest('.finding-row'); });
 }
 
-function toggleSelectAll() {
-    var checked = document.getElementById('select-all').checked;
-    getVisibleRows().forEach(function(r) {
-        var cb = r.querySelector('.row-checkbox');
-        if (cb) cb.checked = checked;
-    });
-    updateSelection();
-}
-
-function updateSelection() {
-    var selected = getSelectedRows();
-    var count = selected.length;
+function paintSelection(count) {
     var countEl = document.getElementById('selected-count');
     if (countEl) countEl.textContent = count;
     var bulkBar = document.getElementById('findings-bulk-bar');
     if (bulkBar) bulkBar.hidden = (count === 0);
     // Show Fix button only if any selected row is fixable.
-    var hasFixable = selected.some(function(r) { return r.getAttribute('data-hasFix') === 'true'; });
+    var hasFixable = getSelectedRows().some(function(r) { return r.getAttribute('data-hasFix') === 'true'; });
     var fixBtn = document.getElementById('bulk-fix-btn');
     if (fixBtn) fixBtn.classList.toggle('d-none', !hasFixable);
 }
 
+function updateSelection() {
+    findingsBulk().refresh();
+}
+
 function clearAllSelections() {
-    document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
-    var sa = document.getElementById('select-all');
-    if (sa) sa.checked = false;
-    updateSelection();
+    findingsBulk().clear();
 }
 
 // Warn before navigating away with active selections
@@ -373,10 +385,7 @@ window.addEventListener('beforeunload', function(e) {
 // Reset select-all when check filter changes
 var checkFilterEl = document.getElementById('check-filter');
 if (checkFilterEl) checkFilterEl.addEventListener('change', function() {
-    var selectAll = document.getElementById('select-all');
-    if (selectAll) selectAll.checked = false;
-    document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
-    updateSelection();
+    clearAllSelections();
     syncFindingsURL();
 });
 
@@ -388,10 +397,7 @@ if (accountFilterEl) accountFilterEl.addEventListener('input', function() {
         findingsTable.currentPage = 1;
         findingsTable.applyFilters();
     }
-    var selectAll = document.getElementById('select-all');
-    if (selectAll) selectAll.checked = false;
-    document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
-    updateSelection();
+    clearAllSelections();
     syncFindingsURL();
 });
 
@@ -417,18 +423,17 @@ function fixOne(btn) {
             message: row.getAttribute('data-message'),
             details: row.getAttribute('data-details') || '',
             file_path: row.getAttribute('data-filepath') || ''
-        }).then(function(data) {
-            if (data.success) {
-                row.style.opacity = '0.3';
-                btn.innerHTML = '<i class="ti ti-check"></i>';
-                btn.className = 'btn btn-success btn-sm me-1';
-                setTimeout(refreshFindings, 1000);
-            } else {
-                CSM.toast('Fix failed: ' + (data.error || 'unknown'), 'error');
-                btn.disabled = false;
-                btn.innerHTML = '<i class="ti ti-tool"></i>';
-            }
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); btn.disabled = false; btn.innerHTML = '<i class="ti ti-tool"></i>'; });
+        }).then(function() {
+            row.style.opacity = '0.3';
+            btn.innerHTML = '<i class="ti ti-check"></i>';
+            btn.className = 'btn btn-success btn-sm me-1';
+            setTimeout(refreshFindings, 1000);
+        }).catch(function(e) {
+            // A fix that did not apply is an error status with the reason.
+            CSM.toast('Fix failed: ' + CSM.errorText(e), 'error');
+            btn.disabled = false;
+            btn.innerHTML = '<i class="ti ti-tool"></i>';
+        });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
@@ -481,41 +486,103 @@ function verifyOne(btn) {
             // the severity can rise here too.
             setTimeout(refreshFindings, 1000);
         }
-    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); btn.disabled = false; btn.innerHTML = orig; });
+    }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); btn.disabled = false; btn.innerHTML = orig; });
+}
+
+// Dismissal marks the finding as known: it stops alerting while its details
+// stay the same, but a later scan that still reports it lists it again. The
+// only way back is the short undo window, so the wording says so.
+var DISMISS_EXPLAINED = 'Dismissed findings stop alerting while they stay unchanged. A later scan that still finds them lists them again; use Suppress to hide them for good. You can undo for 30 seconds.';
+
+function offerDismissUndo(data, label) {
+    if (data && data.undo_token && CSM.undo) CSM.undo.offer({ token: data.undo_token, label: label });
 }
 
 function dismissOne(key) {
-    CSM.confirm('Dismiss this finding?').then(function() {
-        CSM.post('/api/v1/dismiss', {key: key}).then(function() { refreshFindings(); }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+    CSM.confirm('Dismiss this finding?\n\n' + DISMISS_EXPLAINED).then(function() {
+        CSM.post('/api/v1/dismiss', {key: key}).then(function(data) {
+            offerDismissUndo(data, 'Dismissed 1 finding');
+            refreshFindings();
+        }).catch(function(e) { CSM.toast('Dismiss failed: ' + (e && e.message ? e.message : 'request failed'), 'error'); });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
-function suppressFinding(check, message, filePath) {
-    // Pre-fill with file path if available, suggest wildcard for directory
-    var defaultPath = '';
-    if (filePath) {
-        defaultPath = filePath;
-    } else {
-        // Try to extract path from message (e.g. "YARA rule match: /home/user/file.php")
-        var m = message.match(/:\s*(\/\S+)/);
-        if (m) defaultPath = m[1];
+// --- Suppress dialog ---
+// A suppression without a path pattern hides every finding of the check and
+// stops its remediation, so that scope is a separate, explicit choice in one
+// dialog that says what the rule will cover before it is saved.
+// suppressDefaultPattern pre-fills the finding's own file. The pattern is a
+// glob, so characters the server's matcher treats as syntax are escaped to
+// match that file literally.
+function suppressDefaultPattern(message, filePath) {
+    var path = filePath;
+    if (!path) {
+        // e.g. "YARA rule match: /home/user/file.php"
+        var m = (message || '').match(/:\s*(\/\S+)/);
+        path = m ? m[1] : '';
     }
-    CSM.prompt('Reason for suppression (optional):', '').then(function(reason) {
-        CSM.prompt('Path pattern to match (optional, e.g. /home/user/site/*):', defaultPath).then(function(pathPattern) {
-            CSM.post('/api/v1/suppressions', {
-                check: check,
-                path_pattern: pathPattern,
-                reason: reason || 'Suppressed from findings page'
-            }).then(function(data) {
-                if (data.status === 'created') {
-                    CSM.toast('Suppression rule created', 'success');
-                    refreshFindings();
-                } else {
-                    CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
-                }
-            }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
-        }).catch(function() { /* cancelled */ });
-    }).catch(function() { /* cancelled */ });
+    return path.replace(/[\\*?[\]]/g, '\\$&');
+}
+
+function suppressDialogScope() {
+    return document.getElementById('suppress-finding-scope-all').checked ? 'all' : 'path';
+}
+
+function updateSuppressDialog() {
+    var check = document.getElementById('suppress-finding-check').textContent;
+    var pattern = document.getElementById('suppress-finding-pattern').value;
+    var scope = suppressDialogScope();
+    document.getElementById('suppress-finding-summary').textContent = CSM.suppressionSummary(check, scope, pattern);
+    document.getElementById('suppress-finding-submit').disabled = !!CSM.suppressionRequest(check, scope, pattern, '').error;
+}
+
+var _suppressDialogBound = false;
+var _suppressInFlight = false;
+function bindSuppressDialog() {
+    if (_suppressDialogBound) return;
+    _suppressDialogBound = true;
+    var pattern = document.getElementById('suppress-finding-pattern');
+    pattern.addEventListener('input', function() {
+        document.getElementById('suppress-finding-scope-path').checked = true;
+        document.getElementById('suppress-finding-scope-all').checked = false;
+        updateSuppressDialog();
+    });
+    document.getElementById('suppress-finding-scope-path').addEventListener('change', updateSuppressDialog);
+    document.getElementById('suppress-finding-scope-all').addEventListener('change', updateSuppressDialog);
+    document.getElementById('suppress-finding-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+        if (_suppressInFlight) return;
+        var check = document.getElementById('suppress-finding-check').textContent;
+        var body = CSM.suppressionRequest(check, suppressDialogScope(),
+            document.getElementById('suppress-finding-pattern').value,
+            document.getElementById('suppress-finding-reason').value,
+            'Suppressed from findings page');
+        if (body.error) {
+            CSM.toast(body.error, 'error');
+            return;
+        }
+        _suppressInFlight = true;
+        CSM.post('/api/v1/suppressions', body).then(function(resp) {
+            bootstrap.Modal.getOrCreateInstance(document.getElementById('suppress-finding-modal')).hide();
+            CSM.suppressionSaved(resp);
+            refreshFindings();
+        }).catch(function(err) {
+            CSM.toast('Suppression not saved: ' + (err && err.message ? err.message : 'request failed'), 'error');
+        }).then(function() {
+            _suppressInFlight = false;
+        });
+    });
+}
+
+function suppressFinding(check, message, filePath) {
+    bindSuppressDialog();
+    document.getElementById('suppress-finding-check').textContent = check;
+    document.getElementById('suppress-finding-pattern').value = suppressDefaultPattern(message, filePath);
+    document.getElementById('suppress-finding-reason').value = '';
+    document.getElementById('suppress-finding-scope-path').checked = true;
+    document.getElementById('suppress-finding-scope-all').checked = false;
+    updateSuppressDialog();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('suppress-finding-modal')).show();
 }
 
 // --- Bulk actions ---
@@ -556,38 +623,76 @@ function bulkAction(action) {
             CSM.post('/api/v1/fix-bulk', fixItems).then(function(data) {
                 CSM.toast('Fixed ' + data.succeeded + ' of ' + data.total + (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''), 'success');
                 refreshFindings();
-            }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+            }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 
     } else if (action === 'dismiss') {
-        CSM.confirm('Dismiss ' + items.length + ' finding(s)?').then(function() {
-            var succeeded = 0, failed = 0;
-            var chain = Promise.resolve();
-            items.forEach(function(i) {
-                chain = chain.then(function() {
-                    return CSM.post('/api/v1/dismiss', { key: i.key || (i.check + ':' + i.message) })
-                        .then(function() { succeeded++; })
-                        .catch(function() { failed++; });
-                });
-            });
-            chain.then(function() {
-                if (failed > 0) {
-                    CSM.toast('Dismissed ' + succeeded + ' of ' + (succeeded + failed) + ' (' + failed + ' failed)', 'warning');
-                }
+        // One request is one undo entry, so a selection over the server
+        // limit is narrowed instead of being split into several.
+        if (items.length > CSM.DISMISS_BULK_MAX) {
+            CSM.toast('Too many findings selected (' + items.length + '); the bulk dismiss limit is ' + CSM.DISMISS_BULK_MAX + '. Narrow the selection and repeat.', 'error');
+            return;
+        }
+        var keys = items.map(function(i) { return i.key || (i.check + ':' + i.message); });
+        CSM.confirm('Dismiss ' + items.length + ' finding(s)?\n\n' + DISMISS_EXPLAINED).then(function() {
+            return CSM.post('/api/v1/dismiss', { keys: keys }).then(function(data) {
+                offerDismissUndo(data, 'Dismissed ' + (data.count || keys.length) + ' finding(s)');
                 refreshFindings();
-            });
+            }).catch(function(e) { CSM.toast('Dismiss failed: ' + (e && e.message ? e.message : 'request failed'), 'error'); });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 
-    } else if (action === 'quarantine') {
-        var quarItems = bulkFixPayload(items);
-        if (!quarItems) return;
-        CSM.confirm('Quarantine ' + items.length + ' file(s)?\n\nFiles will be moved to /opt/csm/quarantine/').then(function() {
-            CSM.post('/api/v1/fix-bulk', quarItems).then(function(data) {
-                CSM.toast('Quarantined ' + data.succeeded + ' of ' + data.total, 'success');
-                refreshFindings();
-            }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
-        }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
+    } else if (action === 'suppress') {
+        bulkSuppress(items);
     }
+}
+
+// bulkSuppress creates one path rule per selected file. A finding without a
+// file is skipped: its only rule would hide the whole check, which stays a
+// deliberate choice made from that one finding.
+var _bulkSuppressInFlight = false;
+function bulkSuppress(items) {
+    if (_bulkSuppressInFlight) return;
+    var seen = {}, rules = [], skipped = 0;
+    items.forEach(function(i) {
+        var pattern = suppressDefaultPattern(i.message, i.file_path);
+        if (!pattern) { skipped++; return; }
+        var id = i.check + '\u0000' + pattern;
+        if (seen[id]) return;
+        seen[id] = true;
+        rules.push(CSM.suppressionRequest(i.check, 'path', pattern, '', 'Suppressed from findings page'));
+    });
+    if (rules.length === 0) {
+        CSM.toast('None of the selected findings names a file. Suppress them one at a time to choose a scope.', 'warning');
+        return;
+    }
+    if (rules.length > CSM.SUPPRESS_BULK_MAX) {
+        CSM.toast('Too many files selected (' + rules.length + '); the bulk suppress limit is ' + CSM.SUPPRESS_BULK_MAX + '. Narrow the selection and repeat.', 'error');
+        return;
+    }
+    var question = 'Suppress ' + rules.length + ' file(s)?\n\nOne rule per file: matching findings are hidden, and their alerts and remediation stop. IP blocking is not affected.';
+    if (skipped) question += '\n\n' + skipped + ' selected finding(s) without a file are skipped.';
+    _bulkSuppressInFlight = true;
+    CSM.confirm(question).then(function() {
+        var saved = 0, warnings = [];
+        function next() {
+            if (saved >= rules.length) return Promise.resolve();
+            return CSM.post('/api/v1/suppressions', rules[saved]).then(function(resp) {
+                saved++;
+                if (resp && resp.warning && warnings.indexOf(resp.warning) < 0) warnings.push(resp.warning);
+                return next();
+            });
+        }
+        return next().then(function() {
+            CSM.toast('Suppressed ' + saved + ' file(s)', 'success');
+            if (warnings.length) CSM.toast(warnings.join('\n'), 'warning');
+        }, function(err) {
+            CSM.toast('Saved ' + saved + ' of ' + rules.length + ' suppression rule(s); the rest were not sent: ' + (err && err.message ? err.message : 'request failed'), 'error');
+        }).then(function() {
+            _bulkSuppressInFlight = false;
+            clearAllSelections();
+            refreshFindings();
+        });
+    }, function() { _bulkSuppressInFlight = false; });
 }
 
 // --- Scan account ---
@@ -611,16 +716,16 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
         clearInterval(timerInterval);
         btn.disabled = false; btn.innerHTML = '<i class="ti ti-radar-2"></i>&nbsp;Scan';
         if (data.error) { status.textContent = data.error; status.className = 'mt-3 small text-danger'; return; }
-        if (!data.count) { status.textContent = account + ' is clean (' + data.elapsed + ')'; status.className = 'mt-3 small text-success'; return; }
+        if (!data.count) { status.textContent = account + ' is clean (' + CSM.formatDuration(data.elapsed_seconds) + ')'; status.className = 'mt-3 small text-success'; return; }
         // Redirect to filtered view for the scanned account
         window.location.href = '/findings?account=' + encodeURIComponent(account);
-    }).catch(function(e) { clearInterval(timerInterval); btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent='Error: '+e; status.className='mt-3 small text-danger'; });
+    }).catch(function(e) { clearInterval(timerInterval); btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent=CSM.errorText(e); status.className='mt-3 small text-danger'; });
 });
 
 // Load account list for scan autocomplete dropdown
-CSM.get('/api/v1/accounts', { silent: true }).then(function(accounts) {
+CSM.get('/api/v1/accounts', { silent: true }).then(function(data) {
     var dl = document.getElementById('account-list');
-    (accounts||[]).forEach(function(a) {
+    data.items.forEach(function(a) {
         var opt = document.createElement('option');
         opt.value = a;
         dl.appendChild(opt);
@@ -628,14 +733,14 @@ CSM.get('/api/v1/accounts', { silent: true }).then(function(accounts) {
 }).catch(function(err){ console.error('loadAccounts:', err); });
 
 // Bind select-all checkbox
-var _selectAll = document.getElementById('select-all');
-if (_selectAll) _selectAll.addEventListener('change', toggleSelectAll);
 
 // Bind bulk action buttons
 var _bulkFixBtn = document.getElementById('bulk-fix-btn');
 if (_bulkFixBtn) _bulkFixBtn.addEventListener('click', function() { bulkAction('fix'); });
 var _bulkDismissBtn = document.getElementById('bulk-dismiss-btn');
 if (_bulkDismissBtn) _bulkDismissBtn.addEventListener('click', function() { bulkAction('dismiss'); });
+var _bulkSuppressBtn = document.getElementById('bulk-suppress-btn');
+if (_bulkSuppressBtn) _bulkSuppressBtn.addEventListener('click', function() { bulkAction('suppress'); });
 var _bulkCancelBtn = document.getElementById('bulk-cancel-btn');
 if (_bulkCancelBtn) _bulkCancelBtn.addEventListener('click', clearAllSelections);
 
@@ -691,45 +796,43 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
     }
 
     var _savedPerPage = null;
+    // Collapsed groups are remembered by key so a render caused by a search,
+    // sort or refresh keeps them collapsed.
+    var _collapsedGroups = {};
 
-    function applyGrouping() {
+    function layoutGroups() {
         var mode = groupByEl.value;
         removeGroupHeaders();
-
-        // Show all finding rows (remove group-hidden state)
         document.querySelectorAll('.finding-row').forEach(function(r) {
             r.removeAttribute('data-csm-group');
             r.classList.remove('csm-group-hidden');
         });
 
         if (mode === 'none') {
-            // Restore original perPage and re-render
             if (findingsTable && _savedPerPage !== null) {
                 findingsTable.perPage = _savedPerPage;
                 _savedPerPage = null;
+                findingsTable.applyFilters();
             }
-            if (findingsTable) findingsTable.applyFilters();
             return;
         }
 
-        // When grouping, show all rows (disable pagination)
-        if (findingsTable) {
-            if (_savedPerPage === null) {
-                _savedPerPage = findingsTable.perPage;
-            }
+        // Groups show every matching row, so pagination is off while grouped.
+        // Changing perPage renders again, which lays the groups out.
+        if (findingsTable && findingsTable.perPage !== 0) {
+            if (_savedPerPage === null) _savedPerPage = findingsTable.perPage;
             findingsTable.perPage = 0;
             findingsTable.applyFilters();
+            return;
         }
 
         var tbody = document.getElementById('findings-tbody');
         if (!tbody) return;
 
-        // Get all filtered rows (all visible since pagination is disabled)
         var visibleRows = Array.from(tbody.querySelectorAll('.finding-row')).filter(function(r) {
             return r.style.display !== 'none';
         });
 
-        // Build groups
         var groups = {};
         var groupOrder = [];
         visibleRows.forEach(function(row) {
@@ -741,37 +844,43 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
             groups[key].push(row);
             row.setAttribute('data-csm-group', key);
         });
-
-        // Sort group names
         groupOrder.sort();
 
-        // Get number of columns from thead
         var colCount = 7;
         var theadRow = document.querySelector('#findings-table thead tr');
         if (theadRow) colCount = theadRow.children.length;
 
-        // Insert group headers and reorder rows
         groupOrder.forEach(function(key) {
+            var collapsed = !!_collapsedGroups[mode + '\u0000' + key];
             var headerRow = document.createElement('tr');
-            headerRow.className = 'csm-group-header';
+            headerRow.className = 'csm-group-header' + (collapsed ? ' collapsed' : '');
             headerRow.setAttribute('data-csm-group-key', key);
-            headerRow.setAttribute('aria-expanded', 'true');
+            headerRow.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
             var td = document.createElement('td');
             td.colSpan = colCount;
-            td.innerHTML = '<span class="csm-group-arrow">&#9660;</span>' +
-                CSM.esc(key) + ' <span class="text-muted small">(' + groups[key].length + ' finding' + (groups[key].length !== 1 ? 's' : '') + ')</span>';
+            td.innerHTML = '<button type="button" class="csm-group-toggle" aria-expanded="' + (collapsed ? 'false' : 'true') + '">' +
+                '<span class="csm-group-arrow" aria-hidden="true">&#9660;</span>' + CSM.esc(key) + '</button>' +
+                ' <span class="text-muted small">(' + groups[key].length + ' finding' + (groups[key].length !== 1 ? 's' : '') + ')</span>';
+            var accountURL = mode === 'account' ? CSM.accountURL(key) : '';
+            if (accountURL) {
+                td.innerHTML += ' <a class="ms-2 small" href="' + CSM.attr(accountURL) + '">Account page</a>';
+            }
             headerRow.appendChild(td);
 
-            // Append header and then all group rows in order
             tbody.appendChild(headerRow);
             groups[key].forEach(function(row) {
+                if (collapsed) row.style.display = 'none';
                 tbody.appendChild(row);
             });
 
-            // Click to collapse/expand
-            headerRow.addEventListener('click', function() {
+            headerRow.addEventListener('click', function(e) {
+                if (e.target.closest('a')) return;
                 var isCollapsed = headerRow.classList.toggle('collapsed');
                 headerRow.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+                var toggleBtn = headerRow.querySelector('.csm-group-toggle');
+                if (toggleBtn) toggleBtn.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
+                if (isCollapsed) _collapsedGroups[mode + '\u0000' + key] = true;
+                else delete _collapsedGroups[mode + '\u0000' + key];
                 groups[key].forEach(function(row) {
                     row.style.display = isCollapsed ? 'none' : '';
                 });
@@ -779,63 +888,75 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
         });
     }
 
+    _layoutFindingGroups = layoutGroups;
+
+    // Filters, search, sorting and paging all go through the table, whose
+    // render calls layoutGroups; a mode change just asks for a render.
     groupByEl.addEventListener('change', function() {
         syncGroupModeButtons();
-        applyGrouping();
+        if (findingsTable) findingsTable.applyFilters();
+        else layoutGroups();
         syncFindingsURL();
-    });
-
-    // Re-apply grouping when table filters change
-    var checkFilter = document.getElementById('check-filter');
-    if (checkFilter) {
-        checkFilter.addEventListener('change', function() {
-            setTimeout(applyGrouping, 50);
-        });
-    }
-    var searchEl = document.getElementById('findings-search');
-    if (searchEl) {
-        searchEl.addEventListener('input', function() {
-            if (groupByEl.value !== 'none') {
-                setTimeout(applyGrouping, 50);
-            }
-        });
-    }
-    var accountFilter2 = document.getElementById('account-filter');
-    if (accountFilter2) {
-        accountFilter2.addEventListener('input', function() {
-            if (groupByEl.value !== 'none') {
-                setTimeout(applyGrouping, 50);
-            }
-        });
-    }
-    document.querySelectorAll('#findings-table thead th').forEach(function(th) {
-        if (th.querySelector('input[type="checkbox"]')) return;
-        th.addEventListener('click', function() {
-            if (groupByEl.value !== 'none') {
-                setTimeout(applyGrouping, 50);
-            }
-        });
     });
 })();
 
+// blockFindingIP blocks a finding's attacker address permanently, as Block on
+// an incident does: an operator reaching for it has already decided.
+function blockFindingIP(check, ip, btn) {
+    if (!ip || btn.disabled) return;
+    btn.disabled = true;
+    CSM.confirm('Block ' + ip + ' permanently?\n\nThe firewall block does not expire; remove it on the Firewall page.', { danger: true, okLabel: 'Block' }).then(function() {
+        return CSM.post('/api/v1/block-ip', {
+            ip: ip,
+            reason: 'Blocked from finding ' + check,
+            duration: '0' // the API reads 0 as permanent
+        }).then(function(r) {
+            if (r && r.warning) CSM.toast(r.warning, 'warning');
+            else CSM.toast('Blocked ' + ip, 'success');
+        }).catch(function(err) {
+            btn.disabled = false;
+            CSM.toast('Block failed: ' + (err && err.message ? err.message : 'request failed'), 'error');
+        });
+    }, function() {
+        btn.disabled = false;
+    });
+}
+
 // --- Open finding detail in shared CSM.detailPanel (replaces inline row expansion) ---
+var _findingDetailSeq = 0;
 function toggleFindingDetail(row) {
+    var seq = ++_findingDetailSeq;
     var check = row.dataset.check;
     var message = row.dataset.message;
     var hasFix = row.getAttribute('data-hasFix') === 'true';
     var key = row.getAttribute('data-key') || (check + ':' + message);
+    // The open finding is part of the URL, so the view can be shared or reloaded.
+    CSM.urlState.set({ key: key });
+    function onClose() {
+        if (seq !== _findingDetailSeq) return;
+        _findingDetailSeq++;
+        CSM.urlState.set({ key: '' });
+    }
     var filepath = row.getAttribute('data-filepath') || '';
     var account = row.getAttribute('data-account') || '';
+    var blockIP = row.getAttribute('data-block-ip') || '';
 
     CSM.detailPanel.open({
         title: check,
-        bodyHTML: '<div class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>'
+        bodyHTML: '<div class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>',
+        onClose: onClose
     });
 
-    CSM.get('/api/v1/finding-detail?check=' + encodeURIComponent(check) + '&message=' + encodeURIComponent(message))
+    CSM.get('/api/v1/finding-detail?check=' + encodeURIComponent(check) + '&message=' + encodeURIComponent(message), { refresh: false })
         .then(function(data) {
+            if (seq !== _findingDetailSeq) return;
             var html = '<div class="csm-fs-sm">';
-            if (account) html += '<div class="mb-2"><strong>Account:</strong> <code>' + CSM.esc(account) + '</code></div>';
+            if (account) {
+                var accountURL = CSM.accountURL(account);
+                var accountHTML = '<code>' + CSM.esc(account) + '</code>';
+                if (accountURL) accountHTML = '<a href="' + CSM.attr(accountURL) + '" title="Open the account page">' + accountHTML + '</a>';
+                html += '<div class="mb-2"><strong>Account:</strong> ' + accountHTML + '</div>';
+            }
             html += '<div class="mb-2"><strong>Check:</strong> <code>' + CSM.esc(check) + '</code></div>';
             html += '<div class="mb-2"><strong>Message:</strong><br>' + CSM.esc(message) + '</div>';
             if (filepath) html += '<div class="mb-2"><strong>File:</strong> <code class="csm-break-all">' + CSM.esc(filepath) + '</code></div>';
@@ -861,14 +982,19 @@ function toggleFindingDetail(row) {
             html += '</div>';
 
             var footer = '';
+            if (blockIP) footer += '<button type="button" class="btn btn-danger btn-sm" data-csm-finding-block title="Block this address in the firewall"><i class="ti ti-ban"></i>&nbsp;Block ' + CSM.esc(blockIP) + '</button>';
             if (hasFix) footer += '<button type="button" class="btn btn-warning btn-sm" data-csm-finding-fix>Fix</button>';
             footer += '<button type="button" class="btn btn-ghost-secondary btn-sm" data-csm-finding-dismiss>Dismiss</button>';
             footer += '<button type="button" class="btn btn-ghost-secondary btn-sm" data-csm-finding-suppress>Suppress</button>';
 
-            CSM.detailPanel.open({ title: check, bodyHTML: html, footerHTML: footer });
+            CSM.detailPanel.open({ title: check, bodyHTML: html, footerHTML: footer, onClose: onClose });
 
             var panel = CSM.detailPanel.element();
             if (!panel) return;
+            var blockBtn = panel.querySelector('[data-csm-finding-block]');
+            if (blockBtn) blockBtn.addEventListener('click', function() {
+                blockFindingIP(check, blockIP, blockBtn);
+            });
             var fixBtn = panel.querySelector('[data-csm-finding-fix]');
             if (fixBtn) fixBtn.addEventListener('click', function() {
                 var rowFix = row.querySelector('.fix-btn');
@@ -882,10 +1008,13 @@ function toggleFindingDetail(row) {
             });
             var suppressBtn = panel.querySelector('[data-csm-finding-suppress]');
             if (suppressBtn) suppressBtn.addEventListener('click', function() {
+                // The panel traps focus; close it so the dialog owns the keyboard.
+                CSM.detailPanel.close();
                 suppressFinding(check, message, filepath);
             });
         })
         .catch(function(err) {
+            if (seq !== _findingDetailSeq) return;
             console.error('findingDetail:', err);
             CSM.detailPanel.open({
                 title: check,
@@ -893,7 +1022,8 @@ function toggleFindingDetail(row) {
                     icon: 'alert-circle',
                     title: 'Failed to load details',
                     reason: 'Try again from the row buttons.'
-                })
+                }),
+                onClose: onClose
             });
         });
 }
@@ -908,8 +1038,11 @@ var _findingsExportCols = [
     {key:'last_seen', label:'Last Seen'}
 ];
 
+// The export follows the table: the rows the current filters and page show.
 function getExportData() {
-    var rows = getVisibleRows();
+    var rows = Array.from(document.querySelectorAll('.finding-row')).filter(function(r) {
+        return r.style.display !== 'none';
+    });
     return rows.map(function(r) {
         return {
             severity: r.querySelector('.badge') ? r.querySelector('.badge').textContent.trim() : '',
@@ -927,51 +1060,39 @@ if (csvBtn) csvBtn.addEventListener('click', function(e) { e.preventDefault(); C
 var jsonBtn = document.getElementById('export-json');
 if (jsonBtn) jsonBtn.addEventListener('click', function(e) { e.preventDefault(); CSM.exportTable(getExportData(), _findingsExportCols, 'json', 'csm-findings'); });
 
-// --- Auto-refresh: poll for new findings every 15 seconds ---
+// --- Auto-refresh: offer the new list when it changes ---
+// Live updates check at once when a finding arrives; the poll runs every 15
+// seconds without them and every minute as a safety net with them.
 var _findingsPoller = null;
+var _findingsVersion = null;
 
-function findingRefreshKey(f) {
-    if (!f) return '';
-    var check = f.check || '';
-    var message = f.message || '';
-    var severity = f.severity || '';
-    if (check === 'ip_reputation') return check + ':' + message + ':' + severity;
-    return (f.key || (check + ':' + message)) + ':' + severity;
+function showNewFindings(data) {
+    if (!data || !data.version || !_findingsVersion || data.version === _findingsVersion) return;
+    var banner = document.getElementById('refresh-banner');
+    if (banner) banner.classList.remove('d-none');
 }
 
-function initAutoRefresh(initialFindings) {
-    var currentKeys = {};
-    for (var i = 0; i < initialFindings.length; i++) {
-        var f = initialFindings[i];
-        currentKeys[findingRefreshKey(f)] = true;
-    }
-    var currentCount = initialFindings.length;
-
+function initAutoRefresh(version) {
+    _findingsVersion = version;
     // Stop any previous poller
     if (_findingsPoller) { _findingsPoller.stop(); _findingsPoller = null; }
 
-    // Poll the same enriched endpoint that renders the table and seeds
-    // currentKeys/currentCount. The raw /api/v1/findings has no IP dedup and
-    // keeps the per-finding message, so its count and keys never line up with
-    // the deduped table -- comparing the two fired the banner on every poll
-    // whenever any ip_reputation finding existed.
-    _findingsPoller = CSM.poll('/api/v1/findings/enriched', 15000, function(err, data) {
+    // Poll the enriched endpoint that renders the table, for the version of
+    // its list only: the server derives it from the same deduped rows, so it
+    // moves exactly when the table would change, without sending the list.
+    // The raw /api/v1/findings has no IP dedup and fired the banner on every
+    // poll whenever any ip_reputation finding existed.
+    _findingsPoller = CSM.poll('/api/v1/findings/enriched?fields=version', 15000, function(err, data) {
         if (err) { console.error('findings auto-refresh:', err); return; }
-        if (!data || !data.findings) return;
-        var poll = data.findings;
-        var changed = poll.length !== currentCount;
-        if (!changed) {
-            for (var j = 0; j < poll.length; j++) {
-                var key = findingRefreshKey(poll[j]);
-                if (!currentKeys[key]) { changed = true; break; }
-            }
-        }
-        if (changed) {
-            var banner = document.getElementById('refresh-banner');
-            if (banner) banner.classList.remove('d-none');
-        }
-    });
+        showNewFindings(data);
+    }, { whileLive: 60000 });
 }
+
+if (CSM.live) CSM.live.onFinding(function() {
+    CSM.get('/api/v1/findings/enriched?fields=version', { silent: true })
+        .then(showNewFindings)
+        .catch(function(err) { console.error('findings live check:', err); });
+});
 
 window.addEventListener('beforeunload', function() {
     if (_findingsPoller) { _findingsPoller.stop(); _findingsPoller = null; }
@@ -979,7 +1100,14 @@ window.addEventListener('beforeunload', function() {
 
 // Bind refresh button (replaces inline onclick for CSP compliance)
 var refreshBtn = document.getElementById('refresh-page-btn');
-if (refreshBtn) refreshBtn.addEventListener('click', function(e) { e.preventDefault(); location.reload(); });
+if (refreshBtn) refreshBtn.addEventListener('click', function(e) {
+    e.preventDefault();
+    loadFindings({ refresh: true });
+});
+
+if (CSM.refresh) CSM.refresh.onRefresh(function() {
+    if (document.getElementById('tab-active').classList.contains('active')) refreshFindings();
+});
 
 // --- Kick off ---
 loadFindings();

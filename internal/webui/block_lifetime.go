@@ -13,9 +13,7 @@ import (
 
 func (s *Server) blockIPPreservingLifetime(ip, reason string, ttl time.Duration) error {
 	if ttl > 0 {
-		if guarded, ok := s.blocker.(interface {
-			BlockIPForcePreserveLifetime(string, string, time.Duration) error
-		}); ok {
+		if guarded, ok := s.blocker.(lifetimeKeepingBlocker); ok {
 			err := guarded.BlockIPForcePreserveLifetime(ip, reason, ttl)
 			checks.ObserveOperatorBlock(err, checks.BlockSourceWebUI)
 			return err
@@ -104,9 +102,7 @@ func (s *Server) undoSnapshotBlocks(payload undoPayloadIPs, clearEvidence bool) 
 		if !hadPrior && !clearEvidence {
 			continue
 		}
-		if restorer, ok := s.blocker.(interface {
-			RestoreBlockIfUnchanged(string, *firewall.BlockedEntry, *firewall.BlockedEntry) error
-		}); ok {
+		if restorer, ok := s.blocker.(blockRestorer); ok {
 			var expected, restore *firewall.BlockedEntry
 			if entry, exists := payload.ExpectedBlocks[ip]; exists {
 				expected = &entry
@@ -136,7 +132,7 @@ func (s *Server) undoSnapshotBlocks(payload undoPayloadIPs, clearEvidence bool) 
 		}
 		restoreUndoThreatRows(threatRowsForIP(payload.RestoreThreats, ip))
 		if clearEvidence && !hadPrior {
-			flushCphulk(ip)
+			_ = flushCphulk(ip) // best effort
 		}
 		count++
 	}
@@ -144,9 +140,7 @@ func (s *Server) undoSnapshotBlocks(payload undoPayloadIPs, clearEvidence bool) 
 }
 
 func (s *Server) blockIPForUndo(ip, reason string, ttl time.Duration) (*firewall.BlockedEntry, *firewall.BlockedEntry, error) {
-	if blocker, ok := s.blocker.(interface {
-		BlockIPForUndo(string, string, time.Duration) (*firewall.BlockedEntry, *firewall.BlockedEntry, error)
-	}); ok {
+	if blocker, ok := s.blocker.(undoableBlocker); ok {
 		before, after, err := blocker.BlockIPForUndo(ip, reason, ttl)
 		checks.ObserveOperatorBlock(err, checks.BlockSourceWebUI)
 		return before, after, err
@@ -163,9 +157,7 @@ func (s *Server) blockIPForUndo(ip, reason string, ttl time.Duration) (*firewall
 }
 
 func (s *Server) unblockIPForUndo(ip string) (*firewall.BlockedEntry, error) {
-	if blocker, ok := s.blocker.(interface {
-		UnblockIPForUndo(string) (*firewall.BlockedEntry, error)
-	}); ok {
+	if blocker, ok := s.blocker.(undoableUnblocker); ok {
 		return blocker.UnblockIPForUndo(ip)
 	}
 	before, err := snapshotFirewallBlocks(s.cfg.StatePath)

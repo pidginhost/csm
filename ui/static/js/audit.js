@@ -1,5 +1,7 @@
 // CSM Audit Log page
 
+(function() {
+
 var actionBadges = {
     block_ip:           'bg-red',
     block_ip_permanent: 'bg-red',
@@ -69,50 +71,44 @@ function auditURLInputs(fromInput, toInput) {
     };
 }
 
-function auditLocalDateMillis(value, endExclusive) {
-    if (!value) return null;
-    var parts = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!parts) return null;
-    var year = Number(parts[1]);
-    var month = Number(parts[2]) - 1;
-    var day = Number(parts[3]);
-    var d = new Date(year, month, day);
-    if (isNaN(d.getTime())) return null;
-    if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return null;
-    if (endExclusive) d.setDate(d.getDate() + 1);
-    return d.getTime();
+// auditActorLabel names who acted: the credential name, and whether it came
+// as a browser login or an API token. Entries written before the audit
+// recorded an actor have neither.
+function auditActorLabel(e) {
+    if (!e.actor) return '';
+    return e.via ? e.actor + ' (' + e.via + ')' : e.actor;
 }
 
 function loadAudit() {
-    CSM.get('/api/v1/audit').then(function(entries){
+    CSM.get('/api/v1/audit').then(function(data){
+        var entries = data.items;
         var el = document.getElementById('audit-content');
         var _auditFromInput = document.getElementById('audit-from');
         var _auditToInput = document.getElementById('audit-to');
         resetAuditTable();
         // Update card title with count
         var title = document.querySelector('.card-title');
-        if (title) title.innerHTML = '<i class="ti ti-clipboard-list"></i>&nbsp;Audit Log (' + (entries ? entries.length : 0) + ')';
+        if (title) title.innerHTML = '<i class="ti ti-clipboard-list"></i>&nbsp;Audit Log (' + entries.length + ')';
         if (!entries || entries.length === 0) {
             populateAuditActionFilter(entries);
             _auditURLUnbind = CSM.urlState.bind({ inputs: auditURLInputs(_auditFromInput, _auditToInput) });
             el.innerHTML = '<div class="card-body text-center text-muted py-4"><i class="ti ti-clipboard-check"></i> No audit entries yet.</div>';
             return;
         }
-        var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="audit-table"><thead><tr><th>Time</th><th>Action</th><th>Target</th><th>Details</th><th>Admin IP</th></tr></thead><tbody>';
+        var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="audit-table"><thead><tr><th>Time</th><th>Action</th><th>Target</th><th>Details</th><th>By</th><th>Admin IP</th></tr></thead><tbody>';
         for (var i = 0; i < entries.length; i++) {
             var e = entries[i];
             var badgeClass = actionBadges[e.action] || 'bg-secondary';
-            // The row's date-filter key lives on data-audit-ts, not
-            // data-timestamp: the global initTimeAgo loop rewrites the
-            // textContent of every [data-timestamp] element every 60s, which
-            // on a <tr> would wipe all of its cells. The inner span keeps
-            // data-timestamp for relative display and an explicit title so
+            // The row's date-filter key lives on data-audit-ts. The inner
+            // span carries data-timestamp as the sort key and data-time-ago
+            // for the refreshing relative display, with an explicit title so
             // the absolute time is always available on hover.
             html += '<tr data-action="' + CSM.attr(e.action || '') + '" data-audit-ts="' + CSM.attr(e.timestamp || '') + '">';
-            html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.attr(e.timestamp || '') + '" title="' + CSM.attr(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td>';
+            html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.attr(e.timestamp || '') + '" data-time-ago="' + CSM.attr(e.timestamp || '') + '" title="' + CSM.attr(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td>';
             html += '<td><span class="badge ' + badgeClass + '">' + CSM.esc(e.action) + '</span></td>';
             html += '<td><code>' + CSM.esc(e.target) + '</code></td>';
             html += '<td class="small">' + CSM.esc(e.details || '') + '</td>';
+            html += '<td class="small text-nowrap">' + CSM.esc(auditActorLabel(e)) + '</td>';
             html += '<td class="font-monospace small">' + CSM.esc(e.source_ip || '') + '</td>';
             html += '</tr>';
         }
@@ -128,8 +124,8 @@ function loadAudit() {
             if (!raw) return true;
             var ts = CSM.parseTimestamp(raw);
             if (isNaN(ts)) return true;
-            var from = _auditFromInput ? auditLocalDateMillis(_auditFromInput.value, false) : null;
-            var to = _auditToInput ? auditLocalDateMillis(_auditToInput.value, true) : null;
+            var from = _auditFromInput ? CSM.prefs.dayBoundary(_auditFromInput.value, false) : null;
+            var to = _auditToInput ? CSM.prefs.dayBoundary(_auditToInput.value, true) : null;
             if (from !== null && ts < from) return false;
             if (to !== null && ts >= to) return false;
             return true;
@@ -158,7 +154,7 @@ function loadAudit() {
         };
         // WEB_ROADMAP P2.1: persist audit-search + filters to URL.
         _auditURLUnbind = CSM.urlState.bind({ inputs: auditURLInputs(_auditFromInput, _auditToInput) });
-    }).catch(function(){ CSM.loadError(document.getElementById('audit-content'), loadAudit); });
+    }).catch(function(err){ CSM.loadError(document.getElementById('audit-content'), loadAudit, { title: 'Failed to load the audit log', error: err }); });
 }
 
 loadAudit();
@@ -172,6 +168,7 @@ var _auditExportCols = [
     {key: 'action',   label: 'Action'},
     {key: 'target',   label: 'Target'},
     {key: 'details',  label: 'Details'},
+    {key: 'actor',    label: 'By'},
     {key: 'admin_ip', label: 'Admin IP'}
 ];
 
@@ -181,7 +178,7 @@ function _auditExportRows() {
     rows.forEach(function(r) {
         if (r.style.display === 'none') return;
         var cells = r.querySelectorAll('td');
-        if (cells.length < 5) return;
+        if (cells.length < 6) return;
         // Export the absolute ISO timestamp the cell carries, not the
         // rendered "3h ago" relative string.
         var tsSpan = cells[0].querySelector('[data-timestamp]');
@@ -191,7 +188,8 @@ function _auditExportRows() {
             action:   cells[1].textContent.trim(),
             target:   cells[2].textContent.trim(),
             details:  cells[3].textContent.trim(),
-            admin_ip: cells[4].textContent.trim()
+            actor:    cells[4].textContent.trim(),
+            admin_ip: cells[5].textContent.trim()
         });
     });
     return out;
@@ -203,3 +201,5 @@ document.querySelectorAll('[data-export]').forEach(function(el) {
         CSM.exportTable(_auditExportRows(), _auditExportCols, this.getAttribute('data-export'), 'csm-audit');
     });
 });
+
+})();

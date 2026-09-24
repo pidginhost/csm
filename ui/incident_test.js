@@ -25,12 +25,13 @@ function incidentPage(overrides = {}) {
             initTimeAgo() {},
             esc: String,
             attr: String,
+            accountURL() { return ''; },
             ...overrides
         }
     });
     const source = fs.readFileSync(path.join(__dirname, 'static/js/incident.js'), 'utf8');
     // Expose the page's real closures without duplicating their implementation.
-    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.page = { incidentSourceIP, blockIncidentIP, renderIncidentDetail }; })();'), context);
+    vm.runInContext(source.replace(/\}\)\(\);\s*$/, 'globalThis.page = { incidentSourceIP, blockIncidentIP, renderIncidentDetail, setIncidentStatus }; })();'), context);
     return context.page;
 }
 
@@ -64,7 +65,7 @@ test('incident block waits for themed confirmation and sends permanent duration'
     let confirm, request;
     const page = incidentPage({
         confirm(message) { assert.match(message, /192\.0\.2\.10.*permanently/); return new Promise(resolve => { confirm = resolve; }); },
-        post(url, body) { request = { url, body }; return Promise.resolve({ status: 'blocked' }); }
+        post(url, body) { request = { url, body }; return Promise.resolve({ ok: true, ip: body.ip }); }
     });
     const button = { disabled: false };
     const done = page.blockIncidentIP('inc_test', '192.0.2.10', button);
@@ -97,4 +98,39 @@ test('failed incident block allows retry', async () => {
     const button = { disabled: false };
     await page.blockIncidentIP('inc_test', '192.0.2.10', button);
     assert.equal(button.disabled, false);
+});
+
+test('a failed incident block says why and allows a retry', async () => {
+    const toasts = [];
+    const page = incidentPage({
+        confirm() { return Promise.resolve(); },
+        post() { return Promise.reject(new Error('firewall engine unavailable')); },
+        toast(message, kind) { toasts.push({ message, kind }); }
+    });
+    const button = { disabled: false };
+    await page.blockIncidentIP('inc_test', '192.0.2.10', button);
+    assert.equal(button.disabled, false);
+    assert.ok(toasts.some(t => t.kind === 'error' && /firewall engine unavailable/.test(t.message)), JSON.stringify(toasts));
+});
+
+test('a cancelled incident block shows nothing', async () => {
+    const toasts = [];
+    const page = incidentPage({
+        confirm() { return Promise.reject(new Error('cancelled')); },
+        post() { throw new Error('must not post'); },
+        toast(message, kind) { toasts.push({ message, kind }); }
+    });
+    await page.blockIncidentIP('inc_test', '192.0.2.10', { disabled: false });
+    assert.deepEqual(toasts, []);
+});
+
+test('a failed incident status change says why', async () => {
+    const toasts = [];
+    const page = incidentPage({
+        post() { return Promise.reject(new Error('invalid status transition')); },
+        toast(message, kind) { toasts.push({ message, kind }); }
+    });
+    await page.setIncidentStatus('inc_test', 'resolved');
+    assert.ok(toasts.some(t => t.kind === 'error' && /invalid status transition/.test(t.message)), JSON.stringify(toasts));
+    assert.ok(!toasts.some(t => t.kind === 'success'));
 });

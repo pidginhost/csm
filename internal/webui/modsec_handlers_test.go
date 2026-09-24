@@ -1,9 +1,16 @@
 package webui
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"sort"
+	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // --- handleModSec / handleModSecRules (page rendering) ----------------
@@ -83,11 +90,73 @@ func TestAPIModSecRulesApplyGetRejected(t *testing.T) {
 
 // --- apiModSecRulesEscalation -----------------------------------------
 
-func TestAPIModSecRulesEscalationGetRejected(t *testing.T) {
+func TestAPIModSecRulesEscalationPutRejected(t *testing.T) {
 	s := newTestServer(t, "tok")
 	w := httptest.NewRecorder()
-	s.apiModSecRulesEscalation(w, httptest.NewRequest("GET", "/", nil))
+	s.apiModSecRulesEscalation(w, httptest.NewRequest("PUT", "/", nil))
 	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("GET escalation = %d, want 405", w.Code)
+		t.Errorf("PUT escalation = %d, want 405", w.Code)
+	}
+}
+
+// The ModSec Rules page lists every excluded rule from the same endpoint it
+// changes them with, including rules the parsed rules file does not show.
+func TestAPIModSecRulesEscalationListsExclusions(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	for _, id := range []int{900500, 900001} {
+		w := httptest.NewRecorder()
+		body := fmt.Sprintf(`{"rule_id":%d,"escalate":false}`, id)
+		s.apiModSecRulesEscalation(w, httptest.NewRequest("POST", "/", strings.NewReader(body)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("exclude %d = %d", id, w.Code)
+		}
+	}
+	w := httptest.NewRecorder()
+	s.apiModSecRulesEscalation(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET escalation = %d", w.Code)
+	}
+	var resp struct {
+		Rules []int `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !sort.IntsAreSorted(resp.Rules) {
+		t.Errorf("rules not sorted: %v", resp.Rules)
+	}
+	for _, id := range []int{900001, 900500} {
+		if !slices.Contains(resp.Rules, id) {
+			t.Errorf("rules %v missing %d", resp.Rules, id)
+		}
+	}
+}
+
+func TestAPIModSecRulesEscalationRequiresStore(t *testing.T) {
+	s := newTestServer(t, "tok")
+	previous := store.Global()
+	store.SetGlobal(nil)
+	t.Cleanup(func() { store.SetGlobal(previous) })
+	w := httptest.NewRecorder()
+	s.apiModSecRulesEscalation(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("unavailable store = %d, want 500; body: %s", w.Code, w.Body.String())
+	}
+}
+
+// The escalation exclusion set has one writer. A second route replaced the
+// whole set with any integers, skipping the CSM rule range check the
+// per-rule route enforces.
+func TestModSecEscalationSetHasOneWriter(t *testing.T) {
+	s := newTestServer(t, "tok")
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(method, "/api/v1/rules/modsec-escalation", strings.NewReader(`{"rules":[1]}`))
+		req.Header.Set("Authorization", "Bearer tok")
+		req.Header.Set("Content-Type", "application/json")
+		s.httpSrv.Handler.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s /api/v1/rules/modsec-escalation = %d, want 404", method, w.Code)
+		}
 	}
 }

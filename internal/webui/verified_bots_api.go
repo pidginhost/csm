@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
@@ -18,8 +17,8 @@ func (s *Server) SetVerifiedBotsReloader(fn func() error) {
 	s.verifiedBotsReloader = fn
 }
 
-func (s *Server) handleVerifiedBots(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "verified-bots.html", map[string]string{
+func (s *Server) handleVerifiedBots(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "verified-bots.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
@@ -42,11 +41,8 @@ func (s *Server) apiVerifiedBots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bots := disk.Reputation.VerifiedBots
-	if bots == nil {
-		bots = []config.VerifiedBot{}
-	}
-	writeJSON(w, map[string]interface{}{
-		"bots":       bots,
+	writeItems(w, bots, map[string]interface{}{
+		"total":      len(bots),
 		"etag":       disk.Integrity.ConfigHash,
 		"bot_ranges": botRangesSummary(disk),
 	})
@@ -56,16 +52,17 @@ func (s *Server) apiVerifiedBots(w http.ResponseWriter, r *http.Request) {
 // Verified Bots page shows: the configured auto-update posture plus the live
 // per-bot prefix counts and last-refresh time from the active overlay.
 func botRangesSummary(disk *config.Config) map[string]interface{} {
-	lastRefresh := ""
+	summary := map[string]interface{}{
+		"auto_update": disk.BotRangesAutoUpdate(),
+		"prefixes":    threatintel.AICrawlerRangePrefixCounts(),
+	}
+	if secs, ok := durationSeconds(disk.Reputation.BotRanges.UpdateInterval); ok {
+		summary["update_interval_seconds"] = secs
+	}
 	if ts := threatintel.LastFetchedRangesRefresh(); !ts.IsZero() {
-		lastRefresh = ts.UTC().Format(time.RFC3339)
+		summary["last_refresh"] = ts
 	}
-	return map[string]interface{}{
-		"auto_update":     disk.BotRangesAutoUpdate(),
-		"update_interval": disk.Reputation.BotRanges.UpdateInterval,
-		"last_refresh":    lastRefresh,
-		"prefixes":        threatintel.AICrawlerRangePrefixCounts(),
-	}
+	return summary
 }
 
 // apiVerifiedBotsApply (POST /api/v1/verified-bots/apply) validates and

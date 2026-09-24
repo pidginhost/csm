@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -116,7 +117,7 @@ func TestBrowserSessionManagementRequiresAdminAndCSRF(t *testing.T) {
 			req.AddCookie(c)
 		}
 		if csrf {
-			req.Header.Set("X-CSRF-Token", s.csrfToken())
+			setSessionCSRF(s, req)
 		}
 		w := httptest.NewRecorder()
 		s.httpSrv.Handler.ServeHTTP(w, req)
@@ -130,7 +131,7 @@ func TestBrowserSessionManagementRequiresAdminAndCSRF(t *testing.T) {
 		Sessions []struct {
 			ID      string `json:"id"`
 			Current bool   `json:"current"`
-		}
+		} `json:"items"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
@@ -185,7 +186,7 @@ func TestBrowserSessionLogoutRevokesAndRejectsGET(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/logout", nil)
 	req.AddCookie(cookie)
-	req.Header.Set("X-CSRF-Token", s.csrfToken())
+	setSessionCSRF(s, req)
 	w := httptest.NewRecorder()
 	s.httpSrv.Handler.ServeHTTP(w, req)
 	if w.Code != http.StatusFound {
@@ -201,9 +202,7 @@ func TestBrowserSessionLogoutRevokesAndRejectsGET(t *testing.T) {
 func TestBrowserSessionPageRendersRealTemplate(t *testing.T) {
 	token := randomBrowserCredential()
 	s := newTestServer(t, token)
-	page, err := template.New("sessions.html").Funcs(template.FuncMap{
-		"csrfToken": s.csrfToken, "formatTime": formatTime,
-	}).ParseFiles("../../ui/templates/sessions.html")
+	page, err := template.New("sessions.html").Funcs(s.templateFuncs()).ParseFiles("../../ui/templates/sessions.html")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,6 +218,34 @@ func TestBrowserSessionPageRendersRealTemplate(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "Log out all sessions") {
 		t.Fatal("session management missing")
+	}
+}
+
+// Session times carry the instant, so the page shows them in the
+// operator's time zone like every other date.
+func TestBrowserSessionPageDatesCarryTheInstant(t *testing.T) {
+	token := randomBrowserCredential()
+	s := newTestServer(t, token)
+	cookie := loginBrowser(t, s, token, nil)
+	page, err := template.New("sessions.html").Funcs(s.templateFuncs()).ParseFiles("../../ui/templates/sessions.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err = page.New("layout").Parse(`{{template "content" .}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.templates = map[string]*template.Template{"sessions.html": page}
+	req := httptest.NewRequest(http.MethodGet, "/sessions", nil)
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	s.handleSessions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("session page: %d", w.Code)
+	}
+	stamps := regexp.MustCompile(`<time data-csm-date datetime="\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ">`).FindAllString(w.Body.String(), -1)
+	if len(stamps) != 3 {
+		t.Fatalf("want created, last activity and expiry as instants, got %d:\n%s", len(stamps), w.Body.String())
 	}
 }
 

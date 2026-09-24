@@ -125,7 +125,7 @@ func TestSecurityHeadersSet(t *testing.T) {
 	headers := map[string]string{
 		"X-Frame-Options":        "DENY",
 		"X-Content-Type-Options": "nosniff",
-		"X-XSS-Protection":       "1; mode=block",
+		"X-XSS-Protection":       "0", // auditor off; TestSecurityHeadersLockDownNavigationAndPlugins
 	}
 	for key, want := range headers {
 		if got := w.Header().Get(key); got != want {

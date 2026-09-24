@@ -84,15 +84,7 @@ func TestRelayAbuseEmptyStoreReturnsEmptySlice(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 
-	var raw struct {
-		Entries json.RawMessage `json:"entries"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
-		t.Fatalf("unmarshal: %v\nbody: %s", err, w.Body.String())
-	}
-	if string(raw.Entries) != "[]" {
-		t.Errorf("entries raw = %s, want []", raw.Entries)
-	}
+	assertEmptyItems(t, w.Body.Bytes())
 }
 
 // splitScriptKey must split on the ":/" boundary, not the first colon, so a

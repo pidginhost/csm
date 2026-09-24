@@ -38,7 +38,7 @@ func TestAPIQuarantineListsMetaFiles(t *testing.T) {
 	}
 
 	// The handler reads from the const quarantineDir which we can't override,
-	// so instead we call apiQuarantine and verify it returns a valid JSON array
+	// so instead we call apiQuarantine and verify it returns a valid items list
 	// (empty on dev machines without /opt/csm/quarantine).
 	w := httptest.NewRecorder()
 	s.apiQuarantine(w, httptest.NewRequest("GET", "/", nil))
@@ -46,24 +46,20 @@ func TestAPIQuarantineListsMetaFiles(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var entries []interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &entries); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
-	// On dev machines this will be an empty array; that's fine — we exercised the code.
+	decodeItems(t, w.Body.Bytes(), &entries)
+	// On dev machines items will be empty; that's fine — we exercised the code.
 }
 
-func TestAPIQuarantineReturnsEmptyArray(t *testing.T) {
+func TestAPIQuarantineReturnsEmptyItems(t *testing.T) {
 	s := newTestServer(t, "tok")
 	w := httptest.NewRecorder()
 	s.apiQuarantine(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	// Should return a JSON array (possibly empty, never null)
-	body := strings.TrimSpace(w.Body.String())
-	if !strings.HasPrefix(body, "[") && !strings.HasPrefix(body, "null") {
-		t.Errorf("body = %q, expected JSON array", body)
-	}
+	// Should return an items list (possibly empty, never null)
+	var entries []interface{}
+	decodeItems(t, w.Body.Bytes(), &entries)
 }
 
 // ---------------------------------------------------------------------------
@@ -157,18 +153,21 @@ func TestAPIQuarantineBulkDeleteWithInvalidID(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ids":[""]}`))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiQuarantineBulkDelete(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		OK    bool `json:"ok"`
-		Count int  `json:"count"`
+		Count  int      `json:"count"`
+		Failed []string `json:"failed"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
 	if data.Count != 0 {
 		t.Errorf("count = %d, want 0 (all invalid)", data.Count)
+	}
+	if len(data.Failed) != 1 {
+		t.Errorf("failed = %v, want the invalid id listed", data.Failed)
 	}
 }
 
@@ -178,18 +177,19 @@ func TestAPIQuarantineBulkDeleteMultipleNonexistent(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ids":["aaa","bbb","ccc"]}`))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiQuarantineBulkDelete(w, req)
-	if w.Code != http.StatusOK {
+	// None of the ids resolves: nothing was deleted, and each id is listed.
+	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		OK    bool `json:"ok"`
-		Count int  `json:"count"`
+		Count  int      `json:"count"`
+		Failed []string `json:"failed"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if !data.OK {
-		t.Error("ok should be true")
+	if len(data.Failed) != 3 {
+		t.Errorf("failed = %v, want the three ids", data.Failed)
 	}
 	// No files existed so count stays 0
 	if data.Count != 0 {
@@ -230,8 +230,8 @@ func TestAPIImportEmptySuppressions(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var data struct {
-		Imported int    `json:"imported"`
-		Status   string `json:"status"`
+		Imported int  `json:"imported"`
+		OK       bool `json:"ok"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
@@ -239,8 +239,8 @@ func TestAPIImportEmptySuppressions(t *testing.T) {
 	if data.Imported != 0 {
 		t.Errorf("imported = %d, want 0", data.Imported)
 	}
-	if data.Status != "imported" {
-		t.Errorf("status = %q, want imported", data.Status)
+	if !data.OK {
+		t.Errorf("ok = false, want true")
 	}
 }
 
@@ -262,8 +262,8 @@ func TestAPIImportMultipleSuppressions(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var data struct {
-		Imported int    `json:"imported"`
-		Summary  string `json:"summary"`
+		Imported int `json:"imported"`
+		Skipped  int `json:"skipped"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
@@ -271,8 +271,8 @@ func TestAPIImportMultipleSuppressions(t *testing.T) {
 	if data.Imported != 3 {
 		t.Errorf("imported = %d, want 3", data.Imported)
 	}
-	if !strings.Contains(data.Summary, "3 items") {
-		t.Errorf("summary = %q, want '3 items'", data.Summary)
+	if data.Skipped != 0 {
+		t.Errorf("skipped = %d, want 0", data.Skipped)
 	}
 }
 
@@ -305,7 +305,8 @@ func TestAPIBulkFixMultipleMixed(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiBulkFix(w, req)
-	if w.Code != http.StatusOK {
+	// None of the three applied: 422 with each item's outcome.
+	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
@@ -313,8 +314,8 @@ func TestAPIBulkFixMultipleMixed(t *testing.T) {
 		Succeeded int `json:"succeeded"`
 		Failed    int `json:"failed"`
 		Results   []struct {
-			Success bool   `json:"success"`
-			Error   string `json:"error"`
+			OK    bool   `json:"ok"`
+			Error string `json:"error"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
@@ -347,25 +348,17 @@ func TestAPIBulkFixPutRejected(t *testing.T) {
 // apiAccounts — exercise the handler (will return empty on dev machines)
 // ---------------------------------------------------------------------------
 
-func TestAPIAccountsReturnsJSONArray(t *testing.T) {
+func TestAPIAccountsReturnsItems(t *testing.T) {
 	s := newTestServer(t, "tok")
 	w := httptest.NewRecorder()
 	s.apiAccounts(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	// Should return valid JSON (array or null — null is valid when no accounts exist)
-	var accounts interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &accounts); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
-	// On macOS /home exists but has no cPanel accounts → nil slice → JSON null
-	switch accounts.(type) {
-	case []interface{}, nil:
-		// expected
-	default:
-		t.Errorf("expected array or null, got %T", accounts)
-	}
+	// Should return an items list. On macOS /home exists but has no cPanel
+	// accounts, so items is [] (never null).
+	var accounts []interface{}
+	decodeItems(t, w.Body.Bytes(), &accounts)
 }
 
 // ---------------------------------------------------------------------------
@@ -595,9 +588,12 @@ func TestAPIUnblockBulkWithInvalidIPs(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Status    string `json:"status"`
-		Total     int    `json:"total"`
-		Succeeded int    `json:"succeeded"`
+		OK        bool `json:"ok"`
+		Total     int  `json:"total"`
+		Succeeded int  `json:"succeeded"`
+		Failed    []struct {
+			Item string `json:"item"`
+		} `json:"failed"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
@@ -605,8 +601,11 @@ func TestAPIUnblockBulkWithInvalidIPs(t *testing.T) {
 	if data.Total != 3 {
 		t.Errorf("total = %d, want 3", data.Total)
 	}
-	if data.Status != "completed" {
-		t.Errorf("status = %q, want completed", data.Status)
+	if !data.OK {
+		t.Errorf("ok = false, want true")
+	}
+	if len(data.Failed) != 2 {
+		t.Errorf("failed = %v, want the two unusable addresses", data.Failed)
 	}
 }
 
@@ -716,14 +715,14 @@ func TestAPIDismissSuccess(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Status string `json:"status"`
-		Key    string `json:"key"`
+		OK  bool   `json:"ok"`
+		Key string `json:"key"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if data.Status != "dismissed" {
-		t.Errorf("status = %q, want dismissed", data.Status)
+	if !data.OK {
+		t.Errorf("ok = false, want true")
 	}
 	if data.Key != "webshell:test" {
 		t.Errorf("key = %q, want webshell:test", data.Key)
@@ -796,8 +795,8 @@ func TestAPIHistoryWithChecksFilter(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var resp struct {
-		Findings []alert.Finding `json:"findings"`
-		Total    int             `json:"total"`
+		Findings []apiFinding `json:"items"`
+		Total    int          `json:"total"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("bad JSON: %v", err)
@@ -872,9 +871,7 @@ func TestAPIFindingsWithPopulatedState(t *testing.T) {
 		Check  string `json:"check"`
 		HasFix bool   `json:"has_fix"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &data)
 	// auto_response and health should be filtered out
 	if len(data) != 2 {
 		t.Errorf("findings count = %d, want 2 (filtered out auto_response + health)", len(data))
@@ -924,9 +921,7 @@ func TestAPIBlockedIPsWithFirewallStateFile(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data []interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &data)
 	if len(data) != 1 {
 		t.Errorf("blocked count = %d, want 1", len(data))
 	}
@@ -948,9 +943,7 @@ func TestAPIBlockedIPsWithLegacyFile(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data []interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &data)
 	if len(data) != 1 {
 		t.Errorf("blocked count = %d, want 1", len(data))
 	}
@@ -1008,8 +1001,8 @@ func TestFormatBlockedViewNotExpired(t *testing.T) {
 	if !ok {
 		t.Fatal("non-expired entry should be ok")
 	}
-	if view.ExpiresIn == "permanent" {
-		t.Error("should not be permanent when ExpiresAt is set")
+	if !view.ExpiresAt.Equal(entry.ExpiresAt) {
+		t.Error("should carry its expiry when ExpiresAt is set")
 	}
 }
 
@@ -1042,14 +1035,14 @@ func TestAPIUnblockIPSuccess(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var data struct {
-		Status string `json:"status"`
-		IP     string `json:"ip"`
+		OK bool   `json:"ok"`
+		IP string `json:"ip"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if data.Status != "unblocked" {
-		t.Errorf("status = %q, want unblocked", data.Status)
+	if !data.OK {
+		t.Errorf("ok = false, want true")
 	}
 }
 
@@ -1064,15 +1057,15 @@ func TestAPIUnblockBulkSuccessWithFakeBlocker(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Status    string `json:"status"`
-		Total     int    `json:"total"`
-		Succeeded int    `json:"succeeded"`
+		OK        bool `json:"ok"`
+		Total     int  `json:"total"`
+		Succeeded int  `json:"succeeded"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if data.Status != "completed" {
-		t.Errorf("status = %q, want completed", data.Status)
+	if !data.OK {
+		t.Errorf("ok = false, want true")
 	}
 	if data.Total != 2 {
 		t.Errorf("total = %d, want 2", data.Total)
@@ -1207,7 +1200,7 @@ func TestAPIHistoryFilteredPaginationEmpty(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var resp struct {
-		Findings interface{} `json:"findings"`
+		Findings interface{} `json:"items"`
 		Total    int         `json:"total"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {

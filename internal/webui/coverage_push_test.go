@@ -266,15 +266,16 @@ func TestValidateCSRFFailsClosedWithoutSecret(t *testing.T) {
 
 func TestCSRFTokenEmptyWithoutSecret(t *testing.T) {
 	s := newTestServer(t, "")
-	if got := s.csrfToken(); got != "" {
-		t.Fatalf("csrfToken without admin secret = %q, want empty", got)
+	if got := s.csrfTokenForSession("session"); got != "" {
+		t.Fatal("CSRF token must be empty without an admin secret")
 	}
 }
 
 func TestValidateCSRFViaFormField(t *testing.T) {
 	s := newTestServer(t, "tok")
-	form := "csrf_token=" + s.csrfToken()
+	form := "csrf_token=" + s.csrfTokenForSession("session")
 	req := httptest.NewRequest("POST", "/api/x", strings.NewReader(form))
+	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "session"})
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if !s.validateCSRF(req) {
 		t.Error("matching form csrf_token should pass CSRF")
@@ -284,7 +285,8 @@ func TestValidateCSRFViaFormField(t *testing.T) {
 func TestValidateCSRFOnDeleteWithHeader(t *testing.T) {
 	s := newTestServer(t, "tok")
 	req := httptest.NewRequest("DELETE", "/api/x", nil)
-	req.Header.Set("X-CSRF-Token", s.csrfToken())
+	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "session"})
+	setSessionCSRF(s, req)
 	if !s.validateCSRF(req) {
 		t.Error("DELETE with valid CSRF header should pass")
 	}
@@ -732,8 +734,8 @@ func TestAPIThreatTempWhitelistIPDefaultsTo24h(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["hours"].(float64) != 24 {
-		t.Errorf("hours = %v, want 24", resp["hours"])
+	if resp["duration_seconds"].(float64) != 24*3600 {
+		t.Errorf("duration_seconds = %v, want %d", resp["duration_seconds"], 24*3600)
 	}
 }
 
@@ -750,8 +752,8 @@ func TestAPIThreatTempWhitelistIPCapsTo168h(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["hours"].(float64) != 168 {
-		t.Errorf("hours = %v, want 168", resp["hours"])
+	if resp["duration_seconds"].(float64) != 168*3600 {
+		t.Errorf("duration_seconds = %v, want %d", resp["duration_seconds"], 168*3600)
 	}
 }
 
@@ -783,8 +785,8 @@ func TestAPIThreatWhitelistIPSuccessWithBlocker(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["status"] != "whitelisted" {
-		t.Errorf("status = %v", resp["status"])
+	if resp["ok"] != true {
+		t.Errorf("ok = %v, want true", resp["ok"])
 	}
 }
 
@@ -965,8 +967,8 @@ func TestAPIIncidentHoursCappedAt720(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["hours"].(float64) != 720 {
-		t.Errorf("hours = %v, want 720", resp["hours"])
+	if resp["window_seconds"].(float64) != 720*3600 {
+		t.Errorf("window_seconds = %v, want %d", resp["window_seconds"], 720*3600)
 	}
 }
 
@@ -974,7 +976,7 @@ func TestAPIIncidentHoursCappedAt720(t *testing.T) {
 // suppressions_api.go — full CRUD cycle
 // =========================================================================
 
-func TestAPISuppressionsGETReturnsEmptyArray(t *testing.T) {
+func TestAPISuppressionsGETReturnsEmptyItems(t *testing.T) {
 	s := newTestServer(t, "tok")
 	w := httptest.NewRecorder()
 	s.apiSuppressions(w, httptest.NewRequest("GET", "/", nil))
@@ -982,9 +984,7 @@ func TestAPISuppressionsGETReturnsEmptyArray(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data []interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &data)
 }
 
 func TestAPISuppressionsCreateAndDelete(t *testing.T) {
@@ -1067,9 +1067,7 @@ func TestAPIBlockedIPsFallbackFirewallStateJSON(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data []interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &data)
 	if len(data) < 1 {
 		t.Error("expected at least 1 blocked IP from legacy file")
 	}
@@ -1091,9 +1089,7 @@ func TestAPIBlockedIPsFallbackBlockedIPsJSON(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data []interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &data)
 	if len(data) < 1 {
 		t.Error("expected at least 1 blocked IP from legacy blocked_ips.json")
 	}
@@ -1203,8 +1199,8 @@ func TestAPITestAlertDispatchSuccess(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["status"] != "sent" {
-		t.Errorf("status = %v", resp["status"])
+	if resp["ok"] != true {
+		t.Errorf("ok = %v, want true", resp["ok"])
 	}
 }
 

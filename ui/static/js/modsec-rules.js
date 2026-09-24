@@ -4,9 +4,21 @@
 'use strict';
 
 var _rules = [];
+var _noEscalate = [];      // rule IDs excluded from escalation, sorted
+var _escalationLoaded = false;
+var _escalationLoading = false;
+var _escalationBusy = false;
 var _originalEnabled = {}; // ruleID → original enabled state
 var _pendingChanges = {};  // ruleID → new enabled state (only if changed)
 var _rulesTable = null;    // CSM.Table instance
+var _rulesLoading = false;
+
+function setRulesLoading(loading) {
+    _rulesLoading = loading;
+    document.querySelectorAll('.enable-toggle, #btn-apply, #btn-discard').forEach(function(el) {
+        el.disabled = loading;
+    });
+}
 
 function setRowAttr(id, attr, value) {
     var row = document.getElementById('rule-row-' + id);
@@ -36,21 +48,31 @@ function resetPendingToggleState() {
     refreshRulesTable();
 }
 
-function loadRules() {
-    CSM.get('/api/v1/modsec/rules')
+function loadRules(options) {
+    setRulesLoading(true);
+    CSM.get('/api/v1/modsec/rules', options)
         .then(function(data) {
             document.getElementById('modsec-rules-loading').classList.add('d-none');
 
             if (!data.configured) {
+                _rules = [];
+                if (_rulesTable) { _rulesTable.destroy(); _rulesTable = null; }
+                document.getElementById('modsec-rules-content').classList.add('d-none');
                 document.getElementById('modsec-rules-unconfigured').classList.remove('d-none');
                 document.getElementById('missing-fields').textContent = (data.missing || []).join(', ');
+                renderEscalation();
                 return;
             }
 
-            _rules = data.rules || [];
+            document.getElementById('modsec-rules-unconfigured').classList.add('d-none');
+            _rules = data.items;
+            if (_escalationLoaded) {
+                _rules.forEach(function(rule) { rule.escalate = _noEscalate.indexOf(rule.id) < 0; });
+            }
             document.getElementById('modsec-rules-content').classList.remove('d-none');
             renderStats(data);
             renderTable();
+            renderEscalation();
         })
         .catch(function(err) {
             document.getElementById('modsec-rules-loading').innerHTML =
@@ -59,7 +81,7 @@ function loadRules() {
                     title: 'Failed to load rules',
                     reason: err.message || 'unknown'
                 });
-        });
+        }).then(function() { setRulesLoading(false); });
 }
 
 function renderStats(data) {
@@ -95,14 +117,14 @@ function renderTable() {
             '" data-status="' + statusAttr +
             '" data-action="' + CSM.attr(r.action || '') +
             '" data-escalate="' + escalateAttr + '">';
-        html += '<td><label class="form-check form-switch mb-0"><input type="checkbox" class="form-check-input enable-toggle" data-id="' + r.id + '"' + (r.enabled ? ' checked' : '') + '></label></td>';
+        html += '<td><label class="form-check form-switch mb-0"><input type="checkbox" class="form-check-input enable-toggle" data-id="' + r.id + '" aria-label="Enable rule ' + r.id + '"' + (r.enabled ? ' checked' : '') + '></label></td>';
         html += '<td><code>' + r.id + '</code></td>';
         html += '<td>' + CSM.esc(r.description) + '</td>';
         html += '<td>' + actionBadge + '</td>';
         html += '<td>' + r.phase + '</td>';
         html += '<td>' + (r.hits_24h || 0) + '</td>';
-        html += '<td><label class="form-check form-switch mb-0"><input type="checkbox" class="form-check-input escalate-toggle" data-id="' + r.id + '"' + (r.escalate ? ' checked' : '') + '></label></td>';
-        html += '<td class="text-muted small" data-timestamp="' + lastHitTS + '">' + lastHit + '</td>';
+        html += '<td><label class="form-check form-switch mb-0"><input type="checkbox" class="form-check-input escalate-toggle" data-id="' + r.id + '" aria-label="Escalate rule ' + r.id + ' to a firewall block"' + (r.escalate ? ' checked' : '') + '></label></td>';
+        html += '<td class="text-muted small" data-timestamp="' + lastHitTS + '" data-time-ago="' + lastHitTS + '">' + lastHit + '</td>';
         html += '</tr>';
     }
 
@@ -130,6 +152,7 @@ function renderTable() {
     // Bind enable/disable toggles (staged)
     document.querySelectorAll('.enable-toggle').forEach(function(toggle) {
         toggle.addEventListener('change', function() {
+            if (this.disabled) return;
             var id = parseInt(this.getAttribute('data-id'), 10);
             var newEnabled = this.checked;
             var row = setRowAttr(id, 'data-status', newEnabled ? 'enabled' : 'disabled');
@@ -149,37 +172,163 @@ function renderTable() {
     // Bind escalation toggles (immediate save with confirmation)
     document.querySelectorAll('.escalate-toggle').forEach(function(toggle) {
         toggle.addEventListener('change', function() {
+            if (this.disabled) return;
             var id = parseInt(this.getAttribute('data-id'), 10);
             var escalate = this.checked;
             var self = this;
 
             var action = escalate ? 'Enable' : 'Disable';
+            _escalationBusy = true;
+            updateEscalationControls();
             CSM.confirm(action + ' escalation for rule ' + id + '?').then(function() {
-                CSM.post('/api/v1/modsec/rules/escalation', {rule_id: id, escalate: escalate})
-                    .then(function(data) {
-                        // CSM.post rejects non-OK responses, so a server-side
-                        // failure lands in .catch; normalise a 200 ok:false
-                        // body the same way so one path handles every failure.
-                        if (!data.ok) throw new Error(data.error || 'unknown');
-                        CSM.toast('Escalation updated for rule ' + id, 'success');
-                        // Update local state
-                        for (var i = 0; i < _rules.length; i++) {
-                            if (_rules[i].id === id) _rules[i].escalate = escalate;
-                        }
-                        setRowAttr(id, 'data-escalate', escalate ? 'yes' : 'no');
-                        refreshRulesTable();
-                        renderStats({total: _rules.length, active: countActive()});
-                    })
-                    .catch(function(e) {
-                        CSM.toast('Failed to update escalation for rule ' + id + ': ' + (e && e.message ? e.message : 'unknown'), 'error');
-                        self.checked = !escalate; // revert toggle
-                    });
+                setEscalation(id, escalate).catch(function(e) {
+                    escalationFailed(id, e);
+                    self.checked = !escalate; // revert toggle
+                });
             }).catch(function() {
                 self.checked = !escalate; // revert toggle on cancel
+                _escalationBusy = false;
+                updateEscalationControls();
             });
         });
     });
+    updateEscalationControls();
 }
+
+function updateEscalationControls() {
+    var disabled = !_escalationLoaded || _escalationLoading || _escalationBusy;
+    document.getElementById('escalation-add-btn').disabled = disabled;
+    document.querySelectorAll('.escalate-toggle, [data-escalation-remove]').forEach(function(el) {
+        el.disabled = disabled;
+    });
+}
+
+// setEscalation turns firewall escalation on or off for one rule and brings
+// the rule table and the exclusion list up to date.
+function setEscalation(id, escalate) {
+    _escalationBusy = true;
+    updateEscalationControls();
+    function finish() {
+        _escalationBusy = false;
+        updateEscalationControls();
+    }
+    return CSM.post('/api/v1/modsec/rules/escalation', {rule_id: id, escalate: escalate})
+        .then(function(data) {
+            // CSM.post rejects non-OK responses, so a server-side failure
+            // lands in the caller's catch; treat a 200 ok:false body the same.
+            if (!data || !data.ok) throw new Error((data && data.error) || 'unknown');
+            applyEscalation(id, escalate);
+            CSM.toast('Escalation updated for rule ' + id, 'success');
+        }).then(finish, function(err) { finish(); throw err; });
+}
+
+function escalationFailed(id, e) {
+    CSM.toast('Failed to update escalation for rule ' + id + ': ' + (e && e.message ? e.message : 'unknown'), 'error');
+}
+
+function applyEscalation(id, escalate) {
+    _noEscalate = _noEscalate.filter(function(r) { return r !== id; });
+    if (!escalate) {
+        _noEscalate.push(id);
+        _noEscalate.sort(function(a, b) { return a - b; });
+    }
+    for (var i = 0; i < _rules.length; i++) {
+        if (_rules[i].id === id) _rules[i].escalate = escalate;
+    }
+    var toggle = document.querySelector('.escalate-toggle[data-id="' + id + '"]');
+    if (toggle) toggle.checked = escalate;
+    if (setRowAttr(id, 'data-escalate', escalate ? 'yes' : 'no')) {
+        refreshRulesTable();
+        renderStats({total: _rules.length, active: countActive()});
+    }
+    renderEscalation();
+}
+
+function loadEscalation(options) {
+    _escalationLoading = true;
+    _escalationLoaded = false;
+    updateEscalationControls();
+    CSM.get('/api/v1/modsec/rules/escalation', options)
+        .then(function(data) {
+            _noEscalate = data.items.slice().sort(function(a, b) { return a - b; });
+            _escalationLoaded = true;
+            _rules.forEach(function(rule) {
+                rule.escalate = _noEscalate.indexOf(rule.id) < 0;
+                var toggle = document.querySelector('.escalate-toggle[data-id="' + rule.id + '"]');
+                if (toggle) toggle.checked = rule.escalate;
+                setRowAttr(rule.id, 'data-escalate', rule.escalate ? 'yes' : 'no');
+            });
+            refreshRulesTable();
+            renderStats({total: _rules.length, active: countActive()});
+            renderEscalation();
+        })
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('escalation-list'), loadEscalation, { title: 'Failed to load the escalation list', error: err });
+        }).then(function() {
+            _escalationLoading = false;
+            updateEscalationControls();
+        });
+}
+
+function renderEscalation() {
+    if (!_escalationLoaded) return;
+    var container = document.getElementById('escalation-list');
+    if (!container) return;
+    if (_noEscalate.length === 0) {
+        container.innerHTML = '<div class="text-muted small">No rules excluded: every CSM rule escalates to a firewall block.</div>';
+        return;
+    }
+    var described = {};
+    for (var i = 0; i < _rules.length; i++) described[_rules[i].id] = _rules[i].description || '';
+    var html = '<table class="table table-sm table-vcenter mb-0"><thead><tr><th>Rule ID</th><th>Description</th><th class="w-1"><span class="visually-hidden">Actions</span></th></tr></thead><tbody>';
+    for (var j = 0; j < _noEscalate.length; j++) {
+        var id = _noEscalate[j];
+        html += '<tr data-escalation-id="' + id + '"><td><code>' + id + '</code></td>' +
+            '<td class="small">' + (Object.prototype.hasOwnProperty.call(described, id) ? CSM.esc(described[id]) : '<span class="text-muted">-</span>') + '</td>' +
+            '<td><button type="button" class="btn btn-ghost-danger btn-sm" data-escalation-remove="' + id + '" aria-label="Stop excluding rule ' + id + '" title="Stop excluding rule ' + id + '"><i class="ti ti-trash"></i></button></td></tr>';
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+    container.querySelectorAll('[data-escalation-remove]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            if (btn.disabled) return;
+            var ruleID = parseInt(btn.getAttribute('data-escalation-remove'), 10);
+            _escalationBusy = true;
+            updateEscalationControls();
+            CSM.confirm('Stop excluding rule ' + ruleID + '?\n\nMatching requests will again escalate to a firewall block.').then(function() {
+                return setEscalation(ruleID, true).catch(function(e) { escalationFailed(ruleID, e); });
+            }).catch(function() { /* cancelled */ }).then(function() {
+                _escalationBusy = false;
+                updateEscalationControls();
+            });
+        });
+    });
+    updateEscalationControls();
+}
+
+document.getElementById('escalation-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var input = document.getElementById('escalation-rule-id');
+    var button = document.getElementById('escalation-add-btn');
+    var id = parseInt(input.value, 10);
+    if (isNaN(id) || id < 900000 || id > 900999) {
+        CSM.toast('Rule ID must be between 900000 and 900999', 'warning');
+        return;
+    }
+    if (_noEscalate.indexOf(id) >= 0) {
+        CSM.toast('Rule ' + id + ' is already excluded', 'warning');
+        return;
+    }
+    if (button.disabled) return;
+    button.disabled = true;
+    setEscalation(id, false).then(function() {
+        if (input.value === String(id)) input.value = '';
+    }).catch(function(err) {
+        escalationFailed(id, err);
+    }).then(function() {
+        button.disabled = false;
+    });
+});
 
 function countActive() {
     var active = 0;
@@ -226,6 +375,7 @@ function updateApplyBar() {
 
 // Apply Changes
 document.getElementById('btn-apply').addEventListener('click', function() {
+    if (_rulesLoading || this.disabled) return;
     var btn = this;
     var changeCount = Object.keys(_pendingChanges).length;
 
@@ -315,6 +465,22 @@ document.querySelectorAll('[data-export]').forEach(function(el) {
     });
 });
 
+loadEscalation();
 loadRules();
+
+// Refresh reloads the rules, which drops staged toggles; ask first.
+if (CSM.refresh) CSM.refresh.onRefresh(function() {
+    if (_escalationBusy || _escalationLoading || document.getElementById('btn-apply').disabled) return;
+    var staged = Object.keys(_pendingChanges).length;
+    var ask = staged === 0 ? Promise.resolve() :
+        CSM.confirm('Discard ' + staged + ' staged rule change' + (staged !== 1 ? 's' : '') + ' and reload?', { danger: true, okLabel: 'Discard' });
+    ask.then(function() {
+        resetPendingToggleState();
+        _pendingChanges = {};
+        updateApplyBar();
+        loadEscalation({ refresh: true });
+        loadRules({ refresh: true });
+    }, function() { /* kept */ });
+});
 
 })();

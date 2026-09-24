@@ -20,12 +20,12 @@
         <div class="col-lg-7">
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-target"></i>&nbsp;Email action groups</h3>
+                    <h2 class="card-title"><i class="ti ti-target"></i>&nbsp;Email action groups</h2>
                     <div class="card-actions">
                         <span class="text-muted small" id="email-groups-count"></span>
                     </div>
                 </div>
-                <div class="csm-summary-list csm-summary-list--scroll" id="email-action-groups" aria-live="polite">
+                <div class="csm-summary-list csm-summary-list--scroll" id="email-action-groups">
                     <div class="csm-empty">
                         <div class="csm-empty__icon"><i class="ti ti-loader-2"></i></div>
                         <div class="csm-empty__reason">Loading action groups...</div>
@@ -36,7 +36,7 @@
         <div class="col-lg-5">
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-shield-lock"></i>&nbsp;Mail protection state</h3>
+                    <h2 class="card-title"><i class="ti ti-shield-lock"></i>&nbsp;Mail protection state</h2>
                 </div>
                 <div class="card-body" id="email-protection-state">
                     <div class="mb-3" id="protection-queue">
@@ -192,7 +192,7 @@
 
             <!-- Auth failures tab: grouped by mailbox / IP -->
             <div class="tab-pane fade" id="email-pane-auth" role="tabpanel" aria-labelledby="email-tab-auth" tabindex="0">
-                <div class="csm-summary-list" id="email-auth-groups" aria-live="polite">
+                <div class="csm-summary-list" id="email-auth-groups">
                     <div class="csm-empty">
                         <div class="csm-empty__icon"><i class="ti ti-loader-2"></i></div>
                         <div class="csm-empty__reason">Auth-failure clusters load when this tab is opened.</div>
@@ -340,6 +340,6 @@
     </div>
 {{end}}
 {{define "scripts"}}
-<script src="/static/js/email.js"></script>
+<script src="{{asset "js/email.js"}}"></script>
 {{end}}
 {{template "layout" .}}

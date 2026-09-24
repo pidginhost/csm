@@ -30,7 +30,7 @@
         <div class="col-lg-7">
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-flame"></i>&nbsp;Needs your attention</h3>
+                    <h2 class="card-title"><i class="ti ti-flame"></i>&nbsp;Needs your attention</h2>
                     <div class="card-actions">
                         <button id="priority-queue-refresh" class="btn btn-ghost-secondary btn-sm" title="Refresh queue" aria-label="Refresh queue">
                             <i class="ti ti-refresh"></i>
@@ -47,7 +47,7 @@
         </div>
         <div class="col-lg-5">
             <div class="card">
-                <div class="card-header"><h3 class="card-title"><i class="ti ti-shield"></i>&nbsp;System posture</h3></div>
+                <div class="card-header"><h2 class="card-title"><i class="ti ti-shield"></i>&nbsp;System posture</h2></div>
                 <div class="card-body">
                     <div class="csm-status-strip mb-3">
                         <span class="csm-status-strip__chip" title="Daemon uptime since last restart">
@@ -57,7 +57,7 @@
                         </span>
                         <span class="csm-status-strip__chip" title="Time since the most recent critical finding">
                             <i class="ti ti-alert-octagon"></i>
-                            <span class="csm-status-strip__chip-value" id="stat-last-critical"{{if .LastCriticalISO}} data-timestamp="{{.LastCriticalISO}}"{{end}}>{{.LastCriticalAgo}}</span>
+                            <span class="csm-status-strip__chip-value" id="stat-last-critical"{{if .LastCriticalISO}} data-time-ago="{{.LastCriticalISO}}"{{end}}>{{.LastCriticalAgo}}</span>
                             <span class="csm-status-strip__chip-label">since last critical</span>
                         </span>
                         <span class="csm-status-strip__chip" title="Loaded YARA / YAML signatures">
@@ -68,7 +68,7 @@
                     </div>
                     <div class="row g-2 csm-posture-stats mb-3">
                         <div class="col-12 col-sm-4 col-lg-12 col-xxl-4">
-                            <a href="/findings?tab=history&severity=2" class="csm-posture-stat stat-card" title="Critical findings in the last 24 hours">
+                            <a href="/findings?tab=history&severity=2&window=24h" class="csm-posture-stat stat-card" title="Critical findings in the last 24 hours">
                                 <div class="subheader">Critical (24h)</div>
                                 <div class="csm-posture-stat__metric">
                                     <div class="h2 mb-0 text-critical me-2" id="stat-critical">{{.Critical}}</div>
@@ -77,7 +77,7 @@
                             </a>
                         </div>
                         <div class="col-12 col-sm-4 col-lg-12 col-xxl-4">
-                            <a href="/findings?tab=history&severity=1" class="csm-posture-stat stat-card" title="High findings in the last 24 hours">
+                            <a href="/findings?tab=history&severity=1&window=24h" class="csm-posture-stat stat-card" title="High findings in the last 24 hours">
                                 <div class="subheader">High (24h)</div>
                                 <div class="csm-posture-stat__metric">
                                     <div class="h2 mb-0 text-high me-2" id="stat-high">{{.High}}</div>
@@ -86,7 +86,7 @@
                             </a>
                         </div>
                         <div class="col-12 col-sm-4 col-lg-12 col-xxl-4">
-                            <a href="/findings?tab=history&severity=0" class="csm-posture-stat stat-card" title="Warning findings in the last 24 hours">
+                            <a href="/findings?tab=history&severity=0&window=24h" class="csm-posture-stat stat-card" title="Warning findings in the last 24 hours">
                                 <div class="subheader">Warning (24h)</div>
                                 <div class="csm-posture-stat__metric">
                                     <div class="h2 mb-0 text-warning me-2" id="stat-warning">{{.Warning}}</div>
@@ -99,7 +99,7 @@
             </div>
             <div class="card mt-3">
                 <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-list-tree"></i>&nbsp;Components</h3>
+                    <h2 class="card-title"><i class="ti ti-list-tree"></i>&nbsp;Components</h2>
                     <div class="card-actions">
                         <button id="components-refresh" class="btn btn-ghost-secondary btn-sm" title="Refresh components" aria-label="Refresh components">
                             <i class="ti ti-refresh"></i>
@@ -122,7 +122,7 @@
     <div class="row row-deck row-cards mb-3">
         <div class="col-lg-4">
             <div class="card">
-                <div class="card-header"><h3 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Accounts at Risk</h3></div>
+                <div class="card-header"><h2 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Accounts at Risk</h2></div>
                 <div class="card-body p-0 overflow-auto csm-list-scroll" id="accounts-at-risk">
                     <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
                 </div>
@@ -130,7 +130,7 @@
         </div>
         <div class="col-lg-4">
             <div class="card">
-                <div class="card-header"><h3 class="card-title"><i class="ti ti-robot"></i>&nbsp;Auto-Response (24h)</h3></div>
+                <div class="card-header"><h2 class="card-title"><i class="ti ti-robot"></i>&nbsp;Auto-Response (24h)</h2></div>
                 <div class="card-body" id="auto-response-summary">
                     <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
                 </div>
@@ -138,7 +138,7 @@
         </div>
         <div class="col-lg-4">
             <div class="card">
-                <div class="card-header"><h3 class="card-title"><i class="ti ti-shield-bolt"></i>&nbsp;Brute Force (24h)</h3></div>
+                <div class="card-header"><h2 class="card-title"><i class="ti ti-shield-bolt"></i>&nbsp;Brute Force (24h)</h2></div>
                 <div class="card-body p-0" id="brute-force-summary">
                     <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
                 </div>
@@ -149,7 +149,7 @@
     <div class="row row-cards mb-3">
         <div class="col-12">
             <div class="card">
-                <div class="card-header"><h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Challenges</h3><div class="card-actions"><a href="/firewall" class="small">View on Firewall &rarr;</a></div></div>
+                <div class="card-header"><h2 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Challenges</h2><div class="card-actions"><a href="/firewall" class="small">View on Firewall &rarr;</a></div></div>
                 <div class="card-body" id="dash-challenge-summary">
                     <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
                 </div>
@@ -162,20 +162,20 @@
         <div class="col-lg-8">
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-chart-area-line"></i>&nbsp;Findings Timeline (24h)</h3>
+                    <h2 class="card-title"><i class="ti ti-chart-area-line"></i>&nbsp;Findings Timeline (24h)</h2>
                 </div>
                 <div class="card-body py-3 csm-chart-lg">
-                    <canvas id="timeline-chart"></canvas>
+                    <canvas id="timeline-chart" role="img" aria-label="Chart of findings per hour over the last 24 hours, by severity"></canvas>
                 </div>
             </div>
         </div>
         <div class="col-lg-4">
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-chart-bar-popular"></i>&nbsp;Top Attack Types (24h)</h3>
+                    <h2 class="card-title"><i class="ti ti-chart-bar-popular"></i>&nbsp;Top Attack Types (24h)</h2>
                 </div>
                 <div class="card-body csm-chart-lg">
-                    <canvas id="attack-types-chart"></canvas>
+                    <canvas id="attack-types-chart" role="img" aria-label="Chart of the most frequent attack types in the last 24 hours"></canvas>
                 </div>
             </div>
         </div>
@@ -184,7 +184,7 @@
     <!-- Trend (period selectable) -->
     <div class="card mb-3">
         <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-chart-line"></i>&nbsp;<span id="trend-title">30-Day Trend</span></h3>
+            <h2 class="card-title"><i class="ti ti-chart-line"></i>&nbsp;<span id="trend-title">30-Day Trend</span></h2>
             <div class="card-actions">
                 <div class="btn-group btn-group-sm" role="group" aria-label="Trend period">
                     <button type="button" class="btn btn-outline-secondary trend-period-btn" data-days="7">7d</button>
@@ -194,12 +194,12 @@
             </div>
         </div>
         <div class="card-body py-3 csm-chart-sm">
-            <canvas id="trend-chart"></canvas>
+            <canvas id="trend-chart" role="img" aria-label="Chart of daily findings by severity over the selected period"></canvas>
         </div>
     </div>
 {{end}}
 {{define "scripts"}}
-<script src="/static/js/chart.min.js"></script>
-<script src="/static/js/dashboard.js"></script>
+<script src="{{asset "js/chart.min.js"}}"></script>
+<script src="{{asset "js/dashboard.js"}}"></script>
 {{end}}
 {{template "layout" .}}

@@ -1,5 +1,7 @@
 // CSM Firewall page
 
+(function() {
+
 var _fwBlockedData = [];
 var _fwSetView = function() {};
 var _fwTables = {};
@@ -21,11 +23,14 @@ function formatReason(reason, fallback) {
     return CSM.esc(reason || fallback || '-');
 }
 
-function formatExpiresBadge(expiresIn) {
-    if (!expiresIn || expiresIn === 'permanent') {
+// formatExpiresBadge shows how long a block has left, counting down from its
+// expiry instant; a block without one is permanent.
+function formatExpiresBadge(expiresAt) {
+    if (!expiresAt) {
         return '<span class="badge bg-red-lt">Permanent</span>';
     }
-    return '<span class="badge bg-azure-lt">' + CSM.esc(expiresIn) + '</span>';
+    return '<span class="badge bg-azure-lt" data-time-ago="' + CSM.attr(expiresAt) + '" title="' + CSM.attr(CSM.fmtDate(expiresAt)) + '">' +
+        CSM.esc(CSM.timeAgo(expiresAt)) + '</span>';
 }
 
 function formatGeo(geo) {
@@ -197,6 +202,9 @@ function toggleAuditInspect(btn, ip) {
 function loadStatus() {
     CSM.get('/api/v1/firewall/status', {silent: true})
         .then(function(d) {
+            // The loader fills the cards inside #fw-status, so an error from
+            // an earlier poll is cleared here rather than wiped by a rebuild.
+            CSM.clearLoadError(document.getElementById('fw-status'));
             var allowedTotal = (d.allowed_count || 0) + (d.port_allow_count || 0);
             var countryCount = (d.country_block || []).length;
             var dynDNSCount = (d.dyndns_hosts || []).length;
@@ -260,14 +268,15 @@ function loadStatus() {
             t2 += '<tr><td class="text-muted">Port flood rules</td><td>' + (d.port_flood_rules || 0) + '</td></tr>';
             document.getElementById('fw-config-table2').innerHTML = t2;
         })
-        .catch(function() {
-            CSM.loadError(document.getElementById('fw-status'), loadStatus);
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('fw-status'), loadStatus, { title: 'Failed to load firewall status', error: err });
         });
 }
 
 function loadSubnets() {
     CSM.get('/api/v1/firewall/subnets', {silent: true})
-        .then(function(subs) {
+        .then(function(data) {
+            var subs = data.items;
             var el = document.getElementById('subnet-content');
             resetFirewallTable('subnets', 'subnets-table-controls');
             if (!subs || subs.length === 0) {
@@ -283,8 +292,8 @@ function loadSubnets() {
                 h += '<td><code class="csm-copy" title="Click to copy">' + CSM.esc(subs[i].cidr) + '</code></td>';
                 h += '<td class="small text-muted text-nowrap geo-cell" data-ip="' + CSM.esc(baseIP) + '"></td>';
                 h += '<td class="small"><div>' + formatReason(subs[i].reason, 'Blocked via CSM') + '</div><div class="mt-1">' + sourceBadge(subs[i].source || 'unknown') + '</div></td>';
-                h += '<td class="small text-muted" data-timestamp="' + CSM.esc(subs[i].blocked_at || '') + '">' + CSM.esc(subs[i].time_ago || '-') + '</td>';
-                h += '<td>' + formatExpiresBadge(subs[i].expires_in) + '</td>';
+                h += '<td class="small text-muted" data-timestamp="' + CSM.esc(subs[i].blocked_at || '') + '" data-time-ago="' + CSM.esc(subs[i].blocked_at || '') + '">' + CSM.esc(CSM.timeAgo(subs[i].blocked_at) || '-') + '</td>';
+                h += '<td>' + formatExpiresBadge(subs[i].expires_at) + '</td>';
                 h += '<td><button class="btn btn-sm btn-outline-secondary remove-subnet-btn" data-cidr="' + CSM.esc(subs[i].cidr) + '">Remove</button></td>';
                 h += '</tr>';
             }
@@ -297,49 +306,34 @@ function loadSubnets() {
                 btn.addEventListener('click', function() { removeSubnet(this.getAttribute('data-cidr')); });
             });
         })
-        .catch(function() {
-            CSM.loadError(document.getElementById('subnet-content'), loadSubnets);
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('subnet-content'), loadSubnets, { title: 'Failed to load blocked subnets', error: err });
         });
 }
 
-// Bulk unblock selection helpers. Only rows the table currently shows count:
-// CSM.Table hides filtered/other-page rows via style.display, and acting on
-// hidden rows would let a narrowed filter mass-unblock entries the operator
-// never saw. Checked rows that a later filter hid are ignored the same way.
-function visibleBlockedCheckboxes() {
-    var out = [];
-    document.querySelectorAll('#blocked-table tbody tr').forEach(function(row) {
-        if (row.style.display === 'none') return;
-        var cb = row.querySelector('.fw-blocked-cb');
-        if (cb) out.push(cb);
-    });
-    return out;
+// Bulk unblock selection. Only rows the table currently shows count: acting
+// on hidden rows would let a narrowed filter mass-unblock entries the
+// operator never saw. The shared bulk helper ignores checked rows that a
+// later filter or page change hid.
+var _blockedBulk = null;
+function blockedBulk() {
+    if (!_blockedBulk) {
+        _blockedBulk = CSM.bulk({
+            rowCheckboxSelector: '#blocked-table .fw-blocked-cb',
+            selectAllSelector: '#select-all-blocked',
+            valueAttr: 'data-ip',
+            buttons: [{ el: document.getElementById('blocked-bulk-unblock-btn'), labelTemplate: 'Unblock selected ({n})' }]
+        });
+    }
+    return _blockedBulk;
 }
 
 function getSelectedBlockedIPs() {
-    var ips = [];
-    visibleBlockedCheckboxes().forEach(function(cb) {
-        if (cb.checked) ips.push(cb.getAttribute('data-ip'));
-    });
-    return ips;
+    return blockedBulk().selectedValues();
 }
 
 function updateBlockedBulkButton() {
-    var btn = document.getElementById('blocked-bulk-unblock-btn');
-    if (!btn) return;
-    var visible = visibleBlockedCheckboxes();
-    var count = visible.filter(function(cb) { return cb.checked; }).length;
-    var selectAll = document.getElementById('select-all-blocked');
-    if (selectAll) {
-        selectAll.checked = visible.length > 0 && count === visible.length;
-        selectAll.indeterminate = count > 0 && count < visible.length;
-    }
-    if (count > 0) {
-        btn.classList.remove('d-none');
-        btn.textContent = 'Unblock selected (' + count + ')';
-    } else {
-        btn.classList.add('d-none');
-    }
+    blockedBulk().refresh();
 }
 
 function blockedTableStateKey() {
@@ -364,7 +358,8 @@ function blockedTableStateKey() {
 
 function loadBlocked() {
     CSM.get('/api/v1/blocked-ips', {silent: true})
-        .then(function(ips) {
+        .then(function(data) {
+            var ips = data.items;
             var el = document.getElementById('blocked-content');
             resetFirewallTable('blocked', 'blocked-table-controls');
             if (!ips || ips.length === 0) {
@@ -380,7 +375,7 @@ function loadBlocked() {
                     reason: b.reason || '',
                     source: b.source || 'unknown',
                     blocked_at: b.blocked_at || '',
-                    expires: b.expires_in || '',
+                    expires: b.expires_at || '',
                     lifetime: classifyLifetime(b)
                 };
             });
@@ -399,7 +394,7 @@ function loadBlocked() {
                 h += '<td class="small text-muted text-nowrap geo-cell" data-ip="' + CSM.esc(ips[i].ip) + '"></td>';
                 h += '<td class="small"><div>' + formatReason(ips[i].reason, 'Blocked via CSM') + '</div><div class="mt-1">' + sourceBadge(source) + '</div></td>';
                 h += '<td class="small text-muted" data-timestamp="' + CSM.esc(ips[i].blocked_at || '') + '">' + blockedAt + '</td>';
-                h += '<td>' + formatExpiresBadge(ips[i].expires_in) + '</td>';
+                h += '<td>' + formatExpiresBadge(ips[i].expires_at) + '</td>';
                 h += '<td class="text-nowrap">';
                 h += '<div class="dropdown d-inline-block me-1">';
                 h += '<button class="btn btn-sm btn-outline-primary dropdown-toggle" data-bs-toggle="dropdown">Respond</button>';
@@ -410,7 +405,7 @@ function loadBlocked() {
                 h += '<a class="dropdown-item fw-cphulk-btn" href="#" data-ip="' + CSM.esc(ips[i].ip) + '"><i class="ti ti-door-exit me-2"></i>Flush cPHulk only</a>';
                 h += '</div></div>';
                 h += '<button class="btn btn-sm btn-outline-secondary fw-unblock-btn me-1" data-ip="' + CSM.esc(ips[i].ip) + '">Unblock</button>';
-                h += '<button class="btn btn-sm btn-outline-success fw-whitelist-btn" data-ip="' + CSM.esc(ips[i].ip) + '">Whitelist</button>';
+                h += '<button class="btn btn-sm btn-outline-warning fw-whitelist-btn" data-ip="' + CSM.esc(ips[i].ip) + '">Whitelist</button>';
                 h += '</td>';
                 h += '</tr>';
             }
@@ -472,22 +467,11 @@ function loadBlocked() {
                 });
             });
 
-            var selectAll = document.getElementById('select-all-blocked');
-            if (selectAll) {
-                selectAll.addEventListener('change', function() {
-                    var checked = this.checked;
-                    visibleBlockedCheckboxes().forEach(function(cb) { cb.checked = checked; });
-                    updateBlockedBulkButton();
-                });
-            }
-            el.querySelectorAll('.fw-blocked-cb').forEach(function(cb) {
-                cb.addEventListener('change', updateBlockedBulkButton);
-            });
             updateBlockedBulkButton();
 
         })
-        .catch(function() {
-            CSM.loadError(document.getElementById('blocked-content'), loadBlocked);
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('blocked-content'), loadBlocked, { title: 'Failed to load blocked IPs', error: err });
             updateBlockedBulkButton();
         });
 }
@@ -520,7 +504,7 @@ function loadAllowed() {
                     h += '<td><code class="csm-copy" title="Click to copy">' + CSM.esc(allowed[i].ip) + '</code></td>';
                     h += '<td class="small text-muted text-nowrap geo-cell" data-ip="' + CSM.esc(allowed[i].ip) + '"></td>';
                     h += '<td class="small"><div>' + formatReason(allowed[i].reason, 'Allowed via CSM') + '</div><div class="mt-1">' + sourceBadge(allowed[i].source || 'unknown') + '</div></td>';
-                    h += '<td data-timestamp="' + CSM.esc(allowed[i].expires_at || '') + '">' + (allowed[i].expires_at ? '<div>' + expiresText + '</div><div class="text-muted small">' + CSM.esc(allowed[i].expires_in) + '</div>' : formatExpiresBadge('permanent')) + '</td>';
+                    h += '<td data-timestamp="' + CSM.esc(allowed[i].expires_at || '') + '">' + (allowed[i].expires_at ? '<div>' + expiresText + '</div><div class="text-muted small" data-time-ago="' + CSM.attr(allowed[i].expires_at) + '">' + CSM.esc(CSM.timeAgo(allowed[i].expires_at)) + '</div>' : formatExpiresBadge('')) + '</td>';
                     h += '<td><button class="btn btn-sm btn-outline-secondary remove-allow-btn" data-ip="' + CSM.esc(allowed[i].ip) + '">Remove</button></td>';
                     h += '</tr>';
                 }
@@ -554,14 +538,15 @@ function loadAllowed() {
                 enrichGeoIP(el);
             }
         })
-        .catch(function() {
-            CSM.loadError(document.getElementById('allowed-content'), loadAllowed);
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('allowed-content'), loadAllowed, { title: 'Failed to load allowed IPs', error: err });
         });
 }
 
 function loadWhitelist() {
     CSM.get('/api/v1/threat/whitelist', {silent: true})
-        .then(function(ips) {
+        .then(function(data) {
+            var ips = data.items;
             var el = document.getElementById('whitelist-content');
             resetFirewallTable('whitelist', 'whitelist-table-controls');
             if (!ips || ips.length === 0) {
@@ -597,14 +582,15 @@ function loadWhitelist() {
                 btn.addEventListener('click', function() { removeWhitelist(this.getAttribute('data-ip')); });
             });
         })
-        .catch(function() {
-            CSM.loadError(document.getElementById('whitelist-content'), loadWhitelist);
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('whitelist-content'), loadWhitelist, { title: 'Failed to load whitelisted IPs', error: err });
         });
 }
 
 function loadAudit() {
     CSM.get(currentAuditURL(), {silent: true})
-        .then(function(entries) {
+        .then(function(data) {
+            var entries = data.items;
             var el = document.getElementById('fw-audit-content');
             resetFirewallTable('audit', 'firewall-audit-table-controls');
             if (!entries || entries.length === 0) {
@@ -618,11 +604,12 @@ function loadAudit() {
                 var source = entries[i].source || 'unknown';
                 var inspectIPValue = extractLookupIP(entries[i].ip || '');
                 h += '<tr data-action="' + CSM.esc(entries[i].action || '') + '" data-source="' + CSM.esc(source) + '">';
-                h += '<td data-timestamp="' + CSM.esc(entries[i].timestamp || '') + '"><div>' + CSM.esc(entries[i].time_ago || '-') + '</div><div class="text-muted small">' + CSM.esc(entries[i].timestamp || '') + '</div></td>';
+                var ts = entries[i].timestamp || '';
+                h += '<td data-timestamp="' + CSM.esc(ts) + '"><div data-time-ago="' + CSM.esc(ts) + '">' + CSM.esc(CSM.timeAgo(ts) || '-') + '</div><div class="text-muted small">' + CSM.esc(CSM.fmtDate(ts)) + '</div></td>';
                 h += '<td><div><span class="badge bg-secondary-lt">' + humanizeAction(entries[i].action) + '</span></div><div class="mt-1">' + sourceBadge(source) + '</div></td>';
                 h += '<td><code>' + CSM.esc(entries[i].ip || '-') + '</code></td>';
                 h += '<td class="small">' + formatReason(entries[i].reason, '-') + '</td>';
-                h += '<td class="small text-muted">' + CSM.esc(entries[i].duration || '-') + '</td>';
+                h += '<td class="small text-muted">' + CSM.esc(CSM.formatDuration(entries[i].duration_seconds) || '-') + '</td>';
                 h += '<td>' + (inspectIPValue ? '<button class="btn btn-sm btn-outline-secondary audit-inspect-btn" data-ip="' + CSM.esc(inspectIPValue) + '">Inspect</button>' : '') + '</td>';
                 h += '</tr>';
             }
@@ -654,8 +641,8 @@ function loadAudit() {
                 });
             });
         })
-        .catch(function() {
-            CSM.loadError(document.getElementById('fw-audit-content'), loadAudit);
+        .catch(function(err) {
+            CSM.loadError(document.getElementById('fw-audit-content'), loadAudit, { title: 'Failed to load firewall activity', error: err });
         });
 }
 
@@ -683,12 +670,9 @@ function renderIPDetails(ip, targetEl) {
         CSM.get('/api/v1/firewall/check?ip=' + encodeURIComponent(ip)),
         CSM.get('/api/v1/geoip?ip=' + encodeURIComponent(ip), { allowNonOK: true, silent: true }).catch(function() { return {}; })
     ]).then(function(results) {
+        // A failed check rejects and lands in the catch below.
         var data = results[0] || {};
         var geo = results[1] || {};
-        if (!data.success) {
-            targetEl.innerHTML = '<div class="text-danger">' + CSM.esc(data.error_msg || 'Lookup failed') + '</div>';
-            return;
-        }
 
         var state = [];
         if (data.permanent) state.push('<span class="badge bg-red-lt">Blocked</span>');
@@ -717,9 +701,10 @@ function renderIPDetails(ip, targetEl) {
             details += '<button class="btn btn-outline-danger btn-sm lookup-unban-btn" data-ip="' + CSM.esc(ip) + '">Unban everywhere</button>';
         }
         details += '<button class="btn btn-outline-secondary btn-sm lookup-clear-btn" data-ip="' + CSM.esc(ip) + '">Clear only</button>';
-        details += '<button class="btn btn-outline-success btn-sm lookup-allow-btn" data-ip="' + CSM.esc(ip) + '">Clear and allow 24h</button>';
+        details += '<button class="btn btn-outline-warning btn-sm lookup-allow-btn" data-ip="' + CSM.esc(ip) + '">Clear and allow 24h</button>';
         details += '<button class="btn btn-outline-primary btn-sm lookup-cphulk-btn" data-ip="' + CSM.esc(ip) + '">Flush cPHulk only</button>';
-        details += '<button class="btn btn-success btn-sm lookup-whitelist-btn" data-ip="' + CSM.esc(ip) + '">Permanent whitelist</button>';
+        details += '<button class="btn btn-outline-warning btn-sm lookup-whitelist-btn" data-ip="' + CSM.esc(ip) + '">Permanent whitelist</button>';
+        details += '<a class="btn btn-ghost-secondary btn-sm" href="/threat?ip=' + encodeURIComponent(ip) + '" title="Reputation, attack history and score for this IP"><i class="ti ti-spy"></i>&nbsp;Threat Intel</a>';
         details += '</div>';
         targetEl.innerHTML = details;
 
@@ -756,7 +741,7 @@ function removeSubnet(cidr) {
             loadSubnets();
             loadStatus();
             loadAudit();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -766,7 +751,7 @@ function unblockIP(ip) {
     CSM.confirm('Unblock ' + ip + '?').then(function() {
         CSM.post('/api/v1/unblock-ip', { ip: ip }).then(function() {
             refreshFirewallData();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -775,18 +760,12 @@ function unblockIP(ip) {
 function unbanEverywhere(ip) {
     CSM.confirm('Unban ' + ip + ' from CSM and cPHulk?').then(function() {
         CSM.post('/api/v1/firewall/unban', { ip: ip }).then(function(data) {
-            // The unban endpoint reports validation failures as HTTP 200
-            // with success:false, which CSM.post resolves normally.
-            if (data && data.success === false) {
-                CSM.toast('Error: ' + (data.error_msg || 'Unban failed'), 'error');
-                return;
-            }
             var msg = 'Removed lockouts for ' + ip;
             if (data.subnet_removed) msg += ' (also removed subnet ' + data.subnet_removed + ')';
             CSM.toast(msg, 'success');
             refreshFirewallData();
             loadLookup(ip);
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -799,7 +778,7 @@ function removeAllowRule(ip) {
             loadAllowed();
             loadStatus();
             loadAudit();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -811,7 +790,7 @@ function clearThreatState(ip) {
             CSM.toast('Threat state cleared', 'success');
             refreshFirewallData();
             loadLookup(ip);
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -823,7 +802,7 @@ function flushCphulkOnly(ip) {
             CSM.toast('cPHulk history cleared', 'success');
             loadAudit();
             loadLookup(ip);
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -834,14 +813,14 @@ function whitelistIP(ip, durationHours, onSuccess) {
     var confirmMsg = permanent
         ? 'Whitelist ' + ip + ' permanently?\n\nThis will unblock the IP, add a firewall allow rule, and prevent future auto-blocking.'
         : 'Temporarily whitelist ' + ip + ' for ' + durationHours + ' hours?';
-    CSM.confirm(confirmMsg).then(function() {
+    CSM.confirm(confirmMsg, { danger: permanent, okLabel: permanent ? 'Whitelist' : 'OK' }).then(function() {
         var endpoint = permanent ? '/api/v1/threat/whitelist-ip' : '/api/v1/threat/temp-whitelist-ip';
         var payload = permanent ? { ip: ip } : { ip: ip, hours: parseInt(durationHours, 10) };
         CSM.post(endpoint, payload).then(function() {
             CSM.toast(permanent ? 'IP whitelisted' : 'Temporary whitelist added', 'success');
             refreshFirewallData();
             if (onSuccess) onSuccess();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -854,7 +833,7 @@ function removeWhitelist(ip) {
             loadWhitelist();
             loadStatus();
             loadAllowed();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -869,7 +848,7 @@ function flushBlocked() {
         CSM.post('/api/v1/firewall/flush', {}).then(function() {
             CSM.toast('Blocked IPs flushed', 'success');
             refreshFirewallData();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -896,20 +875,10 @@ function refreshFirewallData() {
 // loadChallenges renders the proof-of-work challenge activity panel: live
 // pending count, how many timeouts escalated to a hard block, cumulative routes
 // per source check (since restart), and the most recent routes.
-function renderChallengeLoadError() {
-    var pending = document.getElementById('fw-chal-pending');
-    var escalated = document.getElementById('fw-chal-escalated');
-    var bc = document.getElementById('fw-chal-bychecks');
-    var rc = document.getElementById('fw-chal-recent');
-    if (pending) pending.textContent = '-';
-    if (escalated) escalated.textContent = '-';
-    if (bc) bc.innerHTML = '<div class="text-danger small">Failed to load challenge activity.</div>';
-    if (rc) rc.innerHTML = '<tr><td colspan="3" class="text-muted small">Retrying on the next refresh.</td></tr>';
-}
-
 function loadChallenges() {
     CSM.get('/api/v1/challenge/stats', { silent: true })
         .then(function(d) {
+            CSM.clearLoadError(document.getElementById('fw-chal-body'));
             document.getElementById('fw-chal-pending').textContent = d.pending || 0;
             document.getElementById('fw-chal-escalated').textContent = d.escalated || 0;
 
@@ -940,7 +909,7 @@ function loadChallenges() {
                 rc.innerHTML = '<tr><td colspan="3" class="text-muted small">None yet.</td></tr>';
             } else {
                 rc.innerHTML = recent.map(function(e) {
-                    var t = e.at ? new Date(e.at).toLocaleTimeString() : '';
+                    var t = e.at ? CSM.fmtDate(e.at) : '';
                     return '<tr>' +
                         '<td class="text-muted small text-nowrap">' + CSM.esc(t) + '</td>' +
                         '<td class="font-monospace small">' + CSM.esc(e.ip || '') + '</td>' +
@@ -949,64 +918,16 @@ function loadChallenges() {
                 }).join('');
             }
         })
-        .catch(function() {
+        .catch(function(err) {
             // Refreshed on the shared auto-refresh poll, so a toast per failed
-            // poll would spam; show an inline error in the panel body instead
-            // and let the next poll (or manual Refresh) repopulate it.
-            renderChallengeLoadError();
+            // poll would spam; show the error in the panel instead and let
+            // Retry, the next poll or Refresh fill it again.
+            CSM.loadError(document.getElementById('fw-chal-body'), loadChallenges, { title: 'Failed to load challenge activity', error: err });
         });
 }
 
-// /api/v1/geoip/batch caps each request at 500 IPs, so chunk the call;
-// hosts with thousands of blocked IPs otherwise see HTTP 400 — and a
-// per-IP fallback flood would trip the API rate limit with 429s.
-var GEOIP_CHUNK = 250;
-
 function enrichGeoIP(container) {
-    var cells = container.querySelectorAll('.geo-cell');
-    if (cells.length === 0) return;
-
-    var cellMap = {};
-    for (var i = 0; i < cells.length; i++) {
-        var ip = cells[i].dataset.ip;
-        if (!ip) continue;
-        cellMap[ip] = cellMap[ip] || [];
-        cellMap[ip].push(cells[i]);
-    }
-    var uniqueIPs = Object.keys(cellMap);
-    if (uniqueIPs.length === 0) return;
-
-    function paint(results) {
-        for (var ip in results) {
-            if (!Object.prototype.hasOwnProperty.call(results, ip)) continue;
-            var targets = cellMap[ip];
-            if (!targets) continue;
-            var html = formatGeo(results[ip]);
-            for (var j = 0; j < targets.length; j++) {
-                targets[j].innerHTML = html;
-            }
-        }
-    }
-
-    function markUnavailable(ips) {
-        for (var i = 0; i < ips.length; i++) {
-            var targets = cellMap[ips[i]];
-            if (!targets) continue;
-            for (var j = 0; j < targets.length; j++) {
-                targets[j].textContent = '-';
-            }
-        }
-    }
-
-    function requestGeoIPChunk(ips) {
-        CSM.post('/api/v1/geoip/batch', { ips: ips })
-            .then(function(data) { paint(data.results || {}); })
-            .catch(function() { markUnavailable(ips); });
-    }
-
-    for (var s = 0; s < uniqueIPs.length; s += GEOIP_CHUNK) {
-        requestGeoIPChunk(uniqueIPs.slice(s, s + GEOIP_CHUNK));
-    }
+    CSM.enrichGeoIP(container, { format: formatGeo, failText: '-' });
 }
 
 function updateTrustForm() {
@@ -1021,14 +942,14 @@ function updateTrustForm() {
     var mode = modeEl.value || 'firewall';
     if (mode === 'trusted') {
         durationEl.innerHTML = [
-            '<option value="permanent">Permanent trusted IP</option>',
-            '<option value="24">Temporary trusted IP: 24 hours</option>',
-            '<option value="168">Temporary trusted IP: 7 days</option>'
+            '<option value="permanent">Permanent</option>',
+            '<option value="24">24 hours</option>',
+            '<option value="168">7 days</option>'
         ].join('');
         reasonGroupEl.classList.add('d-none');
         reasonEl.value = '';
-        submitEl.innerHTML = '<i class="ti ti-shield-check"></i>&nbsp;Trust IP';
-        helpEl.textContent = 'Trusted IP clears current blocks, adds a firewall allow, and prevents future auto-blocking until it expires or is removed.';
+        submitEl.innerHTML = '<i class="ti ti-shield-check"></i>&nbsp;Whitelist IP';
+        helpEl.textContent = 'Whitelisting clears current blocks, adds a firewall allow rule, and prevents future auto-blocking until it expires or is removed.';
         return;
     }
 
@@ -1068,7 +989,7 @@ document.getElementById('block-form').addEventListener('submit', function(e) {
         ? { cidr: target, reason: reason, duration: duration }
         : { ip: target, reason: reason, duration: duration };
 
-    CSM.confirm('Block ' + confirmLabel + '?').then(function() {
+    CSM.confirm('Block ' + confirmLabel + '?', { danger: true, okLabel: 'Block' }).then(function() {
         CSM.post(endpoint, payload).then(function() {
             document.getElementById('block-target').value = '';
             document.getElementById('block-reason').value = '';
@@ -1079,7 +1000,7 @@ document.getElementById('block-form').addEventListener('submit', function(e) {
                 return;
             }
             refreshFirewallData();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -1113,7 +1034,7 @@ document.getElementById('trust-form').addEventListener('submit', function(e) {
             loadBlocked();
             loadStatus();
             loadAudit();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
@@ -1153,7 +1074,7 @@ if (bulkUnblockBtn) {
                 }
                 if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: 'Unblocked ' + succeeded + ' IP(s)' });
                 refreshFirewallData();
-            }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+            }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
         }).catch(function(err) {
             if (err) CSM.toast(err.message || 'Request failed', 'error');
         });
@@ -1207,7 +1128,7 @@ if (auditResetBtn) {
         { key: 'reason', label: 'Reason' },
         { key: 'source', label: 'Source' },
         { key: 'blocked_at', label: 'Blocked At' },
-        { key: 'expires', label: 'Expires' }
+        { key: 'expires', label: 'Expires At' }
     ];
     document.querySelectorAll('[data-export]').forEach(function(el) {
         el.addEventListener('click', function(e) {
@@ -1238,7 +1159,8 @@ if (auditResetBtn) {
         for (var j = 0; j < buttons.length; j++) {
             var match = buttons[j].getAttribute('data-fw-nav') === name;
             buttons[j].classList.toggle('active', match);
-            buttons[j].setAttribute('aria-pressed', match ? 'true' : 'false');
+            buttons[j].setAttribute('aria-selected', match ? 'true' : 'false');
+            buttons[j].setAttribute('tabindex', match ? '0' : '-1');
         }
     }
 
@@ -1268,6 +1190,22 @@ if (auditResetBtn) {
         });
     });
 
+    // Arrow keys, Home and End move between the tabs, as in any tab list.
+    nav.addEventListener('keydown', function(e) {
+        var tabs = Array.prototype.slice.call(nav.querySelectorAll('[data-fw-nav]'));
+        var at = tabs.indexOf(e.target);
+        if (at < 0) return;
+        var next = -1;
+        if (e.key === 'ArrowRight') next = (at + 1) % tabs.length;
+        else if (e.key === 'ArrowLeft') next = (at - 1 + tabs.length) % tabs.length;
+        else if (e.key === 'Home') next = 0;
+        else if (e.key === 'End') next = tabs.length - 1;
+        if (next < 0) return;
+        e.preventDefault();
+        setView(tabs[next].getAttribute('data-fw-nav'), true);
+        tabs[next].focus();
+    });
+
     _fwSetView = setView;
     setView(viewFromURL(), false);
 })();
@@ -1276,3 +1214,11 @@ refreshFirewallData();
 if (CSM.refresh && typeof CSM.refresh.onRefresh === 'function') {
     CSM.refresh.onRefresh(refreshFirewallData);
 }
+
+// Other pages link here with ?ip= to inspect one address.
+(function() {
+    var ip = (new URLSearchParams(window.location.search).get('ip') || '').trim();
+    if (CSM.validateIP(ip)) inspectIP(ip);
+})();
+
+})();

@@ -8,12 +8,11 @@ import (
 	"strings"
 
 	"github.com/pidginhost/csm/internal/signatures"
-	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/yara"
 )
 
-func (s *Server) handleRules(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "rules.html", map[string]string{
+func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "rules.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
@@ -34,14 +33,16 @@ func (s *Server) apiRulesStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	result := map[string]interface{}{
-		"yaml_rules":      yamlCount,
-		"yara_rules":      yaraCount,
-		"yara_available":  yara.Available(),
-		"yaml_version":    yamlVersion,
-		"rules_dir":       cfg.Signatures.RulesDir,
-		"auto_update":     cfg.Signatures.UpdateURL != "",
-		"update_url":      cfg.Signatures.UpdateURL,
-		"update_interval": cfg.Signatures.UpdateInterval,
+		"yaml_rules":     yamlCount,
+		"yara_rules":     yaraCount,
+		"yara_available": yara.Available(),
+		"yaml_version":   yamlVersion,
+		"rules_dir":      cfg.Signatures.RulesDir,
+		"auto_update":    cfg.Signatures.UpdateURL != "",
+		"update_url":     cfg.Signatures.UpdateURL,
+	}
+	if secs, ok := durationSeconds(cfg.Signatures.UpdateInterval); ok {
+		result["update_interval_seconds"] = secs
 	}
 	writeJSON(w, result)
 }
@@ -61,7 +62,7 @@ func (s *Server) apiRulesList(w http.ResponseWriter, _ *http.Request) {
 	entries, err := os.ReadDir(rulesDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			writeJSON(w, files)
+			writeAll(w, files)
 			return
 		}
 		writeJSONError(w, fmt.Sprintf("reading rules directory: %v", err), http.StatusInternalServerError)
@@ -97,7 +98,7 @@ func (s *Server) apiRulesList(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 
-	writeJSON(w, files)
+	writeAll(w, files)
 }
 
 // POST /api/v1/rules/reload
@@ -131,57 +132,16 @@ func (s *Server) apiRulesReload(w http.ResponseWriter, r *http.Request) {
 		errors = append(errors, fmt.Sprintf("YARA reload: %v", yaraErr))
 	}
 
+	s.auditLog(r, "rules_reload", "signatures", fmt.Sprintf("errors: %d", len(errors)))
 	result := map[string]interface{}{
-		"ok":         len(errors) == 0,
 		"yaml_rules": yamlCount,
 		"yara_rules": yaraCount,
 	}
 	if len(errors) > 0 {
+		result["error"] = strings.Join(errors, "; ")
 		result["errors"] = errors
-	}
-	s.auditLog(r, "rules_reload", "signatures", fmt.Sprintf("errors: %d", len(errors)))
-
-	writeJSON(w, result)
-}
-
-// GET/POST /api/v1/rules/modsec-escalation - manage rules excluded from auto-block
-func (s *Server) apiModSecEscalation(w http.ResponseWriter, r *http.Request) {
-	db := store.Global()
-
-	if r.Method == http.MethodPost {
-		if db == nil {
-			writeJSONError(w, "Store not available", http.StatusInternalServerError)
-			return
-		}
-		var req struct {
-			Rules []int `json:"rules"`
-		}
-		if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil {
-			writeJSONError(w, "Invalid request body", http.StatusBadRequest)
-			return
-		}
-		rules := make(map[int]bool)
-		for _, id := range req.Rules {
-			rules[id] = true
-		}
-		if err := db.SetModSecNoEscalateRules(rules); err != nil {
-			writeJSONError(w, fmt.Sprintf("Save failed: %v", err), http.StatusInternalServerError)
-			return
-		}
-		s.auditLog(r, "modsec_escalation", "no-escalate rules", fmt.Sprintf("%d rule id(s)", len(rules)))
-		writeJSON(w, map[string]interface{}{"ok": true, "count": len(rules)})
+		writeJSONStatus(w, http.StatusInternalServerError, result)
 		return
 	}
-
-	// GET
-	var ids []int
-	if db != nil {
-		for id := range db.GetModSecNoEscalateRules() {
-			ids = append(ids, id)
-		}
-	}
-	if ids == nil {
-		ids = []int{}
-	}
-	writeJSON(w, map[string]interface{}{"rules": ids})
+	writeOK(w, result)
 }

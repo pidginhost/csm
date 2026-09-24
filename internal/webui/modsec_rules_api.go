@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
+	"strconv"
+	"time"
 
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/store"
@@ -29,8 +32,8 @@ func validateModSecDisabledRules(allRules []modsec.Rule, disabled []int) error {
 	return nil
 }
 
-func (s *Server) handleModSecRules(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "modsec-rules.html", map[string]string{
+func (s *Server) handleModSecRules(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "modsec-rules.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
@@ -51,7 +54,8 @@ func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
 		missing = append(missing, "reload_command")
 	}
 	if len(missing) > 0 {
-		writeJSON(w, map[string]interface{}{
+		writeItems(w, []struct{}{}, map[string]interface{}{
+			"total":      0,
 			"configured": false,
 			"missing":    missing,
 		})
@@ -83,15 +87,15 @@ func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
 
 	// Build response - filter out counter rules
 	type ruleView struct {
-		ID          int    `json:"id"`
-		Description string `json:"description"`
-		Action      string `json:"action"`
-		StatusCode  int    `json:"status_code"`
-		Phase       int    `json:"phase"`
-		Enabled     bool   `json:"enabled"`
-		Escalate    bool   `json:"escalate"`
-		Hits24h     int    `json:"hits_24h"`
-		LastHit     string `json:"last_hit,omitempty"`
+		ID          int       `json:"id"`
+		Description string    `json:"description"`
+		Action      string    `json:"action"`
+		StatusCode  int       `json:"status_code"`
+		Phase       int       `json:"phase"`
+		Enabled     bool      `json:"enabled"`
+		Escalate    bool      `json:"escalate"`
+		Hits24h     int       `json:"hits_24h"`
+		LastHit     time.Time `json:"last_hit,omitzero"`
 	}
 
 	var rules []ruleView
@@ -110,9 +114,7 @@ func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
 		}
 		if h, ok := hits[r.ID]; ok {
 			rv.Hits24h = h.Hits
-			if !h.LastHit.IsZero() {
-				rv.LastHit = h.LastHit.Format("2006-01-02T15:04:05Z07:00")
-			}
+			rv.LastHit = h.LastHit.UTC()
 		}
 		rules = append(rules, rv)
 	}
@@ -124,8 +126,7 @@ func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	writeJSON(w, map[string]interface{}{
-		"rules":      rules,
+	writeItems(w, rules, map[string]interface{}{
 		"total":      len(rules),
 		"active":     active,
 		"disabled":   disabledIDs,
@@ -185,41 +186,54 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 	output, reloadErr := modsec.Reload(cfg.ReloadCommand)
 	if reloadErr != nil {
 		// Rollback on failure
-		_ = modsec.RestoreOverrides(cfg.OverridesFile, previousContent)
-		fmt.Fprintf(os.Stderr, "modsec: reload failed (rolled back): %v\noutput: %s\n", reloadErr, output)
+		rollbackErr := modsec.RestoreOverrides(cfg.OverridesFile, previousContent)
+		outcome := "Web server reload failed, changes rolled back"
+		if rollbackErr != nil {
+			outcome = "Web server reload failed; rollback failed, check the overrides before reloading"
+			fmt.Fprintf(os.Stderr, "modsec: rollback failed: %v\n", rollbackErr)
+		}
+		fmt.Fprintf(os.Stderr, "modsec: reload failed: %v\noutput: %s\n", reloadErr, output)
 		// Truncate output for client - may contain sensitive system paths
 		clientOutput := output
 		if len(clientOutput) > 500 {
 			clientOutput = clientOutput[:500] + "... (truncated)"
 		}
-		writeJSON(w, map[string]interface{}{
-			"ok":            false,
-			"error":         "Web server reload failed, changes rolled back",
+		s.auditLog(r, "modsec_rules_apply_failed", "overrides", outcome)
+		writeJSONStatus(w, http.StatusInternalServerError, map[string]interface{}{
+			"error":         outcome,
 			"reload_output": clientOutput,
-			"rolled_back":   true,
+			"rolled_back":   rollbackErr == nil,
 		})
 		return
 	}
 
-	writeJSON(w, map[string]interface{}{
-		"ok":             true,
+	s.auditLog(r, "modsec_rules_apply", "overrides", fmt.Sprintf("disabled rules: %v", req.Disabled))
+	writeOK(w, map[string]interface{}{
 		"disabled_count": len(req.Disabled),
 	})
 }
 
+// GET  /api/v1/modsec/rules/escalation - rule IDs excluded from escalation
 // POST /api/v1/modsec/rules/escalation - toggle escalation for a single rule
 func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
 	db := store.Global()
 	if db == nil {
 		writeJSONError(w, "Store not available", http.StatusInternalServerError)
 		return
 	}
-
+	if r.Method == http.MethodGet {
+		ids := []int{}
+		for id := range db.GetModSecNoEscalateRules() {
+			ids = append(ids, id)
+		}
+		sort.Ints(ids)
+		writeAll(w, ids)
+		return
+	}
 	var req struct {
 		RuleID   int  `json:"rule_id"`
 		Escalate bool `json:"escalate"`
@@ -248,6 +262,10 @@ func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	s.auditLog(r, "modsec_rules_apply", "custom rules", "rules file written and reloaded")
-	writeJSON(w, map[string]interface{}{"ok": true})
+	setting := "escalation off"
+	if req.Escalate {
+		setting = "escalation on"
+	}
+	s.auditLog(r, "modsec_rule_escalation", strconv.Itoa(req.RuleID), setting)
+	writeOK(w, map[string]interface{}{"rule_id": req.RuleID, "escalate": req.Escalate})
 }

@@ -9,21 +9,6 @@
     var pathname = window.location.pathname;
     var items = document.querySelectorAll('#csm-nav [data-csm-route]');
 
-    function navScope() {
-        if (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.authScope) {
-            return CSM_CONFIG.authScope;
-        }
-        return 'admin';
-    }
-
-    function hideReadScopeAdminItems() {
-        if (navScope() !== 'read') return;
-        var adminOnly = document.querySelectorAll('#csm-nav [data-csm-admin-only]');
-        for (var i = 0; i < adminOnly.length; i++) {
-            adminOnly[i].hidden = true;
-        }
-    }
-
     function activateCurrentItem() {
         var activeGroup = null;
         var matched = false;
@@ -114,27 +99,30 @@
         writeGroupState(state);
     }
 
-    hideReadScopeAdminItems();
     var activeGroup = activateCurrentItem();
     initNavGroups(activeGroup);
 })();
 
-function applyTheme(t) {
-    document.documentElement.setAttribute('data-bs-theme', t);
-    document.documentElement.classList.remove('theme-dark', 'theme-light');
-    document.documentElement.classList.add(t === 'light' ? 'theme-light' : 'theme-dark');
-    var icon = document.querySelector('#theme-toggle i');
-    if (icon) icon.className = t === 'light' ? 'ti ti-moon' : 'ti ti-sun';
-}
-function toggleTheme() {
-    var current = document.documentElement.getAttribute('data-bs-theme') || 'dark';
-    var next = current === 'dark' ? 'light' : 'dark';
-    applyTheme(next);
-    localStorage.setItem('csm-theme', next);
-}
-applyTheme(__theme);
-var _themeBtn = document.getElementById('theme-toggle');
-if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
+// Theme toggle. theme-init.js already put the chosen theme on <html>.
+(function() {
+    function applyTheme(t) {
+        document.documentElement.setAttribute('data-bs-theme', t);
+        document.documentElement.classList.remove('theme-dark', 'theme-light');
+        document.documentElement.classList.add(t === 'light' ? 'theme-light' : 'theme-dark');
+        var icon = document.querySelector('#theme-toggle i');
+        if (icon) icon.className = t === 'light' ? 'ti ti-moon' : 'ti ti-sun';
+    }
+    function toggleTheme() {
+        var current = document.documentElement.getAttribute('data-bs-theme') || 'dark';
+        var next = current === 'dark' ? 'light' : 'dark';
+        applyTheme(next);
+        try { localStorage.setItem('csm-theme', next); } catch (e) { /* not remembered */ }
+    }
+    applyTheme(document.documentElement.getAttribute('data-bs-theme') === 'light' ? 'light' : 'dark');
+    var themeBtn = document.getElementById('theme-toggle');
+    if (themeBtn) themeBtn.addEventListener('click', toggleTheme);
+})();
+
 // Display version in footer
 (function() {
     var v = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.version) ? CSM_CONFIG.version : '';
@@ -187,7 +175,13 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
 
     pill.classList.remove('d-none');
     nowBtn.classList.remove('d-none');
-    toggleBtn.classList.remove('d-none');
+
+    // Pause does something only on a page that refreshes on a timer.
+    function paintAuto() {
+        toggleBtn.classList.toggle('d-none', !CSM.refresh.hasAuto);
+    }
+    paintAuto();
+    window.addEventListener('csm:refresh-auto', paintAuto);
 
     function ageLabel(ms) {
         if (!ms) return 'Never updated';

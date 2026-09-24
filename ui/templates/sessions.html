@@ -1,9 +1,11 @@
-{{define "title"}}Browser sessions{{end}}
+{{define "title"}}Browser Sessions{{end}}
 {{define "page"}}sessions{{end}}
 {{define "content"}}
 <div class="csm-page-header mb-3">
-  <h1 class="csm-page-header__title">Browser sessions</h1>
-  <p class="text-muted">Review administrator logins and revoke access from other browsers. Logging out does not rotate API credentials. Sessions end when the daemon restarts.</p>
+  <div class="csm-page-header__main">
+    <h1 class="csm-page-header__title"><i class="ti ti-devices"></i>&nbsp;Browser Sessions</h1>
+    <div class="csm-page-header__subtitle">Review administrator logins and revoke access from other browsers. Logging out does not rotate API credentials. Sessions end when the daemon restarts.</div>
+  </div>
 </div>
 <div class="card">
   <div class="table-responsive">
@@ -14,7 +16,9 @@
       <tr>
         <td>{{.Name}}{{if .Current}} <span class="badge bg-blue-lt">Current</span>{{end}}</td>
         <td>{{.UserAgent}}</td><td>{{.RemoteIP}}</td>
-        <td>{{formatTime .Created}}</td><td>{{formatTime .LastSeen}}</td><td>{{formatTime .Expires}}</td>
+        <td><time data-csm-date datetime="{{isoTime .Created}}">{{formatTime .Created}}</time></td>
+        <td><time data-csm-date datetime="{{isoTime .LastSeen}}">{{formatTime .LastSeen}}</time></td>
+        <td><time data-csm-date datetime="{{isoTime .Expires}}">{{formatTime .Expires}}</time></td>
         <td><form method="post" action="/sessions/revoke">
           <input type="hidden" name="csrf_token" value="{{csrfToken}}">
           <input type="hidden" name="id" value="{{.ID}}">
@@ -26,7 +30,7 @@
     </table>
   </div>
   <div class="card-footer">
-    <form method="post" action="/sessions/revoke">
+    <form method="post" action="/sessions/revoke" data-csm-confirm="Log out every browser session, including this one? Everyone signs in again." data-csm-confirm-danger data-csm-confirm-ok="Log out all">
       <input type="hidden" name="csrf_token" value="{{csrfToken}}">
       <input type="hidden" name="id" value="all">
       <button type="submit" class="btn btn-danger">Log out all sessions</button>

@@ -59,10 +59,15 @@ func (s *Server) apiSessions(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "Session store unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		writeJSON(w, map[string]any{"sessions": views})
+		writeAll(w, views)
 	case http.MethodDelete:
 		if s.sessions == nil {
 			writeJSONError(w, "Session store unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		actor, via := s.requestActor(r)
+		if id != "" && !s.sessionExists(id) {
+			writeJSONError(w, "Session not found", http.StatusNotFound)
 			return
 		}
 		var err error
@@ -75,13 +80,29 @@ func (s *Server) apiSessions(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "Cannot revoke browser session", http.StatusServiceUnavailable)
 			return
 		}
+		s.auditSessionRevoke(r, actor, via, id)
 		if id == "" {
 			clearBrowserCookie(w)
 		}
-		writeJSON(w, map[string]bool{"ok": true})
+		writeOK(w, nil)
 	default:
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+// sessionExists reports whether id names an active browser session, so
+// revoking an unknown one answers 404 instead of a success that did nothing.
+func (s *Server) sessionExists(id string) bool {
+	records, err := s.sessions.List(s.sessionNow())
+	if err != nil {
+		return false
+	}
+	for _, rec := range records {
+		if rec.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func validSessionID(id string) bool {
@@ -102,7 +123,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Session store unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	s.renderTemplate(w, "sessions.html", map[string]any{"Sessions": views})
+	s.renderTemplate(w, r, "sessions.html", map[string]any{"Sessions": views})
 }
 
 func (s *Server) handleSessionRevoke(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +137,7 @@ func (s *Server) handleSessionRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PostForm.Get("id")
+	actor, via := s.requestActor(r)
 	var err error
 	switch {
 	case id == "all":
@@ -130,10 +152,26 @@ func (s *Server) handleSessionRevoke(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Cannot revoke browser session", http.StatusServiceUnavailable)
 		return
 	}
+	target := id
+	if id == "all" {
+		target = ""
+	}
+	s.auditSessionRevoke(r, actor, via, target)
 	if id == "all" {
 		clearBrowserCookie(w)
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 	http.Redirect(w, r, "/sessions", http.StatusSeeOther)
+}
+
+// auditSessionRevoke records a revocation for the actor resolved before it,
+// since revoking the caller's own session also ends its attribution. An
+// empty id means every browser session.
+func (s *Server) auditSessionRevoke(r *http.Request, actor, via, id string) {
+	if id == "" {
+		s.auditLogAs(r, actor, via, "session_revoke_all", "browser sessions", "every browser session logged out")
+		return
+	}
+	s.auditLogAs(r, actor, via, "session_revoke", id, "browser session revoked")
 }

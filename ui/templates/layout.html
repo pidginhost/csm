@@ -1,18 +1,19 @@
 {{define "layout"}}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-csm-server-tz="{{serverTimeZone}}" data-csm-server-offset="{{serverUTCOffset}}">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>CSM - {{template "title" .}}</title>
-    <link rel="stylesheet" href="/static/css/tabler.min.css">
-    <link rel="stylesheet" href="/static/css/tabler-icons.min.css">
-    <link rel="stylesheet" href="/static/css/csm.css">
+    <link rel="stylesheet" href="{{asset "css/tabler.min.css"}}">
+    <link rel="stylesheet" href="{{asset "css/tabler-icons.min.css"}}">
+    <link rel="stylesheet" href="{{asset "css/csm.css"}}">
     <meta name="csrf-token" content="{{csrfToken}}">
     <script id="csm-config" type="application/json">{{csmConfig}}</script>
-    <script src="/static/js/theme-init.js"></script>
+    <script src="{{asset "js/theme-init.js"}}"></script>
 </head>
 <body class="layout-fluid" data-csm-page="{{template "page" .}}">
+    <a class="visually-hidden-focusable csm-skip-link" href="#csm-main">Skip to content</a>
     <div class="page">
         <aside class="navbar navbar-vertical navbar-expand-lg csm-sidebar" data-bs-theme="dark" aria-label="Primary navigation">
             <div class="container-fluid">
@@ -21,7 +22,7 @@
                 </button>
                 <div class="navbar-brand navbar-brand-autodark">
                     <a href="/dashboard" class="text-decoration-none">
-                        <span class="text-primary">CSM</span>&nbsp;<span class="csm-sidebar-brand-rest">Security Monitor</span>
+                        <span class="text-primary">CSM</span><span class="csm-sidebar-brand-rest">Continuous Security Monitor</span>
                     </a>
                 </div>
                 <div class="collapse navbar-collapse" id="csm-sidebar-menu">
@@ -81,25 +82,19 @@
                                 <li class="nav-item" data-csm-route="cleanup-history">
                                     <a class="nav-link" href="/cleanup-history">
                                         <span class="nav-link-icon"><i class="ti ti-history"></i></span>
-                                        <span class="nav-link-title">Cleanup</span>
+                                        <span class="nav-link-title">Cleanup History</span>
                                     </a>
                                 </li>
                                 <li class="nav-item" data-csm-route="email">
                                     <a class="nav-link" href="/email">
                                         <span class="nav-link-icon"><i class="ti ti-mail"></i></span>
-                                        <span class="nav-link-title">Email</span>
+                                        <span class="nav-link-title">Email Security</span>
                                     </a>
                                 </li>
                                 <li class="nav-item" data-csm-route="modsec">
                                     <a class="nav-link" href="/modsec">
                                         <span class="nav-link-icon"><i class="ti ti-shield-check"></i></span>
                                         <span class="nav-link-title">ModSecurity</span>
-                                    </a>
-                                </li>
-                                <li class="nav-item" data-csm-route="verified-bots" data-csm-admin-only>
-                                    <a class="nav-link" href="/verified-bots">
-                                        <span class="nav-link-icon"><i class="ti ti-robot"></i></span>
-                                        <span class="nav-link-title">Verified Bots</span>
                                     </a>
                                 </li>
                                 <li class="nav-item" data-csm-route="threat">
@@ -125,36 +120,42 @@
                                 <li class="nav-item" data-csm-route="hardening">
                                     <a class="nav-link" href="/hardening">
                                         <span class="nav-link-icon"><i class="ti ti-shield-lock"></i></span>
-                                        <span class="nav-link-title">Hardening</span>
+                                        <span class="nav-link-title">Server Hardening</span>
                                     </a>
                                 </li>
+                                <li class="nav-item" data-csm-route="audit">
+                                    <a class="nav-link" href="/audit">
+                                        <span class="nav-link-icon"><i class="ti ti-clipboard-list"></i></span>
+                                        <span class="nav-link-title">Audit Log</span>
+                                    </a>
+                                </li>
+                            </ul>
+                        </div>
+                        <div class="csm-nav-group" data-csm-nav-group="configuration">
+                            <button class="csm-nav-group__toggle" type="button" data-csm-nav-toggle="configuration" aria-expanded="true" aria-controls="csm-nav-configuration">
+                                <span>Configuration</span>
+                                <i class="ti ti-chevron-down" aria-hidden="true"></i>
+                            </button>
+                            <ul class="navbar-nav" id="csm-nav-configuration">
                                 <li class="nav-item" data-csm-route="rules">
                                     <a class="nav-link" href="/rules">
                                         <span class="nav-link-icon"><i class="ti ti-file-code"></i></span>
                                         <span class="nav-link-title">Rules</span>
                                     </a>
                                 </li>
-                                <li class="nav-item" data-csm-route="modsec-rules" data-csm-admin-only>
+                                <li class="nav-item" data-csm-route="modsec-rules">
                                     <a class="nav-link" href="/modsec/rules">
                                         <span class="nav-link-icon"><i class="ti ti-list-check"></i></span>
-                                        <span class="nav-link-title">ModSec Rules</span>
+                                        <span class="nav-link-title">ModSecurity Rules</span>
                                     </a>
                                 </li>
-                                <li class="nav-item" data-csm-route="audit">
-                                    <a class="nav-link" href="/audit">
-                                        <span class="nav-link-icon"><i class="ti ti-clipboard-list"></i></span>
-                                        <span class="nav-link-title">Audit</span>
+                                <li class="nav-item" data-csm-route="verified-bots">
+                                    <a class="nav-link" href="/verified-bots">
+                                        <span class="nav-link-icon"><i class="ti ti-robot"></i></span>
+                                        <span class="nav-link-title">Verified Bots</span>
                                     </a>
                                 </li>
-                            </ul>
-                        </div>
-                        <div class="csm-nav-group" data-csm-nav-group="configuration" data-csm-admin-only>
-                            <button class="csm-nav-group__toggle" type="button" data-csm-nav-toggle="configuration" aria-expanded="true" aria-controls="csm-nav-configuration">
-                                <span>Configuration</span>
-                                <i class="ti ti-chevron-down" aria-hidden="true"></i>
-                            </button>
-                            <ul class="navbar-nav" id="csm-nav-configuration">
-                                <li class="nav-item" data-csm-route="settings" data-csm-admin-only>
+                                <li class="nav-item" data-csm-route="settings">
                                     <a class="nav-link" href="/settings">
                                         <span class="nav-link-icon"><i class="ti ti-settings"></i></span>
                                         <span class="nav-link-title">Settings</span>
@@ -174,7 +175,7 @@
                             <span class="csm-sse-pill__dot" aria-hidden="true"></span>
                             <span class="csm-sse-pill__label">Live</span>
                         </span>
-                        <span id="csm-refresh-pill" class="d-none align-items-center text-muted small" role="status" aria-live="polite">
+                        <span id="csm-refresh-pill" class="d-none align-items-center text-muted small">
                             <span id="csm-refresh-age" data-csm-empty="Never updated">Never updated</span>
                         </span>
                         <button id="csm-refresh-now" class="btn btn-ghost-secondary btn-sm d-none" title="Refresh now" aria-label="Refresh now">
@@ -200,11 +201,11 @@
                         <button id="theme-toggle" class="btn btn-ghost-secondary btn-sm" title="Toggle dark/light mode" aria-label="Toggle dark/light mode">
                             <i class="ti ti-sun-moon"></i>
                         </button>
-                        <a href="/sessions" class="btn btn-ghost-secondary btn-sm">Sessions</a>
+                        <a href="/sessions" class="btn btn-ghost-secondary btn-sm" aria-label="Sessions"><i class="ti ti-devices" aria-hidden="true"></i><span class="d-none d-sm-inline">&nbsp;Sessions</span></a>
                         <form method="post" action="/logout">
                             <input type="hidden" name="csrf_token" value="{{csrfToken}}">
-                            <button type="submit" class="btn btn-ghost-secondary btn-sm">
-                                <i class="ti ti-logout"></i> Logout
+                            <button type="submit" class="btn btn-ghost-secondary btn-sm" aria-label="Log out">
+                                <i class="ti ti-logout" aria-hidden="true"></i><span class="d-none d-sm-inline"> Logout</span>
                             </button>
                         </form>
                     </div>
@@ -212,12 +213,13 @@
             </header>
             <div id="csm-connection-lost" class="alert alert-danger alert-dismissible mb-0 rounded-0 d-none" role="alert" aria-live="polite">
                 <strong>Connection lost</strong> &mdash; Unable to reach the server. Retrying automatically.
+                <button type="button" class="btn-close" data-csm-dismiss-connection aria-label="Dismiss until the next outage"></button>
             </div>
             <div id="csm-update-banner" class="alert alert-info mb-0 rounded-0 d-none" role="status" aria-live="polite">
                 <span><strong>Update available:</strong> <span id="csm-update-version"></span> &mdash; current version is <span id="csm-update-current"></span>. Run <code id="csm-update-cmd">apt upgrade csm</code> to upgrade.</span>
                 <a href="https://github.com/pidginhost/csm/releases" target="_blank" rel="noopener" class="ms-2">Release notes</a>
             </div>
-            <main class="page-body">
+            <main class="page-body" id="csm-main" tabindex="-1">
                 <div class="container-xl">
                     {{template "content" .}}
                 </div>
@@ -284,17 +286,20 @@
             </div>
         </div>
     </div>
-    <script src="/static/js/tabler.min.js"></script>
-    <script src="/static/js/csrf.js"></script>
-    <script src="/static/js/toast.js"></script>
-    <script src="/static/js/csm-ui.js"></script>
-    <script src="/static/js/prefs.js"></script>
-    <script src="/static/js/table.js"></script>
-    <script src="/static/js/shortcuts.js"></script>
-    <script src="/static/js/palette.js"></script>
-    <script src="/static/js/views.js"></script>
-    <script src="/static/js/undo.js"></script>
-    <script src="/static/js/layout.js"></script>
+    <script src="{{asset "js/tabler.min.js"}}"></script>
+    <script src="{{asset "js/csm-core.js"}}"></script>
+    <script src="{{asset "js/csm-format.js"}}"></script>
+    <script src="{{asset "js/csm-page.js"}}"></script>
+    <script src="{{asset "js/csm-live.js"}}"></script>
+    <script src="{{asset "js/toast.js"}}"></script>
+    <script src="{{asset "js/csm-ui.js"}}"></script>
+    <script src="{{asset "js/prefs.js"}}"></script>
+    <script src="{{asset "js/table.js"}}"></script>
+    <script src="{{asset "js/shortcuts.js"}}"></script>
+    <script src="{{asset "js/palette.js"}}"></script>
+    <script src="{{asset "js/views.js"}}"></script>
+    <script src="{{asset "js/undo.js"}}"></script>
+    <script src="{{asset "js/layout.js"}}"></script>
     {{template "scripts" .}}
 </body>
 </html>

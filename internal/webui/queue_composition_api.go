@@ -59,10 +59,10 @@ func (s *Server) apiEmailFlushBackscatter(w http.ResponseWriter, r *http.Request
 			message = fmt.Sprintf("Flush incomplete: %d of %d targeted message(s) confirmed no longer queued: %v",
 				res.Removed, targeted, err)
 		}
-		writeJSONError(w, message, http.StatusInternalServerError)
+		writeJSONStatus(w, http.StatusInternalServerError, map[string]interface{}{"error": message, "removed": res.Removed})
 		return
 	}
-	writeJSON(w, res)
+	writeOK(w, map[string]interface{}{"removed": res.Removed})
 }
 
 // apiEmailQueueComposition handles GET /api/v1/email/queue-composition and

@@ -31,11 +31,11 @@
     </li>
 </ul>
 
-<div id="account-tab-content" role="tabpanel" aria-live="polite" aria-labelledby="account-tabbtn-findings" tabindex="0">
+<div id="account-tab-content" role="tabpanel" aria-labelledby="account-tabbtn-findings" tabindex="0">
     <div class="card-body text-center text-muted py-4">
         <span class="spinner-border spinner-border-sm"></span> Loading...
     </div>
 </div>
 {{end}}
-{{define "scripts"}}<script src="/static/js/account.js"></script>{{end}}
+{{define "scripts"}}<script src="{{asset "js/account.js"}}"></script>{{end}}
 {{template "layout" .}}

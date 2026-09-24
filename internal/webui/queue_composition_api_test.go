@@ -45,8 +45,9 @@ func TestSelectQueueReporterUsesEximSourceOnCPanel(t *testing.T) {
 
 func TestApiEmailQueueCompositionSerialization(t *testing.T) {
 	s := newTestServer(t, "tok")
+	oldest := 4 * 86400
 	s.queueReporter = fakeQueueReporter{comp: intel.QueueComposition{
-		Total: 4, Bounce: 3, Real: 1, Frozen: 1, OldestAge: "4d",
+		Total: 4, Bounce: 3, Real: 1, Frozen: 1, OldestAgeSeconds: &oldest,
 		TopRecipients: []intel.RecipientCount{{Address: "victim@yahoo.com", Count: 2}},
 	}}
 
@@ -57,7 +58,7 @@ func TestApiEmailQueueCompositionSerialization(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 	body := w.Body.String()
-	for _, want := range []string{`"total": 4`, `"bounce": 3`, `"frozen": 1`, `"oldest_age": "4d"`, `victim@yahoo.com`} {
+	for _, want := range []string{`"total":4`, `"bounce":3`, `"frozen":1`, `"oldest_age_seconds":345600`, `victim@yahoo.com`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("response missing %q\nbody: %s", want, body)
 		}

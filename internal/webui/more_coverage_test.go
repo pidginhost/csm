@@ -94,9 +94,9 @@ func TestAPIPerformanceUsesEntryForKey(t *testing.T) {
 	if len(resp.Findings) == 0 {
 		t.Fatal("expected at least one perf finding")
 	}
-	// FirstSeen should be a parseable RFC3339 timestamp.
-	if _, err := time.Parse(time.RFC3339, resp.Findings[0].FirstSeen); err != nil {
-		t.Errorf("FirstSeen not RFC3339: %v (got %q)", err, resp.Findings[0].FirstSeen)
+	// FirstSeen should be a set instant.
+	if resp.Findings[0].FirstSeen.IsZero() {
+		t.Errorf("FirstSeen not set (got %v)", resp.Findings[0].FirstSeen)
 	}
 }
 
@@ -121,8 +121,10 @@ func TestAPIPerformanceSortsBySeverityDesc(t *testing.T) {
 		t.Fatalf("findings = %d, want 3", len(resp.Findings))
 	}
 	for i := 1; i < len(resp.Findings); i++ {
-		if resp.Findings[i-1].Severity < resp.Findings[i].Severity {
-			t.Errorf("sort order broken at index %d: %d < %d",
+		prev, _ := parseSeverity(resp.Findings[i-1].Severity)
+		cur, _ := parseSeverity(resp.Findings[i].Severity)
+		if prev < cur {
+			t.Errorf("sort order broken at index %d: %s < %s",
 				i, resp.Findings[i-1].Severity, resp.Findings[i].Severity)
 		}
 	}
@@ -390,26 +392,25 @@ func TestAPIUIAuditWithEntries(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var entries []UIAuditEntry
-	if err := json.Unmarshal(w.Body.Bytes(), &entries); err != nil {
-		t.Fatalf("json: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &entries)
 	if len(entries) != 3 {
 		t.Errorf("entries = %d, want 3", len(entries))
 	}
 }
 
-// apiUIAudit returns an empty array (not null) when the log file
+// apiUIAudit returns empty items (not null) when the log file
 // is missing.
-func TestAPIUIAuditEmptyArrayWhenMissing(t *testing.T) {
+func TestAPIUIAuditEmptyItemsWhenMissing(t *testing.T) {
 	s := newTestServer(t, "tok")
 	w := httptest.NewRecorder()
 	s.apiUIAudit(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	body := strings.TrimSpace(w.Body.String())
-	if body != "[]" {
-		t.Errorf("body = %q, want []", body)
+	var entries []UIAuditEntry
+	decodeItems(t, w.Body.Bytes(), &entries)
+	if len(entries) != 0 {
+		t.Errorf("entries = %d, want an empty list", len(entries))
 	}
 }
 

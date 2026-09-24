@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/store"
@@ -53,7 +54,7 @@ func TestAPIRulesStatusDecodesShape(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("json: %v", err)
 	}
-	wantKeys := []string{"yaml_rules", "yara_rules", "yara_available", "yaml_version", "rules_dir", "auto_update", "update_url", "update_interval"}
+	wantKeys := []string{"yaml_rules", "yara_rules", "yara_available", "yaml_version", "rules_dir", "auto_update", "update_url", "update_interval_seconds"}
 	for _, k := range wantKeys {
 		if _, ok := got[k]; !ok {
 			t.Errorf("missing key %q", k)
@@ -61,6 +62,9 @@ func TestAPIRulesStatusDecodesShape(t *testing.T) {
 	}
 	if got["auto_update"] != true {
 		t.Errorf("auto_update = %v, want true", got["auto_update"])
+	}
+	if got["update_interval_seconds"] != float64(24*3600) {
+		t.Errorf("update_interval_seconds = %v, want 86400", got["update_interval_seconds"])
 	}
 }
 
@@ -73,10 +77,7 @@ func TestAPIRulesListMissingDirReturnsEmpty(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	body := strings.TrimSpace(w.Body.String())
-	if body != "null" && body != "[]" {
-		t.Errorf("body = %q, expected null or []", body)
-	}
+	assertEmptyItems(t, w.Body.Bytes())
 }
 
 func TestAPIRulesListFiltersByExtension(t *testing.T) {
@@ -113,9 +114,7 @@ func TestAPIRulesListFiltersByExtension(t *testing.T) {
 	}
 
 	var got []map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("json: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &got)
 	// 6 valid rule files: .yml, .yaml, .yar, .yara (x2 uppercase), .hidden.yml
 	if len(got) < 6 {
 		t.Errorf("want >=6 rule files, got %d: %v", len(got), got)
@@ -209,15 +208,15 @@ func TestAPIRulesReloadPOSTNoGlobalScanners(t *testing.T) {
 
 func TestAPIPerformanceWithStoredSnapshot(t *testing.T) {
 	s := newTestServer(t, "tok")
-	// Seed a snapshot directly into perfSnapshot
+	// Seed a fresh sample so the handler serves it
 	m := &perfMetrics{
-		LoadAvg:    [3]float64{0.5, 0.7, 0.9},
-		CPUCores:   4,
-		MemTotalMB: 8192,
-		MemUsedMB:  2048,
-		Uptime:     "1d 2h",
+		LoadAvg:       [3]float64{0.5, 0.7, 0.9},
+		CPUCores:      4,
+		MemTotalMB:    8192,
+		MemUsedMB:     2048,
+		UptimeSeconds: 86400 + 2*3600,
 	}
-	s.perfSnapshot.Store(m)
+	s.storePerfSample(m, time.Now())
 
 	w := httptest.NewRecorder()
 	s.apiPerformance(w, httptest.NewRequest("GET", "/?limit=50", nil))
@@ -234,8 +233,8 @@ func TestAPIPerformanceWithStoredSnapshot(t *testing.T) {
 	if resp.Metrics.CPUCores != 4 {
 		t.Errorf("CPUCores = %d, want 4", resp.Metrics.CPUCores)
 	}
-	if resp.Metrics.Uptime != "1d 2h" {
-		t.Errorf("Uptime = %q", resp.Metrics.Uptime)
+	if resp.Metrics.UptimeSeconds != 86400+2*3600 {
+		t.Errorf("UptimeSeconds = %d", resp.Metrics.UptimeSeconds)
 	}
 }
 
@@ -392,16 +391,16 @@ func TestAPIModSecRulesApplyReloadFailsRollsBack(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiModSecRulesApply(w, req)
-	// Even on reload failure, handler writes 200 with ok=false + rolled_back:true
-	if w.Code != http.StatusOK {
+	// A reload failure is a 500 that says the change was rolled back.
+	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var resp map[string]interface{}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("json: %v", err)
 	}
-	if resp["ok"] != false {
-		t.Errorf("ok = %v, want false", resp["ok"])
+	if e, _ := resp["error"].(string); e == "" {
+		t.Errorf("error = %v, want the reload failure", resp["error"])
 	}
 	if resp["rolled_back"] != true {
 		t.Errorf("rolled_back = %v, want true", resp["rolled_back"])
@@ -425,8 +424,7 @@ func TestHandleDashboardSeeded(t *testing.T) {
 	s := newTestServerWithTemplates(t, "tok")
 	// Seed sig/fanotify/watcher fields; handler should render without error
 	s.SetSigCount(42)
-	s.fanotifyActive = true
-	s.logWatcherCount = 7
+	s.SetHealthInfo(func() bool { return true }, func() int { return 7 })
 
 	w := httptest.NewRecorder()
 	s.handleDashboard(w, httptest.NewRequest("GET", "/", nil))
@@ -469,7 +467,7 @@ func TestRenderTemplateMissingTemplate(t *testing.T) {
 	s := newTestServerWithTemplates(t, "tok")
 	w := httptest.NewRecorder()
 	delete(s.templates, "dashboard.html")
-	s.renderTemplate(w, "never-existed.html", nil)
+	s.renderTemplate(w, httptest.NewRequest(http.MethodGet, "/", nil), "never-existed.html", nil)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}

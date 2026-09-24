@@ -3,6 +3,10 @@
 // optimistic locking (If-Match etag). All requests go through CSM.request.
 (function () {
     var etag = '';
+    // saved is the list as last loaded or saved; a different form is unsaved work.
+    var saved = '[]';
+    var saving = false;
+    var loading = false;
     var listEl = document.getElementById('vbots-list');
     var loadingEl = document.getElementById('vbots-loading');
     var emptyEl = document.getElementById('vbots-empty');
@@ -103,7 +107,7 @@
     function renderRanges(br) {
         br = br || {};
         document.getElementById('vbots-ranges-auto').textContent = br.auto_update ? 'On' : 'Off';
-        document.getElementById('vbots-ranges-interval').textContent = br.update_interval || '24h';
+        document.getElementById('vbots-ranges-interval').textContent = CSM.formatDuration(br.update_interval_seconds) || '24h';
         document.getElementById('vbots-ranges-refresh').textContent = br.last_refresh ? CSM.fmtDate(br.last_refresh) : 'never';
         var prefixes = br.prefixes || {};
         var names = Object.keys(prefixes).sort();
@@ -115,19 +119,35 @@
         document.getElementById('vbots-ranges-prefixes').textContent = parts.join(', ');
     }
 
-    function load() {
-        CSM.get('/api/v1/verified-bots').then(function (data) {
+    function load(options) {
+        if (loading || saving) return;
+        loading = true;
+        var snapshot = JSON.stringify(collect());
+        document.getElementById('vbots-save').disabled = true;
+        CSM.get('/api/v1/verified-bots', options).then(function (data) {
+            CSM.clearLoadError(loadingEl);
+            if (JSON.stringify(collect()) !== snapshot) {
+                CSM.toast('Kept edits made while the verified bots were loading. Refresh again to reload.', 'warning');
+                return;
+            }
             etag = data.etag || '';
             renderRanges(data.bot_ranges);
             listEl.innerHTML = '';
-            (data.bots || []).forEach(addRow);
+            data.items.forEach(addRow);
             updateVisibility();
-        }).catch(function () {
-            loadingEl.querySelector('.csm-empty__reason').textContent = 'Failed to load verified bots.';
+            saved = JSON.stringify(collect());
+        }).catch(function (err) {
+            CSM.loadError(loadingEl, function () { load(); }, { title: 'Failed to load verified bots', error: err });
+        }).then(function () {
+            loading = false;
+            document.getElementById('vbots-save').disabled = false;
         });
     }
 
     function save() {
+        if (saving || loading) return;
+        saving = true;
+        document.getElementById('vbots-save').disabled = true;
         clearErrors();
         var bots = collect();
         CSM.request('/api/v1/verified-bots/apply', {
@@ -145,18 +165,23 @@
         }).then(function (res) {
             if (res.status === 200) {
                 etag = res.body.new_etag || etag;
+                saved = JSON.stringify(bots);
                 CSM.toast('Saved ' + (res.body.count || 0) + ' verified bot(s)', 'success');
             } else if (res.status === 422) {
                 showErrors(res.body.errors);
                 CSM.toast('Validation failed — see highlighted entries', 'error');
             } else if (res.status === 412) {
                 CSM.toast('Config changed on disk; reloading the current list', 'warning');
+                saving = false;
                 load();
             } else {
                 CSM.toast((res.body && res.body.error) || ('HTTP ' + res.status), 'error');
             }
         }).catch(function (err) {
             CSM.toast('Save failed: ' + err.message, 'error');
+        }).then(function () {
+            saving = false;
+            document.getElementById('vbots-save').disabled = loading;
         });
     }
 
@@ -171,4 +196,10 @@
     });
 
     load();
+    if (CSM.refresh) CSM.refresh.onRefresh(function () {
+        if (saving || loading) return;
+        var ask = JSON.stringify(collect()) === saved ? Promise.resolve() :
+            CSM.confirm('Discard unsaved verified bot changes and reload?', { danger: true, okLabel: 'Discard' });
+        ask.then(function () { load({ refresh: true }); }, function () { /* kept */ });
+    });
 })();

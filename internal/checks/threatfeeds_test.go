@@ -637,7 +637,7 @@ func TestThreatDBStats(t *testing.T) {
 	if s["whitelist"].(int) != 1 {
 		t.Errorf("whitelist = %v", s["whitelist"])
 	}
-	if !strings.HasPrefix(s["last_update"].(string), "2026-04-01") {
+	if got, _ := s["last_update"].(time.Time); !got.Equal(db.LastFeedUpdate) {
 		t.Errorf("last_update = %v", s["last_update"])
 	}
 }

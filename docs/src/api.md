@@ -12,7 +12,7 @@ curl -H "Authorization: Bearer YOUR_TOKEN" https://server:9443/api/v1/status
 curl -b "csm_auth=SESSION_COOKIE_FROM_LOGIN" https://server:9443/api/v1/status
 ```
 
-Cookie-authenticated state-changing requests require the `X-CSRF-Token` header (obtained from the authenticated page meta tag). Admin-scope Bearer requests are CSRF-exempt because the `Authorization` header is the write credential.
+Cookie-authenticated state-changing requests require the `X-CSRF-Token` header (obtained from the authenticated page meta tag). The token belongs to the browser session that loaded the page; another session's token is refused, and a form field is read from the request body only. Admin-scope Bearer requests are CSRF-exempt because the `Authorization` header is the write credential.
 
 ### Browser session management
 
@@ -23,8 +23,8 @@ the same management operations as these admin-only endpoints:
 
 | Method | Path | Result |
 | --- | --- | --- |
-| GET | `/api/v1/sessions` | `sessions` array with `id`, `name`, `created`, `last_seen`, `expires`, `remote_ip`, `user_agent`, `current` |
-| DELETE | `/api/v1/sessions/<id>` | Revoke that session; unknown IDs are an idempotent success |
+| GET | `/api/v1/sessions` | `items` list of sessions with `id`, `name`, `created`, `last_seen`, `expires`, `remote_ip`, `user_agent`, `current` |
+| DELETE | `/api/v1/sessions/<id>` | Revoke that session; an unknown ID answers 404 |
 | DELETE | `/api/v1/sessions` | Revoke all browser sessions, including the caller's |
 
 Revocation returns `{"ok":true}` only after committing to the store. Failure
@@ -51,6 +51,93 @@ webui:
 
 The legacy single-token `webui.auth_token:` is migrated automatically to a `legacy-auth-token` admin entry on first start. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
 
+## Errors
+
+Every failure answers a non-2xx status with a JSON body that has an `error`
+message. That includes CSRF, origin, rate-limit and wrong-method refusals.
+Some failures add detail next to it; a settings save that fails validation
+adds `errors`, a list of fields and messages. An unknown path under `/api/`
+answers 404. No 2xx response reports a failure.
+
+```json
+{"error": "invalid IP address"}
+```
+
+## Actions
+
+A request that changes state answers `"ok": true` with the action's own
+fields, such as `undo_token` or `warning`. Work that continues after the
+answer, such as a daemon restart, a firewall rollback or a scan job, answers
+202. A batch where some items failed answers 200 and lists the failures; a
+batch where nothing changed answers an error status. A read-only route
+answers 405 to any method but GET.
+
+An empty fix batch is rejected. Threat actions report firewall failures,
+and bulk actions list invalid addresses as well as failed changes. A failed
+action can have applied some steps before the error; inspect the current
+state before retrying it. A response that cannot be encoded answers 500
+with an error body.
+
+`/api/v1/firewall/check` and `/api/v1/firewall/unban` also send
+`"success": true` for callers written against the older API. It will be
+removed; use the status code and `ok`.
+
+## Lists
+
+Every GET route that returns a list answers a JSON object, never a bare
+array. The list is under `items`. An empty list anywhere in a response is
+`[]` and an empty map `{}`, never null; null means a value is not known.
+
+- `total` is the number of matches the server counted. It is larger than
+  the length of `items` when the route pages or cuts the list.
+- `offset` and `limit` come with routes that page or cap the list.
+  Capped routes that do not support paging report `offset: 0`.
+- `truncated` is true when matches were left out: past the page, past the
+  limit, or past a scan cap. When a scan cap stopped the count, `total`
+  counts only what was scanned.
+  Incident groups also send `scan_truncated` to distinguish a scan cap
+  from a page limit; their `total` is exact when `scan_truncated` is false.
+- Other keys next to `items` describe the whole list, such as
+  `check_types` on `/findings/enriched` or `summary` on `/email/forwarders`.
+
+`/audit`, `/threat/top-attackers` and `/threat/events` do not count every
+match. They send `limit` and `truncated` without `total`.
+
+```json
+{"items": [{"ip": "203.0.113.9", "reason": "wp_login_bruteforce"}], "total": 1}
+```
+
+## Times and durations
+
+Every time is an RFC 3339 instant in UTC with sub-second precision, such as
+`2026-09-22T10:04:05.123456Z`. The same applies to the event stream. A time
+that is not set is left out, never sent as `0001-01-01T00:00:00Z`.
+
+The API does not send times it formatted for reading, such as "5m ago",
+"1h2m" or a clock time without a date. Clients format instants in their
+own time zone and count down to an `expires_at` themselves.
+
+Durations are numbers of seconds in keys that end in `_seconds`, such as
+`uptime_seconds`, `elapsed_seconds`, `duration_seconds`,
+`oldest_age_seconds` and `update_interval_seconds`.
+Temporary whitelist responses use `duration_seconds`, rollback status uses
+`remaining_seconds`, and incident timelines use `window_seconds`. Request
+parameters such as `hours` and editable configuration values retain their
+documented units.
+
+Two values keep a text form. `started_at_token` is an opaque token for
+restart polling. The `temporary` reason on `/api/v1/firewall/check` keeps its
+"(expires in ...)" text for existing callers; `expires_at` carries the
+instant.
+
+## Severity
+
+A severity is its label: `CRITICAL`, `HIGH` or `WARNING`. That covers
+`severity`, `severity_max`, `demoted_from` and the attack event `sev`.
+Clients derive colours and sort order from the label. A `severity` filter
+takes the label in any case, or the older `0`, `1` or `2` level. The findings
+inside an email quarantine entry keep the scanning engine's own rating.
+
 ## Status & Data
 
 ```
@@ -72,6 +159,7 @@ GET  /api/v1/status              Full health snapshot: version, uptime, watchers
                                  A degraded queue changes `status` and `security_posture`.
                                  `latest_scan` is the canonical last-scan timestamp; `last_scan_time`
                                  is a legacy alias kept for older clients and will be removed.
+                                 `uptime_seconds` is the time since the daemon started.
 GET  /api/v1/challenge/stats     Challenge-routing activity for the UI: `pending`, `escalated`
                                  (timeouts that became hard blocks), `routed_by_check` (per source
                                  check, since restart), and `recent` routes. Read scope.
@@ -88,21 +176,29 @@ GET  /api/v1/events              Server-Sent Events stream of findings as they d
                                  write or flush closes the stream and frees its subscriber slot.
 GET  /api/v1/health              Daemon health (fanotify, watchers, engines)
 GET  /api/v1/findings            Current active findings
-GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix info
+GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix info, and a list version.
+                                 ?limit=N orders by severity, then newest, even when all rows fit;
+                                 returns at most N rows with limit and truncated, while total and
+                                 the severity counts cover all.
+                                 ?fields=version returns only {version, total}, for change polling.
+                                 block_ip is set only for checks that report an attacker address,
+                                 the same evidence auto-block acts on
 GET  /api/v1/finding-detail      Finding detail with action history (?check=&message=)
-GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&severity=&search=)
-GET  /api/v1/history/csv         CSV export (up to 5,000 entries)
+GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&severity=&search=&checks=).
+                                 checks is a comma-separated list of check names to include.
+                                 total counts every match; truncated is true when matches exist past the page
+GET  /api/v1/history/csv         CSV export of the newest 5,000 entries matching the /history filters
 GET  /api/v1/stats               24h severity counts, accounts at risk, auto-response summary
-GET  /api/v1/stats/trend         30-day daily severity counts
-GET  /api/v1/stats/timeline      Event timeline
+GET  /api/v1/stats/trend         30-day daily severity counts; each `date` is a calendar day in the server's time zone
+GET  /api/v1/stats/timeline      Hourly severity counts for the last 24 hours; each bucket names its `start` instant
 GET  /api/v1/quarantine          Quarantined files with metadata (incl. htaccess pre_clean backups)
 GET  /api/v1/quarantine-preview  Preview quarantined file content (?id=)
 GET  /api/v1/db-object-backups   db_object_backups bucket (MySQL trigger/event/procedure/function drops)
 GET  /api/v1/db-object-backup-preview Preview captured CREATE SQL (?key=)
 GET  /api/v1/blocked-ips         Blocked IPs with reason and expiry
-GET  /api/v1/accounts            cPanel account list
+GET  /api/v1/accounts            Accounts a server-wide scan covers
 GET  /api/v1/account             Per-account findings, quarantine, history (?name=)
-GET  /api/v1/audit               UI audit log
+GET  /api/v1/audit               Newest 200 UI audit log entries; truncated marks older ones. Each entry names the credential that acted (actor) and whether it came as an API token or a browser login (via)
 GET  /api/v1/export              Export state (suppressions, whitelist)
 GET  /api/v1/incident            Incident timeline (?ip=&account=&hours=)
 GET  /api/v1/performance         Performance metrics snapshot (admin scope)
@@ -112,6 +208,18 @@ POST /api/v1/perf/fix-display-errors
 POST /api/v1/perf/fix-wp-cron    Disable WP-Cron and install a system cron for a perf_wp_cron finding (admin scope, CSRF)
 GET  /api/v1/hardening           Last stored hardening audit report (admin scope)
 ```
+
+### Date ranges
+
+`/api/v1/history`, `/api/v1/email/groups` and `/api/v1/email/relay-abuse` take
+`from` and `to` as a calendar date (`YYYY-MM-DD`) or an RFC 3339 time. A date is
+a day in the server's time zone, and `to` includes the whole day. An RFC 3339
+`to` is exclusive. The web UI sends RFC 3339 times so a day follows the
+operator's time zone preference. A value in neither form is rejected with 400.
+An empty or whitespace-only bound is treated as absent. Calendar days start at
+their first valid local time, including when midnight is skipped or repeated;
+a skipped calendar date covers an empty range. Fractional seconds are preserved
+when filtering RFC 3339 bounds.
 
 ### WordPress verification coverage
 
@@ -915,6 +1023,10 @@ POST /api/v1/firewall/unban          Unblock IP + flush cphulk
 POST /api/v1/firewall/cphulk-clear   Flush cphulk bans only
 ```
 
+The audit log reports each `timestamp` as an RFC 3339 instant in UTC and
+the block or allow lifetime as `duration_seconds`. Blocked addresses,
+subnets and allow rules carry `expires_at`, left out for a permanent entry.
+
 ## ModSecurity
 
 ```
@@ -922,20 +1034,29 @@ GET  /api/v1/modsec/stats              WAF statistics (read scope). Accepts ?win
 GET  /api/v1/modsec/blocks             Blocked requests log, aggregated per IP, with resolved source country (read scope). Accepts ?window=1h|6h|24h, ?severity=warning|high|critical.
 GET  /api/v1/modsec/events             WAF event details with resolved source country (read scope). Accepts ?window=1h|6h|24h, ?severity=warning|high|critical.
 GET  /api/v1/modsec/rules              Loaded rules list
-POST /api/v1/modsec/rules/apply        Apply custom rules
-POST /api/v1/modsec/rules/escalation   Change rule severity/action
+POST /api/v1/modsec/rules/apply        Apply the set of disabled rules and reload
+GET  /api/v1/modsec/rules/escalation   Rule IDs excluded from firewall escalation, sorted
+POST /api/v1/modsec/rules/escalation   Exclude one rule from escalation or turn it back on
 ```
+
+`POST /api/v1/modsec/rules/escalation` takes `{"rule_id": 900112, "escalate": false}`. The rule ID must be a CSM rule (900000-900999). `escalate: false` adds the exclusion and `escalate: true` removes it; other excluded rules are left as they are.
+
+A failed rules reload reports `rolled_back: true` only when restoring the previous
+overrides succeeds. A rollback failure is reported in the response and audit log;
+inspect the overrides before trying another reload.
 
 ## Rules & Suppressions
 
 ```
 GET  /api/v1/rules/status        YAML/YARA rule counts, version
 GET  /api/v1/rules/list          Rule files
-GET  /api/v1/suppressions        Suppression rules
-POST /api/v1/rules/reload        Reload signature rules from disk
-POST /api/v1/suppressions        Add or delete suppression rule
-POST /api/v1/rules/modsec-escalation   ModSec escalation override
+GET    /api/v1/suppressions      Suppression rules
+POST   /api/v1/rules/reload      Reload signature rules from disk
+POST   /api/v1/suppressions      Add a suppression rule
+DELETE /api/v1/suppressions      Delete a suppression rule by id
 ```
+
+`POST /api/v1/suppressions` takes `{"check", "path_pattern", "reason"}`. The path pattern is a glob and must be valid. A rule that covers every path of a check, hiding all its findings and stopping their remediation, needs `"all_paths": true` and no `path_pattern`; an empty pattern without it returns 400. `check` must be a check name, not a pattern: letters, digits, `_`, `.`, `:` and `-`. A name that is neither a known check nor the check of a current finding is saved, and the response carries a `warning` saying the rule matches nothing yet.
 
 ## Email
 
@@ -972,7 +1093,8 @@ POST /api/v1/hardening/run       Run hardening audit and save report (admin scop
 GET  /api/v1/scan-jobs              List full-scan jobs (read scope)
 GET  /api/v1/scan-jobs/{id}         Job status and stored report (read scope)
 GET  /api/v1/scan-jobs/{id}/findings
-                                      Paginated findings for one job (?offset=&limit=) (read scope)
+                                      Paginated findings for one job (?offset=&limit=, limit 500 by
+                                      default and at most 5000; truncated marks more pages) (read scope)
 POST /api/v1/scan-jobs              Enqueue a full-scan job (admin scope, CSRF)
 POST /api/v1/scan-jobs/{id}/cancel  Cancel a queued or running job (admin scope, CSRF)
 ```
@@ -989,11 +1111,11 @@ POST /api/v1/verified-bots/apply  Validate, apply, and reload an edited verified
 ```
 POST /api/v1/fix                      Apply fix for a finding
 POST /api/v1/fix-bulk                 Bulk fix multiple findings
-POST /api/v1/dismiss                  Dismiss a finding
+POST /api/v1/dismiss                  Dismiss one finding {key} or up to 500 {keys}; returns undo_token
 POST /api/v1/scan-account             On-demand account scan
 POST /api/v1/verify-finding           Re-check a single finding on demand (admin scope, CSRF)
 POST /api/v1/quarantine-restore       Restore quarantined file
-POST /api/v1/quarantine/bulk-delete   Bulk-delete quarantined files
+POST /api/v1/quarantine/bulk-delete   Bulk-delete quarantined files; returns count and the ids it could not delete
 POST /api/v1/db-object-backup-restore Restore a dropped MySQL object from its db_object_backups record
 POST /api/v1/test-alert               Send test alert through all channels
 POST /api/v1/import                   Import state bundle (suppressions, whitelist)
@@ -1025,7 +1147,9 @@ POST /api/v1/settings/firewall/confirm          Confirm tentative firewall chang
 POST /api/v1/settings/firewall/revert           Revert tentative firewall changes now
 ```
 
-Sections map to top-level config keys: `alerts`, `auto_response`, `challenge`, `reputation`, `performance`, `infra_ips`, `sentry`, etc. Writes persist to `csm.yaml`, re-sign the integrity hash, and hot-reload where possible; restart-required changes are queued for `/api/v1/settings/restart`. Invalid field values return 422 and do not touch disk. Firewall tentative apply is restart-class by design: it snapshots the previous config, writes the new one, restarts the daemon, and auto-reverts unless the operator confirms before the timer expires.
+Sections map to top-level config keys: `alerts`, `auto_response`, `challenge`, `reputation`, `performance`, `infra_ips`, `sentry`, etc. Writes persist to `csm.yaml`, re-sign the integrity hash, and hot-reload where possible; restart-required changes are queued for `/api/v1/settings/restart`. Invalid field values return 422 and do not touch disk.
+
+Fields marked `file_only` in the schema are shown but refused on write with a 422: anything that names a command, an executable, a file path, a socket or an environment variable the daemon acts on as root can only be changed in `csm.yaml`. Changing `reputation.upstream.url` or `reputation.rspamd.url` also returns 422 unless the same request enters the effective credential for that address again, and is refused outright when the credential comes from an environment variable. A credential entered in the request must match the resulting configuration after `conf.d` merging; an overridden replacement cannot authorize sending the stored credential to another address. Firewall tentative apply is restart-class by design: it snapshots the previous config, writes the new one, restarts the daemon, and auto-reverts unless the operator confirms before the timer expires.
 
 ## Operator preferences
 
@@ -1064,14 +1188,17 @@ prefs encode as empty strings; the UI applies `comfortable`, `local`, and
 Response shape for `GET /api/v1/prefs/views`:
 
 ```json
-[
-  {
-    "name": "Critical SSH",
-    "page": "findings",
-    "params": { "severity": "critical", "check": "smtp_bruteforce" },
-    "updated": 1779743255
-  }
-]
+{
+  "items": [
+    {
+      "name": "Critical SSH",
+      "page": "findings",
+      "params": { "severity": "critical", "check": "smtp_bruteforce" },
+      "updated": "2026-05-25T21:47:35Z"
+    }
+  ],
+  "total": 1
+}
 ```
 
 Saved views are operator-scoped and capped at 200 per operator. The saved
@@ -1080,11 +1207,11 @@ view collection is stored as one 64 KiB preference blob. `page` and
 underscore, hyphen, or dot, up to 64 bytes. Each view has at most 32
 params, and param string values are capped at 256 bytes. `name` must be
 1-80 bytes with no control characters. `PUT` and `DELETE` return
-`{"status":"ok"}` on success.
+`"ok": true` on success.
 
 ## Bulk-action undo
 
-Bulk threat block / whitelist and bulk firewall unblock responses return
+Finding dismissals, bulk threat block / whitelist and bulk firewall unblock responses return
 an `undo_token` when the daemon queues an inverse operation server-side
 for 30 seconds. The UI surfaces a banner with the same TTL; CLI callers
 can act on the token through the endpoints below. Each successful undo
@@ -1110,13 +1237,18 @@ Non-empty response shape for `GET /api/v1/undo/pending`:
 }
 ```
 
-`POST /api/v1/undo/run` returns `{status, action, inverse, count}` on
+`POST /api/v1/undo/run` returns `{ok, action, inverse, count}` on
 success, or `410 Gone` when the entry is missing, already consumed, or
 past its 30-second TTL. Recognised inverse action keys are
 `threat_bulk_unblock`, `threat_bulk_block`, `threat_bulk_unwhitelist`,
-`threat_bulk_whitelist`, and `firewall_bulk_reblock`. Other bulk actions
+`threat_bulk_whitelist`, `firewall_bulk_reblock`, and `finding_undismiss`. Other bulk actions
 (quarantine delete, generic fix) do not surface an undo token because
 they have no clean inverse.
+
+Dismissals accept at most 500 keys per request and deduplicate repeated keys.
+Undo skips findings changed by a later dismissal, successful re-check or baseline
+reset, and `count` reports only the dismissals it actually reversed. Newer scan
+copies remain in the current findings list.
 
 ## Finding fields
 
@@ -1145,12 +1277,14 @@ Fields are omitted when the daemon could not attribute them. Orchestrators shoul
 
 ## Incidents
 
-`GET /api/v1/incidents/groups` is a read-scope rollup of active incidents by kind and source. It accepts `status=active|all|open|contained|resolved|dismissed`, `kind`, and `limit`, allowing a credential spray to render as one row per attacker rather than one row per target.
+`GET /api/v1/incidents/groups` is a read-scope rollup of active incidents by kind and source. It accepts `status=active|all|open|contained|resolved|dismissed`, `kind`, `limit` and `offset`, allowing a credential spray to render as one row per attacker rather than one row per target. `total` counts the groups and `scanned_incidents` the incidents they came from; `truncated` is true when the scan cap left incidents out.
 
 ### `GET /api/v1/incidents`
 
-Returns every incident (open, contained, resolved, dismissed) sorted by
-`updated_at` descending.
+Returns one page of incidents sorted by `updated_at` descending, with
+`items`, `total`, `offset`, `limit` and `status`. `limit` defaults to 50
+and is at most 500. `status` filters by `open`, `contained`, `resolved`,
+`dismissed`, or `active` for open and contained; empty means all.
 
 ### `GET /api/v1/incidents/<id>`
 

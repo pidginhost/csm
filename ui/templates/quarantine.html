@@ -9,7 +9,7 @@
 
     <div class="card">
         <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-lock"></i>&nbsp;Quarantined Files</h3>
+            <h2 class="card-title"><i class="ti ti-lock"></i>&nbsp;Quarantined Files</h2>
         </div>
         <div class="csm-toolbar">
             <input type="text" id="quarantine-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search quarantine..." aria-label="Search quarantine">
@@ -18,6 +18,11 @@
             </select>
             <select id="quarantine-source-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by detector">
                 <option value="">All detectors</option>
+            </select>
+            <select id="quarantine-kind-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by type">
+                <option value="">All types</option>
+                <option value="quarantine">Quarantine</option>
+                <option value="pre_clean">Pre-clean backup</option>
             </select>
             <input type="date" id="quarantine-from" class="form-control form-control-sm csm-toolbar__filter" aria-label="From date">
             <input type="date" id="quarantine-to" class="form-control form-control-sm csm-toolbar__filter" aria-label="To date">
@@ -33,6 +38,6 @@
     </div>
 {{end}}
 {{define "scripts"}}
-<script src="/static/js/quarantine.js"></script>
+<script src="{{asset "js/quarantine.js"}}"></script>
 {{end}}
 {{template "layout" .}}

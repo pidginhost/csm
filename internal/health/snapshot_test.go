@@ -1,6 +1,8 @@
 package health
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -43,5 +45,17 @@ func TestSnapshot_OKWhenAllGreen(t *testing.T) {
 	}
 	if snap.OverallStatus() != "ok" {
 		t.Fatalf("expected ok, got %s", snap.OverallStatus())
+	}
+}
+
+// A duration goes out in seconds under a key that ends in _seconds, like
+// every other duration the API sends.
+func TestAutomationStatusRollbackSecondsKey(t *testing.T) {
+	raw, err := json.Marshal(AutomationStatus{FirewallRollbackPending: true, FirewallRollbackSecondsRemain: 42})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"firewall_rollback_remaining_seconds":42`) {
+		t.Fatalf("got %s", raw)
 	}
 }

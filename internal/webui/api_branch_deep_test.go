@@ -46,14 +46,14 @@ func TestAPIBlockedIPsWithMultipleEntries(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data []map[string]interface{}
-	_ = json.Unmarshal(w.Body.Bytes(), &data)
+	decodeItems(t, w.Body.Bytes(), &data)
 	// Two active entries; the expired one is filtered by formatBlockedView.
 	if len(data) != 2 {
 		t.Errorf("expected 2 active blocked entries, got %d", len(data))
 	}
 }
 
-func TestAPIBlockedIPsEmptyEngineStateReturnsArray(t *testing.T) {
+func TestAPIBlockedIPsEmptyEngineStateReturnsEmptyItems(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
 	_ = store.Global().BlockIP("10.0.0.99", "stale-bucket", time.Now().Add(time.Hour))
 	legacy := `{"ips":[` +
@@ -69,9 +69,7 @@ func TestAPIBlockedIPsEmptyEngineStateReturnsArray(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	if got := strings.TrimSpace(w.Body.String()); got != "[]" {
-		t.Fatalf("body = %s, want []", got)
-	}
+	assertEmptyItems(t, w.Body.Bytes())
 }
 
 // --- apiUnblockIP with bbolt -----------------------------------------

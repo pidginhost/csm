@@ -356,6 +356,27 @@ func TestExtractIPFromFindingExportedCallsInternal(t *testing.T) {
 	}
 }
 
+// The Web UI offers Block on a finding only when the check reports an
+// attacker address, the same evidence auto-block trusts. An address quoted
+// from a log line in any other check may be a victim or a customer.
+func TestManualBlockIPFollowsTheAutoBlockEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		f    alert.Finding
+		want string
+	}{
+		{alert.Finding{Check: "wp_login_bruteforce", Message: "WordPress brute force from 203.0.113.5"}, "203.0.113.5"},
+		{alert.Finding{Check: "api_auth_failure", Message: "cPanel API auth failures from 198.51.100.7"}, "198.51.100.7"},
+		{alert.Finding{Check: "email_php_relay_abuse", SourceIP: "192.0.2.9"}, ""},
+		{alert.Finding{Check: "webshell", Message: "shell uploaded from 203.0.113.6"}, ""},
+		{alert.Finding{Check: "cpanel_login", Message: "cPanel login from 203.0.113.8"}, ""},
+		{alert.Finding{Check: "wp_login_bruteforce", Message: "no address here"}, ""},
+	} {
+		if got := ManualBlockIP(tc.f); got != tc.want {
+			t.Errorf("ManualBlockIP(%s %q) = %q, want %q", tc.f.Check, tc.f.Message, got, tc.want)
+		}
+	}
+}
+
 func TestExtractIPFromFindingColonSeparator(t *testing.T) {
 	f := alert.Finding{Message: "threat: 198.51.100.1"}
 	if got := extractIPFromFinding(f); got != "198.51.100.1" {

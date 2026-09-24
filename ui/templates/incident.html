@@ -28,9 +28,9 @@
     <div id="incidents-panel" role="tabpanel" aria-labelledby="incidents-tab">
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-timeline-event"></i>&nbsp;Correlated Incidents</h3>
+                <h2 class="card-title"><i class="ti ti-timeline-event"></i>&nbsp;Correlated Incidents</h2>
                 <div class="card-actions d-flex gap-2 align-items-center flex-wrap">
-                    <select id="incident-status-filter" class="form-select form-select-sm" aria-label="Status filter">
+                    <select id="incident-status-filter" class="form-select form-select-sm csm-auto-width" aria-label="Status filter">
                         <option value="active">Open + contained</option>
                         <option value="all">All statuses</option>
                         <option value="open">Open</option>
@@ -38,7 +38,7 @@
                         <option value="resolved">Resolved</option>
                         <option value="dismissed">Dismissed</option>
                     </select>
-                    <select id="incident-page-size" class="form-select form-select-sm" aria-label="Page size">
+                    <select id="incident-page-size" class="form-select form-select-sm csm-auto-width" aria-label="Page size">
                         <option value="25">25 / page</option>
                         <option value="50" selected>50 / page</option>
                         <option value="100">100 / page</option>
@@ -50,33 +50,32 @@
                 </div>
             </div>
             <div id="incidents-content"></div>
-            <div id="incidents-pagination" class="card-footer d-none">
-                <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
-                    <div class="text-muted small" id="incidents-page-summary"></div>
-                    <ul class="pagination pagination-sm m-0">
-                        <li class="page-item"><button class="page-link" id="incidents-page-first" type="button" aria-label="First page"><i class="ti ti-chevrons-left"></i></button></li>
-                        <li class="page-item"><button class="page-link" id="incidents-page-prev" type="button" aria-label="Previous page"><i class="ti ti-chevron-left"></i></button></li>
-                        <li class="page-item active"><span class="page-link" id="incidents-page-indicator">1</span></li>
-                        <li class="page-item"><button class="page-link" id="incidents-page-next" type="button" aria-label="Next page"><i class="ti ti-chevron-right"></i></button></li>
-                        <li class="page-item"><button class="page-link" id="incidents-page-last" type="button" aria-label="Last page"><i class="ti ti-chevrons-right"></i></button></li>
-                    </ul>
-                </div>
+            <!-- Sticky bulk-action bar: hidden until an incident is selected -->
+            <div class="csm-sticky-actions" id="incidents-bulk-bar" hidden>
+                <span class="csm-sticky-actions__count"><strong id="incidents-selected-count">0</strong> selected</span>
+                <button type="button" class="btn btn-sm btn-ghost-secondary" data-bulk-status="contained"><i class="ti ti-shield-check"></i>&nbsp;Mark contained</button>
+                <button type="button" class="btn btn-sm btn-ghost-secondary" data-bulk-status="resolved"><i class="ti ti-circle-check"></i>&nbsp;Mark resolved</button>
+                <button type="button" class="btn btn-sm btn-ghost-secondary" data-bulk-status="dismissed"><i class="ti ti-circle-x"></i>&nbsp;Mark dismissed</button>
+                <button type="button" class="btn btn-sm btn-ghost-secondary" id="incidents-bulk-cancel">Cancel</button>
             </div>
+            <div id="incidents-pagination" class="card-footer d-none"></div>
         </div>
     </div>
 
     <div id="grouped-panel" class="d-none" role="tabpanel" aria-labelledby="grouped-tab">
         <div class="card mb-3">
             <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-stack-2"></i>&nbsp;Grouped Incidents</h3>
+                <h2 class="card-title"><i class="ti ti-stack-2"></i>&nbsp;Grouped Incidents</h2>
                 <div class="card-actions d-flex gap-2 align-items-center flex-wrap">
-                    <select id="grouped-status-filter" class="form-select form-select-sm" aria-label="Status filter">
+                    <select id="grouped-status-filter" class="form-select form-select-sm csm-auto-width" aria-label="Status filter">
                         <option value="active">Open + contained</option>
                         <option value="all">All statuses</option>
                         <option value="open">Open</option>
+                        <option value="contained">Contained</option>
                         <option value="resolved">Resolved</option>
+                        <option value="dismissed">Dismissed</option>
                     </select>
-                    <select id="grouped-kind-filter" class="form-select form-select-sm" aria-label="Kind filter">
+                    <select id="grouped-kind-filter" class="form-select form-select-sm csm-auto-width" aria-label="Kind filter">
                         <option value="">All kinds</option>
                         <option value="mailbox_takeover">Mailbox takeover</option>
                         <option value="mailbox_bruteforce">Mailbox brute force</option>
@@ -87,7 +86,7 @@
                         <option value="host_integrity_risk">Host integrity</option>
                         <option value="host_takeover">Host takeover</option>
                     </select>
-                    <select id="grouped-page-size" class="form-select form-select-sm" aria-label="Page size">
+                    <select id="grouped-page-size" class="form-select form-select-sm csm-auto-width" aria-label="Page size">
                         <option value="25">25 / page</option>
                         <option value="50" selected>50 / page</option>
                         <option value="100">100 / page</option>
@@ -98,24 +97,13 @@
                     </button>
                 </div>
             </div>
-            <div class="csm-summary-list" id="grouped-content" aria-live="polite">
+            <div class="csm-summary-list" id="grouped-content">
                 <div class="csm-empty">
                     <div class="csm-empty__icon"><i class="ti ti-loader-2"></i></div>
                     <div class="csm-empty__reason">Loading groups...</div>
                 </div>
             </div>
-            <div id="grouped-pagination" class="card-footer d-none">
-                <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
-                    <div class="text-muted small" id="grouped-page-summary"></div>
-                    <ul class="pagination pagination-sm m-0">
-                        <li class="page-item"><button class="page-link" id="grouped-page-first" type="button" aria-label="First page"><i class="ti ti-chevrons-left"></i></button></li>
-                        <li class="page-item"><button class="page-link" id="grouped-page-prev" type="button" aria-label="Previous page"><i class="ti ti-chevron-left"></i></button></li>
-                        <li class="page-item active"><span class="page-link" id="grouped-page-indicator">1</span></li>
-                        <li class="page-item"><button class="page-link" id="grouped-page-next" type="button" aria-label="Next page"><i class="ti ti-chevron-right"></i></button></li>
-                        <li class="page-item"><button class="page-link" id="grouped-page-last" type="button" aria-label="Last page"><i class="ti ti-chevrons-right"></i></button></li>
-                    </ul>
-                </div>
-            </div>
+            <div id="grouped-pagination" class="card-footer d-none"></div>
             <div class="card-footer text-muted small" id="grouped-footer"></div>
         </div>
     </div>
@@ -123,9 +111,9 @@
     <div id="timeline-panel" class="d-none" role="tabpanel" aria-labelledby="timeline-tab">
     <div class="card mb-3">
         <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-timeline-event"></i>&nbsp;Incident Timeline</h3>
+            <h2 class="card-title"><i class="ti ti-timeline-event"></i>&nbsp;Incident Timeline</h2>
             <div class="card-actions d-flex gap-2 align-items-center flex-wrap">
-                <input type="text" id="incident-query" class="form-control form-control-sm csm-input-lg" placeholder="e.g. 203.0.113.5 or jdoe">
+                <input type="text" id="incident-query" class="form-control form-control-sm csm-input-lg" placeholder="e.g. 203.0.113.5 or jdoe" aria-label="IP address or account to search the timeline for">
                 <div class="btn-group btn-group-sm" role="group" aria-label="Time range">
                     <button type="button" class="btn btn-outline-secondary incident-hours-btn" data-hours="24">24h</button>
                     <button type="button" class="btn btn-outline-secondary incident-hours-btn active" data-hours="72">3d</button>
@@ -151,6 +139,6 @@
     </div>
 {{end}}
 {{define "scripts"}}
-<script src="/static/js/incident.js"></script>
+<script src="{{asset "js/incident.js"}}"></script>
 {{end}}
 {{template "layout" .}}

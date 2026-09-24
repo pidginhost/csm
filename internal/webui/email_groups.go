@@ -2,14 +2,16 @@ package webui
 
 import (
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/store"
 )
 
-// emailGroupsScanCap is the hard upper bound on findings inspected per
+// emailGroupsScanCap is the hard upper bound on matching findings retained per
 // /api/v1/email/groups call. Bounded reads keep the workbench cheap on
 // hosts that store thousands of mail-related findings per day.
 const emailGroupsScanCap = 5000
@@ -23,25 +25,29 @@ const (
 )
 
 type emailGroup struct {
-	Kind           string          `json:"kind"`
-	Severity       int             `json:"severity"`
-	Title          string          `json:"title"`
-	Subject        string          `json:"subject"`
-	Count          int             `json:"count"`
-	FirstSeen      string          `json:"first_seen"`
-	LastSeen       string          `json:"last_seen"`
-	Summary        string          `json:"summary"`
-	SampleFindings []alert.Finding `json:"sample_findings"`
-	IPs            []string        `json:"ips,omitempty"`
-	TopIPs         []string        `json:"top_ips,omitempty"`
-	Domains        []string        `json:"domains,omitempty"`
-	MessageIDs     []string        `json:"message_ids,omitempty"`
+	Kind           string `json:"kind"`
+	Severity       string `json:"severity"`
+	level          alert.Severity
+	Title          string       `json:"title"`
+	Subject        string       `json:"subject"`
+	Count          int          `json:"count"`
+	FirstSeen      time.Time    `json:"first_seen"`
+	LastSeen       time.Time    `json:"last_seen"`
+	Summary        string       `json:"summary"`
+	SampleFindings []apiFinding `json:"sample_findings"`
+	IPs            []string     `json:"ips,omitempty"`
+	TopIPs         []string     `json:"top_ips,omitempty"`
+	Domains        []string     `json:"domains,omitempty"`
+	MessageIDs     []string     `json:"message_ids,omitempty"`
 }
 
 type emailGroupsResponse struct {
-	Groups    []emailGroup `json:"groups"`
-	From      string       `json:"from"`
-	To        string       `json:"to"`
+	Groups    []emailGroup `json:"items"`
+	Total     int          `json:"total"`
+	Offset    int          `json:"offset"`
+	Limit     int          `json:"limit"`
+	From      time.Time    `json:"from"`
+	To        time.Time    `json:"to"`
 	Scanned   int          `json:"scanned"`
 	Truncated bool         `json:"truncated"`
 }
@@ -216,11 +222,11 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 			agg = &aggregator{
 				group: &emailGroup{
 					Kind:      kind,
-					Severity:  int(f.Severity),
+					level:     f.Severity,
 					Title:     emailGroupTitle(kind, f),
 					Subject:   emailGroupSubject(kind, f),
-					FirstSeen: ts.UTC().Format(time.RFC3339),
-					LastSeen:  ts.UTC().Format(time.RFC3339),
+					FirstSeen: ts.UTC(),
+					LastSeen:  ts.UTC(),
 				},
 				ipCounts:  make(map[string]int),
 				domainSet: make(map[string]struct{}),
@@ -230,15 +236,14 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 			order = append(order, key)
 		}
 		agg.group.Count++
-		if int(f.Severity) > agg.group.Severity {
-			agg.group.Severity = int(f.Severity)
+		if f.Severity > agg.group.level {
+			agg.group.level = f.Severity
 		}
-		ftsStr := ts.UTC().Format(time.RFC3339)
-		if ftsStr < agg.group.FirstSeen {
-			agg.group.FirstSeen = ftsStr
+		if ts.Before(agg.group.FirstSeen) {
+			agg.group.FirstSeen = ts.UTC()
 		}
-		if ftsStr > agg.group.LastSeen {
-			agg.group.LastSeen = ftsStr
+		if ts.After(agg.group.LastSeen) {
+			agg.group.LastSeen = ts.UTC()
 		}
 		if f.SourceIP != "" {
 			agg.ipCounts[f.SourceIP]++
@@ -269,7 +274,8 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 			hint = " across " + plural(len(agg.domainSet), "domain")
 		}
 		g.Summary = plural(g.Count, "event") + hint
-		g.SampleFindings = agg.samples
+		g.Severity = g.level.String()
+		g.SampleFindings = toAPIFindings(agg.samples)
 		if len(agg.ipCounts) > 0 {
 			g.IPs = sortedKeys(agg.ipCounts)
 			g.TopIPs = topKeysByCount(agg.ipCounts, 5)
@@ -287,13 +293,13 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Severity != out[j].Severity {
-			return out[i].Severity > out[j].Severity
+		if out[i].level != out[j].level {
+			return out[i].level > out[j].level
 		}
 		if out[i].Count != out[j].Count {
 			return out[i].Count > out[j].Count
 		}
-		return out[i].LastSeen > out[j].LastSeen
+		return out[i].LastSeen.After(out[j].LastSeen)
 	})
 	return out
 }
@@ -374,24 +380,28 @@ func topKeysByCount(m map[string]int, k int) []string {
 	return out
 }
 
-// parseEmailGroupDate accepts RFC3339 or YYYY-MM-DD; returns the default
-// when the input is empty or unparseable. Date-only upper bounds include
-// the whole local day, matching /api/v1/history.
-func parseEmailGroupDate(s string, def time.Time, endOfDay bool) time.Time {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return def
+// historyRangeQuery reads the from and to parameters the history endpoints
+// share, with the meaning store.ParseHistoryBound gives them: to is
+// exclusive. A missing bound takes its default. An unreadable one is a 400,
+// written here, and ok is false.
+func historyRangeQuery(w http.ResponseWriter, q url.Values, defFrom, defTo time.Time) (from, to time.Time, ok bool) {
+	from, err := store.ParseHistoryBound(q.Get("from"), false)
+	if err != nil {
+		writeJSONError(w, "Invalid from: use YYYY-MM-DD or an RFC 3339 time", http.StatusBadRequest)
+		return from, to, false
 	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t
+	to, err = store.ParseHistoryBound(q.Get("to"), true)
+	if err != nil {
+		writeJSONError(w, "Invalid to: use YYYY-MM-DD or an RFC 3339 time", http.StatusBadRequest)
+		return from, to, false
 	}
-	if t, err := time.ParseInLocation("2006-01-02", s, time.Local); err == nil {
-		if endOfDay {
-			return t.Add(24*time.Hour - time.Nanosecond)
-		}
-		return t
+	if from.IsZero() {
+		from = defFrom
 	}
-	return def
+	if to.IsZero() {
+		to = defTo
+	}
+	return from, to, true
 }
 
 // apiEmailGroups handles GET /api/v1/email/groups. Returns server-side
@@ -410,34 +420,63 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	from := parseEmailGroupDate(q.Get("from"), now.Add(-24*time.Hour), false)
-	to := parseEmailGroupDate(q.Get("to"), now, true)
+	from, to, ok := historyRangeQuery(w, q, now.Add(-24*time.Hour), now)
+	if !ok {
+		return
+	}
 	if to.Before(from) {
 		from, to = to, from
 	}
 
+	kindFilter := q.Get("kind")
+	writeJSON(w, s.emailMemo("groups?"+q.Encode(), func() any {
+		return s.buildEmailGroupsResponse(from, to, kindFilter, limit)
+	}))
+}
+
+func (s *Server) buildEmailGroupsResponse(from, to time.Time, kindFilter string, limit int) emailGroupsResponse {
 	var findings []alert.Finding
 	if s.store != nil {
-		findings = s.store.ReadHistorySince(from)
+		// Filter while walking history so unrelated findings, or findings
+		// newer than the requested range, never use up the scan budget.
+		findings = s.store.SearchHistorySince(from, emailGroupsScanCap+1, func(f alert.Finding) bool {
+			if !f.Timestamp.Before(to) {
+				return false
+			}
+			kind := emailKindForCheck(f.Check)
+			return kind != "" && (kindFilter == "" || kind == kindFilter)
+		})
 	}
-	scanned := len(findings)
 	truncated := false
-	if scanned > emailGroupsScanCap {
+	if len(findings) > emailGroupsScanCap {
 		findings = findings[:emailGroupsScanCap]
-		scanned = emailGroupsScanCap
 		truncated = true
 	}
+	scanned := len(findings)
 
-	groups := buildEmailGroups(findings, from, to, q.Get("kind"))
+	groups := buildEmailGroups(findings, from, to, kindFilter)
+	total := len(groups)
 	if len(groups) > limit {
+		truncated = true
 		groups = groups[:limit]
 	}
 
-	writeJSON(w, emailGroupsResponse{
+	return emailGroupsResponse{
 		Groups:    groups,
-		From:      from.UTC().Format(time.RFC3339),
-		To:        to.UTC().Format(time.RFC3339),
+		Total:     total,
+		Limit:     limit,
+		From:      from.UTC(),
+		To:        to.UTC(),
 		Scanned:   scanned,
 		Truncated: truncated,
-	})
+	}
+}
+
+// emailMemo reuses an email workbench result for the same query while
+// history is unchanged; the page polls these every minute.
+func (s *Server) emailMemo(key string, compute func() any) any {
+	if s.store == nil {
+		return compute()
+	}
+	return s.emailMemos.memo(key).get(s.store.HistoryMark(), compute)
 }

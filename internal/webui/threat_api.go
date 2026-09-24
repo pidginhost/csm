@@ -5,16 +5,18 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/threat"
 )
 
-func (s *Server) handleThreat(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "threat.html", map[string]string{
+func (s *Server) handleThreat(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "threat.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
@@ -23,7 +25,7 @@ func (s *Server) handleThreat(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) apiThreatStats(w http.ResponseWriter, r *http.Request) {
 	adb := attackdb.Global()
 	if adb == nil {
-		writeJSON(w, map[string]string{"error": "attack database not initialized"})
+		writeJSONError(w, "attack database not initialized", http.StatusServiceUnavailable)
 		return
 	}
 	writeJSON(w, adb.Stats())
@@ -31,18 +33,22 @@ func (s *Server) apiThreatStats(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/threat/top-attackers?limit=25
 func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
-	adb := attackdb.Global()
-	if adb == nil {
-		writeJSON(w, []struct{}{})
-		return
-	}
-
 	limit := queryInt(r, "limit", 25)
 	if limit > 200 {
 		limit = 200
 	}
+	adb := attackdb.Global()
+	if adb == nil {
+		writeItems(w, []struct{}{}, map[string]interface{}{"offset": 0, "limit": limit, "truncated": false})
+		return
+	}
 
-	recs := adb.TopAttackers(limit)
+	// One record past the limit tells whether the list was cut.
+	recs := adb.TopAttackers(limit + 1)
+	truncated := len(recs) > limit
+	if truncated {
+		recs = recs[:limit]
+	}
 
 	// Enrich with unified intelligence
 	ips := make([]string, len(recs))
@@ -79,7 +85,7 @@ func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, results)
+	writeItems(w, results, map[string]interface{}{"offset": 0, "limit": limit, "truncated": truncated})
 }
 
 // GET /api/v1/threat/ip?ip=1.2.3.4
@@ -106,6 +112,12 @@ func (s *Server) apiThreatIP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, intel)
 }
 
+// threatEventView is an attack event as the API sends it: sev is a label.
+type threatEventView struct {
+	attackdb.Event
+	Severity string `json:"sev"`
+}
+
 // GET /api/v1/threat/events?ip=1.2.3.4&limit=50
 func (s *Server) apiThreatEvents(w http.ResponseWriter, r *http.Request) {
 	ip := r.URL.Query().Get("ip")
@@ -121,15 +133,21 @@ func (s *Server) apiThreatEvents(w http.ResponseWriter, r *http.Request) {
 
 	adb := attackdb.Global()
 	if adb == nil {
-		writeJSON(w, []struct{}{})
+		writeItems(w, []threatEventView{}, map[string]interface{}{"offset": 0, "limit": limit, "truncated": false})
 		return
 	}
 
-	events := adb.QueryEvents(ip, limit)
-	if events == nil {
-		events = []attackdb.Event{}
+	// One event past the limit tells whether older events were left out.
+	events := adb.QueryEvents(ip, limit+1)
+	truncated := len(events) > limit
+	if truncated {
+		events = events[:limit]
 	}
-	writeJSON(w, events)
+	views := make([]threatEventView, len(events))
+	for i, ev := range events {
+		views[i] = threatEventView{Event: ev, Severity: alert.Severity(ev.Severity).String()}
+	}
+	writeItems(w, views, map[string]interface{}{"offset": 0, "limit": limit, "truncated": truncated})
 }
 
 // GET /api/v1/threat/db-stats
@@ -177,47 +195,7 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 	// matched nothing and still answered 200.
 	req.IP = parsedIP.String()
 
-	var actions []string
-
-	var historyErr error
-	if err := checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP, func() {
-		// 1. Unblock from firewall
-		if s.blocker != nil {
-			if err := s.blocker.UnblockIP(req.IP); err == nil {
-				actions = append(actions, "unblocked from firewall")
-			}
-			// Also add to firewall allow list so it doesn't get re-blocked
-			if allower, ok := s.blocker.(interface {
-				AllowIP(string, string) error
-			}); ok {
-				if err := allower.AllowIP(req.IP, "CSM whitelist: customer IP"); err == nil {
-					actions = append(actions, "added to firewall allow list")
-				}
-			}
-		}
-
-		// 2. Remove from threat DB permanent blocklist + add to whitelist
-		if tdb := checks.GetThreatDB(); tdb != nil {
-			tdb.RemovePermanent(req.IP)
-			tdb.AddWhitelist(req.IP)
-			actions = append(actions, "removed from threat DB, added to whitelist")
-		}
-
-		// 3. Remove from attack DB
-		if adb := attackdb.Global(); adb != nil {
-			adb.RemoveIP(req.IP)
-			actions = append(actions, "removed from attack DB")
-		}
-	}); err != nil {
-		// The firewall and database changes above already happened. Finish the
-		// action, including its audit entry, and report the failure after.
-		historyErr = err
-	} else {
-		actions = append(actions, "removed from subnet block history")
-	}
-
-	// 4. Flush cphulk
-	flushCphulk(req.IP)
+	actions, releaseErr := s.releaseIP(req.IP, ipRelease{allow: releaseAllow, reason: "CSM whitelist: customer IP"})
 
 	warning := ""
 	if s.blocker != nil {
@@ -228,29 +206,28 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 		detail += "; " + warning
 	}
 	s.auditLog(r, "whitelist_ip", req.IP, detail)
-	if historyErr != nil {
-		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+historyErr.Error(), http.StatusInternalServerError)
+	if releaseErr != nil {
+		writeJSONError(w, "IP action incomplete: "+releaseErr.Error(), http.StatusInternalServerError)
 		return
 	}
 	resp := map[string]interface{}{
-		"status":  "whitelisted",
 		"ip":      req.IP,
 		"actions": actions,
 	}
 	if warning != "" {
 		resp["warning"] = warning
 	}
-	writeJSON(w, resp)
+	writeOK(w, resp)
 }
 
 // GET /api/v1/threat/whitelist - list all whitelisted IPs
 func (s *Server) apiThreatWhitelist(w http.ResponseWriter, r *http.Request) {
 	tdb := checks.GetThreatDB()
 	if tdb == nil {
-		writeJSON(w, []string{})
+		writeAll(w, []checks.WhitelistIP{})
 		return
 	}
-	writeJSON(w, tdb.WhitelistedIPs())
+	writeAll(w, tdb.WhitelistedIPs())
 }
 
 // POST /api/v1/threat/unwhitelist-ip - remove an IP from the whitelist
@@ -287,18 +264,19 @@ func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) 
 		}
 		tdb.RemoveWhitelist(req.IP)
 	}
-	s.auditLog(r, "unwhitelist_ip", req.IP, "removed from runtime whitelist and firewall allow list")
-
 	// Also remove from firewall allow list
 	if s.blocker != nil {
-		if remover, ok := s.blocker.(interface {
-			RemoveAllowIP(string) error
-		}); ok {
-			_ = remover.RemoveAllowIP(req.IP)
+		if remover, ok := s.blocker.(allowRemover); ok {
+			if err := remover.RemoveAllowIP(req.IP); err != nil {
+				s.auditLog(r, "unwhitelist_ip_failed", req.IP, err.Error())
+				writeJSONError(w, "Remove firewall allow rule: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 	}
 
-	writeJSON(w, map[string]string{"status": "removed", "ip": req.IP})
+	s.auditLog(r, "unwhitelist_ip", req.IP, "removed from runtime whitelist and firewall allow list")
+	writeOK(w, map[string]interface{}{"ip": req.IP})
 }
 
 // manualBlockTTL is the lifetime of the Web UI "Block (24h)" action. The
@@ -403,8 +381,7 @@ func (s *Server) operatorBlockIP(w http.ResponseWriter, r *http.Request, permane
 	} else {
 		s.auditLog(r, "block_ip", req.IP, "manual block 24h")
 	}
-	writeJSON(w, map[string]interface{}{
-		"status":    "blocked",
+	writeOK(w, map[string]interface{}{
 		"ip":        req.IP,
 		"permanent": permanent,
 		"actions":   actions,
@@ -413,6 +390,89 @@ func (s *Server) operatorBlockIP(w http.ResponseWriter, r *http.Request, permane
 
 // POST /api/v1/threat/clear-ip - unblock + clear from all DBs without whitelisting.
 // For dynamic IP customers: one-time cleanup, IP can be re-blocked later.
+// ipRelease says how releaseIP lets an address go. The zero value unblocks
+// and forgets it without allowing it (Unblock & Clear).
+type ipRelease struct {
+	allow  releaseAllowMode
+	ttl    time.Duration // for releaseTempAllow
+	reason string        // firewall allow rule comment
+}
+
+type releaseAllowMode int
+
+const (
+	releaseNoAllow releaseAllowMode = iota
+	releaseAllow
+	releaseTempAllow
+)
+
+// releaseIP is the shared tail of whitelist, temporary whitelist, clear and
+// bulk whitelist: unblock the address in the firewall, allow it as rel says,
+// drop it from the threat database's permanent list (whitelisting it there
+// too when allowed), and forget it in the attack database, all inside the
+// netblock-history lock so the history cleanup is one operator action with
+// the firewall change. cPHulk's login history is flushed after. It returns
+// the steps that took effect and any failed required steps. Other changes
+// may have happened on error, so callers still audit.
+func (s *Server) releaseIP(ip string, rel ipRelease) ([]string, error) {
+	var actions []string
+	var failures []error
+	hours := int(rel.ttl / time.Hour)
+	err := checks.ForgetNetblockHistory(s.cfg.StatePath, ip, func() {
+		if s.blocker != nil {
+			if err := s.blocker.UnblockIP(ip); err == nil {
+				actions = append(actions, "unblocked from firewall")
+			} else {
+				failures = append(failures, fmt.Errorf("unblock firewall: %w", err))
+			}
+			switch rel.allow {
+			case releaseAllow:
+				if allower, ok := s.blocker.(ipAllower); ok {
+					if err := allower.AllowIP(ip, rel.reason); err == nil {
+						actions = append(actions, "added to firewall allow list")
+					} else {
+						failures = append(failures, fmt.Errorf("allow in firewall: %w", err))
+					}
+				}
+			case releaseTempAllow:
+				if allower, ok := s.blocker.(ipTempAllower); ok {
+					if err := allower.TempAllowIP(ip, rel.reason, rel.ttl); err == nil {
+						actions = append(actions, fmt.Sprintf("temp allowed in firewall for %dh", hours))
+					} else {
+						failures = append(failures, fmt.Errorf("temporarily allow in firewall: %w", err))
+					}
+				}
+			}
+		}
+		if tdb := checks.GetThreatDB(); tdb != nil {
+			tdb.RemovePermanent(ip)
+			switch rel.allow {
+			case releaseAllow:
+				tdb.AddWhitelist(ip)
+				actions = append(actions, "removed from threat DB, added to whitelist")
+			case releaseTempAllow:
+				tdb.TempWhitelist(ip, rel.ttl)
+				actions = append(actions, fmt.Sprintf("temp whitelisted for %dh", hours))
+			default:
+				actions = append(actions, "removed from threat DB")
+			}
+		}
+		if adb := attackdb.Global(); adb != nil {
+			adb.RemoveIP(ip)
+			actions = append(actions, "removed from attack DB")
+		}
+	})
+	if err == nil {
+		actions = append(actions, "removed from subnet block history")
+	} else {
+		failures = append(failures, fmt.Errorf("subnet history cleanup failed: %w", err))
+	}
+	if flushCphulk(ip) == nil {
+		actions = append(actions, "flushed cPanel login history")
+	}
+	return actions, errors.Join(failures...)
+}
+
 func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 	s.threatActionMu.Lock()
 	defer s.threatActionMu.Unlock()
@@ -439,47 +499,14 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 	// matched nothing and still answered 200.
 	req.IP = parsedIP.String()
 
-	var actions []string
-
-	var historyErr error
-	if err := checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP, func() {
-		// 1. Unblock from firewall (but don't add to allow list)
-		if s.blocker != nil {
-			if err := s.blocker.UnblockIP(req.IP); err == nil {
-				actions = append(actions, "unblocked from firewall")
-			}
-		}
-
-		// 2. Remove from threat DB permanent blocklist (but don't whitelist)
-		if tdb := checks.GetThreatDB(); tdb != nil {
-			tdb.RemovePermanent(req.IP)
-			actions = append(actions, "removed from threat DB")
-		}
-
-		// 3. Remove from attack DB
-		if adb := attackdb.Global(); adb != nil {
-			adb.RemoveIP(req.IP)
-			actions = append(actions, "removed from attack DB")
-		}
-	}); err != nil {
-		// The firewall and database changes above already happened. Finish the
-		// action, including its audit entry, and report the failure after.
-		historyErr = err
-	} else {
-		actions = append(actions, "removed from subnet block history")
-	}
-
-	// 4. Flush cphulk
-	flushCphulk(req.IP)
-	actions = append(actions, "flushed cPanel login history")
+	actions, releaseErr := s.releaseIP(req.IP, ipRelease{})
 
 	s.auditLog(r, "clear_ip", req.IP, "unblock & clear")
-	if historyErr != nil {
-		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+historyErr.Error(), http.StatusInternalServerError)
+	if releaseErr != nil {
+		writeJSONError(w, "IP action incomplete: "+releaseErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]interface{}{
-		"status":  "cleared",
+	writeOK(w, map[string]interface{}{
 		"ip":      req.IP,
 		"actions": actions,
 	})
@@ -520,58 +547,17 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 	}
 
 	ttl := time.Duration(req.Hours) * time.Hour
-	var actions []string
-
-	var historyErr error
-	if err := checks.ForgetNetblockHistory(s.cfg.StatePath, req.IP, func() {
-		// 1. Unblock from firewall
-		if s.blocker != nil {
-			if err := s.blocker.UnblockIP(req.IP); err == nil {
-				actions = append(actions, "unblocked from firewall")
-			}
-			// Temp allow in firewall too
-			if allower, ok := s.blocker.(interface {
-				TempAllowIP(string, string, time.Duration) error
-			}); ok {
-				if err := allower.TempAllowIP(req.IP, "CSM temp whitelist", ttl); err == nil {
-					actions = append(actions, fmt.Sprintf("temp allowed in firewall for %dh", req.Hours))
-				}
-			}
-		}
-
-		// 2. Remove from threat DB + temp whitelist
-		if tdb := checks.GetThreatDB(); tdb != nil {
-			tdb.RemovePermanent(req.IP)
-			tdb.TempWhitelist(req.IP, ttl)
-			actions = append(actions, fmt.Sprintf("temp whitelisted for %dh", req.Hours))
-		}
-
-		// 3. Remove from attack DB
-		if adb := attackdb.Global(); adb != nil {
-			adb.RemoveIP(req.IP)
-			actions = append(actions, "removed from attack DB")
-		}
-	}); err != nil {
-		// The firewall and database changes above already happened. Finish the
-		// action, including its audit entry, and report the failure after.
-		historyErr = err
-	} else {
-		actions = append(actions, "removed from subnet block history")
-	}
-
-	// 4. Flush cphulk
-	flushCphulk(req.IP)
+	actions, releaseErr := s.releaseIP(req.IP, ipRelease{allow: releaseTempAllow, ttl: ttl, reason: "CSM temp whitelist"})
 
 	s.auditLog(r, "temp_whitelist_ip", req.IP, fmt.Sprintf("%dh temp whitelist", req.Hours))
-	if historyErr != nil {
-		writeJSONError(w, "IP action applied, but subnet history cleanup failed: "+historyErr.Error(), http.StatusInternalServerError)
+	if releaseErr != nil {
+		writeJSONError(w, "IP action incomplete: "+releaseErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]interface{}{
-		"status":  "temp_whitelisted",
-		"ip":      req.IP,
-		"hours":   req.Hours,
-		"actions": actions,
+	writeOK(w, map[string]interface{}{
+		"ip":               req.IP,
+		"duration_seconds": ttl.Seconds(),
+		"actions":          actions,
 	})
 }
 
@@ -631,6 +617,7 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 	for _, ipStr := range req.IPs {
 		parsedIP, err := parseAndValidateIP(ipStr)
 		if err != nil {
+			warnings = append(warnings, ipStr+": "+err.Error())
 			continue
 		}
 		ipStr = parsedIP.String()
@@ -678,36 +665,19 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 			// Capture the live threat row before dropping it so an undo can
 			// restore it exactly, preserving source/expiry, instead of
 			// leaving a whitelisted attacker with no threat record.
-			if row, ok := captureUndoThreatRow(ipStr, false); ok {
-				removedThreats = append(removedThreats, row)
-			}
-			// Serialize the firewall mutation and history cleanup as one operator action.
-			if err := checks.ForgetNetblockHistory(s.cfg.StatePath, ipStr, func() {
-				// Mirror apiThreatWhitelistIP flow
-				if s.blocker != nil {
-					_ = s.blocker.UnblockIP(ipStr)
-					if allower, ok := s.blocker.(interface {
-						AllowIP(string, string) error
-					}); ok {
-						_ = allower.AllowIP(ipStr, "CSM bulk whitelist")
-					}
-					if warning := coveringSubnetWarning(s.blocker, ipStr); warning != "" {
-						warnings = append(warnings, ipStr+": "+warning)
-					}
-				}
-				if tdb := checks.GetThreatDB(); tdb != nil {
-					tdb.RemovePermanent(ipStr)
-					tdb.AddWhitelist(ipStr)
-				}
-				if adb := attackdb.Global(); adb != nil {
-					adb.RemoveIP(ipStr)
-				}
-			}); err != nil {
-				warnings = append(warnings, ipStr+": subnet history cleanup failed: "+err.Error())
+			row, hadThreat := captureUndoThreatRow(ipStr, false)
+			if _, err := s.releaseIP(ipStr, ipRelease{allow: releaseAllow, reason: "CSM bulk whitelist"}); err != nil {
+				warnings = append(warnings, ipStr+": "+err.Error())
 				continue
 			}
-
-			flushCphulk(ipStr)
+			if hadThreat {
+				removedThreats = append(removedThreats, row)
+			}
+			if s.blocker != nil {
+				if warning := coveringSubnetWarning(s.blocker, ipStr); warning != "" {
+					warnings = append(warnings, ipStr+": "+warning)
+				}
+			}
 			succeeded = append(succeeded, ipStr)
 			count++
 		}
@@ -719,7 +689,9 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 		if permanent {
 			auditDetail = "permanent block"
 		}
+		auditDetail += ": "
 	}
+	auditDetail += strings.Join(succeeded, ", ")
 	s.auditLog(r, "threat_bulk_"+req.Action, fmt.Sprintf("%d IPs", count), auditDetail)
 
 	var undoToken string
@@ -740,13 +712,28 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 			undoPayloadIPs{IPs: succeeded, RestoreThreats: removedThreats, BlockSnapshot: blockAction, RestoreBlocks: priorBlocks, ExpectedBlocks: expectedBlocks})
 	}
 
-	writeJSON(w, map[string]interface{}{
-		"ok":         true,
-		"count":      count,
-		"permanent":  permanent,
-		"undo_token": undoToken,
-		"warnings":   warnings,
-	})
+	if warnings == nil {
+		warnings = []string{}
+	}
+	fields := map[string]interface{}{
+		"count":     count,
+		"permanent": permanent,
+		"warnings":  warnings,
+	}
+	if count == 0 {
+		// No address completed: an error, with each address's reason.
+		msg := "No address action completed"
+		if len(warnings) > 0 {
+			msg += ": " + strings.Join(warnings, "; ")
+		}
+		fields["error"] = msg
+		writeJSONStatus(w, http.StatusUnprocessableEntity, fields)
+		return
+	}
+	if undoToken != "" {
+		fields["undo_token"] = undoToken
+	}
+	writeOK(w, fields)
 }
 
 // writeJSON is defined in api.go

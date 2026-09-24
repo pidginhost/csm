@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -17,9 +16,9 @@ type SeverityBucket struct {
 	Total    int `json:"total"`
 }
 
-// HourBucket is a SeverityBucket keyed by hour label.
+// HourBucket is a SeverityBucket for the hour that begins at Start.
 type HourBucket struct {
-	Hour string `json:"hour"`
+	Start time.Time `json:"start"`
 	SeverityBucket
 }
 
@@ -90,7 +89,7 @@ func (db *DB) AggregateByHour() []HourBucket {
 		hoursAgo := 23 - i
 		t := currentHour.Add(-time.Duration(hoursAgo) * time.Hour)
 		result[i] = HourBucket{
-			Hour:           fmt.Sprintf("%02d:00", t.Hour()),
+			Start:          t,
 			SeverityBucket: *counts[hoursAgo],
 		}
 	}

@@ -1,9 +1,13 @@
 // CSM Rules page
 
+(function() {
+
 var fmtSize = CSM.formatSize;
 
 function loadStatus() {
+    var stats = document.getElementById('stat-yaml').closest('.row');
     CSM.get('/api/v1/rules/status').then(function(data) {
+        CSM.clearLoadError(stats);
         document.getElementById('stat-yaml').textContent = data.yaml_rules || 0;
         document.getElementById('stat-yara').textContent = data.yara_available ? (data.yara_rules || 0) : 'N/A';
         if (!data.yara_available) {
@@ -14,11 +18,12 @@ function loadStatus() {
         if (data.rules_dir) {
             document.getElementById('rules-dir').textContent = 'Rules directory: ' + data.rules_dir;
         }
-    }).catch(function() { CSM.loadError(document.getElementById('stat-yaml').closest('.card') || document.getElementById('stat-yaml').parentElement, loadStatus); });
+    }).catch(function(err) { CSM.loadError(stats, loadStatus, { title: 'Failed to load rule status', error: err }); });
 }
 
 function loadFiles() {
-    CSM.get('/api/v1/rules/list').then(function(data) {
+    CSM.get('/api/v1/rules/list').then(function(resp) {
+        var data = resp.items;
         var tbody = document.getElementById('rules-tbody');
         if (!data || data.length === 0) {
             tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No rule files found</td></tr>';
@@ -54,7 +59,7 @@ function loadFiles() {
                 reason: 'Try clearing the search or type filter.'
             }
         });
-    }).catch(function() { CSM.loadError(document.getElementById('rules-tbody').parentElement.parentElement.parentElement, loadFiles); });
+    }).catch(function(err) { CSM.loadError(document.getElementById('rules-tbody'), loadFiles, { title: 'Failed to load rule files', error: err }); });
 }
 
 document.getElementById('btn-reload').addEventListener('click', function() {
@@ -75,7 +80,7 @@ document.getElementById('btn-reload').addEventListener('click', function() {
         }).catch(function(e) {
             btn.disabled = false;
             btn.innerHTML = '<i class="ti ti-refresh"></i>&nbsp;Reload Rules';
-            CSM.toast('Reload failed: ' + e, 'error');
+            CSM.toast('Reload failed: ' + CSM.errorText(e), 'error');
         });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 });
@@ -84,23 +89,20 @@ document.getElementById('btn-test-alert').addEventListener('click', function() {
     var btn = this;
     btn.disabled = true;
     btn.innerHTML = '<i class="ti ti-loader"></i>&nbsp;Sending...';
-    CSM.post('/api/v1/test-alert', {}).then(function(data) {
+    CSM.post('/api/v1/test-alert', {}).then(function() {
         btn.disabled = false;
         btn.innerHTML = '<i class="ti ti-bell-ringing"></i>&nbsp;Send Test Alert';
-        if (data.status === 'sent') {
-            CSM.toast('Test alert sent successfully', 'success');
-        } else {
-            CSM.toast('Failed: ' + (data.error || 'unknown error'), 'error');
-        }
+        CSM.toast('Test alert sent successfully', 'success');
     }).catch(function(e) {
         btn.disabled = false;
         btn.innerHTML = '<i class="ti ti-bell-ringing"></i>&nbsp;Send Test Alert';
-        CSM.toast('Error: ' + e, 'error');
+        CSM.toast(CSM.errorText(e), 'error');
     });
 });
 
 function loadSuppressions() {
-    CSM.get('/api/v1/suppressions').then(function(data) {
+    CSM.get('/api/v1/suppressions').then(function(resp) {
+        var data = resp.items;
         var container = document.getElementById('suppressions-content');
         if (!data || data.length === 0) {
             container.innerHTML = '<div class="card-body text-center text-muted py-4">No suppression rules configured.</div>';
@@ -116,7 +118,7 @@ function loadSuppressions() {
             html += '<td class="font-monospace small">' + CSM.esc(s.path_pattern || '(all)') + '</td>';
             html += '<td class="text-muted">' + CSM.esc(s.reason || '') + '</td>';
             html += '<td class="text-nowrap small">' + CSM.esc(created) + '</td>';
-            html += '<td><button class="btn btn-ghost-danger btn-sm delete-suppression-btn" data-id="' + CSM.esc(s.id) + '"><i class="ti ti-trash"></i></button></td>';
+            html += '<td><button class="btn btn-ghost-danger btn-sm delete-suppression-btn" data-id="' + CSM.esc(s.id) + '" aria-label="Delete the ' + CSM.attr(s.check) + ' suppression rule" title="Delete rule"><i class="ti ti-trash" aria-hidden="true"></i></button></td>';
             html += '</tr>';
         }
         html += '</tbody></table></div>';
@@ -127,14 +129,10 @@ function loadSuppressions() {
             btn.addEventListener('click', function() {
                 var id = this.getAttribute('data-id');
                 CSM.confirm('Remove this suppression rule?').then(function() {
-                    CSM.delete('/api/v1/suppressions', {id: id}).then(function(data) {
-                        if (data.status === 'deleted') {
-                            CSM.toast('Suppression rule removed', 'success');
-                            loadSuppressions();
-                        } else {
-                            CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
-                        }
-                    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+                    CSM.delete('/api/v1/suppressions', {id: id}).then(function() {
+                        CSM.toast('Suppression rule removed', 'success');
+                        loadSuppressions();
+                    }).catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });
                 }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
             });
         });
@@ -178,10 +176,13 @@ if (importFile) {
             try {
                 var data = JSON.parse(e.target.result);
                 CSM.post('/api/v1/import', data).then(function(result) {
-                    CSM.toast('Import complete: ' + (result.summary || 'done'), 'success');
+                    var msg = 'Import complete: ' + (result.imported || 0) + ' imported';
+                    if (result.skipped) msg += ', ' + result.skipped + ' skipped';
+                    CSM.toast(msg, result.skipped ? 'warning' : 'success');
+                    if (result.warning) CSM.toast(result.warning, 'warning');
                     loadSuppressions();
                 }).catch(function(err) {
-                    CSM.toast('Import failed: ' + err, 'error');
+                    CSM.toast('Import failed: ' + CSM.errorText(err), 'error');
                 }).finally(restore);
             } catch(ex) {
                 CSM.toast('Invalid JSON file', 'error');
@@ -204,28 +205,31 @@ document.getElementById('suppression-form').addEventListener('submit', function(
     e.preventDefault();
     var check = document.getElementById('suppress-check').value.trim();
     if (!check) return;
-    var pathPattern = document.getElementById('suppress-path').value.trim();
-    var reason = document.getElementById('suppress-reason').value.trim();
-    CSM.post('/api/v1/suppressions', {
-        check: check,
-        path_pattern: pathPattern,
-        reason: reason || 'Created from Rules page'
-    }).then(function(data) {
-        if (data.status === 'created') {
-            CSM.toast('Suppression rule created', 'success');
-            document.getElementById('suppress-check').value = '';
-            document.getElementById('suppress-path').value = '';
-            document.getElementById('suppress-reason').value = '';
-            loadSuppressions();
-        } else {
-            CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
-        }
-    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+    var allPaths = document.getElementById('suppress-all-paths');
+    var body = CSM.suppressionRequest(check, allPaths.checked ? 'all' : 'path',
+        document.getElementById('suppress-path').value,
+        document.getElementById('suppress-reason').value,
+        'Created from Rules page');
+    if (body.error) {
+        CSM.toast(body.error, 'error');
+        return;
+    }
+    CSM.post('/api/v1/suppressions', body).then(function(resp) {
+        CSM.suppressionSaved(resp);
+        document.getElementById('suppress-check').value = '';
+        document.getElementById('suppress-path').value = '';
+        document.getElementById('suppress-reason').value = '';
+        allPaths.checked = false;
+        loadSuppressions();
+    }).catch(function(err) {
+        CSM.toast('Suppression not saved: ' + (err && err.message ? err.message : 'request failed'), 'error');
+    });
 });
 
 // Populate check-type datalist from active findings
 function loadCheckTypes() {
-    CSM.get('/api/v1/findings', { silent: true }).then(function(findings) {
+    CSM.get('/api/v1/findings', { silent: true }).then(function(data) {
+        var findings = data.items;
         var types = {};
         for (var i = 0; i < findings.length; i++) {
             if (findings[i].check) types[findings[i].check] = true;
@@ -241,94 +245,14 @@ function loadCheckTypes() {
     }).catch(function(err) { console.error('loadCheckTypes:', err); });
 }
 
-// --- ModSecurity escalation exclusions ---
-var _modsecRules = [];
-
-function loadModSecEscalation() {
-    CSM.get('/api/v1/rules/modsec-escalation', { silent: true })
-        .then(function(data) {
-            _modsecRules = data.rules || [];
-            renderModSecEscalation();
-        })
-        .catch(function(err) { console.error('loadModSecEscalation:', err); });
-}
-
-function renderModSecEscalation() {
-    var container = document.getElementById('modsec-escalation-list');
-    if (!container) return;
-    if (_modsecRules.length === 0) {
-        container.innerHTML = '<div class="text-muted small">No rules excluded - all CSM rules (900000-900999) will escalate to firewall blocks.</div>';
-        return;
-    }
-    var html = '<table class="table table-sm table-vcenter"><thead><tr><th>Rule ID</th><th>Action</th></tr></thead><tbody>';
-    _modsecRules.sort();
-    for (var i = 0; i < _modsecRules.length; i++) {
-        html += '<tr><td><code>' + _modsecRules[i] + '</code></td>' +
-            '<td><button class="btn btn-ghost-danger btn-sm modsec-remove-btn" data-id="' + _modsecRules[i] + '"><i class="ti ti-trash"></i></button></td></tr>';
-    }
-    html += '</tbody></table>';
-    container.innerHTML = html;
-
-    container.querySelectorAll('.modsec-remove-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-            if (btn.disabled) return;
-            var id = parseInt(this.getAttribute('data-id'), 10);
-            var previousRules = _modsecRules.slice();
-            btn.disabled = true;
-            CSM.confirm('Stop excluding rule ' + id + '?\n\nMatching requests will again escalate to a firewall block.').then(function() {
-                _modsecRules = _modsecRules.filter(function(r) { return r !== id; });
-                return saveModSecEscalation().then(function(ok) {
-                    if (!ok) _modsecRules = previousRules;
-                });
-            }).catch(function(err) {
-                if (err) CSM.toast(err.message || 'Request failed', 'error');
-            }).finally(function() {
-                if (document.body.contains(btn)) btn.disabled = false;
-            });
-        });
-    });
-}
-
-function saveModSecEscalation() {
-    return CSM.post('/api/v1/rules/modsec-escalation', {rules: _modsecRules}).then(function(data) {
-        if (data.ok) {
-            CSM.toast('ModSecurity escalation rules updated', 'success');
-            renderModSecEscalation();
-            return true;
-        }
-        CSM.toast('Error: ' + (data.error || 'Save failed'), 'error');
-        return false;
-    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); return false; });
-}
-
-var modsecForm = document.getElementById('modsec-escalation-form');
-if (modsecForm) {
-    modsecForm.addEventListener('submit', function(e) {
-        e.preventDefault();
-        var input = document.getElementById('modsec-rule-id');
-        var id = parseInt(input.value, 10);
-        if (isNaN(id) || id < 900000 || id > 900999) {
-            CSM.toast('Rule ID must be between 900000 and 900999', 'warning');
-            return;
-        }
-        if (_modsecRules.indexOf(id) >= 0) {
-            CSM.toast('Rule ' + id + ' is already excluded', 'warning');
-            return;
-        }
-        var previousRules = _modsecRules.slice();
-        _modsecRules.push(id);
-        input.value = '';
-        saveModSecEscalation().then(function(ok) {
-            if (!ok) {
-                _modsecRules = previousRules;
-                if (input.value === '') input.value = String(id);
-            }
-        });
-    });
-}
-
 loadStatus();
 loadFiles();
 loadSuppressions();
 loadCheckTypes();
-loadModSecEscalation();
+if (CSM.refresh) CSM.refresh.onRefresh(function() {
+    loadStatus();
+    loadFiles();
+    loadSuppressions();
+});
+
+})();

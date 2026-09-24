@@ -52,17 +52,15 @@ func TestFirewallBlockedSelectAllSkipsHiddenRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(js)
-	start := strings.Index(text, "function visibleBlockedCheckboxes(")
-	if start < 0 {
-		t.Fatal("firewall.js missing visibleBlockedCheckboxes helper")
+	// The blocked table selects through the shared bulk helper, which counts
+	// only checkboxes the operator can see; ui/selection_test.js hides a row
+	// with the lifetime filter and selects all.
+	if !strings.Contains(text, "rowCheckboxSelector: '#blocked-table .fw-blocked-cb',") ||
+		!strings.Contains(text, "selectAllSelector: '#select-all-blocked',") {
+		t.Fatal("firewall.js blocked selection does not use the shared bulk helper")
 	}
-	end := strings.Index(text[start:], "\n}")
-	if end < 0 {
-		t.Fatal("visibleBlockedCheckboxes helper not terminated")
-	}
-	fn := text[start : start+end]
-	if !strings.Contains(fn, `row.style.display === 'none'`) || !strings.Contains(fn, "return") {
-		t.Fatal("firewall.js select-all must skip rows hidden by table filters/pagination")
+	if !strings.Contains(readUIScript(t, "csm-ui.js"), "return cb.offsetParent !== null;") {
+		t.Fatal("the shared bulk helper must skip rows hidden by table filters/pagination")
 	}
 }
 
@@ -76,12 +74,16 @@ func TestFirewallBlockedSelectionSyncsAfterTableRender(t *testing.T) {
 	}
 	text := string(js)
 	buttonFn := firewallJSFunction(t, text, "function updateBlockedBulkButton(")
+	if !strings.Contains(buttonFn, "blockedBulk().refresh();") {
+		t.Error("firewall.js blocked selection does not repaint through the shared bulk helper")
+	}
+	shared := readUIScript(t, "csm-ui.js")
 	for _, want := range []string{
 		"selectAll.indeterminate",
 		"selectAll.checked",
 	} {
-		if !strings.Contains(buttonFn, want) {
-			t.Errorf("firewall.js missing blocked-selection sync %q", want)
+		if !strings.Contains(shared, want) {
+			t.Errorf("csm-ui.js missing selection sync %q", want)
 		}
 	}
 	tableStart := strings.Index(text, "_fwTables.blocked = new CSM.Table({")
@@ -191,14 +193,14 @@ func TestFirewallUnbanEverywhereSurfacesBackendFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	fn := firewallJSFunction(t, string(js), "function unbanEverywhere(")
-	failureCheck := strings.Index(fn, "if (data && data.success === false)")
-	errorToast := strings.Index(fn, "CSM.toast('Error: ' + (data.error_msg || 'Unban failed'), 'error');")
-	failureReturn := strings.Index(fn, "return;")
+	// A failed unban is an error status: CSM.post rejects, so the success
+	// toast in then() never runs and the catch shows the server's message.
 	successToast := strings.Index(fn, "CSM.toast(msg, 'success');")
-	if failureCheck < 0 || errorToast < failureCheck {
-		t.Fatal("unbanEverywhere must surface the backend error_msg when success is false")
+	errorToast := strings.Index(fn, ".catch(function(e) { CSM.toast(CSM.errorText(e), 'error'); });")
+	if successToast < 0 || errorToast < successToast {
+		t.Fatal("unbanEverywhere must surface a failed unban from the error status")
 	}
-	if failureReturn < errorToast || successToast < failureReturn {
-		t.Fatal("unbanEverywhere must stop before reporting a failed unban as successful")
+	if strings.Contains(fn, "success === false") {
+		t.Error("unbanEverywhere still reads a success flag the server no longer sends on failure")
 	}
 }

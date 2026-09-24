@@ -25,8 +25,8 @@ import (
 // Seeds perf_ findings and verifies they are returned and sorted by severity.
 func TestAPIPerformanceReturnsPerfFindings(t *testing.T) {
 	s := newTestServer(t, "tok")
-	m := &perfMetrics{CPUCores: 2, Uptime: "5d 1h"}
-	s.perfSnapshot.Store(m)
+	m := &perfMetrics{CPUCores: 2, UptimeSeconds: 5*86400 + 3600}
+	s.storePerfSample(m, time.Now())
 
 	now := time.Now()
 	s.store.SetLatestFindings([]alert.Finding{
@@ -443,7 +443,7 @@ func TestAPIEmailQuarantineActionTraversalSanitized(t *testing.T) {
 }
 
 // =========================================================================
-// rules_api.go — apiRulesList error + apiModSecEscalation GET/POST branches
+// rules_api.go — apiRulesList error branches
 // =========================================================================
 
 // apiRulesList returns 500 when the directory path is a file (read error).
@@ -471,95 +471,6 @@ func TestAPIRulesReloadMethodNotAllowed(t *testing.T) {
 	s.apiRulesReload(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET reload = %d, want 405", w.Code)
-	}
-}
-
-// apiModSecEscalation GET returns empty rules list when no store.
-func TestAPIModSecEscalationGETNoStore(t *testing.T) {
-	s := newTestServer(t, "tok")
-	store.SetGlobal(nil)
-
-	w := httptest.NewRecorder()
-	s.apiModSecEscalation(w, httptest.NewRequest("GET", "/", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
-	}
-	var resp map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("json: %v", err)
-	}
-	rules, _ := resp["rules"].([]interface{})
-	if rules == nil {
-		t.Error("rules should be [] not nil")
-	}
-	if len(rules) != 0 {
-		t.Errorf("rules len = %d, want 0", len(rules))
-	}
-}
-
-// apiModSecEscalation POST with valid rules list (bbolt store).
-func TestAPIModSecEscalationPOSTSavesRules(t *testing.T) {
-	s := newTestServerWithBbolt(t, "tok")
-
-	body := `{"rules":[900001,900002,900003]}`
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	s.apiModSecEscalation(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
-	var resp map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("json: %v", err)
-	}
-	if resp["ok"] != true {
-		t.Errorf("ok = %v", resp["ok"])
-	}
-	if resp["count"].(float64) != 3 {
-		t.Errorf("count = %v, want 3", resp["count"])
-	}
-
-	// Subsequent GET should return the 3 rules.
-	w2 := httptest.NewRecorder()
-	s.apiModSecEscalation(w2, httptest.NewRequest("GET", "/", nil))
-	if w2.Code != http.StatusOK {
-		t.Fatalf("GET status = %d", w2.Code)
-	}
-	var got map[string]interface{}
-	if err := json.Unmarshal(w2.Body.Bytes(), &got); err != nil {
-		t.Fatalf("GET json: %v", err)
-	}
-	rules, _ := got["rules"].([]interface{})
-	if len(rules) != 3 {
-		t.Errorf("GET rules len = %d, want 3", len(rules))
-	}
-}
-
-// apiModSecEscalation POST with no store returns 500.
-func TestAPIModSecEscalationPOSTNoStore(t *testing.T) {
-	s := newTestServer(t, "tok")
-	store.SetGlobal(nil)
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"rules":[900001]}`))
-	req.Header.Set("Content-Type", "application/json")
-	s.apiModSecEscalation(w, req)
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want 500", w.Code)
-	}
-}
-
-// apiModSecEscalation POST with malformed JSON.
-func TestAPIModSecEscalationPOSTBadJSON(t *testing.T) {
-	s := newTestServerWithBbolt(t, "tok")
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/", strings.NewReader(`{bad`))
-	req.Header.Set("Content-Type", "application/json")
-	s.apiModSecEscalation(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", w.Code)
 	}
 }
 
@@ -660,7 +571,7 @@ func TestAPIIncidentIncludesAuditActions(t *testing.T) {
 		Events []struct {
 			Type   string `json:"type"`
 			Source string `json:"source"`
-		} `json:"events"`
+		} `json:"items"`
 		Total int `json:"total"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
@@ -744,8 +655,8 @@ func TestAPIThreatClearIPNoBlocker(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["status"] != "cleared" {
-		t.Errorf("status = %v, want cleared", resp["status"])
+	if resp["ok"] != true {
+		t.Errorf("ok = %v, want true", resp["ok"])
 	}
 }
 
@@ -761,8 +672,8 @@ func TestAPIThreatTempWhitelistIPClampsHours(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["hours"].(float64) != 168 {
-		t.Errorf("hours = %v, want 168 (clamped)", resp["hours"])
+	if resp["duration_seconds"].(float64) != 168*3600 {
+		t.Errorf("duration_seconds = %v, want %d", resp["duration_seconds"], 168*3600)
 	}
 }
 
@@ -778,8 +689,8 @@ func TestAPIThreatTempWhitelistIPDefaultsHours(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["hours"].(float64) != 24 {
-		t.Errorf("hours = %v, want 24 (default)", resp["hours"])
+	if resp["duration_seconds"].(float64) != 24*3600 {
+		t.Errorf("duration_seconds = %v, want %d", resp["duration_seconds"], 24*3600)
 	}
 }
 

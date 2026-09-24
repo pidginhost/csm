@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/redisinfo"
@@ -40,12 +41,12 @@ type perfMetrics struct {
 	// not read the server's process status or the mysql client failed (no /root/.my.cnf,
 	// no socket auth, mysqld absent). The webui renders "n/a" in that case
 	// so operators can tell "MySQL is idle" from "we couldn't ask".
-	MySQLMemMB *uint64 `json:"mysql_mem_mb"`
-	MySQLConns *int    `json:"mysql_conns"`
-	RedisMemMB uint64  `json:"redis_mem_mb"`
-	RedisMaxMB uint64  `json:"redis_maxmem_mb"`
-	RedisKeys  int64   `json:"redis_keys"`
-	Uptime     string  `json:"uptime"`
+	MySQLMemMB    *uint64 `json:"mysql_mem_mb"`
+	MySQLConns    *int    `json:"mysql_conns"`
+	RedisMemMB    uint64  `json:"redis_mem_mb"`
+	RedisMaxMB    uint64  `json:"redis_maxmem_mb"`
+	RedisKeys     int64   `json:"redis_keys"`
+	UptimeSeconds int64   `json:"uptime_seconds"`
 }
 
 type userProcs struct {
@@ -54,14 +55,14 @@ type userProcs struct {
 }
 
 type perfFindingView struct {
-	Severity  int    `json:"severity"`
-	SevClass  string `json:"sev_class"`
-	Check     string `json:"check"`
-	Message   string `json:"message"`
-	Details   string `json:"details,omitempty"`
-	Key       string `json:"key"`
-	FirstSeen string `json:"first_seen"`
-	LastSeen  string `json:"last_seen"`
+	Severity  string `json:"severity"`
+	level     alert.Severity
+	Check     string    `json:"check"`
+	Message   string    `json:"message"`
+	Details   string    `json:"details,omitempty"`
+	Key       string    `json:"key"`
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
 }
 
 // --- Cached values ---
@@ -371,10 +372,7 @@ func sampleMetrics() *perfMetrics {
 			fields := strings.Fields(string(data))
 			if len(fields) >= 1 {
 				secs, _ := strconv.ParseFloat(fields[0], 64)
-				d := time.Duration(secs) * time.Second
-				days := int(d.Hours()) / 24
-				hours := int(d.Hours()) % 24
-				m.Uptime = fmt.Sprintf("%dd %dh", days, hours)
+				m.UptimeSeconds = int64(secs)
 			}
 		}
 	}
@@ -382,22 +380,47 @@ func sampleMetrics() *perfMetrics {
 	return m
 }
 
-// sampleMetricsLoop samples metrics immediately and then every 10 seconds.
-func (s *Server) sampleMetricsLoop(ctx context.Context) {
-	result := sampleMetrics()
-	s.perfSnapshot.Store(result)
+// perfSampleTTL is how long a metrics sample is served before the next
+// request takes a new one. Var so tests can force a fresh sample.
+var perfSampleTTL = 10 * time.Second
 
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			result := sampleMetrics()
-			s.perfSnapshot.Store(result)
-		}
+// perfSample is one metrics sample and when it was taken.
+type perfSample struct {
+	metrics *perfMetrics
+	at      time.Time
+}
+
+func (s *Server) storePerfSample(m *perfMetrics, at time.Time) {
+	s.perfSample.Store(&perfSample{metrics: m, at: at})
+}
+
+func (s *Server) freshPerfSample() (*perfMetrics, bool) {
+	p := s.perfSample.Load()
+	if p == nil || time.Since(p.at) >= perfSampleTTL {
+		return nil, false
 	}
+	return p.metrics, true
+}
+
+// currentPerfMetrics returns a sample no older than perfSampleTTL, taking
+// one if needed. Requests that arrive while a sample is being taken wait for
+// it instead of sampling again.
+func (s *Server) currentPerfMetrics() *perfMetrics {
+	if m, ok := s.freshPerfSample(); ok {
+		return m
+	}
+	s.perfMu.Lock()
+	defer s.perfMu.Unlock()
+	if m, ok := s.freshPerfSample(); ok {
+		return m
+	}
+	sample := s.samplePerf
+	if sample == nil {
+		sample = sampleMetrics
+	}
+	m := sample()
+	s.storePerfSample(m, time.Now())
+	return m
 }
 
 // apiPerformance returns the latest performance snapshot plus perf_ findings.
@@ -407,7 +430,7 @@ func (s *Server) apiPerformance(w http.ResponseWriter, r *http.Request) {
 		limit = 500
 	}
 
-	metrics := s.perfSnapshot.Load()
+	metrics := s.currentPerfMetrics()
 
 	latest := s.store.LatestFindings()
 	suppressions := s.store.LoadSuppressions()
@@ -428,20 +451,20 @@ func (s *Server) apiPerformance(w http.ResponseWriter, r *http.Request) {
 		}
 		key := f.Key()
 		views = append(views, perfFindingView{
-			Severity:  int(f.Severity),
-			SevClass:  severityClass(f.Severity),
+			Severity:  f.Severity.String(),
+			level:     f.Severity,
 			Check:     f.Check,
 			Message:   f.Message,
 			Details:   f.Details,
 			Key:       key,
-			FirstSeen: firstSeen.Format(time.RFC3339),
-			LastSeen:  lastSeen.Format(time.RFC3339),
+			FirstSeen: firstSeen.UTC(),
+			LastSeen:  lastSeen.UTC(),
 		})
 	}
 
 	// Sort by severity descending
 	sort.Slice(views, func(i, j int) bool {
-		return views[i].Severity > views[j].Severity
+		return views[i].level > views[j].level
 	})
 
 	if len(views) > limit {
@@ -475,12 +498,12 @@ func (s *Server) apiPerfFixErrorLog(w http.ResponseWriter, r *http.Request) {
 	}
 	res := checks.FixErrorLogBloatInRoots(req.Path, s.perfFixAllowedRoots())
 	if !res.Success {
-		writeJSON(w, res)
+		writeRemediation(w, res)
 		return
 	}
 	s.dismissPerfFinding(req.Key)
 	s.auditLog(r, "perf_fix_error_log", req.Path, res.Description)
-	writeJSON(w, res)
+	writeRemediation(w, res)
 }
 
 // apiPerfFixDisplayErrors disables display_errors in an account-owned
@@ -507,12 +530,12 @@ func (s *Server) apiPerfFixDisplayErrors(w http.ResponseWriter, r *http.Request)
 	}
 	res := checks.FixDisplayErrorsOnInRoots(req.Path, s.perfFixAllowedRoots())
 	if !res.Success {
-		writeJSON(w, res)
+		writeRemediation(w, res)
 		return
 	}
 	s.dismissPerfFinding(req.Key)
 	s.auditLog(r, "perf_fix_display_errors", req.Path, res.Description)
-	writeJSON(w, res)
+	writeRemediation(w, res)
 }
 
 // apiPerfFixWPCron disables WP-Cron in an account-owned wp-config.php
@@ -543,12 +566,12 @@ func (s *Server) apiPerfFixWPCron(w http.ResponseWriter, r *http.Request) {
 	}
 	res := checks.FixDisableWPCronInRoots(req.Path, checks.ResolveWPCronRoots(cfg), options)
 	if !res.Success {
-		writeJSON(w, res)
+		writeRemediation(w, res)
 		return
 	}
 	s.dismissPerfFinding(req.Key)
 	s.auditLog(r, "perf_fix_wp_cron", req.Path, res.Description)
-	writeJSON(w, res)
+	writeRemediation(w, res)
 }
 
 func (s *Server) perfFixAllowedRoots() []string {
@@ -569,6 +592,6 @@ func (s *Server) dismissPerfFinding(key string) {
 }
 
 // handlePerformance renders the performance dashboard page.
-func (s *Server) handlePerformance(w http.ResponseWriter, _ *http.Request) {
-	s.renderTemplate(w, "performance.html", nil)
+func (s *Server) handlePerformance(w http.ResponseWriter, r *http.Request) {
+	s.renderTemplate(w, r, "performance.html", nil)
 }

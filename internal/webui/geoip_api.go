@@ -46,7 +46,7 @@ func (s *Server) apiGeoIPLookup(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/geoip/batch  body: {"ips": ["1.2.3.4", "5.6.7.8"]}
 func (s *Server) apiGeoIPBatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 

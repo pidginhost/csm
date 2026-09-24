@@ -44,9 +44,7 @@ func TestAPIDBObjectBackupsEmptyStore(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	var got []map[string]any
-	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	decodeItems(t, rr.Body.Bytes(), &got)
 	if len(got) != 0 {
 		t.Errorf("expected empty list, got %d entries", len(got))
 	}
@@ -81,9 +79,7 @@ func TestAPIDBObjectBackupsListsAllRecordsNewestFirst(t *testing.T) {
 	srv.apiDBObjectBackups(rr, req)
 
 	var got []dbObjectBackupEntry
-	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	decodeItems(t, rr.Body.Bytes(), &got)
 	if len(got) != 2 {
 		t.Fatalf("entries = %d, want 2", len(got))
 	}
@@ -98,10 +94,10 @@ func TestAPIDBObjectBackupsListsAllRecordsNewestFirst(t *testing.T) {
 	if got[0].BodyBytes != len("CREATE EVENT ev_new ...") {
 		t.Errorf("BodyBytes for ev_new = %d", got[0].BodyBytes)
 	}
-	if !got[0].Restored || got[0].RestoredAt == "" {
+	if !got[0].Restored || got[0].RestoredAt.IsZero() {
 		t.Errorf("restored state missing from ev_new: %+v", got[0])
 	}
-	if got[1].Restored || got[1].RestoredAt != "" {
+	if got[1].Restored || !got[1].RestoredAt.IsZero() {
 		t.Errorf("unexpected restored state on trg_old: %+v", got[1])
 	}
 	// Each entry must carry a key for the restore round-trip.
@@ -178,7 +174,7 @@ func TestAPIDBObjectBackupRestoreRejectsGET(t *testing.T) {
 	}
 }
 
-func TestAPIDBObjectBackupRestoreUnknownKeyReturns400(t *testing.T) {
+func TestAPIDBObjectBackupRestoreUnknownKeyReturns404(t *testing.T) {
 	withTempStoreForWebui(t)
 	srv := &Server{}
 
@@ -187,8 +183,8 @@ func TestAPIDBObjectBackupRestoreUnknownKeyReturns400(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/db-object-backup-restore", body)
 	srv.apiDBObjectBackupRestore(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400 for missing key", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for an unknown key", rr.Code)
 	}
 	if !strings.Contains(rr.Body.String(), "not found") {
 		t.Errorf("body should mention not found, got %q", rr.Body.String())
@@ -199,13 +195,28 @@ func TestAPIDBObjectBackupRestoreUnknownKeyReturns400(t *testing.T) {
 
 func TestSortDBObjectBackupsNewestFirst(t *testing.T) {
 	in := []dbObjectBackupEntry{
-		{Name: "a", DroppedAt: "2026-04-01T10:00:00Z"},
-		{Name: "c", DroppedAt: "2026-04-30T10:00:00Z"},
-		{Name: "b", DroppedAt: "2026-04-15T10:00:00Z"},
+		{Name: "a", DroppedAt: mustRFC3339(t, "2026-04-01T10:00:00Z")},
+		{Name: "c", DroppedAt: mustRFC3339(t, "2026-04-30T10:00:00Z")},
+		{Name: "b", DroppedAt: mustRFC3339(t, "2026-04-15T10:00:00Z")},
 	}
 	sortDBObjectBackupsNewestFirst(in)
 	got := []string{in[0].Name, in[1].Name, in[2].Name}
 	want := []string{"c", "b", "a"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("position %d = %q, want %q (full = %v)", i, got[i], want[i], got)
+		}
+	}
+
+	// Backups dropped in the same second keep their store order.
+	same := []dbObjectBackupEntry{
+		{Name: "first", DroppedAt: mustRFC3339(t, "2026-04-01T10:00:00Z")},
+		{Name: "newer", DroppedAt: mustRFC3339(t, "2026-04-02T10:00:00Z")},
+		{Name: "second", DroppedAt: mustRFC3339(t, "2026-04-01T10:00:00Z")},
+	}
+	sortDBObjectBackupsNewestFirst(same)
+	got = []string{same[0].Name, same[1].Name, same[2].Name}
+	want = []string{"newer", "first", "second"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("position %d = %q, want %q (full = %v)", i, got[i], want[i], got)

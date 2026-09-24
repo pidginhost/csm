@@ -25,12 +25,8 @@ func TestApiQuarantineEmptyDirReturnsEmptyList(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	body := strings.TrimSpace(w.Body.String())
-	// Empty slice serialises as either "null" or "[]" depending on the
-	// writer — both are acceptable as "no entries".
-	if body != "[]" && body != "null" {
-		t.Errorf("expected empty list, got %q", body)
-	}
+	// No entries answers an empty, non-null items list with total 0.
+	assertEmptyItems(t, w.Body.Bytes())
 }
 
 func TestApiQuarantineListsRootAndPreCleanEntries(t *testing.T) {
@@ -85,9 +81,7 @@ func TestApiQuarantineListsRootAndPreCleanEntries(t *testing.T) {
 		Size         int64  `json:"size"`
 		Reason       string `json:"reason"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("bad JSON: %v body=%s", err, w.Body.String())
-	}
+	decodeItems(t, w.Body.Bytes(), &got)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 entries (root + pre_clean), got %d: %+v", len(got), got)
 	}
@@ -126,9 +120,7 @@ func quarantineListingPaths(t *testing.T) []string {
 	var got []struct {
 		OriginalPath string `json:"original_path"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("bad JSON: %v body=%s", err, w.Body.String())
-	}
+	decodeItems(t, w.Body.Bytes(), &got)
 	var paths []string
 	for _, e := range got {
 		paths = append(paths, e.OriginalPath)
@@ -155,9 +147,7 @@ func quarantineListingEntries(t *testing.T) []struct {
 		OriginalPath string `json:"original_path"`
 		LiveState    string `json:"live_state"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("bad JSON: %v body=%s", err, w.Body.String())
-	}
+	decodeItems(t, w.Body.Bytes(), &got)
 	return got
 }
 

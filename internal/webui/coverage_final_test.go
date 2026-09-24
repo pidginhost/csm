@@ -298,9 +298,7 @@ func TestAPIQuarantineListsSeededEntryFinalCoverage(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var entries []map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &entries); err != nil {
-		t.Fatalf("json: %v", err)
-	}
+	decodeItems(t, w.Body.Bytes(), &entries)
 	found := false
 	for _, e := range entries {
 		if e["id"] == id && e["reason"] == "final-coverage" {
@@ -314,7 +312,7 @@ func TestAPIQuarantineListsSeededEntryFinalCoverage(t *testing.T) {
 
 // =============================================================================
 // apiAccounts — cannot override /home const; just verify JSON shape is OK.
-// Depending on host, this returns [] or a list of dirs.
+// Depending on host, items is [] or a list of dirs.
 // =============================================================================
 
 func TestAPIAccountsReturnsValidJSONFinalCoverage(t *testing.T) {
@@ -324,17 +322,9 @@ func TestAPIAccountsReturnsValidJSONFinalCoverage(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	body := strings.TrimSpace(w.Body.String())
-	if !strings.HasPrefix(body, "[") && body != "null" {
-		t.Errorf("body = %q, expected JSON array or null", body)
-	}
-	// If non-empty, items should decode as strings (account names).
-	if strings.HasPrefix(body, "[") && body != "[]" {
-		var names []string
-		if err := json.Unmarshal(w.Body.Bytes(), &names); err != nil {
-			t.Errorf("expected []string, decode err: %v", err)
-		}
-	}
+	// Items must be a list; when non-empty they decode as strings (account names).
+	var names []string
+	decodeItems(t, w.Body.Bytes(), &names)
 }
 
 // =============================================================================
@@ -372,8 +362,8 @@ func TestAPIImportMergesSuppressionsAndWhitelistFinalCoverage(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("json: %v", err)
 	}
-	if resp["status"] != "imported" {
-		t.Errorf("status = %v, want imported", resp["status"])
+	if resp["ok"] != true {
+		t.Errorf("ok = %v, want true", resp["ok"])
 	}
 	// At minimum the 2 new suppressions are imported (whitelist path depends on
 	// whether threat DB is initialized globally).
@@ -449,16 +439,14 @@ func TestAPIScanAccountReleaseLockOnReturnFinalCoverage(t *testing.T) {
 func TestAPIThreatTopAttackersLimitClampFinalCoverage(t *testing.T) {
 	s := newTestServer(t, "tok")
 	// Even without attackdb.Global() initialized, the handler should early-
-	// return with an empty array. Still exercises the limit parse logic.
+	// return with empty items. Still exercises the limit parse logic.
 	w := httptest.NewRecorder()
 	s.apiThreatTopAttackers(w, httptest.NewRequest("GET", "/?limit=9999", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	body := strings.TrimSpace(w.Body.String())
-	if body != "[]" && !strings.HasPrefix(body, "[") {
-		t.Errorf("body = %q", body)
-	}
+	var items []json.RawMessage
+	decodeItems(t, w.Body.Bytes(), &items)
 }
 
 func TestAPIThreatTopAttackersNegativeLimitFinalCoverage(t *testing.T) {
@@ -586,7 +574,7 @@ func TestAPIModSecRulesConfiguredWithRuleFinalCoverage(t *testing.T) {
 	if resp["configured"] != true {
 		t.Errorf("configured = %v, want true", resp["configured"])
 	}
-	rules, _ := resp["rules"].([]interface{})
+	rules, _ := resp["items"].([]interface{})
 	if len(rules) == 0 {
 		t.Errorf("rules array is empty; expected rule 900200 to be parsed")
 	}
@@ -785,7 +773,7 @@ func TestRenderTemplateMissingTemplateFinalCoverage(t *testing.T) {
 	s.templates = map[string]*template.Template{}
 
 	w := httptest.NewRecorder()
-	s.renderTemplate(w, "missing.html", nil)
+	s.renderTemplate(w, httptest.NewRequest(http.MethodGet, "/", nil), "missing.html", nil)
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}
@@ -803,7 +791,7 @@ func TestRenderTemplateExecuteErrorFinalCoverage(t *testing.T) {
 	// Empty struct data: html/template evaluates the field selector and
 	// returns an exec error ("can't evaluate field MissingField"). Passing
 	// nil here would silently render an empty body without erroring.
-	s.renderTemplate(w, "bad.html", struct{}{})
+	s.renderTemplate(w, httptest.NewRequest(http.MethodGet, "/", nil), "bad.html", struct{}{})
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}
@@ -867,25 +855,14 @@ func TestPerfMetricsMySQLFieldsJSONContract(t *testing.T) {
 	}
 }
 
-func TestSampleMetricsLoopStoresSnapshotFinalCoverage(t *testing.T) {
+func TestSampleMetricsOnDemandStoresSnapshotFinalCoverage(t *testing.T) {
 	s := newTestServer(t, "tok")
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	// sampleMetricsLoop samples immediately then every 10s; we cancel quickly
-	// and verify the initial snapshot landed.
-	done := make(chan struct{})
-	go func() {
-		s.sampleMetricsLoop(ctx)
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("sampleMetricsLoop did not return on ctx cancel")
+	// The first request samples the real host metrics and keeps the sample.
+	if m := s.currentPerfMetrics(); m == nil {
+		t.Fatal("currentPerfMetrics returned no sample")
 	}
-	// After the loop ran at least once, perfSnapshot should have a value.
-	if m := s.perfSnapshot.Load(); m == nil {
-		t.Error("perfSnapshot unset after sampleMetricsLoop ran")
+	if p := s.perfSample.Load(); p == nil || p.metrics == nil {
+		t.Error("sample not kept after an on-demand sample")
 	}
 }
 

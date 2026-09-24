@@ -54,16 +54,6 @@ func TestAPIRulesReloadGetRejected(t *testing.T) {
 	}
 }
 
-func TestAPIModSecEscalationGETReturnsJSON(t *testing.T) {
-	s := newTestServer(t, "tok")
-	w := httptest.NewRecorder()
-	s.apiModSecEscalation(w, httptest.NewRequest("GET", "/", nil))
-	// GET returns current escalation rules (not 405)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
-	}
-}
-
 // --- hardening_api ----------------------------------------------------
 
 func TestAPIHardeningReturnsJSON(t *testing.T) {

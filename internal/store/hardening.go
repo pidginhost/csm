@@ -19,7 +19,7 @@ type AuditResult struct {
 
 // AuditReport is the full result of a hardening audit run.
 type AuditReport struct {
-	Timestamp  time.Time     `json:"timestamp"`
+	Timestamp  time.Time     `json:"timestamp,omitzero"`
 	ServerType string        `json:"server_type"`
 	Results    []AuditResult `json:"results"`
 	Score      int           `json:"score"`

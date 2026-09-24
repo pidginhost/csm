@@ -16,13 +16,15 @@ import (
 // trying to deliver versus null-sender bounce backscatter, how much is frozen,
 // and which recipients are stuck the most.
 type QueueComposition struct {
-	Total                int              `json:"total"`
-	Bounce               int              `json:"bounce"` // null-sender <> messages (backscatter)
-	Real                 int              `json:"real"`
-	Frozen               int              `json:"frozen"`
-	FlushableBackscatter int              `json:"flushable_backscatter"` // frozen AND null-sender: safe to flush
-	OldestAge            string           `json:"oldest_age"`
-	TopRecipients        []RecipientCount `json:"top_recipients"`
+	Total                int `json:"total"`
+	Bounce               int `json:"bounce"` // null-sender <> messages (backscatter)
+	Real                 int `json:"real"`
+	Frozen               int `json:"frozen"`
+	FlushableBackscatter int `json:"flushable_backscatter"` // frozen AND null-sender: safe to flush
+	// OldestAgeSeconds is the age of the oldest queued message; left out
+	// when the queue is empty.
+	OldestAgeSeconds *int             `json:"oldest_age_seconds,omitempty"`
+	TopRecipients    []RecipientCount `json:"top_recipients"`
 }
 
 // RecipientCount is a recipient address and how many queued messages target it.
@@ -64,7 +66,7 @@ func ParseQueue(out string) QueueComposition {
 	inMessage := false
 
 	for _, line := range strings.Split(out, "\n") {
-		if _, age, ageSec, bounce, frozen, ok := parseQueueHeader(line); ok {
+		if _, _, ageSec, bounce, frozen, ok := parseQueueHeader(line); ok {
 			comp.Total++
 			if bounce {
 				comp.Bounce++
@@ -79,7 +81,8 @@ func ParseQueue(out string) QueueComposition {
 			}
 			if ageSec > oldestSeconds {
 				oldestSeconds = ageSec
-				comp.OldestAge = age
+				oldest := ageSec
+				comp.OldestAgeSeconds = &oldest
 			}
 			inMessage = true
 			continue
@@ -140,7 +143,7 @@ func parseQueueHeader(line string) (msgID, age string, ageSeconds int, bounce, f
 		frozen = true
 	}
 	bounce = fields[senderIndex] == "<>"
-	return fields[2], fields[0], ageToSeconds(fields[0]), bounce, frozen, true
+	return fields[2], fields[0], AgeToSeconds(fields[0]), bounce, frozen, true
 }
 
 func queueHeaderCandidate(line string) bool {
@@ -192,9 +195,9 @@ func queueHeaderIndent(line string) int {
 	return len(line)
 }
 
-// ageToSeconds converts an exim age token (e.g. "25m", "4d") to seconds. An
+// AgeToSeconds converts an exim age token (e.g. "25m", "4d") to seconds. An
 // unrecognized token returns 0.
-func ageToSeconds(age string) int {
+func AgeToSeconds(age string) int {
 	if len(age) < 2 {
 		return 0
 	}

@@ -235,7 +235,7 @@ type ProviderRollup struct {
 	Provider  string        `json:"provider"`
 	Deferrals int           `json:"deferrals"`
 	Reasons   []ReasonCount `json:"reasons"`
-	LastSeen  time.Time     `json:"last_seen"`
+	LastSeen  time.Time     `json:"last_seen,omitzero"`
 	Sample    string        `json:"sample"`
 }
 
@@ -246,7 +246,7 @@ type OutboundIPRollup struct {
 	Deferrals int             `json:"deferrals"`
 	Providers []ProviderCount `json:"providers"`
 	Reasons   []ReasonCount   `json:"reasons"`
-	LastSeen  time.Time       `json:"last_seen"`
+	LastSeen  time.Time       `json:"last_seen,omitzero"`
 }
 
 // Report is the aggregated deferral picture over a window of log lines.

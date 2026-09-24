@@ -2,8 +2,9 @@
 (function() {
     'use strict';
 
+    // File backups, pre-clean backups included, are listed on the
+    // Quarantine page; this page keeps the DB object backups.
     var formatSize = CSM.formatSize;
-    var fileMutationBusy = false;
 
     // Thin alias preserved so the rest of the file reads naturally; routes
     // through the shared CSM.get so timeouts and error toasts stay uniform.
@@ -16,217 +17,9 @@
         if (el && el.parentNode) el.parentNode.removeChild(el);
     }
 
-    function kindLabel(kind) {
-        if (kind === 'pre_clean') return 'Pre-clean backup';
-        return 'Quarantine';
-    }
-
-    function stateBadge(state) {
-        var label = 'Review';
-        var cls = 'bg-secondary-lt';
-        if (state === 'original_missing') {
-            label = 'Original missing';
-            cls = 'bg-warning-lt';
-        } else if (state === 'live_differs') {
-            label = 'Live differs';
-            cls = 'bg-orange-lt';
-        } else if (state === 'original_not_file') {
-            label = 'Original not file';
-            cls = 'bg-warning-lt';
-        } else if (state === 'archive_missing' || state === 'archive_not_file') {
-            label = 'Archive issue';
-            cls = 'bg-danger-lt';
-        } else if (state === 'unknown') {
-            label = 'Unknown';
-            cls = 'bg-secondary-lt';
-        }
-        return '<span class="badge ' + cls + '">' + label + '</span>';
-    }
-
-    function loadFileBackups() {
-        return getJSON('/api/v1/quarantine').then(function(files) {
-            var el = document.getElementById('cleanup-files-content');
-            var title = document.getElementById('cleanup-files-title');
-            removeEl('cleanup-files-table-controls');
-            if (title) title.innerHTML = '<i class="ti ti-file-zip"></i>&nbsp;File Backups (' + (files ? files.length : 0) + ')';
-            if (!files || files.length === 0) {
-                el.innerHTML = '<div class="card-body text-center text-muted py-4"><i class="ti ti-circle-check"></i> No file backups.</div>';
-                updateFileBulkButtons();
-                return;
-            }
-            var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="cleanup-files-table"><thead><tr>' +
-                '<th><input type="checkbox" class="form-check-input" id="cleanup-files-select-all"></th>' +
-                '<th>Type</th><th>Original Path</th><th>Size</th><th>Archived</th><th>State</th><th>Reason</th><th>Actions</th></tr></thead><tbody>';
-            for (var i = 0; i < files.length; i++) {
-                var f = files[i];
-                var size = Number(f.size || 0);
-                if (!isFinite(size)) size = 0;
-                html += '<tr>' +
-                    '<td><input type="checkbox" class="form-check-input cleanup-file-cb" data-id="' + CSM.esc(f.id) + '"></td>' +
-                    '<td><span class="badge bg-azure-lt">' + CSM.esc(kindLabel(f.kind)) + '</span></td>' +
-                    '<td><code>' + CSM.esc(f.original_path) + '</code></td>' +
-                    '<td data-sort="' + size + '">' + formatSize(f.size) + '</td>' +
-                    '<td data-timestamp="' + CSM.esc(f.quarantined_at || '') + '" class="text-nowrap small">' + CSM.fmtDate(f.quarantined_at) + '</td>' +
-                    '<td>' + stateBadge(f.live_state) + '</td>' +
-                    '<td class="small text-wrap csm-tw-320">' + CSM.esc(f.reason || '') + '</td>' +
-                    '<td class="text-nowrap">' +
-                    '<button class="btn btn-sm btn-ghost-secondary me-1 cleanup-file-view" data-id="' + CSM.esc(f.id) + '" data-path="' + CSM.esc(f.original_path) + '"><i class="ti ti-eye"></i>&nbsp;View</button>' +
-                    '<button class="btn btn-sm btn-warning cleanup-file-restore" data-id="' + CSM.esc(f.id) + '"><i class="ti ti-restore"></i>&nbsp;Restore</button>' +
-                    '</td></tr>';
-            }
-            html += '</tbody></table></div>';
-            el.innerHTML = html;
-            new CSM.Table({ tableId: 'cleanup-files-table', perPage: 25, searchId: 'cleanup-files-search', sortable: true, stateKey: 'csm-cleanup-files-table' });
-            bindFileBackupActions(el);
-        }).catch(function() {
-            CSM.loadError(document.getElementById('cleanup-files-content'), loadFileBackups);
-        });
-    }
-
-    function bindFileBackupActions(el) {
-        var selectAll = document.getElementById('cleanup-files-select-all');
-        if (selectAll) {
-            selectAll.addEventListener('change', function() {
-                el.querySelectorAll('.cleanup-file-cb').forEach(function(cb) { cb.checked = selectAll.checked; });
-                updateFileBulkButtons();
-            });
-        }
-        el.querySelectorAll('.cleanup-file-cb').forEach(function(cb) {
-            cb.addEventListener('change', updateFileBulkButtons);
-        });
-        el.querySelectorAll('.cleanup-file-view').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                viewFileBackup(this.getAttribute('data-id'), this.getAttribute('data-path'));
-            });
-        });
-        el.querySelectorAll('.cleanup-file-restore').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                restoreFileBackup(this.getAttribute('data-id'));
-            });
-        });
-        syncFileRestoreButtons();
-    }
-
-    function updateFileBulkButtons() {
-        var checked = document.querySelectorAll('.cleanup-file-cb:checked');
-        var restoreBtn = document.getElementById('cleanup-files-restore-btn');
-        var deleteBtn = document.getElementById('cleanup-files-delete-btn');
-        if (restoreBtn) {
-            restoreBtn.classList.toggle('d-none', checked.length === 0);
-            restoreBtn.innerHTML = '<i class="ti ti-restore"></i>&nbsp;Restore ' + checked.length;
-        }
-        if (deleteBtn) {
-            deleteBtn.classList.toggle('d-none', checked.length === 0);
-            deleteBtn.innerHTML = '<i class="ti ti-trash"></i>&nbsp;Delete ' + checked.length;
-        }
-    }
-
-    function viewFileBackup(id, path) {
-        getJSON('/api/v1/quarantine-preview?id=' + encodeURIComponent(id)).then(function(data) {
-            var info = data.truncated ? 'first 8KB of ' + formatSize(data.total_size) : formatSize(data.total_size);
-            CSM.filePreview(path, info, data.preview || '');
-        }).catch(function(e) {
-            CSM.toast('Preview failed: ' + e.message, 'error');
-        });
-    }
-
-    function restoreFileBackup(id) {
-        if (fileMutationBusy) return;
-        CSM.confirm('Restore this file backup? A re-scan is recommended after restore.').then(function() {
-            return withFileBulkButtons(null, '', function() {
-                return CSM.post('/api/v1/quarantine-restore', { id: id }).then(function(data) {
-                    CSM.toast('Restored: ' + data.path, 'success');
-                }).catch(function(e) {
-                    CSM.toast('Restore failed: ' + e.message, 'error');
-                }).then(loadFileBackups);
-            });
-        }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
-    }
-
-    function selectedFileIDs() {
-        var ids = [];
-        document.querySelectorAll('.cleanup-file-cb:checked').forEach(function(cb) {
-            ids.push(cb.getAttribute('data-id'));
-        });
-        return ids;
-    }
-
-    function syncFileRestoreButtons() {
-        document.querySelectorAll('.cleanup-file-restore').forEach(function(btn) {
-            btn.disabled = fileMutationBusy;
-        });
-    }
-
-    function withFileBulkButtons(activeID, busyHTML, fn) {
-        if (fileMutationBusy) return Promise.resolve();
-        fileMutationBusy = true;
-        var buttonIDs = ['cleanup-files-restore-btn', 'cleanup-files-delete-btn'];
-        var states = [];
-        var activeBtn = activeID ? document.getElementById(activeID) : null;
-        buttonIDs.forEach(function(id) {
-            var btn = document.getElementById(id);
-            if (!btn) return;
-            states.push({ btn: btn, disabled: btn.disabled, html: btn.innerHTML });
-            btn.disabled = true;
-        });
-        syncFileRestoreButtons();
-        if (activeBtn) activeBtn.innerHTML = busyHTML;
-        return Promise.resolve().then(fn).finally(function() {
-            fileMutationBusy = false;
-            states.forEach(function(state) {
-                state.btn.disabled = state.disabled;
-                state.btn.innerHTML = state.html;
-            });
-            updateFileBulkButtons();
-            syncFileRestoreButtons();
-        });
-    }
-
-    function restoreSelectedFileBackups() {
-        if (fileMutationBusy) return;
-        var ids = selectedFileIDs();
-        if (ids.length === 0) return;
-        CSM.confirm('Restore ' + ids.length + ' file backup(s)? A re-scan is recommended after restore.').then(function() {
-            return withFileBulkButtons('cleanup-files-restore-btn', '<i class="ti ti-restore"></i>&nbsp;Restoring...', function() {
-                var chain = Promise.resolve();
-                var succeeded = 0;
-                var failed = 0;
-                ids.forEach(function(id) {
-                    chain = chain.then(function() {
-                        return CSM.post('/api/v1/quarantine-restore', { id: id })
-                            .then(function() { succeeded++; })
-                            .catch(function() { failed++; });
-                    });
-                });
-                return chain.then(function() {
-                    CSM.toast('Restored ' + succeeded + ' of ' + (succeeded + failed), failed ? 'warning' : 'success');
-                    return loadFileBackups();
-                });
-            });
-        }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
-    }
-
-    function deleteSelectedFileBackups() {
-        if (fileMutationBusy) return;
-        var ids = selectedFileIDs();
-        if (ids.length === 0) return;
-        CSM.confirm('Permanently delete ' + ids.length + ' file backup(s)?').then(function() {
-            return withFileBulkButtons('cleanup-files-delete-btn', '<i class="ti ti-trash"></i>&nbsp;Deleting...', function() {
-                var deleted = 0;
-                return CSM.postBatches('/api/v1/quarantine/bulk-delete', ids, CSM.QUARANTINE_BULK_MAX,
-                    function(batch) { return { ids: batch }; },
-                    function(data) { deleted += data.count || 0; }
-                ).then(function() {
-                    CSM.toast('Deleted ' + deleted + ' file backup(s)', 'success');
-                }).catch(function(e) {
-                    CSM.toast('Deleted ' + deleted + ' file backup(s), then failed: ' + (e.message || 'request failed'), 'error');
-                }).then(loadFileBackups);
-            });
-        }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
-    }
-
     function loadDBBackups() {
-        getJSON('/api/v1/db-object-backups').then(function(items) {
+        getJSON('/api/v1/db-object-backups').then(function(data) {
+            var items = data.items;
             var el = document.getElementById('cleanup-db-content');
             var title = document.getElementById('cleanup-db-title');
             removeEl('cleanup-db-table-controls');
@@ -262,8 +55,8 @@
             el.innerHTML = html;
             new CSM.Table({ tableId: 'cleanup-db-table', perPage: 25, searchId: 'cleanup-db-search', sortable: true, stateKey: 'csm-cleanup-db-table' });
             bindDBBackupActions(el);
-        }).catch(function() {
-            CSM.loadError(document.getElementById('cleanup-db-content'), loadDBBackups);
+        }).catch(function(err) {
+            CSM.loadError(document.getElementById('cleanup-db-content'), loadDBBackups, { title: 'Failed to load database backups', error: err });
         });
     }
 
@@ -301,11 +94,6 @@
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     }
 
-    var restoreSelectedBtn = document.getElementById('cleanup-files-restore-btn');
-    if (restoreSelectedBtn) restoreSelectedBtn.addEventListener('click', restoreSelectedFileBackups);
-    var deleteSelectedBtn = document.getElementById('cleanup-files-delete-btn');
-    if (deleteSelectedBtn) deleteSelectedBtn.addEventListener('click', deleteSelectedFileBackups);
-
-    loadFileBackups();
     loadDBBackups();
+    if (CSM.refresh) CSM.refresh.onRefresh(loadDBBackups);
 })();

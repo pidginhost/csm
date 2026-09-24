@@ -3,8 +3,10 @@ package webui
 import (
 	"crypto/subtle"
 	"errors"
+	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -31,44 +33,77 @@ func (s *Server) tokenHasScope(r *http.Request, want string) bool {
 }
 
 func (s *Server) cookieTokenWithScope(r *http.Request, want string) (string, bool) {
-	return s.cookieSessionToken(r, want, true)
+	return s.cookieSessionToken(r, want, sessionActivity(r))
+}
+
+// sessionActivity reports whether a request is the operator's own activity,
+// which extends an idle browser session: a page load, or an API call the UI
+// marks with X-CSM-Active because it followed the operator's input. Timer
+// polls and the event stream do not, so a page left open still reaches the
+// idle timeout.
+func sessionActivity(r *http.Request) bool {
+	if r.URL.Path == "/metrics" || r.URL.Path == "/api/v1/events" {
+		return false
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		return r.Header.Get("X-CSM-Active") == "1"
+	}
+	if r.Method != http.MethodGet {
+		return false
+	}
+	// Fetches can poll HTML pages too. Only navigation counts as a page
+	// load; older browsers identify it by Accept instead of Fetch Metadata.
+	if mode := r.Header.Get("Sec-Fetch-Mode"); mode != "" {
+		return mode == "navigate"
+	}
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 func (s *Server) cookieSessionToken(r *http.Request, want string, touch bool) (string, bool) {
+	tok, ok := s.cookieSessionCredential(r, want, touch)
+	return tok.Token, ok
+}
+
+func (s *Server) cookieSessionCredential(r *http.Request, want string, touch bool) (config.WebUIToken, bool) {
 	c, err := r.Cookie("csm_auth")
 	if err != nil || s.sessions == nil {
-		return "", false
+		return config.WebUIToken{}, false
 	}
 	rec, err := s.sessions.Access(c.Value, s.sessionNow(), touch)
 	if err != nil {
-		return "", false
+		return config.WebUIToken{}, false
 	}
 	for _, tok := range s.cfg.WebUI.Tokens {
 		if tok.Name == rec.Name && session.Hash(tok.Token) == rec.Credential && tok.Scope == "admin" && webUITokenAllows(tok, want) {
-			return tok.Token, true
+			return tok, true
 		}
 	}
 	// A removed, rotated or downgraded login credential cannot leave a
 	// browser session active, even if a caller changes config in place.
 	_ = s.sessions.Revoke(rec.ID)
-	return "", false
+	return config.WebUIToken{}, false
 }
 
 func (s *Server) bearerTokenWithScope(r *http.Request, want string) (string, bool) {
+	tok, ok := s.bearerCredentialWithScope(r, want)
+	return tok.Token, ok
+}
+
+func (s *Server) bearerCredentialWithScope(r *http.Request, want string) (config.WebUIToken, bool) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
-		return "", false
+		return config.WebUIToken{}, false
 	}
 	supplied := strings.TrimPrefix(auth, "Bearer ")
 	if supplied == "" {
-		return "", false
+		return config.WebUIToken{}, false
 	}
 	for _, tok := range s.cfg.WebUI.Tokens {
 		if webUITokenMatches(supplied, tok) && webUITokenAllows(tok, want) {
-			return supplied, true
+			return tok, true
 		}
 	}
-	return "", false
+	return config.WebUIToken{}, false
 }
 
 func webUITokenMatches(supplied string, tok config.WebUIToken) bool {
@@ -90,8 +125,12 @@ func webUITokenAllows(tok config.WebUIToken, want string) bool {
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.tokenHasScope(r, "admin") {
-			next.ServeHTTP(w, r)
+		if tok, ok := s.cookieSessionCredential(r, "admin", sessionActivity(r)); ok {
+			next.ServeHTTP(w, withAuditActor(r, tok.Name, "browser"))
+			return
+		}
+		if tok, ok := s.bearerCredentialWithScope(r, "admin"); ok {
+			next.ServeHTTP(w, withAuditActor(r, tok.Name, "api"))
 			return
 		}
 		// API calls get 401 JSON; browser requests get redirect to login
@@ -107,6 +146,7 @@ func (s *Server) requireRead(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.tokenHasScope(r, "read") {
 			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", http.MethodGet)
 				writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
@@ -139,6 +179,22 @@ func clientIPKey(remoteAddr string) string {
 	return remoteAddr
 }
 
+// rateLimitKey is the client a rate limit counts: the IPv4 address, or the
+// /64 of an IPv6 address, since one IPv6 client is routed a whole /64 and can
+// rotate addresses inside it.
+func rateLimitKey(remoteAddr string) string {
+	host := clientIPKey(remoteAddr)
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	ip = ip.WithZone("").Unmap()
+	if ip.Is4() {
+		return ip.String()
+	}
+	return netip.PrefixFrom(ip, 64).Masked().String()
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// Redirect already-authenticated users to dashboard
 	if r.Method == http.MethodGet && s.isAuthenticated(r) {
@@ -147,7 +203,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodGet {
-		s.renderTemplate(w, "login.html", nil)
+		s.renderTemplate(w, r, "login.html", nil)
 		return
 	}
 
@@ -156,8 +212,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate limit: 5 attempts per minute per IP (strip port from RemoteAddr)
-	ip := clientIPKey(r.RemoteAddr)
+	// Rate limit: 5 attempts per minute per client (IPv4 address or IPv6 /64)
+	ip := rateLimitKey(r.RemoteAddr)
 	s.loginMu.Lock()
 	now := time.Now()
 	attempts := s.loginAttempts[ip]
@@ -195,7 +251,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if loginName == "" {
-		s.renderTemplate(w, "login.html", map[string]string{"Error": "Invalid token"})
+		// Failed logins go to the daemon log, not the UI audit trail: they
+		// are unauthenticated, and addresses from a whole network could
+		// otherwise rotate operator history out of the audit file.
+		// #nosec G706 -- RemoteAddr is the TCP peer address net/http sets, not request content.
+		log.Printf("webui: failed browser login from %s", safeLogString(clientIPKey(r.RemoteAddr)))
+		s.renderTemplate(w, r, "login.html", map[string]string{"Error": "Invalid token"})
 		return
 	}
 
@@ -237,6 +298,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   int(record.Expires.Sub(record.Created).Seconds()),
 		Expires:  record.Expires,
 	})
+	s.auditLogAs(r, loginName, "browser", "login", loginName, "browser session started")
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
@@ -258,6 +320,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "Cannot revoke browser session", http.StatusServiceUnavailable)
 				return
 			}
+			s.auditLogAs(r, rec.Name, "browser", "logout", rec.Name, "browser session ended")
 		}
 	}
 	clearBrowserCookie(w)

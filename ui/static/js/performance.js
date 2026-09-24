@@ -5,30 +5,19 @@
     var _perfLastFindings = [];
     var _perfUpdateSeq = 0;
 
-    var _fallbackNames = {
-        'perf_load': 'Load',
-        'perf_php_processes': 'PHP Processes',
-        'perf_memory': 'Memory',
-        'perf_php_handler': 'PHP Handler',
-        'perf_mysql_config': 'MySQL Config',
-        'perf_redis_config': 'Redis Config',
-        'perf_error_logs': 'Error Logs',
-        'perf_wp_config': 'WP Config',
-        'perf_wp_transients': 'WP Transients',
-        'perf_wp_cron': 'WP Cron'
-    };
-    var CHECK_NAMES = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.checkNames) || _fallbackNames;
+
+    // Check labels come from the server with the page config.
+    var CHECK_NAMES = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.checkNames) || {};
 
     function sevClass(sev) {
-        if (sev >= 2) return 'danger';
-        if (sev >= 1) return 'warning';
+        var level = CSM.severity(sev).level;
+        if (level >= 2) return 'danger';
+        if (level >= 1) return 'warning';
         return 'info';
     }
 
     function sevLabel(sev) {
-        if (sev >= 2) return 'CRITICAL';
-        if (sev >= 1) return 'HIGH';
-        return 'WARNING';
+        return CSM.severity(sev).label;
     }
 
     // colorClass returns a Bootstrap text color class based on thresholds.
@@ -109,6 +98,23 @@
         return '';
     }
 
+    // The findings list and the bulk menu are rebuilt on every refresh, so
+    // the state of a running fix lives here, not on the buttons: a rebuilt
+    // button for a fix still in flight comes back disabled.
+    var _perfPending = Object.create(null);
+    var _perfBulkRunning = false;
+    var _perfBulkSignature = null;
+
+    function perfActionKey(action) {
+        return action.endpoint + '|' + (action.path || '') + '|' + (action.key || '');
+    }
+
+    function setPerfActionButtons(key, disabled) {
+        document.querySelectorAll('[data-perf-action]').forEach(function(btn) {
+            if (btn.getAttribute('data-perf-action') === key) btn.disabled = disabled;
+        });
+    }
+
     // Per-row direct action button. Each perf finding currently has at
     // most one supported remediation; a dropdown wrapper buys nothing
     // here, so render a plain button labeled with the action verb.
@@ -116,32 +122,39 @@
         var btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'btn btn-sm btn-outline-secondary';
+        btn.setAttribute('data-perf-action', perfActionKey(action));
+        btn.disabled = _perfBulkRunning || !!_perfPending[perfActionKey(action)];
         var icon = document.createElement('i');
         icon.className = 'ti ' + action.icon + ' me-1';
         btn.appendChild(icon);
         btn.appendChild(document.createTextNode(action.label));
         btn.addEventListener('click', function() {
-            runPerfAction(action, btn);
+            runPerfAction(action);
         });
         return btn;
     }
 
-    function runPerfAction(action, originBtn) {
+    function runPerfAction(action) {
+        var key = perfActionKey(action);
+        if (_perfBulkRunning || _perfPending[key]) return;
         CSM.confirm(action.confirm).then(function() {
-            originBtn.classList.add('disabled');
+            if (_perfBulkRunning || _perfPending[key]) return;
+            _perfPending[key] = true;
+            setPerfActionButtons(key, true);
+            function release() {
+                delete _perfPending[key];
+                setPerfActionButtons(key, _perfBulkRunning);
+            }
             CSM.post(action.endpoint, { path: action.path, key: action.key || '' }).then(function(data) {
-                if (data && data.success) {
-                    CSM.toast(data.description || 'Fix applied', 'success');
-                    update();
-                } else {
-                    CSM.toast((data && data.error) || 'Fix failed', 'error');
-                    originBtn.classList.remove('disabled');
-                }
+                release();
+                CSM.toast((data && data.description) || 'Fix applied', 'success');
+                update();
             }).catch(function(err) {
-                CSM.toast('Error: ' + err, 'error');
-                originBtn.classList.remove('disabled');
+                // A fix that did not apply is an error status with the reason.
+                release();
+                CSM.toast('Fix failed: ' + CSM.errorText(err), 'error');
             });
-        }).catch(function() { /* cancelled */ });
+        }, function() { /* cancelled */ });
     }
 
     // Bulk groups: collect every remediable finding into per-endpoint
@@ -165,9 +178,14 @@
     function renderBulkActions(findings) {
         var holder = document.getElementById('perf-bulk-actions');
         if (!holder) return;
-        holder.textContent = '';
         var groups = buildBulkGroups(findings);
-        var keys = Object.keys(groups);
+        var keys = Object.keys(groups).sort();
+        // Rebuilding would close a menu the operator has open, so only
+        // rebuild when what it offers changed, and never mid-run.
+        var signature = JSON.stringify(keys.map(function(k) { return [k, groups[k].items]; }));
+        if (_perfBulkRunning || signature === _perfBulkSignature) return;
+        _perfBulkSignature = signature;
+        holder.textContent = '';
         if (keys.length === 0) return;
 
         var wrap = document.createElement('div');
@@ -205,9 +223,14 @@
     }
 
     function runBulkPerfAction(group, originLink) {
+        function hasPendingFix() { return Object.keys(_perfPending).length > 0; }
+        if (_perfBulkRunning || hasPendingFix()) return;
         var n = group.items.length;
         var msg = 'Apply "' + group.label + '" to ' + n + ' finding' + (n === 1 ? '' : 's') + '?';
         CSM.confirm(msg).then(function() {
+            if (_perfBulkRunning || hasPendingFix()) return;
+            _perfBulkRunning = true;
+            document.querySelectorAll('[data-perf-action]').forEach(function(btn) { btn.disabled = true; });
             originLink.classList.add('disabled');
             var ok = 0, failed = 0, errs = [];
             function next(i) {
@@ -220,22 +243,24 @@
                         CSM.toast('Fixed ' + ok + ', failed ' + failed + ' (' + errs.slice(0, 2).join('; ') + ')', 'warning');
                     }
                     originLink.classList.remove('disabled');
+                    _perfBulkRunning = false;
+                    document.querySelectorAll('[data-perf-action]').forEach(function(btn) { btn.disabled = false; });
+                    _perfBulkSignature = null;
                     update();
                     return;
                 }
                 var it = group.items[i];
-                CSM.post(group.endpoint, { path: it.path, key: it.key }).then(function(data) {
-                    if (data && data.success) ok++;
-                    else { failed++; if (data && data.error) errs.push(data.error); }
+                CSM.post(group.endpoint, { path: it.path, key: it.key }).then(function() {
+                    ok++;
                     next(i + 1);
                 }).catch(function(e) {
                     failed++;
-                    errs.push(String(e));
+                    errs.push(CSM.errorText(e));
                     next(i + 1);
                 });
             }
             next(0);
-        }).catch(function() { /* cancelled */ });
+        }, function() { /* cancelled */ });
     }
 
     function setFindingsBusy(busy) {
@@ -246,15 +271,10 @@
         return findingsEl;
     }
 
-    function renderPerformanceError() {
+    function renderPerformanceError(err) {
         var findingsEl = setFindingsBusy(false);
-        if (findingsEl) {
-            findingsEl.textContent = '';
-            var item = document.createElement('div');
-            item.className = 'list-group-item text-danger';
-            item.textContent = 'Failed to load performance findings';
-            findingsEl.appendChild(item);
-        }
+        CSM.loadError(findingsEl, update, { title: 'Failed to load performance findings', error: err });
+        _perfBulkSignature = null;
         renderBulkActions([]);
     }
 
@@ -456,27 +476,13 @@
             .catch(function(err) {
                 if (updateSeq !== _perfUpdateSeq) return;
                 console.error('performance update:', err);
-                renderPerformanceError();
+                renderPerformanceError(err);
             });
     }
 
     update();
-    var _perfInterval = CSM.refresh.interval(update, 10000);
-    function _stopPerfInterval() {
-        if (_perfInterval) {
-            _perfInterval.stop();
-            _perfInterval = null;
-        }
-    }
+    CSM.refresh.interval(update, 10000);
 
-    document.addEventListener('visibilitychange', function() {
-        if (document.hidden) {
-            _stopPerfInterval();
-        } else {
-            update();
-            _perfInterval = CSM.refresh.interval(update, 10000);
-        }
-    });
 
     // WEB_ROADMAP P2.4: shared CSV/JSON export of current performance
     // findings. _perfLastFindings is refreshed on every update().

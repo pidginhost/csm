@@ -38,8 +38,8 @@ func TestParseQueueComposition(t *testing.T) {
 	if c.Frozen != 1 {
 		t.Errorf("frozen = %d, want 1", c.Frozen)
 	}
-	if c.OldestAge != "4d" {
-		t.Errorf("oldest age = %q, want 4d", c.OldestAge)
+	if c.OldestAgeSeconds == nil || *c.OldestAgeSeconds != 4*86400 {
+		t.Errorf("oldest age = %v, want 4d in seconds", c.OldestAgeSeconds)
 	}
 	if len(c.TopRecipients) == 0 || c.TopRecipients[0].Address != "victim@yahoo.com" || c.TopRecipients[0].Count != 2 {
 		t.Errorf("top recipient = %+v, want victim@yahoo.com x2", c.TopRecipients)
@@ -82,8 +82,8 @@ func TestParseQueueNewEximMessageIDFormat(t *testing.T) {
 	if c.Frozen != 1 {
 		t.Errorf("frozen = %d, want 1", c.Frozen)
 	}
-	if c.OldestAge != "5d" {
-		t.Errorf("oldest age = %q, want 5d", c.OldestAge)
+	if c.OldestAgeSeconds == nil || *c.OldestAgeSeconds != 5*86400 {
+		t.Errorf("oldest age = %v, want 5d in seconds", c.OldestAgeSeconds)
 	}
 	if len(c.TopRecipients) == 0 || c.TopRecipients[0].Address != "victim@yahoo.com" || c.TopRecipients[0].Count != 2 {
 		t.Errorf("top recipient = %+v, want victim@yahoo.com x2", c.TopRecipients)
@@ -267,8 +267,8 @@ func TestAgeToSeconds(t *testing.T) {
 		"x":   0,
 	}
 	for in, want := range cases {
-		if got := ageToSeconds(in); got != want {
-			t.Errorf("ageToSeconds(%q) = %d, want %d", in, got, want)
+		if got := AgeToSeconds(in); got != want {
+			t.Errorf("AgeToSeconds(%q) = %d, want %d", in, got, want)
 		}
 	}
 }

@@ -45,6 +45,7 @@ CSM.shortcuts = (function() {
             label: 'Findings page',
             items: [
                 { keys: 'j / k', desc: 'Move selection down / up' },
+                { keys: 'o / Enter', desc: 'Open selected finding' },
                 { keys: 'd', desc: 'Dismiss selected finding' },
                 { keys: 'f', desc: 'Fix selected finding' }
             ]
@@ -68,8 +69,18 @@ CSM.shortcuts = (function() {
 
     function _getVisibleFindingRows() {
         return Array.from(document.querySelectorAll('.finding-row')).filter(function(r) {
-            return r.style.display !== 'none';
+            return r.offsetParent !== null;
         });
+    }
+
+    // Tab and table sorting can change focus independently of j/k.
+    function _focusedRowIndex() {
+        var rows = _getVisibleFindingRows();
+        var active = document.activeElement;
+        var row = active && active.closest ? active.closest('.finding-row') : null;
+        if (row) return rows.indexOf(row);
+        var selected = document.querySelector('.finding-row.csm-kbd-selected');
+        return rows.indexOf(selected);
     }
 
     function _clearSelection() {
@@ -86,6 +97,9 @@ CSM.shortcuts = (function() {
         if (index >= rows.length) index = rows.length - 1;
         _selectedRowIndex = index;
         rows[index].classList.add('csm-kbd-selected');
+        // Focus follows the selection, so Enter opens the row and screen
+        // readers announce it.
+        if (typeof rows[index].focus === 'function') rows[index].focus({ preventScroll: true });
         // Scroll into view if needed
         rows[index].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
@@ -213,6 +227,9 @@ CSM.shortcuts = (function() {
             return;
         }
 
+        // Overlays own their keyboard, including while Bootstrap animates.
+        if (document.querySelector('.modal.csm-dialog-active, .modal.show, .modal.showing, .modal.hiding, .offcanvas.show, .offcanvas.showing, .offcanvas.hiding')) return;
+
         // Don't activate shortcuts when typing in form elements
         if (_isInputFocused()) {
             return;
@@ -262,6 +279,7 @@ CSM.shortcuts = (function() {
 
         // Findings-page shortcuts
         if (_isFindingsPage()) {
+            _selectedRowIndex = _focusedRowIndex();
             if (e.key === 'j') {
                 e.preventDefault();
                 _selectRow(_selectedRowIndex + 1);
@@ -270,6 +288,12 @@ CSM.shortcuts = (function() {
             if (e.key === 'k') {
                 e.preventDefault();
                 _selectRow(_selectedRowIndex - 1);
+                return;
+            }
+            if (e.key === 'o' && _selectedRowIndex >= 0) {
+                e.preventDefault();
+                var openRow = _getVisibleFindingRows()[_selectedRowIndex];
+                if (openRow) openRow.click();
                 return;
             }
             if (e.key === 'd' && _selectedRowIndex >= 0) {

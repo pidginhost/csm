@@ -55,6 +55,19 @@ func (d *Daemon) getFileMonitor() *FileMonitor {
 	return d.fileMonitor
 }
 
+// FanotifyActive reports whether the fanotify file monitor is running.
+func (d *Daemon) FanotifyActive() bool {
+	return d.getFileMonitor() != nil
+}
+
+// LogWatcherCount returns the number of running log watchers, including
+// those a retry started after a missing log appeared.
+func (d *Daemon) LogWatcherCount() int {
+	d.logWatchersMu.Lock()
+	defer d.logWatchersMu.Unlock()
+	return len(d.logWatchers)
+}
+
 func (d *Daemon) monitorQueueHealth() {
 	defer d.wg.Done()
 	ticker := time.NewTicker(5 * time.Second)

@@ -82,7 +82,10 @@ func migrateHistoryTimeKeys(tx *bolt.Tx) error {
 		}
 	}
 
-	return replaceBucketFromTemp(tx, historyBucketName, timeKeyHistoryTemp)
+	if err := replaceBucketFromTemp(tx, historyBucketName, timeKeyHistoryTemp); err != nil {
+		return err
+	}
+	return bumpHistoryRevision(tx)
 }
 
 func migrateAttackTimeKeys(tx *bolt.Tx) error {
