@@ -199,75 +199,22 @@ type blockState struct {
 	PendingDropWarnedHour string `json:"pending_drop_warned_hour,omitempty"`
 }
 
-// alwaysBlockChecks carry a confirmed attacker IP: thresholded brute force,
-// confirmed compromise, C2/reputation, or escalation. Raw mailbox auth
-// failures and account-only mail findings feed incident grouping and
-// thresholded trackers, but one row is not enough evidence for a block.
-var alwaysBlockChecks = map[string]bool{
-	"wp_login_bruteforce":         true,
-	"xmlrpc_abuse":                true,
-	"http_request_flood":          true,
-	"http_scanner_profile":        true,
-	"http_claimed_bot_unverified": true,
-	"http_ua_spoof":               true,
-	"ftp_bruteforce":              true,
-	"smtp_bruteforce":             true,
-	"smtp_probe_abuse":            true,
-	"mail_bruteforce":             true,
-	"mail_account_compromised":    true,
-	"admin_panel_bruteforce":      true,
-	"ssh_login_unknown_ip":        true,
-	"pam_bruteforce":              true,
-	"credential_stuffing":         true,
-	"c2_connection":               true,
-	"ip_reputation":               true,
-	"local_threat_score":          true,
-	"modsec_block_escalation":     true,
-	"modsec_csm_block_escalation": true,
-	"email_compromised_account":   true,
-	"email_cloud_relay_abuse":     true,
-	"waf_attack_blocked":          true,
-}
-
-// cpanelWebmailFailureChecks are blockable only when block_cpanel_logins is
-// enabled (disabled by default). Every entry reports a FAILED or thresholded
-// authentication attempt, which is real evidence.
-//
-// Checks that report a SUCCESSFUL operation are deliberately absent, and must
-// stay absent. cpanel_login and cpanel_login_realtime were excluded first:
-// they fire on every direct form login from a non-infra IP, and blocking on
-// one such Warning turns a legitimate customer logging in from a new country
-// into a 24h lockout.
-//
-// cpanel_file_upload_realtime, ftp_login and webmail_login_realtime
-// were missed at the time and caused exactly that. A customer was blocked one
-// second after uploading a file in File Manager, and five addresses were
-// blocked for logging in to FTP successfully. The handler skips 401 and 403,
-// so these only fire once the user has authenticated; on shared hosting every
-// customer is a non-infra IP, so they fire on ordinary use of core features.
-// They remain findings, which is where their value is -- correlated with
-// other evidence on the same account -- but they never block on their own.
-var cpanelWebmailFailureChecks = map[string]bool{
-	"cpanel_multi_ip_login":     true,
-	"api_auth_failure":          true,
-	"api_auth_failure_realtime": true,
-	"webmail_bruteforce":        true,
-	"ftp_auth_failure_realtime": true,
-}
-
 // blockableCheck reports whether a finding's check may drive a firewall block.
+// The policy is carried by the check registry; see response_policy.go.
 func blockableCheck(check string, blockCpanelLogins bool) bool {
-	check = config.CanonicalCheckName(check)
-	if alwaysBlockChecks[check] {
+	switch ResponsePolicyFor(check).Block {
+	case BlockAlways:
 		return true
+	case BlockWithCpanelLogins:
+		return blockCpanelLogins
+	default:
+		return false
 	}
-	return blockCpanelLogins && cpanelWebmailFailureChecks[check]
 }
 
 func blockableFinding(f alert.Finding, blockCpanelLogins bool) bool {
-	// An established multi-mailbox source is advisory below Critical.
 	return blockableCheck(f.Check, blockCpanelLogins) &&
-		(f.Check != "mail_account_compromised" || f.Severity == alert.Critical)
+		(!ResponsePolicyFor(f.Check).CriticalOnly || f.Severity == alert.Critical)
 }
 
 // AutoBlockIPs processes all findings, including repeats, for IP blocking.

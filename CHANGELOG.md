@@ -147,6 +147,14 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - The status API no longer reads the whole daemon binary on every request to report its hash; it hashes the binary again only when the file changes.
 - The web UI now samples host metrics only when the Performance page asks for them, at most once every ten seconds, instead of every ten seconds for as long as the daemon runs.
 - The roadmap clarifies planned response safeguards, capacity validation and operator visibility when automatic action cannot safely proceed. Existing response controls remain unchanged.
+- Recorded finding streams now carry salted finding ids and count addresses that share a pseudonym, and the recording tool's summary and errors no longer repeat check names, paths or input values. The tool also refuses ambiguous input, output paths that alias its inputs and raw identifiers left in its output, and maps equivalent IPv6 spellings to one pseudonym.
+
+### Added
+
+- The privileged-operation JSON inventory now includes action risk and current safety and recovery coverage.
+- The capability matrix and `csm privileges` now show a risk tier for every privileged operation, from read-only detection to destructive responses.
+- The finding-stream tool can anonymize the action and firewall audit logs alongside a recording and write a manifest of digests, join counts and missing streams. Rows it cannot classify refuse the run, and a failed run leaves earlier output in place.
+- A replay tool runs a recorded finding stream through a model of the current automatic block limit, retry queue and temporary deny limit, and reports aggregate outcomes with the assumptions they rest on and the block paths it leaves out. Reports never replace an existing file, including one created while the replay runs.
 
 ### Added
 

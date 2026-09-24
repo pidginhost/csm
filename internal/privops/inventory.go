@@ -6,6 +6,8 @@ package privops
 var operations = []Op{
 	{
 		ID:               "respond.hold_outgoing_mail",
+		Risk:             RiskReversible,
+		RecoveryGap:      "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 		Subsystem:        "response",
 		Summary:          "request a cPanel account outgoing-mail hold through whmapi1 after sustained mail abuse",
 		Privileges:       []Privilege{Root},
@@ -17,26 +19,31 @@ var operations = []Op{
 	},
 	{
 		ID: "detect.bpf_probe", Subsystem: "detection",
-		Summary:    "load and briefly attach BPF LSM, tracepoint and cgroup programs to discover kernel support",
-		Privileges: []Privilege{CapBPF, CapPerfmon, CapNetAdmin, Root}, Trigger: Automatic,
+		Risk:        RiskReversible,
+		RecoveryGap: "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
+		Summary:     "load and briefly attach BPF LSM, tracepoint and cgroup programs to discover kernel support",
+		Privileges:  []Privilege{CapBPF, CapPerfmon, CapNetAdmin, Root}, Trigger: Automatic,
 		Writes:           []string{"kernel:temporary BPF programs and maps"},
 		DisableReason:    "capability discovery runs independently of monitor settings in BPF builds",
 		WithoutPrivilege: "BPF capabilities report unavailable; configured automatic backends use their fallbacks",
 	},
 	{
 		ID: "detect.kernel_oom", Subsystem: "detection",
+		Risk:       RiskObserve,
 		Summary:    "read the restricted kernel message buffer with dmesg to find recent OOM kills",
 		Privileges: []Privilege{CapSyslog, Root}, Trigger: Automatic,
 		WithoutPrivilege: "swap statistics remain available, but OOM kills are not reported",
 	},
 	{
 		ID: "detect.audit_rules", Subsystem: "detection",
+		Risk:       RiskObserve,
 		Summary:    "query loaded audit rules with auditctl to check detection coverage",
 		Privileges: []Privilege{CapAuditControl, Root}, Trigger: Automatic,
 		WithoutPrivilege: "audit-rule coverage cannot be verified",
 	},
 	{
 		ID: "state.control_socket", Subsystem: "csm state",
+		Risk:       RiskObserve,
 		Summary:    "create the private control socket used by operator commands",
 		Privileges: []Privilege{Root}, Trigger: Automatic,
 		Writes:           []string{"/var/run/csm"},
@@ -44,6 +51,7 @@ var operations = []Op{
 	},
 	{
 		ID: "state.update_forge", Subsystem: "csm state",
+		Risk:       RiskObserve,
 		Summary:    "download and verify YARA Forge rules independently of YAML updates",
 		Privileges: []Privilege{Root}, Trigger: Automatic,
 		Writes:     []string{"/opt/csm/rules"},
@@ -52,22 +60,27 @@ var operations = []Op{
 	},
 	{
 		ID: "respond.af_alg_kill", Subsystem: "response",
-		Summary:    "kill a verified AF_ALG socket caller through the separate Copy Fail response setting",
-		Privileges: []Privilege{CapKill, Root}, Trigger: Automatic,
+		Risk:        RiskDestructive,
+		RecoveryGap: "Process termination and restart cannot restore lost process state; this inventory does not yet specify a full recovery contract.",
+		Summary:     "kill a verified AF_ALG socket caller through the separate Copy Fail response setting",
+		Privileges:  []Privilege{CapKill, Root}, Trigger: Automatic,
 		Writes:     []string{"process:signal"},
 		DisableKey: "auto_response.copy_fail_kill_process", DisableValue: "false",
 		WithoutPrivilege: "the process is reported but remains running; this path is independent of kill_processes",
 	},
 	{
 		ID: "respond.af_alg_marker", Subsystem: "response",
-		Summary:    "restore a changed AF_ALG mitigation marker after the operator has opted in",
-		Privileges: []Privilege{Root}, Trigger: Automatic,
+		Risk:        RiskDestructive,
+		RecoveryGap: "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+		Summary:     "restore a changed AF_ALG mitigation marker after the operator has opted in",
+		Privileges:  []Privilege{Root}, Trigger: Automatic,
 		Writes:     []string{"/etc/modprobe.d"},
 		DisableKey: "auto_response.disable_enforce_af_alg", DisableValue: "true",
 		WithoutPrivilege: "a changed module blacklist is reported but cannot be repaired",
 	},
 	{
 		ID: "respond.forward_guard_lookup", Subsystem: "response",
+		Risk:       RiskObserve,
 		Summary:    "refresh the forward-guard bad-sender lookup inside the daemon sandbox",
 		Privileges: []Privilege{Root}, Trigger: Automatic,
 		Writes:     []string{"/var/lib/csm/forward_guard"},
@@ -76,14 +89,23 @@ var operations = []Op{
 	},
 	{
 		ID: "respond.mail_delivery_gate", Subsystem: "response",
-		Summary:    "defer Exim delivery with fanotify permission responses when tempfail policy requires it",
-		Privileges: []Privilege{CapSysAdmin, Root}, Trigger: Automatic,
+		Risk:        RiskReversible,
+		RecoveryGap: "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
+		Summary:     "defer Exim delivery with fanotify permission responses when tempfail policy requires it",
+		Privileges:  []Privilege{CapSysAdmin, Root}, Trigger: Automatic,
 		Writes:     []string{"fanotify:mail delivery decisions"},
 		DisableKey: "email_av.enabled", DisableValue: "false",
 		WithoutPrivilege: "mail AV falls back to notifications and cannot defer delivery on scan failures",
 	},
 	{
 		ID: "integrate.challenge_port_gate", Subsystem: "host integration",
+		Risk: RiskReversible,
+		Contract: &SafetyContract{
+			Authority: "challenge startup with challenge.enabled and challenge.port_gate.enabled; a loopback-only listener or non-Linux build has no gate",
+			Identity:  "Allow validates the address and listener family; IPList adds membership before calling Allow after unlocking; the gate itself does not revalidate list membership; loopback and configured infrastructure ranges have accept rules",
+			Recovery:  "elements carry kernel timeouts; explicit list removal attempts Revoke, while expiry relies on the kernel timeout; gate errors are logged and list/map/gate changes are not one transaction",
+			Limit:     "no challenge-list capacity or generation fence is present; gate installation failure leaves the listener publicly reachable",
+		},
 		Summary:    "install the separate nftables port gate for the public challenge listener",
 		Privileges: []Privilege{CapNetAdmin, Root}, Trigger: Automatic,
 		Writes:     []string{"nftables:challenge port gate"},
@@ -93,6 +115,7 @@ var operations = []Op{
 	// --- Detection: reading the host ---
 	{
 		ID:               "detect.scan_account_files",
+		Risk:             RiskObserve,
 		Subsystem:        "detection",
 		Summary:          "read every account's files for scheduled, real-time and on-demand scans",
 		Privileges:       []Privilege{CapDACReadSearch, Root},
@@ -102,6 +125,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "detect.filesystem_events",
+		Risk:             RiskObserve,
 		Subsystem:        "detection",
 		Summary:          "fanotify stream over account roots and world-writable temp directories",
 		Privileges:       []Privilege{CapSysAdmin},
@@ -110,6 +134,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "detect.process_exec",
+		Risk:             RiskReversible,
+		RecoveryGap:      "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 		Subsystem:        "detection",
 		Summary:          "watch process execution through a BPF tracepoint, or by walking /proc",
 		Privileges:       []Privilege{CapBPF, CapPerfmon, Root},
@@ -121,6 +147,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "detect.outbound_connections",
+		Risk:             RiskReversible,
+		RecoveryGap:      "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 		Subsystem:        "detection",
 		Summary:          "watch outbound connections through BPF cgroup hooks, or by polling /proc/net/tcp",
 		Privileges:       []Privilege{CapBPF, CapNetAdmin, Root},
@@ -132,6 +160,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "detect.sensitive_file_writes",
+		Risk:             RiskReversible,
+		RecoveryGap:      "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 		Subsystem:        "detection",
 		Summary:          "watch writes to /etc/shadow and comparable files through a BPF LSM hook",
 		Privileges:       []Privilege{CapBPF, CapPerfmon, Root},
@@ -143,6 +173,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "detect.af_alg_sockets",
+		Risk:             RiskContain,
+		RecoveryGap:      "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 		Subsystem:        "detection",
 		Summary:          "deny AF_ALG sockets through BPF LSM, or observe socket use through the audit-log fallback",
 		Privileges:       []Privilege{CapBPF, CapPerfmon, Root},
@@ -154,6 +186,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "detect.read_service_logs",
+		Risk:             RiskObserve,
 		Subsystem:        "detection",
 		Summary:          "read mail, authentication, web server and ModSecurity logs",
 		Privileges:       []Privilege{Root},
@@ -162,6 +195,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "detect.pam_events",
+		Risk:             RiskObserve,
 		Subsystem:        "detection",
 		Summary:          "receive authentication attempts from the pam_csm.so hook over a private socket",
 		Privileges:       []Privilege{Root},
@@ -171,6 +205,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "detect.account_databases",
+		Risk:             RiskObserve,
 		Subsystem:        "detection",
 		Summary:          "read account MySQL credentials and scan databases for injected content and stored objects",
 		Privileges:       []Privilege{Root},
@@ -180,6 +215,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "detect.mail_queue_probe",
+		Risk:             RiskReversible,
+		RecoveryGap:      "This inventory does not specify recovery of incidental external cache or log writes by probe commands.",
 		Subsystem:        "detection",
 		Summary:          "query the Exim queue through a transient unit, because Exim opens its logs even to answer a read",
 		Privileges:       []Privilege{Root},
@@ -192,6 +229,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "detect.kernel_livepatch_probe",
+		Risk:             RiskReversible,
+		RecoveryGap:      "This inventory does not specify recovery of incidental external cache or log writes by probe commands.",
 		Subsystem:        "detection",
 		Summary:          "run kcarectl --patch-info to see whether a KernelCare livepatch covers Copy Fail; kcarectl rewrites its own cache on every run",
 		Privileges:       []Privilege{Root},
@@ -204,6 +243,7 @@ var operations = []Op{
 	// --- CSM's own state ---
 	{
 		ID:               "state.write_store",
+		Risk:             RiskObserve,
 		Subsystem:        "csm state",
 		Summary:          "write the bbolt state database, baselines, incidents and scan reports",
 		Privileges:       []Privilege{Root},
@@ -213,6 +253,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "state.write_logs",
+		Risk:             RiskObserve,
 		Subsystem:        "csm state",
 		Summary:          "write the daemon log and the audit-log sinks that feed a SIEM",
 		Privileges:       []Privilege{Root},
@@ -222,6 +263,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "state.sign_config",
+		Risk:             RiskObserve,
 		Subsystem:        "csm state",
 		Summary:          "rewrite CSM's own integrity hashes into csm.yaml after an approved change",
 		Privileges:       []Privilege{Root},
@@ -231,6 +273,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "state.update_signatures",
+		Risk:             RiskObserve,
 		Subsystem:        "csm state",
 		Summary:          "download and signature-verify YAML malware rule updates",
 		Privileges:       []Privilege{Root},
@@ -242,6 +285,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "state.mail_relay_policies",
+		Risk:             RiskObserve,
 		Subsystem:        "csm state",
 		Summary:          "load operator-supplied mailer classes and proxy ranges for the PHP-relay detector",
 		Privileges:       []Privilege{Unprivileged},
@@ -252,6 +296,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "state.php_shield_events",
+		Risk:             RiskObserve,
 		Subsystem:        "csm state",
 		Summary:          "receive PHP Shield events over a socket and append their local archive",
 		Privileges:       []Privilege{Root},
@@ -263,6 +308,7 @@ var operations = []Op{
 	},
 	{
 		ID:               "state.write_deploy_script",
+		Risk:             RiskObserve,
 		Subsystem:        "csm state",
 		Summary:          "refresh the embedded upgrade script in CSM's own directory at startup",
 		Privileges:       []Privilege{Root},
@@ -275,7 +321,14 @@ var operations = []Op{
 
 	// --- Automatic response ---
 	{
-		ID:               "respond.quarantine_file",
+		ID:   "respond.quarantine_file",
+		Risk: RiskContain,
+		Contract: &SafetyContract{
+			Authority: "automatic quarantine requires auto_response.enabled, quarantine_files and non-observe mode; the batch path selects eligible Critical findings and realtime signatures pass the high-confidence validator; directories and special files are refused by the automatic gate",
+			Identity:  "device/inode plus size and modification time are captured before reservation and rechecked after it and when opening the source; quarantine copies from the verified descriptor and checks again before removal; these stat checks are not a content hash",
+			Recovery:  "successful quarantine retains a recovery copy and owner, permissions and modification time for restore; failures can retain a copy or occur after source removal, so inspect action evidence before retrying",
+			Limit:     "shared persisted rolling-hour host and account attempt limits and a host-wide failure pause; failed and interrupted attempts remain charged; dry_run does not preview file actions",
+		},
 		Audited:          true,
 		Subsystem:        "response",
 		Summary:          "move a confirmed malicious file out of an account tree into CSM's quarantine, preserving owner, permissions and mtime",
@@ -287,7 +340,14 @@ var operations = []Op{
 		WithoutPrivilege: "malware is reported and left in place",
 	},
 	{
-		ID:               "respond.clean_file",
+		ID:   "respond.clean_file",
+		Risk: RiskDestructive,
+		Contract: &SafetyContract{
+			Authority: "automatic cleaning requires auto_response.enabled and non-observe mode; PHP cleaning is the supported batch quarantine alternative and also requires quarantine_files; access-file cleaning instead requires clean_htaccess",
+			Identity:  "the automatic caller's captured device/inode, size and modification time are checked after reservation and against the opened descriptor; the cleaner revalidates the target before replacement",
+			Recovery:  "a durable pre-clean backup carries saved attributes before replacement; pre-replacement failure leaves the source, but a later directory-sync failure can report failure after cleaned bytes were installed; failed cleaning does not escalate to quarantine",
+			Limit:     "the same persisted host/account attempt limits and host-wide failure pause as quarantine; dry_run does not preview cleaning",
+		},
 		Audited:          true,
 		Subsystem:        "response",
 		Summary:          "strip injected code from a PHP or access file, keeping a pre-clean backup",
@@ -300,6 +360,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.kill_process",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "Process termination and restart cannot restore lost process state; this inventory does not yet specify a full recovery contract.",
 		Audited:          true,
 		Subsystem:        "response",
 		Summary:          "signal a malicious process through a kernel process handle, never a recycled PID, never root",
@@ -311,7 +373,14 @@ var operations = []Op{
 		WithoutPrivilege: "reverse shells and miners keep running until an operator kills them",
 	},
 	{
-		ID:               "respond.block_ip",
+		ID:   "respond.block_ip",
+		Risk: RiskContain,
+		Contract: &SafetyContract{
+			Authority: "single-IP scan blocks require a check the registry marks blockable, auto_response.enabled and block_ips, and non-observe mode; the subnet-spray, ASN-crawl and netblock escalation paths block subnets under their own fixed rules without consulting the registry; other automatic callers retain their own gates; the wired engine dry_run callback suppresses live automatic blocks",
+			Identity:  "single-IP targets are canonicalized; infrastructure, local, loopback, unspecified, link-local and operator-allow checks run under the engine lock; verified-range callbacks run outside that lock; subnet paths check protected overlap; the engine does not authenticate registry evidence",
+			Recovery:  "temporary single-IP elements expire in the kernel; temporary subnet expiry requires daemon cleanup because subnet sets have no kernel timeouts; unblock or blocked-IP flush removes IP entries, while subnets require subnet removal; permanent entries do not expire and inverse operations do not reconstruct evicted entries or lost traffic",
+			Limit:     "max_blocks_per_hour charges single-IP scan blocks and ASN-crawl subnets only; subnet-spray and netblock escalation subnets, and challenge-timeout, incident, spray and central-intel blocks, are not charged; single-IP deny limits do not provide an all-source or subnet ceiling",
+		},
 		Audited:          true,
 		Subsystem:        "response",
 		Summary:          "add an attacker address or subnet to the firewall's deny sets",
@@ -324,6 +393,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.virtual_patch",
+		Risk:             RiskContain,
+		RecoveryGap:      "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
 		Subsystem:        "response",
 		Summary:          "write a reversible deny rule into an account access file to close an exposed file",
 		Privileges:       []Privilege{Root},
@@ -335,6 +406,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.database_cleanup",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
 		Subsystem:        "response",
 		Summary:          "revoke a rogue CMS admin, sanitize poisoned options, and drop confirmed malicious stored objects after recording their definition",
 		Privileges:       []Privilege{Root},
@@ -346,6 +419,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.enforce_permissions",
+		Risk:             RiskContain,
+		RecoveryGap:      "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
 		Subsystem:        "response",
 		Summary:          "chmod a world-writable or group-writable PHP file back to 644",
 		Privileges:       []Privilege{Root},
@@ -357,6 +432,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.fix_wp_cron",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 		Subsystem:        "response",
 		Summary:          "disable WP-Cron for an account and install a per-user system cron entry instead",
 		Privileges:       []Privilege{Root},
@@ -368,6 +445,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.freeze_mail",
+		Risk:             RiskReversible,
+		RecoveryGap:      "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 		Subsystem:        "response",
 		Summary:          "freeze queued Exim messages attributed to a confirmed PHP-relay finding",
 		Privileges:       []Privilege{Root},
@@ -380,6 +459,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.quarantine_mail",
+		Risk:             RiskContain,
+		RecoveryGap:      "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 		Subsystem:        "response",
 		Summary:          "move an infected message out of the Exim spool after an antivirus match",
 		Privileges:       []Privilege{Root},
@@ -391,6 +472,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.forward_guard",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 		Subsystem:        "response",
 		Summary:          "install or remove the managed Exim block that holds forwarded spam and backscatter, and rebuild the Exim configuration",
 		Privileges:       []Privilege{Root},
@@ -403,6 +486,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.restart_mail_auth",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "Process termination and restart cannot restore lost process state; this inventory does not yet specify a full recovery contract.",
 		Subsystem:        "response",
 		Summary:          "restart the panel's mail authentication service after a sustained outage",
 		Privileges:       []Privilege{Root},
@@ -414,6 +499,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.af_alg_enforce",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 		Subsystem:        "response",
 		Summary:          "unload the AF_ALG kernel modules again when an opted-in mitigation marker is present",
 		Privileges:       []Privilege{CapSysModule, Root},
@@ -426,6 +513,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "respond.bpf_deny_egress",
+		Risk:             RiskContain,
+		RecoveryGap:      "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 		Subsystem:        "response",
 		Summary:          "deny matched outbound connections in the kernel through a BPF cgroup hook",
 		Privileges:       []Privilege{CapBPF, CapNetAdmin, Root},
@@ -438,7 +527,14 @@ var operations = []Op{
 
 	// --- Host integration ---
 	{
-		ID:               "integrate.firewall_ruleset",
+		ID:   "integrate.firewall_ruleset",
+		Risk: RiskDestructive,
+		Contract: &SafetyContract{
+			Authority: "daemon firewall startup or reload when enabled and permitted by mode, or an explicit operator apply",
+			Identity:  "Apply holds the engine lock and batches old-table deletion, new rules and persisted set elements into one nftables transaction; the legacy state loader can seed empty elements on missing or malformed state",
+			Recovery:  "a rejected kernel batch leaves the prior kernel table; timed snapshot recovery belongs to apply-confirmed, not every Apply; kernel atomicity is not an atomic transaction with disk state",
+			Limit:     "one Apply per engine lock; this is ruleset installation, not automatic block admission",
+		},
 		Audited:          true,
 		Subsystem:        "host integration",
 		Summary:          "build and load CSM's nftables table, including the operator's port policy and rate limits",
@@ -451,6 +547,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "integrate.auditd_rules",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 		Subsystem:        "host integration",
 		Summary:          "write CSM's auditd rules and reload them, so audit-backed detection survives package upgrades",
 		Privileges:       []Privilege{CapAuditControl, Root},
@@ -462,6 +560,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "integrate.panel_plugin",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 		Subsystem:        "host integration",
 		Summary:          "deploy the WHM plugin CGI and its AppConfig entry, and register it with the panel",
 		Privileges:       []Privilege{Root},
@@ -473,6 +573,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "integrate.modsec_section",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 		Subsystem:        "host integration",
 		Summary:          "refresh the managed ModSecurity section at startup and during periodic WAF checks, preserving operator configuration",
 		Privileges:       []Privilege{Root},
@@ -484,6 +586,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "integrate.waf_vendor_rules",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 		Subsystem:        "host integration",
 		Summary:          "ask the panel to update stale ModSecurity vendor rulesets when a periodic check finds them out of date",
 		Privileges:       []Privilege{Root},
@@ -495,6 +599,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "integrate.php_shield",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 		Subsystem:        "host integration",
 		Summary:          "install the PHP runtime hook and register its shared event directory for an operator-scheduled CageFS remount",
 		Privileges:       []Privilege{Root},
@@ -504,7 +610,14 @@ var operations = []Op{
 		WithoutPrivilege: "no PHP runtime blocking of uploads and temp-directory execution",
 	},
 	{
-		ID:           "integrate.challenge_snippet",
+		ID:   "integrate.challenge_snippet",
+		Risk: RiskDestructive,
+		Contract: &SafetyContract{
+			Authority: "non-observe startup refreshes legacy snippets and stale managed snippets on supported web servers independently of challenge.enabled; explicit integration commands also install or remove them",
+			Identity:  "managed Install and Remove run the web server configtest after changing the snippet and before reload; legacy map-reference repair and runtime map updates do not use that transaction",
+			Recovery:  "managed configtest or reload failure attempts to restore previous snippet bytes; restore failures are logged and recovery reload is best-effort; legacy repair and runtime maps have no unified rollback with the gate",
+			Limit:     "managed Install skips identical bytes, and nginx map reload skips unchanged maps; there is no shared reload pacing or capacity bound",
+		},
 		Subsystem:    "host integration",
 		Summary:      "refresh the web server snippet and rewrite maps that route challenged visitors to CSM's proof-of-work listener, and reload the web server when the snippet changed",
 		Privileges:   []Privilege{Root},
@@ -522,6 +635,8 @@ var operations = []Op{
 	// --- Operator commands ---
 	{
 		ID:               "operate.export_archives",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "Export can replace an existing operator-selected archive; removing the new archive does not restore overwritten bytes.",
 		Subsystem:        "operator commands",
 		Summary:          "read protected configuration, state or account evidence and export backup or forensic archives, temporary snapshots and checksum sidecars",
 		Privileges:       []Privilege{Root},
@@ -532,6 +647,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "operate.restore_backup",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 		Subsystem:        "operator commands",
 		Summary:          "stage and restore protected configuration, drop-ins and state from a backup while the daemon is stopped",
 		Privileges:       []Privilege{Root},
@@ -542,13 +659,17 @@ var operations = []Op{
 	},
 	{
 		ID: "operate.rehash", Subsystem: "operator commands",
-		Summary:    "re-sign configuration, converge legacy config copies, set binary immutability and refresh the launcher, service and log rotation",
-		Privileges: []Privilege{CapLinuxImmutable, Root}, Trigger: Operator, Unsandboxed: true,
+		Risk:        RiskDestructive,
+		RecoveryGap: "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
+		Summary:     "re-sign configuration, converge legacy config copies, set binary immutability and refresh the launcher, service and log rotation",
+		Privileges:  []Privilege{CapLinuxImmutable, Root}, Trigger: Operator, Unsandboxed: true,
 		Writes:           []string{"/opt/csm", "/etc/csm", "/etc/systemd/system", "/etc/logrotate.d", "/usr/sbin/csm", "service:daemon reload"},
 		WithoutPrivilege: "hash signing and upgrade integration refresh cannot complete",
 	},
 	{
 		ID:               "operate.manual_remediation",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
 		Subsystem:        "operator commands",
 		Summary:          "clean or quarantine files and spool messages, truncate malicious crontabs, kill verified malware processes, or change database objects on request",
 		Privileges:       []Privilege{CapKill, Root},
@@ -557,7 +678,14 @@ var operations = []Op{
 		WithoutPrivilege: "remediation is done by hand over SSH",
 	},
 	{
-		ID:               "operate.manual_firewall",
+		ID:   "operate.manual_firewall",
+		Risk: RiskContain,
+		Contract: &SafetyContract{
+			Authority: "an operator command accepted by the root control socket or an admin-authorized web UI request",
+			Identity:  "single-IP force blocks retain canonicalization and hard address guards under the engine lock but bypass automatic dry-run and soft allows; subnet blocks still refuse protected overlap",
+			Recovery:  "unblock and remove-allow reverse their selected entries; apply-confirmed has a timed ruleset snapshot rollback; a flush has no general inverse that restores all prior entries",
+			Limit:     "single-IP deny limits still apply; manual commands bypass the automatic hourly budget and have no shared all-operation ceiling",
+		},
 		Audited:          true,
 		Subsystem:        "operator commands",
 		Summary:          "block, allow, tempban or flush addresses on request, and roll a firewall apply back",
@@ -568,6 +696,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "operate.truncate_error_log",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
 		Subsystem:        "operator commands",
 		Summary:          "empty an account error log that has grown large enough to threaten the filesystem",
 		Privileges:       []Privilege{Root},
@@ -577,6 +707,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "operate.harden_host",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 		Subsystem:        "operator commands",
 		Summary:          "apply a supported CVE mitigation: a modprobe blacklist, or seccomp drop-ins for the services that need one",
 		Privileges:       []Privilege{CapSysModule, Root},
@@ -587,6 +719,8 @@ var operations = []Op{
 	},
 	{
 		ID:               "operate.install_service",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 		Subsystem:        "operator commands",
 		Summary:          "install or remove CSM itself: the systemd unit, the PAM hook, logrotate and the panel integrations",
 		Privileges:       []Privilege{CapAuditControl, CapLinuxImmutable, Root},

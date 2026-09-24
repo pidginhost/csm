@@ -23,25 +23,41 @@ import (
 // Everything else that calibration needs (timestamps, check names,
 // severities, path structure, plugin names, process names) is kept.
 type Anonymizer struct {
-	salt       []byte
-	accounts   map[string]struct{}
-	hosts      map[string]string // lower-cased name or alias -> canonical hostname
-	domains    map[string]struct{}
-	emails     map[string]struct{}
-	counts     map[string]int
-	pseudonyms map[string]struct{}
+	salt         []byte
+	accounts     map[string]struct{}
+	hosts        map[string]string // lower-cased name or alias -> canonical hostname
+	domains      map[string]struct{}
+	emails       map[string]struct{}
+	counts       map[string]int
+	pseudonyms   map[string]struct{}
+	ids          map[string]idKind   // emitted salted id -> its domain
+	rawIDs       map[string]struct{} // learned raw ids made of id token bytes
+	rawIDLengths map[int]struct{}    // distinct lengths, not one text scan per id
+	rawIDText    map[string]struct{} // learned raw ids with other bytes
+	dropped      map[string]int      // discarded nonempty values per input field
+	// Raw address -> pseudonym, per family. The raw side never leaves the
+	// process; only the counts do.
+	ipv4Seen map[string]string
+	ipv6Seen map[string]string
 }
 
 // NewAnonymizer returns an anonymizer keyed on salt.
 func NewAnonymizer(salt []byte) *Anonymizer {
 	return &Anonymizer{
-		salt:       append([]byte(nil), salt...),
-		accounts:   make(map[string]struct{}),
-		hosts:      make(map[string]string),
-		domains:    make(map[string]struct{}),
-		emails:     make(map[string]struct{}),
-		counts:     make(map[string]int),
-		pseudonyms: make(map[string]struct{}),
+		salt:         append([]byte(nil), salt...),
+		accounts:     make(map[string]struct{}),
+		hosts:        make(map[string]string),
+		domains:      make(map[string]struct{}),
+		emails:       make(map[string]struct{}),
+		counts:       make(map[string]int),
+		pseudonyms:   make(map[string]struct{}),
+		ids:          make(map[string]idKind),
+		rawIDs:       make(map[string]struct{}),
+		rawIDLengths: make(map[int]struct{}),
+		rawIDText:    make(map[string]struct{}),
+		dropped:      make(map[string]int),
+		ipv4Seen:     make(map[string]string),
+		ipv6Seen:     make(map[string]string),
 	}
 }
 
@@ -64,7 +80,7 @@ var (
 	accountRe         = regexp.MustCompile(`Account: ([A-Za-z0-9._-]+)`)
 	secretRe          = regexp.MustCompile(`(?is)(["']?(?:passw(?:or)?d|secret|token|api[_-]?key)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*(?:"|\\?$)|'(?:\\.|[^'\\])*(?:'|\\?$)|\S+)`)
 	domainCandidateRe = regexp.MustCompile(`(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}`)
-	emittedNameRe     = regexp.MustCompile(`(?:acct|host|dom|user)-[0-9a-f]{6}(?:\.example)?`)
+	emittedNameRe     = regexp.MustCompile(`(?:acct|host|dom|user)-[0-9a-f]{6}(?:\.example)?|(?:fid|aid|iid|tid)-[0-9a-f]{32}`)
 	ipv4Re            = regexp.MustCompile(`(?:[0-9]+\.){3}[0-9]+`)
 )
 
@@ -139,17 +155,28 @@ func (a *Anonymizer) IPv4(raw string) string {
 	mac.Write([]byte("ipv4\x00" + raw))
 	sum := mac.Sum(nil)
 	n := binary.BigEndian.Uint32(sum[:4]) & 0x1ffff // 17 bits: 198.18.0.0/15
-	return a.remember(fmt.Sprintf("198.%d.%d.%d", 18+(n>>16), (n>>8)&0xff, n&0xff))
+	out := a.remember(fmt.Sprintf("198.%d.%d.%d", 18+(n>>16), (n>>8)&0xff, n&0xff))
+	a.ipv4Seen[raw] = out
+	return out
 }
 
 // IPv6 maps an address into 2001:db8::/32 (RFC 3849 documentation prefix).
 func (a *Anonymizer) IPv6(raw string) string {
+	if addr, err := netip.ParseAddr(raw); err == nil {
+		addr = addr.Unmap()
+		if addr.Is4() {
+			return a.IPv4(addr.String())
+		}
+		raw = addr.String()
+	}
 	mac := hmac.New(sha256.New, a.salt)
 	mac.Write([]byte("ipv6\x00" + strings.ToLower(raw)))
 	sum := mac.Sum(nil)
-	return a.remember(fmt.Sprintf("2001:db8:%x:%x::%x:%x",
+	out := a.remember(fmt.Sprintf("2001:db8:%x:%x::%x:%x",
 		binary.BigEndian.Uint16(sum[0:2]), binary.BigEndian.Uint16(sum[2:4]),
 		binary.BigEndian.Uint16(sum[4:6]), binary.BigEndian.Uint16(sum[6:8])))
+	a.ipv6Seen[strings.ToLower(raw)] = out
+	return out
 }
 
 // Learn collects the identities the events carry in structured fields and
@@ -226,6 +253,7 @@ func (a *Anonymizer) learnEmail(addr string) {
 // Event returns the anonymized copy of e.
 func (a *Anonymizer) Event(e alert.AuditEvent) alert.AuditEvent {
 	out := e
+	out.FindingID = a.ID(idFinding, e.FindingID)
 	out.Hostname = a.Host(e.Hostname)
 	out.TenantID = a.Account(e.TenantID)
 	out.Domain = a.Domain(e.Domain)
@@ -613,6 +641,11 @@ func (a *Anonymizer) Verify(events []alert.AuditEvent) []string {
 	var problems []string
 	for i := range events {
 		found := a.leaksIn(eventText(events[i]))
+		found = append(found, a.rawIDLeaks(events[i].Check+"\n"+events[i].Severity)...)
+		// An output id must be one this run emitted, not merely id-shaped.
+		if id := events[i].FindingID; id != "" && !a.emittedID(id, idFinding) {
+			found = append(found, "finding id not emitted")
+		}
 		if len(found) > 0 {
 			sort.Strings(found)
 			problems = append(problems, fmt.Sprintf("event %d (%s): %s", i, events[i].Check, strings.Join(found, ", ")))
@@ -705,6 +738,37 @@ func (a *Anonymizer) leaksIn(text string) []string {
 	for _, raw := range unmaskedIPv6(text) {
 		found["ipv6 "+raw] = struct{}{}
 	}
+	for _, problem := range a.rawIDLeaks(text) {
+		found[problem] = struct{}{}
+	}
+	out := make([]string, 0, len(found))
+	for f := range found {
+		out = append(out, f)
+	}
+	return out
+}
+
+func (a *Anonymizer) rawIDLeaks(text string) []string {
+	found := map[string]struct{}{}
+	if len(a.rawIDs) > 0 {
+		for _, tok := range idTokens(text) {
+			// IDs also occur in prefixed tokens and filename components.
+			// Index by length so cost does not grow with every recorded ID.
+			for size := range a.rawIDLengths {
+				for start := 0; start+size <= len(tok); start++ {
+					candidate := tok[start : start+size]
+					if _, ok := a.rawIDs[candidate]; ok {
+						found["id "+candidate] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	for id := range a.rawIDText {
+		if strings.Contains(text, id) {
+			found["id "+id] = struct{}{}
+		}
+	}
 	out := make([]string, 0, len(found))
 	for f := range found {
 		out = append(out, f)
@@ -747,6 +811,23 @@ func unmaskedIPv6(text string) []string {
 	return found
 }
 
+// idTokenBytes are the bytes raw ids are made of: hex digests, base32 text
+// and prefixed forms such as inc_<hex>.
+const idTokenBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+
+// idTokens splits text into maximal runs of id bytes, so a learned raw id is
+// found by one set lookup per token instead of a scan per id.
+func idTokens(text string) []string {
+	return strings.FieldsFunc(text, func(r rune) bool { return r > 0x7f || !idTokenByte[r] })
+}
+
+var idTokenByte = func() (table [0x80]bool) {
+	for i := range len(idTokenBytes) {
+		table[idTokenBytes[i]] = true
+	}
+	return table
+}()
+
 func isIPByte(c byte) bool {
 	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') || c == ':' || c == '.'
 }
@@ -780,6 +861,31 @@ func eventText(e alert.AuditEvent) string {
 		parts = append(parts, p.Cmdline...)
 	}
 	return strings.Join(parts, "\n")
+}
+
+// addressCounts says how many distinct addresses each family mapped and how
+// many distinct pseudonyms they became. Fewer pseudonyms than addresses means
+// some addresses were merged; the IPv4 map has only a 17-bit range.
+type addressCounts struct {
+	IPv4Addresses  int `json:"ipv4_addresses"`
+	IPv4Pseudonyms int `json:"ipv4_pseudonyms"`
+	IPv6Addresses  int `json:"ipv6_addresses"`
+	IPv6Pseudonyms int `json:"ipv6_pseudonyms"`
+}
+
+// AddressCounts reports the address mapping's collisions so far.
+func (a *Anonymizer) AddressCounts() addressCounts {
+	distinct := func(m map[string]string) int {
+		seen := map[string]bool{}
+		for _, v := range m {
+			seen[v] = true
+		}
+		return len(seen)
+	}
+	return addressCounts{
+		IPv4Addresses: len(a.ipv4Seen), IPv4Pseudonyms: distinct(a.ipv4Seen),
+		IPv6Addresses: len(a.ipv6Seen), IPv6Pseudonyms: distinct(a.ipv6Seen),
+	}
 }
 
 // Counts reports how many replacements of each kind Text performed.

@@ -141,7 +141,7 @@ func TestChallengeRoute_DoesNotRouteSMTPChecks(t *testing.T) {
 			t.Errorf("check %q must be hard-blocked, not challenge-routed", check)
 		}
 		if !isHardBlockCheck(check) {
-			t.Errorf("check %q must be in hardBlockChecks (defense-in-depth)", check)
+			t.Errorf("check %q must be registered never-challenge (defense-in-depth)", check)
 		}
 	}
 }
@@ -152,7 +152,7 @@ func TestChallengeRoute_DoesNotRouteMailChecks(t *testing.T) {
 			t.Errorf("check %q must be hard-blocked, not challenge-routed", check)
 		}
 		if !isHardBlockCheck(check) {
-			t.Errorf("check %q must be in hardBlockChecks (defense-in-depth)", check)
+			t.Errorf("check %q must be registered never-challenge (defense-in-depth)", check)
 		}
 	}
 }
@@ -163,7 +163,7 @@ func TestChallengeRoute_DoesNotRoutePAMChecks(t *testing.T) {
 			t.Errorf("check %q must be hard-blocked, not challenge-routed", check)
 		}
 		if !isHardBlockCheck(check) {
-			t.Errorf("check %q must be in hardBlockChecks (defense-in-depth)", check)
+			t.Errorf("check %q must be registered never-challenge (defense-in-depth)", check)
 		}
 	}
 }
@@ -173,7 +173,7 @@ func TestChallengeRoute_AdminPanelIsHardBlocked(t *testing.T) {
 		t.Error("admin_panel_bruteforce must not be challenge-routed (hard-block only)")
 	}
 	if !isHardBlockCheck("admin_panel_bruteforce") {
-		t.Error("admin_panel_bruteforce must be in hardBlockChecks")
+		t.Error("admin_panel_bruteforce must be registered never-challenge")
 	}
 }
 
@@ -228,13 +228,13 @@ func TestChallengeRoute_JSKeyloggerIsHardBlocked(t *testing.T) {
 		t.Error("js_keylogger_dataflow must not be challenge-routed (hard-block only)")
 	}
 	if !isHardBlockCheck("js_keylogger_dataflow") {
-		t.Error("js_keylogger_dataflow must be in hardBlockChecks")
+		t.Error("js_keylogger_dataflow must be registered never-challenge")
 	}
 }
 
 func TestChallengeRoute_ScannerProfileNotHardBlocked(t *testing.T) {
 	if isHardBlockCheck("http_scanner_profile") {
-		t.Error("http_scanner_profile must not be in hardBlockChecks")
+		t.Error("http_scanner_profile must not be registered never-challenge")
 	}
 	if !isChallengeableCheck("http_scanner_profile") {
 		t.Error("http_scanner_profile must be challenge-eligible")
@@ -300,7 +300,7 @@ func TestResponseActionForCheck(t *testing.T) {
 // cannot) and hard-blocks only when challenge is disabled.
 func TestChallengeRoute_ClaimedBotUnverifiedRoutesThenBlocks(t *testing.T) {
 	if isHardBlockCheck("http_claimed_bot_unverified") {
-		t.Error("http_claimed_bot_unverified must not be in hardBlockChecks")
+		t.Error("http_claimed_bot_unverified must not be registered never-challenge")
 	}
 	if !isChallengeableCheck("http_claimed_bot_unverified") {
 		t.Error("http_claimed_bot_unverified must be challenge-eligible")
