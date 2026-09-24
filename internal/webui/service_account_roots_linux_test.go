@@ -119,13 +119,14 @@ func TestCustomAccountRootsInSystemdService(t *testing.T) {
 	}
 	listed := httptest.NewRecorder()
 	server.apiQuarantine(listed, httptest.NewRequest(http.MethodGet, "/api/v1/quarantine", nil))
+	if listed.Code != http.StatusOK {
+		t.Fatalf("quarantine listing=%d %s", listed.Code, listed.Body.String())
+	}
 	var entries []struct {
 		ID   string `json:"id"`
 		Path string `json:"original_path"`
 	}
-	if err := json.Unmarshal(listed.Body.Bytes(), &entries); err != nil {
-		t.Fatal(err)
-	}
+	decodeItems(t, listed.Body.Bytes(), &entries)
 	var ids []string
 	for _, entry := range entries {
 		if entry.Path == path {
