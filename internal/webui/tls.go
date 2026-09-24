@@ -101,7 +101,7 @@ func renewTLSCert(certPath, keyPath string) error {
 	if err != nil {
 		return err
 	}
-	block := leafCertificateBlock(certPEM)
+	block, prefix, suffix := leafCertificateBlock(certPEM)
 	if block == nil {
 		return nil
 	}
@@ -132,19 +132,29 @@ func renewTLSCert(certPath, keyPath string) error {
 	if err != nil {
 		return fmt.Errorf("renewing certificate: %w", err)
 	}
-	return writeTLSFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	renewed := append(bytes.Clone(prefix), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+	renewed = append(renewed, suffix...)
+	return writeTLSFile(certPath, renewed)
 }
 
 // leafCertificateBlock returns the certificate the TLS stack serves: the
 // first CERTIFICATE block. A combined file, such as cPanel's service
-// certificate, carries the private key ahead of it.
-func leafCertificateBlock(data []byte) *pem.Block {
+// certificate, carries the private key ahead of it. The surrounding bytes
+// must survive renewal because they may contain the key and chain.
+func leafCertificateBlock(data []byte) (block *pem.Block, prefix, suffix []byte) {
+	rest := data
 	for {
-		block, rest := pem.Decode(data)
-		if block == nil || block.Type == "CERTIFICATE" {
-			return block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return nil, nil, nil
 		}
-		data = rest
+		if block.Type == "CERTIFICATE" {
+			// Decode skips leading text and malformed blocks. Its accepted
+			// BEGIN marker is the last one before the consumed block's end.
+			end := len(data) - len(rest)
+			start := bytes.LastIndex(data[:end], []byte("-----BEGIN CERTIFICATE-----"))
+			return block, data[:start], rest
+		}
 	}
 }
 

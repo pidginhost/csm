@@ -11,6 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Fixed
 
+- The Web UI accepts combined certificate and private-key files again. Renewing a CSM-generated certificate in a combined file preserves the key and the rest of the bundle.
 - Web UI severity filters, date sorting and live notifications now follow the updated API contract. Failed actions and encoding errors return errors, and capped lists report missing results.
 - Web UI tables, desktop notifications, the incident timeline and merged IP reputation findings now compare times as instants instead of as text, which misordered entries from different time zones or within the same second.
 - The incident timeline, UI audit log, threat event, top attacker and ModSecurity event APIs now say when entries were left out, and the incident timeline no longer reports its page size as the total.

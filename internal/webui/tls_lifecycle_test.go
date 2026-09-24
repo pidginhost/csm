@@ -68,6 +68,17 @@ func TestTLSStartAcceptsACombinedOperatorFile(t *testing.T) {
 	}
 }
 
+func TestTLSStartRenewsACombinedCSMFile(t *testing.T) {
+	s := serverWithOccupiedListener(t)
+	path := filepath.Join(t.TempDir(), "service.pem")
+	writeExpiringCombinedPEM(t, path, true)
+	s.cfg.WebUI.TLSCert = path
+	s.cfg.WebUI.TLSKey = path
+	if err := s.Start(); !errors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("startup stopped before the listener: %v", err)
+	}
+}
+
 func TestCertificateRenewalLoopStopsOnShutdown(t *testing.T) {
 	s := newTestServer(t, randomBrowserCredential())
 	done := make(chan struct{})

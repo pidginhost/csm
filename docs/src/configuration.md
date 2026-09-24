@@ -906,6 +906,8 @@ webui:
 
 On cPanel servers, you can reuse the cPanel self-signed certificate (both cert and key are in the same PEM file). For production, use a proper certificate from Let's Encrypt or your CA.
 
+The private key may appear before or after the certificates. The first certificate must be the leaf served by the Web UI, followed by any chain certificates. Renewal only replaces an expiring CSM-generated leaf; it preserves the private key and all other contents of a combined file. Certificates issued outside CSM are left unchanged.
+
 If both paths are empty, CSM generates an ECDSA self-signed certificate and key under `state_path`. Set both paths to use an operator-managed certificate. Configuring only one of the pair is invalid.
 
 ## Validation
