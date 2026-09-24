@@ -253,8 +253,8 @@ func scanAddressProducers(t *testing.T, root string) ([]addressProducer, []strin
 	var producers []addressProducer
 	var unresolved []string
 	fset := token.NewFileSet()
+	byDir := map[string][]*ast.File{}
 	for _, top := range []string{"internal", "cmd"} {
-		byDir := map[string][]*ast.File{}
 		err := filepath.Walk(filepath.Join(root, top), func(path string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
@@ -278,190 +278,63 @@ func scanAddressProducers(t *testing.T, root string) ([]addressProducer, []strin
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, files := range byDir {
-			consts, returns := packageStringValues(files)
-			for _, f := range files {
-				for _, decl := range f.Decls {
-					ast.Inspect(decl, func(n ast.Node) bool {
-						if ref, ok := n.(*ast.UnaryExpr); ok && ref.Op == token.AND {
-							if field, ok := ast.Unparen(ref.X).(*ast.SelectorExpr); ok && (field.Sel.Name == "SourceIP" || field.Sel.Name == "CIDRs" || (field.Sel.Name == "Check" && isFindingValue(f, field.X, map[ast.Expr]bool{}))) {
-								unresolved = append(unresolved, fset.Position(ref.Pos()).String()+": escaped evidence field needs a reviewed producer contract")
-							}
+	}
+	sources := newProducerSources(root, byDir)
+	for _, files := range byDir {
+		consts, returns := packageStringValues(files)
+		for _, f := range files {
+			for _, decl := range f.Decls {
+				ast.Inspect(decl, func(n ast.Node) bool {
+					var targets []ast.Expr
+					switch v := n.(type) {
+					case *ast.UnaryExpr:
+						if v.Op == token.AND {
+							targets = []ast.Expr{v.X}
 						}
-						as, ok := n.(*ast.AssignStmt)
-						if !ok {
-							return true
-						}
-						for _, lhs := range as.Lhs {
-							if field, ok := ast.Unparen(lhs).(*ast.SelectorExpr); ok && (field.Sel.Name == "SourceIP" || field.Sel.Name == "CIDRs" || (field.Sel.Name == "Check" && isFindingValue(f, field.X, map[ast.Expr]bool{}))) {
-								unresolved = append(unresolved, fset.Position(lhs.Pos()).String()+": evidence field assignment needs a reviewed producer contract")
-							}
-						}
-						return true
-					})
-					for _, lit := range addressFindingLiterals(f, decl) {
-						positional := false
-						for _, elt := range lit.Elts {
-							if _, keyed := elt.(*ast.KeyValueExpr); !keyed {
-								positional = true
-							}
-						}
-						if positional {
-							unresolved = append(unresolved, fset.Position(lit.Pos()).String()+": positional finding needs named fields")
-							continue
-						}
-						check, carries := findingCheckField(lit)
-						if !carries {
-							continue
-						}
-						where := fset.Position(lit.Pos()).String()
-						rel, _ := filepath.Rel(root, where)
-						names, ok := resolveCheckNames(check, decl, consts, returns)
-						if !ok {
-							unresolved = append(unresolved, rel)
-							continue
-						}
-						producers = append(producers, addressProducer{checks: names, where: rel})
+					case *ast.AssignStmt:
+						targets = v.Lhs
+					case *ast.RangeStmt:
+						targets = []ast.Expr{v.Key, v.Value}
 					}
+					for _, target := range targets {
+						if sources.evidenceTarget(f, target) {
+							unresolved = append(unresolved, fset.Position(target.Pos()).String()+": evidence field mutation needs a reviewed producer contract")
+						}
+					}
+					return true
+				})
+				for _, lit := range sources.addressLiterals(f, decl) {
+					if sources.shape(sources.literalType(f, lit)).expr == nil {
+						unresolved = append(unresolved, fset.Position(lit.Pos()).String()+": unresolved address-bearing type needs a reviewed producer contract")
+						continue
+					}
+					positional := false
+					for _, elt := range lit.Elts {
+						if _, keyed := elt.(*ast.KeyValueExpr); !keyed {
+							positional = true
+						}
+					}
+					if positional {
+						unresolved = append(unresolved, fset.Position(lit.Pos()).String()+": positional finding needs named fields")
+						continue
+					}
+					check, carries := findingCheckField(lit)
+					if !carries {
+						continue
+					}
+					where := fset.Position(lit.Pos()).String()
+					rel, _ := filepath.Rel(root, where)
+					names, ok := resolveCheckNames(check, decl, consts, returns)
+					if !ok {
+						unresolved = append(unresolved, rel)
+						continue
+					}
+					producers = append(producers, addressProducer{checks: names, where: rel})
 				}
 			}
 		}
 	}
 	return producers, unresolved
-}
-
-func isFindingTypeExpr(f *ast.File, e ast.Expr) bool {
-	switch t := e.(type) {
-	case *ast.SelectorExpr:
-		x, ok := t.X.(*ast.Ident)
-		if !ok || t.Sel.Name != "Finding" {
-			return false
-		}
-		for _, imp := range f.Imports {
-			path, err := strconv.Unquote(imp.Path.Value)
-			if err != nil || path != "github.com/pidginhost/csm/internal/alert" {
-				continue
-			}
-			name := "alert"
-			if imp.Name != nil {
-				name = imp.Name.Name
-			}
-			if x.Name == name {
-				return true
-			}
-		}
-		return false
-	case *ast.Ident:
-		if t.Obj != nil {
-			if spec, ok := t.Obj.Decl.(*ast.TypeSpec); ok {
-				return isFindingTypeExpr(f, spec.Type)
-			}
-		}
-		if t.Name != "Finding" {
-			return false
-		}
-		if f.Name.Name == "alert" {
-			return true
-		}
-		for _, imp := range f.Imports {
-			path, err := strconv.Unquote(imp.Path.Value)
-			if err == nil && path == "github.com/pidginhost/csm/internal/alert" && imp.Name != nil && imp.Name.Name == "." {
-				return true
-			}
-		}
-		return false
-	case *ast.StarExpr:
-		return isFindingTypeExpr(f, t.X)
-	}
-	return false
-}
-
-// isFindingValue follows declared Finding values and local copies so a
-// later check-name write cannot bypass the literal's policy classification.
-func isFindingValue(f *ast.File, e ast.Expr, seen map[ast.Expr]bool) bool {
-	e = ast.Unparen(e)
-	if e == nil || seen[e] {
-		return false
-	}
-	seen[e] = true
-	switch v := e.(type) {
-	case *ast.CompositeLit:
-		return isFindingTypeExpr(f, v.Type)
-	case *ast.UnaryExpr:
-		return isFindingValue(f, v.X, seen)
-	case *ast.StarExpr:
-		return isFindingValue(f, v.X, seen)
-	case *ast.Ident:
-		if v.Obj == nil {
-			return false
-		}
-		switch d := v.Obj.Decl.(type) {
-		case *ast.Field:
-			return isFindingTypeExpr(f, d.Type)
-		case *ast.ValueSpec:
-			if isFindingTypeExpr(f, d.Type) {
-				return true
-			}
-			for i, name := range d.Names {
-				if name.Obj == v.Obj && i < len(d.Values) {
-					return isFindingValue(f, d.Values[i], seen)
-				}
-			}
-		case *ast.AssignStmt:
-			for i, lhs := range d.Lhs {
-				if name, ok := ast.Unparen(lhs).(*ast.Ident); ok && name.Obj == v.Obj && i < len(d.Rhs) {
-					return isFindingValue(f, d.Rhs[i], seen)
-				}
-			}
-		}
-	}
-	return false
-}
-
-// addressFindingLiterals returns Finding literals in decl, including elided
-// literals inside []alert.Finding and map values of that type.
-func addressFindingLiterals(f *ast.File, decl ast.Decl) []*ast.CompositeLit {
-	var out []*ast.CompositeLit
-	seen := map[*ast.CompositeLit]bool{}
-	add := func(cl *ast.CompositeLit) {
-		if !seen[cl] {
-			seen[cl] = true
-			out = append(out, cl)
-		}
-	}
-	ast.Inspect(decl, func(n ast.Node) bool {
-		cl, ok := n.(*ast.CompositeLit)
-		if !ok {
-			return true
-		}
-		check, carries := findingCheckField(cl)
-		if (cl.Type != nil && isFindingTypeExpr(f, cl.Type)) || (check != nil && carries) {
-			add(cl)
-		}
-		var elt ast.Expr
-		switch t := cl.Type.(type) {
-		case *ast.ArrayType:
-			elt = t.Elt
-		case *ast.MapType:
-			elt = t.Value
-		}
-		if elt == nil || !isFindingTypeExpr(f, elt) {
-			return true
-		}
-		for _, e := range cl.Elts {
-			if kv, ok := e.(*ast.KeyValueExpr); ok {
-				e = kv.Value
-			}
-			if u, ok := e.(*ast.UnaryExpr); ok {
-				e = u.X
-			}
-			if inner, ok := e.(*ast.CompositeLit); ok && inner.Type == nil {
-				add(inner)
-			}
-		}
-		return true
-	})
-	return out
 }
 
 func findingCheckField(lit *ast.CompositeLit) (ast.Expr, bool) {
@@ -491,10 +364,21 @@ func findingCheckField(lit *ast.CompositeLit) (ast.Expr, bool) {
 func packageStringValues(files []*ast.File) (map[string]string, map[string][]string) {
 	consts := map[string]string{}
 	returns := map[string][]string{}
+	declarations := map[string]int{}
 	for _, f := range files {
 		for _, decl := range f.Decls {
 			switch d := decl.(type) {
 			case *ast.GenDecl:
+				for _, spec := range d.Specs {
+					switch v := spec.(type) {
+					case *ast.ValueSpec:
+						for _, name := range v.Names {
+							declarations[name.Name]++
+						}
+					case *ast.TypeSpec:
+						declarations[v.Name.Name]++
+					}
+				}
 				if d.Tok != token.CONST {
 					continue
 				}
@@ -509,7 +393,11 @@ func packageStringValues(files []*ast.File) (map[string]string, map[string][]str
 					}
 				}
 			case *ast.FuncDecl:
-				if d.Recv != nil || d.Body == nil {
+				if d.Recv != nil {
+					continue
+				}
+				declarations[d.Name.Name]++
+				if d.Body == nil {
 					continue
 				}
 				var vals []string
@@ -538,6 +426,14 @@ func packageStringValues(files []*ast.File) (map[string]string, map[string][]str
 					returns[d.Name.Name] = vals
 				}
 			}
+		}
+	}
+	// All build variants are scanned. Conflicting definitions cannot inherit
+	// whichever literal happened to be visited last.
+	for name, count := range declarations {
+		if count > 1 {
+			delete(consts, name)
+			delete(returns, name)
 		}
 	}
 	return consts, returns
@@ -600,6 +496,31 @@ func resolveCheckNames(check ast.Expr, decl ast.Decl, consts map[string]string, 
 	switch id.Obj.Decl.(type) {
 	case *ast.AssignStmt, *ast.ValueSpec:
 	default:
+		return nil, false
+	}
+	// A package variable can be changed by another function between the local
+	// assignment and emission. Only variables declared inside this producer
+	// have all their writes covered by the scan below.
+	local := false
+	ast.Inspect(decl, func(n ast.Node) bool {
+		var body *ast.BlockStmt
+		switch fn := n.(type) {
+		case *ast.FuncDecl:
+			body = fn.Body
+		case *ast.FuncLit:
+			body = fn.Body
+		default:
+			return true
+		}
+		if body != nil {
+			ast.Inspect(body, func(n ast.Node) bool {
+				local = local || n == id.Obj.Decl
+				return !local
+			})
+		}
+		return false
+	})
+	if !local {
 		return nil, false
 	}
 	var names []string
@@ -684,6 +605,35 @@ func TestAddressProducerScannerForms(t *testing.T) {
 		{"finding parameter replacement", `package fixture; import "github.com/pidginhost/csm/internal/alert"; func f(a *alert.Finding) { a.Check = "not_a_check" }`, 0, 1},
 		{"finding copy replacement", `package fixture; import "github.com/pidginhost/csm/internal/alert"; func f() { a := alert.Finding{Check:"ssh_login_unknown_ip", SourceIP:"192.0.2.1"}; b := &a; b.Check = "not_a_check" }`, 1, 1},
 		{"finding escaped check", `package fixture; import "github.com/pidginhost/csm/internal/alert"; func f(a *alert.Finding) { fill(&a.Check) }`, 0, 1},
+		{"constructor result replacement", `package fixture; import "github.com/pidginhost/csm/internal/alert"; func makeFinding() alert.Finding { return alert.Finding{Check:"ssh_login_unknown_ip", SourceIP:"192.0.2.1"} }; func f() { a := makeFinding(); a.Check = "not_a_check" }`, 1, 1},
+		{"method result replacement", `package fixture; import "github.com/pidginhost/csm/internal/alert"; type maker struct{}; func (maker) makeFinding() alert.Finding { return alert.Finding{Check:"ssh_login_unknown_ip", SourceIP:"192.0.2.1"} }; func f(m maker) { a := m.makeFinding(); a.Check = "not_a_check" }`, 1, 1},
+		{"embedded finding replacement", `package fixture; import "github.com/pidginhost/csm/internal/alert"; type wrapper struct { alert.Finding }; func f(a *wrapper) { a.Check = "not_a_check" }`, 0, 1},
+		{"nested finding replacement", `package fixture; import "github.com/pidginhost/csm/internal/alert"; type wrapper struct { Finding alert.Finding }; func f(a *wrapper) { a.Finding.Check = "not_a_check" }`, 0, 1},
+		{"slice element replacement", `package fixture; import "github.com/pidginhost/csm/internal/alert"; func f(a []alert.Finding) { a[0].Check = "not_a_check" }`, 0, 1},
+		{"generic result replacement", `package fixture; import "github.com/pidginhost/csm/internal/alert"; func identity[T any](v T) T { return v }; func f() { a := identity(alert.Finding{Check:"ssh_login_unknown_ip", SourceIP:"192.0.2.1"}); a.Check = "not_a_check" }`, 1, 1},
+		{"generic explicit replacement", `package fixture; import "github.com/pidginhost/csm/internal/alert"; func identity[T any](v T) T { return v }; func f(a alert.Finding) { b := identity[alert.Finding](a); b.Check = "not_a_check" }`, 0, 1},
+		{"generic elided missing check", `package fixture; import "github.com/pidginhost/csm/internal/alert"; type findings[T any] []alert.Finding; var a = findings[int]{{SourceIP:"192.0.2.1"}}`, 0, 1},
+		{"named slice missing check", `package fixture; import "github.com/pidginhost/csm/internal/alert"; type findings []alert.Finding; var a = findings{{SourceIP:"192.0.2.1"}}`, 0, 1},
+		{"nested elided missing check", `package fixture; import "github.com/pidginhost/csm/internal/alert"; var a = [][]alert.Finding{{{SourceIP:"192.0.2.1"}}}`, 0, 1},
+		{"other record literal", `package fixture; type record struct { Check, SourceIP string }; var a = record{Check:"other", SourceIP:"192.0.2.1"}`, 0, 0},
+		{"other record address assignment", `package fixture; type record struct { SourceIP string }; func f(a *record) { a.SourceIP = "192.0.2.1" }`, 0, 0},
+		{"other record address escape", `package fixture; type record struct { SourceIP string }; func fill(*string) {}; func f(a *record) { fill(&a.SourceIP) }`, 0, 0},
+		{"embedded finding shadow", `package fixture; import "github.com/pidginhost/csm/internal/alert"; type wrapper struct { alert.Finding; Check string }; func f(a *wrapper) { a.Check = "other" }`, 0, 0},
+		{"range finding replacement", `package fixture; import "github.com/pidginhost/csm/internal/alert"; func f(a []alert.Finding) { for _, item := range a { item.Check = "not_a_check" } }`, 0, 1},
+		{"tuple constructor replacement", `package fixture; import "github.com/pidginhost/csm/internal/alert"; func makeFinding() (bool, alert.Finding) { return true, alert.Finding{Check:"ssh_login_unknown_ip", SourceIP:"192.0.2.1"} }; func f() { _, a := makeFinding(); a.Check = "not_a_check" }`, 1, 1},
+		{"unknown producer type", `package fixture; var a = unknown{Check:"ssh_login_unknown_ip", SourceIP:"192.0.2.1"}`, 0, 1},
+		{"other method result", `package fixture; type record struct { Check string }; type maker struct{}; func (maker) create() record { return record{} }; func f(m maker) { a := m.create(); a.Check = "other" }`, 0, 0},
+		{"other constructor result", `package fixture; type record struct { Check string }; func create() record { return record{} }; func f() { a := create(); a.Check = "other" }`, 0, 0},
+		{"embedded field at shallow depth", `package fixture; import "github.com/pidginhost/csm/internal/alert"; type deep struct { alert.Finding }; type record struct { Check string }; type wrapper struct { deep; record }; func f(a *wrapper) { a.Check = "other" }`, 0, 0},
+		{"unknown embedding", `package fixture; type record struct { Check string }; type wrapper struct { unknown; record }; func f(a *wrapper) { a.Check = "not_a_check" }`, 0, 1},
+		{"embedded unrelated field", `package fixture; type record struct { Check string }; type empty struct{}; type wrapper struct { empty; record }; func f(a *wrapper) { a.Check = "other" }`, 0, 0},
+		{"recursive unrelated field", `package fixture; type record struct { *record; Check string }; func f(a *record) { a.Check = "other" }`, 0, 0},
+		{"nested map finding", `package fixture; import "github.com/pidginhost/csm/internal/alert"; var a = map[string][]*alert.Finding{"a":{{SourceIP:"192.0.2.1"}}}`, 0, 1},
+		{"range finding field assignment", `package fixture; import "github.com/pidginhost/csm/internal/alert"; func f(a *alert.Finding, names []string) { for _, a.Check = range names {} }`, 0, 1},
+		{"cidr element assignment", `package fixture; import "github.com/pidginhost/csm/internal/alert"; func f(a *alert.Finding) { a.CIDRs[0] = "192.0.2.0/24" }`, 0, 1},
+		{"cidr element escape", `package fixture; import "github.com/pidginhost/csm/internal/alert"; func fill(*string) {}; func f(a *alert.Finding) { fill(&a.CIDRs[0]) }`, 0, 1},
+		{"other cidr element", `package fixture; type record struct { CIDRs []string }; func f(a *record) { a.CIDRs[0] = "192.0.2.0/24" }`, 0, 0},
+		{"package variable check", `package fixture; import "github.com/pidginhost/csm/internal/alert"; var check string; func rename() { check = "not_a_check" }; func f() { check = "ssh_login_unknown_ip"; rename(); _ = alert.Finding{Check:check, SourceIP:"192.0.2.1"} }`, 0, 1},
 		{"other record check", `package fixture; type record struct { Check string }; func f(a *record) { a.Check = "other" }`, 0, 0},
 		{"constant shadow", `package fixture; import "github.com/pidginhost/csm/internal/alert"; const check = "ssh_login_unknown_ip"; func f(check string) { _ = alert.Finding{Check:check, SourceIP:"192.0.2.1"} }`, 0, 1},
 		{"parameter shadow", `package fixture; import "github.com/pidginhost/csm/internal/alert"; func f(check string) { if true { check := "ssh_login_unknown_ip"; _ = check }; _ = alert.Finding{Check:check, SourceIP:"192.0.2.1"} }`, 0, 1},
@@ -725,5 +675,96 @@ func TestAddressProducerScannerUsesLocalConstant(t *testing.T) {
 	producers, unresolved := scanAddressProducers(t, root)
 	if len(unresolved) != 0 || len(producers) != 1 || len(producers[0].checks) != 1 || producers[0].checks[0] != "not_a_check" {
 		t.Fatalf("scanner used the shadowed package constant: %v %v", producers, unresolved)
+	}
+}
+
+func TestAddressProducerScannerResolvesPackageTypes(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"internal/model/type.go": `package model
+import events "github.com/pidginhost/csm/internal/alert"
+type Finding = events.Finding
+type Findings []Finding
+type Record struct { Check, SourceIP string }
+func NewRecord() Record { return Record{} }
+`,
+		"internal/producer/types.go": `package producer
+import "github.com/pidginhost/csm/internal/model"
+type Findings = model.Findings
+type Wrapper struct { model.Finding }
+`,
+		"internal/producer/use.go": `package producer
+import "github.com/pidginhost/csm/internal/model"
+var classified = Findings{{Check:"ssh_login_unknown_ip", SourceIP:"192.0.2.1"}}
+var missing = Findings{{SourceIP:"192.0.2.1"}}
+func rewrite(w *Wrapper) { w.Check = "not_a_check" }
+func unrelated() { r := model.NewRecord(); r.Check = "other"; r.SourceIP = "192.0.2.1" }
+`,
+	}
+	if err := os.MkdirAll(filepath.Join(root, "cmd"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for path, source := range files {
+		path = filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	producers, unresolved := scanAddressProducers(t, root)
+	if len(producers) != 1 || len(producers[0].checks) != 1 || producers[0].checks[0] != "ssh_login_unknown_ip" {
+		t.Fatalf("cross-package producer = %v, want exactly ssh_login_unknown_ip", producers)
+	}
+	if len(unresolved) != 2 {
+		t.Fatalf("unresolved = %v, want the missing check and promoted field write", unresolved)
+	}
+	for _, line := range []string{"use.go:4:", "use.go:5:"} {
+		count := 0
+		for _, where := range unresolved {
+			if strings.Contains(where, line) {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("%s reported %d times in %v, want once", line, count, unresolved)
+		}
+	}
+}
+
+func TestAddressProducerScannerRefusesAmbiguousBuildValues(t *testing.T) {
+	for name, declarations := range map[string][2]string{
+		"constant": {`const check = "ssh_login_unknown_ip"`, `const check = "not_a_check"`},
+		"helper":   {`func check() string { return "ssh_login_unknown_ip" }`, `func check() string { return dynamic() }`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, dir := range []string{"internal", "cmd"} {
+				if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i, declaration := range declarations {
+				// Each definition belongs to a different build, but the source
+				// inventory must not pick one arbitrarily for a shared producer.
+				source := fmt.Sprintf("//go:build variant%d\n\npackage fixture\n%s\n", i, declaration)
+				if err := os.WriteFile(filepath.Join(root, "internal", fmt.Sprintf("variant%d.go", i)), []byte(source), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			value := "check"
+			if name == "helper" {
+				value += "()"
+			}
+			source := `package fixture; import "github.com/pidginhost/csm/internal/alert"; var f = alert.Finding{Check:` + value + `, SourceIP:"192.0.2.1"}`
+			if err := os.WriteFile(filepath.Join(root, "internal", "producer.go"), []byte(source), 0600); err != nil {
+				t.Fatal(err)
+			}
+			producers, unresolved := scanAddressProducers(t, root)
+			if len(producers) != 0 || len(unresolved) != 1 || !strings.Contains(unresolved[0], "producer.go:") {
+				t.Fatalf("ambiguous builds yielded %v / %v, want one unresolved producer", producers, unresolved)
+			}
+		})
 	}
 }
