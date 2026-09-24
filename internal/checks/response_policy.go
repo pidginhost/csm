@@ -174,12 +174,17 @@ func ResponsePolicyFor(check string) ResponsePolicy {
 
 // AdmissionPolicy is the registry projection automatic response admission
 // reads. It maps a renamed producer to its current name first; ok is false
-// for an unregistered check. Producers and the engine use this one lookup.
+// for an unregistered check. A Critical-only check admits only Critical
+// findings as evidence. Producers and the engine use this one lookup.
 func AdmissionPolicy(check string) (string, admission.Policy, bool) {
 	name := config.CanonicalCheckName(check)
 	if _, registered := loadCorrelationIndex().classes[name]; !registered {
 		return "", admission.Policy{}, false
 	}
 	p := ResponsePolicyFor(name)
-	return name, admission.Policy{Family: p.Evidence, Basis: p.Basis}, true
+	pol := admission.Policy{Family: p.Evidence, Basis: p.Basis}
+	if p.CriticalOnly {
+		pol.MinSeverity = admission.SeverityCritical
+	}
+	return name, pol, true
 }

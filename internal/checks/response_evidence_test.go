@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 )
@@ -160,6 +161,7 @@ func TestAdmissionPolicyLookup(t *testing.T) {
 	}{
 		{"ssh_login_realtime", "ssh_login_unknown_ip", admission.Policy{Family: admission.FamilySSH, Basis: admission.BasisLocal}, true},
 		{"ip_reputation", "ip_reputation", admission.Policy{Family: admission.FamilyReputation, Basis: admission.BasisIntel}, true},
+		{"mail_account_compromised", "mail_account_compromised", admission.Policy{Family: admission.FamilyMail, Basis: admission.BasisCompromise, MinSeverity: admission.SeverityCritical}, true},
 		{"cpanel_login", "cpanel_login", admission.Policy{}, true},
 		{"not_a_check", "", admission.Policy{}, false},
 		{"", "", admission.Policy{}, false},
@@ -169,6 +171,59 @@ func TestAdmissionPolicyLookup(t *testing.T) {
 		if name != tc.canonical || p != tc.want || ok != tc.ok {
 			t.Errorf("AdmissionPolicy(%q) = %q %+v %v, want %q %+v %v", tc.in, name, p, ok, tc.canonical, tc.want, tc.ok)
 		}
+	}
+}
+
+// The Critical-only rule must reach admission, or an advisory finding of such
+// a check would become a root there.
+func TestAdmissionPolicyCarriesCriticalOnlyFloor(t *testing.T) {
+	for _, c := range checkRegistry {
+		_, p, ok := AdmissionPolicy(c.Name)
+		if !ok {
+			t.Fatalf("%q is registered but has no admission policy", c.Name)
+		}
+		want := admission.Severity(0)
+		if c.Response.CriticalOnly {
+			want = admission.SeverityCritical
+		}
+		if p.MinSeverity != want {
+			t.Errorf("%q MinSeverity = %s, want %s", c.Name, p.MinSeverity, want)
+		}
+	}
+	reg, err := admission.NewRegistry(AdmissionPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	producer, err := reg.Register(admission.ProducerSpec{ID: "mail_auth", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"mail_account_compromised"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := admission.CanonicalAddress("192.0.2.1", admission.Caps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	in := admission.EvidenceInput{
+		Check:       "mail_account_compromised",
+		FindingID:   "0123456789abcdef",
+		Severity:    admission.SeverityHigh,
+		Observation: admission.ObservationRef{Stream: "maillog", Cursor: "offset=1", Version: 1},
+		ObservedAt:  observed,
+		Parser:      admission.ParserRef{Name: "dovecot", Version: 1},
+		Target:      target,
+	}
+	if _, err := producer.Mint(in); err == nil {
+		t.Error("an advisory mail_account_compromised finding became evidence")
+	} else if reason, _ := admission.ReasonOf(err); reason != admission.ReasonPolicy {
+		t.Errorf("advisory refusal reason = %s, want policy", reason)
+	}
+	in.Severity = admission.SeverityCritical
+	e, err := producer.Mint(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, err := admission.Assess(target, []admission.Evidence{e}, observed); err != nil || !a.DirectC3 {
+		t.Errorf("Critical mail_account_compromised = %+v %v, want direct C3", a, err)
 	}
 }
 

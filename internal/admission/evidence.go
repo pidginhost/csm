@@ -185,6 +185,9 @@ func (p *Producer) Mint(in EvidenceInput) (Evidence, error) {
 	if err := validateRecord(rec); err != nil {
 		return Evidence{}, err
 	}
+	if rec.Severity < pol.MinSeverity {
+		return Evidence{}, refuse(ReasonPolicy, "finding severity is below the check's evidence floor")
+	}
 	e := Evidence{rec: rec}
 	if b, err := e.MarshalBinary(); err != nil || len(b) > MaxEvidenceBytes {
 		return Evidence{}, refuse(ReasonInvalid, "evidence record exceeds its size bound")

@@ -11,13 +11,13 @@ import (
 
 // testPolicies is a registry fixture, not the production table.
 var testPolicies = map[string]Policy{
-	"ssh_brute":      {FamilySSH, BasisLocal},
-	"http_scan":      {FamilyHTTP, BasisLocal},
-	"waf_escalation": {FamilyHTTP, BasisLocal},
-	"mail_brute":     {FamilyMail, BasisLocal},
-	"mail_takeover":  {FamilyMail, BasisCompromise},
-	"reputation":     {FamilyReputation, BasisIntel},
-	"threat_score":   {FamilyDerived, BasisIntel},
+	"ssh_brute":      {Family: FamilySSH, Basis: BasisLocal},
+	"http_scan":      {Family: FamilyHTTP, Basis: BasisLocal},
+	"waf_escalation": {Family: FamilyHTTP, Basis: BasisLocal},
+	"mail_brute":     {Family: FamilyMail, Basis: BasisLocal},
+	"mail_takeover":  {Family: FamilyMail, Basis: BasisCompromise},
+	"reputation":     {Family: FamilyReputation, Basis: BasisIntel},
+	"threat_score":   {Family: FamilyDerived, Basis: BasisIntel},
 	"login_audit":    {},
 }
 
@@ -168,7 +168,7 @@ func TestRegistrationErrorsNeverEchoInput(t *testing.T) {
 		},
 		"invalid policy": func(r *Registry, _ *ProducerSpec) {
 			r.lookup = func(check string) (string, Policy, bool) {
-				return check, Policy{FamilyReputation, BasisCompromise}, true
+				return check, Policy{Family: FamilyReputation, Basis: BasisCompromise}, true
 			}
 		},
 	}
@@ -273,8 +273,8 @@ func TestEvidenceIDFollowsTheObservation(t *testing.T) {
 func TestValidateRefusesPolicyDrift(t *testing.T) {
 	tp := newTestProducers(t)
 	e, _ := tp.ssh.Mint(sshInput(t))
-	testPolicies["ssh_brute"] = Policy{FamilySSH, BasisCompromise}
-	defer func() { testPolicies["ssh_brute"] = Policy{FamilySSH, BasisLocal} }()
+	testPolicies["ssh_brute"] = Policy{Family: FamilySSH, Basis: BasisCompromise}
+	defer func() { testPolicies["ssh_brute"] = Policy{Family: FamilySSH, Basis: BasisLocal} }()
 	err := tp.reg.Validate(e)
 	wantReason(t, "policy drift", err, ReasonPolicy)
 	other, _ := NewRegistry(testLookup)
@@ -440,5 +440,72 @@ func TestObservationKindValuesAreFrozen(t *testing.T) {
 		if pair[0] != pair[1] {
 			t.Errorf("%s = %d, frozen at %d", name, pair[0], pair[1])
 		}
+	}
+}
+
+// A Critical-only check keeps its advisory findings out of admission: a
+// below-floor record is never minted, and one minted before the floor was
+// raised stops validating.
+func TestSeverityFloorKeepsAdvisoryFindingsOutOfEvidence(t *testing.T) {
+	floor := SeverityCritical
+	lookup := func(check string) (string, Policy, bool) {
+		if check != "mail_takeover" {
+			return testLookup(check)
+		}
+		return check, Policy{Family: FamilyMail, Basis: BasisCompromise, MinSeverity: floor}, true
+	}
+	reg, err := NewRegistry(lookup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := reg.Register(ProducerSpec{ID: "mail_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"mail_takeover"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := sshInput(t)
+	in.Check = "mail_takeover"
+	for _, sev := range []Severity{SeverityWarning, SeverityHigh} {
+		in.Severity = sev
+		e, err := p.Mint(in)
+		wantReason(t, "advisory "+sev.String()+" finding", err, ReasonPolicy)
+		if !e.Equal(Evidence{}) {
+			t.Errorf("%s: below-floor finding returned evidence", sev)
+		}
+	}
+	in.Severity = SeverityCritical
+	critical, err := p.Mint(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Validate(critical); err != nil {
+		t.Errorf("Critical evidence does not validate: %v", err)
+	}
+	a, err := Assess(mustAddr(t, "192.0.2.1"), []Evidence{critical}, t0)
+	if err != nil || !a.DirectC3 {
+		t.Errorf("Critical compromise evidence = %+v %v, want direct C3", a, err)
+	}
+
+	floor = 0
+	in.Severity = SeverityHigh
+	high, err := p.Mint(in)
+	if err != nil {
+		t.Fatalf("a check without a floor refused a High finding: %v", err)
+	}
+	floor = SeverityCritical
+	wantReason(t, "floor raised after minting", reg.Validate(high), ReasonPolicy)
+	if err := reg.Validate(critical); err != nil {
+		t.Errorf("raising the floor refused evidence at the floor: %v", err)
+	}
+}
+
+func TestRegisterRefusesUnknownSeverityFloor(t *testing.T) {
+	reg, err := NewRegistry(func(check string) (string, Policy, bool) {
+		return check, Policy{Family: FamilyMail, Basis: BasisLocal, MinSeverity: SeverityCritical + 1}, true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Register(ProducerSpec{ID: "mail_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"mail_brute"}}); err == nil {
+		t.Error("a check with an unknown severity floor registered")
 	}
 }

@@ -10,6 +10,10 @@ import (
 type Policy struct {
 	Family Family
 	Basis  Basis
+	// MinSeverity is the lowest finding severity that counts as evidence for
+	// the check; zero accepts every severity. It carries a Critical-only
+	// rule, so an advisory finding of such a check never becomes a root.
+	MinSeverity Severity
 }
 
 // PolicyLookup resolves a check name, including a renamed producer's old
@@ -120,7 +124,7 @@ func (r *Registry) Register(spec ProducerSpec) (*Producer, error) {
 		if p.Family == FamilyNone {
 			return nil, fmt.Errorf("producer check carries no admissible address evidence")
 		}
-		if err := ValidPolicy(p.Family, p.Basis); err != nil {
+		if err := ValidPolicy(p.Family, p.Basis); err != nil || (p.MinSeverity != 0 && !p.MinSeverity.Valid()) {
 			return nil, fmt.Errorf("producer check has an invalid evidence policy")
 		}
 		if seen[name] {
@@ -159,8 +163,9 @@ func (spec ProducerSpec) publishes(check string) bool {
 }
 
 // Validate refuses evidence whose producer, entry, check or policy no
-// longer matches the registry. Admission calls it on every use, so a
-// policy change takes effect on evidence minted before it.
+// longer matches the registry, including a severity below the check's
+// current floor. Admission calls it on every use, so a policy change takes
+// effect on evidence minted before it.
 func (r *Registry) Validate(e Evidence) error {
 	spec, ok := r.Spec(e.rec.Producer)
 	if !ok {
@@ -170,8 +175,11 @@ func (r *Registry) Validate(e Evidence) error {
 		return refuse(ReasonPolicy, "evidence entry or check is not registered for its producer")
 	}
 	canonical, p, ok := r.lookup(e.rec.Check)
-	if !ok || canonical != e.rec.Check || p != (Policy{Family: e.rec.Family, Basis: e.rec.Basis}) {
+	if !ok || canonical != e.rec.Check || p.Family != e.rec.Family || p.Basis != e.rec.Basis {
 		return refuse(ReasonPolicy, "check policy changed since the evidence was minted")
+	}
+	if e.rec.Severity < p.MinSeverity {
+		return refuse(ReasonPolicy, "finding severity is below the check's evidence floor")
 	}
 	return nil
 }
