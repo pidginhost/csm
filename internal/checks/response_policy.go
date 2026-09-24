@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -86,6 +87,14 @@ type ResponsePolicy struct {
 	// challenge: there is no browser at the other end, or the evidence is
 	// strong enough that a challenge would only delay containment.
 	NeverChallenge bool
+	// Evidence is the observation family of the check's address evidence.
+	// Every check that can drive a response has one. FamilyNone means its
+	// address, if any, is never admissible evidence: a destination, an
+	// authenticated customer, an advisory or a record of a response.
+	Evidence admission.Family
+	// Basis is the priority class the check's own evidence supports.
+	// BasisCompromise is reserved for the reviewed compromise checks.
+	Basis admission.Basis
 }
 
 // neverChallengePrefixes is the contract for check names built at runtime,
@@ -126,6 +135,12 @@ func validateResponsePolicy(entries []CheckInfo) error {
 		if p.ChallengeFirst && (p.NeverChallenge || neverChallengeDynamicName(c.Name)) {
 			return fmt.Errorf("check %q is challenge-first and never-challenge at once", c.Name)
 		}
+		if err := admission.ValidPolicy(p.Evidence, p.Basis); err != nil {
+			return fmt.Errorf("check %q: %w", c.Name, err)
+		}
+		if (p.Block != BlockNever || p.ChallengeFirst) && p.Evidence == admission.FamilyNone {
+			return fmt.Errorf("check %q can drive a response but has no evidence family", c.Name)
+		}
 	}
 	return nil
 }
@@ -155,4 +170,16 @@ func loadResponseIndex() map[string]ResponsePolicy {
 // check gets the zero policy, which never blocks and never challenges.
 func ResponsePolicyFor(check string) ResponsePolicy {
 	return loadResponseIndex()[config.CanonicalCheckName(check)]
+}
+
+// AdmissionPolicy is the registry projection automatic response admission
+// reads. It maps a renamed producer to its current name first; ok is false
+// for an unregistered check. Producers and the engine use this one lookup.
+func AdmissionPolicy(check string) (string, admission.Policy, bool) {
+	name := config.CanonicalCheckName(check)
+	if _, registered := loadCorrelationIndex().classes[name]; !registered {
+		return "", admission.Policy{}, false
+	}
+	p := ResponsePolicyFor(name)
+	return name, admission.Policy{Family: p.Evidence, Basis: p.Basis}, true
 }

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/admission"
 )
 
 func TestResponsePolicyRegistryIsValid(t *testing.T) {
@@ -49,8 +51,8 @@ func TestNeverChallengeDynamicNames(t *testing.T) {
 
 func TestResponsePolicyForFollowsRenamedProducers(t *testing.T) {
 	for name, want := range map[string]ResponsePolicy{
-		"ssh_login_realtime":   {Block: BlockAlways},
-		"ssh_login_unknown_ip": {Block: BlockAlways},
+		"ssh_login_realtime":   {Block: BlockAlways, Evidence: admission.FamilySSH, Basis: admission.BasisLocal},
+		"ssh_login_unknown_ip": {Block: BlockAlways, Evidence: admission.FamilySSH, Basis: admission.BasisLocal},
 		"ftp_login_realtime":   {},
 		"ftp_login":            {},
 	} {
@@ -67,6 +69,8 @@ func TestRegistryResponsePolicyMatchesGoldenTables(t *testing.T) {
 			CriticalOnly:   c.Name == "mail_account_compromised",
 			ChallengeFirst: goldenChallengeable[c.Name],
 			NeverChallenge: goldenNeverChallenge[c.Name],
+			Evidence:       evidencePolicy[c.Name].Family,
+			Basis:          evidencePolicy[c.Name].Basis,
 		}
 		switch {
 		case goldenAlwaysBlock[c.Name]:
@@ -152,8 +156,8 @@ func TestResponseAndHealthChecksAreNeverActionable(t *testing.T) {
 // -race in a fresh process to cover the first initialization.
 func TestResponsePolicyLookupConcurrent(t *testing.T) {
 	want := map[string]ResponsePolicy{
-		"ssh_login_realtime":  {Block: BlockAlways},
-		"wp_login_bruteforce": {Block: BlockAlways, ChallengeFirst: true},
+		"ssh_login_realtime":  {Block: BlockAlways, Evidence: admission.FamilySSH, Basis: admission.BasisLocal},
+		"wp_login_bruteforce": {Block: BlockAlways, ChallengeFirst: true, Evidence: admission.FamilyHTTP, Basis: admission.BasisLocal},
 		"not_a_check":         {},
 	}
 	start := make(chan struct{})
