@@ -116,6 +116,33 @@ func TestLightThemeSurfacesFollowTheTheme(t *testing.T) {
 	}
 }
 
+// Tabler gives the header bar a minimum height and stretches its items, so
+// text and the logout form sat at the top while icon buttons centred. Every
+// header control shares one centre line, and each label keeps its space
+// after the icon: a leading plain space collapses inside a flex item.
+func TestTopbarControlsShareOneCenterLine(t *testing.T) {
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cssDeclaration(t, parseCSSRules(string(css)), ".csm-topbar .navbar-nav", "align-items"); got != "center" {
+		t.Errorf("header controls align %q, want center", got)
+	}
+	_, header, found := strings.Cut(readTemplateText(t, "layout"), `class="navbar navbar-light d-print-none csm-topbar"`)
+	if !found {
+		t.Fatal("no header bar in layout.html")
+	}
+	header, _, _ = strings.Cut(header, "</header>")
+	for _, label := range regexp.MustCompile(`</i><span[^>]*>[^<]*</span>`).FindAllString(header, -1) {
+		if !strings.Contains(label, ">&nbsp;") {
+			t.Errorf("header label loses its space after the icon: %s", label)
+		}
+	}
+	if !strings.Contains(header, `&nbsp;Logout</span>`) {
+		t.Error("logout label missing from the header")
+	}
+}
+
 // On a desktop the ModSecurity apply bar starts at the sidebar edge instead
 // of covering the sidebar; on a phone the header wraps instead of running
 // off the screen.
@@ -127,7 +154,7 @@ func TestFixedBarsFitTheLayout(t *testing.T) {
 	text := string(css)
 	for _, want := range []string{
 		"@media (min-width: 992px) {\n    .csm-apply-bar { left: 244px; }\n}",
-		".csm-topbar .navbar-nav { flex-wrap: wrap; row-gap: 0.25rem; justify-content: flex-end; }",
+		".csm-topbar .navbar-nav { flex-wrap: wrap; row-gap: 0.25rem; justify-content: flex-end; align-items: center; }",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("csm.css missing %q", want)
