@@ -466,8 +466,8 @@ func TestSeverityFloorKeepsAdvisoryFindingsOutOfEvidence(t *testing.T) {
 	in.Check = "mail_takeover"
 	for _, sev := range []Severity{SeverityWarning, SeverityHigh} {
 		in.Severity = sev
-		e, err := p.Mint(in)
-		wantReason(t, "advisory "+sev.String()+" finding", err, ReasonPolicy)
+		e, mintErr := p.Mint(in)
+		wantReason(t, "advisory "+sev.String()+" finding", mintErr, ReasonPolicy)
 		if !e.Equal(Evidence{}) {
 			t.Errorf("%s: below-floor finding returned evidence", sev)
 		}
@@ -477,8 +477,8 @@ func TestSeverityFloorKeepsAdvisoryFindingsOutOfEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := reg.Validate(critical); err != nil {
-		t.Errorf("Critical evidence does not validate: %v", err)
+	if validateErr := reg.Validate(critical); validateErr != nil {
+		t.Errorf("Critical evidence does not validate: %v", validateErr)
 	}
 	a, err := Assess(mustAddr(t, "192.0.2.1"), []Evidence{critical}, t0)
 	if err != nil || !a.DirectC3 {
@@ -537,6 +537,31 @@ func TestEvidenceEncodingAndIDAreFrozen(t *testing.T) {
 		t.Fatalf("encoding = %q %v, want %q", got, err, want)
 	}
 	if e.ID() != "ev_0420f53c6c1a4fbd02004e9f379171f8" {
+		t.Errorf("ID() = %s", e.ID())
+	}
+	back, err := UnmarshalEvidence(want)
+	if err != nil || !back.Equal(e) {
+		t.Errorf("golden record does not decode: %v", err)
+	}
+}
+
+// The populated golden cannot detect a change to optional-field omission.
+// Host-owned local evidence must keep its encoding across upgrades too.
+func TestHostEvidenceEncodingAndIDAreFrozen(t *testing.T) {
+	tp := newTestProducers(t)
+	e, err := tp.ssh.Mint(sshInput(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const body = `{"producer":"sshd_log","entry":1,"check":"ssh_brute","family":4,"basis":2,` +
+		`"finding_id":"0123456789abcdef","severity":2,"stream":"secure:dev=2049,ino=77","cursor":"offset=4096",` +
+		`"version":1,"observed_at":1790251200000000000,"parser":"sshd","parser_version":1,"target":"ip:192.0.2.1"}`
+	want := append([]byte("E\x01"+body), 0xd6, 0xcd, 0x71, 0x50, 0x35, 0x24, 0xa5, 0x42)
+	got, err := e.MarshalBinary()
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("encoding = %q %v, want %q", got, err, want)
+	}
+	if e.ID() != "ev_0c35e7a857527c0fb5c4bcb1030c7704" {
 		t.Errorf("ID() = %s", e.ID())
 	}
 	back, err := UnmarshalEvidence(want)

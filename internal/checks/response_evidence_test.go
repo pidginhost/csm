@@ -212,9 +212,9 @@ func TestAdmissionPolicyCarriesCriticalOnlyFloor(t *testing.T) {
 		Parser:      admission.ParserRef{Name: "dovecot", Version: 1},
 		Target:      target,
 	}
-	if _, err := producer.Mint(in); err == nil {
+	if _, mintErr := producer.Mint(in); mintErr == nil {
 		t.Error("an advisory mail_account_compromised finding became evidence")
-	} else if reason, _ := admission.ReasonOf(err); reason != admission.ReasonPolicy {
+	} else if reason, _ := admission.ReasonOf(mintErr); reason != admission.ReasonPolicy {
 		t.Errorf("advisory refusal reason = %s, want policy", reason)
 	}
 	in.Severity = admission.SeverityCritical
