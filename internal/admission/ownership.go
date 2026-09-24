@@ -1,0 +1,282 @@
+package admission
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"math"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// Owner is a verified victim identity: one hosting account at one inventory
+// generation, or the shared host owner. Only an Inventory produces an
+// account owner; the zero value is the host owner.
+type Owner struct {
+	account    string
+	generation uint64
+}
+
+// HostOwner is the owner of unknown, multi-account and host-level evidence.
+func HostOwner() Owner { return Owner{} }
+
+func (o Owner) IsHost() bool       { return o.account == "" }
+func (o Owner) Account() string    { return o.account }
+func (o Owner) Generation() uint64 { return o.generation }
+
+// Key is a stable text form: "host" or "acct:<name>#<generation>".
+func (o Owner) Key() string {
+	if o.IsHost() {
+		return "host"
+	}
+	return "acct:" + o.account + "#" + strconv.FormatUint(o.generation, 10)
+}
+
+// Scope is the fairness unit: a verified owner and an action family.
+type Scope struct {
+	Owner  Owner
+	Effect Effect
+}
+
+func (s Scope) Key() string { return s.Owner.Key() + "/" + s.Effect.String() }
+
+// ClaimKind says where an ownership claim came from. Only server-owned
+// context can verify an owner.
+type ClaimKind uint8
+
+const (
+	// ClaimAccount names a hosting account from server-owned identity: a
+	// process or file owner, or the account root a path lies under.
+	ClaimAccount ClaimKind = iota + 1
+	// ClaimDomain names the domain of the vhost or listener that served
+	// the request, taken from server configuration or a per-vhost log.
+	ClaimDomain
+	// ClaimMailbox names a mailbox from a protocol exchange. The client
+	// chose it, so it never verifies on its own.
+	ClaimMailbox
+	// ClaimRequestName names a host from request content such as a Host
+	// header. It never verifies.
+	ClaimRequestName
+)
+
+// Claim is an unverified statement of which account a piece of evidence
+// concerns.
+type Claim struct {
+	Kind  ClaimKind
+	Value string
+}
+
+// Inventory is an immutable snapshot of server-owned hosting accounts and
+// the domains they serve.
+type Inventory struct {
+	accounts map[string]uint64
+	domains  map[string]string
+}
+
+// ValidAccountName is the account-name alphabet the scan control protocol
+// accepts, bounded to 64 bytes.
+func ValidAccountName(name string) bool {
+	if name == "" || name == "." || name == ".." || len(name) > 64 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalDomain(d string) string {
+	return strings.TrimSuffix(strings.ToLower(d), ".")
+}
+
+// NewInventory copies accounts (name to generation) and domains (domain to
+// owning account). Every generation is nonzero and every domain owner is a
+// listed account.
+func NewInventory(accounts map[string]uint64, domains map[string]string) (*Inventory, error) {
+	inv := &Inventory{accounts: make(map[string]uint64, len(accounts)), domains: make(map[string]string, len(domains))}
+	for name, gen := range accounts {
+		if !ValidAccountName(name) || gen == 0 {
+			return nil, fmt.Errorf("inventory account entry %q has an invalid name or zero generation", name)
+		}
+		inv.accounts[name] = gen
+	}
+	for domain, owner := range domains {
+		d := canonicalDomain(domain)
+		if d == "" || d != domain {
+			return nil, fmt.Errorf("inventory domain %q is empty or not canonical", domain)
+		}
+		if _, ok := inv.accounts[owner]; !ok {
+			return nil, fmt.Errorf("inventory domain %q names an unlisted account", domain)
+		}
+		inv.domains[d] = owner
+	}
+	return inv, nil
+}
+
+func (inv *Inventory) owner(account string) (Owner, bool) {
+	gen, ok := inv.accounts[account]
+	if !ok {
+		return Owner{}, false
+	}
+	return Owner{account: account, generation: gen}, true
+}
+
+// Resolve verifies claims against the inventory. Claims that cannot be
+// verified are ignored. Exactly one verified account yields that account;
+// none, or several different accounts, yields the host owner.
+func (inv *Inventory) Resolve(claims ...Claim) Owner {
+	var found Owner
+	for _, c := range claims {
+		var o Owner
+		var ok bool
+		switch c.Kind {
+		case ClaimAccount:
+			o, ok = inv.owner(c.Value)
+		case ClaimDomain:
+			if account, hosted := inv.domains[canonicalDomain(c.Value)]; hosted {
+				o, ok = inv.owner(account)
+			}
+		}
+		if !ok {
+			continue
+		}
+		if !found.IsHost() && found != o {
+			return HostOwner()
+		}
+		found = o
+	}
+	return found
+}
+
+// Current reports whether o still names a present account at the same
+// generation. The host owner is always current. Admission re-resolves
+// owners with it before application.
+func (inv *Inventory) Current(o Owner) bool {
+	if o.IsHost() {
+		return true
+	}
+	gen, ok := inv.accounts[o.account]
+	return ok && gen == o.generation
+}
+
+// Generations assigns inventory generations. A name keeps its generation
+// while it appears in consecutive complete observations; a name that
+// disappears and returns gets a new one, so an observed recreation never
+// inherits the old account's scope. Unobserved replacement requires a
+// platform incarnation identity before this tracker can be used live. Generations are never reused.
+type Generations struct {
+	next uint64
+	live map[string]uint64
+}
+
+func NewGenerations() *Generations {
+	return &Generations{next: 1, live: map[string]uint64{}}
+}
+
+// Observe records one complete inventory observation and returns the
+// current name-to-generation map. Callers must not pass a partial
+// observation: a transient read failure would retire every missing account.
+func (g *Generations) Observe(names []string) (map[string]uint64, error) {
+	present := make(map[string]bool, len(names))
+	for _, name := range names {
+		if !ValidAccountName(name) {
+			return nil, fmt.Errorf("inventory observation has an invalid account name")
+		}
+		present[name] = true
+	}
+	newCount := uint64(0)
+	for name := range present {
+		if _, exists := g.live[name]; !exists {
+			newCount++
+		}
+	}
+	if newCount > math.MaxUint64-g.next {
+		return nil, fmt.Errorf("inventory generation counter is exhausted")
+	}
+	for name := range g.live {
+		if !present[name] {
+			delete(g.live, name)
+		}
+	}
+	sorted := make([]string, 0, len(present))
+	for name := range present {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
+	for _, name := range sorted {
+		if _, ok := g.live[name]; !ok {
+			g.live[name] = g.next
+			g.next++
+		}
+	}
+	out := make(map[string]uint64, len(g.live))
+	for name, gen := range g.live {
+		out[name] = gen
+	}
+	return out, nil
+}
+
+type generationsRecord struct {
+	V    int               `json:"v"`
+	Next uint64            `json:"next"`
+	Live map[string]uint64 `json:"live"`
+}
+
+const generationsVersion = 1
+
+// MarshalBinary encodes the tracker as versioned JSON followed by an 8-byte
+// SHA-256 prefix of that JSON.
+func (g *Generations) MarshalBinary() ([]byte, error) {
+	body, err := json.Marshal(generationsRecord{V: generationsVersion, Next: g.next, Live: g.live})
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(body)
+	return append(body, sum[:8]...), nil
+}
+
+// UnmarshalBinary restores a tracker. Corrupt, unknown-version or
+// inconsistent state is an error, never an empty tracker: an empty tracker
+// would hand every account a fresh generation.
+func (g *Generations) UnmarshalBinary(data []byte) error {
+	if len(data) < 8 {
+		return fmt.Errorf("generations record is truncated")
+	}
+	body, sum := data[:len(data)-8], data[len(data)-8:]
+	if want := sha256.Sum256(body); !bytes.Equal(sum, want[:8]) {
+		return fmt.Errorf("generations record checksum mismatch")
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	var rec generationsRecord
+	if err := dec.Decode(&rec); err != nil {
+		return fmt.Errorf("generations record does not decode: %w", err)
+	}
+	canonical, err := json.Marshal(rec)
+	if err != nil || !bytes.Equal(canonical, body) {
+		return fmt.Errorf("generations record is not in canonical form")
+	}
+	if rec.V != generationsVersion {
+		return fmt.Errorf("generations record version %d is not supported", rec.V)
+	}
+	if rec.Next == 0 {
+		return fmt.Errorf("generations record has no next generation")
+	}
+	used := make(map[uint64]bool, len(rec.Live))
+	for name, gen := range rec.Live {
+		if !ValidAccountName(name) || gen == 0 || gen >= rec.Next || used[gen] {
+			return fmt.Errorf("generations record has an invalid entry")
+		}
+		used[gen] = true
+	}
+	if rec.Live == nil {
+		rec.Live = map[string]uint64{}
+	}
+	g.next, g.live = rec.Next, rec.Live
+	return nil
+}
