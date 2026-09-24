@@ -11,14 +11,14 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Highlights
 
-- Breaking: `/api/v1` responses change shape throughout: lists under `items`, `"ok": true` or an error status for actions, a JSON `error` for every failure, RFC 3339 UTC times, severity labels, and 405 for anything but GET on read-only routes. Update API clients before upgrading; the details are under Changed.
-- Upgrade recommended: a Web UI session could set the ModSecurity reload command, several file paths and environment variable names from Settings, and through them run commands or write files as root. Those settings now change only in csm.yaml.
+- Breaking: API response formats and pagination have changed, and read-only routes now reject other request methods. Update API clients before upgrading; the details are under Changed.
+- Upgrade recommended: a Web UI session could set the ModSecurity reload command, several file paths and environment variable names from Settings, and through them run commands or write files as root. Those settings now change only in the daemon's configuration file.
 - Web UI sessions are harder to abuse: CSRF tokens are bound to the browser session, only the Web UI's own loopback origin is trusted, the Content-Security-Policy is stricter, an open dashboard no longer keeps a session alive, and rate limits cover IPv6 prefixes and the metrics endpoint.
-- The UI audit log now records every operator action with the credential that made it, including logins, scans, quarantine, firewall and ModSecurity changes.
+- The UI audit log now names the credential behind each recorded action and covers previously missing logins, scans, quarantine, firewall and ModSecurity changes.
 - A cron file carrying known persistence patterns is no longer downgraded to Warning while a package update or panel maintenance runs. Routine nightly control panel maintenance, which used to page as a system compromise, is now a Warning, recognised by the executable actually running.
 - Notice after upgrading: the scheduled PHP content scan now also compares change times, to catch a file edited in place with its modification time set back, so it reads each PHP file once more as it reaches it.
 - Real-time signature scanning uses a fraction of the CPU it did, and a rules download that changes nothing no longer queues a full rescan of the host every day.
-- Web UI: the time zone preference applies on every page, pages update live from the event stream, keyboard, screen reader and light theme support are fixed across the interface, and incidents, suppressions and blocks can be handled in bulk or straight from a finding.
+- Web UI: dates follow the time zone preference, Findings, Dashboard and Incidents update from the event stream, and keyboard, screen reader and light theme support are improved. Incident status and file suppressions have bulk actions, and attacker addresses can be blocked from findings.
 
 ### Security
 
@@ -36,8 +36,13 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - The UI audit log now names the credential behind each action and records actions it used to miss: email quarantine release and delete, database object restores, ModSecurity rule changes, subnet blocks, allow-rule removals, cPHulk clears, bulk fixes, incident status changes, scans, logins, logouts and session revocations. An entry keeps its administrator when the session ends before the action completes, large bulk actions no longer hide later entries, an entry that cannot be written is reported in the daemon log, and rotation no longer loses history under concurrent writes.
 - The incident timeline CSV export now writes cells that start a spreadsheet formula as text, like every other export.
 - A suppression rule that hides every finding of a check now has to be chosen explicitly. Leaving the path empty on the Findings or Rules page, or in an API request, used to create such a rule silently and stop all remediation for that check; a malformed path pattern, which never matched, is now refused as well.
+- A suppression created from a finding whose file name contains glob characters such as brackets now matches that file; the pre-filled pattern treated them as wildcards and hid nothing.
 - The scheduled PHP content scan no longer skips a file that was edited in place with its size kept and its modification time set back; the change time, which cannot be set that way, is now compared as well. After upgrading, each PHP file is read again the next time the scan visits it.
 - A cron file carrying known persistence patterns, encoded ones included, now keeps its full severity while a package update or control panel maintenance runs; realtime cron writes were downgraded because their content was never checked. Control panel provenance also requires a resolved executable when process details come from the cache.
+- A rules file reached through a symbolic link is now watched by the file it points to, so updating it queues the rescan that new rules need. A rules file that cannot be read, or is replaced while being read, keeps its last known contents and is retried.
+- The Email page action groups, auth-failure clusters and outbound relay abuse no longer come back empty or incomplete on a busy server. Unrelated findings, or findings newer than the chosen dates, used up the scan budget before the matching ones were reached, and a list that is cut short now says so.
+- A quarantine restore that fails partway, for example because the account is over quota, no longer leaves a partial root-owned copy at the original path that hid the entry and made every retry fail. A file another writer put there in the meantime is left in place, and the restore can be retried.
+- The scan jobs API now rejects request bodies with unknown fields or more than a few kilobytes, so a misspelt option no longer starts a scan without it.
 
 ### Changed
 
@@ -92,7 +97,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - Findings can now suppress a selection at once, creating one rule per selected file; findings that name no file are skipped so a check-wide rule is never created in bulk.
 - The account page is now linked from the finding detail, account groups on Findings, incident detail and the accounts targeted in a Threat Intel lookup, and the command palette opens an account typed by name and lists Sessions.
 - `csm privileges` and the capability matrix now show a risk tier for every privileged operation, from read-only detection to destructive responses, and the JSON inventory also reports each operation's current safety and recovery coverage.
-- The finding-stream tool can anonymize the action and firewall audit logs alongside a recording and write a manifest of digests, join counts and missing streams, and recordings carry salted finding ids. Its summary and errors no longer repeat check names, paths or input values, equivalent IPv6 spellings map to one pseudonym, and it refuses rows it cannot classify, ambiguous input, output paths that alias its inputs and raw identifiers left in its output.
+- The finding-stream tool can anonymize the action and firewall audit logs alongside a recording and write a manifest of digests, join counts, missing streams and counts of addresses sharing a pseudonym, and recordings carry salted finding ids. Its summary and errors no longer repeat check names, paths or input values, equivalent IPv6 spellings map to one pseudonym, and it refuses rows it cannot classify, ambiguous input, output paths that alias its inputs and raw identifiers left in its output; a failed run preserves earlier output or retains recovery copies if rollback fails.
 - A replay tool runs a recorded finding stream through a model of the current automatic block limit, retry queue and temporary deny limit, and reports aggregate outcomes with the assumptions they rest on and the block paths it leaves out.
 
 ### Fixed
@@ -110,10 +115,9 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 - Grouped findings stay grouped while searching, filtering or sorting, and a collapsed group stays collapsed. The group headers used to pile up at the top of the table after a search.
 - Dismissing a finding no longer claims it can be restored. The Findings page now says a dismissal stops alerts while the finding is unchanged and that a later scan can list it again, offers undo for 30 seconds, and dismisses a bulk selection as one action that one undo reverses.
-- A suppression created from a finding whose file name contains glob characters such as brackets now matches that file; the pre-filled pattern treated them as wildcards and hid nothing.
 - Suppression rules now refuse a check field that holds a pattern or free text and warn when the check name matches no known check, since such a rule hides nothing. Importing a settings bundle skips such rules and rules with an invalid path pattern, as the suppression form does.
 - Suppression rules added, removed or imported at the same moment are all kept. Each change rewrote the whole rule set, so simultaneous changes silently dropped each other while every one reported success.
-- Findings, dashboard account counts and the findings API now attribute a finding to the account its check recorded before guessing from paths in the message, so mail relay findings count against the sending account.
+- Findings, dashboard account counts and the findings API now attribute a finding to the account its check recorded before guessing from paths in the message, so mail relay findings count against the sending account. The Account page uses the same recorded ownership for current findings and history.
 - The History CSV export now applies the date range, severity and search shown on the History tab, so narrowing the filters reaches entries older than the newest 5,000. The button no longer claims to export the full history.
 - An unrecognised severity now shows as Unknown on every Web UI page instead of being labelled Warning on some of them.
 
@@ -130,10 +134,8 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 #### Email, quarantine and cleanup
 
-- The Email page action groups, auth-failure clusters and outbound relay abuse no longer come back empty or incomplete on a busy server. Unrelated findings, or findings newer than the chosen dates, used up the scan budget before the matching ones were reached, and a list that is cut short now says so.
 - Email Security findings with details now have an expand button that shows them; the details rows were built but could never be opened.
 - A quarantined file that bulk delete cannot remove now stays listed and the page says so. Its metadata used to be removed anyway, which hid the file from the list so it could neither be deleted again nor restored.
-- A quarantine restore that fails partway, for example because the account is over quota, no longer leaves a partial root-owned copy at the original path that hid the entry and made every retry fail. A file another writer put there in the meantime is left in place, and the restore can be retried.
 - Select-all on the Cleanup file backups and the Threat Intel attackers table no longer reaches rows on other pages or hidden by a search, so a permanent delete, permanent block or whitelist acts only on the rows on screen.
 
 #### Pages and dashboard
@@ -142,11 +144,12 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - An expired or revoked browser session now returns the page to the login form instead of showing Unauthorized errors. The connection-lost banner appears only when the daemon cannot be reached, and a daemon restart no longer floods the page with repeated error messages.
 - The Web UI live-updates indicator now keeps saying Reconnecting while it retries after a dropped connection, instead of switching back to Connecting on each attempt.
 - Tables that reload their data, such as the rules, ModSecurity and incident lists, no longer show stale duplicate rows after a reload, an apply or a filter change.
+- Finding details, Account tabs and History now ignore late responses to older requests, so switching views cannot replace the current view with stale content.
 - Pages opened in a background tab no longer double their refresh traffic when first shown, returning to a tab no longer reloads everything while auto-refresh is paused, and the Dashboard idle watcher list stays open across refreshes.
 - The dashboard now shows a scan in progress for every scan the daemon runs, including scheduled scans, command-line checks and scan jobs, not only scans started from the web UI.
 - The health API and dashboard now count log watchers that start after the web UI, such as one waiting for a log file to appear, instead of the count at startup.
-- The Account page and the scan account list now find accounts under every account root of the platform, including Plesk vhosts, and the Account page lists quarantined files from the configured quarantine directory.
-- On the Performance page an open Bulk fix menu no longer closes by itself every few seconds, and a fix that is still running cannot be started a second time.
+- The Account page and the scan account list now find accounts under every account root of the platform, including Plesk vhosts. The Account page recognises linked account roots and lists quarantined files from the configured quarantine directory.
+- On the Performance page an open Bulk fix menu no longer closes by itself every few seconds, and a fix that is still running cannot be started a second time. A bulk fix cannot overlap another bulk or individual fix.
 - A hardening audit that runs longer than three minutes now returns its report instead of failing after saving it.
 - On a phone the Web UI header now wraps instead of running off the screen, and on a desktop the ModSecurity apply bar no longer covers the sidebar.
 - Web UI header controls now share one line: the last-updated text, the Logout button and the What's new dot no longer sit above the icons. Logout and ModSecurity bulk actions keep a space after their icons.
@@ -159,25 +162,23 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - Screen readers no longer read whole lists and the refresh clock aloud every time a Web UI page refreshes; only short status messages such as errors and connection changes are announced.
 - Every Web UI page now starts with a Skip to content link that keeps a visible focus indicator, and section headings follow the page title in order so screen reader users can move through the page outline.
 - Keyboard focus now survives refreshes and dialog transitions and returns to what opened a panel or dialog. A dialog opened from the detail panel keeps the keyboard to itself, the prompt dialog closes with Escape and keeps Tab inside, and finding shortcuts follow the focused row without acting behind dialogs.
-- The light theme now covers the login page, the command palette, the undo banner and chart tooltips, and its status text, badges, toasts, chart labels, warning text and command palette hints meet the WCAG AA contrast ratio. The chosen theme still applies when the browser blocks site storage.
+- The light theme now covers the login page, the command palette, the undo banner and chart tooltips, and its status text, badges, toasts, chart labels, warning text and command palette hints meet the WCAG AA contrast ratio. The chosen theme still applies when the browser blocks site storage, and warning text, dashboard indicators and command palette hints are readable in both themes.
 
 #### API
 
 - The history, incident timeline, UI audit log, threat event, top attacker and ModSecurity event APIs now say when entries were left out. History always reported nothing truncated, and the incident timeline reported its page size as the total.
 - Importing an exported state bundle works again.
-- The scan jobs API now rejects request bodies with unknown fields or more than a few kilobytes, so a misspelt option no longer starts a scan without it.
 
 #### Real-time monitoring and scans
 
 - Real-time signature scanning costs a fraction of the CPU it did. Each rule pattern now runs only on files containing text it cannot match without, and a pattern shared by several rules runs once per file; what matches is unchanged.
 - A rules download or package upgrade that leaves the rules unchanged no longer queues a full rescan of every file on the host. On hosts with a rules download URL set, the unchanged download rewrote the installed rules daily and after each restart, each time queuing a full rescan and a warning finding.
-- A rules file reached through a symbolic link is now watched by the file it points to, so updating it queues the rescan that new rules need. A rules file that cannot be read, or is replaced while being read, keeps its last known contents and is retried.
 - The deep scan no longer sends every file it reads to the PHP analysis worker. Files that cannot hold a remote-code flow are ruled out in the daemon, so images and plain text no longer queue behind real analyses, start the worker, or count as unexamined while it is unavailable.
 - Deciding whether a written file sits under an account or document root, which the real-time monitor does for every watched write, is much cheaper.
 
 #### Control panel maintenance
 
-- Nightly control panel maintenance no longer pages as a system compromise. A cron drop-in or a staged executable written by the panel's own scheduled work is reported as a Warning instead of High or Critical, recognised by the program a parent process is actually running rather than the name it reports. Nothing is skipped, and a cron file carrying persistence tokens still reports at full severity.
+- Nightly control panel maintenance no longer pages as a system compromise. A cron drop-in or a staged executable written by the panel's own scheduled work is reported as a Warning instead of High or Critical, recognised by the program a parent process is actually running rather than the name it reports; nothing is skipped.
 - The scheduled cron.d comparison now scores a changed or new file the same way the realtime write detector does. It was the one cron path with no provenance rescoring and no check for persistence tokens, so a vendor cron update reported High there while the same write was a Warning.
 - Sensitive-file findings are rescored using process ancestry on every Linux host, and ancestry is available before file monitoring starts. Until now that evidence was only read on hosts running the optional kernel monitoring, so the same write scored differently depending on the build.
 
