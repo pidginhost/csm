@@ -182,3 +182,69 @@ func TestWriteCappedKeepsTheTotal(t *testing.T) {
 	writeCapped(w, []int{1, 2}, 2, 5, nil)
 	assertCapped(t, "whole list", decodeCapped(t, "writeCapped", w), 2, false)
 }
+
+func TestCappedRoutesIncludePageMetadata(t *testing.T) {
+	s := newUIServer(t)
+	for _, path := range []string{
+		"/api/v1/findings/enriched?limit=2", "/api/v1/history",
+		"/api/v1/incidents", "/api/v1/incidents/groups",
+		"/api/v1/incident?ip=203.0.113.5", "/api/v1/modsec/blocks", "/api/v1/modsec/events",
+		"/api/v1/email/groups", "/api/v1/email/relay-abuse", "/api/v1/audit",
+		"/api/v1/threat/top-attackers", "/api/v1/threat/events?ip=203.0.113.5", "/api/v1/firewall/audit",
+	} {
+		t.Run(path, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, path, nil)
+			r.Header.Set("Authorization", "Bearer admin-secret")
+			w := httptest.NewRecorder()
+			s.httpSrv.Handler.ServeHTTP(w, r)
+			var body map[string]json.RawMessage
+			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &body) != nil {
+				t.Fatalf("got %d %s", w.Code, w.Body.String())
+			}
+			for _, key := range []string{"offset", "limit", "truncated"} {
+				if _, ok := body[key]; !ok {
+					t.Errorf("missing %s: %s", key, w.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestModSecEventsReportScanCap(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	now := time.Now().Add(-time.Hour)
+	rows := []alert.Finding{modsecBlock("203.0.113.9", "site.test", "/older", "900113", now)}
+	for i := 1; i <= modsecFindingsScanCap; i++ {
+		rows = append(rows, alert.Finding{Check: "modsec_block_escalation", Message: "escalated from 203.0.113.9", Timestamp: now.Add(time.Duration(i) * time.Millisecond)})
+	}
+	if err := store.Global().AppendHistory(rows); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.apiModSecEvents(w, httptest.NewRequest(http.MethodGet, "/api/v1/modsec/events", nil))
+	assertCapped(t, "history cap with no returned events", decodeCapped(t, "modsec events", w), 0, true)
+}
+
+func TestIncidentTimelineReportsAuditScanCap(t *testing.T) {
+	s := newTestServer(t, "tok")
+	f, err := os.Create(filepath.Join(s.cfg.StatePath, uiAuditFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := json.NewEncoder(f)
+	for i := 0; i < 501; i++ {
+		ip := "192.0.2.1"
+		if i == 0 {
+			ip = "203.0.113.9"
+		}
+		if err := enc.Encode(UIAuditEntry{Timestamp: time.Now(), Action: "block", Target: ip}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.apiIncident(w, httptest.NewRequest(http.MethodGet, "/api/v1/incident?ip=203.0.113.9", nil))
+	assertCapped(t, "audit scan cap", decodeCapped(t, "incident timeline", w), 0, true)
+}

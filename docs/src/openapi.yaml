@@ -67,9 +67,12 @@ components:
     ItemList:
       type: object
       description: >-
-        A list. total is present when the server counted every match; offset,
-        limit and truncated when the list is paged or capped. Other keys
-        describe the whole list.
+        A list. total counts the matches inspected and is a lower bound when
+        a scan cap stops counting. Routes that do not count omit total. offset,
+        limit and truncated are present when the list is paged or capped. Other keys
+        describe the whole list. Non-paged capped lists report offset 0.
+        Incident groups also expose scan_truncated, distinguishing an
+        incomplete scan from a page with more results.
       required: [items]
       properties:
         items: { type: array, items: {} }
@@ -77,6 +80,7 @@ components:
         offset: { type: integer }
         limit: { type: integer }
         truncated: { type: boolean }
+        scan_truncated: { type: boolean }
       additionalProperties: true
 security:
   - bearerAuth: []

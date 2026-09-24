@@ -75,8 +75,8 @@ a repeated midnight uses its first occurrence.
 ## Live updates
 
 The Web UI keeps an event stream open (`/api/v1/events`) and shows a Live
-indicator while it is connected. When findings arrive, a couple of seconds
-after the burst ends:
+indicator while it is connected. Findings are batched for up to a couple
+of seconds before pages update:
 
 - Findings shows the "new findings" banner at once instead of on its next check
 - Dashboard sends desktop notifications and refreshes the 24h counts and the triage queue
@@ -85,6 +85,9 @@ after the burst ends:
 While the stream is connected, the checks those pages run on a timer slow down
 to once a minute as a safety net; when it drops they return to their normal
 pace. Pausing auto-refresh also pauses live updates.
+
+Desktop notifications handle findings that arrive out of order within a
+batch or share a timestamp, without repeating them on the next history poll.
 
 ## Refresh
 

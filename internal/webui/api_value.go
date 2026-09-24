@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -88,12 +89,44 @@ func needsNormalizingIn(t reflect.Type, seen map[reflect.Type]bool) bool {
 	case reflect.Struct:
 		for i := 0; i < t.NumField(); i++ {
 			f := t.Field(i)
+			if f.Tag.Get("json") == "-" && !hasJSONMarshaler(t) {
+				continue
+			}
 			if (f.IsExported() || f.Anonymous) && needsNormalizingIn(f.Type, seen) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+var jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
+
+func hasJSONMarshaler(t reflect.Type) bool {
+	return t.Implements(jsonMarshalerType) || reflect.PointerTo(t).Implements(jsonMarshalerType)
+}
+
+var normalizeStructCache sync.Map // reflect.Type -> []int
+
+// History pages repeat the same finding and process types thousands of
+// times. Resolve tags and reachable fields once per type, not per row.
+func normalizingFields(t reflect.Type) []int {
+	if cached, ok := normalizeStructCache.Load(t); ok {
+		return cached.([]int)
+	}
+	custom := hasJSONMarshaler(t)
+	var fields []int
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if (!f.IsExported() && !f.Anonymous) || (f.Tag.Get("json") == "-" && !custom) {
+			continue
+		}
+		if needsNormalizing(f.Type) {
+			fields = append(fields, i)
+		}
+	}
+	normalizeStructCache.Store(t, fields)
+	return fields
 }
 
 func apiValue(v any) (any, error) {
@@ -193,18 +226,12 @@ func normalizeInPlace(v reflect.Value, depth int) error {
 		}
 		v.Set(c)
 	case reflect.Struct:
-		for i := 0; i < t.NumField(); i++ {
-			f := t.Field(i)
-			if !needsNormalizing(f.Type) {
-				continue
+		for _, index := range normalizingFields(t) {
+			f := v.Field(index)
+			if !f.CanSet() {
+				return fmt.Errorf("%w: %s in %s", errUnreachableField, f.Type(), t)
 			}
-			if !f.IsExported() {
-				if f.Anonymous {
-					return fmt.Errorf("%w: %s in %s", errUnreachableField, f.Type, t)
-				}
-				continue
-			}
-			if err := normalizeInPlace(v.Field(i), depth+1); err != nil {
+			if err := normalizeInPlace(f, depth+1); err != nil {
 				return err
 			}
 		}

@@ -1091,6 +1091,10 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
+	if len(reqs) == 0 {
+		writeJSONError(w, "At least one fix is required", http.StatusBadRequest)
+		return
+	}
 
 	results := make([]bulkFixItem, 0, len(reqs))
 	for _, req := range reqs {
@@ -1127,7 +1131,7 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 		"succeeded": succeeded,
 		"failed":    len(results) - succeeded,
 	}
-	if succeeded == 0 && len(results) > 0 {
+	if succeeded == 0 {
 		fields["error"] = "No fix applied"
 		writeJSONStatus(w, http.StatusUnprocessableEntity, fields)
 		return
@@ -2041,12 +2045,17 @@ func writeJSON(w http.ResponseWriter, data interface{}) {
 // writeJSONStatus sends data as JSON with the given status code.
 func writeJSONStatus(w http.ResponseWriter, code int, data interface{}) {
 	body, err := apiValue(data)
+	var encoded []byte
+	if err == nil {
+		encoded, err = json.Marshal(body)
+	}
 	if err != nil {
-		code, body = http.StatusInternalServerError, map[string]string{"error": err.Error()}
+		code = http.StatusInternalServerError
+		encoded, _ = json.Marshal(map[string]string{"error": err.Error()})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(body)
+	_, _ = w.Write(append(encoded, '\n'))
 }
 
 // durationSeconds reads Go duration text such as "24h" as seconds. ok is
@@ -2088,8 +2097,9 @@ func writeCapped[T any](w http.ResponseWriter, items []T, total, limit int, extr
 		items = items[:limit]
 	}
 	extra["total"] = total
+	extra["offset"] = 0
 	extra["limit"] = limit
-	extra["truncated"] = total > len(items)
+	extra["truncated"] = total > len(items) || extra["truncated"] == true
 	writeItems(w, items, extra)
 }
 

@@ -97,6 +97,17 @@ test('the incident groups footer counts groups from total', async () => {
     assert.match(page.document.getElementById('grouped-content').parentElement.textContent, /7 groups from 9 incidents/);
 });
 
+test('incident groups distinguish a page limit from a scan cap', async () => {
+    const page = loadPage(templateBody('incident'), SHARED.concat(['incident.js']));
+    await answerAll(page, () => false, null);
+    page.document.getElementById('grouped-tab').click();
+    await settle();
+    const group = { key: 'k', kind: 'web_attack', source_kind: 'ip', source: '203.0.113.88', incident_count: 2, open_count: 2, severity_max: 'HIGH', last_seen: AT, sample_ids: [] };
+    page.respond('/api/v1/incidents/groups?', 200, { items: [group], total: 7, offset: 0, limit: 1, scanned_incidents: 9, truncated: true, scan_truncated: false });
+    await settle();
+    assert.doesNotMatch(page.document.getElementById('grouped-content').parentElement.textContent, /scan capped/);
+});
+
 test('check names for a new suppression come from the active findings items', async () => {
     const page = loadPage(templateBody('rules'), SHARED.concat(['rules.js']));
     await answerAll(page, u => /\/api\/v1\/findings(\?|$)/.test(u),

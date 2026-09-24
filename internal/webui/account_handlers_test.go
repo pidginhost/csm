@@ -455,20 +455,7 @@ func TestAPIBulkFixEmptyArray(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(`[]`))
 	req.Header.Set("Content-Type", "application/json")
 	s.apiBulkFix(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
-	}
-	var data struct {
-		Total     int `json:"total"`
-		Succeeded int `json:"succeeded"`
-		Failed    int `json:"failed"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
-		t.Fatalf("bad JSON: %v", err)
-	}
-	if data.Total != 0 {
-		t.Errorf("total = %d, want 0", data.Total)
-	}
+	assertJSONError(t, "empty fix batch", w, http.StatusBadRequest)
 }
 
 func TestAPIBulkFixInvalidBody(t *testing.T) {
@@ -653,10 +640,10 @@ func TestAPIIncidentWithAccount(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Events       []timelineEvent `json:"items"`
-		Total        int             `json:"total"`
-		QueryAccount string          `json:"query_account"`
-		Hours        int             `json:"hours"`
+		Events        []timelineEvent `json:"items"`
+		Total         int             `json:"total"`
+		QueryAccount  string          `json:"query_account"`
+		WindowSeconds int             `json:"window_seconds"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
@@ -668,8 +655,8 @@ func TestAPIIncidentWithAccount(t *testing.T) {
 	if data.Total != 1 {
 		t.Errorf("total = %d, want 1 (only frank's finding)", data.Total)
 	}
-	if data.Hours != 72 {
-		t.Errorf("hours = %d, want 72 (default)", data.Hours)
+	if data.WindowSeconds != 72*3600 {
+		t.Errorf("window_seconds = %d, want %d", data.WindowSeconds, 72*3600)
 	}
 }
 
@@ -681,13 +668,13 @@ func TestAPIIncidentHoursParam(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Hours int `json:"hours"`
+		WindowSeconds int `json:"window_seconds"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if data.Hours != 24 {
-		t.Errorf("hours = %d, want 24", data.Hours)
+	if data.WindowSeconds != 24*3600 {
+		t.Errorf("window_seconds = %d, want %d", data.WindowSeconds, 24*3600)
 	}
 }
 
@@ -699,13 +686,13 @@ func TestAPIIncidentHoursMaxCapped(t *testing.T) {
 		t.Fatalf("status = %d", w.Code)
 	}
 	var data struct {
-		Hours int `json:"hours"`
+		WindowSeconds int `json:"window_seconds"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &data); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if data.Hours != 720 {
-		t.Errorf("hours = %d, want 720 (max capped)", data.Hours)
+	if data.WindowSeconds != 720*3600 {
+		t.Errorf("window_seconds = %d, want %d", data.WindowSeconds, 720*3600)
 	}
 }
 

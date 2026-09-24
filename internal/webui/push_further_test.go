@@ -672,8 +672,8 @@ func TestAPIThreatTempWhitelistIPClampsHours(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["hours"].(float64) != 168 {
-		t.Errorf("hours = %v, want 168 (clamped)", resp["hours"])
+	if resp["duration_seconds"].(float64) != 168*3600 {
+		t.Errorf("duration_seconds = %v, want %d", resp["duration_seconds"], 168*3600)
 	}
 }
 
@@ -689,8 +689,8 @@ func TestAPIThreatTempWhitelistIPDefaultsHours(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if resp["hours"].(float64) != 24 {
-		t.Errorf("hours = %v, want 24 (default)", resp["hours"])
+	if resp["duration_seconds"].(float64) != 24*3600 {
+		t.Errorf("duration_seconds = %v, want %d", resp["duration_seconds"], 24*3600)
 	}
 }
 

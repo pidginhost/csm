@@ -120,7 +120,7 @@
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="account-findings-table"><thead><tr><th>Severity</th><th>Check</th><th>Message</th></tr></thead><tbody>';
             for (var i = 0; i < findings.length; i++) {
                 var f = findings[i];
-                html += '<tr data-index="' + i + '" data-severity="' + String(f.severity || 0) + '" data-check="' + CSM.attr(f.check || '') + '">';
+                html += '<tr data-index="' + i + '" data-severity="' + CSM.severity(f.severity).level + '" data-check="' + CSM.attr(f.check || '') + '">';
                 html += '<td data-sort="' + CSM.severity(f.severity).rank + '"><span class="badge badge-' + CSM.severity(f.severity).cls + '">' + CSM.severity(f.severity).label + '</span></td>';
                 html += '<td><code>' + CSM.esc(f.check) + '</code></td><td>' + CSM.esc(f.message) + '</td></tr>';
             }
@@ -200,7 +200,7 @@
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="account-history-table"><thead><tr><th>Severity</th><th>Check</th><th>Message</th><th>Time</th></tr></thead><tbody>';
             for (var h = 0; h < history.length; h++) {
                 var e = history[h];
-                html += '<tr data-index="' + h + '" data-severity="' + String(e.severity || 0) + '" data-timestamp="' + CSM.attr(e.timestamp || '') + '">';
+                html += '<tr data-index="' + h + '" data-severity="' + CSM.severity(e.severity).level + '" data-timestamp="' + CSM.attr(e.timestamp || '') + '">';
                 html += '<td data-sort="' + CSM.severity(e.severity).rank + '"><span class="badge badge-' + CSM.severity(e.severity).cls + '">' + CSM.severity(e.severity).label + '</span></td>';
                 html += '<td><code>' + CSM.esc(e.check) + '</code></td><td>' + CSM.esc(e.message) + '</td>';
                 html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.esc(e.timestamp) + '" data-time-ago="' + CSM.esc(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td></tr>';

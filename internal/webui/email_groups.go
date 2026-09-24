@@ -44,6 +44,7 @@ type emailGroup struct {
 type emailGroupsResponse struct {
 	Groups    []emailGroup `json:"items"`
 	Total     int          `json:"total"`
+	Offset    int          `json:"offset"`
 	Limit     int          `json:"limit"`
 	From      time.Time    `json:"from"`
 	To        time.Time    `json:"to"`

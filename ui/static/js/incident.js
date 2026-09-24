@@ -236,7 +236,7 @@
         if (footer) {
             var summary = data.total + ' group' + (data.total === 1 ? '' : 's')
                 + ' from ' + data.scanned_incidents + ' incident' + (data.scanned_incidents === 1 ? '' : 's');
-            if (data.truncated) summary += ' (scan capped)';
+            if (data.scan_truncated) summary += ' (scan capped)';
             footer.textContent = summary;
         }
     }

@@ -72,6 +72,12 @@ answer, such as a daemon restart, a firewall rollback or a scan job, answers
 batch where nothing changed answers an error status. A read-only route
 answers 405 to any method but GET.
 
+An empty fix batch is rejected. Threat actions report firewall failures,
+and bulk actions list invalid addresses as well as failed changes. A failed
+action can have applied some steps before the error; inspect the current
+state before retrying it. A response that cannot be encoded answers 500
+with an error body.
+
 `/api/v1/firewall/check` and `/api/v1/firewall/unban` also send
 `"success": true` for callers written against the older API. It will be
 removed; use the status code and `ok`.
@@ -85,9 +91,12 @@ array. The list is under `items`. An empty list anywhere in a response is
 - `total` is the number of matches the server counted. It is larger than
   the length of `items` when the route pages or cuts the list.
 - `offset` and `limit` come with routes that page or cap the list.
+  Capped routes that do not support paging report `offset: 0`.
 - `truncated` is true when matches were left out: past the page, past the
   limit, or past a scan cap. When a scan cap stopped the count, `total`
   counts only what was scanned.
+  Incident groups also send `scan_truncated` to distinguish a scan cap
+  from a page limit; their `total` is exact when `scan_truncated` is false.
 - Other keys next to `items` describe the whole list, such as
   `check_types` on `/findings/enriched` or `summary` on `/email/forwarders`.
 
@@ -111,6 +120,10 @@ own time zone and count down to an `expires_at` themselves.
 Durations are numbers of seconds in keys that end in `_seconds`, such as
 `uptime_seconds`, `elapsed_seconds`, `duration_seconds`,
 `oldest_age_seconds` and `update_interval_seconds`.
+Temporary whitelist responses use `duration_seconds`, rollback status uses
+`remaining_seconds`, and incident timelines use `window_seconds`. Request
+parameters such as `hours` and editable configuration values retain their
+documented units.
 
 Two values keep a text form. `started_at_token` is an opaque token for
 restart polling. The `temporary` reason on `/api/v1/firewall/check` keeps its

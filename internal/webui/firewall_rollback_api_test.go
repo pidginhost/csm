@@ -35,6 +35,24 @@ func installRollbackManager(t *testing.T, statePath, configPath string) *rollbac
 	return m
 }
 
+func TestRollbackDurationUsesSecondsSuffix(t *testing.T) {
+	s, cfgPath := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+	mgr := installRollbackManager(t, s.cfg.StatePath, cfgPath)
+	if _, err := mgr.Apply([]byte("old"), []byte("new"), 2*time.Minute, "operator"); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.apiFirewallRollbackStatus(w, httptest.NewRequest(http.MethodGet, "/api/v1/settings/firewall/rollback", nil))
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	secs, ok := body["remaining_seconds"].(float64)
+	if !ok || secs < 100 || secs > 120 || body["seconds_remaining"] != nil {
+		t.Fatalf("rollback duration: %s", w.Body.String())
+	}
+}
+
 func TestAPIFirewallTentativeApplyAndConfirm(t *testing.T) {
 	s, cfgPath := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
 	mgr := installRollbackManager(t, s.cfg.StatePath, cfgPath)

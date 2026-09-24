@@ -99,3 +99,23 @@ test('performance findings colour a severity from its label', async () => {
     }
     assert.match(page.document.getElementById('perf-findings').innerHTML, /danger/);
 });
+
+test('account severity filters match API labels on both tabs', async () => {
+    const page = loadPage(templateBody('account'), SHARED.concat(['account.js']),
+        { url: 'https://csm.example.test/account?name=alice' });
+    const rows = ['WARNING', 'HIGH', 'CRITICAL'].map(severity => ({ severity, check: 'webshell', message: severity, timestamp: '2026-09-22T10:00:00Z' }));
+    page.respond('/api/v1/account', 200, { findings: rows, history: rows, quarantined: [] });
+    await settle();
+    for (const tab of ['findings', 'history']) {
+        page.document.querySelector('#account-tabs [data-tab="' + tab + '"]').click();
+        await settle();
+        const filter = page.document.getElementById('account-' + tab + '-sev');
+        for (const [value, label] of [['0', 'WARNING'], ['1', 'HIGH'], ['2', 'CRITICAL']]) {
+            filter.value = value;
+            filter.dispatchEvent(new page.window.Event('change'));
+            const visible = page.document.querySelectorAll('#account-' + tab + '-table tbody tr').filter(row => row.style.display !== 'none');
+            assert.equal(visible.length, 1, tab + ' did not match ' + label);
+            assert.match(visible[0].textContent, new RegExp(label));
+        }
+    }
+});

@@ -161,6 +161,31 @@ func TestAPIIncidentGroupsHonorsOffset(t *testing.T) {
 	}
 }
 
+func TestIncidentPagesReportRemainingMatches(t *testing.T) {
+	c := incident.NewCorrelator(incident.CorrelatorConfig{})
+	seedSprayIncidents(t, c, "192.0.2.1", 1)
+	seedSprayIncidents(t, c, "192.0.2.2", 1)
+	srv := newTestServerWithIncidentCorrelator(t, c)
+	for _, route := range []struct {
+		path    string
+		handler http.HandlerFunc
+	}{
+		{"/api/v1/incidents", srv.apiIncidentList},
+		{"/api/v1/incidents/groups", srv.apiIncidentGroups},
+	} {
+		for offset := 0; offset < 3; offset++ {
+			t.Run(route.path+strconv.Itoa(offset), func(t *testing.T) {
+				w := httptest.NewRecorder()
+				route.handler(w, httptest.NewRequest(http.MethodGet, route.path+"?limit=1&offset="+strconv.Itoa(offset), nil))
+				body := decodeCapped(t, route.path, w)
+				if *body.Truncated != (offset == 0) || body.Total == nil || *body.Total != 2 {
+					t.Fatalf("incorrect page metadata: %s", w.Body.String())
+				}
+			})
+		}
+	}
+}
+
 func TestAPIIncidentGroupsActiveFilterDefault(t *testing.T) {
 	c := incident.NewCorrelator(incident.CorrelatorConfig{})
 	now := time.Now()

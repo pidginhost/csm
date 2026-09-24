@@ -500,7 +500,7 @@ function tempWhitelistIP(ip) {
         if(isNaN(hours)||hours<1){CSM.toast('Invalid number of hours','warning');return;}
         CSM.post('/api/v1/threat/temp-whitelist-ip',{ip:ip,hours:hours}).then(function(data){
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
-            CSM.toast('IP '+ip+' temp-whitelisted for '+data.hours+'h.\n\nActions: '+(data.actions||[]).join(', '),'success');
+            CSM.toast('IP '+ip+' temp-whitelisted for '+CSM.formatDuration(data.duration_seconds)+'.\n\nActions: '+(data.actions||[]).join(', '),'success');
             document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
         }).catch(function(e){CSM.toast(CSM.errorText(e),'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
@@ -597,6 +597,7 @@ document.getElementById('bulk-whitelist-btn').addEventListener('click', function
         CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: 'whitelist' }).then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
             CSM.toast(data.count + ' IP(s) whitelisted successfully', 'success');
+            if (data.warnings && data.warnings.length) CSM.toast(data.warnings.join('\n'), 'warning');
             if (data.undo_token) CSM.undo.offer({ token: data.undo_token, label: 'Whitelisted ' + data.count + ' IP(s)' });
             loadThreatStats();
             loadTopAttackers();

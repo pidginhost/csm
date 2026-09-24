@@ -119,7 +119,7 @@ func TestThreatActionsFinishOnNetblockHistoryFailure(t *testing.T) {
 
 				w := httptest.NewRecorder()
 				action.handler(s, w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"ip":"203.0.113.5"}`)))
-				if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "IP action applied, but subnet history cleanup failed:") {
+				if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "IP action incomplete: subnet history cleanup failed:") {
 					t.Fatalf("status = %d, want partial failure: %s", w.Code, w.Body.String())
 				}
 				if _, blocked := blocker.blocked["203.0.113.5"]; blocked {

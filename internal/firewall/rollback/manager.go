@@ -41,7 +41,7 @@ type Status struct {
 	Pending          bool      `json:"pending"`
 	AppliedAt        time.Time `json:"applied_at,omitzero"`
 	ExpiresAt        time.Time `json:"expires_at,omitzero"`
-	SecondsRemaining int64     `json:"seconds_remaining,omitempty"`
+	SecondsRemaining int64     `json:"remaining_seconds,omitempty"`
 	AppliedBy        string    `json:"applied_by,omitempty"`
 	PrevHash         string    `json:"prev_hash,omitempty"`
 	NewHash          string    `json:"new_hash,omitempty"`

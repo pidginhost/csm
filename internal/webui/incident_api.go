@@ -164,7 +164,12 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Search UI audit log
-	auditEntries := readUIAuditLog(s.cfg.StatePath, 500)
+	const auditScanLimit = 500
+	auditEntries := readUIAuditLog(s.cfg.StatePath, auditScanLimit+1)
+	if len(auditEntries) > auditScanLimit {
+		truncated = true
+		auditEntries = auditEntries[:auditScanLimit]
+	}
 	for _, a := range auditEntries {
 		if a.Timestamp.Before(cutoff) {
 			continue
@@ -203,11 +208,13 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-CSM-Truncated", "1")
 	}
 	writeItems(w, events, map[string]interface{}{
-		"total":         total,
-		"query_ip":      ip,
-		"query_account": account,
-		"hours":         hours,
-		"truncated":     truncated,
+		"total":          total,
+		"offset":         0,
+		"limit":          incidentTimelineEventLimit,
+		"query_ip":       ip,
+		"query_account":  account,
+		"window_seconds": hours * 3600,
+		"truncated":      truncated,
 	})
 }
 
@@ -267,10 +274,11 @@ func (s *Server) apiIncidentList(w http.ResponseWriter, r *http.Request) {
 		items, total = s.incidentPage(statuses, offset, limit)
 	}
 	writeItems(w, items, map[string]any{
-		"total":  total,
-		"offset": offset,
-		"limit":  limit,
-		"status": statusParam,
+		"total":     total,
+		"offset":    offset,
+		"limit":     limit,
+		"status":    statusParam,
+		"truncated": historyPageTruncated(total, offset, len(items)),
 	})
 }
 

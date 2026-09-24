@@ -105,6 +105,7 @@ test('firewall expiry and audit lifetimes come from instants and seconds', async
     assert.match(blocked, /in 2d/);
     assert.match(blocked, /Permanent/);
     assert.match(page.document.getElementById('subnet-content').textContent, /in 2d/);
+    assert.match(page.document.getElementById('subnets-table').querySelector('tbody tr').cells[3].textContent, /1m ago/);
     assert.match(page.document.getElementById('fw-audit-content').textContent, /1d/);
 });
 
@@ -162,4 +163,37 @@ test('a critical finding newer by a fraction of a second still notifies', async 
     page.window.dispatchEvent(new page.window.CustomEvent('csm:sse-message', { detail: { raw } }));
     await new Promise(r => setTimeout(r, 1700));
     assert.deepEqual(shown, ['webshell: new']);
+});
+
+test('live notifications keep every new finding in an unordered batch', async () => {
+    const shown = [];
+    function Notification(title, opts) { shown.push(opts.body); }
+    Notification.permission = 'granted';
+    const page = loadPage(templateBody('dashboard'), SHARED.concat(['dashboard.js']),
+        { globals: { Chart: chart, Notification }, storage: { 'csm-notif': 'on' } });
+    await answerAll(page, { '/api/v1/history': items([{ severity: 'CRITICAL', check: 'webshell', message: 'old', timestamp: '2026-09-22T10:04:05Z' }]) });
+    const findings = [
+        { message: 'newest', timestamp: '2026-09-22T10:04:07Z' },
+        { message: 'earlier', timestamp: '2026-09-22T10:04:06Z' },
+        { message: 'same instant', timestamp: '2026-09-22T10:04:07Z' }
+    ].map(f => Object.assign({ severity: 'CRITICAL', check: 'webshell' }, f));
+    for (const f of findings) page.window.dispatchEvent(new page.window.CustomEvent('csm:sse-message', { detail: { raw: JSON.stringify(f) } }));
+    await new Promise(r => setTimeout(r, 1700));
+    assert.deepEqual(shown.slice().sort(), ['webshell: earlier', 'webshell: newest', 'webshell: same instant']);
+    page.window.CSM.refresh.manual();
+    await answerAll(page, { '/api/v1/history': items(findings) });
+    assert.equal(shown.length, 3, 'polling repeated a live notification');
+});
+
+test('the first finding after an empty history notifies', async () => {
+    const shown = [];
+    function Notification(title, opts) { shown.push(opts.body); }
+    Notification.permission = 'granted';
+    const page = loadPage(templateBody('dashboard'), SHARED.concat(['dashboard.js']),
+        { globals: { Chart: chart, Notification }, storage: { 'csm-notif': 'on' } });
+    await answerAll(page, {});
+    const f = { severity: 'CRITICAL', check: 'webshell', message: 'first', timestamp: '2026-09-22T10:04:05Z' };
+    page.window.dispatchEvent(new page.window.CustomEvent('csm:sse-message', { detail: { raw: JSON.stringify(f) } }));
+    await new Promise(r => setTimeout(r, 1700));
+    assert.deepEqual(shown, ['webshell: first']);
 });

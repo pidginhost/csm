@@ -53,6 +53,22 @@ test('Quarantine filters by type', async () => {
     assert.equal(row(page, 'b').offsetParent, null, 'a quarantined file shows under pre-clean backups');
 });
 
+test('Quarantine sorts backups by instant including fractional seconds', async () => {
+    const page = await quarantinePage([
+        file('later', { quarantined_at: '2026-09-22T10:00:00.5Z' }),
+        file('earlier', { quarantined_at: '2026-09-22T10:00:00Z' })
+    ]);
+    const table = page.window.CSM._tableInstances.find(t => t.opts.tableId === 'quarantine-table');
+    table.sortColumn = 4;
+    table.sortAsc = true;
+    table.applySort();
+    table.render();
+    const ids = page.document.querySelectorAll('#quarantine-table tbody .q-cb').map(cb => cb.getAttribute('data-id'));
+    assert.deepEqual(ids, ['earlier', 'later']);
+    page.window.CSM.initTimeAgo();
+    assert.equal(row(page, 'earlier').children[4].textContent, page.window.CSM.fmtDate('2026-09-22T10:00:00Z'));
+});
+
 test('Quarantine keeps a row restore from racing a batched delete', async () => {
     const page = await quarantinePage([file('a'), file('b')]);
     tick(page, page.document.getElementById('q-select-all'));

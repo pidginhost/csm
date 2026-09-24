@@ -52,6 +52,19 @@ async function showOnly(page, country) {
 
 const posts = (page, url) => page.requests.filter(r => r.method === 'POST' && r.url.includes(url));
 
+test('temporary whitelist confirmation formats duration seconds', async () => {
+    const { page, log } = await threatPage([], { url: 'https://csm.example.test/threat?ip=203.0.113.9' });
+    page.respond('/api/v1/threat/ip?ip=203.0.113.9', 200, { ip: '203.0.113.9', verdict: 'suspicious', unified_score: 40 });
+    page.respond('/api/v1/threat/events?ip=203.0.113.9', 200, items([]));
+    await settle();
+    page.window.CSM.prompt = () => Promise.resolve('2');
+    page.document.querySelector('.temp-wl-btn').click();
+    await settle();
+    page.respond('/api/v1/threat/temp-whitelist-ip', 200, { ok: true, duration_seconds: 7200, actions: [] });
+    await settle();
+    assert.ok(log.toasts.some(t => /temp-whitelisted for 2h\./.test(t.message)), JSON.stringify(log.toasts));
+});
+
 async function lookup(intel) {
     const { page } = await threatPage([], { url: 'https://csm.example.test/threat?ip=203.0.113.9' });
     page.respond('/api/v1/threat/ip?ip=203.0.113.9', 200, Object.assign({
@@ -127,6 +140,18 @@ test('bulk timed block shows refused permanent blocks', async () => {
 });
 
 const BUTTONS = { block: 'bulk-block-btn', block_permanent: 'bulk-block-perm-btn', whitelist: 'bulk-whitelist-btn' };
+
+test('bulk whitelist displays partial failures', async () => {
+    const { page, log } = await threatPage([attacker('192.0.2.20'), attacker('192.0.2.21')]);
+    selectAll(page);
+    page.document.getElementById('bulk-whitelist-btn').click();
+    await settle();
+    const reason = '192.0.2.21: allow in firewall: unavailable';
+    page.respond('/api/v1/threat/bulk-action', 200, { ok: true, count: 1, warnings: [reason] });
+    await settle();
+    assert.ok(log.toasts.some(t => t.kind === 'success' && /1 IP/.test(t.message)), JSON.stringify(log.toasts));
+    assert.ok(log.toasts.some(t => t.kind === 'warning' && t.message === reason), JSON.stringify(log.toasts));
+});
 
 for (const action of ['block', 'block_permanent', 'whitelist']) {
     for (const count of [0, 100, 101]) {

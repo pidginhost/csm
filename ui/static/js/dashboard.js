@@ -67,6 +67,7 @@
     // no longer renders a live feed but the alert path stays useful.
     // Newest finding time seen, in epoch millis; NaN until the first poll.
     var lastNotifAt = NaN;
+    var lastNotifKeys = new Set();
     var notifInternalChecks = { auto_response: 1, auto_block: 1, check_timeout: 1, health: 1 };
 
     function _maybeNotify(f) {
@@ -80,22 +81,32 @@
         });
     }
 
+    function notifyFindings(findings, live) {
+        var initial = isNaN(lastNotifAt);
+        // A burst may arrive newest first. Compare every member to the
+        // previous batch, and retain identities at the boundary so two
+        // findings within the same millisecond both notify, once each.
+        var cutoff = initial ? -Infinity : lastNotifAt;
+        var maxAt = cutoff;
+        var newestKeys = new Set(lastNotifKeys);
+        var batchKeys = new Set();
+        findings.forEach(function(f) {
+            var at = CSM.parseTimestamp(f.timestamp);
+            if (isNaN(at) || at < cutoff) return;
+            var key = JSON.stringify([f.timestamp, f.check, f.message, f.details]);
+            if (batchKeys.has(key) || (at === cutoff && lastNotifKeys.has(key))) return;
+            batchKeys.add(key);
+            if ((live || !initial) && !notifInternalChecks[f.check]) _maybeNotify(f);
+            if (at > maxAt) { maxAt = at; newestKeys.clear(); }
+            if (at === maxAt) newestKeys.add(key);
+        });
+        lastNotifAt = maxAt;
+        lastNotifKeys = newestKeys;
+    }
+
     function pollFindings() {
         CSM.get('/api/v1/history?limit=10&offset=0')
-            .then(function(data) {
-                var findings = data.items;
-                var maxAt = isNaN(lastNotifAt) ? -Infinity : lastNotifAt;
-                for (var i = findings.length - 1; i >= 0; i--) {
-                    var f = findings[i];
-                    var at = CSM.parseTimestamp(f.timestamp);
-                    if (isNaN(at)) continue;
-                    if (at > maxAt) maxAt = at;
-                    if (!isNaN(lastNotifAt) && at > lastNotifAt && !notifInternalChecks[f.check]) {
-                        _maybeNotify(f);
-                    }
-                }
-                if (isFinite(maxAt)) lastNotifAt = maxAt;
-            })
+            .then(function(data) { notifyFindings(data.items, false); })
             .catch(function(err) { console.error('pollFindings:', err); });
     }
 
@@ -434,12 +445,7 @@
     // A finding dispatched while the page is open notifies at once and
     // refreshes the 24h counts, instead of waiting for the next poll.
     if (CSM.live) CSM.live.onFinding(function(items) {
-        items.forEach(function(f) {
-            var at = CSM.parseTimestamp(f.timestamp);
-            if (isNaN(at)) return;
-            if (!isNaN(lastNotifAt) && at > lastNotifAt && !notifInternalChecks[f.check]) _maybeNotify(f);
-            if (isNaN(lastNotifAt) || at > lastNotifAt) lastNotifAt = at;
-        });
+        notifyFindings(items, true);
         refreshStats();
     });
 })();

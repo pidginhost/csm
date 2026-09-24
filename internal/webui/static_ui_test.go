@@ -3122,8 +3122,8 @@ func TestAccountPerTabFilters(t *testing.T) {
 		`id="account-history-sev"`,
 		`id="account-history-from"`,
 		`id="account-history-to"`,
-		`data-index="' + i + '" data-severity="' + String(f.severity || 0) + '"`,
-		`data-severity="' + String(f.severity || 0) + '"`,
+		`data-index="' + i + '" data-severity="' + CSM.severity(f.severity).level + '"`,
+		`data-severity="' + CSM.severity(e.severity).level + '"`,
 		`data-check="' + CSM.attr(f.check || '') + '"`,
 		`data-path="' + CSM.attr(quarantined[q].original_path || '') + '"`,
 		`data-timestamp="' + CSM.attr(e.timestamp || '') + '"`,
@@ -3184,7 +3184,7 @@ func TestQuarantinePageHasFilterPack(t *testing.T) {
 		`data-path="' + CSM.attr(f.original_path || '') + '" data-account="' + CSM.attr(acct) + '"`,
 		`data-source="' + CSM.attr(det) + '"`,
 		`data-quar-ts="' + CSM.attr(f.quarantined_at || '') + '"`,
-		`data-sort="'+CSM.attr(f.quarantined_at || '')+'"`,
+		`data-timestamp="'+CSM.attr(f.quarantined_at || '')+'"`,
 		`var from = fromEl ? CSM.prefs.dayBoundary(fromEl.value, false) : null;`,
 		`var to = toEl ? CSM.prefs.dayBoundary(toEl.value, true) : null;`,
 		`if (to !== null && ts >= to) return false;`,
@@ -3204,8 +3204,8 @@ func TestQuarantinePageHasFilterPack(t *testing.T) {
 	if strings.Contains(jsText, `86400000`) || strings.Contains(jsText, `new Date(fromEl.value + 'T00:00:00')`) {
 		t.Fatal("quarantine.js must use validated calendar-day bounds instead of fixed 24-hour date math")
 	}
-	if strings.Contains(jsText, `data-timestamp="'+CSM.attr(f.quarantined_at`) {
-		t.Fatal("quarantine.js must not use data-timestamp for absolute local timestamp cells")
+	if strings.Contains(jsText, `data-time-ago="'+CSM.attr(f.quarantined_at`) {
+		t.Fatal("quarantine.js must not use data-time-ago for absolute local timestamp cells")
 	}
 }
 

@@ -230,5 +230,5 @@ func (s *Server) apiUIAudit(w http.ResponseWriter, r *http.Request) {
 	if truncated {
 		entries = entries[:uiAuditPageLimit]
 	}
-	writeItems(w, entries, map[string]interface{}{"limit": uiAuditPageLimit, "truncated": truncated})
+	writeItems(w, entries, map[string]interface{}{"offset": 0, "limit": uiAuditPageLimit, "truncated": truncated})
 }

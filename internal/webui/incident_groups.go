@@ -68,6 +68,7 @@ func (s *Server) apiIncidentGroups(w http.ResponseWriter, r *http.Request) {
 		"offset":            offset,
 		"limit":             limit,
 		"scanned_incidents": resp.ScannedIncidents,
-		"truncated":         resp.Truncated,
+		"truncated":         resp.Truncated || historyPageTruncated(resp.TotalGroups, offset, len(resp.Groups)),
+		"scan_truncated":    resp.Truncated,
 	})
 }

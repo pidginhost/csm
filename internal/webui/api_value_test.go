@@ -4,14 +4,18 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
+	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/processctx"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 var utcTestZone = time.FixedZone("host", 3*3600)
@@ -217,5 +221,143 @@ func TestAPIValueRefusesUnreachableEmbeddedTimes(t *testing.T) {
 	_, err := apiValue(embedsHidden{hiddenTimes: hiddenTimes{When: utcTestAt}, Name: "x"})
 	if !errors.Is(err, errUnreachableField) {
 		t.Fatalf("err = %v, want errUnreachableField", err)
+	}
+}
+
+func TestAPIValueIgnoresExcludedFields(t *testing.T) {
+	cycle := &loop{When: utcTestAt}
+	cycle.Next = cycle
+	in := struct {
+		hiddenTimes `json:"-"`
+		Cycle       *loop     `json:"-"`
+		When        time.Time `json:"when"`
+	}{hiddenTimes: hiddenTimes{When: utcTestAt}, Cycle: cycle, When: utcTestAt}
+	if got := encodeUTC(t, in); got != `{"when":"2026-09-22T10:04:05.123456789Z"}` {
+		t.Fatalf("got %s", got)
+	}
+}
+
+type failedJSON struct{}
+
+func (failedJSON) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("cannot encode response")
+}
+
+func TestWriteJSONRejectsEncodingFailures(t *testing.T) {
+	for name, value := range map[string]any{
+		"invalid float":    math.Inf(1),
+		"invalid time":     time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC),
+		"custom marshaler": failedJSON{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			writeOKStatus(w, http.StatusAccepted, map[string]any{"value": value})
+			var body map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("status %d: invalid JSON: %v", w.Code, err)
+			}
+			if w.Code != http.StatusInternalServerError || body["error"] == nil || body["ok"] != nil {
+				t.Fatalf("got %d %s, want JSON error with 500", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+type apiPointerMarshaler struct {
+	At     time.Time `json:"-"`
+	Values []string  `json:"values"`
+}
+
+func (p *apiPointerMarshaler) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]any{"custom": true, "at": p.At, "values": p.Values})
+}
+
+func TestAPIValuePreservesMarshalerAddressability(t *testing.T) {
+	in := apiPointerMarshaler{At: utcTestAt}
+	want := apiPointerMarshaler{At: utcTestAt.UTC(), Values: []string{}}
+	wraps := map[string]func(apiPointerMarshaler) any{
+		"value":         func(v apiPointerMarshaler) any { return v },
+		"pointer":       func(v apiPointerMarshaler) any { return &v },
+		"slice":         func(v apiPointerMarshaler) any { return []apiPointerMarshaler{v} },
+		"array":         func(v apiPointerMarshaler) any { return [1]apiPointerMarshaler{v} },
+		"array pointer": func(v apiPointerMarshaler) any { return &[1]apiPointerMarshaler{v} },
+		"map value":     func(v apiPointerMarshaler) any { return map[string]apiPointerMarshaler{"v": v} },
+		"map pointer":   func(v apiPointerMarshaler) any { return map[string]*apiPointerMarshaler{"v": &v} },
+		"interface":     func(v apiPointerMarshaler) any { return []any{v, &v} },
+	}
+	for name, wrap := range wraps {
+		t.Run(name, func(t *testing.T) {
+			input := wrap(in)
+			got := encodeUTC(t, input)
+			expected, err := json.Marshal(wrap(want))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != string(expected) {
+				t.Fatalf("got %s, want %s", got, expected)
+			}
+			original, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(original), `"values":[]`) {
+				t.Fatal("input was modified")
+			}
+		})
+	}
+}
+
+func TestAPIValueKeepsTimeMapKeysDistinct(t *testing.T) {
+	in := map[time.Time][1]time.Time{utcTestAt: {utcTestAt}, utcTestAt.UTC(): {utcTestAt}}
+	normalized, err := apiValue(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := normalized.(map[time.Time][1]time.Time)
+	if len(out) != 2 {
+		t.Fatalf("keys collapsed: %v", out)
+	}
+	for key, values := range in {
+		if out[key][0].Location() != time.UTC || values[0].Location() != utcTestZone {
+			t.Fatalf("map key or input changed: %v", out)
+		}
+	}
+}
+
+func TestAPIValueWithConcurrentFindingWriters(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	start := utcTestAt
+	f := alert.Finding{Check: "webshell", Message: "shell", Timestamp: utcTestAt,
+		Process:        &processctx.ProcessContext{PID: 2, StartedAt: &start, Parent: &processctx.ProcessContext{PID: 1, StartedAt: &start}},
+		RelayBreakdown: []alert.RelayScriptHit{{ScriptKey: "script", LastSeen: utcTestAt}}}
+	db := store.Global()
+	var writers sync.WaitGroup
+	defer writers.Wait()
+	writers.Go(func() {
+		for i := 0; i < 40; i++ {
+			s.store.SetLatestFindings([]alert.Finding{f})
+		}
+	})
+	writers.Go(func() {
+		for i := 0; i < 40; i++ {
+			if err := db.AppendHistory([]alert.Finding{f}); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	})
+	for i := 0; i < 40; i++ {
+		for _, handler := range []http.HandlerFunc{s.apiFindings, s.apiHistory} {
+			w := httptest.NewRecorder()
+			handler(w, httptest.NewRequest(http.MethodGet, "/", nil))
+			if w.Code != http.StatusOK {
+				t.Fatalf("got %d %s", w.Code, w.Body.String())
+			}
+			assertTimeContract(t, "concurrent findings", w.Body.Bytes())
+		}
+		_ = encodeUTC(t, toAPIFindings(s.store.LatestFindings()))
+	}
+	if f.Process.StartedAt.Location() != utcTestZone || f.RelayBreakdown[0].LastSeen.Location() != utcTestZone {
+		t.Fatal("shared findings were modified")
 	}
 }
