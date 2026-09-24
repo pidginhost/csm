@@ -191,7 +191,7 @@ func TestParseTargetKeyRoundTripsAndRefusesAliases(t *testing.T) {
 func TestTargetCovers(t *testing.T) {
 	net24, _ := CanonicalPrefix("198.51.100.0/24", v6)
 	inside, _ := CanonicalAddress("198.51.100.9", v6)
-	outside, _ := CanonicalAddress("198.51.101.9", v6)
+	outside, _ := CanonicalAddress("203.0.113.9", v6)
 	net25, _ := CanonicalPrefix("198.51.100.128/25", v6)
 	if !net24.Covers(inside) || !net24.Covers(net25) || !inside.Covers(inside) {
 		t.Error("a prefix does not cover its own addresses")
