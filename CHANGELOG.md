@@ -11,7 +11,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 
 ### Highlights
 
-- Breaking: API response formats and pagination have changed, and read-only routes now reject other request methods. Update API clients before upgrading; the details are under Changed.
+- Breaking: `/api/v1` response formats and pagination have changed: lists under `items`, `"ok": true` or an error status for actions, a JSON `error` for failures, RFC 3339 UTC times and severity labels, and read-only routes now reject other request methods. Update API clients before upgrading; the details are under Changed.
 - Upgrade recommended: a Web UI session could set the ModSecurity reload command, several file paths and environment variable names from Settings, and through them run commands or write files as root. Those settings now change only in the daemon's configuration file.
 - Web UI sessions are harder to abuse: CSRF tokens are bound to the browser session, only the Web UI's own loopback origin is trusted, the Content-Security-Policy is stricter, an open dashboard no longer keeps a session alive, and rate limits cover IPv6 prefixes and the metrics endpoint.
 - The UI audit log now names the credential behind each recorded action and covers previously missing logins, scans, quarantine, firewall and ModSecurity changes.
@@ -162,7 +162,7 @@ Releases before 3.40.0 are archived: [3.30 to 3.39](docs/changelog/3.30-3.39.md)
 - Screen readers no longer read whole lists and the refresh clock aloud every time a Web UI page refreshes; only short status messages such as errors and connection changes are announced.
 - Every Web UI page now starts with a Skip to content link that keeps a visible focus indicator, and section headings follow the page title in order so screen reader users can move through the page outline.
 - Keyboard focus now survives refreshes and dialog transitions and returns to what opened a panel or dialog. A dialog opened from the detail panel keeps the keyboard to itself, the prompt dialog closes with Escape and keeps Tab inside, and finding shortcuts follow the focused row without acting behind dialogs.
-- The light theme now covers the login page, the command palette, the undo banner and chart tooltips, and its status text, badges, toasts, chart labels, warning text and command palette hints meet the WCAG AA contrast ratio. The chosen theme still applies when the browser blocks site storage, and warning text, dashboard indicators and command palette hints are readable in both themes.
+- The light theme now covers the login page, the command palette, the undo banner and chart tooltips, and its status text, badges, toasts and chart labels meet the WCAG AA contrast ratio. Warning text, dashboard indicators and command palette hints are readable in both themes, and the chosen theme still applies when the browser blocks site storage.
 
 #### API
 
