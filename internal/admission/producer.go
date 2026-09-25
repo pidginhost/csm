@@ -20,7 +20,8 @@ type Policy struct {
 // name, to its canonical registered name and policy. ok is false for an
 // unregistered check. Producers and the engine use the same lookup so they
 // cannot disagree about a check; checks.AdmissionPolicy is the production
-// lookup.
+// lookup. Both call it without coordination, so it must be immutable or safe
+// for concurrent use.
 type PolicyLookup func(check string) (canonical string, p Policy, ok bool)
 
 // ProducerID names a registered evidence producer.
