@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"net/netip"
 	"testing"
+	"time"
 )
 
 func FuzzCanonicalTargets(f *testing.F) {
@@ -121,4 +122,60 @@ func resealFuzzRecord(data []byte) []byte {
 	sum := sha256.Sum256(head)
 	copy(out[len(head):], sum[:8])
 	return out
+}
+
+// Every ledger record decoder either refuses its input or accepts bytes that
+// re-encode exactly, and none panics on damaged storage.
+func FuzzLedgerRecords(f *testing.F) {
+	target, _ := CanonicalAddress("192.0.2.10", Caps{})
+	episode, _ := ParseEpisodeID("00000000000000000000000000000001")
+	cand := Candidate{
+		Key:   CandidateKey{Kind: KindBlockIP, Target: target, Episode: episode, Generation: 1},
+		Scope: Scope{Effect: EffectAddress}, Entry: EntryScan, Check: "ssh_brute", FindingID: "0123456789abcdef",
+		Roots: []EvidenceID{"ev_00000000000000000000000000000001"}, FirstQueued: t0, AgeOut: t0.Add(time.Hour),
+		State: StateQueued, Transitions: 1,
+	}
+	id, _ := cand.ID()
+	attempt, _ := NewAttempt(id, 1)
+	clock, _, _ := Clock{}.Advance(ClockReading{Wall: t0, BootID: "0f5e3c2a-1b4d-4e6f-8a9b-0c1d2e3f4a5b", SinceBoot: time.Hour})
+	inv, _ := NewInventory(map[string]uint64{"alice": 1}, map[string]string{"alice.example": "alice"})
+	links, _, _ := ReportLinks{}.Add("0123456789abcdef")
+	for _, rec := range []interface{ MarshalBinary() ([]byte, error) }{
+		cand, AttemptRecord{Attempt: attempt, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0}, clock, inv, links,
+	} {
+		data, err := rec.MarshalBinary()
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(data)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		check := func(data []byte) {
+			roundTrip := func(what string, rec interface{ MarshalBinary() ([]byte, error) }) {
+				out, err := rec.MarshalBinary()
+				if err != nil || !bytes.Equal(out, data) {
+					t.Fatalf("accepted %s does not re-encode to its input: %v", what, err)
+				}
+			}
+			if c, err := UnmarshalClock(data); err == nil {
+				roundTrip("clock", c)
+			}
+			if c, err := UnmarshalCandidate(data); err == nil {
+				roundTrip("candidate", c)
+			}
+			if a, err := UnmarshalAttempt(data); err == nil {
+				roundTrip("attempt", a)
+			}
+			if inv, err := UnmarshalInventory(data); err == nil {
+				roundTrip("inventory", inv)
+			}
+			if r, err := UnmarshalReportLinks(data); err == nil {
+				roundTrip("report links", r)
+			}
+		}
+		check(data)
+		if len(data) >= 8 {
+			check(resealFuzzRecord(data))
+		}
+	})
 }

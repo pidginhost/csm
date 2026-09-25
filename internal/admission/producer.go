@@ -147,6 +147,14 @@ func (r *Registry) Seal() {
 	r.mu.Unlock()
 }
 
+// Sealed reports whether registration has ended. The ledger accepts only a
+// sealed registry, so the set of producers cannot change under it.
+func (r *Registry) Sealed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sealed
+}
+
 // Spec returns a copy of a registered producer's spec.
 func (r *Registry) Spec(id ProducerID) (ProducerSpec, bool) {
 	r.mu.Lock()
