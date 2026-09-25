@@ -350,6 +350,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "perf_redis_config", Category: CategoryPerformance, Correlation: CorrelationIgnored, CorrelationReason: reasonPerformance},
 	{Name: "perf_wp_config", Category: CategoryPerformance, Correlation: CorrelationIgnored, CorrelationReason: reasonPerformance},
 	{Name: "perf_wp_cron", Category: CategoryPerformance, Correlation: CorrelationIgnored, CorrelationReason: reasonPerformance},
+	{Name: "perf_wp_loopback", Category: CategoryPerformance, Correlation: CorrelationIgnored, CorrelationReason: reasonPerformance},
 	{Name: "perf_wp_transients", Category: CategoryPerformance, Correlation: CorrelationIgnored, CorrelationReason: reasonPerformance},
 
 	// --- Network & Firewall ---------------------------------------------

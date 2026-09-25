@@ -15,6 +15,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
+- The Performance page now reports a WordPress site that keeps sending background requests to itself more than once a minute for hours, which usually means a plugin re-runs its job on every page view or a background queue never drains.
 - A very large bloated error log is now reported as High, so it alerts, and every bloated error log finding shows how fast the file is growing.
 
 ### Fixed

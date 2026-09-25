@@ -344,6 +344,7 @@ discovers WordPress installs only.
 | `perf_wp_config` | WordPress wp-config.php settings |
 | `perf_wp_transients` | WordPress database transient bloat |
 | `perf_wp_cron` | WordPress cron scheduling (missed crons) |
+| `perf_wp_loopback` | WordPress self-requests sustained above once a minute |
 
 ## Platform Support
 

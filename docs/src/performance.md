@@ -25,6 +25,7 @@ identities for each scope and victim process.
 | `perf_wp_config` | WordPress wp-config.php hardening and debug settings |
 | `perf_wp_transients` | WordPress database transient bloat |
 | `perf_wp_cron` | WordPress cron scheduling (missed crons, excessive events) |
+| `perf_wp_loopback` | WordPress sites calling themselves faster than WordPress's own schedulers, hour after hour |
 
 ### Bloated error logs
 
@@ -46,6 +47,31 @@ of the tree keeps the logs it did not reach and updates the ones it did.
 The finding keeps the same identity while the log grows, so it alerts at most
 once a day and a dismissal sticks until the log crosses into the higher tier.
 When more than 20 logs are bloated, the largest are reported.
+
+### WordPress loopback requests
+
+A WordPress site runs background work by sending a request to itself, a
+loopback. WordPress's cron spawn and Action Scheduler's admin dispatch each
+hold a 60-second lock, so one job reaches its own site at most once a minute.
+
+`perf_wp_loopback` reads the last three complete hours of every active vhost
+log. It counts POST requests the site sent to itself: WordPress's own
+User-Agent, from the loopback interface or one of the server's addresses. The
+count is kept per job, meaning the path plus the admin-ajax `action`. A job
+over 60 an hour in each of the three hours is reported as a Warning on this
+page. The finding shows the hourly counts, how many runs failed with a 5xx
+error, and the User-Agent.
+
+There are two usual causes:
+
+- A plugin schedules its job for "now" and fires it from every page view.
+  The job then runs about as often as the site is visited, crawlers included.
+- A background queue such as Action Scheduler keeps re-dispatching itself
+  because its backlog never drains.
+
+The hour in progress is not counted. A site that reaches itself through a
+proxy such as Cloudflare is missed when its log records the proxy's address
+rather than the server's.
 
 ## Web UI
 

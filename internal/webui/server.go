@@ -832,6 +832,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"perf_wp_config":                 "WP Config",
 			"perf_wp_transients":             "WP Transients",
 			"perf_wp_cron":                   "WP Cron",
+			"perf_wp_loopback":               "WP Loopback",
 			"integrity":                      "Integrity",
 			"db_siteurl_hijack":              "DB URL Hijack",
 			"db_siteurl_invalid":             "DB Invalid Site Address",
