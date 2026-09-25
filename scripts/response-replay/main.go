@@ -442,7 +442,7 @@ var (
 	assumptions = []string{
 		"demand_is_audit_dispatch_record", "empty_initial_state", "batches_inferred_from_equal_timestamps", "no_empty_scans_between_rows",
 		"challenge_list_available", "engine_applies_every_block", "nonscan_blocks_applied_as_recorded_before_scan_stage",
-		"random_drain_order_not_go_map_order",
+		"random_drain_order_not_go_map_order", "severity_as_recorded",
 	}
 	gaps = []string{
 		"infra_and_allowlist_protection", "verdict_callback", "subnet_spray_asn_crawl_netblock", "permanent_escalation",

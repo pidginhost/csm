@@ -923,6 +923,26 @@ func TestReplayStatesItsDemandSource(t *testing.T) {
 	}
 }
 
+// A finding replays with the severity it was recorded with. A later change
+// in how its check grades severity is not applied, so an older recording can
+// replay as blockable a finding the current build would only challenge.
+func TestReplayStatesSeverityIsAsRecorded(t *testing.T) {
+	dir := t.TempDir()
+	findings := writeStream(t, dir, "stream.jsonl.gz", fixtureEvents()...)
+	out := filepath.Join(dir, "report.json")
+	if err := testRun().execute(fixtureArgs(findings, out), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	report, _ := readReport(t, out)
+	found := false
+	for _, a := range report["assumptions"].([]any) {
+		found = found || a == "severity_as_recorded"
+	}
+	if !found {
+		t.Fatalf("assumptions = %v", report["assumptions"])
+	}
+}
+
 // Pseudonyms can merge distinct addresses; every report says so, and a
 // manifest's counts say how much.
 func TestReplayDisclosesAddressMerging(t *testing.T) {

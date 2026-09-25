@@ -267,6 +267,10 @@ go build -o /tmp/response-replay ./scripts/response-replay
   one. `--reconstruct-reputation-source` recovers the address from that
   message's fixed form; the report then counts the recovered rows and lists
   the reconstruction among its assumptions.
+- A finding keeps the severity it was recorded with. A later change in how
+  a check grades severity is not applied, so an older recording can replay
+  as blockable a finding the current build would only challenge. Every
+  report lists this among its assumptions.
 - Batches are inferred from equal timestamps. Recordings hold no empty scans,
   so queued work drains only when another finding arrives. Rows without a
   timestamp are counted and left out.
