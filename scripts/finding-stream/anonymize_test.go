@@ -562,3 +562,78 @@ func TestAnonymizerMapsBareMailboxField(t *testing.T) {
 		t.Fatalf("clean output reported leaks: %v", problems)
 	}
 }
+
+// The token pass splits text at underscores and trims dots from token edges,
+// while the leak check finds a learned name anywhere it is not glued to a
+// letter or digit. A learned name the token pass cannot see whole must still
+// be replaced, or the run refuses on output the scrubber produced itself.
+func TestAnonymizerScrubsLearnedNamesTheTokenPassSplits(t *testing.T) {
+	events := []alert.AuditEvent{
+		{
+			V: 1, Check: "email_auth_failure_realtime", Severity: "HIGH",
+			Message:  "Mail authentication failure for mx_testuser from 203.0.113.9",
+			Details:  "Dovecot authentication data (set_id=mx_testuser) retry as MX_TestUser",
+			TenantID: "mx_testuser", Mailbox: "mx_testuser",
+		},
+		{
+			V: 1, Check: "email_auth_failure_realtime", Severity: "HIGH",
+			Message:  "Mail authentication failure for mx_test_user from 203.0.113.10",
+			TenantID: "mx_test_user",
+		},
+		{V: 1, Check: "email_auth_failure_realtime", Severity: "HIGH", Message: "Mail authentication failure for mx_test", TenantID: "mx_test"},
+		{
+			V: 1, Check: "http_scanner_profile", Severity: "HIGH",
+			Message: "URL scanner profile from 203.0.113.11",
+			Details: "Sample: GET /home/.probe/auth.json\nSample: GET /app/.probe/config.json",
+		},
+		{V: 1, Check: "x", Message: "sync failed on web_07 at 03:00 for web_07.example.net", Hostname: "web_07.example.net"},
+		{V: 1, Check: "x", Message: "vhost intranet_site misconfigured", Domain: "intranet_site"},
+		// A plain learned name inside an irregular one must not be replaced
+		// first, leaving the rest of the irregular name behind.
+		{V: 1, Check: "x", Message: "account test", TenantID: "test"},
+	}
+	out, a := anonymizeAll(t, testSalt(), events)
+	if problems := a.Verify(out); len(problems) != 0 {
+		t.Fatalf("scrubbed output reported leaks: %v", problems)
+	}
+	for _, c := range []struct {
+		row  int
+		want string
+	}{
+		{0, "failure for " + a.Account("mx_testuser") + " from"},
+		{0, "(set_id=" + a.Account("mx_testuser") + ") retry as " + a.Account("mx_testuser")},
+		{1, "failure for " + a.Account("mx_test_user") + " from"},
+		{2, "failure for " + a.Account("mx_test")},
+		{3, "GET /home/" + a.Account(".probe") + "/auth.json"},
+		{3, "GET /app/" + a.Account(".probe") + "/config.json"},
+		{4, "on " + a.Host("web_07.example.net") + " at 03:00 for " + a.Host("web_07.example.net")},
+		{5, "vhost " + a.Domain("intranet_site") + " misconfigured"},
+	} {
+		if text := eventText(out[c.row]); !strings.Contains(text, c.want) {
+			t.Errorf("row %d: %q missing from %q", c.row, c.want, text)
+		}
+	}
+	for i := range out {
+		lower := strings.ToLower(eventText(out[i]))
+		for _, raw := range []string{"mx_test", ".probe", "web_07", "intranet_site"} {
+			if strings.Contains(lower, raw) {
+				t.Errorf("row %d: %q survived: %q", i, raw, lower)
+			}
+		}
+	}
+	// A name learned after text was already scrubbed is replaced too.
+	late := alert.AuditEvent{V: 1, Check: "x", Message: "login ops_backup rejected", TenantID: "ops_backup"}
+	a.Learn([]alert.AuditEvent{late})
+	if got := a.Event(late); got.Message != "login "+a.Account("ops_backup")+" rejected" {
+		t.Errorf("late name not replaced: %q", got.Message)
+	}
+	// A learned name glued to a letter or digit is part of another word and
+	// is neither replaced nor reported.
+	glued := a.Event(alert.AuditEvent{V: 1, Check: "x", Message: "kmx_testuser9 unrelated"})
+	if glued.Message != "kmx_testuser9 unrelated" {
+		t.Errorf("glued word rewritten: %q", glued.Message)
+	}
+	if problems := a.Verify([]alert.AuditEvent{glued}); len(problems) != 0 {
+		t.Errorf("glued word reported as a leak: %v", problems)
+	}
+}

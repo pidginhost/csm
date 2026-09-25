@@ -39,6 +39,8 @@ type Anonymizer struct {
 	// process; only the counts do.
 	ipv4Seen map[string]string
 	ipv6Seen map[string]string
+	// Learned names the token pass cannot see whole, indexed by prefix.
+	irregular nameIndex
 }
 
 // NewAnonymizer returns an anonymizer keyed on salt.
@@ -221,6 +223,7 @@ func (a *Anonymizer) learnAccount(name string) {
 		return
 	}
 	a.accounts[lower] = struct{}{}
+	a.learnIrregular(lower)
 }
 
 // learnHost records the full hostname and, when its first label looks like
@@ -232,14 +235,18 @@ func (a *Anonymizer) learnHost(name string) {
 	}
 	lower := strings.ToLower(name)
 	a.hosts[lower] = name
+	a.learnIrregular(lower)
 	if short, _, ok := strings.Cut(lower, "."); ok && strings.ContainsAny(short, "0123456789") {
 		a.hosts[short] = name
+		a.learnIrregular(short)
 	}
 }
 
 func (a *Anonymizer) learnDomain(name string) {
 	if name != "" {
-		a.domains[strings.ToLower(name)] = struct{}{}
+		lower := strings.ToLower(name)
+		a.domains[lower] = struct{}{}
+		a.learnIrregular(lower)
 	}
 }
 
@@ -290,64 +297,20 @@ func (a *Anonymizer) process(p *processctx.ProcessContext) *processctx.ProcessCo
 }
 
 // Text removes secrets before identity substitutions can obscure their
-// keys, then scrubs mail, IPv6, home paths and name-shaped tokens in order.
+// keys. Identity replacements use original spans so no later pass can
+// consume part of a name or reinterpret an emitted pseudonym.
 func (a *Anonymizer) Text(s string) string {
 	if s == "" {
 		return s
 	}
 	s = secretRe.ReplaceAllString(s, "${1}[redacted]")
-	s = emailRe.ReplaceAllStringFunc(s, func(m string) string { a.counts["emails"]++; return a.Email(m) })
-	// A mailbox truncated after the "@" still names a mailbox; map the local
-	// part the way Email does so both forms agree.
-	s = replaceLeftBounded(s, localPartRe, func(m string) (string, bool) {
-		local := m[:len(m)-1]
-		if systemUsers[local] || a.isPseudonym(local) {
-			return m, false
-		}
-		a.counts["emails"]++
-		return a.remember("user-"+a.label("mailbox", local)) + "@", true
-	})
-	s = a.scrubIPv6(s)
-	s = homePathRe.ReplaceAllStringFunc(s, func(m string) string {
-		sub := homePathRe.FindStringSubmatch(m)
-		a.counts["accounts"]++
-		return sub[1] + a.Account(sub[2])
-	})
-	s = scrubTokens(s, a.token)
-	return s
+	return a.scrubNames(s)
 }
 
 // A field separator or a hex letter at the end of its key can be part of
 // the regex match, and so can a colon that belongs to the sentence after
 // the address. Try every start after a colon and every end at a group
 // boundary, longest first, before rejecting the match.
-func (a *Anonymizer) scrubIPv6(s string) string {
-	var b strings.Builder
-	last := 0
-	for _, loc := range ipv6Re.FindAllStringIndex(s, -1) {
-		if loc[0] < last {
-			continue
-		}
-		start, end, ok := longestIPv6(s, loc[0], loc[1])
-		if !ok {
-			continue
-		}
-		raw := s[start:end]
-		if net.ParseIP(raw).IsLoopback() {
-			continue
-		}
-		a.counts["ipv6"]++
-		b.WriteString(s[last:start])
-		b.WriteString(a.IPv6(raw))
-		last = end
-	}
-	if last == 0 {
-		return s
-	}
-	b.WriteString(s[last:])
-	return b.String()
-}
-
 func longestIPv6(s string, lo, hi int) (int, int, bool) {
 	for start := lo; start < hi; start++ {
 		if start != lo && s[start-1] != ':' {
@@ -440,6 +403,11 @@ func (a *Anonymizer) embedded(core string) string {
 }
 
 func (a *Anonymizer) embeddedName(lower, raw string) (string, bool) {
+	// A punctuation-only learned value must not turn separators inside a
+	// token into identities either; leave ambiguity to the refusal check.
+	if strings.Trim(lower, ".-") == "" {
+		return "", false
+	}
 	if a.isPseudonym(lower) {
 		return raw, true
 	}
@@ -534,6 +502,22 @@ func scrubTokens(s string, fn func(core string) string) string {
 	return b.String()
 }
 
+// irregularName maps one such name with the precedence token uses: host,
+// then domain, then account.
+func (a *Anonymizer) irregularName(raw string) string {
+	lower := strings.ToLower(raw)
+	if _, ok := a.hosts[lower]; ok {
+		a.counts["hosts"]++
+		return a.Host(raw)
+	}
+	if _, ok := a.domains[lower]; ok {
+		a.counts["domains"]++
+		return a.Domain(raw)
+	}
+	a.counts["accounts"]++
+	return a.Account(raw)
+}
+
 // replaceBounded applies fn to every match of re that is not glued to
 // letters or digits on either side.
 func replaceBounded(s string, re *regexp.Regexp, fn func(m string) (string, bool)) string {
@@ -568,30 +552,6 @@ func findBoundedMatches(s string, re *regexp.Regexp) []string {
 		}
 	}
 	return out
-}
-
-// replaceLeftBounded applies fn to every match of re that is not glued to
-// a letter or digit on the left; the match itself ends at a separator.
-func replaceLeftBounded(s string, re *regexp.Regexp, fn func(m string) (string, bool)) string {
-	var b strings.Builder
-	last := 0
-	for _, loc := range re.FindAllStringIndex(s, -1) {
-		if loc[0] > 0 && isAlnum(s[loc[0]-1]) {
-			continue
-		}
-		r, ok := fn(s[loc[0]:loc[1]])
-		if !ok {
-			continue
-		}
-		b.WriteString(s[last:loc[0]])
-		b.WriteString(r)
-		last = loc[1]
-	}
-	if last == 0 {
-		return s
-	}
-	b.WriteString(s[last:])
-	return b.String()
 }
 
 func bounded(s string, start, end int) bool {

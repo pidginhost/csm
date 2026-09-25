@@ -12,6 +12,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - Response replay reports now state that each finding keeps the severity it was recorded with, since a later grading change is not applied to older recordings.
+- The finding-stream tool now replaces learned names that contain an underscore or start with a dot, such as a bare mail login, as whole identities wherever they appear, instead of refusing the run on its own output. It no longer rewrites punctuation or its own pseudonyms while doing so.
 
 ## [4.0.0] - 2026-09-24
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/alert"
@@ -25,6 +26,68 @@ func FuzzAnonymizerTokens(f *testing.F) {
 		}
 		if got := scrubTokens(text, func(core string) string { return core }); got != text {
 			t.Fatal("identity token transform changed input")
+		}
+	})
+}
+
+func FuzzIrregularNames(f *testing.F) {
+	for _, seed := range []string{"ops_team", "ops_team_backup", "xops_team9", "[.probe]", "\u0130_OPS", "-ops_-", "\xffops_team"} {
+		f.Add(seed, seed+" fuzz_"+seed)
+	}
+	f.Add("\xc3", "fuzz_\u00e9")
+	f.Fuzz(func(t *testing.T, learned, text string) {
+		// Bound the exhaustive oracle; long shared prefixes are covered
+		// separately by the performance benchmark.
+		learned = learned[:min(len(learned), 128)]
+		text = text[:min(len(text), 512)]
+		names := []string{"ops_team", "ops_team_backup", ".probe", "\u0130_ops", "ops_-", "fuzz_" + learned}
+		a := NewAnonymizer(testSalt())
+		foldedNames := make(map[string]bool)
+		maxBytes := 0
+		for _, name := range names {
+			a.learnDomain(name)
+			foldedNames[strings.ToLower(name)] = true
+			maxBytes = max(maxBytes, len(name)*utf8.UTFMax)
+		}
+		matches := make(map[int]int)
+		for _, span := range a.irregular.matches(text) {
+			matches[span.start] = span.end
+		}
+		var boundaries []int
+		for offset := range text {
+			boundaries = append(boundaries, offset)
+		}
+		boundaries = append(boundaries, len(text))
+		for start := range text {
+			if start > 0 && isAlnum(text[start-1]) {
+				if matches[start] != 0 {
+					t.Fatalf("matched inside a word at %d", start)
+				}
+				continue
+			}
+			// Exhaustive substring comparison is intentionally independent
+			// of the trie and handles case folds that change byte length.
+			want := 0
+			for _, end := range boundaries {
+				if end <= start || end-start > maxBytes {
+					continue
+				}
+				if end < len(text) && isAlnum(text[end]) {
+					continue
+				}
+				if foldedNames[strings.ToLower(text[start:end])] {
+					want = end
+				}
+			}
+			if got := matches[start]; got != want {
+				t.Fatalf("match at %d ends at %d, want %d", start, got, want)
+			}
+		}
+		out := a.Text(text)
+		for _, name := range names {
+			if problems := a.Verify([]alert.AuditEvent{{Message: out + "\n" + name}}); len(problems) == 0 {
+				t.Fatalf("independent verifier missed planted name %q", name)
+			}
 		}
 	})
 }
