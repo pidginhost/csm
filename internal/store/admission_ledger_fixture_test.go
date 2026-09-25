@@ -161,3 +161,58 @@ func (f *ledgerFixture) snapshot() map[string]string {
 	}
 	return out
 }
+
+// evidenceSpec describes one observation; zero fields take defaults.
+type evidenceSpec struct {
+	producer *admission.Producer
+	check    string
+	target   string
+	cursor   string
+	age      time.Duration
+	finding  string
+	severity admission.Severity
+	owner    admission.Owner
+}
+
+func (f *ledgerFixture) mint(s evidenceSpec) admission.Evidence {
+	f.t.Helper()
+	if s.producer == nil {
+		s.producer, s.check = f.ssh, "ssh_brute"
+	}
+	if s.target == "" {
+		s.target = "192.0.2.10"
+	}
+	if s.cursor == "" {
+		s.cursor = "offset=1"
+	}
+	if s.finding == "" {
+		s.finding = "0123456789abcdef"
+	}
+	if s.severity == 0 {
+		s.severity = admission.SeverityHigh
+	}
+	in := admission.EvidenceInput{
+		Check: s.check, FindingID: s.finding, Severity: s.severity,
+		Observation: admission.ObservationRef{Stream: "log:" + string(s.producer.ID()), Cursor: s.cursor, Version: 1},
+		ObservedAt:  f.wall.Add(-s.age), Parser: admission.ParserRef{Name: "fixture", Version: 1},
+		Target: f.target(s.target), Owner: s.owner,
+	}
+	if s.producer == f.rep {
+		in.Intel = &admission.IntelRef{Source: "feed", Expires: in.ObservedAt.Add(30 * time.Hour)}
+	}
+	e, err := s.producer.Mint(in)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return e
+}
+
+// published mints and publishes evidence and returns its ID.
+func (f *ledgerFixture) published(s evidenceSpec) admission.EvidenceID {
+	f.t.Helper()
+	e := f.mint(s)
+	if _, err := f.l.PublishEvidence(e); err != nil {
+		f.t.Fatal(err)
+	}
+	return e.ID()
+}
