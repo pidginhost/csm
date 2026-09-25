@@ -136,8 +136,13 @@ func Assess(target Target, roots []Evidence, now time.Time) (Assessment, error) 
 
 // corroboration finds an independent root of another family, a different
 // observation and within the lookback, supporting a fresh local attack
-// root.
+// root. Of several, it returns the one whose support lasts longest, so the
+// assessment is not redone before the class can drop; ties keep the lowest
+// evidence ID.
 func corroboration(fresh, all []Evidence, now time.Time) (Evidence, bool) {
+	var best Evidence
+	var bestEnd time.Time
+	found := false
 	for _, a := range fresh {
 		if !a.Family().LocalAttack() {
 			continue
@@ -146,12 +151,12 @@ func corroboration(fresh, all []Evidence, now time.Time) (Evidence, bool) {
 			if !b.Family().Independent() || b.Family() == a.Family() || sameObservation(a, b) {
 				continue
 			}
-			if now.Before(supportExpiry(b)) {
-				return b, true
+			if end := supportExpiry(b); now.Before(end) && (!found || end.After(bestEnd)) {
+				best, bestEnd, found = b, end, true
 			}
 		}
 	}
-	return Evidence{}, false
+	return best, found
 }
 
 func supportExpiry(e Evidence) time.Time {

@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -294,5 +295,36 @@ func TestAssessIgnoresOrderingAndIdenticalDuplicates(t *testing.T) {
 			}
 		}
 		permute(0)
+	}
+}
+
+// With several qualifying supports, the corroboration lasts as long as the
+// longest-lived one, whichever sorts first by evidence ID.
+func TestAssessReassessByUsesTheLongestLivedSupport(t *testing.T) {
+	tp := newTestProducers(t)
+	now := t0
+	addr := mustAddr(t, "192.0.2.1")
+	local := mintRoot(t, now, rootSpec{p: tp.ssh, check: "ssh_brute", target: "192.0.2.1", age: time.Minute, cursor: "a"})
+	rep := func(age time.Duration, cursor string) Evidence {
+		return mintRoot(t, now, rootSpec{p: tp.reputation, check: "reputation", target: "192.0.2.1", age: age, cursor: cursor, intel: 30 * time.Hour})
+	}
+	// Support windows end 1h and 21h from now; the local root stays fresh
+	// until 1h59m from now, which is when the assessment must be redone.
+	want := now.Add(RootFreshness - time.Minute)
+	for _, shortFirst := range []bool{true, false} {
+		var short, long Evidence
+		for i := 0; ; i++ {
+			short, long = rep(23*time.Hour, fmt.Sprintf("s%d", i)), rep(3*time.Hour, "l")
+			if (short.ID() < long.ID()) == shortFirst {
+				break
+			}
+		}
+		a, err := Assess(addr, []Evidence{local, short, long}, now)
+		if err != nil || !a.Corroborated {
+			t.Fatalf("shortFirst=%v: %+v %v", shortFirst, a, err)
+		}
+		if !a.ReassessBy.Equal(want) {
+			t.Errorf("shortFirst=%v: ReassessBy = %v, want %v", shortFirst, a.ReassessBy, want)
+		}
 	}
 }
