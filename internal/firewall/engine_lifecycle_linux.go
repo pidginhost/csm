@@ -534,7 +534,11 @@ func (e *Engine) BlockIPRequest(req ActionRequest, budget *ScanAdmission) (Block
 	if req.Automatic {
 		return e.blockIPOutcomeRequest(req, budget)
 	}
-	return e.blockIPLockedRequest(req.Target, req.Reason, req.TTL, false, false, req, budget)
+	outcome, err := e.blockIPLockedRequest(req.Target, req.Reason, req.TTL, false, false, req, budget)
+	if e.shouldLegacyOutcome(err) {
+		recordBlockOutcome(req.Target, req.Reason, req.TTL, outcome, err, true, req.FindingID)
+	}
+	return outcome, err
 }
 
 func firewallAuditOperation(req ActionRequest) string {

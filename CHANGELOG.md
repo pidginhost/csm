@@ -12,6 +12,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - The firewall now refuses multicast and broadcast addresses as block targets. No packet the firewall filters can come from one, so such a block only used up a slot in the deny list.
+- Multicast and broadcast targets are now recorded as refusals across timed blocks, subnet dry-runs and manual action requests. These attempts no longer appear as failures or proposed blocks, or go unrecorded.
 
 ## [4.0.0] - 2026-09-24
 

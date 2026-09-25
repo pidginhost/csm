@@ -2484,6 +2484,11 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 		if e.stateReadErr != nil {
 			return BlockOutcomeNoop, e.stateReadErr
 		}
+		// A legacy lifetime or failed kernel probe must not mask the address
+		// refusal. Capacity checks still follow lifetime checks for usable IPs.
+		if isUnblockableAddress(ip) {
+			return BlockOutcomeNoop, ipProtectedErrorf("refusing to block non-routable address: %s", ip)
+		}
 		if entry, found := blockedStateEntry(priorState, ip); found {
 			if entry.ExpiresAt.IsZero() {
 				return BlockOutcomeNoop, ErrPermanentBlock
@@ -3762,9 +3767,6 @@ func (e *Engine) BlockSubnetRequest(req ActionRequest, budget *ScanAdmission) (r
 	if found, replayErr := e.replayActionLocked(req); found || replayErr != nil {
 		return replayErr
 	}
-	if dryRun {
-		return ErrActionDryRun
-	}
 	if readyErr := e.lifecycleReadyLocked(); readyErr != nil {
 		return readyErr
 	}
@@ -3775,6 +3777,9 @@ func (e *Engine) BlockSubnetRequest(req ActionRequest, budget *ScanAdmission) (r
 	network, alreadyBlocked, err := e.subnetBlockPlanLocked(cidr, priorState)
 	if err != nil {
 		return err
+	}
+	if dryRun {
+		return ErrActionDryRun
 	}
 	cidr = network.String()
 	if alreadyBlocked {
