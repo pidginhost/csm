@@ -4,11 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"math"
 	"net"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,11 +30,12 @@ const (
 	// wpLoopbackHours is how many consecutive complete hours must each be over
 	// the rate. A bulk import or a one-off backlog stops well before this.
 	wpLoopbackHours = 3
-	// wpLoopbackProbeBytes is how much of the log one binary-search probe reads.
-	wpLoopbackProbeBytes = 16 * 1024
 	// wpLoopbackMaxLineBytes bounds one log line; longer lines are skipped.
 	wpLoopbackMaxLineBytes = 64 * 1024
 	wpLoopbackMaxTargetLen = 256
+	// Job names are tenant-controlled. Bound aggregate memory independently
+	// of log size and preserve prior findings when coverage exceeds this cap.
+	wpLoopbackMaxSeries = 4096
 )
 
 var wpLoopbackNow = time.Now
@@ -51,6 +52,7 @@ type wpLoopbackSeries struct {
 	perHour  [wpLoopbackHours]int
 	serverKO int
 	ua       string
+	target   string
 }
 
 // CheckWPLoopbackRequests reads the last few hours of every active vhost log
@@ -62,15 +64,17 @@ func CheckWPLoopbackRequests(ctx context.Context, cfg *config.Config, _ *state.S
 		return nil
 	}
 	now := wpLoopbackNow()
-	windowStart := now.Truncate(time.Hour).Add(-wpLoopbackHours * time.Hour)
-	paths := discoverFreshDomlogs(ctx, math.MaxInt, now.Sub(windowStart))
+	windowStart := wpLoopbackWindowEnd(now).Add(-wpLoopbackHours * time.Hour)
+	paths := discoverFreshDomlogsWithErrors(ctx, math.MaxInt, now.Sub(windowStart), func(err error) {
+		markScanReadError(ctx, "perf_wp_loopback", err)
+	})
 	return scanWPLoopbackLogs(ctx, paths, now)
 }
 
 // scanWPLoopbackLogs evaluates the last wpLoopbackHours complete hours before
 // now in each log. The hour in progress is left out: it is incomplete.
 func scanWPLoopbackLogs(ctx context.Context, paths []string, now time.Time) []alert.Finding {
-	end := now.Truncate(time.Hour)
+	end := wpLoopbackWindowEnd(now)
 	start := end.Add(-wpLoopbackHours * time.Hour)
 	var findings []alert.Finding
 	for _, path := range paths {
@@ -92,8 +96,20 @@ func scanWPLoopbackLogs(ctx context.Context, paths []string, now time.Time) []al
 		markCheckIncomplete(ctx, "perf_wp_loopback")
 		return nil
 	}
-	sort.Slice(findings, func(i, j int) bool { return findings[i].Message < findings[j].Message })
+	sort.Slice(findings, func(i, j int) bool {
+		if findings[i].Message == findings[j].Message {
+			return findings[i].DedupKey < findings[j].DedupKey
+		}
+		return findings[i].Message < findings[j].Message
+	})
 	return findings
+}
+
+func wpLoopbackWindowEnd(now time.Time) time.Time {
+	// Truncate rounds absolute time, which splits local clock hours in zones
+	// whose UTC offset includes a half or quarter hour.
+	return now.Add(-time.Duration(now.Minute())*time.Minute -
+		time.Duration(now.Second())*time.Second - time.Duration(now.Nanosecond()))
 }
 
 func wpLoopbackSustained(s *wpLoopbackSeries) bool {
@@ -105,7 +121,7 @@ func wpLoopbackSustained(s *wpLoopbackSeries) bool {
 	return true
 }
 
-func newWPLoopbackFinding(domain, target string, s *wpLoopbackSeries, now time.Time) alert.Finding {
+func newWPLoopbackFinding(domain string, target [sha256.Size]byte, s *wpLoopbackSeries, now time.Time) alert.Finding {
 	counts := make([]string, len(s.perHour))
 	for i, n := range s.perHour {
 		counts[i] = strconv.Itoa(n)
@@ -118,71 +134,88 @@ func newWPLoopbackFinding(domain, target string, s *wpLoopbackSeries, now time.T
 	return alert.Finding{
 		Severity:  alert.Warning,
 		Check:     "perf_wp_loopback",
-		Message:   fmt.Sprintf("Sustained WordPress loopback requests on %s: POST %s", domain, target),
+		Message:   fmt.Sprintf("Sustained WordPress loopback requests on %s: POST %s", domain, s.target),
 		Details:   details,
-		DedupKey:  domain + " " + target,
+		DedupKey:  fmt.Sprintf("%s %x", domain, target),
 		Timestamp: now,
 	}
 }
 
 // readWPLoopbacks counts, per job, the WordPress self-requests stamped in
 // [start, end). Only lines that can be one are parsed.
-func readWPLoopbacks(ctx context.Context, path string, start, end time.Time) map[string]*wpLoopbackSeries {
+func readWPLoopbacks(ctx context.Context, path string, start, end time.Time) map[[sha256.Size]byte]*wpLoopbackSeries {
 	f, err := osFS.Open(path)
 	if err != nil {
+		markCheckIncomplete(ctx, "perf_wp_loopback")
 		return nil
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
+		markCheckIncomplete(ctx, "perf_wp_loopback")
 		return nil
 	}
-	// The seek can land inside a line. Its tail belongs to a line written
-	// before the window, so the time filter drops it like any older line.
-	offset := seekDomlogTo(f, info.Size(), start)
-	reader := bufio.NewReaderSize(io.NewSectionReader(f, offset, info.Size()-offset), 64*1024)
+	// Requests are stamped at start but logged at completion. Arbitrarily
+	// large batches can carry old stamps after in-window lines, so neither
+	// binary search nor stopping at an old chunk can exclude a safe prefix.
+	// Snapshot the size so concurrent appends cannot extend this scan forever.
+	limited := &io.LimitedReader{R: f, N: info.Size()}
+	reader := bufio.NewReaderSize(limited, wpLoopbackMaxLineBytes)
 
-	series := make(map[string]*wpLoopbackSeries)
-	for lines := 0; ; lines++ {
-		if lines%4096 == 0 && ctx.Err() != nil {
-			return nil
-		}
-		line, err := readDomlogLine(reader)
+	series := make(map[[sha256.Size]byte]*wpLoopbackSeries)
+	for {
+		line, err := readDomlogLine(ctx, reader)
 		if line != nil && bytes.Contains(line, []byte(`"WordPress/`)) && bytes.Contains(line, []byte(`"POST `)) {
-			countWPLoopback(series, string(line), start, end)
+			if !countWPLoopback(series, string(line), start, end) {
+				markCheckIncomplete(ctx, "perf_wp_loopback")
+				return nil
+			}
 		}
 		if err != nil {
+			if err != io.EOF || limited.N != 0 {
+				markCheckIncomplete(ctx, "perf_wp_loopback")
+				return nil
+			}
 			return series
 		}
 	}
 }
 
-func countWPLoopback(series map[string]*wpLoopbackSeries, line string, start, end time.Time) {
-	rec, ok := parseAccessLogRecord(line)
+func countWPLoopback(series map[[sha256.Size]byte]*wpLoopbackSeries, line string, start, end time.Time) bool {
+	rec, ok := parseAccessLogRecordWithURILimit(line, wpLoopbackMaxLineBytes)
 	if !ok || rec.Method != "POST" || !strings.HasPrefix(rec.UserAgent, "WordPress/") {
-		return
+		return true
 	}
 	if rec.Time.Before(start) || !rec.Time.Before(end) || !wpLoopbackFromHost(rec.RemoteIP) {
-		return
+		return true
 	}
 	target := wpLoopbackTarget(rec.URI)
-	s := series[target]
+	key := sha256.Sum256([]byte(target))
+	s := series[key]
 	if s == nil {
-		s = &wpLoopbackSeries{ua: rec.UserAgent}
-		series[target] = s
+		if len(series) >= wpLoopbackMaxSeries {
+			return false
+		}
+		// Copy bounded display fields so short substrings do not retain the
+		// entire input line, including discarded query values and headers.
+		s = &wpLoopbackSeries{
+			ua:     strings.Clone(sanitizeJSTaintDisplay(rec.UserAgent, 512)),
+			target: strings.Clone(sanitizeJSTaintDisplay(target, wpLoopbackMaxTargetLen)),
+		}
+		series[key] = s
 	}
 	s.perHour[int(rec.Time.Sub(start)/time.Hour)]++
-	if rec.Status >= 500 {
+	if rec.Status >= 500 && rec.Status < 600 {
 		s.serverKO++
 	}
+	return true
 }
 
 // wpLoopbackTarget names the job a self-request runs: the path, plus the
 // admin-ajax action when there is one. Nonces and other per-request values are
 // dropped so every run of one job counts together; the path is kept as logged
-// because security plugins rename admin-ajax.php. Any tenant's PHP can post to
-// any site from this server, so the action is not percent-decoded and the
-// result is made safe to display.
+// because security plugins rename admin-ajax.php. Keep the logged bytes for
+// identity; sanitizing or truncating them would merge different jobs.
 func wpLoopbackTarget(uri string) string {
 	path, query, _ := strings.Cut(uri, "?")
 	target := path
@@ -192,67 +225,22 @@ func wpLoopbackTarget(uri string) string {
 			break
 		}
 	}
-	return sanitizeJSTaintDisplay(target, wpLoopbackMaxTargetLen)
-}
-
-// seekDomlogTo returns an offset at or before the first line written at or
-// after cutoff, found by binary search so a large log is not read from the
-// top. A line carries its request's start time but is written when the request
-// finishes, so a slow request's stamp runs behind its position in the file.
-// Each probe therefore takes the latest stamp in a whole chunk, the one
-// closest to when the chunk was written; a single line could be far older and
-// send the search past the window.
-func seekDomlogTo(f *os.File, size int64, cutoff time.Time) int64 {
-	buf := make([]byte, wpLoopbackProbeBytes)
-	lo, hi := int64(0), size
-	for hi-lo > wpLoopbackProbeBytes {
-		mid := lo + (hi-lo)/2
-		written, ok := latestStampAt(f, mid, buf)
-		if !ok || !written.Before(cutoff) {
-			// Unknown or not yet old enough: search earlier. Starting early
-			// only costs extra reading; the caller filters every line.
-			hi = mid
-			continue
-		}
-		lo = mid
-	}
-	return lo
-}
-
-// latestStampAt returns the latest timestamp among the complete lines in the
-// chunk at offset.
-func latestStampAt(f *os.File, offset int64, buf []byte) (time.Time, bool) {
-	n, err := f.ReadAt(buf, offset)
-	if n == 0 && err != nil {
-		return time.Time{}, false
-	}
-	chunk := buf[:n]
-	first := bytes.IndexByte(chunk, '\n')
-	if first < 0 {
-		return time.Time{}, false
-	}
-	chunk = chunk[first+1:]
-	var latest time.Time
-	for {
-		nl := bytes.IndexByte(chunk, '\n')
-		if nl < 0 {
-			break
-		}
-		if rec, ok := parseAccessLogRecord(string(chunk[:nl])); ok && rec.Time.After(latest) {
-			latest = rec.Time
-		}
-		chunk = chunk[nl+1:]
-	}
-	return latest, !latest.IsZero()
+	return target
 }
 
 // readDomlogLine returns the next line without its newline. A line over
 // wpLoopbackMaxLineBytes is consumed and returned as nil.
-func readDomlogLine(r *bufio.Reader) ([]byte, error) {
+func readDomlogLine(ctx context.Context, r *bufio.Reader) ([]byte, error) {
 	var line []byte
 	tooLong := false
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		chunk, err := r.ReadSlice('\n')
+		if line == nil && !tooLong && err != bufio.ErrBufferFull && len(chunk) <= wpLoopbackMaxLineBytes {
+			return bytes.TrimRight(chunk, "\r\n"), err
+		}
 		if !tooLong {
 			if len(line)+len(chunk) > wpLoopbackMaxLineBytes {
 				tooLong, line = true, nil

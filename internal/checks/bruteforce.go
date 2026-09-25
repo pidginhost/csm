@@ -141,6 +141,12 @@ var knownCentralAccessLogPaths = []string{
 // stay locked together; each caller layers its own per-line aggregator
 // on top.
 func discoverFreshDomlogs(ctx context.Context, maxFiles int, maxAge time.Duration) []string {
+	return discoverFreshDomlogsWithErrors(ctx, maxFiles, maxAge, nil)
+}
+
+// Stateful consumers must preserve findings when discovery could not enumerate
+// their logs. Best-effort traffic summaries can leave onError nil.
+func discoverFreshDomlogsWithErrors(ctx context.Context, maxFiles int, maxAge time.Duration, onError func(error)) []string {
 	if maxFiles <= 0 {
 		maxFiles = domlogMaxFiles
 	}
@@ -162,7 +168,10 @@ func discoverFreshDomlogs(ctx context.Context, maxFiles int, maxAge time.Duratio
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
-		matches, _ := osFS.Glob(pattern)
+		matches, err := osFS.Glob(pattern)
+		if err != nil && onError != nil {
+			onError(err)
+		}
 		domlogs = append(domlogs, matches...)
 	}
 
@@ -183,6 +192,9 @@ func discoverFreshDomlogs(ctx context.Context, maxFiles int, maxAge time.Duratio
 		// logs to the same backing file; dedupe on the real path.
 		real, err := filepath.EvalSymlinks(dl)
 		if err != nil {
+			if onError != nil {
+				onError(err)
+			}
 			observeDomlogDrop("evalsymlinks_error")
 			continue
 		}
@@ -195,6 +207,9 @@ func discoverFreshDomlogs(ctx context.Context, maxFiles int, maxAge time.Duratio
 		// cannot crowd active sites out of the budget.
 		info, err := osFS.Stat(real)
 		if err != nil {
+			if onError != nil {
+				onError(err)
+			}
 			observeDomlogDrop("stat_error")
 			continue
 		}

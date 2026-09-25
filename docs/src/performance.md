@@ -54,13 +54,22 @@ A WordPress site runs background work by sending a request to itself, a
 loopback. WordPress's cron spawn and Action Scheduler's admin dispatch each
 hold a 60-second lock, so one job reaches its own site at most once a minute.
 
-`perf_wp_loopback` reads the last three complete hours of every active vhost
-log. It counts POST requests the site sent to itself: WordPress's own
-User-Agent, from the loopback interface or one of the server's addresses. The
-count is kept per job, meaning the path plus the admin-ajax `action`. A job
-over 60 an hour in each of the three hours is reported as a Warning on this
+`perf_wp_loopback` counts the last three complete local clock hours in every
+active vhost log. It counts POST requests with WordPress's own User-Agent
+from the loopback interface or one of the server's addresses. The
+count is kept per job, meaning the full logged path plus the admin-ajax
+`action`; shortened display names do not merge jobs. A job over 60 an hour
+in each of the three hours is reported as a Warning on this
 page. The finding shows the hourly counts, how many runs failed with a 5xx
 error, and the User-Agent.
+
+Request timestamps record when requests started, but log lines are written
+when they finish. The check therefore streams each active log from the
+beginning and filters timestamps rather than seeking by time; large retained
+logs cost more I/O. It bounds memory used for distinct jobs and stops at the
+scan deadline, including inside oversized lines. A scan that cannot finish,
+exceeds the job budget, or encounters a log read error preserves prior
+findings for a later successful run.
 
 There are two usual causes:
 
@@ -71,7 +80,9 @@ There are two usual causes:
 
 The hour in progress is not counted. A site that reaches itself through a
 proxy such as Cloudflare is missed when its log records the proxy's address
-rather than the server's.
+rather than the server's. Other tenants can also make requests from the
+server's addresses, so this Warning is advisory: it does not establish which
+site initiated a request, send alerts, or trigger a response action.
 
 ## Web UI
 

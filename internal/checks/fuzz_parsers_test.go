@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"net/netip"
 	"path/filepath"
@@ -8,7 +9,46 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+	"unicode"
+	"unicode/utf8"
 )
+
+func FuzzCountWPLoopback(f *testing.F) {
+	for _, uri := range []string{
+		"/wp-cron.php?doing_wp_cron=123.456",
+		"/ajax?action=sync&nonce=123",
+		"/ajax?action=" + strings.Repeat("a", 5000),
+		"/ajax?action=a\x1bb\x00c\x7fd\xff",
+		"/ajax?action=a%0AFAKE%20LINE",
+	} {
+		f.Add(wpLoopbackLine{ip: "127.0.0.1", at: wpLoopbackHour(12), method: "POST", uri: uri, status: 500, ua: wpLoopbackTestUA}.String())
+	}
+	f.Add(wpLoopbackLine{ip: "::1", at: wpLoopbackHour(13), method: "POST", uri: "/wp-cron.php", status: 599, ua: "WordPress/7.0;\x1b\xff"}.String())
+	f.Add("")
+	f.Fuzz(func(t *testing.T, line string) {
+		if len(line) > wpLoopbackMaxLineBytes {
+			return
+		}
+		series := make(map[[sha256.Size]byte]*wpLoopbackSeries)
+		if !countWPLoopback(series, line, wpLoopbackHour(12), wpLoopbackHour(12).Add(3*time.Hour)) {
+			t.Fatal("one record exhausted the job budget")
+		}
+		if len(series) > 1 {
+			t.Fatalf("one record produced %d jobs", len(series))
+		}
+		for _, s := range series {
+			if s.perHour[0]+s.perHour[1]+s.perHour[2] != 1 || s.serverKO < 0 || s.serverKO > 1 {
+				t.Fatalf("invalid counts: %+v", s)
+			}
+			for text, limit := range map[string]int{s.target: wpLoopbackMaxTargetLen, s.ua: 512} {
+				if len(text) > limit || !utf8.ValidString(text) || strings.ContainsFunc(text, unicode.IsControl) {
+					t.Errorf("unsafe display field: %q", text)
+				}
+			}
+		}
+	})
+}
 
 func FuzzParsePluginNoticeRow(f *testing.F) {
 	f.Add("litespeed.admin_display.messages\t0\tx")

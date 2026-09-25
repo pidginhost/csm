@@ -1,8 +1,10 @@
 package checks
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -120,6 +122,9 @@ func TestWPLoopbackFlagsSustainedSelfRequests(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		lines[i].status = 500
 	}
+	// Custom status codes outside 500-599 are not 5xx responses.
+	lines[4].status = 600
+	lines[5].status = 999
 
 	findings := scanWPLoopbackForTest(t, lines)
 
@@ -241,12 +246,14 @@ func TestWPLoopbackTargetStaysPrintable(t *testing.T) {
 		"/wp-cron.php?doing_wp_cron=1758800000.1234":         "/wp-cron.php",
 	}
 	for uri, want := range cases {
-		if got := wpLoopbackTarget(uri); got != want {
-			t.Errorf("wpLoopbackTarget(%q) = %q, want %q", uri, got, want)
+		lines := sustainedLoopbacks(wpLoopbackTestHostIP, 61, 61, 61)
+		for i := range lines {
+			lines[i].uri = uri
 		}
-	}
-	if got := wpLoopbackTarget("/x?action=a\x00b\tc"); strings.ContainsFunc(got, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
-		t.Errorf("control characters survived: %q", got)
+		got := scanWPLoopbackForTest(t, lines)
+		if len(got) != 1 || !strings.HasSuffix(got[0].Message, "POST "+want) {
+			t.Errorf("display for %q = %+v, want %q", uri, got, want)
+		}
 	}
 }
 
@@ -263,8 +270,8 @@ func TestWPLoopbackKeyIsStableAcrossRates(t *testing.T) {
 	}
 }
 
-// Busy logs are large. The window is found by seeking, and neither older
-// history nor a request stamped a moment before the window is counted in it.
+// Neither older history nor a request stamped a moment before the window is
+// counted, even when a busy log contains much more history than current data.
 func TestWPLoopbackCountsOnlyTheWindowInALargeLog(t *testing.T) {
 	var lines []wpLoopbackLine
 	for h := 0; h < 12; h++ {
@@ -299,9 +306,9 @@ func siteTraffic(hourStart time.Time, n int, lag time.Duration) []wpLoopbackLine
 }
 
 // Slow requests are written well after the time stamped in them, so a line
-// read at a seek point can be much older than its neighbours. Locating the
-// window from such a line would skip its first minutes.
-func TestWPLoopbackSeekToleratesSlowRequestsInTheLog(t *testing.T) {
+// can be much older than its neighbours. The window must include all records
+// even when their start timestamps are interleaved.
+func TestWPLoopbackToleratesSlowRequestsInTheLog(t *testing.T) {
 	var lines []wpLoopbackLine
 	for h := 8; h < 16; h++ {
 		lines = append(lines, siteTraffic(wpLoopbackHour(h), 3000, 25*time.Minute)...)
@@ -353,41 +360,24 @@ func TestWPLoopbackSkipsOverlongLines(t *testing.T) {
 	}
 }
 
-// The seek exists so an hourly check does not read whole logs. It must land at
-// or before the first line of the window, and close to it.
-func TestSeekDomlogToLandsJustBeforeTheCutoff(t *testing.T) {
+// Finding the window requires streaming the old prefix: completion order does
+// not justify skipping any unexamined chunk based on its start timestamps.
+func TestWPLoopbackCountsWindowAfterLargeOldPrefix(t *testing.T) {
 	var lines []wpLoopbackLine
 	for h := 0; h < 16; h++ {
 		lines = append(lines, siteTraffic(wpLoopbackHour(h), 1500, 0)...)
 	}
-	path := writeWPLoopbackLog(t, t.TempDir(), "example.com-ssl_log", lines)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cutoff := wpLoopbackHour(12)
-	boundary := int64(strings.Index(string(data), "["+cutoff.Format("02/Jan/2006:15:04:05 -0700")+"]"))
-	boundary = int64(strings.LastIndexByte(string(data[:boundary]), '\n') + 1)
-
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = f.Close() })
-	got := seekDomlogTo(f, int64(len(data)), cutoff)
-
-	if got > boundary {
-		t.Fatalf("seek offset %d is past the first window line at %d", got, boundary)
-	}
-	if boundary-got > 2*wpLoopbackProbeBytes {
-		t.Fatalf("seek offset %d is %d bytes before the window, want within %d", got, boundary-got, 2*wpLoopbackProbeBytes)
+	lines = append(lines, sustainedLoopbacks(wpLoopbackTestHostIP, 61, 62, 63)...)
+	got := scanWPLoopbackForTest(t, lines)
+	if len(got) != 1 || !strings.Contains(got[0].Details, "61, 62, 63 per hour") {
+		t.Fatalf("findings = %+v, want one with 61, 62, 63 per hour", got)
 	}
 }
 
-// A probe that finds no complete line cannot tell where it is. It must search
-// earlier, which only costs reading, never later, which would skip the window.
-func TestWPLoopbackSeekSearchesEarlierPastUnreadableProbes(t *testing.T) {
-	long := "/?q=" + strings.Repeat("a", 2*wpLoopbackProbeBytes)
+// Long unrelated records must not hide the smaller loopback lines between
+// them, including the first records in the window.
+func TestWPLoopbackReadsWindowAmongLongLines(t *testing.T) {
+	long := "/?q=" + strings.Repeat("a", wpLoopbackMaxLineBytes/2)
 	var lines []wpLoopbackLine
 	for h := 8; h < 16; h++ {
 		for i := 0; i < 40; i++ {
@@ -495,5 +485,190 @@ func TestWPLoopbackCancelledRunIsIncomplete(t *testing.T) {
 	}
 	if !incomplete.contains("perf_wp_loopback") {
 		t.Fatal("cancelled run must mark perf_wp_loopback incomplete")
+	}
+}
+
+// A whole batch of slow requests can finish after the window begins. Even
+// the newest start timestamp in that batch predates an earlier window line.
+func TestWPLoopbackDelayedBatchDoesNotHideWindow(t *testing.T) {
+	lines := sustainedLoopbacks(wpLoopbackTestHostIP, 61, 62, 63)
+	for i := 0; i < 4000; i++ {
+		lines = append(lines, wpLoopbackLine{
+			ip: "198.51.100.7", at: wpLoopbackHour(11),
+			logged: wpLoopbackHour(12).Add(30 * time.Second),
+			method: "GET", uri: "/slow", status: 200, ua: "Mozilla/5.0",
+		})
+	}
+	got := scanWPLoopbackForTest(t, lines)
+	if len(got) != 1 || !strings.Contains(got[0].Details, "61, 62, 63 per hour") {
+		t.Fatalf("delayed batch hid window requests: %+v", got)
+	}
+}
+
+func TestWPLoopbackKeepsFullTargetIdentity(t *testing.T) {
+	for name, prefix := range map[string]string{
+		"display limit": "/ajax?action=" + strings.Repeat("a", 256),
+		"parser limit":  "/ajax?action=" + strings.Repeat("a", 4096),
+		"controls":      "/ajax?action=",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var lines []wpLoopbackLine
+			for h := 12; h < 15; h++ {
+				for _, suffix := range []string{"\x1b", "\x7f"} {
+					lines = append(lines, loopbacks(wpLoopbackTestHostIP, wpLoopbackHour(h), 40, prefix+suffix)...)
+				}
+			}
+			if got := scanWPLoopbackForTest(t, lines); len(got) != 0 {
+				t.Fatalf("distinct jobs combined into a warning: %+v", got)
+			}
+			lines = nil
+			for h := 12; h < 15; h++ {
+				for _, suffix := range []string{"\x1b", "\x7f"} {
+					lines = append(lines, loopbacks(wpLoopbackTestHostIP, wpLoopbackHour(h), 61, prefix+suffix)...)
+				}
+			}
+			got := scanWPLoopbackForTest(t, lines)
+			if len(got) != 2 || got[0].Key() == got[1].Key() {
+				t.Fatalf("distinct sustained jobs need distinct findings: %+v", got)
+			}
+			for _, finding := range got {
+				if strings.ContainsFunc(finding.Message, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+					t.Errorf("unsafe display: %q", finding.Message)
+				}
+			}
+		})
+	}
+}
+
+func TestWPLoopbackReadFailuresAreIncomplete(t *testing.T) {
+	for _, failure := range []string{"open", "stat", "read"} {
+		t.Run(failure, func(t *testing.T) {
+			path := writeWPLoopbackLog(t, t.TempDir(), "example.com-ssl_log", sustainedLoopbacks(wpLoopbackTestHostIP, 90, 90, 90))
+			withMockOS(t, &mockOS{open: func(string) (*os.File, error) {
+				if failure == "open" {
+					return nil, os.ErrPermission
+				}
+				file, err := os.OpenFile(path, os.O_WRONLY, 0)
+				if err == nil && failure == "stat" {
+					err = file.Close()
+				}
+				return file, err
+			}})
+			ctx, incomplete := withIncompleteCheckCollector(context.Background())
+			if got := scanWPLoopbackLogs(ctx, []string{path}, wpLoopbackTestNow); len(got) != 0 {
+				t.Fatalf("unreadable log produced findings: %+v", got)
+			}
+			if !incomplete.contains("perf_wp_loopback") {
+				t.Fatal("unreadable log must preserve prior findings")
+			}
+		})
+	}
+}
+
+func TestCheckWPLoopbackDiscoveryFailuresAreIncomplete(t *testing.T) {
+	for _, failure := range []string{"glob", "stat"} {
+		t.Run(failure, func(t *testing.T) {
+			dir := t.TempDir()
+			path := writeWPLoopbackLog(t, dir, "example.com-ssl_log", nil)
+			platform.ResetForTest()
+			platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{filepath.Join(dir, "*-ssl_log")}})
+			t.Cleanup(platform.ResetForTest)
+			withMockOS(t, &mockOS{
+				glob: func(string) ([]string, error) {
+					if failure == "glob" {
+						return nil, os.ErrPermission
+					}
+					return []string{path}, nil
+				},
+				stat: func(string) (os.FileInfo, error) { return nil, os.ErrPermission },
+			})
+			ctx, incomplete := withIncompleteCheckCollector(context.Background())
+			CheckWPLoopbackRequests(ctx, &config.Config{}, nil)
+			if !incomplete.contains("perf_wp_loopback") {
+				t.Fatal("failed log discovery must preserve prior findings")
+			}
+		})
+	}
+}
+
+func TestWPLoopbackUsesLocalCompleteHours(t *testing.T) {
+	for _, offset := range []int{5*3600 + 30*60, 5*3600 + 45*60, -3*3600 - 30*60} {
+		t.Run(fmt.Sprint(offset), func(t *testing.T) {
+			withWPLoopbackHostAddress(t)
+			zone := time.FixedZone("test", offset)
+			now := time.Date(2026, 9, 1, 15, 20, 0, 0, zone)
+			var lines []wpLoopbackLine
+			for h := 12; h < 15; h++ {
+				at := time.Date(2026, 9, 1, h, 0, 0, 0, zone)
+				lines = append(lines, loopbacks(wpLoopbackTestHostIP, at, 61, wpLoopbackTestTarget)...)
+			}
+			path := writeWPLoopbackLog(t, t.TempDir(), "example.com-ssl_log", lines)
+			got := scanWPLoopbackLogs(context.Background(), []string{path}, now)
+			if len(got) != 1 || !strings.Contains(got[0].Details, "61, 61, 61 per hour") {
+				t.Fatalf("incomplete local hours counted: %+v", got)
+			}
+		})
+	}
+}
+
+func TestWPLoopbackBoundsDistinctJobs(t *testing.T) {
+	withWPLoopbackHostAddress(t)
+	lines := loopbacks(wpLoopbackTestHostIP, wpLoopbackHour(12), 10000, "")
+	for i := range lines {
+		lines[i].uri = fmt.Sprintf("/ajax?action=job%d", i)
+	}
+	path := writeWPLoopbackLog(t, t.TempDir(), "example.com-ssl_log", lines)
+	ctx, incomplete := withIncompleteCheckCollector(context.Background())
+	series := readWPLoopbacks(ctx, path, wpLoopbackHour(12), wpLoopbackHour(15))
+	if len(series) != 0 || !incomplete.contains("perf_wp_loopback") {
+		t.Fatalf("unbounded jobs: retained %d series, incomplete = %v", len(series), incomplete.contains("perf_wp_loopback"))
+	}
+}
+
+func TestWPLoopbackTruncatedReadIsIncomplete(t *testing.T) {
+	path := writeWPLoopbackLog(t, t.TempDir(), "example.com-ssl_log", sustainedLoopbacks(wpLoopbackTestHostIP, 1000, 1000, 1000))
+	previous := wpLoopbackFromHost
+	wpLoopbackFromHost = func(string) bool {
+		if err := os.Truncate(path, 0); err != nil {
+			t.Fatal(err)
+		}
+		return true
+	}
+	t.Cleanup(func() { wpLoopbackFromHost = previous })
+	ctx, incomplete := withIncompleteCheckCollector(context.Background())
+	if got := scanWPLoopbackLogs(ctx, []string{path}, wpLoopbackTestNow); len(got) != 0 {
+		t.Fatalf("partial log produced findings: %+v", got)
+	}
+	if !incomplete.contains("perf_wp_loopback") {
+		t.Fatal("truncated log must preserve prior findings")
+	}
+}
+
+type cancelDomlogReader struct {
+	cancel context.CancelFunc
+	reads  int
+}
+
+func (r *cancelDomlogReader) Read(p []byte) (int, error) {
+	r.reads++
+	for i := range p {
+		p[i] = 'x'
+	}
+	if r.reads == 2 {
+		r.cancel()
+	}
+	if r.reads > 10 {
+		return 0, io.EOF
+	}
+	return len(p), nil
+}
+
+func TestWPLoopbackCancelsInsideOverlongLine(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	source := &cancelDomlogReader{cancel: cancel}
+	line, err := readDomlogLine(ctx, bufio.NewReaderSize(source, wpLoopbackMaxLineBytes))
+	if err != context.Canceled || line != nil || source.reads != 2 {
+		t.Fatalf("line length = %d, error = %v, reads = %d; want cancellation after 2 reads", len(line), err, source.reads)
 	}
 }

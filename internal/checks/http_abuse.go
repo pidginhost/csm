@@ -941,8 +941,13 @@ func itoa(n int) string {
 //
 // Returns ok=false for any line that cannot be parsed. Never panics.
 func parseAccessLogRecord(line string) (accessLogRecord, bool) {
+	return parseAccessLogRecordWithURILimit(line, 4096)
+}
+
+// Callers grouping by request target must retain its full identity rather than
+// grouping by the truncated URI used by the general traffic summaries.
+func parseAccessLogRecordWithURILimit(line string, maxURILen int) (accessLogRecord, bool) {
 	const maxUALen = 512
-	const maxURILen = 4096
 
 	var rec accessLogRecord
 	// IP is everything up to the first space.
