@@ -240,6 +240,11 @@ attacker joined the incident. An outbound connection's remote end, a
 customer login or an advisory never qualifies, whatever raised the
 incident's severity; see [Auto-Response](auto-response.md).
 
+Qualifying address evidence is retained when findings join an incident and
+across restarts, including for incidents saved by earlier versions.
+Reopening an incident keeps its evidence; a new incident starts with its
+own evidence.
+
 The same visibility-only findings are excluded from generic incident
 auto-blocking. In particular, setting `block_at_severity: high` does not turn
 an established multi-mailbox `mail_account_compromised` advisory into firewall

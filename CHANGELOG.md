@@ -12,6 +12,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - Incident auto-blocking and central intelligence now act on an address only when a finding names it as an attacker. They could block the remote end of an outbound connection, a customer login address or an advisory source.
+- Incident auto-blocking retains qualifying address evidence consistently as incidents evolve and across restarts, including incidents saved by earlier versions.
 
 ## [4.0.0] - 2026-09-24
 

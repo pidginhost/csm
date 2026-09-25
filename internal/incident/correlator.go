@@ -336,9 +336,9 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 		delete(c.byKey, keyStr)
 	}
 
-	// Threshold gate. Findings without first-hit semantics need OpenThreshold
-	// sightings inside the merge window before opening an incident.
-	if c.openThreshold > 1 && !opensIncidentImmediately(f) {
+	// Retain pending evidence even when the next finding opens immediately.
+	// Otherwise the incident can lose the only attestation of its address.
+	if c.openThreshold > 1 {
 		if pf, ok := c.pending[keyStr]; ok && now.Sub(pf.at) <= incidentMergeWindow {
 			delete(c.pending, keyStr)
 			id := c.createIncidentLocked(key, keyStr, pf.finding, pf.at)
@@ -352,8 +352,10 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 			}
 			return id, true, nil
 		}
-		c.pending[keyStr] = pendingFinding{finding: f, at: now}
-		return "", false, nil
+		if !opensIncidentImmediately(f) {
+			c.pending[keyStr] = pendingFinding{finding: f, at: now}
+			return "", false, nil
+		}
 	}
 
 	id := c.createIncidentLocked(key, keyStr, f, now)
@@ -680,7 +682,7 @@ func (c *Correlator) mergeLockedWithPersistence(inc *Incident, f alert.Finding, 
 }
 
 // mutateWithFindingLocked folds f into inc and reports whether the fold caused
-// a state-changing transition (kind change or severity escalation). It does not
+// a state-changing transition (kind, severity or address evidence). It does not
 // persist: the caller decides synchronous vs debounced persistence via
 // persistAfterMergeLocked. Splitting mutation from persistence lets the
 // credential_spray path apply its own escalation before a single persist,
@@ -719,9 +721,10 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	}
 	if f.SourceIP != "" {
 		ev.RemoteIP = f.SourceIP
-		if c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
+		if !inc.RemoteIPEvidence && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
 			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(f.SourceIP) {
 				inc.RemoteIPEvidence = true
+				transition = true
 			}
 		}
 	}
@@ -1333,6 +1336,13 @@ func (c *Correlator) Restore(incidents []Incident) {
 	defer c.mu.Unlock()
 	for i := range incidents {
 		inc := incidents[i]
+		// Remember legacy evidence before a merge can trim its event. The
+		// next write saves the bit; until then the stored timeline retains it.
+		if !inc.RemoteIPEvidence && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil {
+			if ip := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); ip != "" {
+				inc.RemoteIPEvidence = c.blockAddressAttested(&inc, ip)
+			}
+		}
 		c.incidents[inc.ID] = &inc
 		delete(c.lastPersistAt, inc.ID)
 		c.persistence.discardDeferred(inc.ID)
@@ -1681,7 +1691,13 @@ func (c *Correlator) blockAddressAttested(inc *Incident, ip string) bool {
 		if ev.Kind != "finding" || normalizeIncidentRemoteIP(ev.RemoteIP) != ip {
 			continue
 		}
-		if sev, ok := parseSeverity(ev.Severity); ok && c.cfg.AddressEvidence(ev.Check, sev) {
+		sev, ok := parseSeverity(ev.Severity)
+		if ev.Severity == "" {
+			// Older events lack severity. They can attest checks with no
+			// severity floor, but cannot establish a Critical-only signal.
+			sev, ok = alert.Warning, true
+		}
+		if ok && c.cfg.AddressEvidence(ev.Check, sev) {
 			return true
 		}
 	}
