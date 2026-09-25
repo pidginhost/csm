@@ -216,3 +216,22 @@ func (f *ledgerFixture) published(s evidenceSpec) admission.EvidenceID {
 	}
 	return e.ID()
 }
+
+func (f *ledgerFixture) request(target string, primary admission.EvidenceID, support ...admission.EvidenceID) admission.CandidateRequest {
+	f.t.Helper()
+	ep, err := admission.ParseEpisodeID("00000000000000000000000000000001")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return admission.CandidateRequest{Kind: admission.KindBlockIP, Target: f.target(target), Episode: ep, Generation: f.generation + 1, Primary: primary, Support: support}
+}
+
+func (f *ledgerFixture) enqueue(req admission.CandidateRequest) (admission.Candidate, admission.CandidateID) {
+	f.t.Helper()
+	c, created, err := f.l.Enqueue(req)
+	if err != nil || !created {
+		f.t.Fatalf("enqueue: created %v, %v", created, err)
+	}
+	id, _ := c.ID()
+	return c, id
+}
