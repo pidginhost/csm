@@ -233,12 +233,15 @@ func TestKindEffect(t *testing.T) {
 		t.Fatalf("table covers %d kinds, package defines %d", len(want), kindEnd-1)
 	}
 	for k, e := range want {
-		if k.Effect() != e {
-			t.Errorf("%s.Effect() = %s, want %s", k, k.Effect(), e)
+		if k.Effect() != e || !e.Valid() {
+			t.Errorf("%s.Effect() = %s, want valid %s", k, k.Effect(), e)
 		}
 	}
 	if Kind(0).Valid() || kindEnd.Valid() {
 		t.Error("an out-of-range kind is valid")
+	}
+	if Effect(0).Valid() || effectEnd.Valid() || Kind(0).Effect().Valid() {
+		t.Error("an out-of-range effect is valid")
 	}
 }
 
@@ -253,6 +256,9 @@ func TestReasonVocabulary(t *testing.T) {
 	}
 	got := map[Disposition][]string{}
 	for r := ReasonCeiling; r < reasonEnd; r++ {
+		if !r.Disposition().Valid() {
+			t.Errorf("%s has no valid disposition", r)
+		}
 		got[r.Disposition()] = append(got[r.Disposition()], r.String())
 	}
 	for d, names := range groups {
@@ -265,6 +271,9 @@ func TestReasonVocabulary(t *testing.T) {
 	}
 	if Reason(0).Valid() || reasonEnd.Valid() || reasonEnd.Disposition() != 0 {
 		t.Error("an out-of-range reason is valid or grouped")
+	}
+	if Disposition(0).Valid() || dispositionEnd.Valid() {
+		t.Error("an out-of-range disposition is valid")
 	}
 }
 
