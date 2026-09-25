@@ -39,10 +39,8 @@ type Anonymizer struct {
 	// process; only the counts do.
 	ipv4Seen map[string]string
 	ipv6Seen map[string]string
-	// Learned names the token pass cannot see whole, and the same names
-	// longest first, rebuilt after a new one is learned.
-	irregular      map[string]struct{}
-	irregularOrder []string
+	// Learned names the token pass cannot see whole, indexed by prefix.
+	irregular nameIndex
 }
 
 // NewAnonymizer returns an anonymizer keyed on salt.
@@ -53,7 +51,6 @@ func NewAnonymizer(salt []byte) *Anonymizer {
 		hosts:        make(map[string]string),
 		domains:      make(map[string]struct{}),
 		emails:       make(map[string]struct{}),
-		irregular:    make(map[string]struct{}),
 		counts:       make(map[string]int),
 		pseudonyms:   make(map[string]struct{}),
 		ids:          make(map[string]idKind),
@@ -300,68 +297,20 @@ func (a *Anonymizer) process(p *processctx.ProcessContext) *processctx.ProcessCo
 }
 
 // Text removes secrets before identity substitutions can obscure their
-// keys, then scrubs mail, IPv6, home paths, learned names the token pass
-// cannot see and name-shaped tokens in order.
+// keys. Identity replacements use original spans so no later pass can
+// consume part of a name or reinterpret an emitted pseudonym.
 func (a *Anonymizer) Text(s string) string {
 	if s == "" {
 		return s
 	}
 	s = secretRe.ReplaceAllString(s, "${1}[redacted]")
-	s = emailRe.ReplaceAllStringFunc(s, func(m string) string { a.counts["emails"]++; return a.Email(m) })
-	// A mailbox truncated after the "@" still names a mailbox; map the local
-	// part the way Email does so both forms agree.
-	s = replaceLeftBounded(s, localPartRe, func(m string) (string, bool) {
-		local := m[:len(m)-1]
-		if systemUsers[local] || a.isPseudonym(local) {
-			return m, false
-		}
-		a.counts["emails"]++
-		return a.remember("user-"+a.label("mailbox", local)) + "@", true
-	})
-	s = a.scrubIPv6(s)
-	s = homePathRe.ReplaceAllStringFunc(s, func(m string) string {
-		sub := homePathRe.FindStringSubmatch(m)
-		a.counts["accounts"]++
-		return sub[1] + a.Account(sub[2])
-	})
-	// Before the token pass, which would split such a name and replace its
-	// parts separately.
-	s = a.scrubIrregular(s)
-	s = scrubTokens(s, a.token)
-	return s
+	return a.scrubNames(s)
 }
 
 // A field separator or a hex letter at the end of its key can be part of
 // the regex match, and so can a colon that belongs to the sentence after
 // the address. Try every start after a colon and every end at a group
 // boundary, longest first, before rejecting the match.
-func (a *Anonymizer) scrubIPv6(s string) string {
-	var b strings.Builder
-	last := 0
-	for _, loc := range ipv6Re.FindAllStringIndex(s, -1) {
-		if loc[0] < last {
-			continue
-		}
-		start, end, ok := longestIPv6(s, loc[0], loc[1])
-		if !ok {
-			continue
-		}
-		raw := s[start:end]
-		if net.ParseIP(raw).IsLoopback() {
-			continue
-		}
-		a.counts["ipv6"]++
-		b.WriteString(s[last:start])
-		b.WriteString(a.IPv6(raw))
-		last = end
-	}
-	if last == 0 {
-		return s
-	}
-	b.WriteString(s[last:])
-	return b.String()
-}
-
 func longestIPv6(s string, lo, hi int) (int, int, bool) {
 	for start := lo; start < hi; start++ {
 		if start != lo && s[start-1] != ':' {
@@ -454,6 +403,11 @@ func (a *Anonymizer) embedded(core string) string {
 }
 
 func (a *Anonymizer) embeddedName(lower, raw string) (string, bool) {
+	// A punctuation-only learned value must not turn separators inside a
+	// token into identities either; leave ambiguity to the refusal check.
+	if strings.Trim(lower, ".-") == "" {
+		return "", false
+	}
 	if a.isPseudonym(lower) {
 		return raw, true
 	}
@@ -548,55 +502,6 @@ func scrubTokens(s string, fn func(core string) string) string {
 	return b.String()
 }
 
-// tokenVisible reports whether scrubTokens can hand name to its callback
-// whole: it splits text at every byte other than a letter, digit, dot or
-// hyphen and trims dots and hyphens from token edges, so a name holding an
-// underscore or starting with a dot never reaches it as one span.
-func tokenVisible(name string) bool {
-	if name == "" || !isAlnum(name[0]) || !isAlnum(name[len(name)-1]) {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		if !isNameByte(name[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-// learnIrregular records a lower-cased learned name that tokenVisible
-// rejects. The leak check finds such a name wherever it is not glued to a
-// letter or digit, so Text must replace it on its own.
-func (a *Anonymizer) learnIrregular(lower string) {
-	if lower == "" || tokenVisible(lower) {
-		return
-	}
-	if _, ok := a.irregular[lower]; ok {
-		return
-	}
-	a.irregular[lower] = struct{}{}
-	a.irregularOrder = nil
-}
-
-// irregularNames returns the names learnIrregular kept, longest first, so a
-// name is replaced before a shorter learned name inside it.
-func (a *Anonymizer) irregularNames() []string {
-	if a.irregularOrder == nil && len(a.irregular) > 0 {
-		names := make([]string, 0, len(a.irregular))
-		for name := range a.irregular {
-			names = append(names, name)
-		}
-		sort.Slice(names, func(i, j int) bool {
-			if len(names[i]) != len(names[j]) {
-				return len(names[i]) > len(names[j])
-			}
-			return names[i] < names[j]
-		})
-		a.irregularOrder = names
-	}
-	return a.irregularOrder
-}
-
 // irregularName maps one such name with the precedence token uses: host,
 // then domain, then account.
 func (a *Anonymizer) irregularName(raw string) string {
@@ -611,63 +516,6 @@ func (a *Anonymizer) irregularName(raw string) string {
 	}
 	a.counts["accounts"]++
 	return a.Account(raw)
-}
-
-// scrubIrregular replaces every occurrence of a name learnIrregular kept
-// that is not glued to a letter or digit, the boundary the leak check
-// applies. A name costs one search per text unless it occurs.
-func (a *Anonymizer) scrubIrregular(s string) string {
-	names := a.irregularNames()
-	if len(names) == 0 {
-		return s
-	}
-	lower := foldASCII(s)
-	for _, name := range names {
-		if !strings.Contains(lower, name) {
-			continue
-		}
-		s = replaceLabel(s, lower, name, a.irregularName)
-		lower = foldASCII(s)
-	}
-	return s
-}
-
-// foldASCII lower-cases ASCII letters only, so every offset in the result
-// is the same offset in s.
-func foldASCII(s string) string {
-	folded := []byte(s)
-	for i, c := range folded {
-		if c >= 'A' && c <= 'Z' {
-			folded[i] = c + 'a' - 'A'
-		}
-	}
-	return string(folded)
-}
-
-// replaceLabel applies fn to every occurrence of name in lower, the
-// foldASCII copy of s, that is not glued to a letter or digit.
-func replaceLabel(s, lower, name string, fn func(raw string) string) string {
-	var b strings.Builder
-	last := 0
-	for offset := 0; ; {
-		i := strings.Index(lower[offset:], name)
-		if i < 0 {
-			break
-		}
-		start, end := offset+i, offset+i+len(name)
-		if !bounded(lower, start, end) {
-			offset = start + 1
-			continue
-		}
-		b.WriteString(s[last:start])
-		b.WriteString(fn(s[start:end]))
-		last, offset = end, end
-	}
-	if last == 0 {
-		return s
-	}
-	b.WriteString(s[last:])
-	return b.String()
 }
 
 // replaceBounded applies fn to every match of re that is not glued to
@@ -704,30 +552,6 @@ func findBoundedMatches(s string, re *regexp.Regexp) []string {
 		}
 	}
 	return out
-}
-
-// replaceLeftBounded applies fn to every match of re that is not glued to
-// a letter or digit on the left; the match itself ends at a separator.
-func replaceLeftBounded(s string, re *regexp.Regexp, fn func(m string) (string, bool)) string {
-	var b strings.Builder
-	last := 0
-	for _, loc := range re.FindAllStringIndex(s, -1) {
-		if loc[0] > 0 && isAlnum(s[loc[0]-1]) {
-			continue
-		}
-		r, ok := fn(s[loc[0]:loc[1]])
-		if !ok {
-			continue
-		}
-		b.WriteString(s[last:loc[0]])
-		b.WriteString(r)
-		last = loc[1]
-	}
-	if last == 0 {
-		return s
-	}
-	b.WriteString(s[last:])
-	return b.String()
 }
 
 func bounded(s string, start, end int) bool {
