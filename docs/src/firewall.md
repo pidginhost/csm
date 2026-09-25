@@ -93,10 +93,10 @@ are recorded as refused in the action log, like single-address refusals. Invalid
 targets and storage or kernel errors remain failures. Refusing a permanent
 promotion leaves the prior temporary block and its expiry unchanged.
 
-Multicast and limited-broadcast targets are refused before timed-block lifetime
-checks. Subnet dry-runs validate the target before reporting a proposed block.
-Manual requests also record safety refusals when durable action tracking is
-enabled. Existing legacy entries survive reloads and can still be unblocked.
+Protected targets are refused before timed-block lifetime checks. Subnet
+dry-runs validate the target before reporting a proposed block. Manual requests
+also record safety refusals when durable action tracking is enabled. Legacy
+entries for protected addresses survive reloads and can still be unblocked.
 
 WAF attacker reports for link-local addresses stay visible but advise
 investigating the traffic source instead of a block CSM would refuse.
