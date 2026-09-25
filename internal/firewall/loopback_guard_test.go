@@ -50,14 +50,22 @@ func TestLocalAddrGuardKeyKeepsRoutableAddresses(t *testing.T) {
 }
 
 // The block path itself must refuse loopback regardless of what the interface
-// enumeration returned.
+// enumeration returned. Multicast and the limited broadcast address are never
+// a packet's source, so a block on one only takes a slot in the deny set.
 func TestIsUnblockableAddress(t *testing.T) {
-	for _, raw := range []string{"127.0.0.1", "::1", "0.0.0.0", "::", "169.254.1.1", "fe80::1"} {
+	for _, raw := range []string{
+		"127.0.0.1", "::1", "0.0.0.0", "::", "169.254.1.1", "fe80::1",
+		"224.0.1.1", "239.1.2.3", "::ffff:239.1.2.3", "255.255.255.255", "::ffff:255.255.255.255",
+		"ff01::1", "ff05::2", "ff0e::1", "ff3e::8000:1",
+	} {
 		if !isUnblockableAddress(raw) {
 			t.Errorf("isUnblockableAddress(%q) = false, want true", raw)
 		}
 	}
-	for _, raw := range []string{"198.51.100.7", "2001:db8::99"} {
+	for _, raw := range []string{
+		"198.51.100.7", "2001:db8::99",
+		"223.255.255.255", "240.0.0.1", "255.255.255.254", "feff::1",
+	} {
 		if isUnblockableAddress(raw) {
 			t.Errorf("isUnblockableAddress(%q) = true, want false", raw)
 		}

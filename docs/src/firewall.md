@@ -82,13 +82,21 @@ migration stage.
 
 ## Mutation failures
 
-Subnet blocks refuse ranges overlapping loopback or link-local scopes,
-infrastructure, host interface addresses, or full-IP and port-specific allows,
-plus unspecified individual addresses and default routes. Other ranges beginning
-at zero, such as `0.0.0.0/8`, remain blockable. All these safety refusals are
-recorded as refused in the action log, like single-address refusals. Invalid
+Single-address blocks refuse loopback, unspecified, link-local, multicast and
+the limited broadcast address. The kernel drops multicast and limited-broadcast
+sources before the input chain. Subnet blocks refuse ranges overlapping
+loopback, link-local or multicast ranges, infrastructure, host interface
+addresses, or full-IP and port-specific allows, plus unspecified or broadcast
+individual addresses and default routes. Other ranges containing those addresses,
+such as `0.0.0.0/8` or `240.0.0.0/4`, remain blockable. All these safety refusals
+are recorded as refused in the action log, like single-address refusals. Invalid
 targets and storage or kernel errors remain failures. Refusing a permanent
 promotion leaves the prior temporary block and its expiry unchanged.
+
+Protected targets are refused before timed-block lifetime checks. Subnet
+dry-runs validate the target before reporting a proposed block. Manual requests
+also record safety refusals when durable action tracking is enabled. Legacy
+entries for protected addresses survive reloads and can still be unblocked.
 
 WAF attacker reports for link-local addresses stay visible but advise
 investigating the traffic source instead of a block CSM would refuse.

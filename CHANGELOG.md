@@ -11,6 +11,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- The firewall now refuses multicast and broadcast addresses as block targets. No packet the firewall filters can come from one, so such a block only used up a slot in the deny list.
+- Blocks of protected addresses, such as loopback, link-local, multicast or broadcast, are now recorded as refusals for timed blocks, subnet dry-runs and manual requests. They were logged as failures or proposed blocks, or not recorded at all.
 - Response replay reports now state that each finding keeps the severity it was recorded with, since a later grading change is not applied to older recordings.
 - The finding-stream tool now replaces learned names that contain an underscore or start with a dot, such as a bare mail login, as whole identities wherever they appear, instead of refusing the run on its own output. It no longer rewrites punctuation or its own pseudonyms while doing so.
 
