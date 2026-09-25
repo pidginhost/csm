@@ -20,6 +20,7 @@ import (
 var protectedAddressCases = []string{
 	"127.0.0.1", "::ffff:127.0.0.53", "::1", "0.0.0.0", "::ffff:0.0.0.0", "::",
 	"169.254.1.1", "::ffff:169.254.1.1", "fe80::1", "224.0.0.1", "ff02::1", "ff12::1",
+	"239.1.2.3", "::ffff:239.1.2.3", "255.255.255.255", "::ffff:255.255.255.255", "ff0e::1",
 }
 
 func newProtectedAddressEngine(t *testing.T, conn *nftables.Conn) *Engine {
@@ -136,6 +137,8 @@ func TestSubnetBlockRefusesProtectedAddresses(t *testing.T) {
 	cidrs := []string{
 		"127.0.0.1/32", "126.0.0.0/7", "::ffff:127.0.0.1/128", "::1/128", "0.0.0.0/32", "::/128",
 		"169.254.1.1/32", "168.0.0.0/7", "fe80::1/128", "fe00::/8", "224.0.0.1/32", "224.0.0.0/3",
+		"224.0.1.0/24", "239.0.0.0/8", "224.0.0.0/4", "::ffff:239.0.0.0/104", "255.255.255.255/32",
+		"ff01::/16", "ff03::/16", "ff0e::/16", "ff00::/8", "fe00::/7",
 	}
 	for flags := 0; flags < 16; flags++ {
 		cidrs = append(cidrs, fmt.Sprintf("ff%x2::1/128", flags), fmt.Sprintf("ff%x0::/12", flags))
@@ -161,7 +164,7 @@ func TestSubnetBlockKeepsOtherAddressRanges(t *testing.T) {
 	for _, cidr := range []string{
 		"192.0.2.0/24", "2001:db8::/32", "10.0.0.0/8", "fc00::/7",
 		"126.0.0.0/8", "128.0.0.0/8", "169.253.0.0/16", "169.255.0.0/16",
-		"224.0.1.0/24", "fe40::/10", "fec0::/10", "ff01::/16", "ff03::/16",
+		"223.255.255.0/24", "240.0.0.0/4", "fe40::/10", "fec0::/10",
 	} {
 		t.Run(cidr, func(t *testing.T) {
 			conn, captured := nftConnCapturingRules(t)

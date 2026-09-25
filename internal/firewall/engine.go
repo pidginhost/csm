@@ -3622,14 +3622,16 @@ func (e *Engine) subnetSafetyGuardStateLocked(network *net.IPNet, state Firewall
 	if ones, _ := network.Mask.Size(); ones == 0 {
 		return ipProtectedErrorf("refusing to block default route: %s", network.String())
 	}
-	// An unspecified host is not a usable target, but its containing range
-	// can be: operators may block 0.0.0.0/8 as a bogon range.
-	if ones, bits := network.Mask.Size(); ones == bits && network.IP.IsUnspecified() {
+	// An unspecified or broadcast host is not a usable target, but its
+	// containing range can be: operators may block 0.0.0.0/8 or 240.0.0.0/4
+	// as bogon ranges.
+	if ones, bits := network.Mask.Size(); ones == bits && (network.IP.IsUnspecified() || network.IP.Equal(net.IPv4bcast)) {
 		return ipProtectedErrorf("refusing to block non-routable range: %s", network.String())
 	}
-	// Checking only the first address misses larger ranges covering a local
-	// scope. Interface enumeration intentionally omits these scopes.
-	for _, protected := range protectedLocalRanges {
+	// Checking only the first address misses larger ranges covering a
+	// protected one. Interface enumeration omits loopback and link-local, and
+	// no packet reaching the input chain carries a multicast source.
+	for _, protected := range unblockableRanges {
 		if network.Contains(protected.IP) || protected.Contains(network.IP) {
 			return ipProtectedErrorf("refusing to block subnet %s: overlaps protected range %s", network, protected)
 		}
@@ -3676,22 +3678,14 @@ func (e *Engine) subnetSafetyGuardStateLocked(network *net.IPNet, state Firewall
 	return nil
 }
 
-var protectedLocalRanges = func() []*net.IPNet {
-	ranges := []*net.IPNet{
-		{IP: net.IPv4(127, 0, 0, 0), Mask: net.CIDRMask(8, 32)},
-		{IP: net.IPv4(169, 254, 0, 0), Mask: net.CIDRMask(16, 32)},
-		{IP: net.IPv4(224, 0, 0, 0), Mask: net.CIDRMask(24, 32)},
-		{IP: net.ParseIP("::1"), Mask: net.CIDRMask(128, 128)},
-		{IP: net.ParseIP("fe80::"), Mask: net.CIDRMask(10, 128)},
-	}
-	// Multicast flags vary independently of the link-local scope nibble.
-	for flags := byte(0); flags < 16; flags++ {
-		ip := make(net.IP, net.IPv6len)
-		ip[0], ip[1] = 0xff, flags<<4|2
-		ranges = append(ranges, &net.IPNet{IP: ip, Mask: net.CIDRMask(16, 128)})
-	}
-	return ranges
-}()
+var unblockableRanges = []*net.IPNet{
+	{IP: net.IPv4(127, 0, 0, 0), Mask: net.CIDRMask(8, 32)},
+	{IP: net.IPv4(169, 254, 0, 0), Mask: net.CIDRMask(16, 32)},
+	{IP: net.IPv4(224, 0, 0, 0), Mask: net.CIDRMask(4, 32)},
+	{IP: net.ParseIP("::1"), Mask: net.CIDRMask(128, 128)},
+	{IP: net.ParseIP("fe80::"), Mask: net.CIDRMask(10, 128)},
+	{IP: net.ParseIP("ff00::"), Mask: net.CIDRMask(8, 128)},
+}
 
 func (e *Engine) subnetBlockPlanLocked(cidr string, state FirewallState) (*net.IPNet, bool, error) {
 	_, network, err := net.ParseCIDR(cidr)
@@ -4041,6 +4035,10 @@ func (e *Engine) refreshLocalAddrsLocked() {
 // refused; nothing broke only because the input chain accepts "iifname lo"
 // before reaching the blocked set, leaving an entry that looked effective
 // while doing nothing.
+//
+// Multicast and the limited broadcast address are never a packet's source:
+// the kernel drops such packets before the input chain. A block on one
+// matches nothing and only takes a slot in the deny set.
 func isUnblockableAddress(ip string) bool {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
@@ -4049,7 +4047,8 @@ func isUnblockableAddress(ip string) bool {
 	return parsed.IsLoopback() ||
 		parsed.IsUnspecified() ||
 		parsed.IsLinkLocalUnicast() ||
-		parsed.IsLinkLocalMulticast()
+		parsed.IsMulticast() ||
+		parsed.Equal(net.IPv4bcast)
 }
 
 func localAddrGuardKey(raw string) (string, bool) {
