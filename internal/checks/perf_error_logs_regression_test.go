@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -304,5 +306,38 @@ func TestErrorLogBloatTierFingerprintsAndDismissal(t *testing.T) {
 	}
 	if got := st.FilterNew([]alert.Finding{finding(2)}); len(got) != 0 {
 		t.Fatal("return to warning lost its dismissal")
+	}
+}
+
+// Coverage only matters for logs that have a baseline or are bloated now; no
+// other path can carry a finding to retire. Recording every directory the walk
+// passes would grow with the whole tree on each hourly run.
+func TestErrorLogScanRecordsCoverageOnlyForKnownOrBloatedLogs(t *testing.T) {
+	root := t.TempDir()
+	tracked := filepath.Join(root, "known", "error_log")
+	bloated := filepath.Join(root, "big", "error_log")
+	writeSizedFile(t, tracked, 10)
+	writeSizedFile(t, bloated, 2*testMiB)
+	writeSizedFile(t, filepath.Join(root, "small", "error_log"), 10)
+	for _, d := range []string{"empty1", "empty2", "empty3"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	scan := errorLogScan{tracked: map[string]bool{tracked: true}}
+	if !scanErrorLogs(context.Background(), root, testMiB, 3, nil, &scan) {
+		t.Fatal("scan reported incomplete")
+	}
+
+	var got []string
+	for p := range scan.covered {
+		got = append(got, p)
+	}
+	sort.Strings(got)
+	want := []string{bloated, tracked}
+	sort.Strings(want)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("covered = %v, want %v", got, want)
 	}
 }

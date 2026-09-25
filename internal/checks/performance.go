@@ -1040,17 +1040,25 @@ type errorLogObservation struct {
 	Inode    uint64 `json:"inode"`
 }
 
+// errorLogScan collects bloated logs and the paths the walk proved. Only a log
+// with a saved baseline or one bloated now can carry a finding to retire, so
+// coverage is recorded for those alone rather than for every directory walked.
 type errorLogScan struct {
 	logs    []bloatedErrorLog
 	covered map[string]bool
+	tracked map[string]bool
 }
 
 func (s *errorLogScan) observe(path string, info os.FileInfo, thresholdBytes int64) {
+	bloated := info != nil && info.Mode().IsRegular() && info.Size() > thresholdBytes
+	if !bloated && !s.tracked[path] {
+		return
+	}
 	if s.covered == nil {
 		s.covered = make(map[string]bool)
 	}
 	s.covered[path] = true
-	if info == nil || !info.Mode().IsRegular() || info.Size() <= thresholdBytes {
+	if !bloated {
 		return
 	}
 	identity, _ := selfWriteIdentityFromFileInfo(info)
@@ -1060,8 +1068,9 @@ func (s *errorLogScan) observe(path string, info os.FileInfo, thresholdBytes int
 }
 
 // Heavy trees are not descended, but their immediate error_log is checked.
-// Covered paths include small and missing logs so partial scans can retire
-// known resolved findings without discarding evidence from unreadable paths.
+// A tracked log found small or missing is recorded as covered, so a partial
+// scan can retire its finding without discarding evidence from unreadable
+// paths.
 func scanErrorLogs(ctx context.Context, dir string, thresholdBytes int64, depth int, roots map[string]struct{}, scan *errorLogScan) bool {
 	if ctx.Err() != nil {
 		return false
@@ -1138,7 +1147,11 @@ func CheckErrorLogBloat(ctx context.Context, cfg *config.Config, scanState *stat
 	for _, root := range roots {
 		rootSet[root.path] = struct{}{}
 	}
-	var scan errorLogScan
+	previous := loadErrorLogSizes(scanState)
+	scan := errorLogScan{tracked: make(map[string]bool, len(previous))}
+	for path := range previous {
+		scan.tracked[path] = true
+	}
 	for _, root := range roots {
 		if !scanErrorLogs(ctx, root.path, warnBytes, 3, rootSet, &scan) {
 			complete = false
@@ -1159,7 +1172,6 @@ func CheckErrorLogBloat(ctx context.Context, cfg *config.Config, scanState *stat
 		return scan.logs[i].path < scan.logs[j].path
 	})
 	now := errorLogNow()
-	previous := loadErrorLogSizes(scanState)
 	current := make(map[string]errorLogObservation, len(scan.logs))
 	var findings []alert.Finding
 	for i, log := range scan.logs {

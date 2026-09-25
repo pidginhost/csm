@@ -38,15 +38,14 @@ one is checked: PHP writes the log next to the running script, so
 A log over `performance.error_log_warn_size_mb` (default 50) is a Warning and
 only shows on this page. A log over `performance.error_log_critical_size_mb`
 (default 1024) is High and alerts. Once a log has been seen for at least an
-hour, the finding also shows how fast it grows per day; a truncated or
-rotated log starts a new baseline when its size decreases or its file identity
-changes. A cancelled scan does not update growth baselines. An incomplete scan
-preserves unexamined logs, but updates or clears logs it successfully checked.
-The finding keeps the same identity while
-the log grows, so it alerts at most once a day and a dismissal sticks until
-the log crosses into the higher tier. Returning to a dismissed warning tier
-keeps that warning hidden. When more than 20 logs are bloated, the
-largest are reported.
+hour, the finding also shows how fast it grows per day. A log that shrinks or
+is replaced by a new file, as on truncation or rotation, starts a new
+baseline. A cancelled scan changes nothing; a scan that could not read part
+of the tree keeps the logs it did not reach and updates the ones it did.
+
+The finding keeps the same identity while the log grows, so it alerts at most
+once a day and a dismissal sticks until the log crosses into the higher tier.
+When more than 20 logs are bloated, the largest are reported.
 
 ## Web UI
 
