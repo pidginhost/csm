@@ -30,15 +30,13 @@ What the tool replaces, in every structured field and in free text:
   vhost tokens, and inside longer tokens such as `example.com-ssl_log` or
   `cp1.log`. A name holding an underscore or starting with a dot, such as
   a bare mail login, is replaced as a whole wherever it is not glued to a
-  letter or digit. Matching ignores case, including Unicode case changes.
-  Overlapping matches use the leftmost complete identity, then the longest
-  match at that position; a full mailbox or home path keeps its usual
-  mapping. Replacements are not processed again as names or domains.
-  Punctuation-only learned names stay subject to the final refusal check
-  instead of rewriting separators throughout the stream. Large sets of
-  learned login names do not require a separate text scan per name.
-  The host's short name (its first label, when it carries a
-  digit) maps to the same pseudonym as the full name. Any other token that
+  letter or digit, ignoring case. Where identities overlap, the leftmost
+  complete one wins, and a full mailbox or home path keeps its usual
+  mapping. A replacement is never rewritten again. A learned name made
+  only of punctuation is not replaced, so it cannot turn separators into
+  identities; the final check refuses the run if one appears. The host's
+  short name (its first label, when it carries a digit) maps to the same
+  pseudonym as the full name. Any other token that
   looks like a domain (two or more labels, alphabetic last label that is
   not a file extension) is mapped too, even if no field named it; that
   over-reaches on a few dotted names like `options.option` and is accepted.
