@@ -39,6 +39,10 @@ type Anonymizer struct {
 	// process; only the counts do.
 	ipv4Seen map[string]string
 	ipv6Seen map[string]string
+	// Learned names the token pass cannot see whole, and the same names
+	// longest first, rebuilt after a new one is learned.
+	irregular      map[string]struct{}
+	irregularOrder []string
 }
 
 // NewAnonymizer returns an anonymizer keyed on salt.
@@ -49,6 +53,7 @@ func NewAnonymizer(salt []byte) *Anonymizer {
 		hosts:        make(map[string]string),
 		domains:      make(map[string]struct{}),
 		emails:       make(map[string]struct{}),
+		irregular:    make(map[string]struct{}),
 		counts:       make(map[string]int),
 		pseudonyms:   make(map[string]struct{}),
 		ids:          make(map[string]idKind),
@@ -221,6 +226,7 @@ func (a *Anonymizer) learnAccount(name string) {
 		return
 	}
 	a.accounts[lower] = struct{}{}
+	a.learnIrregular(lower)
 }
 
 // learnHost records the full hostname and, when its first label looks like
@@ -232,14 +238,18 @@ func (a *Anonymizer) learnHost(name string) {
 	}
 	lower := strings.ToLower(name)
 	a.hosts[lower] = name
+	a.learnIrregular(lower)
 	if short, _, ok := strings.Cut(lower, "."); ok && strings.ContainsAny(short, "0123456789") {
 		a.hosts[short] = name
+		a.learnIrregular(short)
 	}
 }
 
 func (a *Anonymizer) learnDomain(name string) {
 	if name != "" {
-		a.domains[strings.ToLower(name)] = struct{}{}
+		lower := strings.ToLower(name)
+		a.domains[lower] = struct{}{}
+		a.learnIrregular(lower)
 	}
 }
 
@@ -290,7 +300,8 @@ func (a *Anonymizer) process(p *processctx.ProcessContext) *processctx.ProcessCo
 }
 
 // Text removes secrets before identity substitutions can obscure their
-// keys, then scrubs mail, IPv6, home paths and name-shaped tokens in order.
+// keys, then scrubs mail, IPv6, home paths, learned names the token pass
+// cannot see and name-shaped tokens in order.
 func (a *Anonymizer) Text(s string) string {
 	if s == "" {
 		return s
@@ -313,6 +324,9 @@ func (a *Anonymizer) Text(s string) string {
 		a.counts["accounts"]++
 		return sub[1] + a.Account(sub[2])
 	})
+	// Before the token pass, which would split such a name and replace its
+	// parts separately.
+	s = a.scrubIrregular(s)
 	s = scrubTokens(s, a.token)
 	return s
 }
@@ -526,6 +540,128 @@ func scrubTokens(s string, fn func(core string) string) string {
 			}
 		}
 		i = j
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// tokenVisible reports whether scrubTokens can hand name to its callback
+// whole: it splits text at every byte other than a letter, digit, dot or
+// hyphen and trims dots and hyphens from token edges, so a name holding an
+// underscore or starting with a dot never reaches it as one span.
+func tokenVisible(name string) bool {
+	if name == "" || !isAlnum(name[0]) || !isAlnum(name[len(name)-1]) {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if !isNameByte(name[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// learnIrregular records a lower-cased learned name that tokenVisible
+// rejects. The leak check finds such a name wherever it is not glued to a
+// letter or digit, so Text must replace it on its own.
+func (a *Anonymizer) learnIrregular(lower string) {
+	if lower == "" || tokenVisible(lower) {
+		return
+	}
+	if _, ok := a.irregular[lower]; ok {
+		return
+	}
+	a.irregular[lower] = struct{}{}
+	a.irregularOrder = nil
+}
+
+// irregularNames returns the names learnIrregular kept, longest first, so a
+// name is replaced before a shorter learned name inside it.
+func (a *Anonymizer) irregularNames() []string {
+	if a.irregularOrder == nil && len(a.irregular) > 0 {
+		names := make([]string, 0, len(a.irregular))
+		for name := range a.irregular {
+			names = append(names, name)
+		}
+		sort.Slice(names, func(i, j int) bool {
+			if len(names[i]) != len(names[j]) {
+				return len(names[i]) > len(names[j])
+			}
+			return names[i] < names[j]
+		})
+		a.irregularOrder = names
+	}
+	return a.irregularOrder
+}
+
+// irregularName maps one such name with the precedence token uses: host,
+// then domain, then account.
+func (a *Anonymizer) irregularName(raw string) string {
+	lower := strings.ToLower(raw)
+	if _, ok := a.hosts[lower]; ok {
+		a.counts["hosts"]++
+		return a.Host(raw)
+	}
+	if _, ok := a.domains[lower]; ok {
+		a.counts["domains"]++
+		return a.Domain(raw)
+	}
+	a.counts["accounts"]++
+	return a.Account(raw)
+}
+
+// scrubIrregular replaces every occurrence of a name learnIrregular kept
+// that is not glued to a letter or digit, the boundary the leak check
+// applies. A name costs one search per text unless it occurs.
+func (a *Anonymizer) scrubIrregular(s string) string {
+	names := a.irregularNames()
+	if len(names) == 0 {
+		return s
+	}
+	lower := foldASCII(s)
+	for _, name := range names {
+		if !strings.Contains(lower, name) {
+			continue
+		}
+		s = replaceLabel(s, lower, name, a.irregularName)
+		lower = foldASCII(s)
+	}
+	return s
+}
+
+// foldASCII lower-cases ASCII letters only, so every offset in the result
+// is the same offset in s.
+func foldASCII(s string) string {
+	folded := []byte(s)
+	for i, c := range folded {
+		if c >= 'A' && c <= 'Z' {
+			folded[i] = c + 'a' - 'A'
+		}
+	}
+	return string(folded)
+}
+
+// replaceLabel applies fn to every occurrence of name in lower, the
+// foldASCII copy of s, that is not glued to a letter or digit.
+func replaceLabel(s, lower, name string, fn func(raw string) string) string {
+	var b strings.Builder
+	last := 0
+	for offset := 0; ; {
+		i := strings.Index(lower[offset:], name)
+		if i < 0 {
+			break
+		}
+		start, end := offset+i, offset+i+len(name)
+		if !bounded(lower, start, end) {
+			offset = start + 1
+			continue
+		}
+		b.WriteString(s[last:start])
+		b.WriteString(fn(s[start:end]))
+		last, offset = end, end
 	}
 	if last == 0 {
 		return s
