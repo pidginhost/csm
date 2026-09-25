@@ -564,7 +564,7 @@ func (s *Server) apiPerfFixWPCron(w http.ResponseWriter, r *http.Request) {
 		options.IntervalMinutes = cfg.Performance.WPCronFix.IntervalMinutes
 		options.PHPBin = cfg.Performance.WPCronFix.PHPBin
 	}
-	res := checks.FixDisableWPCronInRoots(req.Path, checks.ResolveWPCronRoots(cfg), options)
+	res := checks.FixDisableWPCronInRoots(req.Path, checks.ResolveValidatedDocroots(cfg), options)
 	if !res.Success {
 		writeRemediation(w, res)
 		return
