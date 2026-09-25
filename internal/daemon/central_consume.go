@@ -116,14 +116,11 @@ func (d *Daemon) applyCentral(store *reporting.CentralStore, action reporting.Ac
 }
 
 func (d *Daemon) planCentralAction(store *reporting.CentralStore, action reporting.Action, threshold int, firebreak func(string) bool, f alert.Finding) (centralQueuedAction, bool) {
-	// Response and coverage-health findings are not independent attacker
-	// signals. Feeding them back into the consumer can schedule a redundant
-	// block or attribute service degradation to an unrelated source IP.
-	if f.Check == "auto_block" || f.Check == "reputation_quota_exhausted" || f.Check == "threat_feed_stale" {
-		return centralQueuedAction{}, false
-	}
+	// The local finding is the corroboration, so it must name the address
+	// as an attacker. A response record, a health finding, the remote end
+	// of an outbound connection, a customer login or an advisory does not.
 	ip := f.SourceIP
-	if ip == "" {
+	if ip == "" || !checks.AddressEvidence(f.Check, f.Severity) {
 		return centralQueuedAction{}, false
 	}
 	entry, found := store.Lookup(ip)

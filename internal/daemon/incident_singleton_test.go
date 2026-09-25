@@ -414,6 +414,43 @@ func TestIncidentCorrelatorAutoBlockSuppressesProtectedIPError(t *testing.T) {
 	}
 }
 
+// The production correlator asks the check registry whether a finding's
+// address is attacker evidence. An outbound check reports the remote end of
+// a local connection; the incident still opens, but its address is never
+// handed to the firewall.
+func TestIncidentCorrelatorAutoBlockNeedsAddressEvidence(t *testing.T) {
+	resetIncidentForTest()
+	t.Cleanup(resetIncidentForTest)
+
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.BlockExpiry = "15m"
+	cfg.Incidents.AutoBlock.Enabled = true
+	cfg.Incidents.AutoBlock.BlockAtSeverity = "high"
+	SetIncidentConfigSource(func() *config.Config { return cfg })
+
+	var blocked []string
+	SetIncidentSprayBlocker(func(ip, _ string, _ time.Duration, _ string) (bool, error) {
+		blocked = append(blocked, ip)
+		return true, nil
+	})
+
+	c := IncidentCorrelator()
+	for _, f := range []alert.Finding{
+		{Check: "backdoor_port_outbound", Severity: alert.Critical, SourceIP: "203.0.113.70"},
+		{Check: "xmlrpc_abuse", Severity: alert.Critical, SourceIP: "198.51.100.71"},
+	} {
+		f.Timestamp = time.Now()
+		if _, created, err := c.OnFinding(f); err != nil || !created {
+			t.Fatalf("%s: created=%v err=%v", f.Check, created, err)
+		}
+	}
+	if len(blocked) != 1 || blocked[0] != "198.51.100.71" {
+		t.Fatalf("blocked = %v, want only the attested attacker address", blocked)
+	}
+}
+
 func TestIncidentCorrelatorKeepsVerifiedContainmentWhenAuditPending(t *testing.T) {
 	for _, route := range []string{"spray", "incident"} {
 		for _, result := range []struct {

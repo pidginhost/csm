@@ -110,6 +110,12 @@ type CorrelatorConfig struct {
 	// edits take effect without rebuilding the correlator.
 	CanIncidentBlock func() bool
 
+	// AddressEvidence reports whether a finding of check at sev names an
+	// attacker by its address; the daemon passes checks.AddressEvidence.
+	// The generic auto-block only requests a block of an address such a
+	// finding named. nil counts every address.
+	AddressEvidence func(check string, sev alert.Severity) bool
+
 	// OnIncidentBlock fires when the generic auto-block gate trips. The
 	// callback runs after the correlator mutex is released and returns
 	// true only when a live block request was accepted. Dry-run,
@@ -330,9 +336,9 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 		delete(c.byKey, keyStr)
 	}
 
-	// Threshold gate. Findings without first-hit semantics need OpenThreshold
-	// sightings inside the merge window before opening an incident.
-	if c.openThreshold > 1 && !opensIncidentImmediately(f) {
+	// Retain pending evidence even when the next finding opens immediately.
+	// Otherwise the incident can lose the only attestation of its address.
+	if c.openThreshold > 1 {
 		if pf, ok := c.pending[keyStr]; ok && now.Sub(pf.at) <= incidentMergeWindow {
 			delete(c.pending, keyStr)
 			id := c.createIncidentLocked(key, keyStr, pf.finding, pf.at)
@@ -346,8 +352,10 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 			}
 			return id, true, nil
 		}
-		c.pending[keyStr] = pendingFinding{finding: f, at: now}
-		return "", false, nil
+		if !opensIncidentImmediately(f) {
+			c.pending[keyStr] = pendingFinding{finding: f, at: now}
+			return "", false, nil
+		}
 	}
 
 	id := c.createIncidentLocked(key, keyStr, f, now)
@@ -674,7 +682,7 @@ func (c *Correlator) mergeLockedWithPersistence(inc *Incident, f alert.Finding, 
 }
 
 // mutateWithFindingLocked folds f into inc and reports whether the fold caused
-// a state-changing transition (kind change or severity escalation). It does not
+// a state-changing transition (kind, severity or address evidence). It does not
 // persist: the caller decides synchronous vs debounced persistence via
 // persistAfterMergeLocked. Splitting mutation from persistence lets the
 // credential_spray path apply its own escalation before a single persist,
@@ -713,6 +721,12 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	}
 	if f.SourceIP != "" {
 		ev.RemoteIP = f.SourceIP
+		if !inc.RemoteIPEvidence && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
+			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(f.SourceIP) {
+				inc.RemoteIPEvidence = true
+				transition = true
+			}
+		}
 	}
 	inc.Timeline = appendCappedTimeline(inc.Timeline, ev)
 	if f.Severity > inc.Severity {
@@ -1322,6 +1336,13 @@ func (c *Correlator) Restore(incidents []Incident) {
 	defer c.mu.Unlock()
 	for i := range incidents {
 		inc := incidents[i]
+		// Remember legacy evidence before a merge can trim its event. The
+		// next write saves the bit; until then the stored timeline retains it.
+		if !inc.RemoteIPEvidence && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil {
+			if ip := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); ip != "" {
+				inc.RemoteIPEvidence = c.blockAddressAttested(&inc, ip)
+			}
+		}
 		c.incidents[inc.ID] = &inc
 		delete(c.lastPersistAt, inc.ID)
 		c.persistence.discardDeferred(inc.ID)
@@ -1508,7 +1529,7 @@ func (c *Correlator) maybeBlockIncidentLocked(inc *Incident, now time.Time, why 
 		return nil
 	}
 	ip := incidentBlockCandidate(inc)
-	if ip == "" {
+	if ip == "" || !c.blockAddressAttested(inc, ip) {
 		return nil
 	}
 	if len(c.cfg.AutoBlock.Kinds) > 0 && !c.cfg.AutoBlock.Kinds[inc.Kind] {
@@ -1653,6 +1674,34 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 		live = onBlock(ip, reason, ttl, findingID)
 		callbackReturned = true
 	}
+}
+
+// blockAddressAttested reports whether a finding whose address is attacker
+// evidence named ip. The correlation key's address keeps that across
+// timeline trimming; any other candidate exists only while the timeline is
+// whole, so its events decide.
+func (c *Correlator) blockAddressAttested(inc *Incident, ip string) bool {
+	if c.cfg.AddressEvidence == nil {
+		return true
+	}
+	if inc.RemoteIPEvidence && inc.CorrelationKey != nil && normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP) == ip {
+		return true
+	}
+	for _, ev := range inc.Timeline {
+		if ev.Kind != "finding" || normalizeIncidentRemoteIP(ev.RemoteIP) != ip {
+			continue
+		}
+		sev, ok := parseSeverity(ev.Severity)
+		if ev.Severity == "" {
+			// Older events lack severity. They can attest checks with no
+			// severity floor, but cannot establish a Critical-only signal.
+			sev, ok = alert.Warning, true
+		}
+		if ok && c.cfg.AddressEvidence(ev.Check, sev) {
+			return true
+		}
+	}
+	return false
 }
 
 func incidentBlockCandidate(inc *Incident) string {
