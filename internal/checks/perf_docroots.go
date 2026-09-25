@@ -56,14 +56,13 @@ func ResolveValidatedDocroots(cfg *config.Config) []string {
 }
 
 func validatedDocrootSet(cfg *config.Config) ([]docrootScanRoot, bool) {
-	configured := ResolveWebRoots(cfg)
+	configured, complete := resolveWebRootsChecked(cfg)
 	byPath := make(map[string]docrootScanRoot, len(configured))
 	for _, root := range configured {
 		clean := filepath.Clean(root)
 		byPath[clean] = docrootScanRoot{path: clean, account: accountFromPath(clean)}
 	}
 
-	complete := true
 	data, err := osFS.ReadFile(userdataDomainsPath)
 	if err != nil {
 		if vhostMapFailureIsIncomplete(err) {

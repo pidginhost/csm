@@ -769,9 +769,9 @@ func TestScanErrorLogsSkipsDirs(t *testing.T) {
 	// Every directory lists the same entries, so descending into cache or
 	// node_modules would report their error_log too. testDirEntry.Info()
 	// returns 100 bytes, over the 50-byte threshold.
-	var found []bloatedErrorLog
+	var found errorLogScan
 	scanErrorLogs(context.Background(), "/home/alice/public_html", 50, 3, nil, &found)
-	if len(found) != 1 || found[0].path != "/home/alice/public_html/error_log" {
+	if len(found.logs) != 1 || found.logs[0].path != "/home/alice/public_html/error_log" {
 		t.Errorf("found = %+v, want only the top-level error_log", found)
 	}
 }
@@ -783,9 +783,9 @@ func TestScanErrorLogsDepthExhausted(t *testing.T) {
 		},
 	})
 
-	var found []bloatedErrorLog
+	var found errorLogScan
 	scanErrorLogs(context.Background(), "/home/alice/public_html", 1, -1, nil, &found)
-	if len(found) != 0 {
+	if len(found.logs) != 0 {
 		t.Error("negative depth should not scan anything")
 	}
 }

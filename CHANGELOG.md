@@ -19,6 +19,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- Error log growth estimates now restart after rotation or observed shrinkage, and interrupted scans preserve unexamined logs without keeping outdated severity tiers. Dismissed performance findings stay hidden after a rescan until their identity changes or the dismissal is undone.
 - The bloated error log check now covers addon and subdomain document roots and logs left directly in folders such as wp-admin, and the Web UI can truncate those logs. It only looked under public_html, and a dismissed finding came back whenever the log grew.
 - The firewall now refuses multicast and broadcast addresses as block targets. No packet the firewall filters can come from one, so such a block only used up a slot in the deny list.
 - Blocks of protected addresses, such as loopback, link-local, multicast or broadcast, are now recorded as refusals for timed blocks, subnet dry-runs and manual requests. They were logged as failures or proposed blocks, or not recorded at all.

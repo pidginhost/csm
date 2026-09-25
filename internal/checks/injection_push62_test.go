@@ -31,10 +31,10 @@ func TestScanErrorLogsBloated(t *testing.T) {
 
 	// Each level lists error_log (100 bytes) and subdir, so depth 3 reaches
 	// four levels: the root plus three nested subdirs.
-	var found []bloatedErrorLog
+	var found errorLogScan
 	scanErrorLogs(context.Background(), "/home/alice/public_html", 50, 3, nil, &found)
 	var got []string
-	for _, f := range found {
+	for _, f := range found.logs {
 		got = append(got, f.path)
 	}
 	want := []string{

@@ -1024,59 +1024,101 @@ const (
 var errorLogNow = time.Now
 
 type bloatedErrorLog struct {
-	path string
-	size int64
+	path   string
+	size   int64
+	device uint64
+	inode  uint64
 }
 
-// errorLogObservation is the size baseline a growth rate is measured from.
+// Size and Seen anchor the rate window; LastSize detects a shrink even when
+// frequent scans have not yet advanced that window. Identity detects rotation.
 type errorLogObservation struct {
-	Size int64 `json:"size"`
-	Seen int64 `json:"seen"`
+	Size     int64  `json:"size"`
+	Seen     int64  `json:"seen"`
+	LastSize int64  `json:"last_size"`
+	Device   uint64 `json:"device"`
+	Inode    uint64 `json:"inode"`
 }
 
-// scanErrorLogs walks dir up to depth levels collecting error_log files larger
-// than thresholdBytes. Heavy trees (wp-content, vendor, ...) are not descended,
-// but an error_log directly inside one is still checked: PHP writes the log
-// next to the executing script, so admin-ajax.php errors land in
-// wp-admin/error_log. A subdirectory that is a scan root of its own is left
-// to that root so its logs are reported once.
-func scanErrorLogs(ctx context.Context, dir string, thresholdBytes int64, depth int, roots map[string]struct{}, found *[]bloatedErrorLog) {
-	if depth < 0 || ctx.Err() != nil {
+type errorLogScan struct {
+	logs    []bloatedErrorLog
+	covered map[string]bool
+}
+
+func (s *errorLogScan) observe(path string, info os.FileInfo, thresholdBytes int64) {
+	if s.covered == nil {
+		s.covered = make(map[string]bool)
+	}
+	s.covered[path] = true
+	if info == nil || !info.Mode().IsRegular() || info.Size() <= thresholdBytes {
 		return
+	}
+	identity, _ := selfWriteIdentityFromFileInfo(info)
+	s.logs = append(s.logs, bloatedErrorLog{
+		path: path, size: info.Size(), device: identity.Device, inode: identity.Inode,
+	})
+}
+
+// Heavy trees are not descended, but their immediate error_log is checked.
+// Covered paths include small and missing logs so partial scans can retire
+// known resolved findings without discarding evidence from unreadable paths.
+func scanErrorLogs(ctx context.Context, dir string, thresholdBytes int64, depth int, roots map[string]struct{}, scan *errorLogScan) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if depth < 0 {
+		return true
 	}
 	entries, err := osFS.ReadDir(dir)
 	if err != nil {
-		return
+		return errors.Is(err, fs.ErrNotExist)
 	}
+	complete, sawLog := true, false
 	for _, e := range entries {
+		if ctx.Err() != nil {
+			return false
+		}
 		name := e.Name()
 		fullPath := filepath.Join(dir, name)
-		if e.IsDir() {
-			if _, ownRoot := roots[fullPath]; ownRoot {
-				continue
+		if name == "error_log" {
+			sawLog = true
+			info, infoErr := e.Info()
+			switch {
+			case infoErr == nil:
+				scan.observe(fullPath, info, thresholdBytes)
+			case errors.Is(infoErr, fs.ErrNotExist):
+				scan.observe(fullPath, nil, thresholdBytes)
+			default:
+				complete = false
 			}
-			if skipDirs[name] {
-				if info, statErr := osFS.Lstat(filepath.Join(fullPath, "error_log")); statErr == nil {
-					collectErrorLog(filepath.Join(fullPath, "error_log"), info, thresholdBytes, found)
-				}
-				continue
-			}
-			scanErrorLogs(ctx, fullPath, thresholdBytes, depth-1, roots, found)
+		}
+		if !e.IsDir() || depth == 0 {
 			continue
 		}
-		if name != "error_log" {
+		if _, ownRoot := roots[fullPath]; ownRoot {
 			continue
 		}
-		if info, infoErr := e.Info(); infoErr == nil {
-			collectErrorLog(fullPath, info, thresholdBytes, found)
+		if skipDirs[name] {
+			path := filepath.Join(fullPath, "error_log")
+			info, statErr := osFS.Lstat(path)
+			switch {
+			case statErr == nil:
+				scan.observe(path, info, thresholdBytes)
+			case errors.Is(statErr, fs.ErrNotExist):
+				scan.observe(path, nil, thresholdBytes)
+			default:
+				complete = false
+			}
+			continue
+		}
+		if !scanErrorLogs(ctx, fullPath, thresholdBytes, depth-1, roots, scan) {
+			complete = false
 		}
 	}
-}
-
-func collectErrorLog(path string, info os.FileInfo, thresholdBytes int64, found *[]bloatedErrorLog) {
-	if info.Mode().IsRegular() && info.Size() > thresholdBytes {
-		*found = append(*found, bloatedErrorLog{path: path, size: info.Size()})
+	if !sawLog {
+		scan.observe(filepath.Join(dir, "error_log"), nil, thresholdBytes)
 	}
+	return complete
 }
 
 // CheckErrorLogBloat walks the configured web roots and every docroot in
@@ -1092,63 +1134,81 @@ func CheckErrorLogBloat(ctx context.Context, cfg *config.Config, scanState *stat
 	critBytes := int64(cfg.Performance.ErrorLogCriticalSizeMB) * 1024 * 1024
 
 	roots, complete := validatedDocrootSet(cfg)
-	if !complete {
-		markCheckIncomplete(ctx, "perf_error_logs")
-	}
 	rootSet := make(map[string]struct{}, len(roots))
 	for _, root := range roots {
 		rootSet[root.path] = struct{}{}
 	}
-	var found []bloatedErrorLog
+	var scan errorLogScan
 	for _, root := range roots {
-		scanErrorLogs(ctx, root.path, warnBytes, 3, rootSet, &found)
+		if !scanErrorLogs(ctx, root.path, warnBytes, 3, rootSet, &scan) {
+			complete = false
+		}
+	}
+	if !complete {
+		markCheckIncomplete(ctx, "perf_error_logs")
 	}
 	if ctx.Err() != nil {
 		markCheckIncomplete(ctx, "perf_error_logs")
 		return nil
 	}
 
-	sort.Slice(found, func(i, j int) bool {
-		if found[i].size != found[j].size {
-			return found[i].size > found[j].size
+	sort.Slice(scan.logs, func(i, j int) bool {
+		if scan.logs[i].size != scan.logs[j].size {
+			return scan.logs[i].size > scan.logs[j].size
 		}
-		return found[i].path < found[j].path
+		return scan.logs[i].path < scan.logs[j].path
 	})
 	now := errorLogNow()
 	previous := loadErrorLogSizes(scanState)
-	current := make(map[string]errorLogObservation, len(found))
+	current := make(map[string]errorLogObservation, len(scan.logs))
 	var findings []alert.Finding
-	for i, log := range found {
+	for i, log := range scan.logs {
 		details, baseline := errorLogGrowth(log, previous[log.path], now)
 		current[log.path] = baseline
 		if i < errorLogFindingLimit {
 			findings = append(findings, newErrorLogFinding(log, details, critBytes, now))
 		}
 	}
-	if !complete {
-		// Roots the map would have named went unscanned; their logs were not
-		// seen, not gone, so keep those baselines for the next full run.
-		for path, obs := range previous {
-			if _, seen := current[path]; !seen {
-				current[path] = obs
-			}
+	for path, obs := range previous {
+		if _, seen := current[path]; seen {
+			continue
+		}
+		// Without the map, a nested root may be hidden behind an ancestor's
+		// depth or directory exclusions. Only direct observations retire it.
+		if complete || scan.covered[path] {
+			scan.observe(path, nil, warnBytes)
+		} else {
+			current[path] = obs
 		}
 	}
+	if ctx.Err() != nil {
+		markCheckIncomplete(ctx, "perf_error_logs")
+		return nil
+	}
+	scopes := make(map[string]bool, len(scan.covered))
+	for path := range scan.covered {
+		scopes[errorLogCoverageScope(path)] = true
+	}
+	recordCompletedCoverageScopes(ctx, "perf_error_logs", scopes)
 	storeErrorLogSizes(scanState, current)
 	return findings
 }
 
 // errorLogGrowth renders the finding details and returns the baseline to keep.
-// A baseline younger than errorLogMinRateSpan is kept as is so the rate is
-// always measured across at least that span; a shrink starts a new baseline.
+// A baseline younger than errorLogMinRateSpan keeps its rate anchor while
+// tracking the latest size; a shrink or file replacement resets the anchor.
 func errorLogGrowth(log bloatedErrorLog, prev errorLogObservation, now time.Time) (string, errorLogObservation) {
 	details := fmt.Sprintf("Size: %s", humanBytes(log.size))
-	fresh := errorLogObservation{Size: log.size, Seen: now.Unix()}
-	if prev.Seen == 0 || log.size < prev.Size {
+	fresh := errorLogObservation{
+		Size: log.size, Seen: now.Unix(), LastSize: log.size, Device: log.device, Inode: log.inode,
+	}
+	if prev.Seen == 0 || prev.Inode != log.inode || prev.Device != log.device ||
+		log.size < prev.Size || log.size < prev.LastSize || now.Unix() < prev.Seen {
 		return details, fresh
 	}
 	span := now.Sub(time.Unix(prev.Seen, 0))
 	if span < errorLogMinRateSpan {
+		prev.LastSize = log.size
 		return details, prev
 	}
 	perDay := int64(float64(log.size-prev.Size) * float64(24*time.Hour) / float64(span))
@@ -1167,13 +1227,18 @@ func newErrorLogFinding(log bloatedErrorLog, details string, critBytes int64, no
 		severity, tier = alert.High, "critical"
 	}
 	return alert.Finding{
-		Severity:  severity,
-		Check:     "perf_error_logs",
-		Message:   fmt.Sprintf("Bloated error_log: %s", log.path),
-		Details:   details,
-		DedupKey:  tier + ":" + log.path,
-		Timestamp: now,
+		Severity:      severity,
+		Check:         "perf_error_logs",
+		Message:       fmt.Sprintf("Bloated error_log: %s", log.path),
+		Details:       details,
+		DedupKey:      tier + ":" + log.path,
+		CoverageScope: errorLogCoverageScope(log.path),
+		Timestamp:     now,
 	}
+}
+
+func errorLogCoverageScope(path string) string {
+	return "error_log:" + path
 }
 
 func loadErrorLogSizes(scanState *state.Store) map[string]errorLogObservation {

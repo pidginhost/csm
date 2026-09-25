@@ -446,6 +446,9 @@ func (s *Server) apiPerformance(w http.ResponseWriter, r *http.Request) {
 		firstSeen := f.Timestamp
 		lastSeen := f.Timestamp
 		if entry, ok := s.store.EntryForKey(f.Key()); ok {
+			if entry.IsBaseline && entry.DismissalID != "" && entry.Hash == f.Fingerprint() {
+				continue
+			}
 			firstSeen = entry.FirstSeen
 			lastSeen = entry.LastSeen
 		}

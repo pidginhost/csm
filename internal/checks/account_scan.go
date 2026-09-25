@@ -460,18 +460,32 @@ func WebRootPatterns(cfg *config.Config) []string {
 //
 // Each returned path is an absolute directory that exists on disk.
 func ResolveWebRoots(cfg *config.Config) []string {
+	roots, _ := resolveWebRootsChecked(cfg)
+	return roots
+}
+
+// Stateful scans must distinguish an unreadable root from a removed one.
+func resolveWebRootsChecked(cfg *config.Config) ([]string, bool) {
 	patterns := WebRootPatterns(cfg)
 
 	var roots []string
+	complete := true
 	seen := make(map[string]struct{})
 	for _, pattern := range patterns {
 		matches, err := osFS.Glob(pattern)
-		if err != nil || len(matches) == 0 {
+		if err != nil {
+			complete = false
 			continue
 		}
 		for _, m := range matches {
 			info, err := osFS.Stat(m)
-			if err != nil || !info.IsDir() {
+			if err != nil {
+				if !os.IsNotExist(err) {
+					complete = false
+				}
+				continue
+			}
+			if !info.IsDir() {
 				continue
 			}
 			if _, ok := seen[m]; ok {
@@ -481,7 +495,7 @@ func ResolveWebRoots(cfg *config.Config) []string {
 			roots = append(roots, m)
 		}
 	}
-	return roots
+	return roots, complete
 }
 
 // fakeDirEntry wraps os.FileInfo to implement os.DirEntry.
