@@ -171,7 +171,7 @@ func (inv *Inventory) Current(o Owner) bool {
 // platform incarnation identity before this tracker can be used live. Generations
 // are never reused. Initialize with NewGenerations or a successful UnmarshalBinary
 // before observing or encoding; the zero value cannot allocate identities.
-// It is not safe for concurrent use: its owner serializes every call.
+// It is not safe for concurrent use: callers must serialize every call.
 type Generations struct {
 	next uint64
 	live map[string]uint64

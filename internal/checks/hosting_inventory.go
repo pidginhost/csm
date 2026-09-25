@@ -27,8 +27,9 @@ type HostingSnapshot struct {
 // must be readable and its directories are the accounts. A missing or
 // unreadable required source fails the whole read: a partial snapshot would
 // retire accounts and hand them new generations when they reappear. Off
-// cPanel, a root that is present but not mounted reads as an empty
-// directory, so the snapshot is empty and the read still succeeds.
+// cPanel, mount state is not checked: a readable empty root contributes no
+// accounts even if its expected filesystem is unmounted. Other readable
+// roots still contribute their accounts.
 func HostingInventory() (HostingSnapshot, error) {
 	if !platform.Detect().IsCPanel() {
 		return homeRootInventory()

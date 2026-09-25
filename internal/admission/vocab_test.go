@@ -245,6 +245,25 @@ func TestKindEffect(t *testing.T) {
 	}
 }
 
+func TestAdmissionEffectAndDispositionValidity(t *testing.T) {
+	effects := [...]string{"", "address", "service", "prefix", "challenge"}
+	dispositions := [...]string{"", "deferred", "refused", "withheld", "dropped"}
+	for value := 0; value <= 255; value++ {
+		e, d := Effect(value), Disposition(value)
+		valid := value >= 1 && value <= 4
+		if e.Valid() != valid || d.Valid() != valid {
+			t.Errorf("value %d: effect valid %v, disposition valid %v, want %v", value, e.Valid(), d.Valid(), valid)
+		}
+		wantEffect, wantDisposition := fmt.Sprintf("effect(%d)", value), fmt.Sprintf("disposition(%d)", value)
+		if valid {
+			wantEffect, wantDisposition = effects[value], dispositions[value]
+		}
+		if e.String() != wantEffect || d.String() != wantDisposition {
+			t.Errorf("value %d: effect %q, disposition %q, want %q, %q", value, e, d, wantEffect, wantDisposition)
+		}
+	}
+}
+
 // The tokens are the operator-visible vocabulary of the response safety
 // design; status, audit and alerts print them.
 func TestReasonVocabulary(t *testing.T) {

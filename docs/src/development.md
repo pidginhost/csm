@@ -208,6 +208,25 @@ Installs and upgrades on end-user servers come from the GitHub release artifacts
 - **API responses:** answer through `writeJSONError`, `writeOK`, `writeItems` / `writeAll` / `writeCapped` and `writeJSON`, so every route follows the contract in [API Reference](api.md): JSON errors, `ok` on actions, lists under `items`, UTC instants, durations in seconds and severity labels.
 - **Logging:** New code should use `internal/log` (wraps `log/slog`). Legacy `fmt.Fprintf(os.Stderr, "[%s] ...", ts())` call sites remain valid until migrated.
 
+### Response admission primitives
+
+`internal/admission` is a standard-library-only package that is not yet wired
+into live responses. Its persisted enum values are fixed by golden tests.
+`Assess` sets `ReassessBy` to the first instant the current class or severity
+falls, or all roots become stale, without new evidence. Redundant evidence
+can preserve the tier after another root expires. Each corroborating pair
+lasts until its local root loses freshness or its support expires; the
+longest-lived pair determines how long corroboration remains available.
+Equal deadlines and input order do not affect the result. Direct compromise
+evidence may expire while corroboration continues to preserve the same class.
+
+Policy lookups can overlap across registration, minting and validation, so
+they must be immutable or safe for concurrent use. Callers must serialize
+every operation on an inventory generation tracker. Off cPanel, hosting
+inventory reads account directories without checking mount state: an empty
+readable root contributes no accounts, while other readable roots still do.
+An unreadable required root fails the whole snapshot.
+
 ### Attack event storage
 
 Attack events live in `attacks:events`; `attacks:events:ip` stores empty values

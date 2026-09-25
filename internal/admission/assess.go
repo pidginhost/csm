@@ -31,8 +31,8 @@ type Assessment struct {
 	// EvidenceExpiry is when the last fresh root stops being fresh; the
 	// candidate ages out then.
 	EvidenceExpiry time.Time
-	// ReassessBy is the earliest instant a root used here expires, after
-	// which the class or severity may drop.
+	// ReassessBy is the earliest instant the class or severity drops, or
+	// all roots become stale, if no new evidence arrives.
 	ReassessBy time.Time
 	// Roots are the validated root IDs, sorted and deduplicated.
 	Roots []EvidenceID
@@ -117,32 +117,40 @@ func Assess(target Target, roots []Evidence, now time.Time) (Assessment, error) 
 		if exp.After(a.EvidenceExpiry) {
 			a.EvidenceExpiry = exp
 		}
-		if a.ReassessBy.IsZero() || exp.Before(a.ReassessBy) {
-			a.ReassessBy = exp
-		}
 	}
 	a.DirectC3 = a.Tier.Class == ClassC3
-	if !a.DirectC3 && target.IsAddress() {
-		if support, ok := corroboration(fresh, all, now); ok {
-			a.Tier.Class++
+	var classEnd, severityEnd time.Time
+	if target.IsAddress() {
+		classEnd = corroborationExpiry(fresh, all, now)
+		if !classEnd.IsZero() && !a.DirectC3 {
+			a.Tier.Class = ClassC3
 			a.Corroborated = true
-			if end := supportExpiry(support); end.Before(a.ReassessBy) {
-				a.ReassessBy = end
-			}
 		}
+	}
+	// Independent proofs can outlive each other, including corroboration
+	// that keeps C3 after direct compromise evidence stops being fresh.
+	for _, r := range fresh {
+		exp := rootExpiry(r)
+		if c, _ := r.Basis().Class(); c == a.Tier.Class && exp.After(classEnd) {
+			classEnd = exp
+		}
+		if r.Severity() == a.Tier.Severity && exp.After(severityEnd) {
+			severityEnd = exp
+		}
+	}
+	a.ReassessBy = classEnd
+	if severityEnd.Before(a.ReassessBy) {
+		a.ReassessBy = severityEnd
 	}
 	return a, nil
 }
 
-// corroboration finds an independent root of another family, a different
-// observation and within the lookback, supporting a fresh local attack
-// root. Of several, it returns the one whose support lasts longest, so the
-// assessment is not redone before the class can drop; ties keep the lowest
-// evidence ID.
-func corroboration(fresh, all []Evidence, now time.Time) (Evidence, bool) {
-	var best Evidence
-	var bestEnd time.Time
-	found := false
+// corroborationExpiry is the last instant until which any fresh local attack
+// root has independent support from a different family and observation.
+// Each pair ends at the earlier of local freshness and support expiry.
+// Only the deadline matters, so tied pairs need no evidence-ID selection.
+func corroborationExpiry(fresh, all []Evidence, now time.Time) time.Time {
+	var last time.Time
 	for _, a := range fresh {
 		if !a.Family().LocalAttack() {
 			continue
@@ -151,12 +159,16 @@ func corroboration(fresh, all []Evidence, now time.Time) (Evidence, bool) {
 			if !b.Family().Independent() || b.Family() == a.Family() || sameObservation(a, b) {
 				continue
 			}
-			if end := supportExpiry(b); now.Before(end) && (!found || end.After(bestEnd)) {
-				best, bestEnd, found = b, end, true
+			end := supportExpiry(b)
+			if exp := rootExpiry(a); exp.Before(end) {
+				end = exp
+			}
+			if now.Before(end) && end.After(last) {
+				last = end
 			}
 		}
 	}
-	return best, found
+	return last
 }
 
 func supportExpiry(e Evidence) time.Time {

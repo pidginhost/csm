@@ -167,6 +167,18 @@ func TestCanonicalService(t *testing.T) {
 	wantReason(t, "service on loopback", err, ReasonProtected)
 }
 
+func TestAdmissionServiceTargetIsAddress(t *testing.T) {
+	for _, raw := range []string{"192.0.2.1", "2001:db8::1"} {
+		target := mustService(t, raw, "tcp", 22)
+		if _, ok := target.Service(); !ok || !target.IsAddress() {
+			t.Fatalf("service target %q must also be one address", target.Key())
+		}
+		if addr, ok := target.Addr(); !ok || addr.String() != raw {
+			t.Fatalf("service address = %v %v, want %s", addr, ok, raw)
+		}
+	}
+}
+
 func TestParseTargetKeyRoundTripsAndRefusesAliases(t *testing.T) {
 	for _, key := range []string{
 		"ip:192.0.2.1", "ip:2001:db8::1", "net:198.51.100.0/24",
