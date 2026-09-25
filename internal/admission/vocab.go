@@ -278,8 +278,9 @@ func (e Entry) String() string {
 	return fmt.Sprintf("entry(%d)", uint8(e))
 }
 
-// Disposition groups the reasons a candidate did not receive its selected
-// response.
+// Disposition is how a candidate ended or why it waits. The first four
+// group the reasons a candidate did not receive its selected response; the
+// rest are attempt and preview outcomes.
 type Disposition uint8
 
 const (
@@ -287,10 +288,17 @@ const (
 	DispositionRefused
 	DispositionWithheld
 	DispositionDropped
+	// Outcomes of an attempt or a preview. Persisted: append, never renumber.
+	DispositionApplied
+	DispositionNarrowed
+	DispositionDryRun
+	DispositionObserve
+	DispositionFailed
+	DispositionUnknown
 	dispositionEnd
 )
 
-var dispositionNames = [...]string{"", "deferred", "refused", "withheld", "dropped"}
+var dispositionNames = [...]string{"", "deferred", "refused", "withheld", "dropped", "applied", "narrowed", "dry_run", "observe", "failed", "unknown"}
 
 func (d Disposition) Valid() bool { return d >= DispositionDeferred && d < dispositionEnd }
 

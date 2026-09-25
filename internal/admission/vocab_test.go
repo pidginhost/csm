@@ -60,6 +60,21 @@ func TestPersistedEnumValuesAreFrozen(t *testing.T) {
 		"DispositionRefused":          {uint8(DispositionRefused), 2},
 		"DispositionWithheld":         {uint8(DispositionWithheld), 3},
 		"DispositionDropped":          {uint8(DispositionDropped), 4},
+		"DispositionApplied":          {uint8(DispositionApplied), 5},
+		"DispositionNarrowed":         {uint8(DispositionNarrowed), 6},
+		"DispositionDryRun":           {uint8(DispositionDryRun), 7},
+		"DispositionObserve":          {uint8(DispositionObserve), 8},
+		"DispositionFailed":           {uint8(DispositionFailed), 9},
+		"DispositionUnknown":          {uint8(DispositionUnknown), 10},
+		"StateQueued":                 {uint8(StateQueued), 1},
+		"StateReserved":               {uint8(StateReserved), 2},
+		"StateExecuting":              {uint8(StateExecuting), 3},
+		"StateVerified":               {uint8(StateVerified), 4},
+		"StateFailed":                 {uint8(StateFailed), 5},
+		"StateUnknown":                {uint8(StateUnknown), 6},
+		"StateRefused":                {uint8(StateRefused), 7},
+		"StateWithheld":               {uint8(StateWithheld), 8},
+		"StateDropped":                {uint8(StateDropped), 9},
 		"ReasonSetFull":               {uint8(ReasonSetFull), 2},
 		"ReasonStorageShare":          {uint8(ReasonStorageShare), 3},
 		"ReasonEngineUnavailable":     {uint8(ReasonEngineUnavailable), 4},
@@ -247,16 +262,20 @@ func TestKindEffect(t *testing.T) {
 
 func TestAdmissionEffectAndDispositionValidity(t *testing.T) {
 	effects := [...]string{"", "address", "service", "prefix", "challenge"}
-	dispositions := [...]string{"", "deferred", "refused", "withheld", "dropped"}
+	dispositions := [...]string{"", "deferred", "refused", "withheld", "dropped", "applied", "narrowed", "dry_run", "observe", "failed", "unknown"}
 	for value := 0; value <= 255; value++ {
 		e, d := Effect(value), Disposition(value)
-		valid := value >= 1 && value <= 4
-		if e.Valid() != valid || d.Valid() != valid {
-			t.Errorf("value %d: effect valid %v, disposition valid %v, want %v", value, e.Valid(), d.Valid(), valid)
+		effectValid := value >= 1 && value < len(effects)
+		dispositionValid := value >= 1 && value < len(dispositions)
+		if e.Valid() != effectValid || d.Valid() != dispositionValid {
+			t.Errorf("value %d: effect valid %v, disposition valid %v, want %v, %v", value, e.Valid(), d.Valid(), effectValid, dispositionValid)
 		}
 		wantEffect, wantDisposition := fmt.Sprintf("effect(%d)", value), fmt.Sprintf("disposition(%d)", value)
-		if valid {
-			wantEffect, wantDisposition = effects[value], dispositions[value]
+		if effectValid {
+			wantEffect = effects[value]
+		}
+		if dispositionValid {
+			wantDisposition = dispositions[value]
 		}
 		if e.String() != wantEffect || d.String() != wantDisposition {
 			t.Errorf("value %d: effect %q, disposition %q, want %q, %q", value, e, d, wantEffect, wantDisposition)
