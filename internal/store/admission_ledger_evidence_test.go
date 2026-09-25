@@ -209,3 +209,43 @@ func TestAdmissionLedgerOriginalReportDoesNotConsumeLink(t *testing.T) {
 		t.Fatal("original report allocated a later link")
 	}
 }
+
+// Report links are bound to their evidence: a record copied under another
+// evidence ID, or one listing the evidence's own original finding, which
+// LinkReport never stores, is damaged storage.
+func TestAdmissionLedgerRefusesMisplacedReportLinks(t *testing.T) {
+	f := newLedgerFixture(t)
+	a := f.published(evidenceSpec{cursor: "offset=1", finding: "00000000000000aa"})
+	b := f.published(evidenceSpec{cursor: "offset=2", finding: "00000000000000bb"})
+	if err := f.l.LinkReport(a, "00000000000000cc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		reports := tx.Bucket([]byte(admissionReportsBucket))
+		return reports.Put([]byte(b), bytes.Clone(reports.Get([]byte(a))))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := f.snapshot()
+	if links, _, err := f.l.Reports(b); !isCorrupt(err) {
+		t.Fatalf("copied links read as b's: %v, %v", links, err)
+	}
+	if err := f.l.LinkReport(b, "00000000000000dd"); !isCorrupt(err) {
+		t.Fatalf("copied links extended: %v", err)
+	}
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("misplaced links changed records")
+	}
+	own, err := admission.ReportLinks{Evidence: b, Links: []string{"00000000000000bb"}}.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(admissionReportsBucket)).Put([]byte(b), own)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if links, _, err := f.l.Reports(b); !isCorrupt(err) {
+		t.Fatalf("original finding read as a later report: %v, %v", links, err)
+	}
+}

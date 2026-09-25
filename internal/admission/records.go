@@ -55,6 +55,9 @@ func (inv *Inventory) MatchesGenerations(g *Generations) bool {
 // are metadata: adding one never changes the evidence, its queue age or its
 // freshness.
 type ReportLinks struct {
+	// Evidence is the record the links belong to, so a stored copy under
+	// another evidence ID reads as damaged.
+	Evidence EvidenceID
 	// Links are finding IDs, sorted and unique.
 	Links []string
 	// Dropped counts reports beyond MaxReportLinks. It saturates.
@@ -62,9 +65,10 @@ type ReportLinks struct {
 }
 
 type reportLinksRecord struct {
-	V       uint8    `json:"v"`
-	Links   []string `json:"links"`
-	Dropped uint32   `json:"dropped,omitempty"`
+	V        uint8      `json:"v"`
+	Evidence EvidenceID `json:"evidence"`
+	Links    []string   `json:"links"`
+	Dropped  uint32     `json:"dropped,omitempty"`
 }
 
 // Add returns the links with findingID recorded, and whether they changed.
@@ -94,6 +98,9 @@ func (r ReportLinks) Add(findingID string) (ReportLinks, bool, error) {
 }
 
 func (r ReportLinks) valid() bool {
+	if _, err := ParseEvidenceID(string(r.Evidence)); err != nil {
+		return false
+	}
 	if len(r.Links) > MaxReportLinks || (r.Dropped > 0 && len(r.Links) < MaxReportLinks) {
 		return false
 	}
@@ -113,7 +120,7 @@ func (r ReportLinks) MarshalBinary() ([]byte, error) {
 	if links == nil {
 		links = []string{}
 	}
-	return sealRecord(reportLinksRecord{V: reportLinksVersion, Links: links, Dropped: r.Dropped})
+	return sealRecord(reportLinksRecord{V: reportLinksVersion, Evidence: r.Evidence, Links: links, Dropped: r.Dropped})
 }
 
 // UnmarshalReportLinks decodes stored links and checks their invariants.
@@ -122,7 +129,7 @@ func UnmarshalReportLinks(data []byte) (ReportLinks, error) {
 	if err := openRecord(data, &rec); err != nil {
 		return ReportLinks{}, err
 	}
-	r := ReportLinks{Links: rec.Links, Dropped: rec.Dropped}
+	r := ReportLinks{Evidence: rec.Evidence, Links: rec.Links, Dropped: rec.Dropped}
 	if rec.V != reportLinksVersion || rec.Links == nil || !r.valid() {
 		return ReportLinks{}, ErrCorruptRecord
 	}

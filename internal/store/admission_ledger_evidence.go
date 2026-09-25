@@ -1,6 +1,8 @@
 package store
 
 import (
+	"slices"
+
 	"github.com/pidginhost/csm/internal/admission"
 	bolt "go.etcd.io/bbolt"
 )
@@ -78,12 +80,21 @@ func (l *AdmissionLedger) LoadEvidence(id admission.EvidenceID) (admission.Evide
 	return e, err
 }
 
-func loadReports(tx *bolt.Tx, id admission.EvidenceID) (admission.ReportLinks, error) {
-	raw := tx.Bucket([]byte(admissionReportsBucket)).Get([]byte(id))
+// loadReports loads the later reports of e. A stored record must name e,
+// and it can never list e's own original finding.
+func loadReports(tx *bolt.Tx, e admission.Evidence) (admission.ReportLinks, error) {
+	raw := tx.Bucket([]byte(admissionReportsBucket)).Get([]byte(e.ID()))
 	if raw == nil {
-		return admission.ReportLinks{}, nil
+		return admission.ReportLinks{Evidence: e.ID()}, nil
 	}
-	return admission.UnmarshalReportLinks(raw)
+	links, err := admission.UnmarshalReportLinks(raw)
+	if err != nil {
+		return admission.ReportLinks{}, err
+	}
+	if links.Evidence != e.ID() || slices.Contains(links.Links, e.FindingID()) {
+		return admission.ReportLinks{}, admission.ErrCorruptRecord
+	}
+	return links, nil
 }
 
 // LinkReport records a later finding that reported published evidence.
@@ -95,7 +106,7 @@ func (l *AdmissionLedger) LinkReport(id admission.EvidenceID, findingID string) 
 		if err != nil {
 			return err
 		}
-		links, err := loadReports(tx, id)
+		links, err := loadReports(tx, original)
 		if err != nil {
 			return err
 		}
@@ -118,11 +129,11 @@ func (l *AdmissionLedger) LinkReport(id admission.EvidenceID, findingID string) 
 func (l *AdmissionLedger) Reports(id admission.EvidenceID) ([]string, uint32, error) {
 	var links admission.ReportLinks
 	err := l.db.bolt.View(func(tx *bolt.Tx) error {
-		if _, err := loadEvidence(tx, l.reg, id); err != nil {
+		e, err := loadEvidence(tx, l.reg, id)
+		if err != nil {
 			return err
 		}
-		var err error
-		links, err = loadReports(tx, id)
+		links, err = loadReports(tx, e)
 		return err
 	})
 	return links.Links, links.Dropped, err

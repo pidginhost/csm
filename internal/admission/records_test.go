@@ -39,7 +39,8 @@ func TestInventoryRoundTripsAndRefusesTampering(t *testing.T) {
 }
 
 func TestReportLinksAreBoundedAndSorted(t *testing.T) {
-	var r ReportLinks
+	r := ReportLinks{Evidence: testEvidenceID(1)}
+	ev := string(r.Evidence)
 	var changed bool
 	var err error
 	for i := MaxReportLinks + 2; i > 0; i-- {
@@ -61,7 +62,7 @@ func TestReportLinksAreBoundedAndSorted(t *testing.T) {
 	if _, _, err = r.Add("NOT-A-FINDING-ID"); err == nil {
 		t.Fatal("malformed finding ID accepted")
 	}
-	full := ReportLinks{Links: r.Links, Dropped: ^uint32(0)}
+	full := ReportLinks{Evidence: r.Evidence, Links: r.Links, Dropped: ^uint32(0)}
 	if again, changed, _ := full.Add("ffffffffffffffff"); changed || again.Dropped != ^uint32(0) {
 		t.Fatal("dropped counter wrapped")
 	}
@@ -74,19 +75,21 @@ func TestReportLinksAreBoundedAndSorted(t *testing.T) {
 	}
 	body := data[:len(data)-8]
 	for name, tampered := range map[string][]byte{
-		"dropped while room": resealForTest([]byte(`{"v":1,"links":["0000000000000001"],"dropped":1}`)),
-		"unsorted":           resealForTest([]byte(`{"v":1,"links":["0000000000000002","0000000000000001"]}`)),
-		"upper case":         resealForTest([]byte(`{"v":1,"links":["000000000000000A"]}`)),
-		"null links":         resealForTest([]byte(`{"v":1,"links":null}`)),
+		"dropped while room": resealForTest([]byte(`{"v":1,"evidence":"` + ev + `","links":["0000000000000001"],"dropped":1}`)),
+		"unsorted":           resealForTest([]byte(`{"v":1,"evidence":"` + ev + `","links":["0000000000000002","0000000000000001"]}`)),
+		"upper case":         resealForTest([]byte(`{"v":1,"evidence":"` + ev + `","links":["000000000000000A"]}`)),
+		"null links":         resealForTest([]byte(`{"v":1,"evidence":"` + ev + `","links":null}`)),
+		"no evidence":        resealForTest([]byte(`{"v":1,"links":[]}`)),
+		"malformed evidence": resealForTest([]byte(`{"v":1,"evidence":"ev_x","links":[]}`)),
 		"version":            resealForTest(bytes.Replace(body, []byte(`"v":1`), []byte(`"v":2`), 1)),
 	} {
 		if _, err := UnmarshalReportLinks(tampered); err != ErrCorruptRecord {
 			t.Errorf("%s: err = %v, want ErrCorruptRecord", name, err)
 		}
 	}
-	if empty, err := (ReportLinks{}).MarshalBinary(); err != nil {
+	if empty, err := (ReportLinks{Evidence: r.Evidence}).MarshalBinary(); err != nil {
 		t.Fatal(err)
-	} else if back, err := UnmarshalReportLinks(empty); err != nil || len(back.Links) != 0 {
+	} else if back, err := UnmarshalReportLinks(empty); err != nil || len(back.Links) != 0 || back.Evidence != r.Evidence {
 		t.Fatalf("empty links: %+v, %v", back, err)
 	}
 }
@@ -106,12 +109,15 @@ func TestRegistrySealed(t *testing.T) {
 }
 
 func TestRecordEncodersRejectInvalidValues(t *testing.T) {
+	ev := testEvidenceID(1)
 	for name, r := range map[string]ReportLinks{
-		"invalid ID":           {Links: []string{"bad"}},
-		"unsorted":             {Links: []string{"0000000000000002", "0000000000000001"}},
-		"duplicate":            {Links: []string{"0000000000000001", "0000000000000001"}},
-		"overflow before full": {Dropped: 1},
-		"too many":             {Links: []string{"0000000000000001", "0000000000000002", "0000000000000003", "0000000000000004", "0000000000000005", "0000000000000006", "0000000000000007", "0000000000000008", "0000000000000009"}},
+		"no evidence":          {},
+		"malformed evidence":   {Evidence: "ev_x"},
+		"invalid ID":           {Evidence: ev, Links: []string{"bad"}},
+		"unsorted":             {Evidence: ev, Links: []string{"0000000000000002", "0000000000000001"}},
+		"duplicate":            {Evidence: ev, Links: []string{"0000000000000001", "0000000000000001"}},
+		"overflow before full": {Evidence: ev, Dropped: 1},
+		"too many":             {Evidence: ev, Links: []string{"0000000000000001", "0000000000000002", "0000000000000003", "0000000000000004", "0000000000000005", "0000000000000006", "0000000000000007", "0000000000000008", "0000000000000009"}},
 	} {
 		if _, err := r.MarshalBinary(); refusalReason(err) != ReasonInvalid {
 			t.Errorf("%s encoded: %v", name, err)
