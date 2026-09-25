@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/incident"
@@ -227,6 +228,7 @@ func IncidentCorrelator() *incident.Correlator {
 			SpraySuppression: spray,
 			AutoBlock:        autoBlock,
 			IsWhitelisted:    whitelisted,
+			AddressEvidence:  checks.AddressEvidence,
 			CanSprayBlock: func() bool {
 				cfg := globalCfgForIncidents()
 				return cfg != nil && cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs

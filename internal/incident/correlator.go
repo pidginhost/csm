@@ -110,6 +110,12 @@ type CorrelatorConfig struct {
 	// edits take effect without rebuilding the correlator.
 	CanIncidentBlock func() bool
 
+	// AddressEvidence reports whether a finding of check at sev names an
+	// attacker by its address; the daemon passes checks.AddressEvidence.
+	// The generic auto-block only requests a block of an address such a
+	// finding named. nil counts every address.
+	AddressEvidence func(check string, sev alert.Severity) bool
+
 	// OnIncidentBlock fires when the generic auto-block gate trips. The
 	// callback runs after the correlator mutex is released and returns
 	// true only when a live block request was accepted. Dry-run,
@@ -713,6 +719,11 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	}
 	if f.SourceIP != "" {
 		ev.RemoteIP = f.SourceIP
+		if c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
+			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(f.SourceIP) {
+				inc.RemoteIPEvidence = true
+			}
+		}
 	}
 	inc.Timeline = appendCappedTimeline(inc.Timeline, ev)
 	if f.Severity > inc.Severity {
@@ -1508,7 +1519,7 @@ func (c *Correlator) maybeBlockIncidentLocked(inc *Incident, now time.Time, why 
 		return nil
 	}
 	ip := incidentBlockCandidate(inc)
-	if ip == "" {
+	if ip == "" || !c.blockAddressAttested(inc, ip) {
 		return nil
 	}
 	if len(c.cfg.AutoBlock.Kinds) > 0 && !c.cfg.AutoBlock.Kinds[inc.Kind] {
@@ -1653,6 +1664,28 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 		live = onBlock(ip, reason, ttl, findingID)
 		callbackReturned = true
 	}
+}
+
+// blockAddressAttested reports whether a finding whose address is attacker
+// evidence named ip. The correlation key's address keeps that across
+// timeline trimming; any other candidate exists only while the timeline is
+// whole, so its events decide.
+func (c *Correlator) blockAddressAttested(inc *Incident, ip string) bool {
+	if c.cfg.AddressEvidence == nil {
+		return true
+	}
+	if inc.RemoteIPEvidence && inc.CorrelationKey != nil && normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP) == ip {
+		return true
+	}
+	for _, ev := range inc.Timeline {
+		if ev.Kind != "finding" || normalizeIncidentRemoteIP(ev.RemoteIP) != ip {
+			continue
+		}
+		if sev, ok := parseSeverity(ev.Severity); ok && c.cfg.AddressEvidence(ev.Check, sev) {
+			return true
+		}
+	}
+	return false
 }
 
 func incidentBlockCandidate(inc *Incident) string {

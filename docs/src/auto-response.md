@@ -340,6 +340,13 @@ corroboration for central intelligence or incident correlation. They are
 deduplicated before the digest, attack database, history, and alert sinks
 receive them.
 
+Central intelligence and incident auto-blocking act on an address only when
+a finding names it as an attacker. The remote end of an outbound connection,
+a customer login, and advisories such as ModSecurity warnings or visitors of
+a mail-sending script do not count, even when another finding raised the
+incident's severity. A listed command-and-control server is the exception:
+blocking it is the reviewed response to a local process connecting to it.
+
 ## Safety Guards
 
 - Never kills root processes, system daemons, or cPanel services

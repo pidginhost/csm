@@ -142,6 +142,10 @@ type Incident struct {
 	// saying "already blocked" did not, so an attack that outlasted its
 	// expiry was never blocked again.
 	AutoBlock AutoBlockState `json:"auto_block,omitzero"`
+	// RemoteIPEvidence records that a finding whose address is attacker
+	// evidence named the correlation key's remote IP. Like CompoundFlags it
+	// survives timeline trimming, which may drop that finding's event.
+	RemoteIPEvidence bool `json:"remote_ip_evidence,omitempty"`
 }
 
 // AutoBlockState is the escalation ladder's memory for one incident. Count is
@@ -232,20 +236,30 @@ func (i *Incident) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	switch aux.Severity {
-	case "":
+	if aux.Severity == "" {
 		// allow the zero-severity case for partial decodes (tests, partial
 		// JSON snippets in the API). Severity stays at zero value (Warning).
-	case "WARNING":
-		i.Severity = alert.Warning
-	case "HIGH":
-		i.Severity = alert.High
-	case "CRITICAL":
-		i.Severity = alert.Critical
-	default:
+		return nil
+	}
+	sev, ok := parseSeverity(aux.Severity)
+	if !ok {
 		return fmt.Errorf("incident: unknown severity %q", aux.Severity)
 	}
+	i.Severity = sev
 	return nil
+}
+
+// parseSeverity reads the token alert.Severity.String produces.
+func parseSeverity(s string) (alert.Severity, bool) {
+	switch s {
+	case "WARNING":
+		return alert.Warning, true
+	case "HIGH":
+		return alert.High, true
+	case "CRITICAL":
+		return alert.Critical, true
+	}
+	return 0, false
 }
 
 // IncidentEvent is one entry in an incident's timeline. Built from a

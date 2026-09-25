@@ -287,6 +287,40 @@ func TestPlanCentralActionIgnoresResponseAndHealthFindings(t *testing.T) {
 	}
 }
 
+// Central intel acts on a listed address only when the local finding names
+// it as an attacker. An outbound check's SourceIP is the remote end of a
+// local connection, and a customer login or an advisory is not attacker
+// evidence either.
+func TestPlanCentralActionRequiresAddressEvidence(t *testing.T) {
+	d := New(&config.Config{}, nil, nil, "")
+	store := centralStoreWith(t, []reporting.ScoredEntry{
+		{IP: "198.51.100.20", Score: 95, Classes: []reporting.Class{reporting.ClassBruteforce}, LastSeen: time.Unix(1_700_000_000, 0).UTC()},
+	})
+	notProtected := func(string) bool { return false }
+	for _, c := range []struct {
+		check string
+		sev   alert.Severity
+		want  bool
+	}{
+		{"bad_asn_outbound", alert.High, false},
+		{"backdoor_port_outbound", alert.Critical, false},
+		{"cpanel_login_realtime", alert.Critical, false},
+		{"modsec_warning_realtime", alert.High, false},
+		{"mail_account_compromised", alert.High, false},
+		{"xmlrpc_abuse", alert.High, true},
+		{"mail_account_compromised", alert.Critical, true},
+	} {
+		f := alert.Finding{Check: c.check, Severity: c.sev, SourceIP: "198.51.100.20"}
+		action, ok := d.planCentralAction(store, reporting.ActionBlockIfLocalCorroborated, 80, notProtected, f)
+		if ok != c.want {
+			t.Errorf("%s %s: planned %v (%+v), want %v", c.check, c.sev, ok, action, c.want)
+		}
+		if ok && (action.decision != reporting.DecisionBlock || action.ip != "198.51.100.20") {
+			t.Errorf("%s %s: action = %+v, want a block of the listed address", c.check, c.sev, action)
+		}
+	}
+}
+
 func TestLogCentralBlockFailureSuppressesProtectedIPError(t *testing.T) {
 	prevWriter := log.Writer()
 	prevFlags := log.Flags()

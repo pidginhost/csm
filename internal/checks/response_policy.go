@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -187,4 +188,29 @@ func AdmissionPolicy(check string) (string, admission.Policy, bool) {
 		pol.MinSeverity = admission.SeverityCritical
 	}
 	return name, pol, true
+}
+
+// AddressEvidence reports whether the structured address of a finding from
+// check at sev is attacker evidence: the registry gives the check an evidence
+// family and the finding meets its severity floor. Automatic responses that
+// act on a finding's address outside scan admission ask this first, so a
+// destination, a customer login or an advisory is never blocked for it.
+func AddressEvidence(check string, sev alert.Severity) bool {
+	_, pol, ok := AdmissionPolicy(check)
+	if !ok || pol.Family == admission.FamilyNone {
+		return false
+	}
+	return admissionSeverity(sev) >= pol.MinSeverity
+}
+
+func admissionSeverity(s alert.Severity) admission.Severity {
+	switch s {
+	case alert.Critical:
+		return admission.SeverityCritical
+	case alert.High:
+		return admission.SeverityHigh
+	case alert.Warning:
+		return admission.SeverityWarning
+	}
+	return 0
 }
