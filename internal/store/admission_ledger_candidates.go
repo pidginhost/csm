@@ -177,6 +177,11 @@ func (l *AdmissionLedger) coalesceTx(tx *bolt.Tx, cur admission.Candidate, ids [
 	if cur.State.Terminal() {
 		return admission.Candidate{}, false, admission.ErrCandidateTerminal
 	}
+	if cur.Attempts > 0 {
+		if _, err := currentAttempt(tx, cur); err != nil {
+			return admission.Candidate{}, false, err
+		}
+	}
 	if cur.State != admission.StateQueued {
 		for _, id := range ids {
 			if !slices.Contains(cur.Roots, id) {

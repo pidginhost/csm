@@ -235,3 +235,15 @@ func (f *ledgerFixture) enqueue(req admission.CandidateRequest) (admission.Candi
 	id, _ := c.ID()
 	return c, id
 }
+
+// queued enqueues a candidate for the fixture's current generation, from a
+// root observed now.
+func (f *ledgerFixture) queued() admission.CandidateID {
+	f.t.Helper()
+	root := f.published(evidenceSpec{cursor: fmt.Sprintf("offset=%d", f.generation+1)})
+	_, id := f.enqueue(f.request("192.0.2.10", root))
+	return id
+}
+
+// nextGeneration moves the fixture's requests to a new candidate generation.
+func (f *ledgerFixture) nextGeneration() { f.generation++ }

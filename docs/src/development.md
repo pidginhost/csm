@@ -227,6 +227,20 @@ inventory reads account directories without checking mount state: an empty
 readable root contributes no accounts, while other readable roots still do.
 An unreadable required root fails the whole snapshot.
 
+The admission ledger (`store.AdmissionLedger`) keeps this state durably in
+the daemon's state database, in `adm:` buckets it creates the first time it
+is opened; nothing opens it yet. One owner serializes every write and each
+call is one transaction, so a failed call changes nothing. Admission time
+comes only from recorded clock readings: a wall clock that steps back never
+lowers it, and a new boot credits no elapsed time. Evidence is immutable once
+published, and later reports of the same observation are kept as bounded
+links. A candidate takes its entry, check and finding link from its primary
+evidence, coalesces repeated requests without refreshing its queue age, and
+moves from queued through reserved and executing to one outcome. A proven
+failure may requeue after a backoff, with at most three attempts in total;
+an unknown outcome never retries. Reloading an attempt does not authorize
+replaying its effect; the later applier must reconcile it first.
+
 ### Attack event storage
 
 Attack events live in `attacks:events`; `attacks:events:ip` stores empty values
