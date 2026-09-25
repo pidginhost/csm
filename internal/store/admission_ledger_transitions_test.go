@@ -676,3 +676,58 @@ func TestAdmissionLedgerQueuedMutationsRejectBrokenHistory(t *testing.T) {
 		})
 	}
 }
+
+// A readable attempt is not admissible history if it was reserved after
+// leaving the queue. Recovery must enforce the same boundary as Reserve.
+func TestAdmissionLedgerRejectsReservationsPastQueueDeadline(t *testing.T) {
+	for _, seq := range []uint32{1, 2} {
+		for _, offset := range []time.Duration{0, time.Nanosecond} {
+			for _, op := range []string{"reserve", "execute", "finish", "defer", "terminate", "enqueue"} {
+				t.Run(fmt.Sprintf("attempt=%d/late=%s/%s", seq, offset, op), func(t *testing.T) {
+					f := newLedgerFixture(t)
+					id := f.queued()
+					var c admission.Candidate
+					var a admission.AttemptRecord
+					for n := uint32(1); n <= seq; n++ {
+						f.tickAt(f.wall.Add(time.Minute))
+						var err error
+						c, a, err = f.l.Reserve(id, ledgerT0.Add(24*time.Hour))
+						if err != nil {
+							t.Fatal(err)
+						}
+						if n < seq || op == "defer" || op == "terminate" || op == "enqueue" {
+							c, a, err = f.l.Finish(a.Attempt.ID, admission.DispositionFailed)
+							if err != nil {
+								t.Fatal(err)
+							}
+						}
+					}
+					c.AgeOut = a.Reserved.Add(-offset)
+					if err := f.db.bolt.Update(func(tx *bolt.Tx) error { return putCandidate(tx, c) }); err != nil {
+						t.Fatal(err)
+					}
+					before := f.snapshot()
+					var err error
+					switch op {
+					case "reserve":
+						_, _, err = f.l.Reserve(id, time.Time{})
+					case "execute":
+						_, _, err = f.l.Execute(a.Attempt.ID)
+					case "finish":
+						_, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionFailed)
+					case "defer":
+						_, err = f.l.Defer(id, admission.ReasonCeiling)
+					case "terminate":
+						_, err = f.l.Terminate(id, admission.ReasonStale)
+					case "enqueue":
+						_, _, err = f.l.Enqueue(f.request("192.0.2.10", c.Roots[0]))
+					}
+					wantLedgerErr(t, "reservation outside queue lifetime", err, admission.ErrCorruptRecord)
+					if !reflect.DeepEqual(before, f.snapshot()) {
+						t.Fatal("invalid reservation history changed records")
+					}
+				})
+			}
+		}
+	}
+}

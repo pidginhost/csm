@@ -226,7 +226,7 @@ func currentAttempt(tx *bolt.Tx, c admission.Candidate) (admission.AttemptRecord
 			return admission.AttemptRecord{}, admission.ErrCorruptRecord
 		}
 		a, err := loadAttempt(tx, identity.ID)
-		if err != nil || a.Attempt != identity || !a.ExpiresAt.Equal(c.ExpiresAt) || a.Reserved.Before(c.FirstQueued) {
+		if err != nil || a.Attempt != identity || !a.ExpiresAt.Equal(c.ExpiresAt) || a.Reserved.Before(c.FirstQueued) || !a.Reserved.Before(c.AgeOut) {
 			return admission.AttemptRecord{}, admission.ErrCorruptRecord
 		}
 		if seq > 1 && (prev.State != admission.StateFailed || a.Reserved.Before(prev.Finished.Add(admission.RetryBackoff(seq-1)))) {
