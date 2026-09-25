@@ -77,11 +77,15 @@ type Ledger interface {
 	Defer(CandidateID, Reason) (Candidate, error)
 	// Terminate ends a queued candidate as refused, withheld or dropped.
 	Terminate(CandidateID, Reason) (Candidate, error)
-	// Reserve admits the next attempt. The first reservation fixes the
-	// absolute expiry; later ones must keep it.
-	Reserve(CandidateID, time.Time) (Candidate, AttemptRecord, error)
-	// Execute marks a reserved attempt as running.
-	Execute(ActionID) (Candidate, AttemptRecord, error)
+	// Reserve admits the next attempt and reports true. The first
+	// reservation fixes the absolute expiry; later ones must keep it. On a
+	// candidate already reserved or running it returns that attempt and
+	// false: a readback grants nothing.
+	Reserve(CandidateID, time.Time) (Candidate, AttemptRecord, bool, error)
+	// Execute marks a reserved attempt as running and reports true. On an
+	// attempt already running it returns it and false: a readback is not
+	// permission to dispatch its effect again.
+	Execute(ActionID) (Candidate, AttemptRecord, bool, error)
 	// Finish records an attempt outcome: applied, narrowed, failed or
 	// unknown. A proven failure with attempts left requeues the candidate.
 	Finish(ActionID, Disposition) (Candidate, AttemptRecord, error)
