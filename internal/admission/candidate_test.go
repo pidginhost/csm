@@ -64,7 +64,8 @@ func TestCandidateRoundTripsAndRefusesTampering(t *testing.T) {
 }
 
 // Every invariant is checked on encode, so the ledger cannot write a record
-// its own decoder would refuse.
+// its own decoder would refuse. Each refused case carries the transitions and
+// retry timing its state needs, so it fails only on the invariant it names.
 func TestCandidateInvariants(t *testing.T) {
 	later := t0.Add(time.Hour)
 	for _, c := range []struct {
@@ -93,6 +94,7 @@ func TestCandidateInvariants(t *testing.T) {
 		}, true},
 		{"narrowed full block", func(c *Candidate) {
 			c.State, c.Disposition, c.Attempts, c.ExpiresAt = StateVerified, DispositionNarrowed, 1, later
+			c.Transitions = 4
 		}, false},
 		{"scope family", func(c *Candidate) { c.Scope.Effect = EffectPrefix }, false},
 		{"no roots", func(c *Candidate) { c.Roots = nil }, false},
@@ -109,16 +111,22 @@ func TestCandidateInvariants(t *testing.T) {
 		{"bad check", func(c *Candidate) { c.Check = "SSH brute" }, false},
 		{"age-out past limit", func(c *Candidate) { c.AgeOut = t0.Add(QueueAgeLimit + time.Second) }, false},
 		{"age-out before queued", func(c *Candidate) { c.AgeOut = t0 }, false},
-		{"queued with refusal reason", func(c *Candidate) { c.Reason = ReasonProtected }, false},
+		{"queued with refusal reason", func(c *Candidate) { c.Reason, c.Transitions = ReasonProtected, 2 }, false},
 		{"reserved without attempt", func(c *Candidate) { c.State = StateReserved }, false},
+		{"verified without attempt", func(c *Candidate) {
+			c.State, c.Disposition, c.Transitions = StateVerified, DispositionApplied, 2
+		}, false},
 		{"failed early", func(c *Candidate) {
 			c.State, c.Disposition, c.Attempts, c.ExpiresAt = StateFailed, DispositionFailed, 2, later
+			c.Transitions = 5
 		}, false},
-		{"too many attempts", func(c *Candidate) { c.Attempts, c.ExpiresAt = MaxAttempts+1, later }, false},
+		{"too many attempts", func(c *Candidate) {
+			c.Attempts, c.ExpiresAt, c.NotBefore, c.Transitions = MaxAttempts+1, later, t0.Add(time.Minute), 9
+		}, false},
 		{"expiry before reservation", func(c *Candidate) { c.ExpiresAt = later }, false},
-		{"reservation without expiry", func(c *Candidate) { c.State, c.Attempts = StateReserved, 1 }, false},
+		{"reservation without expiry", func(c *Candidate) { c.State, c.Attempts, c.Transitions = StateReserved, 1, 2 }, false},
 		{"retry wait while reserved", func(c *Candidate) {
-			c.State, c.Attempts, c.ExpiresAt, c.NotBefore = StateReserved, 1, later, later
+			c.State, c.Attempts, c.ExpiresAt, c.NotBefore, c.Transitions = StateReserved, 1, later, later, 2
 		}, false},
 		{"retry wait without attempt", func(c *Candidate) { c.NotBefore = later }, false},
 		{"no transition", func(c *Candidate) { c.Transitions = 0 }, false},
@@ -226,16 +234,18 @@ func TestParseEvidenceID(t *testing.T) {
 func TestCandidateAndAttemptRejectUnrecoverableRecords(t *testing.T) {
 	for name, mutate := range map[string]func(*Candidate){
 		"epoch queue":         func(c *Candidate) { c.FirstQueued = time.Unix(0, 0); c.AgeOut = c.FirstQueued.Add(time.Hour) },
-		"retry without delay": func(c *Candidate) { c.Attempts = 1; c.ExpiresAt = t0.Add(time.Hour) },
+		"retry without delay": func(c *Candidate) { c.Attempts, c.ExpiresAt, c.Transitions = 1, t0.Add(time.Hour), 3 },
 		"retry after exhaustion": func(c *Candidate) {
 			c.Attempts = MaxAttempts
 			c.ExpiresAt = t0.Add(time.Hour)
-			c.NotBefore = t0.Add(time.Second)
+			c.NotBefore = t0.Add(time.Minute)
+			c.Transitions = 7
 		},
 		"retry before queue": func(c *Candidate) {
 			c.Attempts = 1
 			c.ExpiresAt = t0.Add(time.Hour)
 			c.NotBefore = t0.Add(-time.Second)
+			c.Transitions = 3
 		},
 	} {
 		c := queuedCandidate(t)
