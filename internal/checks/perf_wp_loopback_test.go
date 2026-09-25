@@ -16,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 const (
@@ -619,9 +620,10 @@ func TestWPLoopbackBoundsDistinctJobs(t *testing.T) {
 	}
 	path := writeWPLoopbackLog(t, t.TempDir(), "example.com-ssl_log", lines)
 	ctx, incomplete := withIncompleteCheckCollector(context.Background())
-	series := readWPLoopbacks(ctx, path, wpLoopbackHour(12), wpLoopbackHour(15))
-	if len(series) != 0 || !incomplete.contains("perf_wp_loopback") {
-		t.Fatalf("unbounded jobs: retained %d series, incomplete = %v", len(series), incomplete.contains("perf_wp_loopback"))
+	findings, st := scanWPLoopbackLogsState(ctx, []string{path}, wpLoopbackTestNow, nil)
+	if len(findings) != 0 || st[path] != nil || !incomplete.contains("perf_wp_loopback") {
+		t.Fatalf("unbounded jobs: findings = %d, retained state = %v, incomplete = %v",
+			len(findings), st[path] != nil, incomplete.contains("perf_wp_loopback"))
 	}
 }
 
@@ -667,8 +669,209 @@ func TestWPLoopbackCancelsInsideOverlongLine(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	source := &cancelDomlogReader{cancel: cancel}
-	line, err := readDomlogLine(ctx, bufio.NewReaderSize(source, wpLoopbackMaxLineBytes))
+	line, _, err := readDomlogLine(ctx, bufio.NewReaderSize(source, wpLoopbackMaxLineBytes))
 	if err != context.Canceled || line != nil || source.reads != 2 {
 		t.Fatalf("line length = %d, error = %v, reads = %d; want cancellation after 2 reads", len(line), err, source.reads)
+	}
+}
+
+// appendWPLoopbackLog appends lines, in logged order, to an existing log.
+func appendWPLoopbackLog(t *testing.T, path string, lines []wpLoopbackLine) {
+	t.Helper()
+	sort.SliceStable(lines, func(i, j int) bool { return lines[i].writtenAt().Before(lines[j].writtenAt()) })
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range lines {
+		if _, err := f.WriteString(l.String() + "\n"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Each hourly run reads only what was appended since the last one; the hours
+// it read before are carried in state. A busy host's logs are gigabytes, so
+// re-reading them every hour is not an option.
+func TestWPLoopbackStateReadsOnlyAppendedBytes(t *testing.T) {
+	withWPLoopbackHostAddress(t)
+	path := writeWPLoopbackLog(t, t.TempDir(), "example.com-ssl_log", sustainedLoopbacks(wpLoopbackTestHostIP, 61, 62, 63))
+	findings, st := scanWPLoopbackLogsState(context.Background(), []string{path}, wpLoopbackTestNow, nil)
+	if len(findings) != 1 || !strings.Contains(findings[0].Details, "61, 62, 63 per hour") {
+		t.Fatalf("first run = %+v", findings)
+	}
+
+	// Rewrite already-read requests in place to another job, same length. A
+	// run that re-read them would see a second job and lose counts.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, anchor := 512, len(data)-512
+	rewritten := string(data[:head]) +
+		strings.ReplaceAll(string(data[head:anchor]), "shop_sync_async", "shop_sync_asynX") +
+		string(data[anchor:])
+	if err := os.WriteFile(path, []byte(rewritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	appendWPLoopbackLog(t, path, loopbacks(wpLoopbackTestHostIP, wpLoopbackHour(15), 64, wpLoopbackTestTarget))
+
+	findings, _ = scanWPLoopbackLogsState(context.Background(), []string{path}, wpLoopbackTestNow.Add(time.Hour), st)
+	if len(findings) != 1 || !strings.Contains(findings[0].Details, "62, 63, 64 per hour") {
+		t.Fatalf("second run = %+v, want one finding with 62, 63, 64 per hour", findings)
+	}
+}
+
+// Rotation or truncation starts a new file; reading resumes at its start and
+// the hours already counted are kept.
+func TestWPLoopbackStateRestartsAfterTruncation(t *testing.T) {
+	withWPLoopbackHostAddress(t)
+	path := writeWPLoopbackLog(t, t.TempDir(), "example.com-ssl_log", sustainedLoopbacks(wpLoopbackTestHostIP, 61, 62, 63))
+	_, st := scanWPLoopbackLogsState(context.Background(), []string{path}, wpLoopbackTestNow, nil)
+
+	writeWPLoopbackLog(t, filepath.Dir(path), filepath.Base(path), loopbacks(wpLoopbackTestHostIP, wpLoopbackHour(15), 64, wpLoopbackTestTarget))
+
+	findings, _ := scanWPLoopbackLogsState(context.Background(), []string{path}, wpLoopbackTestNow.Add(time.Hour), st)
+	if len(findings) != 1 || !strings.Contains(findings[0].Details, "62, 63, 64 per hour") {
+		t.Fatalf("after truncation = %+v, want one finding with 62, 63, 64 per hour", findings)
+	}
+}
+
+// A line still being written when a run reads the log is left for the next
+// run and counted once, when complete.
+func TestWPLoopbackStateLeavesPartialLineForNextRun(t *testing.T) {
+	withWPLoopbackHostAddress(t)
+	path := writeWPLoopbackLog(t, t.TempDir(), "example.com-ssl_log", sustainedLoopbacks(wpLoopbackTestHostIP, 61, 61, 60))
+	last := wpLoopbackLine{ip: wpLoopbackTestHostIP, at: wpLoopbackHour(14).Add(59 * time.Minute), method: "POST",
+		uri: wpLoopbackTestTarget, status: 200, ua: wpLoopbackTestUA}.String()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(last[:40]); err != nil {
+		t.Fatal(err)
+	}
+	findings, st := scanWPLoopbackLogsState(context.Background(), []string{path}, wpLoopbackTestNow, nil)
+	if len(findings) != 0 {
+		t.Fatalf("partial line counted: %+v", findings)
+	}
+	if _, err := f.WriteString(last[40:] + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, _ = scanWPLoopbackLogsState(context.Background(), []string{path}, wpLoopbackTestNow.Add(5*time.Minute), st)
+	if len(findings) != 1 || !strings.Contains(findings[0].Details, "61, 61, 61 per hour") {
+		t.Fatalf("completed line = %+v, want one finding with 61, 61, 61 per hour", findings)
+	}
+}
+
+// State covers the logs active in the window; a log that went quiet is
+// forgotten, and hours that fell out of the window are pruned.
+func TestWPLoopbackStateForgetsQuietLogsAndOldHours(t *testing.T) {
+	withWPLoopbackHostAddress(t)
+	dir := t.TempDir()
+	active := writeWPLoopbackLog(t, dir, "a.example.com-ssl_log", sustainedLoopbacks(wpLoopbackTestHostIP, 61, 61, 61))
+	quiet := writeWPLoopbackLog(t, dir, "b.example.com-ssl_log", sustainedLoopbacks(wpLoopbackTestHostIP, 61, 61, 61))
+	_, st := scanWPLoopbackLogsState(context.Background(), []string{active, quiet}, wpLoopbackTestNow, nil)
+
+	_, st = scanWPLoopbackLogsState(context.Background(), []string{active}, wpLoopbackTestNow.Add(2*time.Hour), st)
+
+	if _, ok := st[quiet]; ok {
+		t.Fatal("state kept a log that was not active")
+	}
+	for _, job := range st[active].Jobs {
+		for hour := range job.Hours {
+			if hour < wpLoopbackHour(14).Unix() {
+				t.Fatalf("state kept hour %d from before the window", hour)
+			}
+		}
+	}
+}
+
+// A log that could not be read keeps its previous position and counts, so
+// the next successful run neither loses nor double counts its requests.
+func TestWPLoopbackStateKeepsLogOnReadFailure(t *testing.T) {
+	withWPLoopbackHostAddress(t)
+	path := writeWPLoopbackLog(t, t.TempDir(), "example.com-ssl_log", sustainedLoopbacks(wpLoopbackTestHostIP, 61, 62, 63))
+	_, st := scanWPLoopbackLogsState(context.Background(), []string{path}, wpLoopbackTestNow, nil)
+	before := st[path]
+
+	withMockOS(t, &mockOS{open: func(string) (*os.File, error) { return nil, os.ErrPermission }})
+	ctx, incomplete := withIncompleteCheckCollector(context.Background())
+	_, after := scanWPLoopbackLogsState(ctx, []string{path}, wpLoopbackTestNow.Add(time.Hour), st)
+
+	if !incomplete.contains("perf_wp_loopback") {
+		t.Fatal("read failure must mark the check incomplete")
+	}
+	if after[path] != before {
+		t.Fatal("read failure replaced the log's saved state")
+	}
+}
+
+// The daemon path persists state between runs in the scan state store.
+func TestCheckWPLoopbackRequestsPersistsState(t *testing.T) {
+	now := time.Now()
+	prevNow := wpLoopbackNow
+	wpLoopbackNow = func() time.Time { return now }
+	t.Cleanup(func() { wpLoopbackNow = prevNow })
+	withWPLoopbackHostAddress(t)
+
+	start := wpLoopbackWindowEnd(now).Add(-3 * time.Hour)
+	var lines []wpLoopbackLine
+	for h := 0; h < 3; h++ {
+		lines = append(lines, loopbacks(wpLoopbackTestHostIP, start.Add(time.Duration(h)*time.Hour), 90, wpLoopbackTestTarget)...)
+	}
+	dir := t.TempDir()
+	path := writeWPLoopbackLog(t, dir, "example.com-ssl_log", lines)
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{filepath.Join(dir, "*-ssl_log")}})
+	t.Cleanup(platform.ResetForTest)
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if got := CheckWPLoopbackRequests(context.Background(), &config.Config{}, store); len(got) != 1 {
+		t.Fatalf("first run findings = %d, want 1", len(got))
+	}
+	// Emptying the already-read part of the file in place would change what a
+	// full re-read sees; the second run must still report from saved state.
+	if err := os.Truncate(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := CheckWPLoopbackRequests(context.Background(), &config.Config{}, store); len(got) != 1 {
+		t.Fatalf("second run findings = %d, want 1 from saved state", len(got))
+	}
+}
+
+// Logs that discovery failed to list were not read, not gone: their saved
+// position and counts survive the run.
+func TestCheckWPLoopbackKeepsStateWhenDiscoveryFails(t *testing.T) {
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	saved := wpLoopbackState{"/var/log/example.com-ssl_log": {Follow: followState{Offset: 42}}}
+	storeWPLoopbackState(store, saved)
+
+	dir := t.TempDir()
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{filepath.Join(dir, "*-ssl_log")}})
+	t.Cleanup(platform.ResetForTest)
+	withMockOS(t, &mockOS{glob: func(string) ([]string, error) { return nil, os.ErrPermission }})
+
+	CheckWPLoopbackRequests(context.Background(), &config.Config{}, store)
+
+	got := loadWPLoopbackState(store)["/var/log/example.com-ssl_log"]
+	if got == nil || got.Follow.Offset != 42 {
+		t.Fatalf("saved state after failed discovery = %+v, want offset 42 kept", got)
 	}
 }

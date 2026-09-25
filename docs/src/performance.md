@@ -56,20 +56,21 @@ hold a 60-second lock, so one job reaches its own site at most once a minute.
 
 `perf_wp_loopback` counts the last three complete local clock hours in every
 active vhost log. It counts POST requests with WordPress's own User-Agent
-from the loopback interface or one of the server's addresses. The
-count is kept per job, meaning the full logged path plus the admin-ajax
-`action`; shortened display names do not merge jobs. A job over 60 an hour
-in each of the three hours is reported as a Warning on this
-page. The finding shows the hourly counts, how many runs failed with a 5xx
-error, and the User-Agent.
+from the loopback interface or one of the server's addresses. The count is
+kept per job, meaning the full logged path plus the admin-ajax `action`;
+shortened display names do not merge jobs. A job over 60 an hour in each of
+the three hours is reported as a Warning on this page. The finding shows the
+hourly counts, how many runs failed with a 5xx error, and the User-Agent.
 
 Request timestamps record when requests started, but log lines are written
-when they finish. The check therefore streams each active log from the
-beginning and filters timestamps rather than seeking by time; large retained
-logs cost more I/O. It bounds memory used for distinct jobs and stops at the
-scan deadline, including inside oversized lines. A scan that cannot finish,
-exceeds the job budget, or encounters a log read error preserves prior
-findings for a later successful run.
+when they finish, so no part of a log can be skipped by its timestamps. The
+check follows each active log instead: every run reads only what the log
+gained since the previous run, and the hourly counts are kept in the scan
+state. A rotated, truncated or replaced log is read from its start, and the
+first run reads at most the last 8 MB of each log. Memory for distinct jobs
+is bounded, and the scan stops at its deadline, including inside oversized
+lines. A log that cannot be read, or exceeds the job budget, keeps its saved
+position and its prior findings until a later run succeeds.
 
 There are two usual causes:
 

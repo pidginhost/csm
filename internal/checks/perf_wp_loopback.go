@@ -5,10 +5,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,34 +51,77 @@ var wpLoopbackFromHost = func(ip string) bool {
 	return parsed != nil && (parsed.IsLoopback() || netutil.IsHostAddress(ip))
 }
 
-type wpLoopbackSeries struct {
-	perHour  [wpLoopbackHours]int
-	serverKO int
-	ua       string
-	target   string
+// wpLoopbackStateKey is underscore-prefixed so state.Store.Update does not
+// prune it as a stale non-finding key.
+const wpLoopbackStateKey = "_perf_wp_loopback"
+
+// wpLoopbackJob counts one job's self-requests by local clock hour. Hours maps
+// the hour's start (Unix seconds) to its request and 5xx counts. Target and UA
+// are display forms; the job's identity is the hash of its full target.
+type wpLoopbackJob struct {
+	Target string           `json:"target"`
+	UA     string           `json:"ua"`
+	Hours  map[int64][2]int `json:"hours"`
 }
 
-// CheckWPLoopbackRequests reads the last few hours of every active vhost log
-// for WordPress sites calling themselves faster than WordPress's own
-// schedulers ever do, hour after hour. The runner enforces a 60-minute
+// wpLoopbackLog is one vhost log's read position and the jobs seen in it
+// within the window.
+type wpLoopbackLog struct {
+	Follow followState               `json:"follow"`
+	Jobs   map[string]*wpLoopbackJob `json:"jobs,omitempty"`
+}
+
+// wpLoopbackState is keyed by log path.
+type wpLoopbackState map[string]*wpLoopbackLog
+
+// CheckWPLoopbackRequests follows every active vhost log for WordPress sites
+// calling themselves faster than WordPress's own schedulers ever do, hour
+// after hour. Each run reads only what the logs gained since the last one and
+// keeps hourly counts in the scan state. The runner enforces a 60-minute
 // throttle via checkThrottleMin.
-func CheckWPLoopbackRequests(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckWPLoopbackRequests(ctx context.Context, cfg *config.Config, scanState *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
 	}
 	now := wpLoopbackNow()
 	windowStart := wpLoopbackWindowEnd(now).Add(-wpLoopbackHours * time.Hour)
+	discoveryFailed := false
 	paths := discoverFreshDomlogsWithErrors(ctx, math.MaxInt, now.Sub(windowStart), func(err error) {
+		discoveryFailed = true
 		markScanReadError(ctx, "perf_wp_loopback", err)
 	})
-	return scanWPLoopbackLogs(ctx, paths, now)
+	previous := loadWPLoopbackState(scanState)
+	findings, next := scanWPLoopbackLogsState(ctx, paths, now, previous)
+	if ctx.Err() != nil {
+		return nil
+	}
+	if discoveryFailed {
+		// Logs discovery could not list were not read, not gone.
+		for path, log := range previous {
+			if _, ok := next[path]; !ok {
+				next[path] = log
+			}
+		}
+	}
+	storeWPLoopbackState(scanState, next)
+	return findings
 }
 
-// scanWPLoopbackLogs evaluates the last wpLoopbackHours complete hours before
-// now in each log. The hour in progress is left out: it is incomplete.
+// scanWPLoopbackLogs evaluates logs with no saved state, reading each whole
+// (up to the first-run catch-up limit).
 func scanWPLoopbackLogs(ctx context.Context, paths []string, now time.Time) []alert.Finding {
+	findings, _ := scanWPLoopbackLogsState(ctx, paths, now, nil)
+	return findings
+}
+
+// scanWPLoopbackLogsState follows each log from its saved position and judges
+// the last wpLoopbackHours complete hours before now; the hour in progress is
+// counted for later runs but not judged. It returns the findings and the
+// state to save. A log that fails to read keeps its previous state.
+func scanWPLoopbackLogsState(ctx context.Context, paths []string, now time.Time, previous wpLoopbackState) ([]alert.Finding, wpLoopbackState) {
 	end := wpLoopbackWindowEnd(now)
 	start := end.Add(-wpLoopbackHours * time.Hour)
+	next := make(wpLoopbackState, len(paths))
 	var findings []alert.Finding
 	for _, path := range paths {
 		if ctx.Err() != nil {
@@ -85,16 +131,24 @@ func scanWPLoopbackLogs(ctx context.Context, paths []string, now time.Time) []al
 		if domain == "" {
 			continue
 		}
-		series := readWPLoopbacks(ctx, path, start, end)
-		for target, s := range series {
-			if wpLoopbackSustained(s) {
-				findings = append(findings, newWPLoopbackFinding(domain, target, s, now))
+		log, ok := followWPLoopbackLog(ctx, path, previous[path], start)
+		if !ok {
+			markCheckIncomplete(ctx, "perf_wp_loopback")
+			if old := previous[path]; old != nil {
+				next[path] = old
+			}
+			continue
+		}
+		next[path] = log
+		for key, job := range log.Jobs {
+			if counts, serverKO, sustained := wpLoopbackWindowCounts(job, start); sustained {
+				findings = append(findings, newWPLoopbackFinding(domain, key, job, counts, serverKO, now))
 			}
 		}
 	}
 	if ctx.Err() != nil {
 		markCheckIncomplete(ctx, "perf_wp_loopback")
-		return nil
+		return nil, previous
 	}
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].Message == findings[j].Message {
@@ -102,7 +156,7 @@ func scanWPLoopbackLogs(ctx context.Context, paths []string, now time.Time) []al
 		}
 		return findings[i].Message < findings[j].Message
 	})
-	return findings
+	return findings, next
 }
 
 func wpLoopbackWindowEnd(now time.Time) time.Time {
@@ -112,103 +166,176 @@ func wpLoopbackWindowEnd(now time.Time) time.Time {
 		time.Duration(now.Second())*time.Second - time.Duration(now.Nanosecond()))
 }
 
-func wpLoopbackSustained(s *wpLoopbackSeries) bool {
-	for _, n := range s.perHour {
-		if n <= wpLoopbackMaxPerHour {
-			return false
+// wpLoopbackWindowCounts returns the job's requests in each window hour, its
+// 5xx answers across them, and whether every hour is over the rate.
+func wpLoopbackWindowCounts(job *wpLoopbackJob, start time.Time) (counts [wpLoopbackHours]int, serverKO int, sustained bool) {
+	sustained = true
+	for i := range counts {
+		hour := job.Hours[start.Add(time.Duration(i)*time.Hour).Unix()]
+		counts[i], serverKO = hour[0], serverKO+hour[1]
+		if counts[i] <= wpLoopbackMaxPerHour {
+			sustained = false
 		}
 	}
-	return true
+	return counts, serverKO, sustained
 }
 
-func newWPLoopbackFinding(domain string, target [sha256.Size]byte, s *wpLoopbackSeries, now time.Time) alert.Finding {
-	counts := make([]string, len(s.perHour))
-	for i, n := range s.perHour {
-		counts[i] = strconv.Itoa(n)
+func newWPLoopbackFinding(domain, key string, job *wpLoopbackJob, counts [wpLoopbackHours]int, serverKO int, now time.Time) alert.Finding {
+	shown := make([]string, len(counts))
+	for i, n := range counts {
+		shown[i] = strconv.Itoa(n)
 	}
-	details := fmt.Sprintf("From this server, %s per hour over the last %d hours", strings.Join(counts, ", "), wpLoopbackHours)
-	if s.serverKO > 0 {
-		details += fmt.Sprintf("; %d answered with a 5xx error", s.serverKO)
+	details := fmt.Sprintf("From this server, %s per hour over the last %d hours", strings.Join(shown, ", "), wpLoopbackHours)
+	if serverKO > 0 {
+		details += fmt.Sprintf("; %d answered with a 5xx error", serverKO)
 	}
-	details += ". User-Agent: " + s.ua
+	details += ". User-Agent: " + job.UA
 	return alert.Finding{
 		Severity:  alert.Warning,
 		Check:     "perf_wp_loopback",
-		Message:   fmt.Sprintf("Sustained WordPress loopback requests on %s: POST %s", domain, s.target),
+		Message:   fmt.Sprintf("Sustained WordPress loopback requests on %s: POST %s", domain, job.Target),
 		Details:   details,
-		DedupKey:  fmt.Sprintf("%s %x", domain, target),
+		DedupKey:  domain + " " + key,
 		Timestamp: now,
 	}
 }
 
-// readWPLoopbacks counts, per job, the WordPress self-requests stamped in
-// [start, end). Only lines that can be one are parsed.
-func readWPLoopbacks(ctx context.Context, path string, start, end time.Time) map[[sha256.Size]byte]*wpLoopbackSeries {
+// followWPLoopbackLog reads the complete lines path gained since old and
+// returns the updated log state. Requests are stamped when they start but
+// logged when they finish, so no part of a log can be skipped by its
+// timestamps; following it instead reads every byte once across runs. A
+// rotated, truncated or replaced file is read from its start, and a first
+// run catches up on at most the tail the shared follower allows. Hours before
+// start are dropped. old is never modified.
+func followWPLoopbackLog(ctx context.Context, path string, old *wpLoopbackLog, start time.Time) (*wpLoopbackLog, bool) {
 	f, err := osFS.Open(path)
 	if err != nil {
-		markCheckIncomplete(ctx, "perf_wp_loopback")
-		return nil
+		return nil, false
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
-		markCheckIncomplete(ctx, "perf_wp_loopback")
-		return nil
+		return nil, false
 	}
-	// Requests are stamped at start but logged at completion. Arbitrarily
-	// large batches can carry old stamps after in-window lines, so neither
-	// binary search nor stopping at an old chunk can exclude a safe prefix.
-	// Snapshot the size so concurrent appends cannot extend this scan forever.
-	limited := &io.LimitedReader{R: f, N: info.Size()}
-	reader := bufio.NewReaderSize(limited, wpLoopbackMaxLineBytes)
+	size := info.Size()
 
-	series := make(map[[sha256.Size]byte]*wpLoopbackSeries)
-	for {
-		line, err := readDomlogLine(ctx, reader)
-		if line != nil && bytes.Contains(line, []byte(`"WordPress/`)) && bytes.Contains(line, []byte(`"POST `)) {
-			if !countWPLoopback(series, string(line), start, end) {
-				markCheckIncomplete(ctx, "perf_wp_loopback")
-				return nil
+	log := &wpLoopbackLog{Jobs: make(map[string]*wpLoopbackJob)}
+	var follow followState
+	if old != nil {
+		follow = old.Follow
+		for key, job := range old.Jobs {
+			kept := &wpLoopbackJob{Target: job.Target, UA: job.UA, Hours: make(map[int64][2]int, len(job.Hours))}
+			for hour, c := range job.Hours {
+				if hour >= start.Unix() {
+					kept.Hours[hour] = c
+				}
 			}
+			if len(kept.Hours) > 0 {
+				log.Jobs[key] = kept
+			}
+		}
+	}
+	offset, _, err := chooseStart(f, follow, size)
+	if err != nil {
+		return nil, false
+	}
+
+	// The size snapshot bounds the read against concurrent appends; a file
+	// that shrinks while being read ends early and fails the run.
+	limited := &io.LimitedReader{R: io.NewSectionReader(f, offset, size-offset), N: size - offset}
+	reader := bufio.NewReaderSize(limited, wpLoopbackMaxLineBytes)
+	pos := offset
+	for {
+		line, n, err := readDomlogLine(ctx, reader)
+		if err == io.EOF && limited.N == 0 {
+			// Anything left is a line still being written; the next run
+			// starts at its beginning.
+			break
 		}
 		if err != nil {
-			if err != io.EOF || limited.N != 0 {
-				markCheckIncomplete(ctx, "perf_wp_loopback")
-				return nil
+			return nil, false
+		}
+		pos += int64(n)
+		if line != nil && bytes.Contains(line, []byte(`"WordPress/`)) && bytes.Contains(line, []byte(`"POST `)) {
+			if !countWPLoopback(log.Jobs, string(line), start) {
+				return nil, false
 			}
-			return series
 		}
 	}
+	log.Follow = followState{Offset: pos}
+	if err := fillIdentity(f, &log.Follow, size); err != nil {
+		return nil, false
+	}
+	return log, true
 }
 
-func countWPLoopback(series map[[sha256.Size]byte]*wpLoopbackSeries, line string, start, end time.Time) bool {
+func countWPLoopback(jobs map[string]*wpLoopbackJob, line string, start time.Time) bool {
 	rec, ok := parseAccessLogRecordWithURILimit(line, wpLoopbackMaxLineBytes)
 	if !ok || rec.Method != "POST" || !strings.HasPrefix(rec.UserAgent, "WordPress/") {
 		return true
 	}
-	if rec.Time.Before(start) || !rec.Time.Before(end) || !wpLoopbackFromHost(rec.RemoteIP) {
+	if rec.Time.Before(start) || !wpLoopbackFromHost(rec.RemoteIP) {
 		return true
 	}
 	target := wpLoopbackTarget(rec.URI)
-	key := sha256.Sum256([]byte(target))
-	s := series[key]
-	if s == nil {
-		if len(series) >= wpLoopbackMaxSeries {
+	sum := sha256.Sum256([]byte(target))
+	key := hex.EncodeToString(sum[:])
+	job := jobs[key]
+	if job == nil {
+		if len(jobs) >= wpLoopbackMaxSeries {
 			return false
 		}
 		// Copy bounded display fields so short substrings do not retain the
 		// entire input line, including discarded query values and headers.
-		s = &wpLoopbackSeries{
-			ua:     strings.Clone(sanitizeJSTaintDisplay(rec.UserAgent, 512)),
-			target: strings.Clone(sanitizeJSTaintDisplay(target, wpLoopbackMaxTargetLen)),
+		job = &wpLoopbackJob{
+			Target: strings.Clone(sanitizeJSTaintDisplay(target, wpLoopbackMaxTargetLen)),
+			UA:     strings.Clone(sanitizeJSTaintDisplay(rec.UserAgent, 512)),
+			Hours:  make(map[int64][2]int),
 		}
-		series[key] = s
+		jobs[key] = job
 	}
-	s.perHour[int(rec.Time.Sub(start)/time.Hour)]++
+	hour := wpLoopbackWindowEnd(rec.Time).Unix()
+	c := job.Hours[hour]
+	c[0]++
 	if rec.Status >= 500 && rec.Status < 600 {
-		s.serverKO++
+		c[1]++
 	}
+	job.Hours[hour] = c
 	return true
+}
+
+func loadWPLoopbackState(scanState *state.Store) wpLoopbackState {
+	if scanState == nil {
+		return nil
+	}
+	raw, ok := scanState.GetRaw(wpLoopbackStateKey)
+	if !ok {
+		return nil
+	}
+	var st wpLoopbackState
+	if json.Unmarshal([]byte(raw), &st) != nil {
+		return nil
+	}
+	return st
+}
+
+func storeWPLoopbackState(scanState *state.Store, st wpLoopbackState) {
+	if scanState == nil {
+		return
+	}
+	if len(st) == 0 {
+		if err := scanState.DeleteRawAndSave(wpLoopbackStateKey); err != nil {
+			fmt.Fprintf(os.Stderr, "perf_wp_loopback: state clear: %v\n", err)
+		}
+		return
+	}
+	raw, err := json.Marshal(st)
+	if err != nil {
+		return
+	}
+	if err := scanState.SetRawAndSave(wpLoopbackStateKey, string(raw)); err != nil {
+		fmt.Fprintf(os.Stderr, "perf_wp_loopback: state write: %v\n", err)
+	}
 }
 
 // wpLoopbackTarget names the job a self-request runs: the path, plus the
@@ -228,18 +355,22 @@ func wpLoopbackTarget(uri string) string {
 	return target
 }
 
-// readDomlogLine returns the next line without its newline. A line over
-// wpLoopbackMaxLineBytes is consumed and returned as nil.
-func readDomlogLine(ctx context.Context, r *bufio.Reader) ([]byte, error) {
+// readDomlogLine returns the next line without its newline and the bytes it
+// consumed, newline included. A line over wpLoopbackMaxLineBytes is consumed
+// and returned as nil. At the end of input, a final line with no newline is
+// returned with io.EOF.
+func readDomlogLine(ctx context.Context, r *bufio.Reader) ([]byte, int, error) {
 	var line []byte
+	consumed := 0
 	tooLong := false
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, consumed, err
 		}
 		chunk, err := r.ReadSlice('\n')
+		consumed += len(chunk)
 		if line == nil && !tooLong && err != bufio.ErrBufferFull && len(chunk) <= wpLoopbackMaxLineBytes {
-			return bytes.TrimRight(chunk, "\r\n"), err
+			return bytes.TrimRight(chunk, "\r\n"), consumed, err
 		}
 		if !tooLong {
 			if len(line)+len(chunk) > wpLoopbackMaxLineBytes {
@@ -252,8 +383,8 @@ func readDomlogLine(ctx context.Context, r *bufio.Reader) ([]byte, error) {
 			continue
 		}
 		if tooLong {
-			return nil, err
+			return nil, consumed, err
 		}
-		return bytes.TrimRight(line, "\r\n"), err
+		return bytes.TrimRight(line, "\r\n"), consumed, err
 	}
 }

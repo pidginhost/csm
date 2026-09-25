@@ -1,7 +1,6 @@
 package checks
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"net/netip"
 	"path/filepath"
@@ -9,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -30,18 +28,22 @@ func FuzzCountWPLoopback(f *testing.F) {
 		if len(line) > wpLoopbackMaxLineBytes {
 			return
 		}
-		series := make(map[[sha256.Size]byte]*wpLoopbackSeries)
-		if !countWPLoopback(series, line, wpLoopbackHour(12), wpLoopbackHour(12).Add(3*time.Hour)) {
+		jobs := make(map[string]*wpLoopbackJob)
+		if !countWPLoopback(jobs, line, wpLoopbackHour(12)) {
 			t.Fatal("one record exhausted the job budget")
 		}
-		if len(series) > 1 {
-			t.Fatalf("one record produced %d jobs", len(series))
+		if len(jobs) > 1 {
+			t.Fatalf("one record produced %d jobs", len(jobs))
 		}
-		for _, s := range series {
-			if s.perHour[0]+s.perHour[1]+s.perHour[2] != 1 || s.serverKO < 0 || s.serverKO > 1 {
-				t.Fatalf("invalid counts: %+v", s)
+		for _, job := range jobs {
+			requests, serverKO := 0, 0
+			for _, c := range job.Hours {
+				requests, serverKO = requests+c[0], serverKO+c[1]
 			}
-			for text, limit := range map[string]int{s.target: wpLoopbackMaxTargetLen, s.ua: 512} {
+			if requests != 1 || serverKO < 0 || serverKO > 1 {
+				t.Fatalf("invalid counts: %+v", job)
+			}
+			for text, limit := range map[string]int{job.Target: wpLoopbackMaxTargetLen, job.UA: 512} {
 				if len(text) > limit || !utf8.ValidString(text) || strings.ContainsFunc(text, unicode.IsControl) {
 					t.Errorf("unsafe display field: %q", text)
 				}
