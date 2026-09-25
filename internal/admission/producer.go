@@ -18,9 +18,10 @@ type Policy struct {
 
 // PolicyLookup resolves a check name, including a renamed producer's old
 // name, to its canonical registered name and policy. ok is false for an
-// unregistered check. Producers and the engine use the same lookup so they
-// cannot disagree about a check; checks.AdmissionPolicy is the production
-// lookup.
+// unregistered check. Registration, minting and validation share this lookup;
+// checks.AdmissionPolicy projects the production check registry. Calls from
+// separate operations can overlap, so the lookup must be immutable or safe
+// for concurrent use.
 type PolicyLookup func(check string) (canonical string, p Policy, ok bool)
 
 // ProducerID names a registered evidence producer.

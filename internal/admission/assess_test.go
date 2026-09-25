@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -294,5 +295,123 @@ func TestAssessIgnoresOrderingAndIdenticalDuplicates(t *testing.T) {
 			}
 		}
 		permute(0)
+	}
+}
+
+// With several qualifying supports, the corroboration lasts as long as the
+// longest-lived one, whichever sorts first by evidence ID.
+func TestAssessReassessByUsesTheLongestLivedSupport(t *testing.T) {
+	tp := newTestProducers(t)
+	now := t0
+	addr := mustAddr(t, "192.0.2.1")
+	local := mintRoot(t, now, rootSpec{p: tp.ssh, check: "ssh_brute", target: "192.0.2.1", age: time.Minute, cursor: "a"})
+	rep := func(age time.Duration, cursor string) Evidence {
+		return mintRoot(t, now, rootSpec{p: tp.reputation, check: "reputation", target: "192.0.2.1", age: age, cursor: cursor, intel: 30 * time.Hour})
+	}
+	// Support windows end 1h and 21h from now; the local root stays fresh
+	// until 1h59m from now, which is when the assessment must be redone.
+	want := now.Add(RootFreshness - time.Minute)
+	for _, shortFirst := range []bool{true, false} {
+		var short, long Evidence
+		for i := 0; ; i++ {
+			short, long = rep(23*time.Hour, fmt.Sprintf("s%d", i)), rep(3*time.Hour, "l")
+			if (short.ID() < long.ID()) == shortFirst {
+				break
+			}
+		}
+		a, err := Assess(addr, []Evidence{local, short, long}, now)
+		if err != nil || !a.Corroborated {
+			t.Fatalf("shortFirst=%v: %+v %v", shortFirst, a, err)
+		}
+		if !a.ReassessBy.Equal(want) {
+			t.Errorf("shortFirst=%v: ReassessBy = %v, want %v", shortFirst, a.ReassessBy, want)
+		}
+	}
+}
+
+// Reassessment waits until the tier can actually drop, including when one
+// proof expires but another still establishes the same class or severity.
+func TestAdmissionReassessByTracksTierLifetime(t *testing.T) {
+	tp := newTestProducers(t)
+	root := func(p *Producer, check string, age time.Duration, cursor string, sev Severity) rootSpec {
+		return rootSpec{p: p, check: check, target: "192.0.2.1", age: age, cursor: cursor, sev: sev}
+	}
+	early := root(tp.ssh, "ssh_brute", 90*time.Minute, "early", SeverityHigh)
+	late := root(tp.ssh, "ssh_brute", 10*time.Minute, "late", SeverityHigh)
+	mail := root(tp.mail, "mail_brute", time.Hour, "mail", SeverityHigh)
+	direct := root(tp.mail, "mail_takeover", 90*time.Minute, "direct", SeverityHigh)
+	derived := root(tp.derived, "threat_score", 0, "derived", SeverityHigh)
+	short := root(tp.reputation, "reputation", 3*time.Hour, "short", SeverityHigh)
+	short.intel = 3*time.Hour + 15*time.Minute
+	long := root(tp.reputation, "reputation", 3*time.Hour, "long", SeverityHigh)
+	long.intel = 4 * time.Hour
+	tied := long
+	tied.cursor = "tied"
+	warning, critical := early, early
+	warning.sev, critical.sev = SeverityWarning, SeverityCritical
+	for _, tc := range []struct {
+		name   string
+		target Target
+		roots  []rootSpec
+		tier   Tier
+		after  time.Duration
+	}{
+		{"redundant lower severity", mustAddr(t, "192.0.2.1"), []rootSpec{warning, late}, Tier{ClassC2, SeverityHigh}, 110 * time.Minute},
+		{"redundant equal severity", mustAddr(t, "192.0.2.1"), []rootSpec{early, late}, Tier{ClassC2, SeverityHigh}, 110 * time.Minute},
+		{"severity drops first", mustAddr(t, "192.0.2.1"), []rootSpec{critical, late}, Tier{ClassC2, SeverityCritical}, 30 * time.Minute},
+		{"class drops first", mustAddr(t, "192.0.2.1"), []rootSpec{early, derived}, Tier{ClassC2, SeverityHigh}, 30 * time.Minute},
+		{"several local families and supports", mustAddr(t, "192.0.2.1"), []rootSpec{early, late, mail, short, long}, Tier{ClassC3, SeverityHigh}, 110 * time.Minute},
+		{"support ends first with ties", mustAddr(t, "192.0.2.1"), []rootSpec{early, late, short, long, tied}, Tier{ClassC3, SeverityHigh}, time.Hour},
+		{"direct proof falls back to corroboration", mustAddr(t, "192.0.2.1"), []rootSpec{direct, late, short, long}, Tier{ClassC3, SeverityHigh}, 110 * time.Minute},
+		{"direct proof expires without corroboration", mustAddr(t, "192.0.2.1"), []rootSpec{direct, mail}, Tier{ClassC3, SeverityHigh}, 30 * time.Minute},
+		{"prefix ignores corroboration", mustPrefix(t, "192.0.2.0/24"), []rootSpec{direct, late, long}, Tier{ClassC3, SeverityHigh}, 30 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var roots []Evidence
+			var boundaries []time.Time
+			want := t0.Add(tc.after)
+			for _, spec := range tc.roots {
+				e := mintRoot(t, t0, spec)
+				roots = append(roots, e)
+				boundaries = append(boundaries, rootExpiry(e), supportExpiry(e))
+			}
+			baseline, err := Assess(tc.target, roots, t0)
+			if err != nil || baseline.Tier != tc.tier || !baseline.ReassessBy.Equal(want) {
+				t.Fatalf("assessment = %+v %v, want tier %v until %v", baseline, err, tc.tier, want)
+			}
+			// Check every possible earlier transition and the exact deadline.
+			for _, at := range append(boundaries, want.Add(-time.Nanosecond)) {
+				if !at.After(t0) || !at.Before(want) {
+					continue
+				}
+				got, assessErr := Assess(tc.target, roots, at)
+				if assessErr != nil || got.Tier != tc.tier || !got.ReassessBy.Equal(want) {
+					t.Fatalf("at %v: %+v %v, want tier %v until %v", at, got, assessErr, tc.tier, want)
+				}
+			}
+			got, err := Assess(tc.target, roots, want)
+			if err != nil {
+				wantReason(t, "at deadline", err, ReasonStale)
+			} else if !got.Tier.Less(tc.tier) {
+				t.Fatalf("at deadline: tier %v did not drop below %v", got.Tier, tc.tier)
+			}
+			// Tied supports and local roots must not depend on input order.
+			var permute func(int)
+			permute = func(i int) {
+				if i == len(roots) {
+					got, assessErr := Assess(tc.target, roots, t0)
+					if assessErr != nil || !reflect.DeepEqual(got, baseline) {
+						t.Fatalf("permutation = %+v %v, want %+v", got, assessErr, baseline)
+					}
+					return
+				}
+				for j := i; j < len(roots); j++ {
+					roots[i], roots[j] = roots[j], roots[i]
+					permute(i + 1)
+					roots[i], roots[j] = roots[j], roots[i]
+				}
+			}
+			permute(0)
+		})
 	}
 }

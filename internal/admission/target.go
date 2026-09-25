@@ -79,7 +79,9 @@ func (t Target) IsZero() bool { return !t.prefix.IsValid() }
 // Prefix returns the masked prefix; a single address has full length.
 func (t Target) Prefix() netip.Prefix { return t.prefix }
 
-// IsAddress reports whether t names exactly one address.
+// IsAddress reports whether t names exactly one address. A service target
+// names one address too, so a consumer that treats services differently
+// checks Service first.
 func (t Target) IsAddress() bool { return t.prefix.IsValid() && t.prefix.IsSingleIP() }
 
 // Addr returns the address of a single-address or service target.

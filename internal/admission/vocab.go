@@ -221,12 +221,15 @@ const (
 	EffectService
 	EffectPrefix
 	EffectChallenge
+	effectEnd
 )
 
 var effectNames = [...]string{"", "address", "service", "prefix", "challenge"}
 
+func (e Effect) Valid() bool { return e >= EffectAddress && e < effectEnd }
+
 func (e Effect) String() string {
-	if e >= EffectAddress && e <= EffectChallenge {
+	if e.Valid() {
 		return effectNames[e]
 	}
 	return fmt.Sprintf("effect(%d)", uint8(e))
@@ -284,12 +287,15 @@ const (
 	DispositionRefused
 	DispositionWithheld
 	DispositionDropped
+	dispositionEnd
 )
 
 var dispositionNames = [...]string{"", "deferred", "refused", "withheld", "dropped"}
 
+func (d Disposition) Valid() bool { return d >= DispositionDeferred && d < dispositionEnd }
+
 func (d Disposition) String() string {
-	if d >= DispositionDeferred && d <= DispositionDropped {
+	if d.Valid() {
 		return dispositionNames[d]
 	}
 	return fmt.Sprintf("disposition(%d)", uint8(d))

@@ -357,3 +357,25 @@ func TestHostingInventoryMultipleRootsAreComplete(t *testing.T) {
 		t.Fatalf("HostingInventory = %+v %v, want %+v", snap, err, want)
 	}
 }
+
+func TestHostingInventoryEmptyRootPreservesOtherAccounts(t *testing.T) {
+	withInventoryPanel(t, platform.PanelNone)
+	for _, roots := range [][]string{{"/home", "/home2"}, {"/home2", "/home"}} {
+		withAccountRoots(t, roots...)
+		withMockOS(t, &mockOS{readDir: func(name string) ([]os.DirEntry, error) {
+			switch name {
+			case "/home":
+				return nil, nil
+			case "/home2":
+				return []os.DirEntry{dirEntry("alice", true)}, nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		}})
+		snap, err := HostingInventory()
+		want := HostingSnapshot{Accounts: []string{"alice"}, Domains: map[string]string{}}
+		if err != nil || !reflect.DeepEqual(snap, want) {
+			t.Fatalf("roots %v: inventory = %+v %v, want %+v", roots, snap, err, want)
+		}
+	}
+}

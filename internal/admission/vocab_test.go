@@ -233,12 +233,34 @@ func TestKindEffect(t *testing.T) {
 		t.Fatalf("table covers %d kinds, package defines %d", len(want), kindEnd-1)
 	}
 	for k, e := range want {
-		if k.Effect() != e {
-			t.Errorf("%s.Effect() = %s, want %s", k, k.Effect(), e)
+		if k.Effect() != e || !e.Valid() {
+			t.Errorf("%s.Effect() = %s, want valid %s", k, k.Effect(), e)
 		}
 	}
 	if Kind(0).Valid() || kindEnd.Valid() {
 		t.Error("an out-of-range kind is valid")
+	}
+	if Effect(0).Valid() || effectEnd.Valid() || Kind(0).Effect().Valid() {
+		t.Error("an out-of-range effect is valid")
+	}
+}
+
+func TestAdmissionEffectAndDispositionValidity(t *testing.T) {
+	effects := [...]string{"", "address", "service", "prefix", "challenge"}
+	dispositions := [...]string{"", "deferred", "refused", "withheld", "dropped"}
+	for value := 0; value <= 255; value++ {
+		e, d := Effect(value), Disposition(value)
+		valid := value >= 1 && value <= 4
+		if e.Valid() != valid || d.Valid() != valid {
+			t.Errorf("value %d: effect valid %v, disposition valid %v, want %v", value, e.Valid(), d.Valid(), valid)
+		}
+		wantEffect, wantDisposition := fmt.Sprintf("effect(%d)", value), fmt.Sprintf("disposition(%d)", value)
+		if valid {
+			wantEffect, wantDisposition = effects[value], dispositions[value]
+		}
+		if e.String() != wantEffect || d.String() != wantDisposition {
+			t.Errorf("value %d: effect %q, disposition %q, want %q, %q", value, e, d, wantEffect, wantDisposition)
+		}
 	}
 }
 
@@ -253,6 +275,9 @@ func TestReasonVocabulary(t *testing.T) {
 	}
 	got := map[Disposition][]string{}
 	for r := ReasonCeiling; r < reasonEnd; r++ {
+		if !r.Disposition().Valid() {
+			t.Errorf("%s has no valid disposition", r)
+		}
 		got[r.Disposition()] = append(got[r.Disposition()], r.String())
 	}
 	for d, names := range groups {
@@ -265,6 +290,9 @@ func TestReasonVocabulary(t *testing.T) {
 	}
 	if Reason(0).Valid() || reasonEnd.Valid() || reasonEnd.Disposition() != 0 {
 		t.Error("an out-of-range reason is valid or grouped")
+	}
+	if Disposition(0).Valid() || dispositionEnd.Valid() {
+		t.Error("an out-of-range disposition is valid")
 	}
 }
 
