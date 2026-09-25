@@ -46,7 +46,9 @@ var (
 // Each call is one transaction: an error leaves the ledger unchanged.
 type Ledger interface {
 	// Tick records a clock reading. Every other call uses the last
-	// recorded Now, never raw wall time.
+	// recorded Now, never raw wall time. A reopened ledger, or one whose
+	// last reading was refused, admits and dispatches nothing until Tick
+	// succeeds; recording an outcome needs only the stored time.
 	Tick(ClockReading) (ClockTick, error)
 	// PublishEvidence stores an immutable record after revalidating it.
 	// An identical record again changes nothing and reports false; a

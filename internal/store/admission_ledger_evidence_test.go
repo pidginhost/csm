@@ -138,6 +138,7 @@ func newFloorLedger(t *testing.T) (*ledgerFixture, func(admission.Severity)) {
 		t.Fatal(err)
 	}
 	f.reg, f.ssh = reg, ssh
+	f.tickAt(f.wall)
 	return f, func(s admission.Severity) {
 		mu.Lock()
 		floor = s

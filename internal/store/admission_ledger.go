@@ -45,6 +45,11 @@ type AdmissionLedger struct {
 
 	mu  sync.Mutex
 	now time.Time
+	// current is set only by a reading this handle recorded. A reopened
+	// handle, or one whose last reading was refused, keeps the stored
+	// high-water mark but admits nothing new: after a restart that mark can
+	// be hours old, and old evidence would read as fresh.
+	current bool
 
 	inv atomic.Pointer[ledgerInventory]
 
@@ -227,13 +232,25 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 		return meta.Put(admissionClockKey, data)
 	})
 	if err != nil {
+		l.current = false
 		return admission.ClockTick{}, err
 	}
-	l.now = tick.Now
+	l.now, l.current = tick.Now, true
 	return tick, nil
 }
 
+// clock is the admission time for calls that admit or dispatch work. It
+// needs a reading recorded through this handle.
 func (l *AdmissionLedger) clock() (time.Time, error) {
+	if !l.current {
+		return time.Time{}, refusal(admission.ReasonEngineUnavailable, "admission clock has no current reading")
+	}
+	return l.now, nil
+}
+
+// recordedClock is the stored high-water mark. It is enough to record the
+// outcome of work that is already running.
+func (l *AdmissionLedger) recordedClock() (time.Time, error) {
 	if l.now.IsZero() {
 		return time.Time{}, refusal(admission.ReasonEngineUnavailable, "admission clock has no reading")
 	}

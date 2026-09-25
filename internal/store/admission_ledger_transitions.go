@@ -269,10 +269,12 @@ func attemptAndCandidate(tx *bolt.Tx, id admission.ActionID) (admission.AttemptR
 	return a, c, nil
 }
 
-func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, fn func(now time.Time, a *admission.AttemptRecord, c *admission.Candidate) (bool, error)) (admission.Candidate, admission.AttemptRecord, error) {
+// attemptStep runs one attempt transition. now is l.clock for a step that
+// dispatches work and l.recordedClock for one that only records an outcome.
+func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func() (time.Time, error), fn func(now time.Time, a *admission.AttemptRecord, c *admission.Candidate) (bool, error)) (admission.Candidate, admission.AttemptRecord, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now, err := l.clock()
+	at, err := now()
 	if err != nil {
 		return admission.Candidate{}, admission.AttemptRecord{}, err
 	}
@@ -284,7 +286,7 @@ func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, fn func(
 			return loadErr
 		}
 		from := c.State
-		changed, stepErr := fn(now, &a, &c)
+		changed, stepErr := fn(at, &a, &c)
 		if stepErr != nil {
 			return stepErr
 		}
@@ -310,7 +312,7 @@ func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, fn func(
 
 // Execute marks a reserved attempt as running. Running it again is a no-op.
 func (l *AdmissionLedger) Execute(id admission.ActionID) (admission.Candidate, admission.AttemptRecord, error) {
-	return l.attemptStep("execute", id, func(now time.Time, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
+	return l.attemptStep("execute", id, l.clock, func(now time.Time, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
 		switch {
 		case a.State == admission.StateExecuting:
 			return false, nil
@@ -341,7 +343,7 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 	default:
 		return admission.Candidate{}, admission.AttemptRecord{}, refusal(admission.ReasonInvalid, "disposition is not an attempt outcome")
 	}
-	return l.attemptStep("finish", id, func(now time.Time, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
+	return l.attemptStep("finish", id, l.recordedClock, func(now time.Time, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
 		if a.State.Terminal() {
 			if a.Disposition == d {
 				return false, nil

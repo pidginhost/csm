@@ -232,7 +232,8 @@ the daemon's state database, in `adm:` buckets it creates the first time it
 is opened; nothing opens it yet. One owner serializes every write and each
 call is one transaction, so a failed call changes nothing. Admission time
 comes only from recorded clock readings: a wall clock that steps back never
-lowers it, and a new boot credits no elapsed time. Evidence is immutable once
+lowers it, a new boot credits no elapsed time, and a reopened ledger admits
+no new work until it records a fresh reading. Evidence is immutable once
 published, and later reports of the same observation are kept as bounded
 links. A candidate takes its entry, check and finding link from its primary
 evidence, coalesces repeated requests without refreshing its queue age, and

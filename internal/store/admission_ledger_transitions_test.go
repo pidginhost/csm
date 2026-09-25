@@ -515,6 +515,9 @@ func TestAdmissionLedgerRecoverySurvivesDatabaseReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = l.Tick(admission.ClockReading{Wall: f.wall, BootID: ledgerBoot, SinceBoot: f.since}); err != nil {
+		t.Fatal(err)
+	}
 	_, same, err := l.Reserve(id, time.Time{})
 	if err != nil || same != a {
 		t.Fatalf("recovered reservation: %+v %v", same, err)
@@ -606,6 +609,7 @@ func TestAdmissionLedgerNarrowedOutcomeAndRetryRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.l = l
+	f.tickAt(f.wall)
 	_, _, err = l.Reserve(id, time.Time{})
 	wantLedgerErr(t, "reopened backoff", err, admission.ErrNotReady)
 	f.tickAt(ledgerT0.Add(time.Second))
@@ -624,6 +628,7 @@ func TestAdmissionLedgerNarrowedOutcomeAndRetryRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.l = l
+	f.tickAt(f.wall)
 	_, running, err := l.Reserve(id, time.Time{})
 	if err != nil || running.State != admission.StateExecuting || running.Attempt != second.Attempt {
 		t.Fatalf("executing recovery: %+v %v", running, err)
@@ -729,5 +734,52 @@ func TestAdmissionLedgerRejectsReservationsPastQueueDeadline(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// A reopened ledger, or one whose last reading was refused, keeps its stored
+// high-water mark but admits and dispatches nothing until it records a new
+// reading: after a restart the stored time can be hours old, and old evidence
+// would read as fresh. Recording the outcome of running work needs only the
+// stored time.
+func TestAdmissionLedgerAdmitsOnlyAfterACurrentReading(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.queued()
+	_, a, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := f.published(evidenceSpec{target: "192.0.2.11", cursor: "offset=other"})
+	refused := func(when string) {
+		t.Helper()
+		before := f.snapshot()
+		_, _, gateErr := f.l.Enqueue(f.request("192.0.2.11", other))
+		wantLedgerReason(t, when+": enqueue", gateErr, admission.ReasonEngineUnavailable)
+		_, _, gateErr = f.l.Reserve(id, time.Time{})
+		wantLedgerReason(t, when+": reserve", gateErr, admission.ReasonEngineUnavailable)
+		_, _, gateErr = f.l.Execute(a.Attempt.ID)
+		wantLedgerReason(t, when+": execute", gateErr, admission.ReasonEngineUnavailable)
+		if !reflect.DeepEqual(before, f.snapshot()) {
+			t.Fatalf("%s: refused calls changed records", when)
+		}
+	}
+	if f.l, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+	refused("reopened")
+	f.tickAt(f.wall.Add(time.Minute))
+	if _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.l.Tick(admission.ClockReading{Wall: f.wall.Add(time.Minute), SinceBoot: f.since + time.Minute}); err == nil {
+		t.Fatal("reading without a boot ID accepted")
+	}
+	refused("after a refused reading")
+	if c, _, finishErr := f.l.Finish(a.Attempt.ID, admission.DispositionApplied); finishErr != nil || c.State != admission.StateVerified {
+		t.Fatalf("outcome of running work: %+v, %v", c, finishErr)
+	}
+	f.tickAt(f.wall.Add(time.Minute))
+	if _, created, enqueueErr := f.l.Enqueue(f.request("192.0.2.11", other)); enqueueErr != nil || !created {
+		t.Fatalf("enqueue after a current reading: %v, %v", created, enqueueErr)
 	}
 }
