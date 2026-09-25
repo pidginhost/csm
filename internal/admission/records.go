@@ -47,7 +47,8 @@ func UnmarshalInventory(data []byte) (*Inventory, error) {
 // MatchesGenerations checks the persisted snapshot against its allocation
 // tracker before either can be used to refresh account identities.
 func (inv *Inventory) MatchesGenerations(g *Generations) bool {
-	return inv != nil && g != nil && g.next != 0 && maps.Equal(inv.accounts, g.live)
+	return inv != nil && inv.accounts != nil && inv.domains != nil &&
+		g != nil && g.next != 0 && maps.Equal(inv.accounts, g.live)
 }
 
 // ReportLinks are the later findings that reported one evidence record. They

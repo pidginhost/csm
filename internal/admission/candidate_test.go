@@ -73,18 +73,23 @@ func TestCandidateInvariants(t *testing.T) {
 		ok     bool
 	}{
 		{"queued", func(*Candidate) {}, true},
-		{"deferred", func(c *Candidate) { c.Reason = ReasonCeiling }, true},
+		{"deferred", func(c *Candidate) { c.Reason, c.Transitions = ReasonCeiling, 2 }, true},
 		{"refused", func(c *Candidate) {
 			c.State, c.Disposition, c.Reason = StateRefused, DispositionRefused, ReasonProtected
+			c.Transitions = 2
 		}, true},
-		{"reserved", func(c *Candidate) { c.State, c.Attempts, c.ExpiresAt = StateReserved, 1, later }, true},
-		{"retry wait", func(c *Candidate) { c.Attempts, c.ExpiresAt, c.NotBefore = 1, later, t0.Add(time.Second) }, true},
+		{"reserved", func(c *Candidate) { c.State, c.Attempts, c.ExpiresAt, c.Transitions = StateReserved, 1, later, 2 }, true},
+		{"retry wait", func(c *Candidate) {
+			c.Attempts, c.ExpiresAt, c.NotBefore, c.Transitions = 1, later, t0.Add(time.Second), 3
+		}, true},
 		{"failed out", func(c *Candidate) {
 			c.State, c.Disposition, c.Attempts, c.ExpiresAt = StateFailed, DispositionFailed, MaxAttempts, later
+			c.Transitions = 7
 		}, true},
 		{"narrowed challenge", func(c *Candidate) {
 			c.Key.Kind, c.Scope.Effect = KindChallenge, EffectChallenge
 			c.State, c.Disposition, c.Attempts, c.ExpiresAt = StateVerified, DispositionNarrowed, 1, later
+			c.Transitions = 4
 		}, true},
 		{"narrowed full block", func(c *Candidate) {
 			c.State, c.Disposition, c.Attempts, c.ExpiresAt = StateVerified, DispositionNarrowed, 1, later
@@ -249,5 +254,168 @@ func TestCandidateAndAttemptRejectUnrecoverableRecords(t *testing.T) {
 	rec.Attempt, rec.Reserved = a, time.Unix(0, 0)
 	if _, err := rec.MarshalBinary(); refusalReason(err) != ReasonInvalid {
 		t.Fatalf("epoch reservation encoded: %v", err)
+	}
+}
+
+func TestCandidateTransitionCountProvesMinimumHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		state       State
+		disposition Disposition
+		reason      Reason
+		attempts    uint32
+		minimum     uint32
+	}{
+		{"deferred", StateQueued, 0, ReasonCeiling, 0, 2},
+		{"reserved", StateReserved, 0, 0, 1, 2},
+		{"executing", StateExecuting, 0, 0, 1, 3},
+		{"verified", StateVerified, DispositionApplied, 0, 1, 4},
+		{"unknown", StateUnknown, DispositionUnknown, 0, 1, 4},
+		{"exhausted", StateFailed, DispositionFailed, 0, MaxAttempts, 7},
+		{"retry", StateQueued, 0, 0, 1, 3},
+		{"second retry", StateQueued, 0, 0, 2, 5},
+		{"deferred retry", StateQueued, 0, ReasonCeiling, 1, 4},
+		{"refused", StateRefused, DispositionRefused, ReasonProtected, 0, 2},
+		{"withheld", StateWithheld, DispositionWithheld, ReasonCollateral, 0, 2},
+		{"dropped", StateDropped, DispositionDropped, ReasonStale, 0, 2},
+		{"refused retry", StateRefused, DispositionRefused, ReasonProtected, 1, 4},
+		{"later reservation", StateReserved, 0, 0, 2, 4},
+		{"later execution", StateExecuting, 0, 0, 2, 5},
+		{"later verification", StateVerified, DispositionApplied, 0, 2, 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := queuedCandidate(t)
+			c.State, c.Disposition, c.Reason = tc.state, tc.disposition, tc.reason
+			c.Attempts, c.Transitions = tc.attempts, tc.minimum
+			if c.Attempts > 0 {
+				c.ExpiresAt = t0.Add(time.Hour)
+				if c.State == StateQueued {
+					c.NotBefore = t0.Add(10 * time.Second)
+				}
+			}
+			rec, err := c.record()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := c.MarshalBinary()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := UnmarshalCandidate(data); err != nil {
+				t.Fatalf("minimum history refused: %v", err)
+			}
+			c.Transitions--
+			rec.Transitions--
+			assertCandidateRefused(t, c, rec)
+		})
+	}
+}
+
+func TestCandidateCannotTerminateQueueAfterExhaustion(t *testing.T) {
+	for _, reason := range []Reason{ReasonProtected, ReasonCollateral, ReasonStale} {
+		t.Run(reason.String(), func(t *testing.T) {
+			c := queuedCandidate(t)
+			c.Disposition, c.Reason = reason.Disposition(), reason
+			switch reason {
+			case ReasonProtected:
+				c.State = StateRefused
+			case ReasonCollateral:
+				c.State = StateWithheld
+			case ReasonStale:
+				c.State = StateDropped
+			}
+			c.Attempts, c.ExpiresAt, c.Transitions = MaxAttempts-1, t0.Add(time.Hour), 10
+			rec, err := c.record()
+			if err != nil {
+				t.Fatalf("termination before exhaustion: %v", err)
+			}
+			c.Attempts, rec.Attempts = MaxAttempts, MaxAttempts
+			assertCandidateRefused(t, c, rec)
+		})
+	}
+}
+
+func TestCandidateRetryTimesRequireElapsedBackoff(t *testing.T) {
+	for _, first := range []time.Time{t0, time.Unix(0, -1<<63).UTC(), time.Unix(0, 1<<63-1).UTC().Add(-time.Minute)} {
+		for _, field := range []string{"retry", "expiry", "age-out"} {
+			t.Run(first.String()+"/"+field, func(t *testing.T) {
+				c := queuedCandidate(t)
+				c.FirstQueued, c.AgeOut = first, first.Add(time.Minute)
+				c.Attempts, c.Transitions = 2, 5
+				c.ExpiresAt = first.Add(time.Minute)
+				c.NotBefore = first.Add(3 * time.Second)
+				if field != "retry" {
+					c.State, c.NotBefore = StateReserved, time.Time{}
+				}
+				rec, err := c.record()
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch field {
+				case "retry":
+					c.NotBefore = c.NotBefore.Add(-time.Nanosecond)
+					rec.NotBefore = c.NotBefore.UnixNano()
+				case "expiry":
+					c.ExpiresAt = first.Add(time.Second)
+					rec.ExpiresAt = c.ExpiresAt.UnixNano()
+				case "age-out":
+					c.AgeOut = first.Add(time.Second)
+					rec.AgeOut = c.AgeOut.UnixNano()
+				}
+				assertCandidateRefused(t, c, rec)
+			})
+		}
+	}
+}
+
+func assertCandidateRefused(t *testing.T, c Candidate, rec candidateRecord) {
+	t.Helper()
+	if err := c.Validate(); refusalReason(err) != ReasonInvalid {
+		t.Errorf("invalid candidate validated: %v", err)
+	}
+	if _, err := c.MarshalBinary(); refusalReason(err) != ReasonInvalid {
+		t.Errorf("invalid candidate encoded: %v", err)
+	}
+	data, err := sealRecord(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UnmarshalCandidate(data); err != ErrCorruptRecord {
+		t.Errorf("invalid stored candidate decoded: %v", err)
+	}
+}
+
+func TestCandidatePreservesRegisteredEvidenceCheck(t *testing.T) {
+	const check = "ssh-brute.v2"
+	reg, err := NewRegistry(func(name string) (string, Policy, bool) {
+		return name, Policy{Family: FamilySSH, Basis: BasisLocal}, name == check
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := reg.Register(ProducerSpec{ID: "sshd_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{check}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Seal()
+	in := sshInput(t)
+	in.Check = check
+	e, err := p.Mint(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validateErr := reg.Validate(e); validateErr != nil {
+		t.Fatal(validateErr)
+	}
+	c := queuedCandidate(t)
+	c.Check, c.Entry, c.FindingID, c.Roots = e.Check(), e.Entry(), e.FindingID(), []EvidenceID{e.ID()}
+	c.Key.Target, c.Scope.Owner = e.Target(), e.Owner()
+	data, err := c.MarshalBinary()
+	if err != nil {
+		t.Fatalf("registered evidence cannot become a candidate: %v", err)
+	}
+	back, err := UnmarshalCandidate(data)
+	if err != nil || back.Check != check {
+		t.Fatalf("registered check changed on reload: %q, %v", back.Check, err)
 	}
 }

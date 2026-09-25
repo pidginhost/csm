@@ -48,22 +48,9 @@ func ParseEvidenceID(s string) (EvidenceID, error) {
 	return EvidenceID(s), nil
 }
 
-func validCheckName(s string) bool {
-	if s == "" || len(s) > 64 {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
-			return false
-		}
-	}
-	return true
-}
-
 // Candidate is the ledger's record of one queued response. The engine owns
-// it; every field is checked on encode and decode, so a stored record
-// cannot claim a state its history does not allow.
+// it; every field is checked on encode and decode. These local invariants
+// bound possible histories; the ledger also checks the actual attempt rows.
 type Candidate struct {
 	Key   CandidateKey
 	Scope Scope
@@ -140,7 +127,7 @@ func (c Candidate) record() (candidateRecord, error) {
 	if o := c.Scope.Owner; (o.IsHost() && o.generation != 0) || (!o.IsHost() && (!ValidAccountName(o.account) || o.generation == 0)) {
 		return bad("candidate owner is malformed")
 	}
-	if !c.Entry.Valid() || !validCheckName(c.Check) || !lowerHex(c.FindingID, 16) {
+	if !c.Entry.Valid() || !boundedToken(c.Check, 64) || !lowerHex(c.FindingID, 16) {
 		return bad("candidate entry, check or finding link is malformed")
 	}
 	if len(c.Roots) == 0 || len(c.Roots) > MaxRoots || !sort.SliceIsSorted(c.Roots, func(i, j int) bool { return c.Roots[i] < c.Roots[j] }) {
@@ -173,6 +160,14 @@ func (c Candidate) record() (candidateRecord, error) {
 		return bad("candidate failed before exhausting its attempts")
 	case c.State == StateQueued && c.Attempts > 0 && (c.Attempts == MaxAttempts || c.NotBefore.IsZero()):
 		return bad("queued retry has no delay or has exhausted its attempts")
+	case c.Attempts == MaxAttempts && (c.State == StateRefused || c.State == StateWithheld || c.State == StateDropped):
+		return bad("exhausted candidate cannot end through the queue")
+	}
+	// Even immediate failures must wait out each preceding retry backoff.
+	// Use time arithmetic so a deadline near the nanosecond limit cannot wrap.
+	earliestReservation := c.FirstQueued
+	for seq := uint32(1); seq < c.Attempts; seq++ {
+		earliestReservation = earliestReservation.Add(RetryBackoff(seq))
 	}
 	var expires, notBefore int64
 	if c.Attempts == 0 {
@@ -181,18 +176,31 @@ func (c Candidate) record() (candidateRecord, error) {
 		}
 	} else {
 		var ok bool
-		if expires, ok = unixNano(c.ExpiresAt); !ok || !c.ExpiresAt.After(c.FirstQueued) {
-			return bad("candidate expiry is missing or before it was queued")
+		if expires, ok = unixNano(c.ExpiresAt); !ok || !c.ExpiresAt.After(earliestReservation) || !c.AgeOut.After(earliestReservation) {
+			return bad("candidate deadlines cannot accommodate its attempts")
 		}
 	}
 	if !c.NotBefore.IsZero() {
 		var ok bool
-		if notBefore, ok = unixNano(c.NotBefore); !ok || c.State != StateQueued || c.Attempts == 0 || !c.NotBefore.After(c.FirstQueued) {
+		if notBefore, ok = unixNano(c.NotBefore); !ok || c.State != StateQueued || c.Attempts == 0 || c.NotBefore.Before(earliestReservation.Add(RetryBackoff(c.Attempts))) {
 			return bad("only a candidate returned by a failure waits for a retry time")
 		}
 	}
-	if c.Transitions == 0 {
-		return bad("candidate has no recorded transition")
+	// Creation counts once; every preceding attempt needs a reservation and
+	// a failed outcome. Execute is optional only for a proven failure.
+	minimumTransitions := 1 + 2*c.Attempts
+	switch c.State {
+	case StateReserved:
+		minimumTransitions--
+	case StateVerified, StateUnknown, StateRefused, StateWithheld, StateDropped:
+		minimumTransitions++
+	case StateQueued:
+		if c.Reason != 0 {
+			minimumTransitions++
+		}
+	}
+	if c.Transitions < minimumTransitions {
+		return bad("candidate has too few transitions for its state and attempts")
 	}
 	return candidateRecord{
 		V: candidateVersion, Kind: c.Key.Kind, Target: c.Key.Target.Key(), Episode: c.Key.Episode.String(),

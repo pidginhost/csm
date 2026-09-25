@@ -125,3 +125,17 @@ func TestRecordEncodersRejectInvalidValues(t *testing.T) {
 		t.Fatalf("uninitialized inventory encoded: %v", err)
 	}
 }
+
+func TestUninitializedInventoryCannotMatchGenerations(t *testing.T) {
+	g := NewGenerations()
+	if (&Inventory{}).MatchesGenerations(g) {
+		t.Fatal("uninitialized inventory matches a fresh generation tracker")
+	}
+	empty, err := NewInventory(nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !empty.MatchesGenerations(g) {
+		t.Fatal("initialized empty inventory does not match a fresh tracker")
+	}
+}
