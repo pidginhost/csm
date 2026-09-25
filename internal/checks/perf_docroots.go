@@ -16,6 +16,16 @@ type docrootScanRoot struct {
 	account string
 }
 
+// SetUserdataDomainsPathForTest points the cPanel domain map at path and
+// returns a function that restores the previous location. For tests only:
+// packages outside checks cannot reach the injectable filesystem, so this is
+// how they exercise addon-domain docroots.
+func SetUserdataDomainsPathForTest(path string) func() {
+	prev := userdataDomainsPath
+	userdataDomainsPath = path
+	return func() { userdataDomainsPath = prev }
+}
+
 // validatedDocroots lists the document roots the per-site performance checks
 // scan.
 //

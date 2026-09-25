@@ -23,7 +23,8 @@ import (
 
 // userdataDomainsPath is cPanel's authoritative domain->docroot map. It covers
 // addon and subdomain docroots that /home/*/public_html misses.
-const userdataDomainsPath = "/etc/userdatadomains"
+var userdataDomainsPath = "/etc/userdatadomains"
+
 const cpanelInstallPath = "/usr/local/cpanel"
 
 // Bounds so the deep scan stays cheap on a host with hundreds of docroots.

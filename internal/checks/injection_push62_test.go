@@ -29,9 +29,23 @@ func TestScanErrorLogsBloated(t *testing.T) {
 		},
 	})
 
-	var findings []alert.Finding
-	scanErrorLogs("/home/alice/public_html", 5*1024*1024, 3, &findings)
-	_ = findings
+	// Each level lists error_log (100 bytes) and subdir, so depth 3 reaches
+	// four levels: the root plus three nested subdirs.
+	var found []bloatedErrorLog
+	scanErrorLogs(context.Background(), "/home/alice/public_html", 50, 3, nil, &found)
+	var got []string
+	for _, f := range found {
+		got = append(got, f.path)
+	}
+	want := []string{
+		"/home/alice/public_html/error_log",
+		"/home/alice/public_html/subdir/error_log",
+		"/home/alice/public_html/subdir/subdir/error_log",
+		"/home/alice/public_html/subdir/subdir/subdir/error_log",
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("found = %v, want %v", got, want)
+	}
 }
 
 // --- scanWPConfigs with WP_DEBUG true --------------------------------

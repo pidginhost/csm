@@ -794,6 +794,7 @@ performance:
   php_process_warn_per_user: 20         # per-user PHP process count warning (default: 20)
   php_process_critical_total_multiplier: 5  # total PHP processes / CPU cores for critical (default: 5)
   error_log_warn_size_mb: 50            # error log size warning threshold (default: 50)
+  error_log_critical_size_mb: 1024      # error log size that raises the finding to High (default: 1024)
   mysql_join_buffer_max_mb: 64          # MySQL join_buffer_size warning threshold (default: 64)
   mysql_wait_timeout_max: 3600          # MySQL wait_timeout warning threshold (default: 3600)
   mysql_max_connections_per_user: 10    # per-user MySQL connections warning (default: 10)

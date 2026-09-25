@@ -13,8 +13,13 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Incident auto-blocking and central intelligence now act on an address only when a finding names it as an attacker, remembered across restarts and long incidents. They could block the remote end of an outbound connection, a customer login address or an advisory source.
 
+### Added
+
+- A very large bloated error log is now reported as High, so it alerts, and every bloated error log finding shows how fast the file is growing.
+
 ### Fixed
 
+- The bloated error log check now covers addon and subdomain document roots and logs left directly in folders such as wp-admin, and the Web UI can truncate those logs. It only looked under public_html, and a dismissed finding came back whenever the log grew.
 - The firewall now refuses multicast and broadcast addresses as block targets. No packet the firewall filters can come from one, so such a block only used up a slot in the deny list.
 - Blocks of protected addresses, such as loopback, link-local, multicast or broadcast, are now recorded as refusals for timed blocks, subnet dry-runs and manual requests. They were logged as failures or proposed blocks, or not recorded at all.
 - Response replay reports now state that each finding keeps the severity it was recorded with, since a later grading change is not applied to older recordings.

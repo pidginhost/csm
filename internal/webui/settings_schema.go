@@ -412,6 +412,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "php_process_warn_per_user", Type: "int", Label: "PHP process warn per user", Min: int64p(1)},
 			{YAMLPath: "php_process_critical_total_multiplier", Type: "int", Label: "PHP process crit multiplier", Min: int64p(1)},
 			{YAMLPath: "error_log_warn_size_mb", Type: "int", Label: "Error log warn size (MB)", Min: int64p(1)},
+			{YAMLPath: "error_log_critical_size_mb", Type: "int", Label: "Error log critical size (MB)", Min: int64p(1), Help: "A bloated error_log over this size is High and alerts; smaller ones only show on the Performance page. Default 1024."},
 			{YAMLPath: "mysql_join_buffer_max_mb", Type: "int", Label: "MySQL join buffer max (MB)", Min: int64p(1)},
 			{YAMLPath: "mysql_wait_timeout_max", Type: "int", Label: "MySQL wait timeout max (s)", Min: int64p(1)},
 			{YAMLPath: "mysql_max_connections_per_user", Type: "int", Label: "MySQL max connections per user", Min: int64p(1)},

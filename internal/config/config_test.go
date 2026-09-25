@@ -1906,3 +1906,24 @@ func assertSpraySuppressionPerCheckUsesEmittedCheckNames(t *testing.T, cfg *Conf
 		}
 	}
 }
+
+// An unset critical size must land above the warning size, or every bloated
+// error_log would be High and page the operator. An explicit value is kept.
+func TestPerformanceErrorLogCriticalSizeDefault(t *testing.T) {
+	cfg, err := LoadBytes([]byte("hostname: test\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Performance.ErrorLogCriticalSizeMB <= cfg.Performance.ErrorLogWarnSizeMB {
+		t.Fatalf("default critical %d MB is not above warning %d MB",
+			cfg.Performance.ErrorLogCriticalSizeMB, cfg.Performance.ErrorLogWarnSizeMB)
+	}
+
+	cfg, err = LoadBytes([]byte("hostname: test\nperformance:\n  error_log_critical_size_mb: 300\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Performance.ErrorLogCriticalSizeMB != 300 {
+		t.Fatalf("explicit critical size = %d, want 300", cfg.Performance.ErrorLogCriticalSizeMB)
+	}
+}

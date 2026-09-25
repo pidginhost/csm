@@ -496,7 +496,7 @@ func (s *Server) apiPerfFixErrorLog(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "path is required", http.StatusBadRequest)
 		return
 	}
-	res := checks.FixErrorLogBloatInRoots(req.Path, s.perfFixAllowedRoots())
+	res := checks.FixErrorLogBloatInRoots(req.Path, checks.ResolveValidatedDocroots(s.liveCfg()))
 	if !res.Success {
 		writeRemediation(w, res)
 		return

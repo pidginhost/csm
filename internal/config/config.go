@@ -1173,6 +1173,7 @@ type Config struct {
 		PHPProcessWarnPerUser       int     `yaml:"php_process_warn_per_user"`
 		PHPProcessCriticalTotalMult int     `yaml:"php_process_critical_total_multiplier"`
 		ErrorLogWarnSizeMB          int     `yaml:"error_log_warn_size_mb"`
+		ErrorLogCriticalSizeMB      int     `yaml:"error_log_critical_size_mb"`
 		MySQLJoinBufferMaxMB        int     `yaml:"mysql_join_buffer_max_mb"`
 		MySQLWaitTimeoutMax         int     `yaml:"mysql_wait_timeout_max"`
 		MySQLMaxConnectionsPerUser  int     `yaml:"mysql_max_connections_per_user"`
@@ -2021,6 +2022,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Performance.ErrorLogWarnSizeMB == 0 {
 		cfg.Performance.ErrorLogWarnSizeMB = 50
+	}
+	if cfg.Performance.ErrorLogCriticalSizeMB == 0 {
+		cfg.Performance.ErrorLogCriticalSizeMB = 1024
 	}
 	if cfg.Performance.MySQLJoinBufferMaxMB == 0 {
 		cfg.Performance.MySQLJoinBufferMaxMB = 64

@@ -697,3 +697,24 @@ func TestBlockEscalationMinimumsMatchValidation(t *testing.T) {
 		t.Fatalf("checked %d escalation fields, want 2", found)
 	}
 }
+
+// Both error_log size tiers must be editable from Settings; the critical one
+// decides whether a bloated log alerts.
+func TestPerformanceSchemaIncludesErrorLogSizeTiers(t *testing.T) {
+	s, ok := LookupSettingsSection("performance")
+	if !ok {
+		t.Fatal("performance settings section missing")
+	}
+	for _, name := range []string{"error_log_warn_size_mb", "error_log_critical_size_mb"} {
+		f := findSchemaField(s, name)
+		if f == nil {
+			t.Fatalf("%s field missing", name)
+		}
+		if f.Type != "int" {
+			t.Errorf("%s type = %q, want int", name, f.Type)
+		}
+		if f.Min == nil || *f.Min != 1 {
+			t.Errorf("%s min = %v, want 1", name, f.Min)
+		}
+	}
+}

@@ -1012,73 +1012,204 @@ var skipDirs = map[string]bool{
 // CheckErrorLogBloat
 // ---------------------------------------------------------------------------
 
-// scanErrorLogs recursively walks dir up to maxDepth looking for error_log
-// files larger than threshold bytes. Results are appended to *findings (capped
-// at 20).
-func scanErrorLogs(dir string, thresholdBytes int64, depth int, findings *[]alert.Finding) {
-	if depth < 0 || len(*findings) >= 20 {
+const (
+	errorLogFindingLimit = 20
+	errorLogSizesKey     = "_perf_error_log_sizes"
+	// errorLogMinRateSpan is the shortest span a growth rate is computed over.
+	// A restart or manual rescan minutes after the last run would otherwise
+	// extrapolate a few seconds of writes into a daily rate.
+	errorLogMinRateSpan = time.Hour
+)
+
+var errorLogNow = time.Now
+
+type bloatedErrorLog struct {
+	path string
+	size int64
+}
+
+// errorLogObservation is the size baseline a growth rate is measured from.
+type errorLogObservation struct {
+	Size int64 `json:"size"`
+	Seen int64 `json:"seen"`
+}
+
+// scanErrorLogs walks dir up to depth levels collecting error_log files larger
+// than thresholdBytes. Heavy trees (wp-content, vendor, ...) are not descended,
+// but an error_log directly inside one is still checked: PHP writes the log
+// next to the executing script, so admin-ajax.php errors land in
+// wp-admin/error_log. A subdirectory that is a scan root of its own is left
+// to that root so its logs are reported once.
+func scanErrorLogs(ctx context.Context, dir string, thresholdBytes int64, depth int, roots map[string]struct{}, found *[]bloatedErrorLog) {
+	if depth < 0 || ctx.Err() != nil {
 		return
 	}
-
 	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
-
 	for _, e := range entries {
-		if len(*findings) >= 20 {
-			return
-		}
 		name := e.Name()
 		fullPath := filepath.Join(dir, name)
-
 		if e.IsDir() {
-			if skipDirs[name] {
+			if _, ownRoot := roots[fullPath]; ownRoot {
 				continue
 			}
-			scanErrorLogs(fullPath, thresholdBytes, depth-1, findings)
+			if skipDirs[name] {
+				if info, statErr := osFS.Lstat(filepath.Join(fullPath, "error_log")); statErr == nil {
+					collectErrorLog(filepath.Join(fullPath, "error_log"), info, thresholdBytes, found)
+				}
+				continue
+			}
+			scanErrorLogs(ctx, fullPath, thresholdBytes, depth-1, roots, found)
 			continue
 		}
-
 		if name != "error_log" {
 			continue
 		}
-		info, statErr := e.Info()
-		if statErr != nil {
-			continue
-		}
-		if info.Size() > thresholdBytes {
-			*findings = append(*findings, alert.Finding{
-				Severity:  alert.Warning,
-				Check:     "perf_error_logs",
-				Message:   fmt.Sprintf("Bloated error_log: %s", fullPath),
-				Details:   fmt.Sprintf("Size: %s", humanBytes(info.Size())),
-				Timestamp: time.Now(),
-			})
+		if info, infoErr := e.Info(); infoErr == nil {
+			collectErrorLog(fullPath, info, thresholdBytes, found)
 		}
 	}
 }
 
-// CheckErrorLogBloat walks configured web roots (default /home/*/public_html
-// on cPanel) looking for error_log files that exceed the configured size
-// threshold. The runner enforces a 60-minute throttle via checkThrottleMin.
-func CheckErrorLogBloat(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+func collectErrorLog(path string, info os.FileInfo, thresholdBytes int64, found *[]bloatedErrorLog) {
+	if info.Mode().IsRegular() && info.Size() > thresholdBytes {
+		*found = append(*found, bloatedErrorLog{path: path, size: info.Size()})
+	}
+}
+
+// CheckErrorLogBloat walks the configured web roots and every docroot in
+// cPanel's domain map looking for error_log files over the warning size. Logs
+// over the critical size are High so the operator is told; the rest only show
+// on the Performance page. The largest logs are kept when the finding cap is
+// reached. The runner enforces a 60-minute throttle via checkThrottleMin.
+func CheckErrorLogBloat(ctx context.Context, cfg *config.Config, scanState *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
 	}
+	warnBytes := int64(cfg.Performance.ErrorLogWarnSizeMB) * 1024 * 1024
+	critBytes := int64(cfg.Performance.ErrorLogCriticalSizeMB) * 1024 * 1024
 
-	thresholdBytes := int64(cfg.Performance.ErrorLogWarnSizeMB) * 1024 * 1024
+	roots, complete := validatedDocrootSet(cfg)
+	if !complete {
+		markCheckIncomplete(ctx, "perf_error_logs")
+	}
+	rootSet := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		rootSet[root.path] = struct{}{}
+	}
+	var found []bloatedErrorLog
+	for _, root := range roots {
+		scanErrorLogs(ctx, root.path, warnBytes, 3, rootSet, &found)
+	}
+	if ctx.Err() != nil {
+		markCheckIncomplete(ctx, "perf_error_logs")
+		return nil
+	}
 
-	homeDirs := ResolveWebRoots(cfg)
-
+	sort.Slice(found, func(i, j int) bool {
+		if found[i].size != found[j].size {
+			return found[i].size > found[j].size
+		}
+		return found[i].path < found[j].path
+	})
+	now := errorLogNow()
+	previous := loadErrorLogSizes(scanState)
+	current := make(map[string]errorLogObservation, len(found))
 	var findings []alert.Finding
-	for _, dir := range homeDirs {
-		scanErrorLogs(dir, thresholdBytes, 3, &findings)
-		if len(findings) >= 20 {
-			break
+	for i, log := range found {
+		details, baseline := errorLogGrowth(log, previous[log.path], now)
+		current[log.path] = baseline
+		if i < errorLogFindingLimit {
+			findings = append(findings, newErrorLogFinding(log, details, critBytes, now))
 		}
 	}
+	if !complete {
+		// Roots the map would have named went unscanned; their logs were not
+		// seen, not gone, so keep those baselines for the next full run.
+		for path, obs := range previous {
+			if _, seen := current[path]; !seen {
+				current[path] = obs
+			}
+		}
+	}
+	storeErrorLogSizes(scanState, current)
 	return findings
+}
+
+// errorLogGrowth renders the finding details and returns the baseline to keep.
+// A baseline younger than errorLogMinRateSpan is kept as is so the rate is
+// always measured across at least that span; a shrink starts a new baseline.
+func errorLogGrowth(log bloatedErrorLog, prev errorLogObservation, now time.Time) (string, errorLogObservation) {
+	details := fmt.Sprintf("Size: %s", humanBytes(log.size))
+	fresh := errorLogObservation{Size: log.size, Seen: now.Unix()}
+	if prev.Seen == 0 || log.size < prev.Size {
+		return details, fresh
+	}
+	span := now.Sub(time.Unix(prev.Seen, 0))
+	if span < errorLogMinRateSpan {
+		return details, prev
+	}
+	perDay := int64(float64(log.size-prev.Size) * float64(24*time.Hour) / float64(span))
+	if perDay > 0 {
+		details += fmt.Sprintf(", growing %s/day", humanBytes(perDay))
+	}
+	return details, fresh
+}
+
+// newErrorLogFinding keys the finding on its path and tier, not its size, so
+// a growing log stays one finding (one alert per day, a dismissal that
+// sticks) while crossing into the critical tier is a new event.
+func newErrorLogFinding(log bloatedErrorLog, details string, critBytes int64, now time.Time) alert.Finding {
+	severity, tier := alert.Warning, "warning"
+	if log.size > critBytes {
+		severity, tier = alert.High, "critical"
+	}
+	return alert.Finding{
+		Severity:  severity,
+		Check:     "perf_error_logs",
+		Message:   fmt.Sprintf("Bloated error_log: %s", log.path),
+		Details:   details,
+		DedupKey:  tier + ":" + log.path,
+		Timestamp: now,
+	}
+}
+
+func loadErrorLogSizes(scanState *state.Store) map[string]errorLogObservation {
+	if scanState == nil {
+		return nil
+	}
+	raw, ok := scanState.GetRaw(errorLogSizesKey)
+	if !ok {
+		return nil
+	}
+	var sizes map[string]errorLogObservation
+	if json.Unmarshal([]byte(raw), &sizes) != nil {
+		return nil
+	}
+	return sizes
+}
+
+// storeErrorLogSizes replaces the saved baselines, which drops any log that is
+// gone or back under the warning size.
+func storeErrorLogSizes(scanState *state.Store, sizes map[string]errorLogObservation) {
+	if scanState == nil {
+		return
+	}
+	if len(sizes) == 0 {
+		if err := scanState.DeleteRawAndSave(errorLogSizesKey); err != nil {
+			fmt.Fprintf(os.Stderr, "perf_error_logs: baseline clear: %v\n", err)
+		}
+		return
+	}
+	raw, err := json.Marshal(sizes)
+	if err != nil {
+		return
+	}
+	if err := scanState.SetRawAndSave(errorLogSizesKey, string(raw)); err != nil {
+		fmt.Fprintf(os.Stderr, "perf_error_logs: baseline write: %v\n", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

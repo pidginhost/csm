@@ -148,11 +148,13 @@ func TestScanErrorLogsWithFile(t *testing.T) {
 		},
 	})
 
-	var findings []alert.Finding
-	scanErrorLogs("/home/alice/public_html", 5*1024*1024, 3, &findings)
-	// The stat returns 50MB but the function may also check Info() on
-	// DirEntry which uses testDirEntry.Info() returning size=100.
-	_ = findings
+	// The size comes from the directory entry (lstat semantics, 100 bytes),
+	// never from a Stat that would follow a symlink to a 50MB target.
+	var found []bloatedErrorLog
+	scanErrorLogs(context.Background(), "/home/alice/public_html", 5*1024*1024, 3, nil, &found)
+	if len(found) != 0 {
+		t.Errorf("found = %+v, want none: the entry is 100 bytes", found)
+	}
 }
 
 // --- scanGroupWritablePHP with mock ----------------------------------

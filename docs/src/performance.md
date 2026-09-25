@@ -21,10 +21,28 @@ identities for each scope and victim process.
 | `perf_php_handler` | PHP handler type (DSO vs CGI vs FPM) and configuration |
 | `perf_mysql_config` | MySQL my.cnf settings (buffer pool, connections, query cache) |
 | `perf_redis_config` | Redis memory limits, persistence, eviction policy |
-| `perf_error_logs` | Error log file sizes (bloat detection) |
+| `perf_error_logs` | Bloated `error_log` files in every document root, with growth rate |
 | `perf_wp_config` | WordPress wp-config.php hardening and debug settings |
 | `perf_wp_transients` | WordPress database transient bloat |
 | `perf_wp_cron` | WordPress cron scheduling (missed crons, excessive events) |
+
+### Bloated error logs
+
+`perf_error_logs` scans the configured web roots plus every document root in
+cPanel's domain map, so addon and subdomain sites are covered as well as
+`public_html`. It walks three levels deep. Heavy trees such as `wp-content`,
+`wp-admin` and `vendor` are not descended, but an `error_log` directly inside
+one is checked: PHP writes the log next to the running script, so
+`admin-ajax.php` errors land in `wp-admin/error_log`.
+
+A log over `performance.error_log_warn_size_mb` (default 50) is a Warning and
+only shows on this page. A log over `performance.error_log_critical_size_mb`
+(default 1024) is High and alerts. Once a log has been seen for at least an
+hour, the finding also shows how fast it grows per day; a truncated or
+rotated log starts a new baseline. The finding keeps the same identity while
+the log grows, so it alerts at most once a day and a dismissal sticks until
+the log crosses into the higher tier. When more than 20 logs are bloated, the
+largest are reported.
 
 ## Web UI
 
