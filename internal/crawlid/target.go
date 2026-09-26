@@ -174,11 +174,12 @@ func unhex(c byte) byte {
 // Servers must accept absolute-form and hand it to PHP unchanged, so without
 // this a client could choose it to leave its identity. The authority is
 // dropped: the site comes from verified inventory, never from the request.
-// An absolute form without a path has the root path. Any other form, such as
-// asterisk, authority-form, another scheme or a rootless path, is unsupported.
+// A target without a path, including one that starts with '?', is served at
+// the root path. Any other form, such as asterisk, authority-form, another
+// scheme or a rootless path, is unsupported.
 func SplitTarget(raw string) (path, query string, ok bool) {
 	rest := raw
-	if !strings.HasPrefix(raw, "/") {
+	if !strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "?") {
 		scheme, after, found := strings.Cut(raw, ":")
 		if !found || !isHTTPScheme(scheme) {
 			return "", "", false

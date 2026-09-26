@@ -168,6 +168,7 @@ func TestParsePatternRecordRequestFraming(t *testing.T) {
 		{`GET http://example.com/a HTTP/1.1`, "http://example.com/a", false},
 		{`GET HTTPS://example.com?x=1 HTTP/1.1`, "HTTPS://example.com?x=1", false},
 		{`GET http:/a?x=1 HTTP/1.1`, "http:/a?x=1", false},
+		{`GET ?s=a HTTP/1.1`, "?s=a", false},
 		{`GET ftp://example.com/a HTTP/1.1`, "", true},
 		{`GET http:a/b HTTP/1.1`, "", true},
 		{`CONNECT example.com:443 HTTP/1.1`, "", true},

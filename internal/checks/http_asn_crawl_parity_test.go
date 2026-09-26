@@ -25,16 +25,14 @@ func TestHTTPASNCrawlExpensiveMatchesCrawlidVectors(t *testing.T) {
 			RawB64 string `json:"raw_b64"`
 			MaxLen int    `json:"max_len"`
 			OK     bool   `json:"ok"`
+			Err    string `json:"err"`
 		} `json:"targets"`
 	}
 	if err := json.Unmarshal(raw, &vf); err != nil {
 		t.Fatalf("decode vectors: %v", err)
 	}
-	checked := 0
+	checked, rejected := 0, 0
 	for _, v := range vf.Targets {
-		if !v.OK {
-			continue
-		}
 		rawTarget := v.Raw
 		if v.RawB64 != "" {
 			decoded, decodeErr := base64.RawURLEncoding.DecodeString(v.RawB64)
@@ -42,6 +40,20 @@ func TestHTTPASNCrawlExpensiveMatchesCrawlidVectors(t *testing.T) {
 				t.Fatal(decodeErr)
 			}
 			rawTarget = string(decoded)
+		}
+		// A form the identity cannot represent must not be counted either;
+		// the legacy parser has its own length bound, so skip bound rows.
+		if !v.OK {
+			if v.Err == "too-long" {
+				continue
+			}
+			for _, m := range []string{"GET", "HEAD"} {
+				if httpASNCrawlExpensive(accessLogRecord{Method: m, URI: rawTarget}) {
+					t.Errorf("%s %s: unsupported target counted as expensive", m, v.Raw)
+				}
+			}
+			rejected++
+			continue
 		}
 		limit := vf.MaxLen
 		if v.MaxLen != 0 {
@@ -66,8 +78,8 @@ func TestHTTPASNCrawlExpensiveMatchesCrawlidVectors(t *testing.T) {
 			valid++
 		}
 	}
-	if valid == 0 || checked != valid*7 {
-		t.Fatalf("checked %d method/target pairs, want %d", checked, valid*7)
+	if valid == 0 || checked != valid*7 || rejected == 0 {
+		t.Fatalf("checked %d method/target pairs, want %d; %d rejected rows", checked, valid*7, rejected)
 	}
 }
 

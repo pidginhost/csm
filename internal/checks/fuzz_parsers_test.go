@@ -11,8 +11,6 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/pidginhost/csm/internal/crawlid"
 )
 
 func FuzzCountWPLoopback(f *testing.F) {
@@ -731,6 +729,54 @@ func FuzzParseAccessLogRecord(f *testing.F) {
 	})
 }
 
+// patternSupportedTarget restates the supported target forms without calling
+// crawlid: origin-form (path- or query-led), or an http(s) absolute form whose
+// remainder after an optional authority is empty or starts a path or query.
+var patternSupportedTarget = regexp.MustCompile(`(?s)^([/?].*|[hH][tT][tT][pP][sS]?:(//[^/?]*)?([/?].*)?)$`)
+
+// Every in-bound target a server can log must be kept exactly when its form
+// is supported and marked invalid otherwise.
+func FuzzParsePatternRecordTargetForm(f *testing.F) {
+	for _, seed := range []string{
+		"/a?x=1", "?s=a", "?", "http://example.com.css?x=1", "HTTPS:/a", "http:",
+		"ftp://example.com/", "http:a", "*", "example.com:443", `/"q\`, "/\x00\xff",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, target string) {
+		if target == "" || len(target) > patternMaxTarget {
+			return
+		}
+		// Log the target the way Apache escapes a request line.
+		var logged strings.Builder
+		for i := range len(target) {
+			c := target[i]
+			switch {
+			case c == ' ':
+				return
+			case c == '"' || c == '\\':
+				logged.WriteByte('\\')
+				logged.WriteByte(c)
+			case c < ' ' || c >= 0x7f:
+				logged.WriteString(`\x` + hex.EncodeToString([]byte{c}))
+			default:
+				logged.WriteByte(c)
+			}
+		}
+		r, ok := parsePatternRecord(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET ` + logged.String() + ` HTTP/1.1" 200 1 "-" "UA"`)
+		if !ok || r.TargetOverflow || r.UserAgent != "UA" {
+			t.Fatalf("request line lost: ok=%v record=%+v", ok, r)
+		}
+		if patternSupportedTarget.MatchString(target) {
+			if r.TargetInvalid || r.Target != target {
+				t.Fatalf("supported target %q not kept: %+v", target, r)
+			}
+		} else if !r.TargetInvalid || r.Target != "" {
+			t.Fatalf("unsupported target %q kept: %+v", target, r)
+		}
+	})
+}
+
 func FuzzParsePatternRecord(f *testing.F) {
 	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET http://192.0.2.2/a%2Fb?X[0]=%zz HTTP/1.1" 200 1 "-" "UA"`)
 	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET \x48TTPS\x3a\x2f\x2f192.0.2.2\x3f/a.css HTTP/1.1" 200 1 "-" "UA"`)
@@ -764,7 +810,7 @@ func FuzzParsePatternRecord(f *testing.F) {
 		if len(r.Target) > patternMaxTarget || ((r.TargetOverflow || r.TargetInvalid) && r.Target != "") {
 			t.Fatalf("target bound broken: overflow=%v len=%d", r.TargetOverflow, len(r.Target))
 		}
-		if _, _, supported := crawlid.SplitTarget(r.Target); r.Target != "" && !supported {
+		if r.Target != "" && !patternSupportedTarget.MatchString(r.Target) {
 			t.Fatalf("unsupported target form kept: %q", r.Target)
 		}
 		if r.Target == "" && !r.TargetOverflow && !r.TargetInvalid {

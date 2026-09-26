@@ -15,9 +15,10 @@ import (
 )
 
 // supportedForm restates the accepted target forms independently of
-// SplitTarget: origin-form, or an http(s) absolute form whose remainder after
-// an optional authority is empty or starts a path or query.
-var supportedForm = regexp.MustCompile(`(?s)^(/.*|[hH][tT][tT][pP][sS]?:(//[^/?]*)?([/?].*)?)$`)
+// SplitTarget: origin-form (path- or query-led), or an http(s) absolute form
+// whose remainder after an optional authority is empty or starts a path or
+// query.
+var supportedForm = regexp.MustCompile(`(?s)^([/?].*|[hH][tT][tT][pP][sS]?:(//[^/?]*)?([/?].*)?)$`)
 
 func FuzzParseTarget(f *testing.F) {
 	vf := loadVectors(f)
@@ -268,6 +269,50 @@ func FuzzBindingOf(f *testing.F) {
 		again, valid := BindingOf(restored)
 		if !valid || binding != again {
 			t.Fatal("canonical binding changed on round trip")
+		}
+	})
+}
+
+// An absolute form must canonicalize exactly like the origin-form request a
+// server routes it to: no scheme or authority byte may reach the identity.
+func FuzzAbsoluteFormMatchesOrigin(f *testing.F) {
+	for _, seed := range [][3]string{
+		{"http", "example.com", "/a/?x=1"}, {"HTTPS", "example.com.css", "?x=1"},
+		{"http", "", "/a.css"}, {"hTtP", "[2001:db8::1]:8080", ""},
+		{"https", "a.b.c", "?/x.js"}, {"http", "%2e", "//x?y=1"},
+	} {
+		f.Add(seed[0], seed[1], seed[2])
+	}
+	f.Fuzz(func(t *testing.T, scheme, authority, rest string) {
+		folded := []byte(scheme)
+		for i, c := range folded {
+			if 'A' <= c && c <= 'Z' {
+				folded[i] = c + 'a' - 'A'
+			}
+		}
+		if string(folded) != "http" && string(folded) != "https" {
+			return
+		}
+		if strings.ContainsAny(authority, "/?") || (rest != "" && rest[0] != '/' && rest[0] != '?') {
+			return
+		}
+		origin := rest
+		if origin == "" || origin[0] == '?' {
+			origin = "/" + origin
+		}
+		want, wantErr := ParseTarget(origin, len(origin))
+		if wantErr != nil {
+			t.Fatalf("origin %q rejected: %v", origin, wantErr)
+		}
+		raws := []string{scheme + "://" + authority + rest}
+		if !strings.HasPrefix(rest, "//") {
+			raws = append(raws, scheme+":"+rest)
+		}
+		for _, raw := range raws {
+			got, err := ParseTarget(raw, len(raw))
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("ParseTarget(%q) = %+v, %v; want %+v from %q", raw, got, err, want, origin)
+			}
 		}
 	})
 }

@@ -111,6 +111,10 @@ func TestHTTPASNCrawlExpensive(t *testing.T) {
 		{"static CSS uppercase ext with query", accessLogRecord{Method: "GET", URI: "/a.CSS?v=2"}, false},
 		{"dot only in query, no ext", accessLogRecord{Method: "GET", URI: "/path?file=a.css"}, true},
 		{"woff2 font with query", accessLogRecord{Method: "GET", URI: "/f.woff2?d=1"}, false},
+		{"query-led target served at root", accessLogRecord{Method: "GET", URI: "?s=ring"}, true},
+		{"absolute form with asset-like host", accessLogRecord{Method: "GET", URI: "http://example.css?s=ring"}, true},
+		{"absolute form static path", accessLogRecord{Method: "GET", URI: "https://example.com/a.js?v=1"}, false},
+		{"unsupported scheme", accessLogRecord{Method: "GET", URI: "ftp://example.com/?s=ring"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
