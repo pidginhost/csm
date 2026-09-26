@@ -47,8 +47,9 @@ func (l *AdmissionLedger) Attempt(id admission.ActionID) (admission.AttemptRecor
 }
 
 // modify applies fn to one candidate in a write transaction. fn reports
-// whether it changed the record; only a change bumps Transitions.
-func (l *AdmissionLedger) modify(op string, id admission.CandidateID, fn func(c *admission.Candidate) (bool, error)) (admission.Candidate, error) {
+// whether it changed the record; only a change bumps Transitions. Queue
+// bookkeeping fn changes commits with the candidate.
+func (l *AdmissionLedger) modify(op string, id admission.CandidateID, fn func(q *queueTx, c *admission.Candidate) (bool, error)) (admission.Candidate, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var out admission.Candidate
@@ -62,8 +63,12 @@ func (l *AdmissionLedger) modify(op string, id admission.CandidateID, fn func(c 
 				return err
 			}
 		}
+		q, err := l.openQueue(tx, l.now)
+		if err != nil {
+			return err
+		}
 		from := c.State
-		changed, err := fn(&c)
+		changed, err := fn(q, &c)
 		if err != nil {
 			return err
 		}
@@ -75,7 +80,10 @@ func (l *AdmissionLedger) modify(op string, id admission.CandidateID, fn func(c 
 			return admission.ErrTransitionConflict
 		}
 		out.Transitions++
-		return putCandidate(tx, out)
+		if err = putCandidate(tx, out); err != nil {
+			return err
+		}
+		return q.flush()
 	})
 	if err != nil {
 		return admission.Candidate{}, err
@@ -89,7 +97,7 @@ func (l *AdmissionLedger) Defer(id admission.CandidateID, reason admission.Reaso
 	if reason.Disposition() != admission.DispositionDeferred {
 		return admission.Candidate{}, refusal(admission.ReasonInvalid, "reason is not a deferral")
 	}
-	return l.modify("defer", id, func(c *admission.Candidate) (bool, error) {
+	return l.modify("defer", id, func(q *queueTx, c *admission.Candidate) (bool, error) {
 		switch {
 		case c.State.Terminal():
 			return false, admission.ErrCandidateTerminal
@@ -98,8 +106,12 @@ func (l *AdmissionLedger) Defer(id admission.CandidateID, reason admission.Reaso
 		case c.Reason == reason:
 			return false, nil
 		}
+		e, err := loadQueueEntry(q.tx, id)
+		if err != nil {
+			return false, err
+		}
 		c.Reason = reason
-		return true, nil
+		return true, q.count(admission.EventDeferred, reason, e.Tier)
 	})
 }
 
@@ -109,23 +121,31 @@ var terminalFor = map[admission.Disposition]admission.State{
 	admission.DispositionDropped:  admission.StateDropped,
 }
 
-// Terminate ends a queued candidate as refused, withheld or dropped. The
-// same ending again is a no-op; a different one is a conflict.
+// Terminate ends a queued candidate as refused, withheld or dropped and
+// releases its queue position. The same ending again is a no-op; a
+// candidate that already ended otherwise refuses like every other call on
+// an ended candidate, and an in-flight one is a conflict.
 func (l *AdmissionLedger) Terminate(id admission.CandidateID, reason admission.Reason) (admission.Candidate, error) {
 	d := reason.Disposition()
 	state, ok := terminalFor[d]
 	if !ok {
 		return admission.Candidate{}, refusal(admission.ReasonInvalid, "reason does not end a candidate")
 	}
-	return l.modify("terminate", id, func(c *admission.Candidate) (bool, error) {
+	return l.modify("terminate", id, func(q *queueTx, c *admission.Candidate) (bool, error) {
 		switch {
 		case c.State == state && c.Reason == reason:
 			return false, nil
+		case c.State.Terminal():
+			return false, admission.ErrCandidateTerminal
 		case c.State != admission.StateQueued:
 			return false, admission.ErrTransitionConflict
 		}
+		e, err := loadQueueEntry(q.tx, id)
+		if err != nil {
+			return false, err
+		}
 		c.State, c.Disposition, c.Reason, c.NotBefore = state, d, reason, time.Time{}
-		return true, nil
+		return true, q.release(id, e, admission.EventEnded, reason)
 	})
 }
 
@@ -193,6 +213,11 @@ func reserveTx(tx *bolt.Tx, id admission.CandidateID, expiresAt, now time.Time) 
 		if !now.Before(c.ExpiresAt) {
 			return c, admission.AttemptRecord{}, false, refusal(admission.ReasonStale, "absolute expiry has passed")
 		}
+	}
+	// A queued candidate holds a queue position; one without an entry is
+	// invisible to capacity and fairness.
+	if _, err = loadQueueEntry(tx, id); err != nil {
+		return c, admission.AttemptRecord{}, false, err
 	}
 	next, err := admission.NewAttempt(id, c.Attempts+1)
 	if err != nil {
@@ -273,7 +298,7 @@ func attemptAndCandidate(tx *bolt.Tx, id admission.ActionID) (admission.AttemptR
 // attemptStep runs one attempt transition and reports whether it changed
 // anything. now is l.clock for a step that dispatches work and
 // l.recordedClock for one that only records an outcome.
-func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func() (time.Time, error), fn func(now time.Time, a *admission.AttemptRecord, c *admission.Candidate) (bool, error)) (admission.Candidate, admission.AttemptRecord, bool, error) {
+func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func() (time.Time, error), fn func(q *queueTx, a *admission.AttemptRecord, c *admission.Candidate) (bool, error)) (admission.Candidate, admission.AttemptRecord, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	at, err := now()
@@ -288,8 +313,12 @@ func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func
 		if loadErr != nil {
 			return loadErr
 		}
+		q, loadErr := l.openQueue(tx, at)
+		if loadErr != nil {
+			return loadErr
+		}
 		from := c.State
-		stepChanged, stepErr := fn(at, &a, &c)
+		stepChanged, stepErr := fn(q, &a, &c)
 		if stepErr != nil {
 			return stepErr
 		}
@@ -305,7 +334,10 @@ func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func
 		if putErr := putAttempt(tx, a); putErr != nil {
 			return putErr
 		}
-		return putCandidate(tx, c)
+		if putErr := putCandidate(tx, c); putErr != nil {
+			return putErr
+		}
+		return q.flush()
 	})
 	if err != nil {
 		return admission.Candidate{}, admission.AttemptRecord{}, false, err
@@ -317,13 +349,13 @@ func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func
 // attempt already running it is a no-op that reports false: a readback is
 // not permission to dispatch the attempt's effect again.
 func (l *AdmissionLedger) Execute(id admission.ActionID) (admission.Candidate, admission.AttemptRecord, bool, error) {
-	return l.attemptStep("execute", id, l.clock, func(now time.Time, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
+	return l.attemptStep("execute", id, l.clock, func(q *queueTx, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
 		switch {
 		case a.State == admission.StateExecuting:
 			return false, nil
 		case a.State != admission.StateReserved:
 			return false, admission.ErrTransitionConflict
-		case !now.Before(a.ExpiresAt):
+		case !q.now.Before(a.ExpiresAt):
 			return false, refusal(admission.ReasonStale, "absolute expiry has passed")
 		}
 		a.State, c.State = admission.StateExecuting, admission.StateExecuting
@@ -335,7 +367,8 @@ func (l *AdmissionLedger) Execute(id admission.ActionID) (admission.Candidate, a
 // narrowed need a running attempt, and so does unknown: an attempt that never
 // ran is known not to have applied, so it can only fail. A proven failure
 // with attempts left returns the candidate to the queue after a backoff; an
-// unknown outcome ends it without a retry.
+// unknown outcome ends it without a retry. An ended candidate releases its
+// queue position in the same transaction.
 func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
 	var state admission.State
 	switch d {
@@ -348,23 +381,29 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 	default:
 		return admission.Candidate{}, admission.AttemptRecord{}, refusal(admission.ReasonInvalid, "disposition is not an attempt outcome")
 	}
-	cand, att, _, err := l.attemptStep("finish", id, l.recordedClock, func(now time.Time, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
+	cand, att, _, err := l.attemptStep("finish", id, l.recordedClock, func(q *queueTx, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
 		if a.State.Terminal() {
 			if a.Disposition == d {
 				return false, nil
 			}
 			return false, admission.ErrTransitionConflict
 		}
+		e, err := loadQueueEntry(q.tx, a.Attempt.Candidate)
+		if err != nil {
+			return false, err
+		}
 		// The candidate moves in step with its current attempt, so the
 		// lifecycle table decides which outcomes a reserved attempt allows.
-		a.State, a.Disposition, a.Finished = state, d, now
+		a.State, a.Disposition, a.Finished = state, d, q.now
 		switch {
 		case d == admission.DispositionFailed && c.Attempts < admission.MaxAttempts:
-			c.State, c.NotBefore = admission.StateQueued, now.Add(admission.RetryBackoff(c.Attempts))
+			c.State, c.NotBefore = admission.StateQueued, q.now.Add(admission.RetryBackoff(c.Attempts))
+			q.noteDeadlines(*c, e)
+			return true, nil
 		default:
 			c.State, c.Disposition = state, d
 		}
-		return true, nil
+		return true, q.release(a.Attempt.Candidate, e, 0, 0)
 	})
 	return cand, att, err
 }

@@ -123,21 +123,34 @@ func (l *AdmissionLedger) Enqueue(req admission.CandidateRequest) (admission.Can
 	var out admission.Candidate
 	var created bool
 	if err := l.update("enqueue", func(tx *bolt.Tx) error {
-		var txErr error
-		out, created, txErr = l.enqueueTx(tx, req, key, id, ids, now)
-		return txErr
+		q, txErr := l.openQueue(tx, now)
+		if txErr != nil {
+			return txErr
+		}
+		if out, created, txErr = l.enqueueTx(q, req, key, id, ids); txErr != nil {
+			return txErr
+		}
+		return q.flush()
 	}); err != nil {
 		return admission.Candidate{}, false, err
 	}
 	return out, created, nil
 }
 
-func (l *AdmissionLedger) enqueueTx(tx *bolt.Tx, req admission.CandidateRequest, key admission.CandidateKey, id admission.CandidateID, ids []admission.EvidenceID, now time.Time) (admission.Candidate, bool, error) {
+// enqueueTx queues or coalesces one request within q's transaction. The
+// caller flushes q once its transaction's work is done.
+func (l *AdmissionLedger) enqueueTx(q *queueTx, req admission.CandidateRequest, key admission.CandidateKey, id admission.CandidateID, ids []admission.EvidenceID) (admission.Candidate, bool, error) {
+	tx, now := q.tx, q.now
 	cur, err := loadCandidate(tx, id)
 	switch {
 	case err == nil:
-		return l.coalesceTx(tx, cur, ids, now)
+		return l.coalesceTx(q, cur, ids)
 	case !errors.Is(err, errCandidateMissing):
+		return admission.Candidate{}, false, err
+	}
+	// Candidates whose deadlines passed give up their positions before a
+	// new one is placed.
+	if err = q.sweep(); err != nil {
 		return admission.Candidate{}, false, err
 	}
 	roots, err := loadRoots(tx, l.reg, ids)
@@ -165,15 +178,20 @@ func (l *AdmissionLedger) enqueueTx(tx *bolt.Tx, req admission.CandidateRequest,
 		State:       admission.StateQueued,
 		Transitions: 1,
 	}
+	if err = q.insert(id, c, entryFor(assessment)); err != nil {
+		return admission.Candidate{}, false, err
+	}
 	return c, true, putCandidate(tx, c)
 }
 
 // coalesceTx revalidates a repeated request against current policy and
-// inventory, then adds its new roots to a queued candidate and rescopes it.
-// The request alone and the merged set must both assess for the target;
-// queue age and age-out never move. An in-flight candidate's roots are
-// frozen, so it only acknowledges roots it already holds.
-func (l *AdmissionLedger) coalesceTx(tx *bolt.Tx, cur admission.Candidate, ids []admission.EvidenceID, now time.Time) (admission.Candidate, bool, error) {
+// inventory, then adds its new roots to a queued candidate, rescopes it and
+// records its new assessment. The request alone and the merged set must
+// both assess for the target; queue age and age-out never move. An
+// in-flight candidate's roots are frozen, so it only acknowledges roots it
+// already holds.
+func (l *AdmissionLedger) coalesceTx(q *queueTx, cur admission.Candidate, ids []admission.EvidenceID) (admission.Candidate, bool, error) {
+	tx, now := q.tx, q.now
 	if cur.State.Terminal() {
 		return admission.Candidate{}, false, admission.ErrCandidateTerminal
 	}
@@ -205,7 +223,8 @@ func (l *AdmissionLedger) coalesceTx(tx *bolt.Tx, cur admission.Candidate, ids [
 	if err != nil {
 		return admission.Candidate{}, false, err
 	}
-	if _, err = admission.Assess(cur.Key.Target, roots, now); err != nil {
+	assessment, err := admission.Assess(cur.Key.Target, roots, now)
+	if err != nil {
 		return admission.Candidate{}, false, err
 	}
 	owner, err := scopeOwner(l.Inventory(), roots)
@@ -221,9 +240,18 @@ func (l *AdmissionLedger) coalesceTx(tx *bolt.Tx, cur admission.Candidate, ids [
 	if slices.Equal(merged, cur.Roots) && owner == cur.Scope.Owner {
 		return cur, false, nil
 	}
+	id, _ := cur.ID()
+	entry, err := loadQueueEntry(tx, id)
+	if err != nil {
+		return admission.Candidate{}, false, err
+	}
 	cur.Roots, cur.Scope.Owner = merged, owner
 	cur.Transitions++
-	return cur, false, putCandidate(tx, cur)
+	if err = putCandidate(tx, cur); err != nil {
+		return admission.Candidate{}, false, err
+	}
+	stored, err := q.reassess(liveCandidate{id: id, c: cur, entry: entry}, entryFor(assessment))
+	return stored, false, err
 }
 
 func loadRoots(tx *bolt.Tx, reg *admission.Registry, ids []admission.EvidenceID) ([]admission.Evidence, error) {

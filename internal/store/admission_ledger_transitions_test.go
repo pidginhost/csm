@@ -49,7 +49,7 @@ func TestAdmissionLedgerTerminate(t *testing.T) {
 			t.Fatalf("%s: repeat: %+v, %v", reason, again, againErr)
 		}
 		_, err = f.l.Terminate(id, admission.ReasonStale)
-		wantLedgerErr(t, reason.String()+": different ending", err, admission.ErrTransitionConflict)
+		wantLedgerErr(t, reason.String()+": different ending", err, admission.ErrCandidateTerminal)
 		_, _, _, err = f.l.Reserve(id, ledgerT0.Add(time.Hour))
 		wantLedgerErr(t, reason.String()+": reserve after end", err, admission.ErrCandidateTerminal)
 		root := f.published(evidenceSpec{cursor: fmt.Sprintf("offset=%d", f.generation+1)})

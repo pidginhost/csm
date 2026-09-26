@@ -322,14 +322,26 @@ func (l *AdmissionLedger) RefreshInventory(obs admission.InventoryObservation) e
 		if err != nil {
 			return err
 		}
-		if err := meta.Put(admissionTrackerKey, tracker); err != nil {
+		if err = meta.Put(admissionTrackerKey, tracker); err != nil {
 			return err
 		}
-		if err := meta.Put(admissionInventoryKey, snapshot); err != nil {
+		if err = meta.Put(admissionInventoryKey, snapshot); err != nil {
 			return err
 		}
 		next = ledgerInventory{inv: inv, ambiguous: obs.AmbiguousDomains}
-		return meta.Put(admissionAmbiguousKey, strconv.AppendInt(nil, int64(obs.AmbiguousDomains), 10))
+		if err = meta.Put(admissionAmbiguousKey, strconv.AppendInt(nil, int64(obs.AmbiguousDomains), 10)); err != nil {
+			return err
+		}
+		// Queued candidates whose roots name an account that is no longer
+		// current end with the inventory change that retired it.
+		q, err := openQueueWith(tx, l.reg, inv, l.now)
+		if err != nil {
+			return err
+		}
+		if err = q.checkOwners(); err != nil {
+			return err
+		}
+		return q.flush()
 	})
 	if err != nil {
 		return err

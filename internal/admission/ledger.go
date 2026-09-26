@@ -84,6 +84,11 @@ type Ledger interface {
 	Defer(CandidateID, Reason) (Candidate, error)
 	// Terminate ends a queued candidate as refused, withheld or dropped.
 	Terminate(CandidateID, Reason) (Candidate, error)
+	// Revalidate checks every queued candidate against current policy,
+	// inventory and the admission clock: one that no longer qualifies ends,
+	// the rest keep their positions under a new assessment. The engine
+	// calls it after a policy reload and once after the ledger opens.
+	Revalidate() error
 	// Reserve admits the next attempt and reports true. The first
 	// reservation fixes the absolute expiry; later ones must keep it. On a
 	// candidate already reserved or running it returns that attempt and

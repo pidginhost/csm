@@ -37,6 +37,7 @@ type ledgerFixture struct {
 	wall           time.Time
 	since          time.Duration
 	generation     uint32
+	fills          int
 }
 
 func newLedgerRegistry(t *testing.T) (*admission.Registry, *admission.Producer, *admission.Producer, *admission.Producer) {

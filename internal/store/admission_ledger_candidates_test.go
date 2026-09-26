@@ -175,10 +175,23 @@ func TestAdmissionLedgerCoalescingRevalidatesAndRescopes(t *testing.T) {
 	if !c.FirstQueued.Equal(first.FirstQueued) || !c.AgeOut.Equal(first.AgeOut) {
 		t.Fatal("merge moved deadlines")
 	}
+	// The inventory change that retires alice ends the queued candidate
+	// whose root names her, in the same transaction.
 	f.refresh([]string{"bob"}, nil)
-	_, _, err = f.l.Enqueue(req)
+	stored, err := f.l.Candidate(id)
+	if err != nil || stored.State != admission.StateRefused || stored.Reason != admission.ReasonStaleIdentity || stored.Transitions != c.Transitions+1 {
+		t.Fatalf("candidate of a retired account: %+v %v", stored, err)
+	}
+	// A repeat that supplies a root naming the retired account is refused
+	// and changes nothing.
+	f.nextGeneration()
+	current := f.published(evidenceSpec{cursor: "offset=3"})
+	next := f.request("192.0.2.10", current)
+	queued, nextID := f.enqueue(next)
+	next.Support = []admission.EvidenceID{a}
+	_, _, err = f.l.Enqueue(next)
 	wantLedgerReason(t, "duplicate stale owner", err, admission.ReasonStaleIdentity)
-	if stored, err := f.l.Candidate(id); err != nil || stored.Transitions != c.Transitions {
+	if stored, err := f.l.Candidate(nextID); err != nil || stored.Transitions != queued.Transitions {
 		t.Fatalf("refusal changed candidate: %+v %v", stored, err)
 	}
 }
