@@ -120,6 +120,11 @@ func TestPersistedEnumValuesAreFrozen(t *testing.T) {
 		"ReasonCeiling":                {uint8(ReasonCeiling), 1},
 		"ReasonIngressInterruption":    {uint8(ReasonIngressInterruption), 18},
 		"ReasonUnsupportedContainment": {uint8(ReasonUnsupportedContainment), 15},
+		"PartitionGeneral":             {uint8(PartitionGeneral), 1},
+		"PartitionReserved":            {uint8(PartitionReserved), 2},
+		"EventRefused":                 {uint8(EventRefused), 1},
+		"EventDeferred":                {uint8(EventDeferred), 2},
+		"EventEnded":                   {uint8(EventEnded), 3},
 	}
 	for name, v := range frozen {
 		if v[0] != v[1] {

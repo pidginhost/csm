@@ -140,8 +140,12 @@ func FuzzLedgerRecords(f *testing.F) {
 	clock, _, _ := Clock{}.Advance(ClockReading{Wall: t0, BootID: "0f5e3c2a-1b4d-4e6f-8a9b-0c1d2e3f4a5b", SinceBoot: time.Hour})
 	inv, _ := NewInventory(map[string]uint64{"alice": 1}, map[string]string{"alice.example": "alice"})
 	links, _, _ := ReportLinks{Evidence: "ev_00000000000000000000000000000001"}.Add("0123456789abcdef")
+	var counters QueueCounters
+	_ = counters.Add(CountKey{Event: EventEnded, Reason: ReasonStale, Class: ClassC2, Severity: SeverityHigh})
 	for _, rec := range []interface{ MarshalBinary() ([]byte, error) }{
 		cand, AttemptRecord{Attempt: attempt, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0}, clock, inv, links,
+		QueueEntry{Partition: PartitionReserved, Tier: Tier{ClassC3, SeverityHigh}, Direct: true, NextChange: t0},
+		QueueState{NextSweep: t0, Cursors: QueueCursors{General: "host/address"}}, counters,
 	} {
 		data, err := rec.MarshalBinary()
 		if err != nil {
@@ -171,6 +175,15 @@ func FuzzLedgerRecords(f *testing.F) {
 			}
 			if r, err := UnmarshalReportLinks(data); err == nil {
 				roundTrip("report links", r)
+			}
+			if q, err := UnmarshalQueueEntry(data); err == nil {
+				roundTrip("queue entry", q)
+			}
+			if s, err := UnmarshalQueueState(data); err == nil {
+				roundTrip("queue state", s)
+			}
+			if q, err := UnmarshalQueueCounters(data); err == nil {
+				roundTrip("queue counters", q)
 			}
 		}
 		check(data)
