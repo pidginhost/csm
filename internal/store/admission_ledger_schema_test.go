@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -172,6 +173,56 @@ func TestAdmissionLedgerUpgradeRollsBack(t *testing.T) {
 	}
 	if after := dbSnapshot(t, db); !reflect.DeepEqual(before, after) {
 		t.Fatal("a failed upgrade changed the ledger")
+	}
+}
+
+// A live candidate's attempt history is part of what the queue reads, so
+// damaged or missing attempts refuse the upgrade and leave schema 1 intact.
+func TestAdmissionLedgerUpgradeRefusesDamagedAttempts(t *testing.T) {
+	for _, shape := range []string{"damaged", "missing"} {
+		t.Run(shape, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.queued()
+			f.nextGeneration()
+			reserved := f.queued()
+			if _, _, _, err := f.l.Reserve(reserved, ledgerT0.Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			f.schemaOne()
+			if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+				b := tx.Bucket([]byte(admissionAttemptsBucket))
+				var keys [][]byte
+				if err := b.ForEach(func(k, _ []byte) error {
+					keys = append(keys, append([]byte(nil), k...))
+					return nil
+				}); err != nil {
+					return err
+				}
+				if len(keys) == 0 {
+					return errors.New("no attempt records to damage")
+				}
+				for _, k := range keys {
+					if shape == "missing" {
+						if err := b.Delete(k); err != nil {
+							return err
+						}
+					} else if err := b.Put(k, []byte("damaged")); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			db := f.copyDatabase()
+			before := dbSnapshot(t, db)
+			if _, err := OpenAdmissionLedger(db, f.reg); !isCorrupt(err) {
+				t.Fatalf("upgrade over %s attempts: %v", shape, err)
+			}
+			if !reflect.DeepEqual(before, dbSnapshot(t, db)) {
+				t.Fatal("a refused upgrade changed the schema 1 ledger")
+			}
+		})
 	}
 }
 

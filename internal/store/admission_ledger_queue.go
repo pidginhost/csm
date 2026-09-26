@@ -40,8 +40,8 @@ func initializeQueueState(b *bolt.Bucket) error {
 // upgradeLedgerToSchemaTwo adds the queue buckets to a schema 1 ledger
 // inside the opening transaction. Every live candidate gets an unassessed
 // entry holding a general position; the first current reading assesses and
-// places it. A damaged candidate refuses the upgrade, and the transaction
-// leaves the schema 1 ledger exactly as it was.
+// places it. A damaged candidate or attempt history refuses the upgrade,
+// and the transaction leaves the schema 1 ledger exactly as it was.
 func upgradeLedgerToSchemaTwo(tx *bolt.Tx) error {
 	for _, name := range admissionQueueBuckets {
 		if _, err := tx.CreateBucket([]byte(name)); err != nil {
@@ -61,6 +61,13 @@ func upgradeLedgerToSchemaTwo(tx *bolt.Tx) error {
 		}
 		if c.State.Terminal() {
 			return nil
+		}
+		// The queue reads a live candidate's attempt history on every walk,
+		// so the upgrade proves it now rather than commit an unusable queue.
+		if c.Attempts > 0 {
+			if _, err = currentAttempt(tx, c); err != nil {
+				return err
+			}
 		}
 		live++
 		if c.State == admission.StateQueued && (nextSweep.IsZero() || c.FirstQueued.Before(nextSweep)) {
