@@ -150,9 +150,6 @@ func arrivalTier(a admission.Arrival, now time.Time) admission.Tier {
 
 func (l *AdmissionLedger) arriveTx(q *queueTx, a admission.Arrival) (admission.CandidateID, bool, error) {
 	e := a.Evidence
-	if !a.ReportsOnly && a.Request.Primary != e.ID() {
-		return "", false, refusal(admission.ReasonInvalid, "arrival request does not name its evidence")
-	}
 	if _, err := publishTx(q.tx, l.reg, e); errors.Is(err, admission.ErrEvidenceConflict) {
 		stored, loadErr := loadEvidence(q.tx, l.reg, e.ID())
 		if loadErr != nil {
@@ -194,6 +191,12 @@ func (l *AdmissionLedger) arriveTx(q *queueTx, a admission.Arrival) (admission.C
 	}
 	if a.ReportsOnly {
 		return "", false, nil
+	}
+	// The evidence and its acknowledged reports are stored before the
+	// request is judged, so a refused request cannot leave a later
+	// report-only tail an overflow count its links do not support.
+	if a.Request.Primary != a.Evidence.ID() {
+		return "", false, refusal(admission.ReasonInvalid, "arrival request does not name its evidence")
 	}
 	ids, err := rootSet(a.Request)
 	if err != nil {

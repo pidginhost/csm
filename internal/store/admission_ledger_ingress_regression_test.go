@@ -256,3 +256,53 @@ func TestIngressIsolationFencesSnapshotsBetweenCommits(t *testing.T) {
 		})
 	}
 }
+
+// Reports acknowledged with a refused request are stored with their
+// evidence, so a later report-only tail still records its overflow.
+func TestIngressRefusedRequestKeepsReportsAndOverflow(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	in := f.ingress()
+	first := f.submission(evidenceSpec{})
+	remint := func(i int) {
+		t.Helper()
+		if err := in.Submit(f.submission(evidenceSpec{finding: fmt.Sprintf("%016x", i)})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := in.Submit(first); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 5; i++ {
+		remint(i)
+	}
+	// While the first group commits, three reports fill the held list and
+	// two more overflow it.
+	hook := ingressHandoffHook{Ledger: f.l, before: func() {
+		for i := 6; i <= 10; i++ {
+			remint(i)
+		}
+	}}
+	// The request names other published evidence for the same target, so
+	// only the request check can refuse it.
+	other := f.submission(evidenceSpec{cursor: "other"})
+	if _, err := f.l.PublishEvidence(other.Evidence); err != nil {
+		t.Fatal(err)
+	}
+	report, err := in.Drain(hook, 1, func(s admission.Submission) (admission.CandidateRequest, error) {
+		req, reqErr := f.requestFor(s)
+		req.Primary = other.Evidence.ID()
+		return req, reqErr
+	})
+	if err != nil || report != (admission.DrainReport{Refused: 1}) || in.Len() != 1 {
+		t.Fatalf("refused request = %+v %v held=%d", report, err, in.Len())
+	}
+	tail, err := in.Drain(f.l, 1, f.requestFor)
+	if err != nil || tail.Refused != 0 || in.Len() != 0 {
+		t.Fatalf("report tail = %+v %v held=%d", tail, err, in.Len())
+	}
+	links, dropped, err := f.l.Reports(first.Evidence.ID())
+	if err != nil || len(links) != admission.MaxReportLinks || dropped != 2 {
+		t.Fatalf("reports=%v dropped=%d err=%v", links, dropped, err)
+	}
+}
