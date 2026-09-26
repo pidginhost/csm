@@ -262,6 +262,25 @@ func TestScheduleBudgetBlockedTurnPrecedesNewWork(t *testing.T) {
 	}
 }
 
+// A spent reserved budget ends the batch where it stands: an empty
+// sub-lane keeps the next turn although the other one still has work.
+func TestScheduleSpentReservedBudgetKeepsTurn(t *testing.T) {
+	lim := ScheduleLimits{Reserved: 1, Members: MaxBatchMembers}
+	c1 := schedItem("c1", "a", ClassC3, SeverityHigh, time.Hour)
+	c2 := schedItem("c2", "a", ClassC3, SeverityHigh, 0)
+	c1.Corroborated, c2.Corroborated = true, true
+	picks, st := mustSchedule(t, []ScheduleItem{c1, c2}, ScheduleState{}, lim)
+	if got := picked(picks); !reflect.DeepEqual(got, []string{"c1"}) {
+		t.Fatalf("first batch = %v", got)
+	}
+	d1 := schedItem("d1", "b", ClassC3, SeverityHigh, 0)
+	d1.Direct = true
+	picks, _ = mustSchedule(t, []ScheduleItem{c2, d1}, st, lim)
+	if got := picked(picks); !reflect.DeepEqual(got, []string{"d1"}) {
+		t.Fatalf("the sub-lane just served took the next turn: %v", got)
+	}
+}
+
 func assertScheduleProgress(t *testing.T, items []ScheduleItem, st ScheduleState, lim ScheduleLimits, target ScheduleItem) {
 	t.Helper()
 	for round := 0; round < int(target.Cost)+2; round++ {
