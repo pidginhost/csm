@@ -385,6 +385,12 @@ func (in *Ingress) Drain(l Ledger, limit int, request func(Submission) (Candidat
 	done := items
 	var first error
 	if err != nil {
+		// Damage an empty group also meets is shared, not an arrival's:
+		// every item goes back and none is counted lost.
+		if _, err = l.EnqueueGroup(nil, &checkpoint); err != nil {
+			in.Release(items)
+			return report, err
+		}
 		done = nil
 		results = nil
 		for i, a := range arrivals {

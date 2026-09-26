@@ -262,6 +262,50 @@ func TestIngressDrainIsolatesADamagedArrival(t *testing.T) {
 	}
 }
 
+// Damage that every transaction meets belongs to no arrival: the drain
+// returns every item to the ingress, counts none lost, and a drain after
+// the repair persists them.
+func TestIngressDrainReleasesWorkOnSharedDamage(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	in := f.ingress()
+	for _, target := range []string{"192.0.2.10", "192.0.2.11"} {
+		if err := in.Submit(f.submission(evidenceSpec{target: target, cursor: target})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := in.Stats().Counters.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var good []byte
+	setCounters := func(data []byte) {
+		t.Helper()
+		if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte(admissionQueueStateBucket))
+			if good == nil {
+				good = append([]byte(nil), b.Get(queueCountersKey)...)
+			}
+			return b.Put(queueCountersKey, data)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setCounters([]byte("damaged"))
+	report, err := in.Drain(f.l, 10, f.requestFor)
+	if !isCorrupt(err) || report != (admission.DrainReport{}) || in.Len() != 2 {
+		t.Fatalf("drain = %+v, %v; %d held", report, err, in.Len())
+	}
+	after, err := in.Stats().Counters.MarshalBinary()
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("shared damage was counted as lost work: %v", err)
+	}
+	setCounters(good)
+	if report, err = in.Drain(f.l, 10, f.requestFor); err != nil || report != (admission.DrainReport{Queued: 2}) || in.Len() != 0 {
+		t.Fatalf("drain after repair = %+v, %v; %d held", report, err, in.Len())
+	}
+}
+
 // Submitting never waits for the ledger: it completes while the owner holds
 // the ledger's write lock.
 func TestIngressSubmitDoesNotWaitForTheLedger(t *testing.T) {
