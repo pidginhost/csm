@@ -541,3 +541,229 @@ func mustEntry(t *testing.T) []byte {
 	}
 	return data
 }
+
+// A sweep must release expired work before it decides whether a candidate
+// that lost reserved eligibility fits in the general partition.
+func TestAdmissionLedgerSweepReleasesBeforePlacement(t *testing.T) {
+	f := newLedgerFixture(t)
+	alice := f.owner("alice")
+	local := f.published(evidenceSpec{owner: alice})
+	support := f.published(evidenceSpec{producer: f.rep, check: "reputation", owner: alice, cursor: "support", age: 23 * time.Hour})
+	_, id := f.enqueue(f.request("192.0.2.10", local, support))
+	f.tickAt(ledgerT0.Add(time.Second))
+	expired := f.fill(admission.PartitionGeneral.DurableCapacity(), evidenceSpec{owner: alice, severity: admission.SeverityCritical, age: 90 * time.Minute})
+	f.tickAt(ledgerT0.Add(time.Hour))
+	before := f.snapshot()
+	f.failNext("revalidate")
+	if err := f.l.Revalidate(); err == nil {
+		t.Fatal("injected failure did not abort revalidation")
+	}
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("failed sweep changed records")
+	}
+	if err := f.l.Revalidate(); err != nil {
+		t.Fatal(err)
+	}
+	c, err := f.l.Candidate(id)
+	e, entryErr := f.entry(id)
+	if err != nil || entryErr != nil || c.State != admission.StateQueued || e.Partition != admission.PartitionGeneral || e.Tier != sshHigh {
+		t.Fatalf("valid candidate lost to expired occupancy: %+v %+v %v %v", c, e, err, entryErr)
+	}
+	for _, old := range expired {
+		c, err := f.l.Candidate(old)
+		if err != nil || c.Reason != admission.ReasonStale {
+			t.Fatalf("expired candidate: %+v %v", c, err)
+		}
+	}
+	critical := admission.Tier{Class: admission.ClassC2, Severity: admission.SeverityCritical}
+	if n := f.count(ended(admission.ReasonStale, critical)); n != uint64(len(expired)) {
+		t.Fatalf("stale count = %d", n)
+	}
+	if n := f.count(ended(admission.ReasonQueueOverflow, sshHigh)); n != 0 {
+		t.Fatalf("spurious overflow count = %d", n)
+	}
+}
+
+// A newer general candidate can lose severity before an older reserved
+// candidate needs its position. Victim selection must use both new tiers.
+func TestAdmissionLedgerSweepRefreshesVictimTiers(t *testing.T) {
+	f := newLedgerFixture(t)
+	alice := f.owner("alice")
+	local := f.published(evidenceSpec{owner: alice})
+	support := f.published(evidenceSpec{producer: f.rep, check: "reputation", owner: alice, cursor: "support", age: 23 * time.Hour})
+	_, older := f.enqueue(f.request("192.0.2.10", local, support))
+	f.tickAt(ledgerT0.Add(time.Second))
+	general := f.fill(admission.PartitionGeneral.DurableCapacity()-1, evidenceSpec{owner: alice, severity: admission.SeverityCritical})
+	high := f.published(evidenceSpec{owner: alice, target: "192.0.2.11", cursor: "high"})
+	critical := f.published(evidenceSpec{owner: alice, target: "192.0.2.11", cursor: "critical", severity: admission.SeverityCritical, age: 90 * time.Minute})
+	_, victim := f.enqueue(f.request("192.0.2.11", high, critical))
+	f.tickAt(ledgerT0.Add(time.Hour))
+	if err := f.l.Revalidate(); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := f.l.Candidate(older); err != nil || c.State != admission.StateQueued {
+		t.Fatalf("older equal-tier candidate: %+v %v", c, err)
+	}
+	if c, err := f.l.Candidate(victim); err != nil || c.Reason != admission.ReasonQueueOverflow {
+		t.Fatalf("newer lower-tier victim: %+v %v", c, err)
+	}
+	for _, id := range general {
+		if c, err := f.l.Candidate(id); err != nil || c.State != admission.StateQueued {
+			t.Fatalf("higher-tier candidate: %+v %v", c, err)
+		}
+	}
+	if n := f.count(ended(admission.ReasonQueueOverflow, sshHigh)); n != 1 {
+		t.Fatalf("overflow count = %d", n)
+	}
+}
+
+// Maintenance observes the same predecessor-chain invariant as explicit
+// candidate transitions, including when a retry's expiry has passed.
+func TestAdmissionLedgerMaintenanceRejectsBrokenHistory(t *testing.T) {
+	for _, op := range []string{"revalidate", "sweep", "inventory"} {
+		t.Run(op, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			root := f.published(evidenceSpec{owner: f.owner("alice")})
+			_, id := f.enqueue(f.request("192.0.2.10", root))
+			_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, a, err = f.l.Finish(a.Attempt.ID, admission.DispositionFailed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a.State, a.Disposition = admission.StateUnknown, admission.DispositionUnknown
+			if err = f.db.bolt.Update(func(tx *bolt.Tx) error { return putAttempt(tx, a) }); err != nil {
+				t.Fatal(err)
+			}
+			f.tickAt(ledgerT0.Add(time.Minute))
+			next := f.published(evidenceSpec{target: "192.0.2.11", cursor: "next"})
+			before := f.snapshot()
+			switch op {
+			case "revalidate":
+				err = f.l.Revalidate()
+			case "sweep":
+				_, _, err = f.l.Enqueue(f.request("192.0.2.11", next))
+			case "inventory":
+				err = f.l.RefreshInventory(admission.InventoryObservation{Accounts: []string{"bob"}})
+			}
+			if !isCorrupt(err) {
+				t.Fatalf("maintenance accepted broken history: %v", err)
+			}
+			if !reflect.DeepEqual(before, f.snapshot()) {
+				t.Fatal("damaged history changed records")
+			}
+			if got := f.l.Inventory().Resolve(admission.Claim{Kind: admission.ClaimAccount, Value: "alice"}); got.IsHost() {
+				t.Fatal("failed maintenance published inventory")
+			}
+		})
+	}
+}
+
+// Executing an attempt still requires its durable position. The grant must
+// not authorize work that is invisible to queue capacity.
+func TestAdmissionLedgerExecuteRequiresQueueEntry(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.queued()
+	_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.db.bolt.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte(admissionQueueBucket)).Delete([]byte(id)) }); err != nil {
+		t.Fatal(err)
+	}
+	before := f.snapshot()
+	_, _, granted, err := f.l.Execute(a.Attempt.ID)
+	if !isCorrupt(err) || granted {
+		t.Fatalf("execute without a position: granted %v, %v", granted, err)
+	}
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("refused execution changed records")
+	}
+}
+
+// Missing evidence is corruption even when time has also expired. A sweep
+// must not erase the candidate and disguise damage as an ordinary age-out.
+func TestAdmissionLedgerExpiredCandidateRequiresRoots(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.queued()
+	c, err := f.l.Candidate(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.db.bolt.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte(admissionEvidenceBucket)).Delete([]byte(c.Roots[0])) }); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(c.AgeOut)
+	before := f.snapshot()
+	if err = f.l.Revalidate(); !isCorrupt(err) {
+		t.Fatalf("expired candidate hid missing evidence: %v", err)
+	}
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("damaged candidate was changed")
+	}
+}
+
+// Coalescing can also move a candidate out of reserve. The merged roots
+// must be assessed alongside other due work before choosing its position.
+func TestAdmissionLedgerCoalescingSweepsBeforePlacement(t *testing.T) {
+	f := newLedgerFixture(t)
+	alice := f.owner("alice")
+	local := f.published(evidenceSpec{owner: alice})
+	support := f.published(evidenceSpec{producer: f.rep, check: "reputation", owner: alice, cursor: "support", age: 23 * time.Hour})
+	original, id := f.enqueue(f.request("192.0.2.10", local, support))
+	f.tickAt(ledgerT0.Add(time.Second))
+	f.fill(admission.PartitionGeneral.DurableCapacity(), evidenceSpec{owner: alice, severity: admission.SeverityCritical, age: 90 * time.Minute})
+	f.tickAt(ledgerT0.Add(time.Hour))
+	fresh := f.published(evidenceSpec{owner: alice, cursor: "fresh"})
+	req := f.request("192.0.2.10", fresh)
+	before := f.snapshot()
+	f.failNext("enqueue")
+	if _, _, err := f.l.Enqueue(req); err == nil {
+		t.Fatal("injected failure did not abort coalescing")
+	}
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("failed coalescing changed records")
+	}
+	c, created, err := f.l.Enqueue(req)
+	e, entryErr := f.entry(id)
+	if err != nil || entryErr != nil || created || c.State != admission.StateQueued || e.Partition != admission.PartitionGeneral || e.Tier != sshHigh {
+		t.Fatalf("coalesced candidate lost to expired occupancy: %+v %+v %v %v", c, e, err, entryErr)
+	}
+	if c.Transitions != original.Transitions+1 || len(c.Roots) != 3 || c.AgeOut != original.AgeOut || c.FirstQueued != original.FirstQueued {
+		t.Fatalf("coalescing changed history: %+v", c)
+	}
+	if n := f.count(ended(admission.ReasonQueueOverflow, sshHigh)); n != 0 {
+		t.Fatalf("spurious overflow count = %d", n)
+	}
+}
+
+// New support must be visible to victim selection in the same sweep. The
+// promoted candidate cannot be displaced using its previous general tier.
+func TestAdmissionLedgerCoalescingAssessesBeforeDisplacement(t *testing.T) {
+	f := newLedgerFixture(t)
+	alice := f.owner("alice")
+	local := f.published(evidenceSpec{owner: alice})
+	support := f.published(evidenceSpec{producer: f.rep, check: "reputation", owner: alice, cursor: "support", age: 23 * time.Hour})
+	_, demoting := f.enqueue(f.request("192.0.2.10", local, support))
+	f.tickAt(ledgerT0.Add(time.Second))
+	f.fill(admission.PartitionGeneral.DurableCapacity()-1, evidenceSpec{owner: alice, severity: admission.SeverityCritical})
+	root := f.published(evidenceSpec{owner: alice, target: "192.0.2.11", cursor: "root"})
+	_, promoting := f.enqueue(f.request("192.0.2.11", root))
+	f.tickAt(ledgerT0.Add(time.Hour))
+	fresh := f.published(evidenceSpec{producer: f.rep, check: "reputation", owner: alice, target: "192.0.2.11", cursor: "fresh"})
+	c, created, err := f.l.Enqueue(f.request("192.0.2.11", root, fresh))
+	if err != nil || created || c.State != admission.StateQueued {
+		t.Fatalf("promoting candidate displaced: %+v %v", c, err)
+	}
+	for id, partition := range map[admission.CandidateID]admission.Partition{demoting: admission.PartitionGeneral, promoting: admission.PartitionReserved} {
+		e, err := f.entry(id)
+		if err != nil || e.Partition != partition {
+			t.Fatalf("candidate %s: entry %+v, %v; want %s", id, e, err, partition)
+		}
+	}
+	if n := f.count(ended(admission.ReasonQueueOverflow, sshHigh)); n != 0 {
+		t.Fatalf("unnecessary displacement count = %d", n)
+	}
+}

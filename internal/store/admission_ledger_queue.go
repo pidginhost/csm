@@ -42,6 +42,7 @@ func upgradeLedgerToSchemaTwo(tx *bolt.Tx) error {
 	}
 	queue := tx.Bucket([]byte(admissionQueueBucket))
 	live := 0
+	var nextSweep time.Time
 	err := tx.Bucket([]byte(admissionCandidatesBucket)).ForEach(func(k, v []byte) error {
 		c, err := admission.UnmarshalCandidate(v)
 		if err != nil {
@@ -54,6 +55,9 @@ func upgradeLedgerToSchemaTwo(tx *bolt.Tx) error {
 			return nil
 		}
 		live++
+		if c.State == admission.StateQueued && (nextSweep.IsZero() || c.FirstQueued.Before(nextSweep)) {
+			nextSweep = c.FirstQueued
+		}
 		// Eligibility is unknown until a current reading. Every imported
 		// candidate must fit the general partition without borrowing reserve.
 		if live > admission.PartitionGeneral.DurableCapacity() {
@@ -69,6 +73,11 @@ func upgradeLedgerToSchemaTwo(tx *bolt.Tx) error {
 		return err
 	}
 	if err := initializeQueueState(tx.Bucket([]byte(admissionQueueStateBucket))); err != nil {
+		return err
+	}
+	// Unassessed queued work is due at the first current reading, even if
+	// an arrival reaches the ledger before an explicit recovery sweep.
+	if err := putQueueState(tx, admission.QueueState{NextSweep: nextSweep}); err != nil {
 		return err
 	}
 	return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaVersion})
@@ -198,6 +207,11 @@ func (q *queueTx) live() ([]liveCandidate, error) {
 		c, err := loadCandidate(q.tx, id)
 		if err != nil || c.State.Terminal() {
 			return admission.ErrCorruptRecord
+		}
+		if c.Attempts > 0 {
+			if _, err = currentAttempt(q.tx, c); err != nil {
+				return err
+			}
 		}
 		out = append(out, liveCandidate{id: id, c: c, entry: entry})
 		return nil
@@ -366,12 +380,15 @@ func (q *queueTx) reassess(lc liveCandidate, next admission.QueueEntry) (admissi
 // longer published is damage, not a refusal: evidence is never removed.
 func (q *queueTx) check(lc liveCandidate, timed bool) (admission.Assessment, admission.Reason, error) {
 	c := lc.c
-	if timed && (!q.now.Before(c.AgeOut) || (c.Attempts > 0 && !q.now.Before(c.ExpiresAt))) {
-		return admission.Assessment{}, admission.ReasonStale, nil
-	}
 	roots, err := loadRoots(q.tx, q.reg, c.Roots)
 	if errors.Is(err, admission.ErrEvidenceUnpublished) {
 		return admission.Assessment{}, 0, admission.ErrCorruptRecord
+	}
+	if _, refused := admission.ReasonOf(err); err != nil && !refused {
+		return admission.Assessment{}, 0, err
+	}
+	if timed && (!q.now.Before(c.AgeOut) || (c.Attempts > 0 && !q.now.Before(c.ExpiresAt))) {
+		return admission.Assessment{}, admission.ReasonStale, nil
 	}
 	if err == nil {
 		_, err = scopeOwner(q.inv, roots)
@@ -404,8 +421,13 @@ func (q *queueTx) revalidate(all bool) error {
 		}
 		return live[i].id < live[j].id
 	})
+	type assessedCandidate struct {
+		liveCandidate
+		next admission.QueueEntry
+	}
+	var staying, moving []assessedCandidate
 	for _, lc := range live {
-		if _, still := q.view.Item(string(lc.id)); !still || lc.c.State != admission.StateQueued {
+		if lc.c.State != admission.StateQueued {
 			continue
 		}
 		due := !lc.entry.Assessed() || !q.now.Before(lc.entry.NextChange) || !q.now.Before(lc.c.AgeOut) ||
@@ -413,9 +435,9 @@ func (q *queueTx) revalidate(all bool) error {
 		if !all && !due {
 			continue
 		}
-		a, reason, err := q.check(lc, true)
-		if err != nil {
-			return err
+		a, reason, checkErr := q.check(lc, true)
+		if checkErr != nil {
+			return checkErr
 		}
 		if reason != 0 {
 			if err = q.end(lc, reason); err != nil {
@@ -423,7 +445,19 @@ func (q *queueTx) revalidate(all bool) error {
 			}
 			continue
 		}
-		if _, err = q.reassess(lc, entryFor(a)); err != nil {
+		next := entryFor(a)
+		if lc.entry.Partition == admission.PartitionReserved && !next.Eligible() {
+			q.view.Remove(string(lc.id))
+			moving = append(moving, assessedCandidate{lc, next})
+		} else {
+			staying = append(staying, assessedCandidate{lc, next})
+		}
+	}
+	// Release invalid work and refresh every retained tier before choosing
+	// victims. Otherwise an older demotion competes with expired occupancy
+	// or yesterday's priority, and can be dropped despite available room.
+	for _, pending := range append(staying, moving...) {
+		if _, err = q.reassess(pending.liveCandidate, pending.next); err != nil {
 			return err
 		}
 	}

@@ -248,3 +248,30 @@ func TestAdmissionLedgerUpgradeRefusesExcessLiveWork(t *testing.T) {
 		t.Fatal("refused upgrade changed the legacy ledger")
 	}
 }
+
+// The first new arrival after an upgrade must run due maintenance even
+// without a prior explicit revalidation; unassessed entries need a sweep.
+func TestAdmissionLedgerUpgradeSweepsBeforeEnqueue(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.queued()
+	f.schemaOne()
+	l, err := OpenAdmissionLedger(f.db, f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.l = l
+	f.tickAt(ledgerT0.Add(admission.QueueAgeLimit))
+	root := f.published(evidenceSpec{target: "192.0.2.11", cursor: "fresh"})
+	before := f.snapshot()
+	f.failNext("enqueue")
+	if _, _, err = f.l.Enqueue(f.request("192.0.2.11", root)); err == nil {
+		t.Fatal("injected failure did not abort enqueue")
+	}
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("failed enqueue changed the upgraded queue")
+	}
+	f.enqueue(f.request("192.0.2.11", root))
+	if c, err := f.l.Candidate(id); err != nil || c.State != admission.StateDropped || c.Reason != admission.ReasonStale {
+		t.Fatalf("upgraded candidate was not swept: %+v %v", c, err)
+	}
+}

@@ -223,8 +223,7 @@ func (l *AdmissionLedger) coalesceTx(q *queueTx, cur admission.Candidate, ids []
 	if err != nil {
 		return admission.Candidate{}, false, err
 	}
-	assessment, err := admission.Assess(cur.Key.Target, roots, now)
-	if err != nil {
+	if _, err = admission.Assess(cur.Key.Target, roots, now); err != nil {
 		return admission.Candidate{}, false, err
 	}
 	owner, err := scopeOwner(l.Inventory(), roots)
@@ -250,7 +249,19 @@ func (l *AdmissionLedger) coalesceTx(q *queueTx, cur admission.Candidate, ids []
 	if err = putCandidate(tx, cur); err != nil {
 		return admission.Candidate{}, false, err
 	}
-	stored, err := q.reassess(liveCandidate{id: id, c: cur, entry: entry}, entryFor(assessment))
+	// Mark the old assessment due inside this transaction. The sweep must
+	// see merged support before any candidate chooses a displacement victim.
+	if entry.Assessed() {
+		entry.NextChange = now
+	}
+	if err = putQueueEntry(tx, id, entry); err != nil {
+		return admission.Candidate{}, false, err
+	}
+	q.noteDeadlines(cur, entry)
+	if err = q.sweep(); err != nil {
+		return admission.Candidate{}, false, err
+	}
+	stored, err := loadCandidate(tx, id)
 	return stored, false, err
 }
 

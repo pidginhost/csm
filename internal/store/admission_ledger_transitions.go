@@ -358,6 +358,9 @@ func (l *AdmissionLedger) Execute(id admission.ActionID) (admission.Candidate, a
 		case !q.now.Before(a.ExpiresAt):
 			return false, refusal(admission.ReasonStale, "absolute expiry has passed")
 		}
+		if _, err := loadQueueEntry(q.tx, a.Attempt.Candidate); err != nil {
+			return false, err
+		}
 		a.State, c.State = admission.StateExecuting, admission.StateExecuting
 		return true, nil
 	})
