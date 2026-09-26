@@ -57,6 +57,11 @@ type AdmissionLedger struct {
 	// be hours old, and old evidence would read as fresh.
 	current bool
 
+	// revalidated is set once this handle has checked every queued
+	// candidate at a current reading. A reopened ledger cannot know what
+	// changed while it was closed, so its first schedule checks them all.
+	revalidated bool
+
 	inv atomic.Pointer[ledgerInventory]
 
 	// failBeforeCommit lets a test fail a write transaction after all of
@@ -136,6 +141,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 			return err
 		}
 		if _, err := loadQueueCounters(tx); err != nil {
+			return err
+		}
+		if _, err := loadScheduleState(tx); err != nil {
 			return err
 		}
 		meta := tx.Bucket([]byte(admissionMetaBucket))

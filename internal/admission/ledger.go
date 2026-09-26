@@ -84,6 +84,13 @@ type Ledger interface {
 	Defer(CandidateID, Reason) (Candidate, error)
 	// Terminate ends a queued candidate as refused, withheld or dropped.
 	Terminate(CandidateID, Reason) (Candidate, error)
+	// Schedule picks the next candidates to serve within the lane budgets
+	// and records the scheduler's position. Picks stay queued until the
+	// engine reserves or ends them. Every pick is revalidated first.
+	Schedule(ScheduleLimits) ([]Pick, error)
+	// NextWake is when queued work next changes without a new report: a
+	// retry wait ends or a queued deadline passes.
+	NextWake() (time.Time, bool, error)
 	// Revalidate checks every queued candidate against current policy,
 	// inventory and the admission clock: one that no longer qualifies ends,
 	// the rest keep their positions under a new assessment. The engine

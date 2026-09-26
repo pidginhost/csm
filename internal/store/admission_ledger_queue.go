@@ -12,21 +12,27 @@ import (
 var (
 	queueStateKey    = []byte("queue")
 	queueCountersKey = []byte("counters")
+	scheduleStateKey = []byte("schedule")
 )
 
 func initializeQueueState(b *bolt.Bucket) error {
-	state, err := admission.QueueState{}.MarshalBinary()
-	if err != nil {
-		return err
+	for _, rec := range []struct {
+		key   []byte
+		value interface{ MarshalBinary() ([]byte, error) }
+	}{
+		{queueStateKey, admission.QueueState{}},
+		{queueCountersKey, admission.QueueCounters{}},
+		{scheduleStateKey, admission.ScheduleState{}},
+	} {
+		data, err := rec.value.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		if err = b.Put(rec.key, data); err != nil {
+			return err
+		}
 	}
-	counters, err := admission.QueueCounters{}.MarshalBinary()
-	if err != nil {
-		return err
-	}
-	if err := b.Put(queueStateKey, state); err != nil {
-		return err
-	}
-	return b.Put(queueCountersKey, counters)
+	return nil
 }
 
 // upgradeLedgerToSchemaTwo adds the queue buckets to a schema 1 ledger
@@ -522,14 +528,165 @@ func (l *AdmissionLedger) Revalidate() error {
 	if err != nil {
 		return err
 	}
-	return l.update("revalidate", func(tx *bolt.Tx) error {
-		q, err := l.openQueue(tx, now)
-		if err != nil {
-			return err
+	err = l.update("revalidate", func(tx *bolt.Tx) error {
+		q, txErr := l.openQueue(tx, now)
+		if txErr != nil {
+			return txErr
 		}
-		if err = q.revalidate(true); err != nil {
-			return err
+		if txErr = q.revalidate(true); txErr != nil {
+			return txErr
 		}
 		return q.flush()
 	})
+	if err == nil {
+		l.revalidated = true
+	}
+	return err
+}
+
+func loadScheduleState(tx *bolt.Tx) (admission.ScheduleState, error) {
+	raw := tx.Bucket([]byte(admissionQueueStateBucket)).Get(scheduleStateKey)
+	if raw == nil {
+		return admission.ScheduleState{}, admission.ErrCorruptRecord
+	}
+	return admission.UnmarshalScheduleState(raw)
+}
+
+func putScheduleState(tx *bolt.Tx, s admission.ScheduleState) error {
+	data, err := s.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	return tx.Bucket([]byte(admissionQueueStateBucket)).Put(scheduleStateKey, data)
+}
+
+// unitCost is the block cost of every candidate kind the ledger queues: one
+// address, prefix or service tuple (spec 5.6).
+const unitCost = 1
+
+// Schedule picks the next candidates to serve under lim and records the
+// scheduler's new position; the picks stay queued until the engine
+// reserves or ends them. The first schedule of a reopened ledger checks
+// every queued candidate first; later ones end the candidates whose
+// deadlines passed. Each pick is revalidated before it is returned: one
+// that no longer qualifies ends, and its turn goes to the next candidate.
+func (l *AdmissionLedger) Schedule(lim admission.ScheduleLimits) ([]admission.Pick, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now, err := l.clock()
+	if err != nil {
+		return nil, err
+	}
+	var picks []admission.Pick
+	if err = l.update("schedule", func(tx *bolt.Tx) error {
+		q, txErr := l.openQueue(tx, now)
+		if txErr != nil {
+			return txErr
+		}
+		if picks, txErr = l.scheduleTx(q, lim); txErr != nil {
+			return txErr
+		}
+		return q.flush()
+	}); err != nil {
+		return nil, err
+	}
+	l.revalidated = true
+	return picks, nil
+}
+
+func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits) ([]admission.Pick, error) {
+	// Revalidate directly rather than through sweep: an upgraded ledger's
+	// unassessed candidates are due before any deadline is recorded.
+	if err := q.revalidate(!l.revalidated); err != nil {
+		return nil, err
+	}
+	st, err := loadScheduleState(q.tx)
+	if err != nil {
+		return nil, err
+	}
+	live, err := q.live()
+	if err != nil {
+		return nil, err
+	}
+	byID := map[admission.CandidateID]liveCandidate{}
+	var items []admission.ScheduleItem
+	for _, lc := range live {
+		if lc.c.State != admission.StateQueued {
+			continue
+		}
+		byID[lc.id] = lc
+		items = append(items, admission.ScheduleItem{
+			ID: lc.id, Scope: lc.c.Scope.Key(), Tier: lc.entry.Tier, Direct: lc.entry.Direct,
+			Corroborated: lc.entry.Corroborated, Queued: lc.c.FirstQueued, Cost: unitCost, Ready: !q.now.Before(lc.c.NotBefore),
+		})
+	}
+	// A pick that fails revalidation ends, and the schedule is computed
+	// again from the stored position without it, so its turn is not spent.
+	for {
+		picks, next, schedErr := admission.Schedule(items, st, lim)
+		if schedErr != nil {
+			return nil, schedErr
+		}
+		refused := map[admission.CandidateID]bool{}
+		for _, p := range picks {
+			_, reason, checkErr := q.check(byID[p.ID], true)
+			if checkErr != nil {
+				return nil, checkErr
+			}
+			if reason == 0 {
+				continue
+			}
+			if checkErr = q.end(byID[p.ID], reason); checkErr != nil {
+				return nil, checkErr
+			}
+			refused[p.ID] = true
+		}
+		if len(refused) == 0 {
+			return picks, putScheduleState(q.tx, next)
+		}
+		kept := items[:0:0]
+		for _, it := range items {
+			if !refused[it.ID] {
+				kept = append(kept, it)
+			}
+		}
+		items = kept
+	}
+}
+
+// NextWake is the earliest admission time at which queued work changes
+// without a new report: a retry wait ends or a queued deadline passes. The
+// engine's timer ticks and schedules then. ok is false when nothing waits.
+func (l *AdmissionLedger) NextWake() (time.Time, bool, error) {
+	var wake time.Time
+	err := l.db.bolt.View(func(tx *bolt.Tx) error {
+		clock, err := loadLedgerClock(tx.Bucket([]byte(admissionMetaBucket)))
+		if err != nil {
+			return err
+		}
+		q, err := openQueueWith(tx, l.reg, l.Inventory(), clock.Now())
+		if err != nil {
+			return err
+		}
+		live, err := q.live()
+		if err != nil {
+			return err
+		}
+		// Stored sweep times may outlive a released position. Derive the
+		// wake from live queued work in this same read transaction.
+		q.state.NextSweep = time.Time{}
+		for _, lc := range live {
+			if lc.c.State == admission.StateQueued {
+				q.noteDeadlines(lc.c, lc.entry)
+			}
+		}
+		wake = q.state.NextSweep
+		for _, lc := range live {
+			if nb := lc.c.NotBefore; lc.c.State == admission.StateQueued && nb.After(clock.Now()) && (wake.IsZero() || nb.Before(wake)) {
+				wake = nb
+			}
+		}
+		return nil
+	})
+	return wake, !wake.IsZero(), err
 }
