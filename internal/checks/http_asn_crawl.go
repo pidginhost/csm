@@ -7,28 +7,20 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"path"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/crawlid"
 )
 
-// httpASNCrawlStaticExts are path extensions whose responses are cacheable
-// static assets; requests for them never reach PHP, so they are not
-// "expensive" for this detector.
-var httpASNCrawlStaticExts = map[string]struct{}{
-	"jpg": {}, "jpeg": {}, "png": {}, "gif": {}, "webp": {}, "svg": {}, "ico": {},
-	"bmp": {}, "css": {}, "js": {}, "mjs": {}, "map": {}, "woff": {}, "woff2": {},
-	"ttf": {}, "eot": {}, "otf": {}, "mp4": {}, "webm": {}, "ogg": {}, "mp3": {},
-	"pdf": {}, "zip": {}, "gz": {}, "avif": {},
-}
+// Keep one extension heuristic for both crawl classifiers.
+var httpASNCrawlStaticExts = crawlid.StaticExtensions
 
-// httpASNCrawlExpensive reports whether a request is a dynamic, uncacheable
-// hit that reaches PHP: a GET or HEAD with a query string whose path extension
-// is not a static asset.
+// httpASNCrawlExpensive selects GET/HEAD requests with nonempty queries and
+// non-static raw extensions. This heuristic does not prove backend cost.
 func httpASNCrawlExpensive(rec accessLogRecord) bool {
 	if rec.Method != "GET" && rec.Method != "HEAD" {
 		return false
@@ -38,7 +30,7 @@ func httpASNCrawlExpensive(rec accessLogRecord) bool {
 		return false
 	}
 	p := rec.URI[:q]
-	ext := strings.ToLower(strings.TrimPrefix(path.Ext(p), "."))
+	ext := crawlid.PathExtension(p)
 	if ext == "" {
 		return true
 	}
