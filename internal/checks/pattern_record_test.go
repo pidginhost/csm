@@ -279,17 +279,28 @@ func TestParsePatternRecordMalformedAncillaryFields(t *testing.T) {
 }
 
 func TestParsePatternRecordHeaderFields(t *testing.T) {
+	// Apache and nginx escape only quotes, backslashes and non-printable bytes
+	// in the remote user, and log an empty user as "". Basic-auth usernames
+	// are logged even when authentication fails, so a client chooses them.
 	for _, prefix := range []string{
 		`192.0.2.1 ident[0] user[1] `,
 		`192.0.2.1 - [user] `,
+		`192.0.2.1 - a b `,
+		`192.0.2.1 - - extra `,
+		`192.0.2.1 - "" `,
+		`192.0.2.1 - x] [26/Sep/2026 `,
+		`192.0.2.1 - x] [26/Sep/2026:09:00:00 +0000] `,
+		`192.0.2.1 - q\"q `,
+		`192.0.2.1 - bs\\s `,
 	} {
 		r, ok := parsePatternRecord(prefix + prTime + ` "GET /a?x=1 HTTP/1.1" 200 1 "-" "UA"`)
-		if !ok || !r.TimeOK || r.RemoteIP != "192.0.2.1" || r.Target != "/a?x=1" || r.UserAgent != "UA" {
+		want := time.Date(2026, 9, 26, 7, 0, 0, 0, time.UTC)
+		if !ok || !r.TimeOK || !r.Time.Equal(want) || r.RemoteIP != "192.0.2.1" || r.Target != "/a?x=1" || r.UserAgent != "UA" {
 			t.Errorf("header %q: ok=%v record=%+v", prefix, ok, r)
 		}
 	}
 	for _, prefix := range []string{
-		`192.0.2.1 `, `192.0.2.1 - `, `192.0.2.1 - - extra `,
+		`192.0.2.1 `, `192.0.2.1 - `,
 	} {
 		if _, ok := parsePatternRecord(prefix + prTime + ` "GET / HTTP/1.1" 200 1`); ok {
 			t.Errorf("accepted unsupported header %q", prefix)
@@ -316,6 +327,7 @@ func TestParsePatternRecordRequestSyntax(t *testing.T) {
 	for _, tc := range []struct{ request, method string }{
 		{`GET /a HTTP/0.9`, "GET"}, {`GET /a HTTP/1.0`, "GET"},
 		{`GET /a HTTP/2.0`, "GET"}, {`GET /a HTTP/3.0`, "GET"},
+		{`GET /a HTTP/2`, "GET"}, {`GET /a HTTP/3`, "GET"},
 		{`\x47ET /a \x48TTP/1.1`, "GET"},
 		{strings.Repeat("M", patternMaxMethod) + ` /a HTTP/1.1`, strings.Repeat("M", patternMaxMethod)},
 		{`M!#$%&'*+-.^_` + "`" + `|~ /a HTTP/1.1`, "M!#$%&'*+-.^_`|~"},

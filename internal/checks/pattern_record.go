@@ -56,22 +56,17 @@ func parsePatternRecord(line string) (patternRecord, bool) {
 		return rec, false
 	}
 	rec.RemoteIP = line[:sp]
-	// Ident and user are tokens and may themselves contain brackets.
-	ident, rest := patternToken(line[sp+1:])
-	user, rest := patternToken(rest)
-	rest = strings.TrimLeft(rest, " \t")
-	if ident == "" || user == "" || !strings.HasPrefix(rest, "[") {
+	header, stampText, rest, ok := patternSplitHeader(line[sp+1:])
+	if !ok {
 		return rec, false
 	}
-	rest = rest[1:]
-	cb := strings.IndexByte(rest, ']')
-	if cb < 0 {
+	ident, user := patternToken(header)
+	if ident == "" || strings.TrimSpace(user) == "" {
 		return rec, false
 	}
-	if stamp, err := time.Parse("02/Jan/2006:15:04:05 -0700", rest[:cb]); err == nil {
+	if stamp, err := time.Parse("02/Jan/2006:15:04:05 -0700", stampText); err == nil {
 		rec.Time, rec.TimeOK = stamp, true
 	}
-	rest = rest[cb+1:]
 
 	request, rest, ok := patternQuotedField(rest)
 	if !ok {
@@ -159,8 +154,44 @@ func parsePatternRecord(line string) (patternRecord, bool) {
 
 func patternHTTPVersion(s string) bool {
 	v, over := patternDecodeField(s, len("HTTP/1.1"))
-	return !over && len(v) == 8 && strings.HasPrefix(v, "HTTP/") &&
-		v[5] >= '0' && v[5] <= '9' && v[6] == '.' && v[7] >= '0' && v[7] <= '9'
+	if over || !strings.HasPrefix(v, "HTTP/") {
+		return false
+	}
+	switch len(v) {
+	case len("HTTP/1.1"):
+		return v[5] >= '0' && v[5] <= '9' && v[6] == '.' && v[7] >= '0' && v[7] <= '9'
+	case len("HTTP/2"):
+		// HTTP/2 and HTTP/3 have no request line, so the server writes the
+		// version itself and may omit the minor digit. HTTP/1.x never does.
+		return v[5] >= '2' && v[5] <= '9'
+	}
+	return false
+}
+
+// patternSplitHeader separates "<ident> <user> [<time>]" from the request.
+// The remote user is logged unescaped apart from quotes, backslashes and
+// non-printable bytes, and a client chooses it even when authentication
+// fails, so it may hold spaces and brackets. It cannot hold a bare quote, so
+// the first ']' followed by blanks and a quote closes the timestamp.
+func patternSplitHeader(s string) (header, stamp, rest string, ok bool) {
+	for i := 0; i < len(s); i++ {
+		if s[i] != ']' {
+			continue
+		}
+		j := i + 1
+		for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+			j++
+		}
+		if j == i+1 || j == len(s) || s[j] != '"' {
+			continue
+		}
+		open := strings.LastIndexByte(s[:i], '[')
+		if open < 0 {
+			return "", "", "", false
+		}
+		return s[:open], s[open+1 : i], s[i+1:], true
+	}
+	return "", "", "", false
 }
 
 func patternValidMethod(s string) bool {
