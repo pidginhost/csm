@@ -728,6 +728,47 @@ func FuzzParseAccessLogRecord(f *testing.F) {
 	})
 }
 
+func FuzzParsePatternRecord(f *testing.F) {
+	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET /a\x20b?x=1 HTTP/1.1" 200 1 "https://example.com/a\"b" "UA"`)
+	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET /a b HTTP/1.1" 200 1 "-" "UA"`)
+	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET /category/?filter_color=red HTTP/1.1" 200 512 "https://example.com/category/" "Mozilla/5.0"`)
+	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET /a\x22b HTTP/1.1" 200 1 "\"-\"" "UA \"x\""`)
+	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "-" 400 0 "-" "-"`)
+	f.Add(`198.51.100.9 - - [26/Sep/2026:10:00:00 +0300] "GET / HTTP/1.1" 200 1 "http://[2001:db8::1]:8080/" "UA" "203.0.113.7"`)
+	f.Add("192.0.2.2 - - [26/Sep/2026:10:00:00 +0300] \"GET /" + strings.Repeat("a", 9000) + " HTTP/1.1\" 414 0 \"-\" \"-\"")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, line string) {
+		r, ok := parsePatternRecord(line)
+		if !ok {
+			return
+		}
+		if len(r.Target) > patternMaxTarget || ((r.TargetOverflow || r.TargetInvalid) && r.Target != "") {
+			t.Fatalf("target bound broken: overflow=%v len=%d", r.TargetOverflow, len(r.Target))
+		}
+		if r.Target != "" && r.Target[0] != '/' {
+			t.Fatalf("non-origin target kept: %q", r.Target)
+		}
+		if r.Status < 100 || r.Status > 599 || (!r.TimeOK && !r.Time.IsZero()) {
+			t.Fatal("invalid parsed scalar")
+		}
+		if len(r.XFF) > patternMaxExtension || (r.XFFUnusable && r.XFF != "") {
+			t.Fatal("partial XFF retained")
+		}
+		if len(r.Method) > patternMaxMethod {
+			t.Fatal("method not bounded")
+		}
+		if len(r.UserAgent) > patternMaxUA {
+			t.Fatalf("ua bound broken: %d", len(r.UserAgent))
+		}
+		if (r.RefererHost != "") != (r.Referer == refererValid) {
+			t.Fatalf("referer host %q with state %v", r.RefererHost, r.Referer)
+		}
+		if len(r.RefererHost) > patternMaxHost || r.RefererHost != patternASCIILower(r.RefererHost) {
+			t.Fatalf("referer host not bounded/folded: %q", r.RefererHost)
+		}
+	})
+}
+
 func FuzzParseEximFilter(f *testing.F) {
 	// Exim filter bodies are attacker-controlled (written via the cPanel API
 	// once a webmail account is compromised). The tokenizer/parser must walk
