@@ -686,22 +686,34 @@ func TestAdmissionLedgerExecuteRequiresQueueEntry(t *testing.T) {
 // Missing evidence is corruption even when time has also expired. A sweep
 // must not erase the candidate and disguise damage as an ordinary age-out.
 func TestAdmissionLedgerExpiredCandidateRequiresRoots(t *testing.T) {
-	f := newLedgerFixture(t)
-	id := f.queued()
-	c, err := f.l.Candidate(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = f.db.bolt.Update(func(tx *bolt.Tx) error { return tx.Bucket([]byte(admissionEvidenceBucket)).Delete([]byte(c.Roots[0])) }); err != nil {
-		t.Fatal(err)
-	}
-	f.tickAt(c.AgeOut)
-	before := f.snapshot()
-	if err = f.l.Revalidate(); !isCorrupt(err) {
-		t.Fatalf("expired candidate hid missing evidence: %v", err)
-	}
-	if !reflect.DeepEqual(before, f.snapshot()) {
-		t.Fatal("damaged candidate was changed")
+	for _, damage := range []string{"missing", "damaged"} {
+		t.Run(damage, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			id := f.queued()
+			c, err := f.l.Candidate(id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = f.db.bolt.Update(func(tx *bolt.Tx) error {
+				b := tx.Bucket([]byte(admissionEvidenceBucket))
+				if damage == "missing" {
+					return b.Delete([]byte(c.Roots[0]))
+				}
+				raw := append([]byte(nil), b.Get([]byte(c.Roots[0]))...)
+				raw[5] ^= 1
+				return b.Put([]byte(c.Roots[0]), raw)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			f.tickAt(c.AgeOut)
+			before := f.snapshot()
+			if err = f.l.Revalidate(); !isCorrupt(err) {
+				t.Fatalf("expired candidate hid %s evidence: %v", damage, err)
+			}
+			if !reflect.DeepEqual(before, f.snapshot()) {
+				t.Fatal("damaged candidate was changed")
+			}
+		})
 	}
 }
 
