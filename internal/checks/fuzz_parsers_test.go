@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -785,6 +786,48 @@ func FuzzParsePatternRecord(f *testing.F) {
 		}
 		if len(r.RefererHost) > patternMaxHost || r.RefererHost != patternASCIILower(r.RefererHost) {
 			t.Fatalf("referer host not bounded/folded: %q", r.RefererHost)
+		}
+	})
+}
+
+func FuzzParsePatternRecordHeaderUser(f *testing.F) {
+	for _, user := range []string{"", " ", "   ", "a b", `x] [26/Sep/2026`, `] "`, `\\`, "\x00\n\xff"} {
+		f.Add(user)
+	}
+	f.Fuzz(func(t *testing.T, user string) {
+		// Generate a server-escaped user while keeping the other fields fixed.
+		// Arbitrary authentication input must not change their interpretation.
+		var logged strings.Builder
+		if user == "" {
+			logged.WriteString(`""`)
+		}
+		for i := range len(user) {
+			c := user[i]
+			switch {
+			case c == '"' || c == '\\':
+				logged.WriteByte('\\')
+				logged.WriteByte(c)
+			case c < ' ' || c > '~':
+				logged.WriteString(`\x`)
+				logged.WriteString(hex.EncodeToString([]byte{c}))
+			default:
+				logged.WriteByte(c)
+			}
+		}
+		line := `192.0.2.1 ident[0] ` + logged.String() + ` ` + prTime +
+			` "GET /a?x=1 HTTP/2" 401 1 "-" "UA" "203.0.113.7"`
+		r, ok := parsePatternRecord(line)
+		wantTime := time.Date(2026, 9, 26, 7, 0, 0, 0, time.UTC)
+		if !ok || !r.TimeOK || !r.Time.Equal(wantTime) {
+			t.Fatalf("user changed timestamp: ok=%v record=%+v", ok, r)
+		}
+		r.Time = time.Time{}
+		want := patternRecord{
+			RemoteIP: "192.0.2.1", TimeOK: true, Method: "GET", Target: "/a?x=1",
+			Status: 401, Referer: refererDash, UserAgent: "UA", XFF: "203.0.113.7",
+		}
+		if r != want {
+			t.Fatalf("user changed request: record=%+v", r)
 		}
 	})
 }

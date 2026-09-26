@@ -308,6 +308,54 @@ func TestParsePatternRecordHeaderFields(t *testing.T) {
 	}
 }
 
+func TestParsePatternRecordHeaderUserBoundaries(t *testing.T) {
+	for _, ident := range []string{"-", "ident[0]", "ident]"} {
+		for _, user := range []string{`""`, " ", "   ", " leading", "trailing ", `x] [26/Sep/2026`} {
+			for _, stamp := range []string{prTime, "[not-a-time]"} {
+				t.Run(fmt.Sprintf("%s/%q/%s", ident, user, stamp), func(t *testing.T) {
+					line := "192.0.2.1 " + ident + " " + user + " " + stamp +
+						` "GET /a?x=1 HTTP/1.1" 401 1 "-" "UA" "203.0.113.7"`
+					r, ok := parsePatternRecord(line)
+					wantTime := time.Date(2026, 9, 26, 7, 0, 0, 0, time.UTC)
+					wantTimeOK := stamp == prTime
+					if !wantTimeOK {
+						wantTime = time.Time{}
+					}
+					if !ok || r.TimeOK != wantTimeOK || !r.Time.Equal(wantTime) ||
+						r.RemoteIP != "192.0.2.1" || r.Method != "GET" || r.Target != "/a?x=1" ||
+						r.TargetInvalid || r.TargetOverflow || r.Status != 401 ||
+						r.Referer != refererDash || r.UserAgent != "UA" || r.XFF != "203.0.113.7" || r.XFFUnusable {
+						t.Fatalf("header changed record: ok=%v record=%+v", ok, r)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestParsePatternRecordHeaderMissingSeparator(t *testing.T) {
+	for _, header := range []string{"- user", "ident[0] user", "- ", "-  "} {
+		if _, ok := parsePatternRecord("192.0.2.1 " + header + prTime + ` "GET / HTTP/1.1" 200 1`); ok {
+			t.Errorf("accepted incomplete header %q", header)
+		}
+	}
+}
+
+func TestParsePatternRecordBareHTTPVersions(t *testing.T) {
+	for major := 0; major <= 9; major++ {
+		for _, version := range []string{fmt.Sprintf("HTTP/%d", major), fmt.Sprintf(`\x48TTP/\x3%d`, major)} {
+			r, ok := parsePatternRecord(`192.0.2.1 - - ` + prTime + ` "GET /a ` + version + `" 200 1 "-" "UA"`)
+			wantTarget := "/a"
+			if major < 2 {
+				wantTarget = ""
+			}
+			if !ok || r.TargetInvalid != (major < 2) || r.Target != wantTarget || r.TargetOverflow || r.UserAgent != "UA" {
+				t.Errorf("version %q: ok=%v record=%+v", version, ok, r)
+			}
+		}
+	}
+}
+
 func TestParsePatternRecordRequestSyntax(t *testing.T) {
 	for _, request := range []string{
 		`GET /a HTTP/1`, `GET /a HTTP/12.1`, `GET /a HTTP/1.12`,

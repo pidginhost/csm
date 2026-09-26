@@ -56,12 +56,8 @@ func parsePatternRecord(line string) (patternRecord, bool) {
 		return rec, false
 	}
 	rec.RemoteIP = line[:sp]
-	header, stampText, rest, ok := patternSplitHeader(line[sp+1:])
+	stampText, rest, ok := patternSplitHeader(line[sp+1:])
 	if !ok {
-		return rec, false
-	}
-	ident, user := patternToken(header)
-	if ident == "" || strings.TrimSpace(user) == "" {
 		return rec, false
 	}
 	if stamp, err := time.Parse("02/Jan/2006:15:04:05 -0700", stampText); err == nil {
@@ -171,10 +167,14 @@ func patternHTTPVersion(s string) bool {
 // patternSplitHeader separates "<ident> <user> [<time>]" from the request.
 // The remote user is logged unescaped apart from quotes, backslashes and
 // non-printable bytes, and a client chooses it even when authentication
-// fails, so it may hold spaces and brackets. It cannot hold a bare quote, so
-// the first ']' followed by blanks and a quote closes the timestamp.
-func patternSplitHeader(s string) (header, stamp, rest string, ok bool) {
-	for i := 0; i < len(s); i++ {
+// fails, so it may hold spaces and brackets. The empty user is logged as "",
+// so exclude ident before looking for ']' followed by blanks and a quote.
+func patternSplitHeader(s string) (stamp, rest string, ok bool) {
+	ident, s := patternToken(s)
+	if ident == "" {
+		return "", "", false
+	}
+	for i := 1; i < len(s); i++ {
 		if s[i] != ']' {
 			continue
 		}
@@ -186,12 +186,14 @@ func patternSplitHeader(s string) (header, stamp, rest string, ok bool) {
 			continue
 		}
 		open := strings.LastIndexByte(s[:i], '[')
-		if open < 0 {
-			return "", "", "", false
+		// Keep one separator on each side of the user. Trimming would
+		// discard a nonempty username made entirely of spaces.
+		if open < 3 || (s[open-1] != ' ' && s[open-1] != '\t') {
+			return "", "", false
 		}
-		return s[:open], s[open+1 : i], s[i+1:], true
+		return s[open+1 : i], s[i+1:], true
 	}
-	return "", "", "", false
+	return "", "", false
 }
 
 func patternValidMethod(s string) bool {
