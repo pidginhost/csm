@@ -151,6 +151,10 @@ func parsePatternRecord(line string) (patternRecord, bool) {
 	}
 	if rec.XFFUnusable {
 		rec.XFF, rec.XFFPartial = "", false
+	} else {
+		// Detach the bounded suffix from any discarded client-controlled
+		// prefix in the decoded extension's backing allocation.
+		rec.XFF = strings.Clone(rec.XFF)
 	}
 	return rec, true
 }

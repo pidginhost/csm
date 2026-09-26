@@ -465,3 +465,79 @@ func TestParsePatternRecordXFFClientPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestParsePatternRecordXFFSuffixBounds(t *testing.T) {
+	for _, n := range []int{patternMaxExtension - 1, patternMaxExtension, patternMaxExtension + 1} {
+		suffix := "192.0.2.50" + strings.Repeat(" ", n-len("192.0.2.50, 203.0.113.7")) + ", 203.0.113.7"
+		for _, prefix := range []string{"", "unknown, "} {
+			for _, escaped := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%d/prefix=%t/escaped=%t", n, prefix != "", escaped), func(t *testing.T) {
+					value := prefix + suffix
+					if escaped {
+						value = strings.NewReplacer(" ", `\x20`, ",", `\x2c`).Replace(value)
+					}
+					r, ok := parsePatternRecord(`198.51.100.9 - - ` + prTime +
+						` "GET /a HTTP/1.1" 200 1 "-" "UA" "` + value + `" "example.com:443"`)
+					want := suffix
+					if n > patternMaxExtension {
+						want = "203.0.113.7"
+					}
+					if !ok || r.Target != "/a" || r.XFF != want || r.XFFUnusable ||
+						r.XFFPartial != (prefix != "" || n > patternMaxExtension) {
+						t.Fatalf("suffix boundary changed evidence: ok=%v record=%+v", ok, r)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestParsePatternRecordXFFSuffixEscapes(t *testing.T) {
+	for _, tc := range []struct {
+		name, extension, xff string
+		partial, unusable    bool
+	}{
+		{"escaped separators", `"garbage\x2c 2001:db8::7\x2c\t203.0.113.7"`, "2001:db8::7,\t203.0.113.7", true, false},
+		{"escaped address", `"unknown, \x32\x30\x33.0.113.7"`, "203.0.113.7", true, false},
+		{"escaped whitespace", `"garbage,\xe2\x80\x832001:db8::7"`, "2001:db8::7", true, false},
+		{"decode once", `"192.0.2.50\\x2c203.0.113.7"`, "", false, true},
+		{"literal percent", `"192.0.2.50%2c203.0.113.7"`, "", false, true},
+		{"invalid escaped client entry", `"192.0.2.50\"x, 203.0.113.7"`, "203.0.113.7", true, false},
+		{"invalid escaped proxy entry", `"192.0.2.50, 203.0.113.7\"x"`, "", false, true},
+		{"zoned client entry", `"2001:db8::1%zone, 203.0.113.7"`, "203.0.113.7", true, false},
+		{"zoned proxy entry", `"203.0.113.7, 2001:db8::1%zone"`, "", false, true},
+		{"empty client entry", `", 203.0.113.7"`, "203.0.113.7", true, false},
+		{"empty proxy entry", `"203.0.113.7,"`, "", false, true},
+		{"mapped proxy entry", `"unknown, ::ffff:203.0.113.7"`, "::ffff:203.0.113.7", true, false},
+		{"second partial list", `"203.0.113.7" "garbage, 198.51.100.20"`, "", false, true},
+		{"two partial lists", `"garbage, 203.0.113.7" "unknown, 198.51.100.20"`, "", false, true},
+		{"malformed extension after suffix", `"garbage, 203.0.113.7" "unknown"`, "", false, true},
+		{"malformed extension before suffix", `"unknown" "garbage, 203.0.113.7"`, "", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, ok := parsePatternRecord(`198.51.100.9 - - ` + prTime +
+				` "GET /a HTTP/1.1" 200 1 "-" "UA" ` + tc.extension)
+			if !ok || r.Target != "/a" || r.XFF != tc.xff || r.XFFPartial != tc.partial || r.XFFUnusable != tc.unusable {
+				t.Fatalf("extension changed evidence: ok=%v record=%+v", ok, r)
+			}
+		})
+	}
+}
+
+func BenchmarkParsePatternRecordXFFPrefix(b *testing.B) {
+	for _, n := range []int{128, 1024, 8192, 65536} {
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			line := `198.51.100.9 - - ` + prTime + ` "GET /a HTTP/1.1" 200 1 "-" "UA" "` +
+				strings.Repeat("garbage, ", n) + `203.0.113.7"`
+			b.SetBytes(int64(len(line)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				r, ok := parsePatternRecord(line)
+				if !ok || r.Target != "/a" || r.XFF != "203.0.113.7" || !r.XFFPartial || r.XFFUnusable {
+					b.Fatalf("client prefix changed evidence: ok=%v record=%+v", ok, r)
+				}
+			}
+		})
+	}
+}
