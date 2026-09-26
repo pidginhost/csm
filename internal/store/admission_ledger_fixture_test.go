@@ -29,7 +29,7 @@ func ledgerLookup(check string) (string, admission.Policy, bool) {
 // ledgerFixture is a ledger on a fresh database with three registered
 // producers, a clock reading at ledgerT0 and accounts alice and bob.
 type ledgerFixture struct {
-	t              *testing.T
+	t              testing.TB
 	db             *DB
 	reg            *admission.Registry
 	l              *AdmissionLedger
@@ -40,7 +40,7 @@ type ledgerFixture struct {
 	fills          int
 }
 
-func newLedgerRegistry(t *testing.T) (*admission.Registry, *admission.Producer, *admission.Producer, *admission.Producer) {
+func newLedgerRegistry(t testing.TB) (*admission.Registry, *admission.Producer, *admission.Producer, *admission.Producer) {
 	t.Helper()
 	reg, err := admission.NewRegistry(ledgerLookup)
 	if err != nil {
@@ -60,7 +60,7 @@ func newLedgerRegistry(t *testing.T) (*admission.Registry, *admission.Producer, 
 	return reg, ssh, rep, mail
 }
 
-func newLedgerFixture(t *testing.T) *ledgerFixture {
+func newLedgerFixture(t testing.TB) *ledgerFixture {
 	t.Helper()
 	db, err := Open(t.TempDir())
 	if err != nil {

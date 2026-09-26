@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func testInventory(t *testing.T) *Inventory {
+func testInventory(t testing.TB) *Inventory {
 	t.Helper()
 	inv, err := NewInventory(
 		map[string]uint64{"alice": 1, "bob": 2},

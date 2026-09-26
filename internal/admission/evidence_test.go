@@ -36,7 +36,7 @@ type testProducers struct {
 	ssh, http, mail, reputation, derived, spare *Producer
 }
 
-func newTestProducers(t *testing.T) testProducers {
+func newTestProducers(t testing.TB) testProducers {
 	t.Helper()
 	reg, err := NewRegistry(testLookup)
 	if err != nil {
