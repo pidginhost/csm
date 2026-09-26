@@ -81,13 +81,17 @@ type Ingress struct {
 	generation  uint64
 	revision    int
 	initialized bool
+	// mono reads the monotonic clock. Submissions are judged at the
+	// snapshot's admission time plus the time elapsed since publication.
+	mono      func() time.Time
+	published time.Time
 }
 
 func NewIngress(reg *Registry) (*Ingress, error) {
 	if reg == nil || !reg.Sealed() {
 		return nil, fmt.Errorf("ingress needs a sealed producer registry")
 	}
-	return &Ingress{reg: reg, byKey: map[string]*pending{}, byEvidence: map[EvidenceID]*pending{}}, nil
+	return &Ingress{reg: reg, byKey: map[string]*pending{}, byEvidence: map[EvidenceID]*pending{}, mono: time.Now}, nil
 }
 
 func (in *Ingress) lose(event QueueEvent, reason Reason, tier Tier, sev Severity) {
@@ -137,7 +141,14 @@ func (in *Ingress) Submit(s Submission) error {
 		}
 		return nil
 	}
-	a, err := Assess(s.Target, []Evidence{e}, in.snap.Now)
+	// An idle owner must not make fresh evidence look future-dated, and
+	// wall-clock steps must not move this time: advance the snapshot's
+	// admission time by elapsed monotonic time only.
+	at := in.snap.Now
+	if elapsed := in.mono().Sub(in.published); elapsed > 0 {
+		at = at.Add(elapsed)
+	}
+	a, err := Assess(s.Target, []Evidence{e}, at)
 	if err != nil {
 		return refused(err, Tier{})
 	}
@@ -245,7 +256,7 @@ func (in *Ingress) publish(snap *QueueSnapshot) {
 	}
 	own := *snap
 	own.Items = append([]QueueItem(nil), snap.Items...)
-	in.snap, in.revision = &own, snap.Revision
+	in.snap, in.revision, in.published = &own, snap.Revision, in.mono()
 	in.rebuild()
 }
 

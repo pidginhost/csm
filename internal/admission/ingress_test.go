@@ -605,3 +605,34 @@ func TestIngressDamagedCheckpointChangesNothing(t *testing.T) {
 	}
 	wantReason(t, "damaged checkpoint", f.in.Submit(f.sub(subSpec{})), ReasonEngineUnavailable)
 }
+
+// The ingress judges evidence at the snapshot's admission time advanced by
+// the monotonic time elapsed since its publication: an idle owner does not
+// make fresh evidence look future-dated, and early evidence still is.
+func TestIngressAssessesAtElapsedSnapshotTime(t *testing.T) {
+	f := newIngressFixture(t)
+	mono := time.Unix(1, 0)
+	f.in.mono = func() time.Time { return mono }
+	f.publish()
+	fresh := f.sub(subSpec{age: -2 * time.Second})
+	wantReason(t, "evidence ahead of the elapsed admission time", f.in.Submit(fresh), ReasonInvalid)
+	mono = mono.Add(2 * time.Second)
+	if err := f.in.Submit(fresh); err != nil {
+		t.Fatalf("evidence observed after the snapshot was refused: %v", err)
+	}
+}
+
+// Publishing no snapshot closes admission until a usable one arrives.
+func TestIngressPublishNilClosesAdmission(t *testing.T) {
+	f := newIngressFixture(t)
+	f.publish()
+	if err := f.in.Submit(f.sub(subSpec{})); err != nil {
+		t.Fatal(err)
+	}
+	f.in.Publish(nil)
+	wantReason(t, "withdrawn snapshot", f.in.Submit(f.sub(subSpec{})), ReasonEngineUnavailable)
+	f.publish()
+	if err := f.in.Submit(f.sub(subSpec{})); err != nil {
+		t.Fatalf("a new snapshot did not reopen admission: %v", err)
+	}
+}

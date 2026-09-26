@@ -263,7 +263,9 @@ Inside a class, verified scopes rotate, a scope serves Critical:High:Warning
 candidate that costs several block units wait its turn without starving. The
 scheduler's position persists, and every pick is revalidated before it is
 returned. Detectors hand work to a nonblocking ingress that applies the same
-fair shares against the owner's latest snapshot of the queue. Durable
+fair shares against the owner's latest snapshot of the queue. It judges
+freshness at that snapshot's admission time advanced by elapsed monotonic
+time, so an idle owner does not make new evidence look future-dated. Durable
 victims remain counted until commit. Reports arriving during a drain remain
 held for a later report-only commit, and overflow counts persist with their
 links. Ingress cursor progress and loss counts are checkpointed even when
