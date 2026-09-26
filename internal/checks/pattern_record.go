@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // These are parser resource bounds, not qualified server acceptance limits.
@@ -45,6 +46,8 @@ type patternRecord struct {
 	UAOverflow     bool
 	XFF            string
 	XFFUnusable    bool
+	// XFFPartial reports that client-side entries left of XFF were dropped.
+	XFFPartial bool
 }
 
 // parsePatternRecord accepts common/combined logs with optional quoted
@@ -119,33 +122,68 @@ func parsePatternRecord(line string) (patternRecord, bool) {
 	rec.UserAgent, rec.UAOverflow = ua, uaOver
 	// Consume leading separators only. Re-scanning a trailing whitespace run
 	// for every extension would make a long line quadratic to parse.
+	sawXFF := false
 	for rest = strings.TrimLeft(rest, " \t"); rest != ""; rest = strings.TrimLeft(rest, " \t") {
-		value, over, tail, fieldOK := scanPatternQuoted(rest, patternMaxExtension)
+		raw, tail, fieldOK := patternQuotedField(rest)
 		if !fieldOK {
 			return rec, false
 		}
-		// An oversized extension could hide the proxy-appended address.
-		// A duplicate or partly malformed IP list has no unique authority.
+		// Decode the whole field so a bound drops client entries from the
+		// left of a forwarded-for list, never the proxy's own on the right.
+		value, _ := patternDecodeField(raw, len(raw))
+		suffix, partial, isList := patternXFFSuffix(value)
 		switch {
-		case over:
-			rec.XFFUnusable = true
 		case value == "" || value == "-":
-		case patternValidXFF(value):
-			if rec.XFF != "" {
+		case isList:
+			// A second list or a proxy entry beyond the bound leaves no
+			// unique authority.
+			if sawXFF || suffix == "" {
 				rec.XFFUnusable = true
 			}
-			rec.XFF = value
-		case !patternVhostExtension(value):
-			// A field with no valid IPs can still be malformed proxy evidence.
-			// Only a recognized vhost field is safe to ignore here.
+			sawXFF = true
+			rec.XFF, rec.XFFPartial = suffix, partial
+		case len(value) > patternMaxExtension || !patternVhostExtension(value):
+			// A field that does not end in an address can still be malformed
+			// proxy evidence. Only a recognized vhost field is safe to ignore.
 			rec.XFFUnusable = true
 		}
 		rest = tail
 	}
 	if rec.XFFUnusable {
-		rec.XFF = ""
+		rec.XFF, rec.XFFPartial = "", false
 	}
 	return rec, true
+}
+
+// patternXFFSuffix reads a forwarded-for list from the right. A trusted proxy
+// appends the peer it saw, so the right end is its evidence and everything to
+// the left is client-supplied. It keeps the longest run of valid addresses
+// that ends the list and fits the bound; partial reports dropped entries.
+// isList is false when the last entry is not an address.
+func patternXFFSuffix(v string) (suffix string, partial, isList bool) {
+	start := -1
+	for end := len(v); ; {
+		comma := strings.LastIndexByte(v[:end], ',')
+		entry := v[comma+1 : end]
+		addr, err := netip.ParseAddr(strings.TrimSpace(entry))
+		if err != nil || addr.Zone() != "" {
+			break
+		}
+		isList = true
+		at := end - len(strings.TrimLeftFunc(entry, unicode.IsSpace))
+		if len(v)-at > patternMaxExtension {
+			break
+		}
+		start = at
+		if comma < 0 {
+			return v[start:], false, true
+		}
+		end = comma
+	}
+	if start < 0 {
+		return "", false, isList
+	}
+	return v[start:], true, true
 }
 
 func patternHTTPVersion(s string) bool {
@@ -414,16 +452,6 @@ func patternValidPortSuffix(s string) bool {
 		n = n*10 + int(s[i]-'0')
 	}
 	return n <= 65535
-}
-
-func patternValidXFF(s string) bool {
-	for _, part := range strings.Split(s, ",") {
-		addr, err := netip.ParseAddr(strings.TrimSpace(part))
-		if err != nil || addr.Zone() != "" {
-			return false
-		}
-	}
-	return true
 }
 
 func patternVhostExtension(s string) bool {

@@ -226,7 +226,7 @@ func TestParsePatternRecordProxyExtensions(t *testing.T) {
 		{`"192.0.2.50, 203.0.113.7" "example.com:443"`, "192.0.2.50, 203.0.113.7", false},
 		{`"192.0.2.50, invalid"`, "", true},
 		{`"192.0.2.50" "203.0.113.7"`, "", true},
-		{`"192.0.2.50` + strings.Repeat(" ", patternMaxExtension) + `, 203.0.113.7"`, "", true},
+		{`"192.0.2.50` + strings.Repeat(" ", patternMaxExtension) + `, 203.0.113.7"`, "203.0.113.7", false},
 	} {
 		r, ok := parsePatternRecord(`198.51.100.9 - - ` + prTime + ` "GET /a?x=1 HTTP/1.1" 200 1 "-" "UA" ` + tc.extra)
 		if !ok || r.Target != "/a?x=1" || r.XFF != tc.xff || r.XFFUnusable != tc.unusable {
@@ -279,9 +279,9 @@ func TestParsePatternRecordMalformedAncillaryFields(t *testing.T) {
 }
 
 func TestParsePatternRecordHeaderFields(t *testing.T) {
-	// Apache and nginx escape only quotes, backslashes and non-printable bytes
-	// in the remote user, and log an empty user as "". Basic-auth usernames
-	// are logged even when authentication fails, so a client chooses them.
+	// Apache escapes only quotes, backslashes and non-printable bytes in the
+	// remote user and logs an empty user as "". Basic-auth usernames are
+	// logged even when authentication fails, so a client chooses them.
 	for _, prefix := range []string{
 		`192.0.2.1 ident[0] user[1] `,
 		`192.0.2.1 - [user] `,
@@ -430,5 +430,38 @@ func BenchmarkParsePatternRecordExtensions(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// A trusted proxy appends the address it saw at the right end of
+// X-Forwarded-For; everything to its left is client-supplied. Garbage or
+// padding there must not discard the proxy's own entries.
+func TestParsePatternRecordXFFClientPrefix(t *testing.T) {
+	long := strings.Repeat("192.0.2.50, ", 30) + "203.0.113.7"
+	for _, tc := range []struct {
+		name, ext, xff string
+		partial        bool
+	}{
+		{"complete list", `"192.0.2.50, 203.0.113.7"`, "192.0.2.50, 203.0.113.7", false},
+		{"client garbage", `"garbage, 203.0.113.7"`, "203.0.113.7", true},
+		{"client unknown", `"unknown, 198.51.100.20, 203.0.113.7"`, "198.51.100.20, 203.0.113.7", true},
+		{"client padding", `"192.0.2.50` + strings.Repeat(" ", patternMaxExtension) + `, 203.0.113.7"`, "203.0.113.7", true},
+		{"list over the bound", `"` + long + `"`, strings.Repeat("192.0.2.50, ", 20) + "203.0.113.7", true},
+		{"after vhost", `"example.com:443" "garbage, 203.0.113.7"`, "203.0.113.7", true},
+	} {
+		r, ok := parsePatternRecord(`198.51.100.9 - - ` + prTime + ` "GET /a?x=1 HTTP/1.1" 200 1 "-" "UA" ` + tc.ext)
+		if !ok || r.XFFUnusable || r.XFF != tc.xff || r.XFFPartial != tc.partial || r.Target != "/a?x=1" {
+			t.Errorf("%s: ok=%v xff=%q partial=%v unusable=%v", tc.name, ok, r.XFF, r.XFFPartial, r.XFFUnusable)
+		}
+	}
+	for _, ext := range []string{
+		`"203.0.113.7, garbage"`,
+		`"garbage, 203.0.113.7" "198.51.100.20"`,
+		`"192.0.2.50, ` + strings.Repeat("a", patternMaxExtension) + `"`,
+	} {
+		r, ok := parsePatternRecord(`198.51.100.9 - - ` + prTime + ` "GET /a?x=1 HTTP/1.1" 200 1 "-" "UA" ` + ext)
+		if !ok || !r.XFFUnusable || r.XFF != "" || r.XFFPartial {
+			t.Errorf("%s: ok=%v xff=%q partial=%v unusable=%v", ext, ok, r.XFF, r.XFFPartial, r.XFFUnusable)
+		}
 	}
 }

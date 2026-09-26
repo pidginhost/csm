@@ -744,6 +744,7 @@ func FuzzParsePatternRecord(f *testing.F) {
 	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GE\x20T / HTTP/1.1" 200 1`)
 	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "\x47ET /a\\x20b \x48TTP/1.1" 200 1`)
 	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET / HTTP/1.1" 200 1 "-" "UA" "203.0.113.7" "unknown, invalid"`)
+	f.Add(`198.51.100.9 - - [26/Sep/2026:10:00:00 +0300] "GET / HTTP/1.1" 200 1 "-" "UA" "garbage, 198.51.100.20, 203.0.113.7"`)
 	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET / HTTP/1.1" 200 1 "-" "UA" ` + strings.Repeat(`"" `, 128) + strings.Repeat(" ", 128))
 	f.Add("192.0.2.2 - - [26/Sep/2026:10:00:00 +0300] \"GET /" + strings.Repeat("a", 9000) + " HTTP/1.1\" 414 0 \"-\" \"-\"")
 	f.Add("")
@@ -766,6 +767,9 @@ func FuzzParsePatternRecord(f *testing.F) {
 		}
 		if len(r.XFF) > patternMaxExtension || (r.XFFUnusable && r.XFF != "") {
 			t.Fatal("partial XFF retained")
+		}
+		if r.XFFPartial && (r.XFF == "" || r.XFFUnusable) {
+			t.Fatal("dropped entries reported without a retained proxy suffix")
 		}
 		if r.XFF != "" {
 			for _, part := range strings.Split(r.XFF, ",") {
