@@ -125,6 +125,9 @@ func TestPersistedEnumValuesAreFrozen(t *testing.T) {
 		"EventRefused":                 {uint8(EventRefused), 1},
 		"EventDeferred":                {uint8(EventDeferred), 2},
 		"EventEnded":                   {uint8(EventEnded), 3},
+		"LaneGeneral":                  {uint8(LaneGeneral), 1},
+		"LaneDirect":                   {uint8(LaneDirect), 2},
+		"LaneCorroborated":             {uint8(LaneCorroborated), 3},
 	}
 	for name, v := range frozen {
 		if v[0] != v[1] {

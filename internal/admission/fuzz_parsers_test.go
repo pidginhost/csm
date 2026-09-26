@@ -146,6 +146,7 @@ func FuzzLedgerRecords(f *testing.F) {
 		cand, AttemptRecord{Attempt: attempt, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0}, clock, inv, links,
 		QueueEntry{Partition: PartitionReserved, Tier: Tier{ClassC3, SeverityHigh}, Direct: true, NextChange: t0},
 		QueueState{NextSweep: t0, Cursors: QueueCursors{General: "host/address"}}, counters,
+		ScheduleState{ClassSlot: 3, Rings: [ringCount]Ring{ringC2: {Last: "host/address", Scopes: map[string]ScopeTurn{"host/address": {Severity: 1, Deficit: 2}}}}},
 	} {
 		data, err := rec.MarshalBinary()
 		if err != nil {
@@ -184,6 +185,9 @@ func FuzzLedgerRecords(f *testing.F) {
 			}
 			if q, err := UnmarshalQueueCounters(data); err == nil {
 				roundTrip("queue counters", q)
+			}
+			if s, err := UnmarshalScheduleState(data); err == nil {
+				roundTrip("schedule state", s)
 			}
 		}
 		check(data)
