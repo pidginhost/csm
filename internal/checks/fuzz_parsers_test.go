@@ -732,6 +732,12 @@ func FuzzParseAccessLogRecord(f *testing.F) {
 }
 
 func FuzzParsePatternRecord(f *testing.F) {
+	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET http://192.0.2.2/a%2Fb?X[0]=%zz HTTP/1.1" 200 1 "-" "UA"`)
+	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET \x48TTPS\x3a\x2f\x2f192.0.2.2\x3f/a.css HTTP/1.1" 200 1 "-" "UA"`)
+	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET http://192.0.2.2 HTTP/1.1" 200 1 "-" "UA"`)
+	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET http:/a?x=\"1 HTTP/1.1" 200 1 "-" "UA"`)
+	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET ftp://192.0.2.2/a HTTP/1.1" 200 1 "-" "UA"`)
+	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET http:a/b HTTP/1.1" 200 1 "-" "UA"`)
 	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET /a\x20b?x=1 HTTP/1.1" 200 1 "https://example.com/a\"b" "UA"`)
 	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET /a b HTTP/1.1" 200 1 "-" "UA"`)
 	f.Add(`192.0.2.1 - - [26/Sep/2026:10:00:00 +0300] "GET /category/?filter_color=red HTTP/1.1" 200 512 "https://example.com/category/" "Mozilla/5.0"`)

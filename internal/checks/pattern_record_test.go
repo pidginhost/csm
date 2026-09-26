@@ -187,6 +187,83 @@ func TestParsePatternRecordRequestFraming(t *testing.T) {
 	}
 }
 
+func TestParsePatternRecordAbsoluteIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name, logged, target string
+		identity             crawlid.Target
+		class                crawlid.Class
+	}{
+		{
+			name:   "escaped scheme and delimiters",
+			logged: `\x48TTPS\x3a\x2f\x2f192.0.2.2/Category%2FPart/\x3fB%5B0%5D=\"%26ignored=1&A+B=%zz&a+b=2`,
+			target: `HTTPS://192.0.2.2/Category%2FPart/?B%5B0%5D="%26ignored=1&A+B=%zz&a+b=2`,
+			identity: crawlid.Target{
+				Segment: []byte("Category/Part"), HasQuery: true,
+				Names: [][]byte{[]byte("a b"), []byte("b[]")},
+			},
+			class: crawlid.Class{Dynamic: true, Expensive: true},
+		},
+		{
+			name:   "authority only",
+			logged: `http://192.0.2.2`, target: "http://192.0.2.2",
+			identity: crawlid.Target{Segment: []byte{}},
+			class:    crawlid.Class{Dynamic: true},
+		},
+		{
+			name:   "query slash is not a path",
+			logged: `http://192.0.2.2\x3f/a.css`, target: "http://192.0.2.2?/a.css",
+			identity: crawlid.Target{Segment: []byte{}, HasQuery: true, Names: [][]byte{[]byte("/a.css")}},
+			class:    crawlid.Class{Dynamic: true, Expensive: true},
+		},
+		{
+			name:   "static path",
+			logged: `https://[2001:db8::1]/a.CSS?X=1`, target: "https://[2001:db8::1]/a.CSS?X=1",
+			identity: crawlid.Target{Segment: []byte("a.CSS"), HasQuery: true, Names: [][]byte{[]byte("x")}, Ext: "css"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := `192.0.2.1 - - ` + prTime + ` "GET ` + tc.logged + ` HTTP/1.1" 200 1 "-" "UA" "203.0.113.7"`
+			r, ok := parsePatternRecord(line)
+			if !ok || r.TargetInvalid || r.TargetOverflow || r.Target != tc.target ||
+				r.Method != "GET" || r.Status != 200 || r.Referer != refererDash || r.UserAgent != "UA" || r.XFF != "203.0.113.7" {
+				t.Fatalf("absolute target changed record: ok=%v record=%+v", ok, r)
+			}
+			identity, err := crawlid.ParseTarget(r.Target, patternMaxTarget)
+			if err != nil || !reflect.DeepEqual(identity, tc.identity) {
+				t.Fatalf("identity = %+v, err = %v; want %+v", identity, err, tc.identity)
+			}
+			if class := crawlid.Classify(r.Method, identity); class != tc.class {
+				t.Fatalf("class = %+v, want %+v", class, tc.class)
+			}
+		})
+	}
+}
+
+func TestParsePatternRecordAbsoluteBounds(t *testing.T) {
+	for _, prefix := range []string{"http:/", "HTTPS://192.0.2.2/", "http://"} {
+		for _, n := range []int{patternMaxTarget - 1, patternMaxTarget, patternMaxTarget + 1} {
+			for _, escaped := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%d/escaped=%t", prefix, n, escaped), func(t *testing.T) {
+					target := prefix + strings.Repeat("a", n-len(prefix))
+					logged := target
+					if escaped {
+						logged = strings.NewReplacer(":", `\x3a`, "/", `\x2f`, "a", `\x61`).Replace(target)
+					}
+					r, ok := parsePatternRecord(`192.0.2.1 - - ` + prTime + ` "GET ` + logged + ` HTTP/1.1" 200 1 "-" "UA"`)
+					want := target
+					if n > patternMaxTarget {
+						want = ""
+					}
+					if !ok || r.Target != want || r.TargetInvalid || r.TargetOverflow != (n > patternMaxTarget) ||
+						r.Status != 200 || r.Referer != refererDash || r.UserAgent != "UA" {
+						t.Fatalf("absolute bound: ok=%v target bytes=%d invalid=%v overflow=%v", ok, len(r.Target), r.TargetInvalid, r.TargetOverflow)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestParsePatternRecordExactBounds(t *testing.T) {
 	for _, n := range []int{patternMaxTarget - 1, patternMaxTarget, patternMaxTarget + 1} {
 		for _, encoded := range []bool{false, true} {
