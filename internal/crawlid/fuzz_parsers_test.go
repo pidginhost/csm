@@ -2,7 +2,9 @@ package crawlid
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
+	"net/netip"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -127,6 +129,10 @@ func FuzzDecodeKey(f *testing.F) {
 		f.Add(b64(f, v.EncodedB64))
 	}
 	f.Add([]byte{})
+	f.Add([]byte{'c', 'k', 1, 3, 1, 's'})
+	f.Add([]byte{'c', 'k', 1, 1, 1, 's', 0, 1, 0})
+	f.Add([]byte{'c', 'k', 1, 3, 0x81, 0, 's'})
+	f.Add([]byte{'c', 'k', 1, 3, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f})
 	f.Add([]byte{'c', 'k', 1, 3, 0x80, 0})
 	f.Add([]byte{'c', 'k', 1, 1, 0, 0, 2, 1, 'b', 1, 'a'})
 	f.Add([]byte{'c', 'k', 1, 1, 0, 0, 2, 0, 0})
@@ -197,6 +203,42 @@ func FuzzKeysForRoundTrip(f *testing.F) {
 					t.Fatalf("wrong fields at level %d: %+v", levels[i], got)
 				}
 			}
+		}
+	})
+}
+
+func FuzzBindingOf(f *testing.F) {
+	for _, raw := range []string{"192.0.2.10", "::ffff:192.0.2.10", "2001:db8:1:2::3", "2001:db8::1%test0", "192.0.2.10:80", ""} {
+		f.Add(raw)
+	}
+	f.Fuzz(func(t *testing.T, raw string) {
+		binding, ok := BindingOf(raw)
+		if !ok {
+			if binding != "" {
+				t.Fatal("invalid address returned a partial binding")
+			}
+			return
+		}
+		encoded, err := base64.RawURLEncoding.DecodeString(binding.String())
+		if err != nil || string(encoded) != string(binding) {
+			t.Fatal("binding bytes changed in JSON encoding")
+		}
+		var restored string
+		switch {
+		case len(binding) == 5 && binding[0] == '4':
+			var addr [4]byte
+			copy(addr[:], binding[1:])
+			restored = netip.AddrFrom4(addr).String()
+		case len(binding) == 9 && binding[0] == '6':
+			var addr [16]byte
+			copy(addr[:8], binding[1:])
+			restored = netip.AddrFrom16(addr).String()
+		default:
+			t.Fatalf("bad binding shape %x", []byte(binding))
+		}
+		again, valid := BindingOf(restored)
+		if !valid || binding != again {
+			t.Fatal("canonical binding changed on round trip")
 		}
 	})
 }
