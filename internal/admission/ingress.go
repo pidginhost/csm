@@ -242,12 +242,16 @@ func (in *Ingress) publish(snap *QueueSnapshot) {
 		in.generation = snap.Generation
 		in.initialized = true
 	}
+	// Every item must hold one position of the view: an item the view
+	// would reject still raises the partition limit in rebuild.
 	counts := [partitionEnd]int{}
+	keys := make(map[string]bool, len(snap.Items))
 	for _, it := range snap.Items {
-		if !it.Partition.Valid() {
+		if !it.Partition.Valid() || it.Key == "" || it.Scope == "" || keys[it.Key] {
 			in.snap = nil
 			return
 		}
+		keys[it.Key] = true
 		counts[it.Partition]++
 		if counts[it.Partition] > it.Partition.DurableCapacity() {
 			in.snap = nil

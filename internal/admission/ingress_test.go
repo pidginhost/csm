@@ -636,3 +636,23 @@ func TestIngressPublishNilClosesAdmission(t *testing.T) {
 		t.Fatalf("a new snapshot did not reopen admission: %v", err)
 	}
 }
+
+// A malformed snapshot closes admission rather than widen the transfer
+// allocation: a repeated key, an empty key or an empty scope refuses it.
+func TestIngressRefusesMalformedSnapshots(t *testing.T) {
+	tier := Tier{ClassC2, SeverityHigh}
+	item := durable(1, aliceScope, tier)[0]
+	noKey, noScope := item, item
+	noKey.Key, noScope.Scope = "", ""
+	for name, items := range map[string][]QueueItem{
+		"repeated key": {item, item},
+		"empty key":    {noKey},
+		"empty scope":  {noScope},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newIngressFixture(t)
+			f.publish(items...)
+			wantReason(t, name, f.in.Submit(f.sub(subSpec{})), ReasonEngineUnavailable)
+		})
+	}
+}
