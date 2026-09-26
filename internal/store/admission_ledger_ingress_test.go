@@ -281,14 +281,14 @@ func TestIngressDrainReleasesWorkOnSharedDamage(t *testing.T) {
 	var good []byte
 	setCounters := func(data []byte) {
 		t.Helper()
-		if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		if updateErr := f.db.bolt.Update(func(tx *bolt.Tx) error {
 			b := tx.Bucket([]byte(admissionQueueStateBucket))
 			if good == nil {
 				good = append([]byte(nil), b.Get(queueCountersKey)...)
 			}
 			return b.Put(queueCountersKey, data)
-		}); err != nil {
-			t.Fatal(err)
+		}); updateErr != nil {
+			t.Fatal(updateErr)
 		}
 	}
 	setCounters([]byte("damaged"))
