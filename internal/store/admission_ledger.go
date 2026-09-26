@@ -146,6 +146,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 		if _, err := loadScheduleState(tx); err != nil {
 			return err
 		}
+		if _, err := loadIngressState(tx); err != nil {
+			return err
+		}
 		meta := tx.Bucket([]byte(admissionMetaBucket))
 		c, err := loadLedgerClock(meta)
 		if err != nil {

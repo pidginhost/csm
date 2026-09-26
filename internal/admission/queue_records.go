@@ -9,6 +9,7 @@ import (
 const queueEntryVersion = 1
 const queueStateVersion = 1
 const queueCountersVersion = 1
+const ingressStateVersion = 1
 
 // QueueEntry is the ledger's derived record of a live candidate: where it
 // holds its queue position and how it was last assessed. Recovery rebuilds
@@ -274,4 +275,62 @@ func (e QueueEvent) String() string {
 		return "ended"
 	}
 	return fmt.Sprintf("event(%d)", uint8(e))
+}
+
+// IngressState is the ledger's record of ingress generations. Items the
+// ingress held when the daemon stopped without a clean close are lost; the
+// ledger cannot count them, only record that a generation was interrupted.
+type IngressState struct {
+	// Generation numbers the current ingress generation, from 1; zero
+	// before the first.
+	Generation uint64
+	// Open is true from BeginIngress until a clean EndIngress.
+	Open bool
+	// Persisted counts arrivals decided in the current generation.
+	Persisted uint64
+	// Interrupted counts generations that ended without a clean close.
+	Interrupted uint64
+	Checkpoint  *IngressCheckpoint
+}
+
+type ingressStateRecord struct {
+	V           uint8              `json:"v"`
+	Generation  uint64             `json:"generation,omitempty"`
+	Open        bool               `json:"open,omitempty"`
+	Persisted   uint64             `json:"persisted,omitempty"`
+	Interrupted uint64             `json:"interrupted,omitempty"`
+	Checkpoint  *IngressCheckpoint `json:"checkpoint,omitempty"`
+}
+
+func (s IngressState) record() (ingressStateRecord, error) {
+	if (s.Generation == 0 && (s.Open || s.Persisted != 0)) || s.Interrupted >= max(s.Generation, 1) {
+		return ingressStateRecord{}, refuse(ReasonInvalid, "ingress state is inconsistent")
+	}
+	if cp := s.Checkpoint; cp != nil {
+		if cp.Generation > s.Generation || cp.Validate(nil, cp.Generation) != nil {
+			return ingressStateRecord{}, refuse(ReasonInvalid, "ingress checkpoint is inconsistent")
+		}
+	}
+	return ingressStateRecord{V: ingressStateVersion, Generation: s.Generation, Open: s.Open, Persisted: s.Persisted, Interrupted: s.Interrupted, Checkpoint: s.Checkpoint}, nil
+}
+
+func (s IngressState) MarshalBinary() ([]byte, error) {
+	rec, err := s.record()
+	if err != nil {
+		return nil, err
+	}
+	return sealRecord(rec)
+}
+
+// UnmarshalIngressState decodes the stored ingress record.
+func UnmarshalIngressState(data []byte) (IngressState, error) {
+	var rec ingressStateRecord
+	if err := openRecord(data, &rec); err != nil {
+		return IngressState{}, err
+	}
+	s := IngressState{Generation: rec.Generation, Open: rec.Open, Persisted: rec.Persisted, Interrupted: rec.Interrupted, Checkpoint: rec.Checkpoint}
+	if _, err := s.record(); rec.V != ingressStateVersion || err != nil {
+		return IngressState{}, ErrCorruptRecord
+	}
+	return s, nil
 }

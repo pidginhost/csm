@@ -137,3 +137,83 @@ func TestQueueCountersCountAndRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestIngressStateRoundTrips(t *testing.T) {
+	for name, s := range map[string]IngressState{
+		"fresh":       {},
+		"open":        {Generation: 3, Open: true, Persisted: 12, Interrupted: 2},
+		"closed":      {Generation: 1},
+		"interrupted": {Generation: 2, Interrupted: 1},
+	} {
+		data, err := s.MarshalBinary()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if back, err := UnmarshalIngressState(data); err != nil || back != s {
+			t.Fatalf("%s: round trip = %+v, %v", name, back, err)
+		}
+	}
+	for name, s := range map[string]IngressState{
+		"open before the first":      {Open: true},
+		"persisted before the first": {Persisted: 1},
+		"current one interrupted":    {Generation: 2, Interrupted: 2},
+	} {
+		if _, err := s.MarshalBinary(); err == nil {
+			t.Errorf("%s: encoded", name)
+		}
+	}
+	data, _ := IngressState{Generation: 2, Open: true}.MarshalBinary()
+	body := data[:len(data)-8]
+	for name, tampered := range map[string][]byte{
+		"flipped byte":   func() []byte { d := bytes.Clone(data); d[3] ^= 1; return d }(),
+		"future version": resealForTest(bytes.Replace(body, []byte(`"v":1`), []byte(`"v":2`), 1)),
+		"interrupted":    resealForTest(bytes.Replace(body, []byte(`}`), []byte(`,"interrupted":5}`), 1)),
+	} {
+		if _, err := UnmarshalIngressState(tampered); err != ErrCorruptRecord {
+			t.Errorf("%s: err = %v, want ErrCorruptRecord", name, err)
+		}
+	}
+}
+
+func TestIngressCheckpointCodec(t *testing.T) {
+	var counts QueueCounters
+	_ = counts.Add(CountKey{Event: EventRefused, Reason: ReasonQueueOverflow, Class: ClassC2, Severity: SeverityHigh})
+	raw, err := counts.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cp := IngressCheckpoint{Generation: 1, Sequence: 2, Cursors: QueueCursors{General: "host/address"}, Counters: raw}
+	state := IngressState{Generation: 1, Open: true, Checkpoint: &cp}
+	data, err := state.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := UnmarshalIngressState(data)
+	if err != nil || !reflect.DeepEqual(back, state) {
+		t.Fatalf("checkpoint round trip = %+v %v", back, err)
+	}
+	for _, change := range []func(*IngressCheckpoint){
+		func(c *IngressCheckpoint) { c.Generation = 0 },
+		func(c *IngressCheckpoint) { c.Generation = 2 },
+		func(c *IngressCheckpoint) { c.Cursors.General = "bad cursor" },
+		func(c *IngressCheckpoint) { c.Counters = []byte("damaged") },
+	} {
+		bad := cp
+		change(&bad)
+		state.Checkpoint = &bad
+		if _, err = state.MarshalBinary(); err == nil {
+			t.Fatal("invalid checkpoint encoded")
+		}
+	}
+	bad := cp
+	bad.Sequence++
+	bad.Counters, _ = (QueueCounters{}).MarshalBinary()
+	if err = bad.Validate(&cp, 1); err != ErrTransitionConflict {
+		t.Fatal("counter regression accepted")
+	}
+	bad = cp
+	bad.Cursors.General = "acct:alice#1/address"
+	if err = bad.Validate(&cp, 1); err != ErrTransitionConflict {
+		t.Fatal("same sequence changed decision")
+	}
+}

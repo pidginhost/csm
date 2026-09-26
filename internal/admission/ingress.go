@@ -1,6 +1,8 @@
 package admission
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -17,10 +19,10 @@ type Submission struct {
 // are a canonical QueueCounters record, copied at the handoff boundary.
 // They count in-memory decisions, not durable candidate acceptance.
 type IngressCheckpoint struct {
-	Generation uint64
-	Sequence   uint64
-	Cursors    QueueCursors
-	Counters   []byte
+	Generation uint64       `json:"generation"`
+	Sequence   uint64       `json:"sequence"`
+	Cursors    QueueCursors `json:"cursors"`
+	Counters   []byte       `json:"counters"`
 }
 
 // QueueSnapshot is an immutable owner publication. Revision orders committed
@@ -350,4 +352,128 @@ func (in *Ingress) Stats() IngressStats {
 		out.Counters.counts[k] = n
 	}
 	return out
+}
+
+// DrainReport counts durable decisions made by one drain.
+type DrainReport struct{ Queued, Coalesced, Refused, Failed int }
+
+// Drain checkpoints ingress decisions even with no held items. Transient
+// errors release work; only damaged arrivals are isolated and counted lost.
+// One owner serializes Drain with every other mutating ledger operation.
+func (in *Ingress) Drain(l Ledger, limit int, request func(Submission) (CandidateRequest, error)) (DrainReport, error) {
+	var report DrainReport
+	items := in.Take(min(limit, MaxArrivalGroup))
+	arrivals := make([]Arrival, 0, len(items))
+	for _, it := range items {
+		var req CandidateRequest
+		if !it.ReportsOnly {
+			var err error
+			req, err = request(it.Submission)
+			if err != nil {
+				in.Release(items)
+				return report, err
+			}
+		}
+		arrivals = append(arrivals, Arrival{Request: req, Evidence: it.Submission.Evidence, Reports: it.Reports, Dropped: it.Dropped, ReportsOnly: it.ReportsOnly})
+	}
+	checkpoint := in.Checkpoint()
+	results, err := l.EnqueueGroup(arrivals, &checkpoint)
+	if err != nil && !errors.Is(err, ErrCorruptRecord) {
+		in.Release(items)
+		return report, err
+	}
+	done := items
+	var first error
+	if err != nil {
+		done = nil
+		results = nil
+		for i, a := range arrivals {
+			one, oneErr := l.EnqueueGroup([]Arrival{a}, &checkpoint)
+			switch {
+			case errors.Is(oneErr, ErrCorruptRecord):
+				in.discard(items[i])
+				report.Failed++
+				if first == nil {
+					first = oneErr
+				}
+			case oneErr != nil:
+				in.Release(items[i : i+1])
+				if first == nil {
+					first = oneErr
+				}
+			default:
+				done = append(done, items[i])
+				results = append(results, one...)
+			}
+		}
+		// Discard decisions belong to a separate checkpoint after the failed
+		// candidate transactions. A failure leaves them pending for the next drain.
+		checkpoint = in.Checkpoint()
+		if _, err = l.EnqueueGroup(nil, &checkpoint); err != nil && first == nil {
+			first = err
+		}
+	}
+	for _, r := range results {
+		switch {
+		case r.Err != nil:
+			report.Refused++
+		case r.Created:
+			report.Queued++
+		default:
+			report.Coalesced++
+		}
+	}
+	snap, err := l.QueueSnapshot()
+	if err != nil {
+		snap = nil
+		if first == nil {
+			first = err
+		}
+	}
+	in.Complete(done, snap)
+	return report, first
+}
+
+func (in *Ingress) discard(it IngressItem) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if p := in.byKey[it.key]; p != nil {
+		in.seq++
+		in.lose(EventEnded, ReasonInvalid, p.pos.Tier, p.item.Submission.Evidence.Severity())
+		in.drop(p)
+	}
+	in.rebuild()
+}
+
+// Validate rejects a stale generation, regressed decision sequence or counters.
+// Identical checkpoints are idempotent when damage isolation splits a group.
+func (c IngressCheckpoint) Validate(previous *IngressCheckpoint, generation uint64) error {
+	if c.Generation == 0 || c.Generation != generation || !validCursor(c.Cursors.General) || !validCursor(c.Cursors.Reserved) {
+		return ErrTransitionConflict
+	}
+	counts, err := UnmarshalQueueCounters(c.Counters)
+	if err != nil {
+		return err
+	}
+	if previous == nil {
+		return nil
+	}
+	if previous.Generation == c.Generation {
+		if c.Sequence < previous.Sequence {
+			return ErrTransitionConflict
+		}
+		if c.Sequence == previous.Sequence && (c.Cursors != previous.Cursors || !bytes.Equal(c.Counters, previous.Counters)) {
+			return ErrTransitionConflict
+		}
+	}
+	old, err := UnmarshalQueueCounters(previous.Counters)
+	if err != nil {
+		return err
+	}
+	for k, n := range old.counts {
+		if counts.Count(k) < n {
+			return ErrTransitionConflict
+		}
+	}
+	return nil
 }

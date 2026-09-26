@@ -30,6 +30,34 @@ type CandidateRequest struct {
 	Support []EvidenceID
 }
 
+// MaxArrivalGroup bounds the arrivals one ledger transaction persists, so
+// a group commit stays short.
+const MaxArrivalGroup = 64
+
+// Arrival is one ingress submission ready for the ledger: the request the
+// engine built for it, the evidence to publish first and the later
+// findings that reported the same evidence while it waited.
+type Arrival struct {
+	Request     CandidateRequest
+	Evidence    Evidence
+	Reports     []string
+	Dropped     uint32
+	ReportsOnly bool
+}
+
+// ArrivalResult is the ledger's decision on one arrival.
+type ArrivalResult struct {
+	// Candidate is the request's candidate ID. With Err set it may name no
+	// stored candidate.
+	Candidate CandidateID
+	// Created is true when the arrival queued a new candidate and false
+	// when it coalesced into an existing one.
+	Created bool
+	// Err is the arrival's refusal. It does not affect the rest of its
+	// group.
+	Err error
+}
+
 var (
 	// ErrCandidateTerminal refuses work on a candidate that has ended. A
 	// new root set needs a new generation; the old row is never revived.
@@ -91,6 +119,18 @@ type Ledger interface {
 	// NextWake is when queued work next changes without a new report: a
 	// retry wait ends or a queued deadline passes.
 	NextWake() (time.Time, bool, error)
+	// BeginIngress starts an ingress generation. A previous generation
+	// still open was interrupted: its unpersisted items are lost.
+	BeginIngress() (IngressState, error)
+	// EndIngress closes the current generation cleanly, after the owner has
+	// persisted everything the ingress held.
+	EndIngress() error
+	// EnqueueGroup publishes and queues up to MaxArrivalGroup arrivals in
+	// one transaction. A refused arrival is counted and reported in its
+	// result; any other error leaves the ledger unchanged.
+	EnqueueGroup([]Arrival, *IngressCheckpoint) ([]ArrivalResult, error)
+	// QueueSnapshot is the durable queue as the ingress needs it.
+	QueueSnapshot() (*QueueSnapshot, error)
 	// Revalidate checks every queued candidate against current policy,
 	// inventory and the admission clock: one that no longer qualifies ends,
 	// the rest keep their positions under a new assessment. The engine

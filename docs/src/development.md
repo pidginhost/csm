@@ -244,6 +244,35 @@ call granted the step; reading back an attempt that is already reserved or
 running grants nothing, and the later applier must reconcile it before any
 effect is replayed.
 
+Schema 2 of the ledger adds its queue, and the first open upgrades a schema
+1 ledger in the same transaction; legacy work that cannot fit the unassessed
+general partition refuses the upgrade intact. Ingress, queued and in-flight
+work share 1000 positions; 200 take only direct compromise or corroborated
+evidence. Each partition reserves 64 positions for memory transfers, so
+durable work cannot consume handoff space. In a full partition each verified
+scope has a fair share: a scope at its share can only replace its own
+lowest-tier, newest candidate with stronger work, and a scope below its
+share takes one position from the scope most over its share. A displaced
+candidate ends as queue overflow. Queued candidates end at their age-out, or
+at their effect expiry while waiting to retry, and are assessed again when a
+root's freshness changes; an inventory refresh ends those whose roots name a
+retired account. The scheduler serves the reserved lane first, alternating
+direct and corroborated turns, then the general lane at C3:C2:C1 4:2:1.
+Inside a class, verified scopes rotate, a scope serves Critical:High:Warning
+4:2:1 and a severity serves its oldest candidate; deficit accounting lets a
+candidate that costs several block units wait its turn without starving. The
+scheduler's position persists, and every pick is revalidated before it is
+returned. Detectors hand work to a nonblocking ingress that applies the same
+fair shares against the owner's latest snapshot of the queue. Durable
+victims remain counted until commit. Reports arriving during a drain remain
+held for a later report-only commit, and overflow counts persist with their
+links. Ingress cursor progress and loss counts are checkpointed even when
+only refusals occurred; publication cannot overwrite later memory decisions.
+The owner persists held items in groups; an ingress generation that ends
+without a clean close is recorded as interrupted, since its unpersisted
+items cannot be counted. A failed snapshot after a committed drain stops new
+submissions until the owner refreshes it.
+
 ### Attack event storage
 
 Attack events live in `attacks:events`; `attacks:events:ip` stores empty values

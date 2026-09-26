@@ -13,6 +13,7 @@ var (
 	queueStateKey    = []byte("queue")
 	queueCountersKey = []byte("counters")
 	scheduleStateKey = []byte("schedule")
+	ingressStateKey  = []byte("ingress")
 )
 
 func initializeQueueState(b *bolt.Bucket) error {
@@ -23,6 +24,7 @@ func initializeQueueState(b *bolt.Bucket) error {
 		{queueStateKey, admission.QueueState{}},
 		{queueCountersKey, admission.QueueCounters{}},
 		{scheduleStateKey, admission.ScheduleState{}},
+		{ingressStateKey, admission.IngressState{}},
 	} {
 		data, err := rec.value.MarshalBinary()
 		if err != nil {

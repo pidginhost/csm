@@ -37,36 +37,45 @@ func (l *AdmissionLedger) PublishEvidence(e admission.Evidence) (bool, error) {
 	if err := l.reg.Validate(e); err != nil {
 		return false, err
 	}
-	data, err := e.MarshalBinary()
-	if err != nil {
-		return false, err
-	}
-	id := []byte(e.ID())
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	published := false
-	err = l.update("publish", func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte(admissionEvidenceBucket))
-		if raw := b.Get(id); raw != nil {
-			old, decodeErr := admission.UnmarshalEvidence(raw)
-			if decodeErr != nil {
-				return corruptRecord(decodeErr)
-			}
-			if old.ID() != e.ID() {
-				return admission.ErrCorruptRecord
-			}
-			if !old.Equal(e) {
-				return admission.ErrEvidenceConflict
-			}
-			return nil
-		}
-		published = true
-		return b.Put(id, data)
+	err := l.update("publish", func(tx *bolt.Tx) error {
+		var txErr error
+		published, txErr = publishTx(tx, l.reg, e)
+		return txErr
 	})
 	if err != nil {
 		return false, err
 	}
 	return published, nil
+}
+
+// publishTx stores e unless the same record is already there.
+func publishTx(tx *bolt.Tx, reg *admission.Registry, e admission.Evidence) (bool, error) {
+	if err := reg.Validate(e); err != nil {
+		return false, err
+	}
+	data, err := e.MarshalBinary()
+	if err != nil {
+		return false, err
+	}
+	id := []byte(e.ID())
+	b := tx.Bucket([]byte(admissionEvidenceBucket))
+	if raw := b.Get(id); raw != nil {
+		old, decodeErr := admission.UnmarshalEvidence(raw)
+		if decodeErr != nil {
+			return false, corruptRecord(decodeErr)
+		}
+		if old.ID() != e.ID() {
+			return false, admission.ErrCorruptRecord
+		}
+		if !old.Equal(e) {
+			return false, admission.ErrEvidenceConflict
+		}
+		return false, nil
+	}
+	return true, b.Put(id, data)
 }
 
 // LoadEvidence loads a published record and revalidates it.
@@ -101,28 +110,30 @@ func loadReports(tx *bolt.Tx, e admission.Evidence) (admission.ReportLinks, erro
 func (l *AdmissionLedger) LinkReport(id admission.EvidenceID, findingID string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.update("link", func(tx *bolt.Tx) error {
-		original, err := loadEvidence(tx, l.reg, id)
-		if err != nil {
-			return err
-		}
-		links, err := loadReports(tx, original)
-		if err != nil {
-			return err
-		}
-		if findingID == original.FindingID() {
-			return nil
-		}
-		next, changed, err := links.Add(findingID)
-		if err != nil || !changed {
-			return err
-		}
-		data, err := next.MarshalBinary()
-		if err != nil {
-			return err
-		}
-		return tx.Bucket([]byte(admissionReportsBucket)).Put([]byte(id), data)
-	})
+	return l.update("link", func(tx *bolt.Tx) error { return linkTx(tx, l.reg, id, findingID) })
+}
+
+func linkTx(tx *bolt.Tx, reg *admission.Registry, id admission.EvidenceID, findingID string) error {
+	original, err := loadEvidence(tx, reg, id)
+	if err != nil {
+		return err
+	}
+	links, err := loadReports(tx, original)
+	if err != nil {
+		return err
+	}
+	if findingID == original.FindingID() {
+		return nil
+	}
+	next, changed, err := links.Add(findingID)
+	if err != nil || !changed {
+		return err
+	}
+	data, err := next.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	return tx.Bucket([]byte(admissionReportsBucket)).Put([]byte(id), data)
 }
 
 // Reports returns the later findings linked to published evidence.
