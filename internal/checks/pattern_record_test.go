@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -274,5 +275,100 @@ func TestParsePatternRecordMalformedAncillaryFields(t *testing.T) {
 	want := time.Date(2026, 9, 26, 7, 0, 0, 0, time.UTC)
 	if !ok || !r.TimeOK || !r.Time.Equal(want) {
 		t.Fatalf("timestamp offset lost: %v", r.Time)
+	}
+}
+
+func TestParsePatternRecordHeaderFields(t *testing.T) {
+	for _, prefix := range []string{
+		`192.0.2.1 ident[0] user[1] `,
+		`192.0.2.1 - [user] `,
+	} {
+		r, ok := parsePatternRecord(prefix + prTime + ` "GET /a?x=1 HTTP/1.1" 200 1 "-" "UA"`)
+		if !ok || !r.TimeOK || r.RemoteIP != "192.0.2.1" || r.Target != "/a?x=1" || r.UserAgent != "UA" {
+			t.Errorf("header %q: ok=%v record=%+v", prefix, ok, r)
+		}
+	}
+	for _, prefix := range []string{
+		`192.0.2.1 `, `192.0.2.1 - `, `192.0.2.1 - - extra `,
+	} {
+		if _, ok := parsePatternRecord(prefix + prTime + ` "GET / HTTP/1.1" 200 1`); ok {
+			t.Errorf("accepted unsupported header %q", prefix)
+		}
+	}
+}
+
+func TestParsePatternRecordRequestSyntax(t *testing.T) {
+	for _, request := range []string{
+		`GET /a HTTP/1`, `GET /a HTTP/12.1`, `GET /a HTTP/1.12`,
+		`GET /a HTTP/`, `GET /a HTTP/1.`, `GET /a HTTP/.1`,
+		`GET /a HTTP/1.1.0`, `GET /a http/1.1`,
+		"GE\tT /a HTTP/1.1", `GE\x20T /a HTTP/1.1`,
+		`GE\x00T /a HTTP/1.1`, `G(E)T /a HTTP/1.1`,
+		"GET /a\tb HTTP/1.1", "GET /a\rb HTTP/1.1", "GET /a\nb HTTP/1.1",
+		strings.Repeat("M", patternMaxMethod+1) + ` /a HTTP/1.1`,
+		strings.Repeat(`\x4d`, patternMaxMethod+1) + ` /a HTTP/1.1`,
+	} {
+		r, ok := parsePatternRecord(`192.0.2.1 - - ` + prTime + ` "` + request + `" 200 1 "-" "UA" "203.0.113.7"`)
+		if !ok || !r.TargetInvalid || r.Target != "" || r.TargetOverflow || r.UserAgent != "UA" || r.XFF != "203.0.113.7" {
+			t.Errorf("request %q: ok=%v record=%+v", request, ok, r)
+		}
+	}
+	for _, tc := range []struct{ request, method string }{
+		{`GET /a HTTP/0.9`, "GET"}, {`GET /a HTTP/1.0`, "GET"},
+		{`GET /a HTTP/2.0`, "GET"}, {`GET /a HTTP/3.0`, "GET"},
+		{`\x47ET /a \x48TTP/1.1`, "GET"},
+		{strings.Repeat("M", patternMaxMethod) + ` /a HTTP/1.1`, strings.Repeat("M", patternMaxMethod)},
+		{`M!#$%&'*+-.^_` + "`" + `|~ /a HTTP/1.1`, "M!#$%&'*+-.^_`|~"},
+	} {
+		r, ok := parsePatternRecord(`192.0.2.1 - - ` + prTime + ` "` + tc.request + `" 200 1`)
+		if !ok || r.TargetInvalid || r.TargetOverflow || r.Target != "/a" || r.Method != tc.method {
+			t.Errorf("request %q: ok=%v record=%+v", tc.request, ok, r)
+		}
+	}
+}
+
+func TestParsePatternRecordUnusableExtensions(t *testing.T) {
+	for _, extension := range []string{
+		`unknown, invalid`, `unknown`, `203.0.113.999`, `2001:db8::1%zone`,
+		`,`, `example.com:bad`, `example.com:443/path`, `user@example.com:443`,
+	} {
+		for _, extra := range []string{
+			`"` + extension + `"`,
+			`"203.0.113.7" "` + extension + `"`,
+			`"` + extension + `" "203.0.113.7"`,
+		} {
+			r, ok := parsePatternRecord(`198.51.100.9 - - ` + prTime + ` "GET /a HTTP/1.1" 200 1 "-" "UA" ` + extra)
+			if !ok || !r.XFFUnusable || r.XFF != "" || r.Target != "/a" || r.UserAgent != "UA" {
+				t.Errorf("extension %q: ok=%v record=%+v", extra, ok, r)
+			}
+		}
+	}
+	for _, extension := range []string{`example.com:443`, `192.0.2.1:80`, `[2001:db8::1]:443`, `-`, ``} {
+		for _, extra := range []string{
+			`"203.0.113.7" "` + extension + `"`,
+			`"` + extension + `" "203.0.113.7"`,
+		} {
+			r, ok := parsePatternRecord(`198.51.100.9 - - ` + prTime + ` "GET /a HTTP/1.1" 200 1 "-" "UA" ` + extra)
+			if !ok || r.XFFUnusable || r.XFF != "203.0.113.7" || r.Target != "/a" {
+				t.Errorf("extension %q: ok=%v record=%+v", extra, ok, r)
+			}
+		}
+	}
+}
+
+func BenchmarkParsePatternRecordExtensions(b *testing.B) {
+	for _, n := range []int{128, 1024, 8192} {
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			line := `192.0.2.1 - - ` + prTime + ` "GET /a HTTP/1.1" 200 1 "-" "UA" ` +
+				strings.Repeat(`"" `, n) + strings.Repeat(" ", n)
+			b.SetBytes(int64(len(line)))
+			b.ResetTimer()
+			for b.Loop() {
+				r, ok := parsePatternRecord(line)
+				if !ok || r.Target != "/a" || r.XFF != "" || r.XFFUnusable {
+					b.Fatalf("extensions lost record: ok=%v record=%+v", ok, r)
+				}
+			}
+		})
 	}
 }

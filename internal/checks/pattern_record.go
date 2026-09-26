@@ -56,12 +56,14 @@ func parsePatternRecord(line string) (patternRecord, bool) {
 		return rec, false
 	}
 	rec.RemoteIP = line[:sp]
-	rest := line[sp+1:]
-	br := strings.IndexByte(rest, '[')
-	if br < 0 {
+	// Ident and user are tokens and may themselves contain brackets.
+	ident, rest := patternToken(line[sp+1:])
+	user, rest := patternToken(rest)
+	rest = strings.TrimLeft(rest, " \t")
+	if ident == "" || user == "" || !strings.HasPrefix(rest, "[") {
 		return rec, false
 	}
-	rest = rest[br+1:]
+	rest = rest[1:]
 	cb := strings.IndexByte(rest, ']')
 	if cb < 0 {
 		return rec, false
@@ -81,7 +83,8 @@ func parsePatternRecord(line string) (patternRecord, bool) {
 	target, proto, hasProto := strings.Cut(afterMethod, " ")
 	var methodOver bool
 	rec.Method, methodOver = patternDecodeField(method, patternMaxMethod)
-	if !hasMethod || !hasProto || method == "" || target == "" || methodOver || !patternHTTPVersion(proto) {
+	if !hasMethod || !hasProto || methodOver || !patternValidMethod(rec.Method) ||
+		!patternValidRawTarget(target) || !patternHTTPVersion(proto) {
 		rec.TargetInvalid = true
 	} else {
 		rec.Target, rec.TargetOverflow = patternDecodeField(target, patternMaxTarget)
@@ -123,20 +126,28 @@ func parsePatternRecord(line string) (patternRecord, bool) {
 		return rec, false
 	}
 	rec.UserAgent, rec.UAOverflow = ua, uaOver
-	for strings.TrimSpace(rest) != "" {
+	// Consume leading separators only. Re-scanning a trailing whitespace run
+	// for every extension would make a long line quadratic to parse.
+	for rest = strings.TrimLeft(rest, " \t"); rest != ""; rest = strings.TrimLeft(rest, " \t") {
 		value, over, tail, fieldOK := scanPatternQuoted(rest, patternMaxExtension)
 		if !fieldOK {
 			return rec, false
 		}
 		// An oversized extension could hide the proxy-appended address.
 		// A duplicate or partly malformed IP list has no unique authority.
-		if over {
+		switch {
+		case over:
 			rec.XFFUnusable = true
-		} else if looksLikeXFF(value) {
-			if rec.XFF != "" || !patternValidXFF(value) {
+		case value == "" || value == "-":
+		case patternValidXFF(value):
+			if rec.XFF != "" {
 				rec.XFFUnusable = true
 			}
 			rec.XFF = value
+		case !patternVhostExtension(value):
+			// A field with no valid IPs can still be malformed proxy evidence.
+			// Only a recognized vhost field is safe to ignore here.
+			rec.XFFUnusable = true
 		}
 		rest = tail
 	}
@@ -147,11 +158,38 @@ func parsePatternRecord(line string) (patternRecord, bool) {
 }
 
 func patternHTTPVersion(s string) bool {
-	if !strings.HasPrefix(s, "HTTP/") || len(s) > 16 {
+	v, over := patternDecodeField(s, len("HTTP/1.1"))
+	return !over && len(v) == 8 && strings.HasPrefix(v, "HTTP/") &&
+		v[5] >= '0' && v[5] <= '9' && v[6] == '.' && v[7] >= '0' && v[7] <= '9'
+}
+
+func patternValidMethod(s string) bool {
+	if s == "" {
 		return false
 	}
-	major, minor, dot := strings.Cut(s[5:], ".")
-	return patternDigitsOnly(major) && (!dot || patternDigitsOnly(minor))
+	for i := range len(s) {
+		c := s[i]
+		valid := ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z') ||
+			('0' <= c && c <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(c))
+		if !valid {
+			return false
+		}
+	}
+	return true
+}
+
+func patternValidRawTarget(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := range len(s) {
+		// Log-escaped controls remain data; literal controls cannot frame a
+		// request target. Validate before decoding to preserve that distinction.
+		if s[i] <= ' ' || s[i] == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func patternToken(s string) (string, string) {
@@ -353,6 +391,15 @@ func patternValidXFF(s string) bool {
 		}
 	}
 	return true
+}
+
+func patternVhostExtension(s string) bool {
+	colon := strings.LastIndexByte(s, ':')
+	if colon < 0 || !patternValidPortSuffix(s[colon:]) || strings.ContainsAny(s, "/?#@") {
+		return false
+	}
+	_, ok := patternRefererHost("http://"+s, false)
+	return ok
 }
 
 func patternASCIILower(s string) string {
