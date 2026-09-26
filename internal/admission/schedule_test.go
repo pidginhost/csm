@@ -178,6 +178,121 @@ func TestScheduleDeficitAccounting(t *testing.T) {
 	}
 }
 
+// A member that fits a fresh budget must eventually get it. Cheaper work
+// in earlier classes or another scope cannot consume its budget every time.
+func TestSchedulePreservesBudgetBlockedTurns(t *testing.T) {
+	for _, cost := range []uint32{2, MaxMemberCost} {
+		for _, class := range []Class{ClassC2, ClassC1} {
+			t.Run(fmt.Sprintf("%s/cost=%d", class, cost), func(t *testing.T) {
+				large := schedItem("large", "a", class, SeverityHigh, time.Hour)
+				large.Cost = cost
+				items := []ScheduleItem{large}
+				for i := 0; i < 4*(int(cost)+2); i++ {
+					for _, c := range []Class{ClassC3, ClassC2, ClassC1} {
+						if class == ClassC2 && c == class {
+							continue
+						}
+						it := schedItem(fmt.Sprintf("%s-%03d", c, i), "b", c, SeverityHigh, 0)
+						if c == ClassC3 {
+							it.Cost = cost / 2
+						}
+						items = append(items, it)
+					}
+				}
+				// Four C3 turns leave one unit for C2, or three units
+				// for two C2 turns and a cheaper peer in C1.
+				budget := 2*cost + 1
+				if class == ClassC1 {
+					budget += 2
+				}
+				assertScheduleProgress(t, items, ScheduleState{}, ScheduleLimits{General: budget, Members: MaxBatchMembers}, large)
+			})
+		}
+	}
+}
+
+func TestSchedulePreservesReservedBudgetBlockedTurns(t *testing.T) {
+	for _, cost := range []uint32{2, MaxMemberCost} {
+		for _, direct := range []bool{false, true} {
+			t.Run(fmt.Sprintf("direct=%t/cost=%d", direct, cost), func(t *testing.T) {
+				large := schedItem("large", "a", ClassC3, SeverityHigh, time.Hour)
+				large.Cost, large.Direct, large.Corroborated = cost, direct, !direct
+				items := []ScheduleItem{large}
+				for i := 0; i < int(cost)+2; i++ {
+					for _, d := range []bool{false, true} {
+						it := schedItem(fmt.Sprintf("%t-%03d", d, i), "b", ClassC3, SeverityHigh, 0)
+						it.Direct, it.Corroborated = d, !d
+						if d != direct {
+							it.Cost = cost - 1
+						}
+						items = append(items, it)
+					}
+				}
+				st := ScheduleState{NextCorroborated: direct}
+				assertScheduleProgress(t, items, st, ScheduleLimits{Reserved: cost, Members: MaxBatchMembers}, large)
+			})
+		}
+	}
+}
+
+// An empty class or sub-lane may gain work before the next call. That new
+// work must not take the fresh budget promised to a blocked turn.
+func TestScheduleBudgetBlockedTurnPrecedesNewWork(t *testing.T) {
+	for _, reserved := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reserved=%t", reserved), func(t *testing.T) {
+			first := schedItem("first", "a", ClassC3, SeverityHigh, time.Hour)
+			large := schedItem("large", "b", ClassC2, SeverityHigh, time.Hour)
+			arrival := schedItem("arrival", "a", ClassC3, SeverityHigh, 0)
+			large.Cost = 2
+			lim := ScheduleLimits{General: 2, Members: MaxBatchMembers}
+			if reserved {
+				lim.General, lim.Reserved = 0, 2
+				large.Tier.Class = ClassC3
+				first.Direct, large.Direct, arrival.Corroborated = true, true, true
+			}
+			picks, st := mustSchedule(t, []ScheduleItem{first, large}, ScheduleState{}, lim)
+			if got := picked(picks); !reflect.DeepEqual(got, []string{"first"}) {
+				t.Fatalf("first batch = %v", got)
+			}
+			picks, _ = mustSchedule(t, []ScheduleItem{arrival, large}, st, lim)
+			if got := picked(picks); !reflect.DeepEqual(got, []string{"large"}) {
+				t.Fatalf("new work took the blocked turn's budget: %v", got)
+			}
+		})
+	}
+}
+
+func assertScheduleProgress(t *testing.T, items []ScheduleItem, st ScheduleState, lim ScheduleLimits, target ScheduleItem) {
+	t.Helper()
+	for round := 0; round < int(target.Cost)+2; round++ {
+		picks, next := mustSchedule(t, items, st, lim)
+		served := map[CandidateID]bool{}
+		for _, p := range picks {
+			if p.ID == target.ID {
+				return
+			}
+			served[p.ID] = true
+		}
+		kept := items[:0]
+		for _, it := range items {
+			if !served[it.ID] {
+				kept = append(kept, it)
+			}
+		}
+		items = kept
+		// Every call uses a decoded checkpoint, as after a ledger reopen.
+		data, err := next.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err = UnmarshalScheduleState(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Fatal("cheaper work starved a member that fits the full budget")
+}
+
 // A candidate waiting to retry is never picked, and does not cost its scope
 // the deficit it has earned. A scope with no work left loses its turn state.
 func TestScheduleSkipsWaitingCandidates(t *testing.T) {

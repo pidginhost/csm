@@ -226,16 +226,18 @@ func (s *scheduler) head(r int, scope string) (*ScheduleItem, uint8) {
 // have a ready member, from the one after the last served; each visit adds
 // one block unit to the scope's deficit, capped at MaxMemberCost, and the
 // first scope whose deficit and the budget both cover its head is served.
-// A scope whose head exceeds the budget still earns its unit, so a large
-// member is served as soon as the budget allows. When no head fits the
-// budget, serve changes nothing and reports false.
-func (s *scheduler) serve(r int, budget uint32) (*ScheduleItem, bool) {
+// A head above the full budget can still earn bounded credit while other
+// scopes run. A head that fits the full batch budget but not its remainder
+// holds its turn for the next batch:
+// lending that turn could leave it with too little budget on every call.
+// The boolean reports this budget block; otherwise nil means no head fits.
+func (s *scheduler) serve(r int, budget, fullBudget uint32) (*ScheduleItem, bool) {
 	var scopes []string
 	fits := false
 	for scope := range s.rings[r].ready {
 		if it, _ := s.head(r, scope); it != nil {
 			scopes = append(scopes, scope)
-			fits = fits || it.Cost <= budget
+			fits = fits || it.Cost <= fullBudget
 		}
 	}
 	if !fits {
@@ -247,12 +249,14 @@ func (s *scheduler) serve(r int, budget uint32) (*ScheduleItem, bool) {
 	if start < len(scopes) && scopes[start] == ring.Last {
 		start++
 	}
-	// Every visit adds a unit, and a fitting head costs at most
-	// MaxMemberCost, so some fitting head is covered within MaxMemberCost
-	// rotations.
+	// A fitting head is served or held for a fresh budget within
+	// MaxMemberCost rotations, since each visit earns a unit.
 	for visit := 0; ; visit++ {
 		scope := scopes[(start+visit)%len(scopes)]
 		it, slot := s.head(r, scope)
+		if it.Cost > budget && it.Cost <= fullBudget {
+			return nil, true
+		}
 		turn := ring.Scopes[scope]
 		if turn.Deficit < MaxMemberCost {
 			turn.Deficit++
@@ -262,7 +266,7 @@ func (s *scheduler) serve(r int, budget uint32) (*ScheduleItem, bool) {
 			turn.Deficit -= it.Cost
 			turn.Severity = (slot + 1) % patternSlots
 			ring.Scopes[scope] = turn
-			return it, true
+			return it, false
 		}
 		ring.Scopes[scope] = turn
 	}
@@ -293,14 +297,20 @@ func Schedule(items []ScheduleItem, st ScheduleState, lim ScheduleLimits) ([]Pic
 		picks = append(picks, Pick{ID: it.ID, Lane: lane, Cost: it.Cost})
 	}
 	budget := lim.Reserved
-	for len(picks) < lim.Members {
+reserved:
+	for budget > 0 && len(picks) < lim.Members {
 		order := []int{ringDirect, ringCorroborated}
 		if s.st.NextCorroborated {
 			order = []int{ringCorroborated, ringDirect}
 		}
 		served := false
 		for _, r := range order {
-			if it, ok := s.serve(r, budget); ok {
+			it, blocked := s.serve(r, budget, lim.Reserved)
+			if blocked {
+				s.st.NextCorroborated = r == ringCorroborated
+				break reserved
+			}
+			if it != nil {
 				budget -= it.Cost
 				lane := LaneDirect
 				if r == ringCorroborated {
@@ -317,11 +327,17 @@ func Schedule(items []ScheduleItem, st ScheduleState, lim ScheduleLimits) ([]Pic
 		}
 	}
 	budget = lim.General
-	for len(picks) < lim.Members {
+general:
+	for budget > 0 && len(picks) < lim.Members {
 		served := false
 		for k := uint8(0); k < patternSlots; k++ {
 			slot := (s.st.ClassSlot + k) % patternSlots
-			if it, ok := s.serve(int(classPattern[slot])-1, budget); ok {
+			it, blocked := s.serve(int(classPattern[slot])-1, budget, lim.General)
+			if blocked {
+				s.st.ClassSlot = slot
+				break general
+			}
+			if it != nil {
 				budget -= it.Cost
 				take(it, LaneGeneral)
 				s.st.ClassSlot = (slot + 1) % patternSlots
