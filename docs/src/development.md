@@ -84,11 +84,6 @@ macOS or default-tag suite does not demonstrate BPF LSM attachment.
 
 ## Fuzz
 
-Access-log parser tests cover authentication fields, timestamp validity and
-request framing together. The user-field fuzz target varies server-escaped
-authentication input and checks that the timestamp and request stay intact.
-Changes to the new parser must preserve the legacy parser fixtures.
-
 CSM has fuzz targets for parsers that read attacker-controlled input, including Exim mainlog lines, Dovecot maillog lines, Apache Combined Log Format, /proc/net/tcp rows, wp-config.php bodies, /etc/shadow, auditd comm fields, and finding messages coming back from the WebUI.
 
 Fuzz targets live in `*fuzz*test.go` files across the internal packages and scripts. Fuzz targets do two things:
