@@ -64,7 +64,7 @@ func runConfigSchema() {
 }
 
 func configShow() {
-	cfg := loadConfig()
+	cfg := loadConfigLite()
 
 	noRedact := false
 	asJSON := false

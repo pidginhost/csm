@@ -26,6 +26,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Blocks of protected addresses, such as loopback, link-local, multicast or broadcast, are now recorded as refusals for timed blocks, subnet dry-runs and manual requests. They were logged as failures or proposed blocks, or not recorded at all.
 - Response replay reports now state that each finding keeps the severity it was recorded with, since a later grading change is not applied to older recordings.
 - The finding-stream tool now replaces learned names that contain an underscore or start with a dot, such as a bare mail login, as whole identities wherever they appear, instead of refusing the run on its own output. It no longer rewrites punctuation or its own pseudonyms while doing so.
+- `csm config show` now works while the daemon is running. It opened the state database, which it never reads, and failed with a timeout on the daemon's lock.
 
 ## [4.0.0] - 2026-09-24
 

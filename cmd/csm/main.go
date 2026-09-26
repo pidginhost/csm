@@ -243,15 +243,6 @@ Options:
 	`, preferredConfigPath, legacyConfigPath, defaultConfDir)
 }
 
-func loadConfig() *config.Config {
-	cfg := loadConfigLite()
-	if err := ensureGlobalStore(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "store: %v\n", err)
-		os.Exit(1)
-	}
-	return cfg
-}
-
 func ensureGlobalStore(cfg *config.Config) error {
 	// Initialize bbolt store (idempotent - uses sync.Once).
 	if err := store.EnsureOpen(cfg.StatePath); err != nil {
