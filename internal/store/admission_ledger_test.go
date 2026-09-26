@@ -62,7 +62,7 @@ func TestAdmissionLedgerRefusesUnsealedRegistryAndUnknownSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(meta *bolt.Bucket) error{
-		"future schema": func(meta *bolt.Bucket) error { return meta.Put(admissionSchemaKey, []byte{2}) },
+		"future schema": func(meta *bolt.Bucket) error { return meta.Put(admissionSchemaKey, []byte{admissionSchemaVersion + 1}) },
 		"missing schema with data": func(meta *bolt.Bucket) error {
 			if err := meta.Delete(admissionSchemaKey); err != nil {
 				return err

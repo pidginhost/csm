@@ -18,17 +18,23 @@ const (
 	admissionReportsBucket    = "adm:reports"
 	admissionCandidatesBucket = "adm:candidates"
 	admissionAttemptsBucket   = "adm:attempts"
-	admissionSchemaVersion    = 1
+	admissionQueueBucket      = "adm:queue"
+	admissionQueueStateBucket = "adm:qstate"
+	admissionSchemaVersion    = 2
 )
 
 var (
-	admissionBuckets         = []string{admissionMetaBucket, admissionEvidenceBucket, admissionReportsBucket, admissionCandidatesBucket, admissionAttemptsBucket}
-	admissionSchemaKey       = []byte("schema")
-	admissionClockKey        = []byte("clock")
-	admissionClockPendingKey = []byte("clock_pending")
-	admissionTrackerKey      = []byte("generations")
-	admissionInventoryKey    = []byte("inventory")
-	admissionAmbiguousKey    = []byte("ambiguous_domains")
+	// admissionSchemaOneBuckets are the buckets of the schema 1 layout.
+	// Schema 2 adds the queue buckets.
+	admissionSchemaOneBuckets = []string{admissionMetaBucket, admissionEvidenceBucket, admissionReportsBucket, admissionCandidatesBucket, admissionAttemptsBucket}
+	admissionQueueBuckets     = []string{admissionQueueBucket, admissionQueueStateBucket}
+	admissionBuckets          = append(append([]string(nil), admissionSchemaOneBuckets...), admissionQueueBuckets...)
+	admissionSchemaKey        = []byte("schema")
+	admissionClockKey         = []byte("clock")
+	admissionClockPendingKey  = []byte("clock_pending")
+	admissionTrackerKey       = []byte("generations")
+	admissionInventoryKey     = []byte("inventory")
+	admissionAmbiguousKey     = []byte("ambiguous_domains")
 )
 
 // ErrAdmissionSchema reports admission buckets this build cannot read: an
@@ -75,8 +81,8 @@ func refusal(r admission.Reason, detail string) error {
 }
 
 // OpenAdmissionLedger opens the ledger on db, creating its buckets on first
-// use. The registry must be sealed: the set of producers cannot change
-// under a running ledger.
+// use and upgrading a schema 1 ledger in the same transaction. The registry
+// must be sealed: the set of producers cannot change under a running ledger.
 func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, error) {
 	if db == nil || reg == nil || !reg.Sealed() {
 		return nil, errors.New("admission ledger needs a database and a sealed producer registry")
@@ -84,31 +90,55 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 	l := &AdmissionLedger{db: db, reg: reg}
 	published := ledgerInventory{}
 	err := db.bolt.Update(func(tx *bolt.Tx) error {
-		existing := 0
-		for _, name := range admissionBuckets {
-			if tx.Bucket([]byte(name)) != nil {
-				existing++
+		present := func(names []string) (n int) {
+			for _, name := range names {
+				if tx.Bucket([]byte(name)) != nil {
+					n++
+				}
 			}
+			return n
 		}
-		if existing != 0 && existing != len(admissionBuckets) {
-			return admission.ErrCorruptRecord
-		}
-		fresh := existing == 0
-		if fresh {
+		existing := present(admissionBuckets)
+		if existing == 0 {
 			for _, name := range admissionBuckets {
 				if _, err := tx.CreateBucket([]byte(name)); err != nil {
 					return err
 				}
 			}
-		}
-		meta := tx.Bucket([]byte(admissionMetaBucket))
-		if fresh {
-			if err := initializeLedgerMeta(meta); err != nil {
+			if err := initializeLedgerMeta(tx.Bucket([]byte(admissionMetaBucket))); err != nil {
 				return err
 			}
-		} else if schema := meta.Get(admissionSchemaKey); len(schema) != 1 || schema[0] != admissionSchemaVersion {
-			return ErrAdmissionSchema
+			if err := initializeQueueState(tx.Bucket([]byte(admissionQueueStateBucket))); err != nil {
+				return err
+			}
+		} else {
+			meta := tx.Bucket([]byte(admissionMetaBucket))
+			if meta == nil {
+				return admission.ErrCorruptRecord
+			}
+			switch schema := meta.Get(admissionSchemaKey); {
+			case len(schema) == 1 && schema[0] == 1:
+				if existing != len(admissionSchemaOneBuckets) || present(admissionSchemaOneBuckets) != existing {
+					return admission.ErrCorruptRecord
+				}
+				if err := upgradeLedgerToSchemaTwo(tx); err != nil {
+					return err
+				}
+			case len(schema) == 1 && schema[0] == admissionSchemaVersion:
+				if existing != len(admissionBuckets) {
+					return admission.ErrCorruptRecord
+				}
+			default:
+				return ErrAdmissionSchema
+			}
 		}
+		if _, err := loadQueueState(tx); err != nil {
+			return err
+		}
+		if _, err := loadQueueCounters(tx); err != nil {
+			return err
+		}
+		meta := tx.Bucket([]byte(admissionMetaBucket))
 		c, err := loadLedgerClock(meta)
 		if err != nil {
 			return err
