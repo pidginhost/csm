@@ -165,7 +165,12 @@ func TestParsePatternRecordRequestFraming(t *testing.T) {
 		{`GET /a b HTTP/1.1`, "", true},
 		{`GET / HTTP/1.1 extra`, "", true},
 		{`GET /`, "", true},
-		{`GET http://example.com/a HTTP/1.1`, "", true},
+		{`GET http://example.com/a HTTP/1.1`, "http://example.com/a", false},
+		{`GET HTTPS://example.com?x=1 HTTP/1.1`, "HTTPS://example.com?x=1", false},
+		{`GET http:/a?x=1 HTTP/1.1`, "http:/a?x=1", false},
+		{`GET ftp://example.com/a HTTP/1.1`, "", true},
+		{`GET http:a/b HTTP/1.1`, "", true},
+		{`CONNECT example.com:443 HTTP/1.1`, "", true},
 		{`OPTIONS * HTTP/1.1`, "", true},
 	} {
 		r, ok := parsePatternRecord(`192.0.2.1 - - ` + prTime + ` "` + tc.request + `" 200 1 "-" "UA"`)

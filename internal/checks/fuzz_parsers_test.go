@@ -11,6 +11,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/pidginhost/csm/internal/crawlid"
 )
 
 func FuzzCountWPLoopback(f *testing.F) {
@@ -756,8 +758,8 @@ func FuzzParsePatternRecord(f *testing.F) {
 		if len(r.Target) > patternMaxTarget || ((r.TargetOverflow || r.TargetInvalid) && r.Target != "") {
 			t.Fatalf("target bound broken: overflow=%v len=%d", r.TargetOverflow, len(r.Target))
 		}
-		if r.Target != "" && r.Target[0] != '/' {
-			t.Fatalf("non-origin target kept: %q", r.Target)
+		if _, _, supported := crawlid.SplitTarget(r.Target); r.Target != "" && !supported {
+			t.Fatalf("unsupported target form kept: %q", r.Target)
 		}
 		if r.Target == "" && !r.TargetOverflow && !r.TargetInvalid {
 			t.Fatal("missing target without an explicit coverage gap")

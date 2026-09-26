@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/pidginhost/csm/internal/crawlid"
 )
 
 // These are parser resource bounds, not qualified server acceptance limits.
@@ -84,7 +86,7 @@ func parsePatternRecord(line string) (patternRecord, bool) {
 		rec.Target, rec.TargetOverflow = patternDecodeField(target, patternMaxTarget)
 		if rec.TargetOverflow {
 			rec.Target = ""
-		} else if !strings.HasPrefix(rec.Target, "/") {
+		} else if _, _, supported := crawlid.SplitTarget(rec.Target); !supported {
 			rec.Target, rec.TargetInvalid = "", true
 		}
 	}
