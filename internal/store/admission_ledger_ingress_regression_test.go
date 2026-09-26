@@ -194,3 +194,65 @@ func TestIngressIsolationReleasesRemainingHandoffOnTransientError(t *testing.T) 
 		})
 	}
 }
+
+// isolationSnapshotLedger fails a drain's first group as damaged, captures
+// the durable snapshot just before one later group, can fail one group,
+// and never serves the drain's own completion snapshot.
+type isolationSnapshotLedger struct {
+	admission.Ledger
+	t                           testing.TB
+	calls, captureBefore, fails int
+	captured                    *admission.QueueSnapshot
+}
+
+func (l *isolationSnapshotLedger) EnqueueGroup(a []admission.Arrival, cp *admission.IngressCheckpoint) ([]admission.ArrivalResult, int, error) {
+	l.calls++
+	switch l.calls {
+	case 1:
+		return nil, 0, admission.ErrCorruptRecord
+	case l.fails:
+		return nil, 0, errors.New("storage temporarily unavailable")
+	case l.captureBefore:
+		snap, err := l.Ledger.QueueSnapshot()
+		if err != nil {
+			l.t.Fatal(err)
+		}
+		l.captured = snap
+	}
+	return l.Ledger.EnqueueGroup(a, cp)
+}
+
+func (*isolationSnapshotLedger) QueueSnapshot() (*admission.QueueSnapshot, error) {
+	return nil, errors.New("snapshot unavailable")
+}
+
+// After an isolating drain, a snapshot read before any of its commits is
+// stale: the fence is the last committed group, whether that is an
+// arrival or the closing checkpoint.
+func TestIngressIsolationFencesSnapshotsBetweenCommits(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		captureBefore, fails int
+	}{
+		// Calls: 1 failed group, 2 probe, 3 the arrival, 4 the checkpoint.
+		{"arrival", 3, 4},
+		{"checkpoint", 4, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.begin()
+			in := f.ingress()
+			if err := in.Submit(f.submission(evidenceSpec{})); err != nil {
+				t.Fatal(err)
+			}
+			l := &isolationSnapshotLedger{Ledger: f.l, t: t, captureBefore: tc.captureBefore, fails: tc.fails}
+			report, err := in.Drain(l, 1, f.requestFor)
+			if err == nil || report != (admission.DrainReport{Queued: 1}) || in.Len() != 0 || l.captured == nil {
+				t.Fatalf("drain = %+v, %v; %d held", report, err, in.Len())
+			}
+			in.Publish(l.captured)
+			next := f.submission(evidenceSpec{target: "192.0.2.20", cursor: "next"})
+			wantLedgerReason(t, "snapshot older than the last commit", in.Submit(next), admission.ReasonEngineUnavailable)
+		})
+	}
+}
