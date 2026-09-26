@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"reflect"
 	"sync"
@@ -247,5 +248,32 @@ func TestAdmissionLedgerRefusesMisplacedReportLinks(t *testing.T) {
 	}
 	if links, _, err := f.l.Reports(b); !isCorrupt(err) {
 		t.Fatalf("original finding read as a later report: %v, %v", links, err)
+	}
+}
+
+// Evidence refusals name their cause: a reference to unpublished evidence
+// and a conflicting record are distinct sentinels, both with reason invalid.
+func TestAdmissionLedgerEvidenceRefusalSentinels(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.published(evidenceSpec{})
+	_, err := f.l.PublishEvidence(f.mint(evidenceSpec{finding: "fedcba9876543210"}))
+	wantLedgerErr(t, "conflicting publish", err, admission.ErrEvidenceConflict)
+	wantLedgerReason(t, "conflicting publish", err, admission.ReasonInvalid)
+	missing := admission.EvidenceID("ev_00000000000000000000000000000001")
+	for name, call := range map[string]func() error{
+		"load":   func() error { _, err := f.l.LoadEvidence(missing); return err },
+		"link":   func() error { return f.l.LinkReport(missing, "fedcba9876543210") },
+		"report": func() error { _, _, err := f.l.Reports(missing); return err },
+		"enqueue": func() error {
+			_, _, err := f.l.Enqueue(f.request("192.0.2.10", id, missing))
+			return err
+		},
+	} {
+		err := call()
+		wantLedgerErr(t, name, err, admission.ErrEvidenceUnpublished)
+		wantLedgerReason(t, name, err, admission.ReasonInvalid)
+	}
+	if errors.Is(admission.ErrEvidenceConflict, admission.ErrEvidenceUnpublished) {
+		t.Fatal("the two refusals must be distinct")
 	}
 }

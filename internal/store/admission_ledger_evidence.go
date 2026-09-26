@@ -13,7 +13,7 @@ func loadEvidence(tx *bolt.Tx, reg *admission.Registry, id admission.EvidenceID)
 	}
 	raw := tx.Bucket([]byte(admissionEvidenceBucket)).Get([]byte(id))
 	if raw == nil {
-		return admission.Evidence{}, refusal(admission.ReasonInvalid, "evidence is not published")
+		return admission.Evidence{}, admission.ErrEvidenceUnpublished
 	}
 	e, err := admission.UnmarshalEvidence(raw)
 	if err != nil {
@@ -56,7 +56,7 @@ func (l *AdmissionLedger) PublishEvidence(e admission.Evidence) (bool, error) {
 				return admission.ErrCorruptRecord
 			}
 			if !old.Equal(e) {
-				return refusal(admission.ReasonInvalid, "evidence ID already holds a different record")
+				return admission.ErrEvidenceConflict
 			}
 			return nil
 		}

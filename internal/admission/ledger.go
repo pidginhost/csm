@@ -39,6 +39,13 @@ var (
 	ErrTransitionConflict = errors.New("candidate transition conflicts with its recorded state")
 	// ErrNotReady refuses to reserve a candidate before its retry time.
 	ErrNotReady = errors.New("candidate is waiting for its retry time")
+	// ErrEvidenceUnpublished refuses a reference to evidence the ledger does
+	// not hold. Its reason is ReasonInvalid.
+	ErrEvidenceUnpublished error = &Error{Reason: ReasonInvalid, Detail: "evidence is not published"}
+	// ErrEvidenceConflict refuses a different record under a published
+	// evidence ID. Its reason is ReasonInvalid. A record that differs only
+	// in its finding is a later report: link it with LinkReport instead.
+	ErrEvidenceConflict error = &Error{Reason: ReasonInvalid, Detail: "evidence ID already holds a different record"}
 )
 
 // Ledger is the durable admission state (spec 5.4). One engine owner

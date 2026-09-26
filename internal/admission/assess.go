@@ -34,6 +34,10 @@ type Assessment struct {
 	// ReassessBy is the earliest instant the class or severity drops, or
 	// all roots become stale, if no new evidence arrives.
 	ReassessBy time.Time
+	// NextChange is the first instant after now at which any root stops
+	// being fresh or stops supporting corroboration. The assessment cannot
+	// change before it, so a queued candidate is assessed again then.
+	NextChange time.Time
 	// Roots are the validated root IDs, sorted and deduplicated.
 	Roots []EvidenceID
 }
@@ -106,6 +110,13 @@ func Assess(target Target, roots []Evidence, now time.Time) (Assessment, error) 
 		return Assessment{}, refuse(ReasonStale, "no root is fresh")
 	}
 	a := Assessment{Roots: ids}
+	for _, r := range all {
+		for _, boundary := range []time.Time{rootExpiry(r), supportExpiry(r)} {
+			if boundary.After(now) && (a.NextChange.IsZero() || boundary.Before(a.NextChange)) {
+				a.NextChange = boundary
+			}
+		}
+	}
 	for _, r := range fresh {
 		if c, _ := r.Basis().Class(); c > a.Tier.Class {
 			a.Tier.Class = c

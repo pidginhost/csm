@@ -415,3 +415,46 @@ func TestAdmissionReassessByTracksTierLifetime(t *testing.T) {
 		})
 	}
 }
+
+// NextChange is the first root boundary after now. Nothing in the
+// assessment changes before it, while the reserved sub-lane can change
+// before ReassessBy: direct proof expires but corroboration keeps C3.
+func TestAssessNextChange(t *testing.T) {
+	tp := newTestProducers(t)
+	addr := mustAddr(t, "192.0.2.1")
+	root := func(p *Producer, check string, age time.Duration, cursor string, intel time.Duration) Evidence {
+		return mintRoot(t, t0, rootSpec{p: p, check: check, target: "192.0.2.1", age: age, cursor: cursor, intel: intel})
+	}
+	local := root(tp.ssh, "ssh_brute", 30*time.Minute, "local", 0)
+	late := root(tp.ssh, "ssh_brute", 10*time.Minute, "late", 0)
+	direct := root(tp.mail, "mail_takeover", 90*time.Minute, "direct", 0)
+	support := root(tp.reputation, "reputation", 3*time.Hour, "support", 4*time.Hour)
+	for _, tc := range []struct {
+		name  string
+		roots []Evidence
+		want  time.Duration
+	}{
+		{"one local root", []Evidence{local}, 90 * time.Minute},
+		{"support ends first", []Evidence{local, support}, time.Hour},
+		{"direct proof ends first", []Evidence{direct, late, support}, 30 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := Assess(addr, tc.roots, t0)
+			if err != nil || !a.NextChange.Equal(t0.Add(tc.want)) {
+				t.Fatalf("NextChange = %v %v, want %v", a.NextChange, err, t0.Add(tc.want))
+			}
+			before, err := Assess(addr, tc.roots, a.NextChange.Add(-time.Nanosecond))
+			if err != nil || !reflect.DeepEqual(before, a) {
+				t.Fatalf("assessment changed before NextChange: %+v %v", before, err)
+			}
+		})
+	}
+	a, err := Assess(addr, []Evidence{direct, late, support}, t0)
+	if err != nil || !a.DirectC3 || !a.ReassessBy.After(a.NextChange) {
+		t.Fatalf("baseline: %+v %v", a, err)
+	}
+	at, err := Assess(addr, []Evidence{direct, late, support}, a.NextChange)
+	if err != nil || at.Tier != a.Tier || at.DirectC3 || !at.Corroborated {
+		t.Fatalf("at NextChange the lane must move to corroboration: %+v %v", at, err)
+	}
+}

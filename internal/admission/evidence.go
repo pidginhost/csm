@@ -125,6 +125,15 @@ func (e Evidence) Intel() (IntelRef, bool) {
 // different record under an existing ID is a conflict, never an update.
 func (e Evidence) Equal(o Evidence) bool { return e.rec == o.rec }
 
+// SameExceptFinding reports whether o records the same observation as e,
+// field for field, apart from the finding that reported it. Such a record
+// is a later report of the published original, not a conflicting one.
+func (e Evidence) SameExceptFinding(o Evidence) bool {
+	a, b := e.rec, o.rec
+	a.FindingID, b.FindingID = "", ""
+	return a == b
+}
+
 // ID derives the evidence ID from producer, check, observation and target.
 func (e Evidence) ID() EvidenceID {
 	h := sha256.New()

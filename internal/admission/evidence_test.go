@@ -569,3 +569,38 @@ func TestHostEvidenceEncodingAndIDAreFrozen(t *testing.T) {
 		t.Errorf("golden record does not decode: %v", err)
 	}
 }
+
+// A record that differs from the original only in its finding is a later
+// report of the same observation; any other difference is a conflict.
+func TestEvidenceSameExceptFinding(t *testing.T) {
+	tp := newTestProducers(t)
+	in := sshInput(t)
+	original, err := tp.ssh.Mint(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !original.SameExceptFinding(original) {
+		t.Fatal("a record is the same as itself")
+	}
+	inv := testInventory(t)
+	for name, tc := range map[string]struct {
+		mutate func(*EvidenceInput)
+		same   bool
+	}{
+		"finding":  {func(in *EvidenceInput) { in.FindingID = "fedcba9876543210" }, true},
+		"severity": {func(in *EvidenceInput) { in.Severity = SeverityCritical }, false},
+		"owner":    {func(in *EvidenceInput) { in.Owner = inv.Resolve(Claim{ClaimAccount, "alice"}) }, false},
+		"time":     {func(in *EvidenceInput) { in.ObservedAt = in.ObservedAt.Add(time.Minute) }, false},
+		"parser":   {func(in *EvidenceInput) { in.Parser.Version++ }, false},
+	} {
+		changed := in
+		tc.mutate(&changed)
+		other, err := tp.ssh.Mint(changed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := original.SameExceptFinding(other); got != tc.same || other.SameExceptFinding(original) != tc.same {
+			t.Errorf("%s: SameExceptFinding = %v, want %v", name, got, tc.same)
+		}
+	}
+}
