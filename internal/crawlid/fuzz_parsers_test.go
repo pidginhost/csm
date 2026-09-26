@@ -121,3 +121,82 @@ func FuzzTargetEncodedBytes(f *testing.F) {
 		}
 	})
 }
+
+func FuzzDecodeKey(f *testing.F) {
+	for _, v := range loadVectors(f).Keys {
+		f.Add(b64(f, v.EncodedB64))
+	}
+	f.Add([]byte{})
+	f.Add([]byte{'c', 'k', 1, 3, 0x80, 0})
+	f.Add([]byte{'c', 'k', 1, 1, 0, 0, 2, 1, 'b', 1, 'a'})
+	f.Add([]byte{'c', 'k', 1, 1, 0, 0, 2, 0, 0})
+	f.Add([]byte{'c', 'k', 1, 3, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 2})
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		got, err := DecodeKey(raw)
+		if err != nil {
+			if !errors.Is(err, ErrBadKey) || !reflect.DeepEqual(got, Key{}) {
+				t.Fatalf("invalid key returned %+v, %v", got, err)
+			}
+			return
+		}
+		if got.Level < L1 || got.Level > L3 || !bytes.Equal(got.Encode(), raw) {
+			t.Fatalf("accepted noncanonical key %x: %+v", raw, got)
+		}
+		for i := 1; i < len(got.Names); i++ {
+			if bytes.Compare(got.Names[i-1], got.Names[i]) >= 0 {
+				t.Fatalf("accepted unordered or duplicate names: %q", got.Names)
+			}
+		}
+	})
+}
+
+func FuzzKeysForRoundTrip(f *testing.F) {
+	for _, v := range loadVectors(f).Targets {
+		raw := v.Raw
+		if v.RawB64 != "" {
+			raw = string(b64(f, v.RawB64))
+		}
+		f.Add([]byte("example.com"), v.Method, raw)
+	}
+	f.Fuzz(func(t *testing.T, site []byte, method, raw string) {
+		target, err := ParseTarget(raw, len(raw))
+		if err != nil {
+			return
+		}
+		class := Classify(method, target)
+		keys := KeysFor(site, class, target)
+		if !class.Dynamic {
+			if keys != nil {
+				t.Fatalf("non-dynamic request returned keys: %+v", keys)
+			}
+			return
+		}
+		levels := []Level{L3}
+		if class.Expensive {
+			levels = append(levels, L2, L1)
+		}
+		if len(keys) != len(levels) {
+			t.Fatalf("got %d keys, want levels %v", len(keys), levels)
+		}
+		for i, key := range keys {
+			var segment []byte
+			var names [][]byte
+			if levels[i] != L3 {
+				segment = target.Segment
+			}
+			if levels[i] == L1 {
+				names = target.Names
+			}
+			decoded, err := DecodeKey(key.Encode())
+			if err != nil {
+				t.Fatalf("DecodeKey at level %d: %v", levels[i], err)
+			}
+			for _, got := range []Key{key, decoded} {
+				if got.Level != levels[i] || !bytes.Equal(got.Site, site) ||
+					!bytes.Equal(got.Segment, segment) || !slices.EqualFunc(got.Names, names, bytes.Equal) {
+					t.Fatalf("wrong fields at level %d: %+v", levels[i], got)
+				}
+			}
+		}
+	})
+}
