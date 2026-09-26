@@ -51,7 +51,7 @@ type vectorFile struct {
 	Keys     []keyVector     `json:"keys"`
 }
 
-func loadVectors(t *testing.T) vectorFile {
+func loadVectors(t testing.TB) vectorFile {
 	t.Helper()
 	raw, err := os.ReadFile("testdata/vectors.json")
 	if err != nil {
@@ -72,7 +72,7 @@ func loadVectors(t *testing.T) vectorFile {
 	return vf
 }
 
-func b64(t *testing.T, s string) []byte {
+func b64(t testing.TB, s string) []byte {
 	t.Helper()
 	b, err := base64.RawURLEncoding.DecodeString(s)
 	if err != nil {
