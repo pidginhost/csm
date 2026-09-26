@@ -8,12 +8,12 @@ import (
 )
 
 var (
-	ErrEmptyTarget   = errors.New("crawlid: empty target")
-	ErrNotOriginForm = errors.New("crawlid: target is not origin-form")
-	ErrTargetTooLong = errors.New("crawlid: target exceeds bound")
+	ErrEmptyTarget     = errors.New("crawlid: empty target")
+	ErrUnsupportedForm = errors.New("crawlid: target is neither origin-form nor http(s) absolute-form")
+	ErrTargetTooLong   = errors.New("crawlid: target exceeds bound")
 )
 
-// Target is the canonical identity of one origin-form request target.
+// Target is the canonical identity of one request target.
 type Target struct {
 	Segment  []byte   // first path segment, percent-decoded once, case kept
 	HasQuery bool     // a non-empty raw query follows the first '?'
@@ -21,19 +21,21 @@ type Target struct {
 	Ext      string   // lower-case extension of the raw final path element
 }
 
-// ParseTarget canonicalizes a raw origin-form target as it appears in the
-// request line or PHP's REQUEST_URI. A target longer than maxLen is an
-// explicit overflow: callers must not build an identity from a prefix.
+// ParseTarget canonicalizes a raw target as it appears in the request line or
+// PHP's REQUEST_URI. A target longer than maxLen is an explicit overflow:
+// callers must not build an identity from a prefix. The bound counts every
+// raw byte, including an absolute-form scheme and authority.
 func ParseTarget(raw string, maxLen int) (Target, error) {
 	switch {
 	case raw == "":
 		return Target{}, ErrEmptyTarget
 	case len(raw) > maxLen:
 		return Target{}, ErrTargetTooLong
-	case raw[0] != '/':
-		return Target{}, ErrNotOriginForm
 	}
-	p, q, _ := strings.Cut(raw, "?")
+	p, q, ok := SplitTarget(raw)
+	if !ok {
+		return Target{}, ErrUnsupportedForm
+	}
 	seg := p[1:]
 	if i := strings.IndexByte(seg, '/'); i >= 0 {
 		seg = seg[:i]
@@ -165,4 +167,44 @@ func unhex(c byte) byte {
 	default:
 		return c - 'a' + 10
 	}
+}
+
+// SplitTarget returns the raw path and query of an origin-form target or of
+// an http or https absolute-form target (scheme compared in ASCII case only).
+// Servers must accept absolute-form and hand it to PHP unchanged, so without
+// this a client could choose it to leave its identity. The authority is
+// dropped: the site comes from verified inventory, never from the request.
+// An absolute form without a path has the root path. Any other form, such as
+// asterisk, authority-form, another scheme or a rootless path, is unsupported.
+func SplitTarget(raw string) (path, query string, ok bool) {
+	rest := raw
+	if !strings.HasPrefix(raw, "/") {
+		scheme, after, found := strings.Cut(raw, ":")
+		if !found || !isHTTPScheme(scheme) {
+			return "", "", false
+		}
+		rest = after
+		if authority, hasAuthority := strings.CutPrefix(rest, "//"); hasAuthority {
+			rest = ""
+			if end := strings.IndexAny(authority, "/?"); end >= 0 {
+				rest = authority[end:]
+			}
+		}
+		if rest != "" && rest[0] != '/' && rest[0] != '?' {
+			return "", "", false
+		}
+	}
+	path, query, _ = strings.Cut(rest, "?")
+	if path == "" {
+		path = "/"
+	}
+	return path, query, true
+}
+
+func isHTTPScheme(s string) bool {
+	if len(s) != len("http") && len(s) != len("https") {
+		return false
+	}
+	lower := string(asciiLower([]byte(s)))
+	return lower == "http" || lower == "https"
 }

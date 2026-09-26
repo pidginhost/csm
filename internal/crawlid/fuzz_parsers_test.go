@@ -14,6 +14,11 @@ import (
 	"testing"
 )
 
+// supportedForm restates the accepted target forms independently of
+// SplitTarget: origin-form, or an http(s) absolute form whose remainder after
+// an optional authority is empty or starts a path or query.
+var supportedForm = regexp.MustCompile(`(?s)^(/.*|[hH][tT][tT][pP][sS]?:(//[^/?]*)?([/?].*)?)$`)
+
 func FuzzParseTarget(f *testing.F) {
 	vf := loadVectors(f)
 	for _, v := range vf.Targets {
@@ -39,8 +44,8 @@ func FuzzParseTarget(f *testing.F) {
 			wantErr = ErrEmptyTarget
 		case len(raw) > limit:
 			wantErr = ErrTargetTooLong
-		case raw[0] != '/':
-			wantErr = ErrNotOriginForm
+		case !supportedForm.MatchString(raw):
+			wantErr = ErrUnsupportedForm
 		}
 		if !errors.Is(err, wantErr) {
 			t.Fatalf("ParseTarget(%q, %d): error = %v, want %v", raw, limit, err, wantErr)

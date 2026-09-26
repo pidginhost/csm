@@ -82,9 +82,9 @@ func b64(t testing.TB, s string) []byte {
 }
 
 var errNames = map[string]error{
-	"empty":           ErrEmptyTarget,
-	"not-origin-form": ErrNotOriginForm,
-	"too-long":        ErrTargetTooLong,
+	"empty":            ErrEmptyTarget,
+	"unsupported-form": ErrUnsupportedForm,
+	"too-long":         ErrTargetTooLong,
 }
 
 func TestTargetVectors(t *testing.T) {

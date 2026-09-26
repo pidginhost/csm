@@ -25,16 +25,11 @@ func httpASNCrawlExpensive(rec accessLogRecord) bool {
 	if rec.Method != "GET" && rec.Method != "HEAD" {
 		return false
 	}
-	q := strings.IndexByte(rec.URI, '?')
-	if q < 0 || q == len(rec.URI)-1 {
+	p, q, ok := crawlid.SplitTarget(rec.URI)
+	if !ok || q == "" {
 		return false
 	}
-	p := rec.URI[:q]
-	ext := crawlid.PathExtension(p)
-	if ext == "" {
-		return true
-	}
-	_, isStatic := httpASNCrawlStaticExts[ext]
+	_, isStatic := httpASNCrawlStaticExts[crawlid.PathExtension(p)]
 	return !isStatic
 }
 
