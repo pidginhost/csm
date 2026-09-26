@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"net"
 	"net/netip"
 	"net/url"
 	"reflect"
@@ -208,28 +209,51 @@ func FuzzKeysForRoundTrip(f *testing.F) {
 }
 
 func FuzzBindingOf(f *testing.F) {
-	for _, raw := range []string{"192.0.2.10", "::ffff:192.0.2.10", "2001:db8:1:2::3", "2001:db8::1%test0", "192.0.2.10:80", ""} {
+	for _, v := range loadVectors(f).Bindings {
+		f.Add(v.IP)
+	}
+	for _, raw := range []string{
+		"192.0.2.10", "::ffff:192.0.2.10", "2001:db8:1:2::3", "2001:db8::1%test0", "192.0.2.10:80", "",
+		"2001:db8:abcd:ef01:2345:6789:abcd:ef01", "2001:0DB8:0001:0002:0000:0000:0000:0001",
+		"[192.0.2.10]", "[2001:db8::1]:80", "[::ffff:192.0.2.10]:80",
+		"192.0.2.10%test0", "2001:db8::1%", "::ffff:192.0.2.10%test0", "::ffff:c000:20a%test0",
+		"192.0.2.10/32", "2001:db8::1/64", "::ffff:192.0.002.10",
+		"192.0.2.10 ", "\t192.0.2.10", " 2001:db8::1", "2001:db8::1\r\n",
+		"192.0.2.10\x00", "2001:db8::1\x00", "\xff",
+	} {
 		f.Add(raw)
 	}
 	f.Fuzz(func(t *testing.T, raw string) {
 		binding, ok := BindingOf(raw)
+		// A round trip alone also passes for rejected valid inputs and collisions.
+		parsed := net.ParseIP(raw)
+		if ok != (parsed != nil) {
+			t.Fatalf("BindingOf(%q) ok = %v, want %v", raw, ok, parsed != nil)
+		}
 		if !ok {
 			if binding != "" {
 				t.Fatal("invalid address returned a partial binding")
 			}
 			return
 		}
-		encoded, err := base64.RawURLEncoding.DecodeString(binding.String())
-		if err != nil || string(encoded) != string(binding) {
-			t.Fatal("binding bytes changed in JSON encoding")
+		wire := binding.String()
+		encoded, err := base64.RawURLEncoding.DecodeString(wire)
+		if err != nil || string(encoded) != string(binding) || base64.RawURLEncoding.EncodeToString(encoded) != wire {
+			t.Fatal("binding JSON encoding is not canonical or changed the bytes")
 		}
 		var restored string
 		switch {
 		case len(binding) == 5 && binding[0] == '4':
+			if !bytes.Equal([]byte(binding[1:]), parsed.To4()) {
+				t.Fatalf("BindingOf(%q) = %x, want the full IPv4 address", raw, []byte(binding))
+			}
 			var addr [4]byte
 			copy(addr[:], binding[1:])
 			restored = netip.AddrFrom4(addr).String()
 		case len(binding) == 9 && binding[0] == '6':
+			if parsed.To4() != nil || !bytes.Equal([]byte(binding[1:]), parsed[:8]) {
+				t.Fatalf("BindingOf(%q) = %x, want the IPv6 /64", raw, []byte(binding))
+			}
 			var addr [16]byte
 			copy(addr[:8], binding[1:])
 			restored = netip.AddrFrom16(addr).String()

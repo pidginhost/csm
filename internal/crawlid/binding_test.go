@@ -16,6 +16,9 @@ func TestBindingVectors(t *testing.T) {
 		if !ok && b != "" {
 			t.Fatalf("invalid binding returned bytes for %q", v.IP)
 		}
+		if ok && string(b) != string(b64(t, v.B64)) {
+			t.Errorf("BindingOf(%q) bytes = %x, want %x", v.IP, []byte(b), b64(t, v.B64))
+		}
 		if ok && b.String() != v.B64 {
 			t.Errorf("BindingOf(%q) = %s, want %s", v.IP, b.String(), v.B64)
 		}
