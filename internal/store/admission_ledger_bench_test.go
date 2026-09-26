@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"net/netip"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -105,16 +106,18 @@ func BenchmarkAdmissionLedgerRefreshInventoryFullQueue(b *testing.B) {
 func BenchmarkAdmissionLedgerEnqueueGroupFullQueue(b *testing.B) {
 	f := fullLedger(b)
 	f.begin()
+	next := netip.MustParseAddr("2001:db8:1::1")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		group := make([]admission.Arrival, admission.MaxArrivalGroup)
 		for j := range group {
 			f.fills++
-			group[j] = f.arrival(evidenceSpec{target: fmt.Sprintf("2001:db8::%x", f.fills), cursor: fmt.Sprintf("group=%d", f.fills)})
+			group[j] = f.arrival(evidenceSpec{target: next.String(), cursor: fmt.Sprintf("group=%d", f.fills)})
+			next = next.Next()
 		}
 		b.StartTimer()
-		results, err := f.l.EnqueueGroup(group, nil)
+		results, _, err := f.l.EnqueueGroup(group, nil)
 		if err != nil || len(results) != len(group) {
 			b.Fatalf("group: %d results, %v", len(results), err)
 		}

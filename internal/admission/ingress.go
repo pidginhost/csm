@@ -208,15 +208,16 @@ func (in *Ingress) publish(snap *QueueSnapshot) {
 	if !in.initialized {
 		in.generation = snap.Generation
 		if cp := snap.Checkpoint; cp != nil {
-			in.cursors = cp.Cursors
-			// Generations retain lifetime counters and the last cursor, but start
-			// a new sequence. A same-generation restart resumes the checkpoint.
-			if cp.Generation == snap.Generation {
-				in.seq = max(in.seq, cp.Sequence)
-			}
 			counts, err := UnmarshalQueueCounters(cp.Counters)
 			if err != nil {
 				return
+			}
+			in.cursors = cp.Cursors
+			// Generations retain lifetime counters and the last cursor, but start
+			// a new sequence. A same-generation restart resumes the checkpoint.
+			// Refusals before this first snapshot are additional local decisions.
+			if cp.Generation == snap.Generation {
+				in.seq += cp.Sequence
 			}
 			for k, n := range counts.counts {
 				before := in.stats.Counters.Count(k)
@@ -263,6 +264,13 @@ func (in *Ingress) rebuild() {
 		v.limits[it.Partition]++
 	}
 	for _, p := range in.items {
+		owner := p.item.Submission.Evidence.Owner()
+		if in.snap.Inventory == nil || !in.snap.Inventory.Current(owner) {
+			p.pos.Scope = (Scope{Owner: HostOwner(), Effect: p.item.Submission.Kind.Effect()}).Key()
+			p.pos.Eligible = false
+		}
+		// Retain the transfer allocation through handoff, even when an
+		// inventory publication retires the owner of a taken item.
 		pos := p.pos
 		pos.Fixed = p.taken || p.item.ReportsOnly
 		_ = v.Add(pos)
@@ -306,7 +314,8 @@ func (in *Ingress) Release(items []IngressItem) {
 
 // Complete acknowledges only the taken tail. Reports accepted during the
 // commit remain held for a report-only transaction and cannot create work.
-func (in *Ingress) Complete(items []IngressItem, snap *QueueSnapshot) {
+// revision is the last committed group revision, including checkpoints.
+func (in *Ingress) Complete(items []IngressItem, revision int, snap *QueueSnapshot) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	for _, it := range items {
@@ -321,9 +330,10 @@ func (in *Ingress) Complete(items []IngressItem, snap *QueueSnapshot) {
 			}
 		}
 	}
-	if snap == nil {
-		in.revision++
-	}
+	// A stale or other-generation snapshot must not leave the previous
+	// occupancy usable after acknowledgement, even if its read succeeded.
+	in.revision = max(in.revision, revision)
+	in.snap = nil
 	in.publish(snap)
 	in.rebuild()
 }
@@ -377,7 +387,7 @@ func (in *Ingress) Drain(l Ledger, limit int, request func(Submission) (Candidat
 		arrivals = append(arrivals, Arrival{Request: req, Evidence: it.Submission.Evidence, Reports: it.Reports, Dropped: it.Dropped, ReportsOnly: it.ReportsOnly})
 	}
 	checkpoint := in.Checkpoint()
-	results, err := l.EnqueueGroup(arrivals, &checkpoint)
+	results, revision, err := l.EnqueueGroup(arrivals, &checkpoint)
 	if err != nil && !errors.Is(err, ErrCorruptRecord) {
 		in.Release(items)
 		return report, err
@@ -387,14 +397,15 @@ func (in *Ingress) Drain(l Ledger, limit int, request func(Submission) (Candidat
 	if err != nil {
 		// Damage an empty group also meets is shared, not an arrival's:
 		// every item goes back and none is counted lost.
-		if _, err = l.EnqueueGroup(nil, &checkpoint); err != nil {
+		if _, revision, err = l.EnqueueGroup(nil, &checkpoint); err != nil {
 			in.Release(items)
 			return report, err
 		}
 		done = nil
 		results = nil
+	isolating:
 		for i, a := range arrivals {
-			one, oneErr := l.EnqueueGroup([]Arrival{a}, &checkpoint)
+			one, committed, oneErr := l.EnqueueGroup([]Arrival{a}, &checkpoint)
 			switch {
 			case errors.Is(oneErr, ErrCorruptRecord):
 				in.discard(items[i])
@@ -403,11 +414,13 @@ func (in *Ingress) Drain(l Ledger, limit int, request func(Submission) (Candidat
 					first = oneErr
 				}
 			case oneErr != nil:
-				in.Release(items[i : i+1])
+				in.Release(items[i:])
 				if first == nil {
 					first = oneErr
 				}
+				break isolating
 			default:
+				revision = committed
 				done = append(done, items[i])
 				results = append(results, one...)
 			}
@@ -415,8 +428,12 @@ func (in *Ingress) Drain(l Ledger, limit int, request func(Submission) (Candidat
 		// Discard decisions belong to a separate checkpoint after the failed
 		// candidate transactions. A failure leaves them pending for the next drain.
 		checkpoint = in.Checkpoint()
-		if _, err = l.EnqueueGroup(nil, &checkpoint); err != nil && first == nil {
-			first = err
+		if _, committed, checkpointErr := l.EnqueueGroup(nil, &checkpoint); checkpointErr != nil {
+			if first == nil {
+				first = checkpointErr
+			}
+		} else {
+			revision = committed
 		}
 	}
 	for _, r := range results {
@@ -436,7 +453,7 @@ func (in *Ingress) Drain(l Ledger, limit int, request func(Submission) (Candidat
 			first = err
 		}
 	}
-	in.Complete(done, snap)
+	in.Complete(done, revision, snap)
 	return report, first
 }
 

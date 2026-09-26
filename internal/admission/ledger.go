@@ -127,8 +127,9 @@ type Ledger interface {
 	EndIngress() error
 	// EnqueueGroup publishes and queues up to MaxArrivalGroup arrivals in
 	// one transaction. A refused arrival is counted and reported in its
-	// result; any other error leaves the ledger unchanged.
-	EnqueueGroup([]Arrival, *IngressCheckpoint) ([]ArrivalResult, error)
+	// result; any other error leaves the ledger unchanged. The revision is
+	// the committed transaction's snapshot fence, or zero on failure.
+	EnqueueGroup([]Arrival, *IngressCheckpoint) ([]ArrivalResult, int, error)
 	// QueueSnapshot is the durable queue as the ingress needs it.
 	QueueSnapshot() (*QueueSnapshot, error)
 	// Revalidate checks every queued candidate against current policy,

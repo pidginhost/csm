@@ -130,7 +130,7 @@ func TestIngressTakeReleaseComplete(t *testing.T) {
 	if again := f.in.Take(5); len(again) != 1 || !again[0].Submission.Evidence.Equal(subs[1].Evidence) {
 		t.Fatalf("released item = %+v", again)
 	}
-	f.in.Complete(taken, nil)
+	f.in.Complete(taken, f.rev+1, nil)
 	if f.in.Len() != 1 || f.in.Stats().Accepted != 3 {
 		t.Fatalf("after completion: %d held, %+v", f.in.Len(), f.in.Stats())
 	}
@@ -267,7 +267,7 @@ func TestIngressConcurrentUse(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 50; i++ {
-			f.in.Complete(f.in.Take(8), &QueueSnapshot{Now: t0, Inventory: testInventory(t), Generation: 1})
+			f.in.Complete(f.in.Take(8), i+2, &QueueSnapshot{Now: t0, Inventory: testInventory(t), Generation: 1, Revision: i + 2})
 			_ = f.in.Stats()
 		}
 	}()
@@ -341,7 +341,7 @@ func TestIngressTransferCapacityAndFairReclaim(t *testing.T) {
 	assertBound()
 	f.in.Release(taken)
 	assertBound()
-	f.in.Complete(f.in.Take(QueueCapacity), nil)
+	f.in.Complete(f.in.Take(QueueCapacity), f.rev+1, nil)
 	if f.in.Len() != 0 {
 		t.Fatal("committed items retained")
 	}
@@ -438,7 +438,7 @@ func TestIngressReportTailSurvivesHandoff(t *testing.T) {
 			if release {
 				f.in.Release(taken)
 			} else {
-				f.in.Complete(taken, nil)
+				f.in.Complete(taken, f.rev+1, nil)
 			}
 			if f.in.Len() != 1 {
 				t.Fatal("accepted report disappeared")
@@ -447,7 +447,7 @@ func TestIngressReportTailSurvivesHandoff(t *testing.T) {
 			if len(again) != 1 || len(again[0].Reports) != 1 || again[0].Reports[0] != later.Evidence.FindingID() || again[0].ReportsOnly == release {
 				t.Fatalf("retained tail = %+v", again)
 			}
-			f.in.Complete(again, nil)
+			f.in.Complete(again, f.rev+1, nil)
 			if f.in.Len() != 0 {
 				t.Fatal("acknowledged tail stayed held")
 			}
@@ -503,7 +503,7 @@ func TestIngressOverflowTailSurvivesHandoff(t *testing.T) {
 	if err := f.in.Submit(f.sub(subSpec{target: "2001:db8::1", finding: "ffffffffffffffff"})); err != nil {
 		t.Fatal(err)
 	}
-	f.in.Complete(taken, nil)
+	f.in.Complete(taken, f.rev+1, nil)
 	if f.in.Len() != 1 {
 		t.Fatal("accepted overflow disappeared")
 	}
@@ -516,7 +516,7 @@ func TestIngressOverflowTailSurvivesHandoff(t *testing.T) {
 	if len(again) != 1 || again[0].Dropped != 1 {
 		t.Fatal("release acknowledged overflow")
 	}
-	f.in.Complete(again, nil)
+	f.in.Complete(again, f.rev+1, nil)
 	if f.in.Len() != 0 {
 		t.Fatal("overflow acknowledgement retained work")
 	}
@@ -531,7 +531,7 @@ func TestIngressCompleteNeedsACurrentSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := *f.in.snap
-	f.in.Complete(f.in.Take(1), nil)
+	f.in.Complete(f.in.Take(1), f.rev+1, nil)
 	f.in.Publish(&old)
 	next := f.sub(subSpec{sev: SeverityCritical})
 	wantReason(t, "missing committed snapshot", f.in.Submit(next), ReasonEngineUnavailable)
@@ -541,5 +541,53 @@ func TestIngressCompleteNeedsACurrentSnapshot(t *testing.T) {
 	f.publish()
 	if err := f.in.Submit(next); err != nil || f.in.Len() != 1 {
 		t.Fatalf("publication did not resume admission: %v", err)
+	}
+}
+
+func TestIngressPublicationRescopesRetiredHeldOwners(t *testing.T) {
+	f := newIngressFixture(t)
+	f.publish()
+	alice := testInventory(t).Resolve(Claim{ClaimAccount, "alice"})
+	first := f.sub(subSpec{owner: alice})
+	if err := f.in.Submit(first); err != nil {
+		t.Fatal(err)
+	}
+	taken := f.in.Take(1)
+	retired, err := NewInventory(map[string]uint64{"bob": 2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.in.Publish(&QueueSnapshot{Now: t0, Inventory: retired, Revision: 2, Generation: 1})
+	if got := f.held(first).pos.Scope; got != "host/address" {
+		t.Fatalf("retired held owner kept its fairness scope: %s", got)
+	}
+	pos, ok := f.in.view.Item(taken[0].key)
+	if !ok || !pos.Fixed || pos.Scope != "host/address" || f.in.Len() != 1 {
+		t.Fatal("rescoping released or exposed a taken position")
+	}
+	f.in.Release(taken)
+	if err = f.in.Submit(f.sub(subSpec{owner: alice})); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.in.view.parts[PartitionGeneral].scopes) != 1 {
+		t.Fatal("retired held work and new arrivals split the host share")
+	}
+}
+
+func TestIngressRestoredCheckpointIncludesPresnapshotRefusals(t *testing.T) {
+	f := newIngressFixture(t)
+	wantReason(t, "before restored snapshot", f.in.Submit(f.sub(subSpec{})), ReasonEngineUnavailable)
+	counters, err := (QueueCounters{}).MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := IngressCheckpoint{Generation: 1, Sequence: 3, Counters: counters}
+	f.in.Publish(&QueueSnapshot{Now: t0, Inventory: testInventory(t), Revision: 1, Generation: 1, Checkpoint: &previous})
+	cp := f.in.Checkpoint()
+	if err = cp.Validate(&previous, 1); err != nil {
+		t.Fatalf("pre-snapshot refusal could not be checkpointed: %v", err)
+	}
+	if cp.Sequence != previous.Sequence+1 || f.in.Stats().Counters.Count(CountKey{Event: EventRefused, Reason: ReasonEngineUnavailable}) != 1 {
+		t.Fatal("restoring a checkpoint erased pre-snapshot decisions")
 	}
 }

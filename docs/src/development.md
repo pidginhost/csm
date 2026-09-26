@@ -271,7 +271,9 @@ only refusals occurred; publication cannot overwrite later memory decisions.
 The owner persists held items in groups; an ingress generation that ends
 without a clean close is recorded as interrupted, since its unpersisted
 items cannot be counted. A failed snapshot after a committed drain stops new
-submissions until the owner refreshes it.
+submissions until the owner publishes a snapshot at least as new as that
+commit, from the same ingress generation. Shared queue damage retains the
+whole handoff; only arrivals carrying damage are discarded.
 
 ### Attack event storage
 

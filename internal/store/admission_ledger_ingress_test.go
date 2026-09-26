@@ -35,12 +35,12 @@ func (f *ledgerFixture) begin() admission.IngressState {
 // its unpersisted items are lost, and the next generation records that.
 func TestAdmissionLedgerIngressGenerations(t *testing.T) {
 	f := newLedgerFixture(t)
-	_, err := f.l.EnqueueGroup([]admission.Arrival{f.arrival(evidenceSpec{})}, nil)
+	_, _, err := f.l.EnqueueGroup([]admission.Arrival{f.arrival(evidenceSpec{})}, nil)
 	wantLedgerReason(t, "group without a generation", err, admission.ReasonEngineUnavailable)
 	if s := f.begin(); s != (admission.IngressState{Generation: 1, Open: true}) {
 		t.Fatalf("first generation = %+v", s)
 	}
-	if _, err = f.l.EnqueueGroup([]admission.Arrival{f.arrival(evidenceSpec{})}, nil); err != nil {
+	if _, _, err = f.l.EnqueueGroup([]admission.Arrival{f.arrival(evidenceSpec{})}, nil); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := OpenAdmissionLedger(f.db, f.reg)
@@ -75,9 +75,13 @@ func TestAdmissionLedgerEnqueueGroup(t *testing.T) {
 	conflict := f.arrival(evidenceSpec{finding: "00000000000000a4", severity: admission.SeverityCritical})
 	stale := f.arrival(evidenceSpec{target: "192.0.2.11", cursor: "old", age: 3 * time.Hour})
 	other := f.arrival(evidenceSpec{target: "192.0.2.12", cursor: "other"})
-	results, err := f.l.EnqueueGroup([]admission.Arrival{first, again, remint, conflict, stale, other}, nil)
+	results, revision, err := f.l.EnqueueGroup([]admission.Arrival{first, again, remint, conflict, stale, other}, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	snap, err := f.l.QueueSnapshot()
+	if err != nil || revision == 0 || snap.Revision != revision {
+		t.Fatalf("group revision=%d snapshot=%+v err=%v", revision, snap, err)
 	}
 	if !results[0].Created || results[1].Created || results[1].Err != nil || results[2].Created || results[2].Err != nil || results[1].Candidate != results[0].Candidate {
 		t.Fatalf("new, repeat and later report = %+v", results[:3])
@@ -104,7 +108,7 @@ func TestAdmissionLedgerEnqueueGroup(t *testing.T) {
 	}); err != nil || s.Persisted != 6 {
 		t.Fatalf("persisted = %+v, %v", s, err)
 	}
-	if _, err = f.l.EnqueueGroup(make([]admission.Arrival, admission.MaxArrivalGroup+1), nil); err == nil {
+	if _, _, err = f.l.EnqueueGroup(make([]admission.Arrival, admission.MaxArrivalGroup+1), nil); err == nil {
 		t.Fatal("an oversized group was accepted")
 	}
 }
@@ -115,8 +119,8 @@ func TestAdmissionLedgerEnqueueGroupIsAtomic(t *testing.T) {
 	f.begin()
 	before := f.snapshot()
 	f.failNext("group")
-	if _, err := f.l.EnqueueGroup([]admission.Arrival{f.arrival(evidenceSpec{}), f.arrival(evidenceSpec{target: "192.0.2.11", cursor: "x", age: 3 * time.Hour})}, nil); err == nil {
-		t.Fatal("injected failure did not fail the group")
+	if result, revision, err := f.l.EnqueueGroup([]admission.Arrival{f.arrival(evidenceSpec{}), f.arrival(evidenceSpec{target: "192.0.2.11", cursor: "x", age: 3 * time.Hour})}, nil); err == nil || revision != 0 || result != nil {
+		t.Fatalf("failed group exposed acknowledgement: result=%+v revision=%d err=%v", result, revision, err)
 	}
 	if !reflect.DeepEqual(before, f.snapshot()) {
 		t.Fatal("a failed group changed records")
@@ -332,15 +336,15 @@ type ingressHandoffHook struct {
 	after  func()
 }
 
-func (h ingressHandoffHook) EnqueueGroup(a []admission.Arrival, cp *admission.IngressCheckpoint) ([]admission.ArrivalResult, error) {
+func (h ingressHandoffHook) EnqueueGroup(a []admission.Arrival, cp *admission.IngressCheckpoint) ([]admission.ArrivalResult, int, error) {
 	if h.before != nil {
 		h.before()
 	}
-	out, err := h.Ledger.EnqueueGroup(a, cp)
+	out, revision, err := h.Ledger.EnqueueGroup(a, cp)
 	if err == nil && h.after != nil {
 		h.after()
 	}
-	return out, err
+	return out, revision, err
 }
 
 // A report submitted after Take survives both rollback and acknowledgement.
@@ -443,12 +447,12 @@ func TestIngressCheckpointRollbackAndReopen(t *testing.T) {
 		t.Fatalf("checkpoint = %+v, want %+v", snap.Checkpoint, cp)
 	}
 	committed := f.snapshot()
-	if _, err = f.l.EnqueueGroup(nil, &cp); err != nil || !reflect.DeepEqual(committed, f.snapshot()) {
+	if _, _, err = f.l.EnqueueGroup(nil, &cp); err != nil || !reflect.DeepEqual(committed, f.snapshot()) {
 		t.Fatal("checkpoint replay changed records")
 	}
 	bad := cp
 	bad.Sequence--
-	if _, err = f.l.EnqueueGroup(nil, &bad); !errors.Is(err, admission.ErrTransitionConflict) || !reflect.DeepEqual(committed, f.snapshot()) {
+	if _, _, err = f.l.EnqueueGroup(nil, &bad); !errors.Is(err, admission.ErrTransitionConflict) || !reflect.DeepEqual(committed, f.snapshot()) {
 		t.Fatal("stale checkpoint committed")
 	}
 	reopened, err := OpenAdmissionLedger(f.db, f.reg)
@@ -466,7 +470,7 @@ func TestIngressCheckpointRollbackAndReopen(t *testing.T) {
 		t.Fatalf("recovered checkpoint = %+v", recovered)
 	}
 	before = f.snapshot()
-	if _, err = f.l.EnqueueGroup(nil, &cp); !errors.Is(err, admission.ErrTransitionConflict) || !reflect.DeepEqual(before, f.snapshot()) {
+	if _, _, err = f.l.EnqueueGroup(nil, &cp); !errors.Is(err, admission.ErrTransitionConflict) || !reflect.DeepEqual(before, f.snapshot()) {
 		t.Fatal("old generation checkpoint committed")
 	}
 }
@@ -650,7 +654,7 @@ func TestIngressReportTailDoesNotReplayPrimaryOverflow(t *testing.T) {
 	for i := 1; i <= admission.MaxReportLinks; i++ {
 		original.Reports = append(original.Reports, fmt.Sprintf("%016x", i))
 	}
-	if _, err := f.l.EnqueueGroup([]admission.Arrival{original}, nil); err != nil {
+	if _, _, err := f.l.EnqueueGroup([]admission.Arrival{original}, nil); err != nil {
 		t.Fatal(err)
 	}
 	in := f.ingress()
@@ -693,7 +697,7 @@ func TestIngressRotatingScopesAcrossDrainAndReopen(t *testing.T) {
 	for i, name := range names[:admission.PartitionGeneral.DurableCapacity()] {
 		group = append(group, f.arrival(evidenceSpec{owner: f.owner(name), target: fmt.Sprintf("2001:db8:3::%x", i+1), cursor: name}))
 		if len(group) == admission.MaxArrivalGroup || i == admission.PartitionGeneral.DurableCapacity()-1 {
-			result, err := f.l.EnqueueGroup(group, nil)
+			result, _, err := f.l.EnqueueGroup(group, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -783,13 +787,13 @@ func TestAdmissionLedgerReportOnlyRefusalKeepsItsTier(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.begin()
 	original := f.arrival(evidenceSpec{})
-	if _, err := f.l.EnqueueGroup([]admission.Arrival{original}, nil); err != nil {
+	if _, _, err := f.l.EnqueueGroup([]admission.Arrival{original}, nil); err != nil {
 		t.Fatal(err)
 	}
 	conflict := f.arrival(evidenceSpec{severity: admission.SeverityCritical})
 	conflict.ReportsOnly = true
 	conflict.Request = admission.CandidateRequest{}
-	result, err := f.l.EnqueueGroup([]admission.Arrival{conflict}, nil)
+	result, _, err := f.l.EnqueueGroup([]admission.Arrival{conflict}, nil)
 	if err != nil || len(result) != 1 || !errors.Is(result[0].Err, admission.ErrEvidenceConflict) {
 		t.Fatalf("report-only refusal = %+v %v", result, err)
 	}
@@ -808,7 +812,7 @@ func TestAdmissionLedgerClosedIngressRefusesGroups(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := f.snapshot()
-	_, err := f.l.EnqueueGroup([]admission.Arrival{f.arrival(evidenceSpec{})}, nil)
+	_, _, err := f.l.EnqueueGroup([]admission.Arrival{f.arrival(evidenceSpec{})}, nil)
 	wantLedgerReason(t, "closed ingress generation", err, admission.ReasonEngineUnavailable)
 	if !reflect.DeepEqual(before, f.snapshot()) {
 		t.Fatal("closed generation admitted work")

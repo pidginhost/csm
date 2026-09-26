@@ -71,17 +71,18 @@ func (l *AdmissionLedger) EndIngress() error {
 // record only in its finding is a later report: it is linked and queued
 // against the original. A refused arrival is counted and returned in its
 // result; any other error aborts the whole group.
-func (l *AdmissionLedger) EnqueueGroup(arrivals []admission.Arrival, checkpoint *admission.IngressCheckpoint) ([]admission.ArrivalResult, error) {
+func (l *AdmissionLedger) EnqueueGroup(arrivals []admission.Arrival, checkpoint *admission.IngressCheckpoint) ([]admission.ArrivalResult, int, error) {
 	if len(arrivals) > admission.MaxArrivalGroup {
-		return nil, refusal(admission.ReasonInvalid, "arrival group is too large")
+		return nil, 0, refusal(admission.ReasonInvalid, "arrival group is too large")
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now, err := l.clock()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var out []admission.ArrivalResult
+	var revision int
 	err = l.update("group", func(tx *bolt.Tx) error {
 		ingress, txErr := loadIngressState(tx)
 		if txErr != nil {
@@ -98,6 +99,14 @@ func (l *AdmissionLedger) EnqueueGroup(arrivals []admission.Arrival, checkpoint 
 		}
 		q, txErr := l.openQueue(tx, now)
 		if txErr != nil {
+			return txErr
+		}
+		// Empty groups must meet the same shared damage as arrivals. Drain
+		// uses one to distinguish a broken queue from a damaged arrival.
+		if _, txErr = q.queueView(); txErr != nil {
+			return txErr
+		}
+		if txErr = q.sweep(); txErr != nil {
 			return txErr
 		}
 		out = make([]admission.ArrivalResult, len(arrivals))
@@ -120,12 +129,13 @@ func (l *AdmissionLedger) EnqueueGroup(arrivals []admission.Arrival, checkpoint 
 		if txErr = putIngressState(tx, ingress); txErr != nil {
 			return txErr
 		}
+		revision = tx.ID()
 		return q.flush()
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return out, nil
+	return out, revision, nil
 }
 
 // arrivalTier is the tier the arrival's own evidence supports, for
@@ -157,6 +167,9 @@ func (l *AdmissionLedger) arriveTx(q *queueTx, a admission.Arrival) (admission.C
 				return "", false, err
 			}
 		}
+		// Report invariants refer to the immutable original finding, not
+		// the remint we just linked as a later report.
+		e = stored
 	} else if err != nil {
 		return "", false, err
 	}
