@@ -3,6 +3,7 @@ package admission
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -590,4 +591,17 @@ func TestIngressRestoredCheckpointIncludesPresnapshotRefusals(t *testing.T) {
 	if cp.Sequence != previous.Sequence+1 || f.in.Stats().Counters.Count(CountKey{Event: EventRefused, Reason: ReasonEngineUnavailable}) != 1 {
 		t.Fatal("restoring a checkpoint erased pre-snapshot decisions")
 	}
+}
+
+// A snapshot whose checkpoint cannot be decoded changes nothing: no
+// generation, cursor or sequence from it, and admission stays closed.
+func TestIngressDamagedCheckpointChangesNothing(t *testing.T) {
+	f := newIngressFixture(t)
+	before := f.in.Checkpoint()
+	damaged := IngressCheckpoint{Generation: 1, Sequence: 3, Cursors: QueueCursors{General: "in:00000000000000000001"}, Counters: []byte("damaged")}
+	f.in.Publish(&QueueSnapshot{Now: t0, Inventory: testInventory(t), Revision: 1, Generation: 1, Checkpoint: &damaged})
+	if got := f.in.Checkpoint(); !reflect.DeepEqual(got, before) {
+		t.Fatalf("damaged checkpoint applied: %+v, want %+v", got, before)
+	}
+	wantReason(t, "damaged checkpoint", f.in.Submit(f.sub(subSpec{})), ReasonEngineUnavailable)
 }

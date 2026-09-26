@@ -206,7 +206,8 @@ func (in *Ingress) publish(snap *QueueSnapshot) {
 		return
 	}
 	if !in.initialized {
-		in.generation = snap.Generation
+		// A checkpoint that cannot be decoded applies nothing, not even
+		// the generation: admission stays closed until a usable snapshot.
 		if cp := snap.Checkpoint; cp != nil {
 			counts, err := UnmarshalQueueCounters(cp.Counters)
 			if err != nil {
@@ -227,6 +228,7 @@ func (in *Ingress) publish(snap *QueueSnapshot) {
 				in.stats.Counters.counts[k] = n + min(before, ^uint64(0)-n)
 			}
 		}
+		in.generation = snap.Generation
 		in.initialized = true
 	}
 	counts := [partitionEnd]int{}
