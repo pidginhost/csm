@@ -68,13 +68,21 @@ func SummarizeVolume(rows []Volume) HostVolume {
 		return HostVolume{}
 	}
 	lines, bytes := map[int64]float64{}, map[int64]float64{}
+	type siteMinute struct {
+		site   string
+		minute int64
+	}
+	siteLines := map[siteMinute]float64{}
 	first, last := rows[0].Minute, rows[0].Minute
-	site := make([]float64, 0, len(rows))
 	for _, v := range rows {
 		lines[v.Minute] += float64(v.Lines)
 		bytes[v.Minute] += float64(v.Bytes)
-		site = append(site, float64(v.Lines))
+		siteLines[siteMinute{v.Site, v.Minute}] += float64(v.Lines)
 		first, last = min(first, v.Minute), max(last, v.Minute)
+	}
+	site := make([]float64, 0, len(siteLines))
+	for _, n := range siteLines {
+		site = append(site, n)
 	}
 	var l, b []float64
 	for m := first; m <= last; m++ {
@@ -137,24 +145,39 @@ func ShapeSite(site Site, w int) SiteShape {
 		}
 	}
 	firstSeen := map[KeyID]bool{}
-	for _, span := range site.Coverage {
-		keyCounts := map[KeyID]int{}
-		bindCounts := map[string]int{}
-		perHour := map[uint8]float64{}
+	var keyCounts map[KeyID]int
+	var bindCounts map[string]int
+	var coveredFrom int64
+	hour := int64(-1)
+	for i, span := range site.Coverage {
+		if i == 0 || span.From-1 != site.Coverage[i-1].To {
+			// Span boundaries alone do not interrupt a continuous window.
+			coveredFrom = span.From
+			keyCounts = map[KeyID]int{}
+			bindCounts = map[string]int{}
+		}
 		for m := span.From; m <= span.To; m++ {
+			if m/60 != hour {
+				// Disjoint spans in one UTC hour share a single sample.
+				hour = m / 60
+				for level := uint8(1); level <= 3; level++ {
+					shape.NewKeys[level] = append(shape.NewKeys[level], 0)
+				}
+			}
 			for _, r := range byMinute[m] {
 				for _, id := range keysOf(&r) {
 					keyCounts[id]++
 					if !firstSeen[id] {
 						firstSeen[id] = true
-						perHour[id.Level]++
+						counts := shape.NewKeys[id.Level]
+						counts[len(counts)-1]++
 					}
 				}
 				if r.Binding != "" {
 					bindCounts[r.Binding]++
 				}
 			}
-			if old := m - int64(w); old >= span.From {
+			if old := m - int64(w); old >= coveredFrom {
 				for _, r := range byMinute[old] {
 					for _, id := range keysOf(&r) {
 						if keyCounts[id]--; keyCounts[id] == 0 {
@@ -168,7 +191,7 @@ func ShapeSite(site Site, w int) SiteShape {
 					}
 				}
 			}
-			if m-span.From+1 >= int64(w) {
+			if m-coveredFrom+1 >= int64(w) {
 				levels := map[uint8]float64{}
 				for id := range keyCounts {
 					levels[id.Level]++
@@ -177,12 +200,6 @@ func ShapeSite(site Site, w int) SiteShape {
 					shape.WindowKeys[level] = append(shape.WindowKeys[level], levels[level])
 				}
 				shape.WindowBindings = append(shape.WindowBindings, float64(len(bindCounts)))
-			}
-			if (m+1)%60 == 0 || m == span.To {
-				for level := uint8(1); level <= 3; level++ {
-					shape.NewKeys[level] = append(shape.NewKeys[level], perHour[level])
-				}
-				perHour = map[uint8]float64{}
 			}
 		}
 	}

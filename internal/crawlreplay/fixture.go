@@ -35,7 +35,7 @@ type Fixture struct {
 func (f Fixture) Validate() error {
 	switch {
 	case !fixtureName.MatchString(f.Name), f.Train < 0, f.Background < 0,
-		f.Background > 0 && f.Pool < 1, f.Minutes < 1, f.PerMinute < 1, f.Q < 1,
+		f.Pool < 0, f.Background > 0 && f.Pool < 1, f.Minutes < 1, f.PerMinute < 1, f.Q < 1,
 		f.RampMinutes < 0, f.RampMinutes > f.Minutes,
 		f.PaddingSources < 0, f.PaddingPerSource < 0, (f.PaddingSources > 0) != (f.PaddingPerSource > 0):
 		return ErrFixture
@@ -59,16 +59,14 @@ func (f Fixture) Site() Site {
 	}
 	onset := start + int64(f.Train)
 	attackTraffic := Traffic{From: onset, To: end, PerMinute: f.PerMinute, L2: parent, L1: attack, Label: LabelAttack, Episode: f.Name}
-	steady := attackTraffic
-	if f.RampMinutes > 0 {
-		ramp := attackTraffic
-		ramp.To = onset + int64(f.RampMinutes) - 1
-		recs = append(recs, s.Ramp(ramp, 1, f.PerMinute, f.Q)...)
-		steady.From = ramp.To + 1
-	}
-	if steady.From <= steady.To {
-		recs = append(recs, s.Rotating(steady, f.Q)...)
-	}
+	// Keep each client's request count across the ramp-to-steady boundary.
+	recs = append(recs, s.rotating(attackTraffic, f.Q, func(m int64) int {
+		elapsed := m - onset
+		if elapsed < int64(f.RampMinutes) {
+			return 1 + int(int64(f.PerMinute-1)*elapsed/max(1, int64(f.RampMinutes)-1))
+		}
+		return f.PerMinute
+	})...)
 	if f.PaddingSources > 0 {
 		recs = append(recs, s.Heavy(attackTraffic, f.PaddingSources, f.PaddingPerSource, f.Churn)...)
 	}

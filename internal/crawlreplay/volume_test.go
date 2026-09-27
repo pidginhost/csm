@@ -2,6 +2,7 @@ package crawlreplay
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -41,6 +42,23 @@ func TestSummarizeVolumeCountsSilentMinutesAsZero(t *testing.T) {
 	}
 }
 
+func TestSummarizeVolumeCombinesSiteMinuteRows(t *testing.T) {
+	rows := []Volume{
+		{Site: testSite, Minute: 103, Lines: 2, Bytes: 200},
+		{Site: testSite, Minute: 100, Lines: 2, Bytes: 200},
+		{Site: "dom-000001.example", Minute: 100, Lines: 6, Bytes: 600},
+		{Site: testSite, Minute: 100, Lines: 4, Bytes: 400},
+	}
+	want := HostVolume{
+		LinesPerMinute:     Quantiles{N: 4, P50: 0, P99: 12, Max: 12},
+		BytesPerMinute:     Quantiles{N: 4, P50: 0, P99: 1200, Max: 1200},
+		SiteLinesPerMinute: Quantiles{N: 3, P50: 6, P99: 6, Max: 6},
+	}
+	if got := SummarizeVolume(rows); got != want {
+		t.Fatalf("volume = %+v, want %+v", got, want)
+	}
+}
+
 func TestLongestSilence(t *testing.T) {
 	span := Span{From: 100, To: 120}
 	for _, tc := range []struct {
@@ -77,6 +95,74 @@ func TestShapeSiteLatenessKeysAndBindings(t *testing.T) {
 	}
 	if got := shape.NewKeys[1]; len(got) != 1 || got[0] != 2 {
 		t.Fatalf("new L1 keys per hour = %v", got)
+	}
+}
+
+func TestShapeSiteAdjacentCoveragePreservesShape(t *testing.T) {
+	const hour = fixtureStart / 60 * 60
+	var records []Record
+	for i, entry := range []struct {
+		minute int64
+		key    uint64
+	}{{55, 2}, {56, 3}, {58, 2}, {60, 0}, {63, 4}} {
+		r := Record{T: (hour + entry.minute) * 60, Seq: int64(i + 1), Site: testSite,
+			Binding: synthBinding(entry.key), Class: ClassDynamic, Status: 200}
+		if entry.key != 0 {
+			r.Class, r.L2, r.L1 = ClassExpensive, SynthKey(1), SynthKey(entry.key)
+		}
+		records = append(records, r)
+	}
+	want := SiteShape{
+		Lateness: map[int64]int64{0: 5},
+		WindowKeys: map[uint8][]float64{
+			1: {2, 2, 1, 1, 0, 0, 1, 1, 1},
+			2: {1, 1, 1, 1, 0, 0, 1, 1, 1},
+			3: {1, 1, 1, 1, 1, 1, 1, 1, 1},
+		},
+		WindowBindings: []float64{2, 2, 1, 2, 1, 1, 1, 1, 1},
+		NewKeys:        map[uint8][]float64{1: {2, 1}, 2: {1, 0}, 3: {1, 0}},
+	}
+	for name, coverage := range map[string][]Span{
+		"joined": {{From: hour + 55, To: hour + 65}},
+		"split": {
+			{From: hour + 55, To: hour + 55},
+			{From: hour + 56, To: hour + 57},
+			{From: hour + 58, To: hour + 60},
+			{From: hour + 61, To: hour + 65},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := ShapeSite(Site{Records: records, Coverage: coverage}, 3); !reflect.DeepEqual(got, want) {
+				t.Fatalf("shape = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestShapeSiteGapsResetWindowsButNotHours(t *testing.T) {
+	const hour = fixtureStart / 60 * 60
+	var records []Record
+	for i, entry := range []struct {
+		minute int64
+		key    uint64
+	}{{0, 2}, {4, 3}, {5, 2}, {180, 4}} {
+		records = append(records, Record{T: (hour + entry.minute) * 60, Seq: int64(i + 1), Site: testSite,
+			Binding: synthBinding(entry.key), Class: ClassExpensive, L2: SynthKey(1), L1: SynthKey(entry.key), Status: 200})
+	}
+	site := Site{Records: records, Coverage: []Span{
+		{From: hour, To: hour + 1},
+		{From: hour + 4, To: hour + 5},
+		{From: hour + 60, To: hour + 61},
+		{From: hour + 180, To: hour + 181},
+	}}
+	want := SiteShape{
+		Lateness:       map[int64]int64{0: 4},
+		WindowKeys:     map[uint8][]float64{1: {1, 2, 0, 1}, 2: {1, 1, 0, 1}, 3: {1, 1, 0, 1}},
+		WindowBindings: []float64{1, 2, 0, 1},
+		NewKeys:        map[uint8][]float64{1: {2, 0, 1}, 2: {1, 0, 0}, 3: {1, 0, 0}},
+	}
+	if got := ShapeSite(site, 2); !reflect.DeepEqual(got, want) {
+		t.Fatalf("shape = %+v, want %+v", got, want)
 	}
 }
 
@@ -123,16 +209,75 @@ func TestFixtureDetectsAcrossClientSizes(t *testing.T) {
 		t.Fatalf("slow ramp into a trusted young slot should be absorbed: %v %+v", err, trusted.Episodes)
 	}
 	for name, f := range map[string]Fixture{
-		"ramp":     {Name: "fx", Minutes: 2, PerMinute: 1, Q: 1, RampMinutes: 3},
-		"name":     {Name: "Bad Name", Minutes: 1, PerMinute: 1, Q: 1},
-		"pool":     {Name: "fx", Background: 1, Minutes: 1, PerMinute: 1, Q: 1},
-		"q":        {Name: "fx", Minutes: 1, PerMinute: 1},
-		"padding":  {Name: "fx", Minutes: 1, PerMinute: 1, Q: 1, PaddingSources: 2},
-		"minutes":  {Name: "fx", PerMinute: 1, Q: 1},
-		"negative": {Name: "fx", Train: -1, Minutes: 1, PerMinute: 1, Q: 1},
+		"ramp":          {Name: "fx", Minutes: 2, PerMinute: 1, Q: 1, RampMinutes: 3},
+		"name":          {Name: "Bad Name", Minutes: 1, PerMinute: 1, Q: 1},
+		"pool":          {Name: "fx", Background: 1, Minutes: 1, PerMinute: 1, Q: 1},
+		"negative pool": {Name: "fx", Pool: -1, Minutes: 1, PerMinute: 1, Q: 1},
+		"q":             {Name: "fx", Minutes: 1, PerMinute: 1},
+		"padding":       {Name: "fx", Minutes: 1, PerMinute: 1, Q: 1, PaddingSources: 2},
+		"minutes":       {Name: "fx", PerMinute: 1, Q: 1},
+		"negative":      {Name: "fx", Train: -1, Minutes: 1, PerMinute: 1, Q: 1},
 	} {
 		if err := f.Validate(); !errors.Is(err, ErrFixture) {
 			t.Errorf("%s: %v, want ErrFixture", name, err)
 		}
+	}
+}
+
+func TestFixtureRampPreservesClientRequestCounts(t *testing.T) {
+	for name, tc := range map[string]struct {
+		ramp  int
+		rates []int
+	}{
+		"steady":         {0, []int{4, 4, 4}},
+		"one minute":     {1, []int{1, 4, 4}},
+		"ramp to steady": {2, []int{1, 4, 4, 4}},
+		"ramp only":      {3, []int{1, 2, 4}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, q := range []int{1, 3, 20} {
+				f := Fixture{Name: "ramp", Train: 2, Background: 2, Pool: 3, Minutes: len(tc.rates),
+					PerMinute: 4, RampMinutes: tc.ramp, Q: q, Seed: 7}
+				if err := f.Validate(); err != nil {
+					t.Fatal(err)
+				}
+				site := f.Site()
+				perMinute := map[int64]int{}
+				bindings := map[string]int{}
+				var clients []string
+				for _, r := range site.Records {
+					if err := r.Validate(); err != nil {
+						t.Fatal(err)
+					}
+					if r.Label != LabelAttack {
+						continue
+					}
+					perMinute[r.T/60]++
+					if bindings[r.Binding] == 0 {
+						clients = append(clients, r.Binding)
+					}
+					bindings[r.Binding]++
+				}
+				total := 0
+				for i, want := range tc.rates {
+					total += want
+					if got := perMinute[site.Coverage[0].From+int64(f.Train+i)]; got != want {
+						t.Errorf("q=%d minute %d: %d requests, want %d", q, i, got, want)
+					}
+				}
+				if len(clients) != (total+q-1)/q {
+					t.Errorf("q=%d: %d clients, want %d", q, len(clients), (total+q-1)/q)
+				}
+				for i, binding := range clients {
+					want := q
+					if i == len(clients)-1 {
+						want = (total-1)%q + 1
+					}
+					if got := bindings[binding]; got != want {
+						t.Errorf("q=%d client %d: %d requests, want %d", q, i, got, want)
+					}
+				}
+			}
+		})
 	}
 }
