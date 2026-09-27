@@ -118,6 +118,9 @@ baseline settings, with optional sketch sizes; fixtures add synthetic
 attacks from one-, three- and twenty-request clients with optional padding
 and churn.
 
+The silence diagnostic joins adjacent observed spans but stops at an
+unknown gap. A silent run alone does not certify zero traffic.
+
 A replay is a hypothesis about the detector, not a record of what the host
 did: logs hold completed requests, not offered load, backend harm or queued
 work, and the parser is only as good as the server's log escaping. After

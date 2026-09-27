@@ -172,7 +172,13 @@ func run(args []string) error {
 		minutes := logged[site.Site]
 		slices.Sort(minutes)
 		var longest int64
-		for _, span := range site.Coverage {
+		for i := 0; i < len(site.Coverage); i++ {
+			span := site.Coverage[i]
+			// Only an unknown minute interrupts a continuous observed span.
+			for i+1 < len(site.Coverage) && site.Coverage[i+1].From-1 == span.To {
+				i++
+				span.To = site.Coverage[i].To
+			}
 			longest = max(longest, crawlreplay.LongestSilence(minutes, span))
 		}
 		rep.Silences = append(rep.Silences, siteSilence{Site: site.Site, Minutes: longest})

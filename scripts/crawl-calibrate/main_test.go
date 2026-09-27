@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/crawlreplay"
@@ -125,6 +126,58 @@ func TestCalibrateReport(t *testing.T) {
 	}
 	if r.Transitions[crawlreplay.LabelHealthy] != 0 || len(r.FalsePositives) != 0 {
 		t.Fatalf("quiet healthy site raised findings: %+v", r.FalsePositives)
+	}
+}
+
+func TestCalibrateSilenceAcrossCoverageSpans(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gap  bool
+		want int64
+	}{
+		{name: "adjacent", want: 7},
+		{name: "gap", gap: true, want: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := writeBundle(t, false)
+			m, err := loadManifest(b.manifest, map[string]string{"records": b.records, "volume": b.volume})
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := m.Sites[0].Coverage[0]
+			// Seven unlogged minutes precede the first row. Splitting those
+			// minutes must not shorten the silence unless a minute is unknown.
+			m.Sites[0].Coverage = []crawlreplay.Span{
+				{From: original.From - 7, To: original.From - 4},
+				{From: original.From - 3, To: original.From - 2},
+				{From: original.From - 1, To: original.To},
+			}
+			if tc.gap {
+				m.Sites[0].Coverage[1].From++
+			}
+			raw, err := json.Marshal(m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(b.manifest, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err = run(b.args()); err != nil {
+				t.Fatal(err)
+			}
+			raw, err = os.ReadFile(b.out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rep report
+			if err := json.Unmarshal(raw, &rep); err != nil {
+				t.Fatal(err)
+			}
+			want := []siteSilence{{Site: m.Sites[0].Site, Minutes: tc.want}, {Site: m.Sites[1].Site}}
+			if !slices.Equal(rep.Silences, want) {
+				t.Fatalf("silences = %+v, want %+v", rep.Silences, want)
+			}
+		})
 	}
 }
 
