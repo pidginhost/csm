@@ -172,6 +172,41 @@ func TestCoverageGapRestartsWindows(t *testing.T) {
 	}
 }
 
+func TestAdjacentCoveragePreservesReplay(t *testing.T) {
+	p := fixtureParams()
+	joined := fixtureSite(3, nil)
+	split := joined
+	split.Coverage = []Span{
+		{From: fixtureStart, To: fixtureStart + 3},
+		{From: fixtureStart + 4, To: fixtureStart + 7},
+		{From: fixtureStart + 8, To: fixtureStart + 103},
+		{From: fixtureStart + 104, To: fixtureStart + 105},
+		{From: fixtureStart + 106, To: fixtureStart + 139},
+	}
+	for name, options := range map[string]Options{
+		"exact":  {},
+		"sketch": {Sketch: &SketchParams{M: 32, H: 128, Seed: 5}, Shuffle: 11},
+	} {
+		t.Run(name, func(t *testing.T) {
+			replay := func(site Site) []Tick {
+				t.Helper()
+				var ticks []Tick
+				if err := ReplaySite(site, p, options, func(tk Tick) { ticks = append(ticks, tk) }); err != nil {
+					t.Fatal(err)
+				}
+				return ticks
+			}
+			want, got := replay(joined), replay(split)
+			if len(want) != 140-p.W+1 {
+				t.Fatalf("joined replay has %d ticks", len(want))
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("adjacent spans changed replay: split %d ticks, joined %d", len(got), len(want))
+			}
+		})
+	}
+}
+
 func TestSelectScope(t *testing.T) {
 	l2 := KeyID{Level: 2, Key: "k2"}
 	l1a := KeyID{Level: 1, Key: "k1a", Parent: "k2"}
@@ -239,6 +274,76 @@ func TestReplayRefusesBadInput(t *testing.T) {
 	}
 	if err := ReplaySite(good, p, Options{Sketch: &SketchParams{M: p.K + 1, H: p.D + p.K - 1}}, func(Tick) {}); !errors.Is(err, ErrParams) {
 		t.Errorf("h < D+K: %v, want ErrParams", err)
+	}
+}
+
+func TestReplayRefusesInvalidRecordsBeforeCallbacks(t *testing.T) {
+	for name, corrupt := range map[string]func(*Record){
+		"unknown class":    func(r *Record) { r.Class = ClassExpensive + 1 },
+		"missing L1":       func(r *Record) { r.L1 = "" },
+		"invalid binding":  func(r *Record) { r.Binding = "not-a-binding" },
+		"invalid label":    func(r *Record) { r.Label = "not-a-label" },
+		"missing episode":  func(r *Record) { r.Episode = "" },
+		"invalid sequence": func(r *Record) { r.Seq = 0 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			site := fixtureSite(1, nil)
+			corrupt(&site.Records[len(site.Records)-1])
+			calls := 0
+			err := ReplaySite(site, fixtureParams(), Options{}, func(Tick) { calls++ })
+			if !errors.Is(err, ErrSite) || calls != 0 {
+				t.Fatalf("invalid record: error %v, callbacks %d; want ErrSite and no callbacks", err, calls)
+			}
+			if _, err := EvaluateSite(site, fixtureParams(), Options{}); !errors.Is(err, ErrSite) {
+				t.Fatalf("evaluation accepted invalid record: %v", err)
+			}
+		})
+	}
+}
+
+func TestRampPreservesClientRequestCounts(t *testing.T) {
+	for name, rates := range map[string][]int{
+		"rising":  {2, 4, 6, 8},
+		"falling": {8, 6, 4, 2},
+		"flat":    {2, 2, 2, 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			const q = 3
+			traffic := Traffic{From: fixtureStart, To: fixtureStart + int64(len(rates)) - 1}
+			records := NewSynth(testSite, 7).Ramp(traffic, rates[0], rates[len(rates)-1], q)
+			perMinute := map[int64]int{}
+			bindings := map[string]int{}
+			var clients []string
+			for _, r := range records {
+				if err := r.Validate(); err != nil {
+					t.Fatal(err)
+				}
+				perMinute[r.T/60]++
+				if bindings[r.Binding] == 0 {
+					clients = append(clients, r.Binding)
+				}
+				bindings[r.Binding]++
+			}
+			total := 0
+			for i, want := range rates {
+				total += want
+				if got := perMinute[fixtureStart+int64(i)]; got != want {
+					t.Errorf("minute %d: %d requests, want %d", i, got, want)
+				}
+			}
+			if len(records) != total || len(clients) != (total+q-1)/q {
+				t.Errorf("got %d requests from %d clients, want %d requests from %d clients", len(records), len(clients), total, (total+q-1)/q)
+			}
+			for i, b := range clients {
+				want := q
+				if i == len(clients)-1 {
+					want = (total-1)%q + 1
+				}
+				if got := bindings[b]; got != want {
+					t.Errorf("client %d made %d requests, want %d", i, got, want)
+				}
+			}
+		})
 	}
 }
 

@@ -149,7 +149,17 @@ func ReplaySite(site Site, p Params, o Options, fn func(Tick)) error {
 	}
 	keys := map[KeyID]*keyState{}
 	active := map[KeyID]*keyState{}
-	for _, span := range site.Coverage {
+	var coveredFrom int64
+	for i, span := range site.Coverage {
+		if i == 0 || span.From-1 != site.Coverage[i-1].To {
+			coveredFrom = span.From
+			// Only missing minutes break windows; adjacent spans describe
+			// the same continuous coverage as a single joined span.
+			for id, ks := range active {
+				ks.active, ks.window, ks.minutes, ks.sketches = false, newWindow(), nil, nil
+				delete(active, id)
+			}
+		}
 		for m := span.From; m <= span.To; m++ {
 			for _, r := range buckets[m] {
 				for _, id := range keysOf(r) {
@@ -192,7 +202,7 @@ func ReplaySite(site Site, p Params, o Options, fn func(Tick)) error {
 				delete(ks.sketches, m-int64(p.W))
 			}
 			slices.SortFunc(ids, keyOrder)
-			complete := m-span.From+1 >= int64(p.W)
+			complete := m-coveredFrom+1 >= int64(p.W)
 			tick := Tick{Minute: m}
 			for _, id := range ids {
 				ks := active[id]
@@ -220,11 +230,6 @@ func ReplaySite(site Site, p Params, o Options, fn func(Tick)) error {
 				fn(tick)
 			}
 		}
-		// A coverage gap breaks every window: the next span starts cold.
-		for id, ks := range active {
-			ks.active, ks.window, ks.minutes, ks.sketches = false, newWindow(), nil, nil
-			delete(active, id)
-		}
 	}
 	return nil
 }
@@ -244,7 +249,7 @@ func bucketSite(site Site, shuffle uint64) (map[int64][]*Record, error) {
 	buckets := map[int64][]*Record{}
 	for i := range site.Records {
 		r := &site.Records[i]
-		if r.Site != site.Records[0].Site || !covered(r.T/60) {
+		if r.Validate() != nil || r.Site != site.Records[0].Site || !covered(r.T/60) {
 			return nil, ErrSite
 		}
 		if r.Class == ClassOther || r.Infra {

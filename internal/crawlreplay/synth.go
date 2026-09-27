@@ -72,10 +72,14 @@ func (s *Synth) Pool(t Traffic, clients int) []Record {
 // requests before the next one starts (the last client of the range may
 // make fewer).
 func (s *Synth) Rotating(t Traffic, q int) []Record {
+	return s.rotating(t, q, func(int64) int { return t.PerMinute })
+}
+
+func (s *Synth) rotating(t Traffic, q int, perMinute func(int64) int) []Record {
 	var out []Record
 	binding, used := s.newBinding(), 0
 	for m := t.From; m <= t.To; m++ {
-		for range t.PerMinute {
+		for range perMinute(m) {
 			if used == q {
 				binding, used = s.newBinding(), 0
 			}
@@ -107,13 +111,8 @@ func (s *Synth) Heavy(t Traffic, sources, perSource int, churn bool) []Record {
 // Ramp sends fresh q-request clients at a rate rising linearly from
 // startPerMin to endPerMin over the range.
 func (s *Synth) Ramp(t Traffic, startPerMin, endPerMin, q int) []Record {
-	var out []Record
 	span := max(1, t.To-t.From)
-	for m := t.From; m <= t.To; m++ {
-		step := t
-		step.From, step.To = m, m
-		step.PerMinute = startPerMin + int(int64(endPerMin-startPerMin)*(m-t.From)/span)
-		out = append(out, s.Rotating(step, q)...)
-	}
-	return out
+	return s.rotating(t, q, func(m int64) int {
+		return startPerMin + int(int64(endPerMin-startPerMin)*(m-t.From)/span)
+	})
 }
