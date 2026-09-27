@@ -187,7 +187,13 @@ func chargeTx(tx *bolt.Tx, now time.Time, action admission.ActionID, lane admiss
 	if err != nil {
 		return err
 	}
-	if err = tx.Bucket([]byte(admissionChargesBucket)).Put(key, data); err != nil {
+	charges := tx.Bucket([]byte(admissionChargesBucket))
+	// Overwriting a stored charge would leave usage the retained charges no
+	// longer prove, and the next tick would refuse it.
+	if charges.Get(key) != nil {
+		return admission.ErrCorruptRecord
+	}
+	if err = charges.Put(key, data); err != nil {
 		return err
 	}
 	return putCeilingState(tx, s)

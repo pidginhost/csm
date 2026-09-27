@@ -848,3 +848,32 @@ func TestAdmissionLedgerReopenPreservesSpentCredit(t *testing.T) {
 		t.Fatalf("same elapsed interval credited twice: %+v", got)
 	}
 }
+
+// A stored charge under the key the next reservation would write is damage:
+// the reservation refuses rather than overwrite it and commit usage the
+// retained charges no longer prove.
+func TestAdmissionLedgerReserveRefusesAChargeCollision(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.queued()
+	next, err := admission.NewAttempt(id, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.db.bolt.Update(func(tx *bolt.Tx) error {
+		return putCharge(tx, admission.Charge{At: f.wall, Action: next.ID, Lane: admission.LaneGeneral, Cost: 1, Elapsed: f.ceilingState().Elapsed}, true)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if f.l, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatalf("a proven charge refused the open: %v", err)
+	}
+	f.tickAt(f.wall)
+	before := f.snapshot()
+	_, _, granted, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
+	if !isCorrupt(err) || granted {
+		t.Fatalf("reservation over a colliding charge: %v %v", granted, err)
+	}
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("a refused reservation changed the ledger")
+	}
+}
