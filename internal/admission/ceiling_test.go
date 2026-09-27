@@ -1,6 +1,10 @@
 package admission
 
-import "testing"
+import (
+	"errors"
+	"testing"
+	"time"
+)
 
 func TestCeilingLanes(t *testing.T) {
 	for _, tc := range []struct{ limit, general, reserved uint32 }{
@@ -54,6 +58,207 @@ func TestEveryChargeFitsEveryRunningLane(t *testing.T) {
 					t.Fatalf("limit %d: %s costs more than a lane of %d can save", limit, k, size)
 				}
 			}
+		}
+	}
+}
+
+// ceilingAt is a state whose first limit is limit: filled like a new
+// ledger's, or empty like an upgraded one's.
+func ceilingAt(t *testing.T, limit uint32, fill bool) CeilingState {
+	t.Helper()
+	s, err := CeilingState{Fill: fill}.SetLimit(limit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func advanceCeiling(t testing.TB, s CeilingState, elapsed time.Duration) CeilingState {
+	t.Helper()
+	next, err := s.Advance(elapsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return next
+}
+
+func TestCeilingStateFillsOnceAndClips(t *testing.T) {
+	s := ceilingAt(t, 2000, true)
+	if s.General.Units() != 266 || s.Reserved.Units() != 66 || s.Fill {
+		t.Fatalf("first limit of a new ledger: %+v", s)
+	}
+	lower, err := s.SetLimit(200)
+	if err != nil || lower.General.Units() != 26 || lower.Reserved.Units() != 6 {
+		t.Fatalf("reduced limit: %+v %v", lower, err)
+	}
+	raised, err := lower.SetLimit(2000)
+	if err != nil || raised.General.Credit != lower.General.Credit || raised.Reserved.Credit != lower.Reserved.Credit {
+		t.Fatalf("raised limit topped up credit: %+v %v", raised, err)
+	}
+	if up := ceilingAt(t, 2000, false); up.General.Credit != 0 || up.Reserved.Credit != 0 {
+		t.Fatalf("an upgraded ledger's first limit filled credit: %+v", up)
+	}
+	for _, bad := range []uint32{0, MaxCeiling + 1} {
+		got, err := s.SetLimit(bad)
+		wantReason(t, "limit out of range", err, ReasonInvalid)
+		if got != s {
+			t.Errorf("refused limit %d changed the state", bad)
+		}
+	}
+}
+
+// At a ceiling of 2000 the general lane earns a unit every 2.25 seconds and
+// the reserved lane every 9 seconds.
+func TestCeilingStateRefillsAtItsRate(t *testing.T) {
+	s := advanceCeiling(t, ceilingAt(t, 2000, false), 9*time.Second-time.Nanosecond)
+	if s.Reserved.Units() != 0 || s.General.Units() != 3 {
+		t.Fatalf("just before 9s: %+v", s)
+	}
+	s = advanceCeiling(t, s, time.Nanosecond)
+	if s.Reserved.Credit != unitTicks || s.General.Credit != 4*unitTicks || s.Elapsed != 9*time.Second {
+		t.Fatalf("at 9s: %+v", s)
+	}
+	s = advanceCeiling(t, s, 1<<62)
+	if s.General.Credit != 266*unitTicks || s.Reserved.Credit != 66*unitTicks {
+		t.Fatalf("a long gap must saturate at the caps: %+v", s)
+	}
+	// Refill never rounds up: 401 ticks short of the cap at 400 ticks per
+	// nanosecond is still one tick short after a nanosecond.
+	short := s
+	short.Reserved.Credit -= 401
+	if got := advanceCeiling(t, short, time.Nanosecond).Reserved.Credit; got != 66*unitTicks-1 {
+		t.Fatalf("refill rounded: credit %d, want %d", got, 66*unitTicks-1)
+	}
+	for _, none := range []time.Duration{0, -time.Second} {
+		if again := advanceCeiling(t, s, none); again != s {
+			t.Errorf("advancing by %v changed the state", none)
+		}
+	}
+	one := advanceCeiling(t, ceilingAt(t, 1, false), time.Hour)
+	if one.General.Credit != 0 || one.Reserved.Units() != 1 {
+		t.Fatalf("a ceiling of 1 runs only the reserved lane: %+v", one)
+	}
+}
+
+func TestCeilingStateChargesWithinEveryBound(t *testing.T) {
+	s := ceilingAt(t, 10, true)
+	for _, l := range []Lane{LaneGeneral, LaneDirect, LaneCorroborated} {
+		if got := s.Budget(l); got != 1 {
+			t.Fatalf("%s budget = %d, want the saved unit", l, got)
+		}
+	}
+	s, err := s.Charge(LaneDirect, 1)
+	if err != nil || s.Reserved.Used != 1 || s.General.Used != 0 || s.Budget(LaneCorroborated) != 0 {
+		t.Fatalf("direct and corroborated share the reserved allowance: %+v %v", s, err)
+	}
+	before := s
+	refused, err := s.Charge(LaneCorroborated, 1)
+	wantReason(t, "spent reserved credit", err, ReasonCeiling)
+	if refused != before {
+		t.Fatal("refused charge changed the state")
+	}
+	// Credit refills, but the general allowance of 8 bounds the window.
+	for i := 0; i < 8; i++ {
+		if s, err = advanceCeiling(t, s, time.Hour).Charge(LaneGeneral, 1); err != nil {
+			t.Fatalf("general charge %d: %v", i+1, err)
+		}
+	}
+	if s = advanceCeiling(t, s, time.Hour); s.General.Units() != 1 || s.Budget(LaneGeneral) != 0 {
+		t.Fatalf("a full general allowance must stop charges: %+v", s)
+	}
+	if s, err = s.Release(LaneDirect, 1); err != nil || s.Reserved.Used != 0 {
+		t.Fatalf("release: %+v %v", s, err)
+	}
+	// A reduced limit (G=4, R=1) leaves general usage above both the new
+	// general allowance and the whole ceiling: the reserved lane, with
+	// credit and room of its own, waits for general charges to age out.
+	if s, err = s.SetLimit(5); err != nil {
+		t.Fatal(err)
+	}
+	if s.Reserved.Units() != 1 || s.Budget(LaneDirect) != 0 {
+		t.Fatalf("usage above the whole ceiling must stop the reserved lane: %+v", s)
+	}
+	if s, err = s.Release(LaneGeneral, 3); err != nil || s.General.Used != 5 || s.Budget(LaneDirect) != 0 {
+		t.Fatalf("release to the whole ceiling: %+v %v", s, err)
+	}
+	if s, err = s.Release(LaneGeneral, 1); err != nil || s.Budget(LaneDirect) != 1 || s.Budget(LaneGeneral) != 0 {
+		t.Fatalf("room under the whole ceiling: %+v %v", s, err)
+	}
+	if _, err = s.Release(LaneCorroborated, 1); !errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("releasing more than was charged: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		s    CeilingState
+		lane Lane
+		cost uint32
+		want Reason
+	}{
+		"no lane":       {s, 0, 1, ReasonInvalid},
+		"free":          {s, LaneDirect, 0, ReasonInvalid},
+		"too large":     {s, LaneDirect, MaxMemberCost + 1, ReasonInvalid},
+		"ceiling unset": {CeilingState{Fill: true}, LaneGeneral, 1, ReasonEngineUnavailable},
+	} {
+		_, err := tc.s.Charge(tc.lane, tc.cost)
+		wantReason(t, name, err, tc.want)
+	}
+}
+
+func TestCeilingStateCodec(t *testing.T) {
+	charged, err := advanceCeiling(t, ceilingAt(t, 2000, true), time.Minute).Charge(LaneCorroborated, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []CeilingState{{}, {Fill: true}, ceilingAt(t, 1, false), charged} {
+		data, err := s.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		back, err := UnmarshalCeilingState(data)
+		if err != nil || back != s {
+			t.Fatalf("round trip %+v: %+v %v", s, back, err)
+		}
+	}
+	for name, bad := range map[string]CeilingState{
+		"limit too high":         {Limit: MaxCeiling + 1},
+		"fill after a limit":     {Limit: 10, Fill: true},
+		"negative elapsed":       {Elapsed: -1},
+		"credit without a limit": {General: Meter{Credit: 1}},
+		"credit over the cap":    {Limit: 10, Reserved: Meter{Credit: unitTicks + 1}},
+		"usage over any ceiling": {General: Meter{Used: MaxCeiling}, Reserved: Meter{Used: 1}},
+	} {
+		_, err := bad.MarshalBinary()
+		wantReason(t, name, err, ReasonInvalid)
+	}
+	good, _ := charged.MarshalBinary()
+	flipped := append([]byte(nil), good...)
+	flipped[len(flipped)-1] ^= 1
+	unfilled, _ := sealRecord(ceilingStateRecord{V: ceilingStateVersion, Limit: 10, Fill: true})
+	future, _ := sealRecord(ceilingStateRecord{V: ceilingStateVersion + 1})
+	unknown, _ := sealRecord(map[string]any{"v": ceilingStateVersion, "burst": 1})
+	for name, data := range map[string][]byte{"checksum": flipped, "invariant": unfilled, "version": future, "unknown field": unknown} {
+		if _, err := UnmarshalCeilingState(data); !errors.Is(err, ErrCorruptRecord) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestCeilingStateElapsedOverflow(t *testing.T) {
+	const last = time.Duration(1<<63 - 1)
+	s := ceilingAt(t, 2000, false)
+	full, err := s.Advance(last)
+	if err != nil || full.Elapsed != last || full.General.Units() != 266 || full.Reserved.Units() != 66 {
+		t.Fatalf("largest delta: %+v %v", full, err)
+	}
+	s.Elapsed = last - time.Nanosecond
+	next, err := s.Advance(time.Nanosecond)
+	if err != nil || next.Elapsed != last || next.General.Credit != 1600 || next.Reserved.Credit != 400 {
+		t.Fatalf("last representable tick: %+v %v", next, err)
+	}
+	for _, elapsed := range []time.Duration{2 * time.Nanosecond, last} {
+		got, err := s.Advance(elapsed)
+		wantReason(t, "elapsed overflow", err, ReasonEngineUnavailable)
+		if got != s {
+			t.Fatalf("refused advance changed state: %+v", got)
 		}
 	}
 }
