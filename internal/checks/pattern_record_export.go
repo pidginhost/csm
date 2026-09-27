@@ -1,6 +1,9 @@
 package checks
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // Referer classes of a parsed crawl log record, for offline calibration.
 const (
@@ -32,9 +35,11 @@ type CrawlLogRecord struct {
 }
 
 // ParseCrawlLogLine parses one complete domlog line, its terminal LF or CRLF
-// removed, exactly as the crawl detector will. isSiteHost reports whether a
-// Referer host is a verified alias of the line's site.
-func ParseCrawlLogLine(line string, isSiteHost func(string) bool) (CrawlLogRecord, bool) {
+// removed, exactly as the crawl detector will. Callers must bound the raw line
+// length before parsing. siteHosts contains verified aliases of the line's site:
+// lowercase DNS names without a terminal dot, or canonical unmapped IP addresses,
+// without ports. An empty list grants no same-site classification.
+func ParseCrawlLogLine(line string, siteHosts []string) (CrawlLogRecord, bool) {
 	r, ok := parsePatternRecord(line)
 	if !ok {
 		return CrawlLogRecord{}, false
@@ -44,7 +49,8 @@ func ParseCrawlLogLine(line string, isSiteHost func(string) bool) (CrawlLogRecor
 		TargetOverflow: r.TargetOverflow, TargetInvalid: r.TargetInvalid, Status: r.Status,
 		UserAgent: r.UserAgent, UAOverflow: r.UAOverflow, XFF: r.XFF, XFFUnusable: r.XFFUnusable, XFFPartial: r.XFFPartial,
 	}
-	switch classifyReferer(r, isSiteHost) {
+	// Keep the transient Referer host inside this package, including callbacks.
+	switch classifyReferer(r, func(host string) bool { return slices.Contains(siteHosts, host) }) {
 	case refClassMalformed:
 		out.RefererClass = CrawlRefererMalformed
 	case refClassCrossSite:
@@ -57,6 +63,6 @@ func ParseCrawlLogLine(line string, isSiteHost func(string) bool) (CrawlLogRecor
 	return out, true
 }
 
-// CrawlTargetLimit is the record parser's target bound; a longer logged
-// target is an explicit overflow.
+// CrawlTargetLimit bounds target bytes after log-escape decoding; a longer
+// decoded target is an explicit overflow.
 const CrawlTargetLimit = patternMaxTarget
