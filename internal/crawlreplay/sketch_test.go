@@ -78,8 +78,17 @@ func TestSketchBoundsExactWhenSummariesHoldEverything(t *testing.T) {
 func TestSketchCollisionsOnlyLowerCardinality(t *testing.T) {
 	rng := rand.New(rand.NewPCG(10, 11))
 	minutes := streamMinutes(rng, 4)
-	collide := SketchParams{M: 64, H: 500, Hash: func(string) uint64 { return 42 }}
-	_, ld := sketchBounds(sketchesOf(collide, minutes), 3, collide.H)
+	p := SketchParams{M: 64, H: 500, Seed: 9}
+	wantN, wantD := sketchBounds(sketchesOf(p, minutes), 3, p.H)
+	if wantN <= 0 || wantD <= 0 {
+		t.Fatalf("fixture needs positive residual bounds, got %d,%d", wantN, wantD)
+	}
+	collide := p
+	collide.Hash = func(string) uint64 { return 42 }
+	ln, ld := sketchBounds(sketchesOf(collide, minutes), 3, collide.H)
+	if ln != wantN {
+		t.Fatalf("hash collisions changed L_N to %d, want %d", ln, wantN)
+	}
 	if ld != 0 {
 		t.Fatalf("all-colliding hashes gave L_D %d, want 0", ld)
 	}
@@ -91,18 +100,34 @@ func TestSpaceSavingInvariants(t *testing.T) {
 		m := 1 + rng.IntN(20)
 		s := newSpaceSaving(m)
 		truth := map[string]int64{}
-		for range rng.IntN(500) {
+		requests := rng.IntN(500)
+		for range requests {
 			b := fmt.Sprint("b", rng.IntN(60))
 			s.add(b)
 			truth[b]++
 		}
+		wantSize := min(m, len(truth))
+		if len(s.entries) != wantSize || len(s.index) != wantSize {
+			t.Fatalf("trial %d: entries=%d index=%d, want %d", trial, len(s.entries), len(s.index), wantSize)
+		}
 		floor := s.floor()
 		kept := map[string]bool{}
-		for _, e := range s.entries {
+		var total int64
+		for i, e := range s.entries {
+			if kept[e.binding] {
+				t.Fatalf("trial %d: duplicate counter for %s", trial, e.binding)
+			}
 			kept[e.binding] = true
+			if pos, ok := s.index[e.binding]; !ok || pos != i {
+				t.Fatalf("trial %d: counter %d (%s) has index %d, present=%t", trial, i, e.binding, pos, ok)
+			}
+			total += e.count
 			if tr := truth[e.binding]; tr > e.count || tr < e.count-e.err || e.count < floor {
 				t.Fatalf("trial %d: entry %+v true %d floor %d", trial, e, tr, floor)
 			}
+		}
+		if total != int64(requests) {
+			t.Fatalf("trial %d: counter total %d, want %d requests", trial, total, requests)
 		}
 		for b, tr := range truth {
 			if !kept[b] && tr > floor {
