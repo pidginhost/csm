@@ -196,10 +196,25 @@ func (f *ledgerFixture) upgradedCeiling(limit uint32) {
 
 func TestAdmissionLedgerSetCeiling(t *testing.T) {
 	f := newLedgerFixture(t)
-	if err := f.l.SetCeiling(2000); err != nil {
+	// The fixture has already set a limit; the first limit needs a new
+	// ledger that is still waiting to fill its buckets.
+	db, err := Open(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = db.Close() })
+	if f.l, err = OpenAdmissionLedger(db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+	f.db = db
 	s, err := f.l.Ceiling()
+	if err != nil || s != (admission.CeilingState{Fill: true}) {
+		t.Fatalf("new ledger ceiling = %+v, %v", s, err)
+	}
+	if err = f.l.SetCeiling(2000); err != nil {
+		t.Fatal(err)
+	}
+	s, err = f.l.Ceiling()
 	if err != nil || s.Limit != 2000 || s.Fill || s.General.Units() != 266 || s.Reserved.Units() != 66 {
 		t.Fatalf("first limit: %+v %v", s, err)
 	}
@@ -842,10 +857,18 @@ func TestAdmissionLedgerReopenPreservesSpentCredit(t *testing.T) {
 	if _, _, granted, err = f.l.Reserve(second, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil || !granted {
 		t.Fatalf("same-boot elapsed credit: %v %v", granted, err)
 	}
+	// After a crash and reopen, the next reading credits only the time since
+	// the committed checkpoint. 225 seconds at 8 units an hour is half a
+	// unit, below the one-unit cap, so an interval credited again shows.
 	spent := f.ceilingState()
-	f.tickAt(f.wall)
-	if got := f.ceilingState(); got != spent {
-		t.Fatalf("same elapsed interval credited twice: %+v", got)
+	f.db = f.copyDatabase()
+	if f.l, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(f.wall.Add(225 * time.Second))
+	got := f.ceilingState()
+	if got.Elapsed != spent.Elapsed+225*time.Second || got.General.Credit != spent.General.Credit+uint64(time.Hour)/2 {
+		t.Fatalf("elapsed credited across the reopen: %+v, spent %+v", got, spent)
 	}
 }
 
@@ -875,5 +898,90 @@ func TestAdmissionLedgerReserveRefusesAChargeCollision(t *testing.T) {
 	}
 	if !reflect.DeepEqual(before, f.snapshot()) {
 		t.Fatal("a refused reservation changed the ledger")
+	}
+}
+
+// Ready work behind a full general allowance, with a unit of credit saved,
+// is due when the oldest charge leaves the window, not now.
+func TestAdmissionLedgerNextWakeWaitsForTheWindow(t *testing.T) {
+	f := newLedgerFixture(t)
+	if err := f.l.SetCeiling(10); err != nil {
+		t.Fatal(err)
+	}
+	elapsed := f.ceilingState().Elapsed
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		for i := uint32(1); i <= 8; i++ {
+			if err := putCharge(tx, f.ledgerCharge(f.wall, i, admission.LaneGeneral, elapsed), true); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.queued()
+	if s := f.ceilingState(); s.General.Units() != 1 || s.Budget(admission.LaneGeneral) != 0 {
+		t.Fatalf("setup: %+v", s)
+	}
+	wake, ok, err := f.l.NextWake()
+	if err != nil || !ok || !wake.Equal(f.wall.Add(admission.CeilingWindow)) {
+		t.Fatalf("wake = %v %v %v, want the window's end", wake, ok, err)
+	}
+}
+
+// With a ceiling of 1 only the reserved lane runs: once spent, it wakes
+// direct compromise work when its unit returns, an hour later.
+func TestAdmissionLedgerNextWakeServesTheReservedLane(t *testing.T) {
+	f := newLedgerFixture(t)
+	if err := f.l.SetCeiling(1); err != nil {
+		t.Fatal(err)
+	}
+	var ids []admission.CandidateID
+	for _, tc := range []struct{ target, cursor string }{{"192.0.2.11", "directa"}, {"192.0.2.12", "directb"}} {
+		root := f.published(evidenceSpec{producer: f.mail, check: "mail_takeover", target: tc.target, cursor: tc.cursor, severity: admission.SeverityCritical})
+		_, id := f.enqueue(f.request(tc.target, root))
+		ids = append(ids, id)
+	}
+	if _, _, _, err := f.l.Reserve(ids[0], admission.LaneDirect, f.wall.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	wake, ok, err := f.l.NextWake()
+	if err != nil || !ok || !wake.Equal(f.wall.Add(admission.CeilingWindow)) {
+		t.Fatalf("reserved wake = %v %v %v, want the window's end", wake, ok, err)
+	}
+}
+
+// The reserved-lane recheck reports damage as damage: a damaged root or
+// damaged queue bookkeeping refuses the reservation as corrupt, never as
+// merely ineligible, and changes nothing.
+func TestAdmissionLedgerReserveRecheckReportsDamage(t *testing.T) {
+	for name, damage := range map[string]func(root admission.EvidenceID) func(tx *bolt.Tx) error{
+		"root": func(root admission.EvidenceID) func(tx *bolt.Tx) error {
+			return func(tx *bolt.Tx) error {
+				return tx.Bucket([]byte(admissionEvidenceBucket)).Put([]byte(root), []byte("damaged"))
+			}
+		},
+		"queue counters": func(admission.EvidenceID) func(tx *bolt.Tx) error {
+			return func(tx *bolt.Tx) error {
+				return tx.Bucket([]byte(admissionQueueStateBucket)).Put(queueCountersKey, []byte("damaged"))
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			root := f.published(evidenceSpec{producer: f.mail, check: "mail_takeover", target: "192.0.2.11", cursor: "direct", severity: admission.SeverityCritical})
+			_, id := f.enqueue(f.request("192.0.2.11", root))
+			if err := f.db.bolt.Update(damage(root)); err != nil {
+				t.Fatal(err)
+			}
+			before := f.snapshot()
+			_, _, granted, err := f.l.Reserve(id, admission.LaneDirect, f.wall.Add(time.Hour))
+			if !isCorrupt(err) || granted {
+				t.Fatalf("recheck over damaged %s: %v %v", name, granted, err)
+			}
+			if !reflect.DeepEqual(before, f.snapshot()) {
+				t.Fatal("a refused reservation changed the ledger")
+			}
+		})
 	}
 }
