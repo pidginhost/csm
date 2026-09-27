@@ -46,7 +46,9 @@ Referer is written. Sites and accounts use the same pseudonyms as
 two can be joined. A volume stream counts lines and bytes per site and
 minute, including lines without a usable target or client.
 
-The inventory names each site's verified identity and its log copies:
+The inventory names each site's verified identity and its log copies. Site
+names and aliases must be lowercase DNS names without a terminal dot, at
+most 253 bytes each:
 
 ```json
 {
@@ -66,9 +68,13 @@ client is the rightmost forwarded address only when the qualified proxy
 appends the original client there; multi-hop chains need separate qualification; a proxied line without one is
 counted as attribution loss. The optional labels file marks time ranges of a
 site as `attack` or `overload` (each with an episode name) or `healthy`,
-optionally only for a first path segment or parameter-name prefix; the first
-matching rule wins and anything else stays unlabeled. Labels are what the
-calibration measures detection delay and false positives against.
+optionally only for a first path segment or parameter-name prefix. Each rule
+requires nonzero RFC 3339 `from` (inclusive) and `to` (exclusive) timestamps;
+matching preserves fractional seconds even though stream timestamps use
+whole Unix seconds. Prefixes match canonical query names, with ASCII letters
+lowercased and non-ASCII case preserved. The first matching rule wins and
+anything else stays unlabeled. Labels are what the calibration measures
+detection delay and false positives against.
 
 Handling rules for later qualified real-data use (not authorized by this
 prototype):

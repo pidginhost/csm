@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/crawlid"
@@ -220,7 +221,7 @@ func (c *converter) row(s inventorySite, cov *siteCoverage, rec checks.CrawlLogR
 		row.BotRange = client.IsValid() && containsAddr(c.inv.bots[bot], client)
 	}
 	for _, rule := range c.labels {
-		if rule.matches(s.Name, row.T, target, hasTarget) {
+		if rule.matches(s.Name, rec.Time, target, hasTarget) {
 			row.Label, row.Episode = rule.Label, c.ps.episode(rule.Episode)
 			break
 		}
@@ -251,8 +252,8 @@ func (c *converter) client(rec checks.CrawlLogRecord) (netip.Addr, bool) {
 	return a.Unmap(), true
 }
 
-func (r labelRule) matches(site string, t int64, target crawlid.Target, hasTarget bool) bool {
-	if r.Site != site || t < r.From.Unix() || t >= r.To.Unix() {
+func (r labelRule) matches(site string, t time.Time, target crawlid.Target, hasTarget bool) bool {
+	if r.Site != site || t.Before(r.From) || !t.Before(r.To) {
 		return false
 	}
 	if r.Segment == nil && len(r.NamePrefixes) == 0 {

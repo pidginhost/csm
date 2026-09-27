@@ -80,13 +80,13 @@ func parseInventory(b []byte) (*inventory, error) {
 	}
 	names, logs := map[string]bool{}, map[string]bool{}
 	for _, s := range inv.Sites {
-		if !dnsName.MatchString(s.Name) || names[s.Name] || !accountName.MatchString(s.Account) || len(s.Logs) == 0 {
+		if len(s.Name) > 253 || !dnsName.MatchString(s.Name) || names[s.Name] || !accountName.MatchString(s.Account) || len(s.Logs) == 0 {
 			return nil, errInventory
 		}
 		names[s.Name] = true
 		hasName := false
 		for _, a := range s.Aliases {
-			if !dnsName.MatchString(a) {
+			if len(a) > 253 || !dnsName.MatchString(a) {
 				return nil, errInventory
 			}
 			hasName = hasName || a == s.Name
@@ -165,14 +165,15 @@ func parseLabels(b []byte, inv *inventory) ([]labelRule, error) {
 	for _, r := range lf.Labels {
 		episodic := r.Label == crawlreplay.LabelAttack || r.Label == crawlreplay.LabelOverload
 		switch {
-		case !sites[r.Site], !r.From.Before(r.To),
+		case !sites[r.Site], r.From.IsZero(), r.To.IsZero(), !r.From.Before(r.To),
 			!episodic && r.Label != crawlreplay.LabelHealthy,
 			episodic != (r.Episode != ""),
 			r.Episode != "" && !episodeName.MatchString(r.Episode):
 			return nil, errLabels
 		}
 		for _, p := range r.NamePrefixes {
-			if p == "" || strings.ToLower(p) != p {
+			// Canonical query names fold ASCII bytes only, not Unicode case.
+			if p == "" || strings.ContainsAny(p, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
 				return nil, errLabels
 			}
 		}
