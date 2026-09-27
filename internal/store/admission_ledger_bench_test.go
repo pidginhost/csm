@@ -123,3 +123,81 @@ func BenchmarkAdmissionLedgerEnqueueGroupFullQueue(b *testing.B) {
 		}
 	}
 }
+
+// fullWindow sets the largest ceiling and fills its whole window with
+// general and reserved charges spent now, as a sustained flood would.
+func fullWindow(b *testing.B) *ledgerFixture {
+	b.Helper()
+	f := newLedgerFixture(b)
+	if err := f.l.SetCeiling(admission.MaxCeiling); err != nil {
+		b.Fatal(err)
+	}
+	general, reserved := admission.CeilingLanes(admission.MaxCeiling)
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		for i := uint32(0); i < general+reserved; i++ {
+			lane := admission.LaneGeneral
+			if i >= general {
+				lane = admission.LaneCorroborated
+			}
+			if err := putCharge(tx, f.ledgerCharge(f.wall, i+1, lane, 0), true); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		b.Fatal(err)
+	}
+	return f
+}
+
+// Opening proves every retained charge against the ceiling's usage.
+func BenchmarkAdmissionLedgerOpenFullWindow(b *testing.B) {
+	f := fullWindow(b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Ready work behind a full window: NextWake walks the charges to find when
+// a lane gains room.
+func BenchmarkAdmissionLedgerNextWakeFullWindow(b *testing.B) {
+	f := fullWindow(b)
+	f.queued()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, ok, err := f.l.NextWake(); err != nil || !ok {
+			b.Fatalf("wake: %v %v", ok, err)
+		}
+	}
+}
+
+// One tick releasing a whole window at once, after an hour's gap.
+func BenchmarkAdmissionLedgerTickReleasesFullWindow(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		f := fullWindow(b)
+		b.StartTimer()
+		f.tickAt(f.wall.Add(admission.CeilingWindow))
+		b.StopTimer()
+		if s := f.ceilingState(); s.General.Used != 0 || s.Reserved.Used != 0 {
+			b.Fatalf("window not released: %+v", s)
+		}
+		b.StartTimer()
+	}
+}
+
+// A tick proves the retained window even when no charge can leave it.
+func BenchmarkAdmissionLedgerTickRetainsFullWindow(b *testing.B) {
+	f := fullWindow(b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		f.tickAt(f.wall)
+	}
+	b.StopTimer()
+	if s := f.ceilingState(); s.General.Used+s.Reserved.Used != admission.MaxCeiling {
+		b.Fatalf("retained window changed: %+v", s)
+	}
+}
