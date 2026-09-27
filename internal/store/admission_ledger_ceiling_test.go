@@ -350,8 +350,9 @@ func TestAdmissionLedgerFutureChargeCountsUntilItsWindowEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	dated := f.wall.Add(30 * time.Minute)
+	elapsed := f.ceilingState().Elapsed
 	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
-		return putCharge(tx, f.ledgerCharge(dated, 1, admission.LaneGeneral, f.ceilingState().Elapsed), true)
+		return putCharge(tx, f.ledgerCharge(dated, 1, admission.LaneGeneral, elapsed), true)
 	}); err != nil {
 		t.Fatal(err)
 	}
