@@ -69,7 +69,9 @@ func (b *Baseline) Observe(m, total int64) {
 	if s.obs == 0 {
 		s.mean = float64(total)
 	} else {
-		s.mean += b.p.Alpha * (float64(total) - s.mean)
+		// Weight the nonnegative terms separately so a small new total
+		// is not lost when subtracting it from a much larger old mean.
+		s.mean = (1-b.p.Alpha)*s.mean + b.p.Alpha*float64(total)
 	}
 	s.obs++
 }
