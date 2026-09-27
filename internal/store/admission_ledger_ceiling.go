@@ -72,3 +72,68 @@ func loadCeiling(tx *bolt.Tx) (admission.CeilingState, error) {
 	}
 	return s, nil
 }
+
+// meterCeiling credits a tick's elapsed time to the ceiling and releases the
+// charges that have left the window, oldest first. Keys order charges by
+// time and the ledger spends them at non-decreasing elapsed time, so the
+// walk stops at the first charge still counted. Stopping can only keep a
+// later charge longer, never release one early.
+func meterCeiling(tx *bolt.Tx, tick admission.ClockTick) error {
+	s, err := loadCeiling(tx)
+	if err != nil {
+		return err
+	}
+	if s, err = s.Advance(tick.Elapsed); err != nil {
+		return err
+	}
+	var released [][]byte
+	cur := tx.Bucket([]byte(admissionChargesBucket)).Cursor()
+	for k, v := cur.First(); k != nil; k, v = cur.Next() {
+		c, decodeErr := admission.UnmarshalCharge(k, v)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		if !c.Releasable(tick.Now, s.Elapsed) {
+			break
+		}
+		if s, err = s.Release(c.Lane, c.Cost); err != nil {
+			return err
+		}
+		released = append(released, k)
+	}
+	for _, k := range released {
+		if err = tx.Bucket([]byte(admissionChargesBucket)).Delete(k); err != nil {
+			return err
+		}
+	}
+	return putCeilingState(tx, s)
+}
+
+// SetCeiling records the effective hourly ceiling. The first limit of a new
+// ledger fills each bucket to its cap; every later one, including the same
+// limit after a restart, only clips saved credit to the new caps.
+func (l *AdmissionLedger) SetCeiling(limit uint32) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.update("ceiling", func(tx *bolt.Tx) error {
+		s, err := loadCeilingState(tx)
+		if err != nil {
+			return err
+		}
+		if s, err = s.SetLimit(limit); err != nil {
+			return err
+		}
+		return putCeilingState(tx, s)
+	})
+}
+
+// Ceiling is the committed ceiling state.
+func (l *AdmissionLedger) Ceiling() (admission.CeilingState, error) {
+	var s admission.CeilingState
+	err := l.db.bolt.View(func(tx *bolt.Tx) error {
+		var err error
+		s, err = loadCeilingState(tx)
+		return err
+	})
+	return s, err
+}

@@ -83,8 +83,16 @@ type Ledger interface {
 	// Tick records a clock reading. Every other call uses the last
 	// recorded Now, never raw wall time. A reopened ledger, or one whose
 	// last reading was refused, admits and dispatches nothing until Tick
-	// succeeds; recording an outcome needs only the stored time.
+	// succeeds; recording an outcome needs only the stored time. The same
+	// transaction credits the elapsed time to the ceiling and releases the
+	// charges that have left its window.
 	Tick(ClockReading) (ClockTick, error)
+	// SetCeiling records the effective hourly ceiling, 1 to MaxCeiling. The
+	// engine sets it at startup and on every reload; nothing is charged
+	// before the first. Credit is never topped up by a later call.
+	SetCeiling(uint32) error
+	// Ceiling is the committed ceiling state.
+	Ceiling() (CeilingState, error)
 	// PublishEvidence stores an immutable record after revalidating it.
 	// An identical record again changes nothing and reports false; a
 	// different record under the same ID is refused.

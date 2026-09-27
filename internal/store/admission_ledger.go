@@ -266,7 +266,8 @@ func (l *AdmissionLedger) update(op string, fn func(tx *bolt.Tx) error) error {
 }
 
 // Tick records a clock reading. The high-water mark it persists is the only
-// time the other calls use.
+// time the other calls use. The same transaction meters the ceiling, so a
+// crash can neither lose nor repeat the elapsed time it credits.
 func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -289,7 +290,10 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 		if err := meta.Delete(admissionClockPendingKey); err != nil {
 			return err
 		}
-		return meta.Put(admissionClockKey, data)
+		if err := meta.Put(admissionClockKey, data); err != nil {
+			return err
+		}
+		return meterCeiling(tx, t)
 	})
 	if err != nil {
 		l.current = false
