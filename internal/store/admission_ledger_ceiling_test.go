@@ -882,8 +882,9 @@ func TestAdmissionLedgerReserveRefusesAChargeCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	elapsed := f.ceilingState().Elapsed
 	if err = f.db.bolt.Update(func(tx *bolt.Tx) error {
-		return putCharge(tx, admission.Charge{At: f.wall, Action: next.ID, Lane: admission.LaneGeneral, Cost: 1, Elapsed: f.ceilingState().Elapsed}, true)
+		return putCharge(tx, admission.Charge{At: f.wall, Action: next.ID, Lane: admission.LaneGeneral, Cost: 1, Elapsed: elapsed}, true)
 	}); err != nil {
 		t.Fatal(err)
 	}
