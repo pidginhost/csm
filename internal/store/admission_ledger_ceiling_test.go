@@ -547,6 +547,53 @@ func TestAdmissionLedgerReserveChargesThePickedLane(t *testing.T) {
 	}
 }
 
+// Only the caller's zero lane is a readback wildcard. An upgraded attempt
+// keeps its unknown lane and cannot match a newly supplied nonzero lane.
+func TestAdmissionLedgerLegacyReadbackRejectsAnotherLane(t *testing.T) {
+	for _, schema := range []int{1, 2} {
+		for _, executing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("schema=%d/executing=%t", schema, executing), func(t *testing.T) {
+				f := newLedgerFixture(t)
+				id := f.queued()
+				c, a, granted, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
+				if err != nil || !granted {
+					t.Fatalf("reserve: %v %v", granted, err)
+				}
+				if executing {
+					if c, a, granted, err = f.l.Execute(a.Attempt.ID); err != nil || !granted {
+						t.Fatalf("execute: %v %v", granted, err)
+					}
+				}
+				if schema == 1 {
+					f.schemaOne()
+				} else {
+					f.schemaTwo()
+				}
+				if f.l, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+					t.Fatal(err)
+				}
+				f.tickAt(f.wall)
+				a.Lane = 0
+				before := f.snapshot()
+				got, same, granted, err := f.l.Reserve(id, 0, time.Time{})
+				if err != nil || granted || same != a || !reflect.DeepEqual(got, c) {
+					t.Fatalf("legacy readback: %+v %+v %v %v", got, same, granted, err)
+				}
+				for _, lane := range []admission.Lane{admission.LaneGeneral, admission.LaneDirect, admission.LaneCorroborated, 255} {
+					_, _, granted, err = f.l.Reserve(id, lane, time.Time{})
+					wantLedgerErr(t, lane.String(), err, admission.ErrTransitionConflict)
+					if granted {
+						t.Errorf("readback granted work on lane %s", lane)
+					}
+				}
+				if !reflect.DeepEqual(before, f.snapshot()) {
+					t.Fatal("legacy readbacks changed the ledger")
+				}
+			})
+		}
+	}
+}
+
 // Challenge work has its own bound and never charges the block ceiling,
 // even before one is set.
 func TestAdmissionLedgerChallengeIsNeverCharged(t *testing.T) {

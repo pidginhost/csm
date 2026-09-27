@@ -190,7 +190,7 @@ func (l *AdmissionLedger) reserveTx(tx *bolt.Tx, id admission.CandidateID, lane 
 	}
 	switch {
 	case c.State == admission.StateReserved || c.State == admission.StateExecuting:
-		if (!expiresAt.IsZero() && !expiresAt.Equal(c.ExpiresAt)) || (lane != 0 && current.Lane != 0 && lane != current.Lane) {
+		if (!expiresAt.IsZero() && !expiresAt.Equal(c.ExpiresAt)) || (lane != 0 && lane != current.Lane) {
 			return c, admission.AttemptRecord{}, false, admission.ErrTransitionConflict
 		}
 		return c, current, false, nil

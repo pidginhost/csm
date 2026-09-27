@@ -288,7 +288,9 @@ ledger fills both buckets once. A later limit only clips saved credit; the
 owner checkpoints elapsed time at the saved rate before changing it. Every
 reservation, retry included, is charged to the lane its schedule picked, in
 the reservation's transaction, after a reserved lane is rechecked against
-the candidate's current assessment. A charge counts until a full hour of
+the candidate's current assessment. A readback grants and charges nothing;
+its lane must be zero or equal the recorded lane, including when an
+upgraded attempt has no recorded lane. A charge counts until a full hour of
 admission time and of elapsed time have both passed, so neither downtime
 nor a forward clock step releases it early. Schedules serve no more than
 each lane can charge, and the ledger's next wake includes when waiting work
