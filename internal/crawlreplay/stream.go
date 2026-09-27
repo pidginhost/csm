@@ -152,6 +152,10 @@ func (v Volume) Validate() error {
 
 func fieldError(name string) error { return fmt.Errorf("%w: %s", ErrRecord, name) }
 
+// ValidSite reports whether name is a site pseudonym of the closed format,
+// so a bundle's other files can be held to the rule its rows follow.
+func ValidSite(name string) bool { return sitePseudonym.MatchString(name) }
+
 type row interface{ Validate() error }
 
 // ReadRecords decodes a JSON record stream and calls fn for each record in

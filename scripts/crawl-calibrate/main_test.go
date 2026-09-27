@@ -181,6 +181,40 @@ func TestCalibrateSilenceAcrossCoverageSpans(t *testing.T) {
 	}
 }
 
+// A manifest is operator-editable. Its site list must hold the same closed
+// pseudonyms as the records, or a hand-edited raw name would reach the report.
+func TestCalibrateRefusesNonPseudonymManifestSites(t *testing.T) {
+	for name, extra := range map[string]string{
+		"raw name":  "secret-customer.example",
+		"duplicate": "dom-000001.example",
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := writeBundle(t, false)
+			raw, err := os.ReadFile(b.manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var m map[string]any
+			if err = json.Unmarshal(raw, &m); err != nil {
+				t.Fatal(err)
+			}
+			m["sites"] = append(m["sites"].([]any), map[string]any{"site": extra, "coverage": []any{}})
+			if raw, err = json.Marshal(m); err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(b.manifest, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err = run(b.args()); !errors.Is(err, errManifest) {
+				t.Fatalf("manifest site %q: %v, want errManifest", extra, err)
+			}
+			if _, err = os.Stat(b.out); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("refused manifest still wrote a report: %v", err)
+			}
+		})
+	}
+}
+
 func TestCalibrateRefusals(t *testing.T) {
 	b := writeBundle(t, false)
 	if err := os.WriteFile(b.records, []byte("tampered"), 0o600); err != nil {

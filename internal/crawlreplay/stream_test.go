@@ -303,3 +303,20 @@ func TestWriteRowErrors(t *testing.T) {
 		t.Fatalf("err=%v, want ErrRecord", err)
 	}
 }
+
+func TestValidSite(t *testing.T) {
+	for name, want := range map[string]bool{
+		testSite:                  true,
+		"dom-000000.example":      true,
+		"example.com":             false,
+		"secret-customer.example": false,
+		"dom-0A1B2C.example":      false,
+		"dom-0a1b2c.example.":     false,
+		"dom-0a1b2c3.example":     false,
+		"":                        false,
+	} {
+		if got := ValidSite(name); got != want {
+			t.Errorf("ValidSite(%q) = %v, want %v", name, got, want)
+		}
+	}
+}

@@ -260,6 +260,14 @@ func loadManifest(path string, files map[string]string) (bundleManifest, error) 
 	if err := json.Unmarshal(raw, &m); err != nil || m.FormatVersion != 1 || m.StreamVersion != crawlreplay.StreamVersion {
 		return bundleManifest{}, errManifest
 	}
+	// Site names reach the report, so they obey the stream's pseudonym rule.
+	seen := map[string]bool{}
+	for _, s := range m.Sites {
+		if !crawlreplay.ValidSite(s.Site) || seen[s.Site] {
+			return bundleManifest{}, errManifest
+		}
+		seen[s.Site] = true
+	}
 	for kind, path := range files {
 		want := ""
 		for _, o := range m.Outputs {

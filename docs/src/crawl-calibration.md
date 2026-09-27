@@ -106,7 +106,8 @@ go run ./scripts/crawl-calibrate --manifest "$RECORDING_DIR/host-a.manifest.json
     --window "$WINDOW_MINUTES" --grid "$RECORDING_DIR/grid.json" --out "$RECORDING_DIR/host-a.report.json"
 ```
 
-It refuses a bundle whose files do not match the manifest. The report holds
+It refuses a bundle whose files do not match the manifest, and a manifest
+that lists a site other than a unique pseudonym. The report holds
 host lines and bytes per minute, line counts for nonempty site-minutes,
 in-file timestamp disorder, how many patterns and clients are active per
 window, and, for every parameter set in the grid, each labeled episode's detection delay and margins, healthy
