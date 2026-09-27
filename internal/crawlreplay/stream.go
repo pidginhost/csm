@@ -2,11 +2,14 @@ package crawlreplay
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
+	"strings"
 )
 
 // StreamVersion is the record and volume stream format version.
@@ -152,21 +155,35 @@ func fieldError(name string) error { return fmt.Errorf("%w: %s", ErrRecord, name
 type row interface{ Validate() error }
 
 // ReadRecords decodes a JSON record stream and calls fn for each record in
-// stream order. Unknown fields and invalid rows stop the read.
+// stream order. Fields must use their exact JSON names, occur at most once,
+// and be non-null. Fields without omitempty are required, even when zero.
+// Invalid rows stop the read without calling fn for that row.
 func ReadRecords(r io.Reader, fn func(Record) error) error { return readRows(r, fn) }
 
-// ReadVolume decodes a JSON volume stream and calls fn for each row.
+// ReadVolume decodes a JSON volume stream under the same field rules as
+// ReadRecords and calls fn for each valid row.
 func ReadVolume(r io.Reader, fn func(Volume) error) error { return readRows(r, fn) }
 
 func readRows[T row](r io.Reader, fn func(T) error) error {
+	// Derive required and optional names from the writer's schema so the
+	// reader cannot silently invent zero-valued fields or accept aliases.
+	fields := make(map[string]bool)
+	typ := reflect.TypeFor[T]()
+	for i := range typ.NumField() {
+		name, option, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
+		fields[name] = option != "omitempty"
+	}
 	dec := json.NewDecoder(bufio.NewReader(r))
-	dec.DisallowUnknownFields()
 	for n := 1; ; n++ {
-		var v T
-		if err := dec.Decode(&v); err != nil {
+		var data json.RawMessage
+		if err := dec.Decode(&data); err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil
 			}
+			return fmt.Errorf("row %d: %w", n, ErrDecode)
+		}
+		var v T
+		if err := decodeRow(data, &v, fields); err != nil {
 			return fmt.Errorf("row %d: %w", n, ErrDecode)
 		}
 		if err := v.Validate(); err != nil {
@@ -178,6 +195,41 @@ func readRows[T row](r io.Reader, fn func(T) error) error {
 	}
 }
 
+func decodeRow(data []byte, v any, fields map[string]bool) error {
+	// Unmarshal alone accepts case-insensitive names, repeated keys and
+	// null scalars. Check the object before those distinctions are lost.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		return ErrDecode
+	}
+	seen := make(map[string]bool, len(fields))
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return ErrDecode
+		}
+		name, _ := tok.(string)
+		if _, ok := fields[name]; !ok || seen[name] {
+			return ErrDecode
+		}
+		seen[name] = true
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil || string(value) == "null" {
+			return ErrDecode
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return ErrDecode
+	}
+	for name, required := range fields {
+		if required && !seen[name] {
+			return ErrDecode
+		}
+	}
+	return json.Unmarshal(data, v)
+}
+
 // WriteRow validates v and writes it as one JSON line.
 func WriteRow[T row](w io.Writer, v T) error {
 	if err := v.Validate(); err != nil {
@@ -187,6 +239,10 @@ func WriteRow[T row](w io.Writer, v T) error {
 	if err != nil {
 		return err
 	}
-	_, err = w.Write(append(b, '\n'))
+	b = append(b, '\n')
+	n, err := w.Write(b)
+	if err == nil && n < len(b) {
+		return io.ErrShortWrite
+	}
 	return err
 }
