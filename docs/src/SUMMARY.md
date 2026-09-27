@@ -54,6 +54,7 @@
 - [Building and Testing](development.md)
   - [Clean Application Corpus](clean-corpus.md)
   - [Recorded Finding Streams](finding-streams.md)
+  - [Crawl Detector Calibration](crawl-calibration.md)
   - [cPanel Release Tests](cpanel-release-tests.md)
   - [Production Build and Kernel Tests](production-tests.md)
 - [Release Signing](release-signing.md)
