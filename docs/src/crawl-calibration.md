@@ -96,3 +96,46 @@ prototype):
   stalled logging must be excluded before replay. An idle log alone cannot
   certify zero traffic. Do not qualify settings from an inferred extent.
 - Streams, labels, inventories and reports stay outside the repository.
+
+`scripts/crawl-calibrate` replays a bundle through exact models of the
+detector:
+
+```bash
+go run ./scripts/crawl-calibrate --manifest "$RECORDING_DIR/host-a.manifest.json" \
+    --records "$RECORDING_DIR/host-a.records.jsonl.gz" --volume "$RECORDING_DIR/host-a.volume.jsonl.gz" \
+    --window "$WINDOW_MINUTES" --grid "$RECORDING_DIR/grid.json" --out "$RECORDING_DIR/host-a.report.json"
+```
+
+It refuses a bundle whose files do not match the manifest. The report holds
+host lines and bytes per minute, line counts for nonempty site-minutes,
+in-file timestamp disorder, how many patterns and clients are active per
+window, and, for every parameter set in the grid, each labeled episode's detection delay and margins, healthy
+false positives per site and day, the scope level chosen, key and client
+peaks, and, when a sketch is configured, how far the bounded estimates fall
+below the exact values. Grid runs list the window, rate multiple, rate
+floor, removed-client count, distinct-client count, coverage percent and
+baseline settings, with optional sketch sizes; fixtures add synthetic
+attacks from one-, three- and twenty-request clients with optional padding
+and churn.
+
+A replay is a hypothesis about the detector, not a record of what the host
+did: logs hold completed requests, not offered load, backend harm or queued
+work, and the parser is only as good as the server's log escaping. After
+qualification, chosen values and their evidence go to a private calibration
+ledger. Current episode delays and majority-label counts are
+prototype diagnostics, not correct-finding deadlines or qualified false-positive
+rates. The packed footprint estimate is not measured memory or disk usage.
+
+Qualification must use explicit complete-minute coverage, independently
+verified zero-traffic minutes, separate training and scoring intervals, and
+held-out healthy, attack and legitimate-overload cohorts. Warm seasonal
+profiles require history and observations for every enabled seasonal slot.
+A cold-start replay is a separate experiment. Neither a model delay nor
+logged timestamp disorder measures request completion or log-flush delay.
+
+Review every transition per site, key and day. Majority labels are a summary,
+not the definition of a correct finding or permission to ignore mixed traffic.
+The tools model High findings only; absence of Critical or actions here is
+not an end-to-end safety test. Full-bound resource measurements and a private
+ledger approval are required before production implementation. The production
+components must repeat these measurements with their own allocations and I/O.
