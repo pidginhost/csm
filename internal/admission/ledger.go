@@ -67,6 +67,10 @@ var (
 	ErrTransitionConflict = errors.New("candidate transition conflicts with its recorded state")
 	// ErrNotReady refuses to reserve a candidate before its retry time.
 	ErrNotReady = errors.New("candidate is waiting for its retry time")
+	// ErrLaneIneligible refuses a reserved-lane reservation whose candidate
+	// no longer qualifies for that lane. It stays queued: the next schedule
+	// assesses it again and serves it on a lane it qualifies for.
+	ErrLaneIneligible = errors.New("candidate no longer qualifies for the picked lane")
 	// ErrEvidenceUnpublished refuses a reference to evidence the ledger does
 	// not hold. Its reason is ReasonInvalid.
 	ErrEvidenceUnpublished error = &Error{Reason: ReasonInvalid, Detail: "evidence is not published"}
@@ -145,11 +149,15 @@ type Ledger interface {
 	// the rest keep their positions under a new assessment. The engine
 	// calls it after a policy reload and once after the ledger opens.
 	Revalidate() error
-	// Reserve admits the next attempt and reports true. The first
-	// reservation fixes the absolute expiry; later ones must keep it. On a
-	// candidate already reserved or running it returns that attempt and
-	// false: a readback grants nothing.
-	Reserve(CandidateID, time.Time) (Candidate, AttemptRecord, bool, error)
+	// Reserve admits the next attempt on the lane a schedule picked and
+	// reports true. A reserved lane is rechecked against the candidate's
+	// current assessment, then the attempt is charged to the lane's
+	// ceiling budget in the same transaction; a refusal before the charge
+	// consumes nothing. The first reservation fixes the absolute expiry;
+	// later ones must keep it. On a candidate already reserved or running
+	// it returns that attempt and false: a readback grants and charges
+	// nothing, and a zero lane or expiry matches the recorded one.
+	Reserve(CandidateID, Lane, time.Time) (Candidate, AttemptRecord, bool, error)
 	// Execute marks a reserved attempt as running and reports true. On an
 	// attempt already running it returns it and false: a readback is not
 	// permission to dispatch its effect again.

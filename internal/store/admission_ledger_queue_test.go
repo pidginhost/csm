@@ -142,7 +142,7 @@ func TestAdmissionLedgerQueueEntries(t *testing.T) {
 	if _, err = f.entry(id); !isCorrupt(err) || f.count(ended(admission.ReasonProtected, c3h)) != 1 {
 		t.Fatalf("ended candidate kept its entry or was not counted: %v", err)
 	}
-	_, a, _, err := f.l.Reserve(directID, ledgerT0.Add(time.Hour))
+	_, a, _, err := f.l.Reserve(directID, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestAdmissionLedgerQueueEntries(t *testing.T) {
 		t.Fatalf("a retry lost its entry: %v", err)
 	}
 	f.tickAt(ledgerT0.Add(admission.RetryBackoff(1)))
-	if _, a, _, err = f.l.Reserve(directID, time.Time{}); err != nil {
+	if _, a, _, err = f.l.Reserve(directID, admission.LaneGeneral, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
@@ -244,7 +244,7 @@ func TestAdmissionLedgerCoalescingKeepsOnePosition(t *testing.T) {
 	if n, scope := positions(); n != 1 || scope != "host/address" {
 		t.Fatalf("after rescoping: %d positions, scope %q", n, scope)
 	}
-	if _, _, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour)); err != nil {
+	if _, _, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	req.Support = nil
@@ -264,7 +264,7 @@ func TestAdmissionLedgerSweepAgesOut(t *testing.T) {
 	old := f.queued()
 	f.nextGeneration()
 	retry := f.queued()
-	_, a, _, err := f.l.Reserve(retry, ledgerT0.Add(30*time.Minute))
+	_, a, _, err := f.l.Reserve(retry, admission.LaneGeneral, ledgerT0.Add(30*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,7 +345,7 @@ func TestAdmissionLedgerInventoryRefreshEndsStaleOwners(t *testing.T) {
 	_, queued := f.enqueue(f.request("192.0.2.10", queuedRoot))
 	flightRoot := f.published(evidenceSpec{owner: alice, target: "192.0.2.11", cursor: "flight"})
 	_, flight := f.enqueue(f.request("192.0.2.11", flightRoot))
-	if _, _, _, err := f.l.Reserve(flight, ledgerT0.Add(time.Hour)); err != nil {
+	if _, _, _, err := f.l.Reserve(flight, admission.LaneGeneral, ledgerT0.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	before := f.snapshot()
@@ -381,7 +381,7 @@ func TestAdmissionLedgerQueueIndexIsConsistent(t *testing.T) {
 			_, id := f.enqueue(req)
 			var action admission.ActionID
 			if op == "finish" {
-				_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+				_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -396,7 +396,7 @@ func TestAdmissionLedgerQueueIndexIsConsistent(t *testing.T) {
 			var err error
 			switch op {
 			case "reserve":
-				_, _, _, err = f.l.Reserve(id, ledgerT0.Add(time.Hour))
+				_, _, _, err = f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 			case "defer":
 				_, err = f.l.Defer(id, admission.ReasonCeiling)
 			case "terminate":
@@ -625,7 +625,7 @@ func TestAdmissionLedgerMaintenanceRejectsBrokenHistory(t *testing.T) {
 			f := newLedgerFixture(t)
 			root := f.published(evidenceSpec{owner: f.owner("alice")})
 			_, id := f.enqueue(f.request("192.0.2.10", root))
-			_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Minute))
+			_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Minute))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -666,7 +666,7 @@ func TestAdmissionLedgerMaintenanceRejectsBrokenHistory(t *testing.T) {
 func TestAdmissionLedgerExecuteRequiresQueueEntry(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
-	_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

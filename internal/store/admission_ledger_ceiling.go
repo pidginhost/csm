@@ -1,6 +1,8 @@
 package store
 
 import (
+	"time"
+
 	"github.com/pidginhost/csm/internal/admission"
 	bolt "go.etcd.io/bbolt"
 )
@@ -136,4 +138,57 @@ func (l *AdmissionLedger) Ceiling() (admission.CeilingState, error) {
 		return err
 	})
 	return s, err
+}
+
+// laneFits checks that a queued candidate may be reserved on lane. Any
+// candidate may use the general lane. A reserved lane is rechecked against
+// the candidate's assessment at now, since the pick was made in an earlier
+// transaction: direct compromise evidence has only the direct turn and
+// corroboration only the corroborated one.
+func (l *AdmissionLedger) laneFits(tx *bolt.Tx, lc liveCandidate, lane admission.Lane, now time.Time) error {
+	switch {
+	case !lane.Valid():
+		return refusal(admission.ReasonInvalid, "reservation names no lane")
+	case lane == admission.LaneGeneral:
+		return nil
+	}
+	q, err := l.openQueue(tx, now)
+	if err != nil {
+		return err
+	}
+	a, reason, err := q.check(lc, true)
+	switch {
+	case err != nil:
+		return err
+	case reason != 0:
+		return refusal(reason, "candidate no longer qualifies for a response")
+	case lane == admission.LaneDirect && !a.DirectC3, lane == admission.LaneCorroborated && !a.Corroborated:
+		return admission.ErrLaneIneligible
+	}
+	return nil
+}
+
+// chargeTx spends cost units of lane's ceiling budget for an attempt and
+// records the charge, in the reservation's own transaction.
+func chargeTx(tx *bolt.Tx, now time.Time, action admission.ActionID, lane admission.Lane, cost uint32) error {
+	s, err := loadCeilingState(tx)
+	if err != nil {
+		return err
+	}
+	if s, err = s.Charge(lane, cost); err != nil {
+		return err
+	}
+	c := admission.Charge{At: now, Action: action, Lane: lane, Cost: cost, Elapsed: s.Elapsed}
+	key, err := c.Key()
+	if err != nil {
+		return err
+	}
+	data, err := c.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	if err = tx.Bucket([]byte(admissionChargesBucket)).Put(key, data); err != nil {
+		return err
+	}
+	return putCeilingState(tx, s)
 }

@@ -14,6 +14,10 @@ var ledgerT0 = time.Date(2024, 1, 2, 12, 0, 0, 0, time.UTC)
 
 const ledgerBoot = "0f5e3c2a-1b4d-4e6f-8a9b-0c1d2e3f4a5b"
 
+// fixtureCeiling is the fixture's hourly ceiling: its first limit fills 266
+// general and 66 reserved units, more than any single test spends.
+const fixtureCeiling = 2000
+
 func ledgerLookup(check string) (string, admission.Policy, bool) {
 	switch check {
 	case "ssh_brute":
@@ -70,6 +74,9 @@ func newLedgerFixture(t testing.TB) *ledgerFixture {
 	f := &ledgerFixture{t: t, db: db, since: time.Hour}
 	f.reg, f.ssh, f.rep, f.mail = newLedgerRegistry(t)
 	if f.l, err = OpenAdmissionLedger(db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.l.SetCeiling(fixtureCeiling); err != nil {
 		t.Fatal(err)
 	}
 	f.tickAt(ledgerT0)

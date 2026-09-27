@@ -149,12 +149,14 @@ func (l *AdmissionLedger) Terminate(id admission.CandidateID, reason admission.R
 	})
 }
 
-// Reserve admits the next attempt of a queued candidate and reports true.
-// The first reservation fixes the absolute expiry, which must be in the
-// future; retries keep it and refuse once it has passed. A candidate that is
-// already reserved or executing returns its current attempt and false, so
-// recovery reuses the attempt ID without being granted anything.
-func (l *AdmissionLedger) Reserve(id admission.CandidateID, expiresAt time.Time) (admission.Candidate, admission.AttemptRecord, bool, error) {
+// Reserve admits the next attempt of a queued candidate on lane and reports
+// true. The first reservation fixes the absolute expiry, which must be in
+// the future; retries keep it and refuse once it has passed. Every attempt
+// is charged to its lane, retries included, and the charge commits with the
+// attempt. A candidate that is already reserved or executing returns its
+// current attempt and false, so recovery reuses the attempt ID without being
+// granted or charged anything.
+func (l *AdmissionLedger) Reserve(id admission.CandidateID, lane admission.Lane, expiresAt time.Time) (admission.Candidate, admission.AttemptRecord, bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now, err := l.clock()
@@ -166,7 +168,7 @@ func (l *AdmissionLedger) Reserve(id admission.CandidateID, expiresAt time.Time)
 	var granted bool
 	if err := l.update("reserve", func(tx *bolt.Tx) error {
 		var txErr error
-		c, a, granted, txErr = reserveTx(tx, id, expiresAt, now)
+		c, a, granted, txErr = l.reserveTx(tx, id, lane, expiresAt, now)
 		return txErr
 	}); err != nil {
 		return admission.Candidate{}, admission.AttemptRecord{}, false, err
@@ -174,7 +176,7 @@ func (l *AdmissionLedger) Reserve(id admission.CandidateID, expiresAt time.Time)
 	return c, a, granted, nil
 }
 
-func reserveTx(tx *bolt.Tx, id admission.CandidateID, expiresAt, now time.Time) (admission.Candidate, admission.AttemptRecord, bool, error) {
+func (l *AdmissionLedger) reserveTx(tx *bolt.Tx, id admission.CandidateID, lane admission.Lane, expiresAt, now time.Time) (admission.Candidate, admission.AttemptRecord, bool, error) {
 	c, err := loadCandidate(tx, id)
 	if err != nil {
 		return c, admission.AttemptRecord{}, false, err
@@ -188,7 +190,7 @@ func reserveTx(tx *bolt.Tx, id admission.CandidateID, expiresAt, now time.Time) 
 	}
 	switch {
 	case c.State == admission.StateReserved || c.State == admission.StateExecuting:
-		if !expiresAt.IsZero() && !expiresAt.Equal(c.ExpiresAt) {
+		if (!expiresAt.IsZero() && !expiresAt.Equal(c.ExpiresAt)) || (lane != 0 && current.Lane != 0 && lane != current.Lane) {
 			return c, admission.AttemptRecord{}, false, admission.ErrTransitionConflict
 		}
 		return c, current, false, nil
@@ -216,7 +218,11 @@ func reserveTx(tx *bolt.Tx, id admission.CandidateID, expiresAt, now time.Time) 
 	}
 	// A queued candidate holds a queue position; one without an entry is
 	// invisible to capacity and fairness.
-	if _, err = loadQueueEntry(tx, id); err != nil {
+	entry, err := loadQueueEntry(tx, id)
+	if err != nil {
+		return c, admission.AttemptRecord{}, false, err
+	}
+	if err = l.laneFits(tx, liveCandidate{id: id, c: c, entry: entry}, lane, now); err != nil {
 		return c, admission.AttemptRecord{}, false, err
 	}
 	next, err := admission.NewAttempt(id, c.Attempts+1)
@@ -229,7 +235,12 @@ func reserveTx(tx *bolt.Tx, id admission.CandidateID, expiresAt, now time.Time) 
 	if !admission.CanTransition(c.State, admission.StateReserved) {
 		return c, admission.AttemptRecord{}, false, admission.ErrTransitionConflict
 	}
-	a := admission.AttemptRecord{Attempt: next, State: admission.StateReserved, ExpiresAt: c.ExpiresAt, Reserved: now}
+	if cost := c.Key.Kind.CeilingCost(); cost > 0 {
+		if err = chargeTx(tx, now, next.ID, lane, cost); err != nil {
+			return c, admission.AttemptRecord{}, false, err
+		}
+	}
+	a := admission.AttemptRecord{Attempt: next, State: admission.StateReserved, ExpiresAt: c.ExpiresAt, Reserved: now, Lane: lane}
 	c.State, c.Attempts, c.Reason, c.NotBefore = admission.StateReserved, next.Seq, 0, time.Time{}
 	c.Transitions++
 	if err := putAttempt(tx, a); err != nil {

@@ -14,10 +14,25 @@ import (
 )
 
 // schemaTwo rewrites the fixture's database into the schema 2 layout: the
-// same records without the ceiling.
+// same records without the ceiling, and attempts without a charged lane.
 func (f *ledgerFixture) schemaTwo() {
 	f.t.Helper()
 	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		attempts := tx.Bucket([]byte(admissionAttemptsBucket))
+		var legacy []admission.AttemptRecord
+		if err := attempts.ForEach(func(_, v []byte) error {
+			a, err := admission.UnmarshalAttempt(v)
+			a.Lane = 0
+			legacy = append(legacy, a)
+			return err
+		}); err != nil {
+			return err
+		}
+		for _, a := range legacy {
+			if err := putAttempt(tx, a); err != nil {
+				return err
+			}
+		}
 		if err := tx.DeleteBucket([]byte(admissionChargesBucket)); err != nil {
 			return err
 		}
@@ -140,7 +155,7 @@ func TestAdmissionLedgerUpgradesSchemaTwo(t *testing.T) {
 	f.queued()
 	f.nextGeneration()
 	reserved := f.queued()
-	if _, _, _, err := f.l.Reserve(reserved, ledgerT0.Add(time.Hour)); err != nil {
+	if _, _, _, err := f.l.Reserve(reserved, admission.LaneGeneral, ledgerT0.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	f.schemaTwo()
@@ -208,7 +223,7 @@ func TestAdmissionLedgerUpgradesSchemaOne(t *testing.T) {
 	queued := f.queued()
 	f.nextGeneration()
 	reserved := f.queued()
-	if _, _, _, err := f.l.Reserve(reserved, ledgerT0.Add(time.Hour)); err != nil {
+	if _, _, _, err := f.l.Reserve(reserved, admission.LaneGeneral, ledgerT0.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	f.nextGeneration()
@@ -290,7 +305,7 @@ func TestAdmissionLedgerUpgradeRefusesDamagedAttempts(t *testing.T) {
 			f.queued()
 			f.nextGeneration()
 			reserved := f.queued()
-			if _, _, _, err := f.l.Reserve(reserved, ledgerT0.Add(time.Hour)); err != nil {
+			if _, _, _, err := f.l.Reserve(reserved, admission.LaneGeneral, ledgerT0.Add(time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 			f.schemaOne()

@@ -50,7 +50,7 @@ func TestAdmissionLedgerTerminate(t *testing.T) {
 		}
 		_, err = f.l.Terminate(id, admission.ReasonStale)
 		wantLedgerErr(t, reason.String()+": different ending", err, admission.ErrCandidateTerminal)
-		_, _, _, err = f.l.Reserve(id, ledgerT0.Add(time.Hour))
+		_, _, _, err = f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 		wantLedgerErr(t, reason.String()+": reserve after end", err, admission.ErrCandidateTerminal)
 		root := f.published(evidenceSpec{cursor: fmt.Sprintf("offset=%d", f.generation+1)})
 		_, _, err = f.l.Enqueue(f.request("192.0.2.10", root))
@@ -68,21 +68,21 @@ func TestAdmissionLedgerReserveAndRecover(t *testing.T) {
 	id := f.queued()
 	expires := ledgerT0.Add(24 * time.Hour)
 	for name, at := range map[string]time.Time{"no expiry": {}, "expiry now": ledgerT0} {
-		_, _, _, err := f.l.Reserve(id, at)
+		_, _, _, err := f.l.Reserve(id, admission.LaneGeneral, at)
 		wantLedgerReason(t, name, err, admission.ReasonInvalid)
 	}
-	c, a, _, err := f.l.Reserve(id, expires)
+	c, a, _, err := f.l.Reserve(id, admission.LaneGeneral, expires)
 	if err != nil || c.State != admission.StateReserved || c.Attempts != 1 || !c.ExpiresAt.Equal(expires) {
 		t.Fatalf("reserve: %+v, %v", c, err)
 	}
 	if a.Attempt.Seq != 1 || a.Attempt.Prev != "" || a.State != admission.StateReserved || !a.Reserved.Equal(ledgerT0) {
 		t.Fatalf("attempt: %+v", a)
 	}
-	again, same, _, err := f.l.Reserve(id, time.Time{})
+	again, same, _, err := f.l.Reserve(id, admission.LaneGeneral, time.Time{})
 	if err != nil || same != a || again.Transitions != c.Transitions {
 		t.Fatalf("recovery: %+v %+v, %v", again, same, err)
 	}
-	_, _, _, err = f.l.Reserve(id, expires.Add(time.Hour))
+	_, _, _, err = f.l.Reserve(id, admission.LaneGeneral, expires.Add(time.Hour))
 	wantLedgerErr(t, "changed expiry", err, admission.ErrTransitionConflict)
 	if _, running, _, err := f.l.Execute(a.Attempt.ID); err != nil || running.State != admission.StateExecuting {
 		t.Fatalf("execute: %+v, %v", running, err)
@@ -90,7 +90,7 @@ func TestAdmissionLedgerReserveAndRecover(t *testing.T) {
 	if _, running, _, err := f.l.Execute(a.Attempt.ID); err != nil || running.State != admission.StateExecuting {
 		t.Fatalf("repeat execute: %+v, %v", running, err)
 	}
-	if _, same, _, err := f.l.Reserve(id, expires); err != nil || same.Attempt != a.Attempt {
+	if _, same, _, err := f.l.Reserve(id, admission.LaneGeneral, expires); err != nil || same.Attempt != a.Attempt {
 		t.Fatalf("recovery while executing: %+v, %v", same, err)
 	}
 }
@@ -108,7 +108,7 @@ func TestAdmissionLedgerRetriesProvenFailures(t *testing.T) {
 		if seq == 1 {
 			want = expires
 		}
-		_, a, _, err := f.l.Reserve(id, want)
+		_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, want)
 		if err != nil || a.Attempt.Seq != seq || a.Attempt.Prev != prev || !a.ExpiresAt.Equal(expires) {
 			t.Fatalf("attempt %d: %+v, %v", seq, a, err)
 		}
@@ -135,15 +135,15 @@ func TestAdmissionLedgerRetriesProvenFailures(t *testing.T) {
 			}
 		}
 		if seq < admission.MaxAttempts {
-			_, _, _, err = f.l.Reserve(id, time.Time{})
+			_, _, _, err = f.l.Reserve(id, admission.LaneGeneral, time.Time{})
 			wantLedgerErr(t, "reserve before backoff", err, admission.ErrNotReady)
 			f.tickAt(f.wall.Add(admission.RetryBackoff(seq)))
-			_, _, _, err = f.l.Reserve(id, expires.Add(time.Hour))
+			_, _, _, err = f.l.Reserve(id, admission.LaneGeneral, expires.Add(time.Hour))
 			wantLedgerErr(t, "retry with a new expiry", err, admission.ErrTransitionConflict)
 		}
 		prev = a.Attempt.ID
 	}
-	_, _, _, err := f.l.Reserve(id, time.Time{})
+	_, _, _, err := f.l.Reserve(id, admission.LaneGeneral, time.Time{})
 	wantLedgerErr(t, "reserve after exhaustion", err, admission.ErrCandidateTerminal)
 }
 
@@ -153,7 +153,7 @@ func TestAdmissionLedgerRetriesProvenFailures(t *testing.T) {
 func TestAdmissionLedgerOutcomes(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
-	_, a, _, _ := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	_, a, _, _ := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	for _, d := range []admission.Disposition{admission.DispositionApplied, admission.DispositionUnknown} {
 		_, _, err := f.l.Finish(a.Attempt.ID, d)
 		wantLedgerErr(t, d.String()+" before execution", err, admission.ErrTransitionConflict)
@@ -172,12 +172,12 @@ func TestAdmissionLedgerOutcomes(t *testing.T) {
 	}
 	_, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionApplied)
 	wantLedgerErr(t, "applied after unknown", err, admission.ErrTransitionConflict)
-	_, _, _, err = f.l.Reserve(id, time.Time{})
+	_, _, _, err = f.l.Reserve(id, admission.LaneGeneral, time.Time{})
 	wantLedgerErr(t, "retry after unknown", err, admission.ErrCandidateTerminal)
 
 	f.nextGeneration()
 	id2 := f.queued()
-	_, a2, _, _ := f.l.Reserve(id2, ledgerT0.Add(time.Hour))
+	_, a2, _, _ := f.l.Reserve(id2, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	_, _, _, _ = f.l.Execute(a2.Attempt.ID)
 	if c, _, err := f.l.Finish(a2.Attempt.ID, admission.DispositionApplied); err != nil || c.State != admission.StateVerified || c.Disposition != admission.DispositionApplied {
 		t.Fatalf("applied: %+v, %v", c, err)
@@ -190,19 +190,19 @@ func TestAdmissionLedgerRefusesStaleWork(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
 	f.tickAt(ledgerT0.Add(admission.QueueAgeLimit))
-	_, _, _, err := f.l.Reserve(id, ledgerT0.Add(24*time.Hour))
+	_, _, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(24*time.Hour))
 	wantLedgerReason(t, "aged out", err, admission.ReasonStale)
 
 	f.nextGeneration()
 	f.tickAt(f.wall.Add(time.Minute))
 	id2 := f.queued()
-	_, a, _, _ := f.l.Reserve(id2, f.wall.Add(10*time.Second))
+	_, a, _, _ := f.l.Reserve(id2, admission.LaneGeneral, f.wall.Add(10*time.Second))
 	f.tickAt(f.wall.Add(10 * time.Second))
 	_, _, _, err = f.l.Execute(a.Attempt.ID)
 	wantLedgerReason(t, "execute past expiry", err, admission.ReasonStale)
 	_, _, _ = f.l.Finish(a.Attempt.ID, admission.DispositionFailed)
 	f.tickAt(f.wall.Add(time.Minute))
-	_, _, _, err = f.l.Reserve(id2, time.Time{})
+	_, _, _, err = f.l.Reserve(id2, admission.LaneGeneral, time.Time{})
 	wantLedgerReason(t, "retry past expiry", err, admission.ReasonStale)
 }
 
@@ -212,7 +212,7 @@ func TestAdmissionLedgerTransitionsAreAtomic(t *testing.T) {
 	id := f.queued()
 	before, _ := f.l.Candidate(id)
 	f.failNext("reserve")
-	if _, _, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour)); err == nil {
+	if _, _, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour)); err == nil {
 		t.Fatal("injected failure did not fail the reservation")
 	}
 	after, _ := f.l.Candidate(id)
@@ -223,7 +223,7 @@ func TestAdmissionLedgerTransitionsAreAtomic(t *testing.T) {
 	if _, err := f.l.Attempt(first.ID); err == nil {
 		t.Fatal("failed reservation stored an attempt")
 	}
-	_, a, _, _ := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	_, a, _, _ := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	_, _, _, _ = f.l.Execute(a.Attempt.ID)
 	f.failNext("finish")
 	if _, _, err := f.l.Finish(a.Attempt.ID, admission.DispositionApplied); err == nil {
@@ -241,10 +241,10 @@ func TestAdmissionLedgerTransitionsAreAtomic(t *testing.T) {
 func TestAdmissionLedgerRefusesAStaleAttempt(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
-	_, first, _, _ := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	_, first, _, _ := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	_, _, _ = f.l.Finish(first.Attempt.ID, admission.DispositionFailed)
 	f.tickAt(f.wall.Add(admission.RetryBackoff(1)))
-	if _, _, _, err := f.l.Reserve(id, time.Time{}); err != nil {
+	if _, _, _, err := f.l.Reserve(id, admission.LaneGeneral, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	_, _, _, err := f.l.Execute(first.Attempt.ID)
@@ -281,7 +281,7 @@ func TestAdmissionLedgerRefusesWorkBeforeItsFirstReading(t *testing.T) {
 		Primary: "ev_00000000000000000000000000000001"}
 	_, _, err = l.Enqueue(req)
 	wantLedgerReason(t, "enqueue", err, admission.ReasonEngineUnavailable)
-	_, _, _, err = l.Reserve("cand_00000000000000000000000000000001", ledgerT0)
+	_, _, _, err = l.Reserve("cand_00000000000000000000000000000001", admission.LaneGeneral, ledgerT0)
 	wantLedgerReason(t, "reserve", err, admission.ReasonEngineUnavailable)
 }
 
@@ -292,7 +292,7 @@ func TestAdmissionLedgerConcurrentReads(t *testing.T) {
 	_, id := f.enqueue(f.request("192.0.2.10", root))
 	secondRoot := f.published(evidenceSpec{target: "192.0.2.11", cursor: "offset=second"})
 	_, secondID := f.enqueue(f.request("192.0.2.11", secondRoot))
-	_, a, _, err := f.l.Reserve(secondID, ledgerT0.Add(time.Hour))
+	_, a, _, err := f.l.Reserve(secondID, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestAdmissionLedgerAttemptEvidenceIsFrozen(t *testing.T) {
 	primary := f.published(evidenceSpec{})
 	req := f.request("192.0.2.10", primary)
 	_, id := f.enqueue(req)
-	_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func TestAdmissionLedgerValidatesAttemptHistory(t *testing.T) {
 		t.Run(damage, func(t *testing.T) {
 			f := newLedgerFixture(t)
 			id := f.queued()
-			_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+			_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -426,7 +426,7 @@ func TestAdmissionLedgerValidatesAttemptHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := f.snapshot()
-			if _, _, _, err = f.l.Reserve(id, time.Time{}); !isCorrupt(err) {
+			if _, _, _, err = f.l.Reserve(id, admission.LaneGeneral, time.Time{}); !isCorrupt(err) {
 				t.Fatalf("reserve accepted history: %v", err)
 			}
 			if !reflect.DeepEqual(before, f.snapshot()) {
@@ -439,7 +439,7 @@ func TestAdmissionLedgerValidatesAttemptHistory(t *testing.T) {
 func TestAdmissionLedgerPastOutcomeIsIdempotent(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
-	_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestAdmissionLedgerPastOutcomeIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.tickAt(ledgerT0.Add(time.Second))
-	if _, _, _, err = f.l.Reserve(id, time.Time{}); err != nil {
+	if _, _, _, err = f.l.Reserve(id, admission.LaneGeneral, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	before := f.snapshot()
@@ -469,7 +469,7 @@ func TestAdmissionLedgerRemainingTransitionsAreAtomic(t *testing.T) {
 		id := f.queued()
 		var action admission.ActionID
 		if op == "execute" {
-			_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+			_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -498,7 +498,7 @@ func TestAdmissionLedgerRemainingTransitionsAreAtomic(t *testing.T) {
 func TestAdmissionLedgerRecoverySurvivesDatabaseReopen(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
-	_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +518,7 @@ func TestAdmissionLedgerRecoverySurvivesDatabaseReopen(t *testing.T) {
 	if _, err = l.Tick(admission.ClockReading{Wall: f.wall, BootID: ledgerBoot, SinceBoot: f.since}); err != nil {
 		t.Fatal(err)
 	}
-	_, same, _, err := l.Reserve(id, time.Time{})
+	_, same, _, err := l.Reserve(id, admission.LaneGeneral, time.Time{})
 	if err != nil || same != a {
 		t.Fatalf("recovered reservation: %+v %v", same, err)
 	}
@@ -528,7 +528,7 @@ func TestAdmissionLedgerRecoverySurvivesDatabaseReopen(t *testing.T) {
 	if _, _, err := l.Finish(a.Attempt.ID, admission.DispositionUnknown); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := l.Reserve(id, time.Time{}); err != admission.ErrCandidateTerminal {
+	if _, _, _, err := l.Reserve(id, admission.LaneGeneral, time.Time{}); err != admission.ErrCandidateTerminal {
 		t.Fatalf("unknown retried: %v", err)
 	}
 }
@@ -536,7 +536,7 @@ func TestAdmissionLedgerRecoverySurvivesDatabaseReopen(t *testing.T) {
 func TestAdmissionLedgerRefusesFutureAttempt(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
-	_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +562,7 @@ func TestAdmissionLedgerBoundaryReservations(t *testing.T) {
 			f := newLedgerFixture(t)
 			id := f.queued()
 			f.tickAt(ledgerT0.Add(admission.QueueAgeLimit + offset))
-			_, _, _, err := f.l.Reserve(id, f.wall.Add(time.Hour))
+			_, _, _, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
 			if offset < 0 {
 				if err != nil {
 					t.Fatal(err)
@@ -574,7 +574,7 @@ func TestAdmissionLedgerBoundaryReservations(t *testing.T) {
 	}
 	f := newLedgerFixture(t)
 	id := f.queued()
-	_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,10 +582,10 @@ func TestAdmissionLedgerBoundaryReservations(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.tickAt(ledgerT0.Add(time.Second - time.Nanosecond))
-	_, _, _, err = f.l.Reserve(id, time.Time{})
+	_, _, _, err = f.l.Reserve(id, admission.LaneGeneral, time.Time{})
 	wantLedgerErr(t, "before retry", err, admission.ErrNotReady)
 	f.tickAt(ledgerT0.Add(time.Second))
-	if _, _, _, err = f.l.Reserve(id, time.Time{}); err != nil {
+	if _, _, _, err = f.l.Reserve(id, admission.LaneGeneral, time.Time{}); err != nil {
 		t.Fatalf("at retry: %v", err)
 	}
 }
@@ -597,7 +597,7 @@ func TestAdmissionLedgerNarrowedOutcomeAndRetryRestart(t *testing.T) {
 	req.Kind = admission.KindChallenge
 	_, id := f.enqueue(req)
 	expires := ledgerT0.Add(time.Hour)
-	_, first, _, err := f.l.Reserve(id, expires)
+	_, first, _, err := f.l.Reserve(id, admission.LaneGeneral, expires)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,10 +610,10 @@ func TestAdmissionLedgerNarrowedOutcomeAndRetryRestart(t *testing.T) {
 	}
 	f.l = l
 	f.tickAt(f.wall)
-	_, _, _, err = l.Reserve(id, time.Time{})
+	_, _, _, err = l.Reserve(id, admission.LaneGeneral, time.Time{})
 	wantLedgerErr(t, "reopened backoff", err, admission.ErrNotReady)
 	f.tickAt(ledgerT0.Add(time.Second))
-	_, second, _, err := l.Reserve(id, time.Time{})
+	_, second, _, err := l.Reserve(id, admission.LaneGeneral, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +629,7 @@ func TestAdmissionLedgerNarrowedOutcomeAndRetryRestart(t *testing.T) {
 	}
 	f.l = l
 	f.tickAt(f.wall)
-	_, running, _, err := l.Reserve(id, time.Time{})
+	_, running, _, err := l.Reserve(id, admission.LaneGeneral, time.Time{})
 	if err != nil || running.State != admission.StateExecuting || running.Attempt != second.Attempt {
 		t.Fatalf("executing recovery: %+v %v", running, err)
 	}
@@ -651,7 +651,7 @@ func TestAdmissionLedgerQueuedMutationsRejectBrokenHistory(t *testing.T) {
 		t.Run(op, func(t *testing.T) {
 			f := newLedgerFixture(t)
 			id := f.queued()
-			_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+			_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -696,7 +696,7 @@ func TestAdmissionLedgerRejectsReservationsPastQueueDeadline(t *testing.T) {
 					for n := uint32(1); n <= seq; n++ {
 						f.tickAt(f.wall.Add(time.Minute))
 						var err error
-						c, a, _, err = f.l.Reserve(id, ledgerT0.Add(24*time.Hour))
+						c, a, _, err = f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(24*time.Hour))
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -715,7 +715,7 @@ func TestAdmissionLedgerRejectsReservationsPastQueueDeadline(t *testing.T) {
 					var err error
 					switch op {
 					case "reserve":
-						_, _, _, err = f.l.Reserve(id, time.Time{})
+						_, _, _, err = f.l.Reserve(id, admission.LaneGeneral, time.Time{})
 					case "execute":
 						_, _, _, err = f.l.Execute(a.Attempt.ID)
 					case "finish":
@@ -745,7 +745,7 @@ func TestAdmissionLedgerRejectsReservationsPastQueueDeadline(t *testing.T) {
 func TestAdmissionLedgerAdmitsOnlyAfterACurrentReading(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
-	_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -755,7 +755,7 @@ func TestAdmissionLedgerAdmitsOnlyAfterACurrentReading(t *testing.T) {
 		before := f.snapshot()
 		_, _, gateErr := f.l.Enqueue(f.request("192.0.2.11", other))
 		wantLedgerReason(t, when+": enqueue", gateErr, admission.ReasonEngineUnavailable)
-		_, _, _, gateErr = f.l.Reserve(id, time.Time{})
+		_, _, _, gateErr = f.l.Reserve(id, admission.LaneGeneral, time.Time{})
 		wantLedgerReason(t, when+": reserve", gateErr, admission.ReasonEngineUnavailable)
 		_, _, _, gateErr = f.l.Execute(a.Attempt.ID)
 		wantLedgerReason(t, when+": execute", gateErr, admission.ReasonEngineUnavailable)
@@ -791,11 +791,11 @@ func TestAdmissionLedgerAdmitsOnlyAfterACurrentReading(t *testing.T) {
 func TestAdmissionLedgerReadbackGrantsNothing(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
-	_, a, granted, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	_, a, granted, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	if err != nil || !granted {
 		t.Fatalf("first reservation: granted %v, %v", granted, err)
 	}
-	if _, again, readGranted, readErr := f.l.Reserve(id, time.Time{}); readErr != nil || readGranted || again != a {
+	if _, again, readGranted, readErr := f.l.Reserve(id, admission.LaneGeneral, time.Time{}); readErr != nil || readGranted || again != a {
 		t.Fatalf("reserved readback: %+v granted %v, %v", again, readGranted, readErr)
 	}
 	_, running, started, err := f.l.Execute(a.Attempt.ID)
@@ -805,14 +805,14 @@ func TestAdmissionLedgerReadbackGrantsNothing(t *testing.T) {
 	if _, again, readStarted, readErr := f.l.Execute(a.Attempt.ID); readErr != nil || readStarted || again != running {
 		t.Fatalf("running readback: %+v started %v, %v", again, readStarted, readErr)
 	}
-	if _, again, readGranted, readErr := f.l.Reserve(id, time.Time{}); readErr != nil || readGranted || again != running {
+	if _, again, readGranted, readErr := f.l.Reserve(id, admission.LaneGeneral, time.Time{}); readErr != nil || readGranted || again != running {
 		t.Fatalf("running reservation readback: %+v granted %v, %v", again, readGranted, readErr)
 	}
 	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
 		t.Fatal(err)
 	}
 	f.tickAt(f.wall.Add(admission.RetryBackoff(1)))
-	if _, retry, retryGranted, retryErr := f.l.Reserve(id, time.Time{}); retryErr != nil || !retryGranted || retry.Attempt.Seq != 2 {
+	if _, retry, retryGranted, retryErr := f.l.Reserve(id, admission.LaneGeneral, time.Time{}); retryErr != nil || !retryGranted || retry.Attempt.Seq != 2 {
 		t.Fatalf("retry after a proven failure: %+v granted %v, %v", retry, retryGranted, retryErr)
 	}
 }

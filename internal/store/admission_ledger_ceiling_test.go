@@ -483,3 +483,257 @@ func TestAdmissionLedgerTickReleasesInKeyOrder(t *testing.T) {
 		t.Fatalf("charges not released after both clocks passed: %+v", s)
 	}
 }
+
+// charges is every stored charge, oldest first.
+func (f *ledgerFixture) charges() []admission.Charge {
+	f.t.Helper()
+	var out []admission.Charge
+	if err := f.db.bolt.View(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(admissionChargesBucket)).ForEach(func(k, v []byte) error {
+			c, err := admission.UnmarshalCharge(k, v)
+			out = append(out, c)
+			return err
+		})
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+	return out
+}
+
+// Each granted reservation charges its lane once, in its own transaction:
+// a readback charges nothing, a retry is charged again, and a failed
+// attempt's charge is never refunded.
+func TestAdmissionLedgerReserveChargesThePickedLane(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.queued()
+	f.tickAt(f.wall.Add(time.Minute))
+	before := f.ceilingState()
+	expires := f.wall.Add(time.Hour)
+	_, a, granted, err := f.l.Reserve(id, admission.LaneGeneral, expires)
+	if err != nil || !granted || a.Lane != admission.LaneGeneral {
+		t.Fatalf("reserve: %+v %v %v", a, granted, err)
+	}
+	s := f.ceilingState()
+	if s.General.Used != 1 || s.General.Units() != before.General.Units()-1 || s.Reserved != before.Reserved {
+		t.Fatalf("charged ceiling = %+v", s)
+	}
+	want := admission.Charge{At: f.wall, Action: a.Attempt.ID, Lane: admission.LaneGeneral, Cost: 1, Elapsed: time.Minute}
+	if got := f.charges(); len(got) != 1 || got[0] != want {
+		t.Fatalf("charges = %+v, want %+v", got, want)
+	}
+	snap := f.snapshot()
+	for _, lane := range []admission.Lane{0, admission.LaneGeneral} {
+		_, same, again, readErr := f.l.Reserve(id, lane, time.Time{})
+		if readErr != nil || again || same.Attempt != a.Attempt {
+			t.Fatalf("readback on lane %s: %+v %v %v", lane, same, again, readErr)
+		}
+	}
+	_, _, _, err = f.l.Reserve(id, admission.LaneDirect, time.Time{})
+	wantLedgerErr(t, "readback on another lane", err, admission.ErrTransitionConflict)
+	if !reflect.DeepEqual(snap, f.snapshot()) {
+		t.Fatal("a readback changed the ledger")
+	}
+	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(f.wall.Add(admission.RetryBackoff(1)))
+	if _, retry, granted, err := f.l.Reserve(id, admission.LaneGeneral, time.Time{}); err != nil || !granted || retry.Attempt.Seq != 2 {
+		t.Fatalf("retry: %+v %v %v", retry, granted, err)
+	}
+	if s = f.ceilingState(); s.General.Used != 2 || len(f.charges()) != 2 {
+		t.Fatalf("a retry must be charged again and keep the failed charge: %+v", s)
+	}
+}
+
+// Challenge work has its own bound and never charges the block ceiling,
+// even before one is set.
+func TestAdmissionLedgerChallengeIsNeverCharged(t *testing.T) {
+	f := newLedgerFixture(t)
+	root := f.published(evidenceSpec{})
+	req := f.request("192.0.2.10", root)
+	req.Kind = admission.KindChallenge
+	_, challenge := f.enqueue(req)
+	f.nextGeneration()
+	block := f.queued()
+	f.schemaTwo()
+	l, err := OpenAdmissionLedger(f.db, f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.l = l
+	f.tickAt(f.wall)
+	before := f.snapshot()
+	_, _, _, err = f.l.Reserve(block, admission.LaneGeneral, f.wall.Add(time.Hour))
+	wantLedgerReason(t, "block before a ceiling", err, admission.ReasonEngineUnavailable)
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("a refused reservation changed the ledger")
+	}
+	_, _, _, err = f.l.Reserve(challenge, 0, f.wall.Add(time.Hour))
+	wantLedgerReason(t, "challenge without a lane", err, admission.ReasonInvalid)
+	_, a, granted, err := f.l.Reserve(challenge, admission.LaneGeneral, f.wall.Add(time.Hour))
+	if err != nil || !granted || a.Lane != admission.LaneGeneral {
+		t.Fatalf("challenge: %+v %v %v", a, granted, err)
+	}
+	if s := f.ceilingState(); s != (admission.CeilingState{}) || len(f.charges()) != 0 {
+		t.Fatalf("a challenge was charged: %+v", s)
+	}
+}
+
+// The general lane spends only its own credit: once it is spent, a refused
+// reservation changes nothing, direct compromise work still reserves on
+// the reserved lane, and elapsed time earns the general lane a new unit.
+func TestAdmissionLedgerReserveRefusesBeyondTheCeiling(t *testing.T) {
+	f := newLedgerFixture(t)
+	if err := f.l.SetCeiling(10); err != nil {
+		t.Fatal(err)
+	}
+	first := f.queued()
+	if _, _, _, err := f.l.Reserve(first, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	f.nextGeneration()
+	second := f.queued()
+	before := f.snapshot()
+	_, _, _, err := f.l.Reserve(second, admission.LaneGeneral, f.wall.Add(time.Hour))
+	wantLedgerReason(t, "general lane spent", err, admission.ReasonCeiling)
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("a refused reservation changed the ledger")
+	}
+	direct := f.published(evidenceSpec{producer: f.mail, check: "mail_takeover", target: "192.0.2.11", cursor: "direct", severity: admission.SeverityCritical})
+	_, directID := f.enqueue(f.request("192.0.2.11", direct))
+	_, a, _, err := f.l.Reserve(directID, admission.LaneDirect, f.wall.Add(time.Hour))
+	if err != nil || a.Lane != admission.LaneDirect {
+		t.Fatalf("direct compromise on the reserved lane: %+v %v", a, err)
+	}
+	if s := f.ceilingState(); s.General.Used != 1 || s.Reserved.Used != 1 {
+		t.Fatalf("lanes = %+v", s)
+	}
+	// A ceiling of 10 gives the general lane 8 units an hour: one every
+	// 450 seconds.
+	f.tickAt(f.wall.Add(450 * time.Second))
+	if _, _, _, err = f.l.Reserve(second, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
+		t.Fatalf("after a refill: %v", err)
+	}
+}
+
+// A reserved lane is rechecked at reservation, since the pick came from an
+// earlier transaction. A candidate whose compromise root went stale keeps
+// only corroboration: it can no longer use the direct turn but can use the
+// corroborated one, or its general turn.
+func TestAdmissionLedgerReserveRechecksTheReservedLane(t *testing.T) {
+	f := newLedgerFixture(t)
+	local := f.published(evidenceSpec{})
+	direct := f.published(evidenceSpec{producer: f.mail, check: "mail_takeover", cursor: "direct", severity: admission.SeverityCritical, age: admission.RootFreshness - time.Second})
+	_, id := f.enqueue(f.request("192.0.2.10", local, direct))
+	if e, err := f.entry(id); err != nil || !e.Direct {
+		t.Fatalf("entry = %+v, %v", e, err)
+	}
+	f.nextGeneration()
+	plain := f.queued()
+	_, _, _, err := f.l.Reserve(plain, admission.LaneCorroborated, f.wall.Add(time.Hour))
+	wantLedgerErr(t, "local work on a reserved lane", err, admission.ErrLaneIneligible)
+	f.tickAt(f.wall.Add(time.Second))
+	before := f.snapshot()
+	_, _, _, err = f.l.Reserve(id, admission.LaneDirect, f.wall.Add(time.Hour))
+	wantLedgerErr(t, "direct turn after the compromise root went stale", err, admission.ErrLaneIneligible)
+	_, _, _, err = f.l.Reserve(id, 0, f.wall.Add(time.Hour))
+	wantLedgerReason(t, "no lane", err, admission.ReasonInvalid)
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("a refused reservation changed the ledger")
+	}
+	_, a, _, err := f.l.Reserve(id, admission.LaneCorroborated, f.wall.Add(time.Hour))
+	if err != nil || a.Lane != admission.LaneCorroborated {
+		t.Fatalf("corroborated turn: %+v %v", a, err)
+	}
+	if s := f.ceilingState(); s.Reserved.Used != 1 || s.General.Used != 0 {
+		t.Fatalf("lanes = %+v", s)
+	}
+	if _, _, _, err = f.l.Reserve(plain, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The recheck applies current policy: a pick refused by a raised floor is
+// refused for its reason, not as merely ineligible, and stays queued for
+// the next revalidation to end.
+func TestAdmissionLedgerReserveRechecksPolicy(t *testing.T) {
+	f, raise := newFloorLedger(t)
+	id := f.queued()
+	raise(admission.SeverityCritical)
+	before := f.snapshot()
+	_, _, _, err := f.l.Reserve(id, admission.LaneDirect, f.wall.Add(time.Hour))
+	wantLedgerReason(t, "pick below the new floor", err, admission.ReasonPolicy)
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("a refused reservation changed the ledger")
+	}
+}
+
+func TestAdmissionLedgerReserveRollsBackItsCharge(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.queued()
+	before := f.snapshot()
+	ceiling := f.ceilingState()
+	f.failNext("reserve")
+	_, _, granted, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
+	if err == nil || granted {
+		t.Fatalf("aborted reservation granted work: %v %v", granted, err)
+	}
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("aborted reservation changed charge, credit or attempt state")
+	}
+	_, a, granted, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
+	if err != nil || !granted || a.Attempt.Seq != 1 {
+		t.Fatalf("retry after rollback: %+v %v %v", a, granted, err)
+	}
+	if got := f.charges(); len(got) != 1 || got[0].Action != a.Attempt.ID {
+		t.Fatalf("retry charges: %+v", got)
+	}
+	if got := f.ceilingState(); got.General.Used != ceiling.General.Used+1 || got.General.Units() != ceiling.General.Units()-1 || got.Reserved != ceiling.Reserved {
+		t.Fatalf("retry spent more than one charge: %+v", got)
+	}
+}
+
+func TestAdmissionLedgerReopenPreservesSpentCredit(t *testing.T) {
+	f := newLedgerFixture(t)
+	if err := f.l.SetCeiling(10); err != nil {
+		t.Fatal(err)
+	}
+	first := f.queued()
+	if _, _, _, err := f.l.Reserve(first, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	f.nextGeneration()
+	second := f.queued()
+	before := f.ceilingState()
+	f.db = f.copyDatabase()
+	var err error
+	if f.l, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.l.SetCeiling(10); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.ceilingState(); got != before {
+		t.Fatalf("reload on reopen changed credit: %+v", got)
+	}
+	_, _, granted, err := f.l.Reserve(second, admission.LaneGeneral, f.wall.Add(time.Hour))
+	wantLedgerReason(t, "reopen before tick", err, admission.ReasonEngineUnavailable)
+	if granted {
+		t.Fatal("reopen granted work before tick")
+	}
+	f.tickAt(f.wall)
+	_, _, granted, err = f.l.Reserve(second, admission.LaneGeneral, f.wall.Add(time.Hour))
+	wantLedgerReason(t, "saved credit exhausted", err, admission.ReasonCeiling)
+	if granted || f.ceilingState() != before {
+		t.Fatal("reopen manufactured credit")
+	}
+	f.tickAt(f.wall.Add(450 * time.Second))
+	if _, _, granted, err = f.l.Reserve(second, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil || !granted {
+		t.Fatalf("same-boot elapsed credit: %v %v", granted, err)
+	}
+	spent := f.ceilingState()
+	f.tickAt(f.wall)
+	if got := f.ceilingState(); got != spent {
+		t.Fatalf("same elapsed interval credited twice: %+v", got)
+	}
+}

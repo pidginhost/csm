@@ -135,7 +135,7 @@ func TestAdmissionLedgerQueueSnapshot(t *testing.T) {
 	f.nextGeneration()
 	flight := f.published(evidenceSpec{target: "192.0.2.11", cursor: "flight"})
 	_, flightID := f.enqueue(f.request("192.0.2.11", flight))
-	if _, _, _, err := f.l.Reserve(flightID, ledgerT0.Add(time.Hour)); err != nil {
+	if _, _, _, err := f.l.Reserve(flightID, admission.LaneGeneral, ledgerT0.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	snap, err := f.l.QueueSnapshot()

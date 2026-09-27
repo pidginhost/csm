@@ -43,7 +43,7 @@ func TestAdmissionLedgerScheduleRotatesScopes(t *testing.T) {
 	if c, _ := f.l.Candidate(first[0].ID); c.State != admission.StateQueued {
 		t.Fatalf("a pick left the queue: %+v", c)
 	}
-	if _, _, _, err := f.l.Reserve(first[0].ID, f.wall.Add(time.Hour)); err != nil {
+	if _, _, _, err := f.l.Reserve(first[0].ID, first[0].Lane, f.wall.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := OpenAdmissionLedger(f.db, f.reg)
@@ -170,7 +170,7 @@ func TestAdmissionLedgerScheduleRetryTimer(t *testing.T) {
 	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(ledgerT0.Add(admission.QueueAgeLimit)) {
 		t.Fatalf("queued wake = %v %v, %v", wake, ok, err)
 	}
-	_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestAdmissionLedgerScheduleIsAtomic(t *testing.T) {
 func TestAdmissionLedgerNextWakeTracksPendingChanges(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
-	_, a, _, err := f.l.Reserve(id, ledgerT0.Add(time.Hour))
+	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
