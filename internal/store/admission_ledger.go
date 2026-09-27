@@ -20,15 +20,17 @@ const (
 	admissionAttemptsBucket   = "adm:attempts"
 	admissionQueueBucket      = "adm:queue"
 	admissionQueueStateBucket = "adm:qstate"
-	admissionSchemaVersion    = 2
+	admissionChargesBucket    = "adm:charges"
+	admissionSchemaVersion    = 3
 )
 
 var (
 	// admissionSchemaOneBuckets are the buckets of the schema 1 layout.
-	// Schema 2 adds the queue buckets.
+	// Schema 2 adds the queue buckets and schema 3 the charges bucket.
 	admissionSchemaOneBuckets = []string{admissionMetaBucket, admissionEvidenceBucket, admissionReportsBucket, admissionCandidatesBucket, admissionAttemptsBucket}
 	admissionQueueBuckets     = []string{admissionQueueBucket, admissionQueueStateBucket}
-	admissionBuckets          = append(append([]string(nil), admissionSchemaOneBuckets...), admissionQueueBuckets...)
+	admissionSchemaTwoBuckets = append(append([]string(nil), admissionSchemaOneBuckets...), admissionQueueBuckets...)
+	admissionBuckets          = append(append([]string(nil), admissionSchemaTwoBuckets...), admissionChargesBucket)
 	admissionSchemaKey        = []byte("schema")
 	admissionClockKey         = []byte("clock")
 	admissionClockPendingKey  = []byte("clock_pending")
@@ -86,8 +88,9 @@ func refusal(r admission.Reason, detail string) error {
 }
 
 // OpenAdmissionLedger opens the ledger on db, creating its buckets on first
-// use and upgrading a schema 1 ledger in the same transaction. The registry
-// must be sealed: the set of producers cannot change under a running ledger.
+// use and upgrading a schema 1 or 2 ledger in the same transaction. The
+// registry must be sealed: the set of producers cannot change under a
+// running ledger.
 func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, error) {
 	if db == nil || reg == nil || !reg.Sealed() {
 		return nil, errors.New("admission ledger needs a database and a sealed producer registry")
@@ -116,6 +119,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 			if err := initializeQueueState(tx.Bucket([]byte(admissionQueueStateBucket))); err != nil {
 				return err
 			}
+			if err := putCeilingState(tx, admission.CeilingState{Fill: true}); err != nil {
+				return err
+			}
 		} else {
 			meta := tx.Bucket([]byte(admissionMetaBucket))
 			if meta == nil {
@@ -127,6 +133,16 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 					return admission.ErrCorruptRecord
 				}
 				if err := upgradeLedgerToSchemaTwo(tx); err != nil {
+					return err
+				}
+				if err := upgradeLedgerToSchemaThree(tx); err != nil {
+					return err
+				}
+			case len(schema) == 1 && schema[0] == 2:
+				if existing != len(admissionSchemaTwoBuckets) || present(admissionSchemaTwoBuckets) != existing {
+					return admission.ErrCorruptRecord
+				}
+				if err := upgradeLedgerToSchemaThree(tx); err != nil {
 					return err
 				}
 			case len(schema) == 1 && schema[0] == admissionSchemaVersion:
@@ -147,6 +163,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 			return err
 		}
 		if _, err := loadIngressState(tx); err != nil {
+			return err
+		}
+		if _, err := loadCeiling(tx); err != nil {
 			return err
 		}
 		meta := tx.Bucket([]byte(admissionMetaBucket))

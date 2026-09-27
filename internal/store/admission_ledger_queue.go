@@ -41,7 +41,8 @@ func initializeQueueState(b *bolt.Bucket) error {
 // inside the opening transaction. Every live candidate gets an unassessed
 // entry holding a general position; the first current reading assesses and
 // places it. A damaged candidate or attempt history refuses the upgrade,
-// and the transaction leaves the schema 1 ledger exactly as it was.
+// and the transaction leaves the schema 1 ledger exactly as it was. The
+// upgrade that completes the chain records the schema.
 func upgradeLedgerToSchemaTwo(tx *bolt.Tx) error {
 	for _, name := range admissionQueueBuckets {
 		if _, err := tx.CreateBucket([]byte(name)); err != nil {
@@ -92,10 +93,7 @@ func upgradeLedgerToSchemaTwo(tx *bolt.Tx) error {
 	}
 	// Unassessed queued work is due at the first current reading, even if
 	// an arrival reaches the ledger before an explicit recovery sweep.
-	if err := putQueueState(tx, admission.QueueState{NextSweep: nextSweep}); err != nil {
-		return err
-	}
-	return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaVersion})
+	return putQueueState(tx, admission.QueueState{NextSweep: nextSweep})
 }
 
 func loadQueueState(tx *bolt.Tx) (admission.QueueState, error) {
