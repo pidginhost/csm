@@ -112,7 +112,9 @@ func TestAdmissionLedgerScheduleRevalidatesPicks(t *testing.T) {
 }
 
 // The first schedule of a reopened ledger checks every queued candidate,
-// including those an upgrade could only mark.
+// including those an upgrade could only mark. An upgraded ledger's buckets
+// start empty: the reading that follows three elapsed seconds earns the
+// general lane its first unit.
 func TestAdmissionLedgerScheduleRecoversAfterReopen(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
@@ -123,9 +125,12 @@ func TestAdmissionLedgerScheduleRecoversAfterReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.db, f.l = db, l
+	if err = f.l.SetCeiling(fixtureCeiling); err != nil {
+		t.Fatal(err)
+	}
 	_, err = f.l.Schedule(oneEach)
 	wantLedgerReason(t, "schedule without a current reading", err, admission.ReasonEngineUnavailable)
-	f.tickAt(f.wall)
+	f.tickAt(f.wall.Add(3 * time.Second))
 	if picks := f.schedule(oneEach); !reflect.DeepEqual(pickIDs(picks), []admission.CandidateID{id}) {
 		t.Fatalf("recovered picks = %v", picks)
 	}
@@ -160,14 +165,15 @@ func TestAdmissionLedgerScheduleChecksEveryCandidateAfterReopen(t *testing.T) {
 }
 
 // A proven failure waits out its backoff before it can be picked again, and
-// NextWake names the moment it becomes ready.
+// NextWake names the moment it becomes ready. Ready work the ceiling can
+// serve is due at once.
 func TestAdmissionLedgerScheduleRetryTimer(t *testing.T) {
 	f := newLedgerFixture(t)
 	if _, ok, err := f.l.NextWake(); err != nil || ok {
 		t.Fatalf("empty ledger wake = %v, %v", ok, err)
 	}
 	id := f.queued()
-	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(ledgerT0.Add(admission.QueueAgeLimit)) {
+	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(ledgerT0) {
 		t.Fatalf("queued wake = %v %v, %v", wake, ok, err)
 	}
 	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
@@ -228,8 +234,8 @@ func TestAdmissionLedgerScheduleIsAtomic(t *testing.T) {
 	}
 }
 
-// Ready retries no longer have a retry wake; capacity readiness belongs
-// to the budget owner. Ended and in-flight work have no queue wake.
+// Ready retries no longer have a retry wake: with ceiling budget they are
+// due at once. Ended and in-flight work have no queue wake.
 func TestAdmissionLedgerNextWakeTracksPendingChanges(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
@@ -247,7 +253,7 @@ func TestAdmissionLedgerNextWakeTracksPendingChanges(t *testing.T) {
 	for _, at := range []time.Time{retry, retry.Add(time.Second)} {
 		f.tickAt(at)
 		f.schedule(admission.ScheduleLimits{Members: 1})
-		if wake, ok, wakeErr := f.l.NextWake(); wakeErr != nil || !ok || !wake.Equal(ledgerT0.Add(time.Hour)) {
+		if wake, ok, wakeErr := f.l.NextWake(); wakeErr != nil || !ok || !wake.Equal(at) {
 			t.Fatalf("ready retry wake = %v %v, %v", wake, ok, wakeErr)
 		}
 	}

@@ -277,6 +277,24 @@ submissions until the owner publishes a snapshot at least as new as that
 commit, from the same ingress generation. Shared queue damage retains the
 whole handoff; only arrivals carrying damage are discarded.
 
+Schema 3 of the ledger adds the emergency ceiling; the first open upgrades
+a schema 1 or 2 ledger in the same transaction, with empty buckets because
+its recent spend is unknown. The engine sets the hourly ceiling L; a fifth
+of it, rounded up, is reserved for direct compromise and corroborated work,
+and the general lane cannot spend it. Each lane refills a token bucket at
+its hourly rate from elapsed time within a boot, up to ten minutes of that
+rate with a one-unit floor for a nonzero lane, and the first limit of a new
+ledger fills both buckets once. A later limit only clips saved credit; the
+owner checkpoints elapsed time at the saved rate before changing it. Every
+reservation, retry included, is charged to the lane its schedule picked, in
+the reservation's transaction, after a reserved lane is rechecked against
+the candidate's current assessment. A charge counts until a full hour of
+admission time and of elapsed time have both passed, so neither downtime
+nor a forward clock step releases it early. Schedules serve no more than
+each lane can charge, and the ledger's next wake includes when waiting work
+gains budget. Challenge work is never charged, but still waits in the
+shared scheduler until its separate bound is implemented.
+
 ### Attack event storage
 
 Attack events live in `attacks:events`; `attacks:events:ip` stores empty values

@@ -353,3 +353,67 @@ func TestCeilingStateElapsedOverflow(t *testing.T) {
 		}
 	}
 }
+
+func TestCeilingUntilBudget(t *testing.T) {
+	now := t0.Add(2 * time.Hour)
+	// An upgraded ledger at 2000 waits for credit: 9s on the reserved lane,
+	// 2.25s on the general one.
+	empty := ceilingAt(t, 2000, false)
+	for lane, want := range map[Lane]time.Duration{LaneGeneral: 2250 * time.Millisecond, LaneDirect: 9 * time.Second} {
+		if d, ok := empty.UntilBudget(lane, nil, now); !ok || d != want {
+			t.Errorf("%s: %v %v, want %v", lane, d, ok, want)
+		}
+	}
+	// With credit saved the lane can charge now.
+	full := ceilingAt(t, 10, true)
+	if d, ok := full.UntilBudget(LaneCorroborated, nil, now); !ok || d != 0 {
+		t.Fatalf("saved credit: %v %v", d, ok)
+	}
+	// A full general allowance waits for its oldest charge to leave the
+	// window, on both clocks.
+	var charges []Charge
+	s := full
+	for i := uint32(0); i < 8; i++ {
+		var err error
+		if s, err = advanceCeiling(t, s, time.Hour).Charge(LaneGeneral, 1); err != nil {
+			t.Fatal(err)
+		}
+		c := testCharge(t, now.Add(-time.Duration(8-i)*time.Minute), i+1, LaneGeneral)
+		c.Elapsed = s.Elapsed - 30*time.Minute
+		charges = append(charges, c)
+	}
+	s = advanceCeiling(t, s, time.Hour)
+	if d, ok := s.UntilBudget(LaneGeneral, charges, now); !ok || d != 52*time.Minute {
+		t.Fatalf("full allowance: %v %v, want the oldest charge's 52m", d, ok)
+	}
+	if d, ok := s.UntilBudget(LaneDirect, charges, now); !ok || d != 0 {
+		t.Fatalf("the reserved lane has room of its own: %v %v", d, ok)
+	}
+	// After a reduced limit (G=4, R=1, L=5) the reserved lane waits for the
+	// whole ceiling: four general charges must leave first.
+	reduced, err := s.SetLimit(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := reduced.UntilBudget(LaneDirect, charges, now); !ok || d != 55*time.Minute {
+		t.Fatalf("whole ceiling: %v %v, want the fourth charge's 55m", d, ok)
+	}
+	// Charges leave in key order: a later charge already past both of its
+	// windows still waits for the one before it.
+	blocking := testCharge(t, t0, 9, LaneDirect)
+	blocking.Elapsed = s.Elapsed - 50*time.Minute
+	late := testCharge(t, t0.Add(time.Minute), 10, LaneGeneral)
+	late.Elapsed = s.Elapsed - 2*time.Hour
+	queue := CeilingState{Limit: 10, General: Meter{Credit: unitTicks, Used: 8}, Reserved: Meter{Used: 1}, Elapsed: s.Elapsed}
+	ordered := append([]Charge{blocking, late}, charges[:7]...)
+	if d, ok := queue.UntilBudget(LaneGeneral, ordered, now); !ok || d != 10*time.Minute {
+		t.Fatalf("key order: %v %v, want the blocking charge's 10m", d, ok)
+	}
+	// A lane that cannot run never gets budget.
+	if _, ok := ceilingAt(t, 1, true).UntilBudget(LaneGeneral, nil, now); ok {
+		t.Fatal("a ceiling of 1 has no general lane")
+	}
+	if _, ok := (CeilingState{Fill: true}).UntilBudget(LaneDirect, nil, now); ok {
+		t.Fatal("an unset ceiling has no budget")
+	}
+}

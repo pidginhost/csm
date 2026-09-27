@@ -192,3 +192,17 @@ func chargeTx(tx *bolt.Tx, now time.Time, action admission.ActionID, lane admiss
 	}
 	return putCeilingState(tx, s)
 }
+
+// loadCharges is every retained charge in key order, oldest first.
+func loadCharges(tx *bolt.Tx) ([]admission.Charge, error) {
+	var out []admission.Charge
+	err := tx.Bucket([]byte(admissionChargesBucket)).ForEach(func(k, v []byte) error {
+		c, err := admission.UnmarshalCharge(k, v)
+		if err != nil {
+			return err
+		}
+		out = append(out, c)
+		return nil
+	})
+	return out, err
+}

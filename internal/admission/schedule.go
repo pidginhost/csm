@@ -78,7 +78,8 @@ type ScheduleItem struct {
 
 // ScheduleLimits bound one schedule.
 type ScheduleLimits struct {
-	// General and Reserved are the block units each lane may serve.
+	// General and Reserved are the block units each lane may serve. The
+	// ledger lowers them to what its ceiling can charge now.
 	General  uint32
 	Reserved uint32
 	// Members bounds the picks, 1 to MaxBatchMembers.

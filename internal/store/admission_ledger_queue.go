@@ -573,10 +573,11 @@ const unitCost = 1
 
 // Schedule picks the next candidates to serve under lim and records the
 // scheduler's new position; the picks stay queued until the engine
-// reserves or ends them. The first schedule of a reopened ledger checks
-// every queued candidate first; later ones end the candidates whose
-// deadlines passed. Each pick is revalidated before it is returned: one
-// that no longer qualifies ends, and its turn goes to the next candidate.
+// reserves or ends them. Each lane serves at most what the ceiling lets it
+// charge now. The first schedule of a reopened ledger checks every queued
+// candidate first; later ones end the candidates whose deadlines passed.
+// Each pick is revalidated before it is returned: one that no longer
+// qualifies ends, and its turn goes to the next candidate.
 func (l *AdmissionLedger) Schedule(lim admission.ScheduleLimits) ([]admission.Pick, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -611,6 +612,12 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits) (
 	if err != nil {
 		return nil, err
 	}
+	ceiling, err := loadCeilingState(q.tx)
+	if err != nil {
+		return nil, err
+	}
+	lim.General = min(lim.General, ceiling.Budget(admission.LaneGeneral))
+	lim.Reserved = min(lim.Reserved, ceiling.Budget(admission.LaneDirect))
 	live, err := q.live()
 	if err != nil {
 		return nil, err
@@ -662,8 +669,10 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits) (
 }
 
 // NextWake is the earliest admission time at which queued work changes
-// without a new report: a retry wait ends or a queued deadline passes. The
-// engine's timer ticks and schedules then. ok is false when nothing waits.
+// without a new report: a retry wait ends, a queued deadline passes, or
+// ready work gains ceiling budget on a lane it can use. It is the stored
+// admission time when ready work can be served already. The engine's timer
+// ticks and schedules then. ok is false when nothing waits.
 func (l *AdmissionLedger) NextWake() (time.Time, bool, error) {
 	var wake time.Time
 	err := l.db.bolt.View(func(tx *bolt.Tx) error {
@@ -688,9 +697,45 @@ func (l *AdmissionLedger) NextWake() (time.Time, bool, error) {
 			}
 		}
 		wake = q.state.NextSweep
+		earliest := func(t time.Time) {
+			if wake.IsZero() || t.Before(wake) {
+				wake = t
+			}
+		}
+		var general, reserved bool
 		for _, lc := range live {
-			if nb := lc.c.NotBefore; lc.c.State == admission.StateQueued && nb.After(clock.Now()) && (wake.IsZero() || nb.Before(wake)) {
-				wake = nb
+			if lc.c.State != admission.StateQueued {
+				continue
+			}
+			if nb := lc.c.NotBefore; nb.After(clock.Now()) {
+				earliest(nb)
+				continue
+			}
+			general, reserved = true, reserved || lc.entry.Eligible()
+		}
+		if !general {
+			return nil
+		}
+		ceiling, err := loadCeilingState(tx)
+		if err != nil {
+			return err
+		}
+		// Only a lane without budget needs the window's charges.
+		var charges []admission.Charge
+		for _, lane := range []admission.Lane{admission.LaneGeneral, admission.LaneDirect} {
+			switch {
+			case lane == admission.LaneDirect && !reserved:
+				continue
+			case ceiling.Budget(lane) > 0:
+				earliest(clock.Now())
+				continue
+			case charges == nil:
+				if charges, err = loadCharges(tx); err != nil {
+					return err
+				}
+			}
+			if d, ok := ceiling.UntilBudget(lane, charges, clock.Now()); ok {
+				earliest(clock.Now().Add(d))
 			}
 		}
 		return nil

@@ -361,3 +361,45 @@ func UnmarshalCharge(key, data []byte) (Charge, error) {
 	}
 	return c, nil
 }
+
+// UntilBudget is how much longer lane l must wait before it can charge one
+// unit, given the retained charges in key order: until its credit reaches a
+// unit and enough charges have left the window to make room in its
+// allowance and in the whole ceiling. Charges leave in key order, so one
+// waits for every charge before it. Zero means now; false means never under
+// the current limit. A wall deadline is measured on the admission clock and
+// an elapsed one on elapsed time; the owner's timer treats both as elapsed.
+func (s CeilingState) UntilBudget(l Lane, charges []Charge, now time.Time) (time.Duration, bool) {
+	if !l.Valid() {
+		return 0, false
+	}
+	a := s.meter(l)
+	if a.size == 0 {
+		return 0, false
+	}
+	var wait time.Duration
+	if a.m.Credit < unitTicks {
+		short, rate := int64(unitTicks)-int64(a.m.Credit), int64(a.size)
+		wait = time.Duration((short + rate - 1) / rate)
+	}
+	// Units to release before the lane's allowance and the whole ceiling
+	// each have room for one more.
+	var laneNeed, totalNeed uint32
+	if a.m.Used >= a.size {
+		laneNeed = a.m.Used - a.size + 1
+	}
+	if total := s.General.Used + s.Reserved.Used; total >= s.Limit {
+		totalNeed = total - s.Limit + 1
+	}
+	for _, c := range charges {
+		if laneNeed == 0 && totalNeed == 0 {
+			break
+		}
+		wait = max(wait, c.At.Add(CeilingWindow).Sub(now), c.Elapsed+CeilingWindow-s.Elapsed)
+		totalNeed -= min(totalNeed, c.Cost)
+		if (c.Lane == LaneGeneral) == (l == LaneGeneral) {
+			laneNeed -= min(laneNeed, c.Cost)
+		}
+	}
+	return wait, true
+}

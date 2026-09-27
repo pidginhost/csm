@@ -1,7 +1,9 @@
 package store
 
 import (
+	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -665,6 +667,68 @@ func TestAdmissionLedgerReserveRechecksPolicy(t *testing.T) {
 	wantLedgerReason(t, "pick below the new floor", err, admission.ReasonPolicy)
 	if !reflect.DeepEqual(before, f.snapshot()) {
 		t.Fatal("a refused reservation changed the ledger")
+	}
+}
+
+// Each lane serves at most what the ceiling can charge now: with one unit
+// saved in each lane, two direct candidates get one reserved turn and the
+// general lane's C3 turn, and the local work waits for the next general
+// unit to accrue.
+func TestAdmissionLedgerScheduleServesWithinTheCeiling(t *testing.T) {
+	f := newLedgerFixture(t)
+	if err := f.l.SetCeiling(10); err != nil {
+		t.Fatal(err)
+	}
+	var direct []admission.CandidateID
+	for i, target := range []string{"192.0.2.11", "192.0.2.12"} {
+		root := f.published(evidenceSpec{producer: f.mail, check: "mail_takeover", target: target, cursor: fmt.Sprintf("direct=%d", i), severity: admission.SeverityCritical})
+		_, id := f.enqueue(f.request(target, root))
+		direct = append(direct, id)
+	}
+	local := f.fill(2, evidenceSpec{})
+	picks := f.schedule(admission.ScheduleLimits{General: 10, Reserved: 10, Members: 10})
+	if len(picks) != 2 || picks[0].Lane != admission.LaneDirect || picks[1].Lane != admission.LaneGeneral ||
+		!slices.Contains(direct, picks[0].ID) || !slices.Contains(direct, picks[1].ID) {
+		t.Fatalf("picks = %+v, direct %v", picks, direct)
+	}
+	for _, p := range picks {
+		if _, _, _, err := f.l.Reserve(p.ID, p.Lane, f.wall.Add(time.Hour)); err != nil {
+			t.Fatalf("reserve %+v: %v", p, err)
+		}
+	}
+	if picks = f.schedule(admission.ScheduleLimits{General: 10, Reserved: 10, Members: 10}); len(picks) != 0 {
+		t.Fatalf("picks past the ceiling = %+v", picks)
+	}
+	// The general lane earns a unit every 450 seconds, the reserved lane
+	// one every 1800: the ready work wakes the owner for the first.
+	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(f.wall.Add(450*time.Second)) {
+		t.Fatalf("budget wake = %v %v, %v", wake, ok, err)
+	}
+	f.tickAt(f.wall.Add(450 * time.Second))
+	picks = f.schedule(admission.ScheduleLimits{General: 10, Reserved: 10, Members: 10})
+	if len(picks) != 1 || picks[0].Lane != admission.LaneGeneral || !slices.Contains(local, picks[0].ID) {
+		t.Fatalf("after a general unit: %+v, local %v", picks, local)
+	}
+}
+
+// With a ceiling of 1 only the reserved lane exists: ordinary work is never
+// picked and never wakes the owner for budget, only for its deadlines.
+func TestAdmissionLedgerCeilingOfOneServesOnlyTheReservedLane(t *testing.T) {
+	f := newLedgerFixture(t)
+	if err := f.l.SetCeiling(1); err != nil {
+		t.Fatal(err)
+	}
+	f.queued()
+	if picks := f.schedule(admission.ScheduleLimits{General: 10, Reserved: 10, Members: 10}); len(picks) != 0 {
+		t.Fatalf("general work picked with no general lane: %+v", picks)
+	}
+	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(f.wall.Add(admission.QueueAgeLimit)) {
+		t.Fatalf("wake = %v %v, %v; want only the age-out", wake, ok, err)
+	}
+	direct := f.published(evidenceSpec{producer: f.mail, check: "mail_takeover", target: "192.0.2.11", cursor: "direct", severity: admission.SeverityCritical})
+	_, id := f.enqueue(f.request("192.0.2.11", direct))
+	if picks := f.schedule(admission.ScheduleLimits{General: 10, Reserved: 10, Members: 10}); len(picks) != 1 || picks[0].ID != id || picks[0].Lane != admission.LaneDirect {
+		t.Fatalf("direct work on the reserved lane: %+v", picks)
 	}
 }
 
