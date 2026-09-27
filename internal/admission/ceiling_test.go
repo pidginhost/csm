@@ -1,6 +1,8 @@
 package admission
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"testing"
 	"time"
@@ -238,6 +240,95 @@ func TestCeilingStateCodec(t *testing.T) {
 	for name, data := range map[string][]byte{"checksum": flipped, "invariant": unfilled, "version": future, "unknown field": unknown} {
 		if _, err := UnmarshalCeilingState(data); !errors.Is(err, ErrCorruptRecord) {
 			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func testCharge(t *testing.T, at time.Time, seq uint32, lane Lane) Charge {
+	t.Helper()
+	cand, _ := queuedCandidate(t).ID()
+	a, err := NewAttempt(cand, seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Charge{At: at, Action: a.ID, Lane: lane, Cost: 1, Elapsed: time.Hour}
+}
+
+func TestChargeCodec(t *testing.T) {
+	early, late := testCharge(t, t0, 2, LaneGeneral), testCharge(t, t0.Add(time.Nanosecond), 1, LaneDirect)
+	keys := map[string]Charge{}
+	for _, c := range []Charge{early, late} {
+		key, err := c.Key()
+		if err != nil || len(key) != chargeKeyLen {
+			t.Fatalf("key: %x %v", key, err)
+		}
+		data, err := c.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		back, err := UnmarshalCharge(key, data)
+		if err != nil || back != c {
+			t.Fatalf("round trip %+v: %+v %v", c, back, err)
+		}
+		keys[string(key)] = c
+	}
+	earlyKey, _ := early.Key()
+	lateKey, _ := late.Key()
+	if bytes.Compare(earlyKey, lateKey) >= 0 {
+		t.Fatal("an earlier charge must sort first, whatever its action")
+	}
+	for name, bad := range map[string]Charge{
+		"no time":          {Action: early.Action, Lane: LaneGeneral, Cost: 1},
+		"before the epoch": {At: time.Unix(-1, 0), Action: early.Action, Lane: LaneGeneral, Cost: 1},
+		"no action":        {At: t0, Lane: LaneGeneral, Cost: 1},
+		"no lane":          {At: t0, Action: early.Action, Cost: 1},
+		"unknown lane":     {At: t0, Action: early.Action, Lane: laneEnd, Cost: 1},
+		"free":             {At: t0, Action: early.Action, Lane: LaneGeneral},
+		"too large":        {At: t0, Action: early.Action, Lane: LaneGeneral, Cost: MaxMemberCost + 1},
+		"negative elapsed": {At: t0, Action: early.Action, Lane: LaneGeneral, Cost: 1, Elapsed: -1},
+	} {
+		_, err := bad.MarshalBinary()
+		wantReason(t, name, err, ReasonInvalid)
+	}
+	data, _ := early.MarshalBinary()
+	flipped := append([]byte(nil), data...)
+	flipped[len(flipped)-1] ^= 1
+	future, _ := sealRecord(chargeRecord{V: chargeVersion + 1, Lane: LaneGeneral, Cost: 1})
+	unknown, _ := sealRecord(map[string]any{"v": chargeVersion, "lane": LaneGeneral, "cost": 1, "refund": true})
+	free, _ := sealRecord(chargeRecord{V: chargeVersion, Lane: LaneGeneral})
+	top := append(binary.BigEndian.AppendUint64(nil, 1<<63), early.Action...)
+	for name, tc := range map[string]struct{ key, data []byte }{
+		"checksum":      {earlyKey, flipped},
+		"version":       {earlyKey, future},
+		"unknown field": {earlyKey, unknown},
+		"invariant":     {earlyKey, free},
+		"short key":     {earlyKey[:chargeKeyLen-1], data},
+		"key action":    {append(earlyKey[:8:8], "act_zz"+string(early.Action[6:])...), data},
+		"key time":      {top, data},
+	} {
+		if _, err := UnmarshalCharge(tc.key, tc.data); !errors.Is(err, ErrCorruptRecord) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A charge leaves the window only when a full window of wall time and of
+// elapsed time have both passed since it was spent.
+func TestChargeReleasable(t *testing.T) {
+	c := testCharge(t, t0, 1, LaneGeneral)
+	for _, tc := range []struct {
+		name    string
+		now     time.Time
+		elapsed time.Duration
+		want    bool
+	}{
+		{"inside the window", t0.Add(CeilingWindow - time.Nanosecond), c.Elapsed + CeilingWindow, false},
+		{"at the window's end", t0.Add(CeilingWindow), c.Elapsed + CeilingWindow, true},
+		{"wall step or downtime", t0.Add(24 * time.Hour), c.Elapsed + CeilingWindow - time.Nanosecond, false},
+		{"elapsed past a future date", t0.Add(CeilingWindow - time.Nanosecond), c.Elapsed + 24*time.Hour, false},
+	} {
+		if got := c.Releasable(tc.now, tc.elapsed); got != tc.want {
+			t.Errorf("%s: Releasable = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

@@ -190,6 +190,8 @@ func TestAttemptRecordInvariants(t *testing.T) {
 		{"expiry at reservation", AttemptRecord{Attempt: first, State: StateReserved, ExpiresAt: t0, Reserved: t0}, false},
 		{"wrong disposition", AttemptRecord{Attempt: first, State: StateUnknown, Disposition: DispositionFailed, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Finished: finished}, false},
 		{"relinked", AttemptRecord{Attempt: Attempt{ID: first.ID, Candidate: cand, Seq: 2, Prev: first.ID}, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0}, false},
+		{"charged lane", AttemptRecord{Attempt: first, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Lane: LaneCorroborated}, true},
+		{"unknown lane", AttemptRecord{Attempt: first, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Lane: laneEnd}, false},
 	} {
 		err := c.rec.Validate()
 		if (err == nil) != c.ok {
@@ -209,6 +211,32 @@ func TestAttemptRecordInvariants(t *testing.T) {
 		if _, err := UnmarshalAttempt(resealForTest(bytes.Replace(data[:len(data)-8], []byte(`"v":1`), []byte(`"v":9`), 1))); err != ErrCorruptRecord {
 			t.Errorf("%s: unknown version decoded: %v", c.name, err)
 		}
+	}
+}
+
+// An attempt stored before the ledger kept a ceiling has no lane field. It
+// still decodes, as lane zero, and re-encodes to the same bytes.
+func TestAttemptWithoutLaneKeepsItsBytes(t *testing.T) {
+	cand, _ := queuedCandidate(t).ID()
+	first, _ := NewAttempt(cand, 1)
+	legacy, err := sealRecord(struct {
+		V         uint8       `json:"v"`
+		ID        ActionID    `json:"id"`
+		Candidate CandidateID `json:"candidate"`
+		Seq       uint32      `json:"seq"`
+		State     State       `json:"state"`
+		ExpiresAt int64       `json:"expires_at"`
+		Reserved  int64       `json:"reserved"`
+	}{attemptVersion, first.ID, cand, 1, StateReserved, t0.Add(time.Hour).UnixNano(), t0.UnixNano()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := UnmarshalAttempt(legacy)
+	if err != nil || a.Lane != 0 || a.Attempt != first {
+		t.Fatalf("legacy attempt: %+v %v", a, err)
+	}
+	if again, err := a.MarshalBinary(); err != nil || !bytes.Equal(again, legacy) {
+		t.Fatalf("legacy attempt re-encoded differently: %v", err)
 	}
 }
 

@@ -265,6 +265,9 @@ type AttemptRecord struct {
 	Reserved    time.Time
 	// Finished is zero until the attempt has an outcome.
 	Finished time.Time
+	// Lane is the lane the reservation was admitted on and charged to. It
+	// is zero only on attempts reserved before the ledger kept a ceiling.
+	Lane Lane
 }
 
 type attemptRecord struct {
@@ -278,6 +281,7 @@ type attemptRecord struct {
 	ExpiresAt   int64       `json:"expires_at"`
 	Reserved    int64       `json:"reserved"`
 	Finished    int64       `json:"finished,omitempty"`
+	Lane        Lane        `json:"lane,omitempty"`
 }
 
 func (a AttemptRecord) record() (attemptRecord, error) {
@@ -310,9 +314,12 @@ func (a AttemptRecord) record() (attemptRecord, error) {
 	} else if !a.Finished.IsZero() {
 		return bad("an open attempt has a finish time")
 	}
+	if a.Lane != 0 && !a.Lane.Valid() {
+		return bad("attempt names an unknown lane")
+	}
 	return attemptRecord{
 		V: attemptVersion, ID: a.Attempt.ID, Candidate: a.Attempt.Candidate, Seq: a.Attempt.Seq, Prev: a.Attempt.Prev,
-		State: a.State, Disposition: a.Disposition, ExpiresAt: expires, Reserved: reserved, Finished: finished,
+		State: a.State, Disposition: a.Disposition, ExpiresAt: expires, Reserved: reserved, Finished: finished, Lane: a.Lane,
 	}, nil
 }
 
@@ -342,7 +349,7 @@ func UnmarshalAttempt(data []byte) (AttemptRecord, error) {
 	a := AttemptRecord{
 		Attempt: Attempt{ID: rec.ID, Candidate: rec.Candidate, Seq: rec.Seq, Prev: rec.Prev},
 		State:   rec.State, Disposition: rec.Disposition, ExpiresAt: fromNano(rec.ExpiresAt),
-		Reserved: fromNano(rec.Reserved), Finished: fromNano(rec.Finished),
+		Reserved: fromNano(rec.Reserved), Finished: fromNano(rec.Finished), Lane: rec.Lane,
 	}
 	if again, err := a.record(); err != nil || again != rec {
 		return AttemptRecord{}, ErrCorruptRecord

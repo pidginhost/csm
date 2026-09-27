@@ -1,6 +1,10 @@
 package admission
 
-import "time"
+import (
+	"bytes"
+	"encoding/binary"
+	"time"
+)
 
 // MaxCeiling bounds the hourly ceiling the ledger accepts. Every charge
 // retained in the window is one stored record, so it also bounds them.
@@ -260,4 +264,100 @@ func UnmarshalCeilingState(data []byte) (CeilingState, error) {
 		return CeilingState{}, ErrCorruptRecord
 	}
 	return s, nil
+}
+
+const chargeVersion = 1
+
+// chargeKeyLen is the length of a charge key: its time, then its action.
+const chargeKeyLen = 8 + len("act_") + 32
+
+// Charge is one spend of the ceiling, kept while it counts in the rolling
+// window (spec 5.4). At is the admission time of the reservation that spent
+// it, and Elapsed the ceiling's elapsed time then.
+type Charge struct {
+	At      time.Time
+	Action  ActionID
+	Lane    Lane
+	Cost    uint32
+	Elapsed time.Duration
+}
+
+// Releasable reports whether the charge has left the window at admission
+// time now, with elapsed time metered: a full window of wall time and of
+// elapsed time must both have passed, so neither a forward clock step nor
+// downtime ends it early. A charge dated in the future counts until its own
+// time plus the window.
+func (c Charge) Releasable(now time.Time, elapsed time.Duration) bool {
+	return !now.Before(c.At.Add(CeilingWindow)) && elapsed-c.Elapsed >= CeilingWindow
+}
+
+type chargeRecord struct {
+	V       uint8  `json:"v"`
+	Lane    Lane   `json:"lane"`
+	Cost    uint32 `json:"cost"`
+	Elapsed int64  `json:"elapsed,omitempty"`
+}
+
+func (c Charge) record() ([]byte, chargeRecord, error) {
+	bad := func(detail string) ([]byte, chargeRecord, error) {
+		return nil, chargeRecord{}, refuse(ReasonInvalid, detail)
+	}
+	at, ok := unixNano(c.At)
+	switch {
+	case !ok || at < 0:
+		return bad("charge has no time after the epoch")
+	case !c.Lane.Valid() || c.Cost == 0 || c.Cost > MaxMemberCost:
+		return bad("charge has no lane or an invalid cost")
+	case c.Elapsed < 0:
+		return bad("charge elapsed time is negative")
+	}
+	if _, err := ParseActionID(string(c.Action)); err != nil {
+		return bad("charge names no action")
+	}
+	// Big-endian nanoseconds sort by time, so a walk in key order meets the
+	// oldest charges first.
+	key := binary.BigEndian.AppendUint64(make([]byte, 0, chargeKeyLen), uint64(at))
+	return append(key, c.Action...), chargeRecord{V: chargeVersion, Lane: c.Lane, Cost: c.Cost, Elapsed: int64(c.Elapsed)}, nil
+}
+
+// Validate checks the charge's invariants.
+func (c Charge) Validate() error {
+	_, _, err := c.record()
+	return err
+}
+
+// Key is the charge's storage key.
+func (c Charge) Key() ([]byte, error) {
+	key, _, err := c.record()
+	return key, err
+}
+
+func (c Charge) MarshalBinary() ([]byte, error) {
+	_, rec, err := c.record()
+	if err != nil {
+		return nil, err
+	}
+	return sealRecord(rec)
+}
+
+// UnmarshalCharge decodes a stored charge from its key and value and checks
+// its invariants.
+func UnmarshalCharge(key, data []byte) (Charge, error) {
+	var rec chargeRecord
+	if err := openRecord(data, &rec); err != nil {
+		return Charge{}, err
+	}
+	if len(key) != chargeKeyLen || rec.V != chargeVersion {
+		return Charge{}, ErrCorruptRecord
+	}
+	at := binary.BigEndian.Uint64(key[:8])
+	if at > 1<<63-1 {
+		return Charge{}, ErrCorruptRecord
+	}
+	c := Charge{At: fromNano(int64(at)), Action: ActionID(key[8:]), Lane: rec.Lane, Cost: rec.Cost, Elapsed: time.Duration(rec.Elapsed)}
+	again, againRec, err := c.record()
+	if err != nil || !bytes.Equal(again, key) || againRec != rec {
+		return Charge{}, ErrCorruptRecord
+	}
+	return c, nil
 }
