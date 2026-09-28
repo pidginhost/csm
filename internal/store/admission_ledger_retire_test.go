@@ -303,3 +303,68 @@ func TestAdmissionLedgerEndingDropsUnreservedRoots(t *testing.T) {
 		})
 	}
 }
+
+// Retirement must prove the attempt chain before deleting it, including
+// predecessors of a successful retry. Otherwise it hides damaged history.
+func TestAdmissionLedgerRetirementPreservesDamagedAttempts(t *testing.T) {
+	for _, pressure := range []bool{false, true} {
+		for _, damage := range []string{"missing predecessor", "malformed predecessor", "conflicting outcome"} {
+			t.Run(fmt.Sprintf("pressure=%t/%s", pressure, damage), func(t *testing.T) {
+				f := newLedgerFixture(t)
+				id, first := f.admitted(time.Hour)
+				if _, _, err := f.l.Finish(first.Attempt.ID, admission.DispositionFailed); err != nil {
+					t.Fatal(err)
+				}
+				f.tickAt(f.wall.Add(admission.RetryBackoff(1)))
+				_, last, _, err := f.l.Reserve(id, admission.LaneGeneral, time.Time{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, _, _, err = f.l.Execute(last.Attempt.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err = f.l.Finish(last.Attempt.ID, admission.DispositionApplied); err != nil {
+					t.Fatal(err)
+				}
+				if err = f.db.bolt.Update(func(tx *bolt.Tx) error {
+					attempts := tx.Bucket([]byte(admissionAttemptsBucket))
+					switch damage {
+					case "missing predecessor":
+						return attempts.Delete([]byte(first.Attempt.ID))
+					case "malformed predecessor":
+						return attempts.Put([]byte(first.Attempt.ID), []byte("damaged"))
+					default:
+						a, loadErr := loadAttempt(tx, last.Attempt.ID)
+						if loadErr != nil {
+							return loadErr
+						}
+						a.Disposition = admission.DispositionNarrowed
+						return putAttempt(tx, a)
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+				var next admission.CandidateID
+				if pressure {
+					f.tickAt(f.wall.Add(admission.HistoryRetention))
+					f.nextGeneration()
+					next = f.queued()
+					general, _ := admission.HistoryLanes()
+					f.adjustStorage(func(s *admission.StorageState) { s.General.Used = general })
+				}
+				before := f.snapshot()
+				if pressure {
+					_, _, _, err = f.l.Reserve(next, admission.LaneGeneral, f.wall.Add(time.Hour))
+				} else {
+					_, err = f.l.Tick(admission.ClockReading{Wall: f.wall.Add(admission.HistoryTarget), BootID: ledgerBoot, SinceBoot: f.since + admission.HistoryTarget})
+				}
+				if !isCorrupt(err) {
+					t.Errorf("retirement over damaged attempts = %v, want a corrupt record", err)
+				}
+				if !reflect.DeepEqual(before, f.snapshot()) {
+					t.Fatal("retirement erased damaged history or changed accounting")
+				}
+			})
+		}
+	}
+}

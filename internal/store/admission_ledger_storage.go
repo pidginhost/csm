@@ -731,6 +731,10 @@ func (q *queueTx) retire(id admission.CandidateID, key []byte) error {
 	if !slices.ContainsFunc(keys, func(k []byte) bool { return bytes.Equal(k, key) }) {
 		return admission.ErrCorruptRecord
 	}
+	// Deletion must not conceal missing or inconsistent attempt history.
+	if _, err = currentAttempt(q.tx, c); err != nil {
+		return err
+	}
 	retireIndex := q.tx.Bucket([]byte(admissionRetireBucket))
 	for _, k := range keys {
 		if retireIndex.Get(k) == nil {
