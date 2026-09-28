@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"strings"
 	"testing"
 )
@@ -37,7 +38,7 @@ type bundleFiles struct {
 
 // buildBundle writes a two-site bundle the way the converter does: site A
 // carries healthy traffic from minute 1 to 58 of the period, site B none.
-func buildBundle(t *testing.T, st bundleStages) bundleFiles {
+func buildBundle(t testing.TB, st bundleStages) bundleFiles {
 	t.Helper()
 	s := NewSynth(bundleSiteA, 3)
 	recs := s.Pool(Traffic{From: periodFrom + 1, To: periodTo - 1, PerMinute: 3, L2: SynthKey(1), L1: SynthKey(2), Label: LabelHealthy}, 4)
@@ -74,6 +75,12 @@ func buildBundle(t *testing.T, st bundleStages) bundleFiles {
 		Sites:   []SiteManifest{siteOf(bundleSiteA, bundleAcctA, recs, vol), siteOf(bundleSiteB, bundleAcctB, recs, vol)},
 	}
 	m.Inputs[0].ContentBytes, m.Inputs[1].ContentBytes = m.Sites[0].Bytes, m.Sites[1].Bytes
+	for i := range m.Inputs {
+		if extent := m.Sites[i].Extent; extent != nil {
+			copy := *extent
+			m.Inputs[i].Extent = &copy
+		}
+	}
 	if st.manifest != nil {
 		st.manifest(&m)
 	}
@@ -373,6 +380,112 @@ func TestReadBundleFileHashesWhatItReads(t *testing.T) {
 	flaky := &failOnce{r: bytes.NewReader(f.records)}
 	if _, err := ReadBundleFile(flaky, countRecords(new(int64))); !errors.Is(err, ErrBundle) {
 		t.Fatalf("transient read error: err = %v, want ErrBundle", err)
+	}
+}
+
+func TestBundleObservedExtents(t *testing.T) {
+	for name, mutate := range map[string]func(*Manifest){
+		"site begins early":           func(m *Manifest) { m.Sites[0].Extent.From-- },
+		"site ends late":              func(m *Manifest) { m.Sites[0].Extent.To++ },
+		"missing input extent":        func(m *Manifest) { m.Inputs[0].Extent = nil },
+		"input excludes first record": func(m *Manifest) { m.Inputs[0].Extent.From++ },
+		"input excludes last record":  func(m *Manifest) { m.Inputs[0].Extent.To-- },
+		"input begins early":          func(m *Manifest) { m.Inputs[0].Extent.From-- },
+		"input ends late":             func(m *Manifest) { m.Inputs[0].Extent.To++ },
+		"empty input claims records": func(m *Manifest) {
+			m.Inputs[1].Extent = &Span{From: periodFrom, To: periodTo}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := buildBundle(t, bundleStages{manifest: mutate})
+			if _, _, err := validateFiles(f, nil); !errors.Is(err, ErrBundle) {
+				t.Fatalf("inconsistent observed extent: %v, want ErrBundle", err)
+			}
+		})
+	}
+}
+
+func TestBundleExtentsAcrossInputs(t *testing.T) {
+	st := bundleStages{
+		rows: func(recs *[]Record, _ *[]Volume) {
+			for i := len(*recs) / 2; i < len(*recs); i++ {
+				(*recs)[i].File = 1
+			}
+		},
+		manifest: func(m *Manifest) {
+			first := &m.Inputs[0]
+			second := *first
+			first.ContentBytes /= 2
+			first.Extent.To = periodFrom + 29
+			second.Ordinal = 1
+			second.ContentSHA256 = strings.Repeat("6", 64)
+			second.ContentBytes = first.ContentBytes
+			second.Extent = &Span{From: periodFrom + 30, To: periodTo - 1}
+			m.Inputs = append(m.Inputs, second)
+		},
+	}
+	f := buildBundle(t, st)
+	if _, _, err := validateFiles(f, nil); err != nil {
+		t.Fatalf("valid distinct input extents: %v", err)
+	}
+	setInputs := st.manifest
+	st.manifest = func(m *Manifest) {
+		setInputs(m)
+		m.Inputs[0].Extent, m.Inputs[2].Extent = m.Inputs[2].Extent, m.Inputs[0].Extent
+	}
+	f = buildBundle(t, st)
+	if _, _, err := validateFiles(f, nil); !errors.Is(err, ErrBundle) {
+		t.Fatalf("records assigned to the wrong input: %v, want ErrBundle", err)
+	}
+}
+
+func TestBundleRejectsChangedManifest(t *testing.T) {
+	f := buildBundle(t, bundleStages{manifest: func(m *Manifest) {
+		addUntimed(m, UntimedLoss{Category: LossRejected, Lines: 1}, 100)
+	}})
+	for name, mutate := range map[string]func(*Manifest){
+		"provenance": func(m *Manifest) { m.SaltFingerprint = "ffffffffffff" },
+		"loss bracket": func(m *Manifest) {
+			m.Sites[0].Untimed[0].After = (periodTo + 2) * 60
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, err := DecodeManifest(f.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutate(&m)
+			callbacks := 0
+			_, err = ValidateBundle(BundleInput{Manifest: m, Proof: wholeProof(t, f),
+				Volume: bytes.NewReader(f.volume), Records: bytes.NewReader(f.records)}, 1,
+				BundleVisitor{Volume: func(Volume) error { callbacks++; return nil }})
+			if !errors.Is(err, ErrManifest) || callbacks != 0 {
+				t.Fatalf("changed manifest: %v, callbacks %d; want ErrManifest before callbacks", err, callbacks)
+			}
+		})
+	}
+}
+
+func TestManifestLineByteAccounting(t *testing.T) {
+	for name, mutate := range map[string]func(*Manifest){
+		"lines without bytes": func(m *Manifest) {
+			addUntimed(m, UntimedLoss{Category: LossRejected, Lines: math.MaxInt64 - m.Sites[0].Lines}, 0)
+		},
+		"unplaced lines without bytes": func(m *Manifest) {
+			addUntimed(m, UntimedLoss{Category: LossRejected, Lines: 1}, 0)
+		},
+		"unplaced bytes without lines": func(m *Manifest) {
+			m.Sites[0].Bytes++
+			m.Sites[0].UnplacedBytes++
+			m.Inputs[0].ContentBytes++
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := buildBundle(t, bundleStages{manifest: mutate})
+			if _, err := DecodeManifest(f.raw); !errors.Is(err, ErrManifest) {
+				t.Fatalf("impossible byte accounting: %v, want ErrManifest", err)
+			}
+		})
 	}
 }
 

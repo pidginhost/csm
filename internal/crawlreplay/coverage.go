@@ -4,9 +4,11 @@ import (
 	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"slices"
 )
@@ -52,7 +54,8 @@ type CoverageProof struct {
 	Evidence        []ProofEvidence `json:"evidence"`
 	Sites           []ProofSite     `json:"sites"`
 
-	digest string
+	digest        string
+	contentDigest [sha256.Size]byte
 }
 
 // ProofEvidence names one independent evidence file by digest; its content
@@ -104,6 +107,11 @@ func DecodeCoverageProof(raw []byte) (*CoverageProof, error) {
 	}
 	sum := sha256.Sum256(raw)
 	p.digest = hex.EncodeToString(sum[:])
+	canonical, err := json.Marshal(p)
+	if err != nil {
+		return nil, proofError("encoding")
+	}
+	p.contentDigest = sha256.Sum256(canonical)
 	return &p, nil
 }
 
@@ -116,6 +124,14 @@ var (
 // Validate checks the proof's own format; ValidateBundle checks it against
 // a manifest.
 func (p *CoverageProof) Validate() error {
+	if p.digest != "" {
+		// Proofs permit operator formatting, so retain both the original
+		// byte digest and a formatting-independent seal of the decoded data.
+		canonical, err := json.Marshal(p)
+		if err != nil || sha256.Sum256(canonical) != p.contentDigest {
+			return proofError("digest")
+		}
+	}
 	switch {
 	case p.FormatVersion != ProofVersion:
 		return proofError("format_version")
@@ -183,6 +199,7 @@ type BundleInput struct {
 // every volume row, then the validated sites, then every record in stream
 // order. Anything built from them must be discarded if ValidateBundle
 // returns an error, which it can do after the last callback.
+// Sites receives an owned copy, independent of validation and return values.
 type BundleVisitor struct {
 	Volume func(Volume) error
 	Sites  func([]BundleSite) error
@@ -233,7 +250,7 @@ func ValidateBundle(in BundleInput, identityVersion int, v BundleVisitor) ([]Bun
 		return nil, err
 	}
 	if v.Sites != nil {
-		if err = v.Sites(sites); err != nil {
+		if err = v.Sites(cloneBundleSites(sites)); err != nil {
 			return nil, err
 		}
 	}
@@ -257,6 +274,21 @@ func ValidateBundle(in BundleInput, identityVersion int, v BundleVisitor) ([]Bun
 	return sites, nil
 }
 
+func cloneBundleSites(sites []BundleSite) []BundleSite {
+	out := slices.Clone(sites)
+	for i := range out {
+		s := &out[i]
+		if s.Extent != nil {
+			extent := *s.Extent
+			s.Extent = &extent
+		}
+		s.Certified = slices.Clone(s.Certified)
+		s.Coverage = slices.Clone(s.Coverage)
+		s.Excluded = maps.Clone(s.Excluded)
+	}
+	return out
+}
+
 type siteMinute struct {
 	site   string
 	minute int64
@@ -265,7 +297,8 @@ type siteMinute struct {
 type siteState struct {
 	m      *SiteManifest
 	proof  *ProofSite
-	inputs int
+	inputs []inputState
+	extent *Span
 	done   bool
 	seq    int64
 	file   int
@@ -276,6 +309,11 @@ type siteState struct {
 	// From volume rows.
 	volumeLines, volumeUnbound, volumeNoTarget map[int64]int64
 	volumeBytes                                int64
+}
+
+type inputState struct {
+	m      Input
+	extent *Span
 }
 
 type bundleCheck struct {
@@ -293,13 +331,21 @@ type bundleCheck struct {
 func bundleError(field string) error { return fmt.Errorf("%w: %s", ErrBundle, field) }
 
 func newBundleCheck(m Manifest, proof *CoverageProof, identityVersion int) (*bundleCheck, error) {
-	if err := m.Validate(); err != nil {
+	// Exported fields can change after decoding. Rebind the canonical bytes
+	// and take an owned snapshot before callbacks can touch the caller's data.
+	raw, err := EncodeManifest(m)
+	if err != nil {
+		return nil, err
+	}
+	digest := m.digest
+	m, err = DecodeManifest(raw)
+	if err != nil {
 		return nil, err
 	}
 	if m.IdentityVersion != identityVersion {
 		return nil, manifestError("identity_version")
 	}
-	if m.digest == "" {
+	if digest != m.digest {
 		return nil, manifestError("digest")
 	}
 	c := &bundleCheck{m: m, proof: proof, sites: map[string]*siteState{}, volumes: map[siteMinute]bool{},
@@ -310,7 +356,8 @@ func newBundleCheck(m Manifest, proof *CoverageProof, identityVersion int) (*bun
 			volumeLines: map[int64]int64{}, volumeUnbound: map[int64]int64{}, volumeNoTarget: map[int64]int64{}}
 	}
 	for _, in := range m.Inputs {
-		c.sites[in.Site].inputs++
+		s := c.sites[in.Site]
+		s.inputs = append(s.inputs, inputState{m: in})
 	}
 	if proof == nil {
 		return c, nil
@@ -318,6 +365,17 @@ func newBundleCheck(m Manifest, proof *CoverageProof, identityVersion int) (*bun
 	if err := proof.Validate(); err != nil {
 		return nil, err
 	}
+	snapshot := *proof
+	snapshot.Evidence = slices.Clone(proof.Evidence)
+	snapshot.Sites = slices.Clone(proof.Sites)
+	for i := range snapshot.Sites {
+		s := &snapshot.Sites[i]
+		s.Spans = slices.Clone(s.Spans)
+		s.Excluded = slices.Clone(s.Excluded)
+		s.Rejects = slices.Clone(s.Rejects)
+	}
+	proof = &snapshot
+	c.proof = proof
 	if proof.ManifestSHA256 != m.digest {
 		return nil, proofError("manifest_sha256")
 	}
@@ -408,7 +466,7 @@ func (c *bundleCheck) record(r Record) error {
 	switch {
 	case r.Account != s.m.Account:
 		return bundleError("account")
-	case r.Seq <= s.seq, r.Seq > s.m.Lines, r.File < s.file, r.File >= s.inputs:
+	case r.Seq <= s.seq, r.Seq > s.m.Lines, r.File < s.file, r.File >= len(s.inputs):
 		return bundleError("file order")
 	case !c.placed(s, minute):
 		return bundleError("record minute")
@@ -424,6 +482,8 @@ func (c *bundleCheck) record(r Record) error {
 		c.l1Parent[r.L1] = r.L2
 	}
 	s.seq, s.file = r.Seq, r.File
+	observeMinute(&s.extent, minute)
+	observeMinute(&s.inputs[r.File].extent, minute)
 	c.rRows++
 	s.records++
 	s.lines[minute]++
@@ -436,6 +496,18 @@ func (c *bundleCheck) record(r Record) error {
 		s.infra++
 	}
 	return nil
+}
+
+func observeMinute(extent **Span, minute int64) {
+	if *extent == nil {
+		*extent = &Span{From: minute, To: minute}
+	}
+	(*extent).From = min((*extent).From, minute)
+	(*extent).To = max((*extent).To, minute)
+}
+
+func sameExtent(a, b *Span) bool {
+	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
 
 // finish compares what was read with the manifest's outputs and totals.
@@ -451,6 +523,14 @@ func (c *bundleCheck) finish(records, volume Digest) error {
 	}
 	for _, sm := range c.m.Sites {
 		s := c.sites[sm.Site]
+		if !sameExtent(s.extent, sm.Extent) {
+			return bundleError("site extent")
+		}
+		for _, in := range s.inputs {
+			if !sameExtent(in.extent, in.m.Extent) {
+				return bundleError("input extent")
+			}
+		}
 		volumeUnbound, noTarget := int64(0), int64(0)
 		for m, n := range s.volumeUnbound {
 			volumeUnbound += n
@@ -597,6 +677,7 @@ func floorMinute(sec int64) int64 {
 func subtract(spans, cut []Span) []Span {
 	slices.SortFunc(cut, func(a, b Span) int { return cmp.Compare(a.From, b.From) })
 	var out []Span
+spansLoop:
 	for _, s := range spans {
 		from := s.From
 		for _, c := range cut {
@@ -606,7 +687,12 @@ func subtract(spans, cut []Span) []Span {
 			if c.From > from {
 				out = append(out, Span{From: from, To: c.From - 1})
 			}
-			from = max(from, c.To+1)
+			// No successor is needed when the cut consumes the rest. In
+			// particular, the last representable minute has no successor.
+			if c.To >= s.To {
+				continue spansLoop
+			}
+			from = c.To + 1
 		}
 		if from <= s.To {
 			out = append(out, Span{From: from, To: s.To})

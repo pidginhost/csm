@@ -286,6 +286,9 @@ func (s *SiteManifest) validate(period Span, inputs int) error {
 		return manifestError("records")
 	case s.UnplacedBytes > s.Bytes:
 		return manifestError("unplaced_bytes")
+	case s.Bytes < s.Lines, s.UnplacedBytes < s.Lines-s.Records,
+		s.Lines == s.Records && s.UnplacedBytes != 0:
+		return manifestError("line bytes")
 	case (s.Extent == nil) != (s.Records == 0), s.Extent != nil && !within(*s.Extent, period):
 		return manifestError("extent")
 	case s.Labels == nil || s.Untimed == nil:

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -19,7 +20,7 @@ const (
 
 // wholeProof certifies every minute of the period for both sites, bound to
 // the bundle's manifest, with a one-minute lateness bound.
-func wholeProof(t *testing.T, f bundleFiles) *CoverageProof {
+func wholeProof(t testing.TB, f bundleFiles) *CoverageProof {
 	t.Helper()
 	m, err := DecodeManifest(f.raw)
 	if err != nil {
@@ -327,5 +328,106 @@ func TestCoverageBracketAtIntegerBoundary(t *testing.T) {
 		if !ok || got != want {
 			t.Fatalf("reordered bracket = %+v %v, want %+v", got, ok, want)
 		}
+	}
+}
+
+func TestCoverageLossAtLastMinute(t *testing.T) {
+	f := buildBundle(t, bundleStages{manifest: func(m *Manifest) {
+		m.Period.To = math.MaxInt64
+		addUntimed(m, UntimedLoss{Category: LossRejected, Lines: 1}, 100)
+	}})
+	p := wholeProof(t, f)
+	for i := range p.Sites {
+		p.Sites[i].Spans[0].To = math.MaxInt64
+	}
+	sites, _, err := validateFiles(f, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sites[0].Coverage) != 0 || sites[0].Excluded[ExcludedUnknownLoss] != math.MaxInt64-periodFrom+1 {
+		t.Fatalf("untimed loss left certified minutes: %+v", sites[0])
+	}
+	if !reflect.DeepEqual(sites[1].Coverage, p.Sites[1].Spans) {
+		t.Fatalf("quiet site lost certified minutes: %+v", sites[1])
+	}
+}
+
+func TestSubtractBoundaryLoss(t *testing.T) {
+	for name, tc := range map[string]struct{ spans, cut, want []Span }{
+		"last minute":           {[]Span{{1, math.MaxInt64}}, []Span{{math.MaxInt64, math.MaxInt64}}, []Span{{1, math.MaxInt64 - 1}}},
+		"whole span":            {[]Span{{1, math.MaxInt64}}, []Span{{1, math.MaxInt64}}, nil},
+		"cut reaches past span": {[]Span{{1, 3}}, []Span{{2, math.MaxInt64}}, []Span{{1, 1}}},
+		"overlapping cuts":      {[]Span{{1, 3}, {5, 7}, {9, math.MaxInt64}}, []Span{{6, math.MaxInt64}, {2, 10}}, []Span{{1, 1}}},
+		"adjacent spans":        {[]Span{{1, 3}, {4, 7}}, []Span{{3, 4}}, []Span{{1, 2}, {5, 7}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := subtract(tc.spans, tc.cut); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("coverage = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBundleRejectsChangedProof(t *testing.T) {
+	f := buildBundle(t, bundleStages{})
+	raw, err := json.Marshal(wholeProof(t, f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := DecodeCoverageProof(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.LatenessSeconds++
+	if _, _, err := validateFiles(f, p); !errors.Is(err, ErrProof) {
+		t.Fatalf("changed proof retained its original provenance: %v, want ErrProof", err)
+	}
+}
+
+func TestBundleSnapshotsProofBeforeCallbacks(t *testing.T) {
+	f := buildBundle(t, bundleStages{})
+	m, err := DecodeManifest(f.raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := wholeProof(t, f)
+	sites, err := ValidateBundle(BundleInput{Manifest: m, Proof: p,
+		Volume: bytes.NewReader(f.volume), Records: bytes.NewReader(f.records)}, 1,
+		BundleVisitor{Volume: func(Volume) error {
+			p.Sites[0].Spans[0].To = periodTo + 100
+			return nil
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Span{{From: periodFrom, To: periodTo}}
+	if !reflect.DeepEqual(sites[0].Coverage, want) || !reflect.DeepEqual(sites[0].Certified, want) {
+		t.Fatalf("callback rewrote validated proof: %+v", sites[0])
+	}
+}
+
+func TestBundleVisitorCannotRewriteValidatedSites(t *testing.T) {
+	f := buildBundle(t, bundleStages{})
+	m, err := DecodeManifest(f.raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sites, err := ValidateBundle(BundleInput{Manifest: m, Proof: wholeProof(t, f),
+		Volume: bytes.NewReader(f.volume), Records: bytes.NewReader(f.records)}, 1,
+		BundleVisitor{Sites: func(sites []BundleSite) error {
+			sites[0].Site = bundleSiteB
+			sites[0].Extent.From--
+			sites[0].Certified[0].To++
+			sites[0].Coverage[0].To++
+			sites[0].Excluded[ExcludedUnknownLoss] = 1
+			return nil
+		}})
+	if err != nil {
+		t.Fatalf("visitor changed internal validation state: %v", err)
+	}
+	if sites[0].Site != bundleSiteA || *sites[0].Extent != *m.Sites[0].Extent ||
+		!reflect.DeepEqual(sites[0].Coverage, []Span{{From: periodFrom, To: periodTo}}) ||
+		!reflect.DeepEqual(sites[0].Certified, sites[0].Coverage) || len(sites[0].Excluded) != 0 {
+		t.Fatalf("visitor rewrote returned validation results: %+v", sites[0])
 	}
 }
