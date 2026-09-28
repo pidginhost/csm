@@ -182,3 +182,28 @@ func TestScorerOwnsEvidence(t *testing.T) {
 		})
 	}
 }
+
+// An episode whose first request fell in an unreplayed minute but whose
+// later requests were replayed and scored without a correct transition is a
+// miss, not an unscored episode.
+func TestScorerMissesEpisodeAfterUncoveredOnset(t *testing.T) {
+	p := coldParams()
+	span := Span{From: weekStart, To: weekStart + 9}
+	records := NewSynth(siteA, 1).Pool(Traffic{From: span.From + 3, To: span.From + 8,
+		PerMinute: 1, Label: LabelAttack, Episode: "e1"}, 1)
+	sc, err := NewScorer(p, []EpisodeTruth{{Episode: "e1", Label: LabelAttack, Site: siteA, Keys: []KeyID{truthSiteKey}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = sc.Observe(siteA, records, []Span{span}); err != nil {
+		t.Fatal(err)
+	}
+	seg := segment(siteA, records, []Span{span}, Span{From: span.From, To: span.From + 2}, Span{From: span.From + 4, To: span.To})
+	for _, tk := range feedTicks(t, mustSession(t, SessionConfig{Params: p}), seg) {
+		sc.Tick(tk)
+	}
+	got := outcome(t, sc.Report(), siteA, "e1")
+	if got.Status != OutcomeMissed || got.Detected || got.Onset != records[0].T {
+		t.Fatalf("outcome %+v, want missed at the original onset", got)
+	}
+}

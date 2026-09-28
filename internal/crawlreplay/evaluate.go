@@ -118,8 +118,9 @@ type siteDay struct {
 }
 
 type onset struct {
-	t    int64
-	seen bool // the findings active at the onset minute are recorded
+	t       int64
+	minutes []int64 // every minute holding one of the episode's requests, ascending
+	seen    bool    // the findings active at the onset minute are recorded
 }
 
 // Scorer turns a session's ticks into scored evidence. Without a truth
@@ -131,7 +132,8 @@ type Scorer struct {
 	truth     map[episodeSite]*EpisodeTruth
 	labels    map[string]string // episode -> label
 	onsets    map[episodeSite]*onset
-	scored    map[string][]Span
+	declared  map[string][]Span // scoring spans the segments declared
+	scored    map[string][]Span // scored minutes actually replayed
 	results   map[episodeSite]*EpisodeResult
 	events    []ScoredEvent
 	days      map[siteDay]*SiteDay
@@ -162,7 +164,7 @@ func ValidateTruth(truth []EpisodeTruth) error {
 
 func newScorer(truth []EpisodeTruth) (*Scorer, error) {
 	sc := &Scorer{suggest: truth == nil, truth: map[episodeSite]*EpisodeTruth{}, labels: map[string]string{},
-		onsets: map[episodeSite]*onset{}, scored: map[string][]Span{}, results: map[episodeSite]*EpisodeResult{},
+		onsets: map[episodeSite]*onset{}, declared: map[string][]Span{}, scored: map[string][]Span{}, results: map[episodeSite]*EpisodeResult{},
 		days: map[siteDay]*SiteDay{}, wasScored: map[string]bool{}}
 	for _, tr := range truth {
 		es := episodeSite{tr.Episode, tr.Site}
@@ -196,6 +198,7 @@ func newScorer(truth []EpisodeTruth) (*Scorer, error) {
 func (sc *Scorer) Observe(site string, records []Record, score []Span) error {
 	labels := maps.Clone(sc.labels)
 	onsets := map[episodeSite]int64{}
+	minutes := map[episodeSite][]int64{}
 	for _, r := range records {
 		if r.Validate() != nil || r.Site != site {
 			return ErrSite
@@ -214,15 +217,21 @@ func (sc *Scorer) Observe(site string, records []Record, score []Span) error {
 		if t, ok := onsets[es]; !ok || r.T < t {
 			onsets[es] = r.T
 		}
+		minutes[es] = append(minutes[es], r.T/60)
 	}
 	sc.labels = labels
 	for es, t := range onsets {
-		if o := sc.onsets[es]; o == nil {
-			sc.onsets[es] = &onset{t: t}
-		} else {
-			o.t = min(o.t, t)
+		o := sc.onsets[es]
+		if o == nil {
+			o = &onset{t: t}
+			sc.onsets[es] = o
 		}
+		o.t = min(o.t, t)
+		o.minutes = append(o.minutes, minutes[es]...)
+		slices.Sort(o.minutes)
+		o.minutes = slices.Compact(o.minutes)
 	}
+	sc.declared[site] = append(sc.declared[site], score...)
 	return nil
 }
 
@@ -423,7 +432,10 @@ func (sc *Scorer) Report() Scoring {
 			r.Status = OutcomeAbsent
 		case r.Detected:
 			r.Status, r.Onset = OutcomeDetected, o.t
-		case !inSpans(sc.scored[es.site], o.t/60):
+		case !inSpans(sc.declared[es.site], o.t/60),
+			!slices.ContainsFunc(o.minutes, func(m int64) bool { return inSpans(sc.scored[es.site], m) }):
+			// It began outside scoring, or none of its requests was
+			// replayed in a scored minute: not evidence of a miss.
 			r.Status, r.Onset = OutcomeUnscored, o.t
 		default:
 			r.Status, r.Onset = OutcomeMissed, o.t
