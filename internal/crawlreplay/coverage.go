@@ -466,6 +466,8 @@ func (c *bundleCheck) record(r Record) error {
 	switch {
 	case r.Account != s.m.Account:
 		return bundleError("account")
+	case r.BotProof != "" && c.m.BotEvidence == nil:
+		return bundleError("bot evidence")
 	case r.Seq <= s.seq, r.Seq > s.m.Lines, r.File < s.file, r.File >= len(s.inputs):
 		return bundleError("file order")
 	case !c.placed(s, minute):

@@ -106,7 +106,12 @@ func TestBotEvidenceIsClosed(t *testing.T) {
 	if _, err := parseBotEvidence([]byte(proof(`"bot":"googlebot","kind":"range","prefix":"203.0.113.0/25",` + times))); err != nil {
 		t.Fatalf("valid evidence refused: %v", err)
 	}
+	header := `{"format_version":1,"d2_revision":"` + d2Revision + `","config_sha256":"` + d2Config + `"`
+	if _, err := parseBotEvidence([]byte(header + `,"proofs":[]}`)); err != nil {
+		t.Fatalf("explicitly empty evidence refused: %v", err)
+	}
 	for name, doc := range map[string]string{
+		"missing proofs":  header + `}`,
 		"dirty revision":  strings.Replace(proof(`"bot":"googlebot","kind":"range","prefix":"203.0.113.0/25",`+times), d2Revision, "dirty", 1),
 		"config digest":   strings.Replace(proof(`"bot":"googlebot","kind":"range","prefix":"203.0.113.0/25",`+times), d2Config, "x", 1),
 		"version":         strings.Replace(proof(`"bot":"googlebot","kind":"range","prefix":"203.0.113.0/25",`+times), `"format_version":1`, `"format_version":2`, 1),

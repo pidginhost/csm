@@ -47,7 +47,7 @@ func parseBotEvidence(b []byte) (*botEvidence, error) {
 	if err := crawlreplay.DecodeStrictJSON(b, &e); err != nil {
 		return nil, errBotEvidence
 	}
-	if e.FormatVersion != 1 || !revisionHex.MatchString(e.D2Revision) || !lowerHex64.MatchString(e.ConfigSHA256) {
+	if e.FormatVersion != 1 || !revisionHex.MatchString(e.D2Revision) || !lowerHex64.MatchString(e.ConfigSHA256) || e.Proofs == nil {
 		return nil, errBotEvidence
 	}
 	e.ranges, e.dns = map[string][]botProof{}, map[string][]botProof{}

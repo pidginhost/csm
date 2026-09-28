@@ -114,7 +114,7 @@ func (r Record) Validate() error {
 		return fieldError("r")
 	case r.Bot != "" && !botIdentity.MatchString(r.Bot):
 		return fieldError("bot")
-	case r.BotProof != "" && (r.Bot == "" || (r.BotProof != BotProofRange && r.BotProof != BotProofDNS && r.BotProof != BotProofNegative)):
+	case r.BotProof != "" && (r.Bot == "" || r.Binding == "" || (r.BotProof != BotProofRange && r.BotProof != BotProofDNS && r.BotProof != BotProofNegative)):
 		return fieldError("bot_proof")
 	}
 	episodic := r.Label == LabelAttack || r.Label == LabelOverload

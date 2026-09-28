@@ -190,6 +190,36 @@ func validateFiles(f bundleFiles, proof *CoverageProof) ([]BundleSite, []Record,
 	return sites, seen, err
 }
 
+func TestBundleBotProofRequiresEvidence(t *testing.T) {
+	for _, proof := range []string{BotProofRange, BotProofDNS, BotProofNegative} {
+		t.Run(proof, func(t *testing.T) {
+			for _, withEvidence := range []bool{false, true} {
+				f := buildBundle(t, bundleStages{
+					rows: func(recs *[]Record, _ *[]Volume) {
+						(*recs)[0].Bot, (*recs)[0].BotProof = "googlebot", proof
+					},
+					manifest: func(m *Manifest) {
+						if withEvidence {
+							m.BotEvidence = &BotEvidenceRef{
+								Digest:     Digest{SHA256: strings.Repeat("b", 64), Bytes: 100},
+								D2Revision: strings.Repeat("c", 40), ConfigSHA256: strings.Repeat("d", 64),
+							}
+						}
+					},
+				})
+				_, seen, err := validateFiles(f, nil)
+				if withEvidence {
+					if err != nil || int64(len(seen)) != f.manifest.Outputs[0].Rows || seen[0].BotProof != proof {
+						t.Fatalf("referenced proof: rows=%d err=%v", len(seen), err)
+					}
+				} else if !errors.Is(err, ErrBundle) || len(seen) != 0 {
+					t.Fatalf("proof without provenance: rows=%d err=%v", len(seen), err)
+				}
+			}
+		})
+	}
+}
+
 func TestDecodeManifestIsCanonical(t *testing.T) {
 	f := buildBundle(t, bundleStages{})
 	m, err := DecodeManifest(f.raw)

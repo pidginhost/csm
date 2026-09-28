@@ -581,7 +581,7 @@ func TestRegistryLockSurvivesReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer first.close()
-	names := map[string]string{"acct-000001": strings.Repeat("a", 64)}
+	names := map[string]string{"acct-000001": "000001" + strings.Repeat("a", 58)}
 	if _, err = first.add(names); err != nil {
 		t.Fatal(err)
 	}

@@ -59,14 +59,15 @@ func TestRecordValidateRejectsEachField(t *testing.T) {
 			r.Class = ClassDynamic
 			r.L1 = ""
 		},
-		"status":       func(r *Record) { r.Status = 600 },
-		"referer":      func(r *Record) { r.Referer = 4 },
-		"bot text":     func(r *Record) { r.Bot = "Googlebot/2.1 (+http://crawler.example/bot.html)" },
-		"bot proof":    func(r *Record) { r.Bot = "" },
-		"proof kind":   func(r *Record) { r.BotProof = "pending" },
-		"label":        func(r *Record) { r.Label = "maybe" },
-		"episode none": func(r *Record) { r.Episode = "" },
-		"episode text": func(r *Record) { r.Episode = "Site A crawl" },
+		"status":        func(r *Record) { r.Status = 600 },
+		"referer":       func(r *Record) { r.Referer = 4 },
+		"bot text":      func(r *Record) { r.Bot = "Googlebot/2.1 (+http://crawler.example/bot.html)" },
+		"bot proof":     func(r *Record) { r.Bot = "" },
+		"proof kind":    func(r *Record) { r.BotProof = "pending" },
+		"unbound proof": func(r *Record) { r.Binding = "" },
+		"label":         func(r *Record) { r.Label = "maybe" },
+		"episode none":  func(r *Record) { r.Episode = "" },
+		"episode text":  func(r *Record) { r.Episode = "Site A crawl" },
 		"healthy episode": func(r *Record) {
 			r.Label = LabelHealthy
 		},

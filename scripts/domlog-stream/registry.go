@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"syscall"
 
 	"github.com/pidginhost/csm/internal/crawlreplay"
@@ -22,8 +23,9 @@ type identityRegistry struct {
 	SaltFingerprint string            `json:"salt_fingerprint"`
 	Names           map[string]string `json:"names"`
 
-	path string
-	lock *os.File
+	path    string
+	lock    *os.File
+	syncDir func(string) error
 }
 
 var registeredName = regexp.MustCompile(`^(?:dom-[0-9a-f]{6}\.example|acct-[0-9a-f]{6}|e-[0-9a-f]{16})$`)
@@ -31,15 +33,20 @@ var registeredName = regexp.MustCompile(`^(?:dom-[0-9a-f]{6}\.example|acct-[0-9a
 // openRegistry locks the registry against concurrent conversions and reads
 // it, creating an empty one for a salt used for the first time.
 func openRegistry(path, fingerprint string) (*identityRegistry, error) {
-	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600) // #nosec G304 -- operator-chosen registry path; symlinks refused
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o600) // #nosec G304 -- operator-chosen registry path; symlinks refused
 	if err != nil {
+		return nil, errRegistry
+	}
+	info, err := lock.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		lock.Close()
 		return nil, errRegistry
 	}
 	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		lock.Close()
 		return nil, errRegistry
 	}
-	r := &identityRegistry{FormatVersion: 1, SaltFingerprint: fingerprint, Names: map[string]string{}, path: path, lock: lock}
+	r := &identityRegistry{FormatVersion: 1, SaltFingerprint: fingerprint, Names: map[string]string{}, path: path, lock: lock, syncDir: syncRegistryDirectory}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- operator-chosen registry path; symlinks refused
 	if errors.Is(err, os.ErrNotExist) {
 		return r, nil
@@ -49,17 +56,27 @@ func openRegistry(path, fingerprint string) (*identityRegistry, error) {
 		return nil, errRegistry
 	}
 	info, statErr := f.Stat()
+	if statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+		f.Close()
+		r.close()
+		return nil, errRegistry
+	}
 	b, readErr := io.ReadAll(f)
 	closeErr := f.Close()
 	var stored identityRegistry
 	switch {
-	case statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0, readErr != nil, closeErr != nil,
+	case readErr != nil, closeErr != nil,
 		crawlreplay.DecodeStrictJSON(b, &stored) != nil, stored.FormatVersion != 1, stored.SaltFingerprint != fingerprint, stored.Names == nil:
 		r.close()
 		return nil, errRegistry
 	}
 	for name, digest := range stored.Names {
 		if !registeredName.MatchString(name) || !lowerHex64.MatchString(digest) {
+			r.close()
+			return nil, errRegistry
+		}
+		_, prefix, _ := strings.Cut(strings.TrimSuffix(name, ".example"), "-")
+		if !strings.HasPrefix(digest, prefix) {
 			r.close()
 			return nil, errRegistry
 		}
@@ -103,7 +120,20 @@ func (r *identityRegistry) save() error {
 		os.Remove(f.Name())
 		return errRegistry
 	}
+	// The rename must survive a crash before any dependent bundle can be
+	// published. Syncing only the temporary file does not persist its name.
+	if err = r.syncDir(filepath.Dir(r.path)); err != nil {
+		return errRegistry
+	}
 	return nil
 }
 
 func (r *identityRegistry) close() { r.lock.Close() }
+
+func syncRegistryDirectory(path string) error {
+	dir, err := os.Open(path) // #nosec G304 -- parent of the operator-chosen registry path
+	if err != nil {
+		return err
+	}
+	return errors.Join(dir.Sync(), dir.Close())
+}

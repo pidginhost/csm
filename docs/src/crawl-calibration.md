@@ -89,11 +89,13 @@ ranges and reverse-DNS verdicts, each for one identity and valid from `from`
 }
 ```
 
+The `proofs` list is required; use `[]` for an explicitly empty export.
 The converter looks nothing up. A claimed identity is `range` when a range of
 that same identity held the client at the logged time, else `dns` or
 `negative` from a verdict for that exact address; a user agent alone, another
 bot's range, an expired proof or contradictory verdicts leave the claim
 unverified. The manifest records the evidence digest and its list revision.
+Bundle validation refuses a proof without that reference or a client binding.
 
 Aliases decide which Referers count as same-site; a `www` host counts only
 when it is listed. Behind a trusted proxy the client is the rightmost
@@ -198,10 +200,13 @@ components must repeat these measurements with their own allocations and I/O.
 The identity registry reserves site, account and episode pseudonyms across
 all bundles under the same salt. Key and binding pseudonyms are 64 bits and
 are checked within each bundle only; registering every client and pattern
-would grow the registry with all traffic ever converted. Keep the registry and its
-lock file together; never replace or remove the lock while a conversion is
-running. A failed publication may leave conservative identity reservations.
-Keep those reservations on retry instead of rolling the registry back.
+would grow the registry with all traffic ever converted. The registry and its
+lock must be private regular files; inconsistent digest prefixes are refused.
+Registry replacement is synced to its directory before bundle publication.
+Keep the registry and its lock file together; never replace or remove the lock
+while a conversion is running. A failed publication may leave conservative
+identity reservations. Keep those reservations on retry instead of rolling
+the registry back.
 
 A site with no independently certified minutes remains in the bundle: use an
 empty certified-span list and reasoned exclusions covering its whole period.
