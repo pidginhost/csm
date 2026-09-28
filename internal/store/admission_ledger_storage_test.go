@@ -531,6 +531,110 @@ func TestAdmissionLedgerOpenRejectsUnownedRows(t *testing.T) {
 	}
 }
 
+// Damage that keeps every total balanced: only the ownership proof can
+// refuse it, so each case pins one of its guards.
+func TestAdmissionLedgerOpenRefusesBalancedDamage(t *testing.T) {
+	for name, damage := range map[string]func(*testing.T, *bolt.Tx, mixedLedger) error{
+		"queued root evidence missing": func(_ *testing.T, tx *bolt.Tx, m mixedLedger) error {
+			c, err := loadCandidate(tx, m.queued)
+			if err != nil {
+				return err
+			}
+			for _, b := range []string{admissionEvidenceBucket, admissionRefsBucket, admissionReportsBucket} {
+				if err = tx.Bucket([]byte(b)).Delete([]byte(c.Roots[0])); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		"orphan reference row": func(_ *testing.T, tx *bolt.Tx, _ mixedLedger) error {
+			return putRefs(tx, admission.EvidenceID("ev_00000000000000000000000000000000"), admission.EvidenceRefs{Refs: 1})
+		},
+		"unknown outcome unpinned": func(_ *testing.T, tx *bolt.Tx, m mixedLedger) error {
+			h, _, err := loadHistoryEntry(tx, m.unknown)
+			if err != nil {
+				return err
+			}
+			c, err := loadCandidate(tx, m.unknown)
+			if err != nil {
+				return err
+			}
+			h.Pinned = false
+			h.Eligible, _ = admission.HistoryTimes(h.Ended, c.ExpiresAt, false)
+			if err = putHistoryEntry(tx, m.unknown, h); err != nil {
+				return err
+			}
+			return adjustStorage(tx, func(s *admission.StorageState) {
+				s.Recovery -= uint64(h.Charged())
+				s.General.Used += uint64(h.General)
+				s.Reserved.Used += uint64(h.Reserved)
+			})
+		},
+		"ring position beyond the last": func(t *testing.T, tx *bolt.Tx, _ mixedLedger) error {
+			rings := tx.Bucket([]byte(admissionRingsBucket))
+			k, v := rings.Cursor().Seek([]byte{ringEnded})
+			if k == nil || k[0] != ringEnded {
+				t.Fatal("no ended ring entry")
+			}
+			id := append([]byte(nil), v...)
+			if err := rings.Delete(k); err != nil {
+				return err
+			}
+			s, err := loadStorageState(tx)
+			if err != nil {
+				return err
+			}
+			// A later push would overwrite this live slot.
+			return rings.Put(ringKey(ringEnded, s.Ended.Last+5), id)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			m := f.mixed()
+			if err := f.db.bolt.Update(func(tx *bolt.Tx) error { return damage(t, tx, m) }); err != nil {
+				t.Fatal(err)
+			}
+			before := dbSnapshot(t, f.db)
+			if _, err := OpenAdmissionLedger(f.db, f.reg); !isCorrupt(err) {
+				t.Fatalf("damage opened: %v", err)
+			}
+			if !reflect.DeepEqual(before, dbSnapshot(t, f.db)) {
+				t.Fatal("refused open changed the ledger")
+			}
+		})
+	}
+	// Reservation froze every root: a reserved candidate must still own all of
+	// them, though its paid cost would cover a smaller mask.
+	t.Run("reserved candidate with a partial root mask", func(t *testing.T) {
+		f := newLedgerFixture(t)
+		f.fillRoots(1, admission.MaxRoots)
+		ids := f.queuedIDs()
+		if len(ids) != 1 {
+			t.Fatalf("queued %d candidates", len(ids))
+		}
+		if _, _, _, err := f.l.Reserve(ids[0], admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+			h, _, err := loadHistoryEntry(tx, ids[0])
+			if err != nil {
+				return err
+			}
+			h.RootMask = 1
+			return putHistoryEntry(tx, ids[0], h)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		before := dbSnapshot(t, f.db)
+		if _, err := OpenAdmissionLedger(f.db, f.reg); !isCorrupt(err) {
+			t.Fatalf("partial mask opened: %v", err)
+		}
+		if !reflect.DeepEqual(before, dbSnapshot(t, f.db)) {
+			t.Fatal("refused open changed the ledger")
+		}
+	})
+}
+
 // Validate missing roots before pruning can erase their last owner. This
 // also keeps the upgrade guard observable after the final ownership proof.
 func TestAdmissionLedgerUpgradeRejectsPrunedMissingRoot(t *testing.T) {
