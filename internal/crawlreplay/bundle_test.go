@@ -541,6 +541,39 @@ func TestManifestLineByteAccounting(t *testing.T) {
 	}
 }
 
+func TestManifestDisorderIncludesLossBrackets(t *testing.T) {
+	const bound = int64(60)
+	const at = (periodFrom + 20) * 60
+	for name, tc := range map[string]struct {
+		after, before int64
+		invalid       bool
+	}{
+		"forward":               {at, at + bound + 1, false},
+		"equal bound":           {at, at - bound, false},
+		"understated":           {at, at - bound - 1, true},
+		"outside period":        {at - 3600, at - 3600 - bound - 1, true},
+		"open start":            {0, at, false},
+		"open end":              {at, 0, false},
+		"no timed neighbours":   {0, 0, false},
+		"large valid timestamp": {math.MaxInt64, math.MaxInt64 - bound, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := buildBundle(t, bundleStages{manifest: func(m *Manifest) {
+				m.Inputs[0].DisorderSeconds = bound
+				addUntimed(m, UntimedLoss{Category: LossRejected, After: tc.after, Before: tc.before, Lines: 1}, 100)
+			}})
+			_, err := DecodeManifest(f.raw)
+			if tc.invalid {
+				if !errors.Is(err, ErrManifest) {
+					t.Fatalf("loss bracket contradicts input disorder: %v, want ErrManifest", err)
+				}
+			} else if err != nil {
+				t.Fatalf("consistent disorder refused: %v", err)
+			}
+		})
+	}
+}
+
 type failOnce struct {
 	r      io.Reader
 	failed bool

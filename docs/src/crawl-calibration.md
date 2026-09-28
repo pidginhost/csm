@@ -213,9 +213,10 @@ any unknown minute and never train a baseline. These bounds assume each copy
 lists requests in the order they completed. The manifest records, per copy,
 how far any logged time trails an earlier one; that disorder is a lower bound
 on completion delay, so a proof whose lateness bound is smaller is refused.
-Without `--coverage` the report
-holds only volume, silence and shape diagnostics over each site's observed
-extent and says its coverage is unqualified.
+The declared disorder must also cover inversions between the timed neighbours
+of lost lines, including neighbours outside the recording period.
+Without `--coverage` the report holds only volume, silence and shape diagnostics
+over each site's observed extent and says its coverage is unqualified.
 
 The report records its provenance (the manifest and proof digests, both tool
 revisions, the salt fingerprint, the period and the bot evidence) and, per

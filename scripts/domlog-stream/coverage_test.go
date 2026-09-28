@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -204,6 +206,49 @@ func TestConvertLossAccounting(t *testing.T) {
 	}
 	if _, ok := bindings[14]; ok {
 		t.Fatal("a final line without LF became a request")
+	}
+}
+
+func TestConvertDisorderAcrossCopies(t *testing.T) {
+	logAt := func(hms string) string {
+		return line("192.0.2.10", hms, "GET /?p=1 HTTP/1.1", "200", "") + "\n"
+	}
+	c := convertLogs(t, []synthLog{
+		{name: "example.com", data: logAt("19:01:00") + logAt("19:40:00") + "malformed\n" + logAt("19:30:00")},
+		{name: "example.com-ssl.gz", data: logAt("19:00:00") + logAt("19:00:20") + "malformed\n" + logAt("19:00:10"), gz: true},
+	}, "")
+	// Only the first request in the plain copy is in the period. Its loss
+	// neighbours still prove 600 s of disorder. The gzip copy is independent.
+	for i, want := range []int64{600, 10} {
+		if got := c.manifest.Inputs[i].DisorderSeconds; got != want {
+			t.Fatalf("copy %d disorder = %d, want %d", i, got, want)
+		}
+	}
+	for _, late := range []int64{599, 600} {
+		p := coverageProof(t, c, nil)
+		p.LatenessSeconds = late
+		_, err := crawlreplay.ValidateBundle(crawlreplay.BundleInput{Manifest: c.manifest, Proof: p,
+			Volume:  bytes.NewReader(mustRead(t, filepath.Join(c.dir, "volume.jsonl.gz"))),
+			Records: bytes.NewReader(mustRead(t, filepath.Join(c.dir, "records.jsonl.gz")))}, 1, crawlreplay.BundleVisitor{})
+		if late < 600 {
+			if !errors.Is(err, crawlreplay.ErrProof) {
+				t.Fatalf("lateness below out-of-period disorder: %v, want ErrProof", err)
+			}
+		} else if err != nil {
+			t.Fatalf("lateness equal to disorder refused: %v", err)
+		}
+	}
+	for i := range c.manifest.Inputs {
+		m := c.manifest
+		m.Inputs = slices.Clone(m.Inputs)
+		m.Inputs[i].DisorderSeconds--
+		raw, err := json.MarshalIndent(m, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = crawlreplay.DecodeManifest(append(raw, '\n')); !errors.Is(err, crawlreplay.ErrManifest) {
+			t.Fatalf("copy %d loss bracket contradicts disorder: %v, want ErrManifest", i, err)
+		}
 	}
 }
 

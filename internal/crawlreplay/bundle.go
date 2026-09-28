@@ -229,19 +229,19 @@ func (m Manifest) Validate() error {
 	if len(kinds) != 2 {
 		return manifestError("outputs")
 	}
-	inputs := map[string]int{}
+	inputs := map[string][]Input{}
 	read := map[string]int64{}
 	// Two copies with the same nonempty content would count their requests twice.
 	content := map[string]bool{}
 	for _, in := range m.Inputs {
 		switch {
-		case in.Ordinal != inputs[in.Site], !sha256Hex.MatchString(in.SHA256), in.Bytes < 0,
+		case in.Ordinal != len(inputs[in.Site]), !sha256Hex.MatchString(in.SHA256), in.Bytes < 0,
 			!sha256Hex.MatchString(in.ContentSHA256), in.ContentBytes < 0,
 			in.ContentBytes > 0 && content[in.ContentSHA256],
 			in.Extent != nil && !within(*in.Extent, m.Period), in.DisorderSeconds < 0:
 			return manifestError("inputs")
 		}
-		inputs[in.Site]++
+		inputs[in.Site] = append(inputs[in.Site], in)
 		var ok bool
 		if read[in.Site], ok = checkedSum(read[in.Site], in.ContentBytes); !ok {
 			return manifestError("inputs")
@@ -253,7 +253,7 @@ func (m Manifest) Validate() error {
 	sites := map[string]bool{}
 	for i := range m.Sites {
 		s := &m.Sites[i]
-		if !ValidSite(s.Site) || sites[s.Site] || inputs[s.Site] == 0 {
+		if !ValidSite(s.Site) || sites[s.Site] || len(inputs[s.Site]) == 0 {
 			return manifestError("sites")
 		}
 		// Every decompressed byte of a site's copies is a line it counted.
@@ -271,7 +271,7 @@ func (m Manifest) Validate() error {
 	return nil
 }
 
-func (s *SiteManifest) validate(period Span, inputs int) error {
+func (s *SiteManifest) validate(period Span, inputs []Input) error {
 	counters := []int64{s.Bytes, s.UnplacedBytes, s.Lines, s.Records, s.Oversized, s.Rejected, s.TimeInvalid,
 		s.TimeFuture, s.OutOfPeriod, s.Incomplete, s.NoTarget, s.AttributionLoss, s.InvalidClient, s.Infrastructure}
 	for _, n := range counters {
@@ -312,8 +312,13 @@ func (s *SiteManifest) validate(period Span, inputs int) error {
 	}
 	untimed := map[string]int64{}
 	for _, u := range s.Untimed {
-		if _, known := untimedCategories[u.Category]; !known || u.Input < 0 || u.Input >= inputs || u.Lines < 1 || u.After < 0 || u.Before < 0 {
+		if _, known := untimedCategories[u.Category]; !known || u.Input < 0 || u.Input >= len(inputs) || u.Lines < 1 || u.After < 0 || u.Before < 0 {
 			return manifestError("untimed")
+		}
+		// Both neighbours are timed lines of this copy, even when outside
+		// the recording period and therefore absent from the record stream.
+		if u.Before > 0 && u.After-u.Before > inputs[u.Input].DisorderSeconds {
+			return manifestError("input disorder")
 		}
 		if untimed[u.Category], ok = checkedSum(untimed[u.Category], u.Lines); !ok {
 			return manifestError("untimed")
