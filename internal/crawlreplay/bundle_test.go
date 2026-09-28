@@ -299,7 +299,7 @@ func TestDecodeManifestIsCanonical(t *testing.T) {
 		"version 1":       older(1),
 		"version 2":       older(2),
 		"null untimed":    bytes.Replace(f.raw, []byte(`"untimed": []`), []byte(`"untimed": null`), 1),
-		"null identities": bytes.Replace(f.raw, []byte(`"identities": [`), []byte(`"identities": null, "x": [`), 1),
+		"null identities": buildBundle(t, bundleStages{manifest: func(m *Manifest) { m.Identities = nil }}).raw,
 	} {
 		if !bytes.Contains(f.raw, []byte(`"untimed": []`)) || !bytes.Contains(f.raw, version) {
 			t.Fatal("fixture manifest lost its empty untimed list or its format version")
@@ -309,6 +309,8 @@ func TestDecodeManifestIsCanonical(t *testing.T) {
 		}
 		if _, err := DecodeManifest(raw); !errors.Is(err, ErrManifest) {
 			t.Errorf("%s: err = %v, want ErrManifest", name, err)
+		} else if name == "null identities" && err.Error() != manifestError("identities").Error() {
+			t.Errorf("%s: err = %v, want an identity validation error", name, err)
 		}
 	}
 }
