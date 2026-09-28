@@ -489,6 +489,48 @@ func TestAdmissionLedgerUpgradeRejectsUnownedRows(t *testing.T) {
 	}
 }
 
+// A schema-4 ledger proves the rows no candidate walk reaches at every open,
+// not only during an upgrade.
+func TestAdmissionLedgerOpenRejectsUnownedRows(t *testing.T) {
+	for _, kind := range []string{"report", "nested report", "foreign attempt", "attempt past the count"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			id := f.queued()
+			_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = f.db.bolt.Update(func(tx *bolt.Tx) error {
+				switch kind {
+				case "report":
+					return tx.Bucket([]byte(admissionReportsBucket)).Put([]byte("ev_00000000000000000000000000000000"), []byte("damaged"))
+				case "nested report":
+					c, loadErr := loadCandidate(tx, id)
+					if loadErr != nil {
+						return loadErr
+					}
+					_, createErr := tx.Bucket([]byte(admissionReportsBucket)).CreateBucket([]byte(c.Roots[0]))
+					return createErr
+				case "foreign attempt":
+					a.Attempt, _ = admission.NewAttempt(admission.CandidateID("cand_00000000000000000000000000000000"), 1)
+				default:
+					a.Attempt, _ = admission.NewAttempt(id, 2)
+				}
+				return putAttempt(tx, a)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			before := dbSnapshot(t, f.db)
+			if _, err = OpenAdmissionLedger(f.db, f.reg); !isCorrupt(err) {
+				t.Fatalf("unowned row opened: %v", err)
+			}
+			if !reflect.DeepEqual(before, dbSnapshot(t, f.db)) {
+				t.Fatal("refused open changed the ledger")
+			}
+		})
+	}
+}
+
 // Validate missing roots before pruning can erase their last owner. This
 // also keeps the upgrade guard observable after the final ownership proof.
 func TestAdmissionLedgerUpgradeRejectsPrunedMissingRoot(t *testing.T) {
