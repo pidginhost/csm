@@ -23,8 +23,10 @@
 // profile it began with, until a complete window clears it. A Scorer credits
 // an episode only with a High transition at a key its private truth table
 // names, whose window holds the episode's requests; a window's majority
-// label is a suggestion for review. An undetected episode whose onset
-// minute was not replayed as scored is not_scored, even if a declared
-// scoring span includes it. Relevant anomalous windows retain their margins
-// even when an already active finding prevents a new detection.
+// label is a suggestion for review. Onset is the episode's first request the
+// detector counts (not infrastructure or static). An undetected episode that
+// began outside the scoring spans, or none of whose counted requests was
+// replayed in a scored minute, is not_scored; otherwise it is missed.
+// Relevant anomalous windows retain their margins even when an already
+// active finding prevents a new detection.
 package crawlreplay

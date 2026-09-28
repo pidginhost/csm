@@ -118,8 +118,9 @@ type siteDay struct {
 }
 
 type onset struct {
-	t       int64
-	minutes []int64 // every minute holding one of the episode's requests, ascending
+	t       int64   // first counted request, or first request when none is counted
+	counted bool    // t is a request the detector counts
+	minutes []int64 // every minute holding one of the episode's counted requests, ascending
 	seen    bool    // the findings active at the onset minute are recorded
 }
 
@@ -193,11 +194,14 @@ func newScorer(truth []EpisodeTruth) (*Scorer, error) {
 // its coverage excludes, before its ticks: an episode's onset is its first
 // labeled request whether or not that minute can be replayed. With a truth
 // table, every episode in a segment with scored minutes needs an entry for
-// its site, and a record's label must match its episode's. A rejected
-// observation leaves the scorer unchanged.
+// its site, and a record's label must match its episode's. Onset and the
+// replayed evidence come from requests the detector counts: infrastructure
+// and ineligible requests inside a labeled range never move the onset. An
+// episode with no counted request keeps its first request as onset and is
+// never scored. A rejected observation leaves the scorer unchanged.
 func (sc *Scorer) Observe(site string, records []Record, score []Span) error {
 	labels := maps.Clone(sc.labels)
-	onsets := map[episodeSite]int64{}
+	onsets := map[episodeSite]onset{}
 	minutes := map[episodeSite][]int64{}
 	for _, r := range records {
 		if r.Validate() != nil || r.Site != site {
@@ -214,25 +218,41 @@ func (sc *Scorer) Observe(site string, records []Record, score []Span) error {
 			return ErrTruth
 		}
 		labels[r.Episode] = r.Label
-		if t, ok := onsets[es]; !ok || r.T < t {
-			onsets[es] = r.T
+		counted := r.Class != ClassOther && !r.Infra
+		onsets[es] = earlierOnset(onsets[es], onset{t: r.T, counted: counted})
+		if counted {
+			minutes[es] = append(minutes[es], r.T/60)
 		}
-		minutes[es] = append(minutes[es], r.T/60)
 	}
 	sc.labels = labels
-	for es, t := range onsets {
+	for es, first := range onsets {
 		o := sc.onsets[es]
 		if o == nil {
-			o = &onset{t: t}
+			o = &onset{t: first.t, counted: first.counted}
 			sc.onsets[es] = o
 		}
-		o.t = min(o.t, t)
+		merged := earlierOnset(onset{t: o.t, counted: o.counted}, first)
+		o.t, o.counted = merged.t, merged.counted
 		o.minutes = append(o.minutes, minutes[es]...)
 		slices.Sort(o.minutes)
 		o.minutes = slices.Compact(o.minutes)
 	}
 	sc.declared[site] = append(sc.declared[site], score...)
 	return nil
+}
+
+// earlierOnset prefers a counted request over an uncounted one, and the
+// earlier of two of the same kind. The zero onset is empty.
+func earlierOnset(a, b onset) onset {
+	switch {
+	case a.t == 0:
+		return b
+	case b.t == 0, a.counted && !b.counted:
+		return a
+	case b.counted && !a.counted, b.t < a.t:
+		return b
+	}
+	return a
 }
 
 // relevant reports whether a window of key speaks to episode es: a truth

@@ -342,11 +342,12 @@ and other unscored minutes. Fixtures add synthetic attacks from one-, three-
 and twenty-request clients with optional padding and churn, replayed cold and
 scored by suggestion.
 
-Episode onset remains the first labeled request across the experiment, even
-when its minute is excluded. An undetected episode that began outside the
-scoring spans, or none of whose requests was replayed in a scored minute, is
-reported as `not_scored`, not as a qualified detector miss; one whose later
-requests were replayed and scored is a miss. Relevant anomalous windows keep
+Episode onset remains the first labeled request across the experiment that
+the detector counts, even when its minute is excluded; infrastructure and
+static requests inside a labeled range never move it. An undetected episode
+that began outside the scoring spans, or none of whose counted requests was
+replayed in a scored minute, is reported as `not_scored`, not as a qualified
+detector miss; one whose later requests were replayed and scored is a miss. Relevant anomalous windows keep
 their margins even when an already active finding prevents a new detection.
 Only covered records contribute to windows, baselines and
 detections.

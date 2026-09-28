@@ -233,3 +233,50 @@ func TestScorerKeepsMissAcrossOverlappingDeclarations(t *testing.T) {
 		}
 	}
 }
+
+// Onset and the replayed evidence come from requests the detector counts:
+// infrastructure and static requests inside a labeled range never move the
+// onset or make an unreplayable episode a miss.
+func TestScorerCountsOnlyEligibleRequests(t *testing.T) {
+	p := coldParams()
+	span := Span{From: weekStart, To: weekStart + 29}
+	truth := []EpisodeTruth{{Episode: "e1", Label: LabelAttack, Site: siteA, Keys: []KeyID{key1(2, 1)}}}
+	score := func(t *testing.T, recs []Record) EpisodeResult {
+		t.Helper()
+		sc, err := NewScorer(p, truth)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = sc.Observe(siteA, recs, []Span{span}); err != nil {
+			t.Fatal(err)
+		}
+		for _, tk := range feedTicks(t, mustSession(t, SessionConfig{Params: p}), segment(siteA, recs, []Span{span}, span)) {
+			sc.Tick(tk)
+		}
+		return outcome(t, sc.Report(), siteA, "e1")
+	}
+	syn := NewSynth(siteA, 3)
+	attack := syn.Rotating(Traffic{From: span.From + 20, To: span.From + 25, PerMinute: 60, L2: SynthKey(1), L1: SynthKey(2),
+		Label: LabelAttack, Episode: "e1"}, 1)
+	probe := Record{T: (span.From+2)*60 + 5, Seq: 900000, Site: siteA, Binding: "b-00000000000000aa", Class: ClassExpensive,
+		L2: SynthKey(1), L1: SynthKey(2), Status: 200, Infra: true, Label: LabelAttack, Episode: "e1"}
+	static := probe
+	static.Infra, static.Class, static.L2, static.L1, static.Seq = false, ClassOther, "", "", 900001
+
+	t.Run("ineligible requests do not move the onset", func(t *testing.T) {
+		first := attack[0].T
+		for _, r := range attack {
+			first = min(first, r.T)
+		}
+		got := score(t, append([]Record{probe, static}, attack...))
+		if !got.Detected || got.Onset != first || got.DelaySeconds != (got.DetectMinute+1)*60-first {
+			t.Fatalf("outcome %+v, want onset at the first counted request %d", got, first)
+		}
+	})
+	t.Run("only ineligible requests are not scored", func(t *testing.T) {
+		got := score(t, []Record{probe, static})
+		if got.Status != OutcomeUnscored || got.Detected {
+			t.Fatalf("outcome %+v, want not_scored", got)
+		}
+	})
+}
