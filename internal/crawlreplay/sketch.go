@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"slices"
+	"strings"
 )
 
 // SketchParams size the disposable per-minute summaries that phase 1 uses
@@ -123,10 +124,13 @@ func newKeySketch(p SketchParams) *keySketch {
 	return &keySketch{ss: newSpaceSaving(p.M), hs: &bottomH{h: p.H}}
 }
 
-func (k *keySketch) add(p SketchParams, binding string) {
+func (k *keySketch) add(p SketchParams, binding string) { k.insert(binding, p.hash(binding)) }
+
+// insert counts one request of binding, whose keyed hash is h.
+func (k *keySketch) insert(binding string, h uint64) {
 	k.bound++
 	k.ss.add(binding)
-	k.hs.add(p.hash(binding))
+	k.hs.add(h)
 }
 
 // sketchWindow is the spec 6.3 composition of one key's W minute summaries.
@@ -187,4 +191,64 @@ func composeSketches(minutes []*keySketch, k, h int) sketchWindow {
 	w.S = min(len(union), h)
 	w.LN, w.LD = max(0, w.N-w.Top), int64(max(0, w.S-k))
 	return w
+}
+
+// sketchState is a minute summary as a snapshot stores it.
+type sketchState struct {
+	Bound   int64         `json:"bound"`
+	Entries []sketchEntry `json:"entries"` // ordered by binding
+	Hashes  []uint64      `json:"hashes"`  // ascending
+}
+
+type sketchEntry struct {
+	Binding string `json:"b"`
+	Count   int64  `json:"c"`
+	Err     int64  `json:"e"`
+}
+
+func (k *keySketch) state() sketchState {
+	st := sketchState{Bound: k.bound, Entries: make([]sketchEntry, 0, len(k.ss.entries)), Hashes: slices.Clone(k.hs.hashes)}
+	for _, e := range k.ss.entries {
+		st.Entries = append(st.Entries, sketchEntry{Binding: e.binding, Count: e.count, Err: e.err})
+	}
+	slices.SortFunc(st.Entries, func(a, b sketchEntry) int { return strings.Compare(a.Binding, b.Binding) })
+	if st.Hashes == nil {
+		st.Hashes = []uint64{}
+	}
+	return st
+}
+
+// restoreSketch rebuilds a summary, refusing one that breaks the
+// Space-Saving invariants: counters sum to the bound requests, each
+// insertion error is below its counter, and no error exists before the
+// summary filled.
+func restoreSketch(p SketchParams, st sketchState) (*keySketch, error) {
+	if st.Bound < 1 || st.Entries == nil || len(st.Entries) == 0 || len(st.Entries) > p.M ||
+		st.Hashes == nil || len(st.Hashes) == 0 || len(st.Hashes) > p.H {
+		return nil, ErrSession
+	}
+	ks := newKeySketch(p)
+	var total int64
+	for i, e := range st.Entries {
+		if e.Binding == "" || (i > 0 && e.Binding <= st.Entries[i-1].Binding) || e.Count < 1 || e.Err < 0 || e.Err >= e.Count ||
+			(len(st.Entries) < p.M && e.Err != 0) {
+			return nil, ErrSession
+		}
+		var ok bool
+		if total, ok = checkedSum(total, e.Count); !ok {
+			return nil, ErrSession
+		}
+		ks.ss.index[e.Binding] = i
+		ks.ss.entries = append(ks.ss.entries, ssEntry{binding: e.Binding, count: e.Count, err: e.Err})
+	}
+	for i := 1; i < len(st.Hashes); i++ {
+		if st.Hashes[i] <= st.Hashes[i-1] {
+			return nil, ErrSession
+		}
+	}
+	if total != st.Bound {
+		return nil, ErrSession
+	}
+	ks.bound, ks.hs.hashes = st.Bound, slices.Clone(st.Hashes)
+	return ks, nil
 }

@@ -14,4 +14,11 @@
 // decoding, and a changed manifest requires a newly bound proof. Validation
 // snapshots this metadata before invoking visitors. Coverage comes only
 // from certified spans after removing every possible unknown-loss minute.
+//
+// A ReplaySession carries detector state across chronological segments, so
+// held-out minutes are judged against history learned only from earlier
+// ones. It learns a minute only when the segment declares it normal, no
+// finding is active and a complete window judged its traffic; gaps restart
+// windows without learning zeros, and a finding stays active, pinned to the
+// profile it began with, until a complete window clears it.
 package crawlreplay

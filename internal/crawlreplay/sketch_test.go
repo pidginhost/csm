@@ -1,6 +1,8 @@
 package crawlreplay
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"math/rand/v2"
@@ -342,6 +344,44 @@ func TestSketchCompositionBoundaries(t *testing.T) {
 		checkComposition(t, b, exactN, exactD, 1, colliding.M)
 	})
 
+	t.Run("restored summaries continue identically", func(t *testing.T) {
+		p := SketchParams{M: 3, H: 4, Seed: 9}
+		first, rest := "aaabbbcccdddeeeabcf", "ggghhhaaab"
+		whole := sketchOfArrivals(p, first+rest)
+		part := sketchOfArrivals(p, first)
+		raw, err := json.Marshal(part.state())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var st sketchState
+		if err = DecodeStrictJSON(raw, &st); err != nil {
+			t.Fatal(err)
+		}
+		restored, err := restoreSketch(p, st)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, b := range rest {
+			restored.add(p, string(b))
+		}
+		if !reflect.DeepEqual(restored.state(), whole.state()) {
+			t.Fatalf("restored summary %+v, want %+v", restored.state(), whole.state())
+		}
+		for name, damage := range map[string]func(*sketchState){
+			"counts disagree with bound": func(s *sketchState) { s.Bound++ },
+			"error not below count":      func(s *sketchState) { s.Entries[0].Err = s.Entries[0].Count },
+			"too many counters":          func(s *sketchState) { s.Entries = append(s.Entries, sketchEntry{Binding: "z", Count: 1}); s.Bound++ },
+			"unsorted hashes":            func(s *sketchState) { s.Hashes[0], s.Hashes[1] = s.Hashes[1], s.Hashes[0] },
+			"too many hashes":            func(s *sketchState) { s.Hashes = append(s.Hashes, ^uint64(0)) },
+			"duplicate binding":          func(s *sketchState) { s.Entries[1].Binding = s.Entries[0].Binding },
+		} {
+			st := whole.state()
+			damage(&st)
+			if _, err := restoreSketch(p, st); !errors.Is(err, ErrSession) {
+				t.Errorf("%s: %v, want ErrSession", name, err)
+			}
+		}
+	})
 }
 
 // bindingHashVector is the keyed hash of b-0000000000000001 under seed 1.

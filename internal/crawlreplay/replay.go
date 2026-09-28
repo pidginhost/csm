@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"errors"
 	"math"
-	"math/rand/v2"
 	"slices"
 )
 
@@ -92,6 +91,7 @@ type Evaluation struct {
 	Expected       float64          `json:"expected"` // sum of per-minute expectations over the window
 	Anomalous      bool             `json:"anomalous"`
 	ExactAnomalous bool             `json:"exact_anomalous"`
+	Trusted        bool             `json:"trusted"` // some window minute used a trained slot, not the floor
 	Labels         map[string]int64 `json:"labels"`
 }
 
@@ -137,190 +137,44 @@ type Scope struct {
 	Refused     string  `json:"refused,omitempty"`
 }
 
-// Tick is one minute whose windows are complete.
+// Tick is one covered minute of one site. Evaluations hold every key whose
+// window is complete and holds traffic or an active finding; Events hold the
+// High transitions of this minute and Active every finding still active
+// after it.
 type Tick struct {
+	Site        string
 	Minute      int64
+	Complete    bool // the site's last W covered minutes are known
+	Scored      bool
 	Evaluations []Evaluation
 	Scope       Scope
+	Events      []FindingEvent
+	Active      []ActiveFinding
 }
 
-type keyState struct {
-	baseline   *Baseline
-	window     *Window
-	minutes    map[int64]*minuteCounts
-	sketches   map[int64]*keySketch
-	observedTo int64
-	active     bool
-}
-
-// ReplaySite runs the detector over one site, minute by minute, and calls fn
-// for every covered minute whose W-minute window is complete. Each minute is
-// evaluated against the baseline learned before it; anomalous minutes do
-// not train the baseline, and missing minutes are never learned as zero.
+// ReplaySite runs a cold session over one site whose every covered minute
+// is in normal learning state, and calls fn for every minute whose W-minute
+// window is complete. It suits synthetic fixtures; recorded data declares
+// its states through a session.
 func ReplaySite(site Site, p Params, o Options, fn func(Tick)) error {
-	if err := p.Validate(); err != nil {
-		return err
-	}
-	if o.Sketch != nil && (o.Sketch.M <= p.K || o.Sketch.H < p.D+p.K) {
-		return ErrParams
-	}
-	buckets, err := bucketSite(site, o.Shuffle)
+	s, err := NewReplaySession(SessionConfig{Params: p, Sketch: o.Sketch, Shuffle: o.Shuffle})
 	if err != nil {
 		return err
 	}
-	keys := map[KeyID]*keyState{}
-	active := map[KeyID]*keyState{}
-	var coveredFrom int64
-	for i, span := range site.Coverage {
-		if i == 0 || span.From-1 != site.Coverage[i-1].To {
-			coveredFrom = span.From
-			// Only missing minutes break windows; adjacent spans describe
-			// the same continuous coverage as a single joined span.
-			for id, ks := range active {
-				ks.active, ks.window, ks.minutes, ks.sketches = false, newWindow(), nil, nil
-				delete(active, id)
-			}
-		}
-		for m := span.From; m <= span.To; m++ {
-			for _, r := range buckets[m] {
-				for _, id := range keysOf(r) {
-					ks := keys[id]
-					if ks == nil {
-						ks = &keyState{baseline: NewBaseline(p.Baseline, m), window: newWindow(), observedTo: m - 1}
-						keys[id] = ks
-					}
-					if !ks.active {
-						foldIdle(ks, site.Coverage, m)
-						ks.active, ks.minutes, ks.sketches = true, map[int64]*minuteCounts{}, map[int64]*keySketch{}
-						active[id] = ks
-					}
-					mc := ks.minutes[m]
-					if mc == nil {
-						mc = newMinuteCounts()
-						ks.minutes[m] = mc
-					}
-					mc.add(r)
-					if o.Sketch != nil && r.Binding != "" {
-						sk := ks.sketches[m]
-						if sk == nil {
-							sk = newKeySketch(*o.Sketch)
-							ks.sketches[m] = sk
-						}
-						sk.add(*o.Sketch, r.Binding)
-					}
-				}
-			}
-			ids := make([]KeyID, 0, len(active))
-			for id, ks := range active {
-				ids = append(ids, id)
-				if mc := ks.minutes[m]; mc != nil {
-					ks.window.apply(mc, 1)
-				}
-				if mc := ks.minutes[m-int64(p.W)]; mc != nil {
-					ks.window.apply(mc, -1)
-					delete(ks.minutes, m-int64(p.W))
-				}
-				delete(ks.sketches, m-int64(p.W))
-			}
-			slices.SortFunc(ids, keyOrder)
-			complete := m-coveredFrom+1 >= int64(p.W)
-			tick := Tick{Minute: m}
-			for _, id := range ids {
-				ks := active[id]
-				anomalous := false
-				if complete && ks.window.Total() > 0 {
-					e := evaluate(ks, id, m, p, o)
-					anomalous = e.Anomalous
-					tick.Evaluations = append(tick.Evaluations, e)
-				}
-				if !anomalous {
-					var total int64
-					if mc := ks.minutes[m]; mc != nil {
-						total = mc.total
-					}
-					ks.baseline.Observe(m, total)
-				}
-				ks.observedTo = m
-				if ks.window.Total() == 0 {
-					ks.active = false
-					delete(active, id)
-				}
-			}
-			if complete {
-				tick.Scope = selectScope(tick.Evaluations, p.C, nil)
-				fn(tick)
-			}
-		}
+	name := fixtureSiteName
+	if len(site.Records) > 0 {
+		name = site.Records[0].Site
 	}
-	return nil
-}
-
-// bucketSite checks the input and groups eligible records by minute in
-// logged order.
-func bucketSite(site Site, shuffle uint64) (map[int64][]*Record, error) {
-	for i, s := range site.Coverage {
-		if s.From <= 0 || s.To < s.From || (i > 0 && s.From <= site.Coverage[i-1].To) {
-			return nil, ErrSite
+	seg := ReplaySegment{Site: name, Records: site.Records, Coverage: site.Coverage, Score: site.Coverage}
+	if n := len(site.Coverage); n > 0 {
+		seg.States = []StateSpan{{From: site.Coverage[0].From, To: site.Coverage[n-1].To, State: StateNormal}}
+	}
+	return s.Feed(seg, func(t Tick) error {
+		if t.Complete {
+			fn(t)
 		}
-	}
-	covered := func(m int64) bool {
-		i, found := slices.BinarySearchFunc(site.Coverage, m, func(s Span, m int64) int { return cmp.Compare(s.To, m) })
-		return found || (i < len(site.Coverage) && site.Coverage[i].From <= m)
-	}
-	buckets := map[int64][]*Record{}
-	for i := range site.Records {
-		r := &site.Records[i]
-		if r.Validate() != nil || r.Site != site.Records[0].Site || !covered(r.T/60) {
-			return nil, ErrSite
-		}
-		if r.Class == ClassOther || r.Infra {
-			continue
-		}
-		buckets[r.T/60] = append(buckets[r.T/60], r)
-	}
-	for m, rs := range buckets {
-		slices.SortStableFunc(rs, func(a, b *Record) int {
-			return cmp.Or(cmp.Compare(a.File, b.File), cmp.Compare(a.Seq, b.Seq))
-		})
-		if shuffle != 0 {
-			// #nosec G115 G404 -- positive Unix minute; a reproducible permutation, not a secret.
-			rng := rand.New(rand.NewPCG(shuffle, uint64(m)))
-			rng.Shuffle(len(rs), func(i, j int) { rs[i], rs[j] = rs[j], rs[i] })
-		}
-	}
-	return buckets, nil
-}
-
-// foldIdle learns the zero-traffic covered minutes a key sat idle through.
-func foldIdle(ks *keyState, coverage []Span, until int64) {
-	for _, s := range coverage {
-		for m := max(ks.observedTo+1, s.From); m <= min(until-1, s.To); m++ {
-			ks.baseline.Observe(m, 0)
-		}
-	}
-	ks.observedTo = until - 1
-}
-
-func evaluate(ks *keyState, id KeyID, m int64, p Params, o Options) Evaluation {
-	e := Evaluation{Key: id, Total: ks.window.Total(), Expensive: ks.window.Expensive(), Bindings: int64(len(ks.window.bindings)), Labels: ks.window.Labels()}
-	e.ExactResidual, e.ExactDistinct = ks.window.Residual(p.K)
-	for j := m - int64(p.W) + 1; j <= m; j++ {
-		e.Expected += ks.baseline.Expected(j)
-	}
-	e.ExactAnomalous = p.anomalous(e.ExactResidual, e.ExactDistinct, e.Expected)
-	e.Residual, e.Distinct, e.Anomalous = e.ExactResidual, e.ExactDistinct, e.ExactAnomalous
-	if o.Sketch != nil {
-		minutes := make([]*keySketch, 0, p.W)
-		for j := m - int64(p.W) + 1; j <= m; j++ {
-			if sk := ks.sketches[j]; sk != nil {
-				minutes = append(minutes, sk)
-			}
-		}
-		bounds := composeSketches(minutes, p.K, o.Sketch.H)
-		e.Residual, e.Distinct = bounds.LN, bounds.LD
-		e.Anomalous = p.anomalous(e.Residual, e.Distinct, e.Expected)
-	}
-	return e
+		return nil
+	})
 }
 
 // ancestors lists the keys whose traffic contains id's, nearest first.
