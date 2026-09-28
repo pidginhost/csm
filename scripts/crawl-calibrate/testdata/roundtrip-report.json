@@ -1,6 +1,6 @@
 {
   "provenance": {
-    "manifest_sha256": "fdd5aa9698588d63b1cc49a233a34988ba07309dc66794de4cdd41a1eda4fc04",
+    "manifest_sha256": "e9601738addaea0125b0dea0ac3bea7afa14dd469b69301d56b63f57ad641304",
     "stream_version": 2,
     "identity_version": 1,
     "converter": {
@@ -25,7 +25,7 @@
       "config_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     },
     "coverage": "certified",
-    "proof_sha256": "b4f85349d2dbd43658588365399f80fc9e22ac2009d2847d61827dba8fbea5ff",
+    "proof_sha256": "9d08f8bacfbe23ad8d22af2e49014677bfde662fe2a7c8814420e3b0608151a1",
     "lateness_seconds": 60
   },
   "window": 5,

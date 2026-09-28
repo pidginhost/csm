@@ -74,14 +74,18 @@ type BotEvidenceRef struct {
 }
 
 // Input is one log copy: its bytes as read and its decompressed content.
+// DisorderSeconds is the most any timed line's logged time trails an earlier
+// timed line of the copy. A copy lists requests in completion order, so this
+// is a lower bound on how late a request can be written.
 type Input struct {
-	Site          string `json:"site"`
-	Ordinal       int    `json:"ordinal"`
-	SHA256        string `json:"sha256"`
-	Bytes         int64  `json:"bytes"`
-	ContentSHA256 string `json:"content_sha256"`
-	ContentBytes  int64  `json:"content_bytes"`
-	Extent        *Span  `json:"extent,omitempty"`
+	Site            string `json:"site"`
+	Ordinal         int    `json:"ordinal"`
+	SHA256          string `json:"sha256"`
+	Bytes           int64  `json:"bytes"`
+	ContentSHA256   string `json:"content_sha256"`
+	ContentBytes    int64  `json:"content_bytes"`
+	Extent          *Span  `json:"extent,omitempty"`
+	DisorderSeconds int64  `json:"disorder_seconds"`
 }
 
 // Output is one bundle file with its row count.
@@ -234,7 +238,7 @@ func (m Manifest) Validate() error {
 		case in.Ordinal != inputs[in.Site], !sha256Hex.MatchString(in.SHA256), in.Bytes < 0,
 			!sha256Hex.MatchString(in.ContentSHA256), in.ContentBytes < 0,
 			in.ContentBytes > 0 && content[in.ContentSHA256],
-			in.Extent != nil && !within(*in.Extent, m.Period):
+			in.Extent != nil && !within(*in.Extent, m.Period), in.DisorderSeconds < 0:
 			return manifestError("inputs")
 		}
 		inputs[in.Site]++

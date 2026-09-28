@@ -80,6 +80,7 @@ func buildBundle(t testing.TB, st bundleStages) bundleFiles {
 			copy := *extent
 			m.Inputs[i].Extent = &copy
 		}
+		m.Inputs[i].DisorderSeconds = disorderOf(recs, m.Inputs[i].Site)
 	}
 	if st.manifest != nil {
 		st.manifest(&m)
@@ -93,6 +94,23 @@ func buildBundle(t testing.TB, st bundleStages) bundleFiles {
 		st.files(&f.records, &f.volume)
 	}
 	return f
+}
+
+// disorderOf is the most a record's time trails an earlier record's time
+// in the site's single input, as the converter measures it.
+func disorderOf(recs []Record, site string) int64 {
+	var latest, disorder int64
+	for _, r := range recs {
+		if r.Site != site {
+			continue
+		}
+		if r.T < latest {
+			disorder = max(disorder, latest-r.T)
+		} else {
+			latest = r.T
+		}
+	}
+	return disorder
 }
 
 func volumeOf(recs []Record) []Volume {
@@ -312,7 +330,11 @@ func TestBundleContractRejectsMismatch(t *testing.T) {
 			m.Inputs[1].ContentBytes = 10
 			m.Inputs[1].ContentSHA256 = m.Inputs[0].ContentSHA256
 		}}, ErrManifest},
-		"input ordinal":      {bundleStages{manifest: func(m *Manifest) { m.Inputs[0].Ordinal = 1 }}, ErrManifest},
+		"input ordinal":     {bundleStages{manifest: func(m *Manifest) { m.Inputs[0].Ordinal = 1 }}, ErrManifest},
+		"negative disorder": {bundleStages{manifest: func(m *Manifest) { m.Inputs[0].DisorderSeconds = -1 }}, ErrManifest},
+		"disorder understated": {bundleStages{manifest: func(m *Manifest) {
+			m.Inputs[0].DisorderSeconds = 0
+		}}, ErrBundle},
 		"extent past period": {bundleStages{manifest: func(m *Manifest) { m.Sites[0].Extent.To = periodTo + 1 }}, ErrManifest},
 		"bad sha":            {bundleStages{manifest: func(m *Manifest) { m.Outputs[0].SHA256 = strings.Repeat("0", 64) }}, ErrBundle},
 		"bad bytes":          {bundleStages{manifest: func(m *Manifest) { m.Outputs[1].Bytes++ }}, ErrBundle},

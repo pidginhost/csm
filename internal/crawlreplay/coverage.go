@@ -312,8 +312,10 @@ type siteState struct {
 }
 
 type inputState struct {
-	m      Input
-	extent *Span
+	m        Input
+	extent   *Span
+	latest   int64
+	disorder int64
 }
 
 type bundleCheck struct {
@@ -378,6 +380,14 @@ func newBundleCheck(m Manifest, proof *CoverageProof, identityVersion int) (*bun
 	c.proof = proof
 	if proof.ManifestSHA256 != m.digest {
 		return nil, proofError("manifest_sha256")
+	}
+	// A bound below the disorder the copies themselves show is false, or
+	// the copies are not in completion order; either way no bracket built
+	// from it can be trusted.
+	for _, in := range m.Inputs {
+		if in.DisorderSeconds > proof.LatenessSeconds {
+			return nil, proofError("lateness_seconds")
+		}
 	}
 	if len(proof.Sites) != len(m.Sites) {
 		return nil, proofError("sites")
@@ -485,7 +495,13 @@ func (c *bundleCheck) record(r Record) error {
 	}
 	s.seq, s.file = r.Seq, r.File
 	observeMinute(&s.extent, minute)
-	observeMinute(&s.inputs[r.File].extent, minute)
+	in := &s.inputs[r.File]
+	observeMinute(&in.extent, minute)
+	if r.T < in.latest {
+		in.disorder = max(in.disorder, in.latest-r.T)
+	} else {
+		in.latest = r.T
+	}
 	c.rRows++
 	s.records++
 	s.lines[minute]++
@@ -529,6 +545,11 @@ func (c *bundleCheck) finish(records, volume Digest) error {
 			return bundleError("site extent")
 		}
 		for _, in := range s.inputs {
+			// Records are a subset of the copy's timed lines, so their
+			// disorder cannot exceed the copy's.
+			if in.disorder > in.m.DisorderSeconds {
+				return bundleError("input disorder")
+			}
 			if !sameExtent(in.extent, in.m.Extent) {
 				return bundleError("input extent")
 			}

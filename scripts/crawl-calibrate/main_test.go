@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -53,8 +54,13 @@ func writeBundle(t *testing.T, o bundleOptions) bundle {
 	period := crawlreplay.Span{From: attack.Coverage[0].From - o.pad, To: attack.Coverage[0].To}
 	quiet := crawlreplay.NewSynth(quietSite, 2).Pool(crawlreplay.Traffic{
 		From: attack.Coverage[0].From, To: period.To, PerMinute: 1, Label: crawlreplay.LabelHealthy}, 3)
+	// A copy lists requests in completion order; write each site's records
+	// in time order, as the converter would, so the copies show no disorder.
+	for _, recs := range [][]crawlreplay.Record{attack.Records, quiet} {
+		slices.SortStableFunc(recs, func(a, b crawlreplay.Record) int { return cmp.Compare(a.T, b.T) })
+	}
 	for i := range attack.Records {
-		attack.Records[i].Account = attackAccount
+		attack.Records[i].Seq, attack.Records[i].Account = int64(i+1), attackAccount
 	}
 	for i := range quiet {
 		quiet[i].Seq, quiet[i].Account = int64(i+1), quietAccount

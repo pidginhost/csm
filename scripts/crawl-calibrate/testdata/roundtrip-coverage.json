@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "manifest_sha256": "fdd5aa9698588d63b1cc49a233a34988ba07309dc66794de4cdd41a1eda4fc04",
+  "manifest_sha256": "e9601738addaea0125b0dea0ac3bea7afa14dd469b69301d56b63f57ad641304",
   "lateness_seconds": 60,
   "evidence": [
     {"kind": "collection", "sha256": "1111111111111111111111111111111111111111111111111111111111111111"},

@@ -168,6 +168,28 @@ func TestValidateBundleCoverage(t *testing.T) {
 			t.Fatalf("coverage = %+v excluded %v", sites[0].Coverage, sites[0].Excluded)
 		}
 	})
+	t.Run("lateness the bundle contradicts is refused", func(t *testing.T) {
+		// A copy lists requests in completion order, so a logged time six
+		// minutes behind an earlier line proves at least six minutes of
+		// completion delay.
+		f := buildBundle(t, bundleStages{rows: func(recs *[]Record, vol *[]Volume) {
+			for i := range *recs {
+				if (*recs)[i].T/60 == periodFrom+20 {
+					(*recs)[i].T -= 360
+					break
+				}
+			}
+			*vol = volumeOf(*recs)
+		}})
+		p := wholeProof(t, f)
+		if _, _, err := validateFiles(f, p); !errors.Is(err, ErrProof) {
+			t.Fatalf("a 60 s bound over a bundle with 360 s of disorder: err = %v, want ErrProof", err)
+		}
+		p.LatenessSeconds = 3600
+		if _, _, err := validateFiles(f, p); err != nil {
+			t.Fatalf("a bound above the observed disorder was refused: %v", err)
+		}
+	})
 	t.Run("pre-application evidence waives exact loss", func(t *testing.T) {
 		f := buildBundle(t, bundleStages{
 			rows: func(_ *[]Record, vol *[]Volume) {

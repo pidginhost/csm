@@ -202,7 +202,11 @@ around it, widened by the lateness bound. A `rejects` entry keeps those
 minutes only when independent evidence shows that exactly that many
 targetless or oversized lines were refused before the application ran; the
 HTTP status alone is not such evidence. Removed minutes break windows like
-any unknown minute and never train a baseline. Without `--coverage` the report
+any unknown minute and never train a baseline. These bounds assume each copy
+lists requests in the order they completed. The manifest records, per copy,
+how far any logged time trails an earlier one; that disorder is a lower bound
+on completion delay, so a proof whose lateness bound is smaller is refused.
+Without `--coverage` the report
 holds only volume, silence and shape diagnostics over each site's observed
 extent and says its coverage is unqualified.
 
@@ -244,7 +248,8 @@ verified zero-traffic minutes, separate training and scoring intervals, and
 held-out healthy, attack and legitimate-overload cohorts. Warm seasonal
 profiles require history and observations for every enabled seasonal slot.
 A cold-start replay is a separate experiment. Neither a model delay nor
-logged timestamp disorder measures request completion or log-flush delay.
+logged timestamp disorder measures request completion or log-flush delay;
+disorder is only a lower bound on it.
 
 Review every transition per site, key and day. Majority labels are a summary,
 not the definition of a correct finding or permission to ignore mixed traffic.

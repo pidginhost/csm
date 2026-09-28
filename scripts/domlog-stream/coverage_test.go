@@ -188,6 +188,11 @@ func TestConvertLossAccounting(t *testing.T) {
 		!reflect.DeepEqual(in[1].Extent, &crawlreplay.Span{From: m("19:05:00"), To: m("19:05:00")}) {
 		t.Fatalf("input extents = %+v %+v", in[0].Extent, in[1].Extent)
 	}
+	// 18:59:59 is logged after 19:01:10: the copy shows 71 s of completion
+	// delay, out-of-period line included.
+	if in[0].DisorderSeconds != 71 || in[1].DisorderSeconds != 0 {
+		t.Fatalf("input disorder = %d %d, want 71 0", in[0].DisorderSeconds, in[1].DisorderSeconds)
+	}
 	bindings := map[int64]string{}
 	for _, r := range c.records {
 		bindings[r.Seq] = r.Binding

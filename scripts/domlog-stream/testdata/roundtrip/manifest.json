@@ -37,7 +37,8 @@
       "extent": {
         "from": 29840820,
         "to": 29840839
-      }
+      },
+      "disorder_seconds": 0
     },
     {
       "site": "dom-a01dff.example",
@@ -49,7 +50,8 @@
       "extent": {
         "from": 29840836,
         "to": 29840836
-      }
+      },
+      "disorder_seconds": 0
     },
     {
       "site": "dom-dcef08.example",
@@ -61,7 +63,8 @@
       "extent": {
         "from": 29840822,
         "to": 29840838
-      }
+      },
+      "disorder_seconds": 0
     }
   ],
   "outputs": [

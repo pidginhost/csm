@@ -186,6 +186,7 @@ func (c *converter) convertSite(s inventorySite, records io.Writer) ([]crawlrepl
 	var seq int64
 	for ordinal, path := range s.Logs {
 		run := &untimedRun{input: ordinal}
+		var latest int64
 		in := crawlreplay.Input{Site: sm.Site, Ordinal: ordinal}
 		err := c.readInput(path, &in, func(l logLine) error {
 			seq++
@@ -220,6 +221,11 @@ func (c *converter) convertSite(s inventorySite, records io.Writer) ([]crawlrepl
 			// outside the period.
 			t := rec.Time.Unix()
 			run.close(&sm, t)
+			if t < latest {
+				in.DisorderSeconds = max(in.DisorderSeconds, latest-t)
+			} else {
+				latest = t
+			}
 			if t < from || t >= to {
 				sm.OutOfPeriod++
 				sm.UnplacedBytes += l.size
