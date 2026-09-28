@@ -744,3 +744,51 @@ func TestScheduleStorageHoldPrecedesNewScopes(t *testing.T) {
 		}
 	}
 }
+
+// heldScope schedules a1 and c1 so that a1 is served and c1, whose scope has
+// earned its turn, waits for history bytes: the ring holds scope c after a.
+func heldScope(t *testing.T) ScheduleState {
+	t.Helper()
+	lim := ScheduleLimits{General: 10, GeneralBytes: HistoryQuantum, Members: MaxBatchMembers}
+	picks, st := mustSchedule(t, []ScheduleItem{bytesItem("a1", "a", 1), bytesItem("c1", "c", HistoryQuantum)}, ScheduleState{}, lim)
+	if got, ring := picked(picks), st.Rings[ringC2]; !reflect.DeepEqual(got, []string{"a1"}) || ring.Held != "c" || ring.Last != "a" {
+		t.Fatalf("first batch = %v, ring %+v", got, ring)
+	}
+	return st
+}
+
+// A released hold serves its scope once; the rotation then moves on from
+// that scope, so the promise cannot give it every later turn.
+func TestScheduleReleasedHoldRotatesOn(t *testing.T) {
+	st := heldScope(t)
+	lim := ScheduleLimits{General: 10, GeneralBytes: HistoryQuantum + 2, Members: MaxBatchMembers}
+	items := []ScheduleItem{bytesItem("a2", "a", 1), bytesItem("c1", "c", HistoryQuantum), bytesItem("c2", "c", 1)}
+	picks, next := mustSchedule(t, items, st, lim)
+	if got := picked(picks); !reflect.DeepEqual(got, []string{"c1", "a2", "c2"}) {
+		t.Fatalf("after the hold = %v, want c1 a2 c2", got)
+	}
+	if next.Rings[ringC2].Held != "" {
+		t.Fatalf("served hold still recorded: %q", next.Rings[ringC2].Held)
+	}
+}
+
+// A hold whose scope has no ready head, because its member left the queue
+// or waits for a retry, no longer steers the rotation: it resumes after the
+// scope served last.
+func TestScheduleLapsedHoldResumesRotation(t *testing.T) {
+	waiting := bytesItem("c1", "c", HistoryQuantum)
+	waiting.Ready = false
+	lim := ScheduleLimits{General: 10, GeneralBytes: HistoryQuantum, Members: 1}
+	for _, items := range [][]ScheduleItem{
+		{bytesItem("b1", "b", 1), bytesItem("d1", "d", 1)},
+		{bytesItem("b1", "b", 1), bytesItem("d1", "d", 1), waiting},
+	} {
+		picks, next := mustSchedule(t, items, heldScope(t), lim)
+		if got := picked(picks); !reflect.DeepEqual(got, []string{"b1"}) {
+			t.Fatalf("lapsed hold steered the rotation: %v, want b1 after a", got)
+		}
+		if next.Rings[ringC2].Held != "" {
+			t.Fatalf("lapsed hold still recorded: %q", next.Rings[ringC2].Held)
+		}
+	}
+}
