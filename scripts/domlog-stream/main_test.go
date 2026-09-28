@@ -83,8 +83,17 @@ func newFixture(t *testing.T, lines map[string]string, gzipped map[string]bool) 
 }
 
 func (f fixture) args() []string {
-	return []string{"convert", "--salt-file", f.salt, "--registry", f.registry, "--inventory", f.inventory, "--labels", f.labels,
-		"--bot-evidence", f.evidence, "--out", f.out, "--volume-out", f.volume, "--manifest", f.manifest}
+	return append(append([]string{"convert", "--salt-file", f.salt}, registryArgs(f.registry)...), "--inventory", f.inventory, "--labels", f.labels,
+		"--bot-evidence", f.evidence, "--out", f.out, "--volume-out", f.volume, "--manifest", f.manifest)
+}
+
+// registryArgs names the registry for a salt the test wrote itself, and
+// marks its first conversion as an operator does once for such a salt.
+func registryArgs(registry string) []string {
+	if _, err := os.Lstat(registry); errors.Is(err, os.ErrNotExist) {
+		return []string{"--registry", registry, "--new-registry"}
+	}
+	return []string{"--registry", registry}
 }
 
 // googlebotEvidence proves the googlebot range on the fixture day.
@@ -363,13 +372,17 @@ func TestSaltMustBePrivate(t *testing.T) {
 	if err := os.WriteFile(path, bytes.Repeat([]byte{1}, 32), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadOrCreateSalt(osFS{}, path); !errors.Is(err, errSaltUnsafe) {
+	if _, _, err := loadOrCreateSalt(osFS{}, path); !errors.Is(err, errSaltUnsafe) {
 		t.Fatalf("world-readable salt: %v", err)
 	}
 	created := filepath.Join(dir, "new", "salt")
-	salt, err := loadOrCreateSalt(osFS{}, created)
-	if err != nil || len(salt) != 32 {
-		t.Fatalf("create: %v", err)
+	salt, isNew, err := loadOrCreateSalt(osFS{}, created)
+	if err != nil || len(salt) != 32 || !isNew {
+		t.Fatalf("create: new %v, %v", isNew, err)
+	}
+	again, isNew, err := loadOrCreateSalt(osFS{}, created)
+	if err != nil || isNew || !bytes.Equal(again, salt) {
+		t.Fatalf("reload: new %v, %v", isNew, err)
 	}
 	info, err := os.Stat(created)
 	if err != nil || info.Mode().Perm() != 0o600 {

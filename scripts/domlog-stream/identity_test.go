@@ -49,9 +49,9 @@ func convertBundle(t *testing.T, dir, bundle, inventory string, e env) error {
 	if err := os.WriteFile(inv, []byte(inventory), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return run([]string{"convert", "--salt-file", salt, "--registry", filepath.Join(dir, "registry.json"), "--inventory", inv,
+	return run(append(append([]string{"convert", "--salt-file", salt}, registryArgs(filepath.Join(dir, "registry.json"))...), "--inventory", inv,
 		"--out", filepath.Join(dir, bundle+".records.jsonl.gz"), "--volume-out", filepath.Join(dir, bundle+".volume.jsonl.gz"),
-		"--manifest", filepath.Join(dir, bundle+".manifest.json")}, io.Discard, e)
+		"--manifest", filepath.Join(dir, bundle+".manifest.json")), io.Discard, e)
 }
 
 // prefixDigest gives every value of one pseudonym kind the same leading
@@ -188,6 +188,60 @@ func TestInventoryIdentityAndCollisionRefusal(t *testing.T) {
 				t.Fatalf("registry holds the raw name %q", private)
 			}
 		}
+	})
+	t.Run("one registry per salt", func(t *testing.T) {
+		convert := func(t *testing.T, dir, registry string, extra ...string) error {
+			t.Helper()
+			if err := os.WriteFile(filepath.Join(dir, "a.log"), one, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			inv := filepath.Join(dir, "inventory.json")
+			body := period + `"sites":[{"name":"a.example","account":"acct1","aliases":["a.example"],"logs":["` + filepath.Join(dir, "a.log") + `"]}]}`
+			if err := os.WriteFile(inv, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out := t.TempDir()
+			args := append([]string{"convert", "--salt-file", filepath.Join(dir, "salt"), "--registry", registry, "--inventory", inv,
+				"--out", filepath.Join(out, "r.jsonl.gz"), "--volume-out", filepath.Join(out, "v.jsonl.gz"), "--manifest", filepath.Join(out, "m.json")}, extra...)
+			return run(args, io.Discard, testEnv())
+		}
+		existingSalt := func(t *testing.T) string {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "salt"), bytes.Repeat([]byte{0x42}, 32), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return dir
+		}
+		t.Run("a new salt starts its registry", func(t *testing.T) {
+			dir := t.TempDir()
+			if err := convert(t, dir, filepath.Join(dir, "registry.json")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "registry.json")); err != nil {
+				t.Fatalf("no registry beside the new salt: %v", err)
+			}
+		})
+		t.Run("an existing salt without its registry is refused", func(t *testing.T) {
+			dir := existingSalt(t)
+			if err := convert(t, dir, filepath.Join(dir, "registry.json")); !errors.Is(err, errRegistryMissing) {
+				t.Fatalf("lost registry: err = %v, want errRegistryMissing", err)
+			}
+			if err := convert(t, dir, filepath.Join(dir, "registry.json"), "--new-registry"); err != nil {
+				t.Fatalf("explicit first registry for a salt that never had one: %v", err)
+			}
+			if err := convert(t, dir, filepath.Join(dir, "registry.json"), "--new-registry"); !errors.Is(err, errRegistry) {
+				t.Fatalf("--new-registry over an existing registry: err = %v, want errRegistry", err)
+			}
+			if err := convert(t, dir, filepath.Join(dir, "registry.json")); err != nil {
+				t.Fatalf("the salt's own registry refused: %v", err)
+			}
+		})
+		t.Run("the registry lives beside the salt", func(t *testing.T) {
+			dir := existingSalt(t)
+			if err := convert(t, dir, filepath.Join(t.TempDir(), "registry.json"), "--new-registry"); !errors.Is(err, errRegistryPlace) {
+				t.Fatalf("registry in another directory: err = %v, want errRegistryPlace", err)
+			}
+		})
 	})
 	t.Run("registry must belong to the salt and stay private", func(t *testing.T) {
 		for name, prepare := range map[string]func(t *testing.T, registry string){
@@ -512,8 +566,8 @@ func TestCrossBundleIdentityKinds(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				return run([]string{"convert", "--salt-file", salt, "--registry", filepath.Join(dir, "registry.json"), "--inventory", inv, "--labels", labels,
-					"--out", filepath.Join(dir, bundle+".records.jsonl.gz"), "--volume-out", filepath.Join(dir, bundle+".volume.jsonl.gz"), "--manifest", filepath.Join(dir, bundle+".manifest.json")}, io.Discard, e)
+				return run(append(append([]string{"convert", "--salt-file", salt}, registryArgs(filepath.Join(dir, "registry.json"))...), "--inventory", inv, "--labels", labels,
+					"--out", filepath.Join(dir, bundle+".records.jsonl.gz"), "--volume-out", filepath.Join(dir, bundle+".volume.jsonl.gz"), "--manifest", filepath.Join(dir, bundle+".manifest.json")), io.Discard, e)
 			}
 			writeLog("192.0.2.10", "GET /c/?filter_a=1 HTTP/1.1")
 			if err := convert("first", "acct1", "first"); err != nil {

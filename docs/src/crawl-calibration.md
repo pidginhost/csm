@@ -124,9 +124,16 @@ prototype):
   Nothing runs on the monitored host.
 - The salt is created on first use with mode 0600 and must stay private;
   reuse the finding-stream salt so the streams join. Keep one identity
-  registry per salt. It records every site, account and episode pseudonym
-  the salt has issued, as keyed digests, and refuses a later bundle whose
-  different name would take one; it is locked while a conversion runs.
+  registry per salt, in the salt's directory; a registry elsewhere is
+  refused. It records every site, account and episode pseudonym the salt
+  has issued, as keyed digests, and refuses a later bundle whose different
+  name would take one; it is locked while a conversion runs.
+- A run that creates the salt starts its registry. For a salt that already
+  exists but never had a registry, such as the finding-stream salt, pass
+  `--new-registry` on the first conversion only; it is refused once a
+  registry exists. Without that flag, a missing registry stops the run
+  instead of starting an empty one that would forget issued pseudonyms.
+  Back up the salt and its registry together, and restore both.
 - The tool refuses to run from an unknown or modified build, refuses to
   replace an existing output, and publishes nothing unless every log was
   read. Each log copy must be a regular file that stays unchanged while it

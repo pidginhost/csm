@@ -2,7 +2,7 @@
 // anonymized record stream for crawl-detector calibration.
 //
 //	domlog-stream convert --salt-file SALT --registry registry.json \
-//	    --inventory inventory.json [--labels labels.json] \
+//	    [--new-registry] --inventory inventory.json [--labels labels.json] \
 //	    [--bot-evidence bots.json] --out records.jsonl.gz \
 //	    --volume-out volume.jsonl.gz --manifest manifest.json
 //
@@ -18,8 +18,11 @@
 // the bundle's completion marker. The salt file is created on first use
 // (mode 0600) and is shared with scripts/finding-stream so the two streams
 // join; the identity registry beside it records every site, account and
-// episode pseudonym the salt has issued across bundles. Collection is a read-only
-// copy of the logs; nothing here runs on the monitored host.
+// episode pseudonym the salt has issued across bundles. A run that creates
+// the salt starts its registry; a salt that already exists without one
+// needs --new-registry once, and a lost registry stops conversion rather
+// than start over. Collection is a read-only copy of the logs; nothing
+// here runs on the monitored host.
 package main
 
 import (
@@ -50,18 +53,20 @@ type cliError string
 func (e cliError) Error() string { return string(e) }
 
 const (
-	errUsage         cliError = "usage: domlog-stream convert --salt-file SALT --registry FILE --inventory FILE [--labels FILE] [--bot-evidence FILE] --out FILE --volume-out FILE --manifest FILE"
-	errInventory     cliError = "inventory is invalid"
-	errLabels        cliError = "labels are invalid"
-	errInput         cliError = "a log copy could not be read"
-	errInputIdentity cliError = "a log copy is not a stable regular file or duplicates another copy"
-	errOutputs       cliError = "an output already exists or cannot be written"
-	errSaltUnsafe    cliError = "salt file must be a private regular file"
-	errSaltShort     cliError = "salt file is shorter than 32 bytes"
-	errDirtyBuild    cliError = "tool revision unknown or modified: build from a clean checkout with go build"
-	errCollision     cliError = "two distinct names share a pseudonym under this salt"
-	errRegistry      cliError = "identity registry is busy, invalid, not private or not for this salt"
-	errBotEvidence   cliError = "bot evidence is invalid"
+	errUsage           cliError = "usage: domlog-stream convert --salt-file SALT --registry FILE [--new-registry] --inventory FILE [--labels FILE] [--bot-evidence FILE] --out FILE --volume-out FILE --manifest FILE"
+	errInventory       cliError = "inventory is invalid"
+	errLabels          cliError = "labels are invalid"
+	errInput           cliError = "a log copy could not be read"
+	errInputIdentity   cliError = "a log copy is not a stable regular file or duplicates another copy"
+	errOutputs         cliError = "an output already exists or cannot be written"
+	errSaltUnsafe      cliError = "salt file must be a private regular file"
+	errSaltShort       cliError = "salt file is shorter than 32 bytes"
+	errDirtyBuild      cliError = "tool revision unknown or modified: build from a clean checkout with go build"
+	errCollision       cliError = "two distinct names share a pseudonym under this salt"
+	errRegistry        cliError = "identity registry is busy, invalid, not private or not for this salt"
+	errRegistryPlace   cliError = "identity registry must be in the same directory as the salt"
+	errRegistryMissing cliError = "identity registry is missing for an existing salt; restore it, or pass --new-registry if this salt never had one"
+	errBotEvidence     cliError = "bot evidence is invalid"
 )
 
 func readBuildRevision() crawlreplay.ToolRevision {
@@ -95,6 +100,7 @@ func defaultEnv() env { return env{fs: osFS{}, now: time.Now, revision: readBuil
 
 type options struct {
 	salt, registry, inventory, labels, bots, out, volumeOut, manifest string
+	newRegistry                                                       bool
 }
 
 // run is the testable entry point.
@@ -107,6 +113,7 @@ func run(args []string, stdout io.Writer, e env) error {
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&o.salt, "salt-file", "", "")
 	fs.StringVar(&o.registry, "registry", "", "")
+	fs.BoolVar(&o.newRegistry, "new-registry", false, "")
 	fs.StringVar(&o.inventory, "inventory", "", "")
 	fs.StringVar(&o.labels, "labels", "", "")
 	fs.StringVar(&o.bots, "bot-evidence", "", "")
@@ -128,7 +135,14 @@ func run(args []string, stdout io.Writer, e env) error {
 			return errOutputs
 		}
 	}
-	salt, err := loadOrCreateSalt(e.fs, o.salt)
+	// One registry per salt: it sits beside the salt, and a salt that
+	// existed before this run keeps using the registry it already has.
+	saltAbs, saltErr := filepath.Abs(o.salt)
+	registryAbs, registryErr := filepath.Abs(o.registry)
+	if saltErr != nil || registryErr != nil || filepath.Dir(saltAbs) != filepath.Dir(registryAbs) {
+		return errRegistryPlace
+	}
+	salt, created, err := loadOrCreateSalt(e.fs, o.salt)
 	if err != nil {
 		return err
 	}
@@ -137,6 +151,14 @@ func run(args []string, stdout io.Writer, e env) error {
 		return err
 	}
 	defer reg.close()
+	// Decided under the registry lock, so a concurrent first run cannot
+	// slip a second registry in between.
+	switch {
+	case reg.existed && o.newRegistry:
+		return errRegistry
+	case !reg.existed && !created && !o.newRegistry:
+		return errRegistryMissing
+	}
 	invBytes, err := readFile(e.fs, o.inventory)
 	if err != nil {
 		return errInventory
@@ -371,30 +393,33 @@ func saltFingerprint(salt []byte) string {
 	return hex.EncodeToString(sum[:6])
 }
 
-func loadOrCreateSalt(fsys fileSystem, path string) ([]byte, error) {
-	salt, err := readSalt(fsys, path)
+// loadOrCreateSalt reads the salt, creating it when absent; created
+// reports a salt this run made.
+func loadOrCreateSalt(fsys fileSystem, path string) (salt []byte, created bool, err error) {
+	salt, err = readSalt(fsys, path)
 	if !errors.Is(err, os.ErrNotExist) {
-		return salt, err
+		return salt, false, err
 	}
 	if err = fsys.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, errSaltUnsafe
+		return nil, false, errSaltUnsafe
 	}
 	salt = make([]byte, 32)
 	if _, err = rand.Read(salt); err != nil {
-		return nil, errSaltUnsafe
+		return nil, false, errSaltUnsafe
 	}
 	f, err := fsys.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if errors.Is(err, os.ErrExist) {
-		return readSalt(fsys, path)
+		salt, err = readSalt(fsys, path)
+		return salt, false, err
 	}
 	if err != nil {
-		return nil, errSaltUnsafe
+		return nil, false, errSaltUnsafe
 	}
 	_, writeErr := f.Write(salt)
 	if err := errors.Join(writeErr, f.Close()); err != nil {
-		return nil, errSaltUnsafe
+		return nil, false, errSaltUnsafe
 	}
-	return salt, nil
+	return salt, true, nil
 }
 
 func readSalt(fsys fileSystem, path string) ([]byte, error) {

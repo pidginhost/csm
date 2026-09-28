@@ -64,8 +64,8 @@ func convertLogs(t *testing.T, logs []synthLog, evidence string) converted {
 			t.Fatal(err)
 		}
 	}
-	args := []string{"convert", "--salt-file", f.salt, "--registry", filepath.Join(dir, "registry.json"), "--inventory", f.inventory,
-		"--out", f.out, "--volume-out", f.volume, "--manifest", f.manifest}
+	args := append(append([]string{"convert", "--salt-file", f.salt}, registryArgs(filepath.Join(dir, "registry.json"))...), "--inventory", f.inventory,
+		"--out", f.out, "--volume-out", f.volume, "--manifest", f.manifest)
 	if evidence != "" {
 		path := filepath.Join(dir, "bots.json")
 		if err := os.WriteFile(path, []byte(evidence), 0o600); err != nil {

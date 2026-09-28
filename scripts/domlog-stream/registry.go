@@ -27,6 +27,7 @@ type identityRegistry struct {
 	path    string
 	lock    file
 	syncDir func(string) error
+	existed bool
 }
 
 var registeredName = regexp.MustCompile(`^(?:dom-[0-9a-f]{6}\.example|acct-[0-9a-f]{6}|e-[0-9a-f]{16})$`)
@@ -83,7 +84,7 @@ func openRegistry(fsys fileSystem, path, fingerprint string) (*identityRegistry,
 			return nil, errRegistry
 		}
 	}
-	r.Names = stored.Names
+	r.Names, r.existed = stored.Names, true
 	return r, nil
 }
 

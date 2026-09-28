@@ -202,7 +202,7 @@ func newPrivacyFixture(t *testing.T) privacyFixture {
 			t.Fatal(err)
 		}
 	}
-	f.args = []string{"convert", "--salt-file", path("salt"), "--registry", f.registry, "--inventory", path("secret-inventory.json"),
+	f.args = []string{"convert", "--salt-file", path("salt"), "--registry", f.registry, "--new-registry", "--inventory", path("secret-inventory.json"),
 		"--labels", path("secret-labels.json"), "--bot-evidence", path("bots.json"), "--out", path("secret-out.records.jsonl.gz"),
 		"--volume-out", path("secret-out.volume.jsonl.gz"), "--manifest", path("secret-out.manifest.json")}
 	return f
@@ -336,7 +336,7 @@ func assertSameBundle(t *testing.T, op string, at int, clean, f privacyFixture) 
 
 // fixedErrors is every message the command may print.
 var fixedErrors = []cliError{errUsage, errInventory, errLabels, errInput, errInputIdentity, errOutputs, errSaltUnsafe,
-	errSaltShort, errDirtyBuild, errCollision, errRegistry, errBotEvidence}
+	errSaltShort, errDirtyBuild, errCollision, errRegistry, errRegistryPlace, errRegistryMissing, errBotEvidence}
 
 func TestCLIReportsFixedErrors(t *testing.T) {
 	for name, args := range map[string][]string{
