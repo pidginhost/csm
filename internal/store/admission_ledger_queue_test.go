@@ -61,11 +61,7 @@ func (f *ledgerFixture) fill(n int, spec evidenceSpec) []admission.CandidateID {
 			s := spec
 			s.target, s.cursor = fmt.Sprintf("2001:db8::%x", f.fills), fmt.Sprintf("fill=%d", f.fills)
 			e := f.mint(s)
-			data, err := e.MarshalBinary()
-			if err != nil {
-				return err
-			}
-			if err = tx.Bucket([]byte(admissionEvidenceBucket)).Put([]byte(e.ID()), data); err != nil {
+			if _, err = publishTx(q, f.reg, e); err != nil {
 				return err
 			}
 			req := f.request(s.target, e.ID())

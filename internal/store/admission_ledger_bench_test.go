@@ -30,11 +30,7 @@ func (f *ledgerFixture) fillRoots(n, roots int) {
 			var ids []admission.EvidenceID
 			for r := 0; r < roots; r++ {
 				e := f.mint(evidenceSpec{target: target, cursor: fmt.Sprintf("fill=%d/%d", f.fills, r)})
-				data, err := e.MarshalBinary()
-				if err != nil {
-					return err
-				}
-				if err = tx.Bucket([]byte(admissionEvidenceBucket)).Put([]byte(e.ID()), data); err != nil {
+				if _, err = publishTx(q, f.reg, e); err != nil {
 					return err
 				}
 				ids = append(ids, e.ID())

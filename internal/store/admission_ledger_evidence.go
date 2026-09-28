@@ -7,7 +7,9 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-func loadEvidence(tx *bolt.Tx, reg *admission.Registry, id admission.EvidenceID) (admission.Evidence, error) {
+// loadStoredEvidence loads a published record as it was stored, without
+// judging it against current policy.
+func loadStoredEvidence(tx *bolt.Tx, id admission.EvidenceID) (admission.Evidence, error) {
 	if _, err := admission.ParseEvidenceID(string(id)); err != nil {
 		return admission.Evidence{}, err
 	}
@@ -21,6 +23,14 @@ func loadEvidence(tx *bolt.Tx, reg *admission.Registry, id admission.EvidenceID)
 	}
 	if e.ID() != id {
 		return admission.Evidence{}, admission.ErrCorruptRecord
+	}
+	return e, nil
+}
+
+func loadEvidence(tx *bolt.Tx, reg *admission.Registry, id admission.EvidenceID) (admission.Evidence, error) {
+	e, err := loadStoredEvidence(tx, id)
+	if err != nil {
+		return e, err
 	}
 	// Revalidate on every use: a policy change applies to evidence minted
 	// before it.
@@ -41,9 +51,14 @@ func (l *AdmissionLedger) PublishEvidence(e admission.Evidence) (bool, error) {
 	defer l.mu.Unlock()
 	published := false
 	err := l.update("publish", func(tx *bolt.Tx) error {
-		var txErr error
-		published, txErr = publishTx(tx, l.reg, e)
-		return txErr
+		q, txErr := l.openQueue(tx, l.now)
+		if txErr != nil {
+			return txErr
+		}
+		if published, txErr = publishTx(q, l.reg, e); txErr != nil {
+			return txErr
+		}
+		return q.flush()
 	})
 	if err != nil {
 		return false, err
@@ -51,8 +66,9 @@ func (l *AdmissionLedger) PublishEvidence(e admission.Evidence) (bool, error) {
 	return published, nil
 }
 
-// publishTx stores e unless the same record is already there.
-func publishTx(tx *bolt.Tx, reg *admission.Registry, e admission.Evidence) (bool, error) {
+// publishTx stores e unless the same record is already there. A new record
+// takes a loose position until a candidate names it.
+func publishTx(q *queueTx, reg *admission.Registry, e admission.Evidence) (bool, error) {
 	if err := reg.Validate(e); err != nil {
 		return false, err
 	}
@@ -61,7 +77,7 @@ func publishTx(tx *bolt.Tx, reg *admission.Registry, e admission.Evidence) (bool
 		return false, err
 	}
 	id := []byte(e.ID())
-	b := tx.Bucket([]byte(admissionEvidenceBucket))
+	b := q.tx.Bucket([]byte(admissionEvidenceBucket))
 	if raw := b.Get(id); raw != nil {
 		old, decodeErr := admission.UnmarshalEvidence(raw)
 		if decodeErr != nil {
@@ -75,7 +91,10 @@ func publishTx(tx *bolt.Tx, reg *admission.Registry, e admission.Evidence) (bool
 		}
 		return false, nil
 	}
-	return true, b.Put(id, data)
+	if err = b.Put(id, data); err != nil {
+		return false, err
+	}
+	return true, q.loosen(e.ID())
 }
 
 // LoadEvidence loads a published record and revalidates it.
@@ -110,11 +129,13 @@ func loadReports(tx *bolt.Tx, e admission.Evidence) (admission.ReportLinks, erro
 func (l *AdmissionLedger) LinkReport(id admission.EvidenceID, findingID string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.update("link", func(tx *bolt.Tx) error { return linkTx(tx, l.reg, id, findingID) })
+	return l.update("link", func(tx *bolt.Tx) error { return linkTx(tx, id, findingID) })
 }
 
-func linkTx(tx *bolt.Tx, reg *admission.Registry, id admission.EvidenceID, findingID string) error {
-	original, err := loadEvidence(tx, reg, id)
+// linkTx links a report to stored evidence. Links are metadata: they do not
+// depend on the evidence passing current policy.
+func linkTx(tx *bolt.Tx, id admission.EvidenceID, findingID string) error {
+	original, err := loadStoredEvidence(tx, id)
 	if err != nil {
 		return err
 	}
@@ -136,11 +157,12 @@ func linkTx(tx *bolt.Tx, reg *admission.Registry, id admission.EvidenceID, findi
 	return tx.Bucket([]byte(admissionReportsBucket)).Put([]byte(id), data)
 }
 
-// Reports returns the later findings linked to published evidence.
+// Reports returns the later findings linked to published evidence, whether
+// or not it passes current policy.
 func (l *AdmissionLedger) Reports(id admission.EvidenceID) ([]string, uint32, error) {
 	var links admission.ReportLinks
 	err := l.db.bolt.View(func(tx *bolt.Tx) error {
-		e, err := loadEvidence(tx, l.reg, id)
+		e, err := loadStoredEvidence(tx, id)
 		if err != nil {
 			return err
 		}

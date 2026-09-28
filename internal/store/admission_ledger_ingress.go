@@ -150,7 +150,7 @@ func arrivalTier(a admission.Arrival, now time.Time) admission.Tier {
 
 func (l *AdmissionLedger) arriveTx(q *queueTx, a admission.Arrival) (admission.CandidateID, bool, error) {
 	e := a.Evidence
-	if _, err := publishTx(q.tx, l.reg, e); errors.Is(err, admission.ErrEvidenceConflict) {
+	if _, err := publishTx(q, l.reg, e); errors.Is(err, admission.ErrEvidenceConflict) {
 		stored, loadErr := loadEvidence(q.tx, l.reg, e.ID())
 		if loadErr != nil {
 			return "", false, loadErr
@@ -160,7 +160,7 @@ func (l *AdmissionLedger) arriveTx(q *queueTx, a admission.Arrival) (admission.C
 		}
 		// A report-only tail has already acknowledged the primary finding.
 		if !a.ReportsOnly {
-			if err = linkTx(q.tx, l.reg, e.ID(), e.FindingID()); err != nil {
+			if err = linkTx(q.tx, e.ID(), e.FindingID()); err != nil {
 				return "", false, err
 			}
 		}
@@ -171,7 +171,7 @@ func (l *AdmissionLedger) arriveTx(q *queueTx, a admission.Arrival) (admission.C
 		return "", false, err
 	}
 	for _, finding := range a.Reports {
-		if err := linkTx(q.tx, l.reg, e.ID(), finding); err != nil {
+		if err := linkTx(q.tx, e.ID(), finding); err != nil {
 			return "", false, err
 		}
 	}

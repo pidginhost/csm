@@ -326,6 +326,126 @@ func (l *AdmissionLedger) Storage() (admission.StorageState, error) {
 	return s, err
 }
 
+// storageState is the transaction's storage state, loaded on first use.
+func (q *queueTx) storageState() (*admission.StorageState, error) {
+	if !q.storageLoaded {
+		s, err := loadStorageState(q.tx)
+		if err != nil {
+			return nil, err
+		}
+		q.storage, q.storageLoaded = s, true
+	}
+	return &q.storage, nil
+}
+
+func loadRefs(tx *bolt.Tx, id admission.EvidenceID) (admission.EvidenceRefs, error) {
+	raw := tx.Bucket([]byte(admissionRefsBucket)).Get([]byte(id))
+	if raw == nil {
+		return admission.EvidenceRefs{}, admission.ErrCorruptRecord
+	}
+	return admission.UnmarshalEvidenceRefs(raw)
+}
+
+func putRefs(tx *bolt.Tx, id admission.EvidenceID, r admission.EvidenceRefs) error {
+	data, err := r.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	return tx.Bucket([]byte(admissionRefsBucket)).Put([]byte(id), data)
+}
+
+// loosen gives evidence no candidate names the next loose position.
+func (q *queueTx) loosen(id admission.EvidenceID) error {
+	s, err := q.storageState()
+	if err != nil {
+		return err
+	}
+	var pos uint64
+	s.Loose, pos = s.Loose.Push()
+	q.storageDirty = true
+	if err = q.tx.Bucket([]byte(admissionRingsBucket)).Put(ringKey(ringLoose, pos), []byte(id)); err != nil {
+		return err
+	}
+	return putRefs(q.tx, id, admission.EvidenceRefs{Loose: pos})
+}
+
+// name records one more stored candidate naming id as a root. Loose
+// evidence leaves its ring position.
+func (q *queueTx) name(id admission.EvidenceID) error {
+	r, err := loadRefs(q.tx, id)
+	if err != nil {
+		return err
+	}
+	if r.Loose != 0 {
+		rings := q.tx.Bucket([]byte(admissionRingsBucket))
+		key := ringKey(ringLoose, r.Loose)
+		if string(rings.Get(key)) != string(id) {
+			return admission.ErrCorruptRecord
+		}
+		s, err := q.storageState()
+		if err != nil {
+			return err
+		}
+		if s.Loose, err = s.Loose.Remove(); err != nil {
+			return err
+		}
+		q.storageDirty = true
+		if err = rings.Delete(key); err != nil {
+			return err
+		}
+		r = admission.EvidenceRefs{}
+	}
+	r.Refs++
+	return putRefs(q.tx, id, r)
+}
+
+// deleteEvidence removes a record no candidate names, with its report
+// links and reference count.
+func deleteEvidence(tx *bolt.Tx, id admission.EvidenceID) error {
+	for _, name := range []string{admissionEvidenceBucket, admissionReportsBucket, admissionRefsBucket} {
+		if err := tx.Bucket([]byte(name)).Delete([]byte(id)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// flushStorage keeps each ring within its bound, oldest out first, and
+// writes the state back if it changed. It runs when the transaction's
+// work is done, so a record named late in the transaction is kept.
+func (q *queueTx) flushStorage() error {
+	if !q.storageDirty {
+		return nil
+	}
+	s := &q.storage
+	cur := q.tx.Bucket([]byte(admissionRingsBucket)).Cursor()
+	for s.Loose.Count > admission.MaxLooseEvidence {
+		k, v := cur.Seek([]byte{ringLoose})
+		if k == nil || k[0] != ringLoose {
+			return admission.ErrCorruptRecord
+		}
+		id := admission.EvidenceID(v)
+		r, err := loadRefs(q.tx, id)
+		if err != nil {
+			return err
+		}
+		if r.Loose != binary.BigEndian.Uint64(k[1:]) {
+			return admission.ErrCorruptRecord
+		}
+		if err = cur.Delete(); err != nil {
+			return err
+		}
+		if err = deleteEvidence(q.tx, id); err != nil {
+			return err
+		}
+		if s.Loose, err = s.Loose.Remove(); err != nil {
+			return err
+		}
+	}
+	q.storageDirty = false
+	return putStorageState(q.tx, *s)
+}
+
 // validateUnownedRows checks rows that candidate and evidence walks do not
 // necessarily reach. An upgrade must not silently retain or discard them.
 func validateUnownedRows(tx *bolt.Tx) error {

@@ -161,6 +161,10 @@ type queueTx struct {
 	// seq orders the arrivals decided in this transaction.
 	seq                     uint64
 	stateDirty, countsDirty bool
+	// storage is loaded on first use; flush trims its rings and writes it
+	// back if it changed.
+	storage                     admission.StorageState
+	storageLoaded, storageDirty bool
 }
 
 func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error) {
@@ -189,9 +193,11 @@ func (q *queueTx) flush() error {
 		}
 	}
 	if q.countsDirty {
-		return putQueueCounters(q.tx, q.counters)
+		if err := putQueueCounters(q.tx, q.counters); err != nil {
+			return err
+		}
 	}
-	return nil
+	return q.flushStorage()
 }
 
 func queueItem(id admission.CandidateID, c admission.Candidate, e admission.QueueEntry) admission.QueueItem {
