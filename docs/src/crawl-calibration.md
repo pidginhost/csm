@@ -292,8 +292,9 @@ or the minute was observed silent. Idle keys learn those covered normal zero
 minutes on reactivation, once only; unknown minutes never become zeros. A
 minute with no declared state is unknown and never trains. `protected`,
 `degraded` and `recovery_hold` minutes are frozen the same way whether the
-protection was applied or only decided. A key declaration wins over its
-site's. When a finding starts, the key's hour-of-week profile and its trust
+protection was applied or only decided. A key's own declaration wins; otherwise the nearest ancestor's applies
+(an L2 key's covers its L1 keys, the site key's covers every key), and then
+the site's. When a finding starts, the key's hour-of-week profile and its trust
 are pinned until a complete window clears it; a coverage gap leaves the
 finding active but uncertain, and it never counts as a new finding.
 

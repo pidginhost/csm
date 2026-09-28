@@ -995,3 +995,46 @@ func TestRestoreIdentityDropsKeyDeclarations(t *testing.T) {
 		t.Fatalf("old identity declaration froze a new key: %+v", got)
 	}
 }
+
+// A declaration on a key covers the keys whose traffic it contains: an L2
+// or the site key under protection freezes its L1 children too, unless a
+// child declares its own state.
+func TestAncestorDeclarationsFreezeDescendants(t *testing.T) {
+	p := Params{W: 5, R: 3, F: 1, K: 2, D: 5, C: 80, Baseline: BaselineParams{Alpha: 0.5, MinObs: 3, MinAge: 0, FloorPerMin: 1}}
+	hour := weekStart + 10*60
+	child := l1(2)
+	parent, site := child.parent(), KeyID{Level: 3}
+	later := Span{From: hour + 30, To: hour + 39}
+	for _, tc := range []struct {
+		name   string
+		states func(seg *ReplaySegment)
+		learns bool
+	}{
+		{name: "protected parent", states: func(seg *ReplaySegment) {
+			seg.States = append(seg.States, StateSpan{Key: &parent, From: later.From, To: later.To, State: StateProtected})
+		}},
+		{name: "protected site key", states: func(seg *ReplaySegment) {
+			seg.States = append(seg.States, StateSpan{Key: &site, From: later.From, To: later.To, State: StateRecoveryHold})
+		}},
+		{name: "child declaration wins", learns: true, states: func(seg *ReplaySegment) {
+			seg.States = append(seg.States, StateSpan{Key: &parent, From: later.From, To: later.To, State: StateProtected},
+				StateSpan{Key: &child, From: later.From, To: later.To, State: StateNormal})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := mustSession(t, SessionConfig{Params: p})
+			syn := NewSynth(testSite, 5)
+			recs := syn.Pool(Traffic{From: hour, To: hour + 29, PerMinute: 8, L2: SynthKey(1), L1: SynthKey(2), Label: LabelHealthy}, 4)
+			feedTicks(t, s, segment(testSite, recs, nil, Span{From: hour, To: hour + 29}))
+			trained := slotOf(t, s, testSite, child, hour)
+			more := NewSynth(testSite, 8).Pool(Traffic{From: later.From, To: later.To, PerMinute: 8, L2: SynthKey(1), L1: SynthKey(2), Label: LabelHealthy}, 4)
+			seg := segment(testSite, more, nil, later)
+			tc.states(&seg)
+			feedTicks(t, s, seg)
+			got := slotOf(t, s, testSite, child, hour)
+			if learned := got.obs != trained.obs; learned != tc.learns {
+				t.Fatalf("child slot %+v after %+v, want learning %t", got, trained, tc.learns)
+			}
+		})
+	}
+}

@@ -311,9 +311,15 @@ func bucketSite(name string, records []Record, coverage []Span, shuffle uint64) 
 	return buckets, nil
 }
 
-// state is the learning state of key id at minute m.
+// state is the learning state of key id at minute m: its own declaration,
+// else the nearest ancestor's (whose traffic contains its own), else the
+// site's.
 func (site *siteSession) state(id KeyID, m int64) string {
-	for _, spans := range [][]StateSpan{site.keyStates[id], site.siteStates} {
+	scopes := [][]StateSpan{site.keyStates[id]}
+	for _, a := range ancestors(id) {
+		scopes = append(scopes, site.keyStates[a])
+	}
+	for _, spans := range append(scopes, site.siteStates) {
 		i, found := slices.BinarySearchFunc(spans, m, func(s StateSpan, m int64) int { return cmp.Compare(s.To, m) })
 		if found || (i < len(spans) && spans[i].From <= m) {
 			return spans[i].State
