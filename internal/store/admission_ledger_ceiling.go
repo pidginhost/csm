@@ -143,16 +143,12 @@ func (l *AdmissionLedger) Ceiling() (admission.CeilingState, error) {
 // the candidate's assessment at now, since the pick was made in an earlier
 // transaction: direct compromise evidence has only the direct turn and
 // corroboration only the corroborated one.
-func (l *AdmissionLedger) laneFits(tx *bolt.Tx, lc liveCandidate, lane admission.Lane, now time.Time) error {
+func laneFits(q *queueTx, lc liveCandidate, lane admission.Lane) error {
 	switch {
 	case !lane.Valid():
 		return refusal(admission.ReasonInvalid, "reservation names no lane")
 	case lane == admission.LaneGeneral:
 		return nil
-	}
-	q, err := l.openQueue(tx, now)
-	if err != nil {
-		return err
 	}
 	a, reason, err := q.check(lc, true)
 	switch {

@@ -156,8 +156,8 @@ type Ledger interface {
 	// Reserve admits the next attempt on the lane a schedule picked and
 	// reports true. A reserved lane is rechecked against the candidate's
 	// current assessment, then the attempt is charged to the lane's
-	// ceiling budget in the same transaction; a refusal before the charge
-	// consumes nothing. The first reservation fixes the absolute expiry;
+	// ceiling budget and its history to the lane's history allowance in
+	// the same transaction; a refusal before the charges consumes nothing. The first reservation fixes the absolute expiry;
 	// later ones must keep it. On a candidate already reserved or running
 	// it returns that attempt and false: a readback grants and charges
 	// nothing, and a zero lane or expiry matches the recorded one.

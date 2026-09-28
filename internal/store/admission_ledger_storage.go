@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/binary"
 	"errors"
+	"slices"
 	"sort"
 	"time"
 
@@ -538,6 +539,63 @@ func (q *queueTx) flushStorage() error {
 	return putStorageState(q.tx, *s)
 }
 
+func loadHistoryEntry(tx *bolt.Tx, id admission.CandidateID) (admission.HistoryEntry, bool, error) {
+	raw := tx.Bucket([]byte(admissionHistoryBucket)).Get([]byte(id))
+	if raw == nil {
+		return admission.HistoryEntry{}, false, nil
+	}
+	h, err := admission.UnmarshalHistoryEntry(raw)
+	return h, true, err
+}
+
+// chargeHistory charges an admitted candidate's history to the allowance of
+// the lane it was admitted on: what its history cost grew by since its last
+// reservation, from the lane's credit and within its allowance. A
+// reservation is refused while the candidate would not fit the recovery
+// reserve if its outcome were unresolved.
+func (q *queueTx) chargeHistory(id admission.CandidateID, c admission.Candidate, lane admission.Lane) error {
+	cost, err := historyCostOf(q.tx, c)
+	if err != nil {
+		return err
+	}
+	h, found, err := loadHistoryEntry(q.tx, id)
+	if err != nil {
+		return err
+	}
+	if c.Attempts > 1 && !found || found && !h.Ended.IsZero() {
+		return admission.ErrCorruptRecord
+	}
+	s, err := q.storageState()
+	if err != nil {
+		return err
+	}
+	if room, roomErr := q.recoveryRoom(); roomErr != nil {
+		return roomErr
+	} else if uint64(max(cost, h.Charged())) > room {
+		err = refusal(admission.ReasonPendingRecovery, "outstanding outcomes fill the recovery reserve")
+		return err
+	}
+	if cost <= h.Charged() {
+		return nil
+	}
+	grown := cost - h.Charged()
+	next, err := s.ChargeHistory(lane, grown)
+	if err != nil {
+		return err
+	}
+	if lane == admission.LaneGeneral {
+		h.General += grown
+	} else {
+		h.Reserved += grown
+	}
+	h.RootMask = (1 << len(c.Roots)) - 1
+	if err = putHistoryEntry(q.tx, id, h); err != nil {
+		return err
+	}
+	*s, q.storageDirty = next, true
+	return nil
+}
+
 // validateUnownedRows checks rows that candidate and evidence walks do not
 // necessarily reach. An upgrade must not silently retain or discard them.
 func validateUnownedRows(tx *bolt.Tx) error {
@@ -566,4 +624,62 @@ func validateUnownedRows(tx *bolt.Tx) error {
 		}
 		return nil
 	})
+}
+
+// recoveryRoom also holds space for every outstanding attempt. Finishing
+// several such attempts as unknown cannot overbook the recovery reserve.
+func (q *queueTx) recoveryRoom() (uint64, error) {
+	s, err := q.storageState()
+	if err != nil {
+		return 0, err
+	}
+	if s.Recovery >= admission.RecoveryReserveBytes {
+		return 0, nil
+	}
+	room := uint64(admission.RecoveryReserveBytes) - s.Recovery
+	live, err := q.live()
+	if err != nil {
+		return 0, err
+	}
+	for _, lc := range live {
+		if lc.c.State != admission.StateReserved && lc.c.State != admission.StateExecuting {
+			continue
+		}
+		h, found, loadErr := loadHistoryEntry(q.tx, lc.id)
+		if loadErr != nil {
+			return 0, loadErr
+		}
+		if !found {
+			return 0, admission.ErrCorruptRecord
+		}
+		if uint64(h.Charged()) > room {
+			return 0, nil
+		}
+		room -= uint64(h.Charged())
+	}
+	return room, nil
+}
+
+// remapHistoryRoots preserves the paid roots' identity when sorting new
+// retry support changes their positions in the candidate.
+func (q *queueTx) remapHistoryRoots(c admission.Candidate, merged []admission.EvidenceID) error {
+	if c.Attempts == 0 {
+		return nil
+	}
+	id, _ := c.ID()
+	h, found, err := loadHistoryEntry(q.tx, id)
+	if err != nil {
+		return err
+	}
+	if !found || h.RootMask == 0 || h.RootMask>>len(c.Roots) != 0 {
+		return admission.ErrCorruptRecord
+	}
+	var mask uint32
+	for i, root := range c.Roots {
+		if h.RootMask&(1<<i) != 0 {
+			mask |= 1 << slices.Index(merged, root)
+		}
+	}
+	h.RootMask = mask
+	return putHistoryEntry(q.tx, id, h)
 }

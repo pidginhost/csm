@@ -249,6 +249,9 @@ func (l *AdmissionLedger) coalesceTx(q *queueTx, cur admission.Candidate, ids []
 	if err != nil {
 		return admission.Candidate{}, false, err
 	}
+	if err = q.remapHistoryRoots(cur, merged); err != nil {
+		return admission.Candidate{}, false, err
+	}
 	for _, root := range merged {
 		if !slices.Contains(cur.Roots, root) {
 			if err = q.name(root); err != nil {

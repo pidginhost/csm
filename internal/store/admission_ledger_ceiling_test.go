@@ -627,6 +627,12 @@ func TestAdmissionLedgerChallengeIsNeverCharged(t *testing.T) {
 	}
 	f.l = l
 	f.tickAt(f.wall)
+	// An upgraded ledger saves no history credit. Give it the credit that
+	// elapsed time would, without moving the ceiling's clock.
+	f.adjustStorage(func(s *admission.StorageState) {
+		full := admission.NewStorageState()
+		s.General.Credit, s.Reserved.Credit = full.General.Credit, full.Reserved.Credit
+	})
 	before := f.snapshot()
 	_, _, _, err = f.l.Reserve(block, admission.LaneGeneral, f.wall.Add(time.Hour))
 	wantLedgerReason(t, "block before a ceiling", err, admission.ReasonEngineUnavailable)
