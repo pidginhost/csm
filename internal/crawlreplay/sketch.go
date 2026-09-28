@@ -1,8 +1,9 @@
 package crawlreplay
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/binary"
-	"hash/fnv"
 	"slices"
 )
 
@@ -17,16 +18,25 @@ type SketchParams struct {
 	Hash func(binding string) uint64 `json:"-"`
 }
 
+// bindingHashPurpose separates the cardinality hash from any other use of
+// the same seed.
+const bindingHashPurpose = "crawlreplay binding cardinality v1"
+
+// hash is the keyed binding hash: HMAC-SHA256 under the big-endian seed
+// over the purpose label, a zero byte and the binding, first eight bytes.
+// An unkeyed hash would let a client choose bindings whose hashes collide
+// or sort low and so steer the bottom-h witness.
 func (p SketchParams) hash(binding string) uint64 {
 	if p.Hash != nil {
 		return p.Hash(binding)
 	}
-	h := fnv.New64a()
 	var seed [8]byte
 	binary.BigEndian.PutUint64(seed[:], p.Seed)
-	h.Write(seed[:])
-	h.Write([]byte(binding))
-	return h.Sum64()
+	m := hmac.New(sha256.New, seed[:])
+	m.Write([]byte(bindingHashPurpose))
+	m.Write([]byte{0})
+	m.Write([]byte(binding))
+	return binary.BigEndian.Uint64(m.Sum(nil))
 }
 
 type ssEntry struct {
@@ -56,11 +66,13 @@ func (s *spaceSaving) add(binding string) {
 		s.entries = append(s.entries, ssEntry{binding: binding, count: 1})
 		return
 	}
-	// Replace the minimum counter; ties go to the lowest index so replays
-	// are deterministic for one arrival order.
+	// Replace the minimum counter. Ties go to the smallest binding, so the
+	// choice depends on the counters alone, not on their slice order,
+	// which a restored summary does not keep.
 	low := 0
 	for i := range s.entries {
-		if s.entries[i].count < s.entries[low].count {
+		e, l := s.entries[i], s.entries[low]
+		if e.count < l.count || (e.count == l.count && e.binding < l.binding) {
 			low = i
 		}
 	}
@@ -117,19 +129,29 @@ func (k *keySketch) add(p SketchParams, binding string) {
 	k.hs.add(p.hash(binding))
 }
 
-// sketchBounds composes W minute summaries into the conservative residual
-// bounds of spec 6.3: L_N = max(0, N - T_U) and L_D = max(0, s - K). The
-// union is recomputed from whole minutes; nothing is subtracted.
-func sketchBounds(minutes []*keySketch, k, h int) (ln, ld int64) {
-	var n, bSum int64
-	upper := map[string]int64{}
+// sketchWindow is the spec 6.3 composition of one key's W minute summaries.
+type sketchWindow struct {
+	N     int64            // exact bound requests in the window
+	B     int64            // sum of the minute floors: bound for any absent binding
+	Upper map[string]int64 // U(x) for every binding some summary retained
+	Top   int64            // T_U: the K largest U values, padded with B
+	S     int              // distinct retained hashes in the window, at most h
+	LN    int64            // max(0, N - T_U)
+	LD    int64            // max(0, S - K)
+}
+
+// composeSketches composes W minute summaries into the conservative
+// residual bounds of spec 6.3. The union is recomputed from whole minutes;
+// nothing is subtracted or recompressed.
+func composeSketches(minutes []*keySketch, k, h int) sketchWindow {
+	w := sketchWindow{Upper: map[string]int64{}}
 	floors := make([]int64, len(minutes))
 	for j, ks := range minutes {
-		n += ks.bound
+		w.N += ks.bound
 		floors[j] = ks.ss.floor()
-		bSum += floors[j]
+		w.B += floors[j]
 		for _, e := range ks.ss.entries {
-			upper[e.binding] = 0
+			w.Upper[e.binding] = 0
 		}
 	}
 	for j, ks := range minutes {
@@ -137,25 +159,24 @@ func sketchBounds(minutes []*keySketch, k, h int) (ln, ld int64) {
 		for _, e := range ks.ss.entries {
 			present[e.binding] = e.count
 		}
-		for binding := range upper {
+		for binding := range w.Upper {
 			if c, ok := present[binding]; ok {
-				upper[binding] += c
+				w.Upper[binding] += c
 			} else {
-				upper[binding] += floors[j]
+				w.Upper[binding] += floors[j]
 			}
 		}
 	}
-	us := make([]int64, 0, len(upper)+k)
-	for _, u := range upper {
+	us := make([]int64, 0, len(w.Upper)+k)
+	for _, u := range w.Upper {
 		us = append(us, u)
 	}
 	for len(us) < k {
-		us = append(us, bSum)
+		us = append(us, w.B)
 	}
 	slices.Sort(us)
-	var top int64
 	for i := len(us) - 1; i >= len(us)-k; i-- {
-		top += us[i]
+		w.Top += us[i]
 	}
 	var union []uint64
 	for _, ks := range minutes {
@@ -163,6 +184,7 @@ func sketchBounds(minutes []*keySketch, k, h int) (ln, ld int64) {
 	}
 	slices.Sort(union)
 	union = slices.Compact(union)
-	s := min(len(union), h)
-	return max(0, n-top), int64(max(0, s-k))
+	w.S = min(len(union), h)
+	w.LN, w.LD = max(0, w.N-w.Top), int64(max(0, w.S-k))
+	return w
 }

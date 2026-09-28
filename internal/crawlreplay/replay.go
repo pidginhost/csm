@@ -82,10 +82,11 @@ func keysOf(r *Record) []KeyID {
 // Evaluation is one key's complete window at one minute.
 type Evaluation struct {
 	Key            KeyID            `json:"key"`
-	Total          int64            `json:"total"`    // window requests, bound or not
-	Bindings       int64            `json:"bindings"` // distinct bindings in the window
-	Residual       int64            `json:"residual"` // residual requests the decision used
-	Distinct       int64            `json:"distinct"` // residual bindings the decision used
+	Total          int64            `json:"total"`     // window requests, bound or not
+	Expensive      int64            `json:"expensive"` // window requests with a query
+	Bindings       int64            `json:"bindings"`  // distinct bindings in the window
+	Residual       int64            `json:"residual"`  // residual requests the decision used
+	Distinct       int64            `json:"distinct"`  // residual bindings the decision used
 	ExactResidual  int64            `json:"exact_residual"`
 	ExactDistinct  int64            `json:"exact_distinct"`
 	Expected       float64          `json:"expected"` // sum of per-minute expectations over the window
@@ -106,6 +107,25 @@ func (p Params) anomalous(residual, distinct int64, expected float64) bool {
 	return a1 >= 1 && a2 >= 1
 }
 
+// Count bases of a scope selection (spec 6.3).
+const (
+	// BasisExpensive counts only requests with a query.
+	BasisExpensive = "expensive"
+	// BasisDynamic counts queryless dynamic requests too: the anomalous
+	// site key includes them, so every level is measured against them.
+	BasisDynamic = "dynamic"
+)
+
+// Reasons a scope selection refuses to name keys.
+const (
+	// RefusedZero: the anomalous keys hold no requests.
+	RefusedZero = "zero_denominator"
+	// RefusedUnknown: a key whose window is incomplete may be anomalous
+	// outside every known anomalous ancestor, or may be the maximal
+	// ancestor of one, so the anomalous traffic is not known.
+	RefusedUnknown = "unknown_denominator"
+)
+
 // Scope is the narrowest level whose disjoint anomalous keys cover C
 // percent of the anomalous traffic (spec 6.3).
 type Scope struct {
@@ -113,7 +133,8 @@ type Scope struct {
 	Keys        []KeyID `json:"keys,omitempty"`
 	Covered     int64   `json:"covered"`
 	Denominator int64   `json:"denominator"`
-	Dynamic     bool    `json:"dynamic"` // the denominator includes queryless traffic
+	Basis       string  `json:"basis,omitempty"`
+	Refused     string  `json:"refused,omitempty"`
 }
 
 // Tick is one minute whose windows are complete.
@@ -226,7 +247,7 @@ func ReplaySite(site Site, p Params, o Options, fn func(Tick)) error {
 				}
 			}
 			if complete {
-				tick.Scope = selectScope(tick.Evaluations, p.C)
+				tick.Scope = selectScope(tick.Evaluations, p.C, nil)
 				fn(tick)
 			}
 		}
@@ -281,7 +302,7 @@ func foldIdle(ks *keyState, coverage []Span, until int64) {
 }
 
 func evaluate(ks *keyState, id KeyID, m int64, p Params, o Options) Evaluation {
-	e := Evaluation{Key: id, Total: ks.window.Total(), Bindings: int64(len(ks.window.bindings)), Labels: ks.window.Labels()}
+	e := Evaluation{Key: id, Total: ks.window.Total(), Expensive: ks.window.Expensive(), Bindings: int64(len(ks.window.bindings)), Labels: ks.window.Labels()}
 	e.ExactResidual, e.ExactDistinct = ks.window.Residual(p.K)
 	for j := m - int64(p.W) + 1; j <= m; j++ {
 		e.Expected += ks.baseline.Expected(j)
@@ -295,48 +316,84 @@ func evaluate(ks *keyState, id KeyID, m int64, p Params, o Options) Evaluation {
 				minutes = append(minutes, sk)
 			}
 		}
-		e.Residual, e.Distinct = sketchBounds(minutes, p.K, o.Sketch.H)
+		bounds := composeSketches(minutes, p.K, o.Sketch.H)
+		e.Residual, e.Distinct = bounds.LN, bounds.LD
 		e.Anomalous = p.anomalous(e.Residual, e.Distinct, e.Expected)
 	}
 	return e
 }
 
+// ancestors lists the keys whose traffic contains id's, nearest first.
+func ancestors(id KeyID) []KeyID {
+	switch id.Level {
+	case 1:
+		return []KeyID{{Level: 2, Key: id.Parent}, {Level: 3}}
+	case 2:
+		return []KeyID{{Level: 3}}
+	}
+	return nil
+}
+
 // selectScope evaluates anomalous L1 keys, then L2, then L3; the first
 // level whose union covers C percent of the maximal anomalous traffic
-// supplies the disjoint key set.
-func selectScope(evals []Evaluation, c float64) Scope {
-	anomalous := map[KeyID]int64{}
+// supplies the disjoint key set. unknown lists keys with traffic whose
+// window is incomplete; unless an anomalous ancestor already holds one,
+// the anomalous traffic is not known and no scope is chosen.
+func selectScope(evals []Evaluation, c float64, unknown []KeyID) Scope {
+	anomalous := map[KeyID]Evaluation{}
 	for _, e := range evals {
 		if e.Anomalous {
-			anomalous[e.Key] = e.Total
+			anomalous[e.Key] = e
 		}
 	}
 	if len(anomalous) == 0 {
 		return Scope{}
 	}
-	_, siteAnomalous := anomalous[KeyID{Level: 3}]
-	var denominator int64
-	for id, total := range anomalous {
-		switch {
-		case id.Level == 3,
-			id.Level == 2 && !siteAnomalous,
-			id.Level == 1 && !siteAnomalous && anomalous[KeyID{Level: 2, Key: id.Parent}] == 0:
-			denominator += total
+	subsumed := func(id KeyID) bool {
+		for _, a := range ancestors(id) {
+			if _, ok := anomalous[a]; ok {
+				return true
+			}
 		}
+		return false
+	}
+	for _, id := range unknown {
+		if !subsumed(id) {
+			return Scope{Refused: RefusedUnknown}
+		}
+	}
+	basis := BasisExpensive
+	if site, ok := anomalous[KeyID{Level: 3}]; ok && site.Total > site.Expensive {
+		basis = BasisDynamic
+	}
+	count := func(e Evaluation) int64 {
+		if basis == BasisDynamic {
+			return e.Total
+		}
+		return e.Expensive
+	}
+	var denominator int64
+	for id, e := range anomalous {
+		if !subsumed(id) {
+			denominator += count(e)
+		}
+	}
+	if denominator <= 0 {
+		return Scope{Refused: RefusedZero}
 	}
 	for level := uint8(1); level <= 3; level++ {
 		var keys []KeyID
 		var covered int64
-		for id, total := range anomalous {
+		for id, e := range anomalous {
 			if id.Level == level {
 				keys = append(keys, id)
-				covered += total
+				covered += count(e)
 			}
 		}
 		if len(keys) > 0 && float64(covered)*100 >= c*float64(denominator) {
 			slices.SortFunc(keys, keyOrder)
-			return Scope{Level: level, Keys: keys, Covered: covered, Denominator: denominator, Dynamic: siteAnomalous}
+			return Scope{Level: level, Keys: keys, Covered: covered, Denominator: denominator, Basis: basis}
 		}
 	}
-	return Scope{Denominator: denominator, Dynamic: siteAnomalous}
+	return Scope{Denominator: denominator, Basis: basis}
 }

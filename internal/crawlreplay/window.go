@@ -6,9 +6,10 @@ import (
 
 // minuteCounts is one key's traffic in one covered minute.
 type minuteCounts struct {
-	bindings map[string]int64 // requests per client binding
-	total    int64            // all requests, bound or not
-	labels   map[string]int64 // requests per label key (see labelKey)
+	bindings  map[string]int64 // requests per client binding
+	total     int64            // all requests, bound or not
+	expensive int64            // requests with a query (the rest are queryless)
+	labels    map[string]int64 // requests per label key (see labelKey)
 }
 
 func newMinuteCounts() *minuteCounts {
@@ -17,6 +18,9 @@ func newMinuteCounts() *minuteCounts {
 
 func (m *minuteCounts) add(r *Record) {
 	m.total++
+	if r.Class == ClassExpensive {
+		m.expensive++
+	}
 	if r.Binding != "" {
 		m.bindings[r.Binding]++
 	}
@@ -33,9 +37,10 @@ func labelKey(label, episode string) string {
 
 // Window is the exact traffic of one key over its last W covered minutes.
 type Window struct {
-	bindings map[string]int64
-	total    int64
-	labels   map[string]int64
+	bindings  map[string]int64
+	total     int64
+	expensive int64
+	labels    map[string]int64
 }
 
 func newWindow() *Window {
@@ -45,6 +50,7 @@ func newWindow() *Window {
 // apply adds (sign 1) or removes (sign -1) one minute's counts.
 func (w *Window) apply(m *minuteCounts, sign int64) {
 	w.total += sign * m.total
+	w.expensive += sign * m.expensive
 	for b, n := range m.bindings {
 		if v := w.bindings[b] + sign*n; v != 0 {
 			w.bindings[b] = v
@@ -63,6 +69,10 @@ func (w *Window) apply(m *minuteCounts, sign int64) {
 
 // Total is every request in the window, with or without a binding.
 func (w *Window) Total() int64 { return w.total }
+
+// Expensive is the window's requests with a query; L1 and L2 keys hold
+// nothing else.
+func (w *Window) Expensive() int64 { return w.expensive }
 
 // Bound is the requests that carry a client binding.
 func (w *Window) Bound() int64 {
