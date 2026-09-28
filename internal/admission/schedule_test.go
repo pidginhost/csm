@@ -643,3 +643,104 @@ func TestScheduleRecoveryBudgetSharedByLanes(t *testing.T) {
 		t.Fatal("accepted an oversized recovery cost")
 	}
 }
+
+func TestScheduleStorageHoldKeepsEarnedCredit(t *testing.T) {
+	for _, recovery := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recovery=%t", recovery), func(t *testing.T) {
+			head := bytesItem("head", "c", HistoryQuantum)
+			lim := ScheduleLimits{General: 1, Members: 1}
+			if recovery {
+				head.Recovery = HistoryQuantum
+				lim.GeneralBytes = HistoryQuantum
+			}
+			picks, next := mustSchedule(t, []ScheduleItem{head}, ScheduleState{}, lim)
+			if len(picks) != 0 {
+				t.Fatalf("picked a head without storage: %v", picks)
+			}
+			want := ScopeTurn{Deficit: 1, Bytes: HistoryQuantum}
+			if got := next.Rings[ringC2].Scopes["c"]; got != want {
+				t.Fatalf("held turn lost earned credit: %+v, want %+v", got, want)
+			}
+			data, err := next.MarshalBinary()
+			if err != nil {
+				t.Fatal(err)
+			}
+			back, err := UnmarshalScheduleState(data)
+			if err != nil || back.Rings[ringC2].Scopes["c"] != want {
+				t.Fatalf("held credit did not survive a reopen: %+v, %v", back, err)
+			}
+			// A held cursor must name a scope with an earned turn.
+			body := data[:len(data)-8]
+			for _, scope := range []string{"missing", "bad scope"} {
+				bad := bytes.Replace(body, []byte(`"held":"c"`), []byte(fmt.Sprintf(`"held":%q`, scope)), 1)
+				if bytes.Equal(body, bad) {
+					t.Fatal("held scope was not persisted")
+				}
+				if _, err := UnmarshalScheduleState(resealForTest(bad)); err != ErrCorruptRecord {
+					t.Fatalf("accepted a malformed held scope: %v", err)
+				}
+			}
+			bad := bytes.Replace(body, []byte(`,"deficit":1`), nil, 1)
+			if _, err := UnmarshalScheduleState(resealForTest(bad)); err != ErrCorruptRecord {
+				t.Fatalf("accepted a hold without earned units: %v", err)
+			}
+		})
+	}
+}
+
+func TestScheduleStorageHoldPrecedesNewScopes(t *testing.T) {
+	for _, lane := range []Lane{LaneGeneral, LaneDirect, LaneCorroborated} {
+		for _, recovery := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/recovery=%t", lane, recovery), func(t *testing.T) {
+				first := bytesItem("first", "a", 1)
+				head := bytesItem("head", "c", HistoryQuantum)
+				arrival := bytesItem("arrival", "b", 1)
+				lim := ScheduleLimits{General: 10, GeneralBytes: HistoryQuantum, Members: MaxBatchMembers}
+				for _, it := range []*ScheduleItem{&first, &head, &arrival} {
+					if lane != LaneGeneral {
+						it.Tier.Class = ClassC3
+						it.Direct, it.Corroborated = lane == LaneDirect, lane == LaneCorroborated
+					}
+					if recovery {
+						it.Recovery, it.Bytes = it.Bytes, 0
+					}
+				}
+				if lane != LaneGeneral {
+					lim.General, lim.Reserved = 0, lim.General
+					lim.ReservedBytes = lim.GeneralBytes
+				}
+				if recovery {
+					lim.RecoveryBytes = HistoryQuantum
+				}
+				picks, next := mustSchedule(t, []ScheduleItem{first, head}, ScheduleState{}, lim)
+				if got := picked(picks); !reflect.DeepEqual(got, []string{"first"}) {
+					t.Fatalf("first batch = %v", got)
+				}
+				data, err := next.MarshalBinary()
+				if err != nil {
+					t.Fatal(err)
+				}
+				next, err = UnmarshalScheduleState(data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				picks, _ = mustSchedule(t, []ScheduleItem{arrival, head}, next, lim)
+				if got := picked(picks); !reflect.DeepEqual(got, []string{"head"}) || picks[0].Lane != lane {
+					t.Fatalf("new scope took the held budget: %v", picks)
+				}
+				// A hold ends when its scope has no ready work, including
+				// after the head is removed or starts a retry wait.
+				head.Ready = false
+				for _, items := range [][]ScheduleItem{{arrival}, {arrival, head}} {
+					picks, cleared := mustSchedule(t, items, next, lim)
+					if got := picked(picks); !reflect.DeepEqual(got, []string{"arrival"}) {
+						t.Fatalf("absent head held the lane: %v", got)
+					}
+					if _, err := cleared.MarshalBinary(); err != nil {
+						t.Fatalf("cleared hold is not persistable: %v", err)
+					}
+				}
+			})
+		}
+	}
+}

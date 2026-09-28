@@ -155,7 +155,7 @@ func FuzzLedgerRecords(f *testing.F) {
 		cand, AttemptRecord{Attempt: attempt, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Lane: LaneGeneral}, clock, inv, links,
 		QueueEntry{Partition: PartitionReserved, Tier: Tier{ClassC3, SeverityHigh}, Direct: true, NextChange: t0},
 		QueueState{NextSweep: t0, Cursors: QueueCursors{General: "host/address"}}, counters,
-		ScheduleState{ClassSlot: 3, Rings: [ringCount]Ring{ringC2: {Last: "host/address", Scopes: map[string]ScopeTurn{"host/address": {Severity: 1, Deficit: 2, Bytes: 4096}}}}},
+		ScheduleState{ClassSlot: 3, Rings: [ringCount]Ring{ringC2: {Last: "host/address", Held: "host/address", Scopes: map[string]ScopeTurn{"host/address": {Severity: 1, Deficit: 2, Bytes: 4096}}}}},
 		IngressState{Generation: 2, Open: true, Persisted: 5, Interrupted: 1, Checkpoint: &IngressCheckpoint{
 			Generation: 2, Sequence: 3, Cursors: QueueCursors{General: "host/address"}, Counters: counterBytes,
 		}},

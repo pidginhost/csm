@@ -1,6 +1,9 @@
 package admission
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // Storage budgets of spec 5.4, internal constants rather than settings.
 const (
@@ -218,11 +221,15 @@ func (s StorageState) ReleaseHistory(general, reserved uint32) (StorageState, er
 // PinHistory moves an unresolved outcome's history bytes from its
 // allowances to the recovery reserve.
 func (s StorageState) PinHistory(general, reserved uint32) (StorageState, error) {
+	charged := uint64(general) + uint64(reserved)
+	if charged > math.MaxUint64-s.Recovery {
+		return s, ErrCorruptRecord
+	}
 	next, err := s.ReleaseHistory(general, reserved)
 	if err != nil {
 		return s, err
 	}
-	next.Recovery += uint64(general) + uint64(reserved)
+	next.Recovery += charged
 	return next, nil
 }
 

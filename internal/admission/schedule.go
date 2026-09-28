@@ -121,7 +121,10 @@ type ScopeTurn struct {
 // Ring is the persisted rotation of one ring: the scope served last and
 // the turns of scopes that still have work in it.
 type Ring struct {
-	Last   string
+	Last string
+	// Held names the scope promised the next storage budget. Last alone
+	// cannot preserve that promise when new scopes enter the rotation.
+	Held   string
 	Scopes map[string]ScopeTurn
 }
 
@@ -252,6 +255,10 @@ func (s *scheduler) head(r int, scope string) (*ScheduleItem, uint8) {
 // that turn could leave it with too little budget on every call. The
 // boolean reports this budget block; otherwise nil means no head fits.
 func (s *scheduler) serve(r int, budget, fullBudget uint32, bytes, recovery uint64) (*ScheduleItem, bool) {
+	ring := &s.st.Rings[r]
+	if it, _ := s.head(r, ring.Held); it == nil {
+		ring.Held = ""
+	}
 	var scopes []string
 	fits := false
 	for scope := range s.rings[r].ready {
@@ -264,10 +271,12 @@ func (s *scheduler) serve(r int, budget, fullBudget uint32, bytes, recovery uint
 		return nil, false
 	}
 	sort.Strings(scopes)
-	ring := &s.st.Rings[r]
 	start := sort.SearchStrings(scopes, ring.Last)
 	if start < len(scopes) && scopes[start] == ring.Last {
 		start++
+	}
+	if ring.Held != "" {
+		start = sort.SearchStrings(scopes, ring.Held)
 	}
 	// A fitting head is served or held for a fresh budget within
 	// MaxMemberCost rotations, since each visit earns a unit.
@@ -286,8 +295,11 @@ func (s *scheduler) serve(r int, budget, fullBudget uint32, bytes, recovery uint
 		}
 		earned := it.Cost <= turn.Deficit && it.Bytes <= turn.Bytes
 		if earned && (uint64(it.Bytes) > bytes || uint64(it.Recovery) > recovery) {
+			ring.Scopes[scope] = turn
+			ring.Held = scope
 			return nil, true
 		}
+		ring.Held = ""
 		ring.Last = scope
 		if earned && it.Cost <= budget {
 			turn.Deficit -= it.Cost
@@ -394,6 +406,9 @@ general:
 		}
 	}
 	for r := range s.st.Rings {
+		if !left[r][s.st.Rings[r].Held] {
+			s.st.Rings[r].Held = ""
+		}
 		for scope, turn := range s.st.Rings[r].Scopes {
 			if !left[r][scope] || turn == (ScopeTurn{}) {
 				delete(s.st.Rings[r].Scopes, scope)
@@ -412,6 +427,7 @@ type scopeTurnRecord struct {
 
 type ringRecord struct {
 	Last   string            `json:"last,omitempty"`
+	Held   string            `json:"held,omitempty"`
 	Scopes []scopeTurnRecord `json:"scopes"`
 }
 
@@ -434,6 +450,9 @@ func (s ScheduleState) record() (scheduleStateRecord, error) {
 		if !validCursor(ring.Last) || len(ring.Scopes) > QueueCapacity {
 			return bad("schedule ring is malformed")
 		}
+		if ring.Held != "" && ring.Scopes[ring.Held].Deficit == 0 {
+			return bad("held schedule scope has no earned turn")
+		}
 		rows := make([]scopeTurnRecord, 0, len(ring.Scopes))
 		for scope, turn := range ring.Scopes {
 			if !boundedToken(scope, 128) || turn.Severity >= patternSlots || turn.Deficit > MaxMemberCost || turn.Bytes > MaxHistoryBytes || turn == (ScopeTurn{}) {
@@ -442,7 +461,7 @@ func (s ScheduleState) record() (scheduleStateRecord, error) {
 			rows = append(rows, scopeTurnRecord{Scope: scope, Severity: turn.Severity, Deficit: turn.Deficit, Bytes: turn.Bytes})
 		}
 		sort.Slice(rows, func(i, j int) bool { return rows[i].Scope < rows[j].Scope })
-		rec.Rings[r] = ringRecord{Last: ring.Last, Scopes: rows}
+		rec.Rings[r] = ringRecord{Last: ring.Last, Held: ring.Held, Scopes: rows}
 	}
 	return rec, nil
 }
@@ -474,7 +493,7 @@ func UnmarshalScheduleState(data []byte) (ScheduleState, error) {
 		if ring.Scopes == nil {
 			return ScheduleState{}, ErrCorruptRecord
 		}
-		s.Rings[r] = Ring{Last: ring.Last, Scopes: make(map[string]ScopeTurn, len(ring.Scopes))}
+		s.Rings[r] = Ring{Last: ring.Last, Held: ring.Held, Scopes: make(map[string]ScopeTurn, len(ring.Scopes))}
 		for i, row := range ring.Scopes {
 			if i > 0 && ring.Scopes[i-1].Scope >= row.Scope {
 				return ScheduleState{}, ErrCorruptRecord

@@ -230,6 +230,35 @@ func TestStorageStateReleaseAndPin(t *testing.T) {
 	}
 }
 
+func TestStoragePinRefusesOverflowWithoutChangingState(t *testing.T) {
+	for _, charge := range []struct{ general, reserved uint32 }{{1, 0}, {0, 1}, {1, 1}} {
+		s := NewStorageState()
+		s.General.Used, s.Reserved.Used = uint64(charge.general), uint64(charge.reserved)
+		s.Recovery = math.MaxUint64 - uint64(charge.general) - uint64(charge.reserved) + 1
+		data, err := s.MarshalBinary()
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err = UnmarshalStorageState(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.PinHistory(charge.general, charge.reserved)
+		if !errors.Is(err, ErrCorruptRecord) || got != s {
+			t.Fatalf("overflow changed history or recovery: %+v, %v; want %+v", got, err, s)
+		}
+		// Imported unresolved outcomes may exceed the reserve. Pinning
+		// must retain those bytes as long as their total is representable.
+		s.Recovery--
+		got, err = s.PinHistory(charge.general, charge.reserved)
+		want := s
+		want.General.Used, want.Reserved.Used, want.Recovery = 0, 0, math.MaxUint64
+		if err != nil || got != want {
+			t.Fatalf("representable pin = %+v, %v; want %+v", got, err, want)
+		}
+	}
+}
+
 func TestRingPositions(t *testing.T) {
 	var r RingState
 	r, first := r.Push()
