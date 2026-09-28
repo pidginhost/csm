@@ -12,6 +12,7 @@ var ceilingStateKey = []byte("ceiling")
 // upgradeLedgerToSchemaThree adds the ceiling to a schema 2 ledger inside
 // the opening transaction. Its recent spend is unknown, so its buckets start
 // empty rather than full; no charge is invented for earlier reservations.
+// The upgrade that completes the chain records the schema.
 func upgradeLedgerToSchemaThree(tx *bolt.Tx) error {
 	state := tx.Bucket([]byte(admissionQueueStateBucket))
 	if state.Get(ceilingStateKey) != nil || state.Bucket(ceilingStateKey) != nil {
@@ -20,10 +21,7 @@ func upgradeLedgerToSchemaThree(tx *bolt.Tx) error {
 	if _, err := tx.CreateBucket([]byte(admissionChargesBucket)); err != nil {
 		return err
 	}
-	if err := putCeilingState(tx, admission.CeilingState{}); err != nil {
-		return err
-	}
-	return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaVersion})
+	return putCeilingState(tx, admission.CeilingState{})
 }
 
 func loadCeilingState(tx *bolt.Tx) (admission.CeilingState, error) {

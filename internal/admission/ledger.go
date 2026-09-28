@@ -97,6 +97,8 @@ type Ledger interface {
 	SetCeiling(uint32) error
 	// Ceiling is the committed ceiling state.
 	Ceiling() (CeilingState, error)
+	// Storage is the committed storage state.
+	Storage() (StorageState, error)
 	// PublishEvidence stores an immutable record after revalidating it.
 	// An identical record again changes nothing and reports false; a
 	// different record under the same ID is refused.
