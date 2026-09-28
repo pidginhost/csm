@@ -86,10 +86,21 @@ func publishTx(q *queueTx, reg *admission.Registry, e admission.Evidence) (bool,
 		if old.ID() != e.ID() {
 			return false, admission.ErrCorruptRecord
 		}
+		if _, err = loadRefs(q.tx, e.ID()); err != nil {
+			return false, err
+		}
 		if !old.Equal(e) {
 			return false, admission.ErrEvidenceConflict
 		}
 		return false, nil
+	}
+	// A surviving reference or report belongs to missing evidence, not to
+	// a new publication. Recreating it would lose its recorded ownership.
+	for _, name := range []string{admissionRefsBucket, admissionReportsBucket} {
+		owned := q.tx.Bucket([]byte(name))
+		if owned.Get(id) != nil || owned.Bucket(id) != nil {
+			return false, admission.ErrCorruptRecord
+		}
 	}
 	if err = b.Put(id, data); err != nil {
 		return false, err

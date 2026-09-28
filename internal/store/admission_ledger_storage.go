@@ -193,6 +193,7 @@ func upgradeLedgerToSchemaFour(tx *bolt.Tx) error {
 		at time.Time
 	}
 	var loose []looseEvidence
+	var expired []admission.EvidenceID
 	evidence, references := tx.Bucket([]byte(admissionEvidenceBucket)), tx.Bucket([]byte(admissionRefsBucket))
 	err = evidence.ForEach(func(k, v []byte) error {
 		e, walkErr := admission.UnmarshalEvidence(v)
@@ -206,6 +207,10 @@ func upgradeLedgerToSchemaFour(tx *bolt.Tx) error {
 		n, named := refs[id]
 		delete(refs, id)
 		if !named || n == 0 {
+			if named && !clock.Now().Before(e.ObservedAt().Add(admission.SupportLookback)) {
+				expired = append(expired, id)
+				return nil
+			}
 			loose = append(loose, looseEvidence{id, e.ObservedAt()})
 			return nil
 		}
@@ -217,6 +222,11 @@ func upgradeLedgerToSchemaFour(tx *bolt.Tx) error {
 	})
 	if err != nil {
 		return err
+	}
+	for _, id := range expired {
+		if err = deleteEvidence(tx, id); err != nil {
+			return err
+		}
 	}
 	sort.Slice(loose, func(i, j int) bool {
 		if !loose[i].at.Equal(loose[j].at) {
@@ -287,8 +297,8 @@ func loadStorage(tx *bolt.Tx) (admission.StorageState, error) {
 		return s, admission.ErrCorruptRecord
 	}
 	var ended, loose admission.RingState
-	err = tx.Bucket([]byte(admissionRingsBucket)).ForEach(func(k, _ []byte) error {
-		if len(k) != 9 {
+	err = tx.Bucket([]byte(admissionRingsBucket)).ForEach(func(k, v []byte) error {
+		if len(k) != 9 || v == nil {
 			return admission.ErrCorruptRecord
 		}
 		pos := binary.BigEndian.Uint64(k[1:])
@@ -447,6 +457,14 @@ func (q *queueTx) ended(id admission.CandidateID, c admission.Candidate) error {
 // deleteEvidence removes a record no candidate names, with its report
 // links and reference count.
 func deleteEvidence(tx *bolt.Tx, id admission.EvidenceID) error {
+	// Prove the records before removal so eviction cannot conceal damage.
+	e, err := loadStoredEvidence(tx, id)
+	if err != nil {
+		return corruptRecord(err)
+	}
+	if _, err = loadReports(tx, e); err != nil {
+		return err
+	}
 	for _, name := range []string{admissionEvidenceBucket, admissionReportsBucket, admissionRefsBucket} {
 		if err := tx.Bucket([]byte(name)).Delete([]byte(id)); err != nil {
 			return err
@@ -467,7 +485,7 @@ func (q *queueTx) flushStorage() error {
 	// Removed endings can loosen their roots, so they go first.
 	for s.Ended.Count > admission.MaxEndedCandidates {
 		k, v := cur.Seek([]byte{ringEnded})
-		if k == nil || k[0] != ringEnded {
+		if len(k) != 9 || k[0] != ringEnded || v == nil || binary.BigEndian.Uint64(k[1:]) == 0 {
 			return admission.ErrCorruptRecord
 		}
 		id := admission.CandidateID(v)
@@ -495,7 +513,7 @@ func (q *queueTx) flushStorage() error {
 	}
 	for s.Loose.Count > admission.MaxLooseEvidence {
 		k, v := cur.Seek([]byte{ringLoose})
-		if k == nil || k[0] != ringLoose {
+		if len(k) != 9 || k[0] != ringLoose || v == nil || binary.BigEndian.Uint64(k[1:]) == 0 {
 			return admission.ErrCorruptRecord
 		}
 		id := admission.EvidenceID(v)
