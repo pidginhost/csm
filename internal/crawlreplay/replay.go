@@ -346,9 +346,6 @@ func selectScope(evals []Evaluation, c float64, unknown []KeyID) Scope {
 			anomalous[e.Key] = e
 		}
 	}
-	if len(anomalous) == 0 {
-		return Scope{}
-	}
 	subsumed := func(id KeyID) bool {
 		for _, a := range ancestors(id) {
 			if _, ok := anomalous[a]; ok {
@@ -361,6 +358,9 @@ func selectScope(evals []Evaluation, c float64, unknown []KeyID) Scope {
 		if !subsumed(id) {
 			return Scope{Refused: RefusedUnknown}
 		}
+	}
+	if len(anomalous) == 0 {
+		return Scope{}
 	}
 	basis := BasisExpensive
 	if site, ok := anomalous[KeyID{Level: 3}]; ok && site.Total > site.Expensive {

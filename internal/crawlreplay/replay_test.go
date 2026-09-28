@@ -534,6 +534,57 @@ func TestResidualThresholdEquality(t *testing.T) {
 	})
 }
 
+func TestReplayScopeBasisExpiresWithTraffic(t *testing.T) {
+	p := Params{W: 2, R: 2, F: 1, K: 1, D: 2, C: 80,
+		Baseline: BaselineParams{Alpha: 0.5, MinObs: 1, MinAge: 1 << 40, FloorPerMin: 1}}
+	s := NewSynth(testSite, 7)
+	l1 := KeyID{Level: 1, Key: SynthKey(2), Parent: SynthKey(1)}
+	siteKey := KeyID{Level: 3}
+	records := s.Rotating(Traffic{From: fixtureStart, To: fixtureStart, PerMinute: 6}, 1)
+	records = append(records, s.Rotating(Traffic{From: fixtureStart + 1, To: fixtureStart + 2,
+		PerMinute: 6, L2: l1.Parent, L1: l1.Key}, 1)...)
+	site := Site{Records: records, Coverage: []Span{{From: fixtureStart, To: fixtureStart + 4}}}
+	want := []Scope{
+		{Level: 3, Keys: []KeyID{siteKey}, Covered: 12, Denominator: 12, Basis: BasisDynamic},
+		{Level: 1, Keys: []KeyID{l1}, Covered: 12, Denominator: 12, Basis: BasisExpensive},
+		{Level: 1, Keys: []KeyID{l1}, Covered: 6, Denominator: 6, Basis: BasisExpensive},
+		{},
+	}
+	for name, options := range map[string]Options{
+		"exact":  {},
+		"sketch": {Sketch: &SketchParams{M: 16, H: 16, Seed: 7}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got []Scope
+			err := ReplaySite(site, p, options, func(tk Tick) {
+				got = append(got, tk.Scope)
+				for _, e := range tk.Evaluations {
+					var total, expensive int64
+					for _, r := range records {
+						if r.T/60 < tk.Minute-int64(p.W)+1 || r.T/60 > tk.Minute || !slices.Contains(keysOf(&r), e.Key) {
+							continue
+						}
+						total++
+						if r.Class == ClassExpensive {
+							expensive++
+						}
+					}
+					if e.Total != total || e.Expensive != expensive {
+						t.Fatalf("minute %d key %+v: total/expensive %d/%d, want %d/%d",
+							tk.Minute, e.Key, e.Total, e.Expensive, total, expensive)
+					}
+				}
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("scopes %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
 func TestScopeExactUnion(t *testing.T) {
 	site := KeyID{Level: 3}
 	l2 := func(k string) KeyID { return KeyID{Level: 2, Key: k} }
@@ -614,6 +665,19 @@ func TestScopeExactUnion(t *testing.T) {
 			evals: []Evaluation{x(site, 0, true)},
 			c:     80,
 			want:  Scope{Refused: RefusedZero},
+		},
+		{
+			name:    "unknown traffic without any complete evaluations refuses",
+			unknown: []KeyID{site},
+			c:       80,
+			want:    Scope{Refused: RefusedUnknown},
+		},
+		{
+			name:    "normal ancestors do not resolve unknown traffic",
+			evals:   []Evaluation{x(site, 1000, false), x(l2("a"), 900, false)},
+			unknown: []KeyID{l1("a1", "a")},
+			c:       80,
+			want:    Scope{Refused: RefusedUnknown},
 		},
 		{
 			name:    "unknown ancestor refuses",
