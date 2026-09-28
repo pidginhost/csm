@@ -535,18 +535,11 @@ func (r *runResult) addSite(name string, site crawlreplay.Site, origins []crawlr
 		ep, ok := outcomes[origin.Episode]
 		if !ok {
 			ep = origin
+			ep.Status = crawlreplay.OutcomeUnscored
 		}
 		ep.Onset = origin.Onset
 		if ep.Detected {
 			ep.DelaySeconds = (ep.DetectMinute+1)*60 - ep.Onset
-		} else {
-			ep.Status = crawlreplay.OutcomeUnscored
-			for _, span := range site.Coverage {
-				if ep.Onset/60 >= span.From && ep.Onset/60 <= span.To {
-					ep.Status = crawlreplay.OutcomeMissed
-					break
-				}
-			}
 		}
 		r.Episodes = append(r.Episodes, siteEpisode{Site: name, EpisodeResult: ep})
 	}

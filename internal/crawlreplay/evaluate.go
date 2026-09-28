@@ -24,8 +24,8 @@ var ErrTruth = errors.New("crawlreplay: invalid episode truth")
 // Outcomes of one episode on one site.
 const (
 	OutcomeDetected = "detected"   // a correct High transition at or after onset
-	OutcomeMissed   = "missed"     // onset scored, no correct transition
-	OutcomeUnscored = "not_scored" // onset outside every scored minute
+	OutcomeMissed   = "missed"     // onset in scoring, requests replayed, no correct transition
+	OutcomeUnscored = "not_scored" // onset outside scoring or no requests replayed in scoring
 	OutcomeAbsent   = "absent"     // the site logged no request of the episode
 )
 
@@ -432,7 +432,9 @@ func (sc *Scorer) Report() Scoring {
 			r.Status = OutcomeAbsent
 		case r.Detected:
 			r.Status, r.Onset = OutcomeDetected, o.t
-		case !inSpans(sc.declared[es.site], o.t/60),
+		// Each segment's declarations are sorted, but they can overlap
+		// earlier segments' declarations, so their union is not sorted.
+		case !slices.ContainsFunc(sc.declared[es.site], func(s Span) bool { return s.From <= o.t/60 && o.t/60 <= s.To }),
 			!slices.ContainsFunc(o.minutes, func(m int64) bool { return inSpans(sc.scored[es.site], m) }):
 			// It began outside scoring, or none of its requests was
 			// replayed in a scored minute: not evidence of a miss.

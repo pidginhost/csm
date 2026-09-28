@@ -246,7 +246,8 @@ and churn.
 Episode onset remains the first labeled request in the bundle, even when
 its minute is excluded. An undetected episode none of whose requests was
 replayed in a scored minute is reported as `not_scored`, not a qualified
-detector miss; one whose later requests were replayed is a miss. An
+detector miss; one whose later requests were replayed is a miss. Restoring
+the original onset in the calibration report preserves that miss. An
 episode with no covered requests has no replay margins. Relevant anomalous
 windows retain their margins even when an already active finding prevents
 a new detection. Only covered records contribute to windows, baselines and

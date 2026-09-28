@@ -6,6 +6,26 @@ import (
 	"github.com/pidginhost/csm/internal/crawlreplay"
 )
 
+func TestCalibrateKeepsMissAfterExcludedOnset(t *testing.T) {
+	p := crawlreplay.Params{W: 5, R: 3, F: 1, K: 1, D: 4, C: 80,
+		Baseline: crawlreplay.BaselineParams{Alpha: 0.5, MinObs: 1, FloorPerMin: 1}}
+	records := crawlreplay.NewSynth(attackSite, 1).Pool(crawlreplay.Traffic{From: 100, To: 109,
+		PerMinute: 1, Label: crawlreplay.LabelAttack, Episode: "e1"}, 1)
+	r := newRunResult(gridRun{Params: p})
+	coverage := []crawlreplay.Span{{From: 101, To: 109}}
+	site := crawlreplay.Site{Records: crawlreplay.RestrictToCoverage(records, coverage), Coverage: coverage}
+	if err := r.addSite(attackSite, site, episodeOrigins(records)); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Episodes) != 1 {
+		t.Fatalf("episodes = %+v, want one missed episode", r.Episodes)
+	}
+	ep := r.Episodes[0]
+	if ep.Status != crawlreplay.OutcomeMissed || ep.Detected || ep.Onset != records[0].T {
+		t.Fatalf("episode = %+v, want miss with the original onset", ep)
+	}
+}
+
 func TestCalibrateAggregatesSketchFindings(t *testing.T) {
 	p := crawlreplay.Params{W: 5, R: 3, F: 1, K: 1, D: 4, C: 80,
 		Baseline: crawlreplay.BaselineParams{Alpha: 0.5, MinObs: 1, MinAge: 0, FloorPerMin: 1}}

@@ -207,3 +207,29 @@ func TestScorerMissesEpisodeAfterUncoveredOnset(t *testing.T) {
 		t.Fatalf("outcome %+v, want missed at the original onset", got)
 	}
 }
+
+func TestScorerKeepsMissAcrossOverlappingDeclarations(t *testing.T) {
+	p := coldParams()
+	span := Span{From: weekStart, To: weekStart + 9}
+	records := NewSynth(siteA, 1).Pool(Traffic{From: span.From + 3, To: span.From + 3,
+		PerMinute: 1, Label: LabelAttack, Episode: "e1"}, 1)
+	sc, err := NewScorer(p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := mustSession(t, SessionConfig{Params: p})
+	for _, seg := range []ReplaySegment{
+		segment(siteA, records, []Span{span}, Span{From: span.From, To: span.From + 4}),
+		segment(siteA, nil, []Span{{From: span.From + 1, To: span.From + 2}}, Span{From: span.From + 5, To: span.To}),
+	} {
+		if err = sc.Observe(siteA, seg.Records, seg.Score); err != nil {
+			t.Fatal(err)
+		}
+		for _, tk := range feedTicks(t, s, seg) {
+			sc.Tick(tk)
+		}
+		if got := outcome(t, sc.Report(), siteA, "e1"); got.Status != OutcomeMissed || got.Onset != records[0].T {
+			t.Fatalf("outcome %+v, want original scored miss", got)
+		}
+	}
+}
