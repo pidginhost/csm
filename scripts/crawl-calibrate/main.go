@@ -1,60 +1,61 @@
-// Command crawl-calibrate replays a domlog-stream bundle through the exact
-// crawl-detector models and writes an aggregate calibration report.
+// Command crawl-calibrate validates a domlog-stream bundle and replays it
+// through the exact crawl-detector models into an aggregate report.
 //
 //	crawl-calibrate --manifest manifest.json --records records.jsonl.gz \
-//	    --volume volume.jsonl.gz --window 10 [--grid grid.json] --out report.json
+//	    --volume volume.jsonl.gz [--coverage coverage.json] --window 10 \
+//	    [--grid grid.json] --out report.json
 //
-// It refuses a bundle whose files do not match the manifest digests. The
-// report holds load and key-churn distributions, lateness, and for every
-// grid run the per-episode detection delay and margins, healthy false
-// positives per site-day, key and binding peaks, sketch accuracy and the
-// synthetic fixture outcomes. Sites appear only as their pseudonyms. A
-// replay is a hypothesis about the detector: phase 1's ledger turns these
-// numbers into frozen values, it does not take them as proof of protection.
+// Every run reads each bundle file once and checks every row against the
+// manifest, whose bytes must be exactly what domlog-stream wrote. Without a
+// coverage proof the report holds only volume, silence and shape
+// diagnostics over each site's observed extent and says its coverage is
+// unqualified; a grid replay needs a proof bound to the manifest, and then
+// uses only certified minutes without unknown loss. The report records the
+// bundle's provenance, per-site coverage and line counts, load and key
+// churn, lateness and, for every grid run, the per-episode detection delay
+// and margins, healthy false positives per site-day, key and binding
+// peaks, sketch accuracy and synthetic fixture outcomes. Sites appear only
+// as pseudonyms. A replay is a hypothesis about the detector; its numbers
+// feed a private review and approve no setting.
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"cmp"
-	"compress/gzip"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"slices"
+	"syscall"
 
+	"github.com/pidginhost/csm/internal/crawlid"
 	"github.com/pidginhost/csm/internal/crawlreplay"
 )
 
+// cliError is a fixed message: a refusal never repeats a path or input bytes.
 type cliError string
 
 func (e cliError) Error() string { return string(e) }
 
 const (
-	errUsage    cliError = "usage: crawl-calibrate --manifest FILE --records FILE --volume FILE --window MINUTES [--grid FILE] --out FILE"
-	errManifest cliError = "manifest is missing, unsupported or does not match the bundle"
-	errBundle   cliError = "bundle rows are invalid or out of site order"
-	errGrid     cliError = "grid is invalid"
-	errOutput   cliError = "report cannot be written or already exists"
+	errUsage      cliError = "usage: crawl-calibrate --manifest FILE --records FILE --volume FILE [--coverage FILE] --window MINUTES [--grid FILE] --out FILE"
+	errManifest   cliError = "manifest is missing, not canonical or unsupported"
+	errCoverage   cliError = "a grid replay needs a coverage proof, and the proof must match the manifest"
+	errBundle     cliError = "bundle files or rows do not match the manifest"
+	errGrid       cliError = "grid is invalid"
+	errOutput     cliError = "report cannot be written or already exists"
+	errDirtyBuild cliError = "tool revision unknown or modified: build from a clean checkout with go build"
 )
 
-type bundleManifest struct {
-	FormatVersion int `json:"format_version"`
-	StreamVersion int `json:"stream_version"`
-	Outputs       []struct {
-		Kind   string `json:"kind"`
-		SHA256 string `json:"sha256"`
-	} `json:"outputs"`
-	Sites []struct {
-		Site     string             `json:"site"`
-		Coverage []crawlreplay.Span `json:"coverage"`
-	} `json:"sites"`
-}
+// Coverage kinds a report can rest on.
+const (
+	coverageCertified   = "certified"
+	coverageUnqualified = "unqualified_extent"
+)
 
 type gridRun struct {
 	Params  crawlreplay.Params        `json:"params"`
@@ -112,185 +113,358 @@ type siteSilence struct {
 	Minutes int64  `json:"minutes"`
 }
 
+// provenance names what a report rests on: the bundle, both tools, the
+// salt's fingerprint and whether minutes were certified.
+type provenance struct {
+	ManifestSHA256  string                      `json:"manifest_sha256"`
+	StreamVersion   int                         `json:"stream_version"`
+	IdentityVersion int                         `json:"identity_version"`
+	Converter       crawlreplay.ToolRevision    `json:"converter"`
+	Calibrator      crawlreplay.ToolRevision    `json:"calibrator"`
+	SaltFingerprint string                      `json:"salt_fingerprint"`
+	Period          crawlreplay.Span            `json:"period"`
+	BotEvidence     *crawlreplay.BotEvidenceRef `json:"bot_evidence,omitempty"`
+	Coverage        string                      `json:"coverage"`
+	ProofSHA256     string                      `json:"proof_sha256,omitempty"`
+	LatenessSeconds int64                       `json:"lateness_seconds,omitempty"`
+}
+
+// siteCoverage is one site's minutes and line accounting.
+type siteCoverage struct {
+	Site             string            `json:"site"`
+	Extent           *crawlreplay.Span `json:"extent,omitempty"`
+	CertifiedMinutes int64             `json:"certified_minutes"`
+	CoveredMinutes   int64             `json:"covered_minutes"`
+	Excluded         map[string]int64  `json:"excluded,omitempty"`
+	Lines            map[string]int64  `json:"lines"`
+	UnplacedBytes    int64             `json:"unplaced_bytes"`
+}
+
 type report struct {
-	Window int                    `json:"window"`
-	Sites  int                    `json:"sites"`
-	Volume crawlreplay.HostVolume `json:"volume"`
-	// Silences is each site's longest covered run without a logged line,
-	// longest first, for review as possible missing data.
+	Provenance provenance             `json:"provenance"`
+	Window     int                    `json:"window"`
+	Sites      int                    `json:"sites"`
+	Coverage   []siteCoverage         `json:"coverage"`
+	Volume     crawlreplay.HostVolume `json:"volume"`
+	// Silences is each site's longest run without a logged line within the
+	// minutes the report rests on, longest first. Without a proof that is
+	// the observed extent, and silence there proves nothing.
 	Silences []siteSilence `json:"silences"`
 	Shape    shapeReport   `json:"shape"`
 	Runs     []runResult   `json:"runs"`
 }
 
-func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "crawl-calibrate:", err)
-		os.Exit(1)
-	}
+// env is what tests replace: the build stamp the report records.
+type env struct {
+	revision func() crawlreplay.ToolRevision
 }
 
-func run(args []string) error {
+func defaultEnv() env { return env{revision: readBuildRevision} }
+
+func readBuildRevision() crawlreplay.ToolRevision {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return crawlreplay.ToolRevision{Dirty: true}
+	}
+	t := crawlreplay.ToolRevision{GoVersion: info.GoVersion, Dirty: true}
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			t.Revision = s.Value
+		case "vcs.modified":
+			t.Dirty = s.Value != "false"
+		}
+	}
+	return t
+}
+
+// cli runs the command and reports a refusal, always a fixed message, on
+// stderr. It returns the process exit status.
+func cli(args []string, stderr io.Writer, e env) int {
+	if err := run(args, e); err != nil {
+		fmt.Fprintln(stderr, "crawl-calibrate:", err)
+		return 1
+	}
+	return 0
+}
+
+func main() { os.Exit(cli(os.Args[1:], os.Stderr, defaultEnv())) }
+
+type options struct {
+	manifest, records, volume, coverage, grid, out string
+	window                                         int
+}
+
+func run(args []string, e env) error {
+	var o options
 	fs := flag.NewFlagSet("crawl-calibrate", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	manifestPath := fs.String("manifest", "", "")
-	recordsPath := fs.String("records", "", "")
-	volumePath := fs.String("volume", "", "")
-	gridPath := fs.String("grid", "", "")
-	outPath := fs.String("out", "", "")
-	window := fs.Int("window", 0, "")
-	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || *manifestPath == "" || *recordsPath == "" ||
-		*volumePath == "" || *outPath == "" || *window < 1 {
+	fs.StringVar(&o.manifest, "manifest", "", "")
+	fs.StringVar(&o.records, "records", "", "")
+	fs.StringVar(&o.volume, "volume", "", "")
+	fs.StringVar(&o.coverage, "coverage", "", "")
+	fs.StringVar(&o.grid, "grid", "", "")
+	fs.StringVar(&o.out, "out", "", "")
+	fs.IntVar(&o.window, "window", 0, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 || o.manifest == "" || o.records == "" ||
+		o.volume == "" || o.out == "" || o.window < 1 {
 		return errUsage
 	}
-	if _, err := os.Lstat(*outPath); !errors.Is(err, os.ErrNotExist) {
+	if o.grid != "" && o.coverage == "" {
+		return errCoverage
+	}
+	tool := e.revision()
+	if !tool.Clean() {
+		return errDirtyBuild
+	}
+	if _, err := os.Lstat(o.out); !errors.Is(err, os.ErrNotExist) {
 		return errOutput
 	}
-	m, err := loadManifest(*manifestPath, map[string]string{"records": *recordsPath, "volume": *volumePath})
+	raw, err := readInput(o.manifest)
 	if err != nil {
-		return err
+		return errManifest
+	}
+	m, err := crawlreplay.DecodeManifest(raw)
+	if err != nil {
+		return errManifest
+	}
+	rep := report{Window: o.window, Sites: len(m.Sites), Provenance: provenance{
+		ManifestSHA256: m.Digest(), StreamVersion: m.StreamVersion, IdentityVersion: m.IdentityVersion,
+		Converter: m.Tool, Calibrator: tool, SaltFingerprint: m.SaltFingerprint, Period: m.Period,
+		BotEvidence: m.BotEvidence, Coverage: coverageUnqualified,
+	}}
+	var proof *crawlreplay.CoverageProof
+	if o.coverage != "" {
+		b, readErr := readInput(o.coverage)
+		if readErr != nil {
+			return errCoverage
+		}
+		if proof, err = crawlreplay.DecodeCoverageProof(b); err != nil {
+			return errCoverage
+		}
+		rep.Provenance.Coverage, rep.Provenance.ProofSHA256, rep.Provenance.LatenessSeconds = coverageCertified, proof.Digest(), proof.LatenessSeconds
 	}
 	var g grid
-	if *gridPath != "" {
-		if g, err = loadGrid(*gridPath); err != nil {
+	if o.grid != "" {
+		if g, err = loadGrid(o.grid); err != nil {
 			return err
 		}
 	}
-	rep := report{Window: *window, Sites: len(m.Sites)}
-	var volume []crawlreplay.Volume
-	if volErr := readGzipRows(*volumePath, func(r io.Reader) error {
-		return crawlreplay.ReadVolume(r, func(v crawlreplay.Volume) error { volume = append(volume, v); return nil })
-	}); volErr != nil {
+	volumeFile, err := openInput(o.volume)
+	if err != nil {
 		return errBundle
 	}
-	rep.Volume = crawlreplay.SummarizeVolume(volume)
+	defer volumeFile.Close()
+	recordsFile, err := openInput(o.records)
+	if err != nil {
+		return errBundle
+	}
+	defer recordsFile.Close()
+
+	c := newCalibration(o.window, g, proof != nil)
+	sites, err := crawlreplay.ValidateBundle(crawlreplay.BundleInput{Manifest: m, Proof: proof, Volume: volumeFile, Records: recordsFile},
+		crawlid.Version, crawlreplay.BundleVisitor{Volume: c.volume, Sites: c.sites, Record: c.record})
+	if err == nil {
+		err = c.flush()
+	}
+	switch {
+	case errors.Is(err, crawlreplay.ErrProof):
+		return errCoverage
+	case errors.Is(err, crawlreplay.ErrManifest):
+		return errManifest
+	case errors.Is(err, crawlreplay.ErrParams):
+		return errGrid
+	case err != nil:
+		return errBundle
+	}
+	if err = c.quietSites(); err != nil {
+		return errGrid
+	}
+	for i := range c.runs {
+		if err = c.runs[i].addFixtures(g.Fixtures); err != nil {
+			return errGrid
+		}
+	}
+	c.finish(&rep, m, sites)
+	return writeReport(o.out, rep)
+}
+
+// openInput opens a private input without following a symlink or blocking
+// on a FIFO, and refuses anything but a regular file.
+func openInput(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- operator-chosen private bundle; symlinks refused
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		f.Close()
+		return nil, errBundle
+	}
+	return f, nil
+}
+
+func readInput(path string) ([]byte, error) {
+	f, err := openInput(path)
+	if err != nil {
+		return nil, err
+	}
+	b, readErr := io.ReadAll(f)
+	if closeErr := f.Close(); readErr != nil || closeErr != nil {
+		return nil, errBundle
+	}
+	return b, nil
+}
+
+// calibration accumulates the report while ValidateBundle streams the
+// bundle. Nothing it holds is written unless validation succeeds.
+type calibration struct {
+	window    int
+	grid      grid
+	certified bool
+	volumes   []crawlreplay.Volume
+	coverage  map[string][]crawlreplay.Span
+	seen      map[string]bool
+	current   []crawlreplay.Record
+	shapes    *shapeAccumulator
+	runs      []runResult
+}
+
+func newCalibration(window int, g grid, certified bool) *calibration {
+	c := &calibration{window: window, grid: g, certified: certified, coverage: map[string][]crawlreplay.Span{}, seen: map[string]bool{},
+		shapes: &shapeAccumulator{lateness: map[int64]int64{}, keys: map[uint8][]float64{}, newKeys: map[uint8][]float64{}}}
+	for _, gr := range g.Runs {
+		c.runs = append(c.runs, newRunResult(gr))
+	}
+	return c
+}
+
+func (c *calibration) volume(v crawlreplay.Volume) error {
+	c.volumes = append(c.volumes, v)
+	return nil
+}
+
+// sites picks the minutes each site's replay may use: its certified
+// coverage, or, without a proof, its observed extent for diagnostics only.
+func (c *calibration) sites(sites []crawlreplay.BundleSite) error {
+	for _, s := range sites {
+		switch {
+		case c.certified:
+			c.coverage[s.Site] = s.Coverage
+		case s.Extent != nil:
+			c.coverage[s.Site] = []crawlreplay.Span{*s.Extent}
+		}
+	}
+	return nil
+}
+
+func (c *calibration) record(r crawlreplay.Record) error {
+	if len(c.current) > 0 && r.Site != c.current[0].Site {
+		if err := c.flush(); err != nil {
+			return err
+		}
+	}
+	c.current = append(c.current, r)
+	return nil
+}
+
+func (c *calibration) flush() error {
+	if len(c.current) == 0 {
+		return nil
+	}
+	name := c.current[0].Site
+	err := c.replay(name, c.current)
+	c.current = nil
+	return err
+}
+
+func (c *calibration) replay(name string, records []crawlreplay.Record) error {
+	c.seen[name] = true
+	cov := c.coverage[name]
+	site := crawlreplay.Site{Records: crawlreplay.RestrictToCoverage(records, cov), Coverage: cov}
+	// Timestamp disorder and episode origins describe the source stream;
+	// excluding minutes must not erase evidence or shorten detection delay.
+	c.shapes.add(crawlreplay.ShapeSite(crawlreplay.Site{Records: records, Coverage: cov}, c.window))
+	origins := episodeOrigins(records)
+	for i := range c.runs {
+		if err := c.runs[i].addSite(name, site, origins); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// quietSites adds the shape of certified sites that logged nothing.
+func (c *calibration) quietSites() error {
+	names := make([]string, 0, len(c.coverage))
+	for name := range c.coverage {
+		if !c.seen[name] {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		if err := c.replay(name, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *calibration) finish(rep *report, m crawlreplay.Manifest, sites []crawlreplay.BundleSite) {
+	rep.Volume = crawlreplay.SummarizeVolume(c.volumes)
 	logged := map[string][]int64{}
-	for _, v := range volume {
+	for _, v := range c.volumes {
 		logged[v.Site] = append(logged[v.Site], v.Minute)
 	}
-	for _, site := range m.Sites {
-		minutes := logged[site.Site]
-		slices.Sort(minutes)
+	for i, s := range sites {
+		sm := m.Sites[i]
+		sc := siteCoverage{Site: s.Site, Extent: s.Extent, Excluded: s.Excluded, UnplacedBytes: sm.UnplacedBytes, Lines: map[string]int64{
+			"records": sm.Records, "oversized": sm.Oversized, "rejected": sm.Rejected, "time_invalid": sm.TimeInvalid,
+			"time_future": sm.TimeFuture, "out_of_period": sm.OutOfPeriod, "incomplete": sm.Incomplete,
+			"no_target": sm.NoTarget, "attribution_loss": sm.AttributionLoss, "invalid_client": sm.InvalidClient,
+			"infrastructure": sm.Infrastructure,
+		}}
+		sc.CertifiedMinutes, sc.CoveredMinutes = minutes(s.Certified), minutes(s.Coverage)
+		rep.Coverage = append(rep.Coverage, sc)
+		minutesLogged := logged[s.Site]
+		slices.Sort(minutesLogged)
 		var longest int64
-		for i := 0; i < len(site.Coverage); i++ {
-			span := site.Coverage[i]
-			// Only an unknown minute interrupts a continuous observed span.
-			for i+1 < len(site.Coverage) && site.Coverage[i+1].From-1 == span.To {
-				i++
-				span.To = site.Coverage[i].To
+		spans := c.coverage[s.Site]
+		for j := 0; j < len(spans); j++ {
+			span := spans[j]
+			// Only an unknown minute interrupts a continuous span.
+			for j+1 < len(spans) && spans[j+1].From-1 == span.To {
+				j++
+				span.To = spans[j].To
 			}
-			longest = max(longest, crawlreplay.LongestSilence(minutes, span))
+			longest = max(longest, crawlreplay.LongestSilence(minutesLogged, span))
 		}
-		rep.Silences = append(rep.Silences, siteSilence{Site: site.Site, Minutes: longest})
+		rep.Silences = append(rep.Silences, siteSilence{Site: s.Site, Minutes: longest})
 	}
 	slices.SortFunc(rep.Silences, func(a, b siteSilence) int {
 		return cmp.Or(cmp.Compare(b.Minutes, a.Minutes), cmp.Compare(a.Site, b.Site))
 	})
-	results := make([]runResult, len(g.Runs))
-	for i, gr := range g.Runs {
-		results[i] = newRunResult(gr)
+	rep.Shape = c.shapes.report()
+	for i := range c.runs {
+		c.runs[i].finish()
 	}
-	shapes := &shapeAccumulator{lateness: map[int64]int64{}, keys: map[uint8][]float64{}, newKeys: map[uint8][]float64{}}
-	coverage := map[string][]crawlreplay.Span{}
-	for _, s := range m.Sites {
-		coverage[s.Site] = s.Coverage
+	rep.Runs = c.runs
+	if rep.Runs == nil {
+		rep.Runs = []runResult{}
 	}
-	done := map[string]bool{}
-	var current []crawlreplay.Record
-	flush := func() error {
-		if len(current) == 0 {
-			return nil
-		}
-		name := current[0].Site
-		if done[name] {
-			return errBundle
-		}
-		done[name] = true
-		cov, ok := coverage[name]
-		if !ok {
-			return errBundle
-		}
-		site := crawlreplay.Site{Records: current, Coverage: cov}
-		shapes.add(crawlreplay.ShapeSite(site, *window))
-		for i := range g.Runs {
-			if siteErr := results[i].addSite(name, site); siteErr != nil {
-				return siteErr
-			}
-		}
-		current = nil
-		return nil
-	}
-	err = readGzipRows(*recordsPath, func(r io.Reader) error {
-		return crawlreplay.ReadRecords(r, func(rec crawlreplay.Record) error {
-			if len(current) > 0 && rec.Site != current[0].Site {
-				if flushErr := flush(); flushErr != nil {
-					return flushErr
-				}
-			}
-			current = append(current, rec)
-			return nil
-		})
-	})
-	if err == nil {
-		err = flush()
-	}
-	if err != nil {
-		if errors.Is(err, crawlreplay.ErrParams) {
-			return errGrid
-		}
-		return errBundle
-	}
-	rep.Shape = shapes.report()
-	for i := range results {
-		if fixErr := results[i].addFixtures(g.Fixtures); fixErr != nil {
-			return errGrid
-		}
-		results[i].finish()
-	}
-	rep.Runs = results
-	return writeReport(*outPath, rep)
 }
 
-func loadManifest(path string, files map[string]string) (bundleManifest, error) {
-	raw, err := os.ReadFile(path) // #nosec G304 -- operator-chosen private bundle
-	if err != nil {
-		return bundleManifest{}, errManifest
+func minutes(spans []crawlreplay.Span) int64 {
+	var n int64
+	for _, s := range spans {
+		n += s.To - s.From + 1
 	}
-	var m bundleManifest
-	if err := json.Unmarshal(raw, &m); err != nil || m.FormatVersion != 1 || m.StreamVersion != crawlreplay.StreamVersion {
-		return bundleManifest{}, errManifest
-	}
-	// Site names reach the report, so they obey the stream's pseudonym rule.
-	seen := map[string]bool{}
-	for _, s := range m.Sites {
-		if !crawlreplay.ValidSite(s.Site) || seen[s.Site] {
-			return bundleManifest{}, errManifest
-		}
-		seen[s.Site] = true
-	}
-	for kind, path := range files {
-		want := ""
-		for _, o := range m.Outputs {
-			if o.Kind == kind {
-				want = o.SHA256
-			}
-		}
-		f, err := os.Open(path) // #nosec G304 -- operator-chosen private bundle
-		if err != nil {
-			return bundleManifest{}, errManifest
-		}
-		h := sha256.New()
-		_, copyErr := io.Copy(h, f)
-		f.Close()
-		if copyErr != nil || want == "" || hex.EncodeToString(h.Sum(nil)) != want {
-			return bundleManifest{}, errManifest
-		}
-	}
-	return m, nil
+	return n
 }
 
 func loadGrid(path string) (grid, error) {
-	raw, err := os.ReadFile(path) // #nosec G304 -- operator-chosen grid
+	raw, err := readInput(path)
 	if err != nil {
 		return grid{}, errGrid
 	}
@@ -317,19 +491,6 @@ func loadGrid(path string) (grid, error) {
 	return g, nil
 }
 
-func readGzipRows(path string, fn func(io.Reader) error) error {
-	f, err := os.Open(path) // #nosec G304 -- operator-chosen private bundle
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	zr, err := gzip.NewReader(bufio.NewReader(f))
-	if err != nil {
-		return err
-	}
-	return fn(zr)
-}
-
 func newRunResult(g gridRun) runResult {
 	r := runResult{Run: g, Transitions: map[string]int{}, ScopeLevels: map[uint8]int{}, MaxActive: map[uint8]int{}, Keys: map[uint8]int{}}
 	if g.Sketch != nil {
@@ -343,12 +504,42 @@ func (r *runResult) options() crawlreplay.Options {
 	return crawlreplay.Options{Sketch: r.Run.Sketch, Shuffle: r.Run.Shuffle}
 }
 
-func (r *runResult) addSite(name string, site crawlreplay.Site) error {
+func episodeOrigins(records []crawlreplay.Record) []crawlreplay.EpisodeResult {
+	byName := map[string]crawlreplay.EpisodeResult{}
+	for _, rec := range records {
+		if rec.Episode == "" {
+			continue
+		}
+		if ep, ok := byName[rec.Episode]; !ok || rec.T < ep.Onset {
+			byName[rec.Episode] = crawlreplay.EpisodeResult{Episode: rec.Episode, Label: rec.Label, Onset: rec.T}
+		}
+	}
+	origins := make([]crawlreplay.EpisodeResult, 0, len(byName))
+	for _, ep := range byName {
+		origins = append(origins, ep)
+	}
+	slices.SortFunc(origins, func(a, b crawlreplay.EpisodeResult) int { return cmp.Compare(a.Episode, b.Episode) })
+	return origins
+}
+
+func (r *runResult) addSite(name string, site crawlreplay.Site, origins []crawlreplay.EpisodeResult) error {
 	rep, err := crawlreplay.EvaluateSite(site, r.Run.Params, r.options())
 	if err != nil {
 		return err
 	}
+	outcomes := map[string]crawlreplay.EpisodeResult{}
 	for _, ep := range rep.Episodes {
+		outcomes[ep.Episode] = ep
+	}
+	for _, origin := range origins {
+		ep, ok := outcomes[origin.Episode]
+		if !ok {
+			ep = origin
+		}
+		ep.Onset = origin.Onset
+		if ep.Detected {
+			ep.DelaySeconds = (ep.DetectMinute+1)*60 - ep.Onset
+		}
 		r.Episodes = append(r.Episodes, siteEpisode{Site: name, EpisodeResult: ep})
 	}
 	for class, n := range rep.Transitions {

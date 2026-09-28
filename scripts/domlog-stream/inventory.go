@@ -17,14 +17,24 @@ import (
 // copies. The operator writes it from the host's own records; nothing in
 // it comes from a request.
 type inventory struct {
-	Sites          []inventorySite     `json:"sites"`
-	TrustedProxies []string            `json:"trusted_proxies"`
-	Infrastructure []string            `json:"infrastructure"`
-	BotRanges      map[string][]string `json:"bot_ranges"`
+	Period         inventoryPeriod `json:"period"`
+	Sites          []inventorySite `json:"sites"`
+	TrustedProxies []string        `json:"trusted_proxies"`
+	Infrastructure []string        `json:"infrastructure"`
 
 	proxies []netip.Prefix
 	infra   []netip.Prefix
-	bots    map[string][]netip.Prefix
+}
+
+// inventoryPeriod is the recording period in whole UTC minutes. Lines timed
+// outside it are counted but place no record.
+type inventoryPeriod struct {
+	From time.Time `json:"from"`
+	To   time.Time `json:"to"` // exclusive
+}
+
+func (p inventoryPeriod) span() crawlreplay.Span {
+	return crawlreplay.Span{From: p.From.Unix() / 60, To: p.To.Unix()/60 - 1}
 }
 
 type inventorySite struct {
@@ -75,20 +85,27 @@ func parseInventory(b []byte) (*inventory, error) {
 	if err := decodeStrict(b, &inv); err != nil {
 		return nil, err
 	}
-	if len(inv.Sites) == 0 {
+	from, to := inv.Period.From, inv.Period.To
+	if len(inv.Sites) == 0 || from.Unix() <= 0 || !from.Before(to) || from.Unix()%60 != 0 || to.Unix()%60 != 0 ||
+		from.Nanosecond() != 0 || to.Nanosecond() != 0 {
 		return nil, errInventory
 	}
-	names, logs := map[string]bool{}, map[string]bool{}
+	names, hosts, logs := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, s := range inv.Sites {
-		if len(s.Name) > 253 || !dnsName.MatchString(s.Name) || names[s.Name] || !accountName.MatchString(s.Account) || len(s.Logs) == 0 {
+		names[s.Name] = true
+	}
+	for _, s := range inv.Sites {
+		if len(s.Name) > 253 || !dnsName.MatchString(s.Name) || !accountName.MatchString(s.Account) || len(s.Logs) == 0 {
 			return nil, errInventory
 		}
-		names[s.Name] = true
 		hasName := false
 		for _, a := range s.Aliases {
-			if len(a) > 253 || !dnsName.MatchString(a) {
+			// One verified host belongs to one site: a shared alias or an
+			// alias naming another site would attribute its requests twice.
+			if len(a) > 253 || !dnsName.MatchString(a) || hosts[a] || (a != s.Name && names[a]) {
 				return nil, errInventory
 			}
+			hosts[a] = true
 			hasName = hasName || a == s.Name
 		}
 		if !hasName {
@@ -107,15 +124,6 @@ func parseInventory(b []byte) (*inventory, error) {
 	}
 	if inv.infra, err = parsePrefixes(inv.Infrastructure); err != nil {
 		return nil, err
-	}
-	inv.bots = map[string][]netip.Prefix{}
-	for name, ranges := range inv.BotRanges {
-		if !botName.MatchString(name) {
-			return nil, errInventory
-		}
-		if inv.bots[name], err = parsePrefixes(ranges); err != nil {
-			return nil, err
-		}
 	}
 	return &inv, nil
 }

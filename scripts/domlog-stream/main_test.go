@@ -5,33 +5,40 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/crawlreplay"
 )
 
 const ts = "[26/Sep/2026:19:00:00 +0000]"
 
-func cleanTool() toolRevision {
-	return toolRevision{Revision: strings.Repeat("a", 40), GoVersion: "go-test"}
+func cleanTool() crawlreplay.ToolRevision {
+	return crawlreplay.ToolRevision{Revision: strings.Repeat("a", 40), GoVersion: "go-test"}
+}
+
+// testNow is after every synthetic recording period.
+var testNow = time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
+
+func testEnv() env {
+	return env{fs: osFS{}, now: func() time.Time { return testNow }, revision: cleanTool}
 }
 
 type fixture struct {
-	dir, salt, inventory, labels, out, volume, manifest string
+	dir, salt, registry, inventory, labels, evidence, out, volume, manifest string
 }
 
 func newFixture(t *testing.T, lines map[string]string, gzipped map[string]bool) fixture {
 	t.Helper()
 	dir := t.TempDir()
 	f := fixture{
-		dir: dir, salt: filepath.Join(dir, "salt"), inventory: filepath.Join(dir, "inventory.json"),
-		labels: filepath.Join(dir, "labels.json"), out: filepath.Join(dir, "records.jsonl.gz"),
+		dir: dir, salt: filepath.Join(dir, "salt"), registry: testRegistryPath(dir), inventory: filepath.Join(dir, "inventory.json"),
+		labels: filepath.Join(dir, "labels.json"), evidence: filepath.Join(dir, "bots.json"), out: filepath.Join(dir, "records.jsonl.gz"),
 		volume: filepath.Join(dir, "volume.jsonl.gz"), manifest: filepath.Join(dir, "manifest.json"),
 	}
 	if err := os.WriteFile(f.salt, bytes.Repeat([]byte{0x42}, 32), 0o600); err != nil {
@@ -55,11 +62,15 @@ func newFixture(t *testing.T, lines map[string]string, gzipped map[string]bool) 
 			t.Fatal(err)
 		}
 	}
-	inv := `{"sites":[{"name":"example.com","account":"acct1","aliases":["example.com","www.example.com"],
+	inv := `{"period":{"from":"2026-09-26T00:00:00Z","to":"2026-09-27T00:00:00Z"},
+	 "sites":[{"name":"example.com","account":"acct1","aliases":["example.com","www.example.com"],
 	  "logs":["` + filepath.Join(dir, "example.com") + `","` + filepath.Join(dir, "example.com-ssl_log.gz") + `"]},
 	 {"name":"shop.example","account":"acct2","aliases":["shop.example"],"logs":["` + filepath.Join(dir, "shop.example") + `"]}],
-	 "trusted_proxies":["198.51.100.9"],"infrastructure":["192.0.2.200"],"bot_ranges":{"googlebot":["203.0.113.0/24"]}}`
+	 "trusted_proxies":["198.51.100.9"],"infrastructure":["192.0.2.200"]}`
 	if err := os.WriteFile(f.inventory, []byte(inv), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.evidence, []byte(googlebotEvidence), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	labels := `{"labels":[
@@ -72,9 +83,27 @@ func newFixture(t *testing.T, lines map[string]string, gzipped map[string]bool) 
 }
 
 func (f fixture) args() []string {
-	return []string{"convert", "--salt-file", f.salt, "--inventory", f.inventory, "--labels", f.labels,
-		"--out", f.out, "--volume-out", f.volume, "--manifest", f.manifest}
+	return append(append([]string{"convert", "--salt-file", f.salt}, registryArgs(f.registry)...), "--inventory", f.inventory, "--labels", f.labels,
+		"--bot-evidence", f.evidence, "--out", f.out, "--volume-out", f.volume, "--manifest", f.manifest)
 }
+
+// registryArgs names the registry for a salt the test wrote itself, and
+// marks its first conversion as an operator does once for such a salt.
+func registryArgs(registry string) []string {
+	if _, err := os.Lstat(registry); errors.Is(err, os.ErrNotExist) {
+		return []string{"--registry", registry, "--new-registry"}
+	}
+	return []string{"--registry", registry}
+}
+
+// googlebotEvidence proves the googlebot range on the fixture day.
+const googlebotEvidence = `{"format_version":1,"d2_revision":"` + d2Revision + `","config_sha256":"` + d2Config + `",
+ "proofs":[{"bot":"googlebot","kind":"range","prefix":"203.0.113.0/24","from":"2026-09-26T00:00:00Z","to":"2026-09-27T00:00:00Z"}]}`
+
+const (
+	d2Revision = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	d2Config   = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+)
 
 func defaultLogs() (map[string]string, map[string]bool) {
 	plain := strings.Join([]string{
@@ -112,10 +141,10 @@ func readGz(t *testing.T, path string) []byte {
 	return b
 }
 
-func convertOK(t *testing.T, f fixture) ([]crawlreplay.Record, []crawlreplay.Volume, manifest) {
+func convertOK(t *testing.T, f fixture) ([]crawlreplay.Record, []crawlreplay.Volume, crawlreplay.Manifest) {
 	t.Helper()
 	var out bytes.Buffer
-	if err := run(f.args(), &out, cleanTool); err != nil {
+	if err := run(f.args(), &out, testEnv()); err != nil {
 		t.Fatalf("convert: %v", err)
 	}
 	for _, want := range []string{"lines: 12\n", "records: 9\n", "ns/line: ", "platform: "} {
@@ -137,13 +166,13 @@ func convertOK(t *testing.T, f fixture) ([]crawlreplay.Record, []crawlreplay.Vol
 	}); err != nil {
 		t.Fatal(err)
 	}
-	var m manifest
 	raw, err := os.ReadFile(f.manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(raw, &m); err != nil {
-		t.Fatal(err)
+	m, err := crawlreplay.DecodeManifest(raw)
+	if err != nil {
+		t.Fatalf("manifest is not canonical: %v", err)
 	}
 	return recs, vols, m
 }
@@ -205,7 +234,7 @@ func TestConvertRecordsKeepEqualityHierarchyAndAttribution(t *testing.T) {
 	if proxied.Binding == "" || proxied.Binding == red.Binding || lost.Binding != "" {
 		t.Fatalf("trusted proxy attribution wrong: %+v %+v", proxied, lost)
 	}
-	if bot.Bot != "googlebot" || !bot.BotRange || !infra.Infra || red.Bot != "" {
+	if bot.Bot != "googlebot" || bot.BotProof != crawlreplay.BotProofRange || !infra.Infra || red.Bot != "" {
 		t.Fatalf("bot/infrastructure labels wrong: %+v %+v", bot, infra)
 	}
 	if red.Label != crawlreplay.LabelAttack || red.Episode != "e-f4120e75fd2f006b" || proxied.Label != crawlreplay.LabelHealthy {
@@ -217,10 +246,10 @@ func TestConvertRecordsKeepEqualityHierarchyAndAttribution(t *testing.T) {
 	s := m.Sites[0]
 	if s.Lines != 11 || s.Oversized != 1 || s.Rejected != 1 || s.TimeInvalid != 1 || s.AttributionLoss != 1 ||
 		s.Infrastructure != 1 || s.Records != 8 || s.Labels["attack"] != 3 {
-		t.Fatalf("coverage = %+v", s)
+		t.Fatalf("site counts = %+v", s)
 	}
-	if len(s.Coverage) != 1 || s.Coverage[0].To-s.Coverage[0].From != 1 {
-		t.Fatalf("coverage span = %+v", s.Coverage)
+	if s.Extent == nil || s.Extent.To-s.Extent.From != 1 {
+		t.Fatalf("observed extent = %+v", s.Extent)
 	}
 }
 
@@ -272,15 +301,17 @@ func TestConvertRefusalsWriteNothing(t *testing.T) {
 	if err := os.WriteFile(f.volume, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(f.args(), io.Discard, cleanTool); !errors.Is(err, errOutputs) {
+	if err := run(f.args(), io.Discard, testEnv()); !errors.Is(err, errOutputs) {
 		t.Fatalf("existing output: %v", err)
 	}
 	os.Remove(f.volume)
-	if err := run(f.args(), io.Discard, func() toolRevision { return toolRevision{Dirty: true} }); !errors.Is(err, errDirtyBuild) {
+	dirty := testEnv()
+	dirty.revision = func() crawlreplay.ToolRevision { return crawlreplay.ToolRevision{Dirty: true} }
+	if err := run(f.args(), io.Discard, dirty); !errors.Is(err, errDirtyBuild) {
 		t.Fatalf("dirty build: %v", err)
 	}
 	os.Remove(filepath.Join(f.dir, "shop.example"))
-	if err := run(f.args(), io.Discard, cleanTool); !errors.Is(err, errInput) {
+	if err := run(f.args(), io.Discard, testEnv()); !errors.Is(err, errInput) {
 		t.Fatalf("missing log: %v", err)
 	}
 	entries, err := os.ReadDir(f.dir)
@@ -294,22 +325,30 @@ func TestConvertRefusalsWriteNothing(t *testing.T) {
 	}
 }
 
+// period opens a synthetic inventory with a valid recording period.
+const period = `{"period":{"from":"2026-09-26T00:00:00Z","to":"2026-09-27T00:00:00Z"},`
+
 func TestInventoryAndLabelValidation(t *testing.T) {
 	for name, inv := range map[string]string{
-		"no sites":       `{"sites":[]}`,
-		"upper name":     `{"sites":[{"name":"Example.com","account":"a","aliases":["Example.com"],"logs":["x"]}]}`,
-		"alias missing":  `{"sites":[{"name":"example.com","account":"a","aliases":["www.example.com"],"logs":["x"]}]}`,
-		"duplicate log":  `{"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]},{"name":"b.example","account":"b","aliases":["b.example"],"logs":["x"]}]}`,
-		"bad proxy":      `{"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}],"trusted_proxies":["not-an-ip"]}`,
-		"unknown field":  `{"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"],"path":"/home"}]}`,
-		"bad bot name":   `{"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}],"bot_ranges":{"Googlebot":["203.0.113.0/24"]}}`,
-		"zoned infra ip": `{"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}],"infrastructure":["2001:db8::1%eth0"]}`,
+		"no sites":       period + `"sites":[]}`,
+		"upper name":     period + `"sites":[{"name":"Example.com","account":"a","aliases":["Example.com"],"logs":["x"]}]}`,
+		"alias missing":  period + `"sites":[{"name":"example.com","account":"a","aliases":["www.example.com"],"logs":["x"]}]}`,
+		"duplicate log":  period + `"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]},{"name":"b.example","account":"b","aliases":["b.example"],"logs":["x"]}]}`,
+		"bad proxy":      period + `"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}],"trusted_proxies":["not-an-ip"]}`,
+		"unknown field":  period + `"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"],"path":"/home"}]}`,
+		"bot list":       period + `"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}],"bot_ranges":{"googlebot":["203.0.113.0/24"]}}`,
+		"zoned infra ip": period + `"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}],"infrastructure":["2001:db8::1%eth0"]}`,
+		"no period":      `{"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}]}`,
+		"reversed period": `{"period":{"from":"2026-09-27T00:00:00Z","to":"2026-09-26T00:00:00Z"},` +
+			`"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}]}`,
+		"unaligned period": `{"period":{"from":"2026-09-26T00:00:30Z","to":"2026-09-27T00:00:00Z"},` +
+			`"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}]}`,
 	} {
 		if _, err := parseInventory([]byte(inv)); !errors.Is(err, errInventory) {
 			t.Errorf("%s: %v, want errInventory", name, err)
 		}
 	}
-	inv, err := parseInventory([]byte(`{"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}]}`))
+	inv, err := parseInventory([]byte(period + `"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,13 +372,17 @@ func TestSaltMustBePrivate(t *testing.T) {
 	if err := os.WriteFile(path, bytes.Repeat([]byte{1}, 32), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadOrCreateSalt(path); !errors.Is(err, errSaltUnsafe) {
+	if _, _, err := loadOrCreateSalt(osFS{}, path); !errors.Is(err, errSaltUnsafe) {
 		t.Fatalf("world-readable salt: %v", err)
 	}
 	created := filepath.Join(dir, "new", "salt")
-	salt, err := loadOrCreateSalt(created)
-	if err != nil || len(salt) != 32 {
-		t.Fatalf("create: %v", err)
+	salt, isNew, err := loadOrCreateSalt(osFS{}, created)
+	if err != nil || len(salt) != 32 || !isNew {
+		t.Fatalf("create: new %v, %v", isNew, err)
+	}
+	again, isNew, err := loadOrCreateSalt(osFS{}, created)
+	if err != nil || isNew || !bytes.Equal(again, salt) {
+		t.Fatalf("reload: new %v, %v", isNew, err)
 	}
 	info, err := os.Stat(created)
 	if err != nil || info.Mode().Perm() != 0o600 {
@@ -358,7 +401,7 @@ func TestConvertEpisodeNamesArePseudonyms(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout bytes.Buffer
-	if err = run(f.args(), &stdout, cleanTool); err != nil {
+	if err = run(f.args(), &stdout, testEnv()); err != nil {
 		t.Fatal(err)
 	}
 	manifest, err := os.ReadFile(f.manifest)
@@ -403,7 +446,7 @@ func TestConvertWriteFailureDoesNotLeak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := converter{inv: inv, ps: pseudonyms{salt: bytes.Repeat([]byte{0x42}, 32)}, open: openLog}
+	c := newConverter(osFS{}, inv, nil, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
 	_, _, _, err = c.convertSite(inv.Sites[0], failingPrivateWriter{})
 	if !errors.Is(err, errOutputs) || strings.Contains(err.Error(), "example.com") {
 		t.Fatalf("write refusal = %v, want fixed output error", err)
@@ -424,8 +467,18 @@ func TestManifestCountsVolumeRows(t *testing.T) {
 	}
 }
 
+func TestConvertRefusesUnfinishedPeriod(t *testing.T) {
+	logs, gz := defaultLogs()
+	f := newFixture(t, logs, gz)
+	e := testEnv()
+	e.now = func() time.Time { return time.Date(2026, 9, 26, 23, 59, 0, 0, time.UTC) }
+	if err := run(f.args(), io.Discard, e); !errors.Is(err, errInventory) {
+		t.Fatalf("period ending after the conversion clock: %v, want errInventory", err)
+	}
+}
+
 func TestInventoryRejectsTrailingJSON(t *testing.T) {
-	valid := `{"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}]}`
+	valid := period + `"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}]}`
 	for _, suffix := range []string{"]", "}", "null", "{}"} {
 		if _, err := parseInventory([]byte(valid + suffix)); !errors.Is(err, errInventory) {
 			t.Fatalf("trailing JSON %q accepted: %v", suffix, err)
@@ -435,22 +488,22 @@ func TestInventoryRejectsTrailingJSON(t *testing.T) {
 
 func TestPublishFailureClosesAllStages(t *testing.T) {
 	dir := t.TempDir()
-	a, err := newStaged(filepath.Join(dir, "a"))
+	a, err := newStaged(osFS{}, filepath.Join(dir, "a"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := newStaged(filepath.Join(dir, "b"))
+	b, err := newStaged(osFS{}, filepath.Join(dir, "b"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := newStaged(filepath.Join(dir, "c"))
+	c, err := newStaged(osFS{}, filepath.Join(dir, "c"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = os.WriteFile(b.final, []byte("existing"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err = publish(a, b, c); !errors.Is(err, errOutputs) {
+	if err = publish(osFS{}, a, b, c); !errors.Is(err, errOutputs) {
 		t.Fatalf("publish = %v", err)
 	}
 	for _, s := range []*staged{a, b, c} {

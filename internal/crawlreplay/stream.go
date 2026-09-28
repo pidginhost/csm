@@ -12,8 +12,9 @@ import (
 	"strings"
 )
 
-// StreamVersion is the record and volume stream format version.
-const StreamVersion = 1
+// StreamVersion is the record and volume stream format version. Version 2
+// replaced version 1's range flag with verified-bot proof classes.
+const StreamVersion = 2
 
 // Request classes, mirroring crawlid.Classify.
 const (
@@ -28,6 +29,15 @@ const (
 	RefMalformed
 	RefCrossSite
 	RefSameSite
+)
+
+// Verified-bot proof classes of a claimed bot identity, from historical
+// evidence of the verified-bot list for that identity at the logged time. A
+// claim without one stays unverified.
+const (
+	BotProofRange    = "range"
+	BotProofDNS      = "dns"
+	BotProofNegative = "negative"
 )
 
 // Labels an operator assigns before anonymization.
@@ -69,7 +79,7 @@ type Record struct {
 	Status   int    `json:"s"`
 	Referer  uint8  `json:"r"`
 	Bot      string `json:"bot,omitempty"`
-	BotRange bool   `json:"bot_range,omitempty"`
+	BotProof string `json:"bot_proof,omitempty"`
 	Infra    bool   `json:"infra,omitempty"`
 	Label    string `json:"label,omitempty"`
 	Episode  string `json:"ep,omitempty"`
@@ -104,8 +114,8 @@ func (r Record) Validate() error {
 		return fieldError("r")
 	case r.Bot != "" && !botIdentity.MatchString(r.Bot):
 		return fieldError("bot")
-	case r.BotRange && r.Bot == "":
-		return fieldError("bot_range")
+	case r.BotProof != "" && (r.Bot == "" || r.Binding == "" || (r.BotProof != BotProofRange && r.BotProof != BotProofDNS && r.BotProof != BotProofNegative)):
+		return fieldError("bot_proof")
 	}
 	episodic := r.Label == LabelAttack || r.Label == LabelOverload
 	switch {

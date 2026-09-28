@@ -1,0 +1,15 @@
+{
+  "format_version": 1,
+  "manifest_sha256": "e9601738addaea0125b0dea0ac3bea7afa14dd469b69301d56b63f57ad641304",
+  "lateness_seconds": 60,
+  "evidence": [
+    {"kind": "collection", "sha256": "1111111111111111111111111111111111111111111111111111111111111111"},
+    {"kind": "logging_liveness", "sha256": "2222222222222222222222222222222222222222222222222222222222222222"},
+    {"kind": "lateness", "sha256": "3333333333333333333333333333333333333333333333333333333333333333"}
+  ],
+  "sites": [
+    {"site": "dom-a01dff.example", "spans": [{"from": 29840820, "to": 29840839}]},
+    {"site": "dom-dcef08.example", "spans": [{"from": 29840820, "to": 29840837}],
+     "excluded": [{"from": 29840838, "to": 29840839, "reason": "liveness_unknown"}]}
+  ]
+}

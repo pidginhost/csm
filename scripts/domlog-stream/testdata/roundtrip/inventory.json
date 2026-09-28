@@ -1,0 +1,11 @@
+{
+  "period": {"from": "2026-09-26T19:00:00Z", "to": "2026-09-26T19:20:00Z"},
+  "sites": [
+    {"name": "example.com", "account": "acct1", "aliases": ["example.com", "www.example.com"],
+     "logs": ["testdata/roundtrip/example.com.log", "testdata/roundtrip/example.com-ssl.log"]},
+    {"name": "shop.example", "account": "acct2", "aliases": ["shop.example"],
+     "logs": ["testdata/roundtrip/shop.example.log"]}
+  ],
+  "trusted_proxies": ["198.51.100.9"],
+  "infrastructure": ["192.0.2.200"]
+}
