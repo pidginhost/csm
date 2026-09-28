@@ -269,6 +269,33 @@ func TestStoragePinRefusesOverflowWithoutChangingState(t *testing.T) {
 	}
 }
 
+func TestStorageStateUntilHistory(t *testing.T) {
+	general, reserved := HistoryLanes()
+	wait := func(bytes, size uint64) time.Duration {
+		rate := HistoryRate(size)
+		return time.Duration((bytes*uint64(time.Second) + rate - 1) / rate)
+	}
+	var s StorageState
+	if d, ok := s.UntilHistory(LaneGeneral); !ok || d != wait(HistoryQuantum, general) {
+		t.Fatalf("empty general allowance waits %v %v, want %v", d, ok, wait(HistoryQuantum, general))
+	}
+	if d, ok := s.UntilHistory(LaneCorroborated); !ok || d != wait(HistoryQuantum, reserved) {
+		t.Fatalf("empty reserved allowance waits %v %v", d, ok)
+	}
+	full := NewStorageState()
+	if _, ok := full.UntilHistory(LaneGeneral); ok {
+		t.Fatal("a full allowance waits for credit")
+	}
+	near := full
+	near.General.Credit -= 1000 * uint64(time.Second)
+	if d, ok := near.UntilHistory(LaneGeneral); !ok || d != wait(1000, general) {
+		t.Fatalf("an allowance 1000 bytes short of its cap waits %v %v, want %v", d, ok, wait(1000, general))
+	}
+	if _, ok := s.UntilHistory(0); ok {
+		t.Fatal("no lane waits")
+	}
+}
+
 func TestRingPositions(t *testing.T) {
 	var r RingState
 	r, first := r.Push()

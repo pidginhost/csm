@@ -586,10 +586,11 @@ const unitCost = 1
 // Schedule picks the next candidates to serve under lim and records the
 // scheduler's new position; the picks stay queued until the engine
 // reserves or ends them. Each lane serves at most what the ceiling lets it
-// charge now. The first schedule of a reopened ledger checks every queued
-// candidate first; later ones end the candidates whose deadlines passed.
-// Each pick is revalidated before it is returned: one that no longer
-// qualifies ends, and its turn goes to the next candidate.
+// charge and its history allowance can take now; work that would not fit
+// the recovery reserve waits. The first schedule of a reopened ledger
+// checks every queued candidate first; later ones end the candidates whose
+// deadlines passed. Each pick is revalidated before it is returned: one
+// that no longer qualifies ends, and its turn goes to the next candidate.
 func (l *AdmissionLedger) Schedule(lim admission.ScheduleLimits) ([]admission.Pick, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -624,27 +625,17 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits) (
 	if err != nil {
 		return nil, err
 	}
-	ceiling, err := loadCeilingState(q.tx)
+	lim, _, err = q.scheduleLimits(lim)
 	if err != nil {
 		return nil, err
 	}
-	lim.General = min(lim.General, ceiling.Budget(admission.LaneGeneral))
-	lim.Reserved = min(lim.Reserved, ceiling.Budget(admission.LaneDirect))
 	live, err := q.live()
 	if err != nil {
 		return nil, err
 	}
-	byID := map[admission.CandidateID]liveCandidate{}
-	var items []admission.ScheduleItem
-	for _, lc := range live {
-		if lc.c.State != admission.StateQueued {
-			continue
-		}
-		byID[lc.id] = lc
-		items = append(items, admission.ScheduleItem{
-			ID: lc.id, Scope: lc.c.Scope.Key(), Tier: lc.entry.Tier, Direct: lc.entry.Direct,
-			Corroborated: lc.entry.Corroborated, Queued: lc.c.FirstQueued, Cost: unitCost, Ready: !q.now.Before(lc.c.NotBefore),
-		})
+	items, byID, err := q.scheduleItems(live, lim.RecoveryBytes)
+	if err != nil {
+		return nil, err
 	}
 	// A pick that fails revalidation ends, and the schedule is computed
 	// again from the stored position without it, so its turn is not spent.
@@ -680,11 +671,54 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits) (
 	}
 }
 
+// scheduleLimits lowers the caller's lane bounds to what the ceiling can
+// charge now and sets each lane's history budget.
+func (q *queueTx) scheduleLimits(lim admission.ScheduleLimits) (admission.ScheduleLimits, admission.CeilingState, error) {
+	ceiling, err := loadCeilingState(q.tx)
+	if err != nil {
+		return lim, ceiling, err
+	}
+	lim.General = min(lim.General, ceiling.Budget(admission.LaneGeneral))
+	lim.Reserved = min(lim.Reserved, ceiling.Budget(admission.LaneDirect))
+	lim.RecoveryBytes, err = q.recoveryRoom()
+	if err != nil {
+		return lim, ceiling, err
+	}
+	lim.GeneralBytes, lim.ReservedBytes, err = q.historyBudgets()
+	return lim, ceiling, err
+}
+
+// scheduleItems are the queued candidates as the scheduler sees them, each
+// with the history a reservation of it would charge now. One whose details
+// would not fit the recovery reserve is not ready: it waits for recovery to
+// settle unresolved outcomes.
+func (q *queueTx) scheduleItems(live []liveCandidate, room uint64) ([]admission.ScheduleItem, map[admission.CandidateID]liveCandidate, error) {
+	byID := map[admission.CandidateID]liveCandidate{}
+	var items []admission.ScheduleItem
+	for _, lc := range live {
+		if lc.c.State != admission.StateQueued {
+			continue
+		}
+		bytes, recovery, fits, err := q.historyNeed(lc, room)
+		if err != nil {
+			return nil, nil, err
+		}
+		byID[lc.id] = lc
+		items = append(items, admission.ScheduleItem{
+			ID: lc.id, Scope: lc.c.Scope.Key(), Tier: lc.entry.Tier, Direct: lc.entry.Direct,
+			Corroborated: lc.entry.Corroborated, Queued: lc.c.FirstQueued, Cost: unitCost, Bytes: bytes, Recovery: recovery,
+			Ready: fits && !q.now.Before(lc.c.NotBefore),
+		})
+	}
+	return items, byID, nil
+}
+
 // NextWake is the earliest admission time at which queued work changes
 // without a new report: a retry wait ends, a queued deadline passes, or
-// ready work gains ceiling budget on a lane it can use. It is the stored
-// admission time when ready work can be served already. The engine's timer
-// ticks and schedules then. ok is false when nothing waits.
+// ready work gains ceiling budget or history budget on a lane it can use.
+// It is the stored admission time when a schedule would serve ready work
+// already. The engine's timer ticks and schedules then. ok is false when
+// nothing waits.
 func (l *AdmissionLedger) NextWake() (time.Time, bool, error) {
 	var wake time.Time
 	err := l.db.bolt.View(func(tx *bolt.Tx) error {
@@ -714,34 +748,100 @@ func (l *AdmissionLedger) NextWake() (time.Time, bool, error) {
 				wake = t
 			}
 		}
-		var general, reserved bool
 		for _, lc := range live {
-			if lc.c.State != admission.StateQueued {
-				continue
-			}
-			if nb := lc.c.NotBefore; nb.After(clock.Now()) {
+			if nb := lc.c.NotBefore; lc.c.State == admission.StateQueued && nb.After(clock.Now()) {
 				earliest(nb)
-				continue
 			}
-			general, reserved = true, reserved || lc.entry.Eligible()
+		}
+		lim, ceiling, err := q.scheduleLimits(admission.ScheduleLimits{General: admission.MaxCeiling, Reserved: admission.MaxCeiling, Members: admission.MaxBatchMembers})
+		if err != nil {
+			return err
+		}
+		items, _, err := q.scheduleItems(live, lim.RecoveryBytes)
+		if err != nil {
+			return err
+		}
+		var general, reserved bool
+		for _, it := range items {
+			if it.Ready {
+				general, reserved = true, reserved || it.Direct || it.Corroborated
+			}
 		}
 		if !general {
 			return nil
 		}
-		ceiling, err := loadCeilingState(tx)
+		st, err := loadScheduleState(tx)
 		if err != nil {
 			return err
 		}
-		// Only a lane without budget needs the window's charges.
+		picks, _, err := admission.Schedule(items, st, lim)
+		if err != nil {
+			return err
+		}
+		if len(picks) > 0 {
+			earliest(clock.Now())
+			return nil
+		}
+		storage, err := q.storageState()
+		if err != nil {
+			return err
+		}
+		// Only a lane without ceiling budget needs the window's charges.
 		var charges []admission.Charge
 		for _, lane := range []admission.Lane{admission.LaneGeneral, admission.LaneDirect} {
-			switch {
-			case lane == admission.LaneDirect && !reserved:
+			if lane == admission.LaneDirect && !reserved {
 				continue
-			case ceiling.Budget(lane) > 0:
-				earliest(clock.Now())
+			}
+			if ceiling.Budget(lane) > 0 {
+				// Probe the actual next head with a full byte budget. Its
+				// earned turn, rather than a fixed quantum, sets the timer.
+				probe := lim
+				probe.Members = 1
+				room := lim.GeneralBytes
+				if lane == admission.LaneGeneral {
+					probe.Reserved, probe.GeneralBytes = 0, admission.MaxHistoryBytes
+				} else {
+					probe.General, probe.ReservedBytes = 0, admission.MaxHistoryBytes
+					room = lim.ReservedBytes
+				}
+				heads, _, probeErr := admission.Schedule(items, st, probe)
+				if probeErr != nil {
+					return probeErr
+				}
+				if len(heads) == 0 {
+					continue
+				}
+				need := uint64(heads[0].Bytes)
+				if room < need {
+					// Recompute room without the credit cap, including an
+					// upgrade's excess, before choosing credit or retirement.
+					copy := *storage
+					full := admission.NewStorageState()
+					copy.General.Credit, copy.Reserved.Credit = full.General.Credit, full.Reserved.Credit
+					size, _ := admission.HistoryLanes()
+					used := copy.General.Used
+					if lane != admission.LaneGeneral {
+						_, size = admission.HistoryLanes()
+						used = copy.Reserved.Used
+					}
+					r, retErr := q.retirable(lane, used-min(used, size-need))
+					if retErr != nil {
+						return retErr
+					}
+					room = copy.HistoryBudget(lane, r)
+				}
+				if room >= need {
+					if d, ok := storage.UntilHistoryCost(lane, heads[0].Bytes); ok {
+						earliest(clock.Now().Add(d))
+					}
+				} else if at, ok, nextErr := q.nextRetirable(lane); nextErr != nil {
+					return nextErr
+				} else if ok {
+					earliest(at)
+				}
 				continue
-			case charges == nil:
+			}
+			if charges == nil {
 				if charges, err = loadCharges(tx); err != nil {
 					return err
 				}

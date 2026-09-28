@@ -297,6 +297,27 @@ each lane can charge, and the ledger's next wake includes when waiting work
 gains budget. Challenge work is never charged, but still waits in the
 shared scheduler until its separate bound is implemented.
 
+Schema 4 adds storage accounting; the first open upgrades a schema 1, 2 or
+3 ledger in the same transaction. Evidence stays stored while a candidate
+names it as a root. Evidence no candidate names, and candidates that ended
+before any attempt, each wait in a bounded ring and leave oldest first, so
+rejected traffic cannot allocate rows without bound. A candidate's details
+become history at its first reservation: each reservation charges the
+growth of their largest possible size to the allowance of its lane, and a
+fifth of the fixed history budget is reserved for direct compromise and
+corroborated work. Each allowance admits history at a rate that spreads its
+size over the seven-day review window and saves at most ten minutes of that
+rate, so a flood cannot fill a week of history in an hour. Scopes earn
+history turns in fixed quanta, so large records cannot take more than their
+share, and a record that has earned its turn holds its lane until the
+credit covers it. An ended candidate's details are kept through the review
+window and, for a verified effect, for as long as the effect can last. They
+are retired after thirty days, or earlier when an allowance needs the room,
+oldest first. An unresolved outcome is pinned in a separate recovery reserve
+until recovery settles it, and new work waits while that reserve is full.
+Tick refills the allowances and retires history at its target in the
+clock's transaction. Report links stay readable after a policy change.
+
 ### Attack event storage
 
 Attack events live in `attacks:events`; `attacks:events:ip` stores empty values

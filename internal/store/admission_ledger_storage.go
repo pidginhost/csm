@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"time"
@@ -325,7 +326,7 @@ func loadStorage(tx *bolt.Tx) (admission.StorageState, error) {
 	if ended.Count != s.Ended.Count || ended.Last > s.Ended.Last || loose.Count != s.Loose.Count || loose.Last > s.Loose.Last {
 		return s, admission.ErrCorruptRecord
 	}
-	return s, nil
+	return s, proveStorageLinks(tx)
 }
 
 // Storage is the committed storage state.
@@ -632,10 +633,7 @@ func (q *queueTx) retireForRoom(lane admission.Lane, need uint64) error {
 	if err != nil {
 		return err
 	}
-	kind := byte(admission.RetireGeneral)
-	if lane != admission.LaneGeneral {
-		kind = admission.RetireReserved
-	}
+	kind := retireKind(lane)
 	cur := q.tx.Bucket([]byte(admissionRetireBucket)).Cursor()
 	for s.HistoryRoom(lane) < need {
 		k, _ := cur.Seek([]byte{kind})
@@ -775,6 +773,105 @@ func (q *queueTx) retire(id admission.CandidateID, key []byte) error {
 	return nil
 }
 
+// historyNeed is what reserving lc now would charge its lane's history, and
+// whether its details would fit the recovery reserve.
+func (q *queueTx) historyNeed(lc liveCandidate, room uint64) (uint32, uint32, bool, error) {
+	cost, err := historyCostOf(q.tx, lc.c)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	h, found, err := loadHistoryEntry(q.tx, lc.id)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if lc.c.Attempts > 0 && !found {
+		return 0, 0, false, admission.ErrCorruptRecord
+	}
+	recovery := max(cost, h.Charged())
+	fits := uint64(recovery) <= room
+	if cost <= h.Charged() {
+		return 0, recovery, fits, nil
+	}
+	return cost - h.Charged(), recovery, fits, nil
+}
+
+func retireKind(lane admission.Lane) byte {
+	if lane == admission.LaneGeneral {
+		return admission.RetireGeneral
+	}
+	return admission.RetireReserved
+}
+
+// retirable is the bytes of lane's allowance that ended history which may
+// be retired now holds, counted until they reach limit.
+func (q *queueTx) retirable(lane admission.Lane, limit uint64) (uint64, error) {
+	kind := retireKind(lane)
+	var sum uint64
+	cur := q.tx.Bucket([]byte(admissionRetireBucket)).Cursor()
+	for k, _ := cur.Seek([]byte{kind}); k != nil && k[0] == kind && sum < limit; k, _ = cur.Next() {
+		_, at, id, err := admission.ParseRetireKey(k)
+		if err != nil {
+			return 0, err
+		}
+		if at.After(q.now) {
+			break
+		}
+		h, found, err := loadHistoryEntry(q.tx, id)
+		if err != nil {
+			return 0, err
+		}
+		if !found {
+			return 0, admission.ErrCorruptRecord
+		}
+		if lane == admission.LaneGeneral {
+			sum += uint64(h.General)
+		} else {
+			sum += uint64(h.Reserved)
+		}
+	}
+	return sum, nil
+}
+
+// historyBudgets are the history bytes each lane may charge now: its
+// credit, bounded by the room its allowance has once retirable history is
+// retired.
+func (q *queueTx) historyBudgets() (general, reserved uint64, err error) {
+	s, err := q.storageState()
+	if err != nil {
+		return 0, 0, err
+	}
+	budget := func(lane admission.Lane) (uint64, error) {
+		size, _ := admission.HistoryLanes()
+		used := s.General.Used
+		if lane != admission.LaneGeneral {
+			_, size = admission.HistoryLanes()
+			used = s.Reserved.Used
+		}
+		// Subtract first so even a grandfathered overfull allowance cannot wrap.
+		need := used - min(used, size-s.HistoryCredit(lane))
+		r, walkErr := q.retirable(lane, need)
+		return s.HistoryBudget(lane, r), walkErr
+	}
+	if general, err = budget(admission.LaneGeneral); err != nil {
+		return 0, 0, err
+	}
+	reserved, err = budget(admission.LaneDirect)
+	return general, reserved, err
+}
+
+// nextRetirable is when the oldest history of lane's allowance that may not
+// be retired yet becomes retirable.
+func (q *queueTx) nextRetirable(lane admission.Lane) (time.Time, bool, error) {
+	kind := retireKind(lane)
+	after := fmt.Appendf(nil, "%c%019d", kind, q.now.UnixNano()+1)
+	k, _ := q.tx.Bucket([]byte(admissionRetireBucket)).Cursor().Seek(after)
+	if k == nil || k[0] != kind {
+		return time.Time{}, false, nil
+	}
+	_, at, _, err := admission.ParseRetireKey(k)
+	return at, err == nil, err
+}
+
 // validateUnownedRows checks rows that candidate and evidence walks do not
 // necessarily reach. An upgrade must not silently retain or discard them.
 func validateUnownedRows(tx *bolt.Tx) error {
@@ -888,4 +985,166 @@ func (q *queueTx) trimUnreservedRoots(c *admission.Candidate) error {
 	c.Roots = roots
 	h.RootMask = (1 << len(roots)) - 1
 	return putHistoryEntry(q.tx, id, h)
+}
+
+// proveStorageLinks checks ownership as well as totals. No uncharged row,
+// missing reference or foreign retirement key may survive a reopen.
+func proveStorageLinks(tx *bolt.Tx) error {
+	if err := validateUnownedRows(tx); err != nil {
+		return err
+	}
+	refs := map[admission.EvidenceID]uint32{}
+	history := map[string]bool{}
+	ended := map[string]bool{}
+	queued := map[string]bool{}
+	keys := map[string]bool{}
+	if err := tx.Bucket([]byte(admissionCandidatesBucket)).ForEach(func(k, _ []byte) error {
+		c, err := loadCandidate(tx, admission.CandidateID(k))
+		if err != nil {
+			return corruptRecord(err)
+		}
+		for _, root := range c.Roots {
+			refs[root]++
+		}
+		if !c.State.Terminal() {
+			queued[string(k)] = true
+		}
+		if c.Attempts == 0 {
+			if c.State.Terminal() {
+				ended[string(k)] = true
+			}
+			return nil
+		}
+		last, err := currentAttempt(tx, c)
+		if err != nil {
+			return err
+		}
+		h, found, err := loadHistoryEntry(tx, admission.CandidateID(k))
+		if err != nil {
+			return err
+		}
+		if !found || h.RootMask == 0 || h.RootMask>>len(c.Roots) != 0 || c.State.Terminal() == h.Ended.IsZero() || h.Pinned != (c.State == admission.StateUnknown) {
+			return admission.ErrCorruptRecord
+		}
+		if c.State != admission.StateQueued && h.RootMask != (1<<len(c.Roots))-1 {
+			return admission.ErrCorruptRecord
+		}
+		paid := c
+		paid.Roots = nil
+		for i, root := range c.Roots {
+			if h.RootMask&(1<<i) != 0 {
+				paid.Roots = append(paid.Roots, root)
+			}
+		}
+		cost, err := historyCostOf(tx, paid)
+		if err != nil || h.Charged() < cost {
+			return admission.ErrCorruptRecord
+		}
+		if c.State.Terminal() {
+			if last.State == c.State && !h.Ended.Equal(last.Finished) {
+				return admission.ErrCorruptRecord
+			}
+			if !h.Pinned {
+				eligible, _ := admission.HistoryTimes(h.Ended, c.ExpiresAt, c.State == admission.StateVerified)
+				if !h.Eligible.Equal(eligible) {
+					return admission.ErrCorruptRecord
+				}
+			}
+		}
+		history[string(k)] = true
+		retire, err := h.RetireKeys(admission.CandidateID(k))
+		if err != nil {
+			return err
+		}
+		for _, key := range retire {
+			keys[string(key)] = true
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	for _, check := range []struct {
+		name string
+		want map[string]bool
+	}{
+		{admissionHistoryBucket, history}, {admissionRetireBucket, keys}, {admissionQueueBucket, queued},
+	} {
+		b := tx.Bucket([]byte(check.name))
+		if err := b.ForEach(func(k, v []byte) error {
+			if !check.want[string(k)] || b.Bucket(k) != nil {
+				return admission.ErrCorruptRecord
+			}
+			if check.name == admissionRetireBucket && len(v) != 0 {
+				return admission.ErrCorruptRecord
+			}
+			if check.name == admissionQueueBucket {
+				if _, err := admission.UnmarshalQueueEntry(v); err != nil {
+					return err
+				}
+			}
+			delete(check.want, string(k))
+			return nil
+		}); err != nil {
+			return err
+		}
+		if len(check.want) != 0 {
+			return admission.ErrCorruptRecord
+		}
+	}
+	loose := map[admission.EvidenceID]uint64{}
+	if err := tx.Bucket([]byte(admissionRingsBucket)).ForEach(func(k, v []byte) error {
+		if len(k) != 9 {
+			return admission.ErrCorruptRecord
+		}
+		switch k[0] {
+		case ringEnded:
+			if !ended[string(v)] {
+				return admission.ErrCorruptRecord
+			}
+			delete(ended, string(v))
+		case ringLoose:
+			id := admission.EvidenceID(v)
+			if refs[id] != 0 || loose[id] != 0 {
+				return admission.ErrCorruptRecord
+			}
+			loose[id] = binary.BigEndian.Uint64(k[1:])
+		default:
+			return admission.ErrCorruptRecord
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if len(ended) != 0 {
+		return admission.ErrCorruptRecord
+	}
+	evidence := map[string]bool{}
+	if err := tx.Bucket([]byte(admissionEvidenceBucket)).ForEach(func(k, v []byte) error {
+		e, err := admission.UnmarshalEvidence(v)
+		if err != nil || string(e.ID()) != string(k) {
+			return admission.ErrCorruptRecord
+		}
+		r, err := loadRefs(tx, e.ID())
+		if err != nil {
+			return err
+		}
+		if r.Refs != refs[e.ID()] || r.Loose != loose[e.ID()] {
+			return admission.ErrCorruptRecord
+		}
+		delete(refs, e.ID())
+		delete(loose, e.ID())
+		evidence[string(k)] = true
+		return nil
+	}); err != nil {
+		return err
+	}
+	if len(refs) != 0 || len(loose) != 0 {
+		return admission.ErrCorruptRecord
+	}
+	return tx.Bucket([]byte(admissionRefsBucket)).ForEach(func(k, _ []byte) error {
+		if !evidence[string(k)] {
+			return admission.ErrCorruptRecord
+		}
+		return nil
+	})
 }

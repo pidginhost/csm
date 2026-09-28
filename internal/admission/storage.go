@@ -190,6 +190,23 @@ func (s StorageState) HistoryRoom(l Lane) uint64 {
 	return a.size - a.m.Used
 }
 
+// UntilHistory is how long lane l's allowance waits for its saved credit
+// to grow by one quantum, or to its cap if that is nearer. False when the
+// credit is full: then only retiring history can make room.
+func (s StorageState) UntilHistory(l Lane) (time.Duration, bool) {
+	if !l.Valid() {
+		return 0, false
+	}
+	a := s.allowance(l)
+	full := HistoryCap(a.size) * byteTicks
+	if a.m.Credit >= full {
+		return 0, false
+	}
+	need := min(full-a.m.Credit, uint64(HistoryQuantum)*byteTicks)
+	n, rate := int64(need), int64(min(HistoryRate(a.size), HistoryBytes))
+	return time.Duration((n + rate - 1) / rate), true
+}
+
 // Advance credits elapsed admission time, refilling each allowance at its
 // rate up to its cap. A long gap saturates instead of overflowing.
 func (s StorageState) Advance(elapsed time.Duration) (StorageState, error) {
@@ -334,4 +351,20 @@ func UnmarshalStorageState(data []byte) (StorageState, error) {
 		return StorageState{}, ErrCorruptRecord
 	}
 	return s, nil
+}
+
+// UntilHistoryCost waits only for the remaining ticks of the selected
+// head's charge. A quantum timer alone can sleep past a smaller ready head.
+func (s StorageState) UntilHistoryCost(l Lane, cost uint32) (time.Duration, bool) {
+	if !l.Valid() || cost > MaxHistoryBytes {
+		return 0, false
+	}
+	a := s.allowance(l)
+	need := uint64(cost) * byteTicks
+	if a.m.Credit >= need {
+		return 0, false
+	}
+	n := int64(min(need-a.m.Credit, uint64(MaxHistoryBytes)*byteTicks))
+	rate := int64(min(HistoryRate(a.size), HistoryBytes))
+	return time.Duration((n + rate - 1) / rate), true
 }
