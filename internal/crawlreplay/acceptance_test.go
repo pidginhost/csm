@@ -17,7 +17,7 @@ const (
 func key1(n, parent uint64) KeyID { return KeyID{Level: 1, Key: SynthKey(n), Parent: SynthKey(parent)} }
 func key2(n uint64) KeyID         { return KeyID{Level: 2, Key: SynthKey(n)} }
 
-var siteKey = KeyID{Level: 3}
+var truthSiteKey = KeyID{Level: 3}
 
 // run feeds each site's records as one scored, normal segment through one
 // session and scores the ticks.
@@ -135,7 +135,7 @@ func TestFindingTransitionEvidence(t *testing.T) {
 		recs := syn.Rotating(Traffic{From: start, To: start + 40, PerMinute: 30, L2: SynthKey(1), L1: SynthKey(2), Label: LabelHealthy}, 1)
 		recs = append(recs, syn.Rotating(Traffic{From: start + 15, To: start + 40, PerMinute: 120, L2: SynthKey(1), L1: SynthKey(2),
 			Label: LabelAttack, Episode: "e1"}, 1)...)
-		for _, truth := range [][]EpisodeTruth{nil, {{Episode: "e1", Label: LabelAttack, Site: siteA, Keys: []KeyID{key1(2, 1), key2(1), siteKey}}}} {
+		for _, truth := range [][]EpisodeTruth{nil, {{Episode: "e1", Label: LabelAttack, Site: siteA, Keys: []KeyID{key1(2, 1), key2(1), truthSiteKey}}}} {
 			sc, _ := scoreSites(t, SessionConfig{Params: p}, truth, map[string][]Record{siteA: recs}, span)
 			if ev := scoredEventsFor(sc, siteA, key1(2, 1)); len(ev) != 1 || ev[0].Minute != start+int64(p.W)-1 || ev[0].Class != LabelHealthy || len(ev[0].Credited) != 0 {
 				t.Fatalf("truth %v: events %+v, want one healthy transition at the first complete window", truth != nil, ev)
@@ -159,7 +159,7 @@ func TestFindingTransitionEvidence(t *testing.T) {
 		a = append(a, syn.Rotating(Traffic{From: start + 40, To: start + 50, PerMinute: 30, L2: SynthKey(5), L1: SynthKey(4), Label: LabelAttack, Episode: "e-mixed"}, 1)...)
 		b := NewSynth(siteB, 4).Rotating(Traffic{From: start + 10, To: start + 30, PerMinute: 100, L2: SynthKey(1), L1: SynthKey(2), Label: LabelAttack, Episode: "e-other"}, 1)
 		truth := []EpisodeTruth{
-			{Episode: "e-big", Label: LabelAttack, Site: siteA, Keys: []KeyID{key1(2, 1), key2(1), siteKey}},
+			{Episode: "e-big", Label: LabelAttack, Site: siteA, Keys: []KeyID{key1(2, 1), key2(1), truthSiteKey}},
 			// The unlabeled traffic's L2 key transitions after e-small's
 			// onset but holds none of its requests: no credit.
 			{Episode: "e-small", Label: LabelAttack, Site: siteA, Keys: []KeyID{key1(3, 1), key2(7)}},
@@ -342,8 +342,8 @@ func TestAcceptancePerSiteKey(t *testing.T) {
 		got[e.Site] = append(got[e.Site], found{e.Key, e.Minute - start})
 	}
 	want := map[string][]found{
-		siteA: {{siteKey, 30}, {key2(1), 30}, {key1(2, 1), 30}, {key1(3, 1), 50}},
-		siteB: {{siteKey, 30}, {key2(1), 30}, {key1(2, 1), 30}},
+		siteA: {{truthSiteKey, 30}, {key2(1), 30}, {key1(2, 1), 30}, {key1(3, 1), 50}},
+		siteB: {{truthSiteKey, 30}, {key2(1), 30}, {key1(2, 1), 30}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("High transitions %v, want %v", got, want)
@@ -357,7 +357,7 @@ func TestAcceptancePerSiteKey(t *testing.T) {
 	}
 	// e1 began under findings already active on its parent and the site:
 	// they are recorded, never credited, and its scope match is explicit.
-	if !reflect.DeepEqual(e1.ActiveAtOnset, []KeyID{siteKey, key2(1)}) || e1.ScopeMatch == "" || e1.Scope == nil {
+	if !reflect.DeepEqual(e1.ActiveAtOnset, []KeyID{truthSiteKey, key2(1)}) || e1.ScopeMatch == "" || e1.Scope == nil {
 		t.Fatalf("e1 %+v, want the active parent and site recorded with its scope", e1)
 	}
 	// e0 is first credited on its L2 key while the scope names only its L1
@@ -467,7 +467,7 @@ func TestScoringSkipsTraining(t *testing.T) {
 			t.Fatalf("score start %+v, want a finding active since training", st)
 		}
 	}
-	if !reflect.DeepEqual(starts, []KeyID{siteKey, key2(1), key1(2, 1)}) {
+	if !reflect.DeepEqual(starts, []KeyID{truthSiteKey, key2(1), key1(2, 1)}) {
 		t.Fatalf("findings active when scoring began: %v", starts)
 	}
 	if o := outcome(t, got, siteA, "e-train"); o.Status != OutcomeUnscored || o.Detected {

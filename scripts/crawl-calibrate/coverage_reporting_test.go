@@ -64,6 +64,13 @@ func TestCalibrateCoveragePreservesEpisodes(t *testing.T) {
 			if ep.Site != attackSite || ep.Episode != episode || ep.Label != crawlreplay.LabelAttack || ep.Onset != onset || ep.Detected != tc.detected {
 				t.Fatalf("episode = %+v; want onset %d, detected %t", ep, onset, tc.detected)
 			}
+			wantStatus := crawlreplay.OutcomeUnscored
+			if tc.detected {
+				wantStatus = crawlreplay.OutcomeDetected
+			}
+			if ep.Status != wantStatus {
+				t.Fatalf("status = %q, want %q", ep.Status, wantStatus)
+			}
 			if tc.detected {
 				if want := (ep.DetectMinute+1)*60 - onset; ep.DelaySeconds != want {
 					t.Fatalf("delay = %d, want %d from the original onset", ep.DelaySeconds, want)

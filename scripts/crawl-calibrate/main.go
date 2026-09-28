@@ -539,6 +539,14 @@ func (r *runResult) addSite(name string, site crawlreplay.Site, origins []crawlr
 		ep.Onset = origin.Onset
 		if ep.Detected {
 			ep.DelaySeconds = (ep.DetectMinute+1)*60 - ep.Onset
+		} else {
+			ep.Status = crawlreplay.OutcomeUnscored
+			for _, span := range site.Coverage {
+				if ep.Onset/60 >= span.From && ep.Onset/60 <= span.To {
+					ep.Status = crawlreplay.OutcomeMissed
+					break
+				}
+			}
 		}
 		r.Episodes = append(r.Episodes, siteEpisode{Site: name, EpisodeResult: ep})
 	}
@@ -564,6 +572,8 @@ func (r *runResult) addSite(name string, site crawlreplay.Site, origins []crawlr
 		r.Sketch.MaxResidualError = max(r.Sketch.MaxResidualError, rep.Sketch.MaxResidualError)
 		r.Sketch.MaxDistinctError = max(r.Sketch.MaxDistinctError, rep.Sketch.MaxDistinctError)
 		r.Sketch.LostDecisions += rep.Sketch.LostDecisions
+		r.Sketch.ExtraDecisions += rep.Sketch.ExtraDecisions
+		r.Sketch.LostFindings += rep.Sketch.LostFindings
 		r.Sketch.Exceeded += rep.Sketch.Exceeded
 	}
 	return nil

@@ -141,7 +141,7 @@ type Scorer struct {
 
 // NewScorer checks a truth table: pseudonymous sites, episodes and keys,
 // episodic labels, and one definition per episode and site with one label
-// per episode. A nil table scores by suggestion.
+// per episode. It owns a copy of the table. A nil table scores by suggestion.
 func NewScorer(p Params, truth []EpisodeTruth) (*Scorer, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
@@ -164,8 +164,7 @@ func newScorer(truth []EpisodeTruth) (*Scorer, error) {
 	sc := &Scorer{suggest: truth == nil, truth: map[episodeSite]*EpisodeTruth{}, labels: map[string]string{},
 		onsets: map[episodeSite]*onset{}, scored: map[string][]Span{}, results: map[episodeSite]*EpisodeResult{},
 		days: map[siteDay]*SiteDay{}, wasScored: map[string]bool{}}
-	for i := range truth {
-		tr := &truth[i]
+	for _, tr := range truth {
 		es := episodeSite{tr.Episode, tr.Site}
 		if !episodeID.MatchString(tr.Episode) || !ValidSite(tr.Site) || (tr.Label != LabelAttack && tr.Label != LabelOverload) ||
 			len(tr.Keys) == 0 || sc.truth[es] != nil {
@@ -182,7 +181,8 @@ func newScorer(truth []EpisodeTruth) (*Scorer, error) {
 			seen[k] = true
 		}
 		sc.labels[tr.Episode] = tr.Label
-		sc.truth[es] = tr
+		tr.Keys = slices.Clone(tr.Keys)
+		sc.truth[es] = &tr
 	}
 	return sc, nil
 }
@@ -191,8 +191,11 @@ func newScorer(truth []EpisodeTruth) (*Scorer, error) {
 // its coverage excludes, before its ticks: an episode's onset is its first
 // labeled request whether or not that minute can be replayed. With a truth
 // table, every episode in a segment with scored minutes needs an entry for
-// its site, and a record's label must match its episode's.
+// its site, and a record's label must match its episode's. A rejected
+// observation leaves the scorer unchanged.
 func (sc *Scorer) Observe(site string, records []Record, score []Span) error {
+	labels := maps.Clone(sc.labels)
+	onsets := map[episodeSite]int64{}
 	for _, r := range records {
 		if r.Validate() != nil || r.Site != site {
 			return ErrSite
@@ -201,20 +204,25 @@ func (sc *Scorer) Observe(site string, records []Record, score []Span) error {
 			continue
 		}
 		es := episodeSite{r.Episode, site}
-		if l, ok := sc.labels[r.Episode]; ok && l != r.Label {
+		if l, ok := labels[r.Episode]; ok && l != r.Label {
 			return ErrTruth
 		}
 		if !sc.suggest && len(score) > 0 && sc.truth[es] == nil {
 			return ErrTruth
 		}
-		sc.labels[r.Episode] = r.Label
-		if o := sc.onsets[es]; o == nil {
-			sc.onsets[es] = &onset{t: r.T}
-		} else {
-			o.t = min(o.t, r.T)
+		labels[r.Episode] = r.Label
+		if t, ok := onsets[es]; !ok || r.T < t {
+			onsets[es] = r.T
 		}
 	}
-	sc.scored[site] = append(sc.scored[site], score...)
+	sc.labels = labels
+	for es, t := range onsets {
+		if o := sc.onsets[es]; o == nil {
+			sc.onsets[es] = &onset{t: t}
+		} else {
+			o.t = min(o.t, t)
+		}
+	}
 	return nil
 }
 
@@ -293,6 +301,15 @@ func (sc *Scorer) Tick(t Tick) {
 	if !t.Scored {
 		return
 	}
+	// Declared scoring spans can include coverage gaps. Only a delivered
+	// scored tick proves that its minute was actually replayed.
+	spans := sc.scored[t.Site]
+	if n := len(spans); n > 0 && spans[n-1].To == t.Minute-1 {
+		spans[n-1].To = t.Minute
+	} else {
+		spans = append(spans, Span{From: t.Minute, To: t.Minute})
+	}
+	sc.scored[t.Site] = spans
 	if started {
 		for _, a := range t.Prior {
 			if a.Since < t.Minute {
@@ -330,6 +347,7 @@ func (sc *Scorer) Tick(t Tick) {
 		}
 	}
 	for _, ev := range t.Events {
+		ev = cloneFindingEvent(ev)
 		class, _ := classify(ev.Total, ev.Labels)
 		se := ScoredEvent{FindingEvent: ev, Class: class}
 		for _, es := range episodes {
@@ -370,7 +388,8 @@ func scopeMatch(s Scope, key KeyID) string {
 }
 
 // Report finishes the scoring: every truth entry, or every observed episode
-// by suggestion, gets an outcome.
+// by suggestion, gets an outcome. The returned evidence is independent of
+// the scorer and remains unchanged by later ticks.
 func (sc *Scorer) Report() Scoring {
 	out := Scoring{Events: slices.Clone(sc.events), Episodes: []EpisodeResult{}, SiteDays: []SiteDay{}, ScoreStarts: slices.Clone(sc.starts)}
 	if out.Events == nil {
@@ -379,12 +398,25 @@ func (sc *Scorer) Report() Scoring {
 	if out.ScoreStarts == nil {
 		out.ScoreStarts = []ScoreStart{}
 	}
+	for i := range out.Events {
+		out.Events[i].FindingEvent = cloneFindingEvent(out.Events[i].FindingEvent)
+		out.Events[i].Credited = slices.Clone(out.Events[i].Credited)
+	}
 	keys := slices.Collect(maps.Keys(sc.onsets))
 	if !sc.suggest {
 		keys = slices.Collect(maps.Keys(sc.truth))
 	}
 	for _, es := range keys {
 		r := *sc.result(es)
+		r.ActiveAtOnset = slices.Clone(r.ActiveAtOnset)
+		if r.Key != nil {
+			key := *r.Key
+			r.Key = &key
+		}
+		if r.Scope != nil {
+			scope := cloneScope(*r.Scope)
+			r.Scope = &scope
+		}
 		o := sc.onsets[es]
 		switch {
 		case o == nil:
@@ -396,7 +428,7 @@ func (sc *Scorer) Report() Scoring {
 		default:
 			r.Status, r.Onset = OutcomeMissed, o.t
 		}
-		if !r.Detected {
+		if math.IsInf(r.Worst.A1, 1) {
 			r.Worst = Margin{}
 		}
 		if math.IsInf(r.Best.A1, -1) {
@@ -408,10 +440,23 @@ func (sc *Scorer) Report() Scoring {
 		return cmp.Or(cmp.Compare(a.Site, b.Site), cmp.Compare(a.Episode, b.Episode))
 	})
 	for _, d := range sc.days {
-		out.SiteDays = append(out.SiteDays, *d)
+		day := *d
+		day.Requests = maps.Clone(day.Requests)
+		out.SiteDays = append(out.SiteDays, day)
 	}
 	slices.SortFunc(out.SiteDays, func(a, b SiteDay) int { return cmp.Or(cmp.Compare(a.Site, b.Site), cmp.Compare(a.Day, b.Day)) })
 	return out
+}
+
+func cloneFindingEvent(e FindingEvent) FindingEvent {
+	e.Labels = maps.Clone(e.Labels)
+	e.Scope = cloneScope(e.Scope)
+	return e
+}
+
+func cloneScope(s Scope) Scope {
+	s.Keys = slices.Clone(s.Keys)
+	return s
 }
 
 // classify names the majority label of a window: attack or overload with
