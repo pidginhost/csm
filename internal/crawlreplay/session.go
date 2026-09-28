@@ -8,8 +8,8 @@ import (
 )
 
 // ErrSession reports a segment, state declaration, snapshot or call that a
-// replay session cannot accept. After a failed Feed the session refuses
-// every further call: its state may be partly advanced.
+// replay session cannot accept. After a failed Feed callback the session
+// refuses every further call: its state may be partly advanced.
 var ErrSession = errors.New("crawlreplay: invalid replay session input")
 
 // Learning states a segment declares for a site's or key's minutes (spec
@@ -66,6 +66,14 @@ func (c SessionConfig) validate() error {
 		return ErrParams
 	}
 	return nil
+}
+
+func (c SessionConfig) clone() SessionConfig {
+	if c.Sketch != nil {
+		sketch := *c.Sketch
+		c.Sketch = &sketch
+	}
+	return c
 }
 
 // ActiveFinding is a key whose High finding has not cleared. Uncertain
@@ -142,12 +150,12 @@ type finding struct {
 	uncertain bool
 }
 
-// NewReplaySession starts a cold session.
+// NewReplaySession starts a cold session with its own copy of cfg.
 func NewReplaySession(cfg SessionConfig) (*ReplaySession, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	return &ReplaySession{cfg: cfg, sites: map[string]*siteSession{}}, nil
+	return &ReplaySession{cfg: cfg.clone(), sites: map[string]*siteSession{}}, nil
 }
 
 func newSiteSession() *siteSession {
@@ -182,7 +190,11 @@ func (s *ReplaySession) Feed(seg ReplaySegment, fn func(Tick) error) error {
 		if st.Key == nil {
 			site.siteStates = append(site.siteStates, st)
 		} else {
-			site.keyStates[*st.Key] = append(site.keyStates[*st.Key], st)
+			// Keep the declaration's serialized key independent of a caller
+			// reusing the variable that identified this scope.
+			id := *st.Key
+			st.Key = &id
+			site.keyStates[id] = append(site.keyStates[id], st)
 		}
 	}
 	slices.SortFunc(site.siteStates, func(a, b StateSpan) int { return cmp.Compare(a.From, b.From) })

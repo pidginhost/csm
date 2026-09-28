@@ -159,10 +159,11 @@ func snapshotKey(id KeyID, ks *keyState) keySnapshot {
 	return k
 }
 
-// Restore rebuilds a session from Snapshot bytes under cfg. State cfg
-// cannot interpret is invalidated as Invalidation reports; threshold
-// changes (R, F, K, D, C) invalidate nothing and never rewrite a pinned
-// profile. Malformed or inconsistent snapshots are refused with ErrSession.
+// Restore rebuilds a session from Snapshot bytes with its own copy of cfg.
+// State cfg cannot interpret is invalidated as Invalidation reports;
+// threshold changes (R, F, K, D, C) invalidate nothing and never rewrite a
+// pinned profile. Malformed or inconsistent snapshots are refused with
+// ErrSession.
 func Restore(raw []byte, cfg SessionConfig) (*ReplaySession, Invalidation, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, Invalidation{}, err
@@ -175,7 +176,7 @@ func Restore(raw []byte, cfg SessionConfig) (*ReplaySession, Invalidation, error
 	if snap.FormatVersion != SnapshotVersion || stored.validate() != nil || (snap.Sketch == nil) != (snap.HashVersion == "") || snap.Sites == nil {
 		return nil, Invalidation{}, ErrSession
 	}
-	s := &ReplaySession{cfg: cfg, sites: map[string]*siteSession{}}
+	s := &ReplaySession{cfg: cfg.clone(), sites: map[string]*siteSession{}}
 	for _, ss := range snap.Sites {
 		if s.sites[ss.Site] != nil || !ValidSite(ss.Site) {
 			return nil, Invalidation{}, ErrSession
@@ -202,7 +203,9 @@ func Restore(raw []byte, cfg SessionConfig) (*ReplaySession, Invalidation, error
 			clear(site.keyStates)
 		}
 		if inv.Windows {
-			site.windowFrom = site.processedTo + 1
+			if site.processedTo > 0 {
+				site.windowFrom = site.processedTo + 1
+			}
 			site.restart()
 		}
 		if inv.Baselines {
@@ -420,7 +423,7 @@ func restoreKey(k keySnapshot, ss siteSnapshot, cfg SessionConfig, checkHash boo
 		}
 	}
 	if f := k.Finding; f != nil {
-		if f.Since <= 0 || f.Since > ss.ProcessedTo || f.PinFirst != k.First ||
+		if f.PinSlots == nil || f.Since <= 0 || f.Since > ss.ProcessedTo || f.PinFirst != k.First ||
 			f.PinAt < max(f.Since, f.PinFirst) || f.PinAt > ss.ProcessedTo+1 {
 			return nil, ErrSession
 		}
