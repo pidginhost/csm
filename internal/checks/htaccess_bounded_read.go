@@ -2,6 +2,7 @@ package checks
 
 import (
 	"io"
+	"os"
 )
 
 // htaccessMaxFileBytes bounds every scheduled .htaccess read. A real
@@ -21,6 +22,22 @@ func readHtaccessBounded(path string) (data []byte, ok bool, err error) {
 		return nil, false, err
 	}
 	defer func() { _ = f.Close() }()
+	return readHtaccessFileBounded(f)
+}
+
+// readTenantHtaccessBounded is readHtaccessBounded for a caller acting on the
+// tenant's behalf as root: a symlink or special file fails the open instead of
+// being followed or blocking on a FIFO writer.
+func readTenantHtaccessBounded(path string) (data []byte, ok bool, err error) {
+	f, err := openTenantRegularFile(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = f.Close() }()
+	return readHtaccessFileBounded(f)
+}
+
+func readHtaccessFileBounded(f *os.File) (data []byte, ok bool, err error) {
 	info, err := f.Stat()
 	if err != nil {
 		return nil, false, err

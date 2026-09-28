@@ -80,6 +80,30 @@ func TestParseVhostPHPVersionUsesOnlyVersionColumn(t *testing.T) {
 	}
 }
 
+// Only a well-formed row with an empty or "inherit" column is an inheriting
+// vhost. A version, a malformed token, or a row whose shape makes the column
+// untrustworthy is not.
+func TestVhostPHPInheritsOnlyForEmptyOrInheritColumn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		row  string
+		want bool
+	}{
+		{"empty column", "alice==root==main==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==", true},
+		{"literal inherit", "alice==root==main==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==inherit", true},
+		{"explicit version", "alice==root==main==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php83", false},
+		{"malformed token", "alice==root==main==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0==ea-php8", false},
+		{"short legacy row", "alice==root==main==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0", false},
+		{"nonempty field after column", "alice==root==main==example.com==/home/alice/public_html==192.0.2.10:80==192.0.2.10:443====0====inherit", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := vhostPHPInherits(strings.Split(tc.row, "==")); got != tc.want {
+				t.Errorf("vhostPHPInherits() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPHPBinForVersionRejectsUnsupportedTokenWidths(t *testing.T) {
 	for _, version := range []string{"ea-php8", "ea-php810", "alt-php8", "alt-php810"} {
 		if got := phpBinForVersion(version); got != "" {

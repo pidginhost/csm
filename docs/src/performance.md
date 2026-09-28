@@ -143,9 +143,12 @@ Tune the WP-Cron remediation under **Settings -> Performance**:
 - `performance.wp_cron_fix.php_bin` (default empty): overrides the PHP
   interpreter for the cron line. Leave it empty and each site runs under the
   PHP version its own vhost is set to when cPanel's domain map provides an
-  unambiguous version. CSM falls back to the detected CLI interpreter when the
-  map has no usable match; an existing managed job keeps its interpreter while
-  the map is unavailable. Setting a value pins that one interpreter for every
+  unambiguous version. A vhost set to inherit runs the version named by the
+  nearest cPanel-generated handler block in its `.htaccess` chain, up to the
+  account home, because that is what the web server runs for it. CSM falls
+  back to the detected CLI interpreter when neither gives a usable, installed
+  version; an existing managed job keeps its interpreter while the map is
+  unavailable. Setting a value pins that one interpreter for every
   managed site. CLI php is used instead of an HTTP request so the job never
   ties up a web worker.
 

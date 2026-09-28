@@ -683,6 +683,9 @@ type vhost struct {
 	// code against a docroot need this: the system default interpreter is not
 	// necessarily the one the site is pinned to.
 	phpVersion string
+	// phpInherit marks a well-formed row whose vhost has no MultiPHP selection
+	// of its own ("inherit" or an empty column).
+	phpInherit bool
 }
 
 // parseUserdataDomains parses the /etc/userdatadomains map. Each line is
@@ -745,6 +748,7 @@ func parseUserdataDomainsForUse(content string, requireServingIP bool) ([]vhost,
 			docroot:    docroot,
 			ip:         servingIP,
 			phpVersion: parseVhostPHPVersion(fields),
+			phpInherit: vhostPHPInherits(fields),
 		})
 	}
 	return out, complete

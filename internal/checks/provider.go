@@ -110,6 +110,28 @@ func sameFileSnapshot(expected, actual os.FileInfo) bool {
 		expected.ModTime().Equal(actual.ModTime())
 }
 
+// openTenantRegularFile opens a file a tenant controls. It does not follow the
+// final symlink or wait for a FIFO writer, and it validates the opened object.
+func openTenantRegularFile(path string) (*os.File, error) {
+	if fs, production := osFS.(realOS); production {
+		return fs.openRegularFile(path, unix.O_NOFOLLOW)
+	}
+	file, err := osFS.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, errNonRegularFile
+	}
+	return file, nil
+}
+
 // #nosec G304 -- filesystem abstraction; check functions pass trusted paths.
 func (realOS) Open(name string) (*os.File, error) { return os.Open(name) }
 

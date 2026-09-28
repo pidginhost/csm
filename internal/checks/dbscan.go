@@ -570,7 +570,7 @@ func parseWPConfig(path string) wpDBCreds {
 // parseWPConfigChecked bounds account-controlled input so a special or very
 // large wp-config.php cannot strand the scheduled database scan.
 func parseWPConfigChecked(path string) (wpDBCreds, bool) {
-	f, err := openCMSConfig(path)
+	f, err := openTenantRegularFile(path)
 	if err != nil {
 		return wpDBCreds{}, false
 	}
