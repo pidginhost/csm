@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/binary"
+	"errors"
 	"sort"
 	"time"
 
@@ -399,6 +400,50 @@ func (q *queueTx) name(id admission.EvidenceID) error {
 	return putRefs(q.tx, id, r)
 }
 
+// unname records that one stored candidate no longer names id. Evidence no
+// candidate names keeps a loose position while it could still support a
+// candidate, and is removed once it cannot.
+func (q *queueTx) unname(id admission.EvidenceID) error {
+	r, err := loadRefs(q.tx, id)
+	if err != nil {
+		return err
+	}
+	if r.Refs == 0 {
+		return admission.ErrCorruptRecord
+	}
+	if r.Refs--; r.Refs > 0 {
+		return putRefs(q.tx, id, r)
+	}
+	e, err := loadStoredEvidence(q.tx, id)
+	if errors.Is(err, admission.ErrEvidenceUnpublished) {
+		return admission.ErrCorruptRecord
+	}
+	if err != nil {
+		return err
+	}
+	if q.now.Before(e.ObservedAt().Add(admission.SupportLookback)) {
+		return q.loosen(id)
+	}
+	return deleteEvidence(q.tx, id)
+}
+
+// ended records a candidate that has just ended. One that ended before any
+// attempt is not history: it takes the next ended position, and only the
+// newest are kept.
+func (q *queueTx) ended(id admission.CandidateID, c admission.Candidate) error {
+	if c.Attempts > 0 {
+		return nil
+	}
+	s, err := q.storageState()
+	if err != nil {
+		return err
+	}
+	var pos uint64
+	s.Ended, pos = s.Ended.Push()
+	q.storageDirty = true
+	return q.tx.Bucket([]byte(admissionRingsBucket)).Put(ringKey(ringEnded, pos), []byte(id))
+}
+
 // deleteEvidence removes a record no candidate names, with its report
 // links and reference count.
 func deleteEvidence(tx *bolt.Tx, id admission.EvidenceID) error {
@@ -419,6 +464,35 @@ func (q *queueTx) flushStorage() error {
 	}
 	s := &q.storage
 	cur := q.tx.Bucket([]byte(admissionRingsBucket)).Cursor()
+	// Removed endings can loosen their roots, so they go first.
+	for s.Ended.Count > admission.MaxEndedCandidates {
+		k, v := cur.Seek([]byte{ringEnded})
+		if k == nil || k[0] != ringEnded {
+			return admission.ErrCorruptRecord
+		}
+		id := admission.CandidateID(v)
+		c, err := loadCandidate(q.tx, id)
+		if errors.Is(err, errCandidateMissing) || (err == nil && (!c.State.Terminal() || c.Attempts != 0)) {
+			return admission.ErrCorruptRecord
+		}
+		if err != nil {
+			return err
+		}
+		if err = cur.Delete(); err != nil {
+			return err
+		}
+		if err = q.tx.Bucket([]byte(admissionCandidatesBucket)).Delete([]byte(id)); err != nil {
+			return err
+		}
+		for _, root := range c.Roots {
+			if err = q.unname(root); err != nil {
+				return err
+			}
+		}
+		if s.Ended, err = s.Ended.Remove(); err != nil {
+			return err
+		}
+	}
 	for s.Loose.Count > admission.MaxLooseEvidence {
 		k, v := cur.Seek([]byte{ringLoose})
 		if k == nil || k[0] != ringLoose {

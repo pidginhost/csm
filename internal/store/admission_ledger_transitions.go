@@ -145,7 +145,10 @@ func (l *AdmissionLedger) Terminate(id admission.CandidateID, reason admission.R
 			return false, err
 		}
 		c.State, c.Disposition, c.Reason, c.NotBefore = state, d, reason, time.Time{}
-		return true, q.release(id, e, admission.EventEnded, reason)
+		if err = q.release(id, e, admission.EventEnded, reason); err != nil {
+			return false, err
+		}
+		return true, q.ended(id, *c)
 	})
 }
 

@@ -305,7 +305,10 @@ func (q *queueTx) end(lc liveCandidate, reason admission.Reason) error {
 	if err := putCandidate(q.tx, c); err != nil {
 		return err
 	}
-	return q.release(lc.id, lc.entry, admission.EventEnded, reason)
+	if err := q.release(lc.id, lc.entry, admission.EventEnded, reason); err != nil {
+		return err
+	}
+	return q.ended(lc.id, c)
 }
 
 // endByKey ends the queued candidate a view decision displaced.
