@@ -319,18 +319,26 @@ The report records its provenance: the experiment and calibrator digests,
 the salt fingerprint and, per bundle, its role and scoring spans, manifest
 and proof digests, converter revision, period and bot evidence. Per bundle
 and site it records certified and covered minutes, excluded minutes by
-reason and every line count. It also holds host lines and bytes per minute,
-line counts for nonempty site-minutes, in-file timestamp disorder across all
-validated records (including excluded minutes) and how many patterns and
-clients are active per window. For every parameter set it lists each scored
-transition with its margins, scope, window labels, suggested class and
+reason and every line count. It also holds host lines and bytes per minute
+over the observed extent within the recording periods; gaps between bundles
+contribute no zero-traffic samples. It also holds line counts for nonempty
+site-minutes, in-file timestamp disorder across all validated records
+(including excluded minutes) and how many patterns and
+clients are active per window. Diagnostic windows continue across adjacent
+bundles and restart at coverage gaps. Key churn counts each site key only
+once across the experiment and combines samples in the same UTC hour.
+
+For every parameter set it lists each scored transition with its margins,
+scope, window labels, suggested class and
 credited episodes; per site and UTC day the scored and judged minutes,
 requests by label, transitions and credited transitions; each truth
 episode's outcome, detection delay, margins and scope match; key and client
 peaks over scored minutes; and, with a sketch, an independent exact session's
-outcomes, lost or extra decisions and lost findings, beside how far the bounds fall below the exact values
-of the same window. Fixtures add synthetic attacks from one-, three- and
-twenty-request clients with optional padding and churn, replayed cold and
+outcomes, lost or extra decisions and lost findings, beside how far the
+bounds fall below the exact values of the same window. These sketch
+comparisons use only scored minutes; both sessions still learn from training
+and other unscored minutes. Fixtures add synthetic attacks from one-, three-
+and twenty-request clients with optional padding and churn, replayed cold and
 scored by suggestion.
 
 Episode onset remains the first labeled request across the experiment, even

@@ -279,7 +279,7 @@ type calibration struct {
 	identity  map[string]string // pseudonym -> digest across bundles
 	sites     map[string]bool
 	volumes   []crawlreplay.Volume
-	shapes    *shapeAccumulator
+	shapes    shapeTrackers
 	coverage  []siteCoverage
 	silences  []siteSilence
 	bundles   []bundleProvenance
@@ -295,7 +295,7 @@ type calibration struct {
 
 func newCalibration(x experiment) (*calibration, error) {
 	c := &calibration{x: x, certified: true, identity: map[string]string{}, sites: map[string]bool{},
-		shapes: &shapeAccumulator{lateness: map[int64]int64{}, keys: map[uint8][]float64{}, newKeys: map[uint8][]float64{}}}
+		shapes: shapeTrackers{}}
 	for _, g := range x.Runs {
 		r := &runState{result: newRunResult(g), keys: map[siteKey]bool{}}
 		var err error
@@ -464,7 +464,12 @@ func (c *calibration) replaySite(name string, records []crawlreplay.Record) erro
 	cov := c.minutes[name]
 	// Timestamp disorder describes the source stream; excluded minutes
 	// must not hide it.
-	c.shapes.add(crawlreplay.ShapeSite(crawlreplay.Site{Records: records, Coverage: cov}, c.x.Window))
+	tracker := c.shapes[name]
+	if tracker == nil {
+		tracker = crawlreplay.NewShapeTracker(c.x.Window)
+		c.shapes[name] = tracker
+	}
+	tracker.Add(crawlreplay.Site{Records: records, Coverage: cov})
 	if len(c.runs) == 0 {
 		return nil
 	}
@@ -487,7 +492,9 @@ func (r *runState) feed(seg crawlreplay.ReplaySegment, all []crawlreplay.Record)
 			return err
 		}
 		if err := r.exact.Feed(seg, func(t crawlreplay.Tick) error {
-			r.pairing.Exact(t)
+			if t.Scored {
+				r.pairing.Exact(t)
+			}
 			r.exactScorer.Tick(t)
 			return nil
 		}); err != nil {
@@ -496,7 +503,7 @@ func (r *runState) feed(seg crawlreplay.ReplaySegment, all []crawlreplay.Record)
 	}
 	return r.session.Feed(seg, func(t crawlreplay.Tick) error {
 		r.scorer.Tick(t)
-		if r.pairing != nil {
+		if r.pairing != nil && t.Scored {
 			r.pairing.Sketch(t)
 		}
 		if t.Scored {
@@ -567,7 +574,11 @@ func (c *calibration) report(tool crawlreplay.ToolRevision) report {
 	if c.certified {
 		rep.Provenance.Coverage = coverageCertified
 	}
-	rep.Volume = crawlreplay.SummarizeVolume(c.volumes)
+	periods := make([]crawlreplay.Span, 0, len(c.bundles))
+	for _, b := range c.bundles {
+		periods = append(periods, b.Period)
+	}
+	rep.Volume = crawlreplay.SummarizeVolumePeriods(c.volumes, periods)
 	slices.SortStableFunc(rep.Silences, func(a, b siteSilence) int {
 		return cmp.Or(cmp.Compare(b.Minutes, a.Minutes), cmp.Compare(a.Bundle, b.Bundle), cmp.Compare(a.Site, b.Site))
 	})
@@ -618,6 +629,16 @@ func (r *runState) addFixtures(fixtures []crawlreplay.Fixture) error {
 		r.result.Fixtures = append(r.result.Fixtures, fr)
 	}
 	return nil
+}
+
+type shapeTrackers map[string]*crawlreplay.ShapeTracker
+
+func (s shapeTrackers) report() shapeReport {
+	all := &shapeAccumulator{lateness: map[int64]int64{}, keys: map[uint8][]float64{}, newKeys: map[uint8][]float64{}}
+	for _, tracker := range s {
+		all.add(tracker.Report())
+	}
+	return all.report()
 }
 
 type shapeAccumulator struct {
