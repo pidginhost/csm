@@ -656,6 +656,55 @@ func (q *queueTx) retireForRoom(lane admission.Lane, need uint64) error {
 	return nil
 }
 
+// retirementsPerTick bounds the retirements one Tick makes, so a backlog
+// after downtime clears over several ticks instead of in one long clock
+// transaction. Pressure retires what it needs at once.
+const retirementsPerTick = 64
+
+// retireAtTarget retires ended history whose target has passed, oldest
+// target first, at most retirementsPerTick of them.
+func (q *queueTx) retireAtTarget() error {
+	cur := q.tx.Bucket([]byte(admissionRetireBucket)).Cursor()
+	for n := 0; n < retirementsPerTick; n++ {
+		k, _ := cur.Seek([]byte{admission.RetireTarget})
+		if k == nil || k[0] != admission.RetireTarget {
+			return nil
+		}
+		_, at, id, err := admission.ParseRetireKey(k)
+		if err != nil {
+			return err
+		}
+		if at.After(q.now) {
+			return nil
+		}
+		if err = q.retire(id, k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// meterStorage credits a tick's elapsed time to the history allowances and
+// retires the history whose target has passed, in the clock's transaction.
+func (l *AdmissionLedger) meterStorage(tx *bolt.Tx, tick admission.ClockTick) error {
+	q, err := openQueueWith(tx, l.reg, l.Inventory(), tick.Now)
+	if err != nil {
+		return err
+	}
+	s, err := q.storageState()
+	if err != nil {
+		return err
+	}
+	if *s, err = s.Advance(tick.Elapsed); err != nil {
+		return err
+	}
+	q.storageDirty = true
+	if err = q.retireAtTarget(); err != nil {
+		return err
+	}
+	return q.flushStorage()
+}
+
 // retire removes an ended candidate's details: its record, its attempts,
 // its history entry and index keys. Its bytes return to their allowances
 // and its roots are released. key is the index key that led here; it must

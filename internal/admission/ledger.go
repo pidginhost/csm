@@ -88,8 +88,9 @@ type Ledger interface {
 	// recorded Now, never raw wall time. A reopened ledger, or one whose
 	// last reading was refused, admits and dispatches nothing until Tick
 	// succeeds; recording an outcome needs only the stored time. The same
-	// transaction credits the elapsed time to the ceiling and releases the
-	// charges that have left its window.
+	// transaction credits the elapsed time to the ceiling and the history
+	// allowances, releases the charges that have left the ceiling's window
+	// and retires history at its target.
 	Tick(ClockReading) (ClockTick, error)
 	// SetCeiling records the effective hourly ceiling, 1 to MaxCeiling. The
 	// engine sets it at startup and on every reload; nothing is charged
