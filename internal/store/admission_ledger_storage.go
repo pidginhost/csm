@@ -863,7 +863,9 @@ func (q *queueTx) historyBudgets() (general, reserved uint64, err error) {
 // be retired yet becomes retirable.
 func (q *queueTx) nextRetirable(lane admission.Lane) (time.Time, bool, error) {
 	kind := retireKind(lane)
-	after := fmt.Appendf(nil, "%c%019d", kind, q.now.UnixNano()+1)
+	// Sort after every candidate at now without incrementing the timestamp,
+	// which may already be the largest representable nanosecond.
+	after := append(fmt.Appendf(nil, "%c%019d", kind, q.now.UnixNano()), 0xff)
 	k, _ := q.tx.Bucket([]byte(admissionRetireBucket)).Cursor().Seek(after)
 	if k == nil || k[0] != kind {
 		return time.Time{}, false, nil

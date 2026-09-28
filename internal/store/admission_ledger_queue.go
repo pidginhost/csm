@@ -748,21 +748,30 @@ func (l *AdmissionLedger) NextWake() (time.Time, bool, error) {
 				wake = t
 			}
 		}
-		for _, lc := range live {
-			if nb := lc.c.NotBefore; lc.c.State == admission.StateQueued && nb.After(clock.Now()) {
-				earliest(nb)
-			}
-		}
 		lim, ceiling, err := q.scheduleLimits(admission.ScheduleLimits{General: admission.MaxCeiling, Reserved: admission.MaxCeiling, Members: admission.MaxBatchMembers})
 		if err != nil {
 			return err
 		}
-		items, _, err := q.scheduleItems(live, lim.RecoveryBytes)
+		items, byID, err := q.scheduleItems(live, lim.RecoveryBytes)
 		if err != nil {
 			return err
 		}
+		// A due sweep must assess imported entries before the scheduler
+		// can use their tiers. Overdue work needs attention now.
+		if !wake.IsZero() && !wake.After(clock.Now()) {
+			wake = clock.Now()
+			return nil
+		}
 		var general, reserved bool
 		for _, it := range items {
+			// A retry cannot become ready at its backoff while recovery
+			// space is unavailable. Its validity deadlines still apply.
+			if uint64(it.Recovery) > lim.RecoveryBytes {
+				continue
+			}
+			if nb := byID[it.ID].c.NotBefore; nb.After(clock.Now()) {
+				earliest(nb)
+			}
 			if it.Ready {
 				general, reserved = true, reserved || it.Direct || it.Corroborated
 			}

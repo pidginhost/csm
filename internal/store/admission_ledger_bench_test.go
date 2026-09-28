@@ -353,6 +353,9 @@ func fullHistory(b *testing.B) *ledgerFixture {
 
 func BenchmarkAdmissionLedgerOpenFullHistory(b *testing.B) {
 	f := fullHistory(b)
+	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+		b.Fatal(err)
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
@@ -398,11 +401,77 @@ func retirableHistory(b *testing.B, n int) *ledgerFixture {
 	return f
 }
 
+// fillHistoryAllowance fills the remaining general allowance with complete
+// copies of one ended candidate's graph. Shared roots retain one reference
+// per candidate and each copy pays its own full history cost.
+func (f *ledgerFixture) fillHistoryAllowance() {
+	f.t.Helper()
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		k, _ := tx.Bucket([]byte(admissionHistoryBucket)).Cursor().First()
+		base, err := loadCandidate(tx, admission.CandidateID(k))
+		if err != nil {
+			return err
+		}
+		attempt, err := currentAttempt(tx, base)
+		if err != nil {
+			return err
+		}
+		h, _, err := loadHistoryEntry(tx, admission.CandidateID(k))
+		if err != nil {
+			return err
+		}
+		s, err := loadStorageState(tx)
+		if err != nil {
+			return err
+		}
+		general, _ := admission.HistoryLanes()
+		for generation := uint32(1000000000); ; generation++ {
+			c := base
+			c.Key.Generation = generation
+			cost, err := historyCostOf(tx, c)
+			if err != nil {
+				return err
+			}
+			if uint64(cost) > general-s.General.Used {
+				break
+			}
+			id, _ := c.ID()
+			attempt.Attempt, err = admission.NewAttempt(id, 1)
+			if err != nil {
+				return err
+			}
+			if err = putCandidate(tx, c); err != nil {
+				return err
+			}
+			if err = putAttempt(tx, attempt); err != nil {
+				return err
+			}
+			h.General = cost
+			if err = putHistoryEntry(tx, id, h); err != nil {
+				return err
+			}
+			for _, root := range c.Roots {
+				r, err := loadRefs(tx, root)
+				if err != nil {
+					return err
+				}
+				r.Refs++
+				if err = putRefs(tx, root, r); err != nil {
+					return err
+				}
+			}
+			s.General.Used += uint64(cost)
+		}
+		return putStorageState(tx, s)
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
 // A reservation of the largest candidate into a full allowance retires the
 // eligible history it needs room from, each retirement releasing a
 // candidate of the most roots.
 func BenchmarkAdmissionLedgerReserveRetiresUnderPressure(b *testing.B) {
-	general, _ := admission.HistoryLanes()
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		f := retirableHistory(b, 4)
@@ -412,11 +481,34 @@ func BenchmarkAdmissionLedgerReserveRetiresUnderPressure(b *testing.B) {
 		if len(next) != 1 {
 			b.Fatalf("queued %d candidates", len(next))
 		}
-		f.adjustStorage(func(s *admission.StorageState) { s.General.Used = general })
+		f.fillHistoryAllowance()
+		if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+			b.Fatalf("pressure fixture does not pass open: %v", err)
+		}
+		var cost uint32
+		if err := f.db.bolt.View(func(tx *bolt.Tx) error {
+			c, err := loadCandidate(tx, next[0])
+			if err != nil {
+				return err
+			}
+			cost, err = historyCostOf(tx, c)
+			return err
+		}); err != nil {
+			b.Fatal(err)
+		}
+		before := f.storageState().General.Used
+		if f.storageState().HistoryRoom(admission.LaneGeneral) >= uint64(cost) {
+			b.Fatal("pressure fixture has room without retirement")
+		}
 		b.StartTimer()
 		if _, _, _, err := f.l.Reserve(next[0], admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
 			b.Fatal(err)
 		}
+		b.StopTimer()
+		if used := f.storageState().General.Used; used >= before+uint64(cost) {
+			b.Fatal("reservation did not retire history")
+		}
+		b.StartTimer()
 	}
 }
 
@@ -426,6 +518,9 @@ func BenchmarkAdmissionLedgerTickRetiresABatch(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		b.StopTimer()
 		f := retirableHistory(b, retirementsPerTick)
+		if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+			b.Fatal(err)
+		}
 		b.StartTimer()
 		f.tickAt(f.wall.Add(admission.HistoryTarget))
 		b.StopTimer()

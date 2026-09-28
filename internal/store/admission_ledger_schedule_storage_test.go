@@ -320,3 +320,92 @@ func TestAdmissionLedgerOpenProvesStorageLinks(t *testing.T) {
 		})
 	}
 }
+
+func TestAdmissionLedgerNextWakeUnassessedUpgrade(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.queued()
+	f.schemaOne()
+	var err error
+	f.l, err = OpenAdmissionLedger(f.db, f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.l.SetCeiling(fixtureCeiling); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(f.wall.Add(8 * time.Second))
+	before := f.snapshot()
+	wake, ok, err := f.l.NextWake()
+	if err != nil || !ok || !wake.Equal(f.wall) {
+		t.Fatalf("unassessed work wake = %v %v %v, want now", wake, ok, err)
+	}
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("wake changed the upgraded ledger")
+	}
+	if picks := f.schedule(oneEach); len(picks) != 1 || picks[0].ID != id {
+		t.Fatalf("due upgraded work was not served: %+v", picks)
+	}
+}
+
+func TestAdmissionLedgerNextWakeClampsExpiredDeadline(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.queued()
+	f.tickAt(f.wall.Add(admission.QueueAgeLimit + time.Second))
+	wake, ok, err := f.l.NextWake()
+	if err != nil || !ok || !wake.Equal(f.wall) {
+		t.Fatalf("expired work wake = %v %v %v, want now", wake, ok, err)
+	}
+	if picks := f.schedule(oneEach); len(picks) != 0 {
+		t.Fatalf("expired work served: %+v", picks)
+	}
+	if wake, ok, err = f.l.NextWake(); err != nil || ok {
+		t.Fatalf("ended work still wakes: %v %v %v", wake, ok, err)
+	}
+}
+
+func TestAdmissionLedgerRetirementWakeAtTimeLimit(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.applied(time.Hour)
+	if err := f.db.bolt.View(func(tx *bolt.Tx) error {
+		q, err := f.l.openQueue(tx, time.Unix(0, 1<<63-1))
+		if err != nil {
+			return err
+		}
+		at, ok, err := q.nextRetirable(admission.LaneGeneral)
+		if err != nil || ok {
+			t.Fatalf("past history woke at the time limit: %v %v %v", at, ok, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdmissionLedgerNextWakeRecoveryBlockedRetry(t *testing.T) {
+	f := newLedgerFixture(t)
+	id, a := f.admitted(time.Hour)
+	if _, _, err := f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
+		t.Fatal(err)
+	}
+	f.adjustStorage(func(s *admission.StorageState) { s.Recovery = admission.RecoveryReserveBytes })
+	c, err := f.l.Candidate(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := f.entry(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := c.ExpiresAt
+	if e.NextChange.Before(want) {
+		want = e.NextChange
+	}
+	before := f.snapshot()
+	wake, ok, err := f.l.NextWake()
+	if err != nil || !ok || !wake.Equal(want) {
+		t.Fatalf("recovery-blocked retry wake = %v %v %v, want deadline %v", wake, ok, err, want)
+	}
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("wake changed recovery-blocked retry")
+	}
+}

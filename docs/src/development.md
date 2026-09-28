@@ -316,7 +316,9 @@ are retired after thirty days, or earlier when an allowance needs the room,
 oldest first. An unresolved outcome is pinned in a separate recovery reserve
 until recovery settles it, and new work waits while that reserve is full.
 Tick refills the allowances and retires history at its target in the
-clock's transaction. Report links stay readable after a policy change.
+clock's transaction. The next wake runs the scheduler read-only; unassessed
+or overdue queue entries wake immediately for a sweep. Report links stay
+readable after a policy change.
 
 ### Attack event storage
 
