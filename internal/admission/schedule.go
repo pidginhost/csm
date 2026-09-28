@@ -71,6 +71,11 @@ type ScheduleItem struct {
 	Queued       time.Time
 	// Cost is the candidate's size in block units, 1 to MaxMemberCost.
 	Cost uint32
+	// Bytes is the history a reservation of it charges now, at most
+	// MaxHistoryBytes.
+	Bytes uint32
+	// Recovery is the space an unresolved outcome would need.
+	Recovery uint32
 	// Ready is false while a proven failure's retry wait lasts. A waiting
 	// candidate is never picked, but its scope keeps its deficit.
 	Ready bool
@@ -84,13 +89,20 @@ type ScheduleLimits struct {
 	Reserved uint32
 	// Members bounds the picks, 1 to MaxBatchMembers.
 	Members int
+	// GeneralBytes and ReservedBytes are the history bytes each lane may
+	// admit. The ledger sets them from its history budget, replacing any
+	// value the caller passed.
+	GeneralBytes, ReservedBytes uint64
+	// RecoveryBytes is shared by both lanes and spent by each pick.
+	RecoveryBytes uint64
 }
 
 // Pick is one candidate chosen for service and the lane it draws on.
 type Pick struct {
-	ID   CandidateID
-	Lane Lane
-	Cost uint32
+	ID    CandidateID
+	Lane  Lane
+	Cost  uint32
+	Bytes uint32
 }
 
 // ScopeTurn is a scope's persisted place in one ring.
@@ -100,6 +112,10 @@ type ScopeTurn struct {
 	// Deficit is the block units the scope has earned toward a member that
 	// costs more than one turn; it never exceeds MaxMemberCost.
 	Deficit uint32
+	// Bytes is the history the scope has earned toward its next member,
+	// HistoryQuantum per turn while it is short; it never exceeds
+	// MaxHistoryBytes.
+	Bytes uint32
 }
 
 // Ring is the persisted rotation of one ring: the scope served last and
@@ -138,7 +154,7 @@ func validateItems(items []ScheduleItem) error {
 		switch {
 		case seen[it.ID] || it.Scope == "":
 			return refuse(ReasonInvalid, "schedule item is repeated or has no scope")
-		case !it.Tier.Valid() || it.Cost == 0 || it.Cost > MaxMemberCost:
+		case !it.Tier.Valid() || it.Cost == 0 || it.Cost > MaxMemberCost || it.Bytes > MaxHistoryBytes || it.Recovery > MaxHistoryBytes:
 			return refuse(ReasonInvalid, "schedule item has an invalid tier or cost")
 		case it.Direct && it.Corroborated, (it.Direct || it.Corroborated) && it.Tier.Class != ClassC3:
 			return refuse(ReasonInvalid, "schedule item has an impossible reserved turn")
@@ -223,16 +239,19 @@ func (s *scheduler) head(r int, scope string) (*ScheduleItem, uint8) {
 	return nil, 0
 }
 
-// serve takes one turn of ring r within budget. It rotates the scopes that
-// have a ready member, from the one after the last served; each visit adds
-// one block unit to the scope's deficit, capped at MaxMemberCost, and the
-// first scope whose deficit and the budget both cover its head is served.
-// A head above the full budget can still earn bounded credit while other
-// scopes run. A head that fits the full batch budget but not its remainder
-// holds its turn for the next batch:
-// lending that turn could leave it with too little budget on every call.
-// The boolean reports this budget block; otherwise nil means no head fits.
-func (s *scheduler) serve(r int, budget, fullBudget uint32) (*ScheduleItem, bool) {
+// serve takes one turn of ring r within budget and the history bytes left.
+// It rotates the scopes that have a ready member, from the one after the
+// last served; each visit adds one block unit to the scope's deficit,
+// capped at MaxMemberCost, and HistoryQuantum bytes while its earned bytes
+// fall short of its head, capped at MaxHistoryBytes. The first scope whose
+// deficit and earned bytes cover its head and whose head the budget covers
+// is served. A head above the full budget can still earn bounded credit
+// while other scopes run. A head that fits the full batch budget but not
+// its remainder holds its turn for the next batch, and so does a head whose
+// scope has earned its bytes when the bytes left cannot pay for it: lending
+// that turn could leave it with too little budget on every call. The
+// boolean reports this budget block; otherwise nil means no head fits.
+func (s *scheduler) serve(r int, budget, fullBudget uint32, bytes, recovery uint64) (*ScheduleItem, bool) {
 	var scopes []string
 	fits := false
 	for scope := range s.rings[r].ready {
@@ -262,9 +281,17 @@ func (s *scheduler) serve(r int, budget, fullBudget uint32) (*ScheduleItem, bool
 		if turn.Deficit < MaxMemberCost {
 			turn.Deficit++
 		}
+		if turn.Bytes < it.Bytes {
+			turn.Bytes = min(turn.Bytes+HistoryQuantum, MaxHistoryBytes)
+		}
+		earned := it.Cost <= turn.Deficit && it.Bytes <= turn.Bytes
+		if earned && (uint64(it.Bytes) > bytes || uint64(it.Recovery) > recovery) {
+			return nil, true
+		}
 		ring.Last = scope
-		if it.Cost <= turn.Deficit && it.Cost <= budget {
+		if earned && it.Cost <= budget {
 			turn.Deficit -= it.Cost
+			turn.Bytes -= it.Bytes
 			turn.Severity = (slot + 1) % patternSlots
 			ring.Scopes[scope] = turn
 			return it, false
@@ -294,10 +321,11 @@ func Schedule(items []ScheduleItem, st ScheduleState, lim ScheduleLimits) ([]Pic
 	s := &scheduler{st: st.clone(), rings: buildRings(own), picked: map[CandidateID]bool{}}
 	var picks []Pick
 	take := func(it *ScheduleItem, lane Lane) {
+		lim.RecoveryBytes -= uint64(it.Recovery)
 		s.picked[it.ID] = true
-		picks = append(picks, Pick{ID: it.ID, Lane: lane, Cost: it.Cost})
+		picks = append(picks, Pick{ID: it.ID, Lane: lane, Cost: it.Cost, Bytes: it.Bytes})
 	}
-	budget := lim.Reserved
+	budget, bytes := lim.Reserved, lim.ReservedBytes
 reserved:
 	for budget > 0 && len(picks) < lim.Members {
 		order := []int{ringDirect, ringCorroborated}
@@ -306,13 +334,14 @@ reserved:
 		}
 		served := false
 		for _, r := range order {
-			it, blocked := s.serve(r, budget, lim.Reserved)
+			it, blocked := s.serve(r, budget, lim.Reserved, bytes, lim.RecoveryBytes)
 			if blocked {
 				s.st.NextCorroborated = r == ringCorroborated
 				break reserved
 			}
 			if it != nil {
 				budget -= it.Cost
+				bytes -= uint64(it.Bytes)
 				lane := LaneDirect
 				if r == ringCorroborated {
 					lane = LaneCorroborated
@@ -327,19 +356,20 @@ reserved:
 			break
 		}
 	}
-	budget = lim.General
+	budget, bytes = lim.General, lim.GeneralBytes
 general:
 	for budget > 0 && len(picks) < lim.Members {
 		served := false
 		for k := uint8(0); k < patternSlots; k++ {
 			slot := (s.st.ClassSlot + k) % patternSlots
-			it, blocked := s.serve(int(classPattern[slot])-1, budget, lim.General)
+			it, blocked := s.serve(int(classPattern[slot])-1, budget, lim.General, bytes, lim.RecoveryBytes)
 			if blocked {
 				s.st.ClassSlot = slot
 				break general
 			}
 			if it != nil {
 				budget -= it.Cost
+				bytes -= uint64(it.Bytes)
 				take(it, LaneGeneral)
 				s.st.ClassSlot = (slot + 1) % patternSlots
 				served = true
@@ -377,6 +407,7 @@ type scopeTurnRecord struct {
 	Scope    string `json:"scope"`
 	Severity uint8  `json:"severity,omitempty"`
 	Deficit  uint32 `json:"deficit,omitempty"`
+	Bytes    uint32 `json:"bytes,omitempty"`
 }
 
 type ringRecord struct {
@@ -405,10 +436,10 @@ func (s ScheduleState) record() (scheduleStateRecord, error) {
 		}
 		rows := make([]scopeTurnRecord, 0, len(ring.Scopes))
 		for scope, turn := range ring.Scopes {
-			if !boundedToken(scope, 128) || turn.Severity >= patternSlots || turn.Deficit > MaxMemberCost || turn == (ScopeTurn{}) {
+			if !boundedToken(scope, 128) || turn.Severity >= patternSlots || turn.Deficit > MaxMemberCost || turn.Bytes > MaxHistoryBytes || turn == (ScopeTurn{}) {
 				return bad("schedule scope turn is malformed")
 			}
-			rows = append(rows, scopeTurnRecord{Scope: scope, Severity: turn.Severity, Deficit: turn.Deficit})
+			rows = append(rows, scopeTurnRecord{Scope: scope, Severity: turn.Severity, Deficit: turn.Deficit, Bytes: turn.Bytes})
 		}
 		sort.Slice(rows, func(i, j int) bool { return rows[i].Scope < rows[j].Scope })
 		rec.Rings[r] = ringRecord{Last: ring.Last, Scopes: rows}
@@ -448,7 +479,7 @@ func UnmarshalScheduleState(data []byte) (ScheduleState, error) {
 			if i > 0 && ring.Scopes[i-1].Scope >= row.Scope {
 				return ScheduleState{}, ErrCorruptRecord
 			}
-			s.Rings[r].Scopes[row.Scope] = ScopeTurn{Severity: row.Severity, Deficit: row.Deficit}
+			s.Rings[r].Scopes[row.Scope] = ScopeTurn{Severity: row.Severity, Deficit: row.Deficit, Bytes: row.Bytes}
 		}
 	}
 	if s.validate() != nil {

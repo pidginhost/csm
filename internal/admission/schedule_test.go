@@ -457,3 +457,189 @@ func TestScheduleRandomInvariants(t *testing.T) {
 		st = next
 	}
 }
+
+func bytesItem(id, scope string, bytes uint32) ScheduleItem {
+	it := schedItem(id, scope, ClassC2, SeverityHigh, time.Hour)
+	it.Bytes = bytes
+	return it
+}
+
+// History bytes rotate across scopes like block units: a scope earns
+// HistoryQuantum bytes per visit toward its head, so large records wait for
+// their turn and cannot take more than their share from small ones.
+func TestScheduleHistoryBytesRotateFairly(t *testing.T) {
+	items := []ScheduleItem{bytesItem("a1", "a", 4*HistoryQuantum)}
+	for i := 0; i < 8; i++ {
+		items = append(items, bytesItem(fmt.Sprintf("b%d", i), "b", 2000))
+	}
+	lim := ScheduleLimits{General: 100, GeneralBytes: 1 << 20, Members: 5}
+	picks, st := mustSchedule(t, items, ScheduleState{}, lim)
+	if got := picked(picks); !reflect.DeepEqual(got, []string{"b0", "b1", "b2", "a1", "b3"}) {
+		t.Fatalf("picks = %v", got)
+	}
+	for _, p := range picks {
+		want := uint32(2000)
+		if p.ID == "a1" {
+			want = 4 * HistoryQuantum
+		}
+		if p.Bytes != want {
+			t.Fatalf("pick %s carries %d bytes, want %d", p.ID, p.Bytes, want)
+		}
+	}
+	// b keeps the bytes it earned beyond its heads; a spent all of its own.
+	if turn := st.Rings[ringC2].Scopes["b"]; turn.Bytes != 192 {
+		t.Fatalf("b's earned bytes = %+v, want 192", turn)
+	}
+	if _, kept := st.Rings[ringC2].Scopes["a"]; kept {
+		t.Fatal("a scope without work kept its turn")
+	}
+}
+
+// A scope that earned its turn but finds too little history budget left
+// holds the lane, and the next schedule serves it before cheaper work.
+func TestScheduleHistoryBudgetHoldsAnEarnedTurn(t *testing.T) {
+	items := []ScheduleItem{bytesItem("big", "a", 10000)}
+	for i := 0; i < 6; i++ {
+		items = append(items, bytesItem(fmt.Sprintf("s%d", i), "b", 1000))
+	}
+	picks, st := mustSchedule(t, items, ScheduleState{}, ScheduleLimits{General: 100, GeneralBytes: 9500, Members: MaxBatchMembers})
+	if got := picked(picks); !reflect.DeepEqual(got, []string{"s0", "s1"}) {
+		t.Fatalf("first batch = %v", got)
+	}
+	if st.ClassSlot != 4 {
+		t.Fatalf("the held class slot = %d, want the C2 slot", st.ClassSlot)
+	}
+	var rest []ScheduleItem
+	for _, it := range items {
+		if it.ID != "s0" && it.ID != "s1" {
+			rest = append(rest, it)
+		}
+	}
+	picks, _ = mustSchedule(t, rest, st, ScheduleLimits{General: 100, GeneralBytes: 10000, Members: MaxBatchMembers})
+	if got := picked(picks); len(got) == 0 || got[0] != "big" {
+		t.Fatalf("cheaper work took the held turn: %v", got)
+	}
+	// Spent history budget ends the lane at the next earned head.
+	picks, _ = mustSchedule(t, items[1:], ScheduleState{}, ScheduleLimits{General: 100, GeneralBytes: 3000, Members: MaxBatchMembers})
+	if got := picked(picks); !reflect.DeepEqual(got, []string{"s0", "s1", "s2"}) {
+		t.Fatalf("a spent budget = %v", got)
+	}
+}
+
+// A head still earning its bytes does not hold the lane: work that costs
+// no history keeps being served until the large head has earned its turn.
+func TestScheduleEarningHeadDoesNotHold(t *testing.T) {
+	items := []ScheduleItem{bytesItem("big", "a", 10000)}
+	for i := 0; i < 4; i++ {
+		items = append(items, bytesItem(fmt.Sprintf("free%d", i), "b", 0))
+	}
+	picks, _ := mustSchedule(t, items, ScheduleState{}, ScheduleLimits{General: 100, Members: MaxBatchMembers})
+	if got := picked(picks); !reflect.DeepEqual(got, []string{"free0", "free1"}) {
+		t.Fatalf("picks = %v", got)
+	}
+}
+
+// The reserved lane holds its sub-lane's turn the same way.
+func TestScheduleReservedHistoryHold(t *testing.T) {
+	big := bytesItem("big", "a", 3*HistoryQuantum)
+	big.Tier.Class, big.Corroborated = ClassC3, true
+	small := bytesItem("small", "b", 1000)
+	small.Tier.Class, small.Direct = ClassC3, true
+	st := ScheduleState{NextCorroborated: true}
+	st.Rings[ringCorroborated] = Ring{Scopes: map[string]ScopeTurn{"a": {Bytes: 3 * HistoryQuantum}}}
+	lim := ScheduleLimits{Reserved: 10, ReservedBytes: 2000, Members: MaxBatchMembers}
+	picks, next := mustSchedule(t, []ScheduleItem{big, small}, st, lim)
+	if len(picks) != 0 || !next.NextCorroborated {
+		t.Fatalf("a held corroborated turn = %v, next corroborated %t", picked(picks), next.NextCorroborated)
+	}
+	lim.ReservedBytes = 3 * HistoryQuantum
+	picks, _ = mustSchedule(t, []ScheduleItem{big, small}, next, lim)
+	if got := picked(picks); len(got) == 0 || got[0] != "big" || picks[0].Lane != LaneCorroborated {
+		t.Fatalf("after the refill = %v", picks)
+	}
+}
+
+// Earned bytes stop at the largest cost, even with bytes left over from
+// earlier heads.
+func TestScheduleEarnedBytesAreBounded(t *testing.T) {
+	st := ScheduleState{}
+	st.Rings[ringC2] = Ring{Scopes: map[string]ScopeTurn{"a": {Bytes: 30000}}}
+	head := bytesItem("max", "a", MaxHistoryBytes)
+	head.Cost = 2
+	items := []ScheduleItem{head, bytesItem("other", "b", 0)}
+	_, next := mustSchedule(t, items, st, ScheduleLimits{General: 100, Members: MaxBatchMembers})
+	if turn := next.Rings[ringC2].Scopes["a"]; turn.Bytes != MaxHistoryBytes {
+		t.Fatalf("earned bytes = %+v, want the bound", turn)
+	}
+	data, err := next.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back, err := UnmarshalScheduleState(data); err != nil || back.Rings[ringC2].Scopes["a"] != next.Rings[ringC2].Scopes["a"] {
+		t.Fatalf("earned bytes did not round trip: %+v, %v", back.Rings[ringC2].Scopes["a"], err)
+	}
+	over := ScheduleState{}
+	over.Rings[ringC2] = Ring{Scopes: map[string]ScopeTurn{"a": {Bytes: MaxHistoryBytes + 1}}}
+	if _, err := over.MarshalBinary(); err == nil {
+		t.Fatal("encoded earned bytes over the bound")
+	}
+	if _, _, err := Schedule([]ScheduleItem{bytesItem("x", "a", MaxHistoryBytes+1)}, ScheduleState{}, wide); err == nil {
+		t.Fatal("accepted an item over the largest history cost")
+	}
+}
+
+// Random queues keep every history budget, with byte costs and budgets.
+func TestScheduleRandomHistoryBudgets(t *testing.T) {
+	r := rand.New(rand.NewPCG(5, 6))
+	st := ScheduleState{}
+	for round := 0; round < 400; round++ {
+		var items []ScheduleItem
+		for i := 0; i < r.IntN(40); i++ {
+			class := Class(1 + r.IntN(3))
+			it := ScheduleItem{ID: CandidateID(fmt.Sprintf("r%d-%d", round, i)), Scope: fmt.Sprintf("s%d", r.IntN(5)), Tier: Tier{class, Severity(1 + r.IntN(3))},
+				Queued: t0.Add(time.Duration(r.IntN(100)) * time.Second), Cost: 1, Bytes: uint32(r.IntN(MaxHistoryBytes + 1)), Ready: true}
+			if class == ClassC3 {
+				it.Direct = r.IntN(3) == 0
+				it.Corroborated = !it.Direct && r.IntN(2) == 0
+			}
+			items = append(items, it)
+		}
+		lim := ScheduleLimits{General: uint32(r.IntN(20)), Reserved: uint32(r.IntN(10)), Members: MaxBatchMembers,
+			GeneralBytes: uint64(r.IntN(3 * MaxHistoryBytes)), ReservedBytes: uint64(r.IntN(2 * MaxHistoryBytes))}
+		picks, next, err := Schedule(items, st, lim)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var general, reserved uint64
+		for _, p := range picks {
+			if p.Lane == LaneGeneral {
+				general += uint64(p.Bytes)
+			} else {
+				reserved += uint64(p.Bytes)
+			}
+		}
+		if general > lim.GeneralBytes || reserved > lim.ReservedBytes {
+			t.Fatalf("round %d: history budgets broken: %d/%d, %d/%d", round, general, lim.GeneralBytes, reserved, lim.ReservedBytes)
+		}
+		if err = next.validate(); err != nil {
+			t.Fatalf("round %d: state %v", round, err)
+		}
+		st = next
+	}
+}
+
+// General and reserved picks share one finite recovery allowance.
+func TestScheduleRecoveryBudgetSharedByLanes(t *testing.T) {
+	items := []ScheduleItem{
+		{ID: "direct", Scope: "a", Tier: Tier{Class: ClassC3, Severity: SeverityCritical}, Direct: true, Cost: 1, Recovery: 3000, Ready: true},
+		{ID: "general", Scope: "b", Tier: Tier{Class: ClassC1, Severity: SeverityHigh}, Cost: 1, Recovery: 3000, Ready: true},
+	}
+	picks, _, err := Schedule(items, ScheduleState{}, ScheduleLimits{General: 1, Reserved: 1, Members: 2, RecoveryBytes: 3000})
+	if err != nil || len(picks) != 1 || picks[0].ID != "direct" {
+		t.Fatalf("shared recovery picks: %+v %v", picks, err)
+	}
+	items[0].Recovery = MaxHistoryBytes + 1
+	if _, _, err = Schedule(items, ScheduleState{}, ScheduleLimits{General: 1, Reserved: 1, Members: 2, RecoveryBytes: 3000}); err == nil {
+		t.Fatal("accepted an oversized recovery cost")
+	}
+}
