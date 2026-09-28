@@ -23,8 +23,9 @@ clean committed checkout; use absolute local log-copy paths in the inventory:
 # Set WINDOW_MINUTES from the synthetic grid; do not reuse a real recording salt.
 go build -o "$RECORDING_DIR/domlog-stream" ./scripts/domlog-stream
 "$RECORDING_DIR/domlog-stream" convert \
-    --salt-file "$RECORDING_DIR/synthetic-salt" \
+    --salt-file "$RECORDING_DIR/synthetic-salt" --registry "$RECORDING_DIR/synthetic-registry.json" \
     --inventory "$RECORDING_DIR/inventory.json" --labels "$RECORDING_DIR/labels.json" \
+    --bot-evidence "$RECORDING_DIR/bots.json" \
     --out "$RECORDING_DIR/host-a.records.jsonl.gz" \
     --volume-out "$RECORDING_DIR/host-a.volume.jsonl.gz" \
     --manifest "$RECORDING_DIR/host-a.manifest.json"
@@ -35,13 +36,13 @@ identity rules, with the same canonicalization. Deployed log escaping and
 proxy semantics still need qualification before real recordings can be trusted.
 A record keeps the logged time and order, status, whether the request is
 dynamic or an expensive query, the Referer class (none, malformed,
-cross-site or same-site), a claimed bot identity and whether the client sits
-in that bot's configured ranges, an infrastructure flag and the operator's
-label. Sites, accounts, client bindings (the full IPv4 address or the IPv6
+cross-site or same-site), a claimed bot identity with its verified-bot proof
+class, an infrastructure flag and the operator's label. Sites, accounts, client bindings (the full IPv4 address or the IPv6
 /64), episode names and URL patterns become salted pseudonyms that keep
 equality and the
-site/pattern hierarchy. No path, query value, address, user agent or
-Referer is written. Sites and accounts use the same pseudonyms as
+site/pattern hierarchy. Two distinct names that would share a pseudonym stop
+the conversion instead of being merged. No path, query value, address, user
+agent or Referer is written. Sites and accounts use the same pseudonyms as
 [recorded finding streams](finding-streams.md) under the same salt, so the
 two can be joined. A volume stream counts lines and bytes per site and
 minute, including lines without a usable target or client.
@@ -64,10 +65,35 @@ working directory:
               "/srv/crawl-recording/raw/example.com-ssl_log.gz"]}
   ],
   "trusted_proxies": ["198.51.100.9"],
-  "infrastructure": ["192.0.2.200"],
-  "bot_ranges": {"googlebot": ["203.0.113.0/24"]}
+  "infrastructure": ["192.0.2.200"]
 }
 ```
+
+Verified-bot identity comes only from the host's own verified-bot list. The
+optional bot evidence file is an export of that list for the recording
+period: the list's source revision and configuration digest, then published
+ranges and reverse-DNS verdicts, each for one identity and valid from `from`
+(inclusive) to `to` (exclusive):
+
+```json
+{
+  "format_version": 1,
+  "d2_revision": "<40 or 64 hex digits>",
+  "config_sha256": "<64 hex digits>",
+  "proofs": [
+    {"bot": "googlebot", "kind": "range", "prefix": "203.0.113.0/24",
+     "from": "2026-09-20T00:00:00Z", "to": "2026-09-27T00:00:00Z"},
+    {"bot": "googlebot", "kind": "dns", "addr": "192.0.2.60", "verdict": "positive",
+     "from": "2026-09-20T00:00:00Z", "to": "2026-09-21T00:00:00Z"}
+  ]
+}
+```
+
+The converter looks nothing up. A claimed identity is `range` when a range of
+that same identity held the client at the logged time, else `dns` or
+`negative` from a verdict for that exact address; a user agent alone, another
+bot's range, an expired proof or contradictory verdicts leave the claim
+unverified. The manifest records the evidence digest and its list revision.
 
 Aliases decide which Referers count as same-site; a `www` host counts only
 when it is listed. Behind a trusted proxy the client is the rightmost
@@ -94,7 +120,10 @@ prototype):
   handler/logging liveness, then let the operator delete the approved copies.
   Nothing runs on the monitored host.
 - The salt is created on first use with mode 0600 and must stay private;
-  reuse the finding-stream salt so the streams join.
+  reuse the finding-stream salt so the streams join. Keep one identity
+  registry per salt. It records every site, account and episode pseudonym
+  the salt has issued, as keyed digests, and refuses a later bundle whose
+  different name would take one; it is locked while a conversion runs.
 - The tool refuses to run from an unknown or modified build, refuses to
   replace an existing output, and publishes nothing unless every log was
   read. Each log copy must be a regular file that stays unchanged while it
@@ -165,3 +194,15 @@ The tools model High findings only; absence of Critical or actions here is
 not an end-to-end safety test. Full-bound resource measurements and a private
 ledger approval are required before production implementation. The production
 components must repeat these measurements with their own allocations and I/O.
+
+The identity registry reserves site, account and episode pseudonyms across
+all bundles under the same salt. Key and binding pseudonyms are 64 bits and
+are checked within each bundle only; registering every client and pattern
+would grow the registry with all traffic ever converted. Keep the registry and its
+lock file together; never replace or remove the lock while a conversion is
+running. A failed publication may leave conservative identity reservations.
+Keep those reservations on retry instead of rolling the registry back.
+
+A site with no independently certified minutes remains in the bundle: use an
+empty certified-span list and reasoned exclusions covering its whole period.
+It contributes no replay windows, while other qualified sites remain usable.

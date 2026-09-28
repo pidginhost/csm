@@ -30,8 +30,8 @@ type converted struct {
 }
 
 // convertLogs converts one site's copies with a 30-minute recording period
-// from 19:00 UTC and two trusted proxies.
-func convertLogs(t *testing.T, logs []synthLog) converted {
+// from 19:00 UTC and two trusted proxies, with optional bot evidence.
+func convertLogs(t *testing.T, logs []synthLog, evidence string) converted {
 	t.Helper()
 	dir := t.TempDir()
 	var paths []string
@@ -64,7 +64,15 @@ func convertLogs(t *testing.T, logs []synthLog) converted {
 			t.Fatal(err)
 		}
 	}
-	args := []string{"convert", "--salt-file", f.salt, "--inventory", f.inventory, "--out", f.out, "--volume-out", f.volume, "--manifest", f.manifest}
+	args := []string{"convert", "--salt-file", f.salt, "--registry", filepath.Join(dir, "registry.json"), "--inventory", f.inventory,
+		"--out", f.out, "--volume-out", f.volume, "--manifest", f.manifest}
+	if evidence != "" {
+		path := filepath.Join(dir, "bots.json")
+		if err := os.WriteFile(path, []byte(evidence), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		args = append(args, "--bot-evidence", path)
+	}
 	if err := run(args, &bytes.Buffer{}, testEnv()); err != nil {
 		t.Fatalf("convert: %v", err)
 	}
@@ -122,7 +130,7 @@ func TestConvertLossAccounting(t *testing.T) {
 		line("192.0.2.22", "19:04:00", "GET /?p=1 HTTP/1.1", "200", ""),
 	}
 	second := line("192.0.2.30", "19:05:00", "GET /?q=1 HTTP/1.1", "200", "") + "\r\n" + "192.0.2.31 - - [26/Sep"
-	c := convertLogs(t, []synthLog{{name: "example.com", data: strings.Join(lines, "")}, {name: "example.com-ssl_log.gz", data: second, gz: true}})
+	c := convertLogs(t, []synthLog{{name: "example.com", data: strings.Join(lines, "")}, {name: "example.com-ssl_log.gz", data: second, gz: true}}, "")
 	s := c.manifest.Sites[0]
 	want := crawlreplay.SiteManifest{
 		Site: s.Site, Account: s.Account, Extent: &crawlreplay.Span{From: unixAt("19:01:00") / 60, To: unixAt("19:05:00") / 60},
@@ -249,7 +257,7 @@ func TestCoverageLossNeverTrains(t *testing.T) {
 			b.WriteString(line("198.51.100.9", "19:14:50", "GET /shop/?s=ring HTTP/1.1", "200", "") + "\n")
 		}
 	}
-	c := convertLogs(t, []synthLog{{name: "example.com", data: b.String()}})
+	c := convertLogs(t, []synthLog{{name: "example.com", data: b.String()}}, "")
 	p0 := c.manifest.Period.From
 	span := func(from, to int64) crawlreplay.Span { return crawlreplay.Span{From: p0 + from, To: p0 + to} }
 	params := crawlreplay.Params{W: 3, R: 3, F: 1, K: 1, D: 2, C: 80,

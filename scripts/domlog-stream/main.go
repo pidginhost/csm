@@ -1,22 +1,25 @@
 // Command domlog-stream turns local copies of a host's domlogs into an
 // anonymized record stream for crawl-detector calibration.
 //
-//	domlog-stream convert --salt-file SALT --inventory inventory.json \
-//	    [--labels labels.json] --out records.jsonl.gz \
+//	domlog-stream convert --salt-file SALT --registry registry.json \
+//	    --inventory inventory.json [--labels labels.json] \
+//	    [--bot-evidence bots.json] --out records.jsonl.gz \
 //	    --volume-out volume.jsonl.gz --manifest manifest.json
 //
 // Every line is parsed by the crawl detector's own record parser and
 // canonicalized by its identity contract. Records keep logged time and
-// order, status, request class, Referer class, claimed bot identity and
-// operator labels; sites, accounts, client bindings and L1/L2 keys become
-// salted pseudonyms that keep equality and hierarchy. No target, query
+// order, status, request class, Referer class, claimed bot identity with
+// its historical verified-bot proof, and operator labels; sites, accounts,
+// client bindings and L1/L2 keys become salted pseudonyms that keep
+// equality and hierarchy, and a pseudonym two names would share is refused. No target, query
 // value, address, user agent or Referer is written. Outputs are staged and
 // published only after every input converted; the manifest, which records
 // input and output digests and per-site coverage, is published last as
 // the bundle's completion marker. The salt file is created on first use
 // (mode 0600) and is shared with scripts/finding-stream so the two streams
-// join. Collection is a read-only copy of the logs; nothing here runs on
-// the monitored host.
+// join; the identity registry beside it records every site, account and
+// episode pseudonym the salt has issued across bundles. Collection is a read-only
+// copy of the logs; nothing here runs on the monitored host.
 package main
 
 import (
@@ -47,7 +50,7 @@ type cliError string
 func (e cliError) Error() string { return string(e) }
 
 const (
-	errUsage         cliError = "usage: domlog-stream convert --salt-file SALT --inventory FILE [--labels FILE] --out FILE --volume-out FILE --manifest FILE"
+	errUsage         cliError = "usage: domlog-stream convert --salt-file SALT --registry FILE --inventory FILE [--labels FILE] [--bot-evidence FILE] --out FILE --volume-out FILE --manifest FILE"
 	errInventory     cliError = "inventory is invalid"
 	errLabels        cliError = "labels are invalid"
 	errInput         cliError = "a log copy could not be read"
@@ -56,6 +59,9 @@ const (
 	errSaltUnsafe    cliError = "salt file must be a private regular file"
 	errSaltShort     cliError = "salt file is shorter than 32 bytes"
 	errDirtyBuild    cliError = "tool revision unknown or modified: build from a clean checkout with go build"
+	errCollision     cliError = "two distinct names share a pseudonym under this salt"
+	errRegistry      cliError = "identity registry is busy, invalid, not private or not for this salt"
+	errBotEvidence   cliError = "bot evidence is invalid"
 )
 
 func readBuildRevision() crawlreplay.ToolRevision {
@@ -75,15 +81,17 @@ func readBuildRevision() crawlreplay.ToolRevision {
 	return t
 }
 
-// env is what tests replace: the clock that bounds valid log times and the
-// build stamp a manifest records.
+// env is what tests replace: the clock that bounds valid log times, the
+// build stamp a manifest records and, to force collisions, the pseudonym
+// digest (nil: HMAC-SHA256 under the salt).
 type env struct {
 	now      func() time.Time
 	revision func() crawlreplay.ToolRevision
+	digest   func(kind string, value []byte) [sha256.Size]byte
 }
 
 type options struct {
-	salt, inventory, labels, out, volumeOut, manifest string
+	salt, registry, inventory, labels, bots, out, volumeOut, manifest string
 }
 
 // run is the testable entry point.
@@ -95,13 +103,15 @@ func run(args []string, stdout io.Writer, e env) error {
 	fs := flag.NewFlagSet("convert", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&o.salt, "salt-file", "", "")
+	fs.StringVar(&o.registry, "registry", "", "")
 	fs.StringVar(&o.inventory, "inventory", "", "")
 	fs.StringVar(&o.labels, "labels", "", "")
+	fs.StringVar(&o.bots, "bot-evidence", "", "")
 	fs.StringVar(&o.out, "out", "", "")
 	fs.StringVar(&o.volumeOut, "volume-out", "", "")
 	fs.StringVar(&o.manifest, "manifest", "", "")
 	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 0 ||
-		o.salt == "" || o.inventory == "" || o.out == "" || o.volumeOut == "" || o.manifest == "" {
+		o.salt == "" || o.registry == "" || o.inventory == "" || o.out == "" || o.volumeOut == "" || o.manifest == "" {
 		return errUsage
 	}
 	started := time.Now()
@@ -119,6 +129,11 @@ func run(args []string, stdout io.Writer, e env) error {
 	if err != nil {
 		return err
 	}
+	reg, err := openRegistry(o.registry, saltFingerprint(salt))
+	if err != nil {
+		return err
+	}
+	defer reg.close()
 	invBytes, err := os.ReadFile(o.inventory) // #nosec G304 -- operator-chosen private input
 	if err != nil {
 		return errInventory
@@ -147,7 +162,30 @@ func run(args []string, stdout io.Writer, e env) error {
 		d := digestOf(b)
 		m.Labels = &d
 	}
-	c := newConverter(inv, labels, pseudonyms{salt: salt}, now)
+	ps := newPseudonyms(salt, e.digest)
+	c := newConverter(inv, labels, ps, now)
+	if o.bots != "" {
+		b, readErr := os.ReadFile(o.bots) // #nosec G304 -- operator-chosen private input
+		if readErr != nil {
+			return errBotEvidence
+		}
+		if c.bots, err = parseBotEvidence(b); err != nil {
+			return err
+		}
+		m.BotEvidence = &crawlreplay.BotEvidenceRef{Digest: digestOf(b), D2Revision: c.bots.D2Revision, ConfigSHA256: c.bots.ConfigSHA256}
+	}
+	// Refuse a site or account pseudonym collision, within this inventory
+	// or with an earlier bundle, before any log is read.
+	for _, s := range inv.Sites {
+		_, siteErr := ps.site(s.Name)
+		_, accountErr := ps.account(s.Account)
+		if errors.Join(siteErr, accountErr) != nil {
+			return errCollision
+		}
+	}
+	if _, err = reg.add(ps.named); err != nil {
+		return err
+	}
 	records, err := newStaged(o.out)
 	if err != nil {
 		return err
@@ -177,6 +215,11 @@ func run(args []string, stdout io.Writer, e env) error {
 		m.Sites = append(m.Sites, sm)
 		m.Inputs = append(m.Inputs, inputs...)
 	}
+	// Episode pseudonyms are issued as labels match; check them under the
+	// same lock before any output is published.
+	if _, err = reg.add(ps.named); err != nil {
+		return fail(err)
+	}
 	recOut, err := records.finish("records")
 	if err != nil {
 		return fail(err)
@@ -192,6 +235,13 @@ func run(args []string, stdout io.Writer, e env) error {
 	}
 	manifestFile, err := newStaged(o.manifest)
 	if err != nil {
+		return fail(err)
+	}
+	// Record the pseudonyms before publishing: a bundle must never exist
+	// without its names in the registry, while a recorded name whose bundle
+	// failed only reserves that name's own pseudonym.
+	if err = reg.save(); err != nil {
+		manifestFile.discard()
 		return fail(err)
 	}
 	if _, err := manifestFile.raw.Write(manifestBytes); err != nil {

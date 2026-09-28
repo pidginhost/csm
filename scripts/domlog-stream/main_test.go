@@ -30,15 +30,15 @@ func testEnv() env {
 }
 
 type fixture struct {
-	dir, salt, inventory, labels, out, volume, manifest string
+	dir, salt, registry, inventory, labels, evidence, out, volume, manifest string
 }
 
 func newFixture(t *testing.T, lines map[string]string, gzipped map[string]bool) fixture {
 	t.Helper()
 	dir := t.TempDir()
 	f := fixture{
-		dir: dir, salt: filepath.Join(dir, "salt"), inventory: filepath.Join(dir, "inventory.json"),
-		labels: filepath.Join(dir, "labels.json"), out: filepath.Join(dir, "records.jsonl.gz"),
+		dir: dir, salt: filepath.Join(dir, "salt"), registry: filepath.Join(dir, "registry.json"), inventory: filepath.Join(dir, "inventory.json"),
+		labels: filepath.Join(dir, "labels.json"), evidence: filepath.Join(dir, "bots.json"), out: filepath.Join(dir, "records.jsonl.gz"),
 		volume: filepath.Join(dir, "volume.jsonl.gz"), manifest: filepath.Join(dir, "manifest.json"),
 	}
 	if err := os.WriteFile(f.salt, bytes.Repeat([]byte{0x42}, 32), 0o600); err != nil {
@@ -66,8 +66,11 @@ func newFixture(t *testing.T, lines map[string]string, gzipped map[string]bool) 
 	 "sites":[{"name":"example.com","account":"acct1","aliases":["example.com","www.example.com"],
 	  "logs":["` + filepath.Join(dir, "example.com") + `","` + filepath.Join(dir, "example.com-ssl_log.gz") + `"]},
 	 {"name":"shop.example","account":"acct2","aliases":["shop.example"],"logs":["` + filepath.Join(dir, "shop.example") + `"]}],
-	 "trusted_proxies":["198.51.100.9"],"infrastructure":["192.0.2.200"],"bot_ranges":{"googlebot":["203.0.113.0/24"]}}`
+	 "trusted_proxies":["198.51.100.9"],"infrastructure":["192.0.2.200"]}`
 	if err := os.WriteFile(f.inventory, []byte(inv), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.evidence, []byte(googlebotEvidence), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	labels := `{"labels":[
@@ -80,9 +83,18 @@ func newFixture(t *testing.T, lines map[string]string, gzipped map[string]bool) 
 }
 
 func (f fixture) args() []string {
-	return []string{"convert", "--salt-file", f.salt, "--inventory", f.inventory, "--labels", f.labels,
-		"--out", f.out, "--volume-out", f.volume, "--manifest", f.manifest}
+	return []string{"convert", "--salt-file", f.salt, "--registry", f.registry, "--inventory", f.inventory, "--labels", f.labels,
+		"--bot-evidence", f.evidence, "--out", f.out, "--volume-out", f.volume, "--manifest", f.manifest}
 }
+
+// googlebotEvidence proves the googlebot range on the fixture day.
+const googlebotEvidence = `{"format_version":1,"d2_revision":"` + d2Revision + `","config_sha256":"` + d2Config + `",
+ "proofs":[{"bot":"googlebot","kind":"range","prefix":"203.0.113.0/24","from":"2026-09-26T00:00:00Z","to":"2026-09-27T00:00:00Z"}]}`
+
+const (
+	d2Revision = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	d2Config   = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+)
 
 func defaultLogs() (map[string]string, map[string]bool) {
 	plain := strings.Join([]string{
@@ -213,7 +225,7 @@ func TestConvertRecordsKeepEqualityHierarchyAndAttribution(t *testing.T) {
 	if proxied.Binding == "" || proxied.Binding == red.Binding || lost.Binding != "" {
 		t.Fatalf("trusted proxy attribution wrong: %+v %+v", proxied, lost)
 	}
-	if bot.Bot != "googlebot" || !bot.BotRange || !infra.Infra || red.Bot != "" {
+	if bot.Bot != "googlebot" || bot.BotProof != crawlreplay.BotProofRange || !infra.Infra || red.Bot != "" {
 		t.Fatalf("bot/infrastructure labels wrong: %+v %+v", bot, infra)
 	}
 	if red.Label != crawlreplay.LabelAttack || red.Episode != "e-f4120e75fd2f006b" || proxied.Label != crawlreplay.LabelHealthy {
@@ -315,7 +327,7 @@ func TestInventoryAndLabelValidation(t *testing.T) {
 		"duplicate log":  period + `"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]},{"name":"b.example","account":"b","aliases":["b.example"],"logs":["x"]}]}`,
 		"bad proxy":      period + `"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}],"trusted_proxies":["not-an-ip"]}`,
 		"unknown field":  period + `"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"],"path":"/home"}]}`,
-		"bad bot name":   period + `"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}],"bot_ranges":{"Googlebot":["203.0.113.0/24"]}}`,
+		"bot list":       period + `"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}],"bot_ranges":{"googlebot":["203.0.113.0/24"]}}`,
 		"zoned infra ip": period + `"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}],"infrastructure":["2001:db8::1%eth0"]}`,
 		"no period":      `{"sites":[{"name":"a.example","account":"a","aliases":["a.example"],"logs":["x"]}]}`,
 		"reversed period": `{"period":{"from":"2026-09-27T00:00:00Z","to":"2026-09-26T00:00:00Z"},` +
@@ -421,7 +433,7 @@ func TestConvertWriteFailureDoesNotLeak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := newConverter(inv, nil, pseudonyms{salt: bytes.Repeat([]byte{0x42}, 32)}, testNow)
+	c := newConverter(inv, nil, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
 	_, _, _, err = c.convertSite(inv.Sites[0], failingPrivateWriter{})
 	if !errors.Is(err, errOutputs) || strings.Contains(err.Error(), "example.com") {
 		t.Fatalf("write refusal = %v, want fixed output error", err)

@@ -29,38 +29,91 @@ import (
 const maxLine = 64 << 10
 
 // pseudonyms derives salted identities. Sites and accounts use the same
-// derivation as scripts/finding-stream, so one salt joins both streams.
-type pseudonyms struct{ salt []byte }
+// derivation as scripts/finding-stream, so one salt joins both streams. A
+// pseudonym is a prefix of a keyed digest; the full digest of every
+// prefix issued is kept, so two distinct names that share a prefix are
+// refused instead of merged. Site and account pseudonyms keep
+// finding-stream's 24-bit derivation, where such a collision is plausible;
+// they and episode pseudonyms also go to the cross-bundle registry. Key and
+// binding pseudonyms are 64 bits and stay out of it: a registry of every
+// client and pattern would grow with all traffic ever converted.
+type pseudonyms struct {
+	digest func(kind string, value []byte) [sha256.Size]byte
+	seen   map[string]map[uint64][sha256.Size]byte
+	named  map[string]string // issued site, account and episode pseudonym -> full digest
+}
 
-func (p pseudonyms) mac(kind string, value []byte, n int) string {
-	m := hmac.New(sha256.New, p.salt)
+// newPseudonyms derives with HMAC-SHA256 under salt unless digest is set.
+func newPseudonyms(salt []byte, digest func(string, []byte) [sha256.Size]byte) *pseudonyms {
+	if digest == nil {
+		key := append([]byte(nil), salt...)
+		digest = func(kind string, value []byte) [sha256.Size]byte { return saltedDigest(key, kind, value) }
+	}
+	return &pseudonyms{digest: digest, seen: map[string]map[uint64][sha256.Size]byte{}, named: map[string]string{}}
+}
+
+func saltedDigest(salt []byte, kind string, value []byte) [sha256.Size]byte {
+	m := hmac.New(sha256.New, salt)
 	m.Write([]byte(kind))
 	m.Write([]byte{0})
 	m.Write(value)
-	return hex.EncodeToString(m.Sum(nil)[:n])
+	var d [sha256.Size]byte
+	copy(d[:], m.Sum(nil))
+	return d
 }
 
-func (p pseudonyms) site(name string) string {
-	return "dom-" + p.mac("domain", []byte(strings.ToLower(name)), 3) + ".example"
-}
-
-func (p pseudonyms) account(name string) string {
-	return "acct-" + p.mac("account", []byte(strings.ToLower(name)), 3)
-}
-
-func (p pseudonyms) episode(name string) string {
-	if name == "" {
-		return ""
+// name returns the hex prefix of value's digest, n bytes long, and the
+// whole digest.
+func (p *pseudonyms) name(kind string, value []byte, n int) (string, string, error) {
+	d := p.digest(kind, value)
+	var prefix uint64
+	for _, b := range d[:n] {
+		prefix = prefix<<8 | uint64(b)
 	}
-	return "e-" + p.mac("crawl-episode", []byte(name), 8)
+	seen := p.seen[kind]
+	if seen == nil {
+		seen = map[uint64][sha256.Size]byte{}
+		p.seen[kind] = seen
+	}
+	if old, ok := seen[prefix]; ok && old != d {
+		return "", "", errCollision
+	}
+	seen[prefix] = d
+	return hex.EncodeToString(d[:n]), hex.EncodeToString(d[:]), nil
 }
 
-func (p pseudonyms) binding(b crawlid.Binding) string {
-	return "b-" + p.mac("crawl-binding", []byte(b), 8)
+func (p *pseudonyms) site(name string) (string, error) {
+	h, full, err := p.name("domain", []byte(strings.ToLower(name)), 3)
+	out := "dom-" + h + ".example"
+	p.named[out] = full
+	return out, err
 }
 
-func (p pseudonyms) key(k crawlid.Key) string {
-	return "k-" + p.mac("crawl-key", k.Encode(), 8)
+func (p *pseudonyms) account(name string) (string, error) {
+	h, full, err := p.name("account", []byte(strings.ToLower(name)), 3)
+	out := "acct-" + h
+	p.named[out] = full
+	return out, err
+}
+
+func (p *pseudonyms) episode(name string) (string, error) {
+	if name == "" {
+		return "", nil
+	}
+	h, full, err := p.name("crawl-episode", []byte(name), 8)
+	out := "e-" + h
+	p.named[out] = full
+	return out, err
+}
+
+func (p *pseudonyms) binding(b crawlid.Binding) (string, error) {
+	h, _, err := p.name("crawl-binding", []byte(b), 8)
+	return "b-" + h, err
+}
+
+func (p *pseudonyms) key(k crawlid.Key) (string, error) {
+	h, _, err := p.name("crawl-key", k.Encode(), 8)
+	return "k-" + h, err
 }
 
 // logFile is one open log copy.
@@ -78,7 +131,8 @@ func openLog(path string) (logFile, error) {
 type converter struct {
 	inv    *inventory
 	labels []labelRule
-	ps     pseudonyms
+	ps     *pseudonyms
+	bots   *botEvidence // nil: no claim is verified
 	open   func(path string) (logFile, error)
 	now    time.Time
 	// Every copy read so far, so no request is counted twice through a
@@ -87,7 +141,7 @@ type converter struct {
 	content map[string]bool
 }
 
-func newConverter(inv *inventory, labels []labelRule, ps pseudonyms, now time.Time) *converter {
+func newConverter(inv *inventory, labels []labelRule, ps *pseudonyms, now time.Time) *converter {
 	return &converter{inv: inv, labels: labels, ps: ps, open: openLog, now: now, content: map[string]bool{}}
 }
 
@@ -132,8 +186,12 @@ func (u *untimedRun) close(sm *crawlreplay.SiteManifest, before int64) {
 // volume rows, manifest entry and inputs. Every line is a record or one
 // counted refusal, and every byte read is in a volume row or unplaced.
 func (c *converter) convertSite(s inventorySite, records io.Writer) ([]crawlreplay.Volume, crawlreplay.SiteManifest, []crawlreplay.Input, error) {
-	sm := crawlreplay.SiteManifest{Site: c.ps.site(s.Name), Account: c.ps.account(s.Account),
-		Labels: map[string]int64{}, Untimed: []crawlreplay.UntimedLoss{}}
+	site, siteErr := c.ps.site(s.Name)
+	account, accountErr := c.ps.account(s.Account)
+	if err := errors.Join(siteErr, accountErr); err != nil {
+		return nil, crawlreplay.SiteManifest{}, nil, errCollision
+	}
+	sm := crawlreplay.SiteManifest{Site: site, Account: account, Labels: map[string]int64{}, Untimed: []crawlreplay.UntimedLoss{}}
 	from, to := c.inv.Period.From.Unix(), c.inv.Period.To.Unix()
 	volume := map[int64]*crawlreplay.Volume{}
 	var inputs []crawlreplay.Input
@@ -179,7 +237,10 @@ func (c *converter) convertSite(s inventorySite, records io.Writer) ([]crawlrepl
 				sm.UnplacedBytes += l.size
 				return nil
 			}
-			row, noTarget := c.row(s, &sm, rec, ordinal, seq)
+			row, noTarget, rowErr := c.row(s, &sm, rec, ordinal, seq)
+			if rowErr != nil {
+				return rowErr
+			}
 			minute := t / 60
 			v := volume[minute]
 			if v == nil {
@@ -280,7 +341,7 @@ func (c *converter) readInput(path string, in *crawlreplay.Input, fn func(logLin
 // row builds one anonymized record; every string it sets is a pseudonym,
 // a closed-set label or a validated bot identity. noTarget reports a line
 // whose target has no canonical identity.
-func (c *converter) row(s inventorySite, sm *crawlreplay.SiteManifest, rec checks.CrawlLogRecord, ordinal int, seq int64) (crawlreplay.Record, bool) {
+func (c *converter) row(s inventorySite, sm *crawlreplay.SiteManifest, rec checks.CrawlLogRecord, ordinal int, seq int64) (crawlreplay.Record, bool, error) {
 	row := crawlreplay.Record{T: rec.Time.Unix(), File: ordinal, Seq: seq, Site: sm.Site, Account: sm.Account, Status: rec.Status}
 	switch rec.RefererClass {
 	case checks.CrawlRefererMalformed:
@@ -302,7 +363,10 @@ func (c *converter) row(s inventorySite, sm *crawlreplay.SiteManifest, rec check
 			sm.Infrastructure++
 		}
 		if b, bound := crawlid.BindingOf(client.String()); bound {
-			row.Binding = c.ps.binding(b)
+			var err error
+			if row.Binding, err = c.ps.binding(b); err != nil {
+				return crawlreplay.Record{}, false, err
+			}
 		}
 	}
 	var target crawlid.Target
@@ -314,7 +378,12 @@ func (c *converter) row(s inventorySite, sm *crawlreplay.SiteManifest, rec check
 			switch {
 			case class.Expensive:
 				keys := crawlid.KeysFor([]byte(s.Name), class, t)
-				row.Class, row.L2, row.L1 = crawlreplay.ClassExpensive, c.ps.key(keys[1]), c.ps.key(keys[2])
+				l2, l2Err := c.ps.key(keys[1])
+				l1, l1Err := c.ps.key(keys[2])
+				if keyErr := errors.Join(l2Err, l1Err); keyErr != nil {
+					return crawlreplay.Record{}, false, errCollision
+				}
+				row.Class, row.L2, row.L1 = crawlreplay.ClassExpensive, l2, l1
 			case class.Dynamic:
 				row.Class = crawlreplay.ClassDynamic
 			}
@@ -325,15 +394,21 @@ func (c *converter) row(s inventorySite, sm *crawlreplay.SiteManifest, rec check
 	}
 	if bot := threatintel.ClaimedBotFromUA(rec.UserAgent); bot != "" && botName.MatchString(bot) {
 		row.Bot = bot
-		row.BotRange = attribution == clientOK && containsAddr(c.inv.bots[bot], client)
+		if attribution == clientOK && c.bots != nil {
+			row.BotProof = c.bots.proof(bot, client, rec.Time)
+		}
 	}
 	for _, rule := range c.labels {
 		if rule.matches(s.Name, rec.Time, target, hasTarget) {
-			row.Label, row.Episode = rule.Label, c.ps.episode(rule.Episode)
+			var err error
+			row.Label = rule.Label
+			if row.Episode, err = c.ps.episode(rule.Episode); err != nil {
+				return crawlreplay.Record{}, false, err
+			}
 			break
 		}
 	}
-	return row, !hasTarget
+	return row, !hasTarget, nil
 }
 
 type clientAttribution uint8

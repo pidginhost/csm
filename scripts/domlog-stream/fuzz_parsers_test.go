@@ -18,7 +18,7 @@ func FuzzConvertLine(f *testing.F) {
 	f.Add(`192.0.2.10 - - ` + ts + ` "GET ?s=a HTTP/1.1" 200 5 "-" "UA"`)
 	f.Add(`192.0.2.13 - - [bad-time] "GET / HTTP/1.1" 200 5`)
 	inv, err := parseInventory([]byte(period + `"sites":[{"name":"example.com","account":"acct1","aliases":["example.com"],"logs":["x"]}],
-	  "trusted_proxies":["198.51.100.9"],"infrastructure":["192.0.2.200"],"bot_ranges":{"googlebot":["192.0.2.0/24"]}}`))
+	  "trusted_proxies":["198.51.100.9"],"infrastructure":["192.0.2.200"]}`))
 	if err != nil {
 		f.Fatal(err)
 	}
@@ -26,15 +26,23 @@ func FuzzConvertLine(f *testing.F) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	c := newConverter(inv, labels, pseudonyms{salt: bytes.Repeat([]byte{7}, 32)}, testNow)
+	evidence, err := parseBotEvidence([]byte(strings.Replace(googlebotEvidence, "203.0.113.0/24", "192.0.2.0/24", 1)))
+	if err != nil {
+		f.Fatal(err)
+	}
+	c := newConverter(inv, labels, newPseudonyms(bytes.Repeat([]byte{7}, 32), nil), testNow)
+	c.bots = evidence
 	site := inv.Sites[0]
 	f.Fuzz(func(t *testing.T, line string) {
 		rec, ok := checks.ParseCrawlLogLine(line, []string{"example.com"})
 		if !ok || !rec.TimeOK || rec.Time.Unix() <= 0 {
 			return
 		}
-		sm := crawlreplay.SiteManifest{Site: c.ps.site(site.Name), Account: c.ps.account(site.Account), Labels: map[string]int64{}}
-		row, _ := c.row(site, &sm, rec, 0, 1)
+		sm := crawlreplay.SiteManifest{Site: "dom-000000.example", Account: "acct-000000", Labels: map[string]int64{}}
+		row, _, err := c.row(site, &sm, rec, 0, 1)
+		if err != nil {
+			t.Fatalf("pseudonym collision under HMAC-SHA256: %v", err)
+		}
 		var out bytes.Buffer
 		if err := crawlreplay.WriteRow(&out, row); err != nil {
 			t.Fatalf("converted row breaks the stream format: %v", err)

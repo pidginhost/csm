@@ -17,15 +17,13 @@ import (
 // copies. The operator writes it from the host's own records; nothing in
 // it comes from a request.
 type inventory struct {
-	Period         inventoryPeriod     `json:"period"`
-	Sites          []inventorySite     `json:"sites"`
-	TrustedProxies []string            `json:"trusted_proxies"`
-	Infrastructure []string            `json:"infrastructure"`
-	BotRanges      map[string][]string `json:"bot_ranges"`
+	Period         inventoryPeriod `json:"period"`
+	Sites          []inventorySite `json:"sites"`
+	TrustedProxies []string        `json:"trusted_proxies"`
+	Infrastructure []string        `json:"infrastructure"`
 
 	proxies []netip.Prefix
 	infra   []netip.Prefix
-	bots    map[string][]netip.Prefix
 }
 
 // inventoryPeriod is the recording period in whole UTC minutes. Lines timed
@@ -126,15 +124,6 @@ func parseInventory(b []byte) (*inventory, error) {
 	}
 	if inv.infra, err = parsePrefixes(inv.Infrastructure); err != nil {
 		return nil, err
-	}
-	inv.bots = map[string][]netip.Prefix{}
-	for name, ranges := range inv.BotRanges {
-		if !botName.MatchString(name) {
-			return nil, errInventory
-		}
-		if inv.bots[name], err = parsePrefixes(ranges); err != nil {
-			return nil, err
-		}
 	}
 	return &inv, nil
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"os"
@@ -32,14 +33,44 @@ func twoSiteRun(t *testing.T, files map[string][]byte, logA, logB string) error 
 
 func runInventory(t *testing.T, dir, inventory string) error {
 	t.Helper()
-	salt, inv := filepath.Join(dir, "salt"), filepath.Join(dir, "inventory.json")
-	for path, data := range map[string][]byte{salt: bytes.Repeat([]byte{0x42}, 32), inv: []byte(inventory)} {
-		if err := os.WriteFile(path, data, 0o600); err != nil {
+	return convertBundle(t, dir, "r", inventory, testEnv())
+}
+
+// convertBundle converts one inventory into outputs named after bundle,
+// sharing the directory's salt and identity registry with other bundles.
+func convertBundle(t *testing.T, dir, bundle, inventory string, e env) error {
+	t.Helper()
+	salt, inv := filepath.Join(dir, "salt"), filepath.Join(dir, bundle+".inventory.json")
+	if _, err := os.Stat(salt); err != nil {
+		if err = os.WriteFile(salt, bytes.Repeat([]byte{0x42}, 32), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return run([]string{"convert", "--salt-file", salt, "--inventory", inv, "--out", filepath.Join(dir, "r.jsonl.gz"),
-		"--volume-out", filepath.Join(dir, "v.jsonl.gz"), "--manifest", filepath.Join(dir, "m.json")}, io.Discard, testEnv())
+	if err := os.WriteFile(inv, []byte(inventory), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return run([]string{"convert", "--salt-file", salt, "--registry", filepath.Join(dir, "registry.json"), "--inventory", inv,
+		"--out", filepath.Join(dir, bundle+".records.jsonl.gz"), "--volume-out", filepath.Join(dir, bundle+".volume.jsonl.gz"),
+		"--manifest", filepath.Join(dir, bundle+".manifest.json")}, io.Discard, e)
+}
+
+// prefixDigest gives every value of one pseudonym kind the same leading
+// bytes and keeps the rest of the real digest, forcing collisions.
+func prefixDigest(kind string) func(string, []byte) [sha256.Size]byte {
+	salt := bytes.Repeat([]byte{0x42}, 32)
+	return func(k string, v []byte) [sha256.Size]byte {
+		d := saltedDigest(salt, k, v)
+		if k == kind {
+			copy(d[:8], "collide!")
+		}
+		return d
+	}
+}
+
+func twoSites(dir string) string {
+	return period + `"sites":[
+	  {"name":"a.example","account":"acct1","aliases":["a.example"],"logs":["` + filepath.Join(dir, "a.log") + `"]},
+	  {"name":"b.example","account":"acct2","aliases":["b.example"],"logs":["` + filepath.Join(dir, "b.log") + `"]}]}`
 }
 
 func TestInventoryIdentityAndCollisionRefusal(t *testing.T) {
@@ -104,6 +135,140 @@ func TestInventoryIdentityAndCollisionRefusal(t *testing.T) {
 			t.Fatalf("two empty copies refused: %v", err)
 		}
 	})
+	t.Run("pseudonym collisions", func(t *testing.T) {
+		for _, kind := range []string{"domain", "account", "crawl-key", "crawl-binding"} {
+			t.Run(kind, func(t *testing.T) {
+				dir := t.TempDir()
+				for name, peer := range map[string]string{"a.log": "192.0.2.10", "b.log": "192.0.2.11"} {
+					data := line(peer, "19:00:05", "GET /c/?filter_a=1 HTTP/1.1", "200", "") + "\n"
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				e := testEnv()
+				e.digest = prefixDigest(kind)
+				if err := convertBundle(t, dir, "r", twoSites(dir), e); !errors.Is(err, errCollision) {
+					t.Fatalf("colliding %s pseudonyms: err = %v, want errCollision", kind, err)
+				}
+				for _, out := range []string{"r.records.jsonl.gz", "r.volume.jsonl.gz", "r.manifest.json"} {
+					if _, err := os.Stat(filepath.Join(dir, out)); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("refused conversion published %s", out)
+					}
+				}
+			})
+		}
+	})
+	t.Run("collisions across bundles sharing a salt", func(t *testing.T) {
+		dir := t.TempDir()
+		for name, peer := range map[string]string{"a.log": "192.0.2.10", "b.log": "192.0.2.11", "a2.log": "192.0.2.12"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(line(peer, "19:00:05", "GET / HTTP/1.1", "200", "")+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		one := func(site, account, log string) string {
+			return period + `"sites":[{"name":"` + site + `","account":"` + account + `","aliases":["` + site + `"],"logs":["` + filepath.Join(dir, log) + `"]}]}`
+		}
+		e := testEnv()
+		e.digest = prefixDigest("domain")
+		if err := convertBundle(t, dir, "first", one("a.example", "acct1", "a.log"), e); err != nil {
+			t.Fatal(err)
+		}
+		if err := convertBundle(t, dir, "again", one("a.example", "acct1", "a2.log"), e); err != nil {
+			t.Fatalf("the same site in a later bundle was refused: %v", err)
+		}
+		if err := convertBundle(t, dir, "second", one("b.example", "acct1", "b.log"), e); !errors.Is(err, errCollision) {
+			t.Fatalf("a second site under the first site's pseudonym: err = %v, want errCollision", err)
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, "registry.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, private := range []string{"a.example", "b.example", "acct1"} {
+			if bytes.Contains(raw, []byte(private)) {
+				t.Fatalf("registry holds the raw name %q", private)
+			}
+		}
+	})
+	t.Run("registry must belong to the salt and stay private", func(t *testing.T) {
+		for name, prepare := range map[string]func(t *testing.T, registry string){
+			"world readable": func(t *testing.T, registry string) {
+				if err := os.WriteFile(registry, []byte(`{"format_version":1,"salt_fingerprint":"`+saltFingerprint(bytes.Repeat([]byte{0x42}, 32))+`","names":{}}`), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"other salt": func(t *testing.T, registry string) {
+				if err := os.WriteFile(registry, []byte(`{"format_version":1,"salt_fingerprint":"000000000000","names":{}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"malformed": func(t *testing.T, registry string) {
+				if err := os.WriteFile(registry, []byte(`{"format_version":1,"names":null}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"symlink": func(t *testing.T, registry string) {
+				target := registry + ".target"
+				if err := os.WriteFile(target, []byte(`{}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, registry); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"busy": func(t *testing.T, registry string) {
+				lock, err := os.OpenFile(registry+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { lock.Close() })
+				if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+					t.Fatal(err)
+				}
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				dir := t.TempDir()
+				if err := os.WriteFile(filepath.Join(dir, "a.log"), one, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				prepare(t, filepath.Join(dir, "registry.json"))
+				inv := period + `"sites":[{"name":"a.example","account":"acct1","aliases":["a.example"],"logs":["` + filepath.Join(dir, "a.log") + `"]}]}`
+				if err := convertBundle(t, dir, "r", inv, testEnv()); !errors.Is(err, errRegistry) {
+					t.Fatalf("err = %v, want errRegistry", err)
+				}
+			})
+		}
+	})
+	t.Run("distinct names stay distinct", func(t *testing.T) {
+		dir := t.TempDir()
+		var sites []string
+		for i := range 40 {
+			name := "site" + twoDigits(i) + ".example"
+			path := filepath.Join(dir, name+".log")
+			if err := os.WriteFile(path, []byte(line("192.0.2."+twoDigits(i+10), "19:00:05", "GET / HTTP/1.1", "200", "")+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			sites = append(sites, `{"name":"`+name+`","account":"acct`+twoDigits(i)+`","aliases":["`+name+`"],"logs":["`+path+`"]}`)
+		}
+		if err := convertBundle(t, dir, "r", period+`"sites":[`+strings.Join(sites, ",")+`]}`, testEnv()); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, "r.manifest.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := crawlreplay.DecodeManifest(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen := map[string]bool{}
+		for _, s := range m.Sites {
+			seen[s.Site], seen[s.Account] = true, true
+		}
+		if len(seen) != 80 {
+			t.Fatalf("40 sites and accounts produced %d distinct pseudonyms, want 80", len(seen))
+		}
+	})
 	t.Run("referer hosts come only from the inventory", func(t *testing.T) {
 		ref := line("192.0.2.10", "19:00:05", "GET /?p=1 HTTP/1.1", "200", "")
 		ref = strings.Replace(ref, `"-" "Mozilla/5.0"`, `"https://WWW.Example.COM./x" "Mozilla/5.0"`, 1)
@@ -119,9 +284,9 @@ func TestInventoryIdentityAndCollisionRefusal(t *testing.T) {
 			if !ok {
 				t.Fatal("fixture did not parse")
 			}
-			c := newConverter(inv, nil, pseudonyms{salt: bytes.Repeat([]byte{0x42}, 32)}, testNow)
+			c := newConverter(inv, nil, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
 			sm := crawlreplay.SiteManifest{Labels: map[string]int64{}}
-			if row, _ := c.row(inv.Sites[0], &sm, rec, 0, 1); row.Referer != want {
+			if row, _, _ := c.row(inv.Sites[0], &sm, rec, 0, 1); row.Referer != want {
 				t.Errorf("aliases %s: Referer class %d, want %d", aliases, row.Referer, want)
 			}
 		}
@@ -175,7 +340,7 @@ func TestInputSnapshotsMustBeStable(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c := newConverter(inv, nil, pseudonyms{salt: bytes.Repeat([]byte{0x42}, 32)}, testNow)
+		c := newConverter(inv, nil, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
 		if _, _, _, err := c.convertSite(inv.Sites[0], io.Discard); !errors.Is(err, tc.want) {
 			t.Errorf("%s: err = %v, want %v", name, err, tc.want)
 		}
@@ -184,7 +349,7 @@ func TestInputSnapshotsMustBeStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := newConverter(inv, nil, pseudonyms{salt: bytes.Repeat([]byte{0x42}, 32)}, testNow)
+	c := newConverter(inv, nil, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
 	c.open = func(path string) (logFile, error) {
 		f, err := openLog(path)
 		if err != nil {
@@ -207,7 +372,7 @@ func TestInputSnapshotRefusesRestoredMtime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := newConverter(nil, nil, pseudonyms{}, testNow)
+	c := newConverter(nil, nil, newPseudonyms(nil, nil), testNow)
 	changed := false
 	err = c.readInput(path, &crawlreplay.Input{}, func(logLine) error {
 		if changed {
@@ -262,7 +427,7 @@ func TestInputSnapshotBoundsGrowingRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer w.Close()
-	c := newConverter(nil, nil, pseudonyms{}, testNow)
+	c := newConverter(nil, nil, newPseudonyms(nil, nil), testNow)
 	var opened *appendingLog
 	c.open = func(path string) (logFile, error) {
 		f, openErr := openLog(path)
@@ -278,5 +443,166 @@ func TestInputSnapshotBoundsGrowingRead(t *testing.T) {
 	}
 	if opened.bytes != int64(len(data)) {
 		t.Fatalf("read %d bytes from a %d-byte snapshot while it grew", opened.bytes, len(data))
+	}
+}
+
+func TestCollisionUsesWholeDigest(t *testing.T) {
+	for _, kind := range []string{"domain", "account", "crawl-key", "crawl-binding", "crawl-episode"} {
+		t.Run(kind, func(t *testing.T) {
+			ps := newPseudonyms(nil, func(_ string, value []byte) [sha256.Size]byte {
+				var d [sha256.Size]byte
+				d[len(d)-1] = value[0]
+				return d
+			})
+			n := 8
+			if kind == "domain" || kind == "account" {
+				n = 3
+			}
+			if _, _, err := ps.name(kind, []byte("a"), n); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := ps.name(kind, []byte("a"), n); err != nil {
+				t.Fatalf("same value refused: %v", err)
+			}
+			if _, _, err := ps.name(kind, []byte("b"), n); !errors.Is(err, errCollision) {
+				t.Fatalf("different digest suffix accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestCrossBundleIdentityKinds(t *testing.T) {
+	for _, kind := range []string{"account", "crawl-episode"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "a.log")
+			writeLog := func(peer, request string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte(line(peer, "19:00:05", request, "200", "")+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			inventory := func(account string) string {
+				return period + `"sites":[{"name":"a.example","account":"` + account + `","aliases":["a.example"],"logs":["` + path + `"]}]}`
+			}
+			e := testEnv()
+			e.digest = prefixDigest(kind)
+			convert := func(bundle, account, episode string) error {
+				if kind != "crawl-episode" {
+					return convertBundle(t, dir, bundle, inventory(account), e)
+				}
+				// Use the actual CLI entry with labels so episode reservations are persisted.
+				salt, inv, labels := filepath.Join(dir, "salt"), filepath.Join(dir, bundle+".inventory.json"), filepath.Join(dir, bundle+".labels.json")
+				for p, b := range map[string][]byte{
+					salt: bytes.Repeat([]byte{0x42}, 32), inv: []byte(inventory(account)),
+					labels: []byte(`{"labels":[{"site":"a.example","from":"2026-09-26T19:00:00Z","to":"2026-09-26T20:00:00Z","label":"attack","episode":"` + episode + `"}]}`),
+				} {
+					if err := os.WriteFile(p, b, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return run([]string{"convert", "--salt-file", salt, "--registry", filepath.Join(dir, "registry.json"), "--inventory", inv, "--labels", labels,
+					"--out", filepath.Join(dir, bundle+".records.jsonl.gz"), "--volume-out", filepath.Join(dir, bundle+".volume.jsonl.gz"), "--manifest", filepath.Join(dir, bundle+".manifest.json")}, io.Discard, e)
+			}
+			writeLog("192.0.2.10", "GET /c/?filter_a=1 HTTP/1.1")
+			if err := convert("first", "acct1", "first"); err != nil {
+				t.Fatal(err)
+			}
+			if err := convert("repeat", "acct1", "first"); err != nil {
+				t.Fatalf("same identities refused: %v", err)
+			}
+			before, err := os.ReadFile(filepath.Join(dir, "registry.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			account, episode := "acct1", "first"
+			switch kind {
+			case "account":
+				account = "acct2"
+			case "crawl-episode":
+				episode = "second"
+			}
+			if err = convert("collision", account, episode); !errors.Is(err, errCollision) {
+				t.Fatalf("cross-bundle %s collision: %v", kind, err)
+			}
+			after, err := os.ReadFile(filepath.Join(dir, "registry.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("collision changed registry")
+			}
+			for _, name := range []string{"collision.records.jsonl.gz", "collision.volume.jsonl.gz", "collision.manifest.json"} {
+				if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("collision published %s", name)
+				}
+			}
+		})
+	}
+}
+
+// Key and binding pseudonyms stay out of the registry: one entry per client
+// and pattern ever converted would grow it with all traffic.
+func TestRegistryHoldsSiteAccountAndEpisodeNames(t *testing.T) {
+	dir := t.TempDir()
+	for name, peer := range map[string]string{"a.log": "192.0.2.10", "b.log": "192.0.2.11"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(line(peer, "19:00:05", "GET /c/?filter_a=1 HTTP/1.1", "200", "")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := convertBundle(t, dir, "r", twoSites(dir), testEnv()); err != nil {
+		t.Fatal(err)
+	}
+	var reg identityRegistry
+	if err := crawlreplay.DecodeStrictJSON(mustRead(t, filepath.Join(dir, "registry.json")), &reg); err != nil {
+		t.Fatal(err)
+	}
+	sites, accounts := 0, 0
+	for name := range reg.Names {
+		switch {
+		case strings.HasPrefix(name, "dom-"):
+			sites++
+		case strings.HasPrefix(name, "acct-"):
+			accounts++
+		default:
+			t.Fatalf("registry holds %q; only site, account and episode pseudonyms belong there", name)
+		}
+	}
+	if sites != 2 || accounts != 2 {
+		t.Fatalf("registry holds %d sites and %d accounts, want 2 and 2", sites, accounts)
+	}
+}
+
+func TestRegistryLockSurvivesReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.json")
+	fingerprint := saltFingerprint(bytes.Repeat([]byte{0x42}, 32))
+	first, err := openRegistry(path, fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.close()
+	names := map[string]string{"acct-000001": strings.Repeat("a", 64)}
+	if _, err = first.add(names); err != nil {
+		t.Fatal(err)
+	}
+	if err = first.save(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := openRegistry(path, fingerprint)
+	if err == nil {
+		second.close()
+		t.Fatal("registry replacement released the conversion lock")
+	}
+	if !errors.Is(err, errRegistry) {
+		t.Fatalf("second conversion: %v", err)
+	}
+	first.close()
+	third, err := openRegistry(path, fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer third.close()
+	if third.Names["acct-000001"] != names["acct-000001"] {
+		t.Fatal("saved reservation lost after lock handoff")
 	}
 }

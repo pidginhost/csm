@@ -24,7 +24,7 @@ func validRecord() Record {
 	return Record{
 		T: testEpoch, File: 0, Seq: 1, Site: testSite, Account: testAcct, Binding: testBind,
 		L2: testL2, L1: testL1, Class: ClassExpensive, Status: 200, Referer: RefNone,
-		Bot: "googlebot", BotRange: true, Label: LabelAttack, Episode: "e1",
+		Bot: "googlebot", BotProof: BotProofRange, Label: LabelAttack, Episode: "e1",
 	}
 }
 
@@ -62,7 +62,8 @@ func TestRecordValidateRejectsEachField(t *testing.T) {
 		"status":       func(r *Record) { r.Status = 600 },
 		"referer":      func(r *Record) { r.Referer = 4 },
 		"bot text":     func(r *Record) { r.Bot = "Googlebot/2.1 (+http://crawler.example/bot.html)" },
-		"bot range":    func(r *Record) { r.Bot = "" },
+		"bot proof":    func(r *Record) { r.Bot = "" },
+		"proof kind":   func(r *Record) { r.BotProof = "pending" },
 		"label":        func(r *Record) { r.Label = "maybe" },
 		"episode none": func(r *Record) { r.Episode = "" },
 		"episode text": func(r *Record) { r.Episode = "Site A crawl" },
