@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	bolt "go.etcd.io/bbolt"
@@ -197,5 +198,240 @@ func BenchmarkAdmissionLedgerTickRetainsFullWindow(b *testing.B) {
 	b.StopTimer()
 	if s := f.ceilingState(); s.General.Used+s.Reserved.Used != admission.MaxCeiling {
 		b.Fatalf("retained window changed: %+v", s)
+	}
+}
+
+// Ready work across a full queue of the largest candidates: NextWake
+// computes every candidate's history and runs a schedule to decide whether
+// work is due now.
+func BenchmarkAdmissionLedgerNextWakeFullQueue(b *testing.B) {
+	f := fullLedger(b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, ok, err := f.l.NextWake(); err != nil || !ok {
+			b.Fatalf("wake: %v %v", ok, err)
+		}
+	}
+}
+
+// fullHistory fills every allowance and the recovery reserve with the
+// smallest history entries, the most entries the budgets can hold, and
+// fills both rings.
+func fullHistory(b *testing.B) *ledgerFixture {
+	b.Helper()
+	f := newLedgerFixture(b)
+	id := f.queued()
+	base, loadErr := f.l.Candidate(id)
+	if loadErr != nil {
+		b.Fatal(loadErr)
+	}
+	general, reserved := admission.HistoryLanes()
+	if setupErr := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		s, err := loadStorageState(tx)
+		if err != nil {
+			return err
+		}
+		rootRefs, err := loadRefs(tx, base.Roots[0])
+		if err != nil {
+			return err
+		}
+		var generation uint32 = 1000000000
+		put := func(lane admission.Lane, pinned bool) (uint32, error) {
+			generation++
+			c := base
+			c.Key.Generation = generation
+			c.Attempts, c.State, c.Disposition, c.Transitions = 1, admission.StateVerified, admission.DispositionApplied, 4
+			if pinned {
+				c.State, c.Disposition = admission.StateUnknown, admission.DispositionUnknown
+			}
+			c.ExpiresAt = f.wall.Add(time.Hour)
+			cid, memberErr := c.ID()
+			if memberErr != nil {
+				return 0, memberErr
+			}
+			a, memberErr := admission.NewAttempt(cid, 1)
+			if memberErr != nil {
+				return 0, memberErr
+			}
+			cost, memberErr := historyCostOf(tx, c)
+			if memberErr != nil {
+				return 0, memberErr
+			}
+			if memberErr = putCandidate(tx, c); memberErr != nil {
+				return 0, memberErr
+			}
+			if memberErr = putAttempt(tx, admission.AttemptRecord{Attempt: a, State: c.State, Disposition: c.Disposition, ExpiresAt: c.ExpiresAt, Reserved: f.wall, Finished: f.wall, Lane: lane}); memberErr != nil {
+				return 0, memberErr
+			}
+			h := admission.HistoryEntry{RootMask: 1, Ended: f.wall, Eligible: f.wall.Add(admission.HistoryRetention), Pinned: pinned}
+			if pinned {
+				h.Eligible = time.Time{}
+			}
+			if lane == admission.LaneGeneral {
+				h.General = cost
+			} else {
+				h.Reserved = cost
+			}
+			rootRefs.Refs++
+			return cost, putHistoryEntry(tx, cid, h)
+		}
+		// The fixed-width generation keeps every candidate at the same cost.
+		sized := base
+		sized.Key.Generation = generation
+		cost, err := historyCostOf(tx, sized)
+		if err != nil {
+			return err
+		}
+		for _, allowance := range []struct {
+			used   *uint64
+			size   uint64
+			lane   admission.Lane
+			pinned bool
+		}{
+			{&s.General.Used, general, admission.LaneGeneral, false},
+			{&s.Reserved.Used, reserved, admission.LaneDirect, false},
+			{&s.Recovery, admission.RecoveryReserveBytes, admission.LaneGeneral, true},
+		} {
+			for *allowance.used+uint64(cost) <= allowance.size {
+				actual, putErr := put(allowance.lane, allowance.pinned)
+				if putErr != nil {
+					return putErr
+				}
+				if actual != cost {
+					return fmt.Errorf("benchmark history cost changed")
+				}
+				*allowance.used += uint64(actual)
+			}
+		}
+		rings := tx.Bucket([]byte(admissionRingsBucket))
+		for s.Ended.Count < admission.MaxEndedCandidates {
+			generation++
+			c := base
+			c.Key.Generation = generation
+			c.State, c.Disposition, c.Reason, c.Transitions = admission.StateRefused, admission.DispositionRefused, admission.ReasonProtected, 2
+			cid, idErr := c.ID()
+			if idErr != nil {
+				return idErr
+			}
+			if err = putCandidate(tx, c); err != nil {
+				return err
+			}
+			rootRefs.Refs++
+			var pos uint64
+			s.Ended, pos = s.Ended.Push()
+			if err = rings.Put(ringKey(ringEnded, pos), []byte(cid)); err != nil {
+				return err
+			}
+		}
+		if err = putRefs(tx, base.Roots[0], rootRefs); err != nil {
+			return err
+		}
+		for s.Loose.Count < admission.MaxLooseEvidence {
+			var pos uint64
+			s.Loose, pos = s.Loose.Push()
+			e := f.mint(evidenceSpec{target: "192.0.2.12", cursor: fmt.Sprintf("loose=%d", pos)})
+			data, err := e.MarshalBinary()
+			if err != nil {
+				return err
+			}
+			if err = tx.Bucket([]byte(admissionEvidenceBucket)).Put([]byte(e.ID()), data); err != nil {
+				return err
+			}
+			if err = putRefs(tx, e.ID(), admission.EvidenceRefs{Loose: pos}); err != nil {
+				return err
+			}
+			if err = rings.Put(ringKey(ringLoose, pos), []byte(e.ID())); err != nil {
+				return err
+			}
+		}
+		return putStorageState(tx, s)
+	}); setupErr != nil {
+		b.Fatal(setupErr)
+	}
+	return f
+}
+
+func BenchmarkAdmissionLedgerOpenFullHistory(b *testing.B) {
+	f := fullHistory(b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func (f *ledgerFixture) queuedIDs() []admission.CandidateID {
+	f.t.Helper()
+	var ids []admission.CandidateID
+	if err := f.db.bolt.View(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(admissionQueueBucket)).ForEach(func(k, _ []byte) error {
+			ids = append(ids, admission.CandidateID(k))
+			return nil
+		})
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+	return ids
+}
+
+// retirableHistory ends n applied candidates of the most roots. Setup
+// refills history credit directly between them, since ticking that long
+// would age the queue out.
+func retirableHistory(b *testing.B, n int) *ledgerFixture {
+	b.Helper()
+	f := newLedgerFixture(b)
+	f.fillRoots(n, admission.MaxRoots)
+	for _, id := range f.queuedIDs() {
+		f.adjustStorage(func(s *admission.StorageState) { *s, _ = s.Advance(admission.HistoryBurst) })
+		_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+			b.Fatal(err)
+		}
+		if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionApplied); err != nil {
+			b.Fatal(err)
+		}
+	}
+	return f
+}
+
+// A reservation of the largest candidate into a full allowance retires the
+// eligible history it needs room from, each retirement releasing a
+// candidate of the most roots.
+func BenchmarkAdmissionLedgerReserveRetiresUnderPressure(b *testing.B) {
+	general, _ := admission.HistoryLanes()
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		f := retirableHistory(b, 4)
+		f.tickAt(f.wall.Add(admission.HistoryRetention))
+		f.fillRoots(1, admission.MaxRoots)
+		next := f.queuedIDs()
+		if len(next) != 1 {
+			b.Fatalf("queued %d candidates", len(next))
+		}
+		f.adjustStorage(func(s *admission.StorageState) { s.General.Used = general })
+		b.StartTimer()
+		if _, _, _, err := f.l.Reserve(next[0], admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// One tick retiring a full batch of candidates of the most roots at their
+// target.
+func BenchmarkAdmissionLedgerTickRetiresABatch(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		b.StopTimer()
+		f := retirableHistory(b, retirementsPerTick)
+		b.StartTimer()
+		f.tickAt(f.wall.Add(admission.HistoryTarget))
+		b.StopTimer()
+		if s := f.storageState(); s.General.Used != 0 {
+			b.Fatalf("a batch at its target was not retired: %+v", s.General)
+		}
+		b.StartTimer()
 	}
 }
