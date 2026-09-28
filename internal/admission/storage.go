@@ -170,6 +170,26 @@ func (s StorageState) HistoryBudget(l Lane, retirable uint64) uint64 {
 	return min(a.m.Bytes(), a.size-used)
 }
 
+// HistoryCredit is the whole bytes of credit lane l's allowance saves.
+func (s StorageState) HistoryCredit(l Lane) uint64 {
+	if !l.Valid() {
+		return 0
+	}
+	return s.allowance(l).m.Bytes()
+}
+
+// HistoryRoom is the bytes lane l's allowance has left.
+func (s StorageState) HistoryRoom(l Lane) uint64 {
+	if !l.Valid() {
+		return 0
+	}
+	a := s.allowance(l)
+	if a.m.Used >= a.size {
+		return 0
+	}
+	return a.size - a.m.Used
+}
+
 // Advance credits elapsed admission time, refilling each allowance at its
 // rate up to its cap. A long gap saturates instead of overflowing.
 func (s StorageState) Advance(elapsed time.Duration) (StorageState, error) {

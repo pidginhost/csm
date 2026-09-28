@@ -195,6 +195,16 @@ func TestStorageStateHistoryBudget(t *testing.T) {
 	if s.HistoryBudget(0, 0) != 0 {
 		t.Fatal("no lane has a budget")
 	}
+	if s.HistoryRoom(LaneGeneral) != 0 || s.HistoryCredit(LaneGeneral) != HistoryCap(general) {
+		t.Fatalf("an over-full allowance: room %d, credit %d", s.HistoryRoom(LaneGeneral), s.HistoryCredit(LaneGeneral))
+	}
+	s.General.Used = general - 500
+	if s.HistoryRoom(LaneGeneral) != 500 || s.HistoryRoom(LaneDirect) != reserved || s.HistoryCredit(LaneCorroborated) != HistoryCap(reserved) {
+		t.Fatalf("rooms %d and %d", s.HistoryRoom(LaneGeneral), s.HistoryRoom(LaneDirect))
+	}
+	if s.HistoryRoom(0) != 0 || s.HistoryCredit(0) != 0 {
+		t.Fatal("no lane has room or credit")
+	}
 }
 
 func TestStorageStateReleaseAndPin(t *testing.T) {

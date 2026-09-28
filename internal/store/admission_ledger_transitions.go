@@ -144,6 +144,9 @@ func (l *AdmissionLedger) Terminate(id admission.CandidateID, reason admission.R
 		if err != nil {
 			return false, err
 		}
+		if err = q.trimUnreservedRoots(c); err != nil {
+			return false, err
+		}
 		c.State, c.Disposition, c.Reason, c.NotBefore = state, d, reason, time.Time{}
 		if err = q.release(id, e, admission.EventEnded, reason); err != nil {
 			return false, err
@@ -430,7 +433,10 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 		default:
 			c.State, c.Disposition = state, d
 		}
-		return true, q.release(a.Attempt.Candidate, e, 0, 0)
+		if err = q.release(a.Attempt.Candidate, e, 0, 0); err != nil {
+			return false, err
+		}
+		return true, q.ended(a.Attempt.Candidate, *c)
 	})
 	return cand, att, err
 }

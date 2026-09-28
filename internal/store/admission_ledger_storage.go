@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"slices"
@@ -440,10 +441,32 @@ func (q *queueTx) unname(id admission.EvidenceID) error {
 
 // ended records a candidate that has just ended. One that ended before any
 // attempt is not history: it takes the next ended position, and only the
-// newest are kept.
+// newest are kept. An admitted one's history is dated: it may be retired
+// after the review window and, if verified, its effect's lifetime; an
+// unresolved outcome is pinned in the recovery reserve instead.
 func (q *queueTx) ended(id admission.CandidateID, c admission.Candidate) error {
 	if c.Attempts > 0 {
-		return nil
+		h, found, err := loadHistoryEntry(q.tx, id)
+		if err != nil {
+			return err
+		}
+		if !found || !h.Ended.IsZero() {
+			return admission.ErrCorruptRecord
+		}
+		h.Ended = q.now
+		if c.State == admission.StateUnknown {
+			s, err := q.storageState()
+			if err != nil {
+				return err
+			}
+			if *s, err = s.PinHistory(h.General, h.Reserved); err != nil {
+				return err
+			}
+			h.Pinned, q.storageDirty = true, true
+		} else {
+			h.Eligible, _ = admission.HistoryTimes(q.now, c.ExpiresAt, c.State == admission.StateVerified)
+		}
+		return putHistoryEntry(q.tx, id, h)
 	}
 	s, err := q.storageState()
 	if err != nil {
@@ -579,6 +602,11 @@ func (q *queueTx) chargeHistory(id admission.CandidateID, c admission.Candidate,
 		return nil
 	}
 	grown := cost - h.Charged()
+	// A charge the credit cannot cover is refused after this, and the
+	// whole reservation, retirements included, rolls back.
+	if err = q.retireForRoom(lane, uint64(grown)); err != nil {
+		return err
+	}
 	next, err := s.ChargeHistory(lane, grown)
 	if err != nil {
 		return err
@@ -593,6 +621,104 @@ func (q *queueTx) chargeHistory(id admission.CandidateID, c admission.Candidate,
 		return err
 	}
 	*s, q.storageDirty = next, true
+	return nil
+}
+
+// retireForRoom retires ended history of lane's allowance that may be
+// retired, oldest first, until the allowance has room for need bytes or
+// nothing more may be retired.
+func (q *queueTx) retireForRoom(lane admission.Lane, need uint64) error {
+	s, err := q.storageState()
+	if err != nil {
+		return err
+	}
+	kind := byte(admission.RetireGeneral)
+	if lane != admission.LaneGeneral {
+		kind = admission.RetireReserved
+	}
+	cur := q.tx.Bucket([]byte(admissionRetireBucket)).Cursor()
+	for s.HistoryRoom(lane) < need {
+		k, _ := cur.Seek([]byte{kind})
+		if k == nil || k[0] != kind {
+			return nil
+		}
+		_, at, id, err := admission.ParseRetireKey(k)
+		if err != nil {
+			return err
+		}
+		if at.After(q.now) {
+			return nil
+		}
+		if err = q.retire(id, k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// retire removes an ended candidate's details: its record, its attempts,
+// its history entry and index keys. Its bytes return to their allowances
+// and its roots are released. key is the index key that led here; it must
+// be one of the entry's own.
+func (q *queueTx) retire(id admission.CandidateID, key []byte) error {
+	h, found, err := loadHistoryEntry(q.tx, id)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return admission.ErrCorruptRecord
+	}
+	c, err := loadCandidate(q.tx, id)
+	if errors.Is(err, errCandidateMissing) || (err == nil && (!c.State.Terminal() || c.Attempts == 0)) {
+		return admission.ErrCorruptRecord
+	}
+	if err != nil {
+		return err
+	}
+	keys, err := h.RetireKeys(id)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(keys, func(k []byte) bool { return bytes.Equal(k, key) }) {
+		return admission.ErrCorruptRecord
+	}
+	retireIndex := q.tx.Bucket([]byte(admissionRetireBucket))
+	for _, k := range keys {
+		if retireIndex.Get(k) == nil {
+			return admission.ErrCorruptRecord
+		}
+		if err = retireIndex.Delete(k); err != nil {
+			return err
+		}
+	}
+	attempts := q.tx.Bucket([]byte(admissionAttemptsBucket))
+	for seq := uint32(1); seq <= c.Attempts; seq++ {
+		a, idErr := admission.NewAttempt(id, seq)
+		if idErr != nil {
+			return idErr
+		}
+		if err = attempts.Delete([]byte(a.ID)); err != nil {
+			return err
+		}
+	}
+	for _, name := range []string{admissionHistoryBucket, admissionCandidatesBucket} {
+		if err = q.tx.Bucket([]byte(name)).Delete([]byte(id)); err != nil {
+			return err
+		}
+	}
+	for _, root := range c.Roots {
+		if err = q.unname(root); err != nil {
+			return err
+		}
+	}
+	s, err := q.storageState()
+	if err != nil {
+		return err
+	}
+	if *s, err = s.ReleaseHistory(h.General, h.Reserved); err != nil {
+		return err
+	}
+	q.storageDirty = true
 	return nil
 }
 
@@ -681,5 +807,32 @@ func (q *queueTx) remapHistoryRoots(c admission.Candidate, merged []admission.Ev
 		}
 	}
 	h.RootMask = mask
+	return putHistoryEntry(q.tx, id, h)
+}
+
+// trimUnreservedRoots returns retry-only support to the loose ring when a
+// queued candidate ends without another reservation. Paid evidence stays.
+func (q *queueTx) trimUnreservedRoots(c *admission.Candidate) error {
+	if c.Attempts == 0 {
+		return nil
+	}
+	id, _ := c.ID()
+	h, found, err := loadHistoryEntry(q.tx, id)
+	if err != nil {
+		return err
+	}
+	if !found || h.RootMask == 0 || h.RootMask>>len(c.Roots) != 0 {
+		return admission.ErrCorruptRecord
+	}
+	var roots []admission.EvidenceID
+	for i, root := range c.Roots {
+		if h.RootMask&(1<<i) != 0 {
+			roots = append(roots, root)
+		} else if err = q.unname(root); err != nil {
+			return err
+		}
+	}
+	c.Roots = roots
+	h.RootMask = (1 << len(roots)) - 1
 	return putHistoryEntry(q.tx, id, h)
 }

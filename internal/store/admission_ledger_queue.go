@@ -300,6 +300,9 @@ func (q *queueTx) end(lc liveCandidate, reason admission.Reason) error {
 		return admission.ErrTransitionConflict
 	}
 	c := lc.c
+	if err := q.trimUnreservedRoots(&c); err != nil {
+		return err
+	}
 	c.State, c.Disposition, c.Reason, c.NotBefore = state, reason.Disposition(), reason, time.Time{}
 	c.Transitions++
 	if err := putCandidate(q.tx, c); err != nil {
