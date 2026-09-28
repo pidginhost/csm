@@ -382,9 +382,12 @@ func (c *calibration) replay(name string, records []crawlreplay.Record) error {
 	c.seen[name] = true
 	cov := c.coverage[name]
 	site := crawlreplay.Site{Records: crawlreplay.RestrictToCoverage(records, cov), Coverage: cov}
-	c.shapes.add(crawlreplay.ShapeSite(site, c.window))
+	// Timestamp disorder and episode origins describe the source stream;
+	// excluding minutes must not erase evidence or shorten detection delay.
+	c.shapes.add(crawlreplay.ShapeSite(crawlreplay.Site{Records: records, Coverage: cov}, c.window))
+	origins := episodeOrigins(records)
 	for i := range c.runs {
-		if err := c.runs[i].addSite(name, site); err != nil {
+		if err := c.runs[i].addSite(name, site, origins); err != nil {
 			return err
 		}
 	}
@@ -501,12 +504,42 @@ func (r *runResult) options() crawlreplay.Options {
 	return crawlreplay.Options{Sketch: r.Run.Sketch, Shuffle: r.Run.Shuffle}
 }
 
-func (r *runResult) addSite(name string, site crawlreplay.Site) error {
+func episodeOrigins(records []crawlreplay.Record) []crawlreplay.EpisodeResult {
+	byName := map[string]crawlreplay.EpisodeResult{}
+	for _, rec := range records {
+		if rec.Episode == "" {
+			continue
+		}
+		if ep, ok := byName[rec.Episode]; !ok || rec.T < ep.Onset {
+			byName[rec.Episode] = crawlreplay.EpisodeResult{Episode: rec.Episode, Label: rec.Label, Onset: rec.T}
+		}
+	}
+	origins := make([]crawlreplay.EpisodeResult, 0, len(byName))
+	for _, ep := range byName {
+		origins = append(origins, ep)
+	}
+	slices.SortFunc(origins, func(a, b crawlreplay.EpisodeResult) int { return cmp.Compare(a.Episode, b.Episode) })
+	return origins
+}
+
+func (r *runResult) addSite(name string, site crawlreplay.Site, origins []crawlreplay.EpisodeResult) error {
 	rep, err := crawlreplay.EvaluateSite(site, r.Run.Params, r.options())
 	if err != nil {
 		return err
 	}
+	outcomes := map[string]crawlreplay.EpisodeResult{}
 	for _, ep := range rep.Episodes {
+		outcomes[ep.Episode] = ep
+	}
+	for _, origin := range origins {
+		ep, ok := outcomes[origin.Episode]
+		if !ok {
+			ep = origin
+		}
+		ep.Onset = origin.Onset
+		if ep.Detected {
+			ep.DelaySeconds = (ep.DetectMinute+1)*60 - ep.Onset
+		}
 		r.Episodes = append(r.Episodes, siteEpisode{Site: name, EpisodeResult: ep})
 	}
 	for class, n := range rep.Transitions {

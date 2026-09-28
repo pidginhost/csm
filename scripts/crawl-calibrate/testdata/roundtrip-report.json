@@ -116,7 +116,7 @@
   ],
   "shape": {
     "lateness_seconds": {
-      "n": 68,
+      "n": 78,
       "p50": 0,
       "p99": 0,
       "max": 0

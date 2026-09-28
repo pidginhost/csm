@@ -211,7 +211,8 @@ revisions, the salt fingerprint, the period and the bot evidence) and, per
 site, certified and covered minutes, excluded minutes by reason and every
 line count. It also holds host lines and bytes per minute, line counts for
 nonempty site-minutes,
-in-file timestamp disorder, how many patterns and clients are active per
+in-file timestamp disorder across all validated records (including excluded
+minutes), how many patterns and clients are active per
 window, and, for every parameter set in the grid, each labeled episode's detection delay and margins, healthy
 false positives per site and day, the scope level chosen, key and client
 peaks, and, when a sketch is configured, how far the bounded estimates fall
@@ -220,6 +221,12 @@ floor, removed-client count, distinct-client count, coverage percent and
 baseline settings, with optional sketch sizes; fixtures add synthetic
 attacks from one-, three- and twenty-request clients with optional padding
 and churn.
+
+Episode onset remains the first labeled request in the bundle, even when
+its minute is excluded. An episode with no covered requests remains in the
+report as undetected, with no replay margins; it is not evidence of a
+qualified detector miss. Only covered records contribute to windows,
+baselines and detections.
 
 The silence diagnostic joins adjacent spans but stops at an unknown gap. A
 silent run alone does not certify zero traffic.
