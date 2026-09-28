@@ -1,0 +1,7 @@
+{"runs": [
+  {"params": {"w": 5, "r": 3, "f": 1, "k": 1, "d": 2, "c": 80,
+              "baseline": {"alpha": 0.1, "min_obs": 1, "min_age": 10080, "floor_per_min": 1}}},
+  {"params": {"w": 5, "r": 3, "f": 1, "k": 1, "d": 2, "c": 80,
+              "baseline": {"alpha": 0.1, "min_obs": 1, "min_age": 10080, "floor_per_min": 1}},
+   "sketch": {"m": 4, "h": 8, "seed": 7}}
+]}

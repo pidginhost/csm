@@ -5,7 +5,8 @@
 // Production code here imports only the standard library. A replay is a
 // hypothesis about the detector, not a record of what a host did: a stream
 // holds completed requests with their logged times, not offered load, harm,
-// queueing or gate outcomes, and every report says which it assumed.
+// queueing or gate outcomes, and only minutes a coverage proof certifies,
+// less those with unknown loss, count as observed.
 //
 // Bundle validation reconciles observed site and input extents with records
 // and requires every counted line to have source bytes. Decoded manifests

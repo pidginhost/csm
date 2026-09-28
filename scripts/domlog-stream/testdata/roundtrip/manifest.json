@@ -1,0 +1,144 @@
+{
+  "format_version": 2,
+  "stream_version": 2,
+  "identity_version": 1,
+  "tool": {
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "dirty": false,
+    "go_version": "go-test"
+  },
+  "salt_fingerprint": "425ed4e4a36b",
+  "period": {
+    "from": 29840820,
+    "to": 29840839
+  },
+  "inventory": {
+    "sha256": "4bef6643b57643390f47c5fc7901a157deaa2f2a48f3e5347352ede40e1ce18b",
+    "bytes": 496
+  },
+  "labels": {
+    "sha256": "b4e643ef8c850e8b99a0ec51c238c24b214382b3a9f733494a5af1b9227f2185",
+    "bytes": 282
+  },
+  "bot_evidence": {
+    "sha256": "c6e4eeac9e42f545cbb346d7195f53cc3587cf32a74819590e2cd1610b2a0c3e",
+    "bytes": 318,
+    "d2_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "config_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "inputs": [
+    {
+      "site": "dom-a01dff.example",
+      "ordinal": 0,
+      "sha256": "45e4a2e44b32838575cd50c11570dc381078bf04b1cd00f722c7e7e536d08233",
+      "bytes": 8437,
+      "content_sha256": "45e4a2e44b32838575cd50c11570dc381078bf04b1cd00f722c7e7e536d08233",
+      "content_bytes": 8437,
+      "extent": {
+        "from": 29840820,
+        "to": 29840839
+      }
+    },
+    {
+      "site": "dom-a01dff.example",
+      "ordinal": 1,
+      "sha256": "8e83d2a2eea8ed640819aefb3dcbb37c586fc80a1a849ae2877a6e5e060fae86",
+      "bytes": 213,
+      "content_sha256": "8e83d2a2eea8ed640819aefb3dcbb37c586fc80a1a849ae2877a6e5e060fae86",
+      "content_bytes": 213,
+      "extent": {
+        "from": 29840836,
+        "to": 29840836
+      }
+    },
+    {
+      "site": "dom-dcef08.example",
+      "ordinal": 0,
+      "sha256": "ee7324ff17fcb1cb4a43031dbcf724873b450b3ea0ff958b311a80bdc096bc07",
+      "bytes": 297,
+      "content_sha256": "ee7324ff17fcb1cb4a43031dbcf724873b450b3ea0ff958b311a80bdc096bc07",
+      "content_bytes": 297,
+      "extent": {
+        "from": 29840822,
+        "to": 29840838
+      }
+    }
+  ],
+  "outputs": [
+    {
+      "kind": "records",
+      "sha256": "f1ecdf429e59f787caf614a17346cab096fe9e81c960612c0da31f47a146cb28",
+      "bytes": 15815,
+      "rows": 78
+    },
+    {
+      "kind": "volume",
+      "sha256": "29824095e027cd26687b4364b58da2e8c58c9b79a84a8cc9b5e2692ebc4a95f6",
+      "bytes": 2159,
+      "rows": 23
+    }
+  ],
+  "sites": [
+    {
+      "site": "dom-a01dff.example",
+      "account": "acct-7044eb",
+      "extent": {
+        "from": 29840820,
+        "to": 29840839
+      },
+      "bytes": 8650,
+      "unplaced_bytes": 33,
+      "lines": 76,
+      "records": 75,
+      "oversized": 0,
+      "rejected": 1,
+      "time_invalid": 0,
+      "time_future": 0,
+      "out_of_period": 0,
+      "incomplete": 0,
+      "no_target": 1,
+      "attribution_loss": 0,
+      "invalid_client": 0,
+      "infrastructure": 1,
+      "labels": {
+        "attack": 30,
+        "healthy": 45
+      },
+      "untimed": [
+        {
+          "input": 0,
+          "category": "rejected",
+          "after": 1790449510,
+          "before": 1790449540,
+          "lines": 1
+        }
+      ]
+    },
+    {
+      "site": "dom-dcef08.example",
+      "account": "acct-4c864b",
+      "extent": {
+        "from": 29840822,
+        "to": 29840838
+      },
+      "bytes": 297,
+      "unplaced_bytes": 0,
+      "lines": 3,
+      "records": 3,
+      "oversized": 0,
+      "rejected": 0,
+      "time_invalid": 0,
+      "time_future": 0,
+      "out_of_period": 0,
+      "incomplete": 0,
+      "no_target": 0,
+      "attribution_loss": 0,
+      "invalid_client": 0,
+      "infrastructure": 0,
+      "labels": {
+        "": 3
+      },
+      "untimed": []
+    }
+  ]
+}

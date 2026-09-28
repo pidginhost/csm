@@ -1,0 +1,5 @@
+{"labels": [
+  {"site": "example.com", "from": "2026-09-26T19:10:00Z", "to": "2026-09-26T19:15:00Z",
+   "label": "attack", "episode": "e1", "name_prefixes": ["filter_"]},
+  {"site": "example.com", "from": "2026-09-26T19:00:00Z", "to": "2026-09-26T19:20:00Z", "label": "healthy"}
+]}

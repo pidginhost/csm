@@ -1,0 +1,311 @@
+{
+  "provenance": {
+    "manifest_sha256": "fdd5aa9698588d63b1cc49a233a34988ba07309dc66794de4cdd41a1eda4fc04",
+    "stream_version": 2,
+    "identity_version": 1,
+    "converter": {
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "dirty": false,
+      "go_version": "go-test"
+    },
+    "calibrator": {
+      "revision": "dddddddddddddddddddddddddddddddddddddddd",
+      "dirty": false,
+      "go_version": "go-test"
+    },
+    "salt_fingerprint": "425ed4e4a36b",
+    "period": {
+      "from": 29840820,
+      "to": 29840839
+    },
+    "bot_evidence": {
+      "sha256": "c6e4eeac9e42f545cbb346d7195f53cc3587cf32a74819590e2cd1610b2a0c3e",
+      "bytes": 318,
+      "d2_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "config_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "coverage": "certified",
+    "proof_sha256": "b4f85349d2dbd43658588365399f80fc9e22ac2009d2847d61827dba8fbea5ff",
+    "lateness_seconds": 60
+  },
+  "window": 5,
+  "sites": 2,
+  "coverage": [
+    {
+      "site": "dom-a01dff.example",
+      "extent": {
+        "from": 29840820,
+        "to": 29840839
+      },
+      "certified_minutes": 20,
+      "covered_minutes": 16,
+      "excluded": {
+        "unknown_loss": 4
+      },
+      "lines": {
+        "attribution_loss": 0,
+        "incomplete": 0,
+        "infrastructure": 1,
+        "invalid_client": 0,
+        "no_target": 1,
+        "out_of_period": 0,
+        "oversized": 0,
+        "records": 75,
+        "rejected": 1,
+        "time_future": 0,
+        "time_invalid": 0
+      },
+      "unplaced_bytes": 33
+    },
+    {
+      "site": "dom-dcef08.example",
+      "extent": {
+        "from": 29840822,
+        "to": 29840838
+      },
+      "certified_minutes": 18,
+      "covered_minutes": 18,
+      "excluded": {
+        "liveness_unknown": 2
+      },
+      "lines": {
+        "attribution_loss": 0,
+        "incomplete": 0,
+        "infrastructure": 0,
+        "invalid_client": 0,
+        "no_target": 0,
+        "out_of_period": 0,
+        "oversized": 0,
+        "records": 3,
+        "rejected": 0,
+        "time_future": 0,
+        "time_invalid": 0
+      },
+      "unplaced_bytes": 0
+    }
+  ],
+  "volume": {
+    "lines_per_minute": {
+      "n": 20,
+      "p50": 3,
+      "p99": 9,
+      "max": 9
+    },
+    "bytes_per_minute": {
+      "n": 20,
+      "p50": 341,
+      "p99": 980,
+      "max": 980
+    },
+    "site_lines_per_minute": {
+      "n": 23,
+      "p50": 2,
+      "p99": 9,
+      "max": 9
+    }
+  },
+  "silences": [
+    {
+      "site": "dom-dcef08.example",
+      "minutes": 9
+    },
+    {
+      "site": "dom-a01dff.example",
+      "minutes": 0
+    }
+  ],
+  "shape": {
+    "lateness_seconds": {
+      "n": 68,
+      "p50": 0,
+      "p99": 0,
+      "max": 0
+    },
+    "window_keys": {
+      "1": {
+        "n": 22,
+        "p50": 1,
+        "p99": 2,
+        "max": 2
+      },
+      "2": {
+        "n": 22,
+        "p50": 1,
+        "p99": 1,
+        "max": 1
+      },
+      "3": {
+        "n": 22,
+        "p50": 1,
+        "p99": 1,
+        "max": 1
+      }
+    },
+    "window_bindings": {
+      "n": 22,
+      "p50": 1,
+      "p99": 17,
+      "max": 17
+    },
+    "new_keys_per_hour": {
+      "1": {
+        "n": 2,
+        "p50": 1,
+        "p99": 2,
+        "max": 2
+      },
+      "2": {
+        "n": 2,
+        "p50": 1,
+        "p99": 1,
+        "max": 1
+      },
+      "3": {
+        "n": 2,
+        "p50": 1,
+        "p99": 1,
+        "max": 1
+      }
+    }
+  },
+  "runs": [
+    {
+      "run": {
+        "params": {
+          "w": 5,
+          "r": 3,
+          "f": 1,
+          "k": 1,
+          "d": 2,
+          "c": 80,
+          "baseline": {
+            "alpha": 0.1,
+            "min_obs": 1,
+            "min_age": 10080,
+            "floor_per_min": 1
+          }
+        }
+      },
+      "episodes": [
+        {
+          "site": "dom-a01dff.example",
+          "episode": "e-f4120e75fd2f006b",
+          "label": "attack",
+          "onset": 1790449801,
+          "detected": true,
+          "detect_minute": 29840832,
+          "delay_seconds": 179,
+          "level": 3,
+          "at_detection": {
+            "a1": 1.5333333333333334,
+            "a2": 5
+          },
+          "best": {
+            "a1": 2.3333333333333335,
+            "a2": 8
+          },
+          "worst": {
+            "a1": 1.0666666666666667,
+            "a2": 4
+          }
+        }
+      ],
+      "transitions": {
+        "attack": 3
+      },
+      "false_positives": null,
+      "evaluations": 55,
+      "anomalous": 17,
+      "scope_levels": {
+        "2": 6
+      },
+      "max_active": {
+        "1": 2,
+        "2": 1,
+        "3": 1
+      },
+      "keys": {
+        "1": 3,
+        "2": 2,
+        "3": 2
+      },
+      "max_bindings": 17,
+      "fixtures": null
+    },
+    {
+      "run": {
+        "params": {
+          "w": 5,
+          "r": 3,
+          "f": 1,
+          "k": 1,
+          "d": 2,
+          "c": 80,
+          "baseline": {
+            "alpha": 0.1,
+            "min_obs": 1,
+            "min_age": 10080,
+            "floor_per_min": 1
+          }
+        },
+        "sketch": {
+          "m": 4,
+          "h": 8,
+          "seed": 7
+        }
+      },
+      "footprint_bytes": 3548,
+      "episodes": [
+        {
+          "site": "dom-a01dff.example",
+          "episode": "e-f4120e75fd2f006b",
+          "label": "attack",
+          "onset": 1790449801,
+          "detected": true,
+          "detect_minute": 29840832,
+          "delay_seconds": 179,
+          "level": 3,
+          "at_detection": {
+            "a1": 1.3333333333333333,
+            "a2": 3.5
+          },
+          "best": {
+            "a1": 2,
+            "a2": 3.5
+          },
+          "worst": {
+            "a1": 1.0666666666666667,
+            "a2": 3.5
+          }
+        }
+      ],
+      "transitions": {
+        "attack": 3
+      },
+      "false_positives": null,
+      "evaluations": 55,
+      "anomalous": 17,
+      "scope_levels": {
+        "2": 6
+      },
+      "max_active": {
+        "1": 2,
+        "2": 1,
+        "3": 1
+      },
+      "keys": {
+        "1": 3,
+        "2": 2,
+        "3": 2
+      },
+      "max_bindings": 17,
+      "sketch": {
+        "max_residual_error": 5,
+        "max_distinct_error": 9,
+        "lost_decisions": 0,
+        "exceeded": 0
+      },
+      "fixtures": null
+    }
+  ]
+}

@@ -7,12 +7,13 @@ enough distinct clients. Every one of those settings, and the memory bounds
 behind them, must come from what real hosts served, not from guesses. Two
 tools turn copies of a host's access logs into that evidence without
 retaining raw visitor identities. Pseudonymous recordings are still private.
-This revision is a construction prototype for synthetic data only. Certified
-coverage, replay-session state and bounded experiment acceptance are not yet
-implemented. Do not convert private recordings, delete preserved recordings
-on the strength of these outputs, or use reports to choose detector settings
-until those contracts pass their tests and independent review. Real-data
-collection and conversion then require separate operator approval.
+This revision validates bundles and certified coverage, but replay-session
+state and bounded experiment acceptance are not yet implemented, so it is
+still for synthetic data only. Do not convert private recordings, delete
+preserved recordings on the strength of these outputs, or use reports to
+choose detector settings until those contracts pass their tests and
+independent review. Real-data collection and conversion then require
+separate operator approval.
 
 `scripts/domlog-stream` converts local copies of domlogs into an anonymized
 record stream. The following example is for synthetic fixtures only, from a
@@ -144,24 +145,72 @@ prototype):
   stream; every other byte is counted as unplaced. For lines without a
   usable time, the manifest keeps the logged times of the timed lines
   around them, which bounds where the lost requests belong.
-- The prototype's first/last timed lines describe an observed extent, not
-  proof of complete minutes. Partial boundary minutes, internal gaps and
-  stalled logging must be excluded before replay. An idle log alone cannot
-  certify zero traffic. Do not qualify settings from an inferred extent.
+- The first and last timed lines describe an observed extent, not proof of
+  complete minutes, and the manifest keeps them apart from coverage. Only a
+  coverage proof certifies minutes. An idle log alone cannot certify zero
+  traffic.
 - Streams, labels, inventories and reports stay outside the repository.
 
-`scripts/crawl-calibrate` replays a bundle through exact models of the
-detector:
+`scripts/crawl-calibrate` validates a bundle and replays it through exact
+models of the detector. Build it from a clean committed checkout as well:
 
 ```bash
-go run ./scripts/crawl-calibrate --manifest "$RECORDING_DIR/host-a.manifest.json" \
+go build -o "$RECORDING_DIR/crawl-calibrate" ./scripts/crawl-calibrate
+"$RECORDING_DIR/crawl-calibrate" --manifest "$RECORDING_DIR/host-a.manifest.json" \
     --records "$RECORDING_DIR/host-a.records.jsonl.gz" --volume "$RECORDING_DIR/host-a.volume.jsonl.gz" \
+    --coverage "$RECORDING_DIR/host-a.coverage.json" \
     --window "$WINDOW_MINUTES" --grid "$RECORDING_DIR/grid.json" --out "$RECORDING_DIR/host-a.report.json"
 ```
 
-It refuses a bundle whose files do not match the manifest, and a manifest
-that lists a site other than a unique pseudonym. The report holds
-host lines and bytes per minute, line counts for nonempty site-minutes,
+It reads each file once and refuses a manifest that is not exactly what
+domlog-stream wrote, a site other than a unique pseudonym, and any row,
+digest or total that disagrees with the manifest, whether or not a grid is
+given. A grid replay needs `--coverage`, a proof the operator builds from
+evidence independent of the logs: the collection record, handler and logging
+liveness, and a measured bound on how long after its logged time a request
+can be written. The proof names the manifest by digest and tiles the
+recording period for every site with certified spans and reasoned
+exclusions (`partial_minute`, `collection_gap`, `liveness_unknown`,
+`topology_change`). It cites evidence only by digest:
+
+```json
+{
+  "format_version": 1,
+  "manifest_sha256": "<SHA-256 of the manifest file>",
+  "lateness_seconds": <measured completion-delay bound>,
+  "evidence": [
+    {"kind": "collection", "sha256": "<digest>"},
+    {"kind": "logging_liveness", "sha256": "<digest>"},
+    {"kind": "lateness", "sha256": "<digest>"},
+    {"kind": "pre_application", "sha256": "<digest>"}
+  ],
+  "sites": [
+    {"site": "dom-0a1b2c.example",
+     "spans": [{"from": 29840821, "to": 29840838}],
+     "excluded": [{"from": 29840820, "to": 29840820, "reason": "partial_minute"},
+                  {"from": 29840839, "to": 29840839, "reason": "partial_minute"}],
+     "rejects": [{"from": 29840827, "to": 29840827, "category": "no_target",
+                  "lines": 1, "evidence": "<digest of the pre_application entry>"}]}
+  ]
+}
+```
+
+A replay uses only certified minutes without unknown loss. A minute with a
+targetless or unattributed record is removed, and so is every minute a line
+without a usable time may belong to: the minutes between the timed lines
+around it, widened by the lateness bound. A `rejects` entry keeps those
+minutes only when independent evidence shows that exactly that many
+targetless or oversized lines were refused before the application ran; the
+HTTP status alone is not such evidence. Removed minutes break windows like
+any unknown minute and never train a baseline. Without `--coverage` the report
+holds only volume, silence and shape diagnostics over each site's observed
+extent and says its coverage is unqualified.
+
+The report records its provenance (the manifest and proof digests, both tool
+revisions, the salt fingerprint, the period and the bot evidence) and, per
+site, certified and covered minutes, excluded minutes by reason and every
+line count. It also holds host lines and bytes per minute, line counts for
+nonempty site-minutes,
 in-file timestamp disorder, how many patterns and clients are active per
 window, and, for every parameter set in the grid, each labeled episode's detection delay and margins, healthy
 false positives per site and day, the scope level chosen, key and client
@@ -172,8 +221,8 @@ baseline settings, with optional sketch sizes; fixtures add synthetic
 attacks from one-, three- and twenty-request clients with optional padding
 and churn.
 
-The silence diagnostic joins adjacent observed spans but stops at an
-unknown gap. A silent run alone does not certify zero traffic.
+The silence diagnostic joins adjacent spans but stops at an unknown gap. A
+silent run alone does not certify zero traffic.
 
 A replay is a hypothesis about the detector, not a record of what the host
 did: logs hold completed requests, not offered load, backend harm or queued
