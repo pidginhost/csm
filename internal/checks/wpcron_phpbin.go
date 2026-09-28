@@ -130,7 +130,7 @@ func inheritedHandlerPHPBin(owner, dir string) string {
 		return ""
 	}
 	for d := dir; ; d = filepath.Dir(d) {
-		data, ok, err := readTenantHtaccessBounded(filepath.Join(d, ".htaccess"))
+		data, ok, err := readTenantHtaccessBounded(home, d)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 		case err != nil || !ok:
@@ -170,8 +170,8 @@ var (
 )
 
 // cpanelHandlerVersion returns the PHP version the cPanel-generated handler
-// blocks of one .htaccess select for .php, and whether the file carries a
-// complete block at all. The last AddHandler for .php wins, as it does in the
+// blocks of one .htaccess select for .php, and whether a complete block sets
+// a handler for .php. The last AddHandler for .php wins, as it does in the
 // web server; an unrecognised handler selects no usable version. Directives
 // outside a complete block are not cPanel's selection and are ignored.
 func cpanelHandlerVersion(content string) (version string, found bool) {
@@ -182,11 +182,8 @@ func cpanelHandlerVersion(content string) (version string, found bool) {
 		case line == cpanelHandlerBegin:
 			inBlock, blockVersion, blockSets = true, "", false
 		case line == cpanelHandlerEnd:
-			if inBlock {
-				found = true
-				if blockSets {
-					version = blockVersion
-				}
+			if inBlock && blockSets {
+				version, found = blockVersion, true
 			}
 			inBlock = false
 		case inBlock:

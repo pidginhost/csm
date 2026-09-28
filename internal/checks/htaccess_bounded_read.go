@@ -3,6 +3,10 @@ package checks
 import (
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // htaccessMaxFileBytes bounds every scheduled .htaccess read. A real
@@ -26,15 +30,52 @@ func readHtaccessBounded(path string) (data []byte, ok bool, err error) {
 }
 
 // readTenantHtaccessBounded is readHtaccessBounded for a caller acting on the
-// tenant's behalf as root: a symlink or special file fails the open instead of
-// being followed or blocking on a FIFO writer.
-func readTenantHtaccessBounded(path string) (data []byte, ok bool, err error) {
-	f, err := openTenantRegularFile(path)
+// tenant's behalf as root. Every tenant-controlled directory is opened without
+// following symlinks, so a path replacement cannot redirect a privileged read
+// outside the passwd home. Special files cannot block the read.
+func readTenantHtaccessBounded(home, dir string) (data []byte, ok bool, err error) {
+	var f *os.File
+	if _, production := osFS.(realOS); production {
+		f, err = openTenantHtaccess(home, dir)
+	} else {
+		f, err = openTenantRegularFile(filepath.Join(dir, ".htaccess"))
+	}
 	if err != nil {
 		return nil, false, err
 	}
 	defer func() { _ = f.Close() }()
 	return readHtaccessFileBounded(f)
+}
+
+func openTenantHtaccess(home, dir string) (*os.File, error) {
+	rel, err := filepath.Rel(home, dir)
+	if err != nil || !filepath.IsAbs(home) || !filepath.IsLocal(rel) {
+		return nil, os.ErrPermission
+	}
+	const dirFlags = unix.O_RDONLY | unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC | unix.O_NONBLOCK
+	fd, err := unix.Open(home, dirFlags, 0)
+	if err != nil {
+		// A missing directory is not an absent .htaccess. The caller must
+		// stop instead of falling back to a handler in a surviving ancestor.
+		return nil, errNonRegularFile
+	}
+	defer func() { _ = unix.Close(fd) }()
+	if rel != "." {
+		for _, part := range strings.Split(rel, string(filepath.Separator)) {
+			next, openErr := unix.Openat(fd, part, dirFlags, 0)
+			if openErr != nil {
+				return nil, errNonRegularFile
+			}
+			_ = unix.Close(fd)
+			fd = next
+		}
+	}
+	fileFD, err := unix.Openat(fd, ".htaccess", unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	// #nosec G115 -- unix.Openat returned a non-negative descriptor because err is nil.
+	return os.NewFile(uintptr(fileFD), filepath.Join(dir, ".htaccess")), nil
 }
 
 func readHtaccessFileBounded(f *os.File) (data []byte, ok bool, err error) {

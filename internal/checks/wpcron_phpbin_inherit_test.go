@@ -176,6 +176,114 @@ func TestResolveDocrootPHPBinInheritStopsAtAccountHome(t *testing.T) {
 	}
 }
 
+func TestResolveDocrootPHPBinInheritEmptyBlockKeepsAncestor(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty":       "",
+		"comment":     "# Inherit the PHP version from the parent directory.\n",
+		"other types": "AddHandler application/x-httpd-ea-php73 .phtml .php7\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newInheritFixture(t, "alice")
+			f.domainMap("example.com: alice==root==main==example.com==%HOME%/public_html==192.0.2.10:80==192.0.2.10:443====0==inherit")
+			docroot := f.dir("public_html/blog")
+			f.htaccess(f.home, cpanelHandlerBlock("ea-php81", "___lsphp"))
+			f.htaccess(docroot, cpanelHandlerBegin+"\n"+body+cpanelHandlerEnd+"\n")
+			const want = "/opt/cpanel/ea-php81/root/usr/bin/php"
+			withInstalledPHPBins(t, want)
+			if got := resolveDocrootPHPBin("alice", docroot); got != want {
+				t.Fatalf("block without a PHP mapping hid ancestor: got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestResolveDocrootPHPBinInheritRejectsSymlinkedDirectories(t *testing.T) {
+	for _, targetHandler := range []bool{false, true} {
+		t.Run(fmt.Sprintf("outside handler=%t", targetHandler), func(t *testing.T) {
+			f := newInheritFixture(t, "alice")
+			outside := filepath.Join(f.root, "outside")
+			if err := os.MkdirAll(filepath.Join(outside, "blog"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if targetHandler {
+				f.htaccess(filepath.Join(outside, "blog"), cpanelHandlerBlock("ea-php73", "___lsphp"))
+			}
+			f.htaccess(f.home, cpanelHandlerBlock("ea-php81", "___lsphp"))
+			if err := os.Symlink(outside, filepath.Join(f.home, "public_html")); err != nil {
+				t.Fatal(err)
+			}
+			f.domainMap("example.com: alice==root==main==example.com==%HOME%/public_html==192.0.2.10:80==192.0.2.10:443====0==inherit")
+			withInstalledPHPBins(t,
+				"/opt/cpanel/ea-php73/root/usr/bin/php",
+				"/opt/cpanel/ea-php81/root/usr/bin/php")
+			if got := resolveDocrootPHPBin("alice", filepath.Join(f.home, "public_html", "blog")); got != "" {
+				t.Fatalf("symlinked ancestor resolved to %q, want no selection", got)
+			}
+		})
+	}
+}
+
+func TestResolveDocrootPHPBinInheritRejectsUnusableDirectory(t *testing.T) {
+	for _, kind := range []string{"missing", "dangling symlink", "fifo", "regular file", "home symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newInheritFixture(t, "alice")
+			f.htaccess(f.home, cpanelHandlerBlock("ea-php81", ""))
+			dir := filepath.Join(f.home, "public_html")
+			var err error
+			switch kind {
+			case "dangling symlink":
+				err = os.Symlink(filepath.Join(f.root, "absent"), dir)
+			case "fifo":
+				err = unix.Mkfifo(dir, 0o600)
+			case "regular file":
+				err = os.WriteFile(dir, nil, 0o600)
+			case "home symlink":
+				dir = f.dir("public_html")
+				moved := f.home + "-moved"
+				if err = os.Rename(f.home, moved); err == nil {
+					err = os.Symlink(moved, f.home)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.domainMap("example.com: alice==root==main==example.com==%HOME%/public_html==192.0.2.10:80==192.0.2.10:443====0==inherit")
+			withInstalledPHPBins(t, "/opt/cpanel/ea-php81/root/usr/bin/php")
+			done := make(chan string, 1)
+			go func() { done <- resolveDocrootPHPBin("alice", dir) }()
+			select {
+			case got := <-done:
+				if got != "" {
+					t.Fatalf("unusable directory selected %q", got)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("resolution blocked on a tenant directory")
+			}
+		})
+	}
+}
+
+func TestCpanelHandlerVersionEmptyAndUnknownMappings(t *testing.T) {
+	emptyBlock := cpanelHandlerBegin + "\n# Inherit\n" + cpanelHandlerEnd + "\n"
+	unknownBlock := cpanelHandlerBegin + "\nAddHandler custom-php .php\n" + cpanelHandlerEnd + "\n"
+	for _, tc := range []struct {
+		name, content, version string
+		found                  bool
+	}{
+		{"empty alone", emptyBlock, "", false},
+		{"empty after version", cpanelHandlerBlock("ea-php73", "") + emptyBlock, "ea-php73", true},
+		{"unknown after version", cpanelHandlerBlock("ea-php73", "") + unknownBlock, "", true},
+		{"empty after unknown", unknownBlock + emptyBlock, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			version, found := cpanelHandlerVersion(tc.content)
+			if version != tc.version || found != tc.found {
+				t.Fatalf("got (%q, %t), want (%q, %t)", version, found, tc.version, tc.found)
+			}
+		})
+	}
+}
+
 // The walk is bounded by the owner's passwd home. An owner with no passwd
 // entry, or a docroot outside that home, has no boundary to walk within.
 func TestResolveDocrootPHPBinInheritRequiresDocrootInsideOwnerHome(t *testing.T) {
@@ -258,6 +366,11 @@ func TestResolveDocrootPHPBinInheritUnjudgeableHtaccessStopsWalk(t *testing.T) {
 		}},
 		{"fifo", func(t *testing.T, f *inheritFixture, docroot string) {
 			if err := unix.Mkfifo(filepath.Join(docroot, ".htaccess"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"directory", func(t *testing.T, f *inheritFixture, docroot string) {
+			if err := os.Mkdir(filepath.Join(docroot, ".htaccess"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 		}},

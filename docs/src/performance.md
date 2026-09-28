@@ -144,8 +144,10 @@ Tune the WP-Cron remediation under **Settings -> Performance**:
   interpreter for the cron line. Leave it empty and each site runs under the
   PHP version its own vhost is set to when cPanel's domain map provides an
   unambiguous version. A vhost set to inherit runs the version named by the
-  nearest cPanel-generated handler block in its `.htaccess` chain, up to the
-  account home, because that is what the web server runs for it. CSM falls
+  nearest cPanel-generated handler block that maps `.php` in its `.htaccess`
+  chain, up to the account home. Empty blocks leave the parent mapping in
+  effect. The lookup refuses symlinked directories and files, special files,
+  and oversized files; an unreadable nearer file stops inheritance. CSM falls
   back to the detected CLI interpreter when neither gives a usable, installed
   version; an existing managed job keeps its interpreter while the map is
   unavailable. Setting a value pins that one interpreter for every
