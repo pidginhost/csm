@@ -14,8 +14,9 @@
 // equality and hierarchy, and a pseudonym two names would share is refused. No target, query
 // value, address, user agent or Referer is written. Outputs are staged and
 // published only after every input converted; the manifest, which records
-// input and output digests and per-site coverage, is published last as
-// the bundle's completion marker. The salt file is created on first use
+// input and output digests, per-site coverage and the full digest of every
+// site, account and episode pseudonym, is published last as the bundle's
+// completion marker. The salt file is created on first use
 // (mode 0600) and is shared with scripts/finding-stream so the two streams
 // join; the identity registry beside it records every site, account and
 // episode pseudonym the salt has issued across bundles. A run that creates
@@ -35,10 +36,12 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"syscall"
 	"time"
 
@@ -242,6 +245,7 @@ func run(args []string, stdout io.Writer, e env) error {
 	if _, err = reg.add(ps.named); err != nil {
 		return fail(err)
 	}
+	m.Identities = identities(ps.named)
 	recOut, err := records.finish("records")
 	if err != nil {
 		return fail(err)
@@ -284,6 +288,16 @@ func run(args []string, stdout io.Writer, e env) error {
 	fmt.Fprintf(stdout, "elapsed: %s\nns/line: %d\nplatform: %s/%s cpus=%d %s\n", elapsed.Round(time.Millisecond),
 		elapsed.Nanoseconds()/max(1, lines), runtime.GOOS, runtime.GOARCH, runtime.NumCPU(), runtime.Version())
 	return nil
+}
+
+// identities lists issued site, account and episode pseudonyms with their
+// full digests, so bundles combined later can prove they agree.
+func identities(named map[string]string) []crawlreplay.Identity {
+	out := make([]crawlreplay.Identity, 0, len(named))
+	for _, name := range slices.Sorted(maps.Keys(named)) {
+		out = append(out, crawlreplay.Identity{Pseudonym: name, Digest: named[name]})
+	}
+	return out
 }
 
 func digestOf(b []byte) crawlreplay.Digest {

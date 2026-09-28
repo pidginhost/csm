@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // fileSystem is every file operation the command performs, so a test can
@@ -53,11 +54,17 @@ func (osFS) Remove(name string) error                     { return os.Remove(nam
 func (osFS) MkdirAll(path string, perm os.FileMode) error { return os.MkdirAll(path, perm) }
 func (osFS) EvalSymlinks(path string) (string, error)     { return filepath.EvalSymlinks(path) }
 
-// readFile reads a whole operator-supplied input.
+// readFile reads a whole operator-supplied input: a regular file, opened
+// without following a symlink or waiting for a FIFO's writer.
 func readFile(fsys fileSystem, path string) ([]byte, error) {
-	f, err := fsys.OpenFile(path, os.O_RDONLY, 0)
+	f, err := fsys.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		f.Close()
+		return nil, os.ErrInvalid
 	}
 	b, readErr := io.ReadAll(f)
 	if closeErr := f.Close(); readErr != nil || closeErr != nil {

@@ -11,6 +11,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"strings"
 )
 
 // ProofVersion is the coverage proof format.
@@ -320,6 +321,7 @@ type inputState struct {
 
 type bundleCheck struct {
 	m        Manifest
+	episodes map[string]bool // declared episode pseudonym -> seen in a record
 	proof    *CoverageProof
 	sites    map[string]*siteState
 	volumes  map[siteMinute]bool
@@ -351,7 +353,12 @@ func newBundleCheck(m Manifest, proof *CoverageProof, identityVersion int) (*bun
 		return nil, manifestError("digest")
 	}
 	c := &bundleCheck{m: m, proof: proof, sites: map[string]*siteState{}, volumes: map[siteMinute]bool{},
-		l1Parent: map[string]string{}, l2Site: map[string]string{}}
+		l1Parent: map[string]string{}, l2Site: map[string]string{}, episodes: map[string]bool{}}
+	for _, id := range m.Identities {
+		if strings.HasPrefix(id.Pseudonym, "e-") {
+			c.episodes[id.Pseudonym] = false
+		}
+	}
 	for i := range m.Sites {
 		c.sites[m.Sites[i].Site] = &siteState{m: &m.Sites[i], labels: map[string]int64{},
 			lines: map[int64]int64{}, unboundLines: map[int64]int64{},
@@ -478,6 +485,8 @@ func (c *bundleCheck) record(r Record) error {
 		return bundleError("account")
 	case r.BotProof != "" && c.m.BotEvidence == nil:
 		return bundleError("bot evidence")
+	case r.Episode != "" && !c.declared(r.Episode):
+		return bundleError("episode identity")
 	case r.Seq <= s.seq, r.Seq > s.m.Lines, r.File < s.file, r.File >= len(s.inputs):
 		return bundleError("file order")
 	case !c.placed(s, minute):
@@ -528,8 +537,21 @@ func sameExtent(a, b *Span) bool {
 	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
 
+func (c *bundleCheck) declared(episode string) bool {
+	if _, ok := c.episodes[episode]; !ok {
+		return false
+	}
+	c.episodes[episode] = true
+	return true
+}
+
 // finish compares what was read with the manifest's outputs and totals.
 func (c *bundleCheck) finish(records, volume Digest) error {
+	for _, seen := range c.episodes {
+		if !seen {
+			return bundleError("episode identity")
+		}
+	}
 	for _, o := range c.m.Outputs {
 		got, rows := records, c.rRows
 		if o.Kind == "volume" {

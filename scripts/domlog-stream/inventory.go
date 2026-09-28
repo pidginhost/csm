@@ -1,10 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
-	"io"
 	"net/netip"
 	"regexp"
 	"strings"
@@ -67,23 +63,12 @@ var (
 	episodeName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 )
 
-func decodeStrict(b []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		return errInventory
-	}
-	var trailing any
-	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return errInventory
-	}
-	return nil
-}
-
+// parseInventory accepts only the inventory's closed JSON form: exact member
+// names, each once, no nulls and no trailing data.
 func parseInventory(b []byte) (*inventory, error) {
 	var inv inventory
-	if err := decodeStrict(b, &inv); err != nil {
-		return nil, err
+	if err := crawlreplay.DecodeStrictJSON(b, &inv); err != nil {
+		return nil, errInventory
 	}
 	from, to := inv.Period.From, inv.Period.To
 	if len(inv.Sites) == 0 || from.Unix() <= 0 || !from.Before(to) || from.Unix()%60 != 0 || to.Unix()%60 != 0 ||
@@ -163,7 +148,7 @@ func containsAddr(prefixes []netip.Prefix, a netip.Addr) bool {
 
 func parseLabels(b []byte, inv *inventory) ([]labelRule, error) {
 	var lf labelFile
-	if err := decodeStrict(b, &lf); err != nil {
+	if err := crawlreplay.DecodeStrictJSON(b, &lf); err != nil {
 		return nil, errLabels
 	}
 	sites := map[string]bool{}

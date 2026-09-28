@@ -14,11 +14,15 @@ import (
 	"io"
 	"math"
 	"regexp"
+	"strings"
 )
 
 // ManifestVersion is the bundle manifest format. Version 1 called an
-// observed first-to-last extent coverage; it is refused.
-const ManifestVersion = 2
+// observed first-to-last extent coverage. Version 2 lacked identity
+// digests, so bundles converted against a forked or restored identity
+// registry could share a pseudonym for two names unnoticed. Both are
+// refused.
+const ManifestVersion = 3
 
 // Categories of lines no minute holds, as the manifest and proofs name them.
 // LossNoTarget is timed: its lines are records whose volume row counts them.
@@ -43,6 +47,7 @@ var (
 
 	accountPseudonymRe = regexp.MustCompile(`^acct-[0-9a-f]{6}$`)
 	sha256Hex          = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	identityName       = regexp.MustCompile(`^(?:dom-([0-9a-f]{6})\.example|acct-([0-9a-f]{6})|e-([0-9a-f]{16}))$`)
 	saltPrint          = regexp.MustCompile(`^[0-9a-f]{12}$`)
 	revisionHex        = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 )
@@ -109,6 +114,21 @@ type UntimedLoss struct {
 	Lines    int64  `json:"lines"`
 }
 
+// Identity is a site, account or episode pseudonym a bundle issued with the
+// full keyed digest it is a prefix of. One pseudonym with two digests is two
+// names that one registry would have refused; bundles combined in one
+// experiment must agree on every digest.
+type Identity struct {
+	Pseudonym string `json:"pseudonym"`
+	Digest    string `json:"digest"`
+}
+
+// valid reports a closed pseudonym whose hexadecimal part begins its digest.
+func (id Identity) valid() bool {
+	m := identityName.FindStringSubmatch(id.Pseudonym)
+	return m != nil && sha256Hex.MatchString(id.Digest) && strings.HasPrefix(id.Digest, m[1]+m[2]+m[3])
+}
+
 // SiteManifest is what the converter observed for one site. Every line read
 // is a record or exactly one refused category; record bytes are in volume
 // rows and every other byte is unplaced. Extent is diagnostic only.
@@ -149,6 +169,9 @@ type Manifest struct {
 	Inputs          []Input         `json:"inputs"`
 	Outputs         []Output        `json:"outputs"`
 	Sites           []SiteManifest  `json:"sites"`
+	// Identities lists every site, account and episode pseudonym of the
+	// bundle, ordered by pseudonym.
+	Identities []Identity `json:"identities"`
 
 	digest string
 }
@@ -267,6 +290,31 @@ func (m Manifest) Validate() error {
 	}
 	if len(inputs) != len(sites) {
 		return manifestError("inputs")
+	}
+	return m.validateIdentities()
+}
+
+// validateIdentities requires exactly the manifest's sites and accounts
+// plus episode pseudonyms, which only the records can confirm.
+func (m Manifest) validateIdentities() error {
+	named := map[string]bool{}
+	for i, id := range m.Identities {
+		if !id.valid() || (i > 0 && id.Pseudonym <= m.Identities[i-1].Pseudonym) {
+			return manifestError("identities")
+		}
+		named[id.Pseudonym] = true
+	}
+	used := map[string]bool{}
+	for _, s := range m.Sites {
+		if !named[s.Site] || !named[s.Account] {
+			return manifestError("identities")
+		}
+		used[s.Site], used[s.Account] = true, true
+	}
+	for _, id := range m.Identities {
+		if !used[id.Pseudonym] && !strings.HasPrefix(id.Pseudonym, "e-") {
+			return manifestError("identities")
+		}
 	}
 	return nil
 }

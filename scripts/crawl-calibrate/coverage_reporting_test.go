@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/crawlreplay"
@@ -100,6 +102,8 @@ func TestCalibrateEmptySiteNeedsCertifiedCoverage(t *testing.T) {
 			m.Inputs = append(m.Inputs, crawlreplay.Input{Site: emptySite, SHA256: digest, ContentSHA256: digest})
 			m.Sites = append(m.Sites, crawlreplay.SiteManifest{Site: emptySite, Account: "acct-000002",
 				Labels: map[string]int64{}, Untimed: []crawlreplay.UntimedLoss{}})
+			m.Identities = append(m.Identities, testIdentity("acct-000002"), testIdentity(emptySite))
+			slices.SortFunc(m.Identities, func(a, b crawlreplay.Identity) int { return strings.Compare(a.Pseudonym, b.Pseudonym) })
 			raw, err := crawlreplay.EncodeManifest(m)
 			if err != nil {
 				t.Fatal(err)

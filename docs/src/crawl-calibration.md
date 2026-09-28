@@ -53,8 +53,9 @@ its log copies. The period is bounded by whole UTC minutes, `from` inclusive and
 `to` exclusive, and must have ended. Site names and aliases must be lowercase
 DNS names without a terminal dot, at most 253 bytes each, and one host
 belongs to one site: an alias listed twice or naming another site is
-refused. Log paths are absolute; a relative path resolves against the
-working directory:
+refused. Use absolute log paths: the tool also accepts a relative path, but
+resolves it against the directory it runs in, which ties the inventory to
+that directory:
 
 ```json
 {
@@ -69,6 +70,10 @@ working directory:
   "infrastructure": ["192.0.2.200"]
 }
 ```
+
+The inventory, labels and bot evidence files must be regular files, not
+symlinks, devices or FIFOs, in their exact JSON form: every member spelled
+exactly and given once, no null values and nothing after the document.
 
 Verified-bot identity comes only from the host's own verified-bot list. The
 optional bot evidence file is an export of that list for the recording
@@ -97,6 +102,10 @@ that same identity held the client at the logged time, else `dns` or
 bot's range, an expired proof or contradictory verdicts leave the claim
 unverified. The manifest records the evidence digest and its list revision.
 Bundle validation refuses a proof without that reference or a client binding.
+A bot the host verifies only through operator-configured user-agent
+substrings (`reputation.verified_bots`) has no claimed identity here: its
+requests are ordinary traffic in the bundle, and bot-label qualification
+must account for them separately.
 
 Aliases decide which Referers count as same-site; a `www` host counts only
 when it is listed. Behind a trusted proxy the client is the rightmost
@@ -118,7 +127,11 @@ Handling rules for later qualified real-data use (not authorized by this
 prototype):
 
 - The operator copies the logs read-only into a private local directory
-  (mode 0700) after explicit collection approval. Run
+  (mode 0700) after explicit collection approval. Take each copy no earlier
+  than the end of the recording period plus the lateness bound, so requests
+  that complete after the last minute are already written; when a copy was
+  taken earlier, exclude the minutes it cannot vouch for as
+  `partial_minute`. Run
   the tool, review coverage against those copies and independently recorded
   handler/logging liveness, then let the operator delete the approved copies.
   Nothing runs on the monitored host.
@@ -160,6 +173,10 @@ prototype):
   stream; every other byte is counted as unplaced. For lines without a
   usable time, the manifest keeps the logged times of the timed lines
   around them, which bounds where the lost requests belong.
+- The manifest also lists every site, account and episode pseudonym of the
+  bundle with the full keyed digest it is a prefix of. Bundles replayed
+  together must agree on every digest, so bundles converted against a
+  forked or restored registry cannot merge two names unnoticed.
 - The first and last timed lines describe an observed extent, not proof of
   complete minutes, and the manifest keeps them apart from coverage. Only a
   coverage proof certifies minutes. An idle log alone cannot certify zero

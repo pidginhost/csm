@@ -22,6 +22,7 @@ const (
 	quietSite     = "dom-000001.example"
 	attackAccount = "acct-000000"
 	quietAccount  = "acct-000001"
+	attackEpisode = "e-00000000000000e1"
 )
 
 func calibratorTool() crawlreplay.ToolRevision {
@@ -50,7 +51,7 @@ func writeBundle(t *testing.T, o bundleOptions) bundle {
 	b := bundle{dir: dir, manifest: filepath.Join(dir, "manifest.json"), records: filepath.Join(dir, "records.jsonl.gz"),
 		volume: filepath.Join(dir, "volume.jsonl.gz"), coverage: filepath.Join(dir, "coverage.json"),
 		grid: filepath.Join(dir, "grid.json"), out: filepath.Join(dir, "report.json")}
-	attack := crawlreplay.Fixture{Name: "e1", Train: 60, Background: 2, Pool: 5, Minutes: 20, PerMinute: 200, Q: 3, Seed: 1}.Site()
+	attack := crawlreplay.Fixture{Name: attackEpisode, Train: 60, Background: 2, Pool: 5, Minutes: 20, PerMinute: 200, Q: 3, Seed: 1}.Site()
 	period := crawlreplay.Span{From: attack.Coverage[0].From - o.pad, To: attack.Coverage[0].To}
 	quiet := crawlreplay.NewSynth(quietSite, 2).Pool(crawlreplay.Traffic{
 		From: attack.Coverage[0].From, To: period.To, PerMinute: 1, Label: crawlreplay.LabelHealthy}, 3)
@@ -130,6 +131,10 @@ func writeBundle(t *testing.T, o bundleOptions) bundle {
 		sm.Lines, sm.Bytes = sm.Records, sm.Records*100
 		m.Sites = append(m.Sites, sm)
 	}
+	for _, name := range []string{attackAccount, quietAccount, attackSite, quietSite, attackEpisode} {
+		m.Identities = append(m.Identities, testIdentity(name))
+	}
+	slices.SortFunc(m.Identities, func(a, b crawlreplay.Identity) int { return strings.Compare(a.Pseudonym, b.Pseudonym) })
 	// Each site has one input, so its extent is the site's.
 	for i, s := range m.Sites {
 		extent := *s.Extent
@@ -159,6 +164,15 @@ func writeBundle(t *testing.T, o bundleOptions) bundle {
 		}
 	}
 	return b
+}
+
+// testIdentity pads a pseudonym's hexadecimal part into its digest.
+func testIdentity(pseudonym string) crawlreplay.Identity {
+	hexPart := strings.TrimSuffix(pseudonym, ".example")
+	for _, prefix := range []string{"dom-", "acct-", "e-"} {
+		hexPart = strings.TrimPrefix(hexPart, prefix)
+	}
+	return crawlreplay.Identity{Pseudonym: pseudonym, Digest: hexPart + strings.Repeat("f", 64-len(hexPart))}
 }
 
 func (b bundle) args() []string {
