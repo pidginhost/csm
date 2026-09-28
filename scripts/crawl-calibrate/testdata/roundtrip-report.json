@@ -1,37 +1,51 @@
 {
   "provenance": {
-    "manifest_sha256": "ed544b4aa7b6d9a6e4d2a9083581de1ba0f35e4842e0526665e21b5a651753ea",
-    "stream_version": 2,
-    "identity_version": 1,
-    "converter": {
-      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "dirty": false,
-      "go_version": "go-test"
-    },
+    "experiment_sha256": "466cdb962d2b2f62be0ad64358ef9e61cabff6b32a6ad1f6f9eba26a4fce0adc",
     "calibrator": {
       "revision": "dddddddddddddddddddddddddddddddddddddddd",
       "dirty": false,
       "go_version": "go-test"
     },
+    "stream_version": 2,
+    "identity_version": 1,
     "salt_fingerprint": "425ed4e4a36b",
-    "period": {
-      "from": 29840820,
-      "to": 29840839
-    },
-    "bot_evidence": {
-      "sha256": "c6e4eeac9e42f545cbb346d7195f53cc3587cf32a74819590e2cd1610b2a0c3e",
-      "bytes": 318,
-      "d2_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "config_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-    },
     "coverage": "certified",
-    "proof_sha256": "22b8de80db89ce97cee6c2956b1a63977e7f14ef39ee14f56d5ffea30b3ebf77",
-    "lateness_seconds": 60
+    "bundles": [
+      {
+        "role": "scoring",
+        "score": [
+          {
+            "from": 29840820,
+            "to": 29840839
+          }
+        ],
+        "manifest_sha256": "ed544b4aa7b6d9a6e4d2a9083581de1ba0f35e4842e0526665e21b5a651753ea",
+        "converter": {
+          "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "dirty": false,
+          "go_version": "go-test"
+        },
+        "period": {
+          "from": 29840820,
+          "to": 29840839
+        },
+        "bot_evidence": {
+          "sha256": "c6e4eeac9e42f545cbb346d7195f53cc3587cf32a74819590e2cd1610b2a0c3e",
+          "bytes": 318,
+          "d2_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "config_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "coverage": "certified",
+        "proof_sha256": "22b8de80db89ce97cee6c2956b1a63977e7f14ef39ee14f56d5ffea30b3ebf77",
+        "lateness_seconds": 60
+      }
+    ]
   },
   "window": 5,
   "sites": 2,
   "coverage": [
     {
+      "bundle": 0,
       "site": "dom-a01dff.example",
       "extent": {
         "from": 29840820,
@@ -58,6 +72,7 @@
       "unplaced_bytes": 33
     },
     {
+      "bundle": 0,
       "site": "dom-dcef08.example",
       "extent": {
         "from": 29840822,
@@ -106,10 +121,12 @@
   },
   "silences": [
     {
+      "bundle": 0,
       "site": "dom-dcef08.example",
       "minutes": 9
     },
     {
+      "bundle": 0,
       "site": "dom-a01dff.example",
       "minutes": 0
     }
@@ -186,54 +203,202 @@
           }
         }
       },
-      "episodes": [
-        {
-          "site": "dom-a01dff.example",
-          "episode": "e-f4120e75fd2f006b",
-          "label": "attack",
-          "status": "detected",
-          "onset": 1790449801,
-          "detected": true,
-          "detect_minute": 29840832,
-          "delay_seconds": 179,
-          "key": {
-            "level": 3
+      "scoring": {
+        "events": [
+          {
+            "site": "dom-a01dff.example",
+            "key": {
+              "level": 3
+            },
+            "minute": 29840832,
+            "total": 28,
+            "expensive": 28,
+            "expected": 5,
+            "exact": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "bound": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "scope": {
+              "level": 2,
+              "keys": [
+                {
+                  "level": 2,
+                  "key": "k-2a91587001a7ea47"
+                }
+              ],
+              "covered": 28,
+              "denominator": 28,
+              "basis": "expensive"
+            },
+            "labels": {
+              "attack/e-f4120e75fd2f006b": 18,
+              "healthy": 10
+            },
+            "covered_from": 29840828,
+            "trusted": false,
+            "class": "attack",
+            "credited": [
+              "e-f4120e75fd2f006b"
+            ]
           },
-          "at_detection": {
-            "a1": 1.5333333333333334,
-            "a2": 5
+          {
+            "site": "dom-a01dff.example",
+            "key": {
+              "level": 2,
+              "key": "k-2a91587001a7ea47"
+            },
+            "minute": 29840832,
+            "total": 28,
+            "expensive": 28,
+            "expected": 5,
+            "exact": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "bound": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "scope": {
+              "level": 2,
+              "keys": [
+                {
+                  "level": 2,
+                  "key": "k-2a91587001a7ea47"
+                }
+              ],
+              "covered": 28,
+              "denominator": 28,
+              "basis": "expensive"
+            },
+            "labels": {
+              "attack/e-f4120e75fd2f006b": 18,
+              "healthy": 10
+            },
+            "covered_from": 29840828,
+            "trusted": false,
+            "class": "attack",
+            "credited": [
+              "e-f4120e75fd2f006b"
+            ]
           },
-          "exact_at_detection": {
-            "a1": 1.5333333333333334,
-            "a2": 5
-          },
-          "scope": {
-            "level": 2,
-            "keys": [
-              {
-                "level": 2,
-                "key": "k-2a91587001a7ea47"
-              }
-            ],
-            "covered": 28,
-            "denominator": 28,
-            "basis": "expensive"
-          },
-          "scope_match": "narrower",
-          "best": {
-            "a1": 2.3333333333333335,
-            "a2": 8
-          },
-          "worst": {
-            "a1": 1.0666666666666667,
-            "a2": 4
+          {
+            "site": "dom-a01dff.example",
+            "key": {
+              "level": 1,
+              "key": "k-350eb053bb5e976d",
+              "parent": "k-2a91587001a7ea47"
+            },
+            "minute": 29840832,
+            "total": 18,
+            "expensive": 18,
+            "expected": 5,
+            "exact": {
+              "a1": 1.0666666666666667,
+              "a2": 4
+            },
+            "bound": {
+              "a1": 1.0666666666666667,
+              "a2": 4
+            },
+            "scope": {
+              "level": 2,
+              "keys": [
+                {
+                  "level": 2,
+                  "key": "k-2a91587001a7ea47"
+                }
+              ],
+              "covered": 28,
+              "denominator": 28,
+              "basis": "expensive"
+            },
+            "labels": {
+              "attack/e-f4120e75fd2f006b": 18
+            },
+            "covered_from": 29840828,
+            "trusted": false,
+            "class": "attack",
+            "credited": [
+              "e-f4120e75fd2f006b"
+            ]
           }
-        }
-      ],
-      "transitions": {
-        "attack": 3
+        ],
+        "episodes": [
+          {
+            "episode": "e-f4120e75fd2f006b",
+            "label": "attack",
+            "site": "dom-a01dff.example",
+            "status": "detected",
+            "onset": 1790449801,
+            "detected": true,
+            "detect_minute": 29840832,
+            "delay_seconds": 179,
+            "key": {
+              "level": 3
+            },
+            "at_detection": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "exact_at_detection": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "scope": {
+              "level": 2,
+              "keys": [
+                {
+                  "level": 2,
+                  "key": "k-2a91587001a7ea47"
+                }
+              ],
+              "covered": 28,
+              "denominator": 28,
+              "basis": "expensive"
+            },
+            "scope_match": "narrower",
+            "best": {
+              "a1": 2.3333333333333335,
+              "a2": 8
+            },
+            "worst": {
+              "a1": 1.0666666666666667,
+              "a2": 4
+            }
+          }
+        ],
+        "site_days": [
+          {
+            "site": "dom-a01dff.example",
+            "day": 20722,
+            "minutes": 16,
+            "judged": 8,
+            "requests": {
+              "attack": 30,
+              "healthy": 35
+            },
+            "events": 3,
+            "credited": 3
+          },
+          {
+            "site": "dom-dcef08.example",
+            "day": 20722,
+            "minutes": 18,
+            "judged": 14,
+            "requests": {
+              "": 2
+            },
+            "events": 0,
+            "credited": 0
+          }
+        ],
+        "active_at_score_start": []
       },
-      "false_positives": null,
       "evaluations": 55,
       "anomalous": 17,
       "scope_levels": {
@@ -250,7 +415,7 @@
         "3": 2
       },
       "max_bindings": 17,
-      "fixtures": null
+      "fixtures": []
     },
     {
       "run": {
@@ -275,54 +440,398 @@
         }
       },
       "footprint_bytes": 3548,
-      "episodes": [
-        {
-          "site": "dom-a01dff.example",
-          "episode": "e-f4120e75fd2f006b",
-          "label": "attack",
-          "status": "detected",
-          "onset": 1790449801,
-          "detected": true,
-          "detect_minute": 29840832,
-          "delay_seconds": 179,
-          "key": {
-            "level": 3
+      "scoring": {
+        "events": [
+          {
+            "site": "dom-a01dff.example",
+            "key": {
+              "level": 3
+            },
+            "minute": 29840832,
+            "total": 28,
+            "expensive": 28,
+            "expected": 5,
+            "exact": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "bound": {
+              "a1": 1.3333333333333333,
+              "a2": 3.5
+            },
+            "scope": {
+              "level": 2,
+              "keys": [
+                {
+                  "level": 2,
+                  "key": "k-2a91587001a7ea47"
+                }
+              ],
+              "covered": 28,
+              "denominator": 28,
+              "basis": "expensive"
+            },
+            "labels": {
+              "attack/e-f4120e75fd2f006b": 18,
+              "healthy": 10
+            },
+            "covered_from": 29840828,
+            "trusted": false,
+            "class": "attack",
+            "credited": [
+              "e-f4120e75fd2f006b"
+            ]
           },
-          "at_detection": {
-            "a1": 1.3333333333333333,
-            "a2": 3.5
+          {
+            "site": "dom-a01dff.example",
+            "key": {
+              "level": 2,
+              "key": "k-2a91587001a7ea47"
+            },
+            "minute": 29840832,
+            "total": 28,
+            "expensive": 28,
+            "expected": 5,
+            "exact": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "bound": {
+              "a1": 1.3333333333333333,
+              "a2": 3.5
+            },
+            "scope": {
+              "level": 2,
+              "keys": [
+                {
+                  "level": 2,
+                  "key": "k-2a91587001a7ea47"
+                }
+              ],
+              "covered": 28,
+              "denominator": 28,
+              "basis": "expensive"
+            },
+            "labels": {
+              "attack/e-f4120e75fd2f006b": 18,
+              "healthy": 10
+            },
+            "covered_from": 29840828,
+            "trusted": false,
+            "class": "attack",
+            "credited": [
+              "e-f4120e75fd2f006b"
+            ]
           },
-          "exact_at_detection": {
-            "a1": 1.5333333333333334,
-            "a2": 5
-          },
-          "scope": {
-            "level": 2,
-            "keys": [
-              {
-                "level": 2,
-                "key": "k-2a91587001a7ea47"
-              }
-            ],
-            "covered": 28,
-            "denominator": 28,
-            "basis": "expensive"
-          },
-          "scope_match": "narrower",
-          "best": {
-            "a1": 2,
-            "a2": 3.5
-          },
-          "worst": {
-            "a1": 1.0666666666666667,
-            "a2": 3.5
+          {
+            "site": "dom-a01dff.example",
+            "key": {
+              "level": 1,
+              "key": "k-350eb053bb5e976d",
+              "parent": "k-2a91587001a7ea47"
+            },
+            "minute": 29840832,
+            "total": 18,
+            "expensive": 18,
+            "expected": 5,
+            "exact": {
+              "a1": 1.0666666666666667,
+              "a2": 4
+            },
+            "bound": {
+              "a1": 1.0666666666666667,
+              "a2": 3.5
+            },
+            "scope": {
+              "level": 2,
+              "keys": [
+                {
+                  "level": 2,
+                  "key": "k-2a91587001a7ea47"
+                }
+              ],
+              "covered": 28,
+              "denominator": 28,
+              "basis": "expensive"
+            },
+            "labels": {
+              "attack/e-f4120e75fd2f006b": 18
+            },
+            "covered_from": 29840828,
+            "trusted": false,
+            "class": "attack",
+            "credited": [
+              "e-f4120e75fd2f006b"
+            ]
           }
-        }
-      ],
-      "transitions": {
-        "attack": 3
+        ],
+        "episodes": [
+          {
+            "episode": "e-f4120e75fd2f006b",
+            "label": "attack",
+            "site": "dom-a01dff.example",
+            "status": "detected",
+            "onset": 1790449801,
+            "detected": true,
+            "detect_minute": 29840832,
+            "delay_seconds": 179,
+            "key": {
+              "level": 3
+            },
+            "at_detection": {
+              "a1": 1.3333333333333333,
+              "a2": 3.5
+            },
+            "exact_at_detection": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "scope": {
+              "level": 2,
+              "keys": [
+                {
+                  "level": 2,
+                  "key": "k-2a91587001a7ea47"
+                }
+              ],
+              "covered": 28,
+              "denominator": 28,
+              "basis": "expensive"
+            },
+            "scope_match": "narrower",
+            "best": {
+              "a1": 2,
+              "a2": 3.5
+            },
+            "worst": {
+              "a1": 1.0666666666666667,
+              "a2": 3.5
+            }
+          }
+        ],
+        "site_days": [
+          {
+            "site": "dom-a01dff.example",
+            "day": 20722,
+            "minutes": 16,
+            "judged": 8,
+            "requests": {
+              "attack": 30,
+              "healthy": 35
+            },
+            "events": 3,
+            "credited": 3
+          },
+          {
+            "site": "dom-dcef08.example",
+            "day": 20722,
+            "minutes": 18,
+            "judged": 14,
+            "requests": {
+              "": 2
+            },
+            "events": 0,
+            "credited": 0
+          }
+        ],
+        "active_at_score_start": []
       },
-      "false_positives": null,
+      "exact": {
+        "events": [
+          {
+            "site": "dom-a01dff.example",
+            "key": {
+              "level": 3
+            },
+            "minute": 29840832,
+            "total": 28,
+            "expensive": 28,
+            "expected": 5,
+            "exact": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "bound": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "scope": {
+              "level": 2,
+              "keys": [
+                {
+                  "level": 2,
+                  "key": "k-2a91587001a7ea47"
+                }
+              ],
+              "covered": 28,
+              "denominator": 28,
+              "basis": "expensive"
+            },
+            "labels": {
+              "attack/e-f4120e75fd2f006b": 18,
+              "healthy": 10
+            },
+            "covered_from": 29840828,
+            "trusted": false,
+            "class": "attack",
+            "credited": [
+              "e-f4120e75fd2f006b"
+            ]
+          },
+          {
+            "site": "dom-a01dff.example",
+            "key": {
+              "level": 2,
+              "key": "k-2a91587001a7ea47"
+            },
+            "minute": 29840832,
+            "total": 28,
+            "expensive": 28,
+            "expected": 5,
+            "exact": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "bound": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "scope": {
+              "level": 2,
+              "keys": [
+                {
+                  "level": 2,
+                  "key": "k-2a91587001a7ea47"
+                }
+              ],
+              "covered": 28,
+              "denominator": 28,
+              "basis": "expensive"
+            },
+            "labels": {
+              "attack/e-f4120e75fd2f006b": 18,
+              "healthy": 10
+            },
+            "covered_from": 29840828,
+            "trusted": false,
+            "class": "attack",
+            "credited": [
+              "e-f4120e75fd2f006b"
+            ]
+          },
+          {
+            "site": "dom-a01dff.example",
+            "key": {
+              "level": 1,
+              "key": "k-350eb053bb5e976d",
+              "parent": "k-2a91587001a7ea47"
+            },
+            "minute": 29840832,
+            "total": 18,
+            "expensive": 18,
+            "expected": 5,
+            "exact": {
+              "a1": 1.0666666666666667,
+              "a2": 4
+            },
+            "bound": {
+              "a1": 1.0666666666666667,
+              "a2": 4
+            },
+            "scope": {
+              "level": 2,
+              "keys": [
+                {
+                  "level": 2,
+                  "key": "k-2a91587001a7ea47"
+                }
+              ],
+              "covered": 28,
+              "denominator": 28,
+              "basis": "expensive"
+            },
+            "labels": {
+              "attack/e-f4120e75fd2f006b": 18
+            },
+            "covered_from": 29840828,
+            "trusted": false,
+            "class": "attack",
+            "credited": [
+              "e-f4120e75fd2f006b"
+            ]
+          }
+        ],
+        "episodes": [
+          {
+            "episode": "e-f4120e75fd2f006b",
+            "label": "attack",
+            "site": "dom-a01dff.example",
+            "status": "detected",
+            "onset": 1790449801,
+            "detected": true,
+            "detect_minute": 29840832,
+            "delay_seconds": 179,
+            "key": {
+              "level": 3
+            },
+            "at_detection": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "exact_at_detection": {
+              "a1": 1.5333333333333334,
+              "a2": 5
+            },
+            "scope": {
+              "level": 2,
+              "keys": [
+                {
+                  "level": 2,
+                  "key": "k-2a91587001a7ea47"
+                }
+              ],
+              "covered": 28,
+              "denominator": 28,
+              "basis": "expensive"
+            },
+            "scope_match": "narrower",
+            "best": {
+              "a1": 2.3333333333333335,
+              "a2": 8
+            },
+            "worst": {
+              "a1": 1.0666666666666667,
+              "a2": 4
+            }
+          }
+        ],
+        "site_days": [
+          {
+            "site": "dom-a01dff.example",
+            "day": 20722,
+            "minutes": 16,
+            "judged": 8,
+            "requests": {
+              "attack": 30,
+              "healthy": 35
+            },
+            "events": 3,
+            "credited": 3
+          },
+          {
+            "site": "dom-dcef08.example",
+            "day": 20722,
+            "minutes": 18,
+            "judged": 14,
+            "requests": {
+              "": 2
+            },
+            "events": 0,
+            "credited": 0
+          }
+        ],
+        "active_at_score_start": []
+      },
       "evaluations": 55,
       "anomalous": 17,
       "scope_levels": {
@@ -347,7 +856,7 @@
         "extra_decisions": 0,
         "lost_findings": 0
       },
-      "fixtures": null
+      "fixtures": []
     }
   ]
 }

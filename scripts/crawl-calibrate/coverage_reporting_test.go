@@ -51,7 +51,7 @@ func TestCalibrateCoveragePreservesEpisodes(t *testing.T) {
 			if err != nil || onset == 0 {
 				t.Fatalf("episode origin: onset %d, error %v", onset, err)
 			}
-			if err = run(b.args(), testEnv()); err != nil {
+			if err = run(b.args(t), testEnv()); err != nil {
 				t.Fatal(err)
 			}
 			rep := readReport(t, b.out)
@@ -59,10 +59,10 @@ func TestCalibrateCoveragePreservesEpisodes(t *testing.T) {
 				t.Fatalf("covered minutes = %d", got)
 			}
 			result := rep.Runs[0]
-			if len(result.Episodes) != 1 {
-				t.Fatalf("episodes = %+v; excluded episodes must remain visible", result.Episodes)
+			if len(result.Scoring.Episodes) != 1 {
+				t.Fatalf("episodes = %+v; excluded episodes must remain visible", result.Scoring.Episodes)
 			}
-			ep := result.Episodes[0]
+			ep := result.Scoring.Episodes[0]
 			if ep.Site != attackSite || ep.Episode != episode || ep.Label != crawlreplay.LabelAttack || ep.Onset != onset || ep.Detected != tc.detected {
 				t.Fatalf("episode = %+v; want onset %d, detected %t", ep, onset, tc.detected)
 			}
@@ -111,7 +111,8 @@ func TestCalibrateEmptySiteNeedsCertifiedCoverage(t *testing.T) {
 			if err = os.WriteFile(b.manifest, raw, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			args := []string{"--manifest", b.manifest, "--records", b.records, "--volume", b.volume, "--window", "10", "--out", b.out}
+			x := b.experiment()
+			x.Runs, x.Bundles[0].Coverage = []gridRun{}, ""
 			if certified {
 				proof, proofErr := crawlreplay.DecodeCoverageProof(mustRead(t, b.coverage))
 				if proofErr != nil {
@@ -127,9 +128,9 @@ func TestCalibrateEmptySiteNeedsCertifiedCoverage(t *testing.T) {
 				if err = os.WriteFile(b.coverage, raw, 0o600); err != nil {
 					t.Fatal(err)
 				}
-				args = append(args, "--coverage", b.coverage)
+				x.Bundles[0].Coverage = b.coverage
 			}
-			if err = run(args, testEnv()); err != nil {
+			if err = run(b.with(t, x), testEnv()); err != nil {
 				t.Fatal(err)
 			}
 			rep := readReport(t, b.out)
@@ -173,8 +174,12 @@ func TestCalibrationLatenessIncludesExcludedRecords(t *testing.T) {
 		{name: "all records excluded"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := newCalibration(1, grid{}, true)
-			if err := c.sites([]crawlreplay.BundleSite{{Site: attackSite, Coverage: tc.coverage}}); err != nil {
+			c, err := newCalibration(experiment{Window: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.begin(experimentBundle{Coverage: "proof"})
+			if err := c.bundleSites([]crawlreplay.BundleSite{{Site: attackSite, Coverage: tc.coverage}}); err != nil {
 				t.Fatal(err)
 			}
 			// File 0 has a three-minute inversion. File 1 starts with an

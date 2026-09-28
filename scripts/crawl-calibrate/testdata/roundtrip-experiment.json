@@ -1,0 +1,27 @@
+{
+  "format_version": 1,
+  "identity_version": 1,
+  "window": 5,
+  "runs": [
+    {"params": {"w": 5, "r": 3, "f": 1, "k": 1, "d": 2, "c": 80,
+                "baseline": {"alpha": 0.1, "min_obs": 1, "min_age": 10080, "floor_per_min": 1}}},
+    {"params": {"w": 5, "r": 3, "f": 1, "k": 1, "d": 2, "c": 80,
+                "baseline": {"alpha": 0.1, "min_obs": 1, "min_age": 10080, "floor_per_min": 1}},
+     "sketch": {"m": 4, "h": 8, "seed": 7}}
+  ],
+  "fixtures": [],
+  "bundles": [
+    {"manifest": "../../domlog-stream/testdata/roundtrip/manifest.json",
+     "records": "../../domlog-stream/testdata/roundtrip/records.jsonl",
+     "volume": "../../domlog-stream/testdata/roundtrip/volume.jsonl",
+     "coverage": "roundtrip-coverage.json",
+     "role": "scoring",
+     "score": [{"from": 29840820, "to": 29840839}],
+     "states": [{"from": 29840820, "to": 29840839, "state": "normal"}]}
+  ],
+  "truth": [
+    {"episode": "e-f4120e75fd2f006b", "label": "attack", "site": "dom-a01dff.example",
+     "keys": [{"level": 1, "key": "k-350eb053bb5e976d", "parent": "k-2a91587001a7ea47"},
+              {"level": 2, "key": "k-2a91587001a7ea47"}, {"level": 3}]}
+  ]
+}

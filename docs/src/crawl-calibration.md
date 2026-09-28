@@ -7,9 +7,10 @@ enough distinct clients. Every one of those settings, and the memory bounds
 behind them, must come from what real hosts served, not from guesses. Two
 tools turn copies of a host's access logs into that evidence without
 retaining raw visitor identities. Pseudonymous recordings are still private.
-This revision validates bundles and certified coverage, but replay-session
-state and bounded experiment acceptance are not yet implemented, so it is
-still for synthetic data only. Do not convert private recordings, delete
+This revision validates bundles and certified coverage and replays them
+through chronological sessions, but bounded experiments with executable
+acceptance limits are not yet implemented, so it is still for synthetic data
+only. Do not convert private recordings, delete
 preserved recordings on the strength of these outputs, or use reports to
 choose detector settings until those contracts pass their tests and
 independent review. Real-data collection and conversion then require
@@ -183,22 +184,60 @@ prototype):
   traffic.
 - Streams, labels, inventories and reports stay outside the repository.
 
-`scripts/crawl-calibrate` validates a bundle and replays it through exact
-models of the detector. Build it from a clean committed checkout as well:
+`scripts/crawl-calibrate` replays an experiment through exact models of the
+detector. Build it from a clean committed checkout as well:
 
 ```bash
 go build -o "$RECORDING_DIR/crawl-calibrate" ./scripts/crawl-calibrate
-"$RECORDING_DIR/crawl-calibrate" --manifest "$RECORDING_DIR/host-a.manifest.json" \
-    --records "$RECORDING_DIR/host-a.records.jsonl.gz" --volume "$RECORDING_DIR/host-a.volume.jsonl.gz" \
-    --coverage "$RECORDING_DIR/host-a.coverage.json" \
-    --window "$WINDOW_MINUTES" --grid "$RECORDING_DIR/grid.json" --out "$RECORDING_DIR/host-a.report.json"
+"$RECORDING_DIR/crawl-calibrate" --experiment "$RECORDING_DIR/experiment.json" \
+    --out "$RECORDING_DIR/experiment.report.json"
 ```
 
-It reads each file once and refuses a manifest that is not exactly what
-domlog-stream wrote, a site other than a unique pseudonym, and any row,
-digest or total that disagrees with the manifest, whether or not a grid is
-given. A grid replay needs `--coverage`, a proof the operator builds from
-evidence independent of the logs: the collection record, handler and logging
+The experiment file lists the bundles in chronological order, the parameter
+sets to replay and the truth of every scored episode. Paths are relative to
+the experiment file's directory unless absolute. Like the inventory, it must
+be a regular file in its exact JSON form:
+
+```json
+{
+  "format_version": 1,
+  "identity_version": 1,
+  "window": 10,
+  "runs": [
+    {"params": {"w": 10, "r": 3, "f": 5, "k": 20, "d": 50, "c": 80,
+                "baseline": {"alpha": 0.1, "min_obs": 1, "min_age": 10080, "floor_per_min": 1}},
+     "sketch": {"m": 64, "h": 128, "seed": 7}}
+  ],
+  "fixtures": [],
+  "bundles": [
+    {"manifest": "week1.manifest.json", "records": "week1.records.jsonl.gz",
+     "volume": "week1.volume.jsonl.gz", "coverage": "week1.coverage.json",
+     "role": "training",
+     "states": [{"from": 29840820, "to": 29850899, "state": "normal"}]},
+    {"manifest": "day8.manifest.json", "records": "day8.records.jsonl.gz",
+     "volume": "day8.volume.jsonl.gz", "coverage": "day8.coverage.json",
+     "role": "scoring", "score": [{"from": 29850900, "to": 29852339}],
+     "states": [{"from": 29850900, "to": 29852339, "state": "normal"},
+                {"site": "dom-0a1b2c.example", "key": {"level": 2, "key": "k-0123456789abcdef"},
+                 "from": 29851500, "to": 29851560, "state": "protected"}]}
+  ],
+  "truth": [
+    {"episode": "e-0123456789abcdef", "label": "attack", "site": "dom-0a1b2c.example",
+     "keys": [{"level": 1, "key": "k-1111111111111111", "parent": "k-0123456789abcdef"}]}
+  ]
+}
+```
+
+Bundles must share one salt and identity contract, follow one another in
+time without overlap, and agree on every identity digest; a disagreement
+means their identity registries forked or one was restored from an older
+copy, and the experiment is refused. Each bundle is read once and refused
+if its manifest is not exactly what domlog-stream wrote, a site is not a
+unique pseudonym, or any row, digest or total disagrees with the manifest.
+Without parameter sets the report holds only volume, silence and shape
+diagnostics. State declarations and truth definitions are validated even
+without runs. Replaying needs a coverage proof for every bundle, which the
+operator builds from evidence independent of the logs: the collection record, handler and logging
 liveness, and a measured bound on how long after its logged time a request
 can be written. The proof names the manifest by digest and tiles the
 recording period for every site with certified spans and reasoned
@@ -240,34 +279,67 @@ how far any logged time trails an earlier one; that disorder is a lower bound
 on completion delay, so a proof whose lateness bound is smaller is refused.
 The declared disorder must also cover inversions between the timed neighbours
 of lost lines, including neighbours outside the recording period.
-Without `--coverage` the report holds only volume, silence and shape diagnostics
-over each site's observed extent and says its coverage is unqualified.
+A bundle without a proof contributes diagnostics over each site's observed
+extent only, and the report says its coverage is unqualified.
 
-The report records its provenance (the manifest and proof digests, both tool
-revisions, the salt fingerprint, the period and the bot evidence) and, per
-site, certified and covered minutes, excluded minutes by reason and every
-line count. It also holds host lines and bytes per minute, line counts for
-nonempty site-minutes,
-in-file timestamp disorder across all validated records (including excluded
-minutes), how many patterns and clients are active per
-window, and, for every parameter set in the grid, each labeled episode's detection delay and margins, healthy
-false positives per site and day, the scope level chosen, key and client
-peaks, and, when a sketch is configured, how far the bounded estimates fall
-below the exact values, lost or extra decisions against an independent
-exact replay, and exact findings the sketch missed. Grid runs list the
-window, rate multiple, rate floor, removed-client count, distinct-client count, coverage percent and
-baseline settings, with optional sketch sizes; fixtures add synthetic
-attacks from one-, three- and twenty-request clients with optional padding
-and churn.
+Each parameter set replays one session through all bundles in order. Every
+minute is judged against the history learned before it and only then
+learned, so held-out minutes never inform earlier ones; windows run on
+across adjacent bundles, and a gap between them restarts every window. A
+minute trains a baseline only when its state is declared `normal`, no
+finding is active on the key, and either a complete window judged its traffic
+or the minute was observed silent. Idle keys learn those covered normal zero
+minutes on reactivation, once only; unknown minutes never become zeros. A
+minute with no declared state is unknown and never trains. `protected`,
+`degraded` and `recovery_hold` minutes are frozen the same way whether the
+protection was applied or only decided. A key declaration wins over its
+site's. When a finding starts, the key's hour-of-week profile and its trust
+are pinned until a complete window clears it; a coverage gap leaves the
+finding active but uncertain, and it never counts as a new finding.
 
-Episode onset remains the first labeled request in the bundle, even when
-its minute is excluded. An undetected episode none of whose requests was
-replayed in a scored minute is reported as `not_scored`, not a qualified
-detector miss; one whose later requests were replayed is a miss. Restoring
-the original onset in the calibration report preserves that miss. An
-episode with no covered requests has no replay margins. Relevant anomalous
-windows retain their margins even when an already active finding prevents
-a new detection. Only covered records contribute to windows, baselines and
+The session snapshot API preserves findings across restores. Changing the
+identity contract also drops old key declarations and non-finding keys;
+changing baseline semantics resets history and learning watermarks and
+re-pins active findings without changing their start minute. Either change,
+or a changed window, sketch mode, size, seed or hash version, requires a
+complete new window. Threshold and shuffle changes keep compatible evidence
+and pinned history. A snapshot made immediately after invalidation can be
+restored again with the same result.
+
+A High transition is the only finding event. Only transitions in a
+`scoring` bundle's scoring spans are reported; findings still active from
+training appear as active when scoring began. An episode is detected by the
+first transition in a scored minute at a key its truth entry names, whose
+window holds the episode's requests; ancestor findings that were already
+active are listed, never credited. Every labeled episode in a scoring bundle
+needs a truth entry for its site. A window's majority label is only a
+suggested class for review.
+
+The report records its provenance: the experiment and calibrator digests,
+the salt fingerprint and, per bundle, its role and scoring spans, manifest
+and proof digests, converter revision, period and bot evidence. Per bundle
+and site it records certified and covered minutes, excluded minutes by
+reason and every line count. It also holds host lines and bytes per minute,
+line counts for nonempty site-minutes, in-file timestamp disorder across all
+validated records (including excluded minutes) and how many patterns and
+clients are active per window. For every parameter set it lists each scored
+transition with its margins, scope, window labels, suggested class and
+credited episodes; per site and UTC day the scored and judged minutes,
+requests by label, transitions and credited transitions; each truth
+episode's outcome, detection delay, margins and scope match; key and client
+peaks over scored minutes; and, with a sketch, an independent exact session's
+outcomes, lost or extra decisions and lost findings, beside how far the bounds fall below the exact values
+of the same window. Fixtures add synthetic attacks from one-, three- and
+twenty-request clients with optional padding and churn, replayed cold and
+scored by suggestion.
+
+Episode onset remains the first labeled request across the experiment, even
+when its minute is excluded. An undetected episode that began outside the
+scoring spans, or none of whose requests was replayed in a scored minute, is
+reported as `not_scored`, not as a qualified detector miss; one whose later
+requests were replayed and scored is a miss. Relevant anomalous windows keep
+their margins even when an already active finding prevents a new detection.
+Only covered records contribute to windows, baselines and
 detections.
 
 The silence diagnostic joins adjacent spans but stops at an unknown gap. A
@@ -277,9 +349,10 @@ A replay is a hypothesis about the detector, not a record of what the host
 did: logs hold completed requests, not offered load, backend harm or queued
 work, and the parser is only as good as the server's log escaping. After
 qualification, chosen values and their evidence go to a private calibration
-ledger. Current episode delays and majority-label counts are
-prototype diagnostics, not correct-finding deadlines or qualified false-positive
-rates. The packed footprint estimate is not measured memory or disk usage.
+ledger. Episode delays are offline event-time delays: they exclude request
+completion, log flush, lateness watermark and tick delay, so they are not
+correct-finding deadlines on their own. The packed footprint estimate is not
+measured memory or disk usage.
 
 Qualification must use explicit complete-minute coverage, independently
 verified zero-traffic minutes, separate training and scoring intervals, and
