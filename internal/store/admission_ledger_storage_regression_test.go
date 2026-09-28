@@ -250,3 +250,43 @@ func TestAdmissionLedgerOpenRefusesNestedRing(t *testing.T) {
 		})
 	}
 }
+
+// A nested bucket that took the oldest ring position after open is damage,
+// not an entry to evict: the call refuses it as corrupt and changes nothing.
+func TestAdmissionLedgerEvictionRefusesNestedRingEntry(t *testing.T) {
+	for _, kind := range []byte{ringEnded, ringLoose} {
+		t.Run(string(kind), func(t *testing.T) {
+			f := newLedgerFixture(t)
+			var live admission.CandidateID
+			if kind == ringEnded {
+				f.endMany(admission.MaxEndedCandidates)
+				live = f.queued()
+			} else {
+				f.publishLoose(admission.MaxLooseEvidence, false)
+			}
+			if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+				b := tx.Bucket([]byte(admissionRingsBucket))
+				if err := b.Delete(ringKey(kind, 1)); err != nil {
+					return err
+				}
+				_, err := b.CreateBucket(ringKey(kind, 1))
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			before := f.snapshot()
+			var err error
+			if kind == ringEnded {
+				_, err = f.l.Terminate(live, admission.ReasonProtected)
+			} else {
+				_, err = f.l.PublishEvidence(f.mint(evidenceSpec{cursor: "overflow"}))
+			}
+			if !isCorrupt(err) {
+				t.Errorf("eviction of a nested ring entry: %v, want a corrupt record", err)
+			}
+			if !reflect.DeepEqual(before, f.snapshot()) {
+				t.Error("refused eviction changed the ledger")
+			}
+		})
+	}
+}
