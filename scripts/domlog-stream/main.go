@@ -24,7 +24,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -48,38 +47,23 @@ type cliError string
 func (e cliError) Error() string { return string(e) }
 
 const (
-	errUsage      cliError = "usage: domlog-stream convert --salt-file SALT --inventory FILE [--labels FILE] --out FILE --volume-out FILE --manifest FILE"
-	errInventory  cliError = "inventory is invalid"
-	errLabels     cliError = "labels are invalid"
-	errInput      cliError = "a log copy could not be read"
-	errOutputs    cliError = "an output already exists or cannot be written"
-	errSaltUnsafe cliError = "salt file must be a private regular file"
-	errSaltShort  cliError = "salt file is shorter than 32 bytes"
-	errDirtyBuild cliError = "tool revision unknown or modified: build from a clean checkout with go build"
+	errUsage         cliError = "usage: domlog-stream convert --salt-file SALT --inventory FILE [--labels FILE] --out FILE --volume-out FILE --manifest FILE"
+	errInventory     cliError = "inventory is invalid"
+	errLabels        cliError = "labels are invalid"
+	errInput         cliError = "a log copy could not be read"
+	errInputIdentity cliError = "a log copy is not a stable regular file or duplicates another copy"
+	errOutputs       cliError = "an output already exists or cannot be written"
+	errSaltUnsafe    cliError = "salt file must be a private regular file"
+	errSaltShort     cliError = "salt file is shorter than 32 bytes"
+	errDirtyBuild    cliError = "tool revision unknown or modified: build from a clean checkout with go build"
 )
 
-const manifestFormatVersion = 1
-
-type toolRevision struct {
-	Revision  string `json:"revision"`
-	Dirty     bool   `json:"dirty"`
-	GoVersion string `json:"go_version"`
-}
-
-func (t toolRevision) clean() bool {
-	if t.Dirty || (len(t.Revision) != 40 && len(t.Revision) != 64) {
-		return false
-	}
-	_, err := hex.DecodeString(t.Revision)
-	return err == nil
-}
-
-func readBuildRevision() toolRevision {
+func readBuildRevision() crawlreplay.ToolRevision {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		return toolRevision{Dirty: true}
+		return crawlreplay.ToolRevision{Dirty: true}
 	}
-	t := toolRevision{GoVersion: info.GoVersion, Dirty: true}
+	t := crawlreplay.ToolRevision{GoVersion: info.GoVersion, Dirty: true}
 	for _, s := range info.Settings {
 		switch s.Key {
 		case "vcs.revision":
@@ -91,37 +75,19 @@ func readBuildRevision() toolRevision {
 	return t
 }
 
-type outputFile struct {
-	Kind   string `json:"kind"`
-	SHA256 string `json:"sha256"`
-	Bytes  int64  `json:"bytes"`
-	Rows   int64  `json:"rows"`
-}
-
-type digestOnly struct {
-	SHA256 string `json:"sha256"`
-	Bytes  int64  `json:"bytes"`
-}
-
-type manifest struct {
-	FormatVersion   int            `json:"format_version"`
-	StreamVersion   int            `json:"stream_version"`
-	IdentityVersion int            `json:"identity_version"`
-	Tool            toolRevision   `json:"tool"`
-	SaltFingerprint string         `json:"salt_fingerprint"`
-	Inventory       digestOnly     `json:"inventory"`
-	Labels          *digestOnly    `json:"labels,omitempty"`
-	Inputs          []inputFile    `json:"inputs"`
-	Outputs         []outputFile   `json:"outputs"`
-	Sites           []siteCoverage `json:"sites"`
+// env is what tests replace: the clock that bounds valid log times and the
+// build stamp a manifest records.
+type env struct {
+	now      func() time.Time
+	revision func() crawlreplay.ToolRevision
 }
 
 type options struct {
 	salt, inventory, labels, out, volumeOut, manifest string
 }
 
-// run is the testable entry point; revision is injected by tests.
-func run(args []string, stdout io.Writer, revision func() toolRevision) error {
+// run is the testable entry point.
+func run(args []string, stdout io.Writer, e env) error {
 	if len(args) == 0 || args[0] != "convert" {
 		return errUsage
 	}
@@ -139,8 +105,9 @@ func run(args []string, stdout io.Writer, revision func() toolRevision) error {
 		return errUsage
 	}
 	started := time.Now()
-	tool := revision()
-	if !tool.clean() {
+	now := e.now()
+	tool := e.revision()
+	if !tool.Clean() {
 		return errDirtyBuild
 	}
 	for _, p := range []string{o.out, o.volumeOut, o.manifest} {
@@ -160,22 +127,27 @@ func run(args []string, stdout io.Writer, revision func() toolRevision) error {
 	if err != nil {
 		return err
 	}
-	m := manifest{
-		FormatVersion: manifestFormatVersion, StreamVersion: crawlreplay.StreamVersion, IdentityVersion: crawlid.Version,
-		Tool: tool, SaltFingerprint: saltFingerprint(salt), Inventory: digestOf(invBytes),
+	// A period that has not ended yet cannot have been collected.
+	if inv.Period.To.After(now) {
+		return errInventory
 	}
-	c := &converter{inv: inv, ps: pseudonyms{salt: salt}, open: openLog}
+	m := crawlreplay.Manifest{
+		FormatVersion: crawlreplay.ManifestVersion, StreamVersion: crawlreplay.StreamVersion, IdentityVersion: crawlid.Version,
+		Tool: tool, SaltFingerprint: saltFingerprint(salt), Period: inv.Period.span(), Inventory: digestOf(invBytes),
+	}
+	var labels []labelRule
 	if o.labels != "" {
 		b, readErr := os.ReadFile(o.labels) // #nosec G304 -- operator-chosen private input
 		if readErr != nil {
 			return errLabels
 		}
-		if c.labels, err = parseLabels(b, inv); err != nil {
+		if labels, err = parseLabels(b, inv); err != nil {
 			return err
 		}
 		d := digestOf(b)
 		m.Labels = &d
 	}
+	c := newConverter(inv, labels, pseudonyms{salt: salt}, now)
 	records, err := newStaged(o.out)
 	if err != nil {
 		return err
@@ -191,7 +163,7 @@ func run(args []string, stdout io.Writer, revision func() toolRevision) error {
 		return err
 	}
 	for _, s := range inv.Sites {
-		rows, cov, inputs, convErr := c.convertSite(s, records)
+		rows, sm, inputs, convErr := c.convertSite(s, records)
 		if convErr != nil {
 			return fail(convErr)
 		}
@@ -201,8 +173,8 @@ func run(args []string, stdout io.Writer, revision func() toolRevision) error {
 			}
 		}
 		volume.rows += int64(len(rows))
-		records.rows += cov.Records
-		m.Sites = append(m.Sites, cov)
+		records.rows += sm.Records
+		m.Sites = append(m.Sites, sm)
 		m.Inputs = append(m.Inputs, inputs...)
 	}
 	recOut, err := records.finish("records")
@@ -213,8 +185,8 @@ func run(args []string, stdout io.Writer, revision func() toolRevision) error {
 	if err != nil {
 		return fail(err)
 	}
-	m.Outputs = []outputFile{recOut, volOut}
-	manifestBytes, err := json.MarshalIndent(m, "", "  ")
+	m.Outputs = []crawlreplay.Output{recOut, volOut}
+	manifestBytes, err := crawlreplay.EncodeManifest(m)
 	if err != nil {
 		return fail(errOutputs)
 	}
@@ -222,7 +194,7 @@ func run(args []string, stdout io.Writer, revision func() toolRevision) error {
 	if err != nil {
 		return fail(err)
 	}
-	if _, err := manifestFile.raw.Write(append(manifestBytes, '\n')); err != nil {
+	if _, err := manifestFile.raw.Write(manifestBytes); err != nil {
 		manifestFile.discard()
 		return fail(errOutputs)
 	}
@@ -242,13 +214,9 @@ func run(args []string, stdout io.Writer, revision func() toolRevision) error {
 	return nil
 }
 
-func digestOf(b []byte) digestOnly {
+func digestOf(b []byte) crawlreplay.Digest {
 	sum := sha256.Sum256(b)
-	return digestOnly{SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(b))}
-}
-
-func openLog(path string) (io.ReadCloser, error) {
-	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0) // #nosec G304 -- operator-listed private log copy; symlinks refused
+	return crawlreplay.Digest{SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(b))}
 }
 
 // staged is one output written to a private temporary file beside its
@@ -294,16 +262,16 @@ func (s *staged) Write(p []byte) (int, error) {
 	return s.raw.Write(p)
 }
 
-func (s *staged) finish(kind string) (outputFile, error) {
+func (s *staged) finish(kind string) (crawlreplay.Output, error) {
 	if s.gz != nil {
 		if err := s.gz.Close(); err != nil {
-			return outputFile{}, errOutputs
+			return crawlreplay.Output{}, errOutputs
 		}
 	}
 	if err := s.file.Sync(); err != nil {
-		return outputFile{}, errOutputs
+		return crawlreplay.Output{}, errOutputs
 	}
-	return outputFile{Kind: kind, SHA256: hex.EncodeToString(s.hash.Sum(nil)), Bytes: s.bytes.n, Rows: s.rows}, nil
+	return crawlreplay.Output{Kind: kind, SHA256: hex.EncodeToString(s.hash.Sum(nil)), Bytes: s.bytes.n, Rows: s.rows}, nil
 }
 
 func (s *staged) discard() {
@@ -395,7 +363,7 @@ func readSalt(path string) ([]byte, error) {
 }
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout, readBuildRevision); err != nil {
+	if err := run(os.Args[1:], os.Stdout, env{now: time.Now, revision: readBuildRevision}); err != nil {
 		fmt.Fprintln(os.Stderr, "domlog-stream:", err)
 		os.Exit(1)
 	}

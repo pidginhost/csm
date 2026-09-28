@@ -5,7 +5,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
+
+var testPeriod = inventoryPeriod{From: time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 9, 27, 0, 0, 0, 0, time.UTC)}
 
 func TestInventoryDNSNameLength(t *testing.T) {
 	for _, tc := range []struct {
@@ -26,7 +29,7 @@ func TestInventoryDNSNameLength(t *testing.T) {
 				} else {
 					site.Aliases = append(site.Aliases, name)
 				}
-				data, err := json.Marshal(inventory{Sites: []inventorySite{site}})
+				data, err := json.Marshal(inventory{Period: testPeriod, Sites: []inventorySite{site}})
 				if err != nil {
 					t.Fatal(err)
 				}

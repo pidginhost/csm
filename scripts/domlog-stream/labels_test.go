@@ -49,7 +49,7 @@ func TestLabelsPreserveTimeBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := converter{inv: inv, labels: labels, ps: pseudonyms{salt: bytes.Repeat([]byte{0x42}, 32)}}
+	c := newConverter(inv, labels, pseudonyms{salt: bytes.Repeat([]byte{0x42}, 32)}, testNow)
 	for _, tc := range []struct {
 		second, label string
 	}{
@@ -68,8 +68,8 @@ func TestLabelsPreserveTimeBoundaries(t *testing.T) {
 			if !ok || !rec.TimeOK {
 				t.Fatal("fixture did not parse")
 			}
-			cov := siteCoverage{Site: c.ps.site(site.Name), Account: c.ps.account(site.Account)}
-			row := c.row(site, &cov, rec, 0, 1)
+			sm := crawlreplay.SiteManifest{Site: c.ps.site(site.Name), Account: c.ps.account(site.Account)}
+			row, _ := c.row(site, &sm, rec, 0, 1)
 			if row.Label != tc.label {
 				t.Fatalf("label = %q, want %q", row.Label, tc.label)
 			}
@@ -93,7 +93,7 @@ func TestLabelsUseCanonicalASCIINameCase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonical name prefix rejected: %v", err)
 	}
-	c := converter{inv: inv, labels: labels, ps: pseudonyms{salt: bytes.Repeat([]byte{0x42}, 32)}}
+	c := newConverter(inv, labels, pseudonyms{salt: bytes.Repeat([]byte{0x42}, 32)}, testNow)
 	for _, tc := range []struct {
 		name, label string
 	}{
@@ -106,8 +106,8 @@ func TestLabelsUseCanonicalASCIINameCase(t *testing.T) {
 			if !ok || rec.TargetInvalid || rec.TargetOverflow {
 				t.Fatal("fixture did not parse")
 			}
-			cov := siteCoverage{Site: c.ps.site(site.Name), Account: c.ps.account(site.Account)}
-			row := c.row(site, &cov, rec, 0, 1)
+			sm := crawlreplay.SiteManifest{Site: c.ps.site(site.Name), Account: c.ps.account(site.Account)}
+			row, _ := c.row(site, &sm, rec, 0, 1)
 			if row.Label != tc.label {
 				t.Fatalf("label = %q, want %q", row.Label, tc.label)
 			}

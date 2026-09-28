@@ -46,16 +46,22 @@ Referer is written. Sites and accounts use the same pseudonyms as
 two can be joined. A volume stream counts lines and bytes per site and
 minute, including lines without a usable target or client.
 
-The inventory names each site's verified identity and its log copies. Site
-names and aliases must be lowercase DNS names without a terminal dot, at
-most 253 bytes each:
+The inventory names the recording period, each site's verified identity and
+its log copies. The period is bounded by whole UTC minutes, `from` inclusive and
+`to` exclusive, and must have ended. Site names and aliases must be lowercase
+DNS names without a terminal dot, at most 253 bytes each, and one host
+belongs to one site: an alias listed twice or naming another site is
+refused. Log paths are absolute; a relative path resolves against the
+working directory:
 
 ```json
 {
+  "period": {"from": "2026-09-20T00:00:00Z", "to": "2026-09-27T00:00:00Z"},
   "sites": [
     {"name": "example.com", "account": "acct1",
      "aliases": ["example.com", "www.example.com"],
-     "logs": ["raw/example.com", "raw/example.com-ssl_log.gz"]}
+     "logs": ["/srv/crawl-recording/raw/example.com",
+              "/srv/crawl-recording/raw/example.com-ssl_log.gz"]}
   ],
   "trusted_proxies": ["198.51.100.9"],
   "infrastructure": ["192.0.2.200"],
@@ -63,10 +69,13 @@ most 253 bytes each:
 }
 ```
 
-Aliases decide which Referers count as same-site. Behind a trusted proxy the
-client is the rightmost forwarded address only when the qualified proxy
-appends the original client there; multi-hop chains need separate qualification; a proxied line without one is
-counted as attribution loss. The optional labels file marks time ranges of a
+Aliases decide which Referers count as same-site; a `www` host counts only
+when it is listed. Behind a trusted proxy the client is the rightmost
+forwarded address only when the qualified proxy appends the original client
+there. A proxied line without a usable forwarded address, or whose rightmost
+address is another trusted proxy (an unqualified second hop), counts as
+attribution loss; a peer that is not a plain address counts as an invalid
+client. Neither gets a client binding. The optional labels file marks time ranges of a
 site as `attack` or `overload` (each with an episode name) or `healthy`,
 optionally only for a first path segment or parameter-name prefix. Each rule
 requires nonzero RFC 3339 `from` (inclusive) and `to` (exclusive) timestamps;
@@ -88,9 +97,19 @@ prototype):
   reuse the finding-stream salt so the streams join.
 - The tool refuses to run from an unknown or modified build, refuses to
   replace an existing output, and publishes nothing unless every log was
-  read. The manifest, published last, records the digests of every input
-  and output, the tool revision and, per site, the observed extent and
-  counts of refused, oversized, untimed, targetless and unattributed lines.
+  read. Each log copy must be a regular file that stays unchanged while it
+  is read; a second path or hard link to a copy already read, or a copy
+  whose decompressed content repeats another, is refused.
+- The manifest, published last, records the digests of every input (as read
+  and decompressed) and output, the tool revision, the period and, per
+  site, the observed extent and the bytes read. Every line read is either a
+  record or exactly one of: oversized, refused by the parser, invalid time,
+  time in the future, time outside the period, or a final line without a
+  newline, which is incomplete and never a request. Records without a
+  usable target or client are counted too. Record bytes are in the volume
+  stream; every other byte is counted as unplaced. For lines without a
+  usable time, the manifest keeps the logged times of the timed lines
+  around them, which bounds where the lost requests belong.
 - The prototype's first/last timed lines describe an observed extent, not
   proof of complete minutes. Partial boundary minutes, internal gaps and
   stalled logging must be excluded before replay. An idle log alone cannot
