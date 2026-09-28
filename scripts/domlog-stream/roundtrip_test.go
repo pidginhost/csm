@@ -31,7 +31,7 @@ func TestConverterCalibratorRoundTrip(t *testing.T) {
 	if err := os.WriteFile(salt, bytes.Repeat([]byte{0x42}, 32), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"convert", "--salt-file", salt, "--registry", filepath.Join(out, "registry.json"), "--new-registry",
+	args := []string{"convert", "--salt-file", salt, "--registry", testRegistryPath(out), "--new-registry",
 		"--inventory", roundTrip + "/inventory.json", "--labels", roundTrip + "/labels.json", "--bot-evidence", roundTrip + "/bots.json",
 		"--out", filepath.Join(out, "records.jsonl"), "--volume-out", filepath.Join(out, "volume.jsonl"), "--manifest", filepath.Join(out, "manifest.json")}
 	if err := run(args, &bytes.Buffer{}, testEnv()); err != nil {

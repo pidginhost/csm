@@ -49,7 +49,7 @@ func convertBundle(t *testing.T, dir, bundle, inventory string, e env) error {
 	if err := os.WriteFile(inv, []byte(inventory), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return run(append(append([]string{"convert", "--salt-file", salt}, registryArgs(filepath.Join(dir, "registry.json"))...), "--inventory", inv,
+	return run(append(append([]string{"convert", "--salt-file", salt}, registryArgs(testRegistryPath(dir))...), "--inventory", inv,
 		"--out", filepath.Join(dir, bundle+".records.jsonl.gz"), "--volume-out", filepath.Join(dir, bundle+".volume.jsonl.gz"),
 		"--manifest", filepath.Join(dir, bundle+".manifest.json")), io.Discard, e)
 }
@@ -179,7 +179,7 @@ func TestInventoryIdentityAndCollisionRefusal(t *testing.T) {
 		if err := convertBundle(t, dir, "second", one("b.example", "acct1", "b.log"), e); !errors.Is(err, errCollision) {
 			t.Fatalf("a second site under the first site's pseudonym: err = %v, want errCollision", err)
 		}
-		raw, err := os.ReadFile(filepath.Join(dir, "registry.json"))
+		raw, err := os.ReadFile(testRegistryPath(dir))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -214,31 +214,35 @@ func TestInventoryIdentityAndCollisionRefusal(t *testing.T) {
 		}
 		t.Run("a new salt starts its registry", func(t *testing.T) {
 			dir := t.TempDir()
-			if err := convert(t, dir, filepath.Join(dir, "registry.json")); err != nil {
+			if err := convert(t, dir, ""); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := os.Stat(filepath.Join(dir, "registry.json")); err != nil {
+			salt, err := readSalt(osFS{}, filepath.Join(dir, "salt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, testRegistryName(salt))); err != nil {
 				t.Fatalf("no registry beside the new salt: %v", err)
 			}
 		})
 		t.Run("an existing salt without its registry is refused", func(t *testing.T) {
 			dir := existingSalt(t)
-			if err := convert(t, dir, filepath.Join(dir, "registry.json")); !errors.Is(err, errRegistryMissing) {
+			if err := convert(t, dir, testRegistryPath(dir)); !errors.Is(err, errRegistryMissing) {
 				t.Fatalf("lost registry: err = %v, want errRegistryMissing", err)
 			}
-			if err := convert(t, dir, filepath.Join(dir, "registry.json"), "--new-registry"); err != nil {
+			if err := convert(t, dir, testRegistryPath(dir), "--new-registry"); err != nil {
 				t.Fatalf("explicit first registry for a salt that never had one: %v", err)
 			}
-			if err := convert(t, dir, filepath.Join(dir, "registry.json"), "--new-registry"); !errors.Is(err, errRegistry) {
+			if err := convert(t, dir, testRegistryPath(dir), "--new-registry"); !errors.Is(err, errRegistry) {
 				t.Fatalf("--new-registry over an existing registry: err = %v, want errRegistry", err)
 			}
-			if err := convert(t, dir, filepath.Join(dir, "registry.json")); err != nil {
+			if err := convert(t, dir, testRegistryPath(dir)); err != nil {
 				t.Fatalf("the salt's own registry refused: %v", err)
 			}
 		})
 		t.Run("the registry lives beside the salt", func(t *testing.T) {
 			dir := existingSalt(t)
-			if err := convert(t, dir, filepath.Join(t.TempDir(), "registry.json"), "--new-registry"); !errors.Is(err, errRegistryPlace) {
+			if err := convert(t, dir, testRegistryPath(t.TempDir()), "--new-registry"); !errors.Is(err, errRegistryPlace) {
 				t.Fatalf("registry in another directory: err = %v, want errRegistryPlace", err)
 			}
 		})
@@ -285,7 +289,7 @@ func TestInventoryIdentityAndCollisionRefusal(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(dir, "a.log"), one, 0o600); err != nil {
 					t.Fatal(err)
 				}
-				prepare(t, filepath.Join(dir, "registry.json"))
+				prepare(t, testRegistryPath(dir))
 				inv := period + `"sites":[{"name":"a.example","account":"acct1","aliases":["a.example"],"logs":["` + filepath.Join(dir, "a.log") + `"]}]}`
 				if err := convertBundle(t, dir, "r", inv, testEnv()); !errors.Is(err, errRegistry) {
 					t.Fatalf("err = %v, want errRegistry", err)
@@ -566,7 +570,7 @@ func TestCrossBundleIdentityKinds(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				return run(append(append([]string{"convert", "--salt-file", salt}, registryArgs(filepath.Join(dir, "registry.json"))...), "--inventory", inv, "--labels", labels,
+				return run(append(append([]string{"convert", "--salt-file", salt}, registryArgs(testRegistryPath(dir))...), "--inventory", inv, "--labels", labels,
 					"--out", filepath.Join(dir, bundle+".records.jsonl.gz"), "--volume-out", filepath.Join(dir, bundle+".volume.jsonl.gz"), "--manifest", filepath.Join(dir, bundle+".manifest.json")), io.Discard, e)
 			}
 			writeLog("192.0.2.10", "GET /c/?filter_a=1 HTTP/1.1")
@@ -576,7 +580,7 @@ func TestCrossBundleIdentityKinds(t *testing.T) {
 			if err := convert("repeat", "acct1", "first"); err != nil {
 				t.Fatalf("same identities refused: %v", err)
 			}
-			before, err := os.ReadFile(filepath.Join(dir, "registry.json"))
+			before, err := os.ReadFile(testRegistryPath(dir))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -590,7 +594,7 @@ func TestCrossBundleIdentityKinds(t *testing.T) {
 			if err = convert("collision", account, episode); !errors.Is(err, errCollision) {
 				t.Fatalf("cross-bundle %s collision: %v", kind, err)
 			}
-			after, err := os.ReadFile(filepath.Join(dir, "registry.json"))
+			after, err := os.ReadFile(testRegistryPath(dir))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -619,7 +623,7 @@ func TestRegistryHoldsSiteAccountAndEpisodeNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	var reg identityRegistry
-	if err := crawlreplay.DecodeStrictJSON(mustRead(t, filepath.Join(dir, "registry.json")), &reg); err != nil {
+	if err := crawlreplay.DecodeStrictJSON(mustRead(t, testRegistryPath(dir)), &reg); err != nil {
 		t.Fatal(err)
 	}
 	sites, accounts := 0, 0
@@ -639,7 +643,7 @@ func TestRegistryHoldsSiteAccountAndEpisodeNames(t *testing.T) {
 }
 
 func TestRegistryLockSurvivesReplacement(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "registry.json")
+	path := testRegistryPath(t.TempDir())
 	fingerprint := saltFingerprint(bytes.Repeat([]byte{0x42}, 32))
 	first, err := openRegistry(osFS{}, path, fingerprint)
 	if err != nil {

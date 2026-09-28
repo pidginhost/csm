@@ -1,7 +1,7 @@
 // Command domlog-stream turns local copies of a host's domlogs into an
 // anonymized record stream for crawl-detector calibration.
 //
-//	domlog-stream convert --salt-file SALT --registry registry.json \
+//	domlog-stream convert --salt-file SALT [--registry FILE] \
 //	    [--new-registry] --inventory inventory.json [--labels labels.json] \
 //	    [--bot-evidence bots.json] --out records.jsonl.gz \
 //	    --volume-out volume.jsonl.gz --manifest manifest.json
@@ -53,7 +53,7 @@ type cliError string
 func (e cliError) Error() string { return string(e) }
 
 const (
-	errUsage           cliError = "usage: domlog-stream convert --salt-file SALT --registry FILE [--new-registry] --inventory FILE [--labels FILE] [--bot-evidence FILE] --out FILE --volume-out FILE --manifest FILE"
+	errUsage           cliError = "usage: domlog-stream convert --salt-file SALT [--registry FILE] [--new-registry] --inventory FILE [--labels FILE] [--bot-evidence FILE] --out FILE --volume-out FILE --manifest FILE"
 	errInventory       cliError = "inventory is invalid"
 	errLabels          cliError = "labels are invalid"
 	errInput           cliError = "a log copy could not be read"
@@ -64,7 +64,7 @@ const (
 	errDirtyBuild      cliError = "tool revision unknown or modified: build from a clean checkout with go build"
 	errCollision       cliError = "two distinct names share a pseudonym under this salt"
 	errRegistry        cliError = "identity registry is busy, invalid, not private or not for this salt"
-	errRegistryPlace   cliError = "identity registry must be in the same directory as the salt"
+	errRegistryPlace   cliError = "identity registry must be registry-<salt SHA-256>.json in the salt's directory"
 	errRegistryMissing cliError = "identity registry is missing for an existing salt; restore it, or pass --new-registry if this salt never had one"
 	errBotEvidence     cliError = "bot evidence is invalid"
 )
@@ -121,7 +121,7 @@ func run(args []string, stdout io.Writer, e env) error {
 	fs.StringVar(&o.volumeOut, "volume-out", "", "")
 	fs.StringVar(&o.manifest, "manifest", "", "")
 	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 0 ||
-		o.salt == "" || o.registry == "" || o.inventory == "" || o.out == "" || o.volumeOut == "" || o.manifest == "" {
+		o.salt == "" || o.inventory == "" || o.out == "" || o.volumeOut == "" || o.manifest == "" {
 		return errUsage
 	}
 	started := time.Now()
@@ -135,14 +135,11 @@ func run(args []string, stdout io.Writer, e env) error {
 			return errOutputs
 		}
 	}
-	// One registry per salt: it sits beside the salt, and a salt that
-	// existed before this run keeps using the registry it already has.
-	saltAbs, saltErr := filepath.Abs(o.salt)
-	registryAbs, registryErr := filepath.Abs(o.registry)
-	if saltErr != nil || registryErr != nil || filepath.Dir(saltAbs) != filepath.Dir(registryAbs) {
-		return errRegistryPlace
-	}
 	salt, created, err := loadOrCreateSalt(e.fs, o.salt)
+	if err != nil {
+		return err
+	}
+	o.registry, err = registryPath(e.fs, o.salt, o.registry, salt)
 	if err != nil {
 		return err
 	}

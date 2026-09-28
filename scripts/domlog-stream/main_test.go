@@ -37,7 +37,7 @@ func newFixture(t *testing.T, lines map[string]string, gzipped map[string]bool) 
 	t.Helper()
 	dir := t.TempDir()
 	f := fixture{
-		dir: dir, salt: filepath.Join(dir, "salt"), registry: filepath.Join(dir, "registry.json"), inventory: filepath.Join(dir, "inventory.json"),
+		dir: dir, salt: filepath.Join(dir, "salt"), registry: testRegistryPath(dir), inventory: filepath.Join(dir, "inventory.json"),
 		labels: filepath.Join(dir, "labels.json"), evidence: filepath.Join(dir, "bots.json"), out: filepath.Join(dir, "records.jsonl.gz"),
 		volume: filepath.Join(dir, "volume.jsonl.gz"), manifest: filepath.Join(dir, "manifest.json"),
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"os"
+	"path/filepath"
 )
 
 // fileSystem is every file operation the command performs, so a test can
@@ -15,6 +16,7 @@ type fileSystem interface {
 	Rename(oldname, newname string) error
 	Remove(name string) error
 	MkdirAll(path string, perm os.FileMode) error
+	EvalSymlinks(path string) (string, error)
 }
 
 type file interface {
@@ -49,6 +51,7 @@ func (osFS) Link(oldname, newname string) error           { return os.Link(oldna
 func (osFS) Rename(oldname, newname string) error         { return os.Rename(oldname, newname) }
 func (osFS) Remove(name string) error                     { return os.Remove(name) }
 func (osFS) MkdirAll(path string, perm os.FileMode) error { return os.MkdirAll(path, perm) }
+func (osFS) EvalSymlinks(path string) (string, error)     { return filepath.EvalSymlinks(path) }
 
 // readFile reads a whole operator-supplied input.
 func readFile(fsys fileSystem, path string) ([]byte, error) {

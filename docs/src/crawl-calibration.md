@@ -24,7 +24,7 @@ clean committed checkout; use absolute local log-copy paths in the inventory:
 # Set WINDOW_MINUTES from the synthetic grid; do not reuse a real recording salt.
 go build -o "$RECORDING_DIR/domlog-stream" ./scripts/domlog-stream
 "$RECORDING_DIR/domlog-stream" convert \
-    --salt-file "$RECORDING_DIR/synthetic-salt" --registry "$RECORDING_DIR/synthetic-registry.json" \
+    --salt-file "$RECORDING_DIR/synthetic-salt" \
     --inventory "$RECORDING_DIR/inventory.json" --labels "$RECORDING_DIR/labels.json" \
     --bot-evidence "$RECORDING_DIR/bots.json" \
     --out "$RECORDING_DIR/host-a.records.jsonl.gz" \
@@ -124,16 +124,24 @@ prototype):
   Nothing runs on the monitored host.
 - The salt is created on first use with mode 0600 and must stay private;
   reuse the finding-stream salt so the streams join. Keep one identity
-  registry per salt, in the salt's directory; a registry elsewhere is
-  refused. It records every site, account and episode pseudonym the salt
-  has issued, as keyed digests, and refuses a later bundle whose different
-  name would take one; it is locked while a conversion runs.
+  registry per salt, in the salt's directory. The tool derives its filename
+  as `registry-<salt SHA-256>.json`, using the full lowercase hex digest of
+  the salt bytes. Optional `--registry FILE` must name that same file;
+  another filename or directory is refused, even with `--new-registry`.
+  Directory symlink aliases are accepted. It records every site, account and
+  episode pseudonym the salt has issued, as keyed digests, and refuses a
+  later bundle whose different name would take one; it is locked while a
+  conversion runs.
 - A run that creates the salt starts its registry. For a salt that already
   exists but never had a registry, such as the finding-stream salt, pass
   `--new-registry` on the first conversion only; it is refused once a
   registry exists. Without that flag, a missing registry stops the run
   instead of starting an empty one that would forget issued pseudonyms.
-  Back up the salt and its registry together, and restore both.
+  Back up the salt, registry and persistent `.lock` file together, and
+  restore them together. Never remove or replace the lock during conversion.
+  If an earlier tool wrote a custom registry filename, stop conversions and
+  move that registry and its lock to the derived names before reusing the
+  salt. Do not start an empty registry to replace existing history.
 - The tool refuses to run from an unknown or modified build, refuses to
   replace an existing output, and publishes nothing unless every log was
   read. Each log copy must be a regular file that stays unchanged while it

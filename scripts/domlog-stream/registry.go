@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -31,6 +33,47 @@ type identityRegistry struct {
 }
 
 var registeredName = regexp.MustCompile(`^(?:dom-[0-9a-f]{6}\.example|acct-[0-9a-f]{6}|e-[0-9a-f]{16})$`)
+
+// The salt bytes determine the name, so another --registry filename or
+// another name for the same salt cannot start a separate history or lock.
+func registryPath(fsys fileSystem, saltPath, requested string, salt []byte) (string, error) {
+	digest := sha256.Sum256(salt)
+	name := "registry-" + hex.EncodeToString(digest[:]) + ".json"
+	dir, err := registryParent(fsys, saltPath)
+	if err != nil {
+		return "", errRegistryPlace
+	}
+	if requested != "" {
+		_, base := filepath.Split(requested)
+		if base != name {
+			return "", errRegistryPlace
+		}
+		other, err := registryParent(fsys, requested)
+		if err != nil {
+			return "", errRegistryPlace
+		}
+		saltDir, saltErr := fsys.Lstat(dir)
+		registryDir, registryErr := fsys.Lstat(other)
+		if saltErr != nil || registryErr != nil || !os.SameFile(saltDir, registryDir) {
+			return "", errRegistryPlace
+		}
+	}
+	return filepath.Join(dir, name), nil
+}
+
+func registryParent(fsys fileSystem, path string) (string, error) {
+	// Split preserves symlink/.. traversal; Dir and Abs would clean it
+	// before the filesystem can resolve which directory it actually names.
+	dir, _ := filepath.Split(path)
+	if dir == "" {
+		dir = "."
+	}
+	dir, err := fsys.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Abs(dir)
+}
 
 // openRegistry locks the registry against concurrent conversions and reads
 // it, creating an empty one for a salt used for the first time.

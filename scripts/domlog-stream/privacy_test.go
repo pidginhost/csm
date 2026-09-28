@@ -105,6 +105,13 @@ func (f *faultFS) MkdirAll(path string, perm os.FileMode) error {
 	return f.base.MkdirAll(path, perm)
 }
 
+func (f *faultFS) EvalSymlinks(path string) (string, error) {
+	if err := f.fault("evalsymlinks"); err != nil {
+		return "", err
+	}
+	return f.base.EvalSymlinks(path)
+}
+
 type faultFile struct {
 	file
 	fs     *faultFS
@@ -192,7 +199,7 @@ func newPrivacyFixture(t *testing.T) privacyFixture {
 	  "account":"secretacct","aliases":["secret-site.example"],"logs":["` + path("secret-file-log") + `","` + path("secret-file-log.gz") + `"]}]}`
 	labels := `{"labels":[{"site":"secret-site.example","from":"2026-09-26T19:00:00Z","to":"2026-09-26T20:00:00Z",
 	  "label":"attack","episode":"secret-episode","name_prefixes":["q"]}]}`
-	f := privacyFixture{dir: dir, registry: path("secret-registry.json"), existing: map[string][]byte{
+	f := privacyFixture{dir: dir, registry: path(testRegistryName([]byte(privacySalt))), existing: map[string][]byte{
 		"salt": []byte(privacySalt), "secret-file-log": []byte(logs), "secret-file-log.gz": gz.Bytes(),
 		"secret-inventory.json": []byte(inventory), "secret-labels.json": []byte(labels),
 		"bots.json": []byte(googlebotEvidence), "keep.txt": []byte("an unrelated file in the output directory"),
@@ -240,7 +247,7 @@ func TestConverterPrivacyFaults(t *testing.T) {
 	for _, name := range []string{"secret-out.records.jsonl.gz", "secret-out.volume.jsonl.gz"} {
 		assertNoPrivateText(t, name, readGz(t, filepath.Join(clean.dir, name)), clean.dir)
 	}
-	for _, name := range []string{"secret-out.manifest.json", "secret-registry.json"} {
+	for _, name := range []string{"secret-out.manifest.json", filepath.Base(clean.registry)} {
 		assertNoPrivateText(t, name, mustRead(t, filepath.Join(clean.dir, name)), clean.dir)
 	}
 	wantRegistry := mustRead(t, clean.registry)
@@ -249,7 +256,7 @@ func TestConverterPrivacyFaults(t *testing.T) {
 		ops = append(ops, op)
 	}
 	slices.Sort(ops)
-	for _, required := range []string{"open", "read", "write", "stat", "sync", "close", "chmod", "createtemp", "link", "rename", "lstat"} {
+	for _, required := range []string{"open", "read", "write", "stat", "sync", "close", "chmod", "createtemp", "link", "rename", "lstat", "evalsymlinks"} {
 		if counter.counts[required] == 0 {
 			t.Fatalf("clean run never performed %q; the fault sweep would not cover it", required)
 		}
@@ -298,8 +305,8 @@ func TestConverterPrivacyFaults(t *testing.T) {
 					if got := mustRead(t, filepath.Join(f.dir, name)); !bytes.Equal(got, f.existing[name]) {
 						t.Fatalf("%s #%d: existing %s changed", op, at, name)
 					}
-				case name == "secret-registry.json.lock":
-				case name == "secret-registry.json":
+				case name == filepath.Base(f.registry)+".lock":
+				case name == filepath.Base(f.registry):
 					// The registry is written before publication; a later
 					// failure keeps exactly the names this inventory holds.
 					if !bytes.Equal(mustRead(t, filepath.Join(f.dir, name)), wantRegistry) {
