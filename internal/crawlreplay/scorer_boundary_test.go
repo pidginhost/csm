@@ -3,6 +3,7 @@ package crawlreplay
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 	"testing"
 )
 
@@ -32,6 +33,72 @@ func TestScorerRequiresCoveredOnset(t *testing.T) {
 			got := outcome(t, sc.Report(), siteA, "e1")
 			if got.Status != want || got.Onset != records[0].T {
 				t.Fatalf("outcome %+v, want %s at the original onset", got, want)
+			}
+		})
+	}
+}
+
+// Splitting before the first counted request must not pin onset evidence
+// to an earlier infrastructure or static request from the same episode.
+func TestScorerRefreshesCountedOnsetEvidence(t *testing.T) {
+	p := coldParams()
+	span := Span{From: weekStart, To: weekStart + 29}
+	truth := []EpisodeTruth{{Episode: "e1", Label: LabelAttack, Site: siteA, Keys: []KeyID{key1(2, 1)}}}
+	for _, tc := range []struct {
+		name       string
+		background Span
+		wantActive []KeyID
+		wantStatus string
+	}{
+		{"finding starts after ignored request", Span{From: weekStart + 10, To: span.To},
+			[]KeyID{truthSiteKey, key2(1), key1(2, 1)}, OutcomeMissed},
+		{"finding clears before counted request", Span{From: weekStart, To: weekStart + 5},
+			nil, OutcomeDetected},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, infra := range []bool{false, true} {
+				for _, split := range []bool{false, true} {
+					syn := NewSynth(siteA, 7)
+					records := syn.Rotating(Traffic{From: tc.background.From, To: tc.background.To, PerMinute: 30,
+						L2: SynthKey(1), L1: SynthKey(2), Label: LabelHealthy}, 1)
+					attack := syn.Rotating(Traffic{From: weekStart + 20, To: span.To, PerMinute: 120,
+						L2: SynthKey(1), L1: SynthKey(2), Label: LabelAttack, Episode: "e1"}, 1)
+					onset := attack[0].T
+					for _, r := range attack {
+						onset = min(onset, r.T)
+					}
+					records = append(records, attack...)
+					ignored := Record{T: (weekStart+6)*60 + 5, Seq: 900000, Site: siteA,
+						Class: ClassOther, Status: 200, Label: LabelAttack, Episode: "e1"}
+					if infra {
+						ignored.Infra, ignored.Class = true, ClassExpensive
+						ignored.L2, ignored.L1 = SynthKey(1), SynthKey(2)
+					}
+					records = append(records, ignored)
+					sc, err := NewScorer(p, truth)
+					if err != nil {
+						t.Fatal(err)
+					}
+					s := mustSession(t, SessionConfig{Params: p})
+					spans := []Span{span}
+					if split {
+						spans = []Span{{From: span.From, To: weekStart + 9}, {From: weekStart + 10, To: span.To}}
+					}
+					for _, coverage := range spans {
+						seg := segment(siteA, records, []Span{coverage}, coverage)
+						if err := sc.Observe(siteA, seg.Records, seg.Score); err != nil {
+							t.Fatal(err)
+						}
+						for _, tk := range feedTicks(t, s, seg) {
+							sc.Tick(tk)
+						}
+					}
+					got := outcome(t, sc.Report(), siteA, "e1")
+					if got.Onset != onset || got.Status != tc.wantStatus || !slices.Equal(got.ActiveAtOnset, tc.wantActive) {
+						t.Errorf("infra=%t split=%t: outcome %+v, want onset %d, status %s, active %v",
+							infra, split, got, onset, tc.wantStatus, tc.wantActive)
+					}
+				}
 			}
 		})
 	}

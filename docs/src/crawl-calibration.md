@@ -344,11 +344,15 @@ scored by suggestion.
 
 Episode onset remains the first labeled request across the experiment that
 the detector counts, even when its minute is excluded; infrastructure and
-static requests inside a labeled range never move it. An undetected episode
+static requests inside a labeled range never move it. If a later segment
+introduces the first counted request, findings active at onset are captured
+again at that request's minute. An episode with no counted request keeps its
+first request as onset and is never scored. An undetected episode
 that began outside the scoring spans, or none of whose counted requests was
 replayed in a scored minute, is reported as `not_scored`, not as a qualified
-detector miss; one whose later requests were replayed and scored is a miss. Relevant anomalous windows keep
-their margins even when an already active finding prevents a new detection.
+detector miss; one whose later requests were replayed and scored is a miss.
+Relevant anomalous windows keep their margins even when an already active
+finding prevents a new detection.
 Only covered records contribute to windows, baselines and
 detections.
 

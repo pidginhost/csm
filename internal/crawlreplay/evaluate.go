@@ -59,7 +59,7 @@ type EpisodeResult struct {
 	Label            string  `json:"label"`
 	Site             string  `json:"site"`
 	Status           string  `json:"status"`
-	Onset            int64   `json:"onset,omitempty"` // first labeled request, Unix seconds
+	Onset            int64   `json:"onset,omitempty"` // first counted request, or first request if none counted; Unix seconds
 	Detected         bool    `json:"detected"`
 	DetectMinute     int64   `json:"detect_minute,omitempty"`
 	DelaySeconds     int64   `json:"delay_seconds,omitempty"`
@@ -192,7 +192,7 @@ func newScorer(truth []EpisodeTruth) (*Scorer, error) {
 
 // Observe takes a segment's validated records, including those in minutes
 // its coverage excludes, before its ticks: an episode's onset is its first
-// labeled request whether or not that minute can be replayed. With a truth
+// counted request whether or not that minute can be replayed. With a truth
 // table, every episode in a segment with scored minutes needs an entry for
 // its site, and a record's label must match its episode's. Onset and the
 // replayed evidence come from requests the detector counts: infrastructure
@@ -232,6 +232,14 @@ func (sc *Scorer) Observe(site string, records []Record, score []Span) error {
 			sc.onsets[es] = o
 		}
 		merged := earlierOnset(onset{t: o.t, counted: o.counted}, first)
+		if !o.counted && merged.counted {
+			// Earlier segments may have captured findings at a fallback
+			// onset. Only the first counted request fixes this evidence.
+			o.seen = false
+			if r := sc.results[es]; r != nil {
+				r.ActiveAtOnset = nil
+			}
+		}
 		o.t, o.counted = merged.t, merged.counted
 		o.minutes = append(o.minutes, minutes[es]...)
 		slices.Sort(o.minutes)
