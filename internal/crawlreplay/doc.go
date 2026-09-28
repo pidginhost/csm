@@ -20,5 +20,8 @@
 // ones. It learns a minute only when the segment declares it normal, no
 // finding is active and a complete window judged its traffic; gaps restart
 // windows without learning zeros, and a finding stays active, pinned to the
-// profile it began with, until a complete window clears it.
+// profile it began with, until a complete window clears it. A Scorer credits
+// an episode only with a High transition at a key its private truth table
+// names, whose window holds the episode's requests; a window's majority
+// label is a suggestion for review.
 package crawlreplay

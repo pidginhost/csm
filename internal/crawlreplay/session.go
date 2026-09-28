@@ -383,7 +383,9 @@ func (s *ReplaySession) minute(name string, site *siteSession, m int64, records 
 	} else {
 		site.covered = append(site.covered, Span{From: m, To: m})
 	}
+	requests := map[string]int64{}
 	for _, r := range records {
+		requests[r.Label]++
 		var h uint64
 		if s.cfg.Sketch != nil && r.Binding != "" {
 			h = s.cfg.Sketch.hash(r.Binding)
@@ -419,11 +421,14 @@ func (s *ReplaySession) minute(name string, site *siteSession, m int64, records 
 		delete(ks.sketches, m-int64(p.W))
 	}
 	slices.SortFunc(ids, keyOrder)
-	tick := Tick{Site: name, Minute: m, Complete: m-site.windowFrom+1 >= int64(p.W), Scored: scored}
+	tick := Tick{Site: name, Minute: m, Complete: m-site.windowFrom+1 >= int64(p.W), Scored: scored, Requests: requests}
 	var unknown []KeyID
 	judged := map[KeyID]bool{}
 	for _, id := range ids {
 		ks := site.active[id]
+		if ks.finding != nil {
+			tick.Prior = append(tick.Prior, ActiveFinding{Key: id, Since: ks.finding.since, Uncertain: ks.finding.uncertain})
+		}
 		if m-max(site.windowFrom, ks.from)+1 < int64(p.W) {
 			if ks.window.Total() > 0 {
 				unknown = append(unknown, id)

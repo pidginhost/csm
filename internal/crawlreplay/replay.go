@@ -54,6 +54,9 @@ type Options struct {
 	// Shuffle, when nonzero, permutes arrivals inside each minute with this
 	// seed, to measure how sketch bounds depend on arrival order.
 	Shuffle uint64
+	// Truth scores episodes; nil credits a transition to its window's
+	// majority episode, a suggestion only.
+	Truth []EpisodeTruth
 }
 
 // KeyID names a detector key inside one site's replay: level 3 is the
@@ -150,6 +153,8 @@ type Tick struct {
 	Scope       Scope
 	Events      []FindingEvent
 	Active      []ActiveFinding
+	Prior       []ActiveFinding  // findings present before this minute was judged
+	Requests    map[string]int64 // this minute's eligible requests by label, "" unlabeled
 }
 
 // ReplaySite runs a cold session over one site whose every covered minute
@@ -161,15 +166,7 @@ func ReplaySite(site Site, p Params, o Options, fn func(Tick)) error {
 	if err != nil {
 		return err
 	}
-	name := fixtureSiteName
-	if len(site.Records) > 0 {
-		name = site.Records[0].Site
-	}
-	seg := ReplaySegment{Site: name, Records: site.Records, Coverage: site.Coverage, Score: site.Coverage}
-	if n := len(site.Coverage); n > 0 {
-		seg.States = []StateSpan{{From: site.Coverage[0].From, To: site.Coverage[n-1].To, State: StateNormal}}
-	}
-	return s.Feed(seg, func(t Tick) error {
+	return s.Feed(normalSegment(site), func(t Tick) error {
 		if t.Complete {
 			fn(t)
 		}
@@ -250,4 +247,18 @@ func selectScope(evals []Evaluation, c float64, unknown []KeyID) Scope {
 		}
 	}
 	return Scope{Denominator: denominator, Basis: basis}
+}
+
+// normalSegment is one site's whole coverage, scored and in normal learning
+// state, for synthetic replays.
+func normalSegment(site Site) ReplaySegment {
+	name := fixtureSiteName
+	if len(site.Records) > 0 {
+		name = site.Records[0].Site
+	}
+	seg := ReplaySegment{Site: name, Records: site.Records, Coverage: site.Coverage, Score: site.Coverage}
+	if n := len(site.Coverage); n > 0 {
+		seg.States = []StateSpan{{From: site.Coverage[0].From, To: site.Coverage[n-1].To, State: StateNormal}}
+	}
+	return seg
 }

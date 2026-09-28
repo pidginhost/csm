@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// monday is 2026-09-21 00:00 UTC as a Unix minute: hour-of-week slot 0.
-var monday = time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC).Unix() / 60
+// weekStart is Monday 2026-09-21 00:00 UTC as a Unix minute: hour-of-week slot 0.
+var weekStart = time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC).Unix() / 60
 
 const week = int64(7 * 24 * 60)
 
@@ -87,7 +87,7 @@ func slotOf(t *testing.T, s *ReplaySession, site string, id KeyID, m int64) slot
 
 func TestBaselineLearningState(t *testing.T) {
 	p := Params{W: 5, R: 3, F: 1, K: 2, D: 5, C: 80, Baseline: BaselineParams{Alpha: 0.5, MinObs: 3, MinAge: 0, FloorPerMin: 1}}
-	hour := monday + 10*60
+	hour := weekStart + 10*60
 	bg := l1(2)
 	// train fills minutes 0..29 of one UTC hour with eight requests a minute
 	// on bg, so the slot holds a mature mean of 8, far from the floor of 1.
@@ -198,7 +198,7 @@ func (id KeyID) parent() KeyID { return KeyID{Level: 2, Key: id.Parent} }
 // ten requests a minute, Monday 00:00 at twenty, and Monday 01:00 covered
 // but silent, on bg.
 func seasonalHistory(site string, seed uint64) ([]Record, Span) {
-	start := monday - 60 // Sunday 23:00, one week before the episode
+	start := weekStart - 60 // Sunday 23:00, one week before the episode
 	s := NewSynth(site, seed)
 	recs := s.Pool(Traffic{From: start, To: start + 59, PerMinute: 10, L2: SynthKey(1), L1: SynthKey(2), Label: LabelHealthy}, 5)
 	recs = append(recs, s.Pool(Traffic{From: start + 60, To: start + 119, PerMinute: 20, L2: SynthKey(1), L1: SynthKey(2), Label: LabelHealthy}, 5)...)
@@ -206,7 +206,7 @@ func seasonalHistory(site string, seed uint64) ([]Record, Span) {
 }
 
 func TestPinnedSeasonalProfile(t *testing.T) {
-	boundary := monday + week // Monday 00:00 of the episode week
+	boundary := weekStart + week // Monday 00:00 of the episode week
 	// D exceeds every background client count, so no background window is
 	// anomalous and every slot minute trains.
 	base := Params{W: 5, R: 3, F: 1, K: 2, D: 20, C: 80, Baseline: BaselineParams{Alpha: 0.5, MinObs: 60, FloorPerMin: 1}}
@@ -369,8 +369,8 @@ func newWarmScenario() warmScenario {
 		// A small weight keeps one attack minute from raising the night
 		// slot past the attack before the next window judges it.
 		p:       Params{W: 10, R: 3, F: 1, K: 5, D: 10, C: 80, Baseline: BaselineParams{Alpha: 1.0 / 64, MinObs: 60, MinAge: week, FloorPerMin: 10}},
-		train:   Span{From: monday, To: monday + week - 1},
-		heldOut: Span{From: monday + week, To: monday + week + 24*60 - 1},
+		train:   Span{From: weekStart, To: weekStart + week - 1},
+		heldOut: Span{From: weekStart + week, To: weekStart + week + 24*60 - 1},
 	}
 	s := NewSynth(testSite, 77)
 	// Days are busy (20 a minute), nights quiet (1 a minute).
@@ -382,7 +382,7 @@ func newWarmScenario() warmScenario {
 		w.records = append(w.records, s.Pool(Traffic{From: h, To: h + 59, PerMinute: rate, L2: SynthKey(1), L1: SynthKey(2), Label: LabelHealthy}, 300)...)
 	}
 	// A training attack on Wednesday while every key is still young.
-	wednesday := monday + 2*24*60 + 3*60
+	wednesday := weekStart + 2*24*60 + 3*60
 	w.records = append(w.records, s.Rotating(Traffic{From: wednesday, To: wednesday + 20, PerMinute: 300, L2: SynthKey(1), L1: SynthKey(4),
 		Label: LabelAttack, Episode: "e-train"}, 1)...)
 	// An attack that starts in the last training hour and runs on.
@@ -531,7 +531,7 @@ func TestReplaySessionWarmHistory(t *testing.T) {
 
 func TestReplayGapAndRestore(t *testing.T) {
 	cold := Params{W: 5, R: 3, F: 1, K: 2, D: 4, C: 80, Baseline: BaselineParams{Alpha: 0.5, MinObs: 1, MinAge: 1 << 40, FloorPerMin: 1}}
-	start := monday + 9*60
+	start := weekStart + 9*60
 	attack := l1(3)
 	traffic := func(seed uint64, attacks ...Span) []Record {
 		s := NewSynth(testSite, seed)
@@ -748,7 +748,7 @@ func mustRestore(t *testing.T, raw []byte, cfg SessionConfig) *ReplaySession {
 
 func TestReplaySessionContract(t *testing.T) {
 	p := Params{W: 3, R: 3, F: 1, K: 1, D: 2, C: 80, Baseline: BaselineParams{Alpha: 0.5, MinObs: 1, FloorPerMin: 1}}
-	start := monday + 60
+	start := weekStart + 60
 	recs := NewSynth(testSite, 1).Pool(Traffic{From: start, To: start + 29, PerMinute: 3, L2: SynthKey(1), L1: SynthKey(2), Label: LabelHealthy}, 3)
 	// The first segment declares its state beyond its coverage, as a bundle
 	// period can outlast its certified minutes.

@@ -246,7 +246,7 @@ func TestClassifyMajority(t *testing.T) {
 		for _, n := range labels {
 			total += n
 		}
-		got, ep := classify(Evaluation{Total: total, Labels: labels})
+		got, ep := classify(total, labels)
 		if got != want || (want == LabelAttack && ep != "e1") {
 			t.Errorf("%v: classify = %s/%s, want %s", labels, got, ep, want)
 		}

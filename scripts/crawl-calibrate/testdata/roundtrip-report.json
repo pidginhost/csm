@@ -191,15 +191,35 @@
           "site": "dom-a01dff.example",
           "episode": "e-f4120e75fd2f006b",
           "label": "attack",
+          "status": "detected",
           "onset": 1790449801,
           "detected": true,
           "detect_minute": 29840832,
           "delay_seconds": 179,
-          "level": 3,
+          "key": {
+            "level": 3
+          },
           "at_detection": {
             "a1": 1.5333333333333334,
             "a2": 5
           },
+          "exact_at_detection": {
+            "a1": 1.5333333333333334,
+            "a2": 5
+          },
+          "scope": {
+            "level": 2,
+            "keys": [
+              {
+                "level": 2,
+                "key": "k-2a91587001a7ea47"
+              }
+            ],
+            "covered": 28,
+            "denominator": 28,
+            "basis": "expensive"
+          },
+          "scope_match": "narrower",
           "best": {
             "a1": 2.3333333333333335,
             "a2": 8
@@ -260,15 +280,35 @@
           "site": "dom-a01dff.example",
           "episode": "e-f4120e75fd2f006b",
           "label": "attack",
+          "status": "detected",
           "onset": 1790449801,
           "detected": true,
           "detect_minute": 29840832,
           "delay_seconds": 179,
-          "level": 3,
+          "key": {
+            "level": 3
+          },
           "at_detection": {
             "a1": 1.3333333333333333,
             "a2": 3.5
           },
+          "exact_at_detection": {
+            "a1": 1.5333333333333334,
+            "a2": 5
+          },
+          "scope": {
+            "level": 2,
+            "keys": [
+              {
+                "level": 2,
+                "key": "k-2a91587001a7ea47"
+              }
+            ],
+            "covered": 28,
+            "denominator": 28,
+            "basis": "expensive"
+          },
+          "scope_match": "narrower",
           "best": {
             "a1": 2,
             "a2": 3.5
@@ -302,8 +342,10 @@
       "sketch": {
         "max_residual_error": 5,
         "max_distinct_error": 9,
+        "exceeded": 0,
         "lost_decisions": 0,
-        "exceeded": 0
+        "extra_decisions": 0,
+        "lost_findings": 0
       },
       "fixtures": null
     }

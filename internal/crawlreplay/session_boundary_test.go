@@ -18,11 +18,11 @@ func TestRestoreRejectsMissingPinnedProfile(t *testing.T) {
 	cfg := boundaryConfig()
 	s := mustSession(t, cfg)
 	syn := NewSynth(testSite, 1)
-	records := syn.Pool(Traffic{From: monday, To: monday + 3, PerMinute: 2,
+	records := syn.Pool(Traffic{From: weekStart, To: weekStart + 3, PerMinute: 2,
 		L2: SynthKey(1), L1: SynthKey(2), Label: LabelHealthy}, 1)
-	records = append(records, syn.Rotating(Traffic{From: monday + 4, To: monday + 5, PerMinute: 30,
+	records = append(records, syn.Rotating(Traffic{From: weekStart + 4, To: weekStart + 5, PerMinute: 30,
 		L2: SynthKey(1), L1: SynthKey(2), Label: LabelAttack, Episode: "e1"}, 1)...)
-	feedTicks(t, s, segment(testSite, records, nil, Span{From: monday, To: monday + 5}))
+	feedTicks(t, s, segment(testSite, records, nil, Span{From: weekStart, To: weekStart + 5}))
 	raw, err := s.Snapshot()
 	if err != nil {
 		t.Fatal(err)
@@ -58,9 +58,9 @@ func TestSessionOwnsSketchConfiguration(t *testing.T) {
 		t.Run(map[bool]string{false: "new", true: "restored"}[restored], func(t *testing.T) {
 			cfg := boundaryConfig()
 			s := mustSession(t, cfg)
-			records := NewSynth(testSite, 1).Pool(Traffic{From: monday, To: monday + 3, PerMinute: 3,
+			records := NewSynth(testSite, 1).Pool(Traffic{From: weekStart, To: weekStart + 3, PerMinute: 3,
 				L2: SynthKey(1), L1: SynthKey(2), Label: LabelHealthy}, 2)
-			feedTicks(t, s, segment(testSite, records, nil, Span{From: monday, To: monday + 1}))
+			feedTicks(t, s, segment(testSite, records, nil, Span{From: weekStart, To: weekStart + 1}))
 			raw, err := s.Snapshot()
 			if err != nil {
 				t.Fatal(err)
@@ -72,7 +72,7 @@ func TestSessionOwnsSketchConfiguration(t *testing.T) {
 			// Reusing a configuration for another experiment must not change
 			// the hash contract of summaries already held by this session.
 			cfg.Sketch.Seed++
-			next := segment(testSite, records, nil, Span{From: monday + 2, To: monday + 3})
+			next := segment(testSite, records, nil, Span{From: weekStart + 2, To: weekStart + 3})
 			got, want := feedTicks(t, s, next), feedTicks(t, control, next)
 			if !reflect.DeepEqual(got, want) {
 				t.Fatal("caller configuration mutation changed replay decisions")
@@ -96,8 +96,8 @@ func TestSessionOwnsStateDeclarationKeys(t *testing.T) {
 	cfg := boundaryConfig()
 	s := mustSession(t, cfg)
 	key := l1(2)
-	seg := segment(testSite, nil, nil, Span{From: monday, To: monday})
-	seg.States = append(seg.States, StateSpan{Key: &key, From: monday, To: monday + 3, State: StateProtected})
+	seg := segment(testSite, nil, nil, Span{From: weekStart, To: weekStart})
+	seg.States = append(seg.States, StateSpan{Key: &key, From: weekStart, To: weekStart + 3, State: StateProtected})
 	feedTicks(t, s, seg)
 	key = l1(3)
 	raw, err := s.Snapshot()
@@ -105,10 +105,10 @@ func TestSessionOwnsStateDeclarationKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	s = mustRestore(t, raw, cfg)
-	records := NewSynth(testSite, 1).Pool(Traffic{From: monday + 1, To: monday + 3, PerMinute: 1,
+	records := NewSynth(testSite, 1).Pool(Traffic{From: weekStart + 1, To: weekStart + 3, PerMinute: 1,
 		L2: SynthKey(1), L1: SynthKey(2), Label: LabelHealthy}, 1)
-	feedTicks(t, s, segment(testSite, records, nil, Span{From: monday + 1, To: monday + 3}))
-	if got := slotOf(t, s, testSite, l1(2), monday); got != (slot{}) {
+	feedTicks(t, s, segment(testSite, records, nil, Span{From: weekStart + 1, To: weekStart + 3}))
+	if got := slotOf(t, s, testSite, l1(2), weekStart); got != (slot{}) {
 		t.Fatalf("reused declaration key unfroze protected learning after restore: %+v", got)
 	}
 }
@@ -120,7 +120,7 @@ func TestRestoreUnprocessedSiteAfterInvalidation(t *testing.T) {
 			s := mustSession(t, cfg)
 			// A segment can declare states even when none of its minutes
 			// have certified coverage yet.
-			feedTicks(t, s, ReplaySegment{Site: testSite, States: normal(monday, monday+3)})
+			feedTicks(t, s, ReplaySegment{Site: testSite, States: normal(weekStart, weekStart+3)})
 			raw, err := s.Snapshot()
 			if err != nil {
 				t.Fatal(err)
@@ -139,10 +139,10 @@ func TestRestoreUnprocessedSiteAfterInvalidation(t *testing.T) {
 				t.Fatal(err)
 			}
 			s = mustRestore(t, raw, cfg)
-			records := NewSynth(testSite, 1).Pool(Traffic{From: monday, To: monday + 3, PerMinute: 1,
+			records := NewSynth(testSite, 1).Pool(Traffic{From: weekStart, To: weekStart + 3, PerMinute: 1,
 				L2: SynthKey(1), L1: SynthKey(2), Label: LabelHealthy}, 1)
-			feedTicks(t, s, ReplaySegment{Site: testSite, Records: records, Coverage: []Span{{From: monday, To: monday + 3}}})
-			if got := slotOf(t, s, testSite, l1(2), monday); got.obs != 5-cfg.Params.W || got.mean != 1 {
+			feedTicks(t, s, ReplaySegment{Site: testSite, Records: records, Coverage: []Span{{From: weekStart, To: weekStart + 3}}})
+			if got := slotOf(t, s, testSite, l1(2), weekStart); got.obs != 5-cfg.Params.W || got.mean != 1 {
 				t.Fatalf("restored declarations did not govern learning: %+v", got)
 			}
 		})
