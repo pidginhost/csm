@@ -144,8 +144,14 @@ func (l *AdmissionLedger) Terminate(id admission.CandidateID, reason admission.R
 		if err != nil {
 			return false, err
 		}
+		if err = q.trimUnreservedRoots(c); err != nil {
+			return false, err
+		}
 		c.State, c.Disposition, c.Reason, c.NotBefore = state, d, reason, time.Time{}
-		return true, q.release(id, e, admission.EventEnded, reason)
+		if err = q.release(id, e, admission.EventEnded, reason); err != nil {
+			return false, err
+		}
+		return true, q.ended(id, *c)
 	})
 }
 
@@ -153,8 +159,9 @@ func (l *AdmissionLedger) Terminate(id admission.CandidateID, reason admission.R
 // true. The first reservation fixes the absolute expiry, which must be in
 // the future; retries keep it and refuse once it has passed. Every attempt
 // is charged to its lane, retries included, and the charge commits with the
-// attempt. A candidate that is already reserved or executing returns its
-// current attempt and false, so recovery reuses the attempt ID without being
+// attempt, as does the history the candidate's details may keep. A
+// candidate that is already reserved or executing returns its current
+// attempt and false, so recovery reuses the attempt ID without being
 // granted or charged anything.
 func (l *AdmissionLedger) Reserve(id admission.CandidateID, lane admission.Lane, expiresAt time.Time) (admission.Candidate, admission.AttemptRecord, bool, error) {
 	l.mu.Lock()
@@ -167,16 +174,22 @@ func (l *AdmissionLedger) Reserve(id admission.CandidateID, lane admission.Lane,
 	var a admission.AttemptRecord
 	var granted bool
 	if err := l.update("reserve", func(tx *bolt.Tx) error {
-		var txErr error
-		c, a, granted, txErr = l.reserveTx(tx, id, lane, expiresAt, now)
-		return txErr
+		q, txErr := l.openQueue(tx, now)
+		if txErr != nil {
+			return txErr
+		}
+		if c, a, granted, txErr = l.reserveTx(q, id, lane, expiresAt); txErr != nil {
+			return txErr
+		}
+		return q.flush()
 	}); err != nil {
 		return admission.Candidate{}, admission.AttemptRecord{}, false, err
 	}
 	return c, a, granted, nil
 }
 
-func (l *AdmissionLedger) reserveTx(tx *bolt.Tx, id admission.CandidateID, lane admission.Lane, expiresAt, now time.Time) (admission.Candidate, admission.AttemptRecord, bool, error) {
+func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane admission.Lane, expiresAt time.Time) (admission.Candidate, admission.AttemptRecord, bool, error) {
+	tx, now := q.tx, q.now
 	c, err := loadCandidate(tx, id)
 	if err != nil {
 		return c, admission.AttemptRecord{}, false, err
@@ -222,7 +235,7 @@ func (l *AdmissionLedger) reserveTx(tx *bolt.Tx, id admission.CandidateID, lane 
 	if err != nil {
 		return c, admission.AttemptRecord{}, false, err
 	}
-	if err = l.laneFits(tx, liveCandidate{id: id, c: c, entry: entry}, lane, now); err != nil {
+	if err = laneFits(q, liveCandidate{id: id, c: c, entry: entry}, lane); err != nil {
 		return c, admission.AttemptRecord{}, false, err
 	}
 	next, err := admission.NewAttempt(id, c.Attempts+1)
@@ -243,6 +256,9 @@ func (l *AdmissionLedger) reserveTx(tx *bolt.Tx, id admission.CandidateID, lane 
 	a := admission.AttemptRecord{Attempt: next, State: admission.StateReserved, ExpiresAt: c.ExpiresAt, Reserved: now, Lane: lane}
 	c.State, c.Attempts, c.Reason, c.NotBefore = admission.StateReserved, next.Seq, 0, time.Time{}
 	c.Transitions++
+	if err = q.chargeHistory(id, c, lane); err != nil {
+		return c, admission.AttemptRecord{}, false, err
+	}
 	if err := putAttempt(tx, a); err != nil {
 		return c, a, false, err
 	}
@@ -417,7 +433,10 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 		default:
 			c.State, c.Disposition = state, d
 		}
-		return true, q.release(a.Attempt.Candidate, e, 0, 0)
+		if err = q.release(a.Attempt.Candidate, e, 0, 0); err != nil {
+			return false, err
+		}
+		return true, q.ended(a.Attempt.Candidate, *c)
 	})
 	return cand, att, err
 }

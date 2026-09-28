@@ -113,8 +113,9 @@ func TestAdmissionLedgerScheduleRevalidatesPicks(t *testing.T) {
 
 // The first schedule of a reopened ledger checks every queued candidate,
 // including those an upgrade could only mark. An upgraded ledger's buckets
-// start empty: the reading that follows three elapsed seconds earns the
-// general lane its first unit.
+// and history credit start empty: the reading that follows eight elapsed
+// seconds earns the general lane its first unit and the history of one
+// candidate.
 func TestAdmissionLedgerScheduleRecoversAfterReopen(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
@@ -130,7 +131,7 @@ func TestAdmissionLedgerScheduleRecoversAfterReopen(t *testing.T) {
 	}
 	_, err = f.l.Schedule(oneEach)
 	wantLedgerReason(t, "schedule without a current reading", err, admission.ReasonEngineUnavailable)
-	f.tickAt(f.wall.Add(3 * time.Second))
+	f.tickAt(f.wall.Add(8 * time.Second))
 	if picks := f.schedule(oneEach); !reflect.DeepEqual(pickIDs(picks), []admission.CandidateID{id}) {
 		t.Fatalf("recovered picks = %v", picks)
 	}

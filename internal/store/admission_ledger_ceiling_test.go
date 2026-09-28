@@ -627,6 +627,12 @@ func TestAdmissionLedgerChallengeIsNeverCharged(t *testing.T) {
 	}
 	f.l = l
 	f.tickAt(f.wall)
+	// An upgraded ledger saves no history credit. Give it the credit that
+	// elapsed time would, without moving the ceiling's clock.
+	f.adjustStorage(func(s *admission.StorageState) {
+		full := admission.NewStorageState()
+		s.General.Credit, s.Reserved.Credit = full.General.Credit, full.Reserved.Credit
+	})
 	before := f.snapshot()
 	_, _, _, err = f.l.Reserve(block, admission.LaneGeneral, f.wall.Add(time.Hour))
 	wantLedgerReason(t, "block before a ceiling", err, admission.ReasonEngineUnavailable)
@@ -788,10 +794,24 @@ func TestAdmissionLedgerCeilingOfOneServesOnlyTheReservedLane(t *testing.T) {
 	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(f.wall.Add(admission.QueueAgeLimit)) {
 		t.Fatalf("wake = %v %v, %v; want only the age-out", wake, ok, err)
 	}
+	// The reserved lane's history credit does not wake work that cannot
+	// use that lane.
+	f.adjustStorage(func(s *admission.StorageState) { s.Reserved.Credit -= 1000 * uint64(time.Second) })
+	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(f.wall.Add(admission.QueueAgeLimit)) {
+		t.Fatalf("with reserved credit short, wake = %v %v, %v; want only the age-out", wake, ok, err)
+	}
 	direct := f.published(evidenceSpec{producer: f.mail, check: "mail_takeover", target: "192.0.2.11", cursor: "direct", severity: admission.SeverityCritical})
 	_, id := f.enqueue(f.request("192.0.2.11", direct))
 	if picks := f.schedule(admission.ScheduleLimits{General: 10, Reserved: 10, Members: 10}); len(picks) != 1 || picks[0].ID != id || picks[0].Lane != admission.LaneDirect {
 		t.Fatalf("direct work on the reserved lane: %+v", picks)
+	}
+	// With the reserved lane's only unit spent, ordinary work still waits
+	// for nothing but its own age-out.
+	if _, _, _, err := f.l.Reserve(id, admission.LaneDirect, f.wall.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(f.wall.Add(admission.QueueAgeLimit)) {
+		t.Fatalf("with the reserved lane spent, wake = %v %v, %v; want only the age-out", wake, ok, err)
 	}
 }
 

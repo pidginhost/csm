@@ -88,8 +88,9 @@ type Ledger interface {
 	// recorded Now, never raw wall time. A reopened ledger, or one whose
 	// last reading was refused, admits and dispatches nothing until Tick
 	// succeeds; recording an outcome needs only the stored time. The same
-	// transaction credits the elapsed time to the ceiling and releases the
-	// charges that have left its window.
+	// transaction credits the elapsed time to the ceiling and the history
+	// allowances, releases the charges that have left the ceiling's window
+	// and retires history at its target.
 	Tick(ClockReading) (ClockTick, error)
 	// SetCeiling records the effective hourly ceiling, 1 to MaxCeiling. The
 	// engine sets it at startup and on every reload; nothing is charged
@@ -97,6 +98,8 @@ type Ledger interface {
 	SetCeiling(uint32) error
 	// Ceiling is the committed ceiling state.
 	Ceiling() (CeilingState, error)
+	// Storage is the committed storage state.
+	Storage() (StorageState, error)
 	// PublishEvidence stores an immutable record after revalidating it.
 	// An identical record again changes nothing and reports false; a
 	// different record under the same ID is refused.
@@ -125,13 +128,13 @@ type Ledger interface {
 	// Terminate ends a queued candidate as refused, withheld or dropped.
 	Terminate(CandidateID, Reason) (Candidate, error)
 	// Schedule picks the next candidates to serve within the lane budgets,
-	// each at most what the ceiling can charge now, and records the
-	// scheduler's position. Picks stay queued until the engine reserves or
+	// each at most what the ceiling can charge and the history allowance
+	// can take now, and records the scheduler's position. Picks stay queued until the engine reserves or
 	// ends them. Every pick is revalidated first.
 	Schedule(ScheduleLimits) ([]Pick, error)
 	// NextWake is when queued work next changes without a new report: a
 	// retry wait ends, a queued deadline passes or ready work gains ceiling
-	// budget.
+	// or history budget.
 	NextWake() (time.Time, bool, error)
 	// BeginIngress starts an ingress generation. A previous generation
 	// still open was interrupted: its unpersisted items are lost.
@@ -154,8 +157,8 @@ type Ledger interface {
 	// Reserve admits the next attempt on the lane a schedule picked and
 	// reports true. A reserved lane is rechecked against the candidate's
 	// current assessment, then the attempt is charged to the lane's
-	// ceiling budget in the same transaction; a refusal before the charge
-	// consumes nothing. The first reservation fixes the absolute expiry;
+	// ceiling budget and its history to the lane's history allowance in
+	// the same transaction; a refusal before the charges consumes nothing. The first reservation fixes the absolute expiry;
 	// later ones must keep it. On a candidate already reserved or running
 	// it returns that attempt and false: a readback grants and charges
 	// nothing, and a zero lane or expiry matches the recorded one.

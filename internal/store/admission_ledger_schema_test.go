@@ -13,10 +13,36 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+// dropStorage removes the schema 4 storage buckets and record.
+func dropStorage(tx *bolt.Tx) error {
+	for _, name := range admissionStorageBuckets {
+		if err := tx.DeleteBucket([]byte(name)); err != nil {
+			return err
+		}
+	}
+	return tx.Bucket([]byte(admissionQueueStateBucket)).Delete(storageStateKey)
+}
+
+// schemaThree rewrites the fixture's database into the schema 3 layout: the
+// same records without storage accounting.
+func (f *ledgerFixture) schemaThree() {
+	f.t.Helper()
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := dropStorage(tx); err != nil {
+			return err
+		}
+		return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{3})
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
 // schemaTwo rewrites the fixture's database into the schema 2 layout: the
-// same records without the ceiling, and attempts without a charged lane.
+// same records without storage accounting and the ceiling, and attempts
+// without a charged lane.
 func (f *ledgerFixture) schemaTwo() {
 	f.t.Helper()
+	f.schemaThree()
 	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
 		attempts := tx.Bucket([]byte(admissionAttemptsBucket))
 		var legacy []admission.AttemptRecord
@@ -111,9 +137,10 @@ func dbSnapshot(t *testing.T, db *DB) map[string]string {
 	return out
 }
 
-// A new ledger starts at schema 3 with empty queue bookkeeping, no charges
-// and a ceiling waiting for its first limit to fill its buckets.
-func TestAdmissionLedgerSchemaThreeLayout(t *testing.T) {
+// A new ledger starts at schema 4 with empty queue bookkeeping, no charges,
+// a ceiling waiting for its first limit to fill its buckets, and full
+// history credit with nothing stored.
+func TestAdmissionLedgerSchemaFourLayout(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +151,7 @@ func TestAdmissionLedgerSchemaThreeLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = db.bolt.View(func(tx *bolt.Tx) error {
-		if schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey); !bytes.Equal(schema, []byte{3}) {
+		if schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey); !bytes.Equal(schema, []byte{4}) {
 			t.Errorf("schema = %v", schema)
 		}
 		state, stateErr := loadQueueState(tx)
@@ -139,6 +166,14 @@ func TestAdmissionLedgerSchemaThreeLayout(t *testing.T) {
 		}
 		if got, stateErr := loadCeiling(tx); stateErr != nil || got != (admission.CeilingState{Fill: true}) {
 			t.Errorf("new ceiling = %+v, %v", got, stateErr)
+		}
+		if got, stateErr := loadStorage(tx); stateErr != nil || got != admission.NewStorageState() {
+			t.Errorf("new storage = %+v, %v", got, stateErr)
+		}
+		for _, name := range admissionStorageBuckets {
+			if n := tx.Bucket([]byte(name)).Stats().KeyN; n != 0 {
+				t.Errorf("%s holds %d keys", name, n)
+			}
 		}
 		return nil
 	}); err != nil {
@@ -171,7 +206,7 @@ func TestAdmissionLedgerUpgradesSchemaTwo(t *testing.T) {
 			t.Fatalf("upgrade changed schema 2 record %s", k)
 		}
 	}
-	if after[schemaKey] != string([]byte{3}) {
+	if after[schemaKey] != string([]byte{admissionSchemaVersion}) {
 		t.Fatalf("upgraded schema = %q", after[schemaKey])
 	}
 	if err := db.bolt.View(func(tx *bolt.Tx) error {
@@ -346,11 +381,16 @@ func TestAdmissionLedgerUpgradeRefusesDamagedAttempts(t *testing.T) {
 	}
 }
 
-// Only a complete schema 1 layout is upgraded. Queue buckets beside schema
-// 1, a missing schema 1 bucket or damaged queue bookkeeping refuse to open.
+// Only a complete layout of a known schema is upgraded or opened. A later
+// schema's bucket beside an earlier layout, a missing bucket or damaged
+// bookkeeping refuse to open. Each case first drops the later schemas'
+// buckets, so it fails only for the part it names.
 func TestAdmissionLedgerRefusesPartialSchemas(t *testing.T) {
 	for name, damage := range map[string]func(tx *bolt.Tx) error{
 		"schema 1 with a queue bucket": func(tx *bolt.Tx) error {
+			if err := dropStorage(tx); err != nil {
+				return err
+			}
 			for _, name := range []string{admissionQueueStateBucket, admissionChargesBucket} {
 				if err := tx.DeleteBucket([]byte(name)); err != nil {
 					return err
@@ -359,6 +399,9 @@ func TestAdmissionLedgerRefusesPartialSchemas(t *testing.T) {
 			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{1})
 		},
 		"schema 1 without attempts": func(tx *bolt.Tx) error {
+			if err := dropStorage(tx); err != nil {
+				return err
+			}
 			for _, name := range append([]string{admissionAttemptsBucket, admissionChargesBucket}, admissionQueueBuckets...) {
 				if err := tx.DeleteBucket([]byte(name)); err != nil {
 					return err
@@ -376,12 +419,18 @@ func TestAdmissionLedgerRefusesPartialSchemas(t *testing.T) {
 			return tx.Bucket([]byte(admissionQueueStateBucket)).Delete(queueCountersKey)
 		},
 		"schema 2 with the charges bucket": func(tx *bolt.Tx) error {
+			if err := dropStorage(tx); err != nil {
+				return err
+			}
 			if err := tx.Bucket([]byte(admissionQueueStateBucket)).Delete(ceilingStateKey); err != nil {
 				return err
 			}
 			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{2})
 		},
 		"schema 2 without the queue state": func(tx *bolt.Tx) error {
+			if err := dropStorage(tx); err != nil {
+				return err
+			}
 			for _, name := range []string{admissionChargesBucket, admissionQueueStateBucket} {
 				if err := tx.DeleteBucket([]byte(name)); err != nil {
 					return err
@@ -390,7 +439,31 @@ func TestAdmissionLedgerRefusesPartialSchemas(t *testing.T) {
 			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{2})
 		},
 		"schema 3 without charges": func(tx *bolt.Tx) error {
+			if err := dropStorage(tx); err != nil {
+				return err
+			}
+			if err := tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{3}); err != nil {
+				return err
+			}
 			return tx.DeleteBucket([]byte(admissionChargesBucket))
+		},
+		"schema 3 with a storage bucket": func(tx *bolt.Tx) error {
+			if err := dropStorage(tx); err != nil {
+				return err
+			}
+			if _, err := tx.CreateBucket([]byte(admissionRingsBucket)); err != nil {
+				return err
+			}
+			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{3})
+		},
+		"schema 4 without history": func(tx *bolt.Tx) error {
+			return tx.DeleteBucket([]byte(admissionHistoryBucket))
+		},
+		"missing storage state": func(tx *bolt.Tx) error {
+			return tx.Bucket([]byte(admissionQueueStateBucket)).Delete(storageStateKey)
+		},
+		"damaged storage state": func(tx *bolt.Tx) error {
+			return tx.Bucket([]byte(admissionQueueStateBucket)).Put(storageStateKey, []byte("{}"))
 		},
 		"missing ceiling": func(tx *bolt.Tx) error {
 			return tx.Bucket([]byte(admissionQueueStateBucket)).Delete(ceilingStateKey)

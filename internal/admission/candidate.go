@@ -2,6 +2,7 @@ package admission
 
 import (
 	"bytes"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -220,6 +221,21 @@ func (c Candidate) MarshalBinary() ([]byte, error) {
 		return nil, err
 	}
 	return sealRecord(rec)
+}
+
+// MaxBytes is the largest encoding c can reach while its identity, scope,
+// roots and queue times stay as they are: its state, reason, outcome,
+// attempts, deadlines and transition count at their widest. Storage
+// accounting reserves it for a candidate whose roots are fixed.
+func (c Candidate) MaxBytes() (int, error) {
+	rec, err := c.record()
+	if err != nil {
+		return 0, err
+	}
+	rec.State, rec.Reason, rec.Disposition = stateEnd-1, reasonEnd-1, dispositionEnd-1
+	rec.Attempts, rec.ExpiresAt, rec.NotBefore, rec.Transitions = MaxAttempts, math.MaxInt64, math.MaxInt64, math.MaxUint32
+	data, err := sealRecord(rec)
+	return len(data), err
 }
 
 // UnmarshalCandidate decodes a stored candidate and checks its invariants.

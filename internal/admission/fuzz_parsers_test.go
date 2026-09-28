@@ -3,6 +3,7 @@ package admission
 import (
 	"bytes"
 	"crypto/sha256"
+	"fmt"
 	"net/netip"
 	"testing"
 	"time"
@@ -148,21 +149,27 @@ func FuzzLedgerRecords(f *testing.F) {
 	ceiling, _ = ceiling.Charge(LaneDirect, 2)
 	charge := Charge{At: t0, Action: attempt.ID, Lane: LaneDirect, Cost: 2, Elapsed: time.Minute}
 	chargeKey, _ := charge.Key()
+	history := HistoryEntry{General: 3000, Reserved: 400, Ended: t0, Eligible: t0.Add(HistoryRetention)}
+	retireKeys, _ := history.RetireKeys(id)
 	for _, rec := range []interface{ MarshalBinary() ([]byte, error) }{
 		cand, AttemptRecord{Attempt: attempt, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Lane: LaneGeneral}, clock, inv, links,
 		QueueEntry{Partition: PartitionReserved, Tier: Tier{ClassC3, SeverityHigh}, Direct: true, NextChange: t0},
 		QueueState{NextSweep: t0, Cursors: QueueCursors{General: "host/address"}}, counters,
-		ScheduleState{ClassSlot: 3, Rings: [ringCount]Ring{ringC2: {Last: "host/address", Scopes: map[string]ScopeTurn{"host/address": {Severity: 1, Deficit: 2}}}}},
+		ScheduleState{ClassSlot: 3, Rings: [ringCount]Ring{ringC2: {Last: "host/address", Held: "host/address", Scopes: map[string]ScopeTurn{"host/address": {Severity: 1, Deficit: 2, Bytes: 4096}}}}},
 		IngressState{Generation: 2, Open: true, Persisted: 5, Interrupted: 1, Checkpoint: &IngressCheckpoint{
 			Generation: 2, Sequence: 3, Cursors: QueueCursors{General: "host/address"}, Counters: counterBytes,
 		}},
-		ceiling, charge,
+		ceiling, charge, history, EvidenceRefs{Refs: 2}, EvidenceRefs{Loose: 7},
+		StorageState{General: HistoryMeter{Credit: 5, Used: 9}, Recovery: 3, Ended: RingState{Count: 1, Last: 4}},
 	} {
 		data, err := rec.MarshalBinary()
 		if err != nil {
 			f.Fatal(err)
 		}
 		f.Add(data)
+	}
+	for _, k := range retireKeys {
+		f.Add(k)
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		check := func(data []byte) {
@@ -207,6 +214,20 @@ func FuzzLedgerRecords(f *testing.F) {
 			}
 			if c, err := UnmarshalCharge(chargeKey, data); err == nil {
 				roundTrip("charge", c)
+			}
+			if h, err := UnmarshalHistoryEntry(data); err == nil {
+				roundTrip("history entry", h)
+			}
+			if r, err := UnmarshalEvidenceRefs(data); err == nil {
+				roundTrip("evidence references", r)
+			}
+			if s, err := UnmarshalStorageState(data); err == nil {
+				roundTrip("storage state", s)
+			}
+			if kind, at, cand, err := ParseRetireKey(data); err == nil {
+				if again := fmt.Appendf(nil, "%c%019d%s", kind, at.UnixNano(), cand); !bytes.Equal(again, data) {
+					t.Fatalf("accepted retirement key does not re-encode to its input: %q", data)
+				}
 			}
 		}
 		check(data)

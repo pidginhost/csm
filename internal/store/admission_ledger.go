@@ -3,7 +3,9 @@ package store
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,22 +23,29 @@ const (
 	admissionQueueBucket      = "adm:queue"
 	admissionQueueStateBucket = "adm:qstate"
 	admissionChargesBucket    = "adm:charges"
-	admissionSchemaVersion    = 3
+	admissionHistoryBucket    = "adm:history"
+	admissionRetireBucket     = "adm:retire"
+	admissionRefsBucket       = "adm:evrefs"
+	admissionRingsBucket      = "adm:rings"
+	admissionSchemaVersion    = 4
 )
 
 var (
 	// admissionSchemaOneBuckets are the buckets of the schema 1 layout.
-	// Schema 2 adds the queue buckets and schema 3 the charges bucket.
-	admissionSchemaOneBuckets = []string{admissionMetaBucket, admissionEvidenceBucket, admissionReportsBucket, admissionCandidatesBucket, admissionAttemptsBucket}
-	admissionQueueBuckets     = []string{admissionQueueBucket, admissionQueueStateBucket}
-	admissionSchemaTwoBuckets = append(append([]string(nil), admissionSchemaOneBuckets...), admissionQueueBuckets...)
-	admissionBuckets          = append(append([]string(nil), admissionSchemaTwoBuckets...), admissionChargesBucket)
-	admissionSchemaKey        = []byte("schema")
-	admissionClockKey         = []byte("clock")
-	admissionClockPendingKey  = []byte("clock_pending")
-	admissionTrackerKey       = []byte("generations")
-	admissionInventoryKey     = []byte("inventory")
-	admissionAmbiguousKey     = []byte("ambiguous_domains")
+	// Schema 2 adds the queue buckets, schema 3 the charges bucket and
+	// schema 4 the storage buckets.
+	admissionSchemaOneBuckets   = []string{admissionMetaBucket, admissionEvidenceBucket, admissionReportsBucket, admissionCandidatesBucket, admissionAttemptsBucket}
+	admissionQueueBuckets       = []string{admissionQueueBucket, admissionQueueStateBucket}
+	admissionSchemaTwoBuckets   = append(append([]string(nil), admissionSchemaOneBuckets...), admissionQueueBuckets...)
+	admissionSchemaThreeBuckets = append(append([]string(nil), admissionSchemaTwoBuckets...), admissionChargesBucket)
+	admissionStorageBuckets     = []string{admissionHistoryBucket, admissionRetireBucket, admissionRefsBucket, admissionRingsBucket}
+	admissionBuckets            = append(append([]string(nil), admissionSchemaThreeBuckets...), admissionStorageBuckets...)
+	admissionSchemaKey          = []byte("schema")
+	admissionClockKey           = []byte("clock")
+	admissionClockPendingKey    = []byte("clock_pending")
+	admissionTrackerKey         = []byte("generations")
+	admissionInventoryKey       = []byte("inventory")
+	admissionAmbiguousKey       = []byte("ambiguous_domains")
 )
 
 // ErrAdmissionSchema reports admission buckets this build cannot read: an
@@ -88,7 +97,7 @@ func refusal(r admission.Reason, detail string) error {
 }
 
 // OpenAdmissionLedger opens the ledger on db, creating its buckets on first
-// use and upgrading a schema 1 or 2 ledger in the same transaction. The
+// use and upgrading a schema 1, 2 or 3 ledger in the same transaction. The
 // registry must be sealed: the set of producers cannot change under a
 // running ledger.
 func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, error) {
@@ -106,6 +115,14 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 			}
 			return n
 		}
+		if err := tx.ForEach(func(name []byte, _ *bolt.Bucket) error {
+			if strings.HasPrefix(string(name), "adm:") && !slices.Contains(admissionBuckets, string(name)) {
+				return admission.ErrCorruptRecord
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
 		existing := present(admissionBuckets)
 		if existing == 0 {
 			for _, name := range admissionBuckets {
@@ -120,6 +137,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				return err
 			}
 			if err := putCeilingState(tx, admission.CeilingState{Fill: true}); err != nil {
+				return err
+			}
+			if err := putStorageState(tx, admission.NewStorageState()); err != nil {
 				return err
 			}
 		} else {
@@ -138,11 +158,24 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaThree(tx); err != nil {
 					return err
 				}
+				if err := upgradeLedgerToSchemaFour(tx); err != nil {
+					return err
+				}
 			case len(schema) == 1 && schema[0] == 2:
 				if existing != len(admissionSchemaTwoBuckets) || present(admissionSchemaTwoBuckets) != existing {
 					return admission.ErrCorruptRecord
 				}
 				if err := upgradeLedgerToSchemaThree(tx); err != nil {
+					return err
+				}
+				if err := upgradeLedgerToSchemaFour(tx); err != nil {
+					return err
+				}
+			case len(schema) == 1 && schema[0] == 3:
+				if existing != len(admissionSchemaThreeBuckets) || present(admissionSchemaThreeBuckets) != existing {
+					return admission.ErrCorruptRecord
+				}
+				if err := upgradeLedgerToSchemaFour(tx); err != nil {
 					return err
 				}
 			case len(schema) == 1 && schema[0] == admissionSchemaVersion:
@@ -152,6 +185,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 			default:
 				return ErrAdmissionSchema
 			}
+		}
+		if err := validateStateKeys(tx); err != nil {
+			return err
 		}
 		if _, err := loadQueueState(tx); err != nil {
 			return err
@@ -166,6 +202,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 			return err
 		}
 		if _, err := loadCeiling(tx); err != nil {
+			return err
+		}
+		if _, err := loadStorage(tx); err != nil {
 			return err
 		}
 		meta := tx.Bucket([]byte(admissionMetaBucket))
@@ -266,8 +305,9 @@ func (l *AdmissionLedger) update(op string, fn func(tx *bolt.Tx) error) error {
 }
 
 // Tick records a clock reading. The high-water mark it persists is the only
-// time the other calls use. The same transaction meters the ceiling, so a
-// crash can neither lose nor repeat the elapsed time it credits.
+// time the other calls use. The same transaction meters the ceiling and the
+// history allowances and retires history at its target, so a crash can
+// neither lose nor repeat the elapsed time it credits.
 func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -293,7 +333,10 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 		if err := meta.Put(admissionClockKey, data); err != nil {
 			return err
 		}
-		return meterCeiling(tx, t)
+		if err := meterCeiling(tx, t); err != nil {
+			return err
+		}
+		return l.meterStorage(tx, t)
 	})
 	if err != nil {
 		l.current = false
@@ -389,3 +432,29 @@ func (l *AdmissionLedger) Inventory() *admission.Inventory { return l.inv.Load()
 
 // AmbiguousDomains is the count from the last committed observation.
 func (l *AdmissionLedger) AmbiguousDomains() int { return l.inv.Load().ambiguous }
+
+// validateStateKeys refuses state from a layout this binary does not know.
+// Record decoders separately prove the required values and missing rows.
+func validateStateKeys(tx *bolt.Tx) error {
+	for _, state := range []struct {
+		name string
+		keys [][]byte
+	}{
+		{admissionMetaBucket, [][]byte{admissionSchemaKey, admissionClockKey, admissionClockPendingKey, admissionTrackerKey, admissionInventoryKey, admissionAmbiguousKey}},
+		{admissionQueueStateBucket, [][]byte{queueStateKey, queueCountersKey, scheduleStateKey, ingressStateKey, ceilingStateKey, storageStateKey}},
+	} {
+		b := tx.Bucket([]byte(state.name))
+		if b == nil {
+			continue
+		}
+		if err := b.ForEach(func(k, v []byte) error {
+			if v == nil || !slices.ContainsFunc(state.keys, func(key []byte) bool { return string(key) == string(k) }) {
+				return admission.ErrCorruptRecord
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}

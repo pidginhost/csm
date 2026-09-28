@@ -181,6 +181,11 @@ func (l *AdmissionLedger) enqueueTx(q *queueTx, req admission.CandidateRequest, 
 	if err = q.insert(id, c, entryFor(assessment)); err != nil {
 		return admission.Candidate{}, false, err
 	}
+	for _, root := range ids {
+		if err = q.name(root); err != nil {
+			return admission.Candidate{}, false, err
+		}
+	}
 	return c, true, putCandidate(tx, c)
 }
 
@@ -243,6 +248,16 @@ func (l *AdmissionLedger) coalesceTx(q *queueTx, cur admission.Candidate, ids []
 	entry, err := loadQueueEntry(tx, id)
 	if err != nil {
 		return admission.Candidate{}, false, err
+	}
+	if err = q.remapHistoryRoots(cur, merged); err != nil {
+		return admission.Candidate{}, false, err
+	}
+	for _, root := range merged {
+		if !slices.Contains(cur.Roots, root) {
+			if err = q.name(root); err != nil {
+				return admission.Candidate{}, false, err
+			}
+		}
 	}
 	cur.Roots, cur.Scope.Owner = merged, owner
 	cur.Transitions++
