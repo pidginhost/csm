@@ -116,24 +116,12 @@ func (p *pseudonyms) key(k crawlid.Key) (string, error) {
 	return "k-" + h, err
 }
 
-// logFile is one open log copy.
-type logFile interface {
-	io.ReadCloser
-	Stat() (os.FileInfo, error)
-}
-
-// openLog opens a log copy without following a symlink or blocking on a
-// FIFO; convertSite then refuses anything but a regular file.
-func openLog(path string) (logFile, error) {
-	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- operator-listed private log copy; symlinks refused
-}
-
 type converter struct {
 	inv    *inventory
 	labels []labelRule
 	ps     *pseudonyms
 	bots   *botEvidence // nil: no claim is verified
-	open   func(path string) (logFile, error)
+	fs     fileSystem
 	now    time.Time
 	// Every copy read so far, so no request is counted twice through a
 	// second path, a hard link or a compressed duplicate.
@@ -141,8 +129,8 @@ type converter struct {
 	content map[string]bool
 }
 
-func newConverter(inv *inventory, labels []labelRule, ps *pseudonyms, now time.Time) *converter {
-	return &converter{inv: inv, labels: labels, ps: ps, open: openLog, now: now, content: map[string]bool{}}
+func newConverter(fsys fileSystem, inv *inventory, labels []labelRule, ps *pseudonyms, now time.Time) *converter {
+	return &converter{inv: inv, labels: labels, ps: ps, fs: fsys, now: now, content: map[string]bool{}}
 }
 
 // Lost-line categories without a usable time, in the manifest's order.
@@ -290,7 +278,9 @@ func widen(extent **crawlreplay.Span, minute int64) {
 // anything but a regular file that stayed unchanged while read and differs,
 // by file identity and by decompressed content, from every copy before it.
 func (c *converter) readInput(path string, in *crawlreplay.Input, fn func(logLine) error) error {
-	f, err := c.open(path)
+	// Refuse a symlink, and never block opening a FIFO: the regular-file
+	// check below refuses it.
+	f, err := c.fs.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return errInput
 	}
@@ -501,7 +491,12 @@ func logReader(r io.Reader) (*bufio.Reader, *contentReader, error) {
 	br := bufio.NewReaderSize(r, maxLine+2)
 	content := &contentReader{r: br, h: sha256.New()}
 	head, err := br.Peek(2)
-	if err == nil && head[0] == 0x1f && head[1] == 0x8b {
+	if err != nil && !errors.Is(err, io.EOF) {
+		// bufio clears the error it reports, so ignoring it here would let
+		// the read carry on past a failure.
+		return nil, nil, err
+	}
+	if len(head) == 2 && head[0] == 0x1f && head[1] == 0x8b {
 		gz, gzErr := gzip.NewReader(br)
 		if gzErr != nil {
 			return nil, nil, gzErr

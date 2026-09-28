@@ -284,7 +284,7 @@ func TestInventoryIdentityAndCollisionRefusal(t *testing.T) {
 			if !ok {
 				t.Fatal("fixture did not parse")
 			}
-			c := newConverter(inv, nil, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
+			c := newConverter(osFS{}, inv, nil, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
 			sm := crawlreplay.SiteManifest{Labels: map[string]int64{}}
 			if row, _, _ := c.row(inv.Sites[0], &sm, rec, 0, 1); row.Referer != want {
 				t.Errorf("aliases %s: Referer class %d, want %d", aliases, row.Referer, want)
@@ -296,13 +296,13 @@ func TestInventoryIdentityAndCollisionRefusal(t *testing.T) {
 // changingFile reports a different size after it has been read, as a log
 // that is still being written would.
 type changingFile struct {
-	logFile
+	file
 	stats int
 }
 
 func (c *changingFile) Stat() (os.FileInfo, error) {
 	c.stats++
-	info, err := c.logFile.Stat()
+	info, err := c.file.Stat()
 	if c.stats > 1 && err == nil {
 		return grownInfo{info}, nil
 	}
@@ -310,6 +310,16 @@ func (c *changingFile) Stat() (os.FileInfo, error) {
 }
 
 type grownInfo struct{ os.FileInfo }
+
+type changingFS struct{ osFS }
+
+func (changingFS) OpenFile(name string, flag int, perm os.FileMode) (file, error) {
+	f, err := osFS{}.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &changingFile{file: f}, nil
+}
 
 func (g grownInfo) Size() int64 { return g.FileInfo.Size() + 1 }
 
@@ -340,7 +350,7 @@ func TestInputSnapshotsMustBeStable(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c := newConverter(inv, nil, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
+		c := newConverter(osFS{}, inv, nil, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
 		if _, _, _, err := c.convertSite(inv.Sites[0], io.Discard); !errors.Is(err, tc.want) {
 			t.Errorf("%s: err = %v, want %v", name, err, tc.want)
 		}
@@ -349,14 +359,7 @@ func TestInputSnapshotsMustBeStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := newConverter(inv, nil, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
-	c.open = func(path string) (logFile, error) {
-		f, err := openLog(path)
-		if err != nil {
-			return nil, err
-		}
-		return &changingFile{logFile: f}, nil
-	}
+	c := newConverter(changingFS{}, inv, nil, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
 	if _, _, _, err := c.convertSite(inv.Sites[0], io.Discard); !errors.Is(err, errInputIdentity) {
 		t.Fatalf("copy that changed while read: err = %v, want errInputIdentity", err)
 	}
@@ -372,7 +375,7 @@ func TestInputSnapshotRefusesRestoredMtime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := newConverter(nil, nil, newPseudonyms(nil, nil), testNow)
+	c := newConverter(osFS{}, nil, nil, newPseudonyms(nil, nil), testNow)
 	changed := false
 	err = c.readInput(path, &crawlreplay.Input{}, func(logLine) error {
 		if changed {
@@ -396,7 +399,7 @@ func TestInputSnapshotRefusesRestoredMtime(t *testing.T) {
 }
 
 type appendingLog struct {
-	logFile
+	file
 	writer *os.File
 	reads  int
 	bytes  int64
@@ -411,9 +414,25 @@ func (f *appendingLog) Read(p []byte) (int, error) {
 			return 0, err
 		}
 	}
-	n, err := f.logFile.Read(p)
+	n, err := f.file.Read(p)
 	f.bytes += int64(n)
 	return n, err
+}
+
+// appendingFS opens every file as an appendingLog.
+type appendingFS struct {
+	osFS
+	writer *os.File
+	opened *appendingLog
+}
+
+func (a *appendingFS) OpenFile(name string, flag int, perm os.FileMode) (file, error) {
+	f, err := a.osFS.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	a.opened = &appendingLog{file: f, writer: a.writer}
+	return a.opened, nil
 }
 
 func TestInputSnapshotBoundsGrowingRead(t *testing.T) {
@@ -427,22 +446,14 @@ func TestInputSnapshotBoundsGrowingRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer w.Close()
-	c := newConverter(nil, nil, newPseudonyms(nil, nil), testNow)
-	var opened *appendingLog
-	c.open = func(path string) (logFile, error) {
-		f, openErr := openLog(path)
-		if openErr != nil {
-			return nil, openErr
-		}
-		opened = &appendingLog{logFile: f, writer: w}
-		return opened, nil
-	}
+	fsys := &appendingFS{writer: w}
+	c := newConverter(fsys, nil, nil, newPseudonyms(nil, nil), testNow)
 	err = c.readInput(path, &crawlreplay.Input{}, func(logLine) error { return nil })
 	if !errors.Is(err, errInputIdentity) {
 		t.Fatalf("growing copy: err=%v, want errInputIdentity", err)
 	}
-	if opened.bytes != int64(len(data)) {
-		t.Fatalf("read %d bytes from a %d-byte snapshot while it grew", opened.bytes, len(data))
+	if fsys.opened.bytes != int64(len(data)) {
+		t.Fatalf("read %d bytes from a %d-byte snapshot while it grew", fsys.opened.bytes, len(data))
 	}
 }
 
@@ -576,7 +587,7 @@ func TestRegistryHoldsSiteAccountAndEpisodeNames(t *testing.T) {
 func TestRegistryLockSurvivesReplacement(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "registry.json")
 	fingerprint := saltFingerprint(bytes.Repeat([]byte{0x42}, 32))
-	first, err := openRegistry(path, fingerprint)
+	first, err := openRegistry(osFS{}, path, fingerprint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,7 +599,7 @@ func TestRegistryLockSurvivesReplacement(t *testing.T) {
 	if err = first.save(); err != nil {
 		t.Fatal(err)
 	}
-	second, err := openRegistry(path, fingerprint)
+	second, err := openRegistry(osFS{}, path, fingerprint)
 	if err == nil {
 		second.close()
 		t.Fatal("registry replacement released the conversion lock")
@@ -597,7 +608,7 @@ func TestRegistryLockSurvivesReplacement(t *testing.T) {
 		t.Fatalf("second conversion: %v", err)
 	}
 	first.close()
-	third, err := openRegistry(path, fingerprint)
+	third, err := openRegistry(osFS{}, path, fingerprint)
 	if err != nil {
 		t.Fatal(err)
 	}

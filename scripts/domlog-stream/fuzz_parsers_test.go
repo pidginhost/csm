@@ -42,7 +42,7 @@ func FuzzConvertLine(f *testing.F) {
 		}
 		// Each input is a new conversion; collision state must not accumulate
 		// every identity from earlier fuzz inputs for the worker's lifetime.
-		c := newConverter(inv, labels, newPseudonyms(bytes.Repeat([]byte{7}, 32), nil), testNow)
+		c := newConverter(osFS{}, inv, labels, newPseudonyms(bytes.Repeat([]byte{7}, 32), nil), testNow)
 		c.bots = evidence
 		sm := crawlreplay.SiteManifest{Site: "dom-000000.example", Account: "acct-000000", Labels: map[string]int64{}}
 		row, _, err := c.row(site, &sm, rec, 0, 1)

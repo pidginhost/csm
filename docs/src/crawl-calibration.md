@@ -197,6 +197,10 @@ not an end-to-end safety test. Full-bound resource measurements and a private
 ledger approval are required before production implementation. The production
 components must repeat these measurements with their own allocations and I/O.
 
+A cleanup failure returns a fixed error. If the filesystem refuses removal,
+private temporary or output files can remain; retain them for operator-approved
+cleanup and do not retry at those paths or consume them as accepted outputs.
+
 The identity registry reserves site, account and episode pseudonyms across
 all bundles under the same salt. Key and binding pseudonyms are 64 bits and
 are checked within each bundle only; registering every client and pattern

@@ -26,7 +26,7 @@ func cleanTool() crawlreplay.ToolRevision {
 var testNow = time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
 
 func testEnv() env {
-	return env{now: func() time.Time { return testNow }, revision: cleanTool}
+	return env{fs: osFS{}, now: func() time.Time { return testNow }, revision: cleanTool}
 }
 
 type fixture struct {
@@ -363,11 +363,11 @@ func TestSaltMustBePrivate(t *testing.T) {
 	if err := os.WriteFile(path, bytes.Repeat([]byte{1}, 32), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadOrCreateSalt(path); !errors.Is(err, errSaltUnsafe) {
+	if _, err := loadOrCreateSalt(osFS{}, path); !errors.Is(err, errSaltUnsafe) {
 		t.Fatalf("world-readable salt: %v", err)
 	}
 	created := filepath.Join(dir, "new", "salt")
-	salt, err := loadOrCreateSalt(created)
+	salt, err := loadOrCreateSalt(osFS{}, created)
 	if err != nil || len(salt) != 32 {
 		t.Fatalf("create: %v", err)
 	}
@@ -433,7 +433,7 @@ func TestConvertWriteFailureDoesNotLeak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := newConverter(inv, nil, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
+	c := newConverter(osFS{}, inv, nil, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
 	_, _, _, err = c.convertSite(inv.Sites[0], failingPrivateWriter{})
 	if !errors.Is(err, errOutputs) || strings.Contains(err.Error(), "example.com") {
 		t.Fatalf("write refusal = %v, want fixed output error", err)
@@ -475,22 +475,22 @@ func TestInventoryRejectsTrailingJSON(t *testing.T) {
 
 func TestPublishFailureClosesAllStages(t *testing.T) {
 	dir := t.TempDir()
-	a, err := newStaged(filepath.Join(dir, "a"))
+	a, err := newStaged(osFS{}, filepath.Join(dir, "a"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := newStaged(filepath.Join(dir, "b"))
+	b, err := newStaged(osFS{}, filepath.Join(dir, "b"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := newStaged(filepath.Join(dir, "c"))
+	c, err := newStaged(osFS{}, filepath.Join(dir, "c"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err = os.WriteFile(b.final, []byte("existing"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err = publish(a, b, c); !errors.Is(err, errOutputs) {
+	if err = publish(osFS{}, a, b, c); !errors.Is(err, errOutputs) {
 		t.Fatalf("publish = %v", err)
 	}
 	for _, s := range []*staged{a, b, c} {

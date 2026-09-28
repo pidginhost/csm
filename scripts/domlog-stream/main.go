@@ -81,14 +81,17 @@ func readBuildRevision() crawlreplay.ToolRevision {
 	return t
 }
 
-// env is what tests replace: the clock that bounds valid log times, the
-// build stamp a manifest records and, to force collisions, the pseudonym
-// digest (nil: HMAC-SHA256 under the salt).
+// env is what tests replace: the file system, the clock that bounds valid
+// log times, the build stamp a manifest records and, to force collisions,
+// the pseudonym digest (nil: HMAC-SHA256 under the salt).
 type env struct {
+	fs       fileSystem
 	now      func() time.Time
 	revision func() crawlreplay.ToolRevision
 	digest   func(kind string, value []byte) [sha256.Size]byte
 }
+
+func defaultEnv() env { return env{fs: osFS{}, now: time.Now, revision: readBuildRevision} }
 
 type options struct {
 	salt, registry, inventory, labels, bots, out, volumeOut, manifest string
@@ -121,20 +124,20 @@ func run(args []string, stdout io.Writer, e env) error {
 		return errDirtyBuild
 	}
 	for _, p := range []string{o.out, o.volumeOut, o.manifest} {
-		if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+		if _, err := e.fs.Lstat(p); !errors.Is(err, os.ErrNotExist) {
 			return errOutputs
 		}
 	}
-	salt, err := loadOrCreateSalt(o.salt)
+	salt, err := loadOrCreateSalt(e.fs, o.salt)
 	if err != nil {
 		return err
 	}
-	reg, err := openRegistry(o.registry, saltFingerprint(salt))
+	reg, err := openRegistry(e.fs, o.registry, saltFingerprint(salt))
 	if err != nil {
 		return err
 	}
 	defer reg.close()
-	invBytes, err := os.ReadFile(o.inventory) // #nosec G304 -- operator-chosen private input
+	invBytes, err := readFile(e.fs, o.inventory)
 	if err != nil {
 		return errInventory
 	}
@@ -152,7 +155,7 @@ func run(args []string, stdout io.Writer, e env) error {
 	}
 	var labels []labelRule
 	if o.labels != "" {
-		b, readErr := os.ReadFile(o.labels) // #nosec G304 -- operator-chosen private input
+		b, readErr := readFile(e.fs, o.labels)
 		if readErr != nil {
 			return errLabels
 		}
@@ -163,9 +166,9 @@ func run(args []string, stdout io.Writer, e env) error {
 		m.Labels = &d
 	}
 	ps := newPseudonyms(salt, e.digest)
-	c := newConverter(inv, labels, ps, now)
+	c := newConverter(e.fs, inv, labels, ps, now)
 	if o.bots != "" {
-		b, readErr := os.ReadFile(o.bots) // #nosec G304 -- operator-chosen private input
+		b, readErr := readFile(e.fs, o.bots)
 		if readErr != nil {
 			return errBotEvidence
 		}
@@ -186,18 +189,18 @@ func run(args []string, stdout io.Writer, e env) error {
 	if _, err = reg.add(ps.named); err != nil {
 		return err
 	}
-	records, err := newStaged(o.out)
+	records, err := newStaged(e.fs, o.out)
 	if err != nil {
 		return err
 	}
-	volume, err := newStaged(o.volumeOut)
+	volume, err := newStaged(e.fs, o.volumeOut)
 	if err != nil {
-		records.discard()
+		_ = records.discard()
 		return err
 	}
 	fail := func(err error) error {
-		records.discard()
-		volume.discard()
+		_ = records.discard()
+		_ = volume.discard()
 		return err
 	}
 	for _, s := range inv.Sites {
@@ -233,7 +236,7 @@ func run(args []string, stdout io.Writer, e env) error {
 	if err != nil {
 		return fail(errOutputs)
 	}
-	manifestFile, err := newStaged(o.manifest)
+	manifestFile, err := newStaged(e.fs, o.manifest)
 	if err != nil {
 		return fail(err)
 	}
@@ -241,14 +244,14 @@ func run(args []string, stdout io.Writer, e env) error {
 	// without its names in the registry, while a recorded name whose bundle
 	// failed only reserves that name's own pseudonym.
 	if err = reg.save(); err != nil {
-		manifestFile.discard()
+		_ = manifestFile.discard()
 		return fail(err)
 	}
 	if _, err := manifestFile.raw.Write(manifestBytes); err != nil {
-		manifestFile.discard()
+		_ = manifestFile.discard()
 		return fail(errOutputs)
 	}
-	if err := publish(records, volume, manifestFile); err != nil {
+	if err := publish(e.fs, records, volume, manifestFile); err != nil {
 		return err
 	}
 	var lines int64
@@ -272,8 +275,9 @@ func digestOf(b []byte) crawlreplay.Digest {
 // staged is one output written to a private temporary file beside its
 // final path; gzip outputs compress on the way.
 type staged struct {
+	fs    fileSystem
 	final string
-	file  *os.File
+	file  file
 	raw   io.Writer // digest and count, after compression
 	gz    *gzip.Writer
 	hash  hash.Hash
@@ -285,19 +289,19 @@ type countingWriter struct{ n int64 }
 
 func (c *countingWriter) Write(p []byte) (int, error) { c.n += int64(len(p)); return len(p), nil }
 
-func newStaged(final string) (*staged, error) {
-	f, err := os.CreateTemp(filepath.Dir(final), ".domlog-stream-*.tmp")
+func newStaged(fsys fileSystem, final string) (*staged, error) {
+	f, err := fsys.CreateTemp(filepath.Dir(final), ".domlog-stream-*.tmp")
 	if err != nil {
 		return nil, errOutputs
 	}
 	if err := f.Chmod(0o600); err != nil {
 		f.Close()
-		os.Remove(f.Name())
+		_ = fsys.Remove(f.Name())
 		return nil, errOutputs
 	}
 	h := sha256.New()
 	cw := &countingWriter{}
-	s := &staged{final: final, file: f, hash: h, bytes: cw}
+	s := &staged{fs: fsys, final: final, file: f, hash: h, bytes: cw}
 	s.raw = io.MultiWriter(f, h, cw)
 	if filepath.Ext(final) == ".gz" {
 		s.gz = gzip.NewWriter(s.raw)
@@ -324,15 +328,18 @@ func (s *staged) finish(kind string) (crawlreplay.Output, error) {
 	return crawlreplay.Output{Kind: kind, SHA256: hex.EncodeToString(s.hash.Sum(nil)), Bytes: s.bytes.n, Rows: s.rows}, nil
 }
 
-func (s *staged) discard() {
+// discard closes and removes the temporary. A removal failure leaves a
+// private mode-0600 file. Publication reports it; an already failed run
+// retains its original fixed error and leaves cleanup to the operator.
+func (s *staged) discard() error {
 	s.file.Close()
-	os.Remove(s.file.Name())
+	return s.fs.Remove(s.file.Name())
 }
 
 // publish links every staged file to its final name, which refuses to
 // replace an existing file, and the manifest last. On failure it removes
 // what this run published, so no bundle exists without its manifest.
-func publish(files ...*staged) error {
+func publish(fsys fileSystem, files ...*staged) error {
 	var done []string
 	for _, s := range files {
 		if err := s.file.Sync(); err != nil {
@@ -341,17 +348,18 @@ func publish(files ...*staged) error {
 		if err := s.file.Close(); err != nil {
 			break
 		}
-		if err := os.Link(s.file.Name(), s.final); err != nil {
+		if err := fsys.Link(s.file.Name(), s.final); err != nil {
 			break
 		}
 		done = append(done, s.final)
 	}
+	cleanupFailed := false
 	for _, s := range files {
-		s.discard()
+		cleanupFailed = s.discard() != nil || cleanupFailed
 	}
-	if len(done) != len(files) {
+	if len(done) != len(files) || cleanupFailed {
 		for _, p := range done {
-			os.Remove(p)
+			_ = fsys.Remove(p)
 		}
 		return errOutputs
 	}
@@ -363,21 +371,21 @@ func saltFingerprint(salt []byte) string {
 	return hex.EncodeToString(sum[:6])
 }
 
-func loadOrCreateSalt(path string) ([]byte, error) {
-	salt, err := readSalt(path)
+func loadOrCreateSalt(fsys fileSystem, path string) ([]byte, error) {
+	salt, err := readSalt(fsys, path)
 	if !errors.Is(err, os.ErrNotExist) {
 		return salt, err
 	}
-	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err = fsys.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, errSaltUnsafe
 	}
 	salt = make([]byte, 32)
 	if _, err = rand.Read(salt); err != nil {
-		return nil, err
+		return nil, errSaltUnsafe
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) // #nosec G304 -- operator-chosen salt path
+	f, err := fsys.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if errors.Is(err, os.ErrExist) {
-		return readSalt(path)
+		return readSalt(fsys, path)
 	}
 	if err != nil {
 		return nil, errSaltUnsafe
@@ -389,8 +397,9 @@ func loadOrCreateSalt(path string) ([]byte, error) {
 	return salt, nil
 }
 
-func readSalt(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- operator-chosen salt path; symlinks refused
+func readSalt(fsys fileSystem, path string) ([]byte, error) {
+	// Refuse a symlink, and never block opening a FIFO.
+	f, err := fsys.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -412,9 +421,14 @@ func readSalt(path string) ([]byte, error) {
 	return b, nil
 }
 
-func main() {
-	if err := run(os.Args[1:], os.Stdout, env{now: time.Now, revision: readBuildRevision}); err != nil {
-		fmt.Fprintln(os.Stderr, "domlog-stream:", err)
-		os.Exit(1)
+// cli runs the command and reports a refusal, always a fixed message, on
+// stderr. It returns the process exit status.
+func cli(args []string, stdout, stderr io.Writer, e env) int {
+	if err := run(args, stdout, e); err != nil {
+		fmt.Fprintln(stderr, "domlog-stream:", err)
+		return 1
 	}
+	return 0
 }
+
+func main() { os.Exit(cli(os.Args[1:], os.Stdout, os.Stderr, defaultEnv())) }

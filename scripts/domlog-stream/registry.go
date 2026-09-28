@@ -23,8 +23,9 @@ type identityRegistry struct {
 	SaltFingerprint string            `json:"salt_fingerprint"`
 	Names           map[string]string `json:"names"`
 
+	fs      fileSystem
 	path    string
-	lock    *os.File
+	lock    file
 	syncDir func(string) error
 }
 
@@ -32,8 +33,8 @@ var registeredName = regexp.MustCompile(`^(?:dom-[0-9a-f]{6}\.example|acct-[0-9a
 
 // openRegistry locks the registry against concurrent conversions and reads
 // it, creating an empty one for a salt used for the first time.
-func openRegistry(path, fingerprint string) (*identityRegistry, error) {
-	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o600) // #nosec G304 -- operator-chosen registry path; symlinks refused
+func openRegistry(fsys fileSystem, path, fingerprint string) (*identityRegistry, error) {
+	lock, err := fsys.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0o600)
 	if err != nil {
 		return nil, errRegistry
 	}
@@ -46,8 +47,9 @@ func openRegistry(path, fingerprint string) (*identityRegistry, error) {
 		lock.Close()
 		return nil, errRegistry
 	}
-	r := &identityRegistry{FormatVersion: 1, SaltFingerprint: fingerprint, Names: map[string]string{}, path: path, lock: lock, syncDir: syncRegistryDirectory}
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- operator-chosen registry path; symlinks refused
+	r := &identityRegistry{FormatVersion: 1, SaltFingerprint: fingerprint, Names: map[string]string{}, fs: fsys, path: path, lock: lock}
+	r.syncDir = func(dir string) error { return syncDirectory(fsys, dir) }
+	f, err := fsys.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return r, nil
 	}
@@ -107,17 +109,17 @@ func (r *identityRegistry) save() error {
 	if err != nil {
 		return errRegistry
 	}
-	f, err := os.CreateTemp(filepath.Dir(r.path), ".domlog-stream-registry-*.tmp")
+	f, err := r.fs.CreateTemp(filepath.Dir(r.path), ".domlog-stream-registry-*.tmp")
 	if err != nil {
 		return errRegistry
 	}
 	_, writeErr := f.Write(append(b, '\n'))
 	if err = errors.Join(writeErr, f.Chmod(0o600), f.Sync(), f.Close()); err != nil {
-		os.Remove(f.Name())
+		_ = r.fs.Remove(f.Name())
 		return errRegistry
 	}
-	if err = os.Rename(f.Name(), r.path); err != nil {
-		os.Remove(f.Name())
+	if err = r.fs.Rename(f.Name(), r.path); err != nil {
+		_ = r.fs.Remove(f.Name())
 		return errRegistry
 	}
 	// The rename must survive a crash before any dependent bundle can be
@@ -130,8 +132,9 @@ func (r *identityRegistry) save() error {
 
 func (r *identityRegistry) close() { r.lock.Close() }
 
-func syncRegistryDirectory(path string) error {
-	dir, err := os.Open(path) // #nosec G304 -- parent of the operator-chosen registry path
+// syncDirectory persists a rename by syncing the directory that holds it.
+func syncDirectory(fsys fileSystem, path string) error {
+	dir, err := fsys.OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
 		return err
 	}

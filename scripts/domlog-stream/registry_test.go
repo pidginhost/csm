@@ -29,7 +29,7 @@ func TestRegistryRejectsFIFOWithoutReading(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		r, err := openRegistry(path, "0123456789ab")
+		r, err := openRegistry(osFS{}, path, "0123456789ab")
 		if r != nil {
 			r.close()
 		}
@@ -69,7 +69,7 @@ func TestRegistryRejectsUnsafeLock(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			r, err := openRegistry(path, "0123456789ab")
+			r, err := openRegistry(osFS{}, path, "0123456789ab")
 			if r != nil {
 				r.close()
 			}
@@ -88,7 +88,7 @@ func TestRegistryRequiresDigestPrefix(t *testing.T) {
 			if err := os.WriteFile(path, raw, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			r, err := openRegistry(path, "0123456789ab")
+			r, err := openRegistry(osFS{}, path, "0123456789ab")
 			if r != nil {
 				r.close()
 			}
@@ -106,7 +106,7 @@ func TestRegistrySaveRequiresDirectorySync(t *testing.T) {
 	for _, syncFails := range []bool{false, true} {
 		t.Run(strconv.FormatBool(syncFails), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "registry.json")
-			r, err := openRegistry(path, "0123456789ab")
+			r, err := openRegistry(osFS{}, path, "0123456789ab")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -126,7 +126,7 @@ func TestRegistrySaveRequiresDirectorySync(t *testing.T) {
 				if syncFails {
 					return errors.New("synthetic registry directory sync failure")
 				}
-				return syncRegistryDirectory(dir)
+				return syncDirectory(osFS{}, dir)
 			}
 			err = r.save()
 			if !called || (syncFails && err != errRegistry) || (!syncFails && err != nil) {

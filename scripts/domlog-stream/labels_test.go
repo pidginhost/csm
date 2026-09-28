@@ -49,7 +49,7 @@ func TestLabelsPreserveTimeBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := newConverter(inv, labels, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
+	c := newConverter(osFS{}, inv, labels, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
 	for _, tc := range []struct {
 		second, label string
 	}{
@@ -96,7 +96,7 @@ func TestLabelsUseCanonicalASCIINameCase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonical name prefix rejected: %v", err)
 	}
-	c := newConverter(inv, labels, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
+	c := newConverter(osFS{}, inv, labels, newPseudonyms(bytes.Repeat([]byte{0x42}, 32), nil), testNow)
 	for _, tc := range []struct {
 		name, label string
 	}{
