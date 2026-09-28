@@ -18,13 +18,12 @@ import (
 var updateGolden = flag.Bool("update", false, "rewrite the round-trip golden report")
 
 // roundTrip is the bundle scripts/domlog-stream's round-trip test requires
-// its real entry point to produce, byte for byte.
+// its real entry point to produce, byte for byte. The experiment names it
+// relative to its own directory.
 const roundTrip = "../domlog-stream/testdata/roundtrip"
 
 func roundTripArgs(out string) []string {
-	return []string{"--manifest", roundTrip + "/manifest.json", "--records", roundTrip + "/records.jsonl",
-		"--volume", roundTrip + "/volume.jsonl", "--coverage", "testdata/roundtrip-coverage.json",
-		"--window", "5", "--grid", "testdata/roundtrip-grid.json", "--out", out}
+	return []string{"--experiment", "testdata/roundtrip-experiment.json", "--out", out}
 }
 
 // TestConverterCalibratorRoundTrip replays the converter's golden bundle
@@ -51,10 +50,15 @@ func TestConverterCalibratorRoundTrip(t *testing.T) {
 	rep := readReport(t, out)
 	sum := sha256.Sum256(mustRead(t, roundTrip+"/manifest.json"))
 	proof := sha256.Sum256(mustRead(t, "testdata/roundtrip-coverage.json"))
+	experimentSum := sha256.Sum256(mustRead(t, "testdata/roundtrip-experiment.json"))
 	p := rep.Provenance
-	if p.ManifestSHA256 != hex.EncodeToString(sum[:]) || p.ProofSHA256 != hex.EncodeToString(proof[:]) || p.Coverage != coverageCertified ||
-		p.Calibrator != calibratorTool() || !p.Converter.Clean() || p.LatenessSeconds != 60 || p.BotEvidence == nil {
+	if p.ExperimentSHA256 != hex.EncodeToString(experimentSum[:]) || p.Coverage != coverageCertified || p.Calibrator != calibratorTool() ||
+		len(p.Bundles) != 1 {
 		t.Fatalf("provenance = %+v", p)
+	}
+	if bp := p.Bundles[0]; bp.ManifestSHA256 != hex.EncodeToString(sum[:]) || bp.ProofSHA256 != hex.EncodeToString(proof[:]) ||
+		bp.Coverage != coverageCertified || !bp.Converter.Clean() || bp.LatenessSeconds != 60 || bp.BotEvidence == nil || bp.Role != roleScoring {
+		t.Fatalf("bundle provenance = %+v", bp)
 	}
 	// The malformed line lies between 19:05:10 and 19:05:40 give or take the
 	// lateness bound, and the targetless line is at 19:07:30: minutes 4 to 7
@@ -68,29 +72,35 @@ func TestConverterCalibratorRoundTrip(t *testing.T) {
 	if s.CertifiedMinutes != 18 || s.CoveredMinutes != 18 || s.Excluded[crawlreplay.ExcludedLivenessUnknown] != 2 {
 		t.Fatalf("shop coverage = %+v", s)
 	}
-	if len(rep.Runs) != 2 || len(rep.Runs[0].Episodes) != 1 || !rep.Runs[0].Episodes[0].Detected ||
-		rep.Runs[0].Episodes[0].Site != "dom-a01dff.example" || len(rep.Runs[0].FalsePositives) != 0 {
+	if len(rep.Runs) != 2 || len(rep.Runs[0].Scoring.Episodes) != 1 || !rep.Runs[0].Scoring.Episodes[0].Detected ||
+		rep.Runs[0].Scoring.Episodes[0].Site != "dom-a01dff.example" {
 		t.Fatalf("runs = %+v", rep.Runs)
+	}
+	for _, e := range rep.Runs[0].Scoring.Events {
+		if len(e.Credited) == 0 {
+			t.Fatalf("uncredited transition %+v in the round trip", e)
+		}
 	}
 }
 
 func TestCalibrateRequiresCoverageForGrid(t *testing.T) {
 	b := writeBundle(t, bundleOptions{})
-	noProof := []string{"--manifest", b.manifest, "--records", b.records, "--volume", b.volume, "--window", "10", "--grid", b.grid, "--out", b.out}
-	if err := run(noProof, testEnv()); !errors.Is(err, errCoverage) {
+	noProof := b.experiment()
+	noProof.Bundles[0].Coverage = ""
+	if err := run(b.with(t, noProof), testEnv()); !errors.Is(err, errCoverage) {
 		t.Fatalf("grid without a proof: %v", err)
 	}
 	other := writeBundle(t, bundleOptions{pad: 1})
 	if err := os.Rename(other.coverage, b.coverage); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(b.args(), testEnv()); !errors.Is(err, errCoverage) {
+	if err := run(b.args(t), testEnv()); !errors.Is(err, errCoverage) {
 		t.Fatalf("proof bound to another manifest: %v", err)
 	}
 	if err := os.WriteFile(b.coverage, []byte(`{"format_version":1}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(b.args(), testEnv()); !errors.Is(err, errCoverage) {
+	if err := run(b.args(t), testEnv()); !errors.Is(err, errCoverage) {
 		t.Fatalf("malformed proof: %v", err)
 	}
 	if _, err := os.Stat(b.out); !errors.Is(err, os.ErrNotExist) {
@@ -100,12 +110,13 @@ func TestCalibrateRequiresCoverageForGrid(t *testing.T) {
 
 func TestCalibrateValidatesWithoutGrid(t *testing.T) {
 	b := writeBundle(t, bundleOptions{})
-	diagnostics := []string{"--manifest", b.manifest, "--records", b.records, "--volume", b.volume, "--window", "10", "--out", b.out}
-	if err := run(diagnostics, testEnv()); err != nil {
+	diagnostics := b.experiment()
+	diagnostics.Runs, diagnostics.Bundles[0].Coverage = []gridRun{}, ""
+	if err := run(b.with(t, diagnostics), testEnv()); err != nil {
 		t.Fatal(err)
 	}
 	rep := readReport(t, b.out)
-	if rep.Provenance.Coverage != coverageUnqualified || rep.Provenance.ProofSHA256 != "" || len(rep.Runs) != 0 ||
+	if rep.Provenance.Coverage != coverageUnqualified || rep.Provenance.Bundles[0].ProofSHA256 != "" || len(rep.Runs) != 0 ||
 		rep.Coverage[0].CertifiedMinutes != 0 || rep.Coverage[0].Extent == nil || len(rep.Silences) != 2 {
 		t.Fatalf("unqualified report = %+v", rep)
 	}
@@ -124,8 +135,9 @@ func TestCalibrateValidatesWithoutGrid(t *testing.T) {
 	if err = os.WriteFile(bad.manifest, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"--manifest", bad.manifest, "--records", bad.records, "--volume", bad.volume, "--window", "10", "--out", bad.out}
-	if err = run(args, testEnv()); !errors.Is(err, errBundle) {
+	unqualified := bad.experiment()
+	unqualified.Runs, unqualified.Bundles[0].Coverage = []gridRun{}, ""
+	if err = run(bad.with(t, unqualified), testEnv()); !errors.Is(err, errBundle) {
 		t.Fatalf("manifest totals that disagree with the rows: %v", err)
 	}
 	if _, err = os.Stat(bad.out); !errors.Is(err, os.ErrNotExist) {
@@ -139,26 +151,42 @@ func TestCalibrateInputsMustBeRegularFiles(t *testing.T) {
 	if err := os.Symlink(b.records, link); err != nil {
 		t.Fatal(err)
 	}
-	args := b.args()
-	args[3] = link
-	if err := run(args, testEnv()); !errors.Is(err, errBundle) {
+	x := b.experiment()
+	x.Bundles[0].Records = link
+	if err := run(b.with(t, x), testEnv()); !errors.Is(err, errBundle) {
 		t.Fatalf("symlinked records: %v", err)
 	}
 	fifo := filepath.Join(b.dir, "manifest.fifo")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args = b.args()
-	args[1] = fifo
-	if err := run(args, testEnv()); !errors.Is(err, errManifest) {
+	x = b.experiment()
+	x.Bundles[0].Manifest = fifo
+	if err := run(b.with(t, x), testEnv()); !errors.Is(err, errManifest) {
 		t.Fatalf("FIFO manifest: %v", err)
+	}
+	// The experiment file itself is held to the same rule.
+	args := b.args(t)
+	experimentLink := filepath.Join(b.dir, "experiment-link.json")
+	if err := os.Symlink(args[1], experimentLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"--experiment", experimentLink, "--out", b.out}, testEnv()); !errors.Is(err, errExperiment) {
+		t.Fatalf("symlinked experiment: %v", err)
+	}
+	experimentFIFO := filepath.Join(b.dir, "experiment.fifo")
+	if err := syscall.Mkfifo(experimentFIFO, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"--experiment", experimentFIFO, "--out", b.out}, testEnv()); !errors.Is(err, errExperiment) {
+		t.Fatalf("FIFO experiment: %v", err)
 	}
 }
 
 func TestCalibrateCLIReportsFixedErrors(t *testing.T) {
 	for name, args := range map[string][]string{
 		"unknown flag":  {"--secret-value", "/private/secret-file"},
-		"stray operand": {"--window", "10", "secret-target"},
+		"stray operand": {"--experiment", "/private/secret-file", "--out", "/private/secret-out", "secret-target"},
 	} {
 		var stderr bytes.Buffer
 		if code := cli(args, &stderr, testEnv()); code != 1 || stderr.String() != "crawl-calibrate: "+string(errUsage)+"\n" {
@@ -167,7 +195,7 @@ func TestCalibrateCLIReportsFixedErrors(t *testing.T) {
 	}
 	b := writeBundle(t, bundleOptions{})
 	var stderr bytes.Buffer
-	if code := cli(b.args(), &stderr, defaultEnv()); code != 1 || stderr.String() != "crawl-calibrate: "+string(errDirtyBuild)+"\n" {
+	if code := cli(b.args(t), &stderr, defaultEnv()); code != 1 || stderr.String() != "crawl-calibrate: "+string(errDirtyBuild)+"\n" {
 		t.Fatalf("unstamped build: exit %d stderr %q", code, stderr.String())
 	}
 	if strings.Contains(stderr.String(), b.dir) {

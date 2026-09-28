@@ -7,8 +7,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"maps"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -74,6 +77,7 @@ func buildBundle(t testing.TB, st bundleStages) bundleFiles {
 		Outputs: []Output{outputOf("records", recBuf.Bytes(), int64(len(recs))), outputOf("volume", volBuf.Bytes(), int64(len(vol)))},
 		Sites:   []SiteManifest{siteOf(bundleSiteA, bundleAcctA, recs, vol), siteOf(bundleSiteB, bundleAcctB, recs, vol)},
 	}
+	m.Identities = identitiesOf(m.Sites, recs)
 	m.Inputs[0].ContentBytes, m.Inputs[1].ContentBytes = m.Sites[0].Bytes, m.Sites[1].Bytes
 	for i := range m.Inputs {
 		if extent := m.Sites[i].Extent; extent != nil {
@@ -111,6 +115,31 @@ func disorderOf(recs []Record, site string) int64 {
 		}
 	}
 	return disorder
+}
+
+// syntheticIdentity pads a pseudonym's hexadecimal part into a digest.
+func syntheticIdentity(pseudonym string) Identity {
+	hexPart := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimSuffix(pseudonym, ".example"), "dom-"), "acct-"), "e-")
+	return Identity{Pseudonym: pseudonym, Digest: hexPart + strings.Repeat("f", 64-len(hexPart))}
+}
+
+// identitiesOf lists the sites, accounts and record episodes of a bundle,
+// ordered by pseudonym, as the converter declares them.
+func identitiesOf(sites []SiteManifest, recs []Record) []Identity {
+	names := map[string]bool{}
+	for _, s := range sites {
+		names[s.Site], names[s.Account] = true, true
+	}
+	for _, r := range recs {
+		if r.Episode != "" {
+			names[r.Episode] = true
+		}
+	}
+	out := []Identity{}
+	for _, name := range slices.Sorted(maps.Keys(names)) {
+		out = append(out, syntheticIdentity(name))
+	}
+	return out
 }
 
 func volumeOf(recs []Record) []Volume {
@@ -256,21 +285,32 @@ func TestDecodeManifestIsCanonical(t *testing.T) {
 	if err := json.Compact(&compact, f.raw); err != nil {
 		t.Fatal(err)
 	}
+	version := []byte(fmt.Sprintf(`"format_version": %d,`, ManifestVersion))
+	older := func(v int) []byte {
+		return bytes.Replace(f.raw, version, []byte(fmt.Sprintf(`"format_version": %d,`, v)), 1)
+	}
 	for name, raw := range map[string][]byte{
-		"unknown field":  bytes.Replace(f.raw, []byte(`"format_version"`), []byte(`"note": "x",`+"\n  "+`"format_version"`), 1),
-		"duplicate key":  bytes.Replace(f.raw, []byte(`"format_version": 2,`), []byte(`"format_version": 2, "format_version": 2,`), 1),
-		"null tool":      replaceTool(t, f.raw, "null"),
-		"trailing value": append(append([]byte{}, f.raw...), []byte("{}\n")...),
-		"reformatted":    append(compact.Bytes(), '\n'),
-		"case alias":     bytes.Replace(f.raw, []byte(`"format_version"`), []byte(`"Format_Version"`), 1),
-		"version 1":      bytes.Replace(f.raw, []byte(`"format_version": 2`), []byte(`"format_version": 1`), 1),
-		"null untimed":   bytes.Replace(f.raw, []byte(`"untimed": []`), []byte(`"untimed": null`), 1),
+		"unknown field":   bytes.Replace(f.raw, []byte(`"format_version"`), []byte(`"note": "x",`+"\n  "+`"format_version"`), 1),
+		"duplicate key":   bytes.Replace(f.raw, version, append(append([]byte{}, version...), version...), 1),
+		"null tool":       replaceTool(t, f.raw, "null"),
+		"trailing value":  append(append([]byte{}, f.raw...), []byte("{}\n")...),
+		"reformatted":     append(compact.Bytes(), '\n'),
+		"case alias":      bytes.Replace(f.raw, []byte(`"format_version"`), []byte(`"Format_Version"`), 1),
+		"version 1":       older(1),
+		"version 2":       older(2),
+		"null untimed":    bytes.Replace(f.raw, []byte(`"untimed": []`), []byte(`"untimed": null`), 1),
+		"null identities": buildBundle(t, bundleStages{manifest: func(m *Manifest) { m.Identities = nil }}).raw,
 	} {
-		if !bytes.Contains(f.raw, []byte(`"untimed": []`)) {
-			t.Fatal("fixture manifest lost its empty untimed list")
+		if !bytes.Contains(f.raw, []byte(`"untimed": []`)) || !bytes.Contains(f.raw, version) {
+			t.Fatal("fixture manifest lost its empty untimed list or its format version")
+		}
+		if bytes.Equal(raw, f.raw) {
+			t.Fatalf("%s: the edit did not change the manifest", name)
 		}
 		if _, err := DecodeManifest(raw); !errors.Is(err, ErrManifest) {
 			t.Errorf("%s: err = %v, want ErrManifest", name, err)
+		} else if name == "null identities" && err.Error() != manifestError("identities").Error() {
+			t.Errorf("%s: err = %v, want an identity validation error", name, err)
 		}
 	}
 }
@@ -585,4 +625,48 @@ func (f *failOnce) Read(p []byte) (int, error) {
 		return 0, errors.New("transient failure")
 	}
 	return f.r.Read(p)
+}
+
+func TestManifestIdentityDigests(t *testing.T) {
+	const episode = "e-00000000000000e1"
+	withEpisode := func(recs *[]Record, _ *[]Volume) {
+		(*recs)[0].Label, (*recs)[0].Episode = LabelAttack, episode
+	}
+	f := buildBundle(t, bundleStages{rows: withEpisode})
+	if _, _, err := validateFiles(f, nil); err != nil {
+		t.Fatalf("declared identities refused: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		st   bundleStages
+		want error
+	}{
+		"site not declared": {bundleStages{manifest: func(m *Manifest) {
+			m.Identities = slices.DeleteFunc(m.Identities, func(id Identity) bool { return id.Pseudonym == bundleSiteB })
+		}}, ErrManifest},
+		"account not declared": {bundleStages{manifest: func(m *Manifest) {
+			m.Identities = slices.DeleteFunc(m.Identities, func(id Identity) bool { return id.Pseudonym == bundleAcctA })
+		}}, ErrManifest},
+		"undeclared extra site": {bundleStages{manifest: func(m *Manifest) {
+			m.Identities = append(m.Identities, syntheticIdentity("dom-00000c.example"))
+			slices.SortFunc(m.Identities, func(a, b Identity) int { return strings.Compare(a.Pseudonym, b.Pseudonym) })
+		}}, ErrManifest},
+		"unordered":       {bundleStages{manifest: func(m *Manifest) { m.Identities[0], m.Identities[1] = m.Identities[1], m.Identities[0] }}, ErrManifest},
+		"repeated":        {bundleStages{manifest: func(m *Manifest) { m.Identities = append(m.Identities, m.Identities[len(m.Identities)-1]) }}, ErrManifest},
+		"digest prefix":   {bundleStages{manifest: func(m *Manifest) { m.Identities[0].Digest = strings.Repeat("9", 64) }}, ErrManifest},
+		"short digest":    {bundleStages{manifest: func(m *Manifest) { m.Identities[0].Digest = m.Identities[0].Digest[:63] }}, ErrManifest},
+		"not a pseudonym": {bundleStages{manifest: func(m *Manifest) { m.Identities[0].Pseudonym = "k-0000000000000001" }}, ErrManifest},
+		"episode not declared": {bundleStages{rows: withEpisode, manifest: func(m *Manifest) {
+			m.Identities = slices.DeleteFunc(m.Identities, func(id Identity) bool { return id.Pseudonym == episode })
+		}}, ErrBundle},
+		"declared episode unused": {bundleStages{manifest: func(m *Manifest) {
+			m.Identities = append(m.Identities, syntheticIdentity(episode))
+			slices.SortFunc(m.Identities, func(a, b Identity) int { return strings.Compare(a.Pseudonym, b.Pseudonym) })
+		}}, ErrBundle},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := validateFiles(buildBundle(t, tc.st), nil); !errors.Is(err, tc.want) {
+				t.Fatalf("%v, want %v", err, tc.want)
+			}
+		})
+	}
 }

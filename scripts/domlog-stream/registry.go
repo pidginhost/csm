@@ -91,6 +91,13 @@ func openRegistry(fsys fileSystem, path, fingerprint string) (*identityRegistry,
 		lock.Close()
 		return nil, errRegistry
 	}
+	// A lock file replaced between the open and the flock leaves this run
+	// holding a lock no other run can see; the path must still name it.
+	current, err := fsys.Lstat(path + ".lock")
+	if err != nil || !os.SameFile(info, current) {
+		lock.Close()
+		return nil, errRegistry
+	}
 	r := &identityRegistry{FormatVersion: 1, SaltFingerprint: fingerprint, Names: map[string]string{}, fs: fsys, path: path, lock: lock}
 	r.syncDir = func(dir string) error { return syncDirectory(fsys, dir) }
 	f, err := fsys.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)

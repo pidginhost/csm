@@ -29,7 +29,8 @@ func TestInventoryDNSNameLength(t *testing.T) {
 				} else {
 					site.Aliases = append(site.Aliases, name)
 				}
-				data, err := json.Marshal(inventory{Period: testPeriod, Sites: []inventorySite{site}})
+				// Empty lists, not nulls: the inventory's closed form refuses null.
+				data, err := json.Marshal(inventory{Period: testPeriod, Sites: []inventorySite{site}, TrustedProxies: []string{}, Infrastructure: []string{}})
 				if err != nil {
 					t.Fatal(err)
 				}

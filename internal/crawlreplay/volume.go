@@ -2,6 +2,7 @@ package crawlreplay
 
 import (
 	"cmp"
+	"maps"
 	"math"
 	"slices"
 )
@@ -55,7 +56,8 @@ func Summarize(sample []float64) Quantiles {
 
 // HostVolume summarizes logged lines and bytes per minute over every
 // minute from the earliest to the latest volume row; a minute no site
-// logged counts as zero.
+// logged counts as zero. SummarizeVolumePeriods restricts that extent to
+// the supplied recording periods.
 type HostVolume struct {
 	LinesPerMinute     Quantiles `json:"lines_per_minute"`
 	BytesPerMinute     Quantiles `json:"bytes_per_minute"`
@@ -64,6 +66,13 @@ type HostVolume struct {
 
 // SummarizeVolume aggregates volume rows across sites.
 func SummarizeVolume(rows []Volume) HostVolume {
+	return SummarizeVolumePeriods(rows, nil)
+}
+
+// SummarizeVolumePeriods excludes gaps between recording periods. Periods
+// must be chronological and disjoint and contain every row. A nil list
+// uses the full observed extent, as SummarizeVolume does.
+func SummarizeVolumePeriods(rows []Volume, periods []Span) HostVolume {
 	if len(rows) == 0 {
 		return HostVolume{}
 	}
@@ -85,9 +94,14 @@ func SummarizeVolume(rows []Volume) HostVolume {
 		site = append(site, n)
 	}
 	var l, b []float64
-	for m := first; m <= last; m++ {
-		l = append(l, lines[m])
-		b = append(b, bytes[m])
+	if periods == nil {
+		periods = []Span{{From: first, To: last}}
+	}
+	for _, period := range periods {
+		for m := max(first, period.From); m <= min(last, period.To); m++ {
+			l = append(l, lines[m])
+			b = append(b, bytes[m])
+		}
 	}
 	return HostVolume{LinesPerMinute: Summarize(l), BytesPerMinute: Summarize(b), SiteLinesPerMinute: Summarize(site)}
 }
@@ -126,7 +140,33 @@ type SiteShape struct {
 
 // ShapeSite measures one site's records over its coverage.
 func ShapeSite(site Site, w int) SiteShape {
-	shape := SiteShape{Lateness: map[int64]int64{}, WindowKeys: map[uint8][]float64{}, NewKeys: map[uint8][]float64{}}
+	tracker := NewShapeTracker(w)
+	tracker.Add(site)
+	return tracker.Report()
+}
+
+// ShapeTracker carries one site's diagnostic windows and first-seen keys
+// across chronological bundles. Only the current window's records remain
+// retained; earlier traffic contributes summary samples and key identities.
+type ShapeTracker struct {
+	w                       int
+	shape                   SiteShape
+	firstSeen               map[KeyID]bool
+	keyCounts               map[KeyID]int
+	bindCounts              map[string]int
+	window                  map[int64][]Record
+	last, coveredFrom, hour int64
+}
+
+// NewShapeTracker starts one site's diagnostics with a positive window.
+func NewShapeTracker(w int) *ShapeTracker {
+	return &ShapeTracker{w: w, hour: -1, firstSeen: map[KeyID]bool{},
+		shape: SiteShape{Lateness: map[int64]int64{}, WindowKeys: map[uint8][]float64{}, NewKeys: map[uint8][]float64{}}}
+}
+
+// Add measures a validated bundle segment after every minute already added.
+// File numbers belong to this bundle; lateness never joins distinct copies.
+func (s *ShapeTracker) Add(site Site) {
 	ordered := slices.Clone(site.Records)
 	slices.SortStableFunc(ordered, func(a, b Record) int {
 		return cmp.Or(cmp.Compare(a.File, b.File), cmp.Compare(a.Seq, b.Seq))
@@ -135,75 +175,89 @@ func ShapeSite(site Site, w int) SiteShape {
 	byMinute := map[int64][]Record{}
 	for _, r := range ordered {
 		if top, ok := latest[r.File]; ok && top > r.T {
-			shape.Lateness[top-r.T]++
+			s.shape.Lateness[top-r.T]++
 		} else {
 			latest[r.File] = r.T
-			shape.Lateness[0]++
+			s.shape.Lateness[0]++
 		}
 		if r.Class != ClassOther && !r.Infra {
 			byMinute[r.T/60] = append(byMinute[r.T/60], r)
 		}
 	}
-	firstSeen := map[KeyID]bool{}
-	var keyCounts map[KeyID]int
-	var bindCounts map[string]int
-	var coveredFrom int64
-	hour := int64(-1)
-	for i, span := range site.Coverage {
-		if i == 0 || span.From-1 != site.Coverage[i-1].To {
-			// Span boundaries alone do not interrupt a continuous window.
-			coveredFrom = span.From
-			keyCounts = map[KeyID]int{}
-			bindCounts = map[string]int{}
+	for _, span := range site.Coverage {
+		if s.last == 0 || span.From-1 != s.last {
+			s.coveredFrom = span.From
+			s.keyCounts = map[KeyID]int{}
+			s.bindCounts = map[string]int{}
+			s.window = map[int64][]Record{}
 		}
 		for m := span.From; m <= span.To; m++ {
-			if m/60 != hour {
-				// Disjoint spans in one UTC hour share a single sample.
-				hour = m / 60
-				for level := uint8(1); level <= 3; level++ {
-					shape.NewKeys[level] = append(shape.NewKeys[level], 0)
-				}
+			s.minute(m, byMinute[m])
+		}
+	}
+}
+
+func (s *ShapeTracker) minute(m int64, records []Record) {
+	if m/60 != s.hour {
+		s.hour = m / 60
+		for level := uint8(1); level <= 3; level++ {
+			s.shape.NewKeys[level] = append(s.shape.NewKeys[level], 0)
+		}
+	}
+	for _, r := range records {
+		for _, id := range keysOf(&r) {
+			s.keyCounts[id]++
+			if !s.firstSeen[id] {
+				s.firstSeen[id] = true
+				counts := s.shape.NewKeys[id.Level]
+				counts[len(counts)-1]++
 			}
-			for _, r := range byMinute[m] {
-				for _, id := range keysOf(&r) {
-					keyCounts[id]++
-					if !firstSeen[id] {
-						firstSeen[id] = true
-						counts := shape.NewKeys[id.Level]
-						counts[len(counts)-1]++
-					}
-				}
-				if r.Binding != "" {
-					bindCounts[r.Binding]++
-				}
+		}
+		if r.Binding != "" {
+			s.bindCounts[r.Binding]++
+		}
+	}
+	if len(records) > 0 {
+		s.window[m] = records
+	}
+	old := m - int64(s.w)
+	for _, r := range s.window[old] {
+		for _, id := range keysOf(&r) {
+			if s.keyCounts[id]--; s.keyCounts[id] == 0 {
+				delete(s.keyCounts, id)
 			}
-			if old := m - int64(w); old >= coveredFrom {
-				for _, r := range byMinute[old] {
-					for _, id := range keysOf(&r) {
-						if keyCounts[id]--; keyCounts[id] == 0 {
-							delete(keyCounts, id)
-						}
-					}
-					if r.Binding != "" {
-						if bindCounts[r.Binding]--; bindCounts[r.Binding] == 0 {
-							delete(bindCounts, r.Binding)
-						}
-					}
-				}
-			}
-			if m-coveredFrom+1 >= int64(w) {
-				levels := map[uint8]float64{}
-				for id := range keyCounts {
-					levels[id.Level]++
-				}
-				for level := uint8(1); level <= 3; level++ {
-					shape.WindowKeys[level] = append(shape.WindowKeys[level], levels[level])
-				}
-				shape.WindowBindings = append(shape.WindowBindings, float64(len(bindCounts)))
+		}
+		if r.Binding != "" {
+			if s.bindCounts[r.Binding]--; s.bindCounts[r.Binding] == 0 {
+				delete(s.bindCounts, r.Binding)
 			}
 		}
 	}
-	return shape
+	delete(s.window, old)
+	if m-s.coveredFrom+1 >= int64(s.w) {
+		levels := map[uint8]float64{}
+		for id := range s.keyCounts {
+			levels[id.Level]++
+		}
+		for level := uint8(1); level <= 3; level++ {
+			s.shape.WindowKeys[level] = append(s.shape.WindowKeys[level], levels[level])
+		}
+		s.shape.WindowBindings = append(s.shape.WindowBindings, float64(len(s.bindCounts)))
+	}
+	s.last = m
+}
+
+// Report returns diagnostics independent of later additions to the tracker.
+func (s *ShapeTracker) Report() SiteShape {
+	out := SiteShape{Lateness: maps.Clone(s.shape.Lateness), WindowBindings: slices.Clone(s.shape.WindowBindings),
+		WindowKeys: map[uint8][]float64{}, NewKeys: map[uint8][]float64{}}
+	for level, values := range s.shape.WindowKeys {
+		out.WindowKeys[level] = slices.Clone(values)
+	}
+	for level, values := range s.shape.NewKeys {
+		out.NewKeys[level] = slices.Clone(values)
+	}
+	return out
 }
 
 // Footprint estimates the retained bytes of one key's detector state: the

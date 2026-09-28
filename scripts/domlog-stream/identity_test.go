@@ -675,3 +675,30 @@ func TestRegistryLockSurvivesReplacement(t *testing.T) {
 		t.Fatal("saved reservation lost after lock handoff")
 	}
 }
+
+func TestManifestDeclaresIdentities(t *testing.T) {
+	logs, gz := defaultLogs()
+	f := newFixture(t, logs, gz)
+	recs, _, m := convertOK(t, f)
+	var stored identityRegistry
+	if err := crawlreplay.DecodeStrictJSON(mustRead(t, f.registry), &stored); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{}
+	for _, s := range m.Sites {
+		want[s.Site], want[s.Account] = true, true
+	}
+	for _, r := range recs {
+		if r.Episode != "" {
+			want[r.Episode] = true
+		}
+	}
+	if len(m.Identities) != len(want) || len(want) != 5 {
+		t.Fatalf("manifest declares %d identities, want the %d sites, accounts and episodes", len(m.Identities), len(want))
+	}
+	for i, id := range m.Identities {
+		if !want[id.Pseudonym] || stored.Names[id.Pseudonym] != id.Digest || (i > 0 && id.Pseudonym <= m.Identities[i-1].Pseudonym) {
+			t.Fatalf("identity %+v is not the registry's, or out of order", id)
+		}
+	}
+}

@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"errors"
 	"math"
-	"math/rand/v2"
 	"slices"
 )
 
@@ -55,6 +54,9 @@ type Options struct {
 	// Shuffle, when nonzero, permutes arrivals inside each minute with this
 	// seed, to measure how sketch bounds depend on arrival order.
 	Shuffle uint64
+	// Truth scores episodes; nil credits a transition to its window's
+	// majority episode, a suggestion only.
+	Truth []EpisodeTruth
 }
 
 // KeyID names a detector key inside one site's replay: level 3 is the
@@ -82,15 +84,17 @@ func keysOf(r *Record) []KeyID {
 // Evaluation is one key's complete window at one minute.
 type Evaluation struct {
 	Key            KeyID            `json:"key"`
-	Total          int64            `json:"total"`    // window requests, bound or not
-	Bindings       int64            `json:"bindings"` // distinct bindings in the window
-	Residual       int64            `json:"residual"` // residual requests the decision used
-	Distinct       int64            `json:"distinct"` // residual bindings the decision used
+	Total          int64            `json:"total"`     // window requests, bound or not
+	Expensive      int64            `json:"expensive"` // window requests with a query
+	Bindings       int64            `json:"bindings"`  // distinct bindings in the window
+	Residual       int64            `json:"residual"`  // residual requests the decision used
+	Distinct       int64            `json:"distinct"`  // residual bindings the decision used
 	ExactResidual  int64            `json:"exact_residual"`
 	ExactDistinct  int64            `json:"exact_distinct"`
 	Expected       float64          `json:"expected"` // sum of per-minute expectations over the window
 	Anomalous      bool             `json:"anomalous"`
 	ExactAnomalous bool             `json:"exact_anomalous"`
+	Trusted        bool             `json:"trusted"` // some window minute used a trained slot, not the floor
 	Labels         map[string]int64 `json:"labels"`
 }
 
@@ -106,6 +110,25 @@ func (p Params) anomalous(residual, distinct int64, expected float64) bool {
 	return a1 >= 1 && a2 >= 1
 }
 
+// Count bases of a scope selection (spec 6.3).
+const (
+	// BasisExpensive counts only requests with a query.
+	BasisExpensive = "expensive"
+	// BasisDynamic counts queryless dynamic requests too: the anomalous
+	// site key includes them, so every level is measured against them.
+	BasisDynamic = "dynamic"
+)
+
+// Reasons a scope selection refuses to name keys.
+const (
+	// RefusedZero: the anomalous keys hold no requests.
+	RefusedZero = "zero_denominator"
+	// RefusedUnknown: a key whose window is incomplete may be anomalous
+	// outside every known anomalous ancestor, or may be the maximal
+	// ancestor of one, so the anomalous traffic is not known.
+	RefusedUnknown = "unknown_denominator"
+)
+
 // Scope is the narrowest level whose disjoint anomalous keys cover C
 // percent of the anomalous traffic (spec 6.3).
 type Scope struct {
@@ -113,230 +136,129 @@ type Scope struct {
 	Keys        []KeyID `json:"keys,omitempty"`
 	Covered     int64   `json:"covered"`
 	Denominator int64   `json:"denominator"`
-	Dynamic     bool    `json:"dynamic"` // the denominator includes queryless traffic
+	Basis       string  `json:"basis,omitempty"`
+	Refused     string  `json:"refused,omitempty"`
 }
 
-// Tick is one minute whose windows are complete.
+// Tick is one covered minute of one site. Evaluations hold every key whose
+// window is complete and holds traffic or an active finding; Events hold the
+// High transitions of this minute and Active every finding still active
+// after it.
 type Tick struct {
+	Site        string
 	Minute      int64
+	Complete    bool // the site's last W covered minutes are known
+	Scored      bool
 	Evaluations []Evaluation
 	Scope       Scope
+	Events      []FindingEvent
+	Active      []ActiveFinding
+	Prior       []ActiveFinding  // findings present before this minute was judged
+	Requests    map[string]int64 // this minute's eligible requests by label, "" unlabeled
 }
 
-type keyState struct {
-	baseline   *Baseline
-	window     *Window
-	minutes    map[int64]*minuteCounts
-	sketches   map[int64]*keySketch
-	observedTo int64
-	active     bool
-}
-
-// ReplaySite runs the detector over one site, minute by minute, and calls fn
-// for every covered minute whose W-minute window is complete. Each minute is
-// evaluated against the baseline learned before it; anomalous minutes do
-// not train the baseline, and missing minutes are never learned as zero.
+// ReplaySite runs a cold session over one site whose every covered minute
+// is in normal learning state, and calls fn for every minute whose W-minute
+// window is complete. It suits synthetic fixtures; recorded data declares
+// its states through a session.
 func ReplaySite(site Site, p Params, o Options, fn func(Tick)) error {
-	if err := p.Validate(); err != nil {
-		return err
-	}
-	if o.Sketch != nil && (o.Sketch.M <= p.K || o.Sketch.H < p.D+p.K) {
-		return ErrParams
-	}
-	buckets, err := bucketSite(site, o.Shuffle)
+	s, err := NewReplaySession(SessionConfig{Params: p, Sketch: o.Sketch, Shuffle: o.Shuffle})
 	if err != nil {
 		return err
 	}
-	keys := map[KeyID]*keyState{}
-	active := map[KeyID]*keyState{}
-	var coveredFrom int64
-	for i, span := range site.Coverage {
-		if i == 0 || span.From-1 != site.Coverage[i-1].To {
-			coveredFrom = span.From
-			// Only missing minutes break windows; adjacent spans describe
-			// the same continuous coverage as a single joined span.
-			for id, ks := range active {
-				ks.active, ks.window, ks.minutes, ks.sketches = false, newWindow(), nil, nil
-				delete(active, id)
-			}
+	return s.Feed(normalSegment(site), func(t Tick) error {
+		if t.Complete {
+			fn(t)
 		}
-		for m := span.From; m <= span.To; m++ {
-			for _, r := range buckets[m] {
-				for _, id := range keysOf(r) {
-					ks := keys[id]
-					if ks == nil {
-						ks = &keyState{baseline: NewBaseline(p.Baseline, m), window: newWindow(), observedTo: m - 1}
-						keys[id] = ks
-					}
-					if !ks.active {
-						foldIdle(ks, site.Coverage, m)
-						ks.active, ks.minutes, ks.sketches = true, map[int64]*minuteCounts{}, map[int64]*keySketch{}
-						active[id] = ks
-					}
-					mc := ks.minutes[m]
-					if mc == nil {
-						mc = newMinuteCounts()
-						ks.minutes[m] = mc
-					}
-					mc.add(r)
-					if o.Sketch != nil && r.Binding != "" {
-						sk := ks.sketches[m]
-						if sk == nil {
-							sk = newKeySketch(*o.Sketch)
-							ks.sketches[m] = sk
-						}
-						sk.add(*o.Sketch, r.Binding)
-					}
-				}
-			}
-			ids := make([]KeyID, 0, len(active))
-			for id, ks := range active {
-				ids = append(ids, id)
-				if mc := ks.minutes[m]; mc != nil {
-					ks.window.apply(mc, 1)
-				}
-				if mc := ks.minutes[m-int64(p.W)]; mc != nil {
-					ks.window.apply(mc, -1)
-					delete(ks.minutes, m-int64(p.W))
-				}
-				delete(ks.sketches, m-int64(p.W))
-			}
-			slices.SortFunc(ids, keyOrder)
-			complete := m-coveredFrom+1 >= int64(p.W)
-			tick := Tick{Minute: m}
-			for _, id := range ids {
-				ks := active[id]
-				anomalous := false
-				if complete && ks.window.Total() > 0 {
-					e := evaluate(ks, id, m, p, o)
-					anomalous = e.Anomalous
-					tick.Evaluations = append(tick.Evaluations, e)
-				}
-				if !anomalous {
-					var total int64
-					if mc := ks.minutes[m]; mc != nil {
-						total = mc.total
-					}
-					ks.baseline.Observe(m, total)
-				}
-				ks.observedTo = m
-				if ks.window.Total() == 0 {
-					ks.active = false
-					delete(active, id)
-				}
-			}
-			if complete {
-				tick.Scope = selectScope(tick.Evaluations, p.C)
-				fn(tick)
-			}
-		}
+		return nil
+	})
+}
+
+// ancestors lists the keys whose traffic contains id's, nearest first.
+func ancestors(id KeyID) []KeyID {
+	switch id.Level {
+	case 1:
+		return []KeyID{{Level: 2, Key: id.Parent}, {Level: 3}}
+	case 2:
+		return []KeyID{{Level: 3}}
 	}
 	return nil
 }
 
-// bucketSite checks the input and groups eligible records by minute in
-// logged order.
-func bucketSite(site Site, shuffle uint64) (map[int64][]*Record, error) {
-	for i, s := range site.Coverage {
-		if s.From <= 0 || s.To < s.From || (i > 0 && s.From <= site.Coverage[i-1].To) {
-			return nil, ErrSite
-		}
-	}
-	covered := func(m int64) bool {
-		i, found := slices.BinarySearchFunc(site.Coverage, m, func(s Span, m int64) int { return cmp.Compare(s.To, m) })
-		return found || (i < len(site.Coverage) && site.Coverage[i].From <= m)
-	}
-	buckets := map[int64][]*Record{}
-	for i := range site.Records {
-		r := &site.Records[i]
-		if r.Validate() != nil || r.Site != site.Records[0].Site || !covered(r.T/60) {
-			return nil, ErrSite
-		}
-		if r.Class == ClassOther || r.Infra {
-			continue
-		}
-		buckets[r.T/60] = append(buckets[r.T/60], r)
-	}
-	for m, rs := range buckets {
-		slices.SortStableFunc(rs, func(a, b *Record) int {
-			return cmp.Or(cmp.Compare(a.File, b.File), cmp.Compare(a.Seq, b.Seq))
-		})
-		if shuffle != 0 {
-			// #nosec G115 G404 -- positive Unix minute; a reproducible permutation, not a secret.
-			rng := rand.New(rand.NewPCG(shuffle, uint64(m)))
-			rng.Shuffle(len(rs), func(i, j int) { rs[i], rs[j] = rs[j], rs[i] })
-		}
-	}
-	return buckets, nil
-}
-
-// foldIdle learns the zero-traffic covered minutes a key sat idle through.
-func foldIdle(ks *keyState, coverage []Span, until int64) {
-	for _, s := range coverage {
-		for m := max(ks.observedTo+1, s.From); m <= min(until-1, s.To); m++ {
-			ks.baseline.Observe(m, 0)
-		}
-	}
-	ks.observedTo = until - 1
-}
-
-func evaluate(ks *keyState, id KeyID, m int64, p Params, o Options) Evaluation {
-	e := Evaluation{Key: id, Total: ks.window.Total(), Bindings: int64(len(ks.window.bindings)), Labels: ks.window.Labels()}
-	e.ExactResidual, e.ExactDistinct = ks.window.Residual(p.K)
-	for j := m - int64(p.W) + 1; j <= m; j++ {
-		e.Expected += ks.baseline.Expected(j)
-	}
-	e.ExactAnomalous = p.anomalous(e.ExactResidual, e.ExactDistinct, e.Expected)
-	e.Residual, e.Distinct, e.Anomalous = e.ExactResidual, e.ExactDistinct, e.ExactAnomalous
-	if o.Sketch != nil {
-		minutes := make([]*keySketch, 0, p.W)
-		for j := m - int64(p.W) + 1; j <= m; j++ {
-			if sk := ks.sketches[j]; sk != nil {
-				minutes = append(minutes, sk)
-			}
-		}
-		e.Residual, e.Distinct = sketchBounds(minutes, p.K, o.Sketch.H)
-		e.Anomalous = p.anomalous(e.Residual, e.Distinct, e.Expected)
-	}
-	return e
-}
-
 // selectScope evaluates anomalous L1 keys, then L2, then L3; the first
 // level whose union covers C percent of the maximal anomalous traffic
-// supplies the disjoint key set.
-func selectScope(evals []Evaluation, c float64) Scope {
-	anomalous := map[KeyID]int64{}
+// supplies the disjoint key set. unknown lists keys with traffic whose
+// window is incomplete; unless an anomalous ancestor already holds one,
+// the anomalous traffic is not known and no scope is chosen.
+func selectScope(evals []Evaluation, c float64, unknown []KeyID) Scope {
+	anomalous := map[KeyID]Evaluation{}
 	for _, e := range evals {
 		if e.Anomalous {
-			anomalous[e.Key] = e.Total
+			anomalous[e.Key] = e
+		}
+	}
+	subsumed := func(id KeyID) bool {
+		for _, a := range ancestors(id) {
+			if _, ok := anomalous[a]; ok {
+				return true
+			}
+		}
+		return false
+	}
+	for _, id := range unknown {
+		if !subsumed(id) {
+			return Scope{Refused: RefusedUnknown}
 		}
 	}
 	if len(anomalous) == 0 {
 		return Scope{}
 	}
-	_, siteAnomalous := anomalous[KeyID{Level: 3}]
-	var denominator int64
-	for id, total := range anomalous {
-		switch {
-		case id.Level == 3,
-			id.Level == 2 && !siteAnomalous,
-			id.Level == 1 && !siteAnomalous && anomalous[KeyID{Level: 2, Key: id.Parent}] == 0:
-			denominator += total
+	basis := BasisExpensive
+	if site, ok := anomalous[KeyID{Level: 3}]; ok && site.Total > site.Expensive {
+		basis = BasisDynamic
+	}
+	count := func(e Evaluation) int64 {
+		if basis == BasisDynamic {
+			return e.Total
 		}
+		return e.Expensive
+	}
+	var denominator int64
+	for id, e := range anomalous {
+		if !subsumed(id) {
+			denominator += count(e)
+		}
+	}
+	if denominator <= 0 {
+		return Scope{Refused: RefusedZero}
 	}
 	for level := uint8(1); level <= 3; level++ {
 		var keys []KeyID
 		var covered int64
-		for id, total := range anomalous {
+		for id, e := range anomalous {
 			if id.Level == level {
 				keys = append(keys, id)
-				covered += total
+				covered += count(e)
 			}
 		}
 		if len(keys) > 0 && float64(covered)*100 >= c*float64(denominator) {
 			slices.SortFunc(keys, keyOrder)
-			return Scope{Level: level, Keys: keys, Covered: covered, Denominator: denominator, Dynamic: siteAnomalous}
+			return Scope{Level: level, Keys: keys, Covered: covered, Denominator: denominator, Basis: basis}
 		}
 	}
-	return Scope{Denominator: denominator, Dynamic: siteAnomalous}
+	return Scope{Denominator: denominator, Basis: basis}
+}
+
+// normalSegment is one site's whole coverage, scored and in normal learning
+// state, for synthetic replays.
+func normalSegment(site Site) ReplaySegment {
+	name := fixtureSiteName
+	if len(site.Records) > 0 {
+		name = site.Records[0].Site
+	}
+	seg := ReplaySegment{Site: name, Records: site.Records, Coverage: site.Coverage, Score: site.Coverage}
+	if n := len(site.Coverage); n > 0 {
+		seg.States = []StateSpan{{From: site.Coverage[0].From, To: site.Coverage[n-1].To, State: StateNormal}}
+	}
+	return seg
 }

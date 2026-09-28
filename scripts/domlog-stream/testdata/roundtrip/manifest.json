@@ -1,5 +1,5 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "stream_version": 2,
   "identity_version": 1,
   "tool": {
@@ -142,6 +142,28 @@
         "": 3
       },
       "untimed": []
+    }
+  ],
+  "identities": [
+    {
+      "pseudonym": "acct-4c864b",
+      "digest": "4c864b8681a9a6846583d56a7da1779437e08b69ab698d77361c00ef0a7dd0cc"
+    },
+    {
+      "pseudonym": "acct-7044eb",
+      "digest": "7044eb732f7553b1d92dfb88886a30ac1d21a1f2b2534f104422e6d3eb22ed00"
+    },
+    {
+      "pseudonym": "dom-a01dff.example",
+      "digest": "a01dff00b58ed7bf068a4c17e11ed4d1d301ecbbb4c408768d09acc3a529cb5d"
+    },
+    {
+      "pseudonym": "dom-dcef08.example",
+      "digest": "dcef08bdda6cd30140cdb8195acb957a3fb4e2ef8c558a526e88a9bf1efbdfee"
+    },
+    {
+      "pseudonym": "e-f4120e75fd2f006b",
+      "digest": "f4120e75fd2f006ba39f989419c08feb870b79c3c9d6c8f6cd9dbe27f712906e"
     }
   ]
 }
