@@ -248,7 +248,9 @@ func (c *converter) readInput(path string, in *crawlreplay.Input, fn func(logLin
 	}
 	c.files = append(c.files, before)
 	raw := sha256.New()
-	counted := &countingReader{r: io.TeeReader(f, raw)}
+	// A live writer must not move EOF away indefinitely. Read only the
+	// size we opened, then refuse any change to that snapshot.
+	counted := &countingReader{r: io.TeeReader(io.LimitReader(f, before.Size()), raw)}
 	lines, content, err := logReader(counted)
 	if err != nil {
 		return fail(errInput)
@@ -260,7 +262,8 @@ func (c *converter) readInput(path string, in *crawlreplay.Input, fn func(logLin
 	if closeErr := f.Close(); statErr != nil || closeErr != nil {
 		return errInput
 	}
-	if counted.n != before.Size() || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+	if counted.n != before.Size() || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) ||
+		!sameInputChangeTime(before, after) {
 		return errInputIdentity
 	}
 	in.SHA256, in.Bytes = hex.EncodeToString(raw.Sum(nil)), counted.n

@@ -196,3 +196,87 @@ func TestInputSnapshotsMustBeStable(t *testing.T) {
 		t.Fatalf("copy that changed while read: err = %v, want errInputIdentity", err)
 	}
 }
+
+func TestInputSnapshotRefusesRestoredMtime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "example.log")
+	data := []byte(strings.Repeat("original line\n", maxLine))
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newConverter(nil, nil, pseudonyms{}, testNow)
+	changed := false
+	err = c.readInput(path, &crawlreplay.Input{}, func(logLine) error {
+		if changed {
+			return nil
+		}
+		changed = true
+		// Replace both buffered and unread bytes without changing the size
+		// or mtime, as a timestamp-preserving copy can do.
+		replacement := bytes.ReplaceAll(data, []byte("original"), []byte("modified"))
+		if writeErr := os.WriteFile(path, replacement, 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		if timeErr := os.Chtimes(path, before.ModTime(), before.ModTime()); timeErr != nil {
+			t.Fatal(timeErr)
+		}
+		return nil
+	})
+	if !changed || !errors.Is(err, errInputIdentity) {
+		t.Fatalf("same-size rewrite with restored mtime: changed=%v err=%v, want errInputIdentity", changed, err)
+	}
+}
+
+type appendingLog struct {
+	logFile
+	writer *os.File
+	reads  int
+	bytes  int64
+}
+
+func (f *appendingLog) Read(p []byte) (int, error) {
+	f.reads++
+	// Stop appending eventually so a reader that chases EOF fails the
+	// assertion instead of hanging the test.
+	if f.reads <= 4 {
+		if _, err := f.writer.WriteString("another line\n"); err != nil {
+			return 0, err
+		}
+	}
+	n, err := f.logFile.Read(p)
+	f.bytes += int64(n)
+	return n, err
+}
+
+func TestInputSnapshotBoundsGrowingRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "example.log")
+	data := []byte("original line\n")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	c := newConverter(nil, nil, pseudonyms{}, testNow)
+	var opened *appendingLog
+	c.open = func(path string) (logFile, error) {
+		f, openErr := openLog(path)
+		if openErr != nil {
+			return nil, openErr
+		}
+		opened = &appendingLog{logFile: f, writer: w}
+		return opened, nil
+	}
+	err = c.readInput(path, &crawlreplay.Input{}, func(logLine) error { return nil })
+	if !errors.Is(err, errInputIdentity) {
+		t.Fatalf("growing copy: err=%v, want errInputIdentity", err)
+	}
+	if opened.bytes != int64(len(data)) {
+		t.Fatalf("read %d bytes from a %d-byte snapshot while it grew", opened.bytes, len(data))
+	}
+}

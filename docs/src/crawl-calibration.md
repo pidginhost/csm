@@ -98,8 +98,11 @@ prototype):
 - The tool refuses to run from an unknown or modified build, refuses to
   replace an existing output, and publishes nothing unless every log was
   read. Each log copy must be a regular file that stays unchanged while it
-  is read; a second path or hard link to a copy already read, or a copy
-  whose decompressed content repeats another, is refused.
+  is read. Reads stop at its initial size; size, modification time and
+  change time must still match afterward, so restoring the modification
+  time cannot hide a rewrite. Snapshot checks support Linux and macOS;
+  other platforms refuse conversion. A second path or hard link to a copy
+  already read, or a copy whose decompressed content repeats another, is refused.
 - The manifest, published last, records the digests of every input (as read
   and decompressed) and output, the tool revision, the period and, per
   site, the observed extent and the bytes read. Every line read is either a
