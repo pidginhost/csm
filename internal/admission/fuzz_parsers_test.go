@@ -160,6 +160,7 @@ func FuzzLedgerRecords(f *testing.F) {
 			Generation: 2, Sequence: 3, Cursors: QueueCursors{General: "host/address"}, Counters: counterBytes,
 		}},
 		ceiling, charge, history, EvidenceRefs{Refs: 2}, EvidenceRefs{Loose: 7},
+		StorageState{General: HistoryMeter{Credit: 5, Used: 9}, Recovery: 3, Ended: RingState{Count: 1, Last: 4}},
 	} {
 		data, err := rec.MarshalBinary()
 		if err != nil {
@@ -219,6 +220,9 @@ func FuzzLedgerRecords(f *testing.F) {
 			}
 			if r, err := UnmarshalEvidenceRefs(data); err == nil {
 				roundTrip("evidence references", r)
+			}
+			if s, err := UnmarshalStorageState(data); err == nil {
+				roundTrip("storage state", s)
 			}
 			if kind, at, cand, err := ParseRetireKey(data); err == nil {
 				if again := fmt.Appendf(nil, "%c%019d%s", kind, at.UnixNano(), cand); !bytes.Equal(again, data) {
