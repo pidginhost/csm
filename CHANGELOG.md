@@ -21,7 +21,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Challenge migration no longer downgrades newer integration templates at daemon startup. Failed migrations report incomplete rollback and avoid reloading a partially restored configuration.
 - Fresh installs on cPanel Apache and LiteSpeed no longer deploy the old proxy-mode challenge snippet beside the one the webserver integration writes. Installing or upgrading the integration now removes the old snippet, which answered challenged visitors with a not-found page unless trusted proxies were configured.
 - The WP-Cron fix now runs a site whose domain inherits its PHP version under the version its web server actually uses. Such sites ran their scheduled tasks on the system default PHP, which could fail on every run or flood the site's error log.
 - The bloated error log check now covers addon and subdomain document roots and logs left directly in folders such as wp-admin, and the Web UI can truncate those logs. It only looked under public_html.
