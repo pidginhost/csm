@@ -16,9 +16,10 @@ import (
 
 // challengeConfSrc / challengeConfDest locate the legacy Apache/LSWS
 // challenge snippet: the template shipped with the package and the copy
-// the installer deploys. Vars so tests can redirect them to a temp tree.
+// older installers deployed, which hosts keep until the webserver
+// integration retires it. Vars so tests can redirect them to a temp tree.
 var challengeConfSrc = "/opt/csm/configs/csm_challenge.conf"
-var challengeConfDest = "/etc/apache2/conf.d/csm_challenge.conf"
+var challengeConfDest = webserver.LegacySnippetPath
 
 var ensureChallengeMapFile = func() error {
 	return challenge.EnsureMapFile(challenge.DefaultMapPath)
@@ -135,9 +136,9 @@ func prepareChallengeConf(cfg *config.Config) (bool, error) {
 }
 
 // refreshWebserverIntegration rewrites the integration snippet when it is
-// CSM-managed and older than the shipped template, through the installer's
-// own configtest-then-reload flow. Missing, current and operator-edited
-// snippets are left alone.
+// CSM-managed and older than the shipped template, or current with a legacy
+// snippet to retire, through the installer's configtest-then-reload flow.
+// Missing, newer and operator-edited snippets are left alone.
 func refreshWebserverIntegration(inst *webserver.Installer) (bool, error) {
 	path := inst.Handler.SnippetPath()
 	status, err := inst.Status()

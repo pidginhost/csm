@@ -274,9 +274,6 @@ func (inst *Installer) Install() error {
 	// Deploy ModSecurity virtual patches
 	inst.DeployModSecRules()
 
-	// Deploy challenge page config
-	inst.DeployChallengeConfig()
-
 	fmt.Println()
 	fmt.Println("Install complete. Next steps:")
 	fmt.Printf("  1. Edit %s with your settings\n", inst.ConfigPath)
@@ -1254,33 +1251,6 @@ func (inst *Installer) DeployModSecRules() {
 		overridesFile := filepath.Join(filepath.Dir(dest), "modsec2.csm-overrides.conf")
 		modsec.EnsureOverridesInclude(dest, overridesFile)
 		return
-	}
-}
-
-// DeployChallengeConfig copies the Apache challenge redirect config. The
-// snippet makes Apache validate the map file at every config parse, so the
-// map is created first and the snippet is skipped when that fails.
-func (inst *Installer) DeployChallengeConfig() {
-	src := challengeConfSrc
-	if _, err := os.Stat(src); os.IsNotExist(err) {
-		return
-	}
-
-	dest := challengeConfDest
-	if _, err := os.Stat(filepath.Dir(dest)); os.IsNotExist(err) {
-		return
-	}
-
-	if err := ensureChallengeMapFile(); err != nil {
-		fmt.Printf("  Warning: challenge page config not deployed, map %s: %v\n", challenge.DefaultMapPath, err)
-		return
-	}
-
-	data, _ := os.ReadFile(src)
-	// #nosec G304 G306 G703 -- src/dest are the fixed template and Apache
-	// conf.d paths; the webserver reads the result.
-	if err := os.WriteFile(dest, data, 0644); err == nil {
-		fmt.Printf("  Challenge page config deployed to %s\n", dest)
 	}
 }
 

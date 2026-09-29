@@ -184,9 +184,22 @@ take every site down at the next webserver reload. CSM rewrites the Nginx
 include on challenge-list changes and reloads Nginx only when the file
 content changes.
 
+Older installers also deployed a legacy proxy-mode snippet on cPanel
+Apache and LiteSpeed (`/etc/apache2/conf.d/csm_challenge.conf`). Installs
+no longer do. On those stacks `csm webserver-integration install` and
+`upgrade` remove the legacy snippet in the same configtest-then-reload run
+that writes the integration snippet, and restore it if that run fails.
+If either file cannot be restored, the error reports the incomplete rollback
+and no recovery reload runs with that incomplete configuration.
+While both are present and the integration template is not newer than the
+binary, `status` reports the integration as `stale`, so
+the daemon's startup refresh below removes the legacy snippet on hosts
+that already run the integration. Newer templates are left alone at startup,
+including after a binary rollback. Observe mode skips this refresh.
+
 At startup the daemon creates the default maps if they are absent,
 including when challenge mode is disabled. It also checks the legacy
-installer-deployed snippet (`/etc/apache2/conf.d/csm_challenge.conf`). If
+snippet when one is still present. If
 its RewriteMap points at a map file the daemon does not maintain -- which
 makes webserver config validation fail host-wide once that file goes
 missing -- the daemon re-deploys the shipped template. A CSM-managed
@@ -214,7 +227,8 @@ On every run, the installer:
    config.
 
 The snippet header carries a version marker; `upgrade` is a no-op when
-the on-disk version matches the shipped version. Hand-edited files
+the on-disk content matches the rendered template and no legacy snippet
+remains to retire. Hand-edited files
 (missing or mismatched marker) trip a "modified" status and the
 installer refuses to overwrite them - remove or rename first.
 
