@@ -92,6 +92,27 @@ type Installer struct {
 	StatAt   func(path string) (os.FileInfo, error)
 	RemoveAt func(path string) error
 	Stderr   io.Writer
+	// LegacySnippetPath is the pre-integration snippet Install retires
+	// in the same configtest and reload as its own write. Set only when
+	// the handler's configtest covers that file; empty elsewhere.
+	LegacySnippetPath string
+}
+
+// LegacySnippetPath is where the package installer used to deploy a
+// proxy-mode challenge snippet on cPanel Apache and LiteSpeed. It proxied
+// challenged visitors to the loopback listener, which sees them all as
+// loopback unless challenge.trusted_proxies lists it, and it doubled the
+// integration snippet in the same directory.
+const LegacySnippetPath = "/etc/apache2/conf.d/csm_challenge.conf"
+
+// legacySnippetFor returns LegacySnippetPath when the handler's snippet
+// shares its directory, so the handler's configtest and reload cover a
+// change to the legacy file; otherwise "".
+func legacySnippetFor(h Handler) string {
+	if filepath.Dir(h.SnippetPath()) == filepath.Dir(LegacySnippetPath) {
+		return LegacySnippetPath
+	}
+	return ""
 }
 
 // New returns an Installer wired for live operation: real filesystem
@@ -103,14 +124,15 @@ func New(info platform.Info, cfg *config.Config) (*Installer, error) {
 		return nil, err
 	}
 	return &Installer{
-		Handler:  h,
-		Config:   renderConfigFrom(cfg),
-		MkdirAll: os.MkdirAll,
-		WriteAt:  atomicWrite,
-		ReadAt:   os.ReadFile,
-		StatAt:   os.Stat,
-		RemoveAt: os.Remove,
-		Stderr:   os.Stderr,
+		Handler:           h,
+		Config:            renderConfigFrom(cfg),
+		MkdirAll:          os.MkdirAll,
+		WriteAt:           atomicWrite,
+		ReadAt:            os.ReadFile,
+		StatAt:            os.Stat,
+		RemoveAt:          os.Remove,
+		Stderr:            os.Stderr,
+		LegacySnippetPath: legacySnippetFor(h),
 	}, nil
 }
 
@@ -122,6 +144,9 @@ func New(info platform.Info, cfg *config.Config) (*Installer, error) {
 //  3. Validate via the webserver's own configtest.
 //  4. On pass: reload + done.
 //  5. On fail: restore previous bytes + return error.
+//
+// A legacy snippet beside it is removed before step 3, so one configtest
+// and one reload cover both changes and a rollback restores both.
 //
 // Reload failure after a passing configtest is restored the same way,
 // then a recovery reload is attempted so the host returns to the
@@ -154,6 +179,13 @@ func (i *Installer) Install() (Result, error) {
 		return res, ErrManualEdits
 	}
 
+	legacyBytes, legacyExists, err := i.readLegacySnippet()
+	if err != nil {
+		res.Status = "fail"
+		res.Message = err.Error()
+		return res, err
+	}
+
 	if mapErr := i.ensureChallengeMapFiles(); mapErr != nil {
 		res.Status = "fail"
 		res.Message = "runtime files: " + mapErr.Error()
@@ -167,28 +199,50 @@ func (i *Installer) Install() (Result, error) {
 		return res, rerr
 	}
 
-	if prevExists && bytes.Equal(prevBytes, rendered) {
+	current := prevExists && bytes.Equal(prevBytes, rendered)
+	if current && !legacyExists {
 		res.Status = "no-op"
 		res.Message = "snippet already current"
 		return res, nil
 	}
 
-	if err := i.WriteAt(i.Handler.SnippetPath(), rendered, 0o644); err != nil {
-		res.Status = "fail"
-		res.Message = "write: " + err.Error()
-		return res, err
+	if !current {
+		if err := i.WriteAt(i.Handler.SnippetPath(), rendered, 0o644); err != nil {
+			res.Status = "fail"
+			res.Message = "write: " + err.Error()
+			return res, err
+		}
+	}
+	legacyRemoved := false
+	rollback := func() {
+		if !current {
+			i.restore(prevBytes, prevExists)
+		}
+		if legacyRemoved {
+			i.restoreLegacySnippet(legacyBytes)
+		}
+	}
+
+	if legacyExists {
+		if err := i.RemoveAt(i.LegacySnippetPath); err != nil {
+			rollback()
+			res.Status = "fail"
+			res.Message = "delete legacy snippet: " + err.Error()
+			return res, err
+		}
+		legacyRemoved = true
 	}
 
 	if verr := i.Handler.Validate(); verr != nil {
-		i.restore(prevBytes, prevExists)
+		rollback()
 		res.Status = "fail"
 		res.Message = "configtest: " + verr.Error()
 		return res, verr
 	}
 
 	if rerr := i.Handler.Reload(); rerr != nil {
-		i.restore(prevBytes, prevExists)
-		// Best-effort recovery reload. Even if it fails, the file is
+		rollback()
+		// Best-effort recovery reload. Even if it fails, the files are
 		// already back to the last-good content.
 		_ = i.Handler.Reload()
 		res.Status = "fail"
@@ -197,10 +251,16 @@ func (i *Installer) Install() (Result, error) {
 	}
 
 	res.Status = "ok"
-	if prevExists {
+	switch {
+	case current:
+		res.Message = fmt.Sprintf("snippet already current (v%d)", TemplateVersion)
+	case prevExists:
 		res.Message = fmt.Sprintf("snippet upgraded v%d -> v%d", prevVer, TemplateVersion)
-	} else {
+	default:
 		res.Message = fmt.Sprintf("snippet installed (v%d)", TemplateVersion)
+	}
+	if legacyExists {
+		res.Message += "; legacy snippet " + i.LegacySnippetPath + " removed"
 	}
 	res.FollowUp = i.Handler.PostInstallInstructions()
 	return res, nil
@@ -232,6 +292,18 @@ func (i *Installer) Status() (Result, error) {
 	}
 	res.OnDiskVer = ver
 	res.Status, res.Message = classifyStatus(exists, ver, TemplateVersion)
+	if res.Status == "ok" {
+		_, legacyExists, err := i.readLegacySnippet()
+		if err != nil {
+			res.Status = "fail"
+			res.Message = err.Error()
+			return res, err
+		}
+		if legacyExists {
+			res.Status = "stale"
+			res.Message = fmt.Sprintf("legacy snippet %s still present; run `csm webserver-integration upgrade`", i.LegacySnippetPath)
+		}
+	}
 	return res, nil
 }
 
@@ -493,6 +565,30 @@ func (i *Installer) restore(prevBytes []byte, prevExists bool) {
 	}
 	if err := i.WriteAt(i.Handler.SnippetPath(), prevBytes, 0o644); err != nil {
 		fmt.Fprintf(i.Stderr, "webserver integration: rollback write failed: %v\n", err)
+	}
+}
+
+// readLegacySnippet returns the legacy snippet's bytes and whether it
+// exists. Always absent when the handler cannot validate its removal.
+func (i *Installer) readLegacySnippet() ([]byte, bool, error) {
+	if i.LegacySnippetPath == "" {
+		return nil, false, nil
+	}
+	data, err := i.ReadAt(i.LegacySnippetPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read legacy snippet: %w", err)
+	}
+	return data, true, nil
+}
+
+// restoreLegacySnippet puts the legacy snippet back after a failed
+// validate/reload step, reporting I/O errors like restore does.
+func (i *Installer) restoreLegacySnippet(data []byte) {
+	if err := i.WriteAt(i.LegacySnippetPath, data, 0o644); err != nil {
+		fmt.Fprintf(i.Stderr, "webserver integration: rollback of legacy snippet %s failed: %v\n", i.LegacySnippetPath, err)
 	}
 }
 

@@ -16,9 +16,10 @@ import (
 
 // challengeConfSrc / challengeConfDest locate the legacy Apache/LSWS
 // challenge snippet: the template shipped with the package and the copy
-// the installer deploys. Vars so tests can redirect them to a temp tree.
+// older installers deployed, which hosts keep until the webserver
+// integration retires it. Vars so tests can redirect them to a temp tree.
 var challengeConfSrc = "/opt/csm/configs/csm_challenge.conf"
-var challengeConfDest = "/etc/apache2/conf.d/csm_challenge.conf"
+var challengeConfDest = webserver.LegacySnippetPath
 
 var ensureChallengeMapFile = func() error {
 	return challenge.EnsureMapFile(challenge.DefaultMapPath)
