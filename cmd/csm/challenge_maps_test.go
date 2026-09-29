@@ -261,3 +261,61 @@ func TestPrepareChallengeConfKeepsRuntimeMapWhenRefreshIsReadOnly(t *testing.T) 
 		t.Fatalf("runtime maps kept after failed refresh = %v, want %v", *ensured, want)
 	}
 }
+
+func TestPrepareChallengeConfRetiresLegacyOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		newer   bool
+		observe bool
+	}{
+		{name: "current"},
+		{name: "newer", newer: true},
+		{name: "observe", observe: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, snippet, _, inst := challengeRefreshFixture(t, "# csm-managed-version: 1\nold\n")
+			if _, err := inst.Install(); err != nil {
+				t.Fatal(err)
+			}
+			h.validated, h.reloaded = 0, 0
+			body, readErr := os.ReadFile(snippet)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if tc.newer {
+				body = []byte("# csm-managed-version: " + strconv.Itoa(webserver.TemplateVersion+1) + "\nnewer template\n")
+				if err := os.WriteFile(snippet, body, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			legacy := []byte("RewriteMap csm_challenge txt:" + challenge.DefaultMapPath + "\n")
+			if err := os.WriteFile(challengeConfDest, legacy, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			inst.LegacySnippetPath = challengeConfDest
+			cfg := &config.Config{Mode: config.ModeEnforce}
+			if tc.observe {
+				cfg.Mode = config.ModeObserve
+			}
+			retire := !tc.newer && !tc.observe
+			for run := 0; run < 2; run++ {
+				changed, err := prepareChallengeConf(cfg)
+				if err != nil || changed != (retire && run == 0) {
+					t.Fatalf("startup %d: changed=%v err=%v", run, changed, err)
+				}
+			}
+			got, err := os.ReadFile(snippet)
+			if err != nil || string(got) != string(body) {
+				t.Fatalf("integration snippet changed: %q, %v", got, err)
+			}
+			got, err = os.ReadFile(challengeConfDest)
+			if retire {
+				if !errors.Is(err, os.ErrNotExist) || h.validated != 1 || h.reloaded != 1 {
+					t.Fatalf("legacy stat=%v, configtest/reload=%d/%d", err, h.validated, h.reloaded)
+				}
+			} else if err != nil || string(got) != string(legacy) || h.validated != 0 || h.reloaded != 0 {
+				t.Fatalf("untouched legacy=%q err=%v, configtest/reload=%d/%d", got, err, h.validated, h.reloaded)
+			}
+		})
+	}
+}

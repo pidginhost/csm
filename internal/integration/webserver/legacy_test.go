@@ -138,6 +138,12 @@ func TestUpgradeRestoresLegacySnippetBesideCurrentSnippetWhenConfigtestFails(t *
 		t.Fatal(err)
 	}
 	i.LegacySnippetPath = legacy
+	i.WriteAt = func(path string, data []byte, mode os.FileMode) error {
+		if path == h.path {
+			t.Error("rollback rewrote an integration snippet that was not changed this run")
+		}
+		return atomicWrite(path, data, mode)
+	}
 
 	if _, err := i.Upgrade(); err == nil {
 		t.Fatal("expected configtest failure")
@@ -245,5 +251,53 @@ func TestInstallLegacyDeleteFailureRollsBackOnlyIntegrationSnippet(t *testing.T)
 	assertLegacyRestored(t, legacy)
 	if h.validates.Load() != 0 || h.reloads.Load() != 0 {
 		t.Fatalf("validate %d, reload %d; want neither after a failed delete", h.validates.Load(), h.reloads.Load())
+	}
+}
+
+func TestInstallReportsIncompleteLegacyRollback(t *testing.T) {
+	for _, phase := range []string{"configtest", "reload"} {
+		for _, failedRestore := range []string{"legacy", "integration"} {
+			t.Run(phase+"/"+failedRestore, func(t *testing.T) {
+				operationErr := errors.New("webserver rejected config")
+				restoreErr := errors.New("rollback write failed")
+				h := &fakeHandler{kind: "apache", body: "RewriteEngine On\n"}
+				if phase == "configtest" {
+					h.validateErr = []error{operationErr}
+				} else {
+					h.reloadErr = []error{operationErr}
+				}
+				i, legacy := newLegacyInstaller(t, h)
+				previous := []byte("# csm-managed-version: 1\nprevious config\n")
+				if err := os.WriteFile(h.path, previous, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				i.WriteAt = func(path string, data []byte, mode os.FileMode) error {
+					if (failedRestore == "legacy" && path == legacy) ||
+						(failedRestore == "integration" && path == h.path && bytes.Equal(data, previous)) {
+						return restoreErr
+					}
+					return atomicWrite(path, data, mode)
+				}
+				res, err := i.Install()
+				if !errors.Is(err, operationErr) || !errors.Is(err, restoreErr) {
+					t.Errorf("error = %v; want operation and rollback failures", err)
+				}
+				if res.Status != "fail" || !strings.Contains(res.Message, "rollback") || strings.Contains(res.Message, "(rolled back)") {
+					t.Errorf("result hides incomplete rollback: %+v", res)
+				}
+				wantReloads := int32(0)
+				if phase == "reload" {
+					wantReloads = 1
+				}
+				if h.reloads.Load() != wantReloads {
+					t.Errorf("reloads = %d; want %d, no recovery reload with incomplete rollback", h.reloads.Load(), wantReloads)
+				}
+				if failedRestore == "integration" {
+					assertLegacyRestored(t, legacy)
+				} else if got, err := os.ReadFile(h.path); err != nil || !bytes.Equal(got, previous) {
+					t.Errorf("integration rollback = %q, %v", got, err)
+				}
+			})
+		}
 	}
 }

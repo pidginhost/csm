@@ -214,18 +214,20 @@ func (i *Installer) Install() (Result, error) {
 		}
 	}
 	legacyRemoved := false
-	rollback := func() {
+	rollback := func() error {
+		var errs []error
 		if !current {
-			i.restore(prevBytes, prevExists)
+			errs = append(errs, i.restore(prevBytes, prevExists))
 		}
 		if legacyRemoved {
-			i.restoreLegacySnippet(legacyBytes)
+			errs = append(errs, i.restoreLegacySnippet(legacyBytes))
 		}
+		return errors.Join(errs...)
 	}
 
 	if legacyExists {
 		if err := i.RemoveAt(i.LegacySnippetPath); err != nil {
-			rollback()
+			err = errors.Join(err, rollback())
 			res.Status = "fail"
 			res.Message = "delete legacy snippet: " + err.Error()
 			return res, err
@@ -234,18 +236,21 @@ func (i *Installer) Install() (Result, error) {
 	}
 
 	if verr := i.Handler.Validate(); verr != nil {
-		rollback()
+		verr = errors.Join(verr, rollback())
 		res.Status = "fail"
 		res.Message = "configtest: " + verr.Error()
 		return res, verr
 	}
 
 	if rerr := i.Handler.Reload(); rerr != nil {
-		rollback()
-		// Best-effort recovery reload. Even if it fails, the files are
-		// already back to the last-good content.
-		_ = i.Handler.Reload()
 		res.Status = "fail"
+		if rollbackErr := rollback(); rollbackErr != nil {
+			err := errors.Join(rerr, rollbackErr)
+			res.Message = "reload: " + err.Error()
+			return res, err
+		}
+		// Only reload after both files are back to their previous content.
+		_ = i.Handler.Reload()
 		res.Message = "reload: " + rerr.Error() + " (rolled back)"
 		return res, rerr
 	}
@@ -292,7 +297,9 @@ func (i *Installer) Status() (Result, error) {
 	}
 	res.OnDiskVer = ver
 	res.Status, res.Message = classifyStatus(exists, ver, TemplateVersion)
-	if res.Status == "ok" {
+	// A newer template must not become an automatic downgrade merely
+	// because the legacy file is present after a binary rollback.
+	if res.Status == "ok" && ver == TemplateVersion {
 		_, legacyExists, err := i.readLegacySnippet()
 		if err != nil {
 			res.Status = "fail"
@@ -357,13 +364,13 @@ func (i *Installer) Remove() (Result, error) {
 		return res, err
 	}
 	if verr := i.Handler.Validate(); verr != nil {
-		i.restore(prevBytes, prevExists)
+		_ = i.restore(prevBytes, prevExists)
 		res.Status = "fail"
 		res.Message = "configtest after remove: " + verr.Error()
 		return res, verr
 	}
 	if rerr := i.Handler.Reload(); rerr != nil {
-		i.restore(prevBytes, prevExists)
+		_ = i.restore(prevBytes, prevExists)
 		_ = i.Handler.Reload()
 		res.Status = "fail"
 		res.Message = "reload: " + rerr.Error() + " (rolled back)"
@@ -553,19 +560,21 @@ func (i *Installer) readSnippet() ([]byte, bool, int, error) {
 
 // restore writes the previous bytes back (or removes the new file if
 // there were none) after a failed validate/reload step. Best-effort:
-// I/O errors here are reported via stderr but do not change the
-// installer's return code, because the caller already knows the
-// original error.
-func (i *Installer) restore(prevBytes []byte, prevExists bool) {
+// I/O errors are also returned so Install can refuse a recovery reload
+// when either part of the configuration could not be restored.
+func (i *Installer) restore(prevBytes []byte, prevExists bool) error {
 	if !prevExists {
 		if err := i.RemoveAt(i.Handler.SnippetPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 			fmt.Fprintf(i.Stderr, "webserver integration: rollback delete failed: %v\n", err)
+			return fmt.Errorf("rollback delete: %w", err)
 		}
-		return
+		return nil
 	}
 	if err := i.WriteAt(i.Handler.SnippetPath(), prevBytes, 0o644); err != nil {
 		fmt.Fprintf(i.Stderr, "webserver integration: rollback write failed: %v\n", err)
+		return fmt.Errorf("rollback write: %w", err)
 	}
+	return nil
 }
 
 // readLegacySnippet returns the legacy snippet's bytes and whether it
@@ -586,10 +595,12 @@ func (i *Installer) readLegacySnippet() ([]byte, bool, error) {
 
 // restoreLegacySnippet puts the legacy snippet back after a failed
 // validate/reload step, reporting I/O errors like restore does.
-func (i *Installer) restoreLegacySnippet(data []byte) {
+func (i *Installer) restoreLegacySnippet(data []byte) error {
 	if err := i.WriteAt(i.LegacySnippetPath, data, 0o644); err != nil {
 		fmt.Fprintf(i.Stderr, "webserver integration: rollback of legacy snippet %s failed: %v\n", i.LegacySnippetPath, err)
+		return fmt.Errorf("rollback legacy snippet %s: %w", i.LegacySnippetPath, err)
 	}
+	return nil
 }
 
 func parseHeaderVersion(data []byte) int {

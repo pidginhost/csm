@@ -136,9 +136,9 @@ func prepareChallengeConf(cfg *config.Config) (bool, error) {
 }
 
 // refreshWebserverIntegration rewrites the integration snippet when it is
-// CSM-managed and older than the shipped template, through the installer's
-// own configtest-then-reload flow. Missing, current and operator-edited
-// snippets are left alone.
+// CSM-managed and older than the shipped template, or current with a legacy
+// snippet to retire, through the installer's configtest-then-reload flow.
+// Missing, newer and operator-edited snippets are left alone.
 func refreshWebserverIntegration(inst *webserver.Installer) (bool, error) {
 	path := inst.Handler.SnippetPath()
 	status, err := inst.Status()
