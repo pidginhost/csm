@@ -175,7 +175,7 @@ func TestAdmissionLedgerRecoveryIncludesOutstandingAttempts(t *testing.T) {
 	f := newLedgerFixture(t)
 	ids := f.fill(2, evidenceSpec{})
 	cost := f.cost(ids[0])
-	f.adjustStorage(func(s *admission.StorageState) { s.Recovery = admission.RecoveryReserveBytes - uint64(cost) })
+	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, uint64(cost)) })
 	_, a, granted, err := f.l.Reserve(ids[0], admission.LaneGeneral, f.wall.Add(time.Hour))
 	if err != nil || !granted {
 		t.Fatalf("first reservation: %v %v", granted, err)

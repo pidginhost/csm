@@ -166,6 +166,9 @@ func TestAdmissionLedgerUpgradesSchemaThree(t *testing.T) {
 		Recovery: uint64(unknown),
 		Ended:    admission.RingState{Count: 1, Last: 1},
 		Loose:    admission.RingState{Count: 1, Last: 1},
+		// The chain ends at schema 5, whose outbox starts with the fixed
+		// notice records.
+		NoticeRecords: admission.FixedNotices,
 	}
 	if err != nil || s != want {
 		t.Fatalf("upgraded storage = %+v, %v\nwant %+v", s, err, want)

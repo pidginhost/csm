@@ -125,6 +125,24 @@ type StorageState struct {
 	// Ended holds candidates that ended before any attempt; Loose holds
 	// evidence no stored candidate names.
 	Ended, Loose RingState
+	// AuditSlots is the audit row slots the outbox holds: rows not yet
+	// acknowledged and the rows outstanding attempts may still write.
+	AuditSlots uint64
+	// NoticeRecords is the notice records the outbox holds, the fixed
+	// ones included.
+	NoticeRecords uint64
+}
+
+// Outbox bounds: the notice share holds MaxNoticeRecords records, and the
+// reserve holds no more than MaxAuditSlots rows.
+const (
+	MaxNoticeRecords = uint64(NoticeBytes / NoticeSlotBytes)
+	MaxAuditSlots    = uint64(RecoveryReserveBytes / AuditSlotBytes)
+)
+
+// OutboxBytes is what the outbox holds of the recovery and outbox reserve.
+func (s StorageState) OutboxBytes() uint64 {
+	return s.AuditSlots*uint64(AuditSlotBytes) + s.NoticeRecords*uint64(NoticeSlotBytes)
 }
 
 type historyAllowance struct {
@@ -145,10 +163,11 @@ func (s *StorageState) allowance(l Lane) historyAllowance {
 }
 
 // NewStorageState is a new ledger's state: each allowance saves its full
-// credit once. An upgraded ledger starts from the zero value, without
-// credit, since its recent spend is unknown.
+// credit once, and the outbox holds the fixed notice records. An upgraded
+// ledger starts from the zero value, without credit, since its recent
+// spend is unknown.
 func NewStorageState() StorageState {
-	var s StorageState
+	s := StorageState{NoticeRecords: FixedNotices}
 	for _, a := range s.allowances() {
 		a.m.Credit = HistoryCap(a.size) * byteTicks
 	}
@@ -293,6 +312,8 @@ type storageStateRecord struct {
 	EndedLast      uint64 `json:"ended_last,omitempty"`
 	LooseCount     uint32 `json:"loose_count,omitempty"`
 	LooseLast      uint64 `json:"loose_last,omitempty"`
+	AuditSlots     uint64 `json:"audit_slots,omitempty"`
+	NoticeRecords  uint64 `json:"notice_records,omitempty"`
 }
 
 func (s StorageState) record() (storageStateRecord, error) {
@@ -312,10 +333,14 @@ func (s StorageState) record() (storageStateRecord, error) {
 			return bad("ring holds more entries than its bound or its positions")
 		}
 	}
+	if s.NoticeRecords > MaxNoticeRecords || s.AuditSlots > MaxAuditSlots {
+		return bad("outbox holds more than its bounds")
+	}
 	return storageStateRecord{
 		V: storageStateVersion, GeneralCredit: s.General.Credit, GeneralUsed: s.General.Used,
 		ReservedCredit: s.Reserved.Credit, ReservedUsed: s.Reserved.Used, Recovery: s.Recovery,
 		EndedCount: s.Ended.Count, EndedLast: s.Ended.Last, LooseCount: s.Loose.Count, LooseLast: s.Loose.Last,
+		AuditSlots: s.AuditSlots, NoticeRecords: s.NoticeRecords,
 	}, nil
 }
 
@@ -341,11 +366,12 @@ func UnmarshalStorageState(data []byte) (StorageState, error) {
 		return StorageState{}, err
 	}
 	s := StorageState{
-		General:  HistoryMeter{Credit: rec.GeneralCredit, Used: rec.GeneralUsed},
-		Reserved: HistoryMeter{Credit: rec.ReservedCredit, Used: rec.ReservedUsed},
-		Recovery: rec.Recovery,
-		Ended:    RingState{Count: rec.EndedCount, Last: rec.EndedLast},
-		Loose:    RingState{Count: rec.LooseCount, Last: rec.LooseLast},
+		General:    HistoryMeter{Credit: rec.GeneralCredit, Used: rec.GeneralUsed},
+		Reserved:   HistoryMeter{Credit: rec.ReservedCredit, Used: rec.ReservedUsed},
+		Recovery:   rec.Recovery,
+		Ended:      RingState{Count: rec.EndedCount, Last: rec.EndedLast},
+		Loose:      RingState{Count: rec.LooseCount, Last: rec.LooseLast},
+		AuditSlots: rec.AuditSlots, NoticeRecords: rec.NoticeRecords,
 	}
 	if again, err := s.record(); rec.V != storageStateVersion || err != nil || again != rec {
 		return StorageState{}, ErrCorruptRecord

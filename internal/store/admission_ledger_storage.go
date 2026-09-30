@@ -83,7 +83,8 @@ func putHistoryEntry(tx *bolt.Tx, id admission.CandidateID, h admission.HistoryE
 // pinned in the recovery reserve. Evidence no candidate names joins the
 // loose ring in observation order. Each ring keeps its newest entries. The
 // allowances start without credit, since recent spend is unknown, and may
-// start over their size. This upgrade records the schema.
+// start over their size. The upgrade that completes the chain records the
+// schema.
 func upgradeLedgerToSchemaFour(tx *bolt.Tx) error {
 	if err := validateUnownedRows(tx); err != nil {
 		return err
@@ -261,10 +262,7 @@ func upgradeLedgerToSchemaFour(tx *bolt.Tx) error {
 			return err
 		}
 	}
-	if err = putStorageState(tx, s); err != nil {
-		return err
-	}
-	return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaVersion})
+	return putStorageState(tx, s)
 }
 
 // loadStorage loads the storage state and proves it against the stored
@@ -298,6 +296,9 @@ func loadStorage(tx *bolt.Tx) (admission.StorageState, error) {
 	}
 	if general != s.General.Used || reserved != s.Reserved.Used || recovery != s.Recovery {
 		return s, admission.ErrCorruptRecord
+	}
+	if err = proveOutbox(tx, s); err != nil {
+		return s, err
 	}
 	var ended, loose admission.RingState
 	err = tx.Bucket([]byte(admissionRingsBucket)).ForEach(func(k, v []byte) error {
@@ -904,17 +905,18 @@ func validateUnownedRows(tx *bolt.Tx) error {
 	})
 }
 
-// recoveryRoom also holds space for every outstanding attempt. Finishing
-// several such attempts as unknown cannot overbook the recovery reserve.
+// recoveryRoom is what the recovery and outbox reserve has left after
+// pinned history and the outbox. It also holds space for every outstanding
+// attempt: finishing several such attempts as unknown cannot overbook it.
 func (q *queueTx) recoveryRoom() (uint64, error) {
 	s, err := q.storageState()
 	if err != nil {
 		return 0, err
 	}
-	if s.Recovery >= admission.RecoveryReserveBytes {
+	if s.Recovery >= admission.RecoveryReserveBytes || s.OutboxBytes() >= admission.RecoveryReserveBytes-s.Recovery {
 		return 0, nil
 	}
-	room := uint64(admission.RecoveryReserveBytes) - s.Recovery
+	room := admission.RecoveryReserveBytes - s.Recovery - s.OutboxBytes()
 	live, err := q.live()
 	if err != nil {
 		return 0, err

@@ -171,7 +171,7 @@ func FuzzLedgerRecords(f *testing.F) {
 			Generation: 2, Sequence: 3, Cursors: QueueCursors{General: "host/address"}, Counters: counterBytes,
 		}},
 		ceiling, charge, history, EvidenceRefs{Refs: 2}, EvidenceRefs{Loose: 7},
-		StorageState{General: HistoryMeter{Credit: 5, Used: 9}, Recovery: 3, Ended: RingState{Count: 1, Last: 4}},
+		StorageState{General: HistoryMeter{Credit: 5, Used: 9}, Recovery: 3, Ended: RingState{Count: 1, Last: 4}, AuditSlots: 3, NoticeRecords: FixedNotices},
 		auditRow, notice, outcomes,
 	} {
 		data, err := rec.MarshalBinary()
