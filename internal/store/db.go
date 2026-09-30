@@ -27,6 +27,7 @@ var bucketNames = []string{
 	"fw:port_allowed",
 	"reputation",
 	mailGoodSourceBucket,
+	eximFrozenSeenBucket,
 	"plugins",
 	"plugins:sites",
 	"meta",

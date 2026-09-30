@@ -1,27 +1,46 @@
 package daemon
 
 import (
+	"container/list"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // eximFrozenDedupTTL is how long an inactive queue ID remains tracked. Queue
 // runs refresh the timestamp for messages that are still frozen, so one stuck
 // message stays suppressed for its entire frozen lifetime. The expiry only
-// bounds stale state when the daemon misses the corresponding unfreeze event.
+// bounds stale state when the daemon misses the corresponding unfreeze event,
+// for example when a frozen message is removed from the queue, which exim logs
+// without an unfreeze line.
 const eximFrozenDedupTTL = 24 * time.Hour
 
-// Sweep stale entries periodically instead of walking the entire map for every
-// new frozen message. A burst of distinct frozen messages must remain O(n), not
-// degrade to O(n^2) map scans.
+// Sweep stale entries periodically instead of walking the entire table for
+// every new frozen message. A burst of distinct frozen messages must remain
+// O(n), not degrade to O(n^2) scans; eviction at capacity is constant time for
+// the same reason.
 const eximFrozenDedupPruneInterval = time.Hour
 
-// Bound attacker-influenced queue state. Reaching the cap evicts an arbitrary
-// older identity and therefore fails open to an occasional duplicate alert
-// instead of allowing frozen-message churn to exhaust daemon memory.
+// Bound attacker-influenced queue state. Every tracked ID is a real message
+// exim froze (the parser reads only exim's own queue-ID field), so filling
+// the table takes that many frozen messages inside one TTL, each of which
+// raised its own finding. Reaching the cap evicts the ID no queue run has
+// refreshed for the longest, so the cost of overflow is a duplicate finding
+// for an old message, never a missed report for a new one.
 const eximFrozenDedupMaxEntries = 10_000
+
+// eximFrozenDedupPersistInterval is how often changed dedup state is written
+// to the state store. A clean shutdown writes it once more after the log
+// watchers stop, so only a crash can lose the IDs first seen inside the last
+// interval, and each of those is reported once more after the restart. A var
+// so tests can drive the periodic writer without waiting a minute.
+var eximFrozenDedupPersistInterval = time.Minute
 
 // eximMessageIDPattern matches the exim queue ID as its own log field
 // (e.g. "1wuZUi-0000000BrCR-0u0H"; older exims use shorter middle segments).
@@ -30,20 +49,37 @@ var eximMessageIDPattern = regexp.MustCompile(`^[0-9A-Za-z]{6}-[0-9A-Za-z]{6,11}
 // eximFrozenDedup keeps the last-observed time per frozen message ID. Exim
 // re-logs "Message is frozen" on every queue run for as long as the message
 // stays queued, so without this one stuck bounce raises a finding every few
-// minutes for days. In-memory on purpose: stale entries are bounded by the TTL,
-// and losing the state on restart only costs one duplicate finding per
-// still-frozen message.
+// minutes for days. The table is persisted to the state store: the first
+// queue run after a restart re-logs every still-frozen message, and only a
+// message the daemon never saw frozen may alert then. Seeding the table from
+// the queue at startup instead would hide a message that froze while the
+// daemon was down.
 var eximFrozenDedup = struct {
-	mu        sync.Mutex
-	seen      map[string]time.Time
+	mu   sync.Mutex
+	seen map[string]*list.Element
+	// order holds one *eximFrozenSighting per tracked ID, least recently
+	// seen first, so eviction at capacity drops the stalest ID without a scan.
+	order     *list.List
 	nextPrune time.Time
-}{seen: make(map[string]time.Time)}
+	// version counts changes to the table; persisted is the version the state
+	// store last accepted. They differ while there is something to save.
+	version   uint64
+	persisted uint64
+}{seen: make(map[string]*list.Element), order: list.New()}
+
+type eximFrozenSighting struct {
+	id       string
+	lastSeen time.Time
+}
 
 func resetEximFrozenDedup() {
 	eximFrozenDedup.mu.Lock()
 	defer eximFrozenDedup.mu.Unlock()
-	eximFrozenDedup.seen = make(map[string]time.Time)
+	eximFrozenDedup.seen = make(map[string]*list.Element)
+	eximFrozenDedup.order = list.New()
 	eximFrozenDedup.nextPrune = time.Time{}
+	eximFrozenDedup.version = 0
+	eximFrozenDedup.persisted = 0
 }
 
 type eximFrozenEvent uint8
@@ -65,9 +101,7 @@ func eximFrozenShouldAlert(line string, now time.Time) bool {
 	}
 	if event == eximFrozenEventUnfreeze {
 		if id != "" {
-			eximFrozenDedup.mu.Lock()
-			delete(eximFrozenDedup.seen, id)
-			eximFrozenDedup.mu.Unlock()
+			forgetEximFrozenID(id)
 		}
 		return false
 	}
@@ -79,25 +113,149 @@ func eximFrozenShouldAlert(line string, now time.Time) bool {
 	defer eximFrozenDedup.mu.Unlock()
 	if eximFrozenDedup.nextPrune.IsZero() || !now.Before(eximFrozenDedup.nextPrune) {
 		cutoff := now.Add(-eximFrozenDedupTTL)
-		for queuedID, lastSeen := range eximFrozenDedup.seen {
-			if !lastSeen.After(cutoff) {
-				delete(eximFrozenDedup.seen, queuedID)
+		for el := eximFrozenDedup.order.Front(); el != nil; {
+			next := el.Next()
+			if sighting := el.Value.(*eximFrozenSighting); !sighting.lastSeen.After(cutoff) {
+				removeEximFrozenSightingLocked(el)
 			}
+			el = next
 		}
 		eximFrozenDedup.nextPrune = now.Add(eximFrozenDedupPruneInterval)
 	}
-	if lastSeen, ok := eximFrozenDedup.seen[id]; ok && now.Before(lastSeen.Add(eximFrozenDedupTTL)) {
-		eximFrozenDedup.seen[id] = now
-		return false
+	eximFrozenDedup.version++
+	if el, ok := eximFrozenDedup.seen[id]; ok {
+		sighting := el.Value.(*eximFrozenSighting)
+		suppressed := now.Before(sighting.lastSeen.Add(eximFrozenDedupTTL))
+		sighting.lastSeen = now
+		eximFrozenDedup.order.MoveToBack(el)
+		return !suppressed
 	}
-	if _, tracked := eximFrozenDedup.seen[id]; !tracked && len(eximFrozenDedup.seen) >= eximFrozenDedupMaxEntries {
-		for queuedID := range eximFrozenDedup.seen {
-			delete(eximFrozenDedup.seen, queuedID)
-			break
+	if eximFrozenDedup.order.Len() >= eximFrozenDedupMaxEntries {
+		removeEximFrozenSightingLocked(eximFrozenDedup.order.Front())
+	}
+	eximFrozenDedup.seen[id] = eximFrozenDedup.order.PushBack(&eximFrozenSighting{id: id, lastSeen: now})
+	return true
+}
+
+func removeEximFrozenSightingLocked(el *list.Element) {
+	delete(eximFrozenDedup.seen, el.Value.(*eximFrozenSighting).id)
+	eximFrozenDedup.order.Remove(el)
+}
+
+func forgetEximFrozenID(id string) {
+	eximFrozenDedup.mu.Lock()
+	defer eximFrozenDedup.mu.Unlock()
+	if el, ok := eximFrozenDedup.seen[id]; ok {
+		removeEximFrozenSightingLocked(el)
+		eximFrozenDedup.version++
+	}
+}
+
+// loadEximFrozenDedup replaces the table with the persisted one. It runs
+// before the log watchers start, so the replacement discards nothing they
+// recorded. Entries past the TTL, entries that are not exim queue IDs, and
+// any excess over the cap (oldest first) are dropped, so the restored table
+// obeys the same bounds as one built from the log. A last-seen time ahead of
+// now counts as now, so a clock step back cannot stretch suppression past the
+// TTL.
+func loadEximFrozenDedup(db *store.DB, now time.Time) error {
+	persisted, err := db.LoadEximFrozenSeen()
+	if err != nil {
+		return err
+	}
+	cutoff := now.Add(-eximFrozenDedupTTL)
+	restored := make([]*eximFrozenSighting, 0, len(persisted))
+	for id, lastSeen := range persisted {
+		if !eximMessageIDPattern.MatchString(id) || !lastSeen.After(cutoff) {
+			continue
+		}
+		if lastSeen.After(now) {
+			lastSeen = now
+		}
+		restored = append(restored, &eximFrozenSighting{id: id, lastSeen: lastSeen})
+	}
+	sort.Slice(restored, func(i, j int) bool {
+		return restored[i].lastSeen.Before(restored[j].lastSeen)
+	})
+	if excess := len(restored) - eximFrozenDedupMaxEntries; excess > 0 {
+		restored = restored[excess:]
+	}
+
+	seen := make(map[string]*list.Element, len(restored))
+	order := list.New()
+	for _, sighting := range restored {
+		seen[sighting.id] = order.PushBack(sighting)
+	}
+	eximFrozenDedup.mu.Lock()
+	eximFrozenDedup.seen = seen
+	eximFrozenDedup.order = order
+	eximFrozenDedup.mu.Unlock()
+	return nil
+}
+
+// saveEximFrozenDedup writes the table to the state store when it changed
+// since the last successful save. Callers serialize saves: the periodic
+// writer exits before the final shutdown save runs.
+func saveEximFrozenDedup(db *store.DB) error {
+	eximFrozenDedup.mu.Lock()
+	if eximFrozenDedup.version == eximFrozenDedup.persisted {
+		eximFrozenDedup.mu.Unlock()
+		return nil
+	}
+	version := eximFrozenDedup.version
+	snapshot := make(map[string]time.Time, eximFrozenDedup.order.Len())
+	for el := eximFrozenDedup.order.Front(); el != nil; el = el.Next() {
+		sighting := el.Value.(*eximFrozenSighting)
+		snapshot[sighting.id] = sighting.lastSeen
+	}
+	eximFrozenDedup.mu.Unlock()
+
+	if err := db.SaveEximFrozenSeen(snapshot); err != nil {
+		return err
+	}
+	eximFrozenDedup.mu.Lock()
+	eximFrozenDedup.persisted = version
+	eximFrozenDedup.mu.Unlock()
+	return nil
+}
+
+// restoreEximFrozenDedup loads the persisted frozen-message table. Without a
+// state store the daemon keeps the table in memory only.
+func (d *Daemon) restoreEximFrozenDedup() {
+	if sdb := store.Global(); sdb != nil {
+		if err := loadEximFrozenDedup(sdb, time.Now()); err != nil {
+			csmlog.Warn("exim frozen-message dedup load failed", "err", err)
 		}
 	}
-	eximFrozenDedup.seen[id] = now
-	return true
+}
+
+// persistEximFrozenDedup saves the frozen-message table if it changed.
+func (d *Daemon) persistEximFrozenDedup() {
+	if sdb := store.Global(); sdb != nil {
+		if err := saveEximFrozenDedup(sdb); err != nil {
+			csmlog.Warn("exim frozen-message dedup persistence failed", "err", err)
+		}
+	}
+}
+
+// startEximFrozenDedupPersistence saves changed dedup state periodically while
+// the exim mainlog is watched. It stops on d.stopCh without a final save; the
+// shutdown path saves once more after every log watcher has exited.
+func (d *Daemon) startEximFrozenDedupPersistence() {
+	d.wg.Add(1)
+	obs.Go("exim-frozen-dedup-persist", func() {
+		defer d.wg.Done()
+		ticker := time.NewTicker(eximFrozenDedupPersistInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-d.stopCh:
+				return
+			case <-ticker.C:
+				d.persistEximFrozenDedup()
+			}
+		}
+	})
 }
 
 // releaseEximFrozenDedup re-arms a freeze finding that the log watcher could
@@ -108,9 +266,7 @@ func releaseEximFrozenDedup(line string) {
 	if id == "" || event != eximFrozenEventFreeze {
 		return
 	}
-	eximFrozenDedup.mu.Lock()
-	delete(eximFrozenDedup.seen, id)
-	eximFrozenDedup.mu.Unlock()
+	forgetEximFrozenID(id)
 }
 
 // parseEximFrozenEvent recognizes only Exim's action field, not arbitrary

@@ -233,6 +233,13 @@ deadline cannot erase a failure. Correlation evidence expires independently
 of alert delivery, and queue saturation is reported through the existing
 queue health counters and daemon warnings.
 
+A frozen Exim message is reported once. Exim logs a still-frozen message again
+on every queue run, and those lines are not reported again, also after a
+daemon restart: the daemon keeps the messages it reported in its state
+database until a day passes without a queue run logging them. A message that
+froze while the daemon was stopped has not been reported, so the first queue
+run after the start reports it.
+
 Successful FTP logins over loopback do not raise an unfamiliar-address warning.
 Failed authentication remains reportable over loopback, including through local
 relays.
