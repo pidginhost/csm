@@ -1,6 +1,7 @@
 package challenge
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -53,30 +54,36 @@ func tamperSignature(t *testing.T, cookie string) string {
 
 func TestAdminSessionTamperedSignatureRejected(t *testing.T) {
 	s := mustSigner(t, time.Hour)
-	cookie := s.Issue("1.2.3.4")
-	if err := s.Verify(tamperSignature(t, cookie), "1.2.3.4"); !errors.Is(err, ErrSessionBadSignature) {
+	cookie := s.Issue("192.0.2.1")
+	if err := s.Verify(cookie, "192.0.2.1"); err != nil {
+		t.Fatalf("pre-tampering Verify: %v", err)
+	}
+	if err := s.Verify(tamperSignature(t, cookie), "192.0.2.1"); !errors.Is(err, ErrSessionBadSignature) {
 		t.Errorf("err = %v, want ErrSessionBadSignature", err)
 	}
 }
 
-// The signature is random per signer key, so about one cookie in 4096 has
-// a signature that already starts with the bytes a fixed overwrite would
-// write. Tampering must still change it.
-func TestAdminSessionTamperedSignatureRejectedWhateverItsValue(t *testing.T) {
-	s := mustSigner(t, time.Hour)
-	var cookie, ip string
-	for i := 0; i < 1<<20 && cookie == ""; i++ {
-		ip = fmt.Sprintf("2001:db8::%x:%x", i>>16, i&0xffff)
-		c := s.Issue(ip)
-		if strings.HasPrefix(c[strings.LastIndexByte(c, '.')+1:], "AA") {
-			cookie = c
-		}
-	}
-	if cookie == "" {
-		t.Fatal("no cookie with an AA-prefixed signature found")
-	}
-	if err := s.Verify(tamperSignature(t, cookie), ip); !errors.Is(err, ErrSessionBadSignature) {
-		t.Errorf("err = %v, want ErrSessionBadSignature", err)
+func TestTamperSignatureChangesEveryFirstByte(t *testing.T) {
+	payload := base64.RawURLEncoding.EncodeToString(encodeSessionPayload("2001:db8::1", time.Now().Add(time.Hour)))
+	for first := 0; first < 256; first++ {
+		t.Run(fmt.Sprintf("%02x", first), func(t *testing.T) {
+			// Zero bytes produce the AA prefix that a fixed overwrite left unchanged.
+			sig := make([]byte, 32)
+			sig[0] = byte(first)
+			cookie := payload + "." + base64.RawURLEncoding.EncodeToString(sig)
+			tampered := tamperSignature(t, cookie)
+			payloadAfter, signatureAfter, ok := strings.Cut(tampered, ".")
+			if !ok || payloadAfter != payload {
+				t.Fatalf("tampering changed the payload")
+			}
+			decoded, err := base64.RawURLEncoding.DecodeString(signatureAfter)
+			if err != nil || len(decoded) != len(sig) {
+				t.Fatalf("tampering produced a malformed signature")
+			}
+			if bytes.Equal(decoded, sig) {
+				t.Error("tampering left the signature unchanged")
+			}
+		})
 	}
 }
 
