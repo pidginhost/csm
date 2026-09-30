@@ -931,6 +931,13 @@ degradation with the same evidence, but leaves the host status and security
 posture unchanged, warns instead of failing `csm doctor`, and raises no
 notification.
 
+`php_shield.eval_sites` is advisory grading work. It reports running ownership
+walks and completed results still held for callers. A timeout or refused
+lookup counts as a lost proof, while the finding stays High. A completed walk
+releases its single admission slot before publishing, so later events do not
+wait for that caller. Concurrent callers can hold completed results, making
+the aggregate capacity unavailable. Health reads perform no filesystem lookup.
+
 Each degraded row names its condition: `backlog_lag` for the oldest waiting
 item past its budget, `processing_lag` for the oldest running item,
 `queue_full` for capacity held continuously, `dropped_work` for recent losses,

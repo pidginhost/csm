@@ -43,6 +43,7 @@ func (d *Daemon) queueStatuses(now time.Time) map[string]queuehealth.Status {
 	out["checks.plugin_inventory"] = checks.PluginInventoryQueueStatus(now)
 	out["checks.wordpress_core"] = checks.WPCoreQueueStatus(now)
 	out["checks.reputation_queries"] = checks.ReputationQueueStatus(now)
+	out["php_shield.eval_sites"] = phpShieldEvalSiteQueueStatus(now)
 	for name, status := range checks.FileIndexQueueStatuses(now) {
 		out["checks.file_index."+name] = status
 	}

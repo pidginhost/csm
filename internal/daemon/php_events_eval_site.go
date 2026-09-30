@@ -4,8 +4,12 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
 // phpEvalCodeSuffix is how PHP names code run by eval(): the file of the
@@ -24,7 +28,8 @@ var (
 	// phpShieldEvalSiteProbe admits one inspection at a time. A probe stuck in
 	// a hung mount keeps it, so later events are graded at once instead of
 	// each stalling the reader and leaving another blocked thread behind.
-	phpShieldEvalSiteProbe = make(chan struct{}, 1)
+	phpShieldEvalSiteProbe  = make(chan struct{}, 1)
+	phpShieldEvalSiteHealth = queuehealth.New(0, time.Minute)
 )
 
 // phpShieldEvalSiteIsSystemCode reports whether errorFile names a single
@@ -66,18 +71,14 @@ func phpShieldEvalSiteIsSystemCode(errorFile string) bool {
 // fields are forgeable by any local user, so a path on a hung network mount
 // must cost the reader one timeout at most, and then nothing until it clears.
 func phpShieldEvalSiteProven(file string) bool {
-	select {
-	case phpShieldEvalSiteProbe <- struct{}{}:
-	default:
+	work := acquirePHPShieldEvalSiteWork()
+	if work == nil {
 		return false
 	}
+	defer work.release()
 	result := make(chan bool, 1)
 	go func() {
-		proven := rootOwnedUnwritableChain(file)
-		// Release before publishing, including after a timeout. The next
-		// event must not depend on a separate waiter being scheduled.
-		<-phpShieldEvalSiteProbe
-		result <- proven
+		work.run(file, result)
 	}()
 	timer := time.NewTimer(phpShieldEvalSiteTimeout)
 	defer timer.Stop()
@@ -85,8 +86,75 @@ func phpShieldEvalSiteProven(file string) bool {
 	case proven := <-result:
 		return proven
 	case <-timer.C:
+		work.fail()
 		return false
 	}
+}
+
+type phpShieldEvalSiteWork struct {
+	ticket    queuehealth.Ticket
+	stats     *queuehealth.Tracker
+	remaining atomic.Int32
+	failOnce  sync.Once
+}
+
+func acquirePHPShieldEvalSiteWork() *phpShieldEvalSiteWork {
+	stats := phpShieldEvalSiteHealth
+	ticket := stats.Begin(time.Now())
+	select {
+	case phpShieldEvalSiteProbe <- struct{}{}:
+		work := &phpShieldEvalSiteWork{ticket: ticket, stats: stats}
+		work.remaining.Store(2)
+		return work
+	default:
+		ticket.Reject(time.Now())
+		return nil
+	}
+}
+
+func (w *phpShieldEvalSiteWork) fail() {
+	w.failOnce.Do(func() { w.stats.Lose(time.Now(), 1) })
+}
+
+func (w *phpShieldEvalSiteWork) release() {
+	// Neither a caller timeout nor a buffered outcome ends ownership alone.
+	if w.remaining.Add(-1) == 0 {
+		w.ticket.Finish(time.Now())
+	}
+}
+
+func (w *phpShieldEvalSiteWork) run(file string, result chan<- bool) {
+	w.ticket.Start(time.Now())
+	completed := false
+	defer func() {
+		if !completed {
+			w.fail()
+		}
+		w.release()
+	}()
+	proven := func() bool {
+		// Release before publishing, even if the walk exits abnormally.
+		// The next event must not depend on the caller being scheduled.
+		defer func() { <-phpShieldEvalSiteProbe }()
+		return rootOwnedUnwritableChain(file)
+	}()
+	result <- proven
+	completed = true
+}
+
+func phpShieldEvalSiteQueueStatus(now time.Time) queuehealth.Status {
+	status := phpShieldEvalSiteHealth.Snapshot(now)
+	// One filesystem walk is bounded, but concurrent callers can still hold
+	// completed results after it releases its slot.
+	status.CapacityUnavailable = true
+	status.Advisory = true
+	switch {
+	case status.LagSeconds >= phpShieldEvalSiteTimeout.Seconds():
+		status.Status, status.Reason = "degraded", "backlog_lag"
+	case status.ProcessingSeconds >= phpShieldEvalSiteTimeout.Seconds():
+		status.Status, status.Reason = "degraded", "processing_lag"
+	}
+	return status
 }
 
 // rootOwnedUnwritableChain reports whether file is a regular file and it and

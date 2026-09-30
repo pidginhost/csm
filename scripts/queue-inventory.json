@@ -574,6 +574,30 @@
       "rationale": "Stops or joins periodic incident closure and retention; persisted incidents are retained state rather than a handoff buffer."
     },
     {
+      "id": "internal/daemon/php_events_eval_site.go::package::phpShieldEvalSiteProbe::channel::1",
+      "path": "internal/daemon/php_events_eval_site.go",
+      "owner": "package",
+      "target": "phpShieldEvalSiteProbe",
+      "kind": "channel",
+      "source": "make(chan struct{}, 1)",
+      "capacity": "1",
+      "class": "work",
+      "queue": "php_shield.eval_sites",
+      "rationale": "Admits an ownership walk that determines an eval finding's grade. The work owner retains the running lookup after caller timeout and counts refused proofs; findings stay High when proof is unavailable."
+    },
+    {
+      "id": "internal/daemon/php_events_eval_site.go::phpShieldEvalSiteProven::result::channel::1",
+      "path": "internal/daemon/php_events_eval_site.go",
+      "owner": "phpShieldEvalSiteProven",
+      "target": "result",
+      "kind": "channel",
+      "source": "make(chan bool, 1)",
+      "capacity": "1",
+      "class": "work",
+      "queue": "php_shield.eval_sites",
+      "rationale": "Transfers the ownership proof used to grade a finding retained by the event reader. Ownership ends only when both the lookup and caller settle, including buffered results and late completion after timeout."
+    },
+    {
       "id": "internal/daemon/php_relay_msgindex_bbolt.go::*msgIndexPersister.Flush::done::channel::1",
       "path": "internal/daemon/php_relay_msgindex_bbolt.go",
       "owner": "*msgIndexPersister.Flush",
@@ -3734,6 +3758,97 @@
           "path": "internal/alert/phpanel_queue.go",
           "symbol": "phpanelQueueLimit",
           "shape": "100000"
+        }
+      ]
+    },
+    {
+      "id": "php_shield.eval_sites",
+      "rows": [
+        "php_shield.eval_sites"
+      ],
+      "bounds": "One active filesystem ownership walk. A completed walk releases admission before publishing; concurrent callers and undelivered results have no fixed aggregate cap. Ownership survives timeout until both caller and walk settle. Timeouts and refused proofs are advisory losses; findings remain High.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalSiteQueuePublished",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalSiteQueuePublished",
+          "mode": "kernel"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalSiteQueueRetainsTimedOutLookup",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalSiteQueueRetainsTimedOutLookup",
+          "mode": "kernel"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalSiteQueueRetainsUndeliveredResult",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalSiteQueueRetainsUndeliveredResult",
+          "mode": "kernel"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalSiteQueueAbnormalWalkSettlesOnce",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalSiteQueueAbnormalWalkSettlesOnce",
+          "mode": "kernel"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalSiteTimeoutNeedsOnlyOneWorker",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalSiteTimeoutNeedsOnlyOneWorker",
+          "mode": "kernel"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalSiteBackToBackEventsAreEachProven",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalSiteBackToBackEventsAreEachProven",
+          "mode": "kernel"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalFatalOutsideRootOwnedCodeStaysHigh",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalFatalOutsideRootOwnedCodeStaysHigh",
+          "mode": "kernel"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalFatalWarningDoesNotDedupHigh",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestPHPShieldEvalFatalWarningDoesNotDedupHigh",
+          "mode": "kernel"
         }
       ]
     },
