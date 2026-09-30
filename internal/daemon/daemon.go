@@ -2850,10 +2850,11 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 		})
 		recorded = append(recorded, res.Findings...)
 		if err != nil {
-			// Own-interface / infra IPs are never blockable, and a host
-			// without a firewall engine cannot escalate; both are expected
+			// Own-interface / infra IPs are never blockable, a host
+			// without a firewall engine cannot escalate, and an operator
+			// may have turned automatic blocking off; all are expected
 			// no-ops, not failures worth logging.
-			if !isProtectedIPRefusal(err) && !errors.Is(err, checks.ErrNoIPBlocker) {
+			if !isProtectedIPRefusal(err) && !errors.Is(err, checks.ErrNoIPBlocker) && !errors.Is(err, checks.ErrAutoBlockDisabled) {
 				fmt.Fprintf(os.Stderr, "[%s] challenge-escalate: error blocking %s: %v\n", ts(), e.IP, err)
 			}
 			if res.Outcome != firewall.BlockOutcomeLive || !errors.Is(err, firewall.ErrActionAuditPending) {

@@ -359,3 +359,33 @@ func TestApplyBlockConcurrentSourcesRecordOneAppliedBlock(t *testing.T) {
 		t.Fatalf("tracker entries = %+v, want one", state.IPs)
 	}
 }
+
+// Every automatic source blocks only while auto_response.enabled and
+// block_ips are on; the refusal leaves no evidence and never reaches the
+// engine.
+func TestApplyBlockRefusesWhileBlockingIsSwitchedOff(t *testing.T) {
+	for _, off := range []string{"enabled", "block_ips"} {
+		t.Run(off, func(t *testing.T) {
+			cfg := pendingTestConfig(t)
+			if off == "enabled" {
+				cfg.AutoResponse.Enabled = false
+			} else {
+				cfg.AutoResponse.BlockIPs = false
+			}
+			blocker := &outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}
+			applyBlockTestSetup(t, blocker)
+			for _, source := range []string{BlockSourceChallenge, BlockSourceCentral, BlockSourceIncident} {
+				res, err := ApplyBlock(cfg, ApplyBlockRequest{IP: "203.0.113.51", Reason: "r", TTL: time.Hour, Source: source})
+				if !errors.Is(err, ErrAutoBlockDisabled) || res.Outcome != firewall.BlockOutcomeNoop || len(res.Findings) != 0 {
+					t.Fatalf("%s: %+v, %v", source, res, err)
+				}
+			}
+			if len(blocker.calls) != 0 {
+				t.Fatalf("engine called: %+v", blocker.calls)
+			}
+			if _, found := GetThreatDB().Lookup("203.0.113.51"); found {
+				t.Fatal("a refused block left a threat-DB row")
+			}
+		})
+	}
+}

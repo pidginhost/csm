@@ -49,6 +49,11 @@ type ApplyBlockResult struct {
 // treat it as "the block did not happen", never as success.
 var ErrNoIPBlocker = errors.New("firewall engine not available")
 
+// ErrAutoBlockDisabled is returned when auto_response.enabled or block_ips is
+// off: the operator turned automatic blocking off, so no source may block.
+// Like ErrNoIPBlocker it means the block did not happen.
+var ErrAutoBlockDisabled = errors.New("automatic IP blocking is disabled")
+
 // ApplyBlock is the single chokepoint for auto-response IP blocks issued
 // outside the scan loop (challenge escalation, central intel, incident
 // spray). It performs the block and the same evidence bookkeeping a scan
@@ -57,11 +62,19 @@ var ErrNoIPBlocker = errors.New("firewall engine not available")
 // escalation counting. The scan loop shares the inner implementation and
 // keeps its own batch semantics (rate limit, pending queue) around it.
 //
+// auto_response.enabled and block_ips gate every source; with either off
+// ApplyBlock refuses with ErrAutoBlockDisabled before reaching the engine.
+//
 // Non-scan sources deliberately neither consume nor enforce
 // auto_response.max_blocks_per_hour: challenge escalation and central intel
 // are already gated upstream, and letting them starve or be starved by the
 // scan budget would change containment behavior.
 func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, error) {
+	// The switches gate every automatic block, not only scan blocks. The
+	// engine's dry-run gate still applies below them.
+	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
+		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, ErrAutoBlockDisabled
+	}
 	blocker := getIPBlocker()
 	if blocker == nil {
 		res := ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}
