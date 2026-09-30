@@ -117,12 +117,30 @@ var reAutoPrependTarget = regexp.MustCompile(`(?i)auto_(?:prepend|append)_file(?
 // substring test anywhere else on the line is an exemption the attacker
 // controls.
 func autoPrependTargetIsKnownPrelude(target string) bool {
-	base := strings.ToLower(filepath.Base(strings.ReplaceAll(target, `\`, "/")))
+	base := preludeBase(target)
 	switch base {
-	case "wordfence-waf.php", "advanced-headers.php", "malcare-waf.php":
+	case "wordfence-waf.php", "malcare-waf.php":
 		return true
 	}
 	return strings.HasPrefix(base, "sucuri") && strings.HasSuffix(base, ".php")
+}
+
+func preludeBase(target string) string {
+	return strings.ToLower(filepath.Base(strings.ReplaceAll(target, `\`, "/")))
+}
+
+// rssslPreludeName is the prelude Really Simple Security installs.
+const rssslPreludeName = "advanced-headers.php"
+
+// rssslPreludeBound reports whether an unquoted target is the Really Simple
+// Security prelude of the site whose .htaccess carries the directive. The
+// plugin writes WP_CONTENT_DIR/advanced-headers.php, absolute and verbatim,
+// into the .htaccess of the site root, so its target is the wp-content
+// directory beside that file. The file name alone is no evidence: the
+// plugin's marker block is text anyone who can write the .htaccess can copy
+// and point anywhere.
+func rssslPreludeBound(target, htaccessPath string) bool {
+	return target == filepath.Join(filepath.Dir(htaccessPath), "wp-content", rssslPreludeName)
 }
 
 // autoPrependTargetSuspicious reports whether an auto_prepend_file or
@@ -136,7 +154,7 @@ func autoPrependTargetIsKnownPrelude(target string) bool {
 func autoPrependTargetSuspicious(target, htaccessPath string) bool {
 	target = strings.Trim(strings.TrimSpace(target), `"'`)
 	lower := strings.ToLower(target)
-	if lower == "" || lower == "none" || autoPrependTargetIsKnownPrelude(lower) {
+	if lower == "" || lower == "none" || autoPrependTargetIsKnownPrelude(lower) || rssslPreludeBound(target, htaccessPath) {
 		return false
 	}
 	// PHP resolves lexical dot segments before opening the file. Classify the
@@ -1016,6 +1034,10 @@ func detectAutoPrepend(content []byte, path string) []htaccessMatch {
 		out = append(out, htaccessMatch{
 			Range:   lineRange(content, idx[0], idx[1]),
 			Excerpt: trimExcerpt(content, idx[0], idx[1]),
+			// A WordPress installed below the site root puts the plugin's
+			// real prelude outside the bound location, so a mismatch is
+			// reported for review but never removed automatically.
+			Retain: preludeBase(strings.Trim(target, `"'`)) == rssslPreludeName,
 		})
 	}
 	return out

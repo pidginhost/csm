@@ -5,6 +5,7 @@ package yara
 import (
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -374,6 +375,135 @@ Require all denied
 `)
 	if !hasYaraRule(scanner.ScanBytes(malicious), "backdoor_htaccess_auto_prepend") {
 		t.Error("backdoor_htaccess_auto_prepend regression: real shell drop must keep firing")
+	}
+}
+
+// Really Simple Security 9.8 writes its root .htaccess blocks through a
+// marker manager that uses the WordPress spelling "# BEGIN <name>" and
+// "# END <name>". Earlier releases wrote "#Begin <name>" and "#End <name>".
+// Both are the plugin's own output, for the Apache and the LiteSpeed
+// configuration it generates. Files edited on another platform can also
+// carry CRLF line endings.
+func TestBackdoorHtaccessAutoPrepend_ReallySimpleSecurityMarkerSpellings(t *testing.T) {
+	scanner := loadRepoYaraScanner(t)
+
+	const target = "/home/example/public_html/wp-content/advanced-headers.php"
+	block := func(begin, end, open1, open2 string) string {
+		return begin + ` Really Simple Auto Prepend File
+` + open1 + `
+php_value auto_prepend_file ` + target + `
+</IfModule>
+` + open2 + `
+php_value auto_prepend_file ` + target + `
+</IfModule>
+<Files ".user.ini">
+<IfModule mod_authz_core.c>
+Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+Order deny,allow
+Deny from all
+</IfModule>
+</Files>
+` + end + ` Really Simple Auto Prepend File
+`
+	}
+	const siblings = `# BEGIN Really Simple Security Redirect
+
+<IfModule mod_rewrite.c>
+RewriteEngine on
+RewriteCond %{HTTPS} !=on [NC]
+RewriteRule ^(.*)$ https://%{HTTP_HOST}/$1 [R=301,L]
+</IfModule>
+
+# END Really Simple Security Redirect
+# BEGIN Really Simple Security Disable directory indexing
+Options -Indexes
+# END Really Simple Security Disable directory indexing
+`
+	apache98 := block("# BEGIN", "# END", "<IfModule mod_php7.c>", "<IfModule mod_php.c>") + siblings
+	cases := map[string]string{
+		"9.8 apache":    apache98,
+		"9.8 litespeed": block("# BEGIN", "# END", "<IfModule LiteSpeed>", "<IfModule lsapi_module>") + siblings,
+		"9.4 apache":    block("#Begin", "#End", "<IfModule mod_php7.c>", "<IfModule mod_php.c>"),
+		"9.8 crlf":      strings.ReplaceAll(apache98, "\n", "\r\n"),
+	}
+	for name, body := range cases {
+		if hasYaraRule(scanner.ScanBytes([]byte(body)), "backdoor_htaccess_auto_prepend") {
+			t.Errorf("%s: backdoor_htaccess_auto_prepend FP on the generated Really Simple Security block", name)
+		}
+	}
+
+	// The new spelling is as forgeable as the old one. It must not cover a
+	// directive that points anywhere but a wp-content/advanced-headers.php.
+	forged := block("# BEGIN", "# END", "<IfModule mod_php7.c>", "<IfModule mod_php.c>")
+	forged = strings.ReplaceAll(forged, target, "/home/example/public_html/.cache/.x.php")
+	if !hasYaraRule(scanner.ScanBytes([]byte(forged)), "backdoor_htaccess_auto_prepend") {
+		t.Error("backdoor_htaccess_auto_prepend regression: forged Really Simple Security markers hid a dropped prelude")
+	}
+	extra := apache98 + "php_value auto_prepend_file /home/example/public_html/.cache/.x.php\n"
+	if !hasYaraRule(scanner.ScanBytes([]byte(extra)), "backdoor_htaccess_auto_prepend") {
+		t.Error("backdoor_htaccess_auto_prepend regression: a generated block hid a second, malicious prelude")
+	}
+}
+
+// The exclusion is an accounting identity: the rule stays silent only when
+// every prelude directive is one of the excused product directives. A product
+// pattern that matches text which is not a directive -- a comment, the value
+// of another directive, a run-on token -- must not be counted, or a decoy pays
+// for the attacker's real directive.
+func TestBackdoorHtaccessAutoPrepend_DecoyCannotExcuseDirective(t *testing.T) {
+	scanner := loadRepoYaraScanner(t)
+
+	const malicious = "php_value auto_prepend_file /home/example/public_html/.cache/.x.php\n"
+	const rsssl = `#Begin Really Simple Auto Prepend File
+<IfModule mod_php7.c>
+php_value auto_prepend_file /home/example/public_html/wp-content/advanced-headers.php
+</IfModule>
+<Files ".user.ini">
+Require all denied
+</Files>
+#End Really Simple Auto Prepend File
+`
+	decoys := map[string]string{
+		"commented wordfence":        "# auto_prepend_file /home/example/public_html/wordfence-waf.php\n",
+		"commented sucuri":           "# auto_prepend_file /home/example/public_html/sucuri.php\n",
+		"commented ithemes":          "# auto_prepend_file /home/example/public_html/wp-content/plugins/ithemes-security-pro/pro/mu-plugin/hide-backend.php\n",
+		"wordfence in another value": "SetEnv NOTE auto_prepend_file=/home/example/public_html/wordfence-waf.php\n",
+		"run-on wordfence token":     "php_value auto_prepend_filewordfence-waf.php\n",
+		"commented rsssl in block":   rsssl + "# php_value auto_prepend_file /home/example/public_html/wp-content/advanced-headers.php\n",
+	}
+	for name, decoy := range decoys {
+		body := decoy + malicious
+		if !hasYaraRule(scanner.ScanBytes([]byte(body)), "backdoor_htaccess_auto_prepend") {
+			t.Errorf("%s: backdoor_htaccess_auto_prepend missed a dropped prelude behind a decoy", name)
+		}
+	}
+}
+
+// One directive is one directive whatever line ending or blank lines precede
+// it. Counting a CRLF directive twice made the excused product directives
+// look outnumbered, so a stock Wordfence block fired.
+func TestBackdoorHtaccessAutoPrepend_LineEndingsDoNotDoubleCount(t *testing.T) {
+	scanner := loadRepoYaraScanner(t)
+
+	wordfence := "# Wordfence WAF\n<IfModule mod_php7.c>\n\tphp_value auto_prepend_file '/home/example/public_html/wordfence-waf.php'\n</IfModule>\n# END Wordfence WAF\n"
+	cases := map[string]string{
+		"crlf":        strings.ReplaceAll(wordfence, "\n", "\r\n"),
+		"blank lines": strings.Replace(wordfence, "<IfModule mod_php7.c>\n", "<IfModule mod_php7.c>\n\n\n", 1),
+		"cr only":     strings.ReplaceAll(wordfence, "\n", "\r"),
+	}
+	for name, body := range cases {
+		if hasYaraRule(scanner.ScanBytes([]byte(body)), "backdoor_htaccess_auto_prepend") {
+			t.Errorf("%s: backdoor_htaccess_auto_prepend FP on a stock Wordfence block", name)
+		}
+	}
+
+	// A CR-only file is still read line by line by PHP's INI parser, so a
+	// .user.ini directive after a bare CR must keep firing.
+	userINI := "; site settings\rauto_prepend_file = '/home/example/public_html/.cache/.x.php'\r"
+	if !hasYaraRule(scanner.ScanBytes([]byte(userINI)), "backdoor_htaccess_auto_prepend") {
+		t.Error("backdoor_htaccess_auto_prepend regression: CR-separated .user.ini prelude not detected")
 	}
 }
 
