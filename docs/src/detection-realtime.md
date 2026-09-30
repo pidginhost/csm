@@ -240,6 +240,11 @@ database until a day passes without a queue run logging them. A message that
 froze while the daemon was stopped has not been reported, so the first queue
 run after the start reports it.
 
+Startup discards expired records and invalid message IDs, and adjusts
+timestamps ahead of the current clock. These corrections are saved even if
+no new mail event arrives, so another restart does not extend the corrected
+retention period.
+
 Successful FTP logins over loopback do not raise an unfamiliar-address warning.
 Failed authentication remains reportable over loopback, including through local
 relays.

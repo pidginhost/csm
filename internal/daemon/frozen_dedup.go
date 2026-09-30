@@ -165,12 +165,15 @@ func loadEximFrozenDedup(db *store.DB, now time.Time) error {
 	}
 	cutoff := now.Add(-eximFrozenDedupTTL)
 	restored := make([]*eximFrozenSighting, 0, len(persisted))
+	corrected := false
 	for id, lastSeen := range persisted {
 		if !eximMessageIDPattern.MatchString(id) || !lastSeen.After(cutoff) {
+			corrected = true
 			continue
 		}
 		if lastSeen.After(now) {
 			lastSeen = now
+			corrected = true
 		}
 		restored = append(restored, &eximFrozenSighting{id: id, lastSeen: lastSeen})
 	}
@@ -179,6 +182,7 @@ func loadEximFrozenDedup(db *store.DB, now time.Time) error {
 	})
 	if excess := len(restored) - eximFrozenDedupMaxEntries; excess > 0 {
 		restored = restored[excess:]
+		corrected = true
 	}
 
 	seen := make(map[string]*list.Element, len(restored))
@@ -189,6 +193,11 @@ func loadEximFrozenDedup(db *store.DB, now time.Time) error {
 	eximFrozenDedup.mu.Lock()
 	eximFrozenDedup.seen = seen
 	eximFrozenDedup.order = order
+	if corrected {
+		// Save cleanup even if no queue run follows. Otherwise each restart
+		// clamps the same future timestamp again and extends suppression.
+		eximFrozenDedup.version++
+	}
 	eximFrozenDedup.mu.Unlock()
 	return nil
 }

@@ -218,6 +218,105 @@ func TestEximFrozenRestoreClampsFutureLastSeen(t *testing.T) {
 	}
 }
 
+func TestEximFrozenRestorePersistsCorrections(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		seen map[string]time.Time
+		want map[string]time.Time
+	}{
+		{
+			name: "future timestamp",
+			seen: map[string]time.Time{frozenTestIDReported: now.Add(30 * 24 * time.Hour)},
+			want: map[string]time.Time{frozenTestIDReported: now},
+		},
+		{
+			name: "expired ID",
+			seen: map[string]time.Time{frozenTestIDReported: now.Add(-24 * time.Hour)},
+			want: map[string]time.Time{},
+		},
+		{
+			name: "malformed ID",
+			seen: map[string]time.Time{"not-a-queue-id": now, frozenTestIDReported: now},
+			want: map[string]time.Time{frozenTestIDReported: now},
+		},
+	}
+	oversized := make(map[string]time.Time, eximFrozenDedupMaxEntries+2)
+	bounded := make(map[string]time.Time, eximFrozenDedupMaxEntries)
+	for i := 0; i < eximFrozenDedupMaxEntries+2; i++ {
+		lastSeen := now.Add(-time.Hour + time.Duration(i)*time.Millisecond)
+		oversized[frozenTestID(i)] = lastSeen
+		if i >= 2 {
+			bounded[frozenTestID(i)] = lastSeen
+		}
+	}
+	tests = append(tests, struct {
+		name string
+		seen map[string]time.Time
+		want map[string]time.Time
+	}{name: "excess IDs", seen: oversized, want: bounded})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openFrozenDedupTestStore(t)
+			resetEximFrozenDedup()
+			t.Cleanup(resetEximFrozenDedup)
+			if err := db.SaveEximFrozenSeen(tt.seen); err != nil {
+				t.Fatal(err)
+			}
+			if err := loadEximFrozenDedup(db, now); err != nil {
+				t.Fatal(err)
+			}
+			// No mainlog event is needed to make restored corrections durable.
+			if err := saveEximFrozenDedup(db); err != nil {
+				t.Fatal(err)
+			}
+			got, err := db.LoadEximFrozenSeen()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("saved %d IDs, want %d after restore cleanup", len(got), len(tt.want))
+			}
+			for id, want := range tt.want {
+				if !got[id].Equal(want) {
+					t.Errorf("saved %s at %v, want %v", id, got[id], want)
+				}
+			}
+			before := db.WriteTxID()
+			if err := saveEximFrozenDedup(db); err != nil {
+				t.Fatal(err)
+			}
+			if db.WriteTxID() != before {
+				t.Fatal("saved unchanged corrections twice")
+			}
+		})
+	}
+}
+
+func TestEximFrozenRestartsDoNotExtendCorrectedTimestamp(t *testing.T) {
+	db := openFrozenDedupTestStore(t)
+	resetEximFrozenDedup()
+	t.Cleanup(resetEximFrozenDedup)
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	if err := db.SaveEximFrozenSeen(map[string]time.Time{
+		frozenTestIDReported: now.Add(30 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range []time.Time{now, now.Add(23 * time.Hour)} {
+		resetEximFrozenDedup()
+		if err := loadEximFrozenDedup(db, at); err != nil {
+			t.Fatal(err)
+		}
+		if err := saveEximFrozenDedup(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !eximFrozenShouldAlert("2026-10-01 12:00:00 "+frozenTestIDReported+" Message is frozen", now.Add(24*time.Hour)) {
+		t.Fatal("another restart extended suppression beyond a day after the clock correction")
+	}
+}
+
 // Only IDs the parser could have produced are restored; anything else in the
 // bucket is damage and must not occupy capacity.
 func TestEximFrozenRestoreIgnoresMalformedIDs(t *testing.T) {
@@ -501,5 +600,121 @@ func TestEximFrozenPruneSweepReclaimsExpiredIDs(t *testing.T) {
 	}
 	if got := eximFrozenDedup.order.Len(); got != 2 {
 		t.Errorf("table holds %d IDs after the sweep, want 2", got)
+	}
+}
+
+func TestEximFrozenEvictionFollowsObservationsAfterClockStepBack(t *testing.T) {
+	resetEximFrozenDedup()
+	t.Cleanup(resetEximFrozenDedup)
+	start := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	freeze := func(id string, at time.Time) bool {
+		return eximFrozenShouldAlert(at.Format("2006-01-02 15:04:05")+" "+id+" Message is frozen", at)
+	}
+	for i := 0; i < eximFrozenDedupMaxEntries; i++ {
+		if !freeze(frozenTestID(i), start.Add(time.Duration(i)*time.Millisecond)) {
+			t.Fatalf("new ID %d was suppressed", i)
+		}
+	}
+	back := start.Add(-2 * time.Hour)
+	if freeze(frozenTestID(0), back) {
+		t.Fatal("clock step back re-reported a tracked message")
+	}
+	if !freeze(frozenTestIDNewArrival, back.Add(time.Second)) {
+		t.Fatal("overflow hid a new freeze after the clock step back")
+	}
+	if freeze(frozenTestID(0), back.Add(2*time.Second)) {
+		t.Fatal("eviction discarded the recently observed message because its timestamp was earlier")
+	}
+	if !freeze(frozenTestID(1), back.Add(3*time.Second)) {
+		t.Fatal("overflow did not evict the least recently observed message")
+	}
+}
+
+func TestEximFrozenPruneScansPastNewerTimestamp(t *testing.T) {
+	db := openFrozenDedupTestStore(t)
+	resetEximFrozenDedup()
+	t.Cleanup(resetEximFrozenDedup)
+	start := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	freeze := func(id string, at time.Time) {
+		eximFrozenShouldAlert(at.Format("2006-01-02 15:04:05")+" "+id+" Message is frozen", at)
+	}
+	freeze(frozenTestIDReported, start)
+	// The list follows observation order, so its timestamps need not increase.
+	freeze(frozenTestIDWhileDown, start.Add(-2*time.Hour))
+	freeze(frozenTestIDNewArrival, start.Add(22*time.Hour))
+	if err := saveEximFrozenDedup(db); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.LoadEximFrozenSeen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("saved %d IDs, want only the two unexpired messages", len(got))
+	}
+	for _, id := range []string{frozenTestIDReported, frozenTestIDNewArrival} {
+		if _, ok := got[id]; !ok {
+			t.Errorf("unexpired message %s was pruned", id)
+		}
+	}
+}
+
+func TestEximFrozenPeriodicStopLeavesFinalSaveToCaller(t *testing.T) {
+	db := openFrozenDedupTestStore(t)
+	resetEximFrozenDedup()
+	t.Cleanup(resetEximFrozenDedup)
+	prevInterval := eximFrozenDedupPersistInterval
+	eximFrozenDedupPersistInterval = time.Hour
+	t.Cleanup(func() { eximFrozenDedupPersistInterval = prevInterval })
+	d := &Daemon{stopCh: make(chan struct{})}
+	eximFrozenShouldAlert(frozenTestLine(frozenTestIDReported, "Message is frozen"), time.Now())
+	close(d.stopCh)
+	d.startEximFrozenDedupPersistence()
+	d.wg.Wait()
+	got, err := db.LoadEximFrozenSeen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatal("periodic writer saved on stop instead of leaving the save to shutdown")
+	}
+	d.persistEximFrozenDedup()
+	got, err = db.LoadEximFrozenSeen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatal("final save lost the unsaved freeze")
+	}
+	if _, ok := got[frozenTestIDReported]; !ok {
+		t.Fatal("final save omitted the reported message")
+	}
+}
+
+func TestEximFrozenPersistRetriesFailedSave(t *testing.T) {
+	db := openFrozenDedupTestStore(t)
+	resetEximFrozenDedup()
+	t.Cleanup(resetEximFrozenDedup)
+	eximFrozenShouldAlert(frozenTestLine(frozenTestIDReported, "Message is frozen"), time.Now())
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveEximFrozenDedup(db); err == nil {
+		t.Fatal("save to a closed database succeeded")
+	}
+	reopened, err := store.Open(filepath.Dir(db.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if err := saveEximFrozenDedup(reopened); err != nil {
+		t.Fatal(err)
+	}
+	resetEximFrozenDedup()
+	if err := loadEximFrozenDedup(reopened, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if eximFrozenShouldAlert(frozenTestLine(frozenTestIDReported, "Message is frozen"), time.Now()) {
+		t.Fatal("failed save was marked clean, so the retry lost the reported message")
 	}
 }
