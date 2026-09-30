@@ -290,6 +290,13 @@ func TestNoticeRecordRoundTripsAndRefusesTampering(t *testing.T) {
 	if _, err := empty.MarshalBinary(); err == nil {
 		t.Fatal("an empty record with an event time was accepted")
 	}
+	// Undelivered, so only the event times can refuse it.
+	pending := NewNoticeRecord(key)
+	pending, _ = pending.Add(t0, "", 0)
+	pending.First = pending.Last.Add(time.Second)
+	if _, err := pending.MarshalBinary(); err == nil {
+		t.Fatal("an undelivered record whose last event precedes its first was accepted")
+	}
 }
 
 // The outbox charges a fixed slot per notice record, so the widest record

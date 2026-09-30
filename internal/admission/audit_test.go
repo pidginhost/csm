@@ -49,7 +49,9 @@ func TestNewAuditRowRecordsTheTransition(t *testing.T) {
 	if err != nil || row.State != StateVerified || row.Disposition != DispositionApplied || row.Transition != 4 {
 		t.Fatalf("finish row = %+v, %v", row, err)
 	}
-	other := queuedCandidate(t)
+	// The other candidate matches the attempt in everything but its ID, so
+	// only the candidate link can refuse the row.
+	other := c
 	other.Key.Generation = 2
 	if _, err = NewAuditRow(other, a, tier, a.Finished); err == nil {
 		t.Fatal("a row joined an attempt to another candidate")
