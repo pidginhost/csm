@@ -150,6 +150,9 @@ func FuzzLedgerRecords(f *testing.F) {
 	charge := Charge{At: t0, Action: attempt.ID, Lane: LaneDirect, Cost: 2, Elapsed: time.Minute}
 	chargeKey, _ := charge.Key()
 	history := HistoryEntry{General: 3000, Reserved: 400, Ended: t0, Eligible: t0.Add(HistoryRetention)}
+	reserved := cand
+	reserved.State, reserved.Attempts, reserved.ExpiresAt, reserved.Transitions = StateReserved, 1, t0.Add(time.Hour), 2
+	auditRow, _ := NewAuditRow(reserved, AttemptRecord{Attempt: attempt, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Lane: LaneGeneral}, Tier{ClassC2, SeverityHigh}, t0)
 	retireKeys, _ := history.RetireKeys(id)
 	for _, rec := range []interface{ MarshalBinary() ([]byte, error) }{
 		cand, AttemptRecord{Attempt: attempt, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Lane: LaneGeneral}, clock, inv, links,
@@ -161,6 +164,7 @@ func FuzzLedgerRecords(f *testing.F) {
 		}},
 		ceiling, charge, history, EvidenceRefs{Refs: 2}, EvidenceRefs{Loose: 7},
 		StorageState{General: HistoryMeter{Credit: 5, Used: 9}, Recovery: 3, Ended: RingState{Count: 1, Last: 4}},
+		auditRow,
 	} {
 		data, err := rec.MarshalBinary()
 		if err != nil {
@@ -171,6 +175,7 @@ func FuzzLedgerRecords(f *testing.F) {
 	for _, k := range retireKeys {
 		f.Add(k)
 	}
+	f.Add(auditRow.Key())
 	f.Fuzz(func(t *testing.T, data []byte) {
 		check := func(data []byte) {
 			roundTrip := func(what string, rec interface{ MarshalBinary() ([]byte, error) }) {
@@ -223,6 +228,14 @@ func FuzzLedgerRecords(f *testing.F) {
 			}
 			if s, err := UnmarshalStorageState(data); err == nil {
 				roundTrip("storage state", s)
+			}
+			if r, err := UnmarshalAuditRow(data); err == nil {
+				roundTrip("audit row", r)
+			}
+			if action, transition, err := ParseAuditKey(data); err == nil {
+				if again := (AuditRow{Attempt: Attempt{ID: action}, Transition: transition}).Key(); !bytes.Equal(again, data) {
+					t.Fatalf("accepted audit key does not re-encode to its input: %q", data)
+				}
 			}
 			if kind, at, cand, err := ParseRetireKey(data); err == nil {
 				if again := fmt.Appendf(nil, "%c%019d%s", kind, at.UnixNano(), cand); !bytes.Equal(again, data) {
