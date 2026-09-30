@@ -3,6 +3,7 @@ package admission
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 )
 
@@ -17,8 +18,12 @@ const (
 	// kind, reason, outcome and effect, and a check name of at most 64
 	// bytes.
 	NoticeKeyMaxLen = 5 + 64
-	// NoticeSlotBytes is what one record holds in the outbox, with its key.
-	NoticeSlotBytes = NoticeKeyMaxLen + MaxNoticeRecordBytes
+	// NoticeQuietKeyMaxLen is the longest quiet index key: a kind byte, a
+	// time as 19 decimal digits and the record's key.
+	NoticeQuietKeyMaxLen = 1 + 19 + NoticeKeyMaxLen
+	// NoticeSlotBytes is what one record holds in the outbox, with its key
+	// and its quiet index key.
+	NoticeSlotBytes = NoticeKeyMaxLen + NoticeQuietKeyMaxLen + MaxNoticeRecordBytes
 	// NoticeBytes is the share of the recovery and outbox reserve notice
 	// records may hold. Keys combine a reason with any registered check, so
 	// an attacker choosing which checks fire could otherwise fill the
@@ -337,6 +342,58 @@ func (r NoticeRecord) Ack(count uint64, at time.Time) (NoticeRecord, error) {
 	}
 	r.Examples = kept
 	return r, nil
+}
+
+// QuietAt is when a keyed record whose events were all delivered becomes
+// quiet; zero while an event is pending, before any delivery or for a
+// fixed record.
+func (r NoticeRecord) QuietAt() time.Time {
+	if r.Key.Fixed() || r.Count != r.Acked || r.Sent.IsZero() {
+		return time.Time{}
+	}
+	return r.Sent.Add(r.Key.Kind.Interval())
+}
+
+// quietKind is the outbox key kind of the quiet index.
+const quietKind = 'q'
+
+// QuietKey is the quiet index key of the record under k, quiet from at:
+// the time as 19 decimal digits, so the index sorts by it, and the key.
+func QuietKey(at time.Time, k NoticeKey) ([]byte, error) {
+	kb, err := k.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	n, ok := unixNano(at)
+	if !ok || n <= 0 || k.Fixed() {
+		return nil, refuse(ReasonInvalid, "quiet key needs a keyed record and a time after the epoch")
+	}
+	return append(fmt.Appendf([]byte{quietKind}, "%019d", n), kb...), nil
+}
+
+// ParseQuietKey decodes a key written by QuietKey.
+func ParseQuietKey(b []byte) (time.Time, NoticeKey, error) {
+	if len(b) < 20 || len(b) > NoticeQuietKeyMaxLen || b[0] != quietKind {
+		return time.Time{}, NoticeKey{}, ErrCorruptRecord
+	}
+	n, err := strconv.ParseInt(string(b[1:20]), 10, 64)
+	if err != nil || n <= 0 || fmt.Sprintf("%019d", n) != string(b[1:20]) {
+		return time.Time{}, NoticeKey{}, ErrCorruptRecord
+	}
+	k, err := ParseNoticeKey(b[20:])
+	if err != nil || k.Fixed() {
+		return time.Time{}, NoticeKey{}, ErrCorruptRecord
+	}
+	return time.Unix(0, n).UTC(), k, nil
+}
+
+// NoticeAck acknowledges Count events of the record read under Key.
+// First fences a repeated acknowledgement from a later record under the
+// same key: quiet removal requires the clock to advance past delivery.
+type NoticeAck struct {
+	Key   NoticeKey
+	First time.Time
+	Count uint64
 }
 
 // Quiet reports whether a keyed record may be removed: everything was

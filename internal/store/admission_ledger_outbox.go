@@ -80,11 +80,23 @@ func proveOutbox(tx *bolt.Tx, s admission.StorageState) error {
 	}
 	var notices, rows uint64
 	perStep := map[admission.ActionID]map[admission.State]bool{}
-	err := tx.Bucket([]byte(admissionOutboxBucket)).ForEach(func(k, v []byte) error {
-		if v == nil || len(k) == 0 {
+	quiet := map[admission.NoticeKey]time.Time{}
+	var quietRecords int
+	outbox := tx.Bucket([]byte(admissionOutboxBucket))
+	err := outbox.ForEach(func(k, v []byte) error {
+		if len(k) == 0 || outbox.Bucket(k) != nil {
 			return admission.ErrCorruptRecord
 		}
 		switch k[0] {
+		case 'q':
+			at, key, err := admission.ParseQuietKey(k)
+			if err != nil || len(v) != 0 {
+				return admission.ErrCorruptRecord
+			}
+			if _, dup := quiet[key]; dup {
+				return admission.ErrCorruptRecord
+			}
+			quiet[key] = at
 		case 'n':
 			key, err := admission.ParseNoticeKey(k)
 			if err != nil {
@@ -95,6 +107,9 @@ func proveOutbox(tx *bolt.Tx, s admission.StorageState) error {
 				return admission.ErrCorruptRecord
 			}
 			delete(fixed, key)
+			if !r.QuietAt().IsZero() {
+				quietRecords++
+			}
 			notices++
 		case 'a':
 			row, err := admission.UnmarshalAuditRow(v)
@@ -127,6 +142,17 @@ func proveOutbox(tx *bolt.Tx, s admission.StorageState) error {
 	})
 	if err != nil {
 		return err
+	}
+	// The quiet index names exactly the records whose events were all
+	// delivered, at the time each becomes quiet.
+	if len(quiet) != quietRecords {
+		return admission.ErrCorruptRecord
+	}
+	for key, at := range quiet {
+		r, found, loadErr := loadNoticeRecord(tx, key)
+		if loadErr != nil || !found || !r.QuietAt().Equal(at) {
+			return admission.ErrCorruptRecord
+		}
 	}
 	// Each attempt holds a slot for every row it wrote and every row it may
 	// still write, and has written no more rows than steps it took.

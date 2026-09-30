@@ -111,7 +111,10 @@ func (l *AdmissionLedger) Defer(id admission.CandidateID, reason admission.Reaso
 			return false, err
 		}
 		c.Reason = reason
-		return true, q.count(admission.EventDeferred, reason, e.Tier)
+		if err = q.count(admission.EventDeferred, reason, e.Tier); err != nil {
+			return false, err
+		}
+		return true, q.gap(admission.GapDeferred, reason, 0, e, id, *c, c.Transitions+1)
 	})
 }
 
@@ -149,6 +152,9 @@ func (l *AdmissionLedger) Terminate(id admission.CandidateID, reason admission.R
 		}
 		c.State, c.Disposition, c.Reason, c.NotBefore = state, d, reason, time.Time{}
 		if err = q.release(id, e, admission.EventEnded, reason); err != nil {
+			return false, err
+		}
+		if err = q.gap(admission.GapEnded, reason, 0, e, id, *c, c.Transitions+1); err != nil {
 			return false, err
 		}
 		return true, q.ended(id, *c)
@@ -468,7 +474,17 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 		if err = q.release(a.Attempt.Candidate, e, 0, 0); err != nil {
 			return false, err
 		}
-		return true, q.ended(a.Attempt.Candidate, *c)
+		// Pin the ending before allocating its notice: release removed
+		// the outstanding hold, and the notice cannot spend those bytes.
+		if err = q.ended(a.Attempt.Candidate, *c); err != nil {
+			return false, err
+		}
+		if c.State == admission.StateVerified {
+			err = q.raise(admission.NoticeKey{Kind: admission.NoticeAppliedSummary}, a.Attempt.Candidate, c.Transitions+1)
+		} else {
+			err = q.gap(admission.GapOutcome, 0, d, e, a.Attempt.Candidate, *c, c.Transitions+1)
+		}
+		return true, err
 	})
 	return cand, att, err
 }

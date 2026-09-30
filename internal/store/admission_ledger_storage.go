@@ -717,6 +717,9 @@ func (l *AdmissionLedger) meterStorage(tx *bolt.Tx, tick admission.ClockTick) er
 	if err = q.retireAtTarget(); err != nil {
 		return err
 	}
+	if err = q.removeQuietNotices(); err != nil {
+		return err
+	}
 	return q.flushStorage()
 }
 

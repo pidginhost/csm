@@ -185,6 +185,9 @@ func FuzzLedgerRecords(f *testing.F) {
 	}
 	f.Add(auditRow.Key())
 	f.Add(noticeKeyBytes)
+	quiet, _ := notice.Ack(notice.Count, t0)
+	quietKey, _ := QuietKey(quiet.QuietAt(), noticeKey)
+	f.Add(quietKey)
 	f.Add(SpanHour.Key(SpanHour.Start(t0)))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		check := func(data []byte) {
@@ -261,6 +264,11 @@ func FuzzLedgerRecords(f *testing.F) {
 			if span, start, err := ParseSpanKey(data); err == nil {
 				if again := span.Key(start); !bytes.Equal(again, data) {
 					t.Fatalf("accepted outcome bucket key does not re-encode to its input: %q", data)
+				}
+			}
+			if at, k, err := ParseQuietKey(data); err == nil {
+				if again, err := QuietKey(at, k); err != nil || !bytes.Equal(again, data) {
+					t.Fatalf("accepted quiet key does not re-encode to its input: %q", data)
 				}
 			}
 			if kind, at, cand, err := ParseRetireKey(data); err == nil {

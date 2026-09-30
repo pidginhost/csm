@@ -436,3 +436,22 @@ func TestStorageStateHoldsAuditSlots(t *testing.T) {
 		t.Fatal("held beyond the reserve")
 	}
 }
+
+func TestStorageStateCountsNoticeRecords(t *testing.T) {
+	s := NewStorageState()
+	next, ok := s.AddNotice()
+	if !ok || next.NoticeRecords != FixedNotices+1 {
+		t.Fatalf("add = %+v %v", next, ok)
+	}
+	if back, err := next.RemoveNotice(); err != nil || back != s {
+		t.Fatalf("remove = %+v %v", back, err)
+	}
+	if _, err := s.RemoveNotice(); err == nil {
+		t.Fatal("removed a fixed record's count")
+	}
+	full := s
+	full.NoticeRecords = MaxNoticeRecords
+	if next, ok = full.AddNotice(); ok || next != full {
+		t.Fatal("added beyond the notice share")
+	}
+}

@@ -314,8 +314,51 @@ func TestNoticeRecordFitsItsSlot(t *testing.T) {
 	if err != nil || len(data) > MaxNoticeRecordBytes {
 		t.Fatalf("largest record: %d bytes (bound %d), %v", len(data), MaxNoticeRecordBytes, err)
 	}
-	if NoticeSlotBytes != NoticeKeyMaxLen+MaxNoticeRecordBytes || NoticeBytes/NoticeSlotBytes < 1000 {
+	if NoticeSlotBytes != NoticeKeyMaxLen+NoticeQuietKeyMaxLen+MaxNoticeRecordBytes || NoticeBytes/NoticeSlotBytes < 1000 {
 		t.Fatal("notice slots do not add up or the share holds too few keys")
+	}
+}
+
+// A keyed record is quiet from an interval after the delivery that covered
+// all its events; the index key orders records by that time.
+func TestNoticeRecordQuietIndex(t *testing.T) {
+	key := NoticeKey{Kind: NoticeWithheld, Reason: ReasonStale, Check: "ssh_brute", Effect: EffectAddress}
+	r, _ := NewNoticeRecord(key).Add(t0, "", 0)
+	if !r.QuietAt().IsZero() {
+		t.Fatal("an undelivered record has a quiet time")
+	}
+	r, _ = r.Ack(1, t0.Add(time.Minute))
+	at := r.QuietAt()
+	if !at.Equal(t0.Add(time.Minute + time.Hour)) {
+		t.Fatalf("quiet at %v", at)
+	}
+	k, err := QuietKey(at, key)
+	if err != nil || len(k) > NoticeQuietKeyMaxLen {
+		t.Fatalf("key %q, %v", k, err)
+	}
+	back, gotKey, err := ParseQuietKey(k)
+	if err != nil || !back.Equal(at) || gotKey != key {
+		t.Fatalf("parse = %v %+v %v", back, gotKey, err)
+	}
+	earlier, _ := QuietKey(at.Add(-time.Second), key)
+	if bytes.Compare(earlier, k) >= 0 {
+		t.Fatal("quiet keys do not order by time")
+	}
+	if r, _ = r.Add(t0.Add(2*time.Minute), "", 0); !r.QuietAt().IsZero() {
+		t.Fatal("a record with a new event is still quiet")
+	}
+	fixed, _ := NewNoticeRecord(OverflowKey(NoticeWithheld)).Add(t0, "", 0)
+	fixed, _ = fixed.Ack(1, t0)
+	if !fixed.QuietAt().IsZero() {
+		t.Fatal("a fixed record has a quiet time")
+	}
+	if _, err = QuietKey(at, OverflowKey(NoticeWithheld)); err == nil {
+		t.Fatal("a fixed record got a quiet key")
+	}
+	for _, bad := range [][]byte{nil, k[:20], append([]byte{'x'}, k[1:]...), append(append([]byte{'q'}, []byte("0000000000000000000")...), k[20:]...)} {
+		if _, _, err := ParseQuietKey(bad); err == nil {
+			t.Errorf("malformed quiet key %q parsed", bad)
+		}
 	}
 }
 

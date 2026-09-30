@@ -115,8 +115,17 @@ func (l *AdmissionLedger) EnqueueGroup(arrivals []admission.Arrival, checkpoint 
 			out[i].Candidate, out[i].Created, out[i].Err = id, created, arriveErr
 			switch reason, refused := admission.ReasonOf(arriveErr); {
 			case refused:
-				if txErr = q.count(admission.EventRefused, reason, arrivalTier(a, now)); txErr != nil {
+				tier := arrivalTier(a, now)
+				if txErr = q.count(admission.EventRefused, reason, tier); txErr != nil {
 					return txErr
+				}
+				// A refused arrival names no stored candidate: its
+				// notice has its own check and family, and no example.
+				if kind := admission.GapNotice(admission.GapEnded, reason, 0, tier); kind != 0 {
+					key := admission.NoticeKey{Kind: kind, Reason: reason, Check: a.Evidence.Check(), Effect: a.Request.Kind.Effect()}
+					if txErr = q.raise(key, "", 0); txErr != nil {
+						return txErr
+					}
 				}
 			case errors.Is(arriveErr, admission.ErrCandidateTerminal), errors.Is(arriveErr, admission.ErrTransitionConflict):
 				// The request names a candidate that has ended or is in

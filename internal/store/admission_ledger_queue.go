@@ -311,6 +311,9 @@ func (q *queueTx) end(lc liveCandidate, reason admission.Reason) error {
 	if err := q.release(lc.id, lc.entry, admission.EventEnded, reason); err != nil {
 		return err
 	}
+	if err := q.gap(admission.GapEnded, reason, 0, lc.entry, lc.id, c, c.Transitions); err != nil {
+		return err
+	}
 	return q.ended(lc.id, c)
 }
 

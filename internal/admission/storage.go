@@ -158,6 +158,25 @@ func (s StorageState) ReleaseAudit(n uint64) (StorageState, error) {
 	return s, nil
 }
 
+// AddNotice counts one more notice record, or reports false when the
+// notice share is full.
+func (s StorageState) AddNotice() (StorageState, bool) {
+	if s.NoticeRecords >= MaxNoticeRecords {
+		return s, false
+	}
+	s.NoticeRecords++
+	return s, true
+}
+
+// RemoveNotice counts one keyed record fewer; the fixed ones stay.
+func (s StorageState) RemoveNotice() (StorageState, error) {
+	if s.NoticeRecords <= FixedNotices {
+		return s, ErrCorruptRecord
+	}
+	s.NoticeRecords--
+	return s, nil
+}
+
 // OutboxBytes is what the outbox holds of the recovery and outbox reserve.
 func (s StorageState) OutboxBytes() uint64 {
 	return s.AuditSlots*AuditSlotBytes + s.NoticeRecords*NoticeSlotBytes
