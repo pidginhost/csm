@@ -41,7 +41,7 @@ func TestSensitiveFileDemotionKeepsTimestamp(t *testing.T) {
 		Check:     "sensitive_file_modified",
 		Timestamp: time.Now(),
 	}
-	got := rescoreSensitive(stamped, "cron", nil, 0, time.Now())
+	got := rescoreSensitive(stamped, "cron", nil, 0, false, time.Now())
 	if got.Timestamp.IsZero() {
 		t.Fatal("rescoreSensitive dropped the finding's timestamp")
 	}

@@ -100,11 +100,13 @@ func cronHasDangerTokens(content []byte) bool {
 // rescoreSensitive returns f with severity adjusted per provenance signals:
 //   - package-manager activity inside pkgWindowDefault demotes High to Warning
 //   - AncestryProvenance(pid) naming a trusted component demotes High to Warning
+//   - scheduleOnly, a cron.d change that only moved the time of day of its
+//     daily jobs (cronScheduleFingerprint), demotes High to Warning
 //   - cron class with cronHasDangerTokens(content) vetoes any demote
 //
 // content and pid are optional (nil / 0). class is "" for non-classified
 // findings. now is injected for deterministic testing.
-func rescoreSensitive(f alert.Finding, class string, content []byte, pid uint32, now time.Time) alert.Finding {
+func rescoreSensitive(f alert.Finding, class string, content []byte, pid uint32, scheduleOnly bool, now time.Time) alert.Finding {
 	if f.Severity != alert.High {
 		return f
 	}
@@ -117,6 +119,13 @@ func rescoreSensitive(f alert.Finding, class string, content []byte, pid uint32,
 		reason = "package manager active within window"
 	} else if pid != 0 && AncestryProvenance != nil {
 		reason = AncestryProvenance(pid)
+	}
+	// The writer evidence above needs a pid or a package transaction in the
+	// last two minutes. The scheduled cron.d diff and the watchset refresh
+	// have neither, so a panel rewrite they notice later paged High while
+	// the live write of the same bytes was Warning.
+	if reason == "" && scheduleOnly {
+		reason = cronScheduleOnlyReason
 	}
 	if reason == "" {
 		return f

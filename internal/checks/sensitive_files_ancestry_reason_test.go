@@ -21,7 +21,7 @@ func TestRescoreSensitiveRecordsAncestryReason(t *testing.T) {
 	AncestryProvenance = func(uint32) string { return "ancestor is control panel maintenance" }
 	t.Cleanup(func() { AncestryProvenance = oldProbe })
 
-	out := rescoreSensitive(alert.Finding{Severity: alert.High}, "cron", nil, 4242, time.Now())
+	out := rescoreSensitive(alert.Finding{Severity: alert.High}, "cron", nil, 4242, false, time.Now())
 	if out.Severity != alert.Warning {
 		t.Fatalf("severity = %v, want Warning", out.Severity)
 	}
@@ -41,7 +41,7 @@ func TestRescoreSensitiveEmptyAncestryReasonDoesNotDemote(t *testing.T) {
 	AncestryProvenance = func(uint32) string { return "" }
 	t.Cleanup(func() { AncestryProvenance = oldProbe })
 
-	out := rescoreSensitive(alert.Finding{Severity: alert.High}, "cron", nil, 4242, time.Now())
+	out := rescoreSensitive(alert.Finding{Severity: alert.High}, "cron", nil, 4242, false, time.Now())
 	if out.Severity != alert.High {
 		t.Fatalf("severity = %v, want High", out.Severity)
 	}
