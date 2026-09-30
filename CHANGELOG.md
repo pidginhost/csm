@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Core checksum verification remains available during plugin updates. Concurrent file events reuse completed checksum requests.
 - Realtime file analysis no longer stalls when an account replaces a plugin or theme header file with a named pipe or device.
 - Crawl detection now classifies unusual and asset-like request targets consistently.
 - Incident auto-blocking and central intelligence now act on an address only when a finding names it as an attacker, remembered across restarts and long incidents. They could block the remote end of an outbound connection, a customer login address or an advisory source.

@@ -8,12 +8,14 @@ import (
 	"net/http/httptest"
 	"path"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 func TestPluginFetchDropsExpiredNotFoundHistory(t *testing.T) {
 	c, _ := boundedCoreFetchCache(t, http.StatusNotFound)
+	c.markPluginNotFound("premium", "1.0", time.Hour)
 	c.markPluginNotFound("elementor", "99.0.0", -time.Second)
 	c.Verify(Verification{Kind: KindPlugin, Slug: "elementor", Version: "99.0.1"})
 	waitForNotFetching(t, c, pluginKey("elementor", "99.0.1"))
@@ -22,6 +24,54 @@ func TestPluginFetchDropsExpiredNotFoundHistory(t *testing.T) {
 	c.mu.RUnlock()
 	if retained {
 		t.Fatal("expired missing-release history survived a new fetch")
+	}
+	if !c.isPluginNotFound("premium", "1.0") {
+		t.Fatal("pruning expired history removed a live not-found marker")
+	}
+}
+
+func TestPluginFetchRetriesExpiredNotFoundRelease(t *testing.T) {
+	c, hits := boundedCoreFetchCache(t, http.StatusNotFound)
+	c.markPluginNotFound("elementor", "99.0.0", -time.Second)
+	c.Verify(Verification{Kind: KindPlugin, Slug: "elementor", Version: "99.0.0"})
+	waitForNotFetching(t, c, pluginKey("elementor", "99.0.0"))
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("expired release made %d requests, want one", got)
+	}
+	if !c.isPluginNotFound("elementor", "99.0.0") {
+		t.Fatal("new 404 did not renew the expired not-found marker")
+	}
+}
+
+func TestPluginFetchDoesNotRestartCachedRelease(t *testing.T) {
+	c, hits := boundedCoreFetchCache(t, http.StatusServiceUnavailable)
+	c.setPluginChecksums("elementor", "3.30.0", map[string]string{
+		"loader.php": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
+	// A fetch may finish after a caller's cache lookup but before admission.
+	c.startBackgroundPluginFetch("elementor", "3.30.0")
+	if isFetching(c, pluginKey("elementor", "3.30.0")) {
+		t.Fatal("cached release started another fetch/retry chain")
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("cached release made %d requests, want none", got)
+	}
+}
+
+func TestPluginFetchDedupesConcurrentNotFound(t *testing.T) {
+	c, hits := boundedCoreFetchCache(t, http.StatusNotFound)
+	for i := range 20 {
+		version := fmt.Sprintf("99.0.%d", i)
+		before := hits.Load()
+		var callers sync.WaitGroup
+		for range 64 {
+			callers.Go(func() { c.startBackgroundPluginFetch("elementor", version) })
+		}
+		callers.Wait()
+		waitForNotFetching(t, c, pluginKey("elementor", version))
+		if got := hits.Load() - before; got != 1 {
+			t.Fatalf("concurrent misses for %s made %d requests, want one", version, got)
+		}
 	}
 }
 

@@ -299,7 +299,9 @@ func fetchPluginChecksumsFromURL(url, slug string) (map[string]string, error) {
 // --- Cache plugin support ------------------------------------------------
 
 func pluginKey(slug, version string) string {
-	return slug + ":" + version
+	// Account-written plugin headers must not alias core version/locale keys
+	// in the shared in-flight map.
+	return "plugin:" + slug + ":" + version
 }
 
 func (c *Cache) setPluginChecksums(slug, version string, checksums map[string]string) {
@@ -375,19 +377,14 @@ func (c *Cache) startBackgroundPluginFetch(slug, version string) {
 	if c.isStopped() {
 		return
 	}
-	// wp.org has already told us this slug+version does not exist;
-	// suppress the fetch entirely until the marker expires. Without this
-	// gate every cache miss for a non-wp.org plugin would re-arm the
-	// 4-attempt retry cycle.
-	if c.isPluginNotFound(slug, version) {
-		return
-	}
 	key := pluginKey(slug, version)
 	c.mu.Lock()
 	if c.fetching == nil {
 		c.fetching = make(map[string]bool)
 	}
-	if c.fetching[key] {
+	// Recheck both outcomes under the admission lock: another request may
+	// have finished after the caller's cache lookup.
+	if c.fetching[key] || c.pluginChecksums[key] != nil || time.Now().Before(c.pluginNotFoundUntil[key]) {
 		c.mu.Unlock()
 		return
 	}
