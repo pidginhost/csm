@@ -1,14 +1,17 @@
 package daemon
 
 import (
+	"bytes"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -81,7 +84,7 @@ func toolkitTree(t *testing.T) {
 // evalFatalLine is the shape WP Toolkit's bundled wp-cli produces: CLI, so
 // wp-cli's own loopback address and agent, and an empty request URI.
 func evalFatalLine(errorFile string) string {
-	return "[2026-09-29 20:10:56] EVAL_FATAL sha256=- ip=127.0.0.1 script=" + errorFile +
+	return "[2026-01-02 03:04:05] EVAL_FATAL sha256=- ip=127.0.0.1 script=" + errorFile +
 		" uri= ua=WP CLI 2.12.0 details=Fatal in eval(): Uncaught TypeError: round(): Argument #1 ($num) must be of type int|float, string given in " +
 		errorFile + ":1"
 }
@@ -90,10 +93,9 @@ func evalSite(file string, line string) string {
 	return file + "(" + line + ") : eval()'d code"
 }
 
-// Code a root-owned system script evaluates came from whoever ran that
-// script. Only the invoker's own process can report it, and that process
-// already decides whether the Shield loads at all, so the event is kept
-// below High instead of being paged as a malware eval chain.
+// A tenant can disable the Shield in its own process. A reported eval site
+// in system code is therefore kept below High, with filesystem proof rather
+// than trusting the sender's claimed request context.
 func TestPHPShieldEvalFatalAtRootOwnedSystemScriptIsWarning(t *testing.T) {
 	toolkitTree(t)
 	for _, site := range []string{evalSite(toolkitEvalCommand, "44"), evalSite(toolkitEvalFileCommand, "113")} {
@@ -109,6 +111,9 @@ func TestPHPShieldEvalFatalAtRootOwnedSystemScriptIsWarning(t *testing.T) {
 		}
 		if !strings.Contains(f.Message, site) || !strings.Contains(f.Details, "root-owned") {
 			t.Fatalf("%s: operator cannot see why it was not High: %+v", site, f)
+		}
+		if !strings.Contains(f.Message, "reported") || !strings.Contains(f.Details, "reported") || !strings.Contains(f.Details, "sender were not verified") {
+			t.Fatalf("%s: finding presents forgeable event claims as verified provenance: %+v", site, f)
 		}
 	}
 }
@@ -198,6 +203,17 @@ func TestPHPShieldEvalFatalThroughRealSymlinkStaysHigh(t *testing.T) {
 	link := filepath.Join(dir, "Eval_Command.php")
 	if err := os.Symlink("/etc/hostname", link); err != nil {
 		t.Fatal(err)
+	}
+	// Trust synthetic ancestors so neither the runner's uid nor TMPDIR's
+	// ownership can reject the walk before it reaches the real symlink.
+	lstat := phpShieldEvalSiteLstat
+	useFakeEvalSiteTree(t, fakeEvalSiteTree{link: rootFile(link)})
+	tree := phpShieldEvalSiteLstat
+	phpShieldEvalSiteLstat = func(name string) (os.FileInfo, error) {
+		if name == link {
+			return lstat(name)
+		}
+		return tree(name)
 	}
 	f := parsePHPShieldLine(evalFatalLine(evalSite(link, "44")))
 	if f == nil || f.Severity != alert.High {
@@ -300,6 +316,45 @@ func TestPHPShieldEvalSiteHungLookupIsBounded(t *testing.T) {
 	}
 }
 
+// A timed-out walk owns its slot until it finishes. It must not need a
+// separate waiter to release the slot after publishing its result.
+func TestPHPShieldEvalSiteTimeoutNeedsOnlyOneWorker(t *testing.T) {
+	toolkitTree(t)
+	tree := phpShieldEvalSiteLstat
+	synctest.Test(t, func(t *testing.T) {
+		release := make(chan struct{})
+		phpShieldEvalSiteLstat = func(name string) (os.FileInfo, error) {
+			<-release
+			return tree(name)
+		}
+		defer func() {
+			close(release)
+			synctest.Wait()
+			phpShieldEvalSiteLstat = tree
+		}()
+		line := evalFatalLine(evalSite(toolkitEvalCommand, "44"))
+		if f := parsePHPShieldLine(line); f == nil || f.Severity != alert.High {
+			t.Fatalf("timed-out lookup was demoted: %+v", f)
+		}
+		for range 100 {
+			if f := parsePHPShieldLine(line); f == nil || f.Severity != alert.High {
+				t.Fatalf("event behind a hung lookup was demoted: %+v", f)
+			}
+		}
+		synctest.Wait()
+		var stacks bytes.Buffer
+		if err := pprof.Lookup("goroutine").WriteTo(&stacks, 2); err != nil {
+			t.Fatal(err)
+		}
+		if workers := strings.Count(stacks.String(), "daemon.phpShieldEvalSiteProven.func"); workers != 1 {
+			t.Errorf("hung lookup left %d background workers, want one", workers)
+		}
+	})
+	if f := parsePHPShieldLine(evalFatalLine(evalSite(toolkitEvalCommand, "44"))); f == nil || f.Severity != alert.Warning {
+		t.Fatalf("completed lookup left its slot held: %+v", f)
+	}
+}
+
 // The loopback Warning must not share a dedup key with a later High from the
 // same address: a cron job running the same wp-cli could otherwise hide one.
 func TestPHPShieldEvalFatalWarningDoesNotDedupHigh(t *testing.T) {
@@ -311,6 +366,72 @@ func TestPHPShieldEvalFatalWarningDoesNotDedupHigh(t *testing.T) {
 	}
 	if warning.Fingerprint() == high.Fingerprint() {
 		t.Fatal("demoted system eval shares a dedup key with a High eval chain from the same address")
+	}
+	if warning.Key() == high.Key() || len(alert.Deduplicate([]alert.Finding{*warning, *high})) != 2 {
+		t.Fatal("batch dedup absorbed a High eval after a Warning from the same address")
+	}
+}
+
+func TestPHPShieldEvalFatalRequestClaimsDoNotReplaceFilesystemProof(t *testing.T) {
+	toolkitTree(t)
+	for _, claims := range []string{
+		"ip=127.0.0.1 uri= ua=WP CLI 2.12.0",
+		"ip=203.0.113.9 uri=/run?code=example ua=Mozilla/5.0",
+		"ip=203.0.113.9 uri= ua=",
+	} {
+		ip, request, _ := strings.Cut(claims, " ")
+		for _, tc := range []struct {
+			site string
+			want alert.Severity
+		}{
+			{evalSite(toolkitEvalCommand, "44"), alert.Warning},
+			{evalSite("/home/exampleuser/public_html/plugin.php", "12"), alert.High},
+		} {
+			line := "[2026-01-02 03:04:05] EVAL_FATAL " + ip + " script=" + tc.site + " " + request + " details=eval failure"
+			f, quiet := parsePHPShieldEventLine(line)
+			if quiet || f == nil || f.Severity != tc.want {
+				t.Fatalf("claims %q site %q: quiet=%v finding=%+v, want %v", claims, tc.site, quiet, f, tc.want)
+			}
+		}
+	}
+}
+
+func TestPHPShieldEvalFatalPacketRechecksOwnership(t *testing.T) {
+	toolkitTree(t)
+	tree := phpShieldEvalSiteLstat
+	mode := fs.FileMode(0o644)
+	phpShieldEvalSiteLstat = func(name string) (os.FileInfo, error) {
+		if name == toolkitEvalCommand {
+			return fakeEvalSiteInfo{name: "Eval_Command.php", mode: mode}, nil
+		}
+		return tree(name)
+	}
+	line := evalFatalLine(evalSite(toolkitEvalCommand, "44"))
+	archive := filepath.Join(t.TempDir(), "events.log")
+	findings := make(chan alert.Finding, 2)
+	for _, tc := range []struct {
+		mode fs.FileMode
+		want alert.Severity
+	}{
+		{0o644, alert.Warning},
+		{0o666, alert.High},
+	} {
+		mode = tc.mode
+		processed, err := processPHPShieldEventPacket([]byte(line), archive, nil, findings)
+		if err != nil || !processed {
+			t.Fatalf("packet lost: processed=%v err=%v", processed, err)
+		}
+		select {
+		case f := <-findings:
+			if f.Severity != tc.want || f.Timestamp.IsZero() {
+				t.Fatalf("packet finding=%+v, want severity %v and a receipt time", f, tc.want)
+			}
+		default:
+			t.Fatal("eval packet emitted no alert")
+		}
+	}
+	if got, err := os.ReadFile(archive); err != nil || string(got) != line+"\n"+line+"\n" {
+		t.Fatalf("eval packets missing from archive: %q, %v", got, err)
 	}
 }
 

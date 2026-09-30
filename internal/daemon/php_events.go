@@ -363,7 +363,7 @@ func parsePHPShieldEventLine(line string) (*alert.Finding, bool) {
 				Check:    "php_shield_eval",
 				SourceIP: ip,
 				FilePath: script,
-				Message:  fmt.Sprintf("PHP Shield saw eval() fail in code run through a root-owned system script: %s", script),
+				Message:  fmt.Sprintf("PHP Shield reported eval() failure at a root-owned system site: %s", script),
 				Details:  strings.TrimPrefix(context+"\n"+phpShieldSystemEvalNote, "\n"),
 			}, false
 		}

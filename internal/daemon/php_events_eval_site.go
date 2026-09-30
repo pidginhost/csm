@@ -12,7 +12,7 @@ import (
 // eval() call, its line in parentheses, then this suffix.
 const phpEvalCodeSuffix = ") : eval()'d code"
 
-const phpShieldSystemEvalNote = "The eval() call is in a root-owned file no account can change. The evaluated code came from whoever ran that script and was not inspected."
+const phpShieldSystemEvalNote = "The reported eval() site is a root-owned file no account can change. The evaluated code and event sender were not verified."
 
 var (
 	// phpShieldEvalSiteLstat is replaceable so tests can describe root-owned
@@ -27,18 +27,16 @@ var (
 	phpShieldEvalSiteProbe = make(chan struct{}, 1)
 )
 
-// phpShieldEvalSiteIsSystemCode reports whether errorFile, the file PHP
-// blamed for a fatal error, names code evaluated by a single eval() call in a
-// root-owned file that no account can change.
+// phpShieldEvalSiteIsSystemCode reports whether errorFile names a single
+// reported eval() call in a root-owned file that no account can change.
 //
-// Such an eval() runs code chosen by whoever invoked that script -- WP
-// Toolkit's bundled wp-cli running "wp eval" as the account is the common
-// case -- and not a packed loader planted in the site. An account that runs
-// the same script with its own code gains nothing from the lower grade: the
-// Shield is loaded by that account's own PHP process, which can already turn
-// it off. A web request that reaches such an eval() is still reported, only
-// not as High. What must never be lowered is an eval() in a file an account
-// can write, so ownership is checked on the live filesystem at receipt for
+// WP Toolkit's bundled wp-cli running "wp eval" as the account is the common
+// case. An account that runs that script with its own code gains nothing from
+// the lower grade: the Shield is loaded by that account's own PHP process,
+// which can already turn it off. The event fields do not prove who sent it
+// or which code ran. A web request that reaches such an eval() is still
+// reported at Warning. A reported site in a file an account can write must
+// stay High, so ownership is checked on the live filesystem at receipt for
 // the file and every directory above it, without following symlinks. cPanel
 // account homes are owned by the account, so no path under one qualifies.
 // Anything this cannot prove keeps the High grade.
@@ -74,20 +72,19 @@ func phpShieldEvalSiteProven(file string) bool {
 		return false
 	}
 	result := make(chan bool, 1)
-	go func() { result <- rootOwnedUnwritableChain(file) }()
+	go func() {
+		proven := rootOwnedUnwritableChain(file)
+		// Release before publishing, including after a timeout. The next
+		// event must not depend on a separate waiter being scheduled.
+		<-phpShieldEvalSiteProbe
+		result <- proven
+	}()
 	timer := time.NewTimer(phpShieldEvalSiteTimeout)
 	defer timer.Stop()
 	select {
 	case proven := <-result:
-		// Freed here, not by the lookup, so the next event never finds the
-		// slot still held by a lookup that already answered.
-		<-phpShieldEvalSiteProbe
 		return proven
 	case <-timer.C:
-		go func() {
-			<-result
-			<-phpShieldEvalSiteProbe
-		}()
 		return false
 	}
 }
