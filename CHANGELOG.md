@@ -21,7 +21,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Frozen-mail tracking now saves corrections made at startup, so repeated restarts after a clock correction cannot keep an old message suppressed indefinitely.
 - Restarting the daemon no longer reports again every message that is still frozen in the Exim queue. A message that froze while the daemon was stopped is still reported.
 - An account owner's address is no longer blocked for cPanel API authentication failures when a browser tab left open after logging in again fails on its old session. cPanel's own record that it ended that session now explains those failures; other API failures are still reported, a few seconds later at most.
 - Fresh installs on cPanel Apache and LiteSpeed no longer deploy the old proxy-mode challenge snippet beside the one the webserver integration writes. Installing or upgrading the integration now removes the old snippet, which answered challenged visitors with a not-found page unless trusted proxies were configured.
