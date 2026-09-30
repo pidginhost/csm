@@ -152,6 +152,11 @@ func FuzzLedgerRecords(f *testing.F) {
 	history := HistoryEntry{General: 3000, Reserved: 400, Ended: t0, Eligible: t0.Add(HistoryRetention)}
 	reserved := cand
 	reserved.State, reserved.Attempts, reserved.ExpiresAt, reserved.Transitions = StateReserved, 1, t0.Add(time.Hour), 2
+	noticeKey := NoticeKey{Kind: NoticeWithheld, Outcome: DispositionUnknown, Check: "ssh_brute", Effect: EffectAddress}
+	notice, _ := NewNoticeRecord(noticeKey).Add(t0, id, 2)
+	notice, _ = notice.Ack(1, t0)
+	notice, _ = notice.Add(t0.Add(time.Second), id, 3)
+	noticeKeyBytes, _ := noticeKey.Bytes()
 	auditRow, _ := NewAuditRow(reserved, AttemptRecord{Attempt: attempt, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Lane: LaneGeneral}, Tier{ClassC2, SeverityHigh}, t0)
 	retireKeys, _ := history.RetireKeys(id)
 	for _, rec := range []interface{ MarshalBinary() ([]byte, error) }{
@@ -164,7 +169,7 @@ func FuzzLedgerRecords(f *testing.F) {
 		}},
 		ceiling, charge, history, EvidenceRefs{Refs: 2}, EvidenceRefs{Loose: 7},
 		StorageState{General: HistoryMeter{Credit: 5, Used: 9}, Recovery: 3, Ended: RingState{Count: 1, Last: 4}},
-		auditRow,
+		auditRow, notice,
 	} {
 		data, err := rec.MarshalBinary()
 		if err != nil {
@@ -176,6 +181,7 @@ func FuzzLedgerRecords(f *testing.F) {
 		f.Add(k)
 	}
 	f.Add(auditRow.Key())
+	f.Add(noticeKeyBytes)
 	f.Fuzz(func(t *testing.T, data []byte) {
 		check := func(data []byte) {
 			roundTrip := func(what string, rec interface{ MarshalBinary() ([]byte, error) }) {
@@ -235,6 +241,14 @@ func FuzzLedgerRecords(f *testing.F) {
 			if action, transition, err := ParseAuditKey(data); err == nil {
 				if again := (AuditRow{Attempt: Attempt{ID: action}, Transition: transition}).Key(); !bytes.Equal(again, data) {
 					t.Fatalf("accepted audit key does not re-encode to its input: %q", data)
+				}
+			}
+			if r, err := UnmarshalNoticeRecord(data); err == nil {
+				roundTrip("notice record", r)
+			}
+			if k, err := ParseNoticeKey(data); err == nil {
+				if again, err := k.Bytes(); err != nil || !bytes.Equal(again, data) {
+					t.Fatalf("accepted notice key does not re-encode to its input: %q", data)
 				}
 			}
 			if kind, at, cand, err := ParseRetireKey(data); err == nil {
