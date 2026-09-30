@@ -483,9 +483,8 @@ php_shield:
   # Shield in their own PHP processes. Every event field can be forged, so
   # this verifies only the reported path's ownership and permissions, not
   # the sender or evaluated code. A web request reaching such an eval() is
-  # still reported at Warning. An unavailable or timed-out ownership walk
-  # keeps the event at High; later events do not wait behind a hung lookup,
-  # and completed lookups release their slot before publishing a result.
+  # still reported at Warning. An ownership check that fails or times out
+  # keeps the event at High, and a hung check does not delay later events.
   enabled: false                        # receive PHP Shield events and emit alerts
 
 # --- Reputation ---

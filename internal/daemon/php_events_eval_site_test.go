@@ -440,9 +440,12 @@ func TestPHPShieldEvalFatalPacketRechecksOwnership(t *testing.T) {
 func TestPHPShieldEvalSiteBackToBackEventsAreEachProven(t *testing.T) {
 	toolkitTree(t)
 	line := evalFatalLine(evalSite(toolkitEvalCommand, "44"))
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 2000; i++ {
 		if f := parsePHPShieldLine(line); f == nil || f.Severity != alert.Warning {
 			t.Fatalf("event %d graded %+v", i, f)
+		}
+		if held := len(phpShieldEvalSiteProbe); held != 0 {
+			t.Fatalf("event %d returned while its finished lookup still held the slot", i)
 		}
 	}
 }
