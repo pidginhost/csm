@@ -57,7 +57,7 @@ func TestAdmissionLedgerIngressGenerations(t *testing.T) {
 	if err = f.l.EndIngress(); err != nil {
 		t.Fatal(err)
 	}
-	if s := f.begin(); s != (admission.IngressState{Generation: 3, Open: true, Interrupted: 1, Resumed: 2}) {
+	if s := f.begin(); s != (admission.IngressState{Generation: 3, Open: true, Interrupted: 1}) {
 		t.Fatalf("after a clean stop = %+v", s)
 	}
 }
@@ -870,7 +870,7 @@ func TestAdmissionLedgerMarksTheGenerationAfterAnInterruption(t *testing.T) {
 	if err = f.l.EndIngress(); err != nil {
 		t.Fatal(err)
 	}
-	if s, err = f.l.BeginIngress(); err != nil || s.Resumed != 2 || s.Generation != 3 {
+	if s, err = f.l.BeginIngress(); err != nil || s.Resumed != 0 || s.Generation != 3 {
 		t.Fatalf("after a clean close = %+v, %v", s, err)
 	}
 	if rows := admission.DoctorChecks(ptr(f.l.Status()), &admission.IngressHealth{Admitting: true}, f.wall); rows[1].Status != admission.DoctorOK {

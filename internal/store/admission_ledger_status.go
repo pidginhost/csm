@@ -15,44 +15,58 @@ import (
 // is read on its own; a damaged record fails only its own section.
 func (l *AdmissionLedger) Status() admission.LedgerStatus {
 	var s admission.LedgerStatus
-	failed := func(err error) string {
-		if err == nil {
+	err := l.db.bolt.View(func(tx *bolt.Tx) error {
+		section := func(read func() error, buckets ...string) string {
+			for _, name := range buckets {
+				if tx.Bucket([]byte(name)) == nil {
+					return admission.ErrCorruptRecord.Error()
+				}
+			}
+			if err := read(); err != nil {
+				return err.Error()
+			}
 			return ""
 		}
-		return err.Error()
-	}
-	err := l.db.bolt.View(func(tx *bolt.Tx) error {
 		var now time.Time
-		clock, err := loadLedgerClock(tx.Bucket([]byte(admissionMetaBucket)))
-		if s.Clock.Error = failed(err); err == nil {
+		s.Clock.Error = section(func() error {
+			clock, err := loadLedgerClock(tx.Bucket([]byte(admissionMetaBucket)))
+			if err != nil {
+				return err
+			}
 			now = clock.Now()
 			s.Clock.Now = now
-		}
-		s.Queue.Error = failed(queueStatus(tx, &s.Queue))
-		s.Counters.Error = failed(func() error {
+			return nil
+		}, admissionMetaBucket)
+		s.Queue.Error = section(func() error { return queueStatus(tx, &s.Queue) }, admissionQueueBucket, admissionCandidatesBucket)
+		s.Counters.Error = section(func() error {
 			counters, loadErr := loadQueueCounters(tx)
 			s.Counters.Rows = admission.CountRows(counters.Rows())
 			return loadErr
-		}())
-		s.Outcomes.Error = failed(func() error {
-			if err != nil {
+		}, admissionQueueStateBucket)
+		s.Outcomes.Error = section(func() error {
+			if s.Clock.Error != "" {
 				return errors.New("the admission clock is unreadable")
 			}
 			return outcomesStatus(tx, now, &s.Outcomes)
-		}())
-		s.Ingress.Error = failed(func() error {
+		}, admissionWindowsBucket)
+		s.Ingress.Error = section(func() error {
 			in, loadErr := loadIngressState(tx)
 			s.Ingress = admission.IngressSection{Generation: in.Generation, Open: in.Open, Persisted: in.Persisted, Interrupted: in.Interrupted, Resumed: in.Resumed}
 			return loadErr
-		}())
-		s.Ceiling.Error = failed(ceilingStatus(tx, now, &s.Ceiling))
-		s.Storage.Error = failed(storageStatus(tx, &s.Storage))
-		s.Outbox.Error = failed(outboxStatus(tx, &s.Outbox))
-		s.Notices.Error = failed(noticesStatus(tx, &s.Notices))
+		}, admissionQueueStateBucket)
+		s.Ceiling.Error = section(func() error { return ceilingStatus(tx, now, &s.Ceiling) }, admissionQueueStateBucket, admissionChargesBucket)
+		s.Storage.Error = section(func() error { return storageStatus(tx, &s.Storage) }, admissionQueueStateBucket, admissionAttemptsBucket, admissionHistoryBucket)
+		s.Outbox.Error = section(func() error { return outboxStatus(tx, &s.Outbox) }, admissionOutboxBucket)
+		s.Notices.Error = section(func() error { return noticesStatus(tx, &s.Notices) }, admissionOutboxBucket)
 		return nil
 	})
 	if err != nil {
-		s.Clock.Error = err.Error()
+		for _, section := range []*string{
+			&s.Clock.Error, &s.Queue.Error, &s.Counters.Error, &s.Outcomes.Error, &s.Ingress.Error,
+			&s.Ceiling.Error, &s.Storage.Error, &s.Outbox.Error, &s.Notices.Error,
+		} {
+			*section = err.Error()
+		}
 	}
 	return s
 }
@@ -174,10 +188,13 @@ func storageStatus(tx *bolt.Tx, out *admission.StorageStatus) error {
 	out.Pinned, out.Ended, out.Loose = s.Recovery, s.Ended.Count, s.Loose.Count
 	// Outstanding attempts are read from the attempts, not the queue, so
 	// a damaged queue record cannot hide the reserve.
-	err = tx.Bucket([]byte(admissionAttemptsBucket)).ForEach(func(_, v []byte) error {
+	err = tx.Bucket([]byte(admissionAttemptsBucket)).ForEach(func(k, v []byte) error {
 		a, decodeErr := admission.UnmarshalAttempt(v)
 		if decodeErr != nil {
 			return decodeErr
+		}
+		if string(k) != string(a.Attempt.ID) {
+			return admission.ErrCorruptRecord
 		}
 		if a.State != admission.StateReserved && a.State != admission.StateExecuting {
 			return nil
@@ -195,7 +212,10 @@ func storageStatus(tx *bolt.Tx, out *admission.StorageStatus) error {
 	if held := s.Recovery + s.OutboxBytes() + out.Outstanding; s.Recovery < admission.RecoveryReserveBytes && held < admission.RecoveryReserveBytes {
 		out.RecoveryRoom = admission.RecoveryReserveBytes - held
 	}
-	return tx.Bucket([]byte(admissionHistoryBucket)).ForEach(func(_, v []byte) error {
+	return tx.Bucket([]byte(admissionHistoryBucket)).ForEach(func(k, v []byte) error {
+		if _, err := admission.ParseCandidateID(string(k)); err != nil {
+			return admission.ErrCorruptRecord
+		}
 		h, err := admission.UnmarshalHistoryEntry(v)
 		if err != nil {
 			return err
@@ -210,15 +230,23 @@ func storageStatus(tx *bolt.Tx, out *admission.StorageStatus) error {
 // outboxStatus counts the rows and records the outbox holds, from the
 // outbox itself, so a damaged storage record does not hide them.
 func outboxStatus(tx *bolt.Tx, out *admission.OutboxStatus) error {
-	cur := tx.Bucket([]byte(admissionOutboxBucket)).Cursor()
-	for k, v := cur.Seek([]byte{'a'}); k != nil && k[0] == 'a'; k, v = cur.Next() {
-		if row, err := admission.UnmarshalAuditRow(v); err != nil || string(row.Key()) != string(k) {
+	if err := tx.Bucket([]byte(admissionOutboxBucket)).ForEach(func(k, v []byte) error {
+		switch k[0] {
+		case 'a':
+			if row, err := admission.UnmarshalAuditRow(v); err != nil || string(row.Key()) != string(k) {
+				return admission.ErrCorruptRecord
+			}
+			out.AuditRows++
+		case 'n':
+			out.NoticeRecords++
+		case 'q':
+			// Notice records and their quiet indexes are proved in notices.
+		default:
 			return admission.ErrCorruptRecord
 		}
-		out.AuditRows++
-	}
-	for k, _ := cur.Seek([]byte{'n'}); k != nil && k[0] == 'n'; k, _ = cur.Next() {
-		out.NoticeRecords++
+		return nil
+	}); err != nil {
+		return err
 	}
 	out.AuditBytes = out.AuditRows * admission.AuditSlotBytes
 	out.NoticeBytes = out.NoticeRecords * admission.NoticeSlotBytes
@@ -232,6 +260,7 @@ func noticesStatus(tx *bolt.Tx, out *admission.NoticesStatus) error {
 		}
 	}
 	cur := tx.Bucket([]byte(admissionOutboxBucket)).Cursor()
+	quiet := map[admission.NoticeKey]time.Time{}
 	for k, v := cur.Seek([]byte{'n'}); k != nil && k[0] == 'n'; k, v = cur.Next() {
 		key, err := admission.ParseNoticeKey(k)
 		if err != nil {
@@ -247,6 +276,19 @@ func noticesStatus(tx *bolt.Tx, out *admission.NoticesStatus) error {
 		if r.Count > 0 {
 			out.Records = append(out.Records, admission.NoticeRow(r))
 		}
+		if at := r.QuietAt(); !at.IsZero() {
+			quiet[key] = at
+		}
+	}
+	for k, v := cur.Seek([]byte{'q'}); k != nil && k[0] == 'q'; k, v = cur.Next() {
+		at, key, err := admission.ParseQuietKey(k)
+		if err != nil || v == nil || len(v) != 0 || !quiet[key].Equal(at) {
+			return admission.ErrCorruptRecord
+		}
+		delete(quiet, key)
+	}
+	if len(quiet) != 0 {
+		return admission.ErrCorruptRecord
 	}
 	return nil
 }

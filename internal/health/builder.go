@@ -49,7 +49,7 @@ func Build(p Provider, version string, capabilities []string) Snapshot {
 	}
 	var adm *AdmissionStatus
 	if ap, ok := p.(AdmissionProvider); ok {
-		adm = ap.AdmissionStatus()
+		adm = cloneAdmissionStatus(ap.AdmissionStatus())
 	}
 	return Snapshot{
 		WordPressVerification:  wordpress,

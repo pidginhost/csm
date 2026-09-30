@@ -1,6 +1,7 @@
 package health
 
 import (
+	"slices"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -20,4 +21,26 @@ type AdmissionStatus struct {
 // not read as a healthy ledger.
 type AdmissionProvider interface {
 	AdmissionStatus() *AdmissionStatus
+}
+
+func cloneAdmissionStatus(in *AdmissionStatus) *AdmissionStatus {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if in.Ledger != nil {
+		ledger := *in.Ledger
+		ledger.Queue.Occupancy = slices.Clone(ledger.Queue.Occupancy)
+		ledger.Counters.Rows = slices.Clone(ledger.Counters.Rows)
+		ledger.Outcomes.Hour = slices.Clone(ledger.Outcomes.Hour)
+		ledger.Outcomes.Day = slices.Clone(ledger.Outcomes.Day)
+		ledger.Outcomes.Month = slices.Clone(ledger.Outcomes.Month)
+		ledger.Notices.Records = slices.Clone(ledger.Notices.Records)
+		out.Ledger = &ledger
+	}
+	if in.Ingress != nil {
+		ingress := *in.Ingress
+		out.Ingress = &ingress
+	}
+	return &out
 }

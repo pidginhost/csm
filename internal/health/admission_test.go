@@ -2,6 +2,7 @@ package health
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,43 @@ import (
 type admissionFakeProvider struct {
 	*fakeProvider
 	status *AdmissionStatus
+}
+
+func TestBuildOwnsAdmissionSnapshot(t *testing.T) {
+	status := &AdmissionStatus{
+		CheckedAt: time.Unix(100, 0),
+		Ledger: &admission.LedgerStatus{
+			Queue:    admission.QueueStatus{Occupancy: []admission.QueueOccupancy{{Count: 1}}},
+			Counters: admission.CountersStatus{Rows: []admission.CountRow{{N: 2}}},
+			Outcomes: admission.OutcomesStatus{
+				Hour:  []admission.OutcomeStatusRow{{N: 3}},
+				Day:   []admission.OutcomeStatusRow{{N: 4}},
+				Month: []admission.OutcomeStatusRow{{N: 5}},
+			},
+			Notices: admission.NoticesStatus{Records: []admission.NoticeStatusRow{{Count: 6}}},
+		},
+		Ingress: &admission.IngressHealth{Admitting: true},
+	}
+	snapshot := Build(admissionFakeProvider{&fakeProvider{}, status}, "v", nil)
+	before, err := json.Marshal(snapshot.Admission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status.CheckedAt = time.Unix(200, 0)
+	status.Ingress.Admitting = false
+	status.Ledger.Queue.Occupancy[0].Count++
+	status.Ledger.Counters.Rows[0].N++
+	status.Ledger.Outcomes.Hour[0].N++
+	status.Ledger.Outcomes.Day[0].N++
+	status.Ledger.Outcomes.Month[0].N++
+	status.Ledger.Notices.Records[0].Count++
+	after, err := json.Marshal(snapshot.Admission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("provider mutation changed a published snapshot: before=%s after=%s", before, after)
+	}
 }
 
 func (f admissionFakeProvider) AdmissionStatus() *AdmissionStatus { return f.status }

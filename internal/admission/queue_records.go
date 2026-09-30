@@ -311,8 +311,8 @@ type IngressState struct {
 	// Interrupted counts generations that ended without a clean close.
 	Interrupted uint64
 	// Resumed is the generation that began after the latest interruption;
-	// zero if none was interrupted. While it is the current generation,
-	// counts are lower bounds.
+	// cleared when a clean generation follows. While it is the current
+	// generation, counts are lower bounds.
 	Resumed    uint64
 	Checkpoint *IngressCheckpoint
 }

@@ -305,3 +305,174 @@ func TestAdmissionLedgerStatusNeedsClockWithoutOutcomes(t *testing.T) {
 		t.Fatal("missing clock failed an independent section")
 	}
 }
+
+func TestAdmissionLedgerStatusIsolatesMissingBuckets(t *testing.T) {
+	for bucket, affected := range map[string][]string{
+		admissionMetaBucket:       {"clock", "outcomes"},
+		admissionQueueBucket:      {"queue"},
+		admissionCandidatesBucket: {"queue"},
+		admissionQueueStateBucket: {"counters", "ingress", "ceiling", "storage"},
+		admissionWindowsBucket:    {"outcomes"},
+		admissionChargesBucket:    {"ceiling"},
+		admissionAttemptsBucket:   {"storage"},
+		admissionHistoryBucket:    {"storage"},
+		admissionOutboxBucket:     {"outbox", "notices"},
+	} {
+		t.Run(bucket, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.applied(time.Hour)
+			if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+				return tx.DeleteBucket([]byte(bucket))
+			}); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if p := recover(); p != nil {
+					t.Errorf("status panicked after losing a bucket: %v", p)
+				}
+			}()
+			s := f.l.Status()
+			for name, err := range map[string]string{
+				"clock": s.Clock.Error, "queue": s.Queue.Error, "counters": s.Counters.Error,
+				"outcomes": s.Outcomes.Error, "ingress": s.Ingress.Error, "ceiling": s.Ceiling.Error,
+				"storage": s.Storage.Error, "outbox": s.Outbox.Error, "notices": s.Notices.Error,
+			} {
+				want := false
+				for _, section := range affected {
+					want = want || name == section
+				}
+				if (err != "") != want {
+					t.Errorf("%s error = %q, want damaged = %v", name, err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestAdmissionLedgerStatusRejectsMisplacedAttempts(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.admitted(time.Hour)
+	before := f.l.Status()
+	f.l.mu.Lock()
+	defer f.l.mu.Unlock()
+	tx, err := f.db.bolt.Begin(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	attempts := tx.Bucket([]byte(admissionAttemptsBucket))
+	_, v := attempts.Cursor().First()
+	if err = attempts.Put([]byte("misplaced"), append([]byte(nil), v...)); err != nil {
+		t.Fatal(err)
+	}
+	read := make(chan admission.LedgerStatus, 1)
+	go func() { read <- f.l.Status() }()
+	select {
+	case during := <-read:
+		if !reflect.DeepEqual(during, before) {
+			t.Fatalf("status observed an uncommitted write: before=%+v during=%+v", before, during)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("status waited for the ledger writer")
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	s := f.l.Status()
+	if s.Storage.Error == "" {
+		t.Fatalf("duplicate attempt hid reserve damage: %+v", s.Storage)
+	}
+	if s.Queue.Error != "" || s.Outbox.Error != "" || s.Notices.Error != "" {
+		t.Fatalf("misplaced attempt failed another section: %+v", s)
+	}
+}
+
+func TestAdmissionLedgerStatusReportsUnreadableDatabase(t *testing.T) {
+	f := newLedgerFixture(t)
+	if err := f.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s := f.l.Status()
+	for name, err := range map[string]string{
+		"clock": s.Clock.Error, "queue": s.Queue.Error, "counters": s.Counters.Error,
+		"outcomes": s.Outcomes.Error, "ingress": s.Ingress.Error, "ceiling": s.Ceiling.Error,
+		"storage": s.Storage.Error, "outbox": s.Outbox.Error, "notices": s.Notices.Error,
+	} {
+		if err == "" {
+			t.Errorf("unreadable database reported a healthy %s section", name)
+		}
+	}
+}
+
+func TestAdmissionLedgerStatusRejectsUnrecognizedRecordKeys(t *testing.T) {
+	for _, section := range []string{"storage", "outbox"} {
+		t.Run(section, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.applied(time.Hour)
+			if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+				if section == "storage" {
+					history := tx.Bucket([]byte(admissionHistoryBucket))
+					_, v := history.Cursor().First()
+					return history.Put([]byte("misplaced"), append([]byte(nil), v...))
+				}
+				outbox := tx.Bucket([]byte(admissionOutboxBucket))
+				k, v := outbox.Cursor().Seek([]byte{'a'})
+				data := append([]byte(nil), v...)
+				if err := outbox.Delete(k); err != nil {
+					return err
+				}
+				return outbox.Put([]byte("misplaced"), data)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s := f.l.Status()
+			for name, err := range map[string]string{
+				"clock": s.Clock.Error, "queue": s.Queue.Error, "counters": s.Counters.Error,
+				"outcomes": s.Outcomes.Error, "ingress": s.Ingress.Error, "ceiling": s.Ceiling.Error,
+				"storage": s.Storage.Error, "outbox": s.Outbox.Error, "notices": s.Notices.Error,
+			} {
+				if (err != "") != (name == section) {
+					t.Errorf("misplaced %s record: %s error = %q", section, name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestAdmissionLedgerStatusRejectsDamagedQuietIndexes(t *testing.T) {
+	for _, damage := range []string{"malformed", "missing", "unexpected value"} {
+		t.Run(damage, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			id := f.criticalQueued()
+			if _, err := f.l.Defer(id, admission.ReasonCeiling); err != nil {
+				t.Fatal(err)
+			}
+			for key, r := range f.notices() {
+				if err := f.l.AckNotices([]admission.NoticeAck{{Key: key, First: r.First, Count: r.Count}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+				outbox := tx.Bucket([]byte(admissionOutboxBucket))
+				k, _ := outbox.Cursor().Seek([]byte{'q'})
+				if k == nil || k[0] != 'q' {
+					t.Fatal("fixture has no quiet index")
+				}
+				switch damage {
+				case "malformed":
+					return outbox.Put([]byte("q-damaged"), nil)
+				case "missing":
+					return outbox.Delete(k)
+				default:
+					return outbox.Put(k, []byte("damaged"))
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s := f.l.Status()
+			if s.Notices.Error == "" || s.Outbox.Error != "" || s.Storage.Error != "" {
+				t.Fatalf("quiet index damage escaped its section: notices=%q outbox=%q storage=%q", s.Notices.Error, s.Outbox.Error, s.Storage.Error)
+			}
+		})
+	}
+}

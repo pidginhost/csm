@@ -95,7 +95,7 @@ type IngressSection struct {
 	Persisted   uint64 `json:"persisted"`
 	Interrupted uint64 `json:"interrupted"`
 	// Resumed is the generation that began after the latest interruption;
-	// zero if none was interrupted.
+	// cleared when a clean generation follows.
 	Resumed uint64 `json:"resumed,omitempty"`
 	Error   string `json:"error,omitempty"`
 }

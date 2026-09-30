@@ -337,7 +337,11 @@ events and attempt outcomes are also counted into five-minute, hourly and
 daily buckets. `Status` reads every section in one read transaction without
 the ledger's lock or a current clock, each section with its own error, and
 the pure doctor rules turn it and the ingress's own health into fixed rows.
-Nothing sends notices or reads status yet.
+Missing buckets fail the sections that read them; an unreadable database
+fails every section. Quiet notice indexes are checked with their records.
+Health snapshots own copies of the admission view, and a clean ingress
+generation clears the interruption marker. Nothing sends notices or reads
+status yet.
 
 ### Attack event storage
 
