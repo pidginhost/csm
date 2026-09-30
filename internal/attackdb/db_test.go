@@ -94,6 +94,7 @@ func TestRecordFinding_SlowEmailAuthFailuresStayBelowBlockScore(t *testing.T) {
 		db.RecordFinding(alert.Finding{
 			Check:     "email_auth_failure_realtime",
 			Message:   "Email authentication failure for owner from 203.0.113.9",
+			SourceIP:  "203.0.113.9",
 			Severity:  alert.High,
 			Timestamp: ts.Add(time.Duration(i) * 5 * time.Minute),
 		})
@@ -117,6 +118,7 @@ func TestRecordFinding_FastEmailAuthFailuresSetSustainedMarker(t *testing.T) {
 		db.RecordFinding(alert.Finding{
 			Check:     "email_auth_failure_realtime",
 			Message:   "Email authentication failure for owner from 203.0.113.12",
+			SourceIP:  "203.0.113.12",
 			Severity:  alert.High,
 			Timestamp: ts.Add(time.Duration(i) * 20 * time.Second),
 		})
@@ -140,6 +142,7 @@ func TestRecordFinding_NonMailBruteDoesNotSetSustainedScoreTier(t *testing.T) {
 		db.RecordFinding(alert.Finding{
 			Check:     "wp_login_bruteforce",
 			Message:   "WordPress brute force from 203.0.113.13",
+			SourceIP:  "203.0.113.13",
 			Severity:  alert.Critical,
 			Timestamp: ts.Add(time.Duration(i) * 20 * time.Second),
 		})
@@ -163,6 +166,7 @@ func TestRecordFinding_SustainedMarkerSurvivesLaterNonBruteEvent(t *testing.T) {
 		db.RecordFinding(alert.Finding{
 			Check:     "email_auth_failure_realtime",
 			Message:   "Email authentication failure for owner from 203.0.113.14",
+			SourceIP:  "203.0.113.14",
 			Severity:  alert.High,
 			Timestamp: ts.Add(time.Duration(i) * 20 * time.Second),
 		})
@@ -170,6 +174,7 @@ func TestRecordFinding_SustainedMarkerSurvivesLaterNonBruteEvent(t *testing.T) {
 	db.RecordFinding(alert.Finding{
 		Check:     "http_scanner_profile",
 		Message:   "Scanner profile from 203.0.113.14",
+		SourceIP:  "203.0.113.14",
 		Severity:  alert.High,
 		Timestamp: ts.Add(40 * time.Minute),
 	})

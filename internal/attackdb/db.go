@@ -14,7 +14,6 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
-	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -531,32 +530,11 @@ func (db *DB) backgroundSaver() {
 	}
 }
 
-// extractIP pulls an IP address from a finding message.
-func extractIP(message string) string {
-	for _, sep := range []string{" from ", ": ", "accessing server: "} {
-		if idx := strings.Index(message, sep); idx >= 0 {
-			rest := message[idx+len(sep):]
-			fields := strings.Fields(rest)
-			if len(fields) > 0 {
-				token := fields[0]
-				// Strip AbuseIPDB score suffix like "(AbuseIPDB"
-				if paren := strings.Index(token, "("); paren > 0 {
-					token = token[:paren]
-				}
-				if ip, ok := netutil.ParseIPToken(token); ok {
-					return ip
-				}
-			}
-		}
-	}
-	return ""
-}
-
+// extractFindingIP is the attacker address of a finding: its structured
+// source only. Message text can name a connection's destination, a process
+// name or a file path an attacker chose, none of which attacked the host.
 func extractFindingIP(f alert.Finding) string {
-	if ip := normalizeRecordIP(f.SourceIP); ip != "" {
-		return ip
-	}
-	return extractIP(f.Message)
+	return normalizeRecordIP(f.SourceIP)
 }
 
 func normalizeRecordIP(raw string) string {

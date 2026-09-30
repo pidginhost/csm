@@ -71,6 +71,7 @@ var notAddressEvidence = map[string]string{
 	"backdoor_port_outbound":       "destination address of an outbound connection",
 	"bad_asn_outbound":             "destination address of an outbound connection",
 	"cpanel_file_upload_realtime":  "authenticated customer activity",
+	"cpanel_login":                 "authenticated customer login",
 	"cpanel_login_realtime":        "authenticated customer login",
 	"email_auth_failure_realtime":  "one raw mailbox failure; thresholded checks carry the evidence",
 	"email_php_relay_abuse":        "visitor of a sending script, not necessarily the abuser",
@@ -100,10 +101,8 @@ var notAddressEvidence = map[string]string{
 // message text, so these cannot produce evidence until a producer carries
 // the address. The set is pinned so a change is reviewed.
 var respondingWithoutAddress = []string{
-	"api_auth_failure",
 	"cpanel_multi_ip_login",
 	"email_compromised_account",
-	"webmail_bruteforce",
 }
 
 func TestRegistryEvidenceMatchesReviewedTable(t *testing.T) {
@@ -280,8 +279,8 @@ func TestAddressProducersAreClassified(t *testing.T) {
 			}
 		}
 	}
-	if len(producers) != 65 {
-		t.Fatalf("scan found %d address producers; review the change from the pinned 65 producers", len(producers))
+	if len(producers) != 68 {
+		t.Fatalf("scan found %d address producers; review the change from the pinned 68 producers", len(producers))
 	}
 	for name, reason := range notAddressEvidence {
 		if strings.TrimSpace(reason) == "" {

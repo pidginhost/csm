@@ -611,6 +611,7 @@ func CheckWebmailLogins(ctx context.Context, cfg *config.Config, _ *state.Store)
 				Severity: alert.High,
 				Check:    "webmail_bruteforce",
 				Message:  fmt.Sprintf("Webmail brute force from %s: %d attempts", ip, count),
+				SourceIP: ip,
 			})
 		}
 	}
@@ -673,6 +674,7 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 				Severity: alert.High,
 				Check:    "api_auth_failure",
 				Message:  fmt.Sprintf("cPanel API auth failures from %s: %d attempts", ip, count),
+				SourceIP: ip,
 				Details:  "Possible API token brute force or unauthorized API access",
 			})
 		}

@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- The local threat score no longer counts addresses read from finding text. A process in a hosting account could get any address blocked by connecting to it or by naming a file or process after it.
 - Crawl detection now classifies unusual and asset-like request targets consistently.
 - Incident auto-blocking and central intelligence now act on an address only when a finding names it as an attacker, remembered across restarts and long incidents. They could block the remote end of an outbound connection, a customer login address or an advisory source.
 

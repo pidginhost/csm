@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -62,5 +63,35 @@ func TestCheckLocalThreatScoreDoesNotEscalateRoutineHTTP(t *testing.T) {
 	}
 	if findings := CheckLocalThreatScore(context.Background(), &config.Config{StatePath: t.TempDir()}, nil); len(findings) != 0 {
 		t.Fatalf("routine HTTP observations produced a critical score: %+v", findings)
+	}
+}
+
+// An outbound connection names where a local process connected to, not who
+// attacked the host. Its destination must never build a local threat score:
+// the score hard-blocks the address, and the blocked set also cuts the
+// host's own traffic to it.
+func TestCheckLocalThreatScoreIgnoresOutboundDestinations(t *testing.T) {
+	db := attackdb.NewForTest(nil)
+	attackdb.SetGlobal(db)
+	t.Cleanup(func() { attackdb.SetGlobal(nil) })
+	// Two accounts reaching the same service is ordinary; the live
+	// connection path attributes each finding to its process's account.
+	for i, account := range []string{"alice", "bob"} {
+		for n := 0; n < 20; n++ {
+			db.RecordFinding(alert.Finding{
+				Severity:  alert.High,
+				Check:     "user_outbound_connection",
+				Message:   "Non-root user connecting to unusual destination: 203.0.113.20:8443",
+				Details:   fmt.Sprintf("UID: %d (%s), Local port: 40000, Proto: tcp", 1001+i, account),
+				TenantID:  account,
+				Timestamp: time.Now(),
+			})
+		}
+	}
+	if findings := CheckLocalThreatScore(context.Background(), &config.Config{StatePath: t.TempDir()}, nil); len(findings) != 0 {
+		t.Fatalf("an outbound destination produced a critical score: %+v", findings)
+	}
+	if rec := db.LookupIP("203.0.113.20"); rec != nil {
+		t.Fatalf("an outbound destination was recorded as an attacker: %+v", rec)
 	}
 }
