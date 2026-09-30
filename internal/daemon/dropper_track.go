@@ -605,7 +605,7 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 			return dropperBenign
 		}
 	}
-	if _, _, copy := dropperPluginCopySource(c.Path, c.Docroot); copy {
+	if _, _, pluginCopy := dropperPluginCopySource(c.Path, c.Docroot); pluginCopy {
 		// This code ran as a mu-plugin. Other capability probes, directory
 		// churn and install moves cannot vouch for its bytes or erase rewrites.
 		if c.ContentSuspicious || c.ContentRewritten {

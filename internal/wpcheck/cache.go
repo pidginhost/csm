@@ -21,7 +21,6 @@ type Cache struct {
 	fetching        map[string]bool
 	// Retain admission times after completion so fast responses and repeated
 	// misses cannot turn tenant-written release names into unlimited fetches.
-	// Core and plugin fetches share this budget.
 	coreFetchAfter map[string]time.Time
 
 	// pluginNotFoundUntil records slug+version pairs that wordpress.org
@@ -172,20 +171,9 @@ func (c *Cache) startBackgroundFetch(version, locale string) {
 	}
 	key := cacheKey(version, locale)
 	c.mu.Lock()
-	if c.checksums[key] != nil || !c.admitChecksumFetchLocked(key) {
+	if c.fetching[key] || c.checksums[key] != nil || len(c.fetching) >= coreFetchMaxPending {
 		c.mu.Unlock()
 		return
-	}
-	c.mu.Unlock()
-	go c.fetchWithRetry(version, locale, 0)
-}
-
-// admitChecksumFetchLocked applies the existing core fetch budget to every
-// checksum source. A refusal leaves verification pending, never verified.
-// The caller holds c.mu through the cache lookup and admission.
-func (c *Cache) admitChecksumFetchLocked(key string) bool {
-	if c.fetching[key] || len(c.fetching) >= coreFetchMaxPending {
-		return false
 	}
 	now := time.Now()
 	for oldKey, until := range c.coreFetchAfter {
@@ -194,11 +182,13 @@ func (c *Cache) admitChecksumFetchLocked(key string) bool {
 		}
 	}
 	if now.Before(c.coreFetchAfter[key]) || len(c.coreFetchAfter) >= coreFetchHistoryMax {
-		return false
+		c.mu.Unlock()
+		return
 	}
 	c.coreFetchAfter[key] = now.Add(coreFetchCooldown)
 	c.fetching[key] = true
-	return true
+	c.mu.Unlock()
+	go c.fetchWithRetry(version, locale, 0)
 }
 
 func (c *Cache) fetchWithRetry(version, locale string, attempt int) {

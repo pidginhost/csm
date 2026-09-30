@@ -1,80 +1,16 @@
 package wpcheck
 
 import (
+	"archive/zip"
+	"bytes"
 	"fmt"
 	"net/http"
-	"path/filepath"
-	"sync"
+	"net/http/httptest"
+	"path"
+	"strings"
 	"testing"
 	"time"
 )
-
-// A copy's installed-plugin header is account writable. Repeated writes must
-// share the core checksum fetch budget even when each header names a new release.
-func TestPluginFetchSharesConcurrentBudget(t *testing.T) {
-	c, _ := boundedCoreFetchCache(t, http.StatusServiceUnavailable)
-	for i := range 4 {
-		c.Verify(Verification{Kind: KindCore, Version: fmt.Sprintf("99.0.%d", i), Locale: "en_US", Staged: true})
-	}
-	var callers sync.WaitGroup
-	for i := range 64 {
-		callers.Go(func() {
-			c.Verify(Verification{Kind: KindPlugin, Slug: "elementor", Version: fmt.Sprintf("99.0.%d", i)})
-		})
-	}
-	callers.Wait()
-	c.mu.RLock()
-	pending := len(c.fetching)
-	c.mu.RUnlock()
-	if pending != 8 {
-		t.Fatalf("pending core/plugin fetch chains = %d, want 8", pending)
-	}
-}
-
-func TestPluginFetchBoundsRepeatedHeaderChanges(t *testing.T) {
-	c, hits := boundedCoreFetchCache(t, http.StatusNotFound)
-	root := filepath.Join(t.TempDir(), "wp-content", "plugins", "elementor")
-	for i := range 65 {
-		version := fmt.Sprintf("99.0.%d", i)
-		writeStaged(t, filepath.Join(root, "elementor.php"), "<?php\n/* Plugin Name: Elementor\nVersion: "+version+"\n*/\n")
-		v := c.Describe(filepath.Join(root, "modules", "safe-mode", "mu-plugin", "elementor-safe-mode.php"))
-		if v.Kind != KindPlugin || v.Slug != "elementor" || v.Version != version {
-			t.Fatalf("description = %+v, want recorded Elementor release %s", v, version)
-		}
-		waitForNotFetching(t, c, pluginKey("elementor", version))
-	}
-	if got := hits.Load(); got != 64 {
-		t.Fatalf("requests after repeated header changes = %d, want 64", got)
-	}
-	// Refusing a fetch leaves the copy unverified; cached proof still works.
-	c.setPluginChecksums("elementor", "3.30.0", map[string]string{"loader.php": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
-	if got := c.Verify(Verification{Kind: KindPlugin, Slug: "elementor", Version: "3.30.0", Rel: "loader.php",
-		Digest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}); got != VerdictVerified {
-		t.Fatalf("cached proof during fetch throttling = %v, want verified", got)
-	}
-	c.mu.Lock()
-	for key := range c.coreFetchAfter {
-		c.coreFetchAfter[key] = time.Now().Add(-time.Second)
-	}
-	c.mu.Unlock()
-	c.Verify(Verification{Kind: KindPlugin, Slug: "elementor", Version: "99.0.64"})
-	waitForNotFetching(t, c, pluginKey("elementor", "99.0.64"))
-	if got := hits.Load(); got != 65 {
-		t.Fatalf("requests after budget expiry = %d, want 65", got)
-	}
-}
-
-func TestPluginFetchExhaustionKeepsCooldown(t *testing.T) {
-	c, hits := boundedCoreFetchCache(t, http.StatusServiceUnavailable)
-	key := pluginKey("elementor", "99.0.1")
-	c.fetching[key] = true
-	c.fetchPluginWithRetry("elementor", "99.0.1", 4)
-	c.Verify(Verification{Kind: KindPlugin, Slug: "elementor", Version: "99.0.1"})
-	waitForNotFetching(t, c, key)
-	if got := hits.Load(); got != 1 {
-		t.Fatalf("requests after exhausting retries = %d, want 1", got)
-	}
-}
 
 func TestPluginFetchDropsExpiredNotFoundHistory(t *testing.T) {
 	c, _ := boundedCoreFetchCache(t, http.StatusNotFound)
@@ -86,5 +22,51 @@ func TestPluginFetchDropsExpiredNotFoundHistory(t *testing.T) {
 	c.mu.RUnlock()
 	if retained {
 		t.Fatal("expired missing-release history survived a new fetch")
+	}
+}
+
+// A fleet-wide update wave installs many distinct plugin releases within an
+// hour. Realtime verification of their stock files depends on each release's
+// manifest arriving, so plugin fetches must not be rationed by the small
+// budget that bounds tenant-named core releases.
+func TestPluginUpdateWaveIsNotRationedByCoreFetchBudget(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slug, _, _ := strings.Cut(path.Base(r.URL.Path), ".")
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		f, err := zw.Create(slug + "/" + slug + ".php")
+		if err == nil {
+			_, _ = f.Write([]byte("<?php\n/* Plugin Name: " + slug + "\nVersion: 1.0\n*/\n"))
+		}
+		_ = zw.Close()
+		_, _ = w.Write(buf.Bytes())
+	}))
+	t.Cleanup(srv.Close)
+	withTestHTTPClient(t, srv)
+	httpClient.Transport = &rewriteTransport{target: srv.URL, inner: http.DefaultTransport}
+	c := NewCache(t.TempDir())
+	stop := make(chan struct{})
+	c.SetStopCh(stop)
+	t.Cleanup(func() { close(stop) })
+
+	const releases = 100
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		missing := 0
+		for i := range releases {
+			slug := fmt.Sprintf("plugin%d", i)
+			// Each pass is another file event of that release.
+			c.Verify(Verification{Kind: KindPlugin, Slug: slug, Version: "1.0"})
+			if !c.hasPluginChecksums(slug, "1.0") {
+				missing++
+			}
+		}
+		if missing == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d of %d plugin releases never got their manifest", missing, releases)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -11,7 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- Removed or replaced Safe Mode loaders retain critical findings after a payload rewrite, even when their directory is deleted; installed copies alone remain warnings. Account-writable package headers cannot stall analysis, and checksum fetches share a bounded budget.
+- Realtime file analysis no longer stalls when an account replaces a plugin or theme header file with a named pipe or device.
 - Crawl detection now classifies unusual and asset-like request targets consistently.
 - Incident auto-blocking and central intelligence now act on an address only when a finding names it as an attacker, remembered across restarts and long incidents. They could block the remote end of an outbound connection, a customer login address or an advisory source.
 

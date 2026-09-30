@@ -387,18 +387,19 @@ func (c *Cache) startBackgroundPluginFetch(slug, version string) {
 	if c.fetching == nil {
 		c.fetching = make(map[string]bool)
 	}
-	if c.pluginChecksums[key] != nil || !c.admitChecksumFetchLocked(key) {
+	if c.fetching[key] {
 		c.mu.Unlock()
 		return
 	}
+	c.fetching[key] = true
 	c.mu.Unlock()
 	go c.fetchPluginWithRetry(slug, version, 0)
 }
 
 // fetchPluginWithRetry mirrors the core-checksum fetchWithRetry: the
 // fetching flag stays set across retries so cache-miss events for the
-// same slug/version do not spawn new goroutines. Exhaustion clears the flag
-// and keeps the shared fetch cooldown before a future event can retry.
+// same slug/version do not spawn new goroutines. On exhaustion the flag
+// is cleared so a future event can retry fresh.
 //
 // Special case: an HTTP 404 from wordpress.org is treated as a definitive
 // "this plugin is not in the wp.org repository" signal. We mark the
@@ -431,10 +432,7 @@ func (c *Cache) fetchPluginWithRetry(slug, version string, attempt int) {
 	}
 
 	if attempt >= len(backoffs) {
-		c.mu.Lock()
-		c.coreFetchAfter[key] = time.Now().Add(coreFetchCooldown)
-		delete(c.fetching, key)
-		c.mu.Unlock()
+		c.clearFetching(key)
 		fmt.Fprintf(os.Stderr, "wpcheck: plugin fetch abandoned for %s %s after %d attempts: %v\n",
 			slug, version, attempt+1, err)
 		return
