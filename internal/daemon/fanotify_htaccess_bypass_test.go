@@ -48,14 +48,17 @@ func expectHtaccessAlert(t *testing.T, body, wantCheck string) {
 func expectNoHtaccessAlert(t *testing.T, body string) {
 	t.Helper()
 	fd, path := writeHtaccess(t, body)
+	expectNoHtaccessAlertFromFD(t, fd, path, body)
+}
+
+func expectNoHtaccessAlertFromFD(t *testing.T, fd int, path, body string) {
+	t.Helper()
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
 	fm.checkHtaccess(fd, path, "pi")
 	select {
 	case a := <-ch:
-		if a.Check == "htaccess_injection_realtime" {
-			t.Errorf("unexpected htaccess_injection_realtime for body=%q: %+v", body, a)
-		}
+		t.Errorf("unexpected %s for body=%q: %+v", a.Check, body, a)
 	case <-time.After(80 * time.Millisecond):
 		// No alert - correct.
 	}
@@ -79,9 +82,20 @@ func TestCheckHtaccess_LegitWordfenceDirective(t *testing.T) {
 }
 
 func TestCheckHtaccess_LegitReallySimpleSSLDirective(t *testing.T) {
-	// Real target seen in production: Really Simple SSL writes
-	// /home/user/public_html/wp-content/advanced-headers.php.
-	expectNoHtaccessAlert(t, "php_value auto_prepend_file /home/user/public_html/wp-content/advanced-headers.php\n")
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".htaccess")
+	body := "php_value auto_prepend_file " + filepath.Join(dir, "wp-content", "advanced-headers.php") + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	expectNoHtaccessAlertFromFD(t, openRawFd(t, path), path, body)
+}
+
+func TestCheckHtaccess_UnboundReallySimpleSSLDirective(t *testing.T) {
+	// Retained preludes still need an alert, including targets outside the
+	// usual account roots. The generic realtime scan excuses the filename,
+	// so this assertion must see the hardened detector's finding.
+	expectHtaccessAlert(t, "php_value auto_prepend_file /srv/example/wp-content/advanced-headers.php\n", "htaccess_auto_prepend")
 }
 
 func TestCheckHtaccess_LegitReallySimpleSSLRewriteCondBase64Defense(t *testing.T) {

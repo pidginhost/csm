@@ -65,6 +65,8 @@ func TestDetectorAutoPrependBindsReallySimpleSecurityPreludeToDocroot(t *testing
 		{"this docroot quoted", `"` + bound + `"`, 0},
 		{"this docroot through a dot segment", filepath.Join(docroot, "wp-content") + "/uploads/../advanced-headers.php", 1},
 		{"another docroot", "/home/example/public_html/wp-content/advanced-headers.php", 1},
+		{"another mount", "/srv/example/public_html/wp-content/advanced-headers.php", 1},
+		{"system location", "/opt/example/wp-content/advanced-headers.php", 1},
 		{"nested under uploads", filepath.Join(docroot, "wp-content", "uploads", "x", "wp-content", "advanced-headers.php"), 1},
 		{"docroot without wp-content", filepath.Join(docroot, "advanced-headers.php"), 1},
 		{"scratch location", "/tmp/advanced-headers.php", 1},
@@ -97,6 +99,90 @@ func TestDetectorAutoPrependBindsReallySimpleSecurityPreludeToDocroot(t *testing
 	}
 	if _, ranges := AuditHtaccessContent(path, content); len(ranges) != 1 {
 		t.Errorf("dropped prelude: cleaner ranges = %v, want one", ranges)
+	}
+}
+
+func TestReallySimpleSecurityPreludeBindsDocrootAliases(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	realRoot := filepath.Join(dir, "site")
+	realPath := writeHtaccess(t, dir, "site", "# site\n")
+	otherPath := writeHtaccess(t, dir, "other", "# other site\n")
+	aliasRoot := filepath.Join(dir, "public_html")
+	if err := os.Symlink(realRoot, aliasRoot); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		path   string
+		target string
+		want   int
+	}{
+		{"realtime resolved path", realPath, filepath.Join(aliasRoot, "wp-content", "advanced-headers.php"), 0},
+		{"scheduled enumerated path", filepath.Join(aliasRoot, ".htaccess"), filepath.Join(realRoot, "wp-content", "advanced-headers.php"), 0},
+		{"alias with traversal", realPath, aliasRoot + "/wp-content/uploads/../advanced-headers.php", 1},
+		{"different existing site", realPath, filepath.Join(filepath.Dir(otherPath), "wp-content", "advanced-headers.php"), 1},
+		{"missing site", realPath, filepath.Join(dir, "missing", "wp-content", "advanced-headers.php"), 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := []byte("php_value auto_prepend_file " + tc.target + "\n")
+			findings, ranges := AuditHtaccessContent(tc.path, content)
+			if got := countByCheck(findings, "htaccess_auto_prepend"); got != tc.want {
+				t.Errorf("findings = %d, want %d", got, tc.want)
+			}
+			if len(ranges) != 0 {
+				t.Errorf("plugin prelude removal ranges = %v", ranges)
+			}
+			if err := os.WriteFile(realPath, content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var scheduled []alert.Finding
+			checkHtaccessFile(context.Background(), tc.path, []string{"auto_prepend_file"}, nil, &scheduled)
+			if len(scheduled) != tc.want {
+				t.Errorf("scheduled findings = %d, want %d", len(scheduled), tc.want)
+			}
+		})
+	}
+}
+
+func TestReallySimpleSecurityPreludeRequiresAbsoluteTarget(t *testing.T) {
+	findings, ranges := AuditHtaccessContent("site/.htaccess", []byte("php_value auto_prepend_file site/wp-content/advanced-headers.php\n"))
+	if got := countByCheck(findings, "htaccess_auto_prepend"); got != 1 {
+		t.Errorf("relative prelude findings = %d, want one", got)
+	}
+	if len(ranges) != 0 {
+		t.Errorf("relative plugin prelude removal ranges = %v", ranges)
+	}
+}
+
+// The plugin installs a prepend, so its filename must not keep a malicious
+// append directive out of cleaning.
+func TestReallySimpleSecurityPreludeDoesNotRetainAppend(t *testing.T) {
+	dir := setupHtaccessCleanRoots(t)
+	const retained = "php_value auto_prepend_file /home/example/other/wp-content/advanced-headers.php\n"
+	const malicious = "php_value auto_append_file /home/example/.cache/advanced-headers.php\n"
+	path := writeHtaccess(t, dir, "site", retained+malicious)
+	findings, ranges := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_auto_prepend"); got != 2 {
+		t.Fatalf("findings = %d, want both retained and removable directives", got)
+	}
+	if len(ranges) != 1 {
+		t.Fatalf("removal ranges = %v, want only the append directive", ranges)
+	}
+	if res := CleanHtaccessFile(path); !res.Success {
+		t.Fatalf("cleaning append: %s", res.Error)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != retained {
+		t.Fatalf("cleaned content = %q, want retained prepend", content)
+	}
+	if findings, _ := AuditHtaccessFile(path); countByCheck(findings, "htaccess_auto_prepend") != 1 {
+		t.Fatal("retained prepend stopped being reported after cleaning")
 	}
 }
 

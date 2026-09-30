@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Unbound Really Simple Security preludes are now reported across all storage roots. Their filename no longer prevents automatic cleaning of a malicious append directive.
 - Crawl detection now classifies unusual and asset-like request targets consistently.
 - Incident auto-blocking and central intelligence now act on an address only when a finding names it as an attacker, remembered across restarts and long incidents. They could block the remote end of an outbound connection, a customer login address or an advisory source.
 - A PHP prepend directive in an .htaccess file can no longer hide behind a commented copy of a security plugin's directive. A Really Simple Security prepend is now reported unless it loads the plugin's file from the wp-content folder beside that .htaccess, and such a mismatch is never cleaned automatically.
@@ -22,6 +23,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- Really Simple Security preludes remain recognized when a document root is reached through a symbolic link.
 - The prepend block that Really Simple Security 9.8 and later writes into .htaccess, and security plugin prepend blocks saved with Windows line endings or blank lines, are no longer reported as a backdoor.
 - An account owner's address is no longer blocked for cPanel API authentication failures when a browser tab left open after logging in again fails on its old session. cPanel's own record that it ended that session now explains those failures; other API failures are still reported, a few seconds later at most.
 - Fresh installs on cPanel Apache and LiteSpeed no longer deploy the old proxy-mode challenge snippet beside the one the webserver integration writes. Installing or upgrading the integration now removes the old snippet, which answered challenged visitors with a not-found page unless trusted proxies were configured.
