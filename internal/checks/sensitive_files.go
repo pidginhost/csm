@@ -43,8 +43,8 @@ var sensitiveWatchset = []string{
 
 const sensitiveFileBaselineKey = "_sensitive_file_hash:__baseline_complete"
 
-// sensitiveFileScheduleKeyPrefix keys the schedule fingerprint the periodic
-// check stores beside each cron.d file's content hash.
+// sensitiveFileScheduleKeyPrefix keys each cron.d fingerprint bound to its
+// content hash in the periodic check.
 const sensitiveFileScheduleKeyPrefix = "_sensitive_file_schedule:"
 
 // ExpandWatchset returns the absolute paths in the watchset, with globs
@@ -68,6 +68,12 @@ func ExpandWatchset(root string) []string {
 // classifySensitive returns a stable kind label for a watchset path so
 // findings can vary their severity and message.
 func classifySensitive(path string) string {
+	dir := filepath.Dir(path)
+	// Drop-in names are arbitrary; a cron file named after an auth file
+	// still needs cron-content scoring.
+	if strings.Contains(dir, "/cron") || strings.Contains(dir, "/spool/cron") {
+		return "cron"
+	}
 	switch filepath.Base(path) {
 	case "shadow", "gshadow", "passwd", "group":
 		return "auth"
@@ -75,10 +81,6 @@ func classifySensitive(path string) string {
 		return "sshd"
 	case "sudoers":
 		return "sudo"
-	}
-	dir := filepath.Dir(path)
-	if strings.Contains(dir, "/cron") || strings.Contains(dir, "/spool/cron") {
-		return "cron"
 	}
 	if strings.Contains(dir, "/sudoers.d") {
 		return "sudo"
@@ -360,11 +362,13 @@ func CheckSensitiveFiles(_ context.Context, _ *config.Config, store *state.Store
 
 		key := "_sensitive_file_hash:" + path
 		prev, ok := store.GetRaw(key)
-		schedule := cronScheduleFingerprint(path, data)
+		schedule := cronScheduleSnapshotFingerprint(path, data)
 		scheduleKey := sensitiveFileScheduleKeyPrefix + path
 		prevSchedule, _ := store.GetRaw(scheduleKey)
-		if schedule != "" && prevSchedule != schedule {
-			store.SetRaw(scheduleKey, schedule)
+		if schedule != "" {
+			store.SetRaw(scheduleKey, hashHex+":"+schedule)
+		} else {
+			store.DeleteRaw(scheduleKey)
 		}
 		if !ok {
 			store.SetRaw(key, hashHex)
@@ -400,7 +404,7 @@ func CheckSensitiveFiles(_ context.Context, _ *config.Config, store *state.Store
 			FilePath:  path,
 			Timestamp: time.Now(),
 		}
-		scheduleOnly := cronScheduleUnchanged(prevSchedule, schedule)
+		scheduleOnly := cronScheduleBaselineUnchanged(prev, prevSchedule, schedule)
 		findings = append(findings, rescoreSensitive(hashChange, kind, contentForScore, 0, scheduleOnly, time.Now()))
 	}
 	if !baselineComplete {

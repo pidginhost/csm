@@ -151,10 +151,9 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 		hash := hashBytes(data)
 		key := fmt.Sprintf("_crond:%s", filepath.Base(path))
 		prev, exists := store.GetRaw(key)
-		// The fingerprint is stored beside the hash on every pass, so a file
-		// the check has seen once can show a later change to be a move of its
-		// daily jobs and nothing else.
-		schedule := cronScheduleFingerprint(path, data)
+		// Bind the fingerprint to its hash: a partial baseline update must
+		// not make a changed command look like a time-of-day move.
+		schedule := cronScheduleSnapshotFingerprint(path, data)
 		scheduleKey := cronDScheduleKeyPrefix + filepath.Base(path)
 		prevSchedule, _ := store.GetRaw(scheduleKey)
 		// The same file reaches the realtime write detector, which rescores
@@ -163,7 +162,7 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 		// reporting High through whichever detector saw it first.
 		switch {
 		case exists && prev != hash:
-			scheduleOnly := cronScheduleUnchanged(prevSchedule, schedule)
+			scheduleOnly := cronScheduleBaselineUnchanged(prev, prevSchedule, schedule)
 			findings = append(findings, rescoreSensitive(alert.Finding{
 				Severity: alert.High,
 				Check:    "crond_change",
@@ -178,8 +177,10 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 			}, "cron", data, 0, false, time.Now()))
 		}
 		store.SetRaw(key, hash)
-		if schedule != "" && prevSchedule != schedule {
-			store.SetRaw(scheduleKey, schedule)
+		if schedule != "" {
+			store.SetRaw(scheduleKey, hash+":"+schedule)
+		} else {
+			store.DeleteRaw(scheduleKey)
 		}
 	}
 	if cronDBaselineComplete && ctx.Err() == nil {
@@ -193,8 +194,7 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 // then on an unknown file is new rather than backlog.
 const cronDBaselineKey = "_crond:_baseline_complete"
 
-// cronDScheduleKeyPrefix keys the schedule fingerprint of each cron.d file,
-// stored beside its content hash.
+// cronDScheduleKeyPrefix keys each cron.d fingerprint bound to its content hash.
 const cronDScheduleKeyPrefix = "_crond_schedule:"
 
 // cronDExcerptLen bounds the content quoted for a new cron.d file.

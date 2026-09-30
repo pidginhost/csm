@@ -50,7 +50,8 @@ func runCronDOnce(t *testing.T, store *state.Store, path, content string) []aler
 			}
 			return nil, nil
 		},
-		stat: mtimesByPath(map[string]time.Time{path: time.Now()}),
+		stat:  mtimesByPath(map[string]time.Time{path: time.Now()}),
+		lstat: mtimesByPath(map[string]time.Time{path: time.Now()}),
 		readFile: func(name string) ([]byte, error) {
 			if name == path {
 				return []byte(content), nil

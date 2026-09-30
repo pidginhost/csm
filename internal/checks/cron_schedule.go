@@ -20,11 +20,16 @@ const cronScheduleOnlyReason = "only cron job run times changed"
 // followed by blanks and then anything but "=" makes cron parse a job.
 var cronDailyTimeLine = regexp.MustCompile(`^([ \t]*)([0-9]{1,2})([ \t]+)([0-9]{1,2})([ \t].*)$`)
 
+// Cronie chooses randomized calendar fields again on every file reload,
+// including entries whose bytes did not change. They cannot prove a pure
+// time-of-day move, even if another entry caused the reload.
+var cronCalendarLine = regexp.MustCompile(`^[ \t]*-?[0-9*,/~]+[ \t]+[0-9*,/~]+[ \t]+([^ \t]+)[ \t]+([^ \t]+)[ \t]+([^ \t]+)[ \t]+`)
+
 // cronScheduleFingerprint digests a cron.d file with the minute and hour of
-// each once-a-day job left out, and returns "" for any other path. Two
-// versions with the same fingerprint differ at most in the time of day their
-// daily jobs run: every command, user, environment line and comment, and the
-// order of all of them, is compared byte for byte, so no new program, job,
+// each once-a-day job left out, and returns "" for any other path or a file
+// with randomized calendar fields. Equal fingerprints differ at most in
+// the time of day their daily jobs run: every command, user, environment line,
+// comment and their order is compared byte for byte, so no new program, job,
 // frequency or environment can hide behind an equal fingerprint.
 //
 // Only a cron.d drop-in is read this way. A user crontab has no user field,
@@ -36,6 +41,9 @@ func cronScheduleFingerprint(path string, content []byte) string {
 	}
 	h := sha256.New()
 	for _, line := range strings.Split(string(content), "\n") {
+		if m := cronCalendarLine.FindStringSubmatch(line); m != nil && strings.ContainsAny(m[1]+m[2]+m[3], "~") {
+			return ""
+		}
 		// Times outside cron's range make the job invalid. Leaving them in
 		// the fingerprint keeps a dormant job from starting as a mere move.
 		if m := cronDailyTimeLine.FindStringSubmatch(line); m != nil && cronTimeWithin(m[2], 59) && cronTimeWithin(m[4], 23) {
@@ -52,6 +60,29 @@ func cronScheduleFingerprint(path string, content []byte) string {
 // earlier version on record -- proves nothing.
 func cronScheduleUnchanged(prev, cur string) bool {
 	return cur != "" && prev == cur
+}
+
+// The polling checks need the same metadata evidence as the watchset refresh.
+// A permission, ownership or symlink change can activate a previously ignored
+// cron file even when its commands are unchanged.
+func cronScheduleSnapshotFingerprint(path string, content []byte) string {
+	schedule := cronScheduleFingerprint(path, content)
+	if schedule == "" {
+		return ""
+	}
+	identity, regular, known := sensitivePathIdentity(path)
+	if !known || !regular {
+		return ""
+	}
+	h := sha256.New()
+	writeFingerprintLine(h, 'P', identity, schedule)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// Separate raw-key writes can be saved or observed between updates. Bind the
+// fingerprint to its content hash so mixed baselines never justify a demotion.
+func cronScheduleBaselineUnchanged(prevHash, prevRecord, curSchedule string) bool {
+	return curSchedule != "" && prevRecord == prevHash+":"+curSchedule
 }
 
 // writeFingerprintLine adds one tagged, length-prefixed line to h, so a
