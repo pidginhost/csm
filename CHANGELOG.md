@@ -21,8 +21,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Reloading the automatic blocking switches now stops the remaining challenge-timeout blocks in a batch. Incident blocks declined by those switches no longer produce failure warnings.
-- Challenge timeouts and central intelligence no longer block addresses while `auto_response.enabled` or `block_ips` is off. Only scan-driven blocks honoured those switches.
+- Challenge timeouts and central intelligence no longer block addresses while `auto_response.enabled` or `block_ips` is off, and a reload of those switches applies from the next block. Only scan-driven blocks honoured those switches.
 - An account owner's address is no longer blocked for cPanel API authentication failures when a browser tab left open after logging in again fails on its old session. cPanel's own record that it ended that session now explains those failures; other API failures are still reported, a few seconds later at most.
 - Fresh installs on cPanel Apache and LiteSpeed no longer deploy the old proxy-mode challenge snippet beside the one the webserver integration writes. Installing or upgrading the integration now removes the old snippet, which answered challenged visitors with a not-found page unless trusted proxies were configured.
 - The WP-Cron fix now runs a site whose domain inherits its PHP version under the version its web server actually uses. Such sites ran their scheduled tasks on the system default PHP, which could fail on every run or flood the site's error log.
