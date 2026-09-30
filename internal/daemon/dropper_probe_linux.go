@@ -57,6 +57,7 @@ func (p dropperFSProbe) probe(c dropperCandidate) dropperProbe {
 		result.OfficialWPCoreFile = p.coreChecksums.Verify(*c.WPCoreRelease) == wpcheck.VerdictVerified
 	}
 	result.OfficialWPCorePackageFile = p.officialCorePackageFile(c)
+	result.PluginCopy = p.pluginCopy(c)
 	var dst unix.Stat_t
 	if derr := unix.Stat(c.Docroot, &dst); derr != nil && errors.Is(derr, unix.ENOENT) {
 		result.DocrootRemoved = true
@@ -91,6 +92,33 @@ func (p dropperFSProbe) officialCorePackageFile(c dropperCandidate) bool {
 	}
 	v.Rel, v.Digest = rel, hex.EncodeToString(c.CoreMD5[:])
 	return p.coreChecksums.Verify(v) == wpcheck.VerdictVerified
+}
+
+// pluginCopy compares a vanished plugin copy with the plugin it comes from.
+// The wordpress.org manifest of the release named when the copy was written
+// decides when it is cached: a match means the copy ran nothing an attacker
+// chose, a mismatch means the bytes are not that release's file, whatever the
+// installed file now holds. Without a manifest, bytes equal to the installed
+// file only show that the content survives on disk, not who wrote it.
+func (p dropperFSProbe) pluginCopy(c dropperCandidate) dropperPluginCopyEvidence {
+	root, pc, ok := dropperPluginCopySource(c.Path, c.Docroot)
+	if !ok || !c.DigestKnown {
+		return dropperPluginCopyUnproven
+	}
+	if c.PluginRelease != nil && p.coreChecksums != nil {
+		switch p.coreChecksums.Verify(*c.PluginRelease) {
+		case wpcheck.VerdictVerified:
+			return dropperPluginCopyOfficial
+		case wpcheck.VerdictMismatch:
+			return dropperPluginCopyUnproven
+		}
+	}
+	installed, err := statDropperFileNoSymlinks(filepath.Join(root, filepath.FromSlash(pc.rel)))
+	if err != nil || !installed.IsRegular || !installed.DigestKnown ||
+		installed.Size != c.Size || installed.Digest != c.Digest {
+		return dropperPluginCopyUnproven
+	}
+	return dropperPluginCopyInstalled
 }
 
 // dropperFindRenameTarget snapshots the install destinations WordPress and the

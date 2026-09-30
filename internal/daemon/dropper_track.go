@@ -57,13 +57,14 @@ type dropperCandidate struct {
 	// ContentRewritten is sticky: a file whose written content changed
 	// cannot prove from its last bytes what an earlier version ran.
 	ContentRewritten bool
-	// The first nonempty snapshot of a staged package file, kept across empty
-	// writes and delayed analyzer verdicts: its digest, or that its bytes could
-	// not be read whole. The latest snapshot alone cannot prove its history.
-	stagedHistorySet      bool
-	stagedHistoryKnown    bool
-	stagedHistoryDigest   [32]byte
-	stagedHistoryObserved time.Time
+	// The first nonempty snapshot of a staged package file or a plugin copy,
+	// kept across empty writes and delayed analyzer verdicts: its digest, or
+	// that its bytes could not be read whole. The latest snapshot alone cannot
+	// prove its history.
+	historySet      bool
+	historyKnown    bool
+	historyDigest   [32]byte
+	historyObserved time.Time
 	// Observed is the TTL origin; snapshotObserved orders the metadata even
 	// after a merge has moved Observed back to the earliest event.
 	snapshotObserved time.Time
@@ -77,6 +78,11 @@ type dropperCandidate struct {
 	// declares, with that snapshot's digest in the form wordpress.org
 	// publishes. It belongs to the same snapshot as WPInstallData.
 	WPCoreRelease *wpcheck.Verification
+	// PluginRelease names the plugin release a plugin copy is compared with,
+	// as the installed plugin declared it when the copy was written, with the
+	// copy's digest in the form wordpress.org publishes. It belongs to the
+	// same snapshot as Digest.
+	PluginRelease *wpcheck.Verification
 	Head          []byte
 	// Parent identifies the real, non-symlink directory that contained the
 	// candidate while its event fd was open. The later probe uses this stable
@@ -210,10 +216,10 @@ func ownDropperCandidate(c dropperCandidate) dropperCandidate {
 	if c.snapshotObserved.Before(c.Observed) {
 		c.snapshotObserved = c.Observed
 	}
-	if c.Size != 0 && !c.stagedHistorySet && wpUpgradeStagedPackageFile(c.Path, c.Docroot) {
-		c.stagedHistorySet = true
-		c.stagedHistoryKnown, c.stagedHistoryDigest = c.DigestKnown, c.Digest
-		c.stagedHistoryObserved = c.snapshotObserved
+	if c.Size != 0 && !c.historySet && dropperKeepsContentHistory(c.Path, c.Docroot) {
+		c.historySet = true
+		c.historyKnown, c.historyDigest = c.DigestKnown, c.Digest
+		c.historyObserved = c.snapshotObserved
 	}
 	// Torn bytes that already look like code are evidence, not noise.
 	c.ContentMayExecute = c.ContentMayExecute || !dropperCandidateIsHarmless(c)
@@ -224,21 +230,32 @@ func ownDropperCandidate(c dropperCandidate) dropperCandidate {
 	return c
 }
 
-// dropperStagedHistoryDiffers reports whether two snapshots of a staged
-// package file may hold different content. Bytes that could not be read whole
-// only count once a second snapshot exists to compare them with; a single
-// unreadable snapshot moved into place is still one write.
-func dropperStagedHistoryDiffers(a, b dropperCandidate) bool {
-	if !a.stagedHistorySet || !b.stagedHistorySet {
+// dropperKeepsContentHistory reports whether a later exemption for path
+// compares the file's bytes with an official or installed copy. Only then
+// must every earlier snapshot be accounted for, not just the last one.
+func dropperKeepsContentHistory(path, docroot string) bool {
+	if wpUpgradeStagedPackageFile(path, docroot) {
+		return true
+	}
+	_, _, ok := dropperPluginCopySource(path, docroot)
+	return ok
+}
+
+// dropperHistoryDiffers reports whether two snapshots of a staged package
+// file or a plugin copy may hold different content. Bytes that could not be
+// read whole only count once a second snapshot exists to compare them with; a
+// single unreadable snapshot moved into place is still one write.
+func dropperHistoryDiffers(a, b dropperCandidate) bool {
+	if !a.historySet || !b.historySet {
 		return false
 	}
-	if !a.stagedHistoryKnown || !b.stagedHistoryKnown {
+	if !a.historyKnown || !b.historyKnown {
 		// Analyzer verdicts and detached probes can replay the same unreadable
 		// snapshot after newer empty writes. Compare the history's own time,
 		// not the latest metadata time or the merged TTL origin.
-		return !a.stagedHistoryObserved.Equal(b.stagedHistoryObserved)
+		return !a.historyObserved.Equal(b.historyObserved)
 	}
-	return a.stagedHistoryDigest != b.stagedHistoryDigest
+	return a.historyDigest != b.historyDigest
 }
 
 func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
@@ -256,14 +273,14 @@ func mergeDropperCandidate(prev, next dropperCandidate) dropperCandidate {
 	merged.ContentMayExecute = prev.ContentMayExecute || next.ContentMayExecute
 	merged.ContentUnsettled = prev.ContentUnsettled || next.ContentUnsettled
 	merged.WPInstallUnsafe = prev.WPInstallUnsafe || next.WPInstallUnsafe
-	merged.ContentRewritten = prev.ContentRewritten || next.ContentRewritten || dropperStagedHistoryDiffers(prev, next)
+	merged.ContentRewritten = prev.ContentRewritten || next.ContentRewritten || dropperHistoryDiffers(prev, next)
 	history := next
-	if prev.stagedHistorySet {
+	if prev.historySet {
 		history = prev
 	}
-	merged.stagedHistorySet = history.stagedHistorySet
-	merged.stagedHistoryKnown, merged.stagedHistoryDigest = history.stagedHistoryKnown, history.stagedHistoryDigest
-	merged.stagedHistoryObserved = history.stagedHistoryObserved
+	merged.historySet = history.historySet
+	merged.historyKnown, merged.historyDigest = history.historyKnown, history.historyDigest
+	merged.historyObserved = history.historyObserved
 	// CREATE may reach an analyzer after CLOSE_WRITE for the same inode.
 	merged.WritePending = prev.WritePending && next.WritePending
 	merged.Parent = mergeDropperParentIdentity(prev.Parent, next.Parent)
@@ -502,7 +519,24 @@ type dropperProbe struct {
 	// unpacked core release, is byte for byte the file of that path in the
 	// release installed at the WordPress root.
 	OfficialWPCorePackageFile bool
+	// PluginCopy compares a vanished file that a plugin copies out of its own
+	// package with the file it was copied from.
+	PluginCopy dropperPluginCopyEvidence
 }
+
+// dropperPluginCopyEvidence grades how well a vanished plugin copy is
+// accounted for by the plugin package it came from.
+type dropperPluginCopyEvidence int
+
+const (
+	dropperPluginCopyUnproven dropperPluginCopyEvidence = iota
+	// The bytes are the file at that path in the wordpress.org release of the
+	// plugin installed beside the copy.
+	dropperPluginCopyOfficial
+	// No release manifest could be consulted, but the bytes equal the
+	// installed plugin's own file, which stays on disk for the finding to name.
+	dropperPluginCopyInstalled
+)
 
 type dropperVerdict int
 
@@ -516,11 +550,12 @@ const (
 	dropperDemotedDirRemoved
 	dropperDemotedReplaced
 	dropperDemotedBackupState
+	dropperDemotedPluginCopy
 	dropperSuspect
 )
 
 func dropperVerdictDemoted(v dropperVerdict) bool {
-	return v >= dropperDemotedTemplate && v <= dropperDemotedBackupState
+	return v >= dropperDemotedTemplate && v <= dropperDemotedPluginCopy
 }
 
 func dropperSameIdentity(c dropperCandidate, current dropperFileState) bool {
@@ -587,8 +622,14 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	if dropperOfficialCorePackageFile(c, p) {
 		return dropperBenign
 	}
+	if p.PluginCopy == dropperPluginCopyOfficial && dropperPluginCopyEligible(c) {
+		return dropperBenign
+	}
 	if !c.WritePending && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsHarmless(c) {
 		return dropperBenign
+	}
+	if p.PluginCopy == dropperPluginCopyInstalled && dropperPluginCopyEligible(c) {
+		return dropperDemotedPluginCopy
 	}
 	if p.AtPath != nil && dropperReplacedInPlace(c, *p.AtPath) {
 		return dropperDemotedReplaced
@@ -841,6 +882,54 @@ func dropperOfficialCorePackageFile(c dropperCandidate, p dropperProbe) bool {
 		!c.WritePending && !c.ContentUnsettled && c.Mode&0o111 == 0
 }
 
+// dropperPluginCopy names a file that a plugin copies out of its own package
+// into a directory WordPress loads code from, and deletes again when the
+// feature it serves is switched off.
+type dropperPluginCopy struct {
+	// dest is the copy's path below wp-content/.
+	dest string
+	slug string
+	// rel is the source's path below the plugin root, as the plugin's
+	// wordpress.org release manifest keys it.
+	rel string
+}
+
+var dropperPluginCopies = []dropperPluginCopy{
+	// Elementor Safe Mode copies its loader into mu-plugins while enabled.
+	{dest: "mu-plugins/elementor-safe-mode.php", slug: "elementor", rel: "modules/safe-mode/mu-plugin/elementor-safe-mode.php"},
+}
+
+// dropperPluginCopySource maps a path where a listed plugin copy lands to the
+// root of the plugin it comes from. The plugin must be installed in the same
+// wp-content directory, and that directory must lie in the candidate's own
+// document root, so a copy is only ever compared with its own site's plugin.
+func dropperPluginCopySource(path, docroot string) (string, dropperPluginCopy, bool) {
+	if !filepath.IsAbs(path) || !filepath.IsAbs(docroot) ||
+		filepath.Clean(path) != path || filepath.Clean(docroot) != docroot {
+		return "", dropperPluginCopy{}, false
+	}
+	for _, entry := range dropperPluginCopies {
+		wpContent, found := strings.CutSuffix(path, "/"+entry.dest)
+		if !found || filepath.Base(wpContent) != "wp-content" {
+			continue
+		}
+		if wpContent != docroot && !strings.HasPrefix(wpContent, docroot+string(filepath.Separator)) {
+			continue
+		}
+		return filepath.Join(wpContent, "plugins", entry.slug), entry, true
+	}
+	return "", dropperPluginCopy{}, false
+}
+
+// dropperPluginCopyEligible reports whether every snapshot of c was the same
+// complete, settled content, so comparing its digest with the plugin's file
+// accounts for everything the copy could have run.
+func dropperPluginCopyEligible(c dropperCandidate) bool {
+	_, _, ok := dropperPluginCopySource(c.Path, c.Docroot)
+	return ok && c.DigestKnown && !c.ContentRewritten && !c.WritePending && !c.ContentUnsettled &&
+		c.Mode&0o111 == 0
+}
+
 // dropperRenameMatch reports whether a probe of a rename-destination path
 // identifies the same file as the tracked candidate: identical device,
 // inode, and birth time for rename(2), or identical size plus a full SHA-256
@@ -1071,6 +1160,13 @@ func dropperAlertParams(f dropperFinding) (alert.Severity, string, string, strin
 			details += "\nDemoted: the path was replaced in place by a newer file (atomic write), not emptied."
 		case dropperDemotedBackupState:
 			details += "\nDemoted: content matches BackWPup job state written behind a PHP comment; only the leading bytes were seen."
+		case dropperDemotedPluginCopy:
+			if root, pc, ok := dropperPluginCopySource(c.Path, c.Docroot); ok {
+				source := filepath.Join(root, filepath.FromSlash(pc.rel))
+				details += "\nDemoted: content is byte for byte the installed plugin's file " +
+					dropperPrintable([]byte(source), dropperPathExcerptMax) +
+					", which remains on disk; the plugin's official checksums were not available to prove that file unmodified."
+			}
 		}
 	}
 	if len(c.Head) > 0 {
