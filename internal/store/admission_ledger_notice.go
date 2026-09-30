@@ -1,6 +1,8 @@
 package store
 
 import (
+	"errors"
+
 	"github.com/pidginhost/csm/internal/admission"
 	bolt "go.etcd.io/bbolt"
 )
@@ -78,17 +80,14 @@ func (q *queueTx) notify(key admission.NoticeKey, add func(admission.NoticeRecor
 		if key.Fixed() {
 			return admission.ErrCorruptRecord
 		}
-		s, stateErr := q.storageState()
-		if stateErr != nil {
-			return stateErr
+		// A damaged storage record cannot pay for a new record, but the
+		// transition may still be one allowed over it (1.3b-4 decision
+		// 10): the event then counts in the fixed overflow record.
+		allocated, allocErr := q.allocateNotice()
+		if allocErr != nil && !errors.Is(allocErr, admission.ErrCorruptRecord) {
+			return allocErr
 		}
-		room, roomErr := q.recoveryRoom()
-		if roomErr != nil {
-			return roomErr
-		}
-		next, ok := s.AddNotice()
-		if ok && room >= admission.NoticeSlotBytes {
-			*s, q.storageDirty = next, true
+		if allocated {
 			r = admission.NewNoticeRecord(key)
 		} else if r, found, err = loadNoticeRecord(q.tx, admission.OverflowKey(key.Kind)); err != nil || !found {
 			return admission.ErrCorruptRecord
@@ -105,6 +104,26 @@ func (q *queueTx) notify(key admission.NoticeKey, add func(admission.NoticeRecor
 		return nil
 	}
 	return q.notify(admission.NoticeKey{Kind: admission.NoticeCriticalSummary}, add)
+}
+
+// allocateNotice charges a new notice record to the notice share when the
+// share and the reserve's room both allow it. The share is checked first:
+// the room walks every live candidate.
+func (q *queueTx) allocateNotice() (bool, error) {
+	s, err := q.storageState()
+	if err != nil {
+		return false, err
+	}
+	next, ok := s.AddNotice()
+	if !ok {
+		return false, nil
+	}
+	room, err := q.recoveryRoom()
+	if err != nil || room < admission.NoticeSlotBytes {
+		return false, err
+	}
+	*s, q.storageDirty = next, true
+	return true, nil
 }
 
 // noticeCheck is the check of c's highest-severity root, the lexically
