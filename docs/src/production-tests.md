@@ -157,6 +157,14 @@ trace that data before deciding whether it belongs to a work owner. Every work
 allocation must reference an owner. Changes, omissions and stale descriptors
 fail validation.
 
+PHP Shield eval-site admission and result channels belong to the
+`php_shield.eval_sites` work owner: the ownership proof determines the grade
+of a finding held by the event reader. Both modes require publication,
+timeout, result retention, recovery and fail-closed grading regressions.
+The advisory health row retains a timed-out filesystem walk and a completed
+result until the caller and walk both settle. A timeout or refused proof
+counts as lost grading work while the finding stays High.
+
 Each owner records health `rows`, reviewed `bounds`, and separate `publication`
 and `lifecycle` evidence lists. An evidence entry names a package, a top-level
 Go test and its required `portable` or `kernel` mode. Owners without a channel
