@@ -40,6 +40,7 @@ func TestAdmissionLedgerScheduleCountsRetirableHistory(t *testing.T) {
 	general, _ := admission.HistoryLanes()
 	f := newLedgerFixture(t)
 	old := f.applied(time.Hour)
+	f.ackAll()
 	f.tickAt(f.wall.Add(admission.HistoryRetention))
 	f.nextGeneration()
 	id := f.queued()
@@ -61,7 +62,7 @@ func TestAdmissionLedgerScheduleCountsRetirableHistory(t *testing.T) {
 func TestAdmissionLedgerScheduleWaitsForTheRecoveryReserve(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
-	f.adjustStorage(func(s *admission.StorageState) { s.Recovery = admission.RecoveryReserveBytes - uint64(f.cost(id)) + 1 })
+	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, uint64(f.cost(id))-1) })
 	if picks := f.schedule(admission.ScheduleLimits{General: 10, Members: 10}); len(picks) != 0 {
 		t.Fatalf("picks beyond the recovery reserve = %+v", picks)
 	}
@@ -105,6 +106,7 @@ func TestAdmissionLedgerNextWakeWaitsForRetirableHistory(t *testing.T) {
 	f.applied(time.Hour)
 	f.tickAt(f.wall.Add(24 * time.Hour))
 	f.applied(time.Hour)
+	f.ackAll()
 	eligible := f.wall.Add(admission.HistoryRetention)
 	f.tickAt(eligible.Add(-time.Hour))
 	f.nextGeneration()
@@ -129,6 +131,7 @@ func TestAdmissionLedgerScheduleClearsUpgradeExcess(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.applied(time.Hour)
 	f.applied(time.Hour)
+	f.ackAll()
 	f.tickAt(f.wall.Add(admission.HistoryRetention))
 	f.nextGeneration()
 	id := f.queued()
@@ -186,7 +189,7 @@ func TestAdmissionLedgerScheduleRespectsOutstandingRecovery(t *testing.T) {
 	f := newLedgerFixture(t)
 	ids := f.fill(3, evidenceSpec{})
 	cost := uint64(f.cost(ids[0]))
-	f.adjustStorage(func(s *admission.StorageState) { s.Recovery = admission.RecoveryReserveBytes - cost })
+	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, cost+admission.AttemptAuditBytes) })
 	picks := f.schedule(admission.ScheduleLimits{General: 3, Members: 3})
 	if len(picks) != 1 {
 		t.Fatalf("recovery batch overbooked: %+v", picks)
@@ -232,7 +235,7 @@ func TestAdmissionLedgerRecoveryBlockedHeadDoesNotHold(t *testing.T) {
 	f.fillRoots(1, admission.MaxRoots)
 	f.tickAt(f.wall.Add(time.Nanosecond))
 	id := f.queued()
-	f.adjustStorage(func(s *admission.StorageState) { s.Recovery = admission.RecoveryReserveBytes - uint64(f.cost(id)) })
+	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, uint64(f.cost(id))+admission.AttemptAuditBytes) })
 	wake, ok, err := f.l.NextWake()
 	if err != nil || !ok || !wake.Equal(f.wall) {
 		t.Fatalf("affordable recovery head wake: %v %v %v", wake, ok, err)

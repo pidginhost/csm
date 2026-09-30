@@ -13,14 +13,48 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// dropStorage removes the schema 4 storage buckets and record.
+// dropOutbox removes the schema 5 outbox buckets, if present, and the
+// storage record's outbox usage.
+func dropOutbox(tx *bolt.Tx) error {
+	for _, name := range admissionOutboxBuckets {
+		if tx.Bucket([]byte(name)) == nil {
+			continue
+		}
+		if err := tx.DeleteBucket([]byte(name)); err != nil {
+			return err
+		}
+	}
+	if tx.Bucket([]byte(admissionQueueStateBucket)).Get(storageStateKey) == nil {
+		return nil
+	}
+	return adjustStorage(tx, func(s *admission.StorageState) { s.AuditSlots, s.NoticeRecords = 0, 0 })
+}
+
+// dropStorage removes the schema 4 and 5 storage buckets and record.
 func dropStorage(tx *bolt.Tx) error {
+	if err := dropOutbox(tx); err != nil {
+		return err
+	}
 	for _, name := range admissionStorageBuckets {
 		if err := tx.DeleteBucket([]byte(name)); err != nil {
 			return err
 		}
 	}
 	return tx.Bucket([]byte(admissionQueueStateBucket)).Delete(storageStateKey)
+}
+
+// schemaFour rewrites the fixture's database into the schema 4 layout: the
+// same records without the outbox.
+func (f *ledgerFixture) schemaFour() {
+	f.t.Helper()
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := dropOutbox(tx); err != nil {
+			return err
+		}
+		return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{4})
+	}); err != nil {
+		f.t.Fatal(err)
+	}
 }
 
 // schemaThree rewrites the fixture's database into the schema 3 layout: the
@@ -137,10 +171,11 @@ func dbSnapshot(t *testing.T, db *DB) map[string]string {
 	return out
 }
 
-// A new ledger starts at schema 4 with empty queue bookkeeping, no charges,
-// a ceiling waiting for its first limit to fill its buckets, and full
-// history credit with nothing stored.
-func TestAdmissionLedgerSchemaFourLayout(t *testing.T) {
+// A new ledger starts at schema 5 with empty queue bookkeeping, no charges,
+// a ceiling waiting for its first limit to fill its buckets, full history
+// credit with nothing stored, and an outbox holding only the empty fixed
+// notice records.
+func TestAdmissionLedgerSchemaFiveLayout(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +186,7 @@ func TestAdmissionLedgerSchemaFourLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = db.bolt.View(func(tx *bolt.Tx) error {
-		if schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey); !bytes.Equal(schema, []byte{4}) {
+		if schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey); !bytes.Equal(schema, []byte{5}) {
 			t.Errorf("schema = %v", schema)
 		}
 		state, stateErr := loadQueueState(tx)
@@ -170,10 +205,13 @@ func TestAdmissionLedgerSchemaFourLayout(t *testing.T) {
 		if got, stateErr := loadStorage(tx); stateErr != nil || got != admission.NewStorageState() {
 			t.Errorf("new storage = %+v, %v", got, stateErr)
 		}
-		for _, name := range admissionStorageBuckets {
+		for _, name := range append([]string{admissionWindowsBucket}, admissionStorageBuckets...) {
 			if n := tx.Bucket([]byte(name)).Stats().KeyN; n != 0 {
 				t.Errorf("%s holds %d keys", name, n)
 			}
+		}
+		if got := noticeRecordsIn(t, tx); !reflect.DeepEqual(got, emptyFixedNotices(t)) {
+			t.Errorf("new outbox = %+v", got)
 		}
 		return nil
 	}); err != nil {
@@ -457,7 +495,25 @@ func TestAdmissionLedgerRefusesPartialSchemas(t *testing.T) {
 			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{3})
 		},
 		"schema 4 without history": func(tx *bolt.Tx) error {
+			if err := dropOutbox(tx); err != nil {
+				return err
+			}
+			if err := tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{4}); err != nil {
+				return err
+			}
 			return tx.DeleteBucket([]byte(admissionHistoryBucket))
+		},
+		"schema 4 with an outbox bucket": func(tx *bolt.Tx) error {
+			if err := tx.DeleteBucket([]byte(admissionWindowsBucket)); err != nil {
+				return err
+			}
+			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{4})
+		},
+		"schema 5 without history": func(tx *bolt.Tx) error {
+			return tx.DeleteBucket([]byte(admissionHistoryBucket))
+		},
+		"schema 5 without windows": func(tx *bolt.Tx) error {
+			return tx.DeleteBucket([]byte(admissionWindowsBucket))
 		},
 		"missing storage state": func(tx *bolt.Tx) error {
 			return tx.Bucket([]byte(admissionQueueStateBucket)).Delete(storageStateKey)

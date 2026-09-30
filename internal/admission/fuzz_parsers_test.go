@@ -150,17 +150,29 @@ func FuzzLedgerRecords(f *testing.F) {
 	charge := Charge{At: t0, Action: attempt.ID, Lane: LaneDirect, Cost: 2, Elapsed: time.Minute}
 	chargeKey, _ := charge.Key()
 	history := HistoryEntry{General: 3000, Reserved: 400, Ended: t0, Eligible: t0.Add(HistoryRetention)}
+	reserved := cand
+	reserved.State, reserved.Attempts, reserved.ExpiresAt, reserved.Transitions = StateReserved, 1, t0.Add(time.Hour), 2
+	noticeKey := NoticeKey{Kind: NoticeWithheld, Outcome: DispositionUnknown, Check: "ssh_brute", Effect: EffectAddress}
+	notice, _ := NewNoticeRecord(noticeKey).Add(t0, id, 2)
+	notice, _ = notice.Ack(1, t0)
+	notice, _ = notice.Add(t0.Add(time.Second), id, 3)
+	noticeKeyBytes, _ := noticeKey.Bytes()
+	var outcomes OutcomeCounts
+	_ = outcomes.Add(QueueOutcome(EventDeferred, ReasonCeiling, Tier{ClassC2, SeverityCritical}))
+	_ = outcomes.Add(AttemptOutcome(DispositionApplied, Tier{}))
+	auditRow, _ := NewAuditRow(reserved, AttemptRecord{Attempt: attempt, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Lane: LaneGeneral}, Tier{ClassC2, SeverityHigh}, t0)
 	retireKeys, _ := history.RetireKeys(id)
 	for _, rec := range []interface{ MarshalBinary() ([]byte, error) }{
 		cand, AttemptRecord{Attempt: attempt, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Lane: LaneGeneral}, clock, inv, links,
 		QueueEntry{Partition: PartitionReserved, Tier: Tier{ClassC3, SeverityHigh}, Direct: true, NextChange: t0},
 		QueueState{NextSweep: t0, Cursors: QueueCursors{General: "host/address"}}, counters,
 		ScheduleState{ClassSlot: 3, Rings: [ringCount]Ring{ringC2: {Last: "host/address", Held: "host/address", Scopes: map[string]ScopeTurn{"host/address": {Severity: 1, Deficit: 2, Bytes: 4096}}}}},
-		IngressState{Generation: 2, Open: true, Persisted: 5, Interrupted: 1, Checkpoint: &IngressCheckpoint{
+		IngressState{Generation: 2, Open: true, Persisted: 5, Interrupted: 1, Resumed: 2, Checkpoint: &IngressCheckpoint{
 			Generation: 2, Sequence: 3, Cursors: QueueCursors{General: "host/address"}, Counters: counterBytes,
 		}},
 		ceiling, charge, history, EvidenceRefs{Refs: 2}, EvidenceRefs{Loose: 7},
-		StorageState{General: HistoryMeter{Credit: 5, Used: 9}, Recovery: 3, Ended: RingState{Count: 1, Last: 4}},
+		StorageState{General: HistoryMeter{Credit: 5, Used: 9}, Recovery: 3, Ended: RingState{Count: 1, Last: 4}, AuditSlots: 3, NoticeRecords: FixedNotices},
+		auditRow, notice, outcomes,
 	} {
 		data, err := rec.MarshalBinary()
 		if err != nil {
@@ -171,6 +183,12 @@ func FuzzLedgerRecords(f *testing.F) {
 	for _, k := range retireKeys {
 		f.Add(k)
 	}
+	f.Add(auditRow.Key())
+	f.Add(noticeKeyBytes)
+	quiet, _ := notice.Ack(notice.Count, t0)
+	quietKey, _ := QuietKey(quiet.QuietAt(), noticeKey)
+	f.Add(quietKey)
+	f.Add(SpanHour.Key(SpanHour.Start(t0)))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		check := func(data []byte) {
 			roundTrip := func(what string, rec interface{ MarshalBinary() ([]byte, error) }) {
@@ -223,6 +241,35 @@ func FuzzLedgerRecords(f *testing.F) {
 			}
 			if s, err := UnmarshalStorageState(data); err == nil {
 				roundTrip("storage state", s)
+			}
+			if r, err := UnmarshalAuditRow(data); err == nil {
+				roundTrip("audit row", r)
+			}
+			if action, transition, err := ParseAuditKey(data); err == nil {
+				if again := (AuditRow{Attempt: Attempt{ID: action}, Transition: transition}).Key(); !bytes.Equal(again, data) {
+					t.Fatalf("accepted audit key does not re-encode to its input: %q", data)
+				}
+			}
+			if r, err := UnmarshalNoticeRecord(data); err == nil {
+				roundTrip("notice record", r)
+			}
+			if k, err := ParseNoticeKey(data); err == nil {
+				if again, err := k.Bytes(); err != nil || !bytes.Equal(again, data) {
+					t.Fatalf("accepted notice key does not re-encode to its input: %q", data)
+				}
+			}
+			if c, err := UnmarshalOutcomeCounts(data); err == nil {
+				roundTrip("outcome counts", c)
+			}
+			if span, start, err := ParseSpanKey(data); err == nil {
+				if again := span.Key(start); !bytes.Equal(again, data) {
+					t.Fatalf("accepted outcome bucket key does not re-encode to its input: %q", data)
+				}
+			}
+			if at, k, err := ParseQuietKey(data); err == nil {
+				if again, err := QuietKey(at, k); err != nil || !bytes.Equal(again, data) {
+					t.Fatalf("accepted quiet key does not re-encode to its input: %q", data)
+				}
 			}
 			if kind, at, cand, err := ParseRetireKey(data); err == nil {
 				if again := fmt.Appendf(nil, "%c%019d%s", kind, at.UnixNano(), cand); !bytes.Equal(again, data) {

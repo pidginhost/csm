@@ -208,6 +208,26 @@ func (q *QueueCounters) Add(k CountKey) error {
 // Count returns the count for k.
 func (q QueueCounters) Count(k CountKey) uint64 { return q.counts[k] }
 
+// QueueCount is one counter and its count.
+type QueueCount struct {
+	Key CountKey
+	N   uint64
+}
+
+// Rows are the counters in key order.
+func (q QueueCounters) Rows() []QueueCount {
+	rows := make([]queueCountRow, 0, len(q.counts))
+	for k, n := range q.counts {
+		rows = append(rows, queueCountRow{Event: k.Event, Reason: k.Reason, Class: k.Class, Severity: k.Severity, N: n})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rowLess(rows[i], rows[j]) })
+	out := make([]QueueCount, len(rows))
+	for i, r := range rows {
+		out[i] = QueueCount{Key: CountKey{Event: r.Event, Reason: r.Reason, Class: r.Class, Severity: r.Severity}, N: r.N}
+	}
+	return out
+}
+
 type queueCountRow struct {
 	Event    QueueEvent `json:"e"`
 	Reason   Reason     `json:"r"`
@@ -290,7 +310,11 @@ type IngressState struct {
 	Persisted uint64
 	// Interrupted counts generations that ended without a clean close.
 	Interrupted uint64
-	Checkpoint  *IngressCheckpoint
+	// Resumed is the generation that began after the latest interruption;
+	// cleared when a clean generation follows. While it is the current
+	// generation, counts are lower bounds.
+	Resumed    uint64
+	Checkpoint *IngressCheckpoint
 }
 
 type ingressStateRecord struct {
@@ -299,6 +323,7 @@ type ingressStateRecord struct {
 	Open        bool               `json:"open,omitempty"`
 	Persisted   uint64             `json:"persisted,omitempty"`
 	Interrupted uint64             `json:"interrupted,omitempty"`
+	Resumed     uint64             `json:"resumed,omitempty"`
 	Checkpoint  *IngressCheckpoint `json:"checkpoint,omitempty"`
 }
 
@@ -306,12 +331,15 @@ func (s IngressState) record() (ingressStateRecord, error) {
 	if (s.Generation == 0 && (s.Open || s.Persisted != 0)) || s.Interrupted >= max(s.Generation, 1) {
 		return ingressStateRecord{}, refuse(ReasonInvalid, "ingress state is inconsistent")
 	}
+	if s.Resumed != 0 && (s.Interrupted == 0 || s.Resumed < 2 || s.Resumed > s.Generation) {
+		return ingressStateRecord{}, refuse(ReasonInvalid, "ingress state resumes a generation it has not reached")
+	}
 	if cp := s.Checkpoint; cp != nil {
 		if cp.Generation > s.Generation || cp.Validate(nil, cp.Generation) != nil {
 			return ingressStateRecord{}, refuse(ReasonInvalid, "ingress checkpoint is inconsistent")
 		}
 	}
-	return ingressStateRecord{V: ingressStateVersion, Generation: s.Generation, Open: s.Open, Persisted: s.Persisted, Interrupted: s.Interrupted, Checkpoint: s.Checkpoint}, nil
+	return ingressStateRecord{V: ingressStateVersion, Generation: s.Generation, Open: s.Open, Persisted: s.Persisted, Interrupted: s.Interrupted, Resumed: s.Resumed, Checkpoint: s.Checkpoint}, nil
 }
 
 func (s IngressState) MarshalBinary() ([]byte, error) {
@@ -328,7 +356,7 @@ func UnmarshalIngressState(data []byte) (IngressState, error) {
 	if err := openRecord(data, &rec); err != nil {
 		return IngressState{}, err
 	}
-	s := IngressState{Generation: rec.Generation, Open: rec.Open, Persisted: rec.Persisted, Interrupted: rec.Interrupted, Checkpoint: rec.Checkpoint}
+	s := IngressState{Generation: rec.Generation, Open: rec.Open, Persisted: rec.Persisted, Interrupted: rec.Interrupted, Resumed: rec.Resumed, Checkpoint: rec.Checkpoint}
 	if _, err := s.record(); rec.V != ingressStateVersion || err != nil {
 		return IngressState{}, ErrCorruptRecord
 	}

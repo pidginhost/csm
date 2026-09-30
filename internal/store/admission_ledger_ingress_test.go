@@ -48,7 +48,7 @@ func TestAdmissionLedgerIngressGenerations(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.l = reopened
-	if s := f.begin(); s != (admission.IngressState{Generation: 2, Open: true, Interrupted: 1}) {
+	if s := f.begin(); s != (admission.IngressState{Generation: 2, Open: true, Interrupted: 1, Resumed: 2}) {
 		t.Fatalf("after an unclean stop = %+v", s)
 	}
 	if err = f.l.EndIngress(); err != nil {
@@ -851,3 +851,31 @@ func TestIngressDrainSnapshotFailureStopsAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A generation that begins after an interrupted one is marked, so doctor
+// can warn that the lost arrivals make counts lower bounds; the next clean
+// generation clears it.
+func TestAdmissionLedgerMarksTheGenerationAfterAnInterruption(t *testing.T) {
+	f := newLedgerFixture(t)
+	if _, err := f.l.BeginIngress(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := f.l.BeginIngress()
+	if err != nil || s.Resumed != 2 || s.Interrupted != 1 {
+		t.Fatalf("after an interruption = %+v, %v", s, err)
+	}
+	if st := f.l.Status(); st.Ingress.Resumed != 2 || st.Ingress.Generation != 2 {
+		t.Fatalf("status = %+v", st.Ingress)
+	}
+	if err = f.l.EndIngress(); err != nil {
+		t.Fatal(err)
+	}
+	if s, err = f.l.BeginIngress(); err != nil || s.Resumed != 0 || s.Generation != 3 {
+		t.Fatalf("after a clean close = %+v, %v", s, err)
+	}
+	if rows := admission.DoctorChecks(ptr(f.l.Status()), &admission.IngressHealth{Admitting: true}, f.wall); rows[1].Status != admission.DoctorOK {
+		t.Fatalf("doctor after a clean close = %+v", rows[1])
+	}
+}
+
+func ptr[T any](v T) *T { return &v }

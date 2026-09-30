@@ -73,6 +73,7 @@ func TestAdmissionLedgerEndingsDateTheirHistory(t *testing.T) {
 	if _, err := f.l.Terminate(failedID, admission.ReasonPolicy); err != nil {
 		t.Fatal(err)
 	}
+	f.ackAll()
 	now := f.wall
 	for _, tc := range []struct {
 		id   admission.CandidateID
@@ -142,6 +143,7 @@ func TestAdmissionLedgerPressureRetiresEligibleHistory(t *testing.T) {
 	f.enqueue(f.request("192.0.2.10", own))
 	f.tickAt(f.wall.Add(time.Minute))
 	newer := f.applied(time.Hour)
+	f.ackAll()
 	full := func(cost uint32) {
 		f.adjustStorage(func(s *admission.StorageState) { s.General.Used = general - uint64(cost) + 1 })
 	}
@@ -233,6 +235,7 @@ func TestAdmissionLedgerRefusesDamagedRetirement(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newLedgerFixture(t)
 			id := f.applied(time.Hour)
+			f.ackAll()
 			if err := f.db.bolt.Update(func(tx *bolt.Tx) error { return damage(tx, id) }); err != nil {
 				t.Fatal(err)
 			}
@@ -326,6 +329,7 @@ func TestAdmissionLedgerRetirementPreservesDamagedAttempts(t *testing.T) {
 				if _, _, err = f.l.Finish(last.Attempt.ID, admission.DispositionApplied); err != nil {
 					t.Fatal(err)
 				}
+				f.ackAll()
 				if err = f.db.bolt.Update(func(tx *bolt.Tx) error {
 					attempts := tx.Bucket([]byte(admissionAttemptsBucket))
 					switch damage {

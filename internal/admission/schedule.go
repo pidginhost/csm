@@ -74,7 +74,8 @@ type ScheduleItem struct {
 	// Bytes is the history a reservation of it charges now, at most
 	// MaxHistoryBytes.
 	Bytes uint32
-	// Recovery is the space an unresolved outcome would need.
+	// Recovery is the reserve room a reservation needs: the space an
+	// unresolved outcome would need and its attempt's audit rows.
 	Recovery uint32
 	// Ready is false while a proven failure's retry wait lasts. A waiting
 	// candidate is never picked, but its scope keeps its deficit.
@@ -157,7 +158,7 @@ func validateItems(items []ScheduleItem) error {
 		switch {
 		case seen[it.ID] || it.Scope == "":
 			return refuse(ReasonInvalid, "schedule item is repeated or has no scope")
-		case !it.Tier.Valid() || it.Cost == 0 || it.Cost > MaxMemberCost || it.Bytes > MaxHistoryBytes || it.Recovery > MaxHistoryBytes:
+		case !it.Tier.Valid() || it.Cost == 0 || it.Cost > MaxMemberCost || it.Bytes > MaxHistoryBytes || it.Recovery > MaxRecoveryNeed:
 			return refuse(ReasonInvalid, "schedule item has an invalid tier or cost")
 		case it.Direct && it.Corroborated, (it.Direct || it.Corroborated) && it.Tier.Class != ClassC3:
 			return refuse(ReasonInvalid, "schedule item has an impossible reserved turn")

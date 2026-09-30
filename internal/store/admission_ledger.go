@@ -27,19 +27,23 @@ const (
 	admissionRetireBucket     = "adm:retire"
 	admissionRefsBucket       = "adm:evrefs"
 	admissionRingsBucket      = "adm:rings"
-	admissionSchemaVersion    = 4
+	admissionOutboxBucket     = "adm:outbox"
+	admissionWindowsBucket    = "adm:windows"
+	admissionSchemaVersion    = 5
 )
 
 var (
 	// admissionSchemaOneBuckets are the buckets of the schema 1 layout.
-	// Schema 2 adds the queue buckets, schema 3 the charges bucket and
-	// schema 4 the storage buckets.
+	// Schema 2 adds the queue buckets, schema 3 the charges bucket, schema
+	// 4 the storage buckets and schema 5 the outbox and outcome buckets.
 	admissionSchemaOneBuckets   = []string{admissionMetaBucket, admissionEvidenceBucket, admissionReportsBucket, admissionCandidatesBucket, admissionAttemptsBucket}
 	admissionQueueBuckets       = []string{admissionQueueBucket, admissionQueueStateBucket}
 	admissionSchemaTwoBuckets   = append(append([]string(nil), admissionSchemaOneBuckets...), admissionQueueBuckets...)
 	admissionSchemaThreeBuckets = append(append([]string(nil), admissionSchemaTwoBuckets...), admissionChargesBucket)
 	admissionStorageBuckets     = []string{admissionHistoryBucket, admissionRetireBucket, admissionRefsBucket, admissionRingsBucket}
-	admissionBuckets            = append(append([]string(nil), admissionSchemaThreeBuckets...), admissionStorageBuckets...)
+	admissionSchemaFourBuckets  = append(append([]string(nil), admissionSchemaThreeBuckets...), admissionStorageBuckets...)
+	admissionOutboxBuckets      = []string{admissionOutboxBucket, admissionWindowsBucket}
+	admissionBuckets            = append(append([]string(nil), admissionSchemaFourBuckets...), admissionOutboxBuckets...)
 	admissionSchemaKey          = []byte("schema")
 	admissionClockKey           = []byte("clock")
 	admissionClockPendingKey    = []byte("clock_pending")
@@ -97,7 +101,7 @@ func refusal(r admission.Reason, detail string) error {
 }
 
 // OpenAdmissionLedger opens the ledger on db, creating its buckets on first
-// use and upgrading a schema 1, 2 or 3 ledger in the same transaction. The
+// use and upgrading a schema 1, 2, 3 or 4 ledger in the same transaction. The
 // registry must be sealed: the set of producers cannot change under a
 // running ledger.
 func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, error) {
@@ -142,6 +146,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 			if err := putStorageState(tx, admission.NewStorageState()); err != nil {
 				return err
 			}
+			if err := putFixedNotices(tx); err != nil {
+				return err
+			}
 		} else {
 			meta := tx.Bucket([]byte(admissionMetaBucket))
 			if meta == nil {
@@ -161,6 +168,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaFour(tx); err != nil {
 					return err
 				}
+				if err := upgradeLedgerToSchemaFive(tx); err != nil {
+					return err
+				}
 			case len(schema) == 1 && schema[0] == 2:
 				if existing != len(admissionSchemaTwoBuckets) || present(admissionSchemaTwoBuckets) != existing {
 					return admission.ErrCorruptRecord
@@ -171,11 +181,24 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaFour(tx); err != nil {
 					return err
 				}
+				if err := upgradeLedgerToSchemaFive(tx); err != nil {
+					return err
+				}
 			case len(schema) == 1 && schema[0] == 3:
 				if existing != len(admissionSchemaThreeBuckets) || present(admissionSchemaThreeBuckets) != existing {
 					return admission.ErrCorruptRecord
 				}
 				if err := upgradeLedgerToSchemaFour(tx); err != nil {
+					return err
+				}
+				if err := upgradeLedgerToSchemaFive(tx); err != nil {
+					return err
+				}
+			case len(schema) == 1 && schema[0] == 4:
+				if existing != len(admissionSchemaFourBuckets) || present(admissionSchemaFourBuckets) != existing {
+					return admission.ErrCorruptRecord
+				}
+				if err := upgradeLedgerToSchemaFive(tx); err != nil {
 					return err
 				}
 			case len(schema) == 1 && schema[0] == admissionSchemaVersion:
@@ -210,6 +233,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 		meta := tx.Bucket([]byte(admissionMetaBucket))
 		c, err := loadLedgerClock(meta)
 		if err != nil {
+			return err
+		}
+		if err = proveOutcomes(tx, c.Now()); err != nil {
 			return err
 		}
 		l.now = c.Now()
@@ -306,8 +332,9 @@ func (l *AdmissionLedger) update(op string, fn func(tx *bolt.Tx) error) error {
 
 // Tick records a clock reading. The high-water mark it persists is the only
 // time the other calls use. The same transaction meters the ceiling and the
-// history allowances and retires history at its target, so a crash can
-// neither lose nor repeat the elapsed time it credits.
+// history allowances, retires history at its target and drops the outcome
+// buckets that have left their windows, so a crash can neither lose nor
+// repeat the elapsed time it credits.
 func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -334,6 +361,9 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 			return err
 		}
 		if err := meterCeiling(tx, t); err != nil {
+			return err
+		}
+		if err := pruneOutcomes(tx, t.Now); err != nil {
 			return err
 		}
 		return l.meterStorage(tx, t)

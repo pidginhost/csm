@@ -38,7 +38,9 @@ func (l *AdmissionLedger) BeginIngress() (admission.IngressState, error) {
 			return err
 		}
 		if s.Open {
-			s.Interrupted++
+			s.Interrupted, s.Resumed = s.Interrupted+1, s.Generation+1
+		} else {
+			s.Resumed = 0
 		}
 		s.Generation++
 		s.Open, s.Persisted = true, 0
@@ -91,15 +93,18 @@ func (l *AdmissionLedger) EnqueueGroup(arrivals []admission.Arrival, checkpoint 
 		if !ingress.Open {
 			return refusal(admission.ReasonEngineUnavailable, "no ingress generation is open")
 		}
+		q, txErr := l.openQueue(tx, now)
+		if txErr != nil {
+			return txErr
+		}
 		if checkpoint != nil {
 			if txErr = checkpoint.Validate(ingress.Checkpoint, ingress.Generation); txErr != nil {
 				return txErr
 			}
+			if txErr = q.countCheckpoint(ingress.Checkpoint, checkpoint); txErr != nil {
+				return txErr
+			}
 			ingress.Checkpoint = checkpoint
-		}
-		q, txErr := l.openQueue(tx, now)
-		if txErr != nil {
-			return txErr
 		}
 		// Empty groups must meet the same shared damage as arrivals. Drain
 		// uses one to distinguish a broken queue from a damaged arrival.
@@ -115,8 +120,17 @@ func (l *AdmissionLedger) EnqueueGroup(arrivals []admission.Arrival, checkpoint 
 			out[i].Candidate, out[i].Created, out[i].Err = id, created, arriveErr
 			switch reason, refused := admission.ReasonOf(arriveErr); {
 			case refused:
-				if txErr = q.count(admission.EventRefused, reason, arrivalTier(a, now)); txErr != nil {
+				tier := arrivalTier(a, now)
+				if txErr = q.count(admission.EventRefused, reason, tier); txErr != nil {
 					return txErr
+				}
+				// A refused arrival names no stored candidate: its
+				// notice has its own check and family, and no example.
+				if kind := admission.GapNotice(admission.GapEnded, reason, 0, tier); kind != 0 {
+					key := admission.NoticeKey{Kind: kind, Reason: reason, Check: a.Evidence.Check(), Effect: a.Request.Kind.Effect()}
+					if txErr = q.raise(key, "", 0); txErr != nil {
+						return txErr
+					}
 				}
 			case errors.Is(arriveErr, admission.ErrCandidateTerminal), errors.Is(arriveErr, admission.ErrTransitionConflict):
 				// The request names a candidate that has ended or is in
@@ -136,6 +150,39 @@ func (l *AdmissionLedger) EnqueueGroup(arrivals []admission.Arrival, checkpoint 
 		return nil, 0, err
 	}
 	return out, revision, nil
+}
+
+// countCheckpoint counts what the ingress decided since the previous
+// checkpoint into the outcome windows and raises the notices of the
+// Critical losses among it. They name no candidate: none was stored.
+func (q *queueTx) countCheckpoint(previous, next *admission.IngressCheckpoint) error {
+	var old admission.QueueCounters
+	if previous != nil {
+		var err error
+		if old, err = admission.UnmarshalQueueCounters(previous.Counters); err != nil {
+			return err
+		}
+	}
+	counts, err := admission.UnmarshalQueueCounters(next.Counters)
+	if err != nil {
+		return err
+	}
+	for _, row := range counts.Rows() {
+		n := row.N - old.Count(row.Key)
+		if n == 0 {
+			continue
+		}
+		k, tier := row.Key, admission.Tier{Class: row.Key.Class, Severity: row.Key.Severity}
+		if err = q.outcomes.AddCount(admission.QueueOutcome(k.Event, k.Reason, tier), n); err != nil {
+			return err
+		}
+		if kind := admission.GapNotice(admission.GapEnded, k.Reason, 0, tier); kind != 0 {
+			if err = q.raiseCount(admission.NoticeKey{Kind: kind, Reason: k.Reason}, n); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // arrivalTier is the tier the arrival's own evidence supports, for

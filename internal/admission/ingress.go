@@ -85,13 +85,39 @@ type Ingress struct {
 	// snapshot's admission time plus the time elapsed since publication.
 	mono      func() time.Time
 	published time.Time
+	// stoppedAt is when admission last closed, zero while a usable
+	// snapshot is published; criticalRefused counts the Critical arrivals
+	// refused since (ruling 9).
+	stoppedAt       time.Time
+	criticalRefused uint64
 }
 
 func NewIngress(reg *Registry) (*Ingress, error) {
 	if reg == nil || !reg.Sealed() {
 		return nil, fmt.Errorf("ingress needs a sealed producer registry")
 	}
-	return &Ingress{reg: reg, byKey: map[string]*pending{}, byEvidence: map[EvidenceID]*pending{}, mono: time.Now}, nil
+	return &Ingress{reg: reg, byKey: map[string]*pending{}, byEvidence: map[EvidenceID]*pending{}, mono: time.Now, stoppedAt: time.Now()}, nil
+}
+
+// setSnapshot publishes s, or closes admission when s is nil. Closing an
+// open ingress records when it stopped; a usable snapshot clears that.
+func (in *Ingress) setSnapshot(s *QueueSnapshot) {
+	switch {
+	case s == nil && in.snap != nil:
+		in.stoppedAt, in.criticalRefused = in.mono(), 0
+	case s != nil:
+		in.stoppedAt, in.criticalRefused = time.Time{}, 0
+	}
+	in.snap = s
+}
+
+// Health reports whether the ingress admits and, while it does not, since
+// when and how many Critical arrivals it refused. It is process-local, so
+// it holds when the ledger is the damaged part.
+func (in *Ingress) Health() IngressHealth {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return IngressHealth{Admitting: in.snap != nil, StoppedSince: in.stoppedAt, CriticalRefused: in.criticalRefused}
 }
 
 func (in *Ingress) lose(event QueueEvent, reason Reason, tier Tier, sev Severity) {
@@ -114,6 +140,9 @@ func (in *Ingress) Submit(s Submission) error {
 		return err
 	}
 	if in.snap == nil {
+		if e.Severity() == SeverityCritical {
+			in.criticalRefused++
+		}
 		return refused(refuse(ReasonEngineUnavailable, "the ledger owner has published no queue snapshot"), Tier{})
 	}
 	if err := in.reg.Validate(e); err != nil {
@@ -210,7 +239,7 @@ func (in *Ingress) Publish(snap *QueueSnapshot) {
 
 func (in *Ingress) publish(snap *QueueSnapshot) {
 	if snap == nil {
-		in.snap = nil
+		in.setSnapshot(nil)
 		return
 	}
 	if in.initialized && (snap.Generation != in.generation || snap.Revision < in.revision) {
@@ -248,19 +277,20 @@ func (in *Ingress) publish(snap *QueueSnapshot) {
 	keys := make(map[string]bool, len(snap.Items))
 	for _, it := range snap.Items {
 		if !it.Partition.Valid() || it.Key == "" || it.Scope == "" || keys[it.Key] {
-			in.snap = nil
+			in.setSnapshot(nil)
 			return
 		}
 		keys[it.Key] = true
 		counts[it.Partition]++
 		if counts[it.Partition] > it.Partition.DurableCapacity() {
-			in.snap = nil
+			in.setSnapshot(nil)
 			return
 		}
 	}
 	own := *snap
 	own.Items = append([]QueueItem(nil), snap.Items...)
-	in.snap, in.revision, in.published = &own, snap.Revision, in.mono()
+	in.setSnapshot(&own)
+	in.revision, in.published = snap.Revision, in.mono()
 	in.rebuild()
 }
 
@@ -350,7 +380,7 @@ func (in *Ingress) Complete(items []IngressItem, revision int, snap *QueueSnapsh
 	// A stale or other-generation snapshot must not leave the previous
 	// occupancy usable after acknowledgement, even if its read succeeded.
 	in.revision = max(in.revision, revision)
-	in.snap = nil
+	in.setSnapshot(nil)
 	in.publish(snap)
 	in.rebuild()
 }

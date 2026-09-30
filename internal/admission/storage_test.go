@@ -78,9 +78,12 @@ func TestStorageStateStartsFull(t *testing.T) {
 	if s.General.Used != 0 || s.Reserved.Used != 0 || s.Recovery != 0 || s.Ended != (RingState{}) || s.Loose != (RingState{}) {
 		t.Fatalf("new state is not empty: %+v", s)
 	}
+	if s.NoticeRecords != FixedNotices || s.AuditSlots != 0 || s.OutboxBytes() != FixedNotices*NoticeSlotBytes {
+		t.Fatalf("new outbox usage: %+v", s)
+	}
 	var upgraded StorageState
-	if upgraded.HistoryBudget(LaneGeneral, 0) != 0 {
-		t.Fatal("an upgraded state has credit")
+	if upgraded.HistoryBudget(LaneGeneral, 0) != 0 || upgraded.OutboxBytes() != 0 {
+		t.Fatal("an upgraded state has credit or outbox usage")
 	}
 }
 
@@ -317,6 +320,10 @@ func TestStorageStateCodec(t *testing.T) {
 	s := NewStorageState()
 	s.General.Used, s.Reserved.Used, s.Recovery = 123456, 789, 42
 	s.Ended, s.Loose = RingState{Count: 3, Last: 9}, RingState{Count: MaxLooseEvidence, Last: 1 << 40}
+	s.AuditSlots, s.NoticeRecords = MaxAuditSlots, MaxNoticeRecords
+	if s.OutboxBytes() != MaxAuditSlots*AuditSlotBytes+MaxNoticeRecords*NoticeSlotBytes {
+		t.Fatalf("outbox bytes %d", s.OutboxBytes())
+	}
 	data, err := s.MarshalBinary()
 	if err != nil {
 		t.Fatal(err)
@@ -335,6 +342,8 @@ func TestStorageStateCodec(t *testing.T) {
 		}},
 		{"loose ring over its bound", func(s *StorageState) { s.Loose = RingState{Count: MaxLooseEvidence + 1, Last: MaxLooseEvidence + 1} }},
 		{"more entries than positions", func(s *StorageState) { s.Ended = RingState{Count: 4, Last: 3} }},
+		{"notice records over their share", func(s *StorageState) { s.NoticeRecords = MaxNoticeRecords + 1 }},
+		{"audit slots over the reserve", func(s *StorageState) { s.AuditSlots = MaxAuditSlots + 1 }},
 	} {
 		bad := s
 		tc.mutate(&bad)
@@ -403,5 +412,61 @@ func TestStorageStateSurvivesAWeekOfFlood(t *testing.T) {
 	}
 	if s.General.Used == 0 || len(fifo) == 0 {
 		t.Fatal("the flood admitted nothing")
+	}
+}
+
+func TestStorageStateHoldsAuditSlots(t *testing.T) {
+	s := NewStorageState()
+	held, err := s.HoldAudit(AuditStepsPerAttempt)
+	if err != nil || held.AuditSlots != AuditStepsPerAttempt || held.OutboxBytes() != s.OutboxBytes()+AttemptAuditBytes {
+		t.Fatalf("hold = %+v, %v", held, err)
+	}
+	if back, err := held.ReleaseAudit(AuditStepsPerAttempt); err != nil || back != s {
+		t.Fatalf("release = %+v, %v", back, err)
+	}
+	if again, err := held.ReleaseAudit(AuditStepsPerAttempt + 1); err == nil || again != held {
+		t.Fatal("released more slots than held")
+	}
+	full := s
+	full.AuditSlots = MaxAuditSlots - 1
+	if next, err := full.HoldAudit(1); err != nil || next.AuditSlots != MaxAuditSlots {
+		t.Fatalf("the last slot: %+v, %v", next, err)
+	}
+	if next, err := full.HoldAudit(2); err == nil || next != full {
+		t.Fatal("held beyond the reserve")
+	}
+}
+
+func TestStorageAuditSlotsRefuseDamagedCounts(t *testing.T) {
+	for _, slots := range []uint64{MaxAuditSlots + 1, math.MaxUint64} {
+		s := NewStorageState()
+		s.AuditSlots = slots
+		for _, n := range []uint64{0, 1, slots} {
+			if got, err := s.HoldAudit(n); err == nil || got != s {
+				t.Errorf("hold %d with %d slots: %+v, %v", n, slots, got, err)
+			}
+			if got, err := s.ReleaseAudit(n); err == nil || got != s {
+				t.Errorf("release %d with %d slots: %+v, %v", n, slots, got, err)
+			}
+		}
+	}
+}
+
+func TestStorageStateCountsNoticeRecords(t *testing.T) {
+	s := NewStorageState()
+	next, ok := s.AddNotice()
+	if !ok || next.NoticeRecords != FixedNotices+1 {
+		t.Fatalf("add = %+v %v", next, ok)
+	}
+	if back, err := next.RemoveNotice(); err != nil || back != s {
+		t.Fatalf("remove = %+v %v", back, err)
+	}
+	if _, err := s.RemoveNotice(); err == nil {
+		t.Fatal("removed a fixed record's count")
+	}
+	full := s
+	full.NoticeRecords = MaxNoticeRecords
+	if next, ok = full.AddNotice(); ok || next != full {
+		t.Fatal("added beyond the notice share")
 	}
 }

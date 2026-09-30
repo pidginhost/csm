@@ -126,6 +126,9 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	if len(snap.WordPressVerification) != 0 {
 		resp["wordpress_verification"] = snap.WordPressVerification
 	}
+	if snap.Admission != nil {
+		resp["admission"] = snap.Admission
+	}
 	writeJSON(w, resp)
 }
 

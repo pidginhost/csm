@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/mailfwd/inventory"
@@ -23,7 +24,10 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 		InFlight: 2, DroppedTotal: 17, RecentDrops: 3, LagSeconds: 90, ProcessingSeconds: 12,
 	}}
 	s := &Server{cfg: capsTestCfg(), startTime: now.Add(-time.Hour), version: "test"}
-	s.SetHealthProvider(statusFakeProvider{
+	// The admission view is present only from a ledger owner; the contract
+	// covers it too.
+	adm := &health.AdmissionStatus{CheckedAt: now, Ledger: &admission.LedgerStatus{}, Ingress: &admission.IngressHealth{Admitting: true}}
+	s.SetHealthProvider(admissionStatusProvider{status: adm, statusFakeProvider: statusFakeProvider{
 		wordpress:            map[string]health.WPVerificationCounts{"core": {Verified: 3, Unverified: 2, LastAttempt: now}},
 		queues:               queues,
 		bpfEnforcementActive: true,
@@ -60,7 +64,7 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 			ActiveSetUpdates: 3,
 			Since:            now,
 		},
-	})
+	}})
 
 	rec := httptest.NewRecorder()
 	s.apiStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
@@ -90,6 +94,11 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 		t.Fatalf("correlation_attribution payload = %T, want object", raw["correlation_attribution"])
 	}
 	assertJSONKeys(t, attribution, jsonStructKeys(reflect.TypeOf(health.CorrelationAttribution{})))
+	admissionView, ok := raw["admission"].(map[string]any)
+	if !ok {
+		t.Fatalf("admission payload = %T, want object", raw["admission"])
+	}
+	assertJSONKeys(t, admissionView, jsonStructKeys(reflect.TypeOf(health.AdmissionStatus{})))
 }
 
 func TestAPICapabilitiesContract(t *testing.T) {

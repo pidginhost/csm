@@ -656,3 +656,44 @@ func TestIngressRefusesMalformedSnapshots(t *testing.T) {
 		})
 	}
 }
+
+// Ruling 9: the ingress reports when it stopped admitting and how many
+// Critical arrivals it refused since, so a failed snapshot is loud. A
+// usable snapshot clears both.
+func TestIngressHealthReportsAStoppedIngress(t *testing.T) {
+	f := newIngressFixture(t)
+	if h := f.in.Health(); h.Admitting || h.StoppedSince.IsZero() || h.CriticalRefused != 0 {
+		t.Fatalf("new ingress = %+v", h)
+	}
+	mono := time.Unix(100, 0)
+	f.in.mono = func() time.Time { return mono }
+	wantReason(t, "critical", f.in.Submit(f.sub(subSpec{sev: SeverityCritical})), ReasonEngineUnavailable)
+	wantReason(t, "high", f.in.Submit(f.sub(subSpec{})), ReasonEngineUnavailable)
+	if h := f.in.Health(); h.CriticalRefused != 1 {
+		t.Fatalf("after refusals = %+v", h)
+	}
+	f.publish()
+	if h := f.in.Health(); h != (IngressHealth{Admitting: true}) {
+		t.Fatalf("after a snapshot = %+v", h)
+	}
+	if err := f.in.Submit(f.sub(subSpec{sev: SeverityCritical})); err != nil {
+		t.Fatal(err)
+	}
+	mono = mono.Add(time.Minute)
+	f.in.Publish(nil)
+	mono = mono.Add(time.Minute)
+	wantReason(t, "stopped", f.in.Submit(f.sub(subSpec{sev: SeverityCritical})), ReasonEngineUnavailable)
+	if h := f.in.Health(); h.Admitting || !h.StoppedSince.Equal(time.Unix(160, 0)) || h.CriticalRefused != 1 {
+		t.Fatalf("after withdrawal = %+v", h)
+	}
+	f.in.Publish(nil)
+	if h := f.in.Health(); !h.StoppedSince.Equal(time.Unix(160, 0)) || h.CriticalRefused != 1 {
+		t.Fatalf("a second withdrawal restarted the stop: %+v", h)
+	}
+	f.publish()
+	item := durable(1, aliceScope, Tier{ClassC2, SeverityHigh})[0]
+	f.in.Publish(&QueueSnapshot{Now: t0, Inventory: testInventory(t), Items: []QueueItem{item, item}, Revision: f.rev + 1, Generation: 1})
+	if h := f.in.Health(); h.Admitting || !h.StoppedSince.Equal(mono) {
+		t.Fatalf("after a malformed snapshot = %+v", h)
+	}
+}

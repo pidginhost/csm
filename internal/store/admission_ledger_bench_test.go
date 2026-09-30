@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"fmt"
 	"net/netip"
 	"testing"
@@ -398,6 +399,8 @@ func retirableHistory(b *testing.B, n int) *ledgerFixture {
 			b.Fatal(err)
 		}
 	}
+	// Retirement waits for the audit consumer's acknowledgement.
+	f.ackAll()
 	return f
 }
 
@@ -527,6 +530,302 @@ func BenchmarkAdmissionLedgerTickRetiresABatch(b *testing.B) {
 		if s := f.storageState(); s.General.Used != 0 {
 			b.Fatalf("a batch at its target was not retired: %+v", s.General)
 		}
+		b.StartTimer()
+	}
+}
+
+// fullOutbox fills the history as fullHistory does, then the notice share
+// with keyed records of full examples, half of them quiet, and the reserve
+// with the audit rows of as many ended candidates as its slots hold.
+func fullOutbox(b *testing.B) *ledgerFixture {
+	b.Helper()
+	f := fullHistory(b)
+	reasons := []admission.Reason{
+		admission.ReasonProtected, admission.ReasonAttribution, admission.ReasonInvalid, admission.ReasonPolicy,
+		admission.ReasonStaleIdentity, admission.ReasonCollateral, admission.ReasonBreaker,
+		admission.ReasonEnvelopeNoAlternative, admission.ReasonUnsupportedContainment, admission.ReasonStale,
+		admission.ReasonIngressInterruption, admission.ReasonEngineUnavailable,
+	}
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		s, err := loadStorageState(tx)
+		if err != nil {
+			return err
+		}
+		example, _ := admission.ParseCandidateID("cand_" + fmt.Sprintf("%032x", 1))
+		for i := 0; s.NoticeRecords < admission.MaxNoticeRecords; i++ {
+			key := admission.NoticeKey{Kind: admission.NoticeWithheld, Reason: reasons[i%len(reasons)], Check: fmt.Sprintf("check_%d", i/len(reasons)), Effect: admission.EffectAddress}
+			r := admission.NewNoticeRecord(key)
+			for j := 0; j < admission.MaxNoticeExamples; j++ {
+				if r, err = r.Add(f.wall, example, uint32(j+1)); err != nil {
+					return err
+				}
+			}
+			if i%2 == 0 {
+				if r, err = r.Ack(r.Count, f.wall); err != nil {
+					return err
+				}
+			}
+			if err = storeNoticeRecord(tx, admission.NewNoticeRecord(key), r); err != nil {
+				return err
+			}
+			s.NoticeRecords++
+		}
+		// Rows of ended candidates keep their history unretirable.
+		cur := tx.Bucket([]byte(admissionHistoryBucket)).Cursor()
+		for k, v := cur.First(); k != nil && s.AuditSlots+admission.AuditStepsPerAttempt <= admission.MaxAuditSlots/2; k, v = cur.Next() {
+			h, err := admission.UnmarshalHistoryEntry(v)
+			if err != nil {
+				return err
+			}
+			id := admission.CandidateID(k)
+			c, err := loadCandidate(tx, id)
+			if err != nil {
+				return err
+			}
+			a, err := currentAttempt(tx, c)
+			if err != nil {
+				return err
+			}
+			keys, err := h.RetireKeys(id)
+			if err != nil {
+				return err
+			}
+			for _, rk := range keys {
+				if err = tx.Bucket([]byte(admissionRetireBucket)).Delete(rk); err != nil {
+					return err
+				}
+			}
+			for step := uint32(0); step < admission.AuditStepsPerAttempt; step++ {
+				row, err := admission.NewAuditRow(c, a, admission.Tier{}, f.wall)
+				if err != nil {
+					return err
+				}
+				row.Transition = step + 2
+				switch step {
+				case 0:
+					row.State, row.Disposition = admission.StateReserved, 0
+				case 1:
+					row.State, row.Disposition = admission.StateExecuting, 0
+				}
+				data, err := row.MarshalBinary()
+				if err != nil {
+					return err
+				}
+				if err = tx.Bucket([]byte(admissionOutboxBucket)).Put(row.Key(), data); err != nil {
+					return err
+				}
+			}
+			s.AuditSlots += admission.AuditStepsPerAttempt
+		}
+		return putStorageState(tx, s)
+	}); err != nil {
+		b.Fatal(err)
+	}
+	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+		b.Fatal(err)
+	}
+	return f
+}
+
+// Opening proves every notice record, quiet index key and audit row.
+func BenchmarkAdmissionLedgerOpenFullOutbox(b *testing.B) {
+	f := fullOutbox(b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Status reads every section of a full ledger in one read transaction.
+func BenchmarkAdmissionLedgerStatusFullOutbox(b *testing.B) {
+	f := fullOutbox(b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s := f.l.Status()
+		if s.Storage.Error != "" || s.Notices.Error != "" || s.Outbox.AuditRows == 0 {
+			b.Fatalf("status = %+v %+v", s.Storage, s.Outbox)
+		}
+	}
+}
+
+// Reading the records due walks the whole notice share.
+func BenchmarkAdmissionLedgerPendingNoticesFullOutbox(b *testing.B) {
+	f := fullOutbox(b)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if due, err := f.l.PendingNotices(); err != nil || len(due) == 0 {
+			b.Fatalf("due = %d, %v", len(due), err)
+		}
+	}
+}
+
+// benchmarkRestore captures only the records an iteration changes. Resetting
+// them outside the timer keeps each iteration at the same occupancy without
+// rebuilding or retaining another full ledger.
+func benchmarkRestore(f *ledgerFixture, keys map[string][][]byte) func() {
+	f.t.Helper()
+	type record struct {
+		bucket     string
+		key, value []byte
+	}
+	var records []record
+	if err := f.db.bolt.View(func(tx *bolt.Tx) error {
+		for name, list := range keys {
+			bucket := tx.Bucket([]byte(name))
+			for _, key := range list {
+				records = append(records, record{name, bytes.Clone(key), bytes.Clone(bucket.Get(key))})
+			}
+		}
+		return nil
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+	wall, since, now := f.wall, f.since, f.l.now
+	return func() {
+		if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+			for _, r := range records {
+				bucket := tx.Bucket([]byte(r.bucket))
+				var err error
+				if r.value == nil {
+					err = bucket.Delete(r.key)
+				} else {
+					err = bucket.Put(r.key, r.value)
+				}
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			f.t.Fatal(err)
+		}
+		f.wall, f.since, f.l.now = wall, since, now
+	}
+}
+
+// Acknowledging a batch of complete attempts from a full outbox writes
+// their retirement keys in the same transaction.
+func BenchmarkAdmissionLedgerAckAuditFullOutbox(b *testing.B) {
+	f := fullOutbox(b)
+	rows, err := f.l.PendingAudit(999)
+	if err != nil || len(rows) != 999 {
+		b.Fatalf("rows = %d, %v", len(rows), err)
+	}
+	ids := make([]admission.AuditID, 0, len(rows))
+	keys := map[string][][]byte{admissionQueueStateBucket: {storageStateKey}}
+	for _, r := range rows {
+		ids = append(ids, r.ID())
+		keys[admissionOutboxBucket] = append(keys[admissionOutboxBucket], r.Key())
+	}
+	if err = f.db.bolt.View(func(tx *bolt.Tx) error {
+		seen := map[admission.CandidateID]bool{}
+		for _, r := range rows {
+			if seen[r.Attempt.Candidate] {
+				continue
+			}
+			seen[r.Attempt.Candidate] = true
+			h, found, loadErr := loadHistoryEntry(tx, r.Attempt.Candidate)
+			if loadErr != nil || !found {
+				return admission.ErrCorruptRecord
+			}
+			retire, keyErr := h.RetireKeys(r.Attempt.Candidate)
+			if keyErr != nil {
+				return keyErr
+			}
+			keys[admissionRetireBucket] = append(keys[admissionRetireBucket], retire...)
+		}
+		return nil
+	}); err != nil {
+		b.Fatal(err)
+	}
+	restore := benchmarkRestore(f, keys)
+	before := f.storageState().AuditSlots
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err = f.l.AckAudit(ids); err != nil {
+			b.Fatal(err)
+		}
+		b.StopTimer()
+		if got := f.storageState().AuditSlots; got != before-uint64(len(rows)) {
+			b.Fatalf("audit slots %d -> %d", before, got)
+		}
+		restore()
+		b.StartTimer()
+	}
+}
+
+// A Critical gap whose new key finds the notice share full counts in the
+// overflow record and the Critical summary.
+func BenchmarkAdmissionLedgerDeferIntoOverflow(b *testing.B) {
+	f := fullOutbox(b)
+	id := f.criticalQueued()
+	reasons := []admission.Reason{admission.ReasonCeiling, admission.ReasonStorageShare}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := f.l.Defer(id, reasons[i%2]); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.StopTimer()
+	var overflow admission.NoticeRecord
+	if err := f.db.bolt.View(func(tx *bolt.Tx) error {
+		var err error
+		overflow, _, err = loadNoticeRecord(tx, admission.OverflowKey(admission.NoticeCapacity))
+		return err
+	}); err != nil || overflow.Count != uint64(b.N) {
+		b.Fatalf("overflow = %d, %v; want %d", overflow.Count, err, b.N)
+	}
+}
+
+// One tick removing a batch of quiet records from a full notice share.
+func BenchmarkAdmissionLedgerTickRemovesQuietNotices(b *testing.B) {
+	f := fullOutbox(b)
+	f.tickAt(f.wall.Add(time.Hour - time.Second))
+	at := f.wall.Add(time.Second)
+	keys := map[string][][]byte{
+		admissionMetaBucket:       {admissionClockKey},
+		admissionQueueStateBucket: {storageStateKey, ceilingStateKey},
+	}
+	if err := f.db.bolt.View(func(tx *bolt.Tx) error {
+		for _, name := range []string{admissionChargesBucket, admissionWindowsBucket} {
+			if err := tx.Bucket([]byte(name)).ForEach(func(k, _ []byte) error {
+				keys[name] = append(keys[name], bytes.Clone(k))
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		cur := tx.Bucket([]byte(admissionOutboxBucket)).Cursor()
+		for k, _ := cur.Seek([]byte{'q'}); k != nil && k[0] == 'q' && len(keys[admissionOutboxBucket]) < 2*quietRemovalsPerTick; k, _ = cur.Next() {
+			due, key, err := admission.ParseQuietKey(k)
+			if err != nil || due.After(at) {
+				return admission.ErrCorruptRecord
+			}
+			notice, err := key.Bytes()
+			if err != nil {
+				return err
+			}
+			keys[admissionOutboxBucket] = append(keys[admissionOutboxBucket], bytes.Clone(k), notice)
+		}
+		return nil
+	}); err != nil {
+		b.Fatal(err)
+	}
+	if len(keys[admissionOutboxBucket]) != 2*quietRemovalsPerTick {
+		b.Fatal("fixture has too few quiet notices")
+	}
+	restore := benchmarkRestore(f, keys)
+	before := f.storageState().NoticeRecords
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		f.tickAt(at)
+		b.StopTimer()
+		if got := f.storageState().NoticeRecords; got != before-quietRemovalsPerTick {
+			b.Fatalf("records %d -> %d", before, got)
+		}
+		restore()
 		b.StartTimer()
 	}
 }

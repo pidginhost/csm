@@ -54,6 +54,10 @@ type Snapshot struct {
 	// not yet completed a poll (very early startup) or is disabled in
 	// config.
 	Update UpdateInfo `json:"update,omitempty"`
+
+	// Admission is the admission ledger and ingress view; nil when the
+	// daemon owns no ledger.
+	Admission *AdmissionStatus `json:"admission,omitempty"`
 }
 
 // AutomationStatus summarizes the live automation safety state. It is

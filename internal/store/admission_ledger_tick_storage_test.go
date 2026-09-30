@@ -46,6 +46,7 @@ func TestAdmissionLedgerTickRetiresAtTheTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	ended := f.wall
+	f.ackAll()
 	used, shortCost := f.storageState().General.Used, f.cost(short)
 	f.tickAt(ended.Add(admission.HistoryTarget - time.Nanosecond))
 	if _, err := f.l.Candidate(short); err != nil {
@@ -82,6 +83,7 @@ func TestAdmissionLedgerTickRetiresABoundedBatch(t *testing.T) {
 	for i := 0; i < retirementsPerTick+3; i++ {
 		ids = append(ids, f.applied(time.Hour))
 	}
+	f.ackAll()
 	f.tickAt(f.wall.Add(admission.HistoryTarget))
 	var kept int
 	for _, id := range ids {
@@ -137,5 +139,52 @@ func TestAdmissionLedgerDamagedStorageRefusesTick(t *testing.T) {
 	}
 	if h, _ := f.historyEntry(id); h.Ended.IsZero() {
 		t.Fatalf("the outcome did not date its history: %+v", h)
+	}
+}
+
+// A final failure of work that ran is recorded over a damaged storage
+// record too (1.3b-4 decision 10): its notice cannot take a new record,
+// which needs storage, so it counts in its kind's fixed overflow record and
+// in the Critical summary.
+func TestAdmissionLedgerFinalFailureOverDamagedStorage(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.criticalQueued()
+	var a admission.AttemptRecord
+	var err error
+	for seq := uint32(1); seq <= admission.MaxAttempts; seq++ {
+		if seq > 1 {
+			f.tickAt(f.wall.Add(admission.RetryBackoff(seq - 1)))
+		}
+		expires := time.Time{}
+		if seq == 1 {
+			expires = f.wall.Add(3 * time.Hour)
+		}
+		if _, a, _, err = f.l.Reserve(id, admission.LaneGeneral, expires); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+			t.Fatal(err)
+		}
+		if seq < admission.MaxAttempts {
+			if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err = f.db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(admissionQueueStateBucket)).Put(storageStateKey, []byte("damaged"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c, done, err := f.l.Finish(a.Attempt.ID, admission.DispositionFailed)
+	if err != nil || c.State != admission.StateFailed || done.State != admission.StateFailed {
+		t.Fatalf("final failure over damaged storage: %+v %+v, %v", c, done, err)
+	}
+	notices := f.notices()
+	if r := notices[admission.OverflowKey(admission.NoticeWithheld)]; r.Count != 1 {
+		t.Fatalf("overflow record = %+v", r)
+	}
+	if r := notices[admission.NoticeKey{Kind: admission.NoticeCriticalSummary}]; r.Count != 1 {
+		t.Fatalf("Critical summary = %+v", r)
 	}
 }

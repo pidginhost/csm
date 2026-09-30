@@ -140,10 +140,12 @@ func TestQueueCountersCountAndRoundTrip(t *testing.T) {
 
 func TestIngressStateRoundTrips(t *testing.T) {
 	for name, s := range map[string]IngressState{
-		"fresh":       {},
-		"open":        {Generation: 3, Open: true, Persisted: 12, Interrupted: 2},
-		"closed":      {Generation: 1},
-		"interrupted": {Generation: 2, Interrupted: 1},
+		"fresh":        {},
+		"open":         {Generation: 3, Open: true, Persisted: 12, Interrupted: 2},
+		"closed":       {Generation: 1},
+		"interrupted":  {Generation: 2, Interrupted: 1},
+		"resumed":      {Generation: 3, Open: true, Interrupted: 1, Resumed: 3},
+		"resumed once": {Generation: 4, Interrupted: 1, Resumed: 2},
 	} {
 		data, err := s.MarshalBinary()
 		if err != nil {
@@ -157,6 +159,9 @@ func TestIngressStateRoundTrips(t *testing.T) {
 		"open before the first":      {Open: true},
 		"persisted before the first": {Persisted: 1},
 		"current one interrupted":    {Generation: 2, Interrupted: 2},
+		"resumed later":              {Generation: 2, Interrupted: 1, Resumed: 3},
+		"resumed without a loss":     {Generation: 2, Resumed: 2},
+		"resumed the first":          {Generation: 2, Interrupted: 1, Resumed: 1},
 	} {
 		if _, err := s.MarshalBinary(); err == nil {
 			t.Errorf("%s: encoded", name)
@@ -215,5 +220,27 @@ func TestIngressCheckpointCodec(t *testing.T) {
 	bad.Cursors.General = "acct:alice#1/address"
 	if err = bad.Validate(&cp, 1); err != ErrTransitionConflict {
 		t.Fatal("same sequence changed decision")
+	}
+}
+
+func TestQueueCountersRows(t *testing.T) {
+	var q QueueCounters
+	var want []QueueCount
+	for _, e := range []QueueEvent{EventRefused, EventDeferred, EventEnded} {
+		for _, r := range []Reason{ReasonCeiling, ReasonStale} {
+			want = append(want, QueueCount{Key: CountKey{Event: e, Reason: r, Class: ClassC2, Severity: SeverityHigh}, N: uint64(len(want) + 1)})
+		}
+	}
+	// Counted in reverse, so neither insertion order nor a rotation of it
+	// is the key order.
+	for i := len(want) - 1; i >= 0; i-- {
+		for n := uint64(0); n < want[i].N; n++ {
+			if err := q.Add(want[i].Key); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if rows := q.Rows(); !reflect.DeepEqual(rows, want) {
+		t.Fatalf("rows = %+v\nwant %+v", rows, want)
 	}
 }

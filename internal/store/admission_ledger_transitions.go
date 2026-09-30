@@ -111,7 +111,10 @@ func (l *AdmissionLedger) Defer(id admission.CandidateID, reason admission.Reaso
 			return false, err
 		}
 		c.Reason = reason
-		return true, q.count(admission.EventDeferred, reason, e.Tier)
+		if err = q.count(admission.EventDeferred, reason, e.Tier); err != nil {
+			return false, err
+		}
+		return true, q.gap(admission.GapDeferred, reason, 0, e, id, *c, c.Transitions+1)
 	})
 }
 
@@ -149,6 +152,9 @@ func (l *AdmissionLedger) Terminate(id admission.CandidateID, reason admission.R
 		}
 		c.State, c.Disposition, c.Reason, c.NotBefore = state, d, reason, time.Time{}
 		if err = q.release(id, e, admission.EventEnded, reason); err != nil {
+			return false, err
+		}
+		if err = q.gap(admission.GapEnded, reason, 0, e, id, *c, c.Transitions+1); err != nil {
 			return false, err
 		}
 		return true, q.ended(id, *c)
@@ -257,6 +263,16 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 	c.State, c.Attempts, c.Reason, c.NotBefore = admission.StateReserved, next.Seq, 0, time.Time{}
 	c.Transitions++
 	if err = q.chargeHistory(id, c, lane); err != nil {
+		return c, admission.AttemptRecord{}, false, err
+	}
+	// The reservation holds a slot for each row its attempt can write and
+	// writes the first, its own.
+	if err = q.adjustAuditSlots(admission.AuditStepsPerAttempt, 0); err != nil {
+		return c, admission.AttemptRecord{}, false, err
+	}
+	written := c
+	written.Transitions--
+	if err = q.writeAuditRow(written, a, entry.Tier); err != nil {
 		return c, admission.AttemptRecord{}, false, err
 	}
 	if err := putAttempt(tx, a); err != nil {
@@ -385,11 +401,12 @@ func (l *AdmissionLedger) Execute(id admission.ActionID) (admission.Candidate, a
 		case !q.now.Before(a.ExpiresAt):
 			return false, refusal(admission.ReasonStale, "absolute expiry has passed")
 		}
-		if _, err := loadQueueEntry(q.tx, a.Attempt.Candidate); err != nil {
+		e, err := loadQueueEntry(q.tx, a.Attempt.Candidate)
+		if err != nil {
 			return false, err
 		}
 		a.State, c.State = admission.StateExecuting, admission.StateExecuting
-		return true, nil
+		return true, q.writeAuditRow(*c, *a, e.Tier)
 	})
 }
 
@@ -424,19 +441,53 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 		}
 		// The candidate moves in step with its current attempt, so the
 		// lifecycle table decides which outcomes a reserved attempt allows.
+		from := c.State
+		// An attempt that never ran returns the slot of its execution row.
+		var unused uint64
+		if a.State == admission.StateReserved {
+			unused = 1
+		}
 		a.State, a.Disposition, a.Finished = state, d, q.now
+		if err = q.outcomes.Add(admission.AttemptOutcome(d, e.Tier)); err != nil {
+			return false, err
+		}
 		switch {
 		case d == admission.DispositionFailed && c.Attempts < admission.MaxAttempts:
 			c.State, c.NotBefore = admission.StateQueued, q.now.Add(admission.RetryBackoff(c.Attempts))
-			q.noteDeadlines(*c, e)
-			return true, nil
 		default:
 			c.State, c.Disposition = state, d
+		}
+		// A row cannot record an outcome its attempt never reached, so the
+		// table is asked before the row is written.
+		if !admission.CanTransition(from, c.State) {
+			return false, admission.ErrTransitionConflict
+		}
+		// The row goes first: the ending below writes retirement keys
+		// only when no row of the candidate is pending.
+		if err = q.writeAuditRow(*c, *a, e.Tier); err != nil {
+			return false, err
+		}
+		if err = q.adjustAuditSlots(0, unused); err != nil {
+			return false, err
+		}
+		if c.State == admission.StateQueued {
+			q.noteDeadlines(*c, e)
+			return true, nil
 		}
 		if err = q.release(a.Attempt.Candidate, e, 0, 0); err != nil {
 			return false, err
 		}
-		return true, q.ended(a.Attempt.Candidate, *c)
+		// Pin the ending before allocating its notice: release removed
+		// the outstanding hold, and the notice cannot spend those bytes.
+		if err = q.ended(a.Attempt.Candidate, *c); err != nil {
+			return false, err
+		}
+		if c.State == admission.StateVerified {
+			err = q.raise(admission.NoticeKey{Kind: admission.NoticeAppliedSummary}, a.Attempt.Candidate, c.Transitions+1)
+		} else {
+			err = q.gap(admission.GapOutcome, 0, d, e, a.Attempt.Candidate, *c, c.Transitions+1)
+		}
+		return true, err
 	})
 	return cand, att, err
 }
