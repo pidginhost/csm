@@ -62,6 +62,37 @@ func TestCoreFetchBoundsConcurrentMisses(t *testing.T) {
 	}
 }
 
+func TestCoreFetchCapacityIgnoresPendingPlugins(t *testing.T) {
+	c, _ := boundedCoreFetchCache(t, http.StatusServiceUnavailable)
+	for i := range 16 {
+		c.Verify(Verification{Kind: KindPlugin, Slug: fmt.Sprintf("plugin%d", i), Version: "1.0"})
+	}
+	for i := range 9 {
+		c.Verify(Verification{Kind: KindCore, Version: fmt.Sprintf("99.0.%d", i), Locale: "en_US", Staged: true})
+	}
+	for i := range 8 {
+		if !isFetching(c, cacheKey(fmt.Sprintf("99.0.%d", i), "en_US")) {
+			t.Errorf("core release %d was refused while only plugins occupied capacity", i)
+		}
+	}
+	if isFetching(c, cacheKey("99.0.8", "en_US")) {
+		t.Error("core fetch exceeded its own pending limit")
+	}
+}
+
+func TestCoreFetchDoesNotAliasPluginRelease(t *testing.T) {
+	c, _ := boundedCoreFetchCache(t, http.StatusServiceUnavailable)
+	c.Verify(Verification{Kind: KindPlugin, Slug: "6.8", Version: "en_US"})
+	c.Verify(Verification{Kind: KindCore, Version: "6.8", Locale: "en_US", Staged: true})
+	c.mu.RLock()
+	_, admitted := c.coreFetchAfter[cacheKey("6.8", "en_US")]
+	pending := len(c.fetching)
+	c.mu.RUnlock()
+	if !admitted || pending != 2 {
+		t.Fatal("a plugin header prevented a distinct core request from starting")
+	}
+}
+
 func TestCoreFetchStopsAfterRetryBudget(t *testing.T) {
 	c, hits := boundedCoreFetchCache(t, http.StatusServiceUnavailable)
 	key := cacheKey("99.0.1", "en_US")

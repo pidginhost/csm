@@ -12,6 +12,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - A cron drop-in named after an account, sudo or SSH configuration file is now checked for persistence like any other cron file. Such a file could be downgraded during package updates without that check.
+- Plugin checksum downloads, including ones an account can start with a crafted plugin header, no longer hold off the downloads that verify WordPress core files.
+- Realtime file analysis no longer stalls when an account replaces a plugin or theme header file with a named pipe or device.
 - Crawl detection now classifies unusual and asset-like request targets consistently.
 - Incident auto-blocking and central intelligence now act on an address only when a finding names it as an attacker, remembered across restarts and long incidents. They could block the remote end of an outbound connection, a customer login address or an advisory source.
 - A PHP prepend directive in an .htaccess file can no longer hide behind a commented copy of a security plugin's directive. A directive naming Really Simple Security's file is now reported wherever it points unless it loads that file from the wp-content folder beside the .htaccess; such a prepend is reported but never cleaned automatically.
@@ -38,6 +40,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - The finding-stream tool now replaces learned names that contain an underscore or start with a dot, such as a bare mail login, as whole identities wherever they appear, instead of refusing the run on its own output. It no longer rewrites punctuation or its own pseudonyms while doing so.
 - `csm config show` now works while the daemon is running. It opened the state database, which it never reads, and failed with a timeout on the daemon's lock.
 - Checking whether an address is blocked or allowed now re-examines firewall entries for expiry only when one is due, including across clock corrections. On hosts with thousands of timed blocks, re-examining every entry on each check took a large share of the daemon's CPU during the auto-block and subnet passes.
+- Turning Elementor Safe Mode off no longer raises a critical self-deleting file alert when the removed file is Elementor's own loader. When the official checksums are not available to prove it, a copy identical to the installed plugin's file is reported at a lower severity.
 
 ## [4.0.0] - 2026-09-24
 

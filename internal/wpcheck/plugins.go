@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Plugin verification mirrors the core-file verification path: when an
@@ -115,7 +117,7 @@ func ReadPluginVersion(pluginRoot, slug string) (string, error) {
 
 	// #nosec G304 -- pluginRoot is derived from a path the scanner received
 	// from fanotify under a recognized plugin or update-staging layout.
-	dir, err := os.Open(pluginRoot)
+	dir, err := os.OpenFile(pluginRoot, os.O_RDONLY|unix.O_NONBLOCK|unix.O_DIRECTORY, 0)
 	if err != nil {
 		return "", err
 	}
@@ -164,17 +166,9 @@ func ReadPluginVersion(pluginRoot, slug string) (string, error) {
 }
 
 func readPluginVersionHeader(path string) (version string, found bool, err error) {
-	// #nosec G304 -- callers construct path from a scanner-derived root and a
-	// safe immediate child. Reads are bounded to WordPress's 8 KiB header limit.
-	f, err := os.Open(path)
+	buf, err := readPackageHeader(path)
 	if err != nil {
 		return "", false, err
-	}
-	defer func() { _ = f.Close() }()
-
-	buf, err := io.ReadAll(io.LimitReader(f, pluginHeaderReadLimit))
-	if err != nil {
-		return "", false, fmt.Errorf("reading plugin header: %w", err)
 	}
 	if !rePluginNameHeader.Match(buf) {
 		return "", false, nil
@@ -184,6 +178,31 @@ func readPluginVersionHeader(path string) (version string, found bool, err error
 		return "", false, nil
 	}
 	return string(m[1]), true, nil
+}
+
+// Header paths are account writable. Nonblocking opens followed by an fd stat
+// reject FIFOs and devices, including ones reached through symlinks or swapped
+// into place just before the open, without pinning an analyzer worker.
+func readPackageHeader(path string) ([]byte, error) {
+	// #nosec G304 -- callers construct path from a scanner-derived root and a
+	// safe immediate child. Reads are bounded to WordPress's 8 KiB header limit.
+	f, err := os.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("package header is not a regular file")
+	}
+	buf, err := io.ReadAll(io.LimitReader(f, pluginHeaderReadLimit))
+	if err != nil {
+		return nil, fmt.Errorf("reading package header: %w", err)
+	}
+	return buf, nil
 }
 
 // pluginZipURL returns the canonical wordpress.org download URL for a given
@@ -280,7 +299,9 @@ func fetchPluginChecksumsFromURL(url, slug string) (map[string]string, error) {
 // --- Cache plugin support ------------------------------------------------
 
 func pluginKey(slug, version string) string {
-	return slug + ":" + version
+	// Account-written plugin headers must not alias core version/locale keys
+	// in the shared in-flight map.
+	return "plugin:" + slug + ":" + version
 }
 
 func (c *Cache) setPluginChecksums(slug, version string, checksums map[string]string) {
@@ -327,7 +348,13 @@ func (c *Cache) markPluginNotFound(slug, version string, ttl time.Duration) {
 	if c.pluginNotFoundUntil == nil {
 		c.pluginNotFoundUntil = make(map[string]time.Time)
 	}
-	c.pluginNotFoundUntil[key] = time.Now().Add(ttl)
+	now := time.Now()
+	for oldKey, until := range c.pluginNotFoundUntil {
+		if !now.Before(until) {
+			delete(c.pluginNotFoundUntil, oldKey)
+		}
+	}
+	c.pluginNotFoundUntil[key] = now.Add(ttl)
 	c.mu.Unlock()
 }
 
@@ -350,19 +377,14 @@ func (c *Cache) startBackgroundPluginFetch(slug, version string) {
 	if c.isStopped() {
 		return
 	}
-	// wp.org has already told us this slug+version does not exist;
-	// suppress the fetch entirely until the marker expires. Without this
-	// gate every cache miss for a non-wp.org plugin would re-arm the
-	// 4-attempt retry cycle.
-	if c.isPluginNotFound(slug, version) {
-		return
-	}
 	key := pluginKey(slug, version)
 	c.mu.Lock()
 	if c.fetching == nil {
 		c.fetching = make(map[string]bool)
 	}
-	if c.fetching[key] {
+	// Recheck both outcomes under the admission lock: another request may
+	// have finished after the caller's cache lookup.
+	if c.fetching[key] || c.pluginChecksums[key] != nil || time.Now().Before(c.pluginNotFoundUntil[key]) {
 		c.mu.Unlock()
 		return
 	}

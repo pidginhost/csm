@@ -16,7 +16,7 @@ type Cache struct {
 	mu              sync.RWMutex
 	statePath       string
 	checksums       map[string]map[string]string // core: "<version>:<locale>" -> relPath -> MD5
-	pluginChecksums map[string]map[string]string // plugins: "<slug>:<version>" -> relPath -> SHA256
+	pluginChecksums map[string]map[string]string // plugins: "plugin:<slug>:<version>" -> relPath -> SHA256
 	roots           map[string]rootEntry
 	fetching        map[string]bool
 	// Retain admission times after completion so fast responses and repeated
@@ -171,17 +171,22 @@ func (c *Cache) startBackgroundFetch(version, locale string) {
 	}
 	key := cacheKey(version, locale)
 	c.mu.Lock()
-	if c.fetching[key] || c.checksums[key] != nil || len(c.fetching) >= coreFetchMaxPending {
+	if c.fetching[key] || c.checksums[key] != nil {
 		c.mu.Unlock()
 		return
 	}
 	now := time.Now()
+	pending := 0
 	for oldKey, until := range c.coreFetchAfter {
-		if !now.Before(until) && !c.fetching[oldKey] {
+		// Only core admissions consume this budget. Plugin requests retain
+		// their in-flight flags for deduplication, without limiting core.
+		if c.fetching[oldKey] {
+			pending++
+		} else if !now.Before(until) {
 			delete(c.coreFetchAfter, oldKey)
 		}
 	}
-	if now.Before(c.coreFetchAfter[key]) || len(c.coreFetchAfter) >= coreFetchHistoryMax {
+	if pending >= coreFetchMaxPending || now.Before(c.coreFetchAfter[key]) || len(c.coreFetchAfter) >= coreFetchHistoryMax {
 		c.mu.Unlock()
 		return
 	}

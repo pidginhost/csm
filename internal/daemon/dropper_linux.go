@@ -216,10 +216,14 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	wpCopy := len(wpUpgradeCopyDestinations(c.Path, c.Docroot)) > 0
 	staged := wpUpgradeStagedPackageFile(c.Path, c.Docroot)
 	_, _, core := wpUpgradeCorePackageFile(c.Path, c.Docroot)
+	_, _, pluginCopy := dropperPluginCopySource(c.Path, c.Docroot)
+	// Staged files and plugin copies are later compared with an official or
+	// installed file, so they need a digest of the whole snapshot.
+	whole := staged || pluginCopy
 	read, limit := readFromFd, dropperTrackedHeadMax
-	// Oversized staged files still need a head for the executable content
-	// check, even though they cannot supply a complete digest.
-	if wpCopy || (staged && st.Size <= dropperDigestMax) {
+	// Oversized files still need a head for the executable content check,
+	// even though they cannot supply a complete digest.
+	if wpCopy || (whole && st.Size <= dropperDigestMax) {
 		read, limit = readCompleteFromFd, dropperDigestMax
 	}
 	// The data proof and retained head must share the opening stat. Separate
@@ -230,13 +234,16 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 		c.Head = bytes.Clone(c.Head[:dropperTrackedHeadMax])
 	}
 	c.ContentUnsettled = !stable
-	if staged && body != nil && stable && int64(len(body)) == c.Size {
+	if whole && body != nil && stable && int64(len(body)) == c.Size {
 		// Hash the retained snapshot, including CREATE observations, rather
 		// than rereading an fd whose bytes may already have been replaced.
 		c.Digest, c.DigestKnown = sha256.Sum256(body), true
 		if core {
 			// #nosec G401 -- compared with the MD5 digests wordpress.org publishes
 			c.CoreMD5, c.CoreMD5Known = md5.Sum(body), true
+		}
+		if pluginCopy {
+			c.PluginRelease = fm.pluginReleaseOf(c)
 		}
 	}
 	// Copy exceptions must check even CREATE snapshots: a benign CLOSE_WRITE
@@ -256,7 +263,7 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 			}
 		}
 		c.WPInstallUnsafe = !c.WPInstallData || c.Mode&0o111 != 0
-	} else if !wpCopy && !staged && !c.WritePending && atomicWriteRenameCandidate(c.Path) != "" {
+	} else if !wpCopy && !whole && !c.WritePending && atomicWriteRenameCandidate(c.Path) != "" {
 		c.Digest, c.DigestKnown = digestFromFD(event.fd, st.Size)
 	}
 
@@ -314,6 +321,27 @@ func (fm *FileMonitor) wpCoreReleaseOf(body []byte) *wpcheck.Verification {
 	}
 	fm.wpCache.Verify(*v)
 	return v
+}
+
+// pluginReleaseOf names the release of the plugin a copy comes from, as the
+// installed plugin declares it while the copy is written. Asking now starts a
+// missing manifest download in the background, so the deletion probe normally
+// finds it cached, and an update of the plugin later in the tracking window
+// does not change the release the copy is compared with.
+func (fm *FileMonitor) pluginReleaseOf(c dropperCandidate) *wpcheck.Verification {
+	root, pc, ok := dropperPluginCopySource(c.Path, c.Docroot)
+	if fm.wpCache == nil || !ok || !c.DigestKnown {
+		return nil
+	}
+	// The root pins the slug: official releases of some other plugin, whose
+	// author could be anyone, never vouch for this copy. The version header
+	// is account-writable, but it only picks which official release to use.
+	v := fm.wpCache.Describe(filepath.Join(root, filepath.FromSlash(pc.rel)))
+	if v.Kind != wpcheck.KindPlugin || v.Root != root || v.Version == "" {
+		return nil
+	}
+	v.Digest = hex.EncodeToString(c.Digest[:])
+	return &v
 }
 
 // dropperProbeLoop probes overdue candidates for deletion and flushes findings.
@@ -492,6 +520,44 @@ func openDropperDirNoSymlinks(path string) (int, error) {
 		fd = next
 	}
 	return fd, nil
+}
+
+// statDropperFileNoSymlinks opens a regular file without following a symlink
+// anywhere in its path and reports its size and full digest. A plugin file
+// reached through a link could live outside the site, where nothing scans the
+// bytes it is meant to vouch for.
+func statDropperFileNoSymlinks(path string) (dropperFileState, error) {
+	return statDropperFileNoSymlinksWithDigest(path, digestFromFD)
+}
+
+func statDropperFileNoSymlinksWithDigest(path string, digest func(int, int64) ([32]byte, bool)) (dropperFileState, error) {
+	dir, err := openDropperDirNoSymlinks(filepath.Dir(path))
+	if err != nil {
+		return dropperFileState{}, err
+	}
+	defer func() { _ = unix.Close(dir) }()
+	fd, err := unix.Openat(dir, filepath.Base(path), unix.O_RDONLY|unix.O_NONBLOCK|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return dropperFileState{}, err
+	}
+	defer func() { _ = unix.Close(fd) }()
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return dropperFileState{}, err
+	}
+	state := dropperFileState{
+		Path: path, Device: uint64(st.Dev), Inode: st.Ino, Size: st.Size,
+		IsRegular: st.Mode&unix.S_IFMT == unix.S_IFREG,
+	}
+	if state.IsRegular {
+		state.Digest, state.DigestKnown = digest(fd, st.Size)
+		// Size alone cannot show that these bytes still survive in the plugin:
+		// an account writer can replace them and restore mtime during hashing.
+		var after unix.Stat_t
+		state.DigestKnown = state.DigestKnown && unix.Fstat(fd, &after) == nil &&
+			sameReadSnapshot(st, after) && st.Mode == after.Mode
+	}
+	return state, nil
 }
 
 // statDropperParent snapshots a real parent directory without following any
