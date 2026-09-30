@@ -85,6 +85,9 @@ func readOffsetMarker(f *os.File, offset int64) ([]byte, bool, error) {
 	return buf[:read], read == len(buf), nil
 }
 
+// logWatcherPollInterval is how often each LogWatcher reads new lines.
+const logWatcherPollInterval = 2 * time.Second
+
 // NewLogWatcher creates a watcher for a log file.
 func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, alertCh chan<- alert.Finding) (*LogWatcher, error) {
 	// #nosec G304 -- path is operator-configured log path from csm.yaml.
@@ -150,7 +153,7 @@ func (w *LogWatcher) Run(stopCh <-chan struct{}) {
 	// reused by another goroutine mid-Stat/Read.
 	defer w.closeFile()
 
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(logWatcherPollInterval)
 	defer ticker.Stop()
 
 	// Also reopen the file every 5 minutes to handle log rotation

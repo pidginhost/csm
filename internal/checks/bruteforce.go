@@ -628,6 +628,14 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 	var findings []alert.Finding
 
 	lines := tailFile("/usr/local/cpanel/logs/access_log", 300)
+	evidence := StaleSessionEvidence{Denials: recentSessionTokenDenials()}
+	if len(evidence.Denials) > 0 {
+		for _, line := range lines {
+			if r, ok := ParseStaleSessionRequest(line); ok && r.User != "-" {
+				evidence.Rejected = append(evidence.Rejected, r)
+			}
+		}
+	}
 
 	failedAPI := make(map[string]int)
 
@@ -650,6 +658,9 @@ func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Stor
 		ip := fields[0]
 
 		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
+			continue
+		}
+		if r, ok := ParseStaleSessionRequest(line); ok && evidence.Explains(r) {
 			continue
 		}
 
