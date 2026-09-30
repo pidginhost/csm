@@ -145,7 +145,9 @@ type StorageStatus struct {
 	Error         string    `json:"error,omitempty"`
 }
 
-// OutboxStatus is the outbox's use of the reserve.
+// OutboxStatus is what the outbox holds: unacknowledged audit rows and
+// notice records, each at its slot. The slots outstanding attempts hold
+// for rows they have not written count in the storage section's room.
 type OutboxStatus struct {
 	AuditRows     uint64 `json:"audit_rows"`
 	AuditBytes    uint64 `json:"audit_bytes"`
@@ -156,13 +158,14 @@ type OutboxStatus struct {
 
 // NoticeStatusRow is one notice record.
 type NoticeStatusRow struct {
-	Kind   string    `json:"kind"`
-	Reason string    `json:"reason,omitempty"`
-	Check  string    `json:"check,omitempty"`
-	Effect string    `json:"effect,omitempty"`
-	Count  uint64    `json:"count"`
-	Unsent uint64    `json:"unsent"`
-	Last   time.Time `json:"last,omitempty"`
+	Kind    string    `json:"kind"`
+	Reason  string    `json:"reason,omitempty"`
+	Outcome string    `json:"outcome,omitempty"`
+	Check   string    `json:"check,omitempty"`
+	Effect  string    `json:"effect,omitempty"`
+	Count   uint64    `json:"count"`
+	Unsent  uint64    `json:"unsent"`
+	Last    time.Time `json:"last,omitempty"`
 }
 
 // NoticesStatus is the notice records and the latest Critical gap.
@@ -171,6 +174,56 @@ type NoticesStatus struct {
 	// LastCriticalGap is the latest Critical response gap any record saw.
 	LastCriticalGap time.Time `json:"last_critical_gap,omitempty"`
 	Error           string    `json:"error,omitempty"`
+}
+
+// tierNames renders a tier; empty for an unassessed one.
+func tierNames(c Class, s Severity) (string, string) {
+	if c == 0 && s == 0 {
+		return "", ""
+	}
+	return c.String(), s.String()
+}
+
+// CountRows renders queue counters for status.
+func CountRows(rows []QueueCount) []CountRow {
+	out := make([]CountRow, 0, len(rows))
+	for _, r := range rows {
+		class, sev := tierNames(r.Key.Class, r.Key.Severity)
+		out = append(out, CountRow{Event: r.Key.Event.String(), Reason: r.Key.Reason.String(), Class: class, Severity: sev, N: r.N})
+	}
+	return out
+}
+
+// OutcomeRows renders outcome counts for status.
+func OutcomeRows(c OutcomeCounts) []OutcomeStatusRow {
+	rows := c.Rows()
+	out := make([]OutcomeStatusRow, 0, len(rows))
+	for _, r := range rows {
+		row := OutcomeStatusRow{N: r.N}
+		row.Class, row.Severity = tierNames(r.Key.Class, r.Key.Severity)
+		if r.Key.Event != 0 {
+			row.Event, row.Reason = r.Key.Event.String(), r.Key.Reason.String()
+		} else {
+			row.Outcome = r.Key.Outcome.String()
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+// NoticeRow renders a notice record for status.
+func NoticeRow(r NoticeRecord) NoticeStatusRow {
+	row := NoticeStatusRow{Kind: r.Key.Kind.String(), Check: r.Key.Check, Count: r.Count, Unsent: r.Unsent(), Last: r.Last}
+	if r.Key.Reason != 0 {
+		row.Reason = r.Key.Reason.String()
+	}
+	if r.Key.Outcome != 0 {
+		row.Outcome = r.Key.Outcome.String()
+	}
+	if r.Key.Effect != 0 {
+		row.Effect = r.Key.Effect.String()
+	}
+	return row
 }
 
 // IngressHealth is the in-memory ingress's admission state (ruling 9).
