@@ -357,6 +357,16 @@ func parsePHPShieldEventLine(line string) (*alert.Finding, bool) {
 			Details:  context,
 		}, false
 	case "EVAL_FATAL":
+		if phpShieldEvalSiteIsSystemCode(script) {
+			return &alert.Finding{
+				Severity: alert.Warning,
+				Check:    "php_shield_eval",
+				SourceIP: ip,
+				FilePath: script,
+				Message:  fmt.Sprintf("PHP Shield saw eval() fail in code run through a root-owned system script: %s", script),
+				Details:  strings.TrimPrefix(context+"\n"+phpShieldSystemEvalNote, "\n"),
+			}, false
+		}
 		return &alert.Finding{
 			Severity: alert.High,
 			Check:    "php_shield_eval",
