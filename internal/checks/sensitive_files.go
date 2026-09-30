@@ -43,6 +43,10 @@ var sensitiveWatchset = []string{
 
 const sensitiveFileBaselineKey = "_sensitive_file_hash:__baseline_complete"
 
+// sensitiveFileScheduleKeyPrefix keys the schedule fingerprint the periodic
+// check stores beside each cron.d file's content hash.
+const sensitiveFileScheduleKeyPrefix = "_sensitive_file_schedule:"
+
 // ExpandWatchset returns the absolute paths in the watchset, with globs
 // expanded against the given filesystem root. Non-existent paths drop
 // silently; the next refresh picks them up once they are created. root
@@ -130,7 +134,7 @@ func EvaluateSensitiveFileWriteSnapshot(path string, uid, pid uint32, comm strin
 		FilePath:  path,
 		Timestamp: now,
 	}
-	return rescoreSensitive(f, kind, content, pid, now), true
+	return rescoreSensitive(f, kind, content, pid, false, now), true
 }
 
 // EvaluateSensitiveFileAppearance returns a finding when a path no previous
@@ -138,13 +142,15 @@ func EvaluateSensitiveFileWriteSnapshot(path string, uid, pid uint32, comm strin
 // fragment, or user crontab.
 func EvaluateSensitiveFileAppearance(path string) (alert.Finding, bool) {
 	content, err := osFS.ReadFile(path)
-	return evaluateSensitiveWatchsetChange(path, "New sensitive system file appeared", content, err == nil)
+	return evaluateSensitiveWatchsetChange(path, "New sensitive system file appeared", content, err == nil, false)
 }
 
 // evaluateSensitiveWatchsetChange builds the finding both refresh-diff outcomes
 // share. Callers pass the bytes that produced the compared digest so a later
 // rewrite cannot change self-write suppression or cron-content scoring.
-func evaluateSensitiveWatchsetChange(path, summary string, content []byte, contentKnown bool) (alert.Finding, bool) {
+// scheduleOnly reports that those bytes differ from the previous snapshot
+// only in the time of day of cron.d daily jobs.
+func evaluateSensitiveWatchsetChange(path, summary string, content []byte, contentKnown, scheduleOnly bool) (alert.Finding, bool) {
 	kind := classifySensitive(path)
 	if kind == "" {
 		return alert.Finding{}, false
@@ -170,15 +176,18 @@ func evaluateSensitiveWatchsetChange(path, summary string, content []byte, conte
 	if kind == "cron" {
 		scoreContent = content
 	}
-	return rescoreSensitive(f, kind, scoreContent, 0, now), true
+	return rescoreSensitive(f, kind, scoreContent, 0, scheduleOnly, now), true
 }
 
 // SensitiveFileState is the stable identity of one watchset path. Regular-file
 // inode churn is deliberately excluded, while security metadata and symlink
-// targets remain visible.
+// targets remain visible. CronSchedule is the schedule fingerprint of a cron.d
+// file, taken from the same bytes as ContentDigest, and empty for every other
+// path.
 type SensitiveFileState struct {
 	ContentDigest string
 	PathIdentity  string
+	CronSchedule  string
 }
 
 // NextSensitiveDigests builds the state snapshot for a refresh cycle and
@@ -204,6 +213,7 @@ func NextSensitiveDigests(prev map[string]SensitiveFileState, paths []string) (m
 		if err == nil {
 			sum := sha256.Sum256(data)
 			state.ContentDigest = hex.EncodeToString(sum[:])
+			state.CronSchedule = cronScheduleFingerprint(path, data)
 			contents[path] = data
 		}
 		next[path] = state
@@ -290,7 +300,7 @@ func DiffSensitiveWatchset(prev, cur map[string]SensitiveFileState, contents map
 		content, contentKnown := contents[path]
 		switch {
 		case !known:
-			if f, emit := evaluateSensitiveWatchsetChange(path, "New sensitive system file appeared", content, contentKnown); emit {
+			if f, emit := evaluateSensitiveWatchsetChange(path, "New sensitive system file appeared", content, contentKnown, false); emit {
 				findings = append(findings, f)
 			}
 		case !sensitiveFileStateChanged(prevState, curState):
@@ -303,7 +313,11 @@ func DiffSensitiveWatchset(prev, cur map[string]SensitiveFileState, contents map
 			if prevState.PathIdentity != "" && curState.PathIdentity != "" && prevState.PathIdentity != curState.PathIdentity {
 				summary = "Path identity changed on sensitive system file"
 			}
-			if f, emit := evaluateSensitiveWatchsetChange(path, summary, content, contentKnown); emit {
+			// A metadata change is its own evidence; only a pure content
+			// change can be shown to have moved daily jobs and nothing else.
+			scheduleOnly := contentKnown && prevState.PathIdentity == curState.PathIdentity &&
+				cronScheduleUnchanged(prevState.CronSchedule, curState.CronSchedule)
+			if f, emit := evaluateSensitiveWatchsetChange(path, summary, content, contentKnown, scheduleOnly); emit {
 				findings = append(findings, f)
 			}
 		}
@@ -346,6 +360,12 @@ func CheckSensitiveFiles(_ context.Context, _ *config.Config, store *state.Store
 
 		key := "_sensitive_file_hash:" + path
 		prev, ok := store.GetRaw(key)
+		schedule := cronScheduleFingerprint(path, data)
+		scheduleKey := sensitiveFileScheduleKeyPrefix + path
+		prevSchedule, _ := store.GetRaw(scheduleKey)
+		if schedule != "" && prevSchedule != schedule {
+			store.SetRaw(scheduleKey, schedule)
+		}
 		if !ok {
 			store.SetRaw(key, hashHex)
 			if baselineComplete {
@@ -380,7 +400,8 @@ func CheckSensitiveFiles(_ context.Context, _ *config.Config, store *state.Store
 			FilePath:  path,
 			Timestamp: time.Now(),
 		}
-		findings = append(findings, rescoreSensitive(hashChange, kind, contentForScore, 0, time.Now()))
+		scheduleOnly := cronScheduleUnchanged(prevSchedule, schedule)
+		findings = append(findings, rescoreSensitive(hashChange, kind, contentForScore, 0, scheduleOnly, time.Now()))
 	}
 	if !baselineComplete {
 		store.SetRaw(sensitiveFileBaselineKey, "1")

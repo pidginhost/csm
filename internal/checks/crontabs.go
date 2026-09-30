@@ -151,26 +151,36 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 		hash := hashBytes(data)
 		key := fmt.Sprintf("_crond:%s", filepath.Base(path))
 		prev, exists := store.GetRaw(key)
+		// The fingerprint is stored beside the hash on every pass, so a file
+		// the check has seen once can show a later change to be a move of its
+		// daily jobs and nothing else.
+		schedule := cronScheduleFingerprint(path, data)
+		scheduleKey := cronDScheduleKeyPrefix + filepath.Base(path)
+		prevSchedule, _ := store.GetRaw(scheduleKey)
 		// The same file reaches the realtime write detector, which rescores
 		// a vendor-driven change instead of paging. Scoring the scheduled
 		// diff on its own left an upgrade or a panel maintenance run
 		// reporting High through whichever detector saw it first.
 		switch {
 		case exists && prev != hash:
+			scheduleOnly := cronScheduleUnchanged(prevSchedule, schedule)
 			findings = append(findings, rescoreSensitive(alert.Finding{
 				Severity: alert.High,
 				Check:    "crond_change",
 				Message:  fmt.Sprintf("Cron.d file modified: %s", path),
-			}, "cron", data, 0, time.Now()))
+			}, "cron", data, 0, scheduleOnly, time.Now()))
 		case !exists && cronDBaselined:
 			findings = append(findings, rescoreSensitive(alert.Finding{
 				Severity: alert.High,
 				Check:    "crond_change",
 				Message:  fmt.Sprintf("Cron.d file added: %s", path),
 				Details:  fmt.Sprintf("File: %s\nContent: %s", path, alert.RedactCommandLine(truncate(strings.TrimSpace(string(data)), cronDExcerptLen))),
-			}, "cron", data, 0, time.Now()))
+			}, "cron", data, 0, false, time.Now()))
 		}
 		store.SetRaw(key, hash)
+		if schedule != "" && prevSchedule != schedule {
+			store.SetRaw(scheduleKey, schedule)
+		}
 	}
 	if cronDBaselineComplete && ctx.Err() == nil {
 		store.SetRaw(cronDBaselineKey, "1")
@@ -182,6 +192,10 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 // cronDBaselineKey marks that /etc/cron.d was fully enumerated once; from
 // then on an unknown file is new rather than backlog.
 const cronDBaselineKey = "_crond:_baseline_complete"
+
+// cronDScheduleKeyPrefix keys the schedule fingerprint of each cron.d file,
+// stored beside its content hash.
+const cronDScheduleKeyPrefix = "_crond_schedule:"
 
 // cronDExcerptLen bounds the content quoted for a new cron.d file.
 const cronDExcerptLen = 300
