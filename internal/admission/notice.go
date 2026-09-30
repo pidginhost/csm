@@ -274,8 +274,14 @@ func (r NoticeRecord) Unsent() uint64 { return r.Count - r.Acked }
 // Add records one event at time at. A zero candidate adds no example; so
 // does a record whose examples are full or whose count has saturated.
 func (r NoticeRecord) Add(at time.Time, candidate CandidateID, transitions uint32) (NoticeRecord, error) {
+	if _, err := r.record(true); err != nil {
+		return r, err
+	}
 	if _, ok := unixNano(at); !ok {
 		return r, refuse(ReasonInvalid, "notice event has no time")
+	}
+	if at.Before(r.Last) || at.Before(r.Sent) {
+		return r, refuse(ReasonInvalid, "notice event time moved backward")
 	}
 	if candidate != "" {
 		if _, err := ParseCandidateID(string(candidate)); err != nil || transitions == 0 {
@@ -307,6 +313,9 @@ func (r NoticeRecord) Due(now time.Time) bool {
 // Ack records a delivery that covered the first count events, at time at.
 // A repeated or older acknowledgement changes nothing.
 func (r NoticeRecord) Ack(count uint64, at time.Time) (NoticeRecord, error) {
+	if _, err := r.record(true); err != nil {
+		return r, err
+	}
 	if count > r.Count {
 		return r, refuse(ReasonInvalid, "acknowledgement covers events the record does not hold")
 	}
@@ -315,6 +324,9 @@ func (r NoticeRecord) Ack(count uint64, at time.Time) (NoticeRecord, error) {
 	}
 	if _, ok := unixNano(at); !ok {
 		return r, refuse(ReasonInvalid, "acknowledgement has no time")
+	}
+	if at.Before(r.Last) || at.Before(r.Sent) {
+		return r, refuse(ReasonInvalid, "notice acknowledgement time moved backward")
 	}
 	r.Acked, r.Sent = count, at
 	var kept []NoticeExample
@@ -334,7 +346,7 @@ func (r NoticeRecord) Quiet(now time.Time) bool {
 	return !r.Key.Fixed() && r.Count == r.Acked && !r.Sent.IsZero() && !now.Before(r.Sent.Add(r.Key.Kind.Interval()))
 }
 
-const noticeRecordVersion = 1
+const noticeRecordVersion = 2
 
 type noticeExampleRecord struct {
 	Candidate   CandidateID `json:"c"`
@@ -343,11 +355,12 @@ type noticeExampleRecord struct {
 }
 
 type noticeRecordRecord struct {
-	V        uint8                 `json:"v"`
-	Kind     NoticeKind            `json:"kind"`
-	Reason   Reason                `json:"reason,omitempty"`
-	Outcome  Disposition           `json:"outcome,omitempty"`
-	Check    string                `json:"check,omitempty"`
+	V       uint8       `json:"v"`
+	Kind    NoticeKind  `json:"kind"`
+	Reason  Reason      `json:"reason,omitempty"`
+	Outcome Disposition `json:"outcome,omitempty"`
+	// Base64 bounds printable check names without JSON escape expansion.
+	Check    []byte                `json:"check,omitempty"`
 	Effect   Effect                `json:"effect,omitempty"`
 	Count    uint64                `json:"count,omitempty"`
 	Acked    uint64                `json:"acked,omitempty"`
@@ -357,16 +370,16 @@ type noticeRecordRecord struct {
 	Examples []noticeExampleRecord `json:"examples,omitempty"`
 }
 
-func (r NoticeRecord) record() (noticeRecordRecord, error) {
+func (r NoticeRecord) record(allowEmpty bool) (noticeRecordRecord, error) {
 	bad := func(detail string) (noticeRecordRecord, error) {
 		return noticeRecordRecord{}, refuse(ReasonInvalid, detail)
 	}
 	if err := r.Key.validate(); err != nil {
 		return noticeRecordRecord{}, err
 	}
-	rec := noticeRecordRecord{V: noticeRecordVersion, Kind: r.Key.Kind, Reason: r.Key.Reason, Outcome: r.Key.Outcome, Check: r.Key.Check, Effect: r.Key.Effect, Count: r.Count, Acked: r.Acked}
+	rec := noticeRecordRecord{V: noticeRecordVersion, Kind: r.Key.Kind, Reason: r.Key.Reason, Outcome: r.Key.Outcome, Check: []byte(r.Key.Check), Effect: r.Key.Effect, Count: r.Count, Acked: r.Acked}
 	if r.Count == 0 {
-		if !r.Key.Fixed() {
+		if !allowEmpty && !r.Key.Fixed() {
 			return bad("a keyed notice record has no event")
 		}
 		if r.Acked != 0 || !r.First.IsZero() || !r.Last.IsZero() || !r.Sent.IsZero() || len(r.Examples) != 0 {
@@ -385,8 +398,8 @@ func (r NoticeRecord) record() (noticeRecordRecord, error) {
 	}
 	if r.Acked > 0 {
 		var ok bool
-		if rec.Sent, ok = unixNano(r.Sent); !ok {
-			return bad("notice delivery time is not representable")
+		if rec.Sent, ok = unixNano(r.Sent); !ok || r.Sent.Before(r.First) {
+			return bad("notice delivery time is inconsistent")
 		}
 	}
 	if len(r.Examples) > MaxNoticeExamples {
@@ -404,7 +417,7 @@ func (r NoticeRecord) record() (noticeRecordRecord, error) {
 }
 
 func (r NoticeRecord) MarshalBinary() ([]byte, error) {
-	rec, err := r.record()
+	rec, err := r.record(false)
 	if err != nil {
 		return nil, err
 	}
@@ -418,7 +431,7 @@ func UnmarshalNoticeRecord(data []byte) (NoticeRecord, error) {
 		return NoticeRecord{}, err
 	}
 	r := NoticeRecord{
-		Key:   NoticeKey{Kind: rec.Kind, Reason: rec.Reason, Outcome: rec.Outcome, Check: rec.Check, Effect: rec.Effect},
+		Key:   NoticeKey{Kind: rec.Kind, Reason: rec.Reason, Outcome: rec.Outcome, Check: string(rec.Check), Effect: rec.Effect},
 		Count: rec.Count, Acked: rec.Acked, First: fromNano(rec.First), Last: fromNano(rec.Last), Sent: fromNano(rec.Sent),
 	}
 	for _, e := range rec.Examples {

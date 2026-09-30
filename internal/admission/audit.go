@@ -27,7 +27,7 @@ const (
 // auditKind is the outbox key kind of audit rows.
 const auditKind = 'a'
 
-const auditRowVersion = 1
+const auditRowVersion = 2
 
 // AuditRow is the audit record of one admitted transition of an attempt:
 // its reservation, its execution or its outcome. (Attempt.ID, Transition)
@@ -64,6 +64,9 @@ func NewAuditRow(c Candidate, a AttemptRecord, tier Tier, at time.Time) (AuditRo
 	if a.Attempt.Candidate != id {
 		return AuditRow{}, refuse(ReasonInvalid, "audit row joins an attempt to another candidate")
 	}
+	if a.Attempt.Seq != c.Attempts || !a.ExpiresAt.Equal(c.ExpiresAt) {
+		return AuditRow{}, refuse(ReasonInvalid, "audit row attempt does not match the candidate's current attempt")
+	}
 	r := AuditRow{
 		Attempt: a.Attempt, Transition: c.Transitions, State: a.State, Disposition: a.Disposition, Lane: a.Lane,
 		At: at, ExpiresAt: a.ExpiresAt, Kind: c.Key.Kind, Target: c.Key.Target, Check: c.Check,
@@ -74,23 +77,24 @@ func NewAuditRow(c Candidate, a AttemptRecord, tier Tier, at time.Time) (AuditRo
 }
 
 type auditRowRecord struct {
-	V           uint8        `json:"v"`
-	ID          ActionID     `json:"id"`
-	Candidate   CandidateID  `json:"candidate"`
-	Seq         uint32       `json:"seq"`
-	Transition  uint32       `json:"transition"`
-	State       State        `json:"state"`
-	Disposition Disposition  `json:"disposition,omitempty"`
-	Lane        Lane         `json:"lane,omitempty"`
-	At          int64        `json:"at"`
-	ExpiresAt   int64        `json:"expires_at"`
-	Kind        Kind         `json:"kind"`
-	Target      string       `json:"target"`
-	Check       string       `json:"check"`
-	FindingID   string       `json:"finding_id"`
-	Roots       []EvidenceID `json:"roots"`
-	Class       Class        `json:"class,omitempty"`
-	Severity    Severity     `json:"severity,omitempty"`
+	V           uint8       `json:"v"`
+	ID          ActionID    `json:"id"`
+	Candidate   CandidateID `json:"candidate"`
+	Seq         uint32      `json:"seq"`
+	Transition  uint32      `json:"transition"`
+	State       State       `json:"state"`
+	Disposition Disposition `json:"disposition,omitempty"`
+	Lane        Lane        `json:"lane,omitempty"`
+	At          int64       `json:"at"`
+	ExpiresAt   int64       `json:"expires_at"`
+	Kind        Kind        `json:"kind"`
+	Target      string      `json:"target"`
+	// Base64 bounds printable check names without JSON escape expansion.
+	Check     []byte       `json:"check"`
+	FindingID string       `json:"finding_id"`
+	Roots     []EvidenceID `json:"roots"`
+	Class     Class        `json:"class,omitempty"`
+	Severity  Severity     `json:"severity,omitempty"`
 }
 
 func (r AuditRow) record() (auditRowRecord, error) {
@@ -98,7 +102,7 @@ func (r AuditRow) record() (auditRowRecord, error) {
 	if err := r.Attempt.Validate(); err != nil {
 		return auditRowRecord{}, err
 	}
-	if r.Attempt.Seq > MaxAttempts || r.Transition == 0 {
+	if r.Attempt.Seq > MaxAttempts {
 		return bad("audit row names no transition of an admitted attempt")
 	}
 	switch r.State {
@@ -108,6 +112,16 @@ func (r AuditRow) record() (auditRowRecord, error) {
 	}
 	if !terminalDisposition(r.State, r.Disposition) {
 		return bad("audit row state and disposition disagree")
+	}
+	minimumTransition := 2 * r.Attempt.Seq
+	switch r.State {
+	case StateExecuting, StateFailed:
+		minimumTransition++
+	case StateVerified, StateUnknown:
+		minimumTransition += 2
+	}
+	if r.Transition < minimumTransition {
+		return bad("audit row has too few transitions for its attempt phase")
 	}
 	at, okAt := unixNano(r.At)
 	expires, okExp := unixNano(r.ExpiresAt)
@@ -119,6 +133,9 @@ func (r AuditRow) record() (auditRowRecord, error) {
 	}
 	if err := ValidateKindTarget(r.Kind, r.Target); err != nil {
 		return auditRowRecord{}, err
+	}
+	if r.Disposition == DispositionNarrowed && r.Kind != KindChallenge && r.Kind != KindBlockService {
+		return bad("only a challenge or service block narrows")
 	}
 	if !boundedToken(r.Check, 64) || !lowerHex(r.FindingID, 16) {
 		return bad("audit row check or finding link is malformed")
@@ -137,7 +154,7 @@ func (r AuditRow) record() (auditRowRecord, error) {
 	return auditRowRecord{
 		V: auditRowVersion, ID: r.Attempt.ID, Candidate: r.Attempt.Candidate, Seq: r.Attempt.Seq,
 		Transition: r.Transition, State: r.State, Disposition: r.Disposition, Lane: r.Lane, At: at,
-		ExpiresAt: expires, Kind: r.Kind, Target: r.Target.Key(), Check: r.Check, FindingID: r.FindingID,
+		ExpiresAt: expires, Kind: r.Kind, Target: r.Target.Key(), Check: []byte(r.Check), FindingID: r.FindingID,
 		Roots: r.Roots, Class: r.Tier.Class, Severity: r.Tier.Severity,
 	}, nil
 }
@@ -166,7 +183,7 @@ func UnmarshalAuditRow(data []byte) (AuditRow, error) {
 	r := AuditRow{
 		Transition: rec.Transition, State: rec.State, Disposition: rec.Disposition, Lane: rec.Lane,
 		At: fromNano(rec.At), ExpiresAt: fromNano(rec.ExpiresAt), Kind: rec.Kind, Target: target,
-		Check: rec.Check, FindingID: rec.FindingID, Roots: rec.Roots, Tier: Tier{Class: rec.Class, Severity: rec.Severity},
+		Check: string(rec.Check), FindingID: rec.FindingID, Roots: rec.Roots, Tier: Tier{Class: rec.Class, Severity: rec.Severity},
 	}
 	r.Attempt, err = NewAttempt(rec.Candidate, rec.Seq)
 	if err != nil || r.Attempt.ID != rec.ID {

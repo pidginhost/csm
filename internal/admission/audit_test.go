@@ -2,6 +2,7 @@ package admission
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -70,10 +71,11 @@ func TestAuditRowRoundTripsAndRefusesTampering(t *testing.T) {
 		t.Fatalf("round trip = %+v, %v\nwant %+v", back, err, row)
 	}
 	body := data[:len(data)-8]
+	prefix := []byte(fmt.Sprintf(`{"v":%d,`, auditRowVersion))
 	for name, tampered := range map[string][]byte{
 		"flipped byte":  func() []byte { d := bytes.Clone(data); d[10] ^= 1; return d }(),
-		"unknown field": resealForTest(bytes.Replace(body, []byte(`{"v":1,`), []byte(`{"v":1,"x":1,`), 1)),
-		"version 2":     resealForTest(bytes.Replace(body, []byte(`{"v":1,`), []byte(`{"v":2,`), 1)),
+		"unknown field": resealForTest(bytes.Replace(body, prefix, []byte(fmt.Sprintf(`{"v":%d,"x":1,`, auditRowVersion)), 1)),
+		"next version":  resealForTest(bytes.Replace(body, prefix, []byte(fmt.Sprintf(`{"v":%d,`, auditRowVersion+1)), 1)),
 		"other seq":     resealForTest(bytes.Replace(body, []byte(`"seq":1,`), []byte(`"seq":2,`), 1)),
 	} {
 		if _, err := UnmarshalAuditRow(tampered); err != ErrCorruptRecord {
@@ -102,8 +104,11 @@ func TestAuditRowRefusesInconsistentFields(t *testing.T) {
 		"no roots":            func(r *AuditRow) { r.Roots = nil },
 		"unsorted roots":      func(r *AuditRow) { r.Roots = []EvidenceID{testEvidenceID(2), testEvidenceID(1)} },
 		"half a tier":         func(r *AuditRow) { r.Tier = Tier{Class: ClassC1} },
-		"attempt past limit":  func(r *AuditRow) { r.Attempt, _ = NewAttempt(r.Attempt.Candidate, MaxAttempts+1) },
-		"relinked attempt":    func(r *AuditRow) { r.Attempt.ID = ActionID("act_" + strings.Repeat("0", 32)) },
+		"attempt past limit": func(r *AuditRow) {
+			r.Attempt, _ = NewAttempt(r.Attempt.Candidate, MaxAttempts+1)
+			r.Transition = math.MaxUint32
+		},
+		"relinked attempt": func(r *AuditRow) { r.Attempt.ID = ActionID("act_" + strings.Repeat("0", 32)) },
 	} {
 		r := good
 		r.Roots = append([]EvidenceID(nil), good.Roots...)
@@ -155,5 +160,106 @@ func TestAuditKeysOrderAnAttemptsTransitions(t *testing.T) {
 		if _, _, err := ParseAuditKey(bad); err == nil {
 			t.Errorf("malformed key %q parsed", bad)
 		}
+	}
+}
+
+func TestAuditRowSlotIncludesEscapedChecksAndSignedTimes(t *testing.T) {
+	c := largestCandidate(t)
+	id, err := c.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := NewAttempt(id, MaxAttempts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []string{strings.Repeat("&", 64), strings.Repeat(`"`, 64), strings.Repeat(`\`, 64)} {
+		row := AuditRow{
+			Attempt: a, Transition: math.MaxUint32, State: StateUnknown, Disposition: DispositionUnknown,
+			Lane: LaneCorroborated, At: time.Unix(0, math.MinInt64).UTC(), ExpiresAt: time.Unix(0, math.MinInt64).UTC(),
+			Kind: c.Key.Kind, Target: c.Key.Target, Check: check, FindingID: c.FindingID,
+			Roots: c.Roots, Tier: Tier{ClassC3, SeverityCritical},
+		}
+		data, err := row.MarshalBinary()
+		if err != nil || len(data) > MaxAuditRowBytes {
+			t.Errorf("escaped check %q: %d bytes, bound %d, error %v", check[:1], len(data), MaxAuditRowBytes, err)
+			continue
+		}
+		back, err := UnmarshalAuditRow(data)
+		if err != nil || !reflect.DeepEqual(back, row) {
+			t.Errorf("escaped check did not round trip: %+v, %v", back, err)
+		}
+	}
+}
+
+func TestAuditRowRejectsImpossibleAttemptTransitions(t *testing.T) {
+	c, a := reservedPair(t)
+	row, err := NewAuditRow(c, a, Tier{}, a.Reserved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		state State
+		first uint32
+	}{
+		{StateReserved, 6}, {StateExecuting, 7}, {StateVerified, 8}, {StateFailed, 7}, {StateUnknown, 8},
+	} {
+		r := row
+		r.Attempt, err = NewAttempt(a.Attempt.Candidate, MaxAttempts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.State, r.Disposition, r.Transition = tc.state, 0, tc.first-1
+		switch tc.state {
+		case StateVerified:
+			r.Disposition = DispositionApplied
+		case StateFailed:
+			r.Disposition = DispositionFailed
+		case StateUnknown:
+			r.Disposition = DispositionUnknown
+		}
+		if _, err := r.MarshalBinary(); err == nil {
+			t.Errorf("state %v accepted transition %d before its first possible transition %d", tc.state, r.Transition, tc.first)
+		}
+		r.Transition = tc.first
+		if _, err := r.MarshalBinary(); err != nil {
+			t.Errorf("state %v refused its first possible transition %d: %v", tc.state, tc.first, err)
+		}
+	}
+	row.State, row.Disposition, row.Transition = StateVerified, DispositionNarrowed, 4
+	if _, err := row.MarshalBinary(); err == nil {
+		t.Error("an address block claimed a narrowed outcome")
+	}
+}
+
+func TestNewAuditRowRejectsAnEarlierAttempt(t *testing.T) {
+	c, a := reservedPair(t)
+	c.Attempts, c.Transitions = 2, 5
+	if _, err := NewAuditRow(c, a, Tier{}, a.Reserved); err == nil {
+		t.Fatal("the current transition was attached to an earlier attempt")
+	}
+}
+
+func TestNewAuditRowRejectsConflictingExpiry(t *testing.T) {
+	c, a := reservedPair(t)
+	a.ExpiresAt = a.ExpiresAt.Add(time.Second)
+	if _, err := NewAuditRow(c, a, Tier{}, a.Reserved); err == nil {
+		t.Fatal("the audit row accepted an expiry different from its candidate")
+	}
+}
+
+func TestAuditRowRejectsUnversionedCheckEncoding(t *testing.T) {
+	c, a := reservedPair(t)
+	c.Check = "QUJD"
+	r, err := NewAuditRow(c, a, Tier{}, a.Reserved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := r.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UnmarshalAuditRow(legacyCheckRecord(t, data)); err != ErrCorruptRecord {
+		t.Errorf("accepted a legacy check that aliases a base64 check: %v", err)
 	}
 }

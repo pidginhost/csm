@@ -2,6 +2,7 @@ package admission
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"reflect"
 	"strings"
@@ -243,10 +244,11 @@ func TestNoticeRecordRoundTripsAndRefusesTampering(t *testing.T) {
 	}
 	data, _ := r.MarshalBinary()
 	body := data[:len(data)-8]
+	prefix := []byte(fmt.Sprintf(`{"v":%d,`, noticeRecordVersion))
 	for name, tampered := range map[string][]byte{
 		"flipped byte":  func() []byte { d := bytes.Clone(data); d[10] ^= 1; return d }(),
-		"unknown field": resealForTest(bytes.Replace(body, []byte(`{"v":1,`), []byte(`{"v":1,"x":1,`), 1)),
-		"version 2":     resealForTest(bytes.Replace(body, []byte(`{"v":1,`), []byte(`{"v":2,`), 1)),
+		"unknown field": resealForTest(bytes.Replace(body, prefix, []byte(fmt.Sprintf(`{"v":%d,"x":1,`, noticeRecordVersion)), 1)),
+		"next version":  resealForTest(bytes.Replace(body, prefix, []byte(fmt.Sprintf(`{"v":%d,`, noticeRecordVersion+1)), 1)),
 	} {
 		if _, err := UnmarshalNoticeRecord(tampered); err != ErrCorruptRecord {
 			t.Errorf("%s: err = %v, want ErrCorruptRecord", name, err)
@@ -307,5 +309,154 @@ func TestNoticeRecordFitsItsSlot(t *testing.T) {
 	}
 	if NoticeSlotBytes != NoticeKeyMaxLen+MaxNoticeRecordBytes || NoticeBytes/NoticeSlotBytes < 1000 {
 		t.Fatal("notice slots do not add up or the share holds too few keys")
+	}
+}
+
+func TestNoticeSlotIncludesEscapedChecksAndUnknownOutcomes(t *testing.T) {
+	far := time.Unix(0, math.MinInt64).UTC()
+	for _, check := range []string{strings.Repeat("&", 64), strings.Repeat(`"`, 64), strings.Repeat(`\`, 64)} {
+		for _, key := range []NoticeKey{
+			{Kind: NoticeWithheldWarning, Reason: ReasonIngressInterruption, Check: check, Effect: EffectChallenge},
+			{Kind: NoticeWithheldWarning, Outcome: DispositionUnknown, Check: check, Effect: EffectChallenge},
+		} {
+			r := NoticeRecord{Key: key, Count: math.MaxUint64, Acked: math.MaxUint64 - 21, First: far, Last: far, Sent: far}
+			for i := uint64(0); i < 20; i++ {
+				r.Examples = append(r.Examples, NoticeExample{testCandidateID(t, 15), math.MaxUint32, math.MaxUint64 - 20 + i})
+			}
+			data, err := r.MarshalBinary()
+			if err != nil || len(data) > MaxNoticeRecordBytes {
+				t.Errorf("check %q, outcome %v: %d bytes, bound %d, error %v", check[:1], key.Outcome, len(data), MaxNoticeRecordBytes, err)
+				continue
+			}
+			back, err := UnmarshalNoticeRecord(data)
+			if err != nil || !reflect.DeepEqual(back, r) {
+				t.Errorf("escaped check did not round trip: %+v, %v", back, err)
+			}
+		}
+	}
+}
+
+func TestNoticeMutationsRefuseDamagedReceivers(t *testing.T) {
+	good, err := NewNoticeRecord(NoticeKey{Kind: NoticeWithheld, Reason: ReasonPolicy}).Add(t0, testCandidateID(t, 1), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, damage := range map[string]func(*NoticeRecord){
+		"key": func(r *NoticeRecord) { r.Key.Kind = noticeKindEnd },
+		"count": func(r *NoticeRecord) {
+			r.Acked, r.Sent, r.Examples = 2, t0, nil
+		},
+		"first time": func(r *NoticeRecord) { r.First = time.Time{} },
+		"example":    func(r *NoticeRecord) { r.Examples[0].Ordinal = 2 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := good
+			r.Examples = append([]NoticeExample(nil), good.Examples...)
+			damage(&r)
+			before := r
+			before.Examples = append([]NoticeExample(nil), r.Examples...)
+			if got, err := r.Add(t0.Add(time.Second), "", 0); err == nil || !reflect.DeepEqual(got, before) || !reflect.DeepEqual(r, before) {
+				t.Errorf("Add did not refuse unchanged: %+v, %v", got, err)
+			}
+			if got, err := r.Ack(1, t0.Add(time.Second)); err == nil || !reflect.DeepEqual(got, before) || !reflect.DeepEqual(r, before) {
+				t.Errorf("Ack did not refuse unchanged: %+v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestNoticeMutationsRefuseBackwardTimes(t *testing.T) {
+	r, err := NewNoticeRecord(NoticeKey{Kind: NoticeWithheld, Reason: ReasonPolicy}).Add(t0, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, addErr := r.Add(t0.Add(-time.Second), "", 0); addErr == nil || !reflect.DeepEqual(got, r) {
+		t.Errorf("backward event was not refused unchanged: %+v, %v", got, addErr)
+	}
+	if got, ackErr := r.Ack(1, t0.Add(-time.Second)); ackErr == nil || !reflect.DeepEqual(got, r) {
+		t.Errorf("delivery before the event was not refused unchanged: %+v, %v", got, ackErr)
+	}
+	r, err = r.Add(t0, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err = r.Ack(1, t0.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, addErr := r.Add(t0.Add(time.Second), "", 0); addErr == nil || !reflect.DeepEqual(got, r) {
+		t.Errorf("an event before the previous delivery was not refused unchanged: %+v, %v", got, addErr)
+	}
+	if got, ackErr := r.Ack(2, t0.Add(time.Second)); ackErr == nil || !reflect.DeepEqual(got, r) {
+		t.Errorf("an acknowledgement before the previous delivery was not refused unchanged: %+v, %v", got, ackErr)
+	}
+	r, err = r.Add(t0.Add(time.Minute), "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.Ack(3, t0.Add(time.Second)); err == nil || !reflect.DeepEqual(got, r) {
+		t.Errorf("a later acknowledgement moved delivery backward: %+v, %v", got, err)
+	}
+}
+
+func TestNoticeCodecRejectsDeliveryBeforeFirstEvent(t *testing.T) {
+	r, err := NewNoticeRecord(NoticeKey{Kind: NoticeWithheld, Reason: ReasonPolicy}).Add(t0, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err = r.Ack(1, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := r.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	early := t0.Add(-time.Second)
+	body := bytes.Replace(data[:len(data)-8], []byte(fmt.Sprintf(`"sent":%d`, t0.UnixNano())), []byte(fmt.Sprintf(`"sent":%d`, early.UnixNano())), 1)
+	if _, err := UnmarshalNoticeRecord(resealForTest(body)); err != ErrCorruptRecord {
+		t.Errorf("decoder accepted delivery before the first event: %v", err)
+	}
+	r.Sent = early
+	if _, err := r.MarshalBinary(); err == nil {
+		t.Error("encoder accepted delivery before the first event")
+	}
+}
+
+// Version 1 stored checks as text. A base64-shaped old check must never
+// silently acquire a different identity when the encoding changes.
+func legacyCheckRecord(t *testing.T, data []byte) []byte {
+	t.Helper()
+	body := data[:len(data)-8]
+	versionEnd := bytes.IndexByte(body, ',')
+	if versionEnd < 0 {
+		t.Fatal("record has no version separator")
+	}
+	body = append([]byte(`{"v":1`), body[versionEnd:]...)
+	checkAt := bytes.Index(body, []byte(`"check":`))
+	if checkAt < 0 {
+		t.Fatal("record has no check")
+	}
+	checkAt += len(`"check":`)
+	checkEnd := bytes.IndexByte(body[checkAt:], ',')
+	if checkEnd < 0 {
+		t.Fatal("record has no field after check")
+	}
+	old := append([]byte(nil), body[:checkAt]...)
+	old = append(old, `"QUJD"`...)
+	return resealForTest(append(old, body[checkAt+checkEnd:]...))
+}
+
+func TestNoticeRejectsUnversionedCheckEncoding(t *testing.T) {
+	r, err := NewNoticeRecord(NoticeKey{Kind: NoticeWithheld, Reason: ReasonPolicy, Check: "QUJD", Effect: EffectAddress}).Add(t0, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := r.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UnmarshalNoticeRecord(legacyCheckRecord(t, data)); err != ErrCorruptRecord {
+		t.Errorf("accepted a legacy check that aliases a base64 check: %v", err)
 	}
 }
