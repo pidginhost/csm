@@ -52,6 +52,7 @@ var tokenDenialServices = map[string]bool{
 // "[<time>] info [cpaneld] <ip> PURGE <account>:<session> tokendenied ...".
 // The fields are matched by position so a reason text that mentions
 // tokendenied inside another purge line is not accepted.
+// cpsrvd records whole seconds; realtime correlation indexes that precision.
 func ParseSessionTokenDenial(line string) (SessionTokenDenial, bool) {
 	if !strings.HasPrefix(line, "[") {
 		return SessionTokenDenial{}, false
@@ -61,7 +62,7 @@ func ParseSessionTokenDenial(line string) (SessionTokenDenial, bool) {
 		return SessionTokenDenial{}, false
 	}
 	at, ok := parseCPanelLogTime(line[:end+1])
-	if !ok {
+	if !ok || at.Nanosecond() != 0 {
 		return SessionTokenDenial{}, false
 	}
 	fields := strings.Fields(line[end+1:])
@@ -109,7 +110,7 @@ func ParseStaleSessionRequest(line string) (StaleSessionRequest, bool) {
 		return StaleSessionRequest{}, false
 	}
 	at, err := time.Parse("01/02/2006:15:04:05 -0700", f[3][1:]+" "+strings.TrimSuffix(f[4], "]"))
-	if err != nil {
+	if err != nil || at.Nanosecond() != 0 {
 		return StaleSessionRequest{}, false
 	}
 	return StaleSessionRequest{IP: ip.String(), User: f[2], Token: token, At: at}, true
@@ -175,8 +176,5 @@ func (e StaleSessionEvidence) Explains(r StaleSessionRequest) bool {
 
 func withinStaleSessionWindow(a, b time.Time) bool {
 	gap := a.Sub(b)
-	if gap < 0 {
-		gap = -gap
-	}
-	return gap <= StaleSessionMatchWindow
+	return gap >= -StaleSessionMatchWindow && gap <= StaleSessionMatchWindow
 }

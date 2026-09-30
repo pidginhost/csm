@@ -227,6 +227,12 @@ behind the same address, is reported as before. API calls with a token or
 password carry no session URL and are reported at once. The periodic
 `api_auth_failures` check counts failures the same way.
 
+The wait covers both matching-window edges and the log watchers' polling
+delay. It ends at a fixed deadline. Evidence read after that
+deadline cannot erase a failure. Correlation evidence expires independently
+of alert delivery, and queue saturation is reported through the existing
+queue health counters and daemon warnings.
+
 Successful FTP logins over loopback do not raise an unfamiliar-address warning.
 Failed authentication remains reportable over loopback, including through local
 relays.

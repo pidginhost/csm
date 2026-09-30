@@ -1,15 +1,19 @@
 package daemon
 
 import (
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/queuehealth"
 )
 
-// Synthetic cpsrvd lines in the 2026-09-29 shape: a stale tab's page load
-// fails on its URL security token, cPanel purges the session for it.
+// Synthetic cpsrvd lines: a stale tab's page load fails on its URL security
+// token, and cPanel purges the session for it.
 const (
 	staleTabSessionLine = `198.51.100.7 - alice [04/12/2026:07:00:05 -0000] "GET /cpsess0123456789/execute/Themes/list HTTP/1.1" 401 0 "https://example.com:2083/" "Mozilla/5.0" "-" "-" 2083`
 	staleTabDeadLine    = `198.51.100.7 - - [04/12/2026:07:00:05 -0000] "GET /cpsess0123456789/execute/WebApp/list HTTP/1.1" 401 0 "https://example.com:2083/" "Mozilla/5.0" "-" "-" 2083`
@@ -26,6 +30,176 @@ func staleSessionAccessFindings(t *testing.T, line string) []alert.Finding {
 		t.Fatalf("fixture line produced %v, want one api_auth_failure_realtime", findings)
 	}
 	return findings
+}
+
+func TestStaleSession401LateEvidenceCannotEraseExpiredFinding(t *testing.T) {
+	for _, late := range []time.Duration{staleSession401Hold, staleSession401Hold + time.Second} {
+		t.Run(late.String(), func(t *testing.T) {
+			s := newStaleSession401s()
+			now := time.Date(2026, 4, 12, 7, 0, 6, 0, time.UTC)
+			_ = s.filter(staleTabSessionLine, staleSessionAccessFindings(t, staleTabSessionLine), now)
+			s.observeSessionLine(staleTabDenialLine, now.Add(late))
+			got := s.due(now.Add(late))
+			if len(got) != 1 || got[0].SourceIP != "198.51.100.7" {
+				t.Fatalf("expired finding erased by late denial: %+v", got)
+			}
+		})
+	}
+}
+
+func TestStaleSession401LateRejectionCannotEraseExpiredFinding(t *testing.T) {
+	s := newStaleSession401s()
+	now := time.Date(2026, 4, 12, 7, 0, 6, 0, time.UTC)
+	s.observeSessionLine(staleTabDenialLine, now)
+	_ = s.filter(staleTabDeadLine, staleSessionAccessFindings(t, staleTabDeadLine), now)
+	_ = s.filter(staleTabSessionLine, nil, now.Add(staleSession401Hold))
+	if got := s.due(now.Add(staleSession401Hold)); len(got) != 1 {
+		t.Fatalf("expired finding erased by late rejection: %+v", got)
+	}
+}
+
+func TestStaleSession401RetainsRejectionThroughAnonymousHold(t *testing.T) {
+	s := newStaleSession401s()
+	now := time.Date(2026, 4, 12, 7, 0, 0, 0, time.UTC)
+	page := strings.Replace(staleTabSessionLine, "07:00:05", "07:00:00", 1)
+	anonymous := strings.Replace(staleTabDeadLine, "07:00:05", "07:00:10", 1)
+	_ = s.filter(page, nil, now)
+	_ = s.filter(anonymous, staleSessionAccessFindings(t, anonymous), now.Add(12*time.Second))
+	if got := s.due(now.Add(19 * time.Second)); len(got) != 0 {
+		t.Fatalf("anonymous finding emitted before deadline: %+v", got)
+	}
+	// session_log fell behind, but its evidence still arrives before the
+	// anonymous request's deadline.
+	s.observeSessionLine(staleTabDenialLine, now.Add(20*time.Second))
+	if got := s.due(now.Add(12*time.Second + staleSession401Hold)); len(got) != 0 {
+		t.Fatalf("rejection expired before anonymous hold ended: %+v", got)
+	}
+}
+
+func TestStaleSession401AnonymousWaitsForOtherEdgeOfWindow(t *testing.T) {
+	s := newStaleSession401s()
+	now := time.Date(2026, 4, 12, 7, 0, 0, 0, time.UTC)
+	anonymous := strings.Replace(staleTabDeadLine, "07:00:05", "07:00:00", 1)
+	named := strings.Replace(staleTabSessionLine, "07:00:05", "07:00:10", 1)
+	_ = s.filter(anonymous, staleSessionAccessFindings(t, anonymous), now)
+	s.observeSessionLine(staleTabDenialLine, now.Add(5*time.Second))
+	if got := s.due(now.Add(9 * time.Second)); len(got) != 0 {
+		t.Fatalf("anonymous finding emitted before named evidence could arrive: %+v", got)
+	}
+	_ = s.filter(named, nil, now.Add(10*time.Second))
+	if got := s.due(now.Add(staleSession401Hold)); len(got) != 0 {
+		t.Fatalf("matching window-edge evidence did not explain anonymous request: %+v", got)
+	}
+}
+
+func TestStaleSession401FlushDoesNotBlockExpiryOnFullQueue(t *testing.T) {
+	d := &Daemon{
+		alertCh: make(chan alert.Finding, 1), stopCh: make(chan struct{}),
+		staleSession401: newStaleSession401s(),
+	}
+	d.alertCh <- alert.Finding{Check: "occupied"}
+	queue := queuehealth.New(1, time.Minute)
+	t.Cleanup(alert.RegisterQueue(d.alertCh, queue))
+	now := time.Date(2026, 4, 12, 7, 0, 6, 0, time.UTC)
+	_ = d.staleSession401.filter(guesserSessionLine, staleSessionAccessFindings(t, guesserSessionLine), now)
+	done := make(chan struct{})
+	go func() {
+		d.emitDueStaleSession401(now.Add(staleSession401Hold))
+		close(done)
+	}()
+	select {
+	case <-done:
+		if q := queue.Snapshot(time.Now()); q.DroppedTotal != 1 || q.Depth != 0 {
+			t.Fatalf("queue saturation lost accounting: %+v", q)
+		}
+	case <-time.After(time.Second):
+		close(d.stopCh)
+		<-done
+		t.Fatal("full alert queue blocked correlation expiry")
+	}
+}
+
+func TestStaleSession401FloodStorageExpires(t *testing.T) {
+	s := newStaleSession401s()
+	now := time.Date(2026, 4, 12, 7, 0, 6, 0, time.UTC)
+	findings := []alert.Finding{{Check: "api_auth_failure_realtime", SourceIP: "203.0.113.9"}}
+	for i := 0; i < 4096; i++ {
+		line := strings.Replace(guesserSessionLine, "0123456789", fmt.Sprintf("%010d", i), 1)
+		_ = s.filter(line, findings, now)
+	}
+	if got := s.due(now.Add(staleSession401Hold)); len(got) != 4096 {
+		t.Fatalf("reported %d flood findings, want 4096", len(got))
+	}
+	if len(s.held) != 0 || cap(s.held) != 0 {
+		t.Fatalf("expired flood still retains held storage: len=%d cap=%d", len(s.held), cap(s.held))
+	}
+	for i := 0; i < 4096; i++ {
+		line := strings.Replace(staleTabSessionLine, "0123456789", fmt.Sprintf("%010d", i), 1)
+		_ = s.filter(line, nil, now)
+	}
+	s.due(now.Add(staleSessionRejectionRetention))
+	if len(s.rejected) != 0 {
+		t.Fatalf("expired flood retains %d rejection groups", len(s.rejected))
+	}
+}
+
+func TestStaleSession401EvidenceBeforeDeadlineSurvivesDelayedFlush(t *testing.T) {
+	s := newStaleSession401s()
+	now := time.Date(2026, 4, 12, 7, 0, 6, 0, time.UTC)
+	_ = s.filter(staleTabDeadLine, staleSessionAccessFindings(t, staleTabDeadLine), now)
+	s.observeSessionLine(staleTabDenialLine, now.Add(time.Second))
+	_ = s.filter(staleTabSessionLine, nil, now.Add(staleSession401Hold-time.Nanosecond))
+	if got := s.due(now.Add(staleSession401Hold + time.Second)); len(got) != 0 {
+		t.Fatalf("timely evidence lost when flush ran late: %+v", got)
+	}
+}
+
+func TestStaleSession401ConcurrentWatchers(t *testing.T) {
+	s := newStaleSession401s()
+	now := time.Date(2026, 4, 12, 7, 0, 6, 0, time.UTC)
+	var wg sync.WaitGroup
+	for _, action := range []func(){
+		func() {
+			for i := 0; i < 100; i++ {
+				_ = s.filter(staleTabSessionLine, nil, now)
+				_ = s.filter(staleTabDeadLine, []alert.Finding{{Check: "api_auth_failure_realtime"}}, now)
+			}
+		},
+		func() {
+			for i := 0; i < 100; i++ {
+				s.observeSessionLine(staleTabDenialLine, now)
+			}
+		},
+		func() {
+			for i := 0; i < 100; i++ {
+				_ = s.due(now)
+			}
+		},
+	} {
+		wg.Go(action)
+	}
+	wg.Wait()
+	if got := s.due(now.Add(staleSession401Hold)); len(got) != 0 {
+		t.Fatalf("concurrent watchers failed to correlate stale tab: %+v", got)
+	}
+}
+
+func BenchmarkStaleSession401Flood(b *testing.B) {
+	for _, held := range []int{1000, 10000} {
+		b.Run(fmt.Sprint(held), func(b *testing.B) {
+			s := newStaleSession401s()
+			now := time.Date(2026, 4, 12, 7, 0, 6, 0, time.UTC)
+			s.observeSessionLine(staleTabDenialLine, now)
+			for i := 0; i < held; i++ {
+				_ = s.filter(guesserSessionLine, []alert.Finding{{Check: "api_auth_failure_realtime"}}, now)
+			}
+			line := strings.Replace(staleTabSessionLine, "alice", "bob", 1)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = s.filter(line, nil, now)
+			}
+		})
+	}
 }
 
 func checksOf(findings []alert.Finding) []string {

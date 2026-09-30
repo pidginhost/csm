@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -10,13 +12,11 @@ import (
 )
 
 // staleSession401Hold is how long a session-URL 401 waits for the evidence
-// that would explain it. cPanel writes the token denial at most
-// StaleSessionMatchWindow after the 401, and the access_log and session_log
-// watchers each poll every logWatcherPollInterval, so the session_log line
-// can be read up to one poll after the window closes; the second poll is
-// slack for the read itself. A real credential failure is reported this
-// much later than before, never dropped.
-const staleSession401Hold = checks.StaleSessionMatchWindow + 2*logWatcherPollInterval
+// that would explain it. An anonymous request may need a named request at
+// the opposite edge of the denial's match window. Allow both windows plus
+// one watcher poll and one poll of read slack. Unexplained failures leave
+// correlation at this deadline and retain the original finding.
+const staleSession401Hold = 2*checks.StaleSessionMatchWindow + 2*logWatcherPollInterval
 
 // staleSessionDenialRetention bounds memory only. Matching is by log time,
 // so keeping a denial longer never widens what it explains; it only has to
@@ -24,11 +24,9 @@ const staleSession401Hold = checks.StaleSessionMatchWindow + 2*logWatcherPollInt
 // live session, so the set stays small.
 const staleSessionDenialRetention = 10 * time.Minute
 
-// staleSessionRejectionRetention covers every request a rejected request
-// can explain: that request is read within one hold of it and then waits
-// one hold for the denial. Any client can make access_log lines, so this
-// also bounds memory under a flood.
-const staleSessionRejectionRetention = 2 * staleSession401Hold
+// Two requests explained by one denial can be two match windows apart.
+// Keep the rejection through the later request's watcher delay and hold.
+const staleSessionRejectionRetention = 2*checks.StaleSessionMatchWindow + 2*logWatcherPollInterval + staleSession401Hold
 
 // staleSession401s keeps a stale browser tab from being reported, and
 // blocked, as an API authentication failure. A tab left open after its
@@ -38,20 +36,24 @@ const staleSessionRejectionRetention = 2 * staleSession401Hold
 // separate watchers, so a session-URL 401 is held until the purge could
 // have been read, then reported unchanged if nothing explained it.
 type staleSession401s struct {
-	mu       sync.Mutex
-	denials  []observedTokenDenial
-	rejected []observedRejection
-	held     []heldAPI401
+	mu        sync.Mutex
+	denials   map[sessionEvidenceKey]observedExplanation
+	rejected  map[sessionEvidenceKey]map[string]observedExplanation
+	explained map[sessionEvidenceKey]observedExplanation
+	held      []heldAPI401
 }
 
-type observedTokenDenial struct {
-	denial checks.SessionTokenDenial
-	seen   time.Time
+// cPanel timestamps have second precision. Named evidence is keyed by
+// account, anonymous evidence by URL token; neither can cross an address.
+type sessionEvidenceKey struct {
+	ip   string
+	name string
+	at   int64
 }
 
-type observedRejection struct {
-	req  checks.StaleSessionRequest
-	seen time.Time
+type observedExplanation struct {
+	seen    time.Time
+	expires time.Time
 }
 
 type heldAPI401 struct {
@@ -61,7 +63,11 @@ type heldAPI401 struct {
 }
 
 func newStaleSession401s() *staleSession401s {
-	return &staleSession401s{}
+	return &staleSession401s{
+		denials:   make(map[sessionEvidenceKey]observedExplanation),
+		rejected:  make(map[sessionEvidenceKey]map[string]observedExplanation),
+		explained: make(map[sessionEvidenceKey]observedExplanation),
+	}
 }
 
 // filter sees every access_log line with the findings the handler made for
@@ -76,8 +82,19 @@ func (s *staleSession401s) filter(line string, findings []alert.Finding, now tim
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if req.User != "-" {
-		s.rejected = append(s.rejected, observedRejection{req: req, seen: now})
-		s.releaseExplainedLocked()
+		key := sessionEvidenceKey{ip: req.IP, name: req.User, at: req.At.Unix()}
+		if s.rejected[key] == nil {
+			s.rejected[key] = make(map[string]observedExplanation)
+		}
+		r := observedExplanation{seen: now, expires: now.Add(staleSessionRejectionRetention)}
+		rememberExplanation(s.rejected[key], req.Token, r)
+		window := int64(checks.StaleSessionMatchWindow / time.Second)
+		for at := key.at - window; at <= key.at+window; at++ {
+			dKey := sessionEvidenceKey{ip: req.IP, name: req.User, at: at}
+			if d, ok := s.denials[dKey]; ok && d.expires.After(now) {
+				s.explainTokenLocked(req.IP, req.Token, at, d, r)
+			}
+		}
 	}
 	out := findings[:0:0]
 	for _, f := range findings {
@@ -85,7 +102,7 @@ func (s *staleSession401s) filter(line string, findings []alert.Finding, now tim
 			out = append(out, f)
 			continue
 		}
-		if s.evidenceLocked().Explains(req) {
+		if s.explainsLocked(req, now, now) {
 			continue
 		}
 		if f.Timestamp.IsZero() {
@@ -96,8 +113,8 @@ func (s *staleSession401s) filter(line string, findings []alert.Finding, now tim
 	return out
 }
 
-// observeSessionLine records a token denial from session_log and releases
-// the held 401s the evidence now explains.
+// observeSessionLine joins a denial with matching user-named requests.
+// Held requests are resolved in batches by due, never rescanned per line.
 func (s *staleSession401s) observeSessionLine(line string, now time.Time) {
 	d, ok := checks.ParseSessionTokenDenial(line)
 	if !ok {
@@ -105,8 +122,17 @@ func (s *staleSession401s) observeSessionLine(line string, now time.Time) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.denials = append(s.denials, observedTokenDenial{denial: d, seen: now})
-	s.releaseExplainedLocked()
+	key := sessionEvidenceKey{ip: d.IP, name: d.Account, at: d.At.Unix()}
+	observed := observedExplanation{seen: now, expires: now.Add(staleSessionDenialRetention)}
+	rememberExplanation(s.denials, key, observed)
+	window := int64(checks.StaleSessionMatchWindow / time.Second)
+	for at := key.at - window; at <= key.at+window; at++ {
+		for token, r := range s.rejected[sessionEvidenceKey{ip: d.IP, name: d.Account, at: at}] {
+			if r.expires.After(now) {
+				s.explainTokenLocked(d.IP, token, key.at, observed, r)
+			}
+		}
+	}
 }
 
 // due returns the held findings nothing explained within their hold and
@@ -117,6 +143,15 @@ func (s *staleSession401s) due(now time.Time) []alert.Finding {
 	var out []alert.Finding
 	kept := s.held[:0]
 	for _, h := range s.held {
+		before := now
+		if !now.Before(h.due) {
+			// Evidence arriving at or after the deadline cannot retract a
+			// finding, even when the flush goroutine has not run yet.
+			before = h.due.Add(-time.Nanosecond)
+		}
+		if s.explainsLocked(h.req, h.due.Add(-staleSession401Hold), before) {
+			continue
+		}
 		if now.Before(h.due) {
 			kept = append(kept, h)
 			continue
@@ -125,58 +160,69 @@ func (s *staleSession401s) due(now time.Time) []alert.Finding {
 	}
 	clear(s.held[len(kept):])
 	s.held = kept
-
-	denialCutoff := now.Add(-staleSessionDenialRetention)
-	denials := s.denials[:0]
-	for _, d := range s.denials {
-		if d.seen.After(denialCutoff) {
-			denials = append(denials, d)
+	if len(s.held) == 0 {
+		s.held = nil
+	} else if cap(s.held) > 2*len(s.held) {
+		s.held = append([]heldAPI401(nil), s.held...)
+	}
+	pruneExplanations(s.denials, now)
+	pruneExplanations(s.explained, now)
+	for key, tokens := range s.rejected {
+		pruneExplanations(tokens, now)
+		if len(tokens) == 0 {
+			delete(s.rejected, key)
 		}
 	}
-	clear(s.denials[len(denials):])
-	s.denials = denials
-
-	rejectionCutoff := now.Add(-staleSessionRejectionRetention)
-	rejected := s.rejected[:0]
-	for _, r := range s.rejected {
-		if r.seen.After(rejectionCutoff) {
-			rejected = append(rejected, r)
-		}
-	}
-	clear(s.rejected[len(rejected):])
-	s.rejected = rejected
 	return out
 }
 
-func (s *staleSession401s) releaseExplainedLocked() {
-	if len(s.held) == 0 || len(s.denials) == 0 {
-		return
+func (s *staleSession401s) explainTokenLocked(ip, token string, at int64, d, r observedExplanation) {
+	joined := observedExplanation{seen: d.seen, expires: d.expires}
+	if r.seen.After(joined.seen) {
+		joined.seen = r.seen
 	}
-	evidence := s.evidenceLocked()
-	kept := s.held[:0]
-	for _, h := range s.held {
-		if !evidence.Explains(h.req) {
-			kept = append(kept, h)
-		}
+	if r.expires.Before(joined.expires) {
+		joined.expires = r.expires
 	}
-	clear(s.held[len(kept):])
-	s.held = kept
+	rememberExplanation(s.explained, sessionEvidenceKey{ip: ip, name: token, at: at}, joined)
 }
 
-func (s *staleSession401s) evidenceLocked() checks.StaleSessionEvidence {
-	var e checks.StaleSessionEvidence
-	if len(s.denials) == 0 {
-		return e
+func (s *staleSession401s) explainsLocked(req checks.StaleSessionRequest, start, before time.Time) bool {
+	evidence, name := s.denials, req.User
+	if req.User == "-" {
+		evidence, name = s.explained, req.Token
 	}
-	e.Denials = make([]checks.SessionTokenDenial, len(s.denials))
-	for i, d := range s.denials {
-		e.Denials[i] = d.denial
+	at := req.At.Unix()
+	window := int64(checks.StaleSessionMatchWindow / time.Second)
+	for second := at - window; second <= at+window; second++ {
+		e, ok := evidence[sessionEvidenceKey{ip: req.IP, name: name, at: second}]
+		if ok && !e.seen.After(before) && e.expires.After(start) {
+			return true
+		}
 	}
-	e.Rejected = make([]checks.StaleSessionRequest, len(s.rejected))
-	for i, r := range s.rejected {
-		e.Rejected[i] = r.req
+	return false
+}
+
+// Repeated lines in one logged second need one piece of evidence, rather
+// than one allocation per request. Preserve when it first became usable.
+func rememberExplanation[K comparable](entries map[K]observedExplanation, key K, observed observedExplanation) {
+	if old, ok := entries[key]; ok && old.expires.After(observed.seen) {
+		if old.seen.Before(observed.seen) {
+			observed.seen = old.seen
+		}
+		if old.expires.After(observed.expires) {
+			observed.expires = old.expires
+		}
 	}
-	return e
+	entries[key] = observed
+}
+
+func pruneExplanations[K comparable](entries map[K]observedExplanation, now time.Time) {
+	for key, e := range entries {
+		if !e.expires.After(now) {
+			delete(entries, key)
+		}
+	}
 }
 
 // cpanelSessionLogHandler feeds session_log to the password hijack detector
@@ -193,12 +239,17 @@ func (d *Daemon) cpanelAccessLogHandler(line string, cfg *config.Config) []alert
 	return d.staleSession401.filter(line, parseAccessLogLineEnhanced(line, cfg), time.Now())
 }
 
-// emitDueStaleSession401 sends the held findings nothing explained. It waits
-// for queue capacity like any producer outside a watcher; at shutdown the
-// findings still held are dropped with the rest of the pipeline.
+// Keep the same queue contract as LogWatcher: backpressure is counted and
+// logged without stopping expiry of attacker-controlled correlation state.
 func (d *Daemon) emitDueStaleSession401(now time.Time) {
+	dropped := 0
 	for _, f := range d.staleSession401.due(now) {
-		alert.Enqueue(d.alertCh, f, d.stopCh)
+		if !alert.TryEnqueue(d.alertCh, f) {
+			dropped++
+		}
+	}
+	if dropped > 0 {
+		fmt.Fprintf(os.Stderr, "[%s] Warning: alert channel full, dropped %d held cPanel API findings\n", ts(), dropped)
 	}
 }
 
@@ -210,8 +261,9 @@ func (d *Daemon) flushStaleSession401() {
 		select {
 		case <-d.stopCh:
 			return
-		case now := <-ticker.C:
-			d.emitDueStaleSession401(now)
+		case <-ticker.C:
+			// A queued tick can be old after a large batch was processed.
+			d.emitDueStaleSession401(time.Now())
 		}
 	}
 }

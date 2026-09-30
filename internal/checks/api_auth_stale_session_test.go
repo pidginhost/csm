@@ -45,16 +45,17 @@ func TestParseSessionTokenDenialAcceptsIPv6(t *testing.T) {
 
 func TestParseSessionTokenDenialRejectsOtherLines(t *testing.T) {
 	cases := map[string]string{
-		"logout":            `[2026-04-12 10:00:05 +0300] info [cpaneld] 198.51.100.7 PURGE alice:Sess1onNameAbCdEf logout`,
-		"cookie ip check":   `[2026-04-12 10:00:05 +0300] info [cpaneld] 198.51.100.7 PURGE alice:Sess1onNameAbCdEf badpass [cookie ip check: IP address has changed]`,
-		"reason in bracket": `[2026-04-12 10:00:05 +0300] info [cpaneld] 198.51.100.7 PURGE alice:Sess1onNameAbCdEf badpass [tokendenied]`,
-		"password change":   `[2026-04-12 10:00:05 +0300] info [security] internal PURGE alice:Sess1onNameAbCdEf password_change`,
-		"internal source":   `[2026-04-12 10:00:05 +0300] info [cpaneld] internal PURGE alice:Sess1onNameAbCdEf tokendenied [Too many token failures (3/3)]`,
-		"admin service":     `[2026-04-12 10:00:05 +0300] info [xml-api] 198.51.100.7 PURGE alice:Sess1onNameAbCdEf tokendenied [Too many token failures (3/3)]`,
-		"new session":       `[2026-04-12 10:00:05 +0300] info [cpaneld] 198.51.100.7 NEW alice:Sess1onNameAbCdEf address=198.51.100.7,app=cpaneld,method=handle_form_login`,
-		"no session name":   `[2026-04-12 10:00:05 +0300] info [cpaneld] 198.51.100.7 PURGE alice tokendenied [Too many token failures (3/3)]`,
-		"no timestamp":      `info [cpaneld] 198.51.100.7 PURGE alice:Sess1onNameAbCdEf tokendenied [Too many token failures (3/3)]`,
-		"text before stamp": `x [2026-04-12 10:00:05 +0300] info [cpaneld] 198.51.100.7 PURGE alice:Sess1onNameAbCdEf tokendenied`,
+		"logout":               `[2026-04-12 10:00:05 +0300] info [cpaneld] 198.51.100.7 PURGE alice:Sess1onNameAbCdEf logout`,
+		"cookie ip check":      `[2026-04-12 10:00:05 +0300] info [cpaneld] 198.51.100.7 PURGE alice:Sess1onNameAbCdEf badpass [cookie ip check: IP address has changed]`,
+		"reason in bracket":    `[2026-04-12 10:00:05 +0300] info [cpaneld] 198.51.100.7 PURGE alice:Sess1onNameAbCdEf badpass [tokendenied]`,
+		"password change":      `[2026-04-12 10:00:05 +0300] info [security] internal PURGE alice:Sess1onNameAbCdEf password_change`,
+		"internal source":      `[2026-04-12 10:00:05 +0300] info [cpaneld] internal PURGE alice:Sess1onNameAbCdEf tokendenied [Too many token failures (3/3)]`,
+		"admin service":        `[2026-04-12 10:00:05 +0300] info [xml-api] 198.51.100.7 PURGE alice:Sess1onNameAbCdEf tokendenied [Too many token failures (3/3)]`,
+		"new session":          `[2026-04-12 10:00:05 +0300] info [cpaneld] 198.51.100.7 NEW alice:Sess1onNameAbCdEf address=198.51.100.7,app=cpaneld,method=handle_form_login`,
+		"no session name":      `[2026-04-12 10:00:05 +0300] info [cpaneld] 198.51.100.7 PURGE alice tokendenied [Too many token failures (3/3)]`,
+		"no timestamp":         `info [cpaneld] 198.51.100.7 PURGE alice:Sess1onNameAbCdEf tokendenied [Too many token failures (3/3)]`,
+		"text before stamp":    `x [2026-04-12 10:00:05 +0300] info [cpaneld] 198.51.100.7 PURGE alice:Sess1onNameAbCdEf tokendenied`,
+		"fractional timestamp": strings.Replace(staleSessionDeniedLine, "10:00:05", "10:00:05.5", 1),
 	}
 	for name, line := range cases {
 		if d, ok := ParseSessionTokenDenial(line); ok {
@@ -112,15 +113,16 @@ func TestParseStaleSessionRequestReadsSessionURL401(t *testing.T) {
 
 func TestParseStaleSessionRequestRejectsOtherRequests(t *testing.T) {
 	cases := map[string]string{
-		"token api path":    staleSessionAccessLine("198.51.100.7", "-", "04/12/2026:07:00:05", "/execute/Themes/list", "401"),
-		"json-api no token": staleSessionAccessLine("198.51.100.7", "-", "04/12/2026:07:00:05", "/json-api/listaccts", "401"),
-		"forbidden":         staleSessionAccessLine("198.51.100.7", "-", "04/12/2026:07:00:05", staleTabPath, "403"),
-		"success":           staleSessionAccessLine("198.51.100.7", "alice", "04/12/2026:07:00:05", staleTabPath, "200"),
-		"bad token shape":   staleSessionAccessLine("198.51.100.7", "-", "04/12/2026:07:00:05", "/cpsessabc/execute/Themes/list", "401"),
-		"token only":        staleSessionAccessLine("198.51.100.7", "-", "04/12/2026:07:00:05", "/cpsess0123456789", "401"),
-		"no timestamp":      `198.51.100.7 - - "GET /cpsess0123456789/execute/Themes/list HTTP/1.1" 401 0`,
-		"apache timestamp":  `198.51.100.7 - - [12/Apr/2026:07:00:05 +0000] "GET /cpsess0123456789/execute/Themes/list HTTP/1.1" 401 0`,
-		"bad address":       staleSessionAccessLine("host.example", "-", "04/12/2026:07:00:05", staleTabPath, "401"),
+		"token api path":       staleSessionAccessLine("198.51.100.7", "-", "04/12/2026:07:00:05", "/execute/Themes/list", "401"),
+		"json-api no token":    staleSessionAccessLine("198.51.100.7", "-", "04/12/2026:07:00:05", "/json-api/listaccts", "401"),
+		"forbidden":            staleSessionAccessLine("198.51.100.7", "-", "04/12/2026:07:00:05", staleTabPath, "403"),
+		"success":              staleSessionAccessLine("198.51.100.7", "alice", "04/12/2026:07:00:05", staleTabPath, "200"),
+		"bad token shape":      staleSessionAccessLine("198.51.100.7", "-", "04/12/2026:07:00:05", "/cpsessabc/execute/Themes/list", "401"),
+		"token only":           staleSessionAccessLine("198.51.100.7", "-", "04/12/2026:07:00:05", "/cpsess0123456789", "401"),
+		"no timestamp":         `198.51.100.7 - - "GET /cpsess0123456789/execute/Themes/list HTTP/1.1" 401 0`,
+		"apache timestamp":     `198.51.100.7 - - [12/Apr/2026:07:00:05 +0000] "GET /cpsess0123456789/execute/Themes/list HTTP/1.1" 401 0`,
+		"bad address":          staleSessionAccessLine("host.example", "-", "04/12/2026:07:00:05", staleTabPath, "401"),
+		"fractional timestamp": staleSessionAccessLine("198.51.100.7", "-", "04/12/2026:07:00:05.5", staleTabPath, "401"),
 	}
 	for name, line := range cases {
 		if r, ok := ParseStaleSessionRequest(line); ok {
@@ -200,6 +202,15 @@ func TestStaleSessionEvidenceEmptyExplainsNothing(t *testing.T) {
 	}
 }
 
+func TestStaleSessionEvidenceRejectsDistantLogTimes(t *testing.T) {
+	e := staleSessionEvidence(t)
+	r := e.Rejected[0]
+	r.At = time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)
+	if e.Explains(r) {
+		t.Fatal("distant log time overflowed into the matching window")
+	}
+}
+
 // staleSessionLogs serves the access_log and session_log fixtures that
 // CheckAPIAuthFailures reads.
 func staleSessionLogs(t *testing.T, access, session []string) {
@@ -225,8 +236,7 @@ func staleSessionLogs(t *testing.T, access, session []string) {
 	})
 }
 
-// The 2026-09-29 shape: one page load from a stale tab, thirteen 401s in one
-// second, cPanel purging the session for token failures in that second.
+// One stale-tab page load fails while cPanel purges its session.
 func staleSessionBurst(ip string) []string {
 	var lines []string
 	for i := 0; i < 6; i++ {
