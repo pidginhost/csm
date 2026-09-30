@@ -97,11 +97,11 @@ func TestDoctorChecksWarnOnReservePressure(t *testing.T) {
 		t.Fatalf("pinned outcomes: %+v", row)
 	}
 	s = healthyStatus()
-	s.Storage.RecoveryRoom = uint64(MaxRecoveryNeed) - 1
+	s.Storage.RecoveryRoom = MaxRecoveryNeed - 1
 	if row := rowsByName(DoctorChecks(s, nil, t0))["admission recovery reserve"]; row.Status != DoctorWarn {
 		t.Fatalf("no room for the largest reservation: %+v", row)
 	}
-	s.Storage.RecoveryRoom = uint64(MaxRecoveryNeed)
+	s.Storage.RecoveryRoom = MaxRecoveryNeed
 	if row := rowsByName(DoctorChecks(s, nil, t0))["admission recovery reserve"]; row.Status != DoctorOK {
 		t.Fatalf("room for the largest reservation: %+v", row)
 	}

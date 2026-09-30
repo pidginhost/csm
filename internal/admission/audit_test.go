@@ -146,6 +146,9 @@ func TestAuditKeysOrderAnAttemptsTransitions(t *testing.T) {
 	c, a := reservedPair(t)
 	row, _ := NewAuditRow(c, a, Tier{}, a.Reserved)
 	k := row.Key()
+	if id := row.ID(); id != (AuditID{Action: a.Attempt.ID, Transition: 2}) || !bytes.Equal(id.Key(), k) {
+		t.Fatalf("id %+v", id)
+	}
 	if len(k) != AuditKeyLen || !bytes.HasPrefix(k, AuditPrefix(a.Attempt.ID)) {
 		t.Fatalf("key %q", k)
 	}

@@ -195,13 +195,25 @@ func UnmarshalAuditRow(data []byte) (AuditRow, error) {
 	return r, nil
 }
 
+// AuditID names one row: the attempt and the candidate's transition.
+type AuditID struct {
+	Action     ActionID
+	Transition uint32
+}
+
+// ID is the row's name.
+func (r AuditRow) ID() AuditID { return AuditID{Action: r.Attempt.ID, Transition: r.Transition} }
+
+// Key is the outbox key of the row id names.
+func (id AuditID) Key() []byte {
+	return binary.BigEndian.AppendUint32(AuditPrefix(id.Action), id.Transition)
+}
+
 // AuditPrefix is the key prefix every row of one attempt shares.
 func AuditPrefix(id ActionID) []byte { return append([]byte{auditKind}, id...) }
 
 // Key is the row's outbox key. Rows of one attempt sort by transition.
-func (r AuditRow) Key() []byte {
-	return binary.BigEndian.AppendUint32(AuditPrefix(r.Attempt.ID), r.Transition)
-}
+func (r AuditRow) Key() []byte { return r.ID().Key() }
 
 // ParseAuditKey splits a row key into its action and transition.
 func ParseAuditKey(k []byte) (ActionID, uint32, error) {

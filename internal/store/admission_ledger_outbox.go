@@ -33,8 +33,9 @@ func putFixedNotices(tx *bolt.Tx) error {
 
 // upgradeLedgerToSchemaFive adds the outbox and the outcome buckets to a
 // schema 4 ledger inside the opening transaction. The outbox starts with
-// the fixed notice records, charged to the reserve; no outcome is invented
-// for earlier transitions. This upgrade completes the chain and records the
+// the fixed notice records, charged to the reserve, and holds the slots of
+// the rows outstanding attempts may still write; no row or outcome is
+// invented for earlier transitions. This upgrade completes the chain and records the
 // schema.
 func upgradeLedgerToSchemaFive(tx *bolt.Tx) error {
 	for _, name := range admissionOutboxBuckets {
@@ -47,6 +48,17 @@ func upgradeLedgerToSchemaFive(tx *bolt.Tx) error {
 		return err
 	}
 	s.NoticeRecords = admission.FixedNotices
+	// Outstanding attempts will write the rows of their remaining steps.
+	if err = tx.Bucket([]byte(admissionAttemptsBucket)).ForEach(func(_, v []byte) error {
+		a, decodeErr := admission.UnmarshalAttempt(v)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		s.AuditSlots += futureAuditSlots(a.State)
+		return nil
+	}); err != nil {
+		return err
+	}
 	if err = putStorageState(tx, s); err != nil {
 		return err
 	}
@@ -58,14 +70,16 @@ func upgradeLedgerToSchemaFive(tx *bolt.Tx) error {
 
 // proveOutbox checks every outbox row against the storage record: each
 // notice record decodes under its own key and the fixed ones exist, each
-// audit row decodes under its own key and belongs to a recorded attempt,
-// and the record counts exactly the rows stored.
+// audit row decodes under its own key and belongs to a recorded attempt
+// and a transition its candidate made, and the record counts exactly the
+// rows stored and the slots outstanding attempts hold.
 func proveOutbox(tx *bolt.Tx, s admission.StorageState) error {
 	fixed := map[admission.NoticeKey]bool{}
 	for _, k := range admission.FixedNoticeKeys() {
 		fixed[k] = true
 	}
 	var notices, rows uint64
+	perStep := map[admission.ActionID]map[admission.State]bool{}
 	err := tx.Bucket([]byte(admissionOutboxBucket)).ForEach(func(k, v []byte) error {
 		if v == nil || len(k) == 0 {
 			return admission.ErrCorruptRecord
@@ -87,9 +101,24 @@ func proveOutbox(tx *bolt.Tx, s admission.StorageState) error {
 			if err != nil || !bytes.Equal(row.Key(), k) {
 				return admission.ErrCorruptRecord
 			}
-			if _, err = loadAttempt(tx, row.Attempt.ID); err != nil {
+			a, err := loadAttempt(tx, row.Attempt.ID)
+			if err != nil {
 				return corruptRecord(err)
 			}
+			c, err := loadCandidate(tx, row.Attempt.Candidate)
+			if err != nil || row.Transition > c.Transitions {
+				return admission.ErrCorruptRecord
+			}
+			if !auditStepMatches(row, a) {
+				return admission.ErrCorruptRecord
+			}
+			if perStep[row.Attempt.ID] == nil {
+				perStep[row.Attempt.ID] = map[admission.State]bool{}
+			}
+			if perStep[row.Attempt.ID][row.State] {
+				return admission.ErrCorruptRecord
+			}
+			perStep[row.Attempt.ID][row.State] = true
 			rows++
 		default:
 			return admission.ErrCorruptRecord
@@ -99,7 +128,20 @@ func proveOutbox(tx *bolt.Tx, s admission.StorageState) error {
 	if err != nil {
 		return err
 	}
-	if len(fixed) != 0 || notices != s.NoticeRecords || rows != s.AuditSlots {
+	// Each attempt holds a slot for every row it wrote and every row it may
+	// still write, and has written no more rows than steps it took.
+	future := uint64(0)
+	if err = tx.Bucket([]byte(admissionAttemptsBucket)).ForEach(func(_, v []byte) error {
+		a, decodeErr := admission.UnmarshalAttempt(v)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		future += futureAuditSlots(a.State)
+		return nil
+	}); err != nil {
+		return err
+	}
+	if len(fixed) != 0 || notices != s.NoticeRecords || rows+future != s.AuditSlots {
 		return admission.ErrCorruptRecord
 	}
 	return nil

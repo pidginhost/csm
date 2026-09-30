@@ -398,6 +398,8 @@ func retirableHistory(b *testing.B, n int) *ledgerFixture {
 			b.Fatal(err)
 		}
 	}
+	// Retirement waits for the audit consumer's acknowledgement.
+	f.ackAll()
 	return f
 }
 

@@ -56,13 +56,15 @@ func historyCostOf(tx *bolt.Tx, c admission.Candidate) (uint32, error) {
 	return admission.HistoryCost(c, sizes)
 }
 
-// putHistoryEntry stores an entry with its retirement keys.
+// putHistoryEntry stores an entry with its retirement keys. An ended
+// entry gets them only once its candidate's audit rows are acknowledged
+// (spec 5.4).
 func putHistoryEntry(tx *bolt.Tx, id admission.CandidateID, h admission.HistoryEntry) error {
 	data, err := h.MarshalBinary()
 	if err != nil {
 		return err
 	}
-	keys, err := h.RetireKeys(id)
+	keys, err := retireKeysOf(tx, id, h)
 	if err != nil {
 		return err
 	}
@@ -73,6 +75,19 @@ func putHistoryEntry(tx *bolt.Tx, id admission.CandidateID, h admission.HistoryE
 		}
 	}
 	return tx.Bucket([]byte(admissionHistoryBucket)).Put([]byte(id), data)
+}
+
+// retireKeysOf is the retirement keys entry h of candidate id holds now:
+// none while any of its audit rows waits for acknowledgement.
+func retireKeysOf(tx *bolt.Tx, id admission.CandidateID, h admission.HistoryEntry) ([][]byte, error) {
+	keys, err := h.RetireKeys(id)
+	if err != nil || len(keys) == 0 {
+		return keys, err
+	}
+	if pending, err := auditPending(tx, id); err != nil || pending {
+		return nil, err
+	}
+	return keys, nil
 }
 
 // upgradeLedgerToSchemaFour adds storage accounting to a schema 3 ledger
@@ -576,8 +591,9 @@ func loadHistoryEntry(tx *bolt.Tx, id admission.CandidateID) (admission.HistoryE
 // chargeHistory charges an admitted candidate's history to the allowance of
 // the lane it was admitted on: what its history cost grew by since its last
 // reservation, from the lane's credit and within its allowance. A
-// reservation is refused while the candidate would not fit the recovery
-// reserve if its outcome were unresolved.
+// reservation is refused while the candidate, if its outcome were
+// unresolved, and its attempt's audit rows would not fit the recovery
+// reserve.
 func (q *queueTx) chargeHistory(id admission.CandidateID, c admission.Candidate, lane admission.Lane) error {
 	cost, err := historyCostOf(q.tx, c)
 	if err != nil {
@@ -596,7 +612,7 @@ func (q *queueTx) chargeHistory(id admission.CandidateID, c admission.Candidate,
 	}
 	if room, roomErr := q.recoveryRoom(); roomErr != nil {
 		return roomErr
-	} else if uint64(max(cost, h.Charged())) > room {
+	} else if uint64(max(cost, h.Charged()))+admission.AttemptAuditBytes > room {
 		err = refusal(admission.ReasonPendingRecovery, "outstanding outcomes fill the recovery reserve")
 		return err
 	}
@@ -774,8 +790,8 @@ func (q *queueTx) retire(id admission.CandidateID, key []byte) error {
 	return nil
 }
 
-// historyNeed is what reserving lc now would charge its lane's history, and
-// whether its details would fit the recovery reserve.
+// historyNeed is what reserving lc now would charge its lane's history,
+// the reserve room the reservation needs, and whether that fits.
 func (q *queueTx) historyNeed(lc liveCandidate, room uint64) (uint32, uint32, bool, error) {
 	cost, err := historyCostOf(q.tx, lc.c)
 	if err != nil {
@@ -788,7 +804,7 @@ func (q *queueTx) historyNeed(lc liveCandidate, room uint64) (uint32, uint32, bo
 	if lc.c.Attempts > 0 && !found {
 		return 0, 0, false, admission.ErrCorruptRecord
 	}
-	recovery := max(cost, h.Charged())
+	recovery := max(cost, h.Charged()) + admission.AttemptAuditBytes
 	fits := uint64(recovery) <= room
 	if cost <= h.Charged() {
 		return 0, recovery, fits, nil
@@ -1056,7 +1072,7 @@ func proveStorageLinks(tx *bolt.Tx) error {
 			}
 		}
 		history[string(k)] = true
-		retire, err := h.RetireKeys(admission.CandidateID(k))
+		retire, err := retireKeysOf(tx, admission.CandidateID(k), h)
 		if err != nil {
 			return err
 		}

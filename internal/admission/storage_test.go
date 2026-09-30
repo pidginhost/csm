@@ -78,7 +78,7 @@ func TestStorageStateStartsFull(t *testing.T) {
 	if s.General.Used != 0 || s.Reserved.Used != 0 || s.Recovery != 0 || s.Ended != (RingState{}) || s.Loose != (RingState{}) {
 		t.Fatalf("new state is not empty: %+v", s)
 	}
-	if s.NoticeRecords != FixedNotices || s.AuditSlots != 0 || s.OutboxBytes() != uint64(FixedNotices*NoticeSlotBytes) {
+	if s.NoticeRecords != FixedNotices || s.AuditSlots != 0 || s.OutboxBytes() != FixedNotices*NoticeSlotBytes {
 		t.Fatalf("new outbox usage: %+v", s)
 	}
 	var upgraded StorageState
@@ -321,7 +321,7 @@ func TestStorageStateCodec(t *testing.T) {
 	s.General.Used, s.Reserved.Used, s.Recovery = 123456, 789, 42
 	s.Ended, s.Loose = RingState{Count: 3, Last: 9}, RingState{Count: MaxLooseEvidence, Last: 1 << 40}
 	s.AuditSlots, s.NoticeRecords = MaxAuditSlots, MaxNoticeRecords
-	if s.OutboxBytes() != MaxAuditSlots*uint64(AuditSlotBytes)+MaxNoticeRecords*uint64(NoticeSlotBytes) {
+	if s.OutboxBytes() != MaxAuditSlots*AuditSlotBytes+MaxNoticeRecords*NoticeSlotBytes {
 		t.Fatalf("outbox bytes %d", s.OutboxBytes())
 	}
 	data, err := s.MarshalBinary()
@@ -412,5 +412,27 @@ func TestStorageStateSurvivesAWeekOfFlood(t *testing.T) {
 	}
 	if s.General.Used == 0 || len(fifo) == 0 {
 		t.Fatal("the flood admitted nothing")
+	}
+}
+
+func TestStorageStateHoldsAuditSlots(t *testing.T) {
+	s := NewStorageState()
+	held, err := s.HoldAudit(AuditStepsPerAttempt)
+	if err != nil || held.AuditSlots != AuditStepsPerAttempt || held.OutboxBytes() != s.OutboxBytes()+AttemptAuditBytes {
+		t.Fatalf("hold = %+v, %v", held, err)
+	}
+	if back, err := held.ReleaseAudit(AuditStepsPerAttempt); err != nil || back != s {
+		t.Fatalf("release = %+v, %v", back, err)
+	}
+	if again, err := held.ReleaseAudit(AuditStepsPerAttempt + 1); err == nil || again != held {
+		t.Fatal("released more slots than held")
+	}
+	full := s
+	full.AuditSlots = MaxAuditSlots - 1
+	if next, err := full.HoldAudit(1); err != nil || next.AuditSlots != MaxAuditSlots {
+		t.Fatalf("the last slot: %+v, %v", next, err)
+	}
+	if next, err := full.HoldAudit(2); err == nil || next != full {
+		t.Fatal("held beyond the reserve")
 	}
 }

@@ -175,7 +175,9 @@ func TestAdmissionLedgerRecoveryIncludesOutstandingAttempts(t *testing.T) {
 	f := newLedgerFixture(t)
 	ids := f.fill(2, evidenceSpec{})
 	cost := f.cost(ids[0])
-	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, uint64(cost)) })
+	// Room for one reservation's history and two attempts' rows: the
+	// second reservation is refused by the first one's history hold alone.
+	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, uint64(cost)+2*admission.AttemptAuditBytes) })
 	_, a, granted, err := f.l.Reserve(ids[0], admission.LaneGeneral, f.wall.Add(time.Hour))
 	if err != nil || !granted {
 		t.Fatalf("first reservation: %v %v", granted, err)
@@ -189,6 +191,9 @@ func TestAdmissionLedgerRecoveryIncludesOutstandingAttempts(t *testing.T) {
 	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
 		t.Fatal(err)
 	}
+	// Unacknowledged rows keep their slots (ruling 2): the consumer
+	// delivers them first.
+	f.ackAll()
 	if _, _, granted, err = f.l.Reserve(ids[1], admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil || !granted {
 		t.Fatalf("proven failure did not release prospective recovery room: %v %v", granted, err)
 	}

@@ -30,7 +30,7 @@ const (
 
 // Stored IDs are fixed-length derived strings.
 const (
-	actionIDLen   = len("act_") + 32
+	actionIDLen   = 4 + 32 // "act_" and 32 hex digits, untyped so byte bounds mix freely
 	evidenceIDLen = len("ev_") + 32
 )
 
@@ -140,9 +140,27 @@ const (
 	MaxAuditSlots    = uint64(RecoveryReserveBytes / AuditSlotBytes)
 )
 
+// HoldAudit holds n more audit slots.
+func (s StorageState) HoldAudit(n uint64) (StorageState, error) {
+	if n > MaxAuditSlots-s.AuditSlots {
+		return s, ErrCorruptRecord
+	}
+	s.AuditSlots += n
+	return s, nil
+}
+
+// ReleaseAudit returns n audit slots.
+func (s StorageState) ReleaseAudit(n uint64) (StorageState, error) {
+	if n > s.AuditSlots {
+		return s, ErrCorruptRecord
+	}
+	s.AuditSlots -= n
+	return s, nil
+}
+
 // OutboxBytes is what the outbox holds of the recovery and outbox reserve.
 func (s StorageState) OutboxBytes() uint64 {
-	return s.AuditSlots*uint64(AuditSlotBytes) + s.NoticeRecords*uint64(NoticeSlotBytes)
+	return s.AuditSlots*AuditSlotBytes + s.NoticeRecords*NoticeSlotBytes
 }
 
 type historyAllowance struct {

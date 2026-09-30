@@ -221,7 +221,7 @@ func DoctorChecks(s *LedgerStatus, in *IngressHealth, now time.Time) []DoctorRow
 		gap.Fix = "inspect the auto_response_withheld and response_capacity_exhausted notices for the reason"
 	}
 	reserve := DoctorRow{Name: "admission recovery reserve", Status: DoctorOK}
-	if s.Storage.Pinned > 0 || s.Storage.RecoveryRoom < uint64(MaxRecoveryNeed) {
+	if s.Storage.Pinned > 0 || s.Storage.RecoveryRoom < MaxRecoveryNeed {
 		reserve.Status = DoctorWarn
 		reserve.Message = fmt.Sprintf("%d bytes of unresolved outcomes are pinned; %d bytes of room remain", s.Storage.Pinned, s.Storage.RecoveryRoom)
 		reserve.Fix = "resolve unknown outcomes and confirm the audit consumer acknowledges rows; new reservations wait while the reserve is full"

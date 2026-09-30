@@ -46,6 +46,7 @@ func TestAdmissionLedgerTickRetiresAtTheTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	ended := f.wall
+	f.ackAll()
 	used, shortCost := f.storageState().General.Used, f.cost(short)
 	f.tickAt(ended.Add(admission.HistoryTarget - time.Nanosecond))
 	if _, err := f.l.Candidate(short); err != nil {
@@ -82,6 +83,7 @@ func TestAdmissionLedgerTickRetiresABoundedBatch(t *testing.T) {
 	for i := 0; i < retirementsPerTick+3; i++ {
 		ids = append(ids, f.applied(time.Hour))
 	}
+	f.ackAll()
 	f.tickAt(f.wall.Add(admission.HistoryTarget))
 	var kept int
 	for _, id := range ids {

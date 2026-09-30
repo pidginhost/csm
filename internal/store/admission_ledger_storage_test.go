@@ -131,6 +131,9 @@ func (f *ledgerFixture) mixed() mixedLedger {
 	}
 	m.unknownAt = f.wall
 	m.loose = f.published(evidenceSpec{target: "192.0.2.12", cursor: "loose"})
+	// The audit consumer has delivered every row, so ended history holds
+	// its retirement keys.
+	f.ackAll()
 	return m
 }
 
@@ -167,8 +170,10 @@ func TestAdmissionLedgerUpgradesSchemaThree(t *testing.T) {
 		Ended:    admission.RingState{Count: 1, Last: 1},
 		Loose:    admission.RingState{Count: 1, Last: 1},
 		// The chain ends at schema 5, whose outbox starts with the fixed
-		// notice records.
+		// notice records and holds the rows the reserved attempt still
+		// owes.
 		NoticeRecords: admission.FixedNotices,
+		AuditSlots:    2,
 	}
 	if err != nil || s != want {
 		t.Fatalf("upgraded storage = %+v, %v\nwant %+v", s, err, want)

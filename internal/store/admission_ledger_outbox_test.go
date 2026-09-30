@@ -72,7 +72,9 @@ func TestAdmissionLedgerUpgradesSchemaFour(t *testing.T) {
 	if err := db.bolt.View(func(tx *bolt.Tx) error {
 		s, err := loadStorage(tx)
 		want := schema4
-		want.NoticeRecords = admission.FixedNotices
+		// The reserved attempt still owes the rows of its execution and
+		// outcome.
+		want.NoticeRecords, want.AuditSlots = admission.FixedNotices, 2
 		if err != nil || s != want {
 			t.Errorf("upgraded storage = %+v, %v; want %+v", s, err, want)
 		}
@@ -374,7 +376,7 @@ func TestAdmissionLedgerOutboxSharesTheRecoveryReserve(t *testing.T) {
 	f.adjustStorage(func(s *admission.StorageState) { s.Recovery = admission.RecoveryReserveBytes - cost })
 	_, _, _, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
 	wantLedgerReason(t, "room taken by the outbox", err, admission.ReasonPendingRecovery)
-	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, cost) })
+	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, cost+admission.AttemptAuditBytes) })
 	if _, _, granted, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil || !granted {
 		t.Fatalf("room after the outbox: %v %v", granted, err)
 	}
