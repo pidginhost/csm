@@ -149,6 +149,16 @@ type Engine struct {
 	portAllowedIndex map[string]struct{}
 	blockedCIDRIndex map[string]struct{}
 
+	// expiryDue is the earliest moment an entry of stateCache can expire.
+	// Lookups skip the expiry scan until then: the netblock and auto-block
+	// passes check thousands of addresses per cycle, and scanning thousands
+	// of cached entries on every check made each pass quadratic.
+	// expiryClock, when non-nil, replaces time.Now for cache expiry so
+	// tests can pin expiry boundaries. expiryScans counts full scans.
+	expiryDue   expiryDeadline
+	expiryClock func() time.Time
+	expiryScans uint64
+
 	liveBlockLookup func(set *nftables.Set, key []byte) (bool, error)
 
 	// liveBlockedDump, when non-nil, replaces the netlink dump of one
@@ -4391,14 +4401,18 @@ func (e *Engine) keepPriorStateCacheLocked() {
 }
 
 // applyExpiryLocked prunes expired entries from the cached state in
-// place. Returns whether anything changed; the index maps are rebuilt
-// when something did.
+// place and rebuilds the index maps when something was dropped. It scans
+// only when an entry is due or the cache was replaced since the last scan.
 func (e *Engine) applyExpiryLocked() {
 	if e.stateCache == nil {
 		return
 	}
-	now := time.Now()
+	now := e.expiryNow()
 	s := e.stateCache
+	if !e.expiryDue.reached(s, now) {
+		return
+	}
+	e.expiryScans++
 	changed := false
 	if pruned, dropped := pruneBlocked(s.Blocked, now); dropped {
 		s.Blocked = pruned
@@ -4415,6 +4429,76 @@ func (e *Engine) applyExpiryLocked() {
 	if changed {
 		e.rebuildIndexLocked()
 	}
+	e.expiryDue = nextExpiryDeadline(s, now)
+}
+
+func (e *Engine) expiryNow() time.Time {
+	if e.expiryClock != nil {
+		return e.expiryClock()
+	}
+	return time.Now()
+}
+
+// expiryDeadline is bound to the cache snapshot it was computed for, so
+// replacing stateCache (reload, save, committed install) forces a fresh
+// scan without each writer having to reset it. Only applyExpiryLocked
+// changes a cached snapshot in place, and it recomputes the deadline.
+//
+// A cached ExpiresAt carries a monotonic reading when the entry was made
+// in this process and none when it was decoded from disk. The prune
+// compares on the monotonic clock only when both sides carry one, so the
+// deadline keeps both a monotonic and a wall-clock bound and the scan runs
+// once either is reached. That keeps it from ever running later than the
+// prune would drop an entry, even across a wall-clock step.
+type expiryDeadline struct {
+	state *FirewallState
+	never bool
+	mono  time.Time
+	wall  time.Time
+}
+
+func (d expiryDeadline) reached(s *FirewallState, now time.Time) bool {
+	if d.state != s {
+		return true
+	}
+	if d.never {
+		return false
+	}
+	return !now.Before(d.mono) || !now.Round(0).Before(d.wall)
+}
+
+func nextExpiryDeadline(s *FirewallState, now time.Time) expiryDeadline {
+	d := expiryDeadline{state: s, never: true}
+	var soonest time.Duration
+	consider := func(at time.Time) {
+		if at.IsZero() {
+			return
+		}
+		// Sub uses the monotonic clock when both sides carry one, matching
+		// the prune, and saturates instead of overflowing.
+		left := at.Sub(now)
+		wall := at.Round(0)
+		if d.never || left < soonest {
+			soonest = left
+		}
+		if d.never || wall.Before(d.wall) {
+			d.wall = wall
+		}
+		d.never = false
+	}
+	for _, entry := range s.Blocked {
+		consider(entry.ExpiresAt)
+	}
+	for _, entry := range s.BlockedNet {
+		consider(entry.ExpiresAt)
+	}
+	for _, entry := range s.Allowed {
+		consider(entry.ExpiresAt)
+	}
+	if !d.never {
+		d.mono = now.Add(soonest)
+	}
+	return d
 }
 
 // rebuildIndexLocked refreshes the three lookup maps from the cached
