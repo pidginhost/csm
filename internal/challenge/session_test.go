@@ -1,7 +1,9 @@
 package challenge
 
 import (
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -33,18 +35,48 @@ func TestAdminSessionWrongIPRejected(t *testing.T) {
 	}
 }
 
-func TestAdminSessionTamperedSignatureRejected(t *testing.T) {
-	s := mustSigner(t, time.Hour)
-	cookie := s.Issue("1.2.3.4")
-	// Flip a bit in the signature half of the cookie.
+// tamperSignature flips one bit of the decoded signature, so the result
+// always differs from the signed value whatever that value is.
+func tamperSignature(t *testing.T, cookie string) string {
+	t.Helper()
 	dot := strings.LastIndexByte(cookie, '.')
 	if dot < 0 {
 		t.Fatalf("cookie missing dot: %q", cookie)
 	}
-	tampered := cookie[:dot+1] + "AA" + cookie[dot+3:]
-	err := s.Verify(tampered, "1.2.3.4")
-	if !errors.Is(err, ErrSessionBadSignature) && !errors.Is(err, ErrSessionMalformed) {
-		t.Errorf("err = %v, want ErrSessionBadSignature or ErrSessionMalformed", err)
+	sig, err := base64.RawURLEncoding.DecodeString(cookie[dot+1:])
+	if err != nil || len(sig) == 0 {
+		t.Fatalf("cookie signature does not decode: %q", cookie)
+	}
+	sig[0] ^= 1
+	return cookie[:dot+1] + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+func TestAdminSessionTamperedSignatureRejected(t *testing.T) {
+	s := mustSigner(t, time.Hour)
+	cookie := s.Issue("1.2.3.4")
+	if err := s.Verify(tamperSignature(t, cookie), "1.2.3.4"); !errors.Is(err, ErrSessionBadSignature) {
+		t.Errorf("err = %v, want ErrSessionBadSignature", err)
+	}
+}
+
+// The signature is random per signer key, so about one cookie in 4096 has
+// a signature that already starts with the bytes a fixed overwrite would
+// write. Tampering must still change it.
+func TestAdminSessionTamperedSignatureRejectedWhateverItsValue(t *testing.T) {
+	s := mustSigner(t, time.Hour)
+	var cookie, ip string
+	for i := 0; i < 1<<20 && cookie == ""; i++ {
+		ip = fmt.Sprintf("2001:db8::%x:%x", i>>16, i&0xffff)
+		c := s.Issue(ip)
+		if strings.HasPrefix(c[strings.LastIndexByte(c, '.')+1:], "AA") {
+			cookie = c
+		}
+	}
+	if cookie == "" {
+		t.Fatal("no cookie with an AA-prefixed signature found")
+	}
+	if err := s.Verify(tamperSignature(t, cookie), ip); !errors.Is(err, ErrSessionBadSignature) {
+		t.Errorf("err = %v, want ErrSessionBadSignature", err)
 	}
 }
 
