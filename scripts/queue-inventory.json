@@ -574,6 +574,28 @@
       "rationale": "Stops or joins periodic incident closure and retention; persisted incidents are retained state rather than a handoff buffer."
     },
     {
+      "id": "internal/daemon/php_events_eval_site.go::package::phpShieldEvalSiteProbe::channel::1",
+      "path": "internal/daemon/php_events_eval_site.go",
+      "owner": "package",
+      "target": "phpShieldEvalSiteProbe",
+      "kind": "channel",
+      "source": "make(chan struct{}, 1)",
+      "capacity": "1",
+      "class": "lifecycle",
+      "rationale": "Admits one PHP Shield eval-site ownership lookup at a time. It holds no event or finding: an event that finds the slot taken is graded High at once, and the lookup releases the slot itself, so a lookup stuck on a hung mount delays no later event."
+    },
+    {
+      "id": "internal/daemon/php_events_eval_site.go::phpShieldEvalSiteProven::result::channel::1",
+      "path": "internal/daemon/php_events_eval_site.go",
+      "owner": "phpShieldEvalSiteProven",
+      "target": "result",
+      "kind": "channel",
+      "source": "make(chan bool, 1)",
+      "capacity": "1",
+      "class": "lifecycle",
+      "rationale": "Carries one ownership-lookup outcome back to the event reader. The buffer lets a lookup that outlived the reader's deadline finish without blocking; the finding was already graded High by then."
+    },
+    {
       "id": "internal/daemon/php_relay_msgindex_bbolt.go::*msgIndexPersister.Flush::done::channel::1",
       "path": "internal/daemon/php_relay_msgindex_bbolt.go",
       "owner": "*msgIndexPersister.Flush",
