@@ -11,7 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- Cron change alerts retain full severity when metadata or randomized calendar fields can change execution, and after an interrupted baseline update. Cron drop-in names no longer bypass persistence checks.
+- A cron drop-in named after an account, sudo or SSH configuration file is now checked for persistence like any other cron file. Such a file could be downgraded during package updates without that check.
 - Crawl detection now classifies unusual and asset-like request targets consistently.
 - Incident auto-blocking and central intelligence now act on an address only when a finding names it as an attacker, remembered across restarts and long incidents. They could block the remote end of an outbound connection, a customer login address or an advisory source.
 
@@ -22,7 +22,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- cPanel's nightly move of its own cron jobs to a new time no longer raises High cron change alerts. A cron drop-in change that only moves existing daily jobs to another time of day is now a Warning; every other change still alerts High.
+- cPanel's nightly move of its own cron jobs to a new time no longer raises High cron change alerts. A cron drop-in change that only moves existing daily jobs to another time of day is now a Warning; every other change, including new permissions or ownership, still alerts High.
 - An account owner's address is no longer blocked for cPanel API authentication failures when a browser tab left open after logging in again fails on its old session. cPanel's own record that it ended that session now explains those failures; other API failures are still reported, a few seconds later at most.
 - Fresh installs on cPanel Apache and LiteSpeed no longer deploy the old proxy-mode challenge snippet beside the one the webserver integration writes. Installing or upgrading the integration now removes the old snippet, which answered challenged visitors with a not-found page unless trusted proxies were configured.
 - The WP-Cron fix now runs a site whose domain inherits its PHP version under the version its web server actually uses. Such sites ran their scheduled tasks on the system default PHP, which could fail on every run or flood the site's error log.

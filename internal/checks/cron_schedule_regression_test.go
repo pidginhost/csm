@@ -20,6 +20,8 @@ func TestCronDScheduleDemotionRefusesRandomCalendarReload(t *testing.T) {
 				{"fixed time", "17 3 " + calendar + " root /usr/local/bin/job\n"},
 				{"every minute", "* * " + calendar + " root /usr/local/bin/job\n"},
 				{"logging disabled", "-17 3 " + calendar + " root /usr/local/bin/job\n"},
+				{"minute range", "0-5 3 " + calendar + " root /usr/local/bin/job\n"},
+				{"hour range", "17 1-5 " + calendar + " root /usr/local/bin/job\n"},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					before := dailyPanelJob(17, 3) + tc.job

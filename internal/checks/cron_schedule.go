@@ -22,8 +22,10 @@ var cronDailyTimeLine = regexp.MustCompile(`^([ \t]*)([0-9]{1,2})([ \t]+)([0-9]{
 
 // Cronie chooses randomized calendar fields again on every file reload,
 // including entries whose bytes did not change. They cannot prove a pure
-// time-of-day move, even if another entry caused the reload.
-var cronCalendarLine = regexp.MustCompile(`^[ \t]*-?[0-9*,/~]+[ \t]+[0-9*,/~]+[ \t]+([^ \t]+)[ \t]+([^ \t]+)[ \t]+([^ \t]+)[ \t]+`)
+// time-of-day move, even if another entry caused the reload. The minute and
+// hour admit ranges and the leading "-" that turns off logging, so any job
+// line reaches the calendar test.
+var cronCalendarLine = regexp.MustCompile(`^[ \t]*[0-9*,/~-]+[ \t]+[0-9*,/~-]+[ \t]+([^ \t]+)[ \t]+([^ \t]+)[ \t]+([^ \t]+)[ \t]+`)
 
 // cronScheduleFingerprint digests a cron.d file with the minute and hour of
 // each once-a-day job left out, and returns "" for any other path or a file
