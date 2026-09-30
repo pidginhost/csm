@@ -2837,10 +2837,9 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 	if len(expired) == 0 {
 		return
 	}
-	cfg := d.currentCfg()
 	var recorded []alert.Finding
 	for _, e := range expired {
-		res, err := checks.ApplyBlock(cfg, checks.ApplyBlockRequest{
+		res, err := checks.ApplyBlock(d.currentCfg(), checks.ApplyBlockRequest{
 			IP:           e.IP,
 			EngineReason: fmt.Sprintf("CSM challenge-timeout: %s", truncateStr(e.Reason, 100)),
 			Reason:       challengeTimeoutReasonPrefix + truncateStr(e.Reason, 100),

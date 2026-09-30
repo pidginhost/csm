@@ -147,7 +147,7 @@ func IncidentCorrelator() *incident.Correlator {
 							csmlog.Warn("credential_spray block audit delivery pending", "ip", ip, "err", err)
 							return true
 						}
-						if !isProtectedIPRefusal(err) {
+						if !isProtectedIPRefusal(err) && !errors.Is(err, checks.ErrAutoBlockDisabled) {
 							csmlog.Warn("credential_spray block failed", "ip", ip, "err", err)
 						}
 						return false
@@ -187,7 +187,7 @@ func IncidentCorrelator() *incident.Correlator {
 						// alerted to activity attributed to a protected address
 						// (e.g. a compromised site pivoting through the server IP)
 						// without the noise of a failed-block warning.
-						if !isProtectedIPRefusal(err) {
+						if !isProtectedIPRefusal(err) && !errors.Is(err, checks.ErrAutoBlockDisabled) {
 							csmlog.Warn("incident auto-block failed", "ip", ip, "err", err)
 						}
 						return false
