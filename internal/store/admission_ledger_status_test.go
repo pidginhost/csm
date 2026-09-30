@@ -440,7 +440,7 @@ func TestAdmissionLedgerStatusRejectsUnrecognizedRecordKeys(t *testing.T) {
 }
 
 func TestAdmissionLedgerStatusRejectsDamagedQuietIndexes(t *testing.T) {
-	for _, damage := range []string{"malformed", "missing", "unexpected value"} {
+	for _, damage := range []string{"malformed", "missing", "unexpected value", "another time"} {
 		t.Run(damage, func(t *testing.T) {
 			f := newLedgerFixture(t)
 			id := f.criticalQueued()
@@ -463,6 +463,19 @@ func TestAdmissionLedgerStatusRejectsDamagedQuietIndexes(t *testing.T) {
 					return outbox.Put([]byte("q-damaged"), nil)
 				case "missing":
 					return outbox.Delete(k)
+				case "another time":
+					at, key, err := admission.ParseQuietKey(k)
+					if err != nil {
+						return err
+					}
+					moved, err := admission.QuietKey(at.Add(time.Second), key)
+					if err != nil {
+						return err
+					}
+					if err = outbox.Delete(k); err != nil {
+						return err
+					}
+					return outbox.Put(moved, []byte{})
 				default:
 					return outbox.Put(k, []byte("damaged"))
 				}
