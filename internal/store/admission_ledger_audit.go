@@ -2,6 +2,8 @@ package store
 
 import (
 	"bytes"
+	"slices"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	bolt "go.etcd.io/bbolt"
@@ -19,17 +21,51 @@ func futureAuditSlots(s admission.State) uint64 {
 	return 0
 }
 
-// auditStepMatches checks the phase against the attempt, including its
-// outcome. A row count alone cannot prove that an execution took place.
-func auditStepMatches(row admission.AuditRow, a admission.AttemptRecord) bool {
+// auditStepMatches proves the row's intent and phase against its retained
+// records. Retry support can grow, but roots paid for by an attempt stay.
+func auditStepMatches(row admission.AuditRow, a admission.AttemptRecord, c admission.Candidate, now time.Time) bool {
+	if row.Attempt != a.Attempt || row.Lane != a.Lane || !row.ExpiresAt.Equal(a.ExpiresAt) ||
+		row.Kind != c.Key.Kind || row.Target != c.Key.Target || row.Check != c.Check || row.FindingID != c.FindingID ||
+		row.At.Before(a.Reserved) || row.At.After(now) {
+		return false
+	}
+	for _, root := range row.Roots {
+		if !slices.Contains(c.Roots, root) {
+			return false
+		}
+	}
 	switch row.State {
 	case admission.StateReserved:
-		return true
+		return row.At.Equal(a.Reserved)
 	case admission.StateExecuting:
-		return a.State != admission.StateReserved
+		return a.State != admission.StateReserved && row.At.Before(a.ExpiresAt) &&
+			(a.Finished.IsZero() || !row.At.After(a.Finished))
 	default:
-		return row.State == a.State && row.Disposition == a.Disposition
+		return row.State == a.State && row.Disposition == a.Disposition && row.At.Equal(a.Finished)
 	}
+}
+
+// auditFollows allows acknowledged phases to be absent, but remaining rows
+// must describe one unchanged intent and consecutive lifecycle transitions.
+func auditFollows(previous, row admission.AuditRow) bool {
+	if row.At.Before(previous.At) || row.Tier != previous.Tier || !slices.Equal(row.Roots, previous.Roots) {
+		return false
+	}
+	steps := row.Transition - previous.Transition
+	switch previous.State {
+	case admission.StateReserved:
+		switch row.State {
+		case admission.StateExecuting:
+			return steps == 1
+		case admission.StateFailed:
+			return steps == 1 || steps == 2
+		case admission.StateVerified, admission.StateUnknown:
+			return steps == 2
+		}
+	case admission.StateExecuting:
+		return row.State.Terminal() && steps == 1
+	}
+	return false
 }
 
 // writeAuditRow stores the row of the transition c is recording, to

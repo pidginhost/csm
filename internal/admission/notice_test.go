@@ -408,6 +408,11 @@ func TestNoticeMutationsRefuseDamagedReceivers(t *testing.T) {
 			if got, err := r.Add(t0.Add(time.Second), "", 0); err == nil || !reflect.DeepEqual(got, before) || !reflect.DeepEqual(r, before) {
 				t.Errorf("Add did not refuse unchanged: %+v, %v", got, err)
 			}
+			for _, n := range []uint64{0, 1, math.MaxUint64} {
+				if got, err := r.AddCount(t0.Add(time.Second), n); err == nil || !reflect.DeepEqual(got, before) || !reflect.DeepEqual(r, before) {
+					t.Errorf("AddCount(%d) did not refuse unchanged: %+v, %v", n, got, err)
+				}
+			}
 			if got, err := r.Ack(1, t0.Add(time.Second)); err == nil || !reflect.DeepEqual(got, before) || !reflect.DeepEqual(r, before) {
 				t.Errorf("Ack did not refuse unchanged: %+v, %v", got, err)
 			}
@@ -423,6 +428,11 @@ func TestNoticeMutationsRefuseBackwardTimes(t *testing.T) {
 	if got, addErr := r.Add(t0.Add(-time.Second), "", 0); addErr == nil || !reflect.DeepEqual(got, r) {
 		t.Errorf("backward event was not refused unchanged: %+v, %v", got, addErr)
 	}
+	for _, n := range []uint64{0, 1, math.MaxUint64} {
+		if got, countErr := r.AddCount(t0.Add(-time.Second), n); countErr == nil || !reflect.DeepEqual(got, r) {
+			t.Errorf("backward AddCount(%d) was not refused unchanged: %+v, %v", n, got, countErr)
+		}
+	}
 	if got, ackErr := r.Ack(1, t0.Add(-time.Second)); ackErr == nil || !reflect.DeepEqual(got, r) {
 		t.Errorf("delivery before the event was not refused unchanged: %+v, %v", got, ackErr)
 	}
@@ -436,6 +446,11 @@ func TestNoticeMutationsRefuseBackwardTimes(t *testing.T) {
 	}
 	if got, addErr := r.Add(t0.Add(time.Second), "", 0); addErr == nil || !reflect.DeepEqual(got, r) {
 		t.Errorf("an event before the previous delivery was not refused unchanged: %+v, %v", got, addErr)
+	}
+	for _, n := range []uint64{0, 1, math.MaxUint64} {
+		if got, countErr := r.AddCount(t0.Add(time.Second), n); countErr == nil || !reflect.DeepEqual(got, r) {
+			t.Errorf("AddCount(%d) before delivery was not refused unchanged: %+v, %v", n, got, countErr)
+		}
 	}
 	if got, ackErr := r.Ack(2, t0.Add(time.Second)); ackErr == nil || !reflect.DeepEqual(got, r) {
 		t.Errorf("an acknowledgement before the previous delivery was not refused unchanged: %+v, %v", got, ackErr)

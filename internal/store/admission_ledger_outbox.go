@@ -74,12 +74,19 @@ func upgradeLedgerToSchemaFive(tx *bolt.Tx) error {
 // and a transition its candidate made, and the record counts exactly the
 // rows stored and the slots outstanding attempts hold.
 func proveOutbox(tx *bolt.Tx, s admission.StorageState) error {
+	clock, clockErr := loadLedgerClock(tx.Bucket([]byte(admissionMetaBucket)))
+	if clockErr != nil {
+		return clockErr
+	}
+	now := clock.Now()
 	fixed := map[admission.NoticeKey]bool{}
 	for _, k := range admission.FixedNoticeKeys() {
 		fixed[k] = true
 	}
 	var notices, rows uint64
-	perStep := map[admission.ActionID]map[admission.State]bool{}
+	last := map[admission.ActionID]admission.AuditRow{}
+	type transitions struct{ first, last uint32 }
+	attempts := map[admission.CandidateID][admission.MaxAttempts]transitions{}
 	quiet := map[admission.NoticeKey]time.Time{}
 	var quietRecords int
 	outbox := tx.Bucket([]byte(admissionOutboxBucket))
@@ -106,6 +113,9 @@ func proveOutbox(tx *bolt.Tx, s admission.StorageState) error {
 			if err != nil || r.Key != key {
 				return admission.ErrCorruptRecord
 			}
+			if r.Count > 0 && (now.IsZero() || r.Last.After(now) || r.Sent.After(now)) {
+				return admission.ErrCorruptRecord
+			}
 			delete(fixed, key)
 			if !r.QuietAt().IsZero() {
 				quietRecords++
@@ -124,16 +134,29 @@ func proveOutbox(tx *bolt.Tx, s admission.StorageState) error {
 			if err != nil || row.Transition > c.Transitions {
 				return admission.ErrCorruptRecord
 			}
-			if !auditStepMatches(row, a) {
+			if now.IsZero() || !auditStepMatches(row, a, c, now) {
 				return admission.ErrCorruptRecord
 			}
-			if perStep[row.Attempt.ID] == nil {
-				perStep[row.Attempt.ID] = map[admission.State]bool{}
-			}
-			if perStep[row.Attempt.ID][row.State] {
+			if previous, found := last[row.Attempt.ID]; found && !auditFollows(previous, row) {
 				return admission.ErrCorruptRecord
 			}
-			perStep[row.Attempt.ID][row.State] = true
+			last[row.Attempt.ID] = row
+			// Attempt IDs sort independently of lifecycle order. Their
+			// transition ranges must still be disjoint and follow retries.
+			bounds := attempts[row.Attempt.Candidate]
+			for seq := uint32(1); seq <= admission.MaxAttempts; seq++ {
+				bound := bounds[seq-1]
+				if bound.first != 0 && ((seq < row.Attempt.Seq && bound.last >= row.Transition) ||
+					(seq > row.Attempt.Seq && bound.first <= row.Transition)) {
+					return admission.ErrCorruptRecord
+				}
+			}
+			bound := &bounds[row.Attempt.Seq-1]
+			if bound.first == 0 {
+				bound.first = row.Transition
+			}
+			bound.last = row.Transition
+			attempts[row.Attempt.Candidate] = bounds
 			rows++
 		default:
 			return admission.ErrCorruptRecord

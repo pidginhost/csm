@@ -437,6 +437,21 @@ func TestStorageStateHoldsAuditSlots(t *testing.T) {
 	}
 }
 
+func TestStorageAuditSlotsRefuseDamagedCounts(t *testing.T) {
+	for _, slots := range []uint64{MaxAuditSlots + 1, math.MaxUint64} {
+		s := NewStorageState()
+		s.AuditSlots = slots
+		for _, n := range []uint64{0, 1, slots} {
+			if got, err := s.HoldAudit(n); err == nil || got != s {
+				t.Errorf("hold %d with %d slots: %+v, %v", n, slots, got, err)
+			}
+			if got, err := s.ReleaseAudit(n); err == nil || got != s {
+				t.Errorf("release %d with %d slots: %+v, %v", n, slots, got, err)
+			}
+		}
+	}
+}
+
 func TestStorageStateCountsNoticeRecords(t *testing.T) {
 	s := NewStorageState()
 	next, ok := s.AddNotice()

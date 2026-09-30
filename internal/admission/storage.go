@@ -142,7 +142,7 @@ const (
 
 // HoldAudit holds n more audit slots.
 func (s StorageState) HoldAudit(n uint64) (StorageState, error) {
-	if n > MaxAuditSlots-s.AuditSlots {
+	if s.AuditSlots > MaxAuditSlots || n > MaxAuditSlots-s.AuditSlots {
 		return s, ErrCorruptRecord
 	}
 	s.AuditSlots += n
@@ -151,7 +151,7 @@ func (s StorageState) HoldAudit(n uint64) (StorageState, error) {
 
 // ReleaseAudit returns n audit slots.
 func (s StorageState) ReleaseAudit(n uint64) (StorageState, error) {
-	if n > s.AuditSlots {
+	if s.AuditSlots > MaxAuditSlots || n > s.AuditSlots {
 		return s, ErrCorruptRecord
 	}
 	s.AuditSlots -= n

@@ -312,8 +312,14 @@ func (r NoticeRecord) Add(at time.Time, candidate CandidateID, transitions uint3
 // AddCount records n events at time at without examples, as a checkpoint
 // reports them. The count saturates.
 func (r NoticeRecord) AddCount(at time.Time, n uint64) (NoticeRecord, error) {
+	if _, err := r.record(true); err != nil {
+		return r, err
+	}
 	if _, ok := unixNano(at); !ok {
 		return r, refuse(ReasonInvalid, "notice event has no time")
+	}
+	if at.Before(r.Last) || at.Before(r.Sent) {
+		return r, refuse(ReasonInvalid, "notice event time moved backward")
 	}
 	if n == 0 {
 		return r, nil
