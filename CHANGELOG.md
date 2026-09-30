@@ -13,6 +13,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Crawl detection now classifies unusual and asset-like request targets consistently.
 - Incident auto-blocking and central intelligence now act on an address only when a finding names it as an attacker, remembered across restarts and long incidents. They could block the remote end of an outbound connection, a customer login address or an advisory source.
+- A PHP prepend directive in an .htaccess file can no longer hide behind a commented copy of a security plugin's directive. A directive naming Really Simple Security's file is now reported wherever it points unless it loads that file from the wp-content folder beside the .htaccess; such a prepend is reported but never cleaned automatically.
 
 ### Added
 
@@ -22,6 +23,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - Restarting the daemon no longer reports again every message that is still frozen in the Exim queue. A message that froze while the daemon was stopped is still reported.
+- The prepend block that Really Simple Security 9.8 and later writes into .htaccess, and security plugin prepend blocks saved with Windows line endings or blank lines, are no longer reported as a backdoor.
 - An account owner's address is no longer blocked for cPanel API authentication failures when a browser tab left open after logging in again fails on its old session. cPanel's own record that it ended that session now explains those failures; other API failures are still reported, a few seconds later at most.
 - Fresh installs on cPanel Apache and LiteSpeed no longer deploy the old proxy-mode challenge snippet beside the one the webserver integration writes. Installing or upgrading the integration now removes the old snippet, which answered challenged visitors with a not-found page unless trusted proxies were configured.
 - The WP-Cron fix now runs a site whose domain inherits its PHP version under the version its web server actually uses. Such sites ran their scheduled tasks on the system default PHP, which could fail on every run or flood the site's error log.

@@ -40,7 +40,7 @@ account, and re-arm after the same check returns successfully.
 |-------|-------------|
 | `filesystem` | Backdoors, hidden executables, suspicious SUID binaries |
 | `webshells` | Known webshell patterns (c99, r57, b374k, etc.) |
-| `htaccess` | .htaccess injection (auto_prepend_file, eval, base64 handlers) plus nine hardened per-pattern detectors -- `htaccess_php_in_uploads`, `htaccess_auto_prepend`, `htaccess_user_agent_cloak`, `htaccess_spam_redirect`, `htaccess_filesmatch_shield`, `htaccess_header_injection`, `htaccess_errordocument_hijack`, `htaccess_cgi_handler_abuse`, `htaccess_security_disabled`. Auto-cleaning gated by `auto_response.clean_htaccess`. |
+| `htaccess` | .htaccess injection (auto_prepend_file, eval, base64 handlers) plus nine hardened per-pattern detectors -- `htaccess_php_in_uploads`, `htaccess_auto_prepend`, `htaccess_user_agent_cloak`, `htaccess_spam_redirect`, `htaccess_filesmatch_shield`, `htaccess_header_injection`, `htaccess_errordocument_hijack`, `htaccess_cgi_handler_abuse`, `htaccess_security_disabled`. Auto-cleaning gated by `auto_response.clean_htaccess`. A prepend of a security plugin's own file is not reported. For Really Simple Security the target must be the absolute path of `wp-content/advanced-headers.php` beside the `.htaccess`, with no dot segments; a document root reached through a symbolic link counts as the same place. Any other target naming that file is reported wherever it points, and when it is a prepend it is never cleaned automatically. |
 | `file_index` | Indexed file listing to detect new/unauthorized files |
 | `php_content` | Suspicious PHP functions (exec, eval, system, passthru) |
 | `group_writable_php` | World/group-writable PHP files (privilege escalation) |

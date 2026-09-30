@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -26,7 +27,7 @@ func TestDetectorAutoPrependFlagsAccountTargets(t *testing.T) {
 		{"no extension", "/home/u/.cache/prelude", 1},
 		{"wordfence prelude by basename", "/home/u/public_html/wp-content/plugins/wordfence/../../wordfence-waf.php", 0},
 		{"wordfence prelude relative", "wordfence-waf.php", 0},
-		{"really simple ssl prelude", "/home/u/public_html/wp-content/advanced-headers.php", 0},
+		{"really simple ssl prelude of another docroot", "/home/u/public_html/wp-content/advanced-headers.php", 1},
 		{"disabling an inherited prelude", "none", 0},
 		{"root-owned system prelude", "/etc/csm-prelude.php", 0},
 		{"quoted root-owned system prelude", `"/etc/csm/prelude file.php"`, 0},
@@ -42,6 +43,170 @@ func TestDetectorAutoPrependFlagsAccountTargets(t *testing.T) {
 				t.Errorf("target %q: htaccess_auto_prepend = %d, want %d", c.target, got, c.want)
 			}
 		})
+	}
+}
+
+// Really Simple Security writes WP_CONTENT_DIR/advanced-headers.php into the
+// .htaccess of the site root, so its directive names the wp-content directory
+// beside that .htaccess. The file name alone proves nothing: the plugin's
+// markers are comments anyone can copy, and a copied block may point
+// anywhere. A target that fails the binding is reported but never cleaned,
+// because a WordPress installed below the site root legitimately fails it.
+func TestDetectorAutoPrependBindsReallySimpleSecurityPreludeToDocroot(t *testing.T) {
+	dir := t.TempDir()
+	docroot := filepath.Join(dir, "site")
+	bound := filepath.Join(docroot, "wp-content", "advanced-headers.php")
+	cases := []struct {
+		name   string
+		target string
+		want   int
+	}{
+		{"this docroot", bound, 0},
+		{"this docroot quoted", `"` + bound + `"`, 0},
+		{"this docroot through a dot segment", filepath.Join(docroot, "wp-content") + "/uploads/../advanced-headers.php", 1},
+		{"another docroot", "/home/example/public_html/wp-content/advanced-headers.php", 1},
+		{"another mount", "/srv/example/public_html/wp-content/advanced-headers.php", 1},
+		{"system location", "/opt/example/wp-content/advanced-headers.php", 1},
+		{"nested under uploads", filepath.Join(docroot, "wp-content", "uploads", "x", "wp-content", "advanced-headers.php"), 1},
+		{"docroot without wp-content", filepath.Join(docroot, "advanced-headers.php"), 1},
+		{"scratch location", "/tmp/advanced-headers.php", 1},
+		{"relative", "wp-content/advanced-headers.php", 1},
+		{"case variant", filepath.Join(docroot, "wp-content", "Advanced-Headers.php"), 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := writeHtaccess(t, dir, "site", "php_value auto_prepend_file "+c.target+"\n")
+			content, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			findings, ranges := AuditHtaccessContent(path, content)
+			if got := countByCheck(findings, "htaccess_auto_prepend"); got != c.want {
+				t.Fatalf("target %q: htaccess_auto_prepend = %d, want %d", c.target, got, c.want)
+			}
+			if len(ranges) != 0 {
+				t.Errorf("target %q: cleaner would remove %v; an unbound plugin prelude must be reported, not removed", c.target, ranges)
+			}
+		})
+	}
+
+	// Retention is specific to the plugin's file name. A dropped prelude is
+	// still removed by the cleaner.
+	path := writeHtaccess(t, dir, "site", "php_value auto_prepend_file "+filepath.Join(docroot, ".cache", ".x.php")+"\n")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ranges := AuditHtaccessContent(path, content); len(ranges) != 1 {
+		t.Errorf("dropped prelude: cleaner ranges = %v, want one", ranges)
+	}
+}
+
+func TestReallySimpleSecurityPreludeBindsDocrootAliases(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	realRoot := filepath.Join(dir, "site")
+	realPath := writeHtaccess(t, dir, "site", "# site\n")
+	otherPath := writeHtaccess(t, dir, "other", "# other site\n")
+	aliasRoot := filepath.Join(dir, "public_html")
+	if err := os.Symlink(realRoot, aliasRoot); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		path   string
+		target string
+		want   int
+	}{
+		{"realtime resolved path", realPath, filepath.Join(aliasRoot, "wp-content", "advanced-headers.php"), 0},
+		{"scheduled enumerated path", filepath.Join(aliasRoot, ".htaccess"), filepath.Join(realRoot, "wp-content", "advanced-headers.php"), 0},
+		{"alias with traversal", realPath, aliasRoot + "/wp-content/uploads/../advanced-headers.php", 1},
+		{"different existing site", realPath, filepath.Join(filepath.Dir(otherPath), "wp-content", "advanced-headers.php"), 1},
+		{"missing site", realPath, filepath.Join(dir, "missing", "wp-content", "advanced-headers.php"), 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := []byte("php_value auto_prepend_file " + tc.target + "\n")
+			findings, ranges := AuditHtaccessContent(tc.path, content)
+			if got := countByCheck(findings, "htaccess_auto_prepend"); got != tc.want {
+				t.Errorf("findings = %d, want %d", got, tc.want)
+			}
+			if len(ranges) != 0 {
+				t.Errorf("plugin prelude removal ranges = %v", ranges)
+			}
+			if err := os.WriteFile(realPath, content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var scheduled []alert.Finding
+			checkHtaccessFile(context.Background(), tc.path, []string{"auto_prepend_file"}, nil, &scheduled)
+			if len(scheduled) != tc.want {
+				t.Errorf("scheduled findings = %d, want %d", len(scheduled), tc.want)
+			}
+		})
+	}
+}
+
+func TestReallySimpleSecurityPreludeRequiresAbsoluteTarget(t *testing.T) {
+	findings, ranges := AuditHtaccessContent("site/.htaccess", []byte("php_value auto_prepend_file site/wp-content/advanced-headers.php\n"))
+	if got := countByCheck(findings, "htaccess_auto_prepend"); got != 1 {
+		t.Errorf("relative prelude findings = %d, want one", got)
+	}
+	if len(ranges) != 0 {
+		t.Errorf("relative plugin prelude removal ranges = %v", ranges)
+	}
+}
+
+// The plugin installs a prepend, so its filename must not keep a malicious
+// append directive out of cleaning.
+func TestReallySimpleSecurityPreludeDoesNotRetainAppend(t *testing.T) {
+	dir := setupHtaccessCleanRoots(t)
+	const retained = "php_value auto_prepend_file /home/example/other/wp-content/advanced-headers.php\n"
+	const malicious = "php_value auto_append_file /home/example/.cache/advanced-headers.php\n"
+	path := writeHtaccess(t, dir, "site", retained+malicious)
+	findings, ranges := AuditHtaccessFile(path)
+	if got := countByCheck(findings, "htaccess_auto_prepend"); got != 2 {
+		t.Fatalf("findings = %d, want both retained and removable directives", got)
+	}
+	if len(ranges) != 1 {
+		t.Fatalf("removal ranges = %v, want only the append directive", ranges)
+	}
+	if res := CleanHtaccessFile(path); !res.Success {
+		t.Fatalf("cleaning append: %s", res.Error)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != retained {
+		t.Fatalf("cleaned content = %q, want retained prepend", content)
+	}
+	if findings, _ := AuditHtaccessFile(path); countByCheck(findings, "htaccess_auto_prepend") != 1 {
+		t.Fatal("retained prepend stopped being reported after cleaning")
+	}
+}
+
+// The scheduled scanner judges the prelude target with the same binding.
+func TestCheckHtaccessFileBindsReallySimpleSecurityPrelude(t *testing.T) {
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, ".htaccess")
+	for _, tc := range []struct {
+		target string
+		want   int
+	}{
+		{filepath.Join(dir, "wp-content", "advanced-headers.php"), 0},
+		{"/home/example/public_html/wp-content/advanced-headers.php", 1},
+	} {
+		if err := os.WriteFile(tmp, []byte("php_value auto_prepend_file "+tc.target+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		withMockOS(t, &mockOS{open: func(string) (*os.File, error) { return os.Open(tmp) }})
+
+		var findings []alert.Finding
+		checkHtaccessFile(context.Background(), tmp, []string{"auto_prepend_file"}, []string{"advanced-headers.php", "rsssl"}, &findings)
+		if len(findings) != tc.want {
+			t.Errorf("target %q: findings = %d, want %d", tc.target, len(findings), tc.want)
+		}
 	}
 }
 
