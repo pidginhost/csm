@@ -208,6 +208,26 @@ func (q *QueueCounters) Add(k CountKey) error {
 // Count returns the count for k.
 func (q QueueCounters) Count(k CountKey) uint64 { return q.counts[k] }
 
+// QueueCount is one counter and its count.
+type QueueCount struct {
+	Key CountKey
+	N   uint64
+}
+
+// Rows are the counters in key order.
+func (q QueueCounters) Rows() []QueueCount {
+	rows := make([]queueCountRow, 0, len(q.counts))
+	for k, n := range q.counts {
+		rows = append(rows, queueCountRow{Event: k.Event, Reason: k.Reason, Class: k.Class, Severity: k.Severity, N: n})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rowLess(rows[i], rows[j]) })
+	out := make([]QueueCount, len(rows))
+	for i, r := range rows {
+		out[i] = QueueCount{Key: CountKey{Event: r.Event, Reason: r.Reason, Class: r.Class, Severity: r.Severity}, N: r.N}
+	}
+	return out
+}
+
 type queueCountRow struct {
 	Event    QueueEvent `json:"e"`
 	Reason   Reason     `json:"r"`

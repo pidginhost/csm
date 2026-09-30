@@ -217,3 +217,25 @@ func TestIngressCheckpointCodec(t *testing.T) {
 		t.Fatal("same sequence changed decision")
 	}
 }
+
+func TestQueueCountersRows(t *testing.T) {
+	var q QueueCounters
+	var want []QueueCount
+	for _, e := range []QueueEvent{EventRefused, EventDeferred, EventEnded} {
+		for _, r := range []Reason{ReasonCeiling, ReasonStale} {
+			want = append(want, QueueCount{Key: CountKey{Event: e, Reason: r, Class: ClassC2, Severity: SeverityHigh}, N: uint64(len(want) + 1)})
+		}
+	}
+	// Counted in reverse, so neither insertion order nor a rotation of it
+	// is the key order.
+	for i := len(want) - 1; i >= 0; i-- {
+		for n := uint64(0); n < want[i].N; n++ {
+			if err := q.Add(want[i].Key); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if rows := q.Rows(); !reflect.DeepEqual(rows, want) {
+		t.Fatalf("rows = %+v\nwant %+v", rows, want)
+	}
+}

@@ -309,6 +309,25 @@ func (r NoticeRecord) Add(at time.Time, candidate CandidateID, transitions uint3
 	return r, nil
 }
 
+// AddCount records n events at time at without examples, as a checkpoint
+// reports them. The count saturates.
+func (r NoticeRecord) AddCount(at time.Time, n uint64) (NoticeRecord, error) {
+	if _, ok := unixNano(at); !ok {
+		return r, refuse(ReasonInvalid, "notice event has no time")
+	}
+	if n == 0 {
+		return r, nil
+	}
+	if r.Count == 0 {
+		r.First = at
+	}
+	if at.After(r.Last) {
+		r.Last = at
+	}
+	r.Count += min(n, math.MaxUint64-r.Count)
+	return r, nil
+}
+
 // Due reports whether the record has undelivered events and its kind's
 // interval has passed since the last delivery.
 func (r NoticeRecord) Due(now time.Time) bool {

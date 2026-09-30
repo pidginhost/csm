@@ -510,3 +510,23 @@ func TestNoticeRejectsUnversionedCheckEncoding(t *testing.T) {
 		t.Errorf("accepted a legacy check that aliases a base64 check: %v", err)
 	}
 }
+
+// Events counted in bulk, as a checkpoint reports them, add to the count
+// without examples and saturate.
+func TestNoticeRecordAddsCounts(t *testing.T) {
+	key := NoticeKey{Kind: NoticeCapacity, Reason: ReasonQueueOverflow}
+	r, err := NewNoticeRecord(key).AddCount(t0, 3)
+	if err != nil || r.Count != 3 || !r.First.Equal(t0) || !r.Last.Equal(t0) || len(r.Examples) != 0 {
+		t.Fatalf("add three = %+v, %v", r, err)
+	}
+	if again, addErr := r.AddCount(t0.Add(time.Second), 0); addErr != nil || !reflect.DeepEqual(again, r) {
+		t.Fatalf("add none changed the record: %+v, %v", again, addErr)
+	}
+	r.Count = math.MaxUint64 - 1
+	if r, err = r.AddCount(t0.Add(time.Second), 5); err != nil || r.Count != math.MaxUint64 || !r.Last.Equal(t0.Add(time.Second)) {
+		t.Fatalf("saturation = %+v, %v", r, err)
+	}
+	if _, err = r.AddCount(time.Time{}, 1); err == nil {
+		t.Fatal("a count without a time was accepted")
+	}
+}

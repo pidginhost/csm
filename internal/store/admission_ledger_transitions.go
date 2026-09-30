@@ -448,6 +448,9 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 			unused = 1
 		}
 		a.State, a.Disposition, a.Finished = state, d, q.now
+		if err = q.outcomes.Add(admission.AttemptOutcome(d, e.Tier)); err != nil {
+			return false, err
+		}
 		switch {
 		case d == admission.DispositionFailed && c.Attempts < admission.MaxAttempts:
 			c.State, c.NotBefore = admission.StateQueued, q.now.Add(admission.RetryBackoff(c.Attempts))

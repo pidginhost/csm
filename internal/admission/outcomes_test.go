@@ -185,3 +185,20 @@ func TestOutcomeWindowsAlignAndExpire(t *testing.T) {
 		}
 	}
 }
+
+func TestOutcomeCountsAddCounts(t *testing.T) {
+	k := QueueOutcome(EventRefused, ReasonQueueOverflow, Tier{})
+	var c OutcomeCounts
+	if err := c.AddCount(k, 0); err != nil || len(c.Rows()) != 0 {
+		t.Fatalf("adding none stored a row: %+v, %v", c.Rows(), err)
+	}
+	if err := c.AddCount(k, 5); err != nil || c.Count(k) != 5 {
+		t.Fatalf("count %d, %v", c.Count(k), err)
+	}
+	if err := c.AddCount(k, math.MaxUint64); err != nil || c.Count(k) != math.MaxUint64 {
+		t.Fatal("a count wrapped")
+	}
+	if err := c.AddCount(OutcomeKey{}, 1); err == nil {
+		t.Fatal("an invalid key was counted")
+	}
+}

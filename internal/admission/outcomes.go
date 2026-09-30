@@ -94,6 +94,21 @@ func (c *OutcomeCounts) Add(k OutcomeKey) error {
 	return nil
 }
 
+// AddCount counts n events, saturating.
+func (c *OutcomeCounts) AddCount(k OutcomeKey, n uint64) error {
+	if !k.Valid() {
+		return refuse(ReasonInvalid, "outcome key is invalid")
+	}
+	if n == 0 {
+		return nil
+	}
+	if c.counts == nil {
+		c.counts = map[OutcomeKey]uint64{}
+	}
+	c.counts[k] += min(n, ^uint64(0)-c.counts[k])
+	return nil
+}
+
 // Count returns the count for k.
 func (c OutcomeCounts) Count(k OutcomeKey) uint64 { return c.counts[k] }
 

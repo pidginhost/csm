@@ -190,6 +190,34 @@ func proveOutcomes(tx *bolt.Tx, now time.Time) error {
 	})
 }
 
+// flushOutcomes adds the transaction's counted events to the bucket of
+// each span that holds the transaction's time.
+func (q *queueTx) flushOutcomes() error {
+	if len(q.outcomes.Rows()) == 0 {
+		return nil
+	}
+	windows := q.tx.Bucket([]byte(admissionWindowsBucket))
+	for _, span := range admission.Spans() {
+		k := span.Key(span.Start(q.now))
+		var c admission.OutcomeCounts
+		if raw := windows.Get(k); raw != nil {
+			var err error
+			if c, err = admission.UnmarshalOutcomeCounts(raw); err != nil {
+				return err
+			}
+		}
+		c.Merge(q.outcomes)
+		data, err := c.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		if err = windows.Put(k, data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // pruneOutcomes drops the buckets that have left their span's window at
 // now. Each span keeps a bounded number of buckets, so this is bounded.
 func pruneOutcomes(tx *bolt.Tx, now time.Time) error {

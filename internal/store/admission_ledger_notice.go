@@ -57,6 +57,19 @@ func storeNoticeRecord(tx *bolt.Tx, old, r admission.NoticeRecord) error {
 // record. A Critical event also counts in the Critical summary. A zero
 // candidate names no example.
 func (q *queueTx) raise(key admission.NoticeKey, id admission.CandidateID, transitions uint32) error {
+	return q.notify(key, func(r admission.NoticeRecord) (admission.NoticeRecord, error) {
+		return r.Add(q.now, id, transitions)
+	})
+}
+
+// raiseCount records n events under key without examples, as raise does.
+func (q *queueTx) raiseCount(key admission.NoticeKey, n uint64) error {
+	return q.notify(key, func(r admission.NoticeRecord) (admission.NoticeRecord, error) {
+		return r.AddCount(q.now, n)
+	})
+}
+
+func (q *queueTx) notify(key admission.NoticeKey, add func(admission.NoticeRecord) (admission.NoticeRecord, error)) error {
 	r, found, err := loadNoticeRecord(q.tx, key)
 	if err != nil {
 		return err
@@ -81,7 +94,7 @@ func (q *queueTx) raise(key admission.NoticeKey, id admission.CandidateID, trans
 			return admission.ErrCorruptRecord
 		}
 	}
-	next, err := r.Add(q.now, id, transitions)
+	next, err := add(r)
 	if err != nil {
 		return err
 	}
@@ -91,7 +104,7 @@ func (q *queueTx) raise(key admission.NoticeKey, id admission.CandidateID, trans
 	if !key.Kind.Critical() {
 		return nil
 	}
-	return q.raise(admission.NoticeKey{Kind: admission.NoticeCriticalSummary}, id, transitions)
+	return q.notify(admission.NoticeKey{Kind: admission.NoticeCriticalSummary}, add)
 }
 
 // noticeCheck is the check of c's highest-severity root, the lexically

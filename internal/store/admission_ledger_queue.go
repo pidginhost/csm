@@ -165,6 +165,9 @@ type queueTx struct {
 	// back if it changed.
 	storage                     admission.StorageState
 	storageLoaded, storageDirty bool
+	// outcomes are the events this transaction counts into the outcome
+	// windows when it flushes.
+	outcomes admission.OutcomeCounts
 }
 
 func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error) {
@@ -196,6 +199,9 @@ func (q *queueTx) flush() error {
 		if err := putQueueCounters(q.tx, q.counters); err != nil {
 			return err
 		}
+	}
+	if err := q.flushOutcomes(); err != nil {
+		return err
 	}
 	return q.flushStorage()
 }
@@ -258,7 +264,10 @@ func (q *queueTx) queueView() (*admission.QueueView, error) {
 
 func (q *queueTx) count(event admission.QueueEvent, reason admission.Reason, tier admission.Tier) error {
 	q.countsDirty = true
-	return q.counters.Add(admission.CountKey{Event: event, Reason: reason, Class: tier.Class, Severity: tier.Severity})
+	if err := q.counters.Add(admission.CountKey{Event: event, Reason: reason, Class: tier.Class, Severity: tier.Severity}); err != nil {
+		return err
+	}
+	return q.outcomes.Add(admission.QueueOutcome(event, reason, tier))
 }
 
 // noteDeadlines brings the next sweep forward to the earliest time the
