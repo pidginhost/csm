@@ -114,10 +114,10 @@ func TestEximFrozenInactiveIDExpires(t *testing.T) {
 func TestEximFrozenDedupStateIsBounded(t *testing.T) {
 	resetEximFrozenDedup()
 	start := time.Date(2026, 8, 13, 20, 45, 33, 0, time.UTC)
-	eximFrozenDedup.mu.Lock()
 	for i := 0; i < eximFrozenDedupMaxEntries; i++ {
-		eximFrozenDedup.seen["existing-"+strconv.Itoa(i)] = start
+		seedEximFrozenSighting("existing-"+strconv.Itoa(i), start)
 	}
+	eximFrozenDedup.mu.Lock()
 	eximFrozenDedup.nextPrune = start.Add(eximFrozenDedupPruneInterval)
 	eximFrozenDedup.mu.Unlock()
 
@@ -130,6 +130,9 @@ func TestEximFrozenDedupStateIsBounded(t *testing.T) {
 	defer eximFrozenDedup.mu.Unlock()
 	if got := len(eximFrozenDedup.seen); got != eximFrozenDedupMaxEntries {
 		t.Fatalf("dedup state has %d entries, want cap %d", got, eximFrozenDedupMaxEntries)
+	}
+	if got := eximFrozenDedup.order.Len(); got != eximFrozenDedupMaxEntries {
+		t.Fatalf("dedup order has %d entries, want cap %d", got, eximFrozenDedupMaxEntries)
 	}
 	if _, ok := eximFrozenDedup.seen["1wuZUi-0000000BrCR-0u0H"]; !ok {
 		t.Fatal("new queue ID was not retained after capacity eviction")

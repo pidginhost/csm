@@ -1201,6 +1201,9 @@ func (d *Daemon) Run() error {
 	d.wg.Wait()
 	stopProcessCtx()
 	csmlog.Info("workers drained", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
+	// The log watchers have stopped, so this save holds every frozen message
+	// they reported and the next start does not report them again.
+	d.persistEximFrozenDedup()
 	// Some producers can finish a tick after alertDispatcher observes stopCh.
 	// Drain again once tracked workers are gone and before state is closed.
 	d.flushPendingAlertsOnShutdown()
@@ -1972,6 +1975,7 @@ func (d *Daemon) startPHPRelay() {
 
 func (d *Daemon) startLogWatchers() {
 	d.loadMailGoodSource()
+	d.restoreEximFrozenDedup()
 
 	hostInfo := platform.Detect()
 
@@ -2093,6 +2097,7 @@ func (d *Daemon) startLogWatchers() {
 	}
 	if shouldWatchEximMainlog(hostInfo, os.Stat) {
 		logFiles = append(logFiles, logFile{"", eximMainlogPath, eximHandler})
+		d.startEximFrozenDedupPersistence()
 	}
 
 	d.startMailLogReader(hostInfo.MailLogPath(), mailHandler)
