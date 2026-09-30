@@ -68,6 +68,7 @@ type Daemon struct {
 	fileMonitor      *FileMonitor
 	fileMonitorMu    sync.RWMutex
 	hijackDetector   *PasswordHijackDetector
+	staleSession401  *staleSession401s
 	pamListener      *PAMListener
 	controlListener  *ControlListener
 	spoolWatcher     *SpoolWatcher
@@ -750,6 +751,7 @@ func (d *Daemon) Run() error {
 
 	// Create password hijack detector
 	d.hijackDetector = NewPasswordHijackDetector(d.cfg, d.alertCh, d.stopCh)
+	d.staleSession401 = newStaleSession401s()
 
 	// Start the alert dispatcher before any producer, held until the baseline
 	// scan below has published. Producers send non-blocking, so a dispatcher
@@ -1971,14 +1973,6 @@ func (d *Daemon) startPHPRelay() {
 func (d *Daemon) startLogWatchers() {
 	d.loadMailGoodSource()
 
-	// Session log handler wrapper - feeds events to both the alert handler and hijack detector
-	sessionHandler := func(line string, cfg *config.Config) []alert.Finding {
-		// Feed to hijack detector (tracks password changes + correlates with logins)
-		ParseSessionLineForHijack(line, d.hijackDetector)
-		// Regular session log handling
-		return parseSessionLogLine(line, cfg)
-	}
-
 	hostInfo := platform.Detect()
 
 	type logFile struct {
@@ -2090,10 +2084,12 @@ func (d *Daemon) startLogWatchers() {
 	// "not found, will retry every 60s" forever.
 	if hostInfo.IsCPanel() {
 		logFiles = append(logFiles,
-			logFile{"", "/usr/local/cpanel/logs/session_log", sessionHandler},
-			logFile{"", "/usr/local/cpanel/logs/access_log", parseAccessLogLineEnhanced},
+			logFile{"", "/usr/local/cpanel/logs/session_log", d.cpanelSessionLogHandler},
+			logFile{"", "/usr/local/cpanel/logs/access_log", d.cpanelAccessLogHandler},
 			logFile{"", "/var/log/messages", parseFTPLogLine},
 		)
+		d.wg.Add(1)
+		obs.Go("stale-session-401-flush", d.flushStaleSession401)
 	}
 	if shouldWatchEximMainlog(hostInfo, os.Stat) {
 		logFiles = append(logFiles, logFile{"", eximMainlogPath, eximHandler})

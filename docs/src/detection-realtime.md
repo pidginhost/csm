@@ -206,7 +206,7 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 
 | Log | Platforms | What it detects |
 |-----|-----------|-----------------|
-| cPanel session log (`/usr/local/cpanel/logs/session_log`) | cPanel only | Logins from non-infra IPs, password changes, File Manager uploads |
+| cPanel session log (`/usr/local/cpanel/logs/session_log`) | cPanel only | Logins from non-infra IPs, password changes, File Manager uploads, sessions ended for security token failures |
 | cPanel access log (`/usr/local/cpanel/logs/access_log`) | cPanel only | cPanel-API auth patterns |
 | Auth log | All | SSH logins and failures. `/var/log/auth.log` on Debian/Ubuntu, `/var/log/secure` on RHEL family and cPanel |
 | Exim mainlog (`/var/log/exim_mainlog`) | cPanel; non-cPanel when the file exists | Mail anomalies, queue issues, SMTP brute force, probe abuse, and cloud relay abuse |
@@ -215,6 +215,23 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 | FTP log (`/var/log/messages`) | cPanel only | FTP logins and failures |
 | ModSecurity error log | All (if ModSec installed) | WAF blocks and attacks. Auto-discovered from the detected web server |
 | Nginx error log (`/var/log/nginx/error.log`) | Nginx hosts | General web errors, ModSecurity denies |
+
+A cPanel API authentication failure on a session URL (`/cpsess<token>/...`)
+waits a few seconds for the session log. A browser tab left open after the
+account logged in again elsewhere still sends its old URL token, and cPanel
+ends that session after a few token failures. When the session log records
+that for the same address, the failures that name the session's account, and
+the tab's later requests that reuse its URL token, are not reported: nothing
+guessed a credential. Any other failure, including one from another client
+behind the same address, is reported as before. API calls with a token or
+password carry no session URL and are reported at once. The periodic
+`api_auth_failures` check counts failures the same way.
+
+The wait covers both matching-window edges and the log watchers' polling
+delay. It ends at a fixed deadline. Evidence read after that
+deadline cannot erase a failure. Correlation evidence expires independently
+of alert delivery, and queue saturation is reported through the existing
+queue health counters and daemon warnings.
 
 Successful FTP logins over loopback do not raise an unfamiliar-address warning.
 Failed authentication remains reportable over loopback, including through local
