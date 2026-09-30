@@ -157,6 +157,9 @@ func FuzzLedgerRecords(f *testing.F) {
 	notice, _ = notice.Ack(1, t0)
 	notice, _ = notice.Add(t0.Add(time.Second), id, 3)
 	noticeKeyBytes, _ := noticeKey.Bytes()
+	var outcomes OutcomeCounts
+	_ = outcomes.Add(QueueOutcome(EventDeferred, ReasonCeiling, Tier{ClassC2, SeverityCritical}))
+	_ = outcomes.Add(AttemptOutcome(DispositionApplied, Tier{}))
 	auditRow, _ := NewAuditRow(reserved, AttemptRecord{Attempt: attempt, State: StateReserved, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Lane: LaneGeneral}, Tier{ClassC2, SeverityHigh}, t0)
 	retireKeys, _ := history.RetireKeys(id)
 	for _, rec := range []interface{ MarshalBinary() ([]byte, error) }{
@@ -169,7 +172,7 @@ func FuzzLedgerRecords(f *testing.F) {
 		}},
 		ceiling, charge, history, EvidenceRefs{Refs: 2}, EvidenceRefs{Loose: 7},
 		StorageState{General: HistoryMeter{Credit: 5, Used: 9}, Recovery: 3, Ended: RingState{Count: 1, Last: 4}},
-		auditRow, notice,
+		auditRow, notice, outcomes,
 	} {
 		data, err := rec.MarshalBinary()
 		if err != nil {
@@ -182,6 +185,7 @@ func FuzzLedgerRecords(f *testing.F) {
 	}
 	f.Add(auditRow.Key())
 	f.Add(noticeKeyBytes)
+	f.Add(SpanHour.Key(SpanHour.Start(t0)))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		check := func(data []byte) {
 			roundTrip := func(what string, rec interface{ MarshalBinary() ([]byte, error) }) {
@@ -249,6 +253,14 @@ func FuzzLedgerRecords(f *testing.F) {
 			if k, err := ParseNoticeKey(data); err == nil {
 				if again, err := k.Bytes(); err != nil || !bytes.Equal(again, data) {
 					t.Fatalf("accepted notice key does not re-encode to its input: %q", data)
+				}
+			}
+			if c, err := UnmarshalOutcomeCounts(data); err == nil {
+				roundTrip("outcome counts", c)
+			}
+			if span, start, err := ParseSpanKey(data); err == nil {
+				if again := span.Key(start); !bytes.Equal(again, data) {
+					t.Fatalf("accepted outcome bucket key does not re-encode to its input: %q", data)
 				}
 			}
 			if kind, at, cand, err := ParseRetireKey(data); err == nil {
