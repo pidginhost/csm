@@ -42,7 +42,7 @@ func (l *AdmissionLedger) Status() admission.LedgerStatus {
 		}())
 		s.Ingress.Error = failed(func() error {
 			in, loadErr := loadIngressState(tx)
-			s.Ingress = admission.IngressSection{Generation: in.Generation, Open: in.Open, Persisted: in.Persisted, Interrupted: in.Interrupted}
+			s.Ingress = admission.IngressSection{Generation: in.Generation, Open: in.Open, Persisted: in.Persisted, Interrupted: in.Interrupted, Resumed: in.Resumed}
 			return loadErr
 		}())
 		s.Ceiling.Error = failed(ceilingStatus(tx, now, &s.Ceiling))

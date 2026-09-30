@@ -140,10 +140,12 @@ func TestQueueCountersCountAndRoundTrip(t *testing.T) {
 
 func TestIngressStateRoundTrips(t *testing.T) {
 	for name, s := range map[string]IngressState{
-		"fresh":       {},
-		"open":        {Generation: 3, Open: true, Persisted: 12, Interrupted: 2},
-		"closed":      {Generation: 1},
-		"interrupted": {Generation: 2, Interrupted: 1},
+		"fresh":        {},
+		"open":         {Generation: 3, Open: true, Persisted: 12, Interrupted: 2},
+		"closed":       {Generation: 1},
+		"interrupted":  {Generation: 2, Interrupted: 1},
+		"resumed":      {Generation: 3, Open: true, Interrupted: 1, Resumed: 3},
+		"resumed once": {Generation: 4, Interrupted: 1, Resumed: 2},
 	} {
 		data, err := s.MarshalBinary()
 		if err != nil {
@@ -157,6 +159,9 @@ func TestIngressStateRoundTrips(t *testing.T) {
 		"open before the first":      {Open: true},
 		"persisted before the first": {Persisted: 1},
 		"current one interrupted":    {Generation: 2, Interrupted: 2},
+		"resumed later":              {Generation: 2, Interrupted: 1, Resumed: 3},
+		"resumed without a loss":     {Generation: 2, Resumed: 2},
+		"resumed the first":          {Generation: 2, Interrupted: 1, Resumed: 1},
 	} {
 		if _, err := s.MarshalBinary(); err == nil {
 			t.Errorf("%s: encoded", name)

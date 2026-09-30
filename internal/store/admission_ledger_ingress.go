@@ -38,7 +38,7 @@ func (l *AdmissionLedger) BeginIngress() (admission.IngressState, error) {
 			return err
 		}
 		if s.Open {
-			s.Interrupted++
+			s.Interrupted, s.Resumed = s.Interrupted+1, s.Generation+1
 		}
 		s.Generation++
 		s.Open, s.Persisted = true, 0
