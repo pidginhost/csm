@@ -320,6 +320,25 @@ clock's transaction. The next wake runs the scheduler read-only; unassessed
 or overdue queue entries wake immediately for a sweep. Report links stay
 readable after a policy change.
 
+Schema 5 adds the outbox; the first open upgrades a schema 1 to 4 ledger
+in the same transaction. Every admitted step of an attempt (reservation,
+execution, outcome) writes an audit row in its own transaction, and the
+reservation holds room for all three in the recovery reserve, which the
+outbox shares; ended history is retired only after its rows are
+acknowledged. Response gaps are recorded in the transaction that causes
+them as coalesced notices, one record per reason, check and action family,
+with a bounded count of examples, a fixed overflow record per kind and a
+fixed Critical summary that no flood can refuse. Records may use only a
+fixed share of the reserve, a key is due for delivery at most once an hour
+and a summary once a minute after acknowledged delivery. Acknowledgements
+carry the count and first-event time of the record read, so a repeated
+acknowledgement cannot consume a later record under a reused key. Queue
+events and attempt outcomes are also counted into five-minute, hourly and
+daily buckets. `Status` reads every section in one read transaction without
+the ledger's lock or a current clock, each section with its own error, and
+the pure doctor rules turn it and the ingress's own health into fixed rows.
+Nothing sends notices or reads status yet.
+
 ### Attack event storage
 
 Attack events live in `attacks:events`; `attacks:events:ip` stores empty values

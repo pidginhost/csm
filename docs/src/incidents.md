@@ -577,6 +577,7 @@ Attribution gaps:
 | `auto_block` | ignored | response |  |
 | `auto_response` | ignored | response |  |
 | `auto_response_paused` | ignored | response |  |
+| `auto_response_withheld` | ignored | self-health |  |
 | `backdoor_binary` | malware artifact |  |  |
 | `backdoor_port` | security event |  |  |
 | `backdoor_port_outbound` | security event |  |  |
@@ -816,6 +817,7 @@ Attribution gaps:
 | `protection_queue_recovered` | ignored | self-health |  |
 | `realtime_scanner_panic` | ignored | self-health |  |
 | `reputation_quota_exhausted` | ignored | self-health |  |
+| `response_capacity_exhausted` | ignored | self-health |  |
 | `root_password_change` | ignored | host-scope |  |
 | `rpm_integrity` | ignored | host-scope |  |
 | `self_deleting_dropper_overflow` | ignored | self-health |  |
