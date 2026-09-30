@@ -4429,7 +4429,7 @@ func (e *Engine) applyExpiryLocked() {
 	if changed {
 		e.rebuildIndexLocked()
 	}
-	e.expiryDue = nextExpiryDeadline(s, now)
+	e.expiryDue = nextExpiryDeadline(s)
 }
 
 func (e *Engine) expiryNow() time.Time {
@@ -4446,45 +4446,47 @@ func (e *Engine) expiryNow() time.Time {
 //
 // A cached ExpiresAt carries a monotonic reading when the entry was made
 // in this process and none when it was decoded from disk. The prune
-// compares on the monotonic clock only when both sides carry one, so the
-// deadline keeps both a monotonic and a wall-clock bound and the scan runs
-// once either is reached. That keeps it from ever running later than the
-// prune would drop an entry, even across a wall-clock step.
+// compares on the monotonic clock only when both sides carry one. Keep
+// separate minima for those clocks, plus the wall minimum of all entries
+// for a lookup without a monotonic reading. Use the original timestamps:
+// synthesizing a bound with Sub/Add loses clock information and saturates
+// for distant expiries, causing late expiry or unnecessary scans.
 type expiryDeadline struct {
-	state *FirewallState
-	never bool
-	mono  time.Time
-	wall  time.Time
+	state    *FirewallState
+	mono     time.Time
+	wallOnly time.Time
+	wall     time.Time
 }
 
 func (d expiryDeadline) reached(s *FirewallState, now time.Time) bool {
 	if d.state != s {
 		return true
 	}
-	if d.never {
-		return false
+	wallNow := now.Round(0)
+	if now == wallNow { //nolint:staticcheck // Equal ignores monotonic metadata; struct equality detects its absence.
+		return !d.wall.IsZero() && !wallNow.Before(d.wall)
 	}
-	return !now.Before(d.mono) || !now.Round(0).Before(d.wall)
+	return (!d.mono.IsZero() && !now.Before(d.mono)) ||
+		(!d.wallOnly.IsZero() && !wallNow.Before(d.wallOnly))
 }
 
-func nextExpiryDeadline(s *FirewallState, now time.Time) expiryDeadline {
-	d := expiryDeadline{state: s, never: true}
-	var soonest time.Duration
+func nextExpiryDeadline(s *FirewallState) expiryDeadline {
+	d := expiryDeadline{state: s}
 	consider := func(at time.Time) {
 		if at.IsZero() {
 			return
 		}
-		// Sub uses the monotonic clock when both sides carry one, matching
-		// the prune, and saturates instead of overflowing.
-		left := at.Sub(now)
 		wall := at.Round(0)
-		if d.never || left < soonest {
-			soonest = left
-		}
-		if d.never || wall.Before(d.wall) {
+		if d.wall.IsZero() || wall.Before(d.wall) {
 			d.wall = wall
 		}
-		d.never = false
+		if at != wall {
+			if d.mono.IsZero() || at.Before(d.mono) {
+				d.mono = at
+			}
+		} else if d.wallOnly.IsZero() || wall.Before(d.wallOnly) {
+			d.wallOnly = wall
+		}
 	}
 	for _, entry := range s.Blocked {
 		consider(entry.ExpiresAt)
@@ -4494,9 +4496,6 @@ func nextExpiryDeadline(s *FirewallState, now time.Time) expiryDeadline {
 	}
 	for _, entry := range s.Allowed {
 		consider(entry.ExpiresAt)
-	}
-	if !d.never {
-		d.mono = now.Add(soonest)
 	}
 	return d
 }
