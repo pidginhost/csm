@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Plugin verification mirrors the core-file verification path: when an
@@ -115,7 +117,7 @@ func ReadPluginVersion(pluginRoot, slug string) (string, error) {
 
 	// #nosec G304 -- pluginRoot is derived from a path the scanner received
 	// from fanotify under a recognized plugin or update-staging layout.
-	dir, err := os.Open(pluginRoot)
+	dir, err := os.OpenFile(pluginRoot, os.O_RDONLY|unix.O_NONBLOCK|unix.O_DIRECTORY, 0)
 	if err != nil {
 		return "", err
 	}
@@ -164,17 +166,9 @@ func ReadPluginVersion(pluginRoot, slug string) (string, error) {
 }
 
 func readPluginVersionHeader(path string) (version string, found bool, err error) {
-	// #nosec G304 -- callers construct path from a scanner-derived root and a
-	// safe immediate child. Reads are bounded to WordPress's 8 KiB header limit.
-	f, err := os.Open(path)
+	buf, err := readPackageHeader(path)
 	if err != nil {
 		return "", false, err
-	}
-	defer func() { _ = f.Close() }()
-
-	buf, err := io.ReadAll(io.LimitReader(f, pluginHeaderReadLimit))
-	if err != nil {
-		return "", false, fmt.Errorf("reading plugin header: %w", err)
 	}
 	if !rePluginNameHeader.Match(buf) {
 		return "", false, nil
@@ -184,6 +178,31 @@ func readPluginVersionHeader(path string) (version string, found bool, err error
 		return "", false, nil
 	}
 	return string(m[1]), true, nil
+}
+
+// Header paths are account writable. Nonblocking opens followed by an fd stat
+// reject FIFOs and devices, including ones reached through symlinks or swapped
+// into place just before the open, without pinning an analyzer worker.
+func readPackageHeader(path string) ([]byte, error) {
+	// #nosec G304 -- callers construct path from a scanner-derived root and a
+	// safe immediate child. Reads are bounded to WordPress's 8 KiB header limit.
+	f, err := os.OpenFile(path, os.O_RDONLY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("package header is not a regular file")
+	}
+	buf, err := io.ReadAll(io.LimitReader(f, pluginHeaderReadLimit))
+	if err != nil {
+		return nil, fmt.Errorf("reading package header: %w", err)
+	}
+	return buf, nil
 }
 
 // pluginZipURL returns the canonical wordpress.org download URL for a given
@@ -327,7 +346,13 @@ func (c *Cache) markPluginNotFound(slug, version string, ttl time.Duration) {
 	if c.pluginNotFoundUntil == nil {
 		c.pluginNotFoundUntil = make(map[string]time.Time)
 	}
-	c.pluginNotFoundUntil[key] = time.Now().Add(ttl)
+	now := time.Now()
+	for oldKey, until := range c.pluginNotFoundUntil {
+		if !now.Before(until) {
+			delete(c.pluginNotFoundUntil, oldKey)
+		}
+	}
+	c.pluginNotFoundUntil[key] = now.Add(ttl)
 	c.mu.Unlock()
 }
 
@@ -362,19 +387,18 @@ func (c *Cache) startBackgroundPluginFetch(slug, version string) {
 	if c.fetching == nil {
 		c.fetching = make(map[string]bool)
 	}
-	if c.fetching[key] {
+	if c.pluginChecksums[key] != nil || !c.admitChecksumFetchLocked(key) {
 		c.mu.Unlock()
 		return
 	}
-	c.fetching[key] = true
 	c.mu.Unlock()
 	go c.fetchPluginWithRetry(slug, version, 0)
 }
 
 // fetchPluginWithRetry mirrors the core-checksum fetchWithRetry: the
 // fetching flag stays set across retries so cache-miss events for the
-// same slug/version do not spawn new goroutines. On exhaustion the flag
-// is cleared so a future event can retry fresh.
+// same slug/version do not spawn new goroutines. Exhaustion clears the flag
+// and keeps the shared fetch cooldown before a future event can retry.
 //
 // Special case: an HTTP 404 from wordpress.org is treated as a definitive
 // "this plugin is not in the wp.org repository" signal. We mark the
@@ -407,7 +431,10 @@ func (c *Cache) fetchPluginWithRetry(slug, version string, attempt int) {
 	}
 
 	if attempt >= len(backoffs) {
-		c.clearFetching(key)
+		c.mu.Lock()
+		c.coreFetchAfter[key] = time.Now().Add(coreFetchCooldown)
+		delete(c.fetching, key)
+		c.mu.Unlock()
 		fmt.Fprintf(os.Stderr, "wpcheck: plugin fetch abandoned for %s %s after %d attempts: %v\n",
 			slug, version, attempt+1, err)
 		return

@@ -4,7 +4,6 @@ import (
 	"crypto/md5" // #nosec G501 -- wordpress.org publishes MD5 digests for core files
 	"crypto/sha256"
 	"encoding/hex"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -235,14 +234,7 @@ func describeTheme(path string) Verification {
 }
 
 func describeThemeRoot(root, slug, rel string) Verification {
-	// #nosec G304 -- root is derived from a scanner-received path under a
-	// recognised theme or update-staging layout; the read is header-bounded.
-	f, err := os.Open(filepath.Join(root, "style.css"))
-	if err != nil {
-		return Verification{Verdict: VerdictUnknown}
-	}
-	defer func() { _ = f.Close() }()
-	buf, err := io.ReadAll(io.LimitReader(f, pluginHeaderReadLimit))
+	buf, err := readPackageHeader(filepath.Join(root, "style.css"))
 	if err != nil || !reThemeNameHeader.Match(buf) {
 		return Verification{Verdict: VerdictUnknown}
 	}

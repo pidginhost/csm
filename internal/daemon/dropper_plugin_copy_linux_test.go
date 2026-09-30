@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/wpcheck"
 )
@@ -295,4 +297,159 @@ func TestDropperPluginCopyOtherPluginReleaseStillCritical(t *testing.T) {
 		"host:1.0": {filepath.Join("site", "wp-content", "plugins", "elementor", filepath.FromSlash(testElementorLoaderRel)): testForgedLoaderPayload},
 	}})
 	assertSingleCriticalDropper(t, *r.alerts, muPlugin)
+}
+
+func TestDropperPluginCopyPayloadThenOfficialWithDirectoryRemoved(t *testing.T) {
+	s := newSafeModeSite(t)
+	r := newSafeModeRun(t, s)
+	for _, body := range []string{testForgedLoaderPayload, "", testElementorLoader} {
+		writeWPInstallFile(t, s.muPlugin, body)
+		r.observe(t, s.muPlugin, nil)
+	}
+	if err := os.RemoveAll(filepath.Dir(s.muPlugin)); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlushWith(officialElementor(t, testElementorLoader))
+	assertSingleCriticalDropper(t, *r.alerts, s.muPlugin)
+}
+
+func TestDropperPluginCopyEmptyAndReplayedSnapshotsAreNotRewrites(t *testing.T) {
+	s := newSafeModeSite(t)
+	r := newSafeModeRun(t, s)
+	writeWPInstallFile(t, s.muPlugin, testElementorLoader)
+	first := r.observe(t, s.muPlugin, nil)
+	writeWPInstallFile(t, s.muPlugin, "")
+	r.observe(t, s.muPlugin, nil)
+	r.fm.dropper.tr.Refresh(*first)
+	writeWPInstallFile(t, s.muPlugin, testElementorLoader)
+	r.observe(t, s.muPlugin, nil)
+	if err := os.Remove(s.muPlugin); err != nil {
+		t.Fatal(err)
+	}
+	r.probeAndFlushWith(officialElementor(t, testElementorLoader))
+	if len(*r.alerts) != 0 {
+		t.Fatalf("empty writes and a replay prevented official proof: %+v", *r.alerts)
+	}
+}
+
+func TestDropperPluginCopyHeaderLookupDoesNotBlockOnFIFO(t *testing.T) {
+	for _, target := range []string{"elementor.php", ".", "style.css"} {
+		t.Run(target, func(t *testing.T) {
+			s := newSafeModeSite(t)
+			writeWPInstallFile(t, s.muPlugin, testElementorLoader)
+			r := newSafeModeRun(t, s)
+			path := filepath.Join(s.plugin, target)
+			if target == "." {
+				if err := os.RemoveAll(s.plugin); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Remove(filepath.Join(s.plugin, "elementor.php")); err != nil {
+				t.Fatal(err)
+			}
+			if err := unix.Mkfifo(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.Open(s.muPlugin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = f.Close() }()
+			done := make(chan *dropperCandidate, 1)
+			go func() {
+				done <- r.fm.observeDropperCandidate(fileEvent{
+					path: s.muPlugin, fd: int(f.Fd()), pid: 4242, mask: FAN_CREATE | FAN_CLOSE_WRITE,
+				}, "")
+			}()
+			select {
+			case c := <-done:
+				if c == nil || c.PluginRelease != nil {
+					t.Fatalf("non-regular package header supplied release proof: %+v", c)
+				}
+			case <-time.After(2 * time.Second):
+				// Release the blocked lookup before reporting the regression.
+				writer, err := os.OpenFile(path, os.O_WRONLY|unix.O_NONBLOCK, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = writer.Close()
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Fatal("header lookup did not stop after FIFO release")
+				}
+				t.Fatal("account-writable FIFO blocked analyzer header lookup")
+			}
+		})
+	}
+}
+
+func TestDropperPluginCopyInstalledDigestRejectsConcurrentChanges(t *testing.T) {
+	for _, change := range []string{"same-size rewrite", "restored bytes and mtime", "unlink"} {
+		t.Run(change, func(t *testing.T) {
+			s := newSafeModeSite(t)
+			before, err := os.Stat(s.loader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err := statDropperFileNoSymlinksWithDigest(s.loader, func(fd int, size int64) ([32]byte, bool) {
+				sum, known := digestFromFD(fd, size)
+				if !known {
+					t.Fatal("initial plugin snapshot was not readable")
+				}
+				if change == "unlink" {
+					if removeErr := os.Remove(s.loader); removeErr != nil {
+						t.Fatal(removeErr)
+					}
+				} else {
+					writeWPInstallFile(t, s.loader, strings.Replace(testElementorLoader, "filter_plugins", "filter_payload", 1))
+					if change == "restored bytes and mtime" {
+						writeWPInstallFile(t, s.loader, testElementorLoader)
+					}
+					if timeErr := os.Chtimes(s.loader, before.ModTime(), before.ModTime()); timeErr != nil {
+						t.Fatal(timeErr)
+					}
+				}
+				return sum, true
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.DigestKnown {
+				t.Fatal("changed plugin file supplied surviving-content proof")
+			}
+		})
+	}
+}
+
+func TestDropperPluginCopyReplacementStillUsesPackageProof(t *testing.T) {
+	for _, tc := range []struct {
+		name, body  string
+		checksums   func(*testing.T) testChecksums
+		want        alert.Severity
+		wantFinding bool
+	}{
+		{name: "official copy", body: testElementorLoader,
+			checksums: func(t *testing.T) testChecksums { return officialElementor(t, testElementorLoader) }},
+		{name: "installed copy", body: testElementorLoader, want: alert.Warning, wantFinding: true,
+			checksums: func(t *testing.T) testChecksums { return offlinePluginCache(t) }},
+		{name: "forged copy", body: testForgedLoaderPayload, want: alert.Critical, wantFinding: true,
+			checksums: func(t *testing.T) testChecksums { return officialElementor(t, testElementorLoader) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSafeModeSite(t)
+			r := newSafeModeRun(t, s)
+			writeWPInstallFile(t, s.muPlugin, tc.body)
+			r.observe(t, s.muPlugin, nil)
+			replaceAtomically(t, s.muPlugin, testElementorLoader)
+			r.probeAndFlushWith(tc.checksums(t))
+			got := *r.alerts
+			if !tc.wantFinding {
+				if len(got) != 0 {
+					t.Fatalf("official replaced copy reported: %+v", got)
+				}
+			} else if len(got) != 1 || got[0].sev != tc.want || got[0].path != s.muPlugin {
+				t.Fatalf("findings = %+v, want one %v", got, tc.want)
+			}
+		})
+	}
 }

@@ -605,6 +605,25 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 			return dropperBenign
 		}
 	}
+	if _, _, copy := dropperPluginCopySource(c.Path, c.Docroot); copy {
+		// This code ran as a mu-plugin. Other capability probes, directory
+		// churn and install moves cannot vouch for its bytes or erase rewrites.
+		if c.ContentSuspicious || c.ContentRewritten {
+			return dropperSuspect
+		}
+		if dropperPluginCopyEligible(c) {
+			switch p.PluginCopy {
+			case dropperPluginCopyOfficial:
+				return dropperBenign
+			case dropperPluginCopyInstalled:
+				return dropperDemotedPluginCopy
+			}
+		}
+		if !c.WritePending && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsInert(c) {
+			return dropperBenign
+		}
+		return dropperSuspect
+	}
 	if p.RenamedTo != "" || p.RenameTarget != nil {
 		if p.RenamedTo == "" || p.RenameTarget == nil || p.RenameTarget.Path != p.RenamedTo {
 			return dropperSuspect
@@ -622,14 +641,8 @@ func assessDropper(c dropperCandidate, p dropperProbe) dropperVerdict {
 	if dropperOfficialCorePackageFile(c, p) {
 		return dropperBenign
 	}
-	if p.PluginCopy == dropperPluginCopyOfficial && dropperPluginCopyEligible(c) {
-		return dropperBenign
-	}
 	if !c.WritePending && !c.ContentMayExecute && !c.ContentUnsettled && dropperCandidateIsHarmless(c) {
 		return dropperBenign
-	}
-	if p.PluginCopy == dropperPluginCopyInstalled && dropperPluginCopyEligible(c) {
-		return dropperDemotedPluginCopy
 	}
 	if p.AtPath != nil && dropperReplacedInPlace(c, *p.AtPath) {
 		return dropperDemotedReplaced

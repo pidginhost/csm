@@ -34,7 +34,11 @@ func (p dropperFSProbe) probe(c dropperCandidate) dropperProbe {
 	case err == nil:
 		// Every identity field came from one open fd. A matching identity means
 		// the tracked file survived; a different one means it was replaced.
-		return dropperProbe{Conclusive: true, AtPath: &state.file}
+		result := dropperProbe{Conclusive: true, AtPath: &state.file}
+		if !dropperSameIdentity(c, state.file) {
+			result.PluginCopy = p.pluginCopy(c)
+		}
+		return result
 	case !errors.Is(err, unix.ENOENT):
 		// Permission or I/O error: cannot prove deletion. Inconclusive.
 		return dropperProbe{Conclusive: false}

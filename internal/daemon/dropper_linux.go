@@ -527,6 +527,10 @@ func openDropperDirNoSymlinks(path string) (int, error) {
 // reached through a link could live outside the site, where nothing scans the
 // bytes it is meant to vouch for.
 func statDropperFileNoSymlinks(path string) (dropperFileState, error) {
+	return statDropperFileNoSymlinksWithDigest(path, digestFromFD)
+}
+
+func statDropperFileNoSymlinksWithDigest(path string, digest func(int, int64) ([32]byte, bool)) (dropperFileState, error) {
 	dir, err := openDropperDirNoSymlinks(filepath.Dir(path))
 	if err != nil {
 		return dropperFileState{}, err
@@ -546,7 +550,12 @@ func statDropperFileNoSymlinks(path string) (dropperFileState, error) {
 		IsRegular: st.Mode&unix.S_IFMT == unix.S_IFREG,
 	}
 	if state.IsRegular {
-		state.Digest, state.DigestKnown = digestFromFD(fd, st.Size)
+		state.Digest, state.DigestKnown = digest(fd, st.Size)
+		// Size alone cannot show that these bytes still survive in the plugin:
+		// an account writer can replace them and restore mtime during hashing.
+		var after unix.Stat_t
+		state.DigestKnown = state.DigestKnown && unix.Fstat(fd, &after) == nil &&
+			sameReadSnapshot(st, after) && st.Mode == after.Mode
 	}
 	return state, nil
 }

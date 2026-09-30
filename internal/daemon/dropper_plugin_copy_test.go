@@ -140,3 +140,42 @@ func TestDropperPluginCopyAlertNamesInstalledFile(t *testing.T) {
 		t.Fatalf("got sev=%v path=%q details=%q, want Warning naming %s", sev, path, details, want)
 	}
 }
+
+func TestDropperPluginCopyCannotBorrowOtherExemptions(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	for _, tc := range []struct {
+		name  string
+		body  string
+		probe dropperProbe
+		want  dropperVerdict
+	}{
+		{"known probe matches installed file", dropperUploadExecutionProbes[0],
+			dropperProbe{Conclusive: true, PluginCopy: dropperPluginCopyInstalled}, dropperDemotedPluginCopy},
+		{"known probe has no package proof", dropperUploadExecutionProbes[0],
+			dropperProbe{Conclusive: true}, dropperSuspect},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := safeModeCandidate(now)
+			c.Head = []byte(tc.body)
+			c.Size, c.Digest = int64(len(c.Head)), sha256.Sum256(c.Head)
+			c = ownDropperCandidate(c)
+			if got := assessDropper(c, tc.probe); got != tc.want {
+				t.Fatalf("verdict = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDropperPluginCopyRewrittenHistoryStaysCritical(t *testing.T) {
+	now := time.Unix(1_770_000_000, 0)
+	c := safeModeCandidate(now)
+	c.ContentRewritten = true
+	for _, p := range []dropperProbe{
+		{Conclusive: true, ParentRemoved: true, PluginCopy: dropperPluginCopyOfficial},
+		{Conclusive: true, DocrootRemoved: true, PluginCopy: dropperPluginCopyInstalled},
+	} {
+		if got := assessDropper(c, p); got != dropperSuspect {
+			t.Fatalf("probe %+v: verdict = %v, want suspect", p, got)
+		}
+	}
+}
