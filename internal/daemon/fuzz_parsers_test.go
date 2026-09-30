@@ -1,9 +1,32 @@
 package daemon
 
 import (
+	"io/fs"
 	"path/filepath"
 	"testing"
 )
+
+func FuzzPHPShieldEvalSiteRequiresFilesystemProof(f *testing.F) {
+	const file = "/usr/share/example/Eval.php"
+	for _, site := range []string{
+		"", file, evalSite(file, "1"), evalSite(file, "4x"),
+		evalSite(file, "1") + "(2) : eval()'d code",
+		evalSite("/usr/share/example/../example/Eval.php", "1"),
+		evalSite("/usr/share/example/Eval.php\x00", "1"),
+	} {
+		f.Add(site, uint32(0), uint32(0o644))
+	}
+	f.Add(evalSite(file, "1"), uint32(1001), uint32(0o644))
+	f.Add(evalSite(file, "1"), uint32(0), uint32(0o666))
+	f.Add(evalSite(file, "1"), uint32(0), uint32(fs.ModeSymlink|0o644))
+	f.Fuzz(func(t *testing.T, site string, uid, mode uint32) {
+		info := fakeEvalSiteInfo{name: "Eval.php", mode: fs.FileMode(mode), uid: uid}
+		useFakeEvalSiteTree(t, fakeEvalSiteTree{file: info})
+		if phpShieldEvalSiteIsSystemCode(site) && (uid != 0 || !info.mode.IsRegular() || info.mode.Perm()&0o022 != 0) {
+			t.Fatalf("untrusted filesystem metadata demoted eval site: %q uid=%d mode=%v", site, uid, info.mode)
+		}
+	})
+}
 
 func FuzzBackWPupJobState(f *testing.F) {
 	for _, head := range []string{

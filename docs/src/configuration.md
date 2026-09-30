@@ -475,6 +475,16 @@ php_shield:
   # observations remain in the root-only event archive, including quiet probes.
   # This does not verify code included by the entry script; content scanning
   # and runtime protection remain necessary.
+  # A failed eval() is High, except when the reported eval() call sits in a
+  # root-owned file that no account can change, such as the wp-cli bundled with
+  # WP Toolkit running "wp eval". That file and every directory above it must be
+  # root-owned, not symlinks, and not group or world writable when the event
+  # arrives; such a failure is Warning. Tenants can already disable the
+  # Shield in their own PHP processes. Every event field can be forged, so
+  # this verifies only the reported path's ownership and permissions, not
+  # the sender or evaluated code. A web request reaching such an eval() is
+  # still reported at Warning. An ownership check that fails or times out
+  # keeps the event at High, and a hung check does not delay later events.
   enabled: false                        # receive PHP Shield events and emit alerts
 
 # --- Reputation ---
