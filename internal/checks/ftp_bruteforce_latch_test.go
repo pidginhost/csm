@@ -4,9 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -98,5 +100,123 @@ func TestCheckFTPLoginsReportsWhenNewFailureCrossesThreshold(t *testing.T) {
 	got := ftpBruteFindings(CheckFTPLogins(context.Background(), cfg, store))
 	if len(got) != 1 || got[0].SourceIP != "198.51.100.23" {
 		t.Fatalf("crossing failure not reported: %+v", got)
+	}
+}
+
+// A diagnostic scan does not run auto-response. Its observation must still be
+// available to the next live scan, including when it crosses the threshold.
+func TestCheckFTPLoginsDryRunPreservesLiveDetection(t *testing.T) {
+	log, store := ftpLatchFixture(t)
+	cfg := &config.Config{}
+	checks := []namedCheck{{"ftp_logins", CheckFTPLogins}}
+
+	appendFTPFailures(t, log, "198.51.100.24", ftpFailThreshold-1)
+	if got := ftpBruteFindings(CheckFTPLogins(context.Background(), cfg, store)); len(got) != 0 {
+		t.Fatalf("below threshold reported: %+v", got)
+	}
+	appendFTPFailures(t, log, "198.51.100.24", 1)
+	preview, _ := runParallel(cfg, store, checks, "test", true)
+	if got := ftpBruteFindings(preview); len(got) != 1 || got[0].SourceIP != "198.51.100.24" {
+		t.Fatalf("diagnostic scan = %+v, want the new offender", got)
+	}
+	findings, _ := runParallel(cfg, store, checks, "test", false)
+	if got := ftpBruteFindings(findings); len(got) != 1 || got[0].SourceIP != "198.51.100.24" {
+		t.Fatalf("diagnostic scan consumed live detection: %+v", got)
+	}
+}
+
+// The runner discards a cancelled check's output. Advancing its cursor would
+// prevent a later scan from reporting the failures that were never delivered.
+func TestCheckFTPLoginsCancelledScanPreservesLiveDetection(t *testing.T) {
+	log, store := ftpLatchFixture(t)
+	cfg := &config.Config{}
+	checks := []namedCheck{{"ftp_logins", CheckFTPLogins}}
+	appendFTPFailures(t, log, "198.51.100.25", ftpFailThreshold)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	withMockOS(t, &mockOS{open: func(string) (*os.File, error) {
+		f, err := os.Open(log)
+		cancel()
+		return f, err
+	}})
+	interrupted, _ := runParallelWithContext(ctx, cfg, store, checks, "test", false)
+	if got := ftpBruteFindings(interrupted); len(got) != 0 {
+		t.Fatalf("cancelled scan delivered findings: %+v", got)
+	}
+	findings, _ := runParallel(cfg, store, checks, "test", false)
+	if got := ftpBruteFindings(findings); len(got) != 1 || got[0].SourceIP != "198.51.100.25" {
+		t.Fatalf("cancelled scan consumed live detection: %+v", got)
+	}
+}
+
+// FTP can finish before another check causes the whole tier to be cancelled.
+// The tier's discarded result must not consume FTP's reporting opportunity.
+func TestCheckFTPLoginsCancelledTierPreservesLiveDetection(t *testing.T) {
+	log, store := ftpLatchFixture(t)
+	cfg := &config.Config{}
+	appendFTPFailures(t, log, "198.51.100.26", ftpFailThreshold)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ftpDone := make(chan struct{})
+	checks := []namedCheck{
+		{"ftp_logins", func(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+			findings := CheckFTPLogins(ctx, cfg, store)
+			close(ftpDone)
+			return findings
+		}},
+		{"cancel_scan", func(context.Context, *config.Config, *state.Store) []alert.Finding {
+			<-ftpDone
+			cancel()
+			return nil
+		}},
+	}
+	interrupted, _ := runParallelWithContext(withScanBudget(ctx, 2), cfg, store, checks, "test", false)
+	if len(interrupted) != 0 {
+		t.Fatalf("cancelled tier delivered findings: %+v", interrupted)
+	}
+	if got := ftpBruteFindings(CheckFTPLogins(context.Background(), cfg, store)); len(got) != 1 || got[0].SourceIP != "198.51.100.26" {
+		t.Fatalf("cancelled tier consumed live detection: %+v", got)
+	}
+}
+
+// A competing live scan may consume the failures while this tier is still
+// running. Completing the tier must not publish the same burst a second time.
+func TestCheckFTPLoginsConcurrentScanReportsBurstOnce(t *testing.T) {
+	log, store := ftpLatchFixture(t)
+	cfg := &config.Config{}
+	appendFTPFailures(t, log, "198.51.100.27", ftpFailThreshold)
+	ftpDone, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer func() { unblock(); <-finished }()
+	checks := []namedCheck{
+		{"ftp_logins", func(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+			findings := CheckFTPLogins(ctx, cfg, store)
+			close(ftpDone)
+			return findings
+		}},
+		{"wait", func(context.Context, *config.Config, *state.Store) []alert.Finding {
+			<-release
+			return nil
+		}},
+	}
+	var findings []alert.Finding
+	go func() {
+		defer close(finished)
+		findings, _ = runParallelWithContext(withScanBudget(context.Background(), 2), cfg, store, checks, "test", false)
+	}()
+	select {
+	case <-ftpDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("FTP check did not finish")
+	}
+	if got := ftpBruteFindings(CheckFTPLogins(context.Background(), cfg, store)); len(got) != 1 || got[0].SourceIP != "198.51.100.27" {
+		t.Fatalf("unfinished tier consumed live detection: %+v", got)
+	}
+	unblock()
+	<-finished
+	if got := ftpBruteFindings(findings); len(got) != 0 {
+		t.Fatalf("competing scan re-reported the burst: %+v", got)
 	}
 }

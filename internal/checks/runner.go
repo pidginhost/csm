@@ -967,6 +967,8 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 // reduced deep scans from any caller, account scans and scan jobs.
 var scansInFlight atomic.Int64
 
+type scanDryRunKey struct{}
+
 // ScanInProgress reports whether any check run is in progress.
 func ScanInProgress() bool {
 	return scansInFlight.Load() > 0
@@ -1009,6 +1011,11 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 	// private path collector below is copied out only after this runner's workers
 	// completed inside their budgets.
 	scanCtx := context.WithValue(parent, coverageGapsContextKey{}, (*CoverageGaps)(nil))
+	scanCtx = context.WithValue(scanCtx, scanDryRunKey{}, dryRun)
+	ftpObservation := &ftpScanObservation{}
+	if !dryRun {
+		scanCtx = context.WithValue(scanCtx, ftpScanObservationKey{}, ftpObservation)
+	}
 	scanCtx, truncations := withAccountScanTruncationCollector(scanCtx)
 	scanCtx, coveragePaths := withCoveragePathCollector(scanCtx)
 	scanCtx, incompleteChecks := withIncompleteCheckCollector(scanCtx)
@@ -1255,6 +1262,8 @@ func runParallelWithContext(parent context.Context, cfg *config.Config, store *s
 		// last completed scan state with partial findings or an empty purge.
 		return nil, nil
 	}
+
+	findings = append(findings, ftpObservation.complete(scanCtx, cfg, store)...)
 
 	for _, name := range completedThrottled {
 		store.MarkThrottledRan(name)

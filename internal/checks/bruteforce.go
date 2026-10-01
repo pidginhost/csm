@@ -456,8 +456,12 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 	}
 	ftpTrackerMu.Lock()
 	defer ftpTrackerMu.Unlock()
+	if ctx != nil && ctx.Err() != nil {
+		return nil
+	}
 
 	now := time.Now()
+	initialRaw, _ := store.GetRaw(ftpTrackerKey)
 	tracker := loadFTPFailTracker(store)
 
 	lines, next, skipped, err := readNewSyslogLines(ftpSyslogPath, tracker.Follow)
@@ -523,8 +527,26 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 		})
 	}
 
-	tracker.Follow = next
-	tracker.save(store)
+	// Diagnostic scans suppress auto-response, so leave their evidence for
+	// the next live scan rather than consuming its only reporting opportunity.
+	// The runner also discards results from cancelled checks.
+	if ctx != nil && ctx.Err() != nil {
+		return nil
+	}
+	dryRun := false
+	if ctx != nil {
+		dryRun, _ = ctx.Value(scanDryRunKey{}).(bool)
+	}
+	if !dryRun {
+		tracker.Follow = next
+		if ctx != nil {
+			if observation, _ := ctx.Value(ftpScanObservationKey{}).(*ftpScanObservation); observation != nil {
+				observation.prepare(initialRaw, tracker, findings)
+				return nil
+			}
+		}
+		tracker.save(store)
+	}
 	return findings
 }
 
