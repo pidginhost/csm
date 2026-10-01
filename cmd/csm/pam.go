@@ -235,7 +235,7 @@ func pamInstall(w io.Writer, srcOverride string, dryRun bool) error {
 }
 
 // pamInstallStacks hooks the service files and the shared auth stacks. It
-// returns an error when no shared stack ends up reporting failed logins,
+// returns an error when any shared stack cannot report failed logins,
 // after every other edit is done: brute-force detection depends on them.
 func pamInstallStacks(w io.Writer, services, shared []string, dryRun bool) error {
 	for _, path := range services {
@@ -270,13 +270,13 @@ func pamInstallStacks(w io.Writer, services, shared []string, dryRun bool) error
 		}
 		reported = true
 	}
-	if reported {
-		return nil
+	if len(gaps) > 0 {
+		return fmt.Errorf("failed logins are not reported through every shared auth stack: %w", errors.Join(gaps...))
 	}
-	if len(gaps) == 0 {
+	if !reported {
 		return fmt.Errorf("failed logins are not reported to CSM: %w (looked for %s)", errPAMNoSharedStack, strings.Join(shared, ", "))
 	}
-	return fmt.Errorf("failed logins are not reported to CSM: %w", errors.Join(gaps...))
+	return nil
 }
 
 // pamInstallSuccessHook adds the plain auth and session lines to path. It

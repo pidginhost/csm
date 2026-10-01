@@ -46,6 +46,27 @@ static const char *services[][2] = {
     {"csm-test-fail", STACK("pam_deny.so")},
     {"csm-test-pass", STACK("pam_permit.so")},
     {"csm-test-hook-setcred", "auth optional " MOD " authfail\nauth required pam_permit.so\n"},
+    {"csm-test-spaced", "auth [success = 2 default = ignore] pam_permit.so\n"
+                         "auth optional " MOD " authfail\nauth requisite pam_deny.so\n"
+                         "auth required pam_permit.so\n"},
+    {"csm-test-end-installed", "auth required pam_permit.so\n"
+                               "auth [success=2 default=ignore] pam_permit.so\n"
+                               "auth optional " MOD " authfail\nauth required pam_deny.so\n"},
+    {"csm-test-end-removed", "auth required pam_permit.so\n"
+                             "auth [success=1 default=ignore] pam_permit.so\n"
+                             "auth required pam_deny.so\n"},
+    {"csm-test-overshoot", "auth required pam_permit.so\n"
+                           "auth [success=3 default=ignore] pam_permit.so\n"
+                           "auth optional " MOD " authfail\nauth required pam_deny.so\n"},
+    {"csm-test-missing", "auth [success=3 default=ignore] pam_permit.so\n"
+                         "-auth optional pam_csm_nonexistent.so\n"
+                         "auth optional " MOD " authfail\nauth requisite pam_deny.so\n"
+                         "auth required pam_permit.so\n"},
+    {"csm-test-bracketed", "auth optional " MOD " [authfail]\nauth requisite pam_deny.so\n"},
+    {"csm-test-comment", "auth optional " MOD " #authfail\nauth requisite pam_deny.so\n"},
+    {"csm-test-reset", "auth required pam_deny.so\n"
+                       "auth [success=resetdefault=ignore] pam_permit.so\n"
+                       "auth required pam_permit.so\n"},
 };
 
 static int listen_fd = -1;
@@ -226,6 +247,45 @@ main(void)
     rc = pam_setcred(pamh, PAM_ESTABLISH_CRED);
     drain(events, sizeof(events));
     expect("failure hook at setcred", rc, PAM_SUCCESS, events, "");
+    pam_end(pamh, rc);
+
+    /* These stacks match the editor's widened counts, including the exact
+     * end target and the restored count after uninstall. Missing -auth
+     * modules still count towards jumps in Linux-PAM. */
+    {
+        static const char *successful[] = {
+            "csm-test-spaced", "csm-test-end-installed", "csm-test-end-removed",
+            "csm-test-missing", "csm-test-reset",
+        };
+        size_t i;
+        for (i = 0; i < sizeof(successful) / sizeof(successful[0]); i++) {
+            pamh = start(successful[i], "alice", "192.0.2.13");
+            rc = pam_authenticate(pamh, 0);
+            drain(events, sizeof(events));
+            expect(successful[i], rc, PAM_SUCCESS, events, "");
+            pam_end(pamh, rc);
+        }
+    }
+
+    /* Going past the end is an error, unlike landing exactly at the end. */
+    pamh = start("csm-test-overshoot", "alice", "192.0.2.13");
+    rc = pam_authenticate(pamh, 0);
+    drain(events, sizeof(events));
+    expect("jump past end", rc, PAM_PERM_DENIED, events, "");
+    pam_end(pamh, rc);
+
+    /* PAM strips brackets from grouped arguments and drops inline comments. */
+    pamh = start("csm-test-bracketed", "intruder", "192.0.2.14");
+    rc = authenticate(pamh);
+    drain(events, sizeof(events));
+    expect("bracketed authfail", rc, PAM_AUTH_ERR, events,
+           "FAIL ip=192.0.2.14 user=intruder service=csm-test-bracketed\n");
+    pam_end(pamh, rc);
+
+    pamh = start("csm-test-comment", "intruder", "192.0.2.14");
+    rc = authenticate(pamh);
+    drain(events, sizeof(events));
+    expect("commented authfail", rc, PAM_AUTH_ERR, events, "");
     pam_end(pamh, rc);
 
     cleanup();

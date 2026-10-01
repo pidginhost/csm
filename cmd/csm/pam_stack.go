@@ -21,7 +21,8 @@ const pamFailureHookLine = "auth     optional   pam_csm.so " + pamFailureHookArg
 var (
 	errPAMNoDenyLine        = errors.New("no required or requisite pam_deny.so auth line")
 	errPAMSeveralDenyLines  = errors.New("more than one required or requisite pam_deny.so auth line")
-	errPAMJumpAcrossInclude = errors.New("a jump crosses an included stack, so its target cannot be counted")
+	errPAMJumpAcrossInclude = errors.New("a jump may cross an included stack, so its target cannot be counted")
+	errPAMDenyCanReset      = errors.New("a later auth directive can reset the required pam_deny.so failure")
 	errPAMLineContinuation  = errors.New("the file uses line continuations")
 	errPAMMalformedLine     = errors.New("the file has a line this editor cannot parse")
 	errPAMSymlinkedStack    = errors.New("the file is a symlink; authselect-managed stacks are rewritten by authselect and need a custom profile")
@@ -34,6 +35,7 @@ var pamStackRefusals = []error{
 	errPAMNoDenyLine,
 	errPAMSeveralDenyLines,
 	errPAMJumpAcrossInclude,
+	errPAMDenyCanReset,
 	errPAMLineContinuation,
 	errPAMMalformedLine,
 	errPAMSymlinkedStack,
@@ -120,7 +122,7 @@ func parsePAMLine(raw string) (*pamLine, error) {
 		line.control = parts[0]
 		tail = strings.TrimLeft(rest, " \t")[len(parts[0]):]
 	}
-	operands := strings.Fields(tail)
+	operands := pamOperands(tail)
 	if len(operands) == 0 {
 		return nil, errPAMMalformedLine
 	}
@@ -130,6 +132,41 @@ func parsePAMLine(raw string) (*pamLine, error) {
 		line.opaque = true
 	}
 	return line, nil
+}
+
+// PAM strips bracket delimiters from module arguments and keeps the grouped
+// contents as one argument. In particular, [authfail] is the authfail option,
+// whereas [unused authfail] is a single, unrelated option.
+func pamOperands(text string) []string {
+	var operands []string
+	for {
+		text = strings.TrimLeft(text, " \t")
+		if text == "" {
+			return operands
+		}
+		if text[0] != '[' {
+			end := strings.IndexAny(text, " \t")
+			if end < 0 {
+				end = len(text)
+			}
+			operands = append(operands, text[:end])
+			text = text[end:]
+			continue
+		}
+		var token strings.Builder
+		text = text[1:]
+		for len(text) > 0 && text[0] != ']' {
+			if strings.HasPrefix(text, `\]`) {
+				text = text[1:]
+			}
+			token.WriteByte(text[0])
+			text = text[1:]
+		}
+		if len(text) > 0 {
+			text = text[1:]
+		}
+		operands = append(operands, token.String())
+	}
 }
 
 // pamStack is a PAM file split into lines, with each line's directive.
@@ -145,13 +182,13 @@ func parsePAMStack(data []byte) (*pamStack, error) {
 	text := string(data)
 	stack := &pamStack{trailingNewline: strings.HasSuffix(text, "\n")}
 	text = strings.TrimSuffix(text, "\n")
-	for _, raw := range strings.Split(text, "\n") {
+	for i, raw := range strings.Split(text, "\n") {
 		if strings.HasSuffix(strings.TrimRight(raw, " \t"), `\`) {
 			return nil, errPAMLineContinuation
 		}
 		line, err := parsePAMLine(raw)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %q", err, raw)
+			return nil, fmt.Errorf("%w at line %d", err, i+1)
 		}
 		stack.raw = append(stack.raw, raw)
 		stack.parsed = append(stack.parsed, line)
@@ -160,11 +197,24 @@ func parsePAMStack(data []byte) (*pamStack, error) {
 }
 
 func (s *pamStack) bytes() []byte {
+	if len(s.raw) == 0 {
+		return nil
+	}
 	out := strings.Join(s.raw, "\n")
 	if s.trailingNewline {
 		out += "\n"
 	}
 	return []byte(out)
+}
+
+func (s *pamStack) refuseEscapingIncludes(pivot int) error {
+	for _, line := range s.parsed[:pivot] {
+		if line != nil && (line.kind == s.parsed[pivot].kind || line.kind == "") &&
+			line.opaque && !strings.EqualFold(line.control, "substack") {
+			return errPAMJumpAcrossInclude
+		}
+	}
+	return nil
 }
 
 // jumpOutcome reports where a jump of n modules from line from lands relative
@@ -191,33 +241,48 @@ func (s *pamStack) jumpOutcome(kind string, from, n, pivot int) (skipsPivot, pas
 	return skipsPivot, true, nil
 }
 
-var pamJumpAction = regexp.MustCompile(`([A-Za-z_]+)=([0-9]+)`)
+var (
+	pamJumpAction  = regexp.MustCompile(`([A-Za-z_]+[[:space:]]*=[[:space:]]*)([0-9]+)`)
+	pamResetAction = regexp.MustCompile(`[A-Za-z_]+[[:space:]]*=[[:space:]]*reset`)
+)
 
 // shiftJumps adds delta to every jump of line i that skips line pivot. On
-// removal (delta -1) a jump that runs past the end of the stack is left
-// alone: it lands past the end with or without the removed line.
+// removal, jumps over the failure hook are always narrowed, including jumps
+// to or past the end. The plain hooks were appended without widening jumps,
+// so their removal leaves end jumps alone to restore the original count.
 func (s *pamStack) shiftJumps(i, pivot, delta int) error {
 	line := s.parsed[i]
-	if line == nil || line.ctlStart < 0 {
+	removed := s.parsed[pivot]
+	if line == nil || line.ctlStart < 0 || removed == nil || line.kind != removed.kind {
 		return nil
 	}
 	var shiftErr error
 	control := pamJumpAction.ReplaceAllStringFunc(line.control, func(action string) string {
 		parts := pamJumpAction.FindStringSubmatch(action)
-		n, err := strconv.Atoi(parts[2])
-		if err != nil {
+		// PAM stores actions in a signed C int, including on 64-bit hosts.
+		value, err := strconv.ParseInt(parts[2], 10, 32)
+		if err != nil || value == 0 {
 			shiftErr = errPAMMalformedLine
 			return action
 		}
+		n := int(value)
 		skips, pastEnd, err := s.jumpOutcome(line.kind, i, n, pivot)
 		if err != nil {
 			shiftErr = err
 			return action
 		}
-		if !skips || (delta < 0 && pastEnd) {
+		if !skips || (delta < 0 && pastEnd && !removed.hasArg(pamFailureHookArg)) {
 			return action
 		}
-		return parts[1] + "=" + strconv.Itoa(n+delta)
+		if delta > 0 && n == 1<<31-1 {
+			shiftErr = errPAMMalformedLine
+			return action
+		}
+		if n+delta == 0 {
+			// Linux-PAM rejects numeric zero rather than treating it as ignore.
+			return parts[1] + "ignore"
+		}
+		return parts[1] + strconv.Itoa(n+delta)
 	})
 	if shiftErr != nil {
 		return shiftErr
@@ -261,6 +326,21 @@ func pamInsertFailureHook(data []byte) ([]byte, error) {
 			return nil, err
 		}
 	}
+	if err = stack.refuseEscapingIncludes(deny); err != nil {
+		return nil, err
+	}
+	for i, line := range stack.parsed {
+		if line == nil || (line.kind != "auth" && line.kind != "") {
+			continue
+		}
+		// A required failure can be cleared by reset, including one in an
+		// expanded include. A substack cannot reset its parent's failure.
+		include := line.opaque && !strings.EqualFold(line.control, "substack")
+		if i > deny && strings.EqualFold(stack.parsed[deny].control, "required") &&
+			(include || (line.ctlStart >= 0 && pamResetAction.MatchString(line.control))) {
+			return nil, errPAMDenyCanReset
+		}
+	}
 	hook, err := parsePAMLine(pamFailureHookLine)
 	if err != nil {
 		return nil, err
@@ -273,6 +353,16 @@ func pamInsertFailureHook(data []byte) ([]byte, error) {
 // pamRemoveManagedLines drops every line install wrote and narrows the jumps
 // that skipped them, so uninstall restores the stack's original control flow.
 func pamRemoveManagedLines(data []byte) ([]byte, int, error) {
+	managedLine := false
+	for _, raw := range strings.Split(string(data), "\n") {
+		if pamManagedLine(raw) {
+			managedLine = true
+			break
+		}
+	}
+	if !managedLine {
+		return data, 0, nil
+	}
 	stack, err := parsePAMStack(data)
 	if err != nil {
 		return nil, 0, err
@@ -288,6 +378,11 @@ func pamRemoveManagedLines(data []byte) ([]byte, int, error) {
 		}
 		if managed < 0 {
 			return stack.bytes(), removed, nil
+		}
+		if line := stack.parsed[managed]; line != nil && line.hasArg(pamFailureHookArg) {
+			if err := stack.refuseEscapingIncludes(managed); err != nil {
+				return nil, 0, err
+			}
 		}
 		for i := 0; i < managed; i++ {
 			if err := stack.shiftJumps(i, managed, -1); err != nil {

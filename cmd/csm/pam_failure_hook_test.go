@@ -177,9 +177,10 @@ func TestPamInsertFailureHookRefusesUnplaceableStacks(t *testing.T) {
 	}
 }
 
-// An include the jump does not cross does not stop placement.
+// Includes of other types and auth includes after a requisite deny cannot
+// jump across the new hook. An auth include before it could jump out.
 func TestPamInsertFailureHookAllowsIncludeOutsideJump(t *testing.T) {
-	stack := "auth include pre-auth\n" +
+	stack := "session include pre-session\n" +
 		"auth [success=1 default=ignore] pam_unix.so\n" +
 		"auth requisite pam_deny.so\n" +
 		"auth required pam_permit.so\n" +
@@ -188,7 +189,7 @@ func TestPamInsertFailureHookAllowsIncludeOutsideJump(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pamInsertFailureHook: %v", err)
 	}
-	want := "auth include pre-auth\n" +
+	want := "session include pre-session\n" +
 		"auth [success=2 default=ignore] pam_unix.so\n" +
 		pamTestFailureHook + "\n" +
 		"auth requisite pam_deny.so\n" +
