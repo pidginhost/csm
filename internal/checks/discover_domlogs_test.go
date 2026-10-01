@@ -121,7 +121,7 @@ func TestScanDomlogsAndScanDomlogsStatsTouchSameFiles(t *testing.T) {
 	mapScanned := scanDomlogs(context.Background(), nil, 0,
 		map[string]int{}, map[string]int{}, map[string]int{})
 
-	statsScanned := scanDomlogsStats(context.Background(), &config.Config{}, newDomlogStats())
+	statsScanned := scanDomlogsStats(context.Background(), &config.Config{}, newDomlogStats(), "")
 
 	if mapScanned != statsScanned {
 		t.Errorf("scanDomlogs scanned=%d but scanDomlogsStats scanned=%d -- discovery drift",
@@ -167,7 +167,7 @@ func TestScanDomlogsAndScanDomlogsStatsAggregateSameLegacyCounters(t *testing.T)
 	mapScanned := scanDomlogs(context.Background(), infraIPs, 0, wpLogin, xmlrpc, userEnum)
 
 	stats := newDomlogStats()
-	statsScanned := scanDomlogsStats(context.Background(), &config.Config{InfraIPs: infraIPs}, stats)
+	statsScanned := scanDomlogsStats(context.Background(), &config.Config{InfraIPs: infraIPs}, stats, "")
 
 	if mapScanned != 2 || statsScanned != 2 {
 		t.Fatalf("scanned files = scanDomlogs:%d scanDomlogsStats:%d, want both 2",

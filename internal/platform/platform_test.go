@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -316,4 +317,31 @@ func TestResetForTest_ClearsCache(t *testing.T) {
 	}
 	// Touch first to make linter happy
 	_ = first
+}
+
+// cpsrvd writes /usr/local/cpanel/logs/access_log in its own format for
+// panel, webmail and WHM traffic. It is not a web access log: handed to the
+// web access-log parsers it turns a customer's own panel session into web
+// attack findings against their address. The candidates are the Apache
+// log locations cPanel uses, whichever web server writes them.
+func TestPopulatePaths_CPanelAccessLogCandidates(t *testing.T) {
+	want := []string{
+		"/usr/local/apache/logs/access_log",
+		"/var/log/apache2/access_log",
+		"/etc/apache2/logs/access_log",
+	}
+	for _, osName := range []OSFamily{OSCloudLinux, OSAlma, OSUbuntu} {
+		for _, ws := range []WebServer{WSApache, WSNginx, WSLiteSpeed, WSNone} {
+			i := Info{OS: osName, Panel: PanelCPanel, WebServer: ws}
+			populatePaths(&i)
+			for _, p := range i.AccessLogPaths {
+				if p == "/usr/local/cpanel/logs/access_log" {
+					t.Errorf("%v/%v: cpsrvd log listed as a web access log: %v", osName, ws, i.AccessLogPaths)
+				}
+			}
+			if len(i.AccessLogPaths) < len(want) || !slices.Equal(i.AccessLogPaths[:len(want)], want) {
+				t.Errorf("%v/%v: access log candidates = %v, want prefix %v", osName, ws, i.AccessLogPaths, want)
+			}
+		}
+	}
 }

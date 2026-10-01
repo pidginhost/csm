@@ -78,28 +78,29 @@ func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	}
 
 	stats := newDomlogStats()
+	var centralPath string
+	var centralLines []string
+	for _, p := range platform.Detect().AccessLogPaths {
+		if lines := tailFile(p, window); len(lines) > 0 {
+			centralPath, centralLines = p, lines
+			break
+		}
+	}
 
 	// 1. Per-domain domlogs -- primary source on LiteSpeed.
 	// Glob both SSL and non-SSL logs: attackers may use HTTP.
-	scanned := scanDomlogsStats(ctx, cfg, stats)
+	scanned := scanDomlogsStats(ctx, cfg, stats, centralPath)
 
 	// 2. Central access log -- supplement for non-vhost traffic.
 	// On LiteSpeed this mostly has WHM/server-level requests.
 	// On Apache it duplicates domlog data; minor double-counting is
 	// acceptable since thresholds are high enough.
-	for _, p := range platform.Detect().AccessLogPaths {
-		lines := tailFile(p, window)
-		if len(lines) == 0 {
+	for _, line := range centralLines {
+		rec, ok := parseAccessLogRecord(line)
+		if !ok {
 			continue
 		}
-		for _, line := range lines {
-			rec, ok := parseAccessLogRecord(line)
-			if !ok {
-				continue
-			}
-			stats.scan(rec, cfg, currentBotClassifier(cfg))
-		}
-		break
+		stats.scan(rec, cfg, currentBotClassifier(cfg))
 	}
 
 	findings := stats.emit(cfg)
@@ -147,6 +148,10 @@ func discoverFreshDomlogs(ctx context.Context, maxFiles int, maxAge time.Duratio
 // Stateful consumers must preserve findings when discovery could not enumerate
 // their logs. Best-effort traffic summaries can leave onError nil.
 func discoverFreshDomlogsWithErrors(ctx context.Context, maxFiles int, maxAge time.Duration, onError func(error)) []string {
+	return discoverFreshDomlogsExcluding(ctx, maxFiles, maxAge, onError, "")
+}
+
+func discoverFreshDomlogsExcluding(ctx context.Context, maxFiles int, maxAge time.Duration, onError func(error), centralPath string) []string {
 	if maxFiles <= 0 {
 		maxFiles = domlogMaxFiles
 	}
@@ -163,6 +168,9 @@ func discoverFreshDomlogsWithErrors(ctx context.Context, maxFiles int, maxAge ti
 	platformInfo := platform.Detect()
 	globs := platformInfo.DomlogGlobs
 	centralLogs := centralAccessLogSet(platformInfo.AccessLogPaths)
+	// Only the selected candidate is scanned centrally. Exclude its aliases,
+	// while keeping unselected candidates eligible for per-vhost discovery.
+	addCentralAccessLog(centralLogs, centralPath)
 	var domlogs []string
 	for _, pattern := range globs {
 		if err := ctx.Err(); err != nil {
@@ -387,14 +395,13 @@ func cleanDomlogDomain(domain string) string {
 }
 
 // scanDomlogsStats discovers per-vhost logs honouring the operator's
-// thresholds and feeds each parsed record into stats. Production entry
-// point used by CheckWPBruteForce. Returns the number of files actually
-// tailed.
-func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStats) int {
+// thresholds and feeds each parsed record into stats. Returns the number
+// of files actually tailed.
+func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStats, centralPath string) int {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	paths := discoverFreshDomlogs(ctx, cfg.Thresholds.DomlogMaxFiles, effectiveDomlogMaxAge(cfg))
+	paths := discoverFreshDomlogsExcluding(ctx, cfg.Thresholds.DomlogMaxFiles, effectiveDomlogMaxAge(cfg), nil, centralPath)
 	return tailDomlogsInto(ctx, paths, cfg, stats, currentBotClassifier(cfg), effectiveDomlogTailLines(cfg))
 }
 

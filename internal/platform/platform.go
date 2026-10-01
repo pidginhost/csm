@@ -633,10 +633,15 @@ func populatePaths(i *Info) {
 	}
 
 	// cPanel overlays its own access/error logs on top of the OS defaults.
+	// The access logs are where EasyApache writes, and LiteSpeed on cPanel
+	// writes the same file. cpsrvd's /usr/local/cpanel/logs/access_log is not
+	// a web access log: panel and webmail traffic parsed as web traffic turns
+	// a customer's own session into attack findings against their address.
 	if i.Panel == PanelCPanel {
 		i.AccessLogPaths = append([]string{
 			"/usr/local/apache/logs/access_log",
-			"/usr/local/cpanel/logs/access_log",
+			"/var/log/apache2/access_log",
+			"/etc/apache2/logs/access_log",
 		}, i.AccessLogPaths...)
 		i.ErrorLogPaths = append([]string{
 			"/usr/local/apache/logs/error_log",
