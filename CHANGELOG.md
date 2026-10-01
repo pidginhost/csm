@@ -13,6 +13,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Failed SSH and other PAM password logins are reported to CSM again, so PAM brute-force and credential-stuffing detection can fire and block, following `auto_response.block_ips`; the PAM module had stopped reporting failures. Existing hosts must run `csm pam install` again after upgrading to add the failure hook; it leaves a shared auth stack it cannot edit safely unchanged, such as an authselect-managed one, and exits with an error.
 
+### Fixed
+
+- On cPanel the realtime web log watcher and the periodic WordPress brute-force check no longer fall back to cPanel's own access log when the web server's log is missing, where a customer's phpMyAdmin session could block their own address; they try the other Apache log locations and the LiteSpeed log instead. The realtime watcher picks its log when the daemon starts, so the change applies at the restart an upgrade performs; `web_server.access_logs` still overrides the candidates.
+
 ## [4.1.0] - 2026-10-01
 
 ### Highlights
