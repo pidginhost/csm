@@ -2163,8 +2163,9 @@ func (d *Daemon) startLogWatchers() {
 	} else if hostInfo.WebServer != platform.WSNone && len(hostInfo.AccessLogPaths) > 0 {
 		csmlog.Warn("access log not found, will retry every 60s", "candidates", fmt.Sprintf("%v", hostInfo.AccessLogPaths))
 		d.wg.Add(1)
-		accessPath := hostInfo.AccessLogPaths[0]
-		obs.Go("logwatch-access-retry", func() { d.retryLogWatcher(accessPath, parseAccessLogBruteForce) })
+		obs.Go("logwatch-access-retry", func() {
+			d.retryLogWatcherCandidates(hostInfo.AccessLogPaths, parseAccessLogBruteForce, "")
+		})
 	}
 
 	// Start background eviction for modsec dedup/escalation state
@@ -2397,36 +2398,8 @@ func shouldWatchEximMainlog(hostInfo platform.Info, stat func(string) (os.FileIn
 }
 
 func (d *Daemon) retryLogWatcherNamed(path string, handler LogLineHandler, name string) {
-	defer d.wg.Done()
 	csmlog.Warn("log not found, will retry every 60s", "path", path)
-	ticker := time.NewTicker(logWatcherRetryInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-d.stopCh:
-			return
-		case <-ticker.C:
-			w, err := NewLogWatcher(path, d.cfg, handler, d.alertCh)
-			if err != nil {
-				continue // still missing, keep retrying
-			}
-			d.logWatchersMu.Lock()
-			d.logWatchers = append(d.logWatchers, w)
-			d.logWatchersMu.Unlock()
-			d.wg.Add(1)
-			watcher := w
-			obs.Go("logwatch-late", func() {
-				defer d.wg.Done()
-				watcher.Run(d.stopCh)
-			})
-			csmlog.Info("watching log (appeared after retry)", "path", path)
-			if name != "" {
-				d.MarkWatcher(name, true)
-			}
-			return
-		}
-	}
+	d.retryLogWatcherCandidates([]string{path}, handler, name)
 }
 
 func (d *Daemon) startWebUI() {
