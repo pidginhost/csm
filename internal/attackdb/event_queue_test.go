@@ -49,10 +49,10 @@ func TestAttackEventQueueAdmissionUsesArrivalTime(t *testing.T) {
 		t.Fatalf("new queue: %+v", s)
 	}
 	for _, stamp := range []time.Time{time.Now().Add(-24 * time.Hour), time.Now().Add(24 * time.Hour), {}} {
-		db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "198.51.100.23", Timestamp: stamp})
+		db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "198.51.100.23", Timestamp: stamp})
 	}
 	db.RecordFinding(alert.Finding{Check: "unmapped", SourceIP: "198.51.100.23"})
-	db.RecordFinding(alert.Finding{Check: "webshell"})
+	db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce"})
 	if s := eventQueueStatus(t, db, time.Now()); s.Depth != 3 || s.InFlight != 0 || s.DroppedTotal != 0 || s.Status != "ok" || s.LagSeconds >= 1 {
 		t.Fatalf("arrival accounting: %+v", s)
 	}
@@ -417,7 +417,7 @@ func TestAttackEventQueueEncodingFailureCountsOnlyMissingEvent(t *testing.T) {
 				t.Cleanup(cleanup)
 			}
 			for _, stamp := range []time.Time{time.Now(), time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC), time.Now()} {
-				db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "198.51.100.23", Timestamp: stamp})
+				db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "198.51.100.23", Timestamp: stamp})
 			}
 			if err := db.Flush(); err != nil {
 				t.Fatal(err)
@@ -562,7 +562,7 @@ func TestAttackEventQueueKnownLossVisibleBeforeCleanup(t *testing.T) {
 // An uncertain write can have lost persisted evidence; a backlog has not.
 func TestAttackEventQueueReportsUncertainPersistenceFirst(t *testing.T) {
 	db := eventQueueFlatDB(t)
-	db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "198.51.100.23"})
+	db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "198.51.100.23"})
 	q := db.eventHealth()
 	q.mu.Lock()
 	q.oldest = time.Now().Add(-2 * time.Minute)

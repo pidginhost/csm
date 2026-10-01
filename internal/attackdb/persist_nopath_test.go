@@ -29,7 +29,7 @@ func TestFlushWithoutPathWritesNothingToWorkingDir(t *testing.T) {
 	t.Cleanup(func() { store.SetGlobal(previous) })
 
 	db := NewForTest(nil)
-	db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "198.51.100.23", Timestamp: time.Now()})
+	db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "198.51.100.23", Timestamp: time.Now()})
 	if err := db.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestFlushWithPathStillPersists(t *testing.T) {
 	dir := t.TempDir()
 	db := NewForTest(nil)
 	db.dbPath = dir
-	db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "198.51.100.23", Timestamp: time.Now()})
+	db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "198.51.100.23", Timestamp: time.Now()})
 	if err := db.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
@@ -63,8 +63,8 @@ func TestFlushWithPathStillPersists(t *testing.T) {
 	if rec := reloaded.LookupIP("198.51.100.23"); rec == nil || rec.EventCount != 1 {
 		t.Fatalf("persisted record = %+v, want one event", rec)
 	}
-	if events := reloaded.QueryEvents("198.51.100.23", 10); len(events) != 1 || events[0].CheckName != "webshell" {
-		t.Fatalf("persisted events = %+v, want one webshell finding", events)
+	if events := reloaded.QueryEvents("198.51.100.23", 10); len(events) != 1 || events[0].CheckName != "wp_login_bruteforce" {
+		t.Fatalf("persisted events = %+v, want one brute-force finding", events)
 	}
 	db.RemoveIP("198.51.100.23")
 	if err := db.Flush(); err != nil {
@@ -104,7 +104,7 @@ func TestWithoutPathIgnoresWorkingDirectoryState(t *testing.T) {
 	if events := db.readAllEvents(); len(events) != 0 {
 		t.Fatalf("statistics read unrelated working-directory events: %+v", events)
 	}
-	db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "198.51.100.23", Timestamp: time.Now()})
+	db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "198.51.100.23", Timestamp: time.Now()})
 	if err := db.Flush(); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestWithoutPathStillUsesBbolt(t *testing.T) {
 	defer cleanup()
 	t.Chdir(t.TempDir())
 	db := NewForTest(nil)
-	db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "198.51.100.23", Timestamp: time.Now()})
+	db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "198.51.100.23", Timestamp: time.Now()})
 	if err := db.Flush(); err != nil {
 		t.Fatal(err)
 	}
@@ -133,10 +133,10 @@ func TestWithoutPathStillUsesBbolt(t *testing.T) {
 	if rec := reloaded.LookupIP("198.51.100.23"); rec == nil || rec.EventCount != 1 {
 		t.Fatalf("bbolt record lost with no flat-file path: %+v", rec)
 	}
-	if events := reloaded.QueryEvents("198.51.100.23", 10); len(events) != 1 || events[0].CheckName != "webshell" {
+	if events := reloaded.QueryEvents("198.51.100.23", 10); len(events) != 1 || events[0].CheckName != "wp_login_bruteforce" {
 		t.Fatalf("bbolt events lost with no flat-file path: %+v", events)
 	}
-	if events := reloaded.readAllEvents(); len(events) != 1 || events[0].CheckName != "webshell" {
+	if events := reloaded.readAllEvents(); len(events) != 1 || events[0].CheckName != "wp_login_bruteforce" {
 		t.Fatalf("bbolt statistics lost with no flat-file path: %+v", events)
 	}
 	entries, err := os.ReadDir(".")

@@ -88,7 +88,10 @@ remain reportable.
 The attack database counts a finding only against the source address the
 finding carries as a structured field. Addresses that appear only in message
 text, such as a connection's destination, a process name or a file path, never
-build a score.
+build a score. Scores that earlier releases built from such text are corrected
+automatically when the daemon starts; blocks they already caused are not lifted.
+The correction has no setting; `auto_response.block_ips` controls new automatic
+blocks.
 
 The local threat score retains evidence attributed to the server itself. Such
 records can represent forwarded attacks or a compromised local process; firewall

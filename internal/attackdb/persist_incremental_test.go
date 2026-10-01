@@ -10,7 +10,7 @@ import (
 )
 
 func findingFromIP(ip string) alert.Finding {
-	return alert.Finding{Check: "webshell", Message: "attack from " + ip, SourceIP: ip, Timestamp: time.Now()}
+	return alert.Finding{Check: "wp_login_bruteforce", Message: "attack from " + ip, SourceIP: ip, Timestamp: time.Now()}
 }
 
 // RecordFinding must mark the affected IP dirty so the next flush persists it.
@@ -207,7 +207,7 @@ func TestLoadMarksNormalizedBboltRecordDirty(t *testing.T) {
 		FirstSeen:   now,
 		LastSeen:    now,
 		AttackCounts: map[string]int{
-			string(AttackWebshell): 1,
+			string(AttackBruteForce): 1,
 		},
 		Accounts: map[string]int{},
 	}); err != nil {

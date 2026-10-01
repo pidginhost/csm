@@ -18,7 +18,7 @@ func TestAttackEventQueueBufferInterruptRetainsUnsubmittedCurrent(t *testing.T) 
 		for _, firstSize := range []int{4095, 4096, 4097} {
 			name := exitMode + "/" + map[int]string{4095: "partial_current", 4096: "no_current_bytes", 4097: "direct_first_control"}[firstSize]
 			t.Run(name, func(t *testing.T) {
-				first := alert.Finding{Check: "webshell", SourceIP: "198.51.100.23", Timestamp: time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC), TenantID: "x"}
+				first := alert.Finding{Check: "wp_login_bruteforce", SourceIP: "198.51.100.23", Timestamp: time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC), TenantID: "x"}
 				calibration := eventQueueFlatDB(t)
 				calibration.RecordFinding(first)
 				encoded, err := json.Marshal(calibration.pendingEvents[0])
@@ -28,8 +28,8 @@ func TestAttackEventQueueBufferInterruptRetainsUnsubmittedCurrent(t *testing.T) 
 				first.TenantID = strings.Repeat("x", 1+firstSize-len(encoded)-1)
 				db := eventQueueFlatDB(t)
 				db.RecordFinding(first)
-				db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "203.0.113.24"})
-				db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "203.0.113.25"})
+				db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "203.0.113.24"})
+				db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "203.0.113.25"})
 				encoded, err = json.Marshal(db.pendingEvents[0])
 				if err != nil || len(encoded)+1 != firstSize {
 					t.Fatalf("first event framing wrong: size=%d wanted=%d encodingOK=%v", len(encoded)+1, firstSize, err == nil)

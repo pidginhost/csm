@@ -27,8 +27,8 @@ func TestSuccessfulAuthAddsNoScore(t *testing.T) {
 				now := time.Now()
 				wantScore, wantEvents := 0, 40
 				if withAttack {
-					db.RecordFinding(alert.Finding{Check: "suspicious_process", SourceIP: ip, TenantID: "alice", Timestamp: now})
-					wantScore, wantEvents = 37, 41
+					db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: ip, TenantID: "alice", Timestamp: now})
+					wantScore, wantEvents = 17, 41
 				}
 				for i := range 40 {
 					db.RecordFinding(alert.Finding{Check: check, SourceIP: ip, TenantID: fmt.Sprintf("account%d", i%2), Timestamp: now})
@@ -125,15 +125,5 @@ func TestFailureChecksStillScore(t *testing.T) {
 				t.Fatalf("failure evidence/scoring changed: %+v", rec)
 			}
 		})
-	}
-}
-
-func TestMultiIPLoginStillScores(t *testing.T) {
-	db := NewForTest(nil)
-	const ip = "198.51.100.46"
-	db.RecordFinding(alert.Finding{Check: "cpanel_multi_ip_login", SourceIP: ip})
-	rec := db.LookupIP(ip)
-	if rec == nil || rec.AttackCounts[AttackCPanelLogin] != 1 || ComputeScore(rec) != 2 {
-		t.Fatalf("multi-IP evidence/scoring changed: %+v", rec)
 	}
 }

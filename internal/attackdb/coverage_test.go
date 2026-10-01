@@ -48,30 +48,6 @@ func TestComputeScoreVolumeCap(t *testing.T) {
 	}
 }
 
-func TestComputeScoreC2Bonus(t *testing.T) {
-	r := &IPRecord{
-		EventCount:   1,
-		AttackCounts: map[AttackType]int{AttackC2: 1},
-		Accounts:     map[string]int{},
-	}
-	score := ComputeScore(r)
-	// vol=2 + c2=35 = 37
-	if score != 37 {
-		t.Errorf("score = %d, want 37 (vol=2 + c2=35)", score)
-	}
-}
-
-func TestComputeScoreWebshellBonus(t *testing.T) {
-	r := &IPRecord{
-		EventCount:   1,
-		AttackCounts: map[AttackType]int{AttackWebshell: 1},
-		Accounts:     map[string]int{},
-	}
-	if got := ComputeScore(r); got != 32 {
-		t.Errorf("webshell = %d, want 32 (vol=2 + webshell=30)", got)
-	}
-}
-
 func TestComputeScoreWAFThreshold(t *testing.T) {
 	// WAF bonus only fires when count > 5.
 	r := &IPRecord{
@@ -115,12 +91,13 @@ func TestComputeScoreAutoBlockedFloor(t *testing.T) {
 
 func TestComputeScoreAutoBlockedDoesNotCapHigherScores(t *testing.T) {
 	r := &IPRecord{
-		EventCount:   10,
-		AttackCounts: map[AttackType]int{AttackC2: 1, AttackWebshell: 1, AttackFileUpload: 1},
-		Accounts:     map[string]int{"x": 1},
-		AutoBlocked:  true,
+		EventCount:            60,
+		AttackCounts:          map[AttackType]int{AttackBruteForce: 60, AttackFileUpload: 1},
+		Accounts:              map[string]int{"x": 1, "y": 1},
+		AutoBlocked:           true,
+		BruteForceSustainedAt: time.Now(),
 	}
-	// vol=20 + c2=35 + webshell=30 + upload=20 = 105, capped at 100.
+	// vol=30 + brute=15 + sustained=30 + upload=20 + accounts=10 = 105, capped at 100.
 	if got := ComputeScore(r); got != 100 {
 		t.Errorf("score = %d, want 100 (cap)", got)
 	}
@@ -132,13 +109,12 @@ func TestComputeScoreAllAttackTypes(t *testing.T) {
 		EventCount: 1,
 		AttackCounts: map[AttackType]int{
 			AttackBruteForce: 1, // +15
-			AttackPhishing:   1, // +25
 		},
 		Accounts: map[string]int{},
 	}
-	// vol=2 + brute=15 + phishing=25 = 42
-	if got := ComputeScore(r); got != 42 {
-		t.Errorf("got %d, want 42", got)
+	// vol=2 + brute=15 = 17
+	if got := ComputeScore(r); got != 17 {
+		t.Errorf("got %d, want 17", got)
 	}
 }
 
@@ -234,7 +210,7 @@ func TestRecordFindingUnknownCheckIsIgnored(t *testing.T) {
 func TestRecordFindingNoIPIsIgnored(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{
-		Check:   "webshell",
+		Check:   "wp_login_bruteforce",
 		Message: "some event but no IP",
 	})
 	if len(db.records) != 0 {
@@ -245,8 +221,8 @@ func TestRecordFindingNoIPIsIgnored(t *testing.T) {
 func TestRecordFindingCreatesRecord(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{
-		Check:     "webshell",
-		Message:   "shell.php detected from 192.0.2.12",
+		Check:     "wp_login_bruteforce",
+		Message:   "WordPress brute force from 192.0.2.12",
 		SourceIP:  "192.0.2.12",
 		Severity:  alert.Critical,
 		Timestamp: time.Date(2026, 4, 11, 10, 0, 0, 0, time.UTC),
@@ -258,8 +234,8 @@ func TestRecordFindingCreatesRecord(t *testing.T) {
 	if rec.EventCount != 1 {
 		t.Errorf("EventCount = %d, want 1", rec.EventCount)
 	}
-	if rec.AttackCounts[AttackWebshell] != 1 {
-		t.Errorf("AttackCounts[webshell] = %d, want 1", rec.AttackCounts[AttackWebshell])
+	if rec.AttackCounts[AttackBruteForce] != 1 {
+		t.Errorf("AttackCounts[brute_force] = %d, want 1", rec.AttackCounts[AttackBruteForce])
 	}
 	if rec.ThreatScore == 0 {
 		t.Error("ThreatScore should be computed")
@@ -288,8 +264,8 @@ func TestRecordFindingIncrementsExistingRecord(t *testing.T) {
 func TestRecordFindingExtractsAccount(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{
-		Check:     "webshell",
-		Message:   "shell found in /home/alice/public_html from 192.0.2.11",
+		Check:     "wp_login_bruteforce",
+		Message:   "WordPress brute force on /home/alice/public_html from 192.0.2.11",
 		SourceIP:  "192.0.2.11",
 		Timestamp: time.Now(),
 	})
@@ -303,7 +279,7 @@ func TestRecordFindingZeroTimestampUsesNow(t *testing.T) {
 	db := newTestDB(t)
 	before := time.Now()
 	db.RecordFinding(alert.Finding{
-		Check:    "webshell",
+		Check:    "wp_login_bruteforce",
 		Message:  "found from 192.0.2.11",
 		SourceIP: "192.0.2.11",
 	})
@@ -321,7 +297,7 @@ func TestRecordFindingZeroTimestampUsesNow(t *testing.T) {
 func TestMarkBlockedExisting(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{
-		Check:     "webshell",
+		Check:     "wp_login_bruteforce",
 		Message:   "attack from 192.0.2.12",
 		SourceIP:  "192.0.2.12",
 		Timestamp: time.Now(),
@@ -348,7 +324,7 @@ func TestMarkBlockedMissingIsNoOp(t *testing.T) {
 func TestLookupIPHit(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{
-		Check:     "webshell",
+		Check:     "wp_login_bruteforce",
 		Message:   "attack from 192.0.2.12",
 		SourceIP:  "192.0.2.12",
 		Timestamp: time.Now(),
@@ -377,7 +353,7 @@ func TestLookupIPMiss(t *testing.T) {
 func TestRemoveIP(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{
-		Check:     "webshell",
+		Check:     "wp_login_bruteforce",
 		Message:   "attack from 192.0.2.12",
 		SourceIP:  "192.0.2.12",
 		Timestamp: time.Now(),
@@ -669,7 +645,7 @@ func TestStatsAndComputeStats(t *testing.T) {
 	db := newTestDB(t)
 	now := time.Now()
 	db.RecordFinding(alert.Finding{
-		Check: "webshell", Message: "shell.php from 192.0.2.11", Timestamp: now, SourceIP: "192.0.2.11",
+		Check: "http_scanner_profile", Message: "Scanner profile from 192.0.2.11", Timestamp: now, SourceIP: "192.0.2.11",
 	})
 	db.RecordFinding(alert.Finding{
 		Check: "wp_login_bruteforce", Message: "brute from 192.0.2.22", Timestamp: now, SourceIP: "192.0.2.22",
@@ -692,11 +668,11 @@ func TestStatsAndComputeStats(t *testing.T) {
 	if stats.Last24hEvents != 2 {
 		t.Errorf("Last24hEvents = %d, want 2", stats.Last24hEvents)
 	}
-	if stats.ByType[AttackWebshell] != 1 {
-		t.Errorf("ByType[webshell] = %d, want 1", stats.ByType[AttackWebshell])
+	if stats.ByType[AttackRecon] != 1 {
+		t.Errorf("ByType[recon] = %d, want 1", stats.ByType[AttackRecon])
 	}
-	if stats.ByType24h[AttackWebshell] != 1 {
-		t.Errorf("ByType24h[webshell] = %d, want 1", stats.ByType24h[AttackWebshell])
+	if stats.ByType24h[AttackRecon] != 1 {
+		t.Errorf("ByType24h[recon] = %d, want 1", stats.ByType24h[AttackRecon])
 	}
 	if stats.ByType24h[AttackBruteForce] != 1 {
 		t.Errorf("ByType24h[brute_force] = %d, want 1", stats.ByType24h[AttackBruteForce])
@@ -742,10 +718,10 @@ func TestByType24hExcludesOldEvents(t *testing.T) {
 	recent := time.Now()
 
 	db.RecordFinding(alert.Finding{
-		Check: "webshell", Message: "old shell from 192.0.2.11", Timestamp: old, SourceIP: "192.0.2.11",
+		Check: "wp_login_bruteforce", Message: "old shell from 192.0.2.11", Timestamp: old, SourceIP: "192.0.2.11",
 	})
 	db.RecordFinding(alert.Finding{
-		Check: "webshell", Message: "fresh shell from 192.0.2.22", Timestamp: recent, SourceIP: "192.0.2.22",
+		Check: "wp_login_bruteforce", Message: "fresh shell from 192.0.2.22", Timestamp: recent, SourceIP: "192.0.2.22",
 	})
 	db.appendEvents(db.pendingEvents, nil)
 
@@ -754,11 +730,11 @@ func TestByType24hExcludesOldEvents(t *testing.T) {
 	cachedStatsMu.Unlock()
 
 	stats := db.Stats()
-	if stats.ByType[AttackWebshell] != 2 {
-		t.Errorf("ByType[webshell] = %d, want 2 (lifetime)", stats.ByType[AttackWebshell])
+	if stats.ByType[AttackBruteForce] != 2 {
+		t.Errorf("ByType[brute_force] = %d, want 2 (lifetime)", stats.ByType[AttackBruteForce])
 	}
-	if stats.ByType24h[AttackWebshell] != 1 {
-		t.Errorf("ByType24h[webshell] = %d, want 1 (only recent)", stats.ByType24h[AttackWebshell])
+	if stats.ByType24h[AttackBruteForce] != 1 {
+		t.Errorf("ByType24h[brute_force] = %d, want 1 (only recent)", stats.ByType24h[AttackBruteForce])
 	}
 }
 

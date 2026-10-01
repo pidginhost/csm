@@ -49,14 +49,13 @@ func TestHandleThreatForgetRemovesLegacyAliases(t *testing.T) {
 			}
 			wantEvents, wantScore := 1, 50
 			if tc.mixed {
-				for i := 0; i < 20; i++ {
-					for _, check := range []string{"webshell", "user_outbound_connection"} {
-						db.RecordFinding(alert.Finding{Check: check, SourceIP: canonical, Timestamp: time.Now()})
-					}
+				// A sustained mail-auth brute force: vol 30 + brute 15 + sustained 30.
+				for i := 0; i < 60; i++ {
+					db.RecordFinding(alert.Finding{Check: "email_auth_failure_realtime", SourceIP: canonical, Timestamp: time.Now()})
 				}
-				wantEvents, wantScore = 41, 95
+				wantEvents, wantScore = 61, 75
 			}
-			db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "2001:db8::24", Timestamp: time.Now()})
+			db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "2001:db8::24", Timestamp: time.Now()})
 			if flushErr := db.Flush(); flushErr != nil {
 				t.Fatal(flushErr)
 			}
@@ -102,7 +101,7 @@ func TestHandleThreatForgetCanonicalizesIP(t *testing.T) {
 			if err := json.Unmarshal(resp.Result, &res); err != nil {
 				t.Fatal(err)
 			}
-			if !res.Found || res.IP != tc.canonical || res.Events != 40 {
+			if !res.Found || res.IP != tc.canonical || res.Events != 60 {
 				t.Fatalf("forget result = %+v", res)
 			}
 			if db.LookupIP(tc.canonical) != nil {
@@ -117,7 +116,7 @@ func TestHandleThreatForgetConcurrentRequests(t *testing.T) {
 	db := seedAttackRecord(t, "198.51.100.23")
 	c := newListenerForTest(t)
 	for round := 0; round < 100; round++ {
-		db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "198.51.100.23"})
+		db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "198.51.100.23"})
 		start := make(chan struct{})
 		results := make(chan control.ThreatForgetResult, 16)
 		var wg sync.WaitGroup
@@ -155,10 +154,9 @@ func seedAttackRecord(t *testing.T, ip string) *attackdb.DB {
 	previous := attackdb.Global()
 	attackdb.SetGlobal(db)
 	t.Cleanup(func() { attackdb.SetGlobal(previous) })
-	for i := 0; i < 20; i++ {
-		for _, check := range []string{"webshell", "user_outbound_connection"} {
-			db.RecordFinding(alert.Finding{Check: check, SourceIP: ip, Timestamp: time.Now()})
-		}
+	// A sustained mail-auth brute force: vol 30 + brute 15 + sustained 30.
+	for i := 0; i < 60; i++ {
+		db.RecordFinding(alert.Finding{Check: "email_auth_failure_realtime", SourceIP: ip, Timestamp: time.Now()})
 	}
 	return db
 }
@@ -191,8 +189,8 @@ func TestHandleThreatForgetClearsStaleScore(t *testing.T) {
 	if !res.Found {
 		t.Error("Found=false for an IP that had a record")
 	}
-	if res.Events != 40 {
-		t.Errorf("Events = %d, want the 40 recorded findings", res.Events)
+	if res.Events != 60 {
+		t.Errorf("Events = %d, want the 60 recorded findings", res.Events)
 	}
 	if res.Score < 70 {
 		t.Errorf("Score = %d, want the reporting-threshold score that was cleared", res.Score)
@@ -266,8 +264,8 @@ func TestHandleThreatForgetPersistsRemovalAndRetainsHistory(t *testing.T) {
 	}
 	// The command must flush pending evidence too, without deleting either
 	// previously persisted events or records for other addresses.
-	db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: ip, Timestamp: time.Now()})
-	db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "203.0.113.23", Timestamp: time.Now()})
+	db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: ip, Timestamp: time.Now()})
+	db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "203.0.113.23", Timestamp: time.Now()})
 	c := newListenerForTest(t)
 	if _, forgetErr := c.handleThreatForget([]byte(`{"ip":"` + ip + `"}`)); forgetErr != nil {
 		t.Fatal(forgetErr)
@@ -284,13 +282,13 @@ func TestHandleThreatForgetPersistsRemovalAndRetainsHistory(t *testing.T) {
 	if _, found := sdb.LoadIPRecord(ip); found {
 		t.Fatal("forgotten record survived store reopen")
 	}
-	if events := db.QueryEvents(ip, 100); len(events) != 41 {
-		t.Fatalf("event history after forget = %d, want 41", len(events))
+	if events := db.QueryEvents(ip, 100); len(events) != 61 {
+		t.Fatalf("event history after forget = %d, want 61", len(events))
 	}
 	if rec, found := sdb.LoadIPRecord("203.0.113.23"); !found || rec.EventCount != 1 {
 		t.Fatalf("unrelated record changed: %+v, found=%v", rec, found)
 	}
-	db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: ip, Timestamp: time.Now()})
+	db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: ip, Timestamp: time.Now()})
 	if rec := db.LookupIP(ip); rec == nil || rec.EventCount != 1 {
 		t.Fatalf("new finding did not start fresh scoring: %+v", rec)
 	}
