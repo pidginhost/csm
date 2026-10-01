@@ -11,24 +11,25 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Highlights
 
-- Automatic blocking acts only on addresses a finding names as the attacker; threat scores built from finding text are corrected at startup, and existing blocks stay until they expire or are removed.
+- Incident blocking and central intelligence now require attacker evidence; local threat score corrections at startup leave existing blocks in place until they expire or are removed.
 - Challenge timeouts and central intelligence now respect the Auto-response enabled and Block attacker IPs switches, including after a config reload.
 - Very large bloated error logs now alert as High; the size is set under Settings -> Performance.
-- The Performance page reports WordPress sites that keep calling themselves in the background for hours.
-- Fewer false High alerts from cPanel's nightly cron moves, Really Simple Security 9.8 and later, WP Toolkit's wp-cli and Elementor Safe Mode.
-- The daemon removes the legacy challenge snippet at startup on hosts that run the webserver integration.
-- With automatic WP-Cron fixing on, CSM-managed jobs for sites that inherit their PHP version switch to the web server's version at startup.
+- The Performance page reports WordPress sites that keep making excessive background requests to themselves for hours.
+- Fewer false alerts from cPanel's nightly cron moves, Really Simple Security 9.8 and later, WP Toolkit's wp-cli and Elementor Safe Mode.
+- Outside observe mode, startup can remove the legacy challenge snippet when the webserver integration is installed and unedited.
+- With automatic responses and WP-Cron fixing enabled, startup can update existing CSM-managed jobs to the site's inherited PHP version when it can be resolved.
 - Hosts with many timed blocks spend much less CPU checking whether an address is blocked.
 
 ### Security
 
-- A cron drop-in named after an account, sudo or SSH configuration file is now checked for persistence like any other cron file. Such a file could be downgraded during package updates without that check.
-- Plugin checksum downloads, including ones an account can start with a crafted plugin header, no longer hold off the downloads that verify WordPress core files.
-- Realtime file analysis no longer stalls when an account replaces a plugin or theme header file with a named pipe or device.
-- The local threat score no longer counts addresses read from finding text, through which a process in a hosting account could get any address blocked by connecting to it or by naming a file or process after it. Scores built that way are corrected at startup while existing blocks stay until they expire or are removed, and webmail and cPanel API brute-force findings now carry their address so blocking can still act on them.
-- Crawl detection now counts page requests that could previously be mistaken for static file requests.
-- Incident auto-blocking and central intelligence now act on an address only when a finding names it as an attacker, and keep that evidence across restarts and long incidents. They could block the remote end of an outbound connection, a customer login address or an advisory source.
-- A PHP prepend directive in an .htaccess file can no longer hide behind a commented copy of a security plugin's directive. A directive naming Really Simple Security's file is now reported wherever it points unless it loads that file from the wp-content folder beside the .htaccess; such a prepend is reported but never cleaned automatically.
+- Cron persistence checks now apply consistently during package updates, preventing unsafe alert downgrades.
+- Plugin checksum downloads no longer delay WordPress core verification.
+- Realtime file analysis no longer stalls on invalid plugin or theme metadata files.
+- Local threat scores no longer count unrelated addresses. Scores affected by this are corrected at startup while existing blocks stay until they expire or are removed, and webmail and cPanel API brute-force findings now identify their source for blocking.
+- Crawl detection now counts page requests it previously missed.
+- Incident auto-blocking and central intelligence now require attacker evidence and retain it across restarts and long incidents, preventing blocks of unrelated addresses.
+- PHP prepend detection now validates security-plugin directives more strictly, preventing missed detections. Unsafe Really Simple Security directives are reported without automatic cleanup.
+- Challenge timeouts and central intelligence no longer block addresses while Auto-response enabled or Block attacker IPs is off, and a config reload of those switches applies from the next block. Only scan-driven blocks honoured those switches.
 
 ### Added
 
@@ -39,7 +40,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 #### Firewall and blocking
 
-- Challenge timeouts and central intelligence no longer block addresses while Auto-response enabled or Block attacker IPs is off, and a config reload of those switches applies from the next block. Only scan-driven blocks honoured those switches.
 - An account owner's address is no longer blocked for cPanel API authentication failures when a browser tab left open after logging in again fails on its old session. cPanel's own record that it ended that session now explains those failures; other API failures are still reported, a few seconds later at most.
 - The firewall now refuses multicast and broadcast addresses as block targets, since no filtered packet can come from one and such a block only used up a deny-list slot. Refused blocks of protected addresses, such as loopback, link-local, multicast or broadcast, are now recorded as refusals for timed blocks, subnet dry-runs and manual requests, instead of as failures, as proposed blocks or not at all.
 - Checking whether an address is blocked or allowed now re-examines firewall entries for expiry only when one is due, including across clock corrections. On hosts with thousands of timed blocks, re-examining every entry on each check took a large share of the daemon's CPU during the auto-block and subnet passes.
@@ -48,7 +48,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - The prepend block that Really Simple Security 9.8 and later writes into .htaccess, and security plugin prepend blocks saved with Windows line endings or blank lines, are no longer reported as a backdoor.
 - A PHP Shield eval() failure reported inside a root-owned system script that no account can change, such as the wp-cli that cPanel's WP Toolkit runs, is now reported as Warning instead of High. A delayed or refused ownership check keeps the finding High and shows in queue health.
-- cPanel's nightly move of its own cron jobs to a new time no longer raises High cron change alerts. A cron drop-in change that only moves existing daily jobs to another time of day is now a Warning; every other change, including new permissions or ownership, still alerts High.
+- cPanel's nightly move of its own cron jobs to a new time no longer raises High cron change alerts. A cron drop-in change that only moves existing daily jobs to another time of day is now a Warning; other changes keep their existing severity rules.
 - Turning Elementor Safe Mode off no longer raises a critical self-deleting file alert when the removed file is Elementor's own loader. When the official checksums are not available to prove it, a copy identical to the installed plugin's file is reported at a lower severity.
 
 #### Email
