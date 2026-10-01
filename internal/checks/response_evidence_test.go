@@ -1,8 +1,10 @@
 package checks
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -249,13 +251,32 @@ func TestAdmissionRegistryAcceptsEveryClassifiedCheck(t *testing.T) {
 	}
 }
 
+type reviewedEvidenceRestore struct {
+	reason, declaration string
+}
+
 // reviewedEvidenceRestores lists the functions allowed to write an address
 // field of a finding outside a literal. Each copies the field back onto a
 // finding that a classified producer built; none writes Check or makes up an
 // address. The key is the package directory relative to the repository, a
-// dot, and the function name.
-var reviewedEvidenceRestores = map[string]string{
-	"internal/state.fromPendingRecords": "restores the subnets a finding carried when it was parked at shutdown",
+// dot, and the function name. Pin the whole declaration so changes to the
+// source or destination of restored evidence require a new review.
+var reviewedEvidenceRestores = map[string]reviewedEvidenceRestore{
+	"internal/state.fromPendingRecords": {
+		reason: "restores the subnets a finding carried when it was parked at shutdown",
+		declaration: `func fromPendingRecords(records []pendingFinding) []alert.Finding {
+	if records == nil {
+		return nil
+	}
+	findings := make([]alert.Finding, len(records))
+	for i, r := range records {
+		findings[i] = r.Finding
+		findings[i].CIDRs = r.ResponseCIDRs
+		findings[i].SprayTargets = r.ResponseSprayTargets
+	}
+	return findings
+}`,
+	},
 }
 
 // addressProducer is one alert.Finding literal that carries SourceIP or
@@ -271,12 +292,12 @@ type addressProducer struct {
 // check cannot silently fall outside the response policy.
 func TestAddressProducersAreClassified(t *testing.T) {
 	producers, unresolved, restored := scanAddressProducersReviewed(t, findRepoRoot(t), reviewedEvidenceRestores)
-	for key, reason := range reviewedEvidenceRestores {
-		if strings.TrimSpace(reason) == "" {
+	for key, restore := range reviewedEvidenceRestores {
+		if strings.TrimSpace(restore.reason) == "" {
 			t.Errorf("reviewed restore %q has no reason", key)
 		}
 		if !restored[key] {
-			t.Errorf("reviewed restore %q no longer writes an address field", key)
+			t.Errorf("reviewed restore %q changed or no longer restores an address field", key)
 		}
 	}
 	for _, u := range unresolved {
@@ -327,9 +348,27 @@ func scanAddressProducers(t *testing.T, root string) ([]addressProducer, []strin
 
 // scanAddressProducersReviewed also reports which reviewed restores wrote an
 // address field.
-func scanAddressProducersReviewed(t *testing.T, root string, reviewed map[string]string) ([]addressProducer, []string, map[string]bool) {
+func scanAddressProducersReviewed(t *testing.T, root string, reviewed map[string]reviewedEvidenceRestore) ([]addressProducer, []string, map[string]bool) {
 	t.Helper()
 	restored := map[string]bool{}
+	contracts := map[string]string{}
+	for key, restore := range reviewed {
+		if strings.TrimSpace(restore.reason) == "" {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), "", "package reviewed\n"+restore.declaration, 0)
+		if err != nil {
+			t.Fatalf("reviewed restore %q: %v", key, err)
+		}
+		if len(f.Decls) != 1 {
+			t.Fatalf("reviewed restore %q must contain one plain function", key)
+		}
+		fn, ok := f.Decls[0].(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || fn.Body == nil {
+			t.Fatalf("reviewed restore %q must contain one plain function", key)
+		}
+		contracts[key] = canonicalRestoreDeclaration(t, fn)
+	}
 	var producers []addressProducer
 	var unresolved []string
 	fset := token.NewFileSet()
@@ -367,7 +406,9 @@ func scanAddressProducersReviewed(t *testing.T, root string, reviewed map[string
 			for _, decl := range f.Decls {
 				restore := ""
 				if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil {
-					if key := filepath.ToSlash(pkg) + "." + fn.Name.Name; reviewed[key] != "" {
+					// All build variants share this inventory. An ambiguous name
+					// cannot inherit the review of one of its declarations.
+					if key := filepath.ToSlash(pkg) + "." + fn.Name.Name; contracts[key] != "" && len(sources.files[f].names[fn.Name.Name]) == 1 && canonicalRestoreDeclaration(t, fn) == contracts[key] {
 						restore = key
 					}
 				}
@@ -387,7 +428,16 @@ func scanAddressProducersReviewed(t *testing.T, root string, reviewed map[string
 						if !sources.evidenceTarget(f, target) {
 							continue
 						}
-						if restore != "" && evidenceFieldName(target) != "Check" {
+						field, direct := ast.Unparen(target).(*ast.SelectorExpr)
+						assignment, assigns := n.(*ast.AssignStmt)
+						// A closure cannot inherit its enclosing function's review.
+						for parent := sources.parents[target]; parent != nil; parent = sources.parents[parent] {
+							if _, nested := parent.(*ast.FuncLit); nested {
+								direct = false
+								break
+							}
+						}
+						if restore != "" && assigns && assignment.Tok == token.ASSIGN && direct && (field.Sel.Name == "SourceIP" || field.Sel.Name == "CIDRs") {
 							restored[restore] = true
 							continue
 						}
@@ -429,18 +479,15 @@ func scanAddressProducersReviewed(t *testing.T, root string, reviewed map[string
 	return producers, unresolved, restored
 }
 
-// evidenceFieldName is the field an evidence target writes.
-func evidenceFieldName(e ast.Expr) string {
-	for {
-		switch v := ast.Unparen(e).(type) {
-		case *ast.IndexExpr:
-			e = v.X
-		case *ast.SelectorExpr:
-			return v.Sel.Name
-		default:
-			return ""
-		}
+// A fresh file set discards layout, keeping formatting and comments out
+// of the contract while preserving the entire function's syntax.
+func canonicalRestoreDeclaration(t *testing.T, fn *ast.FuncDecl) string {
+	t.Helper()
+	var out bytes.Buffer
+	if err := format.Node(&out, token.NewFileSet(), fn); err != nil {
+		t.Fatal(err)
 	}
+	return out.String()
 }
 
 func findingCheckField(lit *ast.CompositeLit) (ast.Expr, bool) {
@@ -896,10 +943,10 @@ func (cache) restore(f *alert.Finding) { f.SourceIP = "" }
 	if err := os.WriteFile(filepath.Join(root, "internal", "store", "store.go"), []byte(source), 0600); err != nil {
 		t.Fatal(err)
 	}
-	reviewed := map[string]string{
-		"internal/store.restore": "fixture restore",
-		"internal/store.rename":  "fixture rename",
-		"internal/store.missing": "fixture stale entry",
+	reviewed := map[string]reviewedEvidenceRestore{
+		"internal/store.restore": {"fixture restore", `func restore(f *alert.Finding, cidrs []string, ip string) { f.CIDRs = cidrs; f.SourceIP = ip }`},
+		"internal/store.rename":  {"fixture rename", `func rename(f *alert.Finding) { f.Check = "other" }`},
+		"internal/store.missing": {"fixture stale entry", `func missing(f *alert.Finding) { f.CIDRs = nil }`},
 	}
 	_, unresolved, used := scanAddressProducersReviewed(t, root, reviewed)
 	if len(unresolved) != 3 {
@@ -916,5 +963,135 @@ func (cache) restore(f *alert.Finding) { f.SourceIP = "" }
 	}
 	if !used["internal/store.restore"] || used["internal/store.rename"] || used["internal/store.missing"] {
 		t.Fatalf("used = %v, want only the restore that writes address fields", used)
+	}
+}
+
+func TestAddressProducerScannerBoundsReviewedRestores(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{"closure", `func() { f.SourceIP = "192.0.2.2" }()`},
+		{"nested closure", `func() { func() { f.CIDRs = nil }() }()`},
+		{"address pointer", `_ = &f.SourceIP`},
+		{"subnet pointer", `_ = &f.CIDRs`},
+		{"subnet element", `f.CIDRs[0] = "192.0.2.0/24"`},
+		{"subnet element pointer", `_ = &f.CIDRs[0]`},
+		{"range assignment", `for _, f.SourceIP = range []string{"192.0.2.2"} {}`},
+		{"compound assignment", `f.SourceIP += "2"`},
+		{"check assignment", `f.Check = "other"`},
+		{"check pointer", `_ = &f.Check`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, dir := range []string{"cmd", "internal/store"} {
+				if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			declaration := `func restore(f *alert.Finding) { ` + tc.body + ` }`
+			source := `package store; import "github.com/pidginhost/csm/internal/alert"; ` + declaration
+			if err := os.WriteFile(filepath.Join(root, "internal/store/store.go"), []byte(source), 0600); err != nil {
+				t.Fatal(err)
+			}
+			reviewed := map[string]reviewedEvidenceRestore{"internal/store.restore": {"fixture restore", declaration}}
+			producers, unresolved, used := scanAddressProducersReviewed(t, root, reviewed)
+			if len(producers) != 0 || len(unresolved) != 1 || !strings.Contains(unresolved[0], "store.go:") || used["internal/store.restore"] {
+				t.Fatalf("unsafe restore yielded %v / %v / %v, want one unresolved mutation and no used restore", producers, unresolved, used)
+			}
+		})
+	}
+}
+
+func TestAddressProducerScannerRejectsUnreviewedRestoreChanges(t *testing.T) {
+	const declaration = `func fromPendingRecords(records []pendingFinding) []alert.Finding {
+	if records == nil {
+		return nil
+	}
+	findings := make([]alert.Finding, len(records))
+	for i, r := range records {
+		findings[i] = r.Finding
+		findings[i].CIDRs = r.ResponseCIDRs
+		findings[i].SprayTargets = r.ResponseSprayTargets
+	}
+	return findings
+}`
+	for _, tc := range []struct {
+		name, declaration string
+		unresolved        int
+		used              bool
+	}{
+		{"reviewed copy", declaration, 0, true},
+		{"layout and comments", strings.ReplaceAll(strings.ReplaceAll(declaration, "\n", "\n\n"), "return findings", "/* restored */ return findings"), 0, true},
+		{"stale restore", strings.Replace(declaration, "findings[i].CIDRs = r.ResponseCIDRs", "", 1), 0, false},
+		{"new source", strings.Replace(declaration, "r.ResponseCIDRs", `[]string{"192.0.2.0/24"}`, 1), 1, false},
+		{"new field", strings.Replace(declaration, "return findings", `findings[0].SourceIP = "192.0.2.2"; return findings`, 1), 2, false},
+		{"changed provenance", strings.Replace(declaration, "findings[i] = r.Finding", `findings[i] = alert.Finding{Check: "other"}`, 1), 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for _, dir := range []string{"cmd", "internal/state"} {
+				if err := os.MkdirAll(filepath.Join(root, dir), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			source := `package state; import "github.com/pidginhost/csm/internal/alert"; type pendingFinding struct { alert.Finding; ResponseCIDRs, ResponseSprayTargets []string }; ` + tc.declaration
+			if err := os.WriteFile(filepath.Join(root, "internal/state/pending.go"), []byte(source), 0600); err != nil {
+				t.Fatal(err)
+			}
+			producers, unresolved, used := scanAddressProducersReviewed(t, root, reviewedEvidenceRestores)
+			if len(producers) != 0 || len(unresolved) != tc.unresolved || used["internal/state.fromPendingRecords"] != tc.used {
+				t.Fatalf("restore yielded %v / %v / %v, want %d unresolved and used = %v", producers, unresolved, used, tc.unresolved, tc.used)
+			}
+		})
+	}
+}
+
+func TestAddressProducerScannerScopesReviewedRestores(t *testing.T) {
+	const declaration = `func restore(f *alert.Finding, cidrs []string) { f.CIDRs = cidrs }`
+	const source = `package store; import "github.com/pidginhost/csm/internal/alert"; ` + declaration
+	for _, tc := range []struct {
+		name, otherPath, otherSource string
+		unresolved                   int
+		used                         bool
+	}{
+		{"other package", "internal/other/store.go", source, 1, true},
+		{"build variant", "internal/store/store_other.go", "//go:build other\n\n" + source, 2, false},
+		{"generated variant", "internal/store/store_generated.go", "//go:build other\n\n// Code generated by fixture. DO NOT EDIT.\n" + source, 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, "cmd"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			for path, content := range map[string]string{"internal/store/store.go": "//go:build !other\n\n" + source, tc.otherPath: tc.otherSource} {
+				path = filepath.Join(root, path)
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reviewed := map[string]reviewedEvidenceRestore{"internal/store.restore": {"fixture restore", declaration}}
+			producers, unresolved, used := scanAddressProducersReviewed(t, root, reviewed)
+			if len(producers) != 0 || len(unresolved) != tc.unresolved || used["internal/store.restore"] != tc.used {
+				t.Fatalf("scoped restores yielded %v / %v / %v, want %d unresolved and used = %v", producers, unresolved, used, tc.unresolved, tc.used)
+			}
+			paths := []string{tc.otherPath}
+			if !tc.used {
+				paths = append(paths, "internal/store/store.go")
+			}
+			for _, path := range paths {
+				count := 0
+				for _, where := range unresolved {
+					if strings.Contains(where, filepath.FromSlash(path)+":") {
+						count++
+					}
+				}
+				if count != 1 {
+					t.Errorf("%s reported %d times in %v, want once", path, count, unresolved)
+				}
+			}
+		})
 	}
 }
