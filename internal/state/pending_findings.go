@@ -33,6 +33,9 @@ func toPendingRecords(findings []alert.Finding) []pendingFinding {
 }
 
 func fromPendingRecords(records []pendingFinding) []alert.Finding {
+	if records == nil {
+		return nil
+	}
 	findings := make([]alert.Finding, len(records))
 	for i, r := range records {
 		findings[i] = r.Finding

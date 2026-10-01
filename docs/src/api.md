@@ -652,8 +652,9 @@ write and clear results advance progress; replay stays active through dispatch.
 
 Read, write and clear errors report `state_io`. Failed mutations are read back:
 a returned error after replacement does not imply the new findings were lost.
-Readback compares the recovered JSON payload, including its normal repair of
-invalid UTF-8, so repaired log text does not invent uncertainty or hide overflow.
+Readback compares the recovered JSON payload, including internal subnet and
+spray-target data and its normal repair of invalid UTF-8, so repaired log text
+does not invent uncertainty or hide overflow.
 Unreadable outcomes set `depth_unavailable` and `dropped_lower_bound`. A later
 read restores measured depth, while lifetime losses remain lower bounds. Known
 encoding failures and overflow are counted even when other outcomes are unknown.
@@ -664,9 +665,15 @@ exact loss for a partially dispatched batch; uncertainty reports
 `persistence_uncertain` for one minute. Confirmed losses use the common warning
 threshold and remain in lifetime totals after recovery.
 
-The file format, append order, returned errors and clear-before-replay policy
-are unchanged. These observations add no retry or extra replay. Health snapshots
-read metadata only and do not wait for state locks, files or dispatch callbacks.
+Parked findings add optional storage-only keys to the public finding fields so
+subnet response and credential spray correlation keep their inputs at restart.
+Older parked records still replay, and older daemons ignore the added keys.
+Public Finding JSON stays unchanged. Process-local delivery markers are cleared
+on read, so stored findings receive a fresh evaluation.
+
+Append order, returned errors and clear-before-replay policy are unchanged.
+These observations add no retry or extra replay. Health snapshots read metadata
+only and do not wait for state locks, files or dispatch callbacks.
 
 `incident.persist.waiting` reports immutable incident snapshots waiting for the
 ordered writer, with no fixed waiting capacity. `incident.persist.active` reports

@@ -15,7 +15,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Findings still queued when the daemon stops keep their offending subnets and targeted accounts when they replay at the next start, so a crawl's subnet block and credential spray counts are no longer lost across a restart. Only findings parked by the new version carry them; the subnet block still follows `auto_response.enabled` and `block_ips`.
+- Findings still queued when the daemon stops keep their offending subnets and targeted accounts when they replay at the next start, so subnet blocks and credential spray counts survive a restart; empty parked queues keep their prior behavior. Only findings parked by the new version carry this response data; subnet blocking still follows `auto_response.enabled` and `block_ips`.
 
 ## [4.1.0] - 2026-10-01
 
