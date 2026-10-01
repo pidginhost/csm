@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md), [3.30 to 3.39](docs/changelog/3.30-3.39.md), [3.20 to 3.29](docs/changelog/3.20-3.29.md), [3.10 to 3.19](docs/changelog/3.10-3.19.md), [3.0 to 3.9](docs/changelog/3.0-3.9.md), [2.x](docs/changelog/2.x.md).
 
+## [Unreleased]
+
+### Security
+
+- Failed SSH and other PAM password logins are reported to CSM again, so PAM brute-force and credential-stuffing detection can fire and block, following `auto_response.block_ips`; the PAM module had stopped reporting failures. Existing hosts must run `csm pam install` again after upgrading to add the failure hook; it leaves a shared auth stack it cannot edit safely unchanged, such as an authselect-managed one, and exits with an error.
+
 ## [4.1.0] - 2026-10-01
 
 ### Highlights
