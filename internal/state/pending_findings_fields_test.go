@@ -112,8 +112,8 @@ func TestPendingFindingsNullRemainsNil(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(st.path, pendingFindingsFile), []byte("null"), 0o600); err != nil {
-		t.Fatal(err)
+	if writeErr := os.WriteFile(filepath.Join(st.path, pendingFindingsFile), []byte("null"), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
 	}
 	got, err := st.TakePendingFindings()
 	if err != nil {
@@ -135,8 +135,8 @@ func TestPendingFindingsDowngradeKeepsPublicPayload(t *testing.T) {
 		Timestamp:                 time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		AutoFileResponseEvaluated: true, ScanCarryForward: true,
 	}
-	if err := st.AppendPendingFindings([]alert.Finding{f}); err != nil {
-		t.Fatal(err)
+	if appendErr := st.AppendPendingFindings([]alert.Finding{f}); appendErr != nil {
+		t.Fatal(appendErr)
 	}
 	data, err := os.ReadFile(filepath.Join(st.path, pendingFindingsFile))
 	if err != nil {
@@ -144,8 +144,8 @@ func TestPendingFindingsDowngradeKeepsPublicPayload(t *testing.T) {
 	}
 	// Older daemons decode plain Finding objects and ignore storage-only keys.
 	var older []alert.Finding
-	if err := json.Unmarshal(data, &older); err != nil {
-		t.Fatal(err)
+	if decodeErr := json.Unmarshal(data, &older); decodeErr != nil {
+		t.Fatal(decodeErr)
 	}
 	f.CIDRs, f.SprayTargets = nil, nil
 	f.AutoFileResponseEvaluated, f.ScanCarryForward = false, false
@@ -164,8 +164,8 @@ func TestPendingQueueResponseFieldWriteReadback(t *testing.T) {
 						t.Fatal(err)
 					}
 					old := alert.Finding{Check: "fixture", Message: "same"}
-					if err := st.AppendPendingFindings([]alert.Finding{old}); err != nil {
-						t.Fatal(err)
+					if appendErr := st.AppendPendingFindings([]alert.Finding{old}); appendErr != nil {
+						t.Fatal(appendErr)
 					}
 					incoming, different := old, old
 					if field == "cidrs" {
@@ -184,14 +184,14 @@ func TestPendingQueueResponseFieldWriteReadback(t *testing.T) {
 							value = toPendingRecords([]alert.Finding{old, different})
 						}
 						if outcome != "retained" {
-							if err := atomicio.AtomicWriteJSON(path, mode, value); err != nil {
-								return err
+							if atomicErr := atomicio.AtomicWriteJSON(path, mode, value); atomicErr != nil {
+								return atomicErr
 							}
 						}
 						return writeErr
 					}
-					if err := st.AppendPendingFindings([]alert.Finding{incoming}); err != writeErr {
-						t.Fatalf("append error = %v, want %v", err, writeErr)
+					if appendErr := st.AppendPendingFindings([]alert.Finding{incoming}); appendErr != writeErr {
+						t.Fatalf("append error = %v, want %v", appendErr, writeErr)
 					}
 					row := st.QueueStatuses(time.Now())["pending"]
 					wantDepth, wantLoss := 2, uint64(0)
