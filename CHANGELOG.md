@@ -11,7 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Highlights
 
-- Incident blocking and central intelligence now require attacker evidence; local threat score corrections at startup leave existing blocks in place until they expire or are removed.
+- Incident blocking and central intelligence now require attacker evidence; threat scores are corrected at startup, while existing blocks stay until they expire or are removed.
 - Challenge timeouts and central intelligence now respect the Auto-response enabled and Block attacker IPs switches, including after a config reload.
 - Very large bloated error logs now alert as High; the size is set under Settings -> Performance.
 - The Performance page reports WordPress sites that keep making excessive background requests to themselves for hours.
@@ -22,12 +22,12 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- Cron persistence checks now apply consistently during package updates, preventing unsafe alert downgrades.
-- Plugin checksum downloads no longer delay WordPress core verification.
-- Realtime file analysis no longer stalls on invalid plugin or theme metadata files.
-- Local threat scores no longer count unrelated addresses. Scores affected by this are corrected at startup while existing blocks stay until they expire or are removed, and webmail and cPanel API brute-force findings now identify their source for blocking.
+- Every cron file is now checked for persistence patterns during package updates, so a malicious one can no longer be downgraded to Warning in that window.
+- Plugin checksum downloads that an account can trigger no longer delay WordPress core verification.
+- An account can no longer stall realtime file analysis through its plugin or theme files.
+- Local threat scores no longer count unrelated addresses, which a process in a hosting account could use to get any address blocked. Scores affected by this are corrected at startup while existing blocks stay until they expire or are removed, and webmail and cPanel API brute-force findings now identify their source for blocking.
 - Crawl detection now counts page requests it previously missed.
-- Incident auto-blocking and central intelligence now require attacker evidence and retain it across restarts and long incidents, preventing blocks of unrelated addresses.
+- Incident auto-blocking and central intelligence now require attacker evidence and retain it across restarts and long incidents, preventing blocks of unrelated addresses such as a customer's own login address.
 - PHP prepend detection now validates security-plugin directives more strictly, preventing missed detections. Unsafe Really Simple Security directives are reported without automatic cleanup.
 - Challenge timeouts and central intelligence no longer block addresses while Auto-response enabled or Block attacker IPs is off, and a config reload of those switches applies from the next block. Only scan-driven blocks honoured those switches.
 
