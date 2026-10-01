@@ -122,8 +122,9 @@ dropdown that applies one fix to every matching finding at once:
   intervals use a shifted minute list so the gap stays within the configured
   interval. The command also runs under `flock -n` with a per-docroot lock file
   in the account home, so a slow pass skips the next run instead of overlapping
-  it. On daemon start, managed crontab lines installed by older releases are
-  upgraded to this format automatically (only lines under the `# CSM WP-Cron`
+  it. When the automatic fix below is enabled, managed crontab lines installed
+  by older releases are upgraded on daemon start to this format and to the
+  site's resolved PHP interpreter (only lines under the `# CSM WP-Cron`
   marker are touched; customer-authored cron entries are never rewritten).
 
 These actions are limited to configured account roots, reject symlinks and
