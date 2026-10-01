@@ -167,47 +167,7 @@ func TestSortRecordsTieBreakByEventCount(t *testing.T) {
 	}
 }
 
-// --- extractIP / extractAccount ---------------------------------------
-
-func TestExtractIPFromSeparator(t *testing.T) {
-	cases := []struct {
-		msg  string
-		want string
-	}{
-		{"brute force from 1.2.3.4 after 5 attempts", "1.2.3.4"},
-		{"SSH login: 203.0.113.5 failed", "203.0.113.5"},
-		{"accessing server: 198.51.100.10 hit rate limit", "198.51.100.10"},
-	}
-	for _, c := range cases {
-		if got := extractIP(c.msg); got != c.want {
-			t.Errorf("%q -> %q, want %q", c.msg, got, c.want)
-		}
-	}
-}
-
-func TestExtractIPStripsPunctuation(t *testing.T) {
-	if got := extractIP("login from 1.2.3.4, attempting"); got != "1.2.3.4" {
-		t.Errorf("got %q, want 1.2.3.4", got)
-	}
-}
-
-func TestExtractIPStripsAbuseIPDBSuffix(t *testing.T) {
-	if got := extractIP("login from 1.2.3.4(AbuseIPDB 90%)"); got != "1.2.3.4" {
-		t.Errorf("got %q, want 1.2.3.4", got)
-	}
-}
-
-func TestExtractIPNoMatch(t *testing.T) {
-	if got := extractIP("no ip here"); got != "" {
-		t.Errorf("got %q, want empty", got)
-	}
-}
-
-func TestExtractIPInvalidIP(t *testing.T) {
-	if got := extractIP("access from 999.999.999.999 blocked"); got != "" {
-		t.Errorf("bogus IP should return empty, got %q", got)
-	}
-}
+// --- extractAccount ---------------------------------------------------
 
 func TestExtractAccountFromDetails(t *testing.T) {
 	if got := extractAccount("failed login", "Account: alice trying /home/alice"); got != "alice" {
@@ -262,8 +222,9 @@ func TestTruncateMultibyte(t *testing.T) {
 func TestRecordFindingUnknownCheckIsIgnored(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{
-		Check:   "not_an_attack_check",
-		Message: "some event from 1.2.3.4",
+		Check:    "not_an_attack_check",
+		Message:  "some event from 1.2.3.4",
+		SourceIP: "1.2.3.4",
 	})
 	if len(db.records) != 0 {
 		t.Errorf("unknown check should not record, got %d", len(db.records))
@@ -286,6 +247,7 @@ func TestRecordFindingCreatesRecord(t *testing.T) {
 	db.RecordFinding(alert.Finding{
 		Check:     "webshell",
 		Message:   "shell.php detected from 1.2.3.4",
+		SourceIP:  "1.2.3.4",
 		Severity:  alert.Critical,
 		Timestamp: time.Date(2026, 4, 11, 10, 0, 0, 0, time.UTC),
 	})
@@ -310,6 +272,7 @@ func TestRecordFindingIncrementsExistingRecord(t *testing.T) {
 		db.RecordFinding(alert.Finding{
 			Check:     "wp_login_bruteforce",
 			Message:   "brute force from 5.6.7.8",
+			SourceIP:  "5.6.7.8",
 			Timestamp: time.Now(),
 		})
 	}
@@ -327,6 +290,7 @@ func TestRecordFindingExtractsAccount(t *testing.T) {
 	db.RecordFinding(alert.Finding{
 		Check:     "webshell",
 		Message:   "shell found in /home/alice/public_html from 1.1.1.1",
+		SourceIP:  "1.1.1.1",
 		Timestamp: time.Now(),
 	})
 	rec := db.records["1.1.1.1"]
@@ -339,8 +303,9 @@ func TestRecordFindingZeroTimestampUsesNow(t *testing.T) {
 	db := newTestDB(t)
 	before := time.Now()
 	db.RecordFinding(alert.Finding{
-		Check:   "webshell",
-		Message: "found from 1.1.1.1",
+		Check:    "webshell",
+		Message:  "found from 1.1.1.1",
+		SourceIP: "1.1.1.1",
 	})
 	rec := db.records["1.1.1.1"]
 	if rec == nil {
@@ -358,6 +323,7 @@ func TestMarkBlockedExisting(t *testing.T) {
 	db.RecordFinding(alert.Finding{
 		Check:     "webshell",
 		Message:   "attack from 1.2.3.4",
+		SourceIP:  "1.2.3.4",
 		Timestamp: time.Now(),
 	})
 	before := db.records["1.2.3.4"].ThreatScore
@@ -384,6 +350,7 @@ func TestLookupIPHit(t *testing.T) {
 	db.RecordFinding(alert.Finding{
 		Check:     "webshell",
 		Message:   "attack from 1.2.3.4",
+		SourceIP:  "1.2.3.4",
 		Timestamp: time.Now(),
 	})
 	rec := db.LookupIP("1.2.3.4")
@@ -412,6 +379,7 @@ func TestRemoveIP(t *testing.T) {
 	db.RecordFinding(alert.Finding{
 		Check:     "webshell",
 		Message:   "attack from 1.2.3.4",
+		SourceIP:  "1.2.3.4",
 		Timestamp: time.Now(),
 	})
 	db.RemoveIP("1.2.3.4")
@@ -701,10 +669,10 @@ func TestStatsAndComputeStats(t *testing.T) {
 	db := newTestDB(t)
 	now := time.Now()
 	db.RecordFinding(alert.Finding{
-		Check: "webshell", Message: "shell.php from 1.1.1.1", Timestamp: now,
+		Check: "webshell", Message: "shell.php from 1.1.1.1", Timestamp: now, SourceIP: "1.1.1.1",
 	})
 	db.RecordFinding(alert.Finding{
-		Check: "wp_login_bruteforce", Message: "brute from 2.2.2.2", Timestamp: now,
+		Check: "wp_login_bruteforce", Message: "brute from 2.2.2.2", Timestamp: now, SourceIP: "2.2.2.2",
 	})
 	// Flush pending events so readAllEvents() sees them from disk.
 	db.appendEvents(db.pendingEvents, nil)
@@ -774,10 +742,10 @@ func TestByType24hExcludesOldEvents(t *testing.T) {
 	recent := time.Now()
 
 	db.RecordFinding(alert.Finding{
-		Check: "webshell", Message: "old shell from 1.1.1.1", Timestamp: old,
+		Check: "webshell", Message: "old shell from 1.1.1.1", Timestamp: old, SourceIP: "1.1.1.1",
 	})
 	db.RecordFinding(alert.Finding{
-		Check: "webshell", Message: "fresh shell from 2.2.2.2", Timestamp: recent,
+		Check: "webshell", Message: "fresh shell from 2.2.2.2", Timestamp: recent, SourceIP: "2.2.2.2",
 	})
 	db.appendEvents(db.pendingEvents, nil)
 

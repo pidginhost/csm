@@ -10,7 +10,7 @@ import (
 )
 
 func findingFromIP(ip string) alert.Finding {
-	return alert.Finding{Check: "webshell", Message: "attack from " + ip, Timestamp: time.Now()}
+	return alert.Finding{Check: "webshell", Message: "attack from " + ip, SourceIP: ip, Timestamp: time.Now()}
 }
 
 // RecordFinding must mark the affected IP dirty so the next flush persists it.

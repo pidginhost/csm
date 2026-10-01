@@ -7,25 +7,6 @@ import (
 	"time"
 )
 
-// --- extractIP --------------------------------------------------------
-
-func TestExtractIPFromMessage(t *testing.T) {
-	tests := []struct {
-		msg  string
-		want string
-	}{
-		{"FTP login from 203.0.113.5 port 21", "203.0.113.5"},
-		{"Known malicious IP accessing server: 198.51.100.1 (AbuseIPDB", "198.51.100.1"},
-		{"SSH auth failure: 203.0.113.10, user root", "203.0.113.10"},
-		{"no ip here", ""},
-	}
-	for _, tt := range tests {
-		if got := extractIP(tt.msg); got != tt.want {
-			t.Errorf("extractIP(%q) = %q, want %q", tt.msg, got, tt.want)
-		}
-	}
-}
-
 // --- extractAccount ---------------------------------------------------
 
 func TestExtractAccountFromDetailsField(t *testing.T) {

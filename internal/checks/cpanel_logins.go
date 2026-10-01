@@ -82,6 +82,7 @@ func CheckCpanelLogins(ctx context.Context, cfg *config.Config, store *state.Sto
 					Check:    "cpanel_login",
 					Message:  fmt.Sprintf("cPanel direct login from non-infra IP: %s (account: %s)", ip, account),
 					Details:  truncateString(line, 300),
+					SourceIP: ip,
 				})
 			}
 		}

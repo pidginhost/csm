@@ -85,6 +85,11 @@ remain reportable.
 | `local_threat_score` | Aggregated score from internal attack database |
 | `modsec_audit` | ModSecurity audit log parsing |
 
+The attack database counts a finding only against the source address the
+finding carries as a structured field. Addresses that appear only in message
+text, such as a connection's destination, a process name or a file path, never
+build a score.
+
 The local threat score retains evidence attributed to the server itself. Such
 records can represent forwarded attacks or a compromised local process; firewall
 protection against blocking the server does not establish that traffic is safe.
