@@ -223,8 +223,8 @@ func TestRecordFindingUnknownCheckIsIgnored(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{
 		Check:    "not_an_attack_check",
-		Message:  "some event from 1.2.3.4",
-		SourceIP: "1.2.3.4",
+		Message:  "some event from 192.0.2.12",
+		SourceIP: "192.0.2.12",
 	})
 	if len(db.records) != 0 {
 		t.Errorf("unknown check should not record, got %d", len(db.records))
@@ -246,12 +246,12 @@ func TestRecordFindingCreatesRecord(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{
 		Check:     "webshell",
-		Message:   "shell.php detected from 1.2.3.4",
-		SourceIP:  "1.2.3.4",
+		Message:   "shell.php detected from 192.0.2.12",
+		SourceIP:  "192.0.2.12",
 		Severity:  alert.Critical,
 		Timestamp: time.Date(2026, 4, 11, 10, 0, 0, 0, time.UTC),
 	})
-	rec := db.records["1.2.3.4"]
+	rec := db.records["192.0.2.12"]
 	if rec == nil {
 		t.Fatal("record not created")
 	}
@@ -271,12 +271,12 @@ func TestRecordFindingIncrementsExistingRecord(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		db.RecordFinding(alert.Finding{
 			Check:     "wp_login_bruteforce",
-			Message:   "brute force from 5.6.7.8",
-			SourceIP:  "5.6.7.8",
+			Message:   "brute force from 192.0.2.58",
+			SourceIP:  "192.0.2.58",
 			Timestamp: time.Now(),
 		})
 	}
-	rec := db.records["5.6.7.8"]
+	rec := db.records["192.0.2.58"]
 	if rec == nil || rec.EventCount != 3 {
 		t.Errorf("EventCount = %d, want 3", rec.EventCount)
 	}
@@ -289,11 +289,11 @@ func TestRecordFindingExtractsAccount(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{
 		Check:     "webshell",
-		Message:   "shell found in /home/alice/public_html from 1.1.1.1",
-		SourceIP:  "1.1.1.1",
+		Message:   "shell found in /home/alice/public_html from 192.0.2.11",
+		SourceIP:  "192.0.2.11",
 		Timestamp: time.Now(),
 	})
-	rec := db.records["1.1.1.1"]
+	rec := db.records["192.0.2.11"]
 	if rec.Accounts["alice"] != 1 {
 		t.Errorf("Accounts = %v, want alice:1", rec.Accounts)
 	}
@@ -304,10 +304,10 @@ func TestRecordFindingZeroTimestampUsesNow(t *testing.T) {
 	before := time.Now()
 	db.RecordFinding(alert.Finding{
 		Check:    "webshell",
-		Message:  "found from 1.1.1.1",
-		SourceIP: "1.1.1.1",
+		Message:  "found from 192.0.2.11",
+		SourceIP: "192.0.2.11",
 	})
-	rec := db.records["1.1.1.1"]
+	rec := db.records["192.0.2.11"]
 	if rec == nil {
 		t.Fatal("record not created")
 	}
@@ -322,14 +322,14 @@ func TestMarkBlockedExisting(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{
 		Check:     "webshell",
-		Message:   "attack from 1.2.3.4",
-		SourceIP:  "1.2.3.4",
+		Message:   "attack from 192.0.2.12",
+		SourceIP:  "192.0.2.12",
 		Timestamp: time.Now(),
 	})
-	before := db.records["1.2.3.4"].ThreatScore
-	db.MarkBlocked("1.2.3.4")
-	after := db.records["1.2.3.4"].ThreatScore
-	if !db.records["1.2.3.4"].AutoBlocked {
+	before := db.records["192.0.2.12"].ThreatScore
+	db.MarkBlocked("192.0.2.12")
+	after := db.records["192.0.2.12"].ThreatScore
+	if !db.records["192.0.2.12"].AutoBlocked {
 		t.Error("AutoBlocked should be true")
 	}
 	if after < before {
@@ -349,20 +349,20 @@ func TestLookupIPHit(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{
 		Check:     "webshell",
-		Message:   "attack from 1.2.3.4",
-		SourceIP:  "1.2.3.4",
+		Message:   "attack from 192.0.2.12",
+		SourceIP:  "192.0.2.12",
 		Timestamp: time.Now(),
 	})
-	rec := db.LookupIP("1.2.3.4")
+	rec := db.LookupIP("192.0.2.12")
 	if rec == nil {
 		t.Fatal("LookupIP miss")
 	}
-	if rec.IP != "1.2.3.4" {
+	if rec.IP != "192.0.2.12" {
 		t.Errorf("IP = %q", rec.IP)
 	}
 	// Modifying the returned record must not affect the DB (deep copy).
 	rec.EventCount = 999
-	if db.records["1.2.3.4"].EventCount == 999 {
+	if db.records["192.0.2.12"].EventCount == 999 {
 		t.Error("LookupIP should return a deep copy")
 	}
 }
@@ -378,15 +378,15 @@ func TestRemoveIP(t *testing.T) {
 	db := newTestDB(t)
 	db.RecordFinding(alert.Finding{
 		Check:     "webshell",
-		Message:   "attack from 1.2.3.4",
-		SourceIP:  "1.2.3.4",
+		Message:   "attack from 192.0.2.12",
+		SourceIP:  "192.0.2.12",
 		Timestamp: time.Now(),
 	})
-	db.RemoveIP("1.2.3.4")
-	if _, exists := db.records["1.2.3.4"]; exists {
+	db.RemoveIP("192.0.2.12")
+	if _, exists := db.records["192.0.2.12"]; exists {
 		t.Error("record should be removed")
 	}
-	if _, deleted := db.deletedIPs["1.2.3.4"]; !deleted {
+	if _, deleted := db.deletedIPs["192.0.2.12"]; !deleted {
 		t.Error("IP should be in deletedIPs")
 	}
 }
@@ -425,8 +425,8 @@ func TestTotalIPs(t *testing.T) {
 	if n := db.TotalIPs(); n != 0 {
 		t.Errorf("empty = %d, want 0", n)
 	}
-	db.records["1.1.1.1"] = &IPRecord{IP: "1.1.1.1"}
-	db.records["2.2.2.2"] = &IPRecord{IP: "2.2.2.2"}
+	db.records["192.0.2.11"] = &IPRecord{IP: "192.0.2.11"}
+	db.records["192.0.2.22"] = &IPRecord{IP: "192.0.2.22"}
 	if n := db.TotalIPs(); n != 2 {
 		t.Errorf("got %d, want 2", n)
 	}
@@ -434,8 +434,8 @@ func TestTotalIPs(t *testing.T) {
 
 func TestAllRecordsDeepCopy(t *testing.T) {
 	db := newTestDB(t)
-	db.records["1.1.1.1"] = &IPRecord{
-		IP:           "1.1.1.1",
+	db.records["192.0.2.11"] = &IPRecord{
+		IP:           "192.0.2.11",
 		EventCount:   5,
 		AttackCounts: map[AttackType]int{AttackBruteForce: 5},
 		Accounts:     map[string]int{"x": 5},
@@ -446,7 +446,7 @@ func TestAllRecordsDeepCopy(t *testing.T) {
 	}
 	// Mutate the returned copy and verify the original is untouched.
 	all[0].AttackCounts[AttackWebshell] = 99
-	if db.records["1.1.1.1"].AttackCounts[AttackWebshell] != 0 {
+	if db.records["192.0.2.11"].AttackCounts[AttackWebshell] != 0 {
 		t.Error("AllRecords should return a deep copy of AttackCounts")
 	}
 }
@@ -461,8 +461,8 @@ func TestFormatTopLineEmpty(t *testing.T) {
 
 func TestFormatTopLineWithBlocked(t *testing.T) {
 	db := newTestDB(t)
-	db.records["1.1.1.1"] = &IPRecord{IP: "1.1.1.1", AutoBlocked: true}
-	db.records["2.2.2.2"] = &IPRecord{IP: "2.2.2.2"}
+	db.records["192.0.2.11"] = &IPRecord{IP: "192.0.2.11", AutoBlocked: true}
+	db.records["192.0.2.22"] = &IPRecord{IP: "192.0.2.22"}
 	got := db.FormatTopLine()
 	if !strings.Contains(got, "2 IPs tracked") || !strings.Contains(got, "1 auto-blocked") {
 		t.Errorf("got %q", got)
@@ -491,8 +491,8 @@ func TestPruneExpiredRemovesOldRecords(t *testing.T) {
 
 func TestSaveAndLoadRecordsFallback(t *testing.T) {
 	db := newTestDB(t)
-	db.records["1.1.1.1"] = &IPRecord{
-		IP:           "1.1.1.1",
+	db.records["192.0.2.11"] = &IPRecord{
+		IP:           "192.0.2.11",
 		FirstSeen:    time.Now().Add(-time.Hour),
 		LastSeen:     time.Now(),
 		EventCount:   5,
@@ -516,8 +516,8 @@ func TestSaveAndLoadRecordsFallback(t *testing.T) {
 	db2 := newTestDB(t)
 	db2.dbPath = db.dbPath
 	db2.load()
-	if rec, ok := db2.records["1.1.1.1"]; !ok {
-		t.Fatal("1.1.1.1 not loaded from disk")
+	if rec, ok := db2.records["192.0.2.11"]; !ok {
+		t.Fatal("192.0.2.11 not loaded from disk")
 	} else {
 		if rec.EventCount != 5 {
 			t.Errorf("EventCount = %d, want 5", rec.EventCount)
@@ -556,12 +556,12 @@ func TestLoadInitializesNilMaps(t *testing.T) {
 	db := newTestDB(t)
 	path := filepath.Join(db.dbPath, recordsFile)
 	// Write a record with nil maps.
-	body := `{"1.2.3.4":{"ip":"1.2.3.4","first_seen":"2026-04-01T00:00:00Z","last_seen":"2026-04-01T00:00:00Z","event_count":1}}`
+	body := `{"192.0.2.12":{"ip":"192.0.2.12","first_seen":"2026-04-01T00:00:00Z","last_seen":"2026-04-01T00:00:00Z","event_count":1}}`
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
 	db.load()
-	rec := db.records["1.2.3.4"]
+	rec := db.records["192.0.2.12"]
 	if rec == nil {
 		t.Fatal("record not loaded")
 	}
@@ -578,8 +578,8 @@ func TestLoadInitializesNilMaps(t *testing.T) {
 func TestAppendEventsFallback(t *testing.T) {
 	db := newTestDB(t)
 	events := []Event{
-		{Timestamp: time.Now(), IP: "1.1.1.1", AttackType: AttackBruteForce, CheckName: "ssh_login_unknown_ip", Severity: 2},
-		{Timestamp: time.Now(), IP: "2.2.2.2", AttackType: AttackWebshell, CheckName: "webshell", Severity: 3},
+		{Timestamp: time.Now(), IP: "192.0.2.11", AttackType: AttackBruteForce, CheckName: "ssh_login_unknown_ip", Severity: 2},
+		{Timestamp: time.Now(), IP: "192.0.2.22", AttackType: AttackWebshell, CheckName: "webshell", Severity: 3},
 	}
 	db.appendEvents(events, nil)
 
@@ -598,13 +598,13 @@ func TestQueryEventsFallback(t *testing.T) {
 	db := newTestDB(t)
 	base := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
 	events := []Event{
-		{Timestamp: base, IP: "1.1.1.1", AttackType: AttackBruteForce, CheckName: "a"},
-		{Timestamp: base.Add(time.Minute), IP: "2.2.2.2", AttackType: AttackWebshell, CheckName: "b"},
-		{Timestamp: base.Add(2 * time.Minute), IP: "1.1.1.1", AttackType: AttackRecon, CheckName: "c"},
+		{Timestamp: base, IP: "192.0.2.11", AttackType: AttackBruteForce, CheckName: "a"},
+		{Timestamp: base.Add(time.Minute), IP: "192.0.2.22", AttackType: AttackWebshell, CheckName: "b"},
+		{Timestamp: base.Add(2 * time.Minute), IP: "192.0.2.11", AttackType: AttackRecon, CheckName: "c"},
 	}
 	db.appendEvents(events, nil)
 
-	got := db.QueryEvents("1.1.1.1", 10)
+	got := db.QueryEvents("192.0.2.11", 10)
 	if len(got) != 2 {
 		t.Errorf("len = %d, want 2", len(got))
 	}
@@ -620,12 +620,12 @@ func TestQueryEventsLimitTrimsToNewestN(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		db.appendEvents([]Event{{
 			Timestamp:  base.Add(time.Duration(i) * time.Minute),
-			IP:         "1.1.1.1",
+			IP:         "192.0.2.11",
 			AttackType: AttackRecon,
 			CheckName:  "c",
 		}}, nil)
 	}
-	got := db.QueryEvents("1.1.1.1", 3)
+	got := db.QueryEvents("192.0.2.11", 3)
 	if len(got) != 3 {
 		t.Errorf("got %d events, want 3", len(got))
 	}
@@ -633,7 +633,7 @@ func TestQueryEventsLimitTrimsToNewestN(t *testing.T) {
 
 func TestQueryEventsMissingFile(t *testing.T) {
 	db := newTestDB(t)
-	if got := db.QueryEvents("1.1.1.1", 10); got != nil {
+	if got := db.QueryEvents("192.0.2.11", 10); got != nil {
 		t.Errorf("missing file = %v, want nil", got)
 	}
 }
@@ -644,7 +644,7 @@ func TestRotateEventsFile(t *testing.T) {
 	// Build a multi-line JSONL payload so rotation has something to split.
 	var buf []byte
 	for i := 0; i < 10; i++ {
-		ev := Event{Timestamp: time.Now(), IP: "1.1.1.1", AttackType: AttackRecon, CheckName: "c"}
+		ev := Event{Timestamp: time.Now(), IP: "192.0.2.11", AttackType: AttackRecon, CheckName: "c"}
 		b, _ := json.Marshal(ev)
 		buf = append(buf, b...)
 		buf = append(buf, '\n')
@@ -669,10 +669,10 @@ func TestStatsAndComputeStats(t *testing.T) {
 	db := newTestDB(t)
 	now := time.Now()
 	db.RecordFinding(alert.Finding{
-		Check: "webshell", Message: "shell.php from 1.1.1.1", Timestamp: now, SourceIP: "1.1.1.1",
+		Check: "webshell", Message: "shell.php from 192.0.2.11", Timestamp: now, SourceIP: "192.0.2.11",
 	})
 	db.RecordFinding(alert.Finding{
-		Check: "wp_login_bruteforce", Message: "brute from 2.2.2.2", Timestamp: now, SourceIP: "2.2.2.2",
+		Check: "wp_login_bruteforce", Message: "brute from 192.0.2.22", Timestamp: now, SourceIP: "192.0.2.22",
 	})
 	// Flush pending events so readAllEvents() sees them from disk.
 	db.appendEvents(db.pendingEvents, nil)
@@ -742,10 +742,10 @@ func TestByType24hExcludesOldEvents(t *testing.T) {
 	recent := time.Now()
 
 	db.RecordFinding(alert.Finding{
-		Check: "webshell", Message: "old shell from 1.1.1.1", Timestamp: old, SourceIP: "1.1.1.1",
+		Check: "webshell", Message: "old shell from 192.0.2.11", Timestamp: old, SourceIP: "192.0.2.11",
 	})
 	db.RecordFinding(alert.Finding{
-		Check: "webshell", Message: "fresh shell from 2.2.2.2", Timestamp: recent, SourceIP: "2.2.2.2",
+		Check: "webshell", Message: "fresh shell from 192.0.2.22", Timestamp: recent, SourceIP: "192.0.2.22",
 	})
 	db.appendEvents(db.pendingEvents, nil)
 
@@ -792,13 +792,13 @@ func TestReadAllEventsMissingFile(t *testing.T) {
 
 func TestFlushPersistsDirty(t *testing.T) {
 	db := newTestDB(t)
-	db.records["1.2.3.4"] = &IPRecord{
-		IP: "1.2.3.4", FirstSeen: time.Now(), LastSeen: time.Now(),
+	db.records["192.0.2.12"] = &IPRecord{
+		IP: "192.0.2.12", FirstSeen: time.Now(), LastSeen: time.Now(),
 		EventCount: 1, ThreatScore: 10,
 		AttackCounts: map[AttackType]int{}, Accounts: map[string]int{},
 	}
 	db.dirty = true
-	db.pendingEvents = []Event{{Timestamp: time.Now(), IP: "1.2.3.4", AttackType: AttackOther}}
+	db.pendingEvents = []Event{{Timestamp: time.Now(), IP: "192.0.2.12", AttackType: AttackOther}}
 
 	if err := db.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
@@ -821,8 +821,8 @@ func TestStopDrainsAndWaits(t *testing.T) {
 	db.wg.Add(1)
 	go db.backgroundSaver()
 
-	db.records["1.1.1.1"] = &IPRecord{
-		IP: "1.1.1.1", FirstSeen: time.Now(), LastSeen: time.Now(),
+	db.records["192.0.2.11"] = &IPRecord{
+		IP: "192.0.2.11", FirstSeen: time.Now(), LastSeen: time.Now(),
 		EventCount: 1, AttackCounts: map[AttackType]int{}, Accounts: map[string]int{},
 	}
 	db.dirty = true
@@ -867,8 +867,8 @@ func TestSeedFromPermanentBlocklistImportsIPs(t *testing.T) {
 	body := "" +
 		"# comment line\n" +
 		"\n" +
-		"1.2.3.4 # brute force from 2026-04-01\n" +
-		"5.6.7.8\n" +
+		"192.0.2.12 # brute force from 2026-04-01\n" +
+		"192.0.2.58\n" +
 		"bogus-not-an-ip\n"
 	if err := os.WriteFile(filepath.Join(threatDir, "permanent.txt"), []byte(body), 0644); err != nil {
 		t.Fatal(err)
@@ -878,11 +878,11 @@ func TestSeedFromPermanentBlocklistImportsIPs(t *testing.T) {
 	if imported != 2 {
 		t.Errorf("imported = %d, want 2", imported)
 	}
-	if _, ok := db.records["1.2.3.4"]; !ok {
-		t.Error("1.2.3.4 should be imported")
+	if _, ok := db.records["192.0.2.12"]; !ok {
+		t.Error("192.0.2.12 should be imported")
 	}
-	if _, ok := db.records["5.6.7.8"]; !ok {
-		t.Error("5.6.7.8 should be imported")
+	if _, ok := db.records["192.0.2.58"]; !ok {
+		t.Error("192.0.2.58 should be imported")
 	}
 }
 
@@ -893,13 +893,13 @@ func TestSeedFromPermanentBlocklistSkipsExisting(t *testing.T) {
 	if err := os.MkdirAll(threatDir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(threatDir, "permanent.txt"), []byte("1.2.3.4\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(threatDir, "permanent.txt"), []byte("192.0.2.12\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Pre-populate 1.2.3.4.
-	db.records["1.2.3.4"] = &IPRecord{
-		IP: "1.2.3.4", FirstSeen: time.Now(), LastSeen: time.Now(),
+	// Pre-populate 192.0.2.12.
+	db.records["192.0.2.12"] = &IPRecord{
+		IP: "192.0.2.12", FirstSeen: time.Now(), LastSeen: time.Now(),
 		EventCount: 1, AttackCounts: map[AttackType]int{}, Accounts: map[string]int{},
 	}
 	imported := db.SeedFromPermanentBlocklist(parent)
