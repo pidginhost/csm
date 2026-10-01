@@ -1,0 +1,238 @@
+/*
+ * Behaviour test for pam_csm.so. Runs real libpam stacks against a build of
+ * the module whose socket path points at a listener this program owns, and
+ * checks the event lines the module writes.
+ *
+ * Needs root: libpam reads service files only from /etc/pam.d, so the test
+ * writes its own csm-test-* services there and removes them on exit. Run it
+ * through `make check` in a throwaway container or CI job.
+ */
+
+#define _GNU_SOURCE
+
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#include <security/pam_appl.h>
+
+#ifndef CSM_PAM_SOCKET
+#error "build with -DCSM_PAM_SOCKET pointing at the test socket"
+#endif
+#ifndef CSM_PAM_TEST_MODULE
+#error "build with -DCSM_PAM_TEST_MODULE pointing at the test build of pam_csm.so"
+#endif
+
+#define MOD CSM_PAM_TEST_MODULE
+
+/* The failure hook sits where the installer puts it: directly before the
+ * terminal pam_deny.so, with the success jump widened over it. The first
+ * module stands in for the password check. */
+#define STACK(check)                                        \
+    "auth [success=2 default=ignore] " check "\n"           \
+    "auth optional " MOD " authfail\n"                      \
+    "auth requisite pam_deny.so\n"                          \
+    "auth required pam_permit.so\n"                         \
+    "auth optional " MOD "\n"                               \
+    "account required pam_permit.so\n"                      \
+    "session optional " MOD "\n"
+
+static const char *services[][2] = {
+    {"csm-test-fail", STACK("pam_deny.so")},
+    {"csm-test-pass", STACK("pam_permit.so")},
+    {"csm-test-hook-setcred", "auth optional " MOD " authfail\nauth required pam_permit.so\n"},
+};
+
+static int listen_fd = -1;
+static int failures;
+
+static int
+conv(int n, const struct pam_message **msg, struct pam_response **resp, void *data)
+{
+    (void)n;
+    (void)msg;
+    (void)resp;
+    (void)data;
+    return PAM_CONV_ERR;
+}
+
+static void
+cleanup(void)
+{
+    char path[256];
+    size_t i;
+
+    for (i = 0; i < sizeof(services) / sizeof(services[0]); i++) {
+        snprintf(path, sizeof(path), "/etc/pam.d/%s", services[i][0]);
+        unlink(path);
+    }
+    if (listen_fd >= 0) {
+        close(listen_fd);
+    }
+    unlink(CSM_PAM_SOCKET);
+}
+
+static void
+die(const char *what)
+{
+    perror(what);
+    cleanup();
+    exit(2);
+}
+
+static void
+setup(void)
+{
+    struct sockaddr_un addr;
+    char path[256];
+    size_t i;
+
+    for (i = 0; i < sizeof(services) / sizeof(services[0]); i++) {
+        FILE *f;
+        snprintf(path, sizeof(path), "/etc/pam.d/%s", services[i][0]);
+        f = fopen(path, "w");
+        if (!f || fputs(services[i][1], f) == EOF || fclose(f) != 0) {
+            die(path);
+        }
+    }
+
+    unlink(CSM_PAM_SOCKET);
+    listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (listen_fd < 0) {
+        die("socket");
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, CSM_PAM_SOCKET, sizeof(addr.sun_path) - 1);
+    if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(listen_fd, 16) < 0) {
+        die("bind/listen");
+    }
+    if (fcntl(listen_fd, F_SETFL, O_NONBLOCK) < 0) {
+        die("fcntl");
+    }
+}
+
+/* Collect every event line the module wrote since the last call. Each event
+ * is its own connection that the module has already closed. */
+static void
+drain(char *buf, size_t len)
+{
+    size_t off = 0;
+
+    buf[0] = '\0';
+    for (;;) {
+        int fd = accept(listen_fd, NULL, NULL);
+        if (fd < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return;
+            }
+            die("accept");
+        }
+        for (;;) {
+            ssize_t n = read(fd, buf + off, len - off - 1);
+            if (n <= 0) {
+                break;
+            }
+            off += (size_t)n;
+        }
+        buf[off] = '\0';
+        close(fd);
+    }
+}
+
+static void
+expect(const char *step, int got_rc, int want_rc, const char *got, const char *want)
+{
+    if (got_rc != want_rc) {
+        fprintf(stderr, "FAIL %s: PAM result %d, want %d\n", step, got_rc, want_rc);
+        failures++;
+    }
+    if (strcmp(got, want) != 0) {
+        fprintf(stderr, "FAIL %s: events\n  got:  %s\n  want: %s\n", step, got[0] ? got : "(none)\n",
+                want[0] ? want : "(none)\n");
+        failures++;
+    }
+}
+
+static pam_handle_t *
+start(const char *service, const char *user, const char *rhost)
+{
+    static struct pam_conv pc = {conv, NULL};
+    pam_handle_t *pamh = NULL;
+
+    if (pam_start(service, user, &pc, &pamh) != PAM_SUCCESS) {
+        die("pam_start");
+    }
+    if (rhost && pam_set_item(pamh, PAM_RHOST, rhost) != PAM_SUCCESS) {
+        die("pam_set_item");
+    }
+    return pamh;
+}
+
+static int
+authenticate(pam_handle_t *pamh)
+{
+    int rc = pam_authenticate(pamh, 0);
+    return rc == PAM_SUCCESS ? PAM_SUCCESS : PAM_AUTH_ERR;
+}
+
+int
+main(void)
+{
+    char events[4096];
+    pam_handle_t *pamh;
+    int rc;
+
+    setup();
+
+    /* A failed login reaches the failure hook once. */
+    pamh = start("csm-test-fail", "intruder", "192.0.2.10");
+    rc = authenticate(pamh);
+    drain(events, sizeof(events));
+    expect("failed login", rc, PAM_AUTH_ERR, events,
+           "FAIL ip=192.0.2.10 user=intruder service=csm-test-fail\n");
+    pam_end(pamh, rc);
+
+    /* A successful login jumps over the failure hook; the plain line
+     * reports it once, at setcred, and open_session stays quiet. */
+    pamh = start("csm-test-pass", "alice", "192.0.2.11");
+    rc = authenticate(pamh);
+    drain(events, sizeof(events));
+    expect("successful login, authenticate", rc, PAM_SUCCESS, events, "");
+    rc = pam_setcred(pamh, PAM_ESTABLISH_CRED);
+    drain(events, sizeof(events));
+    expect("successful login, setcred", rc, PAM_SUCCESS, events,
+           "OK ip=192.0.2.11 user=alice service=csm-test-pass\n");
+    rc = pam_open_session(pamh, 0);
+    drain(events, sizeof(events));
+    expect("successful login, open_session", rc, PAM_SUCCESS, events, "");
+    pam_end(pamh, rc);
+
+    /* Without a remote host the attempt is local and never reported. */
+    pamh = start("csm-test-fail", "intruder", NULL);
+    rc = authenticate(pamh);
+    drain(events, sizeof(events));
+    expect("local failed login", rc, PAM_AUTH_ERR, events, "");
+    pam_end(pamh, rc);
+
+    /* The failure hook never reports a success, even when setcred walks
+     * through it. */
+    pamh = start("csm-test-hook-setcred", "alice", "192.0.2.12");
+    rc = pam_setcred(pamh, PAM_ESTABLISH_CRED);
+    drain(events, sizeof(events));
+    expect("failure hook at setcred", rc, PAM_SUCCESS, events, "");
+    pam_end(pamh, rc);
+
+    cleanup();
+    if (failures) {
+        fprintf(stderr, "%d check(s) failed\n", failures);
+        return 1;
+    }
+    printf("pam_csm.so: all checks passed\n");
+    return 0;
+}

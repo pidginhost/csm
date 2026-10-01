@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,10 +17,11 @@ import (
 //
 //	status    - report whether pam_csm.so is installed and which /etc/pam.d
 //	            files reference it.
-//	install   - copy build/pam/pam_csm.so to the platform's security dir
-//	            and append the optional session/auth lines to the
-//	            standard PAM service files. Idempotent; refuses to run
-//	            without a backup of every file it edits.
+//	install   - copy build/pam/pam_csm.so to the platform's security dir,
+//	            append the optional session/auth lines to the standard
+//	            PAM service files and place the failed-login hook in the
+//	            shared auth stack. Idempotent; refuses to run without a
+//	            backup of every file it edits.
 //	uninstall - remove the lines added by install and (optionally) the
 //	            shipped pam_csm.so binary.
 //
@@ -65,9 +66,12 @@ Usage: csm pam <subcommand> [options]
 Subcommands:
   status               Report pam_csm.so install state and the /etc/pam.d files referencing it.
   install [--dry-run] [--module <path>]
-                       Copy pam_csm.so into the platform security dir and append
+                       Copy pam_csm.so into the platform security dir, append
                        "session optional pam_csm.so" + "auth optional pam_csm.so"
-                       to the standard PAM service files. --dry-run only previews.
+                       to the standard PAM service files, and add
+                       "auth optional pam_csm.so authfail" before pam_deny.so in
+                       the shared auth stack. Exits non-zero when failed logins
+                       cannot be reported. --dry-run only previews.
   uninstall [--keep-module]
                        Remove the lines this command added. --keep-module leaves
                        the shipped pam_csm.so binary in place.
@@ -77,13 +81,18 @@ out. install creates a timestamped .csm-backup of every file before
 touching it. If you lose access, revert by renaming the backup back.`)
 }
 
-// pamServiceFiles lists the standard /etc/pam.d entries we touch. Order
-// matches the typical RHEL + Debian layout: edit the service-specific
-// file first (sshd / su / sudo) and the shared auth stack last.
+// pamServiceFiles lists the service-specific /etc/pam.d entries we touch.
+// They get the success hook only.
 var pamServiceFiles = []string{
 	"/etc/pam.d/sshd",
 	"/etc/pam.d/su",
 	"/etc/pam.d/sudo",
+}
+
+// pamSharedAuthStacks lists the auth stacks the remote login services
+// include. They get the success hook and the failed-login hook; one failure
+// hook there reports each failed attempt once, whichever service ran it.
+var pamSharedAuthStacks = []string{
 	"/etc/pam.d/password-auth", // RHEL
 	"/etc/pam.d/common-auth",   // Debian
 }
@@ -157,11 +166,17 @@ func pamStatus(w io.Writer) error {
 	for _, path := range pamServiceFiles {
 		fmt.Fprintf(w, "%-32s: %s\n", path, pamFileState(path))
 	}
+	for _, path := range pamSharedAuthStacks {
+		fmt.Fprintf(w, "%-32s: %s\n", path, pamFileState(path))
+		if _, err := os.Lstat(path); err == nil {
+			fmt.Fprintf(w, "%-32s  failed logins: %s\n", "", pamFailureHookState(path))
+		}
+	}
 	return nil
 }
 
 func pamFileState(path string) string {
-	data, err := os.ReadFile(path) // #nosec G304 -- caller controls path; only iterates pamServiceFiles.
+	data, err := os.ReadFile(path) // #nosec G304 -- caller controls path; only iterates the fixed PAM file lists.
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "absent"
@@ -210,45 +225,95 @@ func pamInstall(w io.Writer, srcOverride string, dryRun bool) error {
 		fmt.Fprintf(w, "installed %s -> %s\n", src, dst)
 	}
 
-	for _, path := range pamServiceFiles {
-		info, err := os.Stat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				fmt.Fprintf(w, "skip %s (not present)\n", path)
-				continue
-			}
-			return fmt.Errorf("stat %s: %w", path, err)
-		}
-		if !info.Mode().IsRegular() {
-			fmt.Fprintf(w, "skip %s (not a regular file)\n", path)
-			continue
-		}
-		changed, err := pamEnsureLines(path, dryRun)
-		if err != nil {
-			return fmt.Errorf("editing %s: %w", path, err)
-		}
-		switch {
-		case dryRun && changed:
-			fmt.Fprintf(w, "[dry-run] would add pam_csm.so lines to %s\n", path)
-		case changed:
-			fmt.Fprintf(w, "added pam_csm.so lines to %s\n", path)
-		default:
-			fmt.Fprintf(w, "no change to %s (already hooked)\n", path)
-		}
-	}
+	stacksErr := pamInstallStacks(w, pamServiceFiles, pamSharedAuthStacks, dryRun)
 	if !dryRun {
 		fmt.Fprintln(w, "")
 		fmt.Fprintln(w, "Test from a SECOND terminal before closing this one. If SSH login")
 		fmt.Fprintln(w, "or sudo breaks, the backups end in .csm-backup-<timestamp>.")
 	}
-	return nil
+	return stacksErr
+}
+
+// pamInstallStacks hooks the service files and the shared auth stacks. It
+// returns an error when no shared stack ends up reporting failed logins,
+// after every other edit is done: brute-force detection depends on them.
+func pamInstallStacks(w io.Writer, services, shared []string, dryRun bool) error {
+	for _, path := range services {
+		if _, err := pamInstallSuccessHook(w, path, dryRun); err != nil {
+			return err
+		}
+	}
+	reported := false
+	var gaps []error
+	for _, path := range shared {
+		present, err := pamInstallSuccessHook(w, path, dryRun)
+		if err != nil {
+			return err
+		}
+		if !present {
+			continue
+		}
+		changed, err := pamEnsureFailureHook(path, dryRun)
+		switch {
+		case pamStackRefusal(err):
+			fmt.Fprintf(w, "WARNING: failed logins are not reported through %s: %v\n", path, err)
+			gaps = append(gaps, fmt.Errorf("%s: %w", path, err))
+			continue
+		case err != nil:
+			return fmt.Errorf("editing %s: %w", path, err)
+		case dryRun && changed:
+			fmt.Fprintf(w, "[dry-run] would add the failed-login hook to %s\n", path)
+		case changed:
+			fmt.Fprintf(w, "added the failed-login hook to %s\n", path)
+		default:
+			fmt.Fprintf(w, "no change to %s (failed-login hook present)\n", path)
+		}
+		reported = true
+	}
+	if reported {
+		return nil
+	}
+	if len(gaps) == 0 {
+		return fmt.Errorf("failed logins are not reported to CSM: %w (looked for %s)", errPAMNoSharedStack, strings.Join(shared, ", "))
+	}
+	return fmt.Errorf("failed logins are not reported to CSM: %w", errors.Join(gaps...))
+}
+
+// pamInstallSuccessHook adds the plain auth and session lines to path. It
+// reports whether the file exists.
+func pamInstallSuccessHook(w io.Writer, path string, dryRun bool) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(w, "skip %s (not present)\n", path)
+			return false, nil
+		}
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		fmt.Fprintf(w, "skip %s (not a regular file)\n", path)
+		return false, nil
+	}
+	changed, err := pamEnsureLines(path, dryRun)
+	if err != nil {
+		return false, fmt.Errorf("editing %s: %w", path, err)
+	}
+	switch {
+	case dryRun && changed:
+		fmt.Fprintf(w, "[dry-run] would add pam_csm.so lines to %s\n", path)
+	case changed:
+		fmt.Fprintf(w, "added pam_csm.so lines to %s\n", path)
+	default:
+		fmt.Fprintf(w, "no change to %s (already hooked)\n", path)
+	}
+	return true, nil
 }
 
 // pamEnsureLines appends the two CSM-managed PAM directives to path if
 // they are not already present. Returns whether the file was modified.
 // In dry-run mode the file is left untouched.
 func pamEnsureLines(path string, dryRun bool) (bool, error) {
-	data, err := os.ReadFile(path) // #nosec G304 -- pamServiceFiles allowlisted above.
+	data, err := os.ReadFile(path) // #nosec G304 -- path comes from the fixed PAM file lists.
 	if err != nil {
 		return false, err
 	}
@@ -305,7 +370,7 @@ func pamUninstall(w io.Writer, keepModule bool) error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("csm pam uninstall: only supported on Linux hosts (got %s)", runtime.GOOS)
 	}
-	for _, path := range pamServiceFiles {
+	for _, path := range append(append([]string(nil), pamServiceFiles...), pamSharedAuthStacks...) {
 		removed, err := pamRemoveLines(path)
 		if err != nil {
 			return fmt.Errorf("editing %s: %w", path, err)
@@ -335,28 +400,16 @@ func pamUninstall(w io.Writer, keepModule bool) error {
 }
 
 func pamRemoveLines(path string) (int, error) {
-	data, err := os.ReadFile(path) // #nosec G304 -- pamServiceFiles allowlisted.
+	data, err := os.ReadFile(path) // #nosec G304 -- path comes from the fixed PAM file lists.
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil
 		}
 		return 0, err
 	}
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	out := bytes.NewBuffer(make([]byte, 0, len(data)))
-	removed := 0
-	for scanner.Scan() {
-		line := scanner.Text()
-		if pamManagedLine(line) {
-			removed++
-			continue
-		}
-		out.WriteString(line)
-		out.WriteByte('\n')
-	}
-	if scanErr := scanner.Err(); scanErr != nil {
-		return 0, scanErr
+	out, removed, err := pamRemoveManagedLines(data)
+	if err != nil {
+		return 0, err
 	}
 	if removed == 0 {
 		return 0, nil
@@ -369,7 +422,7 @@ func pamRemoveLines(path string) (int, error) {
 	// matching annotation in pamEnsureLines above.
 	// Atomic write so a concurrent PAM-aware service never reads a
 	// half-written file during uninstall.
-	if err := writeFileAtomic(path, out.Bytes(), 0o644); err != nil {
+	if err := writeFileAtomic(path, out, 0o644); err != nil {
 		return 0, fmt.Errorf("writing %s after backup %s: %w", path, backup, err)
 	}
 	return removed, nil
@@ -416,52 +469,26 @@ type pamDirective struct {
 }
 
 func pamHasActiveCSMHook(data []byte) bool {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		_, module, ok := parsePAMDirective(scanner.Text())
-		if ok && filepath.Base(module) == "pam_csm.so" {
+	for _, raw := range strings.Split(string(data), "\n") {
+		line, err := parsePAMLine(raw)
+		if err == nil && line != nil && filepath.Base(line.module) == "pam_csm.so" {
 			return true
 		}
 	}
 	return false
 }
 
+// pamDirectivePresent reports an active success hook of the given type. The
+// failure hook does not count: it never reports a successful login.
 func pamDirectivePresent(data []byte, kind string) bool {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		lineKind, module, ok := parsePAMDirective(scanner.Text())
-		if ok && lineKind == kind && filepath.Base(module) == "pam_csm.so" {
+	for _, raw := range strings.Split(string(data), "\n") {
+		line, err := parsePAMLine(raw)
+		if err == nil && line != nil && line.kind == kind &&
+			filepath.Base(line.module) == "pam_csm.so" && !line.hasArg(pamFailureHookArg) {
 			return true
 		}
 	}
 	return false
-}
-
-func parsePAMDirective(line string) (kind, module string, ok bool) {
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-		return "", "", false
-	}
-	fields := strings.Fields(trimmed)
-	if len(fields) < 3 {
-		return "", "", false
-	}
-	moduleIndex := 2
-	if strings.HasPrefix(fields[1], "[") {
-		moduleIndex = -1
-		for i := 1; i < len(fields); i++ {
-			if strings.HasSuffix(fields[i], "]") {
-				moduleIndex = i + 1
-				break
-			}
-		}
-		if moduleIndex < 0 || moduleIndex >= len(fields) {
-			return "", "", false
-		}
-	}
-	return fields[0], fields[moduleIndex], true
 }
 
 func pamManagedLine(line string) bool {

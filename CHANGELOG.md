@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Failed SSH and other PAM password logins are reported to CSM again, so PAM brute-force and credential-stuffing detection can fire and block, following `auto_response.block_ips`; the PAM module had stopped reporting failures. Existing hosts must run `csm pam install` again after upgrading to add the failure hook, and the command now exits with an error when the shared auth stack cannot take it, such as an authselect-managed one.
 - A cron drop-in named after an account, sudo or SSH configuration file is now checked for persistence like any other cron file. Such a file could be downgraded during package updates without that check.
 - Plugin checksum downloads, including ones an account can start with a crafted plugin header, no longer hold off the downloads that verify WordPress core files.
 - Realtime file analysis no longer stalls when an account replaces a plugin or theme header file with a named pipe or device.

@@ -75,3 +75,6 @@ docs/book/
 
 # Go test binaries left behind by profiling runs.
 *.test
+
+# PAM module test build (make -C build/pam check)
+/build/pam/pam_csm_test
