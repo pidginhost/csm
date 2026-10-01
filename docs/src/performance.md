@@ -122,9 +122,13 @@ dropdown that applies one fix to every matching finding at once:
   intervals use a shifted minute list so the gap stays within the configured
   interval. The command also runs under `flock -n` with a per-docroot lock file
   in the account home, so a slow pass skips the next run instead of overlapping
-  it. On daemon start, managed crontab lines installed by older releases are
-  upgraded to this format automatically (only lines under the `# CSM WP-Cron`
-  marker are touched; customer-authored cron entries are never rewritten).
+  it. When both `auto_response.enabled` and `auto_response.fix_wp_cron` are
+  enabled, managed crontab lines installed by older releases are upgraded on
+  daemon start to this format. Their PHP interpreter changes only when an
+  override is configured or the site's PHP version can be resolved
+  unambiguously; otherwise, they keep their existing interpreter. Only lines
+  under the `# CSM WP-Cron` marker are touched; customer-authored cron entries
+  are never rewritten.
 
 These actions are limited to configured account roots, reject symlinks and
 unsupported file types, and remove the fixed row from the active findings

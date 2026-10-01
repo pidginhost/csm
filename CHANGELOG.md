@@ -15,14 +15,14 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Plugin checksum downloads, including ones an account can start with a crafted plugin header, no longer hold off the downloads that verify WordPress core files.
 - Realtime file analysis no longer stalls when an account replaces a plugin or theme header file with a named pipe or device.
 - The local threat score no longer counts addresses read from finding text. A process in a hosting account could get any address blocked by connecting to it or by naming a file or process after it.
-- Crawl detection now classifies unusual and asset-like request targets consistently.
+- Crawl detection now counts page requests that could previously be mistaken for static file requests.
 - Incident auto-blocking and central intelligence now act on an address only when a finding names it as an attacker, remembered across restarts and long incidents. They could block the remote end of an outbound connection, a customer login address or an advisory source.
 - A PHP prepend directive in an .htaccess file can no longer hide behind a commented copy of a security plugin's directive. A directive naming Really Simple Security's file is now reported wherever it points unless it loads that file from the wp-content folder beside the .htaccess; such a prepend is reported but never cleaned automatically.
 
 ### Added
 
-- The Performance page now reports a WordPress site that keeps sending background requests to itself more than once a minute for hours, which usually means a plugin re-runs its job on every page view or a background queue never drains.
-- A very large bloated error log is now reported as High, so it alerts, and every bloated error log finding shows how fast the file is growing.
+- The Performance page now reports WordPress sites that keep sending excessive background requests to themselves for hours, which usually means a plugin re-runs its job on every page view or a background queue never drains.
+- A very large bloated error log is now reported as High, so it alerts; the size is set by Error log critical size under Settings -> Performance. Growing logs also show their growth rate once enough scan history is available.
 
 ### Fixed
 
@@ -32,8 +32,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - cPanel's nightly move of its own cron jobs to a new time no longer raises High cron change alerts. A cron drop-in change that only moves existing daily jobs to another time of day is now a Warning; every other change, including new permissions or ownership, still alerts High.
 - Challenge timeouts and central intelligence no longer block addresses while `auto_response.enabled` or `block_ips` is off, and a reload of those switches applies from the next block. Only scan-driven blocks honoured those switches.
 - An account owner's address is no longer blocked for cPanel API authentication failures when a browser tab left open after logging in again fails on its old session. cPanel's own record that it ended that session now explains those failures; other API failures are still reported, a few seconds later at most.
-- Fresh installs on cPanel Apache and LiteSpeed no longer deploy the old proxy-mode challenge snippet beside the one the webserver integration writes. Installing or upgrading the integration now removes the old snippet, which answered challenged visitors with a not-found page unless trusted proxies were configured.
-- The WP-Cron fix now runs a site whose domain inherits its PHP version under the version its web server actually uses. Such sites ran their scheduled tasks on the system default PHP, which could fail on every run or flood the site's error log.
+- Fresh installs on cPanel Apache and LiteSpeed no longer deploy the old proxy-mode challenge snippet, which could send challenged visitors to a not-found page. Installing the webserver integration removes it; daemon startup can also remove it when the integration is already installed and unedited, except in observe mode.
+- The WP-Cron fix can now resolve the web server's PHP version for sites that inherit it, avoiding scheduled task failures from using the system default. With automatic responses and automatic WP-Cron fixing enabled, existing CSM-managed jobs are corrected at daemon startup when that version can be resolved.
 - The bloated error log check now covers addon and subdomain document roots and logs left directly in folders such as wp-admin, and the Web UI can truncate those logs. It only looked under public_html.
 - A dismissed finding on the Performance page now stays hidden after the next scan, until the finding changes or the dismissal is undone. It came back on every scan.
 - The firewall now refuses multicast and broadcast addresses as block targets. No packet the firewall filters can come from one, so such a block only used up a slot in the deny list.
