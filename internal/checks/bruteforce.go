@@ -456,8 +456,12 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 	}
 	ftpTrackerMu.Lock()
 	defer ftpTrackerMu.Unlock()
+	if ctx != nil && ctx.Err() != nil {
+		return nil
+	}
 
 	now := time.Now()
+	initialRaw, _ := store.GetRaw(ftpTrackerKey)
 	tracker := loadFTPFailTracker(store)
 
 	lines, next, skipped, err := readNewSyslogLines(ftpSyslogPath, tracker.Follow)
@@ -473,6 +477,12 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 	cutoff := now.Add(-time.Duration(windowMin) * time.Minute)
 
 	var findings []alert.Finding
+	// An address is reported when this pass read a new failure for it. The
+	// window still sums earlier failures, but a burst already reported is not
+	// reported again on every scan while it ages out: the repeat would count
+	// it again in the attack database and re-block an address the operator
+	// unblocked.
+	freshFailures := make(map[string]bool)
 	for _, line := range lines {
 		if !isPureFTPDLogFields(strings.Fields(line)) {
 			continue
@@ -498,6 +508,7 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 				continue
 			}
 			tracker.record(ip, at)
+			freshFailures[ip] = true
 		case strings.Contains(line, "is now logged in"):
 			findings = append(findings, ftpLoginFinding(ip, line, tracker.count(ip)))
 		}
@@ -505,6 +516,9 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 
 	tracker.capIPs(maxTrackedIPs)
 	for _, off := range tracker.offenders(ftpFailThreshold) {
+		if !freshFailures[off.IP] {
+			continue
+		}
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "ftp_bruteforce",
@@ -513,8 +527,26 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 		})
 	}
 
-	tracker.Follow = next
-	tracker.save(store)
+	// Diagnostic scans suppress auto-response, so leave their evidence for
+	// the next live scan rather than consuming its only reporting opportunity.
+	// The runner also discards results from cancelled checks.
+	if ctx != nil && ctx.Err() != nil {
+		return nil
+	}
+	dryRun := false
+	if ctx != nil {
+		dryRun, _ = ctx.Value(scanDryRunKey{}).(bool)
+	}
+	if !dryRun {
+		tracker.Follow = next
+		if ctx != nil {
+			if observation, _ := ctx.Value(ftpScanObservationKey{}).(*ftpScanObservation); observation != nil {
+				observation.prepare(initialRaw, tracker, findings)
+				return nil
+			}
+		}
+		tracker.save(store)
+	}
 	return findings
 }
 

@@ -15,6 +15,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- FTP brute-force alerts use new failures, so old evidence no longer re-blocks an operator-unblocked address or recounts the same burst; diagnostic and cancelled scans leave evidence for live detection. On upgrade, the Findings page drops the row at the first scan without new failures instead of when the window ends; `thresholds.ftp_fail_window_min` still sets how far back failures add up.
 - After the upgrade restart, cPanel web checks try Apache and LiteSpeed logs instead of the panel's own log, avoiding false blocks of customer sessions; the realtime watcher also retries all candidates when no log exists at startup. Periodic checks count aliases of the selected central log once, including operator overrides through `web_server.access_logs`; existing blocks remain until expiry or removal.
 - Findings still queued when the daemon stops keep their offending subnets and targeted accounts when they replay at the next start, so a crawl's subnet block and credential spray counts are no longer lost across a restart. Only findings parked by the new version carry them; the subnet block still follows `auto_response.enabled` and `block_ips`.
 
