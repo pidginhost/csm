@@ -14,10 +14,6 @@ import (
 // already ignores loopback destinations for exactly this reason; a packet that
 // never leaves the machine is not an outbound connection whichever local
 // address it is addressed to.
-//
-// This matters beyond noise: user_outbound_connection maps to AttackC2 in the
-// attack database, so the proxy hop scored the host as command-and-control
-// traffic and drove its own address to a critical local threat score.
 func TestEvaluateConnectionIgnoresHostOwnAddressDestination(t *testing.T) {
 	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) {
 		return []net.IP{

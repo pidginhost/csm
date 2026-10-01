@@ -33,10 +33,9 @@ func TestCheckLocalThreatScoreReportsHostOwnAddress(t *testing.T) {
 			db := attackdb.NewForTest(nil)
 			attackdb.SetGlobal(db)
 			t.Cleanup(func() { attackdb.SetGlobal(nil) })
-			for i := 0; i < 20; i++ {
-				for _, check := range []string{"webshell", "user_outbound_connection", "email_auth_failure_realtime"} {
-					db.RecordFinding(alert.Finding{Check: check, SourceIP: ip, Timestamp: time.Now()})
-				}
+			// A sustained mail-auth brute force from the address.
+			for i := 0; i < 60; i++ {
+				db.RecordFinding(alert.Finding{Check: "email_auth_failure_realtime", SourceIP: ip, Timestamp: time.Now()})
 			}
 			findings := CheckLocalThreatScore(context.Background(), &config.Config{StatePath: t.TempDir()}, nil)
 			if len(findings) != 1 {

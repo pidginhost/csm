@@ -35,15 +35,6 @@ func computeScoreAt(r *IPRecord, now time.Time) int {
 	score += vol
 
 	// Attack type bonuses
-	if r.AttackCounts[AttackC2] > 0 {
-		score += 35
-	}
-	if r.AttackCounts[AttackWebshell] > 0 {
-		score += 30
-	}
-	if r.AttackCounts[AttackPhishing] > 0 {
-		score += 25
-	}
 	if r.AttackCounts[AttackBruteForce] > 0 {
 		score += 15
 	}

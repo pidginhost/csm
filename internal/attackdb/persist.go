@@ -50,7 +50,12 @@ func (db *DB) load() {
 			for k, v := range sr.Accounts {
 				rec.Accounts[k] = v
 			}
-			if normalizeLoadedRecord(rec) {
+			changed, emptied := normalizeLoadedRecord(rec)
+			if emptied {
+				db.markDeletedLocked(ip)
+				continue
+			}
+			if changed {
 				db.markDirtyLocked(ip)
 			}
 			db.records[ip] = rec
@@ -79,7 +84,13 @@ func (db *DB) load() {
 	}
 	db.mu.Lock()
 	for ip, rec := range records {
-		if normalizeLoadedRecord(rec) {
+		changed, emptied := normalizeLoadedRecord(rec)
+		if emptied {
+			delete(records, ip)
+			db.markDeletedLocked(ip)
+			continue
+		}
+		if changed {
 			db.markDirtyLocked(ip)
 		}
 	}
@@ -87,8 +98,16 @@ func (db *DB) load() {
 	db.mu.Unlock()
 }
 
-func normalizeLoadedRecord(rec *IPRecord) bool {
-	changed := false
+// textDerivedAttackTypes are attack types no producer counts against a
+// structured source address. Earlier builds counted them against addresses
+// read from message text (connection destinations, process names, file
+// paths), so stored counts of them prove nothing about an attacker.
+var textDerivedAttackTypes = []AttackType{AttackC2, AttackWebshell, AttackPhishing, AttackSPAM, AttackCPanelLogin}
+
+// normalizeLoadedRecord repairs a stored record in place. It reports whether
+// the record changed, and whether nothing but text-derived events was left
+// in it, so the caller drops the record.
+func normalizeLoadedRecord(rec *IPRecord) (changed, emptied bool) {
 	// Empty maps are an in-memory invariant; bbolt omits them, so nil-to-empty
 	// alone should not dirty every account-free record on each startup.
 	if rec.AttackCounts == nil {
@@ -96,6 +115,20 @@ func normalizeLoadedRecord(rec *IPRecord) bool {
 	}
 	if rec.Accounts == nil {
 		rec.Accounts = make(map[string]int)
+	}
+	dropped := 0
+	for _, t := range textDerivedAttackTypes {
+		if n := rec.AttackCounts[t]; n > 0 {
+			dropped += n
+			delete(rec.AttackCounts, t)
+		}
+	}
+	if dropped > 0 {
+		rec.EventCount = max(0, rec.EventCount-dropped)
+		changed = true
+		if rec.EventCount == 0 {
+			return true, true
+		}
 	}
 	bruteCount := rec.AttackCounts[AttackBruteForce]
 	if rec.BruteForceWindowCount > bruteCount {
@@ -112,7 +145,7 @@ func normalizeLoadedRecord(rec *IPRecord) bool {
 		rec.ThreatScore = score
 		changed = true
 	}
-	return changed
+	return changed, false
 }
 
 // saveRecords writes records to the bbolt store (if available) or to

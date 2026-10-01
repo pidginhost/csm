@@ -86,31 +86,9 @@ var checkToAttack = map[string]AttackType{
 	"mail_account_compromised":    AttackBruteForce,
 	"admin_panel_bruteforce":      AttackBruteForce,
 
-	// Webshells and malware
-	"webshell":                 AttackWebshell,
-	"new_webshell_file":        AttackWebshell,
-	"obfuscated_php":           AttackWebshell,
-	"suspicious_php_content":   AttackWebshell,
-	"new_php_in_languages":     AttackWebshell,
-	"new_php_in_upgrade":       AttackWebshell,
-	"backdoor_binary":          AttackWebshell,
-	"new_executable_in_config": AttackWebshell,
-
-	// Phishing
-	"phishing_page":           AttackPhishing,
-	"phishing_php":            AttackPhishing,
-	"phishing_iframe":         AttackPhishing,
-	"phishing_redirector":     AttackPhishing,
-	"phishing_credential_log": AttackPhishing,
-	"phishing_kit_archive":    AttackPhishing,
-	"phishing_directory":      AttackPhishing,
-
-	// C2 and suspicious processes
-	"fake_kernel_thread":       AttackC2,
-	"suspicious_process":       AttackC2,
-	"php_suspicious_execution": AttackC2,
-	"user_outbound_connection": AttackC2,
-	"exfiltration_paste_site":  AttackC2,
+	// File, process, outbound-connection and mail-volume findings carry no
+	// attacker source address (their producers set no SourceIP), so they
+	// are not mapped: records are keyed on the structured source only.
 
 	// Recon
 	"wp_user_enumeration": AttackRecon,
@@ -125,10 +103,6 @@ var checkToAttack = map[string]AttackType{
 	"http_claimed_bot_unverified": AttackRecon,
 	"http_ua_spoof":               AttackRecon,
 
-	// SPAM
-	"mail_per_account":     AttackSPAM,
-	"exim_frozen_realtime": AttackSPAM,
-
 	// WAF: no emitted check maps here today. The two names this table once
 	// listed were never emitted by any release, so WAF blocks have never
 	// built local reputation through this database; mapping the real
@@ -141,16 +115,14 @@ var checkToAttack = map[string]AttackType{
 	// attacker for using cPanel, FTP or File Manager normally. One successful
 	// File Manager upload alone added 20 points that never decayed, and the
 	// resulting score fed the reputation path that kept re-blocking the owner.
-	//
-	// cpanel_multi_ip_login stays a real attack type: several addresses inside
-	// a window is correlation evidence rather than one successful login.
 	"cpanel_login":                AttackAuthSuccess,
 	"cpanel_login_realtime":       AttackAuthSuccess,
 	"webmail_login_realtime":      AttackAuthSuccess,
 	"ftp_login":                   AttackAuthSuccess,
 	"pam_login":                   AttackAuthSuccess,
 	"cpanel_file_upload_realtime": AttackAuthSuccess,
-	"cpanel_multi_ip_login":       AttackCPanelLogin,
+	// cpanel_multi_ip_login names its addresses only in Details, so it has no
+	// source to key on.
 
 	// Reputation - known malicious IPs from threat database
 	"ip_reputation": AttackReputation,

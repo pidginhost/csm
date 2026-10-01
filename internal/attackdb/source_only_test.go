@@ -19,6 +19,9 @@ func TestRecordFindingKeysOnSourceIPOnly(t *testing.T) {
 		{Check: "suspicious_process", Message: "Suspicious process name: 203.0.113.22"},
 		{Check: "webshell", Message: "Known webshell found: /home/alice/public_html/a from 203.0.113.23 b/x.php"},
 		{Check: "mail_per_account", Message: "High email volume from [203.0.113.24]: 900 messages"},
+		// Recorded checks that name an address only in their text.
+		{Check: "wp_login_bruteforce", Message: "WordPress brute force from 203.0.113.26"},
+		{Check: "ssh_login_unknown_ip", Message: "SSH login from non-infra IP: 203.0.113.27 (user: root)"},
 		{Check: "wp_login_bruteforce", SourceIP: "999.999.999.999", Message: "WordPress brute force from 203.0.113.25"},
 	} {
 		f.Timestamp = now

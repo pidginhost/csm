@@ -31,13 +31,13 @@ func TestComputeScoreVolumeCapAt30(t *testing.T) {
 func TestComputeScoreAttackTypes(t *testing.T) {
 	r := &IPRecord{
 		EventCount:   5,
-		AttackCounts: map[AttackType]int{AttackC2: 1, AttackBruteForce: 3},
+		AttackCounts: map[AttackType]int{AttackBruteForce: 3},
 		Accounts:     make(map[string]int),
 	}
 	got := ComputeScore(r)
-	// 5*2=10 + C2(35) + BruteForce(15) = 60
-	if got != 60 {
-		t.Errorf("got %d, want 60", got)
+	// 5*2=10 + BruteForce(15) = 25
+	if got != 25 {
+		t.Errorf("got %d, want 25", got)
 	}
 }
 
@@ -69,15 +69,13 @@ func TestComputeScoreAutoBlockedMinimum50(t *testing.T) {
 
 func TestComputeScoreCap100(t *testing.T) {
 	r := &IPRecord{
-		EventCount: 50,
+		EventCount: 60,
 		AttackCounts: map[AttackType]int{
-			AttackC2:         1,
-			AttackWebshell:   1,
-			AttackPhishing:   1,
-			AttackBruteForce: 1,
+			AttackBruteForce: 60,
 			AttackFileUpload: 1,
 		},
-		Accounts: map[string]int{"a": 1, "b": 1},
+		Accounts:              map[string]int{"a": 1, "b": 1},
+		BruteForceSustainedAt: time.Now(),
 	}
 	got := ComputeScore(r)
 	if got != 100 {

@@ -25,7 +25,7 @@ func TestDaemonReportsActualAttackEventQueue(t *testing.T) {
 	db := attackdb.NewForTest(nil)
 	d.prepareAttackDatabase(db)
 	for i := 0; i < 3; i++ {
-		db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "198.51.100.23"})
+		db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "198.51.100.23"})
 	}
 	if s, ok := d.QueueStatuses()["attackdb.events"]; !ok || s.Depth != 3 || s.InFlight != 0 || !s.CapacityUnavailable {
 		t.Fatalf("actual event queue missing: found=%v status=%+v", ok, s)
@@ -58,7 +58,7 @@ func TestDaemonReportsActualAttackRecordQueue(t *testing.T) {
 	db := attackdb.NewForTest(nil)
 	d.prepareAttackDatabase(db)
 	for i := 0; i < 3; i++ {
-		db.RecordFinding(alert.Finding{Check: "webshell", SourceIP: "198.51.100.23"})
+		db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "198.51.100.23"})
 	}
 	db.RemoveIP("203.0.113.24")
 	if s, ok := d.QueueStatuses()["attackdb.records"]; !ok || s.Depth != 2 || s.InFlight != 0 || s.DepthUnit != "records" || !s.CapacityUnavailable || s.DroppedTotal != 0 {
