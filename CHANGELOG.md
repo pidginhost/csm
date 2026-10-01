@@ -13,6 +13,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Failed SSH and other PAM password logins are reported to CSM again, so PAM brute-force and credential-stuffing detection can fire and block, following `auto_response.block_ips`; the PAM module had stopped reporting failures. Existing hosts must run `csm pam install` again after upgrading to add the failure hook; it leaves a shared auth stack it cannot edit safely unchanged, such as an authselect-managed one, and exits with an error.
 
+### Fixed
+
+- Findings still queued when the daemon stops keep their offending subnets and targeted accounts when they replay at the next start, so a crawl's subnet block and credential spray counts are no longer lost across a restart. Only findings parked by the new version carry them; the subnet block still follows `auto_response.enabled` and `block_ips`.
+
 ## [4.1.0] - 2026-10-01
 
 ### Highlights
