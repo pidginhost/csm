@@ -249,6 +249,15 @@ func TestAdmissionRegistryAcceptsEveryClassifiedCheck(t *testing.T) {
 	}
 }
 
+// reviewedEvidenceRestores lists the functions allowed to write an address
+// field of a finding outside a literal. Each copies the field back onto a
+// finding that a classified producer built; none writes Check or makes up an
+// address. The key is the package directory relative to the repository, a
+// dot, and the function name.
+var reviewedEvidenceRestores = map[string]string{
+	"internal/state.fromPendingRecords": "restores the subnets a finding carried when it was parked at shutdown",
+}
+
 // addressProducer is one alert.Finding literal that carries SourceIP or
 // CIDRs.
 type addressProducer struct {
@@ -261,7 +270,15 @@ type addressProducer struct {
 // evidencePolicy or listed in notAddressEvidence, so a new address-bearing
 // check cannot silently fall outside the response policy.
 func TestAddressProducersAreClassified(t *testing.T) {
-	producers, unresolved := scanAddressProducers(t, findRepoRoot(t))
+	producers, unresolved, restored := scanAddressProducersReviewed(t, findRepoRoot(t), reviewedEvidenceRestores)
+	for key, reason := range reviewedEvidenceRestores {
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("reviewed restore %q has no reason", key)
+		}
+		if !restored[key] {
+			t.Errorf("reviewed restore %q no longer writes an address field", key)
+		}
+	}
 	for _, u := range unresolved {
 		t.Errorf("cannot resolve the check name of an address-bearing finding at %s; use a literal or a same-package function that returns literals", u)
 	}
@@ -304,6 +321,15 @@ func TestAddressProducersAreClassified(t *testing.T) {
 
 func scanAddressProducers(t *testing.T, root string) ([]addressProducer, []string) {
 	t.Helper()
+	producers, unresolved, _ := scanAddressProducersReviewed(t, root, nil)
+	return producers, unresolved
+}
+
+// scanAddressProducersReviewed also reports which reviewed restores wrote an
+// address field.
+func scanAddressProducersReviewed(t *testing.T, root string, reviewed map[string]string) ([]addressProducer, []string, map[string]bool) {
+	t.Helper()
+	restored := map[string]bool{}
 	var producers []addressProducer
 	var unresolved []string
 	fset := token.NewFileSet()
@@ -334,10 +360,17 @@ func scanAddressProducers(t *testing.T, root string) ([]addressProducer, []strin
 		}
 	}
 	sources := newProducerSources(root, byDir)
-	for _, files := range byDir {
+	for dir, files := range byDir {
 		consts, returns := packageStringValues(files)
+		pkg, _ := filepath.Rel(root, dir)
 		for _, f := range files {
 			for _, decl := range f.Decls {
+				restore := ""
+				if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil {
+					if key := filepath.ToSlash(pkg) + "." + fn.Name.Name; reviewed[key] != "" {
+						restore = key
+					}
+				}
 				ast.Inspect(decl, func(n ast.Node) bool {
 					var targets []ast.Expr
 					switch v := n.(type) {
@@ -351,9 +384,14 @@ func scanAddressProducers(t *testing.T, root string) ([]addressProducer, []strin
 						targets = []ast.Expr{v.Key, v.Value}
 					}
 					for _, target := range targets {
-						if sources.evidenceTarget(f, target) {
-							unresolved = append(unresolved, fset.Position(target.Pos()).String()+": evidence field mutation needs a reviewed producer contract")
+						if !sources.evidenceTarget(f, target) {
+							continue
 						}
+						if restore != "" && evidenceFieldName(target) != "Check" {
+							restored[restore] = true
+							continue
+						}
+						unresolved = append(unresolved, fset.Position(target.Pos()).String()+": evidence field mutation needs a reviewed producer contract")
 					}
 					return true
 				})
@@ -388,7 +426,21 @@ func scanAddressProducers(t *testing.T, root string) ([]addressProducer, []strin
 			}
 		}
 	}
-	return producers, unresolved
+	return producers, unresolved, restored
+}
+
+// evidenceFieldName is the field an evidence target writes.
+func evidenceFieldName(e ast.Expr) string {
+	for {
+		switch v := ast.Unparen(e).(type) {
+		case *ast.IndexExpr:
+			e = v.X
+		case *ast.SelectorExpr:
+			return v.Sel.Name
+		default:
+			return ""
+		}
+	}
 }
 
 func findingCheckField(lit *ast.CompositeLit) (ast.Expr, bool) {
@@ -820,5 +872,49 @@ func TestAddressProducerScannerRefusesAmbiguousBuildValues(t *testing.T) {
 				t.Fatalf("ambiguous builds yielded %v / %v, want one unresolved producer", producers, unresolved)
 			}
 		})
+	}
+}
+
+// Only a listed function may write an address field outside a literal, only
+// address fields, and the listing must name a function that exists.
+func TestAddressProducerScannerHonoursReviewedRestores(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "cmd"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "internal", "store"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	source := `package store
+import "github.com/pidginhost/csm/internal/alert"
+func restore(f *alert.Finding, cidrs []string, ip string) { f.CIDRs = cidrs; f.SourceIP = ip }
+func rename(f *alert.Finding) { f.Check = "other" }
+func rewrite(f *alert.Finding) { f.CIDRs = nil }
+type cache struct{}
+func (cache) restore(f *alert.Finding) { f.SourceIP = "" }
+`
+	if err := os.WriteFile(filepath.Join(root, "internal", "store", "store.go"), []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reviewed := map[string]string{
+		"internal/store.restore": "fixture restore",
+		"internal/store.rename":  "fixture rename",
+		"internal/store.missing": "fixture stale entry",
+	}
+	_, unresolved, used := scanAddressProducersReviewed(t, root, reviewed)
+	if len(unresolved) != 3 {
+		t.Fatalf("unresolved = %v, want the Check write, the unlisted function and the method", unresolved)
+	}
+	for _, line := range []string{"store.go:4:", "store.go:5:", "store.go:7:"} {
+		found := false
+		for _, where := range unresolved {
+			found = found || strings.Contains(where, line)
+		}
+		if !found {
+			t.Errorf("%s not reported in %v", line, unresolved)
+		}
+	}
+	if !used["internal/store.restore"] || used["internal/store.rename"] || used["internal/store.missing"] {
+		t.Fatalf("used = %v, want only the restore that writes address fields", used)
 	}
 }
