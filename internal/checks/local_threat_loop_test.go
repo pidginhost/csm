@@ -124,19 +124,30 @@ func TestCheckLocalThreatScoreBlockedTopAttackersDoNotStarveUnblocked(t *testing
 	for i := 0; i < 60; i++ {
 		ip := fmt.Sprintf("203.0.113.%d", i+1)
 		records[ip] = &attackdb.IPRecord{
-			IP:          ip,
-			ThreatScore: 100,
-			EventCount:  100,
-			FirstSeen:   now.Add(-1 * time.Hour),
-			LastSeen:    now,
+			IP:                    ip,
+			ThreatScore:           85,
+			EventCount:            60,
+			FirstSeen:             now.Add(-20 * time.Minute),
+			LastSeen:              now,
+			BruteForceWindowStart: now.Add(-20 * time.Minute),
+			BruteForceWindowCount: 60,
+			BruteForceSustainedAt: now,
 			AttackCounts: map[attackdb.AttackType]int{
-				attackdb.AttackC2:       1,
-				attackdb.AttackWebshell: 1,
+				attackdb.AttackBruteForce: 60,
 			},
-			Accounts: map[string]int{},
+			Accounts: map[string]int{"alice": 30, "bob": 30},
 		}
 	}
 
+	for ip, rec := range records {
+		minimumScore := 85
+		if ip == "203.0.113.200" {
+			minimumScore = 75
+		}
+		if score := attackdb.ComputeScore(rec); score < minimumScore {
+			t.Fatalf("seeded score for %s = %d, want at least %d", ip, score, minimumScore)
+		}
+	}
 	db := attackdb.NewForTest(records)
 	attackdb.SetGlobal(db)
 	t.Cleanup(func() { attackdb.SetGlobal(nil) })

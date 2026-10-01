@@ -119,15 +119,21 @@ func TestSuccessfulAuthCannotPromoteAddressToBlock(t *testing.T) {
 			db := attackdb.NewForTest(nil)
 			attackdb.SetGlobal(db)
 			const ip = "198.51.100.90"
-			// This one C2-class finding scores 37, below the local block
-			// threshold. Audit traffic must not raise it to 75.
-			db.RecordFinding(alert.Finding{Check: "suspicious_process", SourceIP: ip, TenantID: "alice"})
-			for range 3 {
+			// Audit traffic must preserve the score of existing attack
+			// evidence without counting successful access as targeting.
+			db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: ip, TenantID: "alice"})
+			if rec := db.LookupIP(ip); rec == nil || rec.EventCount != 1 || rec.AttackCounts[attackdb.AttackBruteForce] != 1 || rec.ThreatScore != 17 {
+				t.Fatalf("audit traffic needs existing attack evidence: %+v", rec)
+			}
+			for round := range 3 {
 				var findings []alert.Finding
 				for _, check := range []string{"cpanel_file_upload_realtime", "cpanel_login", "cpanel_login_realtime", "ftp_login", "webmail_login_realtime", "pam_login"} {
 					f := alert.Finding{Check: check, SourceIP: ip, TenantID: "bob", Severity: alert.Warning, Timestamp: time.Now()}
 					db.RecordFinding(f)
 					findings = append(findings, f)
+				}
+				if rec := db.LookupIP(ip); rec.EventCount != 1+6*(round+1) || rec.AttackCounts[attackdb.AttackBruteForce] != 1 || rec.AttackCounts[attackdb.AttackAuthSuccess] != 6*(round+1) || rec.ThreatScore != 17 {
+					t.Fatalf("successful activity changed the attack score: %+v", rec)
 				}
 				derived := CheckLocalThreatScore(context.Background(), cfg, nil)
 				if len(derived) != 0 {
