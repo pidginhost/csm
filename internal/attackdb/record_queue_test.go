@@ -412,14 +412,26 @@ func TestAttackRecordQueueNormalizationAndPruning(t *testing.T) {
 	_, cleanup := setupBboltStore(t)
 	t.Cleanup(cleanup)
 	old := time.Now().Add(-100 * 24 * time.Hour)
-	if err := store.Global().SaveIPRecord(store.IPRecord{IP: "198.51.100.23", FirstSeen: old, LastSeen: old, EventCount: 1, ThreatScore: 1, AttackCounts: map[string]int{string(AttackWebshell): 1}}); err != nil {
+	if err := store.Global().SaveIPRecord(store.IPRecord{IP: "198.51.100.23", FirstSeen: old, LastSeen: old, EventCount: 1, ThreatScore: 1, AttackCounts: map[string]int{string(AttackBruteForce): 1}}); err != nil {
 		t.Fatal(err)
 	}
 	db.load()
+	if rec := db.LookupIP("198.51.100.23"); rec == nil || rec.EventCount != 1 || rec.ThreatScore != 17 {
+		t.Fatalf("normalization must leave attack evidence for pruning: %+v", rec)
+	}
 	if s := recordQueueStatus(t, db, time.Now()); s.Depth != 1 || s.DroppedTotal != 0 {
 		t.Fatalf("normalized startup record missing: %+v", s)
 	}
 	db.PruneExpired()
+	if rec := db.LookupIP("198.51.100.23"); rec != nil {
+		t.Fatalf("expired attack record survived pruning: %+v", rec)
+	}
+	if _, dirty := db.dirtyIPs["198.51.100.23"]; dirty {
+		t.Fatal("pruned record still has a pending write")
+	}
+	if _, deleted := db.deletedIPs["198.51.100.23"]; !deleted {
+		t.Fatal("pruned record has no pending deletion")
+	}
 	if s := recordQueueStatus(t, db, time.Now()); s.Depth != 1 || s.DroppedTotal != 0 {
 		t.Fatalf("prune did not coalesce obsolete write: %+v", s)
 	}
