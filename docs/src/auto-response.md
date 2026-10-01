@@ -85,6 +85,9 @@ for full-file validation during delivery. The original findings still reach
 alerts and history; a new detection can be evaluated again.
 Findings still queued at shutdown retain the existing restart replay behavior:
 the next daemon run evaluates them again under the same persisted limits.
+Parked findings also keep the offending subnets and targeted accounts needed for
+subnet response and credential spray correlation. Older parked findings replay
+without that data; public finding JSON is unchanged.
 
 A failed PHP cleaner leaves the file and any pre-clean backup for manual review.
 It no longer escalates to whole-file quarantine. A cleaner that recognizes no
