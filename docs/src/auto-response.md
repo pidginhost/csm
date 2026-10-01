@@ -331,6 +331,11 @@ escalations, central-intel corroborated blocks, and incident spray
 containment - records the same evidence: a temporary threat-DB row, a
 blocked-IPs tracker entry, an `auto_block` finding visible to the block
 digest and alerting, and a step toward permanent-block escalation.
+All of them block only while `auto_response.enabled` and `block_ips` are
+on; with either off, an expired challenge simply leaves the challenge list.
+Reloading these switches takes effect before the next block attempt, including
+later entries in a challenge-timeout batch. Incident block refusals caused by
+these switches keep the incident visible without a failed-block warning.
 Challenge, central, and incident blocks are not limited by
 `auto_response.max_blocks_per_hour`; that budget applies to scan-driven
 blocks only.

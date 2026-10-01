@@ -162,8 +162,9 @@ func (d *Daemon) performCentralAction(a centralQueuedAction) error {
 }
 
 func logCentralBlockFailure(ip string, err error) {
-	// Protected IPs are never blockable and a host without a firewall
-	// engine cannot block; both are expected, not failures.
+	// Protected IPs are never blockable, a host without a firewall engine
+	// cannot block, and automatic blocking may be switched off; all are
+	// expected, not failures.
 	if isCentralBlockRefusal(err) {
 		return
 	}
@@ -171,7 +172,7 @@ func logCentralBlockFailure(ip string, err error) {
 }
 
 func isCentralBlockRefusal(err error) bool {
-	return isProtectedIPRefusal(err) || errors.Is(err, checks.ErrNoIPBlocker)
+	return isProtectedIPRefusal(err) || errors.Is(err, checks.ErrNoIPBlocker) || errors.Is(err, checks.ErrAutoBlockDisabled)
 }
 
 // centralFirebreak returns a predicate that reports whether an IP must never be

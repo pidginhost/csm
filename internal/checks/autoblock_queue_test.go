@@ -329,6 +329,7 @@ func TestAutoBlockQueueBypassesDisabledAndMissingEngine(t *testing.T) {
 	cfg := autoBlockQueueFixture(t, func() error { t.Error("unexpected engine call"); return nil })
 	cfg.AutoResponse.Enabled = false
 	AutoBlockIPs(cfg, []alert.Finding{{Check: "wp_login_bruteforce", SourceIP: "192.0.2.30"}})
+	cfg.AutoResponse.Enabled = true
 	SetIPBlocker(nil)
 	if err := autoBlockQueueCall(cfg, "direct", nil); !errors.Is(err, ErrNoIPBlocker) {
 		t.Fatalf("missing engine refusal changed: %v", err)

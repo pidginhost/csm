@@ -205,15 +205,22 @@ func TestCentralQueueActionErrorsRemainVisible(t *testing.T) {
 		{"failure", failed, 1},
 		{"protected", firewall.ErrIPProtected, 0},
 		{"no engine", checks.ErrNoIPBlocker, 0},
+		{"blocking switched off", checks.ErrAutoBlockDisabled, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{StatePath: t.TempDir()}
+			cfg.AutoResponse.Enabled = tc.err != checks.ErrAutoBlockDisabled
+			cfg.AutoResponse.BlockIPs = true
 			previous := config.Active()
 			config.SetActive(cfg)
 			t.Cleanup(func() { config.SetActive(previous); checks.SetIPBlocker(nil) })
-			if tc.err == checks.ErrNoIPBlocker {
+			switch tc.err {
+			case checks.ErrNoIPBlocker:
 				checks.SetIPBlocker(nil)
-			} else {
+			case checks.ErrAutoBlockDisabled:
+				// Only the switch may refuse: an engine reached would fail.
+				checks.SetIPBlocker(centralQueueBlocker{failed})
+			default:
 				checks.SetIPBlocker(centralQueueBlocker{tc.err})
 			}
 			d := New(cfg, nil, nil, "")

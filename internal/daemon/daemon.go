@@ -2842,10 +2842,9 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 	if len(expired) == 0 {
 		return
 	}
-	cfg := d.currentCfg()
 	var recorded []alert.Finding
 	for _, e := range expired {
-		res, err := checks.ApplyBlock(cfg, checks.ApplyBlockRequest{
+		res, err := checks.ApplyBlock(d.currentCfg(), checks.ApplyBlockRequest{
 			IP:           e.IP,
 			EngineReason: fmt.Sprintf("CSM challenge-timeout: %s", truncateStr(e.Reason, 100)),
 			Reason:       challengeTimeoutReasonPrefix + truncateStr(e.Reason, 100),
@@ -2855,10 +2854,11 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 		})
 		recorded = append(recorded, res.Findings...)
 		if err != nil {
-			// Own-interface / infra IPs are never blockable, and a host
-			// without a firewall engine cannot escalate; both are expected
+			// Own-interface / infra IPs are never blockable, a host
+			// without a firewall engine cannot escalate, and an operator
+			// may have turned automatic blocking off; all are expected
 			// no-ops, not failures worth logging.
-			if !isProtectedIPRefusal(err) && !errors.Is(err, checks.ErrNoIPBlocker) {
+			if !isProtectedIPRefusal(err) && !errors.Is(err, checks.ErrNoIPBlocker) && !errors.Is(err, checks.ErrAutoBlockDisabled) {
 				fmt.Fprintf(os.Stderr, "[%s] challenge-escalate: error blocking %s: %v\n", ts(), e.IP, err)
 			}
 			if res.Outcome != firewall.BlockOutcomeLive || !errors.Is(err, firewall.ErrActionAuditPending) {
