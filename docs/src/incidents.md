@@ -797,6 +797,7 @@ Attribution gaps:
 | `perf_wp_config` | ignored | performance |  |
 | `perf_wp_cron` | ignored | performance |  |
 | `perf_wp_loopback` | ignored | performance |  |
+| `perf_wp_myisam` | ignored | performance |  |
 | `perf_wp_transients` | ignored | performance |  |
 | `phishing_credential_log` | security event |  |  |
 | `phishing_directory` | security event |  |  |
