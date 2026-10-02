@@ -4,6 +4,8 @@ import (
 	"io/fs"
 	"path/filepath"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 func FuzzPHPShieldEvalSiteRequiresFilesystemProof(f *testing.F) {
@@ -200,6 +202,37 @@ func FuzzMailPermissionLogText(f *testing.F) {
 		} {
 			if got := mailPermissionLogText(prefix + text); got != "" {
 				t.Fatalf("untrusted log data became permission text: %q", got)
+			}
+		}
+	})
+}
+
+func FuzzPAMObservation(f *testing.F) {
+	prev := pamBootID
+	pamBootID = func() string { return testPAMBootID }
+	f.Cleanup(func() { pamBootID = prev })
+	f.Add("4242", "1790000000.100000000")
+	f.Add("", "")
+	f.Add("abc", "0.1")
+	f.Fuzz(func(t *testing.T, pid, ts string) {
+		o := pamObservation(pid, ts)
+		if o != pamObservation(pid, ts) {
+			t.Fatal("the same wire identity changed observation")
+		}
+		if o == (alert.Observation{}) {
+			return
+		}
+		if o.Producer != "pam_socket" || o.Stream != "pam:"+testPAMBootID || o.Cursor != pid+":"+ts || o.ObservedAt.IsZero() {
+			t.Fatalf("unexpected observation %+v", o)
+		}
+		for _, token := range []string{o.Stream, o.Cursor} {
+			if len(token) == 0 || len(token) > 128 {
+				t.Fatalf("token length %d", len(token))
+			}
+			for i := range token {
+				if token[i] < 0x21 || token[i] > 0x7e {
+					t.Fatal("observation contains an invalid token byte")
+				}
 			}
 		}
 	})

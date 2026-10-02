@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -214,7 +215,7 @@ func (p *PAMListener) processEvent(line string) {
 	eventType := parts[0]
 	kvPart := parts[1]
 
-	var ip, user, service string
+	var ip, user, service, pid, ts string
 	for _, kv := range strings.Fields(kvPart) {
 		switch {
 		case strings.HasPrefix(kv, "ip="):
@@ -223,6 +224,10 @@ func (p *PAMListener) processEvent(line string) {
 			user = kv[5:]
 		case strings.HasPrefix(kv, "service="):
 			service = kv[8:]
+		case strings.HasPrefix(kv, "pid="):
+			pid = kv[4:]
+		case strings.HasPrefix(kv, "ts="):
+			ts = kv[3:]
 		}
 	}
 
@@ -238,7 +243,12 @@ func (p *PAMListener) processEvent(line string) {
 
 	switch eventType {
 	case "FAIL":
-		p.emit(p.recordFailure(ip, user, service))
+		findings := p.recordFailure(ip, user, service)
+		obs := pamObservation(pid, ts)
+		for i := range findings {
+			findings[i].Observation = obs
+		}
+		p.emit(findings)
 	case "OK":
 		p.clearFailuresForUser(ip, user)
 		// Successful login from non-infra IP - informational alert
@@ -487,4 +497,55 @@ func sortedBoolKeys(m map[string]bool) []string {
 // the local copy accepted CIDRs only and silently ignored bare entries.
 func isInfraIP(ip string, infraNets []string) bool {
 	return checks.IsInfraIP(ip, infraNets)
+}
+
+// pamBootID names this boot: a pid and a clock reading from the module name
+// one event only within it. Tests replace it.
+var pamBootID = sync.OnceValue(func() string { return readPAMBootID(pamBootIDPath) })
+
+const pamBootIDPath = "/proc/sys/kernel/random/boot_id"
+
+func readPAMBootID(path string) string {
+	data, err := os.ReadFile(path) // #nosec G304 -- fixed procfs path; tests pass a temp file.
+	if err != nil {
+		return ""
+	}
+	id := strings.TrimSpace(string(data))
+	if len(id) != 36 || strings.Trim(id, "0123456789abcdef-") != "" {
+		return ""
+	}
+	for i := range id {
+		if (i == 8 || i == 13 || i == 18 || i == 23) != (id[i] == '-') {
+			return ""
+		}
+	}
+	return id
+}
+
+// pamObservation names one module event by its pid and clock reading on this
+// boot. A line from an older module, or one whose fields do not parse,
+// carries none.
+func pamObservation(pid, ts string) alert.Observation {
+	const digits = "0123456789"
+	sec, frac, ok := strings.Cut(ts, ".")
+	if pid == "" || len(pid) > 10 || strings.Trim(pid, digits) != "" ||
+		!ok || sec == "" || len(sec) > 19 || strings.Trim(sec, digits) != "" ||
+		len(frac) != 9 || strings.Trim(frac, digits) != "" {
+		return alert.Observation{}
+	}
+	s, err := strconv.ParseInt(sec, 10, 64)
+	if err != nil || s <= 0 {
+		return alert.Observation{}
+	}
+	ns, err := strconv.ParseInt(frac, 10, 64)
+	boot := pamBootID()
+	if err != nil || boot == "" {
+		return alert.Observation{}
+	}
+	return alert.Observation{
+		Producer:   string(checks.ProducerPAMSocket),
+		Stream:     "pam:" + boot,
+		Cursor:     pid + ":" + ts,
+		ObservedAt: time.Unix(s, ns),
+	}
 }

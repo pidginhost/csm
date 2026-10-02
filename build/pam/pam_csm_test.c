@@ -17,6 +17,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <security/pam_appl.h>
@@ -166,6 +167,58 @@ drain(char *buf, size_t len)
     }
 }
 
+static struct timespec call_start;
+
+/* normalize checks every " ts=<seconds>.<nine digits>" field lies between the
+ * start of the PAM call and now, and replaces it with " ts=T" so the rest of
+ * the line can be compared exactly. A field outside that window or of
+ * another shape is left alone, so the comparison rejects it. */
+static void
+normalize(char *events)
+{
+    struct timespec now;
+    char *p = events;
+
+    clock_gettime(CLOCK_REALTIME, &now);
+    while ((p = strstr(p, " ts=")) != NULL) {
+        char *num = p + 4, *dot = num, *end;
+        long long sec = 0;
+        long nsec = 0;
+        int digits = 0;
+
+        while (*dot >= '0' && *dot <= '9') {
+            sec = sec * 10 + (*dot - '0');
+            dot++;
+        }
+        end = dot;
+        if (*dot == '.') {
+            for (end = dot + 1; *end >= '0' && *end <= '9'; end++, digits++) {
+                nsec = nsec * 10 + (*end - '0');
+            }
+        }
+        if (dot == num || *dot != '.' || digits != 9 ||
+            sec < (long long)call_start.tv_sec || sec > (long long)now.tv_sec ||
+            (sec == (long long)call_start.tv_sec && nsec < call_start.tv_nsec) ||
+            (sec == (long long)now.tv_sec && nsec > now.tv_nsec)) {
+            p = end;
+            continue;
+        }
+        memmove(p + 5, end, strlen(end) + 1);
+        memcpy(p, " ts=T", 5);
+        p += 5;
+    }
+}
+
+/* event builds an expected line: the module adds its pid and a timestamp. */
+static const char *
+event(const char *verdict, const char *ip, const char *user, const char *service)
+{
+    static char buf[512];
+
+    snprintf(buf, sizeof(buf), "%s ip=%s user=%s service=%s pid=%ld ts=T\n", verdict, ip, user, service, (long)getpid());
+    return buf;
+}
+
 static void
 expect(const char *step, int got_rc, int want_rc, const char *got, const char *want)
 {
@@ -186,6 +239,7 @@ start(const char *service, const char *user, const char *rhost)
     static struct pam_conv pc = {conv, NULL};
     pam_handle_t *pamh = NULL;
 
+    clock_gettime(CLOCK_REALTIME, &call_start);
     if (pam_start(service, user, &pc, &pamh) != PAM_SUCCESS) {
         die("pam_start");
     }
@@ -215,8 +269,8 @@ main(void)
     pamh = start("csm-test-fail", "intruder", "192.0.2.10");
     rc = authenticate(pamh);
     drain(events, sizeof(events));
-    expect("failed login", rc, PAM_AUTH_ERR, events,
-           "FAIL ip=192.0.2.10 user=intruder service=csm-test-fail\n");
+    normalize(events);
+    expect("failed login", rc, PAM_AUTH_ERR, events, event("FAIL", "192.0.2.10", "intruder", "csm-test-fail"));
     pam_end(pamh, rc);
 
     /* A successful login jumps over the failure hook; the plain line
@@ -227,8 +281,8 @@ main(void)
     expect("successful login, authenticate", rc, PAM_SUCCESS, events, "");
     rc = pam_setcred(pamh, PAM_ESTABLISH_CRED);
     drain(events, sizeof(events));
-    expect("successful login, setcred", rc, PAM_SUCCESS, events,
-           "OK ip=192.0.2.11 user=alice service=csm-test-pass\n");
+    normalize(events);
+    expect("successful login, setcred", rc, PAM_SUCCESS, events, event("OK", "192.0.2.11", "alice", "csm-test-pass"));
     rc = pam_open_session(pamh, 0);
     drain(events, sizeof(events));
     expect("successful login, open_session", rc, PAM_SUCCESS, events, "");
@@ -278,8 +332,8 @@ main(void)
     pamh = start("csm-test-bracketed", "intruder", "192.0.2.14");
     rc = authenticate(pamh);
     drain(events, sizeof(events));
-    expect("bracketed authfail", rc, PAM_AUTH_ERR, events,
-           "FAIL ip=192.0.2.14 user=intruder service=csm-test-bracketed\n");
+    normalize(events);
+    expect("bracketed authfail", rc, PAM_AUTH_ERR, events, event("FAIL", "192.0.2.14", "intruder", "csm-test-bracketed"));
     pam_end(pamh, rc);
 
     pamh = start("csm-test-comment", "intruder", "192.0.2.14");
