@@ -61,6 +61,8 @@ const (
 	ClaimRequestName
 )
 
+func (k ClaimKind) Valid() bool { return k >= ClaimAccount && k <= ClaimRequestName }
+
 // Claim is an unverified statement of which account a piece of evidence
 // concerns.
 type Claim struct {

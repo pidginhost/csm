@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"slices"
 	"time"
 )
 
@@ -49,8 +50,13 @@ type EvidenceInput struct {
 	ObservedAt  time.Time
 	Parser      ParserRef
 	Target      Target
-	Owner       Owner
-	Intel       *IntelRef
+	// Claims say which account the evidence concerns, as the finding read
+	// them. Only kinds the producer declared are accepted.
+	Claims []Claim
+	// Inventory is the server-owned snapshot that verifies Claims. Without
+	// one the evidence belongs to the host.
+	Inventory *Inventory
+	Intel     *IntelRef
 }
 
 // EvidenceID names one evidence record. The same observation of the same
@@ -162,6 +168,15 @@ func (p *Producer) Mint(in EvidenceInput) (Evidence, error) {
 	if !ok || !spec.publishes(canonical) {
 		return Evidence{}, refuse(ReasonPolicy, "check is not registered for this producer")
 	}
+	for _, c := range in.Claims {
+		if !slices.Contains(spec.Claims, c.Kind) {
+			return Evidence{}, refuse(ReasonPolicy, "claim kind is not declared for this producer")
+		}
+	}
+	owner := HostOwner()
+	if in.Inventory != nil {
+		owner = in.Inventory.Resolve(in.Claims...)
+	}
 	rec := evidenceRecord{
 		Producer:        p.id,
 		Entry:           spec.Entry,
@@ -176,8 +191,8 @@ func (p *Producer) Mint(in EvidenceInput) (Evidence, error) {
 		Parser:          in.Parser.Name,
 		ParserVersion:   in.Parser.Version,
 		Target:          in.Target.Key(),
-		OwnerAccount:    in.Owner.account,
-		OwnerGeneration: in.Owner.generation,
+		OwnerAccount:    owner.account,
+		OwnerGeneration: owner.generation,
 	}
 	var err error
 	rec.ObservedAt, err = evidenceTime(in.ObservedAt)

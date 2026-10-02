@@ -129,7 +129,7 @@ func newFloorLedger(t *testing.T) (*ledgerFixture, func(admission.Severity)) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ssh, err := reg.Register(admission.ProducerSpec{ID: "sshd_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}})
+	ssh, err := reg.Register(admission.ProducerSpec{ID: "sshd_log", Entry: admission.EntryScan, Observation: admission.ObservationLogCursor, Checks: []string{"ssh_brute"}, Claims: []admission.ClaimKind{admission.ClaimAccount}})
 	if err != nil {
 		t.Fatal(err)
 	}
