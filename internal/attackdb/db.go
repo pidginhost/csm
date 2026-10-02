@@ -526,6 +526,11 @@ func normalizeRecordIP(raw string) string {
 }
 
 func extractFindingAccount(f alert.Finding) string {
+	// SSH tenants already reflect the authenticated hosting-account lookup.
+	// Raw log details can contain a client-chosen certificate ID.
+	if config.CanonicalCheckName(f.Check) == "ssh_login_unknown_ip" {
+		return strings.TrimSpace(f.TenantID)
+	}
 	mailbox := strings.TrimSpace(f.Mailbox)
 	domain := strings.TrimSpace(f.Domain)
 	if mailbox != "" {

@@ -521,8 +521,10 @@ branches:
   SSH logins from unknown addresses use this validated account as their tenant
   only when the sshd record confirms successful authentication. Root and
   service-user logins group by source address after upgrade, and their
-  findings carry no `tenant_id` and no attack database account; existing
-  incidents keep their grouping. No setting changes this behavior.
+  findings carry no `tenant_id` and no attack database account. The attack
+  database uses only this validated tenant for SSH attribution; certificate
+  text in the log cannot supply an account. Existing incidents and attack
+  records keep their attribution. No setting changes this behavior.
 - File families (content, phishing, htaccess, file index, core integrity,
   realtime file events, PHP shield events, self-deleting droppers) carry the
   judged file's path, which resolves as described above. The collapsed
