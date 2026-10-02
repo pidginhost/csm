@@ -20,7 +20,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- WordPress database performance warnings now recognize local interface addresses and distinguish database instances. Unresolved site settings preserve earlier warnings without assigning tables to the wrong sibling site.
 - An SSH login from an unknown address records a tenant and attack database account only when sshd confirms a successful login to a hosting account; root and service-user findings carry no `tenant_id` and group by address. This applies to new findings after the upgrade, existing incidents and attack records keep their attribution, and no setting changes it.
 - FTP brute-force alerts use new failures, so old evidence no longer re-blocks an operator-unblocked address or recounts the same burst; diagnostic and cancelled scans leave evidence for live detection. On upgrade, the Findings page drops the row at the first scan without new failures instead of when the window ends; `thresholds.ftp_fail_window_min` still sets how far back failures add up.
 - After the upgrade restart, cPanel web checks try Apache and LiteSpeed logs instead of the panel's own log, avoiding false blocks of customer sessions; the realtime watcher also retries all candidates when no log exists at startup. Periodic checks count aliases of the selected central log once, including operator overrides through `web_server.access_logs`; existing blocks remain until expiry or removal.

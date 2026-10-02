@@ -99,10 +99,10 @@ without site credentials, and matches the MyISAM tables against the
 WordPress installs found by the shared discovery. Each install's database and
 table prefix come from explicit string literals in its `wp-config.php`,
 including an explicitly empty prefix. PHP expressions are not evaluated.
-A table belongs to the install whose prefix matches it most closely, so two sites sharing one database are
-reported separately. Dormant and suspended installs still reserve their
-prefixes. Each database and prefix gets one Warning on this page,
-listing the tables largest first with their total size.
+A table belongs to the install whose prefix matches it most closely, so two
+sites sharing one database are reported separately. Dormant and suspended
+installs still reserve their prefixes. Each database and prefix gets one
+Warning on this page, listing the tables largest first with their total size.
 
 Not reported:
 
