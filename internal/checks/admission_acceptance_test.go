@@ -1,11 +1,14 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // acceptanceProducer registers one producer that publishes the checks the
@@ -28,7 +31,15 @@ func acceptanceProducer(t *testing.T) *admission.Producer {
 }
 
 func acceptanceMint(p *admission.Producer, check string, sev admission.Severity, cursor string, observed time.Time) (admission.Evidence, admission.Target, error) {
-	target, err := admission.CanonicalAddress("192.0.2.10", admission.Caps{})
+	return acceptanceMintFor(p, check, sev, "192.0.2.10", cursor, observed)
+}
+
+func acceptanceMintAt(p *admission.Producer, check string, sev admission.Severity, address string) (admission.Evidence, admission.Target, error) {
+	return acceptanceMintFor(p, check, sev, address, "1", time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
+}
+
+func acceptanceMintFor(p *admission.Producer, check string, sev admission.Severity, address, cursor string, observed time.Time) (admission.Evidence, admission.Target, error) {
+	target, err := admission.CanonicalAddress(address, admission.Caps{})
 	if err != nil {
 		return admission.Evidence{}, target, err
 	}
@@ -88,5 +99,29 @@ func TestAdmissionAcceptanceRefusesHighMailCompromise(t *testing.T) {
 	_, _, err := acceptanceMint(p, "mail_account_compromised", admission.SeverityHigh, "1", time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
 	if reason, ok := admission.ReasonOf(err); !ok || reason != admission.ReasonPolicy {
 		t.Fatalf("mint error %v, want a policy refusal", err)
+	}
+}
+
+// An established connection to a listed C2 address names that destination
+// and is direct C3 evidence.
+func TestAdmissionAcceptanceC2ConnectionProducer(t *testing.T) {
+	data := procTCPHeader + tcpLine("0", hexAddr(192, 0, 2, 100, 54321), hexAddr(203, 0, 113, 9, 443), "01")
+	withMockOS(t, &mockOS{readFile: func(string) ([]byte, error) { return []byte(data), nil }})
+	findings := CheckOutboundConnections(context.Background(), &config.Config{C2Blocklist: []string{"203.0.113.9"}, BackdoorPorts: []int{}}, nil)
+	var c2 []alert.Finding
+	for _, f := range findings {
+		if f.Check == "c2_connection" {
+			c2 = append(c2, f)
+		}
+	}
+	if len(c2) != 1 || c2[0].Severity != alert.Critical || c2[0].SourceIP != "203.0.113.9" {
+		t.Fatalf("c2 findings %+v, want one Critical naming the destination", c2)
+	}
+	e, target, err := acceptanceMintAt(acceptanceProducer(t), "c2_connection", admission.SeverityCritical, c2[0].SourceIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, err := admission.Assess(target, []admission.Evidence{e}, e.ObservedAt()); err != nil || !a.DirectC3 {
+		t.Fatalf("assessment %+v err %v, want direct C3", a, err)
 	}
 }
