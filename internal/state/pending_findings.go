@@ -14,6 +14,37 @@ const pendingFindingsFile = "pending_findings.json"
 
 var removePendingFindingsFile = os.Remove
 
+// pendingFinding is the parked form of a finding. The public Finding JSON
+// leaves out the subnets and spray targets, which the automatic response and
+// the incident correlator read; a replayed finding needs them to act the way
+// the original would have. Delivery provenance stays process-local.
+type pendingFinding struct {
+	alert.Finding
+	ResponseCIDRs        []string `json:"response_cidrs,omitempty"`
+	ResponseSprayTargets []string `json:"response_spray_targets,omitempty"`
+}
+
+func toPendingRecords(findings []alert.Finding) []pendingFinding {
+	records := make([]pendingFinding, len(findings))
+	for i, f := range findings {
+		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets}
+	}
+	return records
+}
+
+func fromPendingRecords(records []pendingFinding) []alert.Finding {
+	if records == nil {
+		return nil
+	}
+	findings := make([]alert.Finding, len(records))
+	for i, r := range records {
+		findings[i] = r.Finding
+		findings[i].CIDRs = r.ResponseCIDRs
+		findings[i].SprayTargets = r.ResponseSprayTargets
+	}
+	return findings
+}
+
 // pendingFindingsMax bounds the parked batch; a stop during a flood keeps the
 // newest findings rather than growing the file without limit.
 const pendingFindingsMax = 10000
@@ -56,7 +87,7 @@ func (s *Store) AppendPendingFindings(findings []alert.Finding) error {
 		knownLoss = len(findings)
 	}
 	call.offer(knownLoss)
-	err = write(filepath.Join(s.path, pendingFindingsFile), 0o600, pending)
+	err = write(filepath.Join(s.path, pendingFindingsFile), 0o600, toPendingRecords(pending))
 	if err == nil {
 		call.complete(next, total-len(pending), false, ages)
 		return nil
@@ -157,10 +188,10 @@ func (s *Store) readPendingLocked(call *pendingCall) ([]alert.Finding, error) {
 		call.failedRead()
 		return nil, fmt.Errorf("read pending findings: %w", err)
 	}
-	var pending []alert.Finding
-	if err := json.Unmarshal(data, &pending); err != nil {
+	var records []pendingFinding
+	if err := json.Unmarshal(data, &records); err != nil {
 		call.failedRead()
 		return nil, fmt.Errorf("decode pending findings: %w", err)
 	}
-	return pending, nil
+	return fromPendingRecords(records), nil
 }

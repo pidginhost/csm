@@ -22,13 +22,13 @@ func pendingIdentity(findings []alert.Finding) pendingImage {
 	if len(findings) == 0 {
 		return pendingImage{valid: true}
 	}
-	data, err := json.Marshal(findings)
+	data, err := json.Marshal(toPendingRecords(findings))
 	if err != nil {
 		return pendingImage{count: len(findings)}
 	}
 	// JSON repairs invalid UTF-8, including log text cut inside a character.
 	// Hash the recovered payload so a successful readback has the same identity.
-	var persisted []alert.Finding
+	var persisted []pendingFinding
 	if decodeErr := json.Unmarshal(data, &persisted); decodeErr != nil {
 		return pendingImage{count: len(findings)}
 	}

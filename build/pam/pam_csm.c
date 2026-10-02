@@ -5,8 +5,8 @@
  *
  * Wire format (one line per event, no trailing newline required):
  *
- *     FAIL ip=1.2.3.4 user=root service=sshd
- *     OK   ip=1.2.3.4 user=root service=sshd
+ *     FAIL ip=192.0.2.4 user=root service=sshd
+ *     OK   ip=192.0.2.4 user=root service=sshd
  *
  * The socket lives at /var/run/csm/pam.sock and is owned root:root with
  * mode 0600, so this module must run from a PAM stack that is already
@@ -18,16 +18,18 @@
  *
  *     gcc -shared -fPIC -Wall -Wextra -O2 -o pam_csm.so pam_csm.c -lpam
  *
- * Install (per host operator-handled instructions in
- * docs/operator-pam-install.md):
+ * Install with `csm pam install` (docs/operator-pam-install.md). It adds
  *
- *     install -m 0755 pam_csm.so /usr/lib64/security/pam_csm.so   # RHEL
- *     install -m 0755 pam_csm.so /lib/x86_64-linux-gnu/security/  # Debian
- *
- *     # Append to /etc/pam.d/sshd, /etc/pam.d/su, /etc/pam.d/sudo,
- *     # /etc/pam.d/password-auth (RHEL) or /etc/pam.d/common-auth (Debian):
  *     auth     optional   pam_csm.so
  *     session  optional   pam_csm.so
+ *
+ * to the service files and the shared auth stack; these report successful
+ * logins. A module only sees its own return value, never the verdict of the
+ * modules before it, so failures need a line of their own in the one place
+ * only a failed attempt reaches: directly before the terminal pam_deny.so of
+ * the shared auth stack (password-auth on RHEL, common-auth on Debian):
+ *
+ *     auth     optional   pam_csm.so authfail
  *
  * The `optional` control flag is mandatory: a CSM outage must not block
  * authentication, period.
@@ -52,10 +54,13 @@
 #include <security/pam_appl.h>
 #include <security/pam_modules.h>
 
+#ifndef CSM_PAM_SOCKET
 #define CSM_PAM_SOCKET "/var/run/csm/pam.sock"
+#endif
 #define CSM_PAM_MAX_VALUE_LEN 128
 #define CSM_PAM_CONNECT_TIMEOUT_MS 250
 #define CSM_PAM_EMITTED_KEY "csm_pam_ok_emitted"
+#define CSM_PAM_ARG_AUTHFAIL "authfail"
 
 /* Sanitize an operator-controlled string for the wire format. We drop
  * spaces, control bytes, and bytes outside printable ASCII so a forged
@@ -82,6 +87,19 @@ csm_sanitize(const char *in, char *out, size_t len)
         }
     }
     out[i] = '\0';
+}
+
+static int
+csm_has_arg(int argc, const char **argv, const char *name)
+{
+    int i;
+
+    for (i = 0; i < argc; i++) {
+        if (argv[i] && strcmp(argv[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static void
@@ -226,28 +244,27 @@ csm_emit_ok_once(pam_handle_t *pamh)
     }
 }
 
-/* PAM_SM_AUTH hook: pam_authenticate returns PAM_SUCCESS / PAM_AUTH_ERR;
- * pam_sm_authenticate runs before that verdict is known. Success reaches
- * setcred / open_session; failures are covered by the auth log watcher
- * because failed stacks may not reach a reliable post-auth PAM hook. */
+/* PAM_SM_AUTH hook. A plain line is a no-op here: it runs before the
+ * verdict is known, and a successful login is reported from setcred /
+ * open_session instead. An authfail line runs only on the failure path
+ * (see the header), so reaching it is the verdict. */
 PAM_EXTERN int
 pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv)
 {
     (void)flags;
-    (void)argc;
-    (void)argv;
-    (void)pamh;
-    /* Intentionally a no-op: emitting at pre-auth time would record a
-     * FAIL for every login attempt before the password was even
-     * checked. The real verdict ships from setcred / open_session. */
+    if (csm_has_arg(argc, argv, CSM_PAM_ARG_AUTHFAIL)) {
+        (void)csm_emit("FAIL", pamh);
+    }
     return PAM_IGNORE;
 }
 
 PAM_EXTERN int
 pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const char **argv)
 {
-    (void)argc;
-    (void)argv;
+    if (csm_has_arg(argc, argv, CSM_PAM_ARG_AUTHFAIL)) {
+        /* Never a success signal: the line sits on the failure path. */
+        return PAM_IGNORE;
+    }
     if (flags & PAM_ESTABLISH_CRED) {
         csm_emit_ok_once(pamh);
     } else if (flags & PAM_DELETE_CRED) {
@@ -257,10 +274,10 @@ pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const char **argv)
 }
 
 /* Account / session hooks: PAM calls pam_sm_acct_mgmt after auth
- * succeeded, so observing the negative case here is unreliable. The
- * primary FAIL surface is the auth log watcher; this module supplements
- * it with a high-fidelity OK signal so the daemon can correlate
- * successful login -> source IP without log parsing. */
+ * succeeded, so observing the negative case here is unreliable. FAIL comes
+ * from the authfail line; the session hook adds a high-fidelity OK signal so
+ * the daemon can correlate successful login -> source IP without log
+ * parsing. */
 PAM_EXTERN int
 pam_sm_open_session(pam_handle_t *pamh, int flags, int argc, const char **argv)
 {
