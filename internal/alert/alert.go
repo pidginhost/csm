@@ -142,6 +142,9 @@ type Finding struct {
 	// from, as the producer read it. Admission resolves the owner from them,
 	// so a producer records only what it read, never a guess.
 	Claims []admission.Claim `json:"-"`
+	// Observation is where the finding was read; zero when the producer has
+	// no position for it. Internal-only like Claims.
+	Observation Observation `json:"-"`
 
 	// Process context (Phase 1 process-ancestry enrichment). Optional.
 	// Populated by exec/connection live monitors when cache or enricher

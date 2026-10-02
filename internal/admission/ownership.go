@@ -66,8 +66,8 @@ func (k ClaimKind) Valid() bool { return k >= ClaimAccount && k <= ClaimRequestN
 // Claim is an unverified statement of which account a piece of evidence
 // concerns.
 type Claim struct {
-	Kind  ClaimKind
-	Value string
+	Kind  ClaimKind `json:"kind"`
+	Value string    `json:"value"`
 }
 
 // Inventory is an immutable snapshot of server-owned hosting accounts and
