@@ -51,7 +51,7 @@ func newLedgerRegistry(t testing.TB) (*admission.Registry, *admission.Producer, 
 		t.Fatal(err)
 	}
 	register := func(id admission.ProducerID, obs admission.ObservationKind, check string) *admission.Producer {
-		p, err := reg.Register(admission.ProducerSpec{ID: id, Entry: admission.EntryScan, Observation: obs, Checks: []string{check}})
+		p, err := reg.Register(admission.ProducerSpec{ID: id, Entry: admission.EntryScan, Observation: obs, Checks: []string{check}, Claims: []admission.ClaimKind{admission.ClaimAccount}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -103,6 +103,21 @@ func (f *ledgerFixture) refresh(accounts []string, domains map[string]string) {
 	if err := f.l.RefreshInventory(admission.InventoryObservation{Accounts: accounts, Domains: domains}); err != nil {
 		f.t.Fatal(err)
 	}
+}
+
+// ownerClaims turns a resolved owner back into the claim and the one-account
+// inventory that resolve to exactly that owner, so fixtures can keep naming
+// owners, retired generations included.
+func ownerClaims(t testing.TB, o admission.Owner) ([]admission.Claim, *admission.Inventory) {
+	t.Helper()
+	if o.IsHost() {
+		return nil, nil
+	}
+	inv, err := admission.NewInventory(map[string]uint64{o.Account(): o.Generation()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []admission.Claim{{Kind: admission.ClaimAccount, Value: o.Account()}}, inv
 }
 
 func (f *ledgerFixture) owner(account string) admission.Owner {
@@ -199,11 +214,12 @@ func (f *ledgerFixture) mint(s evidenceSpec) admission.Evidence {
 	if s.severity == 0 {
 		s.severity = admission.SeverityHigh
 	}
+	claims, inv := ownerClaims(f.t, s.owner)
 	in := admission.EvidenceInput{
 		Check: s.check, FindingID: s.finding, Severity: s.severity,
 		Observation: admission.ObservationRef{Stream: "log:" + string(s.producer.ID()), Cursor: s.cursor, Version: 1},
 		ObservedAt:  f.wall.Add(-s.age), Parser: admission.ParserRef{Name: "fixture", Version: 1},
-		Target: f.target(s.target), Owner: s.owner,
+		Target: f.target(s.target), Claims: claims, Inventory: inv,
 	}
 	if s.producer == f.rep {
 		in.Intel = &admission.IntelRef{Source: "feed", Expires: in.ObservedAt.Add(30 * time.Hour)}

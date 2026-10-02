@@ -60,8 +60,9 @@ func (f *ingressFixture) sub(s subSpec) Submission {
 		s.sev = SeverityHigh
 	}
 	target := mustAddr(f.t, s.target)
+	claims, inv := ownerClaims(f.t, s.owner)
 	e, err := s.p.Mint(EvidenceInput{
-		Check: s.check, FindingID: s.finding, Severity: s.sev, Target: target, Owner: s.owner,
+		Check: s.check, FindingID: s.finding, Severity: s.sev, Target: target, Claims: claims, Inventory: inv,
 		Observation: ObservationRef{Stream: string(s.p.ID()), Cursor: s.cursor, Version: 1},
 		ObservedAt:  t0.Add(-s.age), Parser: ParserRef{Name: "fixture", Version: 1},
 	})

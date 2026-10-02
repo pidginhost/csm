@@ -8,6 +8,14 @@ func FuzzSSHAcceptedRecordFields(f *testing.F) {
 	f.Add("Accepted password for root from 192.0.2.50 port 22", "for root from 192.0.2.50 port 22")
 	f.Add("sshd[1]: Accepted publickey for root from 192.0.2.50 port 22", "ssh2: ED25519 SHA256:abc")
 	f.Add("", "")
+	// "from" is a hosting account here, so the tenant shows which field the
+	// parser read the account from.
+	f.Cleanup(SetHostingAccountLookupForTest(func(name string) string {
+		if name == "from" {
+			return name
+		}
+		return ""
+	}))
 	f.Fuzz(func(t *testing.T, user, suffix string) {
 		for _, header := range []string{"Oct  2 12:00:00 host sshd[100]: ", "2026-10-02T12:00:00.123456Z host sshd-session: ", "host sshd: "} {
 			for _, message := range []string{

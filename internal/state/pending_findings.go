@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/atomicio"
 )
@@ -15,19 +16,28 @@ const pendingFindingsFile = "pending_findings.json"
 var removePendingFindingsFile = os.Remove
 
 // pendingFinding is the parked form of a finding. The public Finding JSON
-// leaves out the subnets and spray targets, which the automatic response and
-// the incident correlator read; a replayed finding needs them to act the way
-// the original would have. Delivery provenance stays process-local.
+// leaves out the subnets, spray targets, claims and observation, which the
+// automatic response, the incident correlator and admission read; a replayed
+// finding needs them to act the way the original would have. Delivery
+// provenance stays process-local.
 type pendingFinding struct {
 	alert.Finding
-	ResponseCIDRs        []string `json:"response_cidrs,omitempty"`
-	ResponseSprayTargets []string `json:"response_spray_targets,omitempty"`
+	ResponseCIDRs        []string           `json:"response_cidrs,omitempty"`
+	ResponseSprayTargets []string           `json:"response_spray_targets,omitempty"`
+	ResponseClaims       []admission.Claim  `json:"response_claims,omitempty"`
+	ResponseObservation  *alert.Observation `json:"response_observation,omitempty"`
 }
 
 func toPendingRecords(findings []alert.Finding) []pendingFinding {
 	records := make([]pendingFinding, len(findings))
 	for i, f := range findings {
-		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets}
+		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets, ResponseClaims: f.Claims}
+		// A log can carry a time the JSON encoder refuses. Dropping that
+		// observation costs one finding its provenance, not the whole batch.
+		if _, err := f.Observation.ObservedAt.MarshalJSON(); err == nil && f.Observation != (alert.Observation{}) {
+			observation := f.Observation
+			records[i].ResponseObservation = &observation
+		}
 	}
 	return records
 }
@@ -41,6 +51,10 @@ func fromPendingRecords(records []pendingFinding) []alert.Finding {
 		findings[i] = r.Finding
 		findings[i].CIDRs = r.ResponseCIDRs
 		findings[i].SprayTargets = r.ResponseSprayTargets
+		findings[i].Claims = r.ResponseClaims
+		if r.ResponseObservation != nil {
+			findings[i].Observation = *r.ResponseObservation
+		}
 	}
 	return findings
 }

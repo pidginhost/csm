@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
+
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
@@ -157,11 +159,10 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 	if !ok || isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
 		return alert.Finding{}, false
 	}
-	tenant := user
-	if tenant == "unknown" {
-		tenant = ""
-	}
-	return alert.Finding{
+	// sshd authenticated the name, but only a hosting account is a tenant
+	// or names an owner; root and service users are neither.
+	tenant := HostingAccountForUser(user)
+	f := alert.Finding{
 		Severity: alert.Critical,
 		Check:    "ssh_login_unknown_ip",
 		DedupKey: loginRecordKey(line),
@@ -169,7 +170,11 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 		Details:  truncateString(line, 200),
 		SourceIP: ip,
 		TenantID: tenant,
-	}, true
+	}
+	if tenant != "" {
+		f.Claims = []admission.Claim{{Kind: admission.ClaimAccount, Value: tenant}}
+	}
+	return f, true
 }
 
 // sshAcceptedRecord reads sshd's own success record, "Accepted <method> for

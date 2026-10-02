@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
+
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/threatintel"
@@ -493,6 +495,13 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 	// that crossed an abuse threshold count -- a popular site's normal
 	// visitor spread never trips it.
 	out = append(out, s.emitDistributedFlood(cfg, out)...)
+	// Domain is set only from a per-vhost log path, which server
+	// configuration names, so it is a domain claim.
+	for i := range out {
+		if out[i].Domain != "" {
+			out[i].Claims = []admission.Claim{{Kind: admission.ClaimDomain, Value: out[i].Domain}}
+		}
+	}
 	out = append(out, s.emitASNCrawl(cfg)...)
 	return out
 }

@@ -5,8 +5,12 @@
  *
  * Wire format (one line per event, no trailing newline required):
  *
- *     FAIL ip=192.0.2.4 user=root service=sshd
- *     OK   ip=192.0.2.4 user=root service=sshd
+ *     FAIL ip=192.0.2.4 user=root service=sshd pid=4242 ts=1790000000.123456789
+ *     OK   ip=192.0.2.4 user=root service=sshd pid=4242 ts=1790000000.123456789
+ *
+ * pid and ts (the clock when the event was sent, seconds and nanoseconds)
+ * name the event, so the daemon can tell two events apart and a repeat of
+ * one event from a new one.
  *
  * The socket lives at /var/run/csm/pam.sock and is owned root:root with
  * mode 0600, so this module must run from a PAM stack that is already
@@ -49,6 +53,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <security/pam_appl.h>
@@ -217,8 +222,19 @@ csm_emit(const char *verdict, pam_handle_t *pamh)
         return 0;
     }
 
-    n = snprintf(line, sizeof(line), "%s ip=%s user=%s service=%s\n",
-                 verdict, rhost_safe, user_safe, service_safe);
+    {
+        struct timespec now = {0, 0};
+
+        if (clock_gettime(CLOCK_REALTIME, &now) == 0) {
+            n = snprintf(line, sizeof(line), "%s ip=%s user=%s service=%s pid=%ld ts=%lld.%09ld\n",
+                         verdict, rhost_safe, user_safe, service_safe, (long)getpid(),
+                         (long long)now.tv_sec, (long)now.tv_nsec);
+        } else {
+            /* A clock failure leaves identity unknown, not the auth event. */
+            n = snprintf(line, sizeof(line), "%s ip=%s user=%s service=%s\n",
+                         verdict, rhost_safe, user_safe, service_safe);
+        }
+    }
     if (n <= 0 || (size_t)n >= sizeof(line)) {
         close(fd);
         return 0;

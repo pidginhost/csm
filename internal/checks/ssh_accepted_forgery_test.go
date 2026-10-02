@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,14 @@ func TestSSHAcceptedLoginFindingIgnoresForgedRecords(t *testing.T) {
 }
 
 func TestSSHLoginLogShapes(t *testing.T) {
+	// "from" is a hosting account here, so the tenant shows which field the
+	// parser read the account from.
+	t.Cleanup(SetHostingAccountLookupForTest(func(name string) string {
+		if name == "from" {
+			return name
+		}
+		return ""
+	}))
 	now := time.Now()
 	headers := []string{now.Format("Jan _2 15:04:05") + " host ", now.Format(time.RFC3339Nano) + " host ", "host ", ""}
 	for _, header := range headers {
@@ -90,7 +99,8 @@ func TestSSHLoginScansIgnoreForgedRecords(t *testing.T) {
 				t.Errorf("follow scan reported forged login: %+v", got)
 			}
 			appendLines(t, path, sshAcceptedLine(time.Now(), "198.51.100.7"))
-			if got := CheckSSHLogins(context.Background(), cfg, st); len(got) != 1 || got[0].SourceIP != "198.51.100.7" || got[0].TenantID != "root" {
+			// root is never a hosting account, so the login carries no tenant.
+			if got := CheckSSHLogins(context.Background(), cfg, st); len(got) != 1 || got[0].SourceIP != "198.51.100.7" || !strings.Contains(got[0].Message, "(user: root)") || got[0].TenantID != "" {
 				t.Errorf("follow scan lost subsequent login: %+v", got)
 			}
 		})

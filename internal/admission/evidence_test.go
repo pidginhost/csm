@@ -50,10 +50,10 @@ func newTestProducers(t testing.TB) testProducers {
 		return p
 	}
 	tp := testProducers{reg: reg}
-	tp.ssh = must(ProducerSpec{ID: "sshd_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}})
+	tp.ssh = must(ProducerSpec{ID: "sshd_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}, Claims: []ClaimKind{ClaimAccount}})
 	tp.http = must(ProducerSpec{ID: "access_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"waf_escalation", "http_scan"}})
-	tp.mail = must(ProducerSpec{ID: "mail_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"mail_brute", "mail_takeover"}})
-	tp.reputation = must(ProducerSpec{ID: "reputation_scan", Entry: EntryScan, Observation: ObservationScanPass, Checks: []string{"reputation"}})
+	tp.mail = must(ProducerSpec{ID: "mail_log", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"mail_brute", "mail_takeover"}, Claims: []ClaimKind{ClaimAccount}})
+	tp.reputation = must(ProducerSpec{ID: "reputation_scan", Entry: EntryScan, Observation: ObservationScanPass, Checks: []string{"reputation"}, Claims: []ClaimKind{ClaimAccount}})
 	tp.derived = must(ProducerSpec{ID: "threat_scan", Entry: EntryScan, Observation: ObservationScanPass, Checks: []string{"threat_score"}})
 	tp.spare = must(ProducerSpec{ID: "incident", Entry: EntryIncident, Observation: ObservationEventSeq, Checks: []string{"ssh_brute"}})
 	return tp
@@ -92,6 +92,8 @@ func TestRegisterRefusesUnsafeProducers(t *testing.T) {
 		"alias instead of name":  {ID: "p2", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute_legacy"}},
 		"check without evidence": {ID: "p2", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"login_audit"}},
 		"repeated check":         {ID: "p2", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute", "ssh_brute"}},
+		"unknown claim kind":     {ID: "p2", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}, Claims: []ClaimKind{0}},
+		"repeated claim kind":    {ID: "p2", Entry: EntryScan, Observation: ObservationLogCursor, Checks: []string{"ssh_brute"}, Claims: []ClaimKind{ClaimDomain, ClaimDomain}},
 	}
 	for name, spec := range bad {
 		if _, err := reg.Register(spec); err == nil {
@@ -160,6 +162,8 @@ func TestRegistrationErrorsNeverEchoInput(t *testing.T) {
 		"unknown check":   func(_ *Registry, s *ProducerSpec) { s.Checks = []string{marker} },
 		"no evidence":     func(_ *Registry, s *ProducerSpec) { s.Checks = []string{"login_audit"} },
 		"duplicate check": func(_ *Registry, s *ProducerSpec) { s.Checks = []string{"ssh_brute", "ssh_brute"} },
+		"claim kind":      func(_ *Registry, s *ProducerSpec) { s.Claims = []ClaimKind{ClaimRequestName + 1} },
+		"duplicate claim": func(_ *Registry, s *ProducerSpec) { s.Claims = []ClaimKind{ClaimAccount, ClaimAccount} },
 		"sealed registry": func(r *Registry, _ *ProducerSpec) { r.Seal() },
 		"duplicate producer": func(r *Registry, _ *ProducerSpec) {
 			if _, err := r.Register(good); err != nil {
@@ -285,7 +289,7 @@ func TestEvidenceRoundTripsAndRefusesTampering(t *testing.T) {
 	tp := newTestProducers(t)
 	inv, _ := NewInventory(map[string]uint64{"alice": 4}, nil)
 	in := sshInput(t)
-	in.Owner = inv.Resolve(Claim{ClaimAccount, "alice"})
+	in.Claims, in.Inventory = []Claim{{ClaimAccount, "alice"}}, inv
 	e, err := tp.ssh.Mint(in)
 	if err != nil {
 		t.Fatal(err)
@@ -389,7 +393,7 @@ func TestEvidenceSameIDDoesNotAuthorizeReplacement(t *testing.T) {
 	for name, mutate := range map[string]func(*EvidenceInput){
 		"finding":  func(in *EvidenceInput) { in.FindingID = "fedcba9876543210" },
 		"severity": func(in *EvidenceInput) { in.Severity = SeverityCritical },
-		"owner":    func(in *EvidenceInput) { in.Owner = inv.Resolve(Claim{ClaimAccount, "alice"}) },
+		"owner":    func(in *EvidenceInput) { in.Claims, in.Inventory = []Claim{{ClaimAccount, "alice"}}, inv },
 		"time":     func(in *EvidenceInput) { in.ObservedAt = in.ObservedAt.Add(time.Minute) },
 		"parser":   func(in *EvidenceInput) { in.Parser.Version++ },
 	} {
@@ -521,7 +525,7 @@ func TestEvidenceEncodingAndIDAreFrozen(t *testing.T) {
 	}
 	in := sshInput(t)
 	in.Check = "reputation"
-	in.Owner = inv.Resolve(Claim{ClaimAccount, "alice"})
+	in.Claims, in.Inventory = []Claim{{ClaimAccount, "alice"}}, inv
 	in.Intel = &IntelRef{Source: "feed", Expires: t0.Add(time.Hour)}
 	e, err := tp.reputation.Mint(in)
 	if err != nil {
@@ -589,7 +593,7 @@ func TestEvidenceSameExceptFinding(t *testing.T) {
 	}{
 		"finding":  {func(in *EvidenceInput) { in.FindingID = "fedcba9876543210" }, true},
 		"severity": {func(in *EvidenceInput) { in.Severity = SeverityCritical }, false},
-		"owner":    {func(in *EvidenceInput) { in.Owner = inv.Resolve(Claim{ClaimAccount, "alice"}) }, false},
+		"owner":    {func(in *EvidenceInput) { in.Claims, in.Inventory = []Claim{{ClaimAccount, "alice"}}, inv }, false},
 		"time":     {func(in *EvidenceInput) { in.ObservedAt = in.ObservedAt.Add(time.Minute) }, false},
 		"parser":   {func(in *EvidenceInput) { in.Parser.Version++ }, false},
 	} {

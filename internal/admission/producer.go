@@ -2,6 +2,7 @@ package admission
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 )
@@ -62,12 +63,14 @@ func (k ObservationKind) Valid() bool { return k >= ObservationLogCursor && k < 
 const maxProducerChecks = 32
 
 // ProducerSpec is what a producer registers. Checks are exact names; a
-// dynamic prefix is never a catch-all.
+// dynamic prefix is never a catch-all. Claims are the ownership claim kinds
+// the producer's findings may carry; Mint refuses any other.
 type ProducerSpec struct {
 	ID          ProducerID
 	Entry       Entry
 	Observation ObservationKind
 	Checks      []string
+	Claims      []ClaimKind
 }
 
 // Registry holds the producers allowed to mint evidence. Register all
@@ -136,6 +139,18 @@ func (r *Registry) Register(spec ProducerSpec) (*Producer, error) {
 	}
 	sort.Strings(checks)
 	spec.Checks = checks
+	claims := make([]ClaimKind, 0, len(spec.Claims))
+	for _, kind := range spec.Claims {
+		if !kind.Valid() {
+			return nil, fmt.Errorf("producer declares an unknown claim kind")
+		}
+		if slices.Contains(claims, kind) {
+			return nil, fmt.Errorf("producer claim kind is repeated")
+		}
+		claims = append(claims, kind)
+	}
+	slices.Sort(claims)
+	spec.Claims = claims
 	r.producers[spec.ID] = spec
 	return &Producer{reg: r, id: spec.ID}, nil
 }
@@ -162,6 +177,7 @@ func (r *Registry) Spec(id ProducerID) (ProducerSpec, bool) {
 	spec, ok := r.producers[id]
 	if ok {
 		spec.Checks = append([]string(nil), spec.Checks...)
+		spec.Claims = append([]ClaimKind(nil), spec.Claims...)
 	}
 	return spec, ok
 }

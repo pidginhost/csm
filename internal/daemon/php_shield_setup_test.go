@@ -78,7 +78,7 @@ func TestRetryLogWatcherNamedMarksWatcherAttachedAfterLogAppears(t *testing.T) {
 	d.wg.Add(1)
 	done := make(chan struct{})
 	go func() {
-		d.retryLogWatcherNamed(path, parsePHPShieldLogLine, "test_log")
+		d.retryLogWatcherNamed(logWatchSpec{name: "test_log", path: path, handler: parsePHPShieldLogLine})
 		close(done)
 	}()
 

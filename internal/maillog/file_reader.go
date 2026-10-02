@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 // maxLogLineBytes caps a single mail-log line. Real syslog lines top
@@ -190,6 +193,11 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 	defer close(out)
 	f, reader, lastIno := input.file, input.reader, input.ino
 	source := r.queue.file.attach(input, true)
+	// generation counts rewinds of the same file, so a reused offset is
+	// never the same position, including a rotation back to an earlier inode.
+	epoch := alert.NewObservationEpoch()
+	generation := 0
+	stream := fileStream(lastIno, epoch, generation)
 	sampleCtx, stopSample := context.WithCancel(ctx)
 	sampleDone := make(chan struct{})
 	go r.queue.file.sampleLoop(sampleCtx, sampleDone)
@@ -237,6 +245,8 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 			r.queue.discardFile(source, buffered)
 			source = r.queue.file.attach(&mailFileInput{file: f}, false)
 			pending.reset()
+			generation++
+			stream = fileStream(lastIno, epoch, generation)
 		}
 	}
 
@@ -267,6 +277,8 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 		f, reader, lastIno = next.file, next.reader, next.ino
 		source = r.queue.file.attach(next, true)
 		pending.reset()
+		generation++
+		stream = fileStream(lastIno, epoch, generation)
 		r.recordRestored()
 	}
 
@@ -300,7 +312,8 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, input *mailFileI
 					fmt.Fprintf(os.Stderr, "maillog file_reader %s: oversized line skipped at %d bytes\n", r.path, maxLogLineBytes)
 					continue
 				}
-				if !r.queue.sendFile(ctx, out, Line{Source: "file", Message: line}, source) {
+				position := Position{Stream: stream, Cursor: strconv.FormatInt(r.queue.file.settledAt(source), 10), ObservedAt: time.Now()}
+				if !r.queue.sendFile(ctx, out, Line{Source: "file", Message: line, Position: position}, source) {
 					normal = true
 					return
 				}
@@ -330,4 +343,8 @@ func rewindTruncatedFile(f mailLogFile, reader *bufio.Reader) (bool, error) {
 	// against the descriptor position so those bytes cannot conceal shrinkage.
 	reader.Reset(f)
 	return true, nil
+}
+
+func fileStream(ino uint64, epoch string, generation int) string {
+	return fmt.Sprintf("m:%x:%s.%d", ino, epoch, generation)
 }

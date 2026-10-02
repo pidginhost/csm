@@ -119,6 +119,14 @@ func (s *fileSourceQueue) consume(g *fileSourceGeneration, n, buffered int, err 
 	g.refreshLag(now, n > 0)
 }
 
+// settledAt is the offset where the line being read starts: everything before
+// it was delivered or discarded.
+func (s *fileSourceQueue) settledAt(g *fileSourceGeneration) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return g.settled
+}
+
 func (s *fileSourceQueue) complete(g *fileSourceGeneration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

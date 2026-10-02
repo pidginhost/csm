@@ -5,6 +5,7 @@ package maillog
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -144,9 +145,24 @@ func (r *JournalReader) loop(ctx context.Context, j journalEntries, out chan<- L
 		r.queue.journal.outcome(false, false)
 		unit := entry.Fields["_SYSTEMD_UNIT"]
 		msg := entry.Fields["MESSAGE"]
-		if !r.queue.sendJournal(ctx, out, Line{Source: "journal", Unit: unit, Message: msg}) {
+		if !r.queue.sendJournal(ctx, out, Line{Source: "journal", Unit: unit, Message: msg, Position: journalPosition(entry)}) {
 			normal = true
 			return
 		}
 	}
+}
+
+// journalPosition names the entry by its cursor and the time journald
+// recorded it.
+func journalPosition(entry *sdjournal.JournalEntry) Position {
+	cursor := journalCursor(entry.Cursor)
+	if cursor == "" || entry.RealtimeTimestamp > math.MaxInt64 {
+		return Position{}
+	}
+	at := time.UnixMicro(int64(entry.RealtimeTimestamp))
+	// Parked observations use time.Time's RFC3339 JSON encoding.
+	if at.Year() > 9999 {
+		return Position{}
+	}
+	return Position{Stream: "journal", Cursor: cursor, ObservedAt: at}
 }

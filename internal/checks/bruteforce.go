@@ -6,6 +6,7 @@ import (
 	"net"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -464,7 +465,7 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 	initialRaw, _ := store.GetRaw(ftpTrackerKey)
 	tracker := loadFTPFailTracker(store)
 
-	lines, next, skipped, err := readNewSyslogLines(ftpSyslogPath, tracker.Follow)
+	records, next, skipped, err := readNewSyslogRecords(ftpSyslogPath, tracker.Follow)
 	if err != nil {
 		return nil // leave stored state untouched
 	}
@@ -482,8 +483,9 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 	// reported again on every scan while it ages out: the repeat would count
 	// it again in the attack database and re-block an address the operator
 	// unblocked.
-	freshFailures := make(map[string]bool)
-	for _, line := range lines {
+	freshFailures := make(map[string]alert.Observation)
+	for _, rec := range records {
+		line := rec.text
 		if !isPureFTPDLogFields(strings.Fields(line)) {
 			continue
 		}
@@ -508,7 +510,8 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 				continue
 			}
 			tracker.record(ip, at)
-			freshFailures[ip] = true
+			// The newest new failure is the observation the report names.
+			freshFailures[ip] = alert.Observation{Producer: string(ProducerFTPScan), Stream: syslogStream(next), Cursor: strconv.FormatInt(rec.offset, 10), ObservedAt: at.UTC()}
 		case strings.Contains(line, "is now logged in"):
 			findings = append(findings, ftpLoginFinding(ip, line, tracker.count(ip)))
 		}
@@ -516,14 +519,16 @@ func CheckFTPLogins(ctx context.Context, cfg *config.Config, store *state.Store)
 
 	tracker.capIPs(maxTrackedIPs)
 	for _, off := range tracker.offenders(ftpFailThreshold) {
-		if !freshFailures[off.IP] {
+		observation, fresh := freshFailures[off.IP]
+		if !fresh {
 			continue
 		}
 		findings = append(findings, alert.Finding{
-			Severity: alert.High,
-			Check:    "ftp_bruteforce",
-			SourceIP: off.IP,
-			Message:  fmt.Sprintf("FTP brute force from %s: %d failed attempts in %dm", off.IP, off.Count, windowMin),
+			Severity:    alert.High,
+			Check:       "ftp_bruteforce",
+			SourceIP:    off.IP,
+			Message:     fmt.Sprintf("FTP brute force from %s: %d failed attempts in %dm", off.IP, off.Count, windowMin),
+			Observation: observation,
 		})
 	}
 

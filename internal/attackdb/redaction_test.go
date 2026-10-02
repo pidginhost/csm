@@ -29,7 +29,7 @@ func TestRecordFindingRedactsBeforePersistenceAndTruncation(t *testing.T) {
 			} {
 				f := alert.Finding{
 					Check: "ssh_login_unknown_ip", Severity: alert.Warning, Timestamp: time.Now().UTC(),
-					Message: text.in, Details: "Account: shop", SourceIP: "198.51.100.23",
+					Message: text.in, Details: "Account: shop", SourceIP: "198.51.100.23", TenantID: "shop",
 				}
 				db.RecordFinding(f)
 				want := Event{

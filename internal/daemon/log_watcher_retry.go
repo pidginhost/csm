@@ -8,8 +8,9 @@ import (
 )
 
 // Retry the whole candidate list: a fallback can appear before the preferred
-// log when the web server starts after the daemon.
-func (d *Daemon) retryLogWatcherCandidates(paths []string, handler LogLineHandler, name string) {
+// log when the web server starts after the daemon. spec names the handler and
+// producer; its path is ignored.
+func (d *Daemon) retryLogWatcherCandidates(paths []string, spec logWatchSpec) {
 	defer d.wg.Done()
 	ticker := time.NewTicker(logWatcherRetryInterval)
 	defer ticker.Stop()
@@ -20,7 +21,9 @@ func (d *Daemon) retryLogWatcherCandidates(paths []string, handler LogLineHandle
 			return
 		case <-ticker.C:
 			for _, path := range paths {
-				w, err := NewLogWatcher(path, d.cfg, handler, d.alertCh)
+				candidate := spec
+				candidate.path = path
+				w, err := newObservedLogWatcher(candidate, d.cfg, d.alertCh)
 				if err != nil {
 					continue
 				}
@@ -33,8 +36,8 @@ func (d *Daemon) retryLogWatcherCandidates(paths []string, handler LogLineHandle
 					w.Run(d.stopCh)
 				})
 				csmlog.Info("watching log (appeared after retry)", "path", path)
-				if name != "" {
-					d.MarkWatcher(name, true)
+				if spec.name != "" {
+					d.MarkWatcher(spec.name, true)
 				}
 				return
 			}

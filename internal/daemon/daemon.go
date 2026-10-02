@@ -1979,22 +1979,6 @@ func (d *Daemon) startLogWatchers() {
 
 	hostInfo := platform.Detect()
 
-	type logFile struct {
-		name    string
-		path    string
-		handler func(string, *config.Config) []alert.Finding
-	}
-	var logFiles []logFile
-
-	// Generic Linux auth log. RHEL-family uses /var/log/secure, Debian
-	// family uses /var/log/auth.log. Only register the log appropriate
-	// for the detected OS so we don't spam "not found, retrying" forever.
-	if hostInfo.IsDebianFamily() {
-		logFiles = append(logFiles, logFile{"", "/var/log/auth.log", parseSecureLogLine})
-	} else {
-		logFiles = append(logFiles, logFile{"", "/var/log/secure", parseSecureLogLine})
-	}
-
 	// eximHandler wraps parseEximLogLine (unchanged) and augments the result
 	// with smtpAuthTracker findings for dovecot authenticator failures and
 	// smtpProbeTracker findings for raw connect-rate abuse (scanners that
@@ -2083,20 +2067,13 @@ func (d *Daemon) startLogWatchers() {
 		return findings
 	}
 
-	// cPanel-specific logs only watch these on cPanel hosts. On plain
-	// Ubuntu/AlmaLinux they do not exist and the old code spammed
-	// "not found, will retry every 60s" forever.
+	watchExim := shouldWatchEximMainlog(hostInfo, os.Stat)
+	logFiles := d.fixedLogSpecs(hostInfo, eximHandler, watchExim)
 	if hostInfo.IsCPanel() {
-		logFiles = append(logFiles,
-			logFile{"", "/usr/local/cpanel/logs/session_log", d.cpanelSessionLogHandler},
-			logFile{"", "/usr/local/cpanel/logs/access_log", d.cpanelAccessLogHandler},
-			logFile{"", "/var/log/messages", parseFTPLogLine},
-		)
 		d.wg.Add(1)
 		obs.Go("stale-session-401-flush", d.flushStaleSession401)
 	}
-	if shouldWatchEximMainlog(hostInfo, os.Stat) {
-		logFiles = append(logFiles, logFile{"", eximMainlogPath, eximHandler})
+	if watchExim {
 		d.startEximFrozenDedupPersistence()
 	}
 
@@ -2116,7 +2093,7 @@ func (d *Daemon) startLogWatchers() {
 
 	// ModSecurity error log - auto-discover path based on detected web server.
 	if modsecPath := discoverModSecLogPath(d.cfg); modsecPath != "" {
-		logFiles = append(logFiles, logFile{"modsec", modsecPath, parseModSecLogLineDeduped})
+		logFiles = append(logFiles, logWatchSpec{name: "modsec", path: modsecPath, handler: parseModSecLogLineDeduped, producer: checks.ProducerModSecLog})
 	} else if hostInfo.WebServer != platform.WSNone {
 		// Only bother with the retry loop if a web server is actually
 		// present. Headless hosts don't need this.
@@ -2136,7 +2113,7 @@ func (d *Daemon) startLogWatchers() {
 					if path == "" {
 						continue
 					}
-					w, err := NewLogWatcher(path, d.cfg, parseModSecLogLineDeduped, d.alertCh)
+					w, err := newObservedLogWatcher(logWatchSpec{path: path, handler: parseModSecLogLineDeduped, producer: checks.ProducerModSecLog}, d.cfg, d.alertCh)
 					if err != nil {
 						continue
 					}
@@ -2159,12 +2136,12 @@ func (d *Daemon) startLogWatchers() {
 	// Real-time access log watcher for wp-login/xmlrpc brute force detection.
 	// Auto-discover path from platform info (Apache/Nginx/cPanel aware).
 	if accessLogPath := discoverAccessLogPath(); accessLogPath != "" {
-		logFiles = append(logFiles, logFile{"", accessLogPath, parseAccessLogBruteForce})
+		logFiles = append(logFiles, logWatchSpec{path: accessLogPath, handler: parseAccessLogBruteForce, producer: checks.ProducerAccessLog})
 	} else if hostInfo.WebServer != platform.WSNone && len(hostInfo.AccessLogPaths) > 0 {
 		csmlog.Warn("access log not found, will retry every 60s", "candidates", fmt.Sprintf("%v", hostInfo.AccessLogPaths))
 		d.wg.Add(1)
 		obs.Go("logwatch-access-retry", func() {
-			d.retryLogWatcherCandidates(hostInfo.AccessLogPaths, parseAccessLogBruteForce, "")
+			d.retryLogWatcherCandidates(hostInfo.AccessLogPaths, logWatchSpec{handler: parseAccessLogBruteForce, producer: checks.ProducerAccessLog})
 		})
 	}
 
@@ -2272,7 +2249,7 @@ func (d *Daemon) startLogWatchers() {
 	}
 
 	for _, lf := range logFiles {
-		w, err := NewLogWatcher(lf.path, d.cfg, lf.handler, d.alertCh)
+		w, err := newObservedLogWatcher(lf, d.cfg, d.alertCh)
 		if err != nil {
 			if os.IsNotExist(err) {
 				// File doesn't exist yet - retry periodically until it appears
@@ -2280,8 +2257,8 @@ func (d *Daemon) startLogWatchers() {
 					d.MarkWatcher(lf.name, false)
 				}
 				d.wg.Add(1)
-				path, handler, name := lf.path, lf.handler, lf.name
-				obs.Go("logwatch-retry", func() { d.retryLogWatcherNamed(path, handler, name) })
+				spec := lf
+				obs.Go("logwatch-retry", func() { d.retryLogWatcherNamed(spec) })
 			} else {
 				fmt.Fprintf(os.Stderr, "[%s] Warning: could not watch %s: %v\n", ts(), lf.path, err)
 				if lf.name != "" {
@@ -2369,7 +2346,12 @@ func (d *Daemon) handleMailLogSourceRestored() {
 
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler LogLineHandler) bool {
 	findings := handler(line.Message, d.currentCfg())
+	var obs alert.Observation
+	if line.Position.Stream != "" {
+		obs = alert.Observation{Producer: string(checks.ProducerMailLog), Stream: line.Position.Stream, Cursor: line.Position.Cursor, ObservedAt: line.Position.ObservedAt}
+	}
 	for i, f := range findings {
+		f.Observation = obs
 		if !alert.Enqueue(d.alertCh, f, d.stopCh) {
 			alert.RecordQueueLoss(d.alertCh, uint64(len(findings[i+1:])))
 			return false
@@ -2381,7 +2363,34 @@ func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler LogLineHandler) 
 // retryLogWatcher polls for a missing log file every 60 seconds.
 // When the file appears, it starts a watcher and returns.
 func (d *Daemon) retryLogWatcher(path string, handler LogLineHandler) {
-	d.retryLogWatcherNamed(path, handler, "")
+	d.retryLogWatcherNamed(logWatchSpec{path: path, handler: handler})
+}
+
+// fixedLogSpecs lists the logs at fixed paths and the evidence producer each
+// feeds.
+func (d *Daemon) fixedLogSpecs(hostInfo platform.Info, eximHandler LogLineHandler, watchExim bool) []logWatchSpec {
+	// Generic Linux auth log. RHEL-family uses /var/log/secure, Debian
+	// family uses /var/log/auth.log. Only register the log appropriate
+	// for the detected OS so we don't spam "not found, retrying" forever.
+	specs := []logWatchSpec{{path: "/var/log/secure", handler: parseSecureLogLine, producer: checks.ProducerSSHLog}}
+	if hostInfo.IsDebianFamily() {
+		specs[0].path = "/var/log/auth.log"
+	}
+	// cPanel-specific logs only watch these on cPanel hosts. On plain
+	// Ubuntu/AlmaLinux they do not exist and the old code spammed
+	// "not found, will retry every 60s" forever.
+	if hostInfo.IsCPanel() {
+		specs = append(specs,
+			logWatchSpec{path: "/usr/local/cpanel/logs/session_log", handler: d.cpanelSessionLogHandler},
+			logWatchSpec{path: "/usr/local/cpanel/logs/access_log", handler: d.cpanelAccessLogHandler,
+				observed: d.cpanelAccessLogObservedHandler, producer: checks.ProducerCpanelAccessLog},
+			logWatchSpec{path: "/var/log/messages", handler: parseFTPLogLine, producer: checks.ProducerFTPLog},
+		)
+	}
+	if watchExim {
+		specs = append(specs, logWatchSpec{path: eximMainlogPath, handler: eximHandler, producer: checks.ProducerEximLog})
+	}
+	return specs
 }
 
 func shouldWatchEximMainlog(hostInfo platform.Info, stat func(string) (os.FileInfo, error)) bool {
@@ -2397,9 +2406,9 @@ func shouldWatchEximMainlog(hostInfo platform.Info, stat func(string) (os.FileIn
 	return true
 }
 
-func (d *Daemon) retryLogWatcherNamed(path string, handler LogLineHandler, name string) {
-	csmlog.Warn("log not found, will retry every 60s", "path", path)
-	d.retryLogWatcherCandidates([]string{path}, handler, name)
+func (d *Daemon) retryLogWatcherNamed(spec logWatchSpec) {
+	csmlog.Warn("log not found, will retry every 60s", "path", spec.path)
+	d.retryLogWatcherCandidates([]string{spec.path}, spec)
 }
 
 func (d *Daemon) startWebUI() {

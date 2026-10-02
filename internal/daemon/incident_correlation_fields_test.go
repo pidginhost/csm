@@ -223,6 +223,7 @@ func TestMailAuthTrackerPopulatesCorrelationFields(t *testing.T) {
 }
 
 func TestSSHLoginRealtimePopulatesSourceIP(t *testing.T) {
+	withOwnerTable(t)
 	line := `May  9 12:00:00 host sshd[1234]: Accepted publickey for alice from 203.0.113.5 port 55555 ssh2: RSA SHA256:xxx`
 	cfg := &config.Config{}
 

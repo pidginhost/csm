@@ -1,8 +1,11 @@
 package daemon
 
 import (
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/pidginhost/csm/internal/admission"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
@@ -23,8 +26,17 @@ func stampMailAccountOwner(findings []alert.Finding, account string) {
 		return
 	}
 	owner := mailAccountOwner(account)
+	// A mailbox's domain owner is useful for correlation, but authentication
+	// of the mailbox does not establish the hosting account's identity.
+	var claims []admission.Claim
+	if strings.Contains(account, "@") {
+		claims = append(claims, admission.Claim{Kind: admission.ClaimMailbox, Value: account})
+	} else if owner != "" {
+		claims = append(claims, admission.Claim{Kind: admission.ClaimAccount, Value: owner})
+	}
 	for i := range findings {
 		findings[i].TenantID = owner
+		findings[i].Claims = slices.Clone(claims)
 	}
 }
 

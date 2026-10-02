@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -24,6 +25,14 @@ func TestSecureLogIgnoresForgedAcceptedRecord(t *testing.T) {
 }
 
 func TestSecureLogSSHRecordShapes(t *testing.T) {
+	// "from" is a hosting account here, so the tenant shows which field the
+	// parser read the account from.
+	t.Cleanup(checks.SetHostingAccountLookupForTest(func(name string) string {
+		if name == "from" {
+			return name
+		}
+		return ""
+	}))
 	for _, header := range []string{"Oct  2 12:00:00 host ", "2026-10-02T12:00:00.123456+00:00 host ", "host ", ""} {
 		for _, tag := range []string{"sshd[100]:", "sshd:", "sshd-session[100]:", "sshd-session:"} {
 			for _, method := range []string{"publickey", "password", "keyboard-interactive", "keyboard-interactive/pam", "gssapi-with-mic", "gssapi-keyex", "hostbased"} {

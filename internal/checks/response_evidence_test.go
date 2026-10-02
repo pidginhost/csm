@@ -273,6 +273,10 @@ var reviewedEvidenceRestores = map[string]reviewedEvidenceRestore{
 		findings[i] = r.Finding
 		findings[i].CIDRs = r.ResponseCIDRs
 		findings[i].SprayTargets = r.ResponseSprayTargets
+		findings[i].Claims = r.ResponseClaims
+		if r.ResponseObservation != nil {
+			findings[i].Observation = *r.ResponseObservation
+		}
 	}
 	return findings
 }`,
@@ -1012,6 +1016,10 @@ func TestAddressProducerScannerRejectsUnreviewedRestoreChanges(t *testing.T) {
 		findings[i] = r.Finding
 		findings[i].CIDRs = r.ResponseCIDRs
 		findings[i].SprayTargets = r.ResponseSprayTargets
+		findings[i].Claims = r.ResponseClaims
+		if r.ResponseObservation != nil {
+			findings[i].Observation = *r.ResponseObservation
+		}
 	}
 	return findings
 }`

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
+
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/modsec"
@@ -470,6 +472,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 				Details:  truncateDaemon(line, 400),
 				SourceIP: ip,
 				Domain:   f.Domain,
+				Claims:   modsecRequestNameClaims(f.Domain),
 			})
 		case outcome.lowConfBurst:
 			results = append(results, alert.Finding{
@@ -739,4 +742,13 @@ func claimModSecClassifierGap(rule int, now time.Time) bool {
 	}
 	modsecGapReported[rule] = now
 	return true
+}
+
+// modsecRequestNameClaims names the host the client asked for. The client
+// chose it, so it is a request name and never verifies an owner.
+func modsecRequestNameClaims(host string) []admission.Claim {
+	if host == "" {
+		return nil
+	}
+	return []admission.Claim{{Kind: admission.ClaimRequestName, Value: host}}
 }

@@ -9,11 +9,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -32,6 +34,20 @@ const (
 // LogLineHandler parses a log line and returns findings (if any).
 type LogLineHandler func(line string, cfg *config.Config) []alert.Finding
 
+// ObservedLineHandler is a LogLineHandler that also receives the line's
+// observation, for a handler that keeps a finding and emits it later.
+type ObservedLineHandler func(line string, obs alert.Observation, cfg *config.Config) []alert.Finding
+
+// logWatchSpec is one log the daemon watches: the handler, and the evidence
+// producer its findings come from (empty for a log that feeds none).
+type logWatchSpec struct {
+	name     string
+	path     string
+	handler  LogLineHandler
+	observed ObservedLineHandler
+	producer admission.ProducerID
+}
+
 // LogWatcher tails a log file using inotify and processes new lines.
 type LogWatcher struct {
 	path      string
@@ -43,6 +59,17 @@ type LogWatcher struct {
 	fileID    logFileID
 	marker    []byte
 	closeOnce sync.Once
+	// producer names the evidence producer this log feeds; empty leaves
+	// findings without an observation.
+	producer admission.ProducerID
+	// observed, when set, replaces handler and also gets the observation.
+	observed ObservedLineHandler
+	// epoch separates reader lifetimes even when a reader is reattached
+	// without restarting the process.
+	epoch string
+	// generation counts the times the offset went back to the start, so a
+	// reused offset is never the same position.
+	generation uint64
 }
 
 type logFileID struct {
@@ -130,7 +157,33 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 		offset:  offset,
 		fileID:  fileID(info),
 		marker:  marker,
+		epoch:   alert.NewObservationEpoch(),
 	}, nil
+}
+
+// newObservedLogWatcher watches a log as the evidence producer spec names.
+func newObservedLogWatcher(spec logWatchSpec, cfg *config.Config, alertCh chan<- alert.Finding) (*LogWatcher, error) {
+	w, err := NewLogWatcher(spec.path, cfg, spec.handler, alertCh)
+	if err != nil {
+		return nil, err
+	}
+	w.producer = spec.producer
+	w.observed = spec.observed
+	return w, nil
+}
+
+// observation names the line that starts at lineStart in the current
+// generation of the file; zero when the log feeds no producer.
+func (w *LogWatcher) observation(lineStart int64, at time.Time) alert.Observation {
+	if w.producer == "" || !w.fileID.known {
+		return alert.Observation{}
+	}
+	return alert.Observation{
+		Producer:   string(w.producer),
+		Stream:     fmt.Sprintf("f:%x:%x:%s.%d", w.fileID.dev, w.fileID.ino, w.epoch, w.generation),
+		Cursor:     strconv.FormatInt(lineStart, 10),
+		ObservedAt: at,
+	}
 }
 
 // currentCfg returns the live daemon config so SIGHUP changes to thresholds,
@@ -211,6 +264,7 @@ func (w *LogWatcher) readNewLines() {
 	if !w.offsetMarkerMatches(w.file) {
 		w.offset = 0
 		w.marker = nil
+		w.generation++
 	}
 
 	// No new data
@@ -227,6 +281,7 @@ func (w *LogWatcher) readNewLines() {
 	reader := bufio.NewReaderSize(w.file, 64*1024)
 	committedOffset := w.offset
 	for {
+		lineStart := committedOffset
 		rawLine, truncated, readErr := readBoundedWatcherLine(reader, logWatcherMaxLineBytes)
 		if len(rawLine) > 0 && readErr != nil {
 			break
@@ -248,11 +303,20 @@ func (w *LogWatcher) readNewLines() {
 				continue
 			}
 
-			findings := w.handler(line, w.currentCfg())
+			now := time.Now()
+			var findings []alert.Finding
+			var obs alert.Observation
+			if w.observed != nil {
+				obs = w.observation(lineStart, now)
+				findings = w.observed(line, obs, w.currentCfg())
+			} else if findings = w.handler(line, w.currentCfg()); len(findings) > 0 {
+				obs = w.observation(lineStart, now)
+			}
 			for _, f := range findings {
 				if f.Timestamp.IsZero() {
-					f.Timestamp = time.Now()
+					f.Timestamp = now
 				}
+				f.Observation = obs
 				if !alert.TryEnqueue(w.alertCh, f) {
 					if f.Check == "exim_frozen_realtime" {
 						releaseEximFrozenDedup(line)
@@ -324,15 +388,18 @@ func (w *LogWatcher) reopen() {
 	switch {
 	case w.fileID.known && id.known && !w.fileID.same(id):
 		// Rotated by rename+create: new file, read from the start regardless
-		// of its size.
+		// of its size. Returning to an earlier inode must stay distinct.
 		w.offset = 0
+		w.generation++
 	case info.Size() < w.offset:
 		// Truncated in place (copytruncate rotation).
 		w.offset = 0
+		w.generation++
 	case !w.offsetMarkerMatches(f):
 		// The saved offset now points into different content. This catches a
 		// truncate-and-regrow between polling ticks and cheap inode reuse.
 		w.offset = 0
+		w.generation++
 	}
 	if w.offset == 0 {
 		w.marker = nil
