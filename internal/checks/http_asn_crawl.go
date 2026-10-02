@@ -310,7 +310,7 @@ func (s *domlogStats) emitASNCrawl(cfg *config.Config) []alert.Finding {
 				Message:   fmt.Sprintf("Distributed crawl from AS%d (%s) against %s", asn, a.org, asnCrawlScopeLabel(scopeKey)),
 				Details:   asnCrawlDetails(asn, a, scope, cfg, cidrs),
 				CIDRs:     cidrs,
-				Claims:    asnCrawlClaims(account, domain),
+				Claims:    asnCrawlClaims(a.domains),
 				Timestamp: time.Now(),
 			})
 		}
@@ -484,14 +484,16 @@ func dropFirewallAllowedCIDRs(cidrs []string, a *asnCrawlASN) []string {
 	return kept
 }
 
-// asnCrawlClaims names the crawl's scope: the account comes from the
-// server's domain registry and the domain from per-vhost log paths.
-func asnCrawlClaims(account, domain string) []admission.Claim {
-	var claims []admission.Claim
-	if account != "" {
-		claims = append(claims, admission.Claim{Kind: admission.ClaimAccount, Value: account})
+// Preserve the vhost identities instead of promoting their inferred owner
+// to an authenticated account. Admission verifies all domains together.
+func asnCrawlClaims(observedDomains map[string]struct{}) []admission.Claim {
+	var domains []string
+	for domain := range observedDomains {
+		domains = append(domains, domain)
 	}
-	if domain != "" {
+	sort.Strings(domains)
+	var claims []admission.Claim
+	for _, domain := range domains {
 		claims = append(claims, admission.Claim{Kind: admission.ClaimDomain, Value: domain})
 	}
 	return claims

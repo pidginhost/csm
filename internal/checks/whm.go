@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 
@@ -178,7 +179,10 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 	}
 	// sshd authenticated the name, but only a hosting account is a tenant
 	// or names an owner; root and service users are neither.
-	tenant := HostingAccountForUser(user)
+	tenant := ""
+	if sshAuthenticatedIdentity(parts, user, ip) {
+		tenant = HostingAccountForUser(user)
+	}
 	f := alert.Finding{
 		Severity: alert.Critical,
 		Check:    "ssh_login_unknown_ip",
@@ -192,6 +196,45 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 		f.Claims = []admission.Claim{{Kind: admission.ClaimAccount, Value: tenant}}
 	}
 	return f, true
+}
+
+// "Accepted" elsewhere in a line can be client-controlled text. Only an
+// sshd success record authenticates the name used for tenant and claims.
+func sshAuthenticatedIdentity(fields []string, user, ip string) bool {
+	if len(fields) == 0 {
+		return false
+	}
+	program := 0
+	if len(fields) >= 5 && isSyslogTimestampPrefix(fields) {
+		program = 4
+	} else if len(fields) >= 3 {
+		if _, err := time.Parse(time.RFC3339Nano, fields[0]); err == nil {
+			program = 2
+		}
+	}
+	if !sshProgramToken(fields[program]) {
+		return false
+	}
+	message := fields[program+1:]
+	return len(message) >= 8 && message[0] == "Accepted" && message[2] == "for" &&
+		message[3] == user && message[4] == "from" && message[5] == ip && message[6] == "port"
+}
+
+func sshProgramToken(token string) bool {
+	for _, program := range []string{"sshd", "sshd-session"} {
+		if token == program+":" {
+			return true
+		}
+		pid, ok := strings.CutPrefix(token, program+"[")
+		if !ok {
+			continue
+		}
+		pid, ok = strings.CutSuffix(pid, "]:")
+		if ok && pid != "" && strings.Trim(pid, "0123456789") == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // tailFile reads the last N lines of a file efficiently.

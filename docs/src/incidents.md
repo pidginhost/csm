@@ -518,9 +518,11 @@ branches:
   when its home directory sits directly under an account root, so root,
   service users and unknown uids never become an account. Direct SMTP findings
   apply this validation to both socket users and enriched process accounts.
-  SSH logins from unknown addresses also use this validated account as their
-  tenant. Root and service-user logins group by source address after upgrade;
-  existing incidents keep their grouping. No setting changes this behavior.
+  SSH logins from unknown addresses use this validated account as their tenant
+  only when the sshd record confirms successful authentication. Root,
+  service-user and unverified login records group by source address after
+  upgrade; existing incidents keep their grouping. No setting changes this
+  behavior.
 - File families (content, phishing, htaccess, file index, core integrity,
   realtime file events, PHP shield events, self-deleting droppers) carry the
   judged file's path, which resolves as described above. The collapsed

@@ -91,7 +91,7 @@ func TestDomlogFindingsClaimTheirVhost(t *testing.T) {
 	}
 }
 
-// A crawl scoped to a hosting account claims it, and its single domain too.
+// A crawl retains the domain from the vhost log as its claim provenance.
 func TestASNCrawlClaimsItsScope(t *testing.T) {
 	cfg := configWithASNCrawlDefaults(t)
 	s := asnCrawlStatsWith(t, cfg, "acct1", 64500, "Example", 30, 600, 600, 600)
@@ -100,9 +100,9 @@ func TestASNCrawlClaimsItsScope(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("emit = %+v", out)
 	}
-	want := []admission.Claim{{Kind: admission.ClaimAccount, Value: "acct1"}, {Kind: admission.ClaimDomain, Value: "shop.example.com"}}
+	want := []admission.Claim{{Kind: admission.ClaimDomain, Value: "shop.example.com"}}
 	if out[0].TenantID != "acct1" || out[0].Domain != "shop.example.com" || !reflect.DeepEqual(out[0].Claims, want) {
-		t.Fatalf("finding %+v, want account and domain claims", out[0])
+		t.Fatalf("finding %+v, want a vhost domain claim", out[0])
 	}
 	claimsDeclared(t, ProducerDomlogScan, out[0])
 }

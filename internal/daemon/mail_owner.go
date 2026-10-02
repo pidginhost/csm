@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -25,18 +26,17 @@ func stampMailAccountOwner(findings []alert.Finding, account string) {
 		return
 	}
 	owner := mailAccountOwner(account)
-	// The login authenticated this identity; the owner comes from the
-	// server's own registry of the mailbox's domain or of the account name.
+	// A mailbox's domain owner is useful for correlation, but authentication
+	// of the mailbox does not establish the hosting account's identity.
 	var claims []admission.Claim
 	if strings.Contains(account, "@") {
 		claims = append(claims, admission.Claim{Kind: admission.ClaimMailbox, Value: account})
-	}
-	if owner != "" {
+	} else if owner != "" {
 		claims = append(claims, admission.Claim{Kind: admission.ClaimAccount, Value: owner})
 	}
 	for i := range findings {
 		findings[i].TenantID = owner
-		findings[i].Claims = claims
+		findings[i].Claims = slices.Clone(claims)
 	}
 }
 
