@@ -1979,17 +1979,6 @@ func (d *Daemon) startLogWatchers() {
 
 	hostInfo := platform.Detect()
 
-	var logFiles []logWatchSpec
-
-	// Generic Linux auth log. RHEL-family uses /var/log/secure, Debian
-	// family uses /var/log/auth.log. Only register the log appropriate
-	// for the detected OS so we don't spam "not found, retrying" forever.
-	if hostInfo.IsDebianFamily() {
-		logFiles = append(logFiles, logWatchSpec{path: "/var/log/auth.log", handler: parseSecureLogLine, producer: checks.ProducerSSHLog})
-	} else {
-		logFiles = append(logFiles, logWatchSpec{path: "/var/log/secure", handler: parseSecureLogLine, producer: checks.ProducerSSHLog})
-	}
-
 	// eximHandler wraps parseEximLogLine (unchanged) and augments the result
 	// with smtpAuthTracker findings for dovecot authenticator failures and
 	// smtpProbeTracker findings for raw connect-rate abuse (scanners that
@@ -2078,21 +2067,13 @@ func (d *Daemon) startLogWatchers() {
 		return findings
 	}
 
-	// cPanel-specific logs only watch these on cPanel hosts. On plain
-	// Ubuntu/AlmaLinux they do not exist and the old code spammed
-	// "not found, will retry every 60s" forever.
+	watchExim := shouldWatchEximMainlog(hostInfo, os.Stat)
+	logFiles := d.fixedLogSpecs(hostInfo, eximHandler, watchExim)
 	if hostInfo.IsCPanel() {
-		logFiles = append(logFiles,
-			logWatchSpec{path: "/usr/local/cpanel/logs/session_log", handler: d.cpanelSessionLogHandler},
-			logWatchSpec{path: "/usr/local/cpanel/logs/access_log", handler: d.cpanelAccessLogHandler,
-				observed: d.cpanelAccessLogObservedHandler, producer: checks.ProducerCpanelAccessLog},
-			logWatchSpec{path: "/var/log/messages", handler: parseFTPLogLine, producer: checks.ProducerFTPLog},
-		)
 		d.wg.Add(1)
 		obs.Go("stale-session-401-flush", d.flushStaleSession401)
 	}
-	if shouldWatchEximMainlog(hostInfo, os.Stat) {
-		logFiles = append(logFiles, logWatchSpec{path: eximMainlogPath, handler: eximHandler, producer: checks.ProducerEximLog})
+	if watchExim {
 		d.startEximFrozenDedupPersistence()
 	}
 
@@ -2383,6 +2364,33 @@ func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler LogLineHandler) 
 // When the file appears, it starts a watcher and returns.
 func (d *Daemon) retryLogWatcher(path string, handler LogLineHandler) {
 	d.retryLogWatcherNamed(logWatchSpec{path: path, handler: handler})
+}
+
+// fixedLogSpecs lists the logs at fixed paths and the evidence producer each
+// feeds.
+func (d *Daemon) fixedLogSpecs(hostInfo platform.Info, eximHandler LogLineHandler, watchExim bool) []logWatchSpec {
+	// Generic Linux auth log. RHEL-family uses /var/log/secure, Debian
+	// family uses /var/log/auth.log. Only register the log appropriate
+	// for the detected OS so we don't spam "not found, retrying" forever.
+	specs := []logWatchSpec{{path: "/var/log/secure", handler: parseSecureLogLine, producer: checks.ProducerSSHLog}}
+	if hostInfo.IsDebianFamily() {
+		specs[0].path = "/var/log/auth.log"
+	}
+	// cPanel-specific logs only watch these on cPanel hosts. On plain
+	// Ubuntu/AlmaLinux they do not exist and the old code spammed
+	// "not found, will retry every 60s" forever.
+	if hostInfo.IsCPanel() {
+		specs = append(specs,
+			logWatchSpec{path: "/usr/local/cpanel/logs/session_log", handler: d.cpanelSessionLogHandler},
+			logWatchSpec{path: "/usr/local/cpanel/logs/access_log", handler: d.cpanelAccessLogHandler,
+				observed: d.cpanelAccessLogObservedHandler, producer: checks.ProducerCpanelAccessLog},
+			logWatchSpec{path: "/var/log/messages", handler: parseFTPLogLine, producer: checks.ProducerFTPLog},
+		)
+	}
+	if watchExim {
+		specs = append(specs, logWatchSpec{path: eximMainlogPath, handler: eximHandler, producer: checks.ProducerEximLog})
+	}
+	return specs
 }
 
 func shouldWatchEximMainlog(hostInfo platform.Info, stat func(string) (os.FileInfo, error)) bool {
