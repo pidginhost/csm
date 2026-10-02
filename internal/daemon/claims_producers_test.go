@@ -10,6 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/incident"
 )
 
 func daemonClaimsDeclared(t *testing.T, id admission.ProducerID, f alert.Finding) {
@@ -102,4 +103,17 @@ func TestCloudRelayClaimsTheAuthenticatedSender(t *testing.T) {
 		t.Fatalf("claims %+v, want %+v", f.Claims, want)
 	}
 	daemonClaimsDeclared(t, checks.ProducerEximLog, f)
+}
+
+// Root logins from different addresses no longer share one incident keyed on
+// the login name; each is keyed by its address.
+func TestSSHRootLoginsKeyIncidentsByAddress(t *testing.T) {
+	withOwnerTable(t)
+	for _, ip := range []string{"192.0.2.42", "192.0.2.43"} {
+		line := "Oct  2 12:00:00 host sshd[100]: Accepted publickey for root from " + ip + " port 50000 ssh2"
+		f := onlyCheck(t, parseSecureLogLine(line, &config.Config{}), "ssh_login_unknown_ip")
+		if k := incident.KeyFor(f); k != (incident.Key{RemoteIP: ip}) {
+			t.Errorf("%s: incident key %+v, want the address", ip, k)
+		}
+	}
 }

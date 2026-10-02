@@ -176,10 +176,9 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 			break
 		}
 	}
-	tenant := user
-	if tenant == "unknown" {
-		tenant = ""
-	}
+	// sshd authenticated the name, but only a hosting account is a tenant
+	// or names an owner; root and service users are neither.
+	tenant := HostingAccountForUser(user)
 	f := alert.Finding{
 		Severity: alert.Critical,
 		Check:    "ssh_login_unknown_ip",
@@ -189,9 +188,8 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 		SourceIP: ip,
 		TenantID: tenant,
 	}
-	// sshd authenticated the name, but only a hosting account names an owner.
-	if account := HostingAccountForUser(user); account != "" {
-		f.Claims = []admission.Claim{{Kind: admission.ClaimAccount, Value: account}}
+	if tenant != "" {
+		f.Claims = []admission.Claim{{Kind: admission.ClaimAccount, Value: tenant}}
 	}
 	return f, true
 }

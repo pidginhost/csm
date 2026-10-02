@@ -106,3 +106,21 @@ func TestASNCrawlClaimsItsScope(t *testing.T) {
 	}
 	claimsDeclared(t, ProducerDomlogScan, out[0])
 }
+
+// The tenant of an SSH login is the hosting account it names, or none: root
+// and service users are not tenants.
+func TestSSHLoginTenantIsAHostingAccount(t *testing.T) {
+	t.Cleanup(SetHostingAccountLookupForTest(func(name string) string {
+		if name == "alice" {
+			return "alice"
+		}
+		return ""
+	}))
+	for user, want := range map[string]string{"alice": "alice", "root": "", "deploy": "", "unknown": ""} {
+		line := "Oct  2 12:00:00 host sshd[100]: Accepted password for " + user + " from 192.0.2.41 port 50000 ssh2"
+		f, ok := SSHAcceptedLoginFinding(line, &config.Config{})
+		if !ok || f.TenantID != want {
+			t.Errorf("%s: tenant %q (ok %v), want %q", user, f.TenantID, ok, want)
+		}
+	}
+}

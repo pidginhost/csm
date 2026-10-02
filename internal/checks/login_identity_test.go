@@ -196,6 +196,12 @@ func TestFTPLoginFindingIgnoresNonLoginLines(t *testing.T) {
 
 func TestRealtimeAndScheduledSSHLoginShareIdentity(t *testing.T) {
 	withMockOS(t, logFileOS(t, sshSuccessLine+"\n"))
+	t.Cleanup(SetHostingAccountLookupForTest(func(name string) string {
+		if name == "deploy" {
+			return "deploy"
+		}
+		return ""
+	}))
 	cfg := &config.Config{}
 
 	realtime, ok := SSHAcceptedLoginFinding(sshSuccessLine, cfg)
