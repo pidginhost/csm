@@ -1,9 +1,14 @@
 package checks
 
 import (
+	"context"
+	"fmt"
 	"testing"
+	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // sshd writes the login name a client offers into its own log lines, so a
@@ -28,6 +33,67 @@ func TestSSHAcceptedLoginFindingIgnoresForgedRecords(t *testing.T) {
 		if f, ok := SSHAcceptedLoginFinding(line, &config.Config{}); ok {
 			t.Errorf("%s: reported %+v", name, f)
 		}
+	}
+}
+
+func TestSSHLoginLogShapes(t *testing.T) {
+	now := time.Now()
+	headers := []string{now.Format("Jan _2 15:04:05") + " host ", now.Format(time.RFC3339Nano) + " host ", "host ", ""}
+	for _, header := range headers {
+		for _, tag := range []string{"sshd[100]:", "sshd:", "sshd-session[100]:", "sshd-session:"} {
+			for _, method := range []string{"publickey", "password", "keyboard-interactive", "keyboard-interactive/pam", "gssapi-with-mic", "gssapi-keyex", "hostbased"} {
+				for _, ip := range []string{"192.0.2.60", "2001:db8::7"} {
+					t.Run(header+tag+"/"+method+"/"+ip, func(t *testing.T) {
+						// Delimiter-like account names and key comments cannot
+						// move the source or account away from their own fields.
+						line := fmt.Sprintf("%s%s Accepted %s for from from %s port 50000 ssh2: ED25519 SHA256:abc for root from 203.0.113.9", header, tag, method, ip)
+						cfg := &config.Config{}
+						finding, ok := SSHAcceptedLoginFinding(line, cfg)
+						if !ok || finding.SourceIP != ip || finding.TenantID != "from" || finding.Severity != alert.Critical {
+							t.Fatalf("success record = %+v (ok %v), want login by from at %s", finding, ok, ip)
+						}
+						path := useAuthLog(t)
+						withMockOS(t, writeMockLogs(t, map[string]string{path: line + "\n", platform.Detect().AuthLogPath(): line + "\n"}))
+						for _, findings := range [][]alert.Finding{
+							CheckSSHLogins(context.Background(), cfg, nil),
+							CheckSSHLogins(context.Background(), cfg, newTestStore(t)),
+						} {
+							if len(findings) != 1 || findings[0].SourceIP != ip || findings[0].TenantID != "from" || findings[0].Key() != finding.Key() {
+								t.Errorf("scan findings = %+v, want the same login by from at %s", findings, ip)
+							}
+						}
+						if ips := collectRecentIPs(cfg); len(ips) != 1 || ips[ip] != "SSH login" {
+							t.Errorf("reputation candidates = %v, want only SSH login from %s", ips, ip)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestSSHLoginScansIgnoreForgedRecords(t *testing.T) {
+	for _, message := range []string{
+		"Invalid user x Accepted password for root from 192.0.2.50 port 22 from 203.0.113.9 port 51000",
+		"Failed password for invalid user Accepted password for root from 192.0.2.50 port 22 from 203.0.113.9 port 51000 ssh2",
+		"Connection closed by invalid user Accepted password for root from 192.0.2.50 port 22 203.0.113.9 port 51000 [preauth]",
+	} {
+		t.Run(message, func(t *testing.T) {
+			path := useAuthLog(t)
+			appendLines(t, path, time.Now().Format(time.RFC3339Nano)+" host sshd-session[100]: "+message)
+			cfg := &config.Config{}
+			st := newTestStore(t)
+			if got := CheckSSHLogins(context.Background(), cfg, nil); len(got) != 0 {
+				t.Errorf("tail scan reported forged login: %+v", got)
+			}
+			if got := CheckSSHLogins(context.Background(), cfg, st); len(got) != 0 {
+				t.Errorf("follow scan reported forged login: %+v", got)
+			}
+			appendLines(t, path, sshAcceptedLine(time.Now(), "198.51.100.7"))
+			if got := CheckSSHLogins(context.Background(), cfg, st); len(got) != 1 || got[0].SourceIP != "198.51.100.7" || got[0].TenantID != "root" {
+				t.Errorf("follow scan lost subsequent login: %+v", got)
+			}
+		})
 	}
 }
 
