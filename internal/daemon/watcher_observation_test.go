@@ -346,3 +346,66 @@ func TestMailLogDispatchStampsObservation(t *testing.T) {
 		t.Fatalf("a line without a position stamped %+v", got.Observation)
 	}
 }
+
+// The ModSecurity error log feeds address evidence, at startup and when it
+// appears later, so its watcher names its producer either way.
+func TestModSecWatcherNamesItsProducer(t *testing.T) {
+	oldInterval := logWatcherRetryInterval
+	logWatcherRetryInterval = 10 * time.Millisecond
+	t.Cleanup(func() { logWatcherRetryInterval = oldInterval })
+	for _, late := range []bool{false, true} {
+		t.Run(fmt.Sprintf("late=%v", late), func(t *testing.T) {
+			root := t.TempDir()
+			errorLog := filepath.Join(root, "error_log")
+			if !late {
+				if err := os.WriteFile(errorLog, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			panel, server := platform.PanelNone, platform.WSApache
+			platform.ResetForTest()
+			platform.SetOverrides(platform.Overrides{
+				Panel: &panel, WebServer: &server,
+				AccessLogPaths: []string{filepath.Join(root, "access_log")},
+				ErrorLogPaths:  []string{errorLog},
+			})
+			t.Cleanup(platform.ResetForTest)
+			cfg := &config.Config{}
+			cfg.MailLogs.Source = "file"
+			cfg.MailLogs.File = filepath.Join(root, "mail_log")
+			d := New(cfg, nil, nil, "")
+			d.startLogWatchers()
+			t.Cleanup(func() {
+				close(d.stopCh)
+				d.wg.Wait()
+			})
+			if late {
+				if err := os.WriteFile(errorLog, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				d.logWatchersMu.Lock()
+				var producer admission.ProducerID
+				found := false
+				for _, w := range d.logWatchers {
+					if w.path == errorLog {
+						producer, found = w.producer, true
+					}
+				}
+				d.logWatchersMu.Unlock()
+				if found {
+					if producer != checks.ProducerModSecLog {
+						t.Fatalf("ModSecurity watcher producer %q, want %q", producer, checks.ProducerModSecLog)
+					}
+					return
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("ModSecurity watcher not started")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
+	}
+}
