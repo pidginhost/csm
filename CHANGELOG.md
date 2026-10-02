@@ -40,7 +40,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Local threat scores no longer count unrelated addresses, which a process in a hosting account could use to get any address blocked. Scores affected by this are corrected at startup while existing blocks stay until they expire or are removed, and webmail and cPanel API brute-force findings now identify their source for blocking.
 - Crawl detection now counts page requests it previously missed.
 - Incident auto-blocking and central intelligence now require attacker evidence and retain it across restarts and long incidents, preventing blocks of unrelated addresses such as a customer's own login address.
-- PHP prepend detection now validates security-plugin directives more strictly, preventing missed detections. Unsafe Really Simple Security directives are reported without automatic cleanup.
+- PHP prepend detection now validates security-plugin directives more strictly, preventing missed detections. After the upgrade, a Really Simple Security directive that does not load the plugin's file beside its own .htaccess, as on a WordPress installed in a subfolder, is reported as Critical where it was skipped before, and is never cleaned automatically, even with `auto_response.clean_htaccess` on.
 - Challenge timeouts and central intelligence no longer block addresses while Auto-response enabled or Block attacker IPs is off, and a config reload of those switches applies from the next block. Only scan-driven blocks honoured those switches.
 
 ### Added
@@ -58,14 +58,14 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 #### Findings and alerts
 
-- The prepend block that Really Simple Security 9.8 and later writes into .htaccess, and security plugin prepend blocks saved with Windows line endings or blank lines, are no longer reported as a backdoor.
-- A PHP Shield eval() failure reported inside a root-owned system script that no account can change, such as the wp-cli that cPanel's WP Toolkit runs, is now reported as Warning instead of High. A delayed or refused ownership check keeps the finding High and shows in queue health.
-- cPanel's nightly move of its own cron jobs to a new time no longer raises High cron change alerts. A cron drop-in change that only moves existing daily jobs to another time of day is now a Warning; other changes keep their existing severity rules.
-- Turning Elementor Safe Mode off no longer raises a critical self-deleting file alert when the removed file is Elementor's own loader. When the official checksums are not available to prove it, a copy identical to the installed plugin's file is reported at a lower severity.
+- The prepend block that Really Simple Security 9.8 and later writes into .htaccess, and security plugin prepend blocks saved with Windows line endings or blank lines, are no longer reported as a backdoor. Sites that alerted daily stop from the next scan of the file.
+- With PHP Shield enabled under Settings -> PHP Shield, an eval() failure reported inside a root-owned system script that no account can change, such as the wp-cli that cPanel's WP Toolkit runs, is now reported as Warning instead of High. A delayed or refused ownership check keeps the finding High and shows in queue health.
+- cPanel's nightly move of its own cron jobs to a new time no longer raises High cron change alerts. A cron drop-in change that only moves existing daily jobs to another time of day is now a Warning; other changes keep their existing severity rules. The first such move after the upgrade can still alert High, because CSM records each file's job layout from its next check on.
+- Turning Elementor Safe Mode off no longer raises a critical self-deleting file alert when the removed file is Elementor's own loader. When the official checksums are not available to prove it, a copy identical to the installed plugin's file is reported at a lower severity. The check uses the same wordpress.org checksum downloads as plugin file verification, and `thresholds.dropper_detection` turns it off.
 
 #### Email
 
-- Restarting the daemon no longer reports again every message that is still frozen in the Exim queue. A message that froze while the daemon was stopped is still reported.
+- Restarting the daemon no longer reports again every message that is still frozen in the Exim queue. A message that froze while the daemon was stopped is still reported, and the restart that installs this version still reports the messages frozen at that moment once, since nothing was recorded before it.
 
 #### Performance page
 
