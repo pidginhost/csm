@@ -52,7 +52,7 @@ func acceptanceMintFor(p *admission.Producer, check string, sev admission.Severi
 }
 
 // The mail heuristics and an ordinary successful SSH login are local C2
-// evidence at any severity, also with a second observation of the same check;
+// evidence at High and Critical, also with a second observation of the check;
 // only a C2 connection and a Critical mail compromise are direct C3.
 func TestAdmissionAcceptanceClassifiesProductionChecks(t *testing.T) {
 	p := acceptanceProducer(t)
@@ -67,6 +67,7 @@ func TestAdmissionAcceptanceClassifiesProductionChecks(t *testing.T) {
 		{"email_cloud_relay_abuse", admission.SeverityCritical, admission.ClassC2, false},
 		{"email_compromised_account", admission.SeverityHigh, admission.ClassC2, false},
 		{"email_compromised_account", admission.SeverityCritical, admission.ClassC2, false},
+		{"ssh_login_unknown_ip", admission.SeverityHigh, admission.ClassC2, false},
 		{"ssh_login_unknown_ip", admission.SeverityCritical, admission.ClassC2, false},
 		{"c2_connection", admission.SeverityHigh, admission.ClassC3, true},
 		{"c2_connection", admission.SeverityCritical, admission.ClassC3, true},
@@ -81,12 +82,17 @@ func TestAdmissionAcceptanceClassifiesProductionChecks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			a, err := admission.Assess(target, []admission.Evidence{first, again}, observed.Add(time.Minute))
-			if err != nil {
-				t.Fatal(err)
+			if first.ID() == again.ID() {
+				t.Fatal("distinct observations minted the same evidence ID")
 			}
-			if a.Tier.Class != c.class || a.DirectC3 != c.c3 || a.Corroborated || a.Reserved() != c.c3 {
-				t.Fatalf("assessment %+v, want class %s direct %v and no corroboration", a, c.class, c.c3)
+			for _, roots := range [][]admission.Evidence{{first}, {first, again}} {
+				a, err := admission.Assess(target, roots, observed.Add(time.Minute))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if a.Tier.Class != c.class || a.Tier.Severity != c.sev || a.DirectC3 != c.c3 || a.Corroborated || a.Reserved() != c.c3 || len(a.Roots) != len(roots) {
+					t.Fatalf("%d observations: assessment %+v, want class %s severity %s direct %v and no corroboration", len(roots), a, c.class, c.sev, c.c3)
+				}
 			}
 		})
 	}

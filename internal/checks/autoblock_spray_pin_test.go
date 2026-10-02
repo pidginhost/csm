@@ -1,8 +1,9 @@
 package checks
 
 import (
-	"fmt"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -16,6 +17,7 @@ func TestSprayPinSubnetBlockFollowsTheMessage(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 	cfg.StatePath = t.TempDir()
 	setAutoResponseLive(cfg)
+	setAutoBlockNow(t, time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC))
 
 	fake := &recordingIPBlocker{}
 	prev := getIPBlocker()
@@ -24,6 +26,8 @@ func TestSprayPinSubnetBlockFollowsTheMessage(t *testing.T) {
 
 	findings := []alert.Finding{
 		{Check: "mail_subnet_spray", Severity: alert.Critical, SourceIP: "198.51.100.0/24", Message: "Mail password spray from 203.0.113.0/24: 8 unique IPs in 10m0s"},
+		{Check: "smtp_subnet_spray", Severity: alert.Critical, SourceIP: "203.0.113.0/24", Message: "SMTP password spray from 192.0.2.0/24: 8 unique IPs in 10m0s"},
+		{Check: "mail_subnet_spray", Severity: alert.Critical, SourceIP: "198.51.100.0/24", Message: "Mail password spray burst"},
 		{Check: "smtp_subnet_spray", Severity: alert.Critical, SourceIP: "198.51.100.0/24", Message: "SMTP password spray burst"},
 	}
 	for _, f := range findings {
@@ -32,7 +36,7 @@ func TestSprayPinSubnetBlockFollowsTheMessage(t *testing.T) {
 		}
 	}
 	AutoBlockIPs(cfg, findings)
-	if fmt.Sprint(fake.blockedSubnet) != "[203.0.113.0/24]" || len(fake.blocked) != 0 {
-		t.Fatalf("blocked subnets %v and addresses %v, want only the message subnet", fake.blockedSubnet, fake.blocked)
+	if !slices.Equal(fake.blockedSubnet, []string{"203.0.113.0/24", "192.0.2.0/24"}) || len(fake.blocked) != 0 {
+		t.Fatalf("blocked subnets %v and addresses %v, want only both message subnets", fake.blockedSubnet, fake.blocked)
 	}
 }

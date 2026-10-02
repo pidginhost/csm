@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +12,47 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/store"
 )
+
+// Isolate parser state without discarding entries another test installed.
+func producerAcceptanceState(t *testing.T) {
+	t.Helper()
+	withOwnerTable(t)
+	for _, windows := range []*sync.Map{&emailRateWindows, &cloudRelayWindows} {
+		previous := make(map[any]any)
+		windows.Range(func(key, value any) bool {
+			previous[key] = value
+			return true
+		})
+		windows.Clear()
+		t.Cleanup(func() {
+			windows.Clear()
+			for key, value := range previous {
+				windows.Store(key, value)
+			}
+		})
+	}
+	emailRateSuppressed.mu.Lock()
+	previousSuppressed := emailRateSuppressed.domains
+	emailRateSuppressed.domains = make(map[string]time.Time)
+	emailRateSuppressed.mu.Unlock()
+	t.Cleanup(func() {
+		emailRateSuppressed.mu.Lock()
+		emailRateSuppressed.domains = previousSuppressed
+		emailRateSuppressed.mu.Unlock()
+	})
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousStore := store.Global()
+	store.SetGlobal(db)
+	t.Cleanup(func() {
+		store.SetGlobal(previousStore)
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+}
 
 // producerAcceptanceMint mints a finding the way a producer adapter will:
 // the check and severity from the finding, the target from SourceIP. The
@@ -66,75 +108,83 @@ func onlyCheck(t *testing.T, findings []alert.Finding, check string) alert.Findi
 // The outgoing-mail hold and the bulk-mail match name a mailbox, never an
 // address, so neither can become address evidence.
 func TestProducerAcceptanceMailHeuristicsWithoutAddress(t *testing.T) {
-	withGlobalStore(t, func(*store.DB) {
-		resetEmailRateState()
-		t.Cleanup(resetEmailRateState)
-		cfg := &config.Config{}
-		cfg.EmailProtection.RateWarnThreshold = 100
-		cfg.EmailProtection.RateCritThreshold = 200
-		cfg.EmailProtection.RateWindowMin = 60
-		for _, line := range []string{
-			`2026-10-02 12:00:00 Sender office@example.com has an outgoing mail hold`,
-			`2026-10-02 12:00:00 1abc23 <= bulk@example.org H=truelist.io [192.0.2.5] P=esmtpsa A=dovecot_login:bulk@example.org S=500 T="news"`,
-		} {
-			f := onlyCheck(t, parseEximLogLine(line, cfg), "email_compromised_account")
-			if f.Severity != alert.Critical || f.SourceIP != "" || f.CIDRs != nil {
-				t.Fatalf("finding %+v, want Critical with no address", f)
+	producerAcceptanceState(t)
+	cfg := cloudRelayTestConfig()
+	for _, c := range []struct {
+		name, line, mailbox, domain string
+	}{
+		{"hold", `2026-10-02 12:00:00 Sender office@example.com has an outgoing mail hold`, "office@example.com", "example.com"},
+		{"bulk", `2026-10-02 12:00:00 1abc23 <= bulk@example.org H=truelist.io [192.0.2.5] P=esmtpsa A=dovecot_login:bulk@example.org S=500 T="news"`, "bulk@example.org", "example.org"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := onlyCheck(t, parseEximLogLine(c.line, cfg), "email_compromised_account")
+			if f.Severity != alert.Critical || f.SourceIP != "" || f.CIDRs != nil || f.Mailbox != c.mailbox || f.Domain != c.domain {
+				t.Fatalf("finding %+v, want Critical naming mailbox %s and domain %s with no address", f, c.mailbox, c.domain)
 			}
 			if _, err := producerAcceptanceMint(t, f); err == nil {
 				t.Fatalf("finding without an address minted evidence: %+v", f)
+			} else if reason, ok := admission.ReasonOf(err); !ok || reason != admission.ReasonInvalid {
+				t.Fatalf("mint error %v, want an invalid address refusal", err)
 			}
-		}
-	})
+		})
+	}
 }
 
 // Realtime and retrospective cloud relay findings name the newest relay
 // client and stay local C2 evidence at Critical.
 func TestProducerAcceptanceCloudRelayIsLocal(t *testing.T) {
-	resetCloudRelayState()
-	t.Cleanup(resetCloudRelayState)
+	producerAcceptanceState(t)
 	cfg := cloudRelayTestConfig()
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	var realtime []alert.Finding
 	for i := 10; i < 13; i++ {
 		ip := fmt.Sprintf("192.0.2.%d", i)
 		ptr := fmt.Sprintf("%d.2.0.192.bc.googleusercontent.com", i)
-		realtime = append(realtime, parseEximLogLine(gceSendLine("info@example.com", ptr, ip), cfg)...)
+		realtime = append(realtime, parseEximLogLine(eximLine(now, "info@example.com", ptr, ip, "notice"), cfg)...)
 	}
-	base := time.Now().Add(-2 * time.Hour)
+	base := now.Add(-2 * time.Hour)
 	var lines []string
 	for i := 0; i < 18; i++ {
-		lines = append(lines, eximLine(base.Add(time.Duration(i)*2*time.Minute), "news@example.net", "ec2-198-51-100-7.compute-1.amazonaws.com", "198.51.100.7", "notice"))
+		ip := fmt.Sprintf("198.51.100.%d", 7+i%3)
+		lines = append(lines, eximLine(base.Add(time.Duration(i)*2*time.Minute), "news@example.net", "relay.googleusercontent.com", ip, "notice"))
 	}
-	var retro []alert.Finding
-	withGlobalStore(t, func(*store.DB) {
-		retro = ScanEximHistoryForCloudRelay(&config.Config{}, writeEximFixture(t, lines), time.Now(), 24*time.Hour)
-	})
-	for want, f := range map[string]alert.Finding{
-		"192.0.2.12":   onlyCheck(t, realtime, "email_cloud_relay_abuse"),
-		"198.51.100.7": onlyCheck(t, retro, "email_cloud_relay_abuse"),
+	retro := ScanEximHistoryForCloudRelay(&config.Config{}, writeEximFixture(t, lines), now, 24*time.Hour)
+	for _, c := range []struct {
+		name, address string
+		findings      []alert.Finding
+	}{
+		{"realtime", "192.0.2.12", realtime},
+		{"retrospective", "198.51.100.9", retro},
 	} {
-		if f.Severity != alert.Critical || f.SourceIP != want {
-			t.Fatalf("finding %+v, want Critical naming %s", f, want)
-		}
-		a, err := producerAcceptanceMint(t, f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if a.Tier.Class != admission.ClassC2 || a.DirectC3 {
-			t.Fatalf("%s: assessment %+v, want local C2", want, a)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			f := onlyCheck(t, c.findings, "email_cloud_relay_abuse")
+			if f.Severity != alert.Critical || f.SourceIP != c.address || len(f.CIDRs) != 0 {
+				t.Fatalf("finding %+v, want Critical naming %s", f, c.address)
+			}
+			a, err := producerAcceptanceMint(t, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.Tier.Class != admission.ClassC2 || a.DirectC3 || a.Corroborated || a.Reserved() {
+				t.Fatalf("%s: assessment %+v, want local C2", c.address, a)
+			}
+		})
 	}
 }
 
 // A successful mail login from an address that was failing is direct C3
 // evidence; from an established multi-mailbox source it is High and refused.
 func TestProducerAcceptanceMailCompromise(t *testing.T) {
+	producerAcceptanceState(t)
 	clock := &staticClock{t: time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)}
 	tr := newTestMailTracker(t, clock)
 	for i := 0; i < 3; i++ {
 		tr.Record("192.0.2.20", "alice@example.com")
 	}
 	critical := onlyCheck(t, tr.RecordSuccess("192.0.2.20", "alice@example.com"), "mail_account_compromised")
+	if critical.Severity != alert.Critical || critical.SourceIP != "192.0.2.20" || critical.Mailbox != "alice@example.com" {
+		t.Fatalf("Critical compromise finding %+v, want the successful client's address and mailbox", critical)
+	}
 	if a, err := producerAcceptanceMint(t, critical); err != nil || !a.DirectC3 || a.Tier.Class != admission.ClassC3 {
 		t.Fatalf("Critical compromise: assessment %+v err %v, want direct C3", a, err)
 	}
@@ -143,8 +193,8 @@ func TestProducerAcceptanceMailCompromise(t *testing.T) {
 	tr.Record("192.0.2.21", "victim@example.com")
 	tr.Record("192.0.2.21", "victim@example.com")
 	high := onlyCheck(t, tr.RecordSuccess("192.0.2.21", "victim@example.com"), "mail_account_compromised")
-	if high.Severity != alert.High {
-		t.Fatalf("established source compromise severity %v, want High", high.Severity)
+	if high.Severity != alert.High || high.SourceIP != "192.0.2.21" || high.Mailbox != "victim@example.com" {
+		t.Fatalf("established source compromise %+v, want High naming the successful client and mailbox", high)
 	}
 	if _, err := producerAcceptanceMint(t, high); err == nil {
 		t.Fatal("High compromise minted evidence")
