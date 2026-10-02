@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -151,28 +153,9 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 	if !strings.Contains(line, "Accepted") {
 		return alert.Finding{}, false
 	}
-	parts := strings.Fields(line)
-	ipIdx := -1
-	for i, p := range parts {
-		if p == "from" && i+1 < len(parts) {
-			ipIdx = i + 1
-			break
-		}
-	}
-	if ipIdx < 0 || ipIdx >= len(parts) {
+	user, ip, ok := sshAcceptedRecord(strings.Fields(line))
+	if !ok || isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
 		return alert.Finding{}, false
-	}
-	ip := parts[ipIdx]
-	if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
-		return alert.Finding{}, false
-	}
-
-	user := "unknown"
-	for i, p := range parts {
-		if p == "for" && i+1 < len(parts) {
-			user = parts[i+1]
-			break
-		}
 	}
 	tenant := user
 	if tenant == "unknown" {
@@ -187,6 +170,57 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 		SourceIP: ip,
 		TenantID: tenant,
 	}, true
+}
+
+// sshAcceptedRecord reads sshd's own success record, "Accepted <method> for
+// <user> from <address> port <port>", right after the syslog header and the
+// sshd program token. sshd also logs the login name a client offers, so these
+// words count only at these positions; found anywhere else in a line they
+// would let any client name any address.
+func sshAcceptedRecord(fields []string) (user, ip string, ok bool) {
+	program := -1
+	switch {
+	case len(fields) > 0 && isSSHDProgramToken(fields[0]):
+		program = 0
+	case len(fields) >= 2 && isSSHDProgramToken(fields[1]):
+		// A host name without a timestamp.
+		program = 1
+	case len(fields) >= 5 && isSyslogTimestampPrefix(fields) && isSSHDProgramToken(fields[4]):
+		program = 4
+	case len(fields) >= 3 && isSSHDProgramToken(fields[2]):
+		if _, err := time.Parse(time.RFC3339Nano, fields[0]); err == nil {
+			program = 2
+		}
+	}
+	if program < 0 {
+		return "", "", false
+	}
+	m := fields[program+1:]
+	if len(m) < 8 || m[0] != "Accepted" || m[2] != "for" || m[4] != "from" || m[6] != "port" ||
+		m[7] == "" || strings.Trim(m[7], "0123456789") != "" {
+		return "", "", false
+	}
+	if _, err := netip.ParseAddr(m[5]); err != nil {
+		return "", "", false
+	}
+	return m[3], m[5], true
+}
+
+func isSSHDProgramToken(field string) bool {
+	for _, name := range []string{"sshd", "sshd-session"} {
+		if field == name+":" {
+			return true
+		}
+		pid, ok := strings.CutPrefix(field, name+"[")
+		if !ok {
+			continue
+		}
+		pid, ok = strings.CutSuffix(pid, "]:")
+		if ok && pid != "" && strings.Trim(pid, "0123456789") == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // tailFile reads the last N lines of a file efficiently.
