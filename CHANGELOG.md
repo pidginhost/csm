@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- SSH login alerts come only from sshd's own success records, so a login name chosen by a remote client can no longer raise a Critical login alert, or an automatic block when `auto_response.block_ips` is on, against an address of its choosing. Takes effect at the upgrade restart for new log lines; existing blocks and findings stay until they expire or are removed.
 - Failed SSH and other PAM password logins are reported to CSM again, so PAM brute-force and credential-stuffing detection can fire and block, following `auto_response.block_ips`; the PAM module had stopped reporting failures. Existing hosts must run `csm pam install` again after upgrading to add the failure hook; it leaves a shared auth stack it cannot edit safely unchanged, such as an authselect-managed one, and exits with an error.
 
 ### Fixed

@@ -265,6 +265,11 @@ is recognised as a repeat. When the watcher is not running, on a non-cPanel
 host or before the log file appears, the periodic check still reports the
 login on its own.
 
+An SSH login is reported only from sshd's own success record: the sshd program
+tag, then `Accepted <method> for <user> from <address> port <port>`. sshd also
+logs the login names that clients offer, so the same words anywhere else in a
+line are ignored and cannot name an address to alert on or block.
+
 The identity uses the complete log record, including its timestamp and session
 fields, even when the displayed details are shortened. A later session from the
 same address is a new finding within the 24-hour reminder window.
