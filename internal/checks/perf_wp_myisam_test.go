@@ -3,14 +3,17 @@ package checks
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/mysqlclient"
+	"github.com/pidginhost/csm/internal/netutil"
 )
 
 // MyISAM locks a whole table for every write. On a busy WordPress site a burst
@@ -93,6 +96,11 @@ func wpConfigFor(db, host, prefix string) string {
 func withMyISAMTables(t *testing.T, rows ...string) *int {
 	t.Helper()
 	calls := 0
+	for i, row := range rows {
+		if strings.Count(row, "\t") == 2 {
+			rows[i] = row + "\t3306\t/var/lib/mysql/mysql.sock"
+		}
+	}
 	mysqlclient.SetRootQueryForTest(func(_ context.Context, _ string, query string, _ ...any) ([]string, error) {
 		if !strings.Contains(query, "information_schema.TABLES") {
 			return nil, errors.New("unexpected query: " + query)
@@ -345,6 +353,7 @@ func TestCheckWPMyISAM_DisabledWithPerformanceMonitor(t *testing.T) {
 }
 
 func TestWPDBHostIsLocal(t *testing.T) {
+	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) { return nil, nil }))
 	for host, want := range map[string]bool{
 		"localhost":                           true,
 		"LOCALHOST":                           true,
@@ -358,9 +367,171 @@ func TestWPDBHostIsLocal(t *testing.T) {
 		"192.0.2.10:3306":                     false,
 		"localhost.example.com":               false,
 		"2001:db8::10":                        false,
+		"[::1]extra":                          false,
+		"[localhost]":                         false,
+		"[127.0.0.1]":                         false,
+		"127.0.0.1:invalid":                   false,
+		"127.0.0.1:65536":                     false,
 	} {
 		if got := wpDBHostIsLocal(host); got != want {
 			t.Errorf("wpDBHostIsLocal(%q) = %v, want %v", host, got, want)
 		}
+	}
+}
+
+func TestCheckWPMyISAM_LocalInterfaceDatabase(t *testing.T) {
+	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) {
+		return []net.IP{net.ParseIP("192.0.2.10"), net.ParseIP("2001:db8::10")}, nil
+	}))
+	for _, host := range []string{"192.0.2.10", "192.0.2.10:3306", "[2001:db8::10]:3306", "127.0.0.2", "0:0:0:0:0:0:0:1", "localhost:3306:/var/lib/mysql/mysql.sock"} {
+		t.Run(host, func(t *testing.T) {
+			withMyISAMHost(t, map[string]string{
+				"/home/alice/public_html/wp-config.php": wpConfigFor("alice_wp", host, "wp_"),
+			}, "/home/alice/public_html")
+			withMyISAMTables(t, "alice_wp\twp_posts\t8192")
+			findings := CheckWPMyISAM(context.Background(), &config.Config{}, nil)
+			if len(findings) != 1 {
+				t.Fatalf("local database at %q produced %d findings, want 1", host, len(findings))
+			}
+		})
+	}
+}
+
+func TestCheckWPMyISAM_UnresolvedScopePreservesFindings(t *testing.T) {
+	const cfgPath = "/home/alice/public_html/wp-config.php"
+	for _, body := range []string{
+		wpConfigFor("", "localhost", "wp_"),
+		wpConfigFor("alice_wp", "localhost", "bad-prefix"),
+		strings.ReplaceAll(wpConfigFor("alice_wp", "localhost", "wp_"), "$table_prefix = 'wp_';", ""),
+		strings.ReplaceAll(wpConfigFor("alice_wp", "localhost", "wp_"), "'localhost'", "getenv('DB_HOST')"),
+		strings.ReplaceAll(wpConfigFor("alice_wp", "localhost", "wp_"), "'wp_'", "'wp_' . getenv('SUFFIX')"),
+	} {
+		t.Run(body, func(t *testing.T) {
+			withMyISAMHost(t, map[string]string{cfgPath: body}, "/home/alice/public_html")
+			withMyISAMTables(t, "alice_wp\twp_posts\t8192")
+			ctx, incomplete := withIncompleteCheckCollector(context.Background())
+			findings := CheckWPMyISAM(ctx, &config.Config{}, nil)
+			if !incomplete.contains("perf_wp_myisam") {
+				t.Error("unresolved scope authorizes retiring previous findings")
+			}
+			if len(findings) != 0 {
+				t.Errorf("unresolved scope attributed tables: %+v", findings)
+			}
+		})
+	}
+}
+
+func TestCheckWPMyISAM_EmptyPrefixAndCommentedAssignment(t *testing.T) {
+	const mainCfg = "/home/alice/public_html/wp-config.php"
+	const shopCfg = "/home/alice/shop.example/wp-config.php"
+	withMyISAMHost(t, map[string]string{
+		mainCfg: wpConfigFor("alice_wp", "localhost", "") + "// $table_prefix = 'old_';\n",
+		shopCfg: wpConfigFor("alice_wp", "localhost", "shop_"),
+	}, "/home/alice/public_html", "/home/alice/shop.example")
+	withMyISAMTables(t, "alice_wp\tposts\t8192", "alice_wp\tshop_posts\t4096")
+	findings := CheckWPMyISAM(context.Background(), &config.Config{}, nil)
+	if len(findings) != 2 {
+		t.Fatalf("findings = %+v, want one per prefix", findings)
+	}
+	seen := make(map[string]bool)
+	for _, f := range findings {
+		for path, table := range map[string]string{mainCfg: ": posts.", shopCfg: ": shop_posts."} {
+			if strings.Contains(f.Details, path) {
+				if seen[path] || !strings.Contains(f.Details, "MyISAM tables: 1") || !strings.Contains(f.Details, table) {
+					t.Errorf("wrong tables or duplicate finding for %s: %+v", path, f)
+				}
+				seen[path] = true
+			}
+		}
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected both installs, got %v", seen)
+	}
+}
+
+func TestCheckWPMyISAM_UnresolvedSiblingDoesNotReassignTables(t *testing.T) {
+	const mainCfg = "/home/alice/public_html/wp-config.php"
+	const shopCfg = "/home/alice/shop.example/wp-config.php"
+	for _, unreadable := range []bool{false, true} {
+		t.Run(strconv.FormatBool(unreadable), func(t *testing.T) {
+			host := withMyISAMHost(t, map[string]string{
+				mainCfg: wpConfigFor("alice_wp", "localhost", "wp_"),
+				shopCfg: strings.ReplaceAll(wpConfigFor("alice_wp", "localhost", "wp_shop_"), "$table_prefix = 'wp_shop_';", ""),
+			}, "/home/alice/public_html")
+			host.unreadable[shopCfg] = unreadable
+			withMyISAMTables(t, "alice_wp\twp_shop_posts\t8192")
+			ctx, incomplete := withIncompleteCheckCollector(context.Background())
+			if findings := CheckWPMyISAM(ctx, &config.Config{}, nil); len(findings) != 0 {
+				t.Fatalf("unresolved sibling's tables reassigned to main: %+v", findings)
+			}
+			if !incomplete.contains("perf_wp_myisam") {
+				t.Fatal("ambiguous ownership must preserve findings")
+			}
+		})
+	}
+}
+
+func TestCheckWPMyISAM_DistinguishesLocalDatabaseInstances(t *testing.T) {
+	for _, host := range []string{"127.0.0.1:3307", "[::1]:3307", "localhost:/run/other-mysql.sock"} {
+		t.Run(host, func(t *testing.T) {
+			withMyISAMHost(t, map[string]string{
+				"/home/alice/public_html/wp-config.php": wpConfigFor("alice_wp", host, "wp_"),
+			}, "/home/alice/public_html")
+			withMyISAMTables(t, "alice_wp\twp_posts\t8192")
+			if findings := CheckWPMyISAM(context.Background(), &config.Config{}, nil); len(findings) != 0 {
+				t.Fatalf("different database instance attributed root's tables: %+v", findings)
+			}
+		})
+	}
+}
+
+func TestParseWPMyISAMConfig(t *testing.T) {
+	base := wpConfigFor("alice_wp", "localhost", "wp_")
+	for _, tc := range []struct {
+		name     string
+		body     string
+		complete bool
+	}{
+		{"literal settings", base, true},
+		{"multiline settings", "<?php\ndefine(\n'DB_NAME',\n'alice_wp');\ndefine('DB_HOST', 'localhost');\n$table_prefix = 'wp_';", true},
+		{"commented examples", base + "/*\n$table_prefix = 'old_';\ndefine('DB_NAME', 'old');\n*/", true},
+		{"quoted examples", base + `$sample = '$table_prefix = "old_";';`, true},
+		{"missing host", strings.ReplaceAll(base, "define('DB_HOST', 'localhost');", ""), false},
+		{"dynamic database", strings.ReplaceAll(base, "define('DB_NAME', 'alice_wp');", "define('DB_NAME', getenv('DATABASE'));"), false},
+		{"interpolated prefix", strings.ReplaceAll(base, "'wp_'", `"wp_{$suffix}"`), false},
+		{"syntax error", strings.Replace(base, "'alice_wp');", ");", 1), false},
+		{"malformed PHP", "<?php\xff", false},
+		{"alternative conditional settings", "<?php if ($enabled): define('IGNORED', 'value');" + strings.TrimPrefix(base, "<?php") + "endif;", false},
+		{"conditional prefix", base + "if ($shop) { $table_prefix = 'shop_'; }", false},
+		{"modified prefix", base + "$table_prefix .= 'shop_';", false},
+		{"duplicate database", base + "define('DB_NAME', 'other');", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			creds, complete := parseWPMyISAMConfig([]byte(tc.body))
+			if complete != tc.complete {
+				t.Fatalf("complete = %v, want %v", complete, tc.complete)
+			}
+			if complete && (creds.dbName != "alice_wp" || creds.dbHost != "localhost" || creds.tablePrefix != "wp_") {
+				t.Fatalf("scope = %q/%q/%q", creds.dbName, creds.dbHost, creds.tablePrefix)
+			}
+		})
+	}
+}
+
+func TestCheckWPMyISAM_UsesCatalogueEndpoint(t *testing.T) {
+	for _, tc := range []struct{ host, port, socket string }{
+		{"127.0.0.1:3307", "3307", "/run/custom-mysql.sock"},
+		{"localhost:/run/custom-mysql.sock", "3307", "/run/custom-mysql.sock"},
+		{"localhost:/run/custom-mysql.sock", "0", "/run/custom-mysql.sock"},
+	} {
+		t.Run(tc.host, func(t *testing.T) {
+			withMyISAMHost(t, map[string]string{
+				"/home/alice/public_html/wp-config.php": wpConfigFor("alice_wp", tc.host, "wp_"),
+			}, "/home/alice/public_html")
+			withMyISAMTables(t, "alice_wp\twp_posts\t8192\t"+tc.port+"\t"+tc.socket)
+			if findings := CheckWPMyISAM(context.Background(), &config.Config{}, nil); len(findings) != 1 {
+				t.Fatalf("matching database instance produced %d findings, want 1", len(findings))
+			}
+		})
 	}
 }

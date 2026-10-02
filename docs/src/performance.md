@@ -97,18 +97,27 @@ InnoDB locks single rows, so the same traffic keeps flowing.
 `perf_wp_myisam` reads MySQL's table catalogue once per run, as root and
 without site credentials, and matches the MyISAM tables against the
 WordPress installs found by the shared discovery. Each install's database and
-table prefix come from its `wp-config.php`. A table belongs to the install
-whose prefix matches it most closely, so two sites sharing one database are
-reported separately. Each database and prefix gets one Warning on this page,
+table prefix come from explicit string literals in its `wp-config.php`,
+including an explicitly empty prefix. PHP expressions are not evaluated.
+A table belongs to the install whose prefix matches it most closely, so two sites sharing one database are
+reported separately. Dormant and suspended installs still reserve their
+prefixes. Each database and prefix gets one Warning on this page,
 listing the tables largest first with their total size.
 
 Not reported:
 
-- installs whose `DB_HOST` is another server; the catalogue only covers this one
+- installs whose `DB_HOST` is another server; accepted hosts are `localhost`,
+  loopback addresses and IP addresses bound to this server's interfaces
+- TCP connections whose port differs from the catalogue server's port, and
+  explicit local sockets whose path differs from that server's socket path
+- hostname aliases other than `localhost`; DNS is not used to infer ownership
 - document roots the panel no longer serves, and suspended accounts
 
-A `wp-config.php` that cannot be read, or a failed catalogue query, keeps the
-prior findings until a later run succeeds.
+An unreadable or unresolved configuration, or a failed catalogue query, keeps
+prior findings until a later run succeeds. If a sibling's database or prefix
+cannot be established, affected scopes are withheld rather than assigning its
+tables to a shorter prefix. Configurations using dynamic or conditional database
+settings need explicit literals for this check to resolve their scope.
 
 To convert a site without losing data:
 

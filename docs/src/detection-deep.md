@@ -354,7 +354,7 @@ The deep checks are the most cPanel-biased part of CSM because they iterate acco
 **cPanel-only** (skipped on plain Linux):
 
 - `htaccess`, `file_index`, `php_content`, `group_writable_php`, `symlink_attacks` -- iterate `/home/*/public_html/**`
-- `wp_core`, `outdated_plugins`, `vulnerable_plugins`, `db_content`, `db_objects`, `admin_overlap`, `credential_reuse`, `perf_wp_myisam` -- find WordPress installs through the shared discovery: the panel document-root map, `/home/*/public_html`, one directory below it, and addon-domain directories in an account home. Unresolved document-root aliases retain prior findings and cached plugin inventory instead of treating a partial walk as a clean result.
+- `wp_core`, `outdated_plugins`, `vulnerable_plugins`, `db_content`, `db_objects`, `admin_overlap`, `credential_reuse` -- find WordPress installs through the shared discovery: the panel document-root map, `/home/*/public_html`, one directory below it, and addon-domain directories in an account home. Unresolved document-root aliases retain prior findings and cached plugin inventory instead of treating a partial walk as a clean result.
 - `supply_chain` -- scans `composer.lock` and `package-lock.json` under `/home/*` and `/home/*/public_html`
 - `phishing`, `email_content` -- scan user home directories and Exim spool
 - `dns_zones`, `ssl_certs` -- read cPanel's DNS zone store and SSL installation records
@@ -370,6 +370,7 @@ The deep checks are the most cPanel-biased part of CSM because they iterate acco
 - `rpm_integrity` -- dispatches to `rpm -V` on RHEL family or `debsums` / `dpkg --verify` on Debian family
 - `waf_status` -- detects ModSecurity on Apache, Nginx, and LiteSpeed across all supported distros
 - `perf_mysql_config`, `perf_redis_config`, `perf_error_logs` -- rely on standard service locations
+- `perf_wp_myisam` -- uses shared WordPress discovery on both deep tiers, including account home layouts when no panel map is available
 
 Operators on plain Linux can point `perf_error_logs`, `perf_wp_config`, `perf_wp_transients`, and `perf_wp_cron` at generic web roots with the `account_roots` glob list (see [configuration.md](configuration.md)). The remaining account and CMS scans still assume the cPanel `/home/*/public_html` layout.
 

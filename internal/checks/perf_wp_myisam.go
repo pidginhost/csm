@@ -3,6 +3,8 @@ package checks
 import (
 	"context"
 	"fmt"
+	"net"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -11,12 +13,13 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/mysqlclient"
+	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/state"
 )
 
 // wpMyISAMQuery lists every MyISAM table on the server in one catalogue read.
 // It carries no tenant-supplied names; installs are matched in Go.
-const wpMyISAMQuery = "SELECT TABLE_SCHEMA, TABLE_NAME, COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0) " +
+const wpMyISAMQuery = "SELECT TABLE_SCHEMA, TABLE_NAME, COALESCE(DATA_LENGTH, 0) + COALESCE(INDEX_LENGTH, 0), @@port, @@socket " +
 	"FROM information_schema.TABLES WHERE ENGINE = 'MyISAM' AND TABLE_TYPE = 'BASE TABLE'"
 
 const wpMyISAMListedTables = 10
@@ -31,8 +34,13 @@ type wpMyISAMTable struct {
 type wpMyISAMScope struct {
 	schema   string
 	prefix   string
-	installs []wpInstall
+	installs []wpMyISAMInstall
 	tables   []wpMyISAMTable
+}
+
+type wpMyISAMInstall struct {
+	wpInstall
+	host string
 }
 
 // CheckWPMyISAM reports WordPress installs whose tables still use MyISAM.
@@ -47,17 +55,24 @@ func CheckWPMyISAM(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 
 	scopes := make(map[string]*wpMyISAMScope)
 	prefixesBySchema := make(map[string][]string)
+	unresolvedAccounts := make(map[string]bool)
+	unresolvedSchemas := make(map[string]bool)
 	for _, in := range wpInstalls(ctx, "perf_wp_myisam") {
 		if ctx.Err() != nil {
 			return nil
 		}
-		creds, complete := parseWPConfigChecked(in.ConfigPath)
+		creds, complete := readWPMyISAMConfig(ctx, in.ConfigPath)
 		if !complete {
 			markCheckIncomplete(ctx, "perf_wp_myisam")
+			if creds.dbName != "" {
+				unresolvedSchemas[creds.dbName] = true
+			} else {
+				unresolvedAccounts[in.Account] = true
+			}
 			continue
 		}
-		prefix, ok := resolveTablePrefix(creds)
-		if !ok || creds.dbName == "" || !wpDBHostIsLocal(creds.dbHost) {
+		prefix := creds.tablePrefix
+		if !wpDBHostIsLocal(creds.dbHost) {
 			continue
 		}
 		// Every readable install claims its prefix, reported or not, so a
@@ -67,9 +82,8 @@ func CheckWPMyISAM(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 		if !seen {
 			scope = &wpMyISAMScope{schema: creds.dbName, prefix: prefix}
 			scopes[key] = scope
-			prefixesBySchema[creds.dbName] = append(prefixesBySchema[creds.dbName], prefix)
 		}
-		scope.installs = append(scope.installs, in)
+		scope.installs = append(scope.installs, wpMyISAMInstall{wpInstall: in, host: creds.dbHost})
 	}
 	if len(scopes) == 0 {
 		return nil
@@ -80,30 +94,67 @@ func CheckWPMyISAM(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 		markCheckIncomplete(ctx, "perf_wp_myisam")
 		return nil
 	}
+	if len(rows) == 0 {
+		return nil
+	}
+	metadata := strings.Split(rows[0], "\t")
+	if len(metadata) != 5 {
+		markCheckIncomplete(ctx, "perf_wp_myisam")
+		return nil
+	}
+	port, err := strconv.ParseUint(metadata[3], 10, 16)
+	if err != nil {
+		markCheckIncomplete(ctx, "perf_wp_myisam")
+		return nil
+	}
+	socket := mysqlclient.BatchUnescape(metadata[4])
+	for _, scope := range scopes {
+		matched := scope.installs[:0]
+		for _, in := range scope.installs {
+			if wpMyISAMEndpointMatches(in.host, port, socket) {
+				matched = append(matched, in)
+			}
+		}
+		scope.installs = matched
+		if len(matched) > 0 {
+			prefixesBySchema[scope.schema] = append(prefixesBySchema[scope.schema], scope.prefix)
+		}
+	}
 	for _, line := range rows {
 		fields := strings.Split(line, "\t")
-		if len(fields) != 3 {
+		if len(fields) != 5 {
+			markCheckIncomplete(ctx, "perf_wp_myisam")
 			continue
 		}
 		schema := mysqlclient.BatchUnescape(fields[0])
 		table := mysqlclient.BatchUnescape(fields[1])
 		owner := ""
+		var scope *wpMyISAMScope
 		for _, prefix := range prefixesBySchema[schema] {
-			if strings.HasPrefix(table, prefix) && len(prefix) > len(owner) {
+			if strings.HasPrefix(table, prefix) && (scope == nil || len(prefix) > len(owner)) {
 				owner = prefix
+				scope = scopes[schema+"\x00"+owner]
 			}
 		}
-		if owner == "" {
+		if scope == nil {
 			continue
 		}
 		size, _ := strconv.ParseInt(fields[2], 10, 64)
-		scope := scopes[schema+"\x00"+owner]
 		scope.tables = append(scope.tables, wpMyISAMTable{name: table, bytes: size})
 	}
 
 	var findings []alert.Finding
 	for _, scope := range scopes {
-		if len(scope.tables) == 0 {
+		if len(scope.tables) == 0 || unresolvedSchemas[scope.schema] {
+			continue
+		}
+		// An unreadable sibling may own a longer prefix. Its account's
+		// readable configs cannot establish ownership until it can be read.
+		ambiguous := false
+		for _, in := range scope.installs {
+			ambiguous = ambiguous || unresolvedAccounts[in.Account]
+		}
+		if ambiguous {
 			continue
 		}
 		if in, ok := wpMyISAMReportedInstall(scope.installs); ok {
@@ -117,13 +168,13 @@ func CheckWPMyISAM(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 // wpMyISAMReportedInstall picks the install a finding names. A dormant root
 // and a suspended account serve no traffic, so their tables cannot queue
 // requests; the same tables used by a live root are still reported.
-func wpMyISAMReportedInstall(installs []wpInstall) (wpInstall, bool) {
+func wpMyISAMReportedInstall(installs []wpMyISAMInstall) (wpInstall, bool) {
 	var live []wpInstall
 	for _, in := range installs {
 		if in.Served == notServed || accountSuspended(in.Account) {
 			continue
 		}
-		live = append(live, in)
+		live = append(live, in.wpInstall)
 	}
 	if len(live) == 0 {
 		return wpInstall{}, false
@@ -165,7 +216,7 @@ func newWPMyISAMFinding(scope *wpMyISAMScope, in wpInstall) alert.Finding {
 				"convert them to InnoDB after a backup; MyISAM locks the whole table on every write",
 			scope.schema, scope.prefix, len(tables), humanBytes(total), list, in.ConfigPath,
 		),
-		// Sizes change on every scan; the identity is the set of tables.
+		// Sizes and table membership change; identity is the database and prefix.
 		DedupKey:  fmt.Sprintf("db=%q prefix=%q", scope.schema, scope.prefix),
 		Timestamp: time.Now(),
 	}
@@ -176,16 +227,61 @@ func newWPMyISAMFinding(scope *wpMyISAMScope, in wpInstall) alert.Finding {
 // sees the local server, where a schema with the same name as a remote
 // database is a different database, often a copy left behind by a migration.
 func wpDBHostIsLocal(host string) bool {
-	h := strings.ToLower(strings.TrimSpace(host))
-	switch {
-	case strings.HasPrefix(h, "["):
+	h, _, _, ok := wpMyISAMDBHost(host)
+	if !ok {
+		return false
+	}
+	if h == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && (ip.IsLoopback() || netutil.IsHostAddress(h))
+}
+
+func wpMyISAMEndpointMatches(host string, serverPort uint64, serverSocket string) bool {
+	h, port, socket, ok := wpMyISAMDBHost(host)
+	if !ok {
+		return false
+	}
+	// mysqli uses a Unix socket for localhost, even if a port is given.
+	// A socket argument with a TCP hostname does not change the transport.
+	if h == "localhost" {
+		return socket == "" || filepath.Clean(socket) == filepath.Clean(serverSocket)
+	}
+	return port == serverPort
+}
+
+func wpMyISAMDBHost(host string) (name string, port uint64, socket string, ok bool) {
+	h := strings.TrimSpace(host)
+	// WordPress peels off a socket before parsing the host and optional port.
+	if pos := strings.Index(h, ":/"); pos >= 0 {
+		socket, h = h[pos+1:], h[:pos]
+	}
+	h = strings.ToLower(h)
+	port = 3306
+	var suffix string
+	if strings.HasPrefix(h, "[") {
 		end := strings.IndexByte(h, ']')
 		if end < 0 {
-			return false
+			return "", 0, "", false
 		}
-		h = h[1:end]
-	case strings.Count(h, ":") == 1:
-		h = h[:strings.IndexByte(h, ':')]
+		suffix, h = h[end+1:], h[1:end]
+		if !strings.Contains(h, ":") || net.ParseIP(h) == nil {
+			return "", 0, "", false
+		}
+	} else if strings.Count(h, ":") == 1 {
+		pos := strings.IndexByte(h, ':')
+		suffix, h = h[pos:], h[:pos]
 	}
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	if suffix != "" {
+		if !strings.HasPrefix(suffix, ":") {
+			return "", 0, "", false
+		}
+		var err error
+		port, err = strconv.ParseUint(suffix[1:], 10, 16)
+		if err != nil || port == 0 {
+			return "", 0, "", false
+		}
+	}
+	return h, port, socket, true
 }
