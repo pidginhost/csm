@@ -631,7 +631,7 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 		if !strings.Contains(line, "Accepted") {
 			continue
 		}
-		if ip := extractIPAfterKeyword(line, "from"); ip != "" {
+		if _, ip, ok := sshAcceptedRecord(strings.Fields(line)); ok {
 			addIfNotInfra(ips, ip, "SSH login", cfg)
 		}
 	}
