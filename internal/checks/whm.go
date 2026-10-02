@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/pidginhost/csm/internal/admission"
+
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
@@ -178,7 +180,7 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 	if tenant == "unknown" {
 		tenant = ""
 	}
-	return alert.Finding{
+	f := alert.Finding{
 		Severity: alert.Critical,
 		Check:    "ssh_login_unknown_ip",
 		DedupKey: loginRecordKey(line),
@@ -186,7 +188,12 @@ func SSHAcceptedLoginFinding(line string, cfg *config.Config) (alert.Finding, bo
 		Details:  truncateString(line, 200),
 		SourceIP: ip,
 		TenantID: tenant,
-	}, true
+	}
+	// sshd authenticated the name, but only a hosting account names an owner.
+	if account := HostingAccountForUser(user); account != "" {
+		f.Claims = []admission.Claim{{Kind: admission.ClaimAccount, Value: account}}
+	}
+	return f, true
 }
 
 // tailFile reads the last N lines of a file efficiently.

@@ -4,6 +4,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
+
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 )
@@ -23,8 +25,18 @@ func stampMailAccountOwner(findings []alert.Finding, account string) {
 		return
 	}
 	owner := mailAccountOwner(account)
+	// The login authenticated this identity; the owner comes from the
+	// server's own registry of the mailbox's domain or of the account name.
+	var claims []admission.Claim
+	if strings.Contains(account, "@") {
+		claims = append(claims, admission.Claim{Kind: admission.ClaimMailbox, Value: account})
+	}
+	if owner != "" {
+		claims = append(claims, admission.Claim{Kind: admission.ClaimAccount, Value: owner})
+	}
 	for i := range findings {
 		findings[i].TenantID = owner
+		findings[i].Claims = claims
 	}
 }
 

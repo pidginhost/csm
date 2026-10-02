@@ -73,7 +73,7 @@ var producerTable = []ProducerEntry{
 	{admission.ProducerSpec{ID: ProducerDomlogScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
 		Checks: []string{"wp_login_bruteforce", "xmlrpc_abuse", "wp_user_enumeration", "http_request_flood", "http_ua_spoof",
 			"http_scanner_profile", "http_claimed_bot_unverified", "http_asn_crawl"},
-		Claims: []admission.ClaimKind{admission.ClaimDomain}},
+		Claims: []admission.ClaimKind{admission.ClaimAccount, admission.ClaimDomain}},
 		admission.ParserRef{Name: "access_log", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerModSecLog, Entry: admission.EntryScan, Observation: admission.ObservationLogCursor,
 		Checks: []string{"modsec_block_escalation", "modsec_csm_block_escalation"}, Claims: []admission.ClaimKind{admission.ClaimRequestName}},

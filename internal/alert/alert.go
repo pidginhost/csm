@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
+
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/processctx"
@@ -136,6 +138,10 @@ type Finding struct {
 	// contract is unchanged; the subnet auto-response reads this, never the
 	// Message/Details text.
 	CIDRs []string `json:"-"`
+	// Claims say which account a finding concerns and where each value came
+	// from, as the producer read it. Admission resolves the owner from them,
+	// so a producer records only what it read, never a guess.
+	Claims []admission.Claim `json:"-"`
 
 	// Process context (Phase 1 process-ancestry enrichment). Optional.
 	// Populated by exec/connection live monitors when cache or enricher
