@@ -14,6 +14,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - SSH login alerts and reputation checks of SSH addresses use only genuine successful logins, preventing false alerts and automatic blocks from client-supplied login text when `auto_response.block_ips` is on; certificate text cannot supply an attack database account. Takes effect at the upgrade restart for new log lines and the next reputation scan; existing blocks and findings stay until they expire or are removed.
 - Failed SSH and other PAM password logins are reported to CSM again, so PAM brute-force and credential-stuffing detection can fire and block, following `auto_response.block_ips`; the PAM module had stopped reporting failures. Existing hosts must run `csm pam install` again after upgrading to add the failure hook; it leaves a shared auth stack it cannot edit safely unchanged, such as an authselect-managed one, and exits with an error.
 
+### Added
+
+- The Performance page lists WordPress sites whose database tables still use MyISAM, which locks whole tables and lets a burst of traffic use up the site's database connections.
+
 ### Fixed
 
 - An SSH login from an unknown address records a tenant and attack database account only when sshd confirms a successful login to a hosting account; root and service-user findings carry no `tenant_id` and group by address. This applies to new findings after the upgrade, existing incidents and attack records keep their attribution, and no setting changes it.

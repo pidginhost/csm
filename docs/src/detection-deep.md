@@ -345,6 +345,7 @@ discovers WordPress installs only.
 | `perf_wp_transients` | WordPress database transient bloat |
 | `perf_wp_cron` | WordPress cron scheduling (missed crons) |
 | `perf_wp_loopback` | WordPress self-requests sustained above once a minute |
+| `perf_wp_myisam` | WordPress tables still on the MyISAM storage engine |
 
 ## Platform Support
 
@@ -369,6 +370,7 @@ The deep checks are the most cPanel-biased part of CSM because they iterate acco
 - `rpm_integrity` -- dispatches to `rpm -V` on RHEL family or `debsums` / `dpkg --verify` on Debian family
 - `waf_status` -- detects ModSecurity on Apache, Nginx, and LiteSpeed across all supported distros
 - `perf_mysql_config`, `perf_redis_config`, `perf_error_logs` -- rely on standard service locations
+- `perf_wp_myisam` -- uses shared WordPress discovery on both deep tiers, including account home layouts when no panel map is available
 
 Operators on plain Linux can point `perf_error_logs`, `perf_wp_config`, `perf_wp_transients`, and `perf_wp_cron` at generic web roots with the `account_roots` glob list (see [configuration.md](configuration.md)). The remaining account and CMS scans still assume the cPanel `/home/*/public_html` layout.
 

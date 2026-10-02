@@ -261,6 +261,7 @@ var runnerFindingNames = map[string][]string{
 	"perf_wp_config":       {"perf_wp_config"},
 	"perf_wp_cron":         {"perf_wp_cron"},
 	"perf_wp_loopback":     {"perf_wp_loopback"},
+	"perf_wp_myisam":       {"perf_wp_myisam"},
 	"perf_wp_transients":   {"perf_wp_transients"},
 	"phishing":             {"phishing_credential_log", "phishing_directory", "phishing_iframe", "phishing_kit_archive", "phishing_page", "phishing_php", "phishing_redirector"},
 	"yara_deep":            {"yara_match_scheduled", "yara_scan_incomplete"},
@@ -540,6 +541,7 @@ func deepChecks() []namedCheck {
 		{"perf_wp_transients", CheckWPTransientBloat},
 		{"perf_wp_cron", CheckWPCron},
 		{"perf_wp_loopback", CheckWPLoopbackRequests},
+		{"perf_wp_myisam", CheckWPMyISAM},
 	}
 }
 
@@ -604,6 +606,7 @@ func reducedDeepChecks() []namedCheck {
 		{"perf_wp_transients", CheckWPTransientBloat},
 		{"perf_wp_cron", CheckWPCron},
 		{"perf_wp_loopback", CheckWPLoopbackRequests},
+		{"perf_wp_myisam", CheckWPMyISAM},
 	}
 }
 
@@ -642,6 +645,7 @@ var checkThrottleMin = map[string]int{
 	"perf_wp_transients": 60,
 	"perf_wp_cron":       60,
 	"perf_wp_loopback":   60,
+	"perf_wp_myisam":     60,
 }
 
 // LatestPurgeCheckNamesForTier returns every emitted finding name owned by a

@@ -26,6 +26,7 @@ identities for each scope and victim process.
 | `perf_wp_transients` | WordPress database transient bloat |
 | `perf_wp_cron` | WordPress cron scheduling (missed crons, excessive events) |
 | `perf_wp_loopback` | WordPress sites calling themselves faster than WordPress's own schedulers, hour after hour |
+| `perf_wp_myisam` | WordPress database tables still on the MyISAM storage engine |
 
 ### Bloated error logs
 
@@ -84,6 +85,52 @@ proxy such as Cloudflare is missed when its log records the proxy's address
 rather than the server's. Other tenants can also make requests from the
 server's addresses, so this Warning is advisory: it does not establish which
 site initiated a request, send alerts, or trigger a response action.
+
+### WordPress MyISAM tables
+
+MyISAM locks a whole table for every write. While one request writes, every
+other request that reads or writes that table waits. On a busy site a burst
+of uncached requests queues behind those locks until it holds every database
+connection the account may open, and new visitors get database errors.
+InnoDB locks single rows, so the same traffic keeps flowing.
+
+`perf_wp_myisam` reads MySQL's table catalogue once per run, as root and
+without site credentials, and matches the MyISAM tables against the
+WordPress installs found by the shared discovery. Each install's database and
+table prefix come from explicit string literals in its `wp-config.php`,
+including an explicitly empty prefix. PHP expressions are not evaluated.
+A table belongs to the install whose prefix matches it most closely, so two
+sites sharing one database are reported separately. Dormant and suspended
+installs still reserve their prefixes. Each database and prefix gets one
+Warning on this page, listing the tables largest first with their total size.
+
+Not reported:
+
+- installs whose `DB_HOST` is another server; accepted hosts are `localhost`,
+  loopback addresses and IP addresses bound to this server's interfaces
+- TCP connections whose port differs from the catalogue server's port, and
+  explicit local sockets whose path differs from that server's socket path
+- hostname aliases other than `localhost`; DNS is not used to infer ownership
+- document roots the panel no longer serves, and suspended accounts
+
+An unreadable or unresolved configuration, or a failed catalogue query, keeps
+prior findings until a later run succeeds. If a sibling's database or prefix
+cannot be established, affected scopes are withheld rather than assigning its
+tables to a shorter prefix. Configurations using dynamic or conditional database
+settings need explicit literals for this check to resolve their scope.
+
+To convert a site without losing data:
+
+1. Put the site in maintenance mode so nothing writes during the change.
+2. Take a full database dump and confirm it completed.
+3. Run `ALTER TABLE <table> ENGINE=InnoDB` for each listed table, one at a
+   time, and stop at the first error. Each statement copies the table and
+   blocks writes to it while it runs.
+4. Compare row counts before and after, then end maintenance mode.
+
+Keep the server's strict SQL mode for the conversion. A table holding values
+InnoDB would reject then fails with an error instead of having those values
+silently adjusted.
 
 ## Web UI
 
