@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -56,7 +57,7 @@ func checkSSHLoginsFollow(cfg *config.Config, store *state.Store) []alert.Findin
 	defer sshLoginMu.Unlock()
 
 	st := loadSSHLoginFollow(store)
-	lines, next, _, err := readNewSyslogLines(authLogPath(), st)
+	records, next, _, err := readNewSyslogRecords(authLogPath(), st)
 	if err != nil {
 		return nil // leave stored state untouched
 	}
@@ -64,14 +65,19 @@ func checkSSHLoginsFollow(cfg *config.Config, store *state.Store) []alert.Findin
 	cutoff := now.Add(-sshLoginLookback)
 
 	var findings []alert.Finding
-	for _, line := range lines {
-		if !strings.Contains(line, "Accepted") {
+	for _, rec := range records {
+		if !strings.Contains(rec.text, "Accepted") {
 			continue
 		}
-		if at, ok := syslogLineTime(line, now); ok && at.Before(cutoff) {
+		at, ok := syslogLineTime(rec.text, now)
+		if ok && at.Before(cutoff) {
 			continue
 		}
-		if f, ok := SSHAcceptedLoginFinding(line, cfg); ok {
+		if !ok {
+			at = now
+		}
+		if f, ok := SSHAcceptedLoginFinding(rec.text, cfg); ok {
+			f.Observation = alert.Observation{Producer: string(ProducerSSHLoginScan), Stream: syslogStream(next), Cursor: strconv.FormatInt(rec.offset, 10), ObservedAt: at}
 			findings = append(findings, f)
 		}
 	}

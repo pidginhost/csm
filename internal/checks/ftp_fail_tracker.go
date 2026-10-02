@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/state"
@@ -25,11 +26,14 @@ const (
 
 // followState is the persisted position+identity of the syslog follower.
 type followState struct {
-	Offset    int64  `json:"offset"`
-	HeadLen   int    `json:"head_len"`
-	HeadFP    string `json:"head_fp"`
-	AnchorLen int    `json:"anchor_len"`
-	AnchorFP  string `json:"anchor_fp"`
+	Offset     int64  `json:"offset"`
+	HeadLen    int    `json:"head_len"`
+	HeadFP     string `json:"head_fp"`
+	AnchorLen  int    `json:"anchor_len"`
+	AnchorFP   string `json:"anchor_fp"`
+	Stream     string `json:"observation_stream,omitempty"`
+	FileID     string `json:"observation_file,omitempty"`
+	Generation uint64 `json:"observation_generation,omitempty"`
 }
 
 // ftpFailTracker is the persisted detector state: where we last read to, and a
@@ -177,22 +181,58 @@ func nextNewline(f *os.File, from, size int64) (int64, error) {
 	return size, nil
 }
 
-// completeLines splits data into complete newline-terminated lines and returns
-// the number of bytes consumed (through the last '\n'). Trailing partial bytes
-// are not returned and not consumed.
-func completeLines(data []byte) ([]string, int64) {
+// syslogRecord is one complete line and the offset where it starts.
+type syslogRecord struct {
+	text   string
+	offset int64
+}
+
+// completeRecords splits data, which starts at offset start, into complete
+// newline-terminated lines with their offsets, skipping blank lines, and
+// returns the bytes consumed through the last '\n'. Trailing partial bytes
+// are neither returned nor consumed.
+func completeRecords(data []byte, start int64) ([]syslogRecord, int64) {
 	lastNL := bytes.LastIndexByte(data, '\n')
 	if lastNL < 0 {
 		return nil, 0
 	}
-	var lines []string
-	for _, ln := range bytes.Split(data[:lastNL+1], []byte{'\n'}) {
-		if len(ln) == 0 {
-			continue
+	var records []syslogRecord
+	pos := 0
+	for pos <= lastNL {
+		end := pos + bytes.IndexByte(data[pos:], '\n')
+		if end > pos {
+			records = append(records, syslogRecord{text: string(data[pos:end]), offset: start + int64(pos)})
 		}
-		lines = append(lines, string(ln))
+		pos = end + 1
 	}
-	return lines, int64(lastNL + 1)
+	return records, int64(lastNL + 1)
+}
+
+// The epoch changes only for a new process. Persisted streams survive
+// restarts; a reset made from unchanged input within one process is stable.
+var scanObservationEpoch = alert.NewObservationEpoch()
+
+// syslogStream names the persisted file generation, not a changing head hash.
+func syslogStream(st followState) string { return st.Stream }
+
+func setSyslogObservationStream(next *followState, old followState, info os.FileInfo, start int64) {
+	if info.Size() == 0 && old.Stream == "" {
+		return
+	}
+	identity, ok := selfWriteIdentityFromFileInfo(info)
+	if !ok {
+		return
+	}
+	next.FileID = fmt.Sprintf("%x:%x", identity.Device, identity.Inode)
+	next.Generation = old.Generation
+	reset := start < old.Offset || (old.FileID != "" && old.FileID != next.FileID)
+	if reset {
+		next.Generation++
+	}
+	next.Stream = old.Stream
+	if next.Stream == "" || reset {
+		next.Stream = fmt.Sprintf("s:%s:%s.%d", next.FileID, scanObservationEpoch, next.Generation)
+	}
 }
 
 // chooseStart returns the byte offset to begin reading from, plus skipped bytes
@@ -268,6 +308,16 @@ func fillIdentity(f *os.File, st *followState, curSize int64) error {
 // the new lines, the next follow state, bytes skipped by the catch-up cap, and
 // any I/O error. On error, next == st so the caller leaves stored state intact.
 func readNewSyslogLines(path string, st followState) ([]string, followState, int64, error) {
+	records, next, skipped, err := readNewSyslogRecords(path, st)
+	lines := make([]string, len(records))
+	for i, r := range records {
+		lines[i] = r.text
+	}
+	return lines, next, skipped, err
+}
+
+// readNewSyslogRecords is readNewSyslogLines with each line's start offset.
+func readNewSyslogRecords(path string, st followState) ([]syslogRecord, followState, int64, error) {
 	f, err := osFS.Open(path)
 	if err != nil {
 		return nil, st, 0, err
@@ -295,7 +345,7 @@ func readNewSyslogLines(path string, st followState) ([]string, followState, int
 		start = aligned
 	}
 
-	var lines []string
+	var records []syslogRecord
 	var consumed int64
 	if curSize-start > 0 {
 		data := make([]byte, curSize-start)
@@ -306,14 +356,15 @@ func readNewSyslogLines(path string, st followState) ([]string, followState, int
 		if read != len(data) {
 			return nil, st, 0, io.ErrUnexpectedEOF
 		}
-		lines, consumed = completeLines(data)
+		records, consumed = completeRecords(data, start)
 	}
 
 	next := followState{Offset: start + consumed}
 	if err := fillIdentity(f, &next, curSize); err != nil {
 		return nil, st, 0, err
 	}
-	return lines, next, skipped, nil
+	setSyslogObservationStream(&next, st, info, start)
+	return records, next, skipped, nil
 }
 
 // ftpTrackerKey is underscore-prefixed so state.Store.Update does not prune it
