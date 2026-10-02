@@ -236,7 +236,19 @@ func (d *Daemon) cpanelSessionLogHandler(line string, cfg *config.Config) []aler
 // cpanelAccessLogHandler holds back the API auth failures a stale browser
 // session may explain.
 func (d *Daemon) cpanelAccessLogHandler(line string, cfg *config.Config) []alert.Finding {
-	return d.staleSession401.filter(line, parseAccessLogLineEnhanced(line, cfg), time.Now())
+	return d.cpanelAccessLogObservedHandler(line, alert.Observation{}, cfg)
+}
+
+// cpanelAccessLogObservedHandler stamps the line's observation before the
+// hold, so a held finding still names its line when it is emitted.
+func (d *Daemon) cpanelAccessLogObservedHandler(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	for i := range findings {
+		if findings[i].Observation == (alert.Observation{}) {
+			findings[i].Observation = obs
+		}
+	}
+	return d.staleSession401.filter(line, findings, time.Now())
 }
 
 // Keep the same queue contract as LogWatcher: backpressure is counted and
