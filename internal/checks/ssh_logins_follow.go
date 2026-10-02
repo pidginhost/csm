@@ -77,7 +77,7 @@ func checkSSHLoginsFollow(cfg *config.Config, store *state.Store) []alert.Findin
 			at = now
 		}
 		if f, ok := SSHAcceptedLoginFinding(rec.text, cfg); ok {
-			f.Observation = alert.Observation{Producer: string(ProducerSSHLoginScan), Stream: syslogStream(next), Cursor: strconv.FormatInt(rec.offset, 10), ObservedAt: at}
+			f.Observation = alert.Observation{Producer: string(ProducerSSHLoginScan), Stream: syslogStream(next), Cursor: strconv.FormatInt(rec.offset, 10), ObservedAt: at.UTC()}
 			findings = append(findings, f)
 		}
 	}

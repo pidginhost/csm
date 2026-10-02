@@ -97,3 +97,35 @@ func TestPendingIdentityCoversObservationAndClaims(t *testing.T) {
 		t.Fatal("identity ignores the claims")
 	}
 }
+
+// An observed time the JSON encoder refuses (a UTC offset of 24 hours from a
+// log line) must cost only that observation, never the parked batch.
+func TestPendingFindingsKeepBatchWithUnencodableObservation(t *testing.T) {
+	st, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	odd := time.Date(2026, 10, 2, 12, 0, 0, 0, time.FixedZone("", 24*60*60))
+	if _, marshalErr := odd.MarshalJSON(); marshalErr == nil {
+		t.Fatal("fixture time encodes; the test proves nothing")
+	}
+	claims := []admission.Claim{{Kind: admission.ClaimAccount, Value: "alice"}}
+	parked := []alert.Finding{
+		{Check: "ftp_bruteforce", Message: "burst", SourceIP: "192.0.2.80", Claims: claims, Timestamp: time.Now(),
+			Observation: alert.Observation{Producer: "ftp_scan", Stream: "s:1:2:e.0", Cursor: "10", ObservedAt: odd}},
+		{Check: "mail_bruteforce", Message: "other", SourceIP: "198.51.100.80", Timestamp: time.Now()},
+	}
+	if appendErr := st.AppendPendingFindings(parked); appendErr != nil {
+		t.Fatalf("parking failed: %v", appendErr)
+	}
+	got, err := st.TakePendingFindings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].SourceIP != "192.0.2.80" || got[1].SourceIP != "198.51.100.80" {
+		t.Fatalf("replayed %+v, want both findings", got)
+	}
+	if got[0].Observation != (alert.Observation{}) || !reflect.DeepEqual(got[0].Claims, claims) {
+		t.Fatalf("replayed observation %+v claims %+v, want no observation and the claims", got[0].Observation, got[0].Claims)
+	}
+}

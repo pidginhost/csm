@@ -32,7 +32,9 @@ func toPendingRecords(findings []alert.Finding) []pendingFinding {
 	records := make([]pendingFinding, len(findings))
 	for i, f := range findings {
 		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets, ResponseClaims: f.Claims}
-		if f.Observation != (alert.Observation{}) {
+		// A log can carry a time the JSON encoder refuses. Dropping that
+		// observation costs one finding its provenance, not the whole batch.
+		if _, err := f.Observation.ObservedAt.MarshalJSON(); err == nil && f.Observation != (alert.Observation{}) {
 			observation := f.Observation
 			records[i].ResponseObservation = &observation
 		}

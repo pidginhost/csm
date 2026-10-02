@@ -281,3 +281,42 @@ func TestReadNewSyslogRecordsFreshStateAfterRestartGetsNewStream(t *testing.T) {
 		t.Fatalf("fresh state after a restart reused stream %q (now %q)", a.Stream, b.Stream)
 	}
 }
+
+// A log line may carry a UTC offset the JSON encoder refuses. The scans keep
+// the instant and name it in UTC, so the observation stays encodable.
+func TestScanObservationsNameTheirTimeInUTC(t *testing.T) {
+	zone := time.FixedZone("", 24*60*60)
+	t.Run("ftp", func(t *testing.T) {
+		log, store := ftpLatchFixture(t)
+		var lines []string
+		for i := 0; i < ftpFailThreshold; i++ {
+			lines = append(lines, time.Now().In(zone).Format(time.RFC3339Nano)+" host pure-ftpd[4242]: (?@192.0.2.81) [WARNING] Authentication failed for user [admin]")
+		}
+		if err := os.WriteFile(log, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got := ftpBruteFindings(CheckFTPLogins(context.Background(), &config.Config{}, store))
+		if len(got) != 1 || got[0].Observation.ObservedAt.Location() != time.UTC {
+			t.Fatalf("findings %+v, want one with a UTC observed time", got)
+		}
+		if _, err := got[0].Observation.ObservedAt.MarshalJSON(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("ssh", func(t *testing.T) {
+		path := useAuthLog(t)
+		store, err := state.Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		appendLines(t, path, time.Now().In(zone).Format(time.RFC3339Nano)+" host sshd[1201]: Accepted publickey for root from 198.51.100.82 port 51234 ssh2")
+		got := sshLoginFindings(CheckSSHLogins(context.Background(), &config.Config{}, store))
+		if len(got) != 1 || got[0].Observation.ObservedAt.Location() != time.UTC {
+			t.Fatalf("findings %+v, want one with a UTC observed time", got)
+		}
+		if _, err := got[0].Observation.ObservedAt.MarshalJSON(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
