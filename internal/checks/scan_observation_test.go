@@ -260,3 +260,24 @@ func TestSyslogObservationUsesReadSnapshot(t *testing.T) {
 		t.Fatalf("different read snapshot reused stream %q", old.Stream)
 	}
 }
+
+// Follow state lost across a restart (never saved, or dropped as invalid)
+// must not let the new process name its lines with an earlier stream.
+func TestReadNewSyslogRecordsFreshStateAfterRestartGetsNewStream(t *testing.T) {
+	followReal(t)
+	path := writeFollowFile(t, "first\nsecond\n")
+	_, a, _, err := readNewSyslogRecords(path, followState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := scanObservationEpoch
+	scanObservationEpoch = alert.NewObservationEpoch()
+	t.Cleanup(func() { scanObservationEpoch = before })
+	_, b, _, err := readNewSyslogRecords(path, followState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Stream == "" || a.Stream == b.Stream {
+		t.Fatalf("fresh state after a restart reused stream %q (now %q)", a.Stream, b.Stream)
+	}
+}
