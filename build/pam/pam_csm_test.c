@@ -31,6 +31,38 @@
 
 #define MOD CSM_PAM_TEST_MODULE
 
+/* Compile the emitter with an injected clock to exercise failures through
+ * the real socket. The shared module still drives the libpam stack tests. */
+static int fail_clock;
+
+static int
+test_clock_gettime(clockid_t clock_id, struct timespec *now)
+{
+    if (fail_clock) {
+        now->tv_sec = 1790000000;
+        now->tv_nsec = 123456789;
+        errno = EINVAL;
+        return -1;
+    }
+    return clock_gettime(clock_id, now);
+}
+
+#define clock_gettime test_clock_gettime
+#define pam_sm_authenticate test_pam_sm_authenticate
+#define pam_sm_setcred test_pam_sm_setcred
+#define pam_sm_open_session test_pam_sm_open_session
+#define pam_sm_close_session test_pam_sm_close_session
+#define pam_sm_acct_mgmt test_pam_sm_acct_mgmt
+#define pam_sm_chauthtok test_pam_sm_chauthtok
+#include "pam_csm.c"
+#undef clock_gettime
+#undef pam_sm_authenticate
+#undef pam_sm_setcred
+#undef pam_sm_open_session
+#undef pam_sm_close_session
+#undef pam_sm_acct_mgmt
+#undef pam_sm_chauthtok
+
 /* The failure hook sits where the installer puts it: directly before the
  * terminal pam_deny.so, with the success jump widened over it. The first
  * module stands in for the password check. */
@@ -264,6 +296,33 @@ main(void)
     int rc;
 
     setup();
+
+    /* A failed clock cannot supply provenance, but the event still counts
+     * through the older, identity-free wire format. */
+    pamh = start("csm-test-fail", "intruder", "192.0.2.15");
+    fail_clock = 1;
+    rc = csm_emit("FAIL", pamh);
+    fail_clock = 0;
+    drain(events, sizeof(events));
+    expect("failed clock", rc, 1, events,
+           "FAIL ip=192.0.2.15 user=intruder service=csm-test-fail\n");
+    pam_end(pamh, PAM_SUCCESS);
+
+    /* Maximum sanitized values plus provenance must fit without losing
+     * the newline, so older listeners can still parse a complete record. */
+    {
+        char value[CSM_PAM_MAX_VALUE_LEN], want[512];
+
+        memset(value, 'x', sizeof(value) - 1);
+        value[sizeof(value) - 1] = '\0';
+        pamh = start(value, value, value);
+        rc = csm_emit("FAIL", pamh);
+        drain(events, sizeof(events));
+        normalize(events);
+        snprintf(want, sizeof(want), "%s", event("FAIL", value, value, value));
+        expect("maximum values", rc, 1, events, want);
+        pam_end(pamh, PAM_SUCCESS);
+    }
 
     /* A failed login reaches the failure hook once. */
     pamh = start("csm-test-fail", "intruder", "192.0.2.10");

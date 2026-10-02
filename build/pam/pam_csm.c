@@ -225,10 +225,15 @@ csm_emit(const char *verdict, pam_handle_t *pamh)
     {
         struct timespec now = {0, 0};
 
-        (void)clock_gettime(CLOCK_REALTIME, &now);
-        n = snprintf(line, sizeof(line), "%s ip=%s user=%s service=%s pid=%ld ts=%lld.%09ld\n",
-                     verdict, rhost_safe, user_safe, service_safe, (long)getpid(),
-                     (long long)now.tv_sec, (long)now.tv_nsec);
+        if (clock_gettime(CLOCK_REALTIME, &now) == 0) {
+            n = snprintf(line, sizeof(line), "%s ip=%s user=%s service=%s pid=%ld ts=%lld.%09ld\n",
+                         verdict, rhost_safe, user_safe, service_safe, (long)getpid(),
+                         (long long)now.tv_sec, (long)now.tv_nsec);
+        } else {
+            /* A clock failure leaves identity unknown, not the auth event. */
+            n = snprintf(line, sizeof(line), "%s ip=%s user=%s service=%s\n",
+                         verdict, rhost_safe, user_safe, service_safe);
+        }
     }
     if (n <= 0 || (size_t)n >= sizeof(line)) {
         close(fd);

@@ -166,3 +166,97 @@ func TestFTPBruteforceNamesUnchangedInputConsistently(t *testing.T) {
 		t.Fatalf("unchanged input produced %+v then %+v", a, b)
 	}
 }
+
+func TestReadNewSyslogRecordsSeparatesUncommittedRewrites(t *testing.T) {
+	followReal(t)
+	head := strings.Repeat("H", fingerprintBytes) + "\n"
+	path := writeFollowFile(t, head+"first\n"+head)
+	var previous followState
+	for _, line := range []string{"first", "other", "third"} {
+		if err := os.WriteFile(path, []byte(head+line+"\n"+head), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		records, next, _, err := readNewSyslogRecords(path, followState{})
+		if err != nil || len(records) != 3 || records[1].offset != int64(len(head)) {
+			t.Fatalf("records %+v, error %v", records, err)
+		}
+		if next.Stream == "" || next.Stream == previous.Stream {
+			t.Fatalf("uncommitted rewrite reused stream %q", next.Stream)
+		}
+		_, repeat, _, err := readNewSyslogRecords(path, followState{})
+		if err != nil || repeat.Stream != next.Stream {
+			t.Fatalf("unchanged repeat changed %+v to %+v: %v", next, repeat, err)
+		}
+		previous = next
+	}
+}
+
+func TestReadNewSyslogRecordsCappedRewindChangesStream(t *testing.T) {
+	followReal(t)
+	path := writeFollowFile(t, "first\n")
+	_, old, _, err := readNewSyslogRecords(path, followState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := strings.Repeat(strings.Repeat("o", 1023)+"\n", maxCatchUpBytes/1024+2)
+	if writeErr := os.WriteFile(path, []byte(content), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	// A restart has only the persisted state, so the rewind must be
+	// recognized even without the previous reader's captured bytes.
+	before := scanObservationEpoch
+	scanObservationEpoch = alert.NewObservationEpoch()
+	t.Cleanup(func() { scanObservationEpoch = before })
+	_, next, skipped, err := readNewSyslogRecords(path, old)
+	if err != nil || skipped <= old.Offset || next.Stream == old.Stream || next.Generation <= old.Generation {
+		t.Fatalf("capped rewind reused %+v as %+v (skipped %d): %v", old, next, skipped, err)
+	}
+}
+
+func TestReadNewSyslogRecordsUncommittedEmptyTruncate(t *testing.T) {
+	followReal(t)
+	path := writeFollowFile(t, "first\n")
+	_, old, _, err := readNewSyslogRecords(path, followState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncateErr := os.Truncate(path, 0); truncateErr != nil {
+		t.Fatal(truncateErr)
+	}
+	_, empty, _, err := readNewSyslogRecords(path, followState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writeErr := os.WriteFile(path, []byte("first\n"), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	_, regrown, _, err := readNewSyslogRecords(path, followState{})
+	if err != nil || empty.Stream == "" || empty.Stream == old.Stream || regrown.Stream != empty.Stream {
+		t.Fatalf("empty truncate reused %+v as %+v then %+v: %v", old, empty, regrown, err)
+	}
+}
+
+func TestSyslogObservationUsesReadSnapshot(t *testing.T) {
+	followReal(t)
+	path := writeFollowFile(t, "first\n")
+	_, old, _, err := readNewSyslogRecords(path, followState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A writer can restore the old disk bytes after ReadAt captured a new
+	// line. Provenance must describe the captured bytes being processed.
+	next := old
+	setSyslogObservationStream(&next, followState{}, path, f, info, false, 0, []byte("other\n"))
+	if next.Stream == old.Stream {
+		t.Fatalf("different read snapshot reused stream %q", old.Stream)
+	}
+}

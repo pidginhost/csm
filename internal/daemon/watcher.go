@@ -48,10 +48,6 @@ type logWatchSpec struct {
 	producer admission.ProducerID
 }
 
-// observationEpoch separates this process's streams from an earlier one's:
-// a file truncated while the daemon was down reuses offsets.
-var observationEpoch = alert.NewObservationEpoch()
-
 // LogWatcher tails a log file using inotify and processes new lines.
 type LogWatcher struct {
 	path      string
@@ -68,6 +64,9 @@ type LogWatcher struct {
 	producer admission.ProducerID
 	// observed, when set, replaces handler and also gets the observation.
 	observed ObservedLineHandler
+	// epoch separates reader lifetimes even when a reader is reattached
+	// without restarting the process.
+	epoch string
 	// generation counts the times the offset went back to the start, so a
 	// reused offset is never the same position.
 	generation uint64
@@ -158,6 +157,7 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 		offset:  offset,
 		fileID:  fileID(info),
 		marker:  marker,
+		epoch:   alert.NewObservationEpoch(),
 	}, nil
 }
 
@@ -180,7 +180,7 @@ func (w *LogWatcher) observation(lineStart int64, at time.Time) alert.Observatio
 	}
 	return alert.Observation{
 		Producer:   string(w.producer),
-		Stream:     fmt.Sprintf("f:%x:%x:%s.%d", w.fileID.dev, w.fileID.ino, observationEpoch, w.generation),
+		Stream:     fmt.Sprintf("f:%x:%x:%s.%d", w.fileID.dev, w.fileID.ino, w.epoch, w.generation),
 		Cursor:     strconv.FormatInt(lineStart, 10),
 		ObservedAt: at,
 	}

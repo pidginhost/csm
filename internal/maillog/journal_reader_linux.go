@@ -159,5 +159,10 @@ func journalPosition(entry *sdjournal.JournalEntry) Position {
 	if cursor == "" || entry.RealtimeTimestamp > math.MaxInt64 {
 		return Position{}
 	}
-	return Position{Stream: "journal", Cursor: cursor, ObservedAt: time.UnixMicro(int64(entry.RealtimeTimestamp))}
+	at := time.UnixMicro(int64(entry.RealtimeTimestamp))
+	// Parked observations use time.Time's RFC3339 JSON encoding.
+	if at.Year() > 9999 {
+		return Position{}
+	}
+	return Position{Stream: "journal", Cursor: cursor, ObservedAt: at}
 }

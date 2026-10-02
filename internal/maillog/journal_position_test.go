@@ -64,3 +64,10 @@ func TestJournalLinePositionWithoutCursor(t *testing.T) {
 		t.Fatalf("cursorless entry acquired position %+v", got)
 	}
 }
+
+func TestJournalLinePositionRejectsUnencodableTime(t *testing.T) {
+	entry := &sdjournal.JournalEntry{Cursor: "cursor", RealtimeTimestamp: 253402300800_000000}
+	if got := journalPosition(entry); got != (Position{}) {
+		t.Fatalf("unencodable time acquired position %+v", got)
+	}
+}

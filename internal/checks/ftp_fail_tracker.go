@@ -208,31 +208,77 @@ func completeRecords(data []byte, start int64) ([]syslogRecord, int64) {
 	return records, int64(lastNL + 1)
 }
 
-// The epoch changes only for a new process. Persisted streams survive
-// restarts; a reset made from unchanged input within one process is stable.
+// Persisted streams survive restarts. The process epoch retires cached reader
+// lifetimes; each reader also has its own epoch.
 var scanObservationEpoch = alert.NewObservationEpoch()
+
+type syslogObservationReader struct {
+	processEpoch, epoch string
+	base, next          followState
+	start               int64
+	data                []byte
+}
+
+// Diagnostic scans and failed saves do not advance persisted follow state.
+// Retain their observed generation so a retry is stable, while a rewrite
+// cannot reuse its offsets. Only the fixed forward-reader paths use this map.
+var syslogObservationReaders = struct {
+	sync.Mutex
+	byPath map[string]syslogObservationReader
+}{byPath: make(map[string]syslogObservationReader)}
 
 // syslogStream names the persisted file generation, not a changing head hash.
 func syslogStream(st followState) string { return st.Stream }
 
-func setSyslogObservationStream(next *followState, old followState, info os.FileInfo, start int64) {
-	if info.Size() == 0 && old.Stream == "" {
-		return
-	}
+func setSyslogObservationStream(next *followState, old followState, path string, f *os.File, info os.FileInfo, reset bool, start int64, data []byte) {
 	identity, ok := selfWriteIdentityFromFileInfo(info)
 	if !ok {
 		return
 	}
 	next.FileID = fmt.Sprintf("%x:%x", identity.Device, identity.Inode)
 	next.Generation = old.Generation
-	reset := start < old.Offset || (old.FileID != "" && old.FileID != next.FileID)
+	reset = reset || (old.FileID != "" && old.FileID != next.FileID)
 	if reset {
 		next.Generation++
 	}
 	next.Stream = old.Stream
-	if next.Stream == "" || reset {
-		next.Stream = fmt.Sprintf("s:%s:%s.%d", next.FileID, scanObservationEpoch, next.Generation)
+
+	syslogObservationReaders.Lock()
+	defer syslogObservationReaders.Unlock()
+	reader, cached := syslogObservationReaders.byPath[path]
+	if info.Size() == 0 && old.Stream == "" && (!cached || reader.processEpoch != scanObservationEpoch) {
+		next.FileID = ""
+		return
 	}
+	if !cached || reader.processEpoch != scanObservationEpoch {
+		reader = syslogObservationReader{processEpoch: scanObservationEpoch, epoch: alert.NewObservationEpoch()}
+	} else {
+		intact := false
+		if (old == reader.base || old == reader.next) && next.FileID == reader.next.FileID {
+			from, _, err := chooseStart(f, reader.next, info.Size())
+			if err == nil && from >= reader.next.Offset {
+				// Compare captured bytes at reused positions. A later disk
+				// read could see another rewrite instead of these records.
+				first := max(start, reader.start)
+				last := min(start+int64(len(data)), reader.start+int64(len(reader.data)))
+				intact = first >= last || bytes.Equal(data[first-start:last-start], reader.data[first-reader.start:last-reader.start])
+			}
+		}
+		if intact {
+			next.Stream, next.Generation = reader.next.Stream, reader.next.Generation
+			reset = false
+		} else {
+			next.Generation = max(next.Generation, reader.next.Generation+1)
+			reset = true
+		}
+	}
+	if next.Stream == "" || reset {
+		next.Stream = fmt.Sprintf("s:%s:%s.%d", next.FileID, reader.epoch, next.Generation)
+	}
+	reader.base, reader.next = old, *next
+	// The existing catch-up bound also bounds this retained read snapshot.
+	reader.start, reader.data = start, data
+	syslogObservationReaders.byPath[path] = reader
 }
 
 // chooseStart returns the byte offset to begin reading from, plus skipped bytes
@@ -334,6 +380,8 @@ func readNewSyslogRecords(path string, st followState) ([]syslogRecord, followSt
 	if err != nil {
 		return nil, st, 0, err
 	}
+	// Capture a rewind before the catch-up cap moves start forward again.
+	reset := start < st.Offset
 
 	if curSize-start > maxCatchUpBytes {
 		capped := curSize - maxCatchUpBytes
@@ -347,8 +395,9 @@ func readNewSyslogRecords(path string, st followState) ([]syslogRecord, followSt
 
 	var records []syslogRecord
 	var consumed int64
+	var data []byte
 	if curSize-start > 0 {
-		data := make([]byte, curSize-start)
+		data = make([]byte, curSize-start)
 		read, rerr := f.ReadAt(data, start)
 		if rerr != nil {
 			return nil, st, 0, rerr
@@ -363,7 +412,7 @@ func readNewSyslogRecords(path string, st followState) ([]syslogRecord, followSt
 	if err := fillIdentity(f, &next, curSize); err != nil {
 		return nil, st, 0, err
 	}
-	setSyslogObservationStream(&next, st, info, start)
+	setSyslogObservationStream(&next, st, path, f, info, reset, start, data[:consumed])
 	return records, next, skipped, nil
 }
 

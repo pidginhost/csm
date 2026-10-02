@@ -75,7 +75,7 @@ func TestLogWatcherStampsObservation(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("findings %+v, want two", got)
 	}
-	stream := fmt.Sprintf("f:%x:%x:%s.0", w.fileID.dev, w.fileID.ino, observationEpoch)
+	stream := fmt.Sprintf("f:%x:%x:%s.0", w.fileID.dev, w.fileID.ino, w.epoch)
 	if len(stream) > 128 {
 		t.Fatalf("stream %q is longer than admission accepts", stream)
 	}
@@ -171,14 +171,40 @@ func TestLogWatcherRotatingBackStartsAnotherGeneration(t *testing.T) {
 
 // A fresh process epoch distinguishes a reused offset after downtime.
 func TestLogWatcherRestartEpochSeparatesPositions(t *testing.T) {
-	w, _, _ := observingWatcher(t, checks.ProducerEximLog)
-	old := observationEpoch
-	t.Cleanup(func() { observationEpoch = old })
+	w, path, ch := observingWatcher(t, checks.ProducerEximLog)
 	a := w.observation(0, time.Unix(1, 0))
-	observationEpoch = alert.NewObservationEpoch()
-	b := w.observation(0, time.Unix(1, 0))
+	w.Stop()
+	restarted, err := newObservedLogWatcher(logWatchSpec{path: path, handler: hitHandler, producer: checks.ProducerEximLog}, &config.Config{}, ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restarted.Stop)
+	b := restarted.observation(0, time.Unix(1, 0))
 	if a.Stream == b.Stream || a.Cursor != b.Cursor {
 		t.Fatalf("restart reused %+v as %+v", a, b)
+	}
+}
+
+func TestLogWatcherReattachmentSeparatesPositions(t *testing.T) {
+	w, path, ch := observingWatcher(t, checks.ProducerEximLog)
+	appendLog(t, path, "hit old\n")
+	w.readNewLines()
+	a := drainObservedFindings(ch)
+	w.Stop()
+	if err := os.Truncate(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	reattached, err := newObservedLogWatcher(logWatchSpec{path: path, handler: hitHandler, producer: checks.ProducerEximLog}, &config.Config{}, ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(reattached.Stop)
+	appendLog(t, path, "hit new\n")
+	reattached.readNewLines()
+	b := drainObservedFindings(ch)
+	if len(a) != 1 || len(b) != 1 || a[0].Observation.Stream == b[0].Observation.Stream ||
+		a[0].Observation.Cursor != "0" || b[0].Observation.Cursor != "0" {
+		t.Fatalf("reattachment reused positions: %+v then %+v", a, b)
 	}
 }
 

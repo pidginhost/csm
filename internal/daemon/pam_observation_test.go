@@ -60,12 +60,14 @@ func TestPAMFailurePIDReuseKeepsDistinctObservations(t *testing.T) {
 // still counts but carries no observation.
 func TestPAMFailureWithoutIdentityHasNoObservation(t *testing.T) {
 	for name, suffix := range map[string]string{
-		"older module":    "",
-		"pid not numeric": " pid=abc ts=1790000000.100000000",
-		"no fraction":     " pid=4242 ts=1790000000",
-		"short fraction":  " pid=4242 ts=1790000000.12",
-		"negative time":   " pid=4242 ts=-1.000000000",
-		"zero time":       " pid=4242 ts=0.000000000",
+		"older module":     "",
+		"pid not numeric":  " pid=abc ts=1790000000.100000000",
+		"no fraction":      " pid=4242 ts=1790000000",
+		"short fraction":   " pid=4242 ts=1790000000.12",
+		"negative time":    " pid=4242 ts=-1.000000000",
+		"zero time":        " pid=4242 ts=0.000000000",
+		"unencodable time": " pid=4242 ts=253402300800.000000000",
+		"overflow time":    " pid=4242 ts=9223372036854775807.999999999",
 	} {
 		t.Run(name, func(t *testing.T) {
 			p, alertCh := observingPAMListener(t)

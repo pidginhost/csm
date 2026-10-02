@@ -542,10 +542,15 @@ func pamObservation(pid, ts string) alert.Observation {
 	if err != nil || boot == "" {
 		return alert.Observation{}
 	}
+	at := time.Unix(s, ns)
+	// Parked observations use time.Time's RFC3339 JSON encoding.
+	if at.Year() > 9999 {
+		return alert.Observation{}
+	}
 	return alert.Observation{
 		Producer:   string(checks.ProducerPAMSocket),
 		Stream:     "pam:" + boot,
 		Cursor:     pid + ":" + ts,
-		ObservedAt: time.Unix(s, ns),
+		ObservedAt: at,
 	}
 }
