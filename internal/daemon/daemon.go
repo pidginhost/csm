@@ -2365,7 +2365,12 @@ func (d *Daemon) handleMailLogSourceRestored() {
 
 func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler LogLineHandler) bool {
 	findings := handler(line.Message, d.currentCfg())
+	var obs alert.Observation
+	if line.Position.Stream != "" {
+		obs = alert.Observation{Producer: string(checks.ProducerMailLog), Stream: line.Position.Stream, Cursor: line.Position.Cursor, ObservedAt: line.Position.ObservedAt}
+	}
 	for i, f := range findings {
+		f.Observation = obs
 		if !alert.Enqueue(d.alertCh, f, d.stopCh) {
 			alert.RecordQueueLoss(d.alertCh, uint64(len(findings[i+1:])))
 			return false

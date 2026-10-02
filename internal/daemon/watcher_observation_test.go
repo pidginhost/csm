@@ -12,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -294,5 +295,28 @@ func TestAccessLogWatchersNameTheirProducer(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 		})
+	}
+}
+
+// A mail log line's position becomes the observation of every finding the
+// mail handler returns for it.
+func TestMailLogDispatchStampsObservation(t *testing.T) {
+	d := New(&config.Config{}, nil, nil, "")
+	at := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	line := maillog.Line{Message: "dovecot: auth failed", Position: maillog.Position{Stream: "m:2a:x.0", Cursor: "77", ObservedAt: at}}
+	handler := func(string, *config.Config) []alert.Finding { return []alert.Finding{{Check: "mail_bruteforce"}} }
+	if !d.dispatchMailLogLine(line, handler) {
+		t.Fatal("mail log dispatch stopped")
+	}
+	got := <-d.alertCh
+	want := alert.Observation{Producer: "mail_log", Stream: "m:2a:x.0", Cursor: "77", ObservedAt: at}
+	if got.Observation != want {
+		t.Fatalf("observation %+v, want %+v", got.Observation, want)
+	}
+	if !d.dispatchMailLogLine(maillog.Line{Message: "dovecot: auth failed"}, handler) {
+		t.Fatal("mail log dispatch stopped")
+	}
+	if got := <-d.alertCh; got.Observation != (alert.Observation{}) {
+		t.Fatalf("a line without a position stamped %+v", got.Observation)
 	}
 }
