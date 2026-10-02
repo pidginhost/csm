@@ -86,3 +86,23 @@ func TestProducerTableIsACopy(t *testing.T) {
 		t.Fatalf("table changed through a copy: %+v", second[0])
 	}
 }
+
+// A producer declares only the claim kinds it reads. An extra kind would let
+// a later change attach a guessed owner that Mint no longer refuses.
+func TestProducerTableDeclaresExactClaimKinds(t *testing.T) {
+	account, mailbox := admission.ClaimAccount, admission.ClaimMailbox
+	want := map[admission.ProducerID][]admission.ClaimKind{
+		ProducerSSHLog:       {account},
+		ProducerSSHLoginScan: {account},
+		ProducerEximLog:      {account, mailbox},
+		ProducerEximHistory:  {account, mailbox},
+		ProducerMailLog:      {account, mailbox},
+		ProducerDomlogScan:   {admission.ClaimDomain},
+		ProducerModSecLog:    {admission.ClaimRequestName},
+	}
+	for _, p := range ProducerTable() {
+		if got := p.Spec.Claims; !slices.Equal(got, want[p.Spec.ID]) {
+			t.Errorf("%s declares claim kinds %v, want %v", p.Spec.ID, got, want[p.Spec.ID])
+		}
+	}
+}
