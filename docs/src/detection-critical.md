@@ -98,6 +98,19 @@ brute-force detectors decide those blocks, and they account for successful
 logins and mail authentication backend outages, so a mistyped password or a
 backend outage never raises an address's local threat score.
 
+At the upgrade restart, stored attack records are re-scored and retired
+scoring state is removed on the next successful save, including records whose
+score is unchanged. Existing counts and event history are retained, and existing
+blocks stay until expiry or operator removal. Rolling back before that save can
+restore the retired scoring state; an older daemon also resumes scoring new raw
+mail failures.
+
+New findings recorded by the attack database cannot reach the local threat
+score alert threshold. The separate database-session response path still uses
+`local_threat_score` to block attacker session addresses and is unchanged.
+`auto_response.block_ips` controls new automatic blocks; there is no setting for
+the startup correction.
+
 The local threat score retains evidence attributed to the server itself. Such
 records can represent forwarded attacks or a compromised local process; firewall
 protection against blocking the server does not establish that traffic is safe.

@@ -35,6 +35,29 @@ type IPRecord struct {
 	AuthSuccessAccounts map[string]int `json:"auth_success_accounts,omitempty"`
 	ThreatScore         int            `json:"threat_score"`
 	AutoBlocked         bool           `json:"auto_blocked,omitempty"`
+	// NeedsRewrite marks retired persisted state even when rescoring leaves
+	// the score unchanged. It is load metadata, never part of the record.
+	NeedsRewrite bool `json:"-"`
+}
+
+func (r *IPRecord) UnmarshalJSON(data []byte) error {
+	type record IPRecord
+	var decoded record
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for _, key := range []string{"brute_force_window_start", "brute_force_window_count", "brute_force_sustained_at"} {
+		if _, ok := fields[key]; ok {
+			decoded.NeedsRewrite = true
+			break
+		}
+	}
+	*r = IPRecord(decoded)
+	return nil
 }
 
 // RecordAttackEvent inserts an attack event into both the primary bucket

@@ -30,29 +30,13 @@ func (db *DB) load() {
 			db.records = make(map[string]*IPRecord, len(storeRecords))
 		}
 		for ip, sr := range storeRecords {
-			rec := &IPRecord{
-				IP:                  sr.IP,
-				FirstSeen:           sr.FirstSeen,
-				LastSeen:            sr.LastSeen,
-				EventCount:          sr.EventCount,
-				ThreatScore:         sr.ThreatScore,
-				AutoBlocked:         sr.AutoBlocked,
-				AttackCounts:        make(map[AttackType]int),
-				Accounts:            make(map[string]int),
-				AuthSuccessAccounts: maps.Clone(sr.AuthSuccessAccounts),
-			}
-			for k, v := range sr.AttackCounts {
-				rec.AttackCounts[AttackType(k)] = v
-			}
-			for k, v := range sr.Accounts {
-				rec.Accounts[k] = v
-			}
+			rec := fromStoreIPRecord(sr)
 			changed, emptied := normalizeLoadedRecord(rec)
 			if emptied {
 				db.markDeletedLocked(ip)
 				continue
 			}
-			if changed {
+			if changed || sr.NeedsRewrite {
 				db.markDirtyLocked(ip)
 			}
 			db.records[ip] = rec
@@ -74,25 +58,45 @@ func (db *DB) load() {
 	if err != nil {
 		return
 	}
-	var records map[string]*IPRecord
-	if err := json.Unmarshal(data, &records); err != nil {
+	var storedRecords map[string]*store.IPRecord
+	if err := json.Unmarshal(data, &storedRecords); err != nil {
 		fmt.Fprintf(os.Stderr, "attackdb: error loading %s: %v\n", path, err)
 		return
 	}
 	db.mu.Lock()
-	for ip, rec := range records {
+	records := make(map[string]*IPRecord, len(storedRecords))
+	for ip, sr := range storedRecords {
+		rec := fromStoreIPRecord(sr)
 		changed, emptied := normalizeLoadedRecord(rec)
 		if emptied {
-			delete(records, ip)
 			db.markDeletedLocked(ip)
 			continue
 		}
-		if changed {
+		if changed || sr.NeedsRewrite {
 			db.markDirtyLocked(ip)
 		}
+		records[ip] = rec
 	}
 	db.records = records
 	db.mu.Unlock()
+}
+
+func fromStoreIPRecord(sr *store.IPRecord) *IPRecord {
+	rec := &IPRecord{
+		IP:                  sr.IP,
+		FirstSeen:           sr.FirstSeen,
+		LastSeen:            sr.LastSeen,
+		EventCount:          sr.EventCount,
+		ThreatScore:         sr.ThreatScore,
+		AutoBlocked:         sr.AutoBlocked,
+		AttackCounts:        make(map[AttackType]int, len(sr.AttackCounts)),
+		Accounts:            maps.Clone(sr.Accounts),
+		AuthSuccessAccounts: maps.Clone(sr.AuthSuccessAccounts),
+	}
+	for k, v := range sr.AttackCounts {
+		rec.AttackCounts[AttackType(k)] = v
+	}
+	return rec
 }
 
 // textDerivedAttackTypes are attack types no producer counts against a
