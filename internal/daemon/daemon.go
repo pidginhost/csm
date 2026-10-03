@@ -2048,12 +2048,12 @@ func (d *Daemon) startLogWatchers() {
 	// Real-time access log watcher for wp-login/xmlrpc brute force detection.
 	// Auto-discover path from platform info (Apache/Nginx/cPanel aware).
 	if accessLogPath := discoverAccessLogPath(); accessLogPath != "" {
-		logFiles = append(logFiles, logWatchSpec{path: accessLogPath, handler: parseAccessLogBruteForce, producer: checks.ProducerAccessLog})
+		logFiles = append(logFiles, logWatchSpec{path: accessLogPath, handler: parseAccessLogBruteForce, handlerForPath: accessLogHandlerForPath, producer: checks.ProducerAccessLog})
 	} else if hostInfo.WebServer != platform.WSNone && len(hostInfo.AccessLogPaths) > 0 {
 		csmlog.Warn("access log not found, will retry every 60s", "candidates", fmt.Sprintf("%v", hostInfo.AccessLogPaths))
 		d.wg.Add(1)
 		obs.Go("logwatch-access-retry", func() {
-			d.retryLogWatcherCandidates(hostInfo.AccessLogPaths, logWatchSpec{handler: parseAccessLogBruteForce, producer: checks.ProducerAccessLog})
+			d.retryLogWatcherCandidates(hostInfo.AccessLogPaths, logWatchSpec{handler: parseAccessLogBruteForce, handlerForPath: accessLogHandlerForPath, producer: checks.ProducerAccessLog})
 		})
 	}
 

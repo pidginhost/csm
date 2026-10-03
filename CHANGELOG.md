@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Web attack detection separates proxied panel sessions from website traffic, including long requests and custom logs. Applies after the upgrade restart; `web_server.access_logs` still selects candidate logs, custom logs need a server-written vhost to identify panel traffic, and existing blocks stay until expiry or removal.
 - SSH login alerts and reputation checks of SSH addresses use only genuine successful logins, preventing false alerts and automatic blocks from client-supplied login text when `auto_response.block_ips` is on; certificate text cannot supply an attack database account. Takes effect at the upgrade restart for new log lines and the next reputation scan; existing blocks and findings stay until they expire or are removed.
 - Failed SSH logins are reported to CSM again through the PAM module, so PAM brute-force and credential-stuffing detection can fire and block, following `auto_response.block_ips`; failures from other PAM services raise a non-blocking alert instead, because those services have their own log detectors. Existing hosts must run `csm pam install` again after upgrading to add the failure hook; it leaves a shared auth stack it cannot edit safely unchanged, such as an authselect-managed one, and exits with an error.
 
@@ -24,7 +25,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Web attack detection skips requests that a cPanel proxy subdomain passes to the panel, which the panel's own log already covers, so a busy cPanel or webmail session or phpMyAdmin use through a proxy subdomain no longer counts toward web floods or admin-panel brute force. Applies to log lines read after the upgrade; no setting changes it.
 - An SSH login from an unknown address records a tenant and attack database account only when sshd confirms a successful login to a hosting account; root and service-user findings carry no `tenant_id` and group by address. This applies to new findings after the upgrade, existing incidents and attack records keep their attribution, and no setting changes it.
 - FTP brute-force alerts use new failures, so old evidence no longer re-blocks an operator-unblocked address or recounts the same burst; diagnostic and cancelled scans leave evidence for live detection. On upgrade, the Findings page drops the row at the first scan without new failures instead of when the window ends; `thresholds.ftp_fail_window_min` still sets how far back failures add up.
 - After the upgrade restart, cPanel web checks try Apache and LiteSpeed logs instead of the panel's own log, avoiding false blocks of customer sessions; the realtime watcher also retries all candidates when no log exists at startup. Periodic checks count aliases of the selected central log once, including operator overrides through `web_server.access_logs`; existing blocks remain until expiry or removal.

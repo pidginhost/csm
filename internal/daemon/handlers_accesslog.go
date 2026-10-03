@@ -102,6 +102,17 @@ func discoverAccessLogPath() string {
 // counts to wp-login.php and xmlrpc.php, and emits findings when thresholds
 // are crossed.
 func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
+	return parseAccessLogBruteForceForLog(line, cfg, true)
+}
+
+func accessLogHandlerForPath(path string) LogLineHandler {
+	central := platform.Detect().IsCPanelCentralAccessLog(path)
+	return func(line string, cfg *config.Config) []alert.Finding {
+		return parseAccessLogBruteForceForLog(line, cfg, central)
+	}
+}
+
+func parseAccessLogBruteForceForLog(line string, cfg *config.Config, central bool) []alert.Finding {
 	// Fast reject: only care about POST requests to known attack targets.
 	if !strings.Contains(line, "POST") {
 		return nil
@@ -112,8 +123,8 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 		return nil
 	}
 	// The panel's own log carries requests a cPanel proxy subdomain passed
-	// through the web server. This handler reads the server's central log.
-	if checks.IsProxiedPanelRequest(path, checks.ProxiedPanelLogVhost(line), true) {
+	// through the web server. The reader identifies the log's provenance.
+	if checks.IsProxiedPanelRequest(path, checks.ProxiedPanelLogVhost(line), central) {
 		return nil
 	}
 

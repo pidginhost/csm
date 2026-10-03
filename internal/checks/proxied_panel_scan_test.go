@@ -72,6 +72,64 @@ func TestProxiedPanelVhostUsesOnlyLogExtensions(t *testing.T) {
 	}
 }
 
+func TestProxiedPanelVhostKeepsFieldPositions(t *testing.T) {
+	base := `192.0.2.85 - - [02/Oct/2026:12:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 10 "-" "Mozilla"`
+	for name, line := range map[string]string{
+		"later extension": base + ` "site.example" "proxy-subdomains-vhost.localhost"`,
+		"quoted login":    strings.Replace(strings.Replace(base, ` - - [`, ` - user\"name\" [`, 1), `"Mozilla"`, `"proxy-subdomains-vhost.localhost"`, 1),
+		"malformed UA":    strings.Replace(base, `"Mozilla"`, `"Mozilla"junk "proxy-subdomains-vhost.localhost"`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := ProxiedPanelLogVhost(line); got != "" {
+				t.Fatalf("client field classified as server vhost: %q", got)
+			}
+			rec, ok := parseAccessLogRecord(line)
+			if !ok {
+				t.Fatal("fixture no longer parses")
+			}
+			stats := newDomlogStatsAt(time.Date(2026, 10, 2, 12, 0, 30, 0, time.UTC))
+			stats.scan(rec, &config.Config{}, nopBotClassifier{})
+			if stats.wpLogin["192.0.2.85"] != 1 {
+				t.Fatal("website login was suppressed by a client field")
+			}
+		})
+	}
+}
+
+func TestProxiedPanelVhostHandlesRemoteUsers(t *testing.T) {
+	for _, user := range []string{`a b`, `""`, `a[1]`, `x] [02/Oct/2026`, `user\"name`} {
+		t.Run(user, func(t *testing.T) {
+			base := `192.0.2.85 - ` + user + ` [02/Oct/2026:12:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 10 "-" "Mozilla"`
+			if got := ProxiedPanelLogVhost(base + ` "proxy-subdomains-vhost.localhost"`); got != "proxy-subdomains-vhost.localhost" {
+				t.Fatal("server vhost was lost after a remote user")
+			}
+			clientMarker := strings.Replace(base, `"Mozilla"`, `"proxy-subdomains-vhost.localhost"`, 1)
+			if got := ProxiedPanelLogVhost(clientMarker); got != "" {
+				t.Fatal("remote user shifted the User-Agent into the vhost field")
+			}
+		})
+	}
+}
+
+func TestDomlogProxyClassificationUsesTheFullTarget(t *testing.T) {
+	for _, uri := range []string{
+		"/___proxy_subdomain_cpanel/" + strings.Repeat("a", 4100) + "/../../wp-login.php",
+		"/___proxy_subdomain_cpanel/" + strings.Repeat("a", 4100) + "/%2e%2e/%2e%2e/wp-login.php",
+	} {
+		line := fmt.Sprintf(`192.0.2.85 - - [02/Oct/2026:12:00:00 +0000] "POST %s HTTP/1.1" 200 10 "-" "Mozilla"`, uri)
+		rec, ok := parseAccessLogRecord(line)
+		if !ok {
+			t.Fatal("fixture no longer parses")
+		}
+		rec.Central = true
+		stats := newDomlogStatsAt(time.Date(2026, 10, 2, 12, 0, 30, 0, time.UTC))
+		stats.scan(rec, &config.Config{}, nopBotClassifier{})
+		if stats.httpReqs["192.0.2.85"] != 1 {
+			t.Fatal("website request was suppressed after target truncation")
+		}
+	}
+}
+
 // A client chooses the logged path. It names a proxied request only in the
 // central log and only if it still starts with the prefix once decoded and
 // cleaned the way the server routes it.

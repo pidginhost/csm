@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +12,75 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 )
+
+func TestAccessLogWatcherCountsCustomWebsiteProxyPaths(t *testing.T) {
+	for _, late := range []bool{false, true} {
+		t.Run(fmt.Sprint("late=", late), func(t *testing.T) {
+			resetAccessLogTrackerState()
+			t.Cleanup(resetAccessLogTrackerState)
+			oldInterval := logWatcherRetryInterval
+			logWatcherRetryInterval = 10 * time.Millisecond
+			t.Cleanup(func() { logWatcherRetryInterval = oldInterval })
+			root := t.TempDir()
+			website := filepath.Join(root, "site.example-ssl_log")
+			panel, server := platform.PanelCPanel, platform.WSApache
+			platform.ResetForTest()
+			platform.SetOverrides(platform.Overrides{
+				Panel: &panel, WebServer: &server,
+				AccessLogPaths: []string{website},
+				DomlogGlobs:    []string{filepath.Join(root, "*-ssl_log")},
+				ErrorLogPaths:  []string{filepath.Join(root, "error_log")},
+			})
+			t.Cleanup(platform.ResetForTest)
+			cfg := &config.Config{}
+			cfg.MailLogs.Source = "file"
+			cfg.MailLogs.File = filepath.Join(root, "mail_log")
+			if !late {
+				if err := os.WriteFile(website, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			d := New(cfg, nil, nil, "")
+			d.startLogWatchers()
+			t.Cleanup(func() { close(d.stopCh); d.wg.Wait() })
+			if late {
+				if err := os.WriteFile(website, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			deadline := time.After(2 * time.Second)
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+			var watcher *LogWatcher
+			for watcher == nil {
+				d.logWatchersMu.Lock()
+				for _, w := range d.logWatchers {
+					if w.path == website {
+						watcher = w
+					}
+				}
+				d.logWatchersMu.Unlock()
+				if watcher != nil {
+					break
+				}
+				select {
+				case <-deadline:
+					t.Fatal("website watcher did not attach")
+				case <-ticker.C:
+				}
+			}
+			var findings []alert.Finding
+			for i := 0; i < accessLogWPLoginThreshold; i++ {
+				findings = append(findings, watcher.handler(makeAccessLogLine("192.0.2.30", "POST", "/___proxy_subdomain_cpanel/wp-login.php"), cfg)...)
+			}
+			if len(findings) != 1 || findings[0].Check != "wp_login_bruteforce" || findings[0].SourceIP != "192.0.2.30" {
+				t.Fatalf("custom website findings %+v, want one login finding", findings)
+			}
+		})
+	}
+}
 
 // cPanel proxy subdomains reach the panel through the web server, which logs
 // them under /___proxy_subdomain_<service>/ (LiteSpeed) or as the proxy vhost
@@ -32,11 +102,12 @@ func TestAccessLogSkipsProxiedPanelRequests(t *testing.T) {
 		}
 	}
 	for name, line := range map[string]string{
-		"direct":        makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php"),
-		"nested marker": makeAccessLogLine("203.0.113.83", "POST", "/archive/___proxy_subdomain_text/phpmyadmin/index.php"),
-		"query marker":  makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php?next=/___proxy_subdomain_text/"),
-		"UA marker":     strings.Replace(makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php"), `"Mozilla"`, `"proxy-subdomains-vhost.localhost"`, 1),
-		"quoted UA":     strings.Replace(makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php"), `"Mozilla"`, `"agent \"proxy-subdomains-vhost.localhost\""`, 1),
+		"direct":          makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php"),
+		"nested marker":   makeAccessLogLine("203.0.113.83", "POST", "/archive/___proxy_subdomain_text/phpmyadmin/index.php"),
+		"query marker":    makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php?next=/___proxy_subdomain_text/"),
+		"UA marker":       strings.Replace(makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php"), `"Mozilla"`, `"proxy-subdomains-vhost.localhost"`, 1),
+		"quoted UA":       strings.Replace(makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php"), `"Mozilla"`, `"agent \"proxy-subdomains-vhost.localhost\""`, 1),
+		"later extension": makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php") + ` "site.example" "proxy-subdomains-vhost.localhost"`,
 	} {
 		resetAccessLogTrackerState()
 		var findings []alert.Finding

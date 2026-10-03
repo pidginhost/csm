@@ -42,9 +42,10 @@ type accessLogRecord struct {
 	// ProxiedPanel is set when the trailing vhost field names cPanel's proxy
 	// subdomain vhost.
 	ProxiedPanel bool
-	// Central is set when the line came from the server's central access
-	// log, the only log where a proxied request's path names it.
+	// Central is set only for a recognized central access log on cPanel.
 	Central bool
+	// proxyPath is classified before the URI is truncated for aggregation.
+	proxyPath bool
 }
 
 // uaKind is the User-Agent classification produced by classifyUA and
@@ -189,7 +190,7 @@ func newDomlogStatsAt(t time.Time) *domlogStats {
 // not contribute to either legacy or new metrics.
 func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClassifier) {
 	// A per-vhost domlog never names a proxied request by path.
-	if rec.ProxiedPanel || IsProxiedPanelRequest(rec.URI, "", rec.Central) {
+	if rec.ProxiedPanel || rec.Central && rec.proxyPath {
 		return
 	}
 	ip := normalizeHTTPClientIP(clientIPForRecord(rec, cfg))
@@ -1014,6 +1015,7 @@ func parseAccessLogRecordWithURILimit(line string, maxURILen int) (accessLogReco
 	}
 	if len(parts) >= 2 {
 		uri := parts[1]
+		rec.proxyPath = IsProxiedPanelRequest(uri, "", true)
 		if len(uri) > maxURILen {
 			uri = uri[:maxURILen]
 		}

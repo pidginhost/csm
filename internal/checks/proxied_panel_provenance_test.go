@@ -48,13 +48,24 @@ func TestCheckWPBruteForceSkipsCentralProxyPaths(t *testing.T) {
 		lines = append(lines, line("192.0.2.30", "/___proxy_subdomain_cpanel/wp-login.php"), line("192.0.2.31", "/wp-login.php"))
 	}
 	writeAccessLogLines(t, central, now, lines...)
+	const centralPath = "/usr/local/apache/logs/access_log"
+	panel := platform.PanelCPanel
 	platform.ResetForTest()
 	platform.SetOverrides(platform.Overrides{
-		AccessLogPaths: []string{central},
+		Panel:          &panel,
+		AccessLogPaths: []string{centralPath},
 		DomlogGlobs:    []string{filepath.Join(root, "domlogs", "*")},
 	})
 	t.Cleanup(platform.ResetForTest)
-	withMockOS(t, &mockOS{glob: filepath.Glob, stat: os.Stat, open: func(path string) (*os.File, error) {
+	withMockOS(t, &mockOS{glob: filepath.Glob, stat: func(path string) (os.FileInfo, error) {
+		if path == centralPath {
+			return os.Stat(central)
+		}
+		return os.Stat(path)
+	}, open: func(path string) (*os.File, error) {
+		if path == centralPath {
+			return os.Open(central)
+		}
 		if strings.HasPrefix(path, root+string(filepath.Separator)) {
 			return os.Open(path)
 		}
@@ -75,5 +86,34 @@ func TestCheckWPBruteForceSkipsCentralProxyPaths(t *testing.T) {
 	}
 	if !direct {
 		t.Fatal("direct central traffic no longer counts")
+	}
+}
+
+func TestCheckWPBruteForceCountsCustomWebsiteProxyPaths(t *testing.T) {
+	for _, panel := range []platform.Panel{platform.PanelNone, platform.PanelCPanel} {
+		t.Run(string(panel), func(t *testing.T) {
+			root := t.TempDir()
+			website := filepath.Join(root, "site.example-ssl_log")
+			now := time.Now()
+			line := fmt.Sprintf(`192.0.2.30 - - [%s] "POST /___proxy_subdomain_cpanel/wp-login.php HTTP/1.1" 401 0 "-" "-"`, now.Format("02/Jan/2006:15:04:05 -0700"))
+			writeAccessLogLines(t, website, now, strings.Split(strings.TrimSpace(strings.Repeat(line+"\n", 25)), "\n")...)
+			platform.ResetForTest()
+			platform.SetOverrides(platform.Overrides{
+				Panel:          &panel,
+				AccessLogPaths: []string{website},
+				DomlogGlobs:    []string{filepath.Join(root, "*-ssl_log")},
+			})
+			t.Cleanup(platform.ResetForTest)
+			withMockOS(t, &mockOS{glob: filepath.Glob, stat: os.Stat, open: func(path string) (*os.File, error) {
+				if strings.HasPrefix(path, root+string(filepath.Separator)) {
+					return os.Open(path)
+				}
+				return nil, os.ErrNotExist
+			}})
+			got := CheckWPBruteForce(context.Background(), &config.Config{}, nil)
+			if len(got) != 1 || got[0].Check != "wp_login_bruteforce" || got[0].SourceIP != "192.0.2.30" {
+				t.Fatalf("custom website traffic findings %+v, want one login finding", got)
+			}
+		})
 	}
 }

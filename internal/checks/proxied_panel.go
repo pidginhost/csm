@@ -41,25 +41,33 @@ func IsProxiedPanelRequest(uri, vhost string, central bool) bool {
 // ProxiedPanelLogVhost reads optional Combined Log Format extensions only.
 // Request, referrer and User-Agent values cannot supply a server vhost.
 func ProxiedPanelLogVhost(line string) string {
-	for field := 0; ; field++ {
-		start := strings.IndexByte(line, '"')
-		if start < 0 {
-			return ""
-		}
-		line = line[start+1:]
-		end := 0
-		for end < len(line) && line[end] != '"' {
-			if line[end] == '\\' {
-				end++
-			}
-			end++
-		}
-		if end >= len(line) {
-			return ""
-		}
-		if field >= 3 && line[:end] == proxySubdomainVhost {
-			return proxySubdomainVhost
-		}
-		line = line[end+1:]
+	// The header parser preserves remote users containing spaces or
+	// brackets. Neither login text nor later extensions can name the vhost.
+	_, line = patternToken(line)
+	_, line, ok := patternSplitHeader(line)
+	if !ok {
+		return ""
 	}
+	_, line, ok = patternQuotedField(line)
+	if !ok {
+		return ""
+	}
+	for range 2 { // status and response size
+		var token string
+		token, line = patternToken(line)
+		if token == "" {
+			return ""
+		}
+	}
+	for range 2 { // referrer and User-Agent
+		_, line, ok = patternQuotedField(line)
+		if !ok {
+			return ""
+		}
+	}
+	vhost, _, ok := patternQuotedField(line)
+	if ok && vhost == proxySubdomainVhost {
+		return vhost
+	}
+	return ""
 }

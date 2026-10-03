@@ -41,11 +41,12 @@ type ObservedLineHandler func(line string, obs alert.Observation, cfg *config.Co
 // logWatchSpec is one log the daemon watches: the handler, and the evidence
 // producer its findings come from (empty for a log that feeds none).
 type logWatchSpec struct {
-	name     string
-	path     string
-	handler  LogLineHandler
-	observed ObservedLineHandler
-	producer admission.ProducerID
+	name           string
+	path           string
+	handler        LogLineHandler
+	handlerForPath func(string) LogLineHandler
+	observed       ObservedLineHandler
+	producer       admission.ProducerID
 }
 
 // LogWatcher tails a log file using inotify and processes new lines.
@@ -173,7 +174,11 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 
 // newObservedLogWatcher watches a log as the evidence producer spec names.
 func newObservedLogWatcher(spec logWatchSpec, cfg *config.Config, alertCh chan<- alert.Finding) (*LogWatcher, error) {
-	w, err := NewLogWatcher(spec.path, cfg, spec.handler, alertCh)
+	handler := spec.handler
+	if spec.handlerForPath != nil {
+		handler = spec.handlerForPath(spec.path)
+	}
+	w, err := NewLogWatcher(spec.path, cfg, handler, alertCh)
 	if err != nil {
 		return nil, err
 	}
