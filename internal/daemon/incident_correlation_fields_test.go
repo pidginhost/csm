@@ -139,8 +139,9 @@ func TestSMTPAuthTrackerPopulatesCorrelationFields(t *testing.T) {
 	if !ok {
 		t.Fatal("no smtp_subnet_spray finding emitted")
 	}
-	if subnet.SourceIP != "203.0.113.0/24" {
-		t.Errorf("smtp_subnet_spray SourceIP = %q, want 203.0.113.0/24", subnet.SourceIP)
+	// The subnet is structured; SourceIP stays an address field.
+	if subnet.SourceIP != "" || len(subnet.CIDRs) != 1 || subnet.CIDRs[0] != "203.0.113.0/24" {
+		t.Errorf("smtp_subnet_spray SourceIP = %q CIDRs = %v, want no address and the subnet 203.0.113.0/24", subnet.SourceIP, subnet.CIDRs)
 	}
 	assertCorrelates(t, subnet)
 
@@ -182,8 +183,9 @@ func TestMailAuthTrackerPopulatesCorrelationFields(t *testing.T) {
 	if !ok {
 		t.Fatal("no mail_subnet_spray finding emitted")
 	}
-	if subnet.SourceIP != "198.51.100.0/24" {
-		t.Errorf("mail_subnet_spray SourceIP = %q, want 198.51.100.0/24", subnet.SourceIP)
+	// The subnet is structured; SourceIP stays an address field.
+	if subnet.SourceIP != "" || len(subnet.CIDRs) != 1 || subnet.CIDRs[0] != "198.51.100.0/24" {
+		t.Errorf("mail_subnet_spray SourceIP = %q CIDRs = %v, want no address and the subnet 198.51.100.0/24", subnet.SourceIP, subnet.CIDRs)
 	}
 	assertCorrelates(t, subnet)
 

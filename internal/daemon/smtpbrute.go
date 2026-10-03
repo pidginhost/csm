@@ -316,7 +316,7 @@ func (t *smtpAuthTracker) RecordObserved(ip, account string, obs alert.Observati
 					prefix, len(s.ips), t.window),
 				Details:           "Real-time detection of dovecot_login auth failures from many IPs in one /24",
 				Timestamp:         now,
-				SourceIP:          cidr,
+				CIDRs:             []string{cidr},
 				SprayConstituents: sprayConstituents(s.ips),
 			})
 		}

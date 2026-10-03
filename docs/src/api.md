@@ -1275,7 +1275,7 @@ Every finding in `/api/v1/findings`, `/api/v1/events`, and the JSONL audit log c
 | `tenant_id` | Tenant attribution from the verdict callback or panel-side webhook reply |
 | `domain` | Domain associated with the event (e.g. PHP-relay scriptKey host, mailbox domain) |
 | `mailbox` | Mailbox attribution (e.g. mail brute-force target, PHP-relay envelope-from) |
-| `cidrs` | Offending subnets the finding names (e.g. a distributed crawl's collapsed subnets) |
+| `cidrs` | Offending subnets the finding names (e.g. a distributed crawl's collapsed subnets, or a mail or SMTP password spray's /24; sprays leave `source_ip` empty) |
 | `relay_total` | PHP-relay trigger count for the path that fired |
 | `relay_breakdown` | PHP-relay script samples that contributed to the alert, with script key, hit count, last seen time, and a bounded sample subject when available |
 
