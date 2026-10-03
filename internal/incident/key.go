@@ -70,7 +70,7 @@ func KeyFor(f alert.Finding) Key {
 		// collapses one attacker's hits across many victims into a single
 		// incident. ClassifyKind only returns these kinds when a source IP
 		// is present.
-		return Key{RemoteIP: f.SourceIP}
+		return Key{RemoteIP: alert.AttackerAddress(f)}
 	}
 
 	mailbox, domain := canonicalizeMailboxDomain(f.Mailbox, f.Domain)

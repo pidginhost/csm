@@ -237,7 +237,9 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	if key.IsEmpty() {
 		return "", false, nil
 	}
-	if key.Host == "" && f.SourceIP != "" && c.cfg.IsWhitelisted != nil && c.cfg.IsWhitelisted(f.SourceIP) {
+	// A spray names its subnet in CIDRs; it is whitelisted and recorded as
+	// the remote address exactly as when SourceIP held it.
+	if src := alert.AttackerAddress(f); key.Host == "" && src != "" && c.cfg.IsWhitelisted != nil && c.cfg.IsWhitelisted(src) {
 		return "", false, nil
 	}
 	var afterUnlock func()
@@ -719,10 +721,10 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	if f.FilePath != "" {
 		ev.Path = f.FilePath
 	}
-	if f.SourceIP != "" {
-		ev.RemoteIP = f.SourceIP
+	if src := alert.AttackerAddress(f); src != "" {
+		ev.RemoteIP = src
 		if !inc.RemoteIPEvidence && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
-			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(f.SourceIP) {
+			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(src) {
 				inc.RemoteIPEvidence = true
 				transition = true
 			}

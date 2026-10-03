@@ -113,8 +113,8 @@ func emailGroupKey(kind string, f alert.Finding) string {
 		if mailbox != "" {
 			return "mailbox:" + mailbox
 		}
-		if f.SourceIP != "" {
-			return "ip:" + f.SourceIP
+		if ip := alert.AttackerAddress(f); ip != "" {
+			return "ip:" + ip
 		}
 		if domain != "" {
 			return "domain:" + domain
@@ -129,8 +129,8 @@ func emailGroupKey(kind string, f alert.Finding) string {
 		if domain != "" {
 			return kind + ":domain:" + domain
 		}
-		if f.SourceIP != "" {
-			return kind + ":ip:" + f.SourceIP
+		if ip := alert.AttackerAddress(f); ip != "" {
+			return kind + ":ip:" + ip
 		}
 		// Fall back to message text so two distinct payloads with no
 		// identity fields still produce two groups instead of collapsing.
@@ -160,8 +160,8 @@ func emailGroupTitle(kind string, f alert.Finding) string {
 	if f.Domain != "" {
 		return f.Domain
 	}
-	if f.SourceIP != "" {
-		return f.SourceIP
+	if ip := alert.AttackerAddress(f); ip != "" {
+		return ip
 	}
 	return strings.TrimSpace(f.Message)
 }
@@ -179,7 +179,7 @@ func emailGroupSubject(kind string, f alert.Finding) string {
 	if f.Domain != "" {
 		return "domain"
 	}
-	if f.SourceIP != "" {
+	if alert.AttackerAddress(f) != "" {
 		return "ip"
 	}
 	return "unknown"
@@ -245,8 +245,8 @@ func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter s
 		if ts.After(agg.group.LastSeen) {
 			agg.group.LastSeen = ts.UTC()
 		}
-		if f.SourceIP != "" {
-			agg.ipCounts[f.SourceIP]++
+		if ip := alert.AttackerAddress(f); ip != "" {
+			agg.ipCounts[ip]++
 		}
 		if f.Domain != "" {
 			agg.domainSet[strings.ToLower(f.Domain)] = struct{}{}
