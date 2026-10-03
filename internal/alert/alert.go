@@ -143,6 +143,9 @@ type Finding struct {
 	// Intel names the threat intelligence a reputation finding rests on and
 	// when that claim lapses. Internal-only like Claims.
 	Intel *admission.IntelRef `json:"-"`
+	// Cause names the finding a derived finding was made from, such as the
+	// database finding behind a session-attacker block. Internal-only.
+	Cause *Cause `json:"-"`
 	// Claims say which account a finding concerns and where each value came
 	// from, as the producer read it. Admission resolves the owner from them,
 	// so a producer records only what it read, never a guess.
