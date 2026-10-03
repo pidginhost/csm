@@ -87,7 +87,7 @@ Findings still queued at shutdown retain the existing restart replay behavior:
 the next daemon run evaluates them again under the same persisted limits.
 Parked findings also keep the offending subnets and targeted accounts needed for
 subnet response and credential spray correlation. Older parked findings replay
-without that data; public finding JSON is unchanged.
+without that data. The subnets also appear in the public `cidrs` field.
 
 Parked reputation findings keep their intelligence source and expiry. If an
 expiry cannot be encoded, only that intelligence metadata is dropped; the
