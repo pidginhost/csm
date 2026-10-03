@@ -1491,9 +1491,6 @@ func (c *Correlator) maybeBlockSprayLocked(inc *Incident, ip string, hits int, n
 	if target := normalizeIncidentRemoteIP(ip); target == "" || !c.blockAddressAttested(inc, target) {
 		return nil
 	}
-	if incidentAutoBlockExcludedOnly(inc) {
-		return nil
-	}
 	switch strings.ToLower(c.spray.cfg.BlockAtSeverity) {
 	case "high":
 		if inc.Severity < alert.High {
@@ -1547,9 +1544,6 @@ func (c *Correlator) maybeBlockIncidentLocked(inc *Incident, now time.Time, why 
 	if len(c.cfg.AutoBlock.Kinds) > 0 && !c.cfg.AutoBlock.Kinds[inc.Kind] {
 		return nil
 	}
-	if incidentAutoBlockExcludedOnly(inc) {
-		return nil
-	}
 	switch strings.ToLower(c.cfg.AutoBlock.BlockAtSeverity) {
 	case "high":
 		if inc.Severity < alert.High {
@@ -1563,53 +1557,6 @@ func (c *Correlator) maybeBlockIncidentLocked(inc *Incident, now time.Time, why 
 		return nil
 	}
 	return c.triggerIncidentBlockLocked(inc, ip, now, why)
-}
-
-// incidentAutoBlockExcludedOnly keeps advisory incident signals visible without
-// letting them become firewall evidence unless another blockable finding joins.
-func incidentAutoBlockExcludedOnly(inc *Incident) bool {
-	seen := false
-	for _, ev := range inc.Timeline {
-		if ev.Kind == incidentTimelineTruncatedKind {
-			continue
-		}
-		if ev.Kind != "finding" || ev.Check == "" {
-			continue
-		}
-		seen = true
-		if !incidentEventAutoBlockExcluded(ev) {
-			return false
-		}
-	}
-	return seen
-}
-
-const establishedMailSourceMarker = "(established multi-mailbox source)"
-
-func incidentEventAutoBlockExcluded(ev IncidentEvent) bool {
-	switch strings.ToLower(strings.TrimSpace(ev.Check)) {
-	case "cpanel_file_upload", "cpanel_file_upload_realtime",
-		"cpanel_login", "cpanel_login_realtime", "ftp_login", "ftp_login_realtime",
-		"webmail_login_realtime", "pam_login":
-		// Retained incidents can still carry the old severity of audit events.
-		return true
-	case "ftp_login_after_bruteforce",
-		"mail_bruteforce_suspected",
-		"modsec_classifier_gap",
-		"modsec_low_confidence_burst":
-		return true
-	case "mail_account_compromised":
-		severity := strings.ToUpper(strings.TrimSpace(ev.Severity))
-		if severity != "" {
-			return severity != alert.Critical.String()
-		}
-		// Incidents persisted before timeline events carried severity can still
-		// contain this exact advisory marker. Critical compromise messages never
-		// carry it, so they remain blockable after restore.
-		return strings.HasSuffix(strings.TrimSpace(ev.Message), establishedMailSourceMarker)
-	default:
-		return false
-	}
 }
 
 func (c *Correlator) incidentBlockAllowed() bool {

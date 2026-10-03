@@ -178,6 +178,14 @@ that event, the original link cannot be recovered; it is never made from
 message text. Existing blocks are unchanged.
 
 
+Automatic incident blocks use the address-evidence gate without a separate
+exclusion list. Advisory events alone never attest an address, but can raise
+an incident's severity after an earlier attestation, even when that event
+left a trimmed timeline. Retained evidence in existing incidents follows
+this rule on the next finding after upgrade. The existing incident and spray
+blocking settings still govern the action.
+
+
 Whitelisted IPs (entries in `reputation.whitelist` and the live bbolt
 whitelist updated via the Web UI) are skipped from spray detection so
 internal mail relays, NAT egresses, and known-good infrastructure

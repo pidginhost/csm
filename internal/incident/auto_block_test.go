@@ -309,47 +309,23 @@ func TestSprayAutoBlockSkipsEstablishedSourceMailCompromiseAdvisory(t *testing.T
 	}
 }
 
-func TestIncidentAutoBlockExclusionRestoresLegacyMailCompromiseEvents(t *testing.T) {
-	tests := []struct {
-		name    string
-		event   IncidentEvent
-		exclude bool
-	}{
-		{
-			name: "advisory marker",
-			event: IncidentEvent{
-				Kind:    "finding",
-				Check:   "mail_account_compromised",
-				Message: "Mail account compromise (established multi-mailbox source)",
-			},
-			exclude: true,
-		},
-		{
-			name: "critical message",
-			event: IncidentEvent{
-				Kind:    "finding",
-				Check:   "mail_account_compromised",
-				Message: "Mail account compromise",
-			},
-			exclude: false,
-		},
-		{
-			name: "marker inside attacker-controlled text",
-			event: IncidentEvent{
-				Kind:    "finding",
-				Check:   "mail_account_compromised",
-				Message: "Mail account compromise for (established multi-mailbox source) from 192.0.2.76",
-			},
-			exclude: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			inc := &Incident{Timeline: []IncidentEvent{tt.event}}
-			if got := incidentAutoBlockExcludedOnly(inc); got != tt.exclude {
-				t.Errorf("incidentAutoBlockExcludedOnly() = %v, want %v", got, tt.exclude)
-			}
-		})
+// Events stored before findings carried a severity cannot attest a
+// Critical-only check, whatever their message says, so a legacy mail
+// compromise event never makes its address blockable by itself.
+func TestLegacyMailCompromiseEventsDoNotAttest(t *testing.T) {
+	c := NewCorrelator(CorrelatorConfig{AddressEvidence: registryEvidence})
+	for _, message := range []string{
+		"Mail account compromise (established multi-mailbox source)",
+		"Mail account compromise",
+		"Mail account compromise for (established multi-mailbox source) from 192.0.2.76",
+	} {
+		inc := &Incident{
+			CorrelationKey: &Key{RemoteIP: "192.0.2.76"},
+			Timeline:       []IncidentEvent{{Kind: "finding", Check: "mail_account_compromised", Message: message, RemoteIP: "192.0.2.76"}},
+		}
+		if c.blockAddressAttested(inc, "192.0.2.76") {
+			t.Errorf("legacy event %q attested its address", message)
+		}
 	}
 }
 
