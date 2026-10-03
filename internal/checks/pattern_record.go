@@ -286,13 +286,20 @@ func patternQuotedField(s string) (raw, rest string, ok bool) {
 		return "", s, false
 	}
 	for i := 1; i < len(s); {
-		if s[i] == '"' {
-			if i+1 < len(s) && s[i+1] != ' ' && s[i+1] != '\t' {
-				return "", s, false
-			}
-			return s[1:i], s[i+1:], true
+		// Only a quote or an escape changes the scan; skip plain bytes.
+		q := strings.IndexByte(s[i:], '"')
+		if q < 0 {
+			break
 		}
-		_, i = patternLogByte(s, i)
+		if b := strings.IndexByte(s[i:i+q], '\\'); b >= 0 {
+			_, i = patternLogByte(s, i+b)
+			continue
+		}
+		i += q
+		if i+1 < len(s) && s[i+1] != ' ' && s[i+1] != '\t' {
+			return "", s, false
+		}
+		return s[1:i], s[i+1:], true
 	}
 	return "", s, false
 }
@@ -326,6 +333,14 @@ func patternLogByte(s string, i int) (byte, int) {
 }
 
 func patternDecodeField(raw string, limit int) (string, bool) {
+	// Every escape starts with a backslash; a field without one decodes to
+	// itself, so most lines need no copy.
+	if strings.IndexByte(raw, '\\') < 0 {
+		if len(raw) <= limit {
+			return raw, false
+		}
+		return raw[:max(limit, 0)], len(raw) > 0
+	}
 	var out strings.Builder
 	over := false
 	for i := 0; i < len(raw); {
