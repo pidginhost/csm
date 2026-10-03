@@ -89,6 +89,11 @@ Parked findings also keep the offending subnets and targeted accounts needed for
 subnet response and credential spray correlation. Older parked findings replay
 without that data; public finding JSON is unchanged.
 
+Parked reputation findings keep their intelligence source and expiry. If an
+expiry cannot be encoded, only that intelligence metadata is dropped; the
+finding and the rest of the queued batch are still saved and replayed. This
+handling is automatic and has no setting.
+
 A failed PHP cleaner leaves the file and any pre-clean backup for manual review.
 It no longer escalates to whole-file quarantine. A cleaner that recognizes no
 injection or declines an unsupported target refuses the file instead of failing.

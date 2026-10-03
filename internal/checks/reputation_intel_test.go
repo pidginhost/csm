@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 func reputationFindingFor(t *testing.T, findings []alert.Finding, ip string) alert.Finding {
@@ -156,6 +157,54 @@ func TestReputationIntelAcrossQueryPaths(t *testing.T) {
 			}
 			if count != tc.count {
 				t.Fatalf("reputation findings %d, want %d", count, tc.count)
+			}
+		})
+	}
+}
+
+func TestReputationIntelIgnoresLapsedEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		checkedAgo time.Duration
+		cache      bool
+		wantSource string
+	}{
+		{name: "missing cache", wantSource: "upstream"},
+		{name: "fresh cache", cache: true, checkedAgo: time.Hour, wantSource: "abuseipdb"},
+		{name: "expired cache", cache: true, checkedAgo: 7 * time.Hour, wantSource: "upstream"},
+		{name: "future cache", cache: true, checkedAgo: -time.Hour, wantSource: "upstream"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, db := reputationQueueFixture(t, 1)
+			t.Cleanup(SetGlobalThreatDBForTest(t.TempDir()))
+			threatDB := GetThreatDB()
+			threatDB.badIPs["198.51.100.1"] = "expired-list"
+			threatDB.badIPExpiry["198.51.100.1"] = time.Now().Add(-time.Hour)
+			checked := time.Now().Add(-tc.checkedAgo).Truncate(time.Second)
+			if tc.cache {
+				if err := db.SetReputation("198.51.100.1", store.ReputationEntry{Score: 90, CheckedAt: checked}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg.Reputation.AbuseIPDBKey = ""
+			cfg.Reputation.Upstream.Enabled = true
+			cfg.Reputation.Upstream.URL = "https://intel.example.test"
+			withDefaultHTTPTransport(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = fmt.Fprintf(w, `{"ip":%q,"score":80}`, r.URL.Query().Get("ip"))
+			}))
+			before := time.Now()
+			findings := CheckIPReputation(context.Background(), cfg, nil)
+			after := time.Now()
+			f := reputationFindingFor(t, findings, "198.51.100.1")
+			if f.Intel == nil || f.Intel.Source != tc.wantSource {
+				t.Fatalf("intel %+v, want %s instead of lapsed evidence", f.Intel, tc.wantSource)
+			}
+			if tc.wantSource == "abuseipdb" {
+				if !f.Intel.Expires.Equal(checked.Add(6 * time.Hour)) {
+					t.Fatalf("cached expiry %v does not match its original lifetime", f.Intel.Expires)
+				}
+			} else if f.Intel.Expires.Before(before.Add(6*time.Hour)) || f.Intel.Expires.After(after.Add(6*time.Hour)) {
+				t.Fatalf("supplemental expiry %v does not match its new lifetime", f.Intel.Expires)
 			}
 		})
 	}

@@ -37,7 +37,13 @@ func toPendingRecords(findings []alert.Finding) []pendingFinding {
 	records := make([]pendingFinding, len(findings))
 	for i, f := range findings {
 		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets, ResponseClaims: f.Claims,
-			ResponseSprayConstituents: f.SprayConstituents, ResponseIntel: f.Intel}
+			ResponseSprayConstituents: f.SprayConstituents}
+		// An unencodable expiry costs only its intel, not the whole batch.
+		if f.Intel != nil {
+			if _, err := f.Intel.Expires.MarshalJSON(); err == nil {
+				records[i].ResponseIntel = f.Intel
+			}
+		}
 		// A log can carry a time the JSON encoder refuses. Dropping that
 		// observation costs one finding its provenance, not the whole batch.
 		if _, err := f.Observation.ObservedAt.MarshalJSON(); err == nil && f.Observation != (alert.Observation{}) {
