@@ -178,6 +178,7 @@
       "perf_wp_config",
       "perf_wp_cron",
       "perf_wp_loopback",
+      "perf_wp_myisam",
       "perf_wp_transients",
       "phishing_credential_log",
       "phishing_directory",
