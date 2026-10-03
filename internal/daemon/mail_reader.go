@@ -8,7 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/obs"
 )
 
-func (d *Daemon) startMailLogReader(platformDefault string, handler LogLineHandler) {
+func (d *Daemon) startMailLogReader(platformDefault string, handler ObservedLineHandler) {
 	d.MarkWatcher("maillog", false)
 	queue := maillog.NewQueue()
 	d.registerQueueSource("mail", queue)

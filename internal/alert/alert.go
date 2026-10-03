@@ -137,6 +137,9 @@ type Finding struct {
 	// collapsed subnets of a distributed crawl. The subnet auto-response
 	// reads this, never the Message/Details text.
 	CIDRs []string `json:"cidrs,omitempty"`
+	// SprayConstituents lists the addresses a subnet spray counted and the
+	// line that last named each. Internal-only like SprayTargets.
+	SprayConstituents []SprayConstituent `json:"-"`
 	// Claims say which account a finding concerns and where each value came
 	// from, as the producer read it. Admission resolves the owner from them,
 	// so a producer records only what it read, never a guess.

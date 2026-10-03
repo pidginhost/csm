@@ -27,12 +27,15 @@ type pendingFinding struct {
 	ResponseSprayTargets []string           `json:"response_spray_targets,omitempty"`
 	ResponseClaims       []admission.Claim  `json:"response_claims,omitempty"`
 	ResponseObservation  *alert.Observation `json:"response_observation,omitempty"`
+	// ResponseSprayConstituents keeps the addresses a spray counted.
+	ResponseSprayConstituents []alert.SprayConstituent `json:"response_spray_constituents,omitempty"`
 }
 
 func toPendingRecords(findings []alert.Finding) []pendingFinding {
 	records := make([]pendingFinding, len(findings))
 	for i, f := range findings {
-		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets, ResponseClaims: f.Claims}
+		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets, ResponseClaims: f.Claims,
+			ResponseSprayConstituents: f.SprayConstituents}
 		// A log can carry a time the JSON encoder refuses. Dropping that
 		// observation costs one finding its provenance, not the whole batch.
 		if _, err := f.Observation.ObservedAt.MarshalJSON(); err == nil && f.Observation != (alert.Observation{}) {
@@ -55,6 +58,7 @@ func fromPendingRecords(records []pendingFinding) []alert.Finding {
 		}
 		findings[i].SprayTargets = r.ResponseSprayTargets
 		findings[i].Claims = r.ResponseClaims
+		findings[i].SprayConstituents = r.ResponseSprayConstituents
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}

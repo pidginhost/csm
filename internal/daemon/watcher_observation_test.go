@@ -330,7 +330,9 @@ func TestMailLogDispatchStampsObservation(t *testing.T) {
 	d := New(&config.Config{}, nil, nil, "")
 	at := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	line := maillog.Line{Message: "dovecot: auth failed", Position: maillog.Position{Stream: "m:2a:x.0", Cursor: "77", ObservedAt: at}}
-	handler := func(string, *config.Config) []alert.Finding { return []alert.Finding{{Check: "mail_bruteforce"}} }
+	handler := func(string, alert.Observation, *config.Config) []alert.Finding {
+		return []alert.Finding{{Check: "mail_bruteforce"}}
+	}
 	if !d.dispatchMailLogLine(line, handler) {
 		t.Fatal("mail log dispatch stopped")
 	}
@@ -407,5 +409,19 @@ func TestModSecWatcherNamesItsProducer(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 		})
+	}
+}
+
+// An observed log formats an observation for every line, so the stream name
+// is built once per file generation, not per line.
+func TestLogWatcherObservationReusesTheStream(t *testing.T) {
+	w, _, _ := observingWatcher(t, checks.ProducerEximLog)
+	first := w.observation(12345, time.Unix(1, 0))
+	if allocs := testing.AllocsPerRun(20, func() { _ = w.observation(12345, time.Unix(1, 0)) }); allocs > 1 {
+		t.Fatalf("observation allocates %v times per line, want at most the cursor", allocs)
+	}
+	w.generation++
+	if again := w.observation(12345, time.Unix(1, 0)); again.Stream == first.Stream {
+		t.Fatalf("a new generation kept stream %q", again.Stream)
 	}
 }

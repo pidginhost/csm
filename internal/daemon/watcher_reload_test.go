@@ -111,7 +111,7 @@ func TestDaemonMailLogDispatchUsesActiveConfig(t *testing.T) {
 	config.SetActive(active)
 
 	var seen *config.Config
-	handler := func(_ string, cfg *config.Config) []alert.Finding {
+	handler := func(_ string, _ alert.Observation, cfg *config.Config) []alert.Finding {
 		seen = cfg
 		return nil
 	}

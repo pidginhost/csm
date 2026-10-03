@@ -70,6 +70,16 @@ type LogWatcher struct {
 	// generation counts the times the offset went back to the start, so a
 	// reused offset is never the same position.
 	generation uint64
+	// stream caches the stream name of streamOf, so an observed log does not
+	// format it for every line.
+	stream   string
+	streamOf streamKey
+}
+
+// streamKey is what names a watcher's stream: the file and its generation.
+type streamKey struct {
+	file       logFileID
+	generation uint64
 }
 
 type logFileID struct {
@@ -178,9 +188,13 @@ func (w *LogWatcher) observation(lineStart int64, at time.Time) alert.Observatio
 	if w.producer == "" || !w.fileID.known {
 		return alert.Observation{}
 	}
+	if key := (streamKey{w.fileID, w.generation}); w.stream == "" || w.streamOf != key {
+		w.stream = fmt.Sprintf("f:%x:%x:%s.%d", w.fileID.dev, w.fileID.ino, w.epoch, w.generation)
+		w.streamOf = key
+	}
 	return alert.Observation{
 		Producer:   string(w.producer),
-		Stream:     fmt.Sprintf("f:%x:%x:%s.%d", w.fileID.dev, w.fileID.ino, w.epoch, w.generation),
+		Stream:     w.stream,
 		Cursor:     strconv.FormatInt(lineStart, 10),
 		ObservedAt: at,
 	}

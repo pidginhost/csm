@@ -1979,96 +1979,8 @@ func (d *Daemon) startLogWatchers() {
 
 	hostInfo := platform.Detect()
 
-	// eximHandler wraps parseEximLogLine (unchanged) and augments the result
-	// with smtpAuthTracker findings for dovecot authenticator failures and
-	// smtpProbeTracker findings for raw connect-rate abuse (scanners that
-	// probe-and-disconnect without ever reaching AUTH).
-	eximHandler := func(line string, cfg *config.Config) []alert.Finding {
-		findings := parseEximLogLine(line, cfg)
-
-		// Connect-rate signal fires before any AUTH attempt.
-		if probeIP := parseEximSMTPConnectIP(line); probeIP != "" {
-			if parsed := net.ParseIP(probeIP); parsed != nil {
-				if v4 := parsed.To4(); v4 != nil {
-					probeIP = v4.String()
-				}
-			}
-			if !isInfraIPDaemon(probeIP, cfg.InfraIPs) && !isPrivateOrLoopback(probeIP) {
-				if d.smtpProbeTracker != nil {
-					findings = append(findings, d.smtpProbeTracker.Record(probeIP)...)
-				}
-			}
-		}
-
-		if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
-			ip := eximlog.ClientIP(line)
-			account := extractSetID(line)
-
-			// Canonicalize IPv4-mapped IPv6 (::ffff:a.b.c.d) to plain IPv4 so the
-			// tracker doesn't double-count the same attacker as two IPs.
-			if ip != "" {
-				if parsed := net.ParseIP(ip); parsed != nil {
-					if v4 := parsed.To4(); v4 != nil {
-						ip = v4.String()
-					}
-				}
-			}
-
-			if ip != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
-				if d.smtpAuthTracker != nil {
-					findings = append(findings, d.smtpAuthTracker.Record(ip, account)...)
-				}
-			}
-		}
-
-		// Authenticated deliveries prove the source can still log in, which
-		// disqualifies it from the slow-brute block (an office NAT with one
-		// stale device keeps working devices too; a walker never succeeds).
-		recordEximSMTPAuthSuccess(line, cfg, d.smtpAuthTracker)
-		return findings
-	}
-
-	// mailHandler composes parseDovecotLogLine (preserving email_suspicious_geo)
-	// with mailAuthTracker augmentation for IMAP/POP3/ManageSieve brute-force,
-	// subnet spray, account spray, and compromise detection.
-	mailHandler := func(line string, cfg *config.Config) []alert.Finding {
-		findings := parseDovecotLogLine(line, cfg)
-		authLine := isMailAuthLine(line)
-		// Auth-backend failures (dovecot cannot reach the credential backend)
-		// arrive on their own lines, not login lines. Feed them to the degraded
-		// gate so a backend outage pauses brute-force auto-block instead of
-		// mass-blocking every legitimate user whose login now fails.
-		if d.mailAuthTracker != nil && !authLine && isMailAuthBackendError(line) {
-			return append(findings, d.mailAuthTracker.RecordBackendFailure()...)
-		}
-		if !authLine {
-			return findings
-		}
-		ip, account, success := extractMailLoginEvent(line)
-		if ip == "" {
-			return findings
-		}
-		if parsed := net.ParseIP(ip); parsed != nil {
-			if v4 := parsed.To4(); v4 != nil {
-				ip = v4.String()
-			}
-		}
-		if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
-			return findings
-		}
-		if d.mailAuthTracker == nil {
-			return findings
-		}
-		if success {
-			findings = append(findings, d.mailAuthTracker.RecordSuccess(ip, account)...)
-		} else {
-			findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line)...)
-		}
-		return findings
-	}
-
 	watchExim := shouldWatchEximMainlog(hostInfo, os.Stat)
-	logFiles := d.fixedLogSpecs(hostInfo, eximHandler, watchExim)
+	logFiles := d.fixedLogSpecs(hostInfo, d.handleEximLine, watchExim)
 	if hostInfo.IsCPanel() {
 		d.wg.Add(1)
 		obs.Go("stale-session-401-flush", d.flushStaleSession401)
@@ -2077,7 +1989,7 @@ func (d *Daemon) startLogWatchers() {
 		d.startEximFrozenDedupPersistence()
 	}
 
-	d.startMailLogReader(hostInfo.MailLogPath(), mailHandler)
+	d.startMailLogReader(hostInfo.MailLogPath(), d.handleMailLine)
 
 	// Only receive PHP Shield events if enabled AND actually installed. A stale
 	// php_shield.enabled flag (e.g. after an upgrade wiped /opt/csm) would
@@ -2344,12 +2256,101 @@ func (d *Daemon) handleMailLogSourceRestored() {
 	d.MarkWatcher("maillog", true)
 }
 
-func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler LogLineHandler) bool {
-	findings := handler(line.Message, d.currentCfg())
+// handleEximLine wraps parseEximLogLine (unchanged) and augments the result
+// with smtpAuthTracker findings for dovecot authenticator failures and
+// smtpProbeTracker findings for raw connect-rate abuse (scanners that
+// probe-and-disconnect without ever reaching AUTH). obs names the line, so a
+// subnet spray can name the line that last counted each address.
+func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
+	findings := parseEximLogLine(line, cfg)
+
+	// Connect-rate signal fires before any AUTH attempt.
+	if probeIP := parseEximSMTPConnectIP(line); probeIP != "" {
+		if parsed := net.ParseIP(probeIP); parsed != nil {
+			if v4 := parsed.To4(); v4 != nil {
+				probeIP = v4.String()
+			}
+		}
+		if !isInfraIPDaemon(probeIP, cfg.InfraIPs) && !isPrivateOrLoopback(probeIP) {
+			if d.smtpProbeTracker != nil {
+				findings = append(findings, d.smtpProbeTracker.Record(probeIP)...)
+			}
+		}
+	}
+
+	if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
+		ip := eximlog.ClientIP(line)
+		account := extractSetID(line)
+
+		// Canonicalize IPv4-mapped IPv6 (::ffff:a.b.c.d) to plain IPv4 so the
+		// tracker doesn't double-count the same attacker as two IPs.
+		if ip != "" {
+			if parsed := net.ParseIP(ip); parsed != nil {
+				if v4 := parsed.To4(); v4 != nil {
+					ip = v4.String()
+				}
+			}
+		}
+
+		if ip != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
+			if d.smtpAuthTracker != nil {
+				findings = append(findings, d.smtpAuthTracker.RecordObserved(ip, account, obs)...)
+			}
+		}
+	}
+
+	// Authenticated deliveries prove the source can still log in, which
+	// disqualifies it from the slow-brute block (an office NAT with one
+	// stale device keeps working devices too; a walker never succeeds).
+	recordEximSMTPAuthSuccess(line, cfg, d.smtpAuthTracker)
+	return findings
+}
+
+// handleMailLine composes parseDovecotLogLine (preserving email_suspicious_geo)
+// with mailAuthTracker augmentation for IMAP/POP3/ManageSieve brute-force,
+// subnet spray, account spray, and compromise detection. obs names the line.
+func (d *Daemon) handleMailLine(line string, obs alert.Observation, cfg *config.Config) []alert.Finding {
+	findings := parseDovecotLogLine(line, cfg)
+	authLine := isMailAuthLine(line)
+	// Auth-backend failures (dovecot cannot reach the credential backend)
+	// arrive on their own lines, not login lines. Feed them to the degraded
+	// gate so a backend outage pauses brute-force auto-block instead of
+	// mass-blocking every legitimate user whose login now fails.
+	if d.mailAuthTracker != nil && !authLine && isMailAuthBackendError(line) {
+		return append(findings, d.mailAuthTracker.RecordBackendFailure()...)
+	}
+	if !authLine {
+		return findings
+	}
+	ip, account, success := extractMailLoginEvent(line)
+	if ip == "" {
+		return findings
+	}
+	if parsed := net.ParseIP(ip); parsed != nil {
+		if v4 := parsed.To4(); v4 != nil {
+			ip = v4.String()
+		}
+	}
+	if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
+		return findings
+	}
+	if d.mailAuthTracker == nil {
+		return findings
+	}
+	if success {
+		findings = append(findings, d.mailAuthTracker.RecordSuccess(ip, account)...)
+	} else {
+		findings = append(findings, recordDovecotFailure(d.mailAuthTracker, ip, account, line, obs)...)
+	}
+	return findings
+}
+
+func (d *Daemon) dispatchMailLogLine(line maillog.Line, handler ObservedLineHandler) bool {
 	var obs alert.Observation
 	if line.Position.Stream != "" {
 		obs = alert.Observation{Producer: string(checks.ProducerMailLog), Stream: line.Position.Stream, Cursor: line.Position.Cursor, ObservedAt: line.Position.ObservedAt}
 	}
+	findings := handler(line.Message, obs, d.currentCfg())
 	for i, f := range findings {
 		f.Observation = obs
 		if !alert.Enqueue(d.alertCh, f, d.stopCh) {
@@ -2368,7 +2369,7 @@ func (d *Daemon) retryLogWatcher(path string, handler LogLineHandler) {
 
 // fixedLogSpecs lists the logs at fixed paths and the evidence producer each
 // feeds.
-func (d *Daemon) fixedLogSpecs(hostInfo platform.Info, eximHandler LogLineHandler, watchExim bool) []logWatchSpec {
+func (d *Daemon) fixedLogSpecs(hostInfo platform.Info, exim ObservedLineHandler, watchExim bool) []logWatchSpec {
 	// Generic Linux auth log. RHEL-family uses /var/log/secure, Debian
 	// family uses /var/log/auth.log. Only register the log appropriate
 	// for the detected OS so we don't spam "not found, retrying" forever.
@@ -2388,7 +2389,9 @@ func (d *Daemon) fixedLogSpecs(hostInfo platform.Info, eximHandler LogLineHandle
 		)
 	}
 	if watchExim {
-		specs = append(specs, logWatchSpec{path: eximMainlogPath, handler: eximHandler, producer: checks.ProducerEximLog})
+		// Observed: the SMTP tracker records which line named each address.
+		specs = append(specs, logWatchSpec{path: eximMainlogPath, producer: checks.ProducerEximLog, observed: exim,
+			handler: func(line string, cfg *config.Config) []alert.Finding { return exim(line, alert.Observation{}, cfg) }})
 	}
 	return specs
 }
