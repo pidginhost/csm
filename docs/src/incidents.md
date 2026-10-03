@@ -170,6 +170,14 @@ including `mail_bruteforce_suspected` and the High `mail_account_compromised`
 advisory for an established multi-mailbox source, never make a spray
 incident blockable either.
 
+Incident blocks name the finding that supplied address evidence. That link
+survives timeline trimming and restart. At startup, older incidents learn
+the link from an attesting timeline event even when their evidence flag was
+already set. If an older timeline has no finding identity or already lost
+that event, the original link cannot be recovered; it is never made from
+message text. Existing blocks are unchanged.
+
+
 Whitelisted IPs (entries in `reputation.whitelist` and the live bbolt
 whitelist updated via the Web UI) are skipped from spray detection so
 internal mail relays, NAT egresses, and known-good infrastructure

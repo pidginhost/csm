@@ -146,6 +146,9 @@ type Incident struct {
 	// evidence named the correlation key's remote IP. Like CompoundFlags it
 	// survives timeline trimming, which may drop that finding's event.
 	RemoteIPEvidence bool `json:"remote_ip_evidence,omitempty"`
+	// RemoteIPEvidenceFinding is the FindingID of the finding that set
+	// RemoteIPEvidence, so a block names its evidence after trimming.
+	RemoteIPEvidenceFinding string `json:"remote_ip_evidence_finding,omitempty"`
 }
 
 // AutoBlockState is the escalation ladder's memory for one incident. Count is

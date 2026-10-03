@@ -727,6 +727,7 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 		if !inc.RemoteIPEvidence && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
 			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(src) {
 				inc.RemoteIPEvidence = true
+				inc.RemoteIPEvidenceFinding = ev.FindingID
 				transition = true
 			}
 		}
@@ -1341,9 +1342,12 @@ func (c *Correlator) Restore(incidents []Incident) {
 		inc := incidents[i]
 		// Remember legacy evidence before a merge can trim its event. The
 		// next write saves the bit; until then the stored timeline retains it.
-		if !inc.RemoteIPEvidence && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil {
+		if (!inc.RemoteIPEvidence || inc.RemoteIPEvidenceFinding == "") && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil {
 			if ip := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); ip != "" {
 				inc.RemoteIPEvidence = c.blockAddressAttested(&inc, ip)
+				if inc.RemoteIPEvidence {
+					inc.RemoteIPEvidenceFinding = c.attestingFindingID(&inc, ip)
+				}
 			}
 		}
 		c.incidents[inc.ID] = &inc
@@ -1641,7 +1645,7 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
 	}
 	onBlock := c.cfg.OnIncidentBlock
-	findingID := incidentBlockFindingID(inc, ip)
+	findingID := c.attestingFindingID(inc, ip)
 	return func() {
 		var live bool
 		callbackReturned := false
@@ -1696,20 +1700,45 @@ func (c *Correlator) blockAddressAttested(inc *Incident, ip string) bool {
 		return true
 	}
 	for _, ev := range inc.Timeline {
-		if ev.Kind != "finding" || normalizeIncidentRemoteIP(ev.RemoteIP) != ip {
-			continue
-		}
-		sev, ok := parseSeverity(ev.Severity)
-		if ev.Severity == "" {
-			// Older events lack severity. They can attest checks with no
-			// severity floor, but cannot establish a Critical-only signal.
-			sev, ok = alert.Warning, true
-		}
-		if ok && c.cfg.AddressEvidence(ev.Check, sev) {
+		if ev.Kind == "finding" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && c.eventAttests(ev) {
 			return true
 		}
 	}
 	return false
+}
+
+// eventAttests reports whether a timeline finding is address evidence.
+func (c *Correlator) eventAttests(ev IncidentEvent) bool {
+	sev, ok := parseSeverity(ev.Severity)
+	if ev.Severity == "" {
+		// Older events lack severity. They can attest checks with no
+		// severity floor, but cannot establish a Critical-only signal.
+		sev, ok = alert.Warning, true
+	}
+	return ok && c.cfg.AddressEvidence(ev.Check, sev)
+}
+
+// attestingFindingID names the finding a block of ip rests on: the newest
+// timeline finding with address evidence for it, or the one recorded with
+// RemoteIPEvidence once timeline trimming dropped that event.
+func (c *Correlator) attestingFindingID(inc *Incident, ip string) string {
+	ip = normalizeIncidentRemoteIP(ip)
+	if ip == "" {
+		return ""
+	}
+	if c.cfg.AddressEvidence == nil {
+		return incidentBlockFindingID(inc, ip)
+	}
+	for i := len(inc.Timeline) - 1; i >= 0; i-- {
+		ev := inc.Timeline[i]
+		if ev.Kind == "finding" && ev.FindingID != "" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && c.eventAttests(ev) {
+			return ev.FindingID
+		}
+	}
+	if inc.RemoteIPEvidence && inc.CorrelationKey != nil && normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP) == ip {
+		return inc.RemoteIPEvidenceFinding
+	}
+	return ""
 }
 
 func incidentBlockCandidate(inc *Incident) string {
@@ -1821,7 +1850,7 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
 	}
 	onSprayBlock := c.cfg.OnSprayBlock
-	findingID := incidentBlockFindingID(inc, ip)
+	findingID := c.attestingFindingID(inc, ip)
 	incidentID := inc.ID
 	return func() {
 		var live bool
