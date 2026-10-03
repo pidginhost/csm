@@ -11,7 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// The domlog scan skips proxied panel requests in both log shapes, so a
+// The domlog scan skips proxied panel requests in the central log, so a
 // heavy cPanel or webmail session never counts toward web floods or brute
 // force; other requests from the same address still count.
 func TestDomlogScanSkipsProxiedPanelRequests(t *testing.T) {
@@ -21,7 +21,6 @@ func TestDomlogScanSkipsProxiedPanelRequests(t *testing.T) {
 	}
 	for _, l := range []string{
 		line("/___proxy_subdomain_webmail/wp-login.php", ""),
-		line("/wp-login.php", ` "proxy-subdomains-vhost.localhost"`),
 	} {
 		rec, ok := parseAccessLogRecord(l)
 		if !ok {
@@ -43,31 +42,42 @@ func TestDomlogScanSkipsProxiedPanelRequests(t *testing.T) {
 	}
 }
 
+// No log field marks a request as panel traffic: a trailing quoted field can
+// be a client header, so every one of these lines is a website login.
 func TestProxiedPanelVhostUsesOnlyLogExtensions(t *testing.T) {
 	base := `192.0.2.85 - - [02/Oct/2026:12:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 10 "-" "Mozilla"`
-	for _, tc := range []struct {
-		line string
-		want bool
-	}{
-		{base + ` "proxy-subdomains-vhost.localhost"`, true},
-		{base + ` "proxy-subdomains-vhost.localhost" "192.0.2.1"`, true},
-		{base, false},
-		{strings.Replace(base, `"Mozilla"`, `"proxy-subdomains-vhost.localhost"`, 1), false},
-		{strings.Replace(base, `"-"`, `"proxy-subdomains-vhost.localhost"`, 1), false},
-		{strings.Replace(base, `"Mozilla"`, `"agent \"proxy-subdomains-vhost.localhost\""`, 1), false},
-		{base + ` "site.example"`, false},
+	for _, line := range []string{
+		base + ` "proxy-subdomains-vhost.localhost"`,
+		base + ` "proxy-subdomains-vhost.localhost" "192.0.2.1"`,
+		base,
+		strings.Replace(base, `"Mozilla"`, `"proxy-subdomains-vhost.localhost"`, 1),
+		strings.Replace(base, `"-"`, `"proxy-subdomains-vhost.localhost"`, 1),
+		strings.Replace(base, `"Mozilla"`, `"agent \"proxy-subdomains-vhost.localhost\""`, 1),
+		base + ` "site.example"`,
 	} {
-		if got := ProxiedPanelLogVhost(tc.line) != ""; got != tc.want {
-			t.Errorf("vhost detection %v, want %v for %q", got, tc.want, tc.line)
-		}
-		rec, ok := parseAccessLogRecord(tc.line)
-		if !ok || rec.ProxiedPanel != tc.want {
-			t.Errorf("scan proxy flag %v parsed %v, want %v", rec.ProxiedPanel, ok, tc.want)
-		}
+		requireWebsiteLogin(t, line)
 	}
 	for _, uri := range []string{"/archive/___proxy_subdomain_text/", "/wp-login.php?next=/___proxy_subdomain_text/"} {
-		if IsProxiedPanelRequest(uri, "site.example", true) {
+		if IsProxiedPanelRequest(uri, true) {
 			t.Errorf("ordinary website URI classified as proxy: %q", uri)
+		}
+	}
+}
+
+// requireWebsiteLogin scans line from the central log and from a per-site log
+// and requires one counted login from 192.0.2.85 each time.
+func requireWebsiteLogin(t *testing.T, line string) {
+	t.Helper()
+	for _, central := range []bool{true, false} {
+		rec, ok := parseAccessLogRecord(line)
+		if !ok {
+			t.Fatalf("fixture no longer parses: %q", line)
+		}
+		rec.Central = central
+		stats := newDomlogStatsAt(time.Date(2026, 10, 2, 12, 0, 30, 0, time.UTC))
+		stats.scan(rec, &config.Config{}, nopBotClassifier{})
+		if stats.wpLogin["192.0.2.85"] != 1 {
+			t.Errorf("central=%v: website login suppressed by a log field: %q", central, line)
 		}
 	}
 }
@@ -80,18 +90,7 @@ func TestProxiedPanelVhostKeepsFieldPositions(t *testing.T) {
 		"malformed UA":    strings.Replace(base, `"Mozilla"`, `"Mozilla"junk "proxy-subdomains-vhost.localhost"`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := ProxiedPanelLogVhost(line); got != "" {
-				t.Fatalf("client field classified as server vhost: %q", got)
-			}
-			rec, ok := parseAccessLogRecord(line)
-			if !ok {
-				t.Fatal("fixture no longer parses")
-			}
-			stats := newDomlogStatsAt(time.Date(2026, 10, 2, 12, 0, 30, 0, time.UTC))
-			stats.scan(rec, &config.Config{}, nopBotClassifier{})
-			if stats.wpLogin["192.0.2.85"] != 1 {
-				t.Fatal("website login was suppressed by a client field")
-			}
+			requireWebsiteLogin(t, line)
 		})
 	}
 }
@@ -100,12 +99,11 @@ func TestProxiedPanelVhostHandlesRemoteUsers(t *testing.T) {
 	for _, user := range []string{`a b`, `""`, `a[1]`, `x] [02/Oct/2026`, `user\"name`} {
 		t.Run(user, func(t *testing.T) {
 			base := `192.0.2.85 - ` + user + ` [02/Oct/2026:12:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 10 "-" "Mozilla"`
-			if got := ProxiedPanelLogVhost(base + ` "proxy-subdomains-vhost.localhost"`); got != "proxy-subdomains-vhost.localhost" {
-				t.Fatal("server vhost was lost after a remote user")
-			}
-			clientMarker := strings.Replace(base, `"Mozilla"`, `"proxy-subdomains-vhost.localhost"`, 1)
-			if got := ProxiedPanelLogVhost(clientMarker); got != "" {
-				t.Fatal("remote user shifted the User-Agent into the vhost field")
+			for _, line := range []string{
+				base + ` "proxy-subdomains-vhost.localhost"`,
+				strings.Replace(base, `"Mozilla"`, `"proxy-subdomains-vhost.localhost"`, 1),
+			} {
+				requireWebsiteLogin(t, line)
 			}
 		})
 	}
@@ -143,15 +141,17 @@ func TestProxiedPanelPathCountsOnlyInTheCentralLog(t *testing.T) {
 		"/___proxy_subdomain_cpanel/%2e%2e/wp-login.php":           false,
 		"/___proxy_subdomain_cpanel/%zz":                           false,
 	} {
-		if got := IsProxiedPanelRequest(uri, "", true); got != want {
+		if got := IsProxiedPanelRequest(uri, true); got != want {
 			t.Errorf("central %q = %v, want %v", uri, got, want)
 		}
-		if IsProxiedPanelRequest(uri, "", false) {
+		if IsProxiedPanelRequest(uri, false) {
 			t.Errorf("domlog %q classified as proxy", uri)
 		}
 	}
-	if !IsProxiedPanelRequest("/wp-login.php", "proxy-subdomains-vhost.localhost", false) {
-		t.Error("the server-written proxy vhost no longer counts in a domlog")
+	for _, central := range []bool{true, false} {
+		if IsProxiedPanelRequest("/wp-login.php", central) {
+			t.Errorf("central=%v: a website path classified as proxy", central)
+		}
 	}
 	stats := newDomlogStatsAt(time.Date(2026, 10, 2, 12, 0, 30, 0, time.UTC))
 	rec, ok := parseAccessLogRecord(`192.0.2.86 - - [02/Oct/2026:12:00:00 +0000] "POST /___proxy_subdomain_cpanel/wp-login.php HTTP/1.1" 200 10 "-" "Mozilla"`)
@@ -167,16 +167,12 @@ func TestProxiedPanelPathCountsOnlyInTheCentralLog(t *testing.T) {
 
 // The periodic web detector also cannot corroborate a panel root with itself.
 func TestDomlogProxiedPanelSessionStaysOneFamily(t *testing.T) {
-	for _, extra := range []string{"", ` "proxy-subdomains-vhost.localhost"`} {
+	{
 		at := time.Unix(1_700_000_000, 0)
 		stats := newDomlogStatsAt(at)
 		cfg := &config.Config{}
 		cfg.Thresholds.HTTPFloodThreshold = 2
-		uri := "/___proxy_subdomain_cpanel/wp-login.php"
-		if extra != "" {
-			uri = "/wp-login.php"
-		}
-		line := fmt.Sprintf(`192.0.2.85 - - [14/Nov/2023:22:13:20 +0000] "POST %s HTTP/1.1" 401 10 "-" "Mozilla"%s`, uri, extra)
+		line := `192.0.2.85 - - [14/Nov/2023:22:13:20 +0000] "POST /___proxy_subdomain_cpanel/wp-login.php HTTP/1.1" 401 10 "-" "Mozilla"`
 		for i := 0; i < wpLoginThreshold; i++ {
 			rec, ok := parseAccessLogRecord(line)
 			if !ok {

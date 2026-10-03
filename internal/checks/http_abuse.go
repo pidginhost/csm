@@ -39,9 +39,6 @@ type accessLogRecord struct {
 	XFF       string // optional; only trusted when RemoteIP is a trusted proxy
 	Domain    string // vhost the line came from (per-domain domlog); empty for the central log
 	Account   string // cPanel account owning Domain; empty when unknown/non-cPanel
-	// ProxiedPanel is set when the trailing vhost field names cPanel's proxy
-	// subdomain vhost.
-	ProxiedPanel bool
 	// Central is set only for a recognized central access log on cPanel.
 	Central bool
 	// proxyPath is classified before the URI is truncated for aggregation.
@@ -190,7 +187,7 @@ func newDomlogStatsAt(t time.Time) *domlogStats {
 // not contribute to either legacy or new metrics.
 func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClassifier) {
 	// A per-vhost domlog never names a proxied request by path.
-	if rec.ProxiedPanel || rec.Central && rec.proxyPath {
+	if rec.Central && rec.proxyPath {
 		return
 	}
 	ip := normalizeHTTPClientIP(clientIPForRecord(rec, cfg))
@@ -1015,7 +1012,7 @@ func parseAccessLogRecordWithURILimit(line string, maxURILen int) (accessLogReco
 	}
 	if len(parts) >= 2 {
 		uri := parts[1]
-		rec.proxyPath = IsProxiedPanelRequest(uri, "", true)
+		rec.proxyPath = IsProxiedPanelRequest(uri, true)
 		if len(uri) > maxURILen {
 			uri = uri[:maxURILen]
 		}
@@ -1067,7 +1064,6 @@ func parseAccessLogRecordWithURILimit(line string, maxURILen int) (accessLogReco
 		ua = ua[:maxUALen]
 	}
 	rec.UserAgent = ua
-	rec.ProxiedPanel = ProxiedPanelLogVhost(line) != ""
 	rest = rest[q2+1:]
 
 	// Optional quoted extensions. cPanel may append a quoted vhost after

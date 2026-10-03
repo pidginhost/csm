@@ -124,7 +124,7 @@ func parseAccessLogBruteForceForLog(line string, cfg *config.Config, central boo
 	}
 	// The panel's own log carries requests a cPanel proxy subdomain passed
 	// through the web server. The reader identifies the log's provenance.
-	if checks.IsProxiedPanelRequest(path, checks.ProxiedPanelLogVhost(line), central) {
+	if checks.IsProxiedPanelRequest(path, central) {
 		return nil
 	}
 

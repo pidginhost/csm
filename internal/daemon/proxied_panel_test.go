@@ -82,18 +82,17 @@ func TestAccessLogWatcherCountsCustomWebsiteProxyPaths(t *testing.T) {
 	}
 }
 
-// cPanel proxy subdomains reach the panel through the web server, which logs
-// them under /___proxy_subdomain_<service>/ (LiteSpeed) or as the proxy vhost
-// (cPanel's trailing vhost field). The panel producers own those requests;
-// the web-attack handler skips them.
+// cPanel proxy subdomains reach the panel through the web server; LiteSpeed
+// logs them under /___proxy_subdomain_<service>/ in its central log. The
+// panel producers own those requests; the web-attack handler skips them. A
+// trailing quoted field naming the proxy vhost can be a client header, so it
+// never marks a request as panel traffic.
 func TestAccessLogSkipsProxiedPanelRequests(t *testing.T) {
 	resetAccessLogTrackerState()
 	t.Cleanup(resetAccessLogTrackerState)
 	cfg := &config.Config{}
 	for name, line := range map[string]string{
-		"proxy path":             makeAccessLogLine("203.0.113.81", "POST", "/___proxy_subdomain_cpanel/3rdparty/phpMyAdmin/index.php"),
-		"proxy vhost":            makeAccessLogLine("203.0.113.82", "POST", "/phpmyadmin/index.php") + ` "proxy-subdomains-vhost.localhost"`,
-		"vhost before extension": makeAccessLogLine("203.0.113.82", "POST", "/phpmyadmin/index.php") + ` "proxy-subdomains-vhost.localhost" "192.0.2.1"`,
+		"proxy path": makeAccessLogLine("203.0.113.81", "POST", "/___proxy_subdomain_cpanel/3rdparty/phpMyAdmin/index.php"),
 	} {
 		for i := 0; i < accessLogWPLoginThreshold; i++ {
 			if got := parseAccessLogBruteForce(line, cfg); len(got) != 0 {
@@ -108,6 +107,8 @@ func TestAccessLogSkipsProxiedPanelRequests(t *testing.T) {
 		"UA marker":       strings.Replace(makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php"), `"Mozilla"`, `"proxy-subdomains-vhost.localhost"`, 1),
 		"quoted UA":       strings.Replace(makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php"), `"Mozilla"`, `"agent \"proxy-subdomains-vhost.localhost\""`, 1),
 		"later extension": makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php") + ` "site.example" "proxy-subdomains-vhost.localhost"`,
+		"proxy vhost":     makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php") + ` "proxy-subdomains-vhost.localhost"`,
+		"vhost then XFF":  makeAccessLogLine("203.0.113.83", "POST", "/phpmyadmin/index.php") + ` "proxy-subdomains-vhost.localhost" "192.0.2.1"`,
 	} {
 		resetAccessLogTrackerState()
 		var findings []alert.Finding
