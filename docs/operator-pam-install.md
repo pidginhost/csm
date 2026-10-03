@@ -43,8 +43,12 @@ A jump that skips `pam_deny.so` on success, such as Debian's
 hook too; uninstall narrows it back, including jumps to or past the end.
 Each attempt that reaches this denial is reported once, whichever service
 ran it. Earlier failures that return before it are not reported by this
-hook. These failures drive the PAM brute-force and credential-stuffing
-findings; blocking follows `auto_response.block_ips`.
+hook. SSH failures drive the PAM brute-force and credential-stuffing
+findings; only a successful SSH login clears those failures. Blocking
+follows `auto_response.block_ips`. Failures from other services raise the
+non-blocking `pam_auth_failures` alert. CSM reads pure-ftpd, Dovecot and
+Exim logs separately; other services, such as vsftpd, proftpd or webmin,
+get no blocking signal from PAM.
 
 The installer refuses the failure-hook edit when it cannot prove the
 placement is safe. Any shared stack that refuses it makes the command

@@ -16,22 +16,34 @@ const pendingFindingsFile = "pending_findings.json"
 var removePendingFindingsFile = os.Remove
 
 // pendingFinding is the parked form of a finding. The public Finding JSON
-// leaves out the subnets, spray targets, claims and observation, which the
-// automatic response, the incident correlator and admission read; a replayed
-// finding needs them to act the way the original would have. Delivery
-// provenance stays process-local.
+// leaves out the spray targets, claims and observation, which the incident
+// correlator and admission read; a replayed finding needs them to act the way
+// the original would have. The subnets are public, and the storage-only copy
+// stays so an older daemon replays them too. Delivery provenance stays
+// process-local.
 type pendingFinding struct {
 	alert.Finding
 	ResponseCIDRs        []string           `json:"response_cidrs,omitempty"`
 	ResponseSprayTargets []string           `json:"response_spray_targets,omitempty"`
 	ResponseClaims       []admission.Claim  `json:"response_claims,omitempty"`
 	ResponseObservation  *alert.Observation `json:"response_observation,omitempty"`
+	// ResponseSprayConstituents keeps the addresses a spray counted.
+	ResponseSprayConstituents []alert.SprayConstituent `json:"response_spray_constituents,omitempty"`
+	// ResponseIntel keeps the intel a reputation finding rests on.
+	ResponseIntel *admission.IntelRef `json:"response_intel,omitempty"`
 }
 
 func toPendingRecords(findings []alert.Finding) []pendingFinding {
 	records := make([]pendingFinding, len(findings))
 	for i, f := range findings {
-		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets, ResponseClaims: f.Claims}
+		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets, ResponseClaims: f.Claims,
+			ResponseSprayConstituents: f.SprayConstituents}
+		// An unencodable expiry costs only its intel, not the whole batch.
+		if f.Intel != nil {
+			if _, err := f.Intel.Expires.MarshalJSON(); err == nil {
+				records[i].ResponseIntel = f.Intel
+			}
+		}
 		// A log can carry a time the JSON encoder refuses. Dropping that
 		// observation costs one finding its provenance, not the whole batch.
 		if _, err := f.Observation.ObservedAt.MarshalJSON(); err == nil && f.Observation != (alert.Observation{}) {
@@ -49,9 +61,13 @@ func fromPendingRecords(records []pendingFinding) []alert.Finding {
 	findings := make([]alert.Finding, len(records))
 	for i, r := range records {
 		findings[i] = r.Finding
-		findings[i].CIDRs = r.ResponseCIDRs
+		if r.ResponseCIDRs != nil {
+			findings[i].CIDRs = r.ResponseCIDRs
+		}
 		findings[i].SprayTargets = r.ResponseSprayTargets
 		findings[i].Claims = r.ResponseClaims
+		findings[i].SprayConstituents = r.ResponseSprayConstituents
+		findings[i].Intel = r.ResponseIntel
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}

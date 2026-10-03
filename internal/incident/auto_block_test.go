@@ -17,7 +17,8 @@ func (b *blockCapture) recordOK(ip, reason string, ttl time.Duration, _ string) 
 func TestAutoBlockFiresOnCriticalIncidentWithRemoteIP(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "critical",
@@ -47,7 +48,8 @@ func TestAutoBlockFiresOnCriticalIncidentWithRemoteIP(t *testing.T) {
 func TestAutoBlockSkipsFTPLoginAfterBruteforceOnly(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "critical",
@@ -74,7 +76,8 @@ func TestAutoBlockSkipsFTPLoginAfterBruteforceOnly(t *testing.T) {
 func TestAutoBlockSkipsFTPLoginAfterBruteforceOnlyAfterTimelineCap(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "critical",
@@ -103,7 +106,8 @@ func TestAutoBlockSkipsFTPLoginAfterBruteforceOnlyAfterTimelineCap(t *testing.T)
 func TestAutoBlockFiresWhenBlockableFindingJoinsFTPAdvisory(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "critical",
@@ -144,7 +148,8 @@ func TestAutoBlockFiresWhenBlockableFindingJoinsFTPAdvisory(t *testing.T) {
 func TestAutoBlockSkipsMailBruteforceSuspectedOnly(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "high",
@@ -174,7 +179,8 @@ func TestAutoBlockSkipsMailBruteforceSuspectedOnly(t *testing.T) {
 func TestAutoBlockSkipsEstablishedSourceMailCompromiseAdvisory(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "high",
@@ -208,7 +214,8 @@ func TestAutoBlockSkipsEstablishedSourceMailCompromiseAdvisory(t *testing.T) {
 func TestAutoBlockCriticalMailCompromiseStillBlocksAfterAdvisory(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "high",
@@ -249,7 +256,8 @@ func TestAutoBlockCriticalMailCompromiseStillBlocksAfterAdvisory(t *testing.T) {
 func TestSprayAutoBlockSkipsEstablishedSourceMailCompromiseAdvisory(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		SpraySuppression: SpraySuppressionConfig{
 			Enabled:            true,
 			DistinctMailboxes:  1,
@@ -301,47 +309,23 @@ func TestSprayAutoBlockSkipsEstablishedSourceMailCompromiseAdvisory(t *testing.T
 	}
 }
 
-func TestIncidentAutoBlockExclusionRestoresLegacyMailCompromiseEvents(t *testing.T) {
-	tests := []struct {
-		name    string
-		event   IncidentEvent
-		exclude bool
-	}{
-		{
-			name: "advisory marker",
-			event: IncidentEvent{
-				Kind:    "finding",
-				Check:   "mail_account_compromised",
-				Message: "Mail account compromise (established multi-mailbox source)",
-			},
-			exclude: true,
-		},
-		{
-			name: "critical message",
-			event: IncidentEvent{
-				Kind:    "finding",
-				Check:   "mail_account_compromised",
-				Message: "Mail account compromise",
-			},
-			exclude: false,
-		},
-		{
-			name: "marker inside attacker-controlled text",
-			event: IncidentEvent{
-				Kind:    "finding",
-				Check:   "mail_account_compromised",
-				Message: "Mail account compromise for (established multi-mailbox source) from 192.0.2.76",
-			},
-			exclude: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			inc := &Incident{Timeline: []IncidentEvent{tt.event}}
-			if got := incidentAutoBlockExcludedOnly(inc); got != tt.exclude {
-				t.Errorf("incidentAutoBlockExcludedOnly() = %v, want %v", got, tt.exclude)
-			}
-		})
+// Events stored before findings carried a severity cannot attest a
+// Critical-only check, whatever their message says, so a legacy mail
+// compromise event never makes its address blockable by itself.
+func TestLegacyMailCompromiseEventsDoNotAttest(t *testing.T) {
+	c := NewCorrelator(CorrelatorConfig{AddressEvidence: registryEvidence})
+	for _, message := range []string{
+		"Mail account compromise (established multi-mailbox source)",
+		"Mail account compromise",
+		"Mail account compromise for (established multi-mailbox source) from 192.0.2.76",
+	} {
+		inc := &Incident{
+			CorrelationKey: &Key{RemoteIP: "192.0.2.76"},
+			Timeline:       []IncidentEvent{{Kind: "finding", Check: "mail_account_compromised", Message: message, RemoteIP: "192.0.2.76"}},
+		}
+		if c.blockAddressAttested(inc, "192.0.2.76") {
+			t.Errorf("legacy event %q attested its address", message)
+		}
 	}
 }
 
@@ -350,7 +334,8 @@ func TestAutoBlockSkipsModSecAdvisoryOnly(t *testing.T) {
 		t.Run(check, func(t *testing.T) {
 			var cap blockCapture
 			c := NewCorrelator(CorrelatorConfig{
-				OpenThreshold: 1,
+				AddressEvidence: registryEvidence,
+				OpenThreshold:   1,
 				AutoBlock: IncidentAutoBlockConfig{
 					Enabled:         true,
 					BlockAtSeverity: "high",
@@ -379,7 +364,8 @@ func TestAutoBlockSkipsModSecAdvisoryOnly(t *testing.T) {
 func TestAutoBlockFiresWhenBlockableFindingJoinsMailSuspected(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "high",
@@ -422,7 +408,8 @@ func TestAutoBlockFiresWhenBlockableFindingJoinsMailSuspected(t *testing.T) {
 func TestAutoBlockSkipsBelowSeverityGate(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "critical",
@@ -451,7 +438,8 @@ func TestAutoBlockFiresOncePerIncident(t *testing.T) {
 	// generic block callbacks after one live request has been recorded.
 	var cap blockCapture
 	cfg := CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "critical",
@@ -503,6 +491,9 @@ func TestAutoBlockSkipsCredentialSprayKind(t *testing.T) {
 		BlockAtSeverity:   "high",
 	}
 	c := NewCorrelator(CorrelatorConfig{
+		// The spray findings attest their address, so only the kind decides
+		// which path blocks.
+		AddressEvidence:  func(check string, _ alert.Severity) bool { return check == "email_auth_failure_realtime" },
 		OpenThreshold:    1,
 		SpraySuppression: spray,
 		AutoBlock: IncidentAutoBlockConfig{
@@ -542,6 +533,11 @@ func TestAutoBlockSkipsCredentialSprayKind(t *testing.T) {
 func TestAutoBlockHonorsKindsFilter(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
+		// Both fixture findings attest their address, so only the kinds
+		// filter decides which one blocks.
+		AddressEvidence: func(check string, _ alert.Severity) bool {
+			return check == "email_auth_failure_realtime" || check == "webshell_detected"
+		},
 		OpenThreshold: 1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
@@ -591,7 +587,8 @@ func TestAutoBlockHonorsKindsFilter(t *testing.T) {
 func TestAutoBlockSkipsWhenRemoteIPMissing(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "high",
@@ -619,7 +616,8 @@ func TestAutoBlockHonorsCanIncidentBlockGate(t *testing.T) {
 	var cap blockCapture
 	allow := false
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "high",
@@ -666,7 +664,8 @@ func TestAutoBlockRetriesWhenCallbackReportsNoLiveBlock(t *testing.T) {
 	var cap blockCapture
 	live := false
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "critical",
@@ -726,7 +725,8 @@ func TestAutoBlockRetriesWhenCallbackReportsNoLiveBlock(t *testing.T) {
 func TestAutoBlockUsesTimelineRemoteIPForMailboxIncident(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "critical",
@@ -766,7 +766,8 @@ func TestAutoBlockUsesTimelineRemoteIPForMailboxIncident(t *testing.T) {
 func TestAutoBlockSkipsTruncatedTimelineWithoutRemoteIPKey(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "critical",
@@ -837,7 +838,8 @@ func TestAutoBlockReleasesPendingSlotOnPanic(t *testing.T) {
 		return true
 	}
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 1,
+		AddressEvidence: registryEvidence,
+		OpenThreshold:   1,
 		AutoBlock: IncidentAutoBlockConfig{
 			Enabled:         true,
 			BlockAtSeverity: "critical",
@@ -910,6 +912,7 @@ func TestAutoBlockSkipsAuthenticatedActivity(t *testing.T) {
 		t.Run(check, func(t *testing.T) {
 			var captured blockCapture
 			cfg := CorrelatorConfig{
+				AddressEvidence: registryEvidence,
 				OpenThreshold:   1,
 				AutoBlock:       IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "high"},
 				OnIncidentBlock: captured.recordOK,

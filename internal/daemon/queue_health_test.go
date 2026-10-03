@@ -193,7 +193,7 @@ func TestQueueHealthCanceledBatchesCountEveryAbandonedFinding(t *testing.T) {
 					p := &PAMListener{alertCh: d.alertCh, stopCh: d.stopCh}
 					p.emit(findings)
 				case "mail":
-					if d.dispatchMailLogLine(maillog.Line{}, func(string, *config.Config) []alert.Finding { return findings }) {
+					if d.dispatchMailLogLine(maillog.Line{}, func(string, alert.Observation, *config.Config) []alert.Finding { return findings }) {
 						t.Fatal("canceled mail batch reported success")
 					}
 				case "auth_backend":

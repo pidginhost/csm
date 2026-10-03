@@ -16,7 +16,7 @@ import (
 // observed handler its held findings need.
 func TestFixedLogSpecsNameTheirProducers(t *testing.T) {
 	d := New(&config.Config{}, nil, nil, "")
-	exim := func(string, *config.Config) []alert.Finding { return nil }
+	exim := func(string, alert.Observation, *config.Config) []alert.Finding { return nil }
 	for _, c := range []struct {
 		info platform.Info
 		exim bool
@@ -40,7 +40,9 @@ func TestFixedLogSpecsNameTheirProducers(t *testing.T) {
 				if s.handler == nil {
 					t.Errorf("%s has no handler", s.path)
 				}
-				if (s.path == "/usr/local/cpanel/logs/access_log") != (s.observed != nil) {
+				// The exim log hands each line's observation to the SMTP
+				// tracker, so its spray constituents name their lines.
+				if (s.path == "/usr/local/cpanel/logs/access_log" || s.path == eximMainlogPath) != (s.observed != nil) {
 					t.Errorf("%s observed handler set = %v", s.path, s.observed != nil)
 				}
 			}

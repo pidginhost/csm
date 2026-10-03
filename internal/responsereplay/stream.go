@@ -121,6 +121,7 @@ type wireEvent struct {
 	Domain    string       `json:"domain,omitempty"`
 	Mailbox   string       `json:"mailbox,omitempty"`
 	Process   *wireProcess `json:"process,omitempty"`
+	CIDRs     []string     `json:"cidrs,omitempty"`
 }
 
 type wireProcess struct {

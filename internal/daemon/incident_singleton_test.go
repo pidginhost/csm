@@ -237,7 +237,7 @@ func TestIncidentCorrelatorSprayBlockerHonorsLiveAutoResponseConfig(t *testing.T
 	cfg.Incidents.SpraySuppression.DryRun = false
 	cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
 	cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
-	cfg.Incidents.SpraySuppression.PerCheck = []string{"email_auth_failure_realtime"}
+	cfg.Incidents.SpraySuppression.PerCheck = []string{"pam_bruteforce"}
 	cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 
@@ -295,7 +295,7 @@ func TestIncidentCorrelatorSprayBlockerRequiresLiveOutcome(t *testing.T) {
 	cfg.Incidents.SpraySuppression.DryRun = false
 	cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
 	cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
-	cfg.Incidents.SpraySuppression.PerCheck = []string{"email_auth_failure_realtime"}
+	cfg.Incidents.SpraySuppression.PerCheck = []string{"pam_bruteforce"}
 	cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 
@@ -333,7 +333,7 @@ func TestIncidentCorrelatorSprayBlockerSuppressesProtectedIPError(t *testing.T) 
 	cfg.Incidents.SpraySuppression.DryRun = false
 	cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
 	cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
-	cfg.Incidents.SpraySuppression.PerCheck = []string{"email_auth_failure_realtime"}
+	cfg.Incidents.SpraySuppression.PerCheck = []string{"pam_bruteforce"}
 	cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 
@@ -476,7 +476,7 @@ func TestIncidentCorrelatorKeepsVerifiedContainmentWhenAuditPending(t *testing.T
 					cfg.Incidents.SpraySuppression.Enabled = true
 					cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
 					cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
-					cfg.Incidents.SpraySuppression.PerCheck = []string{"email_auth_failure_realtime"}
+					cfg.Incidents.SpraySuppression.PerCheck = []string{"pam_bruteforce"}
 					cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
 					action, kind = "credential_spray_block_requested", incident.KindCredentialSpray
 				} else {
@@ -542,8 +542,9 @@ func feedSpray(t *testing.T, c *incident.Correlator, ip string, count int) {
 	now := time.Unix(1_700_000_000, 0)
 	for i := 0; i < count; i++ {
 		_, _, err := c.OnFinding(alert.Finding{
-			Check:     "email_auth_failure_realtime",
-			Severity:  alert.High,
+			// Address evidence: a spray of raw failures alone never blocks.
+			Check:     "pam_bruteforce",
+			Severity:  alert.Critical,
 			SourceIP:  ip,
 			Mailbox:   "user" + strconv.Itoa(i) + "@example.com",
 			Timestamp: now.Add(time.Duration(i) * time.Minute),

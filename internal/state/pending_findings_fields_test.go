@@ -147,7 +147,8 @@ func TestPendingFindingsDowngradeKeepsPublicPayload(t *testing.T) {
 	if decodeErr := json.Unmarshal(data, &older); decodeErr != nil {
 		t.Fatal(decodeErr)
 	}
-	f.CIDRs, f.SprayTargets = nil, nil
+	// The subnets are public now; the spray targets stay storage-only.
+	f.SprayTargets = nil
 	f.AutoFileResponseEvaluated, f.ScanCarryForward = false, false
 	if !reflect.DeepEqual(older, []alert.Finding{f}) {
 		t.Fatalf("downgrade payload = %+v, want %+v", older, f)

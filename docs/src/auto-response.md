@@ -12,7 +12,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **Clean supported malware** | Applies bounded PHP and `.htaccess` cleaners with pre-clean backups. Database cleanup has a separate opt-in. |
 | **Drop malicious DB objects** | When `clean_database` is on, confirmed-malicious stored triggers/events/procedures/functions are dropped after a `SHOW CREATE` backup is recorded, so the drop is reversible. Detection runs regardless; the drop is gated on the operator opt-in. |
 | **PHP shield** | Blocks PHP execution from uploads/tmp directories and inspects directly executed `wp-content` scripts for request-fed command sinks and packed eval loaders. |
-| **PAM blocking** | Instant IP block when one address breaches `thresholds.pam_bruteforce_threshold` failures inside `pam_bruteforce_window_min` minutes, or fails against `cred_stuffing_distinct_accounts` distinct accounts. |
+| **PAM blocking** | Instant IP block when one address breaches `thresholds.pam_bruteforce_threshold` SSH failures inside `pam_bruteforce_window_min` minutes, or fails SSH logins against `cred_stuffing_distinct_accounts` distinct accounts. Only successful SSH logins clear those failures; failures from other PAM services never block. |
 | **Subnet blocking** | Auto-blocks IPv4 /24 or IPv6 /64 when 3+ IPs from the same range were blocked within `netblock_window` (7 days by default). Currently blocked addresses count regardless of age, including operator and permanent blocks. Ended blocks count while their latest observed block start is inside the window, unless an earlier subnet block already answered them. A returning operator block starts fresh history after its absence is observed. Whitelist and clear actions, including bulk whitelist, forget the address. |
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
 | **Auto-freeze (PHP relay)** | On cPanel, freezes active Exim messages attributed to a high-confidence PHP-relay finding. It has its own dry-run control and action-rate limit. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
@@ -87,7 +87,12 @@ Findings still queued at shutdown retain the existing restart replay behavior:
 the next daemon run evaluates them again under the same persisted limits.
 Parked findings also keep the offending subnets and targeted accounts needed for
 subnet response and credential spray correlation. Older parked findings replay
-without that data; public finding JSON is unchanged.
+without that data. The subnets also appear in the public `cidrs` field.
+
+Parked reputation findings keep their intelligence source and expiry. If an
+expiry cannot be encoded, only that intelligence metadata is dropped; the
+finding and the rest of the queued batch are still saved and replayed. This
+handling is automatic and has no setting.
 
 A failed PHP cleaner leaves the file and any pre-clean backup for manual review.
 It no longer escalates to whole-file quarantine. A cleaner that recognizes no

@@ -33,7 +33,7 @@ func TestMailReaderReportsStalledDeliveryAndRecovery(t *testing.T) {
 			d.wg.Wait()
 		}()
 		var messages []string
-		d.startMailLogReader("", func(line string, _ *config.Config) []alert.Finding {
+		d.startMailLogReader("", func(line string, _ alert.Observation, _ *config.Config) []alert.Finding {
 			messages = append(messages, line)
 			<-release
 			return nil

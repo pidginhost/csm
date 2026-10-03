@@ -13,7 +13,8 @@ import (
 // cannot import: checks depends on incident.
 func registryEvidence(check string, sev alert.Severity) bool {
 	switch check {
-	case "xmlrpc_abuse", "wp_login_bruteforce", "modsec_csm_block_escalation", "c2_connection", "email_compromised_account":
+	case "xmlrpc_abuse", "wp_login_bruteforce", "modsec_csm_block_escalation", "modsec_block_escalation", "c2_connection",
+		"email_compromised_account", "ftp_bruteforce", "mail_bruteforce":
 		return true
 	case "mail_account_compromised":
 		return sev == alert.Critical
@@ -390,18 +391,41 @@ func TestAddressEvidenceDoesNotOverrideSprayOwnership(t *testing.T) {
 					Check: check, Severity: alert.Critical, SourceIP: "198.51.100.18", Mailbox: "account" + strconv.Itoa(i),
 				})
 			}
-			if generic.len() != 0 || spray.len() != 1 || spray.calls[0].IP != "198.51.100.18" {
-				t.Fatalf("generic=%+v spray=%+v, want only the spray block", generic.calls, spray.calls)
+			// Raw mailbox failures attest nothing, so that spray blocks on
+			// neither path; an attested spray blocks on the spray path only.
+			want := 1
+			if check == "email_auth_failure_realtime" {
+				want = 0
+			}
+			if generic.len() != 0 || spray.len() != want || (want == 1 && spray.calls[0].IP != "198.51.100.18") {
+				t.Fatalf("generic=%+v spray=%+v, want %d spray block(s) and no generic block", generic.calls, spray.calls, want)
 			}
 		})
 	}
 }
 
-func TestAddressEvidenceNilLeavesGateDisabled(t *testing.T) {
+// Without an evidence gate nothing attests an address, so nothing blocks:
+// a correlator built without one fails closed, not open.
+func TestAddressEvidenceNilRefusesBlocks(t *testing.T) {
 	c, cap, now := evidenceCorrelator(t, "critical")
 	c.cfg.AddressEvidence = nil
 	feed(t, c, now, alert.Finding{Check: "backdoor_port_outbound", Severity: alert.Critical, SourceIP: "198.51.100.19"})
-	if cap.len() != 1 || cap.calls[0].IP != "198.51.100.19" {
-		t.Fatalf("nil evidence gate rejected block: %+v", cap.calls)
+	if cap.len() != 0 {
+		t.Fatalf("nil evidence gate allowed block: %+v", cap.calls)
+	}
+	// Evidence an incident recorded earlier does not attest without a gate.
+	*now = now.Add(time.Minute)
+	c.Restore([]Incident{{
+		ID: "inc_recorded", Status: StatusOpen, Kind: KindWebAttack, Severity: alert.Critical,
+		CorrelationKey: &Key{RemoteIP: "198.51.100.20"}, RemoteIPEvidence: true, CreatedAt: *now, UpdatedAt: *now,
+	}})
+	feed(t, c, now, alert.Finding{Check: "modsec_csm_block_escalation", Severity: alert.Critical, SourceIP: "198.51.100.20"})
+	if cap.len() != 0 {
+		t.Fatalf("nil evidence gate allowed a recorded-evidence block: %+v", cap.calls)
 	}
 }
+
+// attestEveryCheck is the gate for tests about other parts of the block path:
+// every finding attests its address, as a correlator without a gate did
+// before a missing gate refused.
+func attestEveryCheck(string, alert.Severity) bool { return true }

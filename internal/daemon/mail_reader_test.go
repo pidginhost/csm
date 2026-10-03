@@ -26,7 +26,7 @@ func TestMailReaderRecoversInitialMissingFile(t *testing.T) {
 			}
 		}()
 		var messages []string
-		d.startMailLogReader("", func(line string, _ *config.Config) []alert.Finding {
+		d.startMailLogReader("", func(line string, _ alert.Observation, _ *config.Config) []alert.Finding {
 			messages = append(messages, line)
 			return nil
 		})

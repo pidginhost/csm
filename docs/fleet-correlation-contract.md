@@ -45,8 +45,12 @@ X-CSM-Hostname: <hostname>
 
 Every field phpanel needs to correlate across hosts is present:
 `hostname` identifies the reporting sensor, and `finding.source_ip`
-identifies the attacker when the detector has a remote source. Severity
-is the CSM numeric enum (`0` warning, `1` high, `2` critical). No extra
+identifies the attacker when the detector has a remote source. For
+`mail_subnet_spray` and `smtp_subnet_spray`, use `source_ip` when present
+(older findings); otherwise use the single subnet in `finding.cidrs`.
+Other checks' `cidrs`, including `http_asn_crawl`, are response targets
+and must not become an attacker key. Severity is the CSM numeric enum
+(`0` warning, `1` high, `2` critical). No extra
 CSM API or peer transport is required; fleet correlation is a matter of
 phpanel aggregating the stream it already receives.
 
@@ -55,24 +59,24 @@ phpanel aggregating the stream it already receives.
 1. Verify `X-CSM-Signature` (HMAC-SHA256 over the raw body) with the
    shared secret before trusting any field. Reject unsigned or
    mismatched messages.
-2. Group incoming findings by `finding.source_ip` within a sliding
-   window (recommend matching CSM's 15-minute incident merge window).
-3. When the same `source_ip` appears in findings from **two or more
+2. Group incoming findings by the attacker address described above within a
+   sliding window (recommend matching CSM's 15-minute incident merge window).
+3. When the same attacker address appears in findings from **two or more
    distinct `hostname` values** inside the window, open one fleet
-   incident keyed on `(source_ip)` rather than per-host incidents.
+   incident keyed on that address rather than per-host incidents.
 4. Attach each contributing `(hostname, finding)` to the fleet
    incident's timeline so an operator sees the spread across the fleet.
 5. Account/mailbox/domain identifiers are host-local; do not use them as
-   the cross-host key (they collide across tenants). `source_ip` is the
-   only globally meaningful attacker key.
+   the cross-host key (they collide across tenants). Use only the attacker
+   address as the cross-host key.
 
 ## Severity and de-duplication
 
 - A fleet incident's severity is the max of its contributing findings.
-- Findings carrying no `source_ip` (host-integrity events, config
+- Findings carrying no attacker address (host-integrity events, config
   drift) are not fleet-correlated; they stay per-host.
-- The same `(hostname, source_ip, check)` arriving repeatedly is the
-  normal heartbeat of an ongoing attack; collapse on `(source_ip)` and
+- The same `(hostname, attacker address, check)` arriving repeatedly is the
+  normal heartbeat of an ongoing attack; collapse on the attacker address and
   count contributions rather than opening a new incident per message.
 
 ## Out of scope (v1)

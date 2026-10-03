@@ -13,7 +13,7 @@ import (
 // account-scoped web-compromise default.
 func ClassifyKind(f alert.Finding) Kind {
 	check := strings.ToLower(f.Check)
-	hasAttacker := strings.TrimSpace(f.SourceIP) != ""
+	hasAttacker := strings.TrimSpace(alert.AttackerAddress(f)) != ""
 
 	// Host integrity -- daemon/kernel-level signals whose blast radius is
 	// the host itself, not a single tenant or an inbound attacker. Listed

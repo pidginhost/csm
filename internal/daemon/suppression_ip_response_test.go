@@ -110,12 +110,13 @@ func TestSuppressedFindingsStillDriveIncidentBlocks(t *testing.T) {
 				cfg.Incidents.SpraySuppression.Enabled = spray
 				cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
 				cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
-				cfg.Incidents.SpraySuppression.PerCheck = []string{"email_auth_failure_realtime"}
+				cfg.Incidents.SpraySuppression.PerCheck = []string{"pam_bruteforce"}
 				cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
 				SetIncidentConfigSource(func() *config.Config { return cfg })
 				check := "api_auth_failure_realtime"
 				if spray {
-					check = "email_auth_failure_realtime"
+					// Address evidence: a spray of raw failures alone never blocks.
+					check = "pam_bruteforce"
 				}
 				d := suppressionTestDaemon(t, cfg, checkWideSuppression(check))
 				SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
@@ -133,15 +134,28 @@ func TestSuppressedFindingsStillDriveIncidentBlocks(t *testing.T) {
 					})
 				}
 				runSuppressionBatch(t, d, path, findings)
-				if got := blockedIPs(blocker); len(got) != 1 || got[0] != "192.0.2.40" {
-					t.Fatalf("suppression prevented incident block: %v", got)
-				}
-				prefix := "CSM incident:"
-				if spray {
-					prefix = "CSM credential_spray:"
-				}
-				if !strings.HasPrefix(blocker.calls[0].reason, prefix) {
-					t.Fatalf("wrong enforcement path: %q", blocker.calls[0].reason)
+				if !spray {
+					if got := blockedIPs(blocker); len(got) != 1 || got[0] != "192.0.2.40" {
+						t.Fatalf("suppression prevented incident block: %v", got)
+					}
+					if !strings.HasPrefix(blocker.calls[0].reason, "CSM incident:") {
+						t.Fatalf("wrong enforcement path: %q", blocker.calls[0].reason)
+					}
+				} else {
+					// The spray check also blocks per address; the spray
+					// incident must still block too.
+					var incidentBlocks int
+					for _, call := range blocker.calls {
+						if call.ip != "192.0.2.40" {
+							t.Fatalf("blocked %q, want only 192.0.2.40", call.ip)
+						}
+						if strings.HasPrefix(call.reason, "CSM credential_spray:") {
+							incidentBlocks++
+						}
+					}
+					if incidentBlocks != 1 {
+						t.Fatalf("spray incident blocks %d in %+v, want 1", incidentBlocks, blocker.calls)
+					}
 				}
 				if rec.delivered(suppressedDetailsMarker) {
 					t.Fatal("incident enforcement leaked the suppressed source alert")

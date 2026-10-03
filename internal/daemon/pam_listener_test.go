@@ -41,7 +41,7 @@ func TestPAMListenerEmitsCredentialStuffing(t *testing.T) {
 	}
 
 	p.processEvent("FAIL ip=203.0.113.20 user=alice service=sshd")
-	p.processEvent("FAIL ip=203.0.113.20 user=bob service=dovecot")
+	p.processEvent("FAIL ip=203.0.113.20 user=bob service=sshd")
 	p.processEvent("FAIL ip=203.0.113.20 user=carol service=sshd")
 
 	got := drainForCheck(alertCh, "credential_stuffing")
@@ -54,7 +54,7 @@ func TestPAMListenerEmitsCredentialStuffing(t *testing.T) {
 	if got.Severity != alert.High {
 		t.Fatalf("Severity = %v, want High", got.Severity)
 	}
-	if got.Details != "Accounts targeted: alice, bob, carol\nService(s): dovecot, sshd" {
+	if got.Details != "Accounts targeted: alice, bob, carol\nService(s): sshd" {
 		t.Fatalf("Details = %q, want targeted account list", got.Details)
 	}
 	if !slices.Equal(got.SprayTargets, []string{"alice", "bob", "carol"}) {
@@ -83,7 +83,7 @@ func TestSpraySuppressionDefaultChecksAreEmittedByProductionParsers(t *testing.T
 	}
 
 	p.processEvent("FAIL ip=203.0.113.24 user=alice service=sshd")
-	p.processEvent("FAIL ip=203.0.113.24 user=bob service=dovecot")
+	p.processEvent("FAIL ip=203.0.113.24 user=bob service=sshd")
 	p.processEvent("FAIL ip=203.0.113.24 user=carol service=sshd")
 
 	for {
@@ -146,8 +146,8 @@ func TestPAMListenerOKClearsCredentialStuffingState(t *testing.T) {
 	}
 
 	p.processEvent("FAIL ip=203.0.113.22 user=alice service=sshd")
-	p.processEvent("FAIL ip=203.0.113.22 user=bob service=dovecot")
-	p.processEvent("OK ip=203.0.113.22 user=bob service=dovecot")
+	p.processEvent("FAIL ip=203.0.113.22 user=bob service=sshd")
+	p.processEvent("OK ip=203.0.113.22 user=bob service=sshd")
 	p.processEvent("FAIL ip=203.0.113.22 user=carol service=sshd")
 
 	if got := drainForCheck(alertCh, "credential_stuffing"); got != nil {
@@ -178,7 +178,7 @@ func TestPAMListenerUsesActiveCredentialStuffingThreshold(t *testing.T) {
 	}
 
 	p.processEvent("FAIL ip=203.0.113.23 user=alice service=sshd")
-	p.processEvent("FAIL ip=203.0.113.23 user=bob service=dovecot")
+	p.processEvent("FAIL ip=203.0.113.23 user=bob service=sshd")
 	p.processEvent("FAIL ip=203.0.113.23 user=carol service=sshd")
 
 	if got := drainForCheck(alertCh, "credential_stuffing"); got == nil {

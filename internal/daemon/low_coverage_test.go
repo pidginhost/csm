@@ -61,12 +61,15 @@ func TestProcessEvent_MissingServiceField(t *testing.T) {
 	p.processEvent("FAIL ip=203.0.113.52 user=root")
 	p.mu.Lock()
 	tracker := p.failures["203.0.113.52"]
+	other := p.serviceFailures["203.0.113.52"]
 	p.mu.Unlock()
-	if tracker == nil {
-		t.Fatal("failure tracker should exist even without service field")
+	// A line without a service is not an sshd failure: it is tracked for
+	// visibility, never as SSH evidence.
+	if tracker != nil {
+		t.Fatalf("missing service became SSH evidence: %+v", tracker)
 	}
-	if !tracker.services[""] {
-		t.Error("empty service should be tracked")
+	if other == nil || !other.services[""] {
+		t.Errorf("visibility tracker = %+v, want the empty service tracked", other)
 	}
 }
 
@@ -244,7 +247,8 @@ func TestRecordFailure_AlertDetailsContainUsersAndServices(t *testing.T) {
 
 	ip := "203.0.113.72"
 	emitRecordFailure(p, ip, "root", "sshd")
-	emitRecordFailure(p, ip, "admin", "webmin")
+	emitRecordFailure(p, ip, "admin", "webmin") // visibility only, not SSH evidence
+	emitRecordFailure(p, ip, "admin", "sshd")
 	emitRecordFailure(p, ip, "root", "sshd") // triggers threshold
 
 	select {
@@ -258,8 +262,8 @@ func TestRecordFailure_AlertDetailsContainUsersAndServices(t *testing.T) {
 		if !strings.Contains(f.Details, "sshd") {
 			t.Errorf("details should contain 'sshd': %q", f.Details)
 		}
-		if !strings.Contains(f.Details, "webmin") {
-			t.Errorf("details should contain 'webmin': %q", f.Details)
+		if strings.Contains(f.Details, "webmin") {
+			t.Errorf("details name a non-sshd service: %q", f.Details)
 		}
 	default:
 		t.Error("threshold hit should emit alert")

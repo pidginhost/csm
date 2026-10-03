@@ -79,9 +79,10 @@ func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	}
 
 	stats := newDomlogStats()
+	hostInfo := platform.Detect()
 	var centralPath string
 	var centralLines []string
-	for _, p := range platform.Detect().AccessLogPaths {
+	for _, p := range hostInfo.AccessLogPaths {
 		if lines := tailFile(p, window); len(lines) > 0 {
 			centralPath, centralLines = p, lines
 			break
@@ -96,11 +97,13 @@ func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	// On LiteSpeed this mostly has WHM/server-level requests.
 	// On Apache it duplicates domlog data; minor double-counting is
 	// acceptable since thresholds are high enough.
+	central := hostInfo.IsCPanelCentralAccessLog(centralPath)
 	for _, line := range centralLines {
 		rec, ok := parseAccessLogRecord(line)
 		if !ok {
 			continue
 		}
+		rec.Central = central
 		stats.scan(rec, cfg, currentBotClassifier(cfg))
 	}
 

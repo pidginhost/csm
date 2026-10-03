@@ -23,7 +23,8 @@ func TestBinaryConfigTamperUsesHostIncidentIdentity(t *testing.T) {
 func TestBinaryConfigTamperOpensAndJoinsHostIncident(t *testing.T) {
 	blocks := 0
 	c := incident.NewCorrelator(incident.CorrelatorConfig{
-		OpenThreshold: 3,
+		AddressEvidence: func(string, alert.Severity) bool { return true },
+		OpenThreshold:   3,
 		AutoBlock: incident.IncidentAutoBlockConfig{
 			Enabled: true, BlockAtSeverity: "high",
 		},

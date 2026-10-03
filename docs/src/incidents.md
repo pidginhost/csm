@@ -126,6 +126,10 @@ opens a single `credential_spray` super-incident keyed on the IP with
 breadth-based severity escalation. Subsequent findings from that IP
 attach to the spray incident's timeline.
 
+If `per_check` includes `mail_subnet_spray` or `smtp_subnet_spray`, grouping
+uses their single `cidrs` subnet. Older findings with the subnet in `source_ip`
+keep the same grouping, including when replayed or joining restored incidents.
+
 Defaults (configurable in `csm.yaml`):
 
 ```yaml
@@ -157,11 +161,32 @@ blocking is live again. Concurrent findings for the same incident share
 one in-flight firewall call, and resolved or dismissed spray incidents do
 not make new block decisions.
 
-Visibility-only findings do not make a spray incident blockable by themselves.
-This includes `mail_bruteforce_suspected` and the High
-`mail_account_compromised` advisory for an established multi-mailbox source.
-A separate blockable finding in the same spray incident can still trip the
-configured severity gate.
+A spray incident blocks only an address that a finding with address
+evidence attests, the same gate every incident block uses. Raw mailbox
+failures such as `email_auth_failure_realtime` count mailboxes and open the
+incident, but cannot block the source alone; `pam_bruteforce` or
+`credential_stuffing` from the same address can. Visibility-only findings,
+including `mail_bruteforce_suspected` and the High `mail_account_compromised`
+advisory for an established multi-mailbox source, never make a spray
+incident blockable either.
+
+Incident blocks name the finding that supplied address evidence. That link
+survives timeline trimming and restart. At startup, older incidents learn
+the link from an attesting timeline event even when their evidence flag was
+already set. If an older timeline has no finding identity or already lost
+that event, the original link cannot be recovered; it is never made from
+message text. The next finding that attests the key's address records its own
+identity when that link is missing, and the new link survives trimming and
+restart. Existing blocks are unchanged.
+
+
+Automatic incident blocks use the address-evidence gate without a separate
+exclusion list. Advisory events alone never attest an address, but can raise
+an incident's severity after an earlier attestation, even when that event
+left a trimmed timeline. Retained evidence in existing incidents follows
+this rule on the next finding after upgrade. The existing incident and spray
+blocking settings still govern the action.
+
 
 Whitelisted IPs (entries in `reputation.whitelist` and the live bbolt
 whitelist updated via the Web UI) are skipped from spray detection so
@@ -784,6 +809,7 @@ Attribution gaps:
 | `opencart_content_injection` | security event |  |  |
 | `opencart_settings_injection` | security event |  |  |
 | `outdated_plugins` | ignored | posture |  |
+| `pam_auth_failures` | ignored | informational |  |
 | `pam_bruteforce` | ignored | attacker-side |  |
 | `pam_login` | ignored | informational |  |
 | `password_hijack_confirmed` | security event |  |  |

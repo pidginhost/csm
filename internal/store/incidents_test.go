@@ -104,7 +104,10 @@ func TestIncidentBlockLadderSurvivesStoreAndRestore(t *testing.T) {
 				}
 				var calls []time.Duration
 				block := func(_, _ string, ttl time.Duration, _ string) bool { calls = append(calls, ttl); return true }
-				cfg := incident.CorrelatorConfig{Persist: db.SaveIncident, AutoBlock: incident.IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "high"}, OnIncidentBlock: block}
+				// Every finding attests its address: this test is about the
+				// ladder surviving storage, not the evidence gate.
+				cfg := incident.CorrelatorConfig{Persist: db.SaveIncident, AutoBlock: incident.IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "high"}, OnIncidentBlock: block,
+					AddressEvidence: func(string, alert.Severity) bool { return true }}
 				if spray {
 					cfg.SpraySuppression = incident.SpraySuppressionConfig{Enabled: true, DistinctMailboxes: 2, BlockAtSeverity: "high", PerCheck: map[string]bool{check: true}}
 					cfg.OnSprayBlock = block

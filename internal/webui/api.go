@@ -574,7 +574,7 @@ func findingAccount(f alert.Finding) string {
 }
 
 func findingIP(f alert.Finding) string {
-	if ip := strings.TrimSpace(f.SourceIP); ip != "" {
+	if ip := strings.TrimSpace(alert.AttackerAddress(f)); ip != "" {
 		return ip
 	}
 	if !isEmailHistoryCheck(f.Check) {

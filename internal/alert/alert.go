@@ -133,11 +133,19 @@ type Finding struct {
 	// findings. It is internal-only so API payloads keep the public Finding
 	// contract while the incident correlator can count distinct targets.
 	SprayTargets []string `json:"-"`
-	// CIDRs carries the collapsed offending subnets for subnet-scoped
-	// findings (http_asn_crawl). Internal-only so the public Finding/webhook
-	// contract is unchanged; the subnet auto-response reads this, never the
-	// Message/Details text.
-	CIDRs []string `json:"-"`
+	// CIDRs carries the offending subnets of a subnet-scoped finding: the
+	// collapsed subnets of a distributed crawl. The subnet auto-response
+	// reads this, never the Message/Details text.
+	CIDRs []string `json:"cidrs,omitempty"`
+	// SprayConstituents lists the addresses a subnet spray counted and the
+	// line that last named each. Internal-only like SprayTargets.
+	SprayConstituents []SprayConstituent `json:"-"`
+	// Intel names the threat intelligence a reputation finding rests on and
+	// when that claim lapses. Internal-only like Claims.
+	Intel *admission.IntelRef `json:"-"`
+	// Cause names the finding a derived finding was made from, such as the
+	// database finding behind a session-attacker block. Internal-only.
+	Cause *Cause `json:"-"`
 	// Claims say which account a finding concerns and where each value came
 	// from, as the producer read it. Admission resolves the owner from them,
 	// so a producer records only what it read, never a guess.

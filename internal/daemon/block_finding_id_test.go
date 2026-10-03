@@ -181,7 +181,7 @@ func TestIncidentBlockWiringRetainsSourceFindingID(t *testing.T) {
 			cfg.Incidents.AutoBlock.BlockAtSeverity = "critical"
 			cfg.Incidents.SpraySuppression.Enabled = spray
 			cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
-			cfg.Incidents.SpraySuppression.PerCheck = []string{"email_auth_failure_realtime"}
+			cfg.Incidents.SpraySuppression.PerCheck = []string{"pam_bruteforce"}
 			cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
 			SetIncidentConfigSource(func() *config.Config { return cfg })
 			d := New(cfg, nil, nil, "")
@@ -190,7 +190,7 @@ func TestIncidentBlockWiringRetainsSourceFindingID(t *testing.T) {
 			f := alert.Finding{Check: "modsec_csm_block_escalation", Severity: alert.Critical, SourceIP: "192.0.2.10", Message: "block evidence", Timestamp: time.Now()}
 			count := 1
 			if spray {
-				f.Check = "email_auth_failure_realtime"
+				f.Check = "pam_bruteforce"
 				count = 3
 			}
 			for i := range count {

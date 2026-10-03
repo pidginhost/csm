@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
@@ -101,6 +102,17 @@ func discoverAccessLogPath() string {
 // counts to wp-login.php and xmlrpc.php, and emits findings when thresholds
 // are crossed.
 func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
+	return parseAccessLogBruteForceForLog(line, cfg, true)
+}
+
+func accessLogHandlerForPath(path string) LogLineHandler {
+	central := platform.Detect().IsCPanelCentralAccessLog(path)
+	return func(line string, cfg *config.Config) []alert.Finding {
+		return parseAccessLogBruteForceForLog(line, cfg, central)
+	}
+}
+
+func parseAccessLogBruteForceForLog(line string, cfg *config.Config, central bool) []alert.Finding {
 	// Fast reject: only care about POST requests to known attack targets.
 	if !strings.Contains(line, "POST") {
 		return nil
@@ -108,6 +120,11 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 
 	ip, method, path, ok := accessLogIPMethodPath(line)
 	if !ok {
+		return nil
+	}
+	// The panel's own log carries requests a cPanel proxy subdomain passed
+	// through the web server. The reader identifies the log's provenance.
+	if checks.IsProxiedPanelRequest(path, central) {
 		return nil
 	}
 
@@ -381,30 +398,56 @@ func decrementAccessLogTrackerCount() {
 // hits this. strings.Fields allocates len(fields)+1 strings per call; this
 // scanner only returns sub-strings that share the input's backing array.
 func accessLogIPMethodPath(line string) (ip, method, path string, ok bool) {
-	var fields [7]string
 	n := len(line)
 	i := 0
-	for f := 0; f < 7; f++ {
+	for i < n && isAccessLogSpace(line[i]) {
+		i++
+	}
+	start := i
+	for i < n && !isAccessLogSpace(line[i]) {
+		i++
+	}
+	ip = line[start:i]
+	if ip == "" {
+		return "", "", "", false
+	}
+	// A remote user may contain spaces and brackets. Its quotes are escaped,
+	// so only the timestamp ends with a bracket, blanks and a literal quote.
+	for ; i < n; i++ {
+		if line[i] != ']' {
+			continue
+		}
+		j := i + 1
+		for j < n && isAccessLogSpace(line[j]) {
+			j++
+		}
+		if j > i+1 && j < n && line[j] == '"' {
+			i = j
+			break
+		}
+	}
+	var fields [2]string
+	for f := range fields {
 		for i < n && isAccessLogSpace(line[i]) {
 			i++
 		}
 		if i >= n {
 			return "", "", "", false
 		}
-		start := i
+		start = i
 		for i < n && !isAccessLogSpace(line[i]) {
 			i++
 		}
 		fields[f] = line[start:i]
 	}
-	method = fields[5]
+	method = fields[0]
 	for len(method) > 0 && method[0] == '"' {
 		method = method[1:]
 	}
 	for len(method) > 0 && method[len(method)-1] == '"' {
 		method = method[:len(method)-1]
 	}
-	return fields[0], method, fields[6], true
+	return ip, method, fields[1], true
 }
 
 func isAccessLogSpace(b byte) bool {

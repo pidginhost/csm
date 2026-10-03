@@ -16,6 +16,7 @@ func blockLifecycleCorrelator(t *testing.T, spray bool, callback func(string, st
 		kind, check = KindCredentialSpray, "email_auth_failure_realtime"
 	}
 	cfg := CorrelatorConfig{
+		AddressEvidence: attestEveryCheck,
 		AutoBlock:       IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "high"},
 		OnIncidentBlock: callback,
 	}
@@ -167,6 +168,7 @@ func TestSprayPromotionSharesPendingBlockGuard(t *testing.T) {
 	cfg := sprayTestConfig(true, false)
 	cfg.BlockAtSeverity = "high"
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
 		AutoBlock:        IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "high"},
 		OnIncidentBlock:  func(string, string, time.Duration, string) bool { close(entered); <-release; return true },

@@ -91,6 +91,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "credential_stuffing", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true, Evidence: admission.FamilySSH, Basis: admission.BasisLocal}},
 	{Name: "pam_bruteforce", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true, Evidence: admission.FamilySSH, Basis: admission.BasisLocal}},
 	{Name: "pam_login", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},
+	{Name: "pam_auth_failures", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonInformational},
 	{Name: "password_hijack_confirmed", Category: CategoryAuth, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "root_password_change", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope, Response: ResponsePolicy{NeverChallenge: true}},
 	{Name: "shadow_change", Category: CategoryAuth, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope, Response: ResponsePolicy{NeverChallenge: true}},

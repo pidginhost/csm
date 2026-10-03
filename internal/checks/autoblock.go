@@ -1345,6 +1345,12 @@ func pruneExemptAutoSubnets(cfg *config.Config, b IPBlocker, progress func()) in
 // the canonical " from " separator. Returns "" if the value does not parse
 // as a CIDR.
 func extractCIDRFromFinding(f alert.Finding) string {
+	if cidr := alert.SubnetSprayCIDR(f); cidr != "" {
+		if _, ipnet, err := net.ParseCIDR(cidr); err == nil {
+			return ipnet.String()
+		}
+		return ""
+	}
 	msg := f.Message
 	idx := strings.LastIndex(msg, " from ")
 	if idx < 0 {

@@ -46,7 +46,7 @@ func (e *smtpIPEntry) evictionRank(now time.Time, window, slowWindow time.Durati
 
 // smtpSubnetEntry tracks unique attacker IPs within a /24.
 type smtpSubnetEntry struct {
-	ips        map[string]time.Time // ip -> firstSeen in window
+	ips        map[string]subnetSighting // ip -> last sighting in window
 	suppressed time.Time
 	lastSeen   time.Time
 }
@@ -208,6 +208,13 @@ func (t *smtpAuthTracker) Size() int {
 // ip MUST be non-private, non-loopback, and non-infra — callers enforce this
 // before invoking Record.
 func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
+	return t.RecordObserved(ip, account, alert.Observation{})
+}
+
+// RecordObserved is Record for a failure read from a positioned line: obs
+// names that line, so a subnet spray names the line that last counted each
+// address.
+func (t *smtpAuthTracker) RecordObserved(ip, account string, obs alert.Observation) []alert.Finding {
 	if ip == "" {
 		return nil
 	}
@@ -292,11 +299,11 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 	if prefix := extractPrefix24Daemon(ip); prefix != "" {
 		s, ok := t.subnets[prefix]
 		if !ok {
-			s = &smtpSubnetEntry{ips: make(map[string]time.Time)}
+			s = &smtpSubnetEntry{ips: make(map[string]subnetSighting)}
 			t.subnets[prefix] = s
 		}
 		pruneSubnetIPs(s, cutoff)
-		s.ips[ip] = now
+		s.ips[ip] = subnetSighting{at: now, obs: obs}
 		s.lastSeen = now
 
 		if t.subnetThreshold > 0 && len(s.ips) >= t.subnetThreshold && !now.Before(s.suppressed) && !degraded {
@@ -307,9 +314,10 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 				Check:    "smtp_subnet_spray",
 				Message: fmt.Sprintf("SMTP password spray from %s.0/24: %d unique IPs in %v",
 					prefix, len(s.ips), t.window),
-				Details:   "Real-time detection of dovecot_login auth failures from many IPs in one /24",
-				Timestamp: now,
-				SourceIP:  cidr,
+				Details:           "Real-time detection of dovecot_login auth failures from many IPs in one /24",
+				Timestamp:         now,
+				CIDRs:             []string{cidr},
+				SprayConstituents: sprayConstituents(s.ips),
 			})
 		}
 	}
@@ -425,8 +433,8 @@ func extractPrefix24Daemon(ip string) string {
 
 // pruneSubnetIPs drops per-/24 IP entries whose last-seen is older than cutoff.
 func pruneSubnetIPs(s *smtpSubnetEntry, cutoff time.Time) {
-	for ip, ts := range s.ips {
-		if ts.Before(cutoff) {
+	for ip, seen := range s.ips {
+		if seen.at.Before(cutoff) {
 			delete(s.ips, ip)
 		}
 	}

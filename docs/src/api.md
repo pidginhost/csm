@@ -667,9 +667,11 @@ threshold and remain in lifetime totals after recovery.
 
 Parked findings add optional storage-only keys to the public finding fields so
 subnet response and credential spray correlation keep their inputs at restart.
-Older parked records still replay, and older daemons ignore the added keys.
-Public Finding JSON stays unchanged. Process-local delivery markers are cleared
-on read, so stored findings receive a fresh evaluation.
+Subnets are in the public `cidrs` field and also keep their storage-only copy,
+so a daemon rolled back after a restart still replays them. Older parked
+records still replay, and older daemons ignore the added keys. Process-local
+delivery markers are cleared on read, so stored findings receive a fresh
+evaluation.
 
 Append order, returned errors and clear-before-replay policy are unchanged.
 These observations add no retry or extra replay. Health snapshots read metadata
@@ -1273,10 +1275,14 @@ Every finding in `/api/v1/findings`, `/api/v1/events`, and the JSONL audit log c
 | `tenant_id` | Tenant attribution from the verdict callback or panel-side webhook reply |
 | `domain` | Domain associated with the event (e.g. PHP-relay scriptKey host, mailbox domain) |
 | `mailbox` | Mailbox attribution (e.g. mail brute-force target, PHP-relay envelope-from) |
+| `cidrs` | Offending subnets the finding names (e.g. a distributed crawl's collapsed subnets, or a mail or SMTP password spray's /24; sprays leave `source_ip` empty) |
 | `relay_total` | PHP-relay trigger count for the path that fired |
 | `relay_breakdown` | PHP-relay script samples that contributed to the alert, with script key, hit count, last seen time, and a bounded sample subject when available |
 
 Fields are omitted when the daemon could not attribute them. Orchestrators should treat absence as "unknown," not "global."
+
+JSONL and syslog audit events include `cidrs` for new findings and replayed
+parked findings after upgrade. Existing audit records are not backfilled.
 
 ## Cleanup fields
 

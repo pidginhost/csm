@@ -136,13 +136,14 @@ func (d *sprayDetector) Decide(f alert.Finding) (decision sprayDecision, hitCoun
 	if d == nil || !d.cfg.Enabled && !d.cfg.DryRun {
 		return sprayDecisionNone, 0
 	}
-	if f.SourceIP == "" {
+	ip := alert.AttackerAddress(f)
+	if ip == "" {
 		return sprayDecisionNone, 0
 	}
 	if !d.cfg.PerCheck[f.Check] {
 		return sprayDecisionNone, 0
 	}
-	if d.isWhitelisted(f.SourceIP) {
+	if d.isWhitelisted(ip) {
 		return sprayDecisionNone, 0
 	}
 
@@ -152,7 +153,7 @@ func (d *sprayDetector) Decide(f alert.Finding) (decision sprayDecision, hitCoun
 	}
 
 	now := d.now()
-	state, ok := d.perIP[f.SourceIP]
+	state, ok := d.perIP[ip]
 	if ok {
 		// Window expiration: a state whose lastSeen fell outside the
 		// window is stale; reset before recording the new hit so a
@@ -162,7 +163,7 @@ func (d *sprayDetector) Decide(f alert.Finding) (decision sprayDecision, hitCoun
 		// lose suppression and duplicate on the next finding.
 		if state.incident == "" && now.Sub(state.lastSeen) > d.window {
 			state = nil
-			delete(d.perIP, f.SourceIP)
+			delete(d.perIP, ip)
 		}
 	}
 	if state == nil {
@@ -176,7 +177,7 @@ func (d *sprayDetector) Decide(f alert.Finding) (decision sprayDecision, hitCoun
 			mailboxes: make(map[string]struct{}),
 			firstSeen: now,
 		}
-		d.perIP[f.SourceIP] = state
+		d.perIP[ip] = state
 	}
 	for _, target := range targets {
 		state.mailboxes[target] = struct{}{}

@@ -112,8 +112,8 @@ type CorrelatorConfig struct {
 
 	// AddressEvidence reports whether a finding of check at sev names an
 	// attacker by its address; the daemon passes checks.AddressEvidence.
-	// The generic auto-block only requests a block of an address such a
-	// finding named. nil counts every address.
+	// Automatic incident and spray blocks only request an address such a
+	// finding named. nil refuses every block.
 	AddressEvidence func(check string, sev alert.Severity) bool
 
 	// OnIncidentBlock fires when the generic auto-block gate trips. The
@@ -237,7 +237,10 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	if key.IsEmpty() {
 		return "", false, nil
 	}
-	if key.Host == "" && f.SourceIP != "" && c.cfg.IsWhitelisted != nil && c.cfg.IsWhitelisted(f.SourceIP) {
+	// A spray names its subnet in CIDRs; it is whitelisted and recorded as
+	// the remote address exactly as when SourceIP held it.
+	src := alert.AttackerAddress(f)
+	if key.Host == "" && src != "" && c.cfg.IsWhitelisted != nil && c.cfg.IsWhitelisted(src) {
 		return "", false, nil
 	}
 	var afterUnlock func()
@@ -261,16 +264,16 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 		decision, hits := c.spray.Decide(f)
 		switch decision {
 		case sprayDecisionOpen:
-			sprayKey := Key{RemoteIP: f.SourceIP}
+			sprayKey := Key{RemoteIP: src}
 			id, created := c.promoteOrCreateSprayLocked(sprayKey, f, now, hits)
-			c.spray.BindIncident(f.SourceIP, id)
+			c.spray.BindIncident(src, id)
 			c.counters.sprayOpenedTotal.Add(1)
-			if cb := c.maybeBlockSprayLocked(c.incidents[id], f.SourceIP, hits, now, "spray opened"); cb != nil {
+			if cb := c.maybeBlockSprayLocked(c.incidents[id], src, hits, now, "spray opened"); cb != nil {
 				afterUnlock = cb
 			}
 			return id, created, nil
 		case sprayDecisionSuppress:
-			id := c.spray.IncidentForIP(f.SourceIP)
+			id := c.spray.IncidentForIP(src)
 			inc, ok := c.incidents[id]
 			if ok && incidentStatusActive(inc.Status) {
 				// Fold the finding and apply the spray-specific escalation
@@ -298,7 +301,7 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 				// helper is idempotent via triggerSprayBlockLocked's
 				// action-presence and in-flight guards so a no-op call is
 				// harmless.
-				if cb := c.maybeBlockSprayLocked(inc, f.SourceIP, hits, now, "spray ongoing"); cb != nil {
+				if cb := c.maybeBlockSprayLocked(inc, src, hits, now, "spray ongoing"); cb != nil {
 					afterUnlock = cb
 				}
 				c.counters.spraySuppressedTotal.Add(1)
@@ -393,7 +396,7 @@ func (c *Correlator) promoteOrCreateSprayLocked(key Key, f alert.Finding, now ti
 				Time:    now,
 				Action:  "credential_spray_opened",
 				Result:  "ok",
-				Details: f.SourceIP + " hit " + strconv.Itoa(hits) + " distinct mailboxes inside window; promoted from " + string(fromKind),
+				Details: key.RemoteIP + " hit " + strconv.Itoa(hits) + " distinct mailboxes inside window; promoted from " + string(fromKind),
 			})
 			// A kind change must be durable, not left to the bookkeeping
 			// debounce.
@@ -426,7 +429,7 @@ func (c *Correlator) createSprayIncidentLocked(key Key, f alert.Finding, now tim
 			Time:    now,
 			Action:  "credential_spray_opened",
 			Result:  "ok",
-			Details: f.SourceIP + " hit " + strconv.Itoa(hits) + " distinct mailboxes inside window",
+			Details: key.RemoteIP + " hit " + strconv.Itoa(hits) + " distinct mailboxes inside window",
 		}},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -719,11 +722,12 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	if f.FilePath != "" {
 		ev.Path = f.FilePath
 	}
-	if f.SourceIP != "" {
-		ev.RemoteIP = f.SourceIP
-		if !inc.RemoteIPEvidence && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
-			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(f.SourceIP) {
+	if src := alert.AttackerAddress(f); src != "" {
+		ev.RemoteIP = src
+		if (!inc.RemoteIPEvidence || inc.RemoteIPEvidenceFinding == "") && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
+			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(src) {
 				inc.RemoteIPEvidence = true
+				inc.RemoteIPEvidenceFinding = ev.FindingID
 				transition = true
 			}
 		}
@@ -1338,9 +1342,12 @@ func (c *Correlator) Restore(incidents []Incident) {
 		inc := incidents[i]
 		// Remember legacy evidence before a merge can trim its event. The
 		// next write saves the bit; until then the stored timeline retains it.
-		if !inc.RemoteIPEvidence && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil {
+		if (!inc.RemoteIPEvidence || inc.RemoteIPEvidenceFinding == "") && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil {
 			if ip := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); ip != "" {
 				inc.RemoteIPEvidence = c.blockAddressAttested(&inc, ip)
+				if inc.RemoteIPEvidence {
+					inc.RemoteIPEvidenceFinding = c.attestingFindingID(&inc, ip)
+				}
 			}
 		}
 		c.incidents[inc.ID] = &inc
@@ -1479,7 +1486,9 @@ func (c *Correlator) maybeBlockSprayLocked(inc *Incident, ip string, hits int, n
 	if !c.sprayBlockAllowed() {
 		return nil
 	}
-	if incidentAutoBlockExcludedOnly(inc) {
+	// Like every incident block, the address needs a finding with address
+	// evidence; raw failures that only count mailboxes never block.
+	if target := normalizeIncidentRemoteIP(ip); target == "" || !c.blockAddressAttested(inc, target) {
 		return nil
 	}
 	switch strings.ToLower(c.spray.cfg.BlockAtSeverity) {
@@ -1535,9 +1544,6 @@ func (c *Correlator) maybeBlockIncidentLocked(inc *Incident, now time.Time, why 
 	if len(c.cfg.AutoBlock.Kinds) > 0 && !c.cfg.AutoBlock.Kinds[inc.Kind] {
 		return nil
 	}
-	if incidentAutoBlockExcludedOnly(inc) {
-		return nil
-	}
 	switch strings.ToLower(c.cfg.AutoBlock.BlockAtSeverity) {
 	case "high":
 		if inc.Severity < alert.High {
@@ -1551,53 +1557,6 @@ func (c *Correlator) maybeBlockIncidentLocked(inc *Incident, now time.Time, why 
 		return nil
 	}
 	return c.triggerIncidentBlockLocked(inc, ip, now, why)
-}
-
-// incidentAutoBlockExcludedOnly keeps advisory incident signals visible without
-// letting them become firewall evidence unless another blockable finding joins.
-func incidentAutoBlockExcludedOnly(inc *Incident) bool {
-	seen := false
-	for _, ev := range inc.Timeline {
-		if ev.Kind == incidentTimelineTruncatedKind {
-			continue
-		}
-		if ev.Kind != "finding" || ev.Check == "" {
-			continue
-		}
-		seen = true
-		if !incidentEventAutoBlockExcluded(ev) {
-			return false
-		}
-	}
-	return seen
-}
-
-const establishedMailSourceMarker = "(established multi-mailbox source)"
-
-func incidentEventAutoBlockExcluded(ev IncidentEvent) bool {
-	switch strings.ToLower(strings.TrimSpace(ev.Check)) {
-	case "cpanel_file_upload", "cpanel_file_upload_realtime",
-		"cpanel_login", "cpanel_login_realtime", "ftp_login", "ftp_login_realtime",
-		"webmail_login_realtime", "pam_login":
-		// Retained incidents can still carry the old severity of audit events.
-		return true
-	case "ftp_login_after_bruteforce",
-		"mail_bruteforce_suspected",
-		"modsec_classifier_gap",
-		"modsec_low_confidence_burst":
-		return true
-	case "mail_account_compromised":
-		severity := strings.ToUpper(strings.TrimSpace(ev.Severity))
-		if severity != "" {
-			return severity != alert.Critical.String()
-		}
-		// Incidents persisted before timeline events carried severity can still
-		// contain this exact advisory marker. Critical compromise messages never
-		// carry it, so they remain blockable after restore.
-		return strings.HasSuffix(strings.TrimSpace(ev.Message), establishedMailSourceMarker)
-	default:
-		return false
-	}
 }
 
 func (c *Correlator) incidentBlockAllowed() bool {
@@ -1633,7 +1592,7 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
 	}
 	onBlock := c.cfg.OnIncidentBlock
-	findingID := incidentBlockFindingID(inc, ip)
+	findingID := c.attestingFindingID(inc, ip)
 	return func() {
 		var live bool
 		callbackReturned := false
@@ -1681,27 +1640,51 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 // timeline trimming; any other candidate exists only while the timeline is
 // whole, so its events decide.
 func (c *Correlator) blockAddressAttested(inc *Incident, ip string) bool {
+	// Without a gate nothing attests an address: fail closed.
 	if c.cfg.AddressEvidence == nil {
-		return true
+		return false
 	}
 	if inc.RemoteIPEvidence && inc.CorrelationKey != nil && normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP) == ip {
 		return true
 	}
 	for _, ev := range inc.Timeline {
-		if ev.Kind != "finding" || normalizeIncidentRemoteIP(ev.RemoteIP) != ip {
-			continue
-		}
-		sev, ok := parseSeverity(ev.Severity)
-		if ev.Severity == "" {
-			// Older events lack severity. They can attest checks with no
-			// severity floor, but cannot establish a Critical-only signal.
-			sev, ok = alert.Warning, true
-		}
-		if ok && c.cfg.AddressEvidence(ev.Check, sev) {
+		if ev.Kind == "finding" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && c.eventAttests(ev) {
 			return true
 		}
 	}
 	return false
+}
+
+// eventAttests reports whether a timeline finding is address evidence.
+// It runs only behind a non-nil gate.
+func (c *Correlator) eventAttests(ev IncidentEvent) bool {
+	sev, ok := parseSeverity(ev.Severity)
+	if ev.Severity == "" {
+		// Older events lack severity. They can attest checks with no
+		// severity floor, but cannot establish a Critical-only signal.
+		sev, ok = alert.Warning, true
+	}
+	return ok && c.cfg.AddressEvidence(ev.Check, sev)
+}
+
+// attestingFindingID names the finding a block of ip rests on: the newest
+// timeline finding with address evidence for it, or the one recorded with
+// RemoteIPEvidence once timeline trimming dropped that event.
+func (c *Correlator) attestingFindingID(inc *Incident, ip string) string {
+	ip = normalizeIncidentRemoteIP(ip)
+	if ip == "" {
+		return ""
+	}
+	for i := len(inc.Timeline) - 1; i >= 0; i-- {
+		ev := inc.Timeline[i]
+		if ev.Kind == "finding" && ev.FindingID != "" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && c.eventAttests(ev) {
+			return ev.FindingID
+		}
+	}
+	if inc.RemoteIPEvidence && inc.CorrelationKey != nil && normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP) == ip {
+		return inc.RemoteIPEvidenceFinding
+	}
+	return ""
 }
 
 func incidentBlockCandidate(inc *Incident) string {
@@ -1813,7 +1796,7 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
 	}
 	onSprayBlock := c.cfg.OnSprayBlock
-	findingID := incidentBlockFindingID(inc, ip)
+	findingID := c.attestingFindingID(inc, ip)
 	incidentID := inc.ID
 	return func() {
 		var live bool
@@ -1856,21 +1839,4 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 		live = onSprayBlock(ip, reason, ttl, findingID)
 		callbackReturned = true
 	}
-}
-
-// incidentBlockFindingID selects the latest eligible observation for this
-// source while the incident lock is held. Older timelines without an audit
-// identity remain unlinked; display text cannot reconstruct the original ID.
-func incidentBlockFindingID(inc *Incident, ip string) string {
-	ip = normalizeIncidentRemoteIP(ip)
-	if ip == "" {
-		return ""
-	}
-	for i := len(inc.Timeline) - 1; i >= 0; i-- {
-		ev := inc.Timeline[i]
-		if ev.Kind == "finding" && ev.FindingID != "" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && !incidentEventAutoBlockExcluded(ev) {
-			return ev.FindingID
-		}
-	}
-	return ""
 }

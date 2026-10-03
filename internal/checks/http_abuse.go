@@ -39,6 +39,10 @@ type accessLogRecord struct {
 	XFF       string // optional; only trusted when RemoteIP is a trusted proxy
 	Domain    string // vhost the line came from (per-domain domlog); empty for the central log
 	Account   string // cPanel account owning Domain; empty when unknown/non-cPanel
+	// Central is set only for a recognized central access log on cPanel.
+	Central bool
+	// proxyPath is classified before the URI is truncated for aggregation.
+	proxyPath bool
 }
 
 // uaKind is the User-Agent classification produced by classifyUA and
@@ -182,6 +186,10 @@ func newDomlogStatsAt(t time.Time) *domlogStats {
 // it. bot is consulted before any count so a verified Googlebot does
 // not contribute to either legacy or new metrics.
 func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClassifier) {
+	// A per-vhost domlog never names a proxied request by path.
+	if rec.Central && rec.proxyPath {
+		return
+	}
 	ip := normalizeHTTPClientIP(clientIPForRecord(rec, cfg))
 	if ip == "" {
 		return
@@ -965,21 +973,10 @@ func parseAccessLogRecordWithURILimit(line string, maxURILen int) (accessLogReco
 		return rec, false
 	}
 	rec.RemoteIP = line[:sp]
-	rest := line[sp+1:]
-
-	// Skip ident, user (two single-token fields). Loose: we just need to
-	// land at the [time] bracket.
-	br := strings.IndexByte(rest, '[')
-	if br < 0 {
+	timeStr, rest, ok := patternSplitHeader(line[sp+1:])
+	if !ok {
 		return rec, false
 	}
-	rest = rest[br+1:]
-	closeBr := strings.IndexByte(rest, ']')
-	if closeBr < 0 {
-		return rec, false
-	}
-	timeStr := rest[:closeBr]
-	rest = rest[closeBr+1:]
 	// time format: 02/Jan/2006:15:04:05 -0700
 	t, err := time.Parse("02/Jan/2006:15:04:05 -0700", timeStr)
 	if err == nil {
@@ -987,23 +984,17 @@ func parseAccessLogRecordWithURILimit(line string, maxURILen int) (accessLogReco
 	}
 
 	// Request quoted field.
-	q1 := strings.IndexByte(rest, '"')
-	if q1 < 0 {
+	request, rest, ok := patternQuotedField(rest)
+	if !ok {
 		return rec, false
 	}
-	rest = rest[q1+1:]
-	q2 := strings.IndexByte(rest, '"')
-	if q2 < 0 {
-		return rec, false
-	}
-	request := rest[:q2]
-	rest = rest[q2+1:]
 	parts := strings.SplitN(request, " ", 3)
 	if len(parts) >= 1 {
 		rec.Method = parts[0]
 	}
 	if len(parts) >= 2 {
-		uri := parts[1]
+		uri, _ := patternDecodeField(parts[1], len(parts[1]))
+		rec.proxyPath = IsProxiedPanelRequest(uri, true)
 		if len(uri) > maxURILen {
 			uri = uri[:maxURILen]
 		}
@@ -1029,54 +1020,34 @@ func parseAccessLogRecordWithURILimit(line string, maxURILen int) (accessLogReco
 	}
 
 	// referer quoted field (skipped).
-	q1 = strings.IndexByte(rest, '"')
-	if q1 < 0 {
-		return rec, false
+	_, rest, ok = patternQuotedField(rest)
+	if !ok {
+		// Optional client fields cannot invalidate a server-written request.
+		return rec, true
 	}
-	rest = rest[q1+1:]
-	q2 = strings.IndexByte(rest, '"')
-	if q2 < 0 {
-		return rec, false
-	}
-	rest = rest[q2+1:]
 
 	// UA quoted field.
-	q1 = strings.IndexByte(rest, '"')
-	if q1 < 0 {
-		return rec, true // no UA present is fine
+	ua, rest, ok := patternQuotedField(rest)
+	if !ok {
+		return rec, true
 	}
-	rest = rest[q1+1:]
-	q2 = strings.IndexByte(rest, '"')
-	if q2 < 0 {
-		return rec, false
-	}
-	ua := rest[:q2]
-	if len(ua) > maxUALen {
-		ua = ua[:maxUALen]
-	}
-	rec.UserAgent = ua
-	rest = rest[q2+1:]
+	rec.UserAgent, _ = patternDecodeField(ua, maxUALen)
 
-	// Optional quoted extensions. cPanel may append a quoted vhost after
-	// UA. Custom proxy formats may append an X-Forwarded-For value. Only
-	// retain a quoted extension that parses as an IP list; clientIPForRecord
-	// still ignores it unless RemoteIP is a configured trusted proxy.
-	for {
-		q1 = strings.IndexByte(rest, '"')
-		if q1 < 0 {
-			break
-		}
-		rest = rest[q1+1:]
-		q2 = strings.IndexByte(rest, '"')
-		if q2 < 0 {
-			return rec, false
-		}
-		extra := rest[:q2]
-		if looksLikeXFF(extra) {
-			rec.XFF = extra
-		}
-		rest = rest[q2+1:]
+	// Supported proxy formats put XFF after UA or after a cPanel host:port.
+	// Later extensions are client text, not a second source of attribution.
+	extra, rest, ok := patternQuotedField(rest)
+	if !ok {
+		return rec, true
 	}
+	extra, _ = patternDecodeField(extra, len(extra))
+	if patternVhostExtension(extra) {
+		extra, _, ok = patternQuotedField(rest)
+		if !ok {
+			return rec, true
+		}
+		extra, _ = patternDecodeField(extra, len(extra))
+	}
+	rec.XFF, _, _ = patternXFFSuffix(extra)
 
 	return rec, true
 }
@@ -1103,12 +1074,8 @@ func clientIPForRecord(rec accessLogRecord, cfg *config.Config) string {
 	// A trusted direct proxy appends the peer it observed to the end of
 	// X-Forwarded-For. Use that entry only; earlier entries can come from
 	// the client.
-	parts := strings.Split(rec.XFF, ",")
-	for i := len(parts) - 1; i >= 0; i-- {
-		ip := strings.TrimSpace(parts[i])
-		if net.ParseIP(ip) == nil {
-			continue
-		}
+	ip := strings.TrimSpace(rec.XFF[strings.LastIndexByte(rec.XFF, ',')+1:])
+	if net.ParseIP(ip) != nil {
 		return ip
 	}
 	return rec.RemoteIP
@@ -1150,15 +1117,6 @@ func isTrustedProxy(addr string, proxies []string) bool {
 			continue
 		}
 		if ip := net.ParseIP(entry); ip != nil && ip.Equal(parsed) {
-			return true
-		}
-	}
-	return false
-}
-
-func looksLikeXFF(raw string) bool {
-	for _, part := range strings.Split(raw, ",") {
-		if net.ParseIP(strings.TrimSpace(part)) != nil {
 			return true
 		}
 	}

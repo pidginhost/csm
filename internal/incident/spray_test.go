@@ -29,6 +29,7 @@ func sprayTestConfig(enabled, dryRun bool) SpraySuppressionConfig {
 func newSprayCorrelator(t *testing.T, enabled, dryRun bool) *Correlator {
 	t.Helper()
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: sprayTestConfig(enabled, dryRun),
 	})
 	c.openThreshold = 1
@@ -161,6 +162,7 @@ func TestSprayAtThresholdSuppressesSubsequentMailboxBruteforce(t *testing.T) {
 
 func TestSprayWhitelistedIPNeverOpensSpray(t *testing.T) {
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: sprayTestConfig(true, false),
 		IsWhitelisted: func(ip string) bool {
 			return ip == "192.0.2.7"
@@ -432,6 +434,7 @@ func TestSprayBlockAtHighFiresOnOpen(t *testing.T) {
 	cfg.BlockAtSeverity = "high"
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
 		OnSprayBlock:     cap.record,
 	})
@@ -479,6 +482,7 @@ func TestSprayBlockCallbackRunsAfterCorrelatorUnlock(t *testing.T) {
 	called := make(chan struct{}, 1)
 	var c *Correlator
 	c = NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
 		OnSprayBlock: func(_, _ string, _ time.Duration, _ string) bool {
 			if got := c.OpenCount(); got != 1 {
@@ -522,6 +526,7 @@ func TestSprayBlockCoalescesConcurrentCallback(t *testing.T) {
 	duplicate := make(chan struct{}, 1)
 	var calls atomic.Int32
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
 		OnSprayBlock: func(_, _ string, _ time.Duration, _ string) bool {
 			if calls.Add(1) == 1 {
@@ -617,6 +622,7 @@ func TestSprayBlockReleasesPendingSlotOnPanic(t *testing.T) {
 	cfg.DistinctMailboxes = 1
 	calls := 0
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
 		OnSprayBlock: func(_, _ string, _ time.Duration, _ string) bool {
 			calls++
@@ -674,6 +680,7 @@ func TestSprayBlockAtCriticalSkipsOpenFiresOnEscalation(t *testing.T) {
 	cfg.BlockAtSeverity = "critical"
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
 		OnSprayBlock:     cap.record,
 	})
@@ -716,6 +723,7 @@ func TestSprayBlockEmptyConfigStaysDetectionOnly(t *testing.T) {
 	// BlockAtSeverity intentionally left empty.
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
 		OnSprayBlock:     cap.record,
 	})
@@ -740,6 +748,7 @@ func TestSprayBlockUnknownSeverityIsNoop(t *testing.T) {
 	cfg.BlockAtSeverity = "garbage"
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
 		OnSprayBlock:     cap.record,
 	})
@@ -874,6 +883,7 @@ func TestSprayBlockFiresOnSuppressAfterCriticalArmedLater(t *testing.T) {
 	cfg.BlockAtSeverity = "critical"
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
 		OnSprayBlock:     cap.record,
 	})
@@ -1115,6 +1125,7 @@ func TestSprayBlockAuditOnlyAfterCallbackSuccess(t *testing.T) {
 	cfg.BlockAtSeverity = "high"
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
 		OnSprayBlock:     cap.recordSkipped,
 	})

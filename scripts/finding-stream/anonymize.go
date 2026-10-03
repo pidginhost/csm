@@ -274,6 +274,12 @@ func (a *Anonymizer) Event(e alert.AuditEvent) alert.AuditEvent {
 		out.Details = a.Text(e.Details)
 	}
 	out.Process = a.process(e.Process)
+	if e.CIDRs != nil {
+		out.CIDRs = make([]string, len(e.CIDRs))
+		for i, cidr := range e.CIDRs {
+			out.CIDRs[i] = a.Text(cidr)
+		}
+	}
 	return out
 }
 
@@ -816,6 +822,7 @@ func containsLabel(text, name string) bool {
 // and is scanned in case a producer ever puts a path in it.
 func eventText(e alert.AuditEvent) string {
 	parts := []string{e.FindingID, e.Message, e.Details, e.FilePath, e.Hostname, e.TenantID, e.Domain, e.Mailbox}
+	parts = append(parts, e.CIDRs...)
 	for p := e.Process; p != nil; p = p.Parent {
 		parts = append(parts, p.User, p.Account, p.Comm, p.Exe)
 		parts = append(parts, p.Cmdline...)

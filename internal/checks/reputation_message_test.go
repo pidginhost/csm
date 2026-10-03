@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -13,7 +14,7 @@ import (
 func TestReputationMessageSourceIPMatchesProducers(t *testing.T) {
 	var produced []alert.Finding
 	for _, ip := range []string{"203.0.113.10", "2001:db8::10"} {
-		appendReputationFinding(&produced, ip, "SMTP", "AbuseIPDB", 87, "brute force")
+		appendReputationFinding(&produced, ip, "SMTP", "AbuseIPDB", 87, "brute force", time.Now().Add(cacheExpiry))
 	}
 
 	statePath := t.TempDir()

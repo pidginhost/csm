@@ -411,11 +411,12 @@ Operator suppressions (`csm phprelay ignore-script <host:/path>`) short-circuit 
 
 ## PAM Brute-Force Listener
 
-Real-time authentication monitoring across all PAM-enabled services.
+Real-time authentication monitoring through the PAM module.
 
 - SSH login tracking with geolocation
-- cPanel, FTP, and webmail authentication
-- Credential stuffing / password spray breadth: one source IP failing against many distinct accounts inside `thresholds.multi_ip_login_window_min`. The finding is `credential_stuffing`; tune the account floor with `thresholds.cred_stuffing_distinct_accounts` (default 5).
+- SSH failures (`service=sshd`) drive `pam_bruteforce` and credential stuffing / password spray breadth: one source IP failing against many distinct accounts inside `thresholds.multi_ip_login_window_min`. The finding is `credential_stuffing`; tune the account floor with `thresholds.cred_stuffing_distinct_accounts` (default 5).
+- Only successful sshd logins clear SSH failure counts.
+- Failures from other PAM services (FTP, mail, webmin and similar) raise `pam_auth_failures` once per window above `thresholds.pam_bruteforce_threshold`. It never blocks: CSM reads pure-ftpd, Dovecot and Exim logs separately, and counting one login twice would corroborate it with itself. Services without such a log detector, such as vsftpd, proftpd or webmin, have no blocking signal from PAM.
 - Blocks IPs within seconds of threshold breach
 - Integrates with the nftables firewall for instant blocking
 
@@ -456,6 +457,10 @@ Caveats:
 ## HTTP Flood, Scanner Profile, UA Spoof, and Distributed Flood
 
 `http_request_flood`, `http_scanner_profile`, `http_claimed_bot_unverified`, `http_ua_spoof`, and `http_distributed_flood` are **periodic**, not real-time. They run inside the same `wp_bruteforce` scheduled check that scans per-vhost access logs every 10 minutes. A real-time inotify tailer would need to hold per-IP state across log rotations and is out of scope for the initial release (see the plan non-goals). For attack types where sub-minute response matters, the access-log inotify watcher already covers wp_login_bruteforce and xmlrpc_abuse; the periodic scan adds volume-based rate enforcement, pending claimed-bot handling, scanner-profile detection, and per-vhost distributed attack rollups on top.
+
+Requests that a cPanel proxy subdomain (`cpanel.`, `webmail.`, `whm.` and similar) passes through the web server to the panel are skipped by the web detectors, realtime and periodic, when cPanel's own central access log records them as proxied. The panel's own access log carries those requests, so a busy cPanel or webmail session through a proxy subdomain does not count as web traffic, and one request does not count as two kinds of evidence. Requests in a per-site log, or in a log chosen through `web_server.access_logs` that is not one of cPanel's own access logs, always count as website traffic.
+
+Web counters use the request and timestamp written by the web server, including requests with Basic authentication usernames and quoted header values. For periodic client attribution, `web_server.trusted_proxies` enables X-Forwarded-For from a configured proxy; the log format must record it immediately after User-Agent, optionally preceded by a vhost in `host:port` form.
 
 A verified crawler is dropped from the scan before any counter increments: a source IP whose claimed bot User-Agent passes IP-range or reverse-DNS verification cannot contribute to a flood, scanner, or spoof finding, so verified Googlebot and AI crawler traffic does not produce false positives. Verification is covered in [Threat intel](threat-intel.md#verified-crawlers).
 

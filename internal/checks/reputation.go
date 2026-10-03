@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/eximlog"
@@ -193,14 +194,20 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 
 		// Tier 2: Check local threat DB
 		if threatDB != nil {
-			if dbSource, found := threatDB.Lookup(ip); found {
+			if match, found := threatDB.LookupMatch(ip); found {
+				seen := time.Now()
+				expires := seen.Add(cacheExpiry)
+				if !match.ExpiresAt.IsZero() && match.ExpiresAt.Before(expires) {
+					expires = match.ExpiresAt
+				}
 				findings = append(findings, alert.Finding{
 					Severity:  reputationSightingSeverity(source),
 					Check:     "ip_reputation",
-					Message:   fmt.Sprintf(reputationMessagePrefix+"%s (source: %s)", ip, dbSource),
+					Message:   fmt.Sprintf(reputationMessagePrefix+"%s (source: %s)", ip, match.Source),
 					Details:   fmt.Sprintf("Detected via: %s\nMatched in local threat intelligence database", source),
-					Timestamp: time.Now(),
+					Timestamp: seen,
 					SourceIP:  ip,
+					Intel:     &admission.IntelRef{Source: intelSource("threatdb:", match.Source), Expires: expires},
 				})
 				continue
 			}
@@ -213,9 +220,9 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 			age := time.Since(entry.CheckedAt)
 			if age >= 0 && age < cacheExpiry {
 				if entry.Score >= abuseConfidenceThreshold {
-					appendReputationFinding(&findings, ip, source, "AbuseIPDB", entry.Score, entry.Category)
+					appendReputationFinding(&findings, ip, source, "AbuseIPDB", entry.Score, entry.Category, entry.CheckedAt.Add(cacheExpiry))
 				} else if score, src, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && score >= abuseConfidenceThreshold {
-					appendReputationFinding(&findings, ip, source, src, score, strings.ToLower(src)+" history")
+					appendReputationFinding(&findings, ip, source, src, score, strings.ToLower(src)+" history", time.Now().Add(cacheExpiry))
 				}
 				continue
 			}
@@ -225,7 +232,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 		// quota / config gates already preclude querying.
 		if cfg.Reputation.AbuseIPDBKey == "" || quotaExhausted || len(pendingQueries) >= maxQueriesPerCycle {
 			if score, src, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && score >= abuseConfidenceThreshold {
-				appendReputationFinding(&findings, ip, source, src, score, strings.ToLower(src)+" history")
+				appendReputationFinding(&findings, ip, source, src, score, strings.ToLower(src)+" history", time.Now().Add(cacheExpiry))
 			}
 			continue
 		}
@@ -265,7 +272,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 	// it first so a stalled or abandoned fallback cannot hide those queries.
 	for _, q := range refusedQueries {
 		if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental >= abuseConfidenceThreshold {
-			appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
+			appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history", time.Now().Add(cacheExpiry))
 		}
 	}
 
@@ -336,7 +343,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 					}
 				}
 				if supplemental, src, ok := supplementalResultThreatScore(ctx, cfg, supplementalAgg, q.ip, work); ok && supplemental >= abuseConfidenceThreshold {
-					appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
+					appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history", time.Now().Add(cacheExpiry))
 				}
 				work.finish(true)
 				continue
@@ -351,7 +358,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 				CheckedAt: time.Now().Add(-(cacheExpiry - errorCacheExpiry)),
 			})
 			if supplemental, src, ok := supplementalResultThreatScore(ctx, cfg, supplementalAgg, q.ip, work); ok && supplemental >= abuseConfidenceThreshold {
-				appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
+				appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history", time.Now().Add(cacheExpiry))
 			}
 			work.phase(false)
 			cacheWork = append(cacheWork, work)
@@ -374,7 +381,11 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, scanState *state
 		}
 
 		if score >= abuseConfidenceThreshold {
-			appendReputationFinding(&findings, q.ip, q.source, provider, score, category)
+			expires := time.Now().Add(cacheExpiry)
+			if provider == "AbuseIPDB" {
+				expires = cache.Entries[q.ip].CheckedAt.Add(cacheExpiry)
+			}
+			appendReputationFinding(&findings, q.ip, q.source, provider, score, category, expires)
 		}
 		work.phase(false)
 		cacheWork = append(cacheWork, work)
@@ -501,7 +512,10 @@ func reputationSightingSeverity(detectedVia string) alert.Severity {
 // follows it up to " (". ReputationMessageSourceIP depends on that form.
 const reputationMessagePrefix = "Known malicious IP accessing server: "
 
-func appendReputationFinding(findings *[]alert.Finding, ip, detectedVia, provider string, score int, category string) {
+// appendReputationFinding reports a listed address. expires is when the
+// provider's claim lapses: the cache entry's end for a cached score, one
+// cache period for a fresh one.
+func appendReputationFinding(findings *[]alert.Finding, ip, detectedVia, provider string, score int, category string, expires time.Time) {
 	*findings = append(*findings, alert.Finding{
 		Severity:  reputationSightingSeverity(detectedVia),
 		Check:     "ip_reputation",
@@ -509,7 +523,23 @@ func appendReputationFinding(findings *[]alert.Finding, ip, detectedVia, provide
 		Details:   fmt.Sprintf("Detected via: %s\nCategory: %s\nThis IP is reported in threat intelligence databases", detectedVia, category),
 		Timestamp: time.Now(),
 		SourceIP:  ip,
+		Intel:     &admission.IntelRef{Source: intelSource("", strings.ToLower(provider)), Expires: expires},
 	})
+}
+
+// intelSource names an intel provider as a bounded token: printable bytes
+// only, at most 64 of them.
+func intelSource(prefix, name string) string {
+	b := []byte(prefix + name)
+	for i, c := range b {
+		if c < 0x21 || c > 0x7e {
+			b[i] = '_'
+		}
+	}
+	if len(b) > 64 {
+		b = b[:64]
+	}
+	return string(b)
 }
 
 // reputationHealthFindings surfaces degraded reputation coverage: an

@@ -14,7 +14,8 @@ func TestCorrelatorIgnoresPostureFindings(t *testing.T) {
 		t.Run(check, func(t *testing.T) {
 			blockCalls := 0
 			c := NewCorrelator(CorrelatorConfig{
-				OpenThreshold: 1,
+				AddressEvidence: attestEveryCheck,
+				OpenThreshold:   1,
 				AutoBlock: IncidentAutoBlockConfig{
 					Enabled:         true,
 					BlockAtSeverity: "critical",

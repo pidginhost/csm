@@ -35,6 +35,10 @@ type PAMListener struct {
 	listener net.Listener
 	mu       sync.Mutex
 	failures map[string]*pamFailureTracker
+	// serviceFailures counts failures from PAM services other than sshd.
+	// They are visibility only: those services have their own log
+	// producers, so counting them as SSH evidence would see one event twice.
+	serviceFailures map[string]*pamServiceFailures
 	// stopCh is set by Run so emit can abort a send when the daemon is
 	// shutting down. Per-connection goroutines are not tracked by a
 	// WaitGroup, so without this escape a goroutine blocked on the
@@ -69,6 +73,16 @@ type pamFailureTracker struct {
 	services  map[string]bool
 	accounts  map[string]*pamAccountFailures
 	blocked   bool
+}
+
+// pamServiceFailures tracks one address's failures from PAM services other
+// than sshd inside the window.
+type pamServiceFailures struct {
+	count     int
+	firstSeen time.Time
+	lastSeen  time.Time
+	services  map[string]bool
+	reported  bool
 }
 
 type pamAccountFailures struct {
@@ -250,7 +264,9 @@ func (p *PAMListener) processEvent(line string) {
 		}
 		p.emit(findings)
 	case "OK":
-		p.clearFailuresForUser(ip, user)
+		if service == "sshd" {
+			p.clearFailuresForUser(ip, user)
+		}
 		// Successful login from non-infra IP - informational alert
 		p.emit([]alert.Finding{{
 			Severity:  alert.High,
@@ -289,6 +305,9 @@ func (p *PAMListener) recordFailure(ip, user, service string) []alert.Finding {
 	cfg := p.currentCfg()
 	threshold, window, distinct := pamThresholds(cfg)
 	now := time.Now()
+	if service != "sshd" {
+		return p.recordServiceFailureLocked(ip, service, threshold, window, now)
+	}
 
 	tracker, exists := p.failures[ip]
 	if !exists {
@@ -370,6 +389,35 @@ func (p *PAMListener) recordFailure(ip, user, service string) []alert.Finding {
 	return findings
 }
 
+// recordServiceFailureLocked counts a failure from a PAM service other than
+// sshd and reports the address once per window above the PAM threshold. The
+// report never blocks: the service's own log carries the evidence.
+func (p *PAMListener) recordServiceFailureLocked(ip, service string, threshold int, window time.Duration, now time.Time) []alert.Finding {
+	if p.serviceFailures == nil {
+		p.serviceFailures = make(map[string]*pamServiceFailures)
+	}
+	tracker := p.serviceFailures[ip]
+	if tracker == nil || now.Sub(tracker.firstSeen) > window {
+		tracker = &pamServiceFailures{firstSeen: now, services: make(map[string]bool)}
+		p.serviceFailures[ip] = tracker
+	}
+	tracker.count++
+	tracker.lastSeen = now
+	tracker.services[service] = true
+	if tracker.count < threshold || tracker.reported {
+		return nil
+	}
+	tracker.reported = true
+	return []alert.Finding{{
+		Severity:  alert.High,
+		Check:     "pam_auth_failures",
+		Message:   fmt.Sprintf("PAM login failures from %s: %d in %ds (not blocked)", ip, tracker.count, int(now.Sub(tracker.firstSeen).Seconds())),
+		Details:   fmt.Sprintf("Service(s): %s\nThese services have their own log detectors, which carry the evidence for blocking.", strings.Join(sortedBoolKeys(tracker.services), ", ")),
+		Timestamp: now,
+		SourceIP:  ip,
+	}}
+}
+
 // clearFailuresForUser forgets the failures attributed to user from ip once
 // that user logged in. Failures against other users stay, and so does the
 // credential-stuffing breadth: an attacker walking many accounts who finally
@@ -438,6 +486,11 @@ func (p *PAMListener) cleanupAt(now time.Time) {
 	for ip, tracker := range p.failures {
 		if tracker.lastSeen.Before(cutoff) {
 			delete(p.failures, ip)
+		}
+	}
+	for ip, tracker := range p.serviceFailures {
+		if tracker.lastSeen.Before(cutoff) {
+			delete(p.serviceFailures, ip)
 		}
 	}
 	if p.stuffing != nil {

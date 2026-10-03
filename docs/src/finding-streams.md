@@ -56,6 +56,9 @@ What the tool replaces, in every structured field and in free text:
   Addresses inside filenames and before numeric rotation suffixes are also
   replaced. This can replace address-shaped version numbers; privacy takes
   priority over preserving ambiguous numeric text.
+  New audit rows can carry a `cidrs` list. Those addresses use the same
+  pseudonyms as addresses in text, keep their prefix lengths, and participate
+  in the output leak check. Older audit rows remain readable without the list.
 - The details of a credential-leak finding are dropped entirely, and generic
   `password=`, `secret:` and `token=` material is blanked anywhere, including
   quoted keys and values containing spaces.

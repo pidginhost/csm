@@ -27,6 +27,7 @@ func sprayIncidentSeverity(c *Correlator) alert.Severity {
 func TestMergeDebouncesBookkeepingPersists(t *testing.T) {
 	var calls int32
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence: attestEveryCheck,
 		Persist: func(Incident) error {
 			atomic.AddInt32(&calls, 1)
 			return nil
@@ -58,6 +59,7 @@ func TestMergeDebouncesBookkeepingPersists(t *testing.T) {
 func TestMergePersistsAfterDebounceWindow(t *testing.T) {
 	var calls int32
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence: attestEveryCheck,
 		Persist: func(Incident) error {
 			atomic.AddInt32(&calls, 1)
 			return nil
@@ -85,6 +87,7 @@ func TestMergePersistsAfterDebounceWindow(t *testing.T) {
 func TestFlushPendingPersistsWritesDebouncedBookkeeping(t *testing.T) {
 	var persisted []Incident
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence: attestEveryCheck,
 		Persist: func(inc Incident) error {
 			persisted = append(persisted, inc)
 			return nil
@@ -121,6 +124,7 @@ func TestFlushPendingPersistsWritesDebouncedBookkeeping(t *testing.T) {
 func TestBulkStatusPersistClearsPendingDebounce(t *testing.T) {
 	var persisted []Incident
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence: attestEveryCheck,
 		Persist: func(inc Incident) error {
 			persisted = append(persisted, inc)
 			return nil
@@ -172,7 +176,8 @@ func TestBulkStatusPersistClearsPendingDebounce(t *testing.T) {
 func TestThresholdPromotionPersistsTriggerFindingWithinDebounceWindow(t *testing.T) {
 	var persisted []Incident
 	c := NewCorrelator(CorrelatorConfig{
-		OpenThreshold: 2,
+		AddressEvidence: attestEveryCheck,
+		OpenThreshold:   2,
 		Persist: func(inc Incident) error {
 			persisted = append(persisted, inc)
 			return nil
@@ -219,6 +224,7 @@ func TestThresholdPromotionPersistsTriggerFindingWithinDebounceWindow(t *testing
 func TestSeverityEscalationPersistsWithinDebounceWindow(t *testing.T) {
 	var calls int32
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence: attestEveryCheck,
 		Persist: func(Incident) error {
 			atomic.AddInt32(&calls, 1)
 			return nil
@@ -246,6 +252,7 @@ func TestSeverityEscalationPersistsWithinDebounceWindow(t *testing.T) {
 func TestSpraySuppressEscalationPersistsOnce(t *testing.T) {
 	var calls int32
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: sprayTestConfig(true, false),
 		Persist: func(Incident) error {
 			atomic.AddInt32(&calls, 1)
