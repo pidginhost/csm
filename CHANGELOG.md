@@ -12,7 +12,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - SSH login alerts and reputation checks of SSH addresses use only genuine successful logins, preventing false alerts and automatic blocks from client-supplied login text when `auto_response.block_ips` is on; certificate text cannot supply an attack database account. Takes effect at the upgrade restart for new log lines and the next reputation scan; existing blocks and findings stay until they expire or are removed.
-- Failed SSH and other PAM password logins are reported to CSM again, so PAM brute-force and credential-stuffing detection can fire and block, following `auto_response.block_ips`; the PAM module had stopped reporting failures. Existing hosts must run `csm pam install` again after upgrading to add the failure hook; it leaves a shared auth stack it cannot edit safely unchanged, such as an authselect-managed one, and exits with an error.
+- Failed SSH logins are reported to CSM again through the PAM module, so PAM brute-force and credential-stuffing detection can fire and block, following `auto_response.block_ips`; failures from other PAM services raise a non-blocking alert instead, because those services have their own log detectors. Existing hosts must run `csm pam install` again after upgrading to add the failure hook; it leaves a shared auth stack it cannot edit safely unchanged, such as an authselect-managed one, and exits with an error.
 
 ### Added
 

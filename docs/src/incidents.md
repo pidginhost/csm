@@ -788,6 +788,7 @@ Attribution gaps:
 | `opencart_content_injection` | security event |  |  |
 | `opencart_settings_injection` | security event |  |  |
 | `outdated_plugins` | ignored | posture |  |
+| `pam_auth_failures` | ignored | informational |  |
 | `pam_bruteforce` | ignored | attacker-side |  |
 | `pam_login` | ignored | informational |  |
 | `password_hijack_confirmed` | security event |  |  |

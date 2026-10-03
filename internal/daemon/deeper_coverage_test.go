@@ -259,13 +259,18 @@ func TestRecordFailure_TracksMultipleUsers(t *testing.T) {
 	tracker := p.failures["203.0.113.12"]
 	userCount := len(tracker.users)
 	svcCount := len(tracker.services)
+	other := p.serviceFailures["203.0.113.12"]
 	p.mu.Unlock()
 
-	if userCount != 3 {
-		t.Errorf("users = %d, want 3", userCount)
+	// Only sshd failures are SSH evidence; webmin is tracked for visibility.
+	if userCount != 2 {
+		t.Errorf("users = %d, want 2", userCount)
 	}
-	if svcCount != 2 {
-		t.Errorf("services = %d, want 2", svcCount)
+	if svcCount != 1 {
+		t.Errorf("services = %d, want 1", svcCount)
+	}
+	if other == nil || other.count != 1 || !other.services["webmin"] {
+		t.Errorf("visibility tracker = %+v, want one webmin failure", other)
 	}
 }
 
@@ -1084,7 +1089,7 @@ func TestProcessEvent_FullBruteForceFlow(t *testing.T) {
 	// 3 failures from the same IP should trigger brute-force detection
 	p.processEvent("FAIL ip=203.0.113.50 user=root service=sshd")
 	p.processEvent("FAIL ip=203.0.113.50 user=admin service=sshd")
-	p.processEvent("FAIL ip=203.0.113.50 user=test service=webmin")
+	p.processEvent("FAIL ip=203.0.113.50 user=test service=sshd")
 
 	var bruteforceFound bool
 	for {

@@ -411,11 +411,12 @@ Operator suppressions (`csm phprelay ignore-script <host:/path>`) short-circuit 
 
 ## PAM Brute-Force Listener
 
-Real-time authentication monitoring across all PAM-enabled services.
+Real-time authentication monitoring through the PAM module.
 
 - SSH login tracking with geolocation
-- cPanel, FTP, and webmail authentication
-- Credential stuffing / password spray breadth: one source IP failing against many distinct accounts inside `thresholds.multi_ip_login_window_min`. The finding is `credential_stuffing`; tune the account floor with `thresholds.cred_stuffing_distinct_accounts` (default 5).
+- SSH failures (`service=sshd`) drive `pam_bruteforce` and credential stuffing / password spray breadth: one source IP failing against many distinct accounts inside `thresholds.multi_ip_login_window_min`. The finding is `credential_stuffing`; tune the account floor with `thresholds.cred_stuffing_distinct_accounts` (default 5).
+- Only successful sshd logins clear SSH failure counts.
+- Failures from other PAM services (FTP, mail, webmin and similar) raise `pam_auth_failures` once per window above `thresholds.pam_bruteforce_threshold`. It never blocks: those services have their own log detectors, and counting one login twice would corroborate it with itself.
 - Blocks IPs within seconds of threshold breach
 - Integrates with the nftables firewall for instant blocking
 

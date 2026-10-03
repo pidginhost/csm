@@ -87,6 +87,7 @@ var notAddressEvidence = map[string]string{
 	"modsec_low_confidence_burst":  "low-confidence advisory",
 	"modsec_warning_realtime":      "warning-level WAF event",
 	"pam_login":                    "authenticated login",
+	"pam_auth_failures":            "visibility only; the service's own log carries the evidence",
 	"password_hijack_confirmed":    "no response policy; candidate for a reviewed compromise decision",
 	"php_shield_block":             "HTTP client of a shielded script; may be an ordinary visitor",
 	"php_shield_eval":              "HTTP client of a shielded script; may be an ordinary visitor",
@@ -324,8 +325,8 @@ func TestAddressProducersAreClassified(t *testing.T) {
 			}
 		}
 	}
-	if len(producers) != 68 {
-		t.Fatalf("scan found %d address producers; review the change from the pinned 68 producers", len(producers))
+	if len(producers) != 69 {
+		t.Fatalf("scan found %d address producers; review the change from the pinned 69 producers", len(producers))
 	}
 	for name, reason := range notAddressEvidence {
 		if strings.TrimSpace(reason) == "" {

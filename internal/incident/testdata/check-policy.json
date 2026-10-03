@@ -165,6 +165,7 @@
       "opencart_admin_injection",
       "opencart_content_injection",
       "opencart_settings_injection",
+      "pam_auth_failures",
       "pam_bruteforce",
       "pam_login",
       "password_hijack_confirmed",
