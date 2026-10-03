@@ -28,33 +28,38 @@ func TestWriteDurableRequiresAcknowledgingSink(t *testing.T) {
 	t.Cleanup(func() { SetSink(nil, "") })
 }
 
+// The file sink does real I/O. In a synctest bubble the write deadline only
+// advances when every goroutine is blocked, so a slow disk on a loaded host
+// cannot turn a durable append into a timeout.
 func TestWriteDurableRetainsIdentityAcrossRetries(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nested", "logs", "actions.jsonl")
-	SetSink(NewFileSink(func() string { return path }, nil), "example.test")
-	t.Cleanup(func() { SetSink(nil, "") })
-	r := Record{ActionID: "action-1", ActionVersion: 3, IncidentID: "incident-1", FindingID: "finding-1", UndoOf: "action-0", Op: "respond.block_ip", Target: "192.0.2.1", Result: Applied, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	for range 2 {
-		if err := WriteDurable(r); err != nil {
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "nested", "logs", "actions.jsonl")
+		SetSink(NewFileSink(func() string { return path }, nil), "example.test")
+		t.Cleanup(func() { SetSink(nil, "") })
+		r := Record{ActionID: "action-1", ActionVersion: 3, IncidentID: "incident-1", FindingID: "finding-1", UndoOf: "action-0", Op: "respond.block_ip", Target: "192.0.2.1", Result: Applied, Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
+		for range 2 {
+			if err := WriteDurable(r); err != nil {
+				t.Fatal(err)
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
 			t.Fatal(err)
 		}
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("records=%d", len(lines))
-	}
-	for _, line := range lines {
-		var got Record
-		if err := json.Unmarshal([]byte(line), &got); err != nil {
-			t.Fatal(err)
+		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+		if len(lines) != 2 {
+			t.Fatalf("records=%d", len(lines))
 		}
-		if got.ActionID != "action-1" || got.ActionVersion != 3 || got.IncidentID != "incident-1" || got.FindingID != "finding-1" || got.UndoOf != "action-0" || got.Timestamp != r.Timestamp || got.Hostname != "example.test" || got.V != SchemaVersion {
-			t.Fatalf("identity or defaults lost: %+v", got)
+		for _, line := range lines {
+			var got Record
+			if err := json.Unmarshal([]byte(line), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.ActionID != "action-1" || got.ActionVersion != 3 || got.IncidentID != "incident-1" || got.FindingID != "finding-1" || got.UndoOf != "action-0" || got.Timestamp != r.Timestamp || got.Hostname != "example.test" || got.V != SchemaVersion {
+				t.Fatalf("identity or defaults lost: %+v", got)
+			}
 		}
-	}
+	})
 }
 
 func TestWriteDurableReportsSinkErrorsAndTimeout(t *testing.T) {
