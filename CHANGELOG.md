@@ -20,11 +20,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Changed
 
-- Findings list the subnets they name in a new `cidrs` field in the API, webhooks, audit logs, the phpanel queue and history: distributed crawls add it, and mail and SMTP password sprays move their subnet there from `source_ip`, which they now leave empty. New findings and replayed parked subnets gain the field; stored history and audit logs are not backfilled, older source_ip values stay, and no setting controls it.
+- Findings list the subnets they name in a new `cidrs` field in the API, webhooks, audit logs, the phpanel queue and history: distributed crawls add it, and mail and SMTP password sprays move their subnet there from `source_ip`, which they now leave empty; incidents and credential-spray grouping (`incidents.spray_suppression`) keep matching sprays by subnet, including replayed findings and existing incidents. New findings and replayed parked subnets gain the field; stored history and audit logs are not backfilled, older `source_ip` values stay, and no setting controls it.
 
 ### Fixed
 
-- Subnet password sprays retain configured credential-spray grouping after upgrade, including replayed findings and existing incidents. This follows `incidents.spray_suppression`, which is disabled by default.
 - An SSH login from an unknown address records a tenant and attack database account only when sshd confirms a successful login to a hosting account; root and service-user findings carry no `tenant_id` and group by address. This applies to new findings after the upgrade, existing incidents and attack records keep their attribution, and no setting changes it.
 - FTP brute-force alerts use new failures, so old evidence no longer re-blocks an operator-unblocked address or recounts the same burst; diagnostic and cancelled scans leave evidence for live detection. On upgrade, the Findings page drops the row at the first scan without new failures instead of when the window ends; `thresholds.ftp_fail_window_min` still sets how far back failures add up.
 - After the upgrade restart, cPanel web checks try Apache and LiteSpeed logs instead of the panel's own log, avoiding false blocks of customer sessions; the realtime watcher also retries all candidates when no log exists at startup. Periodic checks count aliases of the selected central log once, including operator overrides through `web_server.access_logs`; existing blocks remain until expiry or removal.
