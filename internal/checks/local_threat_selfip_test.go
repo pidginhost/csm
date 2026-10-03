@@ -30,13 +30,21 @@ func TestCheckLocalThreatScoreReportsHostOwnAddress(t *testing.T) {
 	}
 	for ip := range ips {
 		t.Run(ip, func(t *testing.T) {
-			db := attackdb.NewForTest(nil)
+			// Brute force, WAF blocks and an upload attributed to the address.
+			db := attackdb.NewForTest(map[string]*attackdb.IPRecord{ip: {
+				IP:         ip,
+				EventCount: 60,
+				FirstSeen:  time.Now().Add(-time.Hour),
+				LastSeen:   time.Now(),
+				AttackCounts: map[attackdb.AttackType]int{
+					attackdb.AttackBruteForce: 53,
+					attackdb.AttackWAFBlock:   6,
+					attackdb.AttackFileUpload: 1,
+				},
+				Accounts: map[string]int{"alice": 30, "bob": 30},
+			}})
 			attackdb.SetGlobal(db)
 			t.Cleanup(func() { attackdb.SetGlobal(nil) })
-			// A sustained mail-auth brute force from the address.
-			for i := 0; i < 60; i++ {
-				db.RecordFinding(alert.Finding{Check: "email_auth_failure_realtime", SourceIP: ip, Timestamp: time.Now()})
-			}
 			findings := CheckLocalThreatScore(context.Background(), &config.Config{StatePath: t.TempDir()}, nil)
 			if len(findings) != 1 {
 				t.Fatalf("got %d findings, want one for attack evidence regardless of interface membership", len(findings))

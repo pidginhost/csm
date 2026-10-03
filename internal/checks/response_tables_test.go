@@ -35,7 +35,6 @@ var (
 		"cpanel_login":                attackdb.AttackAuthSuccess,
 		"cpanel_login_realtime":       attackdb.AttackAuthSuccess,
 		"credential_stuffing":         attackdb.AttackBruteForce,
-		"email_auth_failure_realtime": attackdb.AttackBruteForce,
 		"ftp_auth_failure_realtime":   attackdb.AttackBruteForce,
 		"ftp_bruteforce":              attackdb.AttackBruteForce,
 		"ftp_login":                   attackdb.AttackAuthSuccess,

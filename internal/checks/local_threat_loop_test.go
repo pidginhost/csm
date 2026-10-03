@@ -27,16 +27,15 @@ func TestCheckLocalThreatScoreEmitsForHighUnblocked(t *testing.T) {
 	// IP C: high score, blocked → skipped (alreadyBlocked wins).
 	db := attackdb.NewForTest(map[string]*attackdb.IPRecord{
 		"203.0.113.10": {
-			IP:                    "203.0.113.10",
-			ThreatScore:           85,
-			EventCount:            50,
-			FirstSeen:             now.Add(-20 * time.Minute),
-			LastSeen:              now,
-			BruteForceWindowStart: now.Add(-20 * time.Minute),
-			BruteForceWindowCount: 50,
-			BruteForceSustainedAt: now,
+			IP:          "203.0.113.10",
+			ThreatScore: 85,
+			EventCount:  50,
+			FirstSeen:   now.Add(-20 * time.Minute),
+			LastSeen:    now,
 			AttackCounts: map[attackdb.AttackType]int{
 				attackdb.AttackBruteForce: 50,
+				attackdb.AttackWAFBlock:   6,
+				attackdb.AttackFileUpload: 1,
 			},
 			Accounts: map[string]int{"alice": 5, "bob": 7},
 		},
@@ -48,16 +47,15 @@ func TestCheckLocalThreatScoreEmitsForHighUnblocked(t *testing.T) {
 			LastSeen:    now,
 		},
 		"203.0.113.30": {
-			IP:                    "203.0.113.30",
-			ThreatScore:           95,
-			EventCount:            50,
-			FirstSeen:             now.Add(-20 * time.Minute),
-			LastSeen:              now,
-			BruteForceWindowStart: now.Add(-20 * time.Minute),
-			BruteForceWindowCount: 50,
-			BruteForceSustainedAt: now,
+			IP:          "203.0.113.30",
+			ThreatScore: 95,
+			EventCount:  50,
+			FirstSeen:   now.Add(-20 * time.Minute),
+			LastSeen:    now,
 			AttackCounts: map[attackdb.AttackType]int{
 				attackdb.AttackBruteForce: 50,
+				attackdb.AttackWAFBlock:   6,
+				attackdb.AttackFileUpload: 1,
 			},
 		},
 	})
@@ -107,16 +105,15 @@ func TestCheckLocalThreatScoreBlockedTopAttackersDoNotStarveUnblocked(t *testing
 	now := time.Now()
 	records := map[string]*attackdb.IPRecord{
 		"203.0.113.200": {
-			IP:                    "203.0.113.200",
-			ThreatScore:           75,
-			EventCount:            50,
-			FirstSeen:             now.Add(-20 * time.Minute),
-			LastSeen:              now,
-			BruteForceWindowStart: now.Add(-20 * time.Minute),
-			BruteForceWindowCount: 50,
-			BruteForceSustainedAt: now,
+			IP:          "203.0.113.200",
+			ThreatScore: 75,
+			EventCount:  50,
+			FirstSeen:   now.Add(-20 * time.Minute),
+			LastSeen:    now,
 			AttackCounts: map[attackdb.AttackType]int{
 				attackdb.AttackBruteForce: 50,
+				attackdb.AttackWAFBlock:   6,
+				attackdb.AttackFileUpload: 1,
 			},
 			Accounts: map[string]int{"alice": 50},
 		},
@@ -124,16 +121,15 @@ func TestCheckLocalThreatScoreBlockedTopAttackersDoNotStarveUnblocked(t *testing
 	for i := 0; i < 60; i++ {
 		ip := fmt.Sprintf("203.0.113.%d", i+1)
 		records[ip] = &attackdb.IPRecord{
-			IP:                    ip,
-			ThreatScore:           85,
-			EventCount:            60,
-			FirstSeen:             now.Add(-20 * time.Minute),
-			LastSeen:              now,
-			BruteForceWindowStart: now.Add(-20 * time.Minute),
-			BruteForceWindowCount: 60,
-			BruteForceSustainedAt: now,
+			IP:          ip,
+			ThreatScore: 85,
+			EventCount:  60,
+			FirstSeen:   now.Add(-20 * time.Minute),
+			LastSeen:    now,
 			AttackCounts: map[attackdb.AttackType]int{
 				attackdb.AttackBruteForce: 60,
+				attackdb.AttackWAFBlock:   6,
+				attackdb.AttackFileUpload: 1,
 			},
 			Accounts: map[string]int{"alice": 30, "bob": 30},
 		}

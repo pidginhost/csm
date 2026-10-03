@@ -26,18 +26,15 @@ type AttackEvent struct {
 
 // IPRecord is the store-layer representation of an IP attack record.
 type IPRecord struct {
-	IP                    string         `json:"ip"`
-	FirstSeen             time.Time      `json:"first_seen"`
-	LastSeen              time.Time      `json:"last_seen"`
-	EventCount            int            `json:"event_count"`
-	AttackCounts          map[string]int `json:"attack_counts,omitempty"`
-	Accounts              map[string]int `json:"accounts,omitempty"`
-	AuthSuccessAccounts   map[string]int `json:"auth_success_accounts,omitempty"`
-	ThreatScore           int            `json:"threat_score"`
-	AutoBlocked           bool           `json:"auto_blocked,omitempty"`
-	BruteForceWindowStart time.Time      `json:"brute_force_window_start,omitempty"`
-	BruteForceWindowCount int            `json:"brute_force_window_count,omitempty"`
-	BruteForceSustainedAt time.Time      `json:"brute_force_sustained_at,omitempty"`
+	IP                  string         `json:"ip"`
+	FirstSeen           time.Time      `json:"first_seen"`
+	LastSeen            time.Time      `json:"last_seen"`
+	EventCount          int            `json:"event_count"`
+	AttackCounts        map[string]int `json:"attack_counts,omitempty"`
+	Accounts            map[string]int `json:"accounts,omitempty"`
+	AuthSuccessAccounts map[string]int `json:"auth_success_accounts,omitempty"`
+	ThreatScore         int            `json:"threat_score"`
+	AutoBlocked         bool           `json:"auto_blocked,omitempty"`
 }
 
 // RecordAttackEvent inserts an attack event into both the primary bucket

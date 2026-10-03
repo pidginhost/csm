@@ -93,6 +93,11 @@ automatically when the daemon starts; blocks they already caused are not lifted.
 The correction has no setting; `auto_response.block_ips` controls new automatic
 blocks.
 
+Raw mail and SMTP login failures are not counted. The mail and SMTP
+brute-force detectors decide those blocks, and they account for successful
+logins and mail authentication backend outages, so a mistyped password or a
+backend outage never raises an address's local threat score.
+
 The local threat score retains evidence attributed to the server itself. Such
 records can represent forwarded attacks or a compromised local process; firewall
 protection against blocking the server does not establish that traffic is safe.

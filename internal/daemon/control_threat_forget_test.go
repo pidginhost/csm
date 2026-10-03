@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -49,11 +50,9 @@ func TestHandleThreatForgetRemovesLegacyAliases(t *testing.T) {
 			}
 			wantEvents, wantScore := 1, 50
 			if tc.mixed {
-				// A sustained mail-auth brute force: vol 30 + brute 15 + sustained 30.
-				for i := 0; i < 60; i++ {
-					db.RecordFinding(alert.Finding{Check: "email_auth_failure_realtime", SourceIP: canonical, Timestamp: time.Now()})
-				}
-				wantEvents, wantScore = 61, 75
+				// An SMTP brute force on two mailboxes: vol 30 + brute 15 + accounts 10.
+				recordBruteForce(db, canonical, 60)
+				wantEvents, wantScore = 61, 55
 			}
 			db.RecordFinding(alert.Finding{Check: "wp_login_bruteforce", SourceIP: "2001:db8::24", Timestamp: time.Now()})
 			if flushErr := db.Flush(); flushErr != nil {
@@ -146,19 +145,24 @@ func TestHandleThreatForgetConcurrentRequests(t *testing.T) {
 	}
 }
 
-// seedAttackRecord installs a global attack database holding one IP with
-// enough evidence to clear the local_threat_score reporting threshold.
+// seedAttackRecord installs a global attack database holding one IP with 60
+// recorded brute-force findings.
 func seedAttackRecord(t *testing.T, ip string) *attackdb.DB {
 	t.Helper()
 	db := attackdb.NewForTest(nil)
 	previous := attackdb.Global()
 	attackdb.SetGlobal(db)
 	t.Cleanup(func() { attackdb.SetGlobal(previous) })
-	// A sustained mail-auth brute force: vol 30 + brute 15 + sustained 30.
-	for i := 0; i < 60; i++ {
-		db.RecordFinding(alert.Finding{Check: "email_auth_failure_realtime", SourceIP: ip, Timestamp: time.Now()})
-	}
+	recordBruteForce(db, ip, 60)
 	return db
+}
+
+// recordBruteForce records n SMTP brute-force findings from ip against two
+// mailboxes, which scores vol 30 + brute 15 + accounts 10.
+func recordBruteForce(db *attackdb.DB, ip string, n int) {
+	for i := 0; i < n; i++ {
+		db.RecordFinding(alert.Finding{Check: "smtp_bruteforce", SourceIP: ip, Mailbox: fmt.Sprintf("user%d@example.com", i%2), Timestamp: time.Now()})
+	}
 }
 
 // A detection bug that attributes attacks to the wrong address poisons that
@@ -172,9 +176,11 @@ func seedAttackRecord(t *testing.T, ip string) *attackdb.DB {
 func TestHandleThreatForgetClearsStaleScore(t *testing.T) {
 	const ip = "198.51.100.23"
 	db := seedAttackRecord(t, ip)
-	if db.LookupIP(ip) == nil {
+	seeded := db.LookupIP(ip)
+	if seeded == nil {
 		t.Fatal("seed did not create a record")
 	}
+	before := attackdb.ComputeScore(seeded)
 
 	c := newListenerForTest(t)
 	raw, err := c.handleThreatForget([]byte(`{"ip":"` + ip + `"}`))
@@ -192,8 +198,8 @@ func TestHandleThreatForgetClearsStaleScore(t *testing.T) {
 	if res.Events != 60 {
 		t.Errorf("Events = %d, want the 60 recorded findings", res.Events)
 	}
-	if res.Score < 70 {
-		t.Errorf("Score = %d, want the reporting-threshold score that was cleared", res.Score)
+	if before == 0 || res.Score != before {
+		t.Errorf("Score = %d, want the cleared score %d", res.Score, before)
 	}
 	if db.LookupIP(ip) != nil {
 		t.Error("record still present after forget")

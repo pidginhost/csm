@@ -24,8 +24,7 @@ import (
 func timeKey(k string) bool {
 	switch k {
 	case "timestamp", "time", "ts", "created", "started", "finished", "expires", "updated", "from", "to",
-		"last_hit", "last_refresh", "last_update", "last_critical", "latest_scan", "last_scan_time",
-		"brute_force_window_start":
+		"last_hit", "last_refresh", "last_update", "last_critical", "latest_scan", "last_scan_time":
 		return true
 	}
 	return strings.HasSuffix(k, "_at") || strings.HasSuffix(k, "_seen")

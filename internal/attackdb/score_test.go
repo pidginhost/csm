@@ -68,18 +68,20 @@ func TestComputeScoreAutoBlockedMinimum50(t *testing.T) {
 }
 
 func TestComputeScoreCap100(t *testing.T) {
+	// Every bonus at once: volume 30, brute force 15, WAF 10, upload 20 and
+	// multiple accounts 10.
 	r := &IPRecord{
 		EventCount: 60,
 		AttackCounts: map[AttackType]int{
-			AttackBruteForce: 60,
+			AttackBruteForce: 52,
+			AttackWAFBlock:   6,
 			AttackFileUpload: 1,
 		},
-		Accounts:              map[string]int{"a": 1, "b": 1},
-		BruteForceSustainedAt: time.Now(),
+		Accounts: map[string]int{"a": 1, "b": 1},
 	}
 	got := ComputeScore(r)
-	if got != 100 {
-		t.Errorf("max score = %d, want 100", got)
+	if got != 85 || got > 100 {
+		t.Errorf("max score = %d, want 85 and never above 100", got)
 	}
 }
 
@@ -101,54 +103,35 @@ func TestSortRecordsByScore(t *testing.T) {
 	}
 }
 
-func TestComputeScore_SustainedBruteForceReachesBlockThreshold(t *testing.T) {
+// A fast single-IP brute force blocks through its own producer (the mail,
+// SMTP, FTP or SSH tracker), whose gates know about successful logins and
+// auth backend outages. Its attack record alone never reaches the
+// local_threat_score block threshold.
+func TestComputeScore_SustainedBruteForceStaysBelowBlockThreshold(t *testing.T) {
 	now := time.Now()
 	r := &IPRecord{
-		EventCount:            1255,
-		AttackCounts:          map[AttackType]int{AttackBruteForce: 1255},
-		Accounts:              map[string]int{"florin": 1255},
-		LastSeen:              now,
-		BruteForceWindowStart: now.Add(-20 * time.Minute),
-		BruteForceWindowCount: 1255,
-		BruteForceSustainedAt: now,
+		EventCount:   1255,
+		AttackCounts: map[AttackType]int{AttackBruteForce: 1255},
+		Accounts:     map[string]int{"owner": 1255},
+		LastSeen:     now,
 	}
 	got := ComputeScore(r)
-	if got < 70 {
-		t.Errorf("sustained single-IP brute force score = %d, want >= 70 (block threshold)", got)
+	if got >= 70 {
+		t.Errorf("sustained single-IP brute force score = %d, want < 70 (the producer blocks, not the score)", got)
 	}
 }
 
 func TestComputeScore_SlowStalePasswordDoesNotReachBlockThreshold(t *testing.T) {
 	now := time.Now()
 	r := &IPRecord{
-		EventCount:            50,
-		AttackCounts:          map[AttackType]int{AttackBruteForce: 50},
-		Accounts:              map[string]int{"owner": 50},
-		LastSeen:              now,
-		BruteForceWindowStart: now.Add(-4 * time.Hour),
-		BruteForceWindowCount: 50,
-		BruteForceSustainedAt: now.Add(-3 * time.Hour),
+		EventCount:   50,
+		AttackCounts: map[AttackType]int{AttackBruteForce: 50},
+		Accounts:     map[string]int{"owner": 50},
+		LastSeen:     now,
 	}
 	got := ComputeScore(r)
 	if got >= 70 {
 		t.Errorf("slow stale-password score = %d, want < 70 (no auto-block)", got)
-	}
-}
-
-func TestComputeScore_SustainedBruteForceSurvivesLaterEvent(t *testing.T) {
-	now := time.Now()
-	r := &IPRecord{
-		EventCount:            51,
-		AttackCounts:          map[AttackType]int{AttackBruteForce: 50, AttackWAFBlock: 1},
-		Accounts:              map[string]int{"victim": 50},
-		LastSeen:              now,
-		BruteForceWindowStart: now.Add(-40 * time.Minute),
-		BruteForceWindowCount: 50,
-		BruteForceSustainedAt: now.Add(-20 * time.Minute),
-	}
-	got := ComputeScore(r)
-	if got < 70 {
-		t.Errorf("recent sustained brute score after later event = %d, want >= 70", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package attackdb
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -39,20 +40,17 @@ func TestClassify_CredentialStuffingAsBruteForce(t *testing.T) {
 	}
 }
 
-func TestClassify_EmailAuthFailureRealtimeAsBruteForce(t *testing.T) {
-	// Per-event dovecot/exim SMTP-AUTH failures must feed the attack DB so a
-	// sustained mail brute force builds reputation even when the aggregated
-	// smtp_bruteforce signal is absent. Sibling realtime auth checks
-	// (api_auth_failure_realtime, ftp_auth_failure_realtime) are already
-	// classified; this one was missing, so 1000s of mail-auth failures from a
-	// single IP left it invisible to local_threat_score.
-	got := checkToAttack["email_auth_failure_realtime"]
-	if got != AttackBruteForce {
-		t.Errorf("email_auth_failure_realtime classified as %q, want %q", got, AttackBruteForce)
+func TestClassify_EmailAuthFailureRealtimeIsNotScored(t *testing.T) {
+	// Per-event dovecot/exim auth failures are visibility. The SMTP and mail
+	// trackers turn them into blockable findings with success, established
+	// source and auth backend outage guards; scoring the raw events here let
+	// local_threat_score block around those guards.
+	if got, ok := checkToAttack["email_auth_failure_realtime"]; ok {
+		t.Errorf("email_auth_failure_realtime classified as %q, want unscored", got)
 	}
 }
 
-func TestRecordFinding_EmailAuthFailureBuildsReputation(t *testing.T) {
+func TestRecordFinding_EmailAuthFailureBuildsNoRecord(t *testing.T) {
 	db := newTestDB(t)
 	ts := time.Date(2026, 6, 7, 5, 35, 0, 0, time.UTC)
 	for i := 0; i < 20; i++ {
@@ -61,29 +59,13 @@ func TestRecordFinding_EmailAuthFailureBuildsReputation(t *testing.T) {
 			Message:   "Email authentication failure",
 			Severity:  alert.High,
 			SourceIP:  "203.0.113.7",
-			Mailbox:   "florin",
+			Mailbox:   "owner",
 			Domain:    "example.test",
 			Timestamp: ts.Add(time.Duration(i) * time.Minute),
 		})
 	}
-	rec := db.LookupIP("203.0.113.7")
-	if rec == nil {
-		t.Fatal("mail auth failures did not create an attack-DB record")
-	}
-	if rec.EventCount != 20 {
-		t.Errorf("EventCount = %d, want 20", rec.EventCount)
-	}
-	if rec.AttackCounts[AttackBruteForce] != 20 {
-		t.Errorf("AttackCounts[brute_force] = %d, want 20", rec.AttackCounts[AttackBruteForce])
-	}
-	if rec.BruteForceWindowCount != 20 {
-		t.Errorf("BruteForceWindowCount = %d, want 20", rec.BruteForceWindowCount)
-	}
-	if !rec.BruteForceSustainedAt.IsZero() {
-		t.Errorf("BruteForceSustainedAt = %s, want zero before threshold", rec.BruteForceSustainedAt)
-	}
-	if rec.Accounts["florin@example.test"] != 20 {
-		t.Errorf("Accounts[florin@example.test] = %d, want 20", rec.Accounts["florin@example.test"])
+	if rec := db.LookupIP("203.0.113.7"); rec != nil {
+		t.Fatalf("mail auth failures created an attack-DB record with score %d", rec.ThreatScore)
 	}
 }
 
@@ -99,19 +81,12 @@ func TestRecordFinding_SlowEmailAuthFailuresStayBelowBlockScore(t *testing.T) {
 			Timestamp: ts.Add(time.Duration(i) * 5 * time.Minute),
 		})
 	}
-	rec := db.LookupIP("203.0.113.9")
-	if rec == nil {
-		t.Fatal("mail auth failures did not create an attack-DB record")
-	}
-	if rec.AttackCounts[AttackBruteForce] != 50 {
-		t.Errorf("AttackCounts[brute_force] = %d, want 50", rec.AttackCounts[AttackBruteForce])
-	}
-	if rec.ThreatScore >= 70 {
+	if rec := db.LookupIP("203.0.113.9"); rec != nil && rec.ThreatScore >= 70 {
 		t.Errorf("slow auth-failure score = %d, want < 70", rec.ThreatScore)
 	}
 }
 
-func TestRecordFinding_FastEmailAuthFailuresSetSustainedMarker(t *testing.T) {
+func TestRecordFinding_FastEmailAuthFailuresStayBelowBlockScore(t *testing.T) {
 	db := newTestDB(t)
 	ts := time.Date(2026, 6, 1, 5, 35, 0, 0, time.UTC)
 	for i := 0; i < 50; i++ {
@@ -123,15 +98,9 @@ func TestRecordFinding_FastEmailAuthFailuresSetSustainedMarker(t *testing.T) {
 			Timestamp: ts.Add(time.Duration(i) * 20 * time.Second),
 		})
 	}
-	rec := db.LookupIP("203.0.113.12")
-	if rec == nil {
-		t.Fatal("mail auth failures did not create an attack-DB record")
-	}
-	if rec.BruteForceSustainedAt.IsZero() {
-		t.Fatal("BruteForceSustainedAt is zero, want recent threshold marker")
-	}
-	if rec.ThreatScore < 70 {
-		t.Errorf("fast auth-failure score = %d, want >= 70", rec.ThreatScore)
+	// A fast attacker is blocked by the SMTP tracker's own smtp_bruteforce.
+	if rec := db.LookupIP("203.0.113.12"); rec != nil && rec.ThreatScore >= 70 {
+		t.Errorf("fast auth-failure score = %d, want < 70", rec.ThreatScore)
 	}
 }
 
@@ -151,15 +120,12 @@ func TestRecordFinding_NonMailBruteDoesNotSetSustainedScoreTier(t *testing.T) {
 	if rec == nil {
 		t.Fatal("wp brute findings did not create an attack-DB record")
 	}
-	if !rec.BruteForceSustainedAt.IsZero() {
-		t.Fatalf("BruteForceSustainedAt = %s, want zero for non-mail brute checks", rec.BruteForceSustainedAt)
-	}
 	if rec.ThreatScore >= 70 {
-		t.Errorf("non-mail brute score = %d, want < 70 from sustained tier", rec.ThreatScore)
+		t.Errorf("non-mail brute score = %d, want < 70 (the producer blocks, not the score)", rec.ThreatScore)
 	}
 }
 
-func TestRecordFinding_SustainedMarkerSurvivesLaterNonBruteEvent(t *testing.T) {
+func TestRecordFinding_MailAuthFailuresAddNothingToLaterEvidence(t *testing.T) {
 	db := newTestDB(t)
 	ts := time.Date(2026, 6, 1, 5, 35, 0, 0, time.UTC)
 	for i := 0; i < 50; i++ {
@@ -180,34 +146,29 @@ func TestRecordFinding_SustainedMarkerSurvivesLaterNonBruteEvent(t *testing.T) {
 	})
 	rec := db.LookupIP("203.0.113.14")
 	if rec == nil {
-		t.Fatal("record missing")
+		t.Fatal("scanner finding created no record")
 	}
-	if rec.ThreatScore < 70 {
-		t.Errorf("score after later non-brute event = %d, want >= 70", rec.ThreatScore)
+	if rec.EventCount != 1 || rec.AttackCounts[AttackBruteForce] != 0 || rec.ThreatScore >= 70 {
+		t.Errorf("record %+v: mail auth failures added to the scanner evidence", rec)
 	}
 }
 
-func TestNormalizeLoadedRecordPreservesSustainedBruteWindow(t *testing.T) {
-	now := time.Now()
-	rec := &IPRecord{
-		IP:                    "203.0.113.10",
-		FirstSeen:             now.Add(-20 * time.Minute),
-		LastSeen:              now,
-		EventCount:            1255,
-		AttackCounts:          map[AttackType]int{AttackBruteForce: 1255},
-		Accounts:              map[string]int{"victim@example.test": 1255},
-		BruteForceWindowStart: now.Add(-20 * time.Minute),
-		BruteForceWindowCount: 1255,
+// A record stored by an older daemon can carry the removed sustained-brute
+// marker and the score it earned. Loading it recomputes the score without it.
+func TestNormalizeLoadedRecordRescoresLegacySustainedBrute(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	legacy := `{"ip":"203.0.113.10","first_seen":"` + now + `","last_seen":"` + now + `","event_count":1255,` +
+		`"attack_counts":{"brute_force":1255},"accounts":{"victim@example.test":1255},"threat_score":85,` +
+		`"brute_force_window_start":"` + now + `","brute_force_window_count":1255,"brute_force_sustained_at":"` + now + `"}`
+	var rec IPRecord
+	if err := json.Unmarshal([]byte(legacy), &rec); err != nil {
+		t.Fatal(err)
 	}
-	normalizeLoadedRecord(rec)
-	if rec.BruteForceWindowCount != 1255 {
-		t.Fatalf("BruteForceWindowCount = %d, want 1255", rec.BruteForceWindowCount)
+	if changed, _ := normalizeLoadedRecord(&rec); !changed {
+		t.Error("legacy score was not marked for rewrite")
 	}
-	if rec.BruteForceSustainedAt.IsZero() {
-		t.Fatal("BruteForceSustainedAt is zero, want preserved threshold marker")
-	}
-	if rec.ThreatScore < 70 {
-		t.Errorf("ThreatScore = %d, want >= 70", rec.ThreatScore)
+	if rec.ThreatScore >= 70 {
+		t.Errorf("legacy sustained-brute record rescored to %d, want < 70", rec.ThreatScore)
 	}
 }
 
@@ -222,9 +183,6 @@ func TestNormalizeLoadedRecordDoesNotBackfillSlowBruteWindow(t *testing.T) {
 		Accounts:     map[string]int{"owner@example.test": 50},
 	}
 	normalizeLoadedRecord(rec)
-	if rec.BruteForceWindowCount != 0 {
-		t.Fatalf("BruteForceWindowCount = %d, want 0", rec.BruteForceWindowCount)
-	}
 	if rec.ThreatScore >= 70 {
 		t.Errorf("ThreatScore = %d, want < 70", rec.ThreatScore)
 	}

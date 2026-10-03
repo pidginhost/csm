@@ -1,14 +1,6 @@
 package attackdb
 
-import (
-	"sort"
-	"time"
-)
-
-const (
-	sustainedBruteForceThreshold = 50
-	sustainedBruteForceWindow    = 30 * time.Minute
-)
+import "sort"
 
 // ComputeScore returns a 0-100 local threat score from an IPRecord.
 //
@@ -19,10 +11,6 @@ const (
 //   - Auto-blocked floor: 50
 //   - Hard cap: 100
 func ComputeScore(r *IPRecord) int {
-	return computeScoreAt(r, time.Now())
-}
-
-func computeScoreAt(r *IPRecord, now time.Time) int {
 	score := 0
 
 	// Audit events stay in the record and history, but cannot increase the
@@ -37,12 +25,6 @@ func computeScoreAt(r *IPRecord, now time.Time) int {
 	// Attack type bonuses
 	if r.AttackCounts[AttackBruteForce] > 0 {
 		score += 15
-	}
-	// The sustained-brute tier is rate-bound and tied to the raw mail-auth
-	// signal so stale passwords and unrelated brute-force checks cannot become
-	// block-eligible by slowly accumulating failures over retention.
-	if hasSustainedBruteForce(r, now) {
-		score += 30
 	}
 	if r.AttackCounts[AttackWAFBlock] > 5 {
 		score += 10
@@ -74,14 +56,6 @@ func computeScoreAt(r *IPRecord, now time.Time) int {
 	}
 
 	return score
-}
-
-func hasSustainedBruteForce(r *IPRecord, now time.Time) bool {
-	if r.AttackCounts[AttackBruteForce] < sustainedBruteForceThreshold ||
-		r.BruteForceSustainedAt.IsZero() {
-		return false
-	}
-	return !r.BruteForceSustainedAt.Before(now.Add(-sustainedBruteForceWindow))
 }
 
 // sortRecords sorts by threat score descending, then event count descending.

@@ -67,24 +67,23 @@ func AttackTypeLabels() map[string]string {
 // checkToAttack maps alert.Finding.Check values to attack types.
 var checkToAttack = map[string]AttackType{
 	// Brute force
-	"wp_login_bruteforce":         AttackBruteForce,
-	"xmlrpc_abuse":                AttackBruteForce,
-	"ftp_bruteforce":              AttackBruteForce,
-	"ssh_login_unknown_ip":        AttackBruteForce,
-	"webmail_bruteforce":          AttackBruteForce,
-	"api_auth_failure":            AttackBruteForce,
-	"api_auth_failure_realtime":   AttackBruteForce,
-	"ftp_auth_failure_realtime":   AttackBruteForce,
-	"email_auth_failure_realtime": AttackBruteForce,
-	"credential_stuffing":         AttackBruteForce,
-	"pam_bruteforce":              AttackBruteForce,
-	"smtp_bruteforce":             AttackBruteForce,
-	"smtp_probe_abuse":            AttackBruteForce,
-	"smtp_subnet_spray":           AttackBruteForce,
-	"mail_bruteforce":             AttackBruteForce,
-	"mail_subnet_spray":           AttackBruteForce,
-	"mail_account_compromised":    AttackBruteForce,
-	"admin_panel_bruteforce":      AttackBruteForce,
+	"wp_login_bruteforce":       AttackBruteForce,
+	"xmlrpc_abuse":              AttackBruteForce,
+	"ftp_bruteforce":            AttackBruteForce,
+	"ssh_login_unknown_ip":      AttackBruteForce,
+	"webmail_bruteforce":        AttackBruteForce,
+	"api_auth_failure":          AttackBruteForce,
+	"api_auth_failure_realtime": AttackBruteForce,
+	"ftp_auth_failure_realtime": AttackBruteForce,
+	"credential_stuffing":       AttackBruteForce,
+	"pam_bruteforce":            AttackBruteForce,
+	"smtp_bruteforce":           AttackBruteForce,
+	"smtp_probe_abuse":          AttackBruteForce,
+	"smtp_subnet_spray":         AttackBruteForce,
+	"mail_bruteforce":           AttackBruteForce,
+	"mail_subnet_spray":         AttackBruteForce,
+	"mail_account_compromised":  AttackBruteForce,
+	"admin_panel_bruteforce":    AttackBruteForce,
 
 	// File, process, outbound-connection and mail-volume findings carry no
 	// attacker source address (their producers set no SourceIP), so they
@@ -162,18 +161,15 @@ type Event struct {
 
 // IPRecord is the per-IP aggregated intelligence record.
 type IPRecord struct {
-	IP                    string             `json:"ip"`
-	FirstSeen             time.Time          `json:"first_seen"`
-	LastSeen              time.Time          `json:"last_seen"`
-	EventCount            int                `json:"event_count"`
-	AttackCounts          map[AttackType]int `json:"attack_counts"`
-	Accounts              map[string]int     `json:"accounts"`
-	AuthSuccessAccounts   map[string]int     `json:"auth_success_accounts,omitempty"`
-	ThreatScore           int                `json:"threat_score"`
-	AutoBlocked           bool               `json:"auto_blocked"`
-	BruteForceWindowStart time.Time          `json:"brute_force_window_start,omitzero"`
-	BruteForceWindowCount int                `json:"brute_force_window_count,omitempty"`
-	BruteForceSustainedAt time.Time          `json:"brute_force_sustained_at,omitzero"`
+	IP                  string             `json:"ip"`
+	FirstSeen           time.Time          `json:"first_seen"`
+	LastSeen            time.Time          `json:"last_seen"`
+	EventCount          int                `json:"event_count"`
+	AttackCounts        map[AttackType]int `json:"attack_counts"`
+	Accounts            map[string]int     `json:"accounts"`
+	AuthSuccessAccounts map[string]int     `json:"auth_success_accounts,omitempty"`
+	ThreatScore         int                `json:"threat_score"`
+	AutoBlocked         bool               `json:"auto_blocked"`
 }
 
 // DB is the in-memory attack database backed by JSON files.
@@ -395,9 +391,6 @@ func (db *DB) RecordFinding(f alert.Finding) {
 	rec.LastSeen = now
 	rec.EventCount++
 	rec.AttackCounts[attackType]++
-	if tracksSustainedBruteScore(f.Check) {
-		updateBruteForceWindow(rec, now)
-	}
 	if account != "" {
 		rec.Accounts[account]++
 		if attackType == AttackAuthSuccess {
@@ -407,7 +400,7 @@ func (db *DB) RecordFinding(f alert.Finding) {
 			rec.AuthSuccessAccounts[account]++
 		}
 	}
-	rec.ThreatScore = computeScoreAt(rec, now)
+	rec.ThreatScore = ComputeScore(rec)
 	db.queueEventLocked(event)
 	delete(db.deletedIPs, ip)
 	db.markDirtyLocked(ip)
@@ -573,25 +566,6 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n])
-}
-
-func updateBruteForceWindow(rec *IPRecord, ts time.Time) {
-	if rec.BruteForceWindowStart.IsZero() ||
-		ts.Before(rec.BruteForceWindowStart) ||
-		ts.Sub(rec.BruteForceWindowStart) > sustainedBruteForceWindow {
-		rec.BruteForceWindowStart = ts
-		rec.BruteForceWindowCount = 1
-		return
-	}
-	rec.BruteForceWindowCount++
-	if rec.BruteForceWindowCount >= sustainedBruteForceThreshold &&
-		(rec.BruteForceSustainedAt.IsZero() || !ts.Before(rec.BruteForceSustainedAt)) {
-		rec.BruteForceSustainedAt = ts
-	}
-}
-
-func tracksSustainedBruteScore(check string) bool {
-	return check == "email_auth_failure_realtime"
 }
 
 // RemoveIP removes an IP from the attack database entirely.

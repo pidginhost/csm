@@ -91,15 +91,14 @@ func TestComputeScoreAutoBlockedFloor(t *testing.T) {
 
 func TestComputeScoreAutoBlockedDoesNotCapHigherScores(t *testing.T) {
 	r := &IPRecord{
-		EventCount:            60,
-		AttackCounts:          map[AttackType]int{AttackBruteForce: 60, AttackFileUpload: 1},
-		Accounts:              map[string]int{"x": 1, "y": 1},
-		AutoBlocked:           true,
-		BruteForceSustainedAt: time.Now(),
+		EventCount:   60,
+		AttackCounts: map[AttackType]int{AttackBruteForce: 60, AttackFileUpload: 1},
+		Accounts:     map[string]int{"x": 1, "y": 1},
+		AutoBlocked:  true,
 	}
-	// vol=30 + brute=15 + sustained=30 + upload=20 + accounts=10 = 105, capped at 100.
-	if got := ComputeScore(r); got != 100 {
-		t.Errorf("score = %d, want 100 (cap)", got)
+	// vol=30 + brute=15 + upload=20 + accounts=10 = 75, above the 50 floor.
+	if got := ComputeScore(r); got != 75 {
+		t.Errorf("score = %d, want 75 (the auto-blocked floor never lowers a score)", got)
 	}
 }
 

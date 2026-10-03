@@ -40,7 +40,7 @@ func TestSuccessfulAuthAddsNoScore(t *testing.T) {
 				if rec.EventCount != wantEvents || rec.AttackCounts[AttackAuthSuccess] != 40 || rec.Accounts["account0"] != 20 || rec.Accounts["account1"] != 20 {
 					t.Fatalf("audit counts or account evidence lost: %+v", rec)
 				}
-				if got := computeScoreAt(rec, now); got != wantScore || rec.ThreatScore != wantScore {
+				if got := ComputeScore(rec); got != wantScore || rec.ThreatScore != wantScore {
 					t.Fatalf("computed/stored scores = %d/%d, want %d", got, rec.ThreatScore, wantScore)
 				}
 				events := db.pendingEvents

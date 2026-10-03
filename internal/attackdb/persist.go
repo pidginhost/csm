@@ -31,18 +31,15 @@ func (db *DB) load() {
 		}
 		for ip, sr := range storeRecords {
 			rec := &IPRecord{
-				IP:                    sr.IP,
-				FirstSeen:             sr.FirstSeen,
-				LastSeen:              sr.LastSeen,
-				EventCount:            sr.EventCount,
-				ThreatScore:           sr.ThreatScore,
-				AutoBlocked:           sr.AutoBlocked,
-				BruteForceWindowStart: sr.BruteForceWindowStart,
-				BruteForceWindowCount: sr.BruteForceWindowCount,
-				BruteForceSustainedAt: sr.BruteForceSustainedAt,
-				AttackCounts:          make(map[AttackType]int),
-				Accounts:              make(map[string]int),
-				AuthSuccessAccounts:   maps.Clone(sr.AuthSuccessAccounts),
+				IP:                  sr.IP,
+				FirstSeen:           sr.FirstSeen,
+				LastSeen:            sr.LastSeen,
+				EventCount:          sr.EventCount,
+				ThreatScore:         sr.ThreatScore,
+				AutoBlocked:         sr.AutoBlocked,
+				AttackCounts:        make(map[AttackType]int),
+				Accounts:            make(map[string]int),
+				AuthSuccessAccounts: maps.Clone(sr.AuthSuccessAccounts),
 			}
 			for k, v := range sr.AttackCounts {
 				rec.AttackCounts[AttackType(k)] = v
@@ -129,16 +126,6 @@ func normalizeLoadedRecord(rec *IPRecord) (changed, emptied bool) {
 		if rec.EventCount == 0 {
 			return true, true
 		}
-	}
-	bruteCount := rec.AttackCounts[AttackBruteForce]
-	if rec.BruteForceWindowCount > bruteCount {
-		rec.BruteForceWindowCount = bruteCount
-		changed = true
-	}
-	if rec.BruteForceSustainedAt.IsZero() &&
-		rec.BruteForceWindowCount >= sustainedBruteForceThreshold {
-		rec.BruteForceSustainedAt = rec.LastSeen
-		changed = true
 	}
 	score := ComputeScore(rec)
 	if rec.ThreatScore != score {
@@ -302,18 +289,15 @@ func (db *DB) requeueDirty(dirty map[string]struct{}, hasPendingDelete bool) {
 // shape, copying the count maps so the store never aliases live maps.
 func toStoreIPRecord(rec *IPRecord) store.IPRecord {
 	sr := store.IPRecord{
-		IP:                    rec.IP,
-		FirstSeen:             rec.FirstSeen,
-		LastSeen:              rec.LastSeen,
-		EventCount:            rec.EventCount,
-		ThreatScore:           rec.ThreatScore,
-		AutoBlocked:           rec.AutoBlocked,
-		BruteForceWindowStart: rec.BruteForceWindowStart,
-		BruteForceWindowCount: rec.BruteForceWindowCount,
-		BruteForceSustainedAt: rec.BruteForceSustainedAt,
-		AttackCounts:          make(map[string]int, len(rec.AttackCounts)),
-		Accounts:              make(map[string]int, len(rec.Accounts)),
-		AuthSuccessAccounts:   maps.Clone(rec.AuthSuccessAccounts),
+		IP:                  rec.IP,
+		FirstSeen:           rec.FirstSeen,
+		LastSeen:            rec.LastSeen,
+		EventCount:          rec.EventCount,
+		ThreatScore:         rec.ThreatScore,
+		AutoBlocked:         rec.AutoBlocked,
+		AttackCounts:        make(map[string]int, len(rec.AttackCounts)),
+		Accounts:            make(map[string]int, len(rec.Accounts)),
+		AuthSuccessAccounts: maps.Clone(rec.AuthSuccessAccounts),
 	}
 	for k, v := range rec.AttackCounts {
 		sr.AttackCounts[string(k)] = v
