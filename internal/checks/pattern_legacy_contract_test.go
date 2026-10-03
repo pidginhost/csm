@@ -10,7 +10,7 @@ import (
 const legacyPatternTime = "[26/Sep/2026:10:00:00 +0300]"
 
 func TestPatternLegacyParserContract(t *testing.T) {
-	// Characterization: these pass on the unchanged base, before the new parser.
+	// Retention limits and the vhost/XFF ordering stay compatible.
 	target := "/" + strings.Repeat("a", 5000)
 	for _, tc := range []struct {
 		limit int
@@ -36,7 +36,7 @@ func TestPatternLegacyParserContract(t *testing.T) {
 		}
 	}
 	got, ok := parseAccessLogRecord(`192.0.2.1 - - ` + legacyPatternTime + ` "GET / HTTP/1.1" 200 1 "-" "UA \"quoted\""`)
-	if !ok || got.UserAgent != `UA \` {
-		t.Fatalf("legacy quote behavior changed: ok=%v ua=%q", ok, got.UserAgent)
+	if !ok || got.UserAgent != `UA "quoted"` {
+		t.Fatalf("escaped User-Agent was not decoded: ok=%v ua=%q", ok, got.UserAgent)
 	}
 }

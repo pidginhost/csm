@@ -460,6 +460,8 @@ Caveats:
 
 Requests that a cPanel proxy subdomain (`cpanel.`, `webmail.`, `whm.` and similar) passes through the web server to the panel are skipped by the web detectors, realtime and periodic, when cPanel's own central access log records them as proxied. The panel's own access log carries those requests, so a busy cPanel or webmail session through a proxy subdomain does not count as web traffic, and one request does not count as two kinds of evidence. Requests in a per-site log, or in a log chosen through `web_server.access_logs` that is not one of cPanel's own access logs, always count as website traffic.
 
+Web counters use the request and timestamp written by the web server, including requests with Basic authentication usernames and quoted header values. For periodic client attribution, `web_server.trusted_proxies` enables X-Forwarded-For from a configured proxy; the log format must record it immediately after User-Agent, optionally preceded by a vhost in `host:port` form.
+
 A verified crawler is dropped from the scan before any counter increments: a source IP whose claimed bot User-Agent passes IP-range or reverse-DNS verification cannot contribute to a flood, scanner, or spoof finding, so verified Googlebot and AI crawler traffic does not produce false positives. Verification is covered in [Threat intel](threat-intel.md#verified-crawlers).
 
 | Finding | Fires when | Key gates (defaults) |
