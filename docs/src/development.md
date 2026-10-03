@@ -39,7 +39,7 @@ The default CI job runs every package with the race detector, no extra build
 tags, and a 30-minute per-package timeout. Run its exact test command on Linux:
 
 ```bash
-go test -v -race -timeout=30m -covermode=atomic -coverprofile=coverage.out -coverpkg=./internal/... ./...
+go test -race -timeout=30m -covermode=atomic -coverprofile=coverage.out -coverpkg=./internal/... ./...
 ```
 
 `make test` and the test step of `make ci` use `-short` for local iteration;
@@ -62,7 +62,7 @@ PHP-enabled test image once with an available container builder:
 docker build -f build/Dockerfile.systemd-test -t csm-linux-test .
 GO_LINUX_RUNTIME=docker GO_LINUX_IMAGE=csm-linux-test scripts/go-linux.sh \
   bash -ec 'apt-get update -qq && apt-get install -y --no-install-recommends python3-cryptography
-    go test -v -race -timeout=30m -covermode=atomic -coverprofile=coverage.out -coverpkg=./internal/... ./...'
+    go test -race -timeout=30m -covermode=atomic -coverprofile=coverage.out -coverpkg=./internal/... ./...'
 ```
 
 The wrapper derives the default Go version from `go.mod`, shares persistent
