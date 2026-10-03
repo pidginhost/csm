@@ -95,6 +95,74 @@ func TestRestoreLearnsTheAttestingFinding(t *testing.T) {
 	}
 }
 
+func TestLegacyIncidentLearnsLaterEvidenceBeforeTrim(t *testing.T) {
+	for _, spray := range []bool{false, true} {
+		t.Run(fmt.Sprintf("spray=%v", spray), func(t *testing.T) {
+			var ids []string
+			c, now := attestingCorrelator(t, &ids)
+			if spray {
+				c.cfg.SpraySuppression = SpraySuppressionConfig{
+					Enabled: true, DistinctMailboxes: 2, BlockAtSeverity: "critical",
+					SeverityEscalateAt: maxIncidentTimeline * 2,
+					PerCheck:           map[string]bool{"modsec_csm_block_escalation": true, "wp_login_bruteforce": true},
+				}
+				c.spray = newSprayDetector(c.cfg.SpraySuppression, incidentMergeWindow, c.now, nil)
+				c.cfg.OnSprayBlock = c.cfg.OnIncidentBlock
+				c.cfg.OnIncidentBlock = nil
+			}
+			kind := KindWebAttack
+			if spray {
+				kind = KindCredentialSpray
+			}
+			c.Restore([]Incident{{
+				ID: "legacy", Kind: kind, Status: StatusOpen, Severity: alert.High,
+				CorrelationKey: &Key{RemoteIP: "192.0.2.77"}, RemoteIPEvidence: true,
+				CreatedAt: *now, UpdatedAt: *now,
+			}})
+			var stored Incident
+			writes := 0
+			c.cfg.Persist = func(inc Incident) error {
+				stored = inc
+				writes++
+				return nil
+			}
+			for i := range maxIncidentTimeline / 2 {
+				feed(t, c, now, attestingFinding("wp_login_bruteforce", alert.High, i))
+			}
+			c.FlushPendingPersists()
+			evidence := attestingFinding("modsec_csm_block_escalation", alert.High, 0)
+			before := writes
+			feed(t, c, now, evidence)
+			evidence.Timestamp = *now
+			if writes != before+1 || stored.RemoteIPEvidenceFinding != alert.FindingID(evidence) {
+				t.Errorf("later evidence was not persisted immediately: writes %d -> %d, identity %q", before, writes, stored.RemoteIPEvidenceFinding)
+			}
+			inc, _ := c.Get("legacy")
+			if inc.RemoteIPEvidenceFinding != alert.FindingID(evidence) {
+				t.Errorf("later evidence identity = %q, want %s", inc.RemoteIPEvidenceFinding, alert.FindingID(evidence))
+			}
+			for i := range maxIncidentTimeline {
+				feed(t, c, now, attestingFinding("wp_login_bruteforce", alert.High, i+maxIncidentTimeline))
+			}
+			inc, _ = c.Get("legacy")
+			for _, ev := range inc.Timeline {
+				if ev.FindingID == alert.FindingID(evidence) {
+					t.Fatal("fixture did not trim the later attesting event")
+				}
+			}
+			c.FlushPendingPersists()
+			c.Restore([]Incident{stored})
+			if len(ids) != 0 {
+				t.Fatalf("blocked before the severity transition: %q", ids)
+			}
+			feed(t, c, now, attestingFinding("wp_login_bruteforce", alert.Critical, 9999))
+			if len(ids) != 1 || ids[0] != alert.FindingID(evidence) {
+				t.Fatalf("block named %q, want the later attesting finding %s", ids, alert.FindingID(evidence))
+			}
+		})
+	}
+}
+
 func TestSprayBlockNamesTheAttestingFinding(t *testing.T) {
 	var ids []string
 	c := NewCorrelator(CorrelatorConfig{

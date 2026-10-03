@@ -175,7 +175,9 @@ survives timeline trimming and restart. At startup, older incidents learn
 the link from an attesting timeline event even when their evidence flag was
 already set. If an older timeline has no finding identity or already lost
 that event, the original link cannot be recovered; it is never made from
-message text. Existing blocks are unchanged.
+message text. The next finding that attests the key's address records its own
+identity when that link is missing, and the new link survives trimming and
+restart. Existing blocks are unchanged.
 
 
 Automatic incident blocks use the address-evidence gate without a separate

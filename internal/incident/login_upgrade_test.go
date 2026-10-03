@@ -8,24 +8,30 @@ import (
 )
 
 func TestLoginUpgradeRestoredSSHIncidentRemainsBlockable(t *testing.T) {
-	var captured blockCapture
+	var ids []string
 	cfg := CorrelatorConfig{
-		AddressEvidence: attestEveryCheck,
-		OpenThreshold:   1,
-		AutoBlock:       IncidentAutoBlockConfig{BlockAtSeverity: "critical"},
-		OnIncidentBlock: captured.recordOK,
+		AddressEvidence: func(check string, _ alert.Severity) bool {
+			return check == "ssh_login_realtime" || check == "ssh_login_unknown_ip"
+		},
+		OpenThreshold: 1,
+		AutoBlock:     IncidentAutoBlockConfig{BlockAtSeverity: "critical"},
+		OnIncidentBlock: func(_, _ string, _ time.Duration, id string) bool {
+			ids = append(ids, id)
+			return true
+		},
 	}
 	now := time.Now()
 	c := NewCorrelator(cfg)
 	c.now = func() time.Time { return now }
-	if _, _, err := c.OnFinding(alert.Finding{
+	ssh := alert.Finding{
 		Check: "ssh_login_realtime", Severity: alert.Critical,
 		SourceIP: "192.0.2.50", Timestamp: now,
-	}); err != nil {
+	}
+	if _, _, err := c.OnFinding(ssh); err != nil {
 		t.Fatal(err)
 	}
 	retained := c.Snapshot()
-	if len(retained) != 1 || captured.len() != 0 {
+	if len(retained) != 1 || len(ids) != 0 {
 		t.Fatalf("seed incident: %+v", retained)
 	}
 	cfg.AutoBlock.Enabled = true
@@ -40,7 +46,22 @@ func TestLoginUpgradeRestoredSSHIncidentRemainsBlockable(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if captured.len() != 1 {
-		t.Fatalf("restored SSH evidence authorized %d blocks, want 1", captured.len())
+	if len(ids) != 1 || ids[0] != alert.FindingID(ssh) {
+		t.Fatalf("restored SSH evidence authorized blocks %q, want only %s", ids, alert.FindingID(ssh))
+	}
+	retained[0].RemoteIPEvidence = false
+	retained[0].RemoteIPEvidenceFinding = ""
+	retained[0].Timeline = nil
+	c = NewCorrelator(cfg)
+	c.now = func() time.Time { return now.Add(time.Minute) }
+	c.Restore(retained)
+	if _, _, err := c.OnFinding(alert.Finding{
+		Check: "ftp_login", Severity: alert.Warning,
+		SourceIP: "192.0.2.50", Timestamp: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("FTP advisory authorized a block without retained SSH evidence: %q", ids)
 	}
 }

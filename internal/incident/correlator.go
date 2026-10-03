@@ -112,8 +112,8 @@ type CorrelatorConfig struct {
 
 	// AddressEvidence reports whether a finding of check at sev names an
 	// attacker by its address; the daemon passes checks.AddressEvidence.
-	// The generic auto-block only requests a block of an address such a
-	// finding named. nil counts every address.
+	// Automatic incident and spray blocks only request an address such a
+	// finding named. nil refuses every block.
 	AddressEvidence func(check string, sev alert.Severity) bool
 
 	// OnIncidentBlock fires when the generic auto-block gate trips. The
@@ -724,7 +724,7 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	}
 	if src := alert.AttackerAddress(f); src != "" {
 		ev.RemoteIP = src
-		if !inc.RemoteIPEvidence && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
+		if (!inc.RemoteIPEvidence || inc.RemoteIPEvidenceFinding == "") && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
 			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(src) {
 				inc.RemoteIPEvidence = true
 				inc.RemoteIPEvidenceFinding = ev.FindingID
