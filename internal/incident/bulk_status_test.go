@@ -75,6 +75,7 @@ func TestBulkSetStatusDryRunFiltersAndDoesNotMutate(t *testing.T) {
 func TestBulkSetStatusAppliesOldestFirstAndUnbindsClosedIncident(t *testing.T) {
 	var persisted []Incident
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence: attestEveryCheck,
 		Persist: func(inc Incident) error {
 			persisted = append(persisted, inc)
 			return nil

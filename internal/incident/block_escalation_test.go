@@ -14,6 +14,7 @@ func escalationCorrelator(t *testing.T, cap *blockCapture) (*Correlator, func(ti
 	cfg.BlockExpiry = 24 * time.Hour
 	now := time.Unix(1_700_000_000, 0)
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
 		OnSprayBlock:     cap.record,
 	})

@@ -10,6 +10,7 @@ import (
 func TestLoginUpgradeRestoredSSHIncidentRemainsBlockable(t *testing.T) {
 	var captured blockCapture
 	cfg := CorrelatorConfig{
+		AddressEvidence: attestEveryCheck,
 		OpenThreshold:   1,
 		AutoBlock:       IncidentAutoBlockConfig{BlockAtSeverity: "critical"},
 		OnIncidentBlock: captured.recordOK,

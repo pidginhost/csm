@@ -269,6 +269,7 @@ func TestCloseStaleHonorsDryRun(t *testing.T) {
 func TestCloseStalePersistsClosedReason(t *testing.T) {
 	var persisted []Incident
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence: attestEveryCheck,
 		Persist: func(snap Incident) error {
 			persisted = append(persisted, snap)
 			return nil

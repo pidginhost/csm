@@ -197,6 +197,7 @@ func TestCorrelatorRemoteIPOnlyFindingsDoNotCollide(t *testing.T) {
 
 func TestCorrelatorSkipsWhitelistedRemoteIPOnlyFinding(t *testing.T) {
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence: attestEveryCheck,
 		IsWhitelisted: func(ip string) bool {
 			return ip == "203.0.113.10"
 		},
@@ -228,6 +229,7 @@ func TestCorrelatorSkipsWhitelistedRemoteIPOnlyFinding(t *testing.T) {
 
 func TestCorrelatorSkipsWhitelistedSourceIPWithStableActor(t *testing.T) {
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence: attestEveryCheck,
 		IsWhitelisted: func(ip string) bool {
 			return ip == "203.0.113.10"
 		},
@@ -257,6 +259,7 @@ func TestCorrelatorSkipsWhitelistedSourceIPWithStableActor(t *testing.T) {
 
 func TestCorrelatorWhitelistedSourceIPDoesNotSuppressHostIntegrity(t *testing.T) {
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence: attestEveryCheck,
 		IsWhitelisted: func(ip string) bool {
 			return ip == "203.0.113.10"
 		},
@@ -506,6 +509,7 @@ func TestKeyStringDoesNotCollideOnDelimiters(t *testing.T) {
 func TestCorrelatorPersistFiresExactlyOncePerCreateAndMerge(t *testing.T) {
 	var calls int
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence: attestEveryCheck,
 		Persist: func(_ Incident) error {
 			calls++
 			return nil
@@ -1005,6 +1009,7 @@ func TestCorrelatorPruneClosedUnbindsSpray(t *testing.T) {
 	ip2 := "203.0.113.8"
 	activeIP := "203.0.113.9"
 	c := NewCorrelator(CorrelatorConfig{
+		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: SpraySuppressionConfig{Enabled: true, DistinctMailboxes: 10, MaxTrackedIPs: 100},
 	})
 	c.now = func() time.Time { return now }

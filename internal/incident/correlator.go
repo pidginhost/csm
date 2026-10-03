@@ -1693,8 +1693,9 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 // timeline trimming; any other candidate exists only while the timeline is
 // whole, so its events decide.
 func (c *Correlator) blockAddressAttested(inc *Incident, ip string) bool {
+	// Without a gate nothing attests an address: fail closed.
 	if c.cfg.AddressEvidence == nil {
-		return true
+		return false
 	}
 	if inc.RemoteIPEvidence && inc.CorrelationKey != nil && normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP) == ip {
 		return true
@@ -1708,6 +1709,7 @@ func (c *Correlator) blockAddressAttested(inc *Incident, ip string) bool {
 }
 
 // eventAttests reports whether a timeline finding is address evidence.
+// It runs only behind a non-nil gate.
 func (c *Correlator) eventAttests(ev IncidentEvent) bool {
 	sev, ok := parseSeverity(ev.Severity)
 	if ev.Severity == "" {
@@ -1725,9 +1727,6 @@ func (c *Correlator) attestingFindingID(inc *Incident, ip string) string {
 	ip = normalizeIncidentRemoteIP(ip)
 	if ip == "" {
 		return ""
-	}
-	if c.cfg.AddressEvidence == nil {
-		return incidentBlockFindingID(inc, ip)
 	}
 	for i := len(inc.Timeline) - 1; i >= 0; i-- {
 		ev := inc.Timeline[i]
@@ -1893,21 +1892,4 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 		live = onSprayBlock(ip, reason, ttl, findingID)
 		callbackReturned = true
 	}
-}
-
-// incidentBlockFindingID selects the latest eligible observation for this
-// source while the incident lock is held. Older timelines without an audit
-// identity remain unlinked; display text cannot reconstruct the original ID.
-func incidentBlockFindingID(inc *Incident, ip string) string {
-	ip = normalizeIncidentRemoteIP(ip)
-	if ip == "" {
-		return ""
-	}
-	for i := len(inc.Timeline) - 1; i >= 0; i-- {
-		ev := inc.Timeline[i]
-		if ev.Kind == "finding" && ev.FindingID != "" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && !incidentEventAutoBlockExcluded(ev) {
-			return ev.FindingID
-		}
-	}
-	return ""
 }
