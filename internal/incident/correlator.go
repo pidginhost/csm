@@ -1482,6 +1482,11 @@ func (c *Correlator) maybeBlockSprayLocked(inc *Incident, ip string, hits int, n
 	if !c.sprayBlockAllowed() {
 		return nil
 	}
+	// Like every incident block, the address needs a finding with address
+	// evidence; raw failures that only count mailboxes never block.
+	if target := normalizeIncidentRemoteIP(ip); target == "" || !c.blockAddressAttested(inc, target) {
+		return nil
+	}
 	if incidentAutoBlockExcludedOnly(inc) {
 		return nil
 	}

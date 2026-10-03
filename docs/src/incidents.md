@@ -161,11 +161,14 @@ blocking is live again. Concurrent findings for the same incident share
 one in-flight firewall call, and resolved or dismissed spray incidents do
 not make new block decisions.
 
-Visibility-only findings do not make a spray incident blockable by themselves.
-This includes `mail_bruteforce_suspected` and the High
-`mail_account_compromised` advisory for an established multi-mailbox source.
-A separate blockable finding in the same spray incident can still trip the
-configured severity gate.
+A spray incident blocks only an address that a finding with address
+evidence attests, the same gate every incident block uses. Raw mailbox
+failures such as `email_auth_failure_realtime` count mailboxes and open the
+incident, but cannot block the source alone; `pam_bruteforce` or
+`credential_stuffing` from the same address can. Visibility-only findings,
+including `mail_bruteforce_suspected` and the High `mail_account_compromised`
+advisory for an established multi-mailbox source, never make a spray
+incident blockable either.
 
 Whitelisted IPs (entries in `reputation.whitelist` and the live bbolt
 whitelist updated via the Web UI) are skipped from spray detection so

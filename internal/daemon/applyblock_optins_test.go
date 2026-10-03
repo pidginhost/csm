@@ -122,7 +122,7 @@ func TestIncidentBlocksSuppressSwitchRefusalDuringReload(t *testing.T) {
 					cfg.Incidents.SpraySuppression.Enabled = true
 					cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
 					cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
-					cfg.Incidents.SpraySuppression.PerCheck = []string{"email_auth_failure_realtime"}
+					cfg.Incidents.SpraySuppression.PerCheck = []string{"pam_bruteforce"}
 					cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
 					action, kind = "credential_spray_block_requested", incident.KindCredentialSpray
 				} else {

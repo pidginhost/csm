@@ -390,8 +390,14 @@ func TestAddressEvidenceDoesNotOverrideSprayOwnership(t *testing.T) {
 					Check: check, Severity: alert.Critical, SourceIP: "198.51.100.18", Mailbox: "account" + strconv.Itoa(i),
 				})
 			}
-			if generic.len() != 0 || spray.len() != 1 || spray.calls[0].IP != "198.51.100.18" {
-				t.Fatalf("generic=%+v spray=%+v, want only the spray block", generic.calls, spray.calls)
+			// Raw mailbox failures attest nothing, so that spray blocks on
+			// neither path; an attested spray blocks on the spray path only.
+			want := 1
+			if check == "email_auth_failure_realtime" {
+				want = 0
+			}
+			if generic.len() != 0 || spray.len() != want || (want == 1 && spray.calls[0].IP != "198.51.100.18") {
+				t.Fatalf("generic=%+v spray=%+v, want %d spray block(s) and no generic block", generic.calls, spray.calls, want)
 			}
 		})
 	}
