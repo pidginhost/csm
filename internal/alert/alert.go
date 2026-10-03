@@ -133,11 +133,10 @@ type Finding struct {
 	// findings. It is internal-only so API payloads keep the public Finding
 	// contract while the incident correlator can count distinct targets.
 	SprayTargets []string `json:"-"`
-	// CIDRs carries the collapsed offending subnets for subnet-scoped
-	// findings (http_asn_crawl). Internal-only so the public Finding/webhook
-	// contract is unchanged; the subnet auto-response reads this, never the
-	// Message/Details text.
-	CIDRs []string `json:"-"`
+	// CIDRs carries the offending subnets of a subnet-scoped finding: the
+	// collapsed subnets of a distributed crawl. The subnet auto-response
+	// reads this, never the Message/Details text.
+	CIDRs []string `json:"cidrs,omitempty"`
 	// Claims say which account a finding concerns and where each value came
 	// from, as the producer read it. Admission resolves the owner from them,
 	// so a producer records only what it read, never a guess.

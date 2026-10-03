@@ -16,10 +16,11 @@ const pendingFindingsFile = "pending_findings.json"
 var removePendingFindingsFile = os.Remove
 
 // pendingFinding is the parked form of a finding. The public Finding JSON
-// leaves out the subnets, spray targets, claims and observation, which the
-// automatic response, the incident correlator and admission read; a replayed
-// finding needs them to act the way the original would have. Delivery
-// provenance stays process-local.
+// leaves out the spray targets, claims and observation, which the incident
+// correlator and admission read; a replayed finding needs them to act the way
+// the original would have. The subnets are public, and the storage-only copy
+// stays so an older daemon replays them too. Delivery provenance stays
+// process-local.
 type pendingFinding struct {
 	alert.Finding
 	ResponseCIDRs        []string           `json:"response_cidrs,omitempty"`
@@ -49,7 +50,9 @@ func fromPendingRecords(records []pendingFinding) []alert.Finding {
 	findings := make([]alert.Finding, len(records))
 	for i, r := range records {
 		findings[i] = r.Finding
-		findings[i].CIDRs = r.ResponseCIDRs
+		if r.ResponseCIDRs != nil {
+			findings[i].CIDRs = r.ResponseCIDRs
+		}
 		findings[i].SprayTargets = r.ResponseSprayTargets
 		findings[i].Claims = r.ResponseClaims
 		if r.ResponseObservation != nil {

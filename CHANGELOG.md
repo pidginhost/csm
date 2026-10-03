@@ -16,6 +16,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
+- Findings that name offending subnets, such as distributed crawls, list them in a new `cidrs` field in the API, webhooks, the phpanel queue and history; existing fields keep their values. It appears on new and replayed parked findings; stored history is not backfilled, and no setting controls it.
 - The Performance page lists WordPress sites whose database tables still use MyISAM, which locks whole tables and lets a burst of traffic use up the site's database connections.
 
 ### Fixed

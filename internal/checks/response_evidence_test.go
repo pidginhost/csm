@@ -271,7 +271,9 @@ var reviewedEvidenceRestores = map[string]reviewedEvidenceRestore{
 	findings := make([]alert.Finding, len(records))
 	for i, r := range records {
 		findings[i] = r.Finding
-		findings[i].CIDRs = r.ResponseCIDRs
+		if r.ResponseCIDRs != nil {
+			findings[i].CIDRs = r.ResponseCIDRs
+		}
 		findings[i].SprayTargets = r.ResponseSprayTargets
 		findings[i].Claims = r.ResponseClaims
 		if r.ResponseObservation != nil {
@@ -1014,7 +1016,9 @@ func TestAddressProducerScannerRejectsUnreviewedRestoreChanges(t *testing.T) {
 	findings := make([]alert.Finding, len(records))
 	for i, r := range records {
 		findings[i] = r.Finding
-		findings[i].CIDRs = r.ResponseCIDRs
+		if r.ResponseCIDRs != nil {
+			findings[i].CIDRs = r.ResponseCIDRs
+		}
 		findings[i].SprayTargets = r.ResponseSprayTargets
 		findings[i].Claims = r.ResponseClaims
 		if r.ResponseObservation != nil {
@@ -1030,8 +1034,8 @@ func TestAddressProducerScannerRejectsUnreviewedRestoreChanges(t *testing.T) {
 	}{
 		{"reviewed copy", declaration, 0, true},
 		{"layout and comments", strings.ReplaceAll(strings.ReplaceAll(declaration, "\n", "\n\n"), "return findings", "/* restored */ return findings"), 0, true},
-		{"stale restore", strings.Replace(declaration, "findings[i].CIDRs = r.ResponseCIDRs", "", 1), 0, false},
-		{"new source", strings.Replace(declaration, "r.ResponseCIDRs", `[]string{"192.0.2.0/24"}`, 1), 1, false},
+		{"stale restore", strings.Replace(declaration, "if r.ResponseCIDRs != nil {\n\t\t\tfindings[i].CIDRs = r.ResponseCIDRs\n\t\t}", "", 1), 0, false},
+		{"new source", strings.Replace(declaration, "findings[i].CIDRs = r.ResponseCIDRs", `findings[i].CIDRs = []string{"192.0.2.0/24"}`, 1), 1, false},
 		{"new field", strings.Replace(declaration, "return findings", `findings[0].SourceIP = "192.0.2.2"; return findings`, 1), 2, false},
 		{"changed provenance", strings.Replace(declaration, "findings[i] = r.Finding", `findings[i] = alert.Finding{Check: "other"}`, 1), 1, false},
 	} {
