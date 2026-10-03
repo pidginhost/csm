@@ -140,6 +140,9 @@ type Finding struct {
 	// SprayConstituents lists the addresses a subnet spray counted and the
 	// line that last named each. Internal-only like SprayTargets.
 	SprayConstituents []SprayConstituent `json:"-"`
+	// Intel names the threat intelligence a reputation finding rests on and
+	// when that claim lapses. Internal-only like Claims.
+	Intel *admission.IntelRef `json:"-"`
 	// Claims say which account a finding concerns and where each value came
 	// from, as the producer read it. Admission resolves the owner from them,
 	// so a producer records only what it read, never a guess.

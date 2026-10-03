@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -33,8 +34,8 @@ func TestReputationSightingSeverityGradesBySurface(t *testing.T) {
 
 func TestAppendReputationFindingUsesSurfaceSeverity(t *testing.T) {
 	var findings []alert.Finding
-	appendReputationFinding(&findings, "203.0.113.7", "HTTP request", "AbuseIPDB", 100, "Data Center")
-	appendReputationFinding(&findings, "203.0.113.8", "SMTP auth failure", "AbuseIPDB", 100, "Fixed Line ISP")
+	appendReputationFinding(&findings, "203.0.113.7", "HTTP request", "AbuseIPDB", 100, "Data Center", time.Now().Add(cacheExpiry))
+	appendReputationFinding(&findings, "203.0.113.8", "SMTP auth failure", "AbuseIPDB", 100, "Fixed Line ISP", time.Now().Add(cacheExpiry))
 	if len(findings) != 2 {
 		t.Fatalf("findings = %d, want 2", len(findings))
 	}
