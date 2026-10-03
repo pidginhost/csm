@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/actionlog"
@@ -49,6 +50,13 @@ func TestStartupRollbackWritesActionBeforeRestart(t *testing.T) {
 		return
 	}
 
+	synctest.Test(t, func(t *testing.T) {
+		testStartupRollbackWritesActionBeforeRestart(t, phase)
+	})
+}
+
+func testStartupRollbackWritesActionBeforeRestart(t *testing.T, phase string) {
+	t.Helper()
 	root := t.TempDir()
 	db, openErr := store.Open(filepath.Join(root, "state"))
 	if openErr != nil {

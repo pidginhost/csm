@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -65,32 +66,37 @@ func TestWriteWithoutSinkIsSilent(t *testing.T) {
 }
 
 func TestFileSinkAppendsOneJSONLinePerRecord(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "actions.jsonl")
-	sink := NewFileSink(func() string { return path }, nil)
-	SetSink(sink, "host.example.com")
-	t.Cleanup(func() { SetSink(nil, "") })
+	synctest.Test(t, func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "actions.jsonl")
+		sink := NewFileSink(func() string { return path }, nil)
+		SetSink(sink, "host.example.com")
+		t.Cleanup(func() { SetSink(nil, "") })
 
-	Write(Record{Op: "respond.quarantine_file", Target: "/home/a/public_html/x.php", Result: Applied})
-	Write(Record{Op: "respond.block_ip", Target: "198.51.100.7", Result: DryRun})
+		Write(Record{Op: "respond.quarantine_file", Target: "/home/a/public_html/x.php", Result: Applied})
+		Write(Record{Op: "respond.block_ip", Target: "198.51.100.7", Result: DryRun})
 
-	fh, err := os.Open(path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = fh.Close() }()
-
-	var ops []string
-	sc := bufio.NewScanner(fh)
-	for sc.Scan() {
-		var r Record
-		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
-			t.Fatalf("record is not JSON: %v", err)
+		fh, err := os.Open(path)
+		if err != nil {
+			t.Fatalf("open: %v", err)
 		}
-		ops = append(ops, r.Op)
-	}
-	if len(ops) != 2 || ops[0] != "respond.quarantine_file" || ops[1] != "respond.block_ip" {
-		t.Fatalf("ops = %v, want the two written records in order", ops)
-	}
+		defer func() { _ = fh.Close() }()
+
+		var ops []string
+		sc := bufio.NewScanner(fh)
+		for sc.Scan() {
+			var r Record
+			if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
+				t.Fatalf("record is not JSON: %v", err)
+			}
+			ops = append(ops, r.Op)
+		}
+		if len(ops) != 2 || ops[0] != "respond.quarantine_file" || ops[1] != "respond.block_ip" {
+			t.Fatalf("ops = %v, want the two written records in order", ops)
+		}
+		if err := sc.Err(); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestFileSinkRotatesAtThreshold(t *testing.T) {
