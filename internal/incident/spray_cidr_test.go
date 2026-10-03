@@ -1,6 +1,7 @@
 package incident
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,74 @@ func TestSprayCIDRKeysLikeTheSourceIPSubnet(t *testing.T) {
 	crawl := alert.Finding{Check: "http_asn_crawl", Severity: alert.Critical, CIDRs: []string{"192.0.2.0/24"}, Domain: "shop.example"}
 	if k := KeyFor(crawl); k.RemoteIP != "" {
 		t.Errorf("crawl subnets became an incident key: %+v", k)
+	}
+}
+
+// Operators may include subnet sprays in per_check. Replayed legacy sprays
+// and new structured sprays must keep sharing the same suppression episode.
+func TestSprayCIDRRetainsConfiguredSuppression(t *testing.T) {
+	for _, check := range []string{"mail_subnet_spray", "smtp_subnet_spray"} {
+		t.Run(check, func(t *testing.T) {
+			cfg := sprayTestConfig(true, false)
+			cfg.PerCheck = map[string]bool{check: true}
+			cfg.DistinctMailboxes = 2
+			c := NewCorrelator(CorrelatorConfig{SpraySuppression: cfg})
+			now := time.Unix(1_700_000_000, 0)
+			c.now = func() time.Time { return now }
+			c.spray.now = c.now
+			var firstID string
+			for i, message := range []string{
+				"Password spray from 203.0.113.0/24: 8 unique IPs",
+				"Password spray from 203.0.113.0/24: 9 unique IPs",
+				"Password spray from 203.0.113.0/24: 10 unique IPs",
+			} {
+				f := alert.Finding{Check: check, Severity: alert.Critical, Message: message, Timestamp: now}
+				if i == 0 {
+					f.SourceIP = "203.0.113.0/24"
+				} else {
+					f.CIDRs = []string{"203.0.113.0/24"}
+				}
+				id, _, err := c.OnFinding(f)
+				if err != nil || id == "" {
+					t.Fatalf("finding %d: id %q, error %v", i, id, err)
+				}
+				if i == 0 {
+					firstID = id
+				} else if id != firstID {
+					t.Fatalf("finding %d opened a second episode %q, want %q", i, id, firstID)
+				}
+			}
+			inc, ok := c.Get(firstID)
+			if !ok || inc.Kind != KindCredentialSpray || inc.CorrelationKey == nil || inc.CorrelationKey.RemoteIP != "203.0.113.0/24" {
+				t.Fatalf("incident %+v, want credential spray keyed on the subnet", inc)
+			}
+			if c.counters.sprayOpenedTotal.Load() != 1 || c.counters.spraySuppressedTotal.Load() != 1 || len(inc.Timeline) != 3 {
+				t.Fatalf("opened %d, suppressed %d, timeline %d; want 1, 1, 3", c.counters.sprayOpenedTotal.Load(), c.counters.spraySuppressedTotal.Load(), len(inc.Timeline))
+			}
+			if len(inc.Actions) != 1 || inc.Actions[0].Action != "credential_spray_opened" || !strings.HasPrefix(inc.Actions[0].Details, "203.0.113.0/24 hit ") {
+				t.Errorf("spray action lost its address: %+v", inc.Actions)
+			}
+		})
+	}
+}
+
+func TestSprayCIDRJoinsRestoredSuppression(t *testing.T) {
+	cfg := sprayTestConfig(true, false)
+	cfg.PerCheck = map[string]bool{"mail_subnet_spray": true}
+	c := NewCorrelator(CorrelatorConfig{SpraySuppression: cfg})
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+	c.Restore([]Incident{{
+		ID: "stored-spray", Kind: KindCredentialSpray, Status: StatusOpen,
+		Severity: alert.Critical, CorrelationKey: &Key{RemoteIP: "203.0.113.0/24"},
+		CreatedAt: now, UpdatedAt: now,
+	}})
+	id, created, err := c.OnFinding(alert.Finding{
+		Check: "mail_subnet_spray", Severity: alert.Critical, Timestamp: now,
+		Message: "Password spray burst", CIDRs: []string{"203.0.113.0/24"},
+	})
+	if err != nil || created || id != "stored-spray" || c.counters.spraySuppressedTotal.Load() != 1 {
+		t.Fatalf("restored spray: id %q, created %v, error %v, suppressed %d", id, created, err, c.counters.spraySuppressedTotal.Load())
 	}
 }
 

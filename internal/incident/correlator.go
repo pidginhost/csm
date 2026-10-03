@@ -239,7 +239,8 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	}
 	// A spray names its subnet in CIDRs; it is whitelisted and recorded as
 	// the remote address exactly as when SourceIP held it.
-	if src := alert.AttackerAddress(f); key.Host == "" && src != "" && c.cfg.IsWhitelisted != nil && c.cfg.IsWhitelisted(src) {
+	src := alert.AttackerAddress(f)
+	if key.Host == "" && src != "" && c.cfg.IsWhitelisted != nil && c.cfg.IsWhitelisted(src) {
 		return "", false, nil
 	}
 	var afterUnlock func()
@@ -263,16 +264,16 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 		decision, hits := c.spray.Decide(f)
 		switch decision {
 		case sprayDecisionOpen:
-			sprayKey := Key{RemoteIP: f.SourceIP}
+			sprayKey := Key{RemoteIP: src}
 			id, created := c.promoteOrCreateSprayLocked(sprayKey, f, now, hits)
-			c.spray.BindIncident(f.SourceIP, id)
+			c.spray.BindIncident(src, id)
 			c.counters.sprayOpenedTotal.Add(1)
-			if cb := c.maybeBlockSprayLocked(c.incidents[id], f.SourceIP, hits, now, "spray opened"); cb != nil {
+			if cb := c.maybeBlockSprayLocked(c.incidents[id], src, hits, now, "spray opened"); cb != nil {
 				afterUnlock = cb
 			}
 			return id, created, nil
 		case sprayDecisionSuppress:
-			id := c.spray.IncidentForIP(f.SourceIP)
+			id := c.spray.IncidentForIP(src)
 			inc, ok := c.incidents[id]
 			if ok && incidentStatusActive(inc.Status) {
 				// Fold the finding and apply the spray-specific escalation
@@ -300,7 +301,7 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 				// helper is idempotent via triggerSprayBlockLocked's
 				// action-presence and in-flight guards so a no-op call is
 				// harmless.
-				if cb := c.maybeBlockSprayLocked(inc, f.SourceIP, hits, now, "spray ongoing"); cb != nil {
+				if cb := c.maybeBlockSprayLocked(inc, src, hits, now, "spray ongoing"); cb != nil {
 					afterUnlock = cb
 				}
 				c.counters.spraySuppressedTotal.Add(1)
@@ -395,7 +396,7 @@ func (c *Correlator) promoteOrCreateSprayLocked(key Key, f alert.Finding, now ti
 				Time:    now,
 				Action:  "credential_spray_opened",
 				Result:  "ok",
-				Details: f.SourceIP + " hit " + strconv.Itoa(hits) + " distinct mailboxes inside window; promoted from " + string(fromKind),
+				Details: key.RemoteIP + " hit " + strconv.Itoa(hits) + " distinct mailboxes inside window; promoted from " + string(fromKind),
 			})
 			// A kind change must be durable, not left to the bookkeeping
 			// debounce.
@@ -428,7 +429,7 @@ func (c *Correlator) createSprayIncidentLocked(key Key, f alert.Finding, now tim
 			Time:    now,
 			Action:  "credential_spray_opened",
 			Result:  "ok",
-			Details: f.SourceIP + " hit " + strconv.Itoa(hits) + " distinct mailboxes inside window",
+			Details: key.RemoteIP + " hit " + strconv.Itoa(hits) + " distinct mailboxes inside window",
 		}},
 		CreatedAt: now,
 		UpdatedAt: now,

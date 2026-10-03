@@ -126,6 +126,10 @@ opens a single `credential_spray` super-incident keyed on the IP with
 breadth-based severity escalation. Subsequent findings from that IP
 attach to the spray incident's timeline.
 
+If `per_check` includes `mail_subnet_spray` or `smtp_subnet_spray`, grouping
+uses their single `cidrs` subnet. Older findings with the subnet in `source_ip`
+keep the same grouping, including when replayed or joining restored incidents.
+
 Defaults (configurable in `csm.yaml`):
 
 ```yaml

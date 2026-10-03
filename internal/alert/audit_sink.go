@@ -31,6 +31,7 @@ type AuditEvent struct {
 	Domain    string                     `json:"domain,omitempty"`
 	Mailbox   string                     `json:"mailbox,omitempty"`
 	Process   *processctx.ProcessContext `json:"process,omitempty"`
+	CIDRs     []string                   `json:"cidrs,omitempty"`
 }
 
 // AuditSink is what every audit-log destination implements. Emit must
@@ -76,6 +77,7 @@ func NewAuditEvent(hostname string, f Finding) AuditEvent {
 		Domain:    f.Domain,
 		Mailbox:   f.Mailbox,
 		Process:   f.Process,
+		CIDRs:     f.CIDRs,
 	}
 }
 

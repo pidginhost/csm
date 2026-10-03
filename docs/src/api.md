@@ -1281,6 +1281,9 @@ Every finding in `/api/v1/findings`, `/api/v1/events`, and the JSONL audit log c
 
 Fields are omitted when the daemon could not attribute them. Orchestrators should treat absence as "unknown," not "global."
 
+JSONL and syslog audit events include `cidrs` for new findings and replayed
+parked findings after upgrade. Existing audit records are not backfilled.
+
 ## Cleanup fields
 
 `GET /api/v1/quarantine` also powers the Cleanup page's file-backup list. Entries include:
