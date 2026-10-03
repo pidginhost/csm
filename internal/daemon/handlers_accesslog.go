@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
@@ -108,6 +109,11 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 
 	ip, method, path, ok := accessLogIPMethodPath(line)
 	if !ok {
+		return nil
+	}
+	// The panel's own log carries requests a cPanel proxy subdomain passed
+	// through the web server. This handler reads the server's central log.
+	if checks.IsProxiedPanelRequest(path, checks.ProxiedPanelLogVhost(line), true) {
 		return nil
 	}
 

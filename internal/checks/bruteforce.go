@@ -101,6 +101,7 @@ func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) 
 		if !ok {
 			continue
 		}
+		rec.Central = true
 		stats.scan(rec, cfg, currentBotClassifier(cfg))
 	}
 

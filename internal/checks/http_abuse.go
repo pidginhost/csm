@@ -39,6 +39,12 @@ type accessLogRecord struct {
 	XFF       string // optional; only trusted when RemoteIP is a trusted proxy
 	Domain    string // vhost the line came from (per-domain domlog); empty for the central log
 	Account   string // cPanel account owning Domain; empty when unknown/non-cPanel
+	// ProxiedPanel is set when the trailing vhost field names cPanel's proxy
+	// subdomain vhost.
+	ProxiedPanel bool
+	// Central is set when the line came from the server's central access
+	// log, the only log where a proxied request's path names it.
+	Central bool
 }
 
 // uaKind is the User-Agent classification produced by classifyUA and
@@ -182,6 +188,10 @@ func newDomlogStatsAt(t time.Time) *domlogStats {
 // it. bot is consulted before any count so a verified Googlebot does
 // not contribute to either legacy or new metrics.
 func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClassifier) {
+	// A per-vhost domlog never names a proxied request by path.
+	if rec.ProxiedPanel || IsProxiedPanelRequest(rec.URI, "", rec.Central) {
+		return
+	}
 	ip := normalizeHTTPClientIP(clientIPForRecord(rec, cfg))
 	if ip == "" {
 		return
@@ -1055,6 +1065,7 @@ func parseAccessLogRecordWithURILimit(line string, maxURILen int) (accessLogReco
 		ua = ua[:maxUALen]
 	}
 	rec.UserAgent = ua
+	rec.ProxiedPanel = ProxiedPanelLogVhost(line) != ""
 	rest = rest[q2+1:]
 
 	// Optional quoted extensions. cPanel may append a quoted vhost after
