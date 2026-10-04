@@ -137,3 +137,42 @@ socket_connect($up, $host, $port);
 		t.Error("network_socks_proxy missed a raw-socket SOCKS relay")
 	}
 }
+
+func TestFPVendor_YML_PHPFileManager_EncodedBlob(t *testing.T) {
+	s := loadRepoScanner(t)
+	// Encoder output: base64 text that happens to spell the short project
+	// abbreviation, with no file manager code anywhere.
+	encoded := []byte(`<?php //0046b
+if(!extension_loaded('example_loader')){die('This file needs a PHP loader extension');}
+?>
+Q2xhc3NpYyBlbmNvZGVkIGJvZHkgd2l0aCBubyBjb2RlIGluIGl0IGF0IGFsbA0K3TphpFmW7uYq9Lk2Rr8sD0eJ+/x1Nb
+`)
+	if hasRule(s.ScanContent(encoded, ".php"), "webshell_phpfilemanager") {
+		t.Error("webshell_phpfilemanager FP: matched the abbreviation inside encoded data")
+	}
+}
+
+func TestFPVendor_YML_PHPFileManager_SignatureList(t *testing.T) {
+	s := loadRepoScanner(t)
+	list := []byte(`<?php
+$known_shells = array('c99', 'r57', 'wso', 'phpFileManager', 'tinyfilemanager');
+`)
+	if hasRule(s.ScanContent(list, ".php"), "webshell_phpfilemanager") {
+		t.Error("webshell_phpfilemanager FP: matched a list that only names the tool")
+	}
+}
+
+func TestFPVendor_YML_PHPFileManager_RealHead(t *testing.T) {
+	s := loadRepoScanner(t)
+	head := []byte(`<?php
+//{"fm_lang":"","fm_root":"","fm_timezone":"","fm_pass_md5":"","fm_error_reporting":1}
+/*--------------------------------------------------
+ | phpFileManager
+ +--------------------------------------------------*/
+$fm_path_info = pathinfo($_SERVER['SCRIPT_FILENAME']);
+$fm_current_root = $fm_path_info['dirname'];
+`)
+	if !hasRule(s.ScanContent(head, ".php"), "webshell_phpfilemanager") {
+		t.Error("webshell_phpfilemanager missed the opening of a real phpFileManager install")
+	}
+}
