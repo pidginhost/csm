@@ -194,7 +194,7 @@ See [cPanel release tests](cpanel-release-tests.md) for image acceptance and
 for remaining operational readiness work. These configured dependencies are
 not evidence of a successful live release run.
 
-The Pages workflow builds the coverage report and badge from `merged-coverage.out` of the latest GitHub release that carries one (it walks back through releases if the newest is missing the asset), and renders it against that release tag's sources, so a file removed since the release does not break it. The workflow runs when a mirrored push to main changes the docs, the README or the workflow, which can happen before the new release's assets exist; the badge then shows the previous release until the next such push or a manual run.
+The Pages workflow builds the coverage report and badge from `merged-coverage.out` of the latest GitHub release that carries one (it walks back through releases if the newest is missing the asset), and renders it against that release tag's sources, so a file removed since the release does not break it. A failed release-list request or response parse stops the workflow. Mirrored pushes to main that change the docs, README, workflow or coverage renderer can run before the new release's assets exist and show the previous release. The release job requests another Pages run after uploading the assets to refresh the badge; a manual workflow run can retry a missed refresh.
 
 Installs and upgrades on end-user servers come from the GitHub release artifacts or the apt/dnf mirror. The internal GitLab package registry is operational tooling only.
 
