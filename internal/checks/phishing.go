@@ -583,18 +583,22 @@ func analyzeHTMLForPhishing(ctx context.Context, path string) *phishingResult {
 // Layer 2: Structural analysis helpers
 // ---------------------------------------------------------------------------
 
-// titleNamesBrand reports whether pattern appears in title as a word of its
-// own. A page titled after a person who uses a webmail address carries the
-// brand inside that address or its slug, which is not impersonation, even when
-// the page also has a login widget. Password capture or a login title supplies
-// the context for concatenated brand names; digits and a standalone @ are
-// decoration, not part of another word.
+// Title evidence needs a stricter address match than harvested credential
+// logs: empty dot segments and invalid DNS labels can be title separators,
+// and must not hide a separate brand name.
+var titleEmailPattern = regexp.MustCompile(`[A-Za-z0-9_%+\-]+(?:\.[A-Za-z0-9_%+\-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9\-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}`)
+
+// titleNamesBrand reports whether a title names a brand. A brand inside an
+// email address is not impersonation, even when the page has a login widget.
+// Password capture or a login title supplies the context for concatenated
+// brand names; digits and a standalone @ are decoration, not part of another
+// word.
 func titleNamesBrand(title, pattern string, passwordInput bool) bool {
 	loginTitle := strings.Contains(title, "login") || strings.Contains(title, "log in") ||
 		strings.Contains(title, "log-in") || strings.Contains(title, "signin") ||
 		strings.Contains(title, "sign in") || strings.Contains(title, "sign-in")
 	isLetter := func(b byte) bool { return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' }
-	addresses := emailPattern.FindAllStringIndex(title, -1)
+	addresses := titleEmailPattern.FindAllStringIndex(title, -1)
 	address := 0
 	for offset := 0; offset < len(title); {
 		idx := strings.Index(title[offset:], pattern)
