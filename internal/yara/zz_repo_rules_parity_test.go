@@ -1672,10 +1672,10 @@ $this->loadTemplate("slots.twig", "settings/slots.twig", 23)->display($context);
 <h1>Cutlery set with poker motif</h1><p>Free delivery. Add to wishlist and win a voucher.</p>`,
 		},
 		{
-			name: "hidden casino links",
-			rule: "spam_casino_doorway",
-			ext:  ".html",
-			want: true,
+			name:   "hidden casino links",
+			rule:   "spam_casino_doorway",
+			ext:    ".html",
+			want:   true,
 			sample: `<div style="display:none"><a href="https://casino.example/">best online casino</a></div>`,
 		},
 		{
