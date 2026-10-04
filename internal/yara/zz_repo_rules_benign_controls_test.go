@@ -41,7 +41,6 @@ var knownRealtimeFalsePositives = map[string]string{
 	"spam_wp_post_injector":      "an authenticated gaming-review theme demo importer",
 	"webshell_hex_function_name": "a MIME parser holding a hex-escaped CRLF separator and invoking a parser callback",
 	"webshell_net2ftp_shell":     "a scanner plugin's own signature list",
-	"webshell_phpfilemanager":    "a scanner plugin's own signature list",
 	"wp_db_credential_dump":      "a backup plugin recording database coordinates in its manifest",
 	"wp_user_enum":               "a headless front end pulling the public author list",
 }
@@ -297,9 +296,8 @@ $sources = array('$_POST', '$_GET');
 `,
 	},
 	{
-		name:     "webshell_phpfilemanager",
-		ext:      ".php",
-		knownHit: "webshell_phpfilemanager",
+		name: "webshell_phpfilemanager",
+		ext:  ".php",
 		sample: `<?php
 // Signature list shipped by a malware scanner plugin.
 $known_shells = array('c99', 'r57', 'phpFileManager', 'wso', 'b374k');

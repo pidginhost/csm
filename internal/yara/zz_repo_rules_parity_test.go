@@ -1657,6 +1657,85 @@ echo $double(21);
 <error>file_put_contents(/home/example/public_html/wp-content/plugins/wp-cache/config.php): Failed to open stream</error>
 `,
 		},
+		{
+			name: "compiled template named after slots",
+			rule: "spam_casino_doorway",
+			sample: `<?php
+echo "<div style=\"display:none\">";
+$this->loadTemplate("slots.twig", "settings/slots.twig", 23)->display($context);`,
+		},
+		{
+			name: "product page with a poker motif",
+			rule: "spam_casino_doorway",
+			ext:  ".html",
+			sample: `<div class="cart-popup" style="display:none"></div>
+<h1>Cutlery set with poker motif</h1><p>Free delivery. Add to wishlist and win a voucher.</p>`,
+		},
+		{
+			name: "hidden casino links",
+			rule: "spam_casino_doorway",
+			ext:  ".html",
+			want: true,
+			sample: `<div style="display:none"><a href="https://casino.example/">best online casino</a></div>`,
+		},
+		{
+			name: "SOCKS5 client over a stream wrapper",
+			rule: "network_socks_proxy",
+			sample: `<?php
+/**
+ * SOCKS5 proxy connection class
+ */
+class Client_SOCKS5 extends SocketWrapper {
+    protected function connect($host, $port) {
+        $this->write(pack('C5', 0x05, 0x01, 0x00, 0x03, strlen($host)) . $host . pack('n', $port));
+    }
+}`,
+		},
+		{
+			name: "raw-socket SOCKS relay",
+			rule: "network_socks_proxy",
+			want: true,
+			sample: `<?php
+$srv = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+socket_write($c, chr(0x05) . chr(0x00)); // SOCKS reply
+$up = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+socket_connect($up, $host, $port);`,
+		},
+		{
+			name:     "test fixture downloaded from a gist",
+			rule:     "php_dropper_gist",
+			yaraRule: "php_dropper_github_gist",
+			sample: `<?php
+$request = new Request('https://gist.githubusercontent.com/example/abc/raw/fixture.json');
+$this->assertEquals(200, $this->client->send($request)->getStatusCode());`,
+		},
+		{
+			name:     "ionCube extension check with no decoder",
+			rule:     "obfuscation_ionCube_fake",
+			yaraRule: "obfuscation_fake_ioncube",
+			sample: `<?php
+if (extension_loaded('ionCube Loader') && ioncube_loader_iversion() < 40009) {
+    $warnings['ioncube'] = ioncube_loader_version();
+}
+$text = "Your ionCube Loader extension is incompatible with Phar files.";`,
+		},
+		{
+			name:     "fake ionCube loader naming the encoder first",
+			rule:     "obfuscation_ionCube_fake",
+			yaraRule: "obfuscation_fake_ioncube",
+			want:     true,
+			sample: `<?php
+/* This file is protected by ionCube Encoder */
+eval(gzinflate(base64_decode('S03OyFdIzs8rSc0rUVTyyM/LU0hKLM4pzs9RBAA=')));`,
+		},
+		{
+			name:     "fake ionCube loader naming the encoder last",
+			rule:     "obfuscation_ionCube_fake",
+			yaraRule: "obfuscation_fake_ioncube",
+			want:     true,
+			sample: `<?php
+assert(base64_decode('ZWNobyAiaGVsbG8iOw==')); // ionCube encoded`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -1717,6 +1796,15 @@ func TestRenamedYARARuleClaims(t *testing.T) {
 		wantYAMLHit bool
 		wantYARAHit bool
 	}{
+		{
+			name:        "fake ionCube loader rename",
+			yamlRule:    "obfuscation_ionCube_fake",
+			yaraRule:    "obfuscation_fake_ioncube",
+			ext:         ".php",
+			sample:      "<?php\n/* ionCube Loader */\neval(str_rot13(base64_decode($p)));",
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
 		{
 			name:        "stream wrapper rename",
 			yamlRule:    "dropper_php_stream_wrapper",

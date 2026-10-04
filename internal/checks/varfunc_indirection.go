@@ -228,7 +228,7 @@ func stripPHPCommentsFromCode(code string) string {
 			i = end - 1
 			continue
 		}
-		if isPHPQuote(code[i]) {
+		if isPHPQuote(code[i]) || code[i] == '`' {
 			i = copyPHPString(&b, code, i)
 			continue
 		}
@@ -246,32 +246,15 @@ func stripPHPCommentsFromCode(code string) string {
 			}
 			continue
 		}
-		if code[i] == '/' && i+1 < len(code) && code[i+1] == '/' {
-			b.WriteString("  ")
-			i += 2
-			for i < len(code) {
-				if code[i] == '\n' || code[i] == '\r' {
-					b.WriteByte(code[i])
-					break
-				}
-				b.WriteByte(' ')
-				i++
-			}
-			continue
-		}
 		// "#[" opens a PHP 8 attribute, which can precede a statement on the
-		// same line; only other "#" forms are comments.
-		if code[i] == '#' && isPHPLineCommentStart(code, i) {
-			b.WriteByte(' ')
-			i++
-			for i < len(code) {
-				if code[i] == '\n' || code[i] == '\r' {
-					b.WriteByte(code[i])
-					break
-				}
+		// same line; only other "#" forms are comments. A line comment also
+		// ends at "?>", and the code after that tag runs.
+		if isPHPLineCommentStart(code, i) {
+			end := skipPHPLineComment(code, i)
+			for ; i < end; i++ {
 				b.WriteByte(' ')
-				i++
 			}
+			i--
 			continue
 		}
 		b.WriteByte(code[i])
@@ -343,13 +326,14 @@ func phpHeredocOpen(code string, i int) (label string, bodyStart int, ok bool) {
 		}
 		j++
 	}
-	// The opening line ends at the next newline; only trailing whitespace and
-	// an optional CR may sit between the label and that newline.
-	for j < len(code) && (code[j] == ' ' || code[j] == '\t' || code[j] == '\r') {
+	for j < len(code) && (code[j] == ' ' || code[j] == '\t') {
 		j++
 	}
-	if j >= len(code) || code[j] != '\n' {
+	if j >= len(code) || (code[j] != '\n' && code[j] != '\r') {
 		return "", 0, false
+	}
+	if code[j] == '\r' && j+1 < len(code) && code[j+1] == '\n' {
+		j++
 	}
 	return label, j + 1, true
 }
@@ -363,7 +347,7 @@ func phpHeredocEnd(code string, bodyStart int, label string) int {
 	i := bodyStart
 	for i < len(code) {
 		lineEnd := i
-		for lineEnd < len(code) && code[lineEnd] != '\n' {
+		for lineEnd < len(code) && code[lineEnd] != '\n' && code[lineEnd] != '\r' {
 			lineEnd++
 		}
 		k := i
@@ -385,45 +369,17 @@ func phpHeredocEnd(code string, bodyStart int, label string) int {
 }
 
 func copyPHPString(b *strings.Builder, code string, start int) int {
-	quote := code[start]
-	b.WriteByte(code[start])
-	for i := start + 1; i < len(code); i++ {
-		b.WriteByte(code[i])
-		if code[i] == '\\' && i+1 < len(code) {
-			i++
-			b.WriteByte(code[i])
-			continue
-		}
-		if code[i] == quote {
-			return i
-		}
-	}
-	return len(code) - 1
+	end := skipPHPString(code, start)
+	b.WriteString(code[start : end+1])
+	return end
 }
 
 func replacePHPString(b *strings.Builder, code string, start int) int {
-	quote := code[start]
-	b.WriteByte(' ')
-	for i := start + 1; i < len(code); i++ {
-		if code[i] == '\n' || code[i] == '\r' {
-			b.WriteByte(code[i])
-		} else {
-			b.WriteByte(' ')
-		}
-		if code[i] == '\\' && i+1 < len(code) {
-			i++
-			if code[i] == '\n' || code[i] == '\r' {
-				b.WriteByte(code[i])
-			} else {
-				b.WriteByte(' ')
-			}
-			continue
-		}
-		if code[i] == quote {
-			return i
-		}
+	end := skipPHPString(code, start)
+	for i := start; i <= end; i++ {
+		writeCommentReplacementByte(b, code[i])
 	}
-	return len(code) - 1
+	return end
 }
 
 func writeCommentReplacementByte(b *strings.Builder, c byte) {
@@ -476,14 +432,55 @@ func normalizeIndirectFunctionName(value string) (string, bool) {
 }
 
 func skipPHPString(code string, start int) int {
-	quote := code[start]
+	// Complex interpolation enters PHP mode, where array keys and nested
+	// expressions can use the enclosing quote. Track those modes iteratively
+	// so their quotes cannot end the outer string or exhaust the call stack.
+	modes := []byte{code[start]}
 	for i := start + 1; i < len(code); i++ {
-		if code[i] == '\\' && i+1 < len(code) {
-			i++
+		mode := modes[len(modes)-1]
+		if mode != '{' {
+			if code[i] == '\\' && i+1 < len(code) {
+				i++
+				continue
+			}
+			if code[i] == mode {
+				modes = modes[:len(modes)-1]
+				if len(modes) == 0 {
+					return i
+				}
+				continue
+			}
+			if mode != '\'' && i+1 < len(code) {
+				if code[i] == '{' && code[i+1] == '$' {
+					modes = append(modes, '{')
+				} else if code[i] == '$' && code[i+1] == '{' {
+					modes = append(modes, '{')
+					i++
+				}
+			}
 			continue
 		}
-		if code[i] == quote {
-			return i
+		if label, bodyStart, ok := phpHeredocOpen(code, i); ok {
+			i = phpHeredocEnd(code, bodyStart, label) - 1
+			continue
+		}
+		if isPHPLineCommentStart(code, i) {
+			i = skipPHPLineComment(code, i) - 1
+			continue
+		}
+		if code[i] == '/' && i+1 < len(code) && code[i+1] == '*' {
+			end := strings.Index(code[i+2:], "*/")
+			if end < 0 {
+				return len(code) - 1
+			}
+			i += end + 3
+			continue
+		}
+		switch code[i] {
+		case '\'', '"', '`', '{':
+			modes = append(modes, code[i])
+		case '}':
+			modes = modes[:len(modes)-1]
 		}
 	}
 	return len(code) - 1

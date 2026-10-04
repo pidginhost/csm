@@ -1986,7 +1986,12 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	evalStr := "eval("     // search target for PHP eval function calls
 	assertStr := "assert(" // search target for PHP assert function calls
 	decoders := []string{"base64_decode", "gzinflate", "gzuncompress", "str_rot13", "gzdecode"}
-	for _, line := range strings.Split(content, "\n") {
+	// Library docblocks show decoder usage examples on one line, so this
+	// test reads executable code only. The head starts at byte 0, where tag,
+	// string and comment boundaries are known; the tail check below stays on
+	// raw bytes because its window can open inside a string.
+	code := strings.ToLower(checks.PHPExecutableCode(string(data)))
+	for _, line := range strings.Split(code, "\n") {
 		lineHasEval := strings.Contains(line, evalStr) || strings.Contains(line, assertStr)
 		if !lineHasEval {
 			continue

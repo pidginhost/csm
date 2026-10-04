@@ -1366,6 +1366,15 @@ func phpExpressionEnd(code string, start int) int {
 	return len(code)
 }
 
+// PHPExecutableCode returns src with inline HTML and PHP comments blanked,
+// keeping byte offsets and line breaks, so line-oriented detectors see only
+// code PHP would run. src must begin at the start of a file: a window cut from
+// the middle can open inside a string or comment and shift which bytes count
+// as code.
+func PHPExecutableCode(src string) string {
+	return stripPHPCommentsFromCode(phpCodeOnly(src))
+}
+
 // phpCodeOnly blanks the inline-HTML regions of a PHP source so only the code
 // inside <?php ... ?> (and <?= ... ?>) spans is analysed for execution sinks.
 // Inline HTML is literal output and cannot execute PHP, so scanning it as code
@@ -1426,7 +1435,7 @@ func copyPHPModeRegion(b *strings.Builder, src string, start int) int {
 			i = end
 			continue
 		}
-		if isPHPQuote(src[i]) {
+		if isPHPQuote(src[i]) || src[i] == '`' {
 			i = copyPHPString(b, src, i) + 1
 			continue
 		}
@@ -1446,12 +1455,16 @@ func copyPHPModeRegion(b *strings.Builder, src string, start int) int {
 		}
 		if isPHPLineCommentStart(src, i) {
 			end := skipPHPLineComment(src, i)
+			if end+1 < n && src[end] == '?' && src[end+1] == '>' {
+				// Code after the tag lands on this same output line, so the
+				// comment text must go: a later comment strip would run past
+				// the replaced tag and blank that code.
+				b.WriteString(strings.Repeat(" ", end-i))
+				b.WriteString("; ")
+				return end + 2
+			}
 			b.WriteString(src[i:end])
 			i = end
-			if i+1 < n && src[i] == '?' && src[i+1] == '>' {
-				b.WriteString("; ")
-				return i + 2
-			}
 			continue
 		}
 		if src[i] == '?' && i+1 < n && src[i+1] == '>' {

@@ -80,7 +80,15 @@ cache, and explicit full-content scans always read the files they visit.
 PHP execution heuristics distinguish attribute metadata and multiline string
 contents from executable calls. Literal examples do not establish callable
 bindings or invoke them, and scanning continues through code after attributes.
+String boundaries and legacy line endings preserve the executable code that
+follows them.
 Attribute declarations do not qualify as comment-only stubs for demotion.
+
+Phishing title analysis ignores a brand that appears only inside an email
+address, as on a blog author archive named after its author, even when the page
+also carries a login form. Elsewhere in the title, password capture or a login
+title lets a brand glued to other words still count. Malformed address-like
+text does not hide brand evidence.
 
 ## Re-verifying Findings
 
