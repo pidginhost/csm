@@ -331,9 +331,7 @@ suppressions:
   upcp_window_start: "00:30"            # cPanel nightly update window start
   upcp_window_end: "02:00"              # cPanel nightly update window end
   known_api_tokens: []                  # API tokens to ignore in auth logs (e.g. ["phclient"])
-  ignore_paths:                         # glob patterns to skip in filesystem scans
-    - "*/cache/*"
-    - "*/vendor/*"
+  ignore_paths: []                      # glob patterns to skip in file scans; keep empty, an exempt directory is where an attacker hides
   suppress_webmail_alerts: true         # don't alert on webmail logins
   suppress_cpanel_login_alerts: false   # don't alert on cPanel direct logins
   suppress_blocked_alerts: true         # don't alert on attacks from IPs already blocked or challenged

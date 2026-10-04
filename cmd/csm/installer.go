@@ -856,10 +856,9 @@ suppressions:
   upcp_window_end: "02:00"
   known_api_tokens: []
   suppress_webmail_alerts: true
-  ignore_paths:
-    - "*/imunify-security/*"
-    - "*/cache/*"
-    - "*/vendor/*"
+  # Exempting a directory class from file scans gives an attacker a known
+  # place to hide; keep this empty unless a path is proven harmless.
+  ignore_paths: []
 
 auto_response:
   enabled: false              # must be explicitly enabled

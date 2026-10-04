@@ -327,10 +327,9 @@ suppressions:
   upcp_window_start: "00:30"   # cPanel nightly update window (suppress noise)
   upcp_window_end: "02:00"
   known_api_tokens: []
-  ignore_paths:
-    - "*/imunify-security/*"
-    - "*/cache/*"
-    - "*/vendor/*"
+  # Exempting a directory class from file scans gives an attacker a known
+  # place to hide; keep this empty unless a path is proven harmless.
+  ignore_paths: []
   suppress_webmail_alerts: true
   suppress_cpanel_login_alerts: false
 
