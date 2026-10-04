@@ -90,3 +90,17 @@ func TestAnalyzePHPForPhishingWebmailAddressInTitleIsNotImpersonation(t *testing
 		t.Errorf("author template flagged as %s phishing: %v", res.brand, res.indicators)
 	}
 }
+
+// The same archive with a sidebar login widget: a password field gives no
+// reason to read the author's own address as brand impersonation.
+func TestPhishingWebmailAddressInTitleWithLoginWidgetIsNotImpersonation(t *testing.T) {
+	widget := `<form action="/wp-login.php" method="post"><input type="text" name="log"><input type="password" name="pwd"></form></body>`
+	page := strings.Replace(strings.Replace(authorArchiveTemplate, "%TITLE%", "Posts by jane.doe@gmail.com - Example Blog", 1), "</body>", widget, 1)
+	if res := analyzeHTMLForPhishing(context.Background(), writeHTMLForPhishingTest(t, "index.html", page)); res != nil {
+		t.Errorf("html: author archive with login widget flagged as %s phishing: %v", res.brand, res.indicators)
+	}
+	php := `<?php if (!empty($_POST['pwd'])) { wp_signon(); } ?>` + page
+	if res := analyzePHPForPhishing(context.Background(), writeHTMLForPhishingTest(t, "author.php", php)); res != nil {
+		t.Errorf("php: author template with login widget flagged as %s phishing: %v", res.brand, res.indicators)
+	}
+}

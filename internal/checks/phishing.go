@@ -585,13 +585,11 @@ func analyzeHTMLForPhishing(ctx context.Context, path string) *phishingResult {
 
 // titleNamesBrand reports whether pattern appears in title as a word of its
 // own. A page titled after a person who uses a webmail address carries the
-// brand inside that address or its slug, which is not impersonation. Password
-// capture or a login title supplies the context for concatenated brand names;
-// digits and a standalone @ are decoration, not part of another word.
+// brand inside that address or its slug, which is not impersonation, even when
+// the page also has a login widget. Password capture or a login title supplies
+// the context for concatenated brand names; digits and a standalone @ are
+// decoration, not part of another word.
 func titleNamesBrand(title, pattern string, passwordInput bool) bool {
-	if passwordInput {
-		return strings.Contains(title, pattern)
-	}
 	loginTitle := strings.Contains(title, "login") || strings.Contains(title, "log in") ||
 		strings.Contains(title, "log-in") || strings.Contains(title, "signin") ||
 		strings.Contains(title, "sign in") || strings.Contains(title, "sign-in")
@@ -611,7 +609,7 @@ func titleNamesBrand(title, pattern string, passwordInput bool) bool {
 		mailbox := address < len(addresses) && addresses[address][0] <= start && end <= addresses[address][1]
 		standsAlone := (start == 0 || !isLetter(title[start-1])) &&
 			(end == len(title) || !isLetter(title[end]))
-		if !mailbox && (standsAlone || loginTitle) {
+		if !mailbox && (standsAlone || loginTitle || passwordInput) {
 			return true
 		}
 		offset = start + 1
