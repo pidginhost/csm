@@ -246,32 +246,15 @@ func stripPHPCommentsFromCode(code string) string {
 			}
 			continue
 		}
-		if code[i] == '/' && i+1 < len(code) && code[i+1] == '/' {
-			b.WriteString("  ")
-			i += 2
-			for i < len(code) {
-				if code[i] == '\n' || code[i] == '\r' {
-					b.WriteByte(code[i])
-					break
-				}
-				b.WriteByte(' ')
-				i++
-			}
-			continue
-		}
 		// "#[" opens a PHP 8 attribute, which can precede a statement on the
-		// same line; only other "#" forms are comments.
-		if code[i] == '#' && isPHPLineCommentStart(code, i) {
-			b.WriteByte(' ')
-			i++
-			for i < len(code) {
-				if code[i] == '\n' || code[i] == '\r' {
-					b.WriteByte(code[i])
-					break
-				}
+		// same line; only other "#" forms are comments. A line comment also
+		// ends at "?>", and the code after that tag runs.
+		if isPHPLineCommentStart(code, i) {
+			end := skipPHPLineComment(code, i)
+			for ; i < end; i++ {
 				b.WriteByte(' ')
-				i++
 			}
+			i--
 			continue
 		}
 		b.WriteByte(code[i])

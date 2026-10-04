@@ -1446,12 +1446,16 @@ func copyPHPModeRegion(b *strings.Builder, src string, start int) int {
 		}
 		if isPHPLineCommentStart(src, i) {
 			end := skipPHPLineComment(src, i)
+			if end+1 < n && src[end] == '?' && src[end+1] == '>' {
+				// Code after the tag lands on this same output line, so the
+				// comment text must go: a later comment strip would run past
+				// the replaced tag and blank that code.
+				b.WriteString(strings.Repeat(" ", end-i))
+				b.WriteString("; ")
+				return end + 2
+			}
 			b.WriteString(src[i:end])
 			i = end
-			if i+1 < n && src[i] == '?' && src[i+1] == '>' {
-				b.WriteString("; ")
-				return i + 2
-			}
 			continue
 		}
 		if src[i] == '?' && i+1 < n && src[i+1] == '>' {
