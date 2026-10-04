@@ -281,9 +281,11 @@ func TestSuppressedDatabaseFindingKeepsIPResponse(t *testing.T) {
 			if canRemediate(f) {
 				edits++
 			}
+			cause := alert.CauseOf(f)
 			actions = append(actions, checks.AutoBlockIPs(cfg, []alert.Finding{{
 				Check: "local_threat_score", Severity: alert.Critical,
 				Message: "attacker session IP 192.0.2.43", SourceIP: "192.0.2.43",
+				Cause: &cause,
 			}})...)
 		}
 		return actions

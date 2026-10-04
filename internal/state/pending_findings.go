@@ -31,13 +31,15 @@ type pendingFinding struct {
 	ResponseSprayConstituents []alert.SprayConstituent `json:"response_spray_constituents,omitempty"`
 	// ResponseIntel keeps the intel a reputation finding rests on.
 	ResponseIntel *admission.IntelRef `json:"response_intel,omitempty"`
+	// ResponseCause distinguishes database-session responses from retired scores.
+	ResponseCause *alert.Cause `json:"response_cause,omitempty"`
 }
 
 func toPendingRecords(findings []alert.Finding) []pendingFinding {
 	records := make([]pendingFinding, len(findings))
 	for i, f := range findings {
 		records[i] = pendingFinding{Finding: f, ResponseCIDRs: f.CIDRs, ResponseSprayTargets: f.SprayTargets, ResponseClaims: f.Claims,
-			ResponseSprayConstituents: f.SprayConstituents}
+			ResponseSprayConstituents: f.SprayConstituents, ResponseCause: f.Cause}
 		// An unencodable expiry costs only its intel, not the whole batch.
 		if f.Intel != nil {
 			if _, err := f.Intel.Expires.MarshalJSON(); err == nil {
@@ -68,6 +70,7 @@ func fromPendingRecords(records []pendingFinding) []alert.Finding {
 		findings[i].Claims = r.ResponseClaims
 		findings[i].SprayConstituents = r.ResponseSprayConstituents
 		findings[i].Intel = r.ResponseIntel
+		findings[i].Cause = r.ResponseCause
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}

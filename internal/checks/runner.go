@@ -162,8 +162,9 @@ func DisabledCheckNames() []string {
 }
 
 // DisabledCheckConfigNames returns every value top-level disabled_checks
-// accepts: this is exactly the set splitDisabledChecks honors -- every emitted
-// finding name (including internal ones) plus every compatibility runner ID.
+// accepts: every emitted finding name (including internal ones), compatibility
+// runner ID and retired purge name. Retired values are accepted without
+// disabling a live runner.
 // It is broader than DisabledCheckNames (the UI vocabulary) so POST-side
 // validation never rejects a value an existing operator config relies on.
 func DisabledCheckConfigNames() []string {
@@ -171,8 +172,11 @@ func DisabledCheckConfigNames() []string {
 	for finding := range findingNameToRunnerNames {
 		seen[finding] = struct{}{}
 	}
-	for runner := range runnerFindingNames {
+	for runner, findings := range runnerFindingNames {
 		seen[runner] = struct{}{}
+		for _, finding := range findings {
+			seen[finding] = struct{}{}
+		}
 	}
 	// Logical-owner IDs and their public finding aliases are valid disable
 	// values; the coverage diagnostic stays rejected because it appears in no
@@ -196,6 +200,11 @@ func buildFindingNameToRunnerNames() map[string][]string {
 	out := map[string][]string{}
 	for runner, findings := range runnerFindingNames {
 		for _, finding := range findings {
+			// This is purge ownership only. The retired score check's
+			// disable value must not disable external reputation or health.
+			if runner == "ip_reputation" && finding == "local_threat_score" {
+				continue
+			}
 			out[finding] = append(out[finding], runner)
 		}
 	}

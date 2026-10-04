@@ -279,6 +279,7 @@ var reviewedEvidenceRestores = map[string]reviewedEvidenceRestore{
 		findings[i].Claims = r.ResponseClaims
 		findings[i].SprayConstituents = r.ResponseSprayConstituents
 		findings[i].Intel = r.ResponseIntel
+		findings[i].Cause = r.ResponseCause
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}
@@ -1026,6 +1027,7 @@ func TestAddressProducerScannerRejectsUnreviewedRestoreChanges(t *testing.T) {
 		findings[i].Claims = r.ResponseClaims
 		findings[i].SprayConstituents = r.ResponseSprayConstituents
 		findings[i].Intel = r.ResponseIntel
+		findings[i].Cause = r.ResponseCause
 		if r.ResponseObservation != nil {
 			findings[i].Observation = *r.ResponseObservation
 		}

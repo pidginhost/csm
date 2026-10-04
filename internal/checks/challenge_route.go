@@ -104,6 +104,9 @@ func responseActionForFinding(cfg *config.Config, f alert.Finding) string {
 // challengeRoutesFinding narrows challengeRoutesCheck for one finding, with
 // challenge routing assumed on.
 func challengeRoutesFinding(cfg *config.Config, f alert.Finding) bool {
+	if IsRetiredThreatScoreFinding(f) {
+		return false
+	}
 	if f.Check == "ip_reputation" && f.Severity == alert.Critical {
 		return false
 	}

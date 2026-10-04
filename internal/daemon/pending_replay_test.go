@@ -55,3 +55,34 @@ func TestPendingFindingsAtShutdownAreDispatchedAtNextStart(t *testing.T) {
 		t.Fatalf("%d findings still parked after replay", len(left))
 	}
 }
+
+func TestPendingReplayDropsRetiredThreatScore(t *testing.T) {
+	dir := t.TempDir()
+	_, restore := openTestBoltStore(t, dir)
+	defer restore()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	cause := alert.Cause{Check: "db_siteurl_hijack", FindingID: "0123456789abcdef"}
+	if err := st.AppendPendingFindings([]alert.Finding{
+		{Check: "local_threat_score", Severity: alert.Critical, SourceIP: "192.0.2.10", Message: "legacy score", Timestamp: time.Now()},
+		{Check: "local_threat_score", Severity: alert.Critical, SourceIP: "192.0.2.12", Message: "database session", Cause: &cause, Timestamp: time.Now()},
+		{Check: "fixture", Severity: alert.High, Message: "unrelated", Timestamp: time.Now()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	previousHook := alert.CentralHook
+	var dispatched []alert.Finding
+	alert.SetCentralHook(func(f alert.Finding) { dispatched = append(dispatched, f) })
+	t.Cleanup(func() { alert.SetCentralHook(previousHook) })
+	d := New(&config.Config{StatePath: dir}, st, nil, "")
+	d.replayPendingFindings()
+	if len(dispatched) != 2 || dispatched[0].SourceIP != "192.0.2.12" || dispatched[0].Cause == nil || *dispatched[0].Cause != cause || dispatched[1].Check != "fixture" {
+		t.Fatalf("dispatched = %+v, want the database session and unrelated finding", dispatched)
+	}
+	if left, err := st.TakePendingFindings(); err != nil || len(left) != 0 {
+		t.Fatalf("pending findings = %+v, error %v", left, err)
+	}
+}

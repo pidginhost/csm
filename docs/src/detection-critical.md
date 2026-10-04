@@ -106,12 +106,19 @@ restore the retired scoring state; an older daemon also resumes scoring new raw
 mail failures.
 
 The local threat score ranks addresses on the threat page and feeds the unified
-verdict. No scheduled check turns it into findings or blocks: every check that
-feeds it already blocks on its own, and a derived score is never an independent
-block source. `local_threat_score` now names only the database malware response
+verdict. No scheduled check turns it into findings or blocks; the checks that
+provide attack evidence apply their own response policies.
+`local_threat_score` now names only the database malware response
 above; findings older versions stored under that name clear after the next
-critical scan. `auto_response.block_ips` controls new automatic blocks; there
-is no setting for the startup correction.
+completed critical scan. A legacy `disabled_checks: [local_threat_score]` value
+is still accepted but does not disable `ip_reputation` or its health checks.
+Queued score findings are discarded at restart. Block retries under the retained
+name without a recorded database cause are discarded on their next attempt.
+This also affects older database-session retries, which can be detected again by
+the next database scan. New database-session retries retain their cause, and
+existing blocks stay until expiry or operator removal.
+`auto_response.block_ips` controls new automatic blocks; there is no setting for
+the startup correction.
 
 The local threat score retains evidence attributed to the server itself. Such
 records can represent forwarded attacks or a compromised local process; firewall

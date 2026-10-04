@@ -169,6 +169,7 @@ type pendingIP struct {
 	ActionID  string         `json:"action_id,omitempty"`
 	ActionTTL time.Duration  `json:"action_ttl,omitempty"`
 	FindingID string         `json:"finding_id,omitempty"`
+	Cause     *alert.Cause   `json:"cause,omitempty"`
 	IP        string         `json:"ip"`
 	Reason    string         `json:"reason"`
 	Check     string         `json:"check,omitempty"`
@@ -213,7 +214,7 @@ func blockableCheck(check string, blockCpanelLogins bool) bool {
 }
 
 func blockableFinding(f alert.Finding, blockCpanelLogins bool) bool {
-	return blockableCheck(f.Check, blockCpanelLogins) &&
+	return !IsRetiredThreatScoreFinding(f) && blockableCheck(f.Check, blockCpanelLogins) &&
 		(!ResponsePolicyFor(f.Check).CriticalOnly || f.Severity == alert.Critical)
 }
 
@@ -311,7 +312,7 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 		p.IP = ip
 		// Retry only evidence still eligible under the current policy. Older
 		// queues lack check identity; a free-text reason cannot establish it.
-		if !blockableFinding(alert.Finding{Check: p.Check, Severity: p.Severity}, cfg.AutoResponse.BlockCpanelLogins) {
+		if !blockableFinding(alert.Finding{Check: p.Check, Severity: p.Severity, Cause: p.Cause}, cfg.AutoResponse.BlockCpanelLogins) {
 			work.completePending(p)
 			fmt.Fprintf(os.Stderr, "auto-block: dropping ineligible pending %s (check %q)\n", p.IP, p.Check)
 			continue
@@ -423,10 +424,11 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 				existing.Check = f.Check
 				existing.Severity = f.Severity
 				existing.FindingID = findingID
+				existing.Cause = f.Cause
 			}
 			ipsToBlock[ip] = existing
 		} else {
-			p := pendingIP{IP: ip, Reason: f.Message, Check: f.Check, Severity: f.Severity, FindingID: findingID}
+			p := pendingIP{IP: ip, Reason: f.Message, Check: f.Check, Severity: f.Severity, FindingID: findingID, Cause: f.Cause}
 			p.queueCandidate = work.candidate(p, nil)
 			ipsToBlock[ip] = p
 		}

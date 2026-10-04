@@ -160,6 +160,10 @@ func TestResponsePolicyMatchesGoldenHelpers(t *testing.T) {
 			}
 			for _, sev := range goldenSeverities {
 				f := alert.Finding{Check: name, Severity: sev}
+				if name == "local_threat_score" {
+					// The live producer is the database-session response.
+					f.Cause = &alert.Cause{Check: "db_siteurl_hijack", FindingID: "0123456789abcdef"}
+				}
 				if got, want := blockableFinding(f, cpanel), goldenBlockableFinding(f, cpanel); got != want {
 					t.Errorf("blockableFinding(%q, %v, block_cpanel_logins=%v) = %v, golden %v", name, sev, cpanel, got, want)
 				}
@@ -175,6 +179,9 @@ func TestResponsePolicyMatchesGoldenHelpers(t *testing.T) {
 				}
 				for _, sev := range goldenSeverities {
 					f := alert.Finding{Check: name, Severity: sev}
+					if name == "local_threat_score" {
+						f.Cause = &alert.Cause{Check: "db_siteurl_hijack", FindingID: "0123456789abcdef"}
+					}
 					if got, want := responseActionForFinding(cfg, f), goldenResponseActionForFinding(cfg, f); got != want {
 						t.Errorf("responseActionForFinding(%q, %v, challenge=%v, scanner=%q) = %q, golden %q", name, sev, enabled, action, got, want)
 					}
@@ -202,6 +209,9 @@ func TestChallengeRouteIPsMatchesGoldenPolicy(t *testing.T) {
 						cfg.AutoResponse.BlockCpanelLogins = cpanel
 						cfg.AutoResponse.HTTPScannerAction = action
 						f := alert.Finding{Check: name, Severity: sev, SourceIP: "203.0.113.10", Message: "probe"}
+						if name == "local_threat_score" {
+							f.Cause = &alert.Cause{Check: "db_siteurl_hijack", FindingID: "0123456789abcdef"}
+						}
 						actions := ChallengeRouteIPs(cfg, []alert.Finding{f})
 						want := enabled && (!goldenCpanelFailure[name] || cpanel) &&
 							!goldenHardBlock(name) && goldenChallengeable[name] &&
