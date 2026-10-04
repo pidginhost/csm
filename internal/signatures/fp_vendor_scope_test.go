@@ -176,3 +176,43 @@ $fm_current_root = $fm_path_info['dirname'];
 		t.Error("webshell_phpfilemanager missed the opening of a real phpFileManager install")
 	}
 }
+
+func TestFPVendor_YML_CasinoDoorway_CompiledTwigTemplate(t *testing.T) {
+	s := loadRepoScanner(t)
+	compiled := []byte(`<?php
+/* settings/slots.twig */
+class __TwigTemplate_4f8e2b extends \Twig\Template
+{
+    protected function doDisplay(array $context, array $blocks = [])
+    {
+        echo "<div class=\"wpml-section\" style=\"display:none\">";
+        $this->loadTemplate("slots.twig", "settings/slots.twig", 23)->display($context);
+        echo "</div>";
+    }
+}
+`)
+	if hasRule(s.ScanContent(compiled, ".php"), "spam_casino_doorway") {
+		t.Error("spam_casino_doorway FP: matched a compiled template named after slots")
+	}
+}
+
+func TestFPVendor_YML_CasinoDoorway_ShopProductPage(t *testing.T) {
+	s := loadRepoScanner(t)
+	page := []byte(`<!DOCTYPE html><html><head><title>Cutlery set with poker motif - Shop</title></head>
+<body><div class="cart-popup" style="display:none"></div>
+<h1>Cutlery set with poker motif</h1><p>Free delivery for orders over 200. Add to wishlist and win a voucher.</p>
+</body></html>`)
+	if hasRule(s.ScanContent(page, ".html"), "spam_casino_doorway") {
+		t.Error("spam_casino_doorway FP: matched an ordinary product page")
+	}
+}
+
+func TestFPVendor_YML_CasinoDoorway_HiddenCasinoLinks(t *testing.T) {
+	s := loadRepoScanner(t)
+	doorway := []byte(`<html><body><p>Welcome</p>
+<div style="display:none"><a href="https://casino.example/">best online casino</a> <a href="https://casino.example/spins">free spins no deposit</a></div>
+</body></html>`)
+	if !hasRule(s.ScanContent(doorway, ".html"), "spam_casino_doorway") {
+		t.Error("spam_casino_doorway missed hidden casino links")
+	}
+}

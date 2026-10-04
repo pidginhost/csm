@@ -1658,6 +1658,27 @@ echo $double(21);
 `,
 		},
 		{
+			name: "compiled template named after slots",
+			rule: "spam_casino_doorway",
+			sample: `<?php
+echo "<div style=\"display:none\">";
+$this->loadTemplate("slots.twig", "settings/slots.twig", 23)->display($context);`,
+		},
+		{
+			name: "product page with a poker motif",
+			rule: "spam_casino_doorway",
+			ext:  ".html",
+			sample: `<div class="cart-popup" style="display:none"></div>
+<h1>Cutlery set with poker motif</h1><p>Free delivery. Add to wishlist and win a voucher.</p>`,
+		},
+		{
+			name: "hidden casino links",
+			rule: "spam_casino_doorway",
+			ext:  ".html",
+			want: true,
+			sample: `<div style="display:none"><a href="https://casino.example/">best online casino</a></div>`,
+		},
+		{
 			name: "SOCKS5 client over a stream wrapper",
 			rule: "network_socks_proxy",
 			sample: `<?php
