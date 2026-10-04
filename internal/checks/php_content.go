@@ -1366,6 +1366,15 @@ func phpExpressionEnd(code string, start int) int {
 	return len(code)
 }
 
+// PHPExecutableCode returns src with inline HTML and PHP comments blanked,
+// keeping byte offsets and line breaks, so line-oriented detectors see only
+// code PHP would run. src must begin at the start of a file: a window cut from
+// the middle can open inside a string or comment and shift which bytes count
+// as code.
+func PHPExecutableCode(src string) string {
+	return stripPHPCommentsFromCode(phpCodeOnly(src))
+}
+
 // phpCodeOnly blanks the inline-HTML regions of a PHP source so only the code
 // inside <?php ... ?> (and <?= ... ?>) spans is analysed for execution sinks.
 // Inline HTML is literal output and cannot execute PHP, so scanning it as code
@@ -1379,15 +1388,6 @@ func phpExpressionEnd(code string, start int) int {
 // together. The "?>" scan skips PHP strings, heredoc/nowdoc bodies, and block
 // comments so a "?>" inside them does not end PHP mode and blank real code. A
 // file with no PHP open tag yields all blanks -- it executes nothing.
-// PHPExecutableCode returns src with inline HTML and PHP comments blanked,
-// keeping byte offsets and line breaks, so line-oriented detectors see only
-// code PHP would run. src must begin at the start of a file: a window cut from
-// the middle can open inside a string or comment and shift which bytes count
-// as code.
-func PHPExecutableCode(src string) string {
-	return stripPHPCommentsFromCode(phpCodeOnly(src))
-}
-
 func phpCodeOnly(src string) string {
 	var b strings.Builder
 	b.Grow(len(src))
@@ -1435,7 +1435,7 @@ func copyPHPModeRegion(b *strings.Builder, src string, start int) int {
 			i = end
 			continue
 		}
-		if isPHPQuote(src[i]) {
+		if isPHPQuote(src[i]) || src[i] == '`' {
 			i = copyPHPString(b, src, i) + 1
 			continue
 		}

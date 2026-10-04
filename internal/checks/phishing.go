@@ -460,13 +460,14 @@ func analyzeHTMLForPhishing(ctx context.Context, path string) *phishingResult {
 	brandMatch := ""
 	matchedGeneric := false
 	titleContent := extractTitle(contentLower)
+	passwordInput := hasHTMLPasswordInput(contentLower)
 
 	for _, brand := range phishingBrands {
 		titleHit := false
 		bodyHit := false
 
 		for _, tp := range brand.titlePatterns {
-			if titleNamesBrand(titleContent, tp) {
+			if titleNamesBrand(titleContent, tp, passwordInput) {
 				titleHit = true
 				indicators = append(indicators, fmt.Sprintf("title impersonates '%s'", tp))
 				score += 3
@@ -582,11 +583,21 @@ func analyzeHTMLForPhishing(ctx context.Context, path string) *phishingResult {
 // Layer 2: Structural analysis helpers
 // ---------------------------------------------------------------------------
 
-// extractTitle pulls the <title> content from HTML.
 // titleNamesBrand reports whether pattern appears in title as a word of its
 // own. A page titled after a person who uses a webmail address carries the
-// brand inside that address or its slug, which is not impersonation.
-func titleNamesBrand(title, pattern string) bool {
+// brand inside that address or its slug, which is not impersonation. Password
+// capture or a login title supplies the context for concatenated brand names;
+// digits and a standalone @ are decoration, not part of another word.
+func titleNamesBrand(title, pattern string, passwordInput bool) bool {
+	if passwordInput {
+		return strings.Contains(title, pattern)
+	}
+	loginTitle := strings.Contains(title, "login") || strings.Contains(title, "log in") ||
+		strings.Contains(title, "log-in") || strings.Contains(title, "signin") ||
+		strings.Contains(title, "sign in") || strings.Contains(title, "sign-in")
+	isLetter := func(b byte) bool { return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' }
+	addresses := emailPattern.FindAllStringIndex(title, -1)
+	address := 0
 	for offset := 0; offset < len(title); {
 		idx := strings.Index(title[offset:], pattern)
 		if idx < 0 {
@@ -594,9 +605,13 @@ func titleNamesBrand(title, pattern string) bool {
 		}
 		start := offset + idx
 		end := start + len(pattern)
-		standsAlone := (start == 0 || (!isASCIIAlphaNumeric(title[start-1]) && title[start-1] != '@')) &&
-			(end == len(title) || !isASCIIAlphaNumeric(title[end]))
-		if standsAlone {
+		for address < len(addresses) && addresses[address][1] <= start {
+			address++
+		}
+		mailbox := address < len(addresses) && addresses[address][0] <= start && end <= addresses[address][1]
+		standsAlone := (start == 0 || !isLetter(title[start-1])) &&
+			(end == len(title) || !isLetter(title[end]))
+		if !mailbox && (standsAlone || loginTitle) {
 			return true
 		}
 		offset = start + 1
@@ -604,6 +619,7 @@ func titleNamesBrand(title, pattern string) bool {
 	return false
 }
 
+// extractTitle pulls the <title> content from HTML.
 func extractTitle(contentLower string) string {
 	for offset := 0; offset < len(contentLower); {
 		idx := strings.Index(contentLower[offset:], "<title")
@@ -663,6 +679,21 @@ func hasHTMLCredentialInput(contentLower string) bool {
 	}
 	return strings.Contains(contentLower, "work or school email") ||
 		strings.Contains(contentLower, "corporate email")
+}
+
+func hasHTMLPasswordInput(contentLower string) bool {
+	for _, value := range htmlAttrValues(contentLower, "input", "type", true) {
+		if strings.TrimSpace(value) == "password" {
+			return true
+		}
+	}
+	for _, value := range htmlAttrValues(contentLower, "input", "name", true) {
+		switch strings.TrimSpace(value) {
+		case "pass", "password", "passwd", "pwd", "passcode":
+			return true
+		}
+	}
+	return false
 }
 
 func htmlAttrValues(contentLower, tagName, attrName string, allowUnquoted bool) []string {
@@ -1117,11 +1148,12 @@ func analyzePHPForPhishing(ctx context.Context, path string) *phishingResult {
 	matchedGeneric := false
 	pageMarkup := stripPHPBlocks(contentLower)
 	titleContent := extractTitle(pageMarkup)
+	passwordInput := hasHTMLPasswordInput(pageMarkup)
 
 	if titleContent != "" {
 		for _, brand := range phishingBrands {
 			for _, tp := range brand.titlePatterns {
-				if titleNamesBrand(titleContent, tp) {
+				if titleNamesBrand(titleContent, tp, passwordInput) {
 					brandMatch = brand.name
 					matchedGeneric = brand.generic
 					indicators = append(indicators, fmt.Sprintf("title impersonates '%s'", tp))

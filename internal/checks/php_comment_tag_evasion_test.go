@@ -34,3 +34,32 @@ func TestStripPHPCommentsFromCodeEndsLineCommentAtCloseTag(t *testing.T) {
 		}
 	}
 }
+
+func FuzzPHPExecutableCode(f *testing.F) {
+	for _, src := range []string{
+		"<p>don't /*</p><?php // note ?><?php eval($p);",
+		"<?php # note\r eval($p);",
+		"<?php $s = <<<'DOC'\r?>\rDOC; eval($p);",
+		"<?php $s = `printf \\?>`; eval($p);",
+		`<?php $s = "{$a["?>"]}"; eval($p);`,
+		`<?php $s = "{$a["{$b['?>']}"]}"; eval($p);`,
+		"<?php $s = \"{$a[/* quote \" */ '?>']}\"; eval($p);",
+		"<?php $s = \"{$a[// quote \"\n'?>']}\"; eval($p);",
+		"<?php /* unclosed",
+		"<?php 'unclosed",
+		"",
+	} {
+		f.Add(src)
+	}
+	f.Fuzz(func(t *testing.T, src string) {
+		got := PHPExecutableCode(src)
+		if len(got) != len(src) {
+			t.Fatalf("length changed: input=%d output=%d", len(src), len(got))
+		}
+		for i := range src {
+			if (src[i] == '\r' || src[i] == '\n') && got[i] != src[i] {
+				t.Fatalf("line ending at offset %d was lost", i)
+			}
+		}
+	})
+}
