@@ -18,7 +18,7 @@ module is absent and fail when `CSM_REQUIRE_PYTHON_VERIFIER=1`, which the CI
 test jobs set so a missing module cannot pass as a silent skip. The Web UI
 JavaScript tests need Node 24 or newer the same way: they skip without it and
 fail when `CSM_REQUIRE_NODE=1`, which the CI test job sets. Builds with `yara,journal,bpf` also need
-CGO, pkg-config, YARA-X 1.20.0 and the systemd
+CGO, pkg-config, YARA-X 1.21.0 and the systemd
 development library. Use the release builder or the documented test images.
 CI selects the module toolchain with `GOTOOLCHAIN=auto`; the older Go versions
 in its bootstrap images are not the module requirement.
@@ -194,7 +194,7 @@ See [cPanel release tests](cpanel-release-tests.md) for image acceptance and
 for remaining operational readiness work. These configured dependencies are
 not evidence of a successful live release run.
 
-The coverage badge rebuilds automatically once the GitHub release exists, because the Pages workflow fetches `merged-coverage.out` from the latest release that carries one (it walks back through releases if the newest is missing the asset).
+The Pages workflow builds the coverage report and badge from `merged-coverage.out` of the latest GitHub release that carries one (it walks back through releases if the newest is missing the asset), and renders it against that release tag's sources, so a file removed since the release does not break it. A failed release-list request or response parse stops the workflow. Mirrored pushes to main that change the docs, README, workflow or coverage renderer can run before the new release's assets exist and show the previous release. The release job requests another Pages run after uploading the assets to refresh the badge; a manual workflow run can retry a missed refresh.
 
 Installs and upgrades on end-user servers come from the GitHub release artifacts or the apt/dnf mirror. The internal GitLab package registry is operational tooling only.
 

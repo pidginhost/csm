@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md), [3.30 to 3.39](docs/changelog/3.30-3.39.md), [3.20 to 3.29](docs/changelog/3.20-3.29.md), [3.10 to 3.19](docs/changelog/3.10-3.19.md), [3.0 to 3.9](docs/changelog/3.0-3.9.md), [2.x](docs/changelog/2.x.md).
 
+## [Unreleased]
+
+### Security
+
+- The YARA-X scanning engine is updated to 1.21.0 to fix missed and false matches when a rule that checks a file header shares a pattern with another rule. The shipped rules retain their measured matches, and existing hosts keep their rules and stored findings; affected scans can return corrected results, and no setting is involved.
+
+### Changed
+
+- Go dependencies and the pinned GitHub Actions are updated to their current releases; existing hosts see no behaviour change and no setting is involved.
+
 ## [4.2.0] - 2026-10-04
 
 ### Highlights
