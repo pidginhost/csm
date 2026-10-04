@@ -7,6 +7,7 @@ on:
       - 'docs/**'
       - 'README.md'
       - '.github/workflows/pages.yml'
+      - 'scripts/coverage-report.sh'
   workflow_dispatch:
 
 permissions:
@@ -46,6 +47,7 @@ jobs:
           # as a release asset. We just fetch that artifact; it is already
           # authoritative. Walk recent releases in case the latest one was
           # cut without the integration job completing.
+          set -o pipefail
           DEBUG=coverage-debug.txt
           {
             echo "=== Looking for merged-coverage.out in recent releases ==="
@@ -77,18 +79,22 @@ jobs:
             head -3 coverage.out
             echo "=== Coverage profile lines ==="
             wc -l coverage.out
-            echo "=== Total ==="
-            go tool cover -func=coverage.out 2>&1 | tail -1
             echo "FROM_RELEASE $FOUND" > coverage-source.txt
+            echo "COVERAGE_TAG=$FOUND" >> "$GITHUB_ENV"
           } 2>&1 | tee "$DEBUG"
 
       - name: Generate HTML coverage report
-        run: go tool cover -html=coverage.out -o coverage.html
+        run: |
+          # The profile belongs to the release tag it was downloaded from, not
+          # to this main commit, so render it against that tag's sources.
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "refs/tags/${COVERAGE_TAG}:refs/tags/${COVERAGE_TAG}"
+          scripts/coverage-report.sh coverage.out "$COVERAGE_TAG" .
 
       - name: Generate coverage badge SVG
         run: |
           set -eu
-          COV=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%",""); print $3}')
+          COV=$(awk '/^total:/ {gsub("%",""); print $3}' coverage-func.txt)
           if [ -z "$COV" ]; then COV="0.0"; fi
           COV_INT=${COV%.*}
           if   [ "$COV_INT" -ge 90 ]; then COLOR="#4c1"
