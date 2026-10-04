@@ -105,8 +105,8 @@ func TestSortRecordsByScore(t *testing.T) {
 
 // A fast single-IP brute force blocks through its own producer (the mail,
 // SMTP, FTP or SSH tracker), whose gates know about successful logins and
-// auth backend outages. Its attack record alone never reaches the
-// local_threat_score block threshold.
+// auth backend outages. Its attack record alone never reaches 70, the
+// threshold the retired score scan alerted at.
 func TestComputeScore_SustainedBruteForceStaysBelowBlockThreshold(t *testing.T) {
 	now := time.Now()
 	r := &IPRecord{

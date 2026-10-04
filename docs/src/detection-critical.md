@@ -82,7 +82,7 @@ remain reportable.
 | Check | Description |
 |-------|-------------|
 | `ip_reputation` | IPs against external threat databases and optional rspamd history. Passive HTTP/cPanel sightings are High; SSH and mail-auth activity is Critical |
-| `local_threat_score` | Aggregated score from internal attack database |
+| `local_threat_score` | Database malware response: blocks addresses with a live WordPress session on a site whose database holds malware |
 | `modsec_audit` | ModSecurity audit log parsing |
 
 The attack database counts a finding only against the source address the
@@ -105,11 +105,13 @@ blocks stay until expiry or operator removal. Rolling back before that save can
 restore the retired scoring state; an older daemon also resumes scoring new raw
 mail failures.
 
-New findings recorded by the attack database cannot reach the local threat
-score alert threshold. The separate database-session response path still uses
-`local_threat_score` to block attacker session addresses and is unchanged.
-`auto_response.block_ips` controls new automatic blocks; there is no setting for
-the startup correction.
+The local threat score ranks addresses on the threat page and feeds the unified
+verdict. No scheduled check turns it into findings or blocks: every check that
+feeds it already blocks on its own, and a derived score is never an independent
+block source. `local_threat_score` now names only the database malware response
+above; findings older versions stored under that name clear after the next
+critical scan. `auto_response.block_ips` controls new automatic blocks; there
+is no setting for the startup correction.
 
 The local threat score retains evidence attributed to the server itself. Such
 records can represent forwarded attacks or a compromised local process; firewall

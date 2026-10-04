@@ -4,9 +4,10 @@ CSM tracks, scores, and correlates attacks using a local attack database enriche
 
 ## Attack Database
 
-- Per-IP event tracking (brute force, webshell upload, phishing, C2, WAF block)
-- Local scoring from attack volume, types and targeted accounts
-- Auto-block on reputation threshold
+- Per-IP event tracking (brute force, reconnaissance, reputation, authenticated activity)
+- Local scoring from attack volume, types and targeted accounts, used to rank
+  addresses and in the unified verdict; the score never raises a finding or a
+  block on its own
 - Top attackers leaderboard
 
 Successful cPanel, FTP, webmail and PAM login audit events, and authenticated

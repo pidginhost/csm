@@ -1118,7 +1118,7 @@ func threatForgetOutput(res control.ThreatForgetResult) string {
 // fwForget clears an address's accumulated local threat score without
 // whitelisting it. Needed when a detection bug attributed attacks to the
 // wrong address: fixing the detection stops new events, but the accrued
-// ones keep local_threat_score reporting until the 90-day prune.
+// ones keep the address ranked as an attacker until the 90-day prune.
 func fwForget() {
 	args := fwArgs()
 	if isHelpRequest(args) || len(args) < 1 {

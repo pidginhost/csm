@@ -230,17 +230,19 @@ var runnerFindingNames = map[string][]string{
 	"fake_kernel_threads":   {"fake_kernel_thread"},
 	// new_php_in_languages and new_php_in_upgrade were emitted until a20c6f76;
 	// they stay here so a completed scan clears rows written by older versions.
-	"file_index":           {"new_executable_in_config", "new_php_in_languages", "new_php_in_sensitive_dir", "new_php_in_sensitive_dir_clean", "new_php_in_upgrade", "new_php_in_uploads", "new_php_in_uploads_clean", "new_suspicious_php", "new_webshell_file", "obfuscated_php", "suspicious_php_content"},
-	"filesystem":           {"backdoor_binary", "suid_binary", "suspicious_file"},
-	"firewall":             {"firewall", "firewall_ports", "firewall_ipv6_unmanaged"},
-	"ftp_logins":           {"ftp_bruteforce", "ftp_login", "ftp_login_after_bruteforce"},
-	"group_writable_php":   {"group_writable_php"},
-	"health":               {"csm_health"},
-	"htaccess":             append([]string{"htaccess_handler_abuse", "htaccess_injection"}, htaccessDetectorNames()...),
-	"exposed_files":        {"web_exposed_config_leak", "web_exposed_db_dump", "web_exposed_backup_archive", "web_exposed_source_backup", "web_exposed_phpinfo", "web_exposed_sample_sql"},
-	"ip_reputation":        {"ip_reputation"},
+	"file_index":         {"new_executable_in_config", "new_php_in_languages", "new_php_in_sensitive_dir", "new_php_in_sensitive_dir_clean", "new_php_in_upgrade", "new_php_in_uploads", "new_php_in_uploads_clean", "new_suspicious_php", "new_webshell_file", "obfuscated_php", "suspicious_php_content"},
+	"filesystem":         {"backdoor_binary", "suid_binary", "suspicious_file"},
+	"firewall":           {"firewall", "firewall_ports", "firewall_ipv6_unmanaged"},
+	"ftp_logins":         {"ftp_bruteforce", "ftp_login", "ftp_login_after_bruteforce"},
+	"group_writable_php": {"group_writable_php"},
+	"health":             {"csm_health"},
+	"htaccess":           append([]string{"htaccess_handler_abuse", "htaccess_injection"}, htaccessDetectorNames()...),
+	"exposed_files":      {"web_exposed_config_leak", "web_exposed_db_dump", "web_exposed_backup_archive", "web_exposed_source_backup", "web_exposed_phpinfo", "web_exposed_sample_sql"},
+	// local_threat_score came from the retired attack database score scan;
+	// it stays here so a completed critical scan clears rows older versions
+	// stored.
+	"ip_reputation":        {"ip_reputation", "local_threat_score"},
 	"kernel_modules":       {"kernel_module"},
-	"local_threat_score":   {"local_threat_score"},
 	"mail_per_account":     {"mail_per_account"},
 	"mail_queue":           {"mail_queue", "mail_queue_unavailable"},
 	"modsec_audit":         {"waf_attack_blocked"},
@@ -487,7 +489,6 @@ func criticalChecks() []namedCheck {
 		{"webmail_logins", CheckWebmailLogins},
 		{"api_auth_failures", CheckAPIAuthFailures},
 		{"ip_reputation", CheckIPReputation},
-		{"local_threat_score", CheckLocalThreatScore},
 		{"modsec_audit", CheckModSecAuditLog},
 		{"health", CheckHealth},
 		{"perf_load", CheckLoadAverage},

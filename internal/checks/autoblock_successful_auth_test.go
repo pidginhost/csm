@@ -1,7 +1,6 @@
 package checks
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -97,7 +96,7 @@ func TestUnknownCheckIsNotBlockable(t *testing.T) {
 	}
 }
 
-// Exercise the whole disposition pipeline, including derived scoring and
+// Exercise the whole disposition pipeline, including the attack score and
 // permanent-block promotion. A type-membership assertion alone misses both.
 func TestSuccessfulAuthCannotPromoteAddressToBlock(t *testing.T) {
 	withTestThreatStore(t)
@@ -135,11 +134,6 @@ func TestSuccessfulAuthCannotPromoteAddressToBlock(t *testing.T) {
 				if rec := db.LookupIP(ip); rec.EventCount != 1+6*(round+1) || rec.AttackCounts[attackdb.AttackBruteForce] != 1 || rec.AttackCounts[attackdb.AttackAuthSuccess] != 6*(round+1) || rec.ThreatScore != 17 {
 					t.Fatalf("successful activity changed the attack score: %+v", rec)
 				}
-				derived := CheckLocalThreatScore(context.Background(), cfg, nil)
-				if len(derived) != 0 {
-					t.Errorf("successful activity generated local threat findings: %+v", derived)
-				}
-				findings = append(findings, derived...)
 				challenges, blocks := ChallengeThenBlock(cfg, findings)
 				if len(challenges) != 0 || len(blocks) != 0 || len(blocker.blocked) != 0 || list.Contains(ip) {
 					t.Fatalf("audit activity reached disposition: challenges=%+v blocks=%+v calls=%v", challenges, blocks, blocker.blocked)

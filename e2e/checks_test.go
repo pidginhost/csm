@@ -396,14 +396,6 @@ func TestRealCheckOutboundConnections(t *testing.T) {
 	assertRealCheckResult(t, ctx, "CheckOutboundConnections", findings)
 }
 
-func TestRealCheckLocalThreatScore(t *testing.T) {
-	cfg, store := newCheckCtx(t)
-	ctx, cancel := realCheckTimeout()
-	defer cancel()
-	findings := checks.CheckLocalThreatScore(ctx, cfg, store)
-	assertRealCheckResult(t, ctx, "CheckLocalThreatScore", findings)
-}
-
 // --- forwarders (cPanel-specific, tolerant on Ubuntu) --------------------
 
 func TestRealCheckForwarders(t *testing.T) {

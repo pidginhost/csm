@@ -301,7 +301,7 @@ Incidents and central threat responses receive new findings, including suppresse
 | `ssh_login_unknown_ip` | SSH login from an IP with no prior history, whether the realtime watcher or the periodic scan saw it first |
 | `c2_connection` | Outbound connection to a known C2 server |
 | `ip_reputation` | IP flagged by AbuseIPDB / rspamd / upstream threat-intel |
-| `local_threat_score` | IP crosses the aggregated internal attack-history threshold |
+| `local_threat_score` | Address with a live WordPress session on a site whose database malware response fired |
 | `modsec_block_escalation` | ModSecurity deny escalation |
 | `modsec_csm_block_escalation` | CSM-internal ModSecurity deny escalation |
 | `waf_attack_blocked` | WAF high-volume attacker |

@@ -113,20 +113,6 @@ func TestCheckDangerousPortsCleanConfig(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// local_threat.go — CheckLocalThreatScore additional branch
-// ---------------------------------------------------------------------------
-
-func TestCheckLocalThreatScoreNilStatePath(t *testing.T) {
-	// When attackdb.Global() is nil, we get nil immediately.
-	// This also exercises with a non-nil statepath that has no firewall state.
-	cfg := &config.Config{StatePath: t.TempDir()}
-	findings := CheckLocalThreatScore(context.Background(), cfg, nil)
-	if len(findings) != 0 {
-		t.Errorf("no attackdb should return 0, got %d", len(findings))
-	}
-}
-
-// ---------------------------------------------------------------------------
 // plugincheck.go — evaluatePluginCache with seeded bbolt data
 // ---------------------------------------------------------------------------
 

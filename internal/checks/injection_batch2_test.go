@@ -38,16 +38,6 @@ func TestCheckMailPerAccountNoExim(t *testing.T) {
 	}
 }
 
-// --- CheckLocalThreatScore -------------------------------------------
-
-func TestCheckLocalThreatScoreNoAttackDB(t *testing.T) {
-	findings := CheckLocalThreatScore(context.Background(), &config.Config{}, nil)
-	// Without global attackDB, returns nil
-	if len(findings) != 0 {
-		t.Errorf("no attackdb should produce 0, got %d", len(findings))
-	}
-}
-
 // --- CheckOpenBasedir ------------------------------------------------
 
 func TestCheckOpenBasedirNoHome(t *testing.T) {

@@ -80,7 +80,7 @@ const (
 
 	// Clears one address's accumulated local threat-scoring state. Kept
 	// separate from the firewall commands: it changes no block, allow or
-	// whitelist entry, only what local_threat_score reads.
+	// whitelist entry, only the attack record that ranks the address.
 	CmdThreatForget = "threat.forget"
 
 	// Phase 2 incident correlation.

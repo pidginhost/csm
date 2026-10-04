@@ -168,8 +168,8 @@ func recordBruteForce(db *attackdb.DB, ip string, n int) {
 // A detection bug that attributes attacks to the wrong address poisons that
 // address's attack record. Fixing the detection stops new events but leaves
 // the accumulated ones: most score contributions last until the record is
-// pruned after 90 days, and local_threat_score re-reports the stale score on
-// every daemon start.
+// pruned after 90 days, and the address stays ranked as an attacker on the
+// threat page and in the unified verdict.
 //
 // Unlike the Web UI's clear and whitelist actions, this handler clears
 // scoring state without changing enforcement.

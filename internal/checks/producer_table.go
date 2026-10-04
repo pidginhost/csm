@@ -30,7 +30,7 @@ const (
 	ProducerCpanelAccessLog admission.ProducerID = "cpanel_access_log"
 	ProducerCpanelScan      admission.ProducerID = "cpanel_access_scan"
 	ProducerReputationScan  admission.ProducerID = "reputation_scan"
-	ProducerThreatScan      admission.ProducerID = "threat_scan"
+	ProducerDBSessionScan   admission.ProducerID = "db_session_scan"
 	ProducerConnectionScan  admission.ProducerID = "connection_scan"
 )
 
@@ -90,9 +90,12 @@ var producerTable = []ProducerEntry{
 	{admission.ProducerSpec{ID: ProducerReputationScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
 		Checks: []string{"ip_reputation"}},
 		admission.ParserRef{Name: "reputation", Version: 1}},
-	{admission.ProducerSpec{ID: ProducerThreatScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
+	// local_threat_score now comes only from the database malware response:
+	// addresses with a live WordPress session on a site whose database scan
+	// found malware.
+	{admission.ProducerSpec{ID: ProducerDBSessionScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
 		Checks: []string{"local_threat_score"}},
-		admission.ParserRef{Name: "attackdb", Version: 1}},
+		admission.ParserRef{Name: "db_session", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerConnectionScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
 		Checks: []string{"c2_connection"}},
 		admission.ParserRef{Name: "proc_net_tcp", Version: 1}},

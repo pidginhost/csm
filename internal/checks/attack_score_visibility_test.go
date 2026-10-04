@@ -7,9 +7,10 @@ import (
 	"github.com/pidginhost/csm/internal/attackdb"
 )
 
-// The attack database's scores drive local_threat_score, which can block. A
-// check that names no evidence family is visibility only and must not feed
-// those scores; successful-login audit records are stored but never scored.
+// The attack database's scores rank addresses and feed the unified verdict,
+// which operators act on. A check that names no evidence family is visibility
+// only and must not feed those scores; successful-login audit records are
+// stored but never scored.
 func TestVisibilityChecksNeverFeedAttackScores(t *testing.T) {
 	for _, info := range checkRegistry {
 		typ, ok := attackdb.AttackTypeFor(info.Name)
