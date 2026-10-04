@@ -9,6 +9,17 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Highlights
+
+- Existing hosts keep skipping cache, vendor and Imunify plugin folders until `*/cache/*`, `*/vendor/*` and `*/imunify-security/*` are removed from `suppressions.ignore_paths`; new installs scan them. Expect a one-time burst of world-writable PHP findings there.
+- Run `csm pam install` again after upgrading so failed SSH logins reach CSM.
+- Integrations: password spray findings carry their subnet in the new `cidrs` field and leave `source_ip` empty.
+- Local threat scores no longer alert or block, and raw mail and SMTP login failures no longer raise them.
+- With `web_server.trusted_proxies` set, check custom log formats: the forwarded address is read only right after the User-Agent.
+- PHP content checks close several comment and string tricks that hid payloads from scans and from automatic quarantine.
+- Realtime signatures and phishing detection stop flagging common library code, page caches and blog author archives.
+- Incident blocks rest on the address evidence a brute-force finding attested and name that finding.
+
 ### Security
 
 - New installs no longer skip cache directories, library vendor directories and the Imunify security plugin folder in realtime and scheduled file scans, so a webshell hidden there is reported. Existing hosts keep the list in their csm.yaml: remove those entries from `suppressions.ignore_paths` to scan them, and expect a one-time burst of world-writable PHP findings there, which `auto_response.enforce_permissions` then fixes.
@@ -24,21 +35,28 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Changed
 
 - Findings list the subnets they name in a new `cidrs` field in the API, webhooks, audit logs, the phpanel queue and history: distributed crawls add it, and mail and SMTP password sprays move their subnet there from `source_ip`, which they now leave empty; incidents and credential-spray grouping (`incidents.spray_suppression`) keep matching sprays by subnet, including replayed findings and existing incidents. New findings and replayed parked subnets gain the field; stored history and audit logs are not backfilled, older `source_ip` values stay, and no setting controls it.
+- Local threat scores no longer alert or block: they only rank addresses on the threat page and in the unified verdict, and raw mail and SMTP login failures no longer raise them, so a mail authentication backend outage or a device with a stale password cannot get an address blocked, while the mail and SMTP brute-force detectors still block attacks under `auto_response.block_ips`. At the upgrade restart existing attack records are re-scored and queued score findings are discarded; stored score alerts clear after the next completed critical scan, block retries under the old score name without a recorded database cause are discarded when retried, existing blocks stay, a retired score-check value in `disabled_checks` leaves reputation scans enabled, and database-session blocks still use `auto_response.block_ips`.
 
 ### Fixed
 
-- Raw mail and SMTP login failures no longer raise local threat scores, so a mail authentication backend outage or a device with a stale password cannot get an address blocked around the mail and SMTP brute-force detectors, which still block attacks under `auto_response.block_ips`. Existing attack records are re-scored at the upgrade restart.
-- Local threat scores only rank addresses on the threat page and in the unified verdict after upgrade; stored score alerts clear after the next completed critical scan, queued score findings are discarded at restart, and block retries under the old score name without a recorded database cause are discarded when retried, while existing blocks stay. A retired score-check value in `disabled_checks` leaves reputation scans enabled, and database-session blocks still use `auto_response.block_ips`.
-- Phishing page detection no longer counts a webmail address in a page title as brand impersonation, which graded a cached blog author archive named after its author as critical phishing and made it eligible for automatic quarantine; a brand written into a login page title still counts. This applies from the next scan of each page, and no setting changes it.
-- Realtime file signatures no longer raise alerts on common library and cache code: Composer's ionCube check, gist fixtures in library tests, a SOCKS client library, encoded files that happen to spell a file manager's name, compiled templates or shop pages that mention a game, and a decoder example in a library's comments, while a fake ionCube loader that names the encoder first is now caught. This applies to files written after the upgrade; existing findings stay until dismissed, and no setting changes it.
+#### Firewall and blocking
+
 - Incident blocks rely on the address-evidence check alone: an address that a brute-force finding attested can be blocked when later advisory findings raise the incident's severity, even after the attesting finding left a trimmed timeline, while advisory findings alone still never block. After upgrade, existing incidents keep their evidence and can block on the next finding when `incidents.auto_block` is on.
 - An incident's firewall block now names the finding that attested the address, even after the incident timeline was trimmed, instead of the newest finding from that address. This applies to blocks made after the upgrade; incidents stored earlier learn the link at startup when their timeline retains it or from the next attesting finding if the link was lost, and no setting changes it.
 - Credential-spray incident blocks need address evidence for the source, like other incident blocks: a spray made only of raw mail login failures, as with the default `incidents.spray_suppression.per_check` list, no longer blocks the address, while brute-force and credential-stuffing findings from it still can. This only affects hosts that turned spray blocking on with `incidents.spray_suppression.block_at_severity`, which is off by default.
-- Web attack detection skips requests that a cPanel proxy subdomain passes to the panel, which the panel's own log already covers, so a busy cPanel or webmail session or phpMyAdmin use through a proxy subdomain no longer counts toward web floods or admin-panel brute force. Applies to log lines read after the upgrade; a log named in `web_server.access_logs` that is not one of cPanel's own access logs counts as website traffic.
-- An SSH login from an unknown address records a tenant and attack database account only when sshd confirms a successful login to a hosting account; root and service-user findings carry no `tenant_id` and group by address. This applies to new findings after the upgrade, existing incidents and attack records keep their attribution, and no setting changes it.
 - FTP brute-force alerts use new failures, so old evidence no longer re-blocks an operator-unblocked address or recounts the same burst; diagnostic and cancelled scans leave evidence for live detection. On upgrade, the Findings page drops the row at the first scan without new failures instead of when the window ends; `thresholds.ftp_fail_window_min` still sets how far back failures add up.
-- After the upgrade restart, cPanel web checks try Apache and LiteSpeed logs instead of the panel's own log, avoiding false blocks of customer sessions; the realtime watcher also retries all candidates when no log exists at startup. Periodic checks count aliases of the selected central log once, including operator overrides through `web_server.access_logs`; existing blocks remain until expiry or removal.
 - Findings still queued when the daemon stops keep their offending subnets and targeted accounts when they replay at the next start, so a crawl's subnet block and credential spray counts are no longer lost across a restart. Only findings parked by the new version carry them; the subnet block still follows `auto_response.enabled` and `block_ips`.
+
+#### Web server logs
+
+- Web attack detection skips requests that a cPanel proxy subdomain passes to the panel, which the panel's own log already covers, so a busy cPanel or webmail session or phpMyAdmin use through a proxy subdomain no longer counts toward web floods or admin-panel brute force. Applies to log lines read after the upgrade; a log named in `web_server.access_logs` that is not one of cPanel's own access logs counts as website traffic.
+- After the upgrade restart, cPanel web checks try Apache and LiteSpeed logs instead of the panel's own log, avoiding false blocks of customer sessions; the realtime watcher also retries all candidates when no log exists at startup. Periodic checks count aliases of the selected central log once, including operator overrides through `web_server.access_logs`; existing blocks remain until expiry or removal.
+
+#### Findings and file detection
+
+- Phishing page detection no longer counts a webmail address in a page title as brand impersonation, which graded a cached blog author archive named after its author as critical phishing and made it eligible for automatic quarantine; a brand written into a login page title still counts. This applies from the next scan of each page, and no setting changes it.
+- Realtime file signatures no longer raise alerts on common library and cache code: Composer's ionCube check, gist fixtures in library tests, a SOCKS client library, encoded files that happen to spell a file manager's name, compiled templates or shop pages that mention a game, and a decoder example in a library's comments, while a fake ionCube loader that names the encoder first is now caught. This applies to files written after the upgrade; existing findings stay until dismissed, and no setting changes it.
+- An SSH login from an unknown address records a tenant and attack database account only when sshd confirms a successful login to a hosting account; root and service-user findings carry no `tenant_id` and group by address. This applies to new findings after the upgrade, existing incidents and attack records keep their attribution, and no setting changes it.
 
 ## [4.1.0] - 2026-10-01
 
