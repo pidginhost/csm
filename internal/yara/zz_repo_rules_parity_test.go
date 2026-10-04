@@ -1657,6 +1657,33 @@ echo $double(21);
 <error>file_put_contents(/home/example/public_html/wp-content/plugins/wp-cache/config.php): Failed to open stream</error>
 `,
 		},
+		{
+			name:     "ionCube extension check with no decoder",
+			rule:     "obfuscation_ionCube_fake",
+			yaraRule: "obfuscation_fake_ioncube",
+			sample: `<?php
+if (extension_loaded('ionCube Loader') && ioncube_loader_iversion() < 40009) {
+    $warnings['ioncube'] = ioncube_loader_version();
+}
+$text = "Your ionCube Loader extension is incompatible with Phar files.";`,
+		},
+		{
+			name:     "fake ionCube loader naming the encoder first",
+			rule:     "obfuscation_ionCube_fake",
+			yaraRule: "obfuscation_fake_ioncube",
+			want:     true,
+			sample: `<?php
+/* This file is protected by ionCube Encoder */
+eval(gzinflate(base64_decode('S03OyFdIzs8rSc0rUVTyyM/LU0hKLM4pzs9RBAA=')));`,
+		},
+		{
+			name:     "fake ionCube loader naming the encoder last",
+			rule:     "obfuscation_ionCube_fake",
+			yaraRule: "obfuscation_fake_ioncube",
+			want:     true,
+			sample: `<?php
+assert(base64_decode('ZWNobyAiaGVsbG8iOw==')); // ionCube encoded`,
+		},
 	}
 
 	for _, tc := range tests {
@@ -1717,6 +1744,15 @@ func TestRenamedYARARuleClaims(t *testing.T) {
 		wantYAMLHit bool
 		wantYARAHit bool
 	}{
+		{
+			name:        "fake ionCube loader rename",
+			yamlRule:    "obfuscation_ionCube_fake",
+			yaraRule:    "obfuscation_fake_ioncube",
+			ext:         ".php",
+			sample:      "<?php\n/* ionCube Loader */\neval(str_rot13(base64_decode($p)));",
+			wantYAMLHit: true,
+			wantYARAHit: true,
+		},
 		{
 			name:        "stream wrapper rename",
 			yamlRule:    "dropper_php_stream_wrapper",
