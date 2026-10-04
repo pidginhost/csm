@@ -466,7 +466,7 @@ func analyzeHTMLForPhishing(ctx context.Context, path string) *phishingResult {
 		bodyHit := false
 
 		for _, tp := range brand.titlePatterns {
-			if strings.Contains(titleContent, tp) {
+			if titleNamesBrand(titleContent, tp) {
 				titleHit = true
 				indicators = append(indicators, fmt.Sprintf("title impersonates '%s'", tp))
 				score += 3
@@ -583,6 +583,27 @@ func analyzeHTMLForPhishing(ctx context.Context, path string) *phishingResult {
 // ---------------------------------------------------------------------------
 
 // extractTitle pulls the <title> content from HTML.
+// titleNamesBrand reports whether pattern appears in title as a word of its
+// own. A page titled after a person who uses a webmail address carries the
+// brand inside that address or its slug, which is not impersonation.
+func titleNamesBrand(title, pattern string) bool {
+	for offset := 0; offset < len(title); {
+		idx := strings.Index(title[offset:], pattern)
+		if idx < 0 {
+			return false
+		}
+		start := offset + idx
+		end := start + len(pattern)
+		standsAlone := (start == 0 || (!isASCIIAlphaNumeric(title[start-1]) && title[start-1] != '@')) &&
+			(end == len(title) || !isASCIIAlphaNumeric(title[end]))
+		if standsAlone {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
+}
+
 func extractTitle(contentLower string) string {
 	for offset := 0; offset < len(contentLower); {
 		idx := strings.Index(contentLower[offset:], "<title")
@@ -1100,7 +1121,7 @@ func analyzePHPForPhishing(ctx context.Context, path string) *phishingResult {
 	if titleContent != "" {
 		for _, brand := range phishingBrands {
 			for _, tp := range brand.titlePatterns {
-				if strings.Contains(titleContent, tp) {
+				if titleNamesBrand(titleContent, tp) {
 					brandMatch = brand.name
 					matchedGeneric = brand.generic
 					indicators = append(indicators, fmt.Sprintf("title impersonates '%s'", tp))
