@@ -89,3 +89,51 @@ call_user_func('assert', $code);
 		t.Error("php_dropper_gist missed a gist payload passed to call_user_func")
 	}
 }
+
+const socks5StreamClient = `<?php
+/**
+ * SOCKS5 proxy connection class
+ */
+class HTTP_Request2_SOCKS5 extends HTTP_Request2_SocketWrapper
+{
+    public function __construct($address, $timeout = 10, array $contextOptions = array())
+    {
+        parent::__construct($address, $timeout, $contextOptions);
+        $this->write(pack('C3', 5, 1, 0));
+        $response = unpack('Cversion/Cmethod', $this->read(3));
+        if (5 != $response['version']) {
+            throw new HTTP_Request2_MessageException('Invalid version received from SOCKS5 proxy');
+        }
+    }
+
+    protected function connect($remoteHost, $remotePort)
+    {
+        $request = pack('C5', 0x05, 0x01, 0x00, 0x03, strlen($remoteHost)) . $remoteHost . pack('n', $remotePort);
+        $this->write($request);
+    }
+}
+`
+
+func TestFPVendor_YML_SocksProxy_StreamClient(t *testing.T) {
+	s := loadRepoScanner(t)
+	if hasRule(s.ScanContent([]byte(socks5StreamClient), ".php"), "network_socks_proxy") {
+		t.Error("network_socks_proxy FP: matched a SOCKS5 client that opens no raw socket")
+	}
+}
+
+func TestFPVendor_YML_SocksProxy_SocketRelay(t *testing.T) {
+	s := loadRepoScanner(t)
+	relay := []byte(`<?php
+$srv = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+socket_bind($srv, '0.0.0.0', 1080);
+socket_listen($srv);
+$c = socket_accept($srv);
+$hello = socket_read($c, 3); // SOCKS greeting
+socket_write($c, chr(0x05) . chr(0x00));
+$up = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+socket_connect($up, $host, $port);
+`)
+	if !hasRule(s.ScanContent(relay, ".php"), "network_socks_proxy") {
+		t.Error("network_socks_proxy missed a raw-socket SOCKS relay")
+	}
+}

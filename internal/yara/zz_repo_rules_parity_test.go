@@ -1658,6 +1658,29 @@ echo $double(21);
 `,
 		},
 		{
+			name: "SOCKS5 client over a stream wrapper",
+			rule: "network_socks_proxy",
+			sample: `<?php
+/**
+ * SOCKS5 proxy connection class
+ */
+class Client_SOCKS5 extends SocketWrapper {
+    protected function connect($host, $port) {
+        $this->write(pack('C5', 0x05, 0x01, 0x00, 0x03, strlen($host)) . $host . pack('n', $port));
+    }
+}`,
+		},
+		{
+			name: "raw-socket SOCKS relay",
+			rule: "network_socks_proxy",
+			want: true,
+			sample: `<?php
+$srv = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+socket_write($c, chr(0x05) . chr(0x00)); // SOCKS reply
+$up = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+socket_connect($up, $host, $port);`,
+		},
+		{
 			name:     "test fixture downloaded from a gist",
 			rule:     "php_dropper_gist",
 			yaraRule: "php_dropper_github_gist",
