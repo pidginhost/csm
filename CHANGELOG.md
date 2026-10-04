@@ -13,10 +13,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Go dependencies and the pinned GitHub Actions are updated to their current releases; existing hosts see no behaviour change and no setting is involved.
 
-### Fixed
-
-- Coverage publishing stops when release discovery fails instead of accepting partial results. Existing hosts and settings are unchanged.
-
 ## [4.2.0] - 2026-10-04
 
 ### Highlights
