@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md), [3.30 to 3.39](docs/changelog/3.30-3.39.md), [3.20 to 3.29](docs/changelog/3.20-3.29.md), [3.10 to 3.19](docs/changelog/3.10-3.19.md), [3.0 to 3.9](docs/changelog/3.0-3.9.md), [2.x](docs/changelog/2.x.md).
 
-## [Unreleased]
+## [4.2.0] - 2026-10-04
 
 ### Highlights
 
@@ -301,5 +301,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - **Breaking:** `POST /api/v1/rules/modsec-escalation`, which replaced the whole escalation exclusion list without checking rule IDs, is removed. Use `POST /api/v1/modsec/rules/escalation` to change one rule at a time.
 
+[4.2.0]: https://github.com/pidginhost/csm/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/pidginhost/csm/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/pidginhost/csm/compare/v3.43.0...v4.0.0
