@@ -39,7 +39,11 @@ type sender struct {
 	// announced is set once the current stop of the ingress was sent.
 	announced      bool
 	announcedSince time.Time
-	done           chan struct{}
+	// A failed stop notification must survive recovery until delivery.
+	pendingStop   *alert.Finding
+	pendingSince  time.Time
+	ledgerPending int
+	done          chan struct{}
 }
 
 func (s *sender) run() {
@@ -60,18 +64,14 @@ func (s *sender) cycle() {
 	if s.o.opts.Deliver == nil || s.o.stopping.Load() {
 		return
 	}
-	pendingStop := 0
-	if s.announceStop() {
-		pendingStop = 1
-	}
-	if pendingStop > 0 || len(s.unacked) > 0 {
-		s.queue.Observe(deliveryNow(), pendingStop+len(s.unacked), s.delivered)
-	}
+	s.announceStop()
 	if len(s.unacked) > 0 {
 		if err := s.o.do(func() error { return ackNotices(s.o.ledger, s.unacked) }); err != nil {
 			return
 		}
 		s.unacked = nil
+		s.ledgerPending = 0
+		s.observe()
 	}
 	var l *store.AdmissionLedger
 	if s.o.do(func() error { l = s.o.ledger; return nil }) != nil || l == nil {
@@ -81,7 +81,8 @@ func (s *sender) cycle() {
 	if err != nil {
 		return
 	}
-	s.queue.Observe(deliveryNow(), len(due)+pendingStop, s.delivered)
+	s.ledgerPending = len(due)
+	s.observe()
 	if len(due) == 0 {
 		return
 	}
@@ -99,16 +100,31 @@ func (s *sender) cycle() {
 		return
 	}
 	s.delivered += uint64(len(due))
-	s.queue.Observe(deliveryNow(), pendingStop, s.delivered)
+	s.unacked = acks
+	s.observe()
 	if err = s.o.do(func() error { return ackNotices(l, acks) }); err != nil {
-		s.unacked = acks
+		return
 	}
+	s.unacked = nil
+	s.ledgerPending = 0
+	s.observe()
+}
+
+func (s *sender) observe() {
+	depth := s.ledgerPending
+	if s.pendingStop != nil {
+		depth++
+	}
+	s.queue.Observe(deliveryNow(), depth, s.delivered)
 }
 
 // announceStop sends one Critical notice when the ingress stops admitting,
 // naming the cause the owner recorded (ruling 8, O52). The ledger may be
 // the damaged part, so nothing here writes it.
 func (s *sender) announceStop() bool {
+	if s.pendingStop != nil && s.sendStop() {
+		return true
+	}
 	h := admission.IngressHealth{}
 	cause := "the owner has not started"
 	// Read stop state and its cause together: a recovery between them
@@ -134,17 +150,25 @@ func (s *sender) announceStop() bool {
 	if s.announced && s.announcedSince.Equal(h.StoppedSince) {
 		return false
 	}
-	f := alert.Finding{
+	s.pendingStop = &alert.Finding{
 		Check: "auto_response_withheld", Severity: alert.Critical, Message: "Automatic response admission stopped",
 		Details:   fmt.Sprintf("since=%s critical_refused=%d cause=%s", h.StoppedSince.UTC().Format(time.RFC3339), h.CriticalRefused, cause),
 		Timestamp: time.Now(),
 	}
-	if s.o.opts.Deliver([]alert.Finding{f}) == nil {
-		s.announced, s.announcedSince = true, h.StoppedSince
-		s.delivered++
-		return false
+	s.pendingSince = h.StoppedSince
+	return s.sendStop()
+}
+
+func (s *sender) sendStop() bool {
+	s.observe()
+	if s.o.stopping.Load() || s.o.opts.Deliver([]alert.Finding{*s.pendingStop}) != nil {
+		return true
 	}
-	return true
+	s.announced, s.announcedSince = true, s.pendingSince
+	s.pendingStop = nil
+	s.delivered++
+	s.observe()
+	return false
 }
 
 // noticeFinding is the notification of one notice record: its registered

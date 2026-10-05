@@ -223,6 +223,9 @@ func WriteDurable(r Record) error {
 // write of all of them: a delivery batch is synced once (spec 5.5). Like
 // WriteDurable it delivers at least once.
 func WriteDurableBatch(rs []Record) error {
+	if len(rs) == 0 {
+		return nil
+	}
 	mu.RLock()
 	s, h, a := sink, host, byActor
 	mu.RUnlock()

@@ -288,15 +288,14 @@ func (o *Owner) readTick() (admission.ClockReading, error) {
 // publishes a fresh snapshot.
 func (o *Owner) tick() error {
 	admitting := o.ingress.Health().Admitting
-	if _, err := o.readTick(); err != nil {
-		o.ingress.Publish(nil)
-		if admitting {
+	defer func() {
+		if !admitting || !o.ingress.Health().Admitting {
 			o.refreshStatus()
 		}
+	}()
+	if _, err := o.readTick(); err != nil {
+		o.ingress.Publish(nil)
 		return err
-	}
-	if !admitting {
-		defer o.refreshStatus()
 	}
 	return o.publish()
 }
@@ -325,8 +324,12 @@ func (o *Owner) refreshInventory() {
 	o.inventoryErr = err
 	if err == nil {
 		o.inventoryAt = time.Now()
-		if o.started {
+		if o.started && o.tickErr == nil {
+			admitting := o.ingress.Health().Admitting
 			_ = o.publish()
+			if admitting != o.ingress.Health().Admitting {
+				o.refreshStatus()
+			}
 		}
 	}
 }
