@@ -413,7 +413,7 @@ func (l *AdmissionLedger) RefreshInventory(obs admission.InventoryObservation) e
 		if err != nil {
 			return err
 		}
-		gens, err := g.Observe(obs.Accounts)
+		gens, err := g.Observe(obs.Accounts, obs.Incarnations)
 		if err != nil {
 			return refusal(admission.ReasonInvalid, "inventory observation is malformed")
 		}

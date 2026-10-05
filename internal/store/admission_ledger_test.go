@@ -228,7 +228,7 @@ func TestAdmissionLedgerValidatesInventoryPair(t *testing.T) {
 		raw := []byte("damaged")
 		if mismatch {
 			g := admission.NewGenerations()
-			if _, err := g.Observe([]string{"carol"}); err != nil {
+			if _, err := g.Observe([]string{"carol"}, nil); err != nil {
 				t.Fatal(err)
 			}
 			var err error

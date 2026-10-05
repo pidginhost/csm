@@ -81,6 +81,16 @@ Its entries also appear here; dry-run decisions, failed attempts and whole
 ruleset apply/rollback records are recorded directly on this stream.
 Startup rollback records are written before the daemon requests a restart.
 
+Admission records describe each step of an automatic response the admission
+ledger admitted: `op` is `respond.block_ip`, `action` the kind of response
+(`block_ip`, `block_subnet`, `block_service`, `promote` or `challenge`),
+`target` its canonical target, `reason` the lane and the absolute expiry, and
+`result` the step (`reserved`, `executing`, then `applied`, `narrowed`,
+`failed` or `unknown`). `action_id` and `action_version` name the attempt and
+the step. A record is written durably before the ledger lets it go, so after a
+crash it can appear twice; drop a copy whose `action_id`, `action_version` and
+`ts` match another. Nothing is admitted through the ledger yet.
+
 `actor` uses the caller's attribution when available and otherwise identifies
 the process performing the action. Some web UI requests therefore record as
 `daemon`; the web UI's own action log retains the operator's source address.

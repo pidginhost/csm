@@ -86,6 +86,18 @@ func TestAuditRowRoundTripsAndRefusesTampering(t *testing.T) {
 	}
 }
 
+// A row's acknowledgement names the row and the time it was written.
+func TestAuditRowAckNamesItsTime(t *testing.T) {
+	c, a := reservedPair(t)
+	row, err := NewAuditRow(c, a, Tier{}, a.Reserved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack := row.Ack(); ack.ID != row.ID() || !ack.At.Equal(a.Reserved) {
+		t.Fatalf("ack = %+v, want %+v at %v", ack, row.ID(), a.Reserved)
+	}
+}
+
 func TestAuditRowRefusesInconsistentFields(t *testing.T) {
 	c, a := reservedPair(t)
 	good, err := NewAuditRow(c, a, Tier{}, a.Reserved)

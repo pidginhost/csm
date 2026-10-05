@@ -74,6 +74,9 @@ func copySettingsChangeValues(dst, src *config.Config, section SettingsSection, 
 		if err := copyConfigPathValue(dst, src, path); err != nil {
 			return err
 		}
+		if section.YAMLPath == "auto_response" && key == "max_blocks_per_hour" {
+			dst.AutoResponse.MaxBlocksPerHourDefaulted = src.AutoResponse.MaxBlocksPerHourDefaulted
+		}
 	}
 	return nil
 }

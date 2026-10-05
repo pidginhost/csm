@@ -14,15 +14,27 @@
       "queue": "actionlog"
     },
     {
-      "id": "internal/actionlog/write_queue.go::*writePool.write::done::channel::1",
+      "id": "internal/actionlog/actionlog.go::WriteDurableBatch::acknowledgement::channel::1",
+      "path": "internal/actionlog/actionlog.go",
+      "owner": "WriteDurableBatch",
+      "target": "acknowledgement",
+      "kind": "channel",
+      "source": "make(chan error, 1)",
+      "capacity": "1",
+      "class": "lifecycle",
+      "rationale": "Carries one durable batch-write outcome back to the caller. The buffer keeps the sink's send from blocking after the caller has stopped waiting, so the write retains ownership of the records either way.",
+      "queue": "actionlog"
+    },
+    {
+      "id": "internal/actionlog/write_queue.go::*writePool.run::done::channel::1",
       "path": "internal/actionlog/write_queue.go",
-      "owner": "*writePool.write",
+      "owner": "*writePool.run",
       "target": "done",
       "kind": "channel",
       "source": "make(chan struct{})",
       "capacity": "0",
       "class": "lifecycle",
-      "rationale": "Completes the admitted write; the shared slot owns the record until the sink returns.",
+      "rationale": "Completes the admitted write; the shared slot owns the records until the sink returns.",
       "queue": "actionlog"
     },
     {
@@ -36,6 +48,61 @@
       "class": "work",
       "rationale": "Bounds concurrent action-log writes, including writes whose callers have timed out.",
       "queue": "actionlog"
+    },
+    {
+      "id": "internal/admissionowner/owner.go::*Owner.do::err::channel::1",
+      "path": "internal/admissionowner/owner.go",
+      "owner": "*Owner.do",
+      "target": "err",
+      "kind": "channel",
+      "source": "make(chan error, 1)",
+      "capacity": "1",
+      "class": "lifecycle",
+      "rationale": "Carries one request's result from the owner goroutine to its caller; the buffer keeps the owner from blocking on the reply."
+    },
+    {
+      "id": "internal/admissionowner/owner.go::Start::done::channel::1",
+      "path": "internal/admissionowner/owner.go",
+      "owner": "Start",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Closed when the owner goroutine exits, so waiting callers return."
+    },
+    {
+      "id": "internal/admissionowner/owner.go::Start::done::channel::2",
+      "path": "internal/admissionowner/owner.go",
+      "owner": "Start",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Closed when the notice sender exits, so Stop returns only after a delivery in flight."
+    },
+    {
+      "id": "internal/admissionowner/owner.go::Start::quit::channel::1",
+      "path": "internal/admissionowner/owner.go",
+      "owner": "Start",
+      "target": "quit",
+      "kind": "channel",
+      "source": "make(chan bool)",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Tells the owner goroutine to stop, with or without its final checkpoint; the stopper waits for it."
+    },
+    {
+      "id": "internal/admissionowner/owner.go::Start::requests::channel::1",
+      "path": "internal/admissionowner/owner.go",
+      "owner": "Start",
+      "target": "requests",
+      "kind": "channel",
+      "source": "make(chan request)",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Hands one request to the owner goroutine, which makes every ledger change; the caller waits for the owner and stops waiting once the owner has stopped. Nothing queues."
     },
     {
       "id": "internal/alert/phpanel_queue.go::newPhpanelQueue::done::channel::1",
@@ -1148,6 +1215,65 @@
           "package": "github.com/pidginhost/csm/internal/actionlog",
           "name": "TestWriteQueueReportsLossBeforeBlockedPanicLog",
           "mode": "portable"
+        }
+      ]
+    },
+    {
+      "id": "admission",
+      "rows": [
+        "admission.audit",
+        "admission.notices"
+      ],
+      "bounds": "Audit rows and notice records stay in the admission ledger's outbox, which its recovery and outbox reserve bounds. A delivery writes at most 64 rows per durable write and 16 writes per run; a notice cycle delivers the records due, at most one per key an hour and one per summary a minute.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonOwnsTheAdmissionLedger",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerDeliversAuditRowsDurably",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerReportsStalledAuditDelivery",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerDrainingAuditIsNotStalled",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerDeliversNoticesOnTheIndependentPath",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerNoticeDeliveryFailureIsVisible",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerStopWaitsForANoticeDelivery",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/admissionowner/owner.go",
+          "symbol": "Owner.audit",
+          "shape": "*queuehealth.Sampled"
+        },
+        {
+          "path": "internal/admissionowner/notice.go",
+          "symbol": "sender.queue",
+          "shape": "*queuehealth.Sampled"
         }
       ]
     },

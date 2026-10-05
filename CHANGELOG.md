@@ -13,6 +13,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - The YARA-X scanning engine is updated to 1.21.0 to fix missed and false matches when a rule that checks a file header shares a pattern with another rule. The shipped rules retain their measured matches, and existing hosts keep their rules and stored findings; affected scans can return corrected results, and no setting is involved.
 
+### Added
+
+- Status, `csm doctor` and the status API (capability `status.admission.v1`) report the new automatic response admission ledger, which the daemon creates in its state database at the first start after upgrading, importing the current hour's block count; it admits nothing yet, so blocking is unchanged, and one Critical `auto_response_withheld` alert reports a ledger that cannot start or a stopped admission. Its hourly ceiling follows live changes to `auto_response.max_blocks_per_hour`, where an omitted or zero value selects 2000 for the ledger while the existing per-IP limit keeps its default of 50, and its notices are paced by the ledger instead of `alerts.max_per_hour`, a failed alert being retried at increasing intervals.
+
 ### Changed
 
 - Go dependencies and the pinned GitHub Actions are updated to their current releases; existing hosts see no behaviour change and no setting is involved.

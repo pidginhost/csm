@@ -127,6 +127,43 @@ func (l *AdmissionLedger) SetCeiling(limit uint32) error {
 	})
 }
 
+// ImportLegacySpend takes a new ledger's first limit together with the
+// legacy hourly counter's spend, in one transaction (spec 5.4 migration).
+// A ledger that already has a limit refuses: its import is done, and a
+// restart or rerun cannot create fresh credit.
+func (l *AdmissionLedger) ImportLegacySpend(limit uint32, spend admission.LegacySpend) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.update("ceiling", func(tx *bolt.Tx) error {
+		s, err := loadCeilingState(tx)
+		if err != nil {
+			return err
+		}
+		next, charges, err := s.Import(limit, spend)
+		if err != nil {
+			return err
+		}
+		bucket := tx.Bucket([]byte(admissionChargesBucket))
+		for _, c := range charges {
+			key, err := c.Key()
+			if err != nil {
+				return err
+			}
+			data, err := c.MarshalBinary()
+			if err != nil {
+				return err
+			}
+			if bucket.Get(key) != nil {
+				return admission.ErrCorruptRecord
+			}
+			if err = bucket.Put(key, data); err != nil {
+				return err
+			}
+		}
+		return putCeilingState(tx, next)
+	})
+}
+
 // Ceiling is the committed ceiling state.
 func (l *AdmissionLedger) Ceiling() (admission.CeilingState, error) {
 	var s admission.CeilingState
@@ -205,4 +242,50 @@ func loadCharges(tx *bolt.Tx) ([]admission.Charge, error) {
 		return nil
 	})
 	return out, err
+}
+
+// ImportedLegacySpend reads the retained legacy charges for startup status.
+// Attempt charges retain their attempt until well after the ceiling window;
+// an unmatched orphan is damage, never evidence of a missing import.
+func (l *AdmissionLedger) ImportedLegacySpend() (admission.LegacySpend, error) {
+	var spend admission.LegacySpend
+	err := l.db.bolt.View(func(tx *bolt.Tx) error {
+		if _, err := loadCeiling(tx); err != nil {
+			return err
+		}
+		charges, err := loadCharges(tx)
+		if err != nil {
+			return err
+		}
+		var legacyIDs map[admission.ActionID]bool
+		for _, c := range charges {
+			if tx.Bucket([]byte(admissionAttemptsBucket)).Get([]byte(c.Action)) != nil {
+				a, err := loadAttempt(tx, c.Action)
+				if err != nil {
+					return corruptRecord(err)
+				}
+				candidate, err := loadCandidate(tx, a.Attempt.Candidate)
+				if err != nil || !c.At.Equal(a.Reserved) || c.Lane != a.Lane || c.Cost != candidate.Key.Kind.CeilingCost() {
+					return admission.ErrCorruptRecord
+				}
+				continue
+			}
+			if legacyIDs == nil {
+				spend.At = c.At
+				legacyIDs = make(map[admission.ActionID]bool)
+				for seq := uint32(1); seq <= (admission.MaxCeiling+admission.MaxMemberCost-1)/admission.MaxMemberCost+1; seq++ {
+					legacyIDs[admission.LegacyActionID(c.At, seq)] = true
+				}
+			}
+			if !legacyIDs[c.Action] || !spend.At.Equal(c.At) {
+				return admission.ErrCorruptRecord
+			}
+			spend.Units += c.Cost
+		}
+		return nil
+	})
+	if err != nil {
+		return admission.LegacySpend{}, err
+	}
+	return spend, err
 }

@@ -1,7 +1,11 @@
 package main
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/health"
 )
 
@@ -16,5 +20,71 @@ func admissionDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 	for _, r := range rows {
 		checks = append(checks, DoctorCheck{Name: r.Name, Status: r.Status, Message: r.Message, Fix: r.Fix})
 	}
-	return checks
+	return append(checks, ownerDoctorChecks(a)...)
+}
+
+// ownerDoctorChecks renders what only the ledger's owner knows: whether it
+// runs, its clock, the ceiling's source, the legacy import and the
+// inventory reads.
+func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
+	o := a.Owner
+	if o == nil {
+		return nil
+	}
+	owner := DoctorCheck{Name: "admission owner", Status: "ok"}
+	if o.Error != "" {
+		owner = DoctorCheck{
+			Name: "admission owner", Status: "fail", Message: "the admission ledger is not running: " + o.Error,
+			Fix: "the daemon retries at every tick; if the ledger cannot open, stop csm.service and restore the state database from a backup",
+		}
+	}
+	clock := DoctorCheck{Name: "admission clock", Status: "ok"}
+	switch {
+	case o.TickError != "":
+		clock = DoctorCheck{
+			Name: "admission clock", Status: "fail", Message: "the last clock reading was refused: " + o.TickError,
+			Fix: "nothing is admitted until a reading succeeds; check the system clock and /proc/sys/kernel/random/boot_id",
+		}
+	case o.ClockDegraded:
+		clock = DoctorCheck{
+			Name: "admission clock", Status: "warn",
+			Message: "the wall clock is behind the ledger's time or disagrees with the time since boot; wall time alone proves nothing new until they agree",
+			Fix:     "check time synchronisation",
+		}
+	}
+	rows := []DoctorCheck{owner, clock}
+	if a.Ledger != nil && a.Ledger.Ceiling.Error == "" && a.Ledger.Ceiling.Limit > 0 {
+		limit := a.Ledger.Ceiling.Limit
+		c := DoctorCheck{Name: "admission ceiling", Status: "ok", Message: fmt.Sprintf("%d automatic responses per hour (%s)", limit, o.CeilingSource)}
+		switch {
+		case o.CeilingSource == config.CeilingClamped:
+			c.Status = "warn"
+			c.Message = fmt.Sprintf("auto_response.max_blocks_per_hour exceeds the largest ceiling the ledger accepts; it uses %d", limit)
+			c.Fix = fmt.Sprintf("set auto_response.max_blocks_per_hour to at most %d", admission.MaxCeiling)
+		case limit == 1:
+			c.Status = "warn"
+			c.Message = "a ceiling of 1 runs only the reserved lane: only direct compromise and corroborated responses can be served"
+			c.Fix = "raise auto_response.max_blocks_per_hour, or remove it to use the default"
+		}
+		rows = append(rows, c)
+	}
+	if imp := o.Import; imp != nil {
+		c := DoctorCheck{Name: "admission legacy import", Status: "ok", Message: "the legacy hourly count held no blocks of the last hour"}
+		switch {
+		case imp.Error != "":
+			c.Status = "warn"
+			c.Message = "the legacy hourly count could not be read (" + imp.Error + "); the ledger started without saved credit"
+			c.Fix = "none needed: credit refills at the ceiling's rate"
+		case imp.Units > 0:
+			c.Message = fmt.Sprintf("%d blocks imported from the legacy hourly count; they count at least until %s", imp.Units, imp.At.Add(admission.CeilingWindow).UTC().Format(time.RFC3339))
+		}
+		rows = append(rows, c)
+	}
+	if o.InventoryError != "" {
+		rows = append(rows, DoctorCheck{
+			Name: "admission inventory", Status: "warn", Message: "the last hosting inventory read failed: " + o.InventoryError,
+			Fix: "admission keeps the previous accounts; check the account registry and home directories",
+		})
+	}
+	return rows
 }

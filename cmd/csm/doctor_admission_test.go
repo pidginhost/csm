@@ -49,3 +49,70 @@ func TestBuildDoctorReportRendersAdmissionRows(t *testing.T) {
 		t.Fatalf("overall = %q", report.OverallStatus)
 	}
 }
+
+// The owner's own view reaches doctor: a ledger that is not running and a
+// refused clock reading fail, a degraded clock, a clamped ceiling, a ceiling
+// of one, an unreadable legacy count and a failed inventory read warn, and
+// a healthy owner shows its ceiling and import.
+func TestDoctorRendersAdmissionOwnerRows(t *testing.T) {
+	at := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	ledger := func(limit uint32) *admission.LedgerStatus {
+		return &admission.LedgerStatus{Ceiling: admission.CeilingStatus{Limit: limit}, Storage: admission.StorageStatus{RecoveryRoom: admission.RecoveryReserveBytes}}
+	}
+	healthy := &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(2000), Ingress: &admission.IngressHealth{Admitting: true},
+		Owner: &health.AdmissionOwner{CeilingSource: "default", Import: &health.AdmissionImport{Units: 12, At: at}}}
+	report := doctorReportForSnapshot(t, admissionSnapshot(healthy))
+	for name, want := range map[string]string{
+		"admission owner":         "ok",
+		"admission clock":         "ok",
+		"admission ceiling":       "ok",
+		"admission legacy import": "ok",
+	} {
+		if got, ok := doctorCheckNamed(report, name); !ok || got.Status != want {
+			t.Errorf("%s = %+v (%v), want %s", name, got, ok, want)
+		}
+	}
+	if c, _ := doctorCheckNamed(report, "admission ceiling"); !strings.Contains(c.Message, "2000") || !strings.Contains(c.Message, "default") {
+		t.Errorf("ceiling = %+v", c)
+	}
+	if c, _ := doctorCheckNamed(report, "admission legacy import"); !strings.Contains(c.Message, "12") || !strings.Contains(c.Message, "2026-10-04T13:00:00Z") || !strings.Contains(c.Message, "at least until") {
+		t.Errorf("import = %+v", c)
+	}
+	if _, ok := doctorCheckNamed(report, "admission inventory"); ok {
+		t.Error("a healthy inventory printed a row")
+	}
+	healthy.Owner.Import = &health.AdmissionImport{}
+	if c, _ := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(healthy)), "admission legacy import"); c.Status != "ok" || !strings.Contains(c.Message, "no blocks") {
+		t.Errorf("an empty import = %+v", c)
+	}
+
+	for _, tc := range []struct {
+		name, row, status, text string
+		view                    *health.AdmissionStatus
+	}{
+		{"not running", "admission owner", "fail", "schema", &health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{},
+			Owner: &health.AdmissionOwner{Error: "opening the admission ledger: admission ledger schema is not supported"}}},
+		{"refused reading", "admission clock", "fail", "clock unavailable", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(2000), Ingress: &admission.IngressHealth{},
+			Owner: &health.AdmissionOwner{TickError: "reading the admission clock: clock unavailable"}}},
+		{"degraded clock", "admission clock", "warn", "behind", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(2000), Ingress: &admission.IngressHealth{Admitting: true},
+			Owner: &health.AdmissionOwner{ClockDegraded: true}}},
+		{"clamped", "admission ceiling", "warn", "20000", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(20000), Ingress: &admission.IngressHealth{Admitting: true},
+			Owner: &health.AdmissionOwner{CeilingSource: "clamped"}}},
+		{"ceiling of one", "admission ceiling", "warn", "reserved lane", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(1), Ingress: &admission.IngressHealth{Admitting: true},
+			Owner: &health.AdmissionOwner{CeilingSource: "configured"}}},
+		{"unreadable count", "admission legacy import", "warn", "without saved credit", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(2000), Ingress: &admission.IngressHealth{Admitting: true},
+			Owner: &health.AdmissionOwner{Import: &health.AdmissionImport{Error: "reading blocked_ips.json: unexpected EOF"}}}},
+		{"inventory", "admission inventory", "warn", "registry unreadable", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(2000), Ingress: &admission.IngressHealth{Admitting: true},
+			Owner: &health.AdmissionOwner{InventoryError: "registry unreadable"}}},
+	} {
+		report := doctorReportForSnapshot(t, admissionSnapshot(tc.view))
+		got, ok := doctorCheckNamed(report, tc.row)
+		if !ok || got.Status != tc.status || !strings.Contains(got.Message, tc.text) || got.Fix == "" {
+			t.Errorf("%s: %s = %+v (%v), want %s naming %q with a fix", tc.name, tc.row, got, ok, tc.status, tc.text)
+		}
+	}
+	if _, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(&health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{},
+		Owner: &health.AdmissionOwner{Error: "x"}})), "admission ceiling"); ok {
+		t.Error("a ledger that is not running printed a ceiling")
+	}
+}

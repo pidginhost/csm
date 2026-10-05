@@ -81,7 +81,7 @@ func FuzzUnmarshalEvidence(f *testing.F) {
 
 func FuzzGenerations(f *testing.F) {
 	g := NewGenerations()
-	if _, err := g.Observe([]string{"alice"}); err != nil {
+	if _, err := g.Observe([]string{"alice"}, nil); err != nil {
 		f.Fatal(err)
 	}
 	seed, err := g.MarshalBinary()

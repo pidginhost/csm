@@ -7,6 +7,7 @@ import (
 	"hash"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // identityVersion is hashed into every derived ID. Changing the derivation
@@ -130,6 +131,18 @@ func attemptID(c CandidateID, seq uint32) ActionID {
 	h := sha256.New()
 	writeField(h, []byte{identityVersion})
 	writeField(h, []byte(c))
+	writeField(h, binary.BigEndian.AppendUint32(nil, seq))
+	return ActionID("act_" + hex.EncodeToString(h.Sum(nil)[:16]))
+}
+
+// LegacyActionID names the seq-th charge imported from the legacy hourly
+// counter for the hour ending at at. Its hash input has a field an
+// attempt's never has, so the two never collide.
+func LegacyActionID(at time.Time, seq uint32) ActionID {
+	h := sha256.New()
+	writeField(h, []byte{identityVersion})
+	writeField(h, []byte("legacy_hour"))
+	writeField(h, binary.BigEndian.AppendUint64(nil, uint64(at.UnixNano())))
 	writeField(h, binary.BigEndian.AppendUint32(nil, seq))
 	return ActionID("act_" + hex.EncodeToString(h.Sum(nil)[:16]))
 }
