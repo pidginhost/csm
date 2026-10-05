@@ -13,8 +13,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - A file planted in a hosted site can no longer stall the deep phishing scan.
 - Scheduled phishing scans now report kits in dependency and source-control folders unless excluded.
-- Group-writable PHP checks now include dependency and cache folders and ignore symbolic links.
-- Malware scans now catch previously missed threats and raise fewer false alarms.
+- Group-writable PHP checks now include dependency and cache folders and no longer raise false alerts on symbolic links.
+- The malware scanning engine moves to YARA-X 1.21.0, catching previously missed threats and raising fewer false alarms.
 
 ### Added
 
