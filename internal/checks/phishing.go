@@ -27,9 +27,8 @@ const phishingReadSize = 100000
 // phishingScanMaxDepth bounds how deep CheckPhishing recurses below each doc
 // root. Real kits land in date-nested WordPress upload folders
 // (wp-content/uploads/YYYY/MM/<kit>/), six directory levels below the root, so
-// the budget must clear that. Heavy/transient dirs (node_modules, vendor, WP
-// core, caches) are pruned by isKnownSafeDir before recursion, keeping the
-// deeper walk affordable.
+// the budget must clear that. No directory is pruned by name: anything the web
+// server serves can hold a kit.
 const phishingScanMaxDepth = 8
 
 // ---------------------------------------------------------------------------
@@ -276,27 +275,13 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 		name := entry.Name()
 		fullPath := filepath.Join(dir, name)
 
-		// Bypassed for explicit full-scan / audit requests.
-		suppressed := false
-		if scanRespectsIgnores(ctx, cfg) {
-			for _, ignore := range cfg.Suppressions.IgnorePaths {
-				if matchGlob(fullPath, ignore) {
-					suppressed = true
-					break
-				}
-			}
-		}
-		if suppressed {
+		if scanRespectsIgnores(ctx, cfg) && PathMatchesIgnore(fullPath, cfg.Suppressions.IgnorePaths) {
 			continue
 		}
 
 		if entry.IsDir() {
-			if isKnownSafeDir(name) {
-				continue
-			}
-
 			// --- Directory anomaly detection ---
-			dirResult := analyzeDirectoryStructure(ctx, fullPath, user)
+			dirResult := analyzeDirectoryStructure(ctx, fullPath, user, cfg)
 			if dirResult != nil {
 				*findings = append(*findings, *dirResult)
 			}
@@ -309,6 +294,9 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 		info, err := entry.Info()
 		if err != nil {
 			markScanReadError(ctx, "phishing", err)
+			continue
+		}
+		if !info.Mode().IsRegular() {
 			continue
 		}
 		size := info.Size()
@@ -422,7 +410,7 @@ type phishingResult struct {
 }
 
 func analyzeHTMLForPhishing(ctx context.Context, path string) *phishingResult {
-	f, err := osFS.Open(path)
+	f, err := openTenantRegularFile(path)
 	if err != nil {
 		markScanReadError(ctx, "phishing", err)
 		return nil
@@ -871,7 +859,7 @@ func looksLikePersonName(name string) bool {
 // - Contains only 1-3 HTML files and nothing else significant
 // - Directory name looks like a business/organization name
 // - No CMS markers (wp-config, index.php, etc.)
-func analyzeDirectoryStructure(ctx context.Context, dir string, user string) *alert.Finding {
+func analyzeDirectoryStructure(ctx context.Context, dir string, user string, cfg *config.Config) *alert.Finding {
 	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		markScanReadError(ctx, "phishing", err)
@@ -892,7 +880,7 @@ func analyzeDirectoryStructure(ctx context.Context, dir string, user string) *al
 		}
 		totalFiles++
 		nameLower := strings.ToLower(name)
-		if strings.HasSuffix(nameLower, ".html") || strings.HasSuffix(nameLower, ".htm") {
+		if entry.Type().IsRegular() && (strings.HasSuffix(nameLower, ".html") || strings.HasSuffix(nameLower, ".htm")) {
 			htmlFiles = append(htmlFiles, name)
 		} else {
 			otherFiles++
@@ -914,6 +902,9 @@ func analyzeDirectoryStructure(ctx context.Context, dir string, user string) *al
 	hasPhishingContent := false
 	for _, htmlFile := range htmlFiles {
 		fullPath := filepath.Join(dir, htmlFile)
+		if scanRespectsIgnores(ctx, cfg) && PathMatchesIgnore(fullPath, cfg.Suppressions.IgnorePaths) {
+			continue
+		}
 		if quickPhishingCheck(ctx, fullPath) {
 			hasPhishingContent = true
 			break
@@ -1032,7 +1023,7 @@ func looksLikeBusinessName(name string) bool {
 // phishing kits in scope while letting tutorials and trivial forms drop
 // out without consulting any path-name allowlist.
 func quickPhishingCheck(ctx context.Context, path string) bool {
-	f, err := osFS.Open(path)
+	f, err := openTenantRegularFile(path)
 	if err != nil {
 		markScanReadError(ctx, "phishing", err)
 		return false
@@ -1062,17 +1053,19 @@ func quickPhishingCheck(ctx context.Context, path string) bool {
 	}
 
 	titleContent := extractTitle(contentLower)
+	passwordInput := hasHTMLPasswordInput(contentLower)
+	bodyContent := visiblePageContent(contentLower, true)
 	for _, brand := range phishingBrands {
 		if brand.generic {
 			continue
 		}
 		for _, tp := range brand.titlePatterns {
-			if titleContent != "" && strings.Contains(titleContent, tp) {
+			if titleNamesBrand(titleContent, tp, passwordInput) {
 				return true
 			}
 		}
 		for _, bp := range brand.bodyPatterns {
-			if strings.Contains(contentLower, bp) {
+			if strings.Contains(bodyContent, bp) {
 				return true
 			}
 		}
@@ -1088,7 +1081,7 @@ func quickPhishingCheck(ctx context.Context, path string) bool {
 // brand impersonation. PHP phishing kits often have PHP code at the top
 // (credential handling, emailing) and HTML output below.
 func analyzePHPForPhishing(ctx context.Context, path string) *phishingResult {
-	f, err := osFS.Open(path)
+	f, err := openTenantRegularFile(path)
 	if err != nil {
 		markScanReadError(ctx, "phishing", err)
 		return nil
@@ -1334,7 +1327,7 @@ func isKnownCMSFile(nameLower string) bool {
 // checkPHPRedirector reads a small PHP file and checks if it's an open
 // redirector - a file that redirects the visitor to a URL from a parameter.
 func checkPHPRedirector(ctx context.Context, path string) string {
-	f, err := osFS.Open(path)
+	f, err := openTenantRegularFile(path)
 	if err != nil {
 		markScanReadError(ctx, "phishing", err)
 		return ""
@@ -1510,7 +1503,7 @@ func normalizeCredentialLogText(data []byte) []byte {
 // checkCredentialLog reads a text file and checks if it contains harvested
 // credentials (email:password pairs, one per line) or a harvested address list.
 func checkCredentialLog(ctx context.Context, path string) string {
-	f, err := osFS.Open(path)
+	f, err := openTenantRegularFile(path)
 	if err != nil {
 		markScanReadError(ctx, "phishing", err)
 		return ""
@@ -1609,7 +1602,7 @@ func analyzeCredentialLog(data []byte, path string) string {
 // checkIframePhishing checks small HTML files for iframe-based phishing -
 // a minimal HTML page that just loads an external phishing page in a full-screen iframe.
 func checkIframePhishing(ctx context.Context, path string) string {
-	f, err := osFS.Open(path)
+	f, err := openTenantRegularFile(path)
 	if err != nil {
 		markScanReadError(ctx, "phishing", err)
 		return ""
@@ -1770,9 +1763,11 @@ func isKitCredentialSinkName(base string) bool {
 // blocker. Two signal categories from at least two distinct entries are
 // required so one generic result filename cannot decide the archive alone.
 func zipLooksLikeKit(ctx context.Context, path string) bool {
-	f, err := osFS.Open(path)
+	f, err := openTenantRegularFile(path)
 	if err != nil {
-		markScanReadError(ctx, "phishing", err)
+		if err != errNonRegularFile {
+			markScanReadError(ctx, "phishing", err)
+		}
 		return false
 	}
 	defer func() { _ = f.Close() }()
@@ -2044,25 +2039,4 @@ func visibleTextLen(s string) int {
 		}
 	}
 	return n
-}
-
-// ---------------------------------------------------------------------------
-// Safe directory list
-// ---------------------------------------------------------------------------
-
-// isKnownSafeDir names directories that CheckPhishing does not recurse into.
-// The list is deliberately narrow: dependency trees whose bundled HTML
-// documentation contains legitimate login-form examples, and VCS metadata.
-// It is not an allowlist of "trusted" paths. WordPress core directories,
-// caches, tmp and logs used to be pruned too, and kits were found under
-// wp-includes and wp-admin precisely because scanners skip them; stock core
-// ships no login-form HTML there, so a kit in those trees is as anomalous as
-// one under uploads. wp-content and .well-known are prime drop paths and are
-// always scanned. Never widen this list to skip a path where a file could be
-// dropped and served; fix detection instead.
-func isKnownSafeDir(name string) bool {
-	safeDirs := map[string]bool{
-		"node_modules": true, "vendor": true, ".git": true,
-	}
-	return safeDirs[name]
 }

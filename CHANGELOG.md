@@ -11,6 +11,9 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Phishing scans now reject symbolic links and special files without waiting for input, preventing a planted pipe from stalling a deep scan. Existing hosts use the safer reads on their next scan, and no setting is involved.
+- The scheduled phishing scan no longer skips dependency or source-control folders by name. Existing hosts scan them from the next deep scan unless excluded by `suppressions.ignore_paths`; kit folders are reported for review, and `auto_response.quarantine_files` quarantines eligible phishing pages.
+- The scheduled check for PHP files the web server group can write now includes dependency and cache folders and checks regular files, so symbolic links do not produce permission alerts. Existing hosts see corrected findings on the next deep scan, and `auto_response.enforce_permissions` repairs writable files.
 - The YARA-X scanning engine is updated to 1.21.0 to fix missed and false matches when a rule that checks a file header shares a pattern with another rule. The shipped rules retain their measured matches, and existing hosts keep their rules and stored findings; affected scans can return corrected results, and no setting is involved.
 
 ### Added
@@ -24,6 +27,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - The email forward guard now holds matching copies instead of leaving them deferred in the mail queue; Exim could not reach the guard's files. Installs, package upgrades and lookup refreshes preserve access, and existing hosts are corrected the next time the guard is applied.
+- Directory-based phishing alerts now honor excluded pages and ignore brands found only in title email addresses or hidden markup. Existing hosts use this detection on the next deep scan; `suppressions.ignore_paths` controls exclusions, while explicit audits can still bypass them.
 
 ## [4.2.0] - 2026-10-04
 

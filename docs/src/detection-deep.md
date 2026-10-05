@@ -316,6 +316,21 @@ discovers WordPress installs only.
 | `phishing` | 8-layer phishing detection (kit directories, credential harvesting) |
 | `email_content` | Outbound email body scanning for credentials and suspicious URLs |
 
+The phishing and group-writable PHP scans include dependency and source-control
+folders within their depth budgets. They do not recurse through directory
+symlinks. Phishing content reads also refuse file symlinks and special files
+without blocking, including when a regular file is replaced during a scan. The
+PHP permissions check uses regular-file permissions, so a symlink's write bits
+do not produce a finding.
+
+Phishing directory analysis honors `suppressions.ignore_paths` for the pages it
+reads, just as page analysis does. Explicit audits can bypass those exclusions.
+Directory brand evidence uses the same title rules as page analysis and checks
+visible body content, so a brand appearing only inside an email address in the
+title or hidden markup does not establish impersonation. Suspected kit directories
+are reported for review; `auto_response.quarantine_files` applies only to eligible
+page findings.
+
 ## System Integrity
 
 | Check | Description |

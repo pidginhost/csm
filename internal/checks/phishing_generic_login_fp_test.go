@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // CHK-P04: the "Generic Login" pseudo-brand matches ubiquitous titles like
@@ -89,7 +91,7 @@ func TestAnalyzeDirectoryStructureGenericLoginTitleOnlyNotFlagged(t *testing.T) 
 		[]byte(plainCustomerLoginGenericTitleOnlyHTML), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if res := analyzeDirectoryStructure(context.Background(), dropDir, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), dropDir, "alice", &config.Config{}); res != nil {
 		t.Fatalf("generic login title bypassed the higher floor via directory anomaly: %+v", res)
 	}
 }

@@ -375,10 +375,6 @@ func scanGroupWritablePHP(dir string, maxDepth int, webGIDs map[uint32]bool, fin
 		fullPath := dir + "/" + name
 
 		if entry.IsDir() {
-			// Skip known large/safe dirs
-			if name == "cache" || name == "node_modules" || name == "vendor" {
-				continue
-			}
 			scanGroupWritablePHP(fullPath, maxDepth-1, webGIDs, findings)
 			continue
 		}
@@ -389,6 +385,10 @@ func scanGroupWritablePHP(dir string, maxDepth int, webGIDs map[uint32]bool, fin
 
 		info, err := entry.Info()
 		if err != nil {
+			continue
+		}
+		// Symlink mode bits describe the link, not whether PHP is writable.
+		if !info.Mode().IsRegular() {
 			continue
 		}
 
