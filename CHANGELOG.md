@@ -12,17 +12,13 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - A file planted in a hosted site can no longer stall the deep phishing scan.
-- The scheduled phishing scan now checks dependency and source-control folders, so phishing kits hidden there are reported.
-- The writable-PHP check now covers dependency and cache folders and no longer raises permission alerts for symbolic links.
-- The YARA-X engine is updated to 1.21.0, fixing missed and false matches when two rules share a pattern.
+- Scheduled phishing scans now report kits in dependency and source-control folders unless excluded.
+- Group-writable PHP checks now include dependency and cache folders and ignore symbolic links.
+- Malware scans now catch previously missed threats and raise fewer false alarms.
 
 ### Added
 
-- Status and `csm doctor` report the new automatic response admission ledger, which does not change blocking yet; a Critical alert flags a ledger that fails.
-
-### Changed
-
-- Go dependencies and the pinned GitHub Actions are updated to their current releases.
+- Status and diagnostics now report automatic response admission health, with Critical alerts for failures.
 
 ### Fixed
 

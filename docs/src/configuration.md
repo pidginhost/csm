@@ -348,7 +348,10 @@ auto_response:
   block_ips: false                      # block attacker IPs via firewall
   block_expiry: "24h"                   # positive temporary block duration; omit for the 24h default
   http_asn_crawl_tempban: "24h"         # Critical ASN-crawl subnet ban duration
-  max_blocks_per_hour: 50               # per-IP blocks per hour; 0/omitted uses default; also the admission ledger ceiling (0/omitted: 2000)
+  # Shared scan-driven block budget; 0/omitted selects 50.
+  # Also sets the admission ledger ceiling: 0/omitted selects 2000, capped at 20000.
+  # The ledger does not govern blocking yet. See Automatic response admission in the API reference.
+  max_blocks_per_hour: 50
   enforce_permissions: false            # auto-chmod 644 world/group-writable PHP files
   fix_wp_cron: false                    # on perf_wp_cron findings, auto-disable WP-Cron and install a per-user system cron
   http_scanner_action: "challenge"      # response for http_scanner_profile: "challenge" (default) routes to the PoW page, "block" bans the IP
