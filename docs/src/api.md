@@ -270,6 +270,11 @@ ledger the daemon keeps ready for them.
   which counts at least until an hour after `at`, or names why the count
   could not be read) and the last inventory read.
 
+Doctor fails while the ledger owner is not running or its clock reading is
+refused, and warns on a degraded clock, a clamped ceiling, a ceiling of 1
+(only the reserved lane runs), a legacy hourly count that could not be read
+and a failed inventory read.
+
 `admission.audit` and `admission.notices` in `queues` report the delivery of
 admission records to the [action log](action-log.md) and of admission notices.
 A ledger that cannot start, or admission that stops, raises one Critical
