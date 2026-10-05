@@ -167,26 +167,46 @@ func (inv *Inventory) Current(o Owner) bool {
 }
 
 // Generations assigns inventory generations. A name keeps its generation
-// while it appears in consecutive complete observations; a name that
-// disappears and returns gets a new one, so an observed recreation never
-// inherits the old account's scope. Unobserved replacement requires a
-// platform incarnation identity before this tracker can be used live. Generations
-// are never reused. Initialize with NewGenerations or a successful UnmarshalBinary
-// before observing or encoding; the zero value cannot allocate identities.
-// It is not safe for concurrent use: callers must serialize every call.
+// while it appears in consecutive complete observations with the same
+// server-owned incarnation token; a name that disappears and returns, or
+// returns with another token, gets a new one, so a recreated account never
+// inherits the old account's scope, even when the replacement happened
+// between two observations. A name observed without a token keeps its
+// generation, and a stored name without one adopts the next token it is
+// seen with. Generations are never reused. Initialize with NewGenerations
+// or a successful UnmarshalBinary before observing or encoding; the zero
+// value cannot allocate identities. It is not safe for concurrent use:
+// callers must serialize every call.
 type Generations struct {
-	next uint64
-	live map[string]uint64
+	next         uint64
+	live         map[string]uint64
+	incarnations map[string]string
 }
 
 func NewGenerations() *Generations {
-	return &Generations{next: 1, live: map[string]uint64{}}
+	return &Generations{next: 1, live: map[string]uint64{}, incarnations: map[string]string{}}
+}
+
+// maxIncarnationLen bounds one incarnation token.
+const maxIncarnationLen = 64
+
+func validIncarnation(token string) bool {
+	if token == "" || len(token) > maxIncarnationLen {
+		return false
+	}
+	for i := 0; i < len(token); i++ {
+		if token[i] < 0x21 || token[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 // Observe records one complete inventory observation and returns the
-// current name-to-generation map. Callers must not pass a partial
+// current name-to-generation map. incarnations maps listed names to their
+// incarnation tokens; a name may have none. Callers must not pass a partial
 // observation: a transient read failure would retire every missing account.
-func (g *Generations) Observe(names []string) (map[string]uint64, error) {
+func (g *Generations) Observe(names []string, incarnations map[string]string) (map[string]uint64, error) {
 	if g.next == 0 {
 		return nil, errors.New("inventory generation tracker is not initialized")
 	}
@@ -197,9 +217,18 @@ func (g *Generations) Observe(names []string) (map[string]uint64, error) {
 		}
 		present[name] = true
 	}
+	for name, token := range incarnations {
+		if !present[name] || !validIncarnation(token) {
+			return nil, errors.New("inventory observation has an invalid incarnation")
+		}
+	}
+	replaced := func(name string) bool {
+		stored, observed := g.incarnations[name], incarnations[name]
+		return stored != "" && observed != "" && stored != observed
+	}
 	newCount := uint64(0)
 	for name := range present {
-		if _, exists := g.live[name]; !exists {
+		if _, exists := g.live[name]; !exists || replaced(name) {
 			newCount++
 		}
 	}
@@ -207,8 +236,9 @@ func (g *Generations) Observe(names []string) (map[string]uint64, error) {
 		return nil, errors.New("inventory generation counter is exhausted")
 	}
 	for name := range g.live {
-		if !present[name] {
+		if !present[name] || replaced(name) {
 			delete(g.live, name)
+			delete(g.incarnations, name)
 		}
 	}
 	sorted := make([]string, 0, len(present))
@@ -221,6 +251,9 @@ func (g *Generations) Observe(names []string) (map[string]uint64, error) {
 			g.live[name] = g.next
 			g.next++
 		}
+		if token := incarnations[name]; token != "" {
+			g.incarnations[name] = token
+		}
 	}
 	out := make(map[string]uint64, len(g.live))
 	for name, gen := range g.live {
@@ -230,12 +263,18 @@ func (g *Generations) Observe(names []string) (map[string]uint64, error) {
 }
 
 type generationsRecord struct {
-	V    int               `json:"v"`
-	Next uint64            `json:"next"`
-	Live map[string]uint64 `json:"live"`
+	V            int               `json:"v"`
+	Next         uint64            `json:"next"`
+	Live         map[string]uint64 `json:"live"`
+	Incarnations map[string]string `json:"incarnations,omitempty"`
 }
 
-const generationsVersion = 1
+// A tracker without incarnation tokens keeps the version 1 encoding; one
+// with them is version 2.
+const (
+	generationsVersion             = 1
+	generationsIncarnationsVersion = 2
+)
 
 // MarshalBinary encodes the tracker as versioned JSON followed by an 8-byte
 // SHA-256 prefix of that JSON.
@@ -243,7 +282,11 @@ func (g *Generations) MarshalBinary() ([]byte, error) {
 	if g.next == 0 {
 		return nil, errors.New("inventory generation tracker is not initialized")
 	}
-	body, err := json.Marshal(generationsRecord{V: generationsVersion, Next: g.next, Live: g.live})
+	rec := generationsRecord{V: generationsVersion, Next: g.next, Live: g.live}
+	if len(g.incarnations) > 0 {
+		rec.V, rec.Incarnations = generationsIncarnationsVersion, g.incarnations
+	}
+	body, err := json.Marshal(rec)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +315,7 @@ func (g *Generations) UnmarshalBinary(data []byte) error {
 	if err != nil || !bytes.Equal(canonical, body) {
 		return errors.New("generations record is not in canonical form")
 	}
-	if rec.V != generationsVersion {
+	if (rec.V != generationsVersion && rec.V != generationsIncarnationsVersion) || (rec.V == generationsIncarnationsVersion) != (len(rec.Incarnations) > 0) {
 		return errors.New("generations record version is not supported")
 	}
 	if rec.Next == 0 {
@@ -288,6 +331,14 @@ func (g *Generations) UnmarshalBinary(data []byte) error {
 		}
 		used[gen] = true
 	}
-	g.next, g.live = rec.Next, rec.Live
+	for name, token := range rec.Incarnations {
+		if _, ok := rec.Live[name]; !ok || !validIncarnation(token) {
+			return errors.New("generations record has an invalid incarnation")
+		}
+	}
+	if rec.Incarnations == nil {
+		rec.Incarnations = map[string]string{}
+	}
+	g.next, g.live, g.incarnations = rec.Next, rec.Live, rec.Incarnations
 	return nil
 }

@@ -225,7 +225,9 @@ they must be immutable or safe for concurrent use. Callers must serialize
 every operation on an inventory generation tracker. Off cPanel, hosting
 inventory reads account directories without checking mount state: an empty
 readable root contributes no accounts, while other readable roots still do.
-An unreadable required root fails the whole snapshot.
+An unreadable required root fails the whole snapshot. A changed incarnation
+token gives an account a new generation, even when the account was replaced
+between two observations.
 
 The admission ledger (`store.AdmissionLedger`) keeps this state durably in
 the daemon's state database, in `adm:` buckets it creates the first time it

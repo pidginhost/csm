@@ -70,7 +70,7 @@ func TestHostingInventoryReadsCPanelState(t *testing.T) {
 		t.Errorf("domains = %v (ambiguous %d), want %v", snap.Domains, snap.AmbiguousDomains, want)
 	}
 	g := admission.NewGenerations()
-	gens, err := g.Observe(snap.Accounts)
+	gens, err := g.Observe(snap.Accounts, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestHostingInventoryExcludesAmbiguousDomains(t *testing.T) {
 				t.Fatalf("domains = %v ambiguous %d, want %v and 1", snap.Domains, snap.AmbiguousDomains, want)
 			}
 			g := admission.NewGenerations()
-			gens, err := g.Observe(snap.Accounts)
+			gens, err := g.Observe(snap.Accounts, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -263,7 +263,7 @@ func TestHostingInventoryCanonicalDomainHandoff(t *testing.T) {
 		t.Errorf("domains = %v ambiguous %d, want %v and 0", snap.Domains, snap.AmbiguousDomains, want)
 	}
 	g := admission.NewGenerations()
-	gens, err := g.Observe(snap.Accounts)
+	gens, err := g.Observe(snap.Accounts, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

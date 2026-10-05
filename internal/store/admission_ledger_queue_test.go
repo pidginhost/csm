@@ -365,6 +365,36 @@ func TestAdmissionLedgerInventoryRefreshEndsStaleOwners(t *testing.T) {
 	}
 }
 
+// An account deleted and created again between two refreshes keeps its
+// name but not its incarnation: the refresh gives it a new generation and
+// ends the queued work that named the old one (handoff O47). The token
+// persists, so a reopened ledger detects the same replacement.
+func TestAdmissionLedgerInventoryRefreshTracksIncarnations(t *testing.T) {
+	f := newLedgerFixture(t)
+	if err := f.l.RefreshInventory(admission.InventoryObservation{Accounts: []string{"alice", "bob"}, Incarnations: map[string]string{"alice": "startdate:1", "bob": "startdate:2"}}); err != nil {
+		t.Fatal(err)
+	}
+	alice := f.owner("alice")
+	root := f.published(evidenceSpec{owner: alice, cursor: "queued"})
+	_, queued := f.enqueue(f.request("192.0.2.10", root))
+	reopened, err := OpenAdmissionLedger(f.db, f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.l = reopened
+	f.tickAt(f.wall.Add(time.Minute))
+	if err := f.l.RefreshInventory(admission.InventoryObservation{Accounts: []string{"alice", "bob"}, Incarnations: map[string]string{"alice": "startdate:3", "bob": "startdate:2"}}); err != nil {
+		t.Fatal(err)
+	}
+	if back := f.owner("alice"); back == alice || back.Generation() <= alice.Generation() {
+		t.Fatalf("recreated alice kept generation %d", back.Generation())
+	}
+	if got, _ := f.l.Candidate(queued); got.State != admission.StateRefused || got.Reason != admission.ReasonStaleIdentity {
+		t.Fatalf("queued candidate of the replaced account = %+v", got)
+	}
+	wantLedgerReason(t, "unlisted incarnation", f.l.RefreshInventory(admission.InventoryObservation{Accounts: []string{"bob"}, Incarnations: map[string]string{"alice": "x"}}), admission.ReasonInvalid)
+}
+
 // The queue index and the candidates agree: a live candidate without an
 // entry, or an entry of an ended candidate, is a damaged ledger that
 // refuses mutation.

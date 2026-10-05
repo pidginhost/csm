@@ -8,11 +8,15 @@ import (
 // InventoryObservation is one complete read of server-owned hosting
 // inventory: sorted unique accounts, canonical domains mapped to their
 // owners, and the count of domains left host-scoped because several
-// accounts list them. A partial read must never be passed.
+// accounts list them. Incarnations maps accounts to server-owned tokens
+// that change when an account is deleted and created again; an account
+// without one keeps its generation by name. A partial read must never be
+// passed.
 type InventoryObservation struct {
 	Accounts         []string
 	Domains          map[string]string
 	AmbiguousDomains int
+	Incarnations     map[string]string
 }
 
 // CandidateRequest asks the ledger to queue a response. The engine supplies
