@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,60 @@ import (
 
 	"github.com/pidginhost/csm/internal/admission"
 )
+
+func TestLegacyBlockSpendRejectsNullScalars(t *testing.T) {
+	now := time.Date(2026, 10, 4, 14, 20, 0, 0, time.UTC)
+	for _, field := range []string{
+		`"rate_limit_warned_hour":null`, `"pending_drop_warned_hour":null`,
+		`"ips":[{"ip":"192.0.2.1","reason":null}]`,
+		`"ips":[{"ip":"192.0.2.1","blocked_at":null}]`,
+		`"ips":[{"ip":"192.0.2.1","expires_at":null}]`,
+		`"pending":[{"ip":"192.0.2.1","severity":null}]`,
+		`"pending":[{"ip":"192.0.2.1","queued_at":null}]`,
+		`"pending":[{"ip":"192.0.2.1","cause":{"check":null}}]`,
+		`"ips":[null]`, `"pending":[null]`, `"cleanup_pending":[null]`,
+	} {
+		t.Run(field, func(t *testing.T) {
+			body := `{"blocks_this_hour":0,"hour_key":"",` + field + `}`
+			if spend, err := LegacyBlockSpend(writeLegacyState(t, body), now); err == nil {
+				t.Fatalf("null scalar accepted as %+v", spend)
+			}
+		})
+	}
+	// Nil slices and pointers are valid output from the legacy writer.
+	body, err := json.Marshal(blockState{Pending: []pendingIP{{IP: "192.0.2.1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spend, err := LegacyBlockSpend(writeLegacyState(t, string(body)), now); err != nil || spend != (admission.LegacySpend{}) {
+		t.Fatalf("writer's empty counter: %+v, %v", spend, err)
+	}
+}
+
+func TestLegacyBlockSpendRejectsMissingHour(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 3, 8, 7, 30, 0, 0, time.UTC).In(loc)
+	if spend, err := LegacyBlockSpend(writeLegacyState(t, `{"blocks_this_hour":4,"hour_key":"2026-03-08T02"}`), now); err == nil {
+		t.Fatalf("missing local hour accepted: %+v", spend)
+	}
+}
+
+func TestLegacyBlockSpendDatesSeparatedRepeatedHours(t *testing.T) {
+	loc, err := time.LoadLocation("America/Goose_Bay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The clock steps back two hours; the two 22:00 hours are separated.
+	now := time.Date(1988, 10, 30, 0, 30, 0, 0, time.UTC).In(loc)
+	spend, err := LegacyBlockSpend(writeLegacyState(t, `{"blocks_this_hour":4,"hour_key":"1988-10-29T22"}`), now)
+	want := time.Date(1988, 10, 30, 3, 0, 0, 0, time.UTC)
+	if err != nil || spend.Units != 4 || !spend.At.Equal(want) {
+		t.Fatalf("separated repeated hour: %+v, %v; want %v", spend, err, want)
+	}
+}
 
 func writeLegacyState(t *testing.T, body string) string {
 	t.Helper()
@@ -96,6 +151,7 @@ func TestLegacyBlockSpendRefusesADamagedFile(t *testing.T) {
 		"negative count":        `{"blocks_this_hour":-1,"hour_key":"2026-10-04T14"}`,
 		"count without an hour": `{"blocks_this_hour":2,"hour_key":""}`,
 		"malformed hour":        `{"blocks_this_hour":2,"hour_key":"2026-10-04 14"}`,
+		"short hour":            `{"blocks_this_hour":2,"hour_key":"2026-10-04T4"}`,
 		"malformed warned hour": `{"blocks_this_hour":0,"hour_key":"","rate_limit_warned_hour":"14"}`,
 		"far future zero count": `{"blocks_this_hour":0,"hour_key":"2026-10-06T14"}`,
 		"far future hour":       `{"blocks_this_hour":2,"hour_key":"2026-10-06T14"}`,

@@ -158,7 +158,9 @@ func TestAdmissionLedgerAckAuditIsIdempotent(t *testing.T) {
 	f.applied(time.Hour)
 	rows := f.pendingAudit()
 	base := f.storageState().AuditSlots
-	if err := f.l.AckAudit([]admission.AuditAck{rows[0].Ack()}); err != nil {
+	ack := rows[0].Ack()
+	ack.At = ack.At.In(time.FixedZone("other", 3*60*60))
+	if err := f.l.AckAudit([]admission.AuditAck{ack, rows[0].Ack()}); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.storageState().AuditSlots; got != base-1 || len(f.pendingAudit()) != 2 {

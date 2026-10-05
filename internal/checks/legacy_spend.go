@@ -100,23 +100,40 @@ func validateLegacyState(s blockState, loc *time.Location) error {
 // legacyHourEnd is the end of the local hour key names in loc. An hour the
 // clocks repeat ends with its later instance.
 func legacyHourEnd(key string, loc *time.Location) (time.Time, bool) {
+	civil, err := time.Parse(legacyHourLayout, key)
+	if err != nil || civil.Format(legacyHourLayout) != key {
+		return time.Time{}, false
+	}
 	start, err := time.ParseInLocation(legacyHourLayout, key, loc)
 	if err != nil {
 		return time.Time{}, false
 	}
-	if start.Format(legacyHourLayout) != key {
-		// A fractional-hour forward step can remove the hour's start
-		// while leaving its later minutes present.
-		start = start.Add(time.Hour)
-		if start.Format(legacyHourLayout) != key {
-			return time.Time{}, false
+	// A backward step can separate two instances of an hour by other
+	// hours, and can repeat a whole civil day. Intersect the civil hour
+	// with every zone interval around the parser's chosen instance.
+	stop := start.Add(25 * time.Hour)
+	var end time.Time
+	for cursor := start.Add(-24 * time.Hour); cursor.Before(stop); {
+		_, offset := cursor.Zone()
+		_, zoneEnd := cursor.ZoneBounds()
+		until := stop
+		if !zoneEnd.IsZero() && zoneEnd.Before(until) {
+			until = zoneEnd
 		}
+		from := civil.Add(-time.Duration(offset) * time.Second)
+		to := from.Add(time.Hour)
+		if from.Before(cursor) {
+			from = cursor
+		}
+		if to.After(until) {
+			to = until
+		}
+		if from.Before(to) && to.After(end) {
+			end = to
+		}
+		cursor = until
 	}
-	end := start.Add(time.Hour - time.Duration(start.Minute())*time.Minute - time.Duration(start.Second())*time.Second - time.Duration(start.Nanosecond()))
-	for end.Format(legacyHourLayout) == key {
-		end = end.Add(time.Minute)
-	}
-	return end, true
+	return end.In(loc), !end.IsZero()
 }
 
 // The typed JSON decoder accepts null scalars and repeated keys. Neither
@@ -124,7 +141,7 @@ func legacyHourEnd(key string, loc *time.Location) (time.Time, bool) {
 func validateLegacyJSON(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
-	if err := uniqueLegacyValue(dec); err != nil {
+	if err := uniqueLegacyValue(dec, false); err != nil {
 		return err
 	}
 	var fields map[string]json.RawMessage
@@ -140,10 +157,13 @@ func validateLegacyJSON(data []byte) error {
 	return nil
 }
 
-func uniqueLegacyValue(dec *json.Decoder) error {
+func uniqueLegacyValue(dec *json.Decoder, nullOK bool) error {
 	tok, tokenErr := dec.Token()
 	if tokenErr != nil {
 		return tokenErr
+	}
+	if tok == nil && !nullOK {
+		return errors.New("null legacy scalar or array entry")
 	}
 	delim, ok := tok.(json.Delim)
 	if !ok {
@@ -162,13 +182,16 @@ func uniqueLegacyValue(dec *json.Decoder) error {
 				return errors.New("repeated legacy field")
 			}
 			seen[name] = true
-			if valueErr := uniqueLegacyValue(dec); valueErr != nil {
+			// The writer may encode nil collections and an absent cause.
+			allowsNull := name == legacyJSONFieldName("ips") || name == legacyJSONFieldName("pending") ||
+				name == legacyJSONFieldName("cleanup_pending") || name == legacyJSONFieldName("cause")
+			if valueErr := uniqueLegacyValue(dec, allowsNull); valueErr != nil {
 				return valueErr
 			}
 		}
 	case '[':
 		for dec.More() {
-			if valueErr := uniqueLegacyValue(dec); valueErr != nil {
+			if valueErr := uniqueLegacyValue(dec, false); valueErr != nil {
 				return valueErr
 			}
 		}

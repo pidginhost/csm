@@ -250,28 +250,42 @@ func loadCharges(tx *bolt.Tx) ([]admission.Charge, error) {
 func (l *AdmissionLedger) ImportedLegacySpend() (admission.LegacySpend, error) {
 	var spend admission.LegacySpend
 	err := l.db.bolt.View(func(tx *bolt.Tx) error {
+		if _, err := loadCeiling(tx); err != nil {
+			return err
+		}
 		charges, err := loadCharges(tx)
 		if err != nil {
 			return err
 		}
+		var legacyIDs map[admission.ActionID]bool
 		for _, c := range charges {
 			if tx.Bucket([]byte(admissionAttemptsBucket)).Get([]byte(c.Action)) != nil {
+				a, err := loadAttempt(tx, c.Action)
+				if err != nil {
+					return corruptRecord(err)
+				}
+				candidate, err := loadCandidate(tx, a.Attempt.Candidate)
+				if err != nil || !c.At.Equal(a.Reserved) || c.Lane != a.Lane || c.Cost != candidate.Key.Kind.CeilingCost() {
+					return admission.ErrCorruptRecord
+				}
 				continue
 			}
-			matched := false
-			for seq := uint32(1); seq <= (admission.MaxCeiling+admission.MaxMemberCost-1)/admission.MaxMemberCost+1; seq++ {
-				if c.Action == admission.LegacyActionID(c.At, seq) {
-					matched = true
-					break
+			if legacyIDs == nil {
+				spend.At = c.At
+				legacyIDs = make(map[admission.ActionID]bool)
+				for seq := uint32(1); seq <= (admission.MaxCeiling+admission.MaxMemberCost-1)/admission.MaxMemberCost+1; seq++ {
+					legacyIDs[admission.LegacyActionID(c.At, seq)] = true
 				}
 			}
-			if !matched || (!spend.At.IsZero() && !spend.At.Equal(c.At)) {
+			if !legacyIDs[c.Action] || !spend.At.Equal(c.At) {
 				return admission.ErrCorruptRecord
 			}
 			spend.Units += c.Cost
-			spend.At = c.At
 		}
 		return nil
 	})
+	if err != nil {
+		return admission.LegacySpend{}, err
+	}
 	return spend, err
 }

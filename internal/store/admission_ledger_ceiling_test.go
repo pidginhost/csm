@@ -1105,3 +1105,93 @@ func TestAdmissionLedgerReadsImportedSpend(t *testing.T) {
 		t.Fatalf("retired import: %+v, %v", got, err)
 	}
 }
+
+func TestAdmissionLedgerImportedSpendRefusesDamage(t *testing.T) {
+	for _, name := range []string{"uncounted charge", "usage without a charge", "damaged attempt", "wrong attempt time", "wrong attempt lane", "wrong attempt cost"} {
+		t.Run(name, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.newUnlimitedLedger()
+			f.tickAt(f.wall)
+			spend := admission.LegacySpend{Units: 100, At: f.wall.Add(20 * time.Minute)}
+			if err := f.l.ImportLegacySpend(2000, spend); err != nil {
+				t.Fatal(err)
+			}
+			var action admission.ActionID
+			if name != "uncounted charge" && name != "usage without a charge" {
+				_, a := f.admitted(time.Hour)
+				action = a.Attempt.ID
+			}
+			if got, err := f.l.ImportedLegacySpend(); err != nil || got.Units != 100 || !got.At.Equal(spend.At) {
+				t.Fatalf("valid import with retained attempts: %+v, %v", got, err)
+			}
+			if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+				switch name {
+				case "uncounted charge":
+					return putCharge(tx, admission.Charge{At: spend.At, Action: admission.LegacyActionID(spend.At, 3), Lane: admission.LaneGeneral, Cost: 1}, false)
+				case "usage without a charge":
+					s, err := loadCeilingState(tx)
+					if err != nil {
+						return err
+					}
+					s.General.Used++
+					return putCeilingState(tx, s)
+				case "wrong attempt time", "wrong attempt lane", "wrong attempt cost":
+					charge := admission.Charge{At: f.wall, Action: action, Lane: admission.LaneGeneral, Cost: 1}
+					key, err := charge.Key()
+					if err != nil {
+						return err
+					}
+					if err = tx.Bucket([]byte(admissionChargesBucket)).Delete(key); err != nil {
+						return err
+					}
+					s, err := loadCeilingState(tx)
+					if err != nil {
+						return err
+					}
+					s.General.Used--
+					if err = putCeilingState(tx, s); err != nil {
+						return err
+					}
+					switch name {
+					case "wrong attempt time":
+						charge.At = charge.At.Add(time.Nanosecond)
+					case "wrong attempt lane":
+						charge.Lane = admission.LaneDirect
+					case "wrong attempt cost":
+						charge.Cost = 2
+					}
+					return putCharge(tx, charge, true)
+				default:
+					return tx.Bucket([]byte(admissionAttemptsBucket)).Put([]byte(action), []byte("damaged"))
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			before := f.snapshot()
+			if got, err := f.l.ImportedLegacySpend(); !isCorrupt(err) {
+				t.Fatalf("damaged import returned %+v, %v", got, err)
+			}
+			if !reflect.DeepEqual(before, f.snapshot()) {
+				t.Fatal("reading a damaged import changed the ledger")
+			}
+		})
+	}
+}
+
+func TestAdmissionLedgerReadsLastLegacyCharge(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.newUnlimitedLedger()
+	spend := admission.LegacySpend{Units: admission.MaxCeiling, At: f.wall.Add(20 * time.Minute)}
+	// One general unit and the reserved remainder each have a partial
+	// charge, requiring the extra sequence beyond a single lane's bound.
+	if err := f.l.ImportLegacySpend(2, spend); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenAdmissionLedger(f.db, f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := reopened.ImportedLegacySpend(); err != nil || got.Units != admission.MaxCeiling || !got.At.Equal(spend.At) {
+		t.Fatalf("last legacy charge: %+v, %v", got, err)
+	}
+}

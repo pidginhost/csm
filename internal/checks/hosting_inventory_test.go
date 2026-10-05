@@ -3,6 +3,7 @@ package checks
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,6 +11,19 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/platform"
 )
+
+func TestHostingInventoryRejectsSymlinkHome(t *testing.T) {
+	withInventoryPanel(t, platform.PanelNone)
+	root := t.TempDir()
+	withAccountRoots(t, root)
+	if err := os.Symlink(t.TempDir(), filepath.Join(root, "alice")); err != nil {
+		t.Fatal(err)
+	}
+	withMockOS(t, &mockOS{readDir: os.ReadDir})
+	if snap, err := HostingInventory(); err == nil || !reflect.DeepEqual(snap, HostingSnapshot{}) {
+		t.Fatalf("symlink home returned a complete inventory: %+v, %v", snap, err)
+	}
+}
 
 func withInventoryPanel(t *testing.T, panel platform.Panel) {
 	t.Helper()
@@ -438,6 +452,9 @@ func TestHostingInventoryRefusesUnknownIncarnations(t *testing.T) {
 		"empty creation date": "STARTDATE=\n",
 		"malformed date":      "STARTDATE=16000000x0\n",
 		"oversized date":      "STARTDATE=12345678901234567890\n",
+		"zero date":           "STARTDATE=0\n",
+		"overflow date":       "STARTDATE=9999999999999999999\n",
+		"duplicate date":      "STARTDATE=1600000000\nSTARTDATE=1700000000\n",
 	} {
 		fs := inventoryFS([]os.DirEntry{dirEntry("alice", false)}, nil, nil, nil, "", nil)
 		readFile := fs.readFile

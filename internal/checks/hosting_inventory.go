@@ -2,8 +2,10 @@ package checks
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -97,7 +99,13 @@ func homeRootInventory() (HostingSnapshot, error) {
 		}
 		for _, e := range entries {
 			name := e.Name()
-			if _, seen := snap.Incarnations[name]; !e.IsDir() || !admission.ValidAccountName(name) || seen {
+			if _, seen := snap.Incarnations[name]; !admission.ValidAccountName(name) || seen {
+				continue
+			}
+			if e.Type()&os.ModeSymlink != 0 {
+				return HostingSnapshot{}, fmt.Errorf("account home for %s is a symlink", name)
+			}
+			if !e.IsDir() {
 				continue
 			}
 			snap.Accounts = append(snap.Accounts, name)
@@ -117,15 +125,20 @@ func cpanelIncarnation(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	var token string
 	for _, line := range strings.Split(string(data), "\n") {
 		v, ok := strings.CutPrefix(strings.TrimSuffix(line, "\r"), "STARTDATE=")
 		if !ok {
 			continue
 		}
-		if v == "" || len(v) > 19 || strings.Trim(v, "0123456789") != "" {
-			break
+		date, parseErr := strconv.ParseInt(v, 10, 64)
+		if token != "" || len(v) > 19 || parseErr != nil || date <= 0 || strings.Trim(v, "0123456789") != "" {
+			return "", fmt.Errorf("cPanel user file for %s has an invalid creation date", name)
 		}
-		return "startdate:" + v, nil
+		token = "startdate:" + v
+	}
+	if token != "" {
+		return token, nil
 	}
 	return "", fmt.Errorf("cPanel user file for %s names no creation date", name)
 }

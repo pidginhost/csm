@@ -231,7 +231,9 @@ between two observations. Every account carries one: cPanel's recorded
 creation date, elsewhere the device, inode and birth time of its home
 directory. An account whose token cannot be read, whose home is not a
 directory or whose Linux filesystem supplies no birth time fails the
-snapshot. Tenant edits do not change the token.
+snapshot, including a home listed as a symlink. The cPanel creation date
+must be a positive integer recorded exactly once. Tenant edits do not change
+the token.
 
 The admission ledger (`store.AdmissionLedger`) keeps this state durably in
 the daemon's state database, in `adm:` buckets it creates the first time it
@@ -293,7 +295,10 @@ rate with a one-unit floor for a nonzero lane, and the first limit of a new
 ledger fills both buckets once. A new ledger takes that first limit together
 with the legacy hourly block count, charged at the end of its hour and
 subtracted from the fill; a count that cannot be read starts the ledger
-without credit. A later limit only clips saved credit; the
+without credit. The reader rejects null scalar values and uses the last
+instance of a repeated local hour, even when other hours separate its
+instances. Retained import reads validate the ceiling totals and the
+charge links to ordinary attempts. A later limit only clips saved credit; the
 owner checkpoints elapsed time at the saved rate before changing it. Every
 reservation, retry included, is charged to the lane its schedule picked, in
 the reservation's transaction, after a reserved lane is rechecked against
