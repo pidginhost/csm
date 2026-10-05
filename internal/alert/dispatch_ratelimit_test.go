@@ -81,6 +81,48 @@ func TestDispatchCriticalDoesNotCarryRoutineFindingsPastCap(t *testing.T) {
 	}
 }
 
+func TestDispatchNoticesLeavesTheRoutineBudgetAvailable(t *testing.T) {
+	var got webhookBodies
+	srv := got.server(t)
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Alerts.MaxPerHour = 1
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = srv.URL
+	now := time.Now()
+	if err := DispatchNotices(cfg, []Finding{{Check: "auto_response_withheld", Message: "notice", Severity: Warning, Timestamp: now}}); err != nil {
+		t.Fatal(err)
+	}
+	if n := readRateLimitCount(t, cfg.StatePath); n != 0 {
+		t.Fatalf("notice spent %d routine slots", n)
+	}
+	for _, message := range []string{"routine within budget", "routine over budget"} {
+		if err := Dispatch(cfg, []Finding{{Check: "test_routine", Message: message, Severity: Warning, Timestamp: now}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bodies := got.snapshot()
+	if len(bodies) != 2 || !strings.Contains(bodies[0], "notice") || !strings.Contains(bodies[1], "routine within budget") {
+		t.Fatalf("deliveries = %v, want notice and the first routine alert", bodies)
+	}
+	if n := readRateLimitCount(t, cfg.StatePath); n != 1 {
+		t.Fatalf("routine budget count = %d, want 1", n)
+	}
+}
+
+func TestDispatchNoticesReturnsDeliveryErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = srv.URL
+	err := DispatchNotices(cfg, []Finding{{Check: "auto_response_withheld", Severity: Warning, Timestamp: time.Now()}})
+	if err == nil || !strings.Contains(err.Error(), "webhook:") {
+		t.Fatalf("notice delivery error = %v, want a webhook failure", err)
+	}
+}
+
 // Routine findings no channel will carry must not spend the hourly budget.
 func TestDispatchEmailDisabledRoutineFindingDoesNotSpendBudget(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

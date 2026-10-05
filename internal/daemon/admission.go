@@ -47,7 +47,7 @@ func (d *Daemon) startAdmissionWith(opts admissionowner.Options) {
 // the failure being reported may be in them.
 func (d *Daemon) deliverAdmissionNotices(findings []alert.Finding) error {
 	d.store.AppendHistory(findings)
-	return alert.Dispatch(d.currentCfg(), findings)
+	return alert.DispatchNotices(d.currentCfg(), findings)
 }
 
 // AdmissionStatus is the owner's last reading of the ledger, refreshed on

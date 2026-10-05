@@ -821,24 +821,31 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 // Both inputs remain caller-owned and must already carry the times used by
 // actions that reference them. Missing times are filled on copies for ad-hoc use.
 func DispatchWithSources(cfg *config.Config, findings, sources []Finding) error {
-	return dispatchWithSources(cfg, findings, sources, findings, nil)
+	return dispatchWithSources(cfg, findings, sources, findings, nil, true)
+}
+
+// DispatchNotices delivers notices whose producer already bounds their rate.
+// They keep their severity and notification settings, but do not spend or
+// wait on the routine alert budget.
+func DispatchNotices(cfg *config.Config, findings []Finding) error {
+	return dispatchWithSources(cfg, findings, nil, findings, nil, false)
 }
 
 // DispatchWithEnforcement offers central IP enforcement its own finding set
 // instead of the notification set. Suppression rules mute notifications but
 // must not exempt an attacker from central challenges and blocks.
 func DispatchWithEnforcement(cfg *config.Config, findings, sources, enforcement []Finding) error {
-	return dispatchWithSources(cfg, findings, sources, enforcement, nil)
+	return dispatchWithSources(cfg, findings, sources, enforcement, nil, true)
 }
 
 // DispatchWithNotificationFilter keeps operator policy separate from the
 // phpanel and SSE data streams. Notification observers, audit sources and
 // central enforcement retain their independent policy boundaries.
 func DispatchWithNotificationFilter(cfg *config.Config, findings, sources, enforcement []Finding, filter func([]Finding) []Finding) error {
-	return dispatchWithSources(cfg, findings, sources, enforcement, filter)
+	return dispatchWithSources(cfg, findings, sources, enforcement, filter, true)
 }
 
-func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Finding, notificationFilter func([]Finding) []Finding) error {
+func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Finding, notificationFilter func([]Finding) []Finding, routineBudget bool) error {
 	// Deduplicate owns a copy, so stamping cannot race with callers sharing
 	// the input or pin a reused unstamped finding to its first dispatch time.
 	findings = Deduplicate(findings)
@@ -921,7 +928,7 @@ func dispatchWithSources(cfg *config.Config, findings, sources, enforcement []Fi
 	// out, but they never carry routine findings from the same batch past the
 	// cap with them.
 	var reservation *rateLimitReservation
-	if hasRoutineFinding(emailFindings) || hasRoutineFinding(webhookFindings) {
+	if routineBudget && (hasRoutineFinding(emailFindings) || hasRoutineFinding(webhookFindings)) {
 		var ok bool
 		reservation, ok = reserveRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour)
 		if ok {

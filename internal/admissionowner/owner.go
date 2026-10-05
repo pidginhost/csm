@@ -75,18 +75,19 @@ type Owner struct {
 	notices  *sender
 
 	// Owned by the owner goroutine.
-	ledger       *store.AdmissionLedger
-	started      bool
-	startErr     error
-	snapshotErr  error
-	tickErr      error
-	degraded     bool
-	lastTick     time.Time
-	source       string
-	imported     *health.AdmissionImport
-	inventoryAt  time.Time
-	inventoryErr error
-	auditAcked   uint64
+	ledger        *store.AdmissionLedger
+	started       bool
+	reloadPending bool
+	startErr      error
+	snapshotErr   error
+	tickErr       error
+	degraded      bool
+	lastTick      time.Time
+	source        string
+	imported      *health.AdmissionImport
+	inventoryAt   time.Time
+	inventoryErr  error
+	auditAcked    uint64
 }
 
 // Start opens the ledger and runs the startup sequence before it returns,
@@ -297,6 +298,13 @@ func (o *Owner) tick() error {
 		o.ingress.Publish(nil)
 		return err
 	}
+	if o.reloadPending {
+		if err := o.reloadCeiling(); err != nil {
+			o.snapshotErr = err
+			o.ingress.Publish(nil)
+			return err
+		}
+	}
 	return o.publish()
 }
 
@@ -324,7 +332,7 @@ func (o *Owner) refreshInventory() {
 	o.inventoryErr = err
 	if err == nil {
 		o.inventoryAt = time.Now()
-		if o.started && o.tickErr == nil {
+		if o.started && o.tickErr == nil && !o.reloadPending {
 			admitting := o.ingress.Health().Admitting
 			_ = o.publish()
 			if admitting != o.ingress.Health().Admitting {
@@ -336,30 +344,29 @@ func (o *Owner) refreshInventory() {
 
 // Reload records a reading under the saved limit, then applies the
 // configured one and revalidates the queue against it (O3, O13).
+// A failed reload is retried on ticks before admission can resume.
 func (o *Owner) Reload() error {
 	return o.do(func() error {
 		if !o.started {
 			return errors.New("the admission owner has not started")
 		}
 		defer o.refreshStatus()
-		if _, err := o.readTick(); err != nil {
-			o.ingress.Publish(nil)
-			return err
-		}
-		limit, source := o.opts.Ceiling()
-		if err := o.ledger.SetCeiling(limit); err != nil {
-			o.snapshotErr = err
-			o.ingress.Publish(nil)
-			return fmt.Errorf("setting the ceiling: %w", err)
-		}
-		o.source = source
-		if err := o.ledger.Revalidate(); err != nil {
-			o.snapshotErr = err
-			o.ingress.Publish(nil)
-			return err
-		}
-		return o.publish()
+		o.reloadPending = true
+		return o.tick()
 	})
+}
+
+func (o *Owner) reloadCeiling() error {
+	limit, source := o.opts.Ceiling()
+	if err := o.ledger.SetCeiling(limit); err != nil {
+		return fmt.Errorf("setting the ceiling: %w", err)
+	}
+	o.source = source
+	if err := o.ledger.Revalidate(); err != nil {
+		return err
+	}
+	o.reloadPending = false
+	return nil
 }
 
 // Stop commits a final checkpoint, closes the ingress generation and stops

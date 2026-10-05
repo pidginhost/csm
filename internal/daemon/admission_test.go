@@ -4,9 +4,13 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -54,7 +58,7 @@ func TestDaemonOwnsTheAdmissionLedger(t *testing.T) {
 		t.Fatal("a daemon without an owner reported admission")
 	}
 	d.startAdmissionWith(testAdmissionOptions(d, db))
-	t.Cleanup(d.stopAdmission)
+	defer d.stopAdmission()
 	snap := health.Build(d, "v", health.Capabilities())
 	a := snap.Admission
 	if a == nil || a.Owner == nil || a.Owner.Error != "" || a.Ingress == nil || !a.Ingress.Admitting || a.Ledger == nil {
@@ -117,6 +121,68 @@ func TestDaemonDeliversAdmissionNoticesOutsideTheFindingChannel(t *testing.T) {
 	}
 }
 
+func TestAdmissionNoticesBypassTheRoutineAlertBudget(t *testing.T) {
+	dir := t.TempDir()
+	_, restore := openTestBoltStore(t, dir)
+	defer restore()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			t.Error(readErr)
+		}
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+	}))
+	defer srv.Close()
+	cfg := &config.Config{StatePath: dir}
+	cfg.Alerts.MaxPerHour = 1
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = srv.URL
+	prev := config.Active()
+	config.SetActive(cfg)
+	defer config.SetActive(prev)
+	d := New(cfg, st, nil, "")
+	now := time.Now()
+	if err := alert.Dispatch(cfg, []alert.Finding{{Check: "test_routine", Message: "routine before", Severity: alert.Warning, Timestamp: now}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, notice := range []alert.Finding{
+		{Check: "auto_response_withheld", Message: "withheld warning", Severity: alert.Warning, Timestamp: now},
+		{Check: "auto_block", Message: "applied summary", Severity: alert.Warning, Timestamp: now},
+	} {
+		if err := d.deliverAdmissionNotices([]alert.Finding{notice}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cfg.Alerts.MaxPerHour != 1 {
+		t.Fatal("notice delivery changed the live alert budget")
+	}
+	if err := alert.Dispatch(cfg, []alert.Finding{{Check: "test_routine", Message: "routine after", Severity: alert.Warning, Timestamp: now}}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 3 {
+		t.Fatalf("webhook deliveries = %d, want the routine alert and both notices", len(bodies))
+	}
+	for i, message := range []string{"routine before", "withheld warning", "applied summary"} {
+		if !strings.Contains(bodies[i], message) {
+			t.Errorf("delivery %d does not contain %q", i, message)
+		}
+	}
+	if history, total := st.ReadHistory(10, 0); total != 2 || len(history) != 2 {
+		t.Fatalf("notice history count = %d, want 2", total)
+	}
+}
+
 // O12-O13: a reload that changes max_blocks_per_hour reaches the ledger.
 func TestReloadAppliesTheAdmissionCeiling(t *testing.T) {
 	dir := t.TempDir()
@@ -131,7 +197,7 @@ func TestReloadAppliesTheAdmissionCeiling(t *testing.T) {
 	}
 	d := newDaemonForReloadTest(t, loaded)
 	d.startAdmissionWith(testAdmissionOptions(d, db))
-	t.Cleanup(d.stopAdmission)
+	defer d.stopAdmission()
 	edited := &config.Config{StatePath: dir}
 	edited.AutoResponse.MaxBlocksPerHour = 200
 	edited.Integrity = loaded.Integrity
@@ -212,7 +278,7 @@ func TestDaemonRetainsItsAdmissionOwner(t *testing.T) {
 	defer func() { _ = st.Close() }()
 	d := New(&config.Config{StatePath: dir}, st, nil, "")
 	d.startAdmissionWith(testAdmissionOptions(d, db))
-	t.Cleanup(d.stopAdmission)
+	defer d.stopAdmission()
 	original := d.admission
 	d.startAdmissionWith(testAdmissionOptions(d, db))
 	if d.admission != original {
@@ -237,7 +303,7 @@ func TestDaemonReportsAnUnavailableAdmissionStore(t *testing.T) {
 	t.Cleanup(func() { store.SetGlobal(previous) })
 	d := New(&config.Config{StatePath: dir}, st, nil, "")
 	d.startAdmission()
-	t.Cleanup(d.stopAdmission)
+	defer d.stopAdmission()
 	if s := d.AdmissionStatus(); s == nil || s.Owner.Error == "" || s.Ingress.Admitting {
 		t.Fatalf("missing store status: %+v", s)
 	}

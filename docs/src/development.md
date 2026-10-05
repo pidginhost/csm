@@ -242,9 +242,11 @@ at startup and holds the only handle: one goroutine makes every change,
 records clock readings on a timer, applies the ceiling at startup and on
 reload after a reading at the saved limit, refreshes the inventory from
 complete reads, delivers audit rows to the action log and notices through
-the queue-health path, and reads status on a timer. Nothing submits to it
-yet. One owner serializes every write and each
-call is one transaction, so a failed call changes nothing. Admission time
+the queue-health path with their own pacing, and reads status on a timer.
+Failed ceiling reloads stay pending until a tick applies and revalidates
+them; inventory refreshes cannot reopen admission in the meantime.
+Nothing submits to it yet. One owner serializes every write, and each call
+is one transaction, so a failed call changes nothing. Admission time
 comes only from recorded clock readings: a wall clock that steps back never
 lowers it, a new boot credits no elapsed time, and a reopened ledger admits
 no new work until it records a fresh reading. Evidence is immutable once

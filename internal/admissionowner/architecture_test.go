@@ -1,6 +1,7 @@
 package admissionowner
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -59,38 +60,85 @@ func inPackage(path, dir string) bool { return filepath.ToSlash(filepath.Dir(pat
 // else may create candidates or evidence, or a second handle.
 func TestProductionStaysOffTheLedgerEntryPoints(t *testing.T) {
 	for path, f := range productionFiles(t) {
-		owner, ledgerPkg := inPackage(path, "internal/admissionowner"), inPackage(path, "internal/store")
-		admissionNames := map[string]bool{}
-		for _, imp := range f.Imports {
-			if imp.Path.Value == `"github.com/pidginhost/csm/internal/admission"` {
-				name := "admission"
-				if imp.Name != nil {
-					name = imp.Name.Name
-				}
-				admissionNames[name] = true
+		for _, violation := range ledgerEntryViolations(path, f) {
+			t.Error(violation)
+		}
+	}
+}
+
+func ledgerEntryViolations(path string, f *ast.File) []string {
+	var violations []string
+	owner, ledgerPkg := inPackage(path, "internal/admissionowner"), inPackage(path, "internal/store")
+	admissionNames := map[string]bool{}
+	for _, imp := range f.Imports {
+		if imp.Path.Value == `"github.com/pidginhost/csm/internal/admission"` {
+			name := "admission"
+			if imp.Name != nil {
+				name = imp.Name.Name
+			}
+			admissionNames[name] = true
+		}
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.Ident:
+			if (x.Name == "AdmissionLedger" || x.Name == "OpenAdmissionLedger" || x.Name == "Ledger" && admissionNames["."]) && !owner && !ledgerPkg {
+				violations = append(violations, fmt.Sprintf("%s names %s outside the owner", path, x.Name))
+			}
+		case *ast.SelectorExpr:
+			if x.Sel.Name == "Submit" {
+				violations = append(violations, fmt.Sprintf("%s submits production work before routing is enabled", path))
+			}
+			if name := x.Sel.Name; (name == "OpenAdmissionLedger" || name == "AdmissionLedger") && !owner && !ledgerPkg {
+				violations = append(violations, fmt.Sprintf("%s names %s; only the admission owner holds the ledger", path, name))
+			}
+			if id, ok := x.X.(*ast.Ident); ok && admissionNames[id.Name] && x.Sel.Name == "Ledger" && !owner && !ledgerPkg {
+				violations = append(violations, fmt.Sprintf("%s holds the ledger interface outside the owner", path))
+			}
+			if (x.Sel.Name == "PublishEvidence" && !ledgerPkg) || (x.Sel.Name == "Enqueue" && (owner || inPackage(path, "internal/admission"))) {
+				violations = append(violations, fmt.Sprintf("%s references %s; production work enters through the ingress", path, x.Sel.Name))
+			}
+			if x.Sel.Name == "EnqueueGroup" && !ledgerPkg && path != "internal/admission/ingress.go" {
+				violations = append(violations, fmt.Sprintf("%s commits arrivals outside the ingress", path))
 			}
 		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			switch x := n.(type) {
-			case *ast.Ident:
-				if (x.Name == "AdmissionLedger" || x.Name == "OpenAdmissionLedger") && !owner && !ledgerPkg {
-					t.Errorf("%s names %s outside the owner", path, x.Name)
-				}
-			case *ast.SelectorExpr:
-				if x.Sel.Name == "Submit" {
-					t.Errorf("%s submits production work before routing is enabled", path)
-				}
-				if name := x.Sel.Name; (name == "OpenAdmissionLedger" || name == "AdmissionLedger") && !owner && !ledgerPkg {
-					t.Errorf("%s names %s; only the admission owner holds the ledger", path, name)
-				}
-				if id, ok := x.X.(*ast.Ident); ok && admissionNames[id.Name] && x.Sel.Name == "Ledger" && !owner && !ledgerPkg {
-					t.Errorf("%s holds the ledger interface outside the owner", path)
-				}
-				if (x.Sel.Name == "PublishEvidence" && !ledgerPkg) || (x.Sel.Name == "Enqueue" && (owner || inPackage(path, "internal/admission"))) {
-					t.Errorf("%s references %s; production work enters through the ingress", path, x.Sel.Name)
-				}
+		return true
+	})
+	return violations
+}
+
+func TestLedgerEntryGuardRejectsAlternateAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, source string
+		wantViolation      bool
+	}{
+		{"dot imported interface", "internal/daemon/example.go", `package daemon
+import . "github.com/pidginhost/csm/internal/admission"
+var handle Ledger`, true},
+		{"aliased interface", "internal/daemon/example.go", `package daemon
+import adm "github.com/pidginhost/csm/internal/admission"
+var handle adm.Ledger`, true},
+		{"owner group method value", "internal/admissionowner/example.go", `package admissionowner
+func (o *Owner) bypass() { _ = o.ledger.EnqueueGroup }`, true},
+		{"group outside ingress", "internal/daemon/example.go", `package daemon
+func bypass(handle interface{ EnqueueGroup() }) { _ = handle.EnqueueGroup }`, true},
+		{"ingress group commit", "internal/admission/ingress.go", `package admission
+func drain(handle Ledger) { _ = handle.EnqueueGroup }`, false},
+		{"store group implementation", "internal/store/example.go", `package store
+func commit(handle *AdmissionLedger) { _ = handle.EnqueueGroup }`, false},
+		{"owner interface", "internal/admissionowner/example.go", `package admissionowner
+import . "github.com/pidginhost/csm/internal/admission"
+var handle Ledger`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := parser.ParseFile(token.NewFileSet(), tc.path, tc.source, parser.SkipObjectResolution)
+			if err != nil {
+				t.Fatal(err)
 			}
-			return true
+			violations := ledgerEntryViolations(tc.path, f)
+			if got := len(violations) > 0; got != tc.wantViolation {
+				t.Fatalf("violations = %v, want rejected = %v", violations, tc.wantViolation)
+			}
 		})
 	}
 }
@@ -119,32 +167,6 @@ func TestOwnerExportsNoLedger(t *testing.T) {
 			continue
 		}
 		checked++
-		var holdsLedger func(ast.Expr, map[string]bool) bool
-		holdsLedger = func(expr ast.Expr, seen map[string]bool) bool {
-			found := false
-			ast.Inspect(expr, func(n ast.Node) bool {
-				if field, ok := n.(*ast.Field); ok {
-					for _, name := range field.Names {
-						if name.Name == "Enqueue" || name.Name == "PublishEvidence" {
-							found = true
-						}
-					}
-				}
-				id, ok := n.(*ast.Ident)
-				if !ok {
-					return true
-				}
-				if id.Name == "AdmissionLedger" || id.Name == "Ledger" {
-					found = true
-				}
-				if alias, ok := aliases[id.Name]; ok && !seen[id.Name] {
-					seen[id.Name] = true
-					found = holdsLedger(alias, seen) || found
-				}
-				return true
-			})
-			return found
-		}
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.FuncDecl:
@@ -162,17 +184,17 @@ func TestOwnerExportsNoLedger(t *testing.T) {
 				}
 				if x.Name.IsExported() && x.Type.Results != nil {
 					for _, r := range x.Type.Results.List {
-						if holdsLedger(r.Type, map[string]bool{}) {
+						if holdsLedger(r.Type, aliases, map[string]bool{}) {
 							t.Errorf("%s: %s returns the ledger", path, x.Name.Name)
 						}
 					}
 				}
 			case *ast.Field:
-				if len(x.Names) == 0 && holdsLedger(x.Type, map[string]bool{}) {
+				if len(x.Names) == 0 && holdsLedger(x.Type, aliases, map[string]bool{}) {
 					t.Errorf("%s embeds the ledger", path)
 				}
 				for _, name := range x.Names {
-					if name.IsExported() && holdsLedger(x.Type, map[string]bool{}) {
+					if name.IsExported() && holdsLedger(x.Type, aliases, map[string]bool{}) {
 						t.Errorf("%s: exported field %s holds the ledger", path, name.Name)
 					}
 				}
@@ -183,4 +205,42 @@ func TestOwnerExportsNoLedger(t *testing.T) {
 	if checked == 0 {
 		t.Fatal("no owner files checked")
 	}
+}
+
+func TestOwnerExportGuardRecognizesGroupWriterInterfaces(t *testing.T) {
+	expr, err := parser.ParseExpr(`interface {
+		EnqueueGroup([]admission.Arrival, *admission.IngressCheckpoint) ([]admission.ArrivalResult, int, error)
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !holdsLedger(expr, nil, map[string]bool{}) {
+		t.Fatal("an exported group-writer interface can hand out the ledger")
+	}
+}
+
+func holdsLedger(expr ast.Expr, aliases map[string]ast.Expr, seen map[string]bool) bool {
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if field, ok := n.(*ast.Field); ok {
+			for _, name := range field.Names {
+				if name.Name == "Enqueue" || name.Name == "EnqueueGroup" || name.Name == "PublishEvidence" {
+					found = true
+				}
+			}
+		}
+		id, ok := n.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if id.Name == "AdmissionLedger" || id.Name == "Ledger" {
+			found = true
+		}
+		if alias, ok := aliases[id.Name]; ok && !seen[id.Name] {
+			seen[id.Name] = true
+			found = holdsLedger(alias, aliases, seen) || found
+		}
+		return true
+	})
+	return found
 }

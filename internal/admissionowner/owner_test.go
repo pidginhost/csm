@@ -227,6 +227,44 @@ func TestOwnerTicksBeforeEveryNewLimit(t *testing.T) {
 	}
 }
 
+func TestOwnerRetriesReloadAfterClockRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		old, next uint32
+	}{
+		{"raised", 200, 2000},
+		{"lowered", 2000, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOwnerFixture(t)
+			f.legacy(`{"blocks_this_hour":160,"hour_key":"2026-10-04T12"}`)
+			f.host.set(func(h *fakeHost) { h.limit, h.source = tc.old, "configured" })
+			o := f.start(f.options())
+			f.host.advance(30 * time.Minute)
+			f.host.set(func(h *fakeHost) {
+				h.limit, h.source = tc.next, "configured"
+				h.clockErr = errors.New("clock unavailable")
+			})
+			if err := o.Reload(); err == nil {
+				t.Fatal("reload accepted a refused clock")
+			}
+			if st := o.Status(); st.Ingress.Admitting || st.Owner.TickError == "" || st.Ledger.Ceiling.Limit != tc.old {
+				t.Fatalf("failed reload = %+v", st)
+			}
+			f.host.set(func(h *fakeHost) { h.clockErr = nil })
+			if err := o.do(o.tick); err != nil {
+				t.Fatal(err)
+			}
+			if c := ceiling(t, o); c.Limit != tc.next || c.General.Units() != 26 {
+				t.Fatalf("recovered ceiling = %+v, want limit %d and 26 general units", c, tc.next)
+			}
+			if st := o.status(); !st.Ingress.Admitting || st.Owner.TickError != "" || st.Owner.CeilingSource != "configured" {
+				t.Fatalf("recovered reload = %+v", st)
+			}
+		})
+	}
+}
+
 // O30: a clean stop commits a final checkpoint and closes the ingress
 // generation; a stop that never ran leaves it open, and the next start
 // counts it as interrupted.

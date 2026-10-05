@@ -279,7 +279,9 @@ and a failed inventory read.
 admission records to the [action log](action-log.md) and of admission notices.
 A ledger that cannot start, or admission that stops, raises one Critical
 `auto_response_withheld` alert through the same path as protection queue
-alerts.
+alerts. Admission notices keep their severity and notification channel
+settings but bypass `alerts.max_per_hour`: the ledger already paces them
+per notice key and summary. Delivery errors leave notices pending for retry.
 
 ### Protection queue health
 
