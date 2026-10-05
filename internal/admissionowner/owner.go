@@ -7,8 +7,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/health"
+	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -19,6 +21,7 @@ const (
 	defaultTickEvery      = 10 * time.Second
 	defaultInventoryEvery = 5 * time.Minute
 	defaultStatusEvery    = 30 * time.Second
+	defaultDeliverEvery   = time.Second
 )
 
 // Options are what the owner needs from the daemon.
@@ -34,8 +37,11 @@ type Options struct {
 	Inventory func() (admission.InventoryObservation, error)
 	// LegacySpend reads the legacy hourly counter (checks.LegacyBlockSpend).
 	LegacySpend func(statePath string, now time.Time) (admission.LegacySpend, error)
+	// WriteAudit writes audit rows to the action log in one durable write
+	// (actionlog.WriteDurableBatch).
+	WriteAudit func([]actionlog.Record) error
 	// Timer periods; zero selects the defaults.
-	TickEvery, InventoryEvery, StatusEvery time.Duration
+	TickEvery, InventoryEvery, StatusEvery, DeliverEvery time.Duration
 }
 
 var errStopped = errors.New("the admission owner has stopped")
@@ -59,6 +65,7 @@ type Owner struct {
 	done     chan struct{}
 	stopOnce sync.Once
 	current  atomic.Pointer[health.AdmissionStatus]
+	audit    *queuehealth.Sampled
 
 	// Owned by the owner goroutine.
 	ledger       *store.AdmissionLedger
@@ -72,6 +79,7 @@ type Owner struct {
 	imported     *health.AdmissionImport
 	inventoryAt  time.Time
 	inventoryErr error
+	auditAcked   uint64
 }
 
 // Start opens the ledger and runs the startup sequence before it returns,
@@ -87,8 +95,14 @@ func Start(opts Options) *Owner {
 	if opts.StatusEvery <= 0 {
 		opts.StatusEvery = defaultStatusEvery
 	}
-	o := &Owner{opts: opts, requests: make(chan request), quit: make(chan bool), done: make(chan struct{})}
-	o.reg, o.startErr = Registry()
+	if opts.DeliverEvery <= 0 {
+		opts.DeliverEvery = defaultDeliverEvery
+	}
+	o := &Owner{
+		opts: opts, requests: make(chan request), quit: make(chan bool), done: make(chan struct{}),
+		audit: queuehealth.NewSampled(int(admission.MaxAuditSlots), "rows", deliveryLag),
+	}
+	o.reg, o.startErr = buildRegistry()
 	if o.startErr == nil {
 		o.ingress, o.startErr = admission.NewIngress(o.reg)
 	}
@@ -108,6 +122,8 @@ func (o *Owner) run() {
 	defer inventory.Stop()
 	status := time.NewTicker(o.opts.StatusEvery)
 	defer status.Stop()
+	deliver := time.NewTicker(o.opts.DeliverEvery)
+	defer deliver.Stop()
 	for {
 		select {
 		case clean := <-o.quit:
@@ -138,6 +154,10 @@ func (o *Owner) run() {
 			}
 		case <-status.C:
 			o.refreshStatus()
+		case <-deliver.C:
+			if o.started {
+				_ = o.deliverAudit()
+			}
 		}
 	}
 }
@@ -156,8 +176,12 @@ func (o *Owner) do(fn func() error) error {
 	}
 }
 
-// openLedger opens the ledger; tests count the handles.
-var openLedger = store.OpenAdmissionLedger
+// openLedger opens the ledger and buildRegistry builds its registry; tests
+// count the handles and register their own producer.
+var (
+	openLedger    = store.OpenAdmissionLedger
+	buildRegistry = Registry
+)
 
 // start runs the startup sequence (spec 5.4, handoffs O19-O24). A retry
 // keeps the handle it opened: one database has one ledger handle (O1).

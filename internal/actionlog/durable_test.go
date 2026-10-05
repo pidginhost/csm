@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -202,4 +203,134 @@ func TestWriteDurableDoesNotAcknowledgeSinkPanic(t *testing.T) {
 	if err := WriteDurable(Record{}); !errors.Is(err, ErrDurableUnacknowledged) {
 		t.Fatalf("panic acknowledged: %v", err)
 	}
+}
+
+type batchSinkFunc func([]Record) error
+
+func (f batchSinkFunc) Write(Record) error {
+	panic("best-effort method must not acknowledge durable delivery")
+}
+func (f batchSinkFunc) WriteDurableBatch(rs []Record) error { return f(rs) }
+
+// Spec 5.5: a delivery batch is written and synced once. Every record gets
+// the stream's defaults, and an empty batch writes nothing.
+func TestFileSinkDurableBatchSyncsOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "actions.jsonl")
+	sink := NewFileSink(func() string { return path }, nil)
+	syncs := 0
+	sink.syncFile = func(f *os.File) error {
+		if f.Name() == path {
+			syncs++
+		}
+		return f.Sync()
+	}
+	SetSink(sink, "example.test")
+	t.Cleanup(func() { SetSink(nil, "") })
+	at := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	batch := []Record{{ActionID: "act-1", ActionVersion: 2, Timestamp: at, Op: "respond.block_ip"}, {ActionID: "act-1", ActionVersion: 3, Timestamp: at, Op: "respond.block_ip"}}
+	if err := WriteDurableBatch(batch); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteDurableBatch(nil); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 || syncs != 1 {
+		t.Fatalf("%d lines with %d syncs, want 2 lines and one sync", len(lines), syncs)
+	}
+	for i, line := range lines {
+		var got Record
+		if err := json.Unmarshal([]byte(line), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.ActionVersion != batch[i].ActionVersion || got.Hostname != "example.test" || got.V != SchemaVersion || got.Actor != Daemon {
+			t.Fatalf("record %d = %+v", i, got)
+		}
+	}
+	sink.syncFile = func(*os.File) error { return errors.New("sync failed") }
+	if err := WriteDurableBatch(batch); err == nil {
+		t.Fatal("a failed sync acknowledged the batch")
+	}
+}
+
+func TestWriteDurableBatchNeedsABatchSink(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		t.Cleanup(func() { SetSink(nil, "") })
+		for _, s := range []Sink{nil, &capturingSink{}, durableSinkFunc(func(Record) error { return nil })} {
+			SetSink(s, "")
+			if err := WriteDurableBatch([]Record{{}}); !errors.Is(err, ErrDurableUnavailable) {
+				t.Fatalf("sink %T: %v", s, err)
+			}
+		}
+		want := errors.New("durability failure")
+		SetSink(batchSinkFunc(func([]Record) error { return want }), "")
+		if err := WriteDurableBatch([]Record{{}}); !errors.Is(err, want) {
+			t.Fatalf("error=%v", err)
+		}
+		release := make(chan struct{})
+		SetSink(batchSinkFunc(func([]Record) error { <-release; return nil }), "")
+		if err := WriteDurableBatch([]Record{{}}); !errors.Is(err, ErrDurableUnacknowledged) {
+			t.Fatalf("an unfinished batch = %v", err)
+		}
+		close(release)
+		synctest.Wait()
+	})
+}
+
+// Batches share one bounded writer slot while every failed record is counted.
+func TestWriteDurableBatchConservesPoolRecords(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		previous := actionWrites
+		actionWrites = newWritePool(1)
+		defer func() { actionWrites = previous; SetSink(nil, "") }()
+		batch := []Record{{Command: []string{"original"}}, {}, {}}
+		want := errors.New("batch failed")
+		SetSink(batchSinkFunc(func([]Record) error { return want }), "")
+		if err := WriteDurableBatch(batch); !errors.Is(err, want) {
+			t.Fatalf("batch failure: %v", err)
+		}
+		assertState := func(inFlight int, lost uint64) {
+			t.Helper()
+			got := QueueStatus(time.Now())
+			if got.Depth != 0 || got.InFlight != inFlight || got.DroppedTotal != lost || got.RecentDrops != lost {
+				t.Fatalf("batch accounting: %+v, want active=%d lost=%d", got, inFlight, lost)
+			}
+		}
+		assertState(0, 3)
+		release := make(chan struct{})
+		releaseWrite := sync.OnceFunc(func() { close(release) })
+		defer releaseWrite()
+		calls, command := 0, ""
+		SetSink(batchSinkFunc(func(rs []Record) error { calls++; <-release; command = rs[0].Command[0]; return nil }), "")
+		if err := WriteDurableBatch(batch); !errors.Is(err, ErrDurableUnacknowledged) {
+			t.Fatalf("late batch acknowledged: %v", err)
+		}
+		synctest.Wait()
+		assertState(1, 3)
+		batch[0].Command[0] = "changed"
+		if err := WriteDurableBatch(batch); !errors.Is(err, ErrDurableUnacknowledged) {
+			t.Fatalf("saturated batch acknowledged: %v", err)
+		}
+		synctest.Wait()
+		assertState(1, 6)
+		if calls != 1 {
+			t.Fatalf("saturated pool started %d writes", calls)
+		}
+		releaseWrite()
+		synctest.Wait()
+		assertState(0, 6)
+		if command != "original" {
+			t.Fatalf("late batch read caller-owned command: %q", command)
+		}
+		SetSink(batchSinkFunc(func([]Record) error { panic("batch failed") }), "")
+		if err := WriteDurableBatch(batch); !errors.Is(err, ErrDurableUnacknowledged) {
+			t.Fatalf("panic acknowledged: %v", err)
+		}
+		synctest.Wait()
+		assertState(0, 9)
+	})
 }

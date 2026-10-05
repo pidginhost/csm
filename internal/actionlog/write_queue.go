@@ -33,12 +33,18 @@ func QueueStatus(now time.Time) queuehealth.Status {
 }
 
 func (p *writePool) write(s Sink, r Record) {
+	p.run(1, func() error { return s.Write(r) })
+}
+
+// run holds one slot while write runs; on failure its records count as
+// lost.
+func (p *writePool) run(records uint64, write func() error) {
 	timer := time.NewTimer(writeTimeout)
 	defer timer.Stop()
 	select {
 	case p.slots <- struct{}{}:
 	case <-timer.C:
-		p.stats.Lose(time.Now(), 1)
+		p.stats.Lose(time.Now(), records)
 		return
 	}
 	ticket := p.stats.Begin(time.Now())
@@ -49,7 +55,7 @@ func (p *writePool) write(s Sink, r Record) {
 		defer func() {
 			v := recover()
 			if failed {
-				p.stats.Lose(time.Now(), 1)
+				p.stats.Lose(time.Now(), records)
 			}
 			defer func() {
 				<-p.slots
@@ -60,7 +66,7 @@ func (p *writePool) write(s Sink, r Record) {
 				log.Printf("action log sink panicked: %v", v)
 			}
 		}()
-		failed = s.Write(r) != nil
+		failed = write() != nil
 	}()
 	select {
 	case <-done:

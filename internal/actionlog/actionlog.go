@@ -219,6 +219,35 @@ func WriteDurable(r Record) error {
 	}
 }
 
+// WriteDurableBatch acknowledges records only after a sink's one durable
+// write of all of them: a delivery batch is synced once (spec 5.5). Like
+// WriteDurable it delivers at least once.
+func WriteDurableBatch(rs []Record) error {
+	mu.RLock()
+	s, h, a := sink, host, byActor
+	mu.RUnlock()
+	durable, ok := s.(interface{ WriteDurableBatch([]Record) error })
+	if !ok {
+		return ErrDurableUnavailable
+	}
+	prepared := make([]Record, len(rs))
+	for i, r := range rs {
+		prepared[i] = prepareRecord(r, h, a)
+	}
+	acknowledgement := make(chan error, 1)
+	actionWrites.run(uint64(len(prepared)), func() error {
+		err := durable.WriteDurableBatch(prepared)
+		acknowledgement <- err
+		return err
+	})
+	select {
+	case err := <-acknowledgement:
+		return err
+	default:
+		return ErrDurableUnacknowledged
+	}
+}
+
 type durableWriteAdapter struct {
 	write           func(Record) error
 	acknowledgement chan<- error
@@ -264,7 +293,7 @@ func (f *FileSink) logPath() string {
 func DefaultPath(logDir string) string { return filepath.Join(logDir, "actions.jsonl") }
 
 func (f *FileSink) Write(r Record) error {
-	err := f.write(r, false)
+	err := f.write([]Record{r}, false)
 	// Reporting outside the file lock lets a callback inspect or replace the
 	// sink without deadlocking a completed action.
 	if err != nil {
@@ -276,7 +305,16 @@ func (f *FileSink) Write(r Record) error {
 // WriteDurable appends and syncs the record and its directory entries while
 // holding the same cross-process lock as ordinary writes and rotation.
 func (f *FileSink) WriteDurable(r Record) error {
-	err := f.write(r, true)
+	return f.WriteDurableBatch([]Record{r})
+}
+
+// WriteDurableBatch appends every record in one write and syncs once. An
+// empty batch writes nothing.
+func (f *FileSink) WriteDurableBatch(rs []Record) error {
+	if len(rs) == 0 {
+		return nil
+	}
+	err := f.write(rs, true)
 	if err != nil {
 		f.report(err)
 	}
@@ -290,16 +328,20 @@ func (f *FileSink) sync(file *os.File) error {
 	return file.Sync()
 }
 
-func (f *FileSink) write(r Record, durable bool) error {
-	// Cleaning explanations and command errors may contain attacker-controlled
-	// content. Keep individual lines readable by the bounded history reader.
-	r.Reason = boundedDetail(r.Reason)
-	r.Error = boundedDetail(r.Error)
-	data, marshalErr := json.Marshal(r)
-	if marshalErr != nil {
-		return marshalErr
+func (f *FileSink) write(rs []Record, durable bool) error {
+	var data []byte
+	for _, r := range rs {
+		// Cleaning explanations and command errors may contain
+		// attacker-controlled content. Keep individual lines readable by
+		// the bounded history reader.
+		r.Reason = boundedDetail(r.Reason)
+		r.Error = boundedDetail(r.Error)
+		line, marshalErr := json.Marshal(r)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		data = append(append(data, line...), '\n')
 	}
-	data = append(data, '\n')
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	path := f.logPath()

@@ -14,15 +14,27 @@
       "queue": "actionlog"
     },
     {
-      "id": "internal/actionlog/write_queue.go::*writePool.write::done::channel::1",
+      "id": "internal/actionlog/actionlog.go::WriteDurableBatch::acknowledgement::channel::1",
+      "path": "internal/actionlog/actionlog.go",
+      "owner": "WriteDurableBatch",
+      "target": "acknowledgement",
+      "kind": "channel",
+      "source": "make(chan error, 1)",
+      "capacity": "1",
+      "class": "lifecycle",
+      "rationale": "Carries one durable batch-write outcome back to the caller. The buffer keeps the sink's send from blocking after the caller has stopped waiting, so the write retains ownership of the records either way.",
+      "queue": "actionlog"
+    },
+    {
+      "id": "internal/actionlog/write_queue.go::*writePool.run::done::channel::1",
       "path": "internal/actionlog/write_queue.go",
-      "owner": "*writePool.write",
+      "owner": "*writePool.run",
       "target": "done",
       "kind": "channel",
       "source": "make(chan struct{})",
       "capacity": "0",
       "class": "lifecycle",
-      "rationale": "Completes the admitted write; the shared slot owns the record until the sink returns.",
+      "rationale": "Completes the admitted write; the shared slot owns the records until the sink returns.",
       "queue": "actionlog"
     },
     {
