@@ -27,9 +27,8 @@ const phishingReadSize = 100000
 // phishingScanMaxDepth bounds how deep CheckPhishing recurses below each doc
 // root. Real kits land in date-nested WordPress upload folders
 // (wp-content/uploads/YYYY/MM/<kit>/), six directory levels below the root, so
-// the budget must clear that. Heavy/transient dirs (node_modules, vendor, WP
-// core, caches) are pruned by isKnownSafeDir before recursion, keeping the
-// deeper walk affordable.
+// the budget must clear that. No directory is pruned by name: anything the web
+// server serves can hold a kit.
 const phishingScanMaxDepth = 8
 
 // ---------------------------------------------------------------------------
@@ -291,10 +290,6 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 		}
 
 		if entry.IsDir() {
-			if isKnownSafeDir(name) {
-				continue
-			}
-
 			// --- Directory anomaly detection ---
 			dirResult := analyzeDirectoryStructure(ctx, fullPath, user)
 			if dirResult != nil {
@@ -2044,25 +2039,4 @@ func visibleTextLen(s string) int {
 		}
 	}
 	return n
-}
-
-// ---------------------------------------------------------------------------
-// Safe directory list
-// ---------------------------------------------------------------------------
-
-// isKnownSafeDir names directories that CheckPhishing does not recurse into.
-// The list is deliberately narrow: dependency trees whose bundled HTML
-// documentation contains legitimate login-form examples, and VCS metadata.
-// It is not an allowlist of "trusted" paths. WordPress core directories,
-// caches, tmp and logs used to be pruned too, and kits were found under
-// wp-includes and wp-admin precisely because scanners skip them; stock core
-// ships no login-form HTML there, so a kit in those trees is as anomalous as
-// one under uploads. wp-content and .well-known are prime drop paths and are
-// always scanned. Never widen this list to skip a path where a file could be
-// dropped and served; fix detection instead.
-func isKnownSafeDir(name string) bool {
-	safeDirs := map[string]bool{
-		"node_modules": true, "vendor": true, ".git": true,
-	}
-	return safeDirs[name]
 }

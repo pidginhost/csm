@@ -206,7 +206,7 @@ func TestLooksLikeBusinessNameTechPrefix(t *testing.T) {
 	}
 }
 
-// --- isKnownCMSFile / isKnownSafeDir ----------------------------------
+// --- isKnownCMSFile / directory pruning ------------------------------
 
 func TestIsKnownCMSFileWPFiles(t *testing.T) {
 	for _, name := range []string{"wp-config.php", "wp-login.php", "xmlrpc.php", "index.php"} {
@@ -224,15 +224,22 @@ func TestIsKnownCMSFileUnknown(t *testing.T) {
 	}
 }
 
-func TestIsKnownSafeDir(t *testing.T) {
-	for _, name := range []string{"node_modules", "vendor", ".git"} {
-		if !isKnownSafeDir(name) {
-			t.Errorf("%q should be safe", name)
+// No directory name is a reason to stop looking: a kit is served from any of
+// these if the attacker drops it there.
+func TestScanForPhishingPrunesNoDirectoryName(t *testing.T) {
+	for _, name := range []string{"node_modules", "vendor", ".git", "PhishingKit", "wp-admin", "wp-includes", "cache", "tmp"} {
+		root := t.TempDir()
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
 		}
-	}
-	for _, name := range []string{"PhishingKit", "wp-admin", "wp-includes", "cache", "tmp"} {
-		if isKnownSafeDir(name) {
-			t.Errorf("%q must be scanned, not pruned", name)
+		if err := os.WriteFile(filepath.Join(dir, "verify.html"), []byte(officePhishHTML+strings.Repeat(" ", 3500)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var findings []alert.Finding
+		scanForPhishing(context.Background(), root, 3, "alice", &config.Config{}, &findings)
+		if !hasPhishingCheck(findings, "phishing_page") {
+			t.Errorf("kit under %q not detected: %+v", name, findings)
 		}
 	}
 }
@@ -846,20 +853,21 @@ func TestScanForPhishingContextCancelled(t *testing.T) {
 	}
 }
 
-func TestScanForPhishingSkipsKnownSafeDir(t *testing.T) {
+// A lone kit folder inside a dependency tree is the same anomaly as one
+// anywhere else in the doc root.
+func TestScanForPhishingFlagsKitDirectoryInsideVendor(t *testing.T) {
 	root := t.TempDir()
-	safe := filepath.Join(root, "node_modules")
-	_ = os.MkdirAll(safe, 0700)
-	// Would normally match but the dir is in the skip list.
-	_ = os.WriteFile(filepath.Join(safe, "verify.html"), []byte(officePhishHTML+strings.Repeat(" ", 3500)), 0600)
-
-	cfg := &config.Config{}
+	kit := filepath.Join(root, "vendor", "SecureDocShare")
+	if err := os.MkdirAll(kit, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(kit, "index.html"), []byte(officePhishHTML+strings.Repeat(" ", 3500)), 0600); err != nil {
+		t.Fatal(err)
+	}
 	var findings []alert.Finding
-	scanForPhishing(context.Background(), root, 3, "alice", cfg, &findings)
-	for _, f := range findings {
-		if f.Check == "phishing_page" {
-			t.Errorf("known safe dir should be skipped, got %+v", f)
-		}
+	scanForPhishing(context.Background(), root, 3, "alice", &config.Config{}, &findings)
+	if !hasPhishingCheck(findings, "phishing_directory") {
+		t.Errorf("kit directory under vendor not detected: %+v", findings)
 	}
 }
 

@@ -91,13 +91,12 @@ func TestScanForPhishingIgnoresPlainACMEChallengeTokens(t *testing.T) {
 	}
 }
 
-// Cost guard: dependency trees and VCS metadata stay excluded. WordPress core
-// directories are scanned: stock core ships no login-form HTML, and kits are
-// dropped there precisely because scanners used to skip them.
-func TestScanForPhishingStillSkipsHeavyDirs(t *testing.T) {
-	for _, skip := range []string{"node_modules", "vendor", ".git"} {
+// Dependency trees and VCS metadata are served like any other doc-root
+// directory, so a kit nested inside them must be found.
+func TestScanForPhishingReachesNestedDependencyAndVCSDirs(t *testing.T) {
+	for _, dir := range []string{"node_modules", "vendor", ".git"} {
 		root := t.TempDir()
-		dropDir := filepath.Join(root, skip, "nested")
+		dropDir := filepath.Join(root, dir, "nested")
 		if err := os.MkdirAll(dropDir, 0755); err != nil {
 			t.Fatal(err)
 		}
@@ -108,8 +107,8 @@ func TestScanForPhishingStillSkipsHeavyDirs(t *testing.T) {
 		cfg := &config.Config{}
 		var findings []alert.Finding
 		scanForPhishing(context.Background(), root, phishingScanMaxDepth, "alice", cfg, &findings)
-		if hasPhishingCheck(findings, "phishing_page") {
-			t.Errorf("heavy dir %q should be skipped but a page was scanned inside it", skip)
+		if !hasPhishingCheck(findings, "phishing_page") {
+			t.Errorf("kit nested under %q not detected (findings=%d)", dir, len(findings))
 		}
 	}
 }
