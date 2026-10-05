@@ -15,7 +15,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
-- Status, `csm doctor` and the status API report the automatic response admission ledger, created in the state database on the first start after upgrading with the current hour's block count; it admits nothing yet, so blocking stays unchanged. Its ceiling follows `auto_response.max_blocks_per_hour` and retries failed reloads before admission resumes; admission notices use their own pacing, and an unavailable ledger raises a Critical alert.
+- Status, `csm doctor` and the status API (capability `status.admission.v1`) report the new automatic response admission ledger, which the daemon creates in its state database at the first start after upgrading, importing the current hour's block count; it admits nothing yet, so blocking is unchanged, and one Critical `auto_response_withheld` alert reports a ledger that cannot start or a stopped admission. Its hourly ceiling follows `auto_response.max_blocks_per_hour`, where an omitted or zero value selects 2000 for the ledger while the existing per-IP limit keeps its default of 50, and its notices are paced by the ledger instead of `alerts.max_per_hour`.
 
 ### Changed
 
