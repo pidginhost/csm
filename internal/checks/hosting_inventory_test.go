@@ -22,9 +22,20 @@ func withInventoryPanel(t *testing.T, panel platform.Panel) {
 
 func withAccountRoots(t *testing.T, roots ...string) {
 	t.Helper()
-	prev := accountHomeRoots
+	prev, prevIncarnation := accountHomeRoots, accountIncarnation
 	accountHomeRoots = func() []string { return roots }
-	t.Cleanup(func() { accountHomeRoots = prev })
+	accountIncarnation = func(path string) (string, error) { return "dir:" + path, nil }
+	t.Cleanup(func() { accountHomeRoots, accountIncarnation = prev, prevIncarnation })
+}
+
+// cpanelUserFile is a registry entry's file as cPanel writes it at account
+// creation.
+func cpanelUserFile(name string) ([]byte, bool) {
+	account, ok := strings.CutPrefix(name, "/var/cpanel/users/")
+	if !ok || account == "" || strings.Contains(account, "/") {
+		return nil, false
+	}
+	return []byte("DNS=" + account + ".example\nSTARTDATE=1600000000\nUSER=" + account + "\n"), true
 }
 
 func inventoryFS(registry, homes []os.DirEntry, registryErr, homesErr error, userdomains string, domainsErr error) *mockOS {
@@ -44,6 +55,9 @@ func inventoryFS(registry, homes []os.DirEntry, registryErr, homesErr error, use
 					return nil, domainsErr
 				}
 				return []byte(userdomains), nil
+			}
+			if data, ok := cpanelUserFile(name); ok {
+				return data, nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -242,7 +256,7 @@ func TestHostingInventoryEmptyReadableHost(t *testing.T) {
 			withAccountRoots(t, "/home")
 			withMockOS(t, inventoryFS(nil, nil, nil, nil, "", nil))
 			snap, err := HostingInventory()
-			want := HostingSnapshot{Accounts: []string{}, Domains: map[string]string{}}
+			want := HostingSnapshot{Accounts: []string{}, Domains: map[string]string{}, Incarnations: map[string]string{}}
 			if err != nil || !reflect.DeepEqual(snap, want) {
 				t.Fatalf("empty complete inventory: %+v %v, want %+v", snap, err, want)
 			}
@@ -309,6 +323,9 @@ func TestHostingInventoryRejectsDataWithReadError(t *testing.T) {
 						return entries, nil
 					},
 					readFile: func(name string) ([]byte, error) {
+						if data, ok := cpanelUserFile(name); ok {
+							return data, nil
+						}
 						if name != "/etc/userdomains" {
 							return nil, os.ErrNotExist
 						}
@@ -352,7 +369,8 @@ func TestHostingInventoryMultipleRootsAreComplete(t *testing.T) {
 		}
 	}})
 	snap, err := HostingInventory()
-	want := HostingSnapshot{Accounts: []string{"alice", "bob", "carol"}, Domains: map[string]string{}}
+	want := HostingSnapshot{Accounts: []string{"alice", "bob", "carol"}, Domains: map[string]string{},
+		Incarnations: map[string]string{"alice": "dir:/home/alice", "bob": "dir:/home/bob", "carol": "dir:/home2/carol"}}
 	if err != nil || !reflect.DeepEqual(snap, want) {
 		t.Fatalf("HostingInventory = %+v %v, want %+v", snap, err, want)
 	}
@@ -373,9 +391,84 @@ func TestHostingInventoryEmptyRootPreservesOtherAccounts(t *testing.T) {
 			}
 		}})
 		snap, err := HostingInventory()
-		want := HostingSnapshot{Accounts: []string{"alice"}, Domains: map[string]string{}}
+		want := HostingSnapshot{Accounts: []string{"alice"}, Domains: map[string]string{}, Incarnations: map[string]string{"alice": "dir:/home2/alice"}}
 		if err != nil || !reflect.DeepEqual(snap, want) {
 			t.Fatalf("roots %v: inventory = %+v %v, want %+v", roots, snap, err, want)
 		}
+	}
+}
+
+// Handoff O47: every account carries a server-owned incarnation token, so a
+// deletion and recreation between two refreshes is detected. On cPanel it is
+// the creation date cPanel records in the account's user file; elsewhere the
+// identity of the account's home directory, which its owner cannot change.
+func TestHostingInventoryNamesIncarnations(t *testing.T) {
+	withInventoryPanel(t, platform.PanelCPanel)
+	withAccountRoots(t, "/home")
+	fs := inventoryFS([]os.DirEntry{dirEntry("alice", false), dirEntry("bob", false)}, nil, nil, nil, "", nil)
+	userFile := fs.readFile
+	fs.readFile = func(name string) ([]byte, error) {
+		if name == "/var/cpanel/users/bob" {
+			return []byte("STARTDATE=1700000001\r\nUSER=bob\n"), nil
+		}
+		return userFile(name)
+	}
+	withMockOS(t, fs)
+	snap, err := HostingInventory()
+	if want := map[string]string{"alice": "startdate:1600000000", "bob": "startdate:1700000001"}; err != nil || !reflect.DeepEqual(snap.Incarnations, want) {
+		t.Fatalf("cPanel incarnations = %v %v, want %v", snap.Incarnations, err, want)
+	}
+
+	withInventoryPanel(t, platform.PanelNone)
+	withAccountRoots(t, "/home")
+	withMockOS(t, inventoryFS(nil, []os.DirEntry{dirEntry("carol", true)}, nil, nil, "", nil))
+	if snap, err = HostingInventory(); err != nil || !reflect.DeepEqual(snap.Incarnations, map[string]string{"carol": "dir:/home/carol"}) {
+		t.Fatalf("home incarnations = %v %v", snap.Incarnations, err)
+	}
+}
+
+// An account whose incarnation cannot be read fails the whole read, as any
+// other missing required source does: a refresh without it could not tell a
+// replaced account from the original.
+func TestHostingInventoryRefusesUnknownIncarnations(t *testing.T) {
+	withInventoryPanel(t, platform.PanelCPanel)
+	withAccountRoots(t, "/home")
+	for name, body := range map[string]string{
+		"no creation date":    "USER=alice\n",
+		"empty creation date": "STARTDATE=\n",
+		"malformed date":      "STARTDATE=16000000x0\n",
+		"oversized date":      "STARTDATE=12345678901234567890\n",
+	} {
+		fs := inventoryFS([]os.DirEntry{dirEntry("alice", false)}, nil, nil, nil, "", nil)
+		readFile := fs.readFile
+		fs.readFile = func(file string) ([]byte, error) {
+			if file == "/var/cpanel/users/alice" {
+				return []byte(body), nil
+			}
+			return readFile(file)
+		}
+		withMockOS(t, fs)
+		if snap, err := HostingInventory(); err == nil || snap.Accounts != nil {
+			t.Errorf("%s: accepted %+v", name, snap)
+		}
+	}
+	withMockOS(t, inventoryFS([]os.DirEntry{dirEntry("alice", false)}, nil, nil, nil, "", nil))
+	missing := osFS.(*mockOS)
+	readFile := missing.readFile
+	missing.readFile = func(file string) ([]byte, error) {
+		if file == "/var/cpanel/users/alice" {
+			return nil, os.ErrNotExist
+		}
+		return readFile(file)
+	}
+	if snap, err := HostingInventory(); err == nil || snap.Accounts != nil {
+		t.Errorf("a missing user file was accepted: %+v", snap)
+	}
+
+	withInventoryPanel(t, platform.PanelNone)
+	withMockOS(t, inventoryFS(nil, []os.DirEntry{dirEntry("carol", true)}, nil, nil, "", nil))
+	accountIncarnation = func(string) (string, error) { return "", errors.New("stat failed") }
+	if snap, err := HostingInventory(); err == nil || snap.Accounts != nil {
+		t.Errorf("an unreadable home was accepted: %+v", snap)
 	}
 }

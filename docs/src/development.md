@@ -227,7 +227,11 @@ inventory reads account directories without checking mount state: an empty
 readable root contributes no accounts, while other readable roots still do.
 An unreadable required root fails the whole snapshot. A changed incarnation
 token gives an account a new generation, even when the account was replaced
-between two observations.
+between two observations. Every account carries one: cPanel's recorded
+creation date, elsewhere the device, inode and birth time of its home
+directory. An account whose token cannot be read, whose home is not a
+directory or whose Linux filesystem supplies no birth time fails the
+snapshot. Tenant edits do not change the token.
 
 The admission ledger (`store.AdmissionLedger`) keeps this state durably in
 the daemon's state database, in `adm:` buckets it creates the first time it

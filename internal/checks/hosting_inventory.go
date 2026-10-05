@@ -1,6 +1,8 @@
 package checks
 
 import (
+	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -9,7 +11,7 @@ import (
 )
 
 // HostingSnapshot contains all required inventory sources read without error.
-// It does not establish an atomic read or an account incarnation identity.
+// It does not establish an atomic read.
 type HostingSnapshot struct {
 	// Accounts is sorted and contains no duplicates.
 	Accounts []string
@@ -19,6 +21,9 @@ type HostingSnapshot struct {
 	// AmbiguousDomains counts domains listed for more than one owner. They
 	// are left out of Domains, so evidence about them stays host-scoped.
 	AmbiguousDomains int
+	// Incarnations maps every account to a server-owned token that changes
+	// when the account is deleted and created again.
+	Incarnations map[string]string
 }
 
 // HostingInventory reads the hosting accounts and the domains they own. On
@@ -38,7 +43,7 @@ func HostingInventory() (HostingSnapshot, error) {
 	if err != nil {
 		return HostingSnapshot{}, err
 	}
-	snap := HostingSnapshot{Accounts: []string{}, Domains: map[string]string{}}
+	snap := HostingSnapshot{Accounts: []string{}, Domains: map[string]string{}, Incarnations: map[string]string{}}
 	known := map[string]bool{}
 	for _, e := range registry {
 		name := e.Name()
@@ -47,6 +52,9 @@ func HostingInventory() (HostingSnapshot, error) {
 		}
 		known[name] = true
 		snap.Accounts = append(snap.Accounts, name)
+		if snap.Incarnations[name], err = cpanelIncarnation(name); err != nil {
+			return HostingSnapshot{}, err
+		}
 	}
 	sort.Strings(snap.Accounts)
 	data, err := osFS.ReadFile("/etc/userdomains")
@@ -79,9 +87,9 @@ func HostingInventory() (HostingSnapshot, error) {
 }
 
 // homeRootInventory lists the account directories under every account root.
+// An account listed under several roots is the one in the first.
 func homeRootInventory() (HostingSnapshot, error) {
-	snap := HostingSnapshot{Accounts: []string{}, Domains: map[string]string{}}
-	seen := map[string]bool{}
+	snap := HostingSnapshot{Accounts: []string{}, Domains: map[string]string{}, Incarnations: map[string]string{}}
 	for _, root := range accountHomeRoots() {
 		entries, err := osFS.ReadDir(root)
 		if err != nil {
@@ -89,12 +97,38 @@ func homeRootInventory() (HostingSnapshot, error) {
 		}
 		for _, e := range entries {
 			name := e.Name()
-			if e.IsDir() && admission.ValidAccountName(name) && !seen[name] {
-				seen[name] = true
-				snap.Accounts = append(snap.Accounts, name)
+			if _, seen := snap.Incarnations[name]; !e.IsDir() || !admission.ValidAccountName(name) || seen {
+				continue
+			}
+			snap.Accounts = append(snap.Accounts, name)
+			if snap.Incarnations[name], err = accountIncarnation(filepath.Join(root, name)); err != nil {
+				return HostingSnapshot{}, err
 			}
 		}
 	}
 	sort.Strings(snap.Accounts)
 	return snap, nil
 }
+
+// cpanelIncarnation is the creation time cPanel records in an account's
+// user file. A recreated account has a new one; edits keep it.
+func cpanelIncarnation(name string) (string, error) {
+	data, err := osFS.ReadFile(filepath.Join("/var/cpanel/users", name))
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		v, ok := strings.CutPrefix(strings.TrimSuffix(line, "\r"), "STARTDATE=")
+		if !ok {
+			continue
+		}
+		if v == "" || len(v) > 19 || strings.Trim(v, "0123456789") != "" {
+			break
+		}
+		return "startdate:" + v, nil
+	}
+	return "", fmt.Errorf("cPanel user file for %s names no creation date", name)
+}
+
+// accountIncarnation names one incarnation of the account home at path.
+var accountIncarnation = accountDirIncarnation
