@@ -284,7 +284,10 @@ of it, rounded up, is reserved for direct compromise and corroborated work,
 and the general lane cannot spend it. Each lane refills a token bucket at
 its hourly rate from elapsed time within a boot, up to ten minutes of that
 rate with a one-unit floor for a nonzero lane, and the first limit of a new
-ledger fills both buckets once. A later limit only clips saved credit; the
+ledger fills both buckets once. A new ledger takes that first limit together
+with the legacy hourly block count, charged at the end of its hour and
+subtracted from the fill; a count that cannot be read starts the ledger
+without credit. A later limit only clips saved credit; the
 owner checkpoints elapsed time at the saved rate before changing it. Every
 reservation, retry included, is charged to the lane its schedule picked, in
 the reservation's transaction, after a reserved lane is rechecked against

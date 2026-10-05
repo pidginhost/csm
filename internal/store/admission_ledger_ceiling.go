@@ -127,6 +127,43 @@ func (l *AdmissionLedger) SetCeiling(limit uint32) error {
 	})
 }
 
+// ImportLegacySpend takes a new ledger's first limit together with the
+// legacy hourly counter's spend, in one transaction (spec 5.4 migration).
+// A ledger that already has a limit refuses: its import is done, and a
+// restart or rerun cannot create fresh credit.
+func (l *AdmissionLedger) ImportLegacySpend(limit uint32, spend admission.LegacySpend) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.update("ceiling", func(tx *bolt.Tx) error {
+		s, err := loadCeilingState(tx)
+		if err != nil {
+			return err
+		}
+		next, charges, err := s.Import(limit, spend)
+		if err != nil {
+			return err
+		}
+		bucket := tx.Bucket([]byte(admissionChargesBucket))
+		for _, c := range charges {
+			key, err := c.Key()
+			if err != nil {
+				return err
+			}
+			data, err := c.MarshalBinary()
+			if err != nil {
+				return err
+			}
+			if bucket.Get(key) != nil {
+				return admission.ErrCorruptRecord
+			}
+			if err = bucket.Put(key, data); err != nil {
+				return err
+			}
+		}
+		return putCeilingState(tx, next)
+	})
+}
+
 // Ceiling is the committed ceiling state.
 func (l *AdmissionLedger) Ceiling() (admission.CeilingState, error) {
 	var s admission.CeilingState
@@ -205,4 +242,36 @@ func loadCharges(tx *bolt.Tx) ([]admission.Charge, error) {
 		return nil
 	})
 	return out, err
+}
+
+// ImportedLegacySpend reads the retained legacy charges for startup status.
+// Attempt charges retain their attempt until well after the ceiling window;
+// an unmatched orphan is damage, never evidence of a missing import.
+func (l *AdmissionLedger) ImportedLegacySpend() (admission.LegacySpend, error) {
+	var spend admission.LegacySpend
+	err := l.db.bolt.View(func(tx *bolt.Tx) error {
+		charges, err := loadCharges(tx)
+		if err != nil {
+			return err
+		}
+		for _, c := range charges {
+			if tx.Bucket([]byte(admissionAttemptsBucket)).Get([]byte(c.Action)) != nil {
+				continue
+			}
+			matched := false
+			for seq := uint32(1); seq <= (admission.MaxCeiling+admission.MaxMemberCost-1)/admission.MaxMemberCost+1; seq++ {
+				if c.Action == admission.LegacyActionID(c.At, seq) {
+					matched = true
+					break
+				}
+			}
+			if !matched || (!spend.At.IsZero() && !spend.At.Equal(c.At)) {
+				return admission.ErrCorruptRecord
+			}
+			spend.Units += c.Cost
+			spend.At = c.At
+		}
+		return nil
+	})
+	return spend, err
 }

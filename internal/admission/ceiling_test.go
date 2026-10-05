@@ -417,3 +417,100 @@ func TestCeilingUntilBudget(t *testing.T) {
 		t.Fatal("an unset ceiling has no budget")
 	}
 }
+
+// Spec 5.4 and 5.6 migration: the legacy hour's count becomes charges dated
+// at the end of that hour, on the general lane up to its size and the rest
+// on the reserved lane, and the first limit fills each bucket less the
+// units its lane already spent.
+func TestCeilingImportChargesLegacySpend(t *testing.T) {
+	end := time.Date(2026, 10, 4, 13, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name                string
+		units               uint32
+		general, reserved   uint32
+		gCredit, rCredit    uint32
+		generalN, reservedN int
+	}{
+		{"none", 0, 0, 0, 266, 66, 0, 0},
+		{"within the general cap", 100, 100, 0, 166, 66, 2, 0},
+		{"past the general cap", 300, 300, 0, 0, 66, 5, 0},
+		{"spill into reserved", 1700, 1600, 100, 0, 0, 25, 2},
+		{"past every ceiling", MaxCeiling + 5, 1600, MaxCeiling - 1600, 0, 0, 25, 288},
+	} {
+		s, charges, err := CeilingState{Fill: true}.Import(2000, LegacySpend{Units: tc.units, At: end})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if s.Limit != 2000 || s.Fill || s.General.Used != tc.general || s.Reserved.Used != tc.reserved ||
+			s.General.Units() != tc.gCredit || s.Reserved.Units() != tc.rCredit {
+			t.Errorf("%s: state %+v", tc.name, s)
+		}
+		var sums [2]uint32
+		var counts [2]int
+		ids := map[ActionID]bool{}
+		for _, c := range charges {
+			if err := c.Validate(); err != nil || !c.At.Equal(end) || c.Elapsed != 0 || ids[c.Action] {
+				t.Fatalf("%s: charge %+v (%v)", tc.name, c, err)
+			}
+			ids[c.Action] = true
+			i := 0
+			if c.Lane != LaneGeneral {
+				i = 1
+			}
+			sums[i] += c.Cost
+			counts[i]++
+		}
+		if sums != [2]uint32{tc.general, tc.reserved} || counts != [2]int{tc.generalN, tc.reservedN} {
+			t.Errorf("%s: charged %v units in %v charges, want %d+%d in %d+%d", tc.name, sums, counts, tc.general, tc.reserved, tc.generalN, tc.reservedN)
+		}
+		if err := s.Validate(); err != nil {
+			t.Errorf("%s: imported state is invalid: %v", tc.name, err)
+		}
+	}
+}
+
+// Unknown legacy spend is not an empty ledger: the first limit grants no
+// credit, as missing pacing history starts at zero (spec 5.6). An upgraded
+// ledger keeps starting without credit, and a ledger that already has a
+// limit imports nothing.
+func TestCeilingImportRefusesFreshCredit(t *testing.T) {
+	s, charges, err := CeilingState{Fill: true}.Import(2000, LegacySpend{Unknown: true})
+	if err != nil || s.Limit != 2000 || s.Fill || s.General.Credit != 0 || s.Reserved.Credit != 0 || len(charges) != 0 {
+		t.Fatalf("unknown spend: %+v, %d charges, %v", s, len(charges), err)
+	}
+	s, charges, err = CeilingState{}.Import(2000, LegacySpend{Units: 10, At: time.Unix(1_800_000_000, 0)})
+	if err != nil || s.General.Used != 10 || s.General.Credit != 0 || len(charges) != 1 {
+		t.Fatalf("upgraded ledger: %+v, %d charges, %v", s, len(charges), err)
+	}
+	limited := ceilingAt(t, 2000, true)
+	if got, _, err := limited.Import(2000, LegacySpend{}); !errors.Is(err, ErrTransitionConflict) || got != limited {
+		t.Fatalf("a second import: %+v, %v", got, err)
+	}
+	if _, _, err := (CeilingState{Fill: true}).Import(2000, LegacySpend{Units: 1}); err == nil {
+		t.Fatal("spend without the end of its hour was imported")
+	}
+	if _, _, err := (CeilingState{Fill: true}).Import(0, LegacySpend{}); err == nil {
+		t.Fatal("an import without a limit was accepted")
+	}
+}
+
+// Imported charges are named apart from every attempt: a reservation can
+// never collide with one.
+func TestLegacyActionIDsAreDistinct(t *testing.T) {
+	at := time.Date(2026, 10, 4, 13, 0, 0, 0, time.UTC)
+	seen := map[ActionID]bool{}
+	for _, id := range []ActionID{LegacyActionID(at, 1), LegacyActionID(at, 2), LegacyActionID(at.Add(time.Hour), 1)} {
+		if _, err := ParseActionID(string(id)); err != nil || seen[id] {
+			t.Fatalf("legacy ID %q: %v", id, err)
+		}
+		seen[id] = true
+	}
+	cand, err := CandidateKey{Kind: KindBlockIP, Target: mustAddr(t, "192.0.2.1"), Episode: EpisodeID{1}, Generation: 1}.ID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := NewAttempt(cand, 1)
+	if err != nil || seen[a.ID] {
+		t.Fatalf("attempt %s collides with a legacy charge (%v)", a.ID, err)
+	}
+}

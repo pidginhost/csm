@@ -121,10 +121,11 @@ func (s CeilingState) Budget(l Lane) uint32 {
 }
 
 // SetLimit applies a new effective limit. The first limit of a new ledger
-// fills each bucket to its cap; every later one clips saved credit to the
-// new caps and never tops it up, so no restart or reload manufactures
-// credit. Charges keep their lanes: a lane whose retained usage exceeds a
-// reduced allowance waits for them to age out.
+// fills each bucket to its cap, less the units its lane already spent in
+// the window: the legacy spend imported with it. Every later limit clips
+// saved credit to the new caps and never tops it up, so no restart or
+// reload manufactures credit. Charges keep their lanes: a lane whose
+// retained usage exceeds a reduced allowance waits for them to age out.
 func (s CeilingState) SetLimit(limit uint32) (CeilingState, error) {
 	if limit == 0 || limit > MaxCeiling {
 		return s, refuse(ReasonInvalid, "ceiling is out of range")
@@ -132,12 +133,74 @@ func (s CeilingState) SetLimit(limit uint32) (CeilingState, error) {
 	s.Limit = limit
 	for _, a := range s.allowances() {
 		full := uint64(BucketCap(a.size)) * unitTicks
-		if s.Fill || a.m.Credit > full {
+		switch {
+		case s.Fill:
+			a.m.Credit = full - min(full, uint64(a.m.Used)*unitTicks)
+		case a.m.Credit > full:
 			a.m.Credit = full
 		}
 	}
 	s.Fill = false
 	return s, nil
+}
+
+// LegacySpend is what the legacy hourly counter recorded before a new
+// ledger takes its first limit (spec 5.4 migration).
+type LegacySpend struct {
+	// Units were spent no later than At, the end of the legacy hour that
+	// counted them.
+	Units uint32
+	At    time.Time
+	// Unknown is set when the legacy counter could not be read and
+	// validated. A failed import is not an empty ledger: the first limit
+	// then grants no credit, as missing pacing history starts at zero.
+	Unknown bool
+}
+
+// Import takes the first limit together with the legacy spend before it.
+// The units become charges dated at At, on the general lane up to its size
+// and the rest on the reserved allowance, at most MaxCeiling in all: a
+// count past every ceiling leaves no budget either way. The first fill is
+// reduced by each lane's charges. A ledger that already has a limit
+// imports nothing; a restart cannot import the same hour twice.
+func (s CeilingState) Import(limit uint32, spend LegacySpend) (CeilingState, []Charge, error) {
+	if s.Limit != 0 {
+		return s, nil, ErrTransitionConflict
+	}
+	next := s
+	var charges []Charge
+	switch {
+	case spend.Unknown:
+		next.Fill = false
+	case spend.Units > 0:
+		if at, ok := unixNano(spend.At); !ok || at <= 0 {
+			return s, nil, refuse(ReasonInvalid, "legacy spend names no hour")
+		}
+		units := min(spend.Units, MaxCeiling)
+		g, _ := CeilingLanes(limit)
+		general := min(units, g)
+		// The reserved allowance is spent through either of its turns; a
+		// charge's lane only selects the allowance.
+		var seq uint32
+		for _, part := range []struct {
+			lane  Lane
+			units uint32
+		}{{LaneGeneral, general}, {LaneDirect, units - general}} {
+			for part.units > 0 {
+				cost := min(part.units, MaxMemberCost)
+				seq++
+				charges = append(charges, Charge{At: spend.At, Action: LegacyActionID(spend.At, seq), Lane: part.lane, Cost: cost, Elapsed: s.Elapsed})
+				part.units -= cost
+			}
+		}
+		next.General.Used += general
+		next.Reserved.Used += units - general
+	}
+	next, err := next.SetLimit(limit)
+	if err != nil {
+		return s, nil, err
+	}
+	return next, charges, nil
 }
 
 // Advance credits elapsed admission time: it accumulates Elapsed and
