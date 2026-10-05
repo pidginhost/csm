@@ -49,6 +49,7 @@ func Capabilities() []string {
 		"status.firewall_health.v1", // status snapshot reports firewall enabled/managed state + block counts
 		"mode.observe.v1",           // observe posture: detection and alerting without host changes
 		"status.queue_health.v1",
+		"status.admission.v1", // status carries the admission ledger, ingress and owner view
 	}
 	if firewall.Supported() {
 		caps = append(caps,

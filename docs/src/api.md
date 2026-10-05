@@ -248,6 +248,34 @@ installations share it. These findings are separate from queue health:
 a command that completed with a refusal did not lose queue work. Existing queue
 loss accounting remains responsible for interrupted or missing command work.
 
+### Automatic response admission
+
+`status.admission.v1` advertises the `admission` object on status responses.
+The same view appears under `snapshot.admission` in `csm status --json` and as
+`admission` rows in `csm doctor`. The daemon reads it on a timer, so
+`checked_at` says how old it is. Nothing is admitted through the ledger yet:
+existing blocking paths still decide every block, and the view shows the
+ledger the daemon keeps ready for them.
+
+- `ledger` holds the stored admission time, queue, counters, hourly and daily
+  outcomes, ingress generations, the hourly ceiling with its general and
+  reserved lanes, storage, the outbox and notice records. Each section carries
+  its own `error`, so one damaged record does not hide the rest.
+- `ingress` says whether automatic responses are admitted and, while they are
+  not, since when and how many Critical arrivals were refused.
+- `owner` names why the ledger owner is not running (`error`), why the last
+  clock reading was refused (`tick_error`), whether the clock is degraded,
+  where the ceiling came from (`ceiling_source`: `default`, `configured` or
+  `clamped`), the legacy hourly count imported at the first start (`import`,
+  which counts at least until an hour after `at`, or names why the count
+  could not be read) and the last inventory read.
+
+`admission.audit` and `admission.notices` in `queues` report the delivery of
+admission records to the [action log](action-log.md) and of admission notices.
+A ledger that cannot start, or admission that stops, raises one Critical
+`auto_response_withheld` alert through the same path as protection queue
+alerts.
+
 ### Protection queue health
 
 `status.queue_health.v1` advertises the `queues` map on status responses.

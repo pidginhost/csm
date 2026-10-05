@@ -348,6 +348,15 @@ Challenge, central, and incident blocks are not limited by
 `auto_response.max_blocks_per_hour`; that budget applies to scan-driven
 blocks only.
 
+The same setting also sets the hourly ceiling of the admission ledger, which
+will cover every automatic source once responses are admitted through it. For
+the ledger an omitted or zero value selects 2000 and a value above 20000 is
+clamped to 20000; the per-IP limit above keeps reading omitted or zero as 50.
+At its first start the ledger imports the current hour's block count, so a
+restart cannot grant a fresh hour; a block count that cannot be read starts
+it without saved credit. Status and `csm doctor` show the ceiling and its
+source.
+
 The resulting `auto_block` findings are output evidence, not new local
 corroboration for central intelligence or incident correlation. They are
 deduplicated before the digest, attack database, history, and alert sinks

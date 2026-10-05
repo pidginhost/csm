@@ -1219,6 +1219,65 @@
       ]
     },
     {
+      "id": "admission",
+      "rows": [
+        "admission.audit",
+        "admission.notices"
+      ],
+      "bounds": "Audit rows and notice records stay in the admission ledger's outbox, which its recovery and outbox reserve bounds. A delivery writes at most 64 rows per durable write and 16 writes per run; a notice cycle delivers the records due, at most one per key an hour and one per summary a minute.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/daemon",
+          "name": "TestDaemonOwnsTheAdmissionLedger",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerDeliversAuditRowsDurably",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerReportsStalledAuditDelivery",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerDrainingAuditIsNotStalled",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerDeliversNoticesOnTheIndependentPath",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerNoticeDeliveryFailureIsVisible",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerStopWaitsForANoticeDelivery",
+          "mode": "portable"
+        }
+      ],
+      "anchors": [
+        {
+          "path": "internal/admissionowner/owner.go",
+          "symbol": "Owner.audit",
+          "shape": "*queuehealth.Sampled"
+        },
+        {
+          "path": "internal/admissionowner/notice.go",
+          "symbol": "sender.queue",
+          "shape": "*queuehealth.Sampled"
+        }
+      ]
+    },
+    {
       "id": "attackdb.events",
       "rows": [
         "attackdb.events"

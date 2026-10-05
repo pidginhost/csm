@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admissionowner"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/auditd"
@@ -191,6 +192,10 @@ type Daemon struct {
 	// scanJobs is the full-scan job manager. Wired in Run() after the global
 	// bbolt store is open. Nil when the store is unavailable at startup.
 	scanJobs *ScanJobManager
+
+	// admission owns the admission ledger in the state database. Wired in
+	// Run() before any detector starts; nil without a state database.
+	admission *admissionowner.Owner
 
 	// lastAutomationActionCache memoises the newest automation-emitted
 	// finding so /api/v1/status does not run a 100-row history cursor on
@@ -683,6 +688,9 @@ func (d *Daemon) Run() error {
 	if err := installAccountExtractorFromConfig(d.cfg); err != nil {
 		return err
 	}
+
+	// Own the admission ledger before anything can respond automatically.
+	d.startAdmission()
 
 	d.applyStartupIntegrations()
 
@@ -1200,6 +1208,8 @@ func (d *Daemon) Run() error {
 
 	d.wg.Wait()
 	stopProcessCtx()
+	// Every producer has stopped: close the ingress generation cleanly.
+	d.stopAdmission()
 	csmlog.Info("workers drained", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 	// The log watchers have stopped, so this save holds every frozen message
 	// they reported and the next start does not report them again.

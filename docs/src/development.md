@@ -237,7 +237,13 @@ the token.
 
 The admission ledger (`store.AdmissionLedger`) keeps this state durably in
 the daemon's state database, in `adm:` buckets it creates the first time it
-is opened; nothing opens it yet. One owner serializes every write and each
+is opened. The daemon's admission owner (`internal/admissionowner`) opens it
+at startup and holds the only handle: one goroutine makes every change,
+records clock readings on a timer, applies the ceiling at startup and on
+reload after a reading at the saved limit, refreshes the inventory from
+complete reads, delivers audit rows to the action log and notices through
+the queue-health path, and reads status on a timer. Nothing submits to it
+yet. One owner serializes every write and each
 call is one transaction, so a failed call changes nothing. Admission time
 comes only from recorded clock readings: a wall clock that steps back never
 lowers it, a new boot credits no elapsed time, and a reopened ledger admits
@@ -356,8 +362,7 @@ the pure doctor rules turn it and the ingress's own health into fixed rows.
 Missing buckets fail the sections that read them; an unreadable database
 fails every section. Quiet notice indexes are checked with their records.
 Health snapshots own copies of the admission view, and a clean ingress
-generation clears the interruption marker. Nothing sends notices or reads
-status yet.
+generation clears the interruption marker.
 
 ### Attack event storage
 
