@@ -281,7 +281,9 @@ A ledger that cannot start, or admission that stops, raises one Critical
 `auto_response_withheld` alert through the same path as protection queue
 alerts. Admission notices keep their severity and notification channel
 settings but bypass `alerts.max_per_hour`: the ledger already paces them
-per notice key and summary. Delivery errors leave notices pending for retry.
+per notice key and summary. Delivery errors leave notices pending for retry:
+the next two cycles retry at once, then each attempt waits twice as long as
+the one before, up to an hour.
 
 ### Protection queue health
 

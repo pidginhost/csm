@@ -14,6 +14,9 @@ import (
 // ackNotices acknowledges delivered notices; tests make it fail.
 var ackNotices = (*store.AdmissionLedger).AckNotices
 
+// maxNoticeRetryWait caps the wait between attempts of a failing delivery.
+const maxNoticeRetryWait = time.Hour
+
 // noticeMessages name each notice kind as its notification does.
 var noticeMessages = map[admission.NoticeKind]string{
 	admission.NoticeWithheld:        "Critical automatic response withheld",
@@ -43,7 +46,11 @@ type sender struct {
 	pendingStop   *alert.Finding
 	pendingSince  time.Time
 	ledgerPending int
-	done          chan struct{}
+	// failures counts consecutive failed deliveries; retryAt is when the
+	// next attempt is due.
+	failures int
+	retryAt  time.Time
+	done     chan struct{}
 }
 
 func (s *sender) run() {
@@ -93,10 +100,7 @@ func (s *sender) cycle() {
 		findings[i] = noticeFinding(r, now)
 		acks[i] = admission.NoticeAck{Key: r.Key, First: r.First, Count: r.Count}
 	}
-	if s.o.stopping.Load() {
-		return
-	}
-	if err = s.o.opts.Deliver(findings); err != nil {
+	if !s.deliver(findings) {
 		return
 	}
 	s.delivered += uint64(len(due))
@@ -161,7 +165,7 @@ func (s *sender) announceStop() bool {
 
 func (s *sender) sendStop() bool {
 	s.observe()
-	if s.o.stopping.Load() || s.o.opts.Deliver([]alert.Finding{*s.pendingStop}) != nil {
+	if !s.deliver([]alert.Finding{*s.pendingStop}) {
 		return true
 	}
 	s.announced, s.announcedSince = true, s.pendingSince
@@ -169,6 +173,26 @@ func (s *sender) sendStop() bool {
 	s.delivered++
 	s.observe()
 	return false
+}
+
+// deliver sends findings unless the retry of a failing delivery is not yet
+// due. Every attempt reaches every channel and history, those that accepted
+// the last attempt included, so a failing one is not retried each cycle:
+// the next two cycles retry at once, then each attempt waits twice as long
+// as the one before, up to an hour. A delivery restores prompt retries.
+func (s *sender) deliver(findings []alert.Finding) bool {
+	if s.o.stopping.Load() || deliveryNow().Before(s.retryAt) {
+		return false
+	}
+	if err := s.o.opts.Deliver(findings); err != nil {
+		s.failures++
+		if s.failures > 2 {
+			s.retryAt = deliveryNow().Add(min(defaultNoticeEvery<<min(s.failures-2, 20), maxNoticeRetryWait))
+		}
+		return false
+	}
+	s.failures, s.retryAt = 0, time.Time{}
+	return true
 }
 
 // noticeFinding is the notification of one notice record: its registered
