@@ -74,5 +74,5 @@ func auditRecord(r admission.AuditRow) actionlog.Record {
 // QueueStatuses reports the owner's deliveries through queue health, which
 // does not depend on the ledger being writable.
 func (o *Owner) QueueStatuses(now time.Time) map[string]queuehealth.Status {
-	return map[string]queuehealth.Status{"audit": o.audit.Snapshot(now)}
+	return map[string]queuehealth.Status{"audit": o.audit.Snapshot(now), "notices": o.notices.queue.Snapshot(now)}
 }

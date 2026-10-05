@@ -72,6 +72,17 @@
       "rationale": "Closed when the owner goroutine exits, so waiting callers return."
     },
     {
+      "id": "internal/admissionowner/owner.go::Start::done::channel::2",
+      "path": "internal/admissionowner/owner.go",
+      "owner": "Start",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Closed when the notice sender exits, so Stop returns only after a delivery in flight."
+    },
+    {
       "id": "internal/admissionowner/owner.go::Start::quit::channel::1",
       "path": "internal/admissionowner/owner.go",
       "owner": "Start",

@@ -95,7 +95,7 @@ func (f *ownerFixture) options() Options {
 	return Options{
 		DB: f.db, StatePath: f.statePath, Ceiling: f.host.ceiling, Clock: f.host.clock,
 		Inventory: f.host.inventory, LegacySpend: checks.LegacyBlockSpend,
-		TickEvery: time.Hour, InventoryEvery: time.Hour, StatusEvery: time.Hour,
+		TickEvery: time.Hour, InventoryEvery: time.Hour, StatusEvery: time.Hour, DeliverEvery: time.Hour, NoticeEvery: time.Hour,
 	}
 }
 

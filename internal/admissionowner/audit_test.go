@@ -35,22 +35,21 @@ func withTestRegistry(t *testing.T) *admission.Producer {
 	return p
 }
 
-// applied takes one candidate through a verified attempt, as the routing
-// that 1.4c adds will: its reservation, execution and outcome each leave an
-// audit row.
-func applied(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost) admission.CandidateID {
+// queued publishes one root of the given severity and queues a candidate
+// on it, as the routing that 1.4c adds will.
+func queued(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity) (admission.CandidateID, time.Time) {
 	t.Helper()
 	var id admission.CandidateID
+	host.mu.Lock()
+	now := host.wall
+	host.mu.Unlock()
 	if err := o.do(func() error {
 		target, err := admission.CanonicalAddress("192.0.2.10", admission.Caps{IPv6: true})
 		if err != nil {
 			return err
 		}
-		host.mu.Lock()
-		now := host.wall
-		host.mu.Unlock()
 		e, err := p.Mint(admission.EvidenceInput{
-			Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
+			Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: sev,
 			Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: "offset=1", Version: 1},
 			ObservedAt:  now, Parser: admission.ParserRef{Name: "sshd", Version: 1}, Target: target,
 		})
@@ -68,9 +67,20 @@ func applied(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost) admi
 		if err != nil {
 			return err
 		}
-		if id, err = c.ID(); err != nil {
-			return err
-		}
+		id, err = c.ID()
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return id, now
+}
+
+// applied takes one candidate through a verified attempt: its reservation,
+// execution and outcome each leave an audit row.
+func applied(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost) admission.CandidateID {
+	t.Helper()
+	id, now := queued(t, o, p, host, admission.SeverityHigh)
+	if err := o.do(func() error {
 		_, a, _, err := o.ledger.Reserve(id, admission.LaneGeneral, now.Add(time.Hour))
 		if err != nil {
 			return err

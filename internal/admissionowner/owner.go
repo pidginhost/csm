@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/store"
@@ -22,6 +23,7 @@ const (
 	defaultInventoryEvery = 5 * time.Minute
 	defaultStatusEvery    = 30 * time.Second
 	defaultDeliverEvery   = time.Second
+	defaultNoticeEvery    = 5 * time.Second
 )
 
 // Options are what the owner needs from the daemon.
@@ -40,8 +42,12 @@ type Options struct {
 	// WriteAudit writes audit rows to the action log in one durable write
 	// (actionlog.WriteDurableBatch).
 	WriteAudit func([]actionlog.Record) error
+	// Deliver sends notices through the daemon's independent health path,
+	// as protection_queue_degraded is sent: history and direct dispatch,
+	// never the finding channel, suppressions or the routine rate limit.
+	Deliver func([]alert.Finding) error
 	// Timer periods; zero selects the defaults.
-	TickEvery, InventoryEvery, StatusEvery, DeliverEvery time.Duration
+	TickEvery, InventoryEvery, StatusEvery, DeliverEvery, NoticeEvery time.Duration
 }
 
 var errStopped = errors.New("the admission owner has stopped")
@@ -66,6 +72,7 @@ type Owner struct {
 	stopOnce sync.Once
 	current  atomic.Pointer[health.AdmissionStatus]
 	audit    *queuehealth.Sampled
+	notices  *sender
 
 	// Owned by the owner goroutine.
 	ledger       *store.AdmissionLedger
@@ -98,6 +105,9 @@ func Start(opts Options) *Owner {
 	if opts.DeliverEvery <= 0 {
 		opts.DeliverEvery = defaultDeliverEvery
 	}
+	if opts.NoticeEvery <= 0 {
+		opts.NoticeEvery = defaultNoticeEvery
+	}
 	o := &Owner{
 		opts: opts, requests: make(chan request), quit: make(chan bool), done: make(chan struct{}),
 		audit: queuehealth.NewSampled(int(admission.MaxAuditSlots), "rows", deliveryLag),
@@ -110,7 +120,9 @@ func Start(opts Options) *Owner {
 		o.startErr = o.start()
 	}
 	o.refreshStatus()
+	o.notices = &sender{o: o, queue: queuehealth.NewSampled(admission.FixedNotices+int(admission.NoticeBytes/admission.NoticeSlotBytes), "notices", deliveryLag), done: make(chan struct{})}
 	go o.run()
+	go o.notices.run()
 	return o
 }
 
@@ -348,8 +360,8 @@ func (o *Owner) Reload() error {
 }
 
 // Stop commits a final checkpoint, closes the ingress generation and stops
-// the owner. A failure leaves the generation open, so the next start counts
-// it as interrupted (O30).
+// the owner, after any notice delivery in flight. A failure leaves the
+// generation open, so the next start counts it as interrupted (O30).
 func (o *Owner) Stop() { o.halt(true) }
 
 // halt stops the owner goroutine, after the clean shutdown when clean is
@@ -359,6 +371,7 @@ func (o *Owner) halt(clean bool) {
 		o.stopping.Store(true)
 		o.quit <- clean
 		<-o.done
+		<-o.notices.done
 	})
 }
 
