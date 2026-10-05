@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -236,10 +237,21 @@ func TestApplyInjectsIntoSkeletonAndSideEffects(t *testing.T) {
 // as its own non-root user, so a root-only directory anywhere above either
 // path makes every hold defer with "Permission denied".
 func TestApplyMakesGuardPathsReachableByNonRootExim(t *testing.T) {
+	for _, version := range []int{239, 255} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			testApplyMakesGuardPathsReachable(t, version)
+		})
+	}
+}
+
+func testApplyMakesGuardPathsReachable(t *testing.T, systemdVersion int) {
 	a, _ := testAdapter(t)
 	parent := filepath.Dir(a.quarantineDir)
-	if err := os.MkdirAll(parent, 0700); err != nil {
-		t.Fatal(err)
+	private := filepath.Join(a.stateRoot, "state")
+	for _, dir := range []string{parent, private, filepath.Dir(a.badIPsPath)} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, dir := range []string{a.stateRoot, parent} {
 		if err := os.Chmod(dir, 0700); err != nil {
@@ -247,14 +259,24 @@ func TestApplyMakesGuardPathsReachableByNonRootExim(t *testing.T) {
 		}
 	}
 
-	if err := a.Apply(bothSignals(), nil); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		// 239 preserves the legacy directory mode; 255 reapplies the unit's
+		// 0711 on each start. Apply runs out of the daemon sandbox in both.
+		if systemdVersion == 255 {
+			if err := os.Chmod(a.stateRoot, 0711); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := a.Apply(bothSignals(), nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	for dir, want := range map[string]os.FileMode{
 		a.stateRoot:     0711,
 		parent:          0711,
 		a.quarantineDir: 0700, // owned by the transport user; stays private
+		private:         0700,
 	} {
 		info, err := os.Stat(dir)
 		if err != nil {
@@ -289,6 +311,108 @@ func TestApplyNeverNarrowsGuardPathModes(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0755 {
 		t.Errorf("state root mode = %#o, want 0755 left as is", got)
+	}
+}
+
+func TestGuardLookupDirectoryPermissions(t *testing.T) {
+	for _, refresh := range []bool{false, true} {
+		for _, existing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("refresh=%t/existing=%t", refresh, existing), func(t *testing.T) {
+				a, _ := testAdapter(t)
+				if err := os.Chmod(a.stateRoot, 0700); err != nil {
+					t.Fatal(err)
+				}
+				dir := filepath.Dir(a.badIPsPath)
+				if existing {
+					if err := os.MkdirAll(dir, 0700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if refresh {
+					// Apply or systemd already prepared the shared parent; lookup
+					// refresh has no reason to change its mode or the quarantine.
+					if err := os.Chmod(a.stateRoot, 0711); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Model a daemon/service with umask 0077 without changing the
+				// process-wide umask while other tests may be running.
+				a.mkdirAll = func(path string, mode os.FileMode) error {
+					return os.MkdirAll(path, mode&0700)
+				}
+				var err error
+				if refresh {
+					err = a.RefreshBadIPs([]string{"192.0.2.1"})
+				} else {
+					err = a.Apply(bothSignals(), []string{"192.0.2.1"})
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertMode(t, dir, 0711)
+				assertMode(t, a.badIPsPath, 0644)
+				assertMode(t, a.stateRoot, 0711)
+			})
+		}
+	}
+	// Default umask must not grant directory listings either.
+	a, _ := testAdapter(t)
+	if err := a.Apply(bothSignals(), nil); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, filepath.Dir(a.badIPsPath), 0711)
+}
+
+func TestMakeSearchableRejectsSymlinkAncestors(t *testing.T) {
+	for _, nested := range []bool{false, true} {
+		t.Run(fmt.Sprintf("nested=%t", nested), func(t *testing.T) {
+			root := t.TempDir()
+			private := filepath.Join(root, "state")
+			if err := os.MkdirAll(filepath.Join(private, "child"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(root, "forward_guard")
+			if err := os.Symlink(private, link); err != nil {
+				t.Fatal(err)
+			}
+			dir := link
+			if nested {
+				dir = filepath.Join(link, "child")
+			}
+			if err := makeSearchable(root, dir); err == nil {
+				t.Fatal("expected symlink rejection")
+			}
+			assertMode(t, private, 0700)
+			assertMode(t, filepath.Join(private, "child"), 0700)
+		})
+	}
+}
+
+func TestMakeSearchablePreservesSpecialModes(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0700|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	if err := makeSearchable(root, root); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode() & (os.ModePerm | os.ModeSticky); got != 0711|os.ModeSticky {
+		t.Fatalf("directory mode = %v, want searchable with sticky bit preserved", got)
+	}
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Errorf("%s mode = %#o, want %#o", path, got, want)
 	}
 }
 

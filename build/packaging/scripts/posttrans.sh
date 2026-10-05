@@ -5,5 +5,5 @@
 # down unconditionally still end with the configured binary protection.
 /opt/csm/csm config apply-immutability || \
     echo "WARNING: could not apply configured binary immutability; run: /opt/csm/csm config apply-immutability" >&2
-mkdir -p /var/lib/csm 2>/dev/null || true
+install -d -m 0711 /var/lib/csm 2>/dev/null || true
 touch /var/lib/csm/.pkg-installed 2>/dev/null || true

@@ -75,6 +75,9 @@ func TestSetBinaryImmutableTreatsMissingChattrAsUnsupported(t *testing.T) {
 
 func TestInstallToleratesUnsupportedImmutableFilesystem(t *testing.T) {
 	root := t.TempDir()
+	oldRoot := systemdSandboxRoot
+	systemdSandboxRoot = root
+	t.Cleanup(func() { systemdSandboxRoot = oldRoot })
 	inst := &Installer{
 		BinaryPath:  filepath.Join(root, "opt", "csm", "csm"),
 		CommandPath: filepath.Join(root, "usr", "sbin", "csm"),
@@ -91,6 +94,18 @@ func TestInstallToleratesUnsupportedImmutableFilesystem(t *testing.T) {
 	}
 	if err := inst.Install(); err != nil {
 		t.Fatalf("unsupported immutable filesystem aborted install: %v", err)
+	}
+	for path, want := range map[string]os.FileMode{
+		filepath.Dir(inst.StatePath): 0711,
+		inst.StatePath:               0700,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s mode = %#o, want %#o", path, got, want)
+		}
 	}
 }
 

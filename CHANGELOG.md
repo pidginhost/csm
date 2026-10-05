@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Forward-guard permission repair now refuses directory symlinks so private state stays private.
 - The YARA-X scanning engine is updated to 1.21.0 to fix missed and false matches when a rule that checks a file header shares a pattern with another rule. The shipped rules retain their measured matches, and existing hosts keep their rules and stored findings; affected scans can return corrected results, and no setting is involved.
 
 ### Changed
@@ -19,7 +20,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- The email forward guard now holds matching copies instead of leaving them deferred in the mail queue; Exim could not reach the guard's files. Existing hosts are corrected the next time the guard is applied, which happens on every daemon start.
+- The email forward guard now holds matching copies instead of leaving them deferred in the mail queue; Exim could not reach the guard's files. Installs, package upgrades and lookup refreshes preserve access, and existing hosts are corrected the next time the guard is applied.
 
 ## [4.2.0] - 2026-10-04
 

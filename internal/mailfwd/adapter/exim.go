@@ -288,8 +288,14 @@ func (a *EximAdapter) RefreshBadIPs(ips []string) error {
 }
 
 func (a *EximAdapter) writeBadIPs(ips []string) error {
-	if err := a.mkdirAll(filepath.Dir(a.badIPsPath), 0755); err != nil {
+	dir := filepath.Dir(a.badIPsPath)
+	if err := a.mkdirAll(dir, 0711); err != nil {
 		return fmt.Errorf("creating bad IP lookup dir: %w", err)
+	}
+	// Refresh runs inside the daemon sandbox. It may recreate this directory
+	// under a restrictive umask, but must not change the shared state root.
+	if err := makeSearchable(dir, dir); err != nil {
+		return err
 	}
 
 	var buf bytes.Buffer
@@ -339,20 +345,35 @@ func makeSearchable(root, dir string) error {
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("%s is not under %s", dir, root)
 	}
+	var paths []string
 	for p := dir; ; p = filepath.Dir(p) {
-		info, err := os.Stat(p)
+		paths = append(paths, p)
+		if p == root {
+			break
+		}
+	}
+	// These are root-controlled directories. Reject symlinks before changing
+	// any mode: a link into the private state directory must not expose it.
+	modes := make([]os.FileMode, len(paths))
+	for i := len(paths) - 1; i >= 0; i-- {
+		p := paths[i]
+		info, err := os.Lstat(p)
 		if err != nil {
 			return fmt.Errorf("checking %s: %w", p, err)
 		}
-		if mode := info.Mode().Perm(); mode&0011 != 0011 {
-			if err := os.Chmod(p, mode|0011); err != nil {
+		if !info.IsDir() {
+			return fmt.Errorf("%s must be a directory, not a symlink or file", p)
+		}
+		modes[i] = info.Mode()
+	}
+	for i, p := range paths {
+		if modes[i]&0011 != 0011 {
+			if err := os.Chmod(p, modes[i]|0011); err != nil {
 				return fmt.Errorf("opening %s to the exim user: %w", p, err)
 			}
 		}
-		if p == root {
-			return nil
-		}
 	}
+	return nil
 }
 
 // injectBlock removes any existing managed block of the same kind, then inserts
