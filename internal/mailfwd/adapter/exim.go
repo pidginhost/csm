@@ -43,6 +43,7 @@ type ForwardGuard interface {
 // Default on-disk locations (overridable in tests).
 const (
 	defaultLocalConf     = "/etc/exim.conf.local"
+	defaultStateRoot     = "/var/lib/csm"
 	defaultBadIPsPath    = "/var/lib/csm/forward_guard/bad_ips"
 	defaultQuarantineDir = "/var/lib/csm/forward_quarantine/held"
 	// transportUser delivers held copies. It must NOT be root: cPanel lists
@@ -97,6 +98,7 @@ const eximLocalSkeleton = `@AUTH@
 // EximAdapter is the cPanel/exim ForwardGuard.
 type EximAdapter struct {
 	localConf     string
+	stateRoot     string
 	badIPsPath    string
 	quarantineDir string
 
@@ -110,6 +112,7 @@ type EximAdapter struct {
 func NewEximAdapter() *EximAdapter {
 	return &EximAdapter{
 		localConf:     defaultLocalConf,
+		stateRoot:     defaultStateRoot,
 		badIPsPath:    defaultBadIPsPath,
 		quarantineDir: defaultQuarantineDir,
 		rebuild:       runBuildEximConf,
@@ -163,6 +166,15 @@ func (a *EximAdapter) Apply(cfg policy.Config, badIPs []string) error {
 	}
 	if err := a.writeBadIPs(badIPs); err != nil {
 		return err
+	}
+	// exim appends held copies as the transport user and reads the bad-IP
+	// lookup as its own non-root user. Older systemd applies StateDirectoryMode
+	// only when it creates the state root, so a host installed while that mode
+	// was 0700 keeps a root-only directory above both paths unless opened here.
+	for _, dir := range []string{filepath.Dir(a.quarantineDir), filepath.Dir(a.badIPsPath)} {
+		if err := makeSearchable(a.stateRoot, dir); err != nil {
+			return err
+		}
 	}
 
 	if err := writeFileAtomic(a.localConf, []byte(next)); err != nil {
@@ -316,6 +328,31 @@ func (a *EximAdapter) restore(prev string, had bool) error {
 		return fmt.Errorf("rebuilding restored exim config: %w", err)
 	}
 	return nil
+}
+
+// makeSearchable adds the group and other search bits to dir and to every
+// directory above it up to and including root. It only adds bits, so a mode an
+// operator widened on purpose is left alone, and nothing becomes listable.
+func makeSearchable(root, dir string) error {
+	root, dir = filepath.Clean(root), filepath.Clean(dir)
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%s is not under %s", dir, root)
+	}
+	for p := dir; ; p = filepath.Dir(p) {
+		info, err := os.Stat(p)
+		if err != nil {
+			return fmt.Errorf("checking %s: %w", p, err)
+		}
+		if mode := info.Mode().Perm(); mode&0011 != 0011 {
+			if err := os.Chmod(p, mode|0011); err != nil {
+				return fmt.Errorf("opening %s to the exim user: %w", p, err)
+			}
+		}
+		if p == root {
+			return nil
+		}
+	}
 }
 
 // injectBlock removes any existing managed block of the same kind, then inserts

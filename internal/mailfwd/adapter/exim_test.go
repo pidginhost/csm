@@ -107,8 +107,9 @@ func testAdapter(t *testing.T) (*EximAdapter, *fakeState) {
 	fs := &fakeState{}
 	a := &EximAdapter{
 		localConf:     filepath.Join(dir, "exim.conf.local"),
+		stateRoot:     dir,
 		badIPsPath:    filepath.Join(dir, "forward_guard", "bad_ips"),
-		quarantineDir: filepath.Join(dir, "held"),
+		quarantineDir: filepath.Join(dir, "forward_quarantine", "held"),
 		rebuild:       fs.rebuild,
 		chown:         func(p, u string) error { fs.chownUser = u; fs.chownPath = p; return nil },
 		mkdirAll:      os.MkdirAll,
@@ -228,6 +229,93 @@ func TestApplyInjectsIntoSkeletonAndSideEffects(t *testing.T) {
 	}
 	if fs.rebuilds != 1 {
 		t.Errorf("rebuilds = %d, want 1", fs.rebuilds)
+	}
+}
+
+// exim appends held copies as the transport user and reads the bad-IP lookup
+// as its own non-root user, so a root-only directory anywhere above either
+// path makes every hold defer with "Permission denied".
+func TestApplyMakesGuardPathsReachableByNonRootExim(t *testing.T) {
+	a, _ := testAdapter(t)
+	parent := filepath.Dir(a.quarantineDir)
+	if err := os.MkdirAll(parent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{a.stateRoot, parent} {
+		if err := os.Chmod(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := a.Apply(bothSignals(), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	for dir, want := range map[string]os.FileMode{
+		a.stateRoot:     0711,
+		parent:          0711,
+		a.quarantineDir: 0700, // owned by the transport user; stays private
+	} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s mode = %#o, want %#o", dir, got, want)
+		}
+	}
+	info, err := os.Stat(filepath.Dir(a.badIPsPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got&0011 != 0011 {
+		t.Errorf("bad-IP lookup dir mode = %#o, want group and other search bits", got)
+	}
+}
+
+func TestApplyNeverNarrowsGuardPathModes(t *testing.T) {
+	a, _ := testAdapter(t)
+	if err := os.Chmod(a.stateRoot, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := a.Apply(bothSignals(), nil); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(a.stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0755 {
+		t.Errorf("state root mode = %#o, want 0755 left as is", got)
+	}
+}
+
+func TestMakeSearchableRefusesDirOutsideRootWithoutChanges(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	outside := filepath.Join(base, "outside", "dir")
+	for _, dir := range []string{root, outside} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(base, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := makeSearchable(root, outside); err == nil {
+		t.Fatal("expected error for a directory outside the root")
+	}
+	for _, dir := range []string{base, filepath.Dir(outside), outside} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0700 {
+			t.Errorf("%s mode = %#o, want 0700 untouched", dir, got)
+		}
 	}
 }
 
