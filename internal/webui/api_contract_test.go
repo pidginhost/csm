@@ -26,7 +26,9 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 	s := &Server{cfg: capsTestCfg(), startTime: now.Add(-time.Hour), version: "test"}
 	// The admission view is present only from a ledger owner; the contract
 	// covers it too.
-	adm := &health.AdmissionStatus{CheckedAt: now, Ledger: &admission.LedgerStatus{}, Ingress: &admission.IngressHealth{Admitting: true}}
+	adm := &health.AdmissionStatus{CheckedAt: now, Ledger: &admission.LedgerStatus{}, Ingress: &admission.IngressHealth{Admitting: true},
+		Owner: &health.AdmissionOwner{Error: "fixture start failure", TickError: "fixture clock failure", ClockDegraded: true, LastTick: now,
+			CeilingSource: "default", Import: &health.AdmissionImport{Units: 1, At: now, Error: "fixture read failure"}, InventoryAt: now, InventoryError: "fixture inventory failure"}}
 	s.SetHealthProvider(admissionStatusProvider{status: adm, statusFakeProvider: statusFakeProvider{
 		wordpress:            map[string]health.WPVerificationCounts{"core": {Verified: 3, Unverified: 2, LastAttempt: now}},
 		queues:               queues,
@@ -99,6 +101,11 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 		t.Fatalf("admission payload = %T, want object", raw["admission"])
 	}
 	assertJSONKeys(t, admissionView, jsonStructKeys(reflect.TypeOf(health.AdmissionStatus{})))
+	owner, ok := admissionView["owner"].(map[string]any)
+	if !ok {
+		t.Fatalf("admission owner payload = %T, want object", admissionView["owner"])
+	}
+	assertJSONKeys(t, owner, jsonStructKeys(reflect.TypeOf(health.AdmissionOwner{})))
 }
 
 func TestAPICapabilitiesContract(t *testing.T) {

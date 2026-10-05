@@ -38,6 +38,50 @@
       "queue": "actionlog"
     },
     {
+      "id": "internal/admissionowner/owner.go::*Owner.do::err::channel::1",
+      "path": "internal/admissionowner/owner.go",
+      "owner": "*Owner.do",
+      "target": "err",
+      "kind": "channel",
+      "source": "make(chan error, 1)",
+      "capacity": "1",
+      "class": "lifecycle",
+      "rationale": "Carries one request's result from the owner goroutine to its caller; the buffer keeps the owner from blocking on the reply."
+    },
+    {
+      "id": "internal/admissionowner/owner.go::Start::done::channel::1",
+      "path": "internal/admissionowner/owner.go",
+      "owner": "Start",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Closed when the owner goroutine exits, so waiting callers return."
+    },
+    {
+      "id": "internal/admissionowner/owner.go::Start::quit::channel::1",
+      "path": "internal/admissionowner/owner.go",
+      "owner": "Start",
+      "target": "quit",
+      "kind": "channel",
+      "source": "make(chan bool)",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Tells the owner goroutine to stop, with or without its final checkpoint; the stopper waits for it."
+    },
+    {
+      "id": "internal/admissionowner/owner.go::Start::requests::channel::1",
+      "path": "internal/admissionowner/owner.go",
+      "owner": "Start",
+      "target": "requests",
+      "kind": "channel",
+      "source": "make(chan request)",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Hands one request to the owner goroutine, which makes every ledger change; the caller waits for the owner and stops waiting once the owner has stopped. Nothing queues."
+    },
+    {
       "id": "internal/alert/phpanel_queue.go::newPhpanelQueue::done::channel::1",
       "path": "internal/alert/phpanel_queue.go",
       "owner": "newPhpanelQueue",

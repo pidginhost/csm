@@ -29,6 +29,7 @@ func TestBuildOwnsAdmissionSnapshot(t *testing.T) {
 			Notices: admission.NoticesStatus{Records: []admission.NoticeStatusRow{{Count: 6}}},
 		},
 		Ingress: &admission.IngressHealth{Admitting: true},
+		Owner:   &AdmissionOwner{CeilingSource: "default", Import: &AdmissionImport{Units: 7}},
 	}
 	snapshot := Build(admissionFakeProvider{&fakeProvider{}, status}, "v", nil)
 	before, err := json.Marshal(snapshot.Admission)
@@ -43,6 +44,8 @@ func TestBuildOwnsAdmissionSnapshot(t *testing.T) {
 	status.Ledger.Outcomes.Day[0].N++
 	status.Ledger.Outcomes.Month[0].N++
 	status.Ledger.Notices.Records[0].Count++
+	status.Owner.CeilingSource = "configured"
+	status.Owner.Import.Units++
 	after, err := json.Marshal(snapshot.Admission)
 	if err != nil {
 		t.Fatal(err)
