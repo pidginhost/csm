@@ -11,23 +11,23 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- Phishing scans now reject symbolic links and special files without waiting for input, preventing a planted pipe from stalling a deep scan. Existing hosts use the safer reads on their next scan, and no setting is involved.
-- The scheduled phishing scan no longer skips dependency or source-control folders by name. Existing hosts scan them from the next deep scan unless excluded by `suppressions.ignore_paths`; kit folders are reported for review, and `auto_response.quarantine_files` quarantines eligible phishing pages.
-- The scheduled check for PHP files the web server group can write now includes dependency and cache folders and checks regular files, so symbolic links do not produce permission alerts. Existing hosts see corrected findings on the next deep scan, and `auto_response.enforce_permissions` repairs writable files.
-- The YARA-X scanning engine is updated to 1.21.0 to fix missed and false matches when a rule that checks a file header shares a pattern with another rule. The shipped rules retain their measured matches, and existing hosts keep their rules and stored findings; affected scans can return corrected results, and no setting is involved.
+- A file planted in a hosted site can no longer stall the deep phishing scan.
+- The scheduled phishing scan now checks dependency and source-control folders, so phishing kits hidden there are reported.
+- The writable-PHP check now covers dependency and cache folders and no longer raises permission alerts for symbolic links.
+- The YARA-X engine is updated to 1.21.0, fixing missed and false matches when two rules share a pattern.
 
 ### Added
 
-- Status, `csm doctor` and the status API (capability `status.admission.v1`) report the new automatic response admission ledger, which the daemon creates in its state database at the first start after upgrading, importing the current hour's block count; it admits nothing yet, so blocking is unchanged, and one Critical `auto_response_withheld` alert reports a ledger that cannot start or a stopped admission. Its hourly ceiling follows live changes to `auto_response.max_blocks_per_hour`, where an omitted or zero value selects 2000 for the ledger while the existing per-IP limit keeps its default of 50, and its notices are paced by the ledger instead of `alerts.max_per_hour`, a failed alert being retried at increasing intervals.
+- Status and `csm doctor` report the new automatic response admission ledger, which does not change blocking yet; a Critical alert flags a ledger that fails.
 
 ### Changed
 
-- Go dependencies and the pinned GitHub Actions are updated to their current releases; existing hosts see no behaviour change and no setting is involved.
+- Go dependencies and the pinned GitHub Actions are updated to their current releases.
 
 ### Fixed
 
-- The email forward guard now holds matching copies instead of leaving them deferred in the mail queue; Exim could not reach the guard's files. Installs, package upgrades and lookup refreshes preserve access, and existing hosts are corrected the next time the guard is applied.
-- Directory-based phishing alerts now honor excluded pages and ignore brands found only in title email addresses or hidden markup. Existing hosts use this detection on the next deep scan; `suppressions.ignore_paths` controls exclusions, while explicit audits can still bypass them.
+- The email forward guard now holds matching mail instead of leaving it stuck in the queue.
+- Directory-based phishing alerts now respect excluded pages and raise fewer false alarms.
 
 ## [4.2.0] - 2026-10-04
 

@@ -270,6 +270,10 @@ ledger the daemon keeps ready for them.
   which counts at least until an hour after `at`, or names why the count
   could not be read) and the last inventory read.
 
+The hourly ceiling follows `auto_response.max_blocks_per_hour` and picks up
+changes without a restart. An omitted or zero value gives the ledger 2000, while
+the per-IP block limit keeps its own default of 50.
+
 Doctor fails while the ledger owner is not running or its clock reading is
 refused, and warns on a degraded clock, a clamped ceiling, a ceiling of 1
 (only the reserved lane runs), a legacy hourly count that could not be read
