@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- The scheduled check for PHP files the web server group can write no longer skips folders named cache, node_modules or vendor, so a file planted there is reported. Existing hosts see any such files at the next deep scan, and `auto_response.enforce_permissions` then resets them to 644.
 - The YARA-X scanning engine is updated to 1.21.0 to fix missed and false matches when a rule that checks a file header shares a pattern with another rule. The shipped rules retain their measured matches, and existing hosts keep their rules and stored findings; affected scans can return corrected results, and no setting is involved.
 
 ### Changed

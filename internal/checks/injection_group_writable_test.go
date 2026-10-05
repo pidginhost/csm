@@ -133,21 +133,40 @@ func TestScanGroupWritablePHPFlagsWebOwnedFile(t *testing.T) {
 	}
 }
 
-func TestScanGroupWritablePHPSkipsCacheAndVendorDirs(t *testing.T) {
+// A directory name is no reason to stop looking: a web-server-writable PHP
+// file under cache/, node_modules/ or vendor/ is as reachable as any other.
+func TestScanGroupWritablePHPScansCacheAndVendorDirs(t *testing.T) {
 	tmp := t.TempDir()
+	var gid uint32
 	for _, sub := range []string{"cache", "node_modules", "vendor"} {
 		dir := filepath.Join(tmp, sub)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "x.php"), []byte("<?php"), 0664); err != nil {
+		php := filepath.Join(dir, "x.php")
+		if err := os.WriteFile(php, []byte("<?php"), 0664); err != nil {
 			t.Fatal(err)
 		}
+		// umask may strip the group-write bit on creation; force it back.
+		if err := os.Chmod(php, 0664); err != nil {
+			t.Fatal(err)
+		}
+		gid = fileGID(t, php)
 	}
 	var findings []alert.Finding
-	scanGroupWritablePHP(tmp, 4, map[uint32]bool{getCurrentGID(t): true}, &findings)
-	if len(findings) != 0 {
-		t.Errorf("skip-listed dirs should not be scanned, got %+v", findings)
+	scanGroupWritablePHP(tmp, 4, map[uint32]bool{gid: true}, &findings)
+	got := map[string]bool{}
+	for _, f := range findings {
+		got[f.Message] = true
+	}
+	for _, sub := range []string{"cache", "node_modules", "vendor"} {
+		want := "Web-server group-writable PHP: " + tmp + "/" + sub + "/x.php"
+		if !got[want] {
+			t.Errorf("missing finding %q, got %+v", want, findings)
+		}
+	}
+	if len(findings) != 3 {
+		t.Errorf("expected exactly 3 findings, got %d: %+v", len(findings), findings)
 	}
 }
 

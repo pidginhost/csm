@@ -375,10 +375,6 @@ func scanGroupWritablePHP(dir string, maxDepth int, webGIDs map[uint32]bool, fin
 		fullPath := dir + "/" + name
 
 		if entry.IsDir() {
-			// Skip known large/safe dirs
-			if name == "cache" || name == "node_modules" || name == "vendor" {
-				continue
-			}
 			scanGroupWritablePHP(fullPath, maxDepth-1, webGIDs, findings)
 			continue
 		}
