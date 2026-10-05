@@ -735,6 +735,38 @@ func TestAnalyzeDirectoryStructureNoPhishingContent(t *testing.T) {
 	}
 }
 
+// Brand words a visitor never sees are not impersonation. A login sample whose
+// only brand mention sits in hidden markup must not make its folder a kit; the
+// same word in visible text still does.
+func TestAnalyzeDirectoryStructureIgnoresHiddenBodyBrand(t *testing.T) {
+	page := func(brandMarkup string) string {
+		return `<html><head><title>Welcome</title><link rel="stylesheet" href="a.css"><link rel="stylesheet" href="b.css"></head><body>` +
+			brandMarkup + `<form action="/session"><input type="email" name="email"><input type="password" name="password"></form></body></html>`
+	}
+	for _, tc := range []struct {
+		name   string
+		markup string
+		want   bool
+	}{
+		{"hidden", `<div style="display:none">OneDrive</div>`, false},
+		{"visible", `<div>OneDrive</div>`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "SecureDocShare")
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(page(tc.markup)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			res := analyzeDirectoryStructure(context.Background(), dir, "alice", &config.Config{})
+			if got := res != nil; got != tc.want {
+				t.Fatalf("phishing_directory = %v, want %v: %+v", got, tc.want, res)
+			}
+		})
+	}
+}
+
 func TestAnalyzeDirectoryStructureMissingDir(t *testing.T) {
 	if res := analyzeDirectoryStructure(context.Background(), filepath.Join(t.TempDir(), "missing"), "alice", &config.Config{}); res != nil {
 		t.Errorf("missing dir should return nil, got %+v", res)
