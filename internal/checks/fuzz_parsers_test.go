@@ -1260,3 +1260,24 @@ func FuzzDecodeBase64Body(f *testing.F) {
 		}
 	})
 }
+
+func FuzzLegacyBlockSpend(f *testing.F) {
+	for _, body := range []string{`null`, `{}`, `{"blocks_this_hour":0,"hour_key":""}`, `{"blocks_this_hour":4,"blocks_this_hour":0,"hour_key":""}`} {
+		f.Add(body)
+	}
+	f.Fuzz(func(t *testing.T, body string) {
+		dir := writeLegacyState(t, body)
+		spend, err := LegacyBlockSpend(dir, time.Unix(1_800_000_000, 0))
+		if err != nil {
+			return
+		}
+		if spend.Unknown || (spend.Units > 0 && spend.At.IsZero()) {
+			t.Fatalf("accepted incomplete spend: %+v", spend)
+		}
+		for _, damaged := range []string{"null", "{}"} {
+			if body == damaged {
+				t.Fatal("accepted missing pacing history")
+			}
+		}
+	})
+}
