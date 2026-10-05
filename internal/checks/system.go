@@ -387,6 +387,10 @@ func scanGroupWritablePHP(dir string, maxDepth int, webGIDs map[uint32]bool, fin
 		if err != nil {
 			continue
 		}
+		// Symlink mode bits describe the link, not whether PHP is writable.
+		if !info.Mode().IsRegular() {
+			continue
+		}
 
 		// Check group-write bit
 		if info.Mode()&0020 == 0 {

