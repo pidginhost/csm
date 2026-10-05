@@ -35,11 +35,11 @@ func moveAuditRow(tx *bolt.Tx, row admission.AuditRow, transition uint32) error 
 // ackAuditStates acknowledges the named phases of one attempt.
 func (f *ledgerFixture) ackAuditStates(id admission.ActionID, states ...admission.State) {
 	f.t.Helper()
-	var ids []admission.AuditID
+	var ids []admission.AuditAck
 	for _, row := range f.pendingAudit() {
 		for _, s := range states {
 			if row.Attempt.ID == id && row.State == s {
-				ids = append(ids, row.ID())
+				ids = append(ids, row.Ack())
 			}
 		}
 	}

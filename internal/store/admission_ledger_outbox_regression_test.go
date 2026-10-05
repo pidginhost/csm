@@ -142,13 +142,13 @@ func TestAdmissionLedgerAuditProofOrdersAttempts(t *testing.T) {
 				t.Fatal(err)
 			}
 			var earlier, reserved admission.AuditRow
-			var ack []admission.AuditID
+			var ack []admission.AuditAck
 			for _, row := range f.pendingAudit() {
 				switch {
 				case row.Attempt.Seq == 1 && row.State == admission.StateFailed:
 					earlier = row
 				case row.Attempt.Seq == 1 || row.State == admission.StateExecuting:
-					ack = append(ack, row.ID())
+					ack = append(ack, row.Ack())
 				case row.State == admission.StateReserved:
 					reserved = row
 				}

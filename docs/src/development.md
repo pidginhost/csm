@@ -332,7 +332,9 @@ fixed Critical summary that no flood can refuse. Records may use only a
 fixed share of the reserve, a key is due for delivery at most once an hour
 and a summary once a minute after acknowledged delivery. Acknowledgements
 carry the count and first-event time of the record read, so a repeated
-acknowledgement cannot consume a later record under a reused key. Queue
+acknowledgement cannot consume a later record under a reused key. An audit
+row's acknowledgement carries the row's time as well, so one held past the
+row's retirement cannot remove the row a re-minted attempt writes later. Queue
 events and attempt outcomes are also counted into five-minute, hourly and
 daily buckets. `Status` reads every section in one read transaction without
 the ledger's lock or a current clock, each section with its own error, and

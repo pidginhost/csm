@@ -204,6 +204,18 @@ type AuditID struct {
 // ID is the row's name.
 func (r AuditRow) ID() AuditID { return AuditID{Action: r.Attempt.ID, Transition: r.Transition} }
 
+// AuditAck acknowledges the row ID names, written at At. The time fences an
+// acknowledgement held past its row's retirement: a re-minted attempt
+// writes a later row under the same ID, and the stale acknowledgement must
+// not remove it (ruling R1).
+type AuditAck struct {
+	ID AuditID
+	At time.Time
+}
+
+// Ack is the row's acknowledgement.
+func (r AuditRow) Ack() AuditAck { return AuditAck{ID: r.ID(), At: r.At} }
+
 // Key is the outbox key of the row id names.
 func (id AuditID) Key() []byte {
 	return binary.BigEndian.AppendUint32(AuditPrefix(id.Action), id.Transition)

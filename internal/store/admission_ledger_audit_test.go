@@ -22,11 +22,11 @@ func (f *ledgerFixture) pendingAudit() []admission.AuditRow {
 // ackAll acknowledges every pending audit row, as the audit consumer does.
 func (f *ledgerFixture) ackAll() {
 	f.t.Helper()
-	var ids []admission.AuditID
+	var acks []admission.AuditAck
 	for _, r := range f.pendingAudit() {
-		ids = append(ids, r.ID())
+		acks = append(acks, r.Ack())
 	}
-	if err := f.l.AckAudit(ids); err != nil {
+	if err := f.l.AckAudit(acks); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -158,24 +158,24 @@ func TestAdmissionLedgerAckAuditIsIdempotent(t *testing.T) {
 	f.applied(time.Hour)
 	rows := f.pendingAudit()
 	base := f.storageState().AuditSlots
-	if err := f.l.AckAudit([]admission.AuditID{rows[0].ID()}); err != nil {
+	if err := f.l.AckAudit([]admission.AuditAck{rows[0].Ack()}); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.storageState().AuditSlots; got != base-1 || len(f.pendingAudit()) != 2 {
 		t.Fatalf("slots = %d after one acknowledgement", got)
 	}
 	before := f.snapshot()
-	if err := f.l.AckAudit([]admission.AuditID{rows[0].ID(), rows[0].ID()}); err != nil {
+	if err := f.l.AckAudit([]admission.AuditAck{rows[0].Ack(), rows[0].Ack()}); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(before, f.snapshot()) {
 		t.Fatal("a repeated acknowledgement changed the ledger")
 	}
-	if err := f.l.AckAudit([]admission.AuditID{{Action: "act_x", Transition: 1}}); err == nil {
+	if err := f.l.AckAudit([]admission.AuditAck{{ID: admission.AuditID{Action: "act_x", Transition: 1}}}); err == nil {
 		t.Fatal("a malformed acknowledgement was accepted")
 	}
 	f.failNext("audit")
-	if err := f.l.AckAudit([]admission.AuditID{rows[1].ID()}); err == nil {
+	if err := f.l.AckAudit([]admission.AuditAck{rows[1].Ack()}); err == nil {
 		t.Fatal("injected failure")
 	}
 	if !reflect.DeepEqual(before, f.snapshot()) {
@@ -205,10 +205,10 @@ func TestAdmissionLedgerRetirementWaitsForAudit(t *testing.T) {
 		t.Fatalf("history retired before its rows were acknowledged: %v", err)
 	}
 	rows := f.pendingAudit()
-	var mine []admission.AuditID
+	var mine []admission.AuditAck
 	for _, r := range rows {
 		if r.Attempt.Candidate == id {
-			mine = append(mine, r.ID())
+			mine = append(mine, r.Ack())
 		}
 	}
 	if err := f.l.AckAudit(mine[:len(mine)-1]); err != nil {
@@ -266,6 +266,46 @@ func TestAdmissionLedgerRetiredActionLeavesNoRows(t *testing.T) {
 	}
 	if _, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
 		t.Fatalf("reopen: %v", err)
+	}
+}
+
+// Ruling R1: an acknowledgement names its row's time as well as its ID. An
+// acknowledgement held past its row's retirement, as a retrying consumer
+// holds it, skips the row a re-minted attempt later writes under the same
+// ID, so that row stays pending until its own delivery.
+func TestAdmissionLedgerStaleAckSparesReMintedRow(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.applied(time.Hour)
+	var stale admission.AuditAck
+	for _, r := range f.pendingAudit() {
+		if r.State == admission.StateReserved {
+			stale = r.Ack()
+		}
+	}
+	f.ackAll()
+	f.tickAt(f.wall.Add(admission.HistoryTarget + time.Hour))
+	if again := f.queued(); again != id {
+		t.Fatalf("same key made another candidate %s", again)
+	}
+	if _, _, _, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	rows := f.pendingAudit()
+	if len(rows) != 1 || rows[0].ID() != stale.ID || rows[0].At.Equal(stale.At) {
+		t.Fatalf("rows = %+v, want one re-minted row under %+v", rows, stale.ID)
+	}
+	slots := f.storageState().AuditSlots
+	if err := f.l.AckAudit([]admission.AuditAck{stale}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.pendingAudit(); len(got) != 1 || f.storageState().AuditSlots != slots {
+		t.Fatalf("a stale acknowledgement removed the re-minted row: rows %+v, slots %d want %d", got, f.storageState().AuditSlots, slots)
+	}
+	if err := f.l.AckAudit([]admission.AuditAck{rows[0].Ack()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.pendingAudit(); len(got) != 0 {
+		t.Fatalf("the row's own acknowledgement left %+v", got)
 	}
 }
 
@@ -459,18 +499,18 @@ func TestAdmissionLedgerAuditRefusesDamage(t *testing.T) {
 	if rows, err := f.l.PendingAudit(2); err != nil || len(rows) != 2 {
 		t.Fatalf("a batch of two = %d rows, %v", len(rows), err)
 	}
-	if err := f.l.AckAudit([]admission.AuditID{{Action: f.pendingAudit()[0].Attempt.ID}}); err == nil {
+	if err := f.l.AckAudit([]admission.AuditAck{{ID: admission.AuditID{Action: f.pendingAudit()[0].Attempt.ID}}}); err == nil {
 		t.Fatal("an acknowledgement without a transition was accepted")
 	}
-	misfile := func(f *ledgerFixture) (admission.AuditRow, admission.AuditID) {
+	misfile := func(f *ledgerFixture) (admission.AuditRow, admission.AuditAck) {
 		var row admission.AuditRow
-		var other admission.AuditID
+		var other admission.AuditAck
 		if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
 			row = f.pendingAuditIn(t, tx)[0]
-			other = row.ID()
-			other.Transition += 10
+			other = row.Ack()
+			other.ID.Transition += 10
 			v, _ := row.MarshalBinary()
-			return tx.Bucket([]byte(admissionOutboxBucket)).Put(other.Key(), v)
+			return tx.Bucket([]byte(admissionOutboxBucket)).Put(other.ID.Key(), v)
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -481,7 +521,7 @@ func TestAdmissionLedgerAuditRefusesDamage(t *testing.T) {
 		t.Fatalf("read over a misfiled row: %v", err)
 	}
 	before := f.snapshot()
-	if err := f.l.AckAudit([]admission.AuditID{other}); !isCorrupt(err) {
+	if err := f.l.AckAudit([]admission.AuditAck{other}); !isCorrupt(err) {
 		t.Fatalf("acknowledging a misfiled row: %v", err)
 	}
 	if !reflect.DeepEqual(before, f.snapshot()) {

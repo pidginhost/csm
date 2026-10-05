@@ -134,8 +134,8 @@ func auditPending(tx *bolt.Tx, id admission.CandidateID) (bool, error) {
 }
 
 // PendingAudit returns up to limit unacknowledged audit rows in key order.
-// The consumer delivers them idempotently by their ID and acknowledges
-// them with AckAudit.
+// The consumer delivers them idempotently by their ID and time and
+// acknowledges each with its Ack through AckAudit.
 func (l *AdmissionLedger) PendingAudit(limit int) ([]admission.AuditRow, error) {
 	var rows []admission.AuditRow
 	err := l.db.bolt.View(func(tx *bolt.Tx) error {
@@ -159,12 +159,13 @@ func (l *AdmissionLedger) PendingAudit(limit int) ([]admission.AuditRow, error) 
 }
 
 // AckAudit removes delivered rows and returns their slots in one
-// transaction. A row already acknowledged is skipped. Once an ended
-// candidate's last row is acknowledged, its history may be retired: the
-// same transaction writes its retirement keys (spec 5.4).
-func (l *AdmissionLedger) AckAudit(ids []admission.AuditID) error {
-	for _, id := range ids {
-		if _, err := admission.ParseActionID(string(id.Action)); err != nil || id.Transition == 0 {
+// transaction. A row already acknowledged, or one written at another time
+// than its acknowledgement names, is skipped. Once an ended candidate's
+// last row is acknowledged, its history may be retired: the same
+// transaction writes its retirement keys (spec 5.4).
+func (l *AdmissionLedger) AckAudit(acks []admission.AuditAck) error {
+	for _, ack := range acks {
+		if _, err := admission.ParseActionID(string(ack.ID.Action)); err != nil || ack.ID.Transition == 0 {
 			return refusal(admission.ReasonInvalid, "audit acknowledgement names no row")
 		}
 	}
@@ -178,16 +179,19 @@ func (l *AdmissionLedger) AckAudit(ids []admission.AuditID) error {
 		outbox := tx.Bucket([]byte(admissionOutboxBucket))
 		touched := map[admission.CandidateID]bool{}
 		var acked uint64
-		for _, id := range ids {
-			raw := outbox.Get(id.Key())
+		for _, ack := range acks {
+			raw := outbox.Get(ack.ID.Key())
 			if raw == nil {
 				continue
 			}
 			row, decodeErr := admission.UnmarshalAuditRow(raw)
-			if decodeErr != nil || row.ID() != id {
+			if decodeErr != nil || row.ID() != ack.ID {
 				return admission.ErrCorruptRecord
 			}
-			if err = outbox.Delete(id.Key()); err != nil {
+			if !row.At.Equal(ack.At) {
+				continue
+			}
+			if err = outbox.Delete(ack.ID.Key()); err != nil {
 				return err
 			}
 			touched[row.Attempt.Candidate] = true

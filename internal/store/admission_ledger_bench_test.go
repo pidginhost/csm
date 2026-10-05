@@ -713,10 +713,10 @@ func BenchmarkAdmissionLedgerAckAuditFullOutbox(b *testing.B) {
 	if err != nil || len(rows) != 999 {
 		b.Fatalf("rows = %d, %v", len(rows), err)
 	}
-	ids := make([]admission.AuditID, 0, len(rows))
+	ids := make([]admission.AuditAck, 0, len(rows))
 	keys := map[string][][]byte{admissionQueueStateBucket: {storageStateKey}}
 	for _, r := range rows {
-		ids = append(ids, r.ID())
+		ids = append(ids, r.Ack())
 		keys[admissionOutboxBucket] = append(keys[admissionOutboxBucket], r.Key())
 	}
 	if err = f.db.bolt.View(func(tx *bolt.Tx) error {
