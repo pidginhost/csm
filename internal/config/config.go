@@ -744,6 +744,10 @@ type Config struct {
 		PermBlockInterval string `yaml:"permblock_interval"` // window for counting temp blocks (default "24h")
 		CleanDatabase     bool   `yaml:"clean_database"`     // auto-clean malicious DB injections, revoke sessions, block attacker IPs (default false)
 		CleanHtaccess     bool   `yaml:"clean_htaccess"`     // auto-clean .htaccess directives flagged by the hardened detectors (default false)
+		// MaxBlocksPerHourDefaulted records that the operator left
+		// max_blocks_per_hour unset or zero: the admission ceiling then
+		// takes its own default (AdmissionCeiling).
+		MaxBlocksPerHourDefaulted bool `yaml:"-" json:"-"`
 		// VirtualPatchExposedFiles controls automatic .htaccess "Require all
 		// denied" rules for confirmed web_exposed_* findings. "off" (default,
 		// also the value for any unrecognised setting): detection only. "manual":
@@ -1973,6 +1977,7 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.AutoResponse.MaxBlocksPerHour == 0 {
 		cfg.AutoResponse.MaxBlocksPerHour = DefaultMaxBlocksPerHour
+		cfg.AutoResponse.MaxBlocksPerHourDefaulted = true
 	}
 	// The block path keeps fallbacks for Config values assembled in code.
 	// Loaded configs resolve omitted values here so status surfaces report the
