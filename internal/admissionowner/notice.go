@@ -46,11 +46,16 @@ type sender struct {
 	pendingStop   *alert.Finding
 	pendingSince  time.Time
 	ledgerPending int
-	// failures counts consecutive failed deliveries; retryAt is when the
-	// next attempt is due.
+	// The independent stop alert must not inherit a ledger delivery's wait,
+	// and its successful delivery must not reset that ledger retry.
+	ledgerRetry noticeRetry
+	stopRetry   noticeRetry
+	done        chan struct{}
+}
+
+type noticeRetry struct {
 	failures int
-	retryAt  time.Time
-	done     chan struct{}
+	at       time.Time
 }
 
 func (s *sender) run() {
@@ -100,7 +105,7 @@ func (s *sender) cycle() {
 		findings[i] = noticeFinding(r, now)
 		acks[i] = admission.NoticeAck{Key: r.Key, First: r.First, Count: r.Count}
 	}
-	if !s.deliver(findings) {
+	if !s.deliver(&s.ledgerRetry, findings) {
 		return
 	}
 	s.delivered += uint64(len(due))
@@ -165,7 +170,7 @@ func (s *sender) announceStop() bool {
 
 func (s *sender) sendStop() bool {
 	s.observe()
-	if !s.deliver([]alert.Finding{*s.pendingStop}) {
+	if !s.deliver(&s.stopRetry, []alert.Finding{*s.pendingStop}) {
 		return true
 	}
 	s.announced, s.announcedSince = true, s.pendingSince
@@ -179,19 +184,20 @@ func (s *sender) sendStop() bool {
 // due. Every attempt reaches every channel and history, those that accepted
 // the last attempt included, so a failing one is not retried each cycle:
 // the next two cycles retry at once, then each attempt waits twice as long
-// as the one before, up to an hour. A delivery restores prompt retries.
-func (s *sender) deliver(findings []alert.Finding) bool {
-	if s.o.stopping.Load() || deliveryNow().Before(s.retryAt) {
+// as the one before, up to an hour. A delivery restores prompt retries
+// for its path.
+func (s *sender) deliver(retry *noticeRetry, findings []alert.Finding) bool {
+	if s.o.stopping.Load() || deliveryNow().Before(retry.at) {
 		return false
 	}
 	if err := s.o.opts.Deliver(findings); err != nil {
-		s.failures++
-		if s.failures > 2 {
-			s.retryAt = deliveryNow().Add(min(defaultNoticeEvery<<min(s.failures-2, 20), maxNoticeRetryWait))
+		retry.failures++
+		if retry.failures > 2 {
+			retry.at = deliveryNow().Add(min(defaultNoticeEvery<<min(retry.failures-2, 20), maxNoticeRetryWait))
 		}
 		return false
 	}
-	s.failures, s.retryAt = 0, time.Time{}
+	*retry = noticeRetry{}
 	return true
 }
 

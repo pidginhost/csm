@@ -528,3 +528,53 @@ func TestOwnerAppliesACeilingChangeOnTheNextTick(t *testing.T) {
 		t.Fatalf("after the tick: %+v %+v", st.Owner, st.Ingress)
 	}
 }
+
+func TestOwnerRetriesACeilingChangeAfterASetterFailure(t *testing.T) {
+	f := newOwnerFixture(t)
+	o := f.start(f.options())
+	f.host.set(func(h *fakeHost) { h.limit, h.source = 0, "configured" })
+	if err := o.do(o.tick); err == nil {
+		t.Fatal("an invalid ceiling was accepted")
+	}
+	if st := o.Status(); st.Ingress.Admitting || st.Owner.Error == "" || st.Owner.CeilingSource != "default" || st.Ledger.Ceiling.Limit != 2000 {
+		t.Fatalf("failed ceiling change lost the saved state: %+v %+v %+v", st.Ingress, st.Owner, st.Ledger.Ceiling)
+	}
+	if err := o.do(func() error { o.refreshInventory(); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if o.ingress.Health().Admitting {
+		t.Fatal("inventory resumed admission before the ceiling retry")
+	}
+	f.host.set(func(h *fakeHost) { h.limit = 200 })
+	if err := o.do(o.tick); err != nil {
+		t.Fatal(err)
+	}
+	if st := o.Status(); !st.Ingress.Admitting || st.Owner.Error != "" || st.Owner.CeilingSource != "configured" || st.Ledger.Ceiling.Limit != 200 {
+		t.Fatalf("ceiling retry did not recover: %+v %+v %+v", st.Ingress, st.Owner, st.Ledger.Ceiling)
+	}
+}
+
+// An unchanged configured ceiling needs only the clock write, including
+// after its source changed without changing the effective limit.
+func TestOwnerUnchangedCeilingDoesNotAddTickWrites(t *testing.T) {
+	f := newOwnerFixture(t)
+	o := f.start(f.options())
+	for _, source := range []string{"default", "configured"} {
+		if source == "configured" {
+			f.host.set(func(h *fakeHost) { h.source = source })
+			if err := o.do(o.tick); err != nil {
+				t.Fatal(err)
+			}
+		}
+		before := f.db.WriteTxID()
+		if err := o.do(o.tick); err != nil {
+			t.Fatal(err)
+		}
+		if writes := f.db.WriteTxID() - before; writes != 1 {
+			t.Fatalf("unchanged %s ceiling made %d writes, want only the clock write", source, writes)
+		}
+		if st := o.status(); st.Owner.CeilingSource != source || st.Ledger.Ceiling.Limit != 2000 || !st.Ingress.Admitting {
+			t.Fatalf("unchanged %s ceiling: %+v %+v", source, st.Owner, st.Ledger.Ceiling)
+		}
+	}
+}
