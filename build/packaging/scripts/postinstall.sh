@@ -17,7 +17,8 @@ fi
 
 # Ensure FHS dirs exist (defense in depth; nfpm should have created them).
 install -d -m 0750 /etc/csm /etc/csm/conf.d
-install -d -m 0700 /var/lib/csm /var/lib/csm/state
+install -d -m 0711 /var/lib/csm
+install -d -m 0700 /var/lib/csm/state
 install -d -m 0755 /usr/lib/csm /usr/lib/csm/profiles
 
 is_placeholder_config() {

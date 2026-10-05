@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -188,5 +189,70 @@ func TestWriteSystemdServiceUnitKeepsOldUnitWhenGrantCannotBeCreated(t *testing.
 	}
 	if string(data) != "[Unit]\nDescription=old\n" {
 		t.Errorf("unit replaced despite failed grant: %q", data)
+	}
+}
+
+func TestWriteSystemdServiceUnitPreservesSearchableStateRoot(t *testing.T) {
+	for _, initial := range []os.FileMode{0, 0700, 0711, 0755} {
+		t.Run(fmt.Sprintf("%#o", initial), func(t *testing.T) {
+			root := t.TempDir()
+			oldRoot, oldPath := systemdSandboxRoot, systemdUnitPath
+			systemdSandboxRoot = root
+			systemdUnitPath = filepath.Join(root, "csm.service")
+			t.Cleanup(func() { systemdSandboxRoot, systemdUnitPath = oldRoot, oldPath })
+			stateRoot := filepath.Join(root, "var/lib/csm")
+			if initial != 0 {
+				if err := os.MkdirAll(stateRoot, initial); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Required child grants must not pre-create the systemd-managed
+			// parent as 0700, even on systemd 239 which never repairs it.
+			unit := systemdServiceUnit("/opt/csm/csm") + "\n[Service]\nReadWritePaths=/var/lib/csm/state\n"
+			if err := writeSystemdServiceUnit(unit); err != nil {
+				t.Fatal(err)
+			}
+			want := initial
+			if want == 0 || want == 0700 {
+				want = 0711
+			}
+			for path, mode := range map[string]os.FileMode{stateRoot: want, filepath.Join(stateRoot, "state"): 0700} {
+				info, err := os.Stat(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := info.Mode().Perm(); got != mode {
+					t.Errorf("%s mode = %#o, want %#o", path, got, mode)
+				}
+			}
+		})
+	}
+}
+
+func TestRuntimeDirRejectsSymlinkStateRoot(t *testing.T) {
+	root := t.TempDir()
+	oldRoot := systemdSandboxRoot
+	systemdSandboxRoot = root
+	t.Cleanup(func() { systemdSandboxRoot = oldRoot })
+	private := filepath.Join(root, "private")
+	if err := os.Mkdir(private, 0700); err != nil {
+		t.Fatal(err)
+	}
+	stateRoot := filepath.Join(root, "var/lib/csm")
+	if err := os.MkdirAll(filepath.Dir(stateRoot), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(private, stateRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := makeRuntimeDir(filepath.Join(stateRoot, "state")); err == nil {
+		t.Fatal("expected symlink rejection")
+	}
+	info, err := os.Stat(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0700 {
+		t.Fatalf("private target mode = %#o, want 0700", info.Mode().Perm())
 	}
 }

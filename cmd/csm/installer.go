@@ -181,7 +181,7 @@ func (inst *Installer) Install() error {
 
 	// Create directories
 	for _, d := range installerRuntimeDirs(filepath.Dir(inst.BinaryPath), inst.StatePath, inst.LogPath) {
-		if err := os.MkdirAll(d, 0700); err != nil {
+		if err := makeRuntimeDir(d); err != nil {
 			return fmt.Errorf("creating directory %s: %w", d, err)
 		}
 		fmt.Printf("  Created %s\n", d)
@@ -693,6 +693,32 @@ func installerRuntimeDirs(installRoot, statePath, logPath string) []string {
 		filepath.Join(installRoot, "policies"),
 		filepath.Join(installRoot, "policies", "php_relay"),
 	}
+}
+
+// makeRuntimeDir keeps FHS state ancestors searchable even when MkdirAll
+// would otherwise create them with the private database directory's mode.
+func makeRuntimeDir(dir string) error {
+	root := filepath.Join(systemdSandboxRoot, "var/lib/csm")
+	dir = filepath.Clean(dir)
+	if dir == root || strings.HasPrefix(dir, root+string(filepath.Separator)) {
+		// #nosec G301 -- Exim needs search access to guard paths; state stays 0700.
+		if err := os.MkdirAll(root, 0711); err != nil {
+			return err
+		}
+		info, err := os.Lstat(root)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s must be a directory, not a symlink or file", root)
+		}
+		if info.Mode()&0011 != 0011 {
+			if err := os.Chmod(root, info.Mode()|0011); err != nil {
+				return err
+			}
+		}
+	}
+	return os.MkdirAll(dir, 0700)
 }
 
 func deployDefaultConfig(path string) error {
@@ -1820,7 +1846,7 @@ var systemdSandboxRoot = "/"
 func writeSystemdServiceUnit(content string) error {
 	for _, dir := range systemdUnitRequiredWritableDirs(content) {
 		path := filepath.Join(systemdSandboxRoot, dir)
-		if err := os.MkdirAll(path, 0o700); err != nil {
+		if err := makeRuntimeDir(path); err != nil {
 			return fmt.Errorf("creating sandbox grant %s: %w", dir, err)
 		}
 	}

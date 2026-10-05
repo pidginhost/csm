@@ -22,8 +22,10 @@ CPUWeight=50
 # A cgroup-wide SIGTERM can reach a worker before the daemon enters shutdown.
 KillMode=mixed
 
+# The state root is searchable, not listable: exim delivers forward-guard
+# holds below it as its own non-root user. The state database stays 0700.
 StateDirectory=csm
-StateDirectoryMode=0700
+StateDirectoryMode=0711
 RuntimeDirectory=csm
 RuntimeDirectoryMode=0755
 # The challenge maps the web servers read (Apache/LSWS RewriteMap, nginx map

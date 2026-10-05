@@ -17,6 +17,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Go dependencies and the pinned GitHub Actions are updated to their current releases; existing hosts see no behaviour change and no setting is involved.
 
+### Fixed
+
+- The email forward guard now holds matching copies instead of leaving them deferred in the mail queue; Exim could not reach the guard's files. Installs, package upgrades and lookup refreshes preserve access, and existing hosts are corrected the next time the guard is applied.
+
 ## [4.2.0] - 2026-10-04
 
 ### Highlights

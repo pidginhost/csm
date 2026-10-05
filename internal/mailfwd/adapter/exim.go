@@ -43,6 +43,7 @@ type ForwardGuard interface {
 // Default on-disk locations (overridable in tests).
 const (
 	defaultLocalConf     = "/etc/exim.conf.local"
+	defaultStateRoot     = "/var/lib/csm"
 	defaultBadIPsPath    = "/var/lib/csm/forward_guard/bad_ips"
 	defaultQuarantineDir = "/var/lib/csm/forward_quarantine/held"
 	// transportUser delivers held copies. It must NOT be root: cPanel lists
@@ -97,6 +98,7 @@ const eximLocalSkeleton = `@AUTH@
 // EximAdapter is the cPanel/exim ForwardGuard.
 type EximAdapter struct {
 	localConf     string
+	stateRoot     string
 	badIPsPath    string
 	quarantineDir string
 
@@ -110,6 +112,7 @@ type EximAdapter struct {
 func NewEximAdapter() *EximAdapter {
 	return &EximAdapter{
 		localConf:     defaultLocalConf,
+		stateRoot:     defaultStateRoot,
 		badIPsPath:    defaultBadIPsPath,
 		quarantineDir: defaultQuarantineDir,
 		rebuild:       runBuildEximConf,
@@ -163,6 +166,15 @@ func (a *EximAdapter) Apply(cfg policy.Config, badIPs []string) error {
 	}
 	if err := a.writeBadIPs(badIPs); err != nil {
 		return err
+	}
+	// exim appends held copies as the transport user and reads the bad-IP
+	// lookup as its own non-root user. Older systemd applies StateDirectoryMode
+	// only when it creates the state root, so a host installed while that mode
+	// was 0700 keeps a root-only directory above both paths unless opened here.
+	for _, dir := range []string{filepath.Dir(a.quarantineDir), filepath.Dir(a.badIPsPath)} {
+		if err := makeSearchable(a.stateRoot, dir); err != nil {
+			return err
+		}
 	}
 
 	if err := writeFileAtomic(a.localConf, []byte(next)); err != nil {
@@ -276,8 +288,14 @@ func (a *EximAdapter) RefreshBadIPs(ips []string) error {
 }
 
 func (a *EximAdapter) writeBadIPs(ips []string) error {
-	if err := a.mkdirAll(filepath.Dir(a.badIPsPath), 0755); err != nil {
+	dir := filepath.Dir(a.badIPsPath)
+	if err := a.mkdirAll(dir, 0711); err != nil {
 		return fmt.Errorf("creating bad IP lookup dir: %w", err)
+	}
+	// Refresh runs inside the daemon sandbox. It may recreate this directory
+	// under a restrictive umask, but must not change the shared state root.
+	if err := makeSearchable(dir, dir); err != nil {
+		return err
 	}
 
 	var buf bytes.Buffer
@@ -314,6 +332,46 @@ func (a *EximAdapter) restore(prev string, had bool) error {
 	}
 	if err := a.rebuild(); err != nil {
 		return fmt.Errorf("rebuilding restored exim config: %w", err)
+	}
+	return nil
+}
+
+// makeSearchable adds the group and other search bits to dir and to every
+// directory above it up to and including root. It only adds bits, so a mode an
+// operator widened on purpose is left alone, and nothing becomes listable.
+func makeSearchable(root, dir string) error {
+	root, dir = filepath.Clean(root), filepath.Clean(dir)
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%s is not under %s", dir, root)
+	}
+	var paths []string
+	for p := dir; ; p = filepath.Dir(p) {
+		paths = append(paths, p)
+		if p == root {
+			break
+		}
+	}
+	// These are root-controlled directories. Reject symlinks before changing
+	// any mode: a link into the private state directory must not expose it.
+	modes := make([]os.FileMode, len(paths))
+	for i := len(paths) - 1; i >= 0; i-- {
+		p := paths[i]
+		info, err := os.Lstat(p)
+		if err != nil {
+			return fmt.Errorf("checking %s: %w", p, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s must be a directory, not a symlink or file", p)
+		}
+		modes[i] = info.Mode()
+	}
+	for i, p := range paths {
+		if modes[i]&0011 != 0011 {
+			if err := os.Chmod(p, modes[i]|0011); err != nil {
+				return fmt.Errorf("opening %s to the exim user: %w", p, err)
+			}
+		}
 	}
 	return nil
 }

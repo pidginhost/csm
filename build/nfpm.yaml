@@ -101,7 +101,7 @@ contents:
   - dst: /var/lib/csm
     type: dir
     file_info:
-      mode: 0700
+      mode: 0711
   - dst: /var/lib/csm/state
     type: dir
     file_info:
