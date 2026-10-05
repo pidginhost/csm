@@ -239,8 +239,9 @@ The admission ledger (`store.AdmissionLedger`) keeps this state durably in
 the daemon's state database, in `adm:` buckets it creates the first time it
 is opened. The daemon's admission owner (`internal/admissionowner`) opens it
 at startup and holds the only handle: one goroutine makes every change,
-records clock readings on a timer, applies the ceiling at startup and on
-reload after a reading at the saved limit, refreshes the inventory from
+records clock readings on a timer, applies the ceiling at startup and, after
+a reading at the saved limit, on reload or the first tick that sees a changed
+configured value, refreshes the inventory from
 complete reads, delivers audit rows to the action log and notices through
 the queue-health path with their own pacing, and reads status on a timer.
 Failed ceiling reloads stay pending until a tick applies and revalidates

@@ -83,6 +83,7 @@ type Owner struct {
 	tickErr       error
 	degraded      bool
 	lastTick      time.Time
+	limit         uint32
 	source        string
 	imported      *health.AdmissionImport
 	inventoryAt   time.Time
@@ -253,7 +254,7 @@ func (o *Owner) applyCeiling(now time.Time) error {
 		if retained.Units > 0 {
 			o.imported = &health.AdmissionImport{Units: retained.Units, At: retained.At}
 		}
-		o.source = source
+		o.limit, o.source = limit, source
 		return nil
 	}
 	spend, readErr := o.opts.LegacySpend(o.opts.StatePath, now)
@@ -265,7 +266,7 @@ func (o *Owner) applyCeiling(now time.Time) error {
 	if err = o.ledger.ImportLegacySpend(limit, spend); err != nil {
 		return fmt.Errorf("importing the legacy hourly count: %w", err)
 	}
-	o.source, o.imported = source, imported
+	o.limit, o.source, o.imported = limit, source, imported
 	return nil
 }
 
@@ -297,6 +298,11 @@ func (o *Owner) tick() error {
 	if _, err := o.readTick(); err != nil {
 		o.ingress.Publish(nil)
 		return err
+	}
+	// A ceiling changed by any config path, not only a reload, applies
+	// after this reading at the saved limit.
+	if limit, source := o.opts.Ceiling(); limit != o.limit || source != o.source {
+		o.reloadPending = true
 	}
 	if o.reloadPending {
 		if err := o.reloadCeiling(); err != nil {
@@ -361,7 +367,7 @@ func (o *Owner) reloadCeiling() error {
 	if err := o.ledger.SetCeiling(limit); err != nil {
 		return fmt.Errorf("setting the ceiling: %w", err)
 	}
-	o.source = source
+	o.limit, o.source = limit, source
 	if err := o.ledger.Revalidate(); err != nil {
 		return err
 	}

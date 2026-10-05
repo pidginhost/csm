@@ -355,9 +355,10 @@ clamped to 20000; the per-IP limit above keeps reading omitted or zero as 50.
 At its first start the ledger imports the current hour's block count, so a
 restart cannot grant a fresh hour; a block count that cannot be read starts
 it without saved credit. Status and `csm doctor` show the ceiling and its
-source. A failed live ceiling reload is retried on the owner's clock ticks
-before admission resumes, with elapsed time credited at the saved ceiling
-before the new one applies. Existing blocking paths remain unchanged.
+source. A changed ceiling applies on reload, and a web UI settings save
+applies at the owner's next clock tick; a failed change is retried on later
+ticks before admission resumes, with elapsed time credited at the saved
+ceiling before the new one applies. Existing blocking paths remain unchanged.
 
 The resulting `auto_block` findings are output evidence, not new local
 corroboration for central intelligence or incident correlation. They are

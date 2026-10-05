@@ -505,3 +505,26 @@ func TestOwnerSnapshotFailureStopsAdmission(t *testing.T) {
 		t.Fatalf("recovered publication: %+v", st)
 	}
 }
+
+// A ceiling changed by any config path, the web UI's live settings save
+// included, reaches the ledger on the next tick without a reload call, and
+// after a reading at the saved limit (O13): the legacy spend empties the
+// general bucket, half an hour refills it at 200 an hour to its cap of 26,
+// and the raised limit only clips.
+func TestOwnerAppliesACeilingChangeOnTheNextTick(t *testing.T) {
+	f := newOwnerFixture(t)
+	f.legacy(`{"ips":[],"blocks_this_hour":160,"hour_key":"2026-10-04T12"}`)
+	f.host.set(func(h *fakeHost) { h.limit, h.source = 200, "configured" })
+	o := f.start(f.options())
+	f.host.advance(30 * time.Minute)
+	f.host.set(func(h *fakeHost) { h.limit, h.source = 2000, "default" })
+	if err := o.do(o.tick); err != nil {
+		t.Fatal(err)
+	}
+	if c := ceiling(t, o); c.Limit != 2000 || c.General.Units() != 26 {
+		t.Fatalf("after the tick: %+v, want limit 2000 with the old cap of 26 general units", c)
+	}
+	if st := o.status(); st.Owner.CeilingSource != "default" || !st.Ingress.Admitting {
+		t.Fatalf("after the tick: %+v %+v", st.Owner, st.Ingress)
+	}
+}
