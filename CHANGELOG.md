@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Cron downloads detect quoted shells, grouped commands and common execution wrappers without joining unrelated lines or mistaking URL parameters and longer command names for shell commands. Updated rules keep fast scans and apply at the next scan; existing findings remain until dismissed, and no setting changes.
 - A file planted in a hosted site can no longer stall the deep phishing scan.
 - Scheduled phishing scans now report kits in dependency and source-control folders unless excluded; `auto_response.quarantine_files` can quarantine phishing pages found there.
 - Group-writable PHP checks now include dependency and cache folders and no longer raise false alerts on symbolic links.
@@ -29,7 +30,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Directory-based phishing alerts now respect excluded pages and raise fewer false alarms.
 - A malicious handler mapping in an `.htaccess` is now removed by the automatic cleaner at deep scans instead of the whole file going to quarantine, which also took the site's other rules with it, and a finding with nothing to remove, such as a retained security-plugin prelude, no longer spends automatic response capacity. Hosts that relied on `auto_response.quarantine_files` for this finding need `auto_response.clean_htaccess` on to keep an automatic response; existing findings are handled at the next deep scan, not by realtime detection.
 - The deep phishing scan no longer reads file metadata for names none of its checks can judge, which shortens the run that timed out on large hosts. Findings are unchanged and no setting is involved.
-- The cron downloader signature no longer raises critical alerts on plugin pages that print a recommended wp-cron command, because it now needs a shell or eval command after the download, and long crafted lines no longer slow it down. Existing files stop matching at the next scan with the updated rules, findings already raised stay until dismissed, and no setting is involved.
 
 ## [4.2.0] - 2026-10-04
 
