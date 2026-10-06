@@ -82,6 +82,12 @@ interpolation analysis.
 Shared positive and benign fixtures check both engines. Generated socket and
 funchand wrappers and ordinary legacy callbacks stay silent under these rules.
 
+The cron downloader signature shares its expression between both engines. It
+requires a download followed by a complete shell, eval or exec command on the
+same line. Quoted shells, command groups, common execution wrappers and shell
+lookup commands are recognized. Bounded spans keep crafted lines cheap to scan;
+unrelated lines and shell words inside longer command names are not evidence.
+
 The PHP goto-obfuscation rule requires three independent signals in both
 engines: a PHP opening tag, at least nine jumps to digit-bearing generated
 labels or eleven to alphabetic labels, and a decode call, execution call,
