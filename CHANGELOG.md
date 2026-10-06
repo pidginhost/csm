@@ -15,6 +15,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Scheduled phishing scans now report kits in dependency and source-control folders unless excluded; `auto_response.quarantine_files` can quarantine phishing pages found there.
 - Group-writable PHP checks now include dependency and cache folders and no longer raise false alerts on symbolic links.
 - The malware scanning engine moves to YARA-X 1.21.0, catching previously missed threats and raising fewer false alarms.
+- Leftover mod_security 1.x directives that switch ModSecurity off in an `.htaccess` are high severity again and are removed by the automatic cleaner, because LiteSpeed obeys them. Existing files carrying them, Magento's stock block included, are reported at the next deep scan and cleaned there when `auto_response.clean_htaccess` is on, with a backup kept.
 
 ### Added
 
