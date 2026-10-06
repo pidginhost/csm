@@ -14,7 +14,6 @@ func TestCheckHtaccessHarmlessPrependSettingsStayClean(t *testing.T) {
 		"php_value auto_prepend_file none\n",
 		"php_value auto_append_file /etc/csm-prelude.php\n",
 		"SetEnv NOTE auto_prepend_file\n",
-		"SetEnv NOTE 'auto_prepend_file /tmp/example.php'\n",
 	} {
 		t.Run(body, func(t *testing.T) { expectNoHtaccessAlert(t, body) })
 	}
@@ -37,5 +36,19 @@ func TestCheckHtaccessLegacyWAFBlockIsHigh(t *testing.T) {
 	f := <-ch
 	if f.Check != "htaccess_security_disabled" || f.Severity != alert.High || f.FilePath != path {
 		t.Fatalf("legacy WAF finding = %+v, want High with the event path", f)
+	}
+}
+
+// The variable name is no evidence: Apache expands an E= name before setting
+// it, so a request header can supply PHP_VALUE. Any line carrying a prelude
+// target is judged by that target.
+func TestCheckHtaccessPreludeThroughEnvironmentAlerts(t *testing.T) {
+	for _, body := range []string{
+		"SetEnv PHP_VALUE \"auto_prepend_file=/tmp/x.php\"\n",
+		"RewriteRule .* - [E=PHP_VALUE:auto_prepend_file=/tmp/x.php]\n",
+		"RewriteCond %{HTTP:X-N} (.+)\nRewriteRule .* - [E=%1:auto_prepend_file=/tmp/x.php]\n",
+		"SetEnv NOTE 'auto_prepend_file /tmp/example.php'\n",
+	} {
+		t.Run(body, func(t *testing.T) { expectHtaccessAlert(t, body, "htaccess_injection_realtime") })
 	}
 }

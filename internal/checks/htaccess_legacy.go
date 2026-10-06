@@ -112,14 +112,25 @@ func auditHtaccessLegacyContent(path string, content []byte, suspicious, safe []
 			})
 			continue
 		}
+		// The prelude is judged wherever the line carries one: PHP-FPM also
+		// takes it from a PHP_VALUE environment variable, which SetEnv or a
+		// RewriteRule E= flag can set.
 		var preludeTarget string
-		var isPrepend bool
+		var pluginPrelude bool
 		if m := reAutoPrependTarget.FindStringSubmatchIndex(trimmed); m != nil {
+			preludeTarget = trimmed[m[2]:m[3]]
+			// Really Simple Security writes its prelude only as a php_value
+			// prepend, so only that form is kept out of cleaning.
 			prefix := strings.ToLower(strings.TrimSpace(trimmed[:m[0]]))
-			if prefix == "" || prefix == "php_value" || prefix == "php_admin_value" {
-				preludeTarget = trimmed[m[2]:m[3]]
-				isPrepend = strings.HasPrefix(strings.ToLower(trimmed[m[0]:]), "auto_prepend_file")
-			}
+			pluginPrelude = (prefix == "" || prefix == "php_value" || prefix == "php_admin_value") &&
+				strings.HasPrefix(strings.ToLower(trimmed[m[0]:]), "auto_prepend_file") &&
+				preludeBase(strings.Trim(preludeTarget, `"'`)) == rssslPreludeName
+		}
+		// Other tokens inside a rewrite condition or rule are regex patterns
+		// in an attack-query blocklist, not code.
+		if fields := apacheDirectiveFields(trimmed); preludeTarget == "" && len(fields) > 0 &&
+			(strings.EqualFold(fields[0], "RewriteCond") || strings.EqualFold(fields[0], "RewriteRule")) {
+			continue
 		}
 
 		for _, pattern := range suspicious {
@@ -128,10 +139,6 @@ func auditHtaccessLegacyContent(path string, content []byte, suspicious, safe []
 				continue
 			}
 
-			fields := apacheDirectiveFields(trimmed)
-			if len(fields) > 0 && (strings.EqualFold(fields[0], "RewriteCond") || strings.EqualFold(fields[0], "RewriteRule")) {
-				continue
-			}
 			if strings.Contains(patternLower, "auto_") && preludeTarget == "" {
 				continue
 			}
@@ -220,8 +227,7 @@ func auditHtaccessLegacyContent(path string, content []byte, suspicious, safe []
 				}
 			}
 
-			retain := isPrepend && preludeBase(strings.Trim(preludeTarget, `"'`)) == rssslPreludeName
-			matches = append(matches, htaccessMatch{Range: logical.span, Retain: retain})
+			matches = append(matches, htaccessMatch{Range: logical.span, Retain: pluginPrelude})
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "htaccess_injection",
