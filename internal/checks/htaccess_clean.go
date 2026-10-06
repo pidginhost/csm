@@ -3,7 +3,6 @@ package checks
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -764,8 +763,17 @@ func auditHtaccessFile(path string) ([]alert.Finding, []htaccessByteRange, bool)
 }
 
 func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htaccessByteRange) {
+	legacy, matches := auditHtaccessLegacyContent(path, content, htaccessSuspiciousPatterns, htaccessSafePatterns)
 	var findings []alert.Finding
 	var ranges []htaccessByteRange
+	for i, finding := range legacy {
+		// The specific prelude detector reports retained matches. Do not add a
+		// generic finding that would advertise automatic removal for them.
+		if !matches[i].Retain {
+			findings = append(findings, finding)
+			ranges = append(ranges, matches[i].Range)
+		}
+	}
 	for _, d := range htaccessDetectors {
 		matches := d.Detect(content, path)
 		for _, m := range matches {
@@ -824,9 +832,13 @@ func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result Reme
 	}
 
 	audit.rec.Result = actionlog.Failed
-	original, err := io.ReadAll(target.File)
+	original, ok, err := readHtaccessFileBounded(target.File)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot read: %v", err)}
+	}
+	if !ok {
+		audit.rec.Result = actionlog.Refused
+		return RemediationResult{Refused: true, Error: ".htaccess too large to clean automatically"}
 	}
 
 	audit.capture(target, original)

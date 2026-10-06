@@ -22,7 +22,7 @@ var (
 		"phishing_directory", "phishing_page", "suspicious_php_content", "webshell",
 	}
 	expectedAutoQuarantineChecks = []string{
-		"backdoor_binary", "htaccess_handler_abuse", "new_executable_in_config",
+		"backdoor_binary", "new_executable_in_config",
 		"new_php_in_languages", "new_php_in_upgrade", "new_webshell_file", "obfuscated_php",
 		"phishing_directory", "phishing_page", "signature_match_realtime",
 		"suspicious_php_content", "webshell",

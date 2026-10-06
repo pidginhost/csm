@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -102,7 +101,7 @@ func FixDescription(checkType, message string, filePath ...string) string {
 			return fmt.Sprintf("Quarantine and truncate crontab %s", path)
 		}
 		return "Quarantine and truncate crontab"
-	case "htaccess_injection", "htaccess_handler_abuse":
+	case "htaccess_injection", "htaccess_injection_realtime", "htaccess_handler_abuse":
 		if path != "" {
 			return fmt.Sprintf("Remove malicious directives from %s", path)
 		}
@@ -121,14 +120,15 @@ func HasFix(checkType string) bool {
 		return true
 	}
 	fixableChecks := map[string]bool{
-		"world_writable_php":       true,
-		"group_writable_php":       true,
-		"backdoor_binary":          true,
-		"new_executable_in_config": true,
-		"htaccess_injection":       true,
-		"htaccess_handler_abuse":   true,
-		"email_phishing_content":   true,
-		"suspicious_crontab":       true,
+		"world_writable_php":          true,
+		"group_writable_php":          true,
+		"backdoor_binary":             true,
+		"new_executable_in_config":    true,
+		"htaccess_injection":          true,
+		"htaccess_injection_realtime": true,
+		"htaccess_handler_abuse":      true,
+		"email_phishing_content":      true,
+		"suspicious_crontab":          true,
 	}
 	return fixableChecks[checkType]
 }
@@ -154,7 +154,7 @@ func ApplyFix(ctx context.Context, checkType, message, details string, filePath 
 		return fixPermissions(path, checkType)
 	case "backdoor_binary", "new_executable_in_config":
 		return fixKillAndQuarantine(ctx, path, details)
-	case "htaccess_injection", "htaccess_handler_abuse":
+	case "htaccess_injection", "htaccess_injection_realtime", "htaccess_handler_abuse":
 		return fixHtaccess(path, message)
 	case "email_phishing_content":
 		return fixQuarantineSpoolMessage(message)
@@ -338,73 +338,20 @@ func fixHtaccess(path, message string) (result RemediationResult) {
 	}
 	defer target.Close()
 	audit.rec.Result = actionlog.Failed
-	data, err := io.ReadAll(target.File)
+	data, ok, err := readHtaccessFileBounded(target.File)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot read: %v", err)}
+	}
+	if !ok {
+		audit.rec.Result = actionlog.Refused
+		return RemediationResult{Refused: true, Error: ".htaccess too large to clean automatically"}
 	}
 
 	audit.capture(target, data)
 	audit.rec.Result = actionlog.Refused
-	dangerous := []string{"auto_prepend_file", "auto_append_file", "eval(", "base64_decode",
-		"gzinflate", "str_rot13", "addhandler", "sethandler"}
-	safe := []string{
-		"wordfence-waf.php", "litespeed", "advanced-headers.php", "rsssl",
-		"application/x-httpd-php", "application/x-httpd-ea-php", "application/x-httpd-alt-php",
-		"-execcgi", "sethandler none", "sethandler default-handler",
-		"text/html", "text/css", "text/javascript", "application/javascript",
-		"image/", "font/", ".woff", ".woff2", ".ttf", ".eot", ".svg",
-		"wordfence",
-	}
-
-	var cleaned []string
-	removed := 0
-	var phpHandlerContexts []phpHandlerOverlay
-	// Iterate logical directives so a malicious mapping split across an Apache
-	// line continuation is removed as a unit (every physical line it spans).
-	for _, logical := range joinHtaccessContinuations(strings.Split(string(data), "\n")) {
-		trimmed := strings.TrimSpace(logical.text)
-		lineLower := strings.ToLower(trimmed)
-		if strings.HasPrefix(trimmed, "#") {
-			cleaned = append(cleaned, logical.lines...)
-			continue
-		}
-		if ctx, ok := openPHPHandlerContext(trimmed); ok {
-			phpHandlerContexts = append(phpHandlerContexts, ctx)
-			cleaned = append(cleaned, logical.lines...)
-			continue
-		}
-		if closesPHPHandlerContext(trimmed) {
-			if len(phpHandlerContexts) > 0 {
-				phpHandlerContexts = phpHandlerContexts[:len(phpHandlerContexts)-1]
-			}
-			cleaned = append(cleaned, logical.lines...)
-			continue
-		}
-		isDangerous := false
-		if phpHandlerRemapsNonPHPInContext(lineLower, phpHandlerContexts) {
-			isDangerous = true
-		}
-		for _, d := range dangerous {
-			if strings.Contains(lineLower, d) {
-				isSafe := false
-				for _, s := range safe {
-					if strings.Contains(lineLower, s) {
-						isSafe = true
-						break
-					}
-				}
-				if !isSafe {
-					isDangerous = true
-					break
-				}
-			}
-		}
-		if isDangerous {
-			removed++
-		} else {
-			cleaned = append(cleaned, logical.lines...)
-		}
-	}
+	_, ranges := AuditHtaccessContent(path, data)
+	removed := len(ranges)
+	cleaned := applyRangeRemoval(data, ranges)
 
 	if removed == 0 {
 		return RemediationResult{Error: "no malicious directives found to remove"}
@@ -417,7 +364,7 @@ func fixHtaccess(path, message string) (result RemediationResult) {
 	if err := storeQuarantineBackup(backupPath, data, meta, 0600); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot create durable backup: %v", err)}
 	}
-	if err := audit.replace(target, []byte(strings.Join(cleaned, "\n")), backupPath); err != nil {
+	if err := audit.replace(target, cleaned, backupPath); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("write failed; backup retained at %s: %v", backupPath, err)}
 	}
 	return RemediationResult{

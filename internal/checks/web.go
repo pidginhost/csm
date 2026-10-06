@@ -30,52 +30,6 @@ const htaccessMaxLineBytes = 1 << 20 // 1 MiB
 func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	suspiciousPatterns := []string{
-		"auto_prepend_file",
-		"auto_append_file",
-		"eval(",
-		"base64_decode",
-		"gzinflate",
-		"str_rot13",
-		"php_value disable_functions",
-		"addhandler",
-		"addtype",
-		"sethandler",
-	}
-
-	safePatterns := []string{
-		"wordfence-waf.php",
-		"litespeed",
-		"advanced-headers.php",
-		"rsssl",
-		// Standard handler directives for PHP/static files are safe
-		"application/x-httpd-php",
-		"application/x-httpd-php5",
-		"application/x-httpd-ea-php",
-		"application/x-httpd-alt-php",
-		"text/html",
-		"text/css",
-		"text/javascript",
-		"application/javascript",
-		"image/",
-		"font/",
-		"proxy:unix",
-		// Security plugins that use handler directives to BLOCK execution
-		"-execcgi",                   // Options -ExecCGI disables CGI (Wordfence pattern)
-		"sethandler none",            // Disables all handlers (security measure)
-		"sethandler default-handler", // Resets to default (security measure)
-		// Legitimate MIME type additions
-		"application/font",
-		"application/vnd",
-		".woff",
-		".woff2",
-		".ttf",
-		".eot",
-		".svg",
-		// Wordfence code execution protection
-		"wordfence",
-	}
-
 	// Scan each user's document roots
 	homeDirs := scanHomeDirsWithCoverage(ctx, "htaccess")
 	for _, homeEntry := range homeDirs {
@@ -87,7 +41,7 @@ func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 		}
 		homeDir := scanHomeDirPath(homeEntry)
 		docRoot := filepath.Join(homeDir, "public_html")
-		scanHtaccess(ctx, docRoot, htaccessScanMaxDepth, suspiciousPatterns, safePatterns, cfg, &findings)
+		scanHtaccess(ctx, docRoot, htaccessScanMaxDepth, htaccessSuspiciousPatterns, htaccessSafePatterns, cfg, &findings)
 
 		// Also check addon domains
 		subDirs, err := osFS.ReadDir(homeDir)
@@ -96,7 +50,7 @@ func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
 				sd.Name() != "logs" && sd.Name() != "ssl" && sd.Name() != "tmp" {
-				scanHtaccess(ctx, filepath.Join(homeDir, sd.Name()), htaccessScanMaxDepth, suspiciousPatterns, safePatterns, cfg, &findings)
+				scanHtaccess(ctx, filepath.Join(homeDir, sd.Name()), htaccessScanMaxDepth, htaccessSuspiciousPatterns, htaccessSafePatterns, cfg, &findings)
 			}
 		}
 	}
@@ -165,7 +119,11 @@ func scanHtaccess(ctx context.Context, dir string, maxDepth int, suspicious, saf
 		if !complete {
 			markCheckIncomplete(ctx, "htaccess")
 		}
-		*findings = append(*findings, hardenedFindings...)
+		for _, finding := range hardenedFindings {
+			if finding.Check != "htaccess_injection" && finding.Check != "htaccess_handler_abuse" {
+				*findings = append(*findings, finding)
+			}
+		}
 	}
 }
 
@@ -283,180 +241,8 @@ func checkHtaccessFile(ctx context.Context, path string, suspicious, safe []stri
 		return
 	}
 
-	// Build full file content for context checks
-	fullContentLower := strings.ToLower(strings.Join(lines, "\n"))
-
-	// If file contains handler directives paired with -ExecCGI, the whole
-	// block is a security measure (e.g., Wordfence execution protection)
-	hasExecCGIBlock := strings.Contains(fullContentLower, "-execcgi")
-	var phpHandlerContexts []phpHandlerOverlay
-
-	for _, logical := range joinHtaccessContinuations(lines) {
-		lineNum := logical.start
-		trimmed := strings.TrimSpace(logical.text)
-		lineLower := strings.ToLower(trimmed)
-
-		// Skip comments entirely - commented-out directives are not active
-		if strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if ctx, ok := openPHPHandlerContext(trimmed); ok {
-			phpHandlerContexts = append(phpHandlerContexts, ctx)
-			continue
-		}
-		if closesPHPHandlerContext(trimmed) {
-			if len(phpHandlerContexts) > 0 {
-				phpHandlerContexts = phpHandlerContexts[:len(phpHandlerContexts)-1]
-			}
-			continue
-		}
-
-		// A PHP execution handler mapped onto a non-PHP extension is the
-		// handler-remap webshell technique: an uploaded .jpg then runs as
-		// PHP. The safe-pattern and AddType skips below would otherwise
-		// suppress it because the handler name itself is a normal PHP
-		// handler, so this override fires first and unconditionally.
-		remapsNonPHP := phpHandlerRemapsNonPHP(lineLower)
-		if !remapsNonPHP && len(phpHandlerContexts) > 0 {
-			remapsNonPHP = phpHandlerRemapsNonPHPInContext(lineLower, phpHandlerContexts)
-		}
-		if remapsNonPHP {
-			*findings = append(*findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "htaccess_injection",
-				Message:  "PHP handler mapped to non-PHP extension (handler remap)",
-				Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum+1, trimmed),
-				FilePath: path,
-			})
-			continue
-		}
-
-		for _, pattern := range suspicious {
-			if !strings.Contains(lineLower, strings.ToLower(pattern)) {
-				continue
-			}
-
-			// A prelude directive is judged by its target file alone. The
-			// line-wide safe list below would let a target such as
-			// ".../uploads/fonts/x.ttf" or ".../litespeed/x.php" exempt itself
-			// with a word the attacker chose.
-			if m := reAutoPrependTarget.FindStringSubmatch(trimmed); m != nil {
-				if !autoPrependTargetSuspicious(m[1], path) {
-					continue
-				}
-			} else {
-				// Check per-line safe patterns
-				isSafe := false
-				for _, sp := range safe {
-					if strings.Contains(lineLower, strings.ToLower(sp)) {
-						isSafe = true
-						break
-					}
-				}
-				if isSafe {
-					continue
-				}
-			}
-
-			patternLower := strings.ToLower(pattern)
-
-			// For handler directives, apply context-aware checks
-			if patternLower == "addhandler" || patternLower == "sethandler" {
-				// Skip if paired with -ExecCGI (Wordfence protection)
-				if hasExecCGIBlock {
-					continue
-				}
-				// Skip Drupal security handlers
-				if strings.Contains(lineLower, "drupal_security") {
-					continue
-				}
-				// Skip SetHandler none/default (disabling handlers = security measure)
-				if strings.Contains(lineLower, "sethandler none") ||
-					strings.Contains(lineLower, "sethandler default") {
-					continue
-				}
-				// Skip AddHandler for standard CGI extensions only (.cgi, .pl)
-				if strings.Contains(lineLower, "addhandler") {
-					// Only flag if mapping non-standard extensions
-					standardCGI := true
-					hasNonStandard := false
-					// Check each extension on the line
-					for _, ext := range []string{".haxor", ".cgix", ".phtml", ".php3",
-						".php5", ".suspected", ".bak.php", ".shtml", ".sh"} {
-						if strings.Contains(lineLower, ext) {
-							hasNonStandard = true
-							break
-						}
-					}
-					// If line only has .cgi and/or .pl, it's standard
-					if !hasNonStandard && standardCGI {
-						onlyStandard := true
-						parts := strings.Fields(lineLower)
-						for _, p := range parts {
-							if strings.HasPrefix(p, ".") && p != ".cgi" && p != ".pl" && p != ".py" &&
-								p != ".php" && p != ".jsp" && p != ".asp" {
-								// Has non-standard extension
-								onlyStandard = false
-								break
-							}
-						}
-						if onlyStandard {
-							continue
-						}
-					}
-				}
-			}
-
-			// Skip AddType for any MIME type (application/*, text/*, x-mapp-*, etc.)
-			if patternLower == "addtype" {
-				// AddType is only dangerous if it maps to a PHP/CGI handler
-				// Standard MIME type declarations are safe
-				if strings.Contains(lineLower, "application/") ||
-					strings.Contains(lineLower, "text/") ||
-					strings.Contains(lineLower, "image/") ||
-					strings.Contains(lineLower, "font/") ||
-					strings.Contains(lineLower, "x-mapp-") ||
-					strings.Contains(lineLower, "audio/") ||
-					strings.Contains(lineLower, "video/") {
-					continue
-				}
-			}
-
-			*findings = append(*findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "htaccess_injection",
-				Message:  fmt.Sprintf("Suspicious .htaccess directive: %s", pattern),
-				Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum+1, trimmed),
-				FilePath: path,
-			})
-		}
-	}
-
-	// Special check: AddHandler mapping non-standard extensions WITHOUT -ExecCGI
-	// (actual attack pattern - e.g., AddHandler cgi-script .haxor)
-	if !hasExecCGIBlock && strings.Contains(fullContentLower, "addhandler") {
-		for _, logical := range joinHtaccessContinuations(lines) {
-			lineNum := logical.start
-			line := logical.text
-			lineLower := strings.ToLower(line)
-			if !strings.Contains(lineLower, "addhandler") {
-				continue
-			}
-			// Flag if it maps unusual extensions like .haxor, .cgix, etc.
-			dangerousExts := []string{".haxor", ".cgix", ".suspected", ".bak.php"}
-			for _, ext := range dangerousExts {
-				if strings.Contains(lineLower, ext) {
-					*findings = append(*findings, alert.Finding{
-						Severity: alert.Critical,
-						Check:    "htaccess_handler_abuse",
-						Message:  fmt.Sprintf("Malicious handler mapping for %s extension", ext),
-						Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum+1, strings.TrimSpace(line)),
-						FilePath: path,
-					})
-				}
-			}
-		}
-	}
+	legacy, _ := auditHtaccessLegacyContent(path, []byte(strings.Join(lines, "\n")), suspicious, safe)
+	*findings = append(*findings, legacy...)
 }
 
 // CheckWPCore runs wp core verify-checksums for each WordPress installation

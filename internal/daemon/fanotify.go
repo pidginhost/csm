@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -1799,26 +1798,6 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	}
 }
 
-// Structural exclusions for checkHtaccess. Both anchor to the actual
-// directive or regex context, not to loose substrings that an attacker
-// can paste anywhere on the line.
-var (
-	// Legit auto_(prepend|append)_file directive targets: known product
-	// files shipped by security plugins. Match is anchored to the
-	// directive argument, so a trailing "# litespeed" comment cannot
-	// forge safety.
-	htaccessAutoPrependSafeTarget = regexp.MustCompile(
-		`(?i)auto_(?:prepend|append)_file\s*=?\s*['"]?(?:[^\s'"]*/)?` +
-			`(?:wordfence-waf|sucuri|advanced-headers)\.php(?:['"]|\s|$)`,
-	)
-	// Apache mod_rewrite directives. base64_decode / eval( appearing
-	// inside a RewriteCond or RewriteRule is a pattern in an attack-query
-	// blocklist (e.g. Really Simple SSL hardening), not PHP code.
-	htaccessRewriteDirective = regexp.MustCompile(
-		`(?i)^\s*Rewrite(?:Cond|Rule)\s`,
-	)
-)
-
 // checkCrontab scans a freshly-written /var/spool/cron/<user> file for the
 // known persistence-marker patterns (literal + base64-decoded). Reads from
 // the event fd, not the path, so an attacker swapping the file post-event
@@ -1860,44 +1839,12 @@ func (fm *FileMonitor) checkHtaccess(fd int, path, procInfo string) {
 		return
 	}
 
-	for _, rawLine := range strings.Split(string(data), "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" || strings.HasPrefix(line, "#") {
+	findings, _ := checks.AuditHtaccessContent(path, data)
+	for _, f := range findings {
+		if f.Check == "htaccess_injection" {
+			fm.sendAlertWithPath(f.Severity, "htaccess_injection_realtime", f.Message, f.Details, path, procInfo)
 			continue
 		}
-		lower := strings.ToLower(line)
-
-		// auto_prepend_file / auto_append_file: suspicious unless the
-		// directive target matches a known-legit security plugin file.
-		if strings.Contains(lower, "auto_prepend_file") || strings.Contains(lower, "auto_append_file") {
-			if htaccessAutoPrependSafeTarget.MatchString(line) {
-				continue
-			}
-			fm.sendAlertWithPath(alert.High, "htaccess_injection_realtime",
-				fmt.Sprintf("Suspicious .htaccess modification: %s", path),
-				"auto_prepend_file/auto_append_file target not recognised", path, procInfo)
-			continue
-		}
-
-		// eval( / base64_decode outside a RewriteCond/RewriteRule is a
-		// tamper signal: .htaccess is not a PHP execution context, so
-		// the only legit appearance of these tokens is as regex patterns
-		// inside mod_rewrite attack-blocklists.
-		if strings.Contains(lower, "eval(") || strings.Contains(lower, "base64_decode") {
-			if htaccessRewriteDirective.MatchString(line) {
-				continue
-			}
-			fm.sendAlertWithPath(alert.High, "htaccess_injection_realtime",
-				fmt.Sprintf("Suspicious .htaccess modification: %s", path),
-				"PHP function reference outside RewriteCond/RewriteRule", path, procInfo)
-		}
-	}
-
-	// Run the full .htaccess detector registry so realtime detection matches
-	// the depth of the scheduled scan: CGI-handler webshell arming, ModSecurity
-	// disable, PHP-in-uploads, handler remaps, cloaks, and redirect hijacks.
-	hardened, _ := checks.AuditHtaccessContent(path, data)
-	for _, f := range hardened {
 		fm.sendAlertWithPath(f.Severity, f.Check, f.Message, f.Details, path, procInfo)
 	}
 

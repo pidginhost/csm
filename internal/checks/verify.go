@@ -578,11 +578,14 @@ func verifyHtaccessClean(path string) VerifyResult {
 	if !info.Mode().IsRegular() {
 		return VerifyResult{Checked: false, Detail: ".htaccess path is not a regular file; not auto-verifiable"}
 	}
-	content, err := readFilePreservingIdentity(clean, info)
+	snap, err := readContentSnapshotForReverifyBounded(clean, info, htaccessMaxFileBytes)
+	if errors.Is(err, errContentSnapshotTooLarge) {
+		return VerifyResult{Checked: false, Detail: ".htaccess too large to verify automatically"}
+	}
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: fmt.Sprintf("cannot read .htaccess: %v", err)}
 	}
-	findings, _ := AuditHtaccessContent(clean, content)
+	findings, _ := AuditHtaccessContent(clean, snap.data)
 	if len(findings) == 0 {
 		return VerifyResult{Checked: true, Resolved: true, Detail: "no malicious directives remain in .htaccess"}
 	}
