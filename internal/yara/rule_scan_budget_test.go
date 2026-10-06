@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -155,6 +157,57 @@ func TestShippedRulesScanWithinBudget(t *testing.T) {
 			t.Logf("%d bytes  best %s (warm-up %s)", len(content), best.Round(time.Millisecond), warmup.Round(time.Millisecond))
 			if best > scanBudgetPerFile {
 				t.Errorf("scan took %s, budget is %s. %s", best.Round(time.Millisecond), scanBudgetPerFile, missingAtomHint)
+			}
+		})
+	}
+}
+
+// shippedRule compiles one rule out of the shipped malware.yar on its own.
+func shippedRule(t *testing.T, name string) *yara_x.Rules {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	path := filepath.Join(filepath.Dir(thisFile), "..", "..", "configs", "malware.yar")
+	source, err := os.ReadFile(path) // #nosec G304 -- fixed repository rule file
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	block := regexp.MustCompile(`(?ms)^rule ` + regexp.QuoteMeta(name) + ` \{.*?^\}`).Find(source)
+	if block == nil {
+		t.Fatalf("rule %s not found in %s", name, path)
+	}
+	rules, err := yara_x.Compile(string(block))
+	if err != nil {
+		t.Fatalf("compiling %s: %v", name, err)
+	}
+	return rules
+}
+
+// A frequent literal between two unbounded gaps makes the engine verify every
+// literal hit to the end of its line, so one long crafted line costs time
+// quadratic in its length. Other rules still share that shape, which hides one
+// rule's cost inside the whole-ruleset budget, so these lines are scanned
+// against the cron downloader rule alone.
+func TestRuleScanBudgetCronDownloaderLines(t *testing.T) {
+	rules := shippedRule(t, "backdoor_cron_downloader")
+	inputs := map[string][]byte{
+		"download_words.txt": []byte("*/5 * * * * " + strings.Repeat("curl wget ", 100_000)),
+		"cron_prefixes.txt":  []byte(strings.Repeat("*/5 * * * * wget x ", 55_000)),
+		"pipe_targets.txt":   []byte(strings.Repeat("* * curl x | sh ", 65_000)),
+	}
+	for name, content := range inputs {
+		t.Run(name, func(t *testing.T) {
+			warmup, best, err := measureScanBudget(func() (time.Duration, error) {
+				return scanWithBudgetTimeout(rules, content)
+			})
+			if err != nil {
+				t.Fatalf("scan failed: %v (warm-up %s)", err, warmup.Round(time.Millisecond))
+			}
+			t.Logf("%d bytes  best %s (warm-up %s)", len(content), best.Round(time.Millisecond), warmup.Round(time.Millisecond))
+			if best > scanBudgetPerFile {
+				t.Errorf("scan took %s, budget is %s", best.Round(time.Millisecond), scanBudgetPerFile)
 			}
 		})
 	}
