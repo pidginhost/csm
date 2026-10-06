@@ -2,6 +2,7 @@ package checks
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -1107,25 +1108,81 @@ func analyzePHPForPhishing(ctx context.Context, path string) *phishingResult {
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		markCheckIncomplete(ctx, "phishing")
 	}
-	if n == 0 {
+	if n == 0 || !mayBePHPPhishing(buf[:n]) {
 		return nil
 	}
-	content := string(buf[:n])
-	contentLower := strings.ToLower(content)
+	return analyzePHPPhishingContent(string(buf[:n]))
+}
 
-	// PHP phishing indicators: credential handling code.
-	// Only truly specific patterns belong here - generic functions like
-	// mail() and fwrite() are handled separately with context checks below.
-	phpPhishingPatterns := []string{
-		"$_post['email']",
-		"$_post['password']",
-		"$_post['pass']",
-		"$_post[\"email\"]",
-		"$_post[\"password\"]",
-		"$_post[\"pass\"]",
-		"$_request['email']",
-		"$_request['password']",
+// phpPhishingPatterns are PHP credential handling indicators. Only truly
+// specific patterns belong here - generic functions like mail() and fwrite()
+// are handled separately with context checks.
+var phpPhishingPatterns = []string{
+	"$_post['email']",
+	"$_post['password']",
+	"$_post['pass']",
+	"$_post[\"email\"]",
+	"$_post[\"password\"]",
+	"$_post[\"pass\"]",
+	"$_request['email']",
+	"$_request['password']",
+}
+
+// mayBePHPPhishing reports whether raw can reach a result in
+// analyzePHPPhishingContent, which needs a credential pattern (each starts
+// with $_post or $_request) or "<form" or "<input" in the lowercased content.
+// Most PHP files the walk reads hold none of them, and this byte scan rules
+// them out without lowercasing a copy of the whole file.
+func mayBePHPPhishing(raw []byte) bool {
+	// strings.ToLower maps U+0130 to "i" and U+212A to "k", the only
+	// non-ASCII runes it turns into ASCII. Content holding either takes the
+	// full analysis instead of the ASCII scan below.
+	if bytes.Contains(raw, []byte("\u0130")) || bytes.Contains(raw, []byte("\u212a")) {
+		return true
 	}
+	return anchorFollowedByFold(raw, '$', "_post", "_request") ||
+		anchorFollowedByFold(raw, '<', "form", "input")
+}
+
+// anchorFollowedByFold reports whether some anchor byte in raw is followed by
+// one of the lower-case ASCII suffixes, matched under ASCII case folding.
+func anchorFollowedByFold(raw []byte, anchor byte, suffixes ...string) bool {
+	for i := bytes.IndexByte(raw, anchor); i >= 0; {
+		rest := raw[i+1:]
+		for _, suffix := range suffixes {
+			if hasPrefixFoldASCII(rest, suffix) {
+				return true
+			}
+		}
+		next := bytes.IndexByte(rest, anchor)
+		if next < 0 {
+			return false
+		}
+		i += 1 + next
+	}
+	return false
+}
+
+func hasPrefixFoldASCII(b []byte, lower string) bool {
+	if len(b) < len(lower) {
+		return false
+	}
+	for i := 0; i < len(lower); i++ {
+		c := b[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != lower[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// analyzePHPPhishingContent judges the head of a PHP file for credential
+// capture behind an impersonated brand.
+func analyzePHPPhishingContent(content string) *phishingResult {
+	contentLower := strings.ToLower(content)
 
 	var indicators []string
 	score := 0
