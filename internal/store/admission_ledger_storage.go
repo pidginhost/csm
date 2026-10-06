@@ -543,6 +543,9 @@ func (q *queueTx) flushStorage() error {
 		if err = q.tx.Bucket([]byte(admissionCandidatesBucket)).Delete([]byte(id)); err != nil {
 			return err
 		}
+		if err = q.forgetLine(id, c); err != nil {
+			return err
+		}
 		for _, root := range c.Roots {
 			if err = q.unname(root); err != nil {
 				return err
@@ -776,6 +779,9 @@ func (q *queueTx) retire(id admission.CandidateID, key []byte) error {
 		if err = q.tx.Bucket([]byte(name)).Delete([]byte(id)); err != nil {
 			return err
 		}
+	}
+	if err = q.forgetLine(id, c); err != nil {
+		return err
 	}
 	for _, root := range c.Roots {
 		if err = q.unname(root); err != nil {

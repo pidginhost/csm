@@ -56,9 +56,10 @@ func HistoryCap(size uint64) uint64 { return HistoryRate(size) * uint64(HistoryB
 // HistoryCost is the most ledger bytes an admitted candidate can retain,
 // given the encoded size of each root's evidence in root order: its record
 // at its widest, every attempt it may make, its history entry and index
-// keys, and each root's evidence with a full set of report links and its
-// reference count. Every record counts with its key. Evidence several
-// candidates share is counted for each of them.
+// keys, the episode row that may name it, and each root's evidence with a
+// full set of report links and its reference count. Every record counts
+// with its key. Evidence several candidates share is counted for each of
+// them, and so is an episode row.
 func HistoryCost(c Candidate, evidence []int) (uint32, error) {
 	if len(evidence) != len(c.Roots) {
 		return 0, refuse(ReasonInvalid, "history cost needs the size of every root")
@@ -67,7 +68,7 @@ func HistoryCost(c Candidate, evidence []int) (uint32, error) {
 	if err != nil {
 		return 0, err
 	}
-	n := 2*candidateIDLen + record + MaxHistoryEntryBytes + 3*HistoryIndexKeyLen + MaxAttempts*(actionIDLen+MaxAttemptBytes)
+	n := 2*candidateIDLen + record + MaxHistoryEntryBytes + 3*HistoryIndexKeyLen + MaxAttempts*(actionIDLen+MaxAttemptBytes) + MaxEpisodeBytes
 	for _, size := range evidence {
 		if size <= 0 || size > MaxEvidenceBytes {
 			return 0, refuse(ReasonInvalid, "evidence size is out of range")

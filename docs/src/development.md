@@ -384,7 +384,13 @@ later observations before its first attempt. A queued retry remains live
 but answers new arrivals without coalescing; one that ended before any
 attempt is followed only by a later observation of that kind. Once a candidate has an attempt, later observations
 of its episode are refused as an existing effect, which raises no notice,
-and still extend the episode.
+and still extend the episode. An episode row lives only as long as a
+candidate it names: ring eviction and history retirement clear that
+candidate reference but retain its generation and attempt proof while
+another candidate holds the row. The last retained candidate takes the
+row, and each admitted
+candidate's history charge covers a row. A target without a row opens a
+new episode, so a retired candidate's ID is never minted again.
 
 ### Attack event storage
 

@@ -186,3 +186,22 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 	row := choice.Episode.WithLine(admission.EpisodeLine{Kind: req.Kind, Generation: key.Generation, Candidate: id, Observed: observed})
 	return id, created, putEpisode(q.tx, rowKey, row)
 }
+
+// forgetLine clears a deleted candidate reference but retains the kind's
+// generation and attempt proof. The last retained candidate takes the row,
+// so counters never reset within a surviving episode.
+func (q *queueTx) forgetLine(id admission.CandidateID, c admission.Candidate) error {
+	key := c.Key.Target.Key()
+	e, found, err := loadEpisode(q.tx, key)
+	if err != nil || !found {
+		return err
+	}
+	rest, had := e.WithoutCandidate(id, c.Attempts > 0)
+	switch {
+	case !had:
+		return nil
+	case !rest.HasCandidates():
+		return q.tx.Bucket([]byte(admissionEpisodesBucket)).Delete([]byte(key))
+	}
+	return putEpisode(q.tx, key, rest)
+}

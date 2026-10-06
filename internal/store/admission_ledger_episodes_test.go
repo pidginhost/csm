@@ -647,3 +647,128 @@ func TestAdmissionLedgerKeepsTheEpisodeOnADegradedClock(t *testing.T) {
 		t.Fatalf("on a trusted clock = %+v %+v", third, c.Key)
 	}
 }
+
+// Deleting one kind cannot forget its generation while another kind
+// retains the episode, including across reopen and repeated eviction.
+func TestAdmissionLedgerDeletedEpisodeGenerationNeverRepeats(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
+	episode := f.candidateOf(first).Key.Episode
+	other := f.arrival(evidenceSpec{cursor: "promotion"})
+	other.Request.Kind = admission.KindPromote
+	f.arrive(other)
+	for generation := uint32(2); generation <= 3; generation++ {
+		if _, err := f.l.Terminate(first, admission.ReasonPolicy); err != nil {
+			t.Fatal(err)
+		}
+		f.endMany(admission.MaxEndedCandidates)
+		if _, err := f.l.Candidate(first); err != errCandidateMissing {
+			t.Fatalf("candidate still retained: %v", err)
+		}
+		reopened, err := OpenAdmissionLedger(f.db, f.reg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.l = reopened
+		f.tickAt(f.wall.Add(time.Second))
+		next := f.arrive(f.arrival(evidenceSpec{cursor: string(first)}))[0]
+		c := f.candidateOf(next.Candidate)
+		if next.Err != nil || !next.Created || next.Candidate == first || c.Key.Episode != episode || c.Key.Generation != generation {
+			t.Fatalf("generation after deletion: %+v %+v, want %d", next, c.Key, generation)
+		}
+		first = next.Candidate
+	}
+}
+
+func TestAdmissionLedgerDeletedEpisodeAttemptStillAnswers(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
+	_, a, _, err := f.l.Reserve(first, admission.LaneGeneral, f.wall.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionApplied); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(f.wall.Add(time.Minute))
+	other := f.arrival(evidenceSpec{cursor: "promotion"})
+	other.Request.Kind = admission.KindPromote
+	kept := f.arrive(other)[0].Candidate
+	if _, _, _, err = f.l.Reserve(kept, admission.LaneGeneral, f.wall.Add(2*admission.HistoryTarget)); err != nil {
+		t.Fatal(err)
+	}
+	f.ackAll()
+	f.tickAt(f.wall.Add(admission.HistoryTarget + time.Hour))
+	if _, err = f.l.Candidate(first); err != errCandidateMissing {
+		t.Fatalf("attempted candidate was not retired: %v", err)
+	}
+	reopened, err := OpenAdmissionLedger(f.db, f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.l = reopened
+	f.tickAt(f.wall.Add(time.Second))
+	wantLedgerReason(t, "retired attempt", f.arrive(f.arrival(evidenceSpec{cursor: "new-root"}))[0].Err, admission.ReasonExistingEffect)
+	row, ok := f.episodeAt("192.0.2.10")
+	if line, found := row.Line(admission.KindBlockIP); !ok || !found || line.Candidate != "" || !line.Answered || line.Generation != 1 {
+		t.Fatalf("retired attempt proof: %+v", row)
+	}
+}
+
+// An episode row lives only while a candidate it names does: deletion
+// clears its reference but preserves generation and attempt proof. The
+// last retained candidate takes the row. A target whose row is gone opens a new
+// episode, so a retired candidate's ID is never minted again.
+func TestAdmissionLedgerEpisodeRowsFollowTheirCandidates(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	block := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
+	promote := f.arrival(evidenceSpec{cursor: "offset=2"})
+	promote.Request.Kind = admission.KindPromote
+	kept := f.arrive(promote)[0].Candidate
+	if _, err := f.l.Terminate(block, admission.ReasonPolicy); err != nil {
+		t.Fatal(err)
+	}
+	f.endMany(admission.MaxEndedCandidates)
+	if _, err := f.l.Candidate(block); err != errCandidateMissing {
+		t.Fatalf("the ended candidate was not evicted: %v", err)
+	}
+	if row, ok := f.episodeAt("192.0.2.10"); !ok || len(row.Lines) != 2 || row.Lines[0].Candidate != "" || row.Lines[0].Generation != 1 || row.Lines[1].Candidate != kept {
+		t.Fatalf("after eviction = %+v %v", row, ok)
+	}
+	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatalf("reopen after eviction: %v", err)
+	}
+
+	applied := f.arrive(f.arrival(evidenceSpec{target: "192.0.2.11", cursor: "offset=3"}))[0].Candidate
+	_, a, _, err := f.l.Reserve(applied, admission.LaneGeneral, f.wall.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionApplied); err != nil {
+		t.Fatal(err)
+	}
+	f.ackAll()
+	f.tickAt(f.wall.Add(admission.HistoryTarget + time.Hour))
+	if _, err = f.l.Candidate(applied); err != errCandidateMissing {
+		t.Fatalf("the applied candidate was not retired: %v", err)
+	}
+	if row, ok := f.episodeAt("192.0.2.11"); ok {
+		t.Fatalf("the row outlived its candidate: %+v", row)
+	}
+	if _, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatalf("reopen after retirement: %v", err)
+	}
+	again := f.arrive(f.arrival(evidenceSpec{target: "192.0.2.11", cursor: "offset=4"}))[0]
+	if again.Err != nil || !again.Created || again.Candidate == applied {
+		t.Fatalf("after retirement = %+v", again)
+	}
+}

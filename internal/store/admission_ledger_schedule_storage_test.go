@@ -336,7 +336,7 @@ func TestAdmissionLedgerNextWakeUnassessedUpgrade(t *testing.T) {
 	if err = f.l.SetCeiling(fixtureCeiling); err != nil {
 		t.Fatal(err)
 	}
-	f.tickAt(f.wall.Add(8 * time.Second))
+	f.tickAt(f.wall.Add(11 * time.Second))
 	before := f.snapshot()
 	wake, ok, err := f.l.NextWake()
 	if err != nil || !ok || !wake.Equal(f.wall) {
