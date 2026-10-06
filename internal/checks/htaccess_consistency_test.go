@@ -34,34 +34,25 @@ func TestHtaccessGenericFindingUsesSharedCleaner(t *testing.T) {
 			if len(findings) == 0 || len(ranges) == 0 {
 				t.Fatalf("audit findings=%+v ranges=%+v, want a cleanable finding", findings, ranges)
 			}
-			cfg := &config.Config{StatePath: t.TempDir()}
-			cfg.AutoResponse.Enabled, cfg.AutoResponse.CleanHtaccess = true, true
 			for _, check := range []string{"htaccess_injection", "htaccess_injection_realtime"} {
-				for _, automatic := range []bool{false, true} {
-					if err := os.WriteFile(path, []byte(tc.directive+"\n"), 0644); err != nil {
-						t.Fatal(err)
-					}
-					if v := VerifyFinding(check, "", "", path); !v.Checked || v.Resolved {
-						t.Fatalf("verification before cleaning = %+v", v)
-					}
-					if automatic {
-						actions := AutoCleanHtaccess(cfg, []alert.Finding{{Check: check, FilePath: path}})
-						if len(actions) != 1 || !strings.HasPrefix(actions[0].Message, "AUTO-CLEAN: ") {
-							t.Fatalf("automatic %s actions = %+v", check, actions)
-						}
-					} else if result := ApplyFix(context.Background(), check, "", "", path); !result.Success {
-						t.Fatalf("manual %s result = %+v", check, result)
-					}
-					if v := VerifyFinding(check, "", "", path); !v.Checked || !v.Resolved {
-						t.Fatalf("verification after cleaning = %+v", v)
-					}
-					got, err := os.ReadFile(path)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if string(got) != tc.want {
-						t.Fatalf("cleaned = %q, want %q", got, tc.want)
-					}
+				if err := os.WriteFile(path, []byte(tc.directive+"\n"), 0644); err != nil {
+					t.Fatal(err)
+				}
+				if v := VerifyFinding(check, "", "", path); !v.Checked || v.Resolved {
+					t.Fatalf("verification before cleaning = %+v", v)
+				}
+				if result := ApplyFix(context.Background(), check, "", "", path); !result.Success {
+					t.Fatalf("manual %s result = %+v", check, result)
+				}
+				if v := VerifyFinding(check, "", "", path); !v.Checked || !v.Resolved {
+					t.Fatalf("verification after cleaning = %+v", v)
+				}
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != tc.want {
+					t.Fatalf("cleaned = %q, want %q", got, tc.want)
 				}
 			}
 		})
@@ -85,31 +76,27 @@ func TestHtaccessCommentedHandlerAndDefensiveRewriteStayClean(t *testing.T) {
 	}
 }
 
-func TestHtaccessResponseUsesCleanSettingInsteadOfQuarantine(t *testing.T) {
+// Automatic cleaning acts on the per-pattern detectors only. The generic token
+// scanner also reports directives a site may depend on, such as a PHP handler
+// for .html pages; removing one of those unasked would serve the PHP source as
+// text. Its findings keep the manual fix.
+func TestHtaccessGenericFindingIsNotCleanedAutomatically(t *testing.T) {
 	withSimulatedProcessSignal(t)
 	root := t.TempDir()
 	oldRoots, oldBackup := fixHtaccessAllowedRoots, htaccessBackupDirRoot
 	fixHtaccessAllowedRoots, htaccessBackupDirRoot = []string{root}, t.TempDir()
 	t.Cleanup(func() { fixHtaccessAllowedRoots, htaccessBackupDirRoot = oldRoots, oldBackup })
-	path := writeHtaccess(t, root, "site", "AddHandler cgi-script .haxor\n")
+	const body = "RewriteEngine On\nAddHandler application/x-httpd-php .html\n"
+	path := writeHtaccess(t, root, "public_html", body)
 	cfg := &config.Config{StatePath: t.TempDir()}
-	cfg.AutoResponse.Enabled, cfg.AutoResponse.QuarantineFiles = true, true
-	findings := []alert.Finding{{Severity: alert.Critical, Check: "htaccess_handler_abuse", FilePath: path}}
-	if actions := AutoQuarantineFiles(cfg, findings); len(actions) != 0 {
-		t.Fatalf("quarantine actions = %+v, want none for .htaccess findings", actions)
+	cfg.AutoResponse.Enabled, cfg.AutoResponse.CleanHtaccess = true, true
+	for _, check := range []string{"htaccess_injection", "htaccess_injection_realtime", "htaccess_handler_abuse"} {
+		if actions := AutoCleanHtaccess(cfg, []alert.Finding{{Check: check, FilePath: path}}); len(actions) != 0 {
+			t.Errorf("%s automatic actions = %+v, want none", check, actions)
+		}
 	}
-	if findings[0].AutoFileResponseEvaluated {
-		t.Fatal("quarantine consumed a finding that belongs to automatic htaccess cleaning")
-	}
-	if actions := AutoCleanHtaccess(cfg, findings); len(actions) != 0 {
-		t.Fatalf("cleaning disabled: actions = %+v", actions)
-	}
-	cfg.AutoResponse.CleanHtaccess = true
-	if actions := AutoCleanHtaccess(cfg, findings); len(actions) != 1 || !strings.HasPrefix(actions[0].Message, "AUTO-CLEAN: ") {
-		t.Fatalf("cleaning enabled: actions = %+v", actions)
-	}
-	if got, err := os.ReadFile(path); err != nil || len(got) != 0 {
-		t.Fatalf("cleaned content = %q, error = %v", got, err)
+	if got, err := os.ReadFile(path); err != nil || string(got) != body {
+		t.Fatalf("content = %q, error = %v, want unchanged", got, err)
 	}
 }
 
@@ -161,7 +148,9 @@ func TestHtaccessOversizedResponsesPreserveFile(t *testing.T) {
 			t.Errorf("oversized cleaning action = %s, want refused", rec.Result)
 		}
 	}
-	if cleans != 4 {
-		t.Errorf("cleaning actions = %d, want three manual refusals and one automatic refusal", cleans)
+	// The coverage finding never reaches automatic cleaning, so it cannot
+	// spend an automatic response on a refusal every scan.
+	if cleans != 3 {
+		t.Errorf("cleaning actions = %d, want the three manual refusals only", cleans)
 	}
 }
