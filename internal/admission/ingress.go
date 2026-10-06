@@ -417,8 +417,9 @@ type DrainReport struct{ Queued, Coalesced, Refused, Failed int }
 // Drain checkpoints ingress decisions even with no held items. Transient
 // errors release work; only damaged arrivals are isolated and counted lost.
 // When that damage is the only failure, admission stays open and the error
-// is ErrArrivalsIsolated with the damage. One owner serializes Drain with
-// every other mutating ledger operation.
+// is ErrArrivalsIsolated with the damage. A later failure retains both
+// causes without ErrArrivalsIsolated. One owner serializes Drain with every
+// other mutating ledger operation.
 func (in *Ingress) Drain(l Ledger, limit int, request func(Submission) (CandidateRequest, error)) (DrainReport, error) {
 	items := in.Take(min(limit, MaxArrivalGroup))
 	return in.DrainTaken(l, items, request)
@@ -515,10 +516,16 @@ func (in *Ingress) DrainTaken(l Ledger, items []IngressItem, request func(Submis
 		snap = nil
 	}
 	in.Complete(done, revision, snap)
-	if first == nil && damage != nil {
-		// Everything else committed: one damaged record is not proof the
-		// ledger failed, so admission stays open.
-		first = fmt.Errorf("%w: %w", ErrArrivalsIsolated, damage)
+	if damage != nil {
+		if first == nil {
+			// Everything else committed: one damaged record is not proof the
+			// ledger failed, so admission stays open.
+			first = fmt.Errorf("%w: %w", ErrArrivalsIsolated, damage)
+		} else {
+			// Recovery from the later failure cannot recover discarded work;
+			// retain the damage so the owner can keep its operator signal.
+			first = fmt.Errorf("%w; isolated arrival damage: %w", first, damage)
+		}
 	}
 	return report, first
 }

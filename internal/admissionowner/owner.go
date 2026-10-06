@@ -110,9 +110,9 @@ type Owner struct {
 	// retains its cause independently of later snapshot or reload errors.
 	drainFailed bool
 	drainErr    error
-	// damageErr is the latest damage a drain isolated. It does not close
-	// admission; a damaged record stays damaged, so the cause is kept for
-	// the owner's life.
+	// damageErr is the latest drain cause that discarded damaged arrivals,
+	// even if another failure stopped that drain. A damaged record stays
+	// damaged, so the cause is kept for the owner's life.
 	damageErr error
 }
 
@@ -497,12 +497,14 @@ func (o *Owner) drainHeld() (err error) {
 			o.ingress.Release(items)
 			return err
 		}
-		if _, err := drainGroupOf(o.ingress, o.ledger, items); errors.Is(err, admission.ErrArrivalsIsolated) {
-			// The rest of the group committed and admission stayed open;
-			// stopping it would announce a stop per damaged arrival.
+		report, err := drainGroupOf(o.ingress, o.ledger, items)
+		if report.Failed != 0 {
+			// Discarded work stays lost even if a later failure in this drain
+			// recovers, so its damage signal outlives the drain hold.
 			o.damageErr = fmt.Errorf("draining the ingress: %w", err)
 			o.refreshStatus()
-		} else if err != nil {
+		}
+		if err != nil && !errors.Is(err, admission.ErrArrivalsIsolated) {
 			return err
 		}
 		// The group's own snapshot reopened admission.
