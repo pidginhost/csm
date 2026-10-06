@@ -19,7 +19,10 @@ func (f *ledgerFixture) arrival(s evidenceSpec) admission.Arrival {
 	if target == "" {
 		target = "192.0.2.10"
 	}
-	return admission.Arrival{Request: f.request(target, e.ID()), Evidence: e}
+	req := f.request(target, e.ID())
+	// The ledger assigns arrivals their episode and generation.
+	req.Episode, req.Generation = admission.EpisodeID{}, 0
+	return admission.Arrival{Request: req, Evidence: e}
 }
 
 func (f *ledgerFixture) begin() admission.IngressState {
@@ -182,6 +185,7 @@ func (f *ledgerFixture) submission(s evidenceSpec) admission.Submission {
 func (f *ledgerFixture) requestFor(s admission.Submission) (admission.CandidateRequest, error) {
 	req := f.request("192.0.2.10", s.Evidence.ID())
 	req.Kind, req.Target = s.Kind, s.Target
+	req.Episode, req.Generation = admission.EpisodeID{}, 0
 	return req, nil
 }
 
@@ -238,8 +242,9 @@ func TestIngressDrainWaitsForTheLedger(t *testing.T) {
 func TestIngressDrainIsolatesADamagedArrival(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.begin()
-	damaged := f.queued()
-	c, _ := f.l.Candidate(damaged)
+	// The hit arrival's episode leads to a queued candidate whose queue
+	// entry is gone.
+	damaged := f.arrive(f.arrival(evidenceSpec{cursor: "damaged"}))[0].Candidate
 	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte(admissionQueueBucket)).Delete([]byte(damaged))
 	}); err != nil {
@@ -253,14 +258,7 @@ func TestIngressDrainIsolatesADamagedArrival(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	report, err := in.Drain(f.l, 10, func(s admission.Submission) (admission.CandidateRequest, error) {
-		req, _ := f.requestFor(s)
-		if s.Evidence.ID() == hit.Evidence.ID() {
-			req.Target, req.Episode, req.Generation = c.Key.Target, c.Key.Episode, c.Key.Generation
-			req.Support = nil
-		}
-		return req, nil
-	})
+	report, err := in.Drain(f.l, 10, f.requestFor)
 	if !isCorrupt(err) || report != (admission.DrainReport{Queued: 1, Failed: 1}) || in.Len() != 0 {
 		t.Fatalf("drain = %+v, %v; %d held", report, err, in.Len())
 	}
@@ -545,12 +543,9 @@ func TestIngressDrainBoundsActualPositions(t *testing.T) {
 	if in.Len() != 0 {
 		t.Fatal("bounded drains did not complete held work")
 	}
-	req, _ := f.requestFor(newcomer)
-	id, err := (admission.CandidateKey{Kind: req.Kind, Target: req.Target, Episode: req.Episode, Generation: req.Generation}).ID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c, err := f.l.Candidate(id); err != nil || c.State != admission.StateQueued || c.Scope.Owner != f.owner("bob") {
+	row, _ := f.episodeAt("192.0.2.50")
+	line, _ := row.Line(admission.KindBlockIP)
+	if c, err := f.l.Candidate(line.Candidate); err != nil || c.State != admission.StateQueued || c.Scope.Owner != f.owner("bob") {
 		t.Fatalf("new scope made no progress: %+v %v", c, err)
 	}
 	bound()

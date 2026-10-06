@@ -372,6 +372,19 @@ ledger in the same transaction, without inventing episodes for candidates
 queued before. Each ledger draws episode IDs from its own random nonce and
 a counter, so IDs never repeat, even in a ledger created again after loss.
 Opening proves every episode row against the candidates it names.
+The ledger, not the caller, assigns each arrival its episode and
+generation when it persists the arrival; an arrival that names either is
+refused. Responses of every kind at one target share its episode. An
+observation made within an hour of the episode's last one, or while its
+work is queued or in flight, joins it; a later one opens the next episode,
+and one older than the previous episode's end, or already accepted by
+that episode while its work held it open, is refused as stale. A
+degraded clock reading never ends an episode. A queued candidate coalesces
+later observations before its first attempt. A queued retry remains live
+but answers new arrivals without coalescing; one that ended before any
+attempt is followed only by a later observation of that kind. Once a candidate has an attempt, later observations
+of its episode are refused as an existing effect, which raises no notice,
+and still extend the episode.
 
 ### Attack event storage
 

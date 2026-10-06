@@ -245,17 +245,35 @@ func (l *AdmissionLedger) arriveTx(q *queueTx, a admission.Arrival) (admission.C
 	if a.Request.Primary != a.Evidence.ID() {
 		return "", false, refusal(admission.ReasonInvalid, "arrival request does not name its evidence")
 	}
+	if !a.Request.Episode.IsZero() || a.Request.Generation != 0 {
+		return "", false, refusal(admission.ReasonInvalid, "an arrival names no episode: the ledger assigns it")
+	}
+	if a.Request.Target != e.Target() {
+		return "", false, refusal(admission.ReasonInvalid, "arrival request target differs from its evidence")
+	}
 	ids, err := rootSet(a.Request)
 	if err != nil {
 		return "", false, err
 	}
-	key := admission.CandidateKey{Kind: a.Request.Kind, Target: a.Request.Target, Episode: a.Request.Episode, Generation: a.Request.Generation}
-	id, err := key.ID()
+	if err = admission.ValidateKindTarget(a.Request.Kind, a.Request.Target); err != nil {
+		return "", false, err
+	}
+	roots, err := loadRoots(q.tx, l.reg, ids)
 	if err != nil {
 		return "", false, err
 	}
-	_, created, err := l.enqueueTx(q, a.Request, key, id, ids)
-	return id, created, err
+	if _, err = scopeOwner(l.Inventory(), roots); err != nil {
+		return "", false, err
+	}
+	// Evidence that cannot support its target now is no qualifying
+	// observation: it changes no episode.
+	if _, err = admission.Assess(a.Request.Target, []admission.Evidence{e}, q.now); err != nil {
+		return "", false, err
+	}
+	if _, err = admission.Assess(a.Request.Target, roots, q.now); err != nil {
+		return "", false, err
+	}
+	return l.placeTx(q, a.Request, e, ids)
 }
 
 // QueueSnapshot is the durable queue as the ingress sees it: every live

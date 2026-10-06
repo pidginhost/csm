@@ -74,6 +74,9 @@ type AdmissionLedger struct {
 	// high-water mark but admits nothing new: after a restart that mark can
 	// be hours old, and old evidence would read as fresh.
 	current bool
+	// degraded is set when the current reading was degraded: wall time alone
+	// then cannot end an episode.
+	degraded bool
 
 	// revalidated is set once this handle has checked every queued
 	// candidate at a current reading. A reopened ledger cannot know what
@@ -400,7 +403,7 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 		l.current = false
 		return admission.ClockTick{}, err
 	}
-	l.now, l.current = tick.Now, true
+	l.now, l.current, l.degraded = tick.Now, true, tick.Degraded
 	return tick, nil
 }
 
