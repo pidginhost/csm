@@ -418,8 +418,16 @@ type DrainReport struct{ Queued, Coalesced, Refused, Failed int }
 // errors release work; only damaged arrivals are isolated and counted lost.
 // One owner serializes Drain with every other mutating ledger operation.
 func (in *Ingress) Drain(l Ledger, limit int, request func(Submission) (CandidateRequest, error)) (DrainReport, error) {
-	var report DrainReport
 	items := in.Take(min(limit, MaxArrivalGroup))
+	return in.DrainTaken(l, items, request)
+}
+
+// DrainTaken persists the group frozen by Take. The owner can record a
+// fresh clock reading after freezing it, so observations submitted during
+// that reading stay held for a later group rather than looking future-dated.
+// Errors release the group just as Drain does.
+func (in *Ingress) DrainTaken(l Ledger, items []IngressItem, request func(Submission) (CandidateRequest, error)) (DrainReport, error) {
+	var report DrainReport
 	arrivals := make([]Arrival, 0, len(items))
 	for _, it := range items {
 		var req CandidateRequest
@@ -499,6 +507,12 @@ func (in *Ingress) Drain(l Ledger, limit int, request func(Submission) (Candidat
 		if first == nil {
 			first = err
 		}
+	}
+	// A readable snapshot does not mean an isolating drain succeeded.
+	// Reopening here would reset the stop on every failed retry before the
+	// owner can close admission again.
+	if first != nil {
+		snap = nil
 	}
 	in.Complete(done, revision, snap)
 	return report, first

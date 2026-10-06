@@ -142,7 +142,7 @@ func (s *sender) announceStop() bool {
 		if s.o.ingress != nil {
 			h = s.o.ingress.Health()
 		}
-		for _, err := range []error{s.o.startErr, s.o.tickErr, s.o.snapshotErr} {
+		for _, err := range []error{s.o.startErr, s.o.drainErr, s.o.tickErr, s.o.snapshotErr} {
 			if err != nil {
 				cause = err.Error()
 				break

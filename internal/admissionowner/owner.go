@@ -35,10 +35,10 @@ const maxDrainGroups = 4
 // drainGroup is the arrivals one drain group persists; tests shrink it.
 var drainGroup = admission.MaxArrivalGroup
 
-// drainGroupOf persists one group of in's held work into l; tests make it
+// drainGroupOf persists one frozen group of in's held work into l; tests make it
 // fail.
-var drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger) (admission.DrainReport, error) {
-	return in.Drain(l, drainGroup, arrivalRequest)
+var drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+	return in.DrainTaken(l, items, arrivalRequest)
 }
 
 // Options are what the owner needs from the daemon.
@@ -106,10 +106,10 @@ type Owner struct {
 	auditAcked    uint64
 	// drained is the ingress decision sequence the last drain persisted.
 	drained uint64
-	// drainFailed is set by a failed drain and cleared by the next one
-	// that succeeds. Admission stays closed meanwhile; snapshotErr names
-	// the cause.
+	// drainFailed holds admission closed until a drain succeeds. drainErr
+	// retains its cause independently of later snapshot or reload errors.
 	drainFailed bool
+	drainErr    error
 }
 
 // Start opens the ledger and runs the startup sequence before it returns,
@@ -444,11 +444,7 @@ func (o *Owner) shutdown() {
 	// Producers are stopped before Stop. This empty drain commits their
 	// final decisions after every held group and before the clean close.
 	if held {
-		if o.tick() != nil {
-			return
-		}
-		if _, err := drainGroupOf(o.ingress, o.ledger); err != nil {
-			o.snapshotErr = fmt.Errorf("draining the ingress: %w", err)
+		if o.drainHeld() != nil {
 			return
 		}
 	}
@@ -477,25 +473,32 @@ func (o *Owner) drain() error {
 // Every group, even an empty one, checkpoints the ingress decisions. A
 // failed drain closes admission and names its cause until a drain
 // succeeds.
-func (o *Owner) drainHeld() error {
+func (o *Owner) drainHeld() (err error) {
 	admitting := o.ingress.Health().Admitting
 	defer func() {
-		if o.snapshotErr != nil || admitting != o.ingress.Health().Admitting {
+		if err != nil {
+			o.drainFailed = true
+			o.drainErr = fmt.Errorf("draining the ingress: %w", err)
+			o.ingress.Publish(nil)
+		}
+		if err != nil || o.snapshotErr != nil || admitting != o.ingress.Health().Admitting {
 			o.refreshStatus()
 		}
 	}()
 	for range maxDrainGroups {
+		// Freeze the group before the clock read: Submit can otherwise
+		// hand us evidence newer than the reading used by the ledger.
+		items := o.ingress.Take(min(drainGroup, admission.MaxArrivalGroup))
 		if err := o.tick(); err != nil {
+			o.ingress.Release(items)
 			return err
 		}
-		if _, err := drainGroupOf(o.ingress, o.ledger); err != nil {
-			o.drainFailed = true
-			o.snapshotErr = fmt.Errorf("draining the ingress: %w", err)
-			o.ingress.Publish(nil)
+		if _, err := drainGroupOf(o.ingress, o.ledger, items); err != nil {
 			return err
 		}
 		// The group's own snapshot reopened admission.
-		o.drainFailed, o.snapshotErr = false, nil
+		o.drainFailed = false
+		o.drainErr, o.snapshotErr = nil, nil
 		if o.ingress.Len() == 0 {
 			return nil
 		}
@@ -526,9 +529,12 @@ func (o *Owner) refreshStatus() {
 		ClockDegraded: o.degraded, LastTick: o.lastTick, CeilingSource: o.source,
 		Import: o.imported, InventoryAt: o.inventoryAt,
 	}}
-	if o.startErr != nil {
+	switch {
+	case o.startErr != nil:
 		s.Owner.Error = o.startErr.Error()
-	} else if o.snapshotErr != nil {
+	case o.drainErr != nil:
+		s.Owner.Error = o.drainErr.Error()
+	case o.snapshotErr != nil:
 		s.Owner.Error = o.snapshotErr.Error()
 	}
 	if o.tickErr != nil {

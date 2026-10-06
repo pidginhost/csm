@@ -245,9 +245,12 @@ configured value, refreshes the inventory from
 complete reads, delivers audit rows to the action log and notices through
 the queue-health path with their own pacing, and reads status on a timer.
 Once the ingress has made new decisions, the owner drains it on a short
-timer after a fresh clock reading, and a clean stop drains it before
-closing the generation. A failed drain closes admission until a drain
-succeeds, so a lasting failure is one stop with its cause.
+timer. Each group is frozen before its fresh clock reading, so concurrent
+submissions wait for a reading that includes their observation time. A
+clean stop drains all held work and checkpoints final decisions before
+closing the generation. A failed drain, including its clock or publication
+step, closes admission until a drain succeeds. Its cause survives tick,
+inventory and reload recovery, so a lasting failure is one stop with its cause.
 Failed ceiling reloads stay pending until a tick applies and revalidates
 them; inventory refreshes cannot reopen admission in the meantime.
 Nothing submits to it yet. One owner serializes every write, and each call

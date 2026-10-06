@@ -40,9 +40,15 @@ func submitTo(t *testing.T, o *Owner, p *admission.Producer, addr string, at tim
 
 func submitObservation(t *testing.T, o *Owner, p *admission.Producer, addr, cursor string, at time.Time) {
 	t.Helper()
+	if err := submitObservationError(o, p, addr, cursor, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func submitObservationError(o *Owner, p *admission.Producer, addr, cursor string, at time.Time) error {
 	target, err := admission.CanonicalAddress(addr, admission.Caps{IPv6: true})
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	e, err := p.Mint(admission.EvidenceInput{
 		Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
@@ -50,11 +56,9 @@ func submitObservation(t *testing.T, o *Owner, p *admission.Producer, addr, curs
 		ObservedAt:  at, Parser: admission.ParserRef{Name: "sshd", Version: 1}, Target: target,
 	})
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
-	if err = o.ingress.Submit(admission.Submission{Kind: admission.KindBlockIP, Target: target, Evidence: e}); err != nil {
-		t.Fatal(err)
-	}
+	return o.ingress.Submit(admission.Submission{Kind: admission.KindBlockIP, Target: target, Evidence: e})
 }
 
 // queuedCandidates reads the durable queue's candidates on the owner
@@ -227,14 +231,21 @@ func TestOwnerDrainWithConcurrentSubmit(t *testing.T) {
 	opts.DrainEvery = time.Millisecond
 	o := f.start(opts)
 	var wg sync.WaitGroup
+	errs := make(chan error, 32)
 	for i := 1; i <= 32; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			submitObservation(t, o, p, fmt.Sprintf("2001:db8::%x", i), fmt.Sprintf("offset=%d", i), f.host.now())
+			errs <- submitObservationError(o, p, fmt.Sprintf("2001:db8::%x", i), fmt.Sprintf("offset=%d", i), f.host.now())
 		}()
 	}
 	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	eventually(t, "concurrent submissions to persist", func() bool {
 		return o.ingress.Len() == 0 && len(queuedCandidates(t, o)) == 32
 	})
@@ -270,8 +281,8 @@ func withFailingDrains(t *testing.T) (groups, snapshots *atomic.Bool) {
 	t.Helper()
 	groups, snapshots = &atomic.Bool{}, &atomic.Bool{}
 	prev := drainGroupOf
-	drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger) (admission.DrainReport, error) {
-		return in.Drain(failingLedger{Ledger: l, groups: groups, snapshots: snapshots}, drainGroup, arrivalRequest)
+	drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+		return in.DrainTaken(failingLedger{Ledger: l, groups: groups, snapshots: snapshots}, items, arrivalRequest)
 	}
 	t.Cleanup(func() { drainGroupOf = prev })
 	return groups, snapshots
