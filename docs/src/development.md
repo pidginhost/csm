@@ -390,7 +390,10 @@ candidate reference but retain its generation and attempt proof while
 another candidate holds the row. The last retained candidate takes the
 row, and each admitted
 candidate's history charge covers a row. A target without a row opens a
-new episode, so a retired candidate's ID is never minted again.
+new episode, so a retired candidate's ID is never minted again. A
+verified block ends its episode at the block's original expiry instead of
+an hour after the last observation; an unknown outcome or a response of
+another kind does not.
 
 ### Attack event storage
 

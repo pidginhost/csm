@@ -205,3 +205,21 @@ func (q *queueTx) forgetLine(id admission.CandidateID, c admission.Candidate) er
 	}
 	return putEpisode(q.tx, key, rest)
 }
+
+// closeEpisode ends the episode of a verified block at the block's
+// original expiry (spec 5.2). Other kinds, and a candidate of another
+// episode than its target's row, change nothing. An episode queues no new
+// generation of a kind while one is in flight, so the verified block is its
+// kind's latest.
+func (q *queueTx) closeEpisode(c admission.Candidate) error {
+	if c.Key.Kind != admission.KindBlockIP && c.Key.Kind != admission.KindBlockSubnet {
+		return nil
+	}
+	key := c.Key.Target.Key()
+	e, found, err := loadEpisode(q.tx, key)
+	if err != nil || !found || e.ID != c.Key.Episode {
+		return err
+	}
+	e.Verified = c.ExpiresAt
+	return putEpisode(q.tx, key, e)
+}

@@ -772,3 +772,154 @@ func TestAdmissionLedgerEpisodeRowsFollowTheirCandidates(t *testing.T) {
 		t.Fatalf("after retirement = %+v", again)
 	}
 }
+
+// finishArrival reserves, runs and finishes the candidate an arrival
+// queued, with an effect until expires.
+func (f *ledgerFixture) finishArrival(id admission.CandidateID, expires time.Time, d admission.Disposition) {
+	f.t.Helper()
+	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, expires)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+		f.t.Fatal(err)
+	}
+	if _, _, err = f.l.Finish(a.Attempt.ID, d); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// A verified block ends its episode at its original expiry, not an hour
+// after the last observation (spec 5.2): an observation before then is
+// refused as an existing effect, and one at the expiry opens the next
+// episode.
+func TestAdmissionLedgerVerifiedBlockEndsItsEpisodeAtItsExpiry(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
+	expiry := ledgerT0.Add(20 * time.Minute)
+	f.finishArrival(first, expiry, admission.DispositionApplied)
+	if row, _ := f.episodeAt("192.0.2.10"); !row.Verified.Equal(expiry) {
+		t.Fatalf("verified end = %v, want %v", row.Verified, expiry)
+	}
+	f.tickAt(expiry.Add(-time.Second))
+	wantLedgerReason(t, "before the expiry", f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}))[0].Err, admission.ReasonExistingEffect)
+	f.tickAt(expiry)
+	next := f.arrive(f.arrival(evidenceSpec{cursor: "offset=3"}))[0]
+	if c := f.candidateOf(next.Candidate); next.Err != nil || !next.Created || c.Key.Episode == f.candidateOf(first).Key.Episode {
+		t.Fatalf("at the expiry = %+v %+v", next, c.Key)
+	}
+	if row, _ := f.episodeAt("192.0.2.10"); !row.Previous.Equal(expiry) || !row.Verified.IsZero() {
+		t.Fatalf("next episode row = %+v", row)
+	}
+}
+
+// Live work of another kind holds the episode past the block expiry;
+// reports it accepted during the hold cannot later become a new episode.
+func TestAdmissionLedgerEarlierEpisodeReportsStayEarlier(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
+	other := f.arrival(evidenceSpec{cursor: "promotion"})
+	other.Request.Kind = admission.KindPromote
+	kept := f.arrive(other)[0].Candidate
+	expiry := ledgerT0.Add(20 * time.Minute)
+	f.finishArrival(first, expiry, admission.DispositionApplied)
+	f.tickAt(ledgerT0.Add(25 * time.Minute))
+	old := f.arrival(evidenceSpec{cursor: "while-held"})
+	wantLedgerReason(t, "held episode", f.arrive(old)[0].Err, admission.ReasonExistingEffect)
+	if _, err := f.l.Terminate(kept, admission.ReasonPolicy); err != nil {
+		t.Fatal(err)
+	}
+	wantLedgerReason(t, "report after hold", f.arrive(old)[0].Err, admission.ReasonStale)
+	f.tickAt(ledgerT0.Add(26 * time.Minute))
+	next := f.arrive(f.arrival(evidenceSpec{cursor: "next-episode"}))[0]
+	if next.Err != nil || !next.Created || next.Candidate == first {
+		t.Fatalf("new episode: %+v", next)
+	}
+	row, _ := f.episodeAt("192.0.2.10")
+	if !row.Previous.Equal(expiry) || !row.PriorLast.Equal(ledgerT0.Add(25*time.Minute)) {
+		t.Fatalf("previous episode proof: %+v", row)
+	}
+	wantLedgerReason(t, "report after new episode", f.arrive(old)[0].Err, admission.ReasonStale)
+}
+
+// Subnet targets use the same transactional assignment and original
+// verified boundary as address blocks, with a canonical prefix row key.
+func TestAdmissionLedgerVerifiedSubnetEpisodeEndsAtExpiry(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	prefix, err := admission.CanonicalPrefix("192.0.2.0/24", admission.Caps{IPv6: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := f.ssh.Mint(admission.EvidenceInput{
+		Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: admission.SeverityHigh,
+		Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: "prefix=1", Version: 1},
+		ObservedAt:  f.wall, Parser: admission.ParserRef{Name: "fixture", Version: 1}, Target: prefix,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := f.arrive(admission.Arrival{Request: admission.CandidateRequest{Kind: admission.KindBlockSubnet, Target: prefix, Primary: e.ID()}, Evidence: e})[0]
+	if first.Err != nil || !first.Created {
+		t.Fatalf("subnet arrival: %+v", first)
+	}
+	expiry := ledgerT0.Add(20 * time.Minute)
+	f.finishArrival(first.Candidate, expiry, admission.DispositionApplied)
+	episode := f.candidateOf(first.Candidate).Key.Episode
+	if err = f.db.bolt.View(func(tx *bolt.Tx) error {
+		row, ok, rowErr := loadEpisode(tx, prefix.Key())
+		if rowErr != nil || !ok || !row.Verified.Equal(expiry) || row.ID != episode {
+			t.Errorf("verified subnet row: %+v %v %v", row, ok, rowErr)
+		}
+		return rowErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatalf("verified subnet open proof: %v", err)
+	}
+}
+
+// A new threshold must be built entirely from observations after the
+// previous verified expiry, including any supplied support.
+func TestAdmissionLedgerNextEpisodeRefusesEarlierSupport(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
+	expiry := ledgerT0.Add(20 * time.Minute)
+	f.finishArrival(first, expiry, admission.DispositionApplied)
+	f.tickAt(expiry)
+	before, _ := f.episodeAt("192.0.2.10")
+	a := f.arrival(evidenceSpec{cursor: "offset=2"})
+	a.Request.Support = []admission.EvidenceID{f.published(evidenceSpec{cursor: "before-expiry", age: time.Second})}
+	wantLedgerReason(t, "earlier support", f.arrive(a)[0].Err, admission.ReasonStale)
+	if after, _ := f.episodeAt("192.0.2.10"); !reflect.DeepEqual(before, after) {
+		t.Fatal("earlier support changed the episode")
+	}
+}
+
+// Only a verified block of the row's episode bounds it by its expiry: an
+// unknown outcome cannot (spec 5.2), a verified promotion leaves the
+// episode to its quiet hour, and so does a block queued outside it.
+func TestAdmissionLedgerOnlyAVerifiedBlockEndsItsEpisode(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	f.arrive(f.arrival(evidenceSpec{target: "192.0.2.12", cursor: "offset=3"}))
+	f.nextGeneration()
+	outside := f.published(evidenceSpec{target: "192.0.2.12", cursor: "offset=4"})
+	_, direct := f.enqueue(f.request("192.0.2.12", outside))
+	f.finishArrival(direct, ledgerT0.Add(20*time.Minute), admission.DispositionApplied)
+	unknown := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
+	f.finishArrival(unknown, ledgerT0.Add(20*time.Minute), admission.DispositionUnknown)
+	promote := f.arrival(evidenceSpec{target: "192.0.2.11", cursor: "offset=2"})
+	promote.Request.Kind = admission.KindPromote
+	promoted := f.arrive(promote)[0].Candidate
+	f.finishArrival(promoted, ledgerT0.Add(20*time.Minute), admission.DispositionApplied)
+	for _, addr := range []string{"192.0.2.10", "192.0.2.11", "192.0.2.12"} {
+		if row, ok := f.episodeAt(addr); !ok || !row.Verified.IsZero() || !row.End().Equal(ledgerT0.Add(admission.EpisodeQuiet)) {
+			t.Errorf("%s: row = %+v %v", addr, row, ok)
+		}
+	}
+}
