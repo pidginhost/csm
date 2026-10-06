@@ -87,7 +87,7 @@ func TestAutoFileResponsePauseDoesNotCountAsAction(t *testing.T) {
 	for _, check := range []string{"backdoor_binary", "htaccess_cgi_handler_abuse"} {
 		t.Run(check, func(t *testing.T) {
 			cfg, homes := fileResponseFixture(t, "  max_file_actions_per_hour: 1\n")
-			body := []byte("deny from all\n")
+			body := []byte("AddHandler cgi-script .alfa\n")
 			seed := responseFile(t, homes, "alice", "seed.bin", body)
 			if got := AutoQuarantineFiles(cfg, []alert.Finding{seed}); len(got) != 1 {
 				t.Fatalf("seed action = %+v", got)
@@ -381,6 +381,9 @@ func TestAutoFileResponseRevalidatesAfterReservation(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cfg, homes := fileResponseFixture(t, "")
 			body := []byte("<?php\n@include('/tmp/payload.php');\necho 'site';\n")
+			if name == ".htaccess" {
+				body = []byte("ErrorDocument 404 https://malware.example/missing\n")
+			}
 			f := responseFile(t, homes, "alice", name, body)
 			oldWrite := writeFileResponseState
 			writeFileResponseState = func(path string, mode os.FileMode, value any) error {

@@ -3,9 +3,11 @@
 package daemon
 
 import (
+	"os"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -73,5 +75,42 @@ func TestCheckHtaccessHandlerAbuseKeepsItsName(t *testing.T) {
 	}
 	if abuse != 1 {
 		t.Errorf("critical htaccess_handler_abuse findings = %d, want 1", abuse)
+	}
+}
+
+func TestCheckHtaccessHandlerAbuseExtensionForms(t *testing.T) {
+	for _, body := range []string{
+		"AddHandler x-custom .haxor .cgix .suspected\n",
+		"AddHandler x-custom HAXOR cgix\n",
+	} {
+		t.Run(body, func(t *testing.T) {
+			fd, path := writeHtaccess(t, body)
+			ch := make(chan alert.Finding, 8)
+			cfg := &config.Config{}
+			cfg.AutoResponse.Enabled, cfg.AutoResponse.QuarantineFiles = true, true
+			fm := &FileMonitor{cfg: cfg, alertCh: ch}
+			fm.checkHtaccess(fd, path, "fixture")
+			close(ch)
+			var findings []alert.Finding
+			abuse := 0
+			for f := range ch {
+				findings = append(findings, f)
+				if f.Check == "htaccess_handler_abuse" {
+					abuse++
+					if f.Severity != alert.Critical {
+						t.Errorf("handler severity=%v, want Critical", f.Severity)
+					}
+				}
+			}
+			if abuse != 1 {
+				t.Fatalf("handler findings=%d, want one: %+v", abuse, findings)
+			}
+			if actions := checks.AutoQuarantineFiles(cfg, findings); len(actions) != 0 {
+				t.Errorf("realtime findings produced quarantine actions: %+v", actions)
+			}
+			if got, err := os.ReadFile(path); err != nil || string(got) != body {
+				t.Fatalf("content=%q error=%v, want unchanged", got, err)
+			}
+		})
 	}
 }

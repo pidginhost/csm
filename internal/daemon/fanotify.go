@@ -1841,11 +1841,11 @@ func (fm *FileMonitor) checkHtaccess(fd int, path, procInfo string) {
 
 	findings, _ := checks.AuditHtaccessContent(path, data)
 	for _, f := range findings {
-		check := f.Check
-		if check == "htaccess_injection" {
-			check = "htaccess_injection_realtime"
+		if f.Check == "htaccess_injection" {
+			fm.sendAlertWithPath(f.Severity, "htaccess_injection_realtime", f.Message, f.Details, path, procInfo)
+		} else {
+			fm.sendAlertWithPath(f.Severity, f.Check, f.Message, f.Details, path, procInfo)
 		}
-		fm.sendAlertWithPath(f.Severity, check, f.Message, f.Details, path, procInfo)
 	}
 
 	// Run signature/YARA scanning on .htaccess content

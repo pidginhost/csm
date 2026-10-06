@@ -290,10 +290,8 @@ func auditHtaccessLegacyContent(path string, content []byte, suspicious, safe []
 func htaccessHandlerAbuse(path string, content []byte) ([]alert.Finding, []htaccessMatch) {
 	var findings []alert.Finding
 	var matches []htaccessMatch
-	fullContentLower := strings.ToLower(string(content))
-	// AddHandler mapping non-standard extensions WITHOUT -ExecCGI
-	// (actual attack pattern - e.g., AddHandler cgi-script .haxor)
-	if !strings.Contains(fullContentLower, "-execcgi") && strings.Contains(fullContentLower, "addhandler") {
+	if strings.Contains(strings.ToLower(string(content)), "addhandler") {
+		cgiDisabled := cgiExecutionNeutralized(content)
 		nextLine := 0
 		for _, logical := range htaccessLogicalByteLines(content) {
 			lineNum := nextLine
@@ -306,15 +304,19 @@ func htaccessHandlerAbuse(path string, content []byte) ([]alert.Finding, []htacc
 			if strings.HasPrefix(strings.TrimSpace(line), "#") {
 				continue
 			}
-			lineLower := strings.ToLower(line)
-			fields := apacheDirectiveFields(line)
-			if len(fields) == 0 || !strings.EqualFold(fields[0], "AddHandler") {
+			fields, valid := parseApacheDirectiveFields(stripApacheComment(line))
+			if !valid || len(fields) < 3 || !strings.EqualFold(fields[0], "AddHandler") {
 				continue
 			}
-			// Flag if it maps unusual extensions like .haxor, .cgix, etc.
-			dangerousExts := []string{".haxor", ".cgix", ".suspected", ".bak.php"}
-			for _, ext := range dangerousExts {
-				if strings.Contains(lineLower, ext) {
+			// Disabling CGI does not disable PHP or unrelated custom handlers.
+			if cgiDisabled && handlerIsCGI(fields[1]) {
+				continue
+			}
+		extensions:
+			for _, token := range fields[2:] {
+				ext := "." + strings.TrimPrefix(strings.ToLower(token), ".")
+				switch ext {
+				case ".haxor", ".cgix", ".suspected", ".bak.php":
 					matches = append(matches, htaccessMatch{Range: logical.span})
 					findings = append(findings, alert.Finding{
 						Severity: alert.Critical,
@@ -323,6 +325,7 @@ func htaccessHandlerAbuse(path string, content []byte) ([]alert.Finding, []htacc
 						Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum+1, strings.TrimSpace(line)),
 						FilePath: path,
 					})
+					break extensions
 				}
 			}
 		}
