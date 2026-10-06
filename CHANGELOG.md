@@ -24,6 +24,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - The email forward guard now holds matching mail instead of leaving it stuck in the queue.
 - Directory-based phishing alerts now respect excluded pages and raise fewer false alarms.
+- The deep phishing scan no longer reads file metadata for names none of its checks can judge, which shortens the run that timed out on large hosts. Findings are unchanged and no setting is involved.
 
 ## [4.2.0] - 2026-10-04
 
