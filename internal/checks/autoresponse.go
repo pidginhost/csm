@@ -24,7 +24,7 @@ var quarantineDir = "/opt/csm/quarantine"
 
 // autoQuarantineChecks are the findings the scheduled auto-responder may
 // quarantine on its own: the manual move set plus the kill-and-quarantine
-// and handler-abuse families, and the realtime signature match, which must
+// family, and the realtime signature match, which must
 // additionally pass isHighConfidenceRealtimeMatch. Membership is pinned by
 // test against the check registry.
 var autoQuarantineChecks = map[string]bool{
@@ -38,7 +38,6 @@ var autoQuarantineChecks = map[string]bool{
 	"new_php_in_upgrade":       true,
 	"phishing_page":            true,
 	"phishing_directory":       true,
-	"htaccess_handler_abuse":   true,
 	"signature_match_realtime": true,
 }
 
@@ -806,6 +805,9 @@ func AutoCleanHtaccess(cfg *config.Config, findings []alert.Finding) []alert.Fin
 }
 
 func isHtaccessHardenedFinding(check string) bool {
+	if check == "htaccess_handler_abuse" {
+		return true
+	}
 	for _, detector := range htaccessDetectors {
 		if check == detector.Name {
 			return true

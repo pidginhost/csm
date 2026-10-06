@@ -57,25 +57,21 @@ func TestCheckHtaccessPreludeThroughEnvironmentAlerts(t *testing.T) {
 	}
 }
 
-// Realtime findings reach automatic quarantine but not automatic cleaning, so
-// the generic handler-abuse finding keeps the realtime name there: a write must
-// never move the whole .htaccess out of the site.
-func TestCheckHtaccessHandlerAbuseUsesRealtimeName(t *testing.T) {
+// Handler abuse keeps its own name and severity in realtime. It is not a
+// quarantine finding, so a write can never move the whole .htaccess.
+func TestCheckHtaccessHandlerAbuseKeepsItsName(t *testing.T) {
 	fd, path := writeHtaccess(t, "AddHandler cgi-script .haxor\n")
 	ch := make(chan alert.Finding, 8)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
 	fm.checkHtaccess(fd, path, "fixture")
 	close(ch)
-	var realtime int
+	var abuse int
 	for f := range ch {
-		if f.Check == "htaccess_handler_abuse" {
-			t.Errorf("realtime emitted %s: %+v", f.Check, f)
-		}
-		if f.Check == "htaccess_injection_realtime" && f.Severity == alert.Critical {
-			realtime++
+		if f.Check == "htaccess_handler_abuse" && f.Severity == alert.Critical {
+			abuse++
 		}
 	}
-	if realtime != 1 {
-		t.Errorf("critical htaccess_injection_realtime findings = %d, want 1", realtime)
+	if abuse != 1 {
+		t.Errorf("critical htaccess_handler_abuse findings = %d, want 1", abuse)
 	}
 }

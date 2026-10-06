@@ -1840,30 +1840,16 @@ func (fm *FileMonitor) checkHtaccess(fd int, path, procInfo string) {
 	}
 
 	findings, _ := checks.AuditHtaccessContent(path, data)
-	// Realtime findings reach automatic quarantine, which would move the whole
-	// .htaccess for the generic handler-abuse name, so every generic scanner
-	// finding shares the realtime name. Only one alert per check and path
-	// survives the realtime cooldown: send the most severe of them.
-	generic := -1
-	for i, f := range findings {
-		if htaccessGenericCheck(f.Check) && (generic < 0 || f.Severity > findings[generic].Severity) {
-			generic = i
+	for _, f := range findings {
+		check := f.Check
+		if check == "htaccess_injection" {
+			check = "htaccess_injection_realtime"
 		}
-	}
-	for i, f := range findings {
-		if !htaccessGenericCheck(f.Check) {
-			fm.sendAlertWithPath(f.Severity, f.Check, f.Message, f.Details, path, procInfo)
-		} else if i == generic {
-			fm.sendAlertWithPath(f.Severity, "htaccess_injection_realtime", f.Message, f.Details, path, procInfo)
-		}
+		fm.sendAlertWithPath(f.Severity, check, f.Message, f.Details, path, procInfo)
 	}
 
 	// Run signature/YARA scanning on .htaccess content
 	fm.runEventSignatureScan(fd, data, path, ".htaccess", procInfo)
-}
-
-func htaccessGenericCheck(check string) bool {
-	return check == "htaccess_injection" || check == "htaccess_handler_abuse"
 }
 
 // checkUserINI reads the event fd so a path replacement cannot change the

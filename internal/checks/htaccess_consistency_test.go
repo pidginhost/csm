@@ -90,7 +90,7 @@ func TestHtaccessGenericFindingIsNotCleanedAutomatically(t *testing.T) {
 	path := writeHtaccess(t, root, "public_html", body)
 	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.AutoResponse.Enabled, cfg.AutoResponse.CleanHtaccess = true, true
-	for _, check := range []string{"htaccess_injection", "htaccess_injection_realtime", "htaccess_handler_abuse"} {
+	for _, check := range []string{"htaccess_injection", "htaccess_injection_realtime"} {
 		if actions := AutoCleanHtaccess(cfg, []alert.Finding{{Check: check, FilePath: path}}); len(actions) != 0 {
 			t.Errorf("%s automatic actions = %+v, want none", check, actions)
 		}
@@ -190,5 +190,41 @@ func TestHtaccessAutoCleanLeavesGenericFindingsAlone(t *testing.T) {
 	}
 	if v := VerifyFinding("htaccess_injection", "", "", path); !v.Checked || !v.Resolved {
 		t.Errorf("generic re-check after its fix = %+v, want resolved", v)
+	}
+}
+
+// Handler-abuse extensions are never legitimate, so the finding is answered by
+// removing its directive. Quarantine would move the whole .htaccess and take
+// the site's other directives with it.
+func TestHtaccessHandlerAbuseIsCleanedNotQuarantined(t *testing.T) {
+	withSimulatedProcessSignal(t)
+	root := t.TempDir()
+	oldRoots, oldBackup := fixHtaccessAllowedRoots, htaccessBackupDirRoot
+	fixHtaccessAllowedRoots, htaccessBackupDirRoot = []string{root}, t.TempDir()
+	t.Cleanup(func() { fixHtaccessAllowedRoots, htaccessBackupDirRoot = oldRoots, oldBackup })
+	const kept = "keep\nAddHandler application/x-httpd-php .html\n"
+	path := writeHtaccess(t, root, "public_html", kept+"AddHandler x-custom .suspected\n")
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.AutoResponse.Enabled, cfg.AutoResponse.QuarantineFiles = true, true
+	findings := []alert.Finding{{Severity: alert.Critical, Check: "htaccess_handler_abuse", FilePath: path}}
+
+	if actions := AutoQuarantineFiles(cfg, findings); len(actions) != 0 || findings[0].AutoFileResponseEvaluated {
+		t.Fatalf("quarantine actions = %+v, evaluated = %v, want neither", actions, findings[0].AutoFileResponseEvaluated)
+	}
+	if actions := AutoCleanHtaccess(cfg, findings); len(actions) != 0 {
+		t.Fatalf("cleaning disabled: actions = %+v", actions)
+	}
+	cfg.AutoResponse.CleanHtaccess = true
+	if actions := AutoCleanHtaccess(cfg, findings); len(actions) != 1 || !strings.HasPrefix(actions[0].Message, "AUTO-CLEAN: ") {
+		t.Fatalf("cleaning enabled: actions = %+v", actions)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != kept {
+		t.Fatalf("content = %q, error = %v, want %q", got, err, kept)
+	}
+	if v := VerifyFinding("htaccess_handler_abuse", "", "", path); !v.Checked || !v.Resolved {
+		t.Errorf("handler-abuse re-check = %+v, want resolved", v)
+	}
+	if v := VerifyFinding("htaccess_injection", "", "", path); !v.Checked || v.Resolved {
+		t.Errorf("generic re-check = %+v, want the .html remap still reported", v)
 	}
 }

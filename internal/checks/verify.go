@@ -74,11 +74,14 @@ var presenceVerifiableChecks = []string{
 
 // htaccessGenericChecks come from the generic scanner. They re-audit with it
 // and every per-pattern detector, since their manual fix removes both sets.
-var htaccessGenericChecks = []string{"htaccess_injection", "htaccess_injection_realtime", "htaccess_handler_abuse"}
+var htaccessGenericChecks = []string{"htaccess_injection", "htaccess_injection_realtime"}
+
+// htaccessPatternChecks re-audit with the set automatic cleaning removes.
+var htaccessPatternChecks = append([]string{"htaccess_handler_abuse"}, htaccessDetectorNames()...)
 
 // htaccessVerifiableChecks re-audit the .htaccess and resolve when no malicious
 // directive remains (or the file is gone).
-var htaccessVerifiableChecks = append(append([]string(nil), htaccessGenericChecks...), htaccessDetectorNames()...)
+var htaccessVerifiableChecks = append(append([]string(nil), htaccessGenericChecks...), htaccessPatternChecks...)
 
 // findingVerifiers maps a finding's Check to a read-only re-check. A check not
 // present here has no automated re-check -- either an event finding (a brute
@@ -112,7 +115,7 @@ func buildFindingVerifiers() map[string]func(VerifyInput) VerifyResult {
 	register(func(in VerifyInput) VerifyResult { return verifyHtaccessClean(in.Path, AuditHtaccessContent) },
 		htaccessGenericChecks...)
 	register(func(in VerifyInput) VerifyResult { return verifyHtaccessClean(in.Path, auditHtaccessPatterns) },
-		htaccessDetectorNames()...)
+		htaccessPatternChecks...)
 	register(func(in VerifyInput) VerifyResult { return verifyEximSpoolAbsent(in.Message) },
 		"email_phishing_content")
 	register(func(in VerifyInput) VerifyResult { return verifyCrontabClear(in.Path) },

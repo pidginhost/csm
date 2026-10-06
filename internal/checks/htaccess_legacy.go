@@ -280,9 +280,20 @@ func auditHtaccessLegacyContent(path string, content []byte, suspicious, safe []
 		}
 	}
 
-	// Special check: AddHandler mapping non-standard extensions WITHOUT -ExecCGI
+	abuse, abuseMatches := htaccessHandlerAbuse(path, content)
+	return append(findings, abuse...), append(matches, abuseMatches...)
+}
+
+// htaccessHandlerAbuse flags an AddHandler mapping for an extension only an
+// attacker uses. No site needs these mappings, so unlike the rest of the
+// generic scanner its matches are cleaned automatically.
+func htaccessHandlerAbuse(path string, content []byte) ([]alert.Finding, []htaccessMatch) {
+	var findings []alert.Finding
+	var matches []htaccessMatch
+	fullContentLower := strings.ToLower(string(content))
+	// AddHandler mapping non-standard extensions WITHOUT -ExecCGI
 	// (actual attack pattern - e.g., AddHandler cgi-script .haxor)
-	if !hasExecCGIBlock && strings.Contains(fullContentLower, "addhandler") {
+	if !strings.Contains(fullContentLower, "-execcgi") && strings.Contains(fullContentLower, "addhandler") {
 		nextLine := 0
 		for _, logical := range htaccessLogicalByteLines(content) {
 			lineNum := nextLine

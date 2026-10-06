@@ -154,7 +154,7 @@ func ApplyFix(ctx context.Context, checkType, message, details string, filePath 
 		return fixPermissions(path, checkType)
 	case "backdoor_binary", "new_executable_in_config":
 		return fixKillAndQuarantine(ctx, path, details)
-	case "htaccess_injection", "htaccess_injection_realtime", "htaccess_handler_abuse":
+	case "htaccess_injection", "htaccess_injection_realtime":
 		return fixHtaccess(path, message)
 	case "email_phishing_content":
 		return fixQuarantineSpoolMessage(message)

@@ -770,7 +770,8 @@ func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htacc
 	for i, finding := range legacy {
 		// The specific prelude detector reports retained matches. Do not add a
 		// generic finding that would advertise automatic removal for them.
-		if !matches[i].Retain {
+		// Handler abuse arrives with the per-pattern set below.
+		if !matches[i].Retain && finding.Check != "htaccess_handler_abuse" {
 			findings = append(findings, finding)
 			ranges = append(ranges, matches[i].Range)
 		}
@@ -779,12 +780,16 @@ func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htacc
 	return append(findings, patternFindings...), mergeRanges(append(ranges, patternRanges...))
 }
 
-// auditHtaccessPatterns runs only the per-pattern detectors. Automatic cleaning
-// and their manual fix act on this set: the generic scanner also flags
-// directives a site may rely on, such as a PHP handler for .html pages.
+// auditHtaccessPatterns runs the per-pattern detectors plus handler abuse.
+// Automatic cleaning and their manual fix act on this set: the rest of the
+// generic scanner also flags directives a site may rely on, such as a PHP
+// handler for .html pages.
 func auditHtaccessPatterns(path string, content []byte) ([]alert.Finding, []htaccessByteRange) {
-	var findings []alert.Finding
+	findings, abuse := htaccessHandlerAbuse(path, content)
 	var ranges []htaccessByteRange
+	for _, m := range abuse {
+		ranges = append(ranges, m.Range)
+	}
 	for _, d := range htaccessDetectors {
 		matches := d.Detect(content, path)
 		for _, m := range matches {
