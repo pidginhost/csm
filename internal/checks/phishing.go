@@ -255,6 +255,21 @@ func CheckPhishing(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 // Directory scanner
 // ---------------------------------------------------------------------------
 
+// phishingCandidateName reports whether any file check in scanForPhishing can
+// judge a file of this name. The walk covers millions of files, so the stat
+// is paid only for these names.
+func phishingCandidateName(nameLower string) bool {
+	switch {
+	case strings.HasSuffix(nameLower, ".html"), strings.HasSuffix(nameLower, ".htm"):
+		return true
+	case isExecutablePHPName(nameLower):
+		return !isKnownCMSFile(nameLower)
+	case strings.HasSuffix(nameLower, ".zip"):
+		return isPhishingKitZipName(nameLower)
+	}
+	return isCredentialLogName(nameLower)
+}
+
 func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string, cfg *config.Config, findings *[]alert.Finding) {
 	if ctx.Err() != nil {
 		return
@@ -291,6 +306,9 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 		}
 
 		nameLower := strings.ToLower(name)
+		if !phishingCandidateName(nameLower) {
+			continue
+		}
 		info, err := entry.Info()
 		if err != nil {
 			markScanReadError(ctx, "phishing", err)
@@ -335,10 +353,6 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 
 		// --- PHP phishing pages and open redirectors ---
 		if isExecutablePHPName(nameLower) {
-			// Skip known CMS files
-			if isKnownCMSFile(nameLower) {
-				continue
-			}
 			// PHP phishing (3KB-100KB) - same brand/content analysis as HTML
 			if size >= 3000 && size <= 100000 {
 				result := analyzePHPForPhishing(ctx, fullPath)
