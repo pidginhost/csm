@@ -367,6 +367,12 @@ fails every section. Quiet notice indexes are checked with their records.
 Health snapshots own copies of the admission view, and a clean ingress
 generation clears the interruption marker.
 
+Schema 6 adds offense episodes; the first open upgrades a schema 1 to 5
+ledger in the same transaction, without inventing episodes for candidates
+queued before. Each ledger draws episode IDs from its own random nonce and
+a counter, so IDs never repeat, even in a ledger created again after loss.
+Opening proves every episode row against the candidates it names.
+
 ### Attack event storage
 
 Attack events live in `attacks:events`; `attacks:events:ip` stores empty values

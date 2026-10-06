@@ -35,8 +35,7 @@ func putFixedNotices(tx *bolt.Tx) error {
 // schema 4 ledger inside the opening transaction. The outbox starts with
 // the fixed notice records, charged to the reserve, and holds the slots of
 // the rows outstanding attempts may still write; no row or outcome is
-// invented for earlier transitions. This upgrade completes the chain and records the
-// schema.
+// invented for earlier transitions.
 func upgradeLedgerToSchemaFive(tx *bolt.Tx) error {
 	for _, name := range admissionOutboxBuckets {
 		if _, err := tx.CreateBucket([]byte(name)); err != nil {
@@ -62,10 +61,7 @@ func upgradeLedgerToSchemaFive(tx *bolt.Tx) error {
 	if err = putStorageState(tx, s); err != nil {
 		return err
 	}
-	if err = putFixedNotices(tx); err != nil {
-		return err
-	}
-	return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaVersion})
+	return putFixedNotices(tx)
 }
 
 // proveOutbox checks every outbox row against the storage record: each
