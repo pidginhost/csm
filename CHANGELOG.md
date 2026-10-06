@@ -11,7 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- Cron downloads detect quoted shells, grouped commands and common execution wrappers without joining unrelated lines or mistaking URL parameters and longer command names for shell commands. Updated rules keep fast scans and apply at the next scan; existing findings remain until dismissed, and no setting changes.
+- The cron downloader signature no longer slows scans on long crafted lines, and it no longer raises critical alerts on plugin pages that print a recommended wp-cron command, since it now needs a shell, eval or exec command after the download. Existing files are judged this way at their next scan, findings already raised stay until dismissed, and no setting is involved.
 - A file planted in a hosted site can no longer stall the deep phishing scan.
 - Scheduled phishing scans now report kits in dependency and source-control folders unless excluded; `auto_response.quarantine_files` can quarantine phishing pages found there.
 - Group-writable PHP checks now include dependency and cache folders and no longer raise false alerts on symbolic links.
