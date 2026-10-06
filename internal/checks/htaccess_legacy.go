@@ -2,10 +2,15 @@ package checks
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
 )
+
+// Rewrite flags end at a comma or closing bracket. Those delimiters belong
+// to Apache, not the PHP target; SetEnv values can contain either character.
+var reRewritePreludeTarget = regexp.MustCompile(`(?i)auto_(?:prepend|append)_file(?:[\t ]*=[\t ]*|[\t ]+)("[^"\r\n]*"|'[^'\r\n]*'|[^\s,\]]+)`)
 
 var htaccessSuspiciousPatterns = []string{
 	"auto_prepend_file",
@@ -67,7 +72,8 @@ func auditHtaccessLegacyContent(path string, content []byte, suspicious, safe []
 	var phpHandlerContexts []phpHandlerOverlay
 
 	nextLine := 0
-	for _, logical := range htaccessLogicalByteLines(content) {
+	logicalLines := htaccessLogicalByteLines(content)
+	for lineIndex, logical := range logicalLines {
 		lineNum := nextLine
 		end := logical.span.End
 		if end < len(content) {
@@ -115,20 +121,45 @@ func auditHtaccessLegacyContent(path string, content []byte, suspicious, safe []
 		// The prelude is judged wherever the line carries one: PHP-FPM also
 		// takes it from a PHP_VALUE environment variable, which SetEnv or a
 		// RewriteRule E= flag can set.
-		var preludeTarget string
-		var pluginPrelude bool
-		if m := reAutoPrependTarget.FindStringSubmatchIndex(trimmed); m != nil {
-			preludeTarget = trimmed[m[2]:m[3]]
+		fields := apacheDirectiveFields(trimmed)
+		preludeText := trimmed
+		preludePattern := reAutoPrependTarget
+		if len(fields) > 0 {
+			if strings.EqualFold(fields[0], "SetEnv") || strings.EqualFold(fields[0], "RewriteRule") {
+				// PHP parses the value after Apache removes its outer quotes
+				// and escapes, including escaped quotes around a PHP path.
+				if decoded, ok := parseApacheDirectiveFields(trimmed); ok {
+					preludeText = strings.Join(decoded, " ")
+				}
+			}
+			if strings.EqualFold(fields[0], "RewriteRule") {
+				preludePattern = reRewritePreludeTarget
+			}
+		}
+		preludes := preludePattern.FindAllStringSubmatchIndex(preludeText, -1)
+		var suspiciousPrelude, pluginPrelude bool
+		for _, m := range preludes {
+			target := preludeText[m[2]:m[3]]
+			if !autoPrependTargetSuspicious(target, path) {
+				continue
+			}
+			suspiciousPrelude = true
 			// Really Simple Security writes its prelude only as a php_value
 			// prepend, so only that form is kept out of cleaning.
-			prefix := strings.ToLower(strings.TrimSpace(trimmed[:m[0]]))
+			prefix := strings.ToLower(strings.TrimSpace(preludeText[:m[0]]))
 			pluginPrelude = (prefix == "" || prefix == "php_value" || prefix == "php_admin_value") &&
-				strings.HasPrefix(strings.ToLower(trimmed[m[0]:]), "auto_prepend_file") &&
-				preludeBase(strings.Trim(preludeTarget, `"'`)) == rssslPreludeName
+				strings.HasPrefix(strings.ToLower(preludeText[m[0]:]), "auto_prepend_file") &&
+				preludeBase(strings.Trim(target, `"'`)) == rssslPreludeName
+			// The retained php_value form has one executable target. Later
+			// text must not turn that plugin directive into a removable hit.
+			break
+		}
+		if len(preludes) > 0 && !suspiciousPrelude {
+			continue
 		}
 		// Other tokens inside a rewrite condition or rule are regex patterns
 		// in an attack-query blocklist, not code.
-		if fields := apacheDirectiveFields(trimmed); preludeTarget == "" && len(fields) > 0 &&
+		if len(preludes) == 0 && len(fields) > 0 &&
 			(strings.EqualFold(fields[0], "RewriteCond") || strings.EqualFold(fields[0], "RewriteRule")) {
 			continue
 		}
@@ -139,7 +170,7 @@ func auditHtaccessLegacyContent(path string, content []byte, suspicious, safe []
 				continue
 			}
 
-			if strings.Contains(patternLower, "auto_") && preludeTarget == "" {
+			if strings.Contains(patternLower, "auto_") && len(preludes) == 0 {
 				continue
 			}
 
@@ -147,11 +178,7 @@ func auditHtaccessLegacyContent(path string, content []byte, suspicious, safe []
 			// line-wide safe list below would let a target such as
 			// ".../uploads/fonts/x.ttf" or ".../litespeed/x.php" exempt itself
 			// with a word the attacker chose.
-			if preludeTarget != "" {
-				if !autoPrependTargetSuspicious(preludeTarget, path) {
-					continue
-				}
-			} else if patternLower == "addhandler" || patternLower == "sethandler" || patternLower == "addtype" {
+			if len(preludes) == 0 && (patternLower == "addhandler" || patternLower == "sethandler" || patternLower == "addtype") {
 				// Check per-line safe patterns
 				isSafe := false
 				for _, sp := range safe {
@@ -227,7 +254,22 @@ func auditHtaccessLegacyContent(path string, content []byte, suspicious, safe []
 				}
 			}
 
-			matches = append(matches, htaccessMatch{Range: logical.span, Retain: pluginPrelude})
+			span := logical.span
+			if len(fields) > 0 && strings.EqualFold(fields[0], "RewriteRule") {
+				// Orphaned conditions would apply to the next surviving rule,
+				// changing unrelated site routing after the malicious rule goes.
+				for previous := lineIndex - 1; previous >= 0; previous-- {
+					line := strings.TrimSpace(logicalLines[previous].text)
+					if line == "" || strings.HasPrefix(line, "#") {
+						continue
+					}
+					if htaccessDirectiveName(line) != "rewritecond" {
+						break
+					}
+					span.Start = logicalLines[previous].span.Start
+				}
+			}
+			matches = append(matches, htaccessMatch{Range: span, Retain: pluginPrelude})
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "htaccess_injection",
@@ -254,7 +296,8 @@ func auditHtaccessLegacyContent(path string, content []byte, suspicious, safe []
 				continue
 			}
 			lineLower := strings.ToLower(line)
-			if !strings.Contains(lineLower, "addhandler") {
+			fields := apacheDirectiveFields(line)
+			if len(fields) == 0 || !strings.EqualFold(fields[0], "AddHandler") {
 				continue
 			}
 			// Flag if it maps unusual extensions like .haxor, .cgix, etc.

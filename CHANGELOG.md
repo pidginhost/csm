@@ -17,6 +17,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - The malware scanning engine moves to YARA-X 1.21.0, catching previously missed threats and raising fewer false alarms.
 - Leftover mod_security 1.x directives that switch ModSecurity off in an `.htaccess` are high severity again and are removed by the automatic cleaner, because LiteSpeed obeys them. Existing files carrying them, Magento's stock block included, are reported at the next deep scan and cleaned there when `auto_response.clean_htaccess` is on, with a backup kept.
 - Scheduled and real-time `.htaccess` checks, the manual fix and the re-check now judge the same directives, so real-time detection catches handler remaps and encoded payloads and a reported directive can always be removed by hand, while harmless PHP prepend settings and defensive rewrite rules are no longer reported. Existing files are judged this way at their next scan; automatic cleaning under `auto_response.clean_htaccess` still covers only the per-pattern findings, and oversized files are left for manual inspection.
+- PHP preludes carried through environment settings are now checked by every target, without mistaking quoting or rewrite flags for part of a filename; inert handler text no longer triggers quarantine. This applies to new writes and the next scheduled scan, and manual cleaning removes a malicious rewrite's conditions with it; `auto_response.clean_htaccess` still leaves generic findings for manual action.
 
 ### Added
 

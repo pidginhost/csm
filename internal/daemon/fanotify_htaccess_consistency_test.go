@@ -14,6 +14,9 @@ func TestCheckHtaccessHarmlessPrependSettingsStayClean(t *testing.T) {
 		"php_value auto_prepend_file none\n",
 		"php_value auto_append_file /etc/csm-prelude.php\n",
 		"SetEnv NOTE auto_prepend_file\n",
+		"SetEnv PHP_VALUE \"auto_prepend_file=\\\"/etc/csm/prelude file.php\\\"\"\n",
+		"RewriteRule .* - [E=%1:auto_prepend_file=none]\n",
+		"RewriteRule .* - [E=PHP_VALUE:auto_append_file=/etc/csm-prelude.php,L]\n",
 	} {
 		t.Run(body, func(t *testing.T) { expectNoHtaccessAlert(t, body) })
 	}
@@ -48,6 +51,7 @@ func TestCheckHtaccessPreludeThroughEnvironmentAlerts(t *testing.T) {
 		"RewriteRule .* - [E=PHP_VALUE:auto_prepend_file=/tmp/x.php]\n",
 		"RewriteCond %{HTTP:X-N} (.+)\nRewriteRule .* - [E=%1:auto_prepend_file=/tmp/x.php]\n",
 		"SetEnv NOTE 'auto_prepend_file /tmp/example.php'\n",
+		"RewriteRule .* - [E=NOTE:auto_prepend_file='/etc/csm-prelude.php',E=%1:auto_append_file=/tmp/x.php]\n",
 	} {
 		t.Run(body, func(t *testing.T) { expectHtaccessAlert(t, body, "htaccess_injection_realtime") })
 	}
