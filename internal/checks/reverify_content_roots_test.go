@@ -136,7 +136,7 @@ func TestVerifyHtaccessCleanUsesAccountRootsWhenNoOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res := verifyHtaccessClean(cleaned)
+	res := verifyHtaccessClean(cleaned, AuditHtaccessContent)
 	if !res.Checked {
 		t.Fatalf("a .htaccess under an account root must be re-checkable: %+v", res)
 	}
@@ -166,7 +166,7 @@ func TestNonQuarantineVerifiersRejectQuarantineOnlyRoots(t *testing.T) {
 			return verifyWriteBit(target, 0002, "world-writable")
 		}},
 		{name: "htaccess", verify: func() VerifyResult {
-			return verifyHtaccessClean(target)
+			return verifyHtaccessClean(target, AuditHtaccessContent)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -3,7 +3,6 @@ package checks
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -48,12 +47,8 @@ type htaccessByteRange struct {
 type htaccessMatch struct {
 	Range   htaccessByteRange
 	Excerpt string // the offending line(s), trimmed for the finding details
-	// Severity overrides the detector's default for this match. Nil keeps the
-	// default. Used where one detector covers directives of differing effect.
-	Severity *alert.Severity
-	// Retain keeps the match out of the cleaner's removal set. A match that is
-	// reported for visibility but has no effect on the server must not cause an
-	// edit to a customer's file.
+	// Retain keeps the match out of the cleaner's removal set: the line is
+	// reported for review, but removing it automatically could break the site.
 	Retain bool
 }
 
@@ -716,48 +711,28 @@ func modSecurityDirectiveDisablesWAF(name, value string) bool {
 // .htaccess never legitimately weakens those controls; attackers do it to mask
 // an intrusion. Punctuation is removed from directive names so known
 // obfuscated spellings are classified without matching unrelated settings such
-// as SecAuditEngine or SecStatusEngine.
+// as SecAuditEngine or SecStatusEngine. The mod_security 1.x spellings
+// (SecFilterEngine, SecFilterScanPOST) are live too: LiteSpeed accepts them
+// inside <IfModule mod_security.c> and by default lets .htaccess switch its WAF
+// off with them, which is how Magento's stock block disables it.
 func detectSecurityDisabled(content []byte, _ string) []htaccessMatch {
 	var out []htaccessMatch
-	warning := alert.Warning
 	for _, logical := range htaccessLogicalByteLines(content) {
 		fields := apacheDirectiveFields(strings.TrimSpace(logical.text))
 		if len(fields) < 2 || !modSecurityDirectiveDisablesWAF(fields[0], fields[1]) {
 			continue
 		}
-		match := htaccessMatch{
+		out = append(out, htaccessMatch{
 			Range:   logical.span,
 			Excerpt: trimExcerpt(content, logical.span.Start, logical.span.End),
-		}
-		if legacyModSecurityDirective(fields[0]) {
-			match.Severity = &warning
-			match.Retain = true
-		}
-		out = append(out, match)
+		})
 	}
 	return out
 }
 
-// legacyModSecurityDirective reports whether a directive belongs to
-// mod_security 1.x, which no supported server reads. Apache runs
-// mod_security2 or mod_security3, LiteSpeed reads its own equivalent, and
-// Nginx has neither, so these lines change nothing wherever CSM runs. They are
-// still worth surfacing -- an intruder who pastes one is announcing an attempt
-// -- but they did not disable anything, and stripping them from a legacy shop
-// or Magento .htaccess edits a customer file to no effect.
-func legacyModSecurityDirective(name string) bool {
-	switch normalizeModSecurityDirective(name) {
-	case "secfilterengine", "secfilterscanpost", "secscanpost":
-		return true
-	}
-	return false
-}
-
-// AuditHtaccessFile runs every registered detector against the file
-// at path. Returns the alert findings (one per detector hit) and
-// the merged byte ranges that the cleaner would remove. The two
-// outputs travel together so cleaning never disagrees with what
-// the operator was alerted about.
+// AuditHtaccessFile runs AuditHtaccessContent against the file at path:
+// every finding, and the merged byte ranges a generic finding's manual fix
+// removes.
 func AuditHtaccessFile(path string) ([]alert.Finding, []htaccessByteRange) {
 	findings, ranges, _ := auditHtaccessFile(path)
 	return findings, ranges
@@ -785,18 +760,41 @@ func auditHtaccessFile(path string) ([]alert.Finding, []htaccessByteRange, bool)
 	return findings, ranges, true
 }
 
+// AuditHtaccessContent judges content with the generic scanner and every
+// per-pattern detector: what realtime reports and what a generic finding's
+// manual fix removes.
 func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htaccessByteRange) {
+	legacy, matches := auditHtaccessLegacyContent(path, content, htaccessSuspiciousPatterns, htaccessSafePatterns)
 	var findings []alert.Finding
 	var ranges []htaccessByteRange
+	for i, finding := range legacy {
+		// The specific prelude detector reports retained matches. Do not add a
+		// generic finding that would advertise automatic removal for them.
+		// Handler abuse arrives with the per-pattern set below.
+		if !matches[i].Retain && finding.Check != "htaccess_handler_abuse" {
+			findings = append(findings, finding)
+			ranges = append(ranges, matches[i].Range)
+		}
+	}
+	patternFindings, patternRanges := auditHtaccessPatterns(path, content)
+	return append(findings, patternFindings...), mergeRanges(append(ranges, patternRanges...))
+}
+
+// auditHtaccessPatterns runs the per-pattern detectors plus handler abuse.
+// Automatic cleaning and their manual fix act on this set: the rest of the
+// generic scanner also flags directives a site may rely on, such as a PHP
+// handler for .html pages.
+func auditHtaccessPatterns(path string, content []byte) ([]alert.Finding, []htaccessByteRange) {
+	findings, abuse := htaccessHandlerAbuse(path, content)
+	var ranges []htaccessByteRange
+	for _, m := range abuse {
+		ranges = append(ranges, m.Range)
+	}
 	for _, d := range htaccessDetectors {
 		matches := d.Detect(content, path)
 		for _, m := range matches {
-			severity := d.Severity
-			if m.Severity != nil {
-				severity = *m.Severity
-			}
 			findings = append(findings, alert.Finding{
-				Severity:  severity,
+				Severity:  d.Severity,
 				Check:     d.Name,
 				Message:   fmt.Sprintf("%s in %s", d.Name, path),
 				Details:   fmt.Sprintf("File: %s\nMatch: %s", path, m.Excerpt),
@@ -850,14 +848,18 @@ func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result Reme
 	}
 
 	audit.rec.Result = actionlog.Failed
-	original, err := io.ReadAll(target.File)
+	original, ok, err := readHtaccessFileBounded(target.File)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot read: %v", err)}
+	}
+	if !ok {
+		audit.rec.Result = actionlog.Refused
+		return RemediationResult{Refused: true, Error: ".htaccess too large to clean automatically"}
 	}
 
 	audit.capture(target, original)
 	audit.rec.Result = actionlog.Refused
-	_, ranges := AuditHtaccessContent(resolved, original)
+	_, ranges := auditHtaccessPatterns(resolved, original)
 	if len(ranges) == 0 {
 		return RemediationResult{Refused: true, Error: "no malicious directives found to remove"}
 	}

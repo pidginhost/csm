@@ -1,22 +1,37 @@
 package checks
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
-// SecFilterEngine / SecFilterScanPOST are mod_security 1.x directives. No
-// supported server still reads them: on Apache with mod_security2, LiteSpeed,
-// or Nginx they are inert text. Reporting them as "security disabled" at High
-// put legacy shop and Magento .htaccess files from a decade ago on par with an
-// attacker switching the WAF off, and -- worse -- the cleaner then edited those
-// customer files to strip a line that does nothing.
-//
-// They stay visible as a Warning, because an attacker who plants one is telling
-// on themselves, but they no longer claim the WAF was turned off and they are
-// no longer removed from a customer's file.
+// SecFilterEngine / SecFilterScanPOST are mod_security 1.x spellings, but they
+// are not inert everywhere. LiteSpeed treats <IfModule mod_security.c> as
+// present, its WAF accepts the 1.x syntax, and by default it lets .htaccess turn
+// the engine off. LiteSpeed documents that Magento 2's stock block below
+// disables ModSecurity for the site. They are therefore a WAF disable like
+// SecRuleEngine Off: reported at High and removed by the cleaner, so a finding
+// never pairs with a cleaner that refuses to act on it.
+
+const magentoStockSecFilterBlock = "############################################\n" +
+	"## disable POST processing to not break multiple image upload\n" +
+	"\n" +
+	"    <IfModule mod_security.c>\n" +
+	"        SecFilterEngine Off\n" +
+	"        SecFilterScanPOST Off\n" +
+	"    </IfModule>\n"
+
+const magentoStockSecFilterCleaned = "############################################\n" +
+	"## disable POST processing to not break multiple image upload\n" +
+	"\n" +
+	"    <IfModule mod_security.c>\n" +
+	"    </IfModule>\n"
 
 func severityOf(t *testing.T, findings []alert.Finding, check string) alert.Severity {
 	t.Helper()
@@ -29,19 +44,71 @@ func severityOf(t *testing.T, findings []alert.Finding, check string) alert.Seve
 	return alert.Warning
 }
 
-func TestLegacySecFilterIsWarningAndNotCleaned(t *testing.T) {
+func TestLegacySecFilterIsHighAndCleaned(t *testing.T) {
 	dir := t.TempDir()
-	path := writeHtaccess(t, dir, "site", "<IfModule mod_security.c>\nSecFilterEngine Off\nSecFilterScanPOST Off\n</IfModule>\n")
+	path := writeHtaccess(t, dir, "site", magentoStockSecFilterBlock)
 	findings, ranges := AuditHtaccessFile(path)
 
 	if got := countByCheck(findings, "htaccess_security_disabled"); got != 2 {
-		t.Fatalf("legacy directives should still be reported, got %d findings, want 2", got)
+		t.Fatalf("legacy directives reported = %d, want 2", got)
 	}
-	if sev := severityOf(t, findings, "htaccess_security_disabled"); sev != alert.Warning {
-		t.Errorf("legacy mod_security 1.x directive severity = %v, want Warning", sev)
+	for _, f := range findings {
+		if f.Check == "htaccess_security_disabled" && f.Severity != alert.High {
+			t.Errorf("legacy directive severity = %v, want High: %s", f.Severity, f.Details)
+		}
 	}
-	if len(ranges) != 0 {
-		t.Errorf("cleaner would edit a customer file to remove inert directives: %d ranges", len(ranges))
+	if got := string(applyRangeRemoval([]byte(magentoStockSecFilterBlock), ranges)); got != magentoStockSecFilterCleaned {
+		t.Errorf("cleaned content = %q, want %q", got, magentoStockSecFilterCleaned)
+	}
+}
+
+// The deep scan raises the finding, then auto-response hands it to the
+// cleaner. Both entry points must remove the directives, and the re-check must
+// then see the file as resolved; a refusal here is what left the finding open
+// and re-dispatched on every cycle.
+func TestLegacySecFilterFindingIsCleanedByFixAndAutoResponse(t *testing.T) {
+	withSimulatedProcessSignal(t)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRoots := fixHtaccessAllowedRoots
+	oldBackupRoot := htaccessBackupDirRoot
+	fixHtaccessAllowedRoots = []string{root}
+	htaccessBackupDirRoot = t.TempDir()
+	t.Cleanup(func() {
+		fixHtaccessAllowedRoots = oldRoots
+		htaccessBackupDirRoot = oldBackupRoot
+	})
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.CleanHtaccess = true
+	path := writeHtaccess(t, root, "site", magentoStockSecFilterBlock)
+
+	result := ApplyFix(context.Background(), "htaccess_security_disabled", "", "", path)
+	if !result.Success {
+		t.Fatalf("ApplyFix = %+v, want success", result)
+	}
+	if got, err := os.ReadFile(path); err != nil {
+		t.Fatal(err)
+	} else if string(got) != magentoStockSecFilterCleaned {
+		t.Fatalf("ApplyFix content = %q, want %q", got, magentoStockSecFilterCleaned)
+	}
+
+	if err := os.WriteFile(path, []byte(magentoStockSecFilterBlock), 0644); err != nil {
+		t.Fatal(err)
+	}
+	actions := AutoCleanHtaccess(cfg, []alert.Finding{{Check: "htaccess_security_disabled", FilePath: path}})
+	if len(actions) != 1 || !strings.HasPrefix(actions[0].Message, "AUTO-CLEAN: ") {
+		t.Fatalf("AutoCleanHtaccess actions = %+v, want one AUTO-CLEAN", actions)
+	}
+	if got, err := os.ReadFile(path); err != nil {
+		t.Fatal(err)
+	} else if string(got) != magentoStockSecFilterCleaned {
+		t.Fatalf("AutoCleanHtaccess content = %q, want %q", got, magentoStockSecFilterCleaned)
+	}
+	if verified := VerifyFinding("htaccess_security_disabled", "", "", path); !verified.Checked || !verified.Resolved {
+		t.Fatalf("VerifyFinding after cleaning = %+v, want resolved", verified)
 	}
 }
 
@@ -58,29 +125,23 @@ func TestModSecurity2DisablerStaysHighAndIsCleaned(t *testing.T) {
 	}
 }
 
-// A file carrying both must not have the live disabler masked by the legacy one.
-func TestMixedLegacyAndLiveDisablerCleansOnlyTheLiveOne(t *testing.T) {
+// A file carrying both spellings loses both lines and reports both at High.
+func TestMixedLegacyAndModernDisablersAreBothCleaned(t *testing.T) {
 	dir := t.TempDir()
-	path := writeHtaccess(t, dir, "site", "SecFilterEngine Off\nSecRuleEngine Off\n")
+	body := "keep\nSecFilterEngine Off\nmiddle\nSecRuleEngine Off\nend\n"
+	path := writeHtaccess(t, dir, "site", body)
 	findings, ranges := AuditHtaccessFile(path)
 
 	if got := countByCheck(findings, "htaccess_security_disabled"); got != 2 {
 		t.Fatalf("both directives should be reported, got %d", got)
 	}
-	var sawHigh bool
 	for _, f := range findings {
-		if f.Check == "htaccess_security_disabled" && f.Severity == alert.High {
-			sawHigh = true
-			if !strings.Contains(f.Details, "SecRuleEngine") {
-				t.Errorf("High finding should be the live disabler, details: %s", f.Details)
-			}
+		if f.Check == "htaccess_security_disabled" && f.Severity != alert.High {
+			t.Errorf("severity = %v, want High: %s", f.Severity, f.Details)
 		}
 	}
-	if !sawHigh {
-		t.Error("live WAF disabler lost its High severity when a legacy directive was present")
-	}
-	if len(ranges) != 1 {
-		t.Errorf("cleaner ranges = %d, want 1 (only the live disabler)", len(ranges))
+	if got := string(applyRangeRemoval([]byte(body), ranges)); got != "keep\nmiddle\nend\n" {
+		t.Errorf("cleaned content = %q, want %q", got, "keep\nmiddle\nend\n")
 	}
 }
 

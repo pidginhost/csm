@@ -191,11 +191,26 @@ func TestAutoFileResponseCleanerSafetyRefusalsDoNotTripBreaker(t *testing.T) {
 				fixHtaccessAllowedRoots, htaccessBackupDirRoot = []string{homes}, filepath.Join(quarantineDir, "pre_clean")
 				t.Cleanup(func() { fixHtaccessAllowedRoots, htaccessBackupDirRoot = oldRoots, oldBackup })
 			}
-			if kind == "clean htaccess" {
-				body = []byte("# ordinary configuration\n")
-			}
 			f := responseFile(t, homes, "alice", name, body)
 			want := body
+			if kind == "clean htaccess" {
+				// The directive disappears after admission. The admitted attempt
+				// is charged as a refusal, while already-clean files never enter.
+				want = []byte("# ordinary configuration\n")
+				oldWrite := writeFileResponseState
+				cleared := false
+				writeFileResponseState = func(path string, mode os.FileMode, value any) error {
+					if err := oldWrite(path, mode, value); err != nil {
+						return err
+					}
+					if cleared {
+						return nil
+					}
+					cleared = true
+					return os.WriteFile(f.FilePath, want, 0600)
+				}
+				t.Cleanup(func() { writeFileResponseState = oldWrite })
+			}
 			if kind == "oversized PHP" {
 				oldMax := cleanMaxFileSize
 				cleanMaxFileSize = 1

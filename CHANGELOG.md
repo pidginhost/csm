@@ -15,6 +15,9 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Scheduled phishing scans now report kits in dependency and source-control folders unless excluded; `auto_response.quarantine_files` can quarantine phishing pages found there.
 - Group-writable PHP checks now include dependency and cache folders and no longer raise false alerts on symbolic links.
 - The malware scanning engine moves to YARA-X 1.21.0, catching previously missed threats and raising fewer false alarms.
+- Leftover mod_security 1.x directives that switch ModSecurity off in an `.htaccess` are high severity again and are removed by the automatic cleaner, because LiteSpeed obeys them. Existing files carrying them, Magento's stock block included, are reported at the next deep scan and cleaned there when `auto_response.clean_htaccess` is on, with a backup kept.
+- Scheduled and real-time `.htaccess` checks, the manual fix and the re-check now judge the same directives, so real-time detection catches handler remaps, encoded payloads and every PHP prelude set through an environment variable, and a reported directive can always be removed by hand together with its rewrite conditions; harmless prelude settings, defensive rewrite rules and inert handler text are no longer reported. Existing files are judged this way at their next scan; automatic cleaning under `auto_response.clean_htaccess` covers the per-pattern findings and malicious handler mappings, and oversized files are left for manual inspection.
+- Malicious handler mappings in an `.htaccess` are now judged by their whole extension arguments, and an option that disables CGI no longer hides a PHP or custom handler mapping. Existing files are judged this way at their next deep scan.
 
 ### Added
 
@@ -24,6 +27,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - The email forward guard now holds matching mail instead of leaving it stuck in the queue.
 - Directory-based phishing alerts now respect excluded pages and raise fewer false alarms.
+- A malicious handler mapping in an `.htaccess` is now removed by the automatic cleaner at deep scans instead of the whole file going to quarantine, which also took the site's other rules with it, and a finding with nothing to remove, such as a retained security-plugin prelude, no longer spends automatic response capacity. Hosts that relied on `auto_response.quarantine_files` for this finding need `auto_response.clean_htaccess` on to keep an automatic response; existing findings are handled at the next deep scan, not by realtime detection.
 
 ## [4.2.0] - 2026-10-04
 

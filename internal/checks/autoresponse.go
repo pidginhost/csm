@@ -24,7 +24,7 @@ var quarantineDir = "/opt/csm/quarantine"
 
 // autoQuarantineChecks are the findings the scheduled auto-responder may
 // quarantine on its own: the manual move set plus the kill-and-quarantine
-// and handler-abuse families, and the realtime signature match, which must
+// family, and the realtime signature match, which must
 // additionally pass isHighConfidenceRealtimeMatch. Membership is pinned by
 // test against the check registry.
 var autoQuarantineChecks = map[string]bool{
@@ -38,7 +38,6 @@ var autoQuarantineChecks = map[string]bool{
 	"new_php_in_upgrade":       true,
 	"phishing_page":            true,
 	"phishing_directory":       true,
-	"htaccess_handler_abuse":   true,
 	"signature_match_realtime": true,
 }
 
@@ -748,7 +747,7 @@ func AutoCleanHtaccess(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	}
 
 	var actions []alert.Finding
-	seen := make(map[string]struct{})
+	seen := make(map[string]bool)
 	for i, f := range findings {
 		if f.AutoFileResponseEvaluated || !isHtaccessHardenedFinding(f.Check) {
 			continue
@@ -760,20 +759,32 @@ func AutoCleanHtaccess(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		if path == "" {
 			continue
 		}
-		findings[i].AutoFileResponseEvaluated = true
 		// One Clean per file per autoresponse pass: multiple
 		// detector findings on the same file converge on a single
 		// cleaning call (CleanHtaccessFile re-runs every detector).
 		key := filepath.Clean(path)
-		if _, ok := seen[key]; ok {
+		if removable, ok := seen[key]; ok {
+			findings[i].AutoFileResponseEvaluated = removable
 			continue
 		}
-		seen[key] = struct{}{}
+		seen[key] = false
 
 		info, err := osFS.Lstat(path)
 		if err != nil || info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
+		// Retained preludes and stale findings have no removal spans. They
+		// must not spend response capacity on a permanent cleaner refusal.
+		content, ok, err := readHtaccessBounded(path)
+		if err != nil || !ok {
+			continue
+		}
+		_, ranges := auditHtaccessPatterns(path, content)
+		if len(ranges) == 0 {
+			continue
+		}
+		seen[key] = true
+		findings[i].AutoFileResponseEvaluated = true
 		paused := runAutoFileResponse(cfg, path, info, func() error {
 			result := cleanHtaccessFileIdentified(path, info)
 			if result.Success {
@@ -806,6 +817,9 @@ func AutoCleanHtaccess(cfg *config.Config, findings []alert.Finding) []alert.Fin
 }
 
 func isHtaccessHardenedFinding(check string) bool {
+	if check == "htaccess_handler_abuse" {
+		return true
+	}
 	for _, detector := range htaccessDetectors {
 		if check == detector.Name {
 			return true

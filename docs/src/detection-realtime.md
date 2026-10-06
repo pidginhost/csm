@@ -116,7 +116,7 @@ opening delimiter is outside the window.
 - PHP in uploads, languages, upgrade directories
 - PHP in `.ssh`, `.cpanel`, mail directories (critical escalation)
 - Executable drops in `.config`
-- `.htaccess` injection and tampering (auto_prepend, eval/base64 handlers, CGI execution remaps, and ModSecurity disablement)
+- `.htaccess` injection and tampering (auto_prepend, eval/base64 handlers, CGI execution remaps, and ModSecurity disablement). Handler abuse keeps its own finding name. These findings never quarantine the file; automatic cleaning waits for a deep scan and requires `auto_response.clean_htaccess`.
 - `.user.ini` tampering and `php.ini` tampering under configured or detected web roots
 - Obfuscated PHP (encoded, packed, concatenated)
 - Fragmented base64 evasion (`$a="base"; $b="64_decode"` -- function name split across variables)
