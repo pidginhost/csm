@@ -154,3 +154,41 @@ func TestHtaccessOversizedResponsesPreserveFile(t *testing.T) {
 		t.Errorf("cleaning actions = %d, want the three manual refusals only", cleans)
 	}
 }
+
+// A per-pattern finding hands the file to the cleaner, which must remove only
+// the per-pattern directives. A generic finding in the same file keeps its
+// manual fix, and each re-check follows the action that answers it.
+func TestHtaccessAutoCleanLeavesGenericFindingsAlone(t *testing.T) {
+	withSimulatedProcessSignal(t)
+	root := t.TempDir()
+	oldRoots, oldBackup := fixHtaccessAllowedRoots, htaccessBackupDirRoot
+	fixHtaccessAllowedRoots, htaccessBackupDirRoot = []string{root}, t.TempDir()
+	t.Cleanup(func() { fixHtaccessAllowedRoots, htaccessBackupDirRoot = oldRoots, oldBackup })
+	const generic = "keep\nAddHandler application/x-httpd-php .html\n"
+	path := writeHtaccess(t, root, "public_html", generic+"SecRuleEngine Off\n")
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.AutoResponse.Enabled, cfg.AutoResponse.CleanHtaccess = true, true
+
+	actions := AutoCleanHtaccess(cfg, []alert.Finding{{Check: "htaccess_security_disabled", FilePath: path}})
+	if len(actions) != 1 || !strings.HasPrefix(actions[0].Message, "AUTO-CLEAN: ") {
+		t.Fatalf("automatic actions = %+v", actions)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != generic {
+		t.Fatalf("content = %q, error = %v, want %q", got, err, generic)
+	}
+	if v := VerifyFinding("htaccess_security_disabled", "", "", path); !v.Checked || !v.Resolved {
+		t.Errorf("per-pattern re-check after cleaning = %+v, want resolved", v)
+	}
+	if v := VerifyFinding("htaccess_injection", "", "", path); !v.Checked || v.Resolved {
+		t.Errorf("generic re-check before its fix = %+v, want unresolved", v)
+	}
+	if result := ApplyFix(context.Background(), "htaccess_injection", "", "", path); !result.Success {
+		t.Fatalf("manual generic fix = %+v", result)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "keep\n" {
+		t.Fatalf("content after generic fix = %q, error = %v", got, err)
+	}
+	if v := VerifyFinding("htaccess_injection", "", "", path); !v.Checked || !v.Resolved {
+		t.Errorf("generic re-check after its fix = %+v, want resolved", v)
+	}
+}

@@ -730,11 +730,9 @@ func detectSecurityDisabled(content []byte, _ string) []htaccessMatch {
 	return out
 }
 
-// AuditHtaccessFile runs every registered detector against the file
-// at path. Returns the alert findings (one per detector hit) and
-// the merged byte ranges that the cleaner would remove. The two
-// outputs travel together so cleaning never disagrees with what
-// the operator was alerted about.
+// AuditHtaccessFile runs AuditHtaccessContent against the file at path:
+// every finding, and the merged byte ranges a generic finding's manual fix
+// removes.
 func AuditHtaccessFile(path string) ([]alert.Finding, []htaccessByteRange) {
 	findings, ranges, _ := auditHtaccessFile(path)
 	return findings, ranges
@@ -762,6 +760,9 @@ func auditHtaccessFile(path string) ([]alert.Finding, []htaccessByteRange, bool)
 	return findings, ranges, true
 }
 
+// AuditHtaccessContent judges content with the generic scanner and every
+// per-pattern detector: what realtime reports and what a generic finding's
+// manual fix removes.
 func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htaccessByteRange) {
 	legacy, matches := auditHtaccessLegacyContent(path, content, htaccessSuspiciousPatterns, htaccessSafePatterns)
 	var findings []alert.Finding
@@ -774,6 +775,16 @@ func AuditHtaccessContent(path string, content []byte) ([]alert.Finding, []htacc
 			ranges = append(ranges, matches[i].Range)
 		}
 	}
+	patternFindings, patternRanges := auditHtaccessPatterns(path, content)
+	return append(findings, patternFindings...), mergeRanges(append(ranges, patternRanges...))
+}
+
+// auditHtaccessPatterns runs only the per-pattern detectors. Automatic cleaning
+// and their manual fix act on this set: the generic scanner also flags
+// directives a site may rely on, such as a PHP handler for .html pages.
+func auditHtaccessPatterns(path string, content []byte) ([]alert.Finding, []htaccessByteRange) {
+	var findings []alert.Finding
+	var ranges []htaccessByteRange
 	for _, d := range htaccessDetectors {
 		matches := d.Detect(content, path)
 		for _, m := range matches {
@@ -843,7 +854,7 @@ func cleanHtaccessFileIdentified(path string, expected os.FileInfo) (result Reme
 
 	audit.capture(target, original)
 	audit.rec.Result = actionlog.Refused
-	_, ranges := AuditHtaccessContent(resolved, original)
+	_, ranges := auditHtaccessPatterns(resolved, original)
 	if len(ranges) == 0 {
 		return RemediationResult{Refused: true, Error: "no malicious directives found to remove"}
 	}

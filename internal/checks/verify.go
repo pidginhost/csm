@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"unicode"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/jstaint"
 	"github.com/pidginhost/csm/internal/phptaint"
@@ -71,12 +72,13 @@ var presenceVerifiableChecks = []string{
 	"credential_log_realtime",
 }
 
+// htaccessGenericChecks come from the generic scanner. They re-audit with it
+// and every per-pattern detector, since their manual fix removes both sets.
+var htaccessGenericChecks = []string{"htaccess_injection", "htaccess_injection_realtime", "htaccess_handler_abuse"}
+
 // htaccessVerifiableChecks re-audit the .htaccess and resolve when no malicious
 // directive remains (or the file is gone).
-var htaccessVerifiableChecks = append(
-	[]string{"htaccess_injection", "htaccess_injection_realtime", "htaccess_handler_abuse"},
-	htaccessDetectorNames()...,
-)
+var htaccessVerifiableChecks = append(append([]string(nil), htaccessGenericChecks...), htaccessDetectorNames()...)
 
 // findingVerifiers maps a finding's Check to a read-only re-check. A check not
 // present here has no automated re-check -- either an event finding (a brute
@@ -107,8 +109,10 @@ func buildFindingVerifiers() map[string]func(VerifyInput) VerifyResult {
 	},
 		presenceVerifiableChecks...)
 	register(reverifyContentFinding, contentReverifiableChecks...)
-	register(func(in VerifyInput) VerifyResult { return verifyHtaccessClean(in.Path) },
-		htaccessVerifiableChecks...)
+	register(func(in VerifyInput) VerifyResult { return verifyHtaccessClean(in.Path, AuditHtaccessContent) },
+		htaccessGenericChecks...)
+	register(func(in VerifyInput) VerifyResult { return verifyHtaccessClean(in.Path, auditHtaccessPatterns) },
+		htaccessDetectorNames()...)
 	register(func(in VerifyInput) VerifyResult { return verifyEximSpoolAbsent(in.Message) },
 		"email_phishing_content")
 	register(func(in VerifyInput) VerifyResult { return verifyCrontabClear(in.Path) },
@@ -561,7 +565,7 @@ func verifyPathAbsent(path string, roots []string) VerifyResult {
 	return VerifyResult{Checked: true, Resolved: false, Detail: fmt.Sprintf("file is still present: %s", clean)}
 }
 
-func verifyHtaccessClean(path string) VerifyResult {
+func verifyHtaccessClean(path string, audit func(string, []byte) ([]alert.Finding, []htaccessByteRange)) VerifyResult {
 	if path == "" {
 		return VerifyResult{Checked: false, Detail: "could not extract file path from finding"}
 	}
@@ -585,7 +589,7 @@ func verifyHtaccessClean(path string) VerifyResult {
 	if err != nil {
 		return VerifyResult{Checked: false, Detail: fmt.Sprintf("cannot read .htaccess: %v", err)}
 	}
-	findings, _ := AuditHtaccessContent(clean, snap.data)
+	findings, _ := audit(clean, snap.data)
 	if len(findings) == 0 {
 		return VerifyResult{Checked: true, Resolved: true, Detail: "no malicious directives remain in .htaccess"}
 	}
