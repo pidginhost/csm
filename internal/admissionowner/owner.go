@@ -110,6 +110,10 @@ type Owner struct {
 	// retains its cause independently of later snapshot or reload errors.
 	drainFailed bool
 	drainErr    error
+	// damageErr is the latest damage a drain isolated. It does not close
+	// admission; a damaged record stays damaged, so the cause is kept for
+	// the owner's life.
+	damageErr error
 }
 
 // Start opens the ledger and runs the startup sequence before it returns,
@@ -493,7 +497,12 @@ func (o *Owner) drainHeld() (err error) {
 			o.ingress.Release(items)
 			return err
 		}
-		if _, err := drainGroupOf(o.ingress, o.ledger, items); err != nil {
+		if _, err := drainGroupOf(o.ingress, o.ledger, items); errors.Is(err, admission.ErrArrivalsIsolated) {
+			// The rest of the group committed and admission stayed open;
+			// stopping it would announce a stop per damaged arrival.
+			o.damageErr = fmt.Errorf("draining the ingress: %w", err)
+			o.refreshStatus()
+		} else if err != nil {
 			return err
 		}
 		// The group's own snapshot reopened admission.
@@ -542,6 +551,9 @@ func (o *Owner) refreshStatus() {
 	}
 	if o.inventoryErr != nil {
 		s.Owner.InventoryError = o.inventoryErr.Error()
+	}
+	if o.damageErr != nil {
+		s.Owner.DamageError = o.damageErr.Error()
 	}
 	if o.ledger != nil {
 		ls := o.ledger.Status()

@@ -251,6 +251,10 @@ clean stop drains all held work and checkpoints final decisions before
 closing the generation. A failed drain, including its clock or publication
 step, closes admission until a drain succeeds. Its cause survives tick,
 inventory and reload recovery, so a lasting failure is one stop with its cause.
+A drain whose only failure is a damaged ledger record is not a failed drain:
+the arrivals naming that record are discarded and counted lost, the rest
+commits, admission stays open, and status and `csm doctor` keep the damage
+cause until the daemon restarts.
 Failed ceiling reloads stay pending until a tick applies and revalidates
 them; inventory refreshes cannot reopen admission in the meantime.
 Nothing submits to it yet. One owner serializes every write, and each call

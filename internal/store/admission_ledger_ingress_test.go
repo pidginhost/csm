@@ -262,6 +262,11 @@ func TestIngressDrainIsolatesADamagedArrival(t *testing.T) {
 	if !isCorrupt(err) || report != (admission.DrainReport{Queued: 1, Failed: 1}) || in.Len() != 0 {
 		t.Fatalf("drain = %+v, %v; %d held", report, err, in.Len())
 	}
+	// Only the damaged arrival failed: the rest committed, so admission
+	// stays open and the error says the damage was isolated.
+	if !errors.Is(err, admission.ErrArrivalsIsolated) || !in.Health().Admitting {
+		t.Fatalf("isolated damage: %v, admitting %v", err, in.Health().Admitting)
+	}
 }
 
 // Damage that every transaction meets belongs to no arrival: the drain

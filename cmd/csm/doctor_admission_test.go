@@ -81,6 +81,9 @@ func TestDoctorRendersAdmissionOwnerRows(t *testing.T) {
 	if _, ok := doctorCheckNamed(report, "admission inventory"); ok {
 		t.Error("a healthy inventory printed a row")
 	}
+	if _, ok := doctorCheckNamed(report, "admission ledger damage"); ok {
+		t.Error("an undamaged ledger printed a damage row")
+	}
 	healthy.Owner.Import = &health.AdmissionImport{}
 	if c, _ := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(healthy)), "admission legacy import"); c.Status != "ok" || !strings.Contains(c.Message, "no blocks") {
 		t.Errorf("an empty import = %+v", c)
@@ -104,6 +107,8 @@ func TestDoctorRendersAdmissionOwnerRows(t *testing.T) {
 			Owner: &health.AdmissionOwner{Import: &health.AdmissionImport{Error: "reading blocked_ips.json: unexpected EOF"}}}},
 		{"inventory", "admission inventory", "warn", "registry unreadable", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(2000), Ingress: &admission.IngressHealth{Admitting: true},
 			Owner: &health.AdmissionOwner{InventoryError: "registry unreadable"}}},
+		{"ledger damage", "admission ledger damage", "fail", "admission record is corrupt", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(2000), Ingress: &admission.IngressHealth{Admitting: true},
+			Owner: &health.AdmissionOwner{DamageError: "draining the ingress: damaged arrivals were isolated: admission record is corrupt"}}},
 	} {
 		report := doctorReportForSnapshot(t, admissionSnapshot(tc.view))
 		got, ok := doctorCheckNamed(report, tc.row)

@@ -416,7 +416,9 @@ type DrainReport struct{ Queued, Coalesced, Refused, Failed int }
 
 // Drain checkpoints ingress decisions even with no held items. Transient
 // errors release work; only damaged arrivals are isolated and counted lost.
-// One owner serializes Drain with every other mutating ledger operation.
+// When that damage is the only failure, admission stays open and the error
+// is ErrArrivalsIsolated with the damage. One owner serializes Drain with
+// every other mutating ledger operation.
 func (in *Ingress) Drain(l Ledger, limit int, request func(Submission) (CandidateRequest, error)) (DrainReport, error) {
 	items := in.Take(min(limit, MaxArrivalGroup))
 	return in.DrainTaken(l, items, request)
@@ -448,7 +450,7 @@ func (in *Ingress) DrainTaken(l Ledger, items []IngressItem, request func(Submis
 		return report, err
 	}
 	done := items
-	var first error
+	var first, damage error
 	if err != nil {
 		// Damage an empty group also meets is shared, not an arrival's:
 		// every item goes back and none is counted lost.
@@ -465,14 +467,12 @@ func (in *Ingress) DrainTaken(l Ledger, items []IngressItem, request func(Submis
 			case errors.Is(oneErr, ErrCorruptRecord):
 				in.discard(items[i])
 				report.Failed++
-				if first == nil {
-					first = oneErr
+				if damage == nil {
+					damage = oneErr
 				}
 			case oneErr != nil:
 				in.Release(items[i:])
-				if first == nil {
-					first = oneErr
-				}
+				first = oneErr
 				break isolating
 			default:
 				revision = committed
@@ -515,6 +515,11 @@ func (in *Ingress) DrainTaken(l Ledger, items []IngressItem, request func(Submis
 		snap = nil
 	}
 	in.Complete(done, revision, snap)
+	if first == nil && damage != nil {
+		// Everything else committed: one damaged record is not proof the
+		// ledger failed, so admission stays open.
+		first = fmt.Errorf("%w: %w", ErrArrivalsIsolated, damage)
+	}
 	return report, first
 }
 

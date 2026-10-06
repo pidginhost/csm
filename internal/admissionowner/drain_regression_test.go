@@ -2,6 +2,7 @@ package admissionowner
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -304,5 +305,71 @@ func TestOwnerStopReportsAFailedGenerationClose(t *testing.T) {
 	o.Stop()
 	if st := o.Status(); st.Ingress.Admitting || !strings.Contains(st.Owner.Error, "closing the ingress") {
 		t.Fatalf("shutdown hid the generation close failure: %+v", st.Owner)
+	}
+}
+
+// damagedTargetLedger stands in for a ledger whose records for one target
+// are damaged after open: every group naming that target fails as corrupt,
+// so isolation discards its arrival and every other group commits.
+type damagedTargetLedger struct {
+	admission.Ledger
+	bad admission.Target
+}
+
+func (l *damagedTargetLedger) EnqueueGroup(a []admission.Arrival, cp *admission.IngressCheckpoint) ([]admission.ArrivalResult, int, error) {
+	for _, x := range a {
+		if x.Request.Target == l.bad {
+			return nil, 0, admission.ErrCorruptRecord
+		}
+	}
+	return l.Ledger.EnqueueGroup(a, cp)
+}
+
+// Damage at one target discards that target's arrivals and counts them
+// lost, but it is not a failed drain: admission stays open for every other
+// target, no stop is announced however often the target is reported, and
+// status keeps the damage cause.
+func TestOwnerKeepsAdmissionOpenAroundADamagedTarget(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink := &noticeSink{}
+	opts := f.options()
+	opts.Deliver = sink.deliver
+	o := f.start(opts)
+	bad, err := admission.CanonicalAddress("192.0.2.66", admission.Caps{IPv6: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := drainGroupOf
+	t.Cleanup(func() { drainGroupOf = prev })
+	drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+		return in.DrainTaken(&damagedTargetLedger{Ledger: l, bad: bad}, items, arrivalRequest)
+	}
+	for i := range 3 {
+		f.host.advance(time.Second)
+		submitObservation(t, o, p, "192.0.2.66", fmt.Sprintf("offset=%d", i+1), f.host.now())
+		submitObservation(t, o, p, fmt.Sprintf("192.0.2.%d", 10+i), "offset=1", f.host.now())
+		if err := o.do(o.drain); err != nil {
+			t.Fatalf("round %d: isolated damage failed the drain: %v", i, err)
+		}
+		if !o.ingress.Health().Admitting || o.ingress.Len() != 0 {
+			t.Fatalf("round %d: admitting %v, %d held", i, o.ingress.Health().Admitting, o.ingress.Len())
+		}
+		o.notices.cycle()
+	}
+	if sink.count() != 0 {
+		t.Fatalf("isolated damage announced %d stops: %+v", sink.count(), sink.last())
+	}
+	if got := queuedCandidates(t, o); len(got) != 3 {
+		t.Fatalf("healthy targets queued %d candidates, want 3", len(got))
+	}
+	st := o.status()
+	if st.Owner.Error != "" || !strings.Contains(st.Owner.DamageError, "admission record is corrupt") {
+		t.Fatalf("status after isolated damage: %+v", st.Owner)
+	}
+	// A damaged record stays damaged: a later healthy drain keeps the cause.
+	submitObservation(t, o, p, "192.0.2.20", "offset=1", f.host.now())
+	if err := o.do(o.drain); err != nil || len(queuedCandidates(t, o)) != 4 || o.status().Owner.DamageError == "" {
+		t.Fatalf("a healthy drain cleared the damage cause: %v %+v", err, o.status().Owner)
 	}
 }

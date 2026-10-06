@@ -39,6 +39,10 @@ type AdmissionOwner struct {
 	Import         *AdmissionImport `json:"import,omitempty"`
 	InventoryAt    time.Time        `json:"inventory_at,omitempty"`
 	InventoryError string           `json:"inventory_error,omitempty"`
+	// DamageError is the latest damaged ledger record a drain isolated:
+	// arrivals naming it were discarded and admission stayed open. It is
+	// kept until the owner restarts.
+	DamageError string `json:"damage_error,omitempty"`
 }
 
 // AdmissionImport is the legacy hour's spend imported as charges. They
