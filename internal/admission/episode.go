@@ -89,6 +89,9 @@ func (e Episode) WithLine(l EpisodeLine) Episode {
 // WithoutCandidate clears a deleted candidate but retains its generation
 // and observation frontier while another candidate keeps the row alive.
 func (e Episode) WithoutCandidate(id CandidateID, answered bool) (Episode, bool) {
+	if id == "" {
+		return e, false
+	}
 	i := slices.IndexFunc(e.Lines, func(l EpisodeLine) bool { return l.Candidate == id })
 	if i < 0 {
 		return e, false

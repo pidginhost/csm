@@ -302,6 +302,20 @@ func TestPlaceRetainsDeletedEpisodeLineProof(t *testing.T) {
 	}
 }
 
+func TestEpisodeWithoutCandidateIgnoresAnEmptyID(t *testing.T) {
+	e := testEpisodeRecord(t)
+	e, _ = e.WithoutCandidate(e.Lines[0].Candidate, true)
+	before, err := e.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rest, found := e.WithoutCandidate("", false)
+	after, err := rest.MarshalBinary()
+	if err != nil || found || !bytes.Equal(before, after) {
+		t.Fatalf("an empty ID changed cleared attempt proof: %+v %v %v", rest, found, err)
+	}
+}
+
 // Episode IDs come from a per-ledger nonce and a sequence, so they never
 // repeat within a ledger or across ledgers.
 func TestEpisodeSequenceHandsOutDistinctIDs(t *testing.T) {
@@ -350,14 +364,16 @@ func TestEpisodeSequenceHandsOutDistinctIDs(t *testing.T) {
 // Storage accounting charges each stored episode row its bound, so the
 // widest row the invariants allow must fit it.
 func TestEpisodeRowFitsItsBound(t *testing.T) {
-	e := Episode{ID: testEpisode(t, episodeA), Last: time.Unix(0, math.MaxInt64).UTC(), Verified: time.Unix(0, math.MaxInt64).UTC(), Previous: time.Unix(0, math.MaxInt64).UTC(), PriorLast: time.Unix(0, math.MaxInt64-1).UTC()}
-	for k := KindBlockIP; k < kindEnd; k++ {
-		e = e.WithLine(EpisodeLine{Kind: k, Generation: math.MaxUint32, Candidate: testCandidateID(t, 15), Observed: e.Last})
-	}
-	data, err := e.MarshalBinary()
-	widest := len("svc:ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/udp/65535")
-	if err != nil || widest > MaxEpisodeKeyBytes || len(data)+MaxEpisodeKeyBytes > MaxEpisodeBytes {
-		t.Fatalf("widest row: key %d of %d, record %d, bound %d, %v", widest, MaxEpisodeKeyBytes, len(data), MaxEpisodeBytes, err)
+	for _, nano := range []int64{math.MaxInt64, math.MinInt64 + 1} {
+		e := Episode{ID: testEpisode(t, episodeA), Last: time.Unix(0, nano).UTC(), Verified: time.Unix(0, nano).UTC(), Previous: time.Unix(0, nano).UTC(), PriorLast: time.Unix(0, nano-1).UTC()}
+		for k := KindBlockIP; k < kindEnd; k++ {
+			e = e.WithLine(EpisodeLine{Kind: k, Generation: math.MaxUint32, Candidate: testCandidateID(t, 15), Observed: e.Last})
+		}
+		data, err := e.MarshalBinary()
+		widest := len("svc:ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff/udp/65535")
+		if err != nil || widest > MaxEpisodeKeyBytes || len(data)+MaxEpisodeKeyBytes > MaxEpisodeBytes {
+			t.Fatalf("widest row at %d: key %d of %d, record %d, bound %d, %v", nano, widest, MaxEpisodeKeyBytes, len(data), MaxEpisodeBytes, err)
+		}
 	}
 }
 

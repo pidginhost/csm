@@ -122,6 +122,11 @@ func (q *queueTx) takeEpisode() (admission.EpisodeID, error) {
 // its kind's line already had an attempt: that observation still extends
 // the episode. The engine, never the caller, chooses the episode.
 func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e admission.Evidence, ids []admission.EvidenceID) (admission.CandidateID, bool, error) {
+	// Assessment tolerates clock skew, but storing it as a frontier would
+	// make genuine observations stale or cross a boundary before its time.
+	if e.ObservedAt().After(q.now) {
+		return "", false, refusal(admission.ReasonInvalid, "episode observation is dated in the future")
+	}
 	rowKey := req.Target.Key()
 	cur, found, err := loadEpisode(q.tx, rowKey)
 	if err != nil {

@@ -1,6 +1,8 @@
 package store
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"reflect"
 	"strings"
 	"testing"
@@ -97,6 +99,146 @@ func TestAdmissionLedgerUpgradesSchemaFive(t *testing.T) {
 	}
 	if again := dbSnapshot(t, db); !reflect.DeepEqual(again, after) {
 		t.Fatal("a second open changed the upgraded ledger")
+	}
+}
+
+// Schema 5 history paid for candidates and attempts, but no episode rows.
+// Reserved, verified and unresolved histories keep their charges at upgrade.
+func TestAdmissionLedgerUpgradesSchemaFiveHistory(t *testing.T) {
+	f := newLedgerFixture(t)
+	m := f.mixed()
+	f.nextGeneration()
+	retry := f.queued()
+	_, a, _, err := f.l.Reserve(retry, admission.LaneGeneral, f.wall.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
+		t.Fatal(err)
+	}
+	f.schemaFive()
+	if err = f.db.bolt.Update(func(tx *bolt.Tx) error {
+		s, txErr := loadStorageState(tx)
+		if txErr != nil {
+			return txErr
+		}
+		if txErr = tx.Bucket([]byte(admissionHistoryBucket)).ForEach(func(k, v []byte) error {
+			h, decodeErr := admission.UnmarshalHistoryEntry(v)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			if h.General >= admission.MaxEpisodeBytes {
+				h.General -= admission.MaxEpisodeBytes
+				if !h.Pinned {
+					s.General.Used -= admission.MaxEpisodeBytes
+				}
+			} else {
+				h.Reserved -= admission.MaxEpisodeBytes
+				if !h.Pinned {
+					s.Reserved.Used -= admission.MaxEpisodeBytes
+				}
+			}
+			if h.Pinned {
+				s.Recovery -= admission.MaxEpisodeBytes
+			}
+			return putLegacyHistory(tx, admission.CandidateID(k), h)
+		}); txErr != nil {
+			return txErr
+		}
+		return putStorageState(tx, s)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := dbSnapshot(t, f.db)
+	db := f.copyDatabase()
+	l, err := OpenAdmissionLedger(db, f.reg)
+	if err != nil {
+		t.Fatalf("valid schema 5 history refused upgrade: %v", err)
+	}
+	after := dbSnapshot(t, db)
+	schemaKey := admissionMetaBucket + ":" + string(admissionSchemaKey)
+	for k, v := range before {
+		if k != schemaKey && after[k] != v {
+			t.Fatalf("upgrade changed schema 5 history record %s", k)
+		}
+	}
+	if _, err = OpenAdmissionLedger(db, f.reg); err != nil {
+		t.Fatalf("reopen after upgrading history: %v", err)
+	}
+	if !reflect.DeepEqual(after, dbSnapshot(t, db)) {
+		t.Fatal("reopen changed upgraded history")
+	}
+	f.l, f.db = l, db
+	f.tickAt(f.wall.Add(admission.RetryBackoff(1)))
+	h, _ := f.historyEntry(retry)
+	used := f.storageState().General.Used
+	if _, _, _, err = f.l.Reserve(retry, admission.LaneGeneral, time.Time{}); err != nil {
+		t.Fatalf("legacy retry: %v", err)
+	}
+	if next, _ := f.historyEntry(retry); next.LegacyCost || next.Charged() != h.Charged()+admission.MaxEpisodeBytes || f.storageState().General.Used != used+admission.MaxEpisodeBytes {
+		t.Fatalf("retry did not pay the new charge contract: %+v -> %+v", h, next)
+	}
+	if err = db.bolt.Update(func(tx *bolt.Tx) error {
+		damaged, _, txErr := loadHistoryEntry(tx, m.reserved)
+		if txErr != nil {
+			return txErr
+		}
+		damaged.General--
+		if txErr = putHistoryEntry(tx, m.reserved, damaged); txErr != nil {
+			return txErr
+		}
+		return adjustStorage(tx, func(s *admission.StorageState) { s.General.Used-- })
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before = dbSnapshot(t, db)
+	if _, err = OpenAdmissionLedger(db, f.reg); !isCorrupt(err) {
+		t.Fatalf("undercharged legacy history was accepted: %v", err)
+	}
+	if !reflect.DeepEqual(before, dbSnapshot(t, db)) {
+		t.Fatal("refused legacy proof changed the ledger")
+	}
+}
+
+func putLegacyHistory(tx *bolt.Tx, id admission.CandidateID, h admission.HistoryEntry) error {
+	raw, err := h.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	body := bytes.Replace(raw[:len(raw)-8], []byte(`"v":2`), []byte(`"v":1`), 1)
+	sum := sha256.Sum256(body)
+	return tx.Bucket([]byte(admissionHistoryBucket)).Put([]byte(id), append(body, sum[:8]...))
+}
+
+func TestAdmissionLedgerLegacyHistoryWithAnEpisodePaysForTheRow(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	id := f.arrive(f.arrival(evidenceSpec{}))[0].Candidate
+	if _, _, _, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	h, _ := f.historyEntry(id)
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error { return putLegacyHistory(tx, id, h) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatalf("fully charged version 1 episode history: %v", err)
+	}
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		h.General -= admission.MaxEpisodeBytes
+		if err := putLegacyHistory(tx, id, h); err != nil {
+			return err
+		}
+		return adjustStorage(tx, func(s *admission.StorageState) { s.General.Used -= admission.MaxEpisodeBytes })
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := dbSnapshot(t, f.db)
+	if _, err := OpenAdmissionLedger(f.db, f.reg); !isCorrupt(err) {
+		t.Fatalf("episode row without its history charge: %v", err)
+	}
+	if !reflect.DeepEqual(before, dbSnapshot(t, f.db)) {
+		t.Fatal("refused episode charge proof changed the ledger")
 	}
 }
 
@@ -576,7 +718,8 @@ func TestAdmissionLedgerQueueRefusalLeavesEpisodeRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := f.episodeAt("192.0.2.10")
-	f.fill(admission.PartitionGeneral.DurableCapacity(), evidenceSpec{})
+	filled := f.fill(admission.PartitionGeneral.DurableCapacity(), evidenceSpec{})
+	sequence := episodeSequenceIn(t, f.db)
 	f.tickAt(f.wall.Add(time.Second))
 	out := f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}), f.arrival(evidenceSpec{target: "192.0.2.11", cursor: "offset=3"}))
 	for _, r := range out {
@@ -593,6 +736,22 @@ func TestAdmissionLedgerQueueRefusalLeavesEpisodeRows(t *testing.T) {
 	}
 	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
 		t.Fatalf("refusal left an unprovable row: %v", err)
+	}
+	if got := episodeSequenceIn(t, f.db); got.Nonce != sequence.Nonce || got.Next != sequence.Next+1 {
+		t.Fatalf("the refused new episode did not consume its identity: %+v -> %+v", sequence, got)
+	}
+	if _, err := f.l.Terminate(filled[0], admission.ReasonPolicy); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenAdmissionLedger(f.db, f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.l = reopened
+	f.tickAt(f.wall.Add(time.Second))
+	next := f.arrive(f.arrival(evidenceSpec{target: "192.0.2.11", cursor: "offset=4"}))[0]
+	if next.Err != nil || !next.Created || next.Candidate == out[1].Candidate {
+		t.Fatalf("reopen reused a refused episode's candidate ID: %+v", next)
 	}
 }
 
@@ -615,6 +774,67 @@ func TestAdmissionLedgerStaleObservationLeavesTheEpisode(t *testing.T) {
 	wantLedgerReason(t, "stale primary with fresh support", f.arrive(withSupport)[0].Err, admission.ReasonStale)
 	if after, _ := f.episodeAt("192.0.2.10"); !reflect.DeepEqual(after, before) {
 		t.Fatalf("a stale observation changed the episode: %+v -> %+v", before, after)
+	}
+}
+
+// Assess tolerates clock skew, but a future observation cannot establish
+// an episode boundary or move the frontier ahead of the ledger's clock.
+func TestAdmissionLedgerFutureObservationLeavesTheEpisode(t *testing.T) {
+	for _, state := range []string{"absent", "queued", "ended", "answered", "verified boundary"} {
+		t.Run(state, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.begin()
+			if state != "absent" {
+				first := f.arrive(f.arrival(evidenceSpec{cursor: "first", age: time.Second}))[0]
+				if first.Err != nil {
+					t.Fatal(first.Err)
+				}
+				switch state {
+				case "ended":
+					if _, err := f.l.Terminate(first.Candidate, admission.ReasonPolicy); err != nil {
+						t.Fatal(err)
+					}
+				case "answered":
+					if _, _, _, err := f.l.Reserve(first.Candidate, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
+						t.Fatal(err)
+					}
+				case "verified boundary":
+					expiry := f.wall.Add(time.Minute)
+					f.finishArrival(first.Candidate, expiry, admission.DispositionApplied)
+					f.tickAt(expiry.Add(-time.Second))
+				}
+			}
+			before, existed := f.episodeAt("192.0.2.10")
+			sequence := episodeSequenceIn(t, f.db)
+			future := f.arrival(evidenceSpec{cursor: "future", age: -time.Second})
+			if _, err := admission.Assess(future.Request.Target, []admission.Evidence{future.Evidence}, f.l.now); err != nil {
+				t.Fatalf("skew must be inside assessment tolerance: %v", err)
+			}
+			out := f.arrive(future)[0]
+			wantLedgerReason(t, "future observation", out.Err, admission.ReasonInvalid)
+			if after, exists := f.episodeAt("192.0.2.10"); existed != exists || !reflect.DeepEqual(before, after) {
+				t.Fatalf("future observation changed the row: %+v -> %+v", before, after)
+			}
+			if out.Created || out.Candidate != "" || episodeSequenceIn(t, f.db) != sequence {
+				t.Fatalf("future observation allocated an identity: %+v", out)
+			}
+			genuine := f.arrive(f.arrival(evidenceSpec{cursor: "genuine"}))[0]
+			if state == "answered" || state == "verified boundary" {
+				wantLedgerReason(t, "genuine answered observation", genuine.Err, admission.ReasonExistingEffect)
+			} else if genuine.Err != nil {
+				t.Fatalf("genuine observation was suppressed: %+v", genuine)
+			}
+			if state == "absent" {
+				if _, err := f.l.Terminate(genuine.Candidate, admission.ReasonPolicy); err != nil {
+					t.Fatal(err)
+				}
+				f.tickAt(future.Evidence.ObservedAt())
+				accepted := f.arrive(future)[0]
+				if accepted.Err != nil || !accepted.Created || f.candidateOf(accepted.Candidate).Key.Generation != 2 {
+					t.Fatalf("observation was still refused after the clock caught up: %+v", accepted)
+				}
+			}
+		})
 	}
 }
 

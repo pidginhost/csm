@@ -184,13 +184,30 @@ func TestHistoryEntryInvariants(t *testing.T) {
 	body := data[:len(data)-8]
 	for name, tampered := range map[string][]byte{
 		"flipped byte":   func() []byte { d := bytes.Clone(data); d[4] ^= 1; return d }(),
-		"future version": resealForTest(bytes.Replace(body, []byte(`"v":1`), []byte(`"v":2`), 1)),
-		"unknown field":  resealForTest(bytes.Replace(body, []byte(`{"v":1`), []byte(`{"x":1,"v":1`), 1)),
+		"future version": resealForTest(bytes.Replace(body, []byte(`"v":2`), []byte(`"v":3`), 1)),
+		"unknown field":  resealForTest(bytes.Replace(body, []byte(`{"v":2`), []byte(`{"x":1,"v":2`), 1)),
 		"early":          resealForTest(bytes.Replace(body, []byte(`"general":3000`), []byte(`"general":3000,"pinned":true`), 1)),
 	} {
 		if _, err := UnmarshalHistoryEntry(tampered); err != ErrCorruptRecord {
 			t.Errorf("%s: err = %v, want ErrCorruptRecord", name, err)
 		}
+	}
+}
+
+func TestHistoryEntryPreservesLegacyEncoding(t *testing.T) {
+	h := HistoryEntry{General: 3000, RootMask: 1}
+	current, err := h.MarshalBinary()
+	if err != nil || !bytes.Contains(current, []byte(`"v":2`)) {
+		t.Fatalf("new history does not use the episode charge contract: %q %v", current, err)
+	}
+	legacy := resealForTest(bytes.Replace(current[:len(current)-8], []byte(`"v":2`), []byte(`"v":1`), 1))
+	decoded, err := UnmarshalHistoryEntry(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := decoded.MarshalBinary()
+	if err != nil || !bytes.Equal(again, legacy) {
+		t.Fatalf("legacy encoding changed: %q %v", again, err)
 	}
 }
 
