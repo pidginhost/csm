@@ -35,7 +35,8 @@ func TestHistoryLanes(t *testing.T) {
 	}
 }
 
-// HistoryCost counts every row a candidate can retain, each with its key.
+// HistoryCost counts every row a candidate can retain, each with its key,
+// including the episode row that may name it.
 func TestHistoryCost(t *testing.T) {
 	c := queuedCandidate(t)
 	maxBytes, err := c.MaxBytes()
@@ -43,7 +44,7 @@ func TestHistoryCost(t *testing.T) {
 		t.Fatal(err)
 	}
 	const cand, action, evidence, index = 37, 36, 35, 1 + 19 + 37
-	want := cand + maxBytes + cand + MaxHistoryEntryBytes + 3*index + MaxAttempts*(action+MaxAttemptBytes)
+	want := cand + maxBytes + cand + MaxHistoryEntryBytes + 3*index + MaxAttempts*(action+MaxAttemptBytes) + MaxEpisodeBytes
 	want += 2*3*evidence + 400 + 700 + 2*(MaxReportLinksBytes+MaxEvidenceRefsBytes)
 	got, err := HistoryCost(c, []int{400, 700})
 	if err != nil || got != uint32(want) {

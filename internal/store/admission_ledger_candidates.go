@@ -103,7 +103,9 @@ func scopeOwner(inv *admission.Inventory, roots []admission.Evidence) (admission
 // queued candidate coalesces its new roots without extending queue age,
 // freshness or history. A reserved or executing candidate only acknowledges
 // roots it already holds: its attempt's evidence is frozen until the attempt
-// ends. A terminal candidate is never revived.
+// ends. A terminal candidate is never revived. Enqueue takes the request's
+// episode as given and keeps no episode row: production queues only
+// through EnqueueGroup, where the ledger assigns episodes.
 func (l *AdmissionLedger) Enqueue(req admission.CandidateRequest) (admission.Candidate, bool, error) {
 	ids, err := rootSet(req)
 	if err != nil {

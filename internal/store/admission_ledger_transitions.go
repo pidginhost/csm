@@ -483,6 +483,9 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 			return false, err
 		}
 		if c.State == admission.StateVerified {
+			if err = q.closeEpisode(*c); err != nil {
+				return false, err
+			}
 			err = q.raise(admission.NoticeKey{Kind: admission.NoticeAppliedSummary}, a.Attempt.Candidate, c.Transitions+1)
 		} else {
 			err = q.gap(admission.GapOutcome, 0, d, e, a.Attempt.Candidate, *c, c.Transitions+1)

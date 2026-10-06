@@ -58,12 +58,16 @@ func retireTarget(ended, eligible time.Time) time.Time {
 	return eligible
 }
 
-const historyEntryVersion = 1
+const historyEntryVersion = 2
 
 // HistoryEntry is the ledger's storage record of an admitted candidate: the
 // history bytes its reservations charged to each allowance and, once it
 // ends, the earliest time its details may be retired.
 type HistoryEntry struct {
+	// LegacyCost preserves the version 1 charge contract. It predates the
+	// episode allowance, so a candidate without an episode row need not
+	// have paid for one. New charges use version 2.
+	LegacyCost bool
 	// General and Reserved are the bytes charged to each allowance. The
 	// direct and corroborated lanes share the reserved one.
 	General, Reserved uint32
@@ -107,6 +111,9 @@ func (h HistoryEntry) record() (historyEntryRecord, error) {
 		return historyEntryRecord{}, refuse(ReasonInvalid, detail)
 	}
 	rec := historyEntryRecord{V: historyEntryVersion, General: h.General, Reserved: h.Reserved, Pinned: h.Pinned, RootMask: h.RootMask}
+	if h.LegacyCost {
+		rec.V = 1
+	}
 	if charged := uint64(h.General) + uint64(h.Reserved); charged == 0 || charged > MaxHistoryBytes {
 		return bad("history entry charges nothing or more than any candidate")
 	}
@@ -216,8 +223,8 @@ func UnmarshalHistoryEntry(data []byte) (HistoryEntry, error) {
 	if err := openRecord(data, &rec); err != nil {
 		return HistoryEntry{}, err
 	}
-	h := HistoryEntry{General: rec.General, Reserved: rec.Reserved, Ended: fromNano(rec.Ended), Eligible: fromNano(rec.Eligible), Pinned: rec.Pinned, RootMask: rec.RootMask}
-	if again, err := h.record(); rec.V != historyEntryVersion || err != nil || again != rec {
+	h := HistoryEntry{LegacyCost: rec.V == 1, General: rec.General, Reserved: rec.Reserved, Ended: fromNano(rec.Ended), Eligible: fromNano(rec.Eligible), Pinned: rec.Pinned, RootMask: rec.RootMask}
+	if again, err := h.record(); (rec.V != 1 && rec.V != historyEntryVersion) || err != nil || again != rec {
 		return HistoryEntry{}, ErrCorruptRecord
 	}
 	return h, nil

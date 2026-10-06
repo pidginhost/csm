@@ -21,7 +21,8 @@ type InventoryObservation struct {
 
 // CandidateRequest asks the ledger to queue a response. The engine supplies
 // the kind, target, episode and generation; what describes the attack comes
-// from published evidence, never from the caller.
+// from published evidence, never from the caller. An ingress arrival leaves
+// the episode and generation zero: the ledger assigns them.
 type CandidateRequest struct {
 	Kind       Kind
 	Target     Target
@@ -147,9 +148,11 @@ type Ledger interface {
 	// persisted everything the ingress held.
 	EndIngress() error
 	// EnqueueGroup publishes and queues up to MaxArrivalGroup arrivals in
-	// one transaction. A refused arrival is counted and reported in its
-	// result; any other error leaves the ledger unchanged. The revision is
-	// the committed transaction's snapshot fence, or zero on failure.
+	// one transaction, assigning each its offense episode and generation
+	// (spec 5.2); an arrival that names either is refused. A refused
+	// arrival is counted and reported in its result; any other error
+	// leaves the ledger unchanged. The revision is the committed
+	// transaction's snapshot fence, or zero on failure.
 	EnqueueGroup([]Arrival, *IngressCheckpoint) ([]ArrivalResult, int, error)
 	// QueueSnapshot is the durable queue as the ingress needs it.
 	QueueSnapshot() (*QueueSnapshot, error)

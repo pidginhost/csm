@@ -244,6 +244,19 @@ a reading at the saved limit, on reload or the first tick that sees a changed
 configured value, refreshes the inventory from
 complete reads, delivers audit rows to the action log and notices through
 the queue-health path with their own pacing, and reads status on a timer.
+Once the ingress has made new decisions, the owner drains it on a short
+timer. Each group is frozen before its fresh clock reading, so concurrent
+submissions wait for a reading that includes their observation time. A
+clean stop drains all held work and checkpoints final decisions before
+closing the generation. A failed drain, including its clock or publication
+step, closes admission until a drain succeeds. Its cause survives tick,
+inventory and reload recovery, so a lasting failure is one stop with its cause.
+A drain whose only failure is a damaged ledger record is not a failed drain:
+the arrivals naming that record are discarded and counted lost, the rest
+commits, admission stays open, and status and `csm doctor` keep the damage
+cause until the daemon restarts. If a later write, checkpoint or snapshot
+fails in that drain, admission closes until a drain succeeds; recovery
+clears the drain failure but keeps the damage cause for the discarded work.
 Failed ceiling reloads stay pending until a tick applies and revalidates
 them; inventory refreshes cannot reopen admission in the meantime.
 Nothing submits to it yet. One owner serializes every write, and each call
@@ -366,6 +379,40 @@ Missing buckets fail the sections that read them; an unreadable database
 fails every section. Quiet notice indexes are checked with their records.
 Health snapshots own copies of the admission view, and a clean ingress
 generation clears the interruption marker.
+
+Schema 6 adds offense episodes; the first open upgrades a schema 1 to 5
+ledger in the same transaction, without inventing episodes for candidates
+queued before. Each ledger draws episode IDs from its own random nonce and
+a counter, so IDs never repeat, even in a ledger created again after loss.
+Opening proves every episode row against the candidates it names.
+History entries written before episode accounting keep their charges and
+encoding at upgrade. New entries require the episode allowance; an older
+entry is exempt only while it has no row for its episode.
+The ledger, not the caller, assigns each arrival its episode and
+generation when it persists the arrival; an arrival that names either is
+refused. Responses of every kind at one target share its episode. An
+observation made within an hour of the episode's last one, or while its
+work is queued or in flight, joins it; a later one opens the next episode,
+and one older than the previous episode's end, or already accepted by
+that episode while its work held it open, is refused as stale. A
+degraded clock reading never ends an episode. Episode placement refuses an
+observation dated after the ledger's current reading, even within
+assessment's clock-skew tolerance. This keeps future times out of observation
+frontiers and prevents an early episode boundary. A queued candidate coalesces
+later observations before its first attempt. A queued retry remains live
+but answers new arrivals without coalescing; one that ended before any
+attempt is followed only by a later observation of that kind. Once a candidate has an attempt, later observations
+of its episode are refused as an existing effect, which raises no notice,
+and still extend the episode. An episode row lives only as long as a
+candidate it names: ring eviction and history retirement clear that
+candidate reference but retain its generation and attempt proof while
+another candidate holds the row. The last retained candidate takes the
+row, and each admitted
+candidate's history charge covers a row. A target without a row opens a
+new episode, so a retired candidate's ID is never minted again. A
+verified block ends its episode at the block's original expiry instead of
+an hour after the last observation; an unknown outcome or a response of
+another kind does not.
 
 ### Attack event storage
 

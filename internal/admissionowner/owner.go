@@ -24,7 +24,22 @@ const (
 	defaultStatusEvery    = 30 * time.Second
 	defaultDeliverEvery   = time.Second
 	defaultNoticeEvery    = 5 * time.Second
+	defaultDrainEvery     = time.Second
 )
+
+// maxDrainGroups bounds the groups one drain persists, so a busy ingress
+// cannot keep the owner from its other timers. Shutdown repeats this
+// bounded turn until all held work is persisted.
+const maxDrainGroups = 4
+
+// drainGroup is the arrivals one drain group persists; tests shrink it.
+var drainGroup = admission.MaxArrivalGroup
+
+// drainGroupOf persists one frozen group of in's held work into l; tests make it
+// fail.
+var drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+	return in.DrainTaken(l, items, arrivalRequest)
+}
 
 // Options are what the owner needs from the daemon.
 type Options struct {
@@ -47,7 +62,7 @@ type Options struct {
 	// never the finding channel, suppressions or the routine rate limit.
 	Deliver func([]alert.Finding) error
 	// Timer periods; zero selects the defaults.
-	TickEvery, InventoryEvery, StatusEvery, DeliverEvery, NoticeEvery time.Duration
+	TickEvery, InventoryEvery, StatusEvery, DeliverEvery, NoticeEvery, DrainEvery time.Duration
 }
 
 var errStopped = errors.New("the admission owner has stopped")
@@ -89,6 +104,16 @@ type Owner struct {
 	inventoryAt   time.Time
 	inventoryErr  error
 	auditAcked    uint64
+	// drained is the ingress decision sequence the last drain persisted.
+	drained uint64
+	// drainFailed holds admission closed until a drain succeeds. drainErr
+	// retains its cause independently of later snapshot or reload errors.
+	drainFailed bool
+	drainErr    error
+	// damageErr is the latest drain cause that discarded damaged arrivals,
+	// even if another failure stopped that drain. A damaged record stays
+	// damaged, so the cause is kept for the owner's life.
+	damageErr error
 }
 
 // Start opens the ledger and runs the startup sequence before it returns,
@@ -109,6 +134,9 @@ func Start(opts Options) *Owner {
 	}
 	if opts.NoticeEvery <= 0 {
 		opts.NoticeEvery = defaultNoticeEvery
+	}
+	if opts.DrainEvery <= 0 {
+		opts.DrainEvery = defaultDrainEvery
 	}
 	o := &Owner{
 		opts: opts, requests: make(chan request), quit: make(chan bool), done: make(chan struct{}),
@@ -138,6 +166,8 @@ func (o *Owner) run() {
 	defer status.Stop()
 	deliver := time.NewTicker(o.opts.DeliverEvery)
 	defer deliver.Stop()
+	drain := time.NewTicker(o.opts.DrainEvery)
+	defer drain.Stop()
 	for {
 		select {
 		case clean := <-o.quit:
@@ -171,6 +201,10 @@ func (o *Owner) run() {
 		case <-deliver.C:
 			if o.started {
 				_ = o.deliverAudit()
+			}
+		case <-drain.C:
+			if o.started {
+				_ = o.drain()
 			}
 		}
 	}
@@ -318,6 +352,13 @@ var readSnapshot = (*store.AdmissionLedger).QueueSnapshot
 
 // publish hands the ingress the durable queue; a failed read closes it.
 func (o *Owner) publish() error {
+	if o.drainFailed {
+		// Only a successful drain reopens admission: a snapshot now would
+		// admit work the ledger cannot persist, and every retry would be
+		// announced as a new stop.
+		o.ingress.Publish(nil)
+		return nil
+	}
 	snap, err := readSnapshot(o.ledger)
 	o.snapshotErr = err
 	if err != nil {
@@ -395,19 +436,92 @@ func (o *Owner) shutdown() {
 	if !o.started {
 		return
 	}
-	if o.tick() != nil {
-		return
+	held := o.ingress.Len() != 0
+	for {
+		if o.drainHeld() != nil {
+			return
+		}
+		if o.ingress.Len() == 0 {
+			break
+		}
 	}
-	if _, err := o.ingress.Drain(o.ledger, admission.MaxArrivalGroup, refuseRequest); err != nil {
-		return
+	// Producers are stopped before Stop. This empty drain commits their
+	// final decisions after every held group and before the clean close.
+	if held {
+		if o.drainHeld() != nil {
+			return
+		}
 	}
-	_ = o.ledger.EndIngress()
+	if err := o.ledger.EndIngress(); err != nil {
+		o.snapshotErr = fmt.Errorf("closing the ingress: %w", err)
+	}
 }
 
-// refuseRequest builds no candidate: episodes are assigned only once their
-// builder exists, and nothing submits before then.
-func refuseRequest(admission.Submission) (admission.CandidateRequest, error) {
-	return admission.CandidateRequest{}, errors.New("no candidate request builder")
+// drain persists what detectors handed the ingress since the last drain,
+// after a fresh clock reading, so the ledger judges the arrivals at the
+// current time (O8). With no new ingress decision and no failed drain to
+// retry it reads and writes nothing.
+func (o *Owner) drain() error {
+	seq := o.ingress.Checkpoint().Sequence
+	if seq == o.drained && o.ingress.Len() == 0 && !o.drainFailed {
+		return nil
+	}
+	if err := o.drainHeld(); err != nil {
+		return err
+	}
+	o.drained = seq
+	return nil
+}
+
+// drainHeld persists what the ingress holds, at most maxDrainGroups groups.
+// Every group, even an empty one, checkpoints the ingress decisions. A
+// failed drain closes admission and names its cause until a drain
+// succeeds.
+func (o *Owner) drainHeld() (err error) {
+	admitting := o.ingress.Health().Admitting
+	defer func() {
+		if err != nil {
+			o.drainFailed = true
+			o.drainErr = fmt.Errorf("draining the ingress: %w", err)
+			o.ingress.Publish(nil)
+		}
+		if err != nil || o.snapshotErr != nil || admitting != o.ingress.Health().Admitting {
+			o.refreshStatus()
+		}
+	}()
+	for range maxDrainGroups {
+		// Freeze the group before the clock read: Submit can otherwise
+		// hand us evidence newer than the reading used by the ledger.
+		items := o.ingress.Take(min(drainGroup, admission.MaxArrivalGroup))
+		if err := o.tick(); err != nil {
+			o.ingress.Release(items)
+			return err
+		}
+		report, err := drainGroupOf(o.ingress, o.ledger, items)
+		if report.Failed != 0 {
+			// Discarded work stays lost even if a later failure in this drain
+			// recovers, so its damage signal outlives the drain hold.
+			o.damageErr = fmt.Errorf("draining the ingress: %w", err)
+			o.refreshStatus()
+		}
+		if err != nil && !errors.Is(err, admission.ErrArrivalsIsolated) {
+			return err
+		}
+		// The group's own snapshot reopened admission.
+		o.drainFailed = false
+		o.drainErr, o.snapshotErr = nil, nil
+		if o.ingress.Len() == 0 {
+			return nil
+		}
+	}
+	return nil
+}
+
+// arrivalRequest asks for the response a submission names. The ledger
+// assigns its episode and generation when it persists the arrival (spec
+// 5.2); a caller never chooses them.
+func arrivalRequest(s admission.Submission) (admission.CandidateRequest, error) {
+	return admission.CandidateRequest{Kind: s.Kind, Target: s.Target, Primary: s.Evidence.ID()}, nil
 }
 
 // Status is the last status the owner read.
@@ -426,9 +540,12 @@ func (o *Owner) refreshStatus() {
 		ClockDegraded: o.degraded, LastTick: o.lastTick, CeilingSource: o.source,
 		Import: o.imported, InventoryAt: o.inventoryAt,
 	}}
-	if o.startErr != nil {
+	switch {
+	case o.startErr != nil:
 		s.Owner.Error = o.startErr.Error()
-	} else if o.snapshotErr != nil {
+	case o.drainErr != nil:
+		s.Owner.Error = o.drainErr.Error()
+	case o.snapshotErr != nil:
 		s.Owner.Error = o.snapshotErr.Error()
 	}
 	if o.tickErr != nil {
@@ -436,6 +553,9 @@ func (o *Owner) refreshStatus() {
 	}
 	if o.inventoryErr != nil {
 		s.Owner.InventoryError = o.inventoryErr.Error()
+	}
+	if o.damageErr != nil {
+		s.Owner.DamageError = o.damageErr.Error()
 	}
 	if o.ledger != nil {
 		ls := o.ledger.Status()

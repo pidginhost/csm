@@ -13,6 +13,11 @@ import (
 // refuses mutation; it is never repaired by guessing.
 var ErrCorruptRecord = errors.New("admission record is corrupt")
 
+// ErrArrivalsIsolated is returned with the damage when a drain discarded
+// damaged arrivals and committed everything else. One damaged record is not
+// proof the ledger failed, so admission stays open.
+var ErrArrivalsIsolated = errors.New("damaged arrivals were isolated")
+
 // sealRecord encodes v as JSON followed by the first 8 bytes of its SHA-256,
 // the framing Generations and Evidence use.
 func sealRecord(v any) ([]byte, error) {

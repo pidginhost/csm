@@ -543,6 +543,9 @@ func (q *queueTx) flushStorage() error {
 		if err = q.tx.Bucket([]byte(admissionCandidatesBucket)).Delete([]byte(id)); err != nil {
 			return err
 		}
+		if err = q.forgetLine(id, c); err != nil {
+			return err
+		}
 		for _, root := range c.Roots {
 			if err = q.unname(root); err != nil {
 				return err
@@ -635,6 +638,7 @@ func (q *queueTx) chargeHistory(id admission.CandidateID, c admission.Candidate,
 		h.Reserved += grown
 	}
 	h.RootMask = (1 << len(c.Roots)) - 1
+	h.LegacyCost = false
 	if err = putHistoryEntry(q.tx, id, h); err != nil {
 		return err
 	}
@@ -776,6 +780,9 @@ func (q *queueTx) retire(id admission.CandidateID, key []byte) error {
 		if err = q.tx.Bucket([]byte(name)).Delete([]byte(id)); err != nil {
 			return err
 		}
+	}
+	if err = q.forgetLine(id, c); err != nil {
+		return err
 	}
 	for _, root := range c.Roots {
 		if err = q.unname(root); err != nil {
@@ -1060,7 +1067,22 @@ func proveStorageLinks(tx *bolt.Tx) error {
 			}
 		}
 		cost, err := historyCostOf(tx, paid)
-		if err != nil || h.Charged() < cost {
+		if err != nil {
+			return admission.ErrCorruptRecord
+		}
+		if h.LegacyCost {
+			// Upgrading keeps old history charges and invents no episode
+			// rows. Earlier schema 6 writers also used version 1, so a
+			// candidate whose episode row exists still pays its allowance.
+			episode, exists, episodeErr := loadEpisode(tx, c.Key.Target.Key())
+			if episodeErr != nil {
+				return episodeErr
+			}
+			if !exists || episode.ID != c.Key.Episode {
+				cost -= admission.MaxEpisodeBytes
+			}
+		}
+		if h.Charged() < cost {
 			return admission.ErrCorruptRecord
 		}
 		if c.State.Terminal() {

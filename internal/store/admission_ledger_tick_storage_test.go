@@ -82,6 +82,8 @@ func TestAdmissionLedgerTickRetiresABoundedBatch(t *testing.T) {
 	var ids []admission.CandidateID
 	for i := 0; i < retirementsPerTick+3; i++ {
 		ids = append(ids, f.applied(time.Hour))
+		// The next reservation waits for the history credit it needs.
+		f.tickAt(f.wall.Add(10 * time.Second))
 	}
 	f.ackAll()
 	f.tickAt(f.wall.Add(admission.HistoryTarget))

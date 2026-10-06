@@ -86,5 +86,11 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 			Fix: "admission keeps the previous accounts; check the account registry and home directories",
 		})
 	}
+	if o.DamageError != "" {
+		rows = append(rows, DoctorCheck{
+			Name: "admission ledger damage", Status: "fail", Message: "responses naming a damaged ledger record are discarded: " + o.DamageError,
+			Fix: "restart csm.service so opening the ledger proves every record; if it then refuses to open, stop csm.service and restore the state database from a backup",
+		})
+	}
 	return rows
 }

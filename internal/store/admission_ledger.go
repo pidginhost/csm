@@ -29,13 +29,15 @@ const (
 	admissionRingsBucket      = "adm:rings"
 	admissionOutboxBucket     = "adm:outbox"
 	admissionWindowsBucket    = "adm:windows"
-	admissionSchemaVersion    = 5
+	admissionEpisodesBucket   = "adm:episodes"
+	admissionSchemaVersion    = 6
 )
 
 var (
 	// admissionSchemaOneBuckets are the buckets of the schema 1 layout.
 	// Schema 2 adds the queue buckets, schema 3 the charges bucket, schema
-	// 4 the storage buckets and schema 5 the outbox and outcome buckets.
+	// 4 the storage buckets, schema 5 the outbox and outcome buckets and
+	// schema 6 the episode bucket.
 	admissionSchemaOneBuckets   = []string{admissionMetaBucket, admissionEvidenceBucket, admissionReportsBucket, admissionCandidatesBucket, admissionAttemptsBucket}
 	admissionQueueBuckets       = []string{admissionQueueBucket, admissionQueueStateBucket}
 	admissionSchemaTwoBuckets   = append(append([]string(nil), admissionSchemaOneBuckets...), admissionQueueBuckets...)
@@ -43,7 +45,8 @@ var (
 	admissionStorageBuckets     = []string{admissionHistoryBucket, admissionRetireBucket, admissionRefsBucket, admissionRingsBucket}
 	admissionSchemaFourBuckets  = append(append([]string(nil), admissionSchemaThreeBuckets...), admissionStorageBuckets...)
 	admissionOutboxBuckets      = []string{admissionOutboxBucket, admissionWindowsBucket}
-	admissionBuckets            = append(append([]string(nil), admissionSchemaFourBuckets...), admissionOutboxBuckets...)
+	admissionSchemaFiveBuckets  = append(append([]string(nil), admissionSchemaFourBuckets...), admissionOutboxBuckets...)
+	admissionBuckets            = append(append([]string(nil), admissionSchemaFiveBuckets...), admissionEpisodesBucket)
 	admissionSchemaKey          = []byte("schema")
 	admissionClockKey           = []byte("clock")
 	admissionClockPendingKey    = []byte("clock_pending")
@@ -71,6 +74,9 @@ type AdmissionLedger struct {
 	// high-water mark but admits nothing new: after a restart that mark can
 	// be hours old, and old evidence would read as fresh.
 	current bool
+	// degraded is set when the current reading was degraded: wall time alone
+	// then cannot end an episode.
+	degraded bool
 
 	// revalidated is set once this handle has checked every queued
 	// candidate at a current reading. A reopened ledger cannot know what
@@ -101,7 +107,7 @@ func refusal(r admission.Reason, detail string) error {
 }
 
 // OpenAdmissionLedger opens the ledger on db, creating its buckets on first
-// use and upgrading a schema 1, 2, 3 or 4 ledger in the same transaction. The
+// use and upgrading a schema 1 to 5 ledger in the same transaction. The
 // registry must be sealed: the set of producers cannot change under a
 // running ledger.
 func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, error) {
@@ -149,6 +155,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 			if err := putFixedNotices(tx); err != nil {
 				return err
 			}
+			if err := startEpisodeSequence(tx); err != nil {
+				return err
+			}
 		} else {
 			meta := tx.Bucket([]byte(admissionMetaBucket))
 			if meta == nil {
@@ -171,6 +180,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaFive(tx); err != nil {
 					return err
 				}
+				if err := upgradeLedgerToSchemaSix(tx); err != nil {
+					return err
+				}
 			case len(schema) == 1 && schema[0] == 2:
 				if existing != len(admissionSchemaTwoBuckets) || present(admissionSchemaTwoBuckets) != existing {
 					return admission.ErrCorruptRecord
@@ -184,6 +196,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaFive(tx); err != nil {
 					return err
 				}
+				if err := upgradeLedgerToSchemaSix(tx); err != nil {
+					return err
+				}
 			case len(schema) == 1 && schema[0] == 3:
 				if existing != len(admissionSchemaThreeBuckets) || present(admissionSchemaThreeBuckets) != existing {
 					return admission.ErrCorruptRecord
@@ -194,11 +209,24 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaFive(tx); err != nil {
 					return err
 				}
+				if err := upgradeLedgerToSchemaSix(tx); err != nil {
+					return err
+				}
 			case len(schema) == 1 && schema[0] == 4:
 				if existing != len(admissionSchemaFourBuckets) || present(admissionSchemaFourBuckets) != existing {
 					return admission.ErrCorruptRecord
 				}
 				if err := upgradeLedgerToSchemaFive(tx); err != nil {
+					return err
+				}
+				if err := upgradeLedgerToSchemaSix(tx); err != nil {
+					return err
+				}
+			case len(schema) == 1 && schema[0] == 5:
+				if existing != len(admissionSchemaFiveBuckets) || present(admissionSchemaFiveBuckets) != existing {
+					return admission.ErrCorruptRecord
+				}
+				if err := upgradeLedgerToSchemaSix(tx); err != nil {
 					return err
 				}
 			case len(schema) == 1 && schema[0] == admissionSchemaVersion:
@@ -228,6 +256,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 			return err
 		}
 		if _, err := loadStorage(tx); err != nil {
+			return err
+		}
+		if err := proveEpisodes(tx); err != nil {
 			return err
 		}
 		meta := tx.Bucket([]byte(admissionMetaBucket))
@@ -372,7 +403,7 @@ func (l *AdmissionLedger) Tick(r admission.ClockReading) (admission.ClockTick, e
 		l.current = false
 		return admission.ClockTick{}, err
 	}
-	l.now, l.current = tick.Now, true
+	l.now, l.current, l.degraded = tick.Now, true, tick.Degraded
 	return tick, nil
 }
 
@@ -471,7 +502,7 @@ func validateStateKeys(tx *bolt.Tx) error {
 		keys [][]byte
 	}{
 		{admissionMetaBucket, [][]byte{admissionSchemaKey, admissionClockKey, admissionClockPendingKey, admissionTrackerKey, admissionInventoryKey, admissionAmbiguousKey}},
-		{admissionQueueStateBucket, [][]byte{queueStateKey, queueCountersKey, scheduleStateKey, ingressStateKey, ceilingStateKey, storageStateKey}},
+		{admissionQueueStateBucket, [][]byte{queueStateKey, queueCountersKey, scheduleStateKey, ingressStateKey, ceilingStateKey, storageStateKey, episodeStateKey}},
 	} {
 		b := tx.Bucket([]byte(state.name))
 		if b == nil {
