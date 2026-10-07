@@ -11,7 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- Token guessing protection now covers all login and API routes, including simultaneous requests.
+- Unknown API and metrics tokens now spend the same five-per-minute budget as the login form, so a token cannot be guessed at API speed.
 - The cron downloader signature no longer slows scans on long crafted lines or flags plugin pages that only print a recommended wp-cron command.
 - Four more download, miner and shell startup signatures no longer slow scans on long crafted lines or on files full of documented install commands.
 - A file planted in a hosted site can no longer stall the deep phishing scan.
@@ -31,13 +31,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Removed
 
 - The daemon no longer rewrites the upgrade helper script on every start; the package and the release archive install it.
-- Unused settings no longer appear in the dashboard, and older configurations still load with warnings.
+- Unused scan-interval, webhook and relay settings are gone from the config, dashboard and docs. Old config files still load, and the validator names each key to delete.
 
 ### Fixed
 
-- Valid metrics credentials used outside their scope no longer lock out metrics access.
-- Configuration saves through symbolic links now keep the previous version beside the target configuration.
-- Older configurations using YAML merges now load successfully when they include retired settings.
 - Bot range feed updates no longer hang when a feed host accepts the connection and never answers.
 - The email quarantine sweep now reports entries it could not delete instead of counting the sweep as clean.
 - API writes from a browser origin listed in the allowed origins now pass the browser's preflight check instead of being refused.
