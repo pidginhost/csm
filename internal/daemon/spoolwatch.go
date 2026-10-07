@@ -610,7 +610,9 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	// Clean up temp files when done
 	defer func() {
 		for _, p := range extraction.Parts {
-			os.Remove(p.TempPath)
+			if err := os.Remove(p.TempPath); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "[%s] spoolwatch: temp part not removed: %v\n", ts(), err)
+			}
 		}
 	}()
 

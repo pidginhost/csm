@@ -54,7 +54,7 @@ func TestDetectWPRootIndexPHP(t *testing.T) {
 		t.Errorf("DetectWPRoot(%q) = %q, want %q", indexPath, got, dir)
 	}
 
-	os.RemoveAll(wpIncludes)
+	_ = os.RemoveAll(wpIncludes)
 	got = DetectWPRoot(indexPath)
 	if got != "" {
 		t.Errorf("DetectWPRoot(%q) without version.php = %q, want empty", indexPath, got)

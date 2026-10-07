@@ -189,7 +189,7 @@ func check(directory string, terms []*regexp.Regexp, output io.Writer) error {
 	if violations > 0 {
 		return fmt.Errorf("%d line(s) require sanitisation", violations)
 	}
-	if _, err := fmt.Fprintf(output, "%d fixture file(s) checked; no disallowed IPv4 literals.\n", fixtures); err != nil {
+	if _, err = fmt.Fprintf(output, "%d fixture file(s) checked; no disallowed IPv4 literals.\n", fixtures); err != nil {
 		return err
 	}
 	if len(terms) == 0 {

@@ -1518,7 +1518,7 @@ func probeStatePath(path string) []ValidationResult {
 		return []ValidationResult{{"error", "state_path", fmt.Sprintf("directory not writable: %s", path)}}
 	}
 	f.Close()
-	os.Remove(probe)
+	_ = os.Remove(probe)
 
 	return []ValidationResult{{"ok", "state_path", path}}
 }

@@ -32,7 +32,7 @@ func WriteOverrides(path string, disabledIDs []int) error {
 		return fmt.Errorf("writing overrides tmp: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("renaming overrides: %w", err)
 	}
 	return nil
@@ -93,7 +93,7 @@ func RestoreOverrides(path string, content []byte) error {
 		return fmt.Errorf("writing rollback tmp: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("renaming rollback: %w", err)
 	}
 	return nil

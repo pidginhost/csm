@@ -28,11 +28,6 @@ linters:
         - fmt.Sscanf
         - (io.Closer).Close
         - (*os.File).Close
-        - os.Setenv
-        - os.Remove
-        - os.RemoveAll
-        - (*os/exec.Cmd).Run
-        - (*encoding/json).Unmarshal
     govet:
       enable-all: true
       disable:

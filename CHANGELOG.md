@@ -33,6 +33,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- The email quarantine sweep now reports entries it could not delete instead of counting the sweep as clean.
 - API writes from a browser origin listed in the allowed origins now pass the browser's preflight check instead of being refused.
 - Settings saved from the dashboard now reach the live thresholds, whitelists and forward guard without a restart or reload.
 - The email forward guard now holds matching mail instead of leaving it stuck in the queue.

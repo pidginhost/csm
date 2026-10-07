@@ -683,7 +683,7 @@ func writeReport(path string, rep report) error {
 	}
 	_, writeErr := f.Write(append(b, '\n'))
 	if err := errors.Join(writeErr, f.Close()); err != nil {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return errOutput
 	}
 	return nil

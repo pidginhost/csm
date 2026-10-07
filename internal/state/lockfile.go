@@ -45,6 +45,8 @@ func (l *LockFile) Release() {
 		// #nosec G115 -- see AcquireLock: POSIX fd fits in int.
 		_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
 		_ = l.file.Close()
-		os.Remove(l.path)
+		// A lock file left behind is inert: the lock is the flock on the
+		// open descriptor, which Close released above.
+		_ = os.Remove(l.path)
 	}
 }

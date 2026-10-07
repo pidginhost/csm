@@ -43,7 +43,7 @@ func TestExtractMultipartNestedMultipart(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -80,7 +80,7 @@ func TestExtractMultipartCapsMimeNestingDepth(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -111,7 +111,7 @@ func TestExtractMultipartAllowsTypicalNesting(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -146,7 +146,7 @@ func TestExtractMultipartUnnamedNonTextAttachment(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -179,7 +179,7 @@ func TestExtractMultipartQuotedPrintableAttachment(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -231,7 +231,7 @@ func TestExtractMultipartTotalSizeExceeded(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -262,7 +262,7 @@ func TestExtractMultipartAttachmentExceedsMaxSize(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -292,7 +292,7 @@ func TestExtractTgzExtension(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -329,7 +329,7 @@ func TestExtractZIPInnerFileExceedsMaxSize(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -403,7 +403,7 @@ func TestExtractTarGzTotalSizeExceeded(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -444,7 +444,7 @@ func TestExtractZIPSkipsDirectoryEntries(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -511,7 +511,7 @@ func TestExtractTarGzSkipsNonRegularFiles(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -729,7 +729,7 @@ func TestExtractZIPDepthLimitPreventsNesting(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -802,7 +802,7 @@ func TestParseSinglePartAttachmentOverSizeLimit(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -839,7 +839,7 @@ func TestExtractMultipartFilenameFromContentDisposition(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 

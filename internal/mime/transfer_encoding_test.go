@@ -41,7 +41,7 @@ func parseSpoolWithCleanup(t *testing.T, contentType, body string) *ExtractionRe
 	}
 	t.Cleanup(func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	})
 	return result
@@ -130,7 +130,7 @@ func TestSinglePartBase64IgnoresCharactersOutsideAlphabet(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	})
 	requireSingleStagedPart(t, result, transferPayload())
@@ -208,7 +208,7 @@ func TestSinglePartBase64DecodeFailureNamesDecoding(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	})
 	requireStagedPrefix(t, result, append([]byte("ab"), transferPayload()...), []byte("ab"))

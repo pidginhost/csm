@@ -72,7 +72,7 @@ func TestShieldBlocksDirectWebshellExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(base)
+	defer func() { _ = os.RemoveAll(base) }()
 	if base, err = filepath.Abs(base); err != nil {
 		t.Fatal(err)
 	}
