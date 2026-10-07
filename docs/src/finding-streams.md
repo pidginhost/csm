@@ -160,14 +160,21 @@ scrubbed:
 - A firewall row keeps its time, action, target, reason category, source and
   lease. Firewall entries carry no ids, so nothing joins them to actions or
   findings; the manifest says so rather than guessing from times or addresses.
+- Admission rows keep their kind and step. An audit row's target maps like a
+  firewall target, so it joins the legacy row for the same address, and its
+  reason category names the lane. An hourly summary, which sets `count`,
+  keeps its check, entry, decision, refusal reason and count and names no
+  target; a check that matches a learned account, host or domain refuses the
+  run.
 - An operation, action, actor, result or source the tool has not been
   reviewed against refuses the run instead of passing through.
 
 The manifest is written last and is the bundle's completion marker. It lists
 every input and output with its stream kind, position, SHA-256 of the exact
 bytes, record count and time span, the tool's source revision, the salt
-fingerprint, join counts, counts of discarded fields, action results by value,
-and coverage for each stream. Check every output's digest against it; a bundle
+fingerprint, join counts, counts of discarded fields, action results by value
+(admission steps and decisions included, at zero when absent), and coverage
+for each stream. Check every output's digest against it; a bundle
 without a manifest, or with a digest that does not match, is incomplete.
 
 - An action is matched when it names a finding id present in the recording,

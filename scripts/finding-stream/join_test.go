@@ -334,7 +334,7 @@ func TestRunJoinsRecordedOutcomes(t *testing.T) {
 	if !reflect.DeepEqual(manifest["dropped_fields"], wantDropped) {
 		t.Fatalf("dropped fields:\n got %v\nwant %v", manifest["dropped_fields"], wantDropped)
 	}
-	wantResults := map[string]any{"applied": 3.0, "dry_run": 0.0, "failed": 0.0, "refused": 0.0, "verified": 0.0, "unknown": 0.0}
+	wantResults := withAdmissionResults(map[string]any{"applied": 3.0, "dry_run": 0.0, "failed": 0.0, "refused": 0.0, "verified": 0.0, "unknown": 0.0})
 	if !reflect.DeepEqual(manifest["action_results"], wantResults) {
 		t.Fatalf("results: %v", manifest["action_results"])
 	}
@@ -408,7 +408,7 @@ func assertManifestKeys(t *testing.T, m map[string]any) {
 				}
 			case "action_results":
 				for rk := range v {
-					if !actionResults[rk] {
+					if !actionResults[rk] && !admissionAttemptResults[rk] && !admissionDecisions[rk] {
 						t.Errorf("action_results has unexpected key %q", rk)
 					}
 				}
@@ -488,7 +488,7 @@ func TestRunCountsRepeatedObservations(t *testing.T) {
 			t.Errorf("%s = %v, want %v", key, join[key], want)
 		}
 	}
-	wantResults := map[string]any{"applied": 0.0, "dry_run": 0.0, "failed": 1.0, "refused": 0.0, "verified": 2.0, "unknown": 1.0}
+	wantResults := withAdmissionResults(map[string]any{"applied": 0.0, "dry_run": 0.0, "failed": 1.0, "refused": 0.0, "verified": 2.0, "unknown": 1.0})
 	if !reflect.DeepEqual(manifest["action_results"], wantResults) {
 		t.Fatalf("a retransmission counted as another outcome: %v", manifest["action_results"])
 	}

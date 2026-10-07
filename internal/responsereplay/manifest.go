@@ -85,8 +85,11 @@ var errBundle = errors.New("replay: manifest is not a valid recording bundle man
 var (
 	bundleCoverageKinds  = map[string]bool{"findings": true, "actions": true, "firewall_audit": true, "ledger": true, "review": true, "firewall_id_join": true}
 	bundleCoverageValues = map[string]bool{"present": true, "absent": true, "not_recorded": true, "not_supplied": true, "unavailable": true, "not_applicable": true}
-	bundleResults        = map[string]bool{"applied": true, "dry_run": true, "failed": true, "refused": true, "verified": true, "unknown": true}
-	bundleKinds          = map[string]bool{"findings": true, "actions": true, "firewall_audit": true}
+	// The firewall's results, then the admission ledger's attempt steps
+	// and summary decisions.
+	bundleResults = map[string]bool{"applied": true, "dry_run": true, "failed": true, "refused": true, "verified": true, "unknown": true,
+		"reserved": true, "executing": true, "narrowed": true, "observe": true, "queued": true, "coalesced": true}
+	bundleKinds = map[string]bool{"findings": true, "actions": true, "firewall_audit": true}
 )
 
 // NonScanReasonPrefixes are the reasons automatic blocks from outside the

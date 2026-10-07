@@ -156,7 +156,7 @@ var reasonExact = map[string]string{
 	"AF_ALG socket open":                                      "af_alg",
 }
 
-var reasonPrefixes = []struct{ prefix, kind string }{
+var reasonPrefixes = append([]struct{ prefix, kind string }{
 	{"CSM auto-block (subnet): ", "scan_subnet"},
 	{"CSM auto-block (asn-crawl): ", "asn_crawl"},
 	{"CSM auto-block: ", "scan"},
@@ -169,7 +169,7 @@ var reasonPrefixes = []struct{ prefix, kind string }{
 	{"dyndns: ", "dyndns"},
 	{"source: ", "allow_source"},
 	{"cleared ", "flush"},
-}
+}, admissionLaneReasons()...)
 
 var reasonSuffixes = []struct{ suffix, kind string }{
 	{" via CLI", "operator_cli"},
@@ -177,7 +177,8 @@ var reasonSuffixes = []struct{ suffix, kind string }{
 }
 
 var reasonKinds = func() map[string]bool {
-	kinds := map[string]bool{"empty": true, "other": true}
+	// check: a summary's reason, carried as its typed check.
+	kinds := map[string]bool{"empty": true, "other": true, "check": true}
 	for _, k := range reasonExact {
 		kinds[k] = true
 	}
@@ -243,6 +244,12 @@ type anonAction struct {
 	HasError     bool   `json:"has_error"`
 	BeforeExists *bool  `json:"before_exists,omitempty"`
 	AfterExists  *bool  `json:"after_exists,omitempty"`
+	// An admission summary's typed fields: the check that asked, the entry
+	// it came through, a refusal's reason and how many responses it counts.
+	Check   string `json:"check,omitempty"`
+	Entry   string `json:"entry,omitempty"`
+	Refusal string `json:"refusal,omitempty"`
+	Count   uint64 `json:"count,omitempty"`
 }
 
 // anonFirewallAudit is the only shape a firewall audit entry leaves in. The
@@ -317,6 +324,12 @@ func validateAction(r actionlog.Record) (parsedTarget, error) {
 	if !ok {
 		return parsedTarget{}, errUnknownOp
 	}
+	if r.Count != 0 {
+		return parsedTarget{kind: "empty"}, validateSummary(r)
+	}
+	if r.Op == "respond.block_ip" && isAdmissionKey(r.Target) {
+		return validateAdmissionStep(r)
+	}
 	if !actionAllowed(shape, r.Op, r.Action) {
 		return parsedTarget{}, errUnknownAction
 	}
@@ -343,7 +356,11 @@ func (a *Anonymizer) Action(r actionlog.Record) (anonAction, error) {
 		ActionID: a.ID(idAction, r.ActionID), ActionVersion: r.ActionVersion, UndoOf: a.ID(idAction, r.UndoOf),
 		anonTarget: a.mapTarget(target), ReasonKind: reasonKind(r.Reason), Result: string(r.Result), HasError: r.Error != "",
 	}
-	kept := a.actorDetail(&out, r.ActorDetail)
+	summary := r.Count != 0
+	kept := summary || a.actorDetail(&out, r.ActorDetail)
+	if summary {
+		out.Check, out.Entry, out.Refusal, out.Count, out.ReasonKind = r.Reason, r.ActorDetail, r.Error, r.Count, "check"
+	}
 	if r.Before != nil {
 		exists := r.Before.Exists
 		out.BeforeExists = &exists
@@ -353,8 +370,8 @@ func (a *Anonymizer) Action(r actionlog.Record) (anonAction, error) {
 		out.AfterExists = &exists
 	}
 	a.drop("action.actor_detail", r.ActorDetail != "" && !kept)
-	a.drop("action.reason", r.Reason != "")
-	a.drop("action.error", r.Error != "")
+	a.drop("action.reason", r.Reason != "" && !summary)
+	a.drop("action.error", r.Error != "" && !summary)
 	a.drop("action.command", len(r.Command) > 0)
 	a.drop("action.undo", r.Undo != "")
 	a.drop("action.recovery_path", r.RecoveryPath != "")
@@ -604,13 +621,22 @@ func (a *Anonymizer) FirewallAudit(e firewall.AuditEntry) (anonFirewallAudit, er
 func (a *Anonymizer) VerifyAction(o anonAction) error {
 	shape, ok := actionOps[o.Op]
 	valid := ok && o.V == actionlog.SchemaVersion && o.Format == recordFormatVersion && !o.Timestamp.IsZero() &&
-		actionAllowed(shape, o.Op, o.Action) && actionActors[o.Actor] && actionResults[o.Result] &&
 		reasonKinds[o.ReasonKind] && o.DurationNS >= 0 &&
 		a.emittedName(o.Hostname, "host-") && a.emittedName(o.Account, "acct-") &&
 		(o.ActorIP == "" || a.emittedAddress(o.ActorIP)) &&
 		a.emittedID(o.FindingID, idFinding) && a.emittedID(o.IncidentID, idIncident) &&
-		a.emittedID(o.ActionID, idAction) && a.emittedID(o.UndoOf, idAction) &&
-		a.validTarget(o.anonTarget, actionTargetKinds(shape, o.Action))
+		a.emittedID(o.ActionID, idAction) && a.emittedID(o.UndoOf, idAction)
+	switch {
+	case o.Count != 0 || o.Check != "" || o.Entry != "" || o.Refusal != "":
+		valid = valid && a.verifySummary(o)
+	case strings.HasPrefix(o.ReasonKind, "admission_"):
+		valid = valid && o.Op == "respond.block_ip" && admissionKinds[o.Action] && o.Actor == string(actionlog.Daemon) &&
+			admissionAttemptResults[o.Result] && o.ActionID != "" && o.ActionVersion > 0 && o.FindingID != "" &&
+			o.TargetKind == admissionTargetKind(o.Action) && a.validTarget(o.anonTarget, addressTargetKinds)
+	default:
+		valid = valid && o.ReasonKind != "check" && actionAllowed(shape, o.Op, o.Action) && actionActors[o.Actor] &&
+			actionResults[o.Result] && a.validTarget(o.anonTarget, actionTargetKinds(shape, o.Action))
+	}
 	if !valid {
 		return errRowUnverified
 	}
