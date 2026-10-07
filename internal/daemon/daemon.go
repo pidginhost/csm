@@ -1210,6 +1210,7 @@ func (d *Daemon) Run() error {
 	csmlog.Info("watchers signalled", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
 
 	d.wg.Wait()
+	flushSenderProfiles()
 	stopProcessCtx()
 	// Stop the incident auto-close and retention goroutines before the
 	// admission owner's final drain and before closing the store, so neither
@@ -2088,8 +2089,12 @@ func (d *Daemon) startLogWatchers() {
 	// sender ever seen.
 	StartCloudRelayEviction(d.stopCh)
 
-	// Start background eviction for the per-mailbox sender profile windows.
-	StartSenderProfileEviction(d.stopCh)
+	// Save sender histories off the log-reader path and evict idle windows.
+	d.wg.Add(1)
+	obs.Go("sender-profile-maintenance", func() {
+		defer d.wg.Done()
+		runSenderProfileMaintenance(d.stopCh)
+	})
 
 	// Start background purge for SMTP brute-force tracker
 	d.wg.Add(1)

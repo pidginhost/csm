@@ -18,6 +18,10 @@ func TestRecipientsReadsTopLevelForList(t *testing.T) {
 		{"subject with escaped quote and for", prefix + `sender@example.com H=(helo) [203.0.113.5]:2525 P=esmtpsa S=100 T="say \" for me" for a@example.net`, []string{"a@example.net"}},
 		{"helo with for", prefix + `sender@example.com H=(x for y) [203.0.113.5]:2525 P=esmtpsa A=dovecot_login:bob@example.net S=100 for a@example.net`, []string{"a@example.net"}},
 		{"quoted envelope with for", prefix + `"for a@example.net"@example.com H=(helo) [203.0.113.5]:2525 P=esmtpsa S=100 for c@example.org`, []string{"c@example.org"}},
+		{"quoted recipients", prefix + `sender@example.com S=100 for "first last"@example.net "say \"for\""@example.org`, []string{`"first last"@example.net`, `"say \"for\""@example.org`}},
+		{"unclosed recipient", prefix + `sender@example.com S=100 for "unfinished@example.net`, nil},
+		{"mailauth can forge for", prefix + `sender@example.com H=(helo) [203.0.113.5] P=esmtpsa A=dovecot_login:bob@example.net:fake for forged@example.org S=100 for real@example.net`, nil},
+		{"remote ident can forge for", prefix + `sender@example.com H=(helo) [203.0.113.5] U=remote for forged@example.org P=esmtps S=100 for real@example.net`, nil},
 		{"local arrival", prefix + `root@example.com U=root P=local S=100 for alice@example.com`, []string{"alice@example.com"}},
 		{"no recipients logged", prefix + `sender@example.com H=(helo) [203.0.113.5]:2525 P=esmtpsa S=100 T="Hello"`, nil},
 		{"unclosed subject quote hides the list", prefix + `sender@example.com H=(helo) [203.0.113.5]:2525 P=esmtpsa S=100 T="Hello for a@example.net`, nil},
@@ -36,11 +40,18 @@ func FuzzRecipients(f *testing.F) {
 	f.Add(`2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com H=(helo) [203.0.113.5]:2525 P=esmtpsa A=dovecot_login:bob@example.net S=100 T="for" for a@example.net b@example.org`)
 	f.Add(`2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com T="x for y`)
 	f.Add(`2026-01-01 10:00:00 1abc23-000456-AB <= "for x"@example.com U=bob P=local S=1 for`)
+	f.Add(`2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com S=100 for "first last"@example.net`)
+	f.Add(`2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com H=(for fake@example.net) [203.0.113.5] P=esmtpsa A=dovecot_login:bob@example.net:fake for forged@example.org S=100 for real@example.net`)
 	f.Fuzz(func(t *testing.T, line string) {
 		for _, r := range Recipients(line) {
-			if r == "" || strings.ContainsAny(r, " \t\r\n") || !strings.Contains(line, r) {
-				t.Fatalf("recipient %q is not a whitespace-free token of the record", r)
+			if r == "" || envelopeEnd(r) != len(r) || !strings.Contains(line, r) {
+				t.Fatalf("recipient %q is not an address token of the record", r)
 			}
+		}
+		quoted := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(line)
+		record := `2026-01-01 10:00:00 1abc23-000456-AB <= "for ` + quoted + `"@example.com H=(helo) [203.0.113.5] P=esmtpsa S=100 T="` + quoted + `" for a@example.net`
+		if got := Recipients(record); !reflect.DeepEqual(got, []string{"a@example.net"}) {
+			t.Fatalf("quoted message data changed recipients: %q", got)
 		}
 	})
 }

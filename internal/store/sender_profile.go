@@ -23,6 +23,8 @@ type SenderDay struct {
 	Countries []string `json:"countries,omitempty"`
 	// Recipients are the distinct envelope recipients, lower-cased.
 	Recipients []string `json:"recipients,omitempty"`
+	// SingleRecipients excludes bulk announcements from individual fan-out.
+	SingleRecipients []string `json:"single_recipients,omitempty"`
 }
 
 // SenderProfile is a mailbox's recent sending history keyed by UTC day
@@ -44,21 +46,55 @@ func (db *DB) SetSenderProfile(mailbox string, p SenderProfile) error {
 	})
 }
 
-// GetSenderProfile retrieves the sending profile for a mailbox. It returns
-// the profile and true when found, or a zero value and false otherwise.
-func (db *DB) GetSenderProfile(mailbox string) (SenderProfile, bool) {
+// GetSenderProfile retrieves the sending profile for a mailbox. A missing
+// profile is empty; unreadable history is an error, never a fresh baseline.
+func (db *DB) GetSenderProfile(mailbox string) (SenderProfile, error) {
 	var p SenderProfile
-	var found bool
-	_ = db.bolt.View(func(tx *bolt.Tx) error {
+	err := db.bolt.View(func(tx *bolt.Tx) error {
 		v := tx.Bucket([]byte(senderProfileBucket)).Get([]byte(mailbox))
 		if v == nil {
 			return nil
 		}
-		if json.Unmarshal(v, &p) != nil {
-			return nil //nolint:nilerr // skip corrupt entry
+		return json.Unmarshal(v, &p)
+	})
+	if err != nil {
+		return SenderProfile{}, err
+	}
+	return p, nil
+}
+
+// PruneSenderProfiles expires old days even for mailboxes that never send
+// again. Empty profiles are removed instead of retaining recipient history.
+func (db *DB) PruneSenderProfiles(oldest string) error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte(senderProfileBucket))
+		cursor := bucket.Cursor()
+		for key, value := cursor.First(); key != nil; key, value = cursor.Next() {
+			var p SenderProfile
+			if err := json.Unmarshal(value, &p); err != nil {
+				return err
+			}
+			changed := false
+			for day := range p.Days {
+				if day < oldest {
+					delete(p.Days, day)
+					changed = true
+				}
+			}
+			if len(p.Days) == 0 {
+				if err := cursor.Delete(); err != nil {
+					return err
+				}
+			} else if changed {
+				encoded, err := json.Marshal(p)
+				if err != nil {
+					return err
+				}
+				if err := bucket.Put(key, encoded); err != nil {
+					return err
+				}
+			}
 		}
-		found = true
 		return nil
 	})
-	return p, found
 }

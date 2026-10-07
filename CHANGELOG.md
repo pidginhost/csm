@@ -11,6 +11,9 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Busy mailboxes continue to receive compromise alerts when their sending locations change.
+- A newly seen sending country still contributes to compromise alerts when unusual sending develops later that day.
+- Mailbox compromise alerts no longer count forged recipient lists from ambiguous mail log records.
 - Unknown API and metrics tokens now spend the same five-per-minute budget as the login form, so a token cannot be guessed at API speed.
 - The cron downloader signature no longer slows scans on long crafted lines or flags plugin pages that only print a recommended wp-cron command.
 - Four more download, miner and shell startup signatures no longer slow scans on long crafted lines or on files full of documented install commands.
@@ -26,7 +29,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
-- A mailbox that sends from several countries in an hour, from unusually many addresses or a new country, or to unusually many recipients now raises a compromise alert.
+- Mailboxes now receive compromise alerts for unusual sending locations, source address changes, or individual recipient fan-out.
 - The previous configuration file is kept as a backup next to it before the dashboard, rehash or installer saves a new one.
 - Held forward copies are now deleted once they pass the configured retention window instead of staying on disk.
 - Status and diagnostics now report automatic response admission health, with Critical alerts for failures.
@@ -47,6 +50,11 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - A full rescan queued by a rules update now survives daemon restarts and is cleared only after a completed sweep; it waits while `detection.rescan_on_signature_update` is off.
 - The OpenAPI contract now documents supported methods, settings write requirements and mail deletion errors.
+- Inactive mailboxes no longer retain expired sender and recipient history.
+- Bulk announcements and quoted recipient addresses no longer cause false mailbox fan-out alerts.
+- Mailbox sending history follows UTC days consistently across timezone and daylight-saving changes.
+- Mail log monitoring stays responsive during busy sending periods.
+- Unreadable sender history no longer causes false mailbox compromise alerts.
 - The email password audit now checks mailboxes on cPanel hosts instead of reporting every stored hash as unauditable.
 - Bot range feed updates no longer hang when a feed host accepts the connection and never answers.
 - The email quarantine sweep now reports entries it could not delete instead of counting the sweep as clean.

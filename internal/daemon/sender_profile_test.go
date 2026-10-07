@@ -281,7 +281,8 @@ func TestSenderProfile_DayCountsSurviveRestart(t *testing.T) {
 				t.Fatalf("send %d: unexpected %+v", i, got)
 			}
 		}
-		// A daemon restart loses the in-memory hour window but not the day.
+		// A clean shutdown saves pending days after stopping the log readers.
+		flushSenderProfiles()
 		resetSenderProfileState()
 		var got []alert.Finding
 		for i := 4; i <= 6; i++ {
@@ -330,6 +331,259 @@ func TestSenderProfile_EvictsIdleWindows(t *testing.T) {
 		evictSenderWindows(senderTestNow.Add(3 * time.Hour))
 		if _, ok := senderWindows.Load("user@example.com"); ok {
 			t.Fatal("idle window was not evicted")
+		}
+	})
+}
+
+func TestSenderProfile_BusyHourKeepsNewCountries(t *testing.T) {
+	resetSenderProfileState()
+	stubGeo(t, map[string]string{"203.0.113.5": "RO", "198.51.100.7": "DE", "192.0.2.9": "FR"})
+	withGlobalStore(t, func(_ *store.DB) {
+		cfg := cloudRelayTestConfig()
+		for i := 0; i < senderMaxHourEvents+1; i++ {
+			sendAt(t, cfg, senderTestNow, "user@example.com", "203.0.113.5", "a@example.net")
+		}
+		sendAt(t, cfg, senderTestNow.Add(time.Minute), "user@example.com", "198.51.100.7", "a@example.net")
+		got := sendAt(t, cfg, senderTestNow.Add(2*time.Minute), "user@example.com", "192.0.2.9", "a@example.net")
+		if len(got) != 1 || got[0].Severity != alert.Critical {
+			t.Fatalf("busy mailbox lost new source countries: %+v", got)
+		}
+	})
+}
+
+func TestSenderProfile_AnnouncementDoesNotBecomeIndividualFanout(t *testing.T) {
+	resetSenderProfileState()
+	stubGeo(t, nil)
+	withGlobalStore(t, func(_ *store.DB) {
+		cfg := cloudRelayTestConfig()
+		for i := 0; i < senderRcptFloorDay; i++ {
+			recipients := []string{"a@example.net"}
+			if i == 0 {
+				recipients = manyRecipients(senderRcptFloorDay)
+			}
+			if got := sendAt(t, cfg, senderTestNow.Add(time.Duration(i)*time.Second), "user@example.com", "203.0.113.5", recipients...); len(got) != 0 {
+				t.Fatalf("announcement plus routine correspondence raised %+v", got)
+			}
+		}
+	})
+}
+
+func TestSenderProfile_HotSenderAvoidsPerSendWrites(t *testing.T) {
+	resetSenderProfileState()
+	stubGeo(t, nil)
+	withGlobalStore(t, func(db *store.DB) {
+		cfg := cloudRelayTestConfig()
+		before := db.WriteTxID()
+		for i := 0; i < 100; i++ {
+			sendAt(t, cfg, senderTestNow, "user@example.com", "203.0.113.5", "a@example.net")
+		}
+		if writes := db.WriteTxID() - before; writes > 1 {
+			t.Fatalf("one burst committed %d database transactions", writes)
+		}
+		// Eviction must save the final counters before dropping the cache.
+		evictSenderWindows(senderTestNow.Add(3 * time.Hour))
+		p, err := db.GetSenderProfile("user@example.com")
+		if err != nil || p.Days[senderDayKey(senderTestNow)] == nil || p.Days[senderDayKey(senderTestNow)].Sends != 100 {
+			t.Fatalf("eviction lost pending sends: %+v", p)
+		}
+	})
+}
+
+func TestSenderProfile_DailyHistoryWithoutStore(t *testing.T) {
+	resetSenderProfileState()
+	stubGeo(t, nil)
+	prev := store.Global()
+	store.SetGlobal(nil)
+	t.Cleanup(func() { store.SetGlobal(prev) })
+	var got []alert.Finding
+	for i := 0; i < senderIPFloorDay; i++ {
+		got = sendAt(t, cloudRelayTestConfig(), senderTestNow.Add(time.Duration(i)*90*time.Minute), "user@example.com", fmt.Sprintf("203.0.113.%d", i+1), "a@example.net")
+	}
+	if len(got) != 1 || got[0].Severity != alert.High {
+		t.Fatalf("daily history disappeared without a store: %+v", got)
+	}
+}
+
+func TestSenderBaseline_OnlyPriorUTCDays(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Subtracting calendar days in local time crosses DST and changes the UTC date.
+	now := time.Date(2026, 3, 20, 19, 30, 0, 0, loc)
+	p := store.SenderProfile{Days: map[string]*store.SenderDay{
+		"2026-03-05": {Sends: 1, MaxHourIPs: 9},
+		"2026-03-06": {Sends: 1, MaxHourIPs: 2},
+		"2026-03-20": {Sends: 1, MaxHourIPs: 8},
+		"2026-03-21": {Sends: 1, MaxHourIPs: 7},
+	}}
+	got := senderBaseline(p, now)
+	if got.activeDays != 1 || got.maxHourIPs != 2 {
+		t.Fatalf("baseline must include only the prior UTC days: %+v", got)
+	}
+}
+
+func TestSenderProfile_NovelCountryBeforeChurn(t *testing.T) {
+	resetSenderProfileState()
+	stubGeo(t, map[string]string{"198.51.100.1": "DE", "203.0.113.2": "RO", "203.0.113.3": "RO", "203.0.113.4": "RO"})
+	withGlobalStore(t, func(db *store.DB) {
+		seedSenderBaseline(t, db, senderTestNow, "user@example.com", senderBaselineMinDays, func(int) *store.SenderDay {
+			return &store.SenderDay{Sends: 1, IPs: []string{"203.0.113.1"}, MaxHourIPs: 1, Countries: []string{"RO"}}
+		})
+		var got []alert.Finding
+		for _, ip := range []string{"198.51.100.1", "203.0.113.2", "203.0.113.3", "203.0.113.4"} {
+			got = sendAt(t, cloudRelayTestConfig(), senderTestNow, "user@example.com", ip, "a@example.net")
+		}
+		if len(got) != 1 || got[0].Severity != alert.Critical {
+			t.Fatalf("a new country preceding source churn must still escalate: %+v", got)
+		}
+	})
+}
+
+func TestSenderProfile_UnreadableBaselineDoesNotAlert(t *testing.T) {
+	resetSenderProfileState()
+	stubGeo(t, nil)
+	withGlobalStore(t, func(db *store.DB) {
+		seedSenderBaseline(t, db, senderTestNow, "user@example.com", 3, func(int) *store.SenderDay {
+			return &store.SenderDay{Sends: 10, MaxHourIPs: 10}
+		})
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < senderIPFloorHour; i++ {
+			got := sendAt(t, cloudRelayTestConfig(), senderTestNow, "user@example.com", fmt.Sprintf("203.0.113.%d", i+1), "a@example.net")
+			if len(got) != 0 {
+				t.Fatalf("unreadable history was treated as an empty baseline: %+v", got)
+			}
+		}
+	})
+}
+
+func TestSenderProfile_FailedSaveKeepsDirtyWindow(t *testing.T) {
+	resetSenderProfileState()
+	stubGeo(t, nil)
+	withGlobalStore(t, func(db *store.DB) {
+		sendAt(t, cloudRelayTestConfig(), senderTestNow, "user@example.com", "203.0.113.5", "a@example.net")
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		evictSenderWindows(senderTestNow.Add(3 * time.Hour))
+		val, ok := senderWindows.Load("user@example.com")
+		if !ok {
+			t.Fatal("failed persistence evicted unsaved history")
+		}
+		w := val.(*senderWindow)
+		if !w.dirty || w.profile.Days[senderDayKey(senderTestNow)].Sends != 1 {
+			t.Fatal("failed persistence discarded the pending send")
+		}
+	})
+}
+
+func TestSenderProfile_UTCRolloverPersistsRollingHour(t *testing.T) {
+	resetSenderProfileState()
+	stubGeo(t, nil)
+	withGlobalStore(t, func(db *store.DB) {
+		cfg := cloudRelayTestConfig()
+		at := time.Date(2026, 1, 10, 23, 59, 0, 0, time.UTC).In(time.FixedZone("offset", 3*60*60))
+		sendAt(t, cfg, at, "user@example.com", "203.0.113.1", "a@example.net")
+		sendAt(t, cfg, at.Add(time.Minute), "user@example.com", "203.0.113.2", "b@example.net")
+		flushSenderProfiles()
+		p, err := db.GetSenderProfile("user@example.com")
+		if err != nil || len(p.Days) != 2 {
+			t.Fatalf("missing UTC days: %+v", p)
+		}
+		old, current := p.Days["2026-01-10"], p.Days["2026-01-11"]
+		if old.Sends != 1 || current.Sends != 1 || old.MaxHourIPs != 1 || current.MaxHourIPs != 2 {
+			t.Fatalf("midnight reset the rolling hour or merged daily counts: old=%+v current=%+v", old, current)
+		}
+		resetSenderProfileState()
+		sendAt(t, cfg, at.Add(2*time.Minute), "user@example.com", "203.0.113.3", "c@example.net")
+		flushSenderProfiles()
+		p, _ = db.GetSenderProfile("user@example.com")
+		if p.Days["2026-01-11"].MaxHourIPs != 2 || p.Days["2026-01-11"].Sends != 2 {
+			t.Fatalf("restart reduced the persisted daily maximum: %+v", p)
+		}
+	})
+}
+
+func TestSenderProfile_ConcurrentEvictionPreservesSends(t *testing.T) {
+	resetSenderProfileState()
+	stubGeo(t, nil)
+	withGlobalStore(t, func(db *store.DB) {
+		cfg := cloudRelayTestConfig()
+		sendAt(t, cfg, senderTestNow.Add(-3*time.Hour), "user@example.com", "203.0.113.5", "a@example.net")
+		var wg sync.WaitGroup
+		for i := 0; i < 20; i++ {
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				sendAt(t, cfg, senderTestNow, "user@example.com", "203.0.113.5", "a@example.net")
+			}()
+			go func() {
+				defer wg.Done()
+				evictSenderWindows(senderTestNow)
+				flushSenderProfiles()
+			}()
+		}
+		wg.Wait()
+		flushSenderProfiles()
+		p, err := db.GetSenderProfile("user@example.com")
+		if err != nil || p.Days[senderDayKey(senderTestNow)] == nil || p.Days[senderDayKey(senderTestNow)].Sends != 21 {
+			t.Fatalf("concurrent flush/eviction lost sends: %+v", p)
+		}
+	})
+}
+
+func TestSenderWindow_RefreshesSourcesAndExpiresCountries(t *testing.T) {
+	w := &senderWindow{}
+	w.observeSource(senderTestNow, "203.0.113.1", "RO")
+	w.observeSource(senderTestNow.Add(59*time.Minute), "203.0.113.1", "RO")
+	w.observeSource(senderTestNow.Add(61*time.Minute), "203.0.113.2", "DE")
+	if len(w.events) != 2 || len(w.countries) != 2 {
+		t.Fatalf("repeat did not refresh source: %+v", w)
+	}
+	w.observeSource(senderTestNow.Add(119*time.Minute), "203.0.113.2", "DE")
+	if len(w.events) != 1 || len(w.countries) != 1 || w.events[0].ip != "203.0.113.2" {
+		t.Fatalf("source and country survived the hour cutoff: %+v", w)
+	}
+}
+
+func TestSenderProfile_ExpiresInactiveHistory(t *testing.T) {
+	resetSenderProfileState()
+	withGlobalStore(t, func(db *store.DB) {
+		old := senderDayKey(senderTestNow.AddDate(0, 0, -senderBaselineDays-1))
+		keep := senderDayKey(senderTestNow.AddDate(0, 0, -senderBaselineDays))
+		for user, days := range map[string]map[string]*store.SenderDay{
+			"idle@example.com":   {old: {Sends: 1}},
+			"active@example.com": {old: {Sends: 1}, keep: {Sends: 2}},
+		} {
+			if err := db.SetSenderProfile(user, store.SenderProfile{Days: days}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		evictSenderWindows(senderTestNow)
+		idle, err := db.GetSenderProfile("idle@example.com")
+		if err != nil || idle.Days != nil {
+			t.Fatalf("inactive history outlived retention: %+v, %v", idle, err)
+		}
+		active, err := db.GetSenderProfile("active@example.com")
+		if err != nil || len(active.Days) != 1 || active.Days[keep] == nil || active.Days[keep].Sends != 2 {
+			t.Fatalf("retention failed to preserve the baseline boundary: %+v, %v", active, err)
+		}
+	})
+}
+
+func TestSenderProfile_RepeatedRecipientIsStillIndividual(t *testing.T) {
+	resetSenderProfileState()
+	stubGeo(t, nil)
+	withGlobalStore(t, func(_ *store.DB) {
+		var got []alert.Finding
+		for i := 0; i < senderRcptFloorDay; i++ {
+			r := fmt.Sprintf("r%d@example.net", i)
+			got = sendAt(t, cloudRelayTestConfig(), senderTestNow, "user@example.com", "203.0.113.5", r, strings.ToUpper(r))
+		}
+		if len(got) != 1 || got[0].Severity != alert.High {
+			t.Fatalf("duplicate copies of the same envelope recipient hid fan-out: %+v", got)
 		}
 	})
 }

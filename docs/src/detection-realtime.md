@@ -366,7 +366,7 @@ The finding is `email_cloud_relay_abuse`. Under the global auto-response and dry
 
 ## Authenticated Sender Profile
 
-Catches a stolen mailbox password that is used quietly: under the rate limits, from residential addresses with no cloud reverse DNS, one victim per message. Every authenticated Exim submission updates a rolling one-hour window and the mailbox's own per-day history of source addresses, source countries and envelope recipients, kept for two weeks in the state database.
+Catches a stolen mailbox password that is used quietly: under the rate limits, from residential addresses with no cloud reverse DNS, using individually addressed messages. Every authenticated Exim submission updates a rolling hourly window and the mailbox's own history of source addresses, source countries and envelope recipients, grouped by UTC day. Repeated sends keep each source current, and a busy mailbox continues to accept new source and country evidence.
 
 The finding is `email_compromised_account`. Four signals raise it:
 
@@ -377,7 +377,11 @@ The finding is `email_compromised_account`. Four signals raise it:
 | Far more distinct source addresses within one day than the mailbox's own recent maximum | High, Critical as above |
 | Far more distinct recipients within one day than the mailbox's own recent maximum, each in its own message | High, Critical as above |
 
-Each bar is the larger of a fixed floor and twice the mailbox's own prior maximum, so a shared office mailbox or a travelling owner is judged against their own habit rather than a global number. A country listed in `suppressions.trusted_countries` is never treated as new. A mailbox needs a few active days of history before a new country counts. One finding is raised per mailbox per hour, with an escalation from High to Critical allowed inside that hour.
+Each bar adapts to the mailbox's own prior maximum with a fixed minimum, so a shared office mailbox or a travelling owner is judged against their own habit rather than a global number. A country listed in `suppressions.trusted_countries` is never treated as new. A mailbox needs established prior activity before a new country counts. A newly seen country remains relevant if unusual sending develops later in the same UTC day. Repeated findings are suppressed during a cooldown, while escalation from High to Critical remains possible.
+
+Recipient fan-out counts distinct envelope recipients of individually addressed messages; bulk announcements do not contribute. Quoted addresses remain single recipients. Records with ambiguous recipient metadata do not contribute recipient evidence, but verified source evidence still counts.
+
+Daily history covers the recent baseline period and expires even for inactive mailboxes. It is cached and saved periodically, before idle eviction and during normal shutdown. An abrupt termination can lose submissions since the last save; a restart always starts a fresh hourly window. Save failures retain pending history for retry. An unreadable baseline pauses profiling for that mailbox until the store can be read again.
 
 Source addresses are never blocked for this finding: they rotate per message and the owner's own address can be among them. A Critical finding suspends the mailbox's logins and outgoing mail under the auto-response and dry-run settings, with the account-wide mail hold as the fallback. Mailboxes listed in `email_protection.high_volume_senders` are not profiled.
 
