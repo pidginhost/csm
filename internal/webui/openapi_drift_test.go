@@ -49,12 +49,19 @@ var openAPIMethods = map[string]struct{}{
 	"put":    {},
 }
 
-var openAPIPrimaryMethodOverrides = map[string]string{
-	"/api/v1/sessions/": "delete", // Session ID prefix accepts revocation only.
-	// These CSRF-wrapped handlers use PUT for writes. Documenting POST points
-	// API clients at a method the handlers reject.
-	"/api/v1/prefs/user":  "put",
-	"/api/v1/prefs/views": "put",
+// openAPIRouteMethods lists, for the unqualified registrations whose handler
+// dispatches on r.Method itself, every method the handler serves. The spec
+// must document each of them. A path absent here is documented with one
+// method, derived from its wrapper: GET, or POST under requireCSRF.
+var openAPIRouteMethods = map[string][]string{
+	"/api/v1/email/held/":             {"post", "delete"},
+	"/api/v1/email/quarantine/":       {"get", "post", "delete"},
+	"/api/v1/modsec/rules/escalation": {"get", "post"},
+	"/api/v1/prefs/user":              {"get", "put"},
+	"/api/v1/prefs/views":             {"get", "put", "delete"},
+	"/api/v1/sessions/":               {"delete"}, // Session ID prefix accepts revocation only.
+	"/api/v1/settings/":               {"get", "post"},
+	"/api/v1/suppressions":            {"get", "post", "delete"},
 }
 
 // registeredAPIRoutes scans every non-test Go source in this package for
@@ -123,9 +130,6 @@ func registeredAPIRoutes(t *testing.T) map[string]apiRouteContract {
 			} else if exprContainsCall(call.Args[1], "requireCSRF") {
 				route.Method = "post"
 			}
-			if m, ok := openAPIPrimaryMethodOverrides[path]; ok {
-				route.Method = m
-			}
 
 			switch {
 			case exprContainsCall(call.Args[1], "requireRead"):
@@ -140,6 +144,25 @@ func registeredAPIRoutes(t *testing.T) map[string]apiRouteContract {
 			// co-exist with an unqualified registration (e.g. GET reads and
 			// POST writes sharing a path prefix). Use "METHOD:path" as the
 			// dedup key so both are tracked independently.
+			// A handler that dispatches on r.Method registers one contract
+			// per declared method, keyed the way documentedAPIRoutes keys
+			// multi-method paths.
+			if methods, ok := openAPIRouteMethods[path]; ok && methodOverride == "" {
+				for _, m := range methods {
+					key := path
+					if len(methods) > 1 && m != "get" {
+						key = m + ":" + path
+					}
+					if prev, exists := routes[key]; exists {
+						t.Errorf("%s duplicates %s registered at %s", source, key, prev.Source)
+						continue
+					}
+					perMethod := route
+					perMethod.Method = m
+					routes[key] = perMethod
+				}
+				return true
+			}
 			key := path
 			if methodOverride != "" {
 				key = methodOverride + ":" + path
