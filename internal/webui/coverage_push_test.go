@@ -1273,3 +1273,73 @@ func TestAPIThreatOperatorClearForgetsNetblockHistory(t *testing.T) {
 		})
 	}
 }
+
+// A browser only sends a credentialed JSON POST after a preflight that names
+// the method and headers it will use, so an allowed origin must get them.
+func TestSecurityHeadersPreflightFromAllowedOriginListsMethodsAndHeaders(t *testing.T) {
+	s := newTestServer(t, "tok")
+	s.cfg.WebUI.Listen = ":9443"
+	s.cfg.Hostname = "myhost.example.com"
+	s.cfg.WebUI.AllowedOrigins = []string{"https://panel.example.com"}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("inner handler should not be called for a preflight")
+	})
+	handler := s.securityHeaders(inner)
+
+	req := httptest.NewRequest("OPTIONS", "/api/v1/settings/alerts", nil)
+	req.Host = "myhost.example.com:9443"
+	req.Header.Set("Origin", "https://panel.example.com")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "content-type, if-match, x-csrf-token")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("preflight = %d, want 204", w.Code)
+	}
+	h := w.Header()
+	if got := h.Get("Access-Control-Allow-Origin"); got != "https://panel.example.com" {
+		t.Errorf("ACAO = %q", got)
+	}
+	if got := h.Get("Access-Control-Allow-Credentials"); got != "true" {
+		t.Errorf("ACAC = %q", got)
+	}
+	for _, method := range []string{"GET", "POST", "PUT", "DELETE"} {
+		if !strings.Contains(h.Get("Access-Control-Allow-Methods"), method) {
+			t.Errorf("Allow-Methods %q lacks %s", h.Get("Access-Control-Allow-Methods"), method)
+		}
+	}
+	if got := h.Get("Access-Control-Allow-Headers"); got != "content-type, if-match, x-csrf-token" {
+		t.Errorf("Allow-Headers = %q, want the requested headers echoed", got)
+	}
+	if h.Get("Access-Control-Max-Age") == "" {
+		t.Error("preflight carries no Access-Control-Max-Age")
+	}
+	if !strings.Contains(h.Get("Vary"), "Origin") {
+		t.Errorf("Vary = %q, want Origin", h.Get("Vary"))
+	}
+}
+
+func TestSecurityHeadersPreflightWithoutRequestedHeadersListsTheAPIHeaders(t *testing.T) {
+	s := newTestServer(t, "tok")
+	s.cfg.WebUI.Listen = ":9443"
+	s.cfg.Hostname = "myhost.example.com"
+	handler := s.securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	req := httptest.NewRequest("OPTIONS", "/api/v1/status", nil)
+	req.Host = "myhost.example.com:9443"
+	req.Header.Set("Origin", "https://myhost.example.com:9443")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("preflight = %d, want 204", w.Code)
+	}
+	for _, name := range []string{"Authorization", "Content-Type", "If-Match", "X-CSRF-Token"} {
+		if !strings.Contains(w.Header().Get("Access-Control-Allow-Headers"), name) {
+			t.Errorf("Allow-Headers %q lacks %s", w.Header().Get("Access-Control-Allow-Headers"), name)
+		}
+	}
+}

@@ -1015,9 +1015,21 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 				}
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Add("Vary", "Origin")
 			}
-			// Deny CORS preflight from unknown origins
+			// A preflight from an unknown origin was refused above. An
+			// allowed origin learns the methods and headers the API takes,
+			// or the browser never sends the credentialed write.
 			if r.Method == "OPTIONS" {
+				if origin != "" {
+					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+					requested := r.Header.Get("Access-Control-Request-Headers")
+					if requested == "" {
+						requested = "Authorization, Content-Type, If-Match, X-CSRF-Token"
+					}
+					w.Header().Set("Access-Control-Allow-Headers", requested)
+					w.Header().Set("Access-Control-Max-Age", "600")
+				}
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
