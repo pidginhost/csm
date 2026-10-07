@@ -14,10 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/text/language"
+
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/safepath"
 	"github.com/pidginhost/csm/internal/sshdconf"
-	"golang.org/x/text/language"
 )
 
 // ValidationResult represents a single validation finding.
@@ -1484,12 +1486,7 @@ func splitSystemdWords(value string) ([]string, bool) {
 }
 
 func pathContains(parent, child string) bool {
-	parent = filepath.Clean(parent)
-	child = filepath.Clean(child)
-	if parent == string(filepath.Separator) {
-		return filepath.IsAbs(child)
-	}
-	return child == parent || strings.HasPrefix(child, parent+string(filepath.Separator))
+	return safepath.Within(child, parent)
 }
 
 func pathUnderAny(path string, roots ...string) bool {

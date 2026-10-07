@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/pidginhost/csm/internal/actionlog"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // quarantineMoveChecks are the findings whose manual fix, and whose
@@ -483,9 +484,7 @@ func fixTargetMinDepth(root string) int {
 }
 
 func isPathWithinOrEqual(path, base string) bool {
-	cleanPath := filepath.Clean(path)
-	cleanBase := filepath.Clean(base)
-	return cleanPath == cleanBase || strings.HasPrefix(cleanPath, cleanBase+string(filepath.Separator))
+	return safepath.Within(path, base)
 }
 
 func homeAccountRoot(path string) string {

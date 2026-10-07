@@ -18,6 +18,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // jsonForScript marshals v to JSON and returns it as template.JS suitable
@@ -336,9 +337,7 @@ func isPathUnder(path, base string) bool {
 }
 
 func isPathWithin(path, base string) bool {
-	cleanPath := filepath.Clean(path)
-	cleanBase := filepath.Clean(base)
-	return cleanPath == cleanBase || strings.HasPrefix(cleanPath, cleanBase+string(filepath.Separator))
+	return safepath.Within(path, base)
 }
 
 // hashLiveStateFile hashes a file for quarantineLiveState; a var so tests
