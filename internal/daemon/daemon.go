@@ -137,11 +137,12 @@ type Daemon struct {
 	phpTaintSup *phptaintworker.Supervisor
 
 	// forceFullRescan is armed by the signature watcher
-	// (sig_watch.go) when any tracked rule file's content changes.
+	// (sig_watch.go) when any tracked rule file's content changes,
+	// and again at startup while a queued rescan is stored.
 	// The deep-tier scheduler reads + clears the flag at the start
 	// of each tick; when set, the tick bypasses the fanotify
 	// short-list and runs the full account tree against the new
-	// ruleset.
+	// ruleset, then clears the stored queue once the sweep completes.
 	forceFullRescan atomic.Bool
 
 	// policies holds the email PHP-relay pattern policies
@@ -1845,14 +1846,16 @@ func (d *Daemon) deepScanner() {
 			// without this, only files that change AFTER the rule
 			// update would catch the new patterns.
 			cfg := d.currentCfg()
-			rescan := d.forceFullRescan.CompareAndSwap(true, false)
+			rescan, rescanGen := takeSignatureRescan(&d.forceFullRescan, store.Global())
 			scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
 			var findings []alert.Finding
 			var purgeChecks []string
 			switch {
 			case rescan:
 				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
-				observeSignatureRescan()
+				if finishSignatureRescan(scanCtx, store.Global(), rescanGen) {
+					observeSignatureRescan()
+				}
 			case d.getFileMonitor() != nil:
 				findings, purgeChecks = checks.RunReducedDeepWithContext(scanCtx, cfg, d.store)
 			default:

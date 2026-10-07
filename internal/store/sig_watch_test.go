@@ -52,3 +52,66 @@ func TestSignatureFilesReadsLegacyMtimeMap(t *testing.T) {
 		t.Fatalf("legacy entry = %+v, want unknown size (-1) and no hash", state)
 	}
 }
+
+// A queued rescan is stored with the rule state that caused it, so a restart
+// before the sweep finishes cannot lose it. Only the sweep that read a
+// generation may clear it.
+func TestSignatureRescanPendingUntilCleared(t *testing.T) {
+	db := openTestDB(t)
+	pending := func() uint64 {
+		t.Helper()
+		gen, err := db.SignatureRescanPending()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return gen
+	}
+	arm := func(state map[string]SignatureFileState) uint64 {
+		t.Helper()
+		gen, err := db.PutSignatureFilesWithRescan(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return gen
+	}
+	clear := func(gen uint64) bool {
+		t.Helper()
+		cleared, err := db.ClearSignatureRescan(gen)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cleared
+	}
+
+	if gen := pending(); gen != 0 {
+		t.Fatalf("fresh store pending = %d, want 0", gen)
+	}
+	state := map[string]SignatureFileState{"/opt/csm/rules/malware.yml": {Size: 1, SHA256: "aa"}}
+	first := arm(state)
+	if first == 0 {
+		t.Fatal("arming returned no generation")
+	}
+	got, err := db.GetSignatureFiles()
+	if err != nil || got["/opt/csm/rules/malware.yml"].SHA256 != "aa" {
+		t.Fatalf("rule state not written with the rescan: %v, %v", got, err)
+	}
+	second := arm(state)
+	if second <= first {
+		t.Fatalf("re-arm = %d, want a generation after %d", second, first)
+	}
+	if clear(first) {
+		t.Fatal("stale clear removed the newer rescan")
+	}
+	if gen := pending(); gen != second {
+		t.Fatalf("pending = %d after stale clear, want %d", gen, second)
+	}
+	if !clear(second) {
+		t.Fatal("current generation not cleared")
+	}
+	if gen := pending(); gen != 0 {
+		t.Fatalf("pending = %d after clear, want 0", gen)
+	}
+	if third := arm(state); third <= second {
+		t.Fatalf("arm after clear = %d; generations must not repeat", third)
+	}
+}

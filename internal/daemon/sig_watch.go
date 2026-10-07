@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -43,6 +44,11 @@ import (
 // The per-file state is persisted in bbolt (sig_watch bucket) so a
 // daemon restart does not look like "all files are new" and trigger a
 // phantom rescan on first tick.
+//
+// The queued rescan is persisted in the same transaction as the state
+// that caused it, and only a completed sweep clears it. The flag itself
+// lives in memory, so without this a restart between the change and the
+// next deep tick kept the new state and silently dropped the rescan.
 
 const sigWatchInterval = 60 * time.Second
 
@@ -94,6 +100,9 @@ type sigWatcher struct {
 	// persisted is false until last has been written to bbolt, and again
 	// after it changes, so an unchanged tick commits nothing.
 	persisted bool
+	// queueRescan is true from a detected change until the queued rescan
+	// is written with the state, so a failed write is retried with it.
+	queueRescan bool
 }
 
 // newSigWatcher constructs a watcher with production defaults.
@@ -128,6 +137,14 @@ func (w *sigWatcher) loadInitial(sdb *store.DB) {
 	}
 	w.last = got
 	w.persisted = true
+	// A rescan queued before a restart is still owed.
+	gen, err := sdb.SignatureRescanPending()
+	if err != nil {
+		csmlog.Warn("sig_watch: loading queued rescan", "err", err)
+	}
+	if gen != 0 {
+		w.rescanFlag.Store(true)
+	}
 }
 
 // tick performs one walk of the rules dir and arms the rescan flag
@@ -208,12 +225,22 @@ func (w *sigWatcher) tick() {
 	if !sameSignatureState(w.last, next) {
 		w.persisted = false
 	}
+	if len(changed) > 0 {
+		w.queueRescan = true
+	}
 	w.last = next
 	if sdb != nil && !w.persisted {
-		if err := sdb.PutSignatureFiles(next); err != nil {
+		var err error
+		if w.queueRescan {
+			_, err = sdb.PutSignatureFilesWithRescan(next)
+		} else {
+			err = sdb.PutSignatureFiles(next)
+		}
+		if err != nil {
 			csmlog.Warn("sig_watch: persisting state", "err", err)
 		} else {
 			w.persisted = true
+			w.queueRescan = false
 		}
 	}
 
@@ -231,6 +258,39 @@ func (w *sigWatcher) tick() {
 			Timestamp: time.Now(),
 		})
 	}
+}
+
+// takeSignatureRescan consumes the armed flag at the start of a deep tick.
+// It returns the queued generation, which only that sweep may clear; 0 when
+// the queue was never written, as with no store.
+func takeSignatureRescan(flag *atomic.Bool, sdb *store.DB) (bool, uint64) {
+	if !flag.CompareAndSwap(true, false) {
+		return false, 0
+	}
+	if sdb == nil {
+		return true, 0
+	}
+	gen, err := sdb.SignatureRescanPending()
+	if err != nil {
+		csmlog.Warn("sig_watch: reading queued rescan", "err", err)
+	}
+	return true, gen
+}
+
+// finishSignatureRescan clears the queued rescan after its sweep and reports
+// whether the sweep completed. A sweep cut short by shutdown leaves the queue
+// for the next start. A newer generation stays queued; its change armed the
+// flag again.
+func finishSignatureRescan(ctx context.Context, sdb *store.DB, gen uint64) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if sdb != nil && gen != 0 {
+		if _, err := sdb.ClearSignatureRescan(gen); err != nil {
+			csmlog.Warn("sig_watch: clearing completed rescan", "err", err)
+		}
+	}
+	return true
 }
 
 // hashRulesFile accepts a hash only while the walked file, the open file and

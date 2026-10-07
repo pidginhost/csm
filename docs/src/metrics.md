@@ -383,6 +383,10 @@ symbolic links use the target file's metadata. Failed reads and files
 replaced during hashing are retried without discarding the last verified
 state. First observations and file removals do not queue a rescan.
 
+A queued rescan is stored with the rule state that caused it. A daemon
+restart before the sweep, or one that interrupts it, queues it again at
+the next start. Only a completed sweep clears it.
+
 State from older builds contains only mtimes. The first successful read
 adds a hash without queuing a rescan if the recorded mtime still matches.
 A moved mtime without a recorded hash conservatively queues one rescan.

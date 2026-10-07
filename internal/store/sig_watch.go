@@ -13,7 +13,10 @@ import (
 // trigger a phantom rescan -- without this the in-memory map starts empty
 // after every restart and every file looks new.
 
-const sigWatchKey = "last_mtimes"
+const (
+	sigWatchKey  = "last_mtimes"
+	sigRescanKey = "rescan"
+)
 
 // SignatureFileState is what the watcher last saw of one rules file. SHA256
 // is empty when the content was never hashed, and Size is -1 when unknown:
@@ -57,15 +60,113 @@ func (db *DB) GetSignatureFiles() (map[string]SignatureFileState, error) {
 // PutSignatureFiles overwrites the persisted watcher state. Removed files
 // must disappear from the store, so the whole map is replaced.
 func (db *DB) PutSignatureFiles(m map[string]SignatureFileState) error {
-	payload, err := json.Marshal(m)
-	if err != nil {
-		return err
+	_, err := db.putSignatureFiles(m, false)
+	return err
+}
+
+// PutSignatureFilesWithRescan writes the watcher state and queues a full
+// rescan in one transaction, so a restart cannot keep the new rule state
+// while losing the rescan it calls for. It returns the generation that only
+// the sweep for this queue may clear.
+func (db *DB) PutSignatureFilesWithRescan(m map[string]SignatureFileState) (uint64, error) {
+	return db.putSignatureFiles(m, true)
+}
+
+// signatureRescan is the queued full rescan. Generation keeps counting after
+// a clear, so a sweep can never clear a queue armed after it read its own.
+type signatureRescan struct {
+	Generation uint64 `json:"generation"`
+	Pending    bool   `json:"pending"`
+}
+
+func (db *DB) putSignatureFiles(m map[string]SignatureFileState, rescan bool) (uint64, error) {
+	payload, marshalErr := json.Marshal(m)
+	if marshalErr != nil {
+		return 0, marshalErr
 	}
-	return db.bolt.Update(func(tx *bolt.Tx) error {
+	var gen uint64
+	update := func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("sig_watch"))
 		if b == nil {
 			return errors.New("sig_watch bucket missing (store not migrated)")
 		}
-		return b.Put([]byte(sigWatchKey), payload)
+		if err := b.Put([]byte(sigWatchKey), payload); err != nil {
+			return err
+		}
+		if !rescan {
+			return nil
+		}
+		q, err := readSignatureRescan(b)
+		if err != nil {
+			return err
+		}
+		q.Generation++
+		q.Pending = true
+		gen = q.Generation
+		return writeSignatureRescan(b, q)
+	}
+	if err := db.bolt.Update(update); err != nil {
+		return 0, err
+	}
+	return gen, nil
+}
+
+// SignatureRescanPending returns the generation of the queued full rescan,
+// or 0 when none is queued.
+func (db *DB) SignatureRescanPending() (uint64, error) {
+	var q signatureRescan
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("sig_watch"))
+		if b == nil {
+			return nil
+		}
+		var err error
+		q, err = readSignatureRescan(b)
+		return err
 	})
+	if err != nil || !q.Pending {
+		return 0, err
+	}
+	return q.Generation, nil
+}
+
+// ClearSignatureRescan removes the queued rescan when gen is still the
+// queued generation, and reports whether it did.
+func (db *DB) ClearSignatureRescan(gen uint64) (bool, error) {
+	cleared := false
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("sig_watch"))
+		if b == nil {
+			return errors.New("sig_watch bucket missing (store not migrated)")
+		}
+		q, err := readSignatureRescan(b)
+		if err != nil || !q.Pending || q.Generation != gen {
+			return err
+		}
+		q.Pending = false
+		cleared = true
+		return writeSignatureRescan(b, q)
+	})
+	if err != nil {
+		return false, err
+	}
+	return cleared, nil
+}
+
+func readSignatureRescan(b *bolt.Bucket) (signatureRescan, error) {
+	var q signatureRescan
+	raw := b.Get([]byte(sigRescanKey))
+	if len(raw) == 0 {
+		return q, nil
+	}
+	err := json.Unmarshal(raw, &q)
+	return q, err
+}
+
+func writeSignatureRescan(b *bolt.Bucket, q signatureRescan) error {
+	raw, err := json.Marshal(q)
+	if err != nil {
+		return err
+	}
+	return b.Put([]byte(sigRescanKey), raw)
 }

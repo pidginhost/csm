@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -862,5 +863,145 @@ func TestSigWatchCoalescesMultipleChangesIntoOneFlagOnePerFile(t *testing.T) {
 	alerts := drainAlerts(alertCh)
 	if len(alerts) != 3 {
 		t.Errorf("alerts emitted = %d, want 3 (one per changed file)", len(alerts))
+	}
+}
+
+// --- A queued rescan survives restarts until a sweep completes ------------
+
+// restartWatcher simulates a daemon restart: a fresh watcher and flag over
+// the same store and rules dir. The first tick is the startup tick.
+func restartWatcher(t *testing.T, rulesDir string, sdb *store.DB) *atomic.Bool {
+	t.Helper()
+	cfg := &config.Config{}
+	cfg.Signatures.RulesDir = rulesDir
+	flag := &atomic.Bool{}
+	w := newSigWatcher(
+		func() *config.Config { return cfg },
+		func() *store.DB { return sdb },
+		flag,
+		make(chan alert.Finding, 16),
+	)
+	w.tick()
+	return flag
+}
+
+func TestSigWatchQueuedRescanSurvivesRestart(t *testing.T) {
+	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
+	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-2*time.Hour))
+	w.tick()
+	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-time.Hour))
+	w.tick()
+	if !flag.Load() {
+		t.Fatal("change did not arm the rescan")
+	}
+
+	if !restartWatcher(t, rulesDir, sdb).Load() {
+		t.Fatal("restart before the deep tick dropped the queued rescan")
+	}
+	if !restartWatcher(t, rulesDir, sdb).Load() {
+		t.Fatal("a second restart dropped the queued rescan")
+	}
+}
+
+func TestSigWatchRescanClearedOnlyByCompletedSweep(t *testing.T) {
+	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
+	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-2*time.Hour))
+	w.tick()
+	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-time.Hour))
+	w.tick()
+
+	rescan, gen := takeSignatureRescan(flag, sdb)
+	if !rescan || flag.Load() {
+		t.Fatalf("take = %v (flag %v); want the armed rescan consumed", rescan, flag.Load())
+	}
+	if !restartWatcher(t, rulesDir, sdb).Load() {
+		t.Fatal("restart during the sweep dropped the rescan")
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if finishSignatureRescan(cancelled, sdb, gen) {
+		t.Error("a sweep cut short by shutdown counted as completed")
+	}
+	if !restartWatcher(t, rulesDir, sdb).Load() {
+		t.Fatal("an interrupted sweep cleared the rescan")
+	}
+
+	if !finishSignatureRescan(context.Background(), sdb, gen) {
+		t.Fatal("completed sweep not reported as completed")
+	}
+	if restartWatcher(t, rulesDir, sdb).Load() {
+		t.Error("restart after a completed sweep queued it again")
+	}
+}
+
+// A rules change while the sweep runs needs its own sweep: finishing the
+// older one must not clear it.
+func TestSigWatchChangeDuringSweepKeepsNewRescan(t *testing.T) {
+	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
+	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-3*time.Hour))
+	w.tick()
+	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-2*time.Hour))
+	w.tick()
+	_, gen := takeSignatureRescan(flag, sdb)
+
+	writeRule(t, rulesDir, "malware.yml", "v3", time.Now().Add(-time.Hour))
+	w.tick()
+	if !finishSignatureRescan(context.Background(), sdb, gen) {
+		t.Fatal("completed sweep not reported as completed")
+	}
+	if !flag.Load() {
+		t.Error("change during the sweep did not arm another rescan")
+	}
+	if !restartWatcher(t, rulesDir, sdb).Load() {
+		t.Error("finishing the older sweep cleared the newer rescan")
+	}
+}
+
+// When the store write fails at the change, the retry must still record the
+// rescan, or a restart after the retry would forget it.
+func TestSigWatchRetriedWriteKeepsRescanQueued(t *testing.T) {
+	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
+	stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	writeRule(t, rulesDir, "malware.yml", "v1", stamp)
+	w.tick()
+	if err := sdb.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeRule(t, rulesDir, "malware.yml", "v2", stamp.Add(time.Hour))
+	w.tick()
+	if !flag.Load() {
+		t.Fatal("change did not arm the rescan in memory")
+	}
+	reopened, err := store.Open(filepath.Dir(sdb.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	w.storeFunc = func() *store.DB { return reopened }
+	w.tick()
+	if !restartWatcher(t, rulesDir, reopened).Load() {
+		t.Error("the retried write did not record the queued rescan")
+	}
+}
+
+// A rewrite with unchanged content after a completed sweep moves the stored
+// stamps but is no reason to queue another sweep.
+func TestSigWatchIdenticalRewriteAfterSweepQueuesNothing(t *testing.T) {
+	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
+	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-3*time.Hour))
+	w.tick()
+	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-2*time.Hour))
+	w.tick()
+	_, gen := takeSignatureRescan(flag, sdb)
+	finishSignatureRescan(context.Background(), sdb, gen)
+
+	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-time.Hour))
+	w.tick()
+	if flag.Load() {
+		t.Error("identical rewrite armed a rescan")
+	}
+	if restartWatcher(t, rulesDir, sdb).Load() {
+		t.Error("identical rewrite queued a rescan for the next start")
 	}
 }
