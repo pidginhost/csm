@@ -71,12 +71,16 @@ func (c *comparison) addCountAt(k compareKey, n uint64, now time.Time) {
 	c.counts[k] += n
 }
 
-// begin starts counting the hour now falls in, unless an hour has started.
+// begin advances the hour floor after a committed admission clock reading,
+// including readings made by a startup that later fails.
 func (c *comparison) begin(now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.start.IsZero() {
 		c.start = now.UTC().Truncate(time.Hour)
+	} else if hour := now.UTC().Truncate(time.Hour); hour.After(c.start) {
+		c.closeHour()
+		c.start = hour
 	}
 }
 

@@ -76,10 +76,10 @@ func (d *Daemon) startAdmissionWith(opts admissionowner.Options) {
 // channel, suppressions and automatic response are never involved, since
 // the failure being reported may be in them. A preview is recorded only.
 func (d *Daemon) deliverAdmissionNotices(findings []alert.Finding, preview bool) error {
-	d.store.AppendHistory(findings)
 	if preview {
-		return nil
+		return d.store.AppendHistoryDurable(findings)
 	}
+	d.store.AppendHistory(findings)
 	return alert.DispatchNotices(d.currentCfg(), findings)
 }
 

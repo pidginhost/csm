@@ -103,6 +103,13 @@ as `challenge_timeout` or `central`), `result` the decision (`queued`,
 stop writes the open hour early, so summaries for the same hour add up; a
 crash loses the open hour, so the counts are lower bounds.
 
+Refused previews and submissions displaced from the memory queue count as
+`refused` with their reason, including every report merged into a displaced
+submission. Summaries continue while the ledger or its clock is unavailable,
+and stopping flushes completed decisions even if the final drain fails.
+Their hour never precedes the latest recorded admission hour, including
+clock readings from an incomplete startup.
+
 `actor` uses the caller's attribution when available and otherwise identifies
 the process performing the action. Some web UI requests therefore record as
 `daemon`; the web UI's own action log retains the operator's source address.

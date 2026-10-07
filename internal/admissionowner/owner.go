@@ -186,6 +186,9 @@ func Start(opts Options) *Owner {
 	}
 	if o.startErr == nil {
 		o.ingress.ObserveArrivals(o.countArrival)
+		o.ingress.ObserveDisplacements(func(a admission.DrainedArrival) {
+			o.countArrivalAt(a, deliveryNow())
+		})
 	}
 	if o.startErr == nil {
 		o.startErr = o.start()
@@ -234,6 +237,9 @@ func (o *Owner) run() {
 			} else if o.reg != nil {
 				o.startErr = o.start()
 				o.refreshStatus()
+			}
+			if !o.started {
+				o.writeComparison(false)
 			}
 		case <-inventory.C:
 			if o.started {
@@ -311,7 +317,6 @@ func (o *Owner) start() error {
 		return err
 	}
 	o.started, o.scheduleDue = true, true
-	o.compare.begin(o.now)
 	return nil
 }
 
@@ -364,6 +369,7 @@ func (o *Owner) readTick() (admission.ClockReading, error) {
 		return reading, fmt.Errorf("reading the admission clock: %w", err)
 	}
 	o.tickErr, o.degraded, o.lastTick, o.now = nil, t.Degraded, reading.Wall, t.Now
+	o.compare.begin(o.now)
 	return reading, nil
 }
 
@@ -371,6 +377,7 @@ func (o *Owner) readTick() (admission.ClockReading, error) {
 // would judge arrivals against a stale time (O6). The next good reading
 // publishes a fresh snapshot.
 func (o *Owner) tick() error {
+	defer o.writeComparison(false)
 	admitting := o.ingress.Health().Admitting
 	defer func() {
 		if !admitting || !o.ingress.Health().Admitting {
@@ -381,7 +388,6 @@ func (o *Owner) tick() error {
 		o.ingress.Publish(nil)
 		return err
 	}
-	o.writeComparison(false)
 	// A ceiling changed by any config path, not only a reload, applies
 	// after this reading at the saved limit.
 	if limit, source := o.opts.Ceiling(); limit != o.limit || source != o.source {
@@ -483,8 +489,8 @@ func (o *Owner) halt(clean bool) {
 }
 
 func (o *Owner) shutdown() {
+	defer o.writeComparison(true)
 	if !o.started {
-		o.writeComparison(true)
 		return
 	}
 	// No snapshot published during the stop reopens admission, so the
@@ -509,14 +515,21 @@ func (o *Owner) shutdown() {
 	if err := o.ledger.EndIngress(); err != nil {
 		o.snapshotErr = fmt.Errorf("closing the ingress: %w", err)
 	}
-	o.writeComparison(true)
 }
 
 // writeComparison writes the decision counts of each ended hour, or of the
 // hour in progress at a stop, to the action log. Rows a failed write could
 // not record are retried at the next tick.
 func (o *Owner) writeComparison(final bool) {
-	rows, through := o.compare.take(o.now, final)
+	now := o.now
+	// Refusals still happen during a ledger or clock outage. Their hourly
+	// summaries use wall time without moving the admission clock backward.
+	if !o.started || o.tickErr != nil {
+		if wall := deliveryNow(); wall.After(now) {
+			now = wall
+		}
+	}
+	rows, through := o.compare.take(now, final)
 	if len(rows) == 0 {
 		return
 	}
@@ -643,6 +656,7 @@ func (o *Owner) preview() error {
 					if _, endErr := o.ledger.Terminate(p.ID, reason); endErr != nil {
 						return fmt.Errorf("ending pick %s: %w", p.ID, endErr)
 					}
+					o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionRefused, reason: reason}, o.now)
 					continue
 				}
 			}
@@ -669,19 +683,23 @@ func (o *Owner) preview() error {
 
 // countArrival counts the ledger's decision on one drained arrival.
 func (o *Owner) countArrival(a admission.DrainedArrival) {
+	o.countArrivalAt(a, o.now)
+}
+
+func (o *Owner) countArrivalAt(a admission.DrainedArrival, at time.Time) {
 	k := compareKey{entry: entryOf(a.Submission.Evidence, a.Submission.Via), check: a.Submission.Evidence.Check(), kind: a.Submission.Kind}
 	switch {
 	case a.Result.Err != nil:
 		k.decision, k.reason = decisionRefused, reasonOf(a.Result.Err)
-		o.compare.addCountAt(k, a.Selected, o.now)
+		o.compare.addCountAt(k, a.Selected, at)
 	case a.Result.Created:
 		k.decision = decisionQueued
-		o.compare.addAt(k, o.now)
+		o.compare.addAt(k, at)
 		k.decision = decisionCoalesced
-		o.compare.addCountAt(k, a.Selected-1, o.now)
+		o.compare.addCountAt(k, a.Selected-1, at)
 	default:
 		k.decision = decisionCoalesced
-		o.compare.addCountAt(k, a.Selected, o.now)
+		o.compare.addCountAt(k, a.Selected, at)
 	}
 }
 

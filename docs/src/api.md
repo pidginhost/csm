@@ -296,7 +296,8 @@ alerts; it follows the notification channel settings but bypasses
 capacity and their summaries) describe what the ledger would have done, so
 they are recorded in findings history as Warnings starting with "Admission
 preview:" and sent to no alert channel; the ledger paces them per notice key
-and summary. Delivery errors leave notices pending for retry:
+and summary. A preview is acknowledged only after its history write succeeds.
+Delivery errors leave notices pending for retry:
 the next two cycles retry at once, then each attempt waits twice as long as
 the one before, up to an hour. Ledger notices and the stopped-admission
 alert retry independently, so a failing path does not defer the other;

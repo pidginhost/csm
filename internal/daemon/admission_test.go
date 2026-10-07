@@ -151,6 +151,48 @@ func TestDaemonRecordsAdmissionPreviewsWithoutDispatch(t *testing.T) {
 	}
 }
 
+func TestDaemonRetriesAdmissionPreviewHistoryFailures(t *testing.T) {
+	dir := t.TempDir()
+	db, restore := openTestBoltStore(t, dir)
+	defer restore()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	d := New(&config.Config{StatePath: dir}, st, nil, "")
+	previousHook := alert.CentralHook
+	dispatched := 0
+	alert.SetCentralHook(func(alert.Finding) { dispatched++ })
+	t.Cleanup(func() { alert.SetCentralHook(previousHook) })
+	notice := alert.Finding{Check: "auto_response_withheld", Severity: alert.Warning, Message: "Admission preview: Critical automatic response withheld", Timestamp: time.Now()}
+	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.deliverAdmissionNotices([]alert.Finding{notice}, true); err == nil {
+		t.Error("a failed history write acknowledged the preview")
+	}
+	store.SetGlobal(nil)
+	if err = d.deliverAdmissionNotices([]alert.Finding{notice}, true); err == nil {
+		t.Error("an unavailable history database acknowledged the preview")
+	}
+	reopened, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	store.SetGlobal(reopened)
+	if err := d.deliverAdmissionNotices([]alert.Finding{notice}, true); err != nil {
+		t.Fatal(err)
+	}
+	if dispatched != 0 {
+		t.Fatalf("history retries sent %d alerts", dispatched)
+	}
+	if history, total := st.ReadHistory(10, 0); total != 1 || history[0].Message != notice.Message {
+		t.Fatalf("retried history = %+v (%d)", history, total)
+	}
+}
+
 func TestAdmissionNoticesBypassTheRoutineAlertBudget(t *testing.T) {
 	dir := t.TempDir()
 	_, restore := openTestBoltStore(t, dir)

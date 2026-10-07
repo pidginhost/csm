@@ -116,8 +116,9 @@ type Ingress struct {
 	// refused since (ruling 9).
 	stoppedAt       time.Time
 	criticalRefused uint64
-	// arrived receives each committed arrival (ObserveArrivals).
-	arrived func(DrainedArrival)
+	// These observers are set before any submission or drain.
+	arrived   func(DrainedArrival)
+	displaced func(DrainedArrival)
 }
 
 func NewIngress(reg *Registry) (*Ingress, error) {
@@ -231,6 +232,11 @@ func (in *Ingress) Submit(s Submission) error {
 		victim := in.byKey[placed.Victim.Key]
 		in.drop(victim)
 		in.lose(EventEnded, ReasonQueueOverflow, victim.pos.Tier, victim.item.Submission.Evidence.Severity())
+		if in.displaced != nil {
+			in.displaced(DrainedArrival{Submission: victim.item.Submission,
+				Result:   ArrivalResult{Err: refuse(ReasonQueueOverflow, "held submission displaced")},
+				Selected: victim.item.Selected - victim.ackSelected})
+		}
 	}
 	in.items = append(in.items, p)
 	in.byKey[p.item.key] = p
@@ -487,7 +493,7 @@ func (in *Ingress) Stats() IngressStats {
 // DrainReport counts durable decisions made by one drain.
 type DrainReport struct{ Queued, Coalesced, Refused, Failed int }
 
-// DrainedArrival is one submission and the ledger's decision on it.
+// DrainedArrival is one submission and its committed, isolated or displaced decision.
 type DrainedArrival struct {
 	Submission Submission
 	Result     ArrivalResult
@@ -498,6 +504,11 @@ type DrainedArrival struct {
 // decision on it, as every later drain commits them. Set it before the
 // first drain; fn runs on the draining goroutine.
 func (in *Ingress) ObserveArrivals(fn func(DrainedArrival)) { in.arrived = fn }
+
+// ObserveDisplacements hands fn each held submission lost to queue pressure.
+// Set it before the first submission. fn runs under the ingress mutex on the
+// submitting goroutine and must not call the ingress or ledger.
+func (in *Ingress) ObserveDisplacements(fn func(DrainedArrival)) { in.displaced = fn }
 
 // Drain checkpoints ingress decisions even with no held items. Transient
 // errors release work; only damaged arrivals are isolated and counted lost.

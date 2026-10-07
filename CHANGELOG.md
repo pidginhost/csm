@@ -23,7 +23,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
-- From the first start after upgrade, every host with `auto_response.enabled` previews its selected responses under `auto_response.max_blocks_per_hour`, leaving existing blocking unchanged. Status, findings history, hourly action log summaries and a handoff latency metric show the preview; admission diagnostics say existing blocking is unaffected and warn only on failures, gap previews stay out of alert channels, and a stopped preview raises a Warning.
+- From the first start after upgrade, every host with `auto_response.enabled` previews its selected responses under `auto_response.max_blocks_per_hour`, leaving existing blocking unchanged. Status, findings history, hourly decision summaries and a handoff latency metric show the preview, including refusals during outages and shutdown; admission diagnostics warn only on failures, gap previews retry failed history writes and stay out of alert channels, and a stopped preview raises a Warning.
 
 ### Fixed
 
