@@ -661,7 +661,7 @@ email_protection:
   forward_guard:
     enabled: false                      # master switch (default off)
     dry_run: true                       # account/log only, do not actually hold (default true)
-    quarantine_retention_days: 14       # held-copy retention window
+    quarantine_retention_days: 14       # held copies older than this are deleted; 0 keeps them
     skip_forwarders: []                 # reserved forwarder exemptions; not enforced yet
     hold_signals:                       # signal toggles, each default true
       bounce_backscatter: true          # null-sender bounce backscatter (enforceable)

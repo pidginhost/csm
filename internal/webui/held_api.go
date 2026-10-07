@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/pidginhost/csm/internal/mailfwd/adapter"
 	"github.com/pidginhost/csm/internal/mailfwd/quarantine"
 	"github.com/pidginhost/csm/internal/platform"
 )
@@ -22,7 +23,7 @@ type heldForwardStore interface {
 	Delete(id string) error
 }
 
-const forwardQuarantineDir = "/var/lib/csm/forward_quarantine/held"
+const forwardQuarantineDir = adapter.QuarantineDir
 
 // selectForwardHeld returns the held-forward store for the host. Only
 // cPanel/exim writes held copies; other platforms have none.
