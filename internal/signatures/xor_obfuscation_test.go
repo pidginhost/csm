@@ -12,7 +12,7 @@ import (
 func TestXorStringObfuscation_RealtimeEngine(t *testing.T) {
 	scanner := loadRepoScanner(t)
 
-	// Live sample shape: WPCode snippet 4052, infiltratiizero.ro, 2026-07-27.
+	// Live sample shape: WPCode snippet 4052, acmeplumbing.example.
 	mal := []byte(`if (defined("_WP_WEBSITE")) { return; }
 if (!defined("\xf3\x69\x6d\xf9\x7b\x1a\x56\xbb" ^ "\xa4\x39\x32\xba\x3a\x59\x1e\xfe")) { return; }`)
 	if !hasRule(scanner.ScanContent(mal, ".php"), "php_xor_string_obfuscation") {

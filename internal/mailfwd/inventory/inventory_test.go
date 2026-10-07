@@ -23,7 +23,7 @@ func TestClassifyProvider(t *testing.T) {
 		{"a@live.ro", ProviderOutlook},
 		{"a@outlook.de", ProviderOutlook},
 		{"a@somecorp.example", ProviderExternal},
-		{"a@yahoo.fanclub.ro", ProviderExternal},
+		{"a@yahoo.fanclub.example", ProviderExternal},
 		{"a@live.mycorp.test", ProviderExternal},
 		{"a@live.ly", ProviderExternal},
 		{"a@livestream.com", ProviderExternal},

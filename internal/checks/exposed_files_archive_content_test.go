@@ -47,7 +47,7 @@ func writeZipWithComment(t *testing.T, path, comment string, names ...string) {
 }
 
 // A full-site backup whose name carries no backup token is still a site backup.
-// scoalataspeciala.ro served www_scoalataspeciala.zip (64MB, containing
+// acmeschool.example served www_acmeschool.zip (64MB, containing
 // wwwroot/wp-config.php) with no deny rule, because the name-only classifier
 // returned classNone.
 func TestArchiveContentIdentifiesUnnamedSiteBackup(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// FP reconstructions for the 2026-04-27 forgetwhitecom WHM-transfer event.
+// FP reconstructions for a WHM-transfer event.
 //
 // Three realtime checks fired on legitimate WordPress/plugin code because
 // they used filename-only or path-only signals. The fixes here move them to

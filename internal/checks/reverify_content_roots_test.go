@@ -37,9 +37,8 @@ func withCleanYARAScanner(t *testing.T) {
 //
 // The tests below pin the production shape: the override stays nil, exactly as
 // it is on a running daemon. An override set to t.TempDir() hides the defect,
-// which is why it survived from 2026-06-21 to 2026-09-04 with a green suite
-// while cluster6 carried 92 content findings that could not be re-checked at
-// all.
+// which is why it survived for months with a green suite while host3
+// carried content findings that could not be re-checked at all.
 
 func TestReverifyContentFindingUsesAccountRootsWhenNoOverride(t *testing.T) {
 	root := t.TempDir()

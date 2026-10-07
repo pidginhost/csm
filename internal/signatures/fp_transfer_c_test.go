@@ -4,8 +4,8 @@ import (
 	"testing"
 )
 
-// FP reconstructions for the 2026-04-27 forgetwhitecom WHM-transfer event.
-// See sibling fp_forgetwhite_*_test.go files; this group split exists
+// FP reconstructions for a WHM-transfer event.
+// See sibling fp_transfer_*_test.go files; this group split exists
 // because host-side AV deletes any single source file whose payload
 // fixtures cross an opaque suspicion threshold.
 func TestBackdoorSshKeyInjection_PhpseclibRsaClassIsLegit(t *testing.T) {

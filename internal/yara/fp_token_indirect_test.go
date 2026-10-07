@@ -6,7 +6,7 @@ import "testing"
 
 // Deep-scan counterpart of the realtime webshell_token_gate_indirect rule. The
 // realtime rule only fires on write, so a shell already resting on disk (the
-// 2026-07-20 filmetaricom case) is only reachable through the scheduled scan.
+// acmefilms case) is only reachable through the scheduled scan.
 // Fixtures are assembled from fragments so this source carries no complete
 // webshell signature.
 func TestWebshellTokenGateIndirect_Yara(t *testing.T) {

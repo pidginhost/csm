@@ -18,7 +18,7 @@ func TestClassifyExposedFile(t *testing.T) {
 	}{
 		// Database dumps served as raw downloads.
 		{"softsql.sql", classDBDump},
-		{"hospitalitycult_91.sql.zip", classDBDump},
+		{"acmehotel_91.sql.zip", classDBDump},
 		{"backup.sql.gz", classDBDump},
 		{"cluster.sql.bz2", classDBDump},
 		{"database.dump", classDBDump},

@@ -8,7 +8,7 @@ import (
 )
 
 // A hijack that keeps a clean URL shape passes siteURLPoisonReason: the
-// karmaboutique poisoning was caught only because it carried a query string.
+// acmeboutique poisoning was caught only because it carried a query string.
 // The host is the stronger signal -- but on its own it reports every migrated
 // site, which is why siteURLPoisonReason deliberately does not test it.
 //
@@ -29,7 +29,7 @@ func siteurlHostFinding(t *testing.T, value string, served servedState, owned ..
 }
 
 func TestForeignSiteURL_ServedRootPointingOffAccount(t *testing.T) {
-	got := siteurlHostFinding(t, "https://slow.destinyfernandi.example/", servedByPanel, "karmaboutique.example")
+	got := siteurlHostFinding(t, "https://slow.destinyfernandi.example/", servedByPanel, "acmeboutique.example")
 
 	if got == nil {
 		t.Fatal("a served root addressed at an unowned domain must be reported")
@@ -45,12 +45,12 @@ func TestForeignSiteURL_ServedRootPointingOffAccount(t *testing.T) {
 // The account's own domains are fine, including deeper names below one.
 func TestForeignSiteURL_OwnedDomainsAreSilent(t *testing.T) {
 	for _, value := range []string{
-		"https://karmaboutique.example/",
-		"https://www.karmaboutique.example/shop",
-		"https://shop.karmaboutique.example/",
+		"https://acmeboutique.example/",
+		"https://www.acmeboutique.example/shop",
+		"https://shop.acmeboutique.example/",
 		"http://second.example/",
 	} {
-		if got := siteurlHostFinding(t, value, servedByPanel, "karmaboutique.example", "second.example"); got != nil {
+		if got := siteurlHostFinding(t, value, servedByPanel, "acmeboutique.example", "second.example"); got != nil {
 			t.Errorf("owned address %q reported: %s", value, got.Message)
 		}
 	}
@@ -109,12 +109,12 @@ func TestForeignSiteURL_PublicSuffixDoesNotOwnItsChildren(t *testing.T) {
 // attacker's domain as owned and turn the check off for that account.
 func TestForeignSiteURL_PublicSuffixRowCannotClaimEveryDomain(t *testing.T) {
 	ownership := newPanelDomainOwnership(map[string][]string{
-		"alice": {"com", "karmaboutique.example"},
+		"alice": {"com", "acmeboutique.example"},
 	})
 	if panelHostOwnedByAccount(ownership, "alice", "attacker.com") {
 		t.Fatal("a bare public-suffix row claimed an unrelated domain beneath it")
 	}
-	if !panelHostOwnedByAccount(ownership, "alice", "karmaboutique.example") {
+	if !panelHostOwnedByAccount(ownership, "alice", "acmeboutique.example") {
 		t.Fatal("the account's real domain stopped being recognised")
 	}
 }
@@ -170,7 +170,7 @@ func TestForeignSiteURL_WildcardDelegationUsesMostSpecificOwner(t *testing.T) {
 // The documented false positive: a site that moved away is no longer served
 // here, so an unowned address is expected rather than suspicious.
 func TestForeignSiteURL_DormantRootStaysSilent(t *testing.T) {
-	if got := siteurlHostFinding(t, "https://moved-elsewhere.example/", notServed, "karmaboutique.example"); got != nil {
+	if got := siteurlHostFinding(t, "https://moved-elsewhere.example/", notServed, "acmeboutique.example"); got != nil {
 		t.Fatalf("migrated site on an unserved root reported: %s", got.Message)
 	}
 }
@@ -178,7 +178,7 @@ func TestForeignSiteURL_DormantRootStaysSilent(t *testing.T) {
 // Without the panel's map we do not know whether it is served, so the
 // migration explanation cannot be ruled out.
 func TestForeignSiteURL_UnknownServedStateStaysSilent(t *testing.T) {
-	if got := siteurlHostFinding(t, "https://elsewhere.example/", servedUnknown, "karmaboutique.example"); got != nil {
+	if got := siteurlHostFinding(t, "https://elsewhere.example/", servedUnknown, "acmeboutique.example"); got != nil {
 		t.Fatalf("unknown served state reported: %s", got.Message)
 	}
 }
@@ -200,7 +200,7 @@ func TestForeignSiteURL_LeavesMalformedValuesToTheShapeCheck(t *testing.T) {
 		"https://slow.destinyfernandi.example/hos?/pret.js?l=1",
 		"https://slow.destinyfernandi.example/x#frag",
 	} {
-		if got := siteurlHostFinding(t, value, servedByPanel, "karmaboutique.example"); got != nil {
+		if got := siteurlHostFinding(t, value, servedByPanel, "acmeboutique.example"); got != nil {
 			t.Errorf("malformed value %q double-reported: %s", value, got.Message)
 		}
 	}

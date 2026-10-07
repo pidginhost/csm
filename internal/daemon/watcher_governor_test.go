@@ -38,7 +38,7 @@ func TestParseEximLogLine_MaxDefers_NoOutboundEvidence_Governor(t *testing.T) {
 	cfg.EmailProtection.RateWarnThreshold = 50
 	cfg.EmailProtection.RateWindowMin = 60
 
-	line := `2026-06-07 07:51:17 Domain membranaepdm.ro has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
+	line := `2026-06-07 07:51:17 Domain acmeroofing.example has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
 
 	withGlobalStore(t, func(_ *store.DB) {
 		findings := parseEximLogLine(line, cfg)
@@ -51,8 +51,8 @@ func TestParseEximLogLine_MaxDefers_NoOutboundEvidence_Governor(t *testing.T) {
 				if f.Severity != alert.High {
 					t.Errorf("governor finding severity = %v, want High", f.Severity)
 				}
-				if f.Domain != "membranaepdm.ro" {
-					t.Errorf("governor finding domain = %q, want membranaepdm.ro", f.Domain)
+				if f.Domain != "acmeroofing.example" {
+					t.Errorf("governor finding domain = %q, want acmeroofing.example", f.Domain)
 				}
 			case "email_spam_outbreak":
 				gotOutbreak = true

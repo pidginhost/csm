@@ -34,7 +34,7 @@ func eximLine(ts time.Time, sender, ptr, ip, subject string) string {
 }
 
 func TestScanRetro_FiresOnPacedSlowBurn(t *testing.T) {
-	// Mimic wizard-design.com's actual profile: 20 sends from 1 AWS IP in
+	// Mimic acmedesign.example's actual profile: 20 sends from 1 AWS IP in
 	// a 1h cluster. The realtime multi-IP rule would miss this; the
 	// volume-burst threshold should catch it on retrospective replay.
 	base := time.Now().Add(-2 * time.Hour)
@@ -42,7 +42,7 @@ func TestScanRetro_FiresOnPacedSlowBurn(t *testing.T) {
 	for i := 0; i < 18; i++ {
 		lines = append(lines, eximLine(
 			base.Add(time.Duration(i)*2*time.Minute),
-			"info@wizard-design.com",
+			"info@acmedesign.example",
 			"ec2-13-38-71-129.eu-west-3.compute.amazonaws.com",
 			"13.38.71.129",
 			"BITPANDA LETZTE ERINNERUNG",
@@ -70,7 +70,7 @@ func TestScanRetro_FiresOnPacedSlowBurn(t *testing.T) {
 }
 
 func TestScanRetro_FiresOnRotatingIPFleet(t *testing.T) {
-	// Mimic occonsultingcy.com's actual profile: 10 sends across 5 IPs.
+	// Mimic acmeagency.example's actual profile: 10 sends across 5 IPs.
 	base := time.Now().Add(-2 * time.Hour)
 	ips := []string{"34.26.118.204", "35.237.120.4", "34.26.243.44", "35.185.2.217", "104.196.13.121"}
 	var lines []string
@@ -78,7 +78,7 @@ func TestScanRetro_FiresOnRotatingIPFleet(t *testing.T) {
 		ip := ips[i%len(ips)]
 		lines = append(lines, eximLine(
 			base.Add(time.Duration(i)*3*time.Minute),
-			"info@occonsultingcy.com",
+			"info@acmeagency.example",
 			strings.ReplaceAll(ip, ".", "-")+".bc.googleusercontent.com",
 			ip,
 			"cPanel Service Alert",
@@ -160,7 +160,7 @@ func TestScanRetro_RespectsAllowlist(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		lines = append(lines, eximLine(
 			base.Add(time.Duration(i)*time.Minute),
-			"info@wizard-design.com",
+			"info@acmedesign.example",
 			"ec2-13-38-71-129.eu-west-3.compute.amazonaws.com",
 			"13.38.71.129",
 			"Whatever",
@@ -170,7 +170,7 @@ func TestScanRetro_RespectsAllowlist(t *testing.T) {
 
 	withGlobalStore(t, func(*store.DB) {
 		cfg := &config.Config{}
-		cfg.EmailProtection.HighVolumeSenders = []string{"info@wizard-design.com"}
+		cfg.EmailProtection.HighVolumeSenders = []string{"info@acmedesign.example"}
 		findings := ScanEximHistoryForCloudRelay(cfg, path, time.Now(), 24*time.Hour)
 		if len(findings) != 0 {
 			t.Fatalf("allowlisted user must not produce retro findings: %+v", findings)
@@ -184,7 +184,7 @@ func TestScanRetro_RespectsCloudRelayAllowUsers(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		lines = append(lines, eximLine(
 			base.Add(time.Duration(i)*time.Minute),
-			"office@madconsulting.ro",
+			"office@acmeconsulting.example",
 			"168.135.246.35.bc.googleusercontent.com",
 			"35.246.135.168",
 			"Whatever",
@@ -194,7 +194,7 @@ func TestScanRetro_RespectsCloudRelayAllowUsers(t *testing.T) {
 
 	withGlobalStore(t, func(*store.DB) {
 		cfg := &config.Config{}
-		cfg.EmailProtection.CloudRelay.AllowUsers = []string{"office@madconsulting.ro"}
+		cfg.EmailProtection.CloudRelay.AllowUsers = []string{"office@acmeconsulting.example"}
 		findings := ScanEximHistoryForCloudRelay(cfg, path, time.Now(), 24*time.Hour)
 		if len(findings) != 0 {
 			t.Fatalf("allow_users mailbox must not produce retro findings: %+v", findings)
@@ -206,9 +206,9 @@ func TestScanRetro_RespectsCloudRelayAllowDomains(t *testing.T) {
 	base := time.Now().Add(-30 * time.Minute)
 	var lines []string
 	mailboxes := []string{
-		"office@madconsulting.ro",
-		"steluta.ghelbereu@madconsulting.ro",
-		"amelia.savu@MADCONSULTING.RO",
+		"office@acmeconsulting.example",
+		"jane.roe@acmeconsulting.example",
+		"john.doe@ACMECONSULTING.EXAMPLE",
 	}
 	for i := 0; i < 21; i++ {
 		lines = append(lines, eximLine(
@@ -223,7 +223,7 @@ func TestScanRetro_RespectsCloudRelayAllowDomains(t *testing.T) {
 
 	withGlobalStore(t, func(*store.DB) {
 		cfg := &config.Config{}
-		cfg.EmailProtection.CloudRelay.AllowDomains = []string{"madconsulting.ro"}
+		cfg.EmailProtection.CloudRelay.AllowDomains = []string{"acmeconsulting.example"}
 		findings := ScanEximHistoryForCloudRelay(cfg, path, time.Now(), 24*time.Hour)
 		if len(findings) != 0 {
 			t.Fatalf("allow_domains must cover every mailbox under the domain: %+v", findings)

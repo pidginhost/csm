@@ -397,7 +397,7 @@ Drupal `/user/login` and Tomcat Manager `/manager/html` are intentionally out of
 
 ## PHP-Relay (Mail Abuse, cPanel Only)
 
-Real-time inotify watcher on `/var/spool/exim/input` catches WordPress contact-form spam relays where an attacker uses PHPMailer (or similar) with a spoofed `From`, an external `Reply-To`, and a script URL that doesn't belong to the cPanel account. The `occonsultingcy` incident (2026-04) drove the design: a legitimate site running a vulnerable contact-form plugin became a per-message spam relay through the operator's own mail account.
+Real-time inotify watcher on `/var/spool/exim/input` catches WordPress contact-form spam relays where an attacker uses PHPMailer (or similar) with a spoofed `From`, an external `Reply-To`, and a script URL that doesn't belong to the cPanel account. A contact-form relay incident drove the design: a legitimate site running a vulnerable contact-form plugin became a per-message spam relay through the operator's own mail account.
 
 The detector runs four paths and only fires `email_php_relay_abuse` (Critical) when one of them crosses threshold. Paths 1 and 2 are scoped per-script, using the `host:/path` from the `X-PHP-Script` Exim header. Path 2b is per cPanel user. Path 4 is per HTTP source IP across distinct scripts. Paths 2 and 4 use a recipient-diversity gate that suppresses only known low-recipient notification mail.
 

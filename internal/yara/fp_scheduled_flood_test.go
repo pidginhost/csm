@@ -354,7 +354,7 @@ func TestFPFlood_SpamHiddenLinks_ElementorDemo(t *testing.T) {
 	var b []byte
 	b = append(b, []byte(`<div class="elementor-widget" style="display:none">mobile toggle</div>`)...)
 	for i := 0; i < 60; i++ {
-		b = append(b, []byte(`<section class="e-con"><div class="widget"><a href="https://blanaroo.example/page">Shop</a></div><p>content block with descriptive text here</p></section>`)...)
+		b = append(b, []byte(`<section class="e-con"><div class="widget"><a href="https://acmeshop.example/page">Shop</a></div><p>content block with descriptive text here</p></section>`)...)
 	}
 	if hasYaraRule(s.ScanBytes(b), "spam_hidden_links") {
 		t.Error("spam_hidden_links FP: matched elementor demo content")
@@ -428,7 +428,7 @@ func TestFPFlood_MinerXmrigBinaryRef_XmrStakNeedsContext(t *testing.T) {
 	}
 }
 
-// The 2026-07-23 hospitalityculture compromise dropped eval-packer webshells
+// The acmehotel compromise dropped eval-packer webshells
 // that evaded php_eval_base64_chain by concatenating a "?>" literal between
 // eval( and the decoder: eval("?>".base64_decode(...)). The rule required the
 // decoder immediately after eval(, so the packer slipped through.

@@ -14,7 +14,7 @@ func TestSpamScale_TruncatedSampleIsReportedAsFloor(t *testing.T) {
 	prev := runMySQLQuery
 	// Return exactly the per-pattern cap for the first spam pattern, each row
 	// carrying cloaked-spam context so it survives the context filter.
-	// Shape taken from the live lalimanro injection: an off-screen container
+	// Shape taken from the live acmebakery injection: an off-screen container
 	// wrapping an outbound pharmacy link.
 	cloaked := `<div style="position:absolute;left:-12623px;width:1000px"><a href="https://farmacia.example/produs/viagra/">Viagra</a></div>`
 	runMySQLQuery = func(_ wpDBCreds, query string) []string {
@@ -49,7 +49,7 @@ func TestSpamScale_TruncatedSampleIsReportedAsFloor(t *testing.T) {
 // reads as uncertain.
 func TestSpamScale_UntruncatedSampleIsExact(t *testing.T) {
 	prev := runMySQLQuery
-	// Shape taken from the live lalimanro injection: an off-screen container
+	// Shape taken from the live acmebakery injection: an off-screen container
 	// wrapping an outbound pharmacy link.
 	cloaked := `<div style="position:absolute;left:-12623px;width:1000px"><a href="https://farmacia.example/produs/viagra/">Viagra</a></div>`
 	runMySQLQuery = func(_ wpDBCreds, query string) []string {

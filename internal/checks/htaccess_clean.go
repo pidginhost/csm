@@ -1714,8 +1714,8 @@ const errorDocumentHostShareThreshold = 4
 //
 // Examples:
 //
-//	/home/flores/public_html/.htaccess + https://floresgrup.ro
-//	  -> account "flores" is a substring of label "floresgrup" -> same-brand
+//	/home/acme/public_html/.htaccess + https://acmegroup.example
+//	  -> account "acme" is a substring of label "acmegroup" -> same-brand
 //
 //	/home/shop/example-shop.com/.htaccess + https://www.example-shop.com/404
 //	  -> domain dir "example-shop.com" contains label "example-shop" -> same-brand
@@ -1742,7 +1742,7 @@ func errorDocumentHostIsSameBrand(htaccessPath, urlHost string) bool {
 
 // registrableLabel extracts the leftmost segment of the public
 // suffix + 1: for "www.example-shop.com" returns "example-shop", for
-// "floresgrup.ro" returns "floresgrup". This is heuristic - we treat
+// "acmegroup.example" returns "acmegroup". This is heuristic - we treat
 // the last dot-separated segment as the TLD - but it is robust to
 // the common cases (single-segment TLD, two-segment country code TLD
 // like "co.uk" handled by stripping known double-segment suffixes).

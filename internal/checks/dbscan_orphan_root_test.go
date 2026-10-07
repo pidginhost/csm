@@ -36,7 +36,7 @@ func (m *mockOSCPanelMap) Glob(pattern string) ([]string, error) {
 }
 
 // The production compromise that motivated addon-root scanning sat in a
-// document root that cPanel no longer serves: karmaboutique.ro was absent from
+// document root that cPanel no longer serves: acmeboutique.example was absent from
 // /etc/userdatadomains, /etc/userdomains and vhost userdata entirely. Trusting
 // the served-domain map alone puts that install back out of reach, which is
 // exactly how it stayed unreported for months. An unserved WordPress install

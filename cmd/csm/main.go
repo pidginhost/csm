@@ -1214,9 +1214,9 @@ Options:
   --demote    (revoke-user only) Also demote user to subscriber role.
 
 Examples:
-  csm db-clean --option filmetaricom td_live_css_local_storage --preview
-  csm db-clean --revoke-user filmetaricom 39 --demote
-  csm db-clean --delete-spam filmetaricom --preview
-  csm db-clean --delete-spam filmetaricom
+  csm db-clean --option myaccount td_live_css_local_storage --preview
+  csm db-clean --revoke-user myaccount 39 --demote
+  csm db-clean --delete-spam myaccount --preview
+  csm db-clean --delete-spam myaccount
 `)
 }

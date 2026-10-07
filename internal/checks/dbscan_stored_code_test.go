@@ -13,7 +13,7 @@ import (
 
 // WPCode executes PHP stored in the database. That makes the posts table an
 // executable surface no file scanner covers: a full filesystem
-// sweep of infiltratiizero.ro found nothing while a 17KB obfuscated backdoor
+// sweep of acmeplumbing.example found nothing while a 17KB obfuscated backdoor
 // ran on every request as WPCode snippet 4052.
 func storedCodeRows(t *testing.T, rows [][3]string) {
 	t.Helper()

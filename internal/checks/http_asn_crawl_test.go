@@ -50,23 +50,23 @@ func TestObserveASNCrawlAggregates(t *testing.T) {
 	cfg := configWithASNCrawlDefaults(t) // helper: Thresholds.HTTPASNCrawl* at defaults
 	s := newDomlogStatsAt(mustTime("2026-06-24T12:30:00Z"))
 
-	// 30 Alibaba IPs, each one expensive amplified request to radiusro.
+	// 30 Alibaba IPs, each one expensive amplified request to acmeradio.
 	for i := 1; i <= 30; i++ {
 		rec := accessLogRecord{
 			RemoteIP: fmt.Sprintf("203.0.113.%d", i), Method: "GET",
 			URI: "/categorie/coliere/?filter_x=1&query_type_x=or", Status: 200,
-			Time: mustTime("2026-06-24T12:29:00Z"), Domain: "radius.ro", Account: "radiusro",
+			Time: mustTime("2026-06-24T12:29:00Z"), Domain: "acmeradio.example", Account: "acmeradio",
 		}
 		s.observeASNCrawl(normalizeHTTPClientIP(rec.RemoteIP), rec, cfg)
 	}
 	// One OtherNet expensive request to same account (denominator only).
 	recOther := accessLogRecord{RemoteIP: "192.0.2.5", Method: "GET", URI: "/shop/?q=1", Status: 200,
-		Time: mustTime("2026-06-24T12:29:00Z"), Domain: "radius.ro", Account: "radiusro"}
+		Time: mustTime("2026-06-24T12:29:00Z"), Domain: "acmeradio.example", Account: "acmeradio"}
 	s.observeASNCrawl("192.0.2.5", recOther, cfg)
 
-	sc := s.asnCrawl["radiusro"]
+	sc := s.asnCrawl["acmeradio"]
 	if sc == nil {
-		t.Fatal("no scope accumulated for radiusro")
+		t.Fatal("no scope accumulated for acmeradio")
 	}
 	a := sc.byASN[45102]
 	if a == nil || a.distinctIPs() != 30 || a.expensive != 30 || a.amplified != 30 {
@@ -85,10 +85,10 @@ func TestObserveASNCrawlReverseProxyDropped(t *testing.T) {
 	for i := 1; i <= 40; i++ {
 		rec := accessLogRecord{RemoteIP: fmt.Sprintf("203.0.113.%d", i), Method: "GET",
 			URI: "/c/?filter_x=1", Status: 200, Time: mustTime("2026-06-24T12:29:00Z"),
-			Domain: "radius.ro", Account: "radiusro"}
+			Domain: "acmeradio.example", Account: "acmeradio"}
 		s.observeASNCrawl(normalizeHTTPClientIP(rec.RemoteIP), rec, cfg)
 	}
-	sc := s.asnCrawl["radiusro"]
+	sc := s.asnCrawl["acmeradio"]
 	if sc != nil && sc.byASN[13335] != nil {
 		t.Fatal("reverse-proxy ASN 13335 must not be accumulated")
 	}
@@ -192,7 +192,7 @@ func asnCrawlStatsWith(t *testing.T, cfg *config.Config, account string, asn uin
 
 func TestEmitASNCrawlStage1Fires(t *testing.T) {
 	cfg := configWithASNCrawlDefaults(t)
-	s := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba",
+	s := asnCrawlStatsWith(t, cfg, "acmeradio", 45102, "Alibaba",
 		/*distinctIPs*/ 30 /*expensive*/, 600 /*amplified*/, 600 /*scopeExpensive*/, 600)
 
 	out := s.emitASNCrawl(cfg)
@@ -200,7 +200,7 @@ func TestEmitASNCrawlStage1Fires(t *testing.T) {
 		t.Fatalf("want 1 finding, got %d", len(out))
 	}
 	f := out[0]
-	if f.Check != "http_asn_crawl" || f.Severity != alert.High || f.TenantID != "radiusro" || f.SourceIP != "" {
+	if f.Check != "http_asn_crawl" || f.Severity != alert.High || f.TenantID != "acmeradio" || f.SourceIP != "" {
 		t.Fatalf("unexpected finding: %+v", f)
 	}
 }
@@ -208,19 +208,19 @@ func TestEmitASNCrawlStage1Fires(t *testing.T) {
 func TestEmitASNCrawlStage1Gates(t *testing.T) {
 	cfg := configWithASNCrawlDefaults(t)
 	// Below min_ips (25): no finding.
-	s1 := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba", 10, 600, 600, 600)
+	s1 := asnCrawlStatsWith(t, cfg, "acmeradio", 45102, "Alibaba", 10, 600, 600, 600)
 	if len(s1.emitASNCrawl(cfg)) != 0 {
 		t.Fatal("min_ips gate failed")
 	}
 	// Below share (ASN 600 of 2000 scope = 30% < 50%): no finding.
-	s2 := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba", 30, 600, 600, 2000)
+	s2 := asnCrawlStatsWith(t, cfg, "acmeradio", 45102, "Alibaba", 30, 600, 600, 2000)
 	if len(s2.emitASNCrawl(cfg)) != 0 {
 		t.Fatal("share gate failed")
 	}
 	// Allowlisted ASN: no finding.
 	cfgAllow := configWithASNCrawlDefaults(t)
 	cfgAllow.Thresholds.HTTPASNCrawlAllowlistASNs = []uint{45102}
-	s3 := asnCrawlStatsWith(t, cfgAllow, "radiusro", 45102, "Alibaba", 30, 600, 600, 600)
+	s3 := asnCrawlStatsWith(t, cfgAllow, "acmeradio", 45102, "Alibaba", 30, 600, 600, 600)
 	if len(s3.emitASNCrawl(cfgAllow)) != 0 {
 		t.Fatal("allowlist gate failed")
 	}
@@ -229,7 +229,7 @@ func TestEmitASNCrawlStage1Gates(t *testing.T) {
 func TestEmitASNCrawlSeverityWarningWhenLowAmp(t *testing.T) {
 	cfg := configWithASNCrawlDefaults(t)
 	// Meets min_expensive (250) but not high-volume (4x=1000) and amp 0%.
-	s := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba", 30, 300, 0, 300)
+	s := asnCrawlStatsWith(t, cfg, "acmeradio", 45102, "Alibaba", 30, 300, 0, 300)
 	out := s.emitASNCrawl(cfg)
 	if len(out) != 1 || out[0].Severity != alert.Warning {
 		t.Fatalf("want one Warning, got %+v", out)
@@ -280,10 +280,10 @@ func withPHPWorkers(t *testing.T, counts map[string]int) {
 func TestEmitASNCrawlStage2Escalates(t *testing.T) {
 	cfg := configWithASNCrawlDefaults(t)
 	cfg.Performance.PHPProcessWarnPerUser = 40
-	// account "radiusro" saturated at 50 lsphp.
-	withPHPWorkers(t, map[string]int{"radiusro": 50})
+	// account "acmeradio" saturated at 50 lsphp.
+	withPHPWorkers(t, map[string]int{"acmeradio": 50})
 
-	s := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba", 30, 600, 600, 600)
+	s := asnCrawlStatsWith(t, cfg, "acmeradio", 45102, "Alibaba", 30, 600, 600, 600)
 	out := s.emitASNCrawl(cfg)
 	if len(out) != 1 || out[0].Severity != alert.Critical || len(out[0].CIDRs) == 0 {
 		t.Fatalf("want one Critical with CIDRs, got %+v", out)
@@ -293,8 +293,8 @@ func TestEmitASNCrawlStage2Escalates(t *testing.T) {
 func TestEmitASNCrawlStage2NoEscalationWhenNotSaturated(t *testing.T) {
 	cfg := configWithASNCrawlDefaults(t)
 	cfg.Performance.PHPProcessWarnPerUser = 40
-	withPHPWorkers(t, map[string]int{"radiusro": 5})
-	s := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba", 30, 600, 600, 600)
+	withPHPWorkers(t, map[string]int{"acmeradio": 5})
+	s := asnCrawlStatsWith(t, cfg, "acmeradio", 45102, "Alibaba", 30, 600, 600, 600)
 	out := s.emitASNCrawl(cfg)
 	if len(out) != 1 || out[0].Severity == alert.Critical {
 		t.Fatalf("must stay High/Warning, got %+v", out)
@@ -303,9 +303,9 @@ func TestEmitASNCrawlStage2NoEscalationWhenNotSaturated(t *testing.T) {
 
 func TestEmitASNCrawlStage2NoEscalationWhenAccountless(t *testing.T) {
 	cfg := configWithASNCrawlDefaults(t)
-	withPHPWorkers(t, map[string]int{"radiusro": 50})
+	withPHPWorkers(t, map[string]int{"acmeradio": 50})
 	// domain-scoped (no account): cannot escalate.
-	s := asnCrawlStatsWith(t, cfg, "domain:radius.ro", 45102, "Alibaba", 30, 600, 600, 600)
+	s := asnCrawlStatsWith(t, cfg, "domain:acmeradio.example", 45102, "Alibaba", 30, 600, 600, 600)
 	out := s.emitASNCrawl(cfg)
 	if len(out) != 1 || out[0].Severity == alert.Critical {
 		t.Fatalf("accountless must not escalate, got %+v", out)
@@ -360,11 +360,11 @@ func TestScanFeedsASNCrawlOutsideFloodWindow(t *testing.T) {
 		rec := accessLogRecord{
 			RemoteIP: fmt.Sprintf("203.0.113.%d", i), Method: "GET",
 			URI: "/categorie/coliere/?filter_x=1", Status: 200,
-			Time: inWindow, Domain: "radius.ro", Account: "radiusro",
+			Time: inWindow, Domain: "acmeradio.example", Account: "acmeradio",
 		}
 		s.scan(rec, cfg, nopBotClassifier{})
 	}
-	sc := s.asnCrawl["radiusro"]
+	sc := s.asnCrawl["acmeradio"]
 	if sc == nil || sc.byASN[45102] == nil {
 		t.Fatal("scan() must accumulate asn-crawl records 30 min old (inside 60-min window)")
 	}
@@ -376,10 +376,10 @@ func TestScanFeedsASNCrawlOutsideFloodWindow(t *testing.T) {
 	old := scanTime.Add(-90 * time.Minute)
 	recOld := accessLogRecord{
 		RemoteIP: "198.51.100.7", Method: "GET", URI: "/c/?filter_y=2", Status: 200,
-		Time: old, Domain: "radius.ro", Account: "radiusro",
+		Time: old, Domain: "acmeradio.example", Account: "acmeradio",
 	}
 	s.scan(recOld, cfg, nopBotClassifier{})
-	if got := s.asnCrawl["radiusro"].byASN[45102].expensive; got != 30 {
+	if got := s.asnCrawl["acmeradio"].byASN[45102].expensive; got != 30 {
 		t.Fatalf("90-min-old record must not accumulate; expensive=%d want 30", got)
 	}
 
@@ -388,10 +388,10 @@ func TestScanFeedsASNCrawlOutsideFloodWindow(t *testing.T) {
 	future := scanTime.Add(2 * time.Minute)
 	recFuture := accessLogRecord{
 		RemoteIP: "198.51.100.8", Method: "GET", URI: "/c/?filter_z=3", Status: 200,
-		Time: future, Domain: "radius.ro", Account: "radiusro",
+		Time: future, Domain: "acmeradio.example", Account: "acmeradio",
 	}
 	s.scan(recFuture, cfg, nopBotClassifier{})
-	if got := s.asnCrawl["radiusro"].byASN[45102].expensive; got != 30 {
+	if got := s.asnCrawl["acmeradio"].byASN[45102].expensive; got != 30 {
 		t.Fatalf("future record must not accumulate; expensive=%d want 30", got)
 	}
 }
@@ -437,7 +437,7 @@ func TestEmitASNCrawlDropsFirewallAllowedCIDR(t *testing.T) {
 		expensive: 600,
 		total:     600,
 		amplified: 600,
-		domains:   map[string]struct{}{"radius.ro": {}},
+		domains:   map[string]struct{}{"acmeradio.example": {}},
 		ips:       map[string]struct{}{},
 		cidr24:    map[string]int{},
 	}
@@ -451,7 +451,7 @@ func TestEmitASNCrawlDropsFirewallAllowedCIDR(t *testing.T) {
 		}
 	}
 	s.asnCrawl = map[string]*asnCrawlScope{
-		"radiusro": {byASN: map[uint]*asnCrawlASN{45102: a}, scopeExpensive: 600},
+		"acmeradio": {byASN: map[uint]*asnCrawlASN{45102: a}, scopeExpensive: 600},
 	}
 
 	prev := getIPBlocker()
@@ -489,8 +489,8 @@ func TestEmitASNCrawlStage2UsesSaturationConfig(t *testing.T) {
 	cfg := configWithASNCrawlDefaults(t)
 	cfg.Thresholds.HTTPASNCrawlSaturation = 50
 	cfg.Performance.PHPProcessWarnPerUser = 999 // would block escalation if used
-	withPHPWorkers(t, map[string]int{"radiusro": 50})
-	s := asnCrawlStatsWith(t, cfg, "radiusro", 45102, "Alibaba", 30, 600, 600, 600)
+	withPHPWorkers(t, map[string]int{"acmeradio": 50})
+	s := asnCrawlStatsWith(t, cfg, "acmeradio", 45102, "Alibaba", 30, 600, 600, 600)
 	out := s.emitASNCrawl(cfg)
 	if len(out) != 1 || out[0].Severity != alert.Critical {
 		t.Fatalf("saturation config must drive Critical escalation, got %+v", out)

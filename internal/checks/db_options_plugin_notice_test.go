@@ -48,7 +48,7 @@ func TestPluginNoticeInjectionIgnoresGenuineErrorText(t *testing.T) {
 // and widget code there. Those stay with the reputation-and-baseline path;
 // this check must not claim them.
 func TestPluginNoticeInjectionIgnoresContentOptions(t *testing.T) {
-	value := `a:1:{i:2;a:1:{s:7:"content";s:54:"<script src="https://mny.ro/npId.js" type="text/javascript">";}}`
+	value := `a:1:{i:2;a:1:{s:7:"content";s:54:"<script src="https://acme.example/npId.js" type="text/javascript">";}}`
 
 	if finding := pluginNoticeInjectionFinding("alice", wpDBCreds{dbName: "alice_wp"}, "wp_", "widget_block", value); finding != nil {
 		t.Fatalf("content option reported as a plugin notice injection: %+v", finding)

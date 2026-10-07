@@ -1834,7 +1834,7 @@ func TestAutoBlockHTTPASNCrawlTempbansCIDRs(t *testing.T) {
 	f := alert.Finding{
 		Check:    "http_asn_crawl",
 		Severity: alert.Critical,
-		Message:  "Distributed crawl from AS45102 (Alibaba) against radiusro",
+		Message:  "Distributed crawl from AS45102 (Alibaba) against acmeradio",
 		CIDRs:    []string{"203.0.113.0/24", "198.51.100.0/24"},
 	}
 

@@ -12,7 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// 2026-04-27 forgetwhitecom transfer regression: the inotify forwarder
+// WHM-transfer regression: the inotify forwarder
 // watcher fired email_suspicious_forwarder for every external destination
 // every time it observed the file. During an account transfer rsync
 // writes the entire valiases file at once, and EVERY existing forwarder

@@ -301,8 +301,8 @@ func TestParseDBFindingDetails(t *testing.T) {
 	}{
 		{
 			name:       "standard format",
-			details:    "Database: filmetaricom_3qxJhxS5VoB\nOption: td_live_css_local_storage\nContent preview: ...",
-			wantDB:     "filmetaricom_3qxJhxS5VoB",
+			details:    "Database: acmefilms_3qxJhxS5VoB\nOption: td_live_css_local_storage\nContent preview: ...",
+			wantDB:     "acmefilms_3qxJhxS5VoB",
 			wantOption: "td_live_css_local_storage",
 		},
 		{

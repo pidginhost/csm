@@ -9,7 +9,7 @@ func TestDomainAccountOwnerParsesUserdomains(t *testing.T) {
 	oldOS := osFS
 	osFS = &mockOS{readFile: func(name string) ([]byte, error) {
 		if name == "/etc/userdomains" {
-			return []byte("radius.ro: radiusro\nthermaroll.ro: radiusro\n*: nobody\n"), nil
+			return []byte("acmeradio.example: acmeradio\nacmeheating.example: acmeradio\n*: nobody\n"), nil
 		}
 		return nil, os.ErrNotExist
 	}}
@@ -17,10 +17,10 @@ func TestDomainAccountOwnerParsesUserdomains(t *testing.T) {
 	resetDomainOwnerCache()
 	t.Cleanup(resetDomainOwnerCache)
 
-	if got := domainAccountOwner("radius.ro"); got != "radiusro" {
-		t.Fatalf("radius.ro owner = %q want radiusro", got)
+	if got := domainAccountOwner("acmeradio.example"); got != "acmeradio" {
+		t.Fatalf("acmeradio.example owner = %q want acmeradio", got)
 	}
-	if got := domainAccountOwner("THERMAROLL.RO"); got != "radiusro" {
+	if got := domainAccountOwner("ACMEHEATING.EXAMPLE"); got != "acmeradio" {
 		t.Fatalf("case-insensitive lookup failed, got %q", got)
 	}
 	if got := domainAccountOwner("unknown.example"); got != "" {
