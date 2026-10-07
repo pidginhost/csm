@@ -5,9 +5,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type rangeTestResponse struct {
@@ -299,5 +301,32 @@ func TestSaveLoadFetchedRanges(t *testing.T) {
 	}
 	if !DefaultRanges().IPInBot(net.ParseIP("18.97.1.229"), "perplexitybot") {
 		t.Error("loaded-from-disk overlay must be active in IPInBot")
+	}
+}
+
+// A nil client must not fall back to http.DefaultClient, which has no
+// timeout: a feed host that accepts the connection and never answers would
+// hang the updater for good.
+func TestFetchRangeWithoutClientIsBounded(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	t.Cleanup(func() { close(release); srv.Close() })
+
+	prev := rangeFetchClient
+	rangeFetchClient = &http.Client{Timeout: 100 * time.Millisecond}
+	t.Cleanup(func() { rangeFetchClient = prev })
+
+	start := time.Now()
+	_, err := FetchRange(context.Background(), nil, srv.URL)
+	if err == nil {
+		t.Fatal("FetchRange returned no error from a server that never answers")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("FetchRange took %v, want the client timeout to end it", elapsed)
+	}
+	if prev.Timeout <= 0 {
+		t.Fatalf("default range fetch client has no timeout: %+v", prev)
 	}
 }

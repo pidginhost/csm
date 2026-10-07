@@ -179,10 +179,15 @@ func ParseRangeJSON(data []byte) ([]*net.IPNet, error) {
 	return out, nil
 }
 
+// rangeFetchClient serves FetchRange callers that pass no client. A feed host
+// that accepts the connection and never answers must not hang the updater,
+// so it carries a timeout, unlike http.DefaultClient.
+var rangeFetchClient = &http.Client{Timeout: 30 * time.Second}
+
 // FetchRange downloads and parses one vendor range feed.
 func FetchRange(ctx context.Context, client *http.Client, url string) ([]*net.IPNet, error) {
 	if client == nil {
-		client = http.DefaultClient
+		client = rangeFetchClient
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
