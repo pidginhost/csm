@@ -252,6 +252,11 @@ type DoctorRow struct {
 	Fix     string `json:"fix,omitempty"`
 }
 
+// PreviewUnaffected ends every admission row: legacy blocking enforces
+// while admission previews, so a healthy row says so and an outage only
+// warns (R10).
+const PreviewUnaffected = "existing blocking is unaffected while admission previews"
+
 // DoctorChecks turns a ledger status and the ingress health into fixed
 // doctor rows (ruling 10). Either may be nil: then its rows are left out,
 // so a daemon without an admission owner prints none. now is the time the
@@ -267,22 +272,22 @@ func DoctorChecks(s *LedgerStatus, in *IngressHealth, now time.Time) []DoctorRow
 	if s == nil {
 		return rows
 	}
-	gap := DoctorRow{Name: "admission response gaps", Status: DoctorOK}
+	gap := DoctorRow{Name: "admission response gaps", Status: DoctorOK, Message: PreviewUnaffected}
 	if last := s.Notices.LastCriticalGap; !last.IsZero() && now.Before(last.Add(time.Hour)) {
-		gap.Status = DoctorFail
-		gap.Message = "a Critical finding did not receive its response at " + last.UTC().Format(time.RFC3339)
+		gap.Status = DoctorWarn
+		gap.Message = "a Critical finding would not have received its response at " + last.UTC().Format(time.RFC3339) + "; " + PreviewUnaffected
 		gap.Fix = "inspect the auto_response_withheld and response_capacity_exhausted notices for the reason"
 	}
-	reserve := DoctorRow{Name: "admission recovery reserve", Status: DoctorOK}
+	reserve := DoctorRow{Name: "admission recovery reserve", Status: DoctorOK, Message: PreviewUnaffected}
 	if s.Storage.Pinned > 0 || s.Storage.RecoveryRoom < MaxRecoveryNeed {
 		reserve.Status = DoctorWarn
-		reserve.Message = fmt.Sprintf("%d bytes of unresolved outcomes are pinned; %d bytes of room remain", s.Storage.Pinned, s.Storage.RecoveryRoom)
+		reserve.Message = fmt.Sprintf("%d bytes of unresolved outcomes are pinned; %d bytes of room remain", s.Storage.Pinned, s.Storage.RecoveryRoom) + "; " + PreviewUnaffected
 		reserve.Fix = "resolve unknown outcomes and confirm the audit consumer acknowledges rows; new reservations wait while the reserve is full"
 	}
-	outbox := DoctorRow{Name: "admission outbox", Status: DoctorOK}
+	outbox := DoctorRow{Name: "admission outbox", Status: DoctorOK, Message: PreviewUnaffected}
 	if used := s.Outbox.AuditBytes + s.Outbox.NoticeBytes; used > RecoveryReserveBytes/2 {
 		outbox.Status = DoctorWarn
-		outbox.Message = fmt.Sprintf("the outbox holds %d bytes, over half the reserve", used)
+		outbox.Message = fmt.Sprintf("the outbox holds %d bytes, over half the reserve", used) + "; " + PreviewUnaffected
 		outbox.Fix = "confirm audit and notice delivery is running and acknowledging"
 	}
 	return append(rows, gap, reserve, outbox)
@@ -300,10 +305,10 @@ func ledgerRow(s *LedgerStatus) DoctorRow {
 		}
 	}
 	if len(damaged) == 0 {
-		return DoctorRow{Name: "admission ledger", Status: DoctorOK}
+		return DoctorRow{Name: "admission ledger", Status: DoctorOK, Message: PreviewUnaffected}
 	}
 	return DoctorRow{
-		Name: "admission ledger", Status: DoctorFail, Message: strings.Join(damaged, "; "),
+		Name: "admission ledger", Status: DoctorWarn, Message: strings.Join(damaged, "; ") + "; " + PreviewUnaffected,
 		Fix: "automatic responses are refused while the ledger is damaged; stop csm.service and restore the state database from a backup",
 	}
 }
@@ -312,16 +317,16 @@ func ingressRow(s *LedgerStatus, in *IngressHealth) DoctorRow {
 	switch {
 	case !in.Admitting:
 		return DoctorRow{
-			Name: "admission ingress", Status: DoctorFail,
-			Message: fmt.Sprintf("refusing every automatic response since %s; %d Critical arrivals refused", in.StoppedSince.UTC().Format(time.RFC3339), in.CriticalRefused),
+			Name: "admission ingress", Status: DoctorWarn,
+			Message: fmt.Sprintf("refusing every automatic response since %s; %d Critical arrivals refused; %s", in.StoppedSince.UTC().Format(time.RFC3339), in.CriticalRefused, PreviewUnaffected),
 			Fix:     "the ledger owner has no usable queue snapshot; inspect the daemon log and the admission ledger row",
 		}
 	case s != nil && s.Ingress.Resumed != 0 && s.Ingress.Resumed == s.Ingress.Generation:
 		return DoctorRow{
 			Name: "admission ingress", Status: DoctorWarn,
-			Message: "the previous ingress generation was interrupted; its held arrivals were lost and counts are lower bounds",
+			Message: "the previous ingress generation was interrupted; its held arrivals were lost and counts are lower bounds; " + PreviewUnaffected,
 			Fix:     "stop csm.service cleanly next time; the warning clears after a clean restart",
 		}
 	}
-	return DoctorRow{Name: "admission ingress", Status: DoctorOK}
+	return DoctorRow{Name: "admission ingress", Status: DoctorOK, Message: PreviewUnaffected}
 }

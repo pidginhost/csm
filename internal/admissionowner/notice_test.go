@@ -12,18 +12,27 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// noticeSink records every delivery and fails as told.
+// noticeSink records every delivery, and whether it was a preview, and
+// fails as told.
 type noticeSink struct {
 	mu         sync.Mutex
 	deliveries [][]alert.Finding
+	previews   []bool
 	err        error
 }
 
-func (s *noticeSink) deliver(fs []alert.Finding) error {
+func (s *noticeSink) deliver(fs []alert.Finding, preview bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.deliveries = append(s.deliveries, append([]alert.Finding(nil), fs...))
+	s.previews = append(s.previews, preview)
 	return s.err
+}
+
+func (s *noticeSink) lastPreview() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.previews[len(s.previews)-1]
 }
 
 func (s *noticeSink) set(err error) {
@@ -82,12 +91,14 @@ func TestOwnerDeliversNoticesOnTheIndependentPath(t *testing.T) {
 		t.Fatalf("deliveries = %d", sink.count())
 	}
 	notices := sink.last()
-	if len(notices) != 2 {
-		t.Fatalf("notices = %+v, want the withheld record and the Critical summary", notices)
+	if len(notices) != 2 || !sink.lastPreview() {
+		t.Fatalf("notices = %+v (preview %v), want the withheld record and the Critical summary as previews", notices, sink.lastPreview())
 	}
+	// R10: legacy enforces while admission previews, so a gap is a
+	// preview record, not an outage.
 	var keyed, summary int
 	for _, fd := range notices {
-		if fd.Check != "auto_response_withheld" || fd.Severity != alert.Critical || !strings.Contains(fd.Details, "events=1") {
+		if fd.Check != "auto_response_withheld" || fd.Severity != alert.Warning || !strings.Contains(fd.Details, "events=1") || !strings.HasPrefix(fd.Message, "Admission preview: ") {
 			t.Errorf("notice = %+v", fd)
 		}
 		if strings.Contains(fd.Details, "reason=policy") && strings.Contains(fd.Details, "check=ssh_brute") && strings.Contains(fd.Details, "examples=cand_") {
@@ -159,8 +170,9 @@ func TestOwnerAnnouncesAStoppedIngressOnce(t *testing.T) {
 		t.Fatalf("deliveries = %d, want one failed and one sent", sink.count())
 	}
 	stop := sink.last()
-	if len(stop) != 1 || stop[0].Check != "auto_response_withheld" || stop[0].Severity != alert.Critical || !strings.Contains(stop[0].Details, "clock unavailable") {
-		t.Fatalf("stop notice = %+v", stop)
+	if len(stop) != 1 || stop[0].Check != "auto_response_withheld" || stop[0].Severity != alert.Warning || sink.lastPreview() ||
+		!strings.Contains(stop[0].Message, "existing blocking is unaffected") || !strings.Contains(stop[0].Details, "clock unavailable") {
+		t.Fatalf("stop notice = %+v (preview %v)", stop, sink.lastPreview())
 	}
 	f.host.set(func(h *fakeHost) { h.clockErr = nil })
 	_ = o.do(o.tick)
@@ -196,7 +208,7 @@ func TestOwnerStopWaitsForANoticeDelivery(t *testing.T) {
 	var once sync.Once
 	opts := f.options()
 	opts.NoticeEvery = time.Millisecond
-	opts.Deliver = func([]alert.Finding) error {
+	opts.Deliver = func([]alert.Finding, bool) error {
 		once.Do(func() { close(entered) })
 		<-release
 		return nil
@@ -233,7 +245,7 @@ func TestOwnerStopNoticeSurvivesAnAckFailure(t *testing.T) {
 	f.host.set(func(h *fakeHost) { h.clockErr = errors.New("clock unavailable") })
 	_ = o.do(o.tick)
 	o.notices.cycle()
-	if sink.count() != 2 || len(sink.last()) != 1 || !strings.Contains(sink.last()[0].Message, "admission stopped") {
+	if sink.count() != 2 || len(sink.last()) != 1 || !strings.Contains(sink.last()[0].Message, "admission preview stopped") {
 		t.Fatal("ack failure hid the stop")
 	}
 	o.notices.cycle()

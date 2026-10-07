@@ -23,7 +23,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
-- Status and diagnostics now report automatic response admission health, with Critical alerts for failures.
+- From the first start after upgrade with `auto_response.enabled`, admission gaps stay in findings history without reaching alert channels, and every admission diagnostic warns that existing blocking is unaffected. A stopped preview still raises a Warning.
 
 ### Fixed
 

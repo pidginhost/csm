@@ -23,7 +23,7 @@ func TestOwnerBlockedStopNoticeReportsQueueHealth(t *testing.T) {
 	defer releaseDelivery()
 	opts := f.options()
 	opts.NoticeEvery = time.Millisecond
-	opts.Deliver = func([]alert.Finding) error { close(entered); <-release; return nil }
+	opts.Deliver = func([]alert.Finding, bool) error { close(entered); <-release; return nil }
 	o := f.start(opts)
 	<-entered
 	if q := o.QueueStatuses(time.Now().Add(2 * time.Minute))["notices"]; q.Depth != 1 || q.Reason != "consumer_stalled" {
@@ -171,7 +171,7 @@ func TestOwnerStopNoticeDoesNotWaitForLedgerRetry(t *testing.T) {
 		t.Fatal("failed clock reading succeeded")
 	}
 	o.notices.cycle()
-	if sink.count() != 4 || len(sink.last()) != 1 || !strings.Contains(sink.last()[0].Message, "admission stopped") {
+	if sink.count() != 4 || len(sink.last()) != 1 || !strings.Contains(sink.last()[0].Message, "admission preview stopped") {
 		t.Fatalf("ledger backoff hid or repeated the stop alert: %d deliveries", sink.count())
 	}
 	if q := o.QueueStatuses(now.Add(2 * time.Minute))["notices"]; q.Depth != 2 || q.Reason != "consumer_stalled" {

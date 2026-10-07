@@ -101,9 +101,9 @@ func TestDaemonDeliversAdmissionNoticesOutsideTheFindingChannel(t *testing.T) {
 		}
 	})
 	t.Cleanup(func() { alert.SetCentralHook(previousHook) })
-	notice := alert.Finding{Check: "auto_response_withheld", Severity: alert.Critical, Message: "Automatic response admission stopped", Timestamp: time.Now()}
+	notice := alert.Finding{Check: "auto_response_withheld", Severity: alert.Warning, Message: "Automatic response admission preview stopped; existing blocking is unaffected", Timestamp: time.Now()}
 	delivered := make(chan error, 1)
-	go func() { delivered <- d.deliverAdmissionNotices([]alert.Finding{notice}) }()
+	go func() { delivered <- d.deliverAdmissionNotices([]alert.Finding{notice}, false) }()
 	select {
 	case err := <-delivered:
 		if err != nil {
@@ -118,6 +118,34 @@ func TestDaemonDeliversAdmissionNoticesOutsideTheFindingChannel(t *testing.T) {
 		t.Fatalf("dispatched %d, channel holds %d", len(dispatched), len(d.alertCh))
 	}
 	if history, total := st.ReadHistory(10, 0); total != 1 || history[0].Check != "auto_response_withheld" {
+		t.Fatalf("history = %+v (%d)", history, total)
+	}
+}
+
+// R10: a preview notice is recorded in history and never reaches an alert
+// channel, since legacy blocking still enforces.
+func TestDaemonRecordsAdmissionPreviewsWithoutDispatch(t *testing.T) {
+	dir := t.TempDir()
+	_, restore := openTestBoltStore(t, dir)
+	defer restore()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	d := New(&config.Config{StatePath: dir}, st, nil, "")
+	previousHook := alert.CentralHook
+	dispatched := 0
+	alert.SetCentralHook(func(alert.Finding) { dispatched++ })
+	t.Cleanup(func() { alert.SetCentralHook(previousHook) })
+	notice := alert.Finding{Check: "auto_response_withheld", Severity: alert.Warning, Message: "Admission preview: Critical automatic response withheld", Timestamp: time.Now()}
+	if err := d.deliverAdmissionNotices([]alert.Finding{notice}, true); err != nil {
+		t.Fatal(err)
+	}
+	if dispatched != 0 {
+		t.Fatalf("a preview reached %d alert channels", dispatched)
+	}
+	if history, total := st.ReadHistory(10, 0); total != 1 || history[0].Message != notice.Message {
 		t.Fatalf("history = %+v (%d)", history, total)
 	}
 }
@@ -159,7 +187,7 @@ func TestAdmissionNoticesBypassTheRoutineAlertBudget(t *testing.T) {
 		{Check: "auto_response_withheld", Message: "withheld warning", Severity: alert.Warning, Timestamp: now},
 		{Check: "auto_block", Message: "applied summary", Severity: alert.Warning, Timestamp: now},
 	} {
-		if err := d.deliverAdmissionNotices([]alert.Finding{notice}); err != nil {
+		if err := d.deliverAdmissionNotices([]alert.Finding{notice}, false); err != nil {
 			t.Fatal(err)
 		}
 	}

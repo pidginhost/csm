@@ -77,7 +77,9 @@ type Options struct {
 	// Deliver sends notices through the daemon's independent health path,
 	// as protection_queue_degraded is sent: history and direct dispatch,
 	// never the finding channel, suppressions or the routine rate limit.
-	Deliver func([]alert.Finding) error
+	// A preview is recorded in history only: legacy blocking enforces, so
+	// the gap it describes is not an outage (R10).
+	Deliver func(findings []alert.Finding, preview bool) error
 	// Expiry is how long the response a candidate asks for would last
 	// under the current configuration. A preview records the expiry a
 	// live attempt would have.

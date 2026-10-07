@@ -277,18 +277,25 @@ scan-driven block budget. After editing the configuration, run
 Existing blocking paths do not use the ledger yet; see
 [automatic response](auto-response.md) for the scope of the current budget.
 
-Doctor fails while the ledger owner is not running or its clock reading is
-refused, and warns on a degraded clock, a clamped ceiling, a ceiling of 1
-(only the reserved lane runs), a legacy hourly count that could not be read
-and a failed inventory read.
+Existing blocking paths still decide every block, so no admission row fails
+doctor and every row says existing blocking is unaffected. Rows warn when
+the ledger owner is not running, its clock reading
+is refused, the ledger is damaged, admission has stopped or a Critical
+finding would not have received its response in the last hour. They also
+show a degraded clock, a clamped ceiling, a ceiling of 1 (only the reserved
+lane runs), a legacy hourly count that could not be read and a failed
+inventory read.
 
 `admission.audit` and `admission.notices` in `queues` report the delivery of
 admission records to the [action log](action-log.md) and of admission notices.
-A ledger that cannot start, or admission that stops, raises one Critical
+A ledger that cannot start, or admission that stops, raises one Warning
 `auto_response_withheld` alert through the same path as protection queue
-alerts. Admission notices keep their severity and notification channel
-settings but bypass `alerts.max_per_hour`: the ledger already paces them
-per notice key and summary. Delivery errors leave notices pending for retry:
+alerts; it follows the notification channel settings but bypasses
+`alerts.max_per_hour`. Ledger notices (withheld responses, exhausted
+capacity and their summaries) describe what the ledger would have done, so
+they are recorded in findings history as Warnings starting with "Admission
+preview:" and sent to no alert channel; the ledger paces them per notice key
+and summary. Delivery errors leave notices pending for retry:
 the next two cycles retry at once, then each attempt waits twice as long as
 the one before, up to an hour. Ledger notices and the stopped-admission
 alert retry independently, so a failing path does not defer the other;

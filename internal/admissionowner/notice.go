@@ -105,7 +105,7 @@ func (s *sender) cycle() {
 		findings[i] = noticeFinding(r, now)
 		acks[i] = admission.NoticeAck{Key: r.Key, First: r.First, Count: r.Count}
 	}
-	if !s.deliver(&s.ledgerRetry, findings) {
+	if !s.deliver(&s.ledgerRetry, findings, true) {
 		return
 	}
 	s.delivered += uint64(len(due))
@@ -127,9 +127,10 @@ func (s *sender) observe() {
 	s.queue.Observe(deliveryNow(), depth, s.delivered)
 }
 
-// announceStop sends one Critical notice when the ingress stops admitting,
-// naming the cause the owner recorded (ruling 8, O52). The ledger may be
-// the damaged part, so nothing here writes it.
+// announceStop sends one notice when the ingress stops admitting, naming
+// the cause the owner recorded (ruling 8, O52). The ledger may be the
+// damaged part, so nothing here writes it. It warns: legacy blocking
+// enforces while admission previews (R10).
 func (s *sender) announceStop() bool {
 	if s.pendingStop != nil && s.sendStop() {
 		return true
@@ -160,7 +161,7 @@ func (s *sender) announceStop() bool {
 		return false
 	}
 	s.pendingStop = &alert.Finding{
-		Check: "auto_response_withheld", Severity: alert.Critical, Message: "Automatic response admission stopped",
+		Check: "auto_response_withheld", Severity: alert.Warning, Message: "Automatic response admission preview stopped; existing blocking is unaffected",
 		Details:   fmt.Sprintf("since=%s critical_refused=%d cause=%s", h.StoppedSince.UTC().Format(time.RFC3339), h.CriticalRefused, cause),
 		Timestamp: time.Now(),
 	}
@@ -170,7 +171,7 @@ func (s *sender) announceStop() bool {
 
 func (s *sender) sendStop() bool {
 	s.observe()
-	if !s.deliver(&s.stopRetry, []alert.Finding{*s.pendingStop}) {
+	if !s.deliver(&s.stopRetry, []alert.Finding{*s.pendingStop}, false) {
 		return true
 	}
 	s.announced, s.announcedSince = true, s.pendingSince
@@ -186,11 +187,11 @@ func (s *sender) sendStop() bool {
 // the next two cycles retry at once, then each attempt waits twice as long
 // as the one before, up to an hour. A delivery restores prompt retries
 // for its path.
-func (s *sender) deliver(retry *noticeRetry, findings []alert.Finding) bool {
+func (s *sender) deliver(retry *noticeRetry, findings []alert.Finding, preview bool) bool {
 	if s.o.stopping.Load() || deliveryNow().Before(retry.at) {
 		return false
 	}
-	if err := s.o.opts.Deliver(findings); err != nil {
+	if err := s.o.opts.Deliver(findings, preview); err != nil {
 		retry.failures++
 		if retry.failures > 2 {
 			retry.at = deliveryNow().Add(min(defaultNoticeEvery<<min(retry.failures-2, 20), maxNoticeRetryWait))
@@ -201,9 +202,10 @@ func (s *sender) deliver(retry *noticeRetry, findings []alert.Finding) bool {
 	return true
 }
 
-// noticeFinding is the notification of one notice record: its registered
-// check and severity, and in its details the events no delivery covered,
-// their key and their example candidates.
+// noticeFinding is the preview record of one notice: its registered check,
+// and in its details the events no delivery covered, their key and their
+// example candidates. Legacy blocking enforces while admission previews,
+// so every record warns, whatever its kind's severity (R10).
 func noticeFinding(r admission.NoticeRecord, now time.Time) alert.Finding {
 	var b strings.Builder
 	fmt.Fprintf(&b, "events=%d first=%s last=%s", r.Unsent(), r.First.UTC().Format(time.RFC3339), r.Last.UTC().Format(time.RFC3339))
@@ -229,9 +231,5 @@ func noticeFinding(r admission.NoticeRecord, now time.Time) alert.Finding {
 		}
 		b.WriteString(" examples=" + strings.Join(ids, ","))
 	}
-	sev := alert.Warning
-	if r.Key.Kind.Severity() == admission.SeverityCritical {
-		sev = alert.Critical
-	}
-	return alert.Finding{Check: r.Key.Kind.Check(), Severity: sev, Message: noticeMessages[r.Key.Kind], Details: b.String(), Timestamp: now}
+	return alert.Finding{Check: r.Key.Kind.Check(), Severity: alert.Warning, Message: "Admission preview: " + noticeMessages[r.Key.Kind], Details: b.String(), Timestamp: now}
 }

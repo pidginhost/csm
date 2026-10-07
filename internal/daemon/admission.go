@@ -65,9 +65,12 @@ func (d *Daemon) startAdmissionWith(opts admissionowner.Options) {
 // deliverAdmissionNotices is the independent health path: history and a
 // direct dispatch, as protection_queue_degraded is sent. The finding
 // channel, suppressions and automatic response are never involved, since
-// the failure being reported may be in them.
-func (d *Daemon) deliverAdmissionNotices(findings []alert.Finding) error {
+// the failure being reported may be in them. A preview is recorded only.
+func (d *Daemon) deliverAdmissionNotices(findings []alert.Finding, preview bool) error {
 	d.store.AppendHistory(findings)
+	if preview {
+		return nil
+	}
 	return alert.DispatchNotices(d.currentCfg(), findings)
 }
 

@@ -873,7 +873,7 @@ func TestAdmissionLedgerMarksTheGenerationAfterAnInterruption(t *testing.T) {
 	if s, err = f.l.BeginIngress(); err != nil || s.Resumed != 0 || s.Generation != 3 {
 		t.Fatalf("after a clean close = %+v, %v", s, err)
 	}
-	if rows := admission.DoctorChecks(ptr(f.l.Status()), &admission.IngressHealth{Admitting: true}, f.wall); rows[1].Status != admission.DoctorOK {
+	if rows := admission.DoctorChecks(ptr(f.l.Status()), &admission.IngressHealth{Admitting: true}, f.wall); rows[1].Name != "admission ingress" || rows[1].Status != admission.DoctorOK || rows[1].Message != admission.PreviewUnaffected || rows[1].Fix != "" {
 		t.Fatalf("doctor after a clean close = %+v", rows[1])
 	}
 }

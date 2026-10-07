@@ -81,7 +81,7 @@ func TestOwnerConcurrentStopsReleaseBlockedSender(t *testing.T) {
 		f := newOwnerFixture(t)
 		opts := f.options()
 		opts.NoticeEvery = time.Millisecond
-		opts.Deliver = func([]alert.Finding) error { t.Error("healthy ingress produced a notice"); return nil }
+		opts.Deliver = func([]alert.Finding, bool) error { t.Error("healthy ingress produced a notice"); return nil }
 		o := f.start(opts)
 		entered, release, requestDone := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 		go func() {
