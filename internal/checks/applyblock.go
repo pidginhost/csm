@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -35,6 +36,11 @@ type ApplyBlockRequest struct {
 	Reason       string
 	TTL          time.Duration
 	Source       string
+	// Root is the admission evidence the block answers again, carried by
+	// the derived path that applies it; Entry is that path's entry. The
+	// zero root means the path kept none.
+	Root  admission.Evidence
+	Entry admission.Entry
 }
 
 // ApplyBlockResult carries the engine outcome plus the auto_block findings
@@ -75,6 +81,7 @@ func ApplyBlock(cfg *config.Config, req ApplyBlockRequest) (ApplyBlockResult, er
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
 		return ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}, ErrAutoBlockDisabled
 	}
+	respondDerived(req)
 	blocker := getIPBlocker()
 	if blocker == nil {
 		res := ApplyBlockResult{Outcome: firewall.BlockOutcomeNoop}

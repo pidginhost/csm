@@ -83,6 +83,22 @@ func respondSpray(f alert.Finding, cidr string) {
 	}
 }
 
+// respondDerived hands admission the block a derived path applies, with the
+// root it carries, through its entry. A permanent block is never asked for
+// implicitly (spec 5.10): it is handed over without a root, as a path that
+// kept none is, and admission refuses it.
+func respondDerived(req ApplyBlockRequest) {
+	a := getResponseAdmission()
+	if a == nil {
+		return
+	}
+	root := req.Root
+	if req.TTL == 0 {
+		root = admission.Evidence{}
+	}
+	_ = a.Respond(admission.KindBlockIP, root, req.Entry, req.TTL)
+}
+
 // respondNetblock hands admission a netblock escalation. It rests on past
 // blocks rather than a root admission could answer, so admission refuses
 // it until range corroboration exists.

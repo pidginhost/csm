@@ -30,6 +30,8 @@ type fakeAdmission struct {
 	refused []string
 	refuse  bool
 	pending *respondCall
+	// mint, when set, returns the evidence Mint hands back.
+	mint func(f alert.Finding, target string) admission.Evidence
 }
 
 func (a *fakeAdmission) Mint(f alert.Finding, target string) (admission.Evidence, error) {
@@ -39,6 +41,9 @@ func (a *fakeAdmission) Mint(f alert.Finding, target string) (admission.Evidence
 		return admission.Evidence{}, &admission.Error{Reason: admission.ReasonInvalid, Detail: "refused"}
 	}
 	a.pending = &respondCall{check: f.Check, target: target, cursor: f.Observation.Cursor, rooted: true}
+	if a.mint != nil {
+		return a.mint(f, target), nil
+	}
 	return admission.Evidence{}, nil
 }
 
@@ -48,16 +53,54 @@ func (a *fakeAdmission) Refuse(_ admission.Kind, f alert.Finding, _ admission.En
 	a.refused = append(a.refused, f.Check)
 }
 
-func (a *fakeAdmission) Respond(kind admission.Kind, _ admission.Evidence, via admission.Entry, _ ...time.Duration) error {
+// Respond names a response without a mint before it by the evidence it
+// carries: a root minted earlier, or none.
+func (a *fakeAdmission) Respond(kind admission.Kind, e admission.Evidence, via admission.Entry, ttl ...time.Duration) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var c respondCall
-	if a.pending != nil {
+	switch {
+	case a.pending != nil:
 		c, a.pending = *a.pending, nil
+	case !e.Equal(admission.Evidence{}):
+		c = respondCall{check: e.Check(), target: e.Target().Key(), cursor: e.Observation().Cursor, rooted: true}
 	}
 	c.kind, c.via = kind, via
 	a.calls = append(a.calls, c)
 	return nil
+}
+
+// realRoot mints f's evidence at target as the owner would, with the
+// production registry.
+func realRoot(t *testing.T, f alert.Finding, target string) admission.Evidence {
+	t.Helper()
+	reg, err := admission.NewRegistry(AdmissionPolicy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var producer *admission.Producer
+	for _, p := range ProducerTable() {
+		h, regErr := reg.Register(p.Spec)
+		if regErr != nil {
+			t.Fatal(regErr)
+		}
+		if string(h.ID()) == f.Observation.Producer {
+			producer = h
+		}
+	}
+	tg, err := AdmissionTarget(target, admission.Caps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, in, err := AdmissionEvidence(f, tg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := producer.Mint(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e
 }
 
 func (a *fakeAdmission) responses() []respondCall {

@@ -122,12 +122,31 @@ var derivedEntries = []admission.ProducerSpec{
 		Checks: []string{"http_asn_crawl"}},
 }
 
-// DerivedEntries returns a copy of the derived entries' producer specs.
+// DerivedEntries returns the derived entries' producer specs. A challenge
+// timeout answers the checks routed to the challenge; central intel and
+// incidents answer any check whose address a producer publishes.
 func DerivedEntries() []admission.ProducerSpec {
-	out := make([]admission.ProducerSpec, len(derivedEntries))
-	for i, spec := range derivedEntries {
-		out[i] = spec
-		out[i].Checks = slices.Clone(spec.Checks)
+	var published, challenged []string
+	for _, p := range producerTable {
+		for _, check := range p.Spec.Checks {
+			if slices.Contains(published, check) {
+				continue
+			}
+			published = append(published, check)
+			if ResponsePolicyFor(check).ChallengeFirst {
+				challenged = append(challenged, check)
+			}
+		}
+	}
+	out := []admission.ProducerSpec{
+		{ID: "challenge_timeout", Entry: admission.EntryChallengeTimeout, Observation: admission.ObservationEventSeq, Checks: challenged},
+		{ID: "central", Entry: admission.EntryCentral, Observation: admission.ObservationEventSeq, Checks: slices.Clone(published)},
+		{ID: "incident", Entry: admission.EntryIncident, Observation: admission.ObservationEventSeq, Checks: slices.Clone(published)},
+		{ID: "incident_spray", Entry: admission.EntryIncidentSpray, Observation: admission.ObservationEventSeq, Checks: slices.Clone(published)},
+	}
+	for _, spec := range derivedEntries {
+		spec.Checks = slices.Clone(spec.Checks)
+		out = append(out, spec)
 	}
 	return out
 }

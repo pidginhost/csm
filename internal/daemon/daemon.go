@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/admissionowner"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/attackdb"
@@ -2846,6 +2847,8 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 			TTL:          expiry,
 			Source:       checks.BlockSourceChallenge,
 			FindingID:    e.FindingID,
+			Root:         e.Root,
+			Entry:        admission.EntryChallengeTimeout,
 		})
 		recorded = append(recorded, res.Findings...)
 		if err != nil {

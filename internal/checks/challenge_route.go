@@ -201,13 +201,13 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 
 		// Admission judges existing effects itself; the list's state is
 		// the legacy path's.
-		respond(admission.KindChallenge, f, f.SourceIP, 0)
+		root := respond(admission.KindChallenge, f, f.SourceIP, 0)
 
 		if routed[ip] || challengeIPList.Contains(ip) {
 			continue
 		}
 
-		addChallengeIP(f.Check, ip, f.Message, ChallengeDuration, alert.FindingID(f))
+		addChallengeIP(f.Check, ip, f.Message, ChallengeDuration, alert.FindingID(f), root)
 		routed[ip] = true
 		observeChallengeRouted(f.Check)
 		recordChallengeRouteStat(ip, f.Check, time.Now())
@@ -227,9 +227,15 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	return actions
 }
 
-func addChallengeIP(check, ip, reason string, duration time.Duration, findingID string) {
+func addChallengeIP(check, ip, reason string, duration time.Duration, findingID string, root admission.Evidence) {
 	if check == "http_claimed_bot_unverified" {
 		challengeIPList.AddNonEscalating(ip, reason, duration)
+		return
+	}
+	if list, ok := challengeIPList.(interface {
+		AddWithRoot(string, string, time.Duration, string, admission.Evidence)
+	}); ok {
+		list.AddWithRoot(ip, reason, duration, findingID, root)
 		return
 	}
 	if list, ok := challengeIPList.(interface {

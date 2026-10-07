@@ -844,6 +844,7 @@ func shouldSkipAutoBlockForChallenge(cfg *config.Config, f alert.Finding) bool {
 // them lands live; that fallback preserves pre-existing behaviour for tests
 // and third-party implementations.
 func promoteToPermanentBlock(b IPBlocker, ip, reason, findingID string) bool {
+	respondDerived(ApplyBlockRequest{Entry: admission.EntryPermblock})
 	if pp, ok := b.(interface {
 		PromoteToPermanentBlockWithFindingID(string, string, string) error
 	}); ok {
