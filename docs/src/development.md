@@ -614,4 +614,6 @@ Central selections use the locally corroborating finding as their root and carry
 
 Incident event preparation retains the attesting finding, its evidence or its preparation error until a block is actually selected. Roots use the canonical address the legacy block selects while retaining the original finding. Only that selection counts an admission decision; generic and spray paths preserve the original check and cause. A derived response never mints a second root.
 
+Hourly summaries count committed arrivals, memory-coalesced reports, mint refusals and observed picks. Summary time never regresses: event hours are clamped to the latest admission-clock or funnel hour after a backward wall step. Immutable write acknowledgments cannot consume newer rows. Clean shutdown flushes the open hour after final drains. Failed writes retain a bounded chronological set of completed hours, so missing recordings remain explicit lower bounds.
+
 Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.

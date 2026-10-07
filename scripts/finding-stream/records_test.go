@@ -45,6 +45,7 @@ var recordFieldClasses = map[string]fieldClass{
 	"action_id": classID, "action_version": classNumber, "undo_of": classID, "target": classTarget,
 	"account": classFree, "reason": classFree, "command": classFree, "before": classNested,
 	"after": classNested, "result": classEnum, "error": classFree, "undo": classFree, "recovery_path": classFree,
+	"count": classNumber,
 }
 
 var fileStateFieldClasses = map[string]fieldClass{

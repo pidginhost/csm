@@ -113,6 +113,7 @@ type Owner struct {
 	current   atomic.Pointer[health.AdmissionStatus]
 	audit     *queuehealth.Sampled
 	notices   *sender
+	compare   comparison
 
 	// Owned by the owner goroutine.
 	ledger        *store.AdmissionLedger
@@ -180,6 +181,9 @@ func Start(opts Options) *Owner {
 	o.reg, o.producers, o.startErr = buildRegistry()
 	if o.startErr == nil {
 		o.ingress, o.startErr = admission.NewIngress(o.reg)
+	}
+	if o.startErr == nil {
+		o.ingress.ObserveArrivals(o.countArrival)
 	}
 	if o.startErr == nil {
 		o.startErr = o.start()
@@ -305,6 +309,7 @@ func (o *Owner) start() error {
 		return err
 	}
 	o.started, o.scheduleDue = true, true
+	o.compare.begin(o.now)
 	return nil
 }
 
@@ -374,6 +379,7 @@ func (o *Owner) tick() error {
 		o.ingress.Publish(nil)
 		return err
 	}
+	o.writeComparison(false)
 	// A ceiling changed by any config path, not only a reload, applies
 	// after this reading at the saved limit.
 	if limit, source := o.opts.Ceiling(); limit != o.limit || source != o.source {
@@ -476,6 +482,7 @@ func (o *Owner) halt(clean bool) {
 
 func (o *Owner) shutdown() {
 	if !o.started {
+		o.writeComparison(true)
 		return
 	}
 	// No snapshot published during the stop reopens admission, so the
@@ -499,6 +506,20 @@ func (o *Owner) shutdown() {
 	}
 	if err := o.ledger.EndIngress(); err != nil {
 		o.snapshotErr = fmt.Errorf("closing the ingress: %w", err)
+	}
+	o.writeComparison(true)
+}
+
+// writeComparison writes the decision counts of each ended hour, or of the
+// hour in progress at a stop, to the action log. Rows a failed write could
+// not record are retried at the next tick.
+func (o *Owner) writeComparison(final bool) {
+	rows, through := o.compare.take(o.now, final)
+	if len(rows) == 0 {
+		return
+	}
+	if err := o.opts.WriteAudit(rows); err == nil {
+		o.compare.written(through)
 	}
 }
 
@@ -625,6 +646,7 @@ func (o *Owner) preview() error {
 			}
 			return fmt.Errorf("previewing pick %s: %w", p.ID, err)
 		}
+		o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
 	}
 	if err = o.publish(); err != nil {
 		return err
@@ -641,6 +663,24 @@ func (o *Owner) preview() error {
 		}
 	}
 	return nil
+}
+
+// countArrival counts the ledger's decision on one drained arrival.
+func (o *Owner) countArrival(a admission.DrainedArrival) {
+	k := compareKey{entry: entryOf(a.Submission.Evidence, a.Submission.Via), check: a.Submission.Evidence.Check(), kind: a.Submission.Kind}
+	switch {
+	case a.Result.Err != nil:
+		k.decision, k.reason = decisionRefused, reasonOf(a.Result.Err)
+		o.compare.addCountAt(k, a.Selected, o.now)
+	case a.Result.Created:
+		k.decision = decisionQueued
+		o.compare.addAt(k, o.now)
+		k.decision = decisionCoalesced
+		o.compare.addCountAt(k, a.Selected-1, o.now)
+	default:
+		k.decision = decisionCoalesced
+		o.compare.addCountAt(k, a.Selected, o.now)
+	}
 }
 
 // arrivalRequest asks for the response a submission names. The ledger
@@ -675,12 +715,34 @@ func (o *Owner) Mint(f alert.Finding, target string) (admission.Evidence, error)
 	return p.Mint(in)
 }
 
-// Refuse counts a response that could not be answered because f could not
-// be minted, as the ingress counts a response it refuses itself.
-func (o *Owner) Refuse(_ admission.Kind, f alert.Finding, _ admission.Entry, err error) {
+// Refuse counts a response of kind through via that could not be answered
+// because f could not be minted, as the ingress counts a response it
+// refuses itself.
+func (o *Owner) Refuse(kind admission.Kind, f alert.Finding, via admission.Entry, err error) {
 	if o.ingress != nil {
 		o.ingress.Refuse(err, checks.AdmissionSeverity(f.Severity))
 	}
+	if via == 0 {
+		via = admission.EntryScan
+	}
+	o.compare.add(compareKey{entry: via, check: f.Check, kind: kind, decision: decisionRefused, reason: reasonOf(err)})
+}
+
+// reasonOf is err's admission reason; any other error is an invalid
+// request.
+func reasonOf(err error) admission.Reason {
+	if r, ok := admission.ReasonOf(err); ok {
+		return r
+	}
+	return admission.ReasonInvalid
+}
+
+// entryOf is the entry a response answers through: via, or its evidence's.
+func entryOf(e admission.Evidence, via admission.Entry) admission.Entry {
+	if via != 0 {
+		return via
+	}
+	return e.Entry()
 }
 
 // Respond hands the ingress a response of kind to e's target, through the
@@ -697,18 +759,24 @@ func (o *Owner) Respond(kind admission.Kind, e admission.Evidence, via admission
 	if kind != admission.KindChallenge && !caps.IPv6 && e.Target().Prefix().Addr().Is6() {
 		err := &admission.Error{Reason: admission.ReasonUnsupportedContainment, Detail: "firewall does not contain IPv6"}
 		o.ingress.Refuse(err, e.Severity())
+		o.compare.add(compareKey{entry: entryOf(e, via), check: e.Check(), kind: kind, decision: decisionRefused, reason: admission.ReasonUnsupportedContainment})
 		return err
 	}
 	var selected time.Duration
 	if len(ttl) > 1 {
 		err := &admission.Error{Reason: admission.ReasonInvalid, Detail: "response names several lifetimes"}
 		o.ingress.Refuse(err, e.Severity())
+		o.compare.add(compareKey{entry: entryOf(e, via), check: e.Check(), kind: kind, decision: decisionRefused, reason: admission.ReasonInvalid})
 		return err
 	}
 	if len(ttl) == 1 {
 		selected = ttl[0]
 	}
-	return o.ingress.Submit(admission.Submission{Kind: kind, Target: e.Target(), Evidence: e, Via: via, PreviewTTL: selected})
+	err := o.ingress.Submit(admission.Submission{Kind: kind, Target: e.Target(), Evidence: e, Via: via, PreviewTTL: selected})
+	if err != nil {
+		o.compare.add(compareKey{entry: entryOf(e, via), check: e.Check(), kind: kind, decision: decisionRefused, reason: reasonOf(err)})
+	}
+	return err
 }
 
 // Status is the last status the owner read.

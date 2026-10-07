@@ -61,9 +61,11 @@ type QueueSnapshot struct {
 // IngressItem is an accepted submission waiting for the owner. Reports and
 // Dropped are the unacknowledged tail frozen by Take.
 type IngressItem struct {
-	Submission  Submission
-	Reports     []string
-	Dropped     uint32
+	Submission Submission
+	Reports    []string
+	Dropped    uint32
+	// Selected is the unacknowledged count, including memory merges.
+	Selected    uint64
 	ReportsOnly bool
 	key         string
 }
@@ -78,11 +80,12 @@ type IngressStats struct {
 }
 
 type pending struct {
-	item       IngressItem
-	pos        QueueItem
-	taken      bool
-	ackReports int
-	ackDropped uint32
+	item        IngressItem
+	pos         QueueItem
+	taken       bool
+	ackReports  int
+	ackDropped  uint32
+	ackSelected uint64
 }
 
 // Ingress holds at most IngressPositions items per partition. Stored work
@@ -113,6 +116,8 @@ type Ingress struct {
 	// refused since (ruling 9).
 	stoppedAt       time.Time
 	criticalRefused uint64
+	// arrived receives each committed arrival (ObserveArrivals).
+	arrived func(DrainedArrival)
 }
 
 func NewIngress(reg *Registry) (*Ingress, error) {
@@ -196,6 +201,7 @@ func (in *Ingress) Submit(s Submission) error {
 		default:
 			return refused(ErrEvidenceConflict, Tier{})
 		}
+		h.item.Selected++
 		return nil
 	}
 	// An idle owner must not make fresh evidence look future-dated, and
@@ -213,7 +219,7 @@ func (in *Ingress) Submit(s Submission) error {
 	if in.snap.Inventory == nil || !in.snap.Inventory.Current(scope.Owner) {
 		scope.Owner, eligible = HostOwner(), false
 	}
-	p := &pending{item: IngressItem{Submission: s, key: fmt.Sprintf("in:%020d", in.seq)}}
+	p := &pending{item: IngressItem{Submission: s, Selected: 1, key: fmt.Sprintf("in:%020d", in.seq)}}
 	p.pos = QueueItem{Key: p.item.key, Scope: scope.Key(), Tier: a.Tier, Eligible: eligible, Queued: in.snap.Now, Seq: in.seq}
 	placed, ok := in.view.Admit(p.pos)
 	in.cursors = in.view.Cursors()
@@ -407,6 +413,7 @@ func (in *Ingress) Take(n int) []IngressItem {
 		it := p.item
 		it.Reports = append([]string(nil), p.item.Reports[p.ackReports:]...)
 		it.Dropped = p.item.Dropped - p.ackDropped
+		it.Selected = p.item.Selected - p.ackSelected
 		out = append(out, it)
 	}
 	in.rebuild()
@@ -434,7 +441,8 @@ func (in *Ingress) Complete(items []IngressItem, revision int, snap *QueueSnapsh
 		if p := in.byKey[it.key]; p != nil && p.taken {
 			p.ackReports += len(it.Reports)
 			p.ackDropped += it.Dropped
-			if p.ackReports < len(p.item.Reports) || p.ackDropped < p.item.Dropped {
+			p.ackSelected += it.Selected
+			if p.ackReports < len(p.item.Reports) || p.ackDropped < p.item.Dropped || p.ackSelected < p.item.Selected {
 				p.taken = false
 				p.item.ReportsOnly = true
 			} else {
@@ -478,6 +486,18 @@ func (in *Ingress) Stats() IngressStats {
 
 // DrainReport counts durable decisions made by one drain.
 type DrainReport struct{ Queued, Coalesced, Refused, Failed int }
+
+// DrainedArrival is one submission and the ledger's decision on it.
+type DrainedArrival struct {
+	Submission Submission
+	Result     ArrivalResult
+	Selected   uint64
+}
+
+// ObserveArrivals hands fn each committed or isolated submission with the ledger's
+// decision on it, as every later drain commits them. Set it before the
+// first drain; fn runs on the draining goroutine.
+func (in *Ingress) ObserveArrivals(fn func(DrainedArrival)) { in.arrived = fn }
 
 // Drain checkpoints ingress decisions even with no held items. Transient
 // errors release work; only damaged arrivals are isolated and counted lost.
@@ -531,8 +551,11 @@ func (in *Ingress) DrainTaken(l Ledger, items []IngressItem, request func(Submis
 			one, committed, oneErr := l.EnqueueGroup([]Arrival{a}, &checkpoint)
 			switch {
 			case errors.Is(oneErr, ErrCorruptRecord):
-				in.discard(items[i])
+				selected := in.discard(items[i])
 				report.Failed++
+				if in.arrived != nil {
+					in.arrived(DrainedArrival{Submission: items[i].Submission, Result: ArrivalResult{Err: oneErr}, Selected: selected})
+				}
 				if damage == nil {
 					damage = oneErr
 				}
@@ -557,7 +580,8 @@ func (in *Ingress) DrainTaken(l Ledger, items []IngressItem, request func(Submis
 			revision = committed
 		}
 	}
-	for _, r := range results {
+	// Results follow the committed items in order.
+	for i, r := range results {
 		switch {
 		case r.Err != nil:
 			report.Refused++
@@ -565,6 +589,9 @@ func (in *Ingress) DrainTaken(l Ledger, items []IngressItem, request func(Submis
 			report.Queued++
 		default:
 			report.Coalesced++
+		}
+		if in.arrived != nil {
+			in.arrived(DrainedArrival{Submission: done[i].Submission, Result: r, Selected: done[i].Selected})
 		}
 	}
 	snap, err := l.QueueSnapshot()
@@ -595,15 +622,18 @@ func (in *Ingress) DrainTaken(l Ledger, items []IngressItem, request func(Submis
 	return report, first
 }
 
-func (in *Ingress) discard(it IngressItem) {
+func (in *Ingress) discard(it IngressItem) uint64 {
 	in.mu.Lock()
 	defer in.mu.Unlock()
+	var selected uint64
 	if p := in.byKey[it.key]; p != nil {
+		selected = p.item.Selected - p.ackSelected
 		in.seq++
 		in.lose(EventEnded, ReasonInvalid, p.pos.Tier, p.item.Submission.Evidence.Severity())
 		in.drop(p)
 	}
 	in.rebuild()
+	return selected
 }
 
 // Validate rejects a stale generation, regressed decision sequence or counters.

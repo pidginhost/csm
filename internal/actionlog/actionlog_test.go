@@ -172,6 +172,16 @@ func TestDescribeShowsTheDigestChange(t *testing.T) {
 	}
 }
 
+// A summary names the check and entry it counts and how many events it
+// stands for.
+func TestDescribeShowsASummary(t *testing.T) {
+	r := Record{Timestamp: time.Unix(0, 0).UTC(), Op: "respond.block_ip", Action: "block_ip", Actor: Daemon,
+		ActorDetail: "scan", Reason: "ssh_brute", Result: "observe", Count: 3}
+	if line := r.Describe(); !strings.Contains(line, `reason="ssh_brute" via="scan" count=3`) {
+		t.Fatalf("describe does not show the summary: %s", line)
+	}
+}
+
 func TestDescribeShowsTheExactCommand(t *testing.T) {
 	r := Record{
 		Timestamp: time.Unix(0, 0).UTC(),
