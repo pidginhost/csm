@@ -87,7 +87,7 @@ func TestResponseDispatchCountsUniqueIncidentEvidence(t *testing.T) {
 					rules = checkWideSuppression("api_auth_failure_realtime")
 				}
 				d := suppressionTestDaemon(t, cfg, rules)
-				SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
+				SetIncidentSprayBlocker(d.applyIncidentBlock)
 				f := alert.Finding{
 					Check: "api_auth_failure_realtime", Severity: alert.High,
 					SourceIP: "192.0.2.60", Message: "first login failure", Timestamp: time.Now(),

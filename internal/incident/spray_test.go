@@ -403,7 +403,7 @@ type blockCapture struct {
 	}
 }
 
-func (b *blockCapture) record(ip, reason string, ttl time.Duration, _ string) bool {
+func (b *blockCapture) record(ip, reason string, ttl time.Duration, _ string, _ PreparedRoot) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls = append(b.calls, struct {
@@ -413,7 +413,7 @@ func (b *blockCapture) record(ip, reason string, ttl time.Duration, _ string) bo
 	return true
 }
 
-func (b *blockCapture) recordSkipped(ip, reason string, ttl time.Duration, _ string) bool {
+func (b *blockCapture) recordSkipped(ip, reason string, ttl time.Duration, _ string, _ PreparedRoot) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls = append(b.calls, struct {
@@ -484,7 +484,7 @@ func TestSprayBlockCallbackRunsAfterCorrelatorUnlock(t *testing.T) {
 	c = NewCorrelator(CorrelatorConfig{
 		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
-		OnSprayBlock: func(_, _ string, _ time.Duration, _ string) bool {
+		OnSprayBlock: func(_, _ string, _ time.Duration, _ string, _ PreparedRoot) bool {
 			if got := c.OpenCount(); got != 1 {
 				t.Errorf("OpenCount from block callback = %d, want 1", got)
 			}
@@ -528,7 +528,7 @@ func TestSprayBlockCoalescesConcurrentCallback(t *testing.T) {
 	c := NewCorrelator(CorrelatorConfig{
 		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
-		OnSprayBlock: func(_, _ string, _ time.Duration, _ string) bool {
+		OnSprayBlock: func(_, _ string, _ time.Duration, _ string, _ PreparedRoot) bool {
 			if calls.Add(1) == 1 {
 				close(firstEntered)
 				<-releaseFirst
@@ -624,7 +624,7 @@ func TestSprayBlockReleasesPendingSlotOnPanic(t *testing.T) {
 	c := NewCorrelator(CorrelatorConfig{
 		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
-		OnSprayBlock: func(_, _ string, _ time.Duration, _ string) bool {
+		OnSprayBlock: func(_, _ string, _ time.Duration, _ string, _ PreparedRoot) bool {
 			calls++
 			if calls == 1 {
 				panic("simulated spray block panic")

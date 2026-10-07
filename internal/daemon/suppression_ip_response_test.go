@@ -11,11 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/reporting"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
@@ -119,7 +121,7 @@ func TestSuppressedFindingsStillDriveIncidentBlocks(t *testing.T) {
 					check = "pam_bruteforce"
 				}
 				d := suppressionTestDaemon(t, cfg, checkWideSuppression(check))
-				SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
+				SetIncidentSprayBlocker(d.applyIncidentBlock)
 				count := 1
 				if spray {
 					count = 3
@@ -211,7 +213,7 @@ func TestSuppressedIPActionsStaySilent(t *testing.T) {
 			f := smtpBruteForceFinding("192.0.2.42")
 			switch path {
 			case "incident":
-				if _, err := d.applyIncidentSprayBlock(f.SourceIP, "test incident", time.Hour, alert.FindingID(f)); err != nil {
+				if _, err := d.applyIncidentBlock(f.SourceIP, "test incident", time.Hour, alert.FindingID(f), incident.PreparedRoot{}, admission.EntryIncident); err != nil {
 					t.Fatal(err)
 				}
 			case "central":
@@ -312,7 +314,7 @@ func TestIncidentsSeeEachNewObservationOnce(t *testing.T) {
 	cfg.Incidents.AutoBlock.BlockAtSeverity = "high"
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 	d := suppressionTestDaemon(t, cfg, checkWideSuppression("api_auth_failure_realtime"))
-	SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
+	SetIncidentSprayBlocker(d.applyIncidentBlock)
 	f := alert.Finding{Check: "api_auth_failure_realtime", Severity: alert.High, SourceIP: "192.0.2.44", Message: "authentication failure", Timestamp: time.Now()}
 	d.dispatchBatch([]alert.Finding{f, f})
 	if len(blocker.calls) != 0 {

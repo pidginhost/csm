@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 )
 
@@ -280,6 +281,17 @@ type IncidentEvent struct {
 	Process   string    `json:"process,omitempty"`
 	Path      string    `json:"path,omitempty"`
 	RemoteIP  string    `json:"remote_ip,omitempty"`
+	// root retains the attesting finding's prepared evidence or mint
+	// refusal for the block it may lead to; never stored.
+	root PreparedRoot
+}
+
+// PreparedRoot retains the attesting finding and any mint refusal until a
+// response is selected. Incident events keep it only in memory.
+type PreparedRoot struct {
+	admission.Evidence
+	Finding alert.Finding
+	Err     error
 }
 
 // IncidentAction is an automated or operator action that touched the

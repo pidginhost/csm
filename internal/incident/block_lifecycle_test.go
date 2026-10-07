@@ -8,7 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-func blockLifecycleCorrelator(t *testing.T, spray bool, callback func(string, string, time.Duration, string) bool) (*Correlator, alert.Finding) {
+func blockLifecycleCorrelator(t *testing.T, spray bool, callback func(string, string, time.Duration, string, PreparedRoot) bool) (*Correlator, alert.Finding) {
 	t.Helper()
 	now := time.Unix(1_700_000_000, 0)
 	kind, check := KindWebAttack, "modsec_csm_block_escalation"
@@ -24,7 +24,7 @@ func blockLifecycleCorrelator(t *testing.T, spray bool, callback func(string, st
 		cfg.SpraySuppression = sprayTestConfig(true, false)
 		cfg.SpraySuppression.BlockAtSeverity = "high"
 		cfg.OnSprayBlock = callback
-		cfg.OnIncidentBlock = func(string, string, time.Duration, string) bool {
+		cfg.OnIncidentBlock = func(string, string, time.Duration, string, PreparedRoot) bool {
 			t.Error("spray reached generic block path")
 			return false
 		}
@@ -47,7 +47,7 @@ func TestLapsedBlockCoalescesAndDeclinedCallbackKeepsRung(t *testing.T) {
 			var mu sync.Mutex
 			var calls []time.Duration
 			live := false
-			c, f := blockLifecycleCorrelator(t, spray, func(_, _ string, ttl time.Duration, _ string) bool {
+			c, f := blockLifecycleCorrelator(t, spray, func(_, _ string, ttl time.Duration, _ string, _ PreparedRoot) bool {
 				mu.Lock()
 				calls = append(calls, ttl)
 				first := len(calls) == 1
@@ -88,7 +88,11 @@ func TestPendingBlockCannotOverwriteOperatorOrClosedState(t *testing.T) {
 		for _, change := range []string{"operator", "close", "reopen", "reopen-first", "restore"} {
 			t.Run(map[bool]string{false: "generic", true: "spray"}[spray]+"/"+change, func(t *testing.T) {
 				entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
-				c, f := blockLifecycleCorrelator(t, spray, func(string, string, time.Duration, string) bool { close(entered); <-release; return true })
+				c, f := blockLifecycleCorrelator(t, spray, func(string, string, time.Duration, string, PreparedRoot) bool {
+					close(entered)
+					<-release
+					return true
+				})
 				if change == "reopen-first" {
 					inc, _ := c.Get("inc_ladder")
 					inc.AutoBlock = AutoBlockState{}
@@ -171,8 +175,12 @@ func TestSprayPromotionSharesPendingBlockGuard(t *testing.T) {
 		AddressEvidence:  attestEveryCheck,
 		SpraySuppression: cfg,
 		AutoBlock:        IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "high"},
-		OnIncidentBlock:  func(string, string, time.Duration, string) bool { close(entered); <-release; return true },
-		OnSprayBlock:     sprayCalls.record,
+		OnIncidentBlock: func(string, string, time.Duration, string, PreparedRoot) bool {
+			close(entered)
+			<-release
+			return true
+		},
+		OnSprayBlock: sprayCalls.record,
 	})
 	now := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return now }

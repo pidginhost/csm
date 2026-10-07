@@ -609,4 +609,6 @@ A challenge entry retains its routed root until timeout escalation hands the sel
 
 Central selections use the locally corroborating finding as their root and carry its original attribution if preparation refuses. They do not adopt a remote report as local evidence, and preserve the selected temporary lifetime.
 
+Incident event preparation retains the attesting finding, its evidence or its preparation error until a block is actually selected. Only that selection counts an admission decision; generic and spray paths preserve the original check and cause. A derived response never mints a second root.
+
 Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.

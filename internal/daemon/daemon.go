@@ -33,6 +33,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall/rollback"
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/health"
+	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/integrity"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/maillog"
@@ -2905,10 +2906,11 @@ func (d *Daemon) recordAppliedBlocks(findings []alert.Finding) {
 	}
 }
 
-// applyIncidentSprayBlock is the incident correlator's firewall hand-off,
-// routed through the chokepoint so spray blocks leave evidence and reach
-// the digest.
-func (d *Daemon) applyIncidentSprayBlock(ip, reason string, timeout time.Duration, findingID string) (bool, error) {
+// applyIncidentBlock is the incident correlator's firewall hand-off for
+// incident and spray blocks, routed through the chokepoint so they leave
+// evidence and reach the digest. root and entry are the attesting
+// observation's admission evidence and the path that decided the block.
+func (d *Daemon) applyIncidentBlock(ip, reason string, timeout time.Duration, findingID string, root incident.PreparedRoot, entry admission.Entry) (bool, error) {
 	res, err := checks.ApplyBlock(d.currentCfg(), checks.ApplyBlockRequest{
 		IP:           ip,
 		EngineReason: reason,
@@ -2916,6 +2918,10 @@ func (d *Daemon) applyIncidentSprayBlock(ip, reason string, timeout time.Duratio
 		TTL:          timeout,
 		Source:       checks.BlockSourceIncident,
 		FindingID:    findingID,
+		Root:         root.Evidence,
+		Entry:        entry,
+		RootFinding:  root.Finding,
+		RootErr:      root.Err,
 	})
 	d.recordAppliedBlocks(res.Findings)
 	live := res.Outcome == firewall.BlockOutcomeLive && (err == nil || errors.Is(err, firewall.ErrActionAuditPending))

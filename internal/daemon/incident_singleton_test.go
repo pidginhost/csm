@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -250,7 +251,7 @@ func TestIncidentCorrelatorSprayBlockerHonorsLiveAutoResponseConfig(t *testing.T
 		mu    sync.Mutex
 		calls []blockCall
 	)
-	SetIncidentSprayBlocker(func(ip, reason string, timeout time.Duration, _ string) (bool, error) {
+	SetIncidentSprayBlocker(func(ip, reason string, timeout time.Duration, _ string, _ incident.PreparedRoot, _ admission.Entry) (bool, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls = append(calls, blockCall{ip: ip, reason: reason, timeout: timeout})
@@ -300,7 +301,7 @@ func TestIncidentCorrelatorSprayBlockerRequiresLiveOutcome(t *testing.T) {
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 
 	var calls int
-	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration, _ string) (bool, error) {
+	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration, _ string, _ incident.PreparedRoot, _ admission.Entry) (bool, error) {
 		calls++
 		return false, nil
 	})
@@ -338,7 +339,7 @@ func TestIncidentCorrelatorSprayBlockerSuppressesProtectedIPError(t *testing.T) 
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 
 	var calls int
-	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration, _ string) (bool, error) {
+	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration, _ string, _ incident.PreparedRoot, _ admission.Entry) (bool, error) {
 		calls++
 		return false, firewall.ErrIPProtected
 	})
@@ -378,7 +379,7 @@ func TestIncidentCorrelatorAutoBlockSuppressesProtectedIPError(t *testing.T) {
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 
 	var calls int
-	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration, _ string) (bool, error) {
+	SetIncidentSprayBlocker(func(_, _ string, _ time.Duration, _ string, _ incident.PreparedRoot, _ admission.Entry) (bool, error) {
 		calls++
 		return false, firewall.ErrIPProtected
 	})
@@ -431,7 +432,7 @@ func TestIncidentCorrelatorAutoBlockNeedsAddressEvidence(t *testing.T) {
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 
 	var blocked []string
-	SetIncidentSprayBlocker(func(ip, _ string, _ time.Duration, _ string) (bool, error) {
+	SetIncidentSprayBlocker(func(ip, _ string, _ time.Duration, _ string, _ incident.PreparedRoot, _ admission.Entry) (bool, error) {
 		blocked = append(blocked, ip)
 		return true, nil
 	})
@@ -484,7 +485,7 @@ func TestIncidentCorrelatorKeepsVerifiedContainmentWhenAuditPending(t *testing.T
 					cfg.Incidents.AutoBlock.BlockAtSeverity = "critical"
 				}
 				SetIncidentConfigSource(func() *config.Config { return cfg })
-				SetIncidentSprayBlocker(func(string, string, time.Duration, string) (bool, error) {
+				SetIncidentSprayBlocker(func(string, string, time.Duration, string, incident.PreparedRoot, admission.Entry) (bool, error) {
 					return result.live, result.err
 				})
 				finishLog := captureCSMLog(t)

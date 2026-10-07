@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -31,7 +33,7 @@ var (
 	// nil means "no blocker wired" (early startup or unit tests); the
 	// singleton then skips wiring OnSprayBlock and the spray detector
 	// stays detection-only even with BlockAtSeverity set.
-	incidentSprayBlocker func(ip, reason string, timeout time.Duration, findingID string) (bool, error)
+	incidentSprayBlocker func(ip, reason string, timeout time.Duration, findingID string, root incident.PreparedRoot, entry admission.Entry) (bool, error)
 )
 
 // autoResponseBlockExpiry is the operator's configured block duration, the
@@ -52,7 +54,7 @@ func autoResponseBlockExpiry(cfg *config.Config) time.Duration {
 // incident auto-block paths. Call once after the firewall engine is built
 // and before the first IncidentCorrelator() call.
 // Passing nil clears the binding.
-func SetIncidentSprayBlocker(fn func(ip, reason string, timeout time.Duration, findingID string) (bool, error)) {
+func SetIncidentSprayBlocker(fn func(ip, reason string, timeout time.Duration, findingID string, root incident.PreparedRoot, entry admission.Entry) (bool, error)) {
 	incidentSprayBlocker = fn
 }
 
@@ -114,8 +116,8 @@ func IncidentCorrelator() *incident.Correlator {
 		var spray incident.SpraySuppressionConfig
 		var autoBlock incident.IncidentAutoBlockConfig
 		var whitelisted func(string) bool
-		var onSprayBlock func(ip, reason string, ttl time.Duration, findingID string) bool
-		var onIncidentBlock func(ip, reason string, ttl time.Duration, findingID string) bool
+		var onSprayBlock func(ip, reason string, ttl time.Duration, findingID string, root incident.PreparedRoot) bool
+		var onIncidentBlock func(ip, reason string, ttl time.Duration, findingID string, root incident.PreparedRoot) bool
 		if cfg := globalCfgForIncidents(); cfg != nil {
 			spray = incident.SpraySuppressionConfig{
 				Enabled:            cfg.Incidents.SpraySuppression.Enabled,
@@ -134,14 +136,14 @@ func IncidentCorrelator() *incident.Correlator {
 			// the singleton.
 			if spray.BlockAtSeverity != "" && incidentSprayBlocker != nil {
 				blocker := incidentSprayBlocker
-				onSprayBlock = func(ip, reason string, ttl time.Duration, findingID string) bool {
+				onSprayBlock = func(ip, reason string, ttl time.Duration, findingID string, root incident.PreparedRoot) bool {
 					liveCfg := globalCfgForIncidents()
 					if liveCfg == nil || !liveCfg.AutoResponse.Enabled || !liveCfg.AutoResponse.BlockIPs {
 						return false
 					}
 					// ttl comes from the correlator's escalation ladder; zero
 					// is a permanent block, which the engine understands.
-					live, err := blocker(ip, sprayBlockReasonPrefix+reason, ttl, findingID)
+					live, err := blocker(ip, sprayBlockReasonPrefix+reason, ttl, findingID, root, admission.EntryIncidentSpray)
 					if err != nil {
 						if live && errors.Is(err, firewall.ErrActionAuditPending) {
 							csmlog.Warn("credential_spray block audit delivery pending", "ip", ip, "err", err)
@@ -171,12 +173,12 @@ func IncidentCorrelator() *incident.Correlator {
 			}
 			if autoBlock.Enabled && autoBlock.BlockAtSeverity != "" && incidentSprayBlocker != nil {
 				blocker := incidentSprayBlocker
-				onIncidentBlock = func(ip, reason string, ttl time.Duration, findingID string) bool {
+				onIncidentBlock = func(ip, reason string, ttl time.Duration, findingID string, root incident.PreparedRoot) bool {
 					liveCfg := globalCfgForIncidents()
 					if liveCfg == nil || !liveCfg.AutoResponse.Enabled || !liveCfg.AutoResponse.BlockIPs {
 						return false
 					}
-					live, err := blocker(ip, incidentReasonPrefix+reason, ttl, findingID)
+					live, err := blocker(ip, incidentReasonPrefix+reason, ttl, findingID, root, admission.EntryIncident)
 					if err != nil {
 						if live && errors.Is(err, firewall.ErrActionAuditPending) {
 							csmlog.Warn("incident auto-block audit delivery pending", "ip", ip, "err", err)
@@ -229,6 +231,10 @@ func IncidentCorrelator() *incident.Correlator {
 			AutoBlock:        autoBlock,
 			IsWhitelisted:    whitelisted,
 			AddressEvidence:  checks.AddressEvidence,
+			Root: func(f alert.Finding, target string) incident.PreparedRoot {
+				root, err := checks.PrepareAdmissionRoot(f, target)
+				return incident.PreparedRoot{Evidence: root, Finding: f, Err: err}
+			},
 			CanSprayBlock: func() bool {
 				cfg := globalCfgForIncidents()
 				return cfg != nil && cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs

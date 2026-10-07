@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -10,6 +11,8 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/reporting"
 )
 
@@ -164,6 +167,150 @@ func TestCentralActionAnswersTheLocalRoot(t *testing.T) {
 	for _, r := range got {
 		if r.via != admission.EntryCentral || !r.root.Equal(root) {
 			t.Fatalf("response %+v, want the root through the central entry", r)
+		}
+	}
+}
+
+// An incident block answers the root the correlator kept, through the
+// entry of the path that decided it.
+func TestIncidentBlockAnswersItsRoot(t *testing.T) {
+	cfg, _ := applyWiringSetup(t)
+	a := withRecordingAdmission(t)
+	d := New(cfg, nil, nil, "")
+	root := incident.PreparedRoot{Evidence: mintedRoot(t, observedBruteForce("203.0.113.90"), "203.0.113.90")}
+	for _, entry := range []admission.Entry{admission.EntryIncident, admission.EntryIncidentSpray} {
+		if _, err := d.applyIncidentBlock("203.0.113.90", "incident", 7*24*time.Hour, root.FindingID(), root, entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := a.got()
+	if len(got) != 2 || got[0].via != admission.EntryIncident || got[1].via != admission.EntryIncidentSpray || !got[0].root.Equal(root.Evidence) || !got[1].root.Equal(root.Evidence) || got[0].ttl != 7*24*time.Hour || got[1].ttl != 7*24*time.Hour {
+		t.Fatalf("responses = %+v", got)
+	}
+}
+
+// The correlator hands each block the root it kept for the attesting
+// finding, and the daemon's hand-off names the entry of the path that
+// decided it: credential spray or a generic incident.
+func TestIncidentCorrelatorHandsItsBlocksTheirRootsAndEntries(t *testing.T) {
+	for _, spray := range []bool{true, false} {
+		t.Run(map[bool]string{true: "spray", false: "generic"}[spray], func(t *testing.T) {
+			resetIncidentForTest()
+			t.Cleanup(resetIncidentForTest)
+			withRecordingAdmission(t)
+			cfg := &config.Config{}
+			cfg.AutoResponse.Enabled, cfg.AutoResponse.BlockIPs = true, true
+			if spray {
+				cfg.Incidents.SpraySuppression.Enabled = true
+				cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
+				cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
+				cfg.Incidents.SpraySuppression.PerCheck = []string{"pam_bruteforce"}
+				cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
+			} else {
+				cfg.Incidents.AutoBlock.Enabled = true
+				cfg.Incidents.AutoBlock.BlockAtSeverity = "critical"
+			}
+			SetIncidentConfigSource(func() *config.Config { return cfg })
+			type handed struct {
+				root  incident.PreparedRoot
+				entry admission.Entry
+			}
+			var mu sync.Mutex
+			var got []handed
+			SetIncidentSprayBlocker(func(_, _ string, _ time.Duration, _ string, root incident.PreparedRoot, entry admission.Entry) (bool, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				got = append(got, handed{root, entry})
+				return true, nil
+			})
+			c := IncidentCorrelator()
+			at := time.Unix(1_700_000_000, 0).UTC()
+			findings := []alert.Finding{{
+				Check: "modsec_csm_block_escalation", Severity: alert.Critical, SourceIP: "192.0.2.81", Timestamp: at,
+				Observation: alert.Observation{Producer: string(checks.ProducerModSecLog), Stream: "modsec", Cursor: "offset=1", ObservedAt: at},
+			}}
+			if spray {
+				findings = nil
+				for i := 0; i < 3; i++ {
+					findings = append(findings, alert.Finding{
+						Check: "pam_bruteforce", Severity: alert.Critical, SourceIP: "192.0.2.81", Mailbox: fmt.Sprintf("user%d@example.com", i),
+						Timestamp:   at.Add(time.Duration(i) * time.Minute),
+						Observation: alert.Observation{Producer: string(checks.ProducerPAMSocket), Stream: "pam:boot", Cursor: fmt.Sprintf("1:%d", i), ObservedAt: at.Add(time.Duration(i) * time.Minute)},
+					})
+				}
+			}
+			for _, f := range findings {
+				if _, _, err := c.OnFinding(f); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := admission.EntryIncident
+			if spray {
+				want = admission.EntryIncidentSpray
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(got) == 0 || got[0].entry != want || got[0].root.Equal(admission.Evidence{}) || got[0].root.Check() != findings[0].Check {
+				t.Fatalf("handed %+v, want a root through %s", got, want)
+			}
+		})
+	}
+}
+
+// A failed mint is kept until a response is selected. It becomes one
+// Attribution refusal without changing the legacy block; mere event
+// collection counts nothing.
+func TestIncidentCorrelatorCountsItsSelectedMintRefusal(t *testing.T) {
+	for _, spray := range []bool{false, true} {
+		for _, selected := range []bool{false, true} {
+			t.Run(fmt.Sprintf("spray=%t/selected=%t", spray, selected), func(t *testing.T) {
+				resetIncidentForTest()
+				t.Cleanup(resetIncidentForTest)
+				cfg, blocker := applyWiringSetup(t)
+				a := withRecordingAdmission(t)
+				cfg.Incidents.AutoBlock.Enabled = selected && !spray
+				cfg.Incidents.AutoBlock.BlockAtSeverity = "critical"
+				if spray {
+					cfg.Incidents.SpraySuppression.Enabled = true
+					cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
+					cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
+					cfg.Incidents.SpraySuppression.PerCheck = []string{"pam_bruteforce"}
+					if selected {
+						cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
+					}
+				}
+				SetIncidentConfigSource(func() *config.Config { return cfg })
+				d := New(cfg, nil, nil, "")
+				SetIncidentSprayBlocker(d.applyIncidentBlock)
+				c := IncidentCorrelator()
+				at := time.Now().UTC()
+				findings := []alert.Finding{{Check: "modsec_csm_block_escalation", Severity: alert.Critical, SourceIP: "192.0.2.83", Timestamp: at}}
+				entry, check := admission.EntryIncident, "modsec_csm_block_escalation"
+				if spray {
+					entry, check = admission.EntryIncidentSpray, "pam_bruteforce"
+					findings = nil
+					for i := range 3 {
+						findings = append(findings, alert.Finding{Check: check, Severity: alert.Critical, SourceIP: "192.0.2.83", Mailbox: fmt.Sprintf("user%d@example.com", i), Timestamp: at.Add(time.Duration(i) * time.Second)})
+					}
+				}
+				for _, finding := range findings {
+					if _, _, err := c.OnFinding(finding); err != nil {
+						t.Fatal(err)
+					}
+				}
+				a.mu.Lock()
+				defer a.mu.Unlock()
+				if !selected {
+					if len(a.refusals) != 0 || len(a.responses) != 0 || len(blocker.calls) != 0 {
+						t.Fatalf("unselected events counted: refusals=%+v responses=%+v legacy=%+v", a.refusals, a.responses, blocker.calls)
+					}
+					return
+				}
+				want := derivedRefusal{admission.KindBlockIP, check, entry, admission.ReasonAttribution}
+				if len(a.refusals) != 1 || a.refusals[0] != want || len(a.responses) != 0 || len(blocker.calls) != 1 || blocker.calls[0].ip != "192.0.2.83" {
+					t.Fatalf("selected response lost attribution or changed legacy: refusals=%+v responses=%+v legacy=%+v", a.refusals, a.responses, blocker.calls)
+				}
+			})
 		}
 	}
 }

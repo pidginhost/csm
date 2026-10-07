@@ -14,7 +14,7 @@ func attestingCorrelator(t *testing.T, captured *[]string) (*Correlator, *time.T
 		OpenThreshold:   1,
 		AddressEvidence: func(check string, _ alert.Severity) bool { return check == "modsec_csm_block_escalation" },
 		AutoBlock:       IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "critical"},
-		OnIncidentBlock: func(_, _ string, _ time.Duration, id string) bool {
+		OnIncidentBlock: func(_, _ string, _ time.Duration, id string, _ PreparedRoot) bool {
 			*captured = append(*captured, id)
 			return true
 		},
@@ -170,7 +170,7 @@ func TestSprayBlockNamesTheAttestingFinding(t *testing.T) {
 		SpraySuppression: SpraySuppressionConfig{
 			Enabled: true, DistinctMailboxes: 2, BlockAtSeverity: "high",
 		},
-		OnSprayBlock: func(_, _ string, _ time.Duration, id string) bool {
+		OnSprayBlock: func(_, _ string, _ time.Duration, id string, _ PreparedRoot) bool {
 			ids = append(ids, id)
 			return true
 		},
