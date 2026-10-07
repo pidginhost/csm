@@ -89,7 +89,19 @@ ledger admitted: `op` is `respond.block_ip`, `action` the kind of response
 `failed` or `unknown`). `action_id` and `action_version` name the attempt and
 the step. A record is written durably before the ledger lets it go, so after a
 crash it can appear twice; drop a copy whose `action_id`, `action_version` and
-`ts` match another. Nothing is admitted through the ledger yet.
+`ts` match another. Existing blocking paths still decide every block: the
+ledger previews each response they hand it, so an admitted response is
+`reserved` and then `observe`, and is never executed.
+
+Once an hour the ledger owner appends `respond.block_ip` summary records that
+count its decisions on the responses handed to it during the hour ending at
+`ts`. A summary sets `count`, how many responses it covers, and names no
+target: `action` is the kind of response, `reason` the check that asked for
+it, `actor_detail` the entry it came through (`scan`, or a derived entry such
+as `challenge_timeout` or `central`), `result` the decision (`queued`,
+`coalesced`, `observe` or `refused`) and `error` the refusal reason. A clean
+stop writes the open hour early, so summaries for the same hour add up; a
+crash loses the open hour, so the counts are lower bounds.
 
 `actor` uses the caller's attribution when available and otherwise identifies
 the process performing the action. Some web UI requests therefore record as

@@ -210,8 +210,8 @@ Installs and upgrades on end-user servers come from the GitHub release artifacts
 
 ### Response admission primitives
 
-`internal/admission` is a standard-library-only package that is not yet wired
-into live responses. Its persisted enum values are fixed by golden tests.
+`internal/admission` is a standard-library-only package that live responses
+reach only as a preview. Its persisted enum values are fixed by golden tests.
 `Assess` sets `ReassessBy` to the first instant the current class or severity
 falls, or all roots become stale, without new evidence. Redundant evidence
 can preserve the tier after another root expires. Each corroborating pair
@@ -259,7 +259,16 @@ fails in that drain, admission closes until a drain succeeds; recovery
 clears the drain failure but keeps the damage cause for the discarded work.
 Failed ceiling reloads stay pending until a tick applies and revalidates
 them; inventory refreshes cannot reopen admission in the meantime.
-Nothing submits to it yet. One owner serializes every write, and each call
+The daemon wires the owner into the response funnels
+(`checks.SetResponseAdmission`) while it runs: each automatic response the
+legacy funnels select is minted as evidence and submitted to the ingress, and
+derived responses (challenge timeout, central, incident, mail subnet, ASN
+crawl, netblock, permanent block) carry the root evidence that caused them.
+Legacy blocking never waits for admission and its outcome never changes a
+legacy decision. The owner serves its queue as observe previews: a schedule
+reserves and charges each pick and ends it observed in one transaction, so a
+crash cannot leave a preview reserved. Each hour it appends counts of its
+decisions to the action log. One owner serializes every write, and each call
 is one transaction, so a failed call changes nothing. Admission time
 comes only from recorded clock readings: a wall clock that steps back never
 lowers it, a new boot credits no elapsed time, and a reopened ledger admits

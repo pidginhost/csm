@@ -357,7 +357,10 @@ it without saved credit. Status and `csm doctor` show the ceiling and its
 source. A changed ceiling applies on reload, and a web UI settings save
 applies at the owner's next clock tick; a failed change is retried on later
 ticks before admission resumes, with elapsed time credited at the saved
-ceiling before the new one applies. Existing blocking paths remain unchanged.
+ceiling before the new one applies. Existing blocking paths remain unchanged:
+every automatic response they select is also handed to the ledger, which
+previews it within this ceiling and never applies it. Status, `csm doctor`,
+findings history and the [action log](action-log.md) show the preview.
 
 The resulting `auto_block` findings are output evidence, not new local
 corroboration for central intelligence or incident correlation. They are

@@ -1210,6 +1210,10 @@ func (d *Daemon) Run() error {
 
 	d.wg.Wait()
 	stopProcessCtx()
+	// Stop the incident auto-close and retention goroutines before the
+	// admission owner's final drain and before closing the store, so neither
+	// writes to an already-closed bbolt database.
+	StopIncidentBackgroundLoops()
 	// Every producer has stopped: close the ingress generation cleanly.
 	d.stopAdmission()
 	csmlog.Info("workers drained", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
@@ -1229,9 +1233,6 @@ func (d *Daemon) Run() error {
 	if adb := attackdb.Global(); adb != nil {
 		adb.Stop()
 	}
-	// Stop the incident auto-close and retention goroutines before closing the
-	// store so neither writes to an already-closed bbolt database.
-	StopIncidentBackgroundLoops()
 	if err := d.store.Close(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] error closing state store: %v\n", ts(), err)
 	}

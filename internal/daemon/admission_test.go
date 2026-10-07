@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
@@ -240,8 +241,8 @@ func TestReloadAppliesTheAdmissionCeiling(t *testing.T) {
 
 // O19 and O30: the daemon opens the ledger after publishing its config and
 // before the firewall, dispatcher, watchers and status servers start, and
-// stops it after every producer has stopped and before the state store
-// closes.
+// stops it after every producer and the incident loops have stopped and
+// before the state store closes.
 func TestRunOrdersTheAdmissionOwner(t *testing.T) {
 	f, err := parser.ParseFile(token.NewFileSet(), "daemon.go", nil, 0)
 	if err != nil {
@@ -292,6 +293,10 @@ func TestRunOrdersTheAdmissionOwner(t *testing.T) {
 	}
 	if at("wg.Wait") > stop || at("store.Close") < stop {
 		t.Errorf("stopAdmission runs at %d, outside wg.Wait (%d) and store.Close (%d)", stop, at("wg.Wait"), at("store.Close"))
+	}
+	// R12: the incident loops stop before the owner's final drain.
+	if at("StopIncidentBackgroundLoops") > stop {
+		t.Errorf("StopIncidentBackgroundLoops runs after stopAdmission")
 	}
 }
 
@@ -363,6 +368,52 @@ func TestAdmissionPreviewExpiryFollowsTheConfiguredResponse(t *testing.T) {
 		c := admission.Candidate{Key: admission.CandidateKey{Kind: tc.kind}, Entry: tc.entry}
 		if got := previewExpiry(cfg, c); got != tc.want {
 			t.Errorf("%s via %s: %v, want %v", tc.kind, tc.entry, got, tc.want)
+		}
+	}
+}
+
+// R1: every automatic response the legacy funnels select reaches the owner
+// while it runs, and none reaches it once it stops.
+func TestDaemonWiresTheResponseFunnelsToItsOwner(t *testing.T) {
+	dir := t.TempDir()
+	db, restore := openTestBoltStore(t, dir)
+	defer restore()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	var wired []checks.ResponseAdmission
+	prev := setResponseAdmission
+	setResponseAdmission = func(a checks.ResponseAdmission) { wired = append(wired, a) }
+	t.Cleanup(func() { setResponseAdmission = prev })
+	d := New(&config.Config{StatePath: dir}, st, nil, "")
+	d.startAdmissionWith(testAdmissionOptions(d, db))
+	if len(wired) != 1 || wired[0] != checks.ResponseAdmission(d.admission) {
+		d.stopAdmission()
+		t.Fatalf("wired at start: %v", wired)
+	}
+	d.stopAdmission()
+	if len(wired) != 2 || wired[1] != nil {
+		t.Fatalf("wired after stop: %v", wired)
+	}
+}
+
+// Admission accepts an IPv6 target only when the firewall manages IPv6, as
+// the legacy block refuses one otherwise.
+func TestAdmissionCapsFollowTheFirewallFamily(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fw   *firewall.FirewallConfig
+		want admission.Caps
+	}{
+		{"no firewall section", nil, admission.Caps{}},
+		{"ipv4 only", &firewall.FirewallConfig{}, admission.Caps{}},
+		{"ipv6 managed", &firewall.FirewallConfig{IPv6: true}, admission.Caps{IPv6: true}},
+	} {
+		d := &Daemon{cfg: &config.Config{Firewall: tc.fw}}
+		if got := d.admissionOptions(nil).Caps(); got != tc.want {
+			t.Errorf("%s: caps = %+v, want %+v", tc.name, got, tc.want)
 		}
 	}
 }

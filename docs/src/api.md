@@ -253,9 +253,10 @@ loss accounting remains responsible for interrupted or missing command work.
 `status.admission.v1` advertises the `admission` object on status responses.
 The same view appears under `snapshot.admission` in `csm status --json` and as
 `admission` rows in `csm doctor`. The daemon reads it on a timer, so
-`checked_at` says how old it is. Nothing is admitted through the ledger yet:
-existing blocking paths still decide every block, and the view shows the
-ledger the daemon keeps ready for them.
+`checked_at` says how old it is. Existing blocking paths still decide every
+block. Every automatic response they select is also handed to the ledger,
+which admits and previews it but never applies it, so the view shows what
+the ledger would have done.
 
 - `ledger` holds the stored admission time, queue, counters, hourly and daily
   outcomes, ingress generations, the hourly ceiling with its general and
@@ -274,7 +275,7 @@ The hourly ceiling follows `auto_response.max_blocks_per_hour`, capped at 20000.
 An omitted or zero value selects 2000 for the ledger and 50 for the shared
 scan-driven block budget. After editing the configuration, run
 `systemctl reload csm`; web UI settings saves apply at the next ledger tick.
-Existing blocking paths do not use the ledger yet; see
+Existing blocking paths still decide every block; see
 [automatic response](auto-response.md) for the scope of the current budget.
 
 Existing blocking paths still decide every block, so no admission row fails
