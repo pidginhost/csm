@@ -251,6 +251,11 @@ func (l *AdmissionLedger) arriveTx(q *queueTx, a admission.Arrival) (admission.C
 	if a.Request.Target != e.Target() {
 		return "", false, refusal(admission.ReasonInvalid, "arrival request target differs from its evidence")
 	}
+	if a.Request.Entry != 0 {
+		if err := l.reg.ValidateVia(a.Request.Entry, e); err != nil {
+			return "", false, err
+		}
+	}
 	ids, err := rootSet(a.Request)
 	if err != nil {
 		return "", false, err

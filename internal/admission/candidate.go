@@ -74,6 +74,9 @@ type Candidate struct {
 	// ExpiresAt is the absolute effect expiry fixed by the first
 	// reservation. Retries keep it.
 	ExpiresAt time.Time
+	// PreviewTTL is the legacy path's selected lifetime, fixed when the
+	// candidate is queued. Zero uses the configured lifetime at reservation.
+	PreviewTTL time.Duration
 	// NotBefore is when a candidate returned by a proven failure may be
 	// reserved again.
 	NotBefore time.Time
@@ -105,6 +108,7 @@ type candidateRecord struct {
 	Disposition     Disposition  `json:"disposition,omitempty"`
 	Attempts        uint32       `json:"attempts,omitempty"`
 	ExpiresAt       int64        `json:"expires_at,omitempty"`
+	PreviewTTL      int64        `json:"preview_ttl,omitempty"`
 	NotBefore       int64        `json:"not_before,omitempty"`
 	Transitions     uint32       `json:"transitions"`
 }
@@ -146,6 +150,9 @@ func (c Candidate) record() (candidateRecord, error) {
 	}
 	if !c.State.Valid() || !terminalDisposition(c.State, c.Disposition) || !stateReason(c.State, c.Reason) {
 		return bad("candidate state, disposition and reason disagree")
+	}
+	if c.PreviewTTL < 0 {
+		return bad("candidate preview lifetime is negative")
 	}
 	if c.Disposition == DispositionNarrowed && c.Key.Kind != KindChallenge && c.Key.Kind != KindBlockService {
 		return bad("only a challenge or service block narrows")
@@ -208,7 +215,7 @@ func (c Candidate) record() (candidateRecord, error) {
 		Generation: c.Key.Generation, OwnerAccount: c.Scope.Owner.account, OwnerGeneration: c.Scope.Owner.generation,
 		Effect: c.Scope.Effect, Entry: c.Entry, Check: c.Check, FindingID: c.FindingID, Roots: c.Roots,
 		FirstQueued: first, AgeOut: ageOut, State: c.State, Reason: c.Reason, Disposition: c.Disposition,
-		Attempts: c.Attempts, ExpiresAt: expires, NotBefore: notBefore, Transitions: c.Transitions,
+		Attempts: c.Attempts, ExpiresAt: expires, PreviewTTL: int64(c.PreviewTTL), NotBefore: notBefore, Transitions: c.Transitions,
 	}, nil
 }
 
@@ -260,7 +267,7 @@ func UnmarshalCandidate(data []byte) (Candidate, error) {
 		Scope: Scope{Owner: Owner{account: rec.OwnerAccount, generation: rec.OwnerGeneration}, Effect: rec.Effect},
 		Entry: rec.Entry, Check: rec.Check, FindingID: rec.FindingID, Roots: rec.Roots,
 		FirstQueued: fromNano(rec.FirstQueued), AgeOut: fromNano(rec.AgeOut), State: rec.State, Reason: rec.Reason,
-		Disposition: rec.Disposition, Attempts: rec.Attempts, ExpiresAt: fromNano(rec.ExpiresAt),
+		Disposition: rec.Disposition, Attempts: rec.Attempts, ExpiresAt: fromNano(rec.ExpiresAt), PreviewTTL: time.Duration(rec.PreviewTTL),
 		NotBefore: fromNano(rec.NotBefore), Transitions: rec.Transitions,
 	}
 	// Re-encoding must reproduce the stored bytes: every field survived

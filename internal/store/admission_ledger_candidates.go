@@ -45,6 +45,9 @@ func putCandidate(tx *bolt.Tx, c admission.Candidate) error {
 
 // rootSet returns the request's roots sorted and unique, bounded by MaxRoots.
 func rootSet(req admission.CandidateRequest) ([]admission.EvidenceID, error) {
+	if req.PreviewTTL < 0 {
+		return nil, refusal(admission.ReasonInvalid, "response lifetime is negative")
+	}
 	if len(req.Support) >= admission.MaxRoots {
 		return nil, refusal(admission.ReasonInvalid, "candidate has too many roots")
 	}
@@ -168,10 +171,18 @@ func (l *AdmissionLedger) enqueueTx(q *queueTx, req admission.CandidateRequest, 
 		return admission.Candidate{}, false, err
 	}
 	primary := roots[slices.Index(ids, req.Primary)]
+	entry := primary.Entry()
+	if req.Entry != 0 {
+		if err = l.reg.ValidateVia(req.Entry, primary); err != nil {
+			return admission.Candidate{}, false, err
+		}
+		entry = req.Entry
+	}
 	c := admission.Candidate{
 		Key:         key,
 		Scope:       admission.Scope{Owner: owner, Effect: key.Kind.Effect()},
-		Entry:       primary.Entry(),
+		Entry:       entry,
+		PreviewTTL:  req.PreviewTTL,
 		Check:       primary.Check(),
 		FindingID:   primary.FindingID(),
 		Roots:       ids,

@@ -593,4 +593,6 @@ The scheduler records only ceiling, history-budget and recovery-reserve deferral
 
 The owner schedules queued preview work on its timer and uses the next ledger wake even when no new arrival appears. It preserves the legacy-selected absolute expiry, observes each pick transactionally and continues delivery retries independently of scheduling.
 
+Derived entries validate their producer binding before fresh placement, coalescing and answered results. The first selected temporary lifetime is durable and cannot be extended by a later report of the same candidate; absent metadata retains the configuration-selected lifetime.
+
 Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.

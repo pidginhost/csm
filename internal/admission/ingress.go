@@ -8,12 +8,27 @@ import (
 	"time"
 )
 
-// Submission is the response kind, target and producer-minted evidence.
+// Submission is the response kind, target and producer-minted evidence. Via
+// names the derived entry, such as a challenge timeout or an incident,
+// that answers the root evidence again; zero is the evidence's own entry.
 type Submission struct {
 	Kind     Kind
 	Target   Target
 	Evidence Evidence
+	Via      Entry
+	// PreviewTTL is a selected legacy lifetime; zero uses the owner fallback.
+	PreviewTTL time.Duration
 }
+
+// held identifies one held response: an observation may ask for several
+// kinds, and a derived entry answers the same root as its own response.
+type held struct {
+	id   EvidenceID
+	kind Kind
+	via  Entry
+}
+
+func heldKeyOf(s Submission) held { return held{id: s.Evidence.ID(), kind: s.Kind, via: s.Via} }
 
 // IngressCheckpoint records the ingress decisions preceding a drain. Counters
 // are a canonical QueueCounters record, copied at the handoff boundary.
@@ -74,13 +89,15 @@ type Ingress struct {
 	view        *QueueView
 	items       []*pending
 	byKey       map[string]*pending
-	byEvidence  map[EvidenceID]*pending
+	byEvidence  map[held]*pending
 	seq         uint64
 	stats       IngressStats
 	cursors     QueueCursors
 	generation  uint64
 	revision    int
 	initialized bool
+	// closed refuses every later submission and snapshot for good.
+	closed bool
 	// mono reads the monotonic clock. Submissions are judged at the
 	// snapshot's admission time plus the time elapsed since publication.
 	mono      func() time.Time
@@ -96,7 +113,7 @@ func NewIngress(reg *Registry) (*Ingress, error) {
 	if reg == nil || !reg.Sealed() {
 		return nil, fmt.Errorf("ingress needs a sealed producer registry")
 	}
-	return &Ingress{reg: reg, byKey: map[string]*pending{}, byEvidence: map[EvidenceID]*pending{}, mono: time.Now, stoppedAt: time.Now()}, nil
+	return &Ingress{reg: reg, byKey: map[string]*pending{}, byEvidence: map[held]*pending{}, mono: time.Now, stoppedAt: time.Now()}, nil
 }
 
 // setSnapshot publishes s, or closes admission when s is nil. Closing an
@@ -148,6 +165,14 @@ func (in *Ingress) Submit(s Submission) error {
 	if err := in.reg.Validate(e); err != nil {
 		return refused(err, Tier{})
 	}
+	if s.PreviewTTL < 0 {
+		return refused(refuse(ReasonInvalid, "response lifetime is negative"), Tier{})
+	}
+	if s.Via != 0 {
+		if err := in.reg.ValidateVia(s.Via, e); err != nil {
+			return refused(err, Tier{})
+		}
+	}
 	if err := ValidateKindTarget(s.Kind, s.Target); err != nil {
 		return refused(err, Tier{})
 	}
@@ -155,16 +180,13 @@ func (in *Ingress) Submit(s Submission) error {
 	if s.Target != e.Target() {
 		return refused(refuse(ReasonInvalid, "submission target differs from evidence"), Tier{})
 	}
-	if held := in.byEvidence[e.ID()]; held != nil {
-		if held.item.Submission.Kind != s.Kind {
-			return refused(refuse(ReasonInvalid, "submission differs from held response"), Tier{})
-		}
+	if h := in.byEvidence[heldKeyOf(s)]; h != nil {
 		switch {
-		case held.item.Submission.Evidence.Equal(e):
+		case h.item.Submission.Evidence.Equal(e):
 			in.stats.Duplicates++
-		case held.item.Submission.Evidence.SameExceptFinding(e):
+		case h.item.Submission.Evidence.SameExceptFinding(e):
 			in.stats.Duplicates++
-			held.addReport(e.FindingID())
+			h.addReport(e.FindingID())
 		default:
 			return refused(ErrEvidenceConflict, Tier{})
 		}
@@ -200,9 +222,32 @@ func (in *Ingress) Submit(s Submission) error {
 	}
 	in.items = append(in.items, p)
 	in.byKey[p.item.key] = p
-	in.byEvidence[e.ID()] = p
+	in.byEvidence[heldKeyOf(s)] = p
 	in.stats.Accepted++
 	return nil
+}
+
+// Refuse counts a response whose evidence could not be minted, as Submit
+// counts one it refuses before assessing it.
+func (in *Ingress) Refuse(err error, sev Severity) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	in.seq++
+	reason, ok := ReasonOf(err)
+	if !ok {
+		reason = ReasonInvalid
+	}
+	in.lose(EventRefused, reason, Tier{}, sev)
+}
+
+// Close refuses every later submission and keeps admission closed whatever
+// is published later. Held work can still be drained, so a stop persists a
+// bounded set even while a producer keeps submitting.
+func (in *Ingress) Close() {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	in.closed = true
+	in.setSnapshot(nil)
 }
 
 func (p *pending) addReport(finding string) {
@@ -220,7 +265,7 @@ func (p *pending) addReport(finding string) {
 
 func (in *Ingress) drop(p *pending) {
 	delete(in.byKey, p.item.key)
-	delete(in.byEvidence, p.item.Submission.Evidence.ID())
+	delete(in.byEvidence, heldKeyOf(p.item.Submission))
 	for i, have := range in.items {
 		if have == p {
 			in.items = append(in.items[:i], in.items[i+1:]...)
@@ -238,7 +283,7 @@ func (in *Ingress) Publish(snap *QueueSnapshot) {
 }
 
 func (in *Ingress) publish(snap *QueueSnapshot) {
-	if snap == nil {
+	if snap == nil || in.closed {
 		in.setSnapshot(nil)
 		return
 	}

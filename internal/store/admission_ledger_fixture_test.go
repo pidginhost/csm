@@ -60,6 +60,10 @@ func newLedgerRegistry(t testing.TB) (*admission.Registry, *admission.Producer, 
 	ssh := register("sshd_log", admission.ObservationLogCursor, "ssh_brute")
 	rep := register("reputation_scan", admission.ObservationScanPass, "reputation")
 	mail := register("mail_log", admission.ObservationLogCursor, "mail_takeover")
+	// A derived entry wraps roots of the checks its producer lists.
+	if _, regErr := reg.Register(admission.ProducerSpec{ID: "challenge_timeout", Entry: admission.EntryChallengeTimeout, Observation: admission.ObservationEventSeq, Checks: []string{"ssh_brute"}}); regErr != nil {
+		t.Fatal(regErr)
+	}
 	reg.Seal()
 	return reg, ssh, rep, mail
 }

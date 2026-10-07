@@ -168,3 +168,60 @@ func TestAdmissionLedgerFinishRefusesAPreview(t *testing.T) {
 		t.Fatal("a refused outcome changed the ledger")
 	}
 }
+
+// An arrival through a derived entry keeps its root as primary evidence and
+// takes the entry from its request; the ledger binds that entry to the
+// registry again, so an entry no producer wraps the root's check under is
+// refused and counted.
+func TestAdmissionLedgerArrivalTakesItsEntryFromItsRequest(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	timeout := f.arrival(evidenceSpec{cursor: "offset=1"})
+	timeout.Request.Entry = admission.EntryChallengeTimeout
+	timeout.Request.PreviewTTL = 7 * 24 * time.Hour
+	res := f.arrive(timeout)[0]
+	if res.Err != nil || !res.Created {
+		t.Fatalf("arrival = %+v", res)
+	}
+	if c := f.candidateOf(res.Candidate); c.Entry != admission.EntryChallengeTimeout || c.Roots[0] != timeout.Evidence.ID() || c.PreviewTTL != timeout.Request.PreviewTTL {
+		t.Fatalf("candidate entry %s, roots %v", c.Entry, c.Roots)
+	}
+	coalesced := f.arrival(evidenceSpec{cursor: "offset=coalesced"})
+	coalesced.Request.Entry = admission.EntryChallengeTimeout
+	coalesced.Request.PreviewTTL = time.Hour
+	if next := f.arrive(coalesced)[0]; next.Err != nil || next.Created || next.Candidate != res.Candidate {
+		t.Fatalf("coalesced arrival = %+v", next)
+	}
+	if c := f.candidateOf(res.Candidate); c.PreviewTTL != timeout.Request.PreviewTTL {
+		t.Fatalf("coalescing changed the original lifetime to %v", c.PreviewTTL)
+	}
+	negative := f.arrival(evidenceSpec{cursor: "offset=negative"})
+	negative.Request.PreviewTTL = -time.Second
+	wantLedgerReason(t, "negative selected lifetime", f.arrive(negative)[0].Err, admission.ReasonInvalid)
+	if c := f.candidateOf(res.Candidate); c.PreviewTTL != timeout.Request.PreviewTTL || f.refusals(admission.ReasonInvalid) != 1 {
+		t.Fatalf("negative lifetime changed the candidate to %v, refusals %d", c.PreviewTTL, f.refusals(admission.ReasonInvalid))
+	}
+	central := f.arrival(evidenceSpec{target: "192.0.2.11", cursor: "offset=2"})
+	central.Request.Entry = admission.EntryCentral
+	wantLedgerReason(t, "an unbound entry", f.arrive(central)[0].Err, admission.ReasonPolicy)
+	if _, found := f.episodeAt("192.0.2.11"); found {
+		t.Fatal("a refused entry opened an episode")
+	}
+	invalidCopy := f.arrival(evidenceSpec{cursor: "offset=invalid-copy"})
+	invalidCopy.Request.Entry = admission.EntryCentral
+	wantLedgerReason(t, "an unbound entry coalescing", f.arrive(invalidCopy)[0].Err, admission.ReasonPolicy)
+	if _, _, _, err := f.l.Observe(res.Candidate, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	answeredCopy := f.arrival(evidenceSpec{cursor: "offset=invalid-answer"})
+	answeredCopy.Request.Entry = admission.EntryCentral
+	wantLedgerReason(t, "an unbound entry answering", f.arrive(answeredCopy)[0].Err, admission.ReasonPolicy)
+	if n := f.refusals(admission.ReasonPolicy); n != 3 {
+		t.Fatalf("policy refusals = %d", n)
+	}
+	// The direct queue boundary retains the same binding independently.
+	req := central.Request
+	req.Episode, req.Generation = f.candidateOf(res.Candidate).Key.Episode, 1
+	_, _, err := f.l.Enqueue(req)
+	wantLedgerReason(t, "an unbound direct request", err, admission.ReasonPolicy)
+}
