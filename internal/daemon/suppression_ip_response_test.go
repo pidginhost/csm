@@ -11,11 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/reporting"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
@@ -119,7 +121,7 @@ func TestSuppressedFindingsStillDriveIncidentBlocks(t *testing.T) {
 					check = "pam_bruteforce"
 				}
 				d := suppressionTestDaemon(t, cfg, checkWideSuppression(check))
-				SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
+				SetIncidentSprayBlocker(d.applyIncidentBlock)
 				count := 1
 				if spray {
 					count = 3
@@ -211,7 +213,7 @@ func TestSuppressedIPActionsStaySilent(t *testing.T) {
 			f := smtpBruteForceFinding("192.0.2.42")
 			switch path {
 			case "incident":
-				if _, err := d.applyIncidentSprayBlock(f.SourceIP, "test incident", time.Hour, alert.FindingID(f)); err != nil {
+				if _, err := d.applyIncidentBlock(f.SourceIP, "test incident", time.Hour, alert.FindingID(f), incident.PreparedRoot{}, admission.EntryIncident); err != nil {
 					t.Fatal(err)
 				}
 			case "central":
@@ -265,7 +267,7 @@ func TestSuppressionKeepsPHPFreezeGated(t *testing.T) {
 	}
 }
 
-func TestSuppressedDatabaseFindingKeepsIPResponse(t *testing.T) {
+func TestSuppressedDatabaseFindingStillReachesItsResponder(t *testing.T) {
 	cfg, blocker, rec := suppressionResponseSetup(t)
 	d := suppressionTestDaemon(t, cfg, checkWideSuppression("db_siteurl_hijack"))
 	previous := autoRespondDBMalware
@@ -281,12 +283,6 @@ func TestSuppressedDatabaseFindingKeepsIPResponse(t *testing.T) {
 			if canRemediate(f) {
 				edits++
 			}
-			cause := alert.CauseOf(f)
-			actions = append(actions, checks.AutoBlockIPs(cfg, []alert.Finding{{
-				Check: "local_threat_score", Severity: alert.Critical,
-				Message: "attacker session IP 192.0.2.43", SourceIP: "192.0.2.43",
-				Cause: &cause,
-			}})...)
 		}
 		return actions
 	}
@@ -294,8 +290,8 @@ func TestSuppressedDatabaseFindingKeepsIPResponse(t *testing.T) {
 	if observed != 1 || edits != 0 {
 		t.Fatalf("database observations=%d edits=%d; want 1/0", observed, edits)
 	}
-	if got := blockedIPs(blocker); len(got) != 1 || got[0] != "192.0.2.43" {
-		t.Fatalf("session source was not blocked: %v", got)
+	if got := blockedIPs(blocker); len(got) != 0 {
+		t.Fatalf("a database finding blocked %v", got)
 	}
 	if rec.delivered(suppressedDetailsMarker) {
 		t.Fatal("suppressed database source leaked to webhook")
@@ -312,7 +308,7 @@ func TestIncidentsSeeEachNewObservationOnce(t *testing.T) {
 	cfg.Incidents.AutoBlock.BlockAtSeverity = "high"
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 	d := suppressionTestDaemon(t, cfg, checkWideSuppression("api_auth_failure_realtime"))
-	SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
+	SetIncidentSprayBlocker(d.applyIncidentBlock)
 	f := alert.Finding{Check: "api_auth_failure_realtime", Severity: alert.High, SourceIP: "192.0.2.44", Message: "authentication failure", Timestamp: time.Now()}
 	d.dispatchBatch([]alert.Finding{f, f})
 	if len(blocker.calls) != 0 {

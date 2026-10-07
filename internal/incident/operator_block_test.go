@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestOperatorBlockValidatesIncidentAddress(t *testing.T) {
@@ -30,7 +32,12 @@ func TestOperatorBlockValidatesIncidentAddress(t *testing.T) {
 				t.Fatalf("RecordOperatorBlock error = %v, valid = %v", err, tc.valid)
 			}
 			after, _ := c.Get("inc_test")
-			if !tc.valid && !reflect.DeepEqual(before, after) {
+			unchanged := cmp.Equal(before, after, cmp.AllowUnexported(IncidentEvent{}),
+				cmp.Comparer(func(a, b time.Time) bool { return reflect.DeepEqual(a, b) }),
+				cmp.Comparer(func(a, b PreparedRoot) bool {
+					return a.Equal(b.Evidence) && reflect.DeepEqual(a.Finding, b.Finding) && a.Err == b.Err
+				}))
+			if !tc.valid && !unchanged {
 				t.Fatal("unrelated block changed incident state")
 			}
 		})

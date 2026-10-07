@@ -249,8 +249,10 @@ func joinRecords(findings []alert.AuditEvent, actions []actionlog.Record, audits
 	c.UniqueFindingIDs = len(ids)
 
 	results := map[string]int{}
-	for r := range actionResults {
-		results[r] = 0
+	for _, set := range []map[string]bool{actionResults, admissionAttemptResults, admissionDecisions} {
+		for r := range set {
+			results[r] = 0
+		}
 	}
 	type durableKey struct {
 		id      string

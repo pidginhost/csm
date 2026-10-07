@@ -116,6 +116,19 @@ func TestAdmissionLedgerAuditProofGuardsStandAlone(t *testing.T) {
 				return putAuditRowRaw(tx, row, 0)
 			}
 		},
+		"execution of a preview": func(f *ledgerFixture) damage {
+			f.nextGeneration()
+			_, _, _, err := f.l.Observe(f.queued(), admission.LaneGeneral, f.wall.Add(time.Hour))
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			a := f.pendingAudit()[len(f.pendingAudit())-1]
+			return func(t *testing.T, f *ledgerFixture, tx *bolt.Tx) error {
+				row := auditRowsOf(t, f, tx, a.Attempt.ID)[1]
+				row.State, row.Disposition = admission.StateExecuting, 0
+				return putAuditRowRaw(tx, row, 0)
+			}
+		},
 		"execution at its expiry": func(f *ledgerFixture) damage {
 			_, a := f.admitted(time.Hour)
 			if _, _, _, err := f.l.Execute(a.Attempt.ID); err != nil {

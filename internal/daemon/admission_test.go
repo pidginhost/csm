@@ -17,7 +17,9 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/admissionowner"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
@@ -100,9 +102,9 @@ func TestDaemonDeliversAdmissionNoticesOutsideTheFindingChannel(t *testing.T) {
 		}
 	})
 	t.Cleanup(func() { alert.SetCentralHook(previousHook) })
-	notice := alert.Finding{Check: "auto_response_withheld", Severity: alert.Critical, Message: "Automatic response admission stopped", Timestamp: time.Now()}
+	notice := alert.Finding{Check: "auto_response_withheld", Severity: alert.Warning, Message: "Automatic response admission preview stopped; existing blocking is unaffected", Timestamp: time.Now()}
 	delivered := make(chan error, 1)
-	go func() { delivered <- d.deliverAdmissionNotices([]alert.Finding{notice}) }()
+	go func() { delivered <- d.deliverAdmissionNotices([]alert.Finding{notice}, false) }()
 	select {
 	case err := <-delivered:
 		if err != nil {
@@ -118,6 +120,76 @@ func TestDaemonDeliversAdmissionNoticesOutsideTheFindingChannel(t *testing.T) {
 	}
 	if history, total := st.ReadHistory(10, 0); total != 1 || history[0].Check != "auto_response_withheld" {
 		t.Fatalf("history = %+v (%d)", history, total)
+	}
+}
+
+// R10: a preview notice is recorded in history and never reaches an alert
+// channel, since legacy blocking still enforces.
+func TestDaemonRecordsAdmissionPreviewsWithoutDispatch(t *testing.T) {
+	dir := t.TempDir()
+	_, restore := openTestBoltStore(t, dir)
+	defer restore()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	d := New(&config.Config{StatePath: dir}, st, nil, "")
+	previousHook := alert.CentralHook
+	dispatched := 0
+	alert.SetCentralHook(func(alert.Finding) { dispatched++ })
+	t.Cleanup(func() { alert.SetCentralHook(previousHook) })
+	notice := alert.Finding{Check: "auto_response_withheld", Severity: alert.Warning, Message: "Admission preview: Critical automatic response withheld", Timestamp: time.Now()}
+	if err := d.deliverAdmissionNotices([]alert.Finding{notice}, true); err != nil {
+		t.Fatal(err)
+	}
+	if dispatched != 0 {
+		t.Fatalf("a preview reached %d alert channels", dispatched)
+	}
+	if history, total := st.ReadHistory(10, 0); total != 1 || history[0].Message != notice.Message {
+		t.Fatalf("history = %+v (%d)", history, total)
+	}
+}
+
+func TestDaemonRetriesAdmissionPreviewHistoryFailures(t *testing.T) {
+	dir := t.TempDir()
+	db, restore := openTestBoltStore(t, dir)
+	defer restore()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	d := New(&config.Config{StatePath: dir}, st, nil, "")
+	previousHook := alert.CentralHook
+	dispatched := 0
+	alert.SetCentralHook(func(alert.Finding) { dispatched++ })
+	t.Cleanup(func() { alert.SetCentralHook(previousHook) })
+	notice := alert.Finding{Check: "auto_response_withheld", Severity: alert.Warning, Message: "Admission preview: Critical automatic response withheld", Timestamp: time.Now()}
+	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.deliverAdmissionNotices([]alert.Finding{notice}, true); err == nil {
+		t.Error("a failed history write acknowledged the preview")
+	}
+	store.SetGlobal(nil)
+	if err = d.deliverAdmissionNotices([]alert.Finding{notice}, true); err == nil {
+		t.Error("an unavailable history database acknowledged the preview")
+	}
+	reopened, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	store.SetGlobal(reopened)
+	if err := d.deliverAdmissionNotices([]alert.Finding{notice}, true); err != nil {
+		t.Fatal(err)
+	}
+	if dispatched != 0 {
+		t.Fatalf("history retries sent %d alerts", dispatched)
+	}
+	if history, total := st.ReadHistory(10, 0); total != 1 || history[0].Message != notice.Message {
+		t.Fatalf("retried history = %+v (%d)", history, total)
 	}
 }
 
@@ -158,7 +230,7 @@ func TestAdmissionNoticesBypassTheRoutineAlertBudget(t *testing.T) {
 		{Check: "auto_response_withheld", Message: "withheld warning", Severity: alert.Warning, Timestamp: now},
 		{Check: "auto_block", Message: "applied summary", Severity: alert.Warning, Timestamp: now},
 	} {
-		if err := d.deliverAdmissionNotices([]alert.Finding{notice}); err != nil {
+		if err := d.deliverAdmissionNotices([]alert.Finding{notice}, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -211,8 +283,8 @@ func TestReloadAppliesTheAdmissionCeiling(t *testing.T) {
 
 // O19 and O30: the daemon opens the ledger after publishing its config and
 // before the firewall, dispatcher, watchers and status servers start, and
-// stops it after every producer has stopped and before the state store
-// closes.
+// stops it after every producer and the incident loops have stopped and
+// before the state store closes.
 func TestRunOrdersTheAdmissionOwner(t *testing.T) {
 	f, err := parser.ParseFile(token.NewFileSet(), "daemon.go", nil, 0)
 	if err != nil {
@@ -264,6 +336,10 @@ func TestRunOrdersTheAdmissionOwner(t *testing.T) {
 	if at("wg.Wait") > stop || at("store.Close") < stop {
 		t.Errorf("stopAdmission runs at %d, outside wg.Wait (%d) and store.Close (%d)", stop, at("wg.Wait"), at("store.Close"))
 	}
+	// R12: the incident loops stop before the owner's final drain.
+	if at("StopIncidentBackgroundLoops") > stop {
+		t.Errorf("StopIncidentBackgroundLoops runs after stopAdmission")
+	}
 }
 
 // A repeated wiring call retains the original owner and generation.
@@ -306,5 +382,80 @@ func TestDaemonReportsAnUnavailableAdmissionStore(t *testing.T) {
 	defer d.stopAdmission()
 	if s := d.AdmissionStatus(); s == nil || s.Owner.Error == "" || s.Ingress.Admitting {
 		t.Fatalf("missing store status: %+v", s)
+	}
+}
+
+// A preview records the expiry the live response would get under the
+// current configuration: block_expiry for blocks, the challenge window for
+// a challenge, central intel's own windows and the crawl tempban for their
+// entries.
+func TestAdmissionPreviewExpiryFollowsTheConfiguredResponse(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.BlockExpiry = "6h"
+	cfg.AutoResponse.HTTPASNCrawlTempban = "3h"
+	for _, tc := range []struct {
+		kind  admission.Kind
+		entry admission.Entry
+		want  time.Duration
+	}{
+		{admission.KindBlockIP, admission.EntryScan, 6 * time.Hour},
+		{admission.KindBlockIP, admission.EntryIncident, 6 * time.Hour},
+		{admission.KindBlockIP, admission.EntryChallengeTimeout, 6 * time.Hour},
+		{admission.KindBlockSubnet, admission.EntryMailSubnet, 6 * time.Hour},
+		{admission.KindChallenge, admission.EntryScan, checks.ChallengeDuration},
+		{admission.KindChallenge, admission.EntryCentral, centralChallengeTTL},
+		{admission.KindBlockIP, admission.EntryCentral, centralBlockTTL},
+		{admission.KindBlockSubnet, admission.EntryASNCrawl, 3 * time.Hour},
+	} {
+		c := admission.Candidate{Key: admission.CandidateKey{Kind: tc.kind}, Entry: tc.entry}
+		if got := previewExpiry(cfg, c); got != tc.want {
+			t.Errorf("%s via %s: %v, want %v", tc.kind, tc.entry, got, tc.want)
+		}
+	}
+}
+
+// R1: every automatic response the legacy funnels select reaches the owner
+// while it runs, and none reaches it once it stops.
+func TestDaemonWiresTheResponseFunnelsToItsOwner(t *testing.T) {
+	dir := t.TempDir()
+	db, restore := openTestBoltStore(t, dir)
+	defer restore()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	var wired []checks.ResponseAdmission
+	prev := setResponseAdmission
+	setResponseAdmission = func(a checks.ResponseAdmission) { wired = append(wired, a) }
+	t.Cleanup(func() { setResponseAdmission = prev })
+	d := New(&config.Config{StatePath: dir}, st, nil, "")
+	d.startAdmissionWith(testAdmissionOptions(d, db))
+	if len(wired) != 1 || wired[0] != checks.ResponseAdmission(d.admission) {
+		d.stopAdmission()
+		t.Fatalf("wired at start: %v", wired)
+	}
+	d.stopAdmission()
+	if len(wired) != 2 || wired[1] != nil {
+		t.Fatalf("wired after stop: %v", wired)
+	}
+}
+
+// Admission accepts an IPv6 target only when the firewall manages IPv6, as
+// the legacy block refuses one otherwise.
+func TestAdmissionCapsFollowTheFirewallFamily(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fw   *firewall.FirewallConfig
+		want admission.Caps
+	}{
+		{"no firewall section", nil, admission.Caps{}},
+		{"ipv4 only", &firewall.FirewallConfig{}, admission.Caps{}},
+		{"ipv6 managed", &firewall.FirewallConfig{IPv6: true}, admission.Caps{IPv6: true}},
+	} {
+		d := &Daemon{cfg: &config.Config{Firewall: tc.fw}}
+		if got := d.admissionOptions(nil).Caps(); got != tc.want {
+			t.Errorf("%s: caps = %+v, want %+v", tc.name, got, tc.want)
+		}
 	}
 }

@@ -45,6 +45,9 @@ func putCandidate(tx *bolt.Tx, c admission.Candidate) error {
 
 // rootSet returns the request's roots sorted and unique, bounded by MaxRoots.
 func rootSet(req admission.CandidateRequest) ([]admission.EvidenceID, error) {
+	if req.PreviewTTL < 0 {
+		return nil, refusal(admission.ReasonInvalid, "response lifetime is negative")
+	}
 	if len(req.Support) >= admission.MaxRoots {
 		return nil, refusal(admission.ReasonInvalid, "candidate has too many roots")
 	}
@@ -143,6 +146,15 @@ func (l *AdmissionLedger) Enqueue(req admission.CandidateRequest) (admission.Can
 // caller flushes q once its transaction's work is done.
 func (l *AdmissionLedger) enqueueTx(q *queueTx, req admission.CandidateRequest, key admission.CandidateKey, id admission.CandidateID, ids []admission.EvidenceID) (admission.Candidate, bool, error) {
 	tx, now := q.tx, q.now
+	if req.Entry != 0 {
+		primary, err := loadEvidence(tx, l.reg, req.Primary)
+		if err != nil {
+			return admission.Candidate{}, false, err
+		}
+		if err := l.reg.ValidateVia(req.Entry, primary); err != nil {
+			return admission.Candidate{}, false, err
+		}
+	}
 	cur, err := loadCandidate(tx, id)
 	switch {
 	case err == nil:
@@ -168,10 +180,15 @@ func (l *AdmissionLedger) enqueueTx(q *queueTx, req admission.CandidateRequest, 
 		return admission.Candidate{}, false, err
 	}
 	primary := roots[slices.Index(ids, req.Primary)]
+	entry := primary.Entry()
+	if req.Entry != 0 {
+		entry = req.Entry
+	}
 	c := admission.Candidate{
 		Key:         key,
 		Scope:       admission.Scope{Owner: owner, Effect: key.Kind.Effect()},
-		Entry:       primary.Entry(),
+		Entry:       entry,
+		PreviewTTL:  req.PreviewTTL,
 		Check:       primary.Check(),
 		FindingID:   primary.FindingID(),
 		Roots:       ids,
@@ -228,6 +245,9 @@ func (l *AdmissionLedger) coalesceTx(q *queueTx, cur admission.Candidate, ids []
 	merged := mergeRoots(cur.Roots, ids)
 	roots, err := loadRoots(tx, l.reg, merged)
 	if err != nil {
+		return admission.Candidate{}, false, err
+	}
+	if err = validateCandidateEntry(l.reg, cur, roots); err != nil {
 		return admission.Candidate{}, false, err
 	}
 	if _, err = admission.Assess(cur.Key.Target, roots, now); err != nil {
@@ -292,6 +312,17 @@ func loadRoots(tx *bolt.Tx, reg *admission.Registry, ids []admission.EvidenceID)
 		roots = append(roots, e)
 	}
 	return roots, nil
+}
+
+// validateCandidateEntry checks the retained entry against the primary
+// check, not whichever supporting root sorts first.
+func validateCandidateEntry(reg *admission.Registry, c admission.Candidate, roots []admission.Evidence) error {
+	for _, e := range roots {
+		if e.Check() == c.Check {
+			return reg.ValidateVia(c.Entry, e)
+		}
+	}
+	return admission.ErrCorruptRecord
 }
 
 // Candidate loads a candidate record.

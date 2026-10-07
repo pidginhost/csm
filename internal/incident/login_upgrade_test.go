@@ -15,7 +15,7 @@ func TestLoginUpgradeRestoredSSHIncidentRemainsBlockable(t *testing.T) {
 		},
 		OpenThreshold: 1,
 		AutoBlock:     IncidentAutoBlockConfig{BlockAtSeverity: "critical"},
-		OnIncidentBlock: func(_, _ string, _ time.Duration, id string) bool {
+		OnIncidentBlock: func(_, _ string, _ time.Duration, id string, _ PreparedRoot) bool {
 			ids = append(ids, id)
 			return true
 		},

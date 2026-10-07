@@ -280,7 +280,7 @@ Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved e
 
 When `auto_response.block_ips: true` and the firewall is enabled, qualifying findings in this list block the source IP. Per-row severity and challenge exceptions apply. The dry-run gate still applies if `dry_run: true`. Suppression rules do not stop these blocks; allowlist an address to exempt it.
 
-Suppression rules also leave incident auto-blocking, credential-spray containment and central threat responses active. With database response enabled, suppression stops database cleanup and session revocation while keeping session IP blocking eligible. Suppress the action's own check type to mute its notification; this does not disable enforcement.
+Suppression rules also leave incident auto-blocking, credential-spray containment and central threat responses active. With database response enabled, suppression stops database cleanup and session revocation; the notice listing the session addresses is still sent. Suppress the action's own check type to mute its notification; this does not disable enforcement.
 
 Incidents and central threat responses receive new findings, including suppressed findings and checks that do not notify operators. Duplicate observations within a batch count once. Cross-account correlation uses only unsuppressed sources, and its derived alerts can be muted with their own suppression rules without removing them from enforcement.
 
@@ -301,7 +301,6 @@ Incidents and central threat responses receive new findings, including suppresse
 | `ssh_login_unknown_ip` | SSH login from an IP with no prior history, whether the realtime watcher or the periodic scan saw it first |
 | `c2_connection` | Outbound connection to a known C2 server |
 | `ip_reputation` | IP flagged by AbuseIPDB / rspamd / upstream threat-intel |
-| `local_threat_score` | Address with a live WordPress session on a site whose database malware response fired |
 | `modsec_block_escalation` | ModSecurity deny escalation |
 | `modsec_csm_block_escalation` | CSM-internal ModSecurity deny escalation |
 | `waf_attack_blocked` | WAF high-volume attacker |
@@ -358,7 +357,10 @@ it without saved credit. Status and `csm doctor` show the ceiling and its
 source. A changed ceiling applies on reload, and a web UI settings save
 applies at the owner's next clock tick; a failed change is retried on later
 ticks before admission resumes, with elapsed time credited at the saved
-ceiling before the new one applies. Existing blocking paths remain unchanged.
+ceiling before the new one applies. Existing blocking paths remain unchanged:
+every automatic response they select is also handed to the ledger, which
+previews it within this ceiling and never applies it. Status, `csm doctor`,
+findings history and the [action log](action-log.md) show the preview.
 
 The resulting `auto_block` findings are output evidence, not new local
 corroboration for central intelligence or incident correlation. They are

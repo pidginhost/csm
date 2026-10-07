@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/config"
@@ -39,6 +40,10 @@ const (
 	// slack for the queue to drain.
 	maxPendingAge = 2 * time.Hour
 )
+
+// PendingRetryAge is how long a queued scan block may still be retried;
+// the comparison tool matches such a retry to its earlier preview.
+const PendingRetryAge = maxPendingAge
 
 // IPBlocker abstracts the firewall engine for auto-blocking.
 // When set, blocks go through nftables firewall engine.
@@ -214,18 +219,12 @@ func blockableCheck(check string, blockCpanelLogins bool) bool {
 }
 
 func blockableFinding(f alert.Finding, blockCpanelLogins bool) bool {
-	return !IsRetiredThreatScoreFinding(f) && blockableCheck(f.Check, blockCpanelLogins) &&
+	return blockableCheck(f.Check, blockCpanelLogins) &&
 		(!ResponsePolicyFor(f.Check).CriticalOnly || f.Severity == alert.Critical)
 }
 
 // AutoBlockIPs processes all findings, including repeats, for IP blocking.
 func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding {
-	return autoBlockIPs(cfg, findings, "")
-}
-
-// autoBlockIPs retains the observed source when database response converts one
-// finding into several session-IP candidates for the existing block policy.
-func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID string) []alert.Finding {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
 		return nil
 	}
@@ -298,10 +297,21 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 
 	// Collect IPs to block from findings
 	ipsToBlock := make(map[string]pendingIP)
+	type evaluatedBlock struct{ findingID, ip string }
+	evaluated := make(map[evaluatedBlock]bool)
+	freshIPs := make(map[string]bool)
+	for _, f := range findings {
+		if f.AutoIPResponseEvaluated {
+			evaluated[evaluatedBlock{alert.FindingID(f), extractIPFromFinding(f)}] = true
+		} else if blockableFinding(f, cfg.AutoResponse.BlockCpanelLogins) {
+			freshIPs[extractIPFromFinding(f)] = true
+		}
+	}
 
 	// Drain pending queue first (IPs from prior rate-limited or failed
 	// cycles). Stale entries are dropped by name so the audit trail shows
 	// exactly which attackers aged out instead of being blocked.
+	var deferredPending []pendingIP
 	for _, p := range state.Pending {
 		work.beginPending(p)
 		ip := normalizeBlockIP(p.IP)
@@ -322,6 +332,12 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 				p.IP, p.QueuedAt.Format(time.RFC3339))
 			continue
 		}
+		// Redispatch of the same observation must not retry a failed scan
+		// block through the pending queue. A later cycle can still drain it.
+		if evaluated[evaluatedBlock{p.FindingID, p.IP}] && !freshIPs[p.IP] && !isAlreadyBlocked(state, p.IP) {
+			deferredPending = append(deferredPending, p)
+			continue
+		}
 		if !isAlreadyBlocked(state, p.IP) {
 			p.queueCandidate = work.candidate(p, ipsToBlock[p.IP].queueCandidate)
 			ipsToBlock[p.IP] = p
@@ -329,27 +345,28 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 			work.completePending(p)
 		}
 	}
-	state.Pending = nil
+	state.Pending = deferredPending
 
 	// Subnet fast-path: checks that represent a subnet directly.
 	// Independent of the per-IP rate limit, because a single subnet block
 	// replaces what would otherwise be hundreds of per-IP blocks.
 	for _, f := range findings {
 		work.progress()
-		if f.Check != "smtp_subnet_spray" && f.Check != "mail_subnet_spray" {
+		if f.AutoIPResponseEvaluated || ResponsePolicyFor(f.Check).Subnet != admission.EntryMailSubnet {
 			continue
 		}
 		cidr := extractCIDRFromFinding(f)
 		if cidr == "" {
 			continue
 		}
-		if isSubnetAlreadyBlocked(blocker, cidr) {
-			continue
-		}
 		if cidrIntersectsInfra(cfg, cidr) {
 			continue
 		}
 		if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
+			continue
+		}
+		respondSpray(f, cidr)
+		if isSubnetAlreadyBlocked(blocker, cidr) {
 			continue
 		}
 		if !isAutoResponseActive(cfg) {
@@ -387,7 +404,7 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 
 	for _, f := range findings {
 		work.progress()
-		if !blockableFinding(f, cfg.AutoResponse.BlockCpanelLogins) {
+		if f.AutoIPResponseEvaluated || !blockableFinding(f, cfg.AutoResponse.BlockCpanelLogins) {
 			continue
 		}
 
@@ -399,6 +416,12 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 		// Never block infra IPs
 		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
 			continue
+		}
+
+		// Admission is asked for the block the policy selects; the tracker,
+		// the kernel and the hourly budget below are the legacy path's.
+		if !challengeSelected(cfg, f) {
+			respond(admission.KindBlockIP, f, ip, 0)
 		}
 
 		// Don't re-block already blocked IPs.
@@ -414,10 +437,7 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 
 		// A drained pending entry keeps its QueuedAt when the same IP
 		// recurs in fresh findings; the check, severity and reason are refreshed.
-		findingID := sourceFindingID
-		if findingID == "" {
-			findingID = alert.FindingID(f)
-		}
+		findingID := alert.FindingID(f)
 		if existing, ok := ipsToBlock[ip]; ok {
 			if existing.ActionID == "" {
 				existing.Reason = f.Message
@@ -463,15 +483,19 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 		tempban := parseExpiryWithDefault(cfg.AutoResponse.HTTPASNCrawlTempban, config.DefaultHTTPASNCrawlTempban)
 		for _, f := range findings {
 			work.progress()
-			if f.Check != "http_asn_crawl" || f.Severity != alert.Critical || len(f.CIDRs) == 0 {
+			if f.AutoIPResponseEvaluated || ResponsePolicyFor(f.Check).Subnet != admission.EntryASNCrawl || f.Severity != alert.Critical || len(f.CIDRs) == 0 {
 				continue
 			}
 			for _, cidr := range f.CIDRs {
 				work.progress()
-				if isSubnetAlreadyBlocked(blocker, cidr) || cidrIntersectsInfra(cfg, cidr) {
+				if cidrIntersectsInfra(cfg, cidr) {
 					continue
 				}
 				if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
+					continue
+				}
+				respond(admission.KindBlockSubnet, f, cidr, admission.EntryASNCrawl)
+				if isSubnetAlreadyBlocked(blocker, cidr) {
 					continue
 				}
 				if !isAutoResponseActive(cfg) {
@@ -482,7 +506,7 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 					continue
 				}
 				if budgetUnavailable || state.BlocksThisHour >= maxPerHour {
-					break
+					continue
 				}
 				reason := fmt.Sprintf("CSM auto-block (asn-crawl): %s", truncate(f.Message, 100))
 				var subnetErr error
@@ -700,6 +724,7 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 					if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
 						continue
 					}
+					respondNetblock()
 					if !isAutoResponseActive(cfg) {
 						if !canDryRunBlockSubnet(blocker, cidr) {
 							continue
@@ -831,6 +856,7 @@ func shouldSkipAutoBlockForChallenge(cfg *config.Config, f alert.Finding) bool {
 // them lands live; that fallback preserves pre-existing behaviour for tests
 // and third-party implementations.
 func promoteToPermanentBlock(b IPBlocker, ip, reason, findingID string) bool {
+	respondDerived(ApplyBlockRequest{Entry: admission.EntryPermblock})
 	if pp, ok := b.(interface {
 		PromoteToPermanentBlockWithFindingID(string, string, string) error
 	}); ok {

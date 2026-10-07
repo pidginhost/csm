@@ -82,7 +82,6 @@ remain reportable.
 | Check | Description |
 |-------|-------------|
 | `ip_reputation` | IPs against external threat databases and optional rspamd history. Passive HTTP/cPanel sightings are High; SSH and mail-auth activity is Critical |
-| `local_threat_score` | Database malware response: blocks addresses with a live WordPress session on a site whose database holds malware |
 | `modsec_audit` | ModSecurity audit log parsing |
 
 The attack database counts a finding only against the source address the
@@ -108,14 +107,13 @@ mail failures.
 The local threat score ranks addresses on the threat page and feeds the unified
 verdict. No scheduled check turns it into findings or blocks; the checks that
 provide attack evidence apply their own response policies.
-`local_threat_score` now names only the database malware response
-above; findings older versions stored under that name clear after the next
-completed critical scan. A legacy `disabled_checks: [local_threat_score]` value
-is still accepted but does not disable `ip_reputation` or its health checks.
-Queued score findings are discarded at restart. Block retries under the retained
-name without a recorded database cause are discarded on their next attempt.
-This also affects older database-session retries, which can be detected again by
-the next database scan. New database-session retries retain their cause, and
+No check produces `local_threat_score` findings any more: the database
+malware response reports the addresses of live WordPress sessions in its
+notice instead of blocking them, since the site owner's sessions are among
+them. Findings older versions stored under that name clear after the next
+completed critical scan. A legacy `disabled_checks: [local_threat_score]`
+value is still accepted but does not disable `ip_reputation` or its health
+checks. Queued score findings and block retries under that name are discarded;
 existing blocks stay until expiry or operator removal.
 `auto_response.block_ips` controls new automatic blocks; there is no setting for
 the startup correction.

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/store"
@@ -95,7 +96,8 @@ func (f *ownerFixture) options() Options {
 	return Options{
 		DB: f.db, StatePath: f.statePath, Ceiling: f.host.ceiling, Clock: f.host.clock,
 		Inventory: f.host.inventory, LegacySpend: checks.LegacyBlockSpend,
-		TickEvery: time.Hour, InventoryEvery: time.Hour, StatusEvery: time.Hour, DeliverEvery: time.Hour, NoticeEvery: time.Hour,
+		WriteAudit: func([]actionlog.Record) error { return nil },
+		TickEvery:  time.Hour, InventoryEvery: time.Hour, StatusEvery: time.Hour, DeliverEvery: time.Hour, NoticeEvery: time.Hour,
 		DrainEvery: time.Hour,
 	}
 }

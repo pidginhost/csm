@@ -86,8 +86,8 @@ func ledgerEntryViolations(path string, f *ast.File) []string {
 				violations = append(violations, fmt.Sprintf("%s names %s outside the owner", path, x.Name))
 			}
 		case *ast.SelectorExpr:
-			if x.Sel.Name == "Submit" {
-				violations = append(violations, fmt.Sprintf("%s submits production work before routing is enabled", path))
+			if x.Sel.Name == "Submit" && !owner {
+				violations = append(violations, fmt.Sprintf("%s submits outside the owner; funnels respond through it", path))
 			}
 			if name := x.Sel.Name; (name == "OpenAdmissionLedger" || name == "AdmissionLedger") && !owner && !ledgerPkg {
 				violations = append(violations, fmt.Sprintf("%s names %s; only the admission owner holds the ledger", path, name))
@@ -129,6 +129,10 @@ func commit(handle *AdmissionLedger) { _ = handle.EnqueueGroup }`, false},
 		{"owner interface", "internal/admissionowner/example.go", `package admissionowner
 import . "github.com/pidginhost/csm/internal/admission"
 var handle Ledger`, false},
+		{"detector submits to an ingress", "internal/checks/example.go", `package checks
+func bypass(in interface{ Submit(int) error }) { _ = in.Submit(1) }`, true},
+		{"owner submits to its ingress", "internal/admissionowner/example.go", `package admissionowner
+func (o *Owner) respond(s int) error { return o.ingress.Submit(s) }`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, err := parser.ParseFile(token.NewFileSet(), tc.path, tc.source, parser.SkipObjectResolution)

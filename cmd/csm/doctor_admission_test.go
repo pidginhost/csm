@@ -38,20 +38,22 @@ func TestBuildDoctorReportRendersAdmissionRows(t *testing.T) {
 	want := admission.DoctorChecks(ledger, &admission.IngressHealth{StoppedSince: at.Add(-time.Hour), CriticalRefused: 4}, at)
 	for _, row := range want {
 		got, ok := doctorCheckNamed(report, row.Name)
-		if !ok || got != (DoctorCheck{Name: row.Name, Status: row.Status, Message: row.Message, Fix: row.Fix}) {
+		if !ok || got != (DoctorCheck{Name: row.Name, Status: row.Status, Message: row.Message, Fix: row.Fix}) || !strings.HasSuffix(got.Message, admission.PreviewUnaffected) {
 			t.Errorf("%s = %+v, want %+v", row.Name, got, row)
 		}
 	}
-	if gaps, _ := doctorCheckNamed(report, "admission response gaps"); gaps.Status != "fail" {
+	if gaps, _ := doctorCheckNamed(report, "admission response gaps"); gaps.Status != "warn" {
 		t.Fatalf("a gap a minute before the view: %+v", gaps)
 	}
-	if report.OverallStatus != "fail" {
+	// R10: legacy blocking enforces while admission previews.
+	if report.OverallStatus != "warn" {
 		t.Fatalf("overall = %q", report.OverallStatus)
 	}
 }
 
-// The owner's own view reaches doctor: a ledger that is not running and a
-// refused clock reading fail, a degraded clock, a clamped ceiling, a ceiling
+// The owner's own view reaches doctor: a ledger that is not running, a
+// refused clock reading and ledger damage warn that existing blocking is
+// unaffected while admission previews (R10), a degraded clock, a clamped ceiling, a ceiling
 // of one, an unreadable legacy count and a failed inventory read warn, and
 // a healthy owner shows its ceiling and import.
 func TestDoctorRendersAdmissionOwnerRows(t *testing.T) {
@@ -68,7 +70,7 @@ func TestDoctorRendersAdmissionOwnerRows(t *testing.T) {
 		"admission ceiling":       "ok",
 		"admission legacy import": "ok",
 	} {
-		if got, ok := doctorCheckNamed(report, name); !ok || got.Status != want {
+		if got, ok := doctorCheckNamed(report, name); !ok || got.Status != want || !strings.HasSuffix(got.Message, admission.PreviewUnaffected) || strings.Count(got.Message, admission.PreviewUnaffected) != 1 || got.Fix != "" {
 			t.Errorf("%s = %+v (%v), want %s", name, got, ok, want)
 		}
 	}
@@ -85,7 +87,7 @@ func TestDoctorRendersAdmissionOwnerRows(t *testing.T) {
 		t.Error("an undamaged ledger printed a damage row")
 	}
 	healthy.Owner.Import = &health.AdmissionImport{}
-	if c, _ := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(healthy)), "admission legacy import"); c.Status != "ok" || !strings.Contains(c.Message, "no blocks") {
+	if c, _ := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(healthy)), "admission legacy import"); c.Status != "ok" || !strings.Contains(c.Message, "no blocks") || !strings.HasSuffix(c.Message, admission.PreviewUnaffected) || c.Fix != "" {
 		t.Errorf("an empty import = %+v", c)
 	}
 
@@ -93,9 +95,9 @@ func TestDoctorRendersAdmissionOwnerRows(t *testing.T) {
 		name, row, status, text string
 		view                    *health.AdmissionStatus
 	}{
-		{"not running", "admission owner", "fail", "schema", &health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{},
+		{"not running", "admission owner", "warn", "schema", &health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{},
 			Owner: &health.AdmissionOwner{Error: "opening the admission ledger: admission ledger schema is not supported"}}},
-		{"refused reading", "admission clock", "fail", "clock unavailable", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(2000), Ingress: &admission.IngressHealth{},
+		{"refused reading", "admission clock", "warn", "clock unavailable", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(2000), Ingress: &admission.IngressHealth{},
 			Owner: &health.AdmissionOwner{TickError: "reading the admission clock: clock unavailable"}}},
 		{"degraded clock", "admission clock", "warn", "behind", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(2000), Ingress: &admission.IngressHealth{Admitting: true},
 			Owner: &health.AdmissionOwner{ClockDegraded: true}}},
@@ -107,7 +109,7 @@ func TestDoctorRendersAdmissionOwnerRows(t *testing.T) {
 			Owner: &health.AdmissionOwner{Import: &health.AdmissionImport{Error: "reading blocked_ips.json: unexpected EOF"}}}},
 		{"inventory", "admission inventory", "warn", "registry unreadable", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(2000), Ingress: &admission.IngressHealth{Admitting: true},
 			Owner: &health.AdmissionOwner{InventoryError: "registry unreadable"}}},
-		{"ledger damage", "admission ledger damage", "fail", "admission record is corrupt", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(2000), Ingress: &admission.IngressHealth{Admitting: true},
+		{"ledger damage", "admission ledger damage", "warn", "admission record is corrupt", &health.AdmissionStatus{CheckedAt: at, Ledger: ledger(2000), Ingress: &admission.IngressHealth{Admitting: true},
 			Owner: &health.AdmissionOwner{DamageError: "draining the ingress: damaged arrivals were isolated: admission record is corrupt"}}},
 	} {
 		report := doctorReportForSnapshot(t, admissionSnapshot(tc.view))
@@ -115,9 +117,28 @@ func TestDoctorRendersAdmissionOwnerRows(t *testing.T) {
 		if !ok || got.Status != tc.status || !strings.Contains(got.Message, tc.text) || got.Fix == "" {
 			t.Errorf("%s: %s = %+v (%v), want %s naming %q with a fix", tc.name, tc.row, got, ok, tc.status, tc.text)
 		}
+		if !strings.HasSuffix(got.Message, admission.PreviewUnaffected) || strings.Count(got.Message, admission.PreviewUnaffected) != 1 {
+			t.Errorf("%s: %+v does not say existing blocking is unaffected", tc.name, got)
+		}
 	}
 	if _, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(&health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{},
 		Owner: &health.AdmissionOwner{Error: "x"}})), "admission ceiling"); ok {
 		t.Error("a ledger that is not running printed a ceiling")
+	}
+}
+
+// Owner rows never advise stopping the daemon or restoring the state
+// database while admission previews: legacy blocking still enforces from
+// that database.
+func TestDoctorOwnerFixesKeepTheStateDatabaseWhileAdmissionPreviews(t *testing.T) {
+	at := time.Now().UTC()
+	report := doctorReportForSnapshot(t, admissionSnapshot(&health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{},
+		Owner: &health.AdmissionOwner{Error: "opening the admission ledger: admission record is corrupt",
+			DamageError: "draining the ingress: damaged arrivals were isolated: admission record is corrupt"}}))
+	for _, name := range []string{"admission owner", "admission ledger damage"} {
+		row, ok := doctorCheckNamed(report, name)
+		if !ok || row.Fix == "" || strings.Contains(row.Fix, "restore") || strings.Contains(row.Fix, "stop csm.service") {
+			t.Errorf("%s = %+v (%v)", name, row, ok)
+		}
 	}
 }

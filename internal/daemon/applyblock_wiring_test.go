@@ -13,12 +13,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/blockdigest"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/reporting"
 	"github.com/pidginhost/csm/internal/state"
@@ -199,9 +201,9 @@ func TestIncidentSprayBlockRecordsEvidence(t *testing.T) {
 	cfg, blocker := applyWiringSetup(t)
 	d := New(cfg, nil, nil, "")
 
-	live, err := d.applyIncidentSprayBlock("203.0.113.72", "incident: account spray", time.Hour, "")
+	live, err := d.applyIncidentBlock("203.0.113.72", "incident: account spray", time.Hour, "", incident.PreparedRoot{}, admission.EntryIncidentSpray)
 	if err != nil {
-		t.Fatalf("applyIncidentSprayBlock: %v", err)
+		t.Fatalf("applyIncidentBlock: %v", err)
 	}
 	if !live {
 		t.Fatal("live outcome not reported as live")

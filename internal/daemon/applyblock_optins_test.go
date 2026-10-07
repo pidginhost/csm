@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
@@ -138,12 +139,12 @@ func TestIncidentBlocksSuppressSwitchRefusalDuringReload(t *testing.T) {
 				d := New(cfg, nil, nil, "")
 				SetIncidentConfigSource(config.Active)
 				var calls int
-				SetIncidentSprayBlocker(func(ip, reason string, ttl time.Duration, findingID string) (bool, error) {
+				SetIncidentSprayBlocker(func(ip, reason string, ttl time.Duration, findingID string, root incident.PreparedRoot, entry admission.Entry) (bool, error) {
 					calls++
 					// Reload after the singleton's upstream gate, before the
 					// daemon resolves the config for the actual block attempt.
 					config.SetActive(&reloaded)
-					live, err := d.applyIncidentSprayBlock(ip, reason, ttl, findingID)
+					live, err := d.applyIncidentBlock(ip, reason, ttl, findingID, root, entry)
 					if live || !errors.Is(err, checks.ErrAutoBlockDisabled) {
 						t.Fatalf("switch refusal: live=%t err=%v", live, err)
 					}

@@ -187,6 +187,23 @@ func (spec ProducerSpec) publishes(check string) bool {
 	return i < len(spec.Checks) && spec.Checks[i] == check
 }
 
+// ValidateVia refuses a derived entry that no registered producer of that
+// entry wraps e's check under: the engine binds every entry to its
+// producers (spec 5.1).
+func (r *Registry) ValidateVia(via Entry, e Evidence) error {
+	if !via.Valid() {
+		return refuse(ReasonPolicy, "response entry is not valid")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, spec := range r.producers {
+		if spec.Entry == via && spec.publishes(e.rec.Check) {
+			return nil
+		}
+	}
+	return refuse(ReasonPolicy, "response entry is not registered for the evidence check")
+}
+
 // Validate refuses evidence whose producer, entry, check or policy no
 // longer matches the registry, including a severity below the check's
 // current floor. Admission calls it on every use, so a policy change takes

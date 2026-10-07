@@ -87,7 +87,7 @@ func durable(n int, scope string, tier Tier) []QueueItem {
 
 func (f *ingressFixture) held(s Submission) *pending {
 	f.t.Helper()
-	p := f.in.byEvidence[s.Evidence.ID()]
+	p := f.in.byEvidence[heldKeyOf(s)]
 	if p == nil {
 		f.t.Fatal("submission is not held")
 	}
@@ -213,7 +213,7 @@ func TestIngressDisplacesHeldItems(t *testing.T) {
 	if err := f.in.Submit(f.sub(subSpec{owner: bob})); err != nil {
 		t.Fatal(err)
 	}
-	if _, still := f.in.byEvidence[flood[len(flood)-1].Evidence.ID()]; still || f.in.Len() != IngressPositions {
+	if _, still := f.in.byEvidence[heldKeyOf(flood[len(flood)-1])]; still || f.in.Len() != IngressPositions {
 		t.Fatalf("the newest flood item was not displaced: %d held", f.in.Len())
 	}
 	if n := f.in.Stats().Counters.Count(CountKey{Event: EventEnded, Reason: ReasonQueueOverflow, Class: ClassC2, Severity: SeverityHigh}); n != 1 {
@@ -323,7 +323,7 @@ func TestIngressTransferCapacityAndFairReclaim(t *testing.T) {
 	if err := f.in.Submit(fair); err != nil {
 		t.Fatal(err)
 	}
-	if f.in.byEvidence[general[len(general)-1].Evidence.ID()] != nil {
+	if f.in.byEvidence[heldKeyOf(general[len(general)-1])] != nil {
 		t.Fatal("newest held flood item was not reclaimed")
 	}
 	for _, it := range full {
@@ -332,7 +332,7 @@ func TestIngressTransferCapacityAndFairReclaim(t *testing.T) {
 		}
 	}
 	for _, sub := range reserved {
-		if f.in.byEvidence[sub.Evidence.ID()] == nil {
+		if f.in.byEvidence[heldKeyOf(sub)] == nil {
 			t.Fatal("general work took reserved capacity")
 		}
 	}
@@ -467,9 +467,6 @@ func TestIngressSnapshotOrderAndEnvelope(t *testing.T) {
 	moved := first
 	moved.Target = mustAddr(t, "2001:db8::ffff")
 	wantReason(t, "duplicate with another target", f.in.Submit(moved), ReasonInvalid)
-	changed := first
-	changed.Kind = KindChallenge
-	wantReason(t, "duplicate with another kind", f.in.Submit(changed), ReasonInvalid)
 	snapshot := *f.in.snap
 	f.publish(durable(1, aliceScope, c2h)...)
 	revision := f.in.revision

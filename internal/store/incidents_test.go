@@ -103,7 +103,10 @@ func TestIncidentBlockLadderSurvivesStoreAndRestore(t *testing.T) {
 					t.Fatalf("stored block state = %+v, want %+v", rows, inc.AutoBlock)
 				}
 				var calls []time.Duration
-				block := func(_, _ string, ttl time.Duration, _ string) bool { calls = append(calls, ttl); return true }
+				block := func(_, _ string, ttl time.Duration, _ string, _ incident.PreparedRoot) bool {
+					calls = append(calls, ttl)
+					return true
+				}
 				// Every finding attests its address: this test is about the
 				// ladder surviving storage, not the evidence gate.
 				cfg := incident.CorrelatorConfig{Persist: db.SaveIncident, AutoBlock: incident.IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "high"}, OnIncidentBlock: block,
@@ -111,7 +114,7 @@ func TestIncidentBlockLadderSurvivesStoreAndRestore(t *testing.T) {
 				if spray {
 					cfg.SpraySuppression = incident.SpraySuppressionConfig{Enabled: true, DistinctMailboxes: 2, BlockAtSeverity: "high", PerCheck: map[string]bool{check: true}}
 					cfg.OnSprayBlock = block
-					cfg.OnIncidentBlock = func(string, string, time.Duration, string) bool {
+					cfg.OnIncidentBlock = func(string, string, time.Duration, string, incident.PreparedRoot) bool {
 						t.Error("spray reached generic hand-off")
 						return false
 					}

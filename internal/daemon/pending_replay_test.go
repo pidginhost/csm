@@ -79,8 +79,8 @@ func TestPendingReplayDropsRetiredThreatScore(t *testing.T) {
 	t.Cleanup(func() { alert.SetCentralHook(previousHook) })
 	d := New(&config.Config{StatePath: dir}, st, nil, "")
 	d.replayPendingFindings()
-	if len(dispatched) != 2 || dispatched[0].SourceIP != "192.0.2.12" || dispatched[0].Cause == nil || *dispatched[0].Cause != cause || dispatched[1].Check != "fixture" {
-		t.Fatalf("dispatched = %+v, want the database session and unrelated finding", dispatched)
+	if len(dispatched) != 1 || dispatched[0].Check != "fixture" {
+		t.Fatalf("dispatched = %+v, want only the unrelated finding", dispatched)
 	}
 	if left, err := st.TakePendingFindings(); err != nil || len(left) != 0 {
 		t.Fatalf("pending findings = %+v, error %v", left, err)

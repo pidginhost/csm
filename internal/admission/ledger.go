@@ -29,8 +29,15 @@ type CandidateRequest struct {
 	Episode    EpisodeID
 	Generation uint32
 	// Primary is the root the response answers. Its finding is the
-	// candidate's original link; its entry and check are the candidate's.
+	// candidate's original link; its check is the candidate's, and so is
+	// its entry unless Entry names a derived one.
 	Primary EvidenceID
+	// Entry is the derived entry answering Primary again, bound to the
+	// registry; zero takes Primary's own.
+	Entry Entry
+	// PreviewTTL is the selected lifetime, fixed on the first candidate.
+	// Zero uses the configured response lifetime at reservation.
+	PreviewTTL time.Duration
 	// Support lists further roots, such as independent corroboration.
 	Support []EvidenceID
 }

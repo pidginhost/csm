@@ -18,6 +18,11 @@
 // (mode 0600) and must be kept private and reused across hosts so their
 // streams share pseudonyms. Collection is a read-only copy of the log files;
 // nothing here runs on the monitored host.
+//
+//	finding-stream compare --findings findings.jsonl.gz --actions actions.jsonl.gz
+//
+// compare reads one joined run's outputs and reports how the admission
+// preview treated each legacy automatic block.
 package main
 
 import (
@@ -53,7 +58,12 @@ func main() {
 	}
 }
 
-func run(args []string, stdout io.Writer) error { return newRun().execute(args, stdout) }
+func run(args []string, stdout io.Writer) error {
+	if len(args) > 0 && args[0] == "compare" {
+		return compare(args[1:], stdout)
+	}
+	return newRun().execute(args, stdout)
+}
 
 // cliError is a fixed message. Errors leave the command only through these
 // and recordError, so a refusal never repeats a path, a name or input bytes.

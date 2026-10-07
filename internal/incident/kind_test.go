@@ -178,11 +178,11 @@ func TestClassifyKindStateChangingAccountActionNotWebAttack(t *testing.T) {
 	}
 }
 
-// Remote-IP reputation/threat-score signals flag an attacking source IP, not
-// a compromised tenant, so they classify as web_attack (24h window) rather
+// Remote-IP reputation signals flag an attacking source IP, not a
+// compromised tenant, so they classify as web_attack (24h window) rather
 // than the 7-day web_account_compromise bucket.
 func TestClassifyKindRemoteIPThreatScoreIsWebAttack(t *testing.T) {
-	for _, check := range []string{"ip_reputation", "local_threat_score"} {
+	for _, check := range []string{"ip_reputation"} {
 		got := ClassifyKind(alert.Finding{Check: check, Severity: alert.Critical, SourceIP: "203.0.113.7"})
 		if got != KindWebAttack {
 			t.Errorf("%s with only a source IP: got %v, want web_attack", check, got)
@@ -218,9 +218,8 @@ func TestClassifyKindAttributedInboundAttackIsWebAttack(t *testing.T) {
 // is a genuine compromise.
 func TestClassifyKindNotInboundAttackNotWebAttack(t *testing.T) {
 	cases := []alert.Finding{
-		{Check: "ip_reputation", SourceIP: "203.0.113.7", TenantID: "alice"},
-		{Check: "local_threat_score", SourceIP: "203.0.113.7", Domain: "example.com"},
-		{Check: "webshell_detected", SourceIP: "203.0.113.7", FilePath: "/home/alice/public_html/x.php"},
+		{Check: "ip_reputation", SourceIP: "203.0.113.7", TenantID: "example-account"},
+		{Check: "webshell_detected", SourceIP: "203.0.113.7", FilePath: "/home/example-account/public_html/x.php"},
 	}
 	for _, f := range cases {
 		if got := ClassifyKind(f); got == KindWebAttack {
@@ -285,7 +284,7 @@ func TestCorrelatorClassifiesRemoteIPModsecAsWebAttack(t *testing.T) {
 }
 
 func TestCorrelatorClassifiesRemoteIPReputationAsWebAttack(t *testing.T) {
-	for _, check := range []string{"ip_reputation", "local_threat_score"} {
+	for _, check := range []string{"ip_reputation"} {
 		t.Run(check, func(t *testing.T) {
 			c := newTestCorrelator()
 			f := alert.Finding{Check: check, Severity: alert.Critical, SourceIP: "203.0.113.7"}

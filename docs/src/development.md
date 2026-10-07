@@ -210,8 +210,8 @@ Installs and upgrades on end-user servers come from the GitHub release artifacts
 
 ### Response admission primitives
 
-`internal/admission` is a standard-library-only package that is not yet wired
-into live responses. Its persisted enum values are fixed by golden tests.
+`internal/admission` is a standard-library-only package that live responses
+reach only as a preview. Its persisted enum values are fixed by golden tests.
 `Assess` sets `ReassessBy` to the first instant the current class or severity
 falls, or all roots become stale, without new evidence. Redundant evidence
 can preserve the tier after another root expires. Each corroborating pair
@@ -259,7 +259,16 @@ fails in that drain, admission closes until a drain succeeds; recovery
 clears the drain failure but keeps the damage cause for the discarded work.
 Failed ceiling reloads stay pending until a tick applies and revalidates
 them; inventory refreshes cannot reopen admission in the meantime.
-Nothing submits to it yet. One owner serializes every write, and each call
+The daemon wires the owner into the response funnels
+(`checks.SetResponseAdmission`) while it runs: each automatic response the
+legacy funnels select is minted as evidence and submitted to the ingress, and
+derived responses (challenge timeout, central, incident, mail subnet, ASN
+crawl, netblock, permanent block) carry the root evidence that caused them.
+Legacy blocking never waits for admission and its outcome never changes a
+legacy decision. The owner serves its queue as observe previews: a schedule
+reserves and charges each pick and ends it observed in one transaction, so a
+crash cannot leave a preview reserved. Each hour it appends counts of its
+decisions to the action log. One owner serializes every write, and each call
 is one transaction, so a failed call changes nothing. Admission time
 comes only from recorded clock readings: a wall clock that steps back never
 lowers it, a new boot credits no elapsed time, and a reopened ledger admits
@@ -330,8 +339,8 @@ upgraded attempt has no recorded lane. A charge counts until a full hour of
 admission time and of elapsed time have both passed, so neither downtime
 nor a forward clock step releases it early. Schedules serve no more than
 each lane can charge, and the ledger's next wake includes when waiting work
-gains budget. Challenge work is never charged, but still waits in the
-shared scheduler until its separate bound is implemented.
+gains budget. Challenge work spends fair-turn and history budgets without
+spending ceiling units.
 
 Schema 4 adds storage accounting; the first open upgrades a schema 1, 2 or
 3 ledger in the same transaction. Evidence stays stored while a candidate
@@ -582,3 +591,40 @@ including files without extensions. Scanner failures stop the check; reports
 identify the file and line without printing the suspected address. The
 [fixture sanitisation rules](https://github.com/pidginhost/csm/blob/main/internal/daemon/testdata/php_relay/SANITISE.md)
 describe the additional manual privacy review.
+
+### Admission preview ledger
+
+Admission previews reserve, charge history and capacity, and end observed in one transaction. They write both audit steps, never execute a response, never count as applied, and do not end the evidence episode or raise a notice. Repeated evidence is answered until its quiet window closes.
+
+Imported legacy usage retains its accounting-window charge after an attempt is retired. Retirement of old attempt history cannot create new admission capacity before that window closes.
+
+The scheduler records only ceiling, history-budget and recovery-reserve deferrals, once per changed reason. Fair turns, member bounds and retry backoff produce no deferral; a cleared budget reason produces no new gap notice. Challenges spend fair turns and history without spending block credit, and bounded durable holds preserve the earned turn of charged work while challenges proceed.
+
+The owner schedules queued preview work on its timer and uses the next ledger wake even when no new arrival appears. Reloads recompute that wake under the current ceiling. It preserves the legacy-selected absolute expiry, including on retries, observes each pick transactionally and continues delivery retries independently of scheduling. A refused preview ends only its own queued work, so an invalid expiry cannot starve other picks; a storage failure retries the turn.
+
+Held responses coalesce by evidence, kind and effective entry, whether the root entry is named explicitly or omitted. Derived entries validate their producer binding before fresh placement, coalescing and answered results, including direct queue requests. Retained queued work also revalidates its entry binding before scheduling or coalescing. The first selected temporary lifetime is durable and cannot be extended by a later report of the same candidate; absent metadata retains the configuration-selected lifetime.
+
+Root preparation and selected submission use the cached admission view and do not wait for ledger writes. Missing observation is an attribution refusal; malformed input remains invalid. Unminted Critical responses refused while the ingress is stopped count in its stopped status. Minting accepts canonical IPv6 evidence, while the selected kind checks containment support: HTTP challenges do not depend on the firewall family setting.
+
+Per-address funnels hand every selected block or challenge to admission before
+the existing responder runs. A process-local finding flag skips only the
+second evaluation of the same finding, including its queued block retry;
+unrelated pending work and fresh observations still run. Admission uses the
+canonical address selected by the legacy extractor, including its message
+fallback, without changing the finding or its audit identity. Distinct
+observations still submit even when their address is already challenged.
+Admission outcomes do not change, delay or skip any existing responder decision.
+
+Subnet funnels submit every selected response before the existing responder evaluates its available execution budget. Constituent evidence follows the selected mail response; paths without eligible observations retain their designed refusal rather than minting a replacement root.
+
+A challenge entry retains its routed root until timeout escalation hands the selected response to admission. Escalation never creates new root evidence, and permanent selections take the designed rootless policy refusal.
+
+Central selections use the locally corroborating finding as their root and carry its original attribution if preparation refuses. They do not adopt a remote report as local evidence, and preserve the selected temporary lifetime.
+
+Incident event preparation retains the attesting finding's check and severity, its evidence or its preparation error until a block is actually selected. Roots use the canonical address the legacy block selects while retaining the original finding. Only that selection counts an admission decision; generic and spray paths preserve the original check and cause. A derived response never mints a second root.
+
+Hourly summaries count committed arrivals, memory-coalesced reports, mint refusals, displaced submissions and both observed and terminally refused picks. The displacement callback runs under the ingress mutex on the submitting goroutine and uses the funnel's clock; drain callbacks use the owner's fresh clock. Summary time never regresses: event hours are clamped to the latest admission-clock or funnel hour after a backward wall step, including clock readings from an incomplete startup. Immutable write acknowledgments cannot consume newer rows. Summaries continue during ledger or clock outages, and shutdown flushes completed decisions even when a final drain fails. Failed writes retain a bounded chronological set of completed hours, so missing recordings remain explicit lower bounds.
+
+Ingress placement on an ended or in-flight candidate is a counted invalid refusal. An episode that cannot be encoded is ledger damage. Shutdown closes ingress before final drains and stops incident background response loops before stopping the owner.
+
+Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.

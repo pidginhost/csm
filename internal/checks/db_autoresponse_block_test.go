@@ -5,124 +5,18 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/mysqlclient"
-	"github.com/pidginhost/csm/internal/state"
-	"github.com/pidginhost/csm/internal/store"
 )
 
-// TestBlockSessionAttackerIPs_RoutesThroughRealBlocker asserts that attacker
-// IPs pulled from WordPress sessions are handed to the real firewall engine via
-// the standard auto-block path, and that the returned finding is the genuine
-// AUTO-BLOCK confirmation (not a fabricated one). The previous code emitted a
-// fake "auto_block: AUTO-BLOCK: <ip>" finding that never blocked anything, which
-// alert.FilterBlockedAlerts then trusted as proof-of-block and used to suppress
-// the IP's reputation alert -- so the IP was neither blocked nor alerted.
-func TestBlockSessionAttackerIPs_RoutesThroughRealBlocker(t *testing.T) {
-	withTestThreatStore(t)
-	restoreThreatDB := SetGlobalThreatDBForTest(t.TempDir())
-	t.Cleanup(restoreThreatDB)
-
-	cfg := &config.Config{}
-	cfg.StatePath = t.TempDir()
-	cfg.AutoResponse.Enabled = true
-	cfg.AutoResponse.BlockIPs = true
-	cfg.AutoResponse.BlockExpiry = "45m"
-
-	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcomeLive}
-	swapBlocker(t, blocker)
-
-	before := time.Now()
-	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1", alert.Cause{})
-
-	if blocker.outcomeHits != 1 {
-		t.Fatalf("expected exactly one real firewall block call, got %d", blocker.outcomeHits)
-	}
-	if len(blocker.blocked) != 1 || blocker.blocked[0].ip != "203.0.113.7" {
-		t.Fatalf("firewall engine did not receive the attacker IP: %+v", blocker.blocked)
-	}
-	if len(actions) != 1 {
-		t.Fatalf("expected one AUTO-BLOCK finding, got %d: %+v", len(actions), actions)
-	}
-	if actions[0].Check != "auto_block" || !strings.HasPrefix(actions[0].Message, "AUTO-BLOCK:") {
-		t.Fatalf("expected a real AUTO-BLOCK finding, got %+v", actions[0])
-	}
-	entry, found := store.Global().GetPermanentBlock("203.0.113.7")
-	if !found {
-		t.Fatal("session attacker block did not write a threat DB entry")
-	}
-	if entry.Source != store.ThreatSourceAutoBlock {
-		t.Fatalf("threat source = %q, want %q", entry.Source, store.ThreatSourceAutoBlock)
-	}
-	if entry.ExpiresAt.IsZero() {
-		t.Fatal("autoblock-sourced threat entry must expire")
-	}
-	if entry.ExpiresAt.Before(before.Add(40*time.Minute)) || entry.ExpiresAt.After(before.Add(50*time.Minute)) {
-		t.Fatalf("ExpiresAt = %v, want about 45m after %v", entry.ExpiresAt, before)
-	}
-}
-
-// TestBlockSessionAttackerIPs_DryRunDoesNotFakeBlock guards the CHK-06
-// regression: under dry-run the helper must not emit a finding that looks like
-// a completed block, or the alert filter would suppress the reputation alert
-// for an IP that was never blocked.
-func TestBlockSessionAttackerIPs_DryRunDoesNotFakeBlock(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.StatePath = t.TempDir()
-	cfg.AutoResponse.Enabled = true
-	cfg.AutoResponse.BlockIPs = true
-
-	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcomeDryRun}
-	swapBlocker(t, blocker)
-
-	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1", alert.Cause{})
-
-	for _, a := range actions {
-		if strings.HasPrefix(a.Message, "AUTO-BLOCK:") && strings.Contains(a.Message, "blocked") {
-			t.Fatalf("dry-run must not emit a completed-block finding: %q", a.Message)
-		}
-	}
-}
-
-func TestBlockSessionAttackerIPs_ReturnedActionsStayVolatile(t *testing.T) {
-	cfg := &config.Config{}
-	cfg.StatePath = t.TempDir()
-	cfg.AutoResponse.Enabled = true
-	cfg.AutoResponse.BlockIPs = true
-
-	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcomeLive}
-	swapBlocker(t, blocker)
-
-	actions := blockSessionAttackerIPs(cfg, []string{"203.0.113.7"}, "active session on hijacked site, DB: db1", alert.Cause{})
-	if len(actions) == 0 {
-		t.Fatal("precondition: expected auto-block action")
-	}
-
-	st, err := state.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	st.SetLatestFindings([]alert.Finding{
-		{Check: "auto_block", Message: "old stale auto-block"},
-	})
-
-	StoreLatestScanFindings(st, []string{"db_siteurl_hijack"}, actions)
-	for _, f := range st.LatestFindings() {
-		if f.Check == "auto_block" {
-			t.Fatalf("auto_block action persisted as latest scan state: %+v", f)
-		}
-	}
-}
-
-// TestHandleSiteurlHijack_BlocksAttackerSessionIP is the end-to-end proof that
-// a hijack finding drives a real firewall block of the attacker IP found in an
-// active WordPress session.
-func TestHandleSiteurlHijack_BlocksAttackerSessionIP(t *testing.T) {
-	const wpConfig = "/home/alice/public_html/wp-config.php"
+// A hijacked site's session addresses are reported, not blocked, and not
+// handed to admission: the firewall, the tracker and the ledger all stay
+// untouched, while the sessions are still revoked.
+func TestHandleSiteurlHijack_ReportsSessionIPsWithoutBlocking(t *testing.T) {
+	const wpConfig = "/home/example-account/public_html/wp-config.php"
 	wpConfigFixture := t.TempDir() + "/wp-config.php"
 	if err := os.WriteFile(wpConfigFixture, []byte(
 		"<?php\n"+
@@ -153,8 +47,12 @@ func TestHandleSiteurlHijack_BlocksAttackerSessionIP(t *testing.T) {
 	})
 
 	sessionData := `a:1:{s:64:"tok";a:2:{s:2:"ip";s:11:"203.0.113.7";s:5:"login";i:1;}}`
+	revocations := 0
 	mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, _ mysqlclient.Creds, query string, _ ...any) ([]string, error) {
 		switch {
+		case strings.HasPrefix(query, "UPDATE wp_usermeta SET meta_value=''") && strings.Contains(query, "user_id=1") && strings.Contains(query, "session_tokens"):
+			revocations++
+			return nil, nil
 		case strings.Contains(query, "SELECT user_id, meta_value FROM wp_usermeta"):
 			return []string{"1\t" + sessionData}, nil
 		case strings.Contains(query, "SELECT meta_value FROM wp_usermeta"):
@@ -172,6 +70,7 @@ func TestHandleSiteurlHijack_BlocksAttackerSessionIP(t *testing.T) {
 
 	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcomeLive}
 	swapBlocker(t, blocker)
+	a := withAdmission(t)
 
 	f := alert.Finding{
 		Check:   "db_siteurl_hijack",
@@ -179,23 +78,22 @@ func TestHandleSiteurlHijack_BlocksAttackerSessionIP(t *testing.T) {
 	}
 	actions := handleSiteurlHijack(cfg, f, true)
 
-	if blocker.outcomeHits == 0 {
-		t.Fatal("attacker session IP was never sent to the firewall engine")
+	if blocker.outcomeHits != 0 || len(blocker.blocked) != 0 || len(a.responses()) != 0 || len(a.refused) != 0 {
+		t.Fatalf("session addresses were acted on: firewall %+v, admission %+v %v", blocker.blocked, a.responses(), a.refused)
 	}
-	found := false
-	for _, c := range blocker.blocked {
-		if c.ip == "203.0.113.7" {
-			found = true
+	if len(loadBlockState(cfg.StatePath).IPs) != 0 {
+		t.Fatal("a session address entered the block tracker")
+	}
+	var notice *alert.Finding
+	for i := range actions {
+		if actions[i].Check == "auto_response" && strings.Contains(actions[i].Details, "203.0.113.7") {
+			notice = &actions[i]
+		}
+		if actions[i].Check == "auto_block" {
+			t.Fatalf("an auto_block finding was emitted: %+v", actions[i])
 		}
 	}
-	if !found {
-		t.Fatalf("firewall engine did not block the attacker IP: %+v", blocker.blocked)
-	}
-	// No fabricated AUTO-BLOCK finding: any auto_block finding present must be
-	// the real one emitted by AutoBlockIPs after a live block.
-	for _, a := range actions {
-		if a.Check == "auto_block" && strings.Contains(a.Message, "active session on hijacked site") {
-			t.Errorf("handleSiteurlHijack still emits a fabricated auto_block finding: %q", a.Message)
-		}
+	if notice == nil || notice.Cause == nil || *notice.Cause != alert.CauseOf(f) || revocations != 1 {
+		t.Fatalf("actions=%+v revocations=%d, want the caused session notice and one revocation", actions, revocations)
 	}
 }

@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -51,7 +53,7 @@ func incidentExclusionPinConfig(t *testing.T) *[]string {
 	cfg.Incidents.AutoBlock.BlockAtSeverity = "high"
 	SetIncidentConfigSource(func() *config.Config { return cfg })
 	blocked := &[]string{}
-	SetIncidentSprayBlocker(func(ip, _ string, _ time.Duration, _ string) (bool, error) {
+	SetIncidentSprayBlocker(func(ip, _ string, _ time.Duration, _ string, _ incident.PreparedRoot, _ admission.Entry) (bool, error) {
 		*blocked = append(*blocked, ip)
 		return true, nil
 	})

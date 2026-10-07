@@ -110,6 +110,9 @@ type Record struct {
 	Undo string `json:"undo,omitempty"`
 	// RecoveryPath identifies retained file content and its metadata sidecar.
 	RecoveryPath string `json:"recovery_path,omitempty"`
+	// Count is how many events a summary record stands for. Only a
+	// summary sets it, and a summary names no target.
+	Count uint64 `json:"count,omitempty"`
 }
 
 // Sink writes records. The daemon installs a file sink at startup; tests
@@ -614,6 +617,9 @@ func (r Record) Describe() string {
 	}
 	if r.Error != "" {
 		line += fmt.Sprintf(" error=%q", r.Error)
+	}
+	if r.Count != 0 {
+		line += fmt.Sprintf(" reason=%q via=%q count=%d", r.Reason, r.ActorDetail, r.Count)
 	}
 	return line
 }

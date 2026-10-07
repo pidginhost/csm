@@ -78,7 +78,7 @@ func TestAlwaysBlockableChecksIgnoreTheSwitch(t *testing.T) {
 		"http_claimed_bot_unverified", "http_ua_spoof", "ftp_bruteforce", "smtp_bruteforce",
 		"smtp_probe_abuse", "mail_bruteforce", "mail_account_compromised", "admin_panel_bruteforce",
 		"ssh_login_unknown_ip", "pam_bruteforce", "credential_stuffing",
-		"c2_connection", "ip_reputation", "local_threat_score", "modsec_block_escalation",
+		"c2_connection", "ip_reputation", "modsec_block_escalation",
 		"modsec_csm_block_escalation", "email_compromised_account", "email_cloud_relay_abuse", "waf_attack_blocked",
 	} {
 		for _, blockCpanelLogins := range []bool{false, true} {

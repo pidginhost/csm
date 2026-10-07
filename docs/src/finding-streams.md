@@ -160,14 +160,21 @@ scrubbed:
 - A firewall row keeps its time, action, target, reason category, source and
   lease. Firewall entries carry no ids, so nothing joins them to actions or
   findings; the manifest says so rather than guessing from times or addresses.
+- Admission rows keep their kind and step. An audit row's target maps like a
+  firewall target, so it joins the legacy row for the same address, and its
+  reason category names the lane. An hourly summary, which sets `count`,
+  keeps its check, entry, decision, refusal reason and count and names no
+  target; a check that matches a learned account, host or domain refuses the
+  run.
 - An operation, action, actor, result or source the tool has not been
   reviewed against refuses the run instead of passing through.
 
 The manifest is written last and is the bundle's completion marker. It lists
 every input and output with its stream kind, position, SHA-256 of the exact
 bytes, record count and time span, the tool's source revision, the salt
-fingerprint, join counts, counts of discarded fields, action results by value,
-and coverage for each stream. Check every output's digest against it; a bundle
+fingerprint, join counts, counts of discarded fields, action results by value
+(admission steps and decisions included, at zero when absent), and coverage
+for each stream. Check every output's digest against it; a bundle
 without a manifest, or with a digest that does not match, is incomplete.
 
 - An action is matched when it names a finding id present in the recording,
@@ -196,6 +203,54 @@ looked and found none; `not_recorded` means the host does not keep that
 stream. Ledger and review streams can only be stated absent or not recorded.
 Without an inventory, a stream that was not supplied is reported as not
 supplied.
+
+## Comparing the admission preview
+
+Automatic blocks still run on the legacy path while the admission ledger
+previews the same responses. `compare` reads the outputs of one joined run and
+sets each legacy automatic block in the preview window against what the
+preview did with its finding. Older unstamped finding rows still supply
+their identifiers and checks for joins:
+
+```bash
+/tmp/finding-stream compare --findings host-a/findings.jsonl.gz --actions host-a/actions.jsonl.gz
+```
+
+The window runs from the first to the last hourly admission summary. A block
+is matched by one observed attempt for the same finding, response kind and
+typed target within an hour; a scan block retried from the pending queue may
+land later, until its retry ages out two hours after it was queued. Spray
+blocks match through their own entries: the incident spray block of one
+address through `incident_spray`, the mail spray subnet block through
+`mail_subnet`. Matching can reassign compatible decisions
+when their windows overlap; each decision is consumed once. Coalesced
+decisions and designed refusals each spend one summary count for the same
+entry, kind and check in the same or an adjacent hour. Hourly aggregation
+cannot prove the exact event delay. A backward wall step clamps counts to
+the admission hour floor; larger clock disagreement stays unexplained and
+must be checked through clock status.
+Attribution explains only scan-pass provenance gaps for checks served through
+the matching entry; policy explains only netblock, permanent-block escalation,
+challenge timeout, incident or incident spray paths without a retained root. A rootless
+derived path may spend its fixed unknown-check policy count without
+a finding link. Other policy and attribution refusals stay unexplained.
+Summaries must be stamped at an hour boundary, and only refused decisions
+may carry a refusal reason. Counts that overflow refuse the comparison,
+and output errors never repeat file paths or host data.
+Summary matches are aggregate lower bounds, not proof about one finding. Anything else is listed
+as unexplained. The report also totals Invalid and queue overflow refusals,
+and names what only `csm status` and the metrics show: Critical deferrals,
+queue evictions and the handoff latency. The stream criteria pass when the window spans at
+least seven days, nothing is unexplained and both totals are zero; the
+operator must also verify the named status and metric criteria. Shape
+validation cannot authenticate a prior run: compare accepts outputs only
+from the joined run that already passed its identity verifier. The report
+describes one host's responses; keep it private. Summary retention discards
+whole oldest hours after failed writes exceed its bound. Missing summaries
+may mean idle hours, failed writes or a crash; they cannot certify coverage.
+Rootless designed-refusal matches consume aggregate counts and provide no
+finding join. The operator must prove collector coverage and an undamaged
+ledger through status and doctor before accepting R11.
 
 ## What a recording does and does not contain
 

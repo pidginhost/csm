@@ -69,8 +69,10 @@ type ScheduleItem struct {
 	Direct       bool
 	Corroborated bool
 	Queued       time.Time
-	// Cost is the candidate's size in block units, 1 to MaxMemberCost.
+	// Cost is the fair-turn demand, 1 to MaxMemberCost.
 	Cost uint32
+	// CeilingCost is the actual block demand; zero still spends a fair turn.
+	CeilingCost uint32
 	// Bytes is the history a reservation of it charges now, at most
 	// MaxHistoryBytes.
 	Bytes uint32
@@ -136,12 +138,21 @@ type ScheduleState struct {
 	ClassSlot uint8
 	// NextCorroborated: the reserved lane serves corroboration next when
 	// both of its turns have work.
-	NextCorroborated bool
-	Rings            [ringCount]Ring
+	NextCorroborated          bool
+	Rings                     [ringCount]Ring
+	GeneralHold, ReservedHold *CeilingHold
 }
 
 func (s ScheduleState) clone() ScheduleState {
 	out := s
+	if s.GeneralHold != nil {
+		h := *s.GeneralHold
+		out.GeneralHold = &h
+	}
+	if s.ReservedHold != nil {
+		h := *s.ReservedHold
+		out.ReservedHold = &h
+	}
 	for i := range out.Rings {
 		scopes := make(map[string]ScopeTurn, len(s.Rings[i].Scopes))
 		for k, v := range s.Rings[i].Scopes {
@@ -158,7 +169,7 @@ func validateItems(items []ScheduleItem) error {
 		switch {
 		case seen[it.ID] || it.Scope == "":
 			return refuse(ReasonInvalid, "schedule item is repeated or has no scope")
-		case !it.Tier.Valid() || it.Cost == 0 || it.Cost > MaxMemberCost || it.Bytes > MaxHistoryBytes || it.Recovery > MaxRecoveryNeed:
+		case !it.Tier.Valid() || it.Cost == 0 || it.Cost > MaxMemberCost || it.CeilingCost > MaxMemberCost || it.Bytes > MaxHistoryBytes || it.Recovery > MaxRecoveryNeed:
 			return refuse(ReasonInvalid, "schedule item has an invalid tier or cost")
 		case it.Direct && it.Corroborated, (it.Direct || it.Corroborated) && it.Tier.Class != ClassC3:
 			return refuse(ReasonInvalid, "schedule item has an impossible reserved turn")
@@ -265,7 +276,7 @@ func (s *scheduler) serve(r int, budget, fullBudget uint32, bytes, recovery uint
 	for scope := range s.rings[r].ready {
 		if it, _ := s.head(r, scope); it != nil {
 			scopes = append(scopes, scope)
-			fits = fits || it.Cost <= fullBudget
+			fits = fits || it.CeilingCost <= fullBudget
 		}
 	}
 	if !fits {
@@ -284,8 +295,8 @@ func (s *scheduler) serve(r int, budget, fullBudget uint32, bytes, recovery uint
 	for visit := 0; ; visit++ {
 		scope := scopes[(start+visit)%len(scopes)]
 		it, slot := s.head(r, scope)
-		if it.Cost > budget && it.Cost <= fullBudget {
-			return nil, true
+		if it.CeilingCost > budget && it.CeilingCost <= fullBudget {
+			return it, true
 		}
 		turn := ring.Scopes[scope]
 		if turn.Deficit < MaxMemberCost {
@@ -302,7 +313,7 @@ func (s *scheduler) serve(r int, budget, fullBudget uint32, bytes, recovery uint
 		}
 		ring.Held = ""
 		ring.Last = scope
-		if earned && it.Cost <= budget {
+		if earned && it.CeilingCost <= budget {
 			turn.Deficit -= it.Cost
 			turn.Bytes -= it.Bytes
 			turn.Severity = (slot + 1) % patternSlots
@@ -336,61 +347,22 @@ func Schedule(items []ScheduleItem, st ScheduleState, lim ScheduleLimits) ([]Pic
 	take := func(it *ScheduleItem, lane Lane) {
 		lim.RecoveryBytes -= uint64(it.Recovery)
 		s.picked[it.ID] = true
-		picks = append(picks, Pick{ID: it.ID, Lane: lane, Cost: it.Cost, Bytes: it.Bytes})
+		picks = append(picks, Pick{ID: it.ID, Lane: lane, Cost: it.CeilingCost, Bytes: it.Bytes})
 	}
-	budget, bytes := lim.Reserved, lim.ReservedBytes
-reserved:
-	for budget > 0 && len(picks) < lim.Members {
-		order := []int{ringDirect, ringCorroborated}
-		if s.st.NextCorroborated {
-			order = []int{ringCorroborated, ringDirect}
+	for _, reserved := range []bool{true, false} {
+		budget, bytes := lim.General, lim.GeneralBytes
+		if reserved {
+			budget, bytes = lim.Reserved, lim.ReservedBytes
 		}
-		served := false
-		for _, r := range order {
-			it, blocked := s.serve(r, budget, lim.Reserved, bytes, lim.RecoveryBytes)
-			if blocked {
-				s.st.NextCorroborated = r == ringCorroborated
-				break reserved
-			}
-			if it != nil {
-				budget -= it.Cost
-				bytes -= uint64(it.Bytes)
-				lane := LaneDirect
-				if r == ringCorroborated {
-					lane = LaneCorroborated
-				}
-				take(it, lane)
-				s.st.NextCorroborated = r == ringDirect
-				served = true
+		fullBudget := budget
+		for len(picks) < lim.Members {
+			it, lane, blocked := s.lane(own, reserved, budget, fullBudget, bytes, lim.RecoveryBytes)
+			if blocked || it == nil {
 				break
 			}
-		}
-		if !served {
-			break
-		}
-	}
-	budget, bytes = lim.General, lim.GeneralBytes
-general:
-	for budget > 0 && len(picks) < lim.Members {
-		served := false
-		for k := uint8(0); k < patternSlots; k++ {
-			slot := (s.st.ClassSlot + k) % patternSlots
-			it, blocked := s.serve(int(classPattern[slot])-1, budget, lim.General, bytes, lim.RecoveryBytes)
-			if blocked {
-				s.st.ClassSlot = slot
-				break general
-			}
-			if it != nil {
-				budget -= it.Cost
-				bytes -= uint64(it.Bytes)
-				take(it, LaneGeneral)
-				s.st.ClassSlot = (slot + 1) % patternSlots
-				served = true
-				break
-			}
-		}
-		if !served {
-			break
+			budget -= it.CeilingCost
+			bytes -= uint64(it.Bytes)
+			take(it, lane)
 		}
 	}
 	// A scope keeps its turn only while it has work left in the ring; a
@@ -437,16 +409,18 @@ type scheduleStateRecord struct {
 	ClassSlot        uint8        `json:"class_slot,omitempty"`
 	NextCorroborated bool         `json:"next_corroborated,omitempty"`
 	Rings            []ringRecord `json:"rings"`
+	GeneralHold      *CeilingHold `json:"general_hold,omitempty"`
+	ReservedHold     *CeilingHold `json:"reserved_hold,omitempty"`
 }
 
 func (s ScheduleState) record() (scheduleStateRecord, error) {
 	bad := func(detail string) (scheduleStateRecord, error) {
 		return scheduleStateRecord{}, refuse(ReasonInvalid, detail)
 	}
-	if s.ClassSlot >= patternSlots {
+	if s.ClassSlot >= patternSlots || !s.GeneralHold.valid(false) || !s.ReservedHold.valid(true) {
 		return bad("schedule class position is out of range")
 	}
-	rec := scheduleStateRecord{V: scheduleStateVersion, ClassSlot: s.ClassSlot, NextCorroborated: s.NextCorroborated, Rings: make([]ringRecord, ringCount)}
+	rec := scheduleStateRecord{V: scheduleStateVersion, ClassSlot: s.ClassSlot, NextCorroborated: s.NextCorroborated, Rings: make([]ringRecord, ringCount), GeneralHold: s.GeneralHold, ReservedHold: s.ReservedHold}
 	for r, ring := range s.Rings {
 		if !validCursor(ring.Last) || len(ring.Scopes) > QueueCapacity {
 			return bad("schedule ring is malformed")
@@ -489,7 +463,7 @@ func UnmarshalScheduleState(data []byte) (ScheduleState, error) {
 	if rec.V != scheduleStateVersion || len(rec.Rings) != ringCount {
 		return ScheduleState{}, ErrCorruptRecord
 	}
-	s := ScheduleState{ClassSlot: rec.ClassSlot, NextCorroborated: rec.NextCorroborated}
+	s := ScheduleState{ClassSlot: rec.ClassSlot, NextCorroborated: rec.NextCorroborated, GeneralHold: rec.GeneralHold, ReservedHold: rec.ReservedHold}
 	for r, ring := range rec.Rings {
 		if ring.Scopes == nil {
 			return ScheduleState{}, ErrCorruptRecord
