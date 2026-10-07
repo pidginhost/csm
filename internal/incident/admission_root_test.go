@@ -2,6 +2,7 @@ package incident
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -68,7 +69,7 @@ func TestIncidentBlockCarriesItsAttestingRoot(t *testing.T) {
 	}
 	inc, _ := c.Get(id)
 	for _, ev := range inc.Timeline {
-		if ev.Check == "wp_login_bruteforce" && !ev.root.Equal(admission.Evidence{}) {
+		if ev.Check == "wp_login_bruteforce" && ev.root != nil {
 			t.Fatalf("a finding without address evidence kept a root: %+v", ev)
 		}
 	}
@@ -142,5 +143,13 @@ func TestIncidentRootUsesTheSelectedCanonicalAddress(t *testing.T) {
 	feed(t, c, &now, f)
 	if len(got) != 1 || got[0].Err != nil || got[0].Target().Key() != "ip:192.0.2.81" || got[0].Finding.SourceIP != f.SourceIP {
 		t.Fatalf("prepared roots=%+v", got)
+	}
+}
+
+// Timelines are copied on every read and persist snapshot, so an event
+// keeps its in-memory admission root behind a pointer and stays small.
+func TestIncidentEventsStaySmall(t *testing.T) {
+	if size := reflect.TypeOf(IncidentEvent{}).Size(); size > 256 {
+		t.Fatalf("an incident event takes %d bytes", size)
 	}
 }

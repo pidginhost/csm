@@ -231,10 +231,7 @@ func IncidentCorrelator() *incident.Correlator {
 			AutoBlock:        autoBlock,
 			IsWhitelisted:    whitelisted,
 			AddressEvidence:  checks.AddressEvidence,
-			Root: func(f alert.Finding, target string) incident.PreparedRoot {
-				root, err := checks.PrepareAdmissionRoot(f, target)
-				return incident.PreparedRoot{Evidence: root, Finding: f, Err: err}
-			},
+			Root:             prepareIncidentRoot,
 			CanSprayBlock: func() bool {
 				cfg := globalCfgForIncidents()
 				return cfg != nil && cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs
@@ -508,4 +505,12 @@ func resetIncidentForTestWithThreshold(threshold int) {
 	// correlated event and break those wiring assertions. Pin to the
 	// caller-supplied value; production callers never invoke this seam.
 	incidentOpenThreshold = threshold
+}
+
+// prepareIncidentRoot mints the admission root of an attesting finding.
+// A timeline holds one per attesting event, so it keeps of the finding only
+// what a later refusal counts: its check and severity.
+func prepareIncidentRoot(f alert.Finding, target string) incident.PreparedRoot {
+	root, err := checks.PrepareAdmissionRoot(f, target)
+	return incident.PreparedRoot{Evidence: root, Finding: alert.Finding{Check: f.Check, Severity: f.Severity}, Err: err}
 }

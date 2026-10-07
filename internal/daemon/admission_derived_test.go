@@ -3,6 +3,8 @@ package daemon
 import (
 	"fmt"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -338,5 +340,25 @@ func TestCentralUnobservedRootIsRefusedOnce(t *testing.T) {
 	want := derivedRefusal{admission.KindBlockIP, "ip_reputation", admission.EntryCentral, admission.ReasonAttribution}
 	if len(a.refusals) != 1 || a.refusals[0] != want {
 		t.Fatalf("refusals=%+v, want %+v", a.refusals, want)
+	}
+}
+
+// An incident keeps a prepared root for each attesting event until a block
+// is selected. Only what a refusal counts survives with it, the check and
+// severity, never the finding's message or details.
+func TestIncidentRootsKeepOnlyWhatARefusalCounts(t *testing.T) {
+	withRecordingAdmission(t)
+	observed := observedBruteForce("203.0.113.91")
+	observed.Details = strings.Repeat("x", 4096)
+	unobserved := observed
+	unobserved.Observation = alert.Observation{}
+	for name, f := range map[string]alert.Finding{"minted": observed, "refused": unobserved} {
+		root := prepareIncidentRoot(f, f.SourceIP)
+		if (name == "minted") != (root.Err == nil) {
+			t.Fatalf("%s: mint error = %v", name, root.Err)
+		}
+		if want := (alert.Finding{Check: f.Check, Severity: f.Severity}); !reflect.DeepEqual(root.Finding, want) {
+			t.Fatalf("%s: retained finding = %+v, want %+v", name, root.Finding, want)
+		}
 	}
 }

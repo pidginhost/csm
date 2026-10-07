@@ -286,12 +286,14 @@ type IncidentEvent struct {
 	Path      string    `json:"path,omitempty"`
 	RemoteIP  string    `json:"remote_ip,omitempty"`
 	// root retains the attesting finding's prepared evidence or mint
-	// refusal for the block it may lead to; never stored.
-	root PreparedRoot
+	// refusal for the block it may lead to; never stored. It is a pointer
+	// because timelines are copied on every read: most events carry none.
+	root *PreparedRoot
 }
 
-// PreparedRoot retains the attesting finding and any mint refusal until a
-// response is selected. Incident events keep it only in memory.
+// PreparedRoot retains the attesting finding's evidence, or its mint
+// refusal with what the refusal counts of the finding, until a response is
+// selected. Incident events keep it only in memory.
 type PreparedRoot struct {
 	admission.Evidence
 	Finding alert.Finding

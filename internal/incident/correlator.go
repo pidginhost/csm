@@ -737,7 +737,8 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 			if ip := normalizeIncidentRemoteIP(src); ip != "" {
 				target = ip
 			}
-			ev.root = c.cfg.Root(f, target)
+			root := c.cfg.Root(f, target)
+			ev.root = &root
 		}
 		if (!inc.RemoteIPEvidence || inc.RemoteIPEvidenceFinding == "") && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
 			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(src) {
@@ -1742,7 +1743,10 @@ func (c *Correlator) attesting(inc *Incident, ip string) (string, PreparedRoot) 
 	for i := len(inc.Timeline) - 1; i >= 0; i-- {
 		ev := inc.Timeline[i]
 		if ev.Kind == "finding" && ev.FindingID != "" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && c.eventAttests(ev) {
-			return ev.FindingID, ev.root
+			if ev.root == nil {
+				return ev.FindingID, PreparedRoot{}
+			}
+			return ev.FindingID, *ev.root
 		}
 	}
 	if inc.RemoteIPEvidence && inc.CorrelationKey != nil && normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP) == ip {
