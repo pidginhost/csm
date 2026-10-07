@@ -37,4 +37,9 @@ func TestRegistryCoversTheProducerTable(t *testing.T) {
 	if len(producers) != len(table) {
 		t.Errorf("%d handles for %d producers", len(producers), len(table))
 	}
+	for _, spec := range checks.DerivedEntries() {
+		if got, ok := reg.Spec(spec.ID); !ok || got.Entry != spec.Entry {
+			t.Errorf("derived entry %s registered as %+v (%v)", spec.ID, got, ok)
+		}
+	}
 }

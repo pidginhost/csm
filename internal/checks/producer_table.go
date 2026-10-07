@@ -112,6 +112,26 @@ func ProducerTable() []ProducerEntry {
 	return out
 }
 
+// derivedEntries bind each derived entry to the root checks it may answer
+// again. A derived response never mints evidence of its own: it carries a
+// root a producer of the table minted (spec 5.2).
+var derivedEntries = []admission.ProducerSpec{
+	{ID: "mail_subnet", Entry: admission.EntryMailSubnet, Observation: admission.ObservationLogCursor,
+		Checks: []string{"mail_subnet_spray", "smtp_subnet_spray"}},
+	{ID: "asn_crawl", Entry: admission.EntryASNCrawl, Observation: admission.ObservationScanPass,
+		Checks: []string{"http_asn_crawl"}},
+}
+
+// DerivedEntries returns a copy of the derived entries' producer specs.
+func DerivedEntries() []admission.ProducerSpec {
+	out := make([]admission.ProducerSpec, len(derivedEntries))
+	for i, spec := range derivedEntries {
+		out[i] = spec
+		out[i].Checks = slices.Clone(spec.Checks)
+	}
+	return out
+}
+
 // ProducerParser returns the parser a producer's observations name.
 func ProducerParser(id admission.ProducerID) (admission.ParserRef, bool) {
 	for _, p := range producerTable {

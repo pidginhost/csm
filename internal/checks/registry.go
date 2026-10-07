@@ -120,7 +120,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "http_claimed_bot_unverified", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, ChallengeFirst: true, Evidence: admission.FamilyHTTP, Basis: admission.BasisLocal}},
 	{Name: "http_ua_spoof", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, Evidence: admission.FamilyHTTP, Basis: admission.BasisLocal}},
 	{Name: "http_distributed_flood", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
-	{Name: "http_asn_crawl", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Evidence: admission.FamilyHTTP, Basis: admission.BasisLocal}},
+	{Name: "http_asn_crawl", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Evidence: admission.FamilyHTTP, Basis: admission.BasisLocal, Subnet: admission.EntryASNCrawl}},
 	// Mail protocols cannot answer an HTTP challenge. Compromise severity
 	// decides blocking.
 	{Name: "mail_account_compromised", Category: CategoryBruteForce, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{Block: BlockAlways, CriticalOnly: true, NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisCompromise}},
@@ -129,13 +129,13 @@ var checkRegistry = []CheckInfo{
 	{Name: "mail_bruteforce_suspected", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	// A subnet summary does not authorize a single-IP block; the subnet-spray
 	// path blocks the subnet itself.
-	{Name: "mail_subnet_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisLocal}},
+	{Name: "mail_subnet_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisLocal, Subnet: admission.EntryMailSubnet}},
 	{Name: "smtp_account_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	// SMTP authentication, connection probes and subnet sprays have no browser
 	// at the other end, so a challenge cannot stop their traffic.
 	{Name: "smtp_bruteforce", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisLocal}},
 	{Name: "smtp_probe_abuse", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisLocal}},
-	{Name: "smtp_subnet_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisLocal}},
+	{Name: "smtp_subnet_spray", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{NeverChallenge: true, Evidence: admission.FamilyMail, Basis: admission.BasisLocal, Subnet: admission.EntryMailSubnet}},
 	// These WordPress probes reach public HTTP endpoints before authentication;
 	// the next request from the same source can be sent to the browser gate.
 	{Name: "wp_login_bruteforce", Category: CategoryBruteForce, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, ChallengeFirst: true, Evidence: admission.FamilyHTTP, Basis: admission.BasisLocal}},

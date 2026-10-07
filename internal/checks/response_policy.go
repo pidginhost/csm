@@ -96,6 +96,10 @@ type ResponsePolicy struct {
 	// Basis is the priority class the check's own evidence supports.
 	// BasisCompromise is reserved for the reviewed compromise checks.
 	Basis admission.Basis
+	// Subnet names the subnet response the check feeds: the mail subnet
+	// spray block or the crawl tempban. A subnet summary never authorizes
+	// a single-address block.
+	Subnet admission.Entry
 }
 
 // neverChallengePrefixes is the contract for check names built at runtime,
@@ -139,8 +143,17 @@ func validateResponsePolicy(entries []CheckInfo) error {
 		if err := admission.ValidPolicy(p.Evidence, p.Basis); err != nil {
 			return fmt.Errorf("check %q: %w", c.Name, err)
 		}
-		if (p.Block != BlockNever || p.ChallengeFirst) && p.Evidence == admission.FamilyNone {
+		if (p.Block != BlockNever || p.ChallengeFirst || p.Subnet != 0) && p.Evidence == admission.FamilyNone {
 			return fmt.Errorf("check %q can drive a response but has no evidence family", c.Name)
+		}
+		switch p.Subnet {
+		case 0:
+		case admission.EntryMailSubnet, admission.EntryASNCrawl:
+			if p.Block != BlockNever {
+				return fmt.Errorf("check %q is a subnet summary that blocks an address", c.Name)
+			}
+		default:
+			return fmt.Errorf("check %q names %s, which is no subnet response", c.Name, p.Subnet)
 		}
 	}
 	return nil

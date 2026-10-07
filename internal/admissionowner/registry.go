@@ -21,6 +21,11 @@ func Registry() (*admission.Registry, map[admission.ProducerID]*admission.Produc
 		}
 		producers[handle.ID()] = handle
 	}
+	for _, spec := range checks.DerivedEntries() {
+		if _, regErr := reg.Register(spec); regErr != nil {
+			return nil, nil, regErr
+		}
+	}
 	reg.Seal()
 	return reg, producers, nil
 }

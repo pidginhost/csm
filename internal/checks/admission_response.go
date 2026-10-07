@@ -1,6 +1,8 @@
 package checks
 
 import (
+	"slices"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -56,4 +58,36 @@ func respond(kind admission.Kind, f alert.Finding, target string, via admission.
 	}
 	_ = a.Respond(kind, e, via)
 	return e
+}
+
+// respondSpray asks admission to block a spray's prefix through the mail
+// subnet entry, with each counted address's observation as a root, newest
+// first, at most as many as one candidate holds. A spray recorded without
+// its constituents answers its own observation.
+func respondSpray(f alert.Finding, cidr string) {
+	if len(f.SprayConstituents) == 0 {
+		respond(admission.KindBlockSubnet, f, cidr, admission.EntryMailSubnet)
+		return
+	}
+	constituents := slices.Clone(f.SprayConstituents)
+	slices.SortFunc(constituents, func(a, b alert.SprayConstituent) int {
+		if c := b.LastSeen.Compare(a.LastSeen); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Address, b.Address)
+	})
+	for _, c := range constituents[:min(len(constituents), admission.MaxRoots)] {
+		root := f
+		root.Observation = c.Observation
+		respond(admission.KindBlockSubnet, root, cidr, admission.EntryMailSubnet)
+	}
+}
+
+// respondNetblock hands admission a netblock escalation. It rests on past
+// blocks rather than a root admission could answer, so admission refuses
+// it until range corroboration exists.
+func respondNetblock() {
+	if a := getResponseAdmission(); a != nil {
+		_ = a.Respond(admission.KindBlockSubnet, admission.Evidence{}, admission.EntryNetblock)
+	}
 }

@@ -603,4 +603,6 @@ second evaluation of the same finding; distinct observations still submit,
 even when their address is already challenged. Admission outcomes do not
 change, delay or skip any existing responder decision.
 
+Subnet funnels submit every selected response before the existing responder evaluates its available execution budget. Constituent evidence follows the selected mail response; paths without eligible observations retain their designed refusal rather than minting a replacement root.
+
 Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.

@@ -337,20 +337,21 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 	// replaces what would otherwise be hundreds of per-IP blocks.
 	for _, f := range findings {
 		work.progress()
-		if f.Check != "smtp_subnet_spray" && f.Check != "mail_subnet_spray" {
+		if f.AutoIPResponseEvaluated || ResponsePolicyFor(f.Check).Subnet != admission.EntryMailSubnet {
 			continue
 		}
 		cidr := extractCIDRFromFinding(f)
 		if cidr == "" {
 			continue
 		}
-		if isSubnetAlreadyBlocked(blocker, cidr) {
-			continue
-		}
 		if cidrIntersectsInfra(cfg, cidr) {
 			continue
 		}
 		if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
+			continue
+		}
+		respondSpray(f, cidr)
+		if isSubnetAlreadyBlocked(blocker, cidr) {
 			continue
 		}
 		if !isAutoResponseActive(cfg) {
@@ -470,15 +471,19 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 		tempban := parseExpiryWithDefault(cfg.AutoResponse.HTTPASNCrawlTempban, config.DefaultHTTPASNCrawlTempban)
 		for _, f := range findings {
 			work.progress()
-			if f.Check != "http_asn_crawl" || f.Severity != alert.Critical || len(f.CIDRs) == 0 {
+			if f.AutoIPResponseEvaluated || ResponsePolicyFor(f.Check).Subnet != admission.EntryASNCrawl || f.Severity != alert.Critical || len(f.CIDRs) == 0 {
 				continue
 			}
 			for _, cidr := range f.CIDRs {
 				work.progress()
-				if isSubnetAlreadyBlocked(blocker, cidr) || cidrIntersectsInfra(cfg, cidr) {
+				if cidrIntersectsInfra(cfg, cidr) {
 					continue
 				}
 				if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
+					continue
+				}
+				respond(admission.KindBlockSubnet, f, cidr, admission.EntryASNCrawl)
+				if isSubnetAlreadyBlocked(blocker, cidr) {
 					continue
 				}
 				if !isAutoResponseActive(cfg) {
@@ -489,7 +494,7 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 					continue
 				}
 				if budgetUnavailable || state.BlocksThisHour >= maxPerHour {
-					break
+					continue
 				}
 				reason := fmt.Sprintf("CSM auto-block (asn-crawl): %s", truncate(f.Message, 100))
 				var subnetErr error
@@ -707,6 +712,7 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 					if shouldSkipAutoSubnet(cfg, cidr, exemptLogged) {
 						continue
 					}
+					respondNetblock()
 					if !isAutoResponseActive(cfg) {
 						if !canDryRunBlockSubnet(blocker, cidr) {
 							continue
