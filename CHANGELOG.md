@@ -24,6 +24,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
+- The previous configuration file is kept as a backup next to it before the dashboard, rehash or installer saves a new one.
 - Held forward copies are now deleted once they pass the configured retention window instead of staying on disk.
 - Status and diagnostics now report automatic response admission health, with Critical alerts for failures.
 

@@ -180,3 +180,56 @@ func TestSignAndSavePreservingRejectsDrift(t *testing.T) {
 		t.Errorf("file touched despite drift: %q", unchanged)
 	}
 }
+
+// Every save keeps the previous file next to it, so a bad edit from the UI,
+// a rehash or the installer can be put back by hand.
+func TestSignAndSavePreservingKeepsPreviousFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "csm.yaml")
+	original := []byte("hostname: example.com\nthresholds:\n  mail_queue_warn: 500\nintegrity:\n  binary_hash: \"sha256:stale\"\n  config_hash: \"sha256:stale\"\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	save := func(value int) {
+		t.Helper()
+		current, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		edited, err := config.YAMLEdit(current, []config.YAMLChange{{Path: []string{"thresholds", "mail_queue_warn"}, Value: value}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clone, err := config.LoadBytes(edited)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clone.ConfigFile = path
+		if err := SignAndSavePreserving(path, "", edited, clone, "sha256:binary"); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}
+
+	save(600)
+	backup, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("no backup after the first save: %v", err)
+	}
+	if string(backup) != string(original) {
+		t.Fatalf("backup = %q, want the file as it was before the save", backup)
+	}
+	info, err := os.Stat(path + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("backup mode = %o, want 600", info.Mode().Perm())
+	}
+
+	afterFirst, _ := os.ReadFile(path)
+	save(700)
+	backup, _ = os.ReadFile(path + ".bak")
+	if string(backup) != string(afterFirst) {
+		t.Fatal("second save did not replace the backup with the previous version")
+	}
+}

@@ -945,6 +945,10 @@ sudo systemctl reload csm
 sudo journalctl -u csm -n 20 --no-pager
 ```
 
+Every save CSM makes itself (the Settings page, `csm rehash`, the installer)
+first copies the current file to `csm.yaml.bak` next to it, so the previous
+version is one `cp` away.
+
 `systemctl reload` sends SIGHUP (wired via `ExecReload=` in the unit
 file). The daemon re-reads the file, validates it, diffs it against
 the running config, and if every change is on a field tagged

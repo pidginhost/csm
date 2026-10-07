@@ -1,6 +1,7 @@
 package integrity
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"reflect"
@@ -99,7 +100,28 @@ func SignAndSavePreserving(path, confDir string, editedBytes []byte, intendedClo
 	intendedClone.Integrity.ConfigHash = newConfigHash
 	intendedClone.Integrity.ConfdHash = newConfdHash
 
+	if err := keepPreviousConfig(path, patched); err != nil {
+		return err
+	}
 	return atomicWriteFile(path, patched, 0o600)
+}
+
+// keepPreviousConfig copies the current file to <path>.bak before it is
+// replaced, so a bad edit from the UI, a rehash or the installer can be put
+// back by hand. A missing file (first install) leaves no backup, and an
+// unchanged file keeps the backup it already has.
+func keepPreviousConfig(path string, next []byte) error {
+	current, err := os.ReadFile(path) // #nosec G304 -- operator-configured config path.
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read previous config: %w", err)
+	}
+	if bytes.Equal(current, next) {
+		return nil
+	}
+	return atomicWriteFile(path+".bak", current, 0o600)
 }
 
 // SignConfigFilePreserving signs path in place without re-marshaling the
