@@ -33,6 +33,7 @@ var bucketNames = []string{
 	"meta",
 	"email:geo",
 	"email:fwd",
+	senderProfileBucket,
 	"db_object_backups",
 	"sig_watch",
 	bucketStatsDaily,

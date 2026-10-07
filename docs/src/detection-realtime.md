@@ -364,6 +364,23 @@ Detects authenticated outbound Exim deliveries where the same mailbox is sending
 
 The finding is `email_cloud_relay_abuse`. Under the global auto-response and dry-run settings, the abused mailbox's logins and outgoing mail are suspended, with the account-wide mail hold as the fallback. Operators with legitimate cloud mailers can opt out specific mailboxes or domains under `email_protection.cloud_relay`, or use `email_protection.high_volume_senders` for known high-volume senders.
 
+## Authenticated Sender Profile
+
+Catches a stolen mailbox password that is used quietly: under the rate limits, from residential addresses with no cloud reverse DNS, one victim per message. Every authenticated Exim submission updates a rolling one-hour window and the mailbox's own per-day history of source addresses, source countries and envelope recipients, kept for two weeks in the state database.
+
+The finding is `email_compromised_account`. Four signals raise it:
+
+| Signal | Severity |
+|--------|----------|
+| Sends from several countries within one hour, the pattern of a credential checker validating a stolen password | Critical |
+| Far more distinct source addresses within one hour than the mailbox's own recent maximum | High, Critical when the sends also come from a country the mailbox never sent from |
+| Far more distinct source addresses within one day than the mailbox's own recent maximum | High, Critical as above |
+| Far more distinct recipients within one day than the mailbox's own recent maximum, each in its own message | High, Critical as above |
+
+Each bar is the larger of a fixed floor and twice the mailbox's own prior maximum, so a shared office mailbox or a travelling owner is judged against their own habit rather than a global number. A country listed in `suppressions.trusted_countries` is never treated as new. A mailbox needs a few active days of history before a new country counts. One finding is raised per mailbox per hour, with an escalation from High to Critical allowed inside that hour.
+
+Source addresses are never blocked for this finding: they rotate per message and the owner's own address can be among them. A Critical finding suspends the mailbox's logins and outgoing mail under the auto-response and dry-run settings, with the account-wide mail hold as the fallback. Mailboxes listed in `email_protection.high_volume_senders` are not profiled.
+
 ## Mail Auth Brute-Force Tracker
 
 Detects credential stuffing and password spray against IMAP, POP3, and ManageSieve. Runs through the `mail_logs` reader: file source uses `/var/log/mail.log` on Debian-family hosts and `/var/log/maillog` on RHEL-family and cPanel hosts, while journal source reads configured Postfix/Dovecot units. The wrapper composes with the existing geo-based login monitor, so `email_suspicious_geo` keeps firing for successful logins from novel countries.

@@ -67,13 +67,7 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 	// baseline. Returning before the history update left every mailbox whose
 	// owner lives in a trusted country stuck at zero logins, so its first
 	// foreign login was recorded as a known country and never alerted.
-	trusted := false
-	for _, tc := range cfg.Suppressions.TrustedCountries {
-		if strings.EqualFold(country, tc) {
-			trusted = true
-			break
-		}
-	}
+	trusted := countryTrusted(country, cfg.Suppressions.TrustedCountries)
 
 	// Load history from bbolt
 	boltDB := store.Global()

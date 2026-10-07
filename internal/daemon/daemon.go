@@ -2088,6 +2088,9 @@ func (d *Daemon) startLogWatchers() {
 	// sender ever seen.
 	StartCloudRelayEviction(d.stopCh)
 
+	// Start background eviction for the per-mailbox sender profile windows.
+	StartSenderProfileEviction(d.stopCh)
+
 	// Start background purge for SMTP brute-force tracker
 	d.wg.Add(1)
 	obs.Go("smtp-tracker-purge", func() {

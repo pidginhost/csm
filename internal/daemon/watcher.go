@@ -787,6 +787,15 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		findings = append(findings, f)
 	}
 
+	// 11. Authenticated sender profile: country diversity, source address
+	// churn and recipient fan-out judged against the mailbox's own history.
+	for _, f := range parseSenderProfileFinding(line, cfg, time.Now()) {
+		if f.Severity == alert.Critical {
+			respondToMailboxCompromise(cfg, extractAuthUser(line), "authenticated sends outside the mailbox's own source and recipient history")
+		}
+		findings = append(findings, f)
+	}
+
 	if eng := PHPRelayEvaluator(); eng != nil {
 		findings = append(findings, eng.parsePHPRelayAccountVolume(line, time.Now())...)
 	}
