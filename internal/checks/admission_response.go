@@ -3,11 +3,13 @@ package checks
 import (
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/metrics"
 )
 
 // ResponseAdmission is the admission owner as the response funnels see it.
@@ -42,6 +44,23 @@ func getResponseAdmission() ResponseAdmission {
 	return nil
 }
 
+var (
+	handoffSeconds     *metrics.Histogram
+	handoffSecondsOnce sync.Once
+)
+
+// timeHandoff records how long a funnel waited on admission since start.
+// The comparison reads the 10 ms bucket for its p99 criterion (R11).
+func timeHandoff(start time.Time) {
+	handoffSecondsOnce.Do(func() {
+		handoffSeconds = metrics.NewHistogram("csm_admission_handoff_seconds",
+			"Time a response funnel waits to hand an automatic response to admission.",
+			[]float64{.001, .0025, .005, .01, .025, .1, 1})
+		metrics.MustRegister("csm_admission_handoff_seconds", handoffSeconds)
+	})
+	handoffSeconds.Observe(time.Since(start).Seconds())
+}
+
 // respond asks admission for a response of kind to the address or prefix
 // f names, through via when it is set, and returns the minted evidence for
 // a derived response to answer later. Its outcome never changes the
@@ -51,6 +70,7 @@ func respond(kind admission.Kind, f alert.Finding, target string, via admission.
 	if a == nil {
 		return admission.Evidence{}
 	}
+	defer timeHandoff(time.Now())
 	e, err := a.Mint(f, target)
 	if err != nil {
 		a.Refuse(kind, f, via, err)
@@ -117,6 +137,7 @@ func PrepareAdmissionRoot(f alert.Finding, target string) (admission.Evidence, e
 func AnswerPreparedRoot(kind admission.Kind, root admission.Evidence, via admission.Entry, f alert.Finding, err error, ttl time.Duration) {
 	if err != nil {
 		if a := getResponseAdmission(); a != nil {
+			defer timeHandoff(time.Now())
 			a.Refuse(kind, f, via, err)
 		}
 		return
@@ -128,6 +149,7 @@ func AnswerPreparedRoot(kind admission.Kind, root admission.Evidence, via admiss
 // with the root it kept, through its entry.
 func AnswerRoot(kind admission.Kind, root admission.Evidence, via admission.Entry, ttl ...time.Duration) {
 	if a := getResponseAdmission(); a != nil {
+		defer timeHandoff(time.Now())
 		_ = a.Respond(kind, root, via, ttl...)
 	}
 }
@@ -137,6 +159,7 @@ func AnswerRoot(kind admission.Kind, root admission.Evidence, via admission.Entr
 // it until range corroboration exists.
 func respondNetblock() {
 	if a := getResponseAdmission(); a != nil {
+		defer timeHandoff(time.Now())
 		_ = a.Respond(admission.KindBlockSubnet, admission.Evidence{}, admission.EntryNetblock)
 	}
 }
