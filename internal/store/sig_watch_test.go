@@ -115,3 +115,70 @@ func TestSignatureRescanPendingUntilCleared(t *testing.T) {
 		t.Fatalf("arm after clear = %d; generations must not repeat", third)
 	}
 }
+
+func TestSignatureRescanRepairsCorruptRecord(t *testing.T) {
+	for _, raw := range []string{
+		"{", "null", "{}", `{"generation":0,"pending":true}`,
+		`{"generation":1}`, `{"generation":"bad","pending":true}`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			db := openTestDB(t)
+			old, err := db.PutSignatureFilesWithRescan(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if writeErr := db.bolt.Update(func(tx *bolt.Tx) error {
+				return tx.Bucket([]byte("sig_watch")).Put([]byte(sigRescanKey), []byte(raw))
+			}); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+			if pending, readErr := db.SignatureRescanPending(); readErr == nil || pending != 0 {
+				t.Errorf("corrupt record accepted: generation %d, error %v", pending, readErr)
+			}
+			state := map[string]SignatureFileState{"/opt/csm/rules/malware.yml": {Size: 2, SHA256: "bb"}}
+			gen, err := db.PutSignatureFilesWithRescan(state)
+			if err != nil || gen <= old {
+				t.Fatalf("cannot queue after corruption: generation %d, error %v", gen, err)
+			}
+			got, err := db.GetSignatureFiles()
+			if err != nil || got["/opt/csm/rules/malware.yml"].SHA256 != "bb" {
+				t.Fatalf("repaired queue lost its rule state: %v, %v", got, err)
+			}
+			if cleared, err := db.ClearSignatureRescan(old); err != nil || cleared {
+				t.Fatalf("stale sweep cleared repaired queue: %v, %v", cleared, err)
+			}
+			if cleared, err := db.ClearSignatureRescan(gen); err != nil || !cleared {
+				t.Fatalf("repaired queue cannot be cleared: %v, %v", cleared, err)
+			}
+		})
+	}
+}
+
+func TestSignatureRescanLegacyGenerationSurvivesCorruption(t *testing.T) {
+	db := openTestDB(t)
+	// Compaction can reset transaction IDs below a saved generation. Older
+	// queues have no bucket sequence, so claiming one must preserve its token.
+	const legacyGeneration = 5000
+	if err := db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("sig_watch"))
+		return b.Put([]byte(sigRescanKey), []byte(`{"generation":5000,"pending":true}`))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gen, err := db.SignatureRescanPending()
+	if err != nil || gen != legacyGeneration {
+		t.Fatalf("legacy queue not readable: %d, %v", gen, err)
+	}
+	if writeErr := db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("sig_watch")).Put([]byte(sigRescanKey), []byte("{"))
+	}); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	next, err := db.PutSignatureFilesWithRescan(nil)
+	if err != nil || next <= gen {
+		t.Fatalf("repaired queue reused a legacy sweep's generation: %d after %d, %v", next, gen, err)
+	}
+	if cleared, err := db.ClearSignatureRescan(gen); err != nil || cleared {
+		t.Fatalf("legacy sweep cleared repaired queue: %v, %v", cleared, err)
+	}
+}

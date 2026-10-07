@@ -910,7 +910,7 @@ func TestSigWatchRescanClearedOnlyByCompletedSweep(t *testing.T) {
 	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-time.Hour))
 	w.tick()
 
-	rescan, gen := takeSignatureRescan(flag, sdb)
+	rescan, gen := takeSignatureRescan(flag, sdb, nil)
 	if !rescan || flag.Load() {
 		t.Fatalf("take = %v (flag %v); want the armed rescan consumed", rescan, flag.Load())
 	}
@@ -943,7 +943,7 @@ func TestSigWatchChangeDuringSweepKeepsNewRescan(t *testing.T) {
 	w.tick()
 	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-2*time.Hour))
 	w.tick()
-	_, gen := takeSignatureRescan(flag, sdb)
+	_, gen := takeSignatureRescan(flag, sdb, nil)
 
 	writeRule(t, rulesDir, "malware.yml", "v3", time.Now().Add(-time.Hour))
 	w.tick()
@@ -993,7 +993,7 @@ func TestSigWatchIdenticalRewriteAfterSweepQueuesNothing(t *testing.T) {
 	w.tick()
 	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-2*time.Hour))
 	w.tick()
-	_, gen := takeSignatureRescan(flag, sdb)
+	_, gen := takeSignatureRescan(flag, sdb, nil)
 	finishSignatureRescan(context.Background(), sdb, gen)
 
 	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-time.Hour))
@@ -1003,5 +1003,180 @@ func TestSigWatchIdenticalRewriteAfterSweepQueuesNothing(t *testing.T) {
 	}
 	if restartWatcher(t, rulesDir, sdb).Load() {
 		t.Error("identical rewrite queued a rescan for the next start")
+	}
+}
+
+func TestSigWatchLazyStoreRestoresSavedWork(t *testing.T) {
+	for _, pending := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pending=%v", pending), func(t *testing.T) {
+			original, rulesDir, _, _, cfg, sdb := newWatcherForTest(t)
+			stamp := time.Now().Add(-2 * time.Hour)
+			writeRule(t, rulesDir, "malware.yml", "v1", stamp)
+			original.tick()
+			writeRule(t, rulesDir, "malware.yml", "v2", stamp.Add(time.Hour))
+			if pending {
+				original.tick()
+			}
+
+			flag := &atomic.Bool{}
+			var available *store.DB
+			w := newSigWatcher(func() *config.Config { return cfg }, func() *store.DB { return available }, flag, nil)
+			w.tick()
+			if flag.Load() {
+				t.Fatal("first observation without a store armed a rescan")
+			}
+			available = sdb
+			w.tick()
+			if !flag.Load() {
+				t.Fatal("late store lost the saved queue or comparison baseline")
+			}
+			if !restartWatcher(t, rulesDir, sdb).Load() {
+				t.Fatal("late store recovery did not persist the owed rescan")
+			}
+		})
+	}
+}
+
+func TestSigWatchRetriesInitialStoreRead(t *testing.T) {
+	original, rulesDir, _, _, cfg, sdb := newWatcherForTest(t)
+	stamp := time.Now().Add(-2 * time.Hour)
+	writeRule(t, rulesDir, "malware.yml", "v1", stamp)
+	original.tick()
+	writeRule(t, rulesDir, "malware.yml", "v2", stamp.Add(time.Hour))
+	original.tick()
+	if err := sdb.Close(); err != nil {
+		t.Fatal(err)
+	}
+	flag := &atomic.Bool{}
+	w := newSigWatcher(func() *config.Config { return cfg }, func() *store.DB { return sdb }, flag, nil)
+	w.tick()
+	reopened, err := store.Open(filepath.Dir(sdb.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	w.storeFunc = func() *store.DB { return reopened }
+	w.tick()
+	if !flag.Load() {
+		t.Fatal("initial read failure permanently hid the queued rescan")
+	}
+}
+
+func TestSignatureRescanUsesDurableQueueWithoutFlag(t *testing.T) {
+	_, _, _, flag, _, sdb := newWatcherForTest(t)
+	gen, err := sdb.PutSignatureFilesWithRescan(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rescan, taken := takeSignatureRescan(flag, sdb, nil)
+	if !rescan || taken != gen {
+		t.Fatalf("take = (%v, %d), want durable generation %d", rescan, taken, gen)
+	}
+}
+
+func TestSignatureRescanReadFailureKeepsFlag(t *testing.T) {
+	_, _, _, flag, _, sdb := newWatcherForTest(t)
+	flag.Store(true)
+	if err := sdb.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rescan, gen := takeSignatureRescan(flag, sdb, nil)
+	if rescan || gen != 0 || !flag.Load() {
+		t.Fatalf("failed queue read consumed work: rescan %v, gen %d, flag %v", rescan, gen, flag.Load())
+	}
+}
+
+func TestSigWatchCorruptQueueRecovers(t *testing.T) {
+	w, rulesDir, _, _, _, sdb := newWatcherForTest(t)
+	stamp := time.Now().Add(-2 * time.Hour)
+	writeRule(t, rulesDir, "malware.yml", "v1", stamp)
+	w.tick()
+	writeRule(t, rulesDir, "malware.yml", "v2", stamp.Add(time.Hour))
+	w.tick()
+	old, err := sdb.SignatureRescanPending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if closeErr := sdb.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	raw, err := bolt.Open(sdb.Path(), 0600, &bolt.Options{Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = raw.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("sig_watch")).Put([]byte("rescan"), []byte("{"))
+	})
+	closeErr := raw.Close()
+	if err != nil || closeErr != nil {
+		t.Fatalf("corrupt fixture: %v, close: %v", err, closeErr)
+	}
+	reopened, err := store.Open(filepath.Dir(sdb.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	flag := restartWatcher(t, rulesDir, reopened)
+	if !flag.Load() {
+		t.Fatal("corrupt queue silently dropped the owed sweep")
+	}
+	gen, err := reopened.SignatureRescanPending()
+	if err != nil || gen <= old {
+		t.Fatalf("queue not repaired with a new generation: %d, %v", gen, err)
+	}
+	if cleared, err := reopened.ClearSignatureRescan(old); err != nil || cleared {
+		t.Fatalf("stale sweep cleared repaired queue: %v, %v", cleared, err)
+	}
+	_, taken := takeSignatureRescan(flag, reopened, nil)
+	if !finishSignatureRescan(context.Background(), reopened, taken) || restartWatcher(t, rulesDir, reopened).Load() {
+		t.Fatal("repaired queue could not be completed")
+	}
+}
+
+func TestSignatureRescanKillSwitchPreservesQueue(t *testing.T) {
+	w, rulesDir, _, flag, cfg, sdb := newWatcherForTest(t)
+	stamp := time.Now().Add(-2 * time.Hour)
+	writeRule(t, rulesDir, "malware.yml", "v1", stamp)
+	w.tick()
+	writeRule(t, rulesDir, "malware.yml", "v2", stamp.Add(time.Hour))
+	w.tick()
+	want, err := sdb.SignatureRescanPending()
+	if err != nil || want == 0 {
+		t.Fatalf("change did not queue a generation: %d, %v", want, err)
+	}
+	off := false
+	cfg.Detection.RescanOnSignatureUpdate = &off
+	w.tick()
+	if rescan, gen := takeSignatureRescan(flag, sdb, cfg); rescan || gen != 0 {
+		t.Errorf("disabled rescans consumed queued work: %v, %d", rescan, gen)
+	}
+	if got, err := sdb.SignatureRescanPending(); err != nil || got != want {
+		t.Fatalf("kill switch lost the durable queue: %d, %v", got, err)
+	}
+	on := true
+	cfg.Detection.RescanOnSignatureUpdate = &on
+	w.tick()
+	if rescan, gen := takeSignatureRescan(flag, sdb, cfg); !rescan || gen != want {
+		t.Fatalf("reenabling rescans did not resume queued work: %v, %d", rescan, gen)
+	}
+}
+
+func TestSigWatchLazyStoreWithEmptySavedState(t *testing.T) {
+	_, rulesDir, _, flag, cfg, sdb := newWatcherForTest(t)
+	if _, err := sdb.PutSignatureFilesWithRescan(nil); err != nil {
+		t.Fatal(err)
+	}
+	var available *store.DB
+	w := newSigWatcher(func() *config.Config { return cfg }, func() *store.DB { return available }, flag, nil)
+	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-time.Hour))
+	w.tick()
+	available = sdb
+	w.tick()
+	if !flag.Load() {
+		t.Fatal("empty saved state hid the queued rescan")
+	}
+	files, err := sdb.GetSignatureFiles()
+	if err != nil || len(files) != 1 {
+		t.Fatalf("late store lost the in-memory baseline: %v, %v", files, err)
 	}
 }

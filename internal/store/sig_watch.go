@@ -3,6 +3,8 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -17,6 +19,10 @@ const (
 	sigWatchKey  = "last_mtimes"
 	sigRescanKey = "rescan"
 )
+
+// ErrSignatureRescanCorrupt means the queue cannot establish whether a sweep
+// is owed. The watcher repairs it by conservatively queuing a fresh sweep.
+var ErrSignatureRescanCorrupt = errors.New("corrupt signature rescan record")
 
 // SignatureFileState is what the watcher last saw of one rules file. SHA256
 // is empty when the content was never hashed, and Size is -1 when unknown:
@@ -97,10 +103,21 @@ func (db *DB) putSignatureFiles(m map[string]SignatureFileState, rescan bool) (u
 			return nil
 		}
 		q, err := readSignatureRescan(b)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrSignatureRescanCorrupt) {
 			return err
 		}
-		q.Generation++
+		// Keep the generation outside the JSON record too, so repairing it
+		// cannot reuse an in-flight sweep's token. The transaction ID also
+		// seeds stores written before the bucket sequence was used.
+		transactionID := uint64(tx.ID()) // #nosec G115 -- bbolt transaction IDs are positive.
+		previous := max(b.Sequence(), q.Generation, transactionID)
+		if previous == math.MaxUint64 {
+			return errors.New("signature rescan generation exhausted")
+		}
+		q.Generation = previous + 1
+		if err := b.SetSequence(q.Generation); err != nil {
+			return err
+		}
 		q.Pending = true
 		gen = q.Generation
 		return writeSignatureRescan(b, q)
@@ -115,6 +132,7 @@ func (db *DB) putSignatureFiles(m map[string]SignatureFileState, rescan bool) (u
 // or 0 when none is queued.
 func (db *DB) SignatureRescanPending() (uint64, error) {
 	var q signatureRescan
+	var sequence uint64
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("sig_watch"))
 		if b == nil {
@@ -122,10 +140,27 @@ func (db *DB) SignatureRescanPending() (uint64, error) {
 		}
 		var err error
 		q, err = readSignatureRescan(b)
+		sequence = b.Sequence()
 		return err
 	})
-	if err != nil || !q.Pending {
+	if err != nil {
 		return 0, err
+	}
+	// Preserve legacy tokens before handing them to a sweep. Compaction can
+	// lower the transaction ID, so it alone cannot fence a repaired queue.
+	if q.Generation > sequence {
+		if err := db.bolt.Update(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte("sig_watch"))
+			if b == nil {
+				return errors.New("sig_watch bucket missing (store not migrated)")
+			}
+			return b.SetSequence(max(b.Sequence(), q.Generation))
+		}); err != nil {
+			return 0, err
+		}
+	}
+	if !q.Pending {
+		return 0, nil
 	}
 	return q.Generation, nil
 }
@@ -154,13 +189,21 @@ func (db *DB) ClearSignatureRescan(gen uint64) (bool, error) {
 }
 
 func readSignatureRescan(b *bolt.Bucket) (signatureRescan, error) {
-	var q signatureRescan
 	raw := b.Get([]byte(sigRescanKey))
-	if len(raw) == 0 {
-		return q, nil
+	if raw == nil {
+		return signatureRescan{}, nil
 	}
-	err := json.Unmarshal(raw, &q)
-	return q, err
+	var record struct {
+		Generation uint64 `json:"generation"`
+		Pending    *bool  `json:"pending"`
+	}
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return signatureRescan{}, fmt.Errorf("%w: %v", ErrSignatureRescanCorrupt, err)
+	}
+	if record.Generation == 0 || record.Pending == nil {
+		return signatureRescan{}, ErrSignatureRescanCorrupt
+	}
+	return signatureRescan{Generation: record.Generation, Pending: *record.Pending}, nil
 }
 
 func writeSignatureRescan(b *bolt.Bucket, q signatureRescan) error {

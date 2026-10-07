@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -97,6 +98,9 @@ type sigWatcher struct {
 	// Initialised on first tick from store.GetSignatureFiles(); the
 	// in-memory map is the authoritative working copy for the loop.
 	last map[string]store.SignatureFileState
+	// loaded distinguishes a successful store read from a baseline built
+	// while the store was unavailable. Failed startup reads are retried.
+	loaded bool
 	// persisted is false until last has been written to bbolt, and again
 	// after it changes, so an unchanged tick commits nothing.
 	persisted bool
@@ -120,31 +124,39 @@ func newSigWatcher(cfgFunc func() *config.Config, storeFunc func() *store.DB, fl
 	}
 }
 
-// loadInitial pulls the persisted state into memory. Called once when
-// w.last is nil. A read error here is non-fatal -- the watcher operates
-// with an empty map and the next tick re-persists, so the cost of a
-// transient bbolt error is at most one phantom rescan.
+// loadInitial restores saved work even if earlier ticks ran without a store.
+// A corrupt queue must be replaced before accepting the current rule state.
 func (w *sigWatcher) loadInitial(sdb *store.DB) {
-	if sdb == nil {
-		w.last = map[string]store.SignatureFileState{}
-		return
+	gen, queueErr := sdb.SignatureRescanPending()
+	if queueErr != nil {
+		csmlog.Warn("sig_watch: loading queued rescan", "err", queueErr)
+		if errors.Is(queueErr, store.ErrSignatureRescanCorrupt) {
+			w.queueRescan = true
+		}
+	}
+	if gen != 0 || w.queueRescan {
+		w.rescanFlag.Store(true)
 	}
 	got, err := sdb.GetSignatureFiles()
 	if err != nil {
 		csmlog.Warn("sig_watch: loading persisted state", "err", err)
-		w.last = map[string]store.SignatureFileState{}
 		return
 	}
+	if got == nil {
+		got = make(map[string]store.SignatureFileState)
+	}
+	w.persisted = !w.queueRescan
+	// Saved comparisons take precedence over a first observation made
+	// without the store. Already detected in-memory changes are retained
+	// with their owed queue, and newly observed paths keep their baseline.
+	for path, state := range w.last {
+		if _, exists := got[path]; !exists || w.queueRescan {
+			got[path] = state
+			w.persisted = false
+		}
+	}
 	w.last = got
-	w.persisted = true
-	// A rescan queued before a restart is still owed.
-	gen, err := sdb.SignatureRescanPending()
-	if err != nil {
-		csmlog.Warn("sig_watch: loading queued rescan", "err", err)
-	}
-	if gen != 0 {
-		w.rescanFlag.Store(true)
-	}
+	w.loaded = queueErr == nil || errors.Is(queueErr, store.ErrSignatureRescanCorrupt)
 }
 
 // tick performs one walk of the rules dir and arms the rescan flag
@@ -162,12 +174,7 @@ func (w *sigWatcher) tick() {
 	}
 	sdb := w.storeFunc()
 
-	// Defer first-time persistence load until we have a non-nil
-	// store. A nil store on the first tick (race against bbolt
-	// open) means we operate purely in-memory; once bbolt is up,
-	// the next tick triggers loadInitial as if for the first time
-	// because last is still nil.
-	if w.last == nil && sdb != nil {
+	if !w.loaded && sdb != nil {
 		w.loadInitial(sdb)
 	}
 	if w.last == nil {
@@ -260,21 +267,25 @@ func (w *sigWatcher) tick() {
 	}
 }
 
-// takeSignatureRescan consumes the armed flag at the start of a deep tick.
-// It returns the queued generation, which only that sweep may clear; 0 when
-// the queue was never written, as with no store.
-func takeSignatureRescan(flag *atomic.Bool, sdb *store.DB) (bool, uint64) {
-	if !flag.CompareAndSwap(true, false) {
+// takeSignatureRescan takes owed work from the deep tick's config snapshot.
+// The saved generation fences acknowledgement against intervening updates.
+func takeSignatureRescan(flag *atomic.Bool, sdb *store.DB, cfg *config.Config) (bool, uint64) {
+	if !sigWatchEnabled(cfg) {
 		return false, 0
 	}
 	if sdb == nil {
-		return true, 0
+		return flag.Swap(false), 0
 	}
 	gen, err := sdb.SignatureRescanPending()
 	if err != nil {
 		csmlog.Warn("sig_watch: reading queued rescan", "err", err)
+		return false, 0
 	}
-	return true, gen
+	// Read the generation before consuming the flag. An intervening update
+	// may lose its in-memory signal, but its newer durable generation stays
+	// queued and is picked up on the next tick even without that signal.
+	armed := flag.Swap(false)
+	return armed || gen != 0, gen
 }
 
 // finishSignatureRescan clears the queued rescan after its sweep and reports

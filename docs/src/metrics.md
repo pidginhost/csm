@@ -385,7 +385,19 @@ state. First observations and file removals do not queue a rescan.
 
 A queued rescan is stored with the rule state that caused it. A daemon
 restart before the sweep, or one that interrupts it, queues it again at
-the next start. Only a completed sweep clears it.
+the next start. The saved queue is restored even if the state store becomes
+available after the first watcher tick. Invalid queue records log a warning
+and are repaired by queuing a fresh sweep; transient store read errors defer
+consumption until the queue can be read.
+
+Only a sweep that returns without daemon cancellation clears its queued
+generation. An update during the sweep keeps newer work queued. Per-check
+timeouts and coverage gaps retain the existing one-shot behavior: they do
+not keep the queue pending.
+
+Setting `detection.rescan_on_signature_update` to `false` pauses queued
+rescans as well as the watcher. Re-enabling it resumes saved work on a
+subsequent deep tick.
 
 State from older builds contains only mtimes. The first successful read
 adds a hash without queuing a rescan if the recorded mtime still matches.

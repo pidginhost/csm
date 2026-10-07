@@ -1846,14 +1846,15 @@ func (d *Daemon) deepScanner() {
 			// without this, only files that change AFTER the rule
 			// update would catch the new patterns.
 			cfg := d.currentCfg()
-			rescan, rescanGen := takeSignatureRescan(&d.forceFullRescan, store.Global())
+			sdb := store.Global()
+			rescan, rescanGen := takeSignatureRescan(&d.forceFullRescan, sdb, cfg)
 			scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
 			var findings []alert.Finding
 			var purgeChecks []string
 			switch {
 			case rescan:
 				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
-				if finishSignatureRescan(scanCtx, store.Global(), rescanGen) {
+				if finishSignatureRescan(scanCtx, sdb, rescanGen) {
 					observeSignatureRescan()
 				}
 			case d.getFileMonitor() != nil:
