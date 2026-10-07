@@ -105,6 +105,10 @@ engines use the same shell name boundaries, including commands embedded in
 strings and binary data. The miner cron signature ignores letter case in both
 engines, accepts only spaces and tabs between schedule fields, and counts its
 bounded command span in characters so non-ASCII paths have the same coverage.
+The other bounded spans are measured in bytes by the YARA-X rules and in
+characters by the YAML rules, so the two can disagree on a line with non-ASCII
+text in the span. Measuring characters in YARA-X slowed scans of crafted lines
+too much. A finding is re-checked by the engine that raised it.
 
 The PHP goto-obfuscation rule requires three independent signals in both
 engines: a PHP opening tag, at least nine jumps to digit-bearing generated
