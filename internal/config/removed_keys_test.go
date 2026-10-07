@@ -74,6 +74,24 @@ func TestLoadBytesWithoutRemovedKeysRecordsNone(t *testing.T) {
 	}
 }
 
+func TestRemovedKeysInYAMLMerge(t *testing.T) {
+	data := []byte("thresholds:\n  <<: &legacy {state_expiry_hours: 24}\n  mail_queue_warn: 7\n")
+	cfg, err := LoadBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.RemovedKeys, []string{"thresholds.state_expiry_hours"}) || cfg.Thresholds.MailQueueWarn != 7 {
+		t.Fatalf("removed keys = %v, mail queue warning = %d", cfg.RemovedKeys, cfg.Thresholds.MailQueueWarn)
+	}
+	clean, err := LoadBytes([]byte("thresholds: {mail_queue_warn: 7}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changes := Diff(cfg, clean); len(changes) != 0 {
+		t.Fatalf("removal metadata changed reload policy: %v", changes)
+	}
+}
+
 func TestLoadWithDirDropsRemovedKeysFromFragments(t *testing.T) {
 	dir := t.TempDir()
 	main := filepath.Join(dir, "csm.yaml")
@@ -91,6 +109,14 @@ func TestLoadWithDirDropsRemovedKeysFromFragments(t *testing.T) {
 	}
 	if cfg.Thresholds.MailQueueWarn != 3 {
 		t.Errorf("mail_queue_warn = %d, want 3", cfg.Thresholds.MailQueueWarn)
+	}
+	must(t, os.WriteFile(filepath.Join(confd, "10-old.yaml"), []byte("thresholds:\n  mail_queue_warn: 3\n"), 0o600))
+	clean, err := LoadWithDir(main, confd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clean.RemovedKeys) != 0 || len(Diff(cfg, clean)) != 0 {
+		t.Fatal("removing a retired fragment key must clear its warning without changing live policy")
 	}
 }
 

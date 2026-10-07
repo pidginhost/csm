@@ -94,6 +94,10 @@ func TestSignConfigFilePreservingFollowsConfigSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
+	original, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	configHash, _, err := SignConfigFilePreserving(link, "", "sha256:newbin")
 	if err != nil {
@@ -115,6 +119,10 @@ func TestSignConfigFilePreservingFollowsConfigSymlink(t *testing.T) {
 	}
 	if !strings.Contains(string(final), "binary_hash: sha256:newbin") {
 		t.Fatalf("target config was not signed through symlink:\n%s", final)
+	}
+	backup, err := os.ReadFile(target + ".bak")
+	if err != nil || string(backup) != string(original) {
+		t.Fatalf("backup must be beside the resolved config: %v", err)
 	}
 }
 
@@ -231,5 +239,30 @@ func TestSignAndSavePreservingKeepsPreviousFile(t *testing.T) {
 	backup, _ = os.ReadFile(path + ".bak")
 	if string(backup) != string(afterFirst) {
 		t.Fatal("second save did not replace the backup with the previous version")
+	}
+	save(700)
+	unchangedBackup, err := os.ReadFile(path + ".bak")
+	if err != nil || string(unchangedBackup) != string(backup) {
+		t.Fatalf("unchanged save replaced the previous backup: %v", err)
+	}
+}
+
+func TestSignAndSavePreservingFirstWriteNeedsNoBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	data := []byte("hostname: acme.example\nintegrity:\n  binary_hash: ''\n  config_hash: ''\n")
+	cfg, err := config.LoadBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConfigFile = path
+	if err = SignAndSavePreserving(path, "", data, cfg, "sha256:test"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil || loaded.Hostname != "acme.example" {
+		t.Fatalf("first write did not produce a loadable config: %v", err)
+	}
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("first write created a backup: %v", err)
 	}
 }

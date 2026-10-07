@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -136,5 +137,114 @@ func TestKnownTokenOutsideItsScopeIsNotAGuess(t *testing.T) {
 	s.requireRead(okHandler()).ServeHTTP(w, bearerReq("/api/v1/status", "reader-token-value", "203.0.113.15:4000"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("read token on its own route after scope refusals = %d, want 200", w.Code)
+	}
+}
+
+func TestBearerBudgetCoversConcurrentAuthentication(t *testing.T) {
+	for _, route := range []string{"admin", "read", "metrics"} {
+		t.Run(route, func(t *testing.T) {
+			s := newTestServer(t, "tok")
+			h := s.requireAuth(okHandler())
+			path := "/api/v1/status"
+			switch route {
+			case "read":
+				h = s.requireRead(okHandler())
+			case "metrics":
+				h = http.HandlerFunc(s.handleMetrics)
+				path = "/metrics"
+			}
+			// Pause one request in cookie authentication while other bearer
+			// requests consume the same client's budget.
+			entered, resume := make(chan struct{}), make(chan struct{})
+			s.sessionNow = func() time.Time {
+				close(entered)
+				<-resume
+				return time.Now()
+			}
+			first := httptest.NewRecorder()
+			r := bearerReq(path, "wrong", "203.0.113.16:4000")
+			r.AddCookie(&http.Cookie{Name: "csm_auth", Value: "invalid-session"})
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				h.ServeHTTP(first, r)
+			}()
+			<-entered
+			guesses := 0
+			for i := 0; i < credentialAttemptsPerMinute; i++ {
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, bearerReq(path, "wrong", r.RemoteAddr))
+				if w.Code == http.StatusUnauthorized {
+					guesses++
+				} else if w.Code != http.StatusTooManyRequests {
+					t.Errorf("unexpected status: %d", w.Code)
+				}
+			}
+			close(resume)
+			<-done
+			if first.Code == http.StatusUnauthorized {
+				guesses++
+			} else if first.Code != http.StatusTooManyRequests {
+				t.Errorf("paused request status = %d", first.Code)
+			}
+			if guesses != credentialAttemptsPerMinute {
+				t.Fatalf("authenticated %d guesses, want %d", guesses, credentialAttemptsPerMinute)
+			}
+		})
+	}
+}
+
+func TestLoginGETBearerSharesCredentialBudget(t *testing.T) {
+	s := newTestServerWithTemplates(t, "tok")
+	for i := 0; i < credentialAttemptsPerMinute; i++ {
+		w := httptest.NewRecorder()
+		s.handleLogin(w, bearerReq("/login", "wrong", "203.0.113.17:4000"))
+		if w.Code != http.StatusOK {
+			t.Fatalf("login GET %d = %d, want 200", i, w.Code)
+		}
+	}
+	w := httptest.NewRecorder()
+	s.handleLogin(w, bearerReq("/login", "tok", "203.0.113.17:4000"))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("login GET with spent budget = %d, want 429", w.Code)
+	}
+}
+
+func TestMetricsTokenOutsideScopeIsNotAGuess(t *testing.T) {
+	s := newTestServer(t, "tok")
+	live := *s.cfg
+	live.WebUI.MetricsToken = "metrics-test-token"
+	prev := config.Active()
+	config.SetActive(&live)
+	t.Cleanup(func() { config.SetActive(prev) })
+	for _, h := range []http.Handler{s.requireAuth(okHandler()), s.requireRead(okHandler())} {
+		for i := 0; i < 10; i++ {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, bearerReq("/api/v1/status", live.WebUI.MetricsToken, "203.0.113.18:4000"))
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("known metrics token outside scope = %d, want 401", w.Code)
+			}
+		}
+	}
+	w := httptest.NewRecorder()
+	s.handleMetrics(w, bearerReq("/metrics", live.WebUI.MetricsToken, "203.0.113.18:4000"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("known metrics token on its route = %d, want 200", w.Code)
+	}
+}
+
+func TestUnknownAPIRouteSharesCredentialBudget(t *testing.T) {
+	s := newTestServer(t, "tok")
+	for i := 0; i < credentialAttemptsPerMinute; i++ {
+		w := httptest.NewRecorder()
+		s.apiNotFound(w, bearerReq("/api/v1/missing", "wrong", "203.0.113.19:4000"))
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("unknown route attempt %d = %d, want 401", i, w.Code)
+		}
+	}
+	w := httptest.NewRecorder()
+	s.apiNotFound(w, bearerReq("/api/v1/missing", "tok", "203.0.113.19:4000"))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("unknown route with spent budget = %d, want 429", w.Code)
 	}
 }

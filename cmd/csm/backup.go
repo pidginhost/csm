@@ -62,7 +62,10 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 		return fmt.Errorf("creating backup: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
+	defer func() {
+		// #nosec G703 -- removes only the private filename returned by CreateTemp above.
+		_ = os.Remove(tmpPath)
+	}()
 	if chmodErr := tmp.Chmod(0o600); chmodErr != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("setting backup permissions: %w", chmodErr)
@@ -101,7 +104,10 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 			return snapshotErr
 		}
 		if stateDBSnapshot != "" {
-			defer func() { _ = os.Remove(stateDBSnapshot) }()
+			defer func() {
+				// #nosec G703 -- disarmedStateDBSnapshot returns its own CreateTemp filename.
+				_ = os.Remove(stateDBSnapshot)
+			}()
 		}
 		skip := append([]string{"csm.db", daemonStateLockFileName, "exports"}, daemonStateTransientPaths...)
 		excludeAbs := []string{outAbs, tmpPath}

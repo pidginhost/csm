@@ -111,6 +111,13 @@ func SignAndSavePreserving(path, confDir string, editedBytes []byte, intendedClo
 // back by hand. A missing file (first install) leaves no backup, and an
 // unchanged file keeps the backup it already has.
 func keepPreviousConfig(path string, next []byte) error {
+	// Legacy paths can be symlinks into /etc/csm. The service can write the
+	// resolved directory, but not necessarily the directory holding the link.
+	var err error
+	path, err = atomicWriteTarget(path)
+	if err != nil {
+		return err
+	}
 	current, err := os.ReadFile(path) // #nosec G304 -- operator-configured config path.
 	if err != nil {
 		if os.IsNotExist(err) {

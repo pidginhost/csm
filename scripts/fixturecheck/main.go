@@ -166,6 +166,15 @@ func check(directory string, terms []*regexp.Regexp, output io.Writer) error {
 			continue
 		}
 		seen[name] = true
+		// A private filename is itself a violation and cannot safely be
+		// printed, including through an os.PathError from opening the file.
+		if matchesTerm(entry, terms) {
+			if _, err = fmt.Fprintln(output, "[redacted path]: private term in filename"); err != nil {
+				return err
+			}
+			violations++
+			continue
+		}
 		fixture := isFixture(name)
 		if !fixture && len(terms) == 0 {
 			continue
@@ -183,11 +192,11 @@ func check(directory string, terms []*regexp.Regexp, output io.Writer) error {
 		}
 		scanned++
 	}
-	if fixtures == 0 {
-		return errors.New("no repository fixture files found")
-	}
 	if violations > 0 {
 		return fmt.Errorf("%d line(s) require sanitisation", violations)
+	}
+	if fixtures == 0 {
+		return errors.New("no repository fixture files found")
 	}
 	if _, err = fmt.Fprintf(output, "%d fixture file(s) checked; no disallowed IPv4 literals.\n", fixtures); err != nil {
 		return err

@@ -34,7 +34,6 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.isMetricsAuthenticated(r) {
-		s.noteFailedBearer(r)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="csm-metrics"`)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -53,6 +52,10 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) isMetricsAuthenticated(r *http.Request) bool {
+	return s.metricsBearerMatches(r) || s.isAuthenticated(r)
+}
+
+func (s *Server) metricsBearerMatches(r *http.Request) bool {
 	// Read the metrics token from config.Active() when available so a
 	// SIGHUP-driven rotation of webui.metrics_token takes effect on
 	// the next request. MetricsToken is tagged `hotreload:"safe"` for
@@ -70,7 +73,5 @@ func (s *Server) isMetricsAuthenticated(r *http.Request) bool {
 			}
 		}
 	}
-	// Fall back to the UI session / AuthToken path so the dashboard
-	// can scrape itself without a second credential.
-	return s.isAuthenticated(r)
+	return false
 }

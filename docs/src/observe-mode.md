@@ -22,8 +22,7 @@ Observe mode skips host integration work that otherwise runs automatically:
 - The auditd rules file is written and `augenrules` is run, so CSM's audit
   layers stay current across package upgrades.
 - The host integration files are refreshed: the WHM plugin CGI and its AppConfig
-  registration, the CSM section of the ModSecurity user config, and the deploy
-  script.
+  registration, and the CSM section of the ModSecurity user config.
 - Legacy challenge snippets and managed webserver integration snippets are
   refreshed, with webserver validation and reloads when needed.
 - The WAF check refreshes stale vendor rules and deploys custom ModSecurity

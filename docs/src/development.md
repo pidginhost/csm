@@ -213,9 +213,9 @@ Installs and upgrades on end-user servers come from the GitHub release artifacts
 ### Response admission primitives
 
 `internal/admission` is a standard-library-only package. The daemon's
-admission owner (`internal/admissionowner`) wires it into live responses and
-detectors submit through its ingress, described below. Its persisted enum
-values are fixed by golden tests.
+admission owner (`internal/admissionowner`) maintains its ledger and health,
+but detectors do not yet submit live responses through its ingress. Its
+persisted enum values are fixed by golden tests.
 `Assess` sets `ReassessBy` to the first instant the current class or severity
 falls, or all roots become stale, without new evidence. Redundant evidence
 can preserve the tier after another root expires. Each corroborating pair
@@ -589,6 +589,7 @@ same run scans every tracked and unignored file for private names when
 regular expression per line. That file stays outside the repository: the
 GitLab job receives it as a file-type CI variable and fails without it
 (`-require-terms`), while a local run without one prints a skip notice. Reports
-name the file and line, never the matched text. The
+name the file and line, never the matched text. Filenames are checked too;
+a matching filename is reported with its path redacted. The
 [fixture sanitisation rules](https://github.com/pidginhost/csm/blob/main/internal/daemon/testdata/php_relay/SANITISE.md)
 describe the additional manual privacy review.

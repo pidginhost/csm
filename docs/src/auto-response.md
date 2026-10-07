@@ -270,7 +270,7 @@ skips nftables), or attach metadata (`tenant_id`, `note`). The callback
 runs after local validation and infra-IP safety checks, and before the
 dry-run gate, so panels can observe dry-run decisions too.
 
-CSM fails open on hook errors (timeout, non-2xx, malformed body): the block continues as if the hook were disabled, or is recorded as dry-run when dry-run is active. The failure is written to the daemon log. Full request/response schema: [`docs/verdict-callback-contract.md`](https://github.com/pidginhost/csm/blob/main/docs/verdict-callback-contract.md).
+CSM fails open on hook errors (timeout, non-2xx, malformed body): the block continues as if the hook were disabled, or is recorded as dry-run when dry-run is active. The failure is written to the daemon log. Full request/response schema: [Verdict callback contract](verdict-callback-contract.md).
 
 ### Infrastructure IP DNS guard
 

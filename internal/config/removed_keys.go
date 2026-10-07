@@ -37,6 +37,14 @@ func stripRemovedKeys(data []byte) ([]byte, []string, error) {
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
 		return data, nil, nil
 	}
+	// LoadBytes also serves rehash and Settings without a conf.d merge.
+	// Resolve YAML merges here too so retired inherited settings are dropped
+	// without deleting a shared anchor still used by a live setting.
+	normalized, err := normalizeYAMLForMerge(&doc)
+	if err != nil {
+		return nil, nil, err
+	}
+	doc = *normalized
 	var dropped []string
 	for _, key := range removedKeys {
 		if deleteMappingPath(doc.Content[0], strings.Split(key, ".")) {

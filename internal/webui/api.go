@@ -2163,6 +2163,9 @@ func writeRequestError(w http.ResponseWriter, r *http.Request, msg string, code 
 // page catch-all served the dashboard HTML with 200 to API clients.
 // Unauthenticated callers get 401, as for a real route.
 func (s *Server) apiNotFound(w http.ResponseWriter, r *http.Request) {
+	if s.refuseSpentBearer(w, r) {
+		return
+	}
 	if !s.tokenHasScope(r, "read") {
 		writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
 		return

@@ -155,6 +155,46 @@ func TestCheckAcceptsRepositoryWithoutPrivateTerms(t *testing.T) {
 	}
 }
 
+func TestPrivateTermInFilenameNeverReachesOutput(t *testing.T) {
+	for _, kind := range []string{"content", "name only", "missing", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			root := fixtureRepo(t)
+			writeFixture(t, root, "testdata/mail", "192.0.2.4\n")
+			name := "testdata/acme-private.example.txt"
+			content := "clean\n"
+			if kind == "content" {
+				content = "acme-private.example\n"
+			}
+			writeFixture(t, root, name, content)
+			if kind == "missing" || kind == "symlink" {
+				if out, err := exec.Command("git", "-C", root, "add", name).CombinedOutput(); err != nil {
+					t.Fatalf("git add: %v: %s", err, out)
+				}
+				if err := os.Remove(filepath.Join(root, name)); err != nil {
+					t.Fatal(err)
+				}
+				if kind == "symlink" {
+					if err := os.Symlink("mail", filepath.Join(root, name)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			terms, err := loadTerms(writeTerms(t, `acme-private\.example`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			err = check(root, terms, &output)
+			if err == nil {
+				t.Fatal("private filename was accepted")
+			}
+			if strings.Contains(output.String()+err.Error(), "acme-private") {
+				t.Fatal("private filename leaked to diagnostics")
+			}
+		})
+	}
+}
+
 func TestCheckWithoutTermsReportsTheSkippedScan(t *testing.T) {
 	root := fixtureRepo(t)
 	writeFixture(t, root, "internal/testdata/mail", "192.0.2.4\n")

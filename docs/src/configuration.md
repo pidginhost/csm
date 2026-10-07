@@ -947,7 +947,12 @@ sudo journalctl -u csm -n 20 --no-pager
 
 Every save CSM makes itself (the Settings page, `csm rehash`, the installer)
 first copies the current file to `csm.yaml.bak` next to it, so the previous
-version is one `cp` away.
+version is one `cp` away. For a symlinked config, the backup sits beside the
+resolved target. A first write creates no backup; an unchanged save keeps
+the previous backup. Backups have mode `0600`.
+
+Retired settings are ignored with validation warnings, including settings
+in YAML merges and conf.d fragments. Removing them does not require a restart.
 
 `systemctl reload` sends SIGHUP (wired via `ExecReload=` in the unit
 file). The daemon re-reads the file, validates it, diffs it against

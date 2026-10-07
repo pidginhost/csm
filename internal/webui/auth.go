@@ -159,13 +159,6 @@ func (s *Server) takeCredentialAttempt(ip string) bool {
 	return true
 }
 
-// credentialBudgetSpent reports whether the client has no attempts left.
-func (s *Server) credentialBudgetSpent(ip string) bool {
-	s.loginMu.Lock()
-	defer s.loginMu.Unlock()
-	return len(s.recentCredentialAttempts(ip, time.Now())) >= credentialAttemptsPerMinute
-}
-
 func carriesBearer(r *http.Request) bool {
 	return strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
@@ -173,8 +166,30 @@ func carriesBearer(r *http.Request) bool {
 // refuseSpentBearer answers a request that presents a bearer token from a
 // client with no attempts left. It runs before the token is compared, so a
 // blocked client learns nothing from the response, right token or wrong.
+// The budget check, credential comparison and failed-attempt charge share a
+// critical section; otherwise concurrent requests can all pass the check.
 func (s *Server) refuseSpentBearer(w http.ResponseWriter, r *http.Request) bool {
-	if !carriesBearer(r) || !s.credentialBudgetSpent(rateLimitKey(r.RemoteAddr)) {
+	if !carriesBearer(r) {
+		return false
+	}
+	ip := rateLimitKey(r.RemoteAddr)
+	s.loginMu.Lock()
+	now := time.Now()
+	recent := s.recentCredentialAttempts(ip, now)
+	spent := len(recent) >= credentialAttemptsPerMinute
+	if !spent {
+		_, known := s.bearerCredentialWithScope(r, "read")
+		// A valid credential outside its scope is not a guess, including
+		// the independently rotatable metrics credential on a UI route.
+		if !known && !s.metricsBearerMatches(r) {
+			if _, tracked := s.loginAttempts[ip]; !tracked {
+				boundRateLimitMap(s.loginAttempts, now.Add(-time.Minute))
+			}
+			s.loginAttempts[ip] = append(recent, now)
+		}
+	}
+	s.loginMu.Unlock()
+	if !spent {
 		return false
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -183,19 +198,6 @@ func (s *Server) refuseSpentBearer(w http.ResponseWriter, r *http.Request) bool 
 		http.Error(w, "Too many failed token attempts", http.StatusTooManyRequests)
 	}
 	return true
-}
-
-// noteFailedBearer charges an unknown bearer token to the client's credential
-// budget. Requests without a token are not guesses, and neither is a known
-// token used outside its scope: that client holds a real credential.
-func (s *Server) noteFailedBearer(r *http.Request) {
-	if !carriesBearer(r) {
-		return
-	}
-	if _, known := s.bearerCredentialWithScope(r, "read"); known {
-		return
-	}
-	s.takeCredentialAttempt(rateLimitKey(r.RemoteAddr))
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
@@ -211,7 +213,6 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, withAuditActor(r, tok.Name, "api"))
 			return
 		}
-		s.noteFailedBearer(r)
 		// API calls get 401 JSON; browser requests get redirect to login
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
@@ -235,7 +236,6 @@ func (s *Server) requireRead(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		s.noteFailedBearer(r)
 		// API calls get 401 JSON; browser requests get redirect to login
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
@@ -279,6 +279,9 @@ func rateLimitKey(remoteAddr string) string {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet && s.refuseSpentBearer(w, r) {
+		return
+	}
 	// Redirect already-authenticated users to dashboard
 	if r.Method == http.MethodGet && s.isAuthenticated(r) {
 		http.Redirect(w, r, "/dashboard", http.StatusFound)

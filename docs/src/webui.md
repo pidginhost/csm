@@ -163,7 +163,7 @@ saved.
 - **CSRF** - HMAC-derived token bound to the browser session on cookie-authenticated POST, PUT, PATCH, and DELETE requests; a form sends it in the body, never the query string
 - **Headers** - X-Frame-Options DENY, Content-Security-Policy (scripts, styles and forms from the Web UI only; no plugins, `<base>` or framing), HSTS, nosniff, and the legacy XSS auditor turned off
 - **TLS** - Auto-generated self-signed certificate, renewed automatically within 30 days of expiry and picked up without a restart; a certificate you install is never replaced, and replacing its files takes effect on the next connection. Renewal keeps the existing private key, so a failed certificate write leaves the working pair intact; explicitly configured certificate and key files must already exist
-- **Rate limiting** - 5 credential attempts/min (login form submissions and unknown API or metrics tokens share this budget), 600 API and `/metrics` requests/min per IPv4 address or IPv6 /64
+- **Rate limiting** - 5 credential attempts/min per IPv4 address or IPv6 /64, shared by login submissions and unknown bearer tokens on all authentication routes, including login GETs and unknown API paths. Concurrent requests share the limit; valid UI and metrics tokens used outside their scope do not consume it. Once exhausted, the budget rejects bearer requests before checking credentials. API and `/metrics` traffic also has a 600 requests/min limit.
 - **Token length** - tokens shorter than 32 characters are reported as warnings at startup and by `csm validate` and `csm doctor`; they keep working
 - **Bearer auth** skips CSRF (for API-to-API calls)
 
