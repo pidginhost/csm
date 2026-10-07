@@ -104,12 +104,16 @@ func compareActionShape(o anonAction) bool {
 
 func legacyEntry(o anonAction) string {
 	switch o.ReasonKind {
-	case "scan", "scan_subnet":
+	case "scan":
 		return "scan"
+	case "scan_subnet":
+		// The mail spray subnet block, submitted with its constituents.
+		return "mail_subnet"
 	case "asn_crawl":
 		return "asn_crawl"
 	case "credential_spray":
-		return "mail_subnet"
+		// The incident spray block of one address.
+		return "incident_spray"
 	case "central_intel":
 		return "central"
 	default:
@@ -134,7 +138,7 @@ func legacyKind(o anonAction) string {
 // paths. Other policy or attribution refusals remain unexplained.
 func listedRule(o anonAction, check, reason string) (string, bool) {
 	entry := legacyEntry(o)
-	if reason == "policy" && (entry == "netblock" || entry == "permblock" || entry == "challenge_timeout" || entry == "incident") {
+	if reason == "policy" && (entry == "netblock" || entry == "permblock" || entry == "challenge_timeout" || entry == "incident" || entry == "incident_spray") {
 		return "unknown", true
 	}
 	if check == "" || check == "local_threat_score" {
@@ -152,7 +156,7 @@ func listedRule(o anonAction, check, reason string) (string, bool) {
 		}
 		for _, derived := range checks.DerivedEntries() {
 			if derived.Entry.String() == entry && slices.Contains(derived.Checks, check) &&
-				(entry == "central" || entry == "incident" || entry == "asn_crawl" || entry == "mail_subnet") {
+				(entry == "central" || entry == "incident" || entry == "incident_spray" || entry == "asn_crawl" || entry == "mail_subnet") {
 				return check, true
 			}
 		}

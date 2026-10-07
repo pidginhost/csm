@@ -218,7 +218,11 @@ their identifiers and checks for joins:
 
 The window runs from the first to the last hourly admission summary. A block
 is matched by one observed attempt for the same finding, response kind and
-typed target within an hour. Matching can reassign compatible decisions
+typed target within an hour; a scan block retried from the pending queue may
+land later, until its retry ages out two hours after it was queued. Spray
+blocks match through their own entries: the incident spray block of one
+address through `incident_spray`, the mail spray subnet block through
+`mail_subnet`. Matching can reassign compatible decisions
 when their windows overlap; each decision is consumed once. Coalesced
 decisions and designed refusals each spend one summary count for the same
 entry, kind and check in the same or an adjacent hour. Hourly aggregation
@@ -227,7 +231,7 @@ the admission hour floor; larger clock disagreement stays unexplained and
 must be checked through clock status.
 Attribution explains only scan-pass provenance gaps for checks served through
 the matching entry; policy explains only netblock, permanent-block escalation,
-challenge timeout or incident paths without a retained root. A rootless
+challenge timeout, incident or incident spray paths without a retained root. A rootless
 derived path may spend its fixed unknown-check policy count without
 a finding link. Other policy and attribution refusals stay unexplained.
 Summaries must be stamped at an hour boundary, and only refused decisions

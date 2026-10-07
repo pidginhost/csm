@@ -41,6 +41,10 @@ const (
 	maxPendingAge = 2 * time.Hour
 )
 
+// PendingRetryAge is how long a queued scan block may still be retried;
+// the comparison tool matches such a retry to its earlier preview.
+const PendingRetryAge = maxPendingAge
+
 // IPBlocker abstracts the firewall engine for auto-blocking.
 // When set, blocks go through nftables firewall engine.
 type IPBlocker interface {

@@ -1,6 +1,14 @@
 package main
 
-import "time"
+import (
+	"time"
+
+	"github.com/pidginhost/csm/internal/checks"
+)
+
+// pendingRetryAge bounds how long after its preview a scan block can land
+// from the legacy pending queue.
+const pendingRetryAge = checks.PendingRetryAge
 
 type compareDecision struct {
 	kind     string
@@ -41,8 +49,14 @@ func matchComparison(checks map[string]string, legacy []anonAction, steps map[co
 	choices := make([][]int, len(legacy))
 	for i, o := range legacy {
 		if o.Action != "permblock" && o.Action != "promote" {
+			// A scan block can land from the pending queue until its retry
+			// ages out, after the preview observed the first selection.
+			earliest := -time.Hour
+			if o.ReasonKind == "scan" {
+				earliest -= pendingRetryAge
+			}
 			for _, step := range stepIDs[compareStepKey{o.FindingID, legacyKind(o), o.anonTarget}] {
-				if d := step.at.Sub(o.Timestamp); d >= -time.Hour && d <= time.Hour {
+				if d := step.at.Sub(o.Timestamp); d >= earliest && d <= time.Hour {
 					choices[i] = append(choices[i], step.id)
 				}
 			}
