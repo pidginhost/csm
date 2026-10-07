@@ -70,6 +70,9 @@ func adversarialInputs(t *testing.T) map[string][]byte {
 		"many_calls.php": []byte("<?php\n" + repeatLines("$fn%[1]d( $a%[1]d ); $v%[1]d = 'literal%[1]d';", 40_000)),
 		// A PDF-shaped body: many long base64-ish streams.
 		"streams.pdf": []byte("%PDF-1.7\n" + repeatStreams(run(base64Alphabet, 60_000), 40)),
+		// Download command names on one line, the literal that download and
+		// miner signatures anchor on.
+		"download_words.txt": []byte(strings.Repeat("curl wget ", 30_000)),
 	}
 	return inputs
 }
@@ -185,18 +188,11 @@ func shippedRule(t *testing.T, name string) *yara_x.Rules {
 	return rules
 }
 
-// A frequent literal between two unbounded gaps makes the engine verify every
-// literal hit to the end of its line, so one long crafted line costs time
-// quadratic in its length. Other rules still share that shape, which hides one
-// rule's cost inside the whole-ruleset budget, so these lines are scanned
-// against the cron downloader rule alone.
-func TestRuleScanBudgetCronDownloaderLines(t *testing.T) {
-	rules := shippedRule(t, "backdoor_cron_downloader")
-	inputs := map[string][]byte{
-		"download_words.txt": []byte("*/5 * * * * " + strings.Repeat("curl wget ", 100_000)),
-		"cron_prefixes.txt":  []byte(strings.Repeat("*/5 * * * * wget x ", 55_000)),
-		"pipe_targets.txt":   []byte(strings.Repeat("* * curl x | sh ", 65_000)),
-	}
+// requireRuleScanBudget scans each input against one shipped rule compiled on
+// its own, so a slow rule cannot hide inside the whole-ruleset budget.
+func requireRuleScanBudget(t *testing.T, rule string, inputs map[string][]byte) {
+	t.Helper()
+	rules := shippedRule(t, rule)
 	for name, content := range inputs {
 		t.Run(name, func(t *testing.T) {
 			warmup, best, err := measureScanBudget(func() (time.Duration, error) {
@@ -209,6 +205,61 @@ func TestRuleScanBudgetCronDownloaderLines(t *testing.T) {
 			if best > scanBudgetPerFile {
 				t.Errorf("scan took %s, budget is %s", best.Round(time.Millisecond), scanBudgetPerFile)
 			}
+		})
+	}
+}
+
+// A frequent literal between two unbounded gaps makes the engine verify every
+// literal hit to the end of its line, so one long crafted line costs time
+// quadratic in its length.
+func TestRuleScanBudgetCronDownloaderLines(t *testing.T) {
+	requireRuleScanBudget(t, "backdoor_cron_downloader", map[string][]byte{
+		"download_words.txt": []byte("*/5 * * * * " + strings.Repeat("curl wget ", 100_000)),
+		"cron_prefixes.txt":  []byte(strings.Repeat("*/5 * * * * wget x ", 55_000)),
+		"pipe_targets.txt":   []byte(strings.Repeat("* * curl x | sh ", 65_000)),
+	})
+}
+
+// The download, miner and startup-file rules share the cron rule's shape. The
+// Markdown checks in two of them also compared every command with every fenced
+// block or link, which is quadratic in the number of commands even when each
+// line is short.
+func TestRuleScanBudgetDownloadAndMinerLines(t *testing.T) {
+	downloadWords := []byte(strings.Repeat("curl wget ", 60_000))
+	downloadArgs := []byte(strings.Repeat("wget x ", 85_000))
+	tests := []struct {
+		rule   string
+		inputs map[string][]byte
+	}{
+		{"miner_shell_downloader", map[string][]byte{
+			"download_words.txt": downloadWords,
+			"download_args.txt":  downloadArgs,
+		}},
+		{"miner_cron_persistence", map[string][]byte{
+			"cron_prefixes.txt":  []byte(strings.Repeat("*/5 * * * * ", 50_000)),
+			"cron_downloads.txt": []byte(strings.Repeat("*/5 * * * * wget x ", 32_000)),
+		}},
+		{"dropper_wget_exec", map[string][]byte{
+			"download_words.txt": downloadWords,
+			"download_args.txt":  downloadArgs,
+			"pipe_targets.txt":   []byte(strings.Repeat("curl x | sh ", 50_000)),
+			"fenced_commands.md": []byte(strings.Repeat("```sh\ncurl x | sh\n```\n", 27_000)),
+			"linked_commands.md": []byte(strings.Repeat("[curl x | sh](https://a.test/)\n", 20_000)),
+			"backtick_runs.txt":  []byte(strings.Repeat("`", 600_000)),
+			"fence_lines.md":     []byte(strings.Repeat("```\n", 150_000)),
+		}},
+		{"backdoor_bashrc_injection", map[string][]byte{
+			"download_words.txt":      downloadWords,
+			"download_args.txt":       downloadArgs,
+			"background_words.txt":    []byte(strings.Repeat("nohup ", 100_000)),
+			"fenced_startup_lines.md": []byte(strings.Repeat("```sh\necho 'curl x | sh' >> ~/.bashrc\n```\n", 15_000)),
+			"startup_lines_in_fences.md": []byte(strings.Repeat(
+				"```sh\n"+strings.Repeat("echo 'curl x | sh' >> ~/.bashrc\n", 100)+"```\n", 180)),
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.rule, func(t *testing.T) {
+			requireRuleScanBudget(t, tc.rule, tc.inputs)
 		})
 	}
 }

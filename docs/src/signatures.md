@@ -88,6 +88,16 @@ same line. Quoted shells, command groups, common execution wrappers and shell
 lookup commands are recognized. Bounded spans keep crafted lines cheap to scan;
 unrelated lines and shell words inside longer command names are not evidence.
 
+The download-and-pipe, miner download, miner cron and shell startup file
+signatures also look for their parts within bounded spans of one line, in both
+engines. A download command is found wherever it sits on a long line, and a
+`#` shortly before it still marks a commented-out usage line. The YARA-X rules
+treat a command as documentation only inside a fenced code block, whose opening
+fence starts a line and whose closing fence stands on its own line, or as the
+text of a Markdown link. The shell startup file signature judges a file with
+more Markdown blocks and links than any published document carries without that
+suppression, so its scan time stays linear.
+
 The PHP goto-obfuscation rule requires three independent signals in both
 engines: a PHP opening tag, at least nine jumps to digit-bearing generated
 labels or eleven to alphabetic labels, and a decode call, execution call,

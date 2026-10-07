@@ -12,6 +12,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - The cron downloader signature no longer slows scans on long crafted lines, and it no longer raises critical alerts on plugin pages that print a recommended wp-cron command, since it now needs a shell, eval or exec command after the download. Existing files are judged this way at their next scan, findings already raised stay until dismissed, and no setting is involved.
+- Four more download, miner and shell startup file signatures no longer slow scans on long crafted lines or on files full of documented install commands; they now catch a download command anywhere on a long line, and only well-formed Markdown code blocks and link text count as documentation. Existing files are judged this way at their next scan, and no setting is involved.
 - A file planted in a hosted site can no longer stall the deep phishing scan.
 - Scheduled phishing scans now report kits in dependency and source-control folders unless excluded; `auto_response.quarantine_files` can quarantine phishing pages found there.
 - Group-writable PHP checks now include dependency and cache folders and no longer raise false alerts on symbolic links.

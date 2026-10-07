@@ -68,8 +68,8 @@ func TestRuleScanBudgetMeasurement(t *testing.T) {
 
 func TestRuleScanBudgetFixtures(t *testing.T) {
 	inputs := adversarialInputs(t)
-	if len(inputs) != 4 {
-		t.Fatalf("fixture count = %d, want 4", len(inputs))
+	if len(inputs) != 5 {
+		t.Fatalf("fixture count = %d, want 5", len(inputs))
 	}
 	for name, want := range adversarialInputs(t) {
 		if !bytes.Equal(inputs[name], want) {
@@ -109,6 +109,14 @@ func TestRuleScanBudgetFixtures(t *testing.T) {
 	calls := regexp.MustCompile(`(?m)^\$fn[0-9]+\( \$a[0-9]+ \); \$v[0-9]+ = 'literal[0-9]+';$`)
 	if count := len(calls.FindAll(inputs["many_calls.php"], -1)); count != 40_000 {
 		t.Errorf("variable calls = %d, want 40000", count)
+	}
+	// One line of command names, so every literal hit can run to its end.
+	words := inputs["download_words.txt"]
+	if bytes.IndexByte(words, '\n') >= 0 {
+		t.Error("download words span more than one line")
+	}
+	if n := bytes.Count(words, []byte("curl ")) + bytes.Count(words, []byte("wget ")); n < 60_000 {
+		t.Errorf("download command names = %d, want >= 60000", n)
 	}
 	pdf := inputs["streams.pdf"]
 	if !bytes.HasPrefix(pdf, []byte("%PDF-1.7\n")) {
