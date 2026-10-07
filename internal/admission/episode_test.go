@@ -117,6 +117,7 @@ func TestLineStateFollowsTheCandidate(t *testing.T) {
 		{StateVerified, 1, LineAnswered},
 		{StateFailed, 3, LineAnswered},
 		{StateUnknown, 1, LineAnswered},
+		{StateObserved, 1, LineAnswered},
 		{StateDropped, 0, LineEnded},
 		{StateRefused, 0, LineEnded},
 		{StateWithheld, 0, LineEnded},

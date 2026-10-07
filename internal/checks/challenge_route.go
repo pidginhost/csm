@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
@@ -104,13 +105,16 @@ func responseActionForFinding(cfg *config.Config, f alert.Finding) string {
 // challengeRoutesFinding narrows challengeRoutesCheck for one finding, with
 // challenge routing assumed on.
 func challengeRoutesFinding(cfg *config.Config, f alert.Finding) bool {
-	if IsRetiredThreatScoreFinding(f) {
-		return false
-	}
 	if f.Check == "ip_reputation" && f.Severity == alert.Critical {
 		return false
 	}
 	return challengeRoutesCheck(cfg, f.Check)
+}
+
+// challengeSelected reports whether challenge routing answers f instead of
+// a block: routing serves, and the policy routes the finding.
+func challengeSelected(cfg *config.Config, f alert.Finding) bool {
+	return cfg.Challenge.Enabled && challengeIPList != nil && !isHardBlockCheck(f.Check) && responseActionForFinding(cfg, f) == responseChallenge
 }
 
 // isHardBlockCheck reports whether a check must never be routed to the
@@ -120,7 +124,8 @@ func isHardBlockCheck(check string) bool {
 	return ResponsePolicyFor(check).NeverChallenge || neverChallengeDynamicName(check)
 }
 
-const challengeDuration = 30 * time.Minute
+// ChallengeDuration is how long a routed address stays challenged.
+const ChallengeDuration = 30 * time.Minute
 
 // ChallengeThenBlock runs the two IP-disposition stages in their required
 // order -- challenge routing first so an eligible IP is on the challenge list
@@ -130,9 +135,16 @@ const challengeDuration = 30 * time.Minute
 // be silently broken by reordering in one path. Both stages run on the same
 // finding set (the full/repeat-offender set); callers append the returned
 // actions wherever their pipeline expects them.
+//
+// Both stages skip findings an earlier pass evaluated, and this pass marks
+// every finding it was given, so a scan finding the runner evaluated is not
+// acted on or handed to admission again when it is dispatched.
 func ChallengeThenBlock(cfg *config.Config, findings []alert.Finding) (challengeActions, blockActions []alert.Finding) {
 	challengeActions = ChallengeRouteIPs(cfg, findings)
 	blockActions = AutoBlockIPs(cfg, findings)
+	for i := range findings {
+		findings[i].AutoIPResponseEvaluated = true
+	}
 	return challengeActions, blockActions
 }
 
@@ -148,6 +160,9 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	routed := make(map[string]bool)
 
 	for _, f := range findings {
+		if f.AutoIPResponseEvaluated {
+			continue
+		}
 		// Challenge timeouts can hard-block too, so gated authentication
 		// checks must honor the same opt-in as direct firewall responses.
 		if ResponsePolicyFor(f.Check).Block == BlockWithCpanelLogins && !cfg.AutoResponse.BlockCpanelLogins {
@@ -173,7 +188,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		}
 
 		ip := extractIPFromFinding(f)
-		if ip == "" || routed[ip] {
+		if ip == "" {
 			continue
 		}
 
@@ -181,11 +196,15 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
-		if challengeIPList.Contains(ip) {
+		// Admission judges existing effects itself; the list's state is
+		// the legacy path's.
+		root := respond(admission.KindChallenge, f, ip, 0)
+
+		if routed[ip] || challengeIPList.Contains(ip) {
 			continue
 		}
 
-		addChallengeIP(f.Check, ip, f.Message, challengeDuration, alert.FindingID(f))
+		addChallengeIP(f.Check, ip, f.Message, ChallengeDuration, alert.FindingID(f), root)
 		routed[ip] = true
 		observeChallengeRouted(f.Check)
 		recordChallengeRouteStat(ip, f.Check, time.Now())
@@ -196,7 +215,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "challenge_route",
-			Message:   fmt.Sprintf("CHALLENGE: %s sent to PoW challenge (expires in %s)", ip, challengeDuration),
+			Message:   fmt.Sprintf("CHALLENGE: %s sent to PoW challenge (expires in %s)", ip, ChallengeDuration),
 			Details:   fmt.Sprintf("Reason: %s", f.Message),
 			Timestamp: time.Now(),
 		})
@@ -205,9 +224,15 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	return actions
 }
 
-func addChallengeIP(check, ip, reason string, duration time.Duration, findingID string) {
+func addChallengeIP(check, ip, reason string, duration time.Duration, findingID string, root admission.Evidence) {
 	if check == "http_claimed_bot_unverified" {
 		challengeIPList.AddNonEscalating(ip, reason, duration)
+		return
+	}
+	if list, ok := challengeIPList.(interface {
+		AddWithRoot(string, string, time.Duration, string, admission.Evidence)
+	}); ok {
+		list.AddWithRoot(ip, reason, duration, findingID, root)
 		return
 	}
 	if list, ok := challengeIPList.(interface {

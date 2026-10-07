@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/pidginhost/csm/internal/actionlog"
@@ -137,6 +138,44 @@ func FuzzAddressTarget(f *testing.F) {
 		}
 		if raw != "" && target.Target == raw {
 			t.Fatalf("raw target copied: %q", raw)
+		}
+	})
+}
+
+func FuzzCompareActionShape(f *testing.F) {
+	for _, row := range []anonAction{
+		summary(time.Hour, "pam_bruteforce", "queued", "", 1),
+		admissionStep("fid-"+strings.Repeat("a", 32), time.Minute),
+	} {
+		data, err := json.Marshal(row)
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(data)
+	}
+	for _, seed := range []string{
+		"", "{}", "null", `{"check":"sample_account"}`, `{"check":"pam_bruteforce","account":"pam_bruteforce"}`,
+		`{"finding_id":"raw-identity"}`, `{"target_kind":"ip","target":"192.0.2.10"}`, `{"unexpected":true}`,
+		`{"v":1,"format":1,"result":"queued","target_kind":"empty","count":1,"check":"pam_bruteforce","unknown":true}`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		var row anonAction
+		if decodeStrict(data, &row) != nil || !compareActionShape(row) {
+			return
+		}
+		again, err := json.Marshal(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded anonAction
+		if err = decodeStrict(again, &decoded); err != nil || !compareActionShape(decoded) {
+			t.Fatalf("accepted anonymous action lost its strict shape: %v", err)
+		}
+		round, err := json.Marshal(decoded)
+		if err != nil || string(round) != string(again) {
+			t.Fatalf("accepted anonymous action changed on round trip: %v", err)
 		}
 	})
 }

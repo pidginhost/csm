@@ -8,10 +8,17 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 )
 
+func TestOwnerImplementsTheResponseFunnel(t *testing.T) {
+	if _, ok := any((*Owner)(nil)).(checks.ResponseAdmission); !ok {
+		t.Fatal("the admission owner cannot receive the response funnel's handoffs")
+	}
+}
+
 // Handoff from 1.4a: the daemon registers every producer of the table and
-// seals the registry, so nothing registers later and the ledger opens.
+// seals the registry, so nothing registers later and the ledger opens. The
+// owner keeps every producer's handle: it mints for all of them.
 func TestRegistryCoversTheProducerTable(t *testing.T) {
-	reg, err := Registry()
+	reg, producers, err := Registry()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,6 +35,17 @@ func TestRegistryCoversTheProducerTable(t *testing.T) {
 		spec, ok := reg.Spec(p.Spec.ID)
 		if !ok || !reflect.DeepEqual(spec, p.Spec) {
 			t.Errorf("producer %s registered as %+v (%v), want %+v", p.Spec.ID, spec, ok, p.Spec)
+		}
+		if h := producers[p.Spec.ID]; h == nil || h.ID() != p.Spec.ID {
+			t.Errorf("producer %s has no handle", p.Spec.ID)
+		}
+	}
+	if len(producers) != len(table) {
+		t.Errorf("%d handles for %d producers", len(producers), len(table))
+	}
+	for _, spec := range checks.DerivedEntries() {
+		if got, ok := reg.Spec(spec.ID); !ok || got.Entry != spec.Entry {
+			t.Errorf("derived entry %s registered as %+v (%v)", spec.ID, got, ok)
 		}
 	}
 }

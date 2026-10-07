@@ -105,6 +105,10 @@ type Finding struct {
 	// the alert dispatcher must not retry it, including a refused attempt.
 	// New detections and findings read from storage get a fresh evaluation.
 	AutoFileResponseEvaluated bool `json:"-"`
+	// AutoIPResponseEvaluated records that challenge routing and IP blocking
+	// already considered the finding in this process, so a later pass over
+	// the same finding neither acts again nor reaches admission twice.
+	AutoIPResponseEvaluated bool `json:"-"`
 
 	// PHP-relay structured fields (Stage 1 email_php_relay_abuse). All optional;
 	// zero values mean "this finding does not carry that dimension".

@@ -71,6 +71,7 @@ func TestRegistryResponsePolicyMatchesGoldenTables(t *testing.T) {
 			NeverChallenge: goldenNeverChallenge[c.Name],
 			Evidence:       evidencePolicy[c.Name].Family,
 			Basis:          evidencePolicy[c.Name].Basis,
+			Subnet:         goldenSubnet[c.Name],
 		}
 		switch {
 		case goldenAlwaysBlock[c.Name]:
@@ -87,17 +88,25 @@ func TestRegistryResponsePolicyMatchesGoldenTables(t *testing.T) {
 	}
 }
 
+// goldenSubnet is the subnet response each subnet summary feeds.
+var goldenSubnet = map[string]admission.Entry{
+	"mail_subnet_spray": admission.EntryMailSubnet,
+	"smtp_subnet_spray": admission.EntryMailSubnet,
+	"http_asn_crawl":    admission.EntryASNCrawl,
+}
+
 // Attacker-side checks that deliberately never drive a single-IP scan block
 // or a challenge. Each is a summary of many sources, an advisory, or evidence
-// another layer already acted on; the subnet summaries among them are handled
-// by their own subnet paths, which do not consult the registry. Adding an
-// attacker-side check to the registry means either giving it a Response or
-// adding it here with a reason.
+// another layer already acted on; the subnet summaries among them feed the
+// subnet response their registry row names. Adding an attacker-side check to
+// the registry means either giving it a Response or adding it here with a
+// reason.
 var nonActionableAttackerSide = map[string]string{
 	"email_auth_failure_realtime": "one raw mailbox failure; thresholded checks block",
 	"email_malware":               "content may come from a compromised local sender",
 	"email_phishing_content":      "content may come from a compromised local sender",
 	"http_asn_crawl":              "subnet-scoped; handled by its own tempban path",
+	"local_threat_score":          "retired: nothing emits it; kept so a scan clears stored findings",
 	"http_distributed_flood":      "describes a targeted vhost, not one source",
 	"mail_account_spray":          "per-mailbox summary of many sources",
 	"mail_bruteforce_suspected":   "advisory for an established source",

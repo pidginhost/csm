@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 )
 
@@ -149,6 +150,10 @@ type Incident struct {
 	// RemoteIPEvidenceFinding is the FindingID of the finding that set
 	// RemoteIPEvidence, so a block names its evidence after trimming.
 	RemoteIPEvidenceFinding string `json:"remote_ip_evidence_finding,omitempty"`
+	// The attesting policy identity is retained so restored proof can be
+	// revalidated even after its source event leaves the timeline.
+	RemoteIPEvidenceCheck    string `json:"remote_ip_evidence_check,omitempty"`
+	RemoteIPEvidenceSeverity string `json:"remote_ip_evidence_severity,omitempty"`
 }
 
 // AutoBlockState is the escalation ladder's memory for one incident. Count is
@@ -280,6 +285,19 @@ type IncidentEvent struct {
 	Process   string    `json:"process,omitempty"`
 	Path      string    `json:"path,omitempty"`
 	RemoteIP  string    `json:"remote_ip,omitempty"`
+	// root retains the attesting finding's prepared evidence or mint
+	// refusal for the block it may lead to; never stored. It is a pointer
+	// because timelines are copied on every read: most events carry none.
+	root *PreparedRoot
+}
+
+// PreparedRoot retains the attesting finding's evidence, or its mint
+// refusal with what the refusal counts of the finding, until a response is
+// selected. Incident events keep it only in memory.
+type PreparedRoot struct {
+	admission.Evidence
+	Finding alert.Finding
+	Err     error
 }
 
 // IncidentAction is an automated or operator action that touched the

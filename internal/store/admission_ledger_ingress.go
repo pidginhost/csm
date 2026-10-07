@@ -118,7 +118,14 @@ func (l *AdmissionLedger) EnqueueGroup(arrivals []admission.Arrival, checkpoint 
 		for i, a := range arrivals {
 			id, created, arriveErr := l.arriveTx(q, a)
 			out[i].Candidate, out[i].Created, out[i].Err = id, created, arriveErr
-			switch reason, refused := admission.ReasonOf(arriveErr); {
+			reason, refused := admission.ReasonOf(arriveErr)
+			if errors.Is(arriveErr, admission.ErrCandidateTerminal) || errors.Is(arriveErr, admission.ErrTransitionConflict) {
+				// Placement never lands on an ended or in-flight
+				// candidate; one that does is counted as an invalid
+				// refusal, never dropped (R12).
+				reason, refused = admission.ReasonInvalid, true
+			}
+			switch {
 			case refused:
 				tier := arrivalTier(a, now)
 				if txErr = q.count(admission.EventRefused, reason, tier); txErr != nil {
@@ -132,9 +139,6 @@ func (l *AdmissionLedger) EnqueueGroup(arrivals []admission.Arrival, checkpoint 
 						return txErr
 					}
 				}
-			case errors.Is(arriveErr, admission.ErrCandidateTerminal), errors.Is(arriveErr, admission.ErrTransitionConflict):
-				// The request names a candidate that has ended or is in
-				// flight: the engine's episode choice, not a queue refusal.
 			case arriveErr != nil:
 				return arriveErr
 			}
@@ -250,6 +254,11 @@ func (l *AdmissionLedger) arriveTx(q *queueTx, a admission.Arrival) (admission.C
 	}
 	if a.Request.Target != e.Target() {
 		return "", false, refusal(admission.ReasonInvalid, "arrival request target differs from its evidence")
+	}
+	if a.Request.Entry != 0 {
+		if err := l.reg.ValidateVia(a.Request.Entry, e); err != nil {
+			return "", false, err
+		}
 	}
 	ids, err := rootSet(a.Request)
 	if err != nil {

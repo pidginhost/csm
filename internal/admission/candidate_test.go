@@ -183,6 +183,7 @@ func TestAttemptRecordInvariants(t *testing.T) {
 		{"verified", AttemptRecord{Attempt: first, State: StateVerified, Disposition: DispositionApplied, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Finished: finished}, true},
 		{"failed", AttemptRecord{Attempt: first, State: StateFailed, Disposition: DispositionFailed, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Finished: t0}, true},
 		{"unknown", AttemptRecord{Attempt: first, State: StateUnknown, Disposition: DispositionUnknown, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Finished: finished}, true},
+		{"observed", AttemptRecord{Attempt: first, State: StateObserved, Disposition: DispositionObserve, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Finished: finished}, true},
 		{"queued is not a phase", AttemptRecord{Attempt: first, State: StateQueued, ExpiresAt: t0.Add(time.Hour), Reserved: t0}, false},
 		{"outcome without finish", AttemptRecord{Attempt: first, State: StateVerified, Disposition: DispositionApplied, ExpiresAt: t0.Add(time.Hour), Reserved: t0}, false},
 		{"open with finish", AttemptRecord{Attempt: first, State: StateExecuting, ExpiresAt: t0.Add(time.Hour), Reserved: t0, Finished: finished}, false},
@@ -320,6 +321,8 @@ func TestCandidateTransitionCountProvesMinimumHistory(t *testing.T) {
 		{"later reservation", StateReserved, 0, 0, 2, 4},
 		{"later execution", StateExecuting, 0, 0, 2, 5},
 		{"later verification", StateVerified, DispositionApplied, 0, 2, 6},
+		{"observed", StateObserved, DispositionObserve, 0, 1, 3},
+		{"later observation", StateObserved, DispositionObserve, 0, 2, 5},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := queuedCandidate(t)
@@ -344,6 +347,30 @@ func TestCandidateTransitionCountProvesMinimumHistory(t *testing.T) {
 			}
 			c.Transitions--
 			rec.Transitions--
+			assertCandidateRefused(t, c, rec)
+		})
+	}
+}
+
+// An outcome, a preview included, records what an attempt did: a candidate
+// that was never reserved cannot carry one.
+func TestCandidateOutcomeNeedsAnAttempt(t *testing.T) {
+	for _, tc := range []struct {
+		state State
+		d     Disposition
+	}{
+		{StateVerified, DispositionApplied}, {StateFailed, DispositionFailed},
+		{StateUnknown, DispositionUnknown}, {StateObserved, DispositionObserve},
+	} {
+		t.Run(tc.state.String(), func(t *testing.T) {
+			c := queuedCandidate(t)
+			c.State, c.Disposition, c.Attempts, c.ExpiresAt, c.Transitions = tc.state, tc.d, MaxAttempts, t0.Add(time.Hour), 10
+			rec, err := c.record()
+			if err != nil {
+				t.Fatalf("with its attempts: %v", err)
+			}
+			c.Attempts, c.ExpiresAt = 0, time.Time{}
+			rec.Attempts, rec.ExpiresAt = 0, 0
 			assertCandidateRefused(t, c, rec)
 		})
 	}

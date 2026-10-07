@@ -99,7 +99,7 @@ func (d *Daemon) startFirewallUsing(ops firewallStartupOps) {
 	// Wire the incident firewall hand-off through the ApplyBlock chokepoint
 	// so the correlator distinguishes live mutation from dry-run and no-op
 	// outcomes AND spray blocks leave the standard evidence trail.
-	SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
+	SetIncidentSprayBlocker(d.applyIncidentBlock)
 
 	fwState, _ := firewall.LoadState(d.cfg.StatePath)
 	csmlog.Info("firewall active",

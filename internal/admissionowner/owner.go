@@ -10,6 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/store"
@@ -25,12 +26,17 @@ const (
 	defaultDeliverEvery   = time.Second
 	defaultNoticeEvery    = 5 * time.Second
 	defaultDrainEvery     = time.Second
+	// defaultScheduleEvery bounds the owner to one batch start a second
+	// (spec 5.5).
+	defaultScheduleEvery = time.Second
 )
 
 // maxDrainGroups bounds the groups one drain persists, so a busy ingress
 // cannot keep the owner from its other timers. Shutdown repeats this
 // bounded turn until all held work is persisted.
 const maxDrainGroups = 4
+
+var _ checks.ResponseAdmission = (*Owner)(nil)
 
 // drainGroup is the arrivals one drain group persists; tests shrink it.
 var drainGroup = admission.MaxArrivalGroup
@@ -40,6 +46,17 @@ var drainGroup = admission.MaxArrivalGroup
 var drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
 	return in.DrainTaken(l, items, arrivalRequest)
 }
+
+// scheduleLedger picks queued work; tests make it fail. monoNow reads the
+// monotonic clock the owner's wake time is set on; tests move it.
+var (
+	scheduleLedger = (*store.AdmissionLedger).Schedule
+	monoNow        = time.Now
+)
+
+// previewLimits lets a schedule serve whatever the ledger's budgets allow,
+// one batch of members at a time; tests shrink the batch.
+var previewLimits = admission.ScheduleLimits{General: admission.MaxCeiling, Reserved: admission.MaxCeiling, Members: admission.MaxBatchMembers}
 
 // Options are what the owner needs from the daemon.
 type Options struct {
@@ -60,9 +77,17 @@ type Options struct {
 	// Deliver sends notices through the daemon's independent health path,
 	// as protection_queue_degraded is sent: history and direct dispatch,
 	// never the finding channel, suppressions or the routine rate limit.
-	Deliver func([]alert.Finding) error
+	// A preview is recorded in history only: legacy blocking enforces, so
+	// the gap it describes is not an outage (R10).
+	Deliver func(findings []alert.Finding, preview bool) error
+	// Expiry is how long the response a candidate asks for would last
+	// under the current configuration. A preview records the expiry a
+	// live attempt would have.
+	Expiry func(admission.Candidate) time.Duration
+	// Caps are the firewall's containment capabilities block targets fit.
+	Caps func() admission.Caps
 	// Timer periods; zero selects the defaults.
-	TickEvery, InventoryEvery, StatusEvery, DeliverEvery, NoticeEvery, DrainEvery time.Duration
+	TickEvery, InventoryEvery, StatusEvery, DeliverEvery, NoticeEvery, DrainEvery, ScheduleEvery time.Duration
 }
 
 var errStopped = errors.New("the admission owner has stopped")
@@ -75,19 +100,22 @@ type request struct {
 // Owner is the daemon's one handle on the admission ledger. One goroutine
 // makes every call that changes the ledger, so sequences such as a tick
 // followed by a new limit never interleave with another change (spec 5.4).
-// Nothing submits to its ingress yet.
+// It serves its queue as observe previews: nothing it admits is executed
+// until the applier exists.
 type Owner struct {
-	opts     Options
-	stopping atomic.Bool
-	reg      *admission.Registry
-	ingress  *admission.Ingress
-	requests chan request
-	quit     chan bool
-	done     chan struct{}
-	stopOnce sync.Once
-	current  atomic.Pointer[health.AdmissionStatus]
-	audit    *queuehealth.Sampled
-	notices  *sender
+	opts      Options
+	stopping  atomic.Bool
+	reg       *admission.Registry
+	producers map[admission.ProducerID]*admission.Producer
+	ingress   *admission.Ingress
+	requests  chan request
+	quit      chan bool
+	done      chan struct{}
+	stopOnce  sync.Once
+	current   atomic.Pointer[health.AdmissionStatus]
+	audit     *queuehealth.Sampled
+	notices   *sender
+	compare   comparison
 
 	// Owned by the owner goroutine.
 	ledger        *store.AdmissionLedger
@@ -96,14 +124,21 @@ type Owner struct {
 	startErr      error
 	snapshotErr   error
 	tickErr       error
+	scheduleErr   error
 	degraded      bool
 	lastTick      time.Time
-	limit         uint32
-	source        string
-	imported      *health.AdmissionImport
-	inventoryAt   time.Time
-	inventoryErr  error
-	auditAcked    uint64
+	// now is the admission time of the last reading.
+	now time.Time
+	// scheduleDue asks the next schedule turn to run; wakeAt, on the
+	// monotonic clock, is when the ledger said queued work changes next.
+	scheduleDue  bool
+	wakeAt       time.Time
+	limit        uint32
+	source       string
+	imported     *health.AdmissionImport
+	inventoryAt  time.Time
+	inventoryErr error
+	auditAcked   uint64
 	// drained is the ingress decision sequence the last drain persisted.
 	drained uint64
 	// drainFailed holds admission closed until a drain succeeds. drainErr
@@ -138,13 +173,22 @@ func Start(opts Options) *Owner {
 	if opts.DrainEvery <= 0 {
 		opts.DrainEvery = defaultDrainEvery
 	}
+	if opts.ScheduleEvery <= 0 {
+		opts.ScheduleEvery = defaultScheduleEvery
+	}
 	o := &Owner{
 		opts: opts, requests: make(chan request), quit: make(chan bool), done: make(chan struct{}),
 		audit: queuehealth.NewSampled(int(admission.MaxAuditSlots), "rows", deliveryLag),
 	}
-	o.reg, o.startErr = buildRegistry()
+	o.reg, o.producers, o.startErr = buildRegistry()
 	if o.startErr == nil {
 		o.ingress, o.startErr = admission.NewIngress(o.reg)
+	}
+	if o.startErr == nil {
+		o.ingress.ObserveArrivals(o.countArrival)
+		o.ingress.ObserveDisplacements(func(a admission.DrainedArrival) {
+			o.countArrivalAt(a, deliveryNow())
+		})
 	}
 	if o.startErr == nil {
 		o.startErr = o.start()
@@ -168,6 +212,8 @@ func (o *Owner) run() {
 	defer deliver.Stop()
 	drain := time.NewTicker(o.opts.DrainEvery)
 	defer drain.Stop()
+	schedule := time.NewTicker(o.opts.ScheduleEvery)
+	defer schedule.Stop()
 	for {
 		select {
 		case clean := <-o.quit:
@@ -192,6 +238,9 @@ func (o *Owner) run() {
 				o.startErr = o.start()
 				o.refreshStatus()
 			}
+			if !o.started {
+				o.writeComparison(false)
+			}
 		case <-inventory.C:
 			if o.started {
 				o.refreshInventory()
@@ -205,6 +254,10 @@ func (o *Owner) run() {
 		case <-drain.C:
 			if o.started {
 				_ = o.drain()
+			}
+		case <-schedule.C:
+			if o.started {
+				o.schedule()
 			}
 		}
 	}
@@ -263,7 +316,7 @@ func (o *Owner) start() error {
 	if err = o.publish(); err != nil {
 		return err
 	}
-	o.started = true
+	o.started, o.scheduleDue = true, true
 	return nil
 }
 
@@ -315,7 +368,8 @@ func (o *Owner) readTick() (admission.ClockReading, error) {
 		o.tickErr = err
 		return reading, fmt.Errorf("reading the admission clock: %w", err)
 	}
-	o.tickErr, o.degraded, o.lastTick = nil, t.Degraded, reading.Wall
+	o.tickErr, o.degraded, o.lastTick, o.now = nil, t.Degraded, reading.Wall, t.Now
+	o.compare.begin(o.now)
 	return reading, nil
 }
 
@@ -323,6 +377,7 @@ func (o *Owner) readTick() (admission.ClockReading, error) {
 // would judge arrivals against a stale time (O6). The next good reading
 // publishes a fresh snapshot.
 func (o *Owner) tick() error {
+	defer o.writeComparison(false)
 	admitting := o.ingress.Health().Admitting
 	defer func() {
 		if !admitting || !o.ingress.Health().Admitting {
@@ -413,6 +468,7 @@ func (o *Owner) reloadCeiling() error {
 		return err
 	}
 	o.reloadPending = false
+	o.scheduleDue = true
 	return nil
 }
 
@@ -433,9 +489,13 @@ func (o *Owner) halt(clean bool) {
 }
 
 func (o *Owner) shutdown() {
+	defer o.writeComparison(true)
 	if !o.started {
 		return
 	}
+	// No snapshot published during the stop reopens admission, so the
+	// drains below end even if a producer was not stopped first (O30).
+	o.ingress.Close()
 	held := o.ingress.Len() != 0
 	for {
 		if o.drainHeld() != nil {
@@ -454,6 +514,27 @@ func (o *Owner) shutdown() {
 	}
 	if err := o.ledger.EndIngress(); err != nil {
 		o.snapshotErr = fmt.Errorf("closing the ingress: %w", err)
+	}
+}
+
+// writeComparison writes the decision counts of each ended hour, or of the
+// hour in progress at a stop, to the action log. Rows a failed write could
+// not record are retried at the next tick.
+func (o *Owner) writeComparison(final bool) {
+	now := o.now
+	// Refusals still happen during a ledger or clock outage. Their hourly
+	// summaries use wall time without moving the admission clock backward.
+	if !o.started || o.tickErr != nil {
+		if wall := deliveryNow(); wall.After(now) {
+			now = wall
+		}
+	}
+	rows, through := o.compare.take(now, final)
+	if len(rows) == 0 {
+		return
+	}
+	if err := o.opts.WriteAudit(rows); err == nil {
+		o.compare.written(through)
 	}
 }
 
@@ -507,6 +588,9 @@ func (o *Owner) drainHeld() (err error) {
 		if err != nil && !errors.Is(err, admission.ErrArrivalsIsolated) {
 			return err
 		}
+		if report.Queued+report.Coalesced > 0 {
+			o.scheduleDue = true
+		}
 		// The group's own snapshot reopened admission.
 		o.drainFailed = false
 		o.drainErr, o.snapshotErr = nil, nil
@@ -517,11 +601,202 @@ func (o *Owner) drainHeld() (err error) {
 	return nil
 }
 
+// schedule runs a turn when work was drained or the ledger's wake time has
+// come, and keeps the cause of a failed turn for status until one
+// succeeds.
+func (o *Owner) schedule() {
+	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) {
+		return
+	}
+	o.scheduleDue, o.wakeAt = false, time.Time{}
+	err := o.preview()
+	if err != nil {
+		o.scheduleDue = true
+	}
+	if (err == nil) != (o.scheduleErr == nil) {
+		o.scheduleErr = err
+		o.refreshStatus()
+	}
+	o.scheduleErr = err
+}
+
+// preview serves the queue's picks as observe previews, after a fresh
+// reading (O9): each is reserved and charged as live work would be and
+// ends in the same transaction without running (O14). The schedule has
+// already deferred the work its budgets cannot serve and revalidated each
+// pick under the same state. A terminal refusal ends only that pick, so an
+// invalid selected lifetime cannot starve the queue. Other failures retry
+// the turn. The ledger's wake time, converted by the admission clock's
+// elapsed time, sets the next turn (O16).
+func (o *Owner) preview() error {
+	if err := o.tick(); err != nil {
+		return err
+	}
+	picks, err := scheduleLedger(o.ledger, previewLimits)
+	if err != nil {
+		return fmt.Errorf("scheduling the queue: %w", err)
+	}
+	for _, p := range picks {
+		c, readErr := o.ledger.Candidate(p.ID)
+		if readErr != nil {
+			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
+		}
+		expires := c.ExpiresAt
+		if c.Attempts == 0 {
+			duration := c.PreviewTTL
+			if duration == 0 {
+				duration = o.opts.Expiry(c)
+			}
+			expires = o.now.Add(duration)
+		}
+		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, expires); err != nil {
+			if reason, refused := admission.ReasonOf(err); refused {
+				switch reason.Disposition() {
+				case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
+					if _, endErr := o.ledger.Terminate(p.ID, reason); endErr != nil {
+						return fmt.Errorf("ending pick %s: %w", p.ID, endErr)
+					}
+					o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionRefused, reason: reason}, o.now)
+					continue
+				}
+			}
+			return fmt.Errorf("previewing pick %s: %w", p.ID, err)
+		}
+		o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
+	}
+	if err = o.publish(); err != nil {
+		return err
+	}
+	wake, ok, err := o.ledger.NextWake()
+	if err != nil {
+		return fmt.Errorf("reading the next wake time: %w", err)
+	}
+	if ok {
+		if d := wake.Sub(o.now); d > 0 {
+			o.wakeAt = monoNow().Add(d)
+		} else {
+			o.scheduleDue = true
+		}
+	}
+	return nil
+}
+
+// countArrival counts the ledger's decision on one drained arrival.
+func (o *Owner) countArrival(a admission.DrainedArrival) {
+	o.countArrivalAt(a, o.now)
+}
+
+func (o *Owner) countArrivalAt(a admission.DrainedArrival, at time.Time) {
+	k := compareKey{entry: entryOf(a.Submission.Evidence, a.Submission.Via), check: a.Submission.Evidence.Check(), kind: a.Submission.Kind}
+	switch {
+	case a.Result.Err != nil:
+		k.decision, k.reason = decisionRefused, reasonOf(a.Result.Err)
+		o.compare.addCountAt(k, a.Selected, at)
+	case a.Result.Created:
+		k.decision = decisionQueued
+		o.compare.addAt(k, at)
+		k.decision = decisionCoalesced
+		o.compare.addCountAt(k, a.Selected-1, at)
+	default:
+		k.decision = decisionCoalesced
+		o.compare.addCountAt(k, a.Selected, at)
+	}
+}
+
 // arrivalRequest asks for the response a submission names. The ledger
 // assigns its episode and generation when it persists the arrival (spec
 // 5.2); a caller never chooses them.
 func arrivalRequest(s admission.Submission) (admission.CandidateRequest, error) {
-	return admission.CandidateRequest{Kind: s.Kind, Target: s.Target, Primary: s.Evidence.ID()}, nil
+	return admission.CandidateRequest{Kind: s.Kind, Target: s.Target, Primary: s.Evidence.ID(), Entry: s.Via, PreviewTTL: s.PreviewTTL}, nil
+}
+
+// Mint mints the evidence f's own observation supports for target, with
+// the producer that stamped it (spec 5.1). It counts nothing: a path may
+// mint a root before it knows it will answer it. Mint takes no owner lock:
+// funnels call it on their own goroutines.
+func (o *Owner) Mint(f alert.Finding, target string) (admission.Evidence, error) {
+	if o.ingress == nil {
+		return admission.Evidence{}, o.startErr
+	}
+	t, err := checks.AdmissionTarget(target, admission.Caps{IPv6: true})
+	if err != nil {
+		return admission.Evidence{}, err
+	}
+	producer, in, err := checks.AdmissionEvidence(f, t)
+	if err != nil {
+		return admission.Evidence{}, err
+	}
+	p := o.producers[producer]
+	if p == nil {
+		return admission.Evidence{}, &admission.Error{Reason: admission.ReasonPolicy, Detail: "finding names no registered producer"}
+	}
+	// Claims resolve against the inventory the ingress judges scopes by.
+	in.Inventory = o.ingress.Inventory()
+	return p.Mint(in)
+}
+
+// Refuse counts a response of kind through via that could not be answered
+// because f could not be minted, as the ingress counts a response it
+// refuses itself.
+func (o *Owner) Refuse(kind admission.Kind, f alert.Finding, via admission.Entry, err error) {
+	if o.ingress != nil {
+		o.ingress.Refuse(err, checks.AdmissionSeverity(f.Severity))
+	}
+	if via == 0 {
+		via = admission.EntryScan
+	}
+	o.compare.add(compareKey{entry: via, check: f.Check, kind: kind, decision: decisionRefused, reason: reasonOf(err)})
+}
+
+// reasonOf is err's admission reason; any other error is an invalid
+// request.
+func reasonOf(err error) admission.Reason {
+	if r, ok := admission.ReasonOf(err); ok {
+		return r
+	}
+	return admission.ReasonInvalid
+}
+
+// entryOf is the entry a response answers through: via, or its evidence's.
+func entryOf(e admission.Evidence, via admission.Entry) admission.Entry {
+	if via != 0 {
+		return via
+	}
+	return e.Entry()
+}
+
+// Respond hands the ingress a response of kind to e's target, through the
+// derived entry via when it is set. It acknowledges memory acceptance only
+// and never waits for the ledger.
+func (o *Owner) Respond(kind admission.Kind, e admission.Evidence, via admission.Entry, ttl ...time.Duration) error {
+	if o.ingress == nil {
+		return o.startErr
+	}
+	var caps admission.Caps
+	if o.opts.Caps != nil {
+		caps = o.opts.Caps()
+	}
+	if kind != admission.KindChallenge && !caps.IPv6 && e.Target().Prefix().Addr().Is6() {
+		err := &admission.Error{Reason: admission.ReasonUnsupportedContainment, Detail: "firewall does not contain IPv6"}
+		o.ingress.Refuse(err, e.Severity())
+		o.compare.add(compareKey{entry: entryOf(e, via), check: e.Check(), kind: kind, decision: decisionRefused, reason: admission.ReasonUnsupportedContainment})
+		return err
+	}
+	var selected time.Duration
+	if len(ttl) > 1 {
+		err := &admission.Error{Reason: admission.ReasonInvalid, Detail: "response names several lifetimes"}
+		o.ingress.Refuse(err, e.Severity())
+		o.compare.add(compareKey{entry: entryOf(e, via), check: e.Check(), kind: kind, decision: decisionRefused, reason: admission.ReasonInvalid})
+		return err
+	}
+	if len(ttl) == 1 {
+		selected = ttl[0]
+	}
+	err := o.ingress.Submit(admission.Submission{Kind: kind, Target: e.Target(), Evidence: e, Via: via, PreviewTTL: selected})
+	if err != nil {
+		o.compare.add(compareKey{entry: entryOf(e, via), check: e.Check(), kind: kind, decision: decisionRefused, reason: reasonOf(err)})
+	}
+	return err
 }
 
 // Status is the last status the owner read.
@@ -547,6 +822,8 @@ func (o *Owner) refreshStatus() {
 		s.Owner.Error = o.drainErr.Error()
 	case o.snapshotErr != nil:
 		s.Owner.Error = o.snapshotErr.Error()
+	case o.scheduleErr != nil:
+		s.Owner.Error = o.scheduleErr.Error()
 	}
 	if o.tickErr != nil {
 		s.Owner.TickError = o.tickErr.Error()

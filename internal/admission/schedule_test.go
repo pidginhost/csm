@@ -10,7 +10,7 @@ import (
 )
 
 func schedItem(id, scope string, class Class, sev Severity, age time.Duration) ScheduleItem {
-	return ScheduleItem{ID: CandidateID(id), Scope: scope, Tier: Tier{class, sev}, Queued: t0.Add(-age), Cost: 1, Ready: true}
+	return ScheduleItem{ID: CandidateID(id), Scope: scope, Tier: Tier{class, sev}, Queued: t0.Add(-age), Cost: 1, CeilingCost: 1, Ready: true}
 }
 
 func picked(picks []Pick) []string {
@@ -148,7 +148,7 @@ func TestScheduleReservedLane(t *testing.T) {
 // remaining budget is passed over without spending its scope's deficit.
 func TestScheduleDeficitAccounting(t *testing.T) {
 	big := schedItem("big", "a", ClassC2, SeverityHigh, time.Hour)
-	big.Cost = 3
+	big.Cost, big.CeilingCost = 3, 3
 	var items = []ScheduleItem{big}
 	for i := 0; i < 6; i++ {
 		items = append(items, schedItem(fmt.Sprintf("small-%d", i), "b", ClassC2, SeverityHigh, time.Duration(6-i)*time.Minute))
@@ -185,7 +185,7 @@ func TestSchedulePreservesBudgetBlockedTurns(t *testing.T) {
 		for _, class := range []Class{ClassC2, ClassC1} {
 			t.Run(fmt.Sprintf("%s/cost=%d", class, cost), func(t *testing.T) {
 				large := schedItem("large", "a", class, SeverityHigh, time.Hour)
-				large.Cost = cost
+				large.Cost, large.CeilingCost = cost, cost
 				items := []ScheduleItem{large}
 				for i := 0; i < 4*(int(cost)+2); i++ {
 					for _, c := range []Class{ClassC3, ClassC2, ClassC1} {
@@ -194,7 +194,7 @@ func TestSchedulePreservesBudgetBlockedTurns(t *testing.T) {
 						}
 						it := schedItem(fmt.Sprintf("%s-%03d", c, i), "b", c, SeverityHigh, 0)
 						if c == ClassC3 {
-							it.Cost = cost / 2
+							it.Cost, it.CeilingCost = cost/2, cost/2
 						}
 						items = append(items, it)
 					}
@@ -216,14 +216,14 @@ func TestSchedulePreservesReservedBudgetBlockedTurns(t *testing.T) {
 		for _, direct := range []bool{false, true} {
 			t.Run(fmt.Sprintf("direct=%t/cost=%d", direct, cost), func(t *testing.T) {
 				large := schedItem("large", "a", ClassC3, SeverityHigh, time.Hour)
-				large.Cost, large.Direct, large.Corroborated = cost, direct, !direct
+				large.Cost, large.CeilingCost, large.Direct, large.Corroborated = cost, cost, direct, !direct
 				items := []ScheduleItem{large}
 				for i := 0; i < int(cost)+2; i++ {
 					for _, d := range []bool{false, true} {
 						it := schedItem(fmt.Sprintf("%t-%03d", d, i), "b", ClassC3, SeverityHigh, 0)
 						it.Direct, it.Corroborated = d, !d
 						if d != direct {
-							it.Cost = cost - 1
+							it.Cost, it.CeilingCost = cost-1, cost-1
 						}
 						items = append(items, it)
 					}
@@ -243,7 +243,7 @@ func TestScheduleBudgetBlockedTurnPrecedesNewWork(t *testing.T) {
 			first := schedItem("first", "a", ClassC3, SeverityHigh, time.Hour)
 			large := schedItem("large", "b", ClassC2, SeverityHigh, time.Hour)
 			arrival := schedItem("arrival", "a", ClassC3, SeverityHigh, 0)
-			large.Cost = 2
+			large.Cost, large.CeilingCost = 2, 2
 			lim := ScheduleLimits{General: 2, Members: MaxBatchMembers}
 			if reserved {
 				lim.General, lim.Reserved = 0, 2
@@ -316,7 +316,7 @@ func assertScheduleProgress(t *testing.T, items []ScheduleItem, st ScheduleState
 // the deficit it has earned. A scope with no work left loses its turn state.
 func TestScheduleSkipsWaitingCandidates(t *testing.T) {
 	waiting := schedItem("waiting", "a", ClassC2, SeverityHigh, time.Hour)
-	waiting.Ready, waiting.Cost = false, 5
+	waiting.Ready, waiting.Cost, waiting.CeilingCost = false, 5, 5
 	st := ScheduleState{}
 	st.Rings[ringC2] = Ring{Scopes: map[string]ScopeTurn{"a": {Deficit: 3}, "gone": {Deficit: 1}}}
 	items := []ScheduleItem{waiting, schedItem("ready", "b", ClassC2, SeverityHigh, 0)}
@@ -345,11 +345,11 @@ func TestScheduleRefusesInvalidInput(t *testing.T) {
 		"no members":          {[]ScheduleItem{good}, ScheduleState{}, ScheduleLimits{Members: 0}},
 		"too many members":    {[]ScheduleItem{good}, ScheduleState{}, ScheduleLimits{Members: MaxBatchMembers + 1}},
 		"repeated item":       {[]ScheduleItem{good, good}, ScheduleState{}, wide},
-		"no scope":            {[]ScheduleItem{{ID: "y", Tier: good.Tier, Cost: 1}}, ScheduleState{}, wide},
+		"no scope":            {[]ScheduleItem{{ID: "y", Tier: good.Tier, Cost: 1, CeilingCost: 1}}, ScheduleState{}, wide},
 		"zero cost":           {[]ScheduleItem{{ID: "y", Scope: "s", Tier: good.Tier}}, ScheduleState{}, wide},
-		"cost over the bound": {[]ScheduleItem{{ID: "y", Scope: "s", Tier: good.Tier, Cost: MaxMemberCost + 1}}, ScheduleState{}, wide},
-		"both reserved turns": {[]ScheduleItem{{ID: "y", Scope: "s", Tier: Tier{ClassC3, SeverityHigh}, Cost: 1, Direct: true, Corroborated: true}}, ScheduleState{}, wide},
-		"reserved below C3":   {[]ScheduleItem{{ID: "y", Scope: "s", Tier: good.Tier, Cost: 1, Direct: true}}, ScheduleState{}, wide},
+		"cost over the bound": {[]ScheduleItem{{ID: "y", Scope: "s", Tier: good.Tier, Cost: MaxMemberCost + 1, CeilingCost: MaxMemberCost + 1}}, ScheduleState{}, wide},
+		"both reserved turns": {[]ScheduleItem{{ID: "y", Scope: "s", Tier: Tier{ClassC3, SeverityHigh}, Cost: 1, CeilingCost: 1, Direct: true, Corroborated: true}}, ScheduleState{}, wide},
+		"reserved below C3":   {[]ScheduleItem{{ID: "y", Scope: "s", Tier: good.Tier, Cost: 1, CeilingCost: 1, Direct: true}}, ScheduleState{}, wide},
 		"class slot":          {[]ScheduleItem{good}, ScheduleState{ClassSlot: 7}, wide},
 	} {
 		if _, _, err := Schedule(tc.items, tc.st, tc.lim); err == nil {
@@ -409,6 +409,7 @@ func TestScheduleRandomInvariants(t *testing.T) {
 			class := Class(1 + r.IntN(3))
 			it := ScheduleItem{ID: CandidateID(fmt.Sprintf("r%d-%d", round, i)), Scope: fmt.Sprintf("s%d", r.IntN(5)), Tier: Tier{class, Severity(1 + r.IntN(3))},
 				Queued: t0.Add(time.Duration(r.IntN(100)) * time.Second), Cost: uint32(1 + r.IntN(4)), Ready: r.IntN(5) != 0}
+			it.CeilingCost = it.Cost
 			if class == ClassC3 {
 				it.Direct = r.IntN(3) == 0
 				it.Corroborated = !it.Direct && r.IntN(2) == 0
@@ -565,7 +566,7 @@ func TestScheduleEarnedBytesAreBounded(t *testing.T) {
 	st := ScheduleState{}
 	st.Rings[ringC2] = Ring{Scopes: map[string]ScopeTurn{"a": {Bytes: 30000}}}
 	head := bytesItem("max", "a", MaxHistoryBytes)
-	head.Cost = 2
+	head.Cost, head.CeilingCost = 2, 2
 	items := []ScheduleItem{head, bytesItem("other", "b", 0)}
 	_, next := mustSchedule(t, items, st, ScheduleLimits{General: 100, Members: MaxBatchMembers})
 	if turn := next.Rings[ringC2].Scopes["a"]; turn.Bytes != MaxHistoryBytes {
@@ -597,7 +598,7 @@ func TestScheduleRandomHistoryBudgets(t *testing.T) {
 		for i := 0; i < r.IntN(40); i++ {
 			class := Class(1 + r.IntN(3))
 			it := ScheduleItem{ID: CandidateID(fmt.Sprintf("r%d-%d", round, i)), Scope: fmt.Sprintf("s%d", r.IntN(5)), Tier: Tier{class, Severity(1 + r.IntN(3))},
-				Queued: t0.Add(time.Duration(r.IntN(100)) * time.Second), Cost: 1, Bytes: uint32(r.IntN(MaxHistoryBytes + 1)), Ready: true}
+				Queued: t0.Add(time.Duration(r.IntN(100)) * time.Second), Cost: 1, CeilingCost: 1, Bytes: uint32(r.IntN(MaxHistoryBytes + 1)), Ready: true}
 			if class == ClassC3 {
 				it.Direct = r.IntN(3) == 0
 				it.Corroborated = !it.Direct && r.IntN(2) == 0
@@ -631,8 +632,8 @@ func TestScheduleRandomHistoryBudgets(t *testing.T) {
 // General and reserved picks share one finite recovery allowance.
 func TestScheduleRecoveryBudgetSharedByLanes(t *testing.T) {
 	items := []ScheduleItem{
-		{ID: "direct", Scope: "a", Tier: Tier{Class: ClassC3, Severity: SeverityCritical}, Direct: true, Cost: 1, Recovery: 3000, Ready: true},
-		{ID: "general", Scope: "b", Tier: Tier{Class: ClassC1, Severity: SeverityHigh}, Cost: 1, Recovery: 3000, Ready: true},
+		{ID: "direct", Scope: "a", Tier: Tier{Class: ClassC3, Severity: SeverityCritical}, Direct: true, Cost: 1, CeilingCost: 1, Recovery: 3000, Ready: true},
+		{ID: "general", Scope: "b", Tier: Tier{Class: ClassC1, Severity: SeverityHigh}, Cost: 1, CeilingCost: 1, Recovery: 3000, Ready: true},
 	}
 	picks, _, err := Schedule(items, ScheduleState{}, ScheduleLimits{General: 1, Reserved: 1, Members: 2, RecoveryBytes: 3000})
 	if err != nil || len(picks) != 1 || picks[0].ID != "direct" {

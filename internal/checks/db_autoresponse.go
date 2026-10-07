@@ -196,11 +196,13 @@ func handleMaliciousOption(cfg *config.Config, f alert.Finding, remediate bool) 
 		return nil
 	}
 
-	// 1. Extract and block attacker IPs from active WP sessions through the
-	// real auto-block path (dry-run, rate limits, and allowlists all apply).
+	// 1. Report the addresses of active WP sessions. They are not blocked:
+	// the site owner's sessions are among them.
 	suspiciousIPs := extractSuspiciousSessionIPs(creds, prefix, cfg.InfraIPs)
-	actions = append(actions, blockSessionAttackerIPs(cfg, suspiciousIPs,
-		fmt.Sprintf("active WP session on compromised site, DB: %s", dbName), alert.CauseOf(f))...)
+	if len(suspiciousIPs) > 0 {
+		actions = append(actions, sessionIPsNotice(suspiciousIPs,
+			fmt.Sprintf("active WP session on compromised site, DB: %s", dbName), alert.CauseOf(f)))
+	}
 	if !remediate {
 		return actions
 	}
@@ -232,7 +234,7 @@ func handleMaliciousOption(cfg *config.Config, f alert.Finding, remediate bool) 
 }
 
 // handleSiteurlHijack handles siteurl/home hijacking by revoking sessions
-// and blocking attacker IPs. Does NOT modify siteurl/home values.
+// and reporting their addresses. Does NOT modify siteurl/home values.
 func handleSiteurlHijack(cfg *config.Config, f alert.Finding, remediate bool) []alert.Finding {
 	var actions []alert.Finding
 
@@ -252,8 +254,10 @@ func handleSiteurlHijack(cfg *config.Config, f alert.Finding, remediate bool) []
 	}
 
 	suspiciousIPs := extractSuspiciousSessionIPs(creds, prefix, cfg.InfraIPs)
-	actions = append(actions, blockSessionAttackerIPs(cfg, suspiciousIPs,
-		fmt.Sprintf("active session on hijacked site, DB: %s", dbName), alert.CauseOf(f))...)
+	if len(suspiciousIPs) > 0 {
+		actions = append(actions, sessionIPsNotice(suspiciousIPs,
+			fmt.Sprintf("active session on hijacked site, DB: %s", dbName), alert.CauseOf(f)))
+	}
 	if !remediate {
 		return actions
 	}
@@ -271,42 +275,19 @@ func handleSiteurlHijack(cfg *config.Config, f alert.Finding, remediate bool) []
 	return actions
 }
 
-// blockSessionAttackerIPs routes attacker IPs recovered from active WordPress
-// sessions through the standard auto-block path so each one lands as a real
-// firewall block subject to dry-run, rate limiting, allowlists, and the
-// expiring threat record. It returns the genuine AUTO-BLOCK / dry-run findings
-// AutoBlockIPs emits.
-//
-// The synthetic findings carry the local_threat_score check -- an existing
-// always-block signal meaning "this IP is a confirmed local threat" -- plus a
-// structured SourceIP, so AutoBlockIPs blocks exactly that address. Emitting a
-// fabricated "auto_block: AUTO-BLOCK <ip>" finding here instead -- as the code
-// once did -- never blocked anything, yet alert.FilterBlockedAlerts trusted it
-// as proof-of-block and suppressed the IP's reputation alert, so the address was
-// neither blocked nor surfaced.
-func blockSessionAttackerIPs(cfg *config.Config, ips []string, siteContext string, cause alert.Cause) []alert.Finding {
-	if len(ips) == 0 {
-		return nil
+// sessionIPsNotice reports the addresses of WordPress sessions active on a
+// compromised site. A session address cannot establish attacker attribution
+// and may belong to the site owner. Keep the originating finding identity
+// without setting address fields another responder could act on.
+func sessionIPsNotice(ips []string, siteContext string, cause alert.Cause) alert.Finding {
+	return alert.Finding{
+		Severity:  alert.Warning,
+		Check:     "auto_response",
+		Message:   fmt.Sprintf("AUTO-DB-CLEAN: %d addresses had sessions on a compromised site (%s); not blocked", len(ips), siteContext),
+		Details:   "Session addresses: " + strings.Join(ips, ", "),
+		Timestamp: time.Now(),
+		Cause:     &cause,
 	}
-	return autoBlockIPs(cfg, sessionAttackerFindings(ips, siteContext, cause), cause.FindingID)
-}
-
-// sessionAttackerFindings builds the synthetic local_threat_score findings,
-// each naming the database finding that caused it.
-func sessionAttackerFindings(ips []string, siteContext string, cause alert.Cause) []alert.Finding {
-	findings := make([]alert.Finding, 0, len(ips))
-	for _, ip := range ips {
-		c := cause
-		findings = append(findings, alert.Finding{
-			Severity:  alert.Critical,
-			Check:     "local_threat_score",
-			Message:   fmt.Sprintf("attacker session IP %s (%s)", ip, siteContext),
-			SourceIP:  ip,
-			Timestamp: time.Now(),
-			Cause:     &c,
-		})
-	}
-	return findings
 }
 
 // --- URL analysis ---

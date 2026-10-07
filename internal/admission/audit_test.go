@@ -219,7 +219,7 @@ func TestAuditRowRejectsImpossibleAttemptTransitions(t *testing.T) {
 		state State
 		first uint32
 	}{
-		{StateReserved, 6}, {StateExecuting, 7}, {StateVerified, 8}, {StateFailed, 7}, {StateUnknown, 8},
+		{StateReserved, 6}, {StateExecuting, 7}, {StateVerified, 8}, {StateFailed, 7}, {StateUnknown, 8}, {StateObserved, 7},
 	} {
 		r := row
 		r.Attempt, err = NewAttempt(a.Attempt.Candidate, MaxAttempts)
@@ -234,6 +234,8 @@ func TestAuditRowRejectsImpossibleAttemptTransitions(t *testing.T) {
 			r.Disposition = DispositionFailed
 		case StateUnknown:
 			r.Disposition = DispositionUnknown
+		case StateObserved:
+			r.Disposition = DispositionObserve
 		}
 		if _, err := r.MarshalBinary(); err == nil {
 			t.Errorf("state %v accepted transition %d before its first possible transition %d", tc.state, r.Transition, tc.first)

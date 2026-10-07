@@ -18,7 +18,7 @@ var (
 		"admin_panel_bruteforce", "c2_connection", "credential_stuffing",
 		"email_cloud_relay_abuse", "email_compromised_account", "ftp_bruteforce",
 		"http_claimed_bot_unverified", "http_request_flood", "http_scanner_profile",
-		"http_ua_spoof", "ip_reputation", "local_threat_score",
+		"http_ua_spoof", "ip_reputation",
 		"mail_account_compromised", "mail_bruteforce", "modsec_block_escalation",
 		"modsec_csm_block_escalation", "pam_bruteforce", "smtp_bruteforce",
 		"smtp_probe_abuse", "ssh_login_unknown_ip", "waf_attack_blocked",
@@ -30,7 +30,7 @@ var (
 	)
 	goldenChallengeable = setOf(
 		"http_claimed_bot_unverified", "http_scanner_profile", "ip_reputation",
-		"local_threat_score", "webmail_bruteforce", "wp_login_bruteforce",
+		"webmail_bruteforce", "wp_login_bruteforce",
 		"wp_user_enumeration", "xmlrpc_abuse",
 	)
 	goldenNeverChallenge = setOf(
@@ -160,10 +160,6 @@ func TestResponsePolicyMatchesGoldenHelpers(t *testing.T) {
 			}
 			for _, sev := range goldenSeverities {
 				f := alert.Finding{Check: name, Severity: sev}
-				if name == "local_threat_score" {
-					// The live producer is the database-session response.
-					f.Cause = &alert.Cause{Check: "db_siteurl_hijack", FindingID: "0123456789abcdef"}
-				}
 				if got, want := blockableFinding(f, cpanel), goldenBlockableFinding(f, cpanel); got != want {
 					t.Errorf("blockableFinding(%q, %v, block_cpanel_logins=%v) = %v, golden %v", name, sev, cpanel, got, want)
 				}
@@ -179,9 +175,6 @@ func TestResponsePolicyMatchesGoldenHelpers(t *testing.T) {
 				}
 				for _, sev := range goldenSeverities {
 					f := alert.Finding{Check: name, Severity: sev}
-					if name == "local_threat_score" {
-						f.Cause = &alert.Cause{Check: "db_siteurl_hijack", FindingID: "0123456789abcdef"}
-					}
 					if got, want := responseActionForFinding(cfg, f), goldenResponseActionForFinding(cfg, f); got != want {
 						t.Errorf("responseActionForFinding(%q, %v, challenge=%v, scanner=%q) = %q, golden %q", name, sev, enabled, action, got, want)
 					}
@@ -209,9 +202,6 @@ func TestChallengeRouteIPsMatchesGoldenPolicy(t *testing.T) {
 						cfg.AutoResponse.BlockCpanelLogins = cpanel
 						cfg.AutoResponse.HTTPScannerAction = action
 						f := alert.Finding{Check: name, Severity: sev, SourceIP: "203.0.113.10", Message: "probe"}
-						if name == "local_threat_score" {
-							f.Cause = &alert.Cause{Check: "db_siteurl_hijack", FindingID: "0123456789abcdef"}
-						}
 						actions := ChallengeRouteIPs(cfg, []alert.Finding{f})
 						want := enabled && (!goldenCpanelFailure[name] || cpanel) &&
 							!goldenHardBlock(name) && goldenChallengeable[name] &&

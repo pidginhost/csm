@@ -7,11 +7,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/blockdigest"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -65,7 +67,7 @@ func TestIncidentVerifiedAuditFailureRetainsOutcomeAndEvidence(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, db, dispatched := lifecycleAuditDaemon(t, firewall.BlockOutcomeLive, tc.err)
-			live, err := d.applyIncidentSprayBlock("203.0.113.81", "incident: observed abuse", time.Hour, "finding-incident")
+			live, err := d.applyIncidentBlock("203.0.113.81", "incident: observed abuse", time.Hour, "finding-incident", incident.PreparedRoot{}, admission.EntryIncident)
 			if live != tc.live || !errors.Is(err, tc.err) {
 				t.Fatalf("live=%t err=%v, want live=%t and %v", live, err, tc.live, tc.err)
 			}

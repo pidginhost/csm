@@ -15,6 +15,7 @@ func TestOutcomeKeysAreFixedDimensional(t *testing.T) {
 		QueueOutcome(EventRefused, ReasonInvalid, Tier{}),
 		AttemptOutcome(DispositionApplied, crit),
 		AttemptOutcome(DispositionUnknown, Tier{}),
+		AttemptOutcome(DispositionObserve, crit),
 	} {
 		if !k.Valid() {
 			t.Errorf("%+v refused", k)
@@ -24,7 +25,8 @@ func TestOutcomeKeysAreFixedDimensional(t *testing.T) {
 		"event without a reason":       {Event: EventEnded},
 		"event with an outcome":        {Event: EventEnded, Reason: ReasonStale, Outcome: DispositionApplied},
 		"outcome with a reason":        {Reason: ReasonStale, Outcome: DispositionFailed},
-		"a preview is no outcome":      {Outcome: DispositionDryRun},
+		"a dry run is no outcome":      {Outcome: DispositionDryRun},
+		"an observe preview reason":    {Reason: ReasonStale, Outcome: DispositionObserve},
 		"a queue ending is no outcome": {Outcome: DispositionDropped},
 		"half a tier":                  {Outcome: DispositionApplied, Class: ClassC1},
 		"nothing":                      {},
@@ -123,7 +125,7 @@ func TestOutcomeCountsFitTheirBound(t *testing.T) {
 				c.counts = mapWith(c.counts, QueueOutcome(e, r, tier))
 			}
 		}
-		for _, d := range []Disposition{DispositionApplied, DispositionNarrowed, DispositionFailed, DispositionUnknown} {
+		for _, d := range []Disposition{DispositionApplied, DispositionNarrowed, DispositionFailed, DispositionUnknown, DispositionObserve} {
 			c.counts = mapWith(c.counts, AttemptOutcome(d, tier))
 		}
 	}

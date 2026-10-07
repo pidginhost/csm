@@ -28,9 +28,15 @@ func withTestRegistry(t *testing.T) *admission.Producer {
 	if err != nil {
 		t.Fatal(err)
 	}
+	incident, err := reg.Register(admission.ProducerSpec{ID: "incident", Entry: admission.EntryIncident, Observation: admission.ObservationEventSeq, Checks: []string{"ssh_brute"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	reg.Seal()
 	prev := buildRegistry
-	buildRegistry = func() (*admission.Registry, error) { return reg, nil }
+	buildRegistry = func() (*admission.Registry, map[admission.ProducerID]*admission.Producer, error) {
+		return reg, map[admission.ProducerID]*admission.Producer{p.ID(): p, incident.ID(): incident}, nil
+	}
 	t.Cleanup(func() { buildRegistry = prev })
 	return p
 }

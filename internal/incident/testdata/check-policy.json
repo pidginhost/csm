@@ -145,6 +145,7 @@
       "joomla_extensions_injection",
       "js_keylogger_dataflow",
       "js_taint_scan_incomplete",
+      "local_threat_score",
       "magento_admin_injection",
       "magento_content_injection",
       "magento_settings_injection",
@@ -393,8 +394,7 @@
     ],
     "reason": "Reputation without a victim or process identity is an attacker signal; attribution keeps its own scope.",
     "checks": [
-      "ip_reputation",
-      "local_threat_score"
+      "ip_reputation"
     ]
   },
   {

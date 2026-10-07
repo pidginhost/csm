@@ -13,7 +13,11 @@ func TestIncidentBlockRetainsTriggeringFindingIdentity(t *testing.T) {
 		t.Run(map[bool]string{false: "incident", true: "spray"}[spray], func(t *testing.T) {
 			calls := 0
 			var capturedID string
-			c, f := blockLifecycleCorrelator(t, spray, func(_, _ string, _ time.Duration, id string) bool { calls++; capturedID = id; return true })
+			c, f := blockLifecycleCorrelator(t, spray, func(_, _ string, _ time.Duration, id string, _ PreparedRoot) bool {
+				calls++
+				capturedID = id
+				return true
+			})
 			id, _, err := c.OnFinding(f)
 			if err != nil {
 				t.Fatal(err)
@@ -39,7 +43,11 @@ func TestIncidentBlockAttributesEquivalentIPSpellings(t *testing.T) {
 			t.Run(map[bool]string{false: "incident", true: "spray"}[spray]+"/"+sourceIP, func(t *testing.T) {
 				calls := 0
 				var capturedID string
-				c, f := blockLifecycleCorrelator(t, spray, func(_, _ string, _ time.Duration, id string) bool { calls++; capturedID = id; return true })
+				c, f := blockLifecycleCorrelator(t, spray, func(_, _ string, _ time.Duration, id string, _ PreparedRoot) bool {
+					calls++
+					capturedID = id
+					return true
+				})
 				inc, ok := c.Get("inc_ladder")
 				if !ok {
 					t.Fatal("missing restored incident")

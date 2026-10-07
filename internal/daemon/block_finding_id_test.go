@@ -185,7 +185,7 @@ func TestIncidentBlockWiringRetainsSourceFindingID(t *testing.T) {
 			cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
 			SetIncidentConfigSource(func() *config.Config { return cfg })
 			d := New(cfg, nil, nil, "")
-			SetIncidentSprayBlocker(d.applyIncidentSprayBlock)
+			SetIncidentSprayBlocker(d.applyIncidentBlock)
 			c := IncidentCorrelator()
 			f := alert.Finding{Check: "modsec_csm_block_escalation", Severity: alert.Critical, SourceIP: "192.0.2.10", Message: "block evidence", Timestamp: time.Now()}
 			count := 1

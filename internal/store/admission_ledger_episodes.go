@@ -65,7 +65,9 @@ func loadEpisode(tx *bolt.Tx, key string) (admission.Episode, bool, error) {
 func putEpisode(tx *bolt.Tx, key string, e admission.Episode) error {
 	data, err := e.MarshalBinary()
 	if err != nil {
-		return err
+		// Placement chose the row; one it cannot store is damage, never a
+		// refused arrival that would keep a candidate without its row.
+		return corruptRecord(err)
 	}
 	return tx.Bucket([]byte(admissionEpisodesBucket)).Put([]byte(key), data)
 }

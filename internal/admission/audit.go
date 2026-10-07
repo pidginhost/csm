@@ -106,7 +106,7 @@ func (r AuditRow) record() (auditRowRecord, error) {
 		return bad("audit row names no transition of an admitted attempt")
 	}
 	switch r.State {
-	case StateReserved, StateExecuting, StateVerified, StateFailed, StateUnknown:
+	case StateReserved, StateExecuting, StateVerified, StateFailed, StateUnknown, StateObserved:
 	default:
 		return bad("audit row state is not an attempt phase")
 	}
@@ -115,7 +115,7 @@ func (r AuditRow) record() (auditRowRecord, error) {
 	}
 	minimumTransition := 2 * r.Attempt.Seq
 	switch r.State {
-	case StateExecuting, StateFailed:
+	case StateExecuting, StateFailed, StateObserved:
 		minimumTransition++
 	case StateVerified, StateUnknown:
 		minimumTransition += 2

@@ -38,7 +38,8 @@ func auditStepMatches(row admission.AuditRow, a admission.AttemptRecord, c admis
 	case admission.StateReserved:
 		return row.At.Equal(a.Reserved)
 	case admission.StateExecuting:
-		return a.State != admission.StateReserved && row.At.Before(a.ExpiresAt) &&
+		// A preview never ran: no execution row can belong to it.
+		return a.State != admission.StateReserved && a.State != admission.StateObserved && row.At.Before(a.ExpiresAt) &&
 			(a.Finished.IsZero() || !row.At.After(a.Finished))
 	default:
 		return row.State == a.State && row.Disposition == a.Disposition && row.At.Equal(a.Finished)
@@ -55,7 +56,7 @@ func auditFollows(previous, row admission.AuditRow) bool {
 	switch previous.State {
 	case admission.StateReserved:
 		switch row.State {
-		case admission.StateExecuting:
+		case admission.StateExecuting, admission.StateObserved:
 			return steps == 1
 		case admission.StateFailed:
 			return steps == 1 || steps == 2

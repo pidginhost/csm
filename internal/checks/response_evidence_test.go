@@ -51,7 +51,6 @@ var evidencePolicy = map[string]admission.Policy{
 	"ftp_auth_failure_realtime":   {Family: admission.FamilyFTP, Basis: admission.BasisLocal},
 	"ftp_bruteforce":              {Family: admission.FamilyFTP, Basis: admission.BasisLocal},
 	"ip_reputation":               {Family: admission.FamilyReputation, Basis: admission.BasisIntel},
-	"local_threat_score":          {Family: admission.FamilyDerived, Basis: admission.BasisIntel},
 	"c2_connection":               {Family: admission.FamilyNetwork, Basis: admission.BasisCompromise},
 	"mail_account_compromised":    {Family: admission.FamilyMail, Basis: admission.BasisCompromise},
 }
@@ -327,8 +326,10 @@ func TestAddressProducersAreClassified(t *testing.T) {
 			}
 		}
 	}
-	if len(producers) != 68 {
-		t.Fatalf("scan found %d address producers; review the change from the pinned 68 producers", len(producers))
+	// The database malware response reports session addresses instead of
+	// emitting an address-bearing finding (ruling R9).
+	if len(producers) != 67 {
+		t.Fatalf("scan found %d address producers; review the change from the pinned 67 producers", len(producers))
 	}
 	for name, reason := range notAddressEvidence {
 		if strings.TrimSpace(reason) == "" {

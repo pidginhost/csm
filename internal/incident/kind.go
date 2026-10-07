@@ -116,7 +116,7 @@ func isRemoteIPKeyed(f alert.Finding) bool {
 // bucket. Add future remote-IP reputation checks here.
 func isRemoteIPThreatCheck(check string) bool {
 	switch strings.ToLower(strings.TrimSpace(check)) {
-	case "ip_reputation", "local_threat_score":
+	case "ip_reputation":
 		return true
 	default:
 		return false

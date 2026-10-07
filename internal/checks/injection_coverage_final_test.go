@@ -462,7 +462,7 @@ func TestHandleMaliciousOption_MaliciousURLCleaned(t *testing.T) {
 			switch {
 			case strings.Contains(q, "SELECT option_value"):
 				// Return the malicious option_value containing a bad script URL
-				return []byte(`hello world<script src="https://evil.top/pwn.js"></script>tail` + "\n"), nil
+				return []byte(`hello world<script src="http://payload.example/pwn.js"></script>tail` + "\n"), nil
 			case strings.Contains(q, "session_tokens") && strings.HasPrefix(q, "SELECT meta_value"):
 				// Single user with a suspicious public IP in sessions
 				return []byte(`a:1:{s:5:"token";a:2:{s:2:"ip";s:12:"203.0.113.77";s:2:"ua";s:7:"Firefox";}}` + "\n"), nil
@@ -484,19 +484,19 @@ func TestHandleMaliciousOption_MaliciousURLCleaned(t *testing.T) {
 		t.Fatal("expected auto-response actions for malicious option, got none")
 	}
 
-	// Must emit at least one auto_block for the public session IP.
+	// Must report the public session IP without blocking it.
 	foundBlock := false
 	foundClean := false
 	for _, a := range actions {
-		if a.Check == "auto_block" && strings.Contains(a.Message, "203.0.113.77") {
+		if a.Check == "auto_response" && strings.Contains(a.Details, "203.0.113.77") {
 			foundBlock = true
 		}
-		if a.Check == "auto_response" && strings.Contains(a.Message, "evil.top") {
+		if a.Check == "auto_response" && strings.Contains(a.Message, "payload.example") {
 			foundClean = true
 		}
 	}
 	if !foundBlock {
-		t.Error("expected auto_block action for suspicious IP")
+		t.Error("expected the session notice naming the suspicious IP")
 	}
 	if !foundClean {
 		t.Error("expected auto_response clean action mentioning malicious URL")
@@ -554,9 +554,9 @@ func TestHandleSiteurlHijack_SuspiciousSessionsEmitBlocks(t *testing.T) {
 			}
 			switch {
 			case strings.Contains(q, "session_tokens") && strings.HasPrefix(q, "SELECT meta_value"):
-				return []byte(`a:1:{s:5:"token";a:2:{s:2:"ip";s:11:"8.8.4.4";s:2:"ua";s:7:"Firefox";}}` + "\n"), nil
+				return []byte(`a:1:{s:5:"token";a:2:{s:2:"ip";s:11:"203.0.113.8";s:2:"ua";s:7:"Firefox";}}` + "\n"), nil
 			case strings.Contains(q, "session_tokens") && strings.Contains(q, "user_id"):
-				return []byte(`7	a:1:{s:5:"token";a:2:{s:2:"ip";s:11:"8.8.4.4";s:2:"ua";s:7:"Firefox";}}` + "\n"), nil
+				return []byte(`7	a:1:{s:5:"token";a:2:{s:2:"ip";s:11:"203.0.113.8";s:2:"ua";s:7:"Firefox";}}` + "\n"), nil
 			}
 			return nil, nil
 		},
@@ -573,12 +573,15 @@ func TestHandleSiteurlHijack_SuspiciousSessionsEmitBlocks(t *testing.T) {
 
 	foundBlock := false
 	for _, a := range actions {
-		if a.Check == "auto_block" && strings.Contains(a.Message, "8.8.4.4") {
+		if a.Check == "auto_block" {
+			t.Fatalf("a session address was blocked: %+v", a)
+		}
+		if a.Check == "auto_response" && strings.Contains(a.Details, "203.0.113.8") {
 			foundBlock = true
 		}
 	}
 	if !foundBlock {
-		t.Error("expected auto_block for suspicious session IP 8.8.4.4")
+		t.Error("expected the session notice naming suspicious session IP 203.0.113.8")
 	}
 }
 

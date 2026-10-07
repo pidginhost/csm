@@ -96,7 +96,13 @@ treat a command as documentation only inside a fenced code block, whose opening
 fence starts a line and whose closing fence stands on its own line, or as the
 text of a Markdown link. The shell startup file signature judges a file with
 more Markdown blocks and links than any published document carries without that
-suppression, so its scan time stays linear.
+suppression, so its scan time stays linear. The download-and-pipe and shell
+startup file signatures need a whole shell or interpreter name after the pipe,
+so a download piped into a checksum tool or another program whose name starts
+the same way is not an execution. Versioned Perl and Python names, Python
+build variants and standard Windows executable names retain detection. Both
+engines use the same shell name boundaries, including commands embedded in
+strings and binary data.
 
 The PHP goto-obfuscation rule requires three independent signals in both
 engines: a PHP opening tag, at least nine jumps to digit-bearing generated
@@ -379,7 +385,7 @@ Create suppression rules to silence known false positives:
 
 A suppression rule hides matching findings from the Findings page, stops their email and webhook alerts, and stops file, process and account remediation for them. It does not stop IP blocking, challenge routing or attack scoring: a rule that mutes a whole check would otherwise leave every attacker that check reports unblocked. To exempt an address that was blocked by mistake, whitelist it on the Firewall page under Allow Rules or with `csm firewall allow`.
 
-Incident auto-blocking, credential-spray containment and central threat intelligence also use suppressed findings. Database response may still block suspicious session IPs when enabled, but a suppressed database finding cannot trigger cleanup or session revocation. IP action notifications are separate findings; suppressing their check type mutes those notifications without stopping the action. These rules apply to startup, scheduled and real-time scans, control-socket runs with alerts enabled, and replay after restart.
+Incident auto-blocking, credential-spray containment and central threat intelligence also use suppressed findings. Database response never blocks session IPs; a suppressed database finding cannot trigger cleanup or session revocation. IP action notifications are separate findings; suppressing their check type mutes those notifications without stopping the action. These rules apply to startup, scheduled and real-time scans, control-socket runs with alerts enabled, and replay after restart.
 
 To suppress email alerts for specific checks while keeping them visible in the web UI, use `disabled_checks` in your config:
 

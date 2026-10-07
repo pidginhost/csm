@@ -94,7 +94,9 @@ type CorrelatorConfig struct {
 	// action is not appended in that case so operators cannot mistake a
 	// declined request for an enforced block. findingID identifies the latest
 	// eligible source observation, or is empty for an older unlinked timeline.
-	OnSprayBlock func(ip, reason string, ttl time.Duration, findingID string) bool
+	// root retains that observation's evidence or mint refusal; the zero
+	// value means the incident kept none (restored incidents keep none).
+	OnSprayBlock func(ip, reason string, ttl time.Duration, findingID string, root PreparedRoot) bool
 
 	// AutoBlock turns on the generic incident-driven firewall hand-off
 	// for non-spray kinds. Independent of SpraySuppression; applies when
@@ -122,8 +124,14 @@ type CorrelatorConfig struct {
 	// disabled, and failed attempts must return false so the correlator
 	// can retry on the next finding instead of permanently latching the
 	// incident. nil disables the path even when AutoBlock is configured.
-	// findingID carries the same source attribution as OnSprayBlock.
-	OnIncidentBlock func(ip, reason string, ttl time.Duration, findingID string) bool
+	// findingID and root carry the same source attribution as OnSprayBlock.
+	OnIncidentBlock func(ip, reason string, ttl time.Duration, findingID string, root PreparedRoot) bool
+
+	// Root prepares the finding's admission evidence and keeps a failed
+	// mint with its finding until a later block can count that refusal.
+	// The block answers this observation instead of minting its own root.
+	// It is kept in memory only; nil keeps no roots.
+	Root func(f alert.Finding, target string) PreparedRoot
 }
 
 // IncidentAutoBlockConfig drives the generic incident-driven firewall
@@ -724,10 +732,20 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	}
 	if src := alert.AttackerAddress(f); src != "" {
 		ev.RemoteIP = src
+		if c.cfg.Root != nil && c.cfg.AddressEvidence != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
+			target := src
+			if ip := normalizeIncidentRemoteIP(src); ip != "" {
+				target = ip
+			}
+			root := c.cfg.Root(f, target)
+			ev.root = &root
+		}
 		if (!inc.RemoteIPEvidence || inc.RemoteIPEvidenceFinding == "") && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
 			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(src) {
 				inc.RemoteIPEvidence = true
 				inc.RemoteIPEvidenceFinding = ev.FindingID
+				inc.RemoteIPEvidenceCheck = ev.Check
+				inc.RemoteIPEvidenceSeverity = ev.Severity
 				transition = true
 			}
 		}
@@ -1340,16 +1358,9 @@ func (c *Correlator) Restore(incidents []Incident) {
 	defer c.mu.Unlock()
 	for i := range incidents {
 		inc := incidents[i]
-		// Remember legacy evidence before a merge can trim its event. The
-		// next write saves the bit; until then the stored timeline retains it.
-		if (!inc.RemoteIPEvidence || inc.RemoteIPEvidenceFinding == "") && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil {
-			if ip := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); ip != "" {
-				inc.RemoteIPEvidence = c.blockAddressAttested(&inc, ip)
-				if inc.RemoteIPEvidence {
-					inc.RemoteIPEvidenceFinding = c.attestingFindingID(&inc, ip)
-				}
-			}
-		}
+		// Recheck stored authority against the current policy before a
+		// merge can trim the source event.
+		c.restoreAddressEvidence(&inc)
 		c.incidents[inc.ID] = &inc
 		delete(c.lastPersistAt, inc.ID)
 		c.persistence.discardDeferred(inc.ID)
@@ -1592,7 +1603,7 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
 	}
 	onBlock := c.cfg.OnIncidentBlock
-	findingID := c.attestingFindingID(inc, ip)
+	findingID, root := c.attesting(inc, ip)
 	return func() {
 		var live bool
 		callbackReturned := false
@@ -1630,7 +1641,7 @@ func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now ti
 		if !valid {
 			return
 		}
-		live = onBlock(ip, reason, ttl, findingID)
+		live = onBlock(ip, reason, ttl, findingID, root)
 		callbackReturned = true
 	}
 }
@@ -1644,7 +1655,7 @@ func (c *Correlator) blockAddressAttested(inc *Incident, ip string) bool {
 	if c.cfg.AddressEvidence == nil {
 		return false
 	}
-	if inc.RemoteIPEvidence && inc.CorrelationKey != nil && normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP) == ip {
+	if c.rememberedAddressEvidence(inc, ip) {
 		return true
 	}
 	for _, ev := range inc.Timeline {
@@ -1653,6 +1664,59 @@ func (c *Correlator) blockAddressAttested(inc *Incident, ip string) bool {
 		}
 	}
 	return false
+}
+
+// rememberedAddressEvidence rechecks authority kept beyond timeline
+// trimming. An old bit without its attesting policy identity is no proof.
+func (c *Correlator) rememberedAddressEvidence(inc *Incident, ip string) bool {
+	if !inc.RemoteIPEvidence || inc.RemoteIPEvidenceCheck == "" || c.cfg.AddressEvidence == nil || inc.CorrelationKey == nil || normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP) != ip {
+		return false
+	}
+	return c.eventAttests(IncidentEvent{Check: inc.RemoteIPEvidenceCheck, Severity: inc.RemoteIPEvidenceSeverity})
+}
+
+// restoreAddressEvidence migrates verifiable old proof from a retained
+// event. Missing or retired proof cannot authorize a new block; installed
+// blocks and the escalation ladder remain untouched.
+func (c *Correlator) restoreAddressEvidence(inc *Incident) {
+	if inc.CorrelationKey != nil {
+		ip := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP)
+		if ip != "" && c.rememberedAddressEvidence(inc, ip) {
+			if inc.RemoteIPEvidenceFinding == "" {
+				for i := len(inc.Timeline) - 1; i >= 0; i-- {
+					ev := inc.Timeline[i]
+					if ev.Kind == "finding" && ev.FindingID != "" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && c.eventAttests(ev) {
+						inc.RemoteIPEvidenceFinding = ev.FindingID
+						inc.RemoteIPEvidenceCheck = ev.Check
+						inc.RemoteIPEvidenceSeverity = ev.Severity
+						break
+					}
+				}
+			}
+			return
+		}
+	}
+	inc.RemoteIPEvidence = false
+	inc.RemoteIPEvidenceFinding = ""
+	inc.RemoteIPEvidenceCheck = ""
+	inc.RemoteIPEvidenceSeverity = ""
+	if c.cfg.AddressEvidence == nil || inc.CorrelationKey == nil {
+		return
+	}
+	ip := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP)
+	if ip == "" {
+		return
+	}
+	for i := len(inc.Timeline) - 1; i >= 0; i-- {
+		ev := inc.Timeline[i]
+		if ev.Kind == "finding" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && c.eventAttests(ev) {
+			inc.RemoteIPEvidence = true
+			inc.RemoteIPEvidenceFinding = ev.FindingID
+			inc.RemoteIPEvidenceCheck = ev.Check
+			inc.RemoteIPEvidenceSeverity = ev.Severity
+			return
+		}
+	}
 }
 
 // eventAttests reports whether a timeline finding is address evidence.
@@ -1667,24 +1731,28 @@ func (c *Correlator) eventAttests(ev IncidentEvent) bool {
 	return ok && c.cfg.AddressEvidence(ev.Check, sev)
 }
 
-// attestingFindingID names the finding a block of ip rests on: the newest
-// timeline finding with address evidence for it, or the one recorded with
-// RemoteIPEvidence once timeline trimming dropped that event.
-func (c *Correlator) attestingFindingID(inc *Incident, ip string) string {
+// attesting names the finding a block of ip rests on and the admission root
+// kept for it: the newest timeline finding with address evidence for it,
+// or the one recorded with RemoteIPEvidence, without a root, once timeline
+// trimming dropped that event.
+func (c *Correlator) attesting(inc *Incident, ip string) (string, PreparedRoot) {
 	ip = normalizeIncidentRemoteIP(ip)
 	if ip == "" {
-		return ""
+		return "", PreparedRoot{}
 	}
 	for i := len(inc.Timeline) - 1; i >= 0; i-- {
 		ev := inc.Timeline[i]
 		if ev.Kind == "finding" && ev.FindingID != "" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && c.eventAttests(ev) {
-			return ev.FindingID
+			if ev.root == nil {
+				return ev.FindingID, PreparedRoot{}
+			}
+			return ev.FindingID, *ev.root
 		}
 	}
 	if inc.RemoteIPEvidence && inc.CorrelationKey != nil && normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP) == ip {
-		return inc.RemoteIPEvidenceFinding
+		return inc.RemoteIPEvidenceFinding, PreparedRoot{}
 	}
-	return ""
+	return "", PreparedRoot{}
 }
 
 func incidentBlockCandidate(inc *Incident) string {
@@ -1796,7 +1864,7 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 		reason += "; block " + strconv.Itoa(attempt) + " after the previous one lapsed"
 	}
 	onSprayBlock := c.cfg.OnSprayBlock
-	findingID := c.attestingFindingID(inc, ip)
+	findingID, root := c.attesting(inc, ip)
 	incidentID := inc.ID
 	return func() {
 		var live bool
@@ -1836,7 +1904,7 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 		if !valid {
 			return
 		}
-		live = onSprayBlock(ip, reason, ttl, findingID)
+		live = onSprayBlock(ip, reason, ttl, findingID, root)
 		callbackReturned = true
 	}
 }

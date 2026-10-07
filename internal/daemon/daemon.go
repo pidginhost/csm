@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/admissionowner"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/attackdb"
@@ -32,6 +33,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall/rollback"
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/health"
+	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/integrity"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/maillog"
@@ -1208,6 +1210,10 @@ func (d *Daemon) Run() error {
 
 	d.wg.Wait()
 	stopProcessCtx()
+	// Stop the incident auto-close and retention goroutines before the
+	// admission owner's final drain and before closing the store, so neither
+	// writes to an already-closed bbolt database.
+	StopIncidentBackgroundLoops()
 	// Every producer has stopped: close the ingress generation cleanly.
 	d.stopAdmission()
 	csmlog.Info("workers drained", "elapsed_ms", time.Since(shutdownStart).Milliseconds())
@@ -1227,9 +1233,6 @@ func (d *Daemon) Run() error {
 	if adb := attackdb.Global(); adb != nil {
 		adb.Stop()
 	}
-	// Stop the incident auto-close and retention goroutines before closing the
-	// store so neither writes to an already-closed bbolt database.
-	StopIncidentBackgroundLoops()
 	if err := d.store.Close(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] error closing state store: %v\n", ts(), err)
 	}
@@ -2850,6 +2853,8 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 			TTL:          expiry,
 			Source:       checks.BlockSourceChallenge,
 			FindingID:    e.FindingID,
+			Root:         e.Root,
+			Entry:        admission.EntryChallengeTimeout,
 		})
 		recorded = append(recorded, res.Findings...)
 		if err != nil {
@@ -2906,10 +2911,11 @@ func (d *Daemon) recordAppliedBlocks(findings []alert.Finding) {
 	}
 }
 
-// applyIncidentSprayBlock is the incident correlator's firewall hand-off,
-// routed through the chokepoint so spray blocks leave evidence and reach
-// the digest.
-func (d *Daemon) applyIncidentSprayBlock(ip, reason string, timeout time.Duration, findingID string) (bool, error) {
+// applyIncidentBlock is the incident correlator's firewall hand-off for
+// incident and spray blocks, routed through the chokepoint so they leave
+// evidence and reach the digest. root and entry are the attesting
+// observation's admission evidence and the path that decided the block.
+func (d *Daemon) applyIncidentBlock(ip, reason string, timeout time.Duration, findingID string, root incident.PreparedRoot, entry admission.Entry) (bool, error) {
 	res, err := checks.ApplyBlock(d.currentCfg(), checks.ApplyBlockRequest{
 		IP:           ip,
 		EngineReason: reason,
@@ -2917,6 +2923,10 @@ func (d *Daemon) applyIncidentSprayBlock(ip, reason string, timeout time.Duratio
 		TTL:          timeout,
 		Source:       checks.BlockSourceIncident,
 		FindingID:    findingID,
+		Root:         root.Evidence,
+		Entry:        entry,
+		RootFinding:  root.Finding,
+		RootErr:      root.Err,
 	})
 	d.recordAppliedBlocks(res.Findings)
 	live := res.Outcome == firewall.BlockOutcomeLive && (err == nil || errors.Is(err, firewall.ErrActionAuditPending))

@@ -245,8 +245,9 @@ func loadCharges(tx *bolt.Tx) ([]admission.Charge, error) {
 }
 
 // ImportedLegacySpend reads the retained legacy charges for startup status.
-// Attempt charges retain their attempt until well after the ceiling window;
-// an unmatched orphan is damage, never evidence of a missing import.
+// A charge of a retained attempt must match it. A charge whose attempt has
+// retired is no legacy spend: after a reboot a charge waits for its
+// remaining elapsed time, while history retires by wall time.
 func (l *AdmissionLedger) ImportedLegacySpend() (admission.LegacySpend, error) {
 	var spend admission.LegacySpend
 	err := l.db.bolt.View(func(tx *bolt.Tx) error {
@@ -257,7 +258,8 @@ func (l *AdmissionLedger) ImportedLegacySpend() (admission.LegacySpend, error) {
 		if err != nil {
 			return err
 		}
-		var legacyIDs map[admission.ActionID]bool
+		var idsAt time.Time
+		ids := make(map[admission.ActionID]bool)
 		for _, c := range charges {
 			if tx.Bucket([]byte(admissionAttemptsBucket)).Get([]byte(c.Action)) != nil {
 				a, err := loadAttempt(tx, c.Action)
@@ -270,16 +272,22 @@ func (l *AdmissionLedger) ImportedLegacySpend() (admission.LegacySpend, error) {
 				}
 				continue
 			}
-			if legacyIDs == nil {
-				spend.At = c.At
-				legacyIDs = make(map[admission.ActionID]bool)
+			if !c.At.Equal(idsAt) {
+				// Charges are time-ordered; prior timestamps never recur.
+				clear(ids)
 				for seq := uint32(1); seq <= (admission.MaxCeiling+admission.MaxMemberCost-1)/admission.MaxMemberCost+1; seq++ {
-					legacyIDs[admission.LegacyActionID(c.At, seq)] = true
+					ids[admission.LegacyActionID(c.At, seq)] = true
 				}
+				idsAt = c.At
 			}
-			if !legacyIDs[c.Action] || !spend.At.Equal(c.At) {
+			if !ids[c.Action] {
+				continue
+			}
+			// One import charged every legacy unit at one time.
+			if spend.Units != 0 && !spend.At.Equal(c.At) {
 				return admission.ErrCorruptRecord
 			}
+			spend.At = c.At
 			spend.Units += c.Cost
 		}
 		return nil

@@ -30,7 +30,6 @@ const (
 	ProducerCpanelAccessLog admission.ProducerID = "cpanel_access_log"
 	ProducerCpanelScan      admission.ProducerID = "cpanel_access_scan"
 	ProducerReputationScan  admission.ProducerID = "reputation_scan"
-	ProducerDBSessionScan   admission.ProducerID = "db_session_scan"
 	ProducerConnectionScan  admission.ProducerID = "connection_scan"
 )
 
@@ -90,12 +89,6 @@ var producerTable = []ProducerEntry{
 	{admission.ProducerSpec{ID: ProducerReputationScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
 		Checks: []string{"ip_reputation"}},
 		admission.ParserRef{Name: "reputation", Version: 1}},
-	// local_threat_score now comes only from the database malware response:
-	// addresses with a live WordPress session on a site whose database scan
-	// found malware.
-	{admission.ProducerSpec{ID: ProducerDBSessionScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
-		Checks: []string{"local_threat_score"}},
-		admission.ParserRef{Name: "db_session", Version: 1}},
 	{admission.ProducerSpec{ID: ProducerConnectionScan, Entry: admission.EntryScan, Observation: admission.ObservationScanPass,
 		Checks: []string{"c2_connection"}},
 		admission.ParserRef{Name: "proc_net_tcp", Version: 1}},
@@ -108,6 +101,45 @@ func ProducerTable() []ProducerEntry {
 		out[i] = p
 		out[i].Spec.Checks = slices.Clone(p.Spec.Checks)
 		out[i].Spec.Claims = slices.Clone(p.Spec.Claims)
+	}
+	return out
+}
+
+// derivedEntries bind each derived entry to the root checks it may answer
+// again. A derived response never mints evidence of its own: it carries a
+// root a producer of the table minted (spec 5.2).
+var derivedEntries = []admission.ProducerSpec{
+	{ID: "mail_subnet", Entry: admission.EntryMailSubnet, Observation: admission.ObservationLogCursor,
+		Checks: []string{"mail_subnet_spray", "smtp_subnet_spray"}},
+	{ID: "asn_crawl", Entry: admission.EntryASNCrawl, Observation: admission.ObservationScanPass,
+		Checks: []string{"http_asn_crawl"}},
+}
+
+// DerivedEntries returns the derived entries' producer specs. A challenge
+// timeout answers the checks routed to the challenge; central intel and
+// incidents answer any check whose address a producer publishes.
+func DerivedEntries() []admission.ProducerSpec {
+	var published, challenged []string
+	for _, p := range producerTable {
+		for _, check := range p.Spec.Checks {
+			if slices.Contains(published, check) {
+				continue
+			}
+			published = append(published, check)
+			if ResponsePolicyFor(check).ChallengeFirst {
+				challenged = append(challenged, check)
+			}
+		}
+	}
+	out := []admission.ProducerSpec{
+		{ID: "challenge_timeout", Entry: admission.EntryChallengeTimeout, Observation: admission.ObservationEventSeq, Checks: challenged},
+		{ID: "central", Entry: admission.EntryCentral, Observation: admission.ObservationEventSeq, Checks: slices.Clone(published)},
+		{ID: "incident", Entry: admission.EntryIncident, Observation: admission.ObservationEventSeq, Checks: slices.Clone(published)},
+		{ID: "incident_spray", Entry: admission.EntryIncidentSpray, Observation: admission.ObservationEventSeq, Checks: slices.Clone(published)},
+	}
+	for _, spec := range derivedEntries {
+		spec.Checks = slices.Clone(spec.Checks)
+		out = append(out, spec)
 	}
 	return out
 }
