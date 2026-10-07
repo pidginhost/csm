@@ -120,7 +120,8 @@ func isHardBlockCheck(check string) bool {
 	return ResponsePolicyFor(check).NeverChallenge || neverChallengeDynamicName(check)
 }
 
-const challengeDuration = 30 * time.Minute
+// ChallengeDuration is how long a routed address stays challenged.
+const ChallengeDuration = 30 * time.Minute
 
 // ChallengeThenBlock runs the two IP-disposition stages in their required
 // order -- challenge routing first so an eligible IP is on the challenge list
@@ -185,7 +186,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
-		addChallengeIP(f.Check, ip, f.Message, challengeDuration, alert.FindingID(f))
+		addChallengeIP(f.Check, ip, f.Message, ChallengeDuration, alert.FindingID(f))
 		routed[ip] = true
 		observeChallengeRouted(f.Check)
 		recordChallengeRouteStat(ip, f.Check, time.Now())
@@ -196,7 +197,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "challenge_route",
-			Message:   fmt.Sprintf("CHALLENGE: %s sent to PoW challenge (expires in %s)", ip, challengeDuration),
+			Message:   fmt.Sprintf("CHALLENGE: %s sent to PoW challenge (expires in %s)", ip, ChallengeDuration),
 			Details:   fmt.Sprintf("Reason: %s", f.Message),
 			Timestamp: time.Now(),
 		})

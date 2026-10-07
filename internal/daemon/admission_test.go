@@ -17,6 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/admissionowner"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/state"
@@ -306,5 +307,34 @@ func TestDaemonReportsAnUnavailableAdmissionStore(t *testing.T) {
 	defer d.stopAdmission()
 	if s := d.AdmissionStatus(); s == nil || s.Owner.Error == "" || s.Ingress.Admitting {
 		t.Fatalf("missing store status: %+v", s)
+	}
+}
+
+// A preview records the expiry the live response would get under the
+// current configuration: block_expiry for blocks, the challenge window for
+// a challenge, central intel's own windows and the crawl tempban for their
+// entries.
+func TestAdmissionPreviewExpiryFollowsTheConfiguredResponse(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.BlockExpiry = "6h"
+	cfg.AutoResponse.HTTPASNCrawlTempban = "3h"
+	for _, tc := range []struct {
+		kind  admission.Kind
+		entry admission.Entry
+		want  time.Duration
+	}{
+		{admission.KindBlockIP, admission.EntryScan, 6 * time.Hour},
+		{admission.KindBlockIP, admission.EntryIncident, 6 * time.Hour},
+		{admission.KindBlockIP, admission.EntryChallengeTimeout, 6 * time.Hour},
+		{admission.KindBlockSubnet, admission.EntryMailSubnet, 6 * time.Hour},
+		{admission.KindChallenge, admission.EntryScan, checks.ChallengeDuration},
+		{admission.KindChallenge, admission.EntryCentral, centralChallengeTTL},
+		{admission.KindBlockIP, admission.EntryCentral, centralBlockTTL},
+		{admission.KindBlockSubnet, admission.EntryASNCrawl, 3 * time.Hour},
+	} {
+		c := admission.Candidate{Key: admission.CandidateKey{Kind: tc.kind}, Entry: tc.entry}
+		if got := previewExpiry(cfg, c); got != tc.want {
+			t.Errorf("%s via %s: %v, want %v", tc.kind, tc.entry, got, tc.want)
+		}
 	}
 }

@@ -591,4 +591,6 @@ Imported legacy usage retains its accounting-window charge after an attempt is r
 
 The scheduler records only ceiling, history-budget and recovery-reserve deferrals, once per changed reason. Fair turns, member bounds and retry backoff produce no deferral; a cleared budget reason produces no new gap notice. Challenges spend fair turns and history without spending block credit, and bounded durable holds preserve the earned turn of charged work while challenges proceed.
 
+The owner schedules queued preview work on its timer and uses the next ledger wake even when no new arrival appears. It preserves the legacy-selected absolute expiry, observes each pick transactionally and continues delivery retries independently of scheduling.
+
 Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.

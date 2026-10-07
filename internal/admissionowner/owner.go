@@ -25,6 +25,9 @@ const (
 	defaultDeliverEvery   = time.Second
 	defaultNoticeEvery    = 5 * time.Second
 	defaultDrainEvery     = time.Second
+	// defaultScheduleEvery bounds the owner to one batch start a second
+	// (spec 5.5).
+	defaultScheduleEvery = time.Second
 )
 
 // maxDrainGroups bounds the groups one drain persists, so a busy ingress
@@ -40,6 +43,17 @@ var drainGroup = admission.MaxArrivalGroup
 var drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
 	return in.DrainTaken(l, items, arrivalRequest)
 }
+
+// scheduleLedger picks queued work; tests make it fail. monoNow reads the
+// monotonic clock the owner's wake time is set on; tests move it.
+var (
+	scheduleLedger = (*store.AdmissionLedger).Schedule
+	monoNow        = time.Now
+)
+
+// previewLimits lets a schedule serve whatever the ledger's budgets allow,
+// one batch of members at a time; tests shrink the batch.
+var previewLimits = admission.ScheduleLimits{General: admission.MaxCeiling, Reserved: admission.MaxCeiling, Members: admission.MaxBatchMembers}
 
 // Options are what the owner needs from the daemon.
 type Options struct {
@@ -61,8 +75,12 @@ type Options struct {
 	// as protection_queue_degraded is sent: history and direct dispatch,
 	// never the finding channel, suppressions or the routine rate limit.
 	Deliver func([]alert.Finding) error
+	// Expiry is how long the response a candidate asks for would last
+	// under the current configuration. A preview records the expiry a
+	// live attempt would have.
+	Expiry func(admission.Candidate) time.Duration
 	// Timer periods; zero selects the defaults.
-	TickEvery, InventoryEvery, StatusEvery, DeliverEvery, NoticeEvery, DrainEvery time.Duration
+	TickEvery, InventoryEvery, StatusEvery, DeliverEvery, NoticeEvery, DrainEvery, ScheduleEvery time.Duration
 }
 
 var errStopped = errors.New("the admission owner has stopped")
@@ -75,7 +93,8 @@ type request struct {
 // Owner is the daemon's one handle on the admission ledger. One goroutine
 // makes every call that changes the ledger, so sequences such as a tick
 // followed by a new limit never interleave with another change (spec 5.4).
-// Nothing submits to its ingress yet.
+// It serves its queue as observe previews: nothing it admits is executed
+// until the applier exists.
 type Owner struct {
 	opts     Options
 	stopping atomic.Bool
@@ -96,14 +115,21 @@ type Owner struct {
 	startErr      error
 	snapshotErr   error
 	tickErr       error
+	scheduleErr   error
 	degraded      bool
 	lastTick      time.Time
-	limit         uint32
-	source        string
-	imported      *health.AdmissionImport
-	inventoryAt   time.Time
-	inventoryErr  error
-	auditAcked    uint64
+	// now is the admission time of the last reading.
+	now time.Time
+	// scheduleDue asks the next schedule turn to run; wakeAt, on the
+	// monotonic clock, is when the ledger said queued work changes next.
+	scheduleDue  bool
+	wakeAt       time.Time
+	limit        uint32
+	source       string
+	imported     *health.AdmissionImport
+	inventoryAt  time.Time
+	inventoryErr error
+	auditAcked   uint64
 	// drained is the ingress decision sequence the last drain persisted.
 	drained uint64
 	// drainFailed holds admission closed until a drain succeeds. drainErr
@@ -138,6 +164,9 @@ func Start(opts Options) *Owner {
 	if opts.DrainEvery <= 0 {
 		opts.DrainEvery = defaultDrainEvery
 	}
+	if opts.ScheduleEvery <= 0 {
+		opts.ScheduleEvery = defaultScheduleEvery
+	}
 	o := &Owner{
 		opts: opts, requests: make(chan request), quit: make(chan bool), done: make(chan struct{}),
 		audit: queuehealth.NewSampled(int(admission.MaxAuditSlots), "rows", deliveryLag),
@@ -168,6 +197,8 @@ func (o *Owner) run() {
 	defer deliver.Stop()
 	drain := time.NewTicker(o.opts.DrainEvery)
 	defer drain.Stop()
+	schedule := time.NewTicker(o.opts.ScheduleEvery)
+	defer schedule.Stop()
 	for {
 		select {
 		case clean := <-o.quit:
@@ -205,6 +236,10 @@ func (o *Owner) run() {
 		case <-drain.C:
 			if o.started {
 				_ = o.drain()
+			}
+		case <-schedule.C:
+			if o.started {
+				o.schedule()
 			}
 		}
 	}
@@ -263,7 +298,7 @@ func (o *Owner) start() error {
 	if err = o.publish(); err != nil {
 		return err
 	}
-	o.started = true
+	o.started, o.scheduleDue = true, true
 	return nil
 }
 
@@ -315,7 +350,7 @@ func (o *Owner) readTick() (admission.ClockReading, error) {
 		o.tickErr = err
 		return reading, fmt.Errorf("reading the admission clock: %w", err)
 	}
-	o.tickErr, o.degraded, o.lastTick = nil, t.Degraded, reading.Wall
+	o.tickErr, o.degraded, o.lastTick, o.now = nil, t.Degraded, reading.Wall, t.Now
 	return reading, nil
 }
 
@@ -507,11 +542,74 @@ func (o *Owner) drainHeld() (err error) {
 		if err != nil && !errors.Is(err, admission.ErrArrivalsIsolated) {
 			return err
 		}
+		if report.Queued+report.Coalesced > 0 {
+			o.scheduleDue = true
+		}
 		// The group's own snapshot reopened admission.
 		o.drainFailed = false
 		o.drainErr, o.snapshotErr = nil, nil
 		if o.ingress.Len() == 0 {
 			return nil
+		}
+	}
+	return nil
+}
+
+// schedule runs a turn when work was drained or the ledger's wake time has
+// come, and keeps the cause of a failed turn for status until one
+// succeeds.
+func (o *Owner) schedule() {
+	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) {
+		return
+	}
+	o.scheduleDue, o.wakeAt = false, time.Time{}
+	err := o.preview()
+	if err != nil {
+		o.scheduleDue = true
+	}
+	if (err == nil) != (o.scheduleErr == nil) {
+		o.scheduleErr = err
+		o.refreshStatus()
+	}
+	o.scheduleErr = err
+}
+
+// preview serves the queue's picks as observe previews, after a fresh
+// reading (O9): each is reserved and charged as live work would be and
+// ends in the same transaction without running (O14). The schedule has
+// already deferred the work its budgets cannot serve and revalidated each
+// pick under the same state, so a refused preview is the turn's error. The
+// ledger's wake time, converted by the admission clock's elapsed time,
+// sets the next turn (O16).
+func (o *Owner) preview() error {
+	if err := o.tick(); err != nil {
+		return err
+	}
+	picks, err := scheduleLedger(o.ledger, previewLimits)
+	if err != nil {
+		return fmt.Errorf("scheduling the queue: %w", err)
+	}
+	for _, p := range picks {
+		c, readErr := o.ledger.Candidate(p.ID)
+		if readErr != nil {
+			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
+		}
+		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, o.now.Add(o.opts.Expiry(c))); err != nil {
+			return fmt.Errorf("previewing pick %s: %w", p.ID, err)
+		}
+	}
+	if err = o.publish(); err != nil {
+		return err
+	}
+	wake, ok, err := o.ledger.NextWake()
+	if err != nil {
+		return fmt.Errorf("reading the next wake time: %w", err)
+	}
+	if ok {
+		if d := wake.Sub(o.now); d > 0 {
+			o.wakeAt = monoNow().Add(d)
+		} else {
+			o.scheduleDue = true
 		}
 	}
 	return nil
@@ -547,6 +645,8 @@ func (o *Owner) refreshStatus() {
 		s.Owner.Error = o.drainErr.Error()
 	case o.snapshotErr != nil:
 		s.Owner.Error = o.snapshotErr.Error()
+	case o.scheduleErr != nil:
+		s.Owner.Error = o.scheduleErr.Error()
 	}
 	if o.tickErr != nil {
 		s.Owner.TickError = o.tickErr.Error()

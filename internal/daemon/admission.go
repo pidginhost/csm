@@ -1,10 +1,14 @@
 package daemon
 
 import (
+	"time"
+
 	"github.com/pidginhost/csm/internal/actionlog"
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/admissionowner"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/health"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
@@ -27,7 +31,24 @@ func (d *Daemon) admissionOptions(db *store.DB) admissionowner.Options {
 		LegacySpend: checks.LegacyBlockSpend,
 		WriteAudit:  actionlog.WriteDurableBatch,
 		Deliver:     d.deliverAdmissionNotices,
+		Expiry:      func(c admission.Candidate) time.Duration { return previewExpiry(d.currentCfg(), c) },
 	}
+}
+
+// previewExpiry is how long the response c asks for would last under cfg:
+// each entry keeps the lifetime its legacy path applies.
+func previewExpiry(cfg *config.Config, c admission.Candidate) time.Duration {
+	switch {
+	case c.Entry == admission.EntryCentral && c.Key.Kind == admission.KindChallenge:
+		return centralChallengeTTL
+	case c.Entry == admission.EntryCentral:
+		return centralBlockTTL
+	case c.Key.Kind == admission.KindChallenge:
+		return checks.ChallengeDuration
+	case c.Entry == admission.EntryASNCrawl:
+		return parseBlockExpiry(cfg.AutoResponse.HTTPASNCrawlTempban)
+	}
+	return parseBlockExpiry(cfg.AutoResponse.BlockExpiry)
 }
 
 func (d *Daemon) startAdmissionWith(opts admissionowner.Options) {
