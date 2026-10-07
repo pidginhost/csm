@@ -475,7 +475,6 @@ var reviewedRiskTiers = map[string]RiskTier{
 	"state.sign_config":             RiskObserve,
 	"state.update_forge":            RiskObserve,
 	"state.update_signatures":       RiskObserve,
-	"state.write_deploy_script":     RiskObserve,
 	"state.write_logs":              RiskObserve,
 	"state.write_store":             RiskObserve,
 }

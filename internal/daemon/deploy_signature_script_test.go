@@ -18,21 +18,6 @@ type deploySignatureScript struct {
 	path string
 }
 
-func TestDeployScriptEmbeddedCopyMatches(t *testing.T) {
-	root := repoRootFromDaemonTest()
-	canonical, err := os.ReadFile(filepath.Join(root, "scripts/deploy.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	embedded, err := os.ReadFile(filepath.Join(root, "internal/daemon/configs/deploy.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(canonical, embedded) {
-		t.Fatal("internal/daemon/configs/deploy.sh must match scripts/deploy.sh byte-for-byte")
-	}
-}
-
 func TestVerifySignatureRejectsMismatchWhenRawinSupported(t *testing.T) {
 	for _, script := range deploySignatureScripts() {
 		t.Run(script.name, func(t *testing.T) {
@@ -1821,7 +1806,6 @@ func TestPosttransReportsImmutabilityFailureWithoutFailing(t *testing.T) {
 func deploySignatureScripts() []deploySignatureScript {
 	return []deploySignatureScript{
 		{name: "scripts-deploy", path: "scripts/deploy.sh"},
-		{name: "embedded-deploy", path: "internal/daemon/configs/deploy.sh"},
 		{name: "scripts-install", path: "scripts/install.sh"},
 		{name: "scripts-deploy-gitlab", path: "scripts/deploy-gitlab.sh"},
 	}

@@ -171,7 +171,7 @@ func TestDeployConfigs_ModsecParentNotExistSkipped(t *testing.T) {
 	// This test simply verifies deployConfigs tolerates missing parent
 	// directories without panic. On macOS neither /usr/local/cpanel nor
 	// /etc/apache2/conf.d/modsec nor /usr/local/apache/conf exist,
-	// so the function returns after attempting /opt/csm/deploy.sh write.
+	// so the function returns after the ModSecurity write attempt.
 	deployConfigs()
 }
 

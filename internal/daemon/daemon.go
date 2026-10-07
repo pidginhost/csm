@@ -3497,11 +3497,6 @@ func deployConfigs() {
 		}
 	}
 
-	// Deploy script (self-updating)
-	// #nosec G306 -- Shell script executed by operators and by the CSM
-	// upgrade path; needs to be executable, not private.
-	_ = os.WriteFile("/opt/csm/deploy.sh", embeddedDeployScript, 0755)
-
 	// ModSecurity virtual patches. modsec2.user.conf is shared with
 	// operator-maintained rules, so the embedded rules go through
 	// checks.MergeModSecUserConfSection: this startup deploy only ever

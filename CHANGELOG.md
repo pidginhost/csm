@@ -29,6 +29,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Removed
 
+- The daemon no longer rewrites the upgrade helper script on every start; the package and the release archive install it.
 - Unused scan-interval, webhook and relay settings are gone from the config, dashboard and docs. Old config files still load, and the validator names each key to delete.
 
 ### Fixed
