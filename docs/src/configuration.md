@@ -964,7 +964,7 @@ dropped.
 
 The tagged-safe top-level fields are `alerts`, `thresholds`,
 `detection`, `suppressions`, `auto_response`, `bpf_enforcement`,
-`reputation`, `email_protection`, and `disabled_checks`. The Settings
+`reputation`, `email_protection`, `disabled_checks`, and `confd`. The Settings
 API derives its restart hints from the same manifest that drives
 `config.Diff`, so UI hints and SIGHUP behavior cannot drift silently. A
 save from the Settings page runs the same apply steps as a SIGHUP, so a
