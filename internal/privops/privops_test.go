@@ -333,6 +333,7 @@ func TestAuditedOperationsArePinned(t *testing.T) {
 		"respond.clean_file",
 		"respond.kill_process",
 		"respond.quarantine_file",
+		"respond.suspend_mailbox",
 	}
 	if !reflect.DeepEqual(audited, want) {
 		t.Errorf("audited operations = %v, want %v; wire the action record before claiming coverage", audited, want)

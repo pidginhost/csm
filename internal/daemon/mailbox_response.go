@@ -20,17 +20,29 @@ import (
 // and a hung call must not stall the Exim log watcher for long.
 const uapiTimeout = 20 * time.Second
 
+// CloudLinux does not provide uapi on the service's PATH.
+const uapiPath = "/usr/local/cpanel/bin/uapi"
+
 // uapiExec runs cPanel's uapi with the given arguments and returns its
-// combined output. A var so tests can observe calls without cPanel.
+// JSON stdout. A var so tests can observe calls without cPanel.
 var uapiExec = func(ctx context.Context, args ...string) ([]byte, error) {
 	return runUAPI(ctx, exec.LookPath, uapiCommand, args...)
 }
 
 func uapiCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
 	// #nosec G204 -- name is the resolved systemd-run path or uapi; args are
-	// fixed API words plus an account read from /etc/userdomains and the
-	// authenticated Exim identity, both validated by their parsers.
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	// fixed API words plus a cPanel-managed account and an authenticated Exim
+	// identity. No shell interprets them; systemdrun escapes variable expansion.
+	cmd := exec.CommandContext(ctx, name, args...)
+	// Killing systemd-run or uapi need not close pipes inherited by children.
+	// Bound the drain too, so those children cannot stall the log watcher.
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+		err = fmt.Errorf("%w: %s", err, truncateDaemon(strings.TrimSpace(string(exitErr.Stderr)), 200))
+	}
+	return out, err
 }
 
 // runUAPI starts uapi as a transient unit forked by PID 1. uapi writes the
@@ -42,7 +54,7 @@ func runUAPI(ctx context.Context, lookPath systemdrun.LookPathFunc, run systemdr
 	if deadline, ok := ctx.Deadline(); ok {
 		opt.RuntimeMax = time.Until(deadline)
 	}
-	return systemdrun.Run(ctx, lookPath, run, opt, "uapi", args...)
+	return systemdrun.Run(ctx, lookPath, run, opt, uapiPath, args...)
 }
 
 // uapiResultError reads the outcome of a `uapi --output=json` call. uapi exits
@@ -134,8 +146,8 @@ func runMailboxSuspension(user, mailbox, fn, reason string) error {
 		Target:  mailbox,
 		Account: user,
 		Reason:  reason,
-		Command: append([]string{"uapi"}, args...),
-		Undo:    fmt.Sprintf("uapi --user=%s Email un%s email=%s", user, fn, mailbox),
+		Command: append([]string{uapiPath}, args...),
+		Undo:    fmt.Sprintf("%s %s Email un%s %s", uapiPath, mailboxShellArg("--user="+user), fn, mailboxShellArg("email="+mailbox)),
 		Result:  actionlog.Applied,
 	}
 	if err != nil {
@@ -144,4 +156,10 @@ func runMailboxSuspension(user, mailbox, fn, reason string) error {
 	}
 	actionlog.Write(rec)
 	return err
+}
+
+// Undo is pasted into an operator's shell; the parser's authenticated identity
+// guarantee does not make mailbox punctuation safe for shell interpretation.
+func mailboxShellArg(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }

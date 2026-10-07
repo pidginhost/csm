@@ -110,6 +110,18 @@ func TestArgvRunsCommandDirectlyWithoutSystemdRun(t *testing.T) {
 	}
 }
 
+func TestArgvPreservesLiteralDollars(t *testing.T) {
+	args := []string{"Email", "suspend_login", "email=name${INVOCATION_ID}$$@example.com"}
+	_, wrapped := Argv("/usr/bin/systemd-run", Options{Pipe: true}, "uapi", args...)
+	if got := wrapped[len(wrapped)-1]; got != "email=name$${INVOCATION_ID}$$$$@example.com" {
+		t.Fatalf("systemd would expand the mailbox argument: %q", got)
+	}
+	_, direct := Argv("", Options{Pipe: true}, "uapi", args...)
+	if got := direct[len(direct)-1]; got != "email=name${INVOCATION_ID}$$@example.com" {
+		t.Fatalf("direct fallback changed the mailbox argument: %q", got)
+	}
+}
+
 func contains(args []string, want string) bool {
 	for _, a := range args {
 		if a == want {

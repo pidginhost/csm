@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/config"
@@ -73,40 +75,41 @@ func TestMaybeSuspendMailbox_GatedByConfig(t *testing.T) {
 	withUserdomains(t, "victim.example: cpuser\n")
 	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
 	holds := stubAccountHold(t, true)
-	sink := captureActionRecords(t)
 
 	dryRunOn := true
 	enabledDry := &config.Config{}
 	enabledDry.AutoResponse.Enabled = true
 	enabledDry.AutoResponse.DryRun = &dryRunOn
+	enabledDefaultDry := &config.Config{}
+	enabledDefaultDry.AutoResponse.Enabled = true
 
 	for _, tc := range []struct {
-		name string
-		cfg  *config.Config
+		name        string
+		cfg         *config.Config
+		wantRecords int
 	}{
-		{"nil config", nil},
-		{"defaults (disabled + dry-run)", &config.Config{}},
-		{"enabled but dry-run", enabledDry},
+		{"nil config", nil, 0},
+		{"defaults (disabled + dry-run)", &config.Config{}, 0},
+		{"enabled but dry-run", enabledDry, 1},
+		{"enabled with default dry-run", enabledDefaultDry, 1},
 	} {
-		if maybeSuspendMailbox(tc.cfg, "real@victim.example", "test") {
-			t.Errorf("%s: reported the mailbox as suspended", tc.name)
-		}
-	}
-	if len(*calls) != 0 || len(*holds) != 0 {
-		t.Fatalf("gated-off response ran uapi %v and holds %v", *calls, *holds)
-	}
-	var dryRun int
-	for _, r := range sink.records {
-		if r.Op != "respond.suspend_mailbox" {
-			continue
-		}
-		if r.Result != actionlog.DryRun {
-			t.Fatalf("gated-off response recorded %+v", r)
-		}
-		dryRun++
-	}
-	if dryRun != 1 {
-		t.Fatalf("dry-run records = %d, want exactly one for the enabled dry-run config", dryRun)
+		t.Run(tc.name, func(t *testing.T) {
+			sink := captureActionRecords(t)
+			if maybeSuspendMailbox(tc.cfg, "real@victim.example", "test") {
+				t.Error("reported the mailbox as suspended")
+			}
+			if len(*calls) != 0 || len(*holds) != 0 {
+				t.Fatalf("gated-off response ran uapi %v and holds %v", *calls, *holds)
+			}
+			if len(sink.records) != tc.wantRecords {
+				t.Fatalf("records = %+v, want %d", sink.records, tc.wantRecords)
+			}
+			for _, rec := range sink.records {
+				if rec.Op != "respond.suspend_mailbox" || rec.Result != actionlog.DryRun || rec.Target != "real@victim.example" || rec.Reason != "test" {
+					t.Errorf("dry-run record = %+v", rec)
+				}
+			}
+		})
 	}
 }
 
@@ -136,7 +139,7 @@ func TestMaybeSuspendMailbox_SuspendsLoginAndOutgoing(t *testing.T) {
 		if rec.Target != "real@victim.example" || rec.Account != "cpuser" || rec.Reason != "credential abuse" {
 			t.Errorf("record %d: target=%q account=%q reason=%q", i, rec.Target, rec.Account, rec.Reason)
 		}
-		if !reflect.DeepEqual(rec.Command, append([]string{"uapi"}, want[i]...)) {
+		if !reflect.DeepEqual(rec.Command, append([]string{"/usr/local/cpanel/bin/uapi"}, want[i]...)) {
 			t.Errorf("record %d: command = %v", i, rec.Command)
 		}
 	}
@@ -173,6 +176,71 @@ func TestMaybeSuspendMailbox_LoginFailureStillCountsOutgoing(t *testing.T) {
 	}
 	if sink.records[1].Result != actionlog.Applied {
 		t.Errorf("outgoing record = %+v", sink.records[1])
+	}
+}
+
+func TestMaybeSuspendMailbox_ResultStatusControlsFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		login, outgoing string
+		execErr         error
+		wantHold        bool
+		wantResults     []actionlog.Result
+	}{
+		{"login only", `{"result":{"status":1,"errors":null}}`, `{"result":{"status":0,"errors":null}}`, errors.New("exit status 1"), false, []actionlog.Result{actionlog.Applied, actionlog.Failed}},
+		{"both API failures with zero exit", `{"result":{"status":0,"errors":["login failed"]}}`, `{"result":{"status":0,"errors":["outgoing failed"]}}`, nil, true, []actionlog.Result{actionlog.Failed, actionlog.Failed}},
+		{"both timed out", "", "", context.DeadlineExceeded, true, []actionlog.Result{actionlog.Failed, actionlog.Failed}},
+		{"no result", `{}`, `{"result":null}`, nil, true, []actionlog.Result{actionlog.Failed, actionlog.Failed}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withUserdomains(t, "example.com: cpuser\n")
+			calls := stubUAPI(t, func(args []string) ([]byte, error) {
+				if args[3] == "suspend_login" {
+					return []byte(tc.login), tc.execErr
+				}
+				return []byte(tc.outgoing), tc.execErr
+			})
+			holds := stubAccountHold(t, true)
+			sink := captureActionRecords(t)
+			if !maybeSuspendMailbox(eximAutoHoldConfig(), "alice@example.com", "test") {
+				t.Fatal("successful suspension or fallback did not report stopped")
+			}
+			if len(*calls) != 2 || len(sink.records) != 2 {
+				t.Fatalf("want two attempts and records: calls=%v records=%v", *calls, sink.records)
+			}
+			wantHolds := []string{}
+			if tc.wantHold {
+				wantHolds = append(wantHolds, "alice@example.com")
+			}
+			if !reflect.DeepEqual(*holds, wantHolds) {
+				t.Errorf("holds = %v, want %v", *holds, wantHolds)
+			}
+			for i, rec := range sink.records {
+				if rec.Result != tc.wantResults[i] || rec.Undo == "" {
+					t.Errorf("record %d = %+v", i, rec)
+				}
+			}
+		})
+	}
+}
+
+func TestMailboxSuspensionSetsTimeout(t *testing.T) {
+	prev := uapiExec
+	t.Cleanup(func() { uapiExec = prev })
+	calls := 0
+	uapiExec = func(ctx context.Context, args ...string) ([]byte, error) {
+		deadline, ok := ctx.Deadline()
+		if left := time.Until(deadline); !ok || left <= 0 || left > 20*time.Second {
+			t.Fatalf("uapi context deadline = %v, set=%v", deadline, ok)
+		}
+		calls++
+		return uapiOK()
+	}
+	withUserdomains(t, "example.com: cpuser\n")
+	stubAccountHold(t, true)
+	captureActionRecords(t)
+	if !maybeSuspendMailbox(eximAutoHoldConfig(), "alice@example.com", "test") || calls != 2 {
+		t.Fatalf("expected two bounded calls, got %d", calls)
 	}
 }
 
@@ -259,7 +327,9 @@ func TestRunUAPI_EscapesSandboxWhenSystemdRunExists(t *testing.T) {
 		}
 		return "", errors.New("not found")
 	}
-	if _, err := runUAPI(context.Background(), lookPath, run, "--output=json", "Email", "suspend_login"); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := runUAPI(ctx, lookPath, run, "--output=json", "Email", "suspend_login"); err != nil {
 		t.Fatal(err)
 	}
 	// A side-effect-free probe runs first, then the wrapped command.
@@ -270,7 +340,23 @@ func TestRunUAPI_EscapesSandboxWhenSystemdRunExists(t *testing.T) {
 	if last[0] != "/usr/bin/systemd-run" || !strings.Contains(strings.Join(last, " "), "--pipe") {
 		t.Fatalf("uapi was not wrapped in a transient unit: %v", last)
 	}
-	if tail := last[len(last)-5:]; !reflect.DeepEqual(tail, []string{"--", "uapi", "--output=json", "Email", "suspend_login"}) {
+	var runtimeLimit time.Duration
+	for _, arg := range last {
+		if value, ok := strings.CutPrefix(arg, "--property=RuntimeMaxSec="); ok {
+			var err error
+			runtimeLimit, err = time.ParseDuration(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if arg == "--scope" {
+			t.Fatal("uapi must escape the daemon's sandbox")
+		}
+	}
+	if runtimeLimit <= 0 || runtimeLimit > 20*time.Second {
+		t.Fatalf("transient unit runtime limit = %s, argv = %v", runtimeLimit, last)
+	}
+	if tail := last[len(last)-5:]; !reflect.DeepEqual(tail, []string{"--", "/usr/local/cpanel/bin/uapi", "--output=json", "Email", "suspend_login"}) {
 		t.Fatalf("wrapped argv does not end with the uapi command: %v", last)
 	}
 
@@ -279,8 +365,94 @@ func TestRunUAPI_EscapesSandboxWhenSystemdRunExists(t *testing.T) {
 	if _, err := runUAPI(context.Background(), missing, run, "--output=json"); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(ran, [][]string{{"uapi", "--output=json"}}) {
+	if !reflect.DeepEqual(ran, [][]string{{"/usr/local/cpanel/bin/uapi", "--output=json"}}) {
 		t.Fatalf("without systemd-run uapi must run directly: %v", ran)
+	}
+}
+
+func TestMailboxSuspensionUndoPreservesIdentity(t *testing.T) {
+	withUserdomains(t, "example.com: cpuser\n")
+	calls := stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
+	holds := stubAccountHold(t, true)
+	sink := captureActionRecords(t)
+	for _, mailbox := range []string{
+		"alice@example.com",
+		"o'brien@example.com",
+		"name${INVOCATION_ID}@example.com",
+		"name$(printf${IFS}changed)@example.com",
+		"name`printf${IFS}changed`@example.com",
+		"name;printf${IFS}changed@example.com",
+	} {
+		t.Run(mailbox, func(t *testing.T) {
+			line := "2026-01-01 10:00:00 1abc23-000456-AB <= sender@example.com H=mail.example.com [203.0.113.5]:2525 P=esmtpsa A=dovecot_login:" + mailbox + " S=100"
+			identity := extractAuthUser(line)
+			if identity != mailbox {
+				t.Fatalf("authenticated identity = %q, want %q", identity, mailbox)
+			}
+			if !maybeSuspendMailbox(eximAutoHoldConfig(), identity, "test") {
+				t.Fatal("suspension failed")
+			}
+			for _, args := range (*calls)[len(*calls)-2:] {
+				if args[4] != "email="+mailbox {
+					t.Fatalf("uapi mailbox argument = %q", args[4])
+				}
+			}
+			for _, rec := range sink.records[len(sink.records)-2:] {
+				// Decode the actual undo through a shell without invoking cPanel.
+				_, tail, ok := strings.Cut(rec.Undo, " ")
+				if !ok {
+					t.Fatalf("missing undo command: %+v", rec)
+				}
+				out, err := exec.Command("/bin/sh", "-c", "set -- "+tail+"\nprintf '%s\\n' \"$@\"").CombinedOutput()
+				want := "--user=cpuser\nEmail\nun" + rec.Action + "\nemail=" + mailbox + "\n"
+				if err != nil || string(out) != want {
+					t.Errorf("undo did not preserve mailbox: output=%q error=%v, want %q", out, err, want)
+				}
+			}
+		})
+	}
+	if len(*holds) != 0 {
+		t.Fatalf("successful mailbox responses triggered account holds: %v", *holds)
+	}
+}
+
+func TestUAPICommandSeparatesDiagnosticsFromJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name, reply, exit string
+		wantFailure       bool
+	}{
+		{"success", `{"result":{"status":1,"errors":null}}`, "0", false},
+		{"failure", `{"result":{"status":0,"errors":["mailbox unavailable"]}}`, "1", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := uapiCommand(context.Background(), "/bin/sh", "-c", "printf '%s\\n' \"$1\"; printf 'diagnostic\\n' >&2; exit \"$2\"", "sh", tc.reply, tc.exit)
+			if string(out) != tc.reply+"\n" {
+				t.Fatalf("API stdout contaminated by diagnostics: %q", out)
+			}
+			if (err != nil) != tc.wantFailure {
+				t.Fatalf("process error = %v", err)
+			}
+			if tc.wantFailure && !strings.Contains(err.Error(), "diagnostic") {
+				t.Errorf("process failure lost stderr: %v", err)
+			}
+			if apiErr := uapiResultError(out); (apiErr != nil) != tc.wantFailure {
+				t.Errorf("API result = %v", apiErr)
+			}
+		})
+	}
+}
+
+func TestUAPICommandBoundsInheritedPipes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	// The shell exits, but its child retains stdout/stderr beyond the deadline.
+	_, err := uapiCommand(ctx, "/bin/sh", "-c", "sleep 3 & wait")
+	if err == nil {
+		t.Fatal("timed-out command reported success")
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("inherited pipes delayed command cancellation for %s", elapsed)
 	}
 }
 

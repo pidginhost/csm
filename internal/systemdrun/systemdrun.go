@@ -47,7 +47,13 @@ func Argv(systemdRunPath string, opt Options, name string, args ...string) (stri
 	}
 	flags = append(flags, "--")
 	flags = append(flags, name)
-	return systemdRunPath, append(flags, args...)
+	// PID 1 expands dollar expressions even though no shell is involved.
+	// Doubling dollars preserves literal argv on older systemd versions that
+	// do not support --expand-environment=no. Direct execution needs no escape.
+	for _, arg := range args {
+		flags = append(flags, strings.ReplaceAll(arg, "$", "$$"))
+	}
+	return systemdRunPath, flags
 }
 
 func formatRuntimeMax(d time.Duration) string {
