@@ -1,15 +1,15 @@
-# This repository is published from an upstream mirror, so the branches
-# Dependabot opens here are replaced on the next sync and its pull requests
-# close on their own. Treat them as notifications: the update is applied
-# upstream, and it arrives here with the following sync. Do not spend time
-# reopening or merging them.
+# This repository is published from an upstream mirror, so a branch
+# Dependabot opens here is replaced on the next sync and its pull request
+# closes on its own. Pull requests are therefore switched off; security
+# alerts still arrive, and the update is applied upstream and arrives with
+# the following sync.
 version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 0
     groups:
       go-deps:
         patterns:
@@ -19,4 +19,4 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0

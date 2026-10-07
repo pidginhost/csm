@@ -43,8 +43,9 @@ go test -race -timeout=30m -covermode=atomic -coverprofile=coverage.out -coverpk
 ```
 
 `make test` and the test step of `make ci` use `-short` for local iteration;
-they do not reproduce the full CI suite. Neither default command tests the
-shipped optional backends. The additional required production job runs:
+they do not reproduce the full CI suite. `make test-full` runs the default-tag
+suite with the CI flags (no `-short`, fresh results, the 30-minute package
+timeout). Neither default command tests the shipped optional backends. The additional required production job runs:
 
 ```bash
 scripts/production-tests.sh portable
