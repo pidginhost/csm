@@ -712,14 +712,12 @@ func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admissi
 	}
 	for _, it := range items {
 		lc := byID[it.ID]
-		if picked[it.ID] {
-			continue
-		}
 		eligible := it.Direct || it.Corroborated
 		generalCeiling := general >= it.CeilingCost
 		reservedCeiling := eligible && reserved >= it.CeilingCost
 		var reason admission.Reason
 		switch {
+		case picked[it.ID]:
 		case q.now.Before(lc.c.NotBefore):
 		case !generalCeiling && !reservedCeiling:
 			reason = admission.ReasonCeiling
@@ -733,6 +731,11 @@ func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admissi
 		}
 		c := lc.c
 		if reason == 0 {
+			switch c.Reason {
+			case admission.ReasonCeiling, admission.ReasonStorageShare, admission.ReasonPendingRecovery:
+			default:
+				continue
+			}
 			c.Reason = 0
 		} else {
 			if err := q.deferred(lc.id, &c, lc.entry, reason); err != nil {
@@ -877,15 +880,36 @@ func (l *AdmissionLedger) NextWake() (time.Time, bool, error) {
 			if lane == admission.LaneDirect && !reserved {
 				continue
 			}
-			{
+			probes := []struct {
+				units uint32
+				wait  time.Duration
+			}{{ceiling.Budget(lane), 0}}
+			if ceiling.Budget(lane) == 0 {
+				if charges == nil {
+					if charges, err = loadCharges(tx); err != nil {
+						return err
+					}
+				}
+				if d, ok := ceiling.UntilBudget(lane, charges, clock.Now()); ok {
+					// Every charged ledger member needs one unit. Its next
+					// turn can differ from the challenge borrowing it now.
+					probes = append(probes, struct {
+						units uint32
+						wait  time.Duration
+					}{unitCost, d})
+				}
+			}
+			for _, budget := range probes {
 				// Probe the actual next head with a full byte budget. Its
 				// earned turn, rather than a fixed quantum, sets the timer.
 				probe := lim
 				probe.Members = 1
 				room := lim.GeneralBytes
 				if lane == admission.LaneGeneral {
+					probe.General = budget.units
 					probe.Reserved, probe.ReservedBytes, probe.GeneralBytes = 0, 0, admission.MaxHistoryBytes
 				} else {
+					probe.Reserved = budget.units
 					probe.General, probe.GeneralBytes, probe.ReservedBytes = 0, 0, admission.MaxHistoryBytes
 					room = lim.ReservedBytes
 				}
@@ -923,27 +947,22 @@ func (l *AdmissionLedger) NextWake() (time.Time, bool, error) {
 						room = copy.HistoryBudget(lane, r)
 					}
 					if room >= need {
+						wait := budget.wait
 						if d, ok := storage.UntilHistoryCost(lane, heads[0].Bytes); ok {
-							earliest(clock.Now().Add(d))
+							wait = max(wait, d)
+						}
+						if wait > 0 {
+							earliest(clock.Now().Add(wait))
 						}
 					} else if at, ok, nextErr := q.nextRetirable(lane); nextErr != nil {
 						return nextErr
 					} else if ok {
+						if ceilingAt := clock.Now().Add(budget.wait); at.Before(ceilingAt) {
+							at = ceilingAt
+						}
 						earliest(at)
 					}
-					continue
 				}
-			}
-			if ceiling.Budget(lane) > 0 {
-				continue
-			}
-			if charges == nil {
-				if charges, err = loadCharges(tx); err != nil {
-					return err
-				}
-			}
-			if d, ok := ceiling.UntilBudget(lane, charges, clock.Now()); ok {
-				earliest(clock.Now().Add(d))
 			}
 		}
 		return nil

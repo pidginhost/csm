@@ -66,7 +66,7 @@ func (s *scheduler) park(h **CeilingHold, it *ScheduleItem, r int, slot uint8) {
 	}
 }
 
-func (s *scheduler) historyHeld(reserved bool) bool {
+func (s *scheduler) historyHeld(reserved bool) (held, charged bool) {
 	first, last := ringC1, ringC3
 	if reserved {
 		first, last = ringDirect, ringCorroborated
@@ -74,11 +74,12 @@ func (s *scheduler) historyHeld(reserved bool) bool {
 	for r := first; r <= last; r++ {
 		if scope := s.st.Rings[r].Held; scope != "" {
 			if it, _ := s.head(r, scope); it != nil {
-				return true
+				held = true
+				charged = charged || it.CeilingCost > 0
 			}
 		}
 	}
-	return false
+	return held, charged
 }
 
 // serveHeld spends the suspended head's own fair credits; borrowing never
@@ -119,6 +120,10 @@ func (s *scheduler) serveHeld(h **CeilingHold, it *ScheduleItem, bytes, recovery
 // borrow serves only zero-demand work. It uses the same fair rotations and
 // finite history, recovery and member bounds as ordinary work.
 func (s *scheduler) borrow(items []ScheduleItem, reserved bool, bytes, recovery uint64) (*ScheduleItem, Lane, bool) {
+	if _, charged := s.historyHeld(reserved); charged {
+		// Filtering to challenges cannot change the owner of earned bytes.
+		return nil, 0, true
+	}
 	var free []ScheduleItem
 	for _, it := range items {
 		if it.CeilingCost == 0 && !s.picked[it.ID] {
@@ -171,7 +176,8 @@ func (s *scheduler) lane(items []ScheduleItem, reserved bool, budget, fullBudget
 		h = &s.st.ReservedHold
 	}
 	owed := s.held(h)
-	if owed != nil && owed.CeilingCost <= budget && !s.historyHeld(reserved) {
+	history, chargedHistory := s.historyHeld(reserved)
+	if owed != nil && owed.CeilingCost <= budget && !history {
 		it, blocked := s.serveHeld(h, owed, bytes, recovery)
 		lane := LaneGeneral
 		if reserved {
@@ -233,7 +239,7 @@ func (s *scheduler) lane(items []ScheduleItem, reserved bool, budget, fullBudget
 	}
 	// A ceiling promise stops other charged work taking its remainder.
 	// A head above this call's entire budget does not stop affordable peers.
-	if budget == 0 || (owed != nil && owed.CeilingCost <= fullBudget) {
+	if budget == 0 || (owed != nil && owed.CeilingCost <= fullBudget && !chargedHistory) {
 		return s.borrow(items, reserved, bytes, recovery)
 	}
 	var order []int

@@ -258,7 +258,8 @@ func (l *AdmissionLedger) ImportedLegacySpend() (admission.LegacySpend, error) {
 		if err != nil {
 			return err
 		}
-		legacy := map[int64]map[admission.ActionID]bool{}
+		var idsAt time.Time
+		ids := make(map[admission.ActionID]bool)
 		for _, c := range charges {
 			if tx.Bucket([]byte(admissionAttemptsBucket)).Get([]byte(c.Action)) != nil {
 				a, err := loadAttempt(tx, c.Action)
@@ -271,13 +272,13 @@ func (l *AdmissionLedger) ImportedLegacySpend() (admission.LegacySpend, error) {
 				}
 				continue
 			}
-			ids, found := legacy[c.At.UnixNano()]
-			if !found {
-				ids = make(map[admission.ActionID]bool)
+			if !c.At.Equal(idsAt) {
+				// Charges are time-ordered; prior timestamps never recur.
+				clear(ids)
 				for seq := uint32(1); seq <= (admission.MaxCeiling+admission.MaxMemberCost-1)/admission.MaxMemberCost+1; seq++ {
 					ids[admission.LegacyActionID(c.At, seq)] = true
 				}
-				legacy[c.At.UnixNano()] = ids
+				idsAt = c.At
 			}
 			if !ids[c.Action] {
 				continue

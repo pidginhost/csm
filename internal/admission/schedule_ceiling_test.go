@@ -207,3 +207,64 @@ func TestScheduleChallengePreservesTheLentChargedClassTurn(t *testing.T) {
 		t.Fatalf("lent class lost its second quantum: %+v", picks)
 	}
 }
+
+func TestScheduleChallengeKeepsASeparateChargedHistoryPromise(t *testing.T) {
+	for _, lane := range []Lane{LaneGeneral, LaneDirect, LaneCorroborated} {
+		t.Run(lane.String(), func(t *testing.T) {
+			paid := schedItem("paid", "a", ClassC2, SeverityHigh, time.Hour)
+			paid.CeilingCost = 2
+			large := schedItem("large", "b", ClassC2, SeverityHigh, time.Hour)
+			large.Bytes = 10000
+			free := challengeItem("free", "b", ClassC2)
+			ring := ringC2
+			lim := ScheduleLimits{Members: 1, GeneralBytes: 100}
+			if lane != LaneGeneral {
+				paid.Tier.Class, large.Tier.Class, free.Tier.Class = ClassC3, ClassC3, ClassC3
+				paid.Direct, large.Direct, free.Direct = lane == LaneDirect, lane == LaneDirect, lane == LaneDirect
+				paid.Corroborated, large.Corroborated, free.Corroborated = lane == LaneCorroborated, lane == LaneCorroborated, lane == LaneCorroborated
+				ring = ringDirect
+				if lane == LaneCorroborated {
+					ring = ringCorroborated
+				}
+				lim.GeneralBytes, lim.ReservedBytes = 0, 100
+			}
+			picks, st := mustSchedule(t, []ScheduleItem{paid, free}, ScheduleState{}, lim)
+			if !reflect.DeepEqual(picked(picks), []string{"free"}) {
+				t.Fatalf("initial challenge = %+v", picks)
+			}
+			if lane == LaneGeneral {
+				lim.General = 1
+			} else {
+				lim.Reserved = 1
+			}
+			picks, st = mustSchedule(t, []ScheduleItem{paid, large}, st, lim)
+			if len(picks) != 0 || st.Rings[ring].Held != large.Scope {
+				t.Fatalf("charged history promise = %+v %+v", picks, st)
+			}
+			earned := st.Rings[ring].Scopes[large.Scope]
+			lim.General, lim.Reserved = 0, 0
+			_, next := mustSchedule(t, []ScheduleItem{paid, large, free}, st, lim)
+			if next.Rings[ring].Held != large.Scope || next.Rings[ring].Scopes[large.Scope] != earned {
+				t.Fatalf("challenge spent a charged history promise: %+v", next.Rings[ring])
+			}
+			data, err := next.MarshalBinary()
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, err = UnmarshalScheduleState(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lim.Members = 2
+			if lane == LaneGeneral {
+				lim.General, lim.GeneralBytes = 3, 10000
+			} else {
+				lim.Reserved, lim.ReservedBytes = 3, 10000
+			}
+			picks, _ = mustSchedule(t, []ScheduleItem{paid, large, free}, next, lim)
+			if !reflect.DeepEqual(picked(picks), []string{"large", "paid"}) {
+				t.Fatalf("recovered charged promises = %+v", picks)
+			}
+		})
+	}
+}

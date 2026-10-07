@@ -330,8 +330,8 @@ upgraded attempt has no recorded lane. A charge counts until a full hour of
 admission time and of elapsed time have both passed, so neither downtime
 nor a forward clock step releases it early. Schedules serve no more than
 each lane can charge, and the ledger's next wake includes when waiting work
-gains budget. Challenge work is never charged, but still waits in the
-shared scheduler until its separate bound is implemented.
+gains budget. Challenge work spends fair-turn and history budgets without
+spending ceiling units.
 
 Schema 4 adds storage accounting; the first open upgrades a schema 1, 2 or
 3 ledger in the same transaction. Evidence stays stored while a candidate
@@ -590,3 +590,5 @@ Admission previews reserve, charge history and capacity, and end observed in one
 Imported legacy usage retains its accounting-window charge after an attempt is retired. Retirement of old attempt history cannot create new admission capacity before that window closes.
 
 The scheduler records only ceiling, history-budget and recovery-reserve deferrals, once per changed reason. Fair turns, member bounds and retry backoff produce no deferral; a cleared budget reason produces no new gap notice. Challenges spend fair turns and history without spending block credit, and bounded durable holds preserve the earned turn of charged work while challenges proceed.
+
+Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.

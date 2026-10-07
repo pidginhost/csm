@@ -1,6 +1,7 @@
 package store
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -389,5 +390,92 @@ func TestAdmissionLedgerScheduleChallengeKeepsItsBackoff(t *testing.T) {
 	f.tickAt(retry)
 	if picks := f.schedule(fullSchedule); len(picks) != 1 || picks[0].ID != id {
 		t.Fatalf("ready challenge retry: %+v", picks)
+	}
+}
+
+func TestAdmissionLedgerScheduleClearsBudgetReasonsOnPicks(t *testing.T) {
+	for _, reason := range []admission.Reason{admission.ReasonCeiling, admission.ReasonStorageShare, admission.ReasonPendingRecovery} {
+		t.Run(reason.String(), func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.begin()
+			id := f.criticalArrivals("192.0.2.10")[0]
+			before, err := f.l.Defer(id, reason)
+			if err != nil {
+				t.Fatal(err)
+			}
+			notices := f.notices()
+			count := f.count(deferredKey(reason, critC2))
+			picks := f.schedule(fullSchedule)
+			if len(picks) != 1 || picks[0].ID != id {
+				t.Fatalf("picks = %+v", picks)
+			}
+			if c := f.candidateOf(id); c.Reason != 0 || c.Transitions != before.Transitions+1 {
+				t.Fatalf("resolved pick reason %s, transitions %d, want %d", c.Reason, c.Transitions, before.Transitions+1)
+			}
+			if f.count(deferredKey(reason, critC2)) != count || !reflect.DeepEqual(f.notices(), notices) {
+				t.Fatal("clearing a reason changed counts or notices")
+			}
+			f.schedule(fullSchedule)
+			if c := f.candidateOf(id); c.Transitions != before.Transitions+1 {
+				t.Fatal("unchanged budgets repeated the clearing")
+			}
+		})
+	}
+}
+
+func TestAdmissionLedgerScheduleKeepsExternalDeferralReasons(t *testing.T) {
+	for _, reason := range []admission.Reason{admission.ReasonSetFull, admission.ReasonEngineUnavailable} {
+		t.Run(reason.String(), func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.begin()
+			ids := f.criticalArrivals("192.0.2.10", "192.0.2.11")
+			before := make(map[admission.CandidateID]admission.Candidate)
+			for _, id := range ids {
+				c, err := f.l.Defer(id, reason)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before[id] = c
+			}
+			if picks := f.schedule(oneEach); len(picks) != 1 {
+				t.Fatalf("picks = %+v", picks)
+			}
+			for _, id := range ids {
+				if c := f.candidateOf(id); !reflect.DeepEqual(c, before[id]) {
+					t.Fatalf("schedule changed an external deferral: reason %s, transitions %d", c.Reason, c.Transitions)
+				}
+			}
+		})
+	}
+}
+
+func TestAdmissionLedgerNextWakeTracksChargedWorkBesideChallenges(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	id := f.criticalArrivals("192.0.2.10")[0]
+	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(f.wall.Add(admission.RetryBackoff(1)))
+	arrival := f.arrival(evidenceSpec{target: "192.0.2.11", cursor: "challenge", severity: admission.SeverityCritical})
+	arrival.Request.Kind = admission.KindChallenge
+	if result := f.arrive(arrival)[0]; result.Err != nil || !result.Created {
+		t.Fatalf("challenge = %+v", result)
+	}
+	f.leaveCeilingCredit(0, 0)
+	f.adjustStorage(func(s *admission.StorageState) { s.General.Credit = 0 })
+	// The retry already paid its history. One general ceiling unit accrues
+	// before the new challenge earns its history credit.
+	want := f.wall.Add(2250 * time.Millisecond)
+	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(want) {
+		t.Fatalf("wake = %v %v %v, want %v", wake, ok, err, want)
+	}
+	f.tickAt(want)
+	if picks := f.schedule(fullSchedule); len(picks) != 1 || picks[0].ID != id || picks[0].Bytes != 0 {
+		t.Fatalf("charged retry after refill = %+v", picks)
 	}
 }
