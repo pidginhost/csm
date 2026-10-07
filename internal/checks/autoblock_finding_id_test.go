@@ -22,12 +22,13 @@ type findingIDBlocker struct {
 	live         map[string]bool
 }
 
-func TestDatabaseSessionBlockRetainsDatabaseFindingID(t *testing.T) {
+// The session notice of a database response names the database finding
+// that caused it; its addresses are never blocked (ruling R9).
+func TestDatabaseSessionNoticeNamesTheDatabaseFinding(t *testing.T) {
 	for _, check := range []string{"db_options_injection", "db_siteurl_hijack"} {
 		t.Run(check, func(t *testing.T) {
-			persistentFS := osFS
 			withDatabaseCoverageInstalls(t, map[string]string{
-				"/home/alice/public_html/wp-config.php": databaseCoverageConfig("site"),
+				"/home/example-account/public_html/wp-config.php": databaseCoverageConfig("site"),
 			}, nil)
 			mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, _ mysqlclient.Creds, query string, _ ...any) ([]string, error) {
 				switch {
@@ -41,22 +42,19 @@ func TestDatabaseSessionBlockRetainsDatabaseFindingID(t *testing.T) {
 			t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
 			cfg := pendingTestConfig(t)
 			cfg.AutoResponse.CleanDatabase = true
-			b := &findingIDBlocker{outcomeStubBlocker: outcomeStubBlocker{err: errors.New("engine unavailable")}}
+			b := &findingIDBlocker{outcomeStubBlocker: outcomeStubBlocker{outcome: firewall.BlockOutcomeLive}}
 			applyBlockTestSetup(t, b)
 			f := alert.Finding{Check: check, Severity: alert.High, Timestamp: time.Unix(123, 0), Message: "database compromise", Details: "Database: site\nOption: injected_option"}
-			AutoRespondDBMalware(cfg, []alert.Finding{f})
-			want := alert.FindingID(f)
-			if len(b.ids) != 1 || b.ids[0] != want {
-				t.Fatalf("database response IDs = %q, want original finding %s", b.ids, want)
+			actions := AutoRespondDBMalware(cfg, []alert.Finding{f})
+			if len(b.ids) != 0 {
+				t.Fatalf("session addresses were blocked: %q", b.ids)
 			}
-			b.err = nil
-			b.outcome = firewall.BlockOutcomeLive
-			// Discovery's fake filesystem hides all non-config reads. Retry
-			// against the real state file written by the failed block attempt.
-			osFS = persistentFS
-			AutoBlockIPs(cfg, nil)
-			if len(b.ids) != 2 || b.ids[1] != want {
-				t.Fatalf("database retry lost original finding: %q", b.ids)
+			var named bool
+			for _, a := range actions {
+				named = named || a.Cause != nil && a.Cause.FindingID == alert.FindingID(f) && strings.Contains(a.Details, "192.0.2.10")
+			}
+			if !named {
+				t.Fatalf("actions = %+v, want the session notice naming the database finding", actions)
 			}
 		})
 	}

@@ -106,6 +106,7 @@ var nonActionableAttackerSide = map[string]string{
 	"email_malware":               "content may come from a compromised local sender",
 	"email_phishing_content":      "content may come from a compromised local sender",
 	"http_asn_crawl":              "subnet-scoped; handled by its own tempban path",
+	"local_threat_score":          "retired: nothing emits it; kept so a scan clears stored findings",
 	"http_distributed_flood":      "describes a targeted vhost, not one source",
 	"mail_account_spray":          "per-mailbox summary of many sources",
 	"mail_bruteforce_suspected":   "advisory for an established source",

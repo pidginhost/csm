@@ -739,6 +739,8 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(src) {
 				inc.RemoteIPEvidence = true
 				inc.RemoteIPEvidenceFinding = ev.FindingID
+				inc.RemoteIPEvidenceCheck = ev.Check
+				inc.RemoteIPEvidenceSeverity = ev.Severity
 				transition = true
 			}
 		}
@@ -1351,16 +1353,9 @@ func (c *Correlator) Restore(incidents []Incident) {
 	defer c.mu.Unlock()
 	for i := range incidents {
 		inc := incidents[i]
-		// Remember legacy evidence before a merge can trim its event. The
-		// next write saves the bit; until then the stored timeline retains it.
-		if (!inc.RemoteIPEvidence || inc.RemoteIPEvidenceFinding == "") && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil {
-			if ip := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); ip != "" {
-				inc.RemoteIPEvidence = c.blockAddressAttested(&inc, ip)
-				if inc.RemoteIPEvidence {
-					inc.RemoteIPEvidenceFinding, _ = c.attesting(&inc, ip)
-				}
-			}
-		}
+		// Recheck stored authority against the current policy before a
+		// merge can trim the source event.
+		c.restoreAddressEvidence(&inc)
 		c.incidents[inc.ID] = &inc
 		delete(c.lastPersistAt, inc.ID)
 		c.persistence.discardDeferred(inc.ID)
@@ -1655,7 +1650,7 @@ func (c *Correlator) blockAddressAttested(inc *Incident, ip string) bool {
 	if c.cfg.AddressEvidence == nil {
 		return false
 	}
-	if inc.RemoteIPEvidence && inc.CorrelationKey != nil && normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP) == ip {
+	if c.rememberedAddressEvidence(inc, ip) {
 		return true
 	}
 	for _, ev := range inc.Timeline {
@@ -1664,6 +1659,59 @@ func (c *Correlator) blockAddressAttested(inc *Incident, ip string) bool {
 		}
 	}
 	return false
+}
+
+// rememberedAddressEvidence rechecks authority kept beyond timeline
+// trimming. An old bit without its attesting policy identity is no proof.
+func (c *Correlator) rememberedAddressEvidence(inc *Incident, ip string) bool {
+	if !inc.RemoteIPEvidence || inc.RemoteIPEvidenceCheck == "" || c.cfg.AddressEvidence == nil || inc.CorrelationKey == nil || normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP) != ip {
+		return false
+	}
+	return c.eventAttests(IncidentEvent{Check: inc.RemoteIPEvidenceCheck, Severity: inc.RemoteIPEvidenceSeverity})
+}
+
+// restoreAddressEvidence migrates verifiable old proof from a retained
+// event. Missing or retired proof cannot authorize a new block; installed
+// blocks and the escalation ladder remain untouched.
+func (c *Correlator) restoreAddressEvidence(inc *Incident) {
+	if inc.CorrelationKey != nil {
+		ip := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP)
+		if ip != "" && c.rememberedAddressEvidence(inc, ip) {
+			if inc.RemoteIPEvidenceFinding == "" {
+				for i := len(inc.Timeline) - 1; i >= 0; i-- {
+					ev := inc.Timeline[i]
+					if ev.Kind == "finding" && ev.FindingID != "" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && c.eventAttests(ev) {
+						inc.RemoteIPEvidenceFinding = ev.FindingID
+						inc.RemoteIPEvidenceCheck = ev.Check
+						inc.RemoteIPEvidenceSeverity = ev.Severity
+						break
+					}
+				}
+			}
+			return
+		}
+	}
+	inc.RemoteIPEvidence = false
+	inc.RemoteIPEvidenceFinding = ""
+	inc.RemoteIPEvidenceCheck = ""
+	inc.RemoteIPEvidenceSeverity = ""
+	if c.cfg.AddressEvidence == nil || inc.CorrelationKey == nil {
+		return
+	}
+	ip := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP)
+	if ip == "" {
+		return
+	}
+	for i := len(inc.Timeline) - 1; i >= 0; i-- {
+		ev := inc.Timeline[i]
+		if ev.Kind == "finding" && normalizeIncidentRemoteIP(ev.RemoteIP) == ip && c.eventAttests(ev) {
+			inc.RemoteIPEvidence = true
+			inc.RemoteIPEvidenceFinding = ev.FindingID
+			inc.RemoteIPEvidenceCheck = ev.Check
+			inc.RemoteIPEvidenceSeverity = ev.Severity
+			return
+		}
+	}
 }
 
 // eventAttests reports whether a timeline finding is address evidence.

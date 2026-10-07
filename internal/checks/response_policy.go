@@ -216,11 +216,12 @@ func AddressEvidence(check string, sev alert.Severity) bool {
 	return admissionSeverity(sev) >= pol.MinSeverity
 }
 
-// IsRetiredThreatScoreFinding distinguishes the retired score scan from the
-// database-session response that still uses the same check name. Only the
-// latter carries the database finding as its cause.
+// IsRetiredThreatScoreFinding reports a finding of local_threat_score, which
+// nothing produces any more: neither the retired score scan nor the
+// database-session response, whose addresses are now reported, not blocked.
+// Findings stored by older builds still carry it.
 func IsRetiredThreatScoreFinding(f alert.Finding) bool {
-	return f.Check == "local_threat_score" && f.Cause == nil
+	return f.Check == "local_threat_score"
 }
 
 func admissionSeverity(s alert.Severity) admission.Severity {

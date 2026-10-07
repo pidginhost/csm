@@ -170,8 +170,13 @@ including `mail_bruteforce_suspected` and the High `mail_account_compromised`
 advisory for an established multi-mailbox source, never make a spray
 incident blockable either.
 
-Incident blocks name the finding that supplied address evidence. That link
-survives timeline trimming and restart. At startup, older incidents learn
+Incident blocks name the finding that supplied address evidence. The
+attesting check and severity survive trimming and restart and are checked
+again at startup. Retained active proof in older incidents is migrated;
+missing or retired proof cannot authorize another block until a fresh
+qualifying finding arrives. Existing installed blocks keep their expiry,
+and `incidents.auto_block` and `incidents.spray_suppression` still control
+responses. At startup, older incidents learn
 the link from an attesting timeline event even when their evidence flag was
 already set. If an older timeline has no finding identity or already lost
 that event, the original link cannot be recovered; it is never made from

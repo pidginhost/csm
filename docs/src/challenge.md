@@ -40,9 +40,8 @@ logins), WAF high-volume attacker findings, and non-browser protocols (SSH,
 FTP, DNS recursion, outbound traffic, API auth) are excluded - their IPs have
 no useful challenge step or no browser session to render the PoW page.
 
-Local threat scores no longer route addresses to the challenge page. The
-retained `local_threat_score` name is used by the database malware response to
-block live WordPress session addresses directly under `auto_response.block_ips`.
+Local threat scores no longer route addresses to the challenge page, and no
+check produces `local_threat_score` findings any more.
 
 `http_scanner_profile` routing is operator-selectable:
 `auto_response.http_scanner_action: "challenge"` (default) routes the IP here;

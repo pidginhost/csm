@@ -429,8 +429,9 @@ var checkRegistry = []CheckInfo{
 	{Name: "fanotify_kernel_overflow", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "fanotify_overflow", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "integrity", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
-	// Aggregate suspicion gets a browser verifier before a hard block.
-	{Name: "local_threat_score", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide, Response: ResponsePolicy{Block: BlockAlways, ChallengeFirst: true, Evidence: admission.FamilyDerived, Basis: admission.BasisIntel}},
+	// Retired: no build emits it and it asks for no response; it stays so
+	// a completed scan clears the findings older versions stored.
+	{Name: "local_threat_score", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "mail_auth_backend_degraded", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "mail_log_source_unavailable", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "protection_queue_degraded", Category: CategoryCorrelation, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},

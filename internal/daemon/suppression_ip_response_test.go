@@ -267,7 +267,7 @@ func TestSuppressionKeepsPHPFreezeGated(t *testing.T) {
 	}
 }
 
-func TestSuppressedDatabaseFindingKeepsIPResponse(t *testing.T) {
+func TestSuppressedDatabaseFindingStillReachesItsResponder(t *testing.T) {
 	cfg, blocker, rec := suppressionResponseSetup(t)
 	d := suppressionTestDaemon(t, cfg, checkWideSuppression("db_siteurl_hijack"))
 	previous := autoRespondDBMalware
@@ -283,12 +283,6 @@ func TestSuppressedDatabaseFindingKeepsIPResponse(t *testing.T) {
 			if canRemediate(f) {
 				edits++
 			}
-			cause := alert.CauseOf(f)
-			actions = append(actions, checks.AutoBlockIPs(cfg, []alert.Finding{{
-				Check: "local_threat_score", Severity: alert.Critical,
-				Message: "attacker session IP 192.0.2.43", SourceIP: "192.0.2.43",
-				Cause: &cause,
-			}})...)
 		}
 		return actions
 	}
@@ -296,8 +290,8 @@ func TestSuppressedDatabaseFindingKeepsIPResponse(t *testing.T) {
 	if observed != 1 || edits != 0 {
 		t.Fatalf("database observations=%d edits=%d; want 1/0", observed, edits)
 	}
-	if got := blockedIPs(blocker); len(got) != 1 || got[0] != "192.0.2.43" {
-		t.Fatalf("session source was not blocked: %v", got)
+	if got := blockedIPs(blocker); len(got) != 0 {
+		t.Fatalf("a database finding blocked %v", got)
 	}
 	if rec.delivered(suppressedDetailsMarker) {
 		t.Fatal("suppressed database source leaked to webhook")

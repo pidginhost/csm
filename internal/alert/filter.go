@@ -154,7 +154,7 @@ func ipResponseAnswers(policy IPResponsePolicy, cfg *config.Config, f Finding, b
 	if policy != nil {
 		return policy(cfg, f, blocked)
 	}
-	if f.Check != "ip_reputation" && f.Check != "local_threat_score" {
+	if f.Check != "ip_reputation" {
 		return false
 	}
 	return blocked || challengeHandlesFinding(f)
@@ -163,17 +163,9 @@ func ipResponseAnswers(policy IPResponsePolicy, cfg *config.Config, f Finding, b
 // challengeHandlesFinding mirrors the only finding-level exception to the
 // challenge response policy. ip_reputation has one production grading source:
 // High is browser-facing HTTP/cPanel traffic, while Critical is a browserless
-// vector that resolves to a hard block. local_threat_score remains challenge-
-// eligible at Critical severity.
+// vector that resolves to a hard block.
 func challengeHandlesFinding(f Finding) bool {
-	switch f.Check {
-	case "ip_reputation":
-		return f.Severity != Critical
-	case "local_threat_score":
-		return true
-	default:
-		return false
-	}
+	return f.Check == "ip_reputation" && f.Severity != Critical
 }
 
 func suppressionIPFromFinding(f Finding) net.IP {

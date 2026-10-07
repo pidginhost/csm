@@ -150,6 +150,10 @@ type Incident struct {
 	// RemoteIPEvidenceFinding is the FindingID of the finding that set
 	// RemoteIPEvidence, so a block names its evidence after trimming.
 	RemoteIPEvidenceFinding string `json:"remote_ip_evidence_finding,omitempty"`
+	// The attesting policy identity is retained so restored proof can be
+	// revalidated even after its source event leaves the timeline.
+	RemoteIPEvidenceCheck    string `json:"remote_ip_evidence_check,omitempty"`
+	RemoteIPEvidenceSeverity string `json:"remote_ip_evidence_severity,omitempty"`
 }
 
 // AutoBlockState is the escalation ladder's memory for one incident. Count is

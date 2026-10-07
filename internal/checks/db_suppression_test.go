@@ -11,7 +11,9 @@ import (
 	"github.com/pidginhost/csm/internal/mysqlclient"
 )
 
-func TestDBSuppressionPreservesBlocksWithoutDatabaseWrites(t *testing.T) {
+// A suppressed database finding keeps its session notice, which blocks
+// nothing, and makes no database writes.
+func TestDBSuppressionPreservesSessionNoticesWithoutDatabaseWrites(t *testing.T) {
 	for _, check := range []string{"db_options_injection", "db_siteurl_hijack"} {
 		for _, remediate := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/remediate=%t", check, remediate), func(t *testing.T) {
@@ -39,14 +41,17 @@ func TestDBSuppressionPreservesBlocksWithoutDatabaseWrites(t *testing.T) {
 				applyBlockTestSetup(t, b)
 				f := alert.Finding{Check: check, Severity: alert.High, Message: "database compromise", Details: "Database: site\nOption: injected_option"}
 				actions := AutoRespondDBMalwareWithPolicy(cfg, []alert.Finding{f}, func(alert.Finding) bool { return remediate })
-				if len(b.ids) != 1 || b.ids[0] != alert.FindingID(f) {
-					t.Fatalf("expected one session IP block with original attribution, got %v", b.ids)
+				if len(b.ids) != 0 {
+					t.Fatalf("session addresses were blocked: %v", b.ids)
 				}
 				if (len(writes) > 0) != remediate {
 					t.Fatalf("database writes=%d with remediation=%t", len(writes), remediate)
 				}
-				if !remediate && (len(actions) != 1 || actions[0].Check != "auto_block") {
-					t.Fatalf("suppressed database response returned non-IP actions: %+v", actions)
+				if len(actions) == 0 || actions[0].Check != "auto_response" || actions[0].Cause == nil || actions[0].Cause.FindingID != alert.FindingID(f) || !strings.Contains(actions[0].Details, "192.0.2.10") {
+					t.Fatalf("actions = %+v, want the session notice first", actions)
+				}
+				if !remediate && len(actions) != 1 {
+					t.Fatalf("suppressed database response returned more than its notice: %+v", actions)
 				}
 			})
 		}

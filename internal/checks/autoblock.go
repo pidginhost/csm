@@ -215,18 +215,12 @@ func blockableCheck(check string, blockCpanelLogins bool) bool {
 }
 
 func blockableFinding(f alert.Finding, blockCpanelLogins bool) bool {
-	return !IsRetiredThreatScoreFinding(f) && blockableCheck(f.Check, blockCpanelLogins) &&
+	return blockableCheck(f.Check, blockCpanelLogins) &&
 		(!ResponsePolicyFor(f.Check).CriticalOnly || f.Severity == alert.Critical)
 }
 
 // AutoBlockIPs processes all findings, including repeats, for IP blocking.
 func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding {
-	return autoBlockIPs(cfg, findings, "")
-}
-
-// autoBlockIPs retains the observed source when database response converts one
-// finding into several session-IP candidates for the existing block policy.
-func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID string) []alert.Finding {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
 		return nil
 	}
@@ -422,10 +416,7 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 
 		// A drained pending entry keeps its QueuedAt when the same IP
 		// recurs in fresh findings; the check, severity and reason are refreshed.
-		findingID := sourceFindingID
-		if findingID == "" {
-			findingID = alert.FindingID(f)
-		}
+		findingID := alert.FindingID(f)
 		if existing, ok := ipsToBlock[ip]; ok {
 			if existing.ActionID == "" {
 				existing.Reason = f.Message
