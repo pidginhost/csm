@@ -204,6 +204,42 @@ stream. Ledger and review streams can only be stated absent or not recorded.
 Without an inventory, a stream that was not supplied is reported as not
 supplied.
 
+## Comparing the admission preview
+
+Automatic blocks still run on the legacy path while the admission ledger
+previews the same responses. `compare` reads the outputs of one joined run and
+sets each legacy automatic block in the preview window against what the
+preview did with its finding:
+
+```bash
+/tmp/finding-stream compare --findings host-a/findings.jsonl.gz --actions host-a/actions.jsonl.gz
+```
+
+The window runs from the first to the last hourly admission summary. A block
+is matched by one observed attempt for the same finding, response kind and
+typed target within an hour. Coalesced decisions and designed refusals each
+spend one summary count for the same entry, kind and check in the same or an
+adjacent hour. Hourly aggregation cannot prove the exact event delay. A
+backward wall step clamps counts to the admission hour floor; larger clock
+disagreement stays unexplained and must be checked through clock status. Attribution explains only the listed scan-pass provenance gaps; policy
+explains only an unserved address producer or a rootless derived path. A
+rootless derived path may spend its fixed unknown-check policy count without
+a finding link. Other policy and attribution refusals stay unexplained.
+Summary matches are aggregate lower bounds, not proof about one finding. Anything else is listed
+as unexplained. The report also totals Invalid and queue overflow refusals,
+and names what only `csm status` and the metrics show: Critical deferrals,
+queue evictions and the handoff latency. The stream criteria pass when the window spans at
+least seven days, nothing is unexplained and both totals are zero; the
+operator must also verify the named status and metric criteria. Shape
+validation cannot authenticate a prior run: compare accepts outputs only
+from the joined run that already passed its identity verifier. The report
+describes one host's responses; keep it private. Summary retention discards
+whole oldest hours after failed writes exceed its bound. Missing summaries
+may mean idle hours, failed writes or a crash; they cannot certify coverage.
+Rootless designed-refusal matches consume aggregate counts and provide no
+finding join. The operator must prove collector coverage and an undamaged
+ledger through status and doctor before accepting R11.
+
 ## What a recording does and does not contain
 
 The audit log is the dispatch record: it holds findings that were alerted,

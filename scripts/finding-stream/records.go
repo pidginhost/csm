@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/netip"
 	"reflect"
 	"strconv"
@@ -929,6 +930,12 @@ func jsonFieldTypes(t reflect.Type) map[string]reflect.Type {
 	fields := map[string]reflect.Type{}
 	for i := range t.NumField() {
 		f := t.Field(i)
+		if f.Anonymous && f.Tag.Get("json") == "" && f.Type.Kind() == reflect.Struct {
+			// An untagged embedded struct's fields are promoted, as
+			// encoding/json reads them.
+			maps.Copy(fields, jsonFieldTypes(f.Type))
+			continue
+		}
 		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
 		if !f.IsExported() || name == "-" {
 			continue
