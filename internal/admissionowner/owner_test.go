@@ -98,7 +98,7 @@ func (f *ownerFixture) options() Options {
 		Inventory: f.host.inventory, LegacySpend: checks.LegacyBlockSpend,
 		WriteAudit: func([]actionlog.Record) error { return nil },
 		TickEvery:  time.Hour, InventoryEvery: time.Hour, StatusEvery: time.Hour, DeliverEvery: time.Hour, NoticeEvery: time.Hour,
-		DrainEvery: time.Hour,
+		DrainEvery: time.Hour, ScheduleEvery: time.Hour,
 	}
 }
 
@@ -109,6 +109,23 @@ func (f *ownerFixture) start(opts Options) *Owner {
 	o := Start(opts)
 	f.t.Cleanup(o.Stop)
 	return o
+}
+
+// setOwnerHook serializes a hook change with the owner's timers. Only use
+// it for hooks read on that goroutine; cleanup joins it before restoration.
+func setOwnerHook[T any](t *testing.T, o *Owner, hook *T, next T) {
+	t.Helper()
+	var previous T
+	if err := o.do(func() error {
+		previous, *hook = *hook, next
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		o.Stop()
+		*hook = previous
+	})
 }
 
 func (f *ownerFixture) legacy(body string) {
@@ -489,18 +506,17 @@ func TestOwnerReportsAnImportAcrossRestart(t *testing.T) {
 func TestOwnerSnapshotFailureStopsAdmission(t *testing.T) {
 	f := newOwnerFixture(t)
 	prev := readSnapshot
-	t.Cleanup(func() { readSnapshot = prev })
 	o := f.start(f.options())
-	readSnapshot = func(*store.AdmissionLedger) (*admission.QueueSnapshot, error) {
+	setOwnerHook(t, o, &readSnapshot, func(*store.AdmissionLedger) (*admission.QueueSnapshot, error) {
 		return nil, errors.New("snapshot unavailable")
-	}
+	})
 	if err := o.do(o.tick); err == nil {
 		t.Fatal("a failed publication reported success")
 	}
 	if st := o.status(); st.Ingress.Admitting || !strings.Contains(st.Owner.Error, "snapshot unavailable") {
 		t.Fatalf("failed publication: %+v", st)
 	}
-	readSnapshot = prev
+	setOwnerHook(t, o, &readSnapshot, prev)
 	if err := o.do(o.tick); err != nil {
 		t.Fatal(err)
 	}

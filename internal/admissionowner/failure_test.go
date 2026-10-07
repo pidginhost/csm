@@ -40,11 +40,9 @@ func TestOwnerInventoryCannotResumeAfterClockFailure(t *testing.T) {
 func TestOwnerPublishesSnapshotFailureStatusImmediately(t *testing.T) {
 	f := newOwnerFixture(t)
 	o := f.start(f.options())
-	prev := readSnapshot
-	readSnapshot = func(*store.AdmissionLedger) (*admission.QueueSnapshot, error) {
+	setOwnerHook(t, o, &readSnapshot, func(*store.AdmissionLedger) (*admission.QueueSnapshot, error) {
 		return nil, errors.New("snapshot unavailable")
-	}
-	t.Cleanup(func() { readSnapshot = prev })
+	})
 	if err := o.do(o.tick); err == nil {
 		t.Fatal("failed snapshot read succeeded")
 	}
@@ -62,11 +60,9 @@ func TestOwnerRefreshesStatusWhileAdmissionRemainsStopped(t *testing.T) {
 		t.Fatal("failed clock reading succeeded")
 	}
 	f.host.set(func(h *fakeHost) { h.clockErr = nil })
-	prev := readSnapshot
-	readSnapshot = func(*store.AdmissionLedger) (*admission.QueueSnapshot, error) {
+	setOwnerHook(t, o, &readSnapshot, func(*store.AdmissionLedger) (*admission.QueueSnapshot, error) {
 		return nil, errors.New("snapshot unavailable")
-	}
-	t.Cleanup(func() { readSnapshot = prev })
+	})
 	if err := o.do(o.tick); err == nil {
 		t.Fatal("failed snapshot read succeeded")
 	}

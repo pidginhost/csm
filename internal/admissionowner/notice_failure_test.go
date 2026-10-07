@@ -46,13 +46,12 @@ func TestOwnerNoticeAckFailureReportsQueueHealth(t *testing.T) {
 	o := f.start(opts)
 	criticalGap(t, o, p, f.host)
 	prev := ackNotices
-	ackNotices = func(*store.AdmissionLedger, []admission.NoticeAck) error { return errors.New("ledger unavailable") }
-	t.Cleanup(func() { ackNotices = prev })
+	setOwnerHook(t, o, &ackNotices, func(*store.AdmissionLedger, []admission.NoticeAck) error { return errors.New("ledger unavailable") })
 	o.notices.cycle()
 	if q := o.QueueStatuses(time.Now().Add(2 * time.Minute))["notices"]; q.Depth != 2 || q.Reason != "consumer_stalled" {
 		t.Fatalf("unacknowledged notices are invisible: %+v", q)
 	}
-	ackNotices = prev
+	setOwnerHook(t, o, &ackNotices, prev)
 	o.notices.cycle()
 	if sink.count() != 1 {
 		t.Fatalf("ack retry repeated delivery: %d deliveries", sink.count())

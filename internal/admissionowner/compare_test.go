@@ -56,9 +56,7 @@ func (s *actionSink) previews() []string {
 func TestOwnerWritesHourlyDecisionCounts(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)
-	previousNow := deliveryNow
-	deliveryNow = f.host.now
-	t.Cleanup(func() { deliveryNow = previousNow })
+	comparisonClock(t, f.host.now)
 	sink := &actionSink{}
 	opts := respondOptions(f)
 	opts.WriteAudit = sink.write
@@ -105,13 +103,11 @@ func TestOwnerWritesHourlyDecisionCounts(t *testing.T) {
 func TestOwnerKeepsDecisionCountsUntilWritten(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)
-	previousNow := deliveryNow
-	deliveryNow = f.host.now
-	t.Cleanup(func() { deliveryNow = previousNow })
+	comparisonClock(t, f.host.now)
 	sink := &actionSink{fail: errors.New("disk full")}
 	opts := respondOptions(f)
 	opts.WriteAudit = sink.write
-	o := Start(opts)
+	o := f.start(opts)
 	bad := sshFinding(f.host.now(), "offset=1", alert.High)
 	bad.Observation = alert.Observation{}
 	_, mintErr := o.Mint(bad, "192.0.2.11")
@@ -210,11 +206,9 @@ func TestDecisionCountsIncludeIsolatedCorruptArrivals(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	previousDrain := drainGroupOf
-	t.Cleanup(func() { drainGroupOf = previousDrain })
-	drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+	setOwnerHook(t, o, &drainGroupOf, func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
 		return in.DrainTaken(&damagedTargetLedger{Ledger: l, bad: bad}, items, arrivalRequest)
-	}
+	})
 	for i := range 2 {
 		submitObservation(t, o, p, "192.0.2.66", fmt.Sprintf("offset=%d", i+1), f.host.now())
 		if err := o.do(o.drain); err != nil {
@@ -234,10 +228,8 @@ func TestDecisionCountsAtStopWithoutAnOpenLedger(t *testing.T) {
 	sink := &actionSink{}
 	opts := f.options()
 	opts.DB, opts.WriteAudit = nil, sink.write
-	o := Start(opts)
-	previousNow := deliveryNow
-	deliveryNow = f.host.now
-	t.Cleanup(func() { deliveryNow = previousNow })
+	comparisonClock(t, f.host.now)
+	o := f.start(opts)
 	o.Refuse(admission.KindBlockIP, sshFinding(f.host.now(), "offset=1", alert.High), 0, errors.New("ledger unavailable"))
 	o.Stop()
 	if got := sink.previews(); len(got) != 1 || got[0] != "2026-10-04T13:00:00Z block_ip unknown scan refused invalid 1" {
@@ -251,10 +243,8 @@ func TestDecisionCountsIncludeLifetimeRefusals(t *testing.T) {
 	sink := &actionSink{}
 	opts := respondOptions(f)
 	opts.WriteAudit = sink.write
+	comparisonClock(t, f.host.now)
 	o := f.start(opts)
-	previousNow := deliveryNow
-	deliveryNow = f.host.now
-	t.Cleanup(func() { deliveryNow = previousNow })
 	root, err := o.Mint(sshFinding(f.host.now(), "offset=1", alert.High), "192.0.2.10")
 	if err != nil {
 		t.Fatal(err)
@@ -323,10 +313,8 @@ func TestDecisionCountsIncludeContainmentRefusals(t *testing.T) {
 	sink := &actionSink{}
 	opts := respondOptions(f)
 	opts.WriteAudit = sink.write
+	comparisonClock(t, f.host.now)
 	o := f.start(opts)
-	previousNow := deliveryNow
-	deliveryNow = f.host.now
-	t.Cleanup(func() { deliveryNow = previousNow })
 	root, err := o.Mint(sshFinding(f.host.now(), "offset=1", alert.High), "2001:db8::10")
 	if err != nil {
 		t.Fatal(err)
@@ -374,7 +362,7 @@ func TestDecisionCountsIncludeMemoryMerges(t *testing.T) {
 			}
 			previous := drainGroupOf
 			injected := false
-			drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+			setOwnerHook(t, o, &drainGroupOf, func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
 				if !injected && (outcome == "during commit" || outcome == "same finding during commit" || outcome == "damaged") {
 					injected = true
 					third := second
@@ -402,8 +390,7 @@ func TestDecisionCountsIncludeMemoryMerges(t *testing.T) {
 				default:
 					return previous(in, l, items)
 				}
-			}
-			t.Cleanup(func() { drainGroupOf = previous })
+			})
 			if err := o.do(o.drain); err != nil {
 				t.Fatal(err)
 			}

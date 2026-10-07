@@ -336,3 +336,134 @@ func TestDownloadRuleShellTargetDelimiters(t *testing.T) {
 		}
 	}
 }
+
+// A miner binary keeps working under any letter case, so the cron rule must
+// not depend on it in either engine.
+func TestMinerCronRuleLetterCase(t *testing.T) {
+	yaraScanner, yamlScanner := loadDownloadRuleScanners(t)
+	samples := map[string]string{
+		"mixed case": "*/10 * * * * /tmp/.x/XMRig --config /tmp/.x/c.json >/dev/null 2>&1\n",
+		"upper case": "*/3 * * * * /var/tmp/MINERD -o stratum+tcp://pool.example.test:3333\n",
+		"short name": "*/1 * * * * cd /tmp && ./Xmr-node\n",
+		"miner word": "*/15 * * * * /dev/shm/.cache/Miner -B\n",
+	}
+	for name, sample := range samples {
+		t.Run(name, func(t *testing.T) {
+			content := []byte(sample)
+			matches, err := yaraScanner.ScanBytesChecked(content)
+			if err != nil {
+				t.Fatalf("YARA scan failed: %v", err)
+			}
+			if !hasRepositoryYaraRule(matches, "miner_cron_persistence") {
+				t.Error("YARA miner_cron_persistence did not match")
+			}
+			if !hasSignatureRule(yamlScanner.ScanContent(content, ".sh"), "miner_cron_persistence") {
+				t.Error("YAML miner_cron_persistence did not match")
+			}
+		})
+	}
+}
+
+// Cron separates schedule fields with spaces and tabs, not other whitespace.
+func TestMinerCronRuleFieldSeparators(t *testing.T) {
+	yaraScanner, yamlScanner := loadDownloadRuleScanners(t)
+	separators := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"space", " ", true},
+		{"tab", "\t", true},
+		{"mixed blanks", " \t ", true},
+		{"vertical tab", "\v", false},
+		{"form feed", "\f", false},
+		{"carriage return", "\r", false},
+		{"newline", "\n", false},
+		{"CRLF", "\r\n", false},
+		{"non-breaking space", "\u00a0", false},
+		{"empty", "", false},
+	}
+	for _, separator := range separators {
+		for field := 0; field < 4; field++ {
+			t.Run(separator.name+"/field"+string(rune('1'+field)), func(t *testing.T) {
+				fields := []string{"*/5", "*", "*", "*", "*"}
+				var line strings.Builder
+				for i, value := range fields {
+					if i > 0 {
+						if i-1 == field {
+							line.WriteString(separator.text)
+						} else {
+							line.WriteByte(' ')
+						}
+					}
+					line.WriteString(value)
+				}
+				line.WriteString(" /tmp/")
+				for _, miner := range []string{"xmrig", "XMRig"} {
+					content := []byte(line.String() + miner + "\n")
+					matches, err := yaraScanner.ScanBytesChecked(content)
+					if err != nil {
+						t.Fatalf("YARA scan failed: %v", err)
+					}
+					if got := hasRepositoryYaraRule(matches, "miner_cron_persistence"); got != separator.want {
+						t.Errorf("YARA %s matched = %t, want %t", miner, got, separator.want)
+					}
+					if got := hasSignatureRule(yamlScanner.ScanContent(content, ".sh"), "miner_cron_persistence"); got != separator.want {
+						t.Errorf("YAML %s matched = %t, want %t", miner, got, separator.want)
+					}
+				}
+			})
+		}
+	}
+}
+
+// A non-ASCII path must not shorten the bounded span in scheduled scans.
+// Malformed UTF-8 consumes one character per invalid byte in the YAML engine.
+func TestMinerCronRuleSpanBothEngines(t *testing.T) {
+	yaraScanner, yamlScanner := loadDownloadRuleScanners(t)
+	tests := []struct {
+		name string
+		span string
+		want bool
+	}{
+		{"ASCII at limit", strings.Repeat("a", 256), true},
+		{"ASCII past limit", strings.Repeat("a", 257), false},
+		{"two-byte characters at limit", strings.Repeat("\u00e9", 256), true},
+		{"two-byte characters past limit", strings.Repeat("\u00e9", 257), false},
+		{"three-byte characters at limit", strings.Repeat("\u754c", 256), true},
+		{"three-byte characters past limit", strings.Repeat("\u754c", 257), false},
+		{"four-byte characters at limit", strings.Repeat("\U0001f680", 256), true},
+		{"four-byte characters past limit", strings.Repeat("\U0001f680", 257), false},
+		{"lowest three-byte character", strings.Repeat("\u0800", 256), true},
+		{"character below surrogate range", strings.Repeat("\ud7ff", 256), true},
+		{"character above surrogate range", strings.Repeat("\ue000", 256), true},
+		{"lowest four-byte character", strings.Repeat("\U00010000", 256), true},
+		{"highest Unicode character", strings.Repeat("\U0010ffff", 256), true},
+		{"mixed path at limit", "/tmp/" + strings.Repeat("\u00e9", 124) + strings.Repeat("b", 122) + "/bin/", true},
+		{"invalid bytes at limit", strings.Repeat("\xff", 256), true},
+		{"invalid bytes past limit", strings.Repeat("\xff", 257), false},
+		{"overlong encoding", strings.Repeat("\xc0\x80", 129), false},
+		{"overlong three-byte encoding", strings.Repeat("\xe0\x80\x80", 86), false},
+		{"surrogate encoding", strings.Repeat("\xed\xa0\x80", 86), false},
+		{"overlong four-byte encoding", strings.Repeat("\xf0\x80\x80\x80", 65), false},
+		{"out-of-range encoding", strings.Repeat("\xf4\x90\x80\x80", 65), false},
+		{"miner on next line", " echo ok\n", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, miner := range []string{"xmrig", "XMRig"} {
+				content := []byte("*/5 * * * *" + tc.span + miner + "\n")
+				matches, err := yaraScanner.ScanBytesChecked(content)
+				if err != nil {
+					t.Fatalf("YARA scan failed: %v", err)
+				}
+				if got := hasRepositoryYaraRule(matches, "miner_cron_persistence"); got != tc.want {
+					t.Errorf("YARA %s matched = %t, want %t", miner, got, tc.want)
+				}
+				if got := hasSignatureRule(yamlScanner.ScanContent(content, ".sh"), "miner_cron_persistence"); got != tc.want {
+					t.Errorf("YAML %s matched = %t, want %t", miner, got, tc.want)
+				}
+			}
+		})
+	}
+}
