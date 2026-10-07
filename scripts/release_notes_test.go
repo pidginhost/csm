@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -365,6 +366,79 @@ func TestChangelogEntriesAreNotSeparatedByBlankLines(t *testing.T) {
 		}
 		if loose := looseEntries(string(body)); len(loose) > 0 {
 			t.Errorf("%s: entries separated by a blank line at lines %v; keep a section's entries on consecutive lines", path, loose)
+		}
+	}
+}
+
+// unreleasedEntries returns the entry lines under "## [Unreleased]", with
+// their 1-based line numbers.
+func unreleasedEntries(body string) map[int]string {
+	entries := map[int]string{}
+	inUnreleased := false
+	for i, line := range strings.Split(body, "\n") {
+		switch {
+		case strings.HasPrefix(line, "## [Unreleased]"):
+			inUnreleased = true
+		case strings.HasPrefix(line, "## ["):
+			inUnreleased = false
+		case inUnreleased && strings.HasPrefix(line, "- "):
+			entries[i+1] = strings.TrimPrefix(line, "- ")
+		}
+	}
+	return entries
+}
+
+var sentenceEnd = regexp.MustCompile(`[.!?]\s+`)
+
+// overlongEntryProblems applies the entry rule: one sentence of at most 30
+// words, plus an optional second sentence of at most 15 words for something
+// the operator must do.
+func overlongEntryProblems(entry string) []string {
+	var problems []string
+	sentences := sentenceEnd.Split(strings.TrimSpace(entry), -1)
+	if len(sentences) > 2 {
+		problems = append(problems, fmt.Sprintf("%d sentences, want at most 2", len(sentences)))
+	}
+	if n := len(strings.Fields(sentences[0])); n > 30 {
+		problems = append(problems, fmt.Sprintf("first sentence has %d words, cap is 30", n))
+	}
+	if len(sentences) > 1 {
+		if n := len(strings.Fields(sentences[1])); n > 15 {
+			problems = append(problems, fmt.Sprintf("second sentence has %d words, cap is 15", n))
+		}
+	}
+	return problems
+}
+
+func TestUnreleasedChangelogEntriesStayShort(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join(repoRoot(t), "CHANGELOG.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := unreleasedEntries(string(body))
+	if len(entries) == 0 {
+		t.Skip("no unreleased entries")
+	}
+	for line, entry := range entries {
+		for _, problem := range overlongEntryProblems(entry) {
+			t.Errorf("CHANGELOG.md:%d: %s; say what the operator sees in one short sentence", line, problem)
+		}
+	}
+}
+
+func TestOverlongEntryProblems(t *testing.T) {
+	long := strings.Repeat("word ", 31)
+	cases := map[string]int{
+		"Short and clear.":                                            0,
+		"Fixed the thing. Run the migration.":                         0,
+		"Version 4.1.0 and YARA-X 1.21.0 are mentioned without harm.": 0,
+		long:                    1,
+		"First. Second. Third.": 1,
+		"Fine first sentence. " + strings.Repeat("act ", 16): 1,
+	}
+	for entry, want := range cases {
+		if got := len(overlongEntryProblems(entry)); got != want {
+			t.Errorf("%q: %d problems, want %d", entry, got, want)
 		}
 	}
 }
