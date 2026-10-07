@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/reporting"
@@ -27,6 +28,10 @@ type centralQueuedAction struct {
 	findingID string
 	decision  reporting.Decision
 	ip        string
+	// root is the local finding's admission evidence the action answers.
+	root        admission.Evidence
+	rootFinding alert.Finding
+	rootErr     error
 }
 
 // documentationNets are reserved/non-routable ranges (RFC 5737 documentation,
@@ -134,13 +139,15 @@ func (d *Daemon) planCentralAction(store *reporting.CentralStore, action reporti
 	if dec == reporting.DecisionIgnore {
 		return centralQueuedAction{}, false
 	}
-	return centralQueuedAction{decision: dec, ip: ip, findingID: alert.FindingID(f)}, true
+	root, rootErr := checks.PrepareAdmissionRoot(f, ip)
+	return centralQueuedAction{decision: dec, ip: ip, findingID: alert.FindingID(f), root: root, rootFinding: f, rootErr: rootErr}, true
 }
 
 func (d *Daemon) performCentralAction(a centralQueuedAction) error {
 	switch a.decision {
 	case reporting.DecisionChallenge:
 		if d.ipList != nil {
+			checks.AnswerPreparedRoot(admission.KindChallenge, a.root, admission.EntryCentral, a.rootFinding, a.rootErr, centralChallengeTTL)
 			d.ipList.AddNonEscalating(a.ip, "central-intel", centralChallengeTTL)
 		}
 	case reporting.DecisionBlock:
@@ -151,6 +158,10 @@ func (d *Daemon) performCentralAction(a centralQueuedAction) error {
 			TTL:          centralBlockTTL,
 			Source:       checks.BlockSourceCentral,
 			FindingID:    a.findingID,
+			Root:         a.root,
+			Entry:        admission.EntryCentral,
+			RootFinding:  a.rootFinding,
+			RootErr:      a.rootErr,
 		})
 		d.recordAppliedBlocks(res.Findings)
 		if err != nil {

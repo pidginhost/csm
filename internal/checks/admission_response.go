@@ -88,15 +88,48 @@ func respondSpray(f alert.Finding, cidr string) {
 // implicitly (spec 5.10): it is handed over without a root, as a path that
 // kept none is, and admission refuses it.
 func respondDerived(req ApplyBlockRequest) {
-	a := getResponseAdmission()
-	if a == nil {
+	if req.TTL == 0 {
+		AnswerRoot(admission.KindBlockIP, admission.Evidence{}, req.Entry)
 		return
 	}
-	root := req.Root
-	if req.TTL == 0 {
-		root = admission.Evidence{}
+	AnswerPreparedRoot(admission.KindBlockIP, req.Root, req.Entry, req.RootFinding, req.RootErr, req.TTL)
+}
+
+// AdmissionRoot keeps a root for a derived path whose retained finding
+// may no longer be available when it responds. Failure leaves no root.
+func AdmissionRoot(f alert.Finding, target string) admission.Evidence {
+	e, _ := PrepareAdmissionRoot(f, target)
+	return e
+}
+
+// PrepareAdmissionRoot preserves a local finding's mint refusal so a
+// selected response can count it once with its original check and reason.
+func PrepareAdmissionRoot(f alert.Finding, target string) (admission.Evidence, error) {
+	a := getResponseAdmission()
+	if a == nil {
+		return admission.Evidence{}, nil
 	}
-	_ = a.Respond(admission.KindBlockIP, root, req.Entry, req.TTL)
+	return a.Mint(f, target)
+}
+
+// AnswerPreparedRoot counts a failed mint once, without replacing its
+// provenance refusal with a second rootless-response refusal.
+func AnswerPreparedRoot(kind admission.Kind, root admission.Evidence, via admission.Entry, f alert.Finding, err error, ttl time.Duration) {
+	if err != nil {
+		if a := getResponseAdmission(); a != nil {
+			a.Refuse(kind, f, via, err)
+		}
+		return
+	}
+	AnswerRoot(kind, root, via, ttl)
+}
+
+// AnswerRoot hands admission a response of kind a derived path decided,
+// with the root it kept, through its entry.
+func AnswerRoot(kind admission.Kind, root admission.Evidence, via admission.Entry, ttl ...time.Duration) {
+	if a := getResponseAdmission(); a != nil {
+		_ = a.Respond(kind, root, via, ttl...)
+	}
 }
 
 // respondNetblock hands admission a netblock escalation. It rests on past

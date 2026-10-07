@@ -41,6 +41,9 @@ type ApplyBlockRequest struct {
 	// zero root means the path kept none.
 	Root  admission.Evidence
 	Entry admission.Entry
+	// RootFinding and RootErr preserve a planned local mint refusal.
+	RootFinding alert.Finding
+	RootErr     error
 }
 
 // ApplyBlockResult carries the engine outcome plus the auto_block findings

@@ -10,6 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/reporting"
 )
 
 type derivedResponse struct {
@@ -127,5 +128,68 @@ func TestChallengeEscalationAnswersItsRoot(t *testing.T) {
 	got := a.got()
 	if len(got) != 1 || got[0].kind != admission.KindBlockIP || got[0].via != admission.EntryChallengeTimeout || !got[0].root.Equal(root) || got[0].ttl != parseBlockExpiry(cfg.AutoResponse.BlockExpiry) {
 		t.Fatalf("responses = %+v", got)
+	}
+}
+
+// Central intel answers the local finding's root through the central
+// entry: a block when it blocks and a challenge when it challenges; central
+// data never mints a root of its own (spec 5.3).
+func TestCentralActionAnswersTheLocalRoot(t *testing.T) {
+	cfg, _ := applyWiringSetup(t)
+	a := withRecordingAdmission(t)
+	d := New(cfg, nil, nil, "")
+	d.ipList = challenge.NewIPList(filepath.Join(t.TempDir(), "challenge_ips.txt"))
+	store := centralStoreWith(t, []reporting.ScoredEntry{
+		{IP: "198.51.100.20", Score: 95, Classes: []reporting.Class{reporting.ClassBruteforce}, LastSeen: time.Unix(1_700_000_000, 0).UTC()},
+	})
+	notProtected := func(string) bool { return false }
+	f := observedBruteForce("198.51.100.20")
+	root := mintedRoot(t, f, f.SourceIP)
+	block, ok := d.planCentralAction(store, reporting.ActionBlockIfLocalCorroborated, 80, notProtected, f)
+	if !ok || !block.root.Equal(root) {
+		t.Fatalf("planned %+v (%v), want the local root", block, ok)
+	}
+	if err := d.performCentralAction(block); err != nil {
+		t.Fatal(err)
+	}
+	challenged := block
+	challenged.decision = reporting.DecisionChallenge
+	if err := d.performCentralAction(challenged); err != nil {
+		t.Fatal(err)
+	}
+	got := a.got()
+	if len(got) != 2 || got[0].kind != admission.KindBlockIP || got[1].kind != admission.KindChallenge || got[0].ttl != centralBlockTTL || got[1].ttl != centralChallengeTTL {
+		t.Fatalf("responses = %+v", got)
+	}
+	for _, r := range got {
+		if r.via != admission.EntryCentral || !r.root.Equal(root) {
+			t.Fatalf("response %+v, want the root through the central entry", r)
+		}
+	}
+}
+
+// An unobserved local finding keeps its attribution refusal and check.
+// Legacy still blocks; no second empty-root refusal replaces that refusal.
+func TestCentralUnobservedRootIsRefusedOnce(t *testing.T) {
+	cfg, b := applyWiringSetup(t)
+	a := withRecordingAdmission(t)
+	d := New(cfg, nil, nil, "")
+	store := centralStoreWith(t, []reporting.ScoredEntry{{IP: "198.51.100.21", Score: 95, Classes: []reporting.Class{reporting.ClassBruteforce}, LastSeen: time.Unix(1_700_000_000, 0).UTC()}})
+	f := alert.Finding{Check: "ip_reputation", Severity: alert.Critical, SourceIP: "198.51.100.21"}
+	planned, ok := d.planCentralAction(store, reporting.ActionBlockIfLocalCorroborated, 80, func(string) bool { return false }, f)
+	if !ok {
+		t.Fatal("legacy central policy did not select its block")
+	}
+	if err := d.performCentralAction(planned); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.calls) != 1 || b.calls[0].ip != f.SourceIP || len(a.got()) != 0 {
+		t.Fatalf("legacy calls=%+v admission responses=%+v", b.calls, a.got())
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	want := derivedRefusal{admission.KindBlockIP, "ip_reputation", admission.EntryCentral, admission.ReasonAttribution}
+	if len(a.refusals) != 1 || a.refusals[0] != want {
+		t.Fatalf("refusals=%+v, want %+v", a.refusals, want)
 	}
 }

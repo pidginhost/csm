@@ -607,4 +607,6 @@ Subnet funnels submit every selected response before the existing responder eval
 
 A challenge entry retains its routed root until timeout escalation hands the selected response to admission. Escalation never creates new root evidence, and permanent selections take the designed rootless policy refusal.
 
+Central selections use the locally corroborating finding as their root and carry its original attribution if preparation refuses. They do not adopt a remote report as local evidence, and preserve the selected temporary lifetime.
+
 Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.
