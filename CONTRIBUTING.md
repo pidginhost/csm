@@ -107,7 +107,9 @@ docs: update configuration reference
 GitHub holds a mirror of the project's self-hosted GitLab repository, synced
 with a force push. A pull request opened here is reviewed here, applied
 upstream, and arrives with the next sync; the mirror then closes the pull
-request on its own, so do not expect it to show as merged.
+request on its own, so do not expect it to show as merged. The mirror omits
+the internal deploy script and the GitLab pipeline gate tests; everything
+left runs with `go test ./...` on a plain clone.
 
 1. Fork the repo and create a branch from `main`.
 2. Make your changes with tests.

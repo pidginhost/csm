@@ -16,7 +16,19 @@ import (
 type deploySignatureScript struct {
 	name string
 	path string
+	// exception names a version the script may install without a release
+	// signature and the text it must print when it does; nil when none.
+	exception func(version string) (allowed bool, disclosure string)
 }
+
+// deployScriptPaths lists the deploy scripts every deploy test covers. A
+// script the public mirror does not carry registers itself from its own
+// test file, which the mirror strips together with the script.
+var deployScriptPaths = []string{"scripts/deploy.sh"}
+
+// extraDeploySignatureScripts holds the signature scripts registered the
+// same way.
+var extraDeploySignatureScripts []deploySignatureScript
 
 func TestVerifySignatureRejectsMismatchWhenRawinSupported(t *testing.T) {
 	for _, script := range deploySignatureScripts() {
@@ -114,36 +126,6 @@ func TestVerifySignatureUsesInstalledGoVerifierOnOldOpenSSL(t *testing.T) {
 		}
 	}
 }
-
-// The internal registry signs tagged releases only, so requiring a signature
-// for a CI build refuses an artifact that never had one. A release version
-// fetched through the same path must still be signed, and an operator can
-// refuse unsigned builds outright.
-func TestGitLabRegistryAcceptsUnsignedCIBuildsButNotUnsignedReleases(t *testing.T) {
-	script := deploySignatureScript{name: "scripts-deploy-gitlab", path: "scripts/deploy-gitlab.sh"}
-	for _, tc := range []struct {
-		name, version string
-		env           []string
-		wantPass      bool
-	}{
-		{name: "latest CI build", version: "latest", wantPass: true},
-		{name: "commit build", version: "9b6ee5bd", wantPass: true},
-		{name: "release must be signed", version: "3.33.1"},
-		{name: "operator refuses unsigned", version: "latest", env: []string{"CSM_REQUIRE_SIGNATURES=1"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			stubs := rawinCapableOpenSSL("404")
-			output, code := runVerifySignatureWithVersion(t, script, stubs, tc.env, tc.version)
-			if (code == 0) != tc.wantPass {
-				t.Fatalf("exit=%d output=%s", code, output)
-			}
-			if tc.wantPass && !strings.Contains(output, "unsigned CI build") {
-				t.Fatalf("acceptance not disclosed: %s", output)
-			}
-		})
-	}
-}
-
 func TestVerifySignatureFailsClosedWhenStrict(t *testing.T) {
 	for _, script := range deploySignatureScripts() {
 		t.Run(script.name+"/missing-openssl", func(t *testing.T) {
@@ -305,7 +287,7 @@ func TestAssetsChecksumMissingToleratedUnlessStrict(t *testing.T) {
 		{Name: "deploy.sh", Typeflag: tar.TypeReg, Mode: 0o755, Size: 2},
 	})
 
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		t.Run(rel, func(t *testing.T) {
 			script := filepath.Join(root, rel)
 			run := func(env ...string) (string, int) {
@@ -456,7 +438,7 @@ func TestMissingAssetsChecksumAllowedOnlyForLegacyReleases(t *testing.T) {
 
 func TestReleaseInstallScriptsVerifyAssetsBeforeExtraction(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/install.sh", "scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range append([]string{"scripts/install.sh"}, deployScriptPaths...) {
 		t.Run(rel, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(root, rel))
 			if err != nil {
@@ -485,7 +467,7 @@ func TestReleaseInstallScriptsVerifyAssetsBeforeExtraction(t *testing.T) {
 
 func TestValidateAssetsArchiveRejectsTraversalAndLinks(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/install.sh", "scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range append([]string{"scripts/install.sh"}, deployScriptPaths...) {
 		t.Run(rel, func(t *testing.T) {
 			script := filepath.Join(root, rel)
 			t.Run("regular-files", func(t *testing.T) {
@@ -556,7 +538,7 @@ func TestValidateAssetsArchiveRejectsTraversalAndLinks(t *testing.T) {
 
 func TestAssetExtractionFailuresAreFatal(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		body, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
 			t.Fatal(err)
@@ -578,7 +560,7 @@ func TestAssetExtractionFailuresAreFatal(t *testing.T) {
 
 func TestDeployInstallAndUpgradeKeepAssetsTransactional(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		t.Run(rel, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(root, rel))
 			if err != nil {
@@ -637,30 +619,6 @@ func TestDeployPinsReleaseTagAcrossArtifacts(t *testing.T) {
 		}
 	}
 
-	gitlabData, err := os.ReadFile(filepath.Join(root, "scripts/deploy-gitlab.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, fn := range []string{"do_install", "do_upgrade"} {
-		body := shellFunctionBody(t, string(gitlabData), fn)
-		if strings.Contains(body, "resolve_release_tag") {
-			t.Errorf("%s in deploy-gitlab.sh must not require a GitHub release tag", fn)
-		}
-		for _, call := range []struct {
-			name string
-			want string
-		}{
-			{name: "download_package", want: `download_package "latest" "$tmpdir"`},
-			{name: "download_and_stage_assets", want: `download_and_stage_assets "latest" "$tmpdir"`},
-		} {
-			if got := strings.Count(body, call.name); got != 1 {
-				t.Errorf("%s in deploy-gitlab.sh calls %s %d times, want exactly once", fn, call.name, got)
-			}
-			if !strings.Contains(body, call.want) {
-				t.Errorf("%s in deploy-gitlab.sh missing package-registry call %q", fn, call.want)
-			}
-		}
-	}
 }
 
 func githubReleaseTagResolverStub(rel string) string {
@@ -672,7 +630,7 @@ func githubReleaseTagResolverStub(rel string) string {
 
 func TestDeployCleansTmpdirOnFailureExit(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		t.Run(rel, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(root, rel))
 			if err != nil {
@@ -703,7 +661,7 @@ func TestDeployCleansTmpdirOnFailureExit(t *testing.T) {
 
 func TestDeployCleansTmpdirWhenPackageDownloadFails(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		for _, fn := range []string{"do_install", "do_upgrade"} {
 			t.Run(rel+"/"+fn, func(t *testing.T) {
 				installDir := t.TempDir()
@@ -759,7 +717,7 @@ func TestDeployCleansTmpdirWhenPackageDownloadFails(t *testing.T) {
 
 func TestInstallCleansTmpdirAfterInstallerFailure(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		t.Run(rel, func(t *testing.T) {
 			installDir := t.TempDir()
 			tmpdir := filepath.Join(installDir, "package")
@@ -817,7 +775,7 @@ func TestInstallCleansTmpdirAfterInstallerFailure(t *testing.T) {
 
 func TestInstallCleansBinaryAfterPlacementFailure(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		for _, failure := range []string{"copy", "chmod"} {
 			t.Run(rel+"/"+failure, func(t *testing.T) {
 				installDir := t.TempDir()
@@ -889,7 +847,7 @@ func TestInstallCleansBinaryAfterPlacementFailure(t *testing.T) {
 
 func TestUpgradeHandlesBinaryPlacementFailures(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		for _, failure := range []string{"backup", "copy", "chmod"} {
 			t.Run(rel+"/"+failure, func(t *testing.T) {
 				installDir := t.TempDir()
@@ -1000,7 +958,7 @@ func TestUpgradeHandlesBinaryPlacementFailures(t *testing.T) {
 
 func TestDeployAssetActivationRollbackRestoresPreviousRelease(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		t.Run(rel, func(t *testing.T) {
 			installDir := t.TempDir()
 			stage := t.TempDir()
@@ -1063,7 +1021,7 @@ func TestDeployAssetActivationRollbackRestoresPreviousRelease(t *testing.T) {
 
 func TestRollbackAssetsRemovesRulesCreatedByFailedRelease(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		t.Run(rel, func(t *testing.T) {
 			installDir := t.TempDir()
 			stage := t.TempDir()
@@ -1113,7 +1071,7 @@ func TestRollbackAssetsRemovesRulesCreatedByFailedRelease(t *testing.T) {
 
 func TestUpgradeChecksVersionBeforeStagingAssets(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		t.Run(rel, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(root, rel))
 			if err != nil {
@@ -1141,7 +1099,7 @@ func TestUpgradeChecksVersionBeforeStagingAssets(t *testing.T) {
 
 func TestUpgradeTmpdirLifecycle(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		for _, releaseVersion := range []string{"1.0.0", "2.0.0"} {
 			name := "new-version"
 			if releaseVersion == "1.0.0" {
@@ -1235,7 +1193,7 @@ func TestUpgradeTmpdirLifecycle(t *testing.T) {
 
 func TestRollbackAssetsPreservesEntriesNeverActivated(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		t.Run(rel, func(t *testing.T) {
 			installDir := t.TempDir()
 			stage := t.TempDir()
@@ -1300,7 +1258,7 @@ func TestRollbackAssetsPreservesEntriesNeverActivated(t *testing.T) {
 
 func TestRollbackAssetsContinuesPastFailures(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		t.Run(rel, func(t *testing.T) {
 			installDir := t.TempDir()
 			stage := t.TempDir()
@@ -1371,7 +1329,7 @@ func TestRollbackAssetsContinuesPastFailures(t *testing.T) {
 
 func TestRollbackUpgradeRestoresImmutableState(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		t.Run(rel, func(t *testing.T) {
 			script := filepath.Join(root, rel)
 			upgradeBody, err := os.ReadFile(script)
@@ -1459,7 +1417,7 @@ func TestRollbackUpgradeRestoresImmutableState(t *testing.T) {
 
 func TestRollbackUpgradeDisarmsCleanupBeforeRecovery(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		t.Run(rel, func(t *testing.T) {
 			tmpdir := filepath.Join(t.TempDir(), "rollback-material")
 			if err := os.Mkdir(tmpdir, 0o700); err != nil {
@@ -1507,7 +1465,7 @@ func TestRollbackUpgradeDisarmsCleanupBeforeRecovery(t *testing.T) {
 
 func TestRollbackUpgradeReportsIncompleteRecovery(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		t.Run(rel, func(t *testing.T) {
 			script := filepath.Join(root, rel)
 			wrapper := filepath.Join(t.TempDir(), "rollback-upgrade-incomplete.sh")
@@ -1598,7 +1556,7 @@ fi`
 		t.Error("install.sh must fail when chmod of the required deploy script fails")
 	}
 
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		body, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
 			t.Fatal(err)
@@ -1657,13 +1615,9 @@ func TestPackagePostremovePreservesOperatorModSecurityRules(t *testing.T) {
 
 func TestInstallInstructionsStartDaemonBeforeBaseline(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{
-		"scripts/install.sh",
-		"scripts/deploy.sh",
-		"scripts/deploy-gitlab.sh",
-		"build/packaging/scripts/postinstall.sh",
-		"cmd/csm/installer.go",
-	} {
+	rels := append([]string{"scripts/install.sh"}, deployScriptPaths...)
+	rels = append(rels, "build/packaging/scripts/postinstall.sh", "cmd/csm/installer.go")
+	for _, rel := range rels {
 		t.Run(rel, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(root, rel))
 			if err != nil {
@@ -1706,7 +1660,7 @@ func TestInstallHooksRespectConfiguredBinaryImmutability(t *testing.T) {
 
 	// The deploy scripts may re-arm chattr +i only inside rollback_upgrade,
 	// which restores the pre-upgrade state it observed.
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		body, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
 			t.Fatal(err)
@@ -1804,11 +1758,11 @@ func TestPosttransReportsImmutabilityFailureWithoutFailing(t *testing.T) {
 }
 
 func deploySignatureScripts() []deploySignatureScript {
-	return []deploySignatureScript{
+	scripts := []deploySignatureScript{
 		{name: "scripts-deploy", path: "scripts/deploy.sh"},
 		{name: "scripts-install", path: "scripts/install.sh"},
-		{name: "scripts-deploy-gitlab", path: "scripts/deploy-gitlab.sh"},
 	}
+	return append(scripts, extraDeploySignatureScripts...)
 }
 
 func runVerifySignature(t *testing.T, script deploySignatureScript, stubs string, env []string, pathOverride string) (string, int) {
