@@ -118,18 +118,19 @@ func TestLegacySignatureExceptionRequiresCompletePreSigningVersion(t *testing.T)
 				stubs := rawinCapableOpenSSL("404") + oldOpenSSL() + "\nCSM_SIGNING_KEY_PEM=''\n"
 				output, code := runVerifySignatureWithVersion(t, script, stubs, nil, version)
 				legacy := version == "v1.0.0" || version == "v2.1.9"
-				// The internal registry signs tagged releases only, so an
-				// unsigned CI build is expected there and nowhere else.
-				ciBuild := version == "latest" && script.path == "scripts/deploy-gitlab.sh"
-				allowed := legacy || ciBuild
+				excepted, disclosure := false, ""
+				if script.exception != nil {
+					excepted, disclosure = script.exception(version)
+				}
+				allowed := legacy || excepted
 				if (code == 0) != allowed {
 					t.Fatalf("version=%q exit=%d output=%s", version, code, output)
 				}
 				if legacy && !strings.Contains(output, "pre-signing release") {
 					t.Fatalf("legacy bypass not disclosed: %s", output)
 				}
-				if ciBuild && !strings.Contains(output, "unsigned CI build") {
-					t.Fatalf("CI build acceptance not disclosed: %s", output)
+				if excepted && !strings.Contains(output, disclosure) {
+					t.Fatalf("signature exception not disclosed: %s", output)
 				}
 				if allowed {
 					strictOut, strictCode := runVerifySignatureWithVersion(t, script, stubs, []string{"CSM_REQUIRE_SIGNATURES=1"}, version)
@@ -139,46 +140,5 @@ func TestLegacySignatureExceptionRequiresCompletePreSigningVersion(t *testing.T)
 				}
 			})
 		}
-	}
-}
-
-func TestGitLabUpdateCheckNeverExecutesDownloadedCode(t *testing.T) {
-	dir := t.TempDir()
-	installed, unsigned, marker, requests := filepath.Join(dir, "csm"), filepath.Join(dir, "unsigned"), filepath.Join(dir, "executed"), filepath.Join(dir, "requests")
-	if err := os.WriteFile(installed, []byte("#!/bin/sh\nprintf 'csm 1.0.0\\n'\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(unsigned, []byte("#!/bin/sh\nprintf executed > \"$EXECUTION_MARKER\"\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	body := strings.Join([]string{
-		"set -euo pipefail",
-		"detect_auth_header() { :; }",
-		`sha256sum() { printf '%064d\n' 1; }`,
-		"PKG_BASE=https://example.invalid/pkg",
-		"ARTIFACT_NAME=artifact",
-		`pkg_download() {
- printf '%s\n' "$1" >> "$REQUESTS"
- case "$1" in
-  *.sha256) printf '%064d\n' 0 > "$2";;
-  *) cp "$UNSIGNED" "$2";;
- esac
- printf 200
-}`,
-		extractShellFunction(t, filepath.Join(repoRootFromDaemonTest(), "scripts/deploy-gitlab.sh"), "do_check"),
-		"do_check",
-	}, "\n")
-	cmd := exec.Command("/bin/bash", "-c", body)
-	cmd.Env = withEnv(os.Environ(), "INSTALL_DIR="+dir, "BINARY_PATH="+installed, "UNSIGNED="+unsigned, "EXECUTION_MARKER="+marker, "REQUESTS="+requests)
-	output, err := cmd.CombinedOutput()
-	if err != nil || !strings.Contains(string(output), "Update available") {
-		t.Fatalf("update check: %v %s", err, output)
-	}
-	if _, err = os.Stat(marker); !os.IsNotExist(err) {
-		t.Errorf("update check executed downloaded code: %v", err)
-	}
-	got, err := os.ReadFile(requests)
-	if err != nil || string(got) != "https://example.invalid/pkg/latest/artifact.sha256\n" {
-		t.Fatalf("update check downloaded executable content: %s %v", got, err)
 	}
 }

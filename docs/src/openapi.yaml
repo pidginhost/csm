@@ -2,13 +2,13 @@
 #
 # Hand-written. The TestOpenAPISpecCoversAllRoutes drift guard fails if a
 # registered /api/v1/* route is missing here or documented with another
-# scope or primary method. A handler that accepts several methods on one
-# path documents its primary method only; api.md describes the rest.
+# scope or supported method. Handlers that accept several methods on one
+# path document each supported method.
 #
 # Scope: every operation carries its method and x-csm-scope (read vs admin).
-# Method is derived from the route wrapper: CSRF-protected routes are
-# state-changing methods, the rest are GETs. Response bodies are typed as
-# generic JSON objects in this v1; per-endpoint response schemas can be
+# Methods follow the registrations and each handler's method dispatch.
+# Response bodies are typed as generic JSON objects in this v1;
+# per-endpoint response schemas can be
 # tightened incrementally without changing route coverage. The shapes every
 # route shares (Error, ActionResult, ItemList) are defined under components.
 openapi: 3.1.0
@@ -312,6 +312,21 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/email/held/":
+    delete:
+      operationId: delete_email_held_
+      summary: "Discard the held forward copy whose ID follows this path prefix (CSRF on cookie sessions)."
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { description: Failed to delete the held message. }
     post:
       operationId: post_email_held_
       summary: "post /api/v1/email/held/ (scope: admin)"
@@ -421,6 +436,36 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/email/quarantine/":
+    get:
+      operationId: get_email_quarantine_
+      summary: "Read the quarantined message whose ID follows this path prefix."
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Unknown quarantine ID. }
+    delete:
+      operationId: delete_email_quarantine_
+      summary: "Delete the quarantined message whose ID follows this path prefix (CSRF on cookie sessions)."
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { description: Failed to delete the quarantined message. }
     post:
       operationId: post_email_quarantine_
       summary: "post /api/v1/email/quarantine/ (scope: admin)"
@@ -1106,6 +1151,20 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/modsec/rules/escalation":
+    get:
+      operationId: get_modsec_rules_escalation
+      summary: "Rule IDs excluded from firewall escalation, sorted."
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     post:
       operationId: post_modsec_rules_escalation
       summary: "post /api/v1/modsec/rules/escalation (scope: admin)"
@@ -1216,6 +1275,20 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/prefs/user":
+    get:
+      operationId: get_prefs_user
+      summary: "Read this operator's UI preferences."
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     put:
       operationId: put_prefs_user
       summary: "put /api/v1/prefs/user (scope: admin)"
@@ -1236,6 +1309,39 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/prefs/views":
+    get:
+      operationId: get_prefs_views
+      summary: "List saved views; ?page=<page> filters by page."
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      operationId: delete_prefs_views
+      summary: "Delete one saved view by {page, name} (CSRF on cookie sessions)."
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     put:
       operationId: put_prefs_views
       summary: "put /api/v1/prefs/views (scope: admin)"
@@ -1411,6 +1517,34 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/settings/":
+    post:
+      operationId: post_settings_
+      summary: "Update the config section named after this path prefix: safe fields apply live, restart fields queue (CSRF on cookie sessions)."
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          description: Copy the ETag header or etag value from the section's GET response unchanged.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "400": { description: Missing If-Match header or invalid request body. }
+        "412": { description: The configuration or its fragments changed on disk; reload and retry. }
+        "422": { description: A field failed validation. }
     get:
       operationId: get_settings_
       summary: "get /api/v1/settings/ (scope: admin)"
@@ -1691,6 +1825,39 @@ paths:
         "503":
           description: Scan job manager not available.
   "/api/v1/suppressions":
+    get:
+      operationId: get_suppressions
+      summary: "Suppression rules."
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    delete:
+      operationId: delete_suppressions
+      summary: "Delete a suppression rule by id (CSRF on cookie sessions)."
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JSONObject" }
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
     post:
       operationId: post_suppressions
       summary: "post /api/v1/suppressions (scope: admin)"

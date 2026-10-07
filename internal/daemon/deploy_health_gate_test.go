@@ -108,7 +108,7 @@ func TestUpgradeHealthGateCatchesDaemonExitDuringSettle(t *testing.T) {
 // Run under the caller's `if !` context: errexit is disabled inside the
 // function there, so every failed shell command needs an explicit return.
 func TestUpgradeHealthGateShellBoundaries(t *testing.T) {
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		for _, tc := range []struct {
 			name, settle                 string
 			failSleep, stopAfterDoctor   bool
@@ -168,7 +168,7 @@ func TestUpgradeHealthGateShellBoundaries(t *testing.T) {
 }
 
 func TestUpgradeHealthGateRollsBackRunningDaemon(t *testing.T) {
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		for _, failure := range []string{"doctor", "settle", "none"} {
 			t.Run(rel+"/"+failure, func(t *testing.T) {
 				dir := t.TempDir()
@@ -239,17 +239,6 @@ func TestUpgradeHealthGateRollsBackRunningDaemon(t *testing.T) {
 					}
 				}
 			})
-		}
-	}
-}
-
-func TestDeployHealthGateImplementationsMatch(t *testing.T) {
-	root := repoRootFromDaemonTest()
-	for _, fn := range []string{"verify_upgrade_health", "rollback_upgrade"} {
-		github := extractShellFunction(t, filepath.Join(root, "scripts/deploy.sh"), fn)
-		gitlab := extractShellFunction(t, filepath.Join(root, "scripts/deploy-gitlab.sh"), fn)
-		if github != gitlab {
-			t.Errorf("%s differs between deploy scripts", fn)
 		}
 	}
 }

@@ -130,7 +130,7 @@ func runRefuseDowngrade(t *testing.T, scriptPath, current, target string, env []
 
 func TestRefuseDowngradeGuardsUpgrades(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		path := filepath.Join(root, rel)
 		t.Run(rel, func(t *testing.T) {
 			if out, code := runRefuseDowngrade(t, path, "csm 3.30.0", "csm 3.29.0", nil); code == 0 || !strings.Contains(out, "downgrade") {
@@ -154,7 +154,7 @@ func TestRefuseDowngradeGuardsUpgrades(t *testing.T) {
 
 func TestUpgradeRefusesDowngradeBeforeStaging(t *testing.T) {
 	root := repoRootFromDaemonTest()
-	for _, rel := range []string{"scripts/deploy.sh", "scripts/deploy-gitlab.sh"} {
+	for _, rel := range deployScriptPaths {
 		t.Run(rel, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(root, rel))
 			if err != nil {

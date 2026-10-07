@@ -11,8 +11,10 @@ import (
 	"time"
 
 	systemdbus "github.com/coreos/go-systemd/v22/dbus"
+
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 func runSystemdRoots() {
@@ -65,7 +67,7 @@ func quoteSystemdPath(path string) string {
 }
 
 func servicePathWithin(path, root string) bool {
-	return path == root || strings.HasPrefix(path, strings.TrimSuffix(root, "/")+"/")
+	return safepath.Within(path, root)
 }
 
 // A tenant can replace a directory it owns with a symlink before systemd

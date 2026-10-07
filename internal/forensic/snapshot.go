@@ -28,7 +28,10 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
 	"time"
+
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // SchemaTarget identifies one MySQL schema to include in the snapshot
@@ -334,11 +337,7 @@ func ValidateOutPath(account, outPath string) error {
 }
 
 func pathWithin(root, path string) bool {
-	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
+	return safepath.Within(path, root)
 }
 
 // writeArchiveEntry adds a single file to the tar stream with a fixed

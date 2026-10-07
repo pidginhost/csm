@@ -40,6 +40,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- The OpenAPI contract now documents supported methods, settings write requirements and mail deletion errors.
 - Bot range feed updates no longer hang when a feed host accepts the connection and never answers.
 - The email quarantine sweep now reports entries it could not delete instead of counting the sweep as clean.
 - API writes from a browser origin listed in the allowed origins now pass the browser's preflight check instead of being refused.
