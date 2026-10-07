@@ -6,19 +6,23 @@ import (
 )
 
 // Registry registers every producer of the producer table against the
-// check registry's admission policy and seals it.
-func Registry() (*admission.Registry, error) {
+// check registry's admission policy and seals it. The producer handles are
+// the owner's: only it mints evidence.
+func Registry() (*admission.Registry, map[admission.ProducerID]*admission.Producer, error) {
 	reg, err := admission.NewRegistry(checks.AdmissionPolicy)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	producers := map[admission.ProducerID]*admission.Producer{}
 	for _, p := range checks.ProducerTable() {
-		if _, err = reg.Register(p.Spec); err != nil {
-			return nil, err
+		handle, err := reg.Register(p.Spec)
+		if err != nil {
+			return nil, nil, err
 		}
+		producers[handle.ID()] = handle
 	}
 	reg.Seal()
-	return reg, nil
+	return reg, producers, nil
 }
 
 // Inventory is one complete read of the hosting inventory as the ledger

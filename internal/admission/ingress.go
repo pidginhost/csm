@@ -227,6 +227,17 @@ func (in *Ingress) Submit(s Submission) error {
 	return nil
 }
 
+// Inventory is the inventory of the published snapshot, nil while admission
+// is closed. Producers resolve claims against it, as Submit scopes them.
+func (in *Ingress) Inventory() *Inventory {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.snap == nil {
+		return nil
+	}
+	return in.snap.Inventory
+}
+
 // Refuse counts a response whose evidence could not be minted, as Submit
 // counts one it refuses before assessing it.
 func (in *Ingress) Refuse(err error, sev Severity) {

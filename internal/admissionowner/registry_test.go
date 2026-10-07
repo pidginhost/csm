@@ -9,9 +9,10 @@ import (
 )
 
 // Handoff from 1.4a: the daemon registers every producer of the table and
-// seals the registry, so nothing registers later and the ledger opens.
+// seals the registry, so nothing registers later and the ledger opens. The
+// owner keeps every producer's handle: it mints for all of them.
 func TestRegistryCoversTheProducerTable(t *testing.T) {
-	reg, err := Registry()
+	reg, producers, err := Registry()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,5 +30,11 @@ func TestRegistryCoversTheProducerTable(t *testing.T) {
 		if !ok || !reflect.DeepEqual(spec, p.Spec) {
 			t.Errorf("producer %s registered as %+v (%v), want %+v", p.Spec.ID, spec, ok, p.Spec)
 		}
+		if h := producers[p.Spec.ID]; h == nil || h.ID() != p.Spec.ID {
+			t.Errorf("producer %s has no handle", p.Spec.ID)
+		}
+	}
+	if len(producers) != len(table) {
+		t.Errorf("%d handles for %d producers", len(producers), len(table))
 	}
 }

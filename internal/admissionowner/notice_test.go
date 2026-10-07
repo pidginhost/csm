@@ -299,7 +299,7 @@ func TestOwnerShutdownDoesNotAnnounceAnOutage(t *testing.T) {
 
 // Recovery before the owner's cause read must not produce a stopped notice.
 func TestOwnerReadsStopAndCauseTogether(t *testing.T) {
-	reg, err := Registry()
+	reg, _, err := Registry()
 	if err != nil {
 		t.Fatal(err)
 	}

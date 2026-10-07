@@ -10,6 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/queuehealth"
 	"github.com/pidginhost/csm/internal/store"
@@ -79,6 +80,8 @@ type Options struct {
 	// under the current configuration. A preview records the expiry a
 	// live attempt would have.
 	Expiry func(admission.Candidate) time.Duration
+	// Caps are the firewall's containment capabilities block targets fit.
+	Caps func() admission.Caps
 	// Timer periods; zero selects the defaults.
 	TickEvery, InventoryEvery, StatusEvery, DeliverEvery, NoticeEvery, DrainEvery, ScheduleEvery time.Duration
 }
@@ -96,17 +99,18 @@ type request struct {
 // It serves its queue as observe previews: nothing it admits is executed
 // until the applier exists.
 type Owner struct {
-	opts     Options
-	stopping atomic.Bool
-	reg      *admission.Registry
-	ingress  *admission.Ingress
-	requests chan request
-	quit     chan bool
-	done     chan struct{}
-	stopOnce sync.Once
-	current  atomic.Pointer[health.AdmissionStatus]
-	audit    *queuehealth.Sampled
-	notices  *sender
+	opts      Options
+	stopping  atomic.Bool
+	reg       *admission.Registry
+	producers map[admission.ProducerID]*admission.Producer
+	ingress   *admission.Ingress
+	requests  chan request
+	quit      chan bool
+	done      chan struct{}
+	stopOnce  sync.Once
+	current   atomic.Pointer[health.AdmissionStatus]
+	audit     *queuehealth.Sampled
+	notices   *sender
 
 	// Owned by the owner goroutine.
 	ledger        *store.AdmissionLedger
@@ -171,7 +175,7 @@ func Start(opts Options) *Owner {
 		opts: opts, requests: make(chan request), quit: make(chan bool), done: make(chan struct{}),
 		audit: queuehealth.NewSampled(int(admission.MaxAuditSlots), "rows", deliveryLag),
 	}
-	o.reg, o.startErr = buildRegistry()
+	o.reg, o.producers, o.startErr = buildRegistry()
 	if o.startErr == nil {
 		o.ingress, o.startErr = admission.NewIngress(o.reg)
 	}
@@ -471,6 +475,9 @@ func (o *Owner) shutdown() {
 	if !o.started {
 		return
 	}
+	// No snapshot published during the stop reopens admission, so the
+	// drains below end even if a producer was not stopped first (O30).
+	o.ingress.Close()
 	held := o.ingress.Len() != 0
 	for {
 		if o.drainHeld() != nil {
@@ -594,7 +601,11 @@ func (o *Owner) preview() error {
 		if readErr != nil {
 			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
 		}
-		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, o.now.Add(o.opts.Expiry(c))); err != nil {
+		duration := c.PreviewTTL
+		if duration == 0 {
+			duration = o.opts.Expiry(c)
+		}
+		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, o.now.Add(duration)); err != nil {
 			return fmt.Errorf("previewing pick %s: %w", p.ID, err)
 		}
 	}
@@ -619,7 +630,68 @@ func (o *Owner) preview() error {
 // assigns its episode and generation when it persists the arrival (spec
 // 5.2); a caller never chooses them.
 func arrivalRequest(s admission.Submission) (admission.CandidateRequest, error) {
-	return admission.CandidateRequest{Kind: s.Kind, Target: s.Target, Primary: s.Evidence.ID()}, nil
+	return admission.CandidateRequest{Kind: s.Kind, Target: s.Target, Primary: s.Evidence.ID(), Entry: s.Via, PreviewTTL: s.PreviewTTL}, nil
+}
+
+// Mint mints the evidence f's own observation supports for target, with
+// the producer that stamped it (spec 5.1). It counts nothing: a path may
+// mint a root before it knows it will answer it. Mint takes no owner lock:
+// funnels call it on their own goroutines.
+func (o *Owner) Mint(f alert.Finding, target string) (admission.Evidence, error) {
+	if o.ingress == nil {
+		return admission.Evidence{}, o.startErr
+	}
+	t, err := checks.AdmissionTarget(target, admission.Caps{IPv6: true})
+	if err != nil {
+		return admission.Evidence{}, err
+	}
+	producer, in, err := checks.AdmissionEvidence(f, t)
+	if err != nil {
+		return admission.Evidence{}, err
+	}
+	p := o.producers[producer]
+	if p == nil {
+		return admission.Evidence{}, &admission.Error{Reason: admission.ReasonPolicy, Detail: "finding names no registered producer"}
+	}
+	// Claims resolve against the inventory the ingress judges scopes by.
+	in.Inventory = o.ingress.Inventory()
+	return p.Mint(in)
+}
+
+// Refuse counts a response that could not be answered because f could not
+// be minted, as the ingress counts a response it refuses itself.
+func (o *Owner) Refuse(f alert.Finding, err error) {
+	if o.ingress != nil {
+		o.ingress.Refuse(err, checks.AdmissionSeverity(f.Severity))
+	}
+}
+
+// Respond hands the ingress a response of kind to e's target, through the
+// derived entry via when it is set. It acknowledges memory acceptance only
+// and never waits for the ledger.
+func (o *Owner) Respond(kind admission.Kind, e admission.Evidence, via admission.Entry, ttl ...time.Duration) error {
+	if o.ingress == nil {
+		return o.startErr
+	}
+	var caps admission.Caps
+	if o.opts.Caps != nil {
+		caps = o.opts.Caps()
+	}
+	if kind != admission.KindChallenge && !caps.IPv6 && e.Target().Prefix().Addr().Is6() {
+		err := &admission.Error{Reason: admission.ReasonUnsupportedContainment, Detail: "firewall does not contain IPv6"}
+		o.ingress.Refuse(err, e.Severity())
+		return err
+	}
+	var selected time.Duration
+	if len(ttl) > 1 {
+		err := &admission.Error{Reason: admission.ReasonInvalid, Detail: "response names several lifetimes"}
+		o.ingress.Refuse(err, e.Severity())
+		return err
+	}
+	if len(ttl) == 1 {
+		selected = ttl[0]
+	}
+	return o.ingress.Submit(admission.Submission{Kind: kind, Target: e.Target(), Evidence: e, Via: via, PreviewTTL: selected})
 }
 
 // Status is the last status the owner read.

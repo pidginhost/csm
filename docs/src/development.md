@@ -595,4 +595,6 @@ The owner schedules queued preview work on its timer and uses the next ledger wa
 
 Derived entries validate their producer binding before fresh placement, coalescing and answered results. The first selected temporary lifetime is durable and cannot be extended by a later report of the same candidate; absent metadata retains the configuration-selected lifetime.
 
+Root preparation and selected submission use the cached admission view and do not wait for ledger writes. Missing observation is an attribution refusal; malformed input remains invalid. Minting accepts canonical IPv6 evidence, while the selected kind checks containment support: HTTP challenges do not depend on the firewall family setting.
+
 Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.
