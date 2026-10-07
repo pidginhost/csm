@@ -20,7 +20,8 @@ import (
 // and a hung call must not stall the Exim log watcher for long.
 const uapiTimeout = 20 * time.Second
 
-// CloudLinux does not provide uapi on the service's PATH.
+// cPanel ships uapi here; the /usr/bin symlink is not present on every host
+// and the service PATH is minimal, so the absolute path is used.
 const uapiPath = "/usr/local/cpanel/bin/uapi"
 
 // uapiExec runs cPanel's uapi with the given arguments and returns its

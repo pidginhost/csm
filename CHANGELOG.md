@@ -11,8 +11,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- Mailbox suspensions now preserve the exact account name when it contains special characters.
-- Mailbox release commands can now be copied safely from the action log.
 - Unknown API and metrics tokens now spend the same five-per-minute budget as the login form, so a token cannot be guessed at API speed.
 - The cron downloader signature no longer slows scans on long crafted lines or flags plugin pages that only print a recommended wp-cron command.
 - Four more download, miner and shell startup signatures no longer slow scans on long crafted lines or on files full of documented install commands.
@@ -49,10 +47,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - A full rescan queued by a rules update now survives daemon restarts and is cleared only after a completed sweep; it waits while `detection.rescan_on_signature_update` is off.
 - The OpenAPI contract now documents supported methods, settings write requirements and mail deletion errors.
-- Automatic mailbox suspension now works on CloudLinux hosts.
-- Mailbox suspension now reports successful actions accurately and avoids unnecessary account-wide mail holds.
-- Stalled mailbox suspension attempts no longer leave the mail log watcher waiting indefinitely.
-- The privilege inventory now correctly shows that mailbox suspensions appear in the action log.
 - The email password audit now checks mailboxes on cPanel hosts instead of reporting every stored hash as unauditable.
 - Bot range feed updates no longer hang when a feed host accepts the connection and never answers.
 - The email quarantine sweep now reports entries it could not delete instead of counting the sweep as clean.
