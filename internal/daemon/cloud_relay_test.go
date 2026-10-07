@@ -468,8 +468,12 @@ func TestCloudRelayCredentialAbuseAction_DryRunRecordsDomainWithoutHold(t *testi
 	}
 }
 
-func TestCloudRelayCredentialAbuseAction_LiveHoldsAndRecordsDomain(t *testing.T) {
+func TestCloudRelayCredentialAbuseAction_LiveFallsBackToAccountHold(t *testing.T) {
 	resetEmailRateState()
+	// Without a cPanel account for the domain the mailbox cannot be
+	// suspended on its own, so the account hold is the response.
+	withUserdomains(t, "")
+	stubUAPI(t, func([]string) ([]byte, error) { return uapiOK() })
 
 	prevHook := autoSuspendOutgoingMail
 	var suspendCalls []string

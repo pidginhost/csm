@@ -84,6 +84,7 @@ func TestInventoryMatchesRuntimeContracts(t *testing.T) {
 		{"respond.bpf_deny_egress", "daemon/connection_bpf.go: cgroup socket program", "bpf_enforcement.enabled", "false", []Privilege{"CAP_BPF", "CAP_NET_ADMIN"}, nil},
 		{"respond.mail_delivery_gate", "daemon/spoolwatch.go: FAN_DENY on scanner failure in tempfail mode", "email_av.enabled", "false", []Privilege{CapSysAdmin}, []string{"fanotify:mail delivery decisions"}},
 		{"respond.hold_outgoing_mail", "daemon/watcher.go: maybeHoldOutgoingMail calls whmapi1 hold_outgoing_email", "auto_response.enabled", "false", []Privilege{Root}, []string{"cpanel:account outgoing mail hold"}},
+		{"respond.suspend_mailbox", "daemon/mailbox_response.go: maybeSuspendMailbox calls uapi Email suspend_login and suspend_outgoing", "auto_response.enabled", "false", []Privilege{Root}, []string{"cpanel:mailbox login and outgoing suspension"}},
 		{"integrate.challenge_port_gate", "daemon/daemon.go: attachChallengePortGate installs a separate nftables table", "challenge.port_gate.enabled", "false", []Privilege{CapNetAdmin}, nil},
 		{"state.control_socket", "daemon/control_listener.go: creates root-only command socket", "", "", []Privilege{Root}, []string{"/var/run/csm"}},
 		{"operate.rehash", "cmd/csm/main.go: runRehash also updates service, launcher and immutable flag", "", "", []Privilege{"CAP_LINUX_IMMUTABLE", Root}, []string{"/opt/csm", "/etc/csm", "/etc/systemd/system", "/etc/logrotate.d", "/usr/sbin/csm"}},
@@ -468,6 +469,7 @@ var reviewedRiskTiers = map[string]RiskTier{
 	"respond.quarantine_file":       RiskContain,
 	"respond.quarantine_mail":       RiskContain,
 	"respond.restart_mail_auth":     RiskDestructive,
+	"respond.suspend_mailbox":       RiskReversible,
 	"respond.virtual_patch":         RiskContain,
 	"state.control_socket":          RiskObserve,
 	"state.mail_relay_policies":     RiskObserve,
@@ -543,6 +545,7 @@ var reviewedRecoveryGaps = map[string]string{
 	"respond.mail_delivery_gate":    "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 	"respond.quarantine_mail":       "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 	"respond.restart_mail_auth":     "Process termination and restart cannot restore lost process state; this inventory does not yet specify a full recovery contract.",
+	"respond.suspend_mailbox":       "This inventory does not yet specify identity checks for releasing or restoring mail, or recovery after a restart.",
 	"respond.virtual_patch":         "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
 }
 

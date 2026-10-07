@@ -362,7 +362,7 @@ Tunable via the `thresholds.smtp_bruteforce_*` and `thresholds.smtp_probe_*` key
 
 Detects authenticated outbound Exim deliveries where the same mailbox is sending through public-cloud relay sources. The realtime Exim mainlog watcher evaluates new accepted deliveries, and a bounded startup replay covers recent lines already on disk.
 
-The finding is `email_cloud_relay_abuse`. Auto-response actions follow the global dry-run and block settings plus the email hold path. Operators with legitimate cloud mailers can opt out specific mailboxes or domains under `email_protection.cloud_relay`, or use `email_protection.high_volume_senders` for known high-volume senders.
+The finding is `email_cloud_relay_abuse`. Under the global auto-response and dry-run settings, the abused mailbox's logins and outgoing mail are suspended, with the account-wide mail hold as the fallback. Operators with legitimate cloud mailers can opt out specific mailboxes or domains under `email_protection.cloud_relay`, or use `email_protection.high_volume_senders` for known high-volume senders.
 
 ## Mail Auth Brute-Force Tracker
 

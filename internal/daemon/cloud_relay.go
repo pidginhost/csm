@@ -326,7 +326,7 @@ func parseCloudRelayFinding(line string, cfg *config.Config) (findings []alert.F
 
 func handleCloudRelayCredentialAbuse(cfg *config.Config, authUser string) {
 	if domain := extractDomainFromEmail(authUser); domain != "" {
-		maybeHoldOutgoingMail(cfg, authUser)
+		maybeSuspendMailbox(cfg, authUser, "authenticated sends from several cloud-provider addresses")
 		// This is correlation state, not an auto-response action; keep it
 		// active even when the mail hold is disabled or dry-run gated.
 		RecordCompromisedDomain(domain)

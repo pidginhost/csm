@@ -33,6 +33,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - `finding-stream compare` now reports which legacy automatic blocks the admission preview matched, which a designed refusal explains and which stay unexplained.
 - Every host with automatic response enabled now previews its selected responses under the hourly block ceiling, leaving existing blocking unchanged, and status and findings history show the preview.
 
+### Changed
+
+- When a mailbox's credentials are abused, only that mailbox is now suspended; the account-wide outgoing mail hold is kept as the fallback.
+
 ### Removed
 
 - The daemon no longer rewrites the upgrade helper script on every start; the package and the release archive install it.
