@@ -580,5 +580,11 @@ Production tag selection, execution artifacts, and the required isolated kernel 
 It checks all tracked and unignored files under `testdata` and `fixtures`,
 including files without extensions. Scanner failures stop the check; reports
 identify the file and line without printing the suspected address. The
+same run scans every tracked and unignored file for private names when
+`CSM_PRIVATE_TERMS` (or `-terms`) names a file holding one case-insensitive
+regular expression per line. That file stays outside the repository: the
+GitLab job receives it as a file-type CI variable and fails without it
+(`-require-terms`), while a local run without one prints a skip notice. Reports
+name the file and line, never the matched text. The
 [fixture sanitisation rules](https://github.com/pidginhost/csm/blob/main/internal/daemon/testdata/php_relay/SANITISE.md)
 describe the additional manual privacy review.

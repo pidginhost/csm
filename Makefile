@@ -142,8 +142,9 @@ fmt-check:
 	@test -z "$$(gofmt -l $(GOFILES))" || (echo "Files not formatted:" && gofmt -l $(GOFILES) && exit 1)
 
 # check-fixtures fails CI if any testdata or fixtures file contains a non-RFC-5737
-# IPv4 literal. Guards against unsanitised customer data leaking into the
-# repo (see internal/daemon/testdata/php_relay/SANITISE.md).
+# IPv4 literal, or if any repository file matches a pattern in the private
+# terms file named by CSM_PRIVATE_TERMS. Guards against unsanitised customer
+# data leaking into the repo (see internal/daemon/testdata/php_relay/SANITISE.md).
 check-fixtures:
 	scripts/check-fixtures.sh
 
