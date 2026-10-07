@@ -25,7 +25,7 @@ Before each HTTP request, CSM reads `reputation.upstream.token_env` from
 its process environment. A non-empty value overrides the static `token`
 field. Editing an environment file or exporting a value in another shell
 requires a daemon restart to take effect; configuration reload does not
-replace the process environment. See [credential rotation](src/credential-rotation.md).
+replace the process environment. See [credential rotation](credential-rotation.md).
 
 ## Request
 

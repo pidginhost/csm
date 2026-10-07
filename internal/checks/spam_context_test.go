@@ -17,7 +17,7 @@ import (
 //
 // Tests pin the real-world distinction between legitimate mentions
 // (false positives under the earlier substring/word-boundary checks)
-// and actual cloaked spam (the lalimanro attack captured in production).
+// and actual cloaked spam (the acmebakery attack captured in production).
 // -----------------------------------------------------------------------------
 
 // Small helper: pull the pattern entry out of dbSpamPatterns so the
@@ -37,16 +37,16 @@ func spamPattern(t *testing.T, keyword string) dbSpamPattern {
 // contentHasSpamContext — true positives from production
 // -----------------------------------------------------------------------------
 
-func TestContentHasSpamContext_LalimanroCloakedLink(t *testing.T) {
-	// Real production attack captured on 2026-04-16: post 14954 "GALERIE"
-	// in the lalimanro site. Hidden off-screen div with an anchor to a
-	// Romanian pharmacy's viagra product page. Bracketed by a random
+func TestContentHasSpamContext_AcmebakeryCloakedLink(t *testing.T) {
+	// Real production attack: post "GALERIE" in the acmebakery site. Hidden
+	// off-screen div with an anchor to a Romanian pharmacy's viagra product
+	// page. Bracketed by a random
 	// hex comment the attacker uses as an injection fingerprint.
 	content := `<div style="position:absolute;left:-12623px;width:1000px">` +
-		`<a href="https://farmaciamillefolia.ro/produs/viagra/">Viagra</a>` +
+		`<a href="https://acmepharmacy.example/produs/viagra/">Viagra</a>` +
 		`</div><!--44b51-->`
 	if !contentHasSpamContext(content, spamPattern(t, "viagra")) {
-		t.Fatalf("lalimanro cloaked viagra link must fire as spam context")
+		t.Fatalf("acmebakery cloaked viagra link must fire as spam context")
 	}
 }
 
@@ -120,8 +120,8 @@ func TestContentHasSpamContext_NegativeLeftMargin(t *testing.T) {
 // contentHasSpamContext — false positives (must NOT fire)
 // -----------------------------------------------------------------------------
 
-func TestContentHasSpamContext_DssolLegitimatePharmaVertical(t *testing.T) {
-	// Real production FP from post-patch scan 2026-04-16: dssol page 3161
+func TestContentHasSpamContext_AcmesoftLegitimatePharmaVertical(t *testing.T) {
+	// Real production FP from a post-patch scan: a page titled
 	// "Dispozitive de identificare si sisteme de marcare". Mentions
 	// "Pharma" as an industry vertical the company serves. Red heading
 	// style, no cloaking, no external link.
@@ -132,7 +132,7 @@ func TestContentHasSpamContext_DssolLegitimatePharmaVertical(t *testing.T) {
 	}
 }
 
-func TestContentHasSpamContext_HospitalitycultAdvisorBio(t *testing.T) {
+func TestContentHasSpamContext_AcmehotelAdvisorBio(t *testing.T) {
 	// Real production FP: advisor bio listing industry verticals.
 	content := `<p>He has advised clients across consumer goods, steel, energy, ` +
 		`telecommunications, oil and gas, pharma.</p>`
@@ -292,15 +292,15 @@ func TestCountCloakedSpamMatches_OnlyRowsWithContextCount(t *testing.T) {
 	// Three rows: one cloaked attack, two legitimate prose. Only the
 	// cloaked one should count — matching the new spam-injection rule.
 	rows := []string{
-		// Row 1: the lalimanro attack pattern. The URL host and path
+		// Row 1: the acmebakery attack pattern. The URL host and path
 		// are intentionally free of "pharma" so that only the viagra
 		// keyword fires for this row; we want to isolate row-level
 		// attribution in the assertions below.
 		`<div style="position:absolute;left:-12623px"><a href="https://spam-site.top/buy/viagra">Viagra</a></div>`,
-		// Row 2: dssol-style industry vertical. Bare prose, no spam
+		// Row 2: acmesoft-style industry vertical. Bare prose, no spam
 		// context — must not count.
 		`<p>Industria alimentara si a bauturilor si Pharma</p>`,
-		// Row 3: hospitalitycult-style advisor bio prose. Bare prose,
+		// Row 3: acmehotel-style advisor bio prose. Bare prose,
 		// no spam context — must not count.
 		`<p>Our advisor covers consumer goods, steel, energy, oil and gas, pharma.</p>`,
 	}

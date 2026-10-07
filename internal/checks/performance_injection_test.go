@@ -241,7 +241,7 @@ func TestCheckPHPProcessLoadWithData(t *testing.T) {
 
 func TestPHPWorkersByUser(t *testing.T) {
 	passwd := t.TempDir() + "/passwd"
-	if err := os.WriteFile(passwd, []byte("radiusro:x:1001:1001::/home/radiusro:/bin/bash\n"), 0644); err != nil {
+	if err := os.WriteFile(passwd, []byte("acmeradio:x:1001:1001::/home/acmeradio:/bin/bash\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(swapDefaultUIDCacheForTest(passwd))
@@ -274,8 +274,8 @@ func TestPHPWorkersByUser(t *testing.T) {
 	})
 
 	got := phpWorkersByUser()
-	if len(got["radiusro"]) != 2 {
-		t.Fatalf("radiusro lsphp = %d want 2 (%+v)", len(got["radiusro"]), got)
+	if len(got["acmeradio"]) != 2 {
+		t.Fatalf("acmeradio lsphp = %d want 2 (%+v)", len(got["acmeradio"]), got)
 	}
 	if _, ok := got["root"]; ok {
 		t.Fatalf("httpd must not be counted as lsphp worker")

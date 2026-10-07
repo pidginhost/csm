@@ -198,8 +198,8 @@ func TestReload_PreservesReadersOnFailure(t *testing.T) {
 	}
 
 	// Now remove the files to simulate a failed reload
-	os.Remove(filepath.Join(tmpDir, "GeoLite2-City.mmdb"))
-	os.Remove(filepath.Join(tmpDir, "GeoLite2-ASN.mmdb"))
+	_ = os.Remove(filepath.Join(tmpDir, "GeoLite2-City.mmdb"))
+	_ = os.Remove(filepath.Join(tmpDir, "GeoLite2-ASN.mmdb"))
 
 	// Reload should return error but preserve old readers
 	err := db.Reload()
@@ -232,7 +232,7 @@ func TestReload_PartialSuccess(t *testing.T) {
 	defer db.Close()
 
 	// Remove only the ASN file
-	os.Remove(filepath.Join(tmpDir, "GeoLite2-ASN.mmdb"))
+	_ = os.Remove(filepath.Join(tmpDir, "GeoLite2-ASN.mmdb"))
 
 	// Reload should succeed (partial) - city reloaded, ASN preserved
 	err := db.Reload()

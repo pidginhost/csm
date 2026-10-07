@@ -74,7 +74,7 @@ func TestParseMultipartWithAttachment(t *testing.T) {
 
 	// Cleanup
 	for _, p := range result.Parts {
-		os.Remove(p.TempPath)
+		_ = os.Remove(p.TempPath)
 	}
 }
 
@@ -91,7 +91,7 @@ func TestParseMultipartUsesConfiguredTempDir(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -150,7 +150,7 @@ func TestParseLimitEnforcement(t *testing.T) {
 
 	// Cleanup
 	for _, p := range result.Parts {
-		os.Remove(p.TempPath)
+		_ = os.Remove(p.TempPath)
 	}
 }
 
@@ -206,7 +206,7 @@ func TestParseSinglePartAttachment(t *testing.T) {
 
 	// Cleanup
 	for _, p := range result.Parts {
-		os.Remove(p.TempPath)
+		_ = os.Remove(p.TempPath)
 	}
 }
 
@@ -227,7 +227,7 @@ func TestParseEximRealHeaderFormatDetected(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 

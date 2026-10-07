@@ -124,18 +124,18 @@ func updateEditionWithURL(client *http.Client, dbDir, accountID, licenseKey, edi
 	// LimitReader as safety net for responses without Content-Length
 	mmdbTmpPath := filepath.Join(dbDir, edition+".mmdb.tmp")
 	if err := extractMMDB(io.LimitReader(getResp.Body, maxDownloadSize), mmdbTmpPath, edition); err != nil {
-		os.Remove(mmdbTmpPath)
+		_ = os.Remove(mmdbTmpPath)
 		return EditionResult{Edition: edition, Status: "error", Err: fmt.Errorf("extract: %w", err)}
 	}
 	if err := validateMMDB(mmdbTmpPath); err != nil {
-		os.Remove(mmdbTmpPath)
+		_ = os.Remove(mmdbTmpPath)
 		return EditionResult{Edition: edition, Status: "error", Err: fmt.Errorf("validate: %w", err)}
 	}
 
 	// Atomic install
 	destPath := filepath.Join(dbDir, edition+".mmdb")
 	if err := os.Rename(mmdbTmpPath, destPath); err != nil {
-		os.Remove(mmdbTmpPath)
+		_ = os.Remove(mmdbTmpPath)
 		return EditionResult{Edition: edition, Status: "error", Err: fmt.Errorf("install: %w", err)}
 	}
 

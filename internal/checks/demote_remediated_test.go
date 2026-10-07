@@ -10,9 +10,9 @@ import (
 )
 
 // A file that was flagged and then cleaned changes its bytes, so it satisfies
-// neither auto-clear condition and stays Critical for good. On cluster6 that
-// left a wp-config cleaned on 2026-09-01 and two index.php stubs cleaned on
-// 2026-07-23 sitting at Critical weeks later, beside live findings.
+// neither auto-clear condition and stays Critical for good. On host3 that
+// left a cleaned wp-config and two cleaned index.php stubs sitting at
+// Critical weeks later, beside live findings.
 //
 // The finding is not cleared -- an attacker must not be able to retire one by
 // editing the file -- but it stops competing with live work. Demotion is
@@ -333,7 +333,7 @@ func TestSweepRestoresSeverityWhenDemotedContentBecomesUnverifiable(t *testing.T
 }
 
 // The findings that motivated demotion were yara_match_scheduled: two
-// index.php files cleaned to WordPress's own stub on 2026-07-23, still
+// index.php files cleaned to WordPress's own stub, still
 // Critical six weeks later. Eligibility is decided by the replacement's
 // content, not by which detector fired -- a YARA hit on an inert stub is no
 // more dangerous than a heuristic hit on the same bytes, and excluding the

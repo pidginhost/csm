@@ -138,6 +138,10 @@ type Server struct {
 	modSecApplyMu    sync.Mutex // serializes modsec rules apply (write+reload+rollback)
 	sigCountMu       sync.RWMutex
 	settingsSaveHook func()
+	// configAppliedHook runs after a settings save has published a new live
+	// config, so the daemon can push safe-field values into the subsystems
+	// that cache them. nil in handler tests.
+	configAppliedHook func()
 	// verifyFinding is per server so handler tests can inject a verdict without
 	// replacing process-wide behavior while another server is handling a request.
 	verifyFinding func(checks.VerifyInput) checks.VerifyResult
@@ -765,6 +769,12 @@ func (s *Server) emailAVMode() string {
 }
 
 // SetVersion sets the application version for display in the UI.
+// SetConfigAppliedHook registers the callback the Daemon uses to apply a
+// config the web UI just published, the same steps a SIGHUP reload runs.
+func (s *Server) SetConfigAppliedHook(fn func()) {
+	s.configAppliedHook = fn
+}
+
 func (s *Server) SetVersion(v string) {
 	s.version = v
 }
@@ -1005,9 +1015,21 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 				}
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
+				w.Header().Add("Vary", "Origin")
 			}
-			// Deny CORS preflight from unknown origins
+			// A preflight from an unknown origin was refused above. An
+			// allowed origin learns the methods and headers the API takes,
+			// or the browser never sends the credentialed write.
 			if r.Method == "OPTIONS" {
+				if origin != "" {
+					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+					requested := r.Header.Get("Access-Control-Request-Headers")
+					if requested == "" {
+						requested = "Authorization, Content-Type, If-Match, X-CSRF-Token"
+					}
+					w.Header().Set("Access-Control-Allow-Headers", requested)
+					w.Header().Set("Access-Control-Max-Age", "600")
+				}
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}

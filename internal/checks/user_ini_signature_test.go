@@ -31,8 +31,8 @@ import (
 // -----------------------------------------------------------------------------
 
 func TestIsCpanelManagedUserIni_RealCpanelHeader(t *testing.T) {
-	// Captured verbatim from /home/hospitalitycult/public_html/research_doc/.user.ini
-	// in production during the 2026-04-16 scan cycle.
+	// Captured verbatim from /home/acmehotel/public_html/research_doc/.user.ini
+	// in production.
 	data := []byte(`; cPanel-generated php ini directives, do not edit
 ; Manual editing of this file may result in unexpected behavior.
 ; To make changes to this file, use the cPanel MultiPHP INI Editor (Home >> Software >> MultiPHP INI Editor)

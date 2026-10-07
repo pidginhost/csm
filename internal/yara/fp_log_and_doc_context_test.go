@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-// FP reconstructions for the 2026-09-03 cluster6 triage. Three rules matched
+// FP reconstructions for a host3 triage. Three rules matched
 // strings that were present in a file but had nothing to do with each other:
 // two fired on multi-megabyte PHP error logs, one on a Markdown README. In the
-// blanaroocom log the two required strings sat 1.2 MB apart -- offsets 78,294
+// acmeshop log the two required strings sat 1.2 MB apart -- offsets 78,294
 // and 1,287,040 -- which is the same unrelated-co-occurrence failure that
 // `$shebang at 0` already fixes for cgi_webshell_bash.
 
@@ -93,7 +93,7 @@ func TestWebshellAlfa_StillMatchesWhenPaddingSeparatesSignals(t *testing.T) {
 func TestDropperWPPluginInstaller_DoesNotMatchAnErrorLog(t *testing.T) {
 	s := loadRepoYaraScanner(t)
 
-	// blanaroocom: PHP logged a failed plugin write near the top of the file
+	// acmeshop: PHP logged a failed plugin write near the top of the file
 	// and, 1.2 MB later, a line quoting PHP source. Neither is a dropper.
 	logged := phpErrorLog(
 		1_300_000,

@@ -14,7 +14,7 @@ import (
 // product category ("our advisor covers consumer goods, energy,
 // pharma" or "Industria alimentara si Pharma"). Word-boundary matching
 // cannot distinguish the prose mention from the cloaked black-hat SEO
-// link the lalimanro attack injected on the same site.
+// link the acmebakery attack injected on the same site.
 //
 // This file classifies a keyword HIT as SPAM only when the surrounding
 // HTML shows an attacker signal: CSS cloaking (off-screen absolute

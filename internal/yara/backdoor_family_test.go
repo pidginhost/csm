@@ -4,7 +4,7 @@ package yara
 
 import "testing"
 
-// Detection tests for the 2026-07-19 blanaroocom self-healing webshell family.
+// Detection tests for the acmeshop self-healing webshell family.
 // Before these rules the loaders and mu-plugin droppers went undetected while
 // the site was actively backdoored. Positives mirror the real quarantined
 // files; negatives are legitimate near-misses.

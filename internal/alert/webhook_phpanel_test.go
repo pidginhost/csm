@@ -40,7 +40,6 @@ func TestSendPhpanelWebhook_SignsBody(t *testing.T) {
 	cfg.Alerts.Webhook.Type = "phpanel"
 	cfg.Alerts.Webhook.URL = srv.URL
 	cfg.Alerts.Webhook.HMACSecret = secret
-	cfg.Alerts.Webhook.PerFinding = true
 
 	finding := Finding{Check: "test", Severity: High, Message: "x"}
 	if err := SendPhpanelWebhookFinding(cfg, finding); err != nil {
@@ -136,7 +135,6 @@ func TestDispatchPhpanelWebhookAlwaysUsesSignedPerFinding(t *testing.T) {
 	cfg.Alerts.Webhook.Type = "phpanel"
 	cfg.Alerts.Webhook.URL = srv.URL
 	cfg.Alerts.Webhook.HMACSecret = "secret"
-	cfg.Alerts.Webhook.PerFinding = false
 
 	findings := []Finding{
 		{Check: "a", Message: "a", Severity: Critical, Timestamp: time.Now()},

@@ -390,19 +390,19 @@ func BenchmarkTextWithManyLearnedNames(b *testing.B) {
 func TestAnonymizerScrubsNamesInsideLongerTokens(t *testing.T) {
 	e := alert.AuditEvent{
 		V: 1, Check: "modsec_low_confidence_burst",
-		Details:  "logs /var/log/apache2/domlogs/example.com-ssl_log and /var/log/cluster6.log and Example.COM.conf; range 203.0.113.9-198.51.100.7; agent Chrome/203.0.113.9.1",
-		Hostname: "cluster6.example.net", Domain: "example.com",
+		Details:  "logs /var/log/apache2/domlogs/example.com-ssl_log and /var/log/host3.log and Example.COM.conf; range 203.0.113.9-198.51.100.7; agent Chrome/203.0.113.9.1",
+		Hostname: "host3.example.net", Domain: "example.com",
 	}
 	a := NewAnonymizer(testSalt())
 	a.Learn([]alert.AuditEvent{e})
 	got := a.Event(e).Details
-	for _, raw := range []string{"example.com", "Example.COM", "cluster6", "203.0.113.9", "198.51.100.7"} {
+	for _, raw := range []string{"example.com", "Example.COM", "host3", "203.0.113.9", "198.51.100.7"} {
 		if strings.Contains(got, raw) {
 			t.Errorf("%q survived: %q", raw, got)
 		}
 	}
 	dom := a.Domain("example.com")
-	for _, want := range []string{"domlogs/" + dom + "-ssl_log", "/var/log/" + a.Host("cluster6.example.net") + ".log", dom + ".conf", a.IPv4("203.0.113.9") + "-" + a.IPv4("198.51.100.7"), "Chrome/" + a.IPv4("203.0.113.9") + ".1"} {
+	for _, want := range []string{"domlogs/" + dom + "-ssl_log", "/var/log/" + a.Host("host3.example.net") + ".log", dom + ".conf", a.IPv4("203.0.113.9") + "-" + a.IPv4("198.51.100.7"), "Chrome/" + a.IPv4("203.0.113.9") + ".1"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in %q", want, got)
 		}
@@ -411,7 +411,7 @@ func TestAnonymizerScrubsNamesInsideLongerTokens(t *testing.T) {
 		t.Fatalf("clean output reported leaks: %v", problems)
 	}
 	raw := strings.Join(a.Verify([]alert.AuditEvent{e}), "\n")
-	for _, want := range []string{"domain example.com", "host cluster6", "ipv4 203.0.113.9", "ipv4 198.51.100.7"} {
+	for _, want := range []string{"domain example.com", "host host3", "ipv4 203.0.113.9", "ipv4 198.51.100.7"} {
 		if !strings.Contains(raw, want) {
 			t.Errorf("Verify missed %q: %s", want, raw)
 		}

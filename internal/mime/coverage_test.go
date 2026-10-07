@@ -308,7 +308,7 @@ func TestExtractZIP(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -342,7 +342,7 @@ func TestExtractZIPCorruptArchive(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 	// Outer file should still be present, but no extracted children.
@@ -374,7 +374,7 @@ func TestExtractZIPExceedsMaxFiles(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -400,7 +400,7 @@ func TestExtractTarGz(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -432,7 +432,7 @@ func TestExtractTarGzCorruptArchive(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 
@@ -466,7 +466,7 @@ func TestExtractTarGzExceedsMaxFiles(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 	if !result.Partial {
@@ -496,7 +496,7 @@ func TestExtractZIPTotalSizeExceeded(t *testing.T) {
 	}
 	defer func() {
 		for _, p := range result.Parts {
-			os.Remove(p.TempPath)
+			_ = os.Remove(p.TempPath)
 		}
 	}()
 	if !result.Partial || !strings.Contains(result.PartialReason, "total extraction size") {

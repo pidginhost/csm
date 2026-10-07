@@ -98,8 +98,8 @@ func TestOwnerBacksOffAFailingNoticeChannel(t *testing.T) {
 	prev := deliveryNow
 	t.Cleanup(func() { deliveryNow = prev })
 	start := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
-	now := start
-	deliveryNow = func() time.Time { return now }
+	clk := &testClock{t: start}
+	deliveryNow = clk.now
 	f := newOwnerFixture(t)
 	sink := &noticeSink{err: errors.New("mail relay down")}
 	opts := f.options()
@@ -112,9 +112,9 @@ func TestOwnerBacksOffAFailingNoticeChannel(t *testing.T) {
 		before := sink.count()
 		o.notices.cycle()
 		if sink.count() != before {
-			attempts = append(attempts, now.Sub(start))
+			attempts = append(attempts, clk.now().Sub(start))
 		}
-		now = now.Add(5 * time.Second)
+		clk.advance(5 * time.Second)
 	}
 	var want []time.Duration
 	for _, s := range []int{0, 5, 10, 20, 40, 80, 160, 320, 640, 1280, 2560, 5120} {
@@ -124,7 +124,7 @@ func TestOwnerBacksOffAFailingNoticeChannel(t *testing.T) {
 		t.Fatalf("attempts over two hours at %v, want %v", attempts, want)
 	}
 	sink.set(nil)
-	now = start.Add(8720 * time.Second)
+	clk.set(start.Add(8720 * time.Second))
 	o.notices.cycle()
 	if sink.count() != len(want)+1 {
 		t.Fatalf("the hour-late retry did not deliver: %d attempts", sink.count())
@@ -145,13 +145,38 @@ func TestOwnerBacksOffAFailingNoticeChannel(t *testing.T) {
 	}
 }
 
+// testClock is a delivery clock a test moves while the owner's goroutine
+// reads it through deliveryNow; a plain variable would race.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *testClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *testClock) set(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = t
+}
+
+func (c *testClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
+
 // A ledger delivery outage cannot delay the independent alert about a new
 // admission outage, and delivering that alert must not restart ledger retries.
 func TestOwnerStopNoticeDoesNotWaitForLedgerRetry(t *testing.T) {
 	prev := deliveryNow
 	t.Cleanup(func() { deliveryNow = prev })
-	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
-	deliveryNow = func() time.Time { return now }
+	clk := &testClock{t: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
+	deliveryNow = clk.now
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	sink := &noticeSink{err: errors.New("delivery unavailable")}
@@ -174,15 +199,15 @@ func TestOwnerStopNoticeDoesNotWaitForLedgerRetry(t *testing.T) {
 	if sink.count() != 4 || len(sink.last()) != 1 || !strings.Contains(sink.last()[0].Message, "admission preview stopped") {
 		t.Fatalf("ledger backoff hid or repeated the stop alert: %d deliveries", sink.count())
 	}
-	if q := o.QueueStatuses(now.Add(2 * time.Minute))["notices"]; q.Depth != 2 || q.Reason != "consumer_stalled" {
+	if q := o.QueueStatuses(clk.now().Add(2 * time.Minute))["notices"]; q.Depth != 2 || q.Reason != "consumer_stalled" {
 		t.Fatalf("ledger backoff lost queue health after the stop delivery: %+v", q)
 	}
-	now = now.Add(10 * time.Second)
+	clk.advance(10 * time.Second)
 	o.notices.cycle()
 	if sink.count() != 5 || len(sink.last()) != 2 {
 		t.Fatalf("scheduled ledger retry did not deliver: %d deliveries", sink.count())
 	}
-	if q := o.QueueStatuses(now)["notices"]; q.Depth != 0 || q.Status == "degraded" {
+	if q := o.QueueStatuses(clk.now())["notices"]; q.Depth != 0 || q.Status == "degraded" {
 		t.Fatalf("delivered ledger notices did not recover queue health: %+v", q)
 	}
 }
@@ -192,8 +217,8 @@ func TestOwnerStopNoticeDoesNotWaitForLedgerRetry(t *testing.T) {
 func TestOwnerLedgerNoticesDoNotWaitForStopRetry(t *testing.T) {
 	prev := deliveryNow
 	t.Cleanup(func() { deliveryNow = prev })
-	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
-	deliveryNow = func() time.Time { return now }
+	clk := &testClock{t: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
+	deliveryNow = clk.now
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	sink := &noticeSink{err: errors.New("delivery unavailable")}
@@ -217,15 +242,15 @@ func TestOwnerLedgerNoticesDoNotWaitForStopRetry(t *testing.T) {
 	if sink.count() != 4 || len(sink.last()) != 2 {
 		t.Fatalf("stop backoff hid the new ledger notices: %d deliveries", sink.count())
 	}
-	if q := o.QueueStatuses(now.Add(2 * time.Minute))["notices"]; q.Depth != 1 || q.Reason != "consumer_stalled" {
+	if q := o.QueueStatuses(clk.now().Add(2 * time.Minute))["notices"]; q.Depth != 1 || q.Reason != "consumer_stalled" {
 		t.Fatalf("stop backoff lost queue health after the ledger delivery: %+v", q)
 	}
-	now = now.Add(10 * time.Second)
+	clk.advance(10 * time.Second)
 	o.notices.cycle()
 	if sink.count() != 5 || len(sink.last()) != 1 || !strings.Contains(sink.last()[0].Details, "clock unavailable") {
 		t.Fatalf("scheduled stop retry did not deliver: %d deliveries", sink.count())
 	}
-	if q := o.QueueStatuses(now)["notices"]; q.Depth != 0 || q.Status == "degraded" {
+	if q := o.QueueStatuses(clk.now())["notices"]; q.Depth != 0 || q.Status == "degraded" {
 		t.Fatalf("delivered stop alert did not recover queue health: %+v", q)
 	}
 }

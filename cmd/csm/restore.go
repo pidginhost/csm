@@ -38,7 +38,7 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 	if err != nil {
 		return fmt.Errorf("creating restore staging directory: %w", err)
 	}
-	defer os.RemoveAll(stageRoot)
+	defer func() { _ = os.RemoveAll(stageRoot) }()
 	staged, err := extractBackupArchive(archive, stageRoot, maxBytes)
 	if err != nil {
 		return err

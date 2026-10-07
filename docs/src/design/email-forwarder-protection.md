@@ -1,6 +1,8 @@
 # Email Forwarder Protection and Visibility -- Design and Roadmap
 
-Status: approved design, ready to implement.
+Status: shipped. This page is the design the forward guard, the held-copy
+quarantine and its retention prune were built from; the configuration keys
+below are documented in [configuration](../configuration.md).
 Date: 2026-06-07.
 Owner: CSM mail subsystem.
 
@@ -118,7 +120,6 @@ email_protection:
       malware: true
       bad_sender_ip: true
       auth_fail: true
-    skip_forwarders: []     # reuse/share known_forwarders semantics
     quarantine_retention_days: 14
 ```
 

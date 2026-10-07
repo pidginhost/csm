@@ -15,15 +15,15 @@ func TestScriptSrcMaliciousReason_UnremarkableHostsPass(t *testing.T) {
 	// on the knownSafeDomains allowlist. None has an attack indicator,
 	// so the classifier must return false for all.
 	cases := []string{
-		// OneTrust cookie consent (baxiro post 4084).
+		// OneTrust cookie consent.
 		"https://privacyportalde-cdn.onetrust.com/privacy-notice-scripts/otnotice-1.0.min.js",
-		// Issuu document embed (dssol post 2012).
+		// Issuu document embed.
 		"https://e.issuu.com/embed.js",
-		// Romanian video host (filmetaricom posts). HTTP here; see
+		// Romanian video host (acmefilms posts). HTTP here; see
 		// the dedicated plaintext-HTTP test for why we still flag
 		// that form separately.
 		"https://www.trilulilu.ro/embed-video/floryanplayer/d008a97296f18e",
-		// Romanian tax-form widget (radutv post 14953).
+		// Romanian tax-form widget.
 		"https://formular230.ro/share/7bffd412e68",
 		// Mainstream widgets that the allowlist already covered —
 		// should still pass under the new classifier.
@@ -203,15 +203,15 @@ func TestIsAttackerScriptURL_ClusterRealFalsePositiveCases(t *testing.T) {
 	// The production FPs from the post-patch scan cycle that drove this
 	// rewrite. All must now pass (return false).
 	cases := []string{
-		// baxiro — OneTrust cookie consent widget.
+		// OneTrust cookie consent widget.
 		"https://privacyportalde-cdn.onetrust.com/privacy-notice-scripts/otnotice-1.0.min.js",
-		// dssol — Issuu document embed.
+		// Issuu document embed.
 		"//e.issuu.com/embed.js",
-		// filmetaricom — trilulilu.ro video embed. The real injection
+		// acmefilms: trilulilu.ro video embed. The real injection
 		// uses http:// which will flag on scheme; legacy posts with
 		// https:// should pass.
 		"https://www.trilulilu.ro/embed-video/floryanplayer/d008a97296f18e",
-		// radutv — formular230.ro widget.
+		// formular230.ro widget.
 		"https://formular230.ro/share/7bffd412e68",
 	}
 	for _, c := range cases {
@@ -237,7 +237,7 @@ func TestIsAttackerScriptURL_AttackCasesFlag(t *testing.T) {
 }
 
 func TestIsAttackerScriptURL_PlaintextHTTPOnTriluliluStillFlagsMindful(t *testing.T) {
-	// filmetaricom's posts use http:// (circa 2012 embeds) — these flag
+	// acmefilms posts use http:// (circa 2012 embeds); these flag
 	// under the plaintext-HTTP indicator even though trilulilu.ro
 	// itself is not on an abused TLD. This is intended: plaintext HTTP
 	// external JS is a MITM vector regardless of destination. The
@@ -290,7 +290,7 @@ func TestAbusedTLDs_NonEmpty(t *testing.T) {
 // known-bad exfil hosts, and empty/invalid hosts.
 
 func TestScriptSrcStrongReason_PlaintextHTTPOnMainstreamHostDoesNotFire(t *testing.T) {
-	// filmetaricom post 275: <script src="http://www.trilulilu.ro/...">
+	// acmefilms post: <script src="http://www.trilulilu.ro/...">
 	// Legitimate author embed from 2013, plaintext HTTP, mainstream-TLD
 	// Romanian video host. Must NOT fire under the strong-only classifier.
 	cases := []string{
@@ -347,7 +347,7 @@ func TestScriptSrcStrongReason_RawIPOverHTTP(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestIsAttackerScriptURLInPost_LegacyHTTPEmbedPasses(t *testing.T) {
-	// The driving FP: filmetaricom post content with a 2013-era trilulilu
+	// The driving FP: acmefilms post content with a 2013-era trilulilu
 	// embed. The post was last modified 13 years ago; the embed is part of
 	// the author's text. The post-context predicate must NOT flag it.
 	if isAttackerScriptURLInPost("http://www.trilulilu.ro/embed-video/floryanplayer/d008a97296f18e") {

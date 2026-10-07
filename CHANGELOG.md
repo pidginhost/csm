@@ -11,31 +11,44 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- The database malware response no longer blocks the addresses of WordPress sessions active on the affected site, which include the site owner's; its notice lists them and sessions are still revoked under `auto_response.clean_database`. Existing blocks stay until expiry; queued session retries and unverifiable or retired incident evidence cannot renew them after upgrade.
-- The cron downloader signature no longer slows scans on long crafted lines, and it no longer raises critical alerts on plugin pages that print a recommended wp-cron command, since it now needs a shell, eval or exec command after the download. Existing files are judged this way at their next scan, findings already raised stay until dismissed, and no setting is involved.
-- Four more download, miner and shell startup file signatures no longer slow scans on long crafted lines or on files full of documented install commands; they now catch a download command anywhere on a long line, and only well-formed Markdown code blocks and link text count as documentation. Existing files are judged this way at their next scan, and no setting is involved.
+- Unknown API and metrics tokens now spend the same five-per-minute budget as the login form, so a token cannot be guessed at API speed.
+- The cron downloader signature no longer slows scans on long crafted lines or flags plugin pages that only print a recommended wp-cron command.
+- Four more download, miner and shell startup signatures no longer slow scans on long crafted lines or on files full of documented install commands.
+- The database malware response no longer blocks the addresses of active WordPress sessions on the affected site, including the owner's; the notice lists them and sessions are still revoked.
 - A file planted in a hosted site can no longer stall the deep phishing scan.
 - Scheduled phishing scans now report kits in dependency and source-control folders unless excluded; `auto_response.quarantine_files` can quarantine phishing pages found there.
 - Group-writable PHP checks now include dependency and cache folders and no longer raise false alerts on symbolic links.
 - The malware scanning engine moves to YARA-X 1.21.0, catching previously missed threats and raising fewer false alarms.
-- Leftover mod_security 1.x directives that switch ModSecurity off in an `.htaccess` are high severity again and are removed by the automatic cleaner, because LiteSpeed obeys them. Existing files carrying them, Magento's stock block included, are reported at the next deep scan and cleaned there when `auto_response.clean_htaccess` is on, with a backup kept.
-- Scheduled and real-time `.htaccess` checks, the manual fix and the re-check now judge the same directives, so real-time detection catches handler remaps, encoded payloads and every PHP prelude set through an environment variable, and a reported directive can always be removed by hand together with its rewrite conditions; harmless prelude settings, defensive rewrite rules and inert handler text are no longer reported. Existing files are judged this way at their next scan; automatic cleaning under `auto_response.clean_htaccess` covers the per-pattern findings and malicious handler mappings, and oversized files are left for manual inspection.
-- Malicious handler mappings in an `.htaccess` are now judged by their whole extension arguments, and an option that disables CGI no longer hides a PHP or custom handler mapping. Existing files are judged this way at their next deep scan.
+- Leftover mod_security 1.x directives that switch ModSecurity off in an `.htaccess` are high severity again and the automatic cleaner removes them, keeping a backup.
+- Scheduled and real-time `.htaccess` checks, the manual fix and the re-check now judge the same directives, and harmless prelude settings and defensive rewrite rules are no longer reported.
+- Malicious handler mappings in an `.htaccess` are now judged by their whole extension arguments, and an option that disables CGI no longer hides a PHP or custom handler mapping.
 
 ### Added
 
+- The previous configuration file is kept as a backup next to it before the dashboard, rehash or installer saves a new one.
+- Held forward copies are now deleted once they pass the configured retention window instead of staying on disk.
+- Status and diagnostics now report automatic response admission health, with Critical alerts for failures.
 - After upgrade, `finding-stream anonymize --actions` accepts admission previews and hourly summaries while refusing malformed summaries and identity leaks. Joined bundles remain readable by the replay tool.
-- After upgrade, `finding-stream compare` reads the anonymized outputs of one joined run and reports which legacy automatic blocks the admission preview matched, which a designed refusal explains and which stay unexplained, with Invalid and queue overflow totals. It changes no host settings.
-- From the first start after upgrade, every host with `auto_response.enabled` previews its selected responses under `auto_response.max_blocks_per_hour`, leaving existing blocking unchanged. Status, findings history, hourly decision summaries and a handoff latency metric show the preview, including refusals during outages and shutdown; admission diagnostics warn only on failures, gap previews retry failed history writes and stay out of alert channels, and a stopped preview raises a Warning.
+- `finding-stream compare` now reports which legacy automatic blocks the admission preview matched, which a designed refusal explains and which stay unexplained.
+- Every host with automatic response enabled now previews its selected responses under the hourly block ceiling, leaving existing blocking unchanged, and status and findings history show the preview.
+
+### Removed
+
+- The daemon no longer rewrites the upgrade helper script on every start; the package and the release archive install it.
+- Unused scan-interval, webhook and relay settings are gone from the config, dashboard and docs. Old config files still load, and the validator names each key to delete.
 
 ### Fixed
 
-- The download-and-pipe and shell startup file signatures no longer raise critical alerts when a download is piped into a checksum tool or another program whose name only starts like a shell, including names with punctuation. Existing files are judged this way at their next scan, and no setting is involved.
-- Scheduled scans no longer repeat an address block or challenge when the finding is dispatched; a block that failed during the scan is retried at the next blocking cycle instead, and fresh observations still run. It applies at upgrade; `auto_response.block_ips` and `challenge.enabled` still control the responses.
+- Bot range feed updates no longer hang when a feed host accepts the connection and never answers.
+- The email quarantine sweep now reports entries it could not delete instead of counting the sweep as clean.
+- API writes from a browser origin listed in the allowed origins now pass the browser's preflight check instead of being refused.
+- Settings saved from the dashboard now reach the live thresholds, whitelists and forward guard without a restart or reload.
+- The download-and-pipe and shell startup signatures no longer raise critical alerts when a download is piped into a checksum tool or another program whose name only starts like a shell.
+- Scheduled scans no longer repeat an address block or challenge for a finding already dispatched; a block that failed during the scan is retried at the next blocking cycle.
 - The email forward guard now holds matching mail instead of leaving it stuck in the queue.
 - Directory-based phishing alerts now respect excluded pages and raise fewer false alarms.
-- A malicious handler mapping in an `.htaccess` is now removed by the automatic cleaner at deep scans instead of the whole file going to quarantine, which also took the site's other rules with it, and a finding with nothing to remove, such as a retained security-plugin prelude, no longer spends automatic response capacity. Hosts that relied on `auto_response.quarantine_files` for this finding need `auto_response.clean_htaccess` on to keep an automatic response; existing findings are handled at the next deep scan, not by realtime detection.
-- The deep phishing scan no longer reads file metadata for names none of its checks can judge, and it rules out PHP files with no form or submitted-credential code before analyzing them, which shortens the run that timed out on large hosts. Findings are unchanged and no setting is involved.
+- The automatic cleaner now removes a malicious handler mapping from an `.htaccess` instead of quarantining the whole file. Hosts that relied on quarantine for this finding need the cleaner switched on.
+- The deep phishing scan skips files none of its checks can judge, which shortens the run that timed out on large hosts.
 
 ## [4.2.0] - 2026-10-04
 

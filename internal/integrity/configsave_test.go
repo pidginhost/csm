@@ -94,6 +94,10 @@ func TestSignConfigFilePreservingFollowsConfigSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
+	original, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	configHash, _, err := SignConfigFilePreserving(link, "", "sha256:newbin")
 	if err != nil {
@@ -115,6 +119,10 @@ func TestSignConfigFilePreservingFollowsConfigSymlink(t *testing.T) {
 	}
 	if !strings.Contains(string(final), "binary_hash: sha256:newbin") {
 		t.Fatalf("target config was not signed through symlink:\n%s", final)
+	}
+	backup, err := os.ReadFile(target + ".bak")
+	if err != nil || string(backup) != string(original) {
+		t.Fatalf("backup must be beside the resolved config: %v", err)
 	}
 }
 
@@ -178,5 +186,83 @@ func TestSignAndSavePreservingRejectsDrift(t *testing.T) {
 	unchanged, _ := os.ReadFile(path)
 	if string(unchanged) != "hostname: a\n" {
 		t.Errorf("file touched despite drift: %q", unchanged)
+	}
+}
+
+// Every save keeps the previous file next to it, so a bad edit from the UI,
+// a rehash or the installer can be put back by hand.
+func TestSignAndSavePreservingKeepsPreviousFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "csm.yaml")
+	original := []byte("hostname: example.com\nthresholds:\n  mail_queue_warn: 500\nintegrity:\n  binary_hash: \"sha256:stale\"\n  config_hash: \"sha256:stale\"\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	save := func(value int) {
+		t.Helper()
+		current, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		edited, err := config.YAMLEdit(current, []config.YAMLChange{{Path: []string{"thresholds", "mail_queue_warn"}, Value: value}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		clone, err := config.LoadBytes(edited)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clone.ConfigFile = path
+		if err := SignAndSavePreserving(path, "", edited, clone, "sha256:binary"); err != nil {
+			t.Fatalf("save: %v", err)
+		}
+	}
+
+	save(600)
+	backup, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("no backup after the first save: %v", err)
+	}
+	if string(backup) != string(original) {
+		t.Fatalf("backup = %q, want the file as it was before the save", backup)
+	}
+	info, err := os.Stat(path + ".bak")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("backup mode = %o, want 600", info.Mode().Perm())
+	}
+
+	afterFirst, _ := os.ReadFile(path)
+	save(700)
+	backup, _ = os.ReadFile(path + ".bak")
+	if string(backup) != string(afterFirst) {
+		t.Fatal("second save did not replace the backup with the previous version")
+	}
+	save(700)
+	unchangedBackup, err := os.ReadFile(path + ".bak")
+	if err != nil || string(unchangedBackup) != string(backup) {
+		t.Fatalf("unchanged save replaced the previous backup: %v", err)
+	}
+}
+
+func TestSignAndSavePreservingFirstWriteNeedsNoBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	data := []byte("hostname: acme.example\nintegrity:\n  binary_hash: ''\n  config_hash: ''\n")
+	cfg, err := config.LoadBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConfigFile = path
+	if err = SignAndSavePreserving(path, "", data, cfg, "sha256:test"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(path)
+	if err != nil || loaded.Hostname != "acme.example" {
+		t.Fatalf("first write did not produce a loadable config: %v", err)
+	}
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("first write created a backup: %v", err)
 	}
 }

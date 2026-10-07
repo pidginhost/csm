@@ -228,6 +228,7 @@ func (q *Quarantine) CleanExpired(maxAge time.Duration) (int, error) {
 	}
 
 	cleaned := 0
+	var firstErr error
 	cutoff := time.Now().Add(-maxAge)
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -238,11 +239,19 @@ func (q *Quarantine) CleanExpired(maxAge time.Duration) (int, error) {
 			continue
 		}
 		if meta.QuarantinedAt.Before(cutoff) {
-			os.RemoveAll(filepath.Join(q.baseDir, entry.Name()))
+			// Keep sweeping past a stuck entry, but report it: a silent
+			// failure here leaves the quarantine growing while the sweep
+			// claims success.
+			if err := os.RemoveAll(filepath.Join(q.baseDir, entry.Name())); err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("removing expired entry %s: %w", entry.Name(), err)
+				}
+				continue
+			}
 			cleaned++
 		}
 	}
-	return cleaned, nil
+	return cleaned, firstErr
 }
 
 func (q *Quarantine) readMetadata(msgID string) (*QuarantineMetadata, error) {

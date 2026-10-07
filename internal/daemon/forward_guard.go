@@ -6,6 +6,7 @@ import (
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/mailfwd/adapter"
 	"github.com/pidginhost/csm/internal/mailfwd/guard"
+	"github.com/pidginhost/csm/internal/mailfwd/quarantine"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -56,8 +57,11 @@ func (d *Daemon) reconcileForwardGuard() {
 	}
 }
 
+// forwardQuarantineDir is a var so tests can prune a temporary Maildir.
+var forwardQuarantineDir = adapter.QuarantineDir
+
 // forwardGuardRefresher periodically refreshes the bad-IP lookup file while the
-// guard is enforcing.
+// guard is enforcing and ages held copies out of the quarantine.
 func (d *Daemon) forwardGuardRefresher() {
 	defer d.wg.Done()
 	ticker := time.NewTicker(forwardGuardRefreshInterval)
@@ -71,6 +75,26 @@ func (d *Daemon) forwardGuardRefresher() {
 			if err := d.forwardGuardReconciler().RefreshBadIPs(fg); err != nil {
 				csmlog.Error("forward-guard bad-IP refresh failed", "err", err)
 			}
+			d.pruneForwardQuarantine()
 		}
+	}
+}
+
+// pruneForwardQuarantine deletes held forward copies older than
+// quarantine_retention_days. Copies held while the guard was on must still
+// age out after it is switched off, so only the retention value gates this;
+// 0 keeps everything.
+func (d *Daemon) pruneForwardQuarantine() {
+	days := d.currentCfg().EmailProtection.ForwardGuard.QuarantineRetentionDays
+	if days <= 0 {
+		return
+	}
+	removed, err := quarantine.New(forwardQuarantineDir).PruneOlderThan(time.Duration(days) * 24 * time.Hour)
+	if err != nil {
+		csmlog.Error("forward-guard quarantine prune failed", "err", err)
+		return
+	}
+	if removed > 0 {
+		csmlog.Info("forward-guard quarantine pruned", "removed", removed, "retention_days", days)
 	}
 }

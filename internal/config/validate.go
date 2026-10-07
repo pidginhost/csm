@@ -422,9 +422,6 @@ func Validate(cfg *Config) []ValidationResult {
 	if pr.AccountVolumePerHour < 0 || pr.AccountVolumePerHour > 5000 {
 		results = append(results, ValidationResult{"error", "email_protection.php_relay.account_volume_per_hour", fmt.Sprintf("account_volume_per_hour must be between 0 (auto-derive) and 5000, got %d", pr.AccountVolumePerHour)})
 	}
-	if pr.ReputationFailuresPer24h != 0 && (pr.ReputationFailuresPer24h < 1 || pr.ReputationFailuresPer24h > 50) {
-		results = append(results, ValidationResult{"error", "email_protection.php_relay.reputation_failures_per_24h", fmt.Sprintf("reputation_failures_per_24h must be between 1 and 50, got %d", pr.ReputationFailuresPer24h)})
-	}
 	if pr.FanoutDistinctScripts != 0 && (pr.FanoutDistinctScripts < 2 || pr.FanoutDistinctScripts > 20) {
 		results = append(results, ValidationResult{"error", "email_protection.php_relay.fanout_distinct_scripts", fmt.Sprintf("fanout_distinct_scripts must be between 2 and 20, got %d", pr.FanoutDistinctScripts)})
 	}
@@ -433,12 +430,6 @@ func Validate(cfg *Config) []ValidationResult {
 	}
 	if pr.FanoutWindowMin != 0 && (pr.FanoutWindowMin < 1 || pr.FanoutWindowMin > 60) {
 		results = append(results, ValidationResult{"error", "email_protection.php_relay.fanout_window_min", fmt.Sprintf("fanout_window_min must be between 1 and 60, got %d", pr.FanoutWindowMin)})
-	}
-	if pr.BaselineSigma != 0 && (pr.BaselineSigma < 2.0 || pr.BaselineSigma > 6.0) {
-		results = append(results, ValidationResult{"error", "email_protection.php_relay.baseline_sigma", fmt.Sprintf("baseline_sigma must be between 2.0 and 6.0, got %v", pr.BaselineSigma)})
-	}
-	if pr.BaselineObservationDays != 0 && (pr.BaselineObservationDays < 1 || pr.BaselineObservationDays > 30) {
-		results = append(results, ValidationResult{"error", "email_protection.php_relay.baseline_observation_days", fmt.Sprintf("baseline_observation_days must be between 1 and 30, got %d", pr.BaselineObservationDays)})
 	}
 
 	// --- AutoResponse.PHPRelay bounds ---
@@ -728,6 +719,10 @@ func hasEffectiveInfraIPs(cfg *Config) bool {
 // validateWarnings checks for non-fatal configuration issues.
 func validateWarnings(cfg *Config) []ValidationResult {
 	var results []ValidationResult
+
+	for _, key := range cfg.RemovedKeys {
+		results = append(results, ValidationResult{"warn", key, "this setting was removed and is ignored; delete it from the config"})
+	}
 
 	// GeoIP credentials set but auto_update explicitly false
 	if cfg.GeoIP.AccountID != "" && cfg.GeoIP.LicenseKey != "" {
@@ -1523,7 +1518,7 @@ func probeStatePath(path string) []ValidationResult {
 		return []ValidationResult{{"error", "state_path", fmt.Sprintf("directory not writable: %s", path)}}
 	}
 	f.Close()
-	os.Remove(probe)
+	_ = os.Remove(probe)
 
 	return []ValidationResult{{"ok", "state_path", path}}
 }

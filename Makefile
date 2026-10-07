@@ -1,4 +1,4 @@
-.PHONY: build build-yara build-linux build-all build-pam clean test lint sec vuln fmt fmt-check vet ci tools sync-embedded check-embedded check-fixtures bpf-gen
+.PHONY: build build-yara build-linux build-all build-pam clean test test-full lint sec vuln fmt fmt-check vet ci tools check-fixtures bpf-gen
 
 # Pinned tool versions -- bump deliberately, keep in sync with .gitlab-ci.yml
 GOLANGCI_LINT_VERSION := v2.13.2
@@ -37,13 +37,6 @@ export GOCACHE
 export GOMODCACHE
 export GOLANGCI_LINT_CACHE
 
-# sync-embedded copies scripts/deploy.sh into the embedded-configs directory
-# so the binary ships an up-to-date copy. The daemon rewrites /opt/csm/deploy.sh
-# on every startup from this embedded copy -- without this sync, operators see
-# their deploy.sh silently revert after the daemon restarts.
-sync-embedded:
-	@cp scripts/deploy.sh internal/daemon/configs/deploy.sh
-
 # bpf-gen regenerates bpf2go-emitted Go bindings from BPF C sources.
 # Needs clang + libbpf-devel locally. The CI builder image carries both.
 # Laptops without the toolchain can run inside the builder image:
@@ -51,27 +44,18 @@ sync-embedded:
 bpf-gen:
 	go generate ./internal/...
 
-# check-embedded verifies the embedded deploy.sh matches scripts/deploy.sh.
-# Run in CI to catch drift.
-check-embedded:
-	@if ! cmp -s scripts/deploy.sh internal/daemon/configs/deploy.sh; then \
-		echo "ERROR: internal/daemon/configs/deploy.sh is out of sync with scripts/deploy.sh"; \
-		echo "Run 'make sync-embedded' to fix."; \
-		exit 1; \
-	fi
-
 # Build native binary with YARA stubs.
-build: sync-embedded
+build:
 	go build $(GOBUILDTAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME) ./cmd/csm/
 
 # Build native binary with YARA-X. Requires libyara_x_capi and pkg-config.
-build-yara: sync-embedded
+build-yara:
 	CGO_LDFLAGS="$$(pkg-config --libs --static yara_x_capi)" \
 	go build -tags "yara $(GOTAGS)" -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME) ./cmd/csm/
 
 # Build Linux amd64 binary with YARA stubs. Production YARA-X Linux
 # artifacts are built by the glibc builder image in CI.
-build-linux: sync-embedded
+build-linux:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOBUILDTAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-amd64 ./cmd/csm/
 
 # Build all local stub targets.
@@ -106,6 +90,12 @@ endif
 test:
 	@mkdir -p $(TEST_TMPDIR)
 	TMPDIR=$(TEST_TMPDIR) go test -v -race -short ./...
+
+# test-full runs the default-tag suite the way the CI test job does: no
+# -short, fresh results, the CI package timeout.
+test-full:
+	@mkdir -p $(TEST_TMPDIR)
+	TMPDIR=$(TEST_TMPDIR) go test -race -count=1 -timeout=30m ./...
 
 # Run linter.
 #
@@ -142,13 +132,14 @@ fmt-check:
 	@test -z "$$(gofmt -l $(GOFILES))" || (echo "Files not formatted:" && gofmt -l $(GOFILES) && exit 1)
 
 # check-fixtures fails CI if any testdata or fixtures file contains a non-RFC-5737
-# IPv4 literal. Guards against unsanitised customer data leaking into the
-# repo (see internal/daemon/testdata/php_relay/SANITISE.md).
+# IPv4 literal, or if any repository file matches a pattern in the private
+# terms file named by CSM_PRIVATE_TERMS. Guards against unsanitised customer
+# data leaking into the repo (see internal/daemon/testdata/php_relay/SANITISE.md).
 check-fixtures:
 	scripts/check-fixtures.sh
 
 # Run all CI checks locally
-ci: check-embedded check-fixtures fmt-check vet lint sec vuln test build-linux
+ci: check-fixtures fmt-check vet lint sec vuln test build-linux
 
 # Install dev tools (versions pinned at top of Makefile)
 tools:

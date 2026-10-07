@@ -16,7 +16,7 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	_, err = tmpFile.WriteString("hostname: test\n")
 	if err != nil {
@@ -161,7 +161,7 @@ func TestChallengeListenAddrHonorsOperatorOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 	_, err = tmpFile.WriteString("challenge:\n  listen_addr: 0.0.0.0\n")
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +182,7 @@ func TestDomlogMaxAgeMinHonorsOperatorOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 	_, err = tmpFile.WriteString("thresholds:\n  domlog_max_age_min: 90\n")
 	if err != nil {
 		t.Fatal(err)
@@ -378,7 +378,7 @@ func TestLoadInvalidYAML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	_, _ = tmpFile.WriteString("invalid: [yaml: {{{\n")
 	tmpFile.Close()

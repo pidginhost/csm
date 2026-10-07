@@ -123,8 +123,88 @@ func webUITokenAllows(tok config.WebUIToken, want string) bool {
 	}
 }
 
+// credentialAttemptsPerMinute bounds credential guesses per client. Login
+// form submissions and failed bearer tokens share it: both guess the same
+// secrets, and the API budget of hundreds of requests a minute would let a
+// token be guessed at API speed.
+const credentialAttemptsPerMinute = 5
+
+// recentCredentialAttempts returns the client's attempts inside the last
+// minute. The caller holds loginMu.
+func (s *Server) recentCredentialAttempts(ip string, now time.Time) []time.Time {
+	var recent []time.Time
+	for _, t := range s.loginAttempts[ip] {
+		if now.Sub(t) < time.Minute {
+			recent = append(recent, t)
+		}
+	}
+	return recent
+}
+
+// takeCredentialAttempt records one attempt and reports whether the client
+// was still inside its budget. Check and record share one critical section so
+// concurrent guesses cannot overshoot it.
+func (s *Server) takeCredentialAttempt(ip string) bool {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	now := time.Now()
+	recent := s.recentCredentialAttempts(ip, now)
+	if len(recent) >= credentialAttemptsPerMinute {
+		return false
+	}
+	if _, tracked := s.loginAttempts[ip]; !tracked {
+		boundRateLimitMap(s.loginAttempts, now.Add(-time.Minute))
+	}
+	s.loginAttempts[ip] = append(recent, now)
+	return true
+}
+
+func carriesBearer(r *http.Request) bool {
+	return strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// refuseSpentBearer answers a request that presents a bearer token from a
+// client with no attempts left. It runs before the token is compared, so a
+// blocked client learns nothing from the response, right token or wrong.
+// The budget check, credential comparison and failed-attempt charge share a
+// critical section; otherwise concurrent requests can all pass the check.
+func (s *Server) refuseSpentBearer(w http.ResponseWriter, r *http.Request) bool {
+	if !carriesBearer(r) {
+		return false
+	}
+	ip := rateLimitKey(r.RemoteAddr)
+	s.loginMu.Lock()
+	now := time.Now()
+	recent := s.recentCredentialAttempts(ip, now)
+	spent := len(recent) >= credentialAttemptsPerMinute
+	if !spent {
+		_, known := s.bearerCredentialWithScope(r, "read")
+		// A valid credential outside its scope is not a guess, including
+		// the independently rotatable metrics credential on a UI route.
+		if !known && !s.metricsBearerMatches(r) {
+			if _, tracked := s.loginAttempts[ip]; !tracked {
+				boundRateLimitMap(s.loginAttempts, now.Add(-time.Minute))
+			}
+			s.loginAttempts[ip] = append(recent, now)
+		}
+	}
+	s.loginMu.Unlock()
+	if !spent {
+		return false
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeJSONError(w, "Too many failed token attempts", http.StatusTooManyRequests)
+	} else {
+		http.Error(w, "Too many failed token attempts", http.StatusTooManyRequests)
+	}
+	return true
+}
+
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.refuseSpentBearer(w, r) {
+			return
+		}
 		if tok, ok := s.cookieSessionCredential(r, "admin", sessionActivity(r)); ok {
 			next.ServeHTTP(w, withAuditActor(r, tok.Name, "browser"))
 			return
@@ -144,6 +224,9 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 
 func (s *Server) requireRead(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.refuseSpentBearer(w, r) {
+			return
+		}
 		if s.tokenHasScope(r, "read") {
 			if r.Method != http.MethodGet {
 				w.Header().Set("Allow", http.MethodGet)
@@ -196,6 +279,9 @@ func rateLimitKey(remoteAddr string) string {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet && s.refuseSpentBearer(w, r) {
+		return
+	}
 	// Redirect already-authenticated users to dashboard
 	if r.Method == http.MethodGet && s.isAuthenticated(r) {
 		http.Redirect(w, r, "/dashboard", http.StatusFound)
@@ -212,27 +298,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate limit: 5 attempts per minute per client (IPv4 address or IPv6 /64)
-	ip := rateLimitKey(r.RemoteAddr)
-	s.loginMu.Lock()
-	now := time.Now()
-	attempts := s.loginAttempts[ip]
-	var recent []time.Time
-	for _, t := range attempts {
-		if now.Sub(t) < time.Minute {
-			recent = append(recent, t)
-		}
-	}
-	if len(recent) >= 5 {
-		s.loginMu.Unlock()
+	// One credential budget per client (IPv4 address or IPv6 /64), shared
+	// with failed API tokens.
+	if !s.takeCredentialAttempt(rateLimitKey(r.RemoteAddr)) {
 		http.Error(w, "Too many login attempts", http.StatusTooManyRequests)
 		return
 	}
-	if _, tracked := s.loginAttempts[ip]; !tracked {
-		boundRateLimitMap(s.loginAttempts, now.Add(-time.Minute))
-	}
-	s.loginAttempts[ip] = append(recent, now)
-	s.loginMu.Unlock()
 
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := r.ParseForm(); err != nil {

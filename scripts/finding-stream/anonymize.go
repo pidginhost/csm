@@ -228,7 +228,7 @@ func (a *Anonymizer) learnAccount(name string) {
 
 // learnHost records the full hostname and, when its first label looks like
 // a machine name rather than a word (it carries a digit), that label as an
-// alias: "cp1" identifies the host as much as its full name does.
+// alias: "web1" identifies the host as much as its full name does.
 func (a *Anonymizer) learnHost(name string) {
 	if name == "" {
 		return
@@ -363,7 +363,7 @@ func (a *Anonymizer) token(core string) string {
 
 // labelBounds returns the offsets at which a label of tok starts or ends:
 // the token edges and every dot or hyphen. A learned name inside a longer
-// token ("example.com-ssl", "cluster6.log", "1.2.3.4-5.6.7.8") spans two of
+// token ("example.com-ssl", "host3.log", "1.2.3.4-5.6.7.8") spans two of
 // them.
 func labelBounds(tok string) []int {
 	bounds := []int{0}

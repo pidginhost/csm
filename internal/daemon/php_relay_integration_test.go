@@ -14,7 +14,7 @@ import (
 )
 
 // TestEndToEnd_SpoolFlowFiresAndAutoFreezeRuns wires the entire Stage 1
-// pipeline against a tempdir spool and asserts the occonsultingcy
+// pipeline against a tempdir spool and asserts the acmeagency
 // fixture pattern produces a Path 1 finding and a (dry-run) AutoFreeze.
 func TestEndToEnd_SpoolFlowFiresAndAutoFreezeRuns(t *testing.T) {
 	spool := t.TempDir()

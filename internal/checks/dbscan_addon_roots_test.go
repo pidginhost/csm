@@ -56,7 +56,7 @@ func TestWPConfigPaths_IncludesAddonDomainRoots(t *testing.T) {
 	osFS = &mockOSGlobRoots{files: []string{
 		"/home/alice/public_html/wp-config.php",
 		"/home/alice/shop.example.com/wp-config.php",
-		"/home/bob/karmaboutique.ro/wp-config.php",
+		"/home/bob/acmeboutique.example/wp-config.php",
 	}}
 	t.Cleanup(func() { osFS = old })
 
@@ -64,7 +64,7 @@ func TestWPConfigPaths_IncludesAddonDomainRoots(t *testing.T) {
 	want := []string{
 		"/home/alice/public_html/wp-config.php",
 		"/home/alice/shop.example.com/wp-config.php",
-		"/home/bob/karmaboutique.ro/wp-config.php",
+		"/home/bob/acmeboutique.example/wp-config.php",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("wp-config paths = %v, want %v", got, want)

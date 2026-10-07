@@ -55,7 +55,7 @@ func TestSuccessfulAuthFindingsAreNotHighSeverity(t *testing.T) {
 // authentication succeeded.
 func TestSuccessfulFTPLoginIsNotHighSeverity(t *testing.T) {
 	cfg := &config.Config{}
-	line := `Sep 10 11:30:46 cp1 pure-ftpd[281309]: (?@198.51.100.11) [INFO] alice@example.com is now logged in`
+	line := `Sep 10 11:30:46 web1 pure-ftpd[281309]: (?@198.51.100.11) [INFO] alice@example.com is now logged in`
 
 	var got *alert.Finding
 	for _, f := range parseFTPLogLine(line, cfg) {
@@ -76,7 +76,7 @@ func TestSuccessfulFTPLoginIsNotHighSeverity(t *testing.T) {
 // change would trade a false positive for a blind spot.
 func TestFailedFTPAuthKeepsItsSeverity(t *testing.T) {
 	cfg := &config.Config{}
-	line := `Sep 10 11:30:46 cp1 pure-ftpd[281309]: (?@198.51.100.12) [WARNING] Authentication failed for user [alice]`
+	line := `Sep 10 11:30:46 web1 pure-ftpd[281309]: (?@198.51.100.12) [WARNING] Authentication failed for user [alice]`
 
 	for _, f := range parseFTPLogLine(line, cfg) {
 		if f.Check == "ftp_auth_failure_realtime" {

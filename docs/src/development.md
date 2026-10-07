@@ -43,8 +43,9 @@ go test -race -timeout=30m -covermode=atomic -coverprofile=coverage.out -coverpk
 ```
 
 `make test` and the test step of `make ci` use `-short` for local iteration;
-they do not reproduce the full CI suite. Neither default command tests the
-shipped optional backends. The additional required production job runs:
+they do not reproduce the full CI suite. `make test-full` runs the default-tag
+suite with the CI flags (no `-short`, fresh results, the 30-minute package
+timeout). Neither default command tests the shipped optional backends. The additional required production job runs:
 
 ```bash
 scripts/production-tests.sh portable
@@ -129,9 +130,10 @@ make lint                        # must pass before push
 make fmt-check                   # checks tracked Go files with the pinned formatter
 ```
 
-`make lint` uses repo-local cache directories under `.cache/` and a five-minute
-timeout, matching `.golangci.yml` and CI. Install the pinned tools with
-`make tools`; golangci-lint is 2.11.4. It lints the Linux build, so a macOS
+`make lint` uses repo-local cache directories under `.cache/` and the timeout
+set in `.golangci.yml`, the same one CI uses. Install the pinned tools with
+`make tools`; the golangci-lint version is `GOLANGCI_LINT_VERSION` in the
+Makefile, and CI runs the same release. It lints the Linux build, so a macOS
 host checks the code that ships rather than reporting its linux-only callers
 as unused. Production-tag lint needs the Linux CGO libraries described in
 [production tests](production-tests.md).
@@ -589,6 +591,13 @@ Production tag selection, execution artifacts, and the required isolated kernel 
 It checks all tracked and unignored files under `testdata` and `fixtures`,
 including files without extensions. Scanner failures stop the check; reports
 identify the file and line without printing the suspected address. The
+same run scans every tracked and unignored file for private names when
+`CSM_PRIVATE_TERMS` (or `-terms`) names a file holding one case-insensitive
+regular expression per line. That file stays outside the repository: the
+GitLab job receives it as a file-type CI variable and fails without it
+(`-require-terms`), while a local run without one prints a skip notice. Reports
+name the file and line, never the matched text. Filenames are checked too;
+a matching filename is reported with its path redacted. The
 [fixture sanitisation rules](https://github.com/pidginhost/csm/blob/main/internal/daemon/testdata/php_relay/SANITISE.md)
 describe the additional manual privacy review.
 

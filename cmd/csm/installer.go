@@ -798,11 +798,7 @@ confd:
 thresholds:
   mail_queue_warn: 500
   mail_queue_crit: 2000
-  state_expiry_hours: 24
   deep_scan_interval_min: 60
-  wp_core_check_interval_min: 60
-  webshell_scan_interval_min: 30
-  filesystem_scan_interval_min: 30
   exposed_file_scan_depth: 2
   brute_force_window: 5000
   domlog_max_files: 500
@@ -1075,18 +1071,20 @@ func deploySystemdTimer() error {
 	// Clean up obsolete units from 2.8.x installs: the daemon now schedules
 	// critical/deep tier scans internally, so these timers would double-run
 	// the scanners if left enabled across an upgrade.
+	// Best effort: these units exist only on hosts upgraded from the timer
+	// era, and systemctl reports a missing unit as a failure.
 	for _, name := range []string{"csm-critical.timer", "csm-critical.service", "csm-deep.timer", "csm-deep.service"} {
 		// #nosec G204 -- systemctl hardcoded; `name` iterates a literal slice.
-		exec.Command("systemctl", "stop", name).Run()
+		_ = exec.Command("systemctl", "stop", name).Run()
 		// #nosec G204 -- same.
-		exec.Command("systemctl", "disable", name).Run()
-		os.Remove("/etc/systemd/system/" + name)
+		_ = exec.Command("systemctl", "disable", name).Run()
+		_ = os.Remove("/etc/systemd/system/" + name)
 	}
 
 	// Remove even older single timer if it exists
-	exec.Command("systemctl", "stop", "csm.timer").Run()
-	exec.Command("systemctl", "disable", "csm.timer").Run()
-	os.Remove("/etc/systemd/system/csm.timer")
+	_ = exec.Command("systemctl", "stop", "csm.timer").Run()
+	_ = exec.Command("systemctl", "disable", "csm.timer").Run()
+	_ = os.Remove("/etc/systemd/system/csm.timer")
 
 	// Deploy daemon service unit (the only unit CSM ships now). Directives
 	// this host's systemd rejects are left out rather than logged as
@@ -1718,7 +1716,9 @@ func (inst *Installer) DisablePHPShield() error {
 
 	iniGlob, _ := filepath.Glob("/opt/cpanel/ea-php*/root/etc/php.d/zzz_csm_shield.ini")
 	for _, p := range iniGlob {
-		os.Remove(p)
+		if err := os.Remove(p); err != nil {
+			fmt.Printf("Warning: could not remove %s: %v\n", p, err)
+		}
 	}
 
 	if err := inst.patchConfigPHPShield(false); err != nil {

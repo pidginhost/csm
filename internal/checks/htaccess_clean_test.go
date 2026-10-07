@@ -786,9 +786,9 @@ RewriteRule ^(.*)$ /seo-clean.php?orig=$1 [L]
 	}
 }
 
-// 2026-04-28 production FP: htaccess_errordocument_hijack fired on a
-// same-brand redirect ("ErrorDocument 404 https://floresgrup.ro" from
-// /home/flores/public_html/.htaccess). Custom 404 redirects to the
+// Production FP: htaccess_errordocument_hijack fired on a
+// same-brand redirect ("ErrorDocument 404 https://acmegroup.example" from
+// /home/acme/public_html/.htaccess). Custom 404 redirects to the
 // site's own homepage are extremely common and not malicious; the
 // detector previously flagged any external-URL ErrorDocument target
 // regardless of host.
@@ -805,8 +805,8 @@ RewriteRule ^(.*)$ /seo-clean.php?orig=$1 [L]
 
 func TestDetectorErrorDocumentHijack_SameBrandSubstring(t *testing.T) {
 	dir := t.TempDir()
-	body := "ErrorDocument 404 https://floresgrup.ro\n"
-	full := filepath.Join(dir, "home", "flores", "public_html", ".htaccess")
+	body := "ErrorDocument 404 https://acmegroup.example\n"
+	full := filepath.Join(dir, "home", "acme", "public_html", ".htaccess")
 	if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -815,7 +815,7 @@ func TestDetectorErrorDocumentHijack_SameBrandSubstring(t *testing.T) {
 	}
 	findings, _ := AuditHtaccessFile(full)
 	if countByCheck(findings, "htaccess_errordocument_hijack") != 0 {
-		t.Errorf("errordocument_hijack FP: matched same-brand redirect (account 'flores' substring of 'floresgrup.ro')")
+		t.Errorf("errordocument_hijack FP: matched same-brand redirect (account 'acme' substring of 'acmegroup.example')")
 	}
 }
 
@@ -859,8 +859,8 @@ func TestDetectorErrorDocumentHijack_SpamTLDAlwaysFires(t *testing.T) {
 	// Spam TLDs always fire even if the brand somehow matches: the
 	// TLD itself is the signal of compromise.
 	dir := t.TempDir()
-	body := "ErrorDocument 404 https://floresgrup.tk/landing\n"
-	full := filepath.Join(dir, "home", "flores", "public_html", ".htaccess")
+	body := "ErrorDocument 404 https://acmegroup.tk/landing\n"
+	full := filepath.Join(dir, "home", "acme", "public_html", ".htaccess")
 	if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
 		t.Fatal(err)
 	}

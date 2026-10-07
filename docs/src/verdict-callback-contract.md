@@ -31,7 +31,7 @@ secret is resolved once per request/response exchange: if
 static `hmac_secret` field. Request and response verification use the same
 key for that exchange. The value comes from the running process environment;
 editing an environment file requires a daemon restart, even if configuration
-is reloaded. See [credential rotation](src/credential-rotation.md).
+is reloaded. See [credential rotation](credential-rotation.md).
 
 CSM refuses to enable the callback without a non-empty `hmac_secret` or
 resolved `hmac_secret_env` value. Operators can set

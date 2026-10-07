@@ -10,7 +10,7 @@ import (
 )
 
 // Deleting spam posts does not remove the categories and tags they were filed
-// under, and those archives are public pages. On infiltratiizero.ro the
+// under, and those archives are public pages. On acmeplumbing.example the
 // homepage still rendered gambling links after every spam post was gone,
 // because 22 attacker-created terms survived -- 14 of them named after spam
 // URLs outright.

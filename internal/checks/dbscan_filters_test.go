@@ -271,7 +271,7 @@ func TestCountSpamMatches_AllKeywordsHaveBoundaries(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestHasMaliciousExternalScript_GoogleTagManager(t *testing.T) {
-	// Real production FP: lamicutu posts 17587/17588 content (sanitized).
+	// Real production FP: customer post content (sanitized).
 	content := `<script async src="https://www.googletagmanager.com/gtag/js?id=G-J2F8BWG8DF"></script>` +
 		`<script>window.dataLayer = window.dataLayer || []; function gtag(){dataLayer.push(arguments);}</script>`
 	if hasMaliciousExternalScript(content) {
@@ -280,7 +280,7 @@ func TestHasMaliciousExternalScript_GoogleTagManager(t *testing.T) {
 }
 
 func TestHasMaliciousExternalScript_GoogleMerchantBadge(t *testing.T) {
-	// Real production FP: depo24ro post 12696 content (sanitized).
+	// Real production FP: customer post content (sanitized).
 	content := `<script src="https://apis.google.com/js/platform.js?onload=renderBadge" async defer></script>`
 	if hasMaliciousExternalScript(content) {
 		t.Errorf("Google merchant rating badge embed must NOT flag as malicious")
@@ -451,7 +451,7 @@ func TestIsScannablePostType_DocumentedBehavior(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestHasMaliciousExternalScriptInPost_LegacyHTTPEmbedsPass(t *testing.T) {
-	// Real production FP: filmetaricom posts 275/312/316/320/323 contain
+	// Real production FP: acmefilms posts contain
 	// pre-TLS trilulilu.ro video embeds. post_modified is 2013. The
 	// post-context predicate must NOT flag these.
 	cases := []string{

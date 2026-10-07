@@ -8,7 +8,7 @@ import (
 )
 
 // XOR-constructed identifiers hide every literal a keyword rule looks for. The
-// live sample is WPCode snippet 4052 on infiltratiizero.ro (2026-07-27): 17KB
+// live sample is WPCode snippet 4052 on acmeplumbing.example: 17KB
 // of PHP whose constant and hook names are all built by XOR-ing two binary
 // string literals, so the words WP_CACHE, DONOTCACHEPAGE and
 // rest_send_nocache_headers never appear in the source at all.

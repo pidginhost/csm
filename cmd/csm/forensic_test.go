@@ -82,11 +82,11 @@ func TestListRecentMtimesSkipsPrivateMailAndCageFSDirs(t *testing.T) {
 func TestDiscoverForensicTargetsFindsNestedWordPressRoots(t *testing.T) {
 	root := t.TempDir()
 	configs := map[string]string{
-		"public_html/wp-config.php":                  "define('DB_NAME', 'alice_main');\n$table_prefix = 'wp_';\n",
-		"public_html/agroshop.ro/wp-config.php":      "define('DB_NAME', 'alice_nested');\n$table_prefix = 'shop_';\n",
-		"public_html/agroshop.ro/copy/wp-config.php": "define('DB_NAME', 'alice_nested');\n$table_prefix = 'other_';\n",
-		"mail/private/wp-config.php":                 "define('DB_NAME', 'leaked_mail');\n$table_prefix = 'mail_';\n",
-		".cagefs/private/wp-config.php":              "define('DB_NAME', 'leaked_cagefs');\n$table_prefix = 'cage_';\n",
+		"public_html/wp-config.php":                       "define('DB_NAME', 'alice_main');\n$table_prefix = 'wp_';\n",
+		"public_html/acmefarm.example/wp-config.php":      "define('DB_NAME', 'alice_nested');\n$table_prefix = 'shop_';\n",
+		"public_html/acmefarm.example/copy/wp-config.php": "define('DB_NAME', 'alice_nested');\n$table_prefix = 'other_';\n",
+		"mail/private/wp-config.php":                      "define('DB_NAME', 'leaked_mail');\n$table_prefix = 'mail_';\n",
+		".cagefs/private/wp-config.php":                   "define('DB_NAME', 'leaked_cagefs');\n$table_prefix = 'cage_';\n",
 	}
 	for rel, body := range configs {
 		path := filepath.Join(root, rel)
@@ -111,7 +111,7 @@ func TestDiscoverForensicTargetsFindsNestedWordPressRoots(t *testing.T) {
 	if got["alice_nested"] != "shop_" {
 		t.Fatalf("nested install missing from targets: %v", targets)
 	}
-	if paths["alice_nested"] != filepath.Join(root, "public_html/agroshop.ro/wp-config.php") {
+	if paths["alice_nested"] != filepath.Join(root, "public_html/acmefarm.example/wp-config.php") {
 		t.Fatalf("nested install config path = %q", paths["alice_nested"])
 	}
 	for _, skipped := range []string{"leaked_mail", "leaked_cagefs"} {

@@ -37,7 +37,7 @@ func TestMailFilterFindingsAttributeByPath(t *testing.T) {
 	withTestStore(t)
 	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 	files := map[string]string{
-		"/home/alice/etc/example.com/aura/filter":    filterAuraStealth,
+		"/home/alice/etc/example.com/admin/filter":   filterStealthForward,
 		"/home/alice/etc/example.com/office/filter":  filterBlackholeFixture,
 		"/home/alice/etc/example.com/sales/filter":   filterPipeFixture,
 		"/home/alice/etc/example.com/support/filter": filterForwardFixture,
@@ -45,7 +45,7 @@ func TestMailFilterFindingsAttributeByPath(t *testing.T) {
 	// A plain external forwarder is reported only when its file is new
 	// relative to the baseline, so it appears on the second pass only.
 	paths := []string{
-		"/home/alice/etc/example.com/aura/filter",
+		"/home/alice/etc/example.com/admin/filter",
 		"/home/alice/etc/example.com/office/filter",
 		"/home/alice/etc/example.com/sales/filter",
 	}

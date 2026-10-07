@@ -100,7 +100,7 @@ func NewPAMListener(cfg *config.Config, alertCh chan<- alert.Finding) (*PAMListe
 	}
 
 	// Remove stale socket
-	os.Remove(pamSocketPath)
+	_ = os.Remove(pamSocketPath)
 
 	listener, err := net.Listen("unix", pamSocketPath)
 	if err != nil {
@@ -194,7 +194,7 @@ func (p *PAMListener) Run(stopCh <-chan struct{}) {
 // Stop closes the listener and removes the socket file.
 func (p *PAMListener) Stop() {
 	_ = p.listener.Close()
-	os.Remove(pamSocketPath)
+	_ = os.Remove(pamSocketPath)
 }
 
 func (p *PAMListener) handleConnection(conn net.Conn) {

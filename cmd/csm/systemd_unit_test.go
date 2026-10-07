@@ -67,7 +67,6 @@ func TestSystemdServiceUnitKeepsDaemonRuntimeAccess(t *testing.T) {
 		"/etc/csm",
 		"/opt/csm/quarantine",
 		"/opt/csm/rules",
-		"-/opt/csm/deploy.sh",
 		"-/home",
 		"/tmp",
 		"/var/tmp",

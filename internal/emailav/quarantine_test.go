@@ -408,3 +408,35 @@ func TestValidateReleaseSpoolDirAcceptsRealDirEvenWhenSomeAllowedMissing(t *test
 		t.Errorf("validateReleaseSpoolDir returned %q, want resolved %q", got, resolved)
 	}
 }
+
+// An expired entry that cannot be removed must be reported, or the quarantine
+// grows forever while the sweep claims success.
+func TestCleanExpiredReportsEntriesItCouldNotRemove(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	base := t.TempDir()
+	q := NewQuarantine(base)
+	id := "stuck"
+	dir := filepath.Join(base, id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	meta := QuarantineMetadata{QuarantinedAt: time.Now().Add(-48 * time.Hour)}
+	raw, _ := json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(dir, "metadata.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	cleaned, err := q.CleanExpired(24 * time.Hour)
+	if err == nil {
+		t.Fatal("CleanExpired returned no error for an entry it could not remove")
+	}
+	if cleaned != 0 {
+		t.Fatalf("cleaned = %d, want 0", cleaned)
+	}
+}

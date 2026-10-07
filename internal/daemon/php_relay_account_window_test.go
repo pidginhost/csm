@@ -92,7 +92,7 @@ func TestParsePHPRelayAccountVolume_FiresOnEffectiveLimit(t *testing.T) {
 	eng := newEvaluator(nil, nil, pacct, cfg, nil)
 	eng.SetEffectiveAccountLimit(5)
 
-	line := "2026-04-29 12:00:01 1abc-DEF <= info@occonsultingcy.com U=exampleuser ID=1168 B=redirect_resolver"
+	line := "2026-04-29 12:00:01 1abc-DEF <= info@acmeagency.example U=exampleuser ID=1168 B=redirect_resolver"
 
 	var findings []alert.Finding
 	for i := 0; i < 6; i++ {

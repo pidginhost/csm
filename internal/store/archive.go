@@ -144,7 +144,7 @@ func (db *DB) Export(opts ExportOptions) (*ExportResult, error) {
 		return nil, fmt.Errorf("creating bbolt snapshot temp: %w", err)
 	}
 	snapPath := snap.Name()
-	defer os.Remove(snapPath)
+	defer func() { _ = os.Remove(snapPath) }()
 
 	err = db.bolt.View(func(tx *bolt.Tx) error {
 		_, werr := tx.WriteTo(snap)
@@ -339,7 +339,7 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating staging dir: %w", err)
 	}
-	defer os.RemoveAll(stage)
+	defer func() { _ = os.RemoveAll(stage) }()
 
 	stagedBbolt := ""
 	stagedState := []string{}

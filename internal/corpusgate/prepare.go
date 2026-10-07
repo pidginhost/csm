@@ -122,7 +122,7 @@ func download(ctx context.Context, address, destination string) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(file.Name())
+	defer func() { _ = os.Remove(file.Name()) }()
 	n, copyErr := io.Copy(file, io.LimitReader(response.Body, maxArchive+1))
 	closeErr := file.Close()
 	if copyErr != nil {

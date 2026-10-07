@@ -12,11 +12,11 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// The dovecot/Roundcube sieve script that let aura@lifecont.ro be intercepted
+// The dovecot/Roundcube sieve script that let alice@acmeacct.example be intercepted
 // for a year: forward every message to an external dropbox while :copy keeps a
 // local copy so the victim never notices. This is the active exfil path that
 // the Exim-filter-only audit missed.
-const sieveAuraStealth = `require ["copy"];
+const sieveStealthForward = `require ["copy"];
 # rule:[Forwarding]
 if true
 {
@@ -31,8 +31,8 @@ func scoreSieve(t *testing.T, content string, mb filterMailbox, localDomains map
 }
 
 func TestParseSieveRedirectCopyIsStealthExfil(t *testing.T) {
-	mb := filterMailbox{localPart: "aura", domain: "lifecont.ro"}
-	got := scoreSieve(t, sieveAuraStealth, mb, map[string]bool{"lifecont.ro": true}, nil)
+	mb := filterMailbox{localPart: "alice", domain: "acmeacct.example"}
+	got := scoreSieve(t, sieveStealthForward, mb, map[string]bool{"acmeacct.example": true}, nil)
 	if len(got) != 1 {
 		t.Fatalf("len(findings) = %d, want 1: %+v", len(got), got)
 	}
@@ -181,7 +181,7 @@ func TestParseSieveRedirectDiscardHidesLocalCopy(t *testing.T) {
 	discard;
 }
 `
-	mb := filterMailbox{localPart: "aura", domain: "example.com"}
+	mb := filterMailbox{localPart: "alice", domain: "example.com"}
 	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil)
 	if len(got) != 1 || got[0].check != "email_filter_exfil" || got[0].severity != alert.Critical {
 		t.Fatalf("findings = %+v, want one email_filter_exfil/Critical", got)
@@ -192,7 +192,7 @@ func TestParseSieveRedirectDiscardHidesLocalCopy(t *testing.T) {
 }
 
 func TestParseSieveUnconditionalDiscardIsBlackhole(t *testing.T) {
-	mb := filterMailbox{localPart: "aura", domain: "example.com"}
+	mb := filterMailbox{localPart: "alice", domain: "example.com"}
 	got := scoreSieve(t, `if true { discard; }`, mb, map[string]bool{"example.com": true}, nil)
 	if len(got) != 1 || got[0].check != "email_filter_blackhole" || got[0].severity != alert.High {
 		t.Fatalf("unconditional discard findings = %+v, want one High blackhole", got)
@@ -293,12 +293,12 @@ func TestParseSieveInvalidFileintoDoesNotInventLocalCopy(t *testing.T) {
 }
 
 func TestParseSieveSameDomainRedirectIgnored(t *testing.T) {
-	// contact@franchisebucharest.com -> florin@franchisebucharest.com: a legit
+	// contact@acmefranchise.example -> partner@acmefranchise.example: a legit
 	// same-domain copy-forward, not an external exfil.
 	body := `# rule:[Forwarding]
 if true
 {
-	redirect :copy "florin@example.com";
+	redirect :copy "partner@example.com";
 }
 `
 	mb := filterMailbox{localPart: "contact", domain: "example.com"}
@@ -309,7 +309,7 @@ if true
 }
 
 func TestParseSieveSameDomainNamedRedirectIgnored(t *testing.T) {
-	body := `if true { redirect :copy "Local Partner <florin@example.com>"; }`
+	body := `if true { redirect :copy "Local Partner <partner@example.com>"; }`
 	mb := filterMailbox{localPart: "contact", domain: "example.com"}
 	got := scoreSieve(t, body, mb, map[string]bool{"example.com": true}, nil)
 	if len(got) != 0 {
@@ -441,9 +441,9 @@ func TestMailboxFromSievePath(t *testing.T) {
 		path string
 		mb   filterMailbox
 	}{
-		{"/home/u/mail/example.com/aura/sieve/roundcube.sieve", filterMailbox{localPart: "aura", domain: "example.com"}},
-		{"/home/u/mail/example.com/aura/.dovecot.sieve", filterMailbox{localPart: "aura", domain: "example.com"}},
-		{"/home/mail/mail/example.com/aura/sieve/roundcube.sieve", filterMailbox{localPart: "aura", domain: "example.com"}},
+		{"/home/u/mail/example.com/alice/sieve/roundcube.sieve", filterMailbox{localPart: "alice", domain: "example.com"}},
+		{"/home/u/mail/example.com/alice/.dovecot.sieve", filterMailbox{localPart: "alice", domain: "example.com"}},
+		{"/home/mail/mail/example.com/alice/sieve/roundcube.sieve", filterMailbox{localPart: "alice", domain: "example.com"}},
 	}
 	for _, tt := range tests {
 		if got := mailboxFromSievePath(tt.path); got != tt.mb {
@@ -458,7 +458,7 @@ func TestMailboxFromSievePath(t *testing.T) {
 func TestCheckMailFiltersFlagsSieveStealthOnFirstScan(t *testing.T) {
 	withTestStore(t)
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
-	sievePath := "/home/lifecontro/mail/lifecont.ro/aura/sieve/roundcube.sieve"
+	sievePath := "/home/acmeacct/mail/acmeacct.example/alice/sieve/roundcube.sieve"
 
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
@@ -471,9 +471,9 @@ func TestCheckMailFiltersFlagsSieveStealthOnFirstScan(t *testing.T) {
 		readFile: func(name string) ([]byte, error) {
 			switch name {
 			case "/etc/localdomains":
-				return []byte("lifecont.ro\n"), nil
+				return []byte("acmeacct.example\n"), nil
 			case sievePath:
-				return []byte(sieveAuraStealth), nil
+				return []byte(sieveStealthForward), nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -491,8 +491,8 @@ func TestCheckMailFiltersFlagsSieveStealthOnFirstScan(t *testing.T) {
 	if f.Check != "email_filter_exfil" || f.Severity != alert.Warning {
 		t.Fatalf("finding = %+v, want email_filter_exfil/Warning", f)
 	}
-	if f.Domain != "lifecont.ro" || f.Mailbox != "aura@lifecont.ro" {
-		t.Errorf("tenant fields = domain %q mailbox %q, want lifecont.ro / aura@lifecont.ro", f.Domain, f.Mailbox)
+	if f.Domain != "acmeacct.example" || f.Mailbox != "alice@acmeacct.example" {
+		t.Errorf("tenant fields = domain %q mailbox %q, want acmeacct.example / alice@acmeacct.example", f.Domain, f.Mailbox)
 	}
 	if f.FilePath != sievePath {
 		t.Errorf("FilePath = %q, want %q", f.FilePath, sievePath)
@@ -504,8 +504,8 @@ func TestCheckMailFiltersFlagsSieveStealthOnFirstScan(t *testing.T) {
 func TestCheckMailFiltersSkipsSymlinkDovecotSieve(t *testing.T) {
 	withTestStore(t)
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
-	scriptPath := "/home/lifecontro/mail/lifecont.ro/aura/sieve/roundcube.sieve"
-	activePath := "/home/lifecontro/mail/lifecont.ro/aura/.dovecot.sieve"
+	scriptPath := "/home/acmeacct/mail/acmeacct.example/alice/sieve/roundcube.sieve"
+	activePath := "/home/acmeacct/mail/acmeacct.example/alice/.dovecot.sieve"
 
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
@@ -533,9 +533,9 @@ func TestCheckMailFiltersSkipsSymlinkDovecotSieve(t *testing.T) {
 		readFile: func(name string) ([]byte, error) {
 			switch name {
 			case "/etc/localdomains":
-				return []byte("lifecont.ro\n"), nil
+				return []byte("acmeacct.example\n"), nil
 			case scriptPath, activePath:
-				return []byte(sieveAuraStealth), nil
+				return []byte(sieveStealthForward), nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -553,8 +553,8 @@ func TestCheckMailFiltersSkipsSymlinkDovecotSieve(t *testing.T) {
 func TestCheckMailFiltersDeduplicatesRegularDovecotSieveCopy(t *testing.T) {
 	withTestStore(t)
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
-	scriptPath := "/home/lifecontro/mail/lifecont.ro/aura/sieve/roundcube.sieve"
-	activePath := "/home/lifecontro/mail/lifecont.ro/aura/.dovecot.sieve"
+	scriptPath := "/home/acmeacct/mail/acmeacct.example/alice/sieve/roundcube.sieve"
+	activePath := "/home/acmeacct/mail/acmeacct.example/alice/.dovecot.sieve"
 
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
@@ -573,9 +573,9 @@ func TestCheckMailFiltersDeduplicatesRegularDovecotSieveCopy(t *testing.T) {
 		readFile: func(name string) ([]byte, error) {
 			switch name {
 			case "/etc/localdomains":
-				return []byte("lifecont.ro\n"), nil
+				return []byte("acmeacct.example\n"), nil
 			case scriptPath, activePath:
-				return []byte(sieveAuraStealth), nil
+				return []byte(sieveStealthForward), nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -629,7 +629,7 @@ func TestCheckMailFiltersSymlinkDoesNotConsumeFileCap(t *testing.T) {
 			case "/etc/localdomains":
 				return []byte("example.com\n"), nil
 			case scriptPath:
-				return []byte(sieveAuraStealth), nil
+				return []byte(sieveStealthForward), nil
 			case dormantPath:
 				return []byte("keep;\n"), nil
 			}
@@ -664,7 +664,7 @@ func TestCheckMailFiltersScansDovecotSieveOnLstatErrorOnce(t *testing.T) {
 			case "/etc/localdomains":
 				return []byte("example.com\n"), nil
 			case activePath:
-				return []byte(sieveAuraStealth), nil
+				return []byte(sieveStealthForward), nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -698,7 +698,7 @@ func TestCheckMailFiltersScansSymlinkToUnusualTarget(t *testing.T) {
 			case "/etc/localdomains":
 				return []byte("example.com\n"), nil
 			case activePath:
-				return []byte(sieveAuraStealth), nil
+				return []byte(sieveStealthForward), nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -744,7 +744,7 @@ func TestCheckMailFiltersDoesNotDedupCrossMailboxActiveSymlink(t *testing.T) {
 			case "/etc/localdomains":
 				return []byte("example.com\n"), nil
 			case scriptPath, activePath:
-				return []byte(sieveAuraStealth), nil
+				return []byte(sieveStealthForward), nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -833,7 +833,7 @@ func TestCheckMailFiltersScansStandaloneDovecotSieve(t *testing.T) {
 			case "/etc/localdomains":
 				return []byte("example.com\n"), nil
 			case activePath:
-				return []byte(sieveAuraStealth), nil
+				return []byte(sieveStealthForward), nil
 			}
 			return nil, os.ErrNotExist
 		},

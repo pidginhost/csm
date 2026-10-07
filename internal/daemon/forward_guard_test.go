@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 	"time"
@@ -120,5 +122,58 @@ func TestForwardGuardRefresherStops(t *testing.T) {
 	case <-waited:
 	case <-time.After(time.Second):
 		t.Fatal("forwardGuardRefresher returned without releasing wait group")
+	}
+}
+
+func seedForwardQuarantine(t *testing.T, retentionDays int) (old, fresh string) {
+	t.Helper()
+	dir := t.TempDir()
+	prev := forwardQuarantineDir
+	forwardQuarantineDir = dir
+	t.Cleanup(func() { forwardQuarantineDir = prev })
+	for _, sub := range []string{"new", "cur"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old = filepath.Join(dir, "cur", "old.eml")
+	fresh = filepath.Join(dir, "new", "fresh.eml")
+	for _, path := range []string{old, fresh} {
+		if err := os.WriteFile(path, []byte("X-CSM-Forwarder: a@example.com\n\nbody\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale := time.Now().Add(-3 * 24 * time.Hour)
+	if err := os.Chtimes(old, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	cfg.EmailProtection.ForwardGuard.QuarantineRetentionDays = retentionDays
+	newDaemonForReloadTest(t, cfg)
+	return old, fresh
+}
+
+func TestPruneForwardQuarantineRemovesCopiesPastRetention(t *testing.T) {
+	old, fresh := seedForwardQuarantine(t, 2)
+	d := &Daemon{}
+
+	d.pruneForwardQuarantine()
+
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("held copy older than the retention window still exists (err=%v)", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh held copy was removed: %v", err)
+	}
+}
+
+func TestPruneForwardQuarantineKeepsEverythingWithoutRetention(t *testing.T) {
+	old, _ := seedForwardQuarantine(t, 0)
+	d := &Daemon{}
+
+	d.pruneForwardQuarantine()
+
+	if _, err := os.Stat(old); err != nil {
+		t.Fatalf("retention 0 must keep held copies, got %v", err)
 	}
 }

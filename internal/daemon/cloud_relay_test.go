@@ -29,7 +29,7 @@ func gceSendLine(sender, ptr, ip string) string {
 		" H=" + ptr + " (helo.example) [" + ip + "]:44948 P=esmtpsa" +
 		" X=TLS1.3:TLS_AES_256_GCM_SHA384:256" +
 		" A=dovecot_plain:" + sender +
-		" S=12829 id=test@occonsultingcy.com" +
+		" S=12829 id=test@acmeagency.example" +
 		` T="cPanel Service Alert" for victim@example.com`
 }
 
@@ -64,7 +64,7 @@ func TestCloudRelay_SingleCloudSendDoesNotAlert(t *testing.T) {
 	cfg := cloudRelayTestConfig()
 
 	// One send from a cloud IP is not enough — legit VPS users exist.
-	line := gceSendLine("info@occonsultingcy.com", "204.118.26.34.bc.googleusercontent.com", "34.26.118.204")
+	line := gceSendLine("info@acmeagency.example", "204.118.26.34.bc.googleusercontent.com", "34.26.118.204")
 	findings := parseEximLogLine(line, cfg)
 	for _, f := range findings {
 		if f.Check == "email_cloud_relay_abuse" {
@@ -96,9 +96,9 @@ func TestCloudRelay_MultipleCloudIPsTriggersCritical(t *testing.T) {
 
 	// 3 sends from 3 distinct cloud IPs = compromised relay pattern.
 	lines := []string{
-		gceSendLine("info@occonsultingcy.com", "204.118.26.34.bc.googleusercontent.com", "34.26.118.204"),
-		gceSendLine("info@occonsultingcy.com", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
-		gceSendLine("info@occonsultingcy.com", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
+		gceSendLine("info@acmeagency.example", "204.118.26.34.bc.googleusercontent.com", "34.26.118.204"),
+		gceSendLine("info@acmeagency.example", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
+		gceSendLine("info@acmeagency.example", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
 	}
 
 	var critical alert_Finding
@@ -175,7 +175,7 @@ func TestCloudRelay_DedupOneCriticalPerUserPerWindow(t *testing.T) {
 
 	count := 0
 	for i := 0; i < 50; i++ {
-		line := gceSendLine("info@occonsultingcy.com", ptrs[i%len(ptrs)], ips[i%len(ips)])
+		line := gceSendLine("info@acmeagency.example", ptrs[i%len(ptrs)], ips[i%len(ips)])
 		for _, f := range parseEximLogLine(line, cfg) {
 			if f.Check == "email_cloud_relay_abuse" {
 				count++
@@ -190,12 +190,12 @@ func TestCloudRelay_DedupOneCriticalPerUserPerWindow(t *testing.T) {
 func TestCloudRelay_AllowlistSkips(t *testing.T) {
 	resetCloudRelayState()
 	cfg := cloudRelayTestConfig()
-	cfg.EmailProtection.HighVolumeSenders = []string{"info@occonsultingcy.com"}
+	cfg.EmailProtection.HighVolumeSenders = []string{"info@acmeagency.example"}
 
 	lines := []string{
-		gceSendLine("info@occonsultingcy.com", "204.118.26.34.bc.googleusercontent.com", "34.26.118.204"),
-		gceSendLine("info@occonsultingcy.com", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
-		gceSendLine("info@occonsultingcy.com", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
+		gceSendLine("info@acmeagency.example", "204.118.26.34.bc.googleusercontent.com", "34.26.118.204"),
+		gceSendLine("info@acmeagency.example", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
+		gceSendLine("info@acmeagency.example", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
 	}
 	for _, line := range lines {
 		for _, f := range parseEximLogLine(line, cfg) {
@@ -211,12 +211,12 @@ func TestCloudRelay_AllowUsersSkipsDetectorOnly(t *testing.T) {
 	cfg := cloudRelayTestConfig()
 	// Detector-scoped allowlist: HighVolumeSenders left empty so the rate
 	// detector (or anything else keying off it) still works for this user.
-	cfg.EmailProtection.CloudRelay.AllowUsers = []string{"office@madconsulting.ro"}
+	cfg.EmailProtection.CloudRelay.AllowUsers = []string{"office@acmeconsulting.example"}
 
 	lines := []string{
-		gceSendLine("office@madconsulting.ro", "168.135.246.35.bc.googleusercontent.com", "35.246.135.168"),
-		gceSendLine("office@madconsulting.ro", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
-		gceSendLine("office@madconsulting.ro", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
+		gceSendLine("office@acmeconsulting.example", "168.135.246.35.bc.googleusercontent.com", "35.246.135.168"),
+		gceSendLine("office@acmeconsulting.example", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
+		gceSendLine("office@acmeconsulting.example", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
 	}
 	for _, line := range lines {
 		for _, f := range parseEximLogLine(line, cfg) {
@@ -249,13 +249,13 @@ func TestCloudRelay_AllowUsersSkipsDetectorOnly(t *testing.T) {
 func TestCloudRelay_AllowDomainsCoversAllMailboxes(t *testing.T) {
 	resetCloudRelayState()
 	cfg := cloudRelayTestConfig()
-	cfg.EmailProtection.CloudRelay.AllowDomains = []string{"madconsulting.ro"}
+	cfg.EmailProtection.CloudRelay.AllowDomains = []string{"acmeconsulting.example"}
 
 	// Three different mailboxes under the allowed domain — none should fire.
 	lines := []string{
-		gceSendLine("office@madconsulting.ro", "168.135.246.35.bc.googleusercontent.com", "35.246.135.168"),
-		gceSendLine("steluta.ghelbereu@MADCONSULTING.RO", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
-		gceSendLine("amelia.savu@madconsulting.ro", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
+		gceSendLine("office@acmeconsulting.example", "168.135.246.35.bc.googleusercontent.com", "35.246.135.168"),
+		gceSendLine("jane.roe@ACMECONSULTING.EXAMPLE", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
+		gceSendLine("john.doe@acmeconsulting.example", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
 	}
 	for _, line := range lines {
 		for _, f := range parseEximLogLine(line, cfg) {
@@ -269,15 +269,15 @@ func TestCloudRelay_AllowDomainsCoversAllMailboxes(t *testing.T) {
 func TestCloudRelay_AllowedUserDoesNotPrimeOtherUsers(t *testing.T) {
 	resetCloudRelayState()
 	cfg := cloudRelayTestConfig()
-	cfg.EmailProtection.CloudRelay.AllowUsers = []string{"office@madconsulting.ro"}
+	cfg.EmailProtection.CloudRelay.AllowUsers = []string{"office@acmeconsulting.example"}
 
 	// Allowed user fires twice on cloud IPs — must NOT count toward any
 	// other user's window. Then a separate user does its own 3 sends from
 	// distinct cloud IPs and that one MUST fire on the third event, not
 	// earlier (proving the allowed mailbox didn't poison shared state).
 	allowed := []string{
-		gceSendLine("office@madconsulting.ro", "168.135.246.35.bc.googleusercontent.com", "35.246.135.168"),
-		gceSendLine("office@madconsulting.ro", "168.135.246.35.bc.googleusercontent.com", "35.246.135.168"),
+		gceSendLine("office@acmeconsulting.example", "168.135.246.35.bc.googleusercontent.com", "35.246.135.168"),
+		gceSendLine("office@acmeconsulting.example", "168.135.246.35.bc.googleusercontent.com", "35.246.135.168"),
 	}
 	for _, line := range allowed {
 		for _, f := range parseEximLogLine(line, cfg) {
@@ -315,11 +315,11 @@ func TestIsCloudRelayAllowed_Matching(t *testing.T) {
 	}{
 		{name: "empty user is never allowed", user: "", allowUsers: []string{"x@y.z"}, want: false},
 		{name: "no lists, no match", user: "a@b.c", want: false},
-		{name: "exact user match, mixed case", user: "Office@Madconsulting.RO", allowUsers: []string{"office@madconsulting.ro"}, want: true},
-		{name: "domain match, mixed case", user: "anyone@MadConsulting.ro", allowDomains: []string{"madconsulting.ro"}, want: true},
-		{name: "domain in users list does NOT match", user: "anyone@madconsulting.ro", allowUsers: []string{"madconsulting.ro"}, want: false},
-		{name: "user in domains list does NOT match", user: "anyone@madconsulting.ro", allowDomains: []string{"office@madconsulting.ro"}, want: false},
-		{name: "user without @ is not allowed", user: "noatsign", allowDomains: []string{"madconsulting.ro"}, want: false},
+		{name: "exact user match, mixed case", user: "Office@Acmeconsulting.EXAMPLE", allowUsers: []string{"office@acmeconsulting.example"}, want: true},
+		{name: "domain match, mixed case", user: "anyone@AcmeConsulting.example", allowDomains: []string{"acmeconsulting.example"}, want: true},
+		{name: "domain in users list does NOT match", user: "anyone@acmeconsulting.example", allowUsers: []string{"acmeconsulting.example"}, want: false},
+		{name: "user in domains list does NOT match", user: "anyone@acmeconsulting.example", allowDomains: []string{"office@acmeconsulting.example"}, want: false},
+		{name: "user without @ is not allowed", user: "noatsign", allowDomains: []string{"acmeconsulting.example"}, want: false},
 		{name: "trailing-@ user is not allowed", user: "broken@", allowDomains: []string{""}, want: false},
 	}
 	for _, tc := range cases {
@@ -341,7 +341,7 @@ func TestCloudRelay_VolumeBurstSingleIPTriggersCritical(t *testing.T) {
 	// bursts 18 sends in an hour to evade the multi-IP signal. Must still
 	// trigger via the high-volume threshold.
 	line := gceSendLine(
-		"info@wizard-design.com",
+		"info@acmedesign.example",
 		"ec2-13-38-71-129.eu-west-3.compute.amazonaws.com",
 		"13.38.71.129",
 	)
@@ -560,7 +560,7 @@ func TestCloudRelay_CoversMajorProviders(t *testing.T) {
 func TestExtractEximHostname(t *testing.T) {
 	cases := map[string]string{
 		// Real production format: "H=hostname (helo.something) [IP]:port"
-		`2026-04-22 14:55:43 1wFWBE-000000036n0-1PMK <= info@occonsultingcy.com H=204.118.26.34.bc.googleusercontent.com (occonsultingcy.com) [34.26.118.204]:47280 P=esmtpsa`: "204.118.26.34.bc.googleusercontent.com",
+		`2026-04-22 14:55:43 1wFWBE-000000036n0-1PMK <= info@acmeagency.example H=204.118.26.34.bc.googleusercontent.com (acmeagency.example) [34.26.118.204]:47280 P=esmtpsa`: "204.118.26.34.bc.googleusercontent.com",
 		// No HELO-in-parens:
 		`... <= user@dom H=smtp.example.org [203.0.113.5]:25 P=esmtp`: "smtp.example.org",
 		// Missing H=:

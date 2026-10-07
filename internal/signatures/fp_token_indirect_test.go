@@ -2,7 +2,7 @@ package signatures
 
 import "testing"
 
-// The 2026-07-20 filmetaricom shell gated exec behind a hardcoded token, but
+// The acmefilms shell gated exec behind a hardcoded token, but
 // routed the request value through an intermediate variable before comparing
 // it ($input_token = $_GET['t']; if ($token === $input_token)) and passed a
 // second request-derived variable to the sink. webshell_auth_token_gate keys on
@@ -23,7 +23,7 @@ func TestWebshellTokenGateIndirectDetectsRealShell(t *testing.T) {
 		"        $output = @shell_exec($cmd . ' 2>&1');\n" +
 		"    }\n}"
 	if !hasRule(scanner.ScanContent([]byte(realShell), ".php"), "webshell_token_gate_indirect") {
-		t.Error("webshell_token_gate_indirect missed the real filmetaricom token shell")
+		t.Error("webshell_token_gate_indirect missed the real acmefilms token shell")
 	}
 
 	variants := []struct{ name, content string }{

@@ -159,7 +159,7 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 					n, writeErr := tmpFile.Write(decoded)
 					closeErr := tmpFile.Close()
 					if writeErr != nil || closeErr != nil || n != len(decoded) {
-						os.Remove(tmpFile.Name())
+						_ = os.Remove(tmpFile.Name())
 						markPartial(result, "could not stage single-part attachment for scanning")
 					} else {
 						totalSize += int64(n)
@@ -575,7 +575,7 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 			n, err := io.Copy(tmpFile, limited)
 			closeErr := tmpFile.Close()
 			if closeErr != nil || (err != nil && err != bodyReader.err) {
-				os.Remove(tmpFile.Name())
+				_ = os.Remove(tmpFile.Name())
 				markPartial(result, "could not stage attachment for scanning")
 				continue // fail-open: skip this part
 			}
@@ -584,13 +584,13 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 				// must be scanned even though the rest of the part is lost.
 				markPartial(result, fmt.Sprintf("could not decode attachment %q: %v", filename, bodyReader.err))
 				if n == 0 {
-					os.Remove(tmpFile.Name())
+					_ = os.Remove(tmpFile.Name())
 					continue
 				}
 			}
 
 			if n > limits.MaxAttachmentSize {
-				os.Remove(tmpFile.Name())
+				_ = os.Remove(tmpFile.Name())
 				result.Partial = true
 				result.PartialReason = fmt.Sprintf("attachment %q exceeds max size %d", filename, limits.MaxAttachmentSize)
 				continue
@@ -598,7 +598,7 @@ func extractMultipartNested(r io.Reader, boundary string, limits Limits, result 
 
 			*totalSize += n
 			if *totalSize > limits.MaxExtractionSize {
-				os.Remove(tmpFile.Name())
+				_ = os.Remove(tmpFile.Name())
 				result.Partial = true
 				result.PartialReason = fmt.Sprintf("total extraction size exceeds %d bytes", limits.MaxExtractionSize)
 				return nil // stop extracting
@@ -693,7 +693,7 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 		rc.Close()
 
 		if err != nil || closeErr != nil || n > limits.MaxAttachmentSize {
-			os.Remove(tmpFile.Name())
+			_ = os.Remove(tmpFile.Name())
 			switch {
 			case n > limits.MaxAttachmentSize:
 				result.Partial = true
@@ -708,7 +708,7 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 
 		*totalSize += n
 		if *totalSize > limits.MaxExtractionSize {
-			os.Remove(tmpFile.Name())
+			_ = os.Remove(tmpFile.Name())
 			result.Partial = true
 			result.PartialReason = fmt.Sprintf("total extraction size exceeds %d bytes", limits.MaxExtractionSize)
 			return
@@ -768,7 +768,7 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 		closeErr := tmpFile.Close()
 
 		if err != nil || closeErr != nil || n > limits.MaxAttachmentSize {
-			os.Remove(tmpFile.Name())
+			_ = os.Remove(tmpFile.Name())
 			switch {
 			case n > limits.MaxAttachmentSize:
 				result.Partial = true
@@ -783,7 +783,7 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 
 		*totalSize += n
 		if *totalSize > limits.MaxExtractionSize {
-			os.Remove(tmpFile.Name())
+			_ = os.Remove(tmpFile.Name())
 			result.Partial = true
 			result.PartialReason = fmt.Sprintf("total extraction size exceeds %d bytes", limits.MaxExtractionSize)
 			return

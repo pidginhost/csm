@@ -1710,12 +1710,9 @@ func TestValidate_PHPRelayBounds(t *testing.T) {
 	cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin = 5
 	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
 	cfg.EmailProtection.PHPRelay.AccountVolumePerHour = 0 // auto-derive
-	cfg.EmailProtection.PHPRelay.ReputationFailuresPer24h = 3
 	cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3
 	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5
 	cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
-	cfg.EmailProtection.PHPRelay.BaselineSigma = 3.0
-	cfg.EmailProtection.PHPRelay.BaselineObservationDays = 7
 	cfg.EmailProtection.PHPRelay.PoliciesDir = t.TempDir()
 
 	res := Validate(cfg)
@@ -1760,13 +1757,6 @@ func TestValidate_PHPRelayBounds(t *testing.T) {
 	}
 	cfg.EmailProtection.PHPRelay.AccountVolumePerHour = 0 // reset to valid (auto-derive)
 
-	cfg.EmailProtection.PHPRelay.ReputationFailuresPer24h = 100
-	res = Validate(cfg)
-	if !hasErrorOnField(res, "email_protection.php_relay.reputation_failures_per_24h") {
-		t.Errorf("reputation_failures_per_24h=100 must be invalid (>50), got %+v", res)
-	}
-	cfg.EmailProtection.PHPRelay.ReputationFailuresPer24h = 3 // reset to valid
-
 	cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 50
 	res = Validate(cfg)
 	if !hasErrorOnField(res, "email_protection.php_relay.fanout_distinct_scripts") {
@@ -1785,25 +1775,6 @@ func TestValidate_PHPRelayBounds(t *testing.T) {
 		t.Errorf("fanout_distinct_recipients=0 must be valid (disabled), got %+v", res)
 	}
 	cfg.EmailProtection.PHPRelay.FanoutDistinctRecipients = 5 // reset to valid
-
-	cfg.EmailProtection.PHPRelay.BaselineSigma = 1.5
-	res = Validate(cfg)
-	if !hasErrorOnField(res, "email_protection.php_relay.baseline_sigma") {
-		t.Errorf("baseline_sigma=1.5 must be invalid (<2.0), got %+v", res)
-	}
-	cfg.EmailProtection.PHPRelay.BaselineSigma = 8.0
-	res = Validate(cfg)
-	if !hasErrorOnField(res, "email_protection.php_relay.baseline_sigma") {
-		t.Errorf("baseline_sigma=8.0 must be invalid (>6.0), got %+v", res)
-	}
-	cfg.EmailProtection.PHPRelay.BaselineSigma = 3.0 // reset to valid
-
-	cfg.EmailProtection.PHPRelay.BaselineObservationDays = 60
-	res = Validate(cfg)
-	if !hasErrorOnField(res, "email_protection.php_relay.baseline_observation_days") {
-		t.Errorf("baseline_observation_days=60 must be invalid (>30), got %+v", res)
-	}
-	cfg.EmailProtection.PHPRelay.BaselineObservationDays = 7 // reset to valid
 
 	cfg.AutoResponse.PHPRelay.MaxActionsPerMinute = 5000
 	res = Validate(cfg)

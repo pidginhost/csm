@@ -110,7 +110,7 @@ func (c *Cache) PersistChecksums(version, locale string, rawJSON []byte, checksu
 		return fmt.Errorf("writing temp file: %w", err)
 	}
 	if err := os.Rename(tmpPath, finalPath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("renaming to final: %w", err)
 	}
 	c.mu.Lock()

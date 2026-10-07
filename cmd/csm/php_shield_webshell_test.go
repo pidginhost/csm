@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// The galex fake-plugin webshell (2026-07-23) executed because the shield
+// A fake-plugin webshell executed because the shield
 // path-allowlisted cache directories and never inspected plugin/theme code.
 // These exceptions must be gone.
 func TestShieldDropsPathAllowlist(t *testing.T) {
@@ -72,7 +72,7 @@ func TestShieldBlocksDirectWebshellExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(base)
+	defer func() { _ = os.RemoveAll(base) }()
 	if base, err = filepath.Abs(base); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ require getenv('CSM_SHIELD_TEST_FILE');
 		blocked      bool
 		logged       bool
 	}{
-		{"exec_sink_shell", "wp-content/plugins/galex_x/cox.php",
+		{"exec_sink_shell", "wp-content/plugins/fake_x/cox.php",
 			"<?php if ($_REQUEST['px'] === 'k') { system($_REQUEST['c']); }", "", "", true, true},
 		{"exec_sink_exec", "wp-content/plugins/evil/exec.php",
 			"<?php function run() { exec($_GET['c']); } echo 'UNSAFE';", "", "", true, true},

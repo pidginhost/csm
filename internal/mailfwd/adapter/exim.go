@@ -40,12 +40,16 @@ type ForwardGuard interface {
 	RefreshBadIPs(badIPs []string) error
 }
 
+// QuarantineDir is the Maildir where the exim transport appends held forward
+// copies. The daemon prunes it and the web UI lists it.
+const QuarantineDir = "/var/lib/csm/forward_quarantine/held"
+
 // Default on-disk locations (overridable in tests).
 const (
 	defaultLocalConf     = "/etc/exim.conf.local"
 	defaultStateRoot     = "/var/lib/csm"
 	defaultBadIPsPath    = "/var/lib/csm/forward_guard/bad_ips"
-	defaultQuarantineDir = "/var/lib/csm/forward_quarantine/held"
+	defaultQuarantineDir = QuarantineDir
 	// transportUser delivers held copies. It must NOT be root: cPanel lists
 	// root on exim's never_users, so an appendfile as root fails. mailnull is
 	// exim's own non-root identity and exists on every cPanel host.

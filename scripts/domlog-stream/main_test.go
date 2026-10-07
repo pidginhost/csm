@@ -304,13 +304,13 @@ func TestConvertRefusalsWriteNothing(t *testing.T) {
 	if err := run(f.args(), io.Discard, testEnv()); !errors.Is(err, errOutputs) {
 		t.Fatalf("existing output: %v", err)
 	}
-	os.Remove(f.volume)
+	_ = os.Remove(f.volume)
 	dirty := testEnv()
 	dirty.revision = func() crawlreplay.ToolRevision { return crawlreplay.ToolRevision{Dirty: true} }
 	if err := run(f.args(), io.Discard, dirty); !errors.Is(err, errDirtyBuild) {
 		t.Fatalf("dirty build: %v", err)
 	}
-	os.Remove(filepath.Join(f.dir, "shop.example"))
+	_ = os.Remove(filepath.Join(f.dir, "shop.example"))
 	if err := run(f.args(), io.Discard, testEnv()); !errors.Is(err, errInput) {
 		t.Fatalf("missing log: %v", err)
 	}

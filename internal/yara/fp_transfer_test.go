@@ -4,10 +4,10 @@ package yara
 
 import "testing"
 
-// FP reconstructions for the 2026-04-27 forgetwhitecom WHM-transfer event.
+// FP reconstructions for a WHM-transfer event.
 // The YARA versions of these rules fired alongside their YAML siblings; the
 // signature_match_realtime fixes already landed under
-// internal/signatures/fp_forgetwhite_*_test.go. These pin the YARA side.
+// internal/signatures/fp_transfer_*_test.go. These pin the YARA side.
 
 // miner_hidden_iframe used:
 //

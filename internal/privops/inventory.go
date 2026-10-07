@@ -306,18 +306,6 @@ var operations = []Op{
 		DisableValue:     "false",
 		WithoutPrivilege: "PHP runtime events are not collected",
 	},
-	{
-		ID:               "state.write_deploy_script",
-		Risk:             RiskObserve,
-		Subsystem:        "csm state",
-		Summary:          "refresh the embedded upgrade script in CSM's own directory at startup",
-		Privileges:       []Privilege{Root},
-		Trigger:          Automatic,
-		Writes:           []string{"/opt/csm/deploy.sh"},
-		DisableKey:       "mode",
-		DisableValue:     "observe",
-		WithoutPrivilege: "the packaged upgrade helper is missing and upgrades are run by hand",
-	},
 
 	// --- Automatic response ---
 	{

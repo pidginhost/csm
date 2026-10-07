@@ -609,7 +609,7 @@ func TestLogWatcher_Reopen_MissingFile(t *testing.T) {
 	defer w.Stop()
 
 	// Delete the file, then reopen — should not panic.
-	os.Remove(tmp)
+	_ = os.Remove(tmp)
 	w.reopen()
 }
 
@@ -886,7 +886,7 @@ func TestLogWatcher_Reopen_OpenFailureClearsStaleFile(t *testing.T) {
 	}
 	defer w.Stop()
 
-	os.Remove(tmp)
+	_ = os.Remove(tmp)
 	w.reopen()
 	if w.file != nil {
 		t.Fatal("failed reopen must not retain a closed file handle")

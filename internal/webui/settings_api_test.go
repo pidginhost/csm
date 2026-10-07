@@ -2195,3 +2195,82 @@ func TestSettingsRestartEndpointRequiresPOST(t *testing.T) {
 		t.Errorf("code = %d, want 405", w.Code)
 	}
 }
+
+func TestSettingsPOSTRunsConfigAppliedHookForLiveChanges(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+auto_response:
+  enabled: true
+  block_ips: false
+  max_blocks_per_hour: 50
+`
+	s, _ := newSettingsTestServer(t, "tok", body)
+	calls := 0
+	seen := 0
+	s.SetConfigAppliedHook(func() {
+		calls++
+		seen = config.Active().AutoResponse.MaxBlocksPerHour
+	})
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/auto_response", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"max_blocks_per_hour":75}}`)
+	postReq.Header.Set("If-Match", etag)
+	setSessionCSRF(s, postReq)
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+	if postW.Code != 200 {
+		t.Fatalf("code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("hook ran %d times, want 1", calls)
+	}
+	if seen != 75 {
+		t.Fatalf("hook saw max_blocks_per_hour = %d, want the saved value 75", seen)
+	}
+}
+
+func TestSettingsPOSTSkipsConfigAppliedHookWhenRestartRequired(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+challenge:
+  enabled: false
+  listen_port: 8439
+  difficulty: 2
+`
+	s, _ := newSettingsTestServer(t, "tok", body)
+	calls := 0
+	s.SetConfigAppliedHook(func() { calls++ })
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/challenge", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/challenge", "tok", `{"changes":{"enabled":true,"difficulty":3}}`)
+	postReq.Header.Set("If-Match", etag)
+	setSessionCSRF(s, postReq)
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+	if postW.Code != 200 {
+		t.Fatalf("code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("hook ran %d times for a restart-required save, want 0", calls)
+	}
+}

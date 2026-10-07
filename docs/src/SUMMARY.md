@@ -48,6 +48,12 @@
 - [Metrics (Prometheus)](metrics.md)
 - [Audit Log (SIEM)](audit-log.md)
 - [Action Log](action-log.md)
+- [PAM Hook](operator-pam-install.md)
+- [Pre-start Hooks](operator-systemd-dropins.md)
+- [Supply-chain Advisories](supply-chain-advisories.md)
+- [Upstream Threat-Intel Contract](upstream-threat-intel-contract.md)
+- [Verdict Callback Contract](verdict-callback-contract.md)
+- [Fleet Correlation Contract](fleet-correlation-contract.md)
 
 # Development
 
@@ -58,3 +64,12 @@
   - [cPanel Release Tests](cpanel-release-tests.md)
   - [Production Build and Kernel Tests](production-tests.md)
 - [Release Signing](release-signing.md)
+
+# Design notes
+
+- [Architecture direction](design/architecture-direction.md)
+- [Auto-response safety model](design/auto-response-safety-model.md)
+- [Durable action lifecycle](design/durable-action-lifecycle.md)
+- [Privilege separation](design/privilege-separation.md)
+- [Firewall state migration](design/firewall-state-migration.md)
+- [Email forwarder protection](design/email-forwarder-protection.md)

@@ -23,7 +23,7 @@ import (
 // advisory database. The advisory database itself is operational data,
 // not shipped in the binary -- an operator or a sync job writes
 // <state>/advisories/supply-chain.json (format documented in
-// docs/supply-chain-advisories.md). With no advisory file present the
+// docs/src/supply-chain-advisories.md). With no advisory file present the
 // check is dormant: it parses nothing it cannot match and emits nothing.
 // This mirrors the YARA-forge mirror posture (machinery in CSM, signed
 // data delivered out of band).

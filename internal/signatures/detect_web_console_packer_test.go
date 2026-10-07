@@ -31,7 +31,7 @@ func scanRepoRules(t *testing.T, sample []byte) map[string]Match {
 	return hit
 }
 
-// eval("?>".base64_decode(...)) is the packer the 2026-07-23 hospitalityculture
+// eval("?>".base64_decode(...)) is the packer the acmehotel
 // shells used to evade php_eval_decode_chain, which required the decoder
 // immediately after eval(.
 func TestPHPEvalDecodeChainMatchesPhpCloseConcatPacker(t *testing.T) {

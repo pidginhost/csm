@@ -94,7 +94,7 @@ func HotReloadManifest() []ReloadPolicy {
 }
 
 func isReloadManifestIgnoredRoot(field reflect.StructField) bool {
-	return field.Name == "ConfigFile" || field.Name == "ConfigDir" || field.Name == "Integrity"
+	return field.Name == "ConfigFile" || field.Name == "ConfigDir" || field.Name == "Integrity" || field.Name == "RemovedKeys"
 }
 
 // Diff reports which Config fields differ between old and new,

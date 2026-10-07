@@ -1,8 +1,9 @@
 # CSM HTTP API -- OpenAPI 3.1 contract for /api/v1/*
 #
-# Generated from the route registrations in internal/webui. The
-# TestOpenAPISpecCoversAllRoutes drift guard fails if a registered
-# /api/v1/* route is missing here, so this file stays in sync.
+# Hand-written. The TestOpenAPISpecCoversAllRoutes drift guard fails if a
+# registered /api/v1/* route is missing here or documented with another
+# scope or primary method. A handler that accepts several methods on one
+# path documents its primary method only; api.md describes the rest.
 #
 # Scope: every operation carries its method and x-csm-scope (read vs admin).
 # Method is derived from the route wrapper: CSRF-protected routes are

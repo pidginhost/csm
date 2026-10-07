@@ -28,7 +28,7 @@ What the tool replaces, in every structured field and in free text:
   without knowing who is who. Names are replaced wherever they sit: in
   `/home/<account>/` paths, `Account:` lines, process context, LiteSpeed
   vhost tokens, and inside longer tokens such as `example.com-ssl_log` or
-  `cp1.log`. A name holding an underscore or starting with a dot, such as
+  `web1.log`. A name holding an underscore or starting with a dot, such as
   a bare mail login, is replaced as a whole wherever it is not glued to a
   letter or digit, ignoring case. Where identities overlap, the leftmost
   complete one wins, and a full mailbox or home path keeps its usual
