@@ -58,3 +58,11 @@
   - [cPanel Release Tests](cpanel-release-tests.md)
   - [Production Build and Kernel Tests](production-tests.md)
 - [Release Signing](release-signing.md)
+
+# Design notes
+
+- [Architecture direction](design/architecture-direction.md)
+- [Auto-response safety model](design/auto-response-safety-model.md)
+- [Durable action lifecycle](design/durable-action-lifecycle.md)
+- [Privilege separation](design/privilege-separation.md)
+- [Firewall state migration](design/firewall-state-migration.md)
