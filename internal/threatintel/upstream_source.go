@@ -44,7 +44,7 @@ type UpstreamConfig struct {
 }
 
 // UpstreamSource queries a panel-side TI cache. The wire contract is
-// documented in docs/upstream-threat-intel-contract.md.
+// documented in docs/src/upstream-threat-intel-contract.md.
 //
 //	GET <URL>/lookup?ip=<ip>
 //	Authorization: Bearer <token>     (omitted if no token resolved)

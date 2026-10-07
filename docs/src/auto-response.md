@@ -210,7 +210,7 @@ auto_response:
   # to the panel before applying. The panel can downgrade to "allow"
   # (audit-only), attach `tenant_id` for downstream correlation, or
   # add a reason. CSM fails open on hook errors. Wire contract:
-  # docs/verdict-callback-contract.md.
+  # verdict-callback-contract.md in this book.
   verdict_callback:
     enabled: false
     url: ""                            # POST target
