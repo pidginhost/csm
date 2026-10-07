@@ -104,6 +104,11 @@ docs: update configuration reference
 
 ## Pull Request Process
 
+GitHub holds a mirror of the project's self-hosted GitLab repository, synced
+with a force push. A pull request opened here is reviewed here, applied
+upstream, and arrives with the next sync; the mirror then closes the pull
+request on its own, so do not expect it to show as merged.
+
 1. Fork the repo and create a branch from `main`.
 2. Make your changes with tests.
 3. Ensure `go test ./... -count=1 -race` and `make lint` both pass.

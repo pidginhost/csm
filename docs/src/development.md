@@ -130,9 +130,10 @@ make lint                        # must pass before push
 make fmt-check                   # checks tracked Go files with the pinned formatter
 ```
 
-`make lint` uses repo-local cache directories under `.cache/` and a five-minute
-timeout, matching `.golangci.yml` and CI. Install the pinned tools with
-`make tools`; golangci-lint is 2.11.4. It lints the Linux build, so a macOS
+`make lint` uses repo-local cache directories under `.cache/` and the timeout
+set in `.golangci.yml`, the same one CI uses. Install the pinned tools with
+`make tools`; the golangci-lint version is `GOLANGCI_LINT_VERSION` in the
+Makefile, and CI runs the same release. It lints the Linux build, so a macOS
 host checks the code that ships rather than reporting its linux-only callers
 as unused. Production-tag lint needs the Linux CGO libraries described in
 [production tests](production-tests.md).
@@ -211,8 +212,10 @@ Installs and upgrades on end-user servers come from the GitHub release artifacts
 
 ### Response admission primitives
 
-`internal/admission` is a standard-library-only package that is not yet wired
-into live responses. Its persisted enum values are fixed by golden tests.
+`internal/admission` is a standard-library-only package. The daemon's
+admission owner (`internal/admissionowner`) wires it into live responses and
+detectors submit through its ingress, described below. Its persisted enum
+values are fixed by golden tests.
 `Assess` sets `ReassessBy` to the first instant the current class or severity
 falls, or all roots become stale, without new evidence. Redundant evidence
 can preserve the tier after another root expires. Each corroborating pair
@@ -260,7 +263,7 @@ fails in that drain, admission closes until a drain succeeds; recovery
 clears the drain failure but keeps the damage cause for the discarded work.
 Failed ceiling reloads stay pending until a tick applies and revalidates
 them; inventory refreshes cannot reopen admission in the meantime.
-Nothing submits to it yet. One owner serializes every write, and each call
+One owner serializes every write, and each call
 is one transaction, so a failed call changes nothing. Admission time
 comes only from recorded clock readings: a wall clock that steps back never
 lowers it, a new boot credits no elapsed time, and a reopened ledger admits
