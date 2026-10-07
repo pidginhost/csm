@@ -2,13 +2,13 @@
 #
 # Hand-written. The TestOpenAPISpecCoversAllRoutes drift guard fails if a
 # registered /api/v1/* route is missing here or documented with another
-# scope or primary method. A handler that accepts several methods on one
-# path documents its primary method only; api.md describes the rest.
+# scope or supported method. Handlers that accept several methods on one
+# path document each supported method.
 #
 # Scope: every operation carries its method and x-csm-scope (read vs admin).
-# Method is derived from the route wrapper: CSRF-protected routes are
-# state-changing methods, the rest are GETs. Response bodies are typed as
-# generic JSON objects in this v1; per-endpoint response schemas can be
+# Methods follow the registrations and each handler's method dispatch.
+# Response bodies are typed as generic JSON objects in this v1;
+# per-endpoint response schemas can be
 # tightened incrementally without changing route coverage. The shapes every
 # route shares (Error, ActionResult, ItemList) are defined under components.
 openapi: 3.1.0
@@ -326,7 +326,7 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { description: Unknown held message ID. }
+        "500": { description: Failed to delete the held message. }
     post:
       operationId: post_email_held_
       summary: "post /api/v1/email/held/ (scope: admin)"
@@ -465,7 +465,7 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "404": { description: Unknown quarantine ID. }
+        "500": { description: Failed to delete the quarantined message. }
     post:
       operationId: post_email_quarantine_
       summary: "post /api/v1/email/quarantine/ (scope: admin)"
@@ -1523,6 +1523,12 @@ paths:
       x-csm-scope: admin
       security:
         - bearerAuth: []
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          description: Copy the ETag header or etag value from the section's GET response unchanged.
+          schema: { type: string }
       requestBody:
         required: true
         content:
@@ -1536,7 +1542,8 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
-        "412": { description: The section changed on disk since it was read; reload and retry. }
+        "400": { description: Missing If-Match header or invalid request body. }
+        "412": { description: The configuration or its fragments changed on disk; reload and retry. }
         "422": { description: A field failed validation. }
     get:
       operationId: get_settings_

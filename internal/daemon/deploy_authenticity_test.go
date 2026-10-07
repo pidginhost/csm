@@ -110,3 +110,35 @@ pkg_download() { /bin/cp "$SOURCE_SIGNATURE" "$2"; printf 200; }`
 		}
 	}
 }
+
+func TestLegacySignatureExceptionRequiresCompletePreSigningVersion(t *testing.T) {
+	for _, script := range deploySignatureScripts() {
+		for _, version := range []string{"v1.0.0", "v2.1.9", "v2.2.0", "v2.1.9-suffix", "v1.0.0/current", "v01.0.0", "latest", ""} {
+			t.Run(script.name+"/"+version, func(t *testing.T) {
+				stubs := rawinCapableOpenSSL("404") + oldOpenSSL() + "\nCSM_SIGNING_KEY_PEM=''\n"
+				output, code := runVerifySignatureWithVersion(t, script, stubs, nil, version)
+				legacy := version == "v1.0.0" || version == "v2.1.9"
+				excepted, disclosure := false, ""
+				if script.exception != nil {
+					excepted, disclosure = script.exception(version)
+				}
+				allowed := legacy || excepted
+				if (code == 0) != allowed {
+					t.Fatalf("version=%q exit=%d output=%s", version, code, output)
+				}
+				if legacy && !strings.Contains(output, "pre-signing release") {
+					t.Fatalf("legacy bypass not disclosed: %s", output)
+				}
+				if excepted && !strings.Contains(output, disclosure) {
+					t.Fatalf("signature exception not disclosed: %s", output)
+				}
+				if allowed {
+					strictOut, strictCode := runVerifySignatureWithVersion(t, script, stubs, []string{"CSM_REQUIRE_SIGNATURES=1"}, version)
+					if strictCode == 0 {
+						t.Fatalf("strict legacy accepted: %s", strictOut)
+					}
+				}
+			})
+		}
+	}
+}

@@ -166,3 +166,79 @@ func TestUpgradeHealthGateShellBoundaries(t *testing.T) {
 		}
 	}
 }
+
+func TestUpgradeHealthGateRollsBackRunningDaemon(t *testing.T) {
+	for _, rel := range deployScriptPaths {
+		for _, failure := range []string{"doctor", "settle", "none"} {
+			t.Run(rel+"/"+failure, func(t *testing.T) {
+				dir := t.TempDir()
+				installDir := filepath.Join(dir, "install")
+				binary := filepath.Join(installDir, "csm")
+				packageBinary := filepath.Join(dir, "new")
+				for path, version := range map[string]string{binary: "1.0.0", packageBinary: "2.0.0"} {
+					writeDeployTestFile(t, path, "#!/bin/bash\ncase \"$1\" in\nversion) echo 'csm "+version+"';;\nrehash) echo 'rehash "+version+"' >> \"$TEST_EVENTS\";;\ndoctor) [ \"$TEST_FAILURE\" != doctor ];;\nesac\n")
+					if err := os.Chmod(path, 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				for _, entry := range []string{"ui", "configs", "pam"} {
+					writeDeployTestFile(t, filepath.Join(installDir, entry, "release"), "old")
+				}
+				writeDeployTestFile(t, filepath.Join(installDir, "deploy.sh"), "old")
+				for _, rule := range []string{"malware.yml", "malware.yar"} {
+					writeDeployTestFile(t, filepath.Join(installDir, "rules", rule), "old")
+				}
+				script := filepath.Join(repoRootFromDaemonTest(), rel)
+				body := []string{
+					"set -euo pipefail", "SERVICE_NAME=csm", "ARTIFACT_NAME=csm-linux-amd64", "CSM_UPGRADE_HEALTH_SETTLE=2",
+					"die() { echo \"$1\" >&2; exit 1; }", "id() { echo 0; }",
+					"detect_auth_header() { :; }", "save_token() { :; }", githubReleaseTagResolverStub(rel),
+					"download_package() { command cp \"$TEST_PACKAGE_BINARY\" \"$2/$ARTIFACT_NAME\"; }",
+					"download_and_stage_assets() { local stage=\"$2/assets-stage\"; mkdir -p \"$stage\"/{ui,configs,pam}; for entry in ui configs pam; do echo new > \"$stage/$entry/release\"; done; echo new > \"$stage/deploy.sh\"; for rule in malware.yml malware.yar; do echo new > \"$stage/configs/$rule\"; done; echo \"$stage\"; }",
+					"stop_services() { echo stop >> \"$TEST_EVENTS\"; rm -f \"$TEST_RUNNING\"; }",
+					"start_services() { if [ ! -f \"$TEST_RUNNING\" ]; then \"$BINARY_PATH\" version > \"$TEST_RUNNING\"; echo \"start $(cat \"$TEST_RUNNING\")\" >> \"$TEST_EVENTS\"; fi; }",
+					// Linux refuses to overwrite an executing binary (ETXTBSY).
+					"cp() { if [ \"${!#}\" = \"$BINARY_PATH\" ] && [ -f \"$TEST_RUNNING\" ]; then echo 'Text file busy' >&2; return 1; fi; command cp \"$@\"; }",
+					"systemctl() { [ \"$TEST_FAILURE\" != settle ]; }",
+					"sleep() { :; }", "lsattr() { :; }", "chattr() { :; }",
+				}
+				for _, fn := range []string{"activate_assets", "rollback_assets", "rollback_upgrade", "cleanup_upgrade_backup", "version_key", "refuse_downgrade", "verify_upgrade_health", "do_upgrade"} {
+					body = append(body, extractShellFunction(t, script, fn))
+				}
+				body = append(body, "do_upgrade")
+				wrapper := filepath.Join(dir, "upgrade.sh")
+				writeDeployTestFile(t, wrapper, strings.Join(body, "\n"))
+				events := filepath.Join(dir, "events")
+				cmd := exec.Command("/bin/bash", wrapper)
+				cmd.Env = withEnv(os.Environ(), "INSTALL_DIR="+installDir, "BINARY_PATH="+binary, "TEST_PACKAGE_BINARY="+packageBinary,
+					"TEST_EVENTS="+events, "TEST_RUNNING="+filepath.Join(dir, "running"), "TEST_FAILURE="+failure)
+				out, err := cmd.CombinedOutput()
+				wantVersion, wantAssets := "1.0.0", "old"
+				wantEvents := "stop\nrehash 2.0.0\nstart csm 2.0.0\nstop\nrehash 1.0.0\nstart csm 1.0.0\n"
+				if failure == "none" {
+					wantVersion, wantAssets = "2.0.0", "new"
+					wantEvents = "stop\nrehash 2.0.0\nstart csm 2.0.0\n"
+					if err != nil {
+						t.Fatalf("healthy upgrade failed: %v\n%s", err, out)
+					}
+				} else if err == nil || !strings.Contains(string(out), "rolled back to previous version") {
+					t.Errorf("unhealthy upgrade did not complete rollback: %v\n%s", err, out)
+				}
+				gotEvents, readErr := os.ReadFile(events)
+				if readErr != nil || string(gotEvents) != wantEvents {
+					t.Errorf("recovery order: %v\n%s\nwant:\n%s", readErr, gotEvents, wantEvents)
+				}
+				version, versionErr := exec.Command(binary, "version").CombinedOutput()
+				if versionErr != nil || strings.TrimSpace(string(version)) != "csm "+wantVersion {
+					t.Errorf("installed version: %v %s", versionErr, version)
+				}
+				for _, entry := range []string{"ui/release", "configs/release", "pam/release", "deploy.sh", "rules/malware.yml", "rules/malware.yar"} {
+					data, readErr := os.ReadFile(filepath.Join(installDir, entry))
+					if readErr != nil || strings.TrimSpace(string(data)) != wantAssets {
+						t.Errorf("%s not restored: %q (%v)", entry, data, readErr)
+					}
+				}
+			})
+		}
+	}
+}
