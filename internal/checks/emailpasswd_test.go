@@ -98,6 +98,10 @@ func TestParseShadowLine(t *testing.T) {
 	}{
 		{"user:{SHA512-CRYPT}$6$abc$xyz", "user", "{SHA512-CRYPT}$6$abc$xyz"},
 		{"admin:{BLF-CRYPT}$2y$05$hash", "admin", "{BLF-CRYPT}$2y$05$hash"},
+		// cPanel appends shadow(5) aging fields after the hash.
+		{"user:$6$salt$hash:20733:::::", "user", "$6$salt$hash"},
+		{"user:!$6$salt$hash:20733:::::", "user", "!$6$salt$hash"},
+		{"user::20733:::::", "", ""},
 		{"nocolon", "", ""},
 		{":", "", ""},
 	}
@@ -199,6 +203,8 @@ func TestReadShadowFile(t *testing.T) {
 		"alice:{SHA512-CRYPT}$6$salt$hash\n" +
 		"bob:!{SHA512-CRYPT}$6$salt$lockedhash\n" +
 		"carol:{BLF-CRYPT}$2y$05$active\n" +
+		"dave:$6$salt$cpanelhash:20733:::::\n" +
+		"erin:!$6$salt$cpanellocked:20733:::::\n" +
 		"malformed\n" +
 		"\n"
 	_ = os.WriteFile(path, []byte(content), 0600)
@@ -206,9 +212,12 @@ func TestReadShadowFile(t *testing.T) {
 	sf := shadowFile{path: path, account: "cpuser", domain: "example.com"}
 	entries := readShadowFile(sf)
 
-	// alice = active, bob = locked (skipped), carol = active, malformed = skipped
-	if len(entries) != 2 {
-		t.Fatalf("got %d entries, want 2 (alice + carol)", len(entries))
+	// alice, carol and dave are active; bob and erin are locked; malformed is skipped
+	if len(entries) != 3 {
+		t.Fatalf("got %d entries, want 3 (alice + carol + dave)", len(entries))
+	}
+	if entries[2].mailbox != "dave" || entries[2].hash != "$6$salt$cpanelhash" {
+		t.Errorf("cPanel entry: %+v", entries[2])
 	}
 	if entries[0].mailbox != "alice" || entries[0].account != "cpuser" {
 		t.Errorf("first entry: %+v", entries[0])

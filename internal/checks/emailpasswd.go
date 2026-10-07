@@ -40,13 +40,19 @@ var (
 )
 
 // parseShadowLine parses a Dovecot shadow line "mailbox:{scheme}hash".
-// Returns empty strings if the line is malformed.
+// cPanel writes the shadow(5) layout "mailbox:hash:lastchg:::::", so the
+// hash is the second field only. Returns empty strings when either the
+// mailbox or the hash is missing.
 func parseShadowLine(line string) (mailbox, hash string) {
-	idx := strings.IndexByte(line, ':')
-	if idx <= 0 || idx >= len(line)-1 {
+	mailbox, rest, ok := strings.Cut(line, ":")
+	if !ok || mailbox == "" {
 		return "", ""
 	}
-	return line[:idx], line[idx+1:]
+	hash, _, _ = strings.Cut(rest, ":")
+	if hash == "" {
+		return "", ""
+	}
+	return mailbox, hash
 }
 
 // isLockedHash returns true if the hash indicates a locked/disabled account.

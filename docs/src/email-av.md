@@ -65,7 +65,8 @@ Supported stored formats follow [Dovecot password schemes](https://doc.dovecot.o
 | PLAIN-MD5, LDAP-MD5, SMD5 | MD5 digests; salted variants allow 1 to 64 salt bytes |
 | SHA, SHA1, SSHA, SHA256, SSHA256, SHA512, SSHA512 | SHA digests; salted variants allow 1 to 64 salt bytes |
 
-Unprefixed hashes use CRYPT. Scheme names and `.hex`, `.b64`, and `.base64`
+Unprefixed hashes use CRYPT. cPanel shadow files, which add password aging
+fields after the hash, are read the same way. Scheme names and `.hex`, `.b64`, and `.base64`
 encoding suffixes are case-insensitive. Unsalted digests also accept Dovecot's
 hex/base64 autodetection. DES crypt, bcrypt 2x, yescrypt, PBKDF2, and
 mechanism-specific formats such as SCRAM are not audited.
