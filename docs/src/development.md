@@ -586,3 +586,5 @@ describe the additional manual privacy review.
 ### Admission preview ledger
 
 Admission previews reserve, charge history and capacity, and end observed in one transaction. They write both audit steps, never execute a response, never count as applied, and do not end the evidence episode or raise a notice. Repeated evidence is answered until its quiet window closes.
+
+Imported legacy usage retains its accounting-window charge after an attempt is retired. Retirement of old attempt history cannot create new admission capacity before that window closes.

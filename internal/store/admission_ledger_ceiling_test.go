@@ -1107,7 +1107,7 @@ func TestAdmissionLedgerReadsImportedSpend(t *testing.T) {
 }
 
 func TestAdmissionLedgerImportedSpendRefusesDamage(t *testing.T) {
-	for _, name := range []string{"uncounted charge", "usage without a charge", "damaged attempt", "wrong attempt time", "wrong attempt lane", "wrong attempt cost"} {
+	for _, name := range []string{"uncounted charge", "usage without a charge", "second legacy import", "damaged attempt", "wrong attempt time", "wrong attempt lane", "wrong attempt cost"} {
 		t.Run(name, func(t *testing.T) {
 			f := newLedgerFixture(t)
 			f.newUnlimitedLedger()
@@ -1117,7 +1117,7 @@ func TestAdmissionLedgerImportedSpendRefusesDamage(t *testing.T) {
 				t.Fatal(err)
 			}
 			var action admission.ActionID
-			if name != "uncounted charge" && name != "usage without a charge" {
+			if name != "uncounted charge" && name != "usage without a charge" && name != "second legacy import" {
 				_, a := f.admitted(time.Hour)
 				action = a.Attempt.ID
 			}
@@ -1128,6 +1128,9 @@ func TestAdmissionLedgerImportedSpendRefusesDamage(t *testing.T) {
 				switch name {
 				case "uncounted charge":
 					return putCharge(tx, admission.Charge{At: spend.At, Action: admission.LegacyActionID(spend.At, 3), Lane: admission.LaneGeneral, Cost: 1}, false)
+				case "second legacy import":
+					later := spend.At.Add(time.Minute)
+					return putCharge(tx, admission.Charge{At: later, Action: admission.LegacyActionID(later, 1), Lane: admission.LaneGeneral, Cost: 1}, true)
 				case "usage without a charge":
 					s, err := loadCeilingState(tx)
 					if err != nil {
@@ -1193,5 +1196,33 @@ func TestAdmissionLedgerReadsLastLegacyCharge(t *testing.T) {
 	}
 	if got, err := reopened.ImportedLegacySpend(); err != nil || got.Units != admission.MaxCeiling || !got.At.Equal(spend.At) {
 		t.Fatalf("last legacy charge: %+v, %v", got, err)
+	}
+}
+
+// A reboot grants a charge no downtime credit, so it can outlive its
+// attempt: history retires the attempt by wall time while the charge waits
+// for its remaining elapsed time. The legacy import reading then counts
+// only legacy charges; an attempt's retained charge is not damage.
+func TestAdmissionLedgerImportedSpendOutlivesARetiredAttempt(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	id, _ := f.observedArrival("192.0.2.10", "offset=1")
+	f.ackAll()
+	later := f.wall.Add(admission.HistoryTarget + time.Hour)
+	if _, err := f.l.Tick(admission.ClockReading{Wall: later, BootID: "1a5e3c2a-1b4d-4e6f-8a9b-0c1d2e3f4a5b", SinceBoot: time.Minute}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.l.Candidate(id); err == nil {
+		t.Fatal("the observed candidate was not retired")
+	}
+	if len(f.charges()) == 0 {
+		t.Fatal("the attempt's charge did not wait for its elapsed time")
+	}
+	got, err := f.l.ImportedLegacySpend()
+	if err != nil || got != (admission.LegacySpend{}) {
+		t.Fatalf("imported spend = %+v, %v", got, err)
+	}
+	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatalf("reopening: %v", err)
 	}
 }
