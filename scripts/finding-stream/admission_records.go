@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"time"
 
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/admission"
@@ -127,6 +128,8 @@ func validateSummary(r actionlog.Record) error {
 		return errUnknownActor
 	case !admissionDecisions[string(r.Result)]:
 		return errUnknownResult
+	case !r.Timestamp.Equal(r.Timestamp.UTC().Truncate(time.Hour)):
+		return errSummary
 	case r.Target != "" || r.FindingID != "" || r.IncidentID != "" || r.ActionID != "" || r.ActionVersion != 0 ||
 		r.UndoOf != "" || r.Account != "" || len(r.Command) > 0 || r.Before != nil || r.After != nil || r.Undo != "" || r.RecoveryPath != "":
 		return errSummary
@@ -146,8 +149,10 @@ func checkName(s string) bool { return admissionChecks[s] }
 func (a *Anonymizer) verifySummary(o anonAction) bool {
 	return o.Op == "respond.block_ip" && admissionKinds[o.Action] && o.Actor == string(actionlog.Daemon) &&
 		admissionDecisions[o.Result] && o.Count > 0 && checkName(o.Check) && len(a.leaksIn(o.Check)) == 0 &&
+		o.Timestamp.Equal(o.Timestamp.UTC().Truncate(time.Hour)) &&
 		admissionEntries[o.Entry] && o.ReasonKind == "check" && o.anonTarget == anonTarget{TargetKind: "empty"} &&
-		(o.Result == string(actionlog.Refused)) == admissionRefusals[o.Refusal] && o.HasError == (o.Refusal != "") &&
+		((o.Result == string(actionlog.Refused) && admissionRefusals[o.Refusal]) || (o.Result != string(actionlog.Refused) && o.Refusal == "")) &&
+		o.HasError == (o.Refusal != "") &&
 		o.Account == "" && o.ActorIP == "" && o.DurationNS == 0 && o.FindingID == "" && o.IncidentID == "" &&
 		o.ActionID == "" && o.ActionVersion == 0 && o.UndoOf == "" && o.BeforeExists == nil && o.AfterExists == nil
 }

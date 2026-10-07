@@ -333,12 +333,18 @@ func TestCompareMatchesSummaryBeforeTheLegacyHour(t *testing.T) {
 				first.Check, first.Refusal, first.Entry = "unknown", "policy", "incident"
 				legacy.ReasonKind = "incident"
 			}
-			report := compareReport(map[string]string{fid: check}, []anonAction{first, legacy, last})
+			report, err := compareReport(map[string]string{fid: check}, []anonAction{first, legacy, last})
+			if err != nil {
+				t.Fatal(err)
+			}
 			if !strings.Contains(report, "unexplained: 0: pass") {
 				t.Fatalf("previous-hour handoff was missed:\n%s", report)
 			}
 			legacy.Timestamp = compareTS.Add(2*time.Hour + time.Second)
-			report = compareReport(map[string]string{fid: check}, []anonAction{first, legacy, last})
+			report, err = compareReport(map[string]string{fid: check}, []anonAction{first, legacy, last})
+			if err != nil {
+				t.Fatal(err)
+			}
 			if !strings.Contains(report, "unexplained: 1: FAIL") {
 				t.Fatalf("a handoff two hours away matched:\n%s", report)
 			}

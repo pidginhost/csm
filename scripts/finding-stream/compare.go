@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/netip"
 	"slices"
 	"strings"
@@ -24,6 +25,11 @@ import (
 
 const errCompareUsage cliError = "usage: finding-stream compare --findings FILE --actions FILE"
 
+const (
+	errCompareWrite cliError = "comparison output failed"
+	errCompareCount cliError = "comparison count overflow"
+)
+
 // compareMinWindow is the shortest preview the comparison accepts (R11).
 const compareMinWindow = 7 * 24 * time.Hour
 
@@ -33,10 +39,8 @@ var legacyAutomatic = map[string]bool{
 	"incident": true, "netblock": true, "permblock": true, "central_intel": true,
 }
 
-// designedRefusals explain a legacy block admission did not take: a finding
-// without provenance (attribution, plan 2) and a path admission does not
-// serve yet (policy: an unregistered producer or entry, or a derived path
-// without a retained root, ruling R7).
+// designedRefusals explain only the listed scan provenance gaps and derived
+// responses without a retained root. Other refusals remain unexplained.
 var designedRefusals = []string{"attribution", "policy"}
 
 // compareShown bounds the unexplained blocks a report lists.
@@ -136,18 +140,22 @@ func listedRule(o anonAction, check, reason string) (string, bool) {
 	if check == "" || check == "local_threat_score" {
 		return "", false
 	}
-	registered, scanPass := false, false
+	scanPass := false
 	for _, producer := range checks.ProducerTable() {
 		if slices.Contains(producer.Spec.Checks, check) {
-			registered = true
 			scanPass = scanPass || producer.Spec.Observation == admission.ObservationScanPass
 		}
 	}
-	if reason == "attribution" && scanPass && (entry == "scan" || entry == "central" || entry == "incident" || entry == "asn_crawl" || entry == "mail_subnet") {
-		return check, true
-	}
-	if reason == "policy" && !registered && entry == "scan" && checks.AddressEvidence(check, alert.Critical) {
-		return check, true
+	if reason == "attribution" && scanPass {
+		if entry == "scan" {
+			return check, true
+		}
+		for _, derived := range checks.DerivedEntries() {
+			if derived.Entry.String() == entry && slices.Contains(derived.Checks, check) &&
+				(entry == "central" || entry == "incident" || entry == "asn_crawl" || entry == "mail_subnet") {
+				return check, true
+			}
+		}
 	}
 	return "", false
 }
@@ -173,7 +181,9 @@ func compare(args []string, stdout io.Writer) error {
 		if err := decodeStrict(data, &e); err != nil {
 			return time.Time{}, err
 		}
-		if e.V != alert.AuditSchemaVersion || e.Timestamp.IsZero() || !checkName(e.Check) || e.Check == "unknown" ||
+		// Older recordings retain unstamped findings. Their IDs and checks
+		// still join actions; the action summaries establish the window.
+		if e.V != alert.AuditSchemaVersion || !checkName(e.Check) || e.Check == "unknown" ||
 			(e.FindingID != "" && !compareToken(e.FindingID, "fid-", 16)) {
 			return time.Time{}, errRowUnverified
 		}
@@ -201,11 +211,17 @@ func compare(args []string, stdout io.Writer) error {
 	}); err != nil {
 		return err
 	}
-	_, err := io.WriteString(stdout, compareReport(checks, actions))
-	return err
+	report, err := compareReport(checks, actions)
+	if err != nil {
+		return err
+	}
+	if _, err = io.WriteString(stdout, report); err != nil {
+		return errCompareWrite
+	}
+	return nil
 }
 
-func compareReport(checks map[string]string, actions []anonAction) string {
+func compareReport(checks map[string]string, actions []anonAction) (string, error) {
 	summaries := map[summaryKey]uint64{}
 	steps := map[compareStepKey][]time.Time{}
 	seenAttempts := map[string]bool{}
@@ -214,7 +230,11 @@ func compareReport(checks map[string]string, actions []anonAction) string {
 	for _, o := range actions {
 		switch {
 		case o.Count != 0:
-			summaries[summaryKey{o.Timestamp.UTC(), o.Check, o.Result, o.Refusal, o.Entry, o.Action}] += o.Count
+			key := summaryKey{o.Timestamp.UTC(), o.Check, o.Result, o.Refusal, o.Entry, o.Action}
+			if o.Count > math.MaxUint64-summaries[key] {
+				return "", errCompareCount
+			}
+			summaries[key] += o.Count
 			if first.IsZero() || o.Timestamp.Before(first) {
 				first = o.Timestamp
 			}
@@ -223,8 +243,14 @@ func compareReport(checks map[string]string, actions []anonAction) string {
 			}
 			switch o.Refusal {
 			case "invalid":
+				if o.Count > math.MaxUint64-invalid {
+					return "", errCompareCount
+				}
 				invalid += o.Count
 			case "queue_overflow":
+				if o.Count > math.MaxUint64-overflow {
+					return "", errCompareCount
+				}
 				overflow += o.Count
 			}
 		case strings.HasPrefix(o.ReasonKind, "admission_") && o.FindingID != "" && o.Result == "observe" && !seenAttempts[o.ActionID]:
@@ -243,53 +269,19 @@ func compareReport(checks map[string]string, actions []anonAction) string {
 		}
 	}
 	slices.SortStableFunc(legacy, func(a, b anonAction) int { return a.Timestamp.Compare(b.Timestamp) })
-	// take spends one counted decision for check in the same or an adjacent
-	// hour, since either handoff or legacy completion can cross the hour.
-	take := func(at time.Time, check, decision, refusal, entry, kind string) bool {
-		end := at.UTC().Truncate(time.Hour).Add(time.Hour)
-		for _, hourEnd := range []time.Time{end, end.Add(-time.Hour), end.Add(time.Hour)} {
-			k := summaryKey{hourEnd, check, decision, refusal, entry, kind}
-			if summaries[k] > 0 {
-				summaries[k]--
-				return true
-			}
-		}
-		return false
-	}
 	var stepped, coalesced int
 	designed := map[string]int{}
 	var unexplained []anonAction
-	for _, o := range legacy {
-		check := checks[o.FindingID]
-		switch {
-		case func() bool {
-			if o.Action == "permblock" || o.Action == "promote" {
-				return false
-			}
-			key := compareStepKey{o.FindingID, legacyKind(o), o.anonTarget}
-			for i, at := range steps[key] {
-				if d := at.Sub(o.Timestamp); d >= -time.Hour && d <= time.Hour {
-					steps[key] = slices.Delete(steps[key], i, i+1)
-					return true
-				}
-			}
-			return false
-		}():
+	for i, decision := range matchComparison(checks, legacy, steps, summaries) {
+		switch decision {
+		case "step":
 			stepped++
-		case o.FindingID != "" && take(o.Timestamp, check, "coalesced", "", legacyEntry(o), legacyKind(o)):
+		case "coalesced":
 			coalesced++
+		case "":
+			unexplained = append(unexplained, legacy[i])
 		default:
-			explained := false
-			for _, reason := range designedRefusals {
-				if ruleCheck, listed := listedRule(o, check, reason); listed && take(o.Timestamp, ruleCheck, "refused", reason, legacyEntry(o), legacyKind(o)) {
-					designed[reason]++
-					explained = true
-					break
-				}
-			}
-			if !explained {
-				unexplained = append(unexplained, o)
-			}
+			designed[decision]++
 		}
 	}
 	verdict := func(ok bool) string {
@@ -337,5 +329,5 @@ func compareReport(checks map[string]string, actions []anonAction) string {
 	fmt.Fprintf(&b, "invalid refusals: %d: %s\n", invalid, verdict(invalid == 0))
 	fmt.Fprintf(&b, "queue overflow refusals: %d: %s\n", overflow, verdict(overflow == 0))
 	b.WriteString("read elsewhere: Critical deferrals and queue evictions (csm status, admission outcomes), handoff p99 (csm_admission_handoff_seconds), corruption/damage (csm status and doctor), collection and clean-stop coverage (collector inventory)\n")
-	return b.String()
+	return b.String(), nil
 }

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/admission"
@@ -332,4 +333,35 @@ func withoutAdmissionLink(which string) actionlog.Record {
 		r.FindingID = ""
 	}
 	return r
+}
+
+func TestVerifyNonRefusedSummariesRejectRefusalText(t *testing.T) {
+	a := NewAnonymizer(testSalt())
+	for _, result := range []actionlog.Result{"queued", "coalesced", "observe"} {
+		good, err := a.Action(summaryRow(result, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		good.Refusal, good.HasError = "customer.example", true
+		if a.VerifyAction(good) == nil || compareActionShape(good) {
+			t.Errorf("%s summary accepted raw refusal text", result)
+		}
+	}
+}
+
+func TestAdmissionSummariesRequireAnHourBoundary(t *testing.T) {
+	a := NewAnonymizer(testSalt())
+	r := summaryRow("queued", "")
+	good, err := a.Action(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Timestamp = r.Timestamp.Add(time.Second)
+	if _, err := a.Action(r); err == nil {
+		t.Error("accepted a summary outside its hour boundary")
+	}
+	good.Timestamp = r.Timestamp
+	if a.VerifyAction(good) == nil || compareActionShape(good) {
+		t.Error("verified a summary outside its hour boundary")
+	}
 }

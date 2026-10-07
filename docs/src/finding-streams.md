@@ -209,7 +209,8 @@ supplied.
 Automatic blocks still run on the legacy path while the admission ledger
 previews the same responses. `compare` reads the outputs of one joined run and
 sets each legacy automatic block in the preview window against what the
-preview did with its finding:
+preview did with its finding. Older unstamped finding rows still supply
+their identifiers and checks for joins:
 
 ```bash
 /tmp/finding-stream compare --findings host-a/findings.jsonl.gz --actions host-a/actions.jsonl.gz
@@ -217,14 +218,21 @@ preview did with its finding:
 
 The window runs from the first to the last hourly admission summary. A block
 is matched by one observed attempt for the same finding, response kind and
-typed target within an hour. Coalesced decisions and designed refusals each
-spend one summary count for the same entry, kind and check in the same or an
-adjacent hour. Hourly aggregation cannot prove the exact event delay. A
-backward wall step clamps counts to the admission hour floor; larger clock
-disagreement stays unexplained and must be checked through clock status. Attribution explains only the listed scan-pass provenance gaps; policy
-explains only an unserved address producer or a rootless derived path. A
-rootless derived path may spend its fixed unknown-check policy count without
+typed target within an hour. Matching can reassign compatible decisions
+when their windows overlap; each decision is consumed once. Coalesced
+decisions and designed refusals each spend one summary count for the same
+entry, kind and check in the same or an adjacent hour. Hourly aggregation
+cannot prove the exact event delay. A backward wall step clamps counts to
+the admission hour floor; larger clock disagreement stays unexplained and
+must be checked through clock status.
+Attribution explains only scan-pass provenance gaps for checks served through
+the matching entry; policy explains only netblock, permanent-block escalation,
+challenge timeout or incident paths without a retained root. A rootless
+derived path may spend its fixed unknown-check policy count without
 a finding link. Other policy and attribution refusals stay unexplained.
+Summaries must be stamped at an hour boundary, and only refused decisions
+may carry a refusal reason. Counts that overflow refuse the comparison,
+and output errors never repeat file paths or host data.
 Summary matches are aggregate lower bounds, not proof about one finding. Anything else is listed
 as unexplained. The report also totals Invalid and queue overflow refusals,
 and names what only `csm status` and the metrics show: Critical deferrals,

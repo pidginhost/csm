@@ -23,8 +23,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
-- After upgrade, `finding-stream anonymize --actions` accepts admission previews and hourly summaries instead of rejecting recordings that contain them. Joined bundles remain readable by the replay tool.
-- After upgrade, `finding-stream compare` explains which legacy automatic blocks have matching previews or designed refusals and flags gaps in the recorded evidence. It reads the anonymized outputs of one joined run and changes no host settings.
+- After upgrade, `finding-stream anonymize --actions` accepts admission previews and hourly summaries while refusing malformed summaries and identity leaks. Joined bundles remain readable by the replay tool.
+- After upgrade, `finding-stream compare` accepts older unstamped findings, resolves overlapping matches without reusing decisions and accepts only listed designed refusals. Count overflow and output failures return errors without host data; host settings are unchanged.
 - From the first start after upgrade, every host with `auto_response.enabled` previews its selected responses under `auto_response.max_blocks_per_hour`, leaving existing blocking unchanged. Status, findings history, hourly decision summaries and a handoff latency metric show the preview, including refusals during outages and shutdown; admission diagnostics warn only on failures, gap previews retry failed history writes and stay out of alert channels, and a stopped preview raises a Warning.
 
 ### Fixed
