@@ -228,8 +228,8 @@ func TestOwnerDrainingAuditIsNotStalled(t *testing.T) {
 	prevBatch, prevNow := auditBatch, deliveryNow
 	t.Cleanup(func() { auditBatch, deliveryNow = prevBatch, prevNow })
 	auditBatch = 1
-	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
-	deliveryNow = func() time.Time { return now }
+	clk := &testClock{t: time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)}
+	deliveryNow = clk.now
 	writes := 0
 	opts := f.options()
 	opts.WriteAudit = func([]actionlog.Record) error {
@@ -242,12 +242,12 @@ func TestOwnerDrainingAuditIsNotStalled(t *testing.T) {
 	o := f.start(opts)
 	applied(t, o, p, f.host)
 	_ = o.do(o.deliverAudit)
-	now = now.Add(5 * time.Minute)
+	clk.advance(5 * time.Minute)
 	_ = o.do(o.deliverAudit)
 	if got := len(pendingAudit(t, o)); got != 2 {
 		t.Fatalf("pending = %d, want one row delivered", got)
 	}
-	if s := o.QueueStatuses(now.Add(30 * time.Second))["audit"]; s.Status == "degraded" {
+	if s := o.QueueStatuses(clk.now().Add(30 * time.Second))["audit"]; s.Status == "degraded" {
 		t.Fatalf("a draining backlog reported a stall: %+v", s)
 	}
 }
