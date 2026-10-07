@@ -10,6 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
+	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -165,6 +166,14 @@ func (d *Daemon) reloadConfig() {
 	}
 	fmt.Fprintf(os.Stderr, "[%s] SIGHUP: config reloaded; safe fields updated: %v\n", ts(), names)
 
+	d.reconcileHotReloadables()
+}
+
+// reconcileHotReloadables pushes the safe-field values of the live config into
+// the subsystems that cache them. Both reload paths end here: a SIGHUP after
+// the edited file is published, and a web UI save after the handler has
+// published the edited config.
+func (d *Daemon) reconcileHotReloadables() {
 	// A forward-guard config change is a safe (hot-reload) field; re-reconcile
 	// so enabling/disabling or toggling enforce takes effect without a restart.
 	d.reconcileForwardGuard()
@@ -174,7 +183,7 @@ func (d *Daemon) reloadConfig() {
 	d.reconcileVerifiedBots()
 
 	// thresholds is a safe block; push the new SMTP/mail brute-force thresholds
-	// into the live trackers so a SIGHUP takes effect without a restart.
+	// into the live trackers so a reload takes effect without a restart.
 	d.reconcileBruteThresholds()
 
 	// reputation.whitelist is a safe field; replace the threat database's
@@ -183,6 +192,21 @@ func (d *Daemon) reloadConfig() {
 
 	// auto_response.max_blocks_per_hour sets the admission ceiling.
 	d.reloadAdmission()
+}
+
+// applySavedConfig applies a config the web UI has already saved and
+// published. The file is signed and the live config swapped by then, so a
+// failing step is logged rather than refused: the operator sees the saved
+// values and the log explains what did not reach a subsystem.
+func (d *Daemon) applySavedConfig() {
+	cfg := d.activeOrStartupCfg()
+	if err := installAccountExtractorFromConfig(cfg); err != nil {
+		csmlog.Error("settings save: account extractor update failed", "err", err)
+	}
+	if err := alert.ConfigurePhpanelQueue(cfg); err != nil {
+		csmlog.Error("settings save: phpanel queue update failed", "err", err)
+	}
+	d.reconcileHotReloadables()
 }
 
 // activeOrStartupCfg returns the current live config, falling back

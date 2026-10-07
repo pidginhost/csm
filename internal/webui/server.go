@@ -138,6 +138,10 @@ type Server struct {
 	modSecApplyMu    sync.Mutex // serializes modsec rules apply (write+reload+rollback)
 	sigCountMu       sync.RWMutex
 	settingsSaveHook func()
+	// configAppliedHook runs after a settings save has published a new live
+	// config, so the daemon can push safe-field values into the subsystems
+	// that cache them. nil in handler tests.
+	configAppliedHook func()
 	// verifyFinding is per server so handler tests can inject a verdict without
 	// replacing process-wide behavior while another server is handling a request.
 	verifyFinding func(checks.VerifyInput) checks.VerifyResult
@@ -765,6 +769,12 @@ func (s *Server) emailAVMode() string {
 }
 
 // SetVersion sets the application version for display in the UI.
+// SetConfigAppliedHook registers the callback the Daemon uses to apply a
+// config the web UI just published, the same steps a SIGHUP reload runs.
+func (s *Server) SetConfigAppliedHook(fn func()) {
+	s.configAppliedHook = fn
+}
+
 func (s *Server) SetVersion(v string) {
 	s.version = v
 }

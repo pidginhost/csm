@@ -312,3 +312,52 @@ func TestReconcileBruteThresholdsRaceWithRecord(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// A browser save publishes the edited config through config.SetActive and
+// then asks the daemon to apply it; the trackers must pick the new thresholds
+// up exactly as they do after a SIGHUP reload.
+func TestApplySavedConfigPushesBruteThresholdsIntoTrackers(t *testing.T) {
+	orig := hotReloadThresholdConfig()
+	orig.Hostname = "host-a"
+	orig.Thresholds.SMTPBruteForceThreshold = 50
+	orig.Thresholds.MailBruteForceThreshold = 50
+	orig.Thresholds.SMTPProbeThreshold = 10000
+	prev := config.Active()
+	config.SetActive(orig)
+	t.Cleanup(func() {
+		config.SetActive(prev)
+		SetAccountExtractor(nil)
+	})
+
+	d := New(orig, nil, nil, "")
+	for i := 0; i < 4; i++ {
+		if got := d.smtpAuthTracker.Record("203.0.113.30", ""); len(got) != 0 {
+			t.Fatalf("smtp auth fired before the save: %+v", got)
+		}
+		if got := d.mailAuthTracker.Record("203.0.113.31", "victim@example.com"); len(got) != 0 {
+			t.Fatalf("mail auth fired before the save: %+v", got)
+		}
+	}
+	for i := 0; i < 9; i++ {
+		if got := d.smtpProbeTracker.Record("203.0.113.32"); len(got) != 0 {
+			t.Fatalf("smtp probe fired before the save: %+v", got)
+		}
+	}
+
+	saved := hotReloadThresholdConfig()
+	saved.Hostname = "host-a"
+	saved.Thresholds.SMTPProbeThreshold = 10
+	config.SetActive(saved)
+
+	d.applySavedConfig()
+
+	if got := d.smtpAuthTracker.Record("203.0.113.30", ""); !hasCheckFinding(got, "smtp_bruteforce") {
+		t.Fatalf("save did not push smtp auth threshold; got %+v", got)
+	}
+	if got := d.mailAuthTracker.Record("203.0.113.31", "victim@example.com"); !hasCheckFinding(got, "mail_bruteforce") {
+		t.Fatalf("save did not push mail auth threshold; got %+v", got)
+	}
+	if got := d.smtpProbeTracker.Record("203.0.113.32"); !hasCheckFinding(got, "smtp_probe_abuse") {
+		t.Fatalf("save did not push smtp probe threshold; got %+v", got)
+	}
+}

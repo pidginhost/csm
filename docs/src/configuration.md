@@ -966,7 +966,10 @@ The tagged-safe top-level fields are `alerts`, `thresholds`,
 `detection`, `suppressions`, `auto_response`, `bpf_enforcement`,
 `reputation`, `email_protection`, and `disabled_checks`. The Settings
 API derives its restart hints from the same manifest that drives
-`config.Diff`, so UI hints and SIGHUP behavior cannot drift silently.
+`config.Diff`, so UI hints and SIGHUP behavior cannot drift silently. A
+save from the Settings page runs the same apply steps as a SIGHUP, so a
+changed threshold, reputation whitelist, verified-bot list, forward-guard
+setting or response ceiling reaches the live daemon at once.
 Changes to their sub-keys are picked up on the next tick by the
 periodic scanners, the auto-response helpers
 (block/kill/quarantine/challenge/permission-fix), alert dispatch, and

@@ -423,6 +423,9 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 	if liveCandidate != nil {
 		applySignedIntegrityState(liveCandidate, &clone)
 		config.SetActive(liveCandidate)
+		if s.configAppliedHook != nil {
+			s.configAppliedHook()
+		}
 	} else if live := config.Active(); live != nil {
 		livePatched := *live
 		applySignedIntegrityState(&livePatched, &clone)
