@@ -428,6 +428,9 @@ func (q *queueTx) check(lc liveCandidate, timed bool) (admission.Assessment, adm
 		return admission.Assessment{}, admission.ReasonStale, nil
 	}
 	if err == nil {
+		err = validateCandidateEntry(q.reg, c, roots)
+	}
+	if err == nil {
 		_, err = scopeOwner(q.inv, roots)
 	}
 	var a admission.Assessment

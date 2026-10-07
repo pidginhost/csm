@@ -146,6 +146,15 @@ func (l *AdmissionLedger) Enqueue(req admission.CandidateRequest) (admission.Can
 // caller flushes q once its transaction's work is done.
 func (l *AdmissionLedger) enqueueTx(q *queueTx, req admission.CandidateRequest, key admission.CandidateKey, id admission.CandidateID, ids []admission.EvidenceID) (admission.Candidate, bool, error) {
 	tx, now := q.tx, q.now
+	if req.Entry != 0 {
+		primary, err := loadEvidence(tx, l.reg, req.Primary)
+		if err != nil {
+			return admission.Candidate{}, false, err
+		}
+		if err := l.reg.ValidateVia(req.Entry, primary); err != nil {
+			return admission.Candidate{}, false, err
+		}
+	}
 	cur, err := loadCandidate(tx, id)
 	switch {
 	case err == nil:
@@ -173,9 +182,6 @@ func (l *AdmissionLedger) enqueueTx(q *queueTx, req admission.CandidateRequest, 
 	primary := roots[slices.Index(ids, req.Primary)]
 	entry := primary.Entry()
 	if req.Entry != 0 {
-		if err = l.reg.ValidateVia(req.Entry, primary); err != nil {
-			return admission.Candidate{}, false, err
-		}
 		entry = req.Entry
 	}
 	c := admission.Candidate{
@@ -241,6 +247,9 @@ func (l *AdmissionLedger) coalesceTx(q *queueTx, cur admission.Candidate, ids []
 	if err != nil {
 		return admission.Candidate{}, false, err
 	}
+	if err = validateCandidateEntry(l.reg, cur, roots); err != nil {
+		return admission.Candidate{}, false, err
+	}
 	if _, err = admission.Assess(cur.Key.Target, roots, now); err != nil {
 		return admission.Candidate{}, false, err
 	}
@@ -303,6 +312,17 @@ func loadRoots(tx *bolt.Tx, reg *admission.Registry, ids []admission.EvidenceID)
 		roots = append(roots, e)
 	}
 	return roots, nil
+}
+
+// validateCandidateEntry checks the retained entry against the primary
+// check, not whichever supporting root sorts first.
+func validateCandidateEntry(reg *admission.Registry, c admission.Candidate, roots []admission.Evidence) error {
+	for _, e := range roots {
+		if e.Check() == c.Check {
+			return reg.ValidateVia(c.Entry, e)
+		}
+	}
+	return admission.ErrCorruptRecord
 }
 
 // Candidate loads a candidate record.

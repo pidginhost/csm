@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -198,5 +199,175 @@ func TestOwnerTakesATurnAfterADrain(t *testing.T) {
 	turn()
 	if n := outcomes(ledgerStatus(t, o), admission.DispositionObserve); n != 1 {
 		t.Fatalf("previews after the drain = %d", n)
+	}
+}
+
+func TestOwnerEndsAnInvalidPreviewWithoutStarvingWork(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		selected time.Duration
+		fallback time.Duration
+	}{
+		{"unrepresentable selected expiry", time.Duration(1<<63 - 1), time.Hour},
+		{"negative configured lifetime", 0, -time.Second},
+		{"zero configured lifetime", 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withTestRegistry(t)
+			f := newOwnerFixture(t)
+			opts := respondOptions(f)
+			opts.ScheduleEvery = time.Hour
+			fallback := time.Hour
+			opts.Expiry = func(c admission.Candidate) time.Duration {
+				if c.Key.Target.Key() == "ip:192.0.2.10" {
+					return fallback
+				}
+				return time.Hour
+			}
+			prev := previewLimits
+			previewLimits.Members = 1
+			t.Cleanup(func() { previewLimits = prev })
+			o := f.start(opts)
+			for i, addr := range []string{"192.0.2.10", "192.0.2.11"} {
+				sev, ttl := alert.High, time.Duration(0)
+				if i == 0 {
+					sev, ttl = alert.Critical, tc.selected
+				}
+				finding := sshFinding(f.host.now(), addr, sev)
+				finding.SourceIP = addr
+				e, err := o.Mint(finding, addr)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = o.Respond(admission.KindBlockIP, e, 0, ttl); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := o.do(o.drain); err != nil {
+				t.Fatal(err)
+			}
+			var bad admission.CandidateID
+			for _, c := range queuedCandidates(t, o) {
+				if c.Key.Target.Key() == "ip:192.0.2.10" {
+					bad, _ = c.ID()
+				}
+			}
+			if bad == "" {
+				t.Fatal("the invalid preview was not queued")
+			}
+			if err := o.do(func() error { fallback = tc.fallback; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			if err := o.Reload(); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				if err := o.do(func() error { o.schedule(); return nil }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := o.do(func() error {
+				c, err := o.ledger.Candidate(bad)
+				if err != nil {
+					return err
+				}
+				if c.State != admission.StateRefused || c.Reason != admission.ReasonInvalid || c.Attempts != 0 {
+					t.Errorf("invalid preview = %+v", c)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			st := ledgerStatus(t, o)
+			if outcomes(st, admission.DispositionObserve) != 1 || st.Ceiling.General.Used != 1 || len(queuedCandidates(t, o)) != 0 {
+				t.Fatalf("observed %d, charges %d, queued %d", outcomes(st, admission.DispositionObserve), st.Ceiling.General.Used, len(queuedCandidates(t, o)))
+			}
+			if err := o.status().Owner.Error; err != "" {
+				t.Fatalf("a handled refusal left an owner error: %s", err)
+			}
+		})
+	}
+}
+
+func TestOwnerPreviewRetryKeepsItsReservedExpiry(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	opts := previewOptions(f)
+	opts.ScheduleEvery = time.Hour
+	o := f.start(opts)
+	submitTo(t, o, p, "192.0.2.10", f.host.now())
+	if err := o.do(o.drain); err != nil {
+		t.Fatal(err)
+	}
+	queued := queuedCandidates(t, o)
+	if len(queued) != 1 {
+		t.Fatalf("queued = %+v", queued)
+	}
+	id, _ := queued[0].ID()
+	expires := f.host.now().Add(time.Hour)
+	if err := o.do(func() error {
+		_, a, _, err := o.ledger.Reserve(id, admission.LaneGeneral, expires)
+		if err != nil {
+			return err
+		}
+		_, _, err = o.ledger.Finish(a.Attempt.ID, admission.DispositionFailed)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f.host.advance(time.Second)
+	if err := o.do(o.preview); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.do(func() error {
+		c, err := o.ledger.Candidate(id)
+		if err != nil {
+			return err
+		}
+		if c.State != admission.StateObserved || c.Attempts != 2 || !c.ExpiresAt.Equal(expires) {
+			t.Errorf("retry = %+v", c)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOwnerReloadRecomputesThePreviewWake(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	f.host.set(func(h *fakeHost) { h.limit = 6 })
+	mono := &fakeMono{now: time.Now()}
+	prev := monoNow
+	monoNow = mono.read
+	t.Cleanup(func() { monoNow = prev })
+	opts := previewOptions(f)
+	opts.ScheduleEvery = time.Hour
+	o := f.start(opts)
+	submitTo(t, o, p, "192.0.2.10", f.host.now())
+	submitTo(t, o, p, "192.0.2.11", f.host.now())
+	if err := o.do(o.drain); err != nil {
+		t.Fatal(err)
+	}
+	turn := func() {
+		t.Helper()
+		if err := o.do(func() error { o.schedule(); return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turn()
+	if n := outcomes(ledgerStatus(t, o), admission.DispositionObserve); n != 1 {
+		t.Fatalf("first turn observed %d", n)
+	}
+	f.host.set(func(h *fakeHost) { h.limit = 2000 })
+	if err := o.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	turn()
+	f.host.advance(time.Minute)
+	mono.advance(time.Minute)
+	turn()
+	if n := outcomes(ledgerStatus(t, o), admission.DispositionObserve); n != 2 {
+		t.Fatalf("after the new ceiling earned credit: observed %d, want 2", n)
 	}
 }

@@ -225,3 +225,72 @@ func TestAdmissionLedgerArrivalTakesItsEntryFromItsRequest(t *testing.T) {
 	_, _, err := f.l.Enqueue(req)
 	wantLedgerReason(t, "an unbound direct request", err, admission.ReasonPolicy)
 }
+
+func TestAdmissionLedgerDirectCoalescingRevalidatesEntry(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	a := f.arrival(evidenceSpec{cursor: "bound-root"})
+	a.Request.Entry = admission.EntryChallengeTimeout
+	r := f.arrive(a)[0]
+	if r.Err != nil || !r.Created {
+		t.Fatalf("arrival = %+v", r)
+	}
+	c := f.candidateOf(r.Candidate)
+	req := a.Request
+	req.Episode, req.Generation = c.Key.Episode, c.Key.Generation
+	before := f.snapshot()
+	req.Entry = admission.EntryCentral
+	_, _, err := f.l.Enqueue(req)
+	wantLedgerReason(t, "unbound direct coalescing", err, admission.ReasonPolicy)
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("an unbound entry changed the ledger")
+	}
+	req.Entry = admission.EntryChallengeTimeout
+	if got, created, err := f.l.Enqueue(req); err != nil || created || got.Entry != c.Entry || got.Key != c.Key {
+		t.Fatalf("bound direct coalescing: %+v, created %v, %v", got, created, err)
+	}
+}
+
+func TestAdmissionLedgerRevalidatesRetainedDerivedEntries(t *testing.T) {
+	for _, operation := range []string{"schedule", "coalesce"} {
+		t.Run(operation, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.begin()
+			a := f.arrival(evidenceSpec{cursor: "retained-root"})
+			a.Request.Entry = admission.EntryChallengeTimeout
+			r := f.arrive(a)[0]
+			if r.Err != nil || !r.Created {
+				t.Fatalf("arrival = %+v", r)
+			}
+			reg, err := admission.NewRegistry(ledgerLookup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec, ok := f.reg.Spec(f.ssh.ID())
+			if !ok {
+				t.Fatal("the root producer is missing")
+			}
+			if _, err = reg.Register(spec); err != nil {
+				t.Fatal(err)
+			}
+			reg.Seal()
+			if f.l, err = OpenAdmissionLedger(f.db, reg); err != nil {
+				t.Fatal(err)
+			}
+			f.tickAt(f.wall)
+			switch operation {
+			case "schedule":
+				picks := f.schedule(admission.ScheduleLimits{General: 1, Members: 1})
+				c := f.candidateOf(r.Candidate)
+				if len(picks) != 0 || c.State != admission.StateRefused || c.Reason != admission.ReasonPolicy {
+					t.Fatalf("revoked entry: picks %+v, candidate %+v", picks, c)
+				}
+			case "coalesce":
+				// The new root's scan entry is valid, but coalescing would
+				// keep the candidate's now-unregistered timeout entry.
+				next := f.arrival(evidenceSpec{cursor: "later-root"})
+				wantLedgerReason(t, "revoked retained entry", f.arrive(next)[0].Err, admission.ReasonPolicy)
+			}
+		})
+	}
+}

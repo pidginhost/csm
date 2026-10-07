@@ -30,6 +30,33 @@ func TestIngressHoldsOneItemPerKindAndEntry(t *testing.T) {
 	}
 }
 
+func TestIngressCoalescesImplicitAndExplicitRootEntries(t *testing.T) {
+	f := newIngressFixture(t)
+	f.publish()
+	first := f.sub(subSpec{})
+	if err := f.in.Submit(first); err != nil {
+		t.Fatal(err)
+	}
+	explicit := first
+	explicit.Via = first.Evidence.Entry()
+	if err := f.in.Submit(explicit); err != nil {
+		t.Fatal(err)
+	}
+	if f.in.Len() != 1 || f.in.Stats().Accepted != 1 || f.in.Stats().Duplicates != 1 {
+		t.Fatalf("held %d, stats %+v", f.in.Len(), f.in.Stats())
+	}
+	taken := f.in.Take(1)
+	snap := *f.in.snap
+	snap.Revision = f.rev + 1
+	f.in.Complete(taken, snap.Revision, &snap)
+	if err := f.in.Submit(explicit); err != nil {
+		t.Fatal(err)
+	}
+	if f.in.Len() != 1 || f.in.Stats().Accepted != 2 || f.in.Stats().Duplicates != 1 {
+		t.Fatalf("after acknowledgement: held %d, stats %+v", f.in.Len(), f.in.Stats())
+	}
+}
+
 // A derived entry carries the root it answers; the registry binds it to a
 // producer of that entry that wraps the root's check, so a caller cannot
 // name an entry the check was never registered for.
@@ -64,6 +91,26 @@ func TestIngressCountsAResponseThatCouldNotBeMinted(t *testing.T) {
 	}
 	if got := f.in.Checkpoint().Sequence; got != before+2 {
 		t.Fatalf("sequence %d, want %d", got, before+2)
+	}
+}
+
+func TestIngressCountsUnmintedCriticalResponsesWhileStopped(t *testing.T) {
+	f := newIngressFixture(t)
+	f.publish()
+	f.in.Refuse(refuse(ReasonAttribution, "finding has no observation"), SeverityCritical)
+	if h := f.in.Health(); h.CriticalRefused != 0 {
+		t.Fatalf("open ingress health = %+v", h)
+	}
+	f.in.Publish(nil)
+	stopped := f.in.Health().StoppedSince
+	f.in.Refuse(refuse(ReasonAttribution, "finding has no observation"), SeverityCritical)
+	f.in.Refuse(refuse(ReasonPolicy, "no retained root"), SeverityHigh)
+	if h := f.in.Health(); h.Admitting || h.CriticalRefused != 1 || !h.StoppedSince.Equal(stopped) {
+		t.Fatalf("stopped ingress health = %+v", h)
+	}
+	f.publish()
+	if h := f.in.Health(); h != (IngressHealth{Admitting: true}) {
+		t.Fatalf("recovered ingress health = %+v", h)
 	}
 }
 

@@ -28,7 +28,13 @@ type held struct {
 	via  Entry
 }
 
-func heldKeyOf(s Submission) held { return held{id: s.Evidence.ID(), kind: s.Kind, via: s.Via} }
+func heldKeyOf(s Submission) held {
+	entry := s.Via
+	if entry == 0 {
+		entry = s.Evidence.Entry()
+	}
+	return held{id: s.Evidence.ID(), kind: s.Kind, via: entry}
+}
 
 // IngressCheckpoint records the ingress decisions preceding a drain. Counters
 // are a canonical QueueCounters record, copied at the handoff boundary.
@@ -244,6 +250,9 @@ func (in *Ingress) Refuse(err error, sev Severity) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	in.seq++
+	if in.snap == nil && sev == SeverityCritical {
+		in.criticalRefused++
+	}
 	reason, ok := ReasonOf(err)
 	if !ok {
 		reason = ReasonInvalid

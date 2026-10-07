@@ -452,6 +452,7 @@ func (o *Owner) reloadCeiling() error {
 		return err
 	}
 	o.reloadPending = false
+	o.scheduleDue = true
 	return nil
 }
 
@@ -585,9 +586,10 @@ func (o *Owner) schedule() {
 // reading (O9): each is reserved and charged as live work would be and
 // ends in the same transaction without running (O14). The schedule has
 // already deferred the work its budgets cannot serve and revalidated each
-// pick under the same state, so a refused preview is the turn's error. The
-// ledger's wake time, converted by the admission clock's elapsed time,
-// sets the next turn (O16).
+// pick under the same state. A terminal refusal ends only that pick, so an
+// invalid selected lifetime cannot starve the queue. Other failures retry
+// the turn. The ledger's wake time, converted by the admission clock's
+// elapsed time, sets the next turn (O16).
 func (o *Owner) preview() error {
 	if err := o.tick(); err != nil {
 		return err
@@ -601,11 +603,24 @@ func (o *Owner) preview() error {
 		if readErr != nil {
 			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
 		}
-		duration := c.PreviewTTL
-		if duration == 0 {
-			duration = o.opts.Expiry(c)
+		expires := c.ExpiresAt
+		if c.Attempts == 0 {
+			duration := c.PreviewTTL
+			if duration == 0 {
+				duration = o.opts.Expiry(c)
+			}
+			expires = o.now.Add(duration)
 		}
-		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, o.now.Add(duration)); err != nil {
+		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, expires); err != nil {
+			if reason, refused := admission.ReasonOf(err); refused {
+				switch reason.Disposition() {
+				case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
+					if _, endErr := o.ledger.Terminate(p.ID, reason); endErr != nil {
+						return fmt.Errorf("ending pick %s: %w", p.ID, endErr)
+					}
+					continue
+				}
+			}
 			return fmt.Errorf("previewing pick %s: %w", p.ID, err)
 		}
 	}
