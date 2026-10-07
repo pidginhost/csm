@@ -52,13 +52,12 @@ func TestOwnerRetainsDamageAfterAFailedDrainRecovers(t *testing.T) {
 				t.Fatal(err)
 			}
 			prev := drainGroupOf
-			t.Cleanup(func() { drainGroupOf = prev })
 			fault := errors.New("storage temporarily unavailable")
-			drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+			setOwnerHook(t, o, &drainGroupOf, func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
 				return in.DrainTaken(&failingDamagedTargetLedger{
 					damagedTargetLedger: damagedTargetLedger{Ledger: l, bad: bad}, stage: stage, fault: fault,
 				}, items, arrivalRequest)
-			}
+			})
 			for _, addr := range []string{"192.0.2.66", "192.0.2.20", "192.0.2.21"} {
 				submitTo(t, o, p, addr, f.host.now())
 			}
@@ -76,7 +75,7 @@ func TestOwnerRetainsDamageAfterAFailedDrainRecovers(t *testing.T) {
 			o.notices.cycle()
 			// Ticks, inventory and reload recovery must preserve both the
 			// admission hold and its independent damage signal.
-			drainGroupOf = prev
+			setOwnerHook(t, o, &drainGroupOf, prev)
 			if err = o.do(o.tick); err != nil {
 				t.Fatal(err)
 			}

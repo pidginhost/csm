@@ -105,10 +105,11 @@ func TestOwnerAnswersARootThroughADerivedEntry(t *testing.T) {
 func TestOwnerStopIsBoundedWhileAProducerSubmits(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)
-	o := Start(respondOptions(f))
-	quit, stopped := make(chan struct{}), make(chan struct{})
-	defer close(quit)
+	o := f.start(respondOptions(f))
+	quit, stopped, producerDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	defer func() { close(quit); <-producerDone }()
 	go func() {
+		defer close(producerDone)
 		for i := 0; ; i++ {
 			select {
 			case <-quit:
@@ -142,7 +143,7 @@ func TestOwnerStopIsBoundedWhileAProducerSubmits(t *testing.T) {
 func TestOwnerStopRefusesWorkSubmittedDuringItsDrain(t *testing.T) {
 	withTestRegistry(t)
 	f := newOwnerFixture(t)
-	o := Start(respondOptions(f))
+	o := f.start(respondOptions(f))
 	e, err := o.Mint(sshFinding(f.host.now(), "offset=held", alert.High), "192.0.2.10")
 	if err != nil {
 		t.Fatal(err)
@@ -152,7 +153,7 @@ func TestOwnerStopRefusesWorkSubmittedDuringItsDrain(t *testing.T) {
 	}
 	var late, accepted int
 	prev := drainGroupOf
-	drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+	setOwnerHook(t, o, &drainGroupOf, func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
 		if o.stopping.Load() {
 			late++
 			if e, mintErr := o.Mint(sshFinding(f.host.now(), fmt.Sprintf("offset=late-%d", late), alert.High), "192.0.2.10"); mintErr == nil && o.Respond(admission.KindBlockIP, e, 0) == nil {
@@ -160,8 +161,7 @@ func TestOwnerStopRefusesWorkSubmittedDuringItsDrain(t *testing.T) {
 			}
 		}
 		return prev(in, l, items)
-	}
-	t.Cleanup(func() { drainGroupOf = prev })
+	})
 	stopped := make(chan struct{})
 	go func() { o.Stop(); close(stopped) }()
 	select {
@@ -233,7 +233,7 @@ func TestOwnerPreviewsAnIPv6ChallengeWithoutFirewallIPv6(t *testing.T) {
 			return candidateErr
 		}
 		if candidate.State != admission.StateObserved || candidate.Disposition != admission.DispositionObserve {
-			t.Fatalf("challenge outcome = %+v", candidate)
+			t.Errorf("challenge outcome = %+v", candidate)
 		}
 		return nil
 	}); err != nil {

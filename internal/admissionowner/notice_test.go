@@ -78,14 +78,13 @@ func TestOwnerDeliversNoticesOnTheIndependentPath(t *testing.T) {
 	criticalGap(t, o, p, f.host)
 	failAck := true
 	prev := ackNotices
-	ackNotices = func(l *store.AdmissionLedger, acks []admission.NoticeAck) error {
+	setOwnerHook(t, o, &ackNotices, func(l *store.AdmissionLedger, acks []admission.NoticeAck) error {
 		if failAck {
 			failAck = false
 			return errors.New("ledger busy")
 		}
 		return prev(l, acks)
-	}
-	t.Cleanup(func() { ackNotices = prev })
+	})
 	o.notices.cycle()
 	if sink.count() != 1 {
 		t.Fatalf("deliveries = %d", sink.count())
@@ -205,6 +204,8 @@ func TestOwnerStopWaitsForANoticeDelivery(t *testing.T) {
 	f := newOwnerFixture(t)
 	f.host.set(func(h *fakeHost) { h.clockErr = errors.New("clock unavailable") })
 	entered, release := make(chan struct{}), make(chan struct{})
+	releaseDelivery := sync.OnceFunc(func() { close(release) })
+	defer releaseDelivery()
 	var once sync.Once
 	opts := f.options()
 	opts.NoticeEvery = time.Millisecond
@@ -222,7 +223,7 @@ func TestOwnerStopWaitsForANoticeDelivery(t *testing.T) {
 		t.Fatal("Stop returned during a delivery")
 	case <-time.After(50 * time.Millisecond):
 	}
-	close(release)
+	releaseDelivery()
 	<-stopped
 }
 
@@ -235,9 +236,7 @@ func TestOwnerStopNoticeSurvivesAnAckFailure(t *testing.T) {
 	opts.Deliver = sink.deliver
 	o := f.start(opts)
 	criticalGap(t, o, p, f.host)
-	prev := ackNotices
-	ackNotices = func(*store.AdmissionLedger, []admission.NoticeAck) error { return errors.New("ledger unavailable") }
-	t.Cleanup(func() { ackNotices = prev })
+	setOwnerHook(t, o, &ackNotices, func(*store.AdmissionLedger, []admission.NoticeAck) error { return errors.New("ledger unavailable") })
 	o.notices.cycle()
 	if sink.count() != 1 {
 		t.Fatal("initial delivery missing")

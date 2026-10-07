@@ -36,6 +36,7 @@ func testAdmissionOptions(d *Daemon, db *store.DB) admissionowner.Options {
 		return admission.InventoryObservation{Accounts: []string{"alice"}, Incarnations: map[string]string{"alice": "startdate:1"}}, nil
 	}
 	opts.TickEvery, opts.InventoryEvery, opts.StatusEvery, opts.DeliverEvery, opts.NoticeEvery = time.Hour, time.Hour, time.Hour, time.Hour, time.Hour
+	opts.DrainEvery, opts.ScheduleEvery = time.Hour, time.Hour
 	return opts
 }
 

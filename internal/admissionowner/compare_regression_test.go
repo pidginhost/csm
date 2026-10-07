@@ -74,21 +74,20 @@ func TestDecisionCountsFlushAfterAFailedFinalDrain(t *testing.T) {
 			o.Refuse(admission.KindBlockIP, sshFinding(f.host.now(), "offset=1", alert.High), 0, admission.ErrEvidenceConflict)
 			submit(t, o, p, "offset=2", f.host.now())
 			previous := drainGroupOf
-			t.Cleanup(func() { drainGroupOf = previous })
 			switch failure {
 			case "clock":
 				f.host.set(func(h *fakeHost) { h.clockErr = errors.New("clock unavailable") })
 			case "group":
-				drainGroupOf = func(*admission.Ingress, *store.AdmissionLedger, []admission.IngressItem) (admission.DrainReport, error) {
+				setOwnerHook(t, o, &drainGroupOf, func(*admission.Ingress, *store.AdmissionLedger, []admission.IngressItem) (admission.DrainReport, error) {
 					return admission.DrainReport{}, errors.New("group unavailable")
-				}
+				})
 			case "final checkpoint":
-				drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+				setOwnerHook(t, o, &drainGroupOf, func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
 					if len(items) == 0 {
 						return admission.DrainReport{}, errors.New("checkpoint unavailable")
 					}
 					return previous(in, l, items)
-				}
+				})
 			}
 			o.Stop()
 			want := []string{"2026-10-04T13:00:00Z block_ip unknown scan refused invalid 1"}

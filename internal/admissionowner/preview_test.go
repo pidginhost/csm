@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -44,6 +45,31 @@ func outcomes(s admission.LedgerStatus, d admission.Disposition) uint64 {
 		}
 	}
 	return n
+}
+
+// Manual fixture timers must leave queued work alone until the test asks
+// for a preview, even if the test takes longer than the default period.
+func TestOwnerFixtureKeepsPreviewTurnsManual(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		p := withTestRegistry(t)
+		f := newOwnerFixture(t)
+		o := f.start(previewOptions(f))
+		submitTo(t, o, p, "192.0.2.10", f.host.now())
+		if err := o.do(o.drain); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		if n := outcomes(ledgerStatus(t, o), admission.DispositionObserve); n != 0 || len(queuedCandidates(t, o)) != 1 {
+			t.Fatalf("manual timers ran a preview: %d observed, %d queued", n, len(queuedCandidates(t, o)))
+		}
+		if err := o.do(o.preview); err != nil {
+			t.Fatal(err)
+		}
+		if n := outcomes(ledgerStatus(t, o), admission.DispositionObserve); n != 1 || len(queuedCandidates(t, o)) != 0 {
+			t.Fatalf("requested preview: %d observed, %d queued", n, len(queuedCandidates(t, o)))
+		}
+	})
 }
 
 // The owner serves what it drained as observe previews: each pick is
@@ -129,30 +155,32 @@ func TestOwnerPreviewsDeferredWorkAtTheLedgerWakeTime(t *testing.T) {
 // A schedule the ledger refuses is the owner's error until a later turn
 // succeeds; the turn is retried.
 func TestOwnerReportsAFailedSchedule(t *testing.T) {
-	p := withTestRegistry(t)
-	f := newOwnerFixture(t)
-	failing := errors.New("injected schedule failure")
-	prev := scheduleLedger
-	scheduleLedger = func(*store.AdmissionLedger, admission.ScheduleLimits) ([]admission.Pick, error) { return nil, failing }
-	t.Cleanup(func() { scheduleLedger = prev })
-	o := f.start(previewOptions(f))
-	submitTo(t, o, p, "192.0.2.10", f.host.now())
-	if err := o.do(o.drain); err != nil {
-		t.Fatal(err)
-	}
-	if err := o.do(func() error { o.schedule(); return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if s := o.status().Owner; !strings.Contains(s.Error, failing.Error()) {
-		t.Fatalf("owner error = %q", s.Error)
-	}
-	scheduleLedger = prev
-	if err := o.do(func() error { o.schedule(); return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if s := o.status().Owner; s.Error != "" || outcomes(ledgerStatus(t, o), admission.DispositionObserve) != 1 {
-		t.Fatalf("after recovery: error %q, %d previews", s.Error, outcomes(ledgerStatus(t, o), admission.DispositionObserve))
-	}
+	synctest.Test(t, func(t *testing.T) {
+		p := withTestRegistry(t)
+		f := newOwnerFixture(t)
+		failing := errors.New("injected schedule failure")
+		prev := scheduleLedger
+		scheduleLedger = func(*store.AdmissionLedger, admission.ScheduleLimits) ([]admission.Pick, error) { return nil, failing }
+		t.Cleanup(func() { scheduleLedger = prev })
+		opts := previewOptions(f)
+		opts.ScheduleEvery = time.Second
+		o := f.start(opts)
+		submitTo(t, o, p, "192.0.2.10", f.host.now())
+		if err := o.do(o.drain); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		if s := o.Status().Owner; !strings.Contains(s.Error, failing.Error()) {
+			t.Fatalf("owner error = %q", s.Error)
+		}
+		setOwnerHook(t, o, &scheduleLedger, prev)
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if s := o.Status().Owner; s.Error != "" || outcomes(ledgerStatus(t, o), admission.DispositionObserve) != 1 {
+			t.Fatalf("after recovery: error %q, %d previews", s.Error, outcomes(ledgerStatus(t, o), admission.DispositionObserve))
+		}
+	})
 }
 
 // More ready work than one batch takes the next turn at once: the ledger's

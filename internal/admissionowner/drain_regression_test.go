@@ -52,14 +52,13 @@ func TestOwnerHoldsAdmissionAfterTheDrainTickFails(t *testing.T) {
 			o := f.start(opts)
 			submit(t, o, p, "offset=1", f.host.now())
 			prev := readSnapshot
-			t.Cleanup(func() { readSnapshot = prev })
 			switch failure {
 			case "clock":
 				f.host.set(func(h *fakeHost) { h.clockErr = errors.New("clock unavailable") })
 			case "snapshot":
-				readSnapshot = func(*store.AdmissionLedger) (*admission.QueueSnapshot, error) {
+				setOwnerHook(t, o, &readSnapshot, func(*store.AdmissionLedger) (*admission.QueueSnapshot, error) {
 					return nil, errors.New("snapshot unavailable")
-				}
+				})
 			case "ceiling":
 				f.host.set(func(h *fakeHost) { h.limit = 0 })
 			}
@@ -68,7 +67,7 @@ func TestOwnerHoldsAdmissionAfterTheDrainTickFails(t *testing.T) {
 			}
 			o.notices.cycle()
 			f.host.set(func(h *fakeHost) { h.clockErr, h.limit = nil, 2000 })
-			readSnapshot = prev
+			setOwnerHook(t, o, &readSnapshot, prev)
 			if err := o.do(o.tick); err != nil {
 				t.Fatal(err)
 			}
@@ -158,10 +157,9 @@ func TestOwnerFailedIsolationKeepsTheSameAdmissionStop(t *testing.T) {
 	o := f.start(opts)
 	submit(t, o, p, "offset=1", f.host.now())
 	prev := drainGroupOf
-	t.Cleanup(func() { drainGroupOf = prev })
-	drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+	setOwnerHook(t, o, &drainGroupOf, func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
 		return in.DrainTaken(&failingIsolationLedger{Ledger: l}, items, arrivalRequest)
-	}
+	})
 	for range 3 {
 		if err := o.do(o.drain); err == nil {
 			t.Fatal("failed arrival isolation succeeded")
@@ -171,7 +169,7 @@ func TestOwnerFailedIsolationKeepsTheSameAdmissionStop(t *testing.T) {
 	if sink.count() != 1 || o.ingress.Len() != 1 || len(queuedCandidates(t, o)) != 0 {
 		t.Fatalf("lasting isolation failure: %d notices, %d held, %d queued", sink.count(), o.ingress.Len(), len(queuedCandidates(t, o)))
 	}
-	drainGroupOf = prev
+	setOwnerHook(t, o, &drainGroupOf, prev)
 	if err := o.do(o.drain); err != nil {
 		t.Fatal(err)
 	}
@@ -188,8 +186,7 @@ func TestOwnerCheckpointsARefusalAfterTheLastGroup(t *testing.T) {
 	o := f.start(f.options())
 	submit(t, o, p, "offset=1", f.host.now())
 	prev := drainGroupOf
-	t.Cleanup(func() { drainGroupOf = prev })
-	drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+	setOwnerHook(t, o, &drainGroupOf, func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
 		report, err := prev(in, l, items)
 		if err == nil && len(items) != 0 {
 			if submitErr := in.Submit(admission.Submission{}); submitErr == nil {
@@ -197,7 +194,7 @@ func TestOwnerCheckpointsARefusalAfterTheLastGroup(t *testing.T) {
 			}
 		}
 		return report, err
-	}
+	})
 	if err := o.do(o.drain); err != nil {
 		t.Fatal(err)
 	}
@@ -272,13 +269,12 @@ func TestOwnerStopReportsAFailedFinalCheckpoint(t *testing.T) {
 	o := f.start(f.options())
 	submit(t, o, p, "offset=1", f.host.now())
 	prev := drainGroupOf
-	t.Cleanup(func() { drainGroupOf = prev })
-	drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+	setOwnerHook(t, o, &drainGroupOf, func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
 		if len(items) == 0 {
 			return admission.DrainReport{}, errors.New("final checkpoint unavailable")
 		}
 		return prev(in, l, items)
-	}
+	})
 	o.Stop()
 	if st := o.Status(); !st.Ledger.Ingress.Open || st.Ingress.Admitting || !strings.Contains(st.Owner.Error, "final checkpoint unavailable") {
 		t.Fatalf("shutdown hid the final checkpoint failure: %+v %+v", st.Owner, st.Ledger.Ingress)
@@ -294,14 +290,13 @@ func TestOwnerStopReportsAFailedGenerationClose(t *testing.T) {
 	f := newOwnerFixture(t)
 	o := f.start(f.options())
 	prev := drainGroupOf
-	t.Cleanup(func() { drainGroupOf = prev })
-	drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+	setOwnerHook(t, o, &drainGroupOf, func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
 		report, err := prev(in, l, items)
 		if err == nil {
 			err = f.db.Close()
 		}
 		return report, err
-	}
+	})
 	o.Stop()
 	if st := o.Status(); st.Ingress.Admitting || !strings.Contains(st.Owner.Error, "closing the ingress") {
 		t.Fatalf("shutdown hid the generation close failure: %+v", st.Owner)
@@ -340,11 +335,9 @@ func TestOwnerKeepsAdmissionOpenAroundADamagedTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prev := drainGroupOf
-	t.Cleanup(func() { drainGroupOf = prev })
-	drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
+	setOwnerHook(t, o, &drainGroupOf, func(in *admission.Ingress, l *store.AdmissionLedger, items []admission.IngressItem) (admission.DrainReport, error) {
 		return in.DrainTaken(&damagedTargetLedger{Ledger: l, bad: bad}, items, arrivalRequest)
-	}
+	})
 	for i := range 3 {
 		f.host.advance(time.Second)
 		submitObservation(t, o, p, "192.0.2.66", fmt.Sprintf("offset=%d", i+1), f.host.now())
