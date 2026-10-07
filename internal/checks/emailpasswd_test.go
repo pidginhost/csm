@@ -1,8 +1,10 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -99,9 +101,13 @@ func TestParseShadowLine(t *testing.T) {
 		{"user:{SHA512-CRYPT}$6$abc$xyz", "user", "{SHA512-CRYPT}$6$abc$xyz"},
 		{"admin:{BLF-CRYPT}$2y$05$hash", "admin", "{BLF-CRYPT}$2y$05$hash"},
 		// cPanel appends shadow(5) aging fields after the hash.
-		{"user:$6$salt$hash:20733:::::", "user", "$6$salt$hash"},
-		{"user:!$6$salt$hash:20733:::::", "user", "!$6$salt$hash"},
-		{"user::20733:::::", "", ""},
+		{"user:$6$salt$hash:12345:::::", "user", "$6$salt$hash"},
+		{"user:{SHA512-CRYPT}$6$salt$hash:12345:::::", "user", "{SHA512-CRYPT}$6$salt$hash"},
+		{"user:$6$salt$hash::::::", "user", "$6$salt$hash"},
+		{"user:!$6$salt$hash:12345:::::", "user", "!$6$salt$hash"},
+		{"user:*$6$salt$hash:12345:::::", "user", "*$6$salt$hash"},
+		{"user::12345:::::", "", ""},
+		{"user:::::::", "", ""},
 		{"nocolon", "", ""},
 		{":", "", ""},
 	}
@@ -203,27 +209,68 @@ func TestReadShadowFile(t *testing.T) {
 		"alice:{SHA512-CRYPT}$6$salt$hash\n" +
 		"bob:!{SHA512-CRYPT}$6$salt$lockedhash\n" +
 		"carol:{BLF-CRYPT}$2y$05$active\n" +
-		"dave:$6$salt$cpanelhash:20733:::::\n" +
-		"erin:!$6$salt$cpanellocked:20733:::::\n" +
+		"dave:$6$salt$cpanelhash:12345:::::\n" +
+		"erin:!$6$salt$cpanellocked:12345:::::\n" +
+		"frank:*$6$salt$cpanellocked:12345:::::\n" +
+		"grace::12345:::::\n" +
+		"heidi:::::::\n" +
+		"ivan:!:12345:::::\n" +
+		"judy:*:12345:::::\n" +
 		"malformed\n" +
 		"\n"
-	_ = os.WriteFile(path, []byte(content), 0600)
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	sf := shadowFile{path: path, account: "cpuser", domain: "example.com"}
 	entries := readShadowFile(sf)
 
-	// alice, carol and dave are active; bob and erin are locked; malformed is skipped
-	if len(entries) != 3 {
-		t.Fatalf("got %d entries, want 3 (alice + carol + dave)", len(entries))
+	want := []mailboxEntry{
+		{account: "cpuser", domain: "example.com", mailbox: "alice", hash: "{SHA512-CRYPT}$6$salt$hash"},
+		{account: "cpuser", domain: "example.com", mailbox: "carol", hash: "{BLF-CRYPT}$2y$05$active"},
+		{account: "cpuser", domain: "example.com", mailbox: "dave", hash: "$6$salt$cpanelhash"},
 	}
-	if entries[2].mailbox != "dave" || entries[2].hash != "$6$salt$cpanelhash" {
-		t.Errorf("cPanel entry: %+v", entries[2])
+	if !slices.Equal(entries, want) {
+		t.Fatalf("readShadowFile = %+v, want %+v", entries, want)
 	}
-	if entries[0].mailbox != "alice" || entries[0].account != "cpuser" {
-		t.Errorf("first entry: %+v", entries[0])
-	}
-	if entries[1].mailbox != "carol" || entries[1].domain != "example.com" {
-		t.Errorf("second entry: %+v", entries[1])
+}
+
+func TestReadShadowFileHashVerification(t *testing.T) {
+	// OpenSSL passwd -6 -salt fixturesalt -stdin, using synthetic password "mailbox".
+	const rawHash = "$6$fixturesalt$uVlAd/jFjO6ccod2kJfjIJ1OkRQATcNOSlbT19ukbWF1HI03ZCVZH5pvd9K6pzub7RPAD1Dm9vjw66QgqjULt0"
+	for _, tc := range []struct {
+		name, prefix, aging string
+	}{
+		{"dovecot", "{SHA512-CRYPT}", ""},
+		{"dovecot_unprefixed", "", ""},
+		{"cpanel", "", ":12345:::::"},
+		{"cpanel_prefixed", "{SHA512-CRYPT}", ":12345:::::"},
+		{"cpanel_empty_aging", "", "::::::"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stored := tc.prefix + rawHash
+			path := filepath.Join(t.TempDir(), "shadow")
+			if err := os.WriteFile(path, []byte("mailbox:"+stored+tc.aging+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			entries := readShadowFile(shadowFile{path: path, account: "cpuser", domain: "example.test"})
+			if len(entries) != 1 {
+				t.Fatalf("got %d entries, want one active mailbox", len(entries))
+			}
+			if entries[0].hash != stored {
+				t.Fatal("stored hash changed or includes shadow aging fields")
+			}
+			verifier, err := parseEmailPasswordHash(entries[0].hash)
+			if err != nil {
+				t.Fatalf("shadow hash is not auditable: %v", err)
+			}
+			for _, candidate := range []string{"mailbox", "incorrect-fixture"} {
+				matched, err := verifier.matches(context.Background(), candidate)
+				if err != nil || matched != (candidate == "mailbox") {
+					t.Fatalf("shadow hash verification: matched=%t, err=%v", matched, err)
+				}
+			}
+		})
 	}
 }
 
