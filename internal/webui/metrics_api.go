@@ -30,7 +30,11 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if s.refuseSpentBearer(w, r) {
+		return
+	}
 	if !s.isMetricsAuthenticated(r) {
+		s.noteFailedBearer(r)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="csm-metrics"`)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return

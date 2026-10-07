@@ -123,8 +123,86 @@ func webUITokenAllows(tok config.WebUIToken, want string) bool {
 	}
 }
 
+// credentialAttemptsPerMinute bounds credential guesses per client. Login
+// form submissions and failed bearer tokens share it: both guess the same
+// secrets, and the API budget of hundreds of requests a minute would let a
+// token be guessed at API speed.
+const credentialAttemptsPerMinute = 5
+
+// recentCredentialAttempts returns the client's attempts inside the last
+// minute. The caller holds loginMu.
+func (s *Server) recentCredentialAttempts(ip string, now time.Time) []time.Time {
+	var recent []time.Time
+	for _, t := range s.loginAttempts[ip] {
+		if now.Sub(t) < time.Minute {
+			recent = append(recent, t)
+		}
+	}
+	return recent
+}
+
+// takeCredentialAttempt records one attempt and reports whether the client
+// was still inside its budget. Check and record share one critical section so
+// concurrent guesses cannot overshoot it.
+func (s *Server) takeCredentialAttempt(ip string) bool {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	now := time.Now()
+	recent := s.recentCredentialAttempts(ip, now)
+	if len(recent) >= credentialAttemptsPerMinute {
+		return false
+	}
+	if _, tracked := s.loginAttempts[ip]; !tracked {
+		boundRateLimitMap(s.loginAttempts, now.Add(-time.Minute))
+	}
+	s.loginAttempts[ip] = append(recent, now)
+	return true
+}
+
+// credentialBudgetSpent reports whether the client has no attempts left.
+func (s *Server) credentialBudgetSpent(ip string) bool {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	return len(s.recentCredentialAttempts(ip, time.Now())) >= credentialAttemptsPerMinute
+}
+
+func carriesBearer(r *http.Request) bool {
+	return strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+}
+
+// refuseSpentBearer answers a request that presents a bearer token from a
+// client with no attempts left. It runs before the token is compared, so a
+// blocked client learns nothing from the response, right token or wrong.
+func (s *Server) refuseSpentBearer(w http.ResponseWriter, r *http.Request) bool {
+	if !carriesBearer(r) || !s.credentialBudgetSpent(rateLimitKey(r.RemoteAddr)) {
+		return false
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeJSONError(w, "Too many failed token attempts", http.StatusTooManyRequests)
+	} else {
+		http.Error(w, "Too many failed token attempts", http.StatusTooManyRequests)
+	}
+	return true
+}
+
+// noteFailedBearer charges an unknown bearer token to the client's credential
+// budget. Requests without a token are not guesses, and neither is a known
+// token used outside its scope: that client holds a real credential.
+func (s *Server) noteFailedBearer(r *http.Request) {
+	if !carriesBearer(r) {
+		return
+	}
+	if _, known := s.bearerCredentialWithScope(r, "read"); known {
+		return
+	}
+	s.takeCredentialAttempt(rateLimitKey(r.RemoteAddr))
+}
+
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.refuseSpentBearer(w, r) {
+			return
+		}
 		if tok, ok := s.cookieSessionCredential(r, "admin", sessionActivity(r)); ok {
 			next.ServeHTTP(w, withAuditActor(r, tok.Name, "browser"))
 			return
@@ -133,6 +211,7 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, withAuditActor(r, tok.Name, "api"))
 			return
 		}
+		s.noteFailedBearer(r)
 		// API calls get 401 JSON; browser requests get redirect to login
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
@@ -144,6 +223,9 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 
 func (s *Server) requireRead(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.refuseSpentBearer(w, r) {
+			return
+		}
 		if s.tokenHasScope(r, "read") {
 			if r.Method != http.MethodGet {
 				w.Header().Set("Allow", http.MethodGet)
@@ -153,6 +235,7 @@ func (s *Server) requireRead(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		s.noteFailedBearer(r)
 		// API calls get 401 JSON; browser requests get redirect to login
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
@@ -212,27 +295,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate limit: 5 attempts per minute per client (IPv4 address or IPv6 /64)
-	ip := rateLimitKey(r.RemoteAddr)
-	s.loginMu.Lock()
-	now := time.Now()
-	attempts := s.loginAttempts[ip]
-	var recent []time.Time
-	for _, t := range attempts {
-		if now.Sub(t) < time.Minute {
-			recent = append(recent, t)
-		}
-	}
-	if len(recent) >= 5 {
-		s.loginMu.Unlock()
+	// One credential budget per client (IPv4 address or IPv6 /64), shared
+	// with failed API tokens.
+	if !s.takeCredentialAttempt(rateLimitKey(r.RemoteAddr)) {
 		http.Error(w, "Too many login attempts", http.StatusTooManyRequests)
 		return
 	}
-	if _, tracked := s.loginAttempts[ip]; !tracked {
-		boundRateLimitMap(s.loginAttempts, now.Add(-time.Minute))
-	}
-	s.loginAttempts[ip] = append(recent, now)
-	s.loginMu.Unlock()
 
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := r.ParseForm(); err != nil {
