@@ -591,8 +591,8 @@ func putScheduleState(tx *bolt.Tx, s admission.ScheduleState) error {
 	return tx.Bucket([]byte(admissionQueueStateBucket)).Put(scheduleStateKey, data)
 }
 
-// unitCost is the block cost of every candidate kind the ledger queues: one
-// address, prefix or service tuple (spec 5.6).
+// unitCost is the fair cost of one queued address, prefix or service tuple.
+// Ceiling demand comes from the candidate kind (spec 5.6).
 const unitCost = 1
 
 // Schedule picks the next candidates to serve under lim and records the
@@ -671,6 +671,9 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits) (
 			refused[p.ID] = true
 		}
 		if len(refused) == 0 {
+			if err = q.deferUnserved(items, byID, picks, lim); err != nil {
+				return nil, err
+			}
 			return picks, putScheduleState(q.tx, next)
 		}
 		kept := items[:0:0]
@@ -681,6 +684,67 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits) (
 		}
 		items = kept
 	}
+}
+
+// deferUnserved records why ready work the schedule left queued waits: its
+// lanes ran out of ceiling budget or history budget, or its details do not
+// fit the recovery reserve (spec 5.17). Work passed over for the member
+// bound or another scope's fair turn waits without a reason, and so does a
+// retry in its backoff. A changed reason is one transition, counted and
+// announced once, as Defer records it.
+func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate, picks []admission.Pick, lim admission.ScheduleLimits) error {
+	picked := make(map[admission.CandidateID]bool, len(picks))
+	general, reserved := lim.General, lim.Reserved
+	generalBytes, reservedBytes := lim.GeneralBytes, lim.ReservedBytes
+	for _, p := range picks {
+		picked[p.ID] = true
+		if p.Lane == admission.LaneGeneral {
+			general, generalBytes = general-p.Cost, generalBytes-uint64(p.Bytes)
+		} else {
+			reserved, reservedBytes = reserved-p.Cost, reservedBytes-uint64(p.Bytes)
+		}
+	}
+	recovery := lim.RecoveryBytes
+	for _, it := range items {
+		if picked[it.ID] {
+			recovery -= uint64(it.Recovery)
+		}
+	}
+	for _, it := range items {
+		lc := byID[it.ID]
+		if picked[it.ID] {
+			continue
+		}
+		eligible := it.Direct || it.Corroborated
+		generalCeiling := general >= it.CeilingCost
+		reservedCeiling := eligible && reserved >= it.CeilingCost
+		var reason admission.Reason
+		switch {
+		case q.now.Before(lc.c.NotBefore):
+		case !generalCeiling && !reservedCeiling:
+			reason = admission.ReasonCeiling
+		case (!generalCeiling || generalBytes < uint64(it.Bytes)) && (!reservedCeiling || reservedBytes < uint64(it.Bytes)):
+			reason = admission.ReasonStorageShare
+		case uint64(it.Recovery) > recovery:
+			reason = admission.ReasonPendingRecovery
+		}
+		if lc.c.Reason == reason {
+			continue
+		}
+		c := lc.c
+		if reason == 0 {
+			c.Reason = 0
+		} else {
+			if err := q.deferred(lc.id, &c, lc.entry, reason); err != nil {
+				return err
+			}
+		}
+		c.Transitions++
+		if err := putCandidate(q.tx, c); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // scheduleLimits lowers the caller's lane bounds to what the ceiling can
@@ -718,7 +782,7 @@ func (q *queueTx) scheduleItems(live []liveCandidate, room uint64) ([]admission.
 		byID[lc.id] = lc
 		items = append(items, admission.ScheduleItem{
 			ID: lc.id, Scope: lc.c.Scope.Key(), Tier: lc.entry.Tier, Direct: lc.entry.Direct,
-			Corroborated: lc.entry.Corroborated, Queued: lc.c.FirstQueued, Cost: unitCost, Bytes: bytes, Recovery: recovery,
+			Corroborated: lc.entry.Corroborated, Queued: lc.c.FirstQueued, Cost: unitCost, CeilingCost: lc.c.Key.Kind.CeilingCost(), Bytes: bytes, Recovery: recovery,
 			Ready: fits && !q.now.Before(lc.c.NotBefore),
 		})
 	}
@@ -813,53 +877,64 @@ func (l *AdmissionLedger) NextWake() (time.Time, bool, error) {
 			if lane == admission.LaneDirect && !reserved {
 				continue
 			}
-			if ceiling.Budget(lane) > 0 {
+			{
 				// Probe the actual next head with a full byte budget. Its
 				// earned turn, rather than a fixed quantum, sets the timer.
 				probe := lim
 				probe.Members = 1
 				room := lim.GeneralBytes
 				if lane == admission.LaneGeneral {
-					probe.Reserved, probe.GeneralBytes = 0, admission.MaxHistoryBytes
+					probe.Reserved, probe.ReservedBytes, probe.GeneralBytes = 0, 0, admission.MaxHistoryBytes
 				} else {
-					probe.General, probe.ReservedBytes = 0, admission.MaxHistoryBytes
+					probe.General, probe.GeneralBytes, probe.ReservedBytes = 0, 0, admission.MaxHistoryBytes
 					room = lim.ReservedBytes
 				}
-				heads, _, probeErr := admission.Schedule(items, st, probe)
+				var laneItems []admission.ScheduleItem
+				for _, item := range items {
+					if lane == admission.LaneGeneral {
+						item.Direct, item.Corroborated = false, false
+					} else if !item.Direct && !item.Corroborated {
+						continue
+					}
+					laneItems = append(laneItems, item)
+				}
+				heads, _, probeErr := admission.Schedule(laneItems, st, probe)
 				if probeErr != nil {
 					return probeErr
 				}
-				if len(heads) == 0 {
+				if len(heads) > 0 {
+					need := uint64(heads[0].Bytes)
+					if room < need {
+						// Recompute room without the credit cap, including an
+						// upgrade's excess, before choosing credit or retirement.
+						copy := *storage
+						full := admission.NewStorageState()
+						copy.General.Credit, copy.Reserved.Credit = full.General.Credit, full.Reserved.Credit
+						size, _ := admission.HistoryLanes()
+						used := copy.General.Used
+						if lane != admission.LaneGeneral {
+							_, size = admission.HistoryLanes()
+							used = copy.Reserved.Used
+						}
+						r, retErr := q.retirable(lane, used-min(used, size-need))
+						if retErr != nil {
+							return retErr
+						}
+						room = copy.HistoryBudget(lane, r)
+					}
+					if room >= need {
+						if d, ok := storage.UntilHistoryCost(lane, heads[0].Bytes); ok {
+							earliest(clock.Now().Add(d))
+						}
+					} else if at, ok, nextErr := q.nextRetirable(lane); nextErr != nil {
+						return nextErr
+					} else if ok {
+						earliest(at)
+					}
 					continue
 				}
-				need := uint64(heads[0].Bytes)
-				if room < need {
-					// Recompute room without the credit cap, including an
-					// upgrade's excess, before choosing credit or retirement.
-					copy := *storage
-					full := admission.NewStorageState()
-					copy.General.Credit, copy.Reserved.Credit = full.General.Credit, full.Reserved.Credit
-					size, _ := admission.HistoryLanes()
-					used := copy.General.Used
-					if lane != admission.LaneGeneral {
-						_, size = admission.HistoryLanes()
-						used = copy.Reserved.Used
-					}
-					r, retErr := q.retirable(lane, used-min(used, size-need))
-					if retErr != nil {
-						return retErr
-					}
-					room = copy.HistoryBudget(lane, r)
-				}
-				if room >= need {
-					if d, ok := storage.UntilHistoryCost(lane, heads[0].Bytes); ok {
-						earliest(clock.Now().Add(d))
-					}
-				} else if at, ok, nextErr := q.nextRetirable(lane); nextErr != nil {
-					return nextErr
-				} else if ok {
-					earliest(at)
-				}
+			}
+			if ceiling.Budget(lane) > 0 {
 				continue
 			}
 			if charges == nil {

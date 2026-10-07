@@ -110,12 +110,18 @@ func (l *AdmissionLedger) Defer(id admission.CandidateID, reason admission.Reaso
 		if err != nil {
 			return false, err
 		}
-		c.Reason = reason
-		if err = q.count(admission.EventDeferred, reason, e.Tier); err != nil {
-			return false, err
-		}
-		return true, q.gap(admission.GapDeferred, reason, 0, e, id, *c, c.Transitions+1)
+		return true, q.deferred(id, c, e, reason)
 	})
+}
+
+// deferred records reason on queued candidate c, counts the deferral and
+// raises its notice. The caller counts the transition and stores c.
+func (q *queueTx) deferred(id admission.CandidateID, c *admission.Candidate, e admission.QueueEntry, reason admission.Reason) error {
+	c.Reason = reason
+	if err := q.count(admission.EventDeferred, reason, e.Tier); err != nil {
+		return err
+	}
+	return q.gap(admission.GapDeferred, reason, 0, e, id, *c, c.Transitions+1)
 }
 
 var terminalFor = map[admission.Disposition]admission.State{
