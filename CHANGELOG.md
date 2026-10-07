@@ -14,6 +14,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Unknown API and metrics tokens now spend the same five-per-minute budget as the login form, so a token cannot be guessed at API speed.
 - The cron downloader signature no longer slows scans on long crafted lines or flags plugin pages that only print a recommended wp-cron command.
 - Four more download, miner and shell startup signatures no longer slow scans on long crafted lines or on files full of documented install commands.
+- Scheduled and on-demand scans now catch cron miner entries with capitalized names, as real-time checks already do.
 - The database malware response no longer blocks the addresses of active WordPress sessions on the affected site, including the owner's; the notice lists them and sessions are still revoked.
 - A file planted in a hosted site can no longer stall the deep phishing scan.
 - Scheduled phishing scans now report kits in dependency and source-control folders unless excluded; `auto_response.quarantine_files` can quarantine phishing pages found there.

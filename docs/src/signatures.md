@@ -102,7 +102,8 @@ so a download piped into a checksum tool or another program whose name starts
 the same way is not an execution. Versioned Perl and Python names, Python
 build variants and standard Windows executable names retain detection. Both
 engines use the same shell name boundaries, including commands embedded in
-strings and binary data.
+strings and binary data. The miner cron signature ignores letter case in both
+engines.
 
 The PHP goto-obfuscation rule requires three independent signals in both
 engines: a PHP opening tag, at least nine jumps to digit-bearing generated

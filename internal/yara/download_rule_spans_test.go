@@ -336,3 +336,30 @@ func TestDownloadRuleShellTargetDelimiters(t *testing.T) {
 		}
 	}
 }
+
+// A miner binary keeps working under any letter case, so the cron rule must
+// not depend on it in either engine.
+func TestMinerCronRuleLetterCase(t *testing.T) {
+	yaraScanner, yamlScanner := loadDownloadRuleScanners(t)
+	samples := map[string]string{
+		"mixed case": "*/10 * * * * /tmp/.x/XMRig --config /tmp/.x/c.json >/dev/null 2>&1\n",
+		"upper case": "*/3 * * * * /var/tmp/MINERD -o stratum+tcp://pool.example.test:3333\n",
+		"short name": "*/1 * * * * cd /tmp && ./Xmr-node\n",
+		"miner word": "*/15 * * * * /dev/shm/.cache/Miner -B\n",
+	}
+	for name, sample := range samples {
+		t.Run(name, func(t *testing.T) {
+			content := []byte(sample)
+			matches, err := yaraScanner.ScanBytesChecked(content)
+			if err != nil {
+				t.Fatalf("YARA scan failed: %v", err)
+			}
+			if !hasRepositoryYaraRule(matches, "miner_cron_persistence") {
+				t.Error("YARA miner_cron_persistence did not match")
+			}
+			if !hasSignatureRule(yamlScanner.ScanContent(content, ".sh"), "miner_cron_persistence") {
+				t.Error("YAML miner_cron_persistence did not match")
+			}
+		})
+	}
+}
