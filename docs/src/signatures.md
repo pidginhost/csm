@@ -96,7 +96,10 @@ treat a command as documentation only inside a fenced code block, whose opening
 fence starts a line and whose closing fence stands on its own line, or as the
 text of a Markdown link. The shell startup file signature judges a file with
 more Markdown blocks and links than any published document carries without that
-suppression, so its scan time stays linear.
+suppression, so its scan time stays linear. The download-and-pipe and shell
+startup file signatures need a whole shell or interpreter name after the pipe,
+optionally versioned, so a download piped into a checksum tool or another
+program whose name starts the same way is not an execution.
 
 The PHP goto-obfuscation rule requires three independent signals in both
 engines: a PHP opening tag, at least nine jumps to digit-bearing generated
