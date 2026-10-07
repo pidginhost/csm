@@ -65,9 +65,13 @@ func (db *DB) GetSenderProfile(mailbox string) (SenderProfile, error) {
 
 // PruneSenderProfiles expires old days even for mailboxes that never send
 // again. Empty profiles are removed instead of retaining recipient history.
+// The walk only collects; bbolt leaves a cursor undefined once the bucket it
+// traverses is written, so every write happens after the walk.
 func (db *DB) PruneSenderProfiles(oldest string) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(senderProfileBucket))
+		var expired [][]byte
+		rewritten := map[string][]byte{}
 		cursor := bucket.Cursor()
 		for key, value := cursor.First(); key != nil; key, value = cursor.Next() {
 			var p SenderProfile
@@ -81,18 +85,25 @@ func (db *DB) PruneSenderProfiles(oldest string) error {
 					changed = true
 				}
 			}
-			if len(p.Days) == 0 {
-				if err := cursor.Delete(); err != nil {
-					return err
-				}
-			} else if changed {
+			switch {
+			case len(p.Days) == 0:
+				expired = append(expired, append([]byte(nil), key...))
+			case changed:
 				encoded, err := json.Marshal(p)
 				if err != nil {
 					return err
 				}
-				if err := bucket.Put(key, encoded); err != nil {
-					return err
-				}
+				rewritten[string(key)] = encoded
+			}
+		}
+		for _, key := range expired {
+			if err := bucket.Delete(key); err != nil {
+				return err
+			}
+		}
+		for key, encoded := range rewritten {
+			if err := bucket.Put([]byte(key), encoded); err != nil {
+				return err
 			}
 		}
 		return nil

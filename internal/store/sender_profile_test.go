@@ -42,6 +42,52 @@ func TestSenderProfile_NotFound(t *testing.T) {
 	}
 }
 
+// Rewriting entries while walking the bucket spans several leaf pages here,
+// which is where a cursor invalidated by its own writes skips or repeats keys.
+func TestSenderProfile_PruneRewritesEveryMailboxAcrossPages(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	const mailboxes = 400
+	recipients := make([]string, 40)
+	for i := range recipients {
+		recipients[i] = fmt.Sprintf("recipient-%02d@example.net", i)
+	}
+	for i := 0; i < mailboxes; i++ {
+		p := SenderProfile{Days: map[string]*SenderDay{
+			"2026-01-01": {Sends: 1, Recipients: recipients},
+			"2026-01-05": {Sends: 2, Recipients: recipients},
+		}}
+		if i%3 == 0 {
+			delete(p.Days, "2026-01-05")
+		}
+		if setErr := db.SetSenderProfile(fmt.Sprintf("user%03d@example.com", i), p); setErr != nil {
+			t.Fatal(setErr)
+		}
+	}
+	if pruneErr := db.PruneSenderProfiles("2026-01-02"); pruneErr != nil {
+		t.Fatal(pruneErr)
+	}
+	for i := 0; i < mailboxes; i++ {
+		user := fmt.Sprintf("user%03d@example.com", i)
+		p, getErr := db.GetSenderProfile(user)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if i%3 == 0 {
+			if p.Days != nil {
+				t.Fatalf("%s: fully expired profile survived: %+v", user, p)
+			}
+			continue
+		}
+		if len(p.Days) != 1 || p.Days["2026-01-05"] == nil || p.Days["2026-01-05"].Sends != 2 {
+			t.Fatalf("%s: pruning skipped or damaged the entry: %+v", user, p)
+		}
+	}
+}
+
 func TestSenderProfile_PruneAdjacentMailboxes(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
