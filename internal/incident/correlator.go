@@ -733,7 +733,11 @@ func (c *Correlator) mutateWithFindingLocked(inc *Incident, f alert.Finding, now
 	if src := alert.AttackerAddress(f); src != "" {
 		ev.RemoteIP = src
 		if c.cfg.Root != nil && c.cfg.AddressEvidence != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
-			ev.root = c.cfg.Root(f, src)
+			target := src
+			if ip := normalizeIncidentRemoteIP(src); ip != "" {
+				target = ip
+			}
+			ev.root = c.cfg.Root(f, target)
 		}
 		if (!inc.RemoteIPEvidence || inc.RemoteIPEvidenceFinding == "") && c.cfg.AddressEvidence != nil && inc.CorrelationKey != nil && c.cfg.AddressEvidence(f.Check, f.Severity) {
 			if key := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); key != "" && key == normalizeIncidentRemoteIP(src) {

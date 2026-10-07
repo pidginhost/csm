@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -292,5 +293,115 @@ func TestChallengeBatchAsksAdmissionForEveryObservation(t *testing.T) {
 	}
 	if got := a.responses(); !sameResponses(got, want) || len(challenges) != 1 || len(blocks) != 0 || len(b.calls) != 0 {
 		t.Fatalf("responses=%+v challenges=%+v blocks=%+v legacy=%+v", got, challenges, blocks, b.calls)
+	}
+}
+
+func TestAdmissionUsesTheLegacySelectedAddress(t *testing.T) {
+	for _, challenged := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, source, message, want string
+		}{
+			{"message address", "", "WordPress login brute force from 192.0.2.20: 100 attempts", "192.0.2.20"},
+			{"message IPv6", "", "WordPress login brute force from [2001:db8::20]: 100 attempts", "2001:db8::20"},
+			{"structured port", "[2001:db8::20]:443", "WordPress login brute force from 192.0.2.21", "2001:db8::20"},
+			{"structured precedence", "192.0.2.20", "WordPress login brute force from 192.0.2.21", "192.0.2.20"},
+		} {
+			t.Run(map[bool]string{false: "block/", true: "challenge/"}[challenged]+tc.name, func(t *testing.T) {
+				a := withAdmission(t)
+				b := withBlocker(t)
+				list := &mockIPList{ips: map[string]bool{}}
+				withChallengeList(t, list)
+				cfg := liveAutoBlockConfig(t)
+				cfg.Challenge.Enabled = challenged
+				f := wpBruteForce(tc.source)
+				f.Message = tc.message
+				challenges, blocks := ChallengeThenBlock(cfg, []alert.Finding{f})
+				kind := admission.KindBlockIP
+				if challenged {
+					kind = admission.KindChallenge
+					if len(challenges) != 1 || len(blocks) != 0 || len(b.calls) != 0 || !list.Contains(tc.want) {
+						t.Fatalf("legacy challenges=%+v blocks=%+v calls=%+v", challenges, blocks, b.calls)
+					}
+				} else if len(challenges) != 0 || len(blocks) != 1 || len(b.calls) != 1 || b.calls[0].ip != tc.want {
+					t.Fatalf("legacy challenges=%+v blocks=%+v calls=%+v", challenges, blocks, b.calls)
+				}
+				want := []respondCall{{kind: kind, check: "wp_login_bruteforce", target: tc.want, cursor: "offset=7", rooted: true}}
+				if got := a.responses(); !sameResponses(got, want) {
+					t.Fatalf("responses=%+v, want %+v", got, want)
+				}
+			})
+		}
+	}
+}
+
+type failingRecordingBlocker struct{ recordingIPBlocker }
+
+func (b *failingRecordingBlocker) BlockIP(ip, reason string, ttl time.Duration) error {
+	_ = b.recordingIPBlocker.BlockIP(ip, reason, ttl)
+	return errors.New("firewall unavailable")
+}
+
+func TestEvaluatedFindingDoesNotRetryItsPendingBlock(t *testing.T) {
+	a := withAdmission(t)
+	withChallengeList(t, nil)
+	b := &failingRecordingBlocker{}
+	prev := getIPBlocker()
+	SetIPBlocker(b)
+	t.Cleanup(func() { SetIPBlocker(prev) })
+	cfg := liveAutoBlockConfig(t)
+	findings := []alert.Finding{wpBruteForce("192.0.2.20")}
+	ChallengeThenBlock(cfg, findings)
+	state := loadBlockState(cfg.StatePath)
+	if len(state.Pending) != 1 || len(b.calls) != 1 {
+		t.Fatalf("pending=%+v calls=%+v", state.Pending, b.calls)
+	}
+	queued := state.Pending[0]
+	// Audit identity does not include SourceIP, so a different address can
+	// share it when all the finding's text and timestamp fields match.
+	state.Pending = append(state.Pending, pendingIP{IP: "192.0.2.21", Check: queued.Check, Severity: alert.Critical, FindingID: queued.FindingID, QueuedAt: queued.QueuedAt})
+	saveBlockState(cfg.StatePath, state)
+	findings = append(findings, alert.Finding{Check: "auto_response", Message: "scan response"})
+	ChallengeThenBlock(cfg, findings)
+	if len(b.calls) != 2 || b.calls[1].ip != "192.0.2.21" || len(a.responses()) != 1 {
+		t.Fatalf("dispatch retried evaluated work: calls=%+v responses=%+v", b.calls, a.responses())
+	}
+	state = loadBlockState(cfg.StatePath)
+	if len(state.Pending) != 2 {
+		t.Fatalf("pending work was lost: %+v", state.Pending)
+	}
+	for _, p := range state.Pending {
+		if p.IP == queued.IP && (p.FindingID != queued.FindingID || !p.QueuedAt.Equal(queued.QueuedAt)) {
+			t.Fatalf("pending identity changed: %+v, want %+v", p, queued)
+		}
+	}
+	AutoBlockIPs(cfg, nil)
+	if len(b.calls) != 4 {
+		t.Fatalf("later retry cycle did not attempt both pending blocks: %+v", b.calls)
+	}
+}
+
+func TestFreshFindingCanRetryAnEvaluatedAddress(t *testing.T) {
+	withAdmission(t)
+	withChallengeList(t, nil)
+	b := &failingRecordingBlocker{}
+	prev := getIPBlocker()
+	SetIPBlocker(b)
+	t.Cleanup(func() { SetIPBlocker(prev) })
+	cfg := liveAutoBlockConfig(t)
+	findings := []alert.Finding{wpBruteForce("192.0.2.20")}
+	ChallengeThenBlock(cfg, findings)
+	state := loadBlockState(cfg.StatePath)
+	if len(state.Pending) != 1 {
+		t.Fatalf("pending=%+v", state.Pending)
+	}
+	queued := state.Pending[0]
+	fresh := wpBruteForce("192.0.2.20")
+	fresh.Timestamp = fresh.Timestamp.Add(time.Second)
+	fresh.Observation.Cursor = "offset=8"
+	findings = append(findings, fresh)
+	ChallengeThenBlock(cfg, findings)
+	state = loadBlockState(cfg.StatePath)
+	if len(b.calls) != 2 || len(state.Pending) != 1 || state.Pending[0].ActionID != queued.ActionID || !state.Pending[0].QueuedAt.Equal(queued.QueuedAt) {
+		t.Fatalf("fresh evidence changed retry identity or duplicated it: calls=%+v pending=%+v", b.calls, state.Pending)
 	}
 }

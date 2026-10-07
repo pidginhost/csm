@@ -65,7 +65,7 @@ func TestOwnerCountsAResponseItCannotMint(t *testing.T) {
 	if st := o.ingress.Stats(); st.Counters.Count(key) != 0 || st.CriticalLost != 0 {
 		t.Fatalf("minting counted: %+v", st)
 	}
-	o.Refuse(finding, err)
+	o.Refuse(admission.KindBlockIP, finding, 0, err)
 	if st := o.ingress.Stats(); st.Counters.Count(key) != 1 || st.CriticalLost != 1 {
 		t.Fatalf("stats = %+v", st)
 	}

@@ -36,6 +36,8 @@ const (
 // bounded turn until all held work is persisted.
 const maxDrainGroups = 4
 
+var _ checks.ResponseAdmission = (*Owner)(nil)
+
 // drainGroup is the arrivals one drain group persists; tests shrink it.
 var drainGroup = admission.MaxArrivalGroup
 
@@ -675,7 +677,7 @@ func (o *Owner) Mint(f alert.Finding, target string) (admission.Evidence, error)
 
 // Refuse counts a response that could not be answered because f could not
 // be minted, as the ingress counts a response it refuses itself.
-func (o *Owner) Refuse(f alert.Finding, err error) {
+func (o *Owner) Refuse(_ admission.Kind, f alert.Finding, _ admission.Entry, err error) {
 	if o.ingress != nil {
 		o.ingress.Refuse(err, checks.AdmissionSeverity(f.Severity))
 	}

@@ -599,9 +599,12 @@ Root preparation and selected submission use the cached admission view and do no
 
 Per-address funnels hand every selected block or challenge to admission before
 the existing responder runs. A process-local finding flag skips only the
-second evaluation of the same finding; distinct observations still submit,
-even when their address is already challenged. Admission outcomes do not
-change, delay or skip any existing responder decision.
+second evaluation of the same finding, including its queued block retry;
+unrelated pending work and fresh observations still run. Admission uses the
+canonical address selected by the legacy extractor, including its message
+fallback, without changing the finding or its audit identity. Distinct
+observations still submit even when their address is already challenged.
+Admission outcomes do not change, delay or skip any existing responder decision.
 
 Subnet funnels submit every selected response before the existing responder evaluates its available execution budget. Constituent evidence follows the selected mail response; paths without eligible observations retain their designed refusal rather than minting a replacement root.
 
@@ -609,6 +612,6 @@ A challenge entry retains its routed root until timeout escalation hands the sel
 
 Central selections use the locally corroborating finding as their root and carry its original attribution if preparation refuses. They do not adopt a remote report as local evidence, and preserve the selected temporary lifetime.
 
-Incident event preparation retains the attesting finding, its evidence or its preparation error until a block is actually selected. Only that selection counts an admission decision; generic and spray paths preserve the original check and cause. A derived response never mints a second root.
+Incident event preparation retains the attesting finding, its evidence or its preparation error until a block is actually selected. Roots use the canonical address the legacy block selects while retaining the original finding. Only that selection counts an admission decision; generic and spray paths preserve the original check and cause. A derived response never mints a second root.
 
 Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.

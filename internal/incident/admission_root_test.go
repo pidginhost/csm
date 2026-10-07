@@ -113,3 +113,34 @@ func TestRestoredIncidentBlockCarriesNoRoot(t *testing.T) {
 		t.Fatalf("roots = %+v", got)
 	}
 }
+
+func TestIncidentRootUsesTheSelectedCanonicalAddress(t *testing.T) {
+	roots := testRoots(t)
+	var got []PreparedRoot
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold:   1,
+		AddressEvidence: func(check string, _ alert.Severity) bool { return check == "modsec_csm_block_escalation" },
+		AutoBlock:       IncidentAutoBlockConfig{Enabled: true, BlockAtSeverity: "critical"},
+		Root: func(f alert.Finding, target string) PreparedRoot {
+			if _, err := admission.CanonicalAddress(target, admission.Caps{}); err != nil {
+				return PreparedRoot{Finding: f, Err: err}
+			}
+			return roots(f, target)
+		},
+		OnIncidentBlock: func(ip, _ string, _ time.Duration, _ string, root PreparedRoot) bool {
+			if ip != "192.0.2.81" {
+				t.Fatalf("legacy target=%q", ip)
+			}
+			got = append(got, root)
+			return true
+		},
+	})
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+	f := attestingFinding("modsec_csm_block_escalation", alert.Critical, 1)
+	f.SourceIP = "192.0.2.81:443"
+	feed(t, c, &now, f)
+	if len(got) != 1 || got[0].Err != nil || got[0].Target().Key() != "ip:192.0.2.81" || got[0].Finding.SourceIP != f.SourceIP {
+		t.Fatalf("prepared roots=%+v", got)
+	}
+}

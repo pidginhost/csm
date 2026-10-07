@@ -27,7 +27,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Scheduled scans no longer weigh a finding for an address block or challenge again when it is dispatched, which logged dry-run notices twice and queued a failed block for a second retry. It applies at upgrade; `auto_response.block_ips` and `challenge.enabled` still decide whether either response runs.
+- Scheduled scans no longer repeat an address block or challenge when the finding is dispatched, including retries queued by a failed scan block; unrelated pending work and fresh observations still run. It applies at upgrade; `auto_response.block_ips` and `challenge.enabled` still control the responses.
 - The email forward guard now holds matching mail instead of leaving it stuck in the queue.
 - Directory-based phishing alerts now respect excluded pages and raise fewer false alarms.
 - A malicious handler mapping in an `.htaccess` is now removed by the automatic cleaner at deep scans instead of the whole file going to quarantine, which also took the site's other rules with it, and a finding with nothing to remove, such as a retained security-plugin prelude, no longer spends automatic response capacity. Hosts that relied on `auto_response.quarantine_files` for this finding need `auto_response.clean_htaccess` on to keep an automatic response; existing findings are handled at the next deep scan, not by realtime detection.

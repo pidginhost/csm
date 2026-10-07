@@ -293,10 +293,21 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 	// Collect IPs to block from findings
 	ipsToBlock := make(map[string]pendingIP)
+	type evaluatedBlock struct{ findingID, ip string }
+	evaluated := make(map[evaluatedBlock]bool)
+	freshIPs := make(map[string]bool)
+	for _, f := range findings {
+		if f.AutoIPResponseEvaluated {
+			evaluated[evaluatedBlock{alert.FindingID(f), extractIPFromFinding(f)}] = true
+		} else if blockableFinding(f, cfg.AutoResponse.BlockCpanelLogins) {
+			freshIPs[extractIPFromFinding(f)] = true
+		}
+	}
 
 	// Drain pending queue first (IPs from prior rate-limited or failed
 	// cycles). Stale entries are dropped by name so the audit trail shows
 	// exactly which attackers aged out instead of being blocked.
+	var deferredPending []pendingIP
 	for _, p := range state.Pending {
 		work.beginPending(p)
 		ip := normalizeBlockIP(p.IP)
@@ -317,6 +328,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 				p.IP, p.QueuedAt.Format(time.RFC3339))
 			continue
 		}
+		// Redispatch of the same observation must not retry a failed scan
+		// block through the pending queue. A later cycle can still drain it.
+		if evaluated[evaluatedBlock{p.FindingID, p.IP}] && !freshIPs[p.IP] && !isAlreadyBlocked(state, p.IP) {
+			deferredPending = append(deferredPending, p)
+			continue
+		}
 		if !isAlreadyBlocked(state, p.IP) {
 			p.queueCandidate = work.candidate(p, ipsToBlock[p.IP].queueCandidate)
 			ipsToBlock[p.IP] = p
@@ -324,7 +341,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			work.completePending(p)
 		}
 	}
-	state.Pending = nil
+	state.Pending = deferredPending
 
 	// Subnet fast-path: checks that represent a subnet directly.
 	// Independent of the per-IP rate limit, because a single subnet block
@@ -400,7 +417,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		// Admission is asked for the block the policy selects; the tracker,
 		// the kernel and the hourly budget below are the legacy path's.
 		if !challengeSelected(cfg, f) {
-			respond(admission.KindBlockIP, f, f.SourceIP, 0)
+			respond(admission.KindBlockIP, f, ip, 0)
 		}
 
 		// Don't re-block already blocked IPs.

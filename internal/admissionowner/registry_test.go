@@ -8,6 +8,12 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 )
 
+func TestOwnerImplementsTheResponseFunnel(t *testing.T) {
+	if _, ok := any((*Owner)(nil)).(checks.ResponseAdmission); !ok {
+		t.Fatal("the admission owner cannot receive the response funnel's handoffs")
+	}
+}
+
 // Handoff from 1.4a: the daemon registers every producer of the table and
 // seals the registry, so nothing registers later and the ledger opens. The
 // owner keeps every producer's handle: it mints for all of them.
