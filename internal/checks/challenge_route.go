@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
@@ -113,6 +114,12 @@ func challengeRoutesFinding(cfg *config.Config, f alert.Finding) bool {
 	return challengeRoutesCheck(cfg, f.Check)
 }
 
+// challengeSelected reports whether challenge routing answers f instead of
+// a block: routing serves, and the policy routes the finding.
+func challengeSelected(cfg *config.Config, f alert.Finding) bool {
+	return cfg.Challenge.Enabled && challengeIPList != nil && !isHardBlockCheck(f.Check) && responseActionForFinding(cfg, f) == responseChallenge
+}
+
 // isHardBlockCheck reports whether a check must never be routed to the
 // challenge: its registry policy says so, or it is a runtime-built name the
 // prefix contract covers.
@@ -131,9 +138,16 @@ const ChallengeDuration = 30 * time.Minute
 // be silently broken by reordering in one path. Both stages run on the same
 // finding set (the full/repeat-offender set); callers append the returned
 // actions wherever their pipeline expects them.
+//
+// Both stages skip findings an earlier pass evaluated, and this pass marks
+// every finding it was given, so a scan finding the runner evaluated is not
+// acted on or handed to admission again when it is dispatched.
 func ChallengeThenBlock(cfg *config.Config, findings []alert.Finding) (challengeActions, blockActions []alert.Finding) {
 	challengeActions = ChallengeRouteIPs(cfg, findings)
 	blockActions = AutoBlockIPs(cfg, findings)
+	for i := range findings {
+		findings[i].AutoIPResponseEvaluated = true
+	}
 	return challengeActions, blockActions
 }
 
@@ -149,6 +163,9 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 	routed := make(map[string]bool)
 
 	for _, f := range findings {
+		if f.AutoIPResponseEvaluated {
+			continue
+		}
 		// Challenge timeouts can hard-block too, so gated authentication
 		// checks must honor the same opt-in as direct firewall responses.
 		if ResponsePolicyFor(f.Check).Block == BlockWithCpanelLogins && !cfg.AutoResponse.BlockCpanelLogins {
@@ -174,7 +191,7 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		}
 
 		ip := extractIPFromFinding(f)
-		if ip == "" || routed[ip] {
+		if ip == "" {
 			continue
 		}
 
@@ -182,7 +199,11 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
-		if challengeIPList.Contains(ip) {
+		// Admission judges existing effects itself; the list's state is
+		// the legacy path's.
+		respond(admission.KindChallenge, f, f.SourceIP, 0)
+
+		if routed[ip] || challengeIPList.Contains(ip) {
 			continue
 		}
 

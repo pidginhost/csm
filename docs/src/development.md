@@ -597,4 +597,10 @@ Held responses coalesce by evidence, kind and effective entry, whether the root 
 
 Root preparation and selected submission use the cached admission view and do not wait for ledger writes. Missing observation is an attribution refusal; malformed input remains invalid. Unminted Critical responses refused while the ingress is stopped count in its stopped status. Minting accepts canonical IPv6 evidence, while the selected kind checks containment support: HTTP challenges do not depend on the firewall family setting.
 
+Per-address funnels hand every selected block or challenge to admission before
+the existing responder runs. A process-local finding flag skips only the
+second evaluation of the same finding; distinct observations still submit,
+even when their address is already challenged. Admission outcomes do not
+change, delay or skip any existing responder decision.
+
 Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.

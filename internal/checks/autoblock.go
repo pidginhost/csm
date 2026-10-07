@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/config"
@@ -387,7 +388,7 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 
 	for _, f := range findings {
 		work.progress()
-		if !blockableFinding(f, cfg.AutoResponse.BlockCpanelLogins) {
+		if f.AutoIPResponseEvaluated || !blockableFinding(f, cfg.AutoResponse.BlockCpanelLogins) {
 			continue
 		}
 
@@ -399,6 +400,12 @@ func autoBlockIPs(cfg *config.Config, findings []alert.Finding, sourceFindingID 
 		// Never block infra IPs
 		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
 			continue
+		}
+
+		// Admission is asked for the block the policy selects; the tracker,
+		// the kernel and the hourly budget below are the legacy path's.
+		if !challengeSelected(cfg, f) {
+			respond(admission.KindBlockIP, f, f.SourceIP, 0)
 		}
 
 		// Don't re-block already blocked IPs.
