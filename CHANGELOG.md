@@ -40,7 +40,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Queued rule-update rescans survive restarts and concurrent updates, recover after late store startup or damaged queue state, and pause while `detection.rescan_on_signature_update` is off.
+- A full rescan queued by a rules update now survives daemon restarts and is cleared only after a completed sweep; it waits while `detection.rescan_on_signature_update` is off.
 - The OpenAPI contract now documents supported methods, settings write requirements and mail deletion errors.
 - Bot range feed updates no longer hang when a feed host accepts the connection and never answers.
 - The email quarantine sweep now reports entries it could not delete instead of counting the sweep as clean.
