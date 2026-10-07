@@ -236,8 +236,10 @@ func TestRuleScanBudgetDownloadAndMinerLines(t *testing.T) {
 			"download_args.txt":  downloadArgs,
 		}},
 		{"miner_cron_persistence", map[string][]byte{
-			"cron_prefixes.txt":  []byte(strings.Repeat("*/5 * * * * ", 50_000)),
-			"cron_downloads.txt": []byte(strings.Repeat("*/5 * * * * wget x ", 32_000)),
+			"cron_prefixes.txt":         []byte(strings.Repeat("*/5 * * * * ", 50_000)),
+			"cron_downloads.txt":        []byte(strings.Repeat("*/5 * * * * wget x ", 32_000)),
+			"unicode_cron_prefixes.txt": []byte(strings.Repeat("*/5 * * * * "+strings.Repeat("\u00e9", 256)+"XMRig ", 1_200)),
+			"invalid_cron_prefixes.txt": []byte(strings.Repeat("*/5 * * * * "+strings.Repeat("\xed\xa0\x80", 86)+"XMRig ", 2_000)),
 		}},
 		{"dropper_wget_exec", map[string][]byte{
 			"download_words.txt":    downloadWords,

@@ -103,7 +103,8 @@ the same way is not an execution. Versioned Perl and Python names, Python
 build variants and standard Windows executable names retain detection. Both
 engines use the same shell name boundaries, including commands embedded in
 strings and binary data. The miner cron signature ignores letter case in both
-engines.
+engines, accepts only spaces and tabs between schedule fields, and counts its
+bounded command span in characters so non-ASCII paths have the same coverage.
 
 The PHP goto-obfuscation rule requires three independent signals in both
 engines: a PHP opening tag, at least nine jumps to digit-bearing generated
