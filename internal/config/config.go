@@ -166,6 +166,9 @@ type MailLogsConfig struct {
 type Config struct {
 	ConfigFile string `yaml:"-"`
 	ConfigDir  string `yaml:"-" hotreload:"restart"` // /etc/csm/conf.d (or operator override); empty means no drop-ins loaded
+	// RemovedKeys lists settings found in the loaded YAML that no release
+	// reads any more; Validate turns them into warnings.
+	RemovedKeys []string `yaml:"-"`
 
 	Hostname string `yaml:"hostname" hotreload:"restart"`
 
@@ -196,11 +199,6 @@ type Config struct {
 			// (env wins, for secret hygiene).
 			HMACSecret    string `yaml:"hmac_secret,omitempty"`
 			HMACSecretEnv string `yaml:"hmac_secret_env,omitempty"`
-
-			// PerFinding documents the expected phpanel delivery shape. Phpanel
-			// webhooks always emit one signed POST per finding; other webhook
-			// types keep the existing digest delivery.
-			PerFinding bool `yaml:"per_finding,omitempty"`
 		} `yaml:"webhook"`
 		Heartbeat struct {
 			Enabled bool   `yaml:"enabled"`
@@ -269,13 +267,9 @@ type Config struct {
 	} `yaml:"confd,omitempty" hotreload:"safe"`
 
 	Thresholds struct {
-		MailQueueWarn             int `yaml:"mail_queue_warn"`
-		MailQueueCrit             int `yaml:"mail_queue_crit"`
-		StateExpiryHours          int `yaml:"state_expiry_hours"`
-		DeepScanIntervalMin       int `yaml:"deep_scan_interval_min"`
-		WPCoreCheckIntervalMin    int `yaml:"wp_core_check_interval_min"`
-		WebshellScanIntervalMin   int `yaml:"webshell_scan_interval_min"`
-		FilesystemScanIntervalMin int `yaml:"filesystem_scan_interval_min"`
+		MailQueueWarn       int `yaml:"mail_queue_warn"`
+		MailQueueCrit       int `yaml:"mail_queue_crit"`
+		DeepScanIntervalMin int `yaml:"deep_scan_interval_min"`
 		// ExposedFileScanDepth bounds how many directory levels below each
 		// docroot the web-exposed-file detector descends (default 2, maximum
 		// 10). Dumps and backups almost always sit at or just under the web root.
@@ -1076,18 +1070,15 @@ type Config struct {
 		PHPRelay struct {
 			// The relay pipeline is wired once at startup; a reload can retune
 			// it but cannot start or stop it, so toggling it needs a restart.
-			Enabled                  bool    `yaml:"enabled" hotreload:"restart"`
-			RateWindowMin            int     `yaml:"rate_window_min"`
-			HeaderScoreVolumeMin     int     `yaml:"header_score_volume_min"`
-			AbsoluteVolumePerHour    int     `yaml:"absolute_volume_per_hour"`
-			AccountVolumePerHour     int     `yaml:"account_volume_per_hour"`
-			ReputationFailuresPer24h int     `yaml:"reputation_failures_per_24h"`
-			FanoutDistinctScripts    int     `yaml:"fanout_distinct_scripts"`
-			FanoutDistinctRecipients int     `yaml:"fanout_distinct_recipients"`
-			FanoutWindowMin          int     `yaml:"fanout_window_min"`
-			BaselineSigma            float64 `yaml:"baseline_sigma"`
-			BaselineObservationDays  int     `yaml:"baseline_observation_days"`
-			PoliciesDir              string  `yaml:"policies_dir"`
+			Enabled                  bool   `yaml:"enabled" hotreload:"restart"`
+			RateWindowMin            int    `yaml:"rate_window_min"`
+			HeaderScoreVolumeMin     int    `yaml:"header_score_volume_min"`
+			AbsoluteVolumePerHour    int    `yaml:"absolute_volume_per_hour"`
+			AccountVolumePerHour     int    `yaml:"account_volume_per_hour"`
+			FanoutDistinctScripts    int    `yaml:"fanout_distinct_scripts"`
+			FanoutDistinctRecipients int    `yaml:"fanout_distinct_recipients"`
+			FanoutWindowMin          int    `yaml:"fanout_window_min"`
+			PoliciesDir              string `yaml:"policies_dir"`
 		} `yaml:"php_relay"`
 
 		// CloudRelay scopes opt-out for the email_cloud_relay_abuse
@@ -1634,7 +1625,6 @@ type ForwardGuardConfig struct {
 	Enabled                 bool               `yaml:"enabled"`
 	DryRun                  bool               `yaml:"dry_run"`
 	HoldSignals             ForwardHoldSignals `yaml:"hold_signals"`
-	SkipForwarders          []string           `yaml:"skip_forwarders"`
 	QuarantineRetentionDays int                `yaml:"quarantine_retention_days"`
 }
 
@@ -1734,20 +1724,8 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.Thresholds.MailQueueCrit == 0 {
 		cfg.Thresholds.MailQueueCrit = 2000
 	}
-	if cfg.Thresholds.StateExpiryHours == 0 {
-		cfg.Thresholds.StateExpiryHours = 24
-	}
 	if cfg.Thresholds.DeepScanIntervalMin == 0 {
 		cfg.Thresholds.DeepScanIntervalMin = 60
-	}
-	if cfg.Thresholds.WPCoreCheckIntervalMin == 0 {
-		cfg.Thresholds.WPCoreCheckIntervalMin = 60
-	}
-	if cfg.Thresholds.WebshellScanIntervalMin == 0 {
-		cfg.Thresholds.WebshellScanIntervalMin = 30
-	}
-	if cfg.Thresholds.FilesystemScanIntervalMin == 0 {
-		cfg.Thresholds.FilesystemScanIntervalMin = 30
 	}
 	if cfg.Thresholds.ExposedFileScanDepth == 0 {
 		cfg.Thresholds.ExposedFileScanDepth = DefaultExposedFileScanDepth
@@ -1942,9 +1920,6 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour == 0 {
 		cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
 	}
-	if cfg.EmailProtection.PHPRelay.ReputationFailuresPer24h == 0 {
-		cfg.EmailProtection.PHPRelay.ReputationFailuresPer24h = 3
-	}
 	if cfg.EmailProtection.PHPRelay.FanoutDistinctScripts == 0 {
 		cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3
 	}
@@ -1953,12 +1928,6 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.EmailProtection.PHPRelay.FanoutWindowMin == 0 {
 		cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
-	}
-	if cfg.EmailProtection.PHPRelay.BaselineSigma == 0 {
-		cfg.EmailProtection.PHPRelay.BaselineSigma = 3.0
-	}
-	if cfg.EmailProtection.PHPRelay.BaselineObservationDays == 0 {
-		cfg.EmailProtection.PHPRelay.BaselineObservationDays = 7
 	}
 	if cfg.EmailProtection.PHPRelay.PoliciesDir == "" {
 		cfg.EmailProtection.PHPRelay.PoliciesDir = "/opt/csm/policies/php_relay"
@@ -2223,12 +2192,16 @@ func LoadBytes(data []byte) (*Config, error) {
 	if len(data) > MaxConfigBytes {
 		return nil, fmt.Errorf("parsing config: input size %d exceeds %d byte cap", len(data), MaxConfigBytes)
 	}
+	data, removed, err := stripRemovedKeys(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
 	presence, err := defaultPresenceFromYAML(data)
 	if err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
-	cfg := &Config{}
+	cfg := &Config{RemovedKeys: removed}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {

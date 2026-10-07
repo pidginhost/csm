@@ -26,6 +26,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Held forward copies are now deleted once they pass the configured retention window instead of staying on disk.
 - Status and diagnostics now report automatic response admission health, with Critical alerts for failures.
 
+### Removed
+
+- Unused scan-interval, webhook and relay settings are gone from the config, dashboard and docs. Old config files still load, and the validator names each key to delete.
+
 ### Fixed
 
 - Settings saved from the dashboard now reach the live thresholds, whitelists and forward guard without a restart or reload.

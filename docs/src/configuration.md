@@ -109,7 +109,6 @@ alerts:
     type: "slack"                       # slack, discord, generic, phpanel
     hmac_secret: ""                     # phpanel webhook signing secret
     hmac_secret_env: ""                 # env var containing phpanel signing secret
-    per_finding: false                  # phpanel sends one signed POST per finding
   heartbeat:
     enabled: false
     url: ""                             # healthchecks.io, cronitor, dead man's switch
@@ -148,11 +147,7 @@ confd:
 thresholds:
   mail_queue_warn: 500                  # default: 500
   mail_queue_crit: 2000                 # default: 2000
-  state_expiry_hours: 24                # default: 24
   deep_scan_interval_min: 60            # minutes between deep scans (default: 60)
-  wp_core_check_interval_min: 60        # WordPress core checksum interval (default: 60)
-  webshell_scan_interval_min: 30        # webshell scan interval (default: 30)
-  filesystem_scan_interval_min: 30      # filesystem scan interval (default: 30)
   exposed_file_scan_depth: 2            # directory levels below each web docroot (default: 2, max: 10)
   multi_ip_login_threshold: 3           # IPs per account before alert (default: 3)
   multi_ip_login_window_min: 60         # time window for multi-IP check (default: 60)
@@ -640,12 +635,9 @@ email_protection:
     header_score_volume_min: 5          # Path 1: don't score until script has emitted N msgs
     absolute_volume_per_hour: 30        # Path 2 threshold per script
     account_volume_per_hour: 0          # Path 2b operator override; 0 = auto-derive from cpanel.config maxemailsperhour
-    reputation_failures_per_24h: 3      # Path 3 threshold (Stage 2)
     fanout_distinct_scripts: 3          # Path 4 threshold
     fanout_distinct_recipients: 5       # Path 2 + Path 4 recipient-diversity gate; 0 disables only this gate
     fanout_window_min: 5                # Path 4 window
-    baseline_sigma: 3.0                 # Path 5 (Stage 3)
-    baseline_observation_days: 7        # Path 5 (Stage 3)
     policies_dir: "/opt/csm/policies/php_relay"  # mailer_classes.yaml + http_proxy_ranges.yaml; SIGHUP-reloadable
   cloud_relay:
     allow_users: []                     # full mailbox opt-outs for cloud-relay detection
@@ -662,7 +654,6 @@ email_protection:
     enabled: false                      # master switch (default off)
     dry_run: true                       # account/log only, do not actually hold (default true)
     quarantine_retention_days: 14       # held copies older than this are deleted; 0 keeps them
-    skip_forwarders: []                 # reserved forwarder exemptions; not enforced yet
     hold_signals:                       # signal toggles, each default true
       bounce_backscatter: true          # null-sender bounce backscatter (enforceable)
       spam_flagged: true                # message flagged as spam (dry-run/accounting only)

@@ -54,7 +54,6 @@ account_roots:
 #   webhook:
 #     enabled: true
 #     type: phpanel
-#     per_finding: true
 #     url: https://panel.example.com/api/csm/findings
 #     hmac_secret_env: CSM_PHPANEL_HMAC
 #

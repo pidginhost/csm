@@ -118,7 +118,6 @@ email_protection:
       malware: true
       bad_sender_ip: true
       auth_fail: true
-    skip_forwarders: []     # reuse/share known_forwarders semantics
     quarantine_retention_days: 14
 ```
 
