@@ -130,3 +130,17 @@ func TestDoctorChecksWarnOnReservePressure(t *testing.T) {
 		t.Fatalf("outbox at half the reserve: %+v", row)
 	}
 }
+
+// The state database also holds the legacy path's state, which still
+// enforces while admission previews: no admission row advises restoring
+// it, whatever failed.
+func TestDoctorFixesKeepTheStateDatabaseWhileAdmissionPreviews(t *testing.T) {
+	s := healthyStatus()
+	s.Queue.Error, s.Notices.LastCriticalGap = "admission record is corrupt", t0
+	s.Storage.Pinned, s.Outbox.AuditBytes = 1, RecoveryReserveBytes
+	for _, r := range DoctorChecks(s, &IngressHealth{StoppedSince: t0}, t0) {
+		if strings.Contains(r.Fix, "restore") || strings.Contains(r.Fix, "stop csm.service") {
+			t.Errorf("%s advises: %s", r.Name, r.Fix)
+		}
+	}
+}

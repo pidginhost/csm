@@ -309,7 +309,7 @@ func ledgerRow(s *LedgerStatus) DoctorRow {
 	}
 	return DoctorRow{
 		Name: "admission ledger", Status: DoctorWarn, Message: strings.Join(damaged, "; ") + "; " + PreviewUnaffected,
-		Fix: "automatic responses are refused while the ledger is damaged; stop csm.service and restore the state database from a backup",
+		Fix: "previews are refused while the ledger is damaged; restart csm.service so opening the ledger proves every record, and keep the state database, which existing blocking still uses",
 	}
 }
 

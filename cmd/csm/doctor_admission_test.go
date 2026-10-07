@@ -126,3 +126,19 @@ func TestDoctorRendersAdmissionOwnerRows(t *testing.T) {
 		t.Error("a ledger that is not running printed a ceiling")
 	}
 }
+
+// Owner rows never advise stopping the daemon or restoring the state
+// database while admission previews: legacy blocking still enforces from
+// that database.
+func TestDoctorOwnerFixesKeepTheStateDatabaseWhileAdmissionPreviews(t *testing.T) {
+	at := time.Now().UTC()
+	report := doctorReportForSnapshot(t, admissionSnapshot(&health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{},
+		Owner: &health.AdmissionOwner{Error: "opening the admission ledger: admission record is corrupt",
+			DamageError: "draining the ingress: damaged arrivals were isolated: admission record is corrupt"}}))
+	for _, name := range []string{"admission owner", "admission ledger damage"} {
+		row, ok := doctorCheckNamed(report, name)
+		if !ok || row.Fix == "" || strings.Contains(row.Fix, "restore") || strings.Contains(row.Fix, "stop csm.service") {
+			t.Errorf("%s = %+v (%v)", name, row, ok)
+		}
+	}
+}

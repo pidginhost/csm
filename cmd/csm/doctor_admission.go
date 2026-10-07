@@ -35,7 +35,7 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 	if o.Error != "" {
 		owner = DoctorCheck{
 			Name: "admission owner", Status: "warn", Message: "the admission ledger is not running: " + o.Error + "; " + admission.PreviewUnaffected,
-			Fix: "the daemon retries at every tick; if the ledger cannot open, stop csm.service and restore the state database from a backup",
+			Fix: "the daemon retries at every tick; keep the state database, which existing blocking still uses, and report the error",
 		}
 	}
 	clock := DoctorCheck{Name: "admission clock", Status: "ok", Message: admission.PreviewUnaffected}
@@ -89,7 +89,7 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 	if o.DamageError != "" {
 		rows = append(rows, DoctorCheck{
 			Name: "admission ledger damage", Status: "warn", Message: "responses naming a damaged ledger record are discarded: " + o.DamageError + "; " + admission.PreviewUnaffected,
-			Fix: "restart csm.service so opening the ledger proves every record; if it then refuses to open, stop csm.service and restore the state database from a backup",
+			Fix: "restart csm.service so opening the ledger proves every record; keep the state database, which existing blocking still uses, and report the damage",
 		})
 	}
 	return rows
