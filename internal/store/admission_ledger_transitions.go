@@ -415,8 +415,68 @@ func (l *AdmissionLedger) Execute(id admission.ActionID) (admission.Candidate, a
 // ran is known not to have applied, so it can only fail. A proven failure
 // with attempts left returns the candidate to the queue after a backoff; an
 // unknown outcome ends it without a retry. An ended candidate releases its
-// queue position in the same transaction.
+// queue position in the same transaction. A preview is recorded by Observe.
 func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+	switch d {
+	case admission.DispositionApplied, admission.DispositionNarrowed, admission.DispositionFailed, admission.DispositionUnknown:
+	default:
+		return admission.Candidate{}, admission.AttemptRecord{}, refusal(admission.ReasonInvalid, "disposition is not an attempt outcome")
+	}
+	cand, att, _, err := l.attemptStep("finish", id, l.recordedClock, func(q *queueTx, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
+		return q.finishAttempt(a, c, d)
+	})
+	return cand, att, err
+}
+
+// Observe reserves the next attempt of a queued candidate on lane as
+// Reserve does, charge and history included, and ends it in the same
+// transaction as an observe preview: the attempt never runs, applies
+// nothing and ends no episode. One transaction leaves no reserved preview
+// behind a crash. A candidate already reserved or running is a readback,
+// as with Reserve: nothing is granted or changed.
+func (l *AdmissionLedger) Observe(id admission.CandidateID, lane admission.Lane, expiresAt time.Time) (admission.Candidate, admission.AttemptRecord, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now, err := l.clock()
+	if err != nil {
+		return admission.Candidate{}, admission.AttemptRecord{}, false, err
+	}
+	var c admission.Candidate
+	var a admission.AttemptRecord
+	var granted bool
+	if err := l.update("observe", func(tx *bolt.Tx) error {
+		q, txErr := l.openQueue(tx, now)
+		if txErr != nil {
+			return txErr
+		}
+		if c, a, granted, txErr = l.reserveTx(q, id, lane, expiresAt); txErr != nil || !granted {
+			return txErr
+		}
+		from := c.State
+		if _, txErr = q.finishAttempt(&a, &c, admission.DispositionObserve); txErr != nil {
+			return txErr
+		}
+		if !admission.CanTransition(from, c.State) {
+			return admission.ErrTransitionConflict
+		}
+		c.Transitions++
+		if txErr = putAttempt(tx, a); txErr != nil {
+			return txErr
+		}
+		if txErr = putCandidate(tx, c); txErr != nil {
+			return txErr
+		}
+		return q.flush()
+	}); err != nil {
+		return admission.Candidate{}, admission.AttemptRecord{}, false, err
+	}
+	return c, a, granted, nil
+}
+
+// finishAttempt records outcome d of the candidate's current attempt a and
+// reports whether it changed anything. The caller counts the transition
+// and stores both records.
+func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candidate, d admission.Disposition) (bool, error) {
 	var state admission.State
 	switch d {
 	case admission.DispositionApplied, admission.DispositionNarrowed:
@@ -425,72 +485,70 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 		state = admission.StateFailed
 	case admission.DispositionUnknown:
 		state = admission.StateUnknown
-	default:
-		return admission.Candidate{}, admission.AttemptRecord{}, refusal(admission.ReasonInvalid, "disposition is not an attempt outcome")
+	case admission.DispositionObserve:
+		state = admission.StateObserved
 	}
-	cand, att, _, err := l.attemptStep("finish", id, l.recordedClock, func(q *queueTx, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
-		if a.State.Terminal() {
-			if a.Disposition == d {
-				return false, nil
-			}
-			return false, admission.ErrTransitionConflict
+	if a.State.Terminal() {
+		if a.Disposition == d {
+			return false, nil
 		}
-		e, err := loadQueueEntry(q.tx, a.Attempt.Candidate)
-		if err != nil {
+		return false, admission.ErrTransitionConflict
+	}
+	e, err := loadQueueEntry(q.tx, a.Attempt.Candidate)
+	if err != nil {
+		return false, err
+	}
+	// The candidate moves in step with its current attempt, so the
+	// lifecycle table decides which outcomes a reserved attempt allows.
+	from := c.State
+	// An attempt that never ran returns the slot of its execution row.
+	var unused uint64
+	if a.State == admission.StateReserved {
+		unused = 1
+	}
+	a.State, a.Disposition, a.Finished = state, d, q.now
+	if err = q.outcomes.Add(admission.AttemptOutcome(d, e.Tier)); err != nil {
+		return false, err
+	}
+	switch {
+	case d == admission.DispositionFailed && c.Attempts < admission.MaxAttempts:
+		c.State, c.NotBefore = admission.StateQueued, q.now.Add(admission.RetryBackoff(c.Attempts))
+	default:
+		c.State, c.Disposition = state, d
+	}
+	// A row cannot record an outcome its attempt never reached, so the
+	// table is asked before the row is written.
+	if !admission.CanTransition(from, c.State) {
+		return false, admission.ErrTransitionConflict
+	}
+	// The row goes first: the ending below writes retirement keys
+	// only when no row of the candidate is pending.
+	if err = q.writeAuditRow(*c, *a, e.Tier); err != nil {
+		return false, err
+	}
+	if err = q.adjustAuditSlots(0, unused); err != nil {
+		return false, err
+	}
+	if c.State == admission.StateQueued {
+		q.noteDeadlines(*c, e)
+		return true, nil
+	}
+	if err = q.release(a.Attempt.Candidate, e, 0, 0); err != nil {
+		return false, err
+	}
+	// Pin the ending before allocating its notice: release removed
+	// the outstanding hold, and the notice cannot spend those bytes.
+	if err = q.ended(a.Attempt.Candidate, *c); err != nil {
+		return false, err
+	}
+	if c.State == admission.StateVerified {
+		if err = q.closeEpisode(*c); err != nil {
 			return false, err
 		}
-		// The candidate moves in step with its current attempt, so the
-		// lifecycle table decides which outcomes a reserved attempt allows.
-		from := c.State
-		// An attempt that never ran returns the slot of its execution row.
-		var unused uint64
-		if a.State == admission.StateReserved {
-			unused = 1
-		}
-		a.State, a.Disposition, a.Finished = state, d, q.now
-		if err = q.outcomes.Add(admission.AttemptOutcome(d, e.Tier)); err != nil {
-			return false, err
-		}
-		switch {
-		case d == admission.DispositionFailed && c.Attempts < admission.MaxAttempts:
-			c.State, c.NotBefore = admission.StateQueued, q.now.Add(admission.RetryBackoff(c.Attempts))
-		default:
-			c.State, c.Disposition = state, d
-		}
-		// A row cannot record an outcome its attempt never reached, so the
-		// table is asked before the row is written.
-		if !admission.CanTransition(from, c.State) {
-			return false, admission.ErrTransitionConflict
-		}
-		// The row goes first: the ending below writes retirement keys
-		// only when no row of the candidate is pending.
-		if err = q.writeAuditRow(*c, *a, e.Tier); err != nil {
-			return false, err
-		}
-		if err = q.adjustAuditSlots(0, unused); err != nil {
-			return false, err
-		}
-		if c.State == admission.StateQueued {
-			q.noteDeadlines(*c, e)
-			return true, nil
-		}
-		if err = q.release(a.Attempt.Candidate, e, 0, 0); err != nil {
-			return false, err
-		}
-		// Pin the ending before allocating its notice: release removed
-		// the outstanding hold, and the notice cannot spend those bytes.
-		if err = q.ended(a.Attempt.Candidate, *c); err != nil {
-			return false, err
-		}
-		if c.State == admission.StateVerified {
-			if err = q.closeEpisode(*c); err != nil {
-				return false, err
-			}
-			err = q.raise(admission.NoticeKey{Kind: admission.NoticeAppliedSummary}, a.Attempt.Candidate, c.Transitions+1)
-		} else {
-			err = q.gap(admission.GapOutcome, 0, d, e, a.Attempt.Candidate, *c, c.Transitions+1)
-		}
-		return true, err
-	})
-	return cand, att, err
+		err = q.raise(admission.NoticeKey{Kind: admission.NoticeAppliedSummary}, a.Attempt.Candidate, c.Transitions+1)
+	} else {
+		// A preview is intentional non-enforcement: it raises no gap.
+		err = q.gap(admission.GapOutcome, 0, d, e, a.Attempt.Candidate, *c, c.Transitions+1)
+	}
+	return true, err
 }

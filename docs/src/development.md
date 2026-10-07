@@ -582,3 +582,7 @@ including files without extensions. Scanner failures stop the check; reports
 identify the file and line without printing the suspected address. The
 [fixture sanitisation rules](https://github.com/pidginhost/csm/blob/main/internal/daemon/testdata/php_relay/SANITISE.md)
 describe the additional manual privacy review.
+
+### Admission preview ledger
+
+Admission previews reserve, charge history and capacity, and end observed in one transaction. They write both audit steps, never execute a response, never count as applied, and do not end the evidence episode or raise a notice. Repeated evidence is answered until its quiet window closes.

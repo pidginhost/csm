@@ -75,6 +75,7 @@ func TestPersistedEnumValuesAreFrozen(t *testing.T) {
 		"StateRefused":                {uint8(StateRefused), 7},
 		"StateWithheld":               {uint8(StateWithheld), 8},
 		"StateDropped":                {uint8(StateDropped), 9},
+		"StateObserved":               {uint8(StateObserved), 10},
 		"ReasonSetFull":               {uint8(ReasonSetFull), 2},
 		"ReasonStorageShare":          {uint8(ReasonStorageShare), 3},
 		"ReasonEngineUnavailable":     {uint8(ReasonEngineUnavailable), 4},

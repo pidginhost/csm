@@ -17,10 +17,13 @@ const (
 	StateRefused
 	StateWithheld
 	StateDropped
+	// StateObserved ends an attempt that was reserved as live work would
+	// be and never ran: an observe preview, never an applied outcome.
+	StateObserved
 	stateEnd
 )
 
-var stateNames = [...]string{"", "queued", "reserved", "executing", "verified", "failed", "unknown", "refused", "withheld", "dropped"}
+var stateNames = [...]string{"", "queued", "reserved", "executing", "verified", "failed", "unknown", "refused", "withheld", "dropped", "observed"}
 
 func (s State) Valid() bool { return s >= StateQueued && s < stateEnd }
 
@@ -39,12 +42,14 @@ func (s State) Terminal() bool { return s >= StateVerified && s < stateEnd }
 // CanTransition reports whether the lifecycle allows from -> to. Queued to
 // queued records a changed deferral reason. A proven failure with attempts
 // left returns the candidate to the queue; an unknown outcome never does.
+// Only a reservation can end as a preview: an attempt that ran may have
+// applied something.
 func CanTransition(from, to State) bool {
 	switch from {
 	case StateQueued:
 		return to == StateQueued || to == StateReserved || to == StateRefused || to == StateWithheld || to == StateDropped
 	case StateReserved:
-		return to == StateExecuting || to == StateFailed || to == StateQueued
+		return to == StateExecuting || to == StateFailed || to == StateQueued || to == StateObserved
 	case StateExecuting:
 		return to == StateVerified || to == StateFailed || to == StateUnknown || to == StateQueued
 	}
@@ -69,6 +74,8 @@ func terminalDisposition(s State, d Disposition) bool {
 		return d == DispositionWithheld
 	case StateDropped:
 		return d == DispositionDropped
+	case StateObserved:
+		return d == DispositionObserve
 	}
 	return false
 }

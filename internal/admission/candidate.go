@@ -155,7 +155,7 @@ func (c Candidate) record() (candidateRecord, error) {
 		return bad("candidate exceeds its attempts")
 	case c.Attempts == 0 && c.State != StateQueued && !c.State.Terminal():
 		return bad("candidate is past the queue without an attempt")
-	case c.Attempts == 0 && (c.State == StateVerified || c.State == StateFailed || c.State == StateUnknown):
+	case c.Attempts == 0 && (c.State == StateVerified || c.State == StateFailed || c.State == StateUnknown || c.State == StateObserved):
 		return bad("candidate has an outcome without an attempt")
 	case c.State == StateFailed && c.Attempts != MaxAttempts:
 		return bad("candidate failed before exhausting its attempts")
@@ -309,7 +309,7 @@ func (a AttemptRecord) record() (attemptRecord, error) {
 		return bad("attempt exceeds the candidate limit")
 	}
 	switch a.State {
-	case StateReserved, StateExecuting, StateVerified, StateFailed, StateUnknown:
+	case StateReserved, StateExecuting, StateVerified, StateFailed, StateUnknown, StateObserved:
 	default:
 		return bad("attempt state is not an attempt phase")
 	}
