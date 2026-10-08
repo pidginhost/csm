@@ -55,15 +55,17 @@ type Episode struct {
 	// first. An observation older than it belongs to that episode.
 	Previous time.Time
 	// PriorLast is the latest observation accepted by the previous episode.
-	// Work can keep it open beyond its scheduled verified boundary.
+	// An unresolved line or a degraded clock can keep it open beyond its
+	// scheduled verified boundary.
 	PriorLast time.Time
 	// Lines are sorted by kind, one per kind.
 	Lines []EpisodeLine
 }
 
-// End is when the episode ends unless work is still queued or in flight: at
-// a verified block's original expiry, otherwise an hour after the last
-// accepted observation.
+// End is when the episode ends: at a verified block's original expiry,
+// whatever other kinds have queued or in flight, otherwise an hour after the
+// last accepted observation once no work is queued or in flight. An
+// unresolved line or a degraded clock keeps it open either way.
 func (e Episode) End() time.Time {
 	if !e.Verified.IsZero() {
 		return e.Verified
@@ -259,10 +261,12 @@ type EpisodeChoice struct {
 
 // Place decides where an observation of kind made at observed belongs,
 // given the target's current episode (nil for none) and the state of each
-// of its lines in order (spec 5.2). The episode ends at End once no line is
-// queued, in flight or unresolved; a degraded clock never ends it, since
-// wall time alone cannot prove a new episode. An observation older than the
-// previous episode's end is refused. next names a newly opened episode.
+// of its lines in order (spec 5.2). The episode ends at End: at a verified
+// block's expiry even while other kinds' work is queued or in flight (I1),
+// otherwise once no line is queued or in flight. An unresolved line holds it
+// open, and a degraded clock never ends it, since wall time alone cannot
+// prove a new episode. An observation older than the previous episode's end
+// is refused. next names a newly opened episode.
 func Place(cur *Episode, states []LineState, kind Kind, observed time.Time, degraded bool, next func() (EpisodeID, error)) (EpisodeChoice, error) {
 	if !kind.Valid() {
 		return EpisodeChoice{}, refuse(ReasonInvalid, "unknown response kind")
@@ -274,11 +278,13 @@ func Place(cur *Episode, states []LineState, kind Kind, observed time.Time, degr
 		if len(states) != len(cur.Lines) {
 			return EpisodeChoice{}, refuse(ReasonInvalid, "line states do not match the episode")
 		}
-		live := false
+		live, unresolved := false, false
 		for _, s := range states {
 			switch s {
-			case LineQueued, LineRetry, LineInFlight, LineUnresolved:
+			case LineQueued, LineRetry, LineInFlight:
 				live = true
+			case LineUnresolved:
+				unresolved = true
 			case LineAnswered, LineEnded:
 			default:
 				return EpisodeChoice{}, refuse(ReasonInvalid, "unknown line state")
@@ -287,7 +293,13 @@ func Place(cur *Episode, states []LineState, kind Kind, observed time.Time, degr
 		if observed.Before(cur.Previous) || (!cur.PriorLast.IsZero() && !observed.After(cur.PriorLast)) {
 			return EpisodeChoice{}, refuse(ReasonStale, "observation belongs to an earlier episode")
 		}
-		if live || degraded || observed.Before(cur.End()) {
+		// A verified block's expiry ends the episode whatever else is
+		// queued (I1); only its own kind could hold it, and that line is
+		// the verified one.
+		if !cur.Verified.IsZero() && !observed.Before(cur.Verified) {
+			live = false
+		}
+		if live || unresolved || degraded || observed.Before(cur.End()) {
 			return join(*cur, states, kind, observed)
 		}
 		if !observed.After(cur.Last) {

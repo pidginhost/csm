@@ -145,3 +145,55 @@ func TestAdmissionLedgerUnknownTargetRefusesReservedBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// An earlier episode's live work can end unknown after I1 replaced the
+// target's episode row. Recovery still holds the exact target.
+func TestAdmissionLedgerEarlierEpisodeUnknownTargetStillHolds(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	block := f.arrive(f.arrival(evidenceSpec{cursor: "block"}))[0].Candidate
+	expires := ledgerT0.Add(20 * time.Minute)
+	f.finishArrival(block, expires, admission.DispositionApplied)
+	other := f.arrival(evidenceSpec{cursor: "other"})
+	other.Request.Kind = admission.KindPromote
+	queued := f.arrive(other)[0]
+	if queued.Err != nil {
+		t.Fatal(queued.Err)
+	}
+	_, a, granted, err := f.l.Reserve(queued.Candidate, admission.LaneGeneral, expires.Add(time.Minute))
+	if err != nil || !granted {
+		t.Fatalf("reserve earlier work: %v %v", granted, err)
+	}
+	if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(expires)
+	next := f.arrive(f.arrival(evidenceSpec{cursor: "new_episode"}))[0]
+	if next.Err != nil || f.candidateOf(next.Candidate).Key.Episode == f.candidateOf(queued.Candidate).Key.Episode {
+		t.Fatalf("next episode: %+v", next)
+	}
+	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionUnknown); err != nil {
+		t.Fatal(err)
+	}
+	if f.l, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(expires)
+	before := f.snapshot()
+	_, _, granted, err = f.l.Reserve(next.Candidate, admission.LaneGeneral, f.wall.Add(time.Hour))
+	wantLedgerReason(t, "earlier unknown", err, admission.ReasonPendingRecovery)
+	if granted || !reflect.DeepEqual(f.snapshot(), before) {
+		t.Fatal("earlier uncertainty allowed a reservation")
+	}
+	if picks := f.schedule(fullSchedule); len(picks) != 0 || f.candidateOf(next.Candidate).Reason != admission.ReasonPendingRecovery {
+		t.Fatalf("earlier uncertainty schedule: %+v", picks)
+	}
+	f.ackAll()
+	f.tickAt(a.ExpiresAt)
+	if _, _, granted, err = f.l.RetireUnproven(a.Attempt.ID); err != nil || !granted {
+		t.Fatalf("retire earlier work: %v %v", granted, err)
+	}
+	if _, _, granted, err = f.l.Reserve(next.Candidate, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil || !granted {
+		t.Fatalf("released target: %v %v", granted, err)
+	}
+}

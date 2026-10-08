@@ -258,6 +258,32 @@ func TestPlaceEndsAVerifiedEpisodeAtItsExpiry(t *testing.T) {
 	}
 }
 
+// I1: a verified block ends its episode at its expiry even while another
+// kind's work is queued or in flight. An unresolved line and a degraded
+// clock still hold it.
+func TestPlaceEndsAVerifiedEpisodeDespiteOtherWork(t *testing.T) {
+	cur := place(t, nil, nil, KindBlockIP, t0, false).Episode.WithLine(episodeLine(t, KindBlockIP, 1, 1))
+	cur = cur.WithLine(episodeLine(t, KindChallenge, 1, 2))
+	cur.Verified, cur.Last = t0.Add(20*time.Minute), t0.Add(19*time.Minute)
+	expiry := cur.Verified
+	for _, state := range []LineState{LineQueued, LineRetry, LineInFlight} {
+		if p := place(t, &cur, []LineState{LineAnswered, state}, KindBlockIP, expiry.Add(-time.Nanosecond), false); !p.Answered || p.Episode.ID != cur.ID {
+			t.Fatalf("%v before the expiry: %+v", state, p)
+		}
+		p := place(t, &cur, []LineState{LineAnswered, state}, KindBlockIP, expiry, false)
+		if p.Answered || p.Episode.ID == cur.ID || p.Generation != 1 || !p.Episode.Previous.Equal(expiry) {
+			t.Fatalf("%v at the expiry: %+v", state, p)
+		}
+	}
+	later := expiry.Add(2 * time.Hour)
+	if p := place(t, &cur, []LineState{LineAnswered, LineUnresolved}, KindBlockIP, later, false); !p.Answered || p.Episode.ID != cur.ID {
+		t.Fatalf("an unresolved line: %+v", p)
+	}
+	if p := place(t, &cur, []LineState{LineAnswered, LineQueued}, KindBlockIP, later, true); !p.Answered || p.Episode.ID != cur.ID {
+		t.Fatalf("a degraded clock: %+v", p)
+	}
+}
+
 func TestPlaceRefusesBadInput(t *testing.T) {
 	cur := place(t, nil, nil, KindBlockIP, t0, false).Episode.WithLine(episodeLine(t, KindBlockIP, math.MaxUint32, 1))
 	for _, tc := range []struct {

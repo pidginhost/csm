@@ -444,8 +444,9 @@ row, and each admitted
 candidate's history charge covers a row. A target without a row opens a
 new episode, so a retired candidate's ID is never minted again. A
 verified block ends its episode at the block's original expiry instead of
-an hour after the last observation; an unknown outcome or a response of
-another kind does not.
+an hour after the last observation, even while work of another kind is
+queued or in flight; an unknown outcome or a response of another kind does
+not end it.
 
 Schema 7 adds execution intents; the first open upgrades a schema 1 to 6
 ledger in the same transaction. Execution marks a batch of up to 64

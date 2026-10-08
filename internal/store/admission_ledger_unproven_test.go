@@ -395,3 +395,45 @@ func TestAdmissionLedgerFailedLineStartsTheNextGeneration(t *testing.T) {
 		}
 	})
 }
+
+// I1: a verified block ends its episode at the block's expiry even while a
+// response of another kind is queued. The next block observation opens a
+// new episode with a new candidate, and the earlier episode's queued work
+// stays valid.
+func TestAdmissionLedgerVerifiedBlockEndsItsEpisodeDespiteOtherWork(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	block := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
+	expires := f.wall.Add(20 * time.Minute)
+	_, a, _, err := f.l.Reserve(block, admission.LaneGeneral, expires)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionApplied); err != nil {
+		t.Fatal(err)
+	}
+	other := f.arrival(evidenceSpec{cursor: "promotion"})
+	other.Request.Kind = admission.KindPromote
+	queued := f.arrive(other)[0]
+	episode := f.candidateOf(block).Key.Episode
+	if queued.Err != nil || f.candidateOf(queued.Candidate).Key.Episode != episode {
+		t.Fatalf("other kind: %+v", queued)
+	}
+	f.tickAt(expires)
+	next := f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}))[0]
+	if c := f.candidateOf(next.Candidate); next.Err != nil || c.Key.Episode == episode || c.Key.Generation != 1 || c.State != admission.StateQueued {
+		t.Fatalf("at the expiry: %+v %+v", next, c)
+	}
+	if c := f.candidateOf(queued.Candidate); c.State != admission.StateQueued || c.Key.Episode != episode {
+		t.Fatalf("earlier work: %+v", c)
+	}
+	if _, err = f.l.Terminate(queued.Candidate, admission.ReasonPolicy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -922,14 +922,10 @@ func TestAdmissionLedgerDeletedEpisodeAttemptStillAnswers(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.begin()
 	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
-	_, a, _, err := f.l.Reserve(first, admission.LaneGeneral, f.wall.Add(time.Hour))
+	// A verified block would end the episode at its expiry, before its
+	// details could be retired (I1); a preview does not.
+	_, _, _, err := f.l.Observe(first, admission.LaneGeneral, f.wall.Add(time.Hour))
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionApplied); err != nil {
 		t.Fatal(err)
 	}
 	f.tickAt(f.wall.Add(time.Minute))
@@ -1051,23 +1047,23 @@ func TestAdmissionLedgerVerifiedBlockEndsItsEpisodeAtItsExpiry(t *testing.T) {
 	}
 }
 
-// Live work of another kind holds the episode past the block expiry;
-// reports it accepted during the hold cannot later become a new episode.
+// A degraded clock holds the episode past the block expiry; reports it
+// accepted during the hold cannot later become a new episode.
 func TestAdmissionLedgerEarlierEpisodeReportsStayEarlier(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.begin()
 	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
-	other := f.arrival(evidenceSpec{cursor: "promotion"})
-	other.Request.Kind = admission.KindPromote
-	kept := f.arrive(other)[0].Candidate
 	expiry := ledgerT0.Add(20 * time.Minute)
 	f.finishArrival(first, expiry, admission.DispositionApplied)
-	f.tickAt(ledgerT0.Add(25 * time.Minute))
+	// A degraded reading holds the episode past its verified boundary: the
+	// wall moves two seconds further than the elapsed time.
+	f.wall, f.since = ledgerT0.Add(25*time.Minute), f.since+25*time.Minute-2*time.Second
+	if tick, err := f.l.Tick(admission.ClockReading{Wall: f.wall, BootID: ledgerBoot, SinceBoot: f.since}); err != nil || !tick.Degraded {
+		t.Fatalf("tick = %+v, %v", tick, err)
+	}
 	old := f.arrival(evidenceSpec{cursor: "while-held"})
 	wantLedgerReason(t, "held episode", f.arrive(old)[0].Err, admission.ReasonExistingEffect)
-	if _, err := f.l.Terminate(kept, admission.ReasonPolicy); err != nil {
-		t.Fatal(err)
-	}
+	f.tickAt(f.wall.Add(time.Second))
 	wantLedgerReason(t, "report after hold", f.arrive(old)[0].Err, admission.ReasonStale)
 	f.tickAt(ledgerT0.Add(26 * time.Minute))
 	next := f.arrive(f.arrival(evidenceSpec{cursor: "next-episode"}))[0]
