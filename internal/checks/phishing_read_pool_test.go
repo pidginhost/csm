@@ -30,13 +30,18 @@ func TestPhishingReadsReuseTheirWindow(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := writePhishingSample(t, tc.file, tc.body)
+			// Even -benchtime=1x must average over cold reads and the race
+			// detector's random pool drops rather than judge one allocation.
+			const filesPerIteration = 256
 			res := testing.Benchmark(func(b *testing.B) {
 				b.ReportAllocs()
 				for i := 0; i < b.N; i++ {
-					tc.analyze(context.Background(), path)
+					for j := 0; j < filesPerIteration; j++ {
+						tc.analyze(context.Background(), path)
+					}
 				}
 			})
-			if got := res.AllocedBytesPerOp(); got >= phishingReadSize/2 {
+			if got := res.AllocedBytesPerOp() / filesPerIteration; got >= phishingReadSize/2 {
 				t.Fatalf("%d bytes allocated per file; the read window is not reused", got)
 			}
 		})
