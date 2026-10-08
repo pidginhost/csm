@@ -456,18 +456,19 @@ func (r *wpInstallRun) observeCloseWrite(t *testing.T, path string) {
 }
 
 // replaceAtomically renames a fresh copy of body over path, as an atomic
-// writer does. The copy must be born after every earlier observation. Birth
-// times come from the kernel's coarse clock, which lags time.Now(), so a copy
-// written right after an observation can carry an earlier birth time and
-// would not count as a newer file.
-func replaceAtomically(t *testing.T, path, body string) {
+// writer does. A nonzero after also requires a newer birth time. The kernel's
+// coarse clock can lag time.Now(), so that fixture may need a fresh retry.
+// Tests proving replacement by inode alone do not require birth-time support.
+func replaceAtomically(t *testing.T, path, body string, after time.Time) {
 	t.Helper()
 	tmp := filepath.Join(filepath.Dir(path), "attack.tmp.example")
-	observed := time.Now()
-	deadline := observed.Add(10 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
+		}
+		if after.IsZero() {
+			break
 		}
 		f, err := os.Open(tmp)
 		if err != nil {
@@ -478,14 +479,14 @@ func replaceAtomically(t *testing.T, path, body string) {
 		if !ok {
 			t.Fatal("replacement has no birth time")
 		}
-		if birth.After(observed) {
+		if birth.After(after) {
 			break
 		}
 		if err := os.Remove(tmp); err != nil {
 			t.Fatal(err)
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("replacement birth %v never passed %v", birth, observed)
+			t.Fatalf("replacement birth %v never passed %v", birth, after)
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -519,7 +520,7 @@ func TestDropperWAFLogRewriteAfterConcurrentWriteStillReported(t *testing.T) {
 			r.observeCloseWrite(t, path)
 			want := alert.Critical
 			if replaced {
-				replaceAtomically(t, path, wafAttackDataBody)
+				replaceAtomically(t, path, wafAttackDataBody, time.Now())
 				want = alert.Warning
 			} else if err := os.Remove(path); err != nil {
 				t.Fatal(err)
@@ -543,7 +544,7 @@ func TestDropperWAFLogRacedSnapshotAloneStillReported(t *testing.T) {
 			observeDuringConcurrentWrite(t, r, path, wafAttackDataBody)
 			want := alert.Critical
 			if replaced {
-				replaceAtomically(t, path, wafAttackDataBody)
+				replaceAtomically(t, path, wafAttackDataBody, time.Now())
 				want = alert.Warning
 			} else if err := os.Remove(path); err != nil {
 				t.Fatal(err)

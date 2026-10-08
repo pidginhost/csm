@@ -440,7 +440,7 @@ func TestDropperPluginCopyReplacementStillUsesPackageProof(t *testing.T) {
 			r := newSafeModeRun(t, s)
 			writeWPInstallFile(t, s.muPlugin, tc.body)
 			r.observe(t, s.muPlugin, nil)
-			replaceAtomically(t, s.muPlugin, testElementorLoader)
+			replaceAtomically(t, s.muPlugin, testElementorLoader, time.Time{})
 			r.probeAndFlushWith(tc.checksums(t))
 			got := *r.alerts
 			if !tc.wantFinding {

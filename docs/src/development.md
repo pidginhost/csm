@@ -35,6 +35,12 @@ CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)" go build -tags yara ./cm
 
 ## Test
 
+Process-context unit tests stub start times for synthetic PIDs so unrelated
+processes cannot supply cache identity evidence. UID and command mismatches
+are checked separately. Atomic replacement fixtures require newer birth times
+only when testing WAF log replacement; plugin-copy tests also work without
+filesystem birth-time support.
+
 The default CI job runs every package with the race detector, no extra build
 tags, and a 30-minute per-package timeout. Run its exact test command on Linux:
 

@@ -38,7 +38,7 @@ func TestPopulateProcessCtxFromExecEventWithZeroPIDIsNoop(t *testing.T) {
 
 func TestAttachProcessCtxToExecFinding(t *testing.T) {
 	resetProcessCtxForTest()
-	withoutProcessStartTime(t, 4242)
+	stubProcessStartTime(t, 4242, time.Time{})
 	cache, _ := ProcessCtx()
 	ev := ExecEvent{UID: 1001, PID: 4242, PPID: 1, Comm: "php-fpm", Filename: "/usr/sbin/php-fpm"}
 	populateProcessCtxFromExec(cache, ev, time.Time{})
@@ -53,19 +53,35 @@ func TestAttachProcessCtxToExecFinding(t *testing.T) {
 }
 
 func TestAttachProcessCtxToExecFindingRejectsMismatchedCache(t *testing.T) {
-	resetProcessCtxForTest()
-	cache, _ := ProcessCtx()
-	cache.PutFromExec(4242, 1, 1002, "curl", "/usr/bin/curl")
+	for _, tc := range []struct {
+		name string
+		uid  int
+		comm string
+	}{
+		{"UID mismatch", 1002, "php-fpm"},
+		{"command mismatch", 1001, "curl"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetProcessCtxForTest()
+			t.Cleanup(resetProcessCtxForTest)
+			stubProcessStartTime(t, 4242, time.Time{})
+			cache, _ := ProcessCtx()
+			cache.PutFromExec(4242, 1, tc.uid, tc.comm, "/usr/bin/"+tc.comm)
 
-	ev := ExecEvent{UID: 1001, PID: 4242, PPID: 1, Comm: "php-fpm", Filename: "/usr/sbin/php-fpm"}
-	f := alert.Finding{Check: "suspicious_process_exec", Message: "test", Timestamp: time.Now()}
-	attachProcessCtxToExecFinding(cache, &f, ev)
-	if f.Process != nil {
-		t.Fatalf("expected stale cache hit to be ignored, got %+v", f.Process)
+			ev := ExecEvent{UID: 1001, PID: 4242, PPID: 1, Comm: "php-fpm", Filename: "/usr/sbin/php-fpm"}
+			f := alert.Finding{Check: "suspicious_process_exec", Message: "test", Timestamp: time.Now()}
+			attachProcessCtxToExecFinding(cache, &f, ev)
+			if f.Process != nil {
+				t.Fatalf("expected stale cache hit to be ignored, got %+v", f.Process)
+			}
+		})
 	}
 }
 
 func TestProcessctxRequestFromExecMapsFields(t *testing.T) {
+	resetProcessCtxForTest()
+	startedAt := time.Unix(1700000000, 0)
+	stubProcessStartTime(t, 4242, startedAt)
 	ev := ExecEvent{UID: 1001, PID: 4242, Comm: "php-fpm"}
 	req := processctxRequestFromExec(ev)
 	if req.PID != 4242 || req.UID != 1001 || req.Comm != "php-fpm" {
@@ -73,6 +89,9 @@ func TestProcessctxRequestFromExecMapsFields(t *testing.T) {
 	}
 	if !req.UIDKnown {
 		t.Errorf("UIDKnown: want true (BPF event always knows UID)")
+	}
+	if !req.StartedAt.Equal(startedAt) {
+		t.Fatalf("StartedAt = %v, want %v", req.StartedAt, startedAt)
 	}
 }
 
