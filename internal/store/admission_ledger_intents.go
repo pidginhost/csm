@@ -8,11 +8,35 @@ import (
 // upgradeLedgerToSchemaSeven adds the intent bucket to a schema 6 ledger
 // inside the opening transaction. An attempt that ran without an outcome,
 // or ended unknown, gets the intent its execution would have recorded, as a
-// batch of its own: no effect it may have applied goes unrecorded. This
-// upgrade completes the chain and records the schema.
+// batch of its own: no effect it may have applied goes unrecorded. The
+// recovery reserve then holds each pinned outcome's intent as well; opening
+// proves the result. This upgrade completes the chain and records the
+// schema.
 func upgradeLedgerToSchemaSeven(tx *bolt.Tx) error {
 	if _, err := tx.CreateBucket([]byte(admissionIntentsBucket)); err != nil {
 		return err
+	}
+	s, loadErr := loadStorageState(tx)
+	if loadErr != nil {
+		return loadErr
+	}
+	var outcomes uint64
+	if loadErr = tx.Bucket([]byte(admissionHistoryBucket)).ForEach(func(_, v []byte) error {
+		h, decodeErr := admission.UnmarshalHistoryEntry(v)
+		if decodeErr == nil && h.Pinned {
+			outcomes++
+		}
+		return decodeErr
+	}); loadErr != nil {
+		return loadErr
+	}
+	for range outcomes {
+		if s, loadErr = s.HoldIntent(); loadErr != nil {
+			return loadErr
+		}
+	}
+	if loadErr = putStorageState(tx, s); loadErr != nil {
+		return loadErr
 	}
 	if err := tx.Bucket([]byte(admissionAttemptsBucket)).ForEach(func(_, v []byte) error {
 		a, err := admission.UnmarshalAttempt(v)

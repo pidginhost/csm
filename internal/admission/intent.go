@@ -11,6 +11,11 @@ import (
 // MaxIntentBytes bounds one encoded intent.
 const MaxIntentBytes = 256
 
+// AttemptRecoveryBytes is the room one reservation needs in the recovery
+// reserve besides its history: its attempt's audit rows and the intent an
+// unknown outcome keeps.
+const AttemptRecoveryBytes = AttemptAuditBytes + MaxIntentBytes
+
 const intentVersion = 1
 
 // BatchID names one execution batch.

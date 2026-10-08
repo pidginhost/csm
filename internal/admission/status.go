@@ -7,9 +7,9 @@ import (
 )
 
 // MaxRecoveryNeed is the most room one reservation needs in the recovery
-// and outbox reserve: its candidate's largest history and its attempt's
-// audit rows.
-const MaxRecoveryNeed = MaxHistoryBytes + AttemptAuditBytes
+// and outbox reserve: its candidate's largest history, its attempt's audit
+// rows and its intent.
+const MaxRecoveryNeed = MaxHistoryBytes + AttemptRecoveryBytes
 
 // LedgerStatus is a read-only view of the admission ledger (spec 5.17,
 // ruling 8). Each section is read on its own and carries its own error,

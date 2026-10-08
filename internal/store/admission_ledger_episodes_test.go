@@ -161,8 +161,11 @@ func TestAdmissionLedgerUpgradesSchemaFiveHistory(t *testing.T) {
 	}
 	after := dbSnapshot(t, db)
 	schemaKey := admissionMetaBucket + ":" + string(admissionSchemaKey)
+	// The schema 7 step holds the unresolved outcome's intent in the
+	// reserve; every other record stays.
+	storageKey := admissionQueueStateBucket + ":" + string(storageStateKey)
 	for k, v := range before {
-		if k != schemaKey && after[k] != v {
+		if k != schemaKey && k != storageKey && after[k] != v {
 			t.Fatalf("upgrade changed schema 5 history record %s", k)
 		}
 	}

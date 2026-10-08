@@ -9,10 +9,26 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// dropIntents removes the schema 7 intent bucket, if present.
+// dropIntents removes the schema 7 intent bucket, if present, and the
+// intent bytes pinned with each unresolved outcome.
 func dropIntents(tx *bolt.Tx) error {
 	if tx.Bucket([]byte(admissionIntentsBucket)) == nil {
 		return nil
+	}
+	if tx.Bucket([]byte(admissionQueueStateBucket)).Get(storageStateKey) != nil {
+		var pinned uint64
+		if err := tx.Bucket([]byte(admissionHistoryBucket)).ForEach(func(_, v []byte) error {
+			h, err := admission.UnmarshalHistoryEntry(v)
+			if h.Pinned {
+				pinned++
+			}
+			return err
+		}); err != nil {
+			return err
+		}
+		if err := adjustStorage(tx, func(s *admission.StorageState) { s.Recovery -= pinned * admission.MaxIntentBytes }); err != nil {
+			return err
+		}
 	}
 	return tx.DeleteBucket([]byte(admissionIntentsBucket))
 }
@@ -198,6 +214,53 @@ func TestAdmissionLedgerOutcomeSettlesTheIntent(t *testing.T) {
 	}
 }
 
+// An unknown outcome pins its history and its intent in the recovery
+// reserve, and opening proves both.
+func TestAdmissionLedgerUnknownPinsItsIntent(t *testing.T) {
+	f := newLedgerFixture(t)
+	a := f.reservedAt("192.0.2.10", ledgerT0.Add(time.Hour))
+	if _, _, _, err := f.l.Execute(a.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := f.storageState()
+	if _, _, err := f.l.Finish(a.Attempt.ID, admission.DispositionUnknown); err != nil {
+		t.Fatal(err)
+	}
+	after := f.storageState()
+	if after.Recovery != before.Recovery+uint64(f.cost(a.Attempt.Candidate))+admission.MaxIntentBytes {
+		t.Fatalf("recovery %d -> %d, cost %d", before.Recovery, after.Recovery, f.cost(a.Attempt.Candidate))
+	}
+	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		return adjustStorage(tx, func(s *admission.StorageState) { s.Recovery -= admission.MaxIntentBytes })
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenAdmissionLedger(f.db, f.reg); !isCorrupt(err) {
+		t.Fatalf("open without the pinned intent = %v", err)
+	}
+}
+
+// An outstanding attempt holds room for the intent it may keep: a second
+// reservation that would fit beside the first one's history and rows alone
+// is refused.
+func TestAdmissionLedgerOutstandingAttemptHoldsItsIntent(t *testing.T) {
+	f := newLedgerFixture(t)
+	ids := f.fill(2, evidenceSpec{})
+	need := uint64(f.cost(ids[0])) + admission.AttemptRecoveryBytes
+	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, 2*need-1) })
+	if _, _, granted, err := f.l.Reserve(ids[0], admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil || !granted {
+		t.Fatalf("first reservation: %v %v", granted, err)
+	}
+	_, _, _, err := f.l.Reserve(ids[1], admission.LaneGeneral, f.wall.Add(time.Hour))
+	wantLedgerReason(t, "second reservation", err, admission.ReasonPendingRecovery)
+	if s := f.l.Status(); s.Storage.Outstanding != uint64(f.cost(ids[0]))+admission.MaxIntentBytes {
+		t.Fatalf("outstanding = %d", s.Storage.Outstanding)
+	}
+}
+
 // Opening proves every intent against its attempt: a running or unknown
 // attempt has exactly its own row, and no other attempt has one.
 func TestAdmissionLedgerOpenProvesIntents(t *testing.T) {
@@ -296,19 +359,41 @@ func TestAdmissionLedgerUpgradesSchemaSix(t *testing.T) {
 	}
 	f.schemaSix()
 	before := dbSnapshot(t, f.db)
+	schema6 := f.storageState()
+	damaged := f.copyDatabase()
+	if err := damaged.bolt.Update(func(tx *bolt.Tx) error {
+		return adjustStorage(tx, func(s *admission.StorageState) { s.Recovery++ })
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenAdmissionLedger(damaged, f.reg); !isCorrupt(err) {
+		t.Fatalf("upgrade over a damaged reserve = %v", err)
+	}
 	db := f.copyDatabase()
 	if _, err := OpenAdmissionLedger(db, f.reg); err != nil {
 		t.Fatal(err)
 	}
 	after := dbSnapshot(t, db)
 	schemaKey := admissionMetaBucket + ":" + string(admissionSchemaKey)
+	storageKey := admissionQueueStateBucket + ":" + string(storageStateKey)
 	for k, v := range before {
-		if after[k] != v && k != schemaKey {
+		if after[k] != v && k != schemaKey && k != storageKey {
 			t.Fatalf("upgrade changed schema 6 record %s", k)
 		}
 	}
 	if after[schemaKey] != string([]byte{7}) {
 		t.Fatalf("upgraded schema = %q", after[schemaKey])
+	}
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		s, err := loadStorageState(tx)
+		want := schema6
+		want.Recovery += admission.MaxIntentBytes
+		if err != nil || s != want {
+			t.Errorf("upgraded storage = %+v, %v; want %+v", s, err, want)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	got := map[admission.ActionID]admission.Intent{}
 	if err := db.bolt.View(func(tx *bolt.Tx) error {

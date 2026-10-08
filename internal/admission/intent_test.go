@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -141,5 +142,28 @@ func TestStoredIntentFitsItsBound(t *testing.T) {
 	data, err := in.MarshalBinary()
 	if err != nil || len(data) > MaxIntentBytes {
 		t.Fatalf("widest intent: %d bytes (bound %d), %v", len(data), MaxIntentBytes, err)
+	}
+}
+
+// A reservation needs room for the intent its attempt may keep, and an
+// unknown outcome holds that room in the recovery reserve.
+func TestRecoveryHoldsRoomForTheIntent(t *testing.T) {
+	if AttemptRecoveryBytes != AttemptAuditBytes+MaxIntentBytes || MaxRecoveryNeed != MaxHistoryBytes+AttemptRecoveryBytes {
+		t.Fatalf("recovery needs = %d, %d", AttemptRecoveryBytes, MaxRecoveryNeed)
+	}
+	s := NewStorageState()
+	s.Recovery = 3000
+	held, err := s.HoldIntent()
+	if err != nil || held.Recovery != 3000+MaxIntentBytes {
+		t.Fatalf("hold = %+v, %v", held, err)
+	}
+	full := s
+	full.Recovery = math.MaxUint64 - MaxIntentBytes + 1
+	if got, err := full.HoldIntent(); !errors.Is(err, ErrCorruptRecord) || got != full {
+		t.Fatalf("overflowing hold = %+v, %v", got, err)
+	}
+	full.Recovery--
+	if got, err := full.HoldIntent(); err != nil || got.Recovery != math.MaxUint64 {
+		t.Fatalf("representable hold = %+v, %v", got, err)
 	}
 }

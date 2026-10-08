@@ -121,7 +121,7 @@ func (r RingState) Remove() (RingState, error) {
 // reserve and the two bounded rings.
 type StorageState struct {
 	General, Reserved HistoryMeter
-	// Recovery is the history bytes of unresolved outcomes.
+	// Recovery is the history bytes and intents of unresolved outcomes.
 	Recovery uint64
 	// Ended holds candidates that ended before any attempt; Loose holds
 	// evidence no stored candidate names.
@@ -325,6 +325,15 @@ func (s StorageState) PinHistory(general, reserved uint32) (StorageState, error)
 	}
 	next.Recovery += charged
 	return next, nil
+}
+
+// HoldIntent holds an unresolved outcome's intent in the recovery reserve.
+func (s StorageState) HoldIntent() (StorageState, error) {
+	if s.Recovery > math.MaxUint64-MaxIntentBytes {
+		return s, ErrCorruptRecord
+	}
+	s.Recovery += MaxIntentBytes
+	return s, nil
 }
 
 // CheckRecovery refuses a reservation whose candidate, if its outcome were

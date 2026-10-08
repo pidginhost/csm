@@ -89,7 +89,7 @@ func TestAdmissionLedgerEndingsDateTheirHistory(t *testing.T) {
 		}
 	}
 	s := f.storageState()
-	if s.Recovery != recovery+uint64(f.cost(unknownID)) || s.General.Used != used-uint64(f.cost(unknownID))+uint64(f.cost(failedID)) {
+	if s.Recovery != recovery+uint64(f.cost(unknownID))+admission.MaxIntentBytes || s.General.Used != used-uint64(f.cost(unknownID))+uint64(f.cost(failedID)) {
 		t.Fatalf("storage after the endings = %+v", s)
 	}
 	keys := retireKeysIn(t, f.db)

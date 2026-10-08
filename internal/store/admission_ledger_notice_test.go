@@ -337,7 +337,7 @@ func TestAdmissionLedgerNoticesRespectRecoveryHolds(t *testing.T) {
 			f := newLedgerFixture(t)
 			id := f.criticalQueued()
 			reserved, _ := f.admitted(time.Hour)
-			hold := uint64(f.cost(reserved))
+			hold := uint64(f.cost(reserved)) + admission.MaxIntentBytes
 			f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, hold+room) })
 			before := f.storageState()
 			if _, err := f.l.Defer(id, admission.ReasonCeiling); err != nil {
@@ -377,7 +377,7 @@ func TestAdmissionLedgerOutcomeNoticeKeepsItsRecoveryHold(t *testing.T) {
 	if _, _, granted, err = f.l.Execute(a.Attempt.ID); err != nil || !granted {
 		t.Fatalf("execute: %v %v", granted, err)
 	}
-	hold := uint64(f.cost(id))
+	hold := uint64(f.cost(id)) + admission.MaxIntentBytes
 	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, hold) })
 	before := f.storageState()
 	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionUnknown); err != nil {

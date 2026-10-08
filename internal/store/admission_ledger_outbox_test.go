@@ -384,7 +384,7 @@ func TestAdmissionLedgerOutboxSharesTheRecoveryReserve(t *testing.T) {
 	f.adjustStorage(func(s *admission.StorageState) { s.Recovery = admission.RecoveryReserveBytes - cost })
 	_, _, _, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
 	wantLedgerReason(t, "room taken by the outbox", err, admission.ReasonPendingRecovery)
-	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, cost+admission.AttemptAuditBytes) })
+	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, cost+admission.AttemptRecoveryBytes) })
 	if _, _, granted, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil || !granted {
 		t.Fatalf("room after the outbox: %v %v", granted, err)
 	}
