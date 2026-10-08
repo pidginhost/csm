@@ -4,12 +4,15 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/sourcewalk"
 )
 
 // attributionEvidence maps every newly eligible check (eligible minus the
@@ -245,10 +248,7 @@ func testDeclarations(t *testing.T) map[string]struct{ file, constraint string }
 	root := filepath.Join(repoRootFromSource(t), "internal")
 	out := map[string]struct{ file, constraint string }{}
 	fset := token.NewFileSet()
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if os.IsNotExist(err) && path != root {
-			return nil // a parallel test's scratch folder, removed mid-walk
-		}
+	err := filepath.WalkDir(root, sourcewalk.IgnoreVanished(root, func(path string, info fs.DirEntry, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(path, "_test.go") {
 			return err
 		}
@@ -276,7 +276,7 @@ func testDeclarations(t *testing.T) map[string]struct{ file, constraint string }
 			out[fn.Name.Name] = struct{ file, constraint string }{rel, constraint}
 		}
 		return nil
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

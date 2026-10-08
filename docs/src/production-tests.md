@@ -127,8 +127,11 @@ go run ./scripts/queuegate -scan > queue-allocations.json
 ```
 
 It scans repository Go source across all build constraints, excluding test files,
-`testdata`, hidden directories and vendored dependencies. It records raw channel
-allocations and imported `queuehealth.NewChannel` calls, including renamed and
+`testdata`, hidden directories and vendored dependencies. Directories named like
+test scratch directories are scanned too. A directory removed during traversal
+is skipped; a missing scan root, unreadable directory or failed source read still
+fails the gate. It records raw channel allocations and imported
+`queuehealth.NewChannel` calls, including renamed and
 dot imports. Named channel aliases resolve across every package variant in a
 repository import directory; an alias that is a channel in only some variants fails
 explicitly. Imported named types use the Go toolchain's source importer.

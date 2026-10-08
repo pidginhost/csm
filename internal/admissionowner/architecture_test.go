@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/sourcewalk"
 )
 
 // productionFiles parses every non-test Go file of the module, skipping
@@ -18,7 +20,7 @@ func productionFiles(t *testing.T) map[string]*ast.File {
 	root := filepath.Join("..", "..")
 	files := map[string]*ast.File{}
 	fset := token.NewFileSet()
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(root, sourcewalk.IgnoreVanished(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -41,7 +43,7 @@ func productionFiles(t *testing.T) map[string]*ast.File {
 		}
 		files[filepath.ToSlash(rel)] = f
 		return nil
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

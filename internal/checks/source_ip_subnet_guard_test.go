@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/sourcewalk"
 )
 
 // SourceIP is an address field: a subnet belongs in CIDRs, where consumers
@@ -20,7 +22,7 @@ func TestNoProductionLiteralPutsASubnetInSourceIP(t *testing.T) {
 	root := findRepoRoot(t)
 	fset := token.NewFileSet()
 	var offenders []string
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(root, sourcewalk.IgnoreVanished(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -58,7 +60,7 @@ func TestNoProductionLiteralPutsASubnetInSourceIP(t *testing.T) {
 			return true
 		})
 		return nil
-	})
+	}))
 	if walkErr != nil {
 		t.Fatal(walkErr)
 	}

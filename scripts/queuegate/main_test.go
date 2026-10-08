@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -99,6 +100,17 @@ func TestCLIScanOnlyProducesUnclassifiedAllocations(t *testing.T) {
 	}
 	if err := run([]string{"-root", root, "-scan", "-required-out", filepath.Join(root, "invalid.json")}, &stdout); err == nil {
 		t.Fatal("scan-only created execution requirements")
+	}
+}
+
+func TestCLIScanRejectsMissingRoot(t *testing.T) {
+	var stdout bytes.Buffer
+	err := run([]string{"-root", filepath.Join(t.TempDir(), "missing"), "-scan"}, &stdout)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing root error = %v, want not-exist", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("failed scan emitted output: %s", stdout.Bytes())
 	}
 }
 

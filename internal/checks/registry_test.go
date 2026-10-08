@@ -2,12 +2,15 @@ package checks
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/sourcewalk"
 )
 
 func TestCheckRegistryHasNoDuplicates(t *testing.T) {
@@ -114,7 +117,7 @@ func TestCheckRegistryCoversProductionCode(t *testing.T) {
 	seen := map[string]struct{}{}
 
 	for _, dir := range scanDirs {
-		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		err := filepath.WalkDir(dir, sourcewalk.IgnoreVanished(dir, func(path string, info fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
@@ -147,7 +150,7 @@ func TestCheckRegistryCoversProductionCode(t *testing.T) {
 				}
 			}
 			return nil
-		})
+		}))
 		if err != nil {
 			t.Fatalf("walk %s: %v", dir, err)
 		}

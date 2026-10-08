@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io/fs"
 	"strings"
 	"testing"
@@ -256,5 +257,49 @@ func TestScanSkipsDirectoryRemovedDuringWalk(t *testing.T) {
 	}
 	if len(got) != 1 {
 		t.Fatalf("allocations = %+v, want the one channel in main.go", got)
+	}
+	if got[0].Path != "cmd/csm/main.go" || got[0].Source != "make(chan int, 3)" {
+		t.Fatalf("surviving allocation = %+v, want the channel in main.go", got[0])
+	}
+}
+
+func TestScanRejectsMissingRoot(t *testing.T) {
+	_, err := scanSources(vanishingFS{MapFS: fstest.MapFS{}, gone: "."})
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing root error = %v, want not-exist", err)
+	}
+}
+
+type missingSourceFS struct {
+	fstest.MapFS
+}
+
+func (f missingSourceFS) ReadFile(name string) ([]byte, error) {
+	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+}
+
+func TestScanRejectsSourceRemovedBeforeRead(t *testing.T) {
+	_, err := scanSources(missingSourceFS{MapFS: fstest.MapFS{
+		"cmd/csm/main.go": {Data: []byte("package main\nfunc start() { _ = make(chan int, 3) }\n")},
+	}})
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing source error = %v, want not-exist", err)
+	}
+}
+
+func TestScanIncludesSourcesInScratchNamedDirectories(t *testing.T) {
+	got, err := scanSources(queueFixture(map[string]string{
+		"cmd/csm/shieldtest1/source.go":               "package main; var work = make(chan int, 3)",
+		"internal/daemon/dropper-webroot-1/source.go": "package daemon; var work = make(chan int, 4)",
+		"internal/daemon/eventfilter-1/source.go":     "package daemon; var work = make(chan int, 5)",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("allocations = %+v, want all three scratch-named sources", got)
+	}
+	if got[0].Capacity != "3" || got[1].Capacity != "4" || got[2].Capacity != "5" {
+		t.Fatalf("allocations = %+v, want capacities 3, 4 and 5", got)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"go/format"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/sourcewalk"
 )
 
 // evidencePolicy is the reviewed evidence family and basis of every check
@@ -385,7 +387,8 @@ func scanAddressProducersReviewed(t *testing.T, root string, reviewed map[string
 	fset := token.NewFileSet()
 	byDir := map[string][]*ast.File{}
 	for _, top := range []string{"internal", "cmd"} {
-		err := filepath.Walk(filepath.Join(root, top), func(path string, info os.FileInfo, err error) error {
+		dir := filepath.Join(root, top)
+		err := filepath.WalkDir(dir, sourcewalk.IgnoreVanished(dir, func(path string, info fs.DirEntry, err error) error {
 			if err != nil {
 				return err
 			}
@@ -404,7 +407,7 @@ func scanAddressProducersReviewed(t *testing.T, root string, reviewed map[string
 			}
 			byDir[filepath.Dir(path)] = append(byDir[filepath.Dir(path)], f)
 			return nil
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
