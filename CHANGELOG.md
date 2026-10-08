@@ -9,30 +9,37 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Highlights
+
+- A mailbox that sends from several countries, unusually many addresses or to unusually many recipients now raises a compromise alert, and only that mailbox is suspended.
+- The email password audit now works on cPanel hosts, so the first scan after upgrading may report weak mailbox passwords it never audited before.
+- Hosts with automatic response enabled now preview their responses under the hourly block ceiling; existing blocking is unchanged and status, diagnostics and findings history show the preview.
+- Unused scan-interval, webhook and relay settings are gone; old config files still load and the validator names each key to delete.
+- The automatic cleaner now removes a malicious `.htaccess` handler mapping instead of quarantining the file; hosts that relied on quarantine need the cleaner switched on.
+- The malware scanning engine moves to YARA-X 1.21.0, catching previously missed threats and raising fewer false alarms.
+- The previous configuration file is kept as a backup next to it before the dashboard, rehash or installer saves a new one.
+
 ### Security
 
-- Unknown API and metrics tokens now spend the same five-per-minute budget as the login form, so a token cannot be guessed at API speed.
-- The cron downloader signature no longer slows scans on long crafted lines or flags plugin pages that only print a recommended wp-cron command.
-- Four more download, miner and shell startup signatures no longer slow scans on long crafted lines or on files full of documented install commands.
-- Scheduled and on-demand scans now catch cron miner entries with capitalized names or long non-ASCII paths, as real-time checks do, and all require space- or tab-separated schedule fields.
+- Unknown API and metrics tokens now spend the same attempt budget as the login form, so a token cannot be guessed at API speed.
+- Download, miner, cron and shell startup signatures no longer slow scans on long crafted lines.
+- Scheduled and on-demand scans now catch cron miner entries with capitalized names or long non-ASCII paths, as real-time checks already did.
 - The database malware response no longer blocks the addresses of active WordPress sessions on the affected site, including the owner's; the notice lists them and sessions are still revoked.
 - A file planted in a hosted site can no longer stall the deep phishing scan.
-- Scheduled phishing scans now report kits in dependency and source-control folders unless excluded; `auto_response.quarantine_files` can quarantine phishing pages found there.
+- Scheduled phishing scans now report kits in dependency and source-control folders, and the file quarantine response can remove them.
 - Group-writable PHP checks now include dependency and cache folders and no longer raise false alerts on symbolic links.
 - The malware scanning engine moves to YARA-X 1.21.0, catching previously missed threats and raising fewer false alarms.
 - Leftover mod_security 1.x directives that switch ModSecurity off in an `.htaccess` are high severity again and the automatic cleaner removes them, keeping a backup.
-- Scheduled and real-time `.htaccess` checks, the manual fix and the re-check now judge the same directives, and harmless prelude settings and defensive rewrite rules are no longer reported.
+- Scheduled and real-time `.htaccess` checks, the manual fix and the re-check now judge the same directives; harmless prelude settings and defensive rewrite rules are no longer reported.
 - Malicious handler mappings in an `.htaccess` are now judged by their whole extension arguments, and an option that disables CGI no longer hides a PHP or custom handler mapping.
 
 ### Added
 
 - A mailbox that sends from several countries in an hour, from unusually many addresses or a new country, or to unusually many recipients now raises a compromise alert.
+- Hosts with automatic response enabled now preview their responses under the hourly block ceiling, leaving existing blocking unchanged; status, diagnostics and findings history show the preview and its health.
+- `finding-stream anonymize` and `finding-stream compare` now handle admission previews and hourly summaries, and compare reports which legacy automatic blocks the preview matched, explained or left unexplained.
 - The previous configuration file is kept as a backup next to it before the dashboard, rehash or installer saves a new one.
 - Held forward copies are now deleted once they pass the configured retention window instead of staying on disk.
-- Status and diagnostics now report automatic response admission health, with Critical alerts for failures.
-- After upgrade, `finding-stream anonymize --actions` accepts admission previews and hourly summaries while refusing malformed summaries and identity leaks. Joined bundles remain readable by the replay tool.
-- `finding-stream compare` now reports which legacy automatic blocks the admission preview matched, which a designed refusal explains and which stay unexplained.
-- Every host with automatic response enabled now previews its selected responses under the hourly block ceiling, leaving existing blocking unchanged, and status and findings history show the preview.
 
 ### Changed
 
@@ -45,22 +52,40 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- After upgrade, automatic response previews work on cPanel hosts whose system accounts record a zero creation date, instead of failing the whole account read. They still follow `auto_response.enabled`.
-- After upgrade, admission previews report a repeated observation whose account was recreated in between as a stale identity instead of invalid. Existing stored evidence is kept.
-- A rescan queued by a rules update now survives daemon restarts and completes only after the rolling YARA scan has covered every file since the update. It pauses while `detection.rescan_on_signature_update` is off.
-- Performance checks no longer treat a web root folder that cannot be read as removed, so its stored baselines and findings are kept.
-- The OpenAPI contract now documents supported methods, settings write requirements and mail deletion errors.
-- The email password audit now checks mailboxes on cPanel hosts instead of reporting every stored hash as unauditable.
-- Bot range feed updates no longer hang when a feed host accepts the connection and never answers.
-- The email quarantine sweep now reports entries it could not delete instead of counting the sweep as clean.
-- API writes from a browser origin listed in the allowed origins now pass the browser's preflight check instead of being refused.
-- Settings saved from the dashboard now reach the live thresholds, whitelists and forward guard without a restart or reload.
-- The download-and-pipe and shell startup signatures no longer raise critical alerts when a download is piped into a checksum tool or another program whose name only starts like a shell.
+#### Firewall and blocking
+
 - Scheduled scans no longer repeat an address block or challenge for a finding already dispatched; a block that failed during the scan is retried at the next blocking cycle.
+- Bot range feed updates no longer hang when a feed host accepts the connection and never answers.
+
+#### Email
+
+- The email password audit now checks mailboxes on cPanel hosts instead of reporting every stored hash as unauditable.
 - The email forward guard now holds matching mail instead of leaving it stuck in the queue.
+- The email quarantine sweep now reports entries it could not delete instead of counting the sweep as clean.
+
+#### Findings and file detection
+
+- Download, miner, cron and shell startup signatures no longer flag plugin pages that print a wp-cron command, documented install commands, or downloads piped into a checksum tool.
 - Directory-based phishing alerts now respect excluded pages and raise fewer false alarms.
-- The automatic cleaner now removes a malicious handler mapping from an `.htaccess` instead of quarantining the whole file. Hosts that relied on quarantine for this finding need the cleaner switched on.
+- The automatic cleaner now removes a malicious handler mapping from an `.htaccess` instead of quarantining the whole file; hosts that relied on quarantine need the cleaner switched on.
+
+#### Real-time monitoring and scans
+
+- A full rescan queued by a rules update now survives daemon restarts and is cleared only after a completed sweep.
 - The deep phishing scan skips files none of its checks can judge, which shortens the run that timed out on large hosts.
+
+#### Performance
+
+- Performance checks no longer treat a web root folder that cannot be read as removed, so its stored baselines and findings are kept.
+
+#### API
+
+- API writes from a browser origin listed in the allowed origins now pass the browser's preflight check instead of being refused.
+- The OpenAPI contract now documents supported methods, settings write requirements and mail deletion errors.
+
+#### Web UI
+
+- Settings saved from the dashboard now reach the live thresholds, whitelists and forward guard without a restart or reload.
 
 ## [4.2.0] - 2026-10-04
 
