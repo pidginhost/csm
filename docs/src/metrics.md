@@ -420,6 +420,13 @@ Setting `detection.rescan_on_signature_update` to `false` stops the
 watcher and pauses the queue: the scan keeps running but neither starts
 nor completes a rescan. Re-enabling it resumes the saved work.
 
+`csm check-deep` also advances the rolling scan and can complete a queued
+rescan, including incrementing this counter. It returns findings and saves
+them in scan history without sending alerts or applying automatic responses.
+Use `csm run-deep` when the manual scan should send alerts and run configured
+automatic responses. A later live scan resumes after the dry run's saved
+position; completing the queue does not replay its findings through alerts.
+
 State from older builds contains only mtimes. The first successful read
 adds a hash without queuing a rescan if the recorded mtime still matches.
 A moved mtime without a recorded hash conservatively queues one rescan.

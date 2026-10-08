@@ -177,6 +177,71 @@ func TestYARADeepSignatureRescanNewerUpdateAfterWrapNeedsItsOwnPass(t *testing.T
 	}
 }
 
+// An update arriving in the completing window must keep its own queue and
+// must not count the older generation as completed.
+func TestYARADeepSignatureRescanUpdateDuringCompletion(t *testing.T) {
+	db := useRollingStore(t)
+	cfg, first := rescanRoot(t)
+	putYARADeepCursor(t, db, first, time.Now().UTC())
+	queueSignatureRescan(t, db)
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean two", "clean three")
+	before := signatureRescansCompleted(t)
+	var newer uint64
+	backend := &recordingYARABackend{onScan: func() {
+		if newer == 0 {
+			newer = queueSignatureRescan(t, db)
+		}
+	}}
+	yara.SetActive(backend)
+	t.Cleanup(func() { yara.SetActive(nil) })
+	CheckYARADeep(context.Background(), cfg, nil)
+	wantScanned(t, backend.scanned, "clean one", "clean two", "clean three")
+	if newer == 0 || queuedSignatureRescan(t, db) != newer {
+		t.Fatal("completing the older lap cleared the update that arrived during it")
+	}
+	if got := signatureRescansCompleted(t); got != before {
+		t.Fatalf("superseded lap counted as completed: got %v, want %v", got, before)
+	}
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean one", "clean two", "clean three")
+	if queuedSignatureRescan(t, db) != 0 || signatureRescansCompleted(t) != before+1 {
+		t.Fatal("the newer generation did not complete exactly once after its own pass")
+	}
+}
+
+// A sibling consumer completing the shared walk cannot acknowledge YARA
+// coverage while the YARA backend is unavailable.
+func TestYARADeepSignatureRescanWaitsForBackend(t *testing.T) {
+	db := useRollingStore(t)
+	cfg, first := rescanRoot(t)
+	putYARADeepCursor(t, db, first, time.Now().UTC())
+	gen := queueSignatureRescan(t, db)
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean two", "clean three")
+	before := signatureRescansCompleted(t)
+	prior, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
+	if err != nil || !ok {
+		t.Fatalf("YARA cursor missing before backend outage: ok=%v err=%v", ok, err)
+	}
+	root := cfg.AccountRoots[0]
+	jsPath := writeYARADeepFile(t, root, "a/keylogger.js", jsKeyloggerFixture)
+	restore := useNilYARABackend(t)
+	findings := CheckYARADeep(context.Background(), cfg, nil)
+	jsFindings := jsFindingsByCheck(findings, "js_keylogger_dataflow")
+	if len(jsFindings) != 1 || jsFindings[0].FilePath != jsPath {
+		t.Fatalf("sibling consumer did not finish its scan during outage: %+v", findings)
+	}
+	if queuedSignatureRescan(t, db) != gen || signatureRescansCompleted(t) != before {
+		t.Fatal("a completed sibling scan acknowledged the unavailable YARA consumer")
+	}
+	if cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck); err != nil || !ok || cur != prior {
+		t.Fatalf("backend outage changed YARA progress: got %+v, want %+v, err=%v", cur, prior, err)
+	}
+	restore()
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), jsKeyloggerFixture, "clean one", "clean two", "clean three")
+	if queuedSignatureRescan(t, db) != 0 || signatureRescansCompleted(t) != before+1 {
+		t.Fatal("recovered backend did not complete its pending generation exactly once")
+	}
+}
+
 // Turning rescans off pauses the queue without losing the pass progress.
 func TestYARADeepSignatureRescanKillSwitchPausesQueue(t *testing.T) {
 	db := useRollingStore(t)
