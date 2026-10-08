@@ -85,7 +85,8 @@ funchand wrappers and ordinary legacy callbacks stay silent under these rules.
 The cron downloader signature shares its expression between both engines. It
 recognizes numeric five-field schedules and the standard `@` shortcuts,
 including lists, range steps and randomized ranges. The month and weekday
-fields also accept a single three-letter name; name lists and ranges are not
+fields also accept a single three-letter ASCII name in either case. Unicode
+lookalikes are not schedule names. Name lists and ranges are not
 matched, because they made crafted lines too costly to scan. Schedule tokens
 must be complete and separated by spaces or tabs. Fields are limited to 64
 characters. Root entries that disable cron logging and scripts

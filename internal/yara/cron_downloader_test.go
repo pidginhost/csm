@@ -134,6 +134,10 @@ func TestCronDownloaderSchedules(t *testing.T) {
 		{"0 0 * jan *", true},
 		{"0 0 * JAN SUN", true},
 		{"0 0 * 1 mon", true},
+		{"0 0 * sep sun", true},
+		{"0 0 * SeP SuN", true},
+		{"0 0 * \u017fep sun", false},
+		{"0 0 * sep \u017fun", false},
 		// Name lists and ranges are not matched: their alternations made each
 		// download word on a crafted line far costlier to verify.
 		{"0 0 * jan-dec mon,wed,fri", false},
