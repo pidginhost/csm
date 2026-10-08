@@ -11,24 +11,24 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Highlights
 
-- Mailbox compromise alerts now cover unusual sending patterns; live automatic responses on cPanel attempt mailbox suspension before an account-wide hold.
+- Mailboxes that send from several countries, unusually many addresses or to unusually many recipients now raise a compromise alert; on cPanel the mailbox is suspended before any account-wide hold.
 - The email password audit now detects weak mailbox passwords on cPanel hosts.
 - With automatic response enabled, status, diagnostics and findings history now show IP response previews without changing live blocking.
-- Unused scan-interval, webhook and relay settings are gone; validation now identifies obsolete keys to remove.
+- Unused scan-interval, webhook and relay settings are gone; old config files still load and validation names the keys to remove.
 - The automatic cleaner now removes malicious web handler mappings without quarantining the whole configuration. Enable the cleaner to keep automatic removal.
-- YARA-X 1.21.0 corrects missed detections and false alarms in affected malware scans.
+- The malware scanning engine moves to YARA-X 1.21.0, catching previously missed threats and raising fewer false alarms.
 - The previous configuration file is kept as a backup next to it before the dashboard, rehash or installer saves a new one.
 
 ### Security
 
-- Login, API and metrics access now have stronger protection against token guessing, including simultaneous attempts.
+- Unknown API and metrics tokens now spend the same attempt budget as the login form, so a token cannot be guessed at API speed.
 - Download, miner, cron and shell startup signatures no longer slow scans on long crafted lines.
 - Scheduled and on-demand scans now detect more malicious miner cron entries consistently with real-time checks.
 - The database malware response no longer blocks the addresses of active WordPress sessions on the affected site, including the owner's; the notice lists them and sessions are still revoked.
 - A file planted in a hosted site can no longer stall the deep phishing scan.
 - Scheduled phishing scans now report kits in more folders, and eligible phishing pages can be quarantined.
 - Group-writable PHP checks now include dependency and cache folders and no longer raise false alerts on symbolic links.
-- YARA-X 1.21.0 corrects missed detections and false alarms in affected malware scans.
+- The malware scanning engine moves to YARA-X 1.21.0, catching previously missed threats and raising fewer false alarms.
 - Legacy settings that disable ModSecurity now raise High alerts and can be removed by the automatic cleaner, with a backup kept.
 - Web configuration checks and fixes now agree on malicious directives, with fewer false alerts for harmless PHP settings and defensive redirects.
 - Malicious web handler mappings are now detected more consistently, with fewer false alerts on harmless settings.
@@ -48,6 +48,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Removed
 
+- The daemon no longer rewrites the upgrade helper script on every start; the package and the release archive install it.
 - Unused scan-interval, webhook and relay settings are gone; configurations containing them still load, and validation identifies the keys to remove.
 
 ### Fixed
