@@ -182,9 +182,12 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 			if loadErr != nil {
 				return loadErr
 			}
+			in := admission.Intent{Action: id, Batch: batch, Kind: c.Key.Kind, Target: c.Key.Target, ExpiresAt: a.ExpiresAt}
 			switch {
 			case a.State == admission.StateExecuting:
-				in, found, intentErr := loadIntent(tx, id)
+				var found bool
+				var intentErr error
+				in, found, intentErr = loadIntent(tx, id)
 				if intentErr != nil {
 					return corruptRecord(intentErr)
 				}
@@ -194,12 +197,25 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 				if in.Batch != batch {
 					return admission.ErrTransitionConflict
 				}
-				intents, attempts, candidates = append(intents, in), append(attempts, a), append(candidates, c)
 				running++
-				continue
 			case a.State != admission.StateReserved:
 				return admission.ErrTransitionConflict
-			case !now.Before(a.ExpiresAt):
+			}
+			intents, attempts, candidates = append(intents, in), append(attempts, a), append(candidates, c)
+		}
+		// Retired members can be minted again under the same action IDs,
+		// so a batch ID alone cannot prove every member ran. Check the
+		// whole batch before a running member's target hold can mask a
+		// conflict as a recovery deferral.
+		if running > 0 {
+			if running != len(ids) {
+				return admission.ErrTransitionConflict
+			}
+			return nil
+		}
+		for i, a := range attempts {
+			c := candidates[i]
+			if !now.Before(a.ExpiresAt) {
 				return refusal(admission.ReasonStale, "absolute expiry has passed")
 			}
 			held, holdErr := q.heldTarget(c.Key.Target)
@@ -213,7 +229,6 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 			if loadErr != nil {
 				return loadErr
 			}
-			in := admission.Intent{Action: id, Batch: batch, Kind: c.Key.Kind, Target: c.Key.Target, ExpiresAt: a.ExpiresAt}
 			a.State, c.State = admission.StateExecuting, admission.StateExecuting
 			if txErr = q.writeAuditRow(c, a, e.Tier); txErr != nil {
 				return txErr
@@ -225,18 +240,10 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 			if txErr = putCandidate(tx, c); txErr != nil {
 				return txErr
 			}
-			if txErr = putIntent(tx, in); txErr != nil {
+			if txErr = putIntent(tx, intents[i]); txErr != nil {
 				return txErr
 			}
-			intents, attempts, candidates = append(intents, in), append(attempts, a), append(candidates, c)
-		}
-		// Retired members can be minted again under the same action IDs,
-		// so a batch ID alone cannot prove every member ran.
-		if running > 0 {
-			if running != len(ids) {
-				return admission.ErrTransitionConflict
-			}
-			return nil
+			attempts[i], candidates[i] = a, c
 		}
 		return q.flush()
 	})

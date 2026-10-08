@@ -458,7 +458,9 @@ ledger in the same transaction. Execution marks a batch of up to 64
 reserved attempts as running and records, in the same transaction and
 before any host change, what each member may apply: its kind, its target
 and its absolute expiry. Executing the same members again reads them back;
-a member that runs in another batch refuses the call. An applied or failed
+a member that runs in another batch refuses the call. A batch mixing
+reserved and running members refuses as a transition conflict, regardless
+of member order or target overlap. An applied or failed
 outcome removes the member's intent, while an unknown one keeps it, so a
 restart knows which effects are unproven. A reservation holds room in the
 recovery reserve for its intent, and an unknown outcome pins the intent
