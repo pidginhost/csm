@@ -1572,8 +1572,9 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Kill and quarantine only run on new, unsuppressed findings.
 	killActions := checks.AutoKillProcesses(d.scanContext(), cfg, newFindings)
 	quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
-	// Database response also discovers attacker session IPs. Suppressions
-	// stop SQL writes and session revocation, but not those IP blocks.
+	// Database response also reports WordPress session addresses without
+	// blocking them. Suppressions stop SQL writes and session revocation,
+	// but not that report.
 	dbActions := autoRespondDBMalware(cfg, unfilteredNew, func(f alert.Finding) bool {
 		return !d.store.IsSuppressed(f, suppressions)
 	})

@@ -14,9 +14,9 @@ import (
 )
 
 // AutoRespondDBMalware processes database injection findings and takes
-// automated action: blocks attacker IPs extracted from WordPress session
-// tokens, revokes compromised user sessions, and cleans confirmed
-// malicious content from wp_options or stored database objects.
+// automated action: reports the addresses in WordPress session tokens
+// without blocking them, revokes compromised user sessions, and cleans
+// confirmed malicious content from wp_options or stored database objects.
 //
 // Only acts on high-confidence findings:
 //   - db_options_injection with confirmed malicious external script URLs
@@ -31,9 +31,9 @@ func AutoRespondDBMalware(cfg *config.Config, findings []alert.Finding) []alert.
 	return AutoRespondDBMalwareWithPolicy(cfg, findings, nil)
 }
 
-// AutoRespondDBMalwareWithPolicy keeps session IP enforcement independent of
-// permission to edit a database or revoke sessions. A nil policy permits both;
-// callers with suppressions supply a per-finding remediation decision.
+// AutoRespondDBMalwareWithPolicy reports session addresses whether or not it
+// may edit a database or revoke sessions. A nil policy permits both; callers
+// with suppressions supply a per-finding remediation decision.
 func AutoRespondDBMalwareWithPolicy(cfg *config.Config, findings []alert.Finding, canRemediate func(alert.Finding) bool) []alert.Finding {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.CleanDatabase {
 		return nil
@@ -151,7 +151,7 @@ func parseDBObjectFindingDetails(details string) (account, schema, kind, name st
 
 // handleMaliciousOption checks if a db_options_injection finding contains
 // a confirmed malicious external script URL, and if so:
-// 1. Extracts attacker IPs from WP sessions and emits block findings
+// 1. Reports the addresses of active WP sessions without blocking them
 // 2. Revokes sessions for users with non-infra, non-private IPs only
 // 3. Backs up and cleans the malicious content from the option
 func handleMaliciousOption(cfg *config.Config, f alert.Finding, remediate bool) []alert.Finding {
