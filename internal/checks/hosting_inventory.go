@@ -119,7 +119,8 @@ func homeRootInventory() (HostingSnapshot, error) {
 }
 
 // cpanelIncarnation is the creation time cPanel records in an account's
-// user file. A recreated account has a new one; edits keep it.
+// user file. A recreated account has a new one; edits keep it. cPanel's own
+// system entries record zero, which is stable and therefore valid.
 func cpanelIncarnation(name string) (string, error) {
 	data, err := osFS.ReadFile(filepath.Join("/var/cpanel/users", name))
 	if err != nil {
@@ -131,8 +132,8 @@ func cpanelIncarnation(name string) (string, error) {
 		if !ok {
 			continue
 		}
-		date, parseErr := strconv.ParseInt(v, 10, 64)
-		if token != "" || len(v) > 19 || parseErr != nil || date <= 0 || strings.Trim(v, "0123456789") != "" {
+		_, parseErr := strconv.ParseInt(v, 10, 64)
+		if token != "" || len(v) > 19 || parseErr != nil || strings.Trim(v, "0123456789") != "" {
 			return "", fmt.Errorf("cPanel user file for %s has an invalid creation date", name)
 		}
 		token = "startdate:" + v

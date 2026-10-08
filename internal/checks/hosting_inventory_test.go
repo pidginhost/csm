@@ -441,6 +441,27 @@ func TestHostingInventoryNamesIncarnations(t *testing.T) {
 	}
 }
 
+// cPanel writes a zero creation date for its own system entries (system,
+// freedns and similar). Zero is a valid, stable token: refusing it failed the
+// whole inventory read on every host that has such an entry.
+func TestHostingInventoryAcceptsAZeroCreationDate(t *testing.T) {
+	withInventoryPanel(t, platform.PanelCPanel)
+	withAccountRoots(t, "/home")
+	fs := inventoryFS([]os.DirEntry{dirEntry("alice", false), dirEntry("system", false)}, nil, nil, nil, "", nil)
+	userFile := fs.readFile
+	fs.readFile = func(name string) ([]byte, error) {
+		if name == "/var/cpanel/users/system" {
+			return []byte("STARTDATE=0000000000\nUSER=system\n"), nil
+		}
+		return userFile(name)
+	}
+	withMockOS(t, fs)
+	snap, err := HostingInventory()
+	if want := map[string]string{"alice": "startdate:1600000000", "system": "startdate:0000000000"}; err != nil || !reflect.DeepEqual(snap.Incarnations, want) {
+		t.Fatalf("incarnations = %v %v, want %v", snap.Incarnations, err, want)
+	}
+}
+
 // An account whose incarnation cannot be read fails the whole read, as any
 // other missing required source does: a refresh without it could not tell a
 // replaced account from the original.
@@ -452,7 +473,7 @@ func TestHostingInventoryRefusesUnknownIncarnations(t *testing.T) {
 		"empty creation date": "STARTDATE=\n",
 		"malformed date":      "STARTDATE=16000000x0\n",
 		"oversized date":      "STARTDATE=12345678901234567890\n",
-		"zero date":           "STARTDATE=0\n",
+		"negative date":       "STARTDATE=-1\n",
 		"overflow date":       "STARTDATE=9999999999999999999\n",
 		"duplicate date":      "STARTDATE=1600000000\nSTARTDATE=1700000000\n",
 	} {
