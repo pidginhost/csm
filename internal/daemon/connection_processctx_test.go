@@ -8,8 +8,24 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
+// withoutProcessStartTime makes the start-time reader report no start time
+// for pid, the state the cache entries in these tests are stored in. The real
+// reader would pick up any live process holding pid in the test's PID
+// namespace and reject the cache hit as a different process.
+func withoutProcessStartTime(t *testing.T, pid int) {
+	t.Helper()
+	processCtxReadStartedAt = func(got int) (time.Time, bool) {
+		if got != pid {
+			t.Fatalf("unexpected pid %d", got)
+		}
+		return time.Time{}, false
+	}
+	t.Cleanup(func() { processCtxReadStartedAt = defaultProcessCtxReadStartedAt })
+}
+
 func TestAttachProcessCtxFromCacheHit(t *testing.T) {
 	resetProcessCtxForTest()
+	withoutProcessStartTime(t, 4242)
 	cache, enr := ProcessCtx()
 	cache.PutFromExec(4242, 1, 1001, "ncat", "/usr/bin/ncat")
 	before := enr.Stats().Enqueued
@@ -31,6 +47,7 @@ func TestAttachProcessCtxFromCacheHit(t *testing.T) {
 
 func TestAttachProcessCtxFromProcCacheHitDoesNotReenqueue(t *testing.T) {
 	resetProcessCtxForTest()
+	withoutProcessStartTime(t, 4242)
 	cache, enr := ProcessCtx()
 	cache.PutFromProc(4242, 1, 1001, "alice", "alice", "ncat", "/usr/bin/ncat", []string{"ncat"})
 	before := enr.Stats().Enqueued
@@ -93,6 +110,7 @@ func TestProcessctxRequestFromConnectionIncludesStartTime(t *testing.T) {
 
 func TestAttachProcessCtxOverridesDirectSMTPTenantFromProcessAccount(t *testing.T) {
 	resetProcessCtxForTest()
+	withoutProcessStartTime(t, 4242)
 	cache, enr := ProcessCtx()
 	cache.PutFromProc(4242, 1, 1001, "php-fpm", "alice", "ncat", "/usr/bin/ncat", []string{"ncat"})
 

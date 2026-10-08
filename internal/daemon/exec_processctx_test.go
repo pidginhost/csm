@@ -38,6 +38,7 @@ func TestPopulateProcessCtxFromExecEventWithZeroPIDIsNoop(t *testing.T) {
 
 func TestAttachProcessCtxToExecFinding(t *testing.T) {
 	resetProcessCtxForTest()
+	withoutProcessStartTime(t, 4242)
 	cache, _ := ProcessCtx()
 	ev := ExecEvent{UID: 1001, PID: 4242, PPID: 1, Comm: "php-fpm", Filename: "/usr/sbin/php-fpm"}
 	populateProcessCtxFromExec(cache, ev, time.Time{})
