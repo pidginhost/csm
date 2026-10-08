@@ -450,6 +450,8 @@ recovery reserve for its intent, and an unknown outcome pins the intent
 with its history. The upgrade records an intent for any attempt that ran
 without an outcome or ended unknown and holds each pinned outcome's intent
 in the reserve, and opening proves every intent against its attempt.
+Startup reads the unresolved intents directly, without opening the ledger;
+a ledger older than intents has none, and one it cannot read is an error.
 
 ### Attack event storage
 

@@ -419,3 +419,124 @@ func TestAdmissionLedgerUpgradesSchemaSix(t *testing.T) {
 		t.Fatal("a second open changed the upgraded ledger")
 	}
 }
+
+// The startup read needs no ledger handle: it returns every unresolved
+// intent in action order, nothing for a database without a ledger or
+// whose ledger predates intents, and refuses a ledger it cannot read.
+func TestReadUnresolvedIntents(t *testing.T) {
+	f := newLedgerFixture(t)
+	expires := ledgerT0.Add(time.Hour)
+	running, unknown := f.reservedAt("192.0.2.10", expires), f.reservedAt("192.0.2.11", expires)
+	applied := f.reservedAt("192.0.2.12", expires)
+	f.reservedAt("192.0.2.13", expires)
+	for _, a := range []admission.AttemptRecord{running, unknown, applied} {
+		if _, _, _, err := f.l.Execute(a.Attempt.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for a, d := range map[admission.AttemptRecord]admission.Disposition{unknown: admission.DispositionUnknown, applied: admission.DispositionApplied} {
+		if _, _, err := f.l.Finish(a.Attempt.ID, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := ReadUnresolvedIntents(f.db)
+	stored := f.intents()
+	want := []admission.Intent{stored[running.Attempt.ID], stored[unknown.Attempt.ID]}
+	if want[1].Action < want[0].Action {
+		want[0], want[1] = want[1], want[0]
+	}
+	if err != nil || len(stored) != 2 || !reflect.DeepEqual(got, want) {
+		t.Fatalf("unresolved = %+v, %v; want %+v", got, err, want)
+	}
+
+	empty, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = empty.Close() })
+	if got, err = ReadUnresolvedIntents(empty); err != nil || got != nil {
+		t.Fatalf("no ledger: %+v, %v", got, err)
+	}
+	older := f.copyDatabase()
+	if err = older.bolt.Update(func(tx *bolt.Tx) error {
+		if dropErr := dropIntents(tx); dropErr != nil {
+			return dropErr
+		}
+		return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{6})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = ReadUnresolvedIntents(older); err != nil || got != nil {
+		t.Fatalf("schema 6 ledger: %+v, %v", got, err)
+	}
+	for name, damage := range map[string]func(*bolt.Tx) error{
+		"future schema": func(tx *bolt.Tx) error {
+			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaVersion + 1})
+		},
+		"no schema":  func(tx *bolt.Tx) error { return tx.Bucket([]byte(admissionMetaBucket)).Delete(admissionSchemaKey) },
+		"no intents": func(tx *bolt.Tx) error { return tx.DeleteBucket([]byte(admissionIntentsBucket)) },
+		"undecodable row": func(tx *bolt.Tx) error {
+			return tx.Bucket([]byte(admissionIntentsBucket)).Put([]byte(running.Attempt.ID), []byte("{}"))
+		},
+		"row under another action": func(tx *bolt.Tx) error {
+			data, encodeErr := stored[unknown.Attempt.ID].MarshalBinary()
+			if encodeErr != nil {
+				return encodeErr
+			}
+			return tx.Bucket([]byte(admissionIntentsBucket)).Put([]byte(running.Attempt.ID), data)
+		},
+		"malformed key": func(tx *bolt.Tx) error {
+			data, encodeErr := stored[running.Attempt.ID].MarshalBinary()
+			if encodeErr != nil {
+				return encodeErr
+			}
+			return tx.Bucket([]byte(admissionIntentsBucket)).Put([]byte("act_x"), data)
+		},
+		"intents without a ledger": func(tx *bolt.Tx) error { return tx.DeleteBucket([]byte(admissionMetaBucket)) },
+		"older schema with intents": func(tx *bolt.Tx) error {
+			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{6})
+		},
+		"nested bucket": func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte(admissionIntentsBucket))
+			if deleteErr := b.Delete([]byte(running.Attempt.ID)); deleteErr != nil {
+				return deleteErr
+			}
+			_, createErr := b.CreateBucket([]byte(running.Attempt.ID))
+			return createErr
+		},
+		"other ledger buckets without meta": func(tx *bolt.Tx) error {
+			if deleteErr := tx.DeleteBucket([]byte(admissionIntentsBucket)); deleteErr != nil {
+				return deleteErr
+			}
+			return tx.DeleteBucket([]byte(admissionMetaBucket))
+		},
+	} {
+		db := f.copyDatabase()
+		if err = db.bolt.Update(damage); err != nil {
+			t.Fatal(err)
+		}
+		if got, err = ReadUnresolvedIntents(db); err == nil || got != nil {
+			t.Errorf("%s: %+v, %v", name, got, err)
+		}
+	}
+	// A failed owner-open proof must not prevent the independent startup read.
+	unopenable := f.copyDatabase()
+	if err = unopenable.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(admissionCandidatesBucket)).Put([]byte(running.Attempt.Candidate), []byte("{}"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = OpenAdmissionLedger(unopenable, f.reg); !isCorrupt(err) {
+		t.Fatalf("owner open = %v", err)
+	}
+	if got, err = ReadUnresolvedIntents(unopenable); err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("independent read = %+v, %v", got, err)
+	}
+	closed := f.copyDatabase()
+	if err = closed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = ReadUnresolvedIntents(closed); err == nil || got != nil {
+		t.Fatalf("closed database = %+v, %v", got, err)
+	}
+}

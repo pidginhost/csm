@@ -242,3 +242,51 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 	}
 	return intents, attempts, candidates, running == 0, nil
 }
+
+// ReadUnresolvedIntents reads the intent of every attempt whose outcome is
+// unresolved, in action order, without a ledger handle: startup reads them
+// before the firewall restores its state, whether or not the ledger owner
+// started. A database without a ledger, or whose ledger predates intents,
+// has none. An error means the ledger cannot be read; the caller then
+// cannot tell a proven automatic entry from an unproven one.
+func ReadUnresolvedIntents(db *DB) ([]admission.Intent, error) {
+	var out []admission.Intent
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		intents := tx.Bucket([]byte(admissionIntentsBucket))
+		meta := tx.Bucket([]byte(admissionMetaBucket))
+		if meta == nil {
+			for _, name := range admissionBuckets {
+				if tx.Bucket([]byte(name)) != nil {
+					return admission.ErrCorruptRecord
+				}
+			}
+			return nil
+		}
+		switch schema := meta.Get(admissionSchemaKey); {
+		case len(schema) == 1 && schema[0] >= 1 && schema[0] < admissionSchemaVersion:
+			if intents != nil {
+				return admission.ErrCorruptRecord
+			}
+			return nil
+		case len(schema) != 1 || schema[0] != admissionSchemaVersion:
+			return ErrAdmissionSchema
+		case intents == nil:
+			return admission.ErrCorruptRecord
+		}
+		return intents.ForEach(func(k, _ []byte) error {
+			in, found, err := loadIntent(tx, admission.ActionID(k))
+			if err != nil {
+				return err
+			}
+			if !found {
+				return admission.ErrCorruptRecord
+			}
+			out = append(out, in)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
