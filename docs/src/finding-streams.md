@@ -250,7 +250,7 @@ whole oldest hours after failed writes exceed its bound. Missing summaries
 may mean idle hours, failed writes or a crash; they cannot certify coverage.
 Rootless designed-refusal matches consume aggregate counts and provide no
 finding join. The operator must prove collector coverage and an undamaged
-ledger through status and doctor before accepting R11.
+ledger through status and doctor before accepting the comparison as passed.
 
 ## What a recording does and does not contain
 
