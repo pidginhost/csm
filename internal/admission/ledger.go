@@ -92,9 +92,9 @@ var (
 	// in its finding is a later report: link it with LinkReport instead.
 	ErrEvidenceConflict error = &Error{Reason: ReasonInvalid, Detail: "evidence ID already holds a different record"}
 	// ErrEvidenceOwnerChanged refuses a record that differs from the one
-	// under its evidence ID only in its owner, and perhaps its finding: the
-	// two mints of one observation resolved its claims against different
-	// inventories. Its reason is ReasonStaleIdentity.
+	// under its evidence ID only in its owner: the two mints of one
+	// observation resolved its claims against different inventories.
+	// Its reason is ReasonStaleIdentity.
 	ErrEvidenceOwnerChanged error = &Error{Reason: ReasonStaleIdentity, Detail: "evidence ID holds the observation under another owner"}
 )
 

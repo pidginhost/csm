@@ -206,7 +206,7 @@ func TestIngressRefusesARemintUnderAnotherOwnerAsAStaleIdentity(t *testing.T) {
 	if err := f.in.Submit(first); err != nil {
 		t.Fatal(err)
 	}
-	remint := f.sub(subSpec{target: "2001:db8::1", finding: "fedcba9876543210", owner: Owner{account: "alice", generation: 3}})
+	remint := f.sub(subSpec{target: "2001:db8::1", owner: Owner{account: "alice", generation: 3}})
 	if remint.Evidence.ID() != first.Evidence.ID() {
 		t.Fatal("fixture does not remint the held observation")
 	}

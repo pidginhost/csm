@@ -574,9 +574,8 @@ func TestHostEvidenceEncodingAndIDAreFrozen(t *testing.T) {
 	}
 }
 
-// A record that differs from the original in its owner, and at most its
-// finding besides, was minted against another inventory; any other
-// difference is an invalid conflict.
+// Only an owner difference identifies another inventory; any additional
+// difference, including a new finding, is an invalid conflict.
 func TestEvidenceConflictNamesAnOwnerChange(t *testing.T) {
 	tp := newTestProducers(t)
 	in := sshInput(t)
@@ -593,7 +592,7 @@ func TestEvidenceConflictNamesAnOwnerChange(t *testing.T) {
 		"finding":            {func(in *EvidenceInput) { in.FindingID = "fedcba9876543210" }, ErrEvidenceConflict},
 		"severity":           {func(in *EvidenceInput) { in.Severity = SeverityCritical }, ErrEvidenceConflict},
 		"owner":              {alice, ErrEvidenceOwnerChanged},
-		"owner and finding":  {func(in *EvidenceInput) { alice(in); in.FindingID = "fedcba9876543210" }, ErrEvidenceOwnerChanged},
+		"owner and finding":  {func(in *EvidenceInput) { alice(in); in.FindingID = "fedcba9876543210" }, ErrEvidenceConflict},
 		"owner and severity": {func(in *EvidenceInput) { alice(in); in.Severity = SeverityCritical }, ErrEvidenceConflict},
 	} {
 		changed := in
