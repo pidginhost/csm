@@ -438,6 +438,17 @@ verified block ends its episode at the block's original expiry instead of
 an hour after the last observation; an unknown outcome or a response of
 another kind does not.
 
+Schema 7 adds execution intents; the first open upgrades a schema 1 to 6
+ledger in the same transaction. Execution marks a batch of up to 64
+reserved attempts as running and records, in the same transaction and
+before any host change, what each member may apply: its kind, its target
+and its absolute expiry. Executing the same members again reads them back;
+a member that runs in another batch refuses the call. An applied or failed
+outcome removes the member's intent, while an unknown one keeps it, so a
+restart knows which effects are unproven. The upgrade records an intent for
+any attempt that ran without an outcome or ended unknown, and opening
+proves every intent against its attempt.
+
 ### Attack event storage
 
 Attack events live in `attacks:events`; `attacks:events:ip` stores empty values

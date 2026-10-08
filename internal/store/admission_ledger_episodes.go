@@ -41,16 +41,12 @@ func startEpisodeSequence(tx *bolt.Tx) error {
 
 // upgradeLedgerToSchemaSix adds the episode bucket and sequence to a schema
 // 5 ledger inside the opening transaction. Candidates queued before keep
-// the episodes they were given; no episode row is invented for them. This
-// upgrade completes the chain and records the schema.
+// the episodes they were given; no episode row is invented for them.
 func upgradeLedgerToSchemaSix(tx *bolt.Tx) error {
 	if _, err := tx.CreateBucket([]byte(admissionEpisodesBucket)); err != nil {
 		return err
 	}
-	if err := startEpisodeSequence(tx); err != nil {
-		return err
-	}
-	return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaVersion})
+	return startEpisodeSequence(tx)
 }
 
 func loadEpisode(tx *bolt.Tx, key string) (admission.Episode, bool, error) {

@@ -12,8 +12,12 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// dropEpisodes removes the schema 6 episode bucket and sequence.
+// dropEpisodes removes the schema 6 episode bucket and sequence, and the
+// schema 7 intents.
 func dropEpisodes(tx *bolt.Tx) error {
+	if err := dropIntents(tx); err != nil {
+		return err
+	}
 	if tx.Bucket([]byte(admissionEpisodesBucket)) != nil {
 		if err := tx.DeleteBucket([]byte(admissionEpisodesBucket)); err != nil {
 			return err
@@ -88,7 +92,7 @@ func TestAdmissionLedgerUpgradesSchemaFive(t *testing.T) {
 			t.Fatalf("upgrade changed schema 5 record %s", k)
 		}
 	}
-	if after[schemaKey] != string([]byte{6}) {
+	if after[schemaKey] != string([]byte{admissionSchemaVersion}) {
 		t.Fatalf("upgraded schema = %q", after[schemaKey])
 	}
 	if s := episodeSequenceIn(t, db); s.Nonce == ([16]byte{}) || s.Next != 0 {

@@ -1,0 +1,336 @@
+package store
+
+import (
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/pidginhost/csm/internal/admission"
+	bolt "go.etcd.io/bbolt"
+)
+
+// dropIntents removes the schema 7 intent bucket, if present.
+func dropIntents(tx *bolt.Tx) error {
+	if tx.Bucket([]byte(admissionIntentsBucket)) == nil {
+		return nil
+	}
+	return tx.DeleteBucket([]byte(admissionIntentsBucket))
+}
+
+// schemaSix rewrites the fixture's database into the schema 6 layout: the
+// same records without intents.
+func (f *ledgerFixture) schemaSix() {
+	f.t.Helper()
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		if err := dropIntents(tx); err != nil {
+			return err
+		}
+		return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{6})
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// intents is every stored intent, by its action.
+func (f *ledgerFixture) intents() map[admission.ActionID]admission.Intent {
+	f.t.Helper()
+	out := map[admission.ActionID]admission.Intent{}
+	if err := f.db.bolt.View(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(admissionIntentsBucket)).ForEach(func(k, v []byte) error {
+			in, err := admission.UnmarshalIntent(v)
+			if err != nil {
+				return err
+			}
+			out[admission.ActionID(k)] = in
+			return nil
+		})
+	}); err != nil {
+		f.t.Fatal(err)
+	}
+	return out
+}
+
+// reservedAt queues a candidate at target from a fresh root and reserves
+// its first attempt to expire at expires.
+func (f *ledgerFixture) reservedAt(target string, expires time.Time) admission.AttemptRecord {
+	f.t.Helper()
+	root := f.published(evidenceSpec{target: target, cursor: "offset=" + target})
+	_, id := f.enqueue(f.request(target, root))
+	_, a, granted, err := f.l.Reserve(id, admission.LaneGeneral, expires)
+	if err != nil || !granted {
+		f.t.Fatalf("reserve %s: %v %v", target, granted, err)
+	}
+	return a
+}
+
+func batchOf(t *testing.T, ids ...admission.ActionID) admission.BatchID {
+	t.Helper()
+	b, err := admission.NewBatchID(ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// Executing records what each member may apply before the caller touches
+// the host: one row per member, named by the batch, with the candidate's
+// kind and target and the attempt's absolute expiry. Executing the same
+// members again is a readback; a member that runs in another batch
+// refuses the whole call.
+func TestAdmissionLedgerExecuteRecordsTheBatchIntent(t *testing.T) {
+	f := newLedgerFixture(t)
+	a1 := f.reservedAt("192.0.2.10", ledgerT0.Add(time.Hour))
+	a2 := f.reservedAt("192.0.2.11", ledgerT0.Add(2*time.Hour))
+	batch := batchOf(t, a1.Attempt.ID, a2.Attempt.ID)
+	got, granted, err := f.l.ExecuteBatch([]admission.ActionID{a2.Attempt.ID, a1.Attempt.ID})
+	if err != nil || !granted || len(got) != 2 {
+		t.Fatalf("execute: %v %v %v", got, granted, err)
+	}
+	want := map[admission.ActionID]admission.Intent{
+		a1.Attempt.ID: {Action: a1.Attempt.ID, Batch: batch, Kind: admission.KindBlockIP, Target: f.target("192.0.2.10"), ExpiresAt: a1.ExpiresAt},
+		a2.Attempt.ID: {Action: a2.Attempt.ID, Batch: batch, Kind: admission.KindBlockIP, Target: f.target("192.0.2.11"), ExpiresAt: a2.ExpiresAt},
+	}
+	if got[0] != want[a2.Attempt.ID] || got[1] != want[a1.Attempt.ID] {
+		t.Fatalf("returned intents = %+v", got)
+	}
+	if stored := f.intents(); !reflect.DeepEqual(stored, want) {
+		t.Fatalf("stored intents = %+v", stored)
+	}
+	for _, a := range []admission.AttemptRecord{a1, a2} {
+		running, readErr := f.l.Attempt(a.Attempt.ID)
+		c, candErr := f.l.Candidate(a.Attempt.Candidate)
+		if readErr != nil || candErr != nil || running.State != admission.StateExecuting || c.State != admission.StateExecuting {
+			t.Fatalf("%s: attempt %+v candidate %+v %v %v", a.Attempt.ID, running, c, readErr, candErr)
+		}
+	}
+	before := f.snapshot()
+	again, granted, err := f.l.ExecuteBatch([]admission.ActionID{a1.Attempt.ID, a2.Attempt.ID})
+	if err != nil || granted || !reflect.DeepEqual(again, []admission.Intent{want[a1.Attempt.ID], want[a2.Attempt.ID]}) {
+		t.Fatalf("readback: %+v %v %v", again, granted, err)
+	}
+	if after := f.snapshot(); !reflect.DeepEqual(after, before) {
+		t.Fatal("a readback changed the ledger")
+	}
+	a3 := f.reservedAt("192.0.2.12", ledgerT0.Add(time.Hour))
+	before = f.snapshot()
+	for name, ids := range map[string][]admission.ActionID{
+		"member of another batch": {a1.Attempt.ID, a3.Attempt.ID},
+		"part of a batch":         {a1.Attempt.ID},
+	} {
+		_, _, err = f.l.ExecuteBatch(ids)
+		wantLedgerErr(t, name, err, admission.ErrTransitionConflict)
+	}
+	if after := f.snapshot(); !reflect.DeepEqual(after, before) {
+		t.Fatal("a refused batch changed the ledger")
+	}
+}
+
+// One member that cannot run refuses the batch: nothing is written for the
+// members that could.
+func TestAdmissionLedgerExecuteRefusesTheWholeBatch(t *testing.T) {
+	f := newLedgerFixture(t)
+	a1 := f.reservedAt("192.0.2.10", ledgerT0.Add(time.Hour))
+	stale := f.reservedAt("192.0.2.11", ledgerT0.Add(time.Minute))
+	ended := f.reservedAt("192.0.2.12", ledgerT0.Add(time.Hour))
+	if _, _, err := f.l.Finish(ended.Attempt.ID, admission.DispositionFailed); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(ledgerT0.Add(time.Minute))
+	before := f.snapshot()
+	_, _, err := f.l.ExecuteBatch([]admission.ActionID{a1.Attempt.ID, stale.Attempt.ID})
+	wantLedgerReason(t, "expired member", err, admission.ReasonStale)
+	_, _, err = f.l.ExecuteBatch([]admission.ActionID{a1.Attempt.ID, ended.Attempt.ID})
+	wantLedgerErr(t, "ended member", err, admission.ErrTransitionConflict)
+	missing, idErr := admission.NewAttempt(a1.Attempt.Candidate, 3)
+	if idErr != nil {
+		t.Fatal(idErr)
+	}
+	for name, ids := range map[string][]admission.ActionID{
+		"unrecorded member": {a1.Attempt.ID, missing.ID},
+		"repeated member":   {a1.Attempt.ID, a1.Attempt.ID},
+		"no member":         nil,
+	} {
+		_, _, err = f.l.ExecuteBatch(ids)
+		wantLedgerReason(t, name, err, admission.ReasonInvalid)
+	}
+	if after := f.snapshot(); !reflect.DeepEqual(after, before) {
+		t.Fatal("a refused batch changed the ledger")
+	}
+	f.failNext("execute")
+	if _, _, err = f.l.ExecuteBatch([]admission.ActionID{a1.Attempt.ID}); err == nil {
+		t.Fatal("injected commit failure was ignored")
+	}
+	if after := f.snapshot(); !reflect.DeepEqual(after, before) {
+		t.Fatal("a failed execution left records behind")
+	}
+}
+
+// A member's intent stays only while its outcome is unresolved: applied and
+// failed attempts retire it with the outcome, an unknown one keeps it, and
+// an attempt that never ran has none.
+func TestAdmissionLedgerOutcomeSettlesTheIntent(t *testing.T) {
+	f := newLedgerFixture(t)
+	expires := ledgerT0.Add(time.Hour)
+	applied, failed, unknown := f.reservedAt("192.0.2.10", expires), f.reservedAt("192.0.2.11", expires), f.reservedAt("192.0.2.12", expires)
+	unrun := f.reservedAt("192.0.2.13", expires)
+	for _, a := range []admission.AttemptRecord{applied, failed, unknown} {
+		if _, _, _, err := f.l.Execute(a.Attempt.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(f.intents()); n != 3 {
+		t.Fatalf("running intents = %d", n)
+	}
+	for a, d := range map[admission.AttemptRecord]admission.Disposition{
+		applied: admission.DispositionApplied, failed: admission.DispositionFailed,
+		unknown: admission.DispositionUnknown, unrun: admission.DispositionFailed,
+	} {
+		if _, _, err := f.l.Finish(a.Attempt.ID, d); err != nil {
+			t.Fatalf("finish %s: %v", d, err)
+		}
+	}
+	stored := f.intents()
+	if _, kept := stored[unknown.Attempt.ID]; len(stored) != 1 || !kept {
+		t.Fatalf("settled intents = %+v", stored)
+	}
+	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+}
+
+// Opening proves every intent against its attempt: a running or unknown
+// attempt has exactly its own row, and no other attempt has one.
+func TestAdmissionLedgerOpenProvesIntents(t *testing.T) {
+	expires := ledgerT0.Add(time.Hour)
+	setup := func(t *testing.T) (*ledgerFixture, admission.AttemptRecord, admission.AttemptRecord, admission.Intent) {
+		f := newLedgerFixture(t)
+		running := f.reservedAt("192.0.2.10", expires)
+		done := f.reservedAt("192.0.2.11", expires)
+		for _, a := range []admission.AttemptRecord{running, done} {
+			if _, _, _, err := f.l.Execute(a.Attempt.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		in := f.intents()[done.Attempt.ID]
+		if _, _, err := f.l.Finish(done.Attempt.ID, admission.DispositionApplied); err != nil {
+			t.Fatal(err)
+		}
+		return f, running, done, in
+	}
+	put := func(tx *bolt.Tx, key admission.ActionID, in admission.Intent) error {
+		data, err := in.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		return tx.Bucket([]byte(admissionIntentsBucket)).Put([]byte(key), data)
+	}
+	// change rewrites one field of a stored row and keeps the rest.
+	change := func(tx *bolt.Tx, id admission.ActionID, edit func(*admission.Intent)) error {
+		in, err := admission.UnmarshalIntent(tx.Bucket([]byte(admissionIntentsBucket)).Get([]byte(id)))
+		if err != nil {
+			return err
+		}
+		edit(&in)
+		return put(tx, id, in)
+	}
+	for name, damage := range map[string]func(*bolt.Tx, admission.AttemptRecord, admission.AttemptRecord, admission.Intent) error{
+		"running attempt without its row": func(tx *bolt.Tx, running, _ admission.AttemptRecord, _ admission.Intent) error {
+			return tx.Bucket([]byte(admissionIntentsBucket)).Delete([]byte(running.Attempt.ID))
+		},
+		"row of a verified attempt": func(tx *bolt.Tx, _, done admission.AttemptRecord, in admission.Intent) error {
+			return put(tx, done.Attempt.ID, in)
+		},
+		"row under another action": func(tx *bolt.Tx, running, done admission.AttemptRecord, _ admission.Intent) error {
+			return change(tx, running.Attempt.ID, func(in *admission.Intent) { in.Action = done.Attempt.ID })
+		},
+		"row with another expiry": func(tx *bolt.Tx, running, _ admission.AttemptRecord, _ admission.Intent) error {
+			return change(tx, running.Attempt.ID, func(in *admission.Intent) { in.ExpiresAt = in.ExpiresAt.Add(time.Second) })
+		},
+		"row with another target": func(tx *bolt.Tx, running, _ admission.AttemptRecord, other admission.Intent) error {
+			return change(tx, running.Attempt.ID, func(in *admission.Intent) { in.Target = other.Target })
+		},
+		"row with another kind": func(tx *bolt.Tx, running, _ admission.AttemptRecord, _ admission.Intent) error {
+			return change(tx, running.Attempt.ID, func(in *admission.Intent) { in.Kind = admission.KindChallenge })
+		},
+		"row of an unrecorded attempt": func(tx *bolt.Tx, running, _ admission.AttemptRecord, in admission.Intent) error {
+			missing, err := admission.NewAttempt(running.Attempt.Candidate, 3)
+			if err != nil {
+				return err
+			}
+			in.Action = missing.ID
+			return put(tx, missing.ID, in)
+		},
+		"undecodable row": func(tx *bolt.Tx, running, _ admission.AttemptRecord, _ admission.Intent) error {
+			return tx.Bucket([]byte(admissionIntentsBucket)).Put([]byte(running.Attempt.ID), []byte("{}"))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, running, done, in := setup(t)
+			if err := f.db.bolt.Update(func(tx *bolt.Tx) error { return damage(tx, running, done, in) }); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := OpenAdmissionLedger(f.db, f.reg); !isCorrupt(err) {
+				t.Fatalf("open = %v", err)
+			}
+		})
+	}
+}
+
+// Upgrading a schema 6 ledger records an intent for every attempt that ran
+// without an outcome or ended unknown, each a batch of its own; nothing else
+// changes, and a second open changes nothing.
+func TestAdmissionLedgerUpgradesSchemaSix(t *testing.T) {
+	f := newLedgerFixture(t)
+	expires := ledgerT0.Add(time.Hour)
+	running, unknown := f.reservedAt("192.0.2.10", expires), f.reservedAt("192.0.2.11", expires)
+	reserved, applied := f.reservedAt("192.0.2.12", expires), f.reservedAt("192.0.2.13", expires)
+	for _, a := range []admission.AttemptRecord{running, unknown, applied} {
+		if _, _, _, err := f.l.Execute(a.Attempt.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for a, d := range map[admission.AttemptRecord]admission.Disposition{unknown: admission.DispositionUnknown, applied: admission.DispositionApplied} {
+		if _, _, err := f.l.Finish(a.Attempt.ID, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.schemaSix()
+	before := dbSnapshot(t, f.db)
+	db := f.copyDatabase()
+	if _, err := OpenAdmissionLedger(db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+	after := dbSnapshot(t, db)
+	schemaKey := admissionMetaBucket + ":" + string(admissionSchemaKey)
+	for k, v := range before {
+		if after[k] != v && k != schemaKey {
+			t.Fatalf("upgrade changed schema 6 record %s", k)
+		}
+	}
+	if after[schemaKey] != string([]byte{7}) {
+		t.Fatalf("upgraded schema = %q", after[schemaKey])
+	}
+	got := map[admission.ActionID]admission.Intent{}
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(admissionIntentsBucket)).ForEach(func(k, v []byte) error {
+			in, err := admission.UnmarshalIntent(v)
+			got[admission.ActionID(k)] = in
+			return err
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[admission.ActionID]admission.Intent{
+		running.Attempt.ID: {Action: running.Attempt.ID, Batch: batchOf(t, running.Attempt.ID), Kind: admission.KindBlockIP, Target: f.target("192.0.2.10"), ExpiresAt: expires},
+		unknown.Attempt.ID: {Action: unknown.Attempt.ID, Batch: batchOf(t, unknown.Attempt.ID), Kind: admission.KindBlockIP, Target: f.target("192.0.2.11"), ExpiresAt: expires},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("upgraded intents = %+v, reserved %s", got, reserved.Attempt.ID)
+	}
+	if _, err := OpenAdmissionLedger(db, f.reg); err != nil {
+		t.Fatal(err)
+	}
+	if again := dbSnapshot(t, db); !reflect.DeepEqual(again, after) {
+		t.Fatal("a second open changed the upgraded ledger")
+	}
+}

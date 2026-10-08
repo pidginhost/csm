@@ -183,9 +183,14 @@ type Ledger interface {
 	// it returns that attempt and false: a readback grants and charges
 	// nothing, and a zero lane or expiry matches the recorded one.
 	Reserve(CandidateID, Lane, time.Time) (Candidate, AttemptRecord, bool, error)
-	// Execute marks a reserved attempt as running and reports true. On an
-	// attempt already running it returns it and false: a readback is not
-	// permission to dispatch its effect again.
+	// ExecuteBatch marks the reserved attempts of one batch as running and
+	// records each member's intent in the same transaction, before the
+	// caller dispatches any host change (spec 5.4), and reports true. When
+	// every member already runs in this batch it returns their intents and
+	// false: a readback is not permission to dispatch an effect again. Any
+	// other member state refuses the whole batch.
+	ExecuteBatch([]ActionID) ([]Intent, bool, error)
+	// Execute runs one reserved attempt as a batch of its own.
 	Execute(ActionID) (Candidate, AttemptRecord, bool, error)
 	// Finish records an attempt outcome: applied, narrowed, failed or
 	// unknown. A proven failure with attempts left requeues the candidate.

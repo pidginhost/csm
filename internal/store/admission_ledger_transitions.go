@@ -394,28 +394,6 @@ func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func
 	return outC, outA, changed, nil
 }
 
-// Execute marks a reserved attempt as running and reports true. On an
-// attempt already running it is a no-op that reports false: a readback is
-// not permission to dispatch the attempt's effect again.
-func (l *AdmissionLedger) Execute(id admission.ActionID) (admission.Candidate, admission.AttemptRecord, bool, error) {
-	return l.attemptStep("execute", id, l.clock, func(q *queueTx, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
-		switch {
-		case a.State == admission.StateExecuting:
-			return false, nil
-		case a.State != admission.StateReserved:
-			return false, admission.ErrTransitionConflict
-		case !q.now.Before(a.ExpiresAt):
-			return false, refusal(admission.ReasonStale, "absolute expiry has passed")
-		}
-		e, err := loadQueueEntry(q.tx, a.Attempt.Candidate)
-		if err != nil {
-			return false, err
-		}
-		a.State, c.State = admission.StateExecuting, admission.StateExecuting
-		return true, q.writeAuditRow(*c, *a, e.Tier)
-	})
-}
-
 // Finish records the outcome of the candidate's current attempt. Applied and
 // narrowed need a running attempt, and so does unknown: an attempt that never
 // ran is known not to have applied, so it can only fail. A proven failure
@@ -507,10 +485,15 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 	// The candidate moves in step with its current attempt, so the
 	// lifecycle table decides which outcomes a reserved attempt allows.
 	from := c.State
-	// An attempt that never ran returns the slot of its execution row.
+	// An attempt that never ran returns the slot of its execution row. One
+	// that ran keeps its intent only while its outcome is unknown.
 	var unused uint64
 	if a.State == admission.StateReserved {
 		unused = 1
+	} else if d != admission.DispositionUnknown {
+		if err = deleteIntent(q.tx, a.Attempt.ID); err != nil {
+			return false, err
+		}
 	}
 	a.State, a.Disposition, a.Finished = state, d, q.now
 	if err = q.outcomes.Add(admission.AttemptOutcome(d, e.Tier)); err != nil {
