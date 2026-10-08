@@ -218,6 +218,7 @@ func TestRuleScanBudgetCronDownloaderLines(t *testing.T) {
 		"cron_prefixes.txt":  []byte(strings.Repeat("*/5 * * * * wget x ", 55_000)),
 		"pipe_targets.txt":   []byte(strings.Repeat("* * curl x | sh ", 65_000)),
 		"four_fields.txt":    []byte(strings.Repeat("1 1 1 1 curl x | sh ", 52_000)),
+		"single_names.txt":   []byte(strings.Repeat("0 0 * jan mon curl x | sh ", 40_000)),
 		"star_schedules.txt": []byte(strings.Repeat("* * * * * ", 60_000)),
 		"numeric_fields.txt": []byte(strings.Repeat("1 ", 300_000)),
 		"long_field.txt":     []byte(strings.Repeat("1,", 300_000) + " * * * * curl x | sh"),
