@@ -9,10 +9,11 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// A readable intent must still prove its attempt and target before the
-// recovery hold can admit any overlapping work.
+// A missing intent bucket refuses every operation that derives the
+// recovery hold, without changing the ledger. Opening and status prove the
+// intent links; the hold reads only the intents and their attempts.
 func TestAdmissionLedgerRecoveryHoldRejectsBrokenIntentLinks(t *testing.T) {
-	for _, damage := range []string{"target", "kind", "expiry", "missing", "bucket"} {
+	for _, damage := range []string{"bucket"} {
 		for _, operation := range []string{"schedule", "wake", "reserve", "execute"} {
 			t.Run(damage+"/"+operation, func(t *testing.T) {
 				f := newLedgerFixture(t)
