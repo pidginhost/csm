@@ -14,8 +14,8 @@ import (
 // ackNotices acknowledges delivered notices; tests make it fail.
 var ackNotices = (*store.AdmissionLedger).AckNotices
 
-// maxNoticeRetryWait caps the wait between attempts of a failing delivery.
-const maxNoticeRetryWait = time.Hour
+// maxRetryWait caps the wait between attempts of failing work.
+const maxRetryWait = time.Hour
 
 // noticeMessages name each notice kind as its notification does.
 var noticeMessages = map[admission.NoticeKind]string{
@@ -48,14 +48,26 @@ type sender struct {
 	ledgerPending int
 	// The independent stop alert must not inherit a ledger delivery's wait,
 	// and its successful delivery must not reset that ledger retry.
-	ledgerRetry noticeRetry
-	stopRetry   noticeRetry
+	ledgerRetry retryBackoff
+	stopRetry   retryBackoff
 	done        chan struct{}
 }
 
-type noticeRetry struct {
+// retryBackoff spaces the attempts of work that keeps failing: the next
+// two attempts run at once, then each waits twice as long as the one before,
+// from base up to maxRetryWait. A success restores prompt attempts.
+type retryBackoff struct {
 	failures int
 	at       time.Time
+}
+
+func (r *retryBackoff) due(now time.Time) bool { return !now.Before(r.at) }
+
+func (r *retryBackoff) fail(now time.Time, base time.Duration) {
+	r.failures++
+	if r.failures > 2 {
+		r.at = now.Add(min(base<<min(r.failures-2, 20), maxRetryWait))
+	}
 }
 
 func (s *sender) run() {
@@ -183,22 +195,17 @@ func (s *sender) sendStop() bool {
 
 // deliver sends findings unless the retry of a failing delivery is not yet
 // due. Every attempt reaches every channel and history, those that accepted
-// the last attempt included, so a failing one is not retried each cycle:
-// the next two cycles retry at once, then each attempt waits twice as long
-// as the one before, up to an hour. A delivery restores prompt retries
-// for its path.
-func (s *sender) deliver(retry *noticeRetry, findings []alert.Finding, preview bool) bool {
-	if s.o.stopping.Load() || deliveryNow().Before(retry.at) {
+// the last attempt included, so a failing one is backed off from the
+// default notice period. A delivery restores prompt retries for its path.
+func (s *sender) deliver(retry *retryBackoff, findings []alert.Finding, preview bool) bool {
+	if s.o.stopping.Load() || !retry.due(deliveryNow()) {
 		return false
 	}
 	if err := s.o.opts.Deliver(findings, preview); err != nil {
-		retry.failures++
-		if retry.failures > 2 {
-			retry.at = deliveryNow().Add(min(defaultNoticeEvery<<min(retry.failures-2, 20), maxNoticeRetryWait))
-		}
+		retry.fail(deliveryNow(), defaultNoticeEvery)
 		return false
 	}
-	*retry = noticeRetry{}
+	*retry = retryBackoff{}
 	return true
 }
 

@@ -2,8 +2,10 @@ package admissionowner
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -181,6 +183,79 @@ func TestOwnerReportsAFailedSchedule(t *testing.T) {
 			t.Fatalf("after recovery: error %q, %d previews", s.Error, outcomes(ledgerStatus(t, o), admission.DispositionObserve))
 		}
 	})
+}
+
+// A preview turn that keeps failing is not retried every second, as a
+// failing notice channel is not: the next two turns retry at once, each
+// later attempt waits twice as long as the one before, up to an hour, and a
+// turn that succeeds restores prompt retries.
+func TestOwnerBacksOffAFailingPreviewTurn(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	mono := &fakeMono{now: time.Now()}
+	var attempts atomic.Int64
+	failing := func(*store.AdmissionLedger, admission.ScheduleLimits) ([]admission.Pick, error) {
+		attempts.Add(1)
+		return nil, errors.New("injected schedule failure")
+	}
+	prevMono, prevSchedule := monoNow, scheduleLedger
+	monoNow, scheduleLedger = mono.read, failing
+	t.Cleanup(func() { monoNow, scheduleLedger = prevMono, prevSchedule })
+	o := f.start(previewOptions(f))
+	turn := func() {
+		t.Helper()
+		if err := o.do(func() error { o.schedule(); return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := mono.read()
+	var at []time.Duration
+	for range 2 * 3600 {
+		before := attempts.Load()
+		turn()
+		if attempts.Load() != before {
+			at = append(at, mono.read().Sub(start))
+		}
+		mono.advance(time.Second)
+	}
+	var want []time.Duration
+	for _, s := range []int{0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096} {
+		want = append(want, time.Duration(s)*time.Second)
+	}
+	if !reflect.DeepEqual(at, want) {
+		t.Fatalf("attempts over two hours at %v, want %v", at, want)
+	}
+	if o.status().Owner.Error == "" {
+		t.Fatal("a failing turn left no owner error")
+	}
+	// The attempt after 4096 s waits the hour cap, not 4096 s more.
+	setOwnerHook(t, o, &scheduleLedger, func(l *store.AdmissionLedger, limits admission.ScheduleLimits) ([]admission.Pick, error) {
+		attempts.Add(1)
+		return prevSchedule(l, limits)
+	})
+	mono.advance(4096*time.Second + time.Hour - 2*time.Hour - time.Second)
+	before := attempts.Load()
+	turn()
+	if attempts.Load() != before {
+		t.Fatal("retried before the hour cap")
+	}
+	mono.advance(time.Second)
+	turn()
+	if attempts.Load() != before+1 || o.status().Owner.Error != "" {
+		t.Fatalf("the hour-late retry: %d attempts, owner error %q", attempts.Load()-before, o.status().Owner.Error)
+	}
+	setOwnerHook(t, o, &scheduleLedger, failing)
+	submitTo(t, o, p, "192.0.2.10", f.host.now())
+	if err := o.do(o.drain); err != nil {
+		t.Fatal(err)
+	}
+	before = attempts.Load()
+	for range 4 {
+		turn()
+	}
+	if got := attempts.Load() - before; got != 3 {
+		t.Fatalf("a failure after a success made %d attempts in four turns, want 3", got)
+	}
 }
 
 // More ready work than one batch takes the next turn at once: the ledger's

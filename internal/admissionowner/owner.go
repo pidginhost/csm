@@ -130,9 +130,11 @@ type Owner struct {
 	// now is the admission time of the last reading.
 	now time.Time
 	// scheduleDue asks the next schedule turn to run; wakeAt, on the
-	// monotonic clock, is when the ledger said queued work changes next.
+	// monotonic clock, is when the ledger said queued work changes next;
+	// scheduleWait spaces the turns while they keep failing.
 	scheduleDue  bool
 	wakeAt       time.Time
+	scheduleWait retryBackoff
 	limit        uint32
 	source       string
 	imported     *health.AdmissionImport
@@ -603,15 +605,22 @@ func (o *Owner) drainHeld() (err error) {
 
 // schedule runs a turn when work was drained or the ledger's wake time has
 // come, and keeps the cause of a failed turn for status until one
-// succeeds.
+// succeeds. A turn that keeps failing is backed off from the default
+// schedule period, as a failing notice delivery is.
 func (o *Owner) schedule() {
 	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) {
+		return
+	}
+	if !o.scheduleWait.due(monoNow()) {
 		return
 	}
 	o.scheduleDue, o.wakeAt = false, time.Time{}
 	err := o.preview()
 	if err != nil {
 		o.scheduleDue = true
+		o.scheduleWait.fail(monoNow(), defaultScheduleEvery)
+	} else {
+		o.scheduleWait = retryBackoff{}
 	}
 	if (err == nil) != (o.scheduleErr == nil) {
 		o.scheduleErr = err
