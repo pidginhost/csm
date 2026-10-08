@@ -261,3 +261,39 @@ func rewriteRow(tx *bolt.Tx, id admission.ActionID, edit func(*admission.AuditRo
 	}
 	return outbox.Put(key, data)
 }
+
+// Status counts the attempts whose outcome is unresolved, running or
+// unknown, and says when the first unknown one can be retired. A damaged
+// intent fails only this section.
+func TestAdmissionLedgerStatusCountsUnresolvedAttempts(t *testing.T) {
+	f := newLedgerFixture(t)
+	if s := f.l.Status().Unresolved; s != (admission.UnresolvedStatus{}) {
+		t.Fatalf("empty ledger = %+v", s)
+	}
+	early, late := ledgerT0.Add(time.Hour), ledgerT0.Add(2*time.Hour)
+	running := f.reservedAt("192.0.2.10", ledgerT0.Add(30*time.Minute))
+	if _, _, _, err := f.l.Execute(running.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.unknownAt("192.0.2.11", late)
+	f.unknownAt("192.0.2.12", early)
+	retired := f.unknownAt("192.0.2.13", ledgerT0.Add(time.Minute))
+	f.ackAll()
+	f.tickAt(ledgerT0.Add(time.Minute))
+	if _, _, _, err := f.l.RetireUnproven(retired.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	want := admission.UnresolvedStatus{Running: 1, Unknown: 2, Retires: early}
+	if s := f.l.Status().Unresolved; s != want {
+		t.Fatalf("unresolved = %+v, want %+v", s, want)
+	}
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(admissionIntentsBucket)).Put([]byte(running.Attempt.ID), []byte("{}"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := f.l.Status()
+	if s.Unresolved.Error == "" || s.Queue.Error != "" || s.Storage.Error != "" {
+		t.Fatalf("damaged intent: %+v %q %q", s.Unresolved, s.Queue.Error, s.Storage.Error)
+	}
+}

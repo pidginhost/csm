@@ -58,12 +58,13 @@ func (l *AdmissionLedger) Status() admission.LedgerStatus {
 		s.Storage.Error = section(func() error { return storageStatus(tx, &s.Storage) }, admissionQueueStateBucket, admissionAttemptsBucket, admissionHistoryBucket)
 		s.Outbox.Error = section(func() error { return outboxStatus(tx, &s.Outbox) }, admissionOutboxBucket)
 		s.Notices.Error = section(func() error { return noticesStatus(tx, &s.Notices) }, admissionOutboxBucket)
+		s.Unresolved.Error = section(func() error { return unresolvedStatus(tx, &s.Unresolved) }, admissionIntentsBucket, admissionAttemptsBucket)
 		return nil
 	})
 	if err != nil {
 		for _, section := range []*string{
 			&s.Clock.Error, &s.Queue.Error, &s.Counters.Error, &s.Outcomes.Error, &s.Ingress.Error,
-			&s.Ceiling.Error, &s.Storage.Error, &s.Outbox.Error, &s.Notices.Error,
+			&s.Ceiling.Error, &s.Storage.Error, &s.Outbox.Error, &s.Notices.Error, &s.Unresolved.Error,
 		} {
 			*section = err.Error()
 		}
@@ -291,4 +292,31 @@ func noticesStatus(tx *bolt.Tx, out *admission.NoticesStatus) error {
 		return admission.ErrCorruptRecord
 	}
 	return nil
+}
+
+// unresolvedStatus counts the attempts the intents name, by whether they
+// run or ended unknown.
+func unresolvedStatus(tx *bolt.Tx, out *admission.UnresolvedStatus) error {
+	return tx.Bucket([]byte(admissionIntentsBucket)).ForEach(func(k, _ []byte) error {
+		in, _, err := loadIntent(tx, admission.ActionID(k))
+		if err != nil {
+			return err
+		}
+		a, err := loadAttempt(tx, in.Action)
+		if err != nil {
+			return corruptRecord(err)
+		}
+		switch a.State {
+		case admission.StateExecuting:
+			out.Running++
+		case admission.StateUnknown:
+			out.Unknown++
+			if out.Retires.IsZero() || a.ExpiresAt.Before(out.Retires) {
+				out.Retires = a.ExpiresAt
+			}
+		default:
+			return admission.ErrCorruptRecord
+		}
+		return nil
+	})
 }

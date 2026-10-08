@@ -88,7 +88,7 @@ var (
 	// The firewall's results, then the admission ledger's attempt steps
 	// and summary decisions.
 	bundleResults = map[string]bool{"applied": true, "dry_run": true, "failed": true, "refused": true, "verified": true, "unknown": true,
-		"reserved": true, "executing": true, "narrowed": true, "observe": true, "queued": true, "coalesced": true}
+		"reserved": true, "executing": true, "narrowed": true, "observe": true, "expired_unproven": true, "queued": true, "coalesced": true}
 	bundleKinds = map[string]bool{"findings": true, "actions": true, "firewall_audit": true}
 )
 

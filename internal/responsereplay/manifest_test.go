@@ -116,13 +116,13 @@ func TestBundleRejectsNegativeCounters(t *testing.T) {
 // A bundle counts admission audit steps and summary decisions beside the
 // firewall's results.
 func TestReadBundleManifestCountsAdmissionResults(t *testing.T) {
-	results := `"applied": 0, "verified": 0, "reserved": 1, "executing": 0, "narrowed": 0, "observe": 2, "queued": 3, "coalesced": 0`
+	results := `"applied": 0, "verified": 0, "reserved": 1, "executing": 0, "narrowed": 0, "observe": 2, "queued": 3, "coalesced": 0, "expired_unproven": 4`
 	body := strings.Replace(bundleFixture, `"applied": 0, "verified": 0`, results, 1)
 	m, _, err := ReadBundleManifest(writeBundle(t, body))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.ActionResults["observe"] != 2 || m.ActionResults["queued"] != 3 || m.ActionResults["reserved"] != 1 {
+	if m.ActionResults["observe"] != 2 || m.ActionResults["queued"] != 3 || m.ActionResults["reserved"] != 1 || m.ActionResults["expired_unproven"] != 4 {
 		t.Fatalf("results = %v", m.ActionResults)
 	}
 }

@@ -460,7 +460,8 @@ outcome rows are delivered and the engine finds nothing of it remaining,
 recovery retires the uncertainty: the outcome stays unknown and counts as
 nothing new, nothing is dispatched again, the intent goes, the history and
 intent leave the recovery reserve, and an `expired_unproven` audit row
-records the event.
+records the event. Status counts the attempts that run and the unknown ones
+not yet retired, with the earliest expiry after which one can be retired.
 
 ### Attack event storage
 
