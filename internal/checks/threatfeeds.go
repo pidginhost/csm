@@ -52,10 +52,9 @@ var (
 
 // Minimum expected entries per feed - alerts if feed returns less (corrupted/down)
 var feedMinEntries = map[string]int{
-	"spamhaus-drop":  50,
-	"spamhaus-edrop": 10,
-	"blocklist-de":   1000,
-	"cins-army":      5000,
+	"spamhaus-drop": 50,
+	"blocklist-de":  1000,
+	"cins-army":     5000,
 }
 
 // Free public threat intelligence feeds
@@ -64,7 +63,6 @@ var threatFeeds = []struct {
 	url  string
 }{
 	{"spamhaus-drop", "https://www.spamhaus.org/drop/drop.txt"},
-	{"spamhaus-edrop", "https://www.spamhaus.org/drop/edrop.txt"},
 	{"blocklist-de", "https://lists.blocklist.de/lists/all.txt"},
 	{"cins-army", "https://cinsscore.com/list/ci-badguys.txt"},
 }
