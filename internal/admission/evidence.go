@@ -140,6 +140,20 @@ func (e Evidence) SameExceptFinding(o Evidence) bool {
 	return a == b
 }
 
+// Conflict is the refusal of o under e's ID when o differs from e. A
+// difference in owner alone, apart from the finding, is an inventory change
+// between two mints of the observation, not a malformed record.
+func (e Evidence) Conflict(o Evidence) error {
+	a, b := e.rec, o.rec
+	a.FindingID, b.FindingID = "", ""
+	owner := a.OwnerAccount != b.OwnerAccount || a.OwnerGeneration != b.OwnerGeneration
+	a.OwnerAccount, a.OwnerGeneration = b.OwnerAccount, b.OwnerGeneration
+	if owner && a == b {
+		return ErrEvidenceOwnerChanged
+	}
+	return ErrEvidenceConflict
+}
+
 // ID derives the evidence ID from producer, check, observation and target.
 func (e Evidence) ID() EvidenceID {
 	h := sha256.New()

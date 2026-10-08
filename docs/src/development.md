@@ -280,7 +280,9 @@ comes only from recorded clock readings: a wall clock that steps back never
 lowers it, a new boot credits no elapsed time, and a reopened ledger admits
 no new work until it records a fresh reading. Evidence is immutable once
 published, and later reports of the same observation are kept as bounded
-links. A candidate takes its entry, check and finding link from its primary
+links. A later mint of the observation that names another owner, because the
+inventory changed between the two mints, is refused as a stale identity, not
+as invalid. A candidate takes its entry, check and finding link from its primary
 evidence, coalesces repeated requests without refreshing its queue age, and
 moves from queued through reserved and executing to one outcome. A proven
 failure may requeue after a backoff, with at most three attempts in total;

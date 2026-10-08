@@ -200,7 +200,7 @@ func (in *Ingress) Submit(s Submission) error {
 			in.stats.Duplicates++
 			h.addReport(e.FindingID())
 		default:
-			return refused(ErrEvidenceConflict, Tier{})
+			return refused(h.item.Submission.Evidence.Conflict(e), Tier{})
 		}
 		h.item.Selected++
 		return nil

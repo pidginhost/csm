@@ -574,6 +574,40 @@ func TestHostEvidenceEncodingAndIDAreFrozen(t *testing.T) {
 	}
 }
 
+// A record that differs from the original in its owner, and at most its
+// finding besides, was minted against another inventory; any other
+// difference is an invalid conflict.
+func TestEvidenceConflictNamesAnOwnerChange(t *testing.T) {
+	tp := newTestProducers(t)
+	in := sshInput(t)
+	original, err := tp.ssh.Mint(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv := testInventory(t)
+	alice := func(in *EvidenceInput) { in.Claims, in.Inventory = []Claim{{ClaimAccount, "alice"}}, inv }
+	for name, tc := range map[string]struct {
+		mutate func(*EvidenceInput)
+		want   error
+	}{
+		"finding":            {func(in *EvidenceInput) { in.FindingID = "fedcba9876543210" }, ErrEvidenceConflict},
+		"severity":           {func(in *EvidenceInput) { in.Severity = SeverityCritical }, ErrEvidenceConflict},
+		"owner":              {alice, ErrEvidenceOwnerChanged},
+		"owner and finding":  {func(in *EvidenceInput) { alice(in); in.FindingID = "fedcba9876543210" }, ErrEvidenceOwnerChanged},
+		"owner and severity": {func(in *EvidenceInput) { alice(in); in.Severity = SeverityCritical }, ErrEvidenceConflict},
+	} {
+		changed := in
+		tc.mutate(&changed)
+		other, err := tp.ssh.Mint(changed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := original.Conflict(other); got != tc.want || other.Conflict(original) != tc.want {
+			t.Errorf("%s: Conflict = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
 // A record that differs from the original only in its finding is a later
 // report of the same observation; any other difference is a conflict.
 func TestEvidenceSameExceptFinding(t *testing.T) {

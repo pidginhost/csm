@@ -99,6 +99,58 @@ func TestOwnerAnswersARootThroughADerivedEntry(t *testing.T) {
 	}
 }
 
+// A derived path re-mints the root of a finding the owner already stored.
+// When the inventory recreated the finding's account between the two
+// mints, the re-mint names another owner generation: the response is
+// refused as a stale identity, not counted as an invalid record.
+func TestOwnerCountsADerivedRemintAfterAnInventoryChangeAsAStaleIdentity(t *testing.T) {
+	withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink := &actionSink{}
+	opts := respondOptions(f)
+	opts.WriteAudit = sink.write
+	o := f.start(opts)
+	finding := sshFinding(f.host.now(), "offset=1", alert.High)
+	finding.Claims = []admission.Claim{{Kind: admission.ClaimAccount, Value: "alice"}}
+	primary, err := o.Mint(finding, finding.SourceIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = o.Respond(admission.KindBlockIP, primary, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err = o.do(o.drain); err != nil {
+		t.Fatal(err)
+	}
+	f.host.set(func(h *fakeHost) { h.inv.Incarnations = map[string]string{"alice": "startdate:2"} })
+	if err = o.do(func() error { o.refreshInventory(); return o.inventoryErr }); err != nil {
+		t.Fatal(err)
+	}
+	root, err := o.Mint(finding, finding.SourceIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.ID() != primary.ID() || root.Owner().IsHost() || root.Owner() == primary.Owner() {
+		t.Fatalf("fixture does not remint the root under the recreated account: %s then %s", primary.Owner().Key(), root.Owner().Key())
+	}
+	if err = o.Respond(admission.KindBlockIP, root, admission.EntryIncident); err != nil {
+		t.Fatal(err)
+	}
+	if err = o.do(o.drain); err != nil {
+		t.Fatal(err)
+	}
+	if err = o.do(func() error { o.writeComparison(true); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"2026-10-04T13:00:00Z block_ip unknown incident refused stale_identity 1",
+		"2026-10-04T13:00:00Z block_ip unknown scan queued  1",
+	}
+	if got := sink.previews(); !equalStrings(got, want) {
+		t.Fatalf("rows = %q, want %q", got, want)
+	}
+}
+
 // Handoff O30 and review M4: a stop closes the ingress before its final
 // drains, so it ends even while a producer that was not stopped keeps
 // submitting; later submissions are refused.

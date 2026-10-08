@@ -91,6 +91,11 @@ var (
 	// evidence ID. Its reason is ReasonInvalid. A record that differs only
 	// in its finding is a later report: link it with LinkReport instead.
 	ErrEvidenceConflict error = &Error{Reason: ReasonInvalid, Detail: "evidence ID already holds a different record"}
+	// ErrEvidenceOwnerChanged refuses a record that differs from the one
+	// under its evidence ID only in its owner, and perhaps its finding: the
+	// two mints of one observation resolved its claims against different
+	// inventories. Its reason is ReasonStaleIdentity.
+	ErrEvidenceOwnerChanged error = &Error{Reason: ReasonStaleIdentity, Detail: "evidence ID holds the observation under another owner"}
 )
 
 // Ledger is the durable admission state (spec 5.4). One engine owner

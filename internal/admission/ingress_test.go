@@ -196,6 +196,29 @@ func TestIngressMergesRepeatedEvidence(t *testing.T) {
 	}
 }
 
+// A held record minted again after the inventory recreated its account
+// differs from it only in the owner generation: a stale identity, not an
+// invalid record.
+func TestIngressRefusesARemintUnderAnotherOwnerAsAStaleIdentity(t *testing.T) {
+	f := newIngressFixture(t)
+	f.publish()
+	first := f.sub(subSpec{target: "2001:db8::1", owner: testInventory(t).Resolve(Claim{ClaimAccount, "alice"})})
+	if err := f.in.Submit(first); err != nil {
+		t.Fatal(err)
+	}
+	remint := f.sub(subSpec{target: "2001:db8::1", finding: "fedcba9876543210", owner: Owner{account: "alice", generation: 3}})
+	if remint.Evidence.ID() != first.Evidence.ID() {
+		t.Fatal("fixture does not remint the held observation")
+	}
+	err := f.in.Submit(remint)
+	if r, _ := ReasonOf(err); r != ReasonStaleIdentity {
+		t.Fatalf("remint under another owner: %v", err)
+	}
+	if n := f.in.Stats().Counters.Count(CountKey{Event: EventRefused, Reason: ReasonStaleIdentity}); n != 1 {
+		t.Fatalf("stale identity refusals = %d", n)
+	}
+}
+
 // Held items compete like queued ones: a scope below its share displaces the
 // newest held item of a flooding scope, which is counted. Taken items hold
 // their positions.

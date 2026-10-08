@@ -90,7 +90,7 @@ func publishTx(q *queueTx, reg *admission.Registry, e admission.Evidence) (bool,
 			return false, err
 		}
 		if !old.Equal(e) {
-			return false, admission.ErrEvidenceConflict
+			return false, old.Conflict(e)
 		}
 		return false, nil
 	}
