@@ -45,8 +45,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- After upgrade, automatic response previews can read cPanel inventories with zero-dated system accounts. The previews still follow `auto_response.enabled`, and these accounts keep their generation until their creation date changes or a refresh observes their absence.
-- With `auto_response.enabled`, admission previews after upgrade classify only an owner change alone as stale; records that also change other evidence stay invalid. Existing stored evidence is kept.
+- After upgrade, automatic response previews work on cPanel hosts whose system accounts record a zero creation date, instead of failing the whole account read. They still follow `auto_response.enabled`.
+- After upgrade, admission previews report a repeated observation whose account was recreated in between as a stale identity instead of invalid. Existing stored evidence is kept.
 - A full rescan queued by a rules update now survives daemon restarts and is cleared only after a completed sweep; it waits while `detection.rescan_on_signature_update` is off.
 - The OpenAPI contract now documents supported methods, settings write requirements and mail deletion errors.
 - The email password audit now checks mailboxes on cPanel hosts instead of reporting every stored hash as unauditable.
