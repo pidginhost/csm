@@ -221,17 +221,7 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 		c.lastScanned = c.resume
 	}
 
-	// A rules update leaves every file the walk already covered scanned with
-	// the old rules. The walk is not restarted: restarting on each update
-	// would starve the paths that sort last whenever updates come faster than
-	// one pass. The cursor instead records where the walk stood when it took
-	// the update, and the queued rescan clears once the walk is back there.
 	rescanGen := pendingSignatureRescan(cfg, db, yaraConsumer.dispatch)
-	if rescanGen != 0 && yaraConsumer.cur.RulesGeneration != rescanGen {
-		yaraConsumer.cur.RulesGeneration = rescanGen
-		yaraConsumer.cur.RulesFrom = yaraConsumer.resume
-		yaraConsumer.cur.RulesWrapped = false
-	}
 
 	// The shared walk starts at the earliest dispatchable resume point; a
 	// consumer whose cursor is ahead skips already-covered paths via wants()
@@ -320,6 +310,37 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			return path
 		}
 		return path + sep
+	}
+	roots, rootsComplete := resolveWebRootsChecked(cfg)
+	normalizedRoots := roots[:0]
+	seenRoots := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		if _, exists := seenRoots[root]; exists {
+			continue
+		}
+		seenRoots[root] = struct{}{}
+		normalizedRoots = append(normalizedRoots, root)
+	}
+	roots = normalizedRoots
+	sort.Slice(roots, func(i, j int) bool { return subtreePrefix(roots[i]) < subtreePrefix(roots[j]) })
+
+	// Restarting the walk on updates would starve paths that sort last.
+	// Track a lap from the current position instead. Changed or unresolved
+	// roots invalidate that proof: a new root behind the cursor may not have
+	// been visited on the return lap. The walk itself keeps its position.
+	rootsHash := ""
+	if rootsComplete {
+		rootsHash = fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(roots, "\x00"))))
+	}
+	if (rescanGen != 0 && yaraConsumer.cur.RulesGeneration != rescanGen) ||
+		(yaraConsumer.cur.RulesGeneration != 0 && (yaraConsumer.cur.RulesRootsHash != rootsHash || !rootsComplete)) {
+		if rescanGen != 0 {
+			yaraConsumer.cur.RulesGeneration = rescanGen
+		}
+		yaraConsumer.cur.RulesFrom = yaraConsumer.resume
+		yaraConsumer.cur.RulesWrapped = false
+		yaraConsumer.cur.RulesRootsHash = rootsHash
 	}
 	advanceAll := func(path string) {
 		for _, c := range consumers {
@@ -676,19 +697,6 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 		}
 	}
 
-	roots := ResolveWebRoots(cfg)
-	normalizedRoots := roots[:0]
-	seenRoots := make(map[string]struct{}, len(roots))
-	for _, root := range roots {
-		root = filepath.Clean(root)
-		if _, exists := seenRoots[root]; exists {
-			continue
-		}
-		seenRoots[root] = struct{}{}
-		normalizedRoots = append(normalizedRoots, root)
-	}
-	roots = normalizedRoots
-	sort.Slice(roots, func(i, j int) bool { return subtreePrefix(roots[i]) < subtreePrefix(roots[j]) })
 	for _, root := range roots {
 		if ctx.Err() != nil || stoppedEarly {
 			break
@@ -723,7 +731,8 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			next.Check = c.name
 			next.RulesGeneration = c.cur.RulesGeneration
 			next.RulesFrom = c.cur.RulesFrom
-			next.RulesWrapped = c.cur.RulesWrapped || (!stoppedEarly && c.cur.RulesGeneration != 0)
+			next.RulesWrapped = c.cur.RulesWrapped || (!stoppedEarly && rootsComplete && c.cur.RulesGeneration != 0)
+			next.RulesRootsHash = c.cur.RulesRootsHash
 			if stoppedEarly {
 				next.LastPath = c.lastScanned
 				next.LastFullCycleTS = c.cur.LastFullCycleTS
@@ -739,13 +748,19 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			}
 		}
 	}
-	if rescanGen != 0 {
+	if rescanGen != 0 && rootsComplete {
 		// A walk that started from where the update found it has passed every
 		// file once it completes. Otherwise it must have wrapped and come back
 		// to that point. A stopped walk cannot have wrapped during this run.
 		cur := yaraConsumer.cur
+		reachedFrom := yaraConsumer.lastScanned >= cur.RulesFrom
+		if strings.HasSuffix(cur.RulesFrom, sep) {
+			// A prefix cursor covers every child, not just the first path
+			// that sorts after the prefix. Use the walk's subtree ordering.
+			reachedFrom = subtreeCoveredAfter(yaraConsumer.lastScanned, cur.RulesFrom)
+		}
 		if (!stoppedEarly && (cur.RulesFrom == "" || cur.RulesWrapped)) ||
-			(cur.RulesWrapped && yaraConsumer.lastScanned >= cur.RulesFrom) {
+			(cur.RulesWrapped && reachedFrom) {
 			cleared, err := db.ClearSignatureRescan(rescanGen)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s: clearing signature rescan: %v\n", yaraConsumer.name, err)

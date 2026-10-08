@@ -21,10 +21,12 @@ type ScanCursorRecord struct {
 	// Signature rescan progress (deep YARA cursor only). RulesGeneration is
 	// the queued rescan the walk is covering, RulesFrom is where the walk
 	// stood when it took that generation, and RulesWrapped is set once the
-	// walk has since wrapped to the start.
+	// walk has since wrapped to the start. RulesRootsHash ties the lap to its
+	// resolved roots so a new root behind the cursor cannot be cleared unseen.
 	RulesGeneration uint64 `json:"rules_generation,omitempty"`
 	RulesFrom       string `json:"rules_from,omitempty"`
 	RulesWrapped    bool   `json:"rules_wrapped,omitempty"`
+	RulesRootsHash  string `json:"rules_roots_hash,omitempty"`
 }
 
 // scanCursorKey builds the bucket key for a (account, check) pair.

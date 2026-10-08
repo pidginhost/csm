@@ -3,6 +3,7 @@ package checks
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -270,5 +271,236 @@ func TestYARADeepSignatureRescanCorruptQueueIsLeftForRepair(t *testing.T) {
 	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean one", "clean two", "clean three")
 	if _, err := reopened.SignatureRescanPending(); err == nil {
 		t.Fatal("the walk rewrote a queue record it could not read")
+	}
+}
+
+// A prefix cursor covers the whole subtree. Reaching its first child after
+// wrapping cannot acknowledge the remaining children scanned with old rules.
+func TestYARADeepSignatureRescanSubtreeCursor(t *testing.T) {
+	for _, multipleRoots := range []bool{false, true} {
+		for _, laggingJS := range []bool{false, true} {
+			name := "single root"
+			if multipleRoots {
+				name = "multiple roots"
+			}
+			if laggingJS {
+				name += "/lagging JS"
+			}
+			t.Run(name, func(t *testing.T) {
+				db := useRollingStore(t)
+				root := t.TempDir()
+				writeYARADeepFile(t, root, "a/one.dat", "clean one")
+				writeYARADeepFile(t, root, "a/two.dat", "mal two")
+				writeYARADeepFile(t, root, "z/three.dat", "clean three")
+				cfg := &config.Config{AccountRoots: []string{root}}
+				if multipleRoots {
+					cfg.AccountRoots = []string{filepath.Join(root, "z"), filepath.Join(root, "a")}
+				}
+				if !laggingJS {
+					cfg.DisabledChecks = []string{"js_taint_deep"}
+				}
+				prefix := filepath.Join(root, "a") + string(filepath.Separator)
+				putYARADeepCursor(t, db, prefix, time.Now().UTC())
+				gen := queueSignatureRescan(t, db)
+				// Both consumers resume after a/ for the initial tail. On the
+				// return lap JS may lag while YARA resumes at a/one.dat.
+				if err := db.PutScanCursor(store.ScanCursorRecord{Check: jsTaintDeepCursorCheck, LastPath: prefix}); err != nil {
+					t.Fatal(err)
+				}
+				before := signatureRescansCompleted(t)
+				wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean three")
+				if queuedSignatureRescan(t, db) != gen {
+					t.Fatal("tail completion cleared the rescan before wrapping")
+				}
+				wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "clean one")
+				if queuedSignatureRescan(t, db) != gen || signatureRescansCompleted(t) != before {
+					t.Fatal("first child cleared the rescan while a/two.dat still needed scanning")
+				}
+				if laggingJS {
+					if err := db.PutScanCursor(store.ScanCursorRecord{Check: jsTaintDeepCursorCheck}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "mal two")
+				wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean three")
+				if queuedSignatureRescan(t, db) != 0 || signatureRescansCompleted(t) != before+1 {
+					t.Fatal("covered subtree did not complete exactly one rescan")
+				}
+			})
+		}
+	}
+}
+
+// A new root behind the current cursor has not been covered by the return
+// lap. Its arrival must extend the proof without restarting the walk.
+func TestYARADeepSignatureRescanAddedRootBehindCursor(t *testing.T) {
+	db := useRollingStore(t)
+	root := t.TempDir()
+	first := writeYARADeepFile(t, root, "m/one.dat", "clean one")
+	second := writeYARADeepFile(t, root, "m/two.dat", "clean two")
+	writeYARADeepFile(t, root, "z/three.dat", "clean three")
+	cfg := &config.Config{AccountRoots: []string{filepath.Join(root, "m"), filepath.Join(root, "z")}}
+	putYARADeepCursor(t, db, second, time.Now().UTC())
+	gen := queueSignatureRescan(t, db)
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean three")
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "clean one")
+	if queuedSignatureRescan(t, db) != gen {
+		t.Fatal("return lap cleared before reaching the original cursor")
+	}
+	writeYARADeepFile(t, root, "a/new.dat", "mal new root")
+	cfg.AccountRoots = append(cfg.AccountRoots, filepath.Join(root, "a"))
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "clean two")
+	if queuedSignatureRescan(t, db) != gen {
+		t.Fatal("new root behind the cursor was skipped but the rescan cleared")
+	}
+	cur, ok, err := db.GetScanCursor("", yaraDeepCursorCheck)
+	if err != nil || !ok || cur.LastPath != second || cur.RulesFrom != first || cur.RulesWrapped {
+		t.Fatalf("root change lost forward progress or reused the old lap: %+v, %v", cur, err)
+	}
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean three")
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "mal new root")
+	if queuedSignatureRescan(t, db) != gen {
+		t.Fatal("new lap cleared before covering its starting point")
+	}
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "clean one")
+	if queuedSignatureRescan(t, db) != 0 {
+		t.Fatal("rescan remained queued after the added root and lap were covered")
+	}
+}
+
+type rescanRootStatOS struct {
+	OS
+	failedRoot string
+}
+
+func (f rescanRootStatOS) Stat(path string) (os.FileInfo, error) {
+	if path == f.failedRoot {
+		return nil, os.ErrPermission
+	}
+	return f.OS.Stat(path)
+}
+
+// A failed root lookup is not proof that no files remain to be covered.
+func TestYARADeepSignatureRescanRootLookupFailure(t *testing.T) {
+	db := useRollingStore(t)
+	cfg, _ := rescanRoot(t)
+	gen := queueSignatureRescan(t, db)
+	prev := osFS
+	osFS = rescanRootStatOS{OS: prev, failedRoot: cfg.AccountRoots[0]}
+	t.Cleanup(func() { osFS = prev })
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false))
+	if queuedSignatureRescan(t, db) != gen {
+		t.Fatal("unresolved root was acknowledged as fully scanned")
+	}
+	osFS = prev
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean one", "clean two", "clean three")
+	if queuedSignatureRescan(t, db) != 0 {
+		t.Fatal("recovered root did not complete the rescan")
+	}
+}
+
+func TestYARADeepSignatureRescanRootLookupFailureAfterWrap(t *testing.T) {
+	for _, pause := range []bool{false, true} {
+		name := "tracking enabled"
+		if pause {
+			name = "tracking paused"
+		}
+		t.Run(name, func(t *testing.T) {
+			db := useRollingStore(t)
+			root := t.TempDir()
+			writeYARADeepFile(t, root, "a/early.dat", "mal early")
+			writeYARADeepFile(t, root, "m/one.dat", "clean one")
+			second := writeYARADeepFile(t, root, "m/two.dat", "clean two")
+			writeYARADeepFile(t, root, "z/three.dat", "clean three")
+			cfg := &config.Config{AccountRoots: []string{
+				filepath.Join(root, "a"), filepath.Join(root, "m"), filepath.Join(root, "z"),
+			}}
+			putYARADeepCursor(t, db, second, time.Now().UTC())
+			gen := queueSignatureRescan(t, db)
+			wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean three")
+			if pause {
+				off := false
+				cfg.Detection.RescanOnSignatureUpdate = &off
+			}
+			prev := osFS
+			osFS = rescanRootStatOS{OS: prev, failedRoot: filepath.Join(root, "a")}
+			t.Cleanup(func() { osFS = prev })
+			wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "clean one")
+			osFS = prev
+			cfg.Detection.RescanOnSignatureUpdate = nil
+			wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "clean two")
+			if queuedSignatureRescan(t, db) != gen {
+				t.Fatal("recovered lookup reused a lap that skipped the early root")
+			}
+			wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean three")
+			wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "mal early")
+			if queuedSignatureRescan(t, db) != gen {
+				t.Fatal("rescan cleared before reaching the recovered lap's origin")
+			}
+			wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "clean one")
+			if queuedSignatureRescan(t, db) != 0 {
+				t.Fatal("recovered lap did not complete")
+			}
+		})
+	}
+}
+
+func TestYARADeepSignatureRescanRemovedOriginRoot(t *testing.T) {
+	db := useRollingStore(t)
+	root := t.TempDir()
+	writeYARADeepFile(t, root, "m/one.dat", "clean one")
+	second := writeYARADeepFile(t, root, "m/two.dat", "clean two")
+	writeYARADeepFile(t, root, "z/three.dat", "clean three")
+	cfg := &config.Config{AccountRoots: []string{filepath.Join(root, "m"), filepath.Join(root, "z")}}
+	putYARADeepCursor(t, db, second, time.Now().UTC())
+	queueSignatureRescan(t, db)
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean three")
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "clean one")
+	cfg.AccountRoots = []string{filepath.Join(root, "z")}
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean three")
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean three")
+	if queuedSignatureRescan(t, db) != 0 {
+		t.Fatal("removed origin root left the rescan pending indefinitely")
+	}
+}
+
+// Equivalent root spellings must not discard a lap that already wrapped.
+func TestYARADeepSignatureRescanReorderedRootsKeepLap(t *testing.T) {
+	db := useRollingStore(t)
+	root := t.TempDir()
+	writeYARADeepFile(t, root, "m/one.dat", "clean one")
+	second := writeYARADeepFile(t, root, "m/two.dat", "clean two")
+	writeYARADeepFile(t, root, "z/three.dat", "clean three")
+	cfg := &config.Config{AccountRoots: []string{filepath.Join(root, "m"), filepath.Join(root, "z")}}
+	putYARADeepCursor(t, db, second, time.Now().UTC())
+	queueSignatureRescan(t, db)
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean three")
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "clean one")
+	cfg.AccountRoots = []string{filepath.Join(root, "z"), filepath.Join(root, "m") + "/.", filepath.Join(root, "m")}
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "clean two")
+	if queuedSignatureRescan(t, db) != 0 {
+		t.Fatal("equivalent roots discarded the completed lap")
+	}
+}
+
+func TestYARADeepSignatureRescanRestartKeepsLap(t *testing.T) {
+	db := useRollingStore(t)
+	cfg, first := rescanRoot(t)
+	putYARADeepCursor(t, db, first, time.Now().UTC())
+	queueSignatureRescan(t, db)
+	before := signatureRescansCompleted(t)
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean two", "clean three")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := store.Open(filepath.Dir(db.Path()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetGlobal(reopened)
+	t.Cleanup(func() { _ = reopened.Close() })
+	wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, true), "clean one")
+	if queuedSignatureRescan(t, reopened) != 0 || signatureRescansCompleted(t) != before+1 {
+		t.Fatal("restart lost the lap or counted its completion more than once")
 	}
 }

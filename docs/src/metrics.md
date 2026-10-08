@@ -393,6 +393,13 @@ completes once the scan has wrapped and come back to that point. Every file
 is then scanned with the new rules within one pass. An update during a
 rescan starts a new one from where the scan then stands.
 
+A saved position that represents a whole folder is reached after its entire
+subtree is covered. If the scan roots change, the rescan tracks a new lap
+from the current position without restarting the walk. A failed root lookup
+keeps the rescan pending until a lap with resolved roots covers that position.
+Reordering roots, duplicate entries, and trailing separators do not discard
+the lap.
+
 The rolling scan uses the YARA rules. YAML rule updates reach existing
 files only when those files change, as before.
 
@@ -402,8 +409,8 @@ saved queue is restored even if the state store becomes available after
 the first watcher tick. Invalid queue records log a warning and are
 repaired by queuing a fresh rescan; the scan neither tracks nor clears a
 queue it cannot read. A deep run cancelled by shutdown or by the check
-timeout saves no progress. Coverage gaps, reported by `yara_scan_incomplete`, do
-not keep the queue pending.
+timeout saves no progress. File and subtree coverage gaps, reported by
+`yara_scan_incomplete`, do not keep the queue pending.
 
 Setting `detection.rescan_on_signature_update` to `false` stops the
 watcher and pauses the queue: the scan keeps running but neither starts
