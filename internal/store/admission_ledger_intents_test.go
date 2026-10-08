@@ -9,8 +9,9 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// dropIntents removes the schema 7 intent bucket, if present, and the
-// intent bytes pinned with each unresolved outcome.
+// dropIntents removes the schema 7 intent bucket, if present, and what each
+// unresolved outcome holds for recovery: its intent bytes and the slot of
+// its retirement row.
 func dropIntents(tx *bolt.Tx) error {
 	if tx.Bucket([]byte(admissionIntentsBucket)) == nil {
 		return nil
@@ -26,7 +27,12 @@ func dropIntents(tx *bolt.Tx) error {
 		}); err != nil {
 			return err
 		}
-		if err := adjustStorage(tx, func(s *admission.StorageState) { s.Recovery -= pinned * admission.MaxIntentBytes }); err != nil {
+		if err := adjustStorage(tx, func(s *admission.StorageState) {
+			s.Recovery -= pinned * admission.MaxIntentBytes
+			if tx.Bucket([]byte(admissionOutboxBucket)) != nil {
+				s.AuditSlots -= pinned
+			}
+		}); err != nil {
 			return err
 		}
 	}
@@ -256,7 +262,7 @@ func TestAdmissionLedgerOutstandingAttemptHoldsItsIntent(t *testing.T) {
 	}
 	_, _, _, err := f.l.Reserve(ids[1], admission.LaneGeneral, f.wall.Add(time.Hour))
 	wantLedgerReason(t, "second reservation", err, admission.ReasonPendingRecovery)
-	if s := f.l.Status(); s.Storage.Outstanding != uint64(f.cost(ids[0]))+admission.MaxIntentBytes {
+	if s := f.l.Status(); s.Storage.Outstanding != uint64(f.cost(ids[0]))+admission.UnknownHoldBytes {
 		t.Fatalf("outstanding = %d", s.Storage.Outstanding)
 	}
 }
@@ -388,6 +394,7 @@ func TestAdmissionLedgerUpgradesSchemaSix(t *testing.T) {
 		s, err := loadStorageState(tx)
 		want := schema6
 		want.Recovery += admission.MaxIntentBytes
+		want.AuditSlots++
 		if err != nil || s != want {
 			t.Errorf("upgraded storage = %+v, %v; want %+v", s, err, want)
 		}

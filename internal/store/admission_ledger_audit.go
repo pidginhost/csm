@@ -11,6 +11,7 @@ import (
 
 // futureAuditSlots is the rows an attempt in state s may still write: a
 // reserved one its execution and its outcome, an executing one its outcome.
+// It is the schema 5 rule, which the outbox upgrade applies.
 func futureAuditSlots(s admission.State) uint64 {
 	switch s {
 	case admission.StateReserved:
@@ -19,6 +20,16 @@ func futureAuditSlots(s admission.State) uint64 {
 		return 1
 	}
 	return 0
+}
+
+// heldAuditSlots is the rows attempt a may still write: those of
+// futureAuditSlots, and for an unknown outcome not yet retired, the row that
+// retires it.
+func heldAuditSlots(a admission.AttemptRecord) uint64 {
+	if a.State == admission.StateUnknown && !a.Retired {
+		return 1
+	}
+	return futureAuditSlots(a.State)
 }
 
 // auditStepMatches proves the row's intent and phase against its retained
@@ -34,10 +45,12 @@ func auditStepMatches(row admission.AuditRow, a admission.AttemptRecord, c admis
 			return false
 		}
 	}
-	switch row.State {
-	case admission.StateReserved:
+	switch {
+	case row.Disposition == admission.DispositionExpiredUnproven:
+		return a.State == admission.StateUnknown && a.Retired && !row.At.Before(a.ExpiresAt) && !row.At.Before(a.Finished)
+	case row.State == admission.StateReserved:
 		return row.At.Equal(a.Reserved)
-	case admission.StateExecuting:
+	case row.State == admission.StateExecuting:
 		// A preview never ran: no execution row can belong to it.
 		return a.State != admission.StateReserved && a.State != admission.StateObserved && row.At.Before(a.ExpiresAt) &&
 			(a.Finished.IsZero() || !row.At.After(a.Finished))

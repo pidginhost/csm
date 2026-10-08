@@ -962,7 +962,7 @@ func (q *queueTx) recoveryRoom() (uint64, error) {
 		if !found {
 			return 0, admission.ErrCorruptRecord
 		}
-		hold := uint64(h.Charged()) + admission.MaxIntentBytes
+		hold := uint64(h.Charged()) + admission.UnknownHoldBytes
 		if hold > room {
 			return 0, nil
 		}
@@ -1058,7 +1058,7 @@ func proveStorageLinks(tx *bolt.Tx) error {
 		if err != nil {
 			return err
 		}
-		if !found || h.RootMask == 0 || h.RootMask>>len(c.Roots) != 0 || c.State.Terminal() == h.Ended.IsZero() || h.Pinned != (c.State == admission.StateUnknown) {
+		if !found || h.RootMask == 0 || h.RootMask>>len(c.Roots) != 0 || c.State.Terminal() == h.Ended.IsZero() || h.Pinned != (c.State == admission.StateUnknown && !last.Retired) {
 			return admission.ErrCorruptRecord
 		}
 		if c.State != admission.StateQueued && h.RootMask != (1<<len(c.Roots))-1 {

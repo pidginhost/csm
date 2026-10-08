@@ -337,7 +337,7 @@ func TestAdmissionLedgerNoticesRespectRecoveryHolds(t *testing.T) {
 			f := newLedgerFixture(t)
 			id := f.criticalQueued()
 			reserved, _ := f.admitted(time.Hour)
-			hold := uint64(f.cost(reserved)) + admission.MaxIntentBytes
+			hold := uint64(f.cost(reserved)) + admission.UnknownHoldBytes
 			f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, hold+room) })
 			before := f.storageState()
 			if _, err := f.l.Defer(id, admission.ReasonCeiling); err != nil {
@@ -377,14 +377,14 @@ func TestAdmissionLedgerOutcomeNoticeKeepsItsRecoveryHold(t *testing.T) {
 	if _, _, granted, err = f.l.Execute(a.Attempt.ID); err != nil || !granted {
 		t.Fatalf("execute: %v %v", granted, err)
 	}
-	hold := uint64(f.cost(id)) + admission.MaxIntentBytes
+	hold := uint64(f.cost(id)) + admission.UnknownHoldBytes
 	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, hold) })
 	before := f.storageState()
 	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionUnknown); err != nil {
 		t.Fatal(err)
 	}
 	after := f.storageState()
-	if after.Recovery != before.Recovery+hold || after.AuditSlots != before.AuditSlots || after.NoticeRecords != before.NoticeRecords || after.Recovery+after.OutboxBytes() > admission.RecoveryReserveBytes {
+	if after.Recovery != before.Recovery+hold-admission.AuditSlotBytes || after.AuditSlots != before.AuditSlots+1 || after.NoticeRecords != before.NoticeRecords || after.Recovery+after.OutboxBytes() > admission.RecoveryReserveBytes {
 		t.Fatal("the outcome notice spent its own history hold")
 	}
 	notices := f.notices()

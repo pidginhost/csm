@@ -576,7 +576,12 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 	if err = q.writeAuditRow(*c, *a, e.Tier); err != nil {
 		return false, err
 	}
-	if err = q.adjustAuditSlots(0, unused); err != nil {
+	// An unknown outcome holds the slot of the row that will retire it.
+	var retirement uint64
+	if d == admission.DispositionUnknown {
+		retirement = 1
+	}
+	if err = q.adjustAuditSlots(retirement, unused); err != nil {
 		return false, err
 	}
 	if c.State == admission.StateQueued {

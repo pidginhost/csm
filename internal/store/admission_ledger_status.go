@@ -203,7 +203,7 @@ func storageStatus(tx *bolt.Tx, out *admission.StorageStatus) error {
 		if loadErr != nil || !found {
 			return admission.ErrCorruptRecord
 		}
-		out.Outstanding += uint64(h.Charged()) + admission.MaxIntentBytes
+		out.Outstanding += uint64(h.Charged()) + admission.UnknownHoldBytes
 		return nil
 	})
 	if err != nil {

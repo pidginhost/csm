@@ -170,11 +170,12 @@ func TestAdmissionLedgerUpgradesSchemaThree(t *testing.T) {
 		Recovery: uint64(unknown) + admission.MaxIntentBytes,
 		Ended:    admission.RingState{Count: 1, Last: 1},
 		Loose:    admission.RingState{Count: 1, Last: 1},
-		// The chain ends at schema 5, whose outbox starts with the fixed
+		// The chain passes schema 5, whose outbox starts with the fixed
 		// notice records and holds the rows the reserved attempt still
-		// owes.
+		// owes, and ends at schema 7, where the unknown outcome holds the
+		// row that will retire it.
 		NoticeRecords: admission.FixedNotices,
-		AuditSlots:    2,
+		AuditSlots:    3,
 	}
 	if err != nil || s != want {
 		t.Fatalf("upgraded storage = %+v, %v\nwant %+v", s, err, want)

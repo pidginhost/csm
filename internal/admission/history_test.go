@@ -47,7 +47,7 @@ func TestStoredRecordsFitTheirBounds(t *testing.T) {
 		bound int
 	}{
 		{"candidate", c, MaxCandidateBytes},
-		{"attempt", AttemptRecord{Attempt: third, State: StateUnknown, Disposition: DispositionUnknown, ExpiresAt: far, Reserved: far.Add(-time.Hour), Finished: far, Lane: LaneCorroborated}, MaxAttemptBytes},
+		{"attempt", AttemptRecord{Attempt: third, State: StateUnknown, Disposition: DispositionUnknown, ExpiresAt: far, Reserved: far.Add(-time.Hour), Finished: far, Lane: LaneCorroborated, Retired: true}, MaxAttemptBytes},
 		{"report links", links, MaxReportLinksBytes},
 		{"history entry", HistoryEntry{RootMask: (1 << MaxRoots) - 1, General: MaxHistoryBytes / 2, Reserved: MaxHistoryBytes / 2, Ended: far.Add(-HistoryTarget), Eligible: far}, MaxHistoryEntryBytes},
 		{"pinned history entry", HistoryEntry{RootMask: (1 << MaxRoots) - 1, General: MaxHistoryBytes / 2, Reserved: MaxHistoryBytes / 2, Ended: far, Pinned: true}, MaxHistoryEntryBytes},

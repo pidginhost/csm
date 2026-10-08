@@ -11,10 +11,15 @@ import (
 // MaxIntentBytes bounds one encoded intent.
 const MaxIntentBytes = 256
 
+// UnknownHoldBytes is what an unknown outcome holds in the recovery reserve
+// besides its history and its rows: its intent and the slot of the row that
+// retires it.
+const UnknownHoldBytes = AuditSlotBytes + MaxIntentBytes
+
 // AttemptRecoveryBytes is the room one reservation needs in the recovery
-// reserve besides its history: its attempt's audit rows and the intent an
-// unknown outcome keeps.
-const AttemptRecoveryBytes = AttemptAuditBytes + MaxIntentBytes
+// reserve besides its history: its attempt's audit rows and what an unknown
+// outcome holds.
+const AttemptRecoveryBytes = AttemptAuditBytes + UnknownHoldBytes
 
 const intentVersion = 1
 

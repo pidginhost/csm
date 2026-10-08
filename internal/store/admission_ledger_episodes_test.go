@@ -174,6 +174,8 @@ func TestAdmissionLedgerUpgradesSchemaFiveHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantStorage.Recovery += admission.MaxIntentBytes
+	// The unknown outcome also holds the slot of the row that retires it.
+	wantStorage.AuditSlots++
 	if got, storageErr := l.Storage(); storageErr != nil || got != wantStorage {
 		t.Fatalf("upgraded storage = %+v, %v; want %+v", got, storageErr, wantStorage)
 	}

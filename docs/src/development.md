@@ -454,6 +454,13 @@ without an outcome or ended unknown and holds each pinned outcome's intent
 in the reserve, and opening proves every intent against its attempt.
 Startup reads the unresolved intents directly, without opening the ledger;
 a ledger older than intents has none, and one it cannot read is an error.
+An unknown outcome also holds the slot of the row that will retire it.
+Once its absolute expiry has passed on a current, trusted clock, its
+outcome rows are delivered and the engine finds nothing of it remaining,
+recovery retires the uncertainty: the outcome stays unknown and counts as
+nothing new, nothing is dispatched again, the intent goes, the history and
+intent leave the recovery reserve, and an `expired_unproven` audit row
+records the event.
 
 ### Attack event storage
 

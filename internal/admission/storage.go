@@ -336,6 +336,20 @@ func (s StorageState) HoldIntent() (StorageState, error) {
 	return s, nil
 }
 
+// UnpinHistory returns a retired outcome's history bytes from the recovery
+// reserve to its allowances and releases its intent: the inverse of
+// PinHistory and HoldIntent.
+func (s StorageState) UnpinHistory(general, reserved uint32) (StorageState, error) {
+	held := uint64(general) + uint64(reserved) + MaxIntentBytes
+	if s.Recovery < held || s.General.Used > math.MaxUint64-uint64(general) || s.Reserved.Used > math.MaxUint64-uint64(reserved) {
+		return s, ErrCorruptRecord
+	}
+	s.Recovery -= held
+	s.General.Used += uint64(general)
+	s.Reserved.Used += uint64(reserved)
+	return s, nil
+}
+
 // CheckRecovery refuses a reservation whose candidate, if its outcome were
 // unresolved, would not fit the recovery reserve: new work waits while
 // unresolved outcomes fill it.

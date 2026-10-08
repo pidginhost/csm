@@ -181,7 +181,7 @@ func proveOutbox(tx *bolt.Tx, s admission.StorageState) error {
 		if decodeErr != nil {
 			return decodeErr
 		}
-		future += futureAuditSlots(a.State)
+		future += heldAuditSlots(a)
 		return nil
 	}); err != nil {
 		return err

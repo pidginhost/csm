@@ -110,7 +110,7 @@ func TestAdmissionLedgerStatusReportsEverySection(t *testing.T) {
 		t.Errorf("ceiling = %+v", s.Ceiling)
 	}
 	st := f.storageState()
-	outstanding := uint64(f.cost(reserved)) + admission.MaxIntentBytes
+	outstanding := uint64(f.cost(reserved)) + admission.UnknownHoldBytes
 	if s.Storage.Pinned != st.Recovery || s.Storage.Pinned != uint64(f.cost(unknown))+admission.MaxIntentBytes || s.Storage.Outstanding != outstanding ||
 		s.Storage.RecoveryRoom != admission.RecoveryReserveBytes-st.Recovery-st.OutboxBytes()-outstanding {
 		t.Errorf("storage = %+v", s.Storage)

@@ -271,7 +271,7 @@ func TestKindEffect(t *testing.T) {
 
 func TestAdmissionEffectAndDispositionValidity(t *testing.T) {
 	effects := [...]string{"", "address", "service", "prefix", "challenge"}
-	dispositions := [...]string{"", "deferred", "refused", "withheld", "dropped", "applied", "narrowed", "dry_run", "observe", "failed", "unknown"}
+	dispositions := [...]string{"", "deferred", "refused", "withheld", "dropped", "applied", "narrowed", "dry_run", "observe", "failed", "unknown", "expired_unproven"}
 	for value := 0; value <= 255; value++ {
 		e, d := Effect(value), Disposition(value)
 		effectValid := value >= 1 && value < len(effects)

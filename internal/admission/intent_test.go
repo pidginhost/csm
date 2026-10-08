@@ -145,10 +145,12 @@ func TestStoredIntentFitsItsBound(t *testing.T) {
 	}
 }
 
-// A reservation needs room for the intent its attempt may keep, and an
-// unknown outcome holds that room in the recovery reserve.
+// A reservation needs room for the intent its attempt may keep and the row
+// that retires an unknown outcome, and an unknown outcome holds the intent's
+// room in the recovery reserve.
 func TestRecoveryHoldsRoomForTheIntent(t *testing.T) {
-	if AttemptRecoveryBytes != AttemptAuditBytes+MaxIntentBytes || MaxRecoveryNeed != MaxHistoryBytes+AttemptRecoveryBytes {
+	if UnknownHoldBytes != AuditSlotBytes+MaxIntentBytes || AttemptRecoveryBytes != AttemptAuditBytes+UnknownHoldBytes ||
+		MaxRecoveryNeed != MaxHistoryBytes+AttemptRecoveryBytes {
 		t.Fatalf("recovery needs = %d, %d", AttemptRecoveryBytes, MaxRecoveryNeed)
 	}
 	s := NewStorageState()

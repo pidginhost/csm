@@ -8,8 +8,9 @@ import (
 // upgradeLedgerToSchemaSeven adds the intent bucket to a schema 6 ledger
 // inside the opening transaction. An attempt that ran without an outcome,
 // or ended unknown, gets the intent its execution would have recorded, as a
-// batch of its own: no effect it may have applied goes unrecorded. The
-// recovery reserve then holds each pinned outcome's intent as well; opening
+// batch of its own: no effect it may have applied goes unrecorded. Each
+// unknown outcome then holds what it holds under schema 7: its intent in
+// the recovery reserve and the slot of the row that will retire it; opening
 // proves the result. This upgrade completes the chain and records the
 // schema.
 func upgradeLedgerToSchemaSeven(tx *bolt.Tx) error {
@@ -20,31 +21,21 @@ func upgradeLedgerToSchemaSeven(tx *bolt.Tx) error {
 	if loadErr != nil {
 		return loadErr
 	}
-	var outcomes uint64
-	if loadErr = tx.Bucket([]byte(admissionHistoryBucket)).ForEach(func(_, v []byte) error {
-		h, decodeErr := admission.UnmarshalHistoryEntry(v)
-		if decodeErr == nil && h.Pinned {
-			outcomes++
-		}
-		return decodeErr
-	}); loadErr != nil {
-		return loadErr
-	}
-	for range outcomes {
-		if s, loadErr = s.HoldIntent(); loadErr != nil {
-			return loadErr
-		}
-	}
-	if loadErr = putStorageState(tx, s); loadErr != nil {
-		return loadErr
-	}
-	if err := tx.Bucket([]byte(admissionAttemptsBucket)).ForEach(func(_, v []byte) error {
+	if loadErr = tx.Bucket([]byte(admissionAttemptsBucket)).ForEach(func(_, v []byte) error {
 		a, err := admission.UnmarshalAttempt(v)
 		if err != nil {
 			return err
 		}
 		if a.State != admission.StateExecuting && a.State != admission.StateUnknown {
 			return nil
+		}
+		if a.State == admission.StateUnknown {
+			if s, err = s.HoldIntent(); err != nil {
+				return err
+			}
+			if s, err = s.HoldAudit(1); err != nil {
+				return err
+			}
 		}
 		c, err := loadCandidate(tx, a.Attempt.Candidate)
 		if err != nil {
@@ -55,8 +46,11 @@ func upgradeLedgerToSchemaSeven(tx *bolt.Tx) error {
 			return err
 		}
 		return putIntent(tx, admission.Intent{Action: a.Attempt.ID, Batch: batch, Kind: c.Key.Kind, Target: c.Key.Target, ExpiresAt: a.ExpiresAt})
-	}); err != nil {
-		return err
+	}); loadErr != nil {
+		return loadErr
+	}
+	if loadErr = putStorageState(tx, s); loadErr != nil {
+		return loadErr
 	}
 	return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaVersion})
 }
@@ -98,9 +92,9 @@ func deleteIntent(tx *bolt.Tx, id admission.ActionID) error {
 }
 
 // unsettled reports whether attempt a's outcome is unresolved: it runs, or
-// it ended unknown.
+// it ended unknown and recovery has not retired it.
 func unsettled(a admission.AttemptRecord) bool {
-	return a.State == admission.StateExecuting || a.State == admission.StateUnknown
+	return a.State == admission.StateExecuting || (a.State == admission.StateUnknown && !a.Retired)
 }
 
 // proveIntents checks every intent at open: it decodes under its own
@@ -289,4 +283,99 @@ func ReadUnresolvedIntents(db *DB) ([]admission.Intent, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// RetireUnproven retires the uncertainty of an unknown attempt once nothing
+// it may have applied can remain (spec 5.4). The owner calls it when the
+// attempt's absolute expiry has passed and it found no element of the
+// attempt in a consistent snapshot; the ledger checks the expiry on a
+// current, trusted clock, and waits until the outcome's rows are delivered
+// so the event follows the outcome. The outcome stays unknown and counts
+// as nothing new; nothing is dispatched again. The intent goes, the history
+// and intent leave the recovery reserve for the allowance and the history
+// may be retired after the review window, and an expired_unproven row
+// records the event in the slot the outcome held. On an attempt already
+// retired it is a no-op that reports false.
+func (l *AdmissionLedger) RetireUnproven(id admission.ActionID) (admission.Candidate, admission.AttemptRecord, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now, err := l.clock()
+	if err != nil {
+		return admission.Candidate{}, admission.AttemptRecord{}, false, err
+	}
+	if l.degraded {
+		return admission.Candidate{}, admission.AttemptRecord{}, false, refusal(admission.ReasonEngineUnavailable, "a degraded clock reading cannot prove an expiry")
+	}
+	var c admission.Candidate
+	var a admission.AttemptRecord
+	var granted bool
+	err = l.update("retire", func(tx *bolt.Tx) error {
+		var txErr error
+		if a, c, txErr = attemptAndCandidate(tx, id); txErr != nil {
+			return txErr
+		}
+		switch {
+		case a.State != admission.StateUnknown:
+			return admission.ErrTransitionConflict
+		case a.Retired:
+			return nil
+		case now.Before(a.ExpiresAt):
+			return admission.ErrNotReady
+		}
+		pending, txErr := auditPending(tx, a.Attempt.Candidate)
+		if txErr != nil {
+			return txErr
+		}
+		if pending {
+			return admission.ErrNotReady
+		}
+		q, txErr := l.openQueue(tx, now)
+		if txErr != nil {
+			return txErr
+		}
+		if txErr = deleteIntent(tx, id); txErr != nil {
+			return txErr
+		}
+		h, found, txErr := loadHistoryEntry(tx, a.Attempt.Candidate)
+		if txErr != nil {
+			return txErr
+		}
+		if !found || !h.Pinned {
+			return admission.ErrCorruptRecord
+		}
+		s, txErr := q.storageState()
+		if txErr != nil {
+			return txErr
+		}
+		if *s, txErr = s.UnpinHistory(h.General, h.Reserved); txErr != nil {
+			return txErr
+		}
+		q.storageDirty = true
+		h.Pinned = false
+		h.Eligible, _ = admission.HistoryTimes(h.Ended, c.ExpiresAt, false)
+		a.Retired = true
+		// The event row names the retirement; the attempt keeps its
+		// unknown outcome. Its slot was held since that outcome.
+		event := a
+		event.Disposition = admission.DispositionExpiredUnproven
+		if txErr = q.writeAuditRow(c, event, admission.Tier{}); txErr != nil {
+			return txErr
+		}
+		c.Transitions++
+		if txErr = putHistoryEntry(tx, a.Attempt.Candidate, h); txErr != nil {
+			return txErr
+		}
+		if txErr = putAttempt(tx, a); txErr != nil {
+			return txErr
+		}
+		if txErr = putCandidate(tx, c); txErr != nil {
+			return txErr
+		}
+		granted = true
+		return q.flush()
+	})
+	if err != nil {
+		return admission.Candidate{}, admission.AttemptRecord{}, false, err
+	}
+	return c, a, granted, nil
 }

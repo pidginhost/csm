@@ -195,6 +195,13 @@ type Ledger interface {
 	// Finish records an attempt outcome: applied, narrowed, failed or
 	// unknown. A proven failure with attempts left requeues the candidate.
 	Finish(ActionID, Disposition) (Candidate, AttemptRecord, error)
+	// RetireUnproven retires the uncertainty of an unknown attempt whose
+	// effect can no longer be live: its absolute expiry has passed on a
+	// current, trusted clock, the engine found nothing of it remaining and
+	// its outcome rows were delivered. The outcome stays unknown and
+	// nothing is dispatched again. It reports false on an attempt already
+	// retired.
+	RetireUnproven(ActionID) (Candidate, AttemptRecord, bool, error)
 	// Settle ends the attempts a previous process left outstanding and
 	// reports how many failed and how many ended unknown. The owner calls
 	// it once after opening, before it reserves anything; like Finish it
