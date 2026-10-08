@@ -58,7 +58,7 @@ func (l *AdmissionLedger) Status() admission.LedgerStatus {
 		s.Storage.Error = section(func() error { return storageStatus(tx, &s.Storage) }, admissionQueueStateBucket, admissionAttemptsBucket, admissionHistoryBucket)
 		s.Outbox.Error = section(func() error { return outboxStatus(tx, &s.Outbox) }, admissionOutboxBucket)
 		s.Notices.Error = section(func() error { return noticesStatus(tx, &s.Notices) }, admissionOutboxBucket)
-		s.Unresolved.Error = section(func() error { return unresolvedStatus(tx, &s.Unresolved) }, admissionIntentsBucket, admissionAttemptsBucket)
+		s.Unresolved.Error = section(func() error { return unresolvedStatus(tx, &s.Unresolved) }, admissionIntentsBucket, admissionAttemptsBucket, admissionCandidatesBucket)
 		return nil
 	})
 	if err != nil {
@@ -297,6 +297,11 @@ func noticesStatus(tx *bolt.Tx, out *admission.NoticesStatus) error {
 // unresolvedStatus counts the attempts the intents name, by whether they
 // run or ended unknown.
 func unresolvedStatus(tx *bolt.Tx, out *admission.UnresolvedStatus) error {
+	// Intents alone cannot reveal a missing row or a retired attempt that
+	// incorrectly retained its row. Prove both directions before counting.
+	if err := proveIntents(tx); err != nil {
+		return err
+	}
 	return tx.Bucket([]byte(admissionIntentsBucket)).ForEach(func(k, _ []byte) error {
 		in, _, err := loadIntent(tx, admission.ActionID(k))
 		if err != nil {

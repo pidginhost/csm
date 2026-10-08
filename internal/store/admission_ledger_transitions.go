@@ -422,10 +422,6 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 func (l *AdmissionLedger) Settle() (failed, unknown int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now, err := l.recordedClock()
-	if err != nil {
-		return 0, 0, err
-	}
 	err = l.update("settle", func(tx *bolt.Tx) error {
 		failed, unknown = 0, 0
 		var outstanding []admission.ActionID
@@ -437,6 +433,14 @@ func (l *AdmissionLedger) Settle() (failed, unknown int, err error) {
 			return decodeErr
 		}); walkErr != nil {
 			return walkErr
+		}
+		// A new ledger has neither attempts nor a stored clock yet.
+		if len(outstanding) == 0 {
+			return nil
+		}
+		now, txErr := l.recordedClock()
+		if txErr != nil {
+			return txErr
 		}
 		q, txErr := l.openQueue(tx, now)
 		if txErr != nil {

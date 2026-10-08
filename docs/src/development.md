@@ -299,6 +299,7 @@ running grants nothing. A new process settles what the previous one left
 outstanding before it reserves anything: a reservation, which recorded no
 intent and so dispatched nothing, fails and may retry; a running attempt
 ends unknown. Nothing is dispatched again.
+An empty ledger settles without a clock reading.
 
 Schema 2 of the ledger adds its queue, and the first open upgrades a schema
 1 ledger in the same transaction; legacy work that cannot fit the unassessed
@@ -454,6 +455,8 @@ without an outcome or ended unknown and holds each pinned outcome's intent
 in the reserve, and opening proves every intent against its attempt.
 Startup reads the unresolved intents directly, without opening the ledger;
 a ledger older than intents has none, and one it cannot read is an error.
+Ledger buckets without schema metadata are an error, including unfamiliar
+buckets.
 An unknown outcome also holds the slot of the row that will retire it.
 Once its absolute expiry has passed on a current, trusted clock, its
 outcome rows are delivered and the engine finds nothing of it remaining,
@@ -462,6 +465,9 @@ nothing new, nothing is dispatched again, the intent goes, the history and
 intent leave the recovery reserve, and an `expired_unproven` audit row
 records the event. Status counts the attempts that run and the unknown ones
 not yet retired, with the earliest expiry after which one can be retired.
+A missing or inconsistent intent marks only that section unreadable.
+Opening checks retired attempts against the stored clock even after their
+retirement events have been acknowledged.
 
 ### Attack event storage
 

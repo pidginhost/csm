@@ -1,6 +1,8 @@
 package store
 
 import (
+	"strings"
+
 	"github.com/pidginhost/csm/internal/admission"
 	bolt "go.etcd.io/bbolt"
 )
@@ -249,12 +251,12 @@ func ReadUnresolvedIntents(db *DB) ([]admission.Intent, error) {
 		intents := tx.Bucket([]byte(admissionIntentsBucket))
 		meta := tx.Bucket([]byte(admissionMetaBucket))
 		if meta == nil {
-			for _, name := range admissionBuckets {
-				if tx.Bucket([]byte(name)) != nil {
+			return tx.ForEach(func(name []byte, _ *bolt.Bucket) error {
+				if strings.HasPrefix(string(name), "adm:") {
 					return admission.ErrCorruptRecord
 				}
-			}
-			return nil
+				return nil
+			})
 		}
 		switch schema := meta.Get(admissionSchemaKey); {
 		case len(schema) == 1 && schema[0] >= 1 && schema[0] < admissionSchemaVersion:
