@@ -35,10 +35,9 @@ CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)" go build -tags yara ./cm
 
 ## Test
 
-Repository source inventories tolerate directories removed by concurrent tests.
-Missing inventory roots, permission errors and failed source reads still fail.
-PHP Shield, dropper and event-filter fixtures stay under their package directories
-because system temporary directories change the runtime behavior being tested.
+Some tests keep scratch folders under their package directory, because system
+temporary directories change the behavior they test. Source inventories skip a
+folder removed during their walk; a missing root or failed read still fails.
 
 Process-context unit tests stub start times for synthetic PIDs so unrelated
 processes cannot supply cache identity evidence. UID and command mismatches
