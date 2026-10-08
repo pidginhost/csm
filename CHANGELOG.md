@@ -71,7 +71,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 #### Real-time monitoring and scans
 
-- Full rescans requested by signature updates now survive daemon restarts until the sweep completes.
+- A rescan queued by a rules update now survives daemon restarts and completes only once every file has been scanned since the update.
 - Deep phishing scans now finish sooner on large hosts.
 
 #### Performance
