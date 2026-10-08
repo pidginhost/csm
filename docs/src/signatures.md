@@ -83,14 +83,9 @@ Shared positive and benign fixtures check both engines. Generated socket and
 funchand wrappers and ordinary legacy callbacks stay silent under these rules.
 
 The cron downloader signature shares its expression between both engines. It
-recognizes five-field schedules and the standard `@` shortcuts, including mixed
-numeric and named month or weekday lists, range steps and randomized ranges.
-Schedule tokens must be complete and separated by spaces or tabs. Numeric fields
-are limited to 64 characters. Root entries that disable cron logging and scripts
-that install a quoted cron entry remain covered. It requires a download followed
-by a complete shell, eval or exec command on the same line. Quoted shells,
-command groups, common execution wrappers and shell lookup commands are
-recognized. Bounded spans keep crafted lines cheap to scan;
+requires a download followed by a complete shell, eval or exec command on the
+same line. Quoted shells, command groups, common execution wrappers and shell
+lookup commands are recognized. Bounded spans keep crafted lines cheap to scan;
 unrelated lines and shell words inside longer command names are not evidence.
 
 The download-and-pipe, miner download, miner cron and shell startup file
