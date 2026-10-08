@@ -412,10 +412,9 @@ func TestHostingInventoryEmptyRootPreservesOtherAccounts(t *testing.T) {
 	}
 }
 
-// Handoff O47: every account carries a server-owned incarnation token, so a
-// deletion and recreation between two refreshes is detected. On cPanel it is
-// the creation date cPanel records in the account's user file; elsewhere the
-// identity of the account's home directory, which its owner cannot change.
+// A changed incarnation token distinguishes a replacement account even
+// between refreshes. On cPanel it is the recorded creation date; elsewhere
+// the identity of the home directory, which its owner cannot change.
 func TestHostingInventoryNamesIncarnations(t *testing.T) {
 	withInventoryPanel(t, platform.PanelCPanel)
 	withAccountRoots(t, "/home")
@@ -445,20 +444,36 @@ func TestHostingInventoryNamesIncarnations(t *testing.T) {
 // freedns and similar). Zero is a valid, stable token: refusing it failed the
 // whole inventory read on every host that has such an entry.
 func TestHostingInventoryAcceptsAZeroCreationDate(t *testing.T) {
-	withInventoryPanel(t, platform.PanelCPanel)
-	withAccountRoots(t, "/home")
-	fs := inventoryFS([]os.DirEntry{dirEntry("alice", false), dirEntry("system", false)}, nil, nil, nil, "", nil)
-	userFile := fs.readFile
-	fs.readFile = func(name string) ([]byte, error) {
-		if name == "/var/cpanel/users/system" {
-			return []byte("STARTDATE=0000000000\nUSER=system\n"), nil
-		}
-		return userFile(name)
-	}
-	withMockOS(t, fs)
-	snap, err := HostingInventory()
-	if want := map[string]string{"alice": "startdate:1600000000", "system": "startdate:0000000000"}; err != nil || !reflect.DeepEqual(snap.Incarnations, want) {
-		t.Fatalf("incarnations = %v %v, want %v", snap.Incarnations, err, want)
+	for _, tc := range []struct {
+		name, date, token string
+	}{
+		{"literal zero", "0", "startdate:0"},
+		{"padded zero", "0000000000", "startdate:0000000000"},
+		{"longest zero", "0000000000000000000", "startdate:0000000000000000000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withInventoryPanel(t, platform.PanelCPanel)
+			withAccountRoots(t, "/home")
+			fs := inventoryFS([]os.DirEntry{dirEntry("alice", false), dirEntry("system", false), dirEntry("freedns", false), dirEntry("zfreedns", false)}, nil, nil, nil, "alice.example: alice\n", nil)
+			userFile := fs.readFile
+			fs.readFile = func(name string) ([]byte, error) {
+				switch name {
+				case "/var/cpanel/users/system", "/var/cpanel/users/freedns", "/var/cpanel/users/zfreedns":
+					return []byte("STARTDATE=" + tc.date + "\r\nUSER=" + filepath.Base(name) + "\n"), nil
+				}
+				return userFile(name)
+			}
+			withMockOS(t, fs)
+			snap, err := HostingInventory()
+			want := HostingSnapshot{
+				Accounts:     []string{"alice", "freedns", "system", "zfreedns"},
+				Domains:      map[string]string{"alice.example": "alice"},
+				Incarnations: map[string]string{"alice": "startdate:1600000000", "freedns": tc.token, "system": tc.token, "zfreedns": tc.token},
+			}
+			if err != nil || !reflect.DeepEqual(snap, want) {
+				t.Fatalf("inventory = %+v %v, want %+v", snap, err, want)
+			}
+		})
 	}
 }
 
@@ -474,8 +489,17 @@ func TestHostingInventoryRefusesUnknownIncarnations(t *testing.T) {
 		"malformed date":      "STARTDATE=16000000x0\n",
 		"oversized date":      "STARTDATE=12345678901234567890\n",
 		"negative date":       "STARTDATE=-1\n",
+		"negative zero":       "STARTDATE=-0\n",
+		"positive sign":       "STARTDATE=+0\n",
+		"leading space":       "STARTDATE= 0\n",
+		"trailing space":      "STARTDATE=0 \n",
+		"non-ASCII digit":     "STARTDATE=\u0660\n",
+		"oversized zero":      "STARTDATE=00000000000000000000\n",
 		"overflow date":       "STARTDATE=9999999999999999999\n",
 		"duplicate date":      "STARTDATE=1600000000\nSTARTDATE=1700000000\n",
+		"duplicate zero":      "STARTDATE=0\nSTARTDATE=0\n",
+		"zero then positive":  "STARTDATE=0\nSTARTDATE=1600000000\n",
+		"positive then zero":  "STARTDATE=1600000000\nSTARTDATE=0\n",
 	} {
 		fs := inventoryFS([]os.DirEntry{dirEntry("alice", false)}, nil, nil, nil, "", nil)
 		readFile := fs.readFile

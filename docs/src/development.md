@@ -234,9 +234,12 @@ creation date, elsewhere the device, inode and birth time of its home
 directory. An account whose token cannot be read, whose home is not a
 directory or whose Linux filesystem supplies no birth time fails the
 snapshot, including a home listed as a symlink. The cPanel creation date
-must be a non-negative integer recorded exactly once; cPanel records zero for
-its own system entries, and a recreated entry of that kind keeps its
-generation. Tenant edits do not change the token.
+must contain only decimal digits and be recorded exactly once. Missing,
+empty, overlong or overflowing values fail the snapshot. cPanel records
+zero for its own system entries; recreating one between observations keeps
+its generation when the token stays the same. An observed absence retires
+the generation even for a zero-dated entry. Tenant edits do not change the
+token.
 
 The admission ledger (`store.AdmissionLedger`) keeps this state durably in
 the daemon's state database, in `adm:` buckets it creates the first time it

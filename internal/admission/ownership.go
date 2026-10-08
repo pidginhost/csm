@@ -169,9 +169,9 @@ func (inv *Inventory) Current(o Owner) bool {
 // Generations assigns inventory generations. A name keeps its generation
 // while it appears in consecutive complete observations with the same
 // server-owned incarnation token; a name that disappears and returns, or
-// returns with another token, gets a new one, so a recreated account never
-// inherits the old account's scope, even when the replacement happened
-// between two observations. A name observed without a token keeps its
+// returns with another token, gets a new one. Recreation between observations
+// is detected only when it changes the token; cPanel's zero-dated system
+// entries keep theirs. A name observed without a token keeps its
 // generation, and a stored name without one adopts the next token it is
 // seen with. Generations are never reused. Initialize with NewGenerations
 // or a successful UnmarshalBinary before observing or encoding; the zero

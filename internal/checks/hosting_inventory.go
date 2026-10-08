@@ -23,8 +23,8 @@ type HostingSnapshot struct {
 	// AmbiguousDomains counts domains listed for more than one owner. They
 	// are left out of Domains, so evidence about them stays host-scoped.
 	AmbiguousDomains int
-	// Incarnations maps every account to a server-owned token that changes
-	// when the account is deleted and created again.
+	// Incarnations maps every account to a server-owned lifetime token.
+	// cPanel's zero-dated system entries keep it across recreation.
 	Incarnations map[string]string
 }
 
@@ -119,8 +119,8 @@ func homeRootInventory() (HostingSnapshot, error) {
 }
 
 // cpanelIncarnation is the creation time cPanel records in an account's
-// user file. A recreated account has a new one; edits keep it. cPanel's own
-// system entries record zero, which is stable and therefore valid.
+// user file. Edits keep it. cPanel's own system entries record zero, which
+// stays valid even when recreation leaves it unchanged.
 func cpanelIncarnation(name string) (string, error) {
 	data, err := osFS.ReadFile(filepath.Join("/var/cpanel/users", name))
 	if err != nil {

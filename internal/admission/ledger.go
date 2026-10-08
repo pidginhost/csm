@@ -9,9 +9,10 @@ import (
 // inventory: sorted unique accounts, canonical domains mapped to their
 // owners, and the count of domains left host-scoped because several
 // accounts list them. Incarnations maps accounts to server-owned tokens
-// that change when an account is deleted and created again; an account
-// without one keeps its generation by name. A partial read must never be
-// passed.
+// that identify account lifetimes. Recreation between observations without
+// a token change, including cPanel's zero-dated system entries, keeps the
+// generation, as does an account without a token. A partial read must never
+// be passed.
 type InventoryObservation struct {
 	Accounts         []string
 	Domains          map[string]string
