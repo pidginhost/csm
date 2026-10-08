@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -53,6 +54,11 @@ func readSources(root fs.FS) (*sourceIndex, error) {
 	index := &sourceIndex{fset: token.NewFileSet(), symbols: make(map[string][]sourceSymbol)}
 	err := fs.WalkDir(root, ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			// Tests running in parallel create and remove scratch folders in
+			// the tree; one gone before it is read holds no source to index.
+			if name != "." && errors.Is(walkErr, fs.ErrNotExist) {
+				return nil
+			}
 			return walkErr
 		}
 		if entry.IsDir() {

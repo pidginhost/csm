@@ -227,3 +227,34 @@ func TestScanRejectsAmbiguousCrossFileMakeShadowing(t *testing.T) {
 		t.Fatalf("build-variant queue disappeared behind inactive shadow: %v", err)
 	}
 }
+
+// vanishingFS lists a directory whose contents are gone by the time the walk
+// reads it, as when a test running in parallel removes its scratch folder.
+type vanishingFS struct {
+	fstest.MapFS
+	gone string
+}
+
+func (f vanishingFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if name == f.gone {
+		return nil, &fs.PathError{Op: "readdir", Path: name, Err: fs.ErrNotExist}
+	}
+	return f.MapFS.ReadDir(name)
+}
+
+func TestScanSkipsDirectoryRemovedDuringWalk(t *testing.T) {
+	files := vanishingFS{
+		MapFS: fstest.MapFS{
+			"cmd/csm/main.go":                   {Data: []byte("package main\nfunc start() { _ = make(chan int, 3) }\n")},
+			"cmd/csm/shieldtest1/bootstrap.php": {Data: []byte("<?php\n")},
+		},
+		gone: "cmd/csm/shieldtest1",
+	}
+	got, err := scanSources(files)
+	if err != nil {
+		t.Fatalf("scan failed on a directory removed during the walk: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("allocations = %+v, want the one channel in main.go", got)
+	}
+}

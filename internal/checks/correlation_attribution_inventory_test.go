@@ -246,6 +246,9 @@ func testDeclarations(t *testing.T) map[string]struct{ file, constraint string }
 	out := map[string]struct{ file, constraint string }{}
 	fset := token.NewFileSet()
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if os.IsNotExist(err) && path != root {
+			return nil // a parallel test's scratch folder, removed mid-walk
+		}
 		if err != nil || info.IsDir() || !strings.HasSuffix(path, "_test.go") {
 			return err
 		}
