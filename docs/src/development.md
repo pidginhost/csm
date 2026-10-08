@@ -93,20 +93,6 @@ The separate [kernel gate](production-tests.md#kernel-runner) requires an
 isolated Linux runner with the documented boot capabilities. A successful
 macOS or default-tag suite does not demonstrate BPF LSM attachment.
 
-### Phishing performance checks
-
-Run the PHP benchmarks and read-window regressions together on Linux:
-
-```bash
-mkdir -p /var/tmp/csm-gotest
-TMPDIR=/var/tmp/csm-gotest go test ./internal/checks -run '^TestPhishingRead' \
-  -bench '^BenchmarkAnalyzePHPForPhishing$' -benchmem -benchtime=1x -count=1 -race
-```
-
-Read-window tests average allocations across a fixed batch, so short runs
-allow for cold reads and the race detector discarding pooled buffers.
-Use a longer benchmark duration without `-race` to measure performance.
-
 ## Fuzz
 
 CSM has fuzz targets for parsers that read attacker-controlled input, including Exim mainlog lines, Dovecot maillog lines, Apache Combined Log Format, /proc/net/tcp rows, wp-config.php bodies, /etc/shadow, auditd comm fields, and finding messages coming back from the WebUI.
