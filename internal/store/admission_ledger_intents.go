@@ -202,6 +202,13 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 			case !now.Before(a.ExpiresAt):
 				return refusal(admission.ReasonStale, "absolute expiry has passed")
 			}
+			held, holdErr := q.unknownTarget(c.Key.Target)
+			if holdErr != nil {
+				return holdErr
+			}
+			if held {
+				return refusal(admission.ReasonPendingRecovery, "an unresolved outcome holds the target")
+			}
 			e, loadErr := loadQueueEntry(tx, a.Attempt.Candidate)
 			if loadErr != nil {
 				return loadErr
@@ -380,4 +387,35 @@ func (l *AdmissionLedger) RetireUnproven(id admission.ActionID) (admission.Candi
 		return admission.Candidate{}, admission.AttemptRecord{}, false, err
 	}
 	return c, a, granted, nil
+}
+
+// unknownTarget derives the exact-key recovery hold independently of the
+// current episode row, which may no longer name earlier live work (I1).
+// Reservation and scheduling reuse this read within their transaction;
+// none of their lookups changes an unknown outcome.
+func (q *queueTx) unknownTarget(target admission.Target) (bool, error) {
+	if q.unknownTargets == nil {
+		targets := map[string]bool{}
+		if err := q.tx.Bucket([]byte(admissionIntentsBucket)).ForEach(func(k, v []byte) error {
+			in, err := admission.UnmarshalIntent(v)
+			if err != nil {
+				return err
+			}
+			if in.Action != admission.ActionID(k) {
+				return admission.ErrCorruptRecord
+			}
+			a, err := loadAttempt(q.tx, in.Action)
+			if err != nil {
+				return corruptRecord(err)
+			}
+			if a.State == admission.StateUnknown && !a.Retired {
+				targets[in.Target.Key()] = true
+			}
+			return nil
+		}); err != nil {
+			return false, err
+		}
+		q.unknownTargets = targets
+	}
+	return q.unknownTargets[target.Key()], nil
 }

@@ -34,7 +34,9 @@ type EpisodeLine struct {
 	// Observed is the latest qualifying observation of this kind. A new
 	// generation needs later evidence; a repeated root cannot reset age.
 	Observed time.Time
-	// Answered retains attempt proof after the candidate is retired.
+	// Answered retains, after the candidate is retired, that its verified
+	// effect or observe preview answers the kind for the rest of the
+	// episode.
 	Answered bool
 }
 
@@ -211,15 +213,23 @@ const (
 	LineRetry
 	// LineInFlight: an attempt is reserved or running.
 	LineInFlight
-	// LineAnswered: the candidate ended after an attempt.
+	// LineAnswered: the candidate's effect was verified or previewed; it
+	// answers the kind for the rest of the episode.
 	LineAnswered
-	// LineEnded: the candidate ended before any attempt; a new generation
-	// may follow.
+	// LineEnded: the candidate ended without an effect that answers the
+	// kind: before any attempt, after its last attempt failed, or after
+	// recovery retired its unknown outcome. A new generation may follow.
 	LineEnded
+	// LineUnresolved: the candidate's attempt ended unknown and recovery
+	// has not retired it. It answers the kind but never extends the
+	// episode, and it holds the episode open until it is retired. The ledger
+	// separately holds other kinds on the same target before execution.
+	LineUnresolved
 )
 
-// LineStateOf is the state of a line whose candidate is c.
-func LineStateOf(c Candidate) LineState {
+// LineStateOf is the state of a line whose candidate is c; retired says
+// whether recovery retired c's unknown outcome.
+func LineStateOf(c Candidate, retired bool) LineState {
 	switch {
 	case c.State == StateQueued && c.Attempts > 0:
 		return LineRetry
@@ -227,7 +237,9 @@ func LineStateOf(c Candidate) LineState {
 		return LineQueued
 	case !c.State.Terminal():
 		return LineInFlight
-	case c.Attempts > 0:
+	case c.State == StateUnknown && !retired:
+		return LineUnresolved
+	case c.State == StateVerified || c.State == StateObserved:
 		return LineAnswered
 	}
 	return LineEnded
@@ -248,9 +260,9 @@ type EpisodeChoice struct {
 // Place decides where an observation of kind made at observed belongs,
 // given the target's current episode (nil for none) and the state of each
 // of its lines in order (spec 5.2). The episode ends at End once no line is
-// queued or in flight; a degraded clock never ends it, since wall time alone
-// cannot prove a new episode. An observation older than the previous
-// episode's end is refused. next names a newly opened episode.
+// queued, in flight or unresolved; a degraded clock never ends it, since
+// wall time alone cannot prove a new episode. An observation older than the
+// previous episode's end is refused. next names a newly opened episode.
 func Place(cur *Episode, states []LineState, kind Kind, observed time.Time, degraded bool, next func() (EpisodeID, error)) (EpisodeChoice, error) {
 	if !kind.Valid() {
 		return EpisodeChoice{}, refuse(ReasonInvalid, "unknown response kind")
@@ -265,7 +277,7 @@ func Place(cur *Episode, states []LineState, kind Kind, observed time.Time, degr
 		live := false
 		for _, s := range states {
 			switch s {
-			case LineQueued, LineRetry, LineInFlight:
+			case LineQueued, LineRetry, LineInFlight, LineUnresolved:
 				live = true
 			case LineAnswered, LineEnded:
 			default:
@@ -295,11 +307,17 @@ func Place(cur *Episode, states []LineState, kind Kind, observed time.Time, degr
 
 func join(e Episode, states []LineState, kind Kind, observed time.Time) (EpisodeChoice, error) {
 	e.Lines = slices.Clone(e.Lines)
+	i := slices.IndexFunc(e.Lines, func(l EpisodeLine) bool { return l.Kind == kind })
+	// An unresolved line answers without extending the episode or its own
+	// frontier: an attack that outlasts the uncertainty is not stretched
+	// into it (I2).
+	if i >= 0 && states[i] == LineUnresolved {
+		return EpisodeChoice{Episode: e, Generation: e.Lines[i].Generation, Answered: true}, nil
+	}
 	if observed.After(e.Last) {
 		e.Last = observed
 	}
 	p := EpisodeChoice{Episode: e, Generation: 1}
-	i := slices.IndexFunc(e.Lines, func(l EpisodeLine) bool { return l.Kind == kind })
 	if i < 0 {
 		return p, nil
 	}

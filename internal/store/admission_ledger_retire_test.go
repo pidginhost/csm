@@ -57,7 +57,8 @@ func TestAdmissionLedgerEndingsDateTheirHistory(t *testing.T) {
 	f := newLedgerFixture(t)
 	short := f.applied(time.Hour)
 	long := f.applied(10 * 24 * time.Hour)
-	unknownID, a := f.admitted(time.Hour)
+	a := f.reservedAt("192.0.2.11", f.wall.Add(time.Hour))
+	unknownID := a.Attempt.Candidate
 	if _, _, _, err := f.l.Execute(a.Attempt.ID); err != nil {
 		t.Fatal(err)
 	}

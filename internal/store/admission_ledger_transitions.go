@@ -228,6 +228,13 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 	case c.Attempts >= admission.MaxAttempts:
 		return c, admission.AttemptRecord{}, false, admission.ErrCorruptRecord
 	}
+	held, holdErr := q.unknownTarget(c.Key.Target)
+	if holdErr != nil {
+		return c, admission.AttemptRecord{}, false, holdErr
+	}
+	if held {
+		return c, admission.AttemptRecord{}, false, refusal(admission.ReasonPendingRecovery, "an unresolved outcome holds the target")
+	}
 	if c.Attempts == 0 {
 		if !expiresAt.After(now) {
 			return c, admission.AttemptRecord{}, false, refusal(admission.ReasonInvalid, "absolute expiry must be in the future")

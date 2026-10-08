@@ -184,7 +184,14 @@ func TestAdmissionLedgerOutcomesRaiseNotices(t *testing.T) {
 	if r.Count != 1 || r.Examples[0] != (admission.NoticeExample{Candidate: id, Transitions: c.Transitions, Ordinal: 1}) {
 		t.Fatalf("unknown outcome record = %+v", r)
 	}
-	applied := f.applied(time.Hour)
+	other := f.reservedAt("192.0.2.11", f.wall.Add(time.Hour))
+	applied := other.Attempt.Candidate
+	if _, _, _, err = f.l.Execute(other.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.l.Finish(other.Attempt.ID, admission.DispositionApplied); err != nil {
+		t.Fatal(err)
+	}
 	s := f.notices()[admission.NoticeKey{Kind: admission.NoticeAppliedSummary}]
 	if s.Count != 1 || s.Examples[0].Candidate != applied {
 		t.Fatalf("applied summary = %+v", s)

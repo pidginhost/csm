@@ -428,12 +428,18 @@ assessment's clock-skew tolerance. This keeps future times out of observation
 frontiers and prevents an early episode boundary. A queued candidate coalesces
 later observations before its first attempt. A queued retry remains live
 but answers new arrivals without coalescing; one that ended before any
-attempt is followed only by a later observation of that kind. Once a candidate has an attempt, later observations
-of its episode are refused as an existing effect, which raises no notice,
-and still extend the episode. An episode row lives only as long as a
+attempt is followed only by a later observation of that kind. Once a
+candidate's effect is verified or previewed, later observations of its kind
+in the episode are refused as an existing effect, which raises no notice,
+and still extend the episode. After an unknown outcome they are refused the
+same way but never extend the episode, which stays open until recovery
+retires the outcome. Other kinds may queue at that target, but scheduling
+and admission defer them as `pending_recovery` until the unknown is retired.
+The hold also covers candidates from earlier episodes. A final failure or a retired unknown outcome lets a later
+observation start the next generation. An episode row lives only as long as a
 candidate it names: ring eviction and history retirement clear that
-candidate reference but retain its generation and attempt proof while
-another candidate holds the row. The last retained candidate takes the
+candidate reference but retain its generation, and whether its effect
+answers its kind, while another candidate holds the row. The last retained candidate takes the
 row, and each admitted
 candidate's history charge covers a row. A target without a row opens a
 new episode, so a retired candidate's ID is never minted again. A

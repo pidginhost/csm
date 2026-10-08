@@ -297,3 +297,101 @@ func TestAdmissionLedgerStatusCountsUnresolvedAttempts(t *testing.T) {
 		t.Fatalf("damaged intent: %+v %q %q", s.Unresolved, s.Queue.Error, s.Storage.Error)
 	}
 }
+
+// I2: after an unknown outcome the target answers its kind without
+// extending the episode, however long the attack lasts, until recovery
+// retires the outcome; the next observation then opens a new episode with
+// a new candidate.
+func TestAdmissionLedgerUnknownLineHoldsItsEpisode(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0]
+	expires := f.wall.Add(time.Hour)
+	_, a, _, err := f.l.Reserve(first.Candidate, admission.LaneGeneral, expires)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionUnknown); err != nil {
+		t.Fatal(err)
+	}
+	held, _ := f.episodeAt("192.0.2.10")
+	f.tickAt(ledgerT0.Add(3 * admission.EpisodeQuiet))
+	in := f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}))[0]
+	wantLedgerReason(t, "unresolved outcome", in.Err, admission.ReasonExistingEffect)
+	if row, _ := f.episodeAt("192.0.2.10"); !reflect.DeepEqual(row, held) {
+		t.Fatalf("an answered observation changed the episode: %+v -> %+v", held, row)
+	}
+	f.ackAll()
+	if _, _, _, err = f.l.RetireUnproven(a.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(f.wall.Add(time.Minute))
+	next := f.arrive(f.arrival(evidenceSpec{cursor: "offset=3"}))[0]
+	if next.Err != nil {
+		t.Fatalf("after retirement: %v", next.Err)
+	}
+	if c := f.candidateOf(next.Candidate); c.Key.Episode == held.ID || c.Key.Generation != 1 || c.State != admission.StateQueued {
+		t.Fatalf("after retirement: %+v", c)
+	}
+}
+
+// I2: once a candidate's last attempt has failed, a later observation of
+// the same episode starts its next generation instead of being answered,
+// and so does one after the failed candidate's details are retired while
+// another kind keeps the episode row.
+func TestAdmissionLedgerFailedLineStartsTheNextGeneration(t *testing.T) {
+	failed := func(t *testing.T) (*ledgerFixture, admission.CandidateID) {
+		f := newLedgerFixture(t)
+		f.begin()
+		first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
+		expires := f.wall.Add(admission.HistoryTarget)
+		for seq := uint32(1); seq <= admission.MaxAttempts; seq++ {
+			_, a, _, err := f.l.Reserve(first, admission.LaneGeneral, expires)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
+				t.Fatal(err)
+			}
+			f.tickAt(f.wall.Add(admission.RetryBackoff(seq)))
+		}
+		if c := f.candidateOf(first); c.State != admission.StateFailed {
+			t.Fatalf("candidate = %+v", c)
+		}
+		return f, first
+	}
+	t.Run("live", func(t *testing.T) {
+		f, first := failed(t)
+		episode := f.candidateOf(first).Key.Episode
+		next := f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}))[0]
+		if c := f.candidateOf(next.Candidate); next.Err != nil || c.Key.Episode != episode || c.Key.Generation != 2 {
+			t.Fatalf("after a final failure: %+v %+v", next, c.Key)
+		}
+	})
+	t.Run("retired", func(t *testing.T) {
+		f, first := failed(t)
+		episode := f.candidateOf(first).Key.Episode
+		other := f.arrival(evidenceSpec{cursor: "promotion"})
+		other.Request.Kind = admission.KindPromote
+		kept := f.arrive(other)[0].Candidate
+		if _, _, _, err := f.l.Reserve(kept, admission.LaneGeneral, f.wall.Add(2*admission.HistoryTarget)); err != nil {
+			t.Fatal(err)
+		}
+		f.ackAll()
+		f.tickAt(f.wall.Add(admission.HistoryTarget + time.Hour))
+		if _, err := f.l.Candidate(first); err != errCandidateMissing {
+			t.Fatalf("the failed candidate was not retired: %v", err)
+		}
+		row, ok := f.episodeAt("192.0.2.10")
+		if line, found := row.Line(admission.KindBlockIP); !ok || !found || line.Candidate != "" || line.Answered {
+			t.Fatalf("retired failure: %+v", row)
+		}
+		again := f.arrive(f.arrival(evidenceSpec{cursor: "offset=3"}))[0]
+		if c := f.candidateOf(again.Candidate); again.Err != nil || c.Key.Episode != episode || c.Key.Generation != 2 {
+			t.Fatalf("after the failure was retired: %+v %+v", again, c.Key)
+		}
+	})
+}
