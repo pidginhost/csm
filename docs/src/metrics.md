@@ -393,16 +393,10 @@ completes once the scan has wrapped and come back to that point. Every file
 is then scanned with the new rules within one pass. An update during a
 rescan starts a new one from where the scan then stands.
 
-A saved position that represents a whole folder is reached after its entire
-subtree is covered. If the scan roots change, the rescan tracks a new lap
-from the current position without restarting the walk. A failed root lookup
-keeps the rescan pending until a lap with resolved roots covers that position.
-This includes permission and I/O failures while expanding wildcard roots,
-even when the failure hides every matching folder. Readable roots continue
-to be scanned while discovery is incomplete. Missing folders remain absent
-from the scan scope and do not hold the queue pending.
-Reordering roots, duplicate entries, and trailing separators do not discard
-the lap.
+If the set of scan roots changes, or a root cannot be listed, the rescan
+starts a new lap from where the scan stands; the scan itself keeps going
+and still covers every root it can read. On a host whose accounts change
+faster than one pass, the rescan can stay pending; scanning is unaffected.
 
 The rolling scan uses the YARA rules. YAML rule updates reach existing
 files only when those files change, as before.
@@ -413,19 +407,18 @@ saved queue is restored even if the state store becomes available after
 the first watcher tick. Invalid queue records log a warning and are
 repaired by queuing a fresh rescan; the scan neither tracks nor clears a
 queue it cannot read. A deep run cancelled by shutdown or by the check
-timeout saves no progress. File and subtree coverage gaps, reported by
-`yara_scan_incomplete`, do not keep the queue pending.
+timeout saves no progress. Coverage gaps, reported by `yara_scan_incomplete`, do
+not keep the queue pending.
 
 Setting `detection.rescan_on_signature_update` to `false` stops the
 watcher and pauses the queue: the scan keeps running but neither starts
 nor completes a rescan. Re-enabling it resumes the saved work.
 
-`csm check-deep` also advances the rolling scan and can complete a queued
-rescan, including incrementing this counter. It returns findings and saves
-them in scan history without sending alerts or applying automatic responses.
-Use `csm run-deep` when the manual scan should send alerts and run configured
-automatic responses. A later live scan resumes after the dry run's saved
-position; completing the queue does not replay its findings through alerts.
+`csm check-deep` advances the same rolling scan, so it can complete a
+queued rescan and increment this counter. Its findings are returned and
+kept in scan history but not alerted or acted on, and the live scan does
+not revisit those files until its next pass. Use `csm run-deep` when
+findings should alert.
 
 State from older builds contains only mtimes. The first successful read
 adds a hash without queuing a rescan if the recorded mtime still matches.
