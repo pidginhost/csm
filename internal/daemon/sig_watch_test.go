@@ -1,13 +1,11 @@
 package daemon
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,7 +22,7 @@ import (
 // value so tests can mutate Detection.RescanOnSignatureUpdate to
 // exercise the kill switch; the watcher reads it through the
 // closure on every tick.
-func newWatcherForTest(t *testing.T) (w *sigWatcher, rulesDir string, alertCh chan alert.Finding, flag *atomic.Bool, cfg *config.Config, sdb *store.DB) {
+func newWatcherForTest(t *testing.T) (w *sigWatcher, rulesDir string, alertCh chan alert.Finding, cfg *config.Config, sdb *store.DB) {
 	t.Helper()
 
 	rulesDir = t.TempDir()
@@ -40,16 +38,40 @@ func newWatcherForTest(t *testing.T) (w *sigWatcher, rulesDir string, alertCh ch
 	cfg = &config.Config{}
 	cfg.Signatures.RulesDir = rulesDir
 
-	flag = &atomic.Bool{}
 	alertCh = make(chan alert.Finding, 16)
 
 	w = newSigWatcher(
 		func() *config.Config { return cfg },
 		func() *store.DB { return sdb },
-		flag,
 		alertCh,
 	)
 	return
+}
+
+// rescanQueued reports whether sdb holds a queued rescan.
+func rescanQueued(t *testing.T, sdb *store.DB) bool {
+	t.Helper()
+	gen, err := sdb.SignatureRescanPending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gen != 0
+}
+
+// clearQueuedRescan clears the queued rescan the way the deep YARA walk
+// does once it has scanned every file since the update.
+func clearQueuedRescan(t *testing.T, sdb *store.DB) {
+	t.Helper()
+	gen, err := sdb.SignatureRescanPending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gen == 0 {
+		return
+	}
+	if cleared, err := sdb.ClearSignatureRescan(gen); err != nil || !cleared {
+		t.Fatalf("clearing queued rescan %d: %v, %v", gen, cleared, err)
+	}
 }
 
 // writeRule creates rulesDir/<name> with content and the supplied
@@ -81,14 +103,14 @@ func drainAlerts(ch chan alert.Finding) []alert.Finding {
 // --- First-tick baseline ---------------------------------------------------
 
 func TestSigWatchFirstTickIsBaselineOnly(t *testing.T) {
-	w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
+	w, rulesDir, alertCh, _, sdb := newWatcherForTest(t)
 
 	writeRule(t, rulesDir, "malware.yml", "rules: []", time.Now().Add(-time.Hour))
 	writeRule(t, rulesDir, "phish.yara", "rule a {}", time.Now().Add(-time.Hour))
 
 	w.tick()
 
-	if flag.Load() {
+	if rescanQueued(t, sdb) {
 		t.Error("first tick set forceFullRescan; should be baseline-only")
 	}
 	if got := drainAlerts(alertCh); len(got) > 0 {
@@ -106,21 +128,21 @@ func TestSigWatchFirstTickIsBaselineOnly(t *testing.T) {
 	}
 }
 
-// --- A content change arms the flag ---------------------------------------
+// --- A content change queues a rescan -------------------------------------
 
 func TestSigWatchContentChangeArmsRescan(t *testing.T) {
-	w, rulesDir, alertCh, flag, _, _ := newWatcherForTest(t)
+	w, rulesDir, alertCh, _, sdb := newWatcherForTest(t)
 
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-2*time.Hour))
 	w.tick() // baseline
-	if flag.Load() {
-		t.Fatalf("flag set after baseline tick")
+	if rescanQueued(t, sdb) {
+		t.Fatalf("rescan queued after baseline tick")
 	}
 
 	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-time.Hour))
 	w.tick()
 
-	if !flag.Load() {
+	if !rescanQueued(t, sdb) {
 		t.Error("forceFullRescan not armed after mtime advance")
 	}
 	alerts := drainAlerts(alertCh)
@@ -135,16 +157,16 @@ func TestSigWatchContentChangeArmsRescan(t *testing.T) {
 // --- A change carrying an older mtime is still a change ------------------
 
 func TestSigWatchBackwardsMtimeArmsRescan(t *testing.T) {
-	w, rulesDir, _, flag, _, _ := newWatcherForTest(t)
+	w, rulesDir, _, _, sdb := newWatcherForTest(t)
 
 	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-time.Hour))
 	w.tick()
-	flag.Store(false)
+	clearQueuedRescan(t, sdb)
 
 	// Someone restored an older ruleset from a backup, mtime and all.
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-2*time.Hour))
 	w.tick()
-	if !flag.Load() {
+	if !rescanQueued(t, sdb) {
 		t.Error("restored older ruleset did not arm rescan")
 	}
 }
@@ -155,7 +177,7 @@ func TestSigWatchBackwardsMtimeArmsRescan(t *testing.T) {
 // changed. Each rewrite moves the mtime, and each full rescan it would arm
 // reads every file on the host.
 func TestSigWatchIdenticalRewriteDoesNotArmRescan(t *testing.T) {
-	w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
+	w, rulesDir, alertCh, _, sdb := newWatcherForTest(t)
 
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-2*time.Hour))
 	w.tick()
@@ -164,7 +186,7 @@ func TestSigWatchIdenticalRewriteDoesNotArmRescan(t *testing.T) {
 	path := writeRule(t, rulesDir, "malware.yml", "v1", newer)
 	w.tick()
 
-	if flag.Load() {
+	if rescanQueued(t, sdb) {
 		t.Error("rewriting identical content armed rescan")
 	}
 	if got := drainAlerts(alertCh); len(got) > 0 {
@@ -184,7 +206,7 @@ func TestSigWatchIdenticalRewriteDoesNotArmRescan(t *testing.T) {
 func TestSigWatchHashReadFailureRetainsBaseline(t *testing.T) {
 	for _, content := range []string{"v1", "v2"} {
 		t.Run(content, func(t *testing.T) {
-			w, rulesDir, alertCh, flag, cfg, sdb := newWatcherForTest(t)
+			w, rulesDir, alertCh, cfg, sdb := newWatcherForTest(t)
 			stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
 			path := writeRule(t, rulesDir, "malware.yml", "v1", stamp)
 			w.tick()
@@ -201,7 +223,7 @@ func TestSigWatchHashReadFailureRetainsBaseline(t *testing.T) {
 			w.hashFile = func(string, os.FileInfo) (string, error) { return "", io.ErrUnexpectedEOF }
 			w.tick()
 			w.tick()
-			if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 {
+			if got := drainAlerts(alertCh); rescanQueued(t, sdb) || len(got) != 0 {
 				t.Error("unreadable identical rules armed a rescan")
 			}
 			persisted, err := sdb.GetSignatureFiles()
@@ -213,20 +235,20 @@ func TestSigWatchHashReadFailureRetainsBaseline(t *testing.T) {
 			}
 
 			writeRule(t, rulesDir, "malware.yml", content, newer)
-			flag.Store(false)
-			w = newSigWatcher(func() *config.Config { return cfg }, func() *store.DB { return sdb }, flag, alertCh)
+			clearQueuedRescan(t, sdb)
+			w = newSigWatcher(func() *config.Config { return cfg }, func() *store.DB { return sdb }, alertCh)
 			w.tick()
 			wantChange := content != "v1"
-			if flag.Load() != wantChange {
-				t.Errorf("recovered content %q: rescan = %v, want %v", content, flag.Load(), wantChange)
+			if rescanQueued(t, sdb) != wantChange {
+				t.Errorf("recovered content %q: rescan = %v, want %v", content, rescanQueued(t, sdb), wantChange)
 			}
 			alerts := drainAlerts(alertCh)
 			if (wantChange && len(alerts) != 1) || (!wantChange && len(alerts) != 0) {
 				t.Errorf("recovered content %q: unexpected alerts: %v", content, alerts)
 			}
-			flag.Store(false)
+			clearQueuedRescan(t, sdb)
 			w.tick()
-			if flag.Load() || len(drainAlerts(alertCh)) != 0 {
+			if rescanQueued(t, sdb) || len(drainAlerts(alertCh)) != 0 {
 				t.Error("recovered state armed more than once")
 			}
 		})
@@ -236,7 +258,7 @@ func TestSigWatchHashReadFailureRetainsBaseline(t *testing.T) {
 // An atomic replacement may have exactly the same stamp as the walked file.
 // Its bytes must not be committed with metadata obtained from the old inode.
 func TestSigWatchReplacementDuringHashRetries(t *testing.T) {
-	w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
+	w, rulesDir, alertCh, _, sdb := newWatcherForTest(t)
 	stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
 	path := writeRule(t, rulesDir, "malware.yml", "v1", stamp)
 	w.tick()
@@ -254,7 +276,7 @@ func TestSigWatchReplacementDuringHashRetries(t *testing.T) {
 		return hashRulesFile(path, info)
 	}
 	w.tick()
-	if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 {
+	if got := drainAlerts(alertCh); rescanQueued(t, sdb) || len(got) != 0 {
 		t.Error("unstable file observation armed a rescan")
 	}
 	persisted, err := sdb.GetSignatureFiles()
@@ -265,10 +287,10 @@ func TestSigWatchReplacementDuringHashRetries(t *testing.T) {
 		t.Error("replacement hash was committed with the walked file's metadata")
 	}
 	w.hashFile = hashRulesFile
-	flag.Store(false)
+	clearQueuedRescan(t, sdb)
 	w.tick()
-	if got := drainAlerts(alertCh); !flag.Load() || len(got) != 1 {
-		t.Errorf("stable replacement did not arm exactly once: flag %v, alerts %v", flag.Load(), got)
+	if got := drainAlerts(alertCh); !rescanQueued(t, sdb) || len(got) != 1 {
+		t.Errorf("stable replacement did not arm exactly once: queued %v, alerts %v", rescanQueued(t, sdb), got)
 	}
 	persisted, err = sdb.GetSignatureFiles()
 	if err != nil {
@@ -332,7 +354,7 @@ func TestSigWatchHashRejectsReplacementFIFO(t *testing.T) {
 }
 
 func TestSigWatchSymlinkUsesTargetState(t *testing.T) {
-	w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
+	w, rulesDir, alertCh, _, sdb := newWatcherForTest(t)
 	stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
 	targetDir := t.TempDir()
 	target := writeRule(t, targetDir, "rules.txt", "v1", stamp)
@@ -350,13 +372,13 @@ func TestSigWatchSymlinkUsesTargetState(t *testing.T) {
 	}
 	writeRule(t, targetDir, "rules.txt", "v1", stamp.Add(time.Hour))
 	w.tick()
-	if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 {
+	if got := drainAlerts(alertCh); rescanQueued(t, sdb) || len(got) != 0 {
 		t.Error("identical symlink target rewrite armed a rescan")
 	}
 	writeRule(t, targetDir, "rules.txt", "v2", stamp.Add(2*time.Hour))
 	w.tick()
-	if got := drainAlerts(alertCh); !flag.Load() || len(got) != 1 {
-		t.Errorf("changed symlink target did not arm once: flag %v, alerts %v", flag.Load(), got)
+	if got := drainAlerts(alertCh); !rescanQueued(t, sdb) || len(got) != 1 {
+		t.Errorf("changed symlink target did not arm once: queued %v, alerts %v", rescanQueued(t, sdb), got)
 	}
 }
 
@@ -366,7 +388,7 @@ func TestSigWatchSymlinkUsesTargetState(t *testing.T) {
 // still matches is the file that was recorded and must not arm; a file whose
 // mtime moved cannot be compared by content, so it arms as it always did.
 func TestSigWatchStateWithoutHashes(t *testing.T) {
-	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
+	w, rulesDir, _, _, sdb := newWatcherForTest(t)
 
 	stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
 	same := writeRule(t, rulesDir, "same.yml", "v1", stamp)
@@ -379,17 +401,17 @@ func TestSigWatchStateWithoutHashes(t *testing.T) {
 	}
 
 	w.tick()
-	if !flag.Load() {
+	if !rescanQueued(t, sdb) {
 		t.Fatal("file whose mtime moved since the hashless record did not arm rescan")
 	}
 
-	flag.Store(false)
+	clearQueuedRescan(t, sdb)
 	if err := os.Remove(moved); err != nil {
 		t.Fatal(err)
 	}
 	writeRule(t, rulesDir, "same.yml", "v1", time.Now())
 	w.tick()
-	if flag.Load() {
+	if rescanQueued(t, sdb) {
 		t.Error("identical rewrite armed rescan; the hashless record was never completed")
 	}
 }
@@ -397,7 +419,7 @@ func TestSigWatchStateWithoutHashes(t *testing.T) {
 func TestSigWatchLegacyReadFailureStillUsesMtime(t *testing.T) {
 	for _, moved := range []bool{false, true} {
 		t.Run(fmt.Sprint(moved), func(t *testing.T) {
-			w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
+			w, rulesDir, alertCh, _, sdb := newWatcherForTest(t)
 			stamp := time.Now().Add(-time.Hour).Truncate(time.Second)
 			path := writeRule(t, rulesDir, "malware.yml", "v1", stamp)
 			recorded := stamp
@@ -412,14 +434,14 @@ func TestSigWatchLegacyReadFailureStillUsesMtime(t *testing.T) {
 			w.hashFile = func(string, os.FileInfo) (string, error) { return "", io.ErrUnexpectedEOF }
 			w.tick()
 			alerts := drainAlerts(alertCh)
-			if flag.Load() != moved || (moved && len(alerts) != 1) || (!moved && len(alerts) != 0) {
-				t.Errorf("hashless read failure: flag %v, moved %v, alerts %v", flag.Load(), moved, alerts)
+			if rescanQueued(t, sdb) != moved || (moved && len(alerts) != 1) || (!moved && len(alerts) != 0) {
+				t.Errorf("hashless read failure: queued %v, moved %v, alerts %v", rescanQueued(t, sdb), moved, alerts)
 			}
-			flag.Store(false)
+			clearQueuedRescan(t, sdb)
 			w.tick()
 			w.hashFile = hashRulesFile
 			w.tick()
-			if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 {
+			if got := drainAlerts(alertCh); rescanQueued(t, sdb) || len(got) != 0 {
 				t.Error("legacy retry or recovery queued another rescan")
 			}
 			persisted, err := sdb.GetSignatureFiles()
@@ -445,7 +467,7 @@ func TestSigWatchLegacyStoreUpgrade(t *testing.T) {
 		{name: "moved symlink", symlink: true, moved: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
+			w, rulesDir, alertCh, _, sdb := newWatcherForTest(t)
 			stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
 			var path string
 			if tc.symlink {
@@ -493,8 +515,8 @@ func TestSigWatchLegacyStoreUpgrade(t *testing.T) {
 			t.Cleanup(func() { _ = reopened.Close() })
 			w.storeFunc = func() *store.DB { return reopened }
 			w.tick()
-			if flag.Load() != tc.moved {
-				t.Errorf("upgrade rescan = %v, want %v", flag.Load(), tc.moved)
+			if rescanQueued(t, reopened) != tc.moved {
+				t.Errorf("upgrade rescan = %v, want %v", rescanQueued(t, reopened), tc.moved)
 			}
 			alerts := drainAlerts(alertCh)
 			if (tc.moved && len(alerts) != 1) || (!tc.moved && len(alerts) != 0) {
@@ -507,9 +529,9 @@ func TestSigWatchLegacyStoreUpgrade(t *testing.T) {
 			if persisted[path].SHA256 == "" || persisted[path].Size != 2 || !persisted[path].Mtime.Equal(stamp) {
 				t.Errorf("legacy record not completed: %+v", persisted[path])
 			}
-			flag.Store(false)
+			clearQueuedRescan(t, reopened)
 			w.tick()
-			if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 {
+			if got := drainAlerts(alertCh); rescanQueued(t, reopened) || len(got) != 0 {
 				t.Error("completed legacy record armed again")
 			}
 		})
@@ -517,7 +539,7 @@ func TestSigWatchLegacyStoreUpgrade(t *testing.T) {
 }
 
 func TestSigWatchRetriesFailedPersistence(t *testing.T) {
-	w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
+	w, rulesDir, alertCh, _, sdb := newWatcherForTest(t)
 	stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
 	path := writeRule(t, rulesDir, "malware.yml", "v1", stamp)
 	w.tick()
@@ -526,13 +548,12 @@ func TestSigWatchRetriesFailedPersistence(t *testing.T) {
 	}
 	writeRule(t, rulesDir, "malware.yml", "v2", stamp.Add(time.Hour))
 	w.tick()
-	if got := drainAlerts(alertCh); !flag.Load() || len(got) != 1 || w.persisted {
-		t.Fatalf("failed write lost update: flag %v, alerts %v, persisted %v", flag.Load(), got, w.persisted)
+	if got := drainAlerts(alertCh); !w.queueRescan || len(got) != 1 || w.persisted {
+		t.Fatalf("failed write lost update: owed %v, alerts %v, persisted %v", w.queueRescan, got, w.persisted)
 	}
-	flag.Store(false)
 	w.tick()
-	if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 || w.persisted {
-		t.Fatal("unchanged tick duplicated the rescan or marked the failed write as persisted")
+	if got := drainAlerts(alertCh); !w.queueRescan || len(got) != 0 || w.persisted {
+		t.Fatal("unchanged tick duplicated the rescan, dropped it, or marked the failed write as persisted")
 	}
 	reopened, err := store.Open(filepath.Dir(sdb.Path()))
 	if err != nil {
@@ -552,8 +573,13 @@ func TestSigWatchRetriesFailedPersistence(t *testing.T) {
 	if reopened.WriteTxID() != txID+1 {
 		t.Error("retry did not commit exactly once")
 	}
+	gen, err := reopened.SignatureRescanPending()
+	if err != nil || gen == 0 || w.queueRescan {
+		t.Fatalf("retry did not queue the owed rescan: generation %d, %v, still owed %v", gen, err, w.queueRescan)
+	}
 	w.tick()
-	if got := drainAlerts(alertCh); flag.Load() || len(got) != 0 || reopened.WriteTxID() != txID+1 {
+	again, err := reopened.SignatureRescanPending()
+	if got := drainAlerts(alertCh); err != nil || again != gen || len(got) != 0 || reopened.WriteTxID() != txID+1 {
 		t.Error("successful retry duplicated a rescan or a database commit")
 	}
 }
@@ -563,7 +589,7 @@ func TestSigWatchRetriesFailedPersistence(t *testing.T) {
 // The watcher ticks every minute. Committing an unchanged map to bbolt each
 // time is a synced write for nothing.
 func TestSigWatchDoesNotRewriteUnchangedState(t *testing.T) {
-	w, rulesDir, _, _, _, sdb := newWatcherForTest(t)
+	w, rulesDir, _, _, sdb := newWatcherForTest(t)
 
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-time.Hour))
 	w.tick()
@@ -586,19 +612,19 @@ func TestSigWatchDoesNotRewriteUnchangedState(t *testing.T) {
 // --- Removed files don't trigger rescan -----------------------------------
 
 func TestSigWatchRemovedFileDoesNotArmRescan(t *testing.T) {
-	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
+	w, rulesDir, _, _, sdb := newWatcherForTest(t)
 
 	path := writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-time.Hour))
 	writeRule(t, rulesDir, "phish.yml", "v1", time.Now().Add(-time.Hour))
 	w.tick()
-	flag.Store(false)
+	clearQueuedRescan(t, sdb)
 
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	w.tick()
 
-	if flag.Load() {
+	if rescanQueued(t, sdb) {
 		t.Error("removing a file armed rescan; should be silent per spec")
 	}
 	persisted, _ := sdb.GetSignatureFiles()
@@ -617,16 +643,16 @@ func TestSigWatchNewFilePostBaselineIsSilent(t *testing.T) {
 	// This avoids a fresh `update-rules` install causing a rescan
 	// when the daemon also starts cold and the rules dir is brand
 	// new.
-	w, rulesDir, _, flag, _, _ := newWatcherForTest(t)
+	w, rulesDir, _, _, sdb := newWatcherForTest(t)
 
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-time.Hour))
 	w.tick()
-	flag.Store(false)
+	clearQueuedRescan(t, sdb)
 
 	writeRule(t, rulesDir, "phish.yml", "v1", time.Now().Add(-time.Hour))
 	w.tick()
 
-	if flag.Load() {
+	if rescanQueued(t, sdb) {
 		t.Error("new file post-baseline armed rescan; spec calls first observation a non-event")
 	}
 }
@@ -634,7 +660,7 @@ func TestSigWatchNewFilePostBaselineIsSilent(t *testing.T) {
 // --- Sub-directory walk ---------------------------------------------------
 
 func TestSigWatchTracksSubdirectories(t *testing.T) {
-	w, rulesDir, _, flag, _, _ := newWatcherForTest(t)
+	w, rulesDir, _, _, sdb := newWatcherForTest(t)
 
 	sub := filepath.Join(rulesDir, "yara-forge", "core")
 	if err := os.MkdirAll(sub, 0755); err != nil {
@@ -642,12 +668,12 @@ func TestSigWatchTracksSubdirectories(t *testing.T) {
 	}
 	writeRule(t, sub, "core.yar", "rule a {}", time.Now().Add(-2*time.Hour))
 	w.tick() // baseline
-	flag.Store(false)
+	clearQueuedRescan(t, sdb)
 
 	writeRule(t, sub, "core.yar", "rule b {}", time.Now().Add(-time.Hour))
 	w.tick()
 
-	if !flag.Load() {
+	if !rescanQueued(t, sdb) {
 		t.Error("changed rules under a subdirectory did not arm rescan")
 	}
 }
@@ -655,7 +681,7 @@ func TestSigWatchTracksSubdirectories(t *testing.T) {
 // --- Restart persistence ---------------------------------------------------
 
 func TestSigWatchRestartDoesNotPhantomRescan(t *testing.T) {
-	w, rulesDir, alertCh, _, _, sdb := newWatcherForTest(t)
+	w, rulesDir, alertCh, _, sdb := newWatcherForTest(t)
 
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-time.Hour))
 	w.tick() // baseline persists mtimes to bbolt
@@ -664,16 +690,14 @@ func TestSigWatchRestartDoesNotPhantomRescan(t *testing.T) {
 	// same store + rulesDir.
 	cfg := &config.Config{}
 	cfg.Signatures.RulesDir = rulesDir
-	flag := &atomic.Bool{}
 	w2 := newSigWatcher(
 		func() *config.Config { return cfg },
 		func() *store.DB { return sdb },
-		flag,
 		alertCh,
 	)
 	w2.tick()
 
-	if flag.Load() {
+	if rescanQueued(t, sdb) {
 		t.Error("restart with unchanged mtimes triggered a phantom rescan")
 	}
 }
@@ -681,10 +705,10 @@ func TestSigWatchRestartDoesNotPhantomRescan(t *testing.T) {
 // --- Extension filter ------------------------------------------------------
 
 func TestSigWatchIgnoresUntrackedExtensions(t *testing.T) {
-	w, rulesDir, _, flag, _, _ := newWatcherForTest(t)
+	w, rulesDir, _, _, sdb := newWatcherForTest(t)
 
 	// Create files with extensions outside the tracked set; changes to
-	// these should never arm the flag.
+	// these should never queue a rescan.
 	writeRule(t, rulesDir, "README.md", "docs", time.Now().Add(-2*time.Hour))
 	writeRule(t, rulesDir, "update.sh", "#!/bin/sh", time.Now().Add(-2*time.Hour))
 
@@ -694,47 +718,15 @@ func TestSigWatchIgnoresUntrackedExtensions(t *testing.T) {
 	writeRule(t, rulesDir, "update.sh", "#!/bin/sh\nexit 0", time.Now().Add(-time.Hour))
 	w.tick()
 
-	if flag.Load() {
+	if rescanQueued(t, sdb) {
 		t.Error("untracked extension changes armed rescan")
 	}
 }
 
 // --- Kill-switch -----------------------------------------------------------
 
-func TestSigWatchEnabledTriState(t *testing.T) {
-	cases := []struct {
-		name   string
-		setter func(*config.Config)
-		want   bool
-	}{
-		{"nil cfg defaults on", func(*config.Config) {}, true},
-		{"nil pointer defaults on", func(*config.Config) {}, true},
-		{"explicit true", func(c *config.Config) {
-			on := true
-			c.Detection.RescanOnSignatureUpdate = &on
-		}, true},
-		{"explicit false disables", func(c *config.Config) {
-			off := false
-			c.Detection.RescanOnSignatureUpdate = &off
-		}, false},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			cfg := &config.Config{}
-			c.setter(cfg)
-			if got := sigWatchEnabled(cfg); got != c.want {
-				t.Errorf("sigWatchEnabled = %v, want %v", got, c.want)
-			}
-		})
-	}
-
-	if !sigWatchEnabled(nil) {
-		t.Error("sigWatchEnabled(nil) = false, want true")
-	}
-}
-
 func TestSigWatchKillSwitchSilencesTick(t *testing.T) {
-	w, rulesDir, alertCh, flag, cfg, sdb := newWatcherForTest(t)
+	w, rulesDir, alertCh, cfg, sdb := newWatcherForTest(t)
 	off := false
 	cfg.Detection.RescanOnSignatureUpdate = &off
 
@@ -742,7 +734,7 @@ func TestSigWatchKillSwitchSilencesTick(t *testing.T) {
 	w.tick()
 	// Even if files would otherwise fire, the disabled watcher does
 	// nothing -- not even baseline persistence.
-	if flag.Load() {
+	if rescanQueued(t, sdb) {
 		t.Error("disabled watcher armed rescan")
 	}
 	if got := drainAlerts(alertCh); len(got) > 0 {
@@ -759,13 +751,13 @@ func TestSigWatchKillSwitchSilencesTick(t *testing.T) {
 // instead of reading it per tick. After a config swap, the next tick
 // must walk the new dir.
 func TestSigWatchHotReloadOfRulesDirIsHonored(t *testing.T) {
-	w, oldDir, _, flag, cfg, _ := newWatcherForTest(t)
+	w, oldDir, _, cfg, sdb := newWatcherForTest(t)
 	newDir := t.TempDir()
 
 	// Baseline against oldDir.
 	writeRule(t, oldDir, "v1.yml", "v1", time.Now().Add(-time.Hour))
 	w.tick()
-	flag.Store(false)
+	clearQueuedRescan(t, sdb)
 
 	// Hot-reload: cfg now points at newDir. Drop a fresh file there
 	// older than its first observation -- since "first observation
@@ -780,19 +772,19 @@ func TestSigWatchHotReloadOfRulesDirIsHonored(t *testing.T) {
 	_ = os.Chtimes(old, time.Now().Add(time.Minute), time.Now().Add(time.Minute))
 	w.tick()
 
-	if flag.Load() {
+	if rescanQueued(t, sdb) {
 		t.Error("watcher still walking the OLD rulesDir after hot-reload")
 	}
 
 	// Now touch a file under newDir; the watcher should arm.
 	newFile := writeRule(t, newDir, "v2.yml", "v1", time.Now().Add(-2*time.Hour))
 	w.tick() // observe newFile (silent: first observation)
-	if flag.Load() {
+	if rescanQueued(t, sdb) {
 		t.Fatal("first observation of new file under newDir armed rescan")
 	}
 	writeRule(t, newDir, filepath.Base(newFile), "v2", time.Now().Add(time.Minute))
 	w.tick()
-	if !flag.Load() {
+	if !rescanQueued(t, sdb) {
 		t.Error("changed rules under newDir did not arm rescan after hot-reload")
 	}
 }
@@ -805,21 +797,19 @@ func TestSigWatchLazyStoreRecoversOnceAvailable(t *testing.T) {
 	stateDir := t.TempDir()
 	cfg := &config.Config{}
 	cfg.Signatures.RulesDir = rulesDir
-	flag := &atomic.Bool{}
 	alertCh := make(chan alert.Finding, 16)
 
 	var sdb *store.DB // initially nil
 	w := newSigWatcher(
 		func() *config.Config { return cfg },
 		func() *store.DB { return sdb },
-		flag,
 		alertCh,
 	)
 
 	writeRule(t, rulesDir, "v1.yml", "v1", time.Now().Add(-time.Hour))
 	w.tick() // store nil: in-memory only
-	if flag.Load() {
-		t.Fatal("nil-store first tick armed rescan")
+	if w.queueRescan {
+		t.Fatal("nil-store first tick queued a rescan")
 	}
 
 	// Bring up the store and re-tick. The persisted map should now
@@ -843,21 +833,21 @@ func TestSigWatchLazyStoreRecoversOnceAvailable(t *testing.T) {
 
 // --- Coalescing multiple changes ------------------------------------------
 
-func TestSigWatchCoalescesMultipleChangesIntoOneFlagOnePerFile(t *testing.T) {
-	w, rulesDir, alertCh, flag, _, _ := newWatcherForTest(t)
+func TestSigWatchCoalescesMultipleChangesIntoOneRescanOneAlertPerFile(t *testing.T) {
+	w, rulesDir, alertCh, _, sdb := newWatcherForTest(t)
 
 	for _, name := range []string{"a.yml", "b.yar", "c.yaml"} {
 		writeRule(t, rulesDir, name, "v1", time.Now().Add(-2*time.Hour))
 	}
 	w.tick()
-	flag.Store(false)
+	clearQueuedRescan(t, sdb)
 
 	for _, name := range []string{"a.yml", "b.yar", "c.yaml"} {
 		writeRule(t, rulesDir, name, "v2", time.Now().Add(-time.Hour))
 	}
 	w.tick()
 
-	if !flag.Load() {
+	if !rescanQueued(t, sdb) {
 		t.Fatal("multi-file change did not arm rescan")
 	}
 	alerts := drainAlerts(alertCh)
@@ -868,100 +858,94 @@ func TestSigWatchCoalescesMultipleChangesIntoOneFlagOnePerFile(t *testing.T) {
 
 // --- A queued rescan survives restarts until a sweep completes ------------
 
-// restartWatcher simulates a daemon restart: a fresh watcher and flag over
-// the same store and rules dir. The first tick is the startup tick.
-func restartWatcher(t *testing.T, rulesDir string, sdb *store.DB) *atomic.Bool {
+// restartWatcher simulates a daemon restart: a fresh watcher over the same
+// store and rules dir. It runs the startup tick and reports whether a
+// rescan is queued afterwards.
+func restartWatcher(t *testing.T, rulesDir string, sdb *store.DB) bool {
 	t.Helper()
 	cfg := &config.Config{}
 	cfg.Signatures.RulesDir = rulesDir
-	flag := &atomic.Bool{}
 	w := newSigWatcher(
 		func() *config.Config { return cfg },
 		func() *store.DB { return sdb },
-		flag,
 		make(chan alert.Finding, 16),
 	)
 	w.tick()
-	return flag
+	return rescanQueued(t, sdb)
 }
 
 func TestSigWatchQueuedRescanSurvivesRestart(t *testing.T) {
-	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
+	w, rulesDir, _, _, sdb := newWatcherForTest(t)
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-2*time.Hour))
 	w.tick()
 	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-time.Hour))
 	w.tick()
-	if !flag.Load() {
+	if !rescanQueued(t, sdb) {
 		t.Fatal("change did not arm the rescan")
 	}
 
-	if !restartWatcher(t, rulesDir, sdb).Load() {
+	if !restartWatcher(t, rulesDir, sdb) {
 		t.Fatal("restart before the deep tick dropped the queued rescan")
 	}
-	if !restartWatcher(t, rulesDir, sdb).Load() {
+	if !restartWatcher(t, rulesDir, sdb) {
 		t.Fatal("a second restart dropped the queued rescan")
 	}
 }
 
-func TestSigWatchRescanClearedOnlyByCompletedSweep(t *testing.T) {
-	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
+// Only the deep YARA walk clears the queue, once it has scanned every file
+// since the update (see checks.CheckYARADeep). Until then every start keeps
+// it; afterwards no start queues it again.
+func TestSigWatchRescanQueuedUntilCleared(t *testing.T) {
+	w, rulesDir, _, _, sdb := newWatcherForTest(t)
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-2*time.Hour))
 	w.tick()
 	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-time.Hour))
 	w.tick()
-
-	rescan, gen := takeSignatureRescan(flag, sdb, nil)
-	if !rescan || flag.Load() {
-		t.Fatalf("take = %v (flag %v); want the armed rescan consumed", rescan, flag.Load())
+	gen, err := sdb.SignatureRescanPending()
+	if err != nil || gen == 0 {
+		t.Fatalf("change did not queue a generation: %d, %v", gen, err)
 	}
-	if !restartWatcher(t, rulesDir, sdb).Load() {
-		t.Fatal("restart during the sweep dropped the rescan")
+	if !restartWatcher(t, rulesDir, sdb) {
+		t.Fatal("restart before the walk finished dropped the rescan")
 	}
-
-	cancelled, cancel := context.WithCancel(context.Background())
-	cancel()
-	if finishSignatureRescan(cancelled, sdb, gen) {
-		t.Error("a sweep cut short by shutdown counted as completed")
+	if cleared, err := sdb.ClearSignatureRescan(gen); err != nil || !cleared {
+		t.Fatalf("clearing the queued generation: %v, %v", cleared, err)
 	}
-	if !restartWatcher(t, rulesDir, sdb).Load() {
-		t.Fatal("an interrupted sweep cleared the rescan")
-	}
-
-	if !finishSignatureRescan(context.Background(), sdb, gen) {
-		t.Fatal("completed sweep not reported as completed")
-	}
-	if restartWatcher(t, rulesDir, sdb).Load() {
-		t.Error("restart after a completed sweep queued it again")
+	if restartWatcher(t, rulesDir, sdb) {
+		t.Error("restart after the walk finished queued it again")
 	}
 }
 
-// A rules change while the sweep runs needs its own sweep: finishing the
-// older one must not clear it.
-func TestSigWatchChangeDuringSweepKeepsNewRescan(t *testing.T) {
-	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
+// A rules change while the walk covers an older one needs its own pass:
+// clearing the older generation must not clear it.
+func TestSigWatchChangeDuringPassKeepsNewRescan(t *testing.T) {
+	w, rulesDir, _, _, sdb := newWatcherForTest(t)
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-3*time.Hour))
 	w.tick()
 	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-2*time.Hour))
 	w.tick()
-	_, gen := takeSignatureRescan(flag, sdb, nil)
+	gen, err := sdb.SignatureRescanPending()
+	if err != nil || gen == 0 {
+		t.Fatalf("change did not queue a generation: %d, %v", gen, err)
+	}
 
 	writeRule(t, rulesDir, "malware.yml", "v3", time.Now().Add(-time.Hour))
 	w.tick()
-	if !finishSignatureRescan(context.Background(), sdb, gen) {
-		t.Fatal("completed sweep not reported as completed")
+	if cleared, err := sdb.ClearSignatureRescan(gen); err != nil || cleared {
+		t.Fatalf("clearing the older generation cleared the newer rescan: %v, %v", cleared, err)
 	}
-	if !flag.Load() {
-		t.Error("change during the sweep did not arm another rescan")
+	if !rescanQueued(t, sdb) {
+		t.Error("change during the pass did not queue another rescan")
 	}
-	if !restartWatcher(t, rulesDir, sdb).Load() {
-		t.Error("finishing the older sweep cleared the newer rescan")
+	if !restartWatcher(t, rulesDir, sdb) {
+		t.Error("restart lost the newer rescan")
 	}
 }
 
 // When the store write fails at the change, the retry must still record the
 // rescan, or a restart after the retry would forget it.
 func TestSigWatchRetriedWriteKeepsRescanQueued(t *testing.T) {
-	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
+	w, rulesDir, _, _, sdb := newWatcherForTest(t)
 	stamp := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
 	writeRule(t, rulesDir, "malware.yml", "v1", stamp)
 	w.tick()
@@ -970,8 +954,8 @@ func TestSigWatchRetriedWriteKeepsRescanQueued(t *testing.T) {
 	}
 	writeRule(t, rulesDir, "malware.yml", "v2", stamp.Add(time.Hour))
 	w.tick()
-	if !flag.Load() {
-		t.Fatal("change did not arm the rescan in memory")
+	if !w.queueRescan {
+		t.Fatal("change did not keep the rescan owed in memory")
 	}
 	reopened, err := store.Open(filepath.Dir(sdb.Path()))
 	if err != nil {
@@ -980,28 +964,27 @@ func TestSigWatchRetriedWriteKeepsRescanQueued(t *testing.T) {
 	t.Cleanup(func() { _ = reopened.Close() })
 	w.storeFunc = func() *store.DB { return reopened }
 	w.tick()
-	if !restartWatcher(t, rulesDir, reopened).Load() {
+	if !restartWatcher(t, rulesDir, reopened) {
 		t.Error("the retried write did not record the queued rescan")
 	}
 }
 
-// A rewrite with unchanged content after a completed sweep moves the stored
-// stamps but is no reason to queue another sweep.
+// A rewrite with unchanged content after a completed pass moves the stored
+// stamps but is no reason to queue another rescan.
 func TestSigWatchIdenticalRewriteAfterSweepQueuesNothing(t *testing.T) {
-	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
+	w, rulesDir, _, _, sdb := newWatcherForTest(t)
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-3*time.Hour))
 	w.tick()
 	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-2*time.Hour))
 	w.tick()
-	_, gen := takeSignatureRescan(flag, sdb, nil)
-	finishSignatureRescan(context.Background(), sdb, gen)
+	clearQueuedRescan(t, sdb)
 
 	writeRule(t, rulesDir, "malware.yml", "v2", time.Now().Add(-time.Hour))
 	w.tick()
-	if flag.Load() {
-		t.Error("identical rewrite armed a rescan")
+	if rescanQueued(t, sdb) {
+		t.Error("identical rewrite queued a rescan")
 	}
-	if restartWatcher(t, rulesDir, sdb).Load() {
+	if restartWatcher(t, rulesDir, sdb) {
 		t.Error("identical rewrite queued a rescan for the next start")
 	}
 }
@@ -1009,7 +992,7 @@ func TestSigWatchIdenticalRewriteAfterSweepQueuesNothing(t *testing.T) {
 func TestSigWatchLazyStoreRestoresSavedWork(t *testing.T) {
 	for _, pending := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pending=%v", pending), func(t *testing.T) {
-			original, rulesDir, _, _, cfg, sdb := newWatcherForTest(t)
+			original, rulesDir, _, cfg, sdb := newWatcherForTest(t)
 			stamp := time.Now().Add(-2 * time.Hour)
 			writeRule(t, rulesDir, "malware.yml", "v1", stamp)
 			original.tick()
@@ -1018,19 +1001,18 @@ func TestSigWatchLazyStoreRestoresSavedWork(t *testing.T) {
 				original.tick()
 			}
 
-			flag := &atomic.Bool{}
 			var available *store.DB
-			w := newSigWatcher(func() *config.Config { return cfg }, func() *store.DB { return available }, flag, nil)
+			w := newSigWatcher(func() *config.Config { return cfg }, func() *store.DB { return available }, nil)
 			w.tick()
-			if flag.Load() {
-				t.Fatal("first observation without a store armed a rescan")
+			if w.queueRescan {
+				t.Fatal("first observation without a store queued a rescan")
 			}
 			available = sdb
 			w.tick()
-			if !flag.Load() {
+			if !rescanQueued(t, sdb) {
 				t.Fatal("late store lost the saved queue or comparison baseline")
 			}
-			if !restartWatcher(t, rulesDir, sdb).Load() {
+			if !restartWatcher(t, rulesDir, sdb) {
 				t.Fatal("late store recovery did not persist the owed rescan")
 			}
 		})
@@ -1038,7 +1020,7 @@ func TestSigWatchLazyStoreRestoresSavedWork(t *testing.T) {
 }
 
 func TestSigWatchRetriesInitialStoreRead(t *testing.T) {
-	original, rulesDir, _, _, cfg, sdb := newWatcherForTest(t)
+	original, rulesDir, _, cfg, sdb := newWatcherForTest(t)
 	stamp := time.Now().Add(-2 * time.Hour)
 	writeRule(t, rulesDir, "malware.yml", "v1", stamp)
 	original.tick()
@@ -1047,8 +1029,7 @@ func TestSigWatchRetriesInitialStoreRead(t *testing.T) {
 	if err := sdb.Close(); err != nil {
 		t.Fatal(err)
 	}
-	flag := &atomic.Bool{}
-	w := newSigWatcher(func() *config.Config { return cfg }, func() *store.DB { return sdb }, flag, nil)
+	w := newSigWatcher(func() *config.Config { return cfg }, func() *store.DB { return sdb }, nil)
 	w.tick()
 	reopened, err := store.Open(filepath.Dir(sdb.Path()))
 	if err != nil {
@@ -1057,37 +1038,25 @@ func TestSigWatchRetriesInitialStoreRead(t *testing.T) {
 	t.Cleanup(func() { _ = reopened.Close() })
 	w.storeFunc = func() *store.DB { return reopened }
 	w.tick()
-	if !flag.Load() {
-		t.Fatal("initial read failure permanently hid the queued rescan")
+	if !w.loaded || !rescanQueued(t, reopened) {
+		t.Fatalf("initial read failure permanently hid the queued rescan: loaded %v", w.loaded)
+	}
+	if !sameSignatureState(w.last, mustSignatureFiles(t, reopened)) {
+		t.Error("the retried read did not adopt the saved comparison baseline")
 	}
 }
 
-func TestSignatureRescanUsesDurableQueueWithoutFlag(t *testing.T) {
-	_, _, _, flag, _, sdb := newWatcherForTest(t)
-	gen, err := sdb.PutSignatureFilesWithRescan(nil)
+func mustSignatureFiles(t *testing.T, sdb *store.DB) map[string]store.SignatureFileState {
+	t.Helper()
+	files, err := sdb.GetSignatureFiles()
 	if err != nil {
 		t.Fatal(err)
 	}
-	rescan, taken := takeSignatureRescan(flag, sdb, nil)
-	if !rescan || taken != gen {
-		t.Fatalf("take = (%v, %d), want durable generation %d", rescan, taken, gen)
-	}
-}
-
-func TestSignatureRescanReadFailureKeepsFlag(t *testing.T) {
-	_, _, _, flag, _, sdb := newWatcherForTest(t)
-	flag.Store(true)
-	if err := sdb.Close(); err != nil {
-		t.Fatal(err)
-	}
-	rescan, gen := takeSignatureRescan(flag, sdb, nil)
-	if rescan || gen != 0 || !flag.Load() {
-		t.Fatalf("failed queue read consumed work: rescan %v, gen %d, flag %v", rescan, gen, flag.Load())
-	}
+	return files
 }
 
 func TestSigWatchCorruptQueueRecovers(t *testing.T) {
-	w, rulesDir, _, _, _, sdb := newWatcherForTest(t)
+	w, rulesDir, _, _, sdb := newWatcherForTest(t)
 	stamp := time.Now().Add(-2 * time.Hour)
 	writeRule(t, rulesDir, "malware.yml", "v1", stamp)
 	w.tick()
@@ -1116,25 +1085,25 @@ func TestSigWatchCorruptQueueRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	flag := restartWatcher(t, rulesDir, reopened)
-	if !flag.Load() {
-		t.Fatal("corrupt queue silently dropped the owed sweep")
+	if !restartWatcher(t, rulesDir, reopened) {
+		t.Fatal("corrupt queue silently dropped the owed rescan")
 	}
 	gen, err := reopened.SignatureRescanPending()
 	if err != nil || gen <= old {
 		t.Fatalf("queue not repaired with a new generation: %d, %v", gen, err)
 	}
 	if cleared, err := reopened.ClearSignatureRescan(old); err != nil || cleared {
-		t.Fatalf("stale sweep cleared repaired queue: %v, %v", cleared, err)
+		t.Fatalf("stale pass cleared repaired queue: %v, %v", cleared, err)
 	}
-	_, taken := takeSignatureRescan(flag, reopened, nil)
-	if !finishSignatureRescan(context.Background(), reopened, taken) || restartWatcher(t, rulesDir, reopened).Load() {
-		t.Fatal("repaired queue could not be completed")
+	if cleared, err := reopened.ClearSignatureRescan(gen); err != nil || !cleared || restartWatcher(t, rulesDir, reopened) {
+		t.Fatalf("repaired queue could not be completed: %v, %v", cleared, err)
 	}
 }
 
+// Turning rescans off stops the watcher but must not drop or renumber work
+// it already queued; the walk resumes it when they are turned back on.
 func TestSignatureRescanKillSwitchPreservesQueue(t *testing.T) {
-	w, rulesDir, _, flag, cfg, sdb := newWatcherForTest(t)
+	w, rulesDir, _, cfg, sdb := newWatcherForTest(t)
 	stamp := time.Now().Add(-2 * time.Hour)
 	writeRule(t, rulesDir, "malware.yml", "v1", stamp)
 	w.tick()
@@ -1147,32 +1116,29 @@ func TestSignatureRescanKillSwitchPreservesQueue(t *testing.T) {
 	off := false
 	cfg.Detection.RescanOnSignatureUpdate = &off
 	w.tick()
-	if rescan, gen := takeSignatureRescan(flag, sdb, cfg); rescan || gen != 0 {
-		t.Errorf("disabled rescans consumed queued work: %v, %d", rescan, gen)
-	}
 	if got, err := sdb.SignatureRescanPending(); err != nil || got != want {
 		t.Fatalf("kill switch lost the durable queue: %d, %v", got, err)
 	}
 	on := true
 	cfg.Detection.RescanOnSignatureUpdate = &on
 	w.tick()
-	if rescan, gen := takeSignatureRescan(flag, sdb, cfg); !rescan || gen != want {
-		t.Fatalf("reenabling rescans did not resume queued work: %v, %d", rescan, gen)
+	if got, err := sdb.SignatureRescanPending(); err != nil || got != want {
+		t.Fatalf("reenabling rescans did not resume the queued generation: %d, %v", got, err)
 	}
 }
 
 func TestSigWatchLazyStoreWithEmptySavedState(t *testing.T) {
-	_, rulesDir, _, flag, cfg, sdb := newWatcherForTest(t)
+	_, rulesDir, _, cfg, sdb := newWatcherForTest(t)
 	if _, err := sdb.PutSignatureFilesWithRescan(nil); err != nil {
 		t.Fatal(err)
 	}
 	var available *store.DB
-	w := newSigWatcher(func() *config.Config { return cfg }, func() *store.DB { return available }, flag, nil)
+	w := newSigWatcher(func() *config.Config { return cfg }, func() *store.DB { return available }, nil)
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-time.Hour))
 	w.tick()
 	available = sdb
 	w.tick()
-	if !flag.Load() {
+	if !rescanQueued(t, sdb) || !w.loaded {
 		t.Fatal("empty saved state hid the queued rescan")
 	}
 	files, err := sdb.GetSignatureFiles()

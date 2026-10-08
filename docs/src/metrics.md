@@ -372,32 +372,42 @@ All series are prefixed `csm_php_relay_`. Registered when `email_protection.php_
 
 ### Signature retroactive rescans
 
-- `csm_signature_rescans_total` (counter): full deep-tier sweeps
-  completed because a tracked signature file's content changed.
-  Re-installing identical rules, as a package upgrade or a repeated
-  download does, does not count. Multiple updates before the next
-  sweep can coalesce into one rescan.
+- `csm_signature_rescans_total` (counter): rescans queued by a change
+  to a tracked signature file's content that completed. A rescan
+  completes when the rolling deep YARA scan has scanned every file
+  since the change. Re-installing identical rules, as a package upgrade
+  or a repeated download does, does not count. Multiple updates before
+  a rescan completes coalesce into one.
 
 The watcher compares content hashes when a file's mtime or size changes;
 symbolic links use the target file's metadata. Failed reads and files
 replaced during hashing are retried without discarding the last verified
 state. First observations and file removals do not queue a rescan.
 
-A queued rescan is stored with the rule state that caused it. A daemon
-restart before the sweep, or one that interrupts it, queues it again at
-the next start. The saved queue is restored even if the state store becomes
-available after the first watcher tick. Invalid queue records log a warning
-and are repaired by queuing a fresh sweep; transient store read errors defer
-consumption until the queue can be read.
+The rolling deep YARA scan reads files in path order and resumes each
+deep run where the previous one stopped, so one pass spans many deep runs.
+A rules update does not restart the pass: restarting on every update would
+never reach the files that sort last when updates come faster than a pass.
+The scan records where it stood when it took the update, and the rescan
+completes once the scan has wrapped and come back to that point. Every file
+is then scanned with the new rules within one pass. An update during a
+rescan starts a new one from where the scan then stands.
 
-Only a sweep that returns without daemon cancellation clears its queued
-generation. An update during the sweep keeps newer work queued. Per-check
-timeouts and coverage gaps retain the existing one-shot behavior: they do
+The rolling scan uses the YARA rules. YAML rule updates reach existing
+files only when those files change, as before.
+
+A queued rescan is stored with the rule state that caused it, and the scan
+stores its progress with its cursor, so daemon restarts keep both. The
+saved queue is restored even if the state store becomes available after
+the first watcher tick. Invalid queue records log a warning and are
+repaired by queuing a fresh rescan; the scan neither tracks nor clears a
+queue it cannot read. A deep run cancelled by shutdown or by the check
+timeout saves no progress. Coverage gaps, reported by `yara_scan_incomplete`, do
 not keep the queue pending.
 
-Setting `detection.rescan_on_signature_update` to `false` pauses queued
-rescans as well as the watcher. Re-enabling it resumes saved work on a
-subsequent deep tick.
+Setting `detection.rescan_on_signature_update` to `false` stops the
+watcher and pauses the queue: the scan keeps running but neither starts
+nor completes a rescan. Re-enabling it resumes the saved work.
 
 State from older builds contains only mtimes. The first successful read
 adds a hash without queuing a rescan if the recorded mtime still matches.

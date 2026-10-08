@@ -403,7 +403,7 @@ detection:
   admin_overlap_min_accounts: 2         # raise only if routine shared-admin accounts are expected on this host
   admin_overlap_trusted_emails: []       # exact reviewed admin emails that may manage multiple cPanel accounts
   admin_overlap_trusted_domains: []      # exact reviewed email domains for developer or reseller admin accounts
-  # rescan_on_signature_update: true    # tri-state; omit for default-on, false to disable retroactive sweeps
+  # rescan_on_signature_update: true    # tri-state; omit for default-on, false to stop tracking rescans after rule updates
   af_alg_backend: "auto"                # auto | bpf | auditd | none
   connection_tracker_backend: "auto"    # auto | bpf | legacy | none
   connection_poll_interval: 30s         # legacy connection tracker interval

@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -10,8 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -19,62 +16,38 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
-	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/store"
 )
 
 // Signature-update-driven retroactive rescan.
 //
 // CSM's signature rules update independently of the deep-tier
-// scanner. Without this watcher, a fresh ruleset only catches files
-// that change AFTER the update -- existing files that newly match
-// stay silent until the next time they happen to be touched. Real
-// attacks aren't that polite.
+// scanner. The rolling deep YARA walk reaches every existing file once
+// per pass, but a pass spans many deep ticks, so a rules update is only
+// applied to all existing files when the walk has come back round to
+// where it stood at the update. This watcher makes that point visible.
 //
 // The watcher polls cfg.Signatures.RulesDir every sigWatchInterval,
-// stat()s every *.yaml / *.yml / *.yar / *.yara file, and sets the
-// daemon's forceFullRescan flag whenever any tracked file's content
-// changes. The next deep-tier tick reads + clears the flag and runs
-// the full account tree instead of the fanotify short-list.
+// stat()s every *.yaml / *.yml / *.yar / *.yara file, and queues a
+// rescan in the store whenever any tracked file's content changes. The
+// rolling deep YARA walk (checks.CheckYARADeep) tracks the queued
+// generation and clears it once it has scanned every file since then.
 //
 // A file is hashed only when its mtime or size moved. Package upgrades
-// and the rules updater rewrite files whose content is unchanged, and a
-// full rescan reads every file on the host, so a moved mtime alone is
-// not a reason to arm.
+// and the rules updater rewrite files whose content is unchanged, so a
+// moved mtime alone is not a reason to queue a rescan.
 //
 // The per-file state is persisted in bbolt (sig_watch bucket) so a
 // daemon restart does not look like "all files are new" and trigger a
 // phantom rescan on first tick.
 //
 // The queued rescan is persisted in the same transaction as the state
-// that caused it, and only a completed sweep clears it. The flag itself
-// lives in memory, so without this a restart between the change and the
-// next deep tick kept the new state and silently dropped the rescan.
+// that caused it, so a restart cannot keep the new state and drop the
+// rescan it calls for.
 
 const sigWatchInterval = 60 * time.Second
 
 var sigWatchExtensions = []string{".yaml", ".yml", ".yar", ".yara"}
-
-var (
-	sigRescansTotalOnce sync.Once
-	sigRescansTotal     *metrics.Counter
-)
-
-// observeSignatureRescan increments the operator-facing counter the
-// first time the watcher arms a rescan in any process lifetime, and
-// every subsequent time. Called from the deep-tier path AFTER a full
-// retro-sweep completes, so the counter measures completed sweeps,
-// not queued ones.
-func observeSignatureRescan() {
-	sigRescansTotalOnce.Do(func() {
-		sigRescansTotal = metrics.NewCounter(
-			"csm_signature_rescans_total",
-			"Signature-update-driven full deep-tier rescans completed. Incremented when the deep-tier scheduler picks up the forceFullRescan flag set by the signature watcher and finishes a sweep against the new ruleset.",
-		)
-		metrics.MustRegister("csm_signature_rescans_total", sigRescansTotal)
-	})
-	sigRescansTotal.Inc()
-}
 
 // sigWatcher carries the watcher's loop state. The daemon owns one
 // instance; the goroutine in (*Daemon).signatureWatcher drives it.
@@ -88,12 +61,11 @@ func observeSignatureRescan() {
 // watcher persistence-blind for the rest of its lifetime. Live
 // resolution closes both.
 type sigWatcher struct {
-	cfgFunc    func() *config.Config
-	storeFunc  func() *store.DB
-	rescanFlag *atomic.Bool
-	alertCh    chan<- alert.Finding
-	interval   time.Duration
-	hashFile   func(string, os.FileInfo) (string, error)
+	cfgFunc   func() *config.Config
+	storeFunc func() *store.DB
+	alertCh   chan<- alert.Finding
+	interval  time.Duration
+	hashFile  func(string, os.FileInfo) (string, error)
 
 	// Initialised on first tick from store.GetSignatureFiles(); the
 	// in-memory map is the authoritative working copy for the loop.
@@ -113,29 +85,25 @@ type sigWatcher struct {
 // cfgFunc and storeFunc are called per tick so config hot-reloads
 // and lazy bbolt initialisation are picked up automatically.
 // Callers can override the interval after construction for tests.
-func newSigWatcher(cfgFunc func() *config.Config, storeFunc func() *store.DB, flag *atomic.Bool, alertCh chan<- alert.Finding) *sigWatcher {
+func newSigWatcher(cfgFunc func() *config.Config, storeFunc func() *store.DB, alertCh chan<- alert.Finding) *sigWatcher {
 	return &sigWatcher{
-		cfgFunc:    cfgFunc,
-		storeFunc:  storeFunc,
-		rescanFlag: flag,
-		alertCh:    alertCh,
-		interval:   sigWatchInterval,
-		hashFile:   hashRulesFile,
+		cfgFunc:   cfgFunc,
+		storeFunc: storeFunc,
+		alertCh:   alertCh,
+		interval:  sigWatchInterval,
+		hashFile:  hashRulesFile,
 	}
 }
 
 // loadInitial restores saved work even if earlier ticks ran without a store.
 // A corrupt queue must be replaced before accepting the current rule state.
 func (w *sigWatcher) loadInitial(sdb *store.DB) {
-	gen, queueErr := sdb.SignatureRescanPending()
+	_, queueErr := sdb.SignatureRescanPending()
 	if queueErr != nil {
 		csmlog.Warn("sig_watch: loading queued rescan", "err", queueErr)
 		if errors.Is(queueErr, store.ErrSignatureRescanCorrupt) {
 			w.queueRescan = true
 		}
-	}
-	if gen != 0 || w.queueRescan {
-		w.rescanFlag.Store(true)
 	}
 	got, err := sdb.GetSignatureFiles()
 	if err != nil {
@@ -159,13 +127,13 @@ func (w *sigWatcher) loadInitial(sdb *store.DB) {
 	w.loaded = queueErr == nil || errors.Is(queueErr, store.ErrSignatureRescanCorrupt)
 }
 
-// tick performs one walk of the rules dir and arms the rescan flag
-// when any tracked file's content changed. Removed files drop out of
+// tick performs one walk of the rules dir and queues a rescan when any
+// tracked file's content changed. Removed files drop out of
 // the persisted map without triggering a rescan -- the spec calls out
 // only a change to an existing file as a trigger.
 func (w *sigWatcher) tick() {
 	cfg := w.cfgFunc()
-	if !sigWatchEnabled(cfg) {
+	if !cfg.SignatureRescanEnabled() {
 		return
 	}
 	rulesDir := cfg.Signatures.RulesDir
@@ -251,57 +219,16 @@ func (w *sigWatcher) tick() {
 		}
 	}
 
-	if len(changed) == 0 {
-		return
-	}
-	w.rescanFlag.Store(true)
 	for _, c := range changed {
 		alert.TryEnqueue(w.alertCh, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "signature_update_rescan_queued",
-			Message:   fmt.Sprintf("Signature update detected, full deep rescan queued: %s", filepath.Base(c.Path)),
+			Message:   fmt.Sprintf("Signature update detected, rescan of existing files queued: %s", filepath.Base(c.Path)),
 			Details:   fmt.Sprintf("File: %s\nOld mtime: %s\nNew mtime: %s", c.Path, c.Old.UTC().Format(time.RFC3339), c.New.UTC().Format(time.RFC3339)),
 			FilePath:  c.Path,
 			Timestamp: time.Now(),
 		})
 	}
-}
-
-// takeSignatureRescan takes owed work from the deep tick's config snapshot.
-// The saved generation fences acknowledgement against intervening updates.
-func takeSignatureRescan(flag *atomic.Bool, sdb *store.DB, cfg *config.Config) (bool, uint64) {
-	if !sigWatchEnabled(cfg) {
-		return false, 0
-	}
-	if sdb == nil {
-		return flag.Swap(false), 0
-	}
-	gen, err := sdb.SignatureRescanPending()
-	if err != nil {
-		csmlog.Warn("sig_watch: reading queued rescan", "err", err)
-		return false, 0
-	}
-	// Read the generation before consuming the flag. An intervening update
-	// may lose its in-memory signal, but its newer durable generation stays
-	// queued and is picked up on the next tick even without that signal.
-	armed := flag.Swap(false)
-	return armed || gen != 0, gen
-}
-
-// finishSignatureRescan clears the queued rescan after its sweep and reports
-// whether the sweep completed. A sweep cut short by shutdown leaves the queue
-// for the next start. A newer generation stays queued; its change armed the
-// flag again.
-func finishSignatureRescan(ctx context.Context, sdb *store.DB, gen uint64) bool {
-	if ctx.Err() != nil {
-		return false
-	}
-	if sdb != nil && gen != 0 {
-		if _, err := sdb.ClearSignatureRescan(gen); err != nil {
-			csmlog.Warn("sig_watch: clearing completed rescan", "err", err)
-		}
-	}
-	return true
 }
 
 // hashRulesFile accepts a hash only while the walked file, the open file and
@@ -412,19 +339,6 @@ func sigWatchExtMatches(ext string) bool {
 	return false
 }
 
-// sigWatchEnabled resolves the tri-state cfg flag. Same shape as
-// dbObjectScanningEnabled in the checks package: nil = on, *true =
-// on, *false = off.
-func sigWatchEnabled(cfg *config.Config) bool {
-	if cfg == nil {
-		return true
-	}
-	if cfg.Detection.RescanOnSignatureUpdate == nil {
-		return true
-	}
-	return *cfg.Detection.RescanOnSignatureUpdate
-}
-
 // sigWatchChange records one changed file for the alert detail
 // message.
 type sigWatchChange struct {
@@ -434,8 +348,8 @@ type sigWatchChange struct {
 }
 
 // signatureWatcher is the daemon's signature-watch goroutine. Runs
-// until d.stopCh is closed; ticks every sigWatchInterval, sets
-// d.forceFullRescan when any tracked rule file's content changes.
+// until d.stopCh is closed; ticks every sigWatchInterval and queues a
+// rescan when any tracked rule file's content changes.
 //
 // Cfg and store are accessed via getter closures (not captured
 // values) so a hot-reload of signatures.rules_dir takes effect on
@@ -447,7 +361,6 @@ func (d *Daemon) signatureWatcher() {
 	w := newSigWatcher(
 		func() *config.Config { return d.currentCfg() },
 		store.Global,
-		&d.forceFullRescan,
 		d.alertCh,
 	)
 

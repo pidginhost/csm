@@ -17,6 +17,14 @@ type ScanCursorRecord struct {
 	LastPath        string    `json:"last_path"`          // last path-sorted candidate scanned
 	WrappedAt       time.Time `json:"wrapped_at"`         // when the cursor last wrapped to start
 	LastFullCycleTS time.Time `json:"last_full_cycle_ts"` // when a full sweep last completed
+
+	// Signature rescan progress (deep YARA cursor only). RulesGeneration is
+	// the queued rescan the walk is covering, RulesFrom is where the walk
+	// stood when it took that generation, and RulesWrapped is set once the
+	// walk has since wrapped to the start.
+	RulesGeneration uint64 `json:"rules_generation,omitempty"`
+	RulesFrom       string `json:"rules_from,omitempty"`
+	RulesWrapped    bool   `json:"rules_wrapped,omitempty"`
 }
 
 // scanCursorKey builds the bucket key for a (account, check) pair.

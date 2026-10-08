@@ -605,13 +605,12 @@ type Config struct {
 		// developer or reseller admin accounts.
 		AdminOverlapTrustedDomains []string `yaml:"admin_overlap_trusted_domains"`
 
-		// RescanOnSignatureUpdate fires a forced full-tree deep
-		// scan the next time the content of any file under
-		// cfg.Signatures.RulesDir changes. Tri-state *bool: nil = default-on,
-		// *true = explicit on, *false = explicit off. Off means the
-		// existing behaviour (deep-tier runs against the fanotify
-		// short-list when fanotify is active) is unchanged; new
-		// rules only catch files that change after the update.
+		// RescanOnSignatureUpdate queues a rescan of existing files
+		// when the content of any file under cfg.Signatures.RulesDir
+		// changes. The rolling deep YARA walk tracks it and clears it
+		// once every file was scanned after the change. Tri-state *bool:
+		// nil = default-on, *true = explicit on, *false = explicit off.
+		// Off pauses the queue; the walk keeps running either way.
 		RescanOnSignatureUpdate *bool `yaml:"rescan_on_signature_update"`
 
 		// AFAlgBackend selects the live AF_ALG (CVE-2026-31431, "Copy
@@ -1505,6 +1504,12 @@ func (cfg *Config) VirtualPatchMode() string {
 	default:
 		return VirtualPatchOff
 	}
+}
+
+// SignatureRescanEnabled reports whether rule updates queue a rescan of
+// existing files. Tri-state *bool: nil (omitted) defaults to on.
+func (cfg *Config) SignatureRescanEnabled() bool {
+	return cfg == nil || cfg.Detection.RescanOnSignatureUpdate == nil || *cfg.Detection.RescanOnSignatureUpdate
 }
 
 // VulnerablePluginScanningEnabled reports whether the known-vulnerable plugin

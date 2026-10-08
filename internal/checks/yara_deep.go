@@ -16,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/jstaint"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/phptaint"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
@@ -218,6 +219,18 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 		}
 		c.resume = c.cur.LastPath
 		c.lastScanned = c.resume
+	}
+
+	// A rules update leaves every file the walk already covered scanned with
+	// the old rules. The walk is not restarted: restarting on each update
+	// would starve the paths that sort last whenever updates come faster than
+	// one pass. The cursor instead records where the walk stood when it took
+	// the update, and the queued rescan clears once the walk is back there.
+	rescanGen := pendingSignatureRescan(cfg, db, yaraConsumer.dispatch)
+	if rescanGen != 0 && yaraConsumer.cur.RulesGeneration != rescanGen {
+		yaraConsumer.cur.RulesGeneration = rescanGen
+		yaraConsumer.cur.RulesFrom = yaraConsumer.resume
+		yaraConsumer.cur.RulesWrapped = false
 	}
 
 	// The shared walk starts at the earliest dispatchable resume point; a
@@ -708,6 +721,9 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			}
 			var next store.ScanCursorRecord
 			next.Check = c.name
+			next.RulesGeneration = c.cur.RulesGeneration
+			next.RulesFrom = c.cur.RulesFrom
+			next.RulesWrapped = c.cur.RulesWrapped || (!stoppedEarly && c.cur.RulesGeneration != 0)
 			if stoppedEarly {
 				next.LastPath = c.lastScanned
 				next.LastFullCycleTS = c.cur.LastFullCycleTS
@@ -720,6 +736,21 @@ func CheckYARADeep(ctx context.Context, cfg *config.Config, st *state.Store) []a
 			}
 			if err := db.PutScanCursor(next); err != nil {
 				fmt.Fprintf(os.Stderr, "%s: cursor write: %v\n", c.name, err)
+			}
+		}
+	}
+	if rescanGen != 0 {
+		// A walk that started from where the update found it has passed every
+		// file once it completes. Otherwise it must have wrapped and come back
+		// to that point. A stopped walk cannot have wrapped during this run.
+		cur := yaraConsumer.cur
+		if (!stoppedEarly && (cur.RulesFrom == "" || cur.RulesWrapped)) ||
+			(cur.RulesWrapped && yaraConsumer.lastScanned >= cur.RulesFrom) {
+			cleared, err := db.ClearSignatureRescan(rescanGen)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%s: clearing signature rescan: %v\n", yaraConsumer.name, err)
+			} else if cleared {
+				observeSignatureRescan()
 			}
 		}
 	}
@@ -841,4 +872,37 @@ func yaraMatchSeverity(value string) alert.Severity {
 	default:
 		return alert.Critical
 	}
+}
+
+var (
+	sigRescansTotalOnce sync.Once
+	sigRescansTotal     *metrics.Counter
+)
+
+// observeSignatureRescan counts a queued rescan cleared because the walk
+// has scanned every file since the rules update that queued it.
+func observeSignatureRescan() {
+	sigRescansTotalOnce.Do(func() {
+		sigRescansTotal = metrics.NewCounter(
+			"csm_signature_rescans_total",
+			"Rescans queued by a signature update that completed. Incremented when the rolling deep YARA walk has scanned every file since the update.",
+		)
+		metrics.MustRegister("csm_signature_rescans_total", sigRescansTotal)
+	})
+	sigRescansTotal.Inc()
+}
+
+// pendingSignatureRescan returns the queued rescan generation the YARA walk
+// should cover, or 0 when there is none to track. Disabled rescans pause the
+// queue, and an unreadable queue is left for the watcher to repair.
+func pendingSignatureRescan(cfg *config.Config, db *store.DB, dispatch bool) uint64 {
+	if !dispatch || db == nil || !cfg.SignatureRescanEnabled() {
+		return 0
+	}
+	gen, err := db.SignatureRescanPending()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s: reading signature rescan: %v\n", yaraDeepCursorCheck, err)
+		return 0
+	}
+	return gen
 }

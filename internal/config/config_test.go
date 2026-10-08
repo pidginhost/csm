@@ -663,6 +663,39 @@ func TestPackagedDefaultFeatureSamplesPreserveEffectiveDefaults(t *testing.T) {
 	}
 }
 
+func TestSignatureRescanEnabledTriState(t *testing.T) {
+	cases := []struct {
+		name   string
+		setter func(*Config)
+		want   bool
+	}{
+		{"nil cfg defaults on", func(*Config) {}, true},
+		{"nil pointer defaults on", func(*Config) {}, true},
+		{"explicit true", func(c *Config) {
+			on := true
+			c.Detection.RescanOnSignatureUpdate = &on
+		}, true},
+		{"explicit false disables", func(c *Config) {
+			off := false
+			c.Detection.RescanOnSignatureUpdate = &off
+		}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := &Config{}
+			c.setter(cfg)
+			if got := cfg.SignatureRescanEnabled(); got != c.want {
+				t.Errorf("SignatureRescanEnabled = %v, want %v", got, c.want)
+			}
+		})
+	}
+
+	var unset *Config
+	if !unset.SignatureRescanEnabled() {
+		t.Error("nil Config SignatureRescanEnabled = false, want true")
+	}
+}
+
 func TestVulnerablePluginScanningConfig(t *testing.T) {
 	if !(&Config{}).VulnerablePluginScanningEnabled() {
 		t.Fatal("omitted vulnerable_plugin_scanning must default to enabled")

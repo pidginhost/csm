@@ -70,16 +70,16 @@ func (db *DB) PutSignatureFiles(m map[string]SignatureFileState) error {
 	return err
 }
 
-// PutSignatureFilesWithRescan writes the watcher state and queues a full
-// rescan in one transaction, so a restart cannot keep the new rule state
-// while losing the rescan it calls for. It returns the generation that only
-// the sweep for this queue may clear.
+// PutSignatureFilesWithRescan writes the watcher state and queues a rescan
+// in one transaction, so a restart cannot keep the new rule state while
+// losing the rescan it calls for. It returns the generation that only the
+// pass covering this queue may clear.
 func (db *DB) PutSignatureFilesWithRescan(m map[string]SignatureFileState) (uint64, error) {
 	return db.putSignatureFiles(m, true)
 }
 
-// signatureRescan is the queued full rescan. Generation keeps counting after
-// a clear, so a sweep can never clear a queue armed after it read its own.
+// signatureRescan is the queued rescan. Generation keeps counting after a
+// clear, so a pass can never clear a queue armed after it read its own.
 type signatureRescan struct {
 	Generation uint64 `json:"generation"`
 	Pending    bool   `json:"pending"`
@@ -128,7 +128,7 @@ func (db *DB) putSignatureFiles(m map[string]SignatureFileState, rescan bool) (u
 	return gen, nil
 }
 
-// SignatureRescanPending returns the generation of the queued full rescan,
+// SignatureRescanPending returns the generation of the queued rescan,
 // or 0 when none is queued.
 func (db *DB) SignatureRescanPending() (uint64, error) {
 	var q signatureRescan

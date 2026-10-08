@@ -136,15 +136,6 @@ type Daemon struct {
 	// parser. It starts its child lazily on the first admitted source.
 	phpTaintSup *phptaintworker.Supervisor
 
-	// forceFullRescan is armed by the signature watcher
-	// (sig_watch.go) when any tracked rule file's content changes,
-	// and again at startup while a queued rescan is stored.
-	// The deep-tier scheduler reads + clears the flag at the start
-	// of each tick; when set, the tick bypasses the fanotify
-	// short-list and runs the full account tree against the new
-	// ruleset, then clears the stored queue once the sweep completes.
-	forceFullRescan atomic.Bool
-
 	// policies holds the email PHP-relay pattern policies
 	// (suspicious/safe x-mailer classes, HTTP proxy ranges) loaded
 	// from EmailProtection.PHPRelay.PoliciesDir. Initialised in O2
@@ -1072,8 +1063,8 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	obs.Go("signature-updater", d.signatureUpdater)
 
-	// Start signature watcher: arms forceFullRescan when any rule
-	// file's content changes. Disabled wholesale via
+	// Start signature watcher: queues a rescan when any rule file's
+	// content changes. Disabled wholesale via
 	// detection.rescan_on_signature_update: false.
 	d.wg.Add(1)
 	obs.Go("signature-watcher", d.signatureWatcher)
@@ -1839,29 +1830,16 @@ func (d *Daemon) deepScanner() {
 			}
 
 			// If fanotify is active, only run checks it can't replace.
-			// If fanotify is NOT active, run the full deep tier.
-			//
-			// One exception: forceFullRescan is armed by the
-			// signature watcher when any rule file's content changes.
-			// In that case we bypass the fanotify short-list so the
-			// new ruleset gets a full sweep against existing files;
-			// without this, only files that change AFTER the rule
-			// update would catch the new patterns.
+			// If fanotify is NOT active, run the full deep tier. A rescan
+			// queued by a rules update needs neither: both sets include the
+			// rolling YARA walk, which tracks and clears it.
 			cfg := d.currentCfg()
-			sdb := store.Global()
-			rescan, rescanGen := takeSignatureRescan(&d.forceFullRescan, sdb, cfg)
 			scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
 			var findings []alert.Finding
 			var purgeChecks []string
-			switch {
-			case rescan:
-				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
-				if finishSignatureRescan(scanCtx, sdb, rescanGen) {
-					observeSignatureRescan()
-				}
-			case d.getFileMonitor() != nil:
+			if d.getFileMonitor() != nil {
 				findings, purgeChecks = checks.RunReducedDeepWithContext(scanCtx, cfg, d.store)
-			default:
+			} else {
 				findings, purgeChecks = checks.RunTierWithContext(scanCtx, cfg, d.store, checks.TierDeep)
 			}
 			d.processScanFindingsWithCoverage(cfg, findings, purgeChecks, gaps.Snapshot(), "deep")
