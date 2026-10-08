@@ -455,11 +455,39 @@ func (r *wpInstallRun) observeCloseWrite(t *testing.T, path string) {
 	r.fm.observeDropperCandidate(fileEvent{path: path, fd: int(f.Fd()), pid: 4242, mask: FAN_CLOSE_WRITE}, "pid=4242 cmd=lsphp uid=1000")
 }
 
+// replaceAtomically renames a fresh copy of body over path, as an atomic
+// writer does. The copy must be born after every earlier observation. Birth
+// times come from the kernel's coarse clock, which lags time.Now(), so a copy
+// written right after an observation can carry an earlier birth time and
+// would not count as a newer file.
 func replaceAtomically(t *testing.T, path, body string) {
 	t.Helper()
 	tmp := filepath.Join(filepath.Dir(path), "attack.tmp.example")
-	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
+	observed := time.Now()
+	deadline := observed.Add(10 * time.Second)
+	for {
+		if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		f, err := os.Open(tmp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		birth, ok := statxBirthFromFD(int(f.Fd()))
+		_ = f.Close()
+		if !ok {
+			t.Fatal("replacement has no birth time")
+		}
+		if birth.After(observed) {
+			break
+		}
+		if err := os.Remove(tmp); err != nil {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("replacement birth %v never passed %v", birth, observed)
+		}
+		time.Sleep(time.Millisecond)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		t.Fatal(err)
