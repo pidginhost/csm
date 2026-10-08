@@ -11,11 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- Scans now report cron entries that download and run scripts on minute, hourly, daily, named, randomized and boot schedules.
-
-### Fixed
-
-- Cron scans no longer flag incomplete schedule tokens or oversized schedule fields.
+- Scans now report cron entries that download and run a script on any schedule, including every minute, hourly, daily, randomized and at boot. The rules update queues a rescan of existing files.
 
 ### Changed
 
