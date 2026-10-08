@@ -412,6 +412,67 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 	return cand, att, err
 }
 
+// Settle ends every attempt a previous process left outstanding, in one
+// transaction. A reserved attempt has no intent, so it dispatched nothing:
+// it fails, keeping its charge, and its candidate retries after the
+// backoff while attempts remain. A running attempt may have applied its
+// effect: it ends unknown and keeps its intent. Nothing is dispatched
+// again. Called after this handle reserved anything, it would end that
+// work too, so the owner settles once, before its first reservation.
+func (l *AdmissionLedger) Settle() (failed, unknown int, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now, err := l.recordedClock()
+	if err != nil {
+		return 0, 0, err
+	}
+	err = l.update("settle", func(tx *bolt.Tx) error {
+		failed, unknown = 0, 0
+		var outstanding []admission.ActionID
+		if walkErr := tx.Bucket([]byte(admissionAttemptsBucket)).ForEach(func(_, v []byte) error {
+			a, decodeErr := admission.UnmarshalAttempt(v)
+			if decodeErr == nil && (a.State == admission.StateReserved || a.State == admission.StateExecuting) {
+				outstanding = append(outstanding, a.Attempt.ID)
+			}
+			return decodeErr
+		}); walkErr != nil {
+			return walkErr
+		}
+		q, txErr := l.openQueue(tx, now)
+		if txErr != nil {
+			return txErr
+		}
+		for _, id := range outstanding {
+			a, c, loadErr := attemptAndCandidate(tx, id)
+			if loadErr != nil {
+				return loadErr
+			}
+			d := admission.DispositionFailed
+			if a.State == admission.StateExecuting {
+				d = admission.DispositionUnknown
+				unknown++
+			} else {
+				failed++
+			}
+			if _, txErr = q.finishAttempt(&a, &c, d); txErr != nil {
+				return txErr
+			}
+			c.Transitions++
+			if txErr = putAttempt(tx, a); txErr != nil {
+				return txErr
+			}
+			if txErr = putCandidate(tx, c); txErr != nil {
+				return txErr
+			}
+		}
+		return q.flush()
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return failed, unknown, nil
+}
+
 // Observe reserves the next attempt of a queued candidate on lane as
 // Reserve does, charge and history included, and ends it in the same
 // transaction as an observe preview: the attempt never runs, applies

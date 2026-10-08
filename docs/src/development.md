@@ -295,8 +295,10 @@ moves from queued through reserved and executing to one outcome. A proven
 failure may requeue after a backoff, with at most three attempts in total;
 an unknown outcome never retries. Reserve and Execute report whether the
 call granted the step; reading back an attempt that is already reserved or
-running grants nothing, and the later applier must reconcile it before any
-effect is replayed.
+running grants nothing. A new process settles what the previous one left
+outstanding before it reserves anything: a reservation, which recorded no
+intent and so dispatched nothing, fails and may retry; a running attempt
+ends unknown. Nothing is dispatched again.
 
 Schema 2 of the ledger adds its queue, and the first open upgrades a schema
 1 ledger in the same transaction; legacy work that cannot fit the unassessed

@@ -195,5 +195,10 @@ type Ledger interface {
 	// Finish records an attempt outcome: applied, narrowed, failed or
 	// unknown. A proven failure with attempts left requeues the candidate.
 	Finish(ActionID, Disposition) (Candidate, AttemptRecord, error)
+	// Settle ends the attempts a previous process left outstanding and
+	// reports how many failed and how many ended unknown. The owner calls
+	// it once after opening, before it reserves anything; like Finish it
+	// needs only the stored time.
+	Settle() (int, int, error)
 	Attempt(ActionID) (AttemptRecord, error)
 }
