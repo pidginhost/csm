@@ -435,6 +435,9 @@ and still extend the episode. After an unknown outcome they are refused the
 same way but never extend the episode, which stays open until recovery
 retires the outcome. Other kinds may queue at that target, but scheduling
 and admission defer them as `pending_recovery` until the unknown is retired.
+An attempt still recorded as running, left by a crash before settlement or
+by an outcome that failed to commit, holds its target the same way until
+its outcome is recorded.
 The hold also covers candidates from earlier episodes. A missing intent
 bucket refuses the operation without changing the ledger.
 A final failure or a retired unknown outcome lets a later

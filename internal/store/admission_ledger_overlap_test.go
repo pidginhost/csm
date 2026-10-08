@@ -277,3 +277,61 @@ func TestAdmissionLedgerEarlierEpisodeUnknownTargetStillHolds(t *testing.T) {
 		t.Fatalf("released target: %v %v", granted, err)
 	}
 }
+
+// An attempt left running, by a crash before Settle or by a Finish that
+// failed to commit, may have applied its effect: it holds its exact target
+// for every other kind, as an unknown outcome does, until its outcome is
+// recorded.
+func TestAdmissionLedgerRunningAttemptHoldsItsTarget(t *testing.T) {
+	for _, reservedFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "reserve", true: "execute"}[reservedFirst], func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.begin()
+			block := f.arrive(f.arrival(evidenceSpec{cursor: "block"}))[0].Candidate
+			other := f.arrival(evidenceSpec{cursor: "other"})
+			other.Request.Kind = admission.KindPromote
+			queued := f.arrive(other)[0]
+			if queued.Err != nil {
+				t.Fatal(queued.Err)
+			}
+			var held admission.AttemptRecord
+			if reservedFirst {
+				_, a, granted, err := f.l.Reserve(queued.Candidate, admission.LaneGeneral, f.wall.Add(time.Hour))
+				if err != nil || !granted {
+					t.Fatalf("reserve other: %v %v", granted, err)
+				}
+				held = a
+			}
+			_, a, granted, err := f.l.Reserve(block, admission.LaneGeneral, f.wall.Add(time.Hour))
+			if err != nil || !granted {
+				t.Fatalf("reserve block: %v %v", granted, err)
+			}
+			if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+				t.Fatal(err)
+			}
+			// A new process opens the ledger and has not settled yet.
+			if f.l, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+				t.Fatal(err)
+			}
+			f.tickAt(f.wall.Add(time.Second))
+			before := f.snapshot()
+			if reservedFirst {
+				var intents []admission.Intent
+				intents, granted, err = f.l.ExecuteBatch([]admission.ActionID{held.Attempt.ID})
+				wantLedgerReason(t, "running target", err, admission.ReasonPendingRecovery)
+				if intents != nil || granted {
+					t.Fatalf("held batch: %+v %v", intents, granted)
+				}
+			} else {
+				_, _, granted, err = f.l.Reserve(queued.Candidate, admission.LaneGeneral, f.wall.Add(time.Hour))
+				wantLedgerReason(t, "running target", err, admission.ReasonPendingRecovery)
+				if granted {
+					t.Fatal("a running target granted a reservation")
+				}
+			}
+			if !reflect.DeepEqual(f.snapshot(), before) {
+				t.Fatal("a held step changed the ledger")
+			}
+		})
+	}
+}

@@ -168,8 +168,8 @@ type queueTx struct {
 	// outcomes are the events this transaction counts into the outcome
 	// windows when it flushes.
 	outcomes admission.OutcomeCounts
-	// unknownTargets is derived once from the intents, never episode rows.
-	unknownTargets map[string]bool
+	// heldTargets is derived once from the intents, never episode rows.
+	heldTargets map[string]bool
 }
 
 func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error) {
@@ -720,7 +720,7 @@ func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admissi
 		eligible := it.Direct || it.Corroborated
 		generalCeiling := general >= it.CeilingCost
 		reservedCeiling := eligible && reserved >= it.CeilingCost
-		held, err := q.unknownTarget(lc.c.Key.Target)
+		held, err := q.heldTarget(lc.c.Key.Target)
 		if err != nil {
 			return err
 		}
@@ -793,7 +793,7 @@ func (q *queueTx) scheduleItems(live []liveCandidate, room uint64) ([]admission.
 		if err != nil {
 			return nil, nil, err
 		}
-		held, err := q.unknownTarget(lc.c.Key.Target)
+		held, err := q.heldTarget(lc.c.Key.Target)
 		if err != nil {
 			return nil, nil, err
 		}

@@ -202,12 +202,12 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 			case !now.Before(a.ExpiresAt):
 				return refusal(admission.ReasonStale, "absolute expiry has passed")
 			}
-			held, holdErr := q.unknownTarget(c.Key.Target)
+			held, holdErr := q.heldTarget(c.Key.Target)
 			if holdErr != nil {
 				return holdErr
 			}
 			if held {
-				return refusal(admission.ReasonPendingRecovery, "an unresolved outcome holds the target")
+				return refusal(admission.ReasonPendingRecovery, "an unresolved attempt holds the target")
 			}
 			e, loadErr := loadQueueEntry(tx, a.Attempt.Candidate)
 			if loadErr != nil {
@@ -389,12 +389,15 @@ func (l *AdmissionLedger) RetireUnproven(id admission.ActionID) (admission.Candi
 	return c, a, granted, nil
 }
 
-// unknownTarget derives the exact-key recovery hold independently of the
+// heldTarget derives the exact-key recovery hold independently of the
 // current episode row, which may no longer name earlier live work (I1).
-// Reservation and scheduling reuse this read within their transaction;
-// none of their lookups changes an unknown outcome.
-func (q *queueTx) unknownTarget(target admission.Target) (bool, error) {
-	if q.unknownTargets == nil {
+// Every unresolved attempt holds its target: an unknown outcome until
+// recovery retires it, and a running attempt, which a crash before Settle or
+// a Finish that failed to commit can leave behind, until its outcome is
+// recorded. Reservation and scheduling reuse this read within their
+// transaction; none of their lookups changes an unresolved attempt.
+func (q *queueTx) heldTarget(target admission.Target) (bool, error) {
+	if q.heldTargets == nil {
 		intents := q.tx.Bucket([]byte(admissionIntentsBucket))
 		if intents == nil {
 			return false, admission.ErrCorruptRecord
@@ -412,14 +415,14 @@ func (q *queueTx) unknownTarget(target admission.Target) (bool, error) {
 			if err != nil {
 				return corruptRecord(err)
 			}
-			if a.State == admission.StateUnknown && !a.Retired {
+			if unsettled(a) {
 				targets[in.Target.Key()] = true
 			}
 			return nil
 		}); err != nil {
 			return false, err
 		}
-		q.unknownTargets = targets
+		q.heldTargets = targets
 	}
-	return q.unknownTargets[target.Key()], nil
+	return q.heldTargets[target.Key()], nil
 }
