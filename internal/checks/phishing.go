@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf16"
 
@@ -24,6 +25,15 @@ import (
 // kit that opens with a large inline stylesheet keep its form past the read
 // window and pass as clean.
 const phishingReadSize = 100000
+
+// phishingReadBuffers recycles the read windows. Most pages the walk reads
+// are a few KB, and allocating and zeroing a fresh window for each one was a
+// measurable share of the check's CPU. Only buf[:n] of a reused window holds
+// the current file.
+var phishingReadBuffers = sync.Pool{New: func() any {
+	buf := make([]byte, phishingReadSize)
+	return &buf
+}}
 
 // phishingScanMaxDepth bounds how deep CheckPhishing recurses below each doc
 // root. Real kits land in date-nested WordPress upload folders
@@ -432,7 +442,9 @@ func analyzeHTMLForPhishing(ctx context.Context, path string) *phishingResult {
 	}
 	defer func() { _ = f.Close() }()
 
-	buf := make([]byte, phishingReadSize)
+	bufp := phishingReadBuffers.Get().(*[]byte)
+	defer phishingReadBuffers.Put(bufp)
+	buf := *bufp
 	n, err := io.ReadFull(f, buf)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		markCheckIncomplete(ctx, "phishing")
@@ -1103,7 +1115,9 @@ func analyzePHPForPhishing(ctx context.Context, path string) *phishingResult {
 	}
 	defer func() { _ = f.Close() }()
 
-	buf := make([]byte, phishingReadSize)
+	bufp := phishingReadBuffers.Get().(*[]byte)
+	defer phishingReadBuffers.Put(bufp)
+	buf := *bufp
 	n, err := io.ReadFull(f, buf)
 	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
 		markCheckIncomplete(ctx, "phishing")

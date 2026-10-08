@@ -9,6 +9,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Changed
+
+- The deep phishing scan reuses its read buffers, so each scanned page costs less memory and CPU.
+
 ### Fixed
 
 - After upgrade, IP reputation stops fetching the retired Spamhaus EDROP list and ignores its cached ranges; Spamhaus DROP carries the merged entries.
