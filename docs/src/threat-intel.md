@@ -35,11 +35,29 @@ Combines multiple sources into a unified verdict:
 | Rspamd | Per-IP rolling history (if controller access configured) |
 | Upstream HTTP cache | Panel-side shared score (if `reputation.upstream` configured) |
 | Permanent blocklist | Operator-managed persistent blocks |
+| Free public feeds | Spamhaus DROP, blocklist.de, CINS Army |
 | Firewall state | Currently blocked/allowed status |
 | GeoIP | Country, city, ASN, ISP |
 | RDAP | Network name, organization (cached 24h) |
 
 **Verdicts:** clean, suspicious, malicious, blocked
+
+### Free public feeds
+
+CSM loads cached Spamhaus DROP, blocklist.de, and CINS Army data at startup
+and refreshes it daily. A failed download keeps that feed's previous data.
+These lists supplement local evidence without requiring an AbuseIPDB key.
+
+After upgrading and restarting the daemon, CSM no longer loads or downloads
+Spamhaus EDROP, which Spamhaus merged into DROP. The old
+`<state_path>/threat_db/spamhaus-edrop.txt` cache remains on disk but is ignored;
+no manual cleanup or configuration change is needed. Active-feed cache data
+and refresh timing remain in use. Feed statistics exclude EDROP data.
+
+Retiring the feed does not clear existing firewall blocks, operator-managed
+threat evidence, whitelists, or historical findings. An address listed by an
+active feed still matches. Review an existing block separately before
+unblocking it through the Threat Intel page.
 
 ### Pluggable sources
 
