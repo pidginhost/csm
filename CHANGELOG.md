@@ -11,7 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- After restart, IP reputation ignores retired Spamhaus EDROP data while retaining active-feed coverage, operator blocks, and whitelists.
+- After upgrade, IP reputation stops fetching the retired Spamhaus EDROP list and ignores its cached ranges; Spamhaus DROP carries the merged entries.
 
 ## [4.3.0] - 2026-10-08
 
