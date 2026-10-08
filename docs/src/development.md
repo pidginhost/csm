@@ -663,3 +663,7 @@ Hourly summaries count committed arrivals, memory-coalesced reports, mint refusa
 Ingress placement on an ended or in-flight candidate is a counted invalid refusal. An episode that cannot be encoded is ledger damage. Shutdown closes ingress before final drains and stops incident background response loops before stopping the owner.
 
 Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.
+
+A batch readback requires every member to be running. Direct queue requests
+can reserve a retired action ID again. If another member of that batch still
+runs, execution refuses the mixed batch without writes.

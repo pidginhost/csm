@@ -227,9 +227,12 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 			}
 			intents, attempts, candidates = append(intents, in), append(attempts, a), append(candidates, c)
 		}
-		// A batch's ID is its member set and its members run together, so
-		// either all of them ran already or none did.
+		// Retired members can be minted again under the same action IDs,
+		// so a batch ID alone cannot prove every member ran.
 		if running > 0 {
+			if running != len(ids) {
+				return admission.ErrTransitionConflict
+			}
 			return nil
 		}
 		return q.flush()

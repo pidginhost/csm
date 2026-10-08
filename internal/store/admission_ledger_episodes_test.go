@@ -169,6 +169,14 @@ func TestAdmissionLedgerUpgradesSchemaFiveHistory(t *testing.T) {
 			t.Fatalf("upgrade changed schema 5 history record %s", k)
 		}
 	}
+	wantStorage, err := admission.UnmarshalStorageState([]byte(before[storageKey]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStorage.Recovery += admission.MaxIntentBytes
+	if got, storageErr := l.Storage(); storageErr != nil || got != wantStorage {
+		t.Fatalf("upgraded storage = %+v, %v; want %+v", got, storageErr, wantStorage)
+	}
 	if _, err = OpenAdmissionLedger(db, f.reg); err != nil {
 		t.Fatalf("reopen after upgrading history: %v", err)
 	}
