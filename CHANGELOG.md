@@ -47,7 +47,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - After upgrade, automatic response previews work on cPanel hosts whose system accounts record a zero creation date, instead of failing the whole account read. They still follow `auto_response.enabled`.
 - After upgrade, admission previews report a repeated observation whose account was recreated in between as a stale identity instead of invalid. Existing stored evidence is kept.
-- Rescans after signature updates survive restarts and finish only after covering existing files, including whole folders and newly configured scan roots. They pause while `detection.rescan_on_signature_update` is off.
+- Rescans after signature updates survive restarts and finish after covering configured folders, waiting for inaccessible folders. They pause while `detection.rescan_on_signature_update` is off.
 - The OpenAPI contract now documents supported methods, settings write requirements and mail deletion errors.
 - The email password audit now checks mailboxes on cPanel hosts instead of reporting every stored hash as unauditable.
 - Bot range feed updates no longer hang when a feed host accepts the connection and never answers.

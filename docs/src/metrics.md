@@ -397,6 +397,10 @@ A saved position that represents a whole folder is reached after its entire
 subtree is covered. If the scan roots change, the rescan tracks a new lap
 from the current position without restarting the walk. A failed root lookup
 keeps the rescan pending until a lap with resolved roots covers that position.
+This includes permission and I/O failures while expanding wildcard roots,
+even when the failure hides every matching folder. Readable roots continue
+to be scanned while discovery is incomplete. Missing folders remain absent
+from the scan scope and do not hold the queue pending.
 Reordering roots, duplicate entries, and trailing separators do not discard
 the lap.
 

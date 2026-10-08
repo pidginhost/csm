@@ -504,3 +504,74 @@ func TestYARADeepSignatureRescanRestartKeepsLap(t *testing.T) {
 		t.Fatal("restart lost the lap or counted its completion more than once")
 	}
 }
+
+// filepath.Glob suppresses I/O errors, including those encountered before
+// producing a match. A hidden root must not look like an empty scan scope.
+type rescanHiddenRootOS struct {
+	OS
+	pattern string
+	parent  string
+}
+
+func (f rescanHiddenRootOS) Glob(pattern string) ([]string, error) {
+	if pattern == f.pattern {
+		return nil, nil
+	}
+	return f.OS.Glob(pattern)
+}
+
+func (f rescanHiddenRootOS) Lstat(path string) (os.FileInfo, error) {
+	if strings.HasPrefix(path, f.parent+string(filepath.Separator)) {
+		return nil, os.ErrPermission
+	}
+	return f.OS.Lstat(path)
+}
+
+func (f rescanHiddenRootOS) Stat(path string) (os.FileInfo, error) {
+	if strings.HasPrefix(path, f.parent+string(filepath.Separator)) {
+		return nil, os.ErrPermission
+	}
+	return f.OS.Stat(path)
+}
+
+func (f rescanHiddenRootOS) ReadDir(path string) ([]os.DirEntry, error) {
+	if path == f.parent {
+		return nil, os.ErrPermission
+	}
+	return f.OS.ReadDir(path)
+}
+
+func TestYARADeepSignatureRescanHiddenGlobRoot(t *testing.T) {
+	for _, tc := range []struct {
+		pattern string
+		want    []string
+	}{
+		{"a/public", []string{"mal hidden", "clean visible"}},
+		{"a/*", []string{"mal hidden", "mal nested", "clean visible"}},
+		{"*/public", []string{"mal hidden", "clean visible"}},
+		{"*/*/public", []string{"mal nested", "clean visible"}},
+	} {
+		t.Run(tc.pattern, func(t *testing.T) {
+			db := useRollingStore(t)
+			root := t.TempDir()
+			writeYARADeepFile(t, root, "a/public/hidden.dat", "mal hidden")
+			writeYARADeepFile(t, root, "a/site/public/hidden.dat", "mal nested")
+			writeYARADeepFile(t, root, "z/visible.dat", "clean visible")
+			cfg := &config.Config{AccountRoots: []string{filepath.Join(root, tc.pattern), filepath.Join(root, "z")}}
+			gen := queueSignatureRescan(t, db)
+			before := signatureRescansCompleted(t)
+			prev := osFS
+			osFS = rescanHiddenRootOS{OS: prev, pattern: cfg.AccountRoots[0], parent: filepath.Join(root, "a")}
+			t.Cleanup(func() { osFS = prev })
+			wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), "clean visible")
+			if queuedSignatureRescan(t, db) != gen || signatureRescansCompleted(t) != before {
+				t.Fatal("glob I/O failure was acknowledged as an empty scan scope")
+			}
+			osFS = prev
+			wantScanned(t, runYARADeepWindow(t, context.Background(), cfg, false), tc.want...)
+			if queuedSignatureRescan(t, db) != 0 || signatureRescansCompleted(t) != before+1 {
+				t.Fatal("recovered root discovery did not complete exactly one rescan")
+			}
+		})
+	}
+}

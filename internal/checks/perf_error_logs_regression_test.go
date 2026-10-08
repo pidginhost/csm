@@ -47,13 +47,10 @@ func TestErrorLogBloatReadFailuresPreserveBaseline(t *testing.T) {
 				}
 				return os.Stat(name)
 			}
-			mock.glob = func(pattern string) ([]string, error) {
-				if broken && failure == "root glob" {
+			mock.readDir = func(name string) ([]os.DirEntry, error) {
+				if broken && name == fx.home && failure == "root glob" {
 					return nil, fs.ErrPermission
 				}
-				return filepath.Glob(pattern)
-			}
-			mock.readDir = func(name string) ([]os.DirEntry, error) {
 				if broken && name == dir && failure == "directory" {
 					return nil, fs.ErrPermission
 				}

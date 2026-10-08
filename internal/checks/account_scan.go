@@ -460,22 +460,28 @@ func WebRootPatterns(cfg *config.Config) []string {
 //
 // Each returned path is an absolute directory that exists on disk.
 func ResolveWebRoots(cfg *config.Config) []string {
-	roots, _ := resolveWebRootsChecked(cfg)
+	roots, _ := resolveWebRootsWithGlob(cfg, func(pattern string) ([]string, bool) {
+		matches, err := osFS.Glob(pattern)
+		return matches, err == nil
+	})
 	return roots
 }
 
 // Stateful scans must distinguish an unreadable root from a removed one.
 func resolveWebRootsChecked(cfg *config.Config) ([]string, bool) {
+	return resolveWebRootsWithGlob(cfg, checkedWebRootGlob)
+}
+
+func resolveWebRootsWithGlob(cfg *config.Config, glob func(string) ([]string, bool)) ([]string, bool) {
 	patterns := WebRootPatterns(cfg)
 
 	var roots []string
 	complete := true
 	seen := make(map[string]struct{})
 	for _, pattern := range patterns {
-		matches, err := osFS.Glob(pattern)
-		if err != nil {
+		matches, patternComplete := glob(pattern)
+		if !patternComplete {
 			complete = false
-			continue
 		}
 		for _, m := range matches {
 			info, err := osFS.Stat(m)
