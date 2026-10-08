@@ -6,7 +6,86 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	bolt "go.etcd.io/bbolt"
 )
+
+// A readable intent must still prove its attempt and target before the
+// recovery hold can admit any overlapping work.
+func TestAdmissionLedgerRecoveryHoldRejectsBrokenIntentLinks(t *testing.T) {
+	for _, damage := range []string{"target", "kind", "expiry", "missing", "bucket"} {
+		for _, operation := range []string{"schedule", "wake", "reserve", "execute"} {
+			t.Run(damage+"/"+operation, func(t *testing.T) {
+				f := newLedgerFixture(t)
+				f.begin()
+				block := f.arrive(f.arrival(evidenceSpec{cursor: "block"}))[0].Candidate
+				other := f.arrival(evidenceSpec{cursor: "other"})
+				other.Request.Kind = admission.KindPromote
+				queued := f.arrive(other)[0]
+				if queued.Err != nil {
+					t.Fatal(queued.Err)
+				}
+				var reserved admission.AttemptRecord
+				if operation == "execute" {
+					_, a, granted, err := f.l.Reserve(queued.Candidate, admission.LaneGeneral, f.wall.Add(time.Hour))
+					if err != nil || !granted {
+						t.Fatalf("reserve other: %v %v", granted, err)
+					}
+					reserved = a
+				}
+				_, a, granted, err := f.l.Reserve(block, admission.LaneGeneral, f.wall.Add(time.Hour))
+				if err != nil || !granted {
+					t.Fatalf("reserve block: %v %v", granted, err)
+				}
+				if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionUnknown); err != nil {
+					t.Fatal(err)
+				}
+				if err = f.db.bolt.Update(func(tx *bolt.Tx) error {
+					if damage == "bucket" {
+						return tx.DeleteBucket([]byte(admissionIntentsBucket))
+					}
+					if damage == "missing" {
+						return deleteIntent(tx, a.Attempt.ID)
+					}
+					in, _, loadErr := loadIntent(tx, a.Attempt.ID)
+					if loadErr != nil {
+						return loadErr
+					}
+					switch damage {
+					case "target":
+						in.Target = f.target("192.0.2.11")
+					case "kind":
+						in.Kind = admission.KindChallenge
+					case "expiry":
+						in.ExpiresAt = in.ExpiresAt.Add(time.Hour)
+					}
+					return putIntent(tx, in)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				before := dbSnapshot(t, f.db)
+				switch operation {
+				case "schedule":
+					_, err = f.l.Schedule(fullSchedule)
+				case "wake":
+					_, _, err = f.l.NextWake()
+				case "reserve":
+					_, _, _, err = f.l.Reserve(queued.Candidate, admission.LaneGeneral, f.wall.Add(time.Hour))
+				case "execute":
+					_, _, err = f.l.ExecuteBatch([]admission.ActionID{reserved.Attempt.ID})
+				}
+				if !isCorrupt(err) {
+					t.Fatalf("broken intent link accepted: %v", err)
+				}
+				if !reflect.DeepEqual(dbSnapshot(t, f.db), before) {
+					t.Fatal("broken intent link changed the ledger")
+				}
+			})
+		}
+	}
+}
 
 // An unresolved outcome holds every kind on its exact target, including
 // work already queued; disjoint work proceeds without spending the held

@@ -435,7 +435,10 @@ and still extend the episode. After an unknown outcome they are refused the
 same way but never extend the episode, which stays open until recovery
 retires the outcome. Other kinds may queue at that target, but scheduling
 and admission defer them as `pending_recovery` until the unknown is retired.
-The hold also covers candidates from earlier episodes. A final failure or a retired unknown outcome lets a later
+The hold also covers candidates from earlier episodes. Scheduling and
+admission prove intent links before deriving the hold; a missing or
+inconsistent intent refuses the operation without changing the ledger.
+A final failure or a retired unknown outcome lets a later
 observation start the next generation. An episode row lives only as long as a
 candidate it names: ring eviction and history retirement clear that
 candidate reference but retain its generation, and whether its effect

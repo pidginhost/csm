@@ -104,8 +104,18 @@ func unsettled(a admission.AttemptRecord) bool {
 // outcome is unresolved, and names that candidate's kind and target and the
 // attempt's expiry. Every unresolved attempt has its intent.
 func proveIntents(tx *bolt.Tx) error {
+	return walkProvenIntents(tx, nil)
+}
+
+// Recovery holds need the same link and completeness proof as opening;
+// derive them during that walk so every intent is decoded once.
+func walkProvenIntents(tx *bolt.Tx, visit func(admission.Intent, admission.AttemptRecord)) error {
+	intents := tx.Bucket([]byte(admissionIntentsBucket))
+	if intents == nil {
+		return admission.ErrCorruptRecord
+	}
 	rows := map[admission.ActionID]bool{}
-	if err := tx.Bucket([]byte(admissionIntentsBucket)).ForEach(func(k, _ []byte) error {
+	if err := intents.ForEach(func(k, _ []byte) error {
 		id, err := admission.ParseActionID(string(k))
 		if err != nil {
 			return admission.ErrCorruptRecord
@@ -122,6 +132,9 @@ func proveIntents(tx *bolt.Tx) error {
 			return admission.ErrCorruptRecord
 		}
 		rows[id] = true
+		if visit != nil {
+			visit(in, a)
+		}
 		return nil
 	}); err != nil {
 		return err
@@ -396,22 +409,10 @@ func (l *AdmissionLedger) RetireUnproven(id admission.ActionID) (admission.Candi
 func (q *queueTx) unknownTarget(target admission.Target) (bool, error) {
 	if q.unknownTargets == nil {
 		targets := map[string]bool{}
-		if err := q.tx.Bucket([]byte(admissionIntentsBucket)).ForEach(func(k, v []byte) error {
-			in, err := admission.UnmarshalIntent(v)
-			if err != nil {
-				return err
-			}
-			if in.Action != admission.ActionID(k) {
-				return admission.ErrCorruptRecord
-			}
-			a, err := loadAttempt(q.tx, in.Action)
-			if err != nil {
-				return corruptRecord(err)
-			}
+		if err := walkProvenIntents(q.tx, func(in admission.Intent, a admission.AttemptRecord) {
 			if a.State == admission.StateUnknown && !a.Retired {
 				targets[in.Target.Key()] = true
 			}
-			return nil
 		}); err != nil {
 			return false, err
 		}
