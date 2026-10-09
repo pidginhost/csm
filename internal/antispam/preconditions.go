@@ -61,6 +61,7 @@ type CommandResult struct {
 type PathFacts struct {
 	Path string
 	UID  int
+	GID  int
 	// Mode is the full lstat mode, including type bits.
 	Mode fs.FileMode
 	// ExtACL is true when the object carries POSIX ACL entries beyond its
@@ -83,6 +84,10 @@ type SocketFacts struct {
 	// PeerUID is the listener's SO_PEERCRED uid, read during the probe, or -1
 	// when unavailable. A failed /ping does not invalidate known credentials.
 	PeerUID int
+	// EximUID and EximGID are Exim's runtime user and group (exim_user and
+	// exim_group, mailnull and mail on cPanel), or -1 when unknown.
+	EximUID int
+	EximGID int
 }
 
 // HostFacts is everything CheckHost reads. A collector fills it; the checks
@@ -249,6 +254,7 @@ func checkSocket(s SocketFacts) []Problem {
 		out = append(out, Problem{Code: CodeSocket, Severity: sev, Detail: fmt.Sprintf(format, args...)})
 	}
 	trusted := func(uid int) bool { return uid == 0 || uid == s.RspamdUID }
+	eximKnown := s.EximUID >= 0 && s.EximGID >= 0
 	switch {
 	case s.Err != nil:
 		add(Temporary, "cannot stat the rspamd socket; check file access")
@@ -267,6 +273,11 @@ func checkSocket(s SocketFacts) []Problem {
 		if len(s.Parents) == 0 {
 			add(Temporary, "the socket's parent directories were not checked")
 		}
+		if !eximKnown {
+			add(Temporary, "Exim's runtime user is unknown")
+		} else if !permits(s.Socket, s.EximUID, s.EximGID, 0o2) {
+			add(Definite, "Exim's runtime user (uid %d) cannot write to %s; bind it with mode=0666", s.EximUID, s.Socket.Path)
+		}
 	}
 	for _, p := range s.Parents {
 		switch {
@@ -278,6 +289,8 @@ func checkSocket(s SocketFacts) []Problem {
 			add(Definite, "%s is writable by group or others", p.Path)
 		case p.ExtACL:
 			add(Definite, "%s carries extra ACL entries", p.Path)
+		case eximKnown && !permits(p, s.EximUID, s.EximGID, 0o1):
+			add(Definite, "Exim's runtime user (uid %d) cannot search %s", s.EximUID, p.Path)
 		}
 	}
 	if s.Err != nil || s.Missing {
@@ -294,6 +307,23 @@ func checkSocket(s SocketFacts) []Problem {
 		add(Definite, "the socket listener runs as uid %d; want root or the rspamd user", s.PeerUID)
 	}
 	return out
+}
+
+// permits reports whether uid and gid get the want bits (2 write, 1 search)
+// on p from its mode bits. CSM's own probe runs as root, so this is how it
+// knows Exim's user can connect. Extra ACL entries are not read here.
+func permits(p PathFacts, uid, gid int, want fs.FileMode) bool {
+	perm := p.Mode.Perm()
+	switch {
+	case uid == 0:
+		return true
+	case uid == p.UID:
+		return perm>>6&want == want
+	case gid == p.GID:
+		return perm>>3&want == want
+	default:
+		return perm&want == want
+	}
 }
 
 func checkRspamdVersions(daemon, adm CommandResult) []Problem {

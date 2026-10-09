@@ -7,7 +7,11 @@ import (
 	"testing"
 )
 
-const rspamdUID = 979
+const (
+	rspamdUID = 979
+	// eximUID and eximGID are cPanel's mailnull user and mail group.
+	eximUID, eximGID = 47, 12
+)
 
 // goodFacts is a host that meets every precondition, shaped like the spike's
 // scratch host.
@@ -24,14 +28,16 @@ func goodFacts() HostFacts {
 		RspamdVersion:   CommandResult{Stdout: "Rspamd daemon version 4.2.1\n"},
 		RspamadmVersion: CommandResult{Stdout: "Rspamadm 4.2.1\n"},
 		Socket: SocketFacts{
-			Socket: PathFacts{Path: DefaultSocket, UID: rspamdUID, Mode: fs.ModeSocket | 0o666},
+			Socket: PathFacts{Path: DefaultSocket, UID: rspamdUID, GID: rspamdUID, Mode: fs.ModeSocket | 0o666},
 			Parents: []PathFacts{
 				{Path: "/", UID: 0, Mode: fs.ModeDir | 0o555},
 				{Path: "/run", UID: 0, Mode: fs.ModeDir | 0o755},
-				{Path: "/run/rspamd", UID: rspamdUID, Mode: fs.ModeDir | 0o755},
+				{Path: "/run/rspamd", UID: rspamdUID, GID: rspamdUID, Mode: fs.ModeDir | 0o755},
 			},
 			RspamdUID: rspamdUID,
 			PeerUID:   rspamdUID,
+			EximUID:   eximUID,
+			EximGID:   eximGID,
 		},
 	}
 }
@@ -106,6 +112,11 @@ func TestCheckHostProblems(t *testing.T) {
 			f.SpamdDisabled, f.SpamdDisabledErr = false, boom
 		}, CodeSpamAssassin, Temporary},
 		{"named lists incomplete", func(f *HostFacts) { f.NamedLists = f.NamedLists[:1] }, CodeNamedList, Temporary},
+		// CSM's own probe runs as root, so only the mode bits show whether
+		// Exim's mailnull user can reach the socket.
+		{"exim user unknown", func(f *HostFacts) { f.Socket.EximUID = -1 }, CodeSocket, Temporary},
+		{"socket closed to exim", func(f *HostFacts) { f.Socket.Socket.Mode = fs.ModeSocket | 0o660 }, CodeSocket, Definite},
+		{"parent closed to exim", func(f *HostFacts) { f.Socket.Parents[2].Mode = fs.ModeDir | 0o750 }, CodeSocket, Definite},
 		{"ungated router", func(f *HostFacts) {
 			f.GeneratedConf += "begin routers\nfwd:\n  driver = redirect\n  condition = ${if >{$spam_score_int}{100}}\n"
 		}, CodeSpamScoreRules, Definite},
@@ -321,5 +332,16 @@ func TestCheckHostDiagnosticsDoNotExposeProbeOutput(t *testing.T) {
 				t.Error("finding must contain a bounded explanation without raw probe diagnostics")
 			}
 		})
+	}
+}
+
+func TestCheckHostAcceptsSocketThroughEximGroup(t *testing.T) {
+	f := goodFacts()
+	f.Socket.Socket.Mode = fs.ModeSocket | 0o660
+	f.Socket.Socket.GID = eximGID
+	f.Socket.Parents[2].Mode = fs.ModeDir | 0o750
+	f.Socket.Parents[2].GID = eximGID
+	if got := CheckHost(f); len(got) != 0 {
+		t.Fatalf("socket reachable through Exim's group reported %+v", got)
 	}
 }
