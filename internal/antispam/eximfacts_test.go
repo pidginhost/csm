@@ -496,3 +496,48 @@ func TestLocateBlocksRejectsStatementContinuingAfterEnd(t *testing.T) {
 		}
 	}
 }
+
+// cPanel's no_forward_outbound_spam_over_int renders this router (seen on a
+// cPanel 11.138 host). Nothing gates a router, so any $spam_* read there acts
+// on CSM's score for accounts that opted out.
+func TestUngatedSpamUsesOutsideACLs(t *testing.T) {
+	conf := `received_header_text = Received: ${spam_score}
+begin acl
+acl_smtp_data:
+  accept
+begin routers
+reject_forwarded_mail_marked_as_spam:
+  driver = redirect
+  domains = ! +local_domains
+  condition = ${if eq {$spam_score_int}{}{0}{${if >{$spam_score_int}{100}{1}{0}}}}
+  allow_fail
+localuser_spam:
+  condition = ${if match{$h_x-spam-status:}{\N^Yes\N}{true}{false}}
+begin transports
+spam_pipe:
+  # headers_add = X-Score: $spam_score
+  headers_add = X-Score: $spam_score
+`
+	if got, want := ungated(t, conf), []int{1, 9, 16}; !reflect.DeepEqual(got, want) {
+		t.Errorf("UngatedSpamUses = %v, want %v", got, want)
+	}
+}
+
+func TestFilterSpamUses(t *testing.T) {
+	filter := `# Exim filter
+if $h_x-spam-score: is above 100 then
+  fail text "spam"
+endif
+# if $spam_score_int is above 50
+if $spam_score_int is above 50 then
+  seen finish
+endif
+if ${spam_bar} contains "+++" then fail endif
+`
+	if got, want := FilterSpamUses(filter), []int{6, 9}; !reflect.DeepEqual(got, want) {
+		t.Errorf("FilterSpamUses = %v, want %v", got, want)
+	}
+	if got := FilterSpamUses(""); len(got) != 0 {
+		t.Errorf("empty filter flagged at %v", got)
+	}
+}

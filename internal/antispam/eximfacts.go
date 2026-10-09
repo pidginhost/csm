@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -209,11 +210,12 @@ func splitACLVerb(line string) (string, string) {
 	return "", line
 }
 
-// UngatedSpamUses returns the 1-based line numbers of ACL statements, outside
-// CSM blocks, that run a spam scan or read $spam_* without cPanel's
-// ${perl{spamd_is_available}} gate. cPanel's spam-score deny, ratelimit and
-// forwarding options generate such statements; they would act on CSM's scan
-// with their own threshold and ignore an account's opt-out.
+// UngatedSpamUses returns the 1-based line numbers, outside CSM blocks, of ACL
+// statements that run a spam scan or read $spam_* without cPanel's
+// ${perl{spamd_is_available}} gate, and of any other line that reads $spam_*.
+// cPanel's spam-score deny, ratelimit and forwarding options generate such
+// statements and routers; they would act on CSM's scan with their own
+// threshold and ignore an account's opt-out.
 func UngatedSpamUses(conf string) ([]int, error) {
 	var out []int
 	var macros []eximMacro
@@ -283,6 +285,14 @@ func UngatedSpamUses(conf string) ([]int, error) {
 			continue
 		}
 		if !inACL {
+			// Nothing gates a router, transport or main option, so any spam
+			// read there acts on CSM's score for every account.
+			for _, expanded := range lines {
+				if readsSpamVariable(expanded) {
+					out = append(out, raw.number)
+					break
+				}
+			}
 			continue
 		}
 		newVerb, uses, gate := "", false, true
@@ -295,7 +305,7 @@ func UngatedSpamUses(conf string) ([]int, error) {
 			if word != "" && (newVerb == "" || word == "require") {
 				newVerb = word
 			}
-			uses = uses || spamCondRe.MatchString(rest) || strings.Contains(rest, "$spam_") || strings.Contains(rest, "${spam_")
+			uses = uses || spamCondRe.MatchString(rest) || readsSpamVariable(rest)
 			name, value, ok := strings.Cut(rest, "=")
 			gate = gate && ok && strings.TrimSpace(name) == "condition" && strings.TrimSpace(value) == "${perl{spamd_is_available}}"
 		}
@@ -318,7 +328,29 @@ func UngatedSpamUses(conf string) ([]int, error) {
 		}
 	}
 	flush()
+	sort.Ints(out)
 	return out, nil
+}
+
+// FilterSpamUses returns the 1-based lines of an Exim system filter that read
+// $spam_*. The filter runs at delivery, after CSM's scan, for every account.
+// A header test such as $h_x-spam-score: is not a read of CSM's score.
+func FilterSpamUses(filter string) []int {
+	var out []int
+	for i, raw := range strings.Split(filter, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		if readsSpamVariable(line) {
+			out = append(out, i+1)
+		}
+	}
+	return out
+}
+
+func readsSpamVariable(s string) bool {
+	return strings.Contains(s, "$spam_") || strings.Contains(s, "${spam_")
 }
 
 // HasCutthrough reports whether a generated exim.conf enables cutthrough

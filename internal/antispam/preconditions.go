@@ -98,6 +98,9 @@ type HostFacts struct {
 	GeneratedErr  error
 	LocalConf     string // /etc/exim.conf.local; "" when absent
 	LocalErr      error
+	// SystemFilter is the file `exim -bP system_filter` names; "" when none.
+	SystemFilter    string
+	SystemFilterErr error
 	// NamedLists holds one result per NamedListProbes entry, in order.
 	NamedLists    []CommandResult
 	SpamdDisabled bool // /etc/spamddisable exists
@@ -173,7 +176,7 @@ func CheckHost(f HostFacts) []Problem {
 			add(CodeUnverifiable, Temporary, "cannot verify the generated Exim configuration: %v", err)
 		} else {
 			if len(lines) > 0 {
-				add(CodeSpamScoreRules, Definite, "Exim ACL statements at lines %v act on spam scores outside cPanel's SpamAssassin gate; turn off cPanel's spam-score deny, ratelimit, forwarding and outgoing-scan options", lines)
+				add(CodeSpamScoreRules, Definite, "Exim configuration lines %v act on spam scores outside cPanel's SpamAssassin gate; turn off cPanel's spam-score deny, ratelimit, forwarding and outgoing-scan options", lines)
 			}
 			if cut {
 				add(CodeCutthrough, Definite, "cutthrough delivery is enabled; DATA-time header changes need it off")
@@ -182,6 +185,12 @@ func CheckHost(f HostFacts) []Problem {
 				add(CodeMarkers, Definite, "generated Exim configuration: %v", errL)
 			}
 		}
+	}
+
+	if f.SystemFilterErr != nil {
+		add(CodeSpamScoreRules, Temporary, "cannot read Exim's system filter; check file access")
+	} else if lines := FilterSpamUses(f.SystemFilter); len(lines) > 0 {
+		add(CodeSpamScoreRules, Definite, "Exim's system filter reads spam scores at lines %v; remove those rules so opted-out accounts are not affected", lines)
 	}
 
 	if f.LocalErr != nil {

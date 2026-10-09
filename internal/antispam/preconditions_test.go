@@ -106,6 +106,13 @@ func TestCheckHostProblems(t *testing.T) {
 			f.SpamdDisabled, f.SpamdDisabledErr = false, boom
 		}, CodeSpamAssassin, Temporary},
 		{"named lists incomplete", func(f *HostFacts) { f.NamedLists = f.NamedLists[:1] }, CodeNamedList, Temporary},
+		{"ungated router", func(f *HostFacts) {
+			f.GeneratedConf += "begin routers\nfwd:\n  driver = redirect\n  condition = ${if >{$spam_score_int}{100}}\n"
+		}, CodeSpamScoreRules, Definite},
+		{"system filter spam rule", func(f *HostFacts) {
+			f.SystemFilter = "if $spam_score_int is above 50 then\n  seen finish\nendif\n"
+		}, CodeSpamScoreRules, Definite},
+		{"system filter unreadable", func(f *HostFacts) { f.SystemFilterErr = boom }, CodeSpamScoreRules, Temporary},
 		{"generated include", func(f *HostFacts) { f.GeneratedConf += ".include /etc/exim_extra.conf\n" }, CodeUnverifiable, Temporary},
 		{"local include", func(f *HostFacts) { f.LocalConf += ".include_if_exists /etc/exim_extra.conf\n" }, CodeUnverifiable, Temporary},
 		{"generated macro bomb", func(f *HostFacts) {
