@@ -11,7 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
-- Scans now report cron entries that download and run a script on any numeric or `@` schedule, including every minute, hourly, daily and at boot. The rules update queues a rescan of existing files.
+- Scans report cron entries that download and run a script on any numeric or `@` schedule, including every minute, hourly, daily, at boot and with a month or weekday name. The rules update queues a rescan of existing files.
 
 ### Changed
 
@@ -19,7 +19,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Scheduled and real-time scans now agree on cron month and weekday names and ignore lookalike Unicode letters.
 - After upgrade, IP reputation stops fetching the retired Spamhaus EDROP list and ignores its cached ranges; Spamhaus DROP carries the merged entries.
 
 ## [4.3.0] - 2026-10-08
