@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- CSM is now built with Go 1.27.2, which fixes standard library security flaws in HTTP/2, TLS and HTML templates.
 - Scans report cron entries that download and run a script on any numeric or `@` schedule, including every minute, hourly, daily, at boot and with a month or weekday name. The rules update queues a rescan of existing files.
 
 ### Changed

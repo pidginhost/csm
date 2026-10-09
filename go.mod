@@ -1,6 +1,6 @@
 module github.com/pidginhost/csm
 
-go 1.27.1
+go 1.27.2
 
 require (
 	github.com/VKCOM/php-parser v0.8.2
@@ -18,7 +18,7 @@ require (
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/tdewolff/parse/v2 v2.8.16
 	go.etcd.io/bbolt v1.5.0
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/text v0.42.0
 	gopkg.in/yaml.v3 v3.0.1
