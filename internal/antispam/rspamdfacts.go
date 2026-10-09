@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-var rspamdVersionRe = regexp.MustCompile(`(?i)\brspam(?:d daemon version|adm)\s+(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?`)
+var rspamdVersionRe = regexp.MustCompile(`(?i)\brspam(?:d daemon version|adm)\s+(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?(?:[ \t\r\n+-]|$)`)
 
 // ParseRspamdVersion reads `rspamd --version` or `rspamadm --version` and
 // returns the dotted version and its major number.
@@ -52,22 +52,40 @@ type Actions struct {
 }
 
 // ParseActions reads `rspamadm configdump -j actions`. Keys other than the
-// four CSM sets are ignored; a non-numeric value for one of those is an error.
+// four CSM sets are ignored. Both underscored and spaced names are accepted;
+// ambiguous aliases or a non-numeric, non-null value are errors.
 func ParseActions(out []byte) (Actions, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return Actions{}, fmt.Errorf("configdump actions: %w", err)
 	}
+	if raw == nil {
+		return Actions{}, errors.New("configdump actions: expected an object")
+	}
 	get := func(key string) (*float64, error) {
-		v, ok := raw[key]
-		if !ok || string(v) == "null" {
-			return nil, nil
+		names := []string{key}
+		if alias := strings.ReplaceAll(key, "_", " "); alias != key {
+			names = append(names, alias)
 		}
-		var f float64
-		if err := json.Unmarshal(v, &f); err != nil {
-			return nil, fmt.Errorf("configdump action %s: %w", key, err)
+		var value *float64
+		seen := false
+		for _, name := range names {
+			v, ok := raw[name]
+			if !ok {
+				continue
+			}
+			var f *float64
+			if err := json.Unmarshal(v, &f); err != nil {
+				return nil, fmt.Errorf("configdump action %s: %w", name, err)
+			}
+			same := value == nil && f == nil || value != nil && f != nil && *value == *f
+			if seen && !same {
+				// The dump omits UCL priorities, so alias precedence is unknown.
+				return nil, fmt.Errorf("configdump action %s: conflicting aliases %q and %q", key, key, name)
+			}
+			value, seen = f, true
 		}
-		return &f, nil
+		return value, nil
 	}
 	var a Actions
 	var err error
