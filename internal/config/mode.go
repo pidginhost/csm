@@ -51,6 +51,7 @@ func observeConflicts(cfg *Config) []observeConflict {
 	add(cfg.PHPShield.Enabled, "php_shield.enabled", "false")
 	add(cfg.BPFEnforcement.Enabled, "bpf_enforcement.enabled", "false")
 	add(cfg.EmailProtection.ForwardGuard.Enabled, "email_protection.forward_guard.enabled", "false")
+	add(cfg.EmailProtection.Antispam.Enabled, "email_protection.antispam.enabled", "false")
 	add(cfg.EmailAV.QuarantineInfected, "email_av.quarantine_infected", "false")
 	add(cfg.EmailAV.Enabled && cfg.EmailAV.FailMode == "tempfail", "email_av.fail_mode", "open")
 	add(cfg.AutoResponse.PHPRelay.Freeze != nil && *cfg.AutoResponse.PHPRelay.Freeze,
