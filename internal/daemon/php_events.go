@@ -85,6 +85,8 @@ func listenPHPShieldEventSocket(path string) (phpEventPacketListener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listening on PHP Shield event socket: %w", err)
 	}
+	// #nosec G302 -- write-only for every uid: tenant PHP processes must send
+	// events, and only the daemon can read them.
 	if chmodErr := os.Chmod(path, phpEventSocketMode); chmodErr != nil {
 		_ = conn.Close()
 		_ = os.Remove(path)
