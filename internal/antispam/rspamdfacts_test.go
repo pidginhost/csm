@@ -69,7 +69,7 @@ func TestCheckRspamd(t *testing.T) {
 		t.Fatalf("got %v, want only the asn conflict", got)
 	}
 	delete(enabled, "asn")
-	if got := CheckRspamd(enabled, Actions{Reject: f(15), AddHeader: f(6)}, s); len(got) != 0 {
+	if got = CheckRspamd(enabled, Actions{Reject: f(15), AddHeader: f(6)}, s); len(got) != 0 {
 		t.Errorf("clean state reported %v", got)
 	}
 	got = CheckRspamd(enabled, Actions{Reject: f(20), Greylist: f(4), RewriteSubject: f(8)}, s)
