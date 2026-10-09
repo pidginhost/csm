@@ -12,8 +12,12 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// dropEpisodes removes the schema 6 episode bucket and sequence.
+// dropEpisodes removes the schema 6 episode bucket and sequence, and the
+// schema 7 intents.
 func dropEpisodes(tx *bolt.Tx) error {
+	if err := dropIntents(tx); err != nil {
+		return err
+	}
 	if tx.Bucket([]byte(admissionEpisodesBucket)) != nil {
 		if err := tx.DeleteBucket([]byte(admissionEpisodesBucket)); err != nil {
 			return err
@@ -88,7 +92,7 @@ func TestAdmissionLedgerUpgradesSchemaFive(t *testing.T) {
 			t.Fatalf("upgrade changed schema 5 record %s", k)
 		}
 	}
-	if after[schemaKey] != string([]byte{6}) {
+	if after[schemaKey] != string([]byte{admissionSchemaVersion}) {
 		t.Fatalf("upgraded schema = %q", after[schemaKey])
 	}
 	if s := episodeSequenceIn(t, db); s.Nonce == ([16]byte{}) || s.Next != 0 {
@@ -157,10 +161,23 @@ func TestAdmissionLedgerUpgradesSchemaFiveHistory(t *testing.T) {
 	}
 	after := dbSnapshot(t, db)
 	schemaKey := admissionMetaBucket + ":" + string(admissionSchemaKey)
+	// The schema 7 step holds the unresolved outcome's intent in the
+	// reserve; every other record stays.
+	storageKey := admissionQueueStateBucket + ":" + string(storageStateKey)
 	for k, v := range before {
-		if k != schemaKey && after[k] != v {
+		if k != schemaKey && k != storageKey && after[k] != v {
 			t.Fatalf("upgrade changed schema 5 history record %s", k)
 		}
+	}
+	wantStorage, err := admission.UnmarshalStorageState([]byte(before[storageKey]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStorage.Recovery += admission.MaxIntentBytes
+	// The unknown outcome also holds the slot of the row that retires it.
+	wantStorage.AuditSlots++
+	if got, storageErr := l.Storage(); storageErr != nil || got != wantStorage {
+		t.Fatalf("upgraded storage = %+v, %v; want %+v", got, storageErr, wantStorage)
 	}
 	if _, err = OpenAdmissionLedger(db, f.reg); err != nil {
 		t.Fatalf("reopen after upgrading history: %v", err)
@@ -905,14 +922,10 @@ func TestAdmissionLedgerDeletedEpisodeAttemptStillAnswers(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.begin()
 	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
-	_, a, _, err := f.l.Reserve(first, admission.LaneGeneral, f.wall.Add(time.Hour))
+	// A verified block would end the episode at its expiry, before its
+	// details could be retired (I1); a preview does not.
+	_, _, _, err := f.l.Observe(first, admission.LaneGeneral, f.wall.Add(time.Hour))
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionApplied); err != nil {
 		t.Fatal(err)
 	}
 	f.tickAt(f.wall.Add(time.Minute))
@@ -1034,23 +1047,23 @@ func TestAdmissionLedgerVerifiedBlockEndsItsEpisodeAtItsExpiry(t *testing.T) {
 	}
 }
 
-// Live work of another kind holds the episode past the block expiry;
-// reports it accepted during the hold cannot later become a new episode.
+// A degraded clock holds the episode past the block expiry; reports it
+// accepted during the hold cannot later become a new episode.
 func TestAdmissionLedgerEarlierEpisodeReportsStayEarlier(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.begin()
 	first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
-	other := f.arrival(evidenceSpec{cursor: "promotion"})
-	other.Request.Kind = admission.KindPromote
-	kept := f.arrive(other)[0].Candidate
 	expiry := ledgerT0.Add(20 * time.Minute)
 	f.finishArrival(first, expiry, admission.DispositionApplied)
-	f.tickAt(ledgerT0.Add(25 * time.Minute))
+	// A degraded reading holds the episode past its verified boundary: the
+	// wall moves two seconds further than the elapsed time.
+	f.wall, f.since = ledgerT0.Add(25*time.Minute), f.since+25*time.Minute-2*time.Second
+	if tick, err := f.l.Tick(admission.ClockReading{Wall: f.wall, BootID: ledgerBoot, SinceBoot: f.since}); err != nil || !tick.Degraded {
+		t.Fatalf("tick = %+v, %v", tick, err)
+	}
 	old := f.arrival(evidenceSpec{cursor: "while-held"})
 	wantLedgerReason(t, "held episode", f.arrive(old)[0].Err, admission.ReasonExistingEffect)
-	if _, err := f.l.Terminate(kept, admission.ReasonPolicy); err != nil {
-		t.Fatal(err)
-	}
+	f.tickAt(f.wall.Add(time.Second))
 	wantLedgerReason(t, "report after hold", f.arrive(old)[0].Err, admission.ReasonStale)
 	f.tickAt(ledgerT0.Add(26 * time.Minute))
 	next := f.arrive(f.arrival(evidenceSpec{cursor: "next-episode"}))[0]

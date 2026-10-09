@@ -41,16 +41,12 @@ func startEpisodeSequence(tx *bolt.Tx) error {
 
 // upgradeLedgerToSchemaSix adds the episode bucket and sequence to a schema
 // 5 ledger inside the opening transaction. Candidates queued before keep
-// the episodes they were given; no episode row is invented for them. This
-// upgrade completes the chain and records the schema.
+// the episodes they were given; no episode row is invented for them.
 func upgradeLedgerToSchemaSix(tx *bolt.Tx) error {
 	if _, err := tx.CreateBucket([]byte(admissionEpisodesBucket)); err != nil {
 		return err
 	}
-	if err := startEpisodeSequence(tx); err != nil {
-		return err
-	}
-	return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaVersion})
+	return startEpisodeSequence(tx)
 }
 
 func loadEpisode(tx *bolt.Tx, key string) (admission.Episode, bool, error) {
@@ -154,7 +150,15 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 			if c.Key != (admission.CandidateKey{Kind: line.Kind, Target: req.Target, Episode: cur.ID, Generation: line.Generation}) {
 				return "", false, admission.ErrCorruptRecord
 			}
-			states = append(states, admission.LineStateOf(c))
+			retired := false
+			if c.State == admission.StateUnknown {
+				a, attemptErr := currentAttempt(q.tx, c)
+				if attemptErr != nil {
+					return "", false, attemptErr
+				}
+				retired = a.Retired
+			}
+			states = append(states, admission.LineStateOf(c, retired))
 		}
 	}
 	choice, err := admission.Place(at, states, req.Kind, e.ObservedAt(), l.degraded, q.takeEpisode)
@@ -195,15 +199,16 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 }
 
 // forgetLine clears a deleted candidate reference but retains the kind's
-// generation and attempt proof. The last retained candidate takes the row,
-// so counters never reset within a surviving episode.
+// generation and whether its effect answers the kind. The last retained
+// candidate takes the row, so counters never reset within a surviving
+// episode.
 func (q *queueTx) forgetLine(id admission.CandidateID, c admission.Candidate) error {
 	key := c.Key.Target.Key()
 	e, found, err := loadEpisode(q.tx, key)
 	if err != nil || !found {
 		return err
 	}
-	rest, had := e.WithoutCandidate(id, c.Attempts > 0)
+	rest, had := e.WithoutCandidate(id, c.State == admission.StateVerified || c.State == admission.StateObserved)
 	switch {
 	case !had:
 		return nil

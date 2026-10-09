@@ -30,14 +30,15 @@ const (
 	admissionOutboxBucket     = "adm:outbox"
 	admissionWindowsBucket    = "adm:windows"
 	admissionEpisodesBucket   = "adm:episodes"
-	admissionSchemaVersion    = 6
+	admissionIntentsBucket    = "adm:intents"
+	admissionSchemaVersion    = 7
 )
 
 var (
 	// admissionSchemaOneBuckets are the buckets of the schema 1 layout.
 	// Schema 2 adds the queue buckets, schema 3 the charges bucket, schema
-	// 4 the storage buckets, schema 5 the outbox and outcome buckets and
-	// schema 6 the episode bucket.
+	// 4 the storage buckets, schema 5 the outbox and outcome buckets, schema
+	// 6 the episode bucket and schema 7 the intent bucket.
 	admissionSchemaOneBuckets   = []string{admissionMetaBucket, admissionEvidenceBucket, admissionReportsBucket, admissionCandidatesBucket, admissionAttemptsBucket}
 	admissionQueueBuckets       = []string{admissionQueueBucket, admissionQueueStateBucket}
 	admissionSchemaTwoBuckets   = append(append([]string(nil), admissionSchemaOneBuckets...), admissionQueueBuckets...)
@@ -46,7 +47,8 @@ var (
 	admissionSchemaFourBuckets  = append(append([]string(nil), admissionSchemaThreeBuckets...), admissionStorageBuckets...)
 	admissionOutboxBuckets      = []string{admissionOutboxBucket, admissionWindowsBucket}
 	admissionSchemaFiveBuckets  = append(append([]string(nil), admissionSchemaFourBuckets...), admissionOutboxBuckets...)
-	admissionBuckets            = append(append([]string(nil), admissionSchemaFiveBuckets...), admissionEpisodesBucket)
+	admissionSchemaSixBuckets   = append(append([]string(nil), admissionSchemaFiveBuckets...), admissionEpisodesBucket)
+	admissionBuckets            = append(append([]string(nil), admissionSchemaSixBuckets...), admissionIntentsBucket)
 	admissionSchemaKey          = []byte("schema")
 	admissionClockKey           = []byte("clock")
 	admissionClockPendingKey    = []byte("clock_pending")
@@ -107,7 +109,7 @@ func refusal(r admission.Reason, detail string) error {
 }
 
 // OpenAdmissionLedger opens the ledger on db, creating its buckets on first
-// use and upgrading a schema 1 to 5 ledger in the same transaction. The
+// use and upgrading a schema 1 to 6 ledger in the same transaction. The
 // registry must be sealed: the set of producers cannot change under a
 // running ledger.
 func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, error) {
@@ -183,6 +185,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaSix(tx); err != nil {
 					return err
 				}
+				if err := upgradeLedgerToSchemaSeven(tx); err != nil {
+					return err
+				}
 			case len(schema) == 1 && schema[0] == 2:
 				if existing != len(admissionSchemaTwoBuckets) || present(admissionSchemaTwoBuckets) != existing {
 					return admission.ErrCorruptRecord
@@ -199,6 +204,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaSix(tx); err != nil {
 					return err
 				}
+				if err := upgradeLedgerToSchemaSeven(tx); err != nil {
+					return err
+				}
 			case len(schema) == 1 && schema[0] == 3:
 				if existing != len(admissionSchemaThreeBuckets) || present(admissionSchemaThreeBuckets) != existing {
 					return admission.ErrCorruptRecord
@@ -212,6 +220,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaSix(tx); err != nil {
 					return err
 				}
+				if err := upgradeLedgerToSchemaSeven(tx); err != nil {
+					return err
+				}
 			case len(schema) == 1 && schema[0] == 4:
 				if existing != len(admissionSchemaFourBuckets) || present(admissionSchemaFourBuckets) != existing {
 					return admission.ErrCorruptRecord
@@ -222,11 +233,24 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaSix(tx); err != nil {
 					return err
 				}
+				if err := upgradeLedgerToSchemaSeven(tx); err != nil {
+					return err
+				}
 			case len(schema) == 1 && schema[0] == 5:
 				if existing != len(admissionSchemaFiveBuckets) || present(admissionSchemaFiveBuckets) != existing {
 					return admission.ErrCorruptRecord
 				}
 				if err := upgradeLedgerToSchemaSix(tx); err != nil {
+					return err
+				}
+				if err := upgradeLedgerToSchemaSeven(tx); err != nil {
+					return err
+				}
+			case len(schema) == 1 && schema[0] == 6:
+				if existing != len(admissionSchemaSixBuckets) || present(admissionSchemaSixBuckets) != existing {
+					return admission.ErrCorruptRecord
+				}
+				if err := upgradeLedgerToSchemaSeven(tx); err != nil {
 					return err
 				}
 			case len(schema) == 1 && schema[0] == admissionSchemaVersion:
@@ -259,6 +283,9 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 			return err
 		}
 		if err := proveEpisodes(tx); err != nil {
+			return err
+		}
+		if err := proveIntents(tx); err != nil {
 			return err
 		}
 		meta := tx.Bucket([]byte(admissionMetaBucket))

@@ -31,10 +31,11 @@ var admissionChecks = func() map[string]bool {
 }()
 
 // admissionAttemptResults are the steps an audit row records: the
-// reservation, the execution and each outcome of an attempt.
+// reservation, the execution, each outcome of an attempt and the retirement
+// of an unknown one.
 var admissionAttemptResults = map[string]bool{
 	"reserved": true, "executing": true, "applied": true, "narrowed": true,
-	"dry_run": true, "observe": true, "failed": true, "unknown": true,
+	"dry_run": true, "observe": true, "failed": true, "unknown": true, "expired_unproven": true,
 }
 
 // admissionDecisions are what a summary counts.

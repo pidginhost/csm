@@ -66,7 +66,7 @@ func TestAdmissionLedgerUpgradesSchemaFour(t *testing.T) {
 			t.Fatalf("upgrade changed schema 4 record %s", k)
 		}
 	}
-	if after[schemaKey] != string([]byte{6}) {
+	if after[schemaKey] != string([]byte{7}) {
 		t.Fatalf("upgraded schema = %q", after[schemaKey])
 	}
 	if err := db.bolt.View(func(tx *bolt.Tx) error {
@@ -96,13 +96,13 @@ func TestAdmissionLedgerUpgradesSchemaFour(t *testing.T) {
 	}
 }
 
-// Every upgrade path ends at schema 6 with the fixed notice records and an
-// episode sequence.
-func TestAdmissionLedgerUpgradeChainsReachSchemaSix(t *testing.T) {
+// Every upgrade path ends at schema 7 with the fixed notice records, an
+// episode sequence and the intent bucket.
+func TestAdmissionLedgerUpgradeChainsReachSchemaSeven(t *testing.T) {
 	for name, downgrade := range map[string]func(*ledgerFixture){
 		"1": (*ledgerFixture).schemaOne, "2": (*ledgerFixture).schemaTwo,
 		"3": (*ledgerFixture).schemaThree, "4": (*ledgerFixture).schemaFour,
-		"5": (*ledgerFixture).schemaFive,
+		"5": (*ledgerFixture).schemaFive, "6": (*ledgerFixture).schemaSix,
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newLedgerFixture(t)
@@ -113,8 +113,11 @@ func TestAdmissionLedgerUpgradeChainsReachSchemaSix(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := db.bolt.View(func(tx *bolt.Tx) error {
-				if schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey); string(schema) != string([]byte{6}) {
+				if schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey); string(schema) != string([]byte{7}) {
 					t.Errorf("schema %v", schema)
+				}
+				if tx.Bucket([]byte(admissionIntentsBucket)) == nil {
+					t.Error("no intent bucket")
 				}
 				if got := noticeRecordsIn(t, tx); !reflect.DeepEqual(got, emptyFixedNotices(t)) {
 					t.Errorf("outbox = %+v", got)
@@ -381,7 +384,7 @@ func TestAdmissionLedgerOutboxSharesTheRecoveryReserve(t *testing.T) {
 	f.adjustStorage(func(s *admission.StorageState) { s.Recovery = admission.RecoveryReserveBytes - cost })
 	_, _, _, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour))
 	wantLedgerReason(t, "room taken by the outbox", err, admission.ReasonPendingRecovery)
-	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, cost+admission.AttemptAuditBytes) })
+	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, cost+admission.AttemptRecoveryBytes) })
 	if _, _, granted, err := f.l.Reserve(id, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil || !granted {
 		t.Fatalf("room after the outbox: %v %v", granted, err)
 	}

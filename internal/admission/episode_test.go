@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -103,28 +104,35 @@ func TestEpisodeLinesAreKeptInKindOrder(t *testing.T) {
 	}
 }
 
+// A line answers its kind while its outcome holds the target: a verified
+// block or an observe preview. An unknown outcome is unresolved until
+// recovery retires it (I2). A final failure, a retired unknown outcome and
+// a queue ending let a later observation start the next generation.
 func TestLineStateFollowsTheCandidate(t *testing.T) {
 	c := queuedCandidate(t)
 	for _, tc := range []struct {
 		state    State
 		attempts uint32
+		retired  bool
 		want     LineState
 	}{
-		{StateQueued, 0, LineQueued},
-		{StateQueued, 1, LineRetry},
-		{StateReserved, 1, LineInFlight},
-		{StateExecuting, 1, LineInFlight},
-		{StateVerified, 1, LineAnswered},
-		{StateFailed, 3, LineAnswered},
-		{StateUnknown, 1, LineAnswered},
-		{StateObserved, 1, LineAnswered},
-		{StateDropped, 0, LineEnded},
-		{StateRefused, 0, LineEnded},
-		{StateWithheld, 0, LineEnded},
+		{StateQueued, 0, false, LineQueued},
+		{StateQueued, 1, false, LineRetry},
+		{StateReserved, 1, false, LineInFlight},
+		{StateExecuting, 1, false, LineInFlight},
+		{StateVerified, 1, false, LineAnswered},
+		{StateObserved, 1, false, LineAnswered},
+		{StateUnknown, 1, false, LineUnresolved},
+		{StateUnknown, 1, true, LineEnded},
+		{StateFailed, 3, false, LineEnded},
+		{StateDropped, 1, false, LineEnded},
+		{StateDropped, 0, false, LineEnded},
+		{StateRefused, 0, false, LineEnded},
+		{StateWithheld, 0, false, LineEnded},
 	} {
 		c.State, c.Attempts = tc.state, tc.attempts
-		if got := LineStateOf(c); got != tc.want {
-			t.Errorf("%v with %d attempts: %v, want %v", tc.state, tc.attempts, got, tc.want)
+		if got := LineStateOf(c, tc.retired); got != tc.want {
+			t.Errorf("%v with %d attempts, retired %v: %v, want %v", tc.state, tc.attempts, tc.retired, got, tc.want)
 		}
 	}
 }
@@ -211,8 +219,28 @@ func TestPlaceAnswersAnAttemptedLine(t *testing.T) {
 	}
 }
 
-// A verified response ends its episode at its original expiry, not an hour
-// after the last observation (spec 5.2).
+// I2: an unresolved line answers its kind and holds the episode open, but
+// the observation it answers neither extends the episode nor moves the
+// line's frontier. Another kind's observation still extends the episode.
+// Once the line is retired, a later observation opens the next episode.
+func TestPlaceHoldsAnUnresolvedLineWithoutExtending(t *testing.T) {
+	cur := place(t, nil, nil, KindBlockIP, t0, false).Episode.WithLine(episodeLine(t, KindBlockIP, 2, 1))
+	cur = cur.WithLine(episodeLine(t, KindPromote, 1, 2))
+	gap := t0.Add(3 * EpisodeQuiet)
+	p := place(t, &cur, []LineState{LineUnresolved, LineEnded}, KindBlockIP, gap, false)
+	if !p.Answered || p.Generation != 2 || p.Episode.ID != cur.ID || !p.Episode.Last.Equal(cur.Last) || !slices.Equal(p.Episode.Lines, cur.Lines) {
+		t.Fatalf("answered by an unresolved line: %+v", p)
+	}
+	other := place(t, &cur, []LineState{LineUnresolved, LineEnded}, KindPromote, gap, false)
+	if other.Answered || other.Episode.ID != cur.ID || !other.Episode.Last.Equal(gap) || other.Generation != 2 {
+		t.Fatalf("another kind: %+v", other)
+	}
+	next := place(t, &cur, []LineState{LineEnded, LineEnded}, KindBlockIP, gap, false)
+	if next.Episode.ID == cur.ID || next.Generation != 1 {
+		t.Fatalf("after retirement: %+v", next)
+	}
+}
+
 func TestPlaceEndsAVerifiedEpisodeAtItsExpiry(t *testing.T) {
 	cur := place(t, nil, nil, KindBlockIP, t0, false).Episode.WithLine(episodeLine(t, KindBlockIP, 1, 1))
 	cur.Verified = t0.Add(20 * time.Minute)
@@ -227,6 +255,32 @@ func TestPlaceEndsAVerifiedEpisodeAtItsExpiry(t *testing.T) {
 	cur.Verified = t0.Add(5 * time.Hour)
 	if p = place(t, &cur, []LineState{LineAnswered}, KindBlockIP, t0.Add(2*time.Hour), false); !p.Answered || p.Episode.ID != cur.ID {
 		t.Fatalf("a long block keeps its episode past the quiet hour: %+v", p)
+	}
+}
+
+// I1: a verified block ends its episode at its expiry even while another
+// kind's work is queued or in flight. An unresolved line and a degraded
+// clock still hold it.
+func TestPlaceEndsAVerifiedEpisodeDespiteOtherWork(t *testing.T) {
+	cur := place(t, nil, nil, KindBlockIP, t0, false).Episode.WithLine(episodeLine(t, KindBlockIP, 1, 1))
+	cur = cur.WithLine(episodeLine(t, KindChallenge, 1, 2))
+	cur.Verified, cur.Last = t0.Add(20*time.Minute), t0.Add(19*time.Minute)
+	expiry := cur.Verified
+	for _, state := range []LineState{LineQueued, LineRetry, LineInFlight} {
+		if p := place(t, &cur, []LineState{LineAnswered, state}, KindBlockIP, expiry.Add(-time.Nanosecond), false); !p.Answered || p.Episode.ID != cur.ID {
+			t.Fatalf("%v before the expiry: %+v", state, p)
+		}
+		p := place(t, &cur, []LineState{LineAnswered, state}, KindBlockIP, expiry, false)
+		if p.Answered || p.Episode.ID == cur.ID || p.Generation != 1 || !p.Episode.Previous.Equal(expiry) {
+			t.Fatalf("%v at the expiry: %+v", state, p)
+		}
+	}
+	later := expiry.Add(2 * time.Hour)
+	if p := place(t, &cur, []LineState{LineAnswered, LineUnresolved}, KindBlockIP, later, false); !p.Answered || p.Episode.ID != cur.ID {
+		t.Fatalf("an unresolved line: %+v", p)
+	}
+	if p := place(t, &cur, []LineState{LineAnswered, LineQueued}, KindBlockIP, later, true); !p.Answered || p.Episode.ID != cur.ID {
+		t.Fatalf("a degraded clock: %+v", p)
 	}
 }
 

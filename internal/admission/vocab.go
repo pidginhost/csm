@@ -295,10 +295,14 @@ const (
 	DispositionObserve
 	DispositionFailed
 	DispositionUnknown
+	// DispositionExpiredUnproven names the audit row of a linked event,
+	// never an outcome: recovery retired an unknown attempt's uncertainty
+	// after its effect expired, without proving success or failure.
+	DispositionExpiredUnproven
 	dispositionEnd
 )
 
-var dispositionNames = [...]string{"", "deferred", "refused", "withheld", "dropped", "applied", "narrowed", "dry_run", "observe", "failed", "unknown"}
+var dispositionNames = [...]string{"", "deferred", "refused", "withheld", "dropped", "applied", "narrowed", "dry_run", "observe", "failed", "unknown", "expired_unproven"}
 
 func (d Disposition) Valid() bool { return d >= DispositionDeferred && d < dispositionEnd }
 

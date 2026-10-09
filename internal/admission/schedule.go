@@ -10,7 +10,8 @@ import (
 // spans at most 64 set elements (spec 5.5).
 const MaxMemberCost = 64
 
-// MaxBatchMembers bounds the candidates one schedule picks (spec 5.5).
+// MaxBatchMembers bounds the candidates one schedule picks and the members
+// of one execution batch (spec 5.5).
 const MaxBatchMembers = 64
 
 const scheduleStateVersion = 1

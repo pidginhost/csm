@@ -174,11 +174,11 @@ func dbSnapshot(t *testing.T, db *DB) map[string]string {
 	return out
 }
 
-// A new ledger starts at schema 6 with empty queue bookkeeping, no charges,
+// A new ledger starts at schema 7 with empty queue bookkeeping, no charges,
 // a ceiling waiting for its first limit to fill its buckets, full history
 // credit with nothing stored, an outbox holding only the empty fixed
-// notice records, and no episodes.
-func TestAdmissionLedgerSchemaSixLayout(t *testing.T) {
+// notice records, no episodes and no intents.
+func TestAdmissionLedgerSchemaSevenLayout(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestAdmissionLedgerSchemaSixLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = db.bolt.View(func(tx *bolt.Tx) error {
-		if schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey); !bytes.Equal(schema, []byte{6}) {
+		if schema := tx.Bucket([]byte(admissionMetaBucket)).Get(admissionSchemaKey); !bytes.Equal(schema, []byte{7}) {
 			t.Errorf("schema = %v", schema)
 		}
 		state, stateErr := loadQueueState(tx)
@@ -208,7 +208,7 @@ func TestAdmissionLedgerSchemaSixLayout(t *testing.T) {
 		if got, stateErr := loadStorage(tx); stateErr != nil || got != admission.NewStorageState() {
 			t.Errorf("new storage = %+v, %v", got, stateErr)
 		}
-		for _, name := range append([]string{admissionWindowsBucket, admissionEpisodesBucket}, admissionStorageBuckets...) {
+		for _, name := range append([]string{admissionWindowsBucket, admissionEpisodesBucket, admissionIntentsBucket}, admissionStorageBuckets...) {
 			if n := tx.Bucket([]byte(name)).Stats().KeyN; n != 0 {
 				t.Errorf("%s holds %d keys", name, n)
 			}

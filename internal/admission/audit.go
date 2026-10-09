@@ -110,14 +110,17 @@ func (r AuditRow) record() (auditRowRecord, error) {
 	default:
 		return bad("audit row state is not an attempt phase")
 	}
-	if !terminalDisposition(r.State, r.Disposition) {
+	retirement := r.State == StateUnknown && r.Disposition == DispositionExpiredUnproven
+	if !retirement && !terminalDisposition(r.State, r.Disposition) {
 		return bad("audit row state and disposition disagree")
 	}
 	minimumTransition := 2 * r.Attempt.Seq
-	switch r.State {
-	case StateExecuting, StateFailed, StateObserved:
+	switch {
+	case retirement:
+		minimumTransition += 3
+	case r.State == StateExecuting || r.State == StateFailed || r.State == StateObserved:
 		minimumTransition++
-	case StateVerified, StateUnknown:
+	case r.State == StateVerified || r.State == StateUnknown:
 		minimumTransition += 2
 	}
 	if r.Transition < minimumTransition {

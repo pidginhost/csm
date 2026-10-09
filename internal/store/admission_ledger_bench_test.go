@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"net/netip"
 	"testing"
 	"time"
@@ -215,10 +216,9 @@ func BenchmarkAdmissionLedgerNextWakeFullQueue(b *testing.B) {
 	}
 }
 
-// fullHistory fills every allowance and the recovery reserve with the
-// smallest history entries, the most entries the budgets can hold, and
-// fills both rings.
-func fullHistory(b *testing.B) *ledgerFixture {
+// historyFixture fills up to maxPerLane entries in each allowance and ring.
+// Benchmarks use the full budgets; unit tests use a bounded sample.
+func historyFixture(b testing.TB, withOutbox bool, maxPerLane uint32) *ledgerFixture {
 	b.Helper()
 	f := newLedgerFixture(b)
 	id := f.queued()
@@ -267,6 +267,19 @@ func fullHistory(b *testing.B) *ledgerFixture {
 			h := admission.HistoryEntry{RootMask: 1, Ended: f.wall, Eligible: f.wall.Add(admission.HistoryRetention), Pinned: pinned}
 			if pinned {
 				h.Eligible = time.Time{}
+				batch, batchErr := admission.NewBatchID([]admission.ActionID{a.ID})
+				if batchErr != nil {
+					return 0, batchErr
+				}
+				if memberErr = putIntent(tx, admission.Intent{Action: a.ID, Batch: batch, Kind: c.Key.Kind, Target: c.Key.Target, ExpiresAt: c.ExpiresAt}); memberErr != nil {
+					return 0, memberErr
+				}
+				if s, memberErr = s.HoldIntent(); memberErr != nil {
+					return 0, memberErr
+				}
+				if s, memberErr = s.HoldAudit(1); memberErr != nil {
+					return 0, memberErr
+				}
 			}
 			if lane == admission.LaneGeneral {
 				h.General = cost
@@ -293,7 +306,18 @@ func fullHistory(b *testing.B) *ledgerFixture {
 			{&s.Reserved.Used, reserved, admission.LaneDirect, false},
 			{&s.Recovery, admission.RecoveryReserveBytes, admission.LaneGeneral, true},
 		} {
-			for *allowance.used+uint64(cost) <= allowance.size {
+			for rows := uint32(0); rows < maxPerLane; rows++ {
+				if allowance.pinned {
+					outbox := s.OutboxBytes()
+					if withOutbox {
+						outbox = admission.MaxAuditSlots/2*admission.AuditSlotBytes + admission.MaxNoticeRecords*admission.NoticeSlotBytes
+					}
+					if s.Recovery+outbox+uint64(cost)+admission.UnknownHoldBytes > admission.RecoveryReserveBytes {
+						break
+					}
+				} else if *allowance.used+uint64(cost) > allowance.size {
+					break
+				}
 				actual, putErr := put(allowance.lane, allowance.pinned)
 				if putErr != nil {
 					return putErr
@@ -305,7 +329,7 @@ func fullHistory(b *testing.B) *ledgerFixture {
 			}
 		}
 		rings := tx.Bucket([]byte(admissionRingsBucket))
-		for s.Ended.Count < admission.MaxEndedCandidates {
+		for s.Ended.Count < min(admission.MaxEndedCandidates, maxPerLane) {
 			generation++
 			c := base
 			c.Key.Generation = generation
@@ -327,7 +351,7 @@ func fullHistory(b *testing.B) *ledgerFixture {
 		if err = putRefs(tx, base.Roots[0], rootRefs); err != nil {
 			return err
 		}
-		for s.Loose.Count < admission.MaxLooseEvidence {
+		for s.Loose.Count < min(admission.MaxLooseEvidence, maxPerLane) {
 			var pos uint64
 			s.Loose, pos = s.Loose.Push()
 			e := f.mint(evidenceSpec{target: "192.0.2.12", cursor: fmt.Sprintf("loose=%d", pos)})
@@ -353,7 +377,8 @@ func fullHistory(b *testing.B) *ledgerFixture {
 }
 
 func BenchmarkAdmissionLedgerOpenFullHistory(b *testing.B) {
-	f := fullHistory(b)
+	f := historyFixture(b, false, math.MaxUint32)
+	f.assertFullHistoryFixture(false)
 	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
 		b.Fatal(err)
 	}
@@ -534,12 +559,11 @@ func BenchmarkAdmissionLedgerTickRetiresABatch(b *testing.B) {
 	}
 }
 
-// fullOutbox fills the history as fullHistory does, then the notice share
-// with keyed records of full examples, half of them quiet, and the reserve
-// with the audit rows of as many ended candidates as its slots hold.
+// fullOutbox keeps the history allowances and rings full while reserving
+// space for every notice and the audit rows written below.
 func fullOutbox(b *testing.B) *ledgerFixture {
 	b.Helper()
-	f := fullHistory(b)
+	f := historyFixture(b, true, math.MaxUint32)
 	reasons := []admission.Reason{
 		admission.ReasonProtected, admission.ReasonAttribution, admission.ReasonInvalid, admission.ReasonPolicy,
 		admission.ReasonStaleIdentity, admission.ReasonCollateral, admission.ReasonBreaker,
@@ -621,6 +645,7 @@ func fullOutbox(b *testing.B) *ledgerFixture {
 	}); err != nil {
 		b.Fatal(err)
 	}
+	f.assertFullHistoryFixture(true)
 	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
 		b.Fatal(err)
 	}

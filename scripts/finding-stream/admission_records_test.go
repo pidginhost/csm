@@ -57,7 +57,7 @@ func TestAdmissionVocabulariesMatchTheLedger(t *testing.T) {
 		want []string
 	}{
 		{"kinds", admissionKinds, kinds}, {"entries", admissionEntries, entries}, {"reasons", admissionRefusals, reasons},
-		{"attempt results", admissionAttemptResults, []string{"applied", "dry_run", "executing", "failed", "narrowed", "observe", "reserved", "unknown"}},
+		{"attempt results", admissionAttemptResults, []string{"applied", "dry_run", "executing", "expired_unproven", "failed", "narrowed", "observe", "reserved", "unknown"}},
 		{"decisions", admissionDecisions, []string{"coalesced", "observe", "queued", "refused"}},
 	} {
 		slices.Sort(tc.want)
@@ -146,7 +146,7 @@ func TestAdmissionAuditRowRefusals(t *testing.T) {
 		}
 	}
 	legacy := fullRecord()
-	for _, result := range []actionlog.Result{"reserved", "executing", "observe", "narrowed", "queued", "coalesced"} {
+	for _, result := range []actionlog.Result{"reserved", "executing", "observe", "narrowed", "expired_unproven", "queued", "coalesced"} {
 		legacy.Result = result
 		if _, err := NewAnonymizer(testSalt()).Action(legacy); !errors.Is(err, errUnknownResult) {
 			t.Errorf("legacy row with %q: %v", result, err)

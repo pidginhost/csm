@@ -168,6 +168,8 @@ type queueTx struct {
 	// outcomes are the events this transaction counts into the outcome
 	// windows when it flushes.
 	outcomes admission.OutcomeCounts
+	// heldTargets is derived once from the intents, never episode rows.
+	heldTargets map[string]bool
 }
 
 func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error) {
@@ -718,10 +720,16 @@ func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admissi
 		eligible := it.Direct || it.Corroborated
 		generalCeiling := general >= it.CeilingCost
 		reservedCeiling := eligible && reserved >= it.CeilingCost
+		held, err := q.heldTarget(lc.c.Key.Target)
+		if err != nil {
+			return err
+		}
 		var reason admission.Reason
 		switch {
 		case picked[it.ID]:
 		case q.now.Before(lc.c.NotBefore):
+		case held:
+			reason = admission.ReasonPendingRecovery
 		case !generalCeiling && !reservedCeiling:
 			reason = admission.ReasonCeiling
 		case (!generalCeiling || generalBytes < uint64(it.Bytes)) && (!reservedCeiling || reservedBytes < uint64(it.Bytes)):
@@ -785,11 +793,15 @@ func (q *queueTx) scheduleItems(live []liveCandidate, room uint64) ([]admission.
 		if err != nil {
 			return nil, nil, err
 		}
+		held, err := q.heldTarget(lc.c.Key.Target)
+		if err != nil {
+			return nil, nil, err
+		}
 		byID[lc.id] = lc
 		items = append(items, admission.ScheduleItem{
 			ID: lc.id, Scope: lc.c.Scope.Key(), Tier: lc.entry.Tier, Direct: lc.entry.Direct,
 			Corroborated: lc.entry.Corroborated, Queued: lc.c.FirstQueued, Cost: unitCost, CeilingCost: lc.c.Key.Kind.CeilingCost(), Bytes: bytes, Recovery: recovery,
-			Ready: fits && !q.now.Before(lc.c.NotBefore),
+			Ready: fits && !held && !q.now.Before(lc.c.NotBefore),
 		})
 	}
 	return items, byID, nil

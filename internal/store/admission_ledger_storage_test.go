@@ -139,7 +139,8 @@ func (f *ledgerFixture) mixed() mixedLedger {
 
 // A schema 3 ledger is upgraded once, in the opening transaction: every
 // schema 3 record stays byte for byte, each admitted candidate is charged
-// its history cost, an unresolved one is held in the recovery reserve, the
+// its history cost, an unresolved one is held in the recovery reserve with
+// its intent, the
 // ended candidate and the loose evidence take the first ring positions,
 // and the allowances start without credit. Opening again changes nothing.
 func TestAdmissionLedgerUpgradesSchemaThree(t *testing.T) {
@@ -166,14 +167,15 @@ func TestAdmissionLedgerUpgradesSchemaThree(t *testing.T) {
 	s, err := l.Storage()
 	want := admission.StorageState{
 		General:  admission.HistoryMeter{Used: uint64(reserved) + uint64(applied)},
-		Recovery: uint64(unknown),
+		Recovery: uint64(unknown) + admission.MaxIntentBytes,
 		Ended:    admission.RingState{Count: 1, Last: 1},
 		Loose:    admission.RingState{Count: 1, Last: 1},
-		// The chain ends at schema 5, whose outbox starts with the fixed
+		// The chain passes schema 5, whose outbox starts with the fixed
 		// notice records and holds the rows the reserved attempt still
-		// owes.
+		// owes, and ends at schema 7, where the unknown outcome holds the
+		// row that will retire it.
 		NoticeRecords: admission.FixedNotices,
-		AuditSlots:    2,
+		AuditSlots:    3,
 	}
 	if err != nil || s != want {
 		t.Fatalf("upgraded storage = %+v, %v\nwant %+v", s, err, want)
@@ -573,7 +575,7 @@ func TestAdmissionLedgerOpenRefusesBalancedDamage(t *testing.T) {
 				return err
 			}
 			return adjustStorage(tx, func(s *admission.StorageState) {
-				s.Recovery -= uint64(h.Charged())
+				s.Recovery -= uint64(h.Charged()) + admission.MaxIntentBytes
 				s.General.Used += uint64(h.General)
 				s.Reserved.Used += uint64(h.Reserved)
 			})

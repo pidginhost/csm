@@ -183,12 +183,29 @@ type Ledger interface {
 	// it returns that attempt and false: a readback grants and charges
 	// nothing, and a zero lane or expiry matches the recorded one.
 	Reserve(CandidateID, Lane, time.Time) (Candidate, AttemptRecord, bool, error)
-	// Execute marks a reserved attempt as running and reports true. On an
-	// attempt already running it returns it and false: a readback is not
-	// permission to dispatch its effect again.
+	// ExecuteBatch marks the reserved attempts of one batch as running and
+	// records each member's intent in the same transaction, before the
+	// caller dispatches any host change (spec 5.4), and reports true. When
+	// every member already runs in this batch it returns their intents and
+	// false: a readback is not permission to dispatch an effect again. Any
+	// other member state refuses the whole batch.
+	ExecuteBatch([]ActionID) ([]Intent, bool, error)
+	// Execute runs one reserved attempt as a batch of its own.
 	Execute(ActionID) (Candidate, AttemptRecord, bool, error)
 	// Finish records an attempt outcome: applied, narrowed, failed or
 	// unknown. A proven failure with attempts left requeues the candidate.
 	Finish(ActionID, Disposition) (Candidate, AttemptRecord, error)
+	// RetireUnproven retires the uncertainty of an unknown attempt whose
+	// effect can no longer be live: its absolute expiry has passed on a
+	// current, trusted clock, the engine found nothing of it remaining and
+	// its outcome rows were delivered. The outcome stays unknown and
+	// nothing is dispatched again. It reports false on an attempt already
+	// retired.
+	RetireUnproven(ActionID) (Candidate, AttemptRecord, bool, error)
+	// Settle ends the attempts a previous process left outstanding and
+	// reports how many failed and how many ended unknown. The owner calls
+	// it once after opening, before it reserves anything; like Finish it
+	// needs only the stored time.
+	Settle() (int, int, error)
 	Attempt(ActionID) (AttemptRecord, error)
 }

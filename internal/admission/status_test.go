@@ -44,15 +44,16 @@ func TestDoctorChecksPassAHealthyLedgerThatPreviews(t *testing.T) {
 // ledger, a stopped ingress and a recent gap warn, saying so.
 func TestDoctorChecksWarnOnDamagedSections(t *testing.T) {
 	for name, damage := range map[string]func(*LedgerStatus){
-		"clock":    func(s *LedgerStatus) { s.Clock.Error = "admission record is corrupt" },
-		"queue":    func(s *LedgerStatus) { s.Queue.Error = "x" },
-		"counters": func(s *LedgerStatus) { s.Counters.Error = "x" },
-		"outcomes": func(s *LedgerStatus) { s.Outcomes.Error = "x" },
-		"ingress":  func(s *LedgerStatus) { s.Ingress.Error = "x" },
-		"ceiling":  func(s *LedgerStatus) { s.Ceiling.Error = "x" },
-		"storage":  func(s *LedgerStatus) { s.Storage.Error = "x" },
-		"outbox":   func(s *LedgerStatus) { s.Outbox.Error = "x" },
-		"notices":  func(s *LedgerStatus) { s.Notices.Error = "x" },
+		"clock":      func(s *LedgerStatus) { s.Clock.Error = "admission record is corrupt" },
+		"queue":      func(s *LedgerStatus) { s.Queue.Error = "x" },
+		"counters":   func(s *LedgerStatus) { s.Counters.Error = "x" },
+		"outcomes":   func(s *LedgerStatus) { s.Outcomes.Error = "x" },
+		"ingress":    func(s *LedgerStatus) { s.Ingress.Error = "x" },
+		"ceiling":    func(s *LedgerStatus) { s.Ceiling.Error = "x" },
+		"storage":    func(s *LedgerStatus) { s.Storage.Error = "x" },
+		"outbox":     func(s *LedgerStatus) { s.Outbox.Error = "x" },
+		"notices":    func(s *LedgerStatus) { s.Notices.Error = "x" },
+		"unresolved": func(s *LedgerStatus) { s.Unresolved.Error = "x" },
 	} {
 		s := healthyStatus()
 		damage(s)

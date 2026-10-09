@@ -57,7 +57,8 @@ func TestAdmissionLedgerEndingsDateTheirHistory(t *testing.T) {
 	f := newLedgerFixture(t)
 	short := f.applied(time.Hour)
 	long := f.applied(10 * 24 * time.Hour)
-	unknownID, a := f.admitted(time.Hour)
+	a := f.reservedAt("192.0.2.11", f.wall.Add(time.Hour))
+	unknownID := a.Attempt.Candidate
 	if _, _, _, err := f.l.Execute(a.Attempt.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +90,7 @@ func TestAdmissionLedgerEndingsDateTheirHistory(t *testing.T) {
 		}
 	}
 	s := f.storageState()
-	if s.Recovery != recovery+uint64(f.cost(unknownID)) || s.General.Used != used-uint64(f.cost(unknownID))+uint64(f.cost(failedID)) {
+	if s.Recovery != recovery+uint64(f.cost(unknownID))+admission.MaxIntentBytes || s.General.Used != used-uint64(f.cost(unknownID))+uint64(f.cost(failedID)) {
 		t.Fatalf("storage after the endings = %+v", s)
 	}
 	keys := retireKeysIn(t, f.db)

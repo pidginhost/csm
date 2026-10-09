@@ -228,6 +228,13 @@ func (l *AdmissionLedger) reserveTx(q *queueTx, id admission.CandidateID, lane a
 	case c.Attempts >= admission.MaxAttempts:
 		return c, admission.AttemptRecord{}, false, admission.ErrCorruptRecord
 	}
+	held, holdErr := q.heldTarget(c.Key.Target)
+	if holdErr != nil {
+		return c, admission.AttemptRecord{}, false, holdErr
+	}
+	if held {
+		return c, admission.AttemptRecord{}, false, refusal(admission.ReasonPendingRecovery, "an unresolved attempt holds the target")
+	}
 	if c.Attempts == 0 {
 		if !expiresAt.After(now) {
 			return c, admission.AttemptRecord{}, false, refusal(admission.ReasonInvalid, "absolute expiry must be in the future")
@@ -394,28 +401,6 @@ func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func
 	return outC, outA, changed, nil
 }
 
-// Execute marks a reserved attempt as running and reports true. On an
-// attempt already running it is a no-op that reports false: a readback is
-// not permission to dispatch the attempt's effect again.
-func (l *AdmissionLedger) Execute(id admission.ActionID) (admission.Candidate, admission.AttemptRecord, bool, error) {
-	return l.attemptStep("execute", id, l.clock, func(q *queueTx, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
-		switch {
-		case a.State == admission.StateExecuting:
-			return false, nil
-		case a.State != admission.StateReserved:
-			return false, admission.ErrTransitionConflict
-		case !q.now.Before(a.ExpiresAt):
-			return false, refusal(admission.ReasonStale, "absolute expiry has passed")
-		}
-		e, err := loadQueueEntry(q.tx, a.Attempt.Candidate)
-		if err != nil {
-			return false, err
-		}
-		a.State, c.State = admission.StateExecuting, admission.StateExecuting
-		return true, q.writeAuditRow(*c, *a, e.Tier)
-	})
-}
-
 // Finish records the outcome of the candidate's current attempt. Applied and
 // narrowed need a running attempt, and so does unknown: an attempt that never
 // ran is known not to have applied, so it can only fail. A proven failure
@@ -432,6 +417,71 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 		return q.finishAttempt(a, c, d)
 	})
 	return cand, att, err
+}
+
+// Settle ends every attempt a previous process left outstanding, in one
+// transaction. A reserved attempt has no intent, so it dispatched nothing:
+// it fails, keeping its charge, and its candidate retries after the
+// backoff while attempts remain. A running attempt may have applied its
+// effect: it ends unknown and keeps its intent. Nothing is dispatched
+// again. Called after this handle reserved anything, it would end that
+// work too, so the owner settles once, before its first reservation.
+func (l *AdmissionLedger) Settle() (failed, unknown int, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	err = l.update("settle", func(tx *bolt.Tx) error {
+		failed, unknown = 0, 0
+		var outstanding []admission.ActionID
+		if walkErr := tx.Bucket([]byte(admissionAttemptsBucket)).ForEach(func(_, v []byte) error {
+			a, decodeErr := admission.UnmarshalAttempt(v)
+			if decodeErr == nil && (a.State == admission.StateReserved || a.State == admission.StateExecuting) {
+				outstanding = append(outstanding, a.Attempt.ID)
+			}
+			return decodeErr
+		}); walkErr != nil {
+			return walkErr
+		}
+		// A new ledger has neither attempts nor a stored clock yet.
+		if len(outstanding) == 0 {
+			return nil
+		}
+		now, txErr := l.recordedClock()
+		if txErr != nil {
+			return txErr
+		}
+		q, txErr := l.openQueue(tx, now)
+		if txErr != nil {
+			return txErr
+		}
+		for _, id := range outstanding {
+			a, c, loadErr := attemptAndCandidate(tx, id)
+			if loadErr != nil {
+				return loadErr
+			}
+			d := admission.DispositionFailed
+			if a.State == admission.StateExecuting {
+				d = admission.DispositionUnknown
+				unknown++
+			} else {
+				failed++
+			}
+			if _, txErr = q.finishAttempt(&a, &c, d); txErr != nil {
+				return txErr
+			}
+			c.Transitions++
+			if txErr = putAttempt(tx, a); txErr != nil {
+				return txErr
+			}
+			if txErr = putCandidate(tx, c); txErr != nil {
+				return txErr
+			}
+		}
+		return q.flush()
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return failed, unknown, nil
 }
 
 // Observe reserves the next attempt of a queued candidate on lane as
@@ -507,10 +557,15 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 	// The candidate moves in step with its current attempt, so the
 	// lifecycle table decides which outcomes a reserved attempt allows.
 	from := c.State
-	// An attempt that never ran returns the slot of its execution row.
+	// An attempt that never ran returns the slot of its execution row. One
+	// that ran keeps its intent only while its outcome is unknown.
 	var unused uint64
 	if a.State == admission.StateReserved {
 		unused = 1
+	} else if d != admission.DispositionUnknown {
+		if err = deleteIntent(q.tx, a.Attempt.ID); err != nil {
+			return false, err
+		}
 	}
 	a.State, a.Disposition, a.Finished = state, d, q.now
 	if err = q.outcomes.Add(admission.AttemptOutcome(d, e.Tier)); err != nil {
@@ -532,7 +587,12 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 	if err = q.writeAuditRow(*c, *a, e.Tier); err != nil {
 		return false, err
 	}
-	if err = q.adjustAuditSlots(0, unused); err != nil {
+	// An unknown outcome holds the slot of the row that will retire it.
+	var retirement uint64
+	if d == admission.DispositionUnknown {
+		retirement = 1
+	}
+	if err = q.adjustAuditSlots(retirement, unused); err != nil {
 		return false, err
 	}
 	if c.State == admission.StateQueued {

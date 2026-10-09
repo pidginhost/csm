@@ -299,8 +299,11 @@ moves from queued through reserved and executing to one outcome. A proven
 failure may requeue after a backoff, with at most three attempts in total;
 an unknown outcome never retries. Reserve and Execute report whether the
 call granted the step; reading back an attempt that is already reserved or
-running grants nothing, and the later applier must reconcile it before any
-effect is replayed.
+running grants nothing. A new process settles what the previous one left
+outstanding before it reserves anything: a reservation, which recorded no
+intent and so dispatched nothing, fails and may retry; a running attempt
+ends unknown. Nothing is dispatched again.
+An empty ledger settles without a clock reading.
 
 Schema 2 of the ledger adds its queue, and the first open upgrades a schema
 1 ledger in the same transaction; legacy work that cannot fit the unassessed
@@ -429,18 +432,60 @@ assessment's clock-skew tolerance. This keeps future times out of observation
 frontiers and prevents an early episode boundary. A queued candidate coalesces
 later observations before its first attempt. A queued retry remains live
 but answers new arrivals without coalescing; one that ended before any
-attempt is followed only by a later observation of that kind. Once a candidate has an attempt, later observations
-of its episode are refused as an existing effect, which raises no notice,
-and still extend the episode. An episode row lives only as long as a
+attempt is followed only by a later observation of that kind. Once a
+candidate's effect is verified or previewed, later observations of its kind
+in the episode are refused as an existing effect, which raises no notice,
+and still extend the episode. After an unknown outcome they are refused the
+same way but never extend the episode, which stays open until recovery
+retires the outcome. Other kinds may queue at that target, but scheduling
+and admission defer them as `pending_recovery` until the unknown is retired.
+An attempt still recorded as running, left by a crash before settlement or
+by an outcome that failed to commit, holds its target the same way until
+its outcome is recorded.
+The hold also covers candidates from earlier episodes. A missing intent
+bucket refuses the operation without changing the ledger.
+A final failure or a retired unknown outcome lets a later
+observation start the next generation. An episode row lives only as long as a
 candidate it names: ring eviction and history retirement clear that
-candidate reference but retain its generation and attempt proof while
-another candidate holds the row. The last retained candidate takes the
+candidate reference but retain its generation, and whether its effect
+answers its kind, while another candidate holds the row. The last retained candidate takes the
 row, and each admitted
 candidate's history charge covers a row. A target without a row opens a
 new episode, so a retired candidate's ID is never minted again. A
 verified block ends its episode at the block's original expiry instead of
-an hour after the last observation; an unknown outcome or a response of
-another kind does not.
+an hour after the last observation, even while work of another kind is
+queued or in flight; an unknown outcome or a response of another kind does
+not end it.
+
+Schema 7 adds execution intents; the first open upgrades a schema 1 to 6
+ledger in the same transaction. Execution marks a batch of up to 64
+reserved attempts as running and records, in the same transaction and
+before any host change, what each member may apply: its kind, its target
+and its absolute expiry. Executing the same members again reads them back;
+a member that runs in another batch refuses the call. A batch mixing
+reserved and running members refuses as a transition conflict, regardless
+of member order or target overlap. An applied or failed
+outcome removes the member's intent, while an unknown one keeps it, so a
+restart knows which effects are unproven. A reservation holds room in the
+recovery reserve for its intent, and an unknown outcome pins the intent
+with its history. The upgrade records an intent for any attempt that ran
+without an outcome or ended unknown and holds each pinned outcome's intent
+in the reserve, and opening proves every intent against its attempt.
+Startup reads the unresolved intents directly, without opening the ledger;
+a ledger older than intents has none, and one it cannot read is an error.
+Ledger buckets without schema metadata are an error, including unfamiliar
+buckets.
+An unknown outcome also holds the slot of the row that will retire it.
+Once its absolute expiry has passed on a current, trusted clock, its
+outcome rows are delivered and the engine finds nothing of it remaining,
+recovery retires the uncertainty: the outcome stays unknown and counts as
+nothing new, nothing is dispatched again, the intent goes, the history and
+intent leave the recovery reserve, and an `expired_unproven` audit row
+records the event. Status counts the attempts that run and the unknown ones
+not yet retired, with the earliest expiry after which one can be retired.
+A missing or inconsistent intent marks only that section unreadable.
+Opening checks retired attempts against the stored clock even after their
+retirement events have been acknowledged.
 
 ### Attack event storage
 
@@ -654,3 +699,7 @@ Hourly summaries count committed arrivals, memory-coalesced reports, mint refusa
 Ingress placement on an ended or in-flight candidate is a counted invalid refusal. An episode that cannot be encoded is ledger damage. Shutdown closes ingress before final drains and stops incident background response loops before stopping the owner.
 
 Selected work also clears a stale budget reason without another count or notice. The scheduler preserves deferrals owned by other components. Wake times consider both the next charged turn and the history needed by challenges, while independent history holds retain their earned credit through a ceiling wait.
+
+A batch readback requires every member to be running. Direct queue requests
+can reserve a retired action ID again. If another member of that batch still
+runs, execution refuses the mixed batch without writes.

@@ -181,7 +181,12 @@ func proveOutbox(tx *bolt.Tx, s admission.StorageState) error {
 		if decodeErr != nil {
 			return decodeErr
 		}
-		future += futureAuditSlots(a.State)
+		// Delivery removes the event row, but cannot remove the clock's
+		// proof that retirement followed the expiry and the outcome.
+		if a.Retired && (now.Before(a.ExpiresAt) || now.Before(a.Finished)) {
+			return admission.ErrCorruptRecord
+		}
+		future += heldAuditSlots(a)
 		return nil
 	}); err != nil {
 		return err

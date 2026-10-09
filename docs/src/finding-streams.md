@@ -160,7 +160,8 @@ scrubbed:
 - A firewall row keeps its time, action, target, reason category, source and
   lease. Firewall entries carry no ids, so nothing joins them to actions or
   findings; the manifest says so rather than guessing from times or addresses.
-- Admission rows keep their kind and step. An audit row's target maps like a
+- Admission rows keep their kind and step, including the retirement of an
+  unknown outcome (`expired_unproven`). An audit row's target maps like a
   firewall target, so it joins the legacy row for the same address, and its
   reason category names the lane. An hourly summary, which sets `count`,
   keeps its check, entry, decision, refusal reason and count and names no

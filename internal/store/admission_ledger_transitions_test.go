@@ -175,10 +175,10 @@ func TestAdmissionLedgerOutcomes(t *testing.T) {
 	_, _, _, err = f.l.Reserve(id, admission.LaneGeneral, time.Time{})
 	wantLedgerErr(t, "retry after unknown", err, admission.ErrCandidateTerminal)
 
-	f.nextGeneration()
-	id2 := f.queued()
-	_, a2, _, _ := f.l.Reserve(id2, admission.LaneGeneral, ledgerT0.Add(time.Hour))
-	_, _, _, _ = f.l.Execute(a2.Attempt.ID)
+	a2 := f.reservedAt("192.0.2.11", ledgerT0.Add(time.Hour))
+	if _, _, _, err = f.l.Execute(a2.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
 	if c, _, err := f.l.Finish(a2.Attempt.ID, admission.DispositionApplied); err != nil || c.State != admission.StateVerified || c.Disposition != admission.DispositionApplied {
 		t.Fatalf("applied: %+v, %v", c, err)
 	}

@@ -125,12 +125,12 @@ func TestAdmissionLedgerFinishWithoutExecuteReleasesASlot(t *testing.T) {
 	}
 }
 
-// A reservation needs room in the reserve for its attempt's rows as well
-// as for its history (ruling 2), and so does a schedule's pick.
+// A reservation needs room in the reserve for its attempt's rows and intent
+// as well as for its history (ruling 2), and so does a schedule's pick.
 func TestAdmissionLedgerReserveNeedsRoomForItsAuditRows(t *testing.T) {
 	f := newLedgerFixture(t)
 	id := f.queued()
-	need := uint64(f.cost(id)) + admission.AttemptAuditBytes
+	need := uint64(f.cost(id)) + admission.AttemptRecoveryBytes
 	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, need-1) })
 	if picks := f.schedule(admission.ScheduleLimits{General: 10, Members: 10}); len(picks) != 0 {
 		t.Fatalf("picked without room for its rows: %+v", picks)

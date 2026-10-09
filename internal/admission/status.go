@@ -7,9 +7,9 @@ import (
 )
 
 // MaxRecoveryNeed is the most room one reservation needs in the recovery
-// and outbox reserve: its candidate's largest history and its attempt's
-// audit rows.
-const MaxRecoveryNeed = MaxHistoryBytes + AttemptAuditBytes
+// and outbox reserve: its candidate's largest history, its attempt's audit
+// rows and its intent.
+const MaxRecoveryNeed = MaxHistoryBytes + AttemptRecoveryBytes
 
 // LedgerStatus is a read-only view of the admission ledger (spec 5.17,
 // ruling 8). Each section is read on its own and carries its own error,
@@ -25,6 +25,8 @@ type LedgerStatus struct {
 	Storage  StorageStatus  `json:"storage"`
 	Outbox   OutboxStatus   `json:"outbox"`
 	Notices  NoticesStatus  `json:"notices"`
+	// Unresolved is the attempts whose outcome is unresolved.
+	Unresolved UnresolvedStatus `json:"unresolved"`
 }
 
 // ClockStatus is the stored high-water mark; zero before the first
@@ -143,6 +145,16 @@ type StorageStatus struct {
 	// far back review reaches.
 	ReviewHorizon time.Time `json:"review_horizon,omitempty"`
 	Error         string    `json:"error,omitempty"`
+}
+
+// UnresolvedStatus counts the attempts whose outcome is unresolved: those
+// running and those that ended unknown and are not yet retired, with the
+// earliest expiry after which one of the unknown ones can be retired.
+type UnresolvedStatus struct {
+	Running int       `json:"running"`
+	Unknown int       `json:"unknown"`
+	Retires time.Time `json:"retires,omitempty"`
+	Error   string    `json:"error,omitempty"`
 }
 
 // OutboxStatus is what the outbox holds: unacknowledged audit rows and
@@ -299,6 +311,7 @@ func ledgerRow(s *LedgerStatus) DoctorRow {
 		{"clock", s.Clock.Error}, {"queue", s.Queue.Error}, {"counters", s.Counters.Error},
 		{"outcomes", s.Outcomes.Error}, {"ingress", s.Ingress.Error}, {"ceiling", s.Ceiling.Error},
 		{"storage", s.Storage.Error}, {"outbox", s.Outbox.Error}, {"notices", s.Notices.Error},
+		{"unresolved", s.Unresolved.Error},
 	} {
 		if section.err != "" {
 			damaged = append(damaged, section.name+": "+section.err)

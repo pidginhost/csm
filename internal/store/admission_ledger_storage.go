@@ -299,7 +299,7 @@ func loadStorage(tx *bolt.Tx) (admission.StorageState, error) {
 		case decodeErr != nil:
 			return decodeErr
 		case h.Pinned:
-			recovery += uint64(h.Charged())
+			recovery += uint64(h.Charged()) + admission.MaxIntentBytes
 		default:
 			general += uint64(h.General)
 			reserved += uint64(h.Reserved)
@@ -479,6 +479,9 @@ func (q *queueTx) ended(id admission.CandidateID, c admission.Candidate) error {
 			if *s, err = s.PinHistory(h.General, h.Reserved); err != nil {
 				return err
 			}
+			if *s, err = s.HoldIntent(); err != nil {
+				return err
+			}
 			h.Pinned, q.storageDirty = true, true
 		} else {
 			h.Eligible, _ = admission.HistoryTimes(q.now, c.ExpiresAt, c.State == admission.StateVerified)
@@ -615,7 +618,7 @@ func (q *queueTx) chargeHistory(id admission.CandidateID, c admission.Candidate,
 	}
 	if room, roomErr := q.recoveryRoom(); roomErr != nil {
 		return roomErr
-	} else if uint64(max(cost, h.Charged()))+admission.AttemptAuditBytes > room {
+	} else if uint64(max(cost, h.Charged()))+admission.AttemptRecoveryBytes > room {
 		err = refusal(admission.ReasonPendingRecovery, "outstanding outcomes fill the recovery reserve")
 		return err
 	}
@@ -814,7 +817,7 @@ func (q *queueTx) historyNeed(lc liveCandidate, room uint64) (uint32, uint32, bo
 	if lc.c.Attempts > 0 && !found {
 		return 0, 0, false, admission.ErrCorruptRecord
 	}
-	recovery := max(cost, h.Charged()) + admission.AttemptAuditBytes
+	recovery := max(cost, h.Charged()) + admission.AttemptRecoveryBytes
 	fits := uint64(recovery) <= room
 	if cost <= h.Charged() {
 		return 0, recovery, fits, nil
@@ -933,7 +936,8 @@ func validateUnownedRows(tx *bolt.Tx) error {
 
 // recoveryRoom is what the recovery and outbox reserve has left after
 // pinned history and the outbox. It also holds space for every outstanding
-// attempt: finishing several such attempts as unknown cannot overbook it.
+// attempt's history and intent: finishing several such attempts as unknown
+// cannot overbook it.
 func (q *queueTx) recoveryRoom() (uint64, error) {
 	s, err := q.storageState()
 	if err != nil {
@@ -958,10 +962,11 @@ func (q *queueTx) recoveryRoom() (uint64, error) {
 		if !found {
 			return 0, admission.ErrCorruptRecord
 		}
-		if uint64(h.Charged()) > room {
+		hold := uint64(h.Charged()) + admission.UnknownHoldBytes
+		if hold > room {
 			return 0, nil
 		}
-		room -= uint64(h.Charged())
+		room -= hold
 	}
 	return room, nil
 }
@@ -1053,7 +1058,7 @@ func proveStorageLinks(tx *bolt.Tx) error {
 		if err != nil {
 			return err
 		}
-		if !found || h.RootMask == 0 || h.RootMask>>len(c.Roots) != 0 || c.State.Terminal() == h.Ended.IsZero() || h.Pinned != (c.State == admission.StateUnknown) {
+		if !found || h.RootMask == 0 || h.RootMask>>len(c.Roots) != 0 || c.State.Terminal() == h.Ended.IsZero() || h.Pinned != (c.State == admission.StateUnknown && !last.Retired) {
 			return admission.ErrCorruptRecord
 		}
 		if c.State != admission.StateQueued && h.RootMask != (1<<len(c.Roots))-1 {

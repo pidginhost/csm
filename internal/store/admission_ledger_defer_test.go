@@ -232,7 +232,7 @@ func TestAdmissionLedgerScheduleDefersWorkThePicksLeaveNoRecoveryFor(t *testing.
 	f := newLedgerFixture(t)
 	f.begin()
 	ids := f.criticalArrivals("192.0.2.10", "192.0.2.11")
-	need := uint64(f.cost(ids[0])) + admission.AttemptAuditBytes
+	need := uint64(f.cost(ids[0])) + admission.AttemptRecoveryBytes
 	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, need+need/2) })
 	picks := f.schedule(fullSchedule)
 	if len(picks) != 1 {

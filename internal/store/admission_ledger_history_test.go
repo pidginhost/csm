@@ -175,9 +175,11 @@ func TestAdmissionLedgerRecoveryIncludesOutstandingAttempts(t *testing.T) {
 	f := newLedgerFixture(t)
 	ids := f.fill(2, evidenceSpec{})
 	cost := f.cost(ids[0])
-	// Room for one reservation's history and two attempts' rows: the
-	// second reservation is refused by the first one's history hold alone.
-	f.adjustStorage(func(s *admission.StorageState) { leaveRecoveryRoom(s, uint64(cost)+2*admission.AttemptAuditBytes) })
+	// Room for one reservation's history and intent and two attempts'
+	// rows: the second reservation is refused by the first one's hold alone.
+	f.adjustStorage(func(s *admission.StorageState) {
+		leaveRecoveryRoom(s, uint64(cost)+2*admission.AttemptAuditBytes+admission.MaxIntentBytes)
+	})
 	_, a, granted, err := f.l.Reserve(ids[0], admission.LaneGeneral, f.wall.Add(time.Hour))
 	if err != nil || !granted {
 		t.Fatalf("first reservation: %v %v", granted, err)
