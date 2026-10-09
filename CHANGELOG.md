@@ -9,6 +9,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ## [Unreleased]
 
+### Security
+
+- Scans report cron entries that download and run a script on any numeric or `@` schedule, including every minute, hourly, daily, at boot and with a month or weekday name. The rules update queues a rescan of existing files.
+
 ### Changed
 
 - Deep phishing scans use less memory and CPU per page.
