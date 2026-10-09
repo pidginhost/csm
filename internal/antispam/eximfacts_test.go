@@ -1,6 +1,7 @@
 package antispam
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -55,6 +56,44 @@ func TestParseBeResult(t *testing.T) {
 	} {
 		if err := ParseBeResult(bad[0], bad[1]); err == nil {
 			t.Errorf("ParseBeResult(%q, %q) = nil, want error", bad[0], bad[1])
+		}
+	}
+}
+
+// Exim 4.100.1 on a cPanel host prints these for an undefined list and exits 0
+// (spike 1a); a lookup that cannot read its file exits 1 instead.
+func TestParseBeResultSeparatesUndefinedLists(t *testing.T) {
+	stdout := "Failed: unable to complete match against \"+csm_no_such_list\": NULL\n"
+	for _, stderr := range []string{
+		"2026-10-09 08:12:11 unknown named host list \"+csm_no_such_list\"\n",
+		"2026-10-09 08:12:11 unknown named domain list \"+csm_no_such_list\"\n",
+	} {
+		if err := ParseBeResult(stdout, stderr); !errors.Is(err, ErrUndefinedList) {
+			t.Errorf("ParseBeResult(%q, %q) = %v, want ErrUndefinedList", stdout, stderr, err)
+		}
+	}
+	for _, bad := range [][2]string{
+		{stdout, ""},
+		{"y\n", "some warning\n"},
+		{"", "failed to open /etc/csm_no_such_file for linear search: No such file or directory\n"},
+	} {
+		err := ParseBeResult(bad[0], bad[1])
+		if err == nil || errors.Is(err, ErrUndefinedList) {
+			t.Errorf("ParseBeResult(%q, %q) = %v, want an error other than ErrUndefinedList", bad[0], bad[1], err)
+		}
+	}
+}
+
+// Probe output can carry list contents such as lookup credentials, so errors
+// never repeat it.
+func TestParseBeResultHidesProbeOutput(t *testing.T) {
+	for _, out := range [][2]string{
+		{"Failed: lookup user=csm_probe_secret\n", ""},
+		{"", "mysql: csm_probe_secret denied\n"},
+		{"Failed: x \"+csm_probe_secret\": NULL\n", "unknown named host list \"+csm_probe_secret\"\n"},
+	} {
+		if err := ParseBeResult(out[0], out[1]); err == nil || strings.Contains(err.Error(), "csm_probe_secret") {
+			t.Errorf("ParseBeResult(%q, %q) = %v, want an error without probe text", out[0], out[1], err)
 		}
 	}
 }

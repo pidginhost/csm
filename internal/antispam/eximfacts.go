@@ -60,17 +60,28 @@ func NamedListProbes() []string {
 	}
 }
 
+// ErrUndefinedList is the probe result for a named list that does not exist.
+// Exim 4.100.1 exits 0 for it, prints "Failed: ..." and logs "unknown named
+// <kind> list" on stderr.
+var ErrUndefinedList = errors.New("named list is undefined")
+
+// errBeUnexpected covers any other output, such as a warning on stderr.
+var errBeUnexpected = errors.New("exim -be printed an unexpected result")
+
+var undefinedListRe = regexp.MustCompile(`unknown named (?:domain|host|address|local part) list "\+`)
+
 // ParseBeResult checks one `exim -be` probe. Exim exits 0 even when a list is
-// undefined, so only the printed text separates success from failure.
+// undefined, so only the printed text separates success from failure. Errors
+// never repeat the output: a list's lookup text can hold credentials.
 func ParseBeResult(stdout, stderr string) error {
-	if strings.TrimSpace(stderr) == "" && (stdout == "y\n" || stdout == "n\n") {
+	switch {
+	case strings.TrimSpace(stderr) == "" && (stdout == "y\n" || stdout == "n\n"):
 		return nil
+	case strings.HasPrefix(stdout, "Failed: ") && undefinedListRe.MatchString(stderr):
+		return ErrUndefinedList
+	default:
+		return errBeUnexpected
 	}
-	msg := firstLine(stdout)
-	if msg == "" {
-		msg = firstLine(stderr)
-	}
-	return fmt.Errorf("named list check failed: %s", msg)
 }
 
 // ParseEximOptions reads `exim -bP name...` output. A "name = value" line maps
@@ -509,14 +520,4 @@ func CheckPlacement(blocks []Placement, rcptACL, dataACL string) error {
 		return fmt.Errorf("found %d config, %d RCPT and %d DATA CSM blocks; want 1, 1 and 2", main, rcpt, data)
 	}
 	return nil
-}
-
-// firstLine returns the first line of s, trimmed and cut to 200 bytes so a
-// command's output cannot flood a finding.
-func firstLine(s string) string {
-	line, _, _ := strings.Cut(strings.TrimSpace(s), "\n")
-	if len(line) > 200 {
-		line = line[:200]
-	}
-	return strings.TrimSpace(line)
 }

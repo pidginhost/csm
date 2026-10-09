@@ -1,6 +1,7 @@
 package antispam
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 )
@@ -99,7 +100,9 @@ type HostFacts struct {
 	// NamedLists holds one result per NamedListProbes entry, in order.
 	NamedLists    []CommandResult
 	SpamdDisabled bool // /etc/spamddisable exists
-	GlobalEnable  bool // /etc/global_spamassassin_enable exists
+	// SpamdDisabledErr is a stat failure other than absence.
+	SpamdDisabledErr error
+	GlobalEnable     bool // /etc/global_spamassassin_enable exists
 	// RspamdVersion is `rspamd --version`; RspamadmVersion `rspamadm --version`.
 	RspamdVersion   CommandResult
 	RspamadmVersion CommandResult
@@ -129,7 +132,10 @@ func CheckHost(f HostFacts) []Problem {
 			v.Major, v.Minor, v.Patch, v.ContentScanning)
 	}
 
-	if !f.SpamdDisabled {
+	switch {
+	case f.SpamdDisabledErr != nil:
+		add(CodeSpamAssassin, Temporary, "cannot check /etc/spamddisable; check file access")
+	case !f.SpamdDisabled:
 		add(CodeSpamAssassin, Definite, "SpamAssassin is enabled; disable spamd in WHM so /etc/spamddisable exists")
 	}
 	if f.GlobalEnable {
@@ -192,9 +198,11 @@ func CheckHost(f HostFacts) []Problem {
 			add(CodeNamedList, Temporary, "exim -be %s failed; check Exim availability and configuration", probes[i])
 			continue
 		}
-		if err := ParseBeResult(r.Stdout, r.Stderr); err != nil {
-			// Probe diagnostics may contain configuration values or credentials.
-			add(CodeNamedList, Definite, "exim -be %s returned an invalid result; check the referenced named list", probes[i])
+		switch err := ParseBeResult(r.Stdout, r.Stderr); {
+		case errors.Is(err, ErrUndefinedList):
+			add(CodeNamedList, Definite, "exim -be %s: a named list it uses is undefined", probes[i])
+		case err != nil:
+			add(CodeNamedList, Temporary, "exim -be %s printed an unexpected result", probes[i])
 		}
 	}
 	return out
@@ -280,7 +288,8 @@ func checkRspamdVersions(daemon, adm CommandResult) []Problem {
 		add(Definite, "rspamadm %s is unsupported; need 3 or later", av)
 	}
 	if dv != "" && av != "" && dv != av {
-		add(Definite, "rspamd %s and rspamadm %s differ", dv, av)
+		// A package upgrade replaces the two binaries one after the other.
+		add(Temporary, "rspamd %s and rspamadm %s differ; wait for any upgrade to finish", dv, av)
 	}
 	return out
 }

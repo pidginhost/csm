@@ -72,7 +72,8 @@ func TestCheckHostProblems(t *testing.T) {
 		{"rspamd too old", func(f *HostFacts) {
 			f.RspamdVersion.Stdout, f.RspamadmVersion.Stdout = "Rspamd daemon version 2.7\n", "Rspamadm 2.7\n"
 		}, CodeRspamdVersion, Definite},
-		{"rspamadm differs", func(f *HostFacts) { f.RspamadmVersion.Stdout = "Rspamadm 4.1.0\n" }, CodeRspamdVersion, Definite},
+		// A package upgrade replaces the two binaries one after the other.
+		{"rspamadm differs", func(f *HostFacts) { f.RspamadmVersion.Stdout = "Rspamadm 4.1.0\n" }, CodeRspamdVersion, Temporary},
 		{"exim -bP failed", func(f *HostFacts) { f.EximOptions.Err = boom }, CodeEximOptions, Temporary},
 		{"exim -bP incomplete", func(f *HostFacts) { f.EximOptions.Stdout = "no_prdr_enable\n" }, CodeEximOptions, Temporary},
 		{"prdr on", func(f *HostFacts) {
@@ -92,8 +93,18 @@ func TestCheckHostProblems(t *testing.T) {
 		{"local markers broken", func(f *HostFacts) { f.LocalConf += "# CSM-ANTISPAM END\n" }, CodeMarkers, Definite},
 		{"named list probe failed", func(f *HostFacts) { f.NamedLists[1].Err = boom }, CodeNamedList, Temporary},
 		{"named list undefined", func(f *HostFacts) {
-			f.NamedLists[2] = CommandResult{Stdout: "Failed: unable to complete match against \"+cpanel_mail_netblocks\": NULL\n"}
+			f.NamedLists[2] = CommandResult{
+				Stdout: "Failed: unable to complete match against \"+cpanel_mail_netblocks\": NULL\n",
+				Stderr: "2026-10-09 08:12:11 unknown named host list \"+cpanel_mail_netblocks\"\n",
+			}
 		}, CodeNamedList, Definite},
+		{"named list unexpected output", func(f *HostFacts) {
+			f.NamedLists[2] = CommandResult{Stdout: "Failed: unable to complete match against \"+cpanel_mail_netblocks\": NULL\n"}
+		}, CodeNamedList, Temporary},
+		{"named list warning", func(f *HostFacts) { f.NamedLists[0].Stderr = "some warning\n" }, CodeNamedList, Temporary},
+		{"spamddisable unreadable", func(f *HostFacts) {
+			f.SpamdDisabled, f.SpamdDisabledErr = false, boom
+		}, CodeSpamAssassin, Temporary},
 		{"named lists incomplete", func(f *HostFacts) { f.NamedLists = f.NamedLists[:1] }, CodeNamedList, Temporary},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -185,7 +196,10 @@ func TestCheckHostRetainsConfirmedConflicts(t *testing.T) {
 			f.Socket.PingErr = boom
 		}, CodeSocket},
 		{"incomplete named lists and undefined list", func(f *HostFacts) {
-			f.NamedLists = []CommandResult{{Stdout: "Failed: unable to complete match against \"+local_domains\": NULL\n"}}
+			f.NamedLists = []CommandResult{{
+				Stdout: "Failed: unable to complete match against \"+local_domains\": NULL\n",
+				Stderr: "2026-10-09 08:12:11 unknown named domain list \"+local_domains\"\n",
+			}}
 		}, CodeNamedList},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -279,10 +293,10 @@ func TestCheckHostDiagnosticsDoNotExposeProbeOutput(t *testing.T) {
 		{"generated config", func(f *HostFacts) { f.GeneratedErr = boom }, CodeSpamScoreRules, Temporary},
 		{"local config", func(f *HostFacts) { f.LocalErr = boom }, CodeForeignScanner, Temporary},
 		{"named list command", func(f *HostFacts) { f.NamedLists[0].Err = boom }, CodeNamedList, Temporary},
-		{"named list stdout", func(f *HostFacts) { f.NamedLists[0].Stdout = diagnostic + "\n" }, CodeNamedList, Definite},
+		{"named list stdout", func(f *HostFacts) { f.NamedLists[0].Stdout = diagnostic + "\n" }, CodeNamedList, Temporary},
 		{"named list stderr", func(f *HostFacts) {
 			f.NamedLists[0] = CommandResult{Stderr: diagnostic + "\n"}
-		}, CodeNamedList, Definite},
+		}, CodeNamedList, Temporary},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := goodFacts()
