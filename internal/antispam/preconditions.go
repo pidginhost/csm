@@ -41,6 +41,7 @@ const (
 	CodeForeignScanner = "foreign_spamd_address"
 	CodeMarkers        = "markers"
 	CodeNamedList      = "named_list"
+	CodeUnverifiable   = "exim_config_unverifiable"
 )
 
 const (
@@ -165,27 +166,41 @@ func CheckHost(f HostFacts) []Problem {
 	if f.GeneratedErr != nil {
 		add(CodeSpamScoreRules, Temporary, "cannot read the generated Exim configuration; check file access")
 	} else {
-		if lines := UngatedSpamUses(f.GeneratedConf); len(lines) > 0 {
-			add(CodeSpamScoreRules, Definite, "Exim ACL statements at lines %v act on spam scores outside cPanel's SpamAssassin gate; turn off cPanel's spam-score deny, ratelimit, forwarding and outgoing-scan options", lines)
-		}
-		if HasCutthrough(f.GeneratedConf) {
-			add(CodeCutthrough, Definite, "cutthrough delivery is enabled; DATA-time header changes need it off")
-		}
-		if _, err := LocateBlocks(f.GeneratedConf); err != nil {
-			add(CodeMarkers, Definite, "generated Exim configuration: %v", err)
+		lines, errU := UngatedSpamUses(f.GeneratedConf)
+		cut, errC := HasCutthrough(f.GeneratedConf)
+		_, errL := LocateBlocks(f.GeneratedConf)
+		if err := firstUnverifiable(errU, errC, errL); err != nil {
+			add(CodeUnverifiable, Temporary, "cannot verify the generated Exim configuration: %v", err)
+		} else {
+			if len(lines) > 0 {
+				add(CodeSpamScoreRules, Definite, "Exim ACL statements at lines %v act on spam scores outside cPanel's SpamAssassin gate; turn off cPanel's spam-score deny, ratelimit, forwarding and outgoing-scan options", lines)
+			}
+			if cut {
+				add(CodeCutthrough, Definite, "cutthrough delivery is enabled; DATA-time header changes need it off")
+			}
+			if errL != nil {
+				add(CodeMarkers, Definite, "generated Exim configuration: %v", errL)
+			}
 		}
 	}
 
 	if f.LocalErr != nil {
 		add(CodeForeignScanner, Temporary, "cannot read /etc/exim.conf.local; check file access")
 	} else {
-		if ForeignSpamdAddress(f.LocalConf) {
-			add(CodeForeignScanner, Definite, "/etc/exim.conf.local sets its own spamd_address; remove it so CSM's scanner is the only one")
-		}
-		if blocks, err := LocateBlocks(f.LocalConf); err != nil {
-			add(CodeMarkers, Definite, "/etc/exim.conf.local: %v", err)
-		} else if len(blocks) > 1 {
-			add(CodeMarkers, Definite, "/etc/exim.conf.local has multiple CSM blocks; only one scanner block is allowed")
+		found, errF := ForeignSpamdAddress(f.LocalConf)
+		blocks, errL := LocateBlocks(f.LocalConf)
+		switch err := firstUnverifiable(errF, errL); {
+		case err != nil:
+			add(CodeUnverifiable, Temporary, "cannot verify /etc/exim.conf.local: %v", err)
+		default:
+			if found {
+				add(CodeForeignScanner, Definite, "/etc/exim.conf.local sets its own spamd_address; remove it so CSM's scanner is the only one")
+			}
+			if errL != nil {
+				add(CodeMarkers, Definite, "/etc/exim.conf.local: %v", errL)
+			} else if len(blocks) > 1 {
+				add(CodeMarkers, Definite, "/etc/exim.conf.local has multiple CSM blocks; only one scanner block is allowed")
+			}
 		}
 	}
 
@@ -206,6 +221,17 @@ func CheckHost(f HostFacts) []Problem {
 		}
 	}
 	return out
+}
+
+// firstUnverifiable returns the first error that marks an Exim file CSM
+// cannot check, so one unparseable file yields one temporary problem.
+func firstUnverifiable(errs ...error) error {
+	for _, err := range errs {
+		if errors.Is(err, ErrUnverifiable) {
+			return err
+		}
+	}
+	return nil
 }
 
 func checkSocket(s SocketFacts) []Problem {

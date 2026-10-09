@@ -130,6 +130,19 @@ var (
 	macroNameRe  = regexp.MustCompile(`^[A-Z][A-Za-z0-9_]*$`)
 )
 
+// ErrUnverifiable marks an Exim configuration CSM cannot check: an included
+// file it does not follow, or macros that expand past its parsing bounds.
+var ErrUnverifiable = errors.New("exim configuration cannot be verified")
+
+const (
+	// maxMacroVariants bounds the lines one configuration line expands to.
+	// Each conditional redefinition adds a variant, so they multiply.
+	maxMacroVariants = 64
+	// maxExpandedLine bounds one expanded line, so a macro redefined in terms
+	// of itself cannot double without limit.
+	maxExpandedLine = 64 << 10
+)
+
 type eximLine struct {
 	number    int
 	text      string
@@ -138,7 +151,8 @@ type eximLine struct {
 
 // Exim joins continuations without adding spaces and ignores intervening
 // comments. Keep comments and physical line numbers for the ownership markers.
-func eximLines(conf string) []eximLine {
+// An .include makes the file unverifiable: CSM does not follow it.
+func eximLines(conf string) ([]eximLine, error) {
 	var out []eximLine
 	var text strings.Builder
 	current := -1
@@ -151,6 +165,9 @@ func eximLines(conf string) []eximLine {
 		if current == -1 {
 			if line == "" {
 				continue
+			}
+			if strings.HasPrefix(line, ".include") {
+				return nil, fmt.Errorf("line %d: %w: .include is not followed", i+1, ErrUnverifiable)
 			}
 			current = len(out)
 			out = append(out, eximLine{number: i + 1})
@@ -166,7 +183,7 @@ func eximLines(conf string) []eximLine {
 	if current != -1 {
 		out[current].text = strings.TrimSpace(text.String())
 	}
-	return out
+	return out, nil
 }
 
 func eximSection(line string) (string, bool) {
@@ -197,7 +214,7 @@ func splitACLVerb(line string) (string, string) {
 // ${perl{spamd_is_available}} gate. cPanel's spam-score deny, ratelimit and
 // forwarding options generate such statements; they would act on CSM's scan
 // with their own threshold and ignore an account's opt-out.
-func UngatedSpamUses(conf string) []int {
+func UngatedSpamUses(conf string) ([]int, error) {
 	var out []int
 	var macros []eximMacro
 	inACL, inCSM := false, false
@@ -209,9 +226,15 @@ func UngatedSpamUses(conf string) []int {
 		}
 		stmt, unsafe, verb, gateDepth = 0, false, "", -1
 	}
-	for _, raw := range eximLines(conf) {
+	parsed, err := eximLines(conf)
+	if err != nil {
+		return nil, err
+	}
+	for _, raw := range parsed {
 		line := raw.text
-		if recordEximMacro(line, depth, &macros) {
+		if ok, err := recordEximMacro(line, depth, &macros); err != nil {
+			return nil, fmt.Errorf("line %d: %w", raw.number, err)
+		} else if ok {
 			flush()
 			continue
 		}
@@ -233,7 +256,7 @@ func UngatedSpamUses(conf string) []int {
 			switch strings.Fields(line)[0] {
 			case ".if", ".ifdef", ".ifndef":
 				depth++
-			case ".else", ".endif":
+			case ".else", ".elifdef", ".elifndef", ".endif":
 				if gateDepth >= depth {
 					gateDepth = -1
 				}
@@ -243,7 +266,10 @@ func UngatedSpamUses(conf string) []int {
 			}
 			continue
 		}
-		lines := expandEximMacros(line, macros)
+		lines, err := expandEximMacros(line, macros)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", raw.number, err)
+		}
 		sectionFound, aclSection := false, false
 		for _, expanded := range lines {
 			if section, ok := eximSection(expanded); ok {
@@ -292,15 +318,19 @@ func UngatedSpamUses(conf string) []int {
 		}
 	}
 	flush()
-	return out
+	return out, nil
 }
 
 // HasCutthrough reports whether a generated exim.conf enables cutthrough
 // delivery anywhere outside a comment.
-func HasCutthrough(conf string) bool {
+func HasCutthrough(conf string) (bool, error) {
 	var macros []eximMacro
 	depth := 0
-	for _, raw := range eximLines(conf) {
+	parsed, err := eximLines(conf)
+	if err != nil {
+		return false, err
+	}
+	for _, raw := range parsed {
 		line := raw.text
 		if line == "" || line[0] == '#' {
 			continue
@@ -314,17 +344,23 @@ func HasCutthrough(conf string) bool {
 			}
 			continue
 		}
-		if recordEximMacro(line, depth, &macros) {
+		if ok, err := recordEximMacro(line, depth, &macros); err != nil {
+			return false, fmt.Errorf("line %d: %w", raw.number, err)
+		} else if ok {
 			continue
 		}
-		for _, expanded := range expandEximMacros(line, macros) {
+		lines, err := expandEximMacros(line, macros)
+		if err != nil {
+			return false, fmt.Errorf("line %d: %w", raw.number, err)
+		}
+		for _, expanded := range lines {
 			_, condition := splitACLVerb(expanded)
 			if name, value, ok := strings.Cut(condition, "="); ok && strings.TrimSpace(name) == "control" && cutthroughRe.MatchString(value) {
-				return true
+				return true, nil
 			}
 		}
 	}
-	return false
+	return false, nil
 }
 
 type eximMacro struct {
@@ -332,14 +368,17 @@ type eximMacro struct {
 	values []string
 }
 
-func recordEximMacro(line string, depth int, macros *[]eximMacro) bool {
+func recordEximMacro(line string, depth int, macros *[]eximMacro) (bool, error) {
 	name, value, ok := strings.Cut(line, "=")
 	name = strings.TrimSpace(name)
 	if !ok || !macroNameRe.MatchString(name) {
-		return false
+		return false, nil
 	}
 	value = strings.TrimSpace(strings.TrimPrefix(value, "="))
-	values := expandEximMacros(value, *macros)
+	values, err := expandEximMacros(value, *macros)
+	if err != nil {
+		return false, err
+	}
 	for i := range *macros {
 		if (*macros)[i].name == name {
 			if depth == 0 {
@@ -348,11 +387,14 @@ func recordEximMacro(line string, depth int, macros *[]eximMacro) bool {
 				// Host-dependent conditionals can select any definition.
 				(*macros)[i].values = append((*macros)[i].values, values...)
 			}
-			return true
+			if len((*macros)[i].values) > maxMacroVariants {
+				return false, fmt.Errorf("%w: a macro has more than %d definitions", ErrUnverifiable, maxMacroVariants)
+			}
+			return true, nil
 		}
 	}
 	*macros = append(*macros, eximMacro{name: name, values: values})
-	return true
+	return true, nil
 }
 
 func eximConditionalDepth(line string, depth int) int {
@@ -367,34 +409,47 @@ func eximConditionalDepth(line string, depth int) int {
 	return depth
 }
 
-func expandEximMacros(line string, macros []eximMacro) []string {
+func expandEximMacros(line string, macros []eximMacro) ([]string, error) {
 	lines := []string{line}
 	for _, macro := range macros {
 		var expanded []string
 		for _, line := range lines {
-			if !strings.Contains(line, macro.name) {
+			n := strings.Count(line, macro.name)
+			if n == 0 {
 				expanded = append(expanded, line)
 				continue
 			}
 			for _, value := range macro.values {
+				if len(line)+n*(len(value)-len(macro.name)) > maxExpandedLine {
+					return nil, fmt.Errorf("%w: a macro expands one line past %d bytes", ErrUnverifiable, maxExpandedLine)
+				}
 				expanded = append(expanded, strings.ReplaceAll(line, macro.name, value))
+			}
+			if len(expanded) > maxMacroVariants {
+				return nil, fmt.Errorf("%w: macros expand one line into more than %d variants", ErrUnverifiable, maxMacroVariants)
 			}
 		}
 		lines = expanded
 	}
-	return lines
+	return lines, nil
 }
 
 // ForeignSpamdAddress reports whether /etc/exim.conf.local sets spamd_address
 // outside CSM's own block.
-func ForeignSpamdAddress(local string) bool {
+func ForeignSpamdAddress(local string) (bool, error) {
 	inCSM := false
 	var macros []eximMacro
 	depth := 0
-	for _, raw := range eximLines(local) {
+	parsed, err := eximLines(local)
+	if err != nil {
+		return false, err
+	}
+	for _, raw := range parsed {
 		line := raw.text
 		depth = eximConditionalDepth(line, depth)
-		if recordEximMacro(line, depth, &macros) {
+		if ok, err := recordEximMacro(line, depth, &macros); err != nil {
+			return false, fmt.Errorf("line %d: %w", raw.number, err)
+		} else if ok {
 			continue
 		}
 		switch line {
@@ -403,16 +458,21 @@ func ForeignSpamdAddress(local string) bool {
 		case MarkerEnd:
 			inCSM = false
 		default:
-			if !inCSM {
-				for _, expanded := range expandEximMacros(line, macros) {
-					if spamdAddrRe.MatchString(expanded) {
-						return true
-					}
+			if inCSM {
+				continue
+			}
+			lines, err := expandEximMacros(line, macros)
+			if err != nil {
+				return false, fmt.Errorf("line %d: %w", raw.number, err)
+			}
+			for _, expanded := range lines {
+				if spamdAddrRe.MatchString(expanded) {
+					return true, nil
 				}
 			}
 		}
 	}
-	return false
+	return false, nil
 }
 
 // Placement is one CSM block found in an Exim config file.
@@ -431,13 +491,28 @@ func LocateBlocks(conf string) ([]Placement, error) {
 	var macros []eximMacro
 	depth := 0
 	section, acl, open := "", "", 0
-	for _, raw := range eximLines(conf) {
+	// afterEnd is set when a block closed inside an ACL: the next line must
+	// start something new, or Exim would join it to CSM's last statement.
+	afterEnd := false
+	parsed, err := eximLines(conf)
+	if err != nil {
+		return nil, err
+	}
+	for _, raw := range parsed {
 		line, number := raw.text, raw.number
 		if raw.continued && (line == MarkerBegin || line == MarkerEnd) {
 			return nil, fmt.Errorf("line %d: CSM marker splits a continued configuration line", number)
 		}
 		depth = eximConditionalDepth(line, depth)
-		if recordEximMacro(line, depth, &macros) {
+		if afterEnd && line != "" && line[0] != '#' && line[0] != '.' {
+			if err := startsStatement(line, macros); err != nil {
+				return nil, fmt.Errorf("line %d: %w", number, err)
+			}
+			afterEnd = false
+		}
+		if ok, err := recordEximMacro(line, depth, &macros); err != nil {
+			return nil, fmt.Errorf("line %d: %w", number, err)
+		} else if ok {
 			if section == "acl" {
 				if open != 0 {
 					return nil, fmt.Errorf("line %d: macro ends an ACL inside a CSM block", number)
@@ -447,7 +522,10 @@ func LocateBlocks(conf string) ([]Placement, error) {
 			continue
 		}
 		boundary := ""
-		lines := expandEximMacros(line, macros)
+		lines, err := expandEximMacros(line, macros)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", number, err)
+		}
 		boundaries := 0
 		for _, expanded := range lines {
 			if name, ok := eximSection(expanded); ok {
@@ -490,12 +568,40 @@ func LocateBlocks(conf string) ([]Placement, error) {
 			}
 			out = append(out, Placement{ACL: acl, Begin: open, End: number})
 			open = 0
+			afterEnd = acl != ""
 		}
 	}
 	if open != 0 {
 		return nil, fmt.Errorf("line %d: %s without %s", open, MarkerBegin, MarkerEnd)
 	}
 	return out, nil
+}
+
+// errContinuesBlock is a line after a CSM block in an ACL that would extend
+// the block's last statement.
+var errContinuesBlock = errors.New("a line after the CSM block continues its last statement")
+
+// startsStatement accepts a line after a CSM block that begins something new:
+// an ACL verb, an ACL name, a section, a macro or another CSM block.
+func startsStatement(line string, macros []eximMacro) error {
+	if line == MarkerBegin {
+		return nil
+	}
+	if name, _, ok := strings.Cut(line, "="); ok && macroNameRe.MatchString(strings.TrimSpace(name)) {
+		return nil
+	}
+	lines, err := expandEximMacros(line, macros)
+	if err != nil {
+		return err
+	}
+	for _, expanded := range lines {
+		word, _ := splitACLVerb(expanded)
+		_, section := eximSection(expanded)
+		if word == "" && !section && !aclNameRe.MatchString(expanded) {
+			return errContinuesBlock
+		}
+	}
+	return nil
 }
 
 // CheckPlacement verifies a generated exim.conf holds exactly one scanner

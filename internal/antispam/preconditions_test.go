@@ -106,6 +106,11 @@ func TestCheckHostProblems(t *testing.T) {
 			f.SpamdDisabled, f.SpamdDisabledErr = false, boom
 		}, CodeSpamAssassin, Temporary},
 		{"named lists incomplete", func(f *HostFacts) { f.NamedLists = f.NamedLists[:1] }, CodeNamedList, Temporary},
+		{"generated include", func(f *HostFacts) { f.GeneratedConf += ".include /etc/exim_extra.conf\n" }, CodeUnverifiable, Temporary},
+		{"local include", func(f *HostFacts) { f.LocalConf += ".include_if_exists /etc/exim_extra.conf\n" }, CodeUnverifiable, Temporary},
+		{"generated macro bomb", func(f *HostFacts) {
+			f.GeneratedConf = "A = x\n" + strings.Repeat("A == A A\n", 26) + f.GeneratedConf
+		}, CodeUnverifiable, Temporary},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := goodFacts()

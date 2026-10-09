@@ -2,6 +2,7 @@ package antispam
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strconv"
 	"strings"
@@ -90,6 +91,45 @@ func FuzzParseActions(f *testing.F) {
 		got, err := ParseActions(encoded)
 		if err != nil || !reflect.DeepEqual(got, a) {
 			t.Fatalf("round trip changed actions %+v to %+v, %v", a, got, err)
+		}
+	})
+}
+
+// The Exim parsers read operator-written files inside the daemon, so any input
+// must finish without a panic and within the expansion bounds.
+func FuzzEximConfigParsers(f *testing.F) {
+	for _, seed := range []string{
+		generatedConf,
+		"A = x\n" + strings.Repeat("A == A A\n", 26) + "begin acl\nacl_smtp_data:\n  warn condition = A\n",
+		"M = a\n.ifdef X\nM = b\n.elifdef Y\nM = c\n.endif\nbegin acl\nacl_smtp_data:\nwarn\n  condition = M M M\n",
+		"begin acl\nacl_smtp_data:\n" + MarkerBegin + "\nwarn\n" + MarkerEnd + "\n  add_header = X: $spam_score_int\n",
+		"begin acl\nacl_smtp_data:\n.include /etc/x\n",
+		"line \\\n# c\ncontinued\n",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, conf string) {
+		total := strings.Count(conf, "\n") + 1
+		lines, err := UngatedSpamUses(conf)
+		if err != nil && !errors.Is(err, ErrUnverifiable) {
+			t.Fatalf("UngatedSpamUses error %v is not ErrUnverifiable", err)
+		}
+		for _, n := range lines {
+			if n < 1 || n > total {
+				t.Fatalf("line %d outside 1..%d", n, total)
+			}
+		}
+		if _, err := HasCutthrough(conf); err != nil && !errors.Is(err, ErrUnverifiable) {
+			t.Fatalf("HasCutthrough error %v is not ErrUnverifiable", err)
+		}
+		if _, err := ForeignSpamdAddress(conf); err != nil && !errors.Is(err, ErrUnverifiable) {
+			t.Fatalf("ForeignSpamdAddress error %v is not ErrUnverifiable", err)
+		}
+		blocks, err := LocateBlocks(conf)
+		for _, b := range blocks {
+			if err != nil || b.Begin < 1 || b.End <= b.Begin || b.End > total {
+				t.Fatalf("block %+v with err %v outside 1..%d", b, err, total)
+			}
 		}
 	})
 }
