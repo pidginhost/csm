@@ -105,6 +105,8 @@ func FuzzEximConfigParsers(f *testing.F) {
 		"begin acl\nacl_smtp_data:\n" + MarkerBegin + "\nwarn\n" + MarkerEnd + "\n  add_header = X: $spam_score_int\n",
 		"begin acl\nacl_smtp_data:\n.include /etc/x\n",
 		"line \\\n# c\ncontinued\n",
+		"EXTRA = .include /etc/exim_extra.conf\nhosts_lookup = example.invalid \\\nEXTRA\n",
+		"if \"$sp\\\n  am_score_int\" is above 50 then finish endif\n",
 	} {
 		f.Add(seed)
 	}
@@ -118,6 +120,13 @@ func FuzzEximConfigParsers(f *testing.F) {
 			if n < 1 || n > total {
 				t.Fatalf("line %d outside 1..%d", n, total)
 			}
+		}
+		previous := 0
+		for _, n := range FilterSpamUses(conf) {
+			if n <= previous || n > total {
+				t.Fatalf("filter line %d outside %d..%d", n, previous+1, total)
+			}
+			previous = n
 		}
 		if _, errC := HasCutthrough(conf); errC != nil && !errors.Is(errC, ErrUnverifiable) {
 			t.Fatalf("HasCutthrough error %v is not ErrUnverifiable", errC)

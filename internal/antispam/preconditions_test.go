@@ -345,3 +345,53 @@ func TestCheckHostAcceptsSocketThroughEximGroup(t *testing.T) {
 		t.Fatalf("socket reachable through Exim's group reported %+v", got)
 	}
 }
+
+func TestCheckHostSocketACLAccessIsTemporary(t *testing.T) {
+	for _, mode := range []fs.FileMode{0o660, 0o666} {
+		f := goodFacts()
+		f.Socket.Socket.Mode = fs.ModeSocket | mode
+		f.Socket.Socket.ExtACL = true
+		got := CheckHost(f)
+		if len(got) != 1 || got[0].Code != CodeSocket || got[0].Severity != Temporary {
+			t.Fatalf("socket mode %o with unread ACL: got %+v, want one temporary socket problem", mode, got)
+		}
+	}
+}
+
+func TestCheckHostRetainsConflictsBeforeUnverifiableMacros(t *testing.T) {
+	bomb := "A = x\n" + strings.Repeat("A == A A\n", 26)
+	for _, tc := range []struct {
+		name, code string
+		mutate     func(*HostFacts)
+	}{
+		{"spam score", CodeSpamScoreRules, func(f *HostFacts) {
+			f.GeneratedConf += "deny condition = ${if >{$spam_score_int}{100}}\n" + bomb
+		}},
+		{"cutthrough", CodeCutthrough, func(f *HostFacts) {
+			f.GeneratedConf += "accept control = cutthrough_delivery\n" + bomb
+		}},
+		{"scanner", CodeForeignScanner, func(f *HostFacts) {
+			f.LocalConf += "spamd_address = /run/rspamd/operator.sock\n" + bomb
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := goodFacts()
+			tc.mutate(&f)
+			got := CheckHost(f)
+			if len(got) != 2 {
+				t.Fatalf("got %+v, want a confirmed conflict and an unverifiable problem", got)
+			}
+			counts := make(map[string]int)
+			for _, p := range got {
+				if p.Code == tc.code && p.Severity == Definite || p.Code == CodeUnverifiable && p.Severity == Temporary {
+					counts[p.Code]++
+				} else {
+					t.Errorf("unexpected problem %+v", p)
+				}
+			}
+			if counts[tc.code] != 1 || counts[CodeUnverifiable] != 1 {
+				t.Fatalf("got %+v, want one of each problem", got)
+			}
+		})
+	}
+}

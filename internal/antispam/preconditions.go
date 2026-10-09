@@ -179,16 +179,15 @@ func CheckHost(f HostFacts) []Problem {
 		_, errL := LocateBlocks(f.GeneratedConf)
 		if err := firstUnverifiable(errU, errC, errL); err != nil {
 			add(CodeUnverifiable, Temporary, "cannot verify the generated Exim configuration: %v", err)
-		} else {
-			if len(lines) > 0 {
-				add(CodeSpamScoreRules, Definite, "Exim configuration lines %v act on spam scores outside cPanel's SpamAssassin gate; turn off cPanel's spam-score deny, ratelimit, forwarding and outgoing-scan options", lines)
-			}
-			if cut {
-				add(CodeCutthrough, Definite, "cutthrough delivery is enabled; DATA-time header changes need it off")
-			}
-			if errL != nil {
-				add(CodeMarkers, Definite, "generated Exim configuration: %v", errL)
-			}
+		}
+		if len(lines) > 0 {
+			add(CodeSpamScoreRules, Definite, "Exim configuration lines %v act on spam scores outside cPanel's SpamAssassin gate; turn off cPanel's spam-score deny, ratelimit, forwarding and outgoing-scan options", lines)
+		}
+		if cut {
+			add(CodeCutthrough, Definite, "cutthrough delivery is enabled; DATA-time header changes need it off")
+		}
+		if errL != nil && !errors.Is(errL, ErrUnverifiable) {
+			add(CodeMarkers, Definite, "generated Exim configuration: %v", errL)
 		}
 	}
 
@@ -203,18 +202,18 @@ func CheckHost(f HostFacts) []Problem {
 	} else {
 		found, errF := ForeignSpamdAddress(f.LocalConf)
 		blocks, errL := LocateBlocks(f.LocalConf)
-		switch err := firstUnverifiable(errF, errL); {
-		case err != nil:
+		if err := firstUnverifiable(errF, errL); err != nil {
 			add(CodeUnverifiable, Temporary, "cannot verify /etc/exim.conf.local: %v", err)
-		default:
-			if found {
-				add(CodeForeignScanner, Definite, "/etc/exim.conf.local sets its own spamd_address; remove it so CSM's scanner is the only one")
-			}
-			if errL != nil {
+		}
+		if found {
+			add(CodeForeignScanner, Definite, "/etc/exim.conf.local sets its own spamd_address; remove it so CSM's scanner is the only one")
+		}
+		if errL != nil {
+			if !errors.Is(errL, ErrUnverifiable) {
 				add(CodeMarkers, Definite, "/etc/exim.conf.local: %v", errL)
-			} else if len(blocks) > 1 {
-				add(CodeMarkers, Definite, "/etc/exim.conf.local has multiple CSM blocks; only one scanner block is allowed")
 			}
+		} else if len(blocks) > 1 {
+			add(CodeMarkers, Definite, "/etc/exim.conf.local has multiple CSM blocks; only one scanner block is allowed")
 		}
 	}
 
@@ -273,9 +272,12 @@ func checkSocket(s SocketFacts) []Problem {
 		if len(s.Parents) == 0 {
 			add(Temporary, "the socket's parent directories were not checked")
 		}
-		if !eximKnown {
+		switch {
+		case !eximKnown:
 			add(Temporary, "Exim's runtime user is unknown")
-		} else if !permits(s.Socket, s.EximUID, s.EximGID, 0o2) {
+		case s.Socket.ExtACL:
+			add(Temporary, "Exim's access to the socket cannot be verified from mode bits while extra ACL entries are present")
+		case !permits(s.Socket, s.EximUID, s.EximGID, 0o2):
 			add(Definite, "Exim's runtime user (uid %d) cannot write to %s; bind it with mode=0666", s.EximUID, s.Socket.Path)
 		}
 	}

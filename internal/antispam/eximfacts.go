@@ -148,6 +148,7 @@ type eximLine struct {
 	number    int
 	text      string
 	continued bool
+	physical  []string
 }
 
 // Exim joins continuations without adding spaces and ignores intervening
@@ -163,16 +164,17 @@ func eximLines(conf string) ([]eximLine, error) {
 			out = append(out, eximLine{number: i + 1, text: line, continued: current != -1})
 			continue
 		}
+		if strings.HasPrefix(line, ".include") {
+			return nil, fmt.Errorf("line %d: %w: .include is not followed", i+1, ErrUnverifiable)
+		}
 		if current == -1 {
 			if line == "" {
 				continue
 			}
-			if strings.HasPrefix(line, ".include") {
-				return nil, fmt.Errorf("line %d: %w: .include is not followed", i+1, ErrUnverifiable)
-			}
 			current = len(out)
 			out = append(out, eximLine{number: i + 1})
 		}
+		out[current].physical = append(out[current].physical, line)
 		part, continued := strings.CutSuffix(line, `\`)
 		text.WriteString(part)
 		if !continued {
@@ -185,6 +187,26 @@ func eximLines(conf string) ([]eximLine, error) {
 		out[current].text = strings.TrimSpace(text.String())
 	}
 	return out, nil
+}
+
+// Exim expands macros and processes includes on physical lines, even inside
+// continuations. Checking only the joined line can hide an included file.
+func checkEximIncludes(line eximLine, macros []eximMacro) error {
+	for i, physical := range line.physical {
+		if name, _, ok := strings.Cut(physical, "="); i == 0 && ok && macroNameRe.MatchString(strings.TrimSpace(name)) {
+			continue
+		}
+		lines, err := expandEximMacros(physical, macros)
+		if err != nil {
+			return err
+		}
+		for _, expanded := range lines {
+			if strings.HasPrefix(strings.TrimSpace(expanded), ".include") {
+				return fmt.Errorf("%w: .include is not followed", ErrUnverifiable)
+			}
+		}
+	}
+	return nil
 }
 
 func eximSection(line string) (string, bool) {
@@ -234,8 +256,13 @@ func UngatedSpamUses(conf string) ([]int, error) {
 	}
 	for _, raw := range parsed {
 		line := raw.text
+		if err := checkEximIncludes(raw, macros); err != nil {
+			flush()
+			return out, fmt.Errorf("line %d: %w", raw.number, err)
+		}
 		if ok, err := recordEximMacro(line, depth, &macros); err != nil {
-			return nil, fmt.Errorf("line %d: %w", raw.number, err)
+			flush()
+			return out, fmt.Errorf("line %d: %w", raw.number, err)
 		} else if ok {
 			flush()
 			continue
@@ -270,7 +297,8 @@ func UngatedSpamUses(conf string) ([]int, error) {
 		}
 		lines, err := expandEximMacros(line, macros)
 		if err != nil {
-			return nil, fmt.Errorf("line %d: %w", raw.number, err)
+			flush()
+			return out, fmt.Errorf("line %d: %w", raw.number, err)
 		}
 		sectionFound, aclSection := false, false
 		for _, expanded := range lines {
@@ -332,23 +360,6 @@ func UngatedSpamUses(conf string) ([]int, error) {
 	return out, nil
 }
 
-// FilterSpamUses returns the 1-based lines of an Exim system filter that read
-// $spam_*. The filter runs at delivery, after CSM's scan, for every account.
-// A header test such as $h_x-spam-score: is not a read of CSM's score.
-func FilterSpamUses(filter string) []int {
-	var out []int
-	for i, raw := range strings.Split(filter, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || line[0] == '#' {
-			continue
-		}
-		if readsSpamVariable(line) {
-			out = append(out, i+1)
-		}
-	}
-	return out
-}
-
 func readsSpamVariable(s string) bool {
 	return strings.Contains(s, "$spam_") || strings.Contains(s, "${spam_")
 }
@@ -364,6 +375,9 @@ func HasCutthrough(conf string) (bool, error) {
 	}
 	for _, raw := range parsed {
 		line := raw.text
+		if err := checkEximIncludes(raw, macros); err != nil {
+			return false, fmt.Errorf("line %d: %w", raw.number, err)
+		}
 		if line == "" || line[0] == '#' {
 			continue
 		}
@@ -478,6 +492,9 @@ func ForeignSpamdAddress(local string) (bool, error) {
 	}
 	for _, raw := range parsed {
 		line := raw.text
+		if err := checkEximIncludes(raw, macros); err != nil {
+			return false, fmt.Errorf("line %d: %w", raw.number, err)
+		}
 		depth = eximConditionalDepth(line, depth)
 		if ok, err := recordEximMacro(line, depth, &macros); err != nil {
 			return false, fmt.Errorf("line %d: %w", raw.number, err)
@@ -526,16 +543,42 @@ func LocateBlocks(conf string) ([]Placement, error) {
 	// afterEnd is set when a block closed inside an ACL: the next line must
 	// start something new, or Exim would join it to CSM's last statement.
 	afterEnd := false
+	type branch struct {
+		entry, pending, hasElse bool
+	}
+	var branches []branch
 	parsed, err := eximLines(conf)
 	if err != nil {
 		return nil, err
 	}
 	for _, raw := range parsed {
 		line, number := raw.text, raw.number
+		if err := checkEximIncludes(raw, macros); err != nil {
+			return nil, fmt.Errorf("line %d: %w", number, err)
+		}
 		if raw.continued && (line == MarkerBegin || line == MarkerEnd) {
 			return nil, fmt.Errorf("line %d: CSM marker splits a continued configuration line", number)
 		}
 		depth = eximConditionalDepth(line, depth)
+		if strings.HasPrefix(line, ".") {
+			switch strings.Fields(line)[0] {
+			case ".if", ".ifdef", ".ifndef":
+				branches = append(branches, branch{entry: afterEnd})
+			case ".else", ".elifdef", ".elifndef":
+				if len(branches) > 0 {
+					b := &branches[len(branches)-1]
+					b.pending = b.pending || afterEnd
+					b.hasElse = b.hasElse || strings.Fields(line)[0] == ".else"
+					afterEnd = b.entry
+				}
+			case ".endif":
+				if len(branches) > 0 {
+					b := branches[len(branches)-1]
+					afterEnd = afterEnd || b.pending || !b.hasElse && b.entry
+					branches = branches[:len(branches)-1]
+				}
+			}
+		}
 		if afterEnd && line != "" && line[0] != '#' && line[0] != '.' {
 			if err := startsStatement(line, macros); err != nil {
 				return nil, fmt.Errorf("line %d: %w", number, err)

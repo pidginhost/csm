@@ -541,3 +541,66 @@ if ${spam_bar} contains "+++" then fail endif
 		t.Errorf("empty filter flagged at %v", got)
 	}
 }
+
+func TestEximParsersRejectPhysicalIncludes(t *testing.T) {
+	for name, conf := range map[string]string{
+		"continuation":    "hosts_lookup = example.invalid \\\n  .include /etc/exim_extra.conf\n",
+		"macro":           "EXTRA = .include /etc/exim_extra.conf\nEXTRA\n",
+		"continued macro": "EXTRA = .include_if_exists /etc/exim_extra.conf\nhosts_lookup = example.invalid \\\n  EXTRA\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			for parser, err := range eximParsers(conf) {
+				if !errors.Is(err, ErrUnverifiable) {
+					t.Errorf("%s: err = %v, want ErrUnverifiable", parser, err)
+				}
+			}
+		})
+	}
+	for parser, err := range eximParsers("EXTRA = .include /etc/exim_extra.conf\n") {
+		if err != nil {
+			t.Errorf("%s rejected an unused macro: %v", parser, err)
+		}
+	}
+}
+
+func TestLocateBlocksChecksEveryFollowingBranch(t *testing.T) {
+	block := "begin acl\ncheck_data:\n" + MarkerBegin + "\nwarn\n" + MarkerEnd + "\n"
+	for name, branch := range map[string]string{
+		"optional": ".ifdef OPTIONAL\naccept\n.endif\n",
+		"else":     ".ifdef OPTIONAL\naccept\n.else\n.endif\n",
+		"elif":     ".ifdef OPTIONAL\naccept\n.elifdef OTHER\n.endif\n",
+		"nested":   ".ifdef OPTIONAL\n.ifdef OTHER\naccept\n.endif\n.else\naccept\n.endif\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LocateBlocks(block + branch + "  add_header = X-Score: $spam_score_int\n"); !errors.Is(err, errContinuesBlock) {
+				t.Fatalf("got %v, want a continuation error", err)
+			}
+		})
+	}
+	allBranches := ".ifdef OPTIONAL\naccept\n.elifdef OTHER\ndeny\n.else\nwarn\n.endif\n"
+	if _, err := LocateBlocks(block + allBranches + "  add_header = X-Score: $spam_score_int\n"); err != nil {
+		t.Fatalf("every branch starts a statement: %v", err)
+	}
+}
+
+func TestFilterSpamUsesEximLexing(t *testing.T) {
+	for _, tc := range []struct {
+		name, filter string
+		want         []int
+	}{
+		{"inline comment", "finish # $spam_score_int\n", nil},
+		{"quoted hash", "logwrite \"# $spam_score_int\"\n", []int{1}},
+		{"continued variable", "if \"$sp\\\n  am_score_int\" is above 50 then finish endif\n", []int{1}},
+		{"escaped variable", `if $message_body contains \$spam_score_int then finish endif`, nil},
+		{"quoted escaped variable", `if $message_body contains "\\$spam_score_int" then finish endif`, nil},
+		{"unexpanded variable", `if $message_body contains \N$spam_score_int\N then finish endif`, nil},
+		{"quoted unexpanded variable", `if $message_body contains "\\N$spam_score_int\\N" then finish endif`, nil},
+		{"quoted encoded variable", `if "\x24spam_score_int" is above 50 then finish endif`, []int{1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FilterSpamUses(tc.filter); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
