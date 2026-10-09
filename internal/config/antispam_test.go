@@ -71,15 +71,21 @@ func TestLoadBytesAntispamEnabledRejectsBadValues(t *testing.T) {
 	}
 }
 
-// yaml.v3 truncates 6.5 into an int field silently, so fractional scores need
-// their own check. A quoted number is not an integer node either; a list
-// socket fails in the decoder.
+// yaml.v3 silently truncates floats into ints and converts non-string scalars
+// into strings, so these types must be checked before decoding.
 func TestLoadBytesAntispamTypeErrorsFailEvenWhenDisabled(t *testing.T) {
 	for name, tc := range map[string]struct{ body, want string }{
 		"fractional score":     {"    reject_score: 6.5\n", "whole number"},
 		"fractional via alias": {"    reject_score: &r 6.5\n    tag_score: *r\n", "whole number"},
 		"string score":         {"    tag_score: \"6\"\n", "whole number"},
-		"list socket":          {"    rspamd_socket: [x]\n", "cannot unmarshal"},
+		"list socket":          {"    rspamd_socket: [x]\n", "must be a string"},
+		"map socket":           {"    rspamd_socket: {path: /run/rspamd/scan.sock}\n", "must be a string"},
+		"boolean socket":       {"    rspamd_socket: false\n", "must be a string"},
+		"integer socket":       {"    rspamd_socket: 6\n", "must be a string"},
+		"fractional socket":    {"    rspamd_socket: 6.5\n", "must be a string"},
+		"timestamp socket":     {"    rspamd_socket: 2026-10-09\n", "must be a string"},
+		"boolean socket alias": {"    dry_run: &off false\n    rspamd_socket: *off\n", "must be a string"},
+		"inherited socket":     {"    <<: {rspamd_socket: false}\n", "must be a string"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := loadAntispam(t, "    enabled: false\n"+tc.body)
@@ -91,8 +97,53 @@ func TestLoadBytesAntispamTypeErrorsFailEvenWhenDisabled(t *testing.T) {
 }
 
 func TestLoadBytesAntispamDisabledSkipsRangeChecks(t *testing.T) {
-	if _, err := loadAntispam(t, "    enabled: false\n    reject_score: 0\n    rspamd_socket: \"\"\n"); err != nil {
-		t.Fatalf("dormant values blocked a disabled config: %v", err)
+	for _, tc := range []struct {
+		name, value, want string
+	}{
+		{"empty", `""`, ""},
+		{"quoted number", `"6"`, "6"},
+		{"quoted boolean", `"false"`, "false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadAntispam(t, "    enabled: false\n    reject_score: 0\n    rspamd_socket: "+tc.value+"\n")
+			if err != nil {
+				t.Fatalf("dormant values blocked a disabled config: %v", err)
+			}
+			if as := cfg.EmailProtection.Antispam; as.RspamdSocket != tc.want || as.RejectScore != 0 {
+				t.Errorf("dormant values changed: %+v", as)
+			}
+		})
+	}
+}
+
+func TestLoadBytesAntispamSocketAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{"null", "    dry_run: &unset null\n    rspamd_socket: *unset\n", "/run/rspamd/csm-normal.sock"},
+		{"string", "    <<: {rspamd_socket: &socket /run/rspamd/scan.sock}\n    rspamd_socket: *socket\n", "/run/rspamd/scan.sock"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadAntispam(t, "    enabled: true\n"+tc.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.EmailProtection.Antispam.RspamdSocket; got != tc.want {
+				t.Errorf("socket = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadWithDirAntispamRejectsSocketTypeCoercion(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	confd := filepath.Join(dir, "conf.d")
+	must(t, os.MkdirAll(confd, 0o700))
+	must(t, os.WriteFile(main, []byte("email_protection:\n  antispam:\n    enabled: false\n    rspamd_socket: /run/rspamd/scan.sock\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(confd, "20-antispam.yaml"), []byte("email_protection:\n  antispam:\n    rspamd_socket: false\n"), 0o600))
+	if _, err := LoadWithDir(main, confd); err == nil || !strings.Contains(err.Error(), "email_protection.antispam.rspamd_socket must be a string") {
+		t.Fatalf("err = %v, want socket type error", err)
 	}
 }
 

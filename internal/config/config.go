@@ -2381,6 +2381,11 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 			return presence, fmt.Errorf("email_protection.antispam.%s must be a whole number", key)
 		}
 	}
+	// yaml.v3 also converts non-string scalars into strings. Reject these
+	// before decoding even when socket range checks are disabled.
+	if node, ok := as["rspamd_socket"]; ok && !yamlNodeIsNull(&node) && yamlResolvedTag(&node) != "!!str" {
+		return presence, fmt.Errorf("email_protection.antispam.rspamd_socket must be a string")
+	}
 	presence.antispam = antispamPresence{
 		dryRun:      set("dry_run"),
 		socket:      set("rspamd_socket"),
