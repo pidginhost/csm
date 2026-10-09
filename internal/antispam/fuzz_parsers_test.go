@@ -119,16 +119,16 @@ func FuzzEximConfigParsers(f *testing.F) {
 				t.Fatalf("line %d outside 1..%d", n, total)
 			}
 		}
-		if _, err := HasCutthrough(conf); err != nil && !errors.Is(err, ErrUnverifiable) {
-			t.Fatalf("HasCutthrough error %v is not ErrUnverifiable", err)
+		if _, errC := HasCutthrough(conf); errC != nil && !errors.Is(errC, ErrUnverifiable) {
+			t.Fatalf("HasCutthrough error %v is not ErrUnverifiable", errC)
 		}
-		if _, err := ForeignSpamdAddress(conf); err != nil && !errors.Is(err, ErrUnverifiable) {
-			t.Fatalf("ForeignSpamdAddress error %v is not ErrUnverifiable", err)
+		if _, errF := ForeignSpamdAddress(conf); errF != nil && !errors.Is(errF, ErrUnverifiable) {
+			t.Fatalf("ForeignSpamdAddress error %v is not ErrUnverifiable", errF)
 		}
-		blocks, err := LocateBlocks(conf)
+		blocks, errL := LocateBlocks(conf)
 		for _, b := range blocks {
-			if err != nil || b.Begin < 1 || b.End <= b.Begin || b.End > total {
-				t.Fatalf("block %+v with err %v outside 1..%d", b, err, total)
+			if errL != nil || b.Begin < 1 || b.End <= b.Begin || b.End > total {
+				t.Fatalf("block %+v with err %v outside 1..%d", b, errL, total)
 			}
 		}
 	})
