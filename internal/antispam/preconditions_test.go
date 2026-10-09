@@ -109,3 +109,191 @@ func TestCheckHostProblems(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckHostUnreadableVersionsAreTemporary(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*HostFacts)
+		code   string
+	}{
+		{"exim", func(f *HostFacts) { f.EximVersion.Stdout = "" }, CodeEximVersion},
+		{"rspamd", func(f *HostFacts) { f.RspamdVersion.Stdout = "" }, CodeRspamdVersion},
+		{"rspamadm", func(f *HostFacts) { f.RspamadmVersion.Stdout = "" }, CodeRspamdVersion},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := goodFacts()
+			tc.mutate(&f)
+			got := CheckHost(f)
+			if len(got) != 1 || got[0].Code != tc.code || got[0].Severity != Temporary {
+				t.Fatalf("got %+v, want one temporary %s problem", got, tc.code)
+			}
+		})
+	}
+}
+
+func TestCheckHostRetainsConfirmedConflicts(t *testing.T) {
+	boom := errors.New("probe unavailable")
+	for _, tc := range []struct {
+		name   string
+		mutate func(*HostFacts)
+		code   string
+	}{
+		{"prdr on and chunking unreadable", func(f *HostFacts) {
+			f.EximOptions.Stdout = "prdr_enable\n"
+		}, CodeEximOptions},
+		{"chunking on and prdr unreadable", func(f *HostFacts) {
+			f.EximOptions.Stdout = "chunking_advertise_hosts = *\n"
+		}, CodeEximOptions},
+		{"old daemon and failed admin probe", func(f *HostFacts) {
+			f.RspamdVersion.Stdout = "Rspamd daemon version 2.7\n"
+			f.RspamadmVersion.Err = boom
+		}, CodeRspamdVersion},
+		{"failed daemon probe and old admin", func(f *HostFacts) {
+			f.RspamdVersion.Err = boom
+			f.RspamadmVersion.Stdout = "Rspamadm 2.7\n"
+		}, CodeRspamdVersion},
+		{"unreadable daemon and old admin", func(f *HostFacts) {
+			f.RspamdVersion.Stdout = ""
+			f.RspamadmVersion.Stdout = "Rspamadm 2.7\n"
+		}, CodeRspamdVersion},
+		{"old daemon and unreadable admin", func(f *HostFacts) {
+			f.RspamdVersion.Stdout = "Rspamd daemon version 2.7\n"
+			f.RspamadmVersion.Stdout = ""
+		}, CodeRspamdVersion},
+		{"unknown service user and socket symlink", func(f *HostFacts) {
+			f.Socket.RspamdUID = -1
+			f.Socket.Socket.Mode = fs.ModeSymlink | 0o777
+		}, CodeSocket},
+		{"unknown service user and writable parent", func(f *HostFacts) {
+			f.Socket.RspamdUID = -1
+			f.Socket.Parents[2].Mode = fs.ModeDir | 0o777
+		}, CodeSocket},
+		{"unknown service user and parent ACL", func(f *HostFacts) {
+			f.Socket.RspamdUID = -1
+			f.Socket.Parents[2].ExtACL = true
+		}, CodeSocket},
+		{"missing socket and writable parent", func(f *HostFacts) {
+			f.Socket.Missing = true
+			f.Socket.Parents[2].Mode = fs.ModeDir | 0o777
+		}, CodeSocket},
+		{"socket stat failure and writable parent", func(f *HostFacts) {
+			f.Socket.Err = boom
+			f.Socket.Parents[2].Mode = fs.ModeDir | 0o777
+		}, CodeSocket},
+		{"untrusted peer and failed ping", func(f *HostFacts) {
+			f.Socket.PeerUID = 1001
+			f.Socket.PingErr = boom
+		}, CodeSocket},
+		{"incomplete named lists and undefined list", func(f *HostFacts) {
+			f.NamedLists = []CommandResult{{Stdout: "Failed: unable to complete match against \"+local_domains\": NULL\n"}}
+		}, CodeNamedList},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := goodFacts()
+			tc.mutate(&f)
+			got := CheckHost(f)
+			if len(got) != 2 {
+				t.Fatalf("got %+v, want one temporary and one definite %s problem", got, tc.code)
+			}
+			counts := make(map[Severity]int)
+			for _, p := range got {
+				if p.Code != tc.code {
+					t.Errorf("got code %s, want %s", p.Code, tc.code)
+				}
+				counts[p.Severity]++
+			}
+			if counts[Temporary] != 1 || counts[Definite] != 1 {
+				t.Errorf("got %+v, want one temporary and one definite problem", got)
+			}
+		})
+	}
+}
+
+func TestCheckHostUnknownPeerIsTemporary(t *testing.T) {
+	f := goodFacts()
+	f.Socket.PeerUID = -1
+	got := CheckHost(f)
+	if len(got) != 1 || got[0].Code != CodeSocket || got[0].Severity != Temporary {
+		t.Fatalf("got %+v, want one temporary socket problem", got)
+	}
+}
+
+func TestCheckHostIgnoresFailedVersionOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*HostFacts)
+		code   string
+	}{
+		{"exim", func(f *HostFacts) {
+			f.EximVersion = CommandResult{Stdout: "Exim version 4.96\n", Err: errors.New("probe unavailable")}
+		}, CodeEximVersion},
+		{"rspamd", func(f *HostFacts) {
+			f.RspamdVersion = CommandResult{Stdout: "Rspamd daemon version 2.7\n", Err: errors.New("probe unavailable")}
+		}, CodeRspamdVersion},
+		{"rspamadm", func(f *HostFacts) {
+			f.RspamadmVersion = CommandResult{Stdout: "Rspamadm 2.7\n", Err: errors.New("probe unavailable")}
+		}, CodeRspamdVersion},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := goodFacts()
+			tc.mutate(&f)
+			got := CheckHost(f)
+			if len(got) != 1 || got[0].Code != tc.code || got[0].Severity != Temporary {
+				t.Fatalf("got %+v, want one temporary %s problem", got, tc.code)
+			}
+		})
+	}
+}
+
+func TestCheckHostRejectsDuplicateLocalBlocks(t *testing.T) {
+	hooks, err := RenderExim(defaults(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := goodFacts()
+	f.LocalConf = "@CONFIG@\n" + hooks.Config + "@DIRECTOREND@\n"
+	f.GeneratedConf = hooks.Config + "begin acl\nacl_smtp_rcpt:\n" + hooks.RCPT + "acl_smtp_data:\n" + hooks.Scan + hooks.Post
+	if got := CheckHost(f); len(got) != 0 {
+		t.Fatalf("valid installed hooks reported %+v", got)
+	}
+	f.LocalConf = "@CONFIG@\n" + hooks.Config + hooks.Config + "@DIRECTOREND@\n"
+	got := CheckHost(f)
+	if len(got) != 1 || got[0].Code != CodeMarkers || got[0].Severity != Definite {
+		t.Fatalf("got %+v, want one definite local-marker problem", got)
+	}
+}
+
+func TestCheckHostDiagnosticsDoNotExposeProbeOutput(t *testing.T) {
+	const diagnostic = "untrusted diagnostic text"
+	boom := errors.New(diagnostic + "\n" + strings.Repeat("diagnostic ", 4096))
+	for _, tc := range []struct {
+		name   string
+		mutate func(*HostFacts)
+		code   string
+		sev    Severity
+	}{
+		{"exim version", func(f *HostFacts) { f.EximVersion.Err = boom }, CodeEximVersion, Temporary},
+		{"exim options", func(f *HostFacts) { f.EximOptions.Err = boom }, CodeEximOptions, Temporary},
+		{"socket stat", func(f *HostFacts) { f.Socket.Err = boom }, CodeSocket, Temporary},
+		{"socket ping", func(f *HostFacts) { f.Socket.PingErr = boom }, CodeSocket, Temporary},
+		{"generated config", func(f *HostFacts) { f.GeneratedErr = boom }, CodeSpamScoreRules, Temporary},
+		{"local config", func(f *HostFacts) { f.LocalErr = boom }, CodeForeignScanner, Temporary},
+		{"named list command", func(f *HostFacts) { f.NamedLists[0].Err = boom }, CodeNamedList, Temporary},
+		{"named list stdout", func(f *HostFacts) { f.NamedLists[0].Stdout = diagnostic + "\n" }, CodeNamedList, Definite},
+		{"named list stderr", func(f *HostFacts) {
+			f.NamedLists[0] = CommandResult{Stderr: diagnostic + "\n"}
+		}, CodeNamedList, Definite},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := goodFacts()
+			tc.mutate(&f)
+			got := CheckHost(f)
+			if len(got) != 1 || got[0].Code != tc.code || got[0].Severity != tc.sev {
+				t.Fatalf("got %+v, want one %s/%d problem", got, tc.code, tc.sev)
+			}
+			if got[0].Detail == "" || len(got[0].Detail) > 512 || strings.Contains(got[0].Detail, diagnostic) {
+				t.Error("finding must contain a bounded explanation without raw probe diagnostics")
+			}
+		})
+	}
+}
