@@ -15,6 +15,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/firewall"
 )
@@ -1101,6 +1102,12 @@ type Config struct {
 		// off; dry-run first. The MTA enforces; CSM only generates the rule
 		// and owns the quarantine, so it is never in the live mail path.
 		ForwardGuard ForwardGuardConfig `yaml:"forward_guard"`
+
+		// Antispam is the opt-in inbound spam filter through rspamd. Default
+		// off; dry-run first. Each cPanel account's own Spam Filters toggle
+		// decides whether its mail is filtered. Exim enforces; CSM only
+		// writes the hooks, so it is never in the live mail path.
+		Antispam AntispamConfig `yaml:"antispam"`
 	} `yaml:"email_protection" hotreload:"safe"`
 
 	Firewall *firewall.FirewallConfig `yaml:"firewall" hotreload:"restart"`
@@ -1570,6 +1577,7 @@ type defaultPresence struct {
 	smtpBruteSlowThreshold     bool
 	mailBruteSlowThreshold     bool
 	forwardGuard               forwardGuardPresence
+	antispam                   antispamPresence
 	phpRelay                   phpRelayPresence
 	retention                  retentionPresence
 	blockDigestMinBlock        bool
@@ -1610,6 +1618,15 @@ type forwardGuardPresence struct {
 	authFail          bool
 }
 
+// antispamPresence records which antispam fields were set to a non-null
+// value, so an explicit false or zero survives the defaults.
+type antispamPresence struct {
+	dryRun      bool
+	socket      bool
+	rejectScore bool
+	tagScore    bool
+}
+
 // phpRelayPresence records PHP-relay fields where a literal zero has runtime
 // meaning and must not be overwritten by defaults.
 type phpRelayPresence struct {
@@ -1631,6 +1648,17 @@ type ForwardGuardConfig struct {
 	DryRun                  bool               `yaml:"dry_run"`
 	HoldSignals             ForwardHoldSignals `yaml:"hold_signals"`
 	QuarantineRetentionDays int                `yaml:"quarantine_retention_days"`
+}
+
+// AntispamConfig configures inbound spam filtering through rspamd. Enabled is
+// the master switch (default off); DryRun (default true) scans and logs
+// without changing delivery.
+type AntispamConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	DryRun       bool   `yaml:"dry_run"`
+	RspamdSocket string `yaml:"rspamd_socket"`
+	RejectScore  int    `yaml:"reject_score"`
+	TagScore     int    `yaml:"tag_score"`
 }
 
 // ForwardHoldSignals toggles which layered signals may hold a forward copy.
@@ -1910,6 +1938,7 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 
 	applyForwardGuardDefaults(&cfg.EmailProtection.ForwardGuard, presence.forwardGuard)
+	applyAntispamDefaults(&cfg.EmailProtection.Antispam, presence.antispam)
 
 	// EmailProtection.PHPRelay defaults. Freeze/DryRun are *bool and
 	// remain nil here -- accessors resolve the safe defaults
@@ -2240,6 +2269,9 @@ func LoadBytes(data []byte) (*Config, error) {
 	if err := validateForwardGuard(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateAntispam(cfg); err != nil {
+		return nil, err
+	}
 	if err := validateHTTPASNCrawl(cfg); err != nil {
 		return nil, err
 	}
@@ -2260,6 +2292,7 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		EmailProtection struct {
 			ForwardGuard map[string]yaml.Node `yaml:"forward_guard"`
 			PHPRelay     map[string]yaml.Node `yaml:"php_relay"`
+			Antispam     map[string]yaml.Node `yaml:"antispam"`
 		} `yaml:"email_protection"`
 		Alerts struct {
 			BlockDigest map[string]yaml.Node `yaml:"block_digest"`
@@ -2335,22 +2368,52 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		_, presence.forwardGuard.badSenderIP = sig["bad_sender_ip"]
 		_, presence.forwardGuard.authFail = sig["auth_fail"]
 	}
+
+	as := raw.EmailProtection.Antispam
+	set := func(key string) bool {
+		node, ok := as[key]
+		return ok && !yamlNodeIsNull(&node)
+	}
+	// yaml.v3 truncates 6.5 into an int field without an error, so a score
+	// must be checked as a YAML integer before decoding.
+	for _, key := range []string{"reject_score", "tag_score"} {
+		if node, ok := as[key]; ok && !yamlNodeIsNull(&node) && yamlResolvedTag(&node) != "!!int" {
+			return presence, fmt.Errorf("email_protection.antispam.%s must be a whole number", key)
+		}
+	}
+	// yaml.v3 also converts non-string scalars into strings. Reject these
+	// before decoding even when socket range checks are disabled.
+	if node, ok := as["rspamd_socket"]; ok && !yamlNodeIsNull(&node) && yamlResolvedTag(&node) != "!!str" {
+		return presence, fmt.Errorf("email_protection.antispam.rspamd_socket must be a string")
+	}
+	presence.antispam = antispamPresence{
+		dryRun:      set("dry_run"),
+		socket:      set("rspamd_socket"),
+		rejectScore: set("reject_score"),
+		tagScore:    set("tag_score"),
+	}
 	return presence, nil
 }
 
 func yamlNodeIsNull(node *yaml.Node) bool {
+	return yamlResolvedTag(node) == "!!null"
+}
+
+// yamlResolvedTag follows aliases and returns the tag of the node they end at,
+// or "" for a cycle or an unresolved alias.
+func yamlResolvedTag(node *yaml.Node) string {
 	seen := make(map[*yaml.Node]struct{})
 	for node != nil && node.Kind == yaml.AliasNode {
-		if node.Alias == nil {
-			return false
+		if _, ok := seen[node]; ok {
+			return ""
 		}
-		if _, ok := seen[node.Alias]; ok {
-			return false
-		}
-		seen[node.Alias] = struct{}{}
+		seen[node] = struct{}{}
 		node = node.Alias
 	}
-	return node != nil && node.Tag == "!!null"
+	if node == nil {
+		return ""
+	}
+	return node.Tag
 }
 
 // applyForwardGuardDefaults fills unset forward-guard fields. dry_run and every
@@ -2447,6 +2510,40 @@ func applyFirewallFieldDefaults(fc *firewall.FirewallConfig, present map[string]
 	if !present["log_rate"] {
 		fc.LogRate = def.LogRate
 	}
+}
+
+// applyAntispamDefaults fills omitted or null antispam fields. dry_run defaults
+// on; an explicit false, empty socket or zero score is kept for validation.
+func applyAntispamDefaults(as *AntispamConfig, p antispamPresence) {
+	if !p.dryRun {
+		as.DryRun = true
+	}
+	if !p.socket {
+		as.RspamdSocket = antispam.DefaultSocket
+	}
+	if !p.rejectScore {
+		as.RejectScore = antispam.DefaultRejectScore
+	}
+	if !p.tagScore {
+		as.TagScore = antispam.DefaultTagScore
+	}
+}
+
+// validateAntispam checks the values CSM renders into Exim and rspamd. A
+// disabled block is not range-checked, so dormant values never stop an
+// operator from turning filtering off; YAML type errors still fail the load.
+func validateAntispam(cfg *Config) error {
+	as := cfg.EmailProtection.Antispam
+	if !as.Enabled {
+		return nil
+	}
+	if err := antispam.ValidateSocket(as.RspamdSocket); err != nil {
+		return fmt.Errorf("email_protection.antispam: %w", err)
+	}
+	if err := antispam.ValidateScores(as.RejectScore, as.TagScore); err != nil {
+		return fmt.Errorf("email_protection.antispam: %w", err)
+	}
+	return nil
 }
 
 // validateForwardGuard rejects nonsensical or unsafe forward-guard configs. The

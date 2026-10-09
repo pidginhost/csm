@@ -1,0 +1,22 @@
+# CSM-ANTISPAM BEGIN
+warn
+  set acl_m_csm_rcpt =
+
+warn
+  !authenticated = *
+  !hosts = <; 127.0.0.0/8 ; ::1 ; +trustedmailhosts ; +cpanel_mail_netblocks
+  set acl_m_csm_rcpt = skip
+
+warn
+  condition = ${if eq{$acl_m_csm_rcpt}{skip}}
+  domains = +local_domains
+  set acl_m_csm_rcpt = ${if exists{/etc/global_spamassassin_enable}{on}{${lookup passwd{${if eq{$domain}{$primary_hostname}{${sg{$local_part}{\N[/+].*\N}{}}}{${lookup{$domain}lsearch{/etc/userdomains}}}}}{${if exists{${extract{5}{:}{$value}}/.spamassassinenable}{on}{off}}}{off}}}}
+
+warn
+  condition = ${if and{{!eq{$acl_m_csm_rcpt}{}}{=={$recipients_count}{0}}}}
+  set acl_m_csm_policy = $acl_m_csm_rcpt
+
+warn
+  condition = ${if and{{!eq{$acl_m_csm_rcpt}{}}{>{$recipients_count}{0}}{!eq{$acl_m_csm_rcpt}{$acl_m_csm_policy}}}}
+  logwrite = :main: CSM-ANTISPAM event=split mode=dry-run policy=$acl_m_csm_policy rcpt_class=$acl_m_csm_rcpt
+# CSM-ANTISPAM END

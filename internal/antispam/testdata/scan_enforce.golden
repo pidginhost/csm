@@ -1,0 +1,25 @@
+# CSM-ANTISPAM BEGIN
+warn
+  set acl_m_csm_scan_ok = 0
+  set acl_m_csm_score = 0
+
+warn
+  !authenticated = *
+  !hosts = <; 127.0.0.0/8 ; ::1 ; +trustedmailhosts ; +cpanel_mail_netblocks
+  condition = ${if or{{eq{$acl_m_csm_policy}{on}}{eq{$acl_m_csm_policy}{off}}}}
+  remove_header = ^(?i)x-(spam|rspamd|spamd)-
+
+warn
+  !authenticated = *
+  !hosts = <; 127.0.0.0/8 ; ::1 ; +trustedmailhosts ; +cpanel_mail_netblocks
+  condition = ${if or{{eq{$acl_m_csm_policy}{on}}{eq{$acl_m_csm_policy}{off}}}}
+  spam = nobody:true/defer_ok
+  set acl_m_csm_scan_ok = 1
+  set acl_m_csm_score = $spam_score_int
+
+warn
+  !authenticated = *
+  !hosts = <; 127.0.0.0/8 ; ::1 ; +trustedmailhosts ; +cpanel_mail_netblocks
+  condition = ${if or{{eq{$acl_m_csm_policy}{on}}{eq{$acl_m_csm_policy}{off}}}}
+  logwrite = :main: CSM-ANTISPAM event=scan mode=enforce policy=$acl_m_csm_policy ${if eq{$acl_m_csm_scan_ok}{1}{result=ok score=$acl_m_csm_score action="${sg{$spam_action}{[^a-z ]}{_}}" decision=${if eq{$acl_m_csm_policy}{off}{unfiltered}{${if >={$acl_m_csm_score}{150}{reject}{${if >={$acl_m_csm_score}{60}{tag}{none}}}}}}}{result=error score=none action="unavailable" decision=none}}
+# CSM-ANTISPAM END

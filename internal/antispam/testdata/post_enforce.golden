@@ -1,0 +1,13 @@
+# CSM-ANTISPAM BEGIN
+deny
+  !authenticated = *
+  !hosts = <; 127.0.0.0/8 ; ::1 ; +trustedmailhosts ; +cpanel_mail_netblocks
+  condition = ${if and{{eq{$acl_m_csm_policy}{on}}{eq{$acl_m_csm_scan_ok}{1}}{>={$acl_m_csm_score}{150}}}}
+  message = 550 5.7.1 Message rejected as spam
+
+warn
+  !authenticated = *
+  !hosts = <; 127.0.0.0/8 ; ::1 ; +trustedmailhosts ; +cpanel_mail_netblocks
+  condition = ${if and{{eq{$acl_m_csm_policy}{on}}{eq{$acl_m_csm_scan_ok}{1}}{>={$acl_m_csm_score}{60}}}}
+  add_header = X-Spam-Status: Yes, score=${eval:$acl_m_csm_score/10}.${eval:$acl_m_csm_score%10}
+# CSM-ANTISPAM END
