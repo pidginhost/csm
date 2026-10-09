@@ -128,6 +128,118 @@ func TestUngatedSpamUses(t *testing.T) {
 	}
 }
 
+func TestUngatedSpamUsesEximSyntax(t *testing.T) {
+	for _, tc := range []struct {
+		name, statement string
+		unsafe          bool
+	}{
+		{"tab after verb", "deny\tcondition = ${if >{$spam_score_int}{50}}", true},
+		{"tab separates statements", "warn\n  condition = ${perl{spamd_is_available}}\n  spam = nobody:true\ndeny\tcondition = ${if >{$spam_score_int}{50}}", true},
+		{"scan before gate", "warn\n  spam = nobody:true\n  condition = ${perl{spamd_is_available}}", true},
+		{"header before gate", "warn\n  add_header = X-Spam-Score: $spam_score_int\n  condition = ${perl{spamd_is_available}}", true},
+		{"log is not a gate", "deny\n  log_message = ${perl{spamd_is_available}}\n  condition = ${if >{$spam_score_int}{50}}", true},
+		{"inverted gate", "deny\n  !condition = ${perl{spamd_is_available}}\n  condition = ${if >{$spam_score_int}{50}}", true},
+		{"compound expression is not a gate", "deny\n  condition = ${if eq{${perl{spamd_is_available}}}{0}{yes}{no}}\n  condition = ${if >{$spam_score_int}{50}}", true},
+		{"conditional gate", "warn\n.ifdef OPTIONAL_GATE\n  condition = ${perl{spamd_is_available}}\n.endif\n  spam = nobody:true", true},
+		{"gate from another branch", "warn\n.ifdef OPTIONAL_GATE\n  condition = ${perl{spamd_is_available}}\n.else\n  spam = nobody:true\n.endif", true},
+		{"require rejects when gate fails", "require\n  condition = ${perl{spamd_is_available}}\n  condition = ${if <{$spam_score_int}{50}}", true},
+		{"continued verb", "de\\\n  ny condition = ${if >{$spam_score_int}{50}}", true},
+		{"continued spam condition", "warn\n  sp\\\n  am = nobody:true", true},
+		{"plain gate", "warn\n  condition = ${perl{spamd_is_available}}\n  spam = nobody:true\n  add_header = X-Spam-Score: $spam_score_int", false},
+		{"continued gate", "warn\n  condition = \\\n    ${perl{spamd_is_available}}\n  spam = nobody:true", false},
+		{"comment within continued gate", "warn\n  condition = \\\n# explanation\n    ${perl{spamd_is_available}}\n  spam = nobody:true", false},
+		{"enclosing gate", "warn\n  condition = ${perl{spamd_is_available}}\n.ifdef EXTRA_HEADER\n  add_header = X-Spam-Score: $spam_score_int\n.endif\n  spam = nobody:true", false},
+		{"repeated nested gate", "warn\n  condition = ${perl{spamd_is_available}}\n.ifdef OPTIONAL_GATE\n  condition = ${perl{spamd_is_available}}\n.endif\n  spam = nobody:true", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conf := "begin acl\ncheck_data:\n" + tc.statement + "\n"
+			got := UngatedSpamUses(conf)
+			if tc.unsafe {
+				want := []int{3}
+				if tc.name == "tab separates statements" {
+					want = []int{6}
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("UngatedSpamUses = %v, want %v", got, want)
+				}
+			} else if len(got) != 0 {
+				t.Fatalf("gated statement flagged at %v", got)
+			}
+		})
+	}
+}
+
+func TestUngatedSpamUsesSpacedSection(t *testing.T) {
+	for _, section := range []string{"begin   acl", "begin acls", "BEGIN acl"} {
+		conf := section + "\ncheck_data:\ndeny condition = ${if >{$spam_score_int}{50}}\n"
+		if got, want := UngatedSpamUses(conf), []int{3}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%q: UngatedSpamUses = %v, want %v", section, got, want)
+		}
+	}
+}
+
+func TestUngatedSpamUsesMacros(t *testing.T) {
+	conf := "SCAN = spam = nobody:true\nSCORE = $spam_score_int\nGATE = condition = ${perl{spamd_is_available}}\nbegin acl\ncheck_data:\nwarn SCAN\ndeny condition = ${if >{SCORE}{50}}\n"
+	if got, want := UngatedSpamUses(conf), []int{6, 7}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("UngatedSpamUses = %v, want %v", got, want)
+	}
+	clean := strings.Replace(conf, "warn SCAN", "warn GATE\n  SCAN", 1)
+	clean = strings.Replace(clean, "deny condition =", "deny GATE\n  condition =", 1)
+	if got := UngatedSpamUses(clean); len(got) != 0 {
+		t.Fatalf("gated macro uses flagged at %v", got)
+	}
+	conditional := "GATE = condition = ${perl{spamd_is_available}}\n.ifdef INVERT_GATE\nGATE == !condition = ${perl{spamd_is_available}}\n.endif\nbegin acl\ncheck_data:\nwarn GATE\n  spam = nobody:true\n"
+	if got, want := UngatedSpamUses(conditional), []int{7}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("conditional macro: UngatedSpamUses = %v, want %v", got, want)
+	}
+}
+
+func TestHasCutthroughControls(t *testing.T) {
+	for _, tc := range []struct {
+		conf string
+		want bool
+	}{
+		{"warn\n  logwrite = cutthrough_delivery is disabled\n", false},
+		{"CUTTHROUGH_OPTION = cutthrough_delivery\n", false},
+		{"CUTTHROUGH_OPTION = cutthrough_delivery\nwarn\n  control = CUTTHROUGH_OPTION\n", true},
+		{"CUTTHROUGH_CONTROL = control = cutthrough_delivery\nwarn CUTTHROUGH_CONTROL\n", true},
+		{"warn\n  control = cutthrough_delivery/defer=pass\n", true},
+		{"accept\tcontrol = cutthrough_delivery\n", true},
+		{"warn\n  con\\\n  trol = cutthrough_delivery\n", true},
+		{"warn\n  control = cutthrough_\\\n  delivery\n", true},
+	} {
+		if got := HasCutthrough(tc.conf); got != tc.want {
+			t.Errorf("HasCutthrough(%q) = %v, want %v", tc.conf, got, tc.want)
+		}
+	}
+}
+
+func TestForeignSpamdAddressContinuation(t *testing.T) {
+	local := "@CONFIG@\nspamd_\\\n  address = /run/rspamd/operator.sock\n"
+	if !ForeignSpamdAddress(local) {
+		t.Fatal("continued operator spamd_address not found")
+	}
+	if ForeignSpamdAddress(MarkerBegin + "\n" + local + MarkerEnd + "\n") {
+		t.Fatal("continued CSM spamd_address counted as foreign")
+	}
+}
+
+func TestForeignSpamdAddressHiddenOption(t *testing.T) {
+	if !ForeignSpamdAddress("@CONFIG@\nhide spamd_address = /run/rspamd/operator.sock\n") {
+		t.Fatal("hidden operator spamd_address not found")
+	}
+}
+
+func TestForeignSpamdAddressMacro(t *testing.T) {
+	conf := "SCANNER = hide spamd_address = /run/rspamd/operator.sock\nSCANNER\n"
+	if !ForeignSpamdAddress(conf) {
+		t.Fatal("operator scanner macro not found")
+	}
+	if ForeignSpamdAddress(MarkerBegin + "\n" + conf + MarkerEnd + "\n") {
+		t.Fatal("CSM scanner macro counted as foreign")
+	}
+}
+
 func TestHasCutthroughAndForeignSpamdAddress(t *testing.T) {
 	if HasCutthrough(generatedConf) {
 		t.Error("no cutthrough in fixture")
@@ -179,5 +291,58 @@ func TestLocateBlocksAndPlacement(t *testing.T) {
 		if _, err := LocateBlocks(conf); err == nil {
 			t.Errorf("%s markers accepted", name)
 		}
+	}
+}
+
+func TestLocateBlocksRejectsWrongSections(t *testing.T) {
+	for name, conf := range map[string]string{
+		"cross ACL":             "begin acl\ncheck_rcpt:\n" + MarkerBegin + "\ncheck_data:\n" + MarkerEnd + "\n",
+		"cross spaced section":  MarkerBegin + "\nbegin   routers\n" + MarkerEnd + "\n",
+		"router block":          "begin routers\nlocaluser:\n" + MarkerBegin + "\n" + MarkerEnd + "\n",
+		"unnamed ACL":           "begin acl\n" + MarkerBegin + "\n" + MarkerEnd + "\n",
+		"begin in continuation": "spamd_address = \\\n" + MarkerBegin + "\n/run/rspamd/operator.sock\n" + MarkerEnd + "\n",
+		"end in continuation":   MarkerBegin + "\nspamd_address = \\\n" + MarkerEnd + "\n/run/rspamd/operator.sock\n",
+		"macro ACL boundary":    "NEXT_ACL = check_data:\nbegin acl\ncheck_rcpt:\n" + MarkerBegin + "\nNEXT_ACL\n" + MarkerEnd + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LocateBlocks(conf); err == nil {
+				t.Fatal("invalid CSM block accepted")
+			}
+		})
+	}
+}
+
+func TestLocateBlocksEximSyntax(t *testing.T) {
+	for _, section := range []string{"begin   acl", "begin acls", "BEGIN acl"} {
+		conf := section + "\ncheck_data :\n" + MarkerBegin + "\n" + MarkerEnd + "\n"
+		got, err := LocateBlocks(conf)
+		if err != nil {
+			t.Errorf("%q: %v", section, err)
+			continue
+		}
+		want := []Placement{{ACL: "check_data", Begin: 3, End: 4}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%q: blocks = %+v, want %+v", section, got, want)
+		}
+	}
+}
+
+func TestLocateBlocksMacroACL(t *testing.T) {
+	conf := "ACL_NAME = check_data:\nbegin acl\nACL_NAME\n" + MarkerBegin + "\n" + MarkerEnd + "\n"
+	got, err := LocateBlocks(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Placement{{ACL: "check_data", Begin: 4, End: 5}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("blocks = %+v, want %+v", got, want)
+	}
+	ambiguous := strings.Replace(conf, "begin acl", ".ifdef OTHER_ACL\nACL_NAME == other_data:\n.endif\nbegin acl", 1)
+	if _, err := LocateBlocks(ambiguous); err == nil {
+		t.Fatal("ambiguous ACL ownership accepted")
+	}
+	mixed := "LINE = warn\n.ifdef OTHER_ACL\nLINE == check_data:\n.endif\nbegin acl\ncheck_rcpt:\nLINE\n" + MarkerBegin + "\n" + MarkerEnd + "\n"
+	if _, err := LocateBlocks(mixed); err == nil {
+		t.Fatal("optional macro ACL boundary accepted")
 	}
 }

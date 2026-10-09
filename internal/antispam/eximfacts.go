@@ -111,10 +111,75 @@ var aclVerbs = map[string]bool{
 }
 
 var (
-	aclNameRe   = regexp.MustCompile(`^[A-Za-z0-9_]+:$`)
-	spamCondRe  = regexp.MustCompile(`^!?\s*spam\s*=`)
-	spamdAddrRe = regexp.MustCompile(`^spamd_address\s*=`)
+	aclNameRe    = regexp.MustCompile(`^[A-Za-z0-9_]+\s*:$`)
+	spamCondRe   = regexp.MustCompile(`^!?\s*spam\s*=`)
+	spamdAddrRe  = regexp.MustCompile(`^(?:hide\s+)?spamd_address\s*=`)
+	sectionRe    = regexp.MustCompile(`(?i)^begin\s+([a-z_]+)$`)
+	cutthroughRe = regexp.MustCompile(`\bcutthrough_delivery\b`)
+	macroNameRe  = regexp.MustCompile(`^[A-Z][A-Za-z0-9_]*$`)
 )
+
+type eximLine struct {
+	number    int
+	text      string
+	continued bool
+}
+
+// Exim joins continuations without adding spaces and ignores intervening
+// comments. Keep comments and physical line numbers for the ownership markers.
+func eximLines(conf string) []eximLine {
+	var out []eximLine
+	var text strings.Builder
+	current := -1
+	for i, raw := range strings.Split(conf, "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "#") {
+			out = append(out, eximLine{number: i + 1, text: line, continued: current != -1})
+			continue
+		}
+		if current == -1 {
+			if line == "" {
+				continue
+			}
+			current = len(out)
+			out = append(out, eximLine{number: i + 1})
+		}
+		part, continued := strings.CutSuffix(line, `\`)
+		text.WriteString(part)
+		if !continued {
+			out[current].text = strings.TrimSpace(text.String())
+			text.Reset()
+			current = -1
+		}
+	}
+	if current != -1 {
+		out[current].text = strings.TrimSpace(text.String())
+	}
+	return out
+}
+
+func eximSection(line string) (string, bool) {
+	m := sectionRe.FindStringSubmatch(line)
+	if m == nil {
+		return "", false
+	}
+	section := strings.ToLower(m[1])
+	if section == "acls" {
+		section = "acl"
+	}
+	return section, true
+}
+
+func splitACLVerb(line string) (string, string) {
+	word, rest := line, ""
+	if i := strings.IndexAny(line, " \t\r\n\f\v"); i >= 0 {
+		word, rest = line[:i], strings.TrimSpace(line[i:])
+	}
+	if aclVerbs[word] {
+		return word, rest
+	}
+	return "", line
+}
 
 // UngatedSpamUses returns the 1-based line numbers of ACL statements, outside
 // CSM blocks, that run a spam scan or read $spam_* without cPanel's
@@ -123,49 +188,96 @@ var (
 // with their own threshold and ignore an account's opt-out.
 func UngatedSpamUses(conf string) []int {
 	var out []int
+	var macros []eximMacro
 	inACL, inCSM := false, false
-	stmt, uses, gated := 0, false, false
+	stmt, unsafe, verb := 0, false, ""
+	depth, gateDepth := 0, -1
 	flush := func() {
-		if stmt != 0 && uses && !gated {
+		if stmt != 0 && unsafe {
 			out = append(out, stmt)
 		}
-		stmt, uses, gated = 0, false, false
+		stmt, unsafe, verb, gateDepth = 0, false, "", -1
 	}
-	for i, raw := range strings.Split(conf, "\n") {
-		line := strings.TrimSpace(raw)
-		switch {
-		case strings.HasPrefix(line, "begin "):
+	for _, raw := range eximLines(conf) {
+		line := raw.text
+		if recordEximMacro(line, depth, &macros) {
 			flush()
-			inACL = line == "begin acl"
 			continue
-		case line == MarkerBegin:
+		}
+		switch line {
+		case MarkerBegin:
 			flush()
 			inCSM = true
 			continue
-		case line == MarkerEnd:
+		case MarkerEnd:
 			inCSM = false
 			continue
 		}
-		if !inACL || inCSM || line == "" || line[0] == '#' || line[0] == '.' {
+		if inCSM || line == "" || line[0] == '#' {
 			continue
 		}
-		if aclNameRe.MatchString(line) {
+		if line[0] == '.' {
+			// A gate in an optional branch cannot protect uses after that
+			// branch, but an enclosing gate still protects nested branches.
+			switch strings.Fields(line)[0] {
+			case ".if", ".ifdef", ".ifndef":
+				depth++
+			case ".else", ".endif":
+				if gateDepth >= depth {
+					gateDepth = -1
+				}
+				if strings.HasPrefix(line, ".endif") {
+					depth--
+				}
+			}
+			continue
+		}
+		lines := expandEximMacros(line, macros)
+		sectionFound, aclSection := false, false
+		for _, expanded := range lines {
+			if section, ok := eximSection(expanded); ok {
+				sectionFound = true
+				aclSection = aclSection || section == "acl"
+			}
+		}
+		if sectionFound {
+			flush()
+			inACL = aclSection
+			continue
+		}
+		if !inACL {
+			continue
+		}
+		newVerb, uses, gate := "", false, true
+		boundary := false
+		for _, expanded := range lines {
+			if aclNameRe.MatchString(expanded) {
+				boundary = true
+			}
+			word, rest := splitACLVerb(expanded)
+			if word != "" && (newVerb == "" || word == "require") {
+				newVerb = word
+			}
+			uses = uses || spamCondRe.MatchString(rest) || strings.Contains(rest, "$spam_") || strings.Contains(rest, "${spam_")
+			name, value, ok := strings.Cut(rest, "=")
+			gate = gate && ok && strings.TrimSpace(name) == "condition" && strings.TrimSpace(value) == "${perl{spamd_is_available}}"
+		}
+		if boundary {
 			flush()
 			continue
 		}
-		if word, rest, _ := strings.Cut(line, " "); aclVerbs[word] {
+		if newVerb != "" {
 			flush()
-			stmt = i + 1
-			line = strings.TrimSpace(rest)
+			stmt, verb = raw.number, newVerb
 		}
 		if stmt == 0 {
 			continue
 		}
-		if spamCondRe.MatchString(line) || strings.Contains(line, "$spam_") || strings.Contains(line, "${spam_") {
-			uses = true
+		if uses && (gateDepth == -1 || verb == "require") {
+			unsafe = true
 		}
-		if strings.Contains(line, "${perl{spamd_is_available}}") {
-			gated = true
+		if gate && gateDepth == -1 {
+			gateDepth = depth
 		}
 	}
 	flush()
@@ -175,28 +287,118 @@ func UngatedSpamUses(conf string) []int {
 // HasCutthrough reports whether a generated exim.conf enables cutthrough
 // delivery anywhere outside a comment.
 func HasCutthrough(conf string) bool {
-	for _, raw := range strings.Split(conf, "\n") {
-		line := strings.TrimSpace(raw)
-		if line != "" && line[0] != '#' && strings.Contains(line, "cutthrough_delivery") {
-			return true
+	var macros []eximMacro
+	depth := 0
+	for _, raw := range eximLines(conf) {
+		line := raw.text
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		if line[0] == '.' {
+			switch strings.Fields(line)[0] {
+			case ".if", ".ifdef", ".ifndef":
+				depth++
+			case ".endif":
+				depth--
+			}
+			continue
+		}
+		if recordEximMacro(line, depth, &macros) {
+			continue
+		}
+		for _, expanded := range expandEximMacros(line, macros) {
+			_, condition := splitACLVerb(expanded)
+			if name, value, ok := strings.Cut(condition, "="); ok && strings.TrimSpace(name) == "control" && cutthroughRe.MatchString(value) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+type eximMacro struct {
+	name   string
+	values []string
+}
+
+func recordEximMacro(line string, depth int, macros *[]eximMacro) bool {
+	name, value, ok := strings.Cut(line, "=")
+	name = strings.TrimSpace(name)
+	if !ok || !macroNameRe.MatchString(name) {
+		return false
+	}
+	value = strings.TrimSpace(strings.TrimPrefix(value, "="))
+	values := expandEximMacros(value, *macros)
+	for i := range *macros {
+		if (*macros)[i].name == name {
+			if depth == 0 {
+				(*macros)[i].values = values
+			} else {
+				// Host-dependent conditionals can select any definition.
+				(*macros)[i].values = append((*macros)[i].values, values...)
+			}
+			return true
+		}
+	}
+	*macros = append(*macros, eximMacro{name: name, values: values})
+	return true
+}
+
+func eximConditionalDepth(line string, depth int) int {
+	if strings.HasPrefix(line, ".") {
+		switch strings.Fields(line)[0] {
+		case ".if", ".ifdef", ".ifndef":
+			return depth + 1
+		case ".endif":
+			return depth - 1
+		}
+	}
+	return depth
+}
+
+func expandEximMacros(line string, macros []eximMacro) []string {
+	lines := []string{line}
+	for _, macro := range macros {
+		var expanded []string
+		for _, line := range lines {
+			if !strings.Contains(line, macro.name) {
+				expanded = append(expanded, line)
+				continue
+			}
+			for _, value := range macro.values {
+				expanded = append(expanded, strings.ReplaceAll(line, macro.name, value))
+			}
+		}
+		lines = expanded
+	}
+	return lines
 }
 
 // ForeignSpamdAddress reports whether /etc/exim.conf.local sets spamd_address
 // outside CSM's own block.
 func ForeignSpamdAddress(local string) bool {
 	inCSM := false
-	for _, raw := range strings.Split(local, "\n") {
-		line := strings.TrimSpace(raw)
-		switch {
-		case line == MarkerBegin:
+	var macros []eximMacro
+	depth := 0
+	for _, raw := range eximLines(local) {
+		line := raw.text
+		depth = eximConditionalDepth(line, depth)
+		if recordEximMacro(line, depth, &macros) {
+			continue
+		}
+		switch line {
+		case MarkerBegin:
 			inCSM = true
-		case line == MarkerEnd:
+		case MarkerEnd:
 			inCSM = false
-		case !inCSM && spamdAddrRe.MatchString(line):
-			return true
+		default:
+			if !inCSM {
+				for _, expanded := range expandEximMacros(line, macros) {
+					if spamdAddrRe.MatchString(expanded) {
+						return true
+					}
+				}
+			}
 		}
 	}
 	return false
@@ -204,42 +406,78 @@ func ForeignSpamdAddress(local string) bool {
 
 // Placement is one CSM block found in an Exim config file.
 type Placement struct {
-	// ACL is the ACL holding the block, or "" outside the ACL section.
+	// ACL is the ACL holding the block, or "" in the main configuration.
 	ACL   string
 	Begin int // 1-based line of the BEGIN marker
 	End   int // 1-based line of the END marker
 }
 
 // LocateBlocks finds every CSM block and the ACL that holds it. Nested,
-// unpaired or section-crossing markers are an error: CSM never edits a file
+// unpaired or boundary-crossing markers are an error: CSM never edits a file
 // whose blocks it cannot identify.
 func LocateBlocks(conf string) ([]Placement, error) {
 	var out []Placement
-	inACL, acl, open := false, "", 0
-	for i, raw := range strings.Split(conf, "\n") {
-		line := strings.TrimSpace(raw)
-		switch {
-		case strings.HasPrefix(line, "begin "):
-			if open != 0 {
-				return nil, fmt.Errorf("line %d: section starts inside a CSM block", i+1)
+	var macros []eximMacro
+	depth := 0
+	section, acl, open := "", "", 0
+	for _, raw := range eximLines(conf) {
+		line, number := raw.text, raw.number
+		if raw.continued && (line == MarkerBegin || line == MarkerEnd) {
+			return nil, fmt.Errorf("line %d: CSM marker splits a continued configuration line", number)
+		}
+		depth = eximConditionalDepth(line, depth)
+		if recordEximMacro(line, depth, &macros) {
+			if section == "acl" {
+				if open != 0 {
+					return nil, fmt.Errorf("line %d: macro ends an ACL inside a CSM block", number)
+				}
+				acl = ""
 			}
-			inACL, acl = line == "begin acl", ""
-		case inACL && open == 0 && aclNameRe.MatchString(line):
-			acl = strings.TrimSuffix(line, ":")
-		case line == MarkerBegin:
-			if open != 0 {
-				return nil, fmt.Errorf("line %d: nested %s", i+1, MarkerBegin)
+			continue
+		}
+		boundary := ""
+		lines := expandEximMacros(line, macros)
+		boundaries := 0
+		for _, expanded := range lines {
+			if name, ok := eximSection(expanded); ok {
+				boundaries++
+				if open != 0 {
+					return nil, fmt.Errorf("line %d: section starts inside a CSM block", number)
+				}
+				if boundary != "" && boundary != "section:"+name {
+					return nil, fmt.Errorf("line %d: ambiguous section", number)
+				}
+				boundary = "section:" + name
+				section, acl = name, ""
+			} else if section == "acl" && aclNameRe.MatchString(expanded) {
+				boundaries++
+				if open != 0 {
+					return nil, fmt.Errorf("line %d: ACL starts inside a CSM block", number)
+				}
+				name := strings.TrimSpace(strings.TrimSuffix(expanded, ":"))
+				if boundary != "" && boundary != "acl:"+name {
+					return nil, fmt.Errorf("line %d: ambiguous ACL", number)
+				}
+				boundary, acl = "acl:"+name, name
 			}
-			open = i + 1
-		case line == MarkerEnd:
+		}
+		if boundaries != 0 && boundaries != len(lines) {
+			return nil, fmt.Errorf("line %d: optional section or ACL boundary", number)
+		}
+		switch line {
+		case MarkerBegin:
+			if open != 0 {
+				return nil, fmt.Errorf("line %d: nested %s", number, MarkerBegin)
+			}
+			if section != "" && (section != "acl" || acl == "") {
+				return nil, fmt.Errorf("line %d: CSM block is outside the main configuration or a named ACL", number)
+			}
+			open = number
+		case MarkerEnd:
 			if open == 0 {
-				return nil, fmt.Errorf("line %d: %s without %s", i+1, MarkerEnd, MarkerBegin)
+				return nil, fmt.Errorf("line %d: %s without %s", number, MarkerEnd, MarkerBegin)
 			}
-			name := ""
-			if inACL {
-				name = acl
-			}
-			out = append(out, Placement{ACL: name, Begin: open, End: i + 1})
+			out = append(out, Placement{ACL: acl, Begin: open, End: number})
 			open = 0
 		}
 	}
@@ -250,8 +488,8 @@ func LocateBlocks(conf string) ([]Placement, error) {
 }
 
 // CheckPlacement verifies a generated exim.conf holds exactly one scanner
-// block outside the ACL section, one hook in the RCPT ACL and two (scan, then
-// decision) in the DATA ACL. rcptACL and dataACL come from
+// block in the main configuration, one hook in the RCPT ACL and two hooks in
+// the DATA ACL. rcptACL and dataACL come from
 // `exim -bP acl_smtp_rcpt acl_smtp_data`.
 func CheckPlacement(blocks []Placement, rcptACL, dataACL string) error {
 	var main, rcpt, data int
