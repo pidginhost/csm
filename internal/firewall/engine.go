@@ -28,11 +28,14 @@ import (
 // Engine manages the nftables firewall ruleset.
 // Manages the nftables ruleset via netlink.
 type Engine struct {
-	lifecycle     *Lifecycle
-	stateRevision uint64
-	stateReadErr  error
-	mu            sync.Mutex
-	conn          *nftables.Conn
+	lifecycle              *Lifecycle
+	unverifiedBlockActions map[string]bool
+	failedBlockActions     map[string]bool
+	blockBatchStateErr     error
+	stateRevision          uint64
+	stateReadErr           error
+	mu                     sync.Mutex
+	conn                   *nftables.Conn
 	// listTables, when set, replaces conn.ListTables (tests inject a
 	// failing listing).
 	listTables func() ([]*nftables.Table, error)
@@ -228,6 +231,13 @@ type BlockedEntry struct {
 	Source    string    `json:"source,omitempty"`
 	BlockedAt time.Time `json:"blocked_at"`
 	ExpiresAt time.Time `json:"expires_at"` // zero = permanent
+	// ActionID names the admission attempt that wrote the row; empty for
+	// every other block. Older builds ignore it.
+	ActionID string `json:"action_id,omitempty"`
+	// Unverified marks a row whose kernel element is unproven: the attempt
+	// ended unknown or has not been settled. It is not reported as a block
+	// and not restored into the kernel.
+	Unverified bool `json:"unverified,omitempty"`
 }
 
 // AllowedEntry represents an allowed IP with metadata.
@@ -1613,6 +1623,12 @@ func sameIPString(a, b string) bool {
 }
 
 func preferLongerLivedBlock(current, candidate BlockedEntry) BlockedEntry {
+	if current.Unverified != candidate.Unverified {
+		if current.Unverified {
+			return current
+		}
+		return candidate
+	}
 	if current.ExpiresAt.IsZero() {
 		return current
 	}
@@ -4144,7 +4160,7 @@ func (e *Engine) Status() map[string]interface{} {
 		"udp_in":      e.cfg.UDPIn,
 		"udp_out":     e.cfg.UDPOut,
 		"infra_ips":   e.cfg.InfraIPs,
-		"blocked":     len(state.Blocked),
+		"blocked":     len(state.Blocked) - unverifiedRows(state.Blocked),
 		"allowed":     len(state.Allowed),
 		"log_dropped": e.cfg.LogDropped,
 	}
@@ -4180,6 +4196,9 @@ func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 	var ibs initialBlockState
 	restoredBlocked := make(map[string]bool)
 	for _, entry := range state.Blocked {
+		if entry.Unverified {
+			continue
+		}
 		timeout := time.Duration(0)
 		if !entry.ExpiresAt.IsZero() {
 			var ok bool
@@ -4393,6 +4412,7 @@ func (e *Engine) ensureStateCacheAtLocked(now time.Time) {
 		return
 	}
 
+	e.overlayUnverifiedBlockActionsLocked(&fresh)
 	normalizeFirewallStateIPs(&fresh)
 	e.stateCache = &fresh
 	e.applyExpiryAtLocked(now)
@@ -4497,7 +4517,9 @@ func nextExpiryDeadline(s *FirewallState) expiryDeadline {
 		}
 	}
 	for _, entry := range s.Blocked {
-		consider(entry.ExpiresAt)
+		if !entry.Unverified {
+			consider(entry.ExpiresAt)
+		}
 	}
 	for _, entry := range s.BlockedNet {
 		consider(entry.ExpiresAt)
@@ -4521,6 +4543,9 @@ func (e *Engine) rebuildIndexLocked() {
 	s := e.stateCache
 	blocked := make(map[string]int, len(s.Blocked))
 	for i, entry := range s.Blocked {
+		if entry.Unverified {
+			continue
+		}
 		blocked[entry.IP] = i
 		if key, ok := canonicalIPKey(entry.IP); ok {
 			blocked[key] = i
@@ -4550,14 +4575,13 @@ func (e *Engine) rebuildIndexLocked() {
 	e.blockedCIDRIndex = subnets
 }
 
-// pruneBlocked returns the list with expired blocked-IP entries removed
-// and a flag indicating whether anything was dropped. Returns the
-// original slice when no entries expired so we avoid pointless
-// allocations on the steady-state hot path.
+// pruneBlocked retains unverified rows until their owner retires the
+// matching attempt; expiry alone cannot settle an unknown kernel effect.
+// Return the original slice when no enforced entry expired.
 func pruneBlocked(in []BlockedEntry, now time.Time) ([]BlockedEntry, bool) {
 	expired := 0
 	for _, entry := range in {
-		if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
+		if !entry.Unverified && !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
 			expired++
 		}
 	}
@@ -4566,7 +4590,7 @@ func pruneBlocked(in []BlockedEntry, now time.Time) ([]BlockedEntry, bool) {
 	}
 	out := make([]BlockedEntry, 0, len(in)-expired)
 	for _, entry := range in {
-		if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
+		if !entry.Unverified && !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
 			continue
 		}
 		out = append(out, entry)
@@ -4629,6 +4653,7 @@ func (e *Engine) saveState(s *FirewallState) error {
 	}
 
 	state := copyFirewallState(*s)
+	e.overlayUnverifiedBlockActionsLocked(&state)
 	normalizeFirewallStateIPs(&state)
 	path := filepath.Join(e.statePath, "state.json")
 	if err := writeFirewallStateJSON(path, 0o600, &state); err != nil {
@@ -4641,6 +4666,9 @@ func (e *Engine) saveState(s *FirewallState) error {
 		return err
 	}
 	e.setStateCacheLocked(path, &state)
+	e.unverifiedBlockActions = nil
+	e.failedBlockActions = nil
+	e.blockBatchStateErr = nil
 	return nil
 }
 
@@ -4668,6 +4696,7 @@ func (e *Engine) setStateCacheLocked(path string, s *FirewallState) {
 	}
 
 	state := copyFirewallState(*s)
+	e.overlayUnverifiedBlockActionsLocked(&state)
 	normalizeFirewallStateIPs(&state)
 	e.stateCache = &FirewallState{
 		Blocked:     append([]BlockedEntry(nil), state.Blocked...),

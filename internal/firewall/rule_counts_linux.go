@@ -17,7 +17,7 @@ func countBlockedRules(entries []BlockedEntry, ipv6Enabled bool) int {
 	seen := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		key, ok := ruleIPKey(entry.IP, ipv6Enabled)
-		if !ok {
+		if !ok || entry.Unverified {
 			continue
 		}
 		seen[key] = struct{}{}

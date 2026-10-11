@@ -50,6 +50,7 @@ func (e *Engine) installCommittedCache(state FirewallState) {
 
 func (e *Engine) installCommittedCacheAtLocked(state FirewallState, now time.Time) {
 	state = copyFirewallState(state)
+	e.overlayUnverifiedBlockActionsLocked(&state)
 	e.stateCache = &state
 	e.applyExpiryAtLocked(now)
 	e.rebuildIndexLocked()
@@ -188,7 +189,7 @@ func desiredActionSets(state FirewallState, ipv6 bool, now time.Time) map[string
 		out[name] = nil
 	}
 	for _, b := range state.Blocked {
-		if !b.ExpiresAt.IsZero() && !b.ExpiresAt.After(now) {
+		if b.Unverified || (!b.ExpiresAt.IsZero() && !b.ExpiresAt.After(now)) {
 			continue
 		}
 		ip := net.ParseIP(b.IP)
