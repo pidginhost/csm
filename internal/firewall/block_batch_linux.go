@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/nftables"
+	"github.com/mdlayher/netlink"
 )
 
 // MaxBlockBatchMembers bounds one block batch, as the admission ledger
@@ -221,6 +223,277 @@ func (e *Engine) CheckBlockBatch(members []BlockMember) ([]BlockRefusal, error) 
 		return nil, err
 	}
 	return e.checkBlockMembersLocked(members, verified, snap, snap.at), nil
+}
+
+// BlockEffect is what a batch did to one member.
+type BlockEffect string
+
+const (
+	// BlockApplied: the kernel holds the member's element as encoded.
+	BlockApplied BlockEffect = "applied"
+	// BlockFailed: proven not applied; nothing of it is in the kernel.
+	BlockFailed BlockEffect = "failed"
+	// BlockUnknown: the element may or may not be in the kernel. Its row
+	// stays, marked unverified.
+	BlockUnknown BlockEffect = "unknown"
+)
+
+// BlockResult is one member's outcome: its effect, the check that refused
+// it before the kernel batch, or the error behind a failed or unknown one.
+type BlockResult struct {
+	Effect  BlockEffect
+	Refusal BlockRefusal
+	Err     error
+}
+
+// blockReadbackSlack covers the kernel's timeout granularity and the
+// clock reads around the batch.
+const blockReadbackSlack = time.Second
+
+// kernelRejected follows error provenance: a definitive reply proves the
+// atomic transaction failed even if later acknowledgements were lost.
+// A local receive error only says the reply could not be read.
+func kernelRejected(err error) bool {
+	if timed, ok := err.(interface{ Timeout() bool }); ok && timed.Timeout() {
+		return false
+	}
+	switch cause := err.(type) {
+	case *netlink.OpError:
+		if cause.Op == "receive" {
+			errno, ok := cause.Err.(syscall.Errno)
+			return ok && kernelRejected(errno)
+		}
+		return cause.Op == "send-messages" && kernelRejected(cause.Err)
+	case syscall.Errno:
+		switch cause {
+		case syscall.EINTR, syscall.EAGAIN, syscall.ENOBUFS, syscall.ETIMEDOUT:
+			return false
+		}
+		return cause != 0
+	case interface{ Unwrap() []error }:
+		for _, child := range cause.Unwrap() {
+			if kernelRejected(child) {
+				return true
+			}
+		}
+	case interface{ Unwrap() error }:
+		return kernelRejected(cause.Unwrap())
+	}
+	return false
+}
+
+// A lasting connection dials before returning, so dial and socket-option
+// errors are known before any send. The deadline covers send and readback.
+func newBlockBatchConn(e *Engine, extra ...nftables.ConnOption) (*nftables.Conn, error) {
+	if e.conn == nil {
+		return nil, errors.New("firewall batch transport unavailable")
+	}
+	opts := []nftables.ConnOption{
+		nftables.AsLasting(),
+		nftables.WithNetNSFd(e.conn.NetNS),
+		nftables.WithTestDial(e.conn.TestDial),
+		nftables.WithSockOptions(applyNFTSocketBuffer),
+	}
+	if e.conn.TestDial == nil {
+		opts = append(opts, nftables.WithSockOptions(applyLifecycleSocketDeadline))
+	}
+	opts = append(opts, extra...)
+	return nftables.New(opts...)
+}
+
+// readbackMatches bounds time left between the encoded timeout and that
+// timeout minus elapsed send/readback time and slack. The timeout itself
+// must match independently of elapsed time, allowing kernel tick truncation.
+// An older element with a longer timeout can have the same time left.
+func readbackMatches(el nftables.SetElement, encoded, window time.Duration) bool {
+	if el.Expires <= 0 || el.Expires > encoded || encoded-el.Expires > window {
+		return false
+	}
+	return el.Timeout > 0 && el.Timeout <= encoded && encoded-el.Timeout <= blockReadbackSlack && el.Expires <= el.Timeout
+}
+
+func (e *Engine) readbackLocked(conn *nftables.Conn, set *nftables.Set) ([]nftables.SetElement, error) {
+	if e.liveBlockedDump != nil {
+		return e.liveBlockedDump(set)
+	}
+	return conn.GetSetElements(set)
+}
+
+// ApplyBlockBatch runs the members of one batch: it checks them again
+// against the current state and kernel, writes every remaining row (with
+// its action ID) in one state write, adds their elements in one netlink
+// transaction on a fresh connection with a deadline, and reads the sets
+// back. A member is applied only when the readback shows its element as
+// encoded. A kernel rejection fails every member and restores the state;
+// any other uncertainty leaves them unknown, their rows marked unverified.
+// An error means nothing was written or sent.
+func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
+	if len(members) == 0 || len(members) > MaxBlockBatchMembers {
+		return nil, fmt.Errorf("a block batch has 1 to %d members", MaxBlockBatchMembers)
+	}
+	verified := e.verifiedRanges(members)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	snap, err := e.blockSnapshotLocked()
+	if err != nil {
+		return nil, err
+	}
+	now := snap.at
+	results := make([]BlockResult, len(members))
+	next := copyFirewallState(snap.state)
+	encoded := make(map[int]time.Duration)
+	var run []int
+	var elems4, elems6 []nftables.SetElement
+	for i, refusal := range e.checkBlockMembersLocked(members, verified, snap, now) {
+		if refusal != "" {
+			results[i] = BlockResult{Effect: BlockFailed, Refusal: refusal}
+			continue
+		}
+		m := members[i]
+		upsertBlockedEntryInState(&next, BlockedEntry{IP: m.IP, Reason: m.Reason, Source: SourceAutoResponse, BlockedAt: now, ExpiresAt: m.ExpiresAt.UTC(), ActionID: m.Action})
+		run = append(run, i)
+	}
+	if len(run) == 0 {
+		return results, nil
+	}
+	if persistErr := e.persistFirewallIntent(snap.state, next); persistErr != nil {
+		e.suppressFailedBlockActionsLocked(blockActions(members, run))
+		e.blockBatchStateErr = errors.Join(ErrBlockBatchState, persistErr)
+		for _, i := range run {
+			results[i] = BlockResult{Effect: BlockFailed, Err: e.blockBatchStateErr}
+		}
+		return results, nil
+	}
+
+	conn, err := newBlockBatchConn(e)
+	if err == nil {
+		defer func() { _ = conn.CloseLasting() }()
+		// State persistence can consume a member's remaining lifetime.
+		// Refresh at one instant immediately before queueing the send.
+		sendAt := e.expiryNow()
+		var ready []int
+		for _, i := range run {
+			m := members[i]
+			timeout, ok := blockTimeout(m.ExpiresAt, sendAt)
+			if !ok {
+				results[i] = BlockResult{Effect: BlockFailed, Refusal: BlockRefusedExpired}
+				e.suppressFailedBlockActionsLocked([]string{m.Action})
+				removeBlockedIPFromState(&next, m.IP)
+				continue
+			}
+			encoded[i] = timeout
+			parsed := net.ParseIP(m.IP)
+			if ip4 := parsed.To4(); ip4 != nil {
+				elems4 = append(elems4, nftables.SetElement{Key: ip4, Timeout: timeout})
+			} else {
+				elems6 = append(elems6, nftables.SetElement{Key: parsed.To16(), Timeout: timeout})
+			}
+			ready = append(ready, i)
+		}
+		run = ready
+		if len(run) == 0 {
+			return results, nil
+		}
+	}
+	if err == nil && len(elems4) > 0 {
+		err = conn.SetAddElements(e.setBlocked, elems4)
+	}
+	if err == nil && len(elems6) > 0 {
+		err = conn.SetAddElements(e.setBlocked6, elems6)
+	}
+	sent := err == nil
+	start := time.Now()
+	if sent {
+		err = conn.Flush()
+	}
+	if err != nil && (!sent || kernelRejected(err)) {
+		if restoreErr := e.saveState(&snap.state); restoreErr != nil {
+			e.suppressFailedBlockActionsLocked(blockActions(members, run))
+			e.blockBatchStateErr = errors.Join(ErrBlockBatchState, restoreErr)
+			err = errors.Join(err, fmt.Errorf("state restore failed: %w", e.blockBatchStateErr))
+		}
+		for _, i := range run {
+			results[i] = BlockResult{Effect: BlockFailed, Err: err}
+		}
+		return results, nil
+	}
+
+	var found map[string]nftables.SetElement
+	if err == nil {
+		found, err = e.readbackBatchLocked(conn, len(elems4) > 0, len(elems6) > 0)
+	}
+	window := time.Since(start) + blockReadbackSlack
+	var unknown []int
+	for _, i := range run {
+		m := members[i]
+		if el, ok := found[m.IP]; ok && readbackMatches(el, encoded[i], window) {
+			results[i] = BlockResult{Effect: BlockApplied}
+			e.legacyFileAuditLocked("block", m.IP, m.Reason, SourceAutoResponse, encoded[i])
+			continue
+		}
+		results[i] = BlockResult{Effect: BlockUnknown, Err: err}
+		unknown = append(unknown, i)
+	}
+	if len(unknown) > 0 {
+		if markErr := e.flagUnknownRowsLocked(members, unknown, next); markErr != nil {
+			for _, i := range unknown {
+				results[i].Err = errors.Join(results[i].Err, markErr)
+			}
+		}
+	}
+	return results, nil
+}
+
+func (e *Engine) readbackBatchLocked(conn *nftables.Conn, v4, v6 bool) (map[string]nftables.SetElement, error) {
+	found := map[string]nftables.SetElement{}
+	var readErr error
+	for _, read := range []struct {
+		set  *nftables.Set
+		used bool
+	}{{e.setBlocked, v4}, {e.setBlocked6, v6}} {
+		if !read.used {
+			continue
+		}
+		elements, err := e.readbackLocked(conn, read.set)
+		if err != nil {
+			readErr = errors.Join(readErr, fmt.Errorf("reading back blocked set %s: %w", read.set.Name, err))
+			continue
+		}
+		for _, el := range elements {
+			if ip, ok := blockSetIP(read.set, el.Key); ok {
+				found[ip] = el
+			}
+		}
+	}
+	return found, readErr
+}
+
+// flagUnknownRowsLocked persists unknown marks; failed persistence keeps
+// live suppression and exposes the shared state-integrity hold.
+func (e *Engine) flagUnknownRowsLocked(members []BlockMember, unknown []int, next FirewallState) error {
+	flag := make(map[string]bool, len(unknown))
+	for _, i := range unknown {
+		flag[members[i].Action] = true
+	}
+	for i, row := range next.Blocked {
+		if flag[row.ActionID] {
+			next.Blocked[i].Unverified = true
+		}
+	}
+	e.rememberUnverifiedBlockActionsLocked(next)
+	if err := e.saveState(&next); err != nil {
+		e.blockBatchStateErr = errors.Join(ErrBlockBatchState, err)
+		return e.blockBatchStateErr
+	}
+	return nil
+}
+
+func blockActions(members []BlockMember, indices []int) []string {
+	out := make([]string, 0, len(indices))
+	for _, i := range indices {
+		out = append(out, members[i].Action)
+	}
+	return out
 }
 
 func blockSnapshotAllows(state FirewallState, ip string) bool {

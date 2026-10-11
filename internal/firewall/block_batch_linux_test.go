@@ -5,26 +5,32 @@ package firewall
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/nftables"
+	"github.com/mdlayher/netlink"
 )
 
 type batchFixture struct {
-	e    *Engine
-	at   time.Time
-	live map[string]time.Duration // address -> kernel timeout, 0 = permanent
-	err  error                    // dump failure
+	e       *Engine
+	at      time.Time
+	live    map[string]time.Duration // address -> kernel timeout, 0 = permanent
+	expires map[string]time.Duration // address -> time left, when not its timeout
+	err     error                    // dump failure
+	sends   int                      // kernel batches sent
+	reply   func([]netlink.Message) ([]netlink.Message, error)
+	onFlush func() // what an acknowledged batch leaves in the kernel
 }
 
 func newBatchFixture(t *testing.T, state FirewallState) *batchFixture {
 	t.Helper()
 	dir := t.TempDir()
 	writeEngineStateFile(t, dir, state)
-	f := &batchFixture{at: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC), live: map[string]time.Duration{}}
+	f := &batchFixture{at: time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC), live: map[string]time.Duration{}, expires: map[string]time.Duration{}}
 	table := &nftables.Table{Name: "csm", Family: nftables.TableFamilyINet}
 	f.e = &Engine{
 		statePath:        dir,
@@ -49,10 +55,37 @@ func newBatchFixture(t *testing.T, state FirewallState) *batchFixture {
 			if (len(key) == net.IPv4len) != (set == f.e.setBlocked) {
 				continue
 			}
-			out = append(out, nftables.SetElement{Key: key, Timeout: timeout, Expires: timeout})
+			left, ok := f.expires[ip]
+			if !ok {
+				left = timeout
+			}
+			out = append(out, nftables.SetElement{Key: key, Timeout: timeout, Expires: left})
 		}
 		return out, nil
 	}
+	conn, err := nftables.New(nftables.WithTestDial(func(req []netlink.Message) ([]netlink.Message, error) {
+		if len(req) == 0 {
+			return nil, io.EOF
+		}
+		f.sends++
+		if f.reply != nil {
+			return f.reply(req)
+		}
+		if f.onFlush != nil {
+			f.onFlush()
+		}
+		var acks []netlink.Message
+		for _, msg := range req {
+			if msg.Header.Flags&netlink.Acknowledge != 0 {
+				acks = append(acks, netlink.Message{Header: netlink.Header{Length: 4, Type: netlink.Error, Sequence: msg.Header.Sequence, PID: msg.Header.PID}, Data: []byte{0, 0, 0, 0}})
+			}
+		}
+		return acks, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.e.conn = conn
 	return f
 }
 
