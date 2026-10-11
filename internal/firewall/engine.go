@@ -2872,14 +2872,16 @@ func (e *Engine) blockProtectionLocked(parsed net.IP, ip string) error {
 }
 
 // soonestExpiringTempIP returns the IP of the temporary block closest to
-// expiry, skipping permanent blocks and excludeIP. Pure helper so the
-// eviction policy is unit-testable without nftables.
+// expiry, skipping permanent blocks, unverified rows and excludeIP. Pure
+// helper so the eviction policy is unit-testable without nftables. An
+// unverified row is never an automatic victim: its effect is unproven and
+// only the owner's retirement may remove it.
 func soonestExpiringTempIP(st FirewallState, excludeIP string) (string, bool) {
 	var best string
 	var bestExp time.Time
 	found := false
 	for _, b := range st.Blocked {
-		if sameIPString(b.IP, excludeIP) || b.ExpiresAt.IsZero() {
+		if sameIPString(b.IP, excludeIP) || b.ExpiresAt.IsZero() || b.Unverified {
 			continue
 		}
 		if !found || b.ExpiresAt.Before(bestExp) {
@@ -2912,7 +2914,7 @@ func blockedStatePermTempCounts(state FirewallState, excludeIP string) (perm, te
 	seen := make(map[string]bool, len(state.Blocked))
 	for _, entry := range state.Blocked {
 		key, ok := canonicalIPKey(entry.IP)
-		if !ok {
+		if !ok || entry.Unverified {
 			continue
 		}
 		if excludeIP != "" && sameIPString(key, excludeIP) {

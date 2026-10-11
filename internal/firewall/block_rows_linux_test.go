@@ -461,3 +461,22 @@ func TestBlockedEntryActionFieldsParticipateInSnapshotEquality(t *testing.T) {
 		t.Fatal("equal timestamps at different offsets no longer compare equal")
 	}
 }
+
+// An unverified row is never an automatic victim (spec 5.4) and never
+// occupies a counted slot in the state fallback, even after its expiry.
+func TestLegacyEvictionSkipsUnverifiedRows(t *testing.T) {
+	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	state := FirewallState{Blocked: []BlockedEntry{
+		{IP: "192.0.2.10", ExpiresAt: at.Add(-time.Hour), ActionID: "act_unknown", Unverified: true},
+		{IP: "192.0.2.11", ExpiresAt: at.Add(time.Minute), ActionID: "act_pending", Unverified: true},
+		{IP: "203.0.113.40", ExpiresAt: at.Add(2 * time.Hour)},
+		{IP: "203.0.113.41", ExpiresAt: at.Add(time.Hour)},
+		{IP: "203.0.113.42"},
+	}}
+	if victim, ok := soonestExpiringTempIP(state, ""); !ok || victim != "203.0.113.41" {
+		t.Fatalf("victim = %q, %t; want the soonest verified temporary row", victim, ok)
+	}
+	if perm, temp := blockedStatePermTempCounts(state, ""); perm != 1 || temp != 2 {
+		t.Fatalf("fallback counts = %d permanent, %d temporary; want 1 and 2", perm, temp)
+	}
+}
