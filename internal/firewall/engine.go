@@ -2394,7 +2394,7 @@ func (e *Engine) PromoteToPermanentBlockWithFindingID(ip, reason, findingID stri
 	found := false
 	wasTemporary := false
 	for _, b := range priorState.Blocked {
-		if sameIPString(b.IP, ip) {
+		if sameIPString(b.IP, ip) && !b.Unverified {
 			found = true
 			wasTemporary = !b.ExpiresAt.IsZero()
 			entry.BlockedAt = b.BlockedAt
@@ -2779,7 +2779,7 @@ func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipEx
 		perm, temp, ok := e.livePermTempCountsLocked(st)
 		stateEntry, replacingStateEntry := blockedStateEntry(st, ip)
 		if ok && !skipExisting {
-			if replacingStateEntry {
+			if replacingStateEntry && !stateEntry.Unverified {
 				// Replacing an element already occupying a limit slot is not a new
 				// block. Only subtract it when the kernel confirms the state entry
 				// is still live; stale state must not hide some other live element.
@@ -3081,7 +3081,7 @@ func (e *Engine) IsBlockedLive(ip string) (bool, error) {
 // entries across the blocked v4 + v6 nft sets. Used by blockIPTarget so
 // the deny limits trip against the kernel's actual state instead of
 // stale state.json entries that the kernel already expired. Live keys
-// that still exist in CSM state are classified from state because nft
+// with verified CSM state are classified from state because nft
 // timeout attributes can reflect inherited/default set behaviour rather
 // than the operator's block intent. Out-of-state live keys fall back to
 // the kernel expiration attributes.
@@ -3123,7 +3123,7 @@ func (e *Engine) livePermTempCountsLocked(state FirewallState) (perm, temp int, 
 func blockedStateTempByIP(state FirewallState) map[string]bool {
 	byIP := make(map[string]bool, len(state.Blocked)*2)
 	for _, entry := range state.Blocked {
-		if entry.IP == "" {
+		if entry.IP == "" || entry.Unverified {
 			continue
 		}
 		temp := !entry.ExpiresAt.IsZero()

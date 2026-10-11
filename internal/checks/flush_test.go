@@ -88,6 +88,39 @@ func TestFlushAutoBlockStateClearsTrackerAndThreatRows(t *testing.T) {
 	}
 }
 
+func TestFlushAutoBlockStatePreservesUnverifiedEvidence(t *testing.T) {
+	withTestThreatStore(t)
+	restore := SetGlobalThreatDBForTest(t.TempDir())
+	t.Cleanup(restore)
+	statePath := t.TempDir()
+	writeFirewallFlushState(t, statePath, "203.0.113.20")
+	data := `{"blocked":[
+		{"ip":"203.0.113.20"},
+		{"ip":"203.0.113.21","expires_at":"2099-01-01T00:00:00Z","unverified":true},
+		{"ip":"203.0.113.22","expires_at":"2000-01-01T00:00:00Z","unverified":true},
+		{"ip":"203.0.113.23","unverified":true}
+	]}`
+	if err := os.WriteFile(filepath.Join(statePath, "firewall", "state.json"), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tdb := GetThreatDB()
+	for _, ip := range []string{"203.0.113.20", "203.0.113.21", "203.0.113.22", "203.0.113.23"} {
+		tdb.AddTemporary(ip, "attack evidence", time.Hour)
+	}
+	result, err := FlushAutoBlockState(statePath, func() error { return nil })
+	if err != nil || !result.Flushed || result.SnapshotErr != nil || result.BlockedCount != 1 {
+		t.Fatalf("flush = %+v, %v; want only the enforced block counted", result, err)
+	}
+	if _, found := tdb.Lookup("203.0.113.20"); found {
+		t.Fatal("the flushed block's evidence survived")
+	}
+	for _, ip := range []string{"203.0.113.21", "203.0.113.22", "203.0.113.23"} {
+		if reason, found := tdb.Lookup(ip); !found || reason != "attack evidence" {
+			t.Fatalf("unverified address %s lost evidence: %q, %t", ip, reason, found)
+		}
+	}
+}
+
 func TestFlushAutoBlockStatePreservesOperatorEvidence(t *testing.T) {
 	withTestThreatStore(t)
 	restore := SetGlobalThreatDBForTest(t.TempDir())

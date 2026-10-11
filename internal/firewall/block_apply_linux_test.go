@@ -673,3 +673,72 @@ func TestApplyBlockBatchNamesKernelRejections(t *testing.T) {
 		t.Fatalf("uncertain reply = %s, %v, %v", effects(results), err, results[0].Err)
 	}
 }
+
+func TestApplyBlockBatchStateRestoreFailureIsNotRetryable(t *testing.T) {
+	for _, afterRename := range []bool{false, true} {
+		t.Run(fmt.Sprint(afterRename), func(t *testing.T) {
+			f := newBatchFixture(t, FirewallState{Blocked: []BlockedEntry{{IP: "203.0.113.40", Reason: "operator"}}})
+			f.reply = func(req []netlink.Message) ([]netlink.Message, error) { return nltest.Error(int(syscall.EINVAL), req) }
+			prev := writeFirewallStateJSON
+			t.Cleanup(func() { writeFirewallStateJSON = prev })
+			cause := errors.New("state restore refused")
+			writes := 0
+			writeFirewallStateJSON = func(path string, mode os.FileMode, v any) error {
+				writes++
+				if writes == 2 {
+					if afterRename {
+						if err := prev(path, mode, v); err != nil {
+							return err
+						}
+					}
+					return cause
+				}
+				return prev(path, mode, v)
+			}
+			members := []BlockMember{f.member("act_v4", "203.0.113.20"), f.member("act_v6", "2001:db8::20")}
+			results, err := f.e.ApplyBlockBatch(members)
+			if err != nil || effects(results) != "failed/ failed/" || f.sends != 1 || writes != 2 {
+				t.Fatalf("apply = %s, %v, sends %d, writes %d", effects(results), err, f.sends, writes)
+			}
+			for _, result := range results {
+				if !errors.Is(result.Err, syscall.EINVAL) || !errors.Is(result.Err, cause) || !errors.Is(result.Err, ErrBlockBatchState) || errors.Is(result.Err, ErrBlockBatchRejected) {
+					t.Fatalf("restore failure = %v; want state hold without a retry marker", result.Err)
+				}
+			}
+			if _, checkErr := f.e.CheckBlockBatch(members); !errors.Is(checkErr, ErrBlockBatchState) {
+				t.Fatalf("check during hold = %v", checkErr)
+			}
+
+			writeFirewallStateJSON = func(path string, mode os.FileMode, v any) error {
+				if afterRename {
+					if err := prev(path, mode, v); err != nil {
+						return err
+					}
+				}
+				return cause
+			}
+			if marked, markErr := f.e.MarkBlockActionsUnverified(nil); marked != 0 || !errors.Is(markErr, ErrBlockBatchState) || !errors.Is(markErr, cause) {
+				t.Fatalf("failed release = %d, %v", marked, markErr)
+			}
+			if _, checkErr := f.e.CheckBlockBatch(members); !errors.Is(checkErr, ErrBlockBatchState) {
+				t.Fatalf("failed release cleared the hold: %v", checkErr)
+			}
+
+			writeFirewallStateJSON = prev
+			releaseWrites := f.countWrites(t)
+			if marked, markErr := f.e.MarkBlockActionsUnverified(nil); marked != 0 || markErr != nil || *releaseWrites != 1 {
+				t.Fatalf("release = %d, %v after %d writes", marked, markErr, *releaseWrites)
+			}
+			rows := f.storedRows(t)
+			if len(rows) != 1 || rows["203.0.113.40"].Reason != "operator" {
+				t.Fatalf("safe state = %+v; failed rows must not return", rows)
+			}
+			if got, checkErr := f.e.CheckBlockBatch(members); checkErr != nil || len(got) != 2 || got[0] != "" || got[1] != "" {
+				t.Fatalf("check after release = %q, %v", got, checkErr)
+			}
+			if marked, markErr := f.e.MarkBlockActionsUnverified(nil); marked != 0 || markErr != nil || *releaseWrites != 1 {
+				t.Fatalf("second release = %d, %v after %d writes", marked, markErr, *releaseWrites)
+			}
+		})
+	}
+}

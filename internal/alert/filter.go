@@ -250,14 +250,16 @@ func parseNormalizedIP(raw string) net.IP {
 
 func loadBlockedIPSource(statePath string, now time.Time, ips map[string]bool) {
 	// Use injected loader (bbolt-backed) when available.
-	if BlockedIPsFunc != nil {
+	loadVerified := BlockedIPsFunc == nil
+	if !loadVerified {
 		for ip, v := range BlockedIPsFunc() {
 			ips[ip] = v
 		}
-		return
 	}
 
-	loadFirewallStateFile(statePath, now, ips)
+	// Unverified state overrides legacy tracker rows even with an injected
+	// loader, which only returns the addresses it considers blocked.
+	loadFirewallStateFile(statePath, now, ips, loadVerified)
 }
 
 // BlockedIPsFunc is an optional callback that returns currently blocked IPs.
@@ -277,12 +279,12 @@ var ChallengedIPFunc func(ip string) bool
 func loadBlockedIPs(statePath string) map[string]bool {
 	ips := make(map[string]bool)
 	now := time.Now()
-	loadBlockedIPSource(statePath, now, ips)
 	loadBlockFileEntries(statePath, now, ips, nil, blockFileIPsSection)
+	loadBlockedIPSource(statePath, now, ips)
 	return ips
 }
 
-func loadFirewallStateFile(statePath string, now time.Time, ips map[string]bool) {
+func loadFirewallStateFile(statePath string, now time.Time, ips map[string]bool, loadVerified bool) {
 	fwPath := filepath.Join(statePath, "firewall", "state.json")
 	fwData, err := os.ReadFile(fwPath) // #nosec G304 -- filepath.Join under operator-configured statePath.
 	if err != nil {
@@ -302,10 +304,19 @@ func loadFirewallStateFile(statePath string, now time.Time, ips map[string]bool)
 		return
 	}
 
+	unverified := make(map[string]bool)
 	for _, entry := range fwState.Blocked {
-		// An unverified row's effect is unproven: it must not suppress alerts.
-		if !entry.Unverified && (entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt)) {
+		if entry.Unverified {
+			if ip := net.ParseIP(entry.IP); ip != nil {
+				unverified[ip.String()] = true
+			}
+		} else if loadVerified && (entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt)) {
 			ips[entry.IP] = true
+		}
+	}
+	for ip := range ips {
+		if parsed := net.ParseIP(ip); parsed != nil && unverified[parsed.String()] {
+			delete(ips, ip)
 		}
 	}
 }

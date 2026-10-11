@@ -511,6 +511,13 @@ write is returned as a state-integrity error and retains live suppression
 until a successful state write; later batches refuse while that error is
 held. The admission owner must reconcile action-linked rows before startup
 or any downgrade to a build that ignores their verification fields.
+The retry marker for a kernel rejection requires a successful state restore.
+Marking with no action IDs still writes the safe state to release a state hold.
+Unverified rows cannot suppress alerts or reputation checks through stale legacy
+tracker entries. They do not count as enforced blocks or select threat evidence
+for operator flush cleanup. Live deny limits count their kernel elements using
+kernel timeouts rather than the unresolved rows' requested lifetimes, including
+replacement accounting. Permanent promotion requires a verified block row.
 
 ### Attack event storage
 
