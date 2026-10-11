@@ -3,8 +3,10 @@ package worker
 import (
 	"bytes"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/eximlock"
@@ -70,6 +72,64 @@ func TestHandleReportsTransactionFailure(t *testing.T) {
 	}
 }
 
+func TestHandleRunsTransactionsBeforeReleasingLock(t *testing.T) {
+	for name, body := range map[string]string{"apply": applyBody, "remove": `{"operation":"remove"}`} {
+		for outcome, want := range map[string]antispam.Result{
+			"success": {OK: true},
+			"failure": {FailedStep: "reload", Rollback: antispam.RollbackVerified, Error: "reload failed"},
+		} {
+			t.Run(name+"/"+outcome, func(t *testing.T) {
+				if want.OK && name == antispam.OpApply {
+					want.Generation = "g1"
+				}
+				dir := t.TempDir()
+				tr := &fakeTransactor{result: want}
+				locked := 0
+				result, code := run(t, body, tr, func(mutate func() error) error {
+					locked++
+					return eximlock.With(dir, func() error {
+						if len(tr.applied)+tr.removed != 0 {
+							t.Fatal("transaction ran before acquiring the lock")
+						}
+						err := mutate()
+						if len(tr.applied)+tr.removed != 1 {
+							t.Fatal("transaction did not finish while holding the lock")
+						}
+						return err
+					})
+				})
+				want.Operation = name
+				wantCode := 1
+				if want.OK {
+					wantCode = 0
+				}
+				if result != want || code != wantCode || locked != 1 {
+					t.Fatalf("code=%d result=%+v locked=%d, want code=%d result=%+v locked=1", code, result, locked, wantCode, want)
+				}
+				if err := eximlock.With(dir, func() error { return nil }); err != nil {
+					t.Fatalf("lock not released: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestHandleRejectsReadFailureBeforeSideEffects(t *testing.T) {
+	tr := &fakeTransactor{result: antispam.Result{OK: true}}
+	locked := 0
+	input := io.MultiReader(strings.NewReader(`{"operation":"remove"}`), iotest.ErrReader(errors.New("reader failure details")))
+	var out bytes.Buffer
+	code := Handle(input, &out, tr, func(mutate func() error) error { locked++; return mutate() })
+	result, err := antispam.ParseResult(out.Bytes())
+	want := antispam.Result{FailedStep: "request", Rollback: antispam.RollbackNone, Error: "cannot read request"}
+	if err != nil || result != want || code != 1 || locked != 0 || tr.removed != 0 || len(tr.applied) != 0 {
+		t.Fatalf("code=%d result=%+v err=%v locked=%d transactor=%+v", code, result, err, locked, tr)
+	}
+	if strings.Count(out.String(), "\n") != 1 || !strings.HasSuffix(out.String(), "\n") {
+		t.Fatalf("output is not one line: %q", out.String())
+	}
+}
+
 // A bad request is refused before the lock is taken or anything runs.
 func TestHandleRejectsBadRequestBeforeSideEffects(t *testing.T) {
 	for name, body := range map[string]string{
@@ -123,5 +183,25 @@ func TestHandleFailsWhenResultCannotBeWritten(t *testing.T) {
 	tr := &fakeTransactor{result: antispam.Result{OK: true}}
 	if code := Handle(strings.NewReader(`{"operation":"remove"}`), failingWriter{}, tr, freeLock); code != 1 {
 		t.Fatalf("code = %d, want 1", code)
+	}
+}
+
+type shortWriter struct {
+	bytes.Buffer
+}
+
+func (w *shortWriter) Write(data []byte) (int, error) {
+	return w.Buffer.Write(data[:len(data)-1])
+}
+
+func TestHandleFailsWhenResultWriteIsShort(t *testing.T) {
+	tr := &fakeTransactor{result: antispam.Result{OK: true}}
+	var out shortWriter
+	code := Handle(strings.NewReader(`{"operation":"remove"}`), &out, tr, freeLock)
+	if code != 1 {
+		t.Fatalf("code=%d for incomplete reply %q, want 1", code, out.String())
+	}
+	if tr.removed != 1 || len(tr.applied) != 0 {
+		t.Fatalf("transactor=%+v, want exactly one removal", tr)
 	}
 }

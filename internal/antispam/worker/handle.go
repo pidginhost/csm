@@ -31,7 +31,8 @@ func Handle(input io.Reader, output io.Writer, t Transactor, lock Locker) int {
 	if err != nil {
 		return 1
 	}
-	if _, err := output.Write(append(line, '\n')); err != nil || !result.OK {
+	line = append(line, '\n')
+	if n, err := output.Write(line); err != nil || n != len(line) || !result.OK {
 		return 1
 	}
 	return 0
