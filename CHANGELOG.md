@@ -17,6 +17,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Changed
 
 - Deep phishing scans use less memory and CPU per page.
+- After upgrade, IP response previews use a new storage format; going back to 4.3.0 or earlier stops the previews, while live blocking keeps working.
 
 ### Fixed
 
