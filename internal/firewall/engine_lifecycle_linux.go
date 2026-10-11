@@ -395,21 +395,25 @@ func actionElementDelta(before, after ActionSet, now time.Time) (add, remove []n
 		live[actionElementKey(elem)] = elem
 	}
 	intended := make(map[string]ActionElement, len(after.Elements))
-	for _, elem := range actionElements(after.Elements, now) {
-		entry := ActionElement{Key: elem.Key, End: elem.IntervalEnd, Comment: elem.Comment}
-		if elem.Timeout > 0 {
-			entry.ExpiresAt = now.Add(elem.Timeout)
+	var additions []ActionElement
+	for _, entry := range after.Elements {
+		if !entry.ExpiresAt.IsZero() {
+			if _, ok := blockTimeout(entry.ExpiresAt, now); !ok {
+				continue
+			}
 		}
 		key := actionElementKey(entry)
 		intended[key] = entry
 		prior, held := live[key]
+		// Millisecond encoding must not make an unchanged absolute expiry
+		// look like a replacement on every later mutation.
 		if held && prior.Comment == entry.Comment && prior.ExpiresAt.Equal(entry.ExpiresAt) {
 			continue
 		}
 		if held {
 			remove = append(remove, nftables.SetElement{Key: prior.Key, IntervalEnd: prior.End})
 		}
-		add = append(add, elem)
+		additions = append(additions, entry)
 	}
 	for _, elem := range before.Elements {
 		if _, wanted := intended[actionElementKey(elem)]; wanted {
@@ -417,7 +421,7 @@ func actionElementDelta(before, after ActionSet, now time.Time) (add, remove []n
 		}
 		remove = append(remove, nftables.SetElement{Key: elem.Key, IntervalEnd: elem.End})
 	}
-	return add, remove
+	return actionElements(additions, now), remove
 }
 func actionElements(entries []ActionElement, now time.Time) []nftables.SetElement {
 	var out []nftables.SetElement

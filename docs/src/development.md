@@ -491,6 +491,8 @@ Firewall startup restores temporary blocks only for their remaining lifetime.
 Timed elements use the same millisecond encoder in legacy and durable state;
 rows with less than a millisecond left or an unrepresentable lifetime are
 skipped. Blocks, operator allows and subnets use one startup clock reading.
+Durable updates compare absolute expiries before encoding timeouts, so
+millisecond rounding does not replace unchanged timed blocks.
 
 ### Attack event storage
 
