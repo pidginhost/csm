@@ -142,3 +142,43 @@ func FuzzEximConfigParsers(f *testing.F) {
 		}
 	})
 }
+
+// The worker decodes requests from a root-owned boundary: any input must be
+// rejected or produce a request that re-encodes to settings that validate.
+func FuzzDecodeRequest(f *testing.F) {
+	for _, seed := range []string{
+		`{"operation":"apply","enabled":true,"dry_run":false,"rspamd_socket":"/run/rspamd/csm-normal.sock","reject_score":15,"tag_score":6}`,
+		`{"operation":"remove"}`,
+		`{"operation":"remove","operation":"apply"}`,
+		`{"Operation":"remove"}`,
+		`{"operation":"apply","enabled":true,"dry_run":false,"rspamd_socket":"/x","reject_score":2,"tag_score":1}{}`,
+		`null`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		req, s, err := DecodeRequest(data)
+		if err != nil {
+			return
+		}
+		switch req.Operation {
+		case OpApply:
+			if s.Validate() != nil {
+				t.Fatalf("accepted invalid settings %+v", s)
+			}
+			again, err := json.Marshal(ApplyRequest(s))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, s2, err := DecodeRequest(again); err != nil || s2 != s {
+				t.Fatalf("re-encoded apply: %+v %v", s2, err)
+			}
+		case OpRemove:
+			if s != (Settings{}) {
+				t.Fatalf("remove carried settings %+v", s)
+			}
+		default:
+			t.Fatalf("accepted operation %q", req.Operation)
+		}
+	})
+}
