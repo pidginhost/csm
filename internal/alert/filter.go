@@ -291,8 +291,9 @@ func loadFirewallStateFile(statePath string, now time.Time, ips map[string]bool)
 
 	var fwState struct {
 		Blocked []struct {
-			IP        string    `json:"ip"`
-			ExpiresAt time.Time `json:"expires_at"`
+			IP         string    `json:"ip"`
+			ExpiresAt  time.Time `json:"expires_at"`
+			Unverified bool      `json:"unverified"`
 		} `json:"blocked"`
 	}
 	if err := json.Unmarshal(fwData, &fwState); err != nil {
@@ -302,7 +303,8 @@ func loadFirewallStateFile(statePath string, now time.Time, ips map[string]bool)
 	}
 
 	for _, entry := range fwState.Blocked {
-		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+		// An unverified row's effect is unproven: it must not suppress alerts.
+		if !entry.Unverified && (entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt)) {
 			ips[entry.IP] = true
 		}
 	}

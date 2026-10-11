@@ -258,3 +258,23 @@ func TestLoadReputationCacheEmpty(t *testing.T) {
 		t.Errorf("empty dir should return empty cache, got %v", cache.Entries)
 	}
 }
+
+func TestLoadAllBlockedIPsSkipsUnverifiedRows(t *testing.T) {
+	dir := t.TempDir()
+	fwDir := filepath.Join(dir, "firewall")
+	if err := os.MkdirAll(fwDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Hour).Format(time.RFC3339)
+	data := `{"blocked":[
+		{"ip":"203.0.113.1","expires_at":"` + future + `"},
+		{"ip":"203.0.113.3","expires_at":"` + future + `","action_id":"act_unknown","unverified":true}
+	]}`
+	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := loadAllBlockedIPs(dir)
+	if !blocked["203.0.113.1"] || blocked["203.0.113.3"] {
+		t.Fatalf("blocked = %v; an unverified row is not a block", blocked)
+	}
+}

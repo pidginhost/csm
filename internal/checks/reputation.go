@@ -839,8 +839,9 @@ func loadAllBlockedIPs(statePath string) map[string]bool {
 	if fwData, err := osFS.ReadFile(fwPath); err == nil {
 		var fwState struct {
 			Blocked []struct {
-				IP        string    `json:"ip"`
-				ExpiresAt time.Time `json:"expires_at"`
+				IP         string    `json:"ip"`
+				ExpiresAt  time.Time `json:"expires_at"`
+				Unverified bool      `json:"unverified"`
 			} `json:"blocked"`
 		}
 		if uerr := json.Unmarshal(fwData, &fwState); uerr != nil {
@@ -848,7 +849,8 @@ func loadAllBlockedIPs(statePath string) map[string]bool {
 		} else {
 			now := time.Now()
 			for _, entry := range fwState.Blocked {
-				if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+				// An unverified row's effect is unproven; it is not a block.
+				if !entry.Unverified && (entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt)) {
 					blocked[entry.IP] = true
 				}
 			}

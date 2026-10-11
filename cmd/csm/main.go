@@ -253,16 +253,22 @@ func ensureGlobalStore(cfg *config.Config) error {
 	// engine state. The bbolt fw:blocked bucket is migration-only, so reading
 	// it would suppress alerts based on a stale snapshot.
 	statePath := cfg.StatePath
-	alert.BlockedIPsFunc = func() map[string]bool {
-		ips := make(map[string]bool)
-		if fwState, err := firewall.LoadState(statePath); err == nil && fwState != nil {
-			for _, entry := range fwState.Blocked {
+	alert.BlockedIPsFunc = func() map[string]bool { return firewallBlockedIPs(statePath) }
+	return nil
+}
+
+// firewallBlockedIPs returns the addresses the firewall state enforces. An
+// unverified row's effect is unproven, so it never suppresses an alert.
+func firewallBlockedIPs(statePath string) map[string]bool {
+	ips := make(map[string]bool)
+	if fwState, err := firewall.LoadState(statePath); err == nil && fwState != nil {
+		for _, entry := range fwState.Blocked {
+			if !entry.Unverified {
 				ips[entry.IP] = true
 			}
 		}
-		return ips
 	}
-	return nil
+	return ips
 }
 
 // loadConfigLite loads config without opening bbolt. Used by CLI commands
