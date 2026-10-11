@@ -259,6 +259,11 @@ type BlockResult struct {
 	Err     error
 }
 
+// ErrBlockBatchRejected marks a member that failed because the kernel
+// rejected the whole transaction; a failure before the send does not carry
+// it. The owner retries such members one at a time (P9).
+var ErrBlockBatchRejected = errors.New("kernel rejected the block batch")
+
 // blockReadbackSlack covers the kernel's timeout granularity and the
 // clock reads around the batch.
 const blockReadbackSlack = time.Second
@@ -420,6 +425,9 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 		err = conn.Flush()
 	}
 	if err != nil && (!sent || kernelRejected(err)) {
+		if sent {
+			err = errors.Join(ErrBlockBatchRejected, err)
+		}
 		if restoreErr := e.saveState(&snap.prior); restoreErr != nil {
 			e.suppressFailedBlockActionsLocked(blockActions(members, run))
 			e.blockBatchStateErr = errors.Join(ErrBlockBatchState, restoreErr)

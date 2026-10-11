@@ -643,3 +643,33 @@ func TestMarkReleasesTheBatchHoldAfterAFailedIntentWrite(t *testing.T) {
 		t.Fatalf("second mark = %d, %v with %d writes; want no write without a hold", marked, err, *writes)
 	}
 }
+
+// Only a definitive kernel rejection carries ErrBlockBatchRejected, so the
+// owner can retry its members alone; a failure before the send and an
+// uncertain reply do not.
+func TestApplyBlockBatchNamesKernelRejections(t *testing.T) {
+	members := func(f *batchFixture) []BlockMember {
+		return []BlockMember{f.member("act_v4", "203.0.113.20"), f.member("act_v6", "2001:db8::20")}
+	}
+
+	rejected := newBatchFixture(t, FirewallState{})
+	rejected.reply = func(req []netlink.Message) ([]netlink.Message, error) { return nltest.Error(int(syscall.EINVAL), req) }
+	results, err := rejected.e.ApplyBlockBatch(members(rejected))
+	if err != nil || effects(results) != "failed/ failed/" || !errors.Is(results[0].Err, ErrBlockBatchRejected) || !errors.Is(results[0].Err, syscall.EINVAL) {
+		t.Fatalf("rejection = %s, %v, %v", effects(results), err, results[0].Err)
+	}
+
+	presend := newBatchFixture(t, FirewallState{})
+	presend.e.setBlocked6.Anonymous = true
+	results, err = presend.e.ApplyBlockBatch(members(presend))
+	if err != nil || effects(results) != "failed/ failed/" || results[0].Err == nil || errors.Is(results[0].Err, ErrBlockBatchRejected) {
+		t.Fatalf("pre-send failure = %s, %v, %v", effects(results), err, results[0].Err)
+	}
+
+	uncertain := newBatchFixture(t, FirewallState{})
+	uncertain.reply = func([]netlink.Message) ([]netlink.Message, error) { return nil, os.ErrDeadlineExceeded }
+	results, err = uncertain.e.ApplyBlockBatch(members(uncertain))
+	if err != nil || effects(results) != "unknown/ unknown/" || errors.Is(results[0].Err, ErrBlockBatchRejected) {
+		t.Fatalf("uncertain reply = %s, %v, %v", effects(results), err, results[0].Err)
+	}
+}
