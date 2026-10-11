@@ -21,7 +21,7 @@ might leak customer data MUST be replaced before checking in.
 `check-fixtures` job runs the same scanner. It checks every tracked or unignored
 file below a `testdata` or `fixtures` directory anywhere in the repository,
 including JSON, cron records, and extensionless Exim records. IPv4 literals must
-use 192.0.2.0/24, 198.51.100.0/24, or 203.0.113.0/24.
+use 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24, or loopback 127.0.0.0/8.
 
 A violation reports its file and line without copying the address into CI logs.
 Repository listing errors, unreadable or missing tracked files, symlinks, and
