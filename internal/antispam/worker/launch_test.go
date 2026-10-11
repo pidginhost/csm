@@ -115,6 +115,22 @@ func TestRunSendsRequestThroughStdin(t *testing.T) {
 	}
 }
 
+func TestRunRejectsRelativeSystemdRunLookup(t *testing.T) {
+	launchWorker(t, "protocol")
+	bin := os.Getenv("PATH")
+	t.Chdir(filepath.Dir(bin))
+	t.Setenv("PATH", "./"+filepath.Base(bin))
+	t.Setenv("GODEBUG", "execerrdot=1")
+	if _, err := exec.LookPath("systemd-run"); !errors.Is(err, exec.ErrDot) {
+		t.Fatalf("lookup error=%v, want exec.ErrDot", err)
+	}
+	settings := antispam.Settings{DryRun: false, Socket: "/var/run/rspamd/scan.sock", RejectScore: 20, TagScore: 8}
+	result, err := Run(context.Background(), antispam.ApplyRequest(settings))
+	if result != (antispam.Result{}) || !errors.Is(err, systemdrun.ErrUnavailable) || !errors.Is(err, exec.ErrDot) {
+		t.Fatalf("result=%+v err=%v, want rejected lookup without a worker result", result, err)
+	}
+}
+
 // A complete JSON prefix must not hide output that exceeded the capture limit.
 func TestRunRejectsOversizedOutput(t *testing.T) {
 	launchWorker(t, "oversized")
