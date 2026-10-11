@@ -95,3 +95,96 @@ func TestParseResult(t *testing.T) {
 		}
 	}
 }
+
+func TestParseResultRoundTrip(t *testing.T) {
+	for name, want := range map[string]Result{
+		"apply":         {Operation: OpApply, OK: true, Generation: "g1"},
+		"remove":        {Operation: OpRemove, OK: true},
+		"unchanged":     {Operation: OpApply, OK: true, Rollback: RollbackNone, Generation: "g1"},
+		"request error": {FailedStep: "request", Rollback: RollbackNone, Error: "invalid request"},
+		"lock error":    {Operation: OpRemove, FailedStep: "lock", Rollback: RollbackNone, Error: "cannot lock"},
+		"busy":          {Operation: OpApply, Busy: true, FailedStep: "lock", Rollback: RollbackNone, Error: "held"},
+		"precondition":  {Operation: OpApply, FailedStep: "preconditions", Rollback: RollbackNone},
+		"rolled back":   {Operation: OpRemove, FailedStep: "reload", Rollback: RollbackVerified, Error: "reload failed"},
+		"unverified":    {Operation: OpApply, FailedStep: "probe", Rollback: RollbackFailed, Error: "probe failed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			data, err := json.Marshal(want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := ParseResult(append(data, '\n'))
+			if err != nil || got != want {
+				t.Fatalf("ParseResult = %+v, %v; want %+v", got, err, want)
+			}
+		})
+	}
+}
+
+func TestParseResultRejectsMalformedReports(t *testing.T) {
+	const success = `{"operation":"apply","ok":true,"generation":"g1"}`
+	for name, out := range map[string]string{
+		"null":                      `null`,
+		"empty object":              `{}`,
+		"missing ok":                `{"operation":"apply","generation":"g1"}`,
+		"null ok":                   `{"operation":"apply","ok":null,"generation":"g1"}`,
+		"duplicate ok":              `{"operation":"apply","ok":false,"ok":true,"generation":"g1"}`,
+		"escaped duplicate ok":      `{"operation":"apply","ok":false,"\u006fk":true,"generation":"g1"}`,
+		"case variant ok":           `{"operation":"apply","OK":true,"generation":"g1"}`,
+		"case variant operation":    `{"Operation":"apply","ok":true,"generation":"g1"}`,
+		"missing operation":         `{"ok":true,"generation":"g1"}`,
+		"unknown operation":         `{"operation":"restart","ok":true}`,
+		"missing generation":        `{"operation":"apply","ok":true}`,
+		"remove generation":         `{"operation":"remove","ok":true,"generation":"g1"}`,
+		"success with busy":         `{"operation":"apply","ok":true,"busy":true,"generation":"g1"}`,
+		"success with failed step":  `{"operation":"apply","ok":true,"failed_step":"probe","generation":"g1"}`,
+		"success with error":        `{"operation":"apply","ok":true,"error":"probe failed","generation":"g1"}`,
+		"success rolled back":       `{"operation":"apply","ok":true,"rollback":"verified","generation":"g1"}`,
+		"success rollback failed":   `{"operation":"apply","ok":true,"rollback":"failed","generation":"g1"}`,
+		"unknown rollback":          `{"operation":"apply","ok":false,"failed_step":"probe","rollback":"maybe"}`,
+		"failure without step":      `{"operation":"apply","ok":false,"rollback":"none"}`,
+		"failure without rollback":  `{"operation":"apply","ok":false,"failed_step":"probe"}`,
+		"failure without operation": `{"ok":false,"failed_step":"probe","rollback":"failed"}`,
+		"failure with generation":   `{"operation":"apply","ok":false,"failed_step":"probe","rollback":"failed","generation":"g1"}`,
+		"busy after changes":        `{"operation":"apply","ok":false,"busy":true,"failed_step":"lock","rollback":"failed"}`,
+		"busy outside lock":         `{"operation":"apply","ok":false,"busy":true,"failed_step":"probe","rollback":"none"}`,
+		"request changed state":     `{"ok":false,"failed_step":"request","rollback":"failed"}`,
+		"lock changed state":        `{"operation":"remove","ok":false,"failed_step":"lock","rollback":"verified"}`,
+		"trailing null":             success + `null`,
+		"trailing junk":             success + `x`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := ParseResult([]byte(out))
+			if err == nil || got != (Result{}) {
+				t.Fatalf("ParseResult = %+v, %v; want zero result and error", got, err)
+			}
+		})
+	}
+	for _, field := range []string{"operation", "ok", "busy", "failed_step", "rollback", "generation", "error"} {
+		for name, value := range map[string]any{"null": nil, "wrong type": 123, "nested": map[string]any{"x": true}} {
+			t.Run(name+" "+field, func(t *testing.T) {
+				fields := map[string]any{"operation": "remove", "ok": false, "failed_step": "lock", "rollback": "none"}
+				fields[field] = value
+				out, err := json.Marshal(fields)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, err := ParseResult(out); err == nil || got != (Result{}) {
+					t.Fatalf("ParseResult = %+v, %v; want zero result and error", got, err)
+				}
+			})
+		}
+	}
+}
+
+func TestParseResultErrorsDoNotEchoOutput(t *testing.T) {
+	for _, out := range []string{
+		`{"csm_private_field":"value","ok":true}`,
+		`{"operation":"remove","ok":"csm_private_value"}`,
+		`{"operation":"remove","ok":true,"error":123}`,
+	} {
+		if _, err := ParseResult([]byte(out)); err == nil || strings.Contains(err.Error(), "csm_private") {
+			t.Fatalf("ParseResult = %v; want an error without worker output", err)
+		}
+	}
+}

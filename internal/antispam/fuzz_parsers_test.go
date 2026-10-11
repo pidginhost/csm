@@ -159,6 +159,9 @@ func FuzzDecodeRequest(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		req, s, err := DecodeRequest(data)
 		if err != nil {
+			if req != (Request{}) || s != (Settings{}) {
+				t.Fatal("rejected input returned a partial request")
+			}
 			return
 		}
 		switch req.Operation {
@@ -179,6 +182,41 @@ func FuzzDecodeRequest(f *testing.F) {
 			}
 		default:
 			t.Fatalf("accepted operation %q", req.Operation)
+		}
+	})
+}
+
+func FuzzParseResult(f *testing.F) {
+	for _, seed := range []string{
+		`{"operation":"apply","ok":true,"generation":"g1"}`,
+		`{"operation":"remove","ok":true}`,
+		`{"operation":"apply","ok":false,"busy":true,"failed_step":"lock","rollback":"none"}`,
+		`{"ok":false,"failed_step":"request","rollback":"none","error":"invalid request"}`,
+		`{"operation":"remove","ok":false,"failed_step":"reload","rollback":"failed"}`,
+		`{"operation":"apply","ok":false,"ok":true,"generation":"g1"}`,
+		`{"operation":"apply","OK":true,"generation":"g1"}`,
+		`null`, `{}`, `{"ok":null}`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r, err := ParseResult(data)
+		if err != nil {
+			if r != (Result{}) {
+				t.Fatal("rejected output returned a partial result")
+			}
+			return
+		}
+		encoded, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again, err := ParseResult(encoded); err != nil || again != r {
+			t.Fatalf("round trip changed %+v to %+v, %v", r, again, err)
+		}
+		duplicate := string(encoded[:len(encoded)-1]) + `,"ok":true}`
+		if _, err := ParseResult([]byte(duplicate)); err == nil {
+			t.Fatal("accepted a duplicate success field")
 		}
 	})
 }
