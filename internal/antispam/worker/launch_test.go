@@ -11,14 +11,26 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 // Run launches this executable, so the test process also serves as the worker.
 func TestMain(m *testing.M) {
+	if filepath.Base(os.Args[0]) == "systemd-run" {
+		// Stand-in for systemd-run: run the command after "--" in place.
+		for i, arg := range os.Args {
+			if arg == "--" && i+1 < len(os.Args) {
+				// #nosec G204 -- test helper; argv comes from Run in this package.
+				_ = syscall.Exec(os.Args[i+1], os.Args[i+1:], os.Environ())
+			}
+		}
+		os.Exit(2)
+	}
 	if len(os.Args) != 2 {
 		os.Exit(m.Run())
 	}
@@ -78,14 +90,24 @@ func TestMain(m *testing.M) {
 	os.Exit(2)
 }
 
-func directWorker(t *testing.T, mode string) {
+// launchWorker makes Run find a systemd-run that is this test binary, so the
+// worker runs through the same wrapped argv as in production.
+func launchWorker(t *testing.T, mode string) {
 	t.Helper()
-	t.Setenv("PATH", t.TempDir())
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.Symlink(self, filepath.Join(bin, "systemd-run")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
 	t.Setenv("CSM_ANTISPAM_TEST_MODE", mode)
 }
 
 func TestRunSendsRequestThroughStdin(t *testing.T) {
-	directWorker(t, "protocol")
+	launchWorker(t, "protocol")
 	settings := antispam.Settings{DryRun: false, Socket: "/var/run/rspamd/scan.sock", RejectScore: 20, TagScore: 8}
 	result, err := Run(context.Background(), antispam.ApplyRequest(settings))
 	if err != nil || !result.OK || result.Operation != antispam.OpApply || result.Generation != "g2" {
@@ -95,7 +117,7 @@ func TestRunSendsRequestThroughStdin(t *testing.T) {
 
 // A complete JSON prefix must not hide output that exceeded the capture limit.
 func TestRunRejectsOversizedOutput(t *testing.T) {
-	directWorker(t, "oversized")
+	launchWorker(t, "oversized")
 	result, err := Run(context.Background(), antispam.RemoveRequest())
 	if err == nil || result != (antispam.Result{}) || !strings.Contains(err.Error(), "output exceeds") {
 		t.Fatalf("result=%+v err=%v", result, err)
@@ -103,7 +125,7 @@ func TestRunRejectsOversizedOutput(t *testing.T) {
 }
 
 func TestRunBoundsProcessDiagnostics(t *testing.T) {
-	directWorker(t, "stderr")
+	launchWorker(t, "stderr")
 	_, err := Run(context.Background(), antispam.RemoveRequest())
 	var exitErr *exec.ExitError
 	want := "antispam worker failed: exit status 1: " + strings.Repeat("x", maxStderr)
@@ -113,7 +135,7 @@ func TestRunBoundsProcessDiagnostics(t *testing.T) {
 }
 
 func TestRunReportsActiveDeadline(t *testing.T) {
-	directWorker(t, "wait")
+	launchWorker(t, "wait")
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	_, err := Run(ctx, antispam.RemoveRequest())
@@ -123,7 +145,7 @@ func TestRunReportsActiveDeadline(t *testing.T) {
 }
 
 func TestRunCancellationBoundsInheritedPipes(t *testing.T) {
-	directWorker(t, "inherited pipes")
+	launchWorker(t, "inherited pipes")
 	ready := filepath.Join(t.TempDir(), "ready")
 	t.Setenv("CSM_ANTISPAM_TEST_READY", ready)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -173,7 +195,7 @@ func TestRunCancellationBoundsInheritedPipes(t *testing.T) {
 }
 
 func TestRunReportsDeadline(t *testing.T) {
-	directWorker(t, "inherited pipes")
+	launchWorker(t, "inherited pipes")
 	ready := filepath.Join(t.TempDir(), "ready")
 	t.Setenv("CSM_ANTISPAM_TEST_READY", ready)
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
@@ -260,9 +282,12 @@ func TestRunAndHandleShareTheProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	tr := &fakeTransactor{result: antispam.Result{OK: true, Generation: "g2"}}
-	result, err := execute(context.Background(), "/opt/csm/csm", func(string) (string, error) { return "", errors.New("not installed") },
+	result, err := execute(context.Background(), "/opt/csm/csm", systemdRun,
 		func(_ context.Context, name string, args ...string) ([]byte, error) {
-			if name != "/opt/csm/csm" || len(args) != 1 || args[0] != Command {
+			if args[len(args)-1] == "/bin/true" {
+				return nil, nil
+			}
+			if name != "/usr/bin/systemd-run" || !reflect.DeepEqual(args[len(args)-3:], []string{"--", "/opt/csm/csm", Command}) {
 				t.Fatalf("ran %s %q", name, args)
 			}
 			var out bytes.Buffer
@@ -298,5 +323,28 @@ func TestCappedBufferDrainsWithoutRetainingExcess(t *testing.T) {
 	}
 	if n, err := b.Write(nil); n != 0 || err != nil || len(b.data) != maxStderr {
 		t.Fatalf("empty Write=%d, %v retained=%d", n, err, len(b.data))
+	}
+}
+
+// The worker edits /etc as root; inside the daemon sandbox it would fail
+// halfway. Without a working systemd-run it must not start at all.
+func TestRunNeverStartsTheWorkerInsideTheSandbox(t *testing.T) {
+	for name, tc := range map[string]struct {
+		lookup     systemdrun.LookPathFunc
+		wantProbes int
+	}{
+		"missing":      {func(string) (string, error) { return "", exec.ErrNotFound }, 0},
+		"probe failed": {systemdRun, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls [][]string
+			_, err := execute(context.Background(), "/opt/csm/csm", tc.lookup, func(_ context.Context, name string, args ...string) ([]byte, error) {
+				calls = append(calls, append([]string{name}, args...))
+				return nil, errors.New("Failed to connect to bus")
+			})
+			if !errors.Is(err, systemdrun.ErrUnavailable) || len(calls) != tc.wantProbes {
+				t.Fatalf("err=%v calls=%q", err, calls)
+			}
+		})
 	}
 }

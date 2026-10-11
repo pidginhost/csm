@@ -49,7 +49,9 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 
 // Run sends req to `csm antispam-worker` in a transient systemd unit, outside
 // the daemon's sandbox, and returns the worker's result. A failed or busy
-// result is a Result, not an error; an error means no result came back.
+// result is a Result, not an error; an error means no result came back. When
+// systemd-run cannot start a unit the worker does not run and the error wraps
+// systemdrun.ErrUnavailable.
 func Run(ctx context.Context, req antispam.Request) (antispam.Result, error) {
 	binary, err := os.Executable()
 	if err != nil {
@@ -89,7 +91,7 @@ func Run(ctx context.Context, req antispam.Request) (antispam.Result, error) {
 }
 
 func execute(ctx context.Context, binary string, lookup systemdrun.LookPathFunc, run systemdrun.RunnerFunc) (antispam.Result, error) {
-	out, runErr := systemdrun.Run(ctx, lookup, run, systemdrun.Options{Pipe: true, RuntimeMax: Timeout}, binary, Command)
+	out, runErr := systemdrun.Run(ctx, lookup, run, systemdrun.Options{Pipe: true, RuntimeMax: Timeout, Required: true}, binary, Command)
 	// The worker exits 1 for a failed or busy result and still prints it.
 	if result, err := antispam.ParseResult(out); err == nil {
 		return result, nil

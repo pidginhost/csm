@@ -27,6 +27,9 @@ type Options struct {
 	// RuntimeMax bounds the unit's lifetime via RuntimeMaxSec. Zero omits the
 	// property, leaving the unit unbounded.
 	RuntimeMax time.Duration
+	// Required makes Run return ErrUnavailable instead of running the command
+	// directly, for commands that must never run inside the caller's sandbox.
+	Required bool
 }
 
 // Argv returns the argv that runs name/args as a transient unit. When

@@ -191,3 +191,33 @@ func TestRunDoesNotStartCommandAfterProbeContextCancellation(t *testing.T) {
 		}
 	}
 }
+
+// A caller that must not run inside the service sandbox gets ErrUnavailable
+// instead of a direct run, so it can retry once systemd-run works again.
+func TestRunRequiredNeverRunsCommandDirectly(t *testing.T) {
+	for name, tc := range map[string]struct {
+		lookPath   LookPathFunc
+		probeErr   error
+		wantProbes int
+	}{
+		"missing":      {func(string) (string, error) { return "", exec.ErrNotFound }, nil, 0},
+		"probe failed": {func(string) (string, error) { return "/usr/bin/systemd-run", nil }, errors.New("Failed to connect to bus"), 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls []recordedCall
+			run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+				calls = append(calls, recordedCall{name, args})
+				return nil, tc.probeErr
+			}
+			_, err := Run(context.Background(), tc.lookPath, run, Options{Pipe: true, Required: true}, "csm", "antispam-worker")
+			if !errors.Is(err, ErrUnavailable) || len(calls) != tc.wantProbes {
+				t.Fatalf("err=%v calls=%+v", err, calls)
+			}
+			for _, call := range calls {
+				if call.name == "csm" {
+					t.Fatalf("ran the command directly: %+v", calls)
+				}
+			}
+		})
+	}
+}
