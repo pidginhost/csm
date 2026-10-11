@@ -45,9 +45,13 @@ func writeFirewallActionAudit(a FirewallAction) error {
 }
 func (e *Engine) lifecycleEnabled() bool { e.mu.Lock(); defer e.mu.Unlock(); return e.lifecycle != nil }
 func (e *Engine) installCommittedCache(state FirewallState) {
+	e.installCommittedCacheAtLocked(state, e.expiryNow())
+}
+
+func (e *Engine) installCommittedCacheAtLocked(state FirewallState, now time.Time) {
 	state = copyFirewallState(state)
 	e.stateCache = &state
-	e.applyExpiryLocked()
+	e.applyExpiryAtLocked(now)
 	e.rebuildIndexLocked()
 }
 func (e *Engine) lifecycleReadyLocked() error {
@@ -419,8 +423,8 @@ func actionElements(entries []ActionElement, now time.Time) []nftables.SetElemen
 	for _, entry := range entries {
 		timeout := time.Duration(0)
 		if !entry.ExpiresAt.IsZero() {
-			timeout = entry.ExpiresAt.Sub(now)
-			if timeout < time.Millisecond {
+			var ok bool
+			if timeout, ok = blockTimeout(entry.ExpiresAt, now); !ok {
 				continue
 			}
 		}

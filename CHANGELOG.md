@@ -21,6 +21,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- A temporary block that expires while the firewall starts can no longer be restored as a permanent block.
 - After upgrade, IP reputation stops fetching the retired Spamhaus EDROP list and ignores its cached ranges; Spamhaus DROP carries the merged entries.
 
 ## [4.3.0] - 2026-10-08

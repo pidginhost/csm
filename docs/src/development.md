@@ -487,6 +487,11 @@ A missing or inconsistent intent marks only that section unreadable.
 Opening checks retired attempts against the stored clock even after their
 retirement events have been acknowledged.
 
+Firewall startup restores temporary blocks only for their remaining lifetime.
+Timed elements use the same millisecond encoder in legacy and durable state;
+rows with less than a millisecond left or an unrepresentable lifetime are
+skipped. Blocks, operator allows and subnets use one startup clock reading.
+
 ### Attack event storage
 
 Attack events live in `attacks:events`; `attacks:events:ip` stores empty values

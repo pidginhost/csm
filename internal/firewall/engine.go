@@ -4168,19 +4168,24 @@ type initialBlockState struct {
 // Apply before any AddTable / AddSet so the result can be queued
 // into the same atomic netlink batch.
 func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
-	state := e.loadStateFile()
+	now := e.expiryNow()
+	state := e.loadStateFileAtLocked(now)
 	if e.lifecycle != nil {
-		now := time.Now()
 		sets := desiredActionSets(state, e.cfg.IPv6, now)
 		return initialBlockState{blocked4: actionElements(sets["blocked_ips"], now), blocked6: actionElements(sets["blocked_ips6"], now), allowed4: actionElements(sets["allowed_ips"], now), allowed6: actionElements(sets["allowed_ips6"], now), blockedNet4: actionElements(sets["blocked_nets"], now), blockedNet6: actionElements(sets["blocked_nets6"], now)}
 	}
 
-	now := time.Now()
+	// One reading for every row: a row must not pass the expiry check and
+	// then encode the time left after a later reading.
 	var ibs initialBlockState
 	restoredBlocked := make(map[string]bool)
 	for _, entry := range state.Blocked {
-		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
-			continue
+		timeout := time.Duration(0)
+		if !entry.ExpiresAt.IsZero() {
+			var ok bool
+			if timeout, ok = blockTimeout(entry.ExpiresAt, now); !ok {
+				continue
+			}
 		}
 		key, ok := canonicalIPKey(entry.IP)
 		if !ok {
@@ -4190,10 +4195,6 @@ func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 			continue
 		}
 		parsed := net.ParseIP(entry.IP)
-		timeout := time.Duration(0)
-		if !entry.ExpiresAt.IsZero() {
-			timeout = time.Until(entry.ExpiresAt)
-		}
 		if ip4 := parsed.To4(); ip4 != nil {
 			ibs.blocked4 = append(ibs.blocked4, nftables.SetElement{Key: ip4, Timeout: timeout})
 		} else if e.cfg.IPv6 {
@@ -4301,7 +4302,11 @@ func logNftSetOpErr(op, target string, err error) {
 // Hot read paths (IsBlocked, IsSubnetBlocked, IsAllowed) bypass this
 // allocation by consulting the index maps directly.
 func (e *Engine) loadStateFile() FirewallState {
-	e.ensureStateCacheLocked()
+	return e.loadStateFileAtLocked(e.expiryNow())
+}
+
+func (e *Engine) loadStateFileAtLocked(now time.Time) FirewallState {
+	e.ensureStateCacheAtLocked(now)
 	if e.stateCache == nil {
 		return FirewallState{}
 	}
@@ -4346,10 +4351,14 @@ func (e *Engine) loadStateFileRawLocked() (FirewallState, bool) {
 // other index-backed lookups never report a stale block. Pruning
 // updates the index maps via rebuildIndexLocked.
 func (e *Engine) ensureStateCacheLocked() {
+	e.ensureStateCacheAtLocked(e.expiryNow())
+}
+
+func (e *Engine) ensureStateCacheAtLocked(now time.Time) {
 	if e.lifecycle != nil {
 		state, _, err := e.readCommittedStateLocked()
 		if err == nil {
-			e.installCommittedCache(state)
+			e.installCommittedCacheAtLocked(state, now)
 		}
 		return
 	}
@@ -4357,7 +4366,7 @@ func (e *Engine) ensureStateCacheLocked() {
 	stateFile := filepath.Join(e.statePath, "state.json")
 	info, statErr := os.Stat(stateFile)
 	if statErr == nil && e.stateCache != nil && e.stateCacheKey.matches(info) {
-		e.applyExpiryLocked()
+		e.applyExpiryAtLocked(now)
 		return
 	}
 
@@ -4367,11 +4376,11 @@ func (e *Engine) ensureStateCacheLocked() {
 		// #nosec G304 -- filepath.Join under operator-configured statePath.
 		data, readErr := os.ReadFile(stateFile)
 		if readErr != nil {
-			e.keepPriorStateCacheLocked()
+			e.keepPriorStateCacheAtLocked(now)
 			return
 		}
 		if err := json.Unmarshal(data, &fresh); err != nil {
-			e.keepPriorStateCacheLocked()
+			e.keepPriorStateCacheAtLocked(now)
 			return
 		}
 		e.stateCacheKey = stateFileCacheKeyFromInfo(info)
@@ -4380,19 +4389,19 @@ func (e *Engine) ensureStateCacheLocked() {
 	case e.stateCache != nil:
 		// Transient stat error (permission, EIO). Keep the prior
 		// cache rather than dropping all blocks.
-		e.applyExpiryLocked()
+		e.applyExpiryAtLocked(now)
 		return
 	}
 
 	normalizeFirewallStateIPs(&fresh)
 	e.stateCache = &fresh
-	e.applyExpiryLocked()
+	e.applyExpiryAtLocked(now)
 	e.rebuildIndexLocked()
 }
 
-func (e *Engine) keepPriorStateCacheLocked() {
+func (e *Engine) keepPriorStateCacheAtLocked(now time.Time) {
 	if e.stateCache != nil {
-		e.applyExpiryLocked()
+		e.applyExpiryAtLocked(now)
 		return
 	}
 	e.stateCache = &FirewallState{}
@@ -4400,14 +4409,13 @@ func (e *Engine) keepPriorStateCacheLocked() {
 	e.rebuildIndexLocked()
 }
 
-// applyExpiryLocked prunes expired entries from the cached state in
+// applyExpiryAtLocked prunes expired entries from the cached state in
 // place and rebuilds the index maps when something was dropped. It scans
 // only when an entry is due or the cache was replaced since the last scan.
-func (e *Engine) applyExpiryLocked() {
+func (e *Engine) applyExpiryAtLocked(now time.Time) {
 	if e.stateCache == nil {
 		return
 	}
-	now := e.expiryNow()
 	s := e.stateCache
 	if !e.expiryDue.reached(s, now) {
 		return
@@ -4441,7 +4449,7 @@ func (e *Engine) expiryNow() time.Time {
 
 // expiryDeadline is bound to the cache snapshot it was computed for, so
 // replacing stateCache (reload, save, committed install) forces a fresh
-// scan without each writer having to reset it. Only applyExpiryLocked
+// scan without each writer having to reset it. Only applyExpiryAtLocked
 // changes a cached snapshot in place, and it recomputes the deadline.
 //
 // A cached ExpiresAt carries a monotonic reading when the entry was made
