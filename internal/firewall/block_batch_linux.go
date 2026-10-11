@@ -86,6 +86,7 @@ func validBlockReason(reason string) bool {
 // file and the kernel's blocked sets.
 type blockSnapshot struct {
 	at    time.Time
+	prior FirewallState
 	state FirewallState
 	live  map[string]bool
 	temp  int
@@ -101,6 +102,12 @@ func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
 	if e.setBlocked == nil || (e.liveBlockedDump == nil && e.conn == nil) {
 		return blockSnapshot{}, errors.New("blocked sets unavailable")
 	}
+	prior, ok := e.loadStateFileRawLocked()
+	if !ok {
+		return blockSnapshot{}, fmt.Errorf("%w: firewall state unavailable", ErrBlockBatchState)
+	}
+	e.overlayUnverifiedBlockActionsLocked(&prior)
+	normalizeFirewallStateIPs(&prior)
 	var conn *nftables.Conn
 	if e.liveBlockedDump == nil {
 		var err error
@@ -110,7 +117,13 @@ func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
 		}
 	}
 	at := e.expiryNow()
-	snap := blockSnapshot{at: at, state: e.loadStateFileAtLocked(at), live: map[string]bool{}}
+	// Expired rows still own kernel cleanup, notably untimed subnet elements.
+	// Only the check view is pruned; intent and restore retain the full image.
+	state := copyFirewallState(prior)
+	state.Blocked, _ = pruneBlocked(state.Blocked, at)
+	state.BlockedNet, _ = pruneBlockedNet(state.BlockedNet, at)
+	state.Allowed, _ = pruneAllowed(state.Allowed, at)
+	snap := blockSnapshot{at: at, prior: prior, state: state, live: map[string]bool{}}
 	tempByIP := blockedStateTempByIP(snap.state)
 	for _, set := range []*nftables.Set{e.setBlocked, e.setBlocked6} {
 		if set == nil || (set == e.setBlocked6 && !e.cfg.IPv6) {
@@ -340,7 +353,7 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 	}
 	now := snap.at
 	results := make([]BlockResult, len(members))
-	next := copyFirewallState(snap.state)
+	next := copyFirewallState(snap.prior)
 	encoded := make(map[int]time.Duration)
 	var run []int
 	var elems4, elems6 []nftables.SetElement
@@ -356,7 +369,7 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 	if len(run) == 0 {
 		return results, nil
 	}
-	if persistErr := e.persistFirewallIntent(snap.state, next); persistErr != nil {
+	if persistErr := e.persistFirewallIntent(snap.prior, next); persistErr != nil {
 		e.suppressFailedBlockActionsLocked(blockActions(members, run))
 		e.blockBatchStateErr = errors.Join(ErrBlockBatchState, persistErr)
 		for _, i := range run {
@@ -407,7 +420,7 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 		err = conn.Flush()
 	}
 	if err != nil && (!sent || kernelRejected(err)) {
-		if restoreErr := e.saveState(&snap.state); restoreErr != nil {
+		if restoreErr := e.saveState(&snap.prior); restoreErr != nil {
 			e.suppressFailedBlockActionsLocked(blockActions(members, run))
 			e.blockBatchStateErr = errors.Join(ErrBlockBatchState, restoreErr)
 			err = errors.Join(err, fmt.Errorf("state restore failed: %w", e.blockBatchStateErr))

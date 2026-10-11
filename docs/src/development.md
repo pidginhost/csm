@@ -497,7 +497,9 @@ millisecond rounding does not replace unchanged timed blocks.
 The engine also provides internal batch entry points for up to 64 timed
 full-address blocks. No production caller uses them yet. Each member is
 checked against one state and kernel snapshot over bounded fresh sockets;
-rejected members consume no slot and cannot exclude a valid member. The batch rechecks, writes one
+unreadable state refuses the whole call. Expired rows remain available for
+kernel cleanup in both the intent and restored state. Rejected members
+consume no slot and cannot exclude a valid member. The batch rechecks, writes one
 intent with expiry instants stored in UTC, refreshes timeouts after the
 write, and uses one atomic transaction
 on a fresh socket with a two-second deadline. Exact-family readback proves
