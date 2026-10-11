@@ -1,5 +1,6 @@
-// fixturecheck rejects non-documentation IPv4 literals in repository fixtures
-// and, given a terms file, private names anywhere in the repository.
+// fixturecheck rejects IPv4 literals outside the documentation and loopback
+// ranges in repository fixtures and, given a terms file, private names
+// anywhere in the repository.
 package main
 
 import (
@@ -17,10 +18,14 @@ import (
 )
 
 var ipv4Literal = regexp.MustCompile(`\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b`)
-var documentationRanges = []netip.Prefix{
+
+// allowedRanges identify no real host: the documentation ranges, and loopback,
+// which rendered mail-server configuration names.
+var allowedRanges = []netip.Prefix{
 	netip.MustParsePrefix("192.0.2.0/24"),
 	netip.MustParsePrefix("198.51.100.0/24"),
 	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("127.0.0.0/8"),
 }
 
 func disallowedIPv4(line []byte) bool {
@@ -30,7 +35,7 @@ func disallowedIPv4(line []byte) bool {
 			continue
 		}
 		allowed := false
-		for _, prefix := range documentationRanges {
+		for _, prefix := range allowedRanges {
 			if prefix.Contains(ip) {
 				allowed = true
 				break

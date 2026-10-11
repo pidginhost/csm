@@ -57,6 +57,28 @@ func TestCheckAcceptsDocumentationAddresses(t *testing.T) {
 	}
 }
 
+// Loopback identifies no host or person, and rendered mail-server
+// configuration names it, so fixtures may carry it.
+func TestCheckAcceptsLoopbackAddresses(t *testing.T) {
+	root := fixtureRepo(t)
+	writeFixture(t, root, "internal/testdata/hook.golden", "!hosts = <; 127.0.0.0/8 ; ::1\nconnect 127.0.0.1\n")
+	var output bytes.Buffer
+	if err := check(root, nil, &output); err != nil {
+		t.Fatalf("loopback rejected: %v\n%s", err, &output)
+	}
+}
+
+func TestCheckStillRejectsNeighboursOfAllowedRanges(t *testing.T) {
+	for _, ip := range []string{"128.0.0.1", "126.255.255.255", "192.0.3.1", "198.51.101.1", "203.0.114.1"} {
+		root := fixtureRepo(t)
+		writeFixture(t, root, "internal/testdata/record", "peer "+ip+"\n")
+		var output bytes.Buffer
+		if err := check(root, nil, &output); err == nil {
+			t.Errorf("%s accepted", ip)
+		}
+	}
+}
+
 func TestCheckSurfacesListingAndReadErrors(t *testing.T) {
 	t.Run("not a repository", func(t *testing.T) {
 		if err := check(t.TempDir(), nil, new(bytes.Buffer)); err == nil {
