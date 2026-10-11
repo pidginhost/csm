@@ -25,7 +25,9 @@ func unverifiedRows(entries []BlockedEntry) int {
 // MarkBlockActionsUnverified flags the rows written by the named attempts
 // as unproven, in one state write, and reports how many changed. Startup
 // calls it with the ledger's unresolved attempts before Apply, so their
-// rows are neither restored nor reported as blocks.
+// rows are neither restored nor reported as blocks. While a failed state
+// write holds batches it writes the safe state even when nothing is named,
+// and a successful write releases the hold.
 func (e *Engine) MarkBlockActionsUnverified(actions []string) (int, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -38,7 +40,8 @@ func (e *Engine) MarkBlockActionsUnverified(actions []string) (int, error) {
 			named[id] = true
 		}
 	}
-	if len(named) == 0 {
+	held := e.blockBatchStateErr != nil
+	if len(named) == 0 && !held {
 		return 0, nil
 	}
 	state, ok := e.loadStateFileRawLocked()
@@ -57,7 +60,7 @@ func (e *Engine) MarkBlockActionsUnverified(actions []string) (int, error) {
 			pending = true
 		}
 	}
-	if marked == 0 && !pending {
+	if marked == 0 && !pending && !held {
 		return 0, nil
 	}
 	e.rememberUnverifiedBlockActionsLocked(state)

@@ -612,3 +612,34 @@ func TestApplyBlockBatchPostWriteSubMillisecondRefusalIsNotReported(t *testing.T
 		t.Fatalf("results %+v, %v, sends %d; a refused row must not be reported", got, err, f.sends)
 	}
 }
+
+// After a failed intent write the batch hold stays until the owner writes
+// the safe state again; marking (even nothing) is that write.
+func TestMarkReleasesTheBatchHoldAfterAFailedIntentWrite(t *testing.T) {
+	f := newBatchFixture(t, FirewallState{})
+	prev := writeFirewallStateJSON
+	t.Cleanup(func() { writeFirewallStateJSON = prev })
+	writeFirewallStateJSON = func(string, os.FileMode, any) error { return errors.New("disk full") }
+	member := f.member("act_v4", "203.0.113.20")
+	if results, err := f.e.ApplyBlockBatch([]BlockMember{member}); err != nil || effects(results) != "failed/" || !errors.Is(results[0].Err, ErrBlockBatchState) {
+		t.Fatalf("apply = %s, %v", effects(results), err)
+	}
+	if _, err := f.e.CheckBlockBatch([]BlockMember{member}); !errors.Is(err, ErrBlockBatchState) {
+		t.Fatalf("check during the hold = %v, want ErrBlockBatchState", err)
+	}
+
+	writeFirewallStateJSON = prev // storage recovered
+	writes := f.countWrites(t)
+	if marked, err := f.e.MarkBlockActionsUnverified(nil); err != nil || marked != 0 || *writes != 1 {
+		t.Fatalf("mark = %d, %v with %d writes; want the safe state written once", marked, err, *writes)
+	}
+	if got, err := f.e.CheckBlockBatch([]BlockMember{member}); err != nil || got[0] != "" {
+		t.Fatalf("check after release = %q, %v", got, err)
+	}
+	if _, ok := f.storedRows(t)[member.IP]; ok {
+		t.Fatal("the failed member's row was written back")
+	}
+	if marked, err := f.e.MarkBlockActionsUnverified(nil); err != nil || marked != 0 || *writes != 1 {
+		t.Fatalf("second mark = %d, %v with %d writes; want no write without a hold", marked, err, *writes)
+	}
+}
