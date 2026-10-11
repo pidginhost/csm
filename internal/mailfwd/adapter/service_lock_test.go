@@ -2,26 +2,30 @@ package adapter
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/eximlock"
+	"github.com/pidginhost/csm/internal/mailfwd/policy"
 )
 
-func TestEximMutationRejectsConcurrentTransaction(t *testing.T) {
-	dir := t.TempDir()
+// Forward guard and the antispam worker share one lock: while another
+// transaction holds it, forward guard reports busy and touches nothing.
+func TestLockedAdapterSharesTheEximMutationLock(t *testing.T) {
+	a, side := testAdapter(t)
+	locked := lockedEximAdapter{a}
 	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
-	go func() { finished <- withEximMutationLock(dir, func() error { close(entered); <-release; return nil }) }()
+	go func() {
+		finished <- eximlock.With(filepath.Dir(a.badIPsPath), func() error { close(entered); <-release; return nil })
+	}()
 	<-entered
-	calls := 0
-	err := withEximMutationLock(dir, func() error { calls++; return nil })
+	applyErr := locked.Apply(policy.Config{Enabled: true}, nil)
+	removeErr := locked.Remove()
 	close(release)
-	firstErr := <-finished
-	if err == nil || firstErr != nil || calls != 0 {
-		t.Fatalf("concurrent=%v first=%v calls=%d", err, firstErr, calls)
-	}
-	failure := errors.New("mutation failed")
-	if err := withEximMutationLock(dir, func() error { return failure }); !errors.Is(err, failure) {
+	if err := <-finished; err != nil {
 		t.Fatal(err)
 	}
-	if err := withEximMutationLock(dir, func() error { calls++; return nil }); err != nil || calls != 1 {
-		t.Fatalf("lock not released: %v calls=%d", err, calls)
+	if !errors.Is(applyErr, eximlock.ErrBusy) || !errors.Is(removeErr, eximlock.ErrBusy) || side.rebuilds != 0 {
+		t.Fatalf("apply=%v remove=%v rebuilds=%d", applyErr, removeErr, side.rebuilds)
 	}
 }
