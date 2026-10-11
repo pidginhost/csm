@@ -2750,42 +2750,8 @@ func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipEx
 	}
 	ip = parsed.String()
 
-	// SAFETY: never block infra IPs - prevents admin lockout.
-	// Runs before resolveIPSet so that an IPv6-disabled config (set6 == nil)
-	// cannot bypass the infra guard when the caller passes the canonical
-	// IPv6 form of a listed infra address.
-	for _, cidr := range e.cfg.InfraIPs {
-		_, network, cidrErr := net.ParseCIDR(cidr)
-		if cidrErr != nil {
-			if infraIP := net.ParseIP(cidr); infraIP != nil && infraIP.String() == parsed.String() {
-				return nil, nil, false, "", ipProtectedErrorf("refusing to block infra IP: %s", ip)
-			}
-			continue
-		}
-		if network.Contains(parsed) {
-			return nil, nil, false, "", ipProtectedErrorf("refusing to block infra IP: %s (in %s)", ip, cidr)
-		}
-	}
-	// Hostnames in cfg.InfraIPs are resolved by the DynDNS loop and
-	// pushed in via UpdateInfraResolved. Without this check a hostname
-	// listed as infra would only be honoured when the operator also
-	// pinned the IP, so a moving panel IP would silently drop out of
-	// the lockout guard.
-	if host, ok := e.infraIPResolvedHostLocked(ip); ok {
-		return nil, nil, false, "", ipProtectedErrorf("refusing to block infra IP: %s (resolved from %s)", ip, host)
-	}
-	// Daemon's own interface addresses are always off-limits. Without
-	// this guard a stray request from the host to itself (cron, panel
-	// callback, internal probe) could trigger an auto-block that
-	// firewalls every customer hosted on the same IP.
-	if e.isLocalAddrLocked(ip) {
-		return nil, nil, false, "", ipProtectedErrorf("refusing to block local host IP: %s (own interface address)", ip)
-	}
-	// Loopback and link-local are excluded from the interface set above, so
-	// they need their own refusal: the panel's own proxied requests appear as
-	// loopback, and a WAF denial count for it must not become a block.
-	if isUnblockableAddress(ip) {
-		return nil, nil, false, "", ipProtectedErrorf("refusing to block non-routable address: %s", ip)
+	if err := e.blockProtectionLocked(parsed, ip); err != nil {
+		return nil, nil, false, "", err
 	}
 
 	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
@@ -2860,6 +2826,49 @@ func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipEx
 	}
 
 	return targetSet, key, false, "", nil
+}
+
+// blockProtectionLocked refuses an address no block may name: infra,
+// the host's own interfaces and addresses that are never a packet's source.
+func (e *Engine) blockProtectionLocked(parsed net.IP, ip string) error {
+	// SAFETY: never block infra IPs - prevents admin lockout.
+	// Runs before resolveIPSet so that an IPv6-disabled config (set6 == nil)
+	// cannot bypass the infra guard when the caller passes the canonical
+	// IPv6 form of a listed infra address.
+	for _, cidr := range e.cfg.InfraIPs {
+		_, network, cidrErr := net.ParseCIDR(cidr)
+		if cidrErr != nil {
+			if infraIP := net.ParseIP(cidr); infraIP != nil && infraIP.String() == parsed.String() {
+				return ipProtectedErrorf("refusing to block infra IP: %s", ip)
+			}
+			continue
+		}
+		if network.Contains(parsed) {
+			return ipProtectedErrorf("refusing to block infra IP: %s (in %s)", ip, cidr)
+		}
+	}
+	// Hostnames in cfg.InfraIPs are resolved by the DynDNS loop and
+	// pushed in via UpdateInfraResolved. Without this check a hostname
+	// listed as infra would only be honoured when the operator also
+	// pinned the IP, so a moving panel IP would silently drop out of
+	// the lockout guard.
+	if host, ok := e.infraIPResolvedHostLocked(ip); ok {
+		return ipProtectedErrorf("refusing to block infra IP: %s (resolved from %s)", ip, host)
+	}
+	// Daemon's own interface addresses are always off-limits. Without
+	// this guard a stray request from the host to itself (cron, panel
+	// callback, internal probe) could trigger an auto-block that
+	// firewalls every customer hosted on the same IP.
+	if e.isLocalAddrLocked(ip) {
+		return ipProtectedErrorf("refusing to block local host IP: %s (own interface address)", ip)
+	}
+	// Loopback and link-local are excluded from the interface set above, so
+	// they need their own refusal: the panel's own proxied requests appear as
+	// loopback, and a WAF denial count for it must not become a block.
+	if isUnblockableAddress(ip) {
+		return ipProtectedErrorf("refusing to block non-routable address: %s", ip)
+	}
+	return nil
 }
 
 // soonestExpiringTempIP returns the IP of the temporary block closest to
