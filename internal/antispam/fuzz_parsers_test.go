@@ -360,9 +360,16 @@ func FuzzSetBlock(f *testing.F) {
 	if err != nil {
 		f.Fatal(err)
 	}
-	for _, seed := range []string{"", "warn\n  log_message = x\n", h.Post + "deny\n", "@CONFIG@\n", "@AUTH@\n@CONFIG@\n" + h.Config, MarkerBegin + "\n", "  message = x\n"} {
-		f.Add(seed, false, false)
-		f.Add(seed, true, true)
+	for _, seed := range []string{
+		"", "warn\n  log_message = x\n", h.Post + "deny\n", "@CONFIG@\n",
+		"@AUTH@\n@CONFIG@\n" + h.Config, MarkerBegin + "\n", "  message = x\n",
+		"@CONFIG@\n" + MarkerBegin + "\n@ROUTERSTART@\n" + MarkerEnd + "\n",
+	} {
+		for _, local := range []bool{false, true} {
+			for _, remove := range []bool{false, true} {
+				f.Add(seed, local, remove)
+			}
+		}
 	}
 	f.Fuzz(func(t *testing.T, content string, local, remove bool) {
 		kind, block := TargetEximHook, h.Post

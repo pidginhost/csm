@@ -146,20 +146,24 @@ func checkTargets(targets []TargetFacts, removal bool) []Problem {
 			if !removal && !IsManaged(t.Content) {
 				add(CodeTargets, Definite, "%s is not managed by CSM; remove or rename it so CSM can write its own", t.Path)
 			}
+		case TargetEximLocal:
+			if !removal {
+				if !oneConfigSection(t.Content) {
+					add(CodeTargets, Definite, "%s must hold exactly one @CONFIG@ line, alone and unindented", t.Path)
+				}
+				continue
+			}
+			fallthrough
 		case TargetEximHook:
 			// Hook files are ACL fragments, so trailing options can extend
 			// CSM's last statement even without a section header in the file.
-			switch blocks, err := locateBlocks(t.Content, "acl", "csm_hook", false); {
+			switch blocks, err := fileBlocks(t.Kind, t.Content); {
 			case errors.Is(err, ErrUnverifiable):
 				add(CodeUnverifiable, Temporary, "cannot verify %s: %v", t.Path, err)
 			case err != nil:
 				add(CodeMarkers, Definite, "%s: %v", t.Path, err)
 			case len(blocks) > 1:
 				add(CodeMarkers, Definite, "%s has multiple CSM blocks; only one is allowed", t.Path)
-			}
-		case TargetEximLocal:
-			if !removal && !oneConfigSection(t.Content) {
-				add(CodeTargets, Definite, "%s must hold exactly one @CONFIG@ line, alone and unindented", t.Path)
 			}
 		}
 	}

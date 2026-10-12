@@ -319,9 +319,14 @@ func TestCheckRemovalLeavesForeignFiles(t *testing.T) {
 	targets[0].File = PathFacts{Path: targets[0].Path, Mode: 0o644}
 	targets[0].Content = "reject = 15;\n"
 	targets[1].Err = fs.ErrNotExist
-	targets[len(targets)-1].Content = "@AUTH@\n"
-	if got := CheckRemoval(targets); len(got) != 0 {
-		t.Errorf("removal refused: %+v", got)
+	for _, content := range []string{
+		"@AUTH@\n",
+		"@AUTH@\n" + MarkerBegin + "\nspamd_address = /run/rspamd/normal.sock\n" + MarkerEnd + "\n",
+	} {
+		targets[len(targets)-1].Content = content
+		if got := CheckRemoval(targets); len(got) != 0 {
+			t.Errorf("removal refused: %+v", got)
+		}
 	}
 	if got := checkTargets(targets, false); len(got) != 3 {
 		t.Errorf("apply problems = %+v, want foreign file, missing directory and @CONFIG@", got)
@@ -339,5 +344,31 @@ func TestCheckRemovalRefusesUnsafeEdits(t *testing.T) {
 		if got := CheckRemoval(targets); len(got) == 0 || got[0].Severity != Definite {
 			t.Errorf("%s: removal problems = %+v", name, got)
 		}
+	}
+}
+
+func TestCheckRemovalRefusesAmbiguousLocalBlocks(t *testing.T) {
+	block := MarkerBegin + "\nspamd_address = /run/rspamd/normal.sock\n" + MarkerEnd + "\n"
+	for name, tc := range map[string]struct {
+		content string
+		code    string
+		sev     Severity
+	}{
+		"unpaired begin": {"@CONFIG@\n" + MarkerBegin + "\n", CodeMarkers, Definite},
+		"unpaired end":   {"@CONFIG@\n" + MarkerEnd + "\n", CodeMarkers, Definite},
+		"nested":         {"@CONFIG@\n" + MarkerBegin + "\n" + block + MarkerEnd + "\n", CodeMarkers, Definite},
+		"duplicate":      {"@CONFIG@\n" + block + block, CodeMarkers, Definite},
+		"include":        {"@CONFIG@\n.include /etc/exim_extra\n", CodeUnverifiable, Temporary},
+		"section crossing": {"@CONFIG@\n" + MarkerBegin + "\n@ROUTERSTART@\n" +
+			"# operator configuration\n" + MarkerEnd + "\n", CodeMarkers, Definite},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := goodFacts()
+			target(&f, TargetEximLocal).Content = tc.content
+			got := CheckRemoval(f.Targets)
+			if len(got) != 1 || got[0].Code != tc.code || got[0].Severity != tc.sev {
+				t.Fatalf("removal reported %+v, want one %s/%d problem", got, tc.code, tc.sev)
+			}
+		})
 	}
 }

@@ -12,7 +12,22 @@ func fileBlocks(kind TargetKind, content string) ([]Placement, error) {
 	if kind == TargetEximHook {
 		return locateBlocks(content, "acl", "csm_hook", false)
 	}
-	return LocateBlocks(content)
+	blocks, err := LocateBlocks(content)
+	if err != nil {
+		return nil, err
+	}
+	// cPanel section markers are not Exim section headers. A block that
+	// spans one cannot be removed without taking operator configuration.
+	lines := strings.Split(content, "\n")
+	for _, b := range blocks {
+		for _, line := range lines[b.Begin : b.End-1] {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "@") && strings.HasSuffix(line, "@") {
+				return nil, errors.New("a cPanel section starts inside a CSM block")
+			}
+		}
+	}
+	return blocks, nil
 }
 
 // BlockText returns the one CSM block in content, markers included, exactly

@@ -45,11 +45,12 @@ func TestSetBlockLocal(t *testing.T) {
 	moved := renderedHooks(t, Settings{Socket: "/run/rspamd/other.sock", RejectScore: 15, TagScore: 6})
 	guard := "@ROUTERSTART@\n# CSM-FORWARD-GUARD ROUTER BEGIN (managed by csm; do not edit)\ncsm_forward_guard:\n  driver = accept\n# CSM-FORWARD-GUARD ROUTER END\n"
 	for name, tc := range map[string]struct{ content, block, want string }{
-		"skeleton":            {"@AUTH@\n\n@CONFIG@\n\n" + guard, h.Config, "@AUTH@\n\n@CONFIG@\n" + h.Config + "\n" + guard},
-		"stale block updated": {"@CONFIG@\n" + moved.Config + "keep_environment =\n", h.Config, "@CONFIG@\n" + h.Config + "keep_environment =\n"},
-		"block moved":         {"@CONFIG@\n" + guard + moved.Config, h.Config, "@CONFIG@\n" + h.Config + guard},
-		"last line":           {"@AUTH@\n@CONFIG@", h.Config, "@AUTH@\n@CONFIG@\n" + h.Config},
-		"remove":              {"@CONFIG@\n" + h.Config + guard, "", "@CONFIG@\n" + guard},
+		"skeleton":              {"@AUTH@\n\n@CONFIG@\n\n" + guard, h.Config, "@AUTH@\n\n@CONFIG@\n" + h.Config + "\n" + guard},
+		"stale block updated":   {"@CONFIG@\n" + moved.Config + "keep_environment =\n", h.Config, "@CONFIG@\n" + h.Config + "keep_environment =\n"},
+		"block moved":           {"@CONFIG@\n" + guard + moved.Config, h.Config, "@CONFIG@\n" + h.Config + guard},
+		"last line":             {"@AUTH@\n@CONFIG@", h.Config, "@AUTH@\n@CONFIG@\n" + h.Config},
+		"remove":                {"@CONFIG@\n" + h.Config + guard, "", "@CONFIG@\n" + guard},
+		"remove without CONFIG": {"@AUTH@\n" + h.Config + guard, "", "@AUTH@\n" + guard},
 	} {
 		got, err := SetBlock(TargetEximLocal, tc.content, tc.block)
 		if err != nil || got != tc.want {
@@ -81,5 +82,23 @@ func TestSetBlockIsIdempotent(t *testing.T) {
 		if text, ok := BlockText(tc.kind, once); !ok || text != tc.block {
 			t.Errorf("BlockText = %q, %t", text, ok)
 		}
+	}
+}
+
+func TestSetBlockLocalRefusesSectionCrossing(t *testing.T) {
+	h := renderedHooks(t, enforceSettings())
+	for _, section := range []string{"@CONFIG@", "@ROUTERSTART@", "@TRANSPORTSTART@"} {
+		content := "@CONFIG@\n" + MarkerBegin + "\nspamd_address = /run/rspamd/old.sock\n" +
+			section + "\n# operator configuration\n" + MarkerEnd + "\n"
+		t.Run(section, func(t *testing.T) {
+			for _, block := range []string{h.Config, ""} {
+				if got, err := SetBlock(TargetEximLocal, content, block); err == nil || got != "" {
+					t.Errorf("section-crossing block edited to %q (%v)", got, err)
+				}
+			}
+			if text, ok := BlockText(TargetEximLocal, content); ok || text != "" {
+				t.Errorf("section-crossing block claimed as %q, %t", text, ok)
+			}
+		})
 	}
 }
