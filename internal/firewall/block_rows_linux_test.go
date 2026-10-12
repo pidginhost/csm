@@ -371,7 +371,11 @@ func TestMarkUnverifiedRefusesUnreadableRawState(t *testing.T) {
 	if marked, err := e.MarkBlockActionsUnverified([]string{"act_unknown"}); err == nil || marked != 0 || e.blockBatchStateErr == nil {
 		t.Fatalf("Mark = %d, %v; hold = %v", marked, err, e.blockBatchStateErr)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	kept := e.StateSetAside()
+	if kept == "" {
+		t.Fatal("a fresh marking read did not keep unreadable state aside")
+	}
+	data, err := os.ReadFile(kept)
 	if err != nil || string(data) != "{" {
 		t.Fatalf("unreadable state was changed: %q, %v", data, err)
 	}
