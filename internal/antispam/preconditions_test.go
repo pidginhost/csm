@@ -405,3 +405,30 @@ func TestCheckHostRetainsConflictsBeforeUnverifiableMacros(t *testing.T) {
 		})
 	}
 }
+
+// Without the rspamd uid, CSM cannot prove which non-root uid on the socket
+// path is rspamd's, but two different non-root uids cannot both be.
+func TestCheckHostSocketOwnersWithUnknownRspamdUser(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*SocketFacts)
+		sev    Severity
+		detail string
+	}{
+		{"one owner", func(*SocketFacts) {}, Temporary, "uid 979"},
+		{"tenant directory", func(s *SocketFacts) { s.Parents[2].UID = 1001 }, Definite, "[979 1001]"},
+		{"tenant listener", func(s *SocketFacts) { s.PeerUID = 1001 }, Definite, "[979 1001]"},
+		{"tenant socket", func(s *SocketFacts) { s.Socket.UID = 1001 }, Definite, "[979 1001]"},
+		{"root only", func(s *SocketFacts) { s.Socket.UID, s.Parents[2].UID, s.PeerUID = 0, 0, 0 }, Temporary, "service user is unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := goodFacts()
+			f.Socket.RspamdUID = -1
+			tc.mutate(&f.Socket)
+			got := CheckHost(f)
+			if len(got) != 1 || got[0].Code != CodeSocket || got[0].Severity != tc.sev || !strings.Contains(got[0].Detail, tc.detail) {
+				t.Fatalf("got %+v, want one socket problem of severity %d naming %q", got, tc.sev, tc.detail)
+			}
+		})
+	}
+}

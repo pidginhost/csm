@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 )
 
 // Severity says what a failed precondition means for an installation
@@ -288,14 +289,36 @@ func checkSocket(s SocketFacts) []Problem {
 	}
 	trusted := func(uid int) bool { return uid == 0 || uid == s.RspamdUID }
 	eximKnown := s.EximUID >= 0 && s.EximGID >= 0
+	// Without the rspamd uid, one non-root owner or listener may be rspamd's;
+	// two different ones cannot both be.
+	var owners []int
+	if s.RspamdUID < 0 {
+		uids := []int{}
+		if s.Err == nil && !s.Missing {
+			uids = append(uids, s.Socket.UID, s.PeerUID)
+		}
+		for _, p := range s.Parents {
+			uids = append(uids, p.UID)
+		}
+		for _, uid := range uids {
+			if uid > 0 && !slices.Contains(owners, uid) {
+				owners = append(owners, uid)
+			}
+		}
+		slices.Sort(owners)
+	}
 	switch {
 	case s.Err != nil:
 		add(Temporary, "cannot stat the rspamd socket; check file access")
 	case s.Missing:
 		add(Temporary, "rspamd socket %s does not exist; is rspamd running with CSM's bind_socket?", s.Socket.Path)
 	default:
-		if s.RspamdUID < 0 {
+		switch {
+		case s.RspamdUID >= 0:
+		case len(owners) == 0:
 			add(Temporary, "the rspamd service user is unknown")
+		case len(owners) == 1:
+			add(Temporary, "the rspamd service user is unknown, so CSM cannot confirm that uid %d, which owns the socket path or runs its listener, is that user", owners[0])
 		}
 		if s.Socket.Mode.Type() != fs.ModeSocket {
 			add(Definite, "%s is not a socket", s.Socket.Path)
@@ -328,6 +351,9 @@ func checkSocket(s SocketFacts) []Problem {
 		case eximKnown && !permits(p, s.EximUID, s.EximGID, 0o1):
 			add(Definite, "Exim's runtime user (uid %d) cannot search %s", s.EximUID, p.Path)
 		}
+	}
+	if len(owners) > 1 {
+		add(Definite, "uids %v own the socket path or run its listener; only root and the rspamd user may, and at most one of them is the rspamd user", owners)
 	}
 	if s.Err != nil || s.Missing {
 		return out
