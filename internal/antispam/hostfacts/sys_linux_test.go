@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -41,5 +42,34 @@ func TestPathFactsReportsExtendedACL(t *testing.T) {
 	got, err := pathFacts(p)
 	if err != nil || !got.ExtACL {
 		t.Fatalf("got %+v, %v; want ExtACL", got, err)
+	}
+}
+
+func TestReadTextRejectsFIFOWithoutWaitingForWriter(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "exim.conf.local")
+	if err := unix.Mkfifo(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := readText(p)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || err.Error() != "configuration is not a regular file" {
+			t.Fatalf("readText FIFO = %v; want a non-regular file error", err)
+		}
+	case <-time.After(2 * time.Second):
+		// Release a blocked reader so the regression leaves no goroutine.
+		writer, err := os.OpenFile(p, os.O_WRONLY|unix.O_NONBLOCK, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		<-done
+		t.Fatal("readText waited for a writer before rejecting the FIFO")
 	}
 }

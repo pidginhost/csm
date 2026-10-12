@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -83,13 +86,21 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 		f.LocalConf, f.LocalErr = "", nil
 	}
 	f.SpamdDisabled, f.SpamdDisabledErr = exists(c.layout.SpamdDisabled)
-	f.GlobalEnable, _ = exists(c.layout.GlobalEnable)
+	f.GlobalEnable, f.GlobalEnableErr = exists(c.layout.GlobalEnable)
 
 	settings := map[string]string{}
 	if f.EximSettings.Err == nil {
 		settings = antispam.ParseEximOptions(f.EximSettings.Stdout)
 	}
-	if name := settings["system_filter"]; name != "" {
+	name, known := settings["system_filter"]
+	switch {
+	case !known && f.EximSettings.Err == nil:
+		f.SystemFilterErr = errors.New("exim -bP did not report system_filter")
+	case name != "" && (!filepath.IsAbs(name) || strings.Contains(name, "$")):
+		// The collector cannot reproduce Exim's delivery-time expansion
+		// or working directory.
+		f.SystemFilterErr = errors.New("system_filter is not a literal absolute path")
+	case name != "":
 		f.SystemFilter, f.SystemFilterErr = readText(name)
 	}
 	for _, t := range c.layout.Targets {
@@ -103,17 +114,18 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	return f
 }
 
-// serviceUser is the uid a loaded unit runs as: root without User=, -1 when
-// unknown.
+// serviceUser returns the scanner uid, or -1 when it cannot be inferred.
+// A root-started rspamd can select a different worker user with -u.
 func (c collector) serviceUser(show antispam.CommandResult) int {
 	props := antispam.ParseUnitShow(show.Stdout)
-	switch {
-	case show.Err != nil || props["LoadState"] != "loaded":
+	if show.Err != nil || props["LoadState"] != "loaded" {
 		return -1
-	case props["User"] == "":
-		return 0
 	}
-	return id(props["User"], c.uid)
+	uid := id(props["User"], c.uid)
+	if uid == 0 {
+		return -1
+	}
+	return uid
 }
 
 // id resolves a user or group given by name or number, or returns -1.
@@ -163,7 +175,20 @@ func runCommand(ctx context.Context, name string, args ...string) antispam.Comma
 }
 
 func readText(p string) (string, error) {
-	data, err := os.ReadFile(p) // #nosec G304 -- root-owned Exim configuration files
+	// Opening a FIFO must not stall collection before its type is checked.
+	file, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0) // #nosec G304 -- paths come from the fixed layout or trusted Exim settings
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("configuration is not a regular file")
+	}
+	data, err := io.ReadAll(file)
 	return string(data), err
 }
 

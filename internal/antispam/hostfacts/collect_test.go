@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -109,8 +111,8 @@ func TestCollectReadsEveryFact(t *testing.T) {
 	if f.GeneratedConf != "generated\n" || f.GeneratedErr != nil || f.LocalConf != "@CONFIG@\n" || f.LocalErr != nil {
 		t.Errorf("config files %q %v %q %v", f.GeneratedConf, f.GeneratedErr, f.LocalConf, f.LocalErr)
 	}
-	if !f.SpamdDisabled || f.SpamdDisabledErr != nil || f.GlobalEnable {
-		t.Errorf("spamd %t %v global %t", f.SpamdDisabled, f.SpamdDisabledErr, f.GlobalEnable)
+	if !f.SpamdDisabled || f.SpamdDisabledErr != nil || f.GlobalEnable || f.GlobalEnableErr != nil {
+		t.Errorf("spamd %t %v global %t %v", f.SpamdDisabled, f.SpamdDisabledErr, f.GlobalEnable, f.GlobalEnableErr)
 	}
 	if !strings.HasPrefix(f.SystemFilter, "if $spam_score_int") || f.SystemFilterErr != nil || f.SystemdRunErr != nil {
 		t.Errorf("filter %q %v systemd-run %v", f.SystemFilter, f.SystemFilterErr, f.SystemdRunErr)
@@ -174,15 +176,115 @@ func TestServiceUser(t *testing.T) {
 		want int
 	}{
 		{antispam.CommandResult{Stdout: "User=_rspamd\nLoadState=loaded\n"}, 979},
-		{antispam.CommandResult{Stdout: "User=\nLoadState=loaded\n"}, 0},
+		{antispam.CommandResult{Stdout: "User=\nLoadState=loaded\n"}, -1},
 		{antispam.CommandResult{Stdout: "User=1500\nLoadState=loaded\n"}, 1500},
 		{antispam.CommandResult{Stdout: "User=nosuch\nLoadState=loaded\n"}, -1},
+		{antispam.CommandResult{Stdout: "LoadState=loaded\n"}, -1},
 		{antispam.CommandResult{Stdout: "User=\nLoadState=not-found\n"}, -1},
 		{antispam.CommandResult{Stdout: "User=_rspamd\nLoadState=loaded\n", Err: errors.New("boom")}, -1},
 	} {
 		if got := c.serviceUser(tc.show); got != tc.want {
 			t.Errorf("serviceUser(%q, %v) = %d, want %d", tc.show.Stdout, tc.show.Err, got, tc.want)
 		}
+	}
+}
+
+func TestRootServiceUserDoesNotProveWorkerIdentity(t *testing.T) {
+	c := testCollector(t.TempDir(), &fakeRun{})
+	for _, value := range []string{"", "root", "0"} {
+		t.Run("User="+value, func(t *testing.T) {
+			c.uid = lookup(map[string]int{"root": 0})
+			uid := c.serviceUser(antispam.CommandResult{Stdout: "LoadState=loaded\nUser=" + value + "\n"})
+			if uid != -1 {
+				t.Errorf("worker uid = %d; a root-started rspamd can drop privileges with -u", uid)
+			}
+			f := antispam.HostFacts{Socket: antispam.SocketFacts{
+				Socket: antispam.PathFacts{Path: antispam.DefaultSocket, UID: 979, Mode: fs.ModeSocket | 0o666},
+				Parents: []antispam.PathFacts{
+					{Path: "/", Mode: fs.ModeDir | 0o755},
+					{Path: "/run", Mode: fs.ModeDir | 0o755},
+					{Path: "/run/rspamd", UID: 979, Mode: fs.ModeDir | 0o755},
+				},
+				RspamdUID: uid, PeerUID: 979, EximUID: 47, EximGID: 12,
+			}}
+			var socketProblems []antispam.Problem
+			for _, p := range antispam.CheckHost(f) {
+				if p.Code == antispam.CodeSocket {
+					socketProblems = append(socketProblems, p)
+				}
+			}
+			if len(socketProblems) != 1 || socketProblems[0].Severity != antispam.Temporary {
+				t.Fatalf("socket problems = %+v; want one temporary identity failure", socketProblems)
+			}
+		})
+	}
+}
+
+func TestCollectSystemFilterStates(t *testing.T) {
+	d := t.TempDir()
+	t.Chdir(d)
+	write(t, filepath.Join(d, "exim.conf"), "")
+	filter := filepath.Join(d, "filter")
+	content := "if $spam_score_int is above 50 then\n  seen finish\nendif\n"
+	write(t, filter, content)
+	write(t, filepath.Join(d, "relative-filter"), "")
+	expanded := filepath.Join(d, "filter.$sender_address")
+	write(t, expanded, "")
+	for _, tc := range []struct {
+		name     string
+		result   antispam.CommandResult
+		wantText string
+		wantErr  bool
+		wantSev  antispam.Severity
+		wantN    int
+	}{
+		{name: "missing option", result: antispam.CommandResult{Stdout: "message_size_limit = 50M\n"}, wantErr: true, wantSev: antispam.Temporary, wantN: 1},
+		{name: "disabled", result: antispam.CommandResult{Stdout: "system_filter =\n"}},
+		{name: "relative path", result: antispam.CommandResult{Stdout: "system_filter = relative-filter\n"}, wantErr: true, wantSev: antispam.Temporary, wantN: 1},
+		{name: "expanded path", result: antispam.CommandResult{Stdout: "system_filter = " + expanded + "\n"}, wantErr: true, wantSev: antispam.Temporary, wantN: 1},
+		{name: "unreadable", result: antispam.CommandResult{Stdout: "system_filter = " + filepath.Join(d, "missing") + "\n"}, wantErr: true, wantSev: antispam.Temporary, wantN: 1},
+		{name: "spam rules", result: antispam.CommandResult{Stdout: "system_filter = " + filter + "\n"}, wantText: content, wantSev: antispam.Definite, wantN: 1},
+		{name: "failed probe with partial output", result: antispam.CommandResult{Stdout: "system_filter = " + filter + "\n", Err: errors.New("failed")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testCollector(d, &fakeRun{results: map[string]antispam.CommandResult{
+				"exim -bP message_size_limit log_file_path exim_user exim_group system_filter": tc.result,
+			}})
+			f := c.collect(context.Background(), "/csm-antispam-test-missing/s")
+			if f.SystemFilter != tc.wantText || (f.SystemFilterErr != nil) != tc.wantErr {
+				t.Errorf("system filter = %q, %v; want %q, error %t", f.SystemFilter, f.SystemFilterErr, tc.wantText, tc.wantErr)
+			}
+			var filterProblems []antispam.Problem
+			for _, p := range antispam.CheckHost(f) {
+				if p.Code == antispam.CodeSpamScoreRules {
+					filterProblems = append(filterProblems, p)
+				}
+			}
+			if len(filterProblems) != tc.wantN || tc.wantN == 1 && filterProblems[0].Severity != tc.wantSev {
+				t.Errorf("filter problems = %+v; want %d with severity %d", filterProblems, tc.wantN, tc.wantSev)
+			}
+		})
+	}
+}
+
+func TestCollectGlobalEnableStatFailureIsReported(t *testing.T) {
+	d := t.TempDir()
+	c := testCollector(d, &fakeRun{})
+	if err := os.Symlink(filepath.Base(c.layout.GlobalEnable), c.layout.GlobalEnable); err != nil {
+		t.Fatal(err)
+	}
+	f := c.collect(context.Background(), "/csm-antispam-test-missing/s")
+	if f.GlobalEnable || f.GlobalEnableErr == nil {
+		t.Errorf("global flag = %t, %v; want a retained stat error", f.GlobalEnable, f.GlobalEnableErr)
+	}
+	var problems []antispam.Problem
+	for _, p := range antispam.CheckHost(f) {
+		if p.Code == antispam.CodeGlobalEnable {
+			problems = append(problems, p)
+		}
+	}
+	if len(problems) != 1 || problems[0].Severity != antispam.Warning {
+		t.Fatalf("global opt-out problems = %+v; want one warning for an unverifiable flag", problems)
 	}
 }
 

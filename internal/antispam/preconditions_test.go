@@ -71,6 +71,7 @@ func TestCheckHostProblems(t *testing.T) {
 		{"no content scanning", func(f *HostFacts) { f.EximVersion.Stdout = strings.Replace(eximBV, "Content_Scanning ", "", 1) }, CodeEximVersion, Definite},
 		{"spamd enabled", func(f *HostFacts) { f.SpamdDisabled = false }, CodeSpamAssassin, Definite},
 		{"global enable", func(f *HostFacts) { f.GlobalEnable = true }, CodeGlobalEnable, Warning},
+		{"global enable unreadable", func(f *HostFacts) { f.GlobalEnableErr = boom }, CodeGlobalEnable, Warning},
 		{"socket stat error", func(f *HostFacts) { f.Socket.Err = boom }, CodeSocket, Temporary},
 		{"socket missing", func(f *HostFacts) { f.Socket.Missing = true }, CodeSocket, Temporary},
 		{"rspamd user unknown", func(f *HostFacts) { f.Socket.RspamdUID = -1 }, CodeSocket, Temporary},

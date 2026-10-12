@@ -129,6 +129,8 @@ type HostFacts struct {
 	// SpamdDisabledErr is a stat failure other than absence.
 	SpamdDisabledErr error
 	GlobalEnable     bool // /etc/global_spamassassin_enable exists
+	// GlobalEnableErr is a stat failure other than absence.
+	GlobalEnableErr error
 	// RspamdVersion is `rspamd --version`; RspamadmVersion `rspamadm --version`.
 	RspamdVersion   CommandResult
 	RspamadmVersion CommandResult
@@ -166,7 +168,9 @@ func CheckHost(f HostFacts) []Problem {
 	case !f.SpamdDisabled:
 		add(CodeSpamAssassin, Definite, "SpamAssassin is enabled; disable spamd in WHM so /etc/spamddisable exists")
 	}
-	if f.GlobalEnable {
+	if f.GlobalEnableErr != nil {
+		add(CodeGlobalEnable, Warning, "cannot check /etc/global_spamassassin_enable; account opt-out availability is unknown")
+	} else if f.GlobalEnable {
 		add(CodeGlobalEnable, Warning, "/etc/global_spamassassin_enable exists, so no account can opt out")
 	}
 
@@ -220,7 +224,7 @@ func CheckHost(f HostFacts) []Problem {
 	}
 
 	if f.SystemFilterErr != nil {
-		add(CodeSpamScoreRules, Temporary, "cannot read Exim's system filter; check file access")
+		add(CodeSpamScoreRules, Temporary, "cannot read or verify Exim's system filter; check system_filter and file access")
 	} else if lines := FilterSpamUses(f.SystemFilter); len(lines) > 0 {
 		add(CodeSpamScoreRules, Definite, "Exim's system filter reads spam scores at lines %v; remove those rules so opted-out accounts are not affected", lines)
 	}
