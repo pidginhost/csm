@@ -1,7 +1,9 @@
 package hostfacts
 
 import (
+	"bufio"
 	"context"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -154,5 +156,134 @@ func TestSocketFactsMissingDirectory(t *testing.T) {
 func TestSocketFactsRejectsInvalidPath(t *testing.T) {
 	if f := socketFacts(context.Background(), "run/rspamd.sock"); f.Err == nil {
 		t.Fatalf("relative socket accepted: %+v", f)
+	}
+}
+
+func serveReply(t *testing.T, reply string, hold bool) string {
+	t.Helper()
+	sock := filepath.Join(t.TempDir(), "s")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		c, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.Close() }()
+		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := http.ReadRequest(bufio.NewReader(c)); err != nil {
+			t.Errorf("read request: %v", err)
+			return
+		}
+		_, _ = io.WriteString(c, reply)
+		if hold {
+			<-release
+		}
+	}()
+	t.Cleanup(func() {
+		_ = l.Close()
+		close(release)
+		<-done
+	})
+	return sock
+}
+
+func TestPingDoesNotRepeatMalformedReplies(t *testing.T) {
+	const marker = "reply-marker"
+	for name, reply := range map[string]string{
+		"status line": marker + "\r\n\r\n",
+		"status code": "HTTP/1.1 " + marker + "\r\n\r\n",
+		"header":      "HTTP/1.1 200 OK\r\n" + marker + "\r\n\r\n",
+		"length":      "HTTP/1.1 200 OK\r\nContent-Length: " + marker + "\r\n\r\n",
+		"encoding":    "HTTP/1.1 200 OK\r\nTransfer-Encoding: " + marker + "\r\n\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			uid, err := Ping(context.Background(), serveReply(t, reply, false))
+			if err == nil || strings.Contains(err.Error(), marker) {
+				t.Fatalf("malformed reply not safely rejected: uid=%d err=%v", uid, err)
+			}
+			if uid != wantPeer() {
+				t.Errorf("uid = %d, want %d", uid, wantPeer())
+			}
+		})
+	}
+}
+
+func TestPingRejectsOversizedHeaders(t *testing.T) {
+	reply := "HTTP/1.1 200 OK\r\nX-Padding: " + strings.Repeat("a", 64<<10) + "\r\nContent-Length: 4\r\n\r\npong"
+	uid, err := Ping(context.Background(), serveReply(t, reply, false))
+	if err == nil || uid != wantPeer() {
+		t.Fatalf("oversized headers: uid=%d err=%v", uid, err)
+	}
+}
+
+func TestPingDoesNotDrainOversizedBody(t *testing.T) {
+	reply := "HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n" + strings.Repeat("a", maxPingBody+1)
+	sock := serveReply(t, reply, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := Ping(ctx, sock); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("oversized body accepted")
+		}
+	case <-time.After(time.Second):
+		cancel()
+		<-done
+		t.Fatal("Ping drained the rejected reply instead of closing the connection")
+	}
+}
+
+func TestReadPingReplyAcceptsValidFraming(t *testing.T) {
+	for name, reply := range map[string]string{
+		"chunked":       "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\npong\r\n0\r\n\r\n",
+		"body boundary": "HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\npong" + strings.Repeat(" ", maxPingBody-4),
+		"CRLF":          "HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\npong\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := readPingReply(io.NopCloser(strings.NewReader(reply))); err != nil {
+				t.Fatalf("valid reply refused: %v", err)
+			}
+		})
+	}
+}
+
+func TestReadPingReplyDoesNotTreatWireLimitAsEOF(t *testing.T) {
+	reply := "HTTP/1.1 200 OK\r\nX-Padding: " + strings.Repeat("a", maxPingBody+100) +
+		"\r\n\r\npong" + strings.Repeat(" ", maxPingBody)
+	if err := readPingReply(io.NopCloser(strings.NewReader(reply))); err == nil {
+		t.Fatal("truncated oversized reply accepted as a complete pong")
+	}
+}
+
+func TestPingCancelsPendingReply(t *testing.T) {
+	entered := make(chan struct{})
+	sock := serve(t, t.TempDir(), func(_ http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-r.Context().Done()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := Ping(ctx, sock); done <- err }()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("probe did not reach the server")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("canceled probe succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled probe waited for its timeout")
 	}
 }

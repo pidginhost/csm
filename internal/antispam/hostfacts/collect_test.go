@@ -117,7 +117,9 @@ func TestCollectReadsEveryFact(t *testing.T) {
 	if !strings.HasPrefix(f.SystemFilter, "if $spam_score_int") || f.SystemFilterErr != nil || f.SystemdRunErr != nil {
 		t.Errorf("filter %q %v systemd-run %v", f.SystemFilter, f.SystemFilterErr, f.SystemdRunErr)
 	}
-	if len(f.Targets) != 2 || f.Targets[0].Content != antispam.ManagedHeader+"\n" || !f.Targets[1].Missing {
+	// The test files are not root-owned, so the collector stats them but
+	// never reads their content.
+	if len(f.Targets) != 2 || !f.Targets[0].File.Mode.IsRegular() || f.Targets[0].Content != "" || !f.Targets[1].Missing {
 		t.Errorf("targets %+v", f.Targets)
 	}
 	s := f.Socket

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -143,7 +144,7 @@ func TestTargetFacts(t *testing.T) {
 	symlink(t, "local.d", filepath.Join(d, "linkdir"))
 
 	present := targetFacts(antispam.Target{Path: filepath.Join(d, "local.d", "actions.conf"), Kind: antispam.TargetRspamd})
-	if present.Err != nil || present.Missing || !present.File.Mode.IsRegular() || present.Content != antispam.ManagedHeader+"\n" {
+	if present.Err != nil || present.Missing || !present.File.Mode.IsRegular() || present.Content != "" {
 		t.Errorf("present file: %+v", present)
 	}
 	absent := targetFacts(antispam.Target{Path: filepath.Join(d, "local.d", "rbl.conf"), Kind: antispam.TargetRspamd})
@@ -161,5 +162,96 @@ func TestTargetFacts(t *testing.T) {
 	noDir := targetFacts(antispam.Target{Path: filepath.Join(d, "nodir", "x.conf"), Kind: antispam.TargetRspamd})
 	if !errors.Is(noDir.Err, fs.ErrNotExist) || noDir.Missing {
 		t.Errorf("missing directory: %+v", noDir)
+	}
+}
+
+func TestTargetFactsDoesNotReadUnsafePaths(t *testing.T) {
+	d := t.TempDir()
+	for _, mode := range []fs.FileMode{0o644, 0o666} {
+		p := filepath.Join(d, "unsafe.conf")
+		write(t, p, antispam.ManagedHeader+"\n")
+		if err := os.Chmod(p, mode); err != nil {
+			t.Fatal(err)
+		}
+		got := targetFacts(antispam.Target{Path: p, Kind: antispam.TargetRspamd})
+		if got.Err != nil || got.Missing || !got.File.Mode.IsRegular() || got.Content != "" {
+			t.Errorf("unsafe path was read: %+v", got)
+		}
+	}
+}
+
+func TestReadRegularContent(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "file")
+	write(t, p, antispam.ManagedHeader+"\n")
+	got, err := readRegularContent(p)
+	if err != nil || got != antispam.ManagedHeader+"\n" {
+		t.Fatalf("regular file: got=%q err=%v", got, err)
+	}
+	symlink(t, "file", filepath.Join(d, "link"))
+	if got, err := readRegularContent(filepath.Join(d, "link")); err == nil || got != "" {
+		t.Errorf("symlink read: got=%q err=%v", got, err)
+	}
+	mkdir(t, filepath.Join(d, "dir"))
+	if got, err := readRegularContent(filepath.Join(d, "dir")); err == nil || got != "" {
+		t.Errorf("directory read: got=%q err=%v", got, err)
+	}
+	symlink(t, ".", filepath.Join(d, "linkdir"))
+	if got, err := readRegularContent(filepath.Join(d, "linkdir", "file")); err == nil || got != "" {
+		t.Errorf("symlinked parent read: got=%q err=%v", got, err)
+	}
+}
+
+func TestTargetSafeToRead(t *testing.T) {
+	good := func() antispam.TargetFacts {
+		return antispam.TargetFacts{
+			File: antispam.PathFacts{Mode: 0o644},
+			Parents: []antispam.PathFacts{
+				{Path: "/", Mode: fs.ModeDir | 0o755},
+				{Path: "/etc", Mode: fs.ModeDir | 0o755},
+			},
+		}
+	}
+	if !targetSafeToRead(good()) {
+		t.Fatal("protected target refused")
+	}
+	for name, mutate := range map[string]func(*antispam.TargetFacts){
+		"file owner":         func(f *antispam.TargetFacts) { f.File.UID = 1000 },
+		"file group write":   func(f *antispam.TargetFacts) { f.File.Mode |= 0o020 },
+		"file other write":   func(f *antispam.TargetFacts) { f.File.Mode |= 0o002 },
+		"file ACL":           func(f *antispam.TargetFacts) { f.File.ExtACL = true },
+		"file symlink":       func(f *antispam.TargetFacts) { f.File.Mode |= fs.ModeSymlink },
+		"ancestor owner":     func(f *antispam.TargetFacts) { f.Parents[0].UID = 1000 },
+		"parent group write": func(f *antispam.TargetFacts) { f.Parents[1].Mode |= 0o020 },
+		"parent other write": func(f *antispam.TargetFacts) { f.Parents[1].Mode |= 0o002 },
+		"parent ACL":         func(f *antispam.TargetFacts) { f.Parents[1].ExtACL = true },
+		"parent symlink":     func(f *antispam.TargetFacts) { f.Parents[1].Mode = fs.ModeSymlink | 0o755 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := good()
+			mutate(&f)
+			if targetSafeToRead(f) {
+				t.Fatal("unsafe target accepted for reading")
+			}
+		})
+	}
+}
+
+func TestResolveRequiresDirectoryForTrailingSlash(t *testing.T) {
+	d := t.TempDir()
+	write(t, filepath.Join(d, "file"), "")
+	mkdir(t, filepath.Join(d, "dir"))
+	symlink(t, "file/", filepath.Join(d, "bad"))
+	symlink(t, "dir/", filepath.Join(d, "good"))
+	for _, p := range []string{filepath.Join(d, "bad"), filepath.Join(d, "file") + "/"} {
+		if _, err := os.Stat(p); !errors.Is(err, syscall.ENOTDIR) {
+			t.Fatalf("kernel lookup of %s: %v, want ENOTDIR", p, err)
+		}
+		if _, _, err := resolve(p); !errors.Is(err, syscall.ENOTDIR) {
+			t.Errorf("resolve(%s) = %v, want ENOTDIR", p, err)
+		}
+	}
+	if final, _, err := resolve(filepath.Join(d, "good")); err != nil || final != filepath.Join(d, "dir") {
+		t.Errorf("directory with trailing slash: final=%s err=%v", final, err)
 	}
 }

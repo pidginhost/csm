@@ -67,7 +67,8 @@ type TargetFacts struct {
 	// Parents run from "/" down to the target's directory, without following
 	// symbolic links. The walk stops at the first entry that is not a directory.
 	Parents []PathFacts
-	// Content is the text of an existing regular file.
+	// Content is the text of an existing protected regular file. Unsafe
+	// targets are rejected from their path facts without reading content.
 	Content string
 }
 

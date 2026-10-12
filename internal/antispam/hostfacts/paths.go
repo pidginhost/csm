@@ -5,6 +5,7 @@ package hostfacts
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // maxSymlinks matches the kernel's limit on links followed in one lookup.
@@ -65,7 +67,7 @@ func chain(dir string) ([]antispam.PathFacts, error) {
 func resolve(p string) (string, []string, error) {
 	var dirs []string
 	seen := make(map[string]bool)
-	cur, rest, links := "/", names(p), 0
+	cur, rest, links := "/", lookupNames(p), 0
 	for len(rest) > 0 {
 		name := rest[0]
 		rest = rest[1:]
@@ -96,7 +98,7 @@ func resolve(p string) (string, []string, error) {
 			if filepath.IsAbs(target) {
 				cur = "/"
 			}
-			rest = append(names(target), rest...)
+			rest = append(lookupNames(target), rest...)
 			continue
 		}
 		if len(rest) > 0 && !info.IsDir() {
@@ -109,6 +111,37 @@ func resolve(p string) (string, []string, error) {
 
 func names(p string) []string {
 	return strings.FieldsFunc(p, func(r rune) bool { return r == '/' })
+}
+
+func lookupNames(p string) []string {
+	out := names(p)
+	if strings.HasSuffix(p, "/") {
+		// A trailing slash requires a directory even in a symlink target.
+		out = append(out, ".")
+	}
+	return out
+}
+
+func readRegularContent(p string) (string, error) {
+	dir, err := safepath.OpenDirNoFollow(filepath.Dir(p))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = dir.Close() }()
+	file, err := dir.OpenFile(filepath.Base(p), os.O_RDONLY, 0)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("mutation target is not a regular file")
+	}
+	data, err := io.ReadAll(file)
+	return string(data), err
 }
 
 // targetFacts describes one mutation target.
@@ -130,9 +163,23 @@ func targetFacts(t antispam.Target) antispam.TargetFacts {
 		return f
 	}
 	f.File = facts
-	if facts.Mode.IsRegular() {
-		data, err := os.ReadFile(t.Path) // #nosec G304 -- fixed CSM mutation target
-		f.Content, f.Err = string(data), err
+	if targetSafeToRead(f) {
+		f.Content, f.Err = readRegularContent(t.Path)
 	}
 	return f
+}
+
+func targetSafeToRead(f antispam.TargetFacts) bool {
+	protected := func(p antispam.PathFacts) bool {
+		return p.UID == 0 && p.Mode.Perm()&0o022 == 0 && !p.ExtACL
+	}
+	if !f.File.Mode.IsRegular() || !protected(f.File) {
+		return false
+	}
+	for _, parent := range f.Parents {
+		if !parent.Mode.IsDir() || !protected(parent) {
+			return false
+		}
+	}
+	return true
 }

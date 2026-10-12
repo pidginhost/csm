@@ -9,17 +9,21 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// hasExtACL reports whether p carries a POSIX access ACL. Without one, the
-// mode bits are the whole permission story.
+// Default ACLs also matter: they can grant access to the files CSM creates
+// even when the directory's current access permissions are safe.
 func hasExtACL(p string) (bool, error) {
-	_, err := unix.Lgetxattr(p, "system.posix_acl_access", nil)
-	switch {
-	case err == nil:
-		return true, nil
-	case errors.Is(err, unix.ENODATA), errors.Is(err, unix.EOPNOTSUPP):
-		return false, nil
+	for _, attribute := range []string{"system.posix_acl_access", "system.posix_acl_default"} {
+		_, err := unix.Lgetxattr(p, attribute, nil)
+		switch {
+		case err == nil:
+			return true, nil
+		case errors.Is(err, unix.ENODATA), errors.Is(err, unix.EOPNOTSUPP):
+			continue
+		default:
+			return false, err
+		}
 	}
-	return false, err
+	return false, nil
 }
 
 // peerUID is the uid SO_PEERCRED reports for the listener behind conn, or -1.

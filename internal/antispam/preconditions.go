@@ -68,8 +68,8 @@ type PathFacts struct {
 	GID  int
 	// Mode is the full lstat mode, including type bits.
 	Mode fs.FileMode
-	// ExtACL is true when the object carries POSIX ACL entries beyond its
-	// mode bits.
+	// ExtACL is true when the object carries a POSIX access or default ACL
+	// beyond its mode bits.
 	ExtACL bool
 }
 
@@ -80,8 +80,8 @@ type SocketFacts struct {
 	Missing bool
 	Socket  PathFacts
 	// Parents are every directory the path walk looked a name up in, in
-	// lookup order: "/" first, the socket's directory last, and the directory
-	// of each symlink followed on the way.
+	// lookup order without repeats: "/" first, including the directory of
+	// each symlink followed on the way.
 	Parents []PathFacts
 	// RspamdUID is the rspamd service user's uid, or -1 when unknown.
 	RspamdUID int

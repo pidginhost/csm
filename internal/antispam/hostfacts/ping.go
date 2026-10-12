@@ -19,6 +19,9 @@ import (
 const (
 	pingTimeout = 3 * time.Second
 	maxPingBody = 4 << 10
+	// Framing has its own allowance so headers and chunk metadata cannot
+	// consume unbounded memory before the decoded body limit applies.
+	maxPingReply = 2 * maxPingBody
 )
 
 // Ping sends GET /ping over the rspamd socket and wants HTTP 200 with "pong"
@@ -35,31 +38,45 @@ func Ping(ctx context.Context, socket string) (int, error) {
 	}
 	defer func() { _ = conn.Close() }()
 	uid := peerUID(conn)
-	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
-	defer stop()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
+	// Install cancellation last so an expired deadline cannot be replaced
+	// by the later timeout when the caller cancels during setup.
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
+	defer stop()
 	if _, err = io.WriteString(conn, "GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"); err != nil {
 		return uid, err
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	return uid, readPingReply(conn)
+}
+
+func readPingReply(conn io.ReadCloser) error {
+	reply := &io.LimitedReader{R: conn, N: maxPingReply + 1}
+	resp, err := http.ReadResponse(bufio.NewReader(reply), nil)
 	if err != nil {
-		return uid, err
+		return errors.New("rspamd /ping returned an invalid HTTP response")
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		// ReadResponse bodies can drain unread data on Close. This probe
+		// never reuses its connection, so close it before closing the body.
+		_ = conn.Close()
+		_ = resp.Body.Close()
+	}()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPingBody+1))
 	switch {
 	case err != nil:
-		return uid, err
+		return errors.New("rspamd /ping reply could not be read")
+	case reply.N == 0:
+		return errors.New("rspamd /ping reply is too large")
 	case resp.StatusCode != http.StatusOK:
-		return uid, fmt.Errorf("rspamd /ping returned HTTP %d", resp.StatusCode)
+		return fmt.Errorf("rspamd /ping returned HTTP %d", resp.StatusCode)
 	case len(body) > maxPingBody:
-		return uid, errors.New("rspamd /ping reply is too large")
+		return errors.New("rspamd /ping reply is too large")
 	case strings.Trim(string(body), " \t\r\n") != "pong":
-		return uid, errors.New("rspamd /ping did not answer pong")
+		return errors.New("rspamd /ping did not answer pong")
 	}
-	return uid, nil
+	return nil
 }
 
 // socketFacts describes the scan socket, the directories its path walks
