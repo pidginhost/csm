@@ -262,8 +262,8 @@ func TestExpiredUnverifiedRowsStayUntilMatchingRetirement(t *testing.T) {
 		t.Fatal("an expired unknown was seeded")
 	}
 	public, err := LoadState(root)
-	if err != nil || len(public.Blocked) != 1 || !SameBlockedEntry(public.Blocked[0], unknown) {
-		t.Fatalf("public load = %+v, %v; want the expired unknown", public, err)
+	if err != nil || len(public.Blocked) != 0 {
+		t.Fatalf("public load = %+v, %v; want no enforced block", public, err)
 	}
 	scans := e.expiryScans
 	for range 3 {
@@ -288,9 +288,8 @@ func TestExpiredUnverifiedRowsStayUntilMatchingRetirement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row, ok = blockedStateEntry(*public, unknown.IP)
-	if len(public.Blocked) != 2 || !ok || !SameBlockedEntry(row, unknown) {
-		t.Fatalf("public load after unrelated save = %+v", public.Blocked)
+	if _, ok = blockedStateEntry(*public, unknown.IP); len(public.Blocked) != 1 || ok {
+		t.Fatalf("public load after unrelated save = %+v; want only the operator block", public.Blocked)
 	}
 	// After owner settlement, explicit cleanup must not resurrect the row.
 	removeBlockedIPFromState(&got, unknown.IP)
@@ -371,7 +370,11 @@ func TestMarkUnverifiedRefusesUnreadableRawState(t *testing.T) {
 	if marked, err := e.MarkBlockActionsUnverified([]string{"act_unknown"}); err == nil || marked != 0 || e.blockBatchStateErr == nil {
 		t.Fatalf("Mark = %d, %v; hold = %v", marked, err, e.blockBatchStateErr)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	kept := e.StateSetAside()
+	if kept == "" {
+		t.Fatal("a fresh marking read did not keep unreadable state aside")
+	}
+	data, err := os.ReadFile(kept)
 	if err != nil || string(data) != "{" {
 		t.Fatalf("unreadable state was changed: %q, %v", data, err)
 	}
@@ -478,5 +481,72 @@ func TestLegacyEvictionSkipsUnverifiedRows(t *testing.T) {
 	}
 	if perm, temp := blockedStatePermTempCounts(state, ""); perm != 1 || temp != 2 {
 		t.Fatalf("fallback counts = %d permanent, %d temporary; want 1 and 2", perm, temp)
+	}
+}
+
+// Without a readable ledger at startup nothing proves which rows of its
+// attempts the kernel enforces. They are restored as before, but none is
+// ever chosen to make room for a new block (P11).
+func TestUnprovenBlockActionsAreNeverEvicted(t *testing.T) {
+	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	state := FirewallState{Blocked: []BlockedEntry{
+		{IP: "192.0.2.30", ExpiresAt: at.Add(time.Minute), ActionID: "act_soonest"},
+		{IP: "203.0.113.30", ExpiresAt: at.Add(time.Hour)},
+	}}
+	e := &Engine{statePath: t.TempDir(), cfg: &FirewallConfig{}, expiryClock: func() time.Time { return at }}
+	e.mu.Lock()
+	victim, ok := e.evictionVictimLocked(state, "")
+	e.mu.Unlock()
+	if !ok || victim != "192.0.2.30" {
+		t.Fatalf("victim = %q, %t; want the soonest row while the ledger was read", victim, ok)
+	}
+	if err := e.saveState(&state); err != nil {
+		t.Fatal(err)
+	}
+	if e.BlockActionsUnproven() != nil {
+		t.Fatal("a fresh engine reports unproven rows")
+	}
+	cause := errors.New("ledger unreadable")
+	e.SetBlockActionsUnproven(cause)
+	if !errors.Is(e.BlockActionsUnproven(), cause) {
+		t.Fatalf("BlockActionsUnproven = %v, want the cause", e.BlockActionsUnproven())
+	}
+	e.mu.Lock()
+	victim, ok = e.evictionVictimLocked(state, "")
+	onlyActions, onlyOK := e.evictionVictimLocked(FirewallState{Blocked: state.Blocked[:1]}, "")
+	e.mu.Unlock()
+	if !ok || victim != "203.0.113.30" || onlyOK {
+		t.Fatalf("victims = %q, %t and %q, %t; want only the row no attempt wrote", victim, ok, onlyActions, onlyOK)
+	}
+	if !e.IsBlocked("192.0.2.30") {
+		t.Fatal("an unproven row was dropped from the enforced state")
+	}
+	if err := e.saveBlockedEntry(BlockedEntry{IP: "198.51.100.30", Reason: "operator"}); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(e.BlockActionsUnproven(), cause) || !e.IsBlocked("192.0.2.30") {
+		t.Fatal("a later save lost the in-memory cause or restored row")
+	}
+	data, err := os.ReadFile(filepath.Join(e.statePath, "state.json"))
+	if err != nil || strings.Contains(string(data), "unverified") {
+		t.Fatalf("the unproven mark reached the state file: %s, %v", data, err)
+	}
+}
+
+// At the temporary cap a new block finds no victim among unproven rows and
+// is refused rather than evicting one.
+func TestUnprovenBlockActionsHoldTheTempCap(t *testing.T) {
+	for _, unproven := range []bool{false, true} {
+		e := &Engine{statePath: t.TempDir(), cfg: &FirewallConfig{DenyTempIPLimit: 1}, setBlocked: namedIPv4Set("blocked_ips")}
+		state := FirewallState{Blocked: []BlockedEntry{{IP: "192.0.2.31", ExpiresAt: time.Now().Add(time.Hour), ActionID: "act_cap"}}}
+		if err := e.saveState(&state); err != nil {
+			t.Fatal(err)
+		}
+		if unproven {
+			e.SetBlockActionsUnproven(errors.New("ledger unreadable"))
+		}
+		if _, err := e.validateBlockIP("198.51.100.31", time.Hour, false); unproven != (err != nil) {
+			t.Fatalf("unproven=%v: validation = %v; want a refusal only for unproven rows", unproven, err)
+		}
 	}
 }

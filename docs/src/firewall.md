@@ -171,6 +171,39 @@ nftables permissions problem, and restart `csm.service`. A successful startup
 clears the error and enables the firewall-dependent services. Disabling the
 firewall deliberately does not degrade health.
 
+If the firewall state file cannot be read at startup, CSM renames it to
+`state.json.unreadable-<UTC time>` (with a numbered suffix if needed) in the
+same directory before anything can
+replace it, then starts without the blocked and allowed addresses it held. It
+raises a Critical `firewall_state_unreadable` finding, and `csm doctor` fails
+its `firewall state` check, naming the kept file, until the next restart.
+`automation.firewall_state_set_aside` carries the same path. Review the kept
+file and add back the entries that must stay. This startup alert bypasses the
+finding queue and finding suppression rules. If the file cannot be renamed
+or synced, startup fails without retrying, even if installing the base rules
+also fails. A running CSM ruleset stays in place with its blocks; after a
+reboot, CSM installs its base rules without saved blocks, allows or port
+exceptions. The failed engine does not adopt replacement state or resume
+management when storage becomes readable. Correct the storage problem before
+restarting CSM. A running engine keeps its known state across an unreadable
+rewrite, including failed saves, and writes that state back when storage
+accepts a later save.
+
+Before restoring blocks at startup, CSM asks the admission ledger about every
+block an automatic response attempt wrote. Blocks whose attempt is still
+running, ended unknown or failed are marked unverified and held back from the
+kernel. Firewall views omit them once the mark is saved; if the mark cannot be
+saved, the block still stays out of the kernel, but views can list it until a
+later save succeeds. If the ledger cannot be read, eligible blocks are restored
+as before and existing unverified marks are kept; none of those automatic
+blocks is evicted to make room for a new one, and `csm doctor` warns until a
+restart reads the ledger. `automation.firewall_ledger_error` carries the
+reason.
+
+Firewall and threat views omit unverified addresses, including duplicate
+spellings. When firewall state exists, threat views use it alone for block
+status; legacy tracking entries cannot make held-back blocks appear enforced.
+
 ## CLI Commands
 
 ```bash

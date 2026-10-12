@@ -262,28 +262,10 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 func ReadUnresolvedIntents(db *DB) ([]admission.Intent, error) {
 	var out []admission.Intent
 	err := db.bolt.View(func(tx *bolt.Tx) error {
-		intents := tx.Bucket([]byte(admissionIntentsBucket))
-		meta := tx.Bucket([]byte(admissionMetaBucket))
-		if meta == nil {
-			return tx.ForEach(func(name []byte, _ *bolt.Bucket) error {
-				if strings.HasPrefix(string(name), "adm:") {
-					return admission.ErrCorruptRecord
-				}
-				return nil
-			})
+		if current, err := currentLedger(tx); !current {
+			return err
 		}
-		switch schema := meta.Get(admissionSchemaKey); {
-		case len(schema) == 1 && schema[0] >= 1 && schema[0] < admissionSchemaVersion:
-			if intents != nil {
-				return admission.ErrCorruptRecord
-			}
-			return nil
-		case len(schema) != 1 || schema[0] != admissionSchemaVersion:
-			return ErrAdmissionSchema
-		case intents == nil:
-			return admission.ErrCorruptRecord
-		}
-		return intents.ForEach(func(k, _ []byte) error {
+		return tx.Bucket([]byte(admissionIntentsBucket)).ForEach(func(k, _ []byte) error {
 			in, found, err := loadIntent(tx, admission.ActionID(k))
 			if err != nil {
 				return err
@@ -294,6 +276,81 @@ func ReadUnresolvedIntents(db *DB) ([]admission.Intent, error) {
 			out = append(out, in)
 			return nil
 		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// currentLedger reports whether tx holds a ledger of the current schema for
+// a read without a handle. A database without a ledger, or whose ledger
+// predates intents, has nothing to read; one it cannot read is an error.
+func currentLedger(tx *bolt.Tx) (bool, error) {
+	intents := tx.Bucket([]byte(admissionIntentsBucket))
+	meta := tx.Bucket([]byte(admissionMetaBucket))
+	if meta == nil {
+		return false, tx.ForEach(func(name []byte, _ *bolt.Bucket) error {
+			if strings.HasPrefix(string(name), "adm:") {
+				return admission.ErrCorruptRecord
+			}
+			return nil
+		})
+	}
+	switch schema := meta.Get(admissionSchemaKey); {
+	case len(schema) == 1 && schema[0] >= 1 && schema[0] < admissionSchemaVersion:
+		if intents != nil {
+			return false, admission.ErrCorruptRecord
+		}
+		return false, nil
+	case len(schema) != 1 || schema[0] != admissionSchemaVersion:
+		return false, ErrAdmissionSchema
+	case intents == nil:
+		return false, admission.ErrCorruptRecord
+	}
+	return true, nil
+}
+
+// ReadUnprovenBlockActions returns, in order, the actions among ids whose
+// attempt the ledger records with anything but a verified outcome: it
+// runs, ended unknown (retired or not) or failed. Startup marks their
+// firewall rows unverified before the firewall restores its state, whether
+// or not the ledger owner started. A name the ledger never recorded is not
+// returned: no attempt claims its row. An error means the ledger cannot be
+// read.
+func ReadUnprovenBlockActions(db *DB, ids []string) ([]string, error) {
+	var out []string
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		if current, err := currentLedger(tx); !current {
+			return err
+		}
+		attempts := tx.Bucket([]byte(admissionAttemptsBucket))
+		if attempts == nil {
+			return admission.ErrCorruptRecord
+		}
+		for _, id := range ids {
+			if _, err := admission.ParseActionID(id); err != nil {
+				continue
+			}
+			raw := attempts.Get([]byte(id))
+			if raw == nil {
+				if attempts.Bucket([]byte(id)) != nil {
+					return admission.ErrCorruptRecord
+				}
+				continue
+			}
+			a, err := admission.UnmarshalAttempt(raw)
+			if err != nil {
+				return err
+			}
+			if string(a.Attempt.ID) != id {
+				return admission.ErrCorruptRecord
+			}
+			if a.State != admission.StateVerified {
+				out = append(out, id)
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err

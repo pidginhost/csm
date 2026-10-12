@@ -86,7 +86,9 @@ type Daemon struct {
 	// fwActions retains the durable-action boundary even after failed startup,
 	// so pending actions remain recoverable while the firewall is unmanaged.
 	fwActions      firewallActionBoundary
-	fwStartupError string     // finalized before status servers start
+	fwStartupError string // finalized before status servers start
+	fwStateAsideMu sync.RWMutex
+	fwStateAside   string
 	baselineMu     sync.Mutex // serialises CmdBaseline handler runs
 	geoipDB        *geoip.DB
 	geoipMu        sync.Mutex // protects geoipDB for publishGeoIP

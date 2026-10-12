@@ -3,6 +3,7 @@ package firewall
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -17,6 +18,10 @@ var ErrLongerBlock = errors.New("IP has a longer block; unblock it explicitly be
 // ErrBlockChanged prevents undo from replacing a later firewall decision.
 var ErrBlockChanged = errors.New("block changed since the action; undo is no longer available")
 
+// ErrStateNotKeptAside requires a new startup after unreadable state could
+// not be preserved. Retrying with a fresh engine can miss an unsynced rename.
+var ErrStateNotKeptAside = errors.New("firewall state unreadable and not kept aside")
+
 // SameBlockedEntry compares snapshots without relying on time.Time locations.
 func SameBlockedEntry(a, b BlockedEntry) bool {
 	return a.IP == b.IP && a.Reason == b.Reason && a.Source == b.Source &&
@@ -26,7 +31,8 @@ func SameBlockedEntry(a, b BlockedEntry) bool {
 
 // LoadState reads the authoritative firewall state file directly without requiring
 // a running engine. A missing state file is a valid fresh-host state and returns
-// an empty FirewallState.
+// an empty FirewallState. Only enforced blocks are returned: an unverified row is
+// held for recovery and never restored to the kernel.
 func LoadState(statePath string) (*FirewallState, error) {
 	stateFile := filepath.Join(statePath, "firewall", "state.json")
 	// #nosec G304 -- filepath.Join under operator-configured statePath.
@@ -43,11 +49,28 @@ func LoadState(statePath string) (*FirewallState, error) {
 		return nil, err
 	}
 
+	// The engine keeps an unverified row over its address aliases, even
+	// after expiry. Filtering it alone would expose a duplicate it never seeds.
+	held := make(map[string]bool)
+	for _, entry := range state.Blocked {
+		if !entry.Unverified {
+			continue
+		}
+		if ip := net.ParseIP(entry.IP); ip != nil {
+			held[ip.String()] = true
+		}
+	}
+
 	// Clean expired entries
 	now := time.Now()
 	var active []BlockedEntry
 	for _, entry := range state.Blocked {
-		if entry.Unverified || entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+		if len(held) > 0 {
+			if ip := net.ParseIP(entry.IP); ip != nil && held[ip.String()] {
+				continue
+			}
+		}
+		if !entry.Unverified && (entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt)) {
 			active = append(active, entry)
 		}
 	}

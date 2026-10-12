@@ -22,6 +22,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - A temporary block that expires while the firewall starts can no longer be restored as a permanent block.
+- An enabled firewall keeps unreadable saved state for inspection, preserves known blocks and raises a critical alert and doctor failure. If it cannot be kept, fix storage and restart CSM.
+- Threat lookups no longer show an address as blocked from stale auto-block records when the firewall does not hold that block.
 - After upgrade, IP reputation stops fetching the retired Spamhaus EDROP list and ignores its cached ranges; Spamhaus DROP carries the merged entries.
 
 ## [4.3.0] - 2026-10-08

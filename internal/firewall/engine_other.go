@@ -99,8 +99,14 @@ func (e *Engine) SetShutdownContext(_ context.Context)    {}
 func (e *Engine) SetSoftAllowChecker(_ func(string) bool) {}
 func (e *Engine) UnblockIP(_ string) error                { return ErrUnsupportedPlatform }
 func (e *Engine) IsBlocked(_ string) bool                 { return false }
-func (e *Engine) IsAllowed(_ string) bool                 { return false }
-func (e *Engine) IsBlockedLive(_ string) (bool, error)    { return false, ErrUnsupportedPlatform }
+func (e *Engine) StateSetAside() string                   { return "" }
+func (e *Engine) SetBlockActionsUnproven(_ error)         {}
+func (e *Engine) BlockActionsUnproven() error             { return nil }
+func (e *Engine) MarkBlockActionsUnverified(_ []string) (int, error) {
+	return 0, ErrUnsupportedPlatform
+}
+func (e *Engine) IsAllowed(_ string) bool              { return false }
+func (e *Engine) IsBlockedLive(_ string) (bool, error) { return false, ErrUnsupportedPlatform }
 func (e *Engine) LiveBlockedSet() (LiveBlockedSnapshot, error) {
 	return LiveBlockedSnapshot{}, ErrUnsupportedPlatform
 }

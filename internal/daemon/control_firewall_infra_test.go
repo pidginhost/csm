@@ -1,9 +1,13 @@
 package daemon
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
@@ -164,5 +168,35 @@ func TestHandleFirewallStatusReportsEffectiveChallengePort(t *testing.T) {
 	lines := strings.Join(portsRaw.(control.FirewallListResult).Lines, "\n")
 	if !strings.Contains(lines, "80, 8439") || !strings.Contains(lines, "TCP Restricted (infra only):\n  9443") {
 		t.Errorf("ports output does not match effective firewall policy:\n%s", lines)
+	}
+}
+
+// `csm firewall status` counts and lists only enforced blocks: a row held
+// back as unverified is not in the kernel.
+func TestHandleFirewallStatusLeavesOutUnverifiedRows(t *testing.T) {
+	c := newListenerForTest(t)
+	c.d.cfg = &config.Config{StatePath: t.TempDir(), Firewall: &firewall.FirewallConfig{Enabled: true}}
+	config.SetActive(c.d.cfg)
+	expires := time.Now().Add(time.Hour)
+	data, err := json.Marshal(firewall.FirewallState{Blocked: []firewall.BlockedEntry{
+		{IP: "198.51.100.60", Reason: "operator", ExpiresAt: expires},
+		{IP: "198.51.100.61", Reason: "automatic", ExpiresAt: expires, ActionID: "act_held", Unverified: true},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(filepath.Join(c.d.cfg.StatePath, "firewall"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(c.d.cfg.StatePath, "firewall", "state.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := c.handleFirewallStatus(nil)
+	if err != nil {
+		t.Fatalf("handleFirewallStatus: %v", err)
+	}
+	r := raw.(control.FirewallStatusResult)
+	if r.BlockedCount != 1 || len(r.RecentBlocked) != 1 || r.RecentBlocked[0].IP != "198.51.100.60" {
+		t.Fatalf("status = %d blocked, recent %+v; want only the enforced block", r.BlockedCount, r.RecentBlocked)
 	}
 }

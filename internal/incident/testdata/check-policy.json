@@ -121,6 +121,7 @@
       "fanotify_overflow",
       "firewall",
       "firewall_ports",
+      "firewall_state_unreadable",
       "ftp_auth_failure_realtime",
       "ftp_bruteforce",
       "ftp_login",

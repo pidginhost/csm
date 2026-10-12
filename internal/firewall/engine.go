@@ -20,6 +20,7 @@ import (
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 	"github.com/mdlayher/netlink"
+	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/atomicio"
@@ -31,9 +32,14 @@ type Engine struct {
 	lifecycle              *Lifecycle
 	unverifiedBlockActions map[string]bool
 	failedBlockActions     map[string]bool
+	blockActionsUnproven   error
 	blockBatchStateErr     error
 	stateRevision          uint64
 	stateReadErr           error
+	stateSetAside          string
+	stateAsideErr          error
+	renameStateAside       func(string, string) error
+	syncStateAside         func(string) error
 	mu                     sync.Mutex
 	conn                   *nftables.Conn
 	// listTables, when set, replaces conn.ListTables (tests inject a
@@ -691,13 +697,20 @@ func (e *Engine) Apply() (resultErr error) {
 	}
 	return e.applyRulesetLocked("")
 }
-func (e *Engine) applyRulesetLocked(marker string) error {
+func (e *Engine) applyRulesetLocked(marker string) (resultErr error) {
 
 	// Compute the elements to seed each set from persisted state
 	// BEFORE touching nft. Pure computation; if state.json is
 	// missing or malformed the slices stay empty and the new table
 	// still applies (no firewall regression on a fresh install).
 	initial := e.computeInitialBlockStateLocked()
+	// Even a failed base install must stop fresh-engine startup retries:
+	// an unsynced rename can leave no file for the next engine to inspect.
+	defer func() {
+		if e.stateAsideErr != nil && !errors.Is(resultErr, ErrStateNotKeptAside) {
+			resultErr = errors.Join(e.stateAsideErr, resultErr)
+		}
+	}()
 
 	// Check if existing CSM table needs replacing.
 	// If so, include the delete in the same atomic batch as the new table.
@@ -708,11 +721,21 @@ func (e *Engine) applyRulesetLocked(marker string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", errTableListing, err)
 	}
+	var running *nftables.Table
 	for _, t := range tables {
 		if t.Name == "csm" && t.Family == nftables.TableFamilyINet {
-			e.conn.DelTable(t)
+			running = t
 			break
 		}
+	}
+	// State the engine could neither read nor keep aside seeds nothing and
+	// fails startup. A running ruleset keeps its blocks; after a reboot the
+	// kernel has none, so the base rules still go in.
+	if e.stateAsideErr != nil && running != nil {
+		return e.stateAsideErr
+	}
+	if running != nil {
+		e.conn.DelTable(running)
 	}
 
 	// Create table - all operations below are batched, nothing is sent until Flush()
@@ -2814,7 +2837,7 @@ func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipEx
 		if timeout > 0 && e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit {
 			// Validation must stay read-only because verdict and dry-run gates run
 			// after it. The live block path applies this eviction target.
-			victim, ok := soonestExpiringTempIP(st, ip)
+			victim, ok := e.evictionVictimLocked(st, ip)
 			if !ok {
 				return nil, nil, false, "", fmt.Errorf("temporary deny limit reached (%d) and no temp entry to evict", e.cfg.DenyTempIPLimit)
 			}
@@ -4357,6 +4380,9 @@ func (e *Engine) loadStateFileRawLocked() (FirewallState, bool) {
 		state, _, err := e.readCommittedStateLocked()
 		return state, err == nil
 	}
+	if e.stateAsideErr != nil {
+		return FirewallState{}, false
+	}
 
 	stateFile := filepath.Join(e.statePath, "state.json")
 	data, err := os.ReadFile(stateFile) // #nosec G304 -- filepath.Join under operator-configured statePath.
@@ -4364,10 +4390,12 @@ func (e *Engine) loadStateFileRawLocked() (FirewallState, bool) {
 		if os.IsNotExist(err) {
 			return FirewallState{}, true
 		}
+		e.ensureStateCacheLocked()
 		return FirewallState{}, false
 	}
 	var state FirewallState
 	if err := json.Unmarshal(data, &state); err != nil {
+		e.keepPriorStateCacheAtLocked(e.expiryNow(), stateFile, err)
 		return FirewallState{}, false
 	}
 	return state, true
@@ -4392,6 +4420,11 @@ func (e *Engine) ensureStateCacheAtLocked(now time.Time) {
 		}
 		return
 	}
+	// Preservation failure is terminal for this engine. In particular, the
+	// port-allow read during a base install must not adopt replacement state.
+	if e.stateAsideErr != nil {
+		return
+	}
 
 	stateFile := filepath.Join(e.statePath, "state.json")
 	info, statErr := os.Stat(stateFile)
@@ -4406,20 +4439,22 @@ func (e *Engine) ensureStateCacheAtLocked(now time.Time) {
 		// #nosec G304 -- filepath.Join under operator-configured statePath.
 		data, readErr := os.ReadFile(stateFile)
 		if readErr != nil {
-			e.keepPriorStateCacheAtLocked(now)
+			e.keepPriorStateCacheAtLocked(now, stateFile, readErr)
 			return
 		}
 		if err := json.Unmarshal(data, &fresh); err != nil {
-			e.keepPriorStateCacheAtLocked(now)
+			e.keepPriorStateCacheAtLocked(now, stateFile, err)
 			return
 		}
 		e.stateCacheKey = stateFileCacheKeyFromInfo(info)
 	case os.IsNotExist(statErr):
 		e.stateCacheKey = stateFileCacheKey{}
-	case e.stateCache != nil:
-		// Transient stat error (permission, EIO). Keep the prior
-		// cache rather than dropping all blocks.
-		e.applyExpiryAtLocked(now)
+	default:
+		if e.stateCache != nil {
+			e.applyExpiryAtLocked(now)
+		} else {
+			e.stateAsideErr = fmt.Errorf("%w: stat: %v", ErrStateNotKeptAside, statErr)
+		}
 		return
 	}
 
@@ -4430,14 +4465,68 @@ func (e *Engine) ensureStateCacheAtLocked(now time.Time) {
 	e.rebuildIndexLocked()
 }
 
-func (e *Engine) keepPriorStateCacheAtLocked(now time.Time) {
+// keepPriorStateCacheAtLocked answers a state file the engine cannot read.
+// A held cache stays, and the next write puts it back. Without one, the
+// next write would replace the file and every entry in it, so the file is
+// first renamed aside and the engine starts empty. If it cannot be moved,
+// Apply refuses.
+func (e *Engine) keepPriorStateCacheAtLocked(now time.Time, path string, cause error) {
 	if e.stateCache != nil {
 		e.applyExpiryAtLocked(now)
 		return
 	}
+	base := path + ".unreadable-" + now.UTC().Format("20060102T150405Z")
+	rename := e.renameStateAside
+	if rename == nil {
+		rename = func(old, kept string) error {
+			return unix.Renameat2(unix.AT_FDCWD, old, unix.AT_FDCWD, kept, unix.RENAME_NOREPLACE)
+		}
+	}
+	aside := base
+	for collision := 0; ; collision++ {
+		if collision > 0 {
+			aside = fmt.Sprintf("%s-%d", base, collision)
+		}
+		if err := rename(path, aside); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			e.stateAsideErr = fmt.Errorf("%w: %v; %v", ErrStateNotKeptAside, cause, err)
+			return
+		}
+		break
+	}
+	e.stateSetAside = aside
+	// The kept name must survive a crash before another state write.
+	syncDir := e.syncStateAside
+	if syncDir == nil {
+		syncDir = syncKeptStateDirectory
+	}
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		e.stateAsideErr = fmt.Errorf("%w: sync kept state: %v", ErrStateNotKeptAside, err)
+		return
+	}
+	e.stateAsideErr = nil
 	e.stateCache = &FirewallState{}
 	e.stateCacheKey = stateFileCacheKey{}
 	e.rebuildIndexLocked()
+}
+
+func syncKeptStateDirectory(path string) error {
+	// #nosec G304 -- parent of the operator-configured state path.
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return errors.Join(dir.Sync(), dir.Close())
+}
+
+// StateSetAside names where an unreadable state file was kept when the
+// engine first read its state, or "" when it read it.
+func (e *Engine) StateSetAside() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.stateSetAside
 }
 
 // applyExpiryAtLocked prunes expired entries from the cached state in
@@ -4663,6 +4752,12 @@ func (e *Engine) saveState(s *FirewallState) error {
 		return e.runDurableLocked(ActionRequest{Operation: "state", Target: "*"}, nil, *s)
 	}
 
+	if e.stateCache == nil {
+		_, _ = e.loadStateFileRawLocked()
+	}
+	if e.stateAsideErr != nil {
+		return e.stateAsideErr
+	}
 	state := copyFirewallState(*s)
 	e.overlayUnverifiedBlockActionsLocked(&state)
 	normalizeFirewallStateIPs(&state)
@@ -4673,7 +4768,9 @@ func (e *Engine) saveState(s *FirewallState) error {
 			return &stateDurabilityError{cause: err}
 		}
 		fmt.Fprintf(os.Stderr, "firewall: persist state.json failed: %v\n", err)
-		e.clearStateCacheLocked()
+		// A failed write must not make a held engine fresh again: unreadable
+		// external state still needs the last known snapshot for the retry.
+		e.stateCacheKey = stateFileCacheKey{}
 		return err
 	}
 	e.setStateCacheLocked(path, &state)

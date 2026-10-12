@@ -3,14 +3,92 @@ package daemon
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/state"
 )
+
+func TestFirewallStartupStateAlertBypassesFullFindingQueue(t *testing.T) {
+	const kept = "/var/lib/csm/firewall/state.json.unreadable-20260301T120000Z"
+	var delivered atomic.Int32
+	webhook := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { delivered.Add(1) }))
+	t.Cleanup(webhook.Close)
+	cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: true}, StatePath: t.TempDir()}
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = webhook.URL
+	cfg.Alerts.MaxPerHour = 1
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	st, err := state.Open(cfg.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.SaveSuppressions([]state.SuppressionRule{{Check: "firewall_state_unreadable"}}); err != nil {
+		t.Fatal(err)
+	}
+	d := New(cfg, st, nil, "")
+	d.alertCh = make(chan alert.Finding, 1)
+	d.alertCh <- alert.Finding{Check: "fixture_backlog"}
+	d.startFirewallUsing(firewallStartupOps{
+		newEngine: func(*firewall.FirewallConfig, string) (*firewall.Engine, error) { return new(firewall.Engine), nil },
+		apply:     func(*firewall.Engine) error { return errors.New("fixture netlink failure") },
+		setAside:  func(*firewall.Engine) string { return kept },
+		delays:    []time.Duration{0, 0},
+	})
+	if calls := delivered.Load(); calls != 1 {
+		t.Fatalf("startup health alert reached the webhook %d times, want once despite the full queue", calls)
+	}
+	history, total := st.ReadHistory(10, 0)
+	if total != 1 || len(history) != 1 || history[0].Check != "firewall_state_unreadable" || history[0].Severity != alert.Critical {
+		t.Fatalf("startup alert missing from history: total=%d findings=%+v", total, history)
+	}
+	if len(d.alertCh) != 1 || (<-d.alertCh).Check != "fixture_backlog" {
+		t.Fatal("startup health delivery consumed the existing backlog")
+	}
+}
+
+func TestFirewallStateAsideStatusDuringStartup(t *testing.T) {
+	const kept = "/var/lib/csm/firewall/state.json.unreadable-20260301T120000Z"
+	cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: true}, StatePath: t.TempDir()}
+	d := New(cfg, nil, nil, "")
+	start := make(chan struct{})
+	var readers sync.WaitGroup
+	readers.Add(1)
+	go func() {
+		defer readers.Done()
+		close(start)
+		for i := 0; i < 1000; i++ {
+			if aside := d.AutomationStatus().FirewallStateSetAside; aside != "" && aside != kept {
+				t.Errorf("status read a partial kept path: %q", aside)
+			}
+		}
+	}()
+	<-start
+	for i := 0; i < 1000; i++ {
+		_, err := d.prepareFirewall(cfg.Firewall, firewallStartupOps{
+			newEngine: func(*firewall.FirewallConfig, string) (*firewall.Engine, error) { return new(firewall.Engine), nil },
+			apply:     func(*firewall.Engine) error { return errors.New("fixture netlink failure") },
+			setAside:  func(*firewall.Engine) string { return kept },
+		})
+		if err == nil {
+			t.Fatal("fixture startup failure was lost")
+		}
+	}
+	readers.Wait()
+	if aside := d.AutomationStatus().FirewallStateSetAside; aside != kept {
+		t.Fatalf("startup lost kept path: %q", aside)
+	}
+}
 
 func TestFirewallStartupRetriesAndRetainsFailure(t *testing.T) {
 	for _, failAt := range []string{"constructor", "apply"} {
@@ -50,6 +128,50 @@ func TestFirewallStartupRetriesAndRetainsFailure(t *testing.T) {
 				t.Fatalf("failure was not propagated to status: %+v", status)
 			}
 		})
+	}
+}
+
+// An attempt that kept an unreadable state file aside reports it whatever
+// later attempts do: they find no file and start empty.
+func TestFirewallStartupReportsStateSetAside(t *testing.T) {
+	const kept = "/var/lib/csm/firewall/state.json.unreadable-20260301T120000Z"
+	cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: true}, StatePath: t.TempDir()}
+	d := New(cfg, nil, nil, "")
+	var found []alert.Finding
+	previousHook := alert.CentralHook
+	alert.SetCentralHook(func(f alert.Finding) {
+		if f.Check == "firewall_state_unreadable" {
+			found = append(found, f)
+		}
+	})
+	t.Cleanup(func() { alert.SetCentralHook(previousHook) })
+	first := new(firewall.Engine)
+	attempts := 0
+	d.startFirewallUsing(firewallStartupOps{
+		newEngine: func(*firewall.FirewallConfig, string) (*firewall.Engine, error) {
+			attempts++
+			if attempts == 1 {
+				return first, nil
+			}
+			return new(firewall.Engine), nil
+		},
+		apply: func(*firewall.Engine) error { return errors.New("fixture netlink failure") },
+		setAside: func(e *firewall.Engine) string {
+			if e == first {
+				return kept
+			}
+			return ""
+		},
+		delays: []time.Duration{0, 0},
+	})
+	if attempts != 3 || d.fwStateAside != kept {
+		t.Fatalf("attempts=%d set aside=%q; want three attempts and the kept file", attempts, d.fwStateAside)
+	}
+	if got := d.AutomationStatus().FirewallStateSetAside; got != kept {
+		t.Fatalf("status reports %q, want %q", got, kept)
+	}
+	if len(found) != 1 || found[0].Severity != alert.Critical || !strings.Contains(found[0].Message, kept) {
+		t.Fatalf("findings = %+v; want one critical finding naming the kept file", found)
 	}
 }
 

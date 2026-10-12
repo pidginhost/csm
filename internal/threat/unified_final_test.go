@@ -50,9 +50,8 @@ func TestLookupThreatDBBranchViaInit(t *testing.T) {
 	}
 }
 
-// TestLookupCombinesBboltReputationAndBlockAndLegacy exercises Lookup with
-// bbolt-backed reputation + bbolt block + legacy blocked_ips.json coexisting.
-func TestLookupCombinesBboltReputationAndBlockAndLegacy(t *testing.T) {
+// Engine state determines block status while reputation remains independent.
+func TestLookupPrefersEngineBlocksOverLegacy(t *testing.T) {
 	dir := t.TempDir()
 	sdb, err := store.Open(dir)
 	if err != nil {
@@ -71,7 +70,7 @@ func TestLookupCombinesBboltReputationAndBlockAndLegacy(t *testing.T) {
 		{"ip": "198.51.100.10", "reason": "test-block", "expires_at": time.Time{}.Format(time.RFC3339Nano)},
 	})
 
-	// Legacy blocked_ips.json with a DIFFERENT IP so both files are read.
+	// Stale bookkeeping must not add blocks absent from engine state.
 	writeBlockedIPsFile(t, dir, []map[string]any{
 		{
 			"ip":         "198.51.100.11",
@@ -92,13 +91,13 @@ func TestLookupCombinesBboltReputationAndBlockAndLegacy(t *testing.T) {
 		t.Errorf("Verdict = %q, want blocked", intel.Verdict)
 	}
 
-	// Second IP is only in legacy file.
+	// The second IP is absent from the authoritative engine state.
 	intel2 := Lookup("198.51.100.11", dir)
-	if !intel2.CurrentlyBlocked {
-		t.Error("legacy-only IP should still be blocked")
+	if intel2.CurrentlyBlocked || intel2.Verdict == "blocked" {
+		t.Error("stale legacy-only IP should not be reported blocked")
 	}
-	if intel2.BlockReason != "legacy entry" {
-		t.Errorf("BlockReason = %q", intel2.BlockReason)
+	if intel2.BlockReason != "" {
+		t.Errorf("BlockReason = %q, want empty", intel2.BlockReason)
 	}
 }
 
@@ -119,9 +118,7 @@ func TestLookupMissingStatePathIsClean(t *testing.T) {
 	}
 }
 
-// TestLookupBatchWithBboltAndLegacyCombined covers LookupBatch branches that
-// draw from both bbolt state and a legacy blocked_ips.json file.
-func TestLookupBatchWithBboltAndLegacyCombined(t *testing.T) {
+func TestLookupBatchPrefersEngineBlocksOverLegacy(t *testing.T) {
 	dir := t.TempDir()
 	sdb, err := store.Open(dir)
 	if err != nil {
@@ -150,8 +147,8 @@ func TestLookupBatchWithBboltAndLegacyCombined(t *testing.T) {
 	if results[0].Verdict != "blocked" {
 		t.Errorf("results[0] = %q, want blocked", results[0].Verdict)
 	}
-	if results[1].Verdict != "blocked" {
-		t.Errorf("results[1] = %q, want blocked", results[1].Verdict)
+	if results[1].CurrentlyBlocked || results[1].Verdict == "blocked" {
+		t.Errorf("stale legacy-only block returned: %+v", results[1])
 	}
 	if results[2].Verdict != "clean" {
 		t.Errorf("results[2] = %q, want clean", results[2].Verdict)

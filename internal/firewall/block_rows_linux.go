@@ -71,6 +71,38 @@ func (e *Engine) MarkBlockActionsUnverified(actions []string) (int, error) {
 	return marked, nil
 }
 
+// SetBlockActionsUnproven records, in memory only, why startup could not
+// read the ledger. The rows its attempts wrote are restored as before, but
+// none is ever chosen to make room for a new block: nothing proves which
+// of them the kernel enforces. The next start reads the ledger again.
+func (e *Engine) SetBlockActionsUnproven(cause error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.blockActionsUnproven = cause
+}
+
+// BlockActionsUnproven is the cause SetBlockActionsUnproven recorded, or nil.
+func (e *Engine) BlockActionsUnproven() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.blockActionsUnproven
+}
+
+// evictionVictimLocked picks the temporary block a new one replaces at the
+// cap, leaving out the rows of unproven attempts.
+func (e *Engine) evictionVictimLocked(st FirewallState, excludeIP string) (string, bool) {
+	if e.blockActionsUnproven != nil {
+		var kept []BlockedEntry
+		for _, row := range st.Blocked {
+			if row.ActionID == "" {
+				kept = append(kept, row)
+			}
+		}
+		st.Blocked = kept
+	}
+	return soonestExpiringTempIP(st, excludeIP)
+}
+
 // The in-memory mark survives a failed save and cache replacement until a
 // successful full-state write records it. Only then can the hold clear.
 func (e *Engine) rememberUnverifiedBlockActionsLocked(state FirewallState) {

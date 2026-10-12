@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -22,7 +23,11 @@ import (
 type firewallStartupOps struct {
 	newEngine func(*firewall.FirewallConfig, string) (*firewall.Engine, error)
 	apply     func(*firewall.Engine) error
-	delays    []time.Duration
+	// setAside, when set, replaces (*firewall.Engine).StateSetAside.
+	setAside func(*firewall.Engine) string
+	// unproven, when set, replaces readUnprovenBlockActions.
+	unproven func([]string) ([]string, error)
+	delays   []time.Duration
 }
 
 func (d *Daemon) startFirewall() {
@@ -46,7 +51,9 @@ func retryFirewallStartup(stop <-chan struct{}, delays []time.Duration, attempt 
 		if err == nil {
 			return engine, nil
 		}
-		if i == len(delays) {
+		// A fresh engine cannot distinguish a missing file from a rename
+		// whose directory sync failed in the previous attempt.
+		if errors.Is(err, firewall.ErrStateNotKeptAside) || i == len(delays) {
 			return nil, err
 		}
 		timer := time.NewTimer(delays[i])
@@ -71,6 +78,17 @@ func (d *Daemon) startFirewallUsing(ops firewallStartupOps) {
 	engine, err := retryFirewallStartup(d.stopCh, ops.delays, func() (*firewall.Engine, error) {
 		return d.prepareFirewall(effectiveFirewall, ops)
 	})
+	if aside := d.firewallStateSetAside(); aside != "" {
+		findings := []alert.Finding{firewallStateSetAsideFinding(aside)}
+		// Startup health owns its delivery, like queue health: the finding
+		// queue and routine suppression must not hide missing firewall state.
+		if d.store != nil {
+			d.store.AppendHistory(findings)
+		}
+		if dispatchErr := alert.Dispatch(d.currentCfg(), findings); dispatchErr != nil {
+			csmlog.Error("firewall state notification failed", "err", dispatchErr)
+		}
+	}
 	if err != nil {
 		d.fwStartupError = err.Error()
 		csmlog.Error("firewall remains unmanaged after startup attempts", "err", err)
@@ -185,10 +203,81 @@ func (d *Daemon) prepareFirewall(effectiveFirewall *firewall.FirewallConfig, ops
 	// retaining the boundary for operator resolution even if Apply fails.
 	d.fwActions, _ = any(engine).(firewallActionBoundary)
 	recoverFirewallActions(d.fwActions)
+	gateFirewallRows(d.cfg.StatePath, engine, ops)
 
-	if err := ops.apply(engine); err != nil {
+	err = ops.apply(engine)
+	// Report a kept file even when this attempt fails: the next attempt
+	// finds no file and starts empty.
+	setAside := ops.setAside
+	if setAside == nil {
+		setAside = (*firewall.Engine).StateSetAside
+	}
+	if aside := setAside(engine); aside != "" {
+		d.fwStateAsideMu.Lock()
+		d.fwStateAside = aside
+		d.fwStateAsideMu.Unlock()
+	}
+	if err != nil {
 		return nil, fmt.Errorf("applying firewall: %w", err)
 	}
 
 	return engine, nil
+}
+
+func (d *Daemon) firewallStateSetAside() string {
+	d.fwStateAsideMu.RLock()
+	defer d.fwStateAsideMu.RUnlock()
+	return d.fwStateAside
+}
+
+// gateFirewallRows holds back, before Apply restores them, the rows whose
+// attempts the ledger has not proven applied. Without a readable ledger
+// nothing is proven: the rows are restored as before, the engine never
+// evicts them, and status reports why until the next start.
+func gateFirewallRows(statePath string, engine *firewall.Engine, ops firewallStartupOps) {
+	state, stateErr := firewall.LoadState(statePath)
+	var ids []string
+	if stateErr == nil {
+		for _, row := range state.Blocked {
+			if row.ActionID != "" {
+				ids = append(ids, row.ActionID)
+			}
+		}
+	}
+	read := ops.unproven
+	if read == nil {
+		read = readUnprovenBlockActions
+	}
+	unproven, err := read(ids)
+	if err != nil {
+		engine.SetBlockActionsUnproven(err)
+		csmlog.Warn("firewall restores automatic blocks without a readable ledger", "err", err)
+		return
+	}
+	if stateErr != nil || len(unproven) == 0 {
+		return // Apply preserves an unreadable state file.
+	}
+	if _, err := engine.MarkBlockActionsUnverified(unproven); err != nil {
+		csmlog.Warn("firewall holds unproven blocks back in memory only", "err", err)
+	}
+}
+
+func readUnprovenBlockActions(ids []string) ([]string, error) {
+	db := store.Global()
+	if db == nil {
+		return nil, errors.New("state database unavailable")
+	}
+	return store.ReadUnprovenBlockActions(db, ids)
+}
+
+// firewallStateSetAsideFinding reports a state file the engine could not
+// read at startup and kept aside before anything could replace it.
+func firewallStateSetAsideFinding(path string) alert.Finding {
+	return alert.Finding{
+		Check:     "firewall_state_unreadable",
+		Severity:  alert.Critical,
+		Message:   "firewall state file could not be read at startup; kept at " + path,
+		Details:   "The blocked and allowed addresses in the kept file could not be restored. Review the kept file and add back the entries that must stay.",
+		Timestamp: time.Now(),
+	}
 }

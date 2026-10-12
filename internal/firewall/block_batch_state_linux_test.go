@@ -50,7 +50,14 @@ func TestBlockBatchRequiresReadableState(t *testing.T) {
 				if !errors.Is(err, ErrBlockBatchState) || *writes != 0 || f.sends != 0 {
 					t.Errorf("error %v, writes %d, sends %d; unreadable state must refuse the whole call", err, *writes, f.sends)
 				}
-				got, readErr := os.ReadFile(path)
+				kept := path
+				if !warm {
+					kept = f.e.StateSetAside()
+					if kept == "" {
+						t.Fatal("a fresh raw read did not keep the unreadable state aside")
+					}
+				}
+				got, readErr := os.ReadFile(kept)
 				if readErr != nil || !bytes.Equal(got, broken) {
 					t.Fatalf("unreadable operator state was overwritten: %q, %v", got, readErr)
 				}

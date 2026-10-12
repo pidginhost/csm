@@ -366,6 +366,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "firewall", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
 	{Name: "firewall_ports", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
 	{Name: "firewall_ipv6_unmanaged", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonHostScope},
+	{Name: "firewall_state_unreadable", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "bad_asn_outbound", Category: CategoryNetwork, Correlation: CorrelationSecurityEvent},
 	{Name: "infra_ips_unresolvable", Category: CategoryNetwork, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	// Reputation on the HTTP path gives a browser one verifier before blocking.
