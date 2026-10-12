@@ -71,3 +71,33 @@ func TestDoctorReportsFirewallStateSetAside(t *testing.T) {
 		}
 	}
 }
+
+// Without a readable ledger when the firewall started, the automatic rows
+// it restored carry no proof: a warning until a restart reads it.
+func TestDoctorWarnsFirewallLedgerUnreadable(t *testing.T) {
+	for _, ledgerErr := range []string{"", "fixture ledger damage"} {
+		payload, err := json.Marshal(control.StatusResult{Snapshot: &health.Snapshot{
+			StartedAt: time.Now(), StoreHealthy: true, Watchers: map[string]bool{"file": true},
+			Automation: health.AutomationStatus{FirewallEnabled: true, FirewallManaged: true, FirewallLedgerError: ledgerErr},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		report := buildDoctorReport(func() (*config.Config, error) { return validDoctorConfig(), nil }, func() ([]byte, error) { return payload, nil }, integrityOK)
+		var rows []DoctorCheck
+		for _, check := range report.Checks {
+			if check.Name == "firewall automatic blocks" {
+				rows = append(rows, check)
+			}
+		}
+		if ledgerErr == "" {
+			if len(rows) != 0 {
+				t.Fatalf("readable ledger reported %+v", rows)
+			}
+			continue
+		}
+		if len(rows) != 1 || rows[0].Status != "warn" || !strings.Contains(rows[0].Message, ledgerErr) || rows[0].Fix == "" {
+			t.Fatalf("unreadable ledger not reported as a warning: %+v", rows)
+		}
+	}
+}

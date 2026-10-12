@@ -25,6 +25,8 @@ type firewallStartupOps struct {
 	apply     func(*firewall.Engine) error
 	// setAside, when set, replaces (*firewall.Engine).StateSetAside.
 	setAside func(*firewall.Engine) string
+	// unproven, when set, replaces readUnprovenBlockActions.
+	unproven func([]string) ([]string, error)
 	delays   []time.Duration
 }
 
@@ -201,6 +203,7 @@ func (d *Daemon) prepareFirewall(effectiveFirewall *firewall.FirewallConfig, ops
 	// retaining the boundary for operator resolution even if Apply fails.
 	d.fwActions, _ = any(engine).(firewallActionBoundary)
 	recoverFirewallActions(d.fwActions)
+	gateFirewallRows(d.cfg.StatePath, engine, ops)
 
 	err = ops.apply(engine)
 	// Report a kept file even when this attempt fails: the next attempt
@@ -225,6 +228,46 @@ func (d *Daemon) firewallStateSetAside() string {
 	d.fwStateAsideMu.RLock()
 	defer d.fwStateAsideMu.RUnlock()
 	return d.fwStateAside
+}
+
+// gateFirewallRows holds back, before Apply restores them, the rows whose
+// attempts the ledger has not proven applied. Without a readable ledger
+// nothing is proven: the rows are restored as before, the engine never
+// evicts them, and status reports why until the next start.
+func gateFirewallRows(statePath string, engine *firewall.Engine, ops firewallStartupOps) {
+	state, stateErr := firewall.LoadState(statePath)
+	var ids []string
+	if stateErr == nil {
+		for _, row := range state.Blocked {
+			if row.ActionID != "" {
+				ids = append(ids, row.ActionID)
+			}
+		}
+	}
+	read := ops.unproven
+	if read == nil {
+		read = readUnprovenBlockActions
+	}
+	unproven, err := read(ids)
+	if err != nil {
+		engine.SetBlockActionsUnproven(err)
+		csmlog.Warn("firewall restores automatic blocks without a readable ledger", "err", err)
+		return
+	}
+	if stateErr != nil || len(unproven) == 0 {
+		return // Apply preserves an unreadable state file.
+	}
+	if _, err := engine.MarkBlockActionsUnverified(unproven); err != nil {
+		csmlog.Warn("firewall holds unproven blocks back in memory only", "err", err)
+	}
+}
+
+func readUnprovenBlockActions(ids []string) ([]string, error) {
+	db := store.Global()
+	if db == nil {
+		return nil, errors.New("state database unavailable")
+	}
+	return store.ReadUnprovenBlockActions(db, ids)
 }
 
 // firewallStateSetAsideFinding reports a state file the engine could not

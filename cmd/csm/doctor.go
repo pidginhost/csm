@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/health"
@@ -187,6 +188,14 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 				Status:  "fail",
 				Message: "the firewall state file could not be read at startup; it was kept at " + automation.FirewallStateSetAside + " and its blocked and allowed addresses could not be restored",
 				Fix:     "review the kept file, add back the entries that must stay, then restart csm.service to clear this check",
+			})
+		}
+		if automation.FirewallLedgerError != "" {
+			report.Checks = append(report.Checks, DoctorCheck{
+				Name:    "firewall automatic blocks",
+				Status:  "warn",
+				Message: "the admission ledger could not be read when the firewall started: " + automation.FirewallLedgerError + "; the automatic blocks it wrote were restored without proof of their outcome and none is evicted until a restart reads it; " + admission.PreviewUnaffected,
+				Fix:     "resolve the ledger error the admission checks report, then restart csm.service",
 			})
 		}
 	}

@@ -275,6 +275,9 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 	// firewall silently unmanaged.
 	if engine := d.fwEngine; engine != nil {
 		out.FirewallManaged = true
+		if err := engine.BlockActionsUnproven(); err != nil {
+			out.FirewallLedgerError = err.Error()
+		}
 		rc := engine.RuleCounts()
 		out.FirewallBlockedIPs = rc.Blocked
 		out.FirewallBlockedSubnets = rc.Subnets

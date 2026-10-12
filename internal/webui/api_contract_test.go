@@ -48,6 +48,7 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 			FirewallEnabled:               true,
 			FirewallStartupError:          "fixture apply failure",
 			FirewallStateSetAside:         "/var/lib/csm/firewall/state.json.unreadable-20260512T100000Z",
+			FirewallLedgerError:           "fixture ledger damage",
 			FirewallRollbackPending:       true,
 			FirewallRollbackSecondsRemain: 120,
 			LastAction: &health.AutomationAction{

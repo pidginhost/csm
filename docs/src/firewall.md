@@ -185,6 +185,14 @@ Correct the storage problem before restarting CSM. A running engine keeps
 its known state across an unreadable rewrite, including failed saves, and
 writes that state back when storage accepts a later save.
 
+Before restoring blocks at startup, CSM asks the admission ledger about every
+block an automatic response attempt wrote. Blocks whose attempt is still
+running, ended unknown or failed are marked unverified and held back: they are
+neither restored to the kernel nor reported as blocked. If the ledger cannot be
+read, eligible blocks are restored as before and existing unverified marks
+are kept; none of those automatic blocks is evicted to make room for a new one, and `csm doctor` warns until a restart reads the
+ledger. `automation.firewall_ledger_error` carries the reason.
+
 ## CLI Commands
 
 ```bash
