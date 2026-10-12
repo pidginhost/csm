@@ -43,6 +43,7 @@ const (
 	CodeNamedList      = "named_list"
 	CodeUnverifiable   = "exim_config_unverifiable"
 	CodeTargets        = "mutation_target"
+	CodeMessageSize    = "message_size"
 )
 
 const (
@@ -99,7 +100,11 @@ type HostFacts struct {
 	// EximVersion is `exim -bV`.
 	EximVersion CommandResult
 	// EximOptions is `exim -bP prdr_enable chunking_advertise_hosts`.
-	EximOptions   CommandResult
+	EximOptions CommandResult
+	// EximSettings is `exim -bP` for EximSettingNames.
+	EximSettings CommandResult
+	// RspamdOptions is `rspamadm configdump -j options`.
+	RspamdOptions CommandResult
 	GeneratedConf string // /etc/exim.conf
 	GeneratedErr  error
 	LocalConf     string // /etc/exim.conf.local; "" when absent
@@ -172,6 +177,13 @@ func CheckHost(f HostFacts) []Problem {
 		if okChunking && !ChunkingOff(chunking) {
 			add(CodeEximOptions, Definite, "chunking_advertise_hosts must be empty; BDAT is untested with these hooks")
 		}
+	}
+
+	if f.EximSettings.Err != nil {
+		add(CodeEximOptions, Temporary, "exim -bP failed; check Exim availability and configuration")
+	} else {
+		settings := ParseEximOptions(f.EximSettings.Stdout)
+		out = append(out, checkMessageSize(settings, f.RspamdOptions)...)
 	}
 
 	if f.GeneratedErr != nil {

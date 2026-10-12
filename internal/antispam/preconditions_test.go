@@ -7,6 +7,9 @@ import (
 	"testing"
 )
 
+// eximSettings is `exim -bP` for EximSettingNames on the spike's host.
+const eximSettings = "message_size_limit = 50M\nlog_file_path = /var/log/exim_%slog\nexim_user = mailnull\nexim_group = mail\nsystem_filter = /etc/cpanel_exim_system_filter\n"
+
 const (
 	rspamdUID = 979
 	// eximUID and eximGID are cPanel's mailnull user and mail group.
@@ -21,6 +24,8 @@ func goodFacts() HostFacts {
 		MTAExim:         true,
 		EximVersion:     CommandResult{Stdout: eximBV},
 		EximOptions:     CommandResult{Stdout: "no_prdr_enable\nchunking_advertise_hosts = 198.51.100.1\n"},
+		EximSettings:    CommandResult{Stdout: eximSettings},
+		RspamdOptions:   CommandResult{Stdout: `{"max_message": 62914560, "task_timeout": 8.0}`},
 		GeneratedConf:   "begin acl\nacl_smtp_data:\n  warn\n    condition = ${perl{spamd_is_available}}\n    spam = ${acl_m1}/defer_ok\n",
 		LocalConf:       "@CONFIG@\n\n@DIRECTOREND@\n",
 		NamedLists:      []CommandResult{{Stdout: "n\n"}, {Stdout: "n\n"}, {Stdout: "y\n"}},
