@@ -111,7 +111,8 @@ type tx struct {
 	eximReloaded  bool
 	eximActive    bool
 	// eximBlocks are the prior CSM blocks per ACL, for rollback.
-	eximBlocks map[string][]string
+	eximBlocks               map[string][]string
+	eximRCPTACL, eximDataACL string
 	// greeting is the listener that answered before any change; "" when
 	// Exim was not running.
 	greeting       string
@@ -295,6 +296,9 @@ func (t *tx) removeRecord() error {
 		t.recordWritten = true
 		t.recordCurrent = fileState{}
 	}
+	if err == nil {
+		return t.fwd.Err()
+	}
 	return err
 }
 
@@ -411,6 +415,7 @@ func (t *tx) generatedConf() (fileState, error) {
 // so rollback can prove the rebuilt configuration holds them again.
 func (t *tx) rememberEximBlocks(targets []antispam.TargetFacts, opts map[string]string) {
 	t.eximBlocks = make(map[string][]string)
+	t.eximRCPTACL, t.eximDataACL = opts["acl_smtp_rcpt"], opts["acl_smtp_data"]
 	for _, target := range targets {
 		if target.Kind == antispam.TargetRspamd {
 			continue
@@ -433,29 +438,21 @@ func (t *tx) rememberEximBlocks(targets []antispam.TargetFacts, opts map[string]
 // checkRollbackExim compares the rebuilt configuration's CSM blocks with the
 // remembered ones. A builder can exit 0 and leave stale output, and service
 // probes alone cannot show which hooks the reloaded configuration holds.
-func (t *tx) checkRollbackExim() error {
+func (t *tx) checkRollbackExim(ctx context.Context) error {
+	if len(t.eximBlocks) > 0 {
+		opts, err := t.eximSettings(ctx)
+		if err != nil {
+			return err
+		}
+		if opts["acl_smtp_rcpt"] != t.eximRCPTACL || opts["acl_smtp_data"] != t.eximDataACL {
+			return errors.New("the restored Exim configuration selects different SMTP ACLs")
+		}
+	}
 	conf, err := t.generatedConf()
 	if err != nil {
 		return err
 	}
-	blocks, err := antispam.LocateBlocks(conf.content)
-	if err != nil {
-		return errors.New("cannot verify CSM blocks in the restored Exim configuration")
-	}
-	got := make(map[string][]string)
-	lines := strings.SplitAfter(conf.content, "\n")
-	for _, b := range blocks {
-		got[b.ACL] = append(got[b.ACL], strings.Join(lines[b.Begin-1:b.End], ""))
-	}
-	if len(got) != len(t.eximBlocks) {
-		return errors.New("the restored Exim configuration differs from the prior CSM blocks")
-	}
-	for acl, want := range t.eximBlocks {
-		if !slices.Equal(got[acl], want) {
-			return errors.New("the restored Exim configuration differs from the prior CSM blocks")
-		}
-	}
-	return nil
+	return antispam.CheckGeneratedBlocks(conf.content, t.eximBlocks)
 }
 
 // validateExim checks the generated configuration and the named lists the
@@ -570,16 +567,22 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 			return antispam.RollbackFailed, err
 		}
 		w := t.writes[i]
-		if err := t.h.replace(w.path, w.next, w.before); err != nil {
+		before := w.before
+		// Surviving files keep later owner and mode changes. Only a
+		// deleted file needs its snapshot metadata reinstated.
+		if w.next.exists {
+			before.metadata = false
+		}
+		if err := t.h.replace(w.path, w.next, before); err != nil {
 			errs = append(errs, fmt.Errorf("restoring %s: %w", strings.TrimPrefix(w.path, t.h.root), err))
 		}
 	}
 	if t.eximTouched {
 		if r := t.cmd(ctx, buildLimit, BuildEximConf); r.Err != nil {
 			errs = append(errs, cmdErr("buildeximconf", r))
-		} else if r := t.cmd(ctx, commandLimit, "exim", "-bV"); r.Err != nil {
-			errs = append(errs, cmdErr("exim -bV", r))
-		} else if err := t.checkRollbackExim(); err != nil {
+		} else if err := t.validateExim(ctx); err != nil {
+			errs = append(errs, err)
+		} else if err := t.checkRollbackExim(ctx); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -632,6 +635,9 @@ func (t *tx) restoreRecord(ctx context.Context) error {
 	err := t.h.replace(p, t.recordCurrent, before)
 	if err == nil || errors.Is(err, errDurability) {
 		t.recordCurrent = before
+	}
+	if err == nil {
+		return ctx.Err()
 	}
 	return err
 }

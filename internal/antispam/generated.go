@@ -3,6 +3,7 @@ package antispam
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -57,6 +58,30 @@ func CheckGenerated(conf string, h EximHooks, rcptACL, dataACL string) error {
 	}
 	if data[0] != h.Scan || data[1] != h.Post {
 		return errors.New("the DATA ACL hooks differ from the rendered scan and post hooks, or are out of order")
+	}
+	return nil
+}
+
+// CheckGeneratedBlocks verifies prior blocks after a rollback, including
+// partial installations that cannot satisfy CheckGenerated's full layout.
+// Owned markers alone do not prove that Exim executes the restored text.
+func CheckGeneratedBlocks(conf string, want map[string][]string) error {
+	blocks, err := locateBlocks(conf, "", "", true)
+	if err != nil {
+		return errors.New("cannot verify CSM blocks in the restored Exim configuration")
+	}
+	got := make(map[string][]string)
+	lines := strings.SplitAfter(conf, "\n")
+	for _, b := range blocks {
+		got[b.ACL] = append(got[b.ACL], strings.Join(lines[b.Begin-1:b.End], ""))
+	}
+	if len(got) != len(want) {
+		return errors.New("the restored Exim configuration differs from the prior CSM blocks")
+	}
+	for acl, prior := range want {
+		if !slices.Equal(got[acl], prior) {
+			return errors.New("the restored Exim configuration differs from the prior CSM blocks")
+		}
 	}
 	return nil
 }
