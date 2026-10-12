@@ -40,3 +40,34 @@ func TestDoctorReportsUnmanagedConfiguredFirewall(t *testing.T) {
 		}
 	}
 }
+
+// A state file kept aside at startup is a failure the operator must act
+// on: the firewall runs without the entries it held.
+func TestDoctorReportsFirewallStateSetAside(t *testing.T) {
+	const kept = "/var/lib/csm/firewall/state.json.unreadable-20260301T120000Z"
+	for _, aside := range []string{"", kept} {
+		payload, err := json.Marshal(control.StatusResult{Snapshot: &health.Snapshot{
+			StartedAt: time.Now(), StoreHealthy: true, Watchers: map[string]bool{"file": true},
+			Automation: health.AutomationStatus{FirewallEnabled: true, FirewallManaged: true, FirewallStateSetAside: aside},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		report := buildDoctorReport(func() (*config.Config, error) { return validDoctorConfig(), nil }, func() ([]byte, error) { return payload, nil }, integrityOK)
+		var rows []DoctorCheck
+		for _, check := range report.Checks {
+			if check.Name == "firewall state" {
+				rows = append(rows, check)
+			}
+		}
+		if aside == "" {
+			if len(rows) != 0 {
+				t.Fatalf("readable state reported %+v", rows)
+			}
+			continue
+		}
+		if len(rows) != 1 || rows[0].Status != "fail" || !strings.Contains(rows[0].Message, kept) || rows[0].Fix == "" || report.OverallStatus != "fail" {
+			t.Fatalf("kept state file not reported as a failure: %+v (overall %s)", rows, report.OverallStatus)
+		}
+	}
+}

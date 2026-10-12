@@ -266,6 +266,7 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 		out.FirewallEnabled = cfg.Firewall.Enabled
 		if out.FirewallEnabled {
 			out.FirewallStartupError = d.fwStartupError
+			out.FirewallStateSetAside = d.fwStateAside
 		}
 	}
 	// FirewallManaged is true only when a live engine is wired. Reporting it

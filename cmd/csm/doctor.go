@@ -181,6 +181,14 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 			check.Fix = "inspect journalctl -u csm.service for the firewall startup error, correct the configuration or nftables permissions, then restart csm.service"
 		}
 		report.Checks = append(report.Checks, check)
+		if automation.FirewallStateSetAside != "" {
+			report.Checks = append(report.Checks, DoctorCheck{
+				Name:    "firewall state",
+				Status:  "fail",
+				Message: "the firewall state file could not be read at startup; it was kept at " + automation.FirewallStateSetAside + " and its blocked and allowed addresses could not be restored",
+				Fix:     "review the kept file, add back the entries that must stay, then restart csm.service to clear this check",
+			})
+		}
 	}
 
 	// Termination depends on a kernel that can pin a process handle. Report it

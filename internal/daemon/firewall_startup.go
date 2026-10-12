@@ -22,7 +22,9 @@ import (
 type firewallStartupOps struct {
 	newEngine func(*firewall.FirewallConfig, string) (*firewall.Engine, error)
 	apply     func(*firewall.Engine) error
-	delays    []time.Duration
+	// setAside, when set, replaces (*firewall.Engine).StateSetAside.
+	setAside func(*firewall.Engine) string
+	delays   []time.Duration
 }
 
 func (d *Daemon) startFirewall() {
@@ -71,6 +73,12 @@ func (d *Daemon) startFirewallUsing(ops firewallStartupOps) {
 	engine, err := retryFirewallStartup(d.stopCh, ops.delays, func() (*firewall.Engine, error) {
 		return d.prepareFirewall(effectiveFirewall, ops)
 	})
+	if d.fwStateAside != "" {
+		if !alert.TryEnqueue(d.alertCh, firewallStateSetAsideFinding(d.fwStateAside)) {
+			atomic.AddInt64(&d.droppedAlerts, 1)
+			fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping firewall state finding: %s\n", ts(), d.fwStateAside)
+		}
+	}
 	if err != nil {
 		d.fwStartupError = err.Error()
 		csmlog.Error("firewall remains unmanaged after startup attempts", "err", err)
@@ -186,9 +194,31 @@ func (d *Daemon) prepareFirewall(effectiveFirewall *firewall.FirewallConfig, ops
 	d.fwActions, _ = any(engine).(firewallActionBoundary)
 	recoverFirewallActions(d.fwActions)
 
-	if err := ops.apply(engine); err != nil {
+	err = ops.apply(engine)
+	// Report a kept file even when this attempt fails: the next attempt
+	// finds no file and starts empty.
+	setAside := ops.setAside
+	if setAside == nil {
+		setAside = (*firewall.Engine).StateSetAside
+	}
+	if aside := setAside(engine); aside != "" {
+		d.fwStateAside = aside
+	}
+	if err != nil {
 		return nil, fmt.Errorf("applying firewall: %w", err)
 	}
 
 	return engine, nil
+}
+
+// firewallStateSetAsideFinding reports a state file the engine could not
+// read at startup and kept aside before anything could replace it.
+func firewallStateSetAsideFinding(path string) alert.Finding {
+	return alert.Finding{
+		Check:     "firewall_state_unreadable",
+		Severity:  alert.Critical,
+		Message:   "firewall state file could not be read at startup; kept at " + path,
+		Details:   "The blocked and allowed addresses in the kept file could not be restored. Review the kept file and add back the entries that must stay.",
+		Timestamp: time.Now(),
+	}
 }

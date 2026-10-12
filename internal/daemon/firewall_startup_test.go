@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -50,6 +51,48 @@ func TestFirewallStartupRetriesAndRetainsFailure(t *testing.T) {
 				t.Fatalf("failure was not propagated to status: %+v", status)
 			}
 		})
+	}
+}
+
+// An attempt that kept an unreadable state file aside reports it whatever
+// later attempts do: they find no file and start empty.
+func TestFirewallStartupReportsStateSetAside(t *testing.T) {
+	const kept = "/var/lib/csm/firewall/state.json.unreadable-20260301T120000Z"
+	cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: true}, StatePath: t.TempDir()}
+	d := New(cfg, nil, nil, "")
+	first := new(firewall.Engine)
+	attempts := 0
+	d.startFirewallUsing(firewallStartupOps{
+		newEngine: func(*firewall.FirewallConfig, string) (*firewall.Engine, error) {
+			attempts++
+			if attempts == 1 {
+				return first, nil
+			}
+			return new(firewall.Engine), nil
+		},
+		apply: func(*firewall.Engine) error { return errors.New("fixture netlink failure") },
+		setAside: func(e *firewall.Engine) string {
+			if e == first {
+				return kept
+			}
+			return ""
+		},
+		delays: []time.Duration{0, 0},
+	})
+	if attempts != 3 || d.fwStateAside != kept {
+		t.Fatalf("attempts=%d set aside=%q; want three attempts and the kept file", attempts, d.fwStateAside)
+	}
+	if got := d.AutomationStatus().FirewallStateSetAside; got != kept {
+		t.Fatalf("status reports %q, want %q", got, kept)
+	}
+	var found []alert.Finding
+	for len(d.alertCh) > 0 {
+		if f := <-d.alertCh; f.Check == "firewall_state_unreadable" {
+			found = append(found, f)
+		}
+	}
+	if len(found) != 1 || found[0].Severity != alert.Critical || !strings.Contains(found[0].Message, kept) {
+		t.Fatalf("findings = %+v; want one critical finding naming the kept file", found)
 	}
 }
 

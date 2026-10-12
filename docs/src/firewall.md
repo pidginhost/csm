@@ -171,6 +171,16 @@ nftables permissions problem, and restart `csm.service`. A successful startup
 clears the error and enables the firewall-dependent services. Disabling the
 firewall deliberately does not degrade health.
 
+If the firewall state file cannot be read at startup, CSM renames it to
+`state.json.unreadable-<UTC time>` (with a numbered suffix if needed) in the
+same directory before anything can
+replace it, then starts without the blocked and allowed addresses it held. It
+raises a Critical `firewall_state_unreadable` finding, and `csm doctor` fails
+its `firewall state` check, naming the kept file, until the next restart.
+`automation.firewall_state_set_aside` carries the same path. Review the kept
+file and add back the entries that must stay. If the file cannot be renamed
+or synced, startup fails as above and the kernel keeps its running rules.
+
 ## CLI Commands
 
 ```bash

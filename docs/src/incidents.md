@@ -742,6 +742,7 @@ Attribution gaps:
 | `firewall` | ignored | host-scope |  |
 | `firewall_ipv6_unmanaged` | ignored | host-scope |  |
 | `firewall_ports` | ignored | host-scope |  |
+| `firewall_state_unreadable` | ignored | self-health |  |
 | `ftp_auth_failure_realtime` | ignored | attacker-side |  |
 | `ftp_bruteforce` | ignored | attacker-side |  |
 | `ftp_login` | ignored | informational |  |

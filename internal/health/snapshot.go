@@ -85,9 +85,12 @@ type AutomationStatus struct {
 	// combination FirewallEnabled && !FirewallManaged means the firewall is
 	// configured on but the daemon is NOT managing it (e.g. the engine failed
 	// to apply at startup) -- a condition monitoring should alert on.
+	// FirewallStateSetAside names where startup kept a state file it could
+	// not read; the firewall then runs without the entries that file held.
 	FirewallEnabled               bool              `json:"firewall_enabled"`
 	FirewallManaged               bool              `json:"firewall_managed"`
 	FirewallStartupError          string            `json:"firewall_startup_error,omitempty"`
+	FirewallStateSetAside         string            `json:"firewall_state_set_aside,omitempty"`
 	FirewallBlockedIPs            int               `json:"firewall_blocked_ips"`
 	FirewallBlockedSubnets        int               `json:"firewall_blocked_subnets"`
 	FirewallRollbackPending       bool              `json:"firewall_rollback_pending"`
