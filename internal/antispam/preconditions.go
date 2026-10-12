@@ -44,6 +44,8 @@ const (
 	CodeUnverifiable   = "exim_config_unverifiable"
 	CodeTargets        = "mutation_target"
 	CodeMessageSize    = "message_size"
+	CodeEximLog        = "exim_log"
+	CodeSystemd        = "systemd"
 )
 
 const (
@@ -105,6 +107,13 @@ type HostFacts struct {
 	EximSettings CommandResult
 	// RspamdOptions is `rspamadm configdump -j options`.
 	RspamdOptions CommandResult
+	// MonitoredLog is the Exim main log CSM reads markers from.
+	MonitoredLog string
+	// SystemdRunErr is nil when systemd-run is on PATH.
+	SystemdRunErr error
+	// RspamdService and EximService are `systemctl` with UnitShowArgs.
+	RspamdService CommandResult
+	EximService   CommandResult
 	GeneratedConf string // /etc/exim.conf
 	GeneratedErr  error
 	LocalConf     string // /etc/exim.conf.local; "" when absent
@@ -184,7 +193,9 @@ func CheckHost(f HostFacts) []Problem {
 	} else {
 		settings := ParseEximOptions(f.EximSettings.Stdout)
 		out = append(out, checkMessageSize(settings, f.RspamdOptions)...)
+		out = append(out, checkEximLog(settings, f.MonitoredLog)...)
 	}
+	out = append(out, checkServices(f)...)
 
 	if f.GeneratedErr != nil {
 		add(CodeSpamScoreRules, Temporary, "cannot read the generated Exim configuration; check file access")

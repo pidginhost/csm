@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// EximMainLog is the Exim main log the daemon follows on cPanel hosts.
+const EximMainLog = "/var/log/exim_mainlog"
+
 // MTAIdents lists local users and process basenames belonging to the
 // host's Mail Transfer Agent stack. Direct SMTP egress detection uses
 // this allowlist to skip legitimate local MTA traffic instead of

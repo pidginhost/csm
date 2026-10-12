@@ -56,7 +56,7 @@ import (
 	"github.com/pidginhost/csm/internal/yaraworker"
 )
 
-const eximMainlogPath = "/var/log/exim_mainlog"
+const eximMainlogPath = platform.EximMainLog
 
 // Daemon is the main persistent monitoring process.
 type Daemon struct {
