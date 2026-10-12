@@ -262,8 +262,8 @@ func TestExpiredUnverifiedRowsStayUntilMatchingRetirement(t *testing.T) {
 		t.Fatal("an expired unknown was seeded")
 	}
 	public, err := LoadState(root)
-	if err != nil || len(public.Blocked) != 1 || !SameBlockedEntry(public.Blocked[0], unknown) {
-		t.Fatalf("public load = %+v, %v; want the expired unknown", public, err)
+	if err != nil || len(public.Blocked) != 0 {
+		t.Fatalf("public load = %+v, %v; want no enforced block", public, err)
 	}
 	scans := e.expiryScans
 	for range 3 {
@@ -288,9 +288,8 @@ func TestExpiredUnverifiedRowsStayUntilMatchingRetirement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	row, ok = blockedStateEntry(*public, unknown.IP)
-	if len(public.Blocked) != 2 || !ok || !SameBlockedEntry(row, unknown) {
-		t.Fatalf("public load after unrelated save = %+v", public.Blocked)
+	if _, ok = blockedStateEntry(*public, unknown.IP); len(public.Blocked) != 1 || ok {
+		t.Fatalf("public load after unrelated save = %+v; want only the operator block", public.Blocked)
 	}
 	// After owner settlement, explicit cleanup must not resurrect the row.
 	removeBlockedIPFromState(&got, unknown.IP)

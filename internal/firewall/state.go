@@ -30,7 +30,8 @@ func SameBlockedEntry(a, b BlockedEntry) bool {
 
 // LoadState reads the authoritative firewall state file directly without requiring
 // a running engine. A missing state file is a valid fresh-host state and returns
-// an empty FirewallState.
+// an empty FirewallState. Only enforced blocks are returned: an unverified row is
+// held for recovery and never restored to the kernel.
 func LoadState(statePath string) (*FirewallState, error) {
 	stateFile := filepath.Join(statePath, "firewall", "state.json")
 	// #nosec G304 -- filepath.Join under operator-configured statePath.
@@ -51,7 +52,7 @@ func LoadState(statePath string) (*FirewallState, error) {
 	now := time.Now()
 	var active []BlockedEntry
 	for _, entry := range state.Blocked {
-		if entry.Unverified || entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+		if !entry.Unverified && (entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt)) {
 			active = append(active, entry)
 		}
 	}
