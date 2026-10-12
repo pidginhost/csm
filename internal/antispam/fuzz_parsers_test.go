@@ -9,6 +9,80 @@ import (
 	"testing"
 )
 
+func FuzzParseEximSize(f *testing.F) {
+	for _, seed := range []string{"50M", "+50M", "-0", "-0K", "52428800", " 100k ", "1G", "", "-1", "+-0", "8589934592G", "${if def:x{1}{2}}"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		n, err := ParseEximSize(input)
+		if err != nil {
+			if n != 0 {
+				t.Fatalf("rejected size returned %d", n)
+			}
+			return
+		}
+		if n < 0 || n+sizeHeadroom <= n {
+			t.Fatalf("size %d cannot accommodate headroom", n)
+		}
+		if got, err := ParseEximSize(strconv.FormatInt(n, 10)); err != nil || got != n {
+			t.Fatalf("round trip changed %d to %d, %v", n, got, err)
+		}
+	})
+}
+
+func FuzzMaxMessage(f *testing.F) {
+	for _, seed := range []string{
+		`{"max_message":62914560}`, `{"max_message":0}`, `{"task_timeout":8.0}`,
+		`{"max_message":6.5e7}`, `{"max_message":53477375.99}`, `{"max_message":0.5}`,
+		`{"max_message":9223372036854775807}`, `{"max_message":1e1000}`,
+		`{"dns":{"nameserver":[]},"max_message":62914560}`,
+		`{"max_message":1,"max_message":0}`, `{"max_message":0} trailing`,
+		`{"max_message":-1}`, `{"max_message":null}`, `null`, ``,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, input []byte) {
+		n, err := MaxMessage(input)
+		if err != nil {
+			if n != 0 {
+				t.Fatalf("rejected options returned %d", n)
+			}
+			return
+		}
+		if n < 0 || !json.Valid(input) {
+			t.Fatalf("accepted invalid options with size %d", n)
+		}
+		if _, err := MaxMessage(append(append([]byte(nil), input...), []byte("{}")...)); err == nil {
+			t.Fatal("accepted trailing object")
+		}
+		encoded := []byte(`{"max_message":` + strconv.FormatInt(n, 10) + `}`)
+		if got, err := MaxMessage(encoded); err != nil || got != n {
+			t.Fatalf("round trip changed %d to %d, %v", n, got, err)
+		}
+	})
+}
+
+func FuzzEximLogFirstDestination(f *testing.F) {
+	for _, seed := range []string{"/var/log/exim_%slog", "syslog", "", ":", ": /var/log/exim_%slog", "${primary_hostname}", "<;"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, suffix string) {
+		// A later destination or an escaped colon cannot redirect the first
+		// file destination to the monitored path.
+		for _, prefix := range []string{"/var/log/other_%slog : ", "/var/log/other::"} {
+			raw := prefix + suffix
+			got := checkEximLog(map[string]string{"log_file_path": raw}, "/var/log/exim_mainlog")
+			want := Definite
+			if strings.ContainsAny(raw, "$<") {
+				want = Temporary
+			}
+			if len(got) != 1 || got[0].Code != CodeEximLog || got[0].Severity != want {
+				t.Fatalf("unmonitored first destination %q reported %+v, want one exim_log/%d problem", raw, got, want)
+			}
+		}
+	})
+}
+
 func FuzzParseRspamdVersion(f *testing.F) {
 	for _, seed := range []string{"Rspamd daemon version 4.2.1\n", "Rspamadm 3.8\n", "Rspamadm 4.2.1-git\n", "Rspamadm 4.2.12345\n", "", "command not found"} {
 		f.Add(seed)
@@ -138,6 +212,66 @@ func FuzzEximConfigParsers(f *testing.F) {
 		for _, b := range blocks {
 			if errL != nil || b.Begin < 1 || b.End <= b.Begin || b.End > total {
 				t.Fatalf("block %+v with err %v outside 1..%d", b, errL, total)
+			}
+		}
+		hookBlocks, hookErr := locateBlocks(conf, "acl", "csm_hook", false)
+		for _, b := range hookBlocks {
+			if hookErr != nil || b.Begin < 1 || b.End <= b.Begin || b.End > total {
+				t.Fatalf("hook block %+v with err %v outside 1..%d", b, hookErr, total)
+			}
+		}
+	})
+}
+
+func FuzzOneConfigSection(f *testing.F) {
+	for _, seed := range []string{
+		"@CONFIG@\n", "@AUTH@\n\n@CONFIG@\n\n@DIRECTOREND@\n",
+		"@CONFIG@\n@CONFIG@\n", " @CONFIG@\n", "@CONFIG@\r\n", "",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, conf string) {
+		if !oneConfigSection(conf) {
+			return
+		}
+		if oneConfigSection("@CONFIG@\n"+conf) || oneConfigSection(conf+"\n@CONFIG@\n") {
+			t.Fatal("accepted another CONFIG section")
+		}
+		if oneConfigSection(strings.ReplaceAll(conf, "@CONFIG@", " @CONFIG@")) {
+			t.Fatal("accepted an indented CONFIG section")
+		}
+		if oneConfigSection(strings.ReplaceAll(conf, "@CONFIG@", "@AUTH@")) {
+			t.Fatal("accepted a file without its CONFIG section")
+		}
+	})
+}
+
+func FuzzCheckGenerated(f *testing.F) {
+	h, err := RenderExim(defaults(false))
+	if err != nil {
+		f.Fatal(err)
+	}
+	conf := rebuiltConf(h.Config, h.RCPT, h.Scan, h.Post)
+	for _, seed := range []string{
+		conf,
+		"Yes = No\n" + conf,
+		".ifdef OPTIONAL_HOOKS\n" + conf + ".endif\n",
+		strings.Replace(conf, "acl_smtp_data:", "unexpected_acl:", 1),
+		"A = x\n" + strings.Repeat("A == A A\n", 26) + conf,
+		"",
+	} {
+		f.Add(seed, "acl_smtp_rcpt", "acl_smtp_data")
+	}
+	f.Fuzz(func(t *testing.T, conf, rcptACL, dataACL string) {
+		if err := CheckGenerated(conf, h, rcptACL, dataACL); err != nil {
+			return
+		}
+		if rcptACL == "" || dataACL == "" || rcptACL == dataACL {
+			t.Fatal("accepted invalid ACL names")
+		}
+		for name, block := range map[string]string{"config": h.Config, "rcpt": h.RCPT, "scan": h.Scan, "post": h.Post} {
+			if count := strings.Count(conf, block); count != 1 {
+				t.Fatalf("accepted configuration with %d copies of the rendered %s block", count, name)
 			}
 		}
 	})

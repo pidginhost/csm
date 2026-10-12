@@ -2,10 +2,14 @@ package antispam
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"strings"
 	"testing"
 )
+
+// eximSettings is `exim -bP` for EximSettingNames on the spike's host.
+const eximSettings = "message_size_limit = 50M\nlog_file_path = /var/log/exim_%slog\nexim_user = mailnull\nexim_group = mail\nsystem_filter = /etc/cpanel_exim_system_filter\n"
 
 const (
 	rspamdUID = 979
@@ -21,6 +25,11 @@ func goodFacts() HostFacts {
 		MTAExim:         true,
 		EximVersion:     CommandResult{Stdout: eximBV},
 		EximOptions:     CommandResult{Stdout: "no_prdr_enable\nchunking_advertise_hosts = 198.51.100.1\n"},
+		EximSettings:    CommandResult{Stdout: eximSettings},
+		RspamdOptions:   CommandResult{Stdout: `{"max_message": 62914560, "task_timeout": 8.0}`},
+		MonitoredLog:    "/var/log/exim_mainlog",
+		RspamdService:   CommandResult{Stdout: "User=_rspamd\nLoadState=loaded\nCanReload=yes\n"},
+		EximService:     CommandResult{Stdout: "User=\nLoadState=loaded\nCanReload=yes\n"},
 		GeneratedConf:   "begin acl\nacl_smtp_data:\n  warn\n    condition = ${perl{spamd_is_available}}\n    spam = ${acl_m1}/defer_ok\n",
 		LocalConf:       "@CONFIG@\n\n@DIRECTOREND@\n",
 		NamedLists:      []CommandResult{{Stdout: "n\n"}, {Stdout: "n\n"}, {Stdout: "y\n"}},
@@ -39,6 +48,7 @@ func goodFacts() HostFacts {
 			EximUID:   eximUID,
 			EximGID:   eximGID,
 		},
+		Targets: goodTargets(),
 	}
 }
 
@@ -62,6 +72,7 @@ func TestCheckHostProblems(t *testing.T) {
 		{"no content scanning", func(f *HostFacts) { f.EximVersion.Stdout = strings.Replace(eximBV, "Content_Scanning ", "", 1) }, CodeEximVersion, Definite},
 		{"spamd enabled", func(f *HostFacts) { f.SpamdDisabled = false }, CodeSpamAssassin, Definite},
 		{"global enable", func(f *HostFacts) { f.GlobalEnable = true }, CodeGlobalEnable, Warning},
+		{"global enable unreadable", func(f *HostFacts) { f.GlobalEnableErr = boom }, CodeGlobalEnable, Warning},
 		{"socket stat error", func(f *HostFacts) { f.Socket.Err = boom }, CodeSocket, Temporary},
 		{"socket missing", func(f *HostFacts) { f.Socket.Missing = true }, CodeSocket, Temporary},
 		{"rspamd user unknown", func(f *HostFacts) { f.Socket.RspamdUID = -1 }, CodeSocket, Temporary},
@@ -391,6 +402,87 @@ func TestCheckHostRetainsConflictsBeforeUnverifiableMacros(t *testing.T) {
 			}
 			if counts[tc.code] != 1 || counts[CodeUnverifiable] != 1 {
 				t.Fatalf("got %+v, want one of each problem", got)
+			}
+		})
+	}
+}
+
+// Without the rspamd uid, CSM cannot prove which non-root uid on the socket
+// path is rspamd's, but two different non-root uids cannot both be.
+func TestCheckHostSocketOwnersWithUnknownRspamdUser(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*SocketFacts)
+		sev    Severity
+		detail string
+	}{
+		{"one owner", func(*SocketFacts) {}, Temporary, "uid 979"},
+		{"tenant directory", func(s *SocketFacts) { s.Parents[2].UID = 1001 }, Definite, "[979 1001]"},
+		{"tenant listener", func(s *SocketFacts) { s.PeerUID = 1001 }, Definite, "[979 1001]"},
+		{"tenant socket", func(s *SocketFacts) { s.Socket.UID = 1001 }, Definite, "[979 1001]"},
+		{"root only", func(s *SocketFacts) { s.Socket.UID, s.Parents[2].UID, s.PeerUID = 0, 0, 0 }, Temporary, "service user is unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := goodFacts()
+			f.Socket.RspamdUID = -1
+			tc.mutate(&f.Socket)
+			got := CheckHost(f)
+			if len(got) != 1 || got[0].Code != CodeSocket || got[0].Severity != tc.sev || !strings.Contains(got[0].Detail, tc.detail) {
+				t.Fatalf("got %+v, want one socket problem of severity %d naming %q", got, tc.sev, tc.detail)
+			}
+		})
+	}
+}
+
+func TestCheckHostSocketOwnerDiagnosticStaysBounded(t *testing.T) {
+	f := goodFacts()
+	f.Socket.RspamdUID = -1
+	for i := range 128 {
+		f.Socket.Parents = append(f.Socket.Parents, PathFacts{
+			Path: fmt.Sprintf("/run/socket-link-%d", i),
+			UID:  1000 + i,
+			Mode: fs.ModeDir | 0o755,
+		})
+	}
+	got := CheckHost(f)
+	if len(got) != 1 || got[0].Code != CodeSocket || got[0].Severity != Definite {
+		t.Fatalf("got %+v, want one definite socket ownership problem", got)
+	}
+	if len(got[0].Detail) > 512 {
+		t.Fatalf("socket ownership diagnostic is %d bytes; want at most 512", len(got[0].Detail))
+	}
+	if !strings.Contains(got[0].Detail, "[979 1000]") {
+		t.Fatalf("diagnostic %q does not name two conflicting owners", got[0].Detail)
+	}
+
+	f.Socket.Parents[len(f.Socket.Parents)-1].Mode = fs.ModeDir | 0o777
+	got = CheckHost(f)
+	if len(got) != 2 || got[0].Code != CodeSocket || got[0].Severity != Definite ||
+		!strings.Contains(got[0].Detail, "writable by group or others") ||
+		got[1].Code != CodeSocket || got[1].Severity != Definite || len(got[1].Detail) > 512 {
+		t.Fatalf("got %+v, want both the later directory conflict and bounded ownership evidence", got)
+	}
+}
+
+func TestCheckHostSocketParentOwnersSurviveUnavailableSocket(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*SocketFacts)
+	}{
+		{"missing", func(s *SocketFacts) { s.Missing = true }},
+		{"stat failed", func(s *SocketFacts) { s.Err = errors.New("stat failed") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := goodFacts()
+			f.Socket.RspamdUID = -1
+			f.Socket.Parents[1].UID = 1001
+			f.Socket.Socket.UID, f.Socket.PeerUID = 1002, 1003
+			tc.mutate(&f.Socket)
+			got := CheckHost(f)
+			if len(got) != 2 || got[0].Code != CodeSocket || got[0].Severity != Temporary ||
+				got[1].Code != CodeSocket || got[1].Severity != Definite ||
+				!strings.Contains(got[1].Detail, "[979 1001]") {
+				t.Fatalf("got %+v, want a temporary socket failure and confirmed parent ownership conflict", got)
 			}
 		})
 	}

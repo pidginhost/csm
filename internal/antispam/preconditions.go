@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 )
 
 // Severity says what a failed precondition means for an installation
@@ -42,6 +43,10 @@ const (
 	CodeMarkers        = "markers"
 	CodeNamedList      = "named_list"
 	CodeUnverifiable   = "exim_config_unverifiable"
+	CodeTargets        = "mutation_target"
+	CodeMessageSize    = "message_size"
+	CodeEximLog        = "exim_log"
+	CodeSystemd        = "systemd"
 )
 
 const (
@@ -64,8 +69,8 @@ type PathFacts struct {
 	GID  int
 	// Mode is the full lstat mode, including type bits.
 	Mode fs.FileMode
-	// ExtACL is true when the object carries POSIX ACL entries beyond its
-	// mode bits.
+	// ExtACL is true when the object carries a POSIX access or default ACL
+	// beyond its mode bits.
 	ExtACL bool
 }
 
@@ -75,7 +80,9 @@ type SocketFacts struct {
 	Err     error
 	Missing bool
 	Socket  PathFacts
-	// Parents run from "/" down to the socket's directory.
+	// Parents are every directory the path walk looked a name up in, in
+	// lookup order without repeats: "/" first, including the directory of
+	// each symlink followed on the way.
 	Parents []PathFacts
 	// RspamdUID is the rspamd service user's uid, or -1 when unknown.
 	RspamdUID int
@@ -98,7 +105,18 @@ type HostFacts struct {
 	// EximVersion is `exim -bV`.
 	EximVersion CommandResult
 	// EximOptions is `exim -bP prdr_enable chunking_advertise_hosts`.
-	EximOptions   CommandResult
+	EximOptions CommandResult
+	// EximSettings is `exim -bP` for EximSettingNames.
+	EximSettings CommandResult
+	// RspamdOptions is `rspamadm configdump -j options`.
+	RspamdOptions CommandResult
+	// MonitoredLog is the Exim main log CSM reads markers from.
+	MonitoredLog string
+	// SystemdRunErr is nil when systemd-run is on PATH.
+	SystemdRunErr error
+	// RspamdService and EximService are `systemctl` with UnitShowArgs.
+	RspamdService CommandResult
+	EximService   CommandResult
 	GeneratedConf string // /etc/exim.conf
 	GeneratedErr  error
 	LocalConf     string // /etc/exim.conf.local; "" when absent
@@ -112,10 +130,14 @@ type HostFacts struct {
 	// SpamdDisabledErr is a stat failure other than absence.
 	SpamdDisabledErr error
 	GlobalEnable     bool // /etc/global_spamassassin_enable exists
+	// GlobalEnableErr is a stat failure other than absence.
+	GlobalEnableErr error
 	// RspamdVersion is `rspamd --version`; RspamadmVersion `rspamadm --version`.
 	RspamdVersion   CommandResult
 	RspamadmVersion CommandResult
 	Socket          SocketFacts
+	// Targets describe the files CSM writes, in MutationTargets order.
+	Targets []TargetFacts
 }
 
 // CheckHost evaluates the host preconditions of spec section 6.2 that hold
@@ -147,7 +169,9 @@ func CheckHost(f HostFacts) []Problem {
 	case !f.SpamdDisabled:
 		add(CodeSpamAssassin, Definite, "SpamAssassin is enabled; disable spamd in WHM so /etc/spamddisable exists")
 	}
-	if f.GlobalEnable {
+	if f.GlobalEnableErr != nil {
+		add(CodeGlobalEnable, Warning, "cannot check /etc/global_spamassassin_enable; account opt-out availability is unknown")
+	} else if f.GlobalEnable {
 		add(CodeGlobalEnable, Warning, "/etc/global_spamassassin_enable exists, so no account can opt out")
 	}
 
@@ -171,6 +195,15 @@ func CheckHost(f HostFacts) []Problem {
 		}
 	}
 
+	if f.EximSettings.Err != nil {
+		add(CodeEximOptions, Temporary, "exim -bP failed; check Exim availability and configuration")
+	} else {
+		settings := ParseEximOptions(f.EximSettings.Stdout)
+		out = append(out, checkMessageSize(settings, f.RspamdOptions)...)
+		out = append(out, checkEximLog(settings, f.MonitoredLog)...)
+	}
+	out = append(out, checkServices(f)...)
+
 	if f.GeneratedErr != nil {
 		add(CodeSpamScoreRules, Temporary, "cannot read the generated Exim configuration; check file access")
 	} else {
@@ -192,7 +225,7 @@ func CheckHost(f HostFacts) []Problem {
 	}
 
 	if f.SystemFilterErr != nil {
-		add(CodeSpamScoreRules, Temporary, "cannot read Exim's system filter; check file access")
+		add(CodeSpamScoreRules, Temporary, "cannot read or verify Exim's system filter; check system_filter and file access")
 	} else if lines := FilterSpamUses(f.SystemFilter); len(lines) > 0 {
 		add(CodeSpamScoreRules, Definite, "Exim's system filter reads spam scores at lines %v; remove those rules so opted-out accounts are not affected", lines)
 	}
@@ -216,6 +249,8 @@ func CheckHost(f HostFacts) []Problem {
 			add(CodeMarkers, Definite, "/etc/exim.conf.local has multiple CSM blocks; only one scanner block is allowed")
 		}
 	}
+
+	out = append(out, checkTargets(f.Targets)...)
 
 	probes := NamedListProbes()
 	if len(f.NamedLists) != len(probes) {
@@ -254,14 +289,37 @@ func checkSocket(s SocketFacts) []Problem {
 	}
 	trusted := func(uid int) bool { return uid == 0 || uid == s.RspamdUID }
 	eximKnown := s.EximUID >= 0 && s.EximGID >= 0
+	// Without the rspamd uid, one non-root owner or listener may be rspamd's;
+	// two different ones cannot both be. That pair is enough evidence, and
+	// keeping only it bounds the diagnostic even after a long symlink walk.
+	var owners []int
+	if s.RspamdUID < 0 {
+		rememberOwner := func(uid int) {
+			if uid > 0 && len(owners) < 2 && !slices.Contains(owners, uid) {
+				owners = append(owners, uid)
+			}
+		}
+		if s.Err == nil && !s.Missing {
+			rememberOwner(s.Socket.UID)
+			rememberOwner(s.PeerUID)
+		}
+		for _, p := range s.Parents {
+			rememberOwner(p.UID)
+		}
+		slices.Sort(owners)
+	}
 	switch {
 	case s.Err != nil:
 		add(Temporary, "cannot stat the rspamd socket; check file access")
 	case s.Missing:
 		add(Temporary, "rspamd socket %s does not exist; is rspamd running with CSM's bind_socket?", s.Socket.Path)
 	default:
-		if s.RspamdUID < 0 {
+		switch {
+		case s.RspamdUID >= 0:
+		case len(owners) == 0:
 			add(Temporary, "the rspamd service user is unknown")
+		case len(owners) == 1:
+			add(Temporary, "the rspamd service user is unknown, so CSM cannot confirm that uid %d, which owns the socket path or runs its listener, is that user", owners[0])
 		}
 		if s.Socket.Mode.Type() != fs.ModeSocket {
 			add(Definite, "%s is not a socket", s.Socket.Path)
@@ -294,6 +352,9 @@ func checkSocket(s SocketFacts) []Problem {
 		case eximKnown && !permits(p, s.EximUID, s.EximGID, 0o1):
 			add(Definite, "Exim's runtime user (uid %d) cannot search %s", s.EximUID, p.Path)
 		}
+	}
+	if len(owners) > 1 {
+		add(Definite, "uids %v own the socket path or run its listener; only root and the rspamd user may, and at most one of them is the rspamd user", owners)
 	}
 	if s.Err != nil || s.Missing {
 		return out
