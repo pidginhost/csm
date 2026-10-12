@@ -61,7 +61,8 @@ type TargetFacts struct {
 	Err error
 	// Missing is true when the target does not exist; CSM creates it.
 	Missing bool
-	// File is the target's own lstat, set when it exists.
+	// File is the target's own lstat, including Path, set after a successful
+	// stat. It remains available if reading Content then fails.
 	File PathFacts
 	// Parents run from "/" down to the target's directory, without following
 	// symbolic links. The walk stops at the first entry that is not a directory.
@@ -83,14 +84,6 @@ func checkTargets(targets []TargetFacts) []Problem {
 	}
 	reported := make(map[string]bool)
 	for _, t := range targets {
-		switch {
-		case errors.Is(t.Err, fs.ErrNotExist):
-			add(CodeTargets, Definite, "the directory for %s is missing", t.Path)
-			continue
-		case t.Err != nil:
-			add(CodeTargets, Temporary, "cannot check %s; check file access", t.Path)
-			continue
-		}
 		safe := true
 		for _, p := range t.Parents {
 			problem := unprotected(p)
@@ -106,15 +99,34 @@ func checkTargets(targets []TargetFacts) []Problem {
 				add(CodeTargets, Definite, "%s %s", p.Path, problem)
 			}
 		}
-		if !safe || t.Missing {
+		if !safe {
 			continue
 		}
-		if !t.File.Mode.IsRegular() {
-			add(CodeTargets, Definite, "%s is not a regular file; CSM does not write through symbolic links", t.Path)
-			continue
+		// A later read error must not hide unsafe metadata already collected.
+		if !t.Missing && t.File.Path != "" {
+			if !t.File.Mode.IsRegular() {
+				add(CodeTargets, Definite, "%s is not a regular file; CSM does not write through symbolic links", t.Path)
+				continue
+			}
+			if problem := unprotected(t.File); problem != "" {
+				add(CodeTargets, Definite, "%s %s", t.Path, problem)
+				continue
+			}
 		}
-		if problem := unprotected(t.File); problem != "" {
-			add(CodeTargets, Definite, "%s %s", t.Path, problem)
+		switch {
+		case errors.Is(t.Err, fs.ErrNotExist):
+			add(CodeTargets, Definite, "the directory for %s is missing", t.Path)
+			continue
+		case t.Err != nil:
+			add(CodeTargets, Temporary, "cannot check %s; check file access", t.Path)
+			continue
+		case len(t.Parents) == 0:
+			add(CodeTargets, Temporary, "the parent directories for %s were not checked", t.Path)
+			continue
+		case t.Missing:
+			continue
+		case t.File.Path == "":
+			add(CodeTargets, Temporary, "the file metadata for %s was not checked", t.Path)
 			continue
 		}
 		switch t.Kind {
@@ -123,7 +135,9 @@ func checkTargets(targets []TargetFacts) []Problem {
 				add(CodeTargets, Definite, "%s is not managed by CSM; remove or rename it so CSM can write its own", t.Path)
 			}
 		case TargetEximHook:
-			switch blocks, err := LocateBlocks(t.Content); {
+			// Hook files are ACL fragments, so trailing options can extend
+			// CSM's last statement even without a section header in the file.
+			switch blocks, err := locateBlocks(t.Content, "acl", "csm_hook"); {
 			case errors.Is(err, ErrUnverifiable):
 				add(CodeUnverifiable, Temporary, "cannot verify %s: %v", t.Path, err)
 			case err != nil:

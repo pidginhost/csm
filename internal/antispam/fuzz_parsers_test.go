@@ -193,6 +193,35 @@ func FuzzEximConfigParsers(f *testing.F) {
 				t.Fatalf("block %+v with err %v outside 1..%d", b, errL, total)
 			}
 		}
+		hookBlocks, hookErr := locateBlocks(conf, "acl", "csm_hook")
+		for _, b := range hookBlocks {
+			if hookErr != nil || b.Begin < 1 || b.End <= b.Begin || b.End > total {
+				t.Fatalf("hook block %+v with err %v outside 1..%d", b, hookErr, total)
+			}
+		}
+	})
+}
+
+func FuzzOneConfigSection(f *testing.F) {
+	for _, seed := range []string{
+		"@CONFIG@\n", "@AUTH@\n\n@CONFIG@\n\n@DIRECTOREND@\n",
+		"@CONFIG@\n@CONFIG@\n", " @CONFIG@\n", "@CONFIG@\r\n", "",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, conf string) {
+		if !oneConfigSection(conf) {
+			return
+		}
+		if oneConfigSection("@CONFIG@\n"+conf) || oneConfigSection(conf+"\n@CONFIG@\n") {
+			t.Fatal("accepted another CONFIG section")
+		}
+		if oneConfigSection(strings.ReplaceAll(conf, "@CONFIG@", " @CONFIG@")) {
+			t.Fatal("accepted an indented CONFIG section")
+		}
+		if oneConfigSection(strings.ReplaceAll(conf, "@CONFIG@", "@AUTH@")) {
+			t.Fatal("accepted a file without its CONFIG section")
+		}
 	})
 }
 

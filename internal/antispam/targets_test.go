@@ -71,6 +71,10 @@ func TestMutationTargetsCoverSpecFiles(t *testing.T) {
 		if kind, ok := want[tg.Path]; !ok || kind != tg.Kind {
 			t.Errorf("unexpected target %+v", tg)
 		}
+		delete(want, tg.Path)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing targets: %v", want)
 	}
 	if got[0].Kind != TargetRspamd || got[len(got)-1].Kind != TargetEximLocal {
 		t.Errorf("rspamd files must come first and exim.conf.local last: %+v", got)
@@ -78,22 +82,34 @@ func TestMutationTargetsCoverSpecFiles(t *testing.T) {
 }
 
 func TestCheckHostAcceptsExistingCSMFiles(t *testing.T) {
-	f := goodFacts()
-	for i := range f.Targets {
-		tg := &f.Targets[i]
-		tg.Missing = false
-		tg.File = PathFacts{Path: tg.Path, Mode: 0o644}
-		switch tg.Kind {
-		case TargetRspamd:
-			tg.Content = ManagedHeader + "\nenabled = false;\n"
-		case TargetEximHook:
-			tg.Content = MarkerBegin + "\nwarn\n  logwrite = x\n" + MarkerEnd + "\n"
-		case TargetEximLocal:
-			tg.Content = "@CONFIG@\n" + MarkerBegin + "\nspamd_address = /run/rspamd/csm-normal.sock variant=rspamd tmo=30s\n" + MarkerEnd + "\n"
+	for _, dryRun := range []bool{false, true} {
+		hooks, err := RenderExim(defaults(dryRun))
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	if got := CheckHost(f); len(got) != 0 {
-		t.Fatalf("existing CSM files reported %+v", got)
+		contents := map[string]string{
+			HookRCPTPath: hooks.RCPT,
+			HookScanPath: hooks.Scan,
+			HookPostPath: hooks.Post,
+		}
+		f := goodFacts()
+		for i := range f.Targets {
+			tg := &f.Targets[i]
+			tg.Missing = false
+			tg.File = PathFacts{Path: tg.Path, Mode: 0o644}
+			switch tg.Kind {
+			case TargetRspamd:
+				tg.Content = ManagedHeader + "\nenabled = false;\n"
+			case TargetEximHook:
+				tg.Content = contents[tg.Path]
+			case TargetEximLocal:
+				tg.Content = "@CONFIG@\n" + hooks.Config
+				f.LocalConf = tg.Content
+			}
+		}
+		if got := CheckHost(f); len(got) != 0 {
+			t.Fatalf("existing CSM files (dry run %t) reported %+v", dryRun, got)
+		}
 	}
 }
 
@@ -199,5 +215,100 @@ func TestCheckHostSkipsFilesUnderUnsafeDirectories(t *testing.T) {
 	got := CheckHost(f)
 	if len(got) != 1 || !strings.Contains(got[0].Detail, "is not a directory") {
 		t.Fatalf("got %+v, want only the symlinked directory", got)
+	}
+}
+
+func TestCheckHostRejectsUncheckedTargetParents(t *testing.T) {
+	for _, kind := range []TargetKind{TargetRspamd, TargetEximHook, TargetEximLocal} {
+		for _, missing := range []bool{false, true} {
+			t.Run(fmt.Sprintf("kind=%d/missing=%t", kind, missing), func(t *testing.T) {
+				f := goodFacts()
+				tg := target(&f, kind)
+				tg.Parents = nil
+				tg.Missing = missing
+				tg.File = PathFacts{Path: tg.Path, Mode: 0o644}
+				if kind == TargetRspamd {
+					tg.Content = ManagedHeader + "\nenabled = false;\n"
+				}
+				got := CheckHost(f)
+				if len(got) != 1 || got[0].Code != CodeTargets || got[0].Severity != Temporary {
+					t.Fatalf("unchecked parents reported %+v, want one temporary target problem", got)
+				}
+			})
+		}
+	}
+}
+
+func TestCheckHostRetainsUnsafeTargetsAfterReadError(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*TargetFacts)
+		detail string
+	}{
+		{"parent writable", func(tg *TargetFacts) {
+			tg.Parents[len(tg.Parents)-1].Mode = fs.ModeDir | 0o777
+		}, "writable by group or others"},
+		{"parent owned by tenant", func(tg *TargetFacts) {
+			tg.Parents[len(tg.Parents)-1].UID = 1001
+		}, "owned by uid 1001"},
+		{"file writable", func(tg *TargetFacts) { tg.File.Mode = 0o666 }, "writable by group or others"},
+		{"file owned by tenant", func(tg *TargetFacts) { tg.File.UID = 1001 }, "owned by uid 1001"},
+		{"file ACL", func(tg *TargetFacts) { tg.File.ExtACL = true }, "extra ACL entries"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := goodFacts()
+			tg := target(&f, TargetEximHook)
+			tg.Err = fs.ErrPermission
+			tc.mutate(tg)
+			got := CheckHost(f)
+			if len(got) != 1 || got[0].Code != CodeTargets || got[0].Severity != Definite || !strings.Contains(got[0].Detail, tc.detail) {
+				t.Fatalf("known unsafe target reported %+v, want one definite problem containing %q", got, tc.detail)
+			}
+		})
+	}
+}
+
+func TestCheckHostUnknownTargetMetadataStaysTemporary(t *testing.T) {
+	for _, err := range []error{nil, fs.ErrPermission} {
+		f := goodFacts()
+		tg := target(&f, TargetEximHook)
+		tg.File = PathFacts{}
+		tg.Err = err
+		got := CheckHost(f)
+		if len(got) != 1 || got[0].Code != CodeTargets || got[0].Severity != Temporary {
+			t.Fatalf("unknown stat (err %v) reported %+v, want one temporary target problem", err, got)
+		}
+	}
+}
+
+func TestCheckHostRejectsHookBlockContinuations(t *testing.T) {
+	block := MarkerBegin + "\nwarn\n  logwrite = x\n" + MarkerEnd + "\n"
+	for _, content := range []string{
+		block + "  condition = false\n",
+		block + "# operator comment\n\n  condition = false\n",
+		block + ".ifdef X\n  condition = false\n.endif\n",
+		"EXTRA = condition = false\n" + block + "EXTRA\n",
+	} {
+		f := goodFacts()
+		target(&f, TargetEximHook).Content = content
+		got := CheckHost(f)
+		if len(got) != 1 || got[0].Code != CodeMarkers || got[0].Severity != Definite {
+			t.Errorf("hook block continuation %q reported %+v, want one definite marker problem", content, got)
+		}
+	}
+}
+
+func TestCheckHostAcceptsIndependentHookStatements(t *testing.T) {
+	block := MarkerBegin + "\nwarn\n  logwrite = x\n" + MarkerEnd + "\n"
+	for _, suffix := range []string{
+		"warn\n  condition = false\n",
+		"# operator comment\n\nwarn\n  condition = false\n",
+		".ifdef X\nwarn\n  condition = false\n.endif\n",
+	} {
+		f := goodFacts()
+		target(&f, TargetEximHook).Content = block + suffix
+		if got := CheckHost(f); len(got) != 0 {
+			t.Errorf("independent hook statement %q reported %+v", suffix, got)
+		}
 	}
 }

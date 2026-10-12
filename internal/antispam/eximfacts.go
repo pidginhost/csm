@@ -536,10 +536,14 @@ type Placement struct {
 // unpaired or boundary-crossing markers are an error: CSM never edits a file
 // whose blocks it cannot identify.
 func LocateBlocks(conf string) ([]Placement, error) {
+	return locateBlocks(conf, "", "")
+}
+
+func locateBlocks(conf, section, acl string) ([]Placement, error) {
 	var out []Placement
 	var macros []eximMacro
 	depth := 0
-	section, acl, open := "", "", 0
+	open := 0
 	// afterEnd is set when a block closed inside an ACL: the next line must
 	// start something new, or Exim would join it to CSM's last statement.
 	afterEnd := false
