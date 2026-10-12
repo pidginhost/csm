@@ -88,6 +88,8 @@ func main() {
 		runDaemon()
 	case "forward-guard-worker":
 		runForwardGuardWorker()
+	case "antispam-worker":
+		runAntispamWorker()
 	case "yara-worker":
 		runYaraWorker()
 	case "phptaint-worker":
