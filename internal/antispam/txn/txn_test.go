@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // fakeHost is a cPanel host in a temporary directory with scripted commands.
@@ -29,9 +30,10 @@ type fakeHost struct {
 	// pingFail and greetFail list the 1-based probe calls that fail.
 	pingFail, greetFail []int
 	pings, greets       int
-	// dropHooks lists the 1-based builds that lose CSM's hooks.
-	dropHooks []int
-	builds    int
+	// dropHooks lists the 1-based builds that lose CSM's hooks, and
+	// staleBuilds those that leave the old exim.conf in place.
+	dropHooks, staleBuilds []int
+	builds                 int
 	// onCall runs before a command line is answered.
 	onCall func(line string)
 }
@@ -158,6 +160,9 @@ func (f *fakeHost) dumpActions() string {
 // where cPanel puts them.
 func (f *fakeHost) build() {
 	f.builds++
+	if contains(f.staleBuilds, f.builds) {
+		return
+	}
 	read := func(p string) string {
 		st, err := readFile(f.root + p)
 		if err != nil {
@@ -507,5 +512,130 @@ func TestApplyReservesRollbackTime(t *testing.T) {
 	}
 	if len(builds) != 2 || !builds[0].Equal(f.start.Add(forwardBudget)) || !builds[1].Equal(f.start.Add(totalBudget)) {
 		t.Errorf("build deadlines %v, want forward %v then rollback %v", builds, f.start.Add(forwardBudget), f.start.Add(totalBudget))
+	}
+}
+
+func TestRemoveTakesOutEverything(t *testing.T) {
+	f := newFake(t)
+	writeTest(t, f.root+antispam.HookPostPath, "warn\n  log_message = operator rule\n", 0o644)
+	wantOK(t, f.host().Apply(enforce()))
+	foreign := f.root + antispam.RspamdLocalDir + "/greylist.conf"
+	writeTest(t, foreign, "enabled = true;\n", 0o644)
+	f.reset()
+	r := f.host().Remove()
+	wantOK(t, r)
+	if r.Generation != "" {
+		t.Errorf("remove reported generation %s", r.Generation)
+	}
+	want := map[string]string{
+		antispam.HookRCPTPath:                      "",
+		antispam.HookScanPath:                      "",
+		antispam.HookPostPath:                      "warn\n  log_message = operator rule\n",
+		antispam.LocalEximConfPath:                 platform.EximLocalSkeleton,
+		antispam.RecordPath:                        "<absent>",
+		antispam.RspamdLocalDir + "/greylist.conf": "enabled = true;\n",
+		antispam.RspamdLocalDir + "/actions.conf":  "<absent>",
+	}
+	for p, content := range want {
+		if got := f.file(p); got != content {
+			t.Errorf("%s = %q, want %q", p, got, content)
+		}
+	}
+	if strings.Contains(f.file(antispam.GeneratedEximConfPath), antispam.MarkerBegin) {
+		t.Error("generated configuration keeps CSM blocks")
+	}
+	for prefix, n := range map[string]int{BuildEximConf: 1, "systemctl reload exim.service": 1, "rspamadm configtest": 1, "systemctl reload rspamd.service": 1} {
+		if got := f.count(prefix); got != n {
+			t.Errorf("%s ran %d times, want %d", prefix, got, n)
+		}
+	}
+	// Exim stops using the hooks before rspamd loses CSM's settings.
+	if strings.Index(fmt.Sprint(f.calls), "reload exim") > strings.Index(fmt.Sprint(f.calls), "reload rspamd") {
+		t.Errorf("rspamd reloaded before exim: %v", f.calls)
+	}
+}
+
+func TestRemoveWithNothingInstalledDoesNothing(t *testing.T) {
+	f := newFake(t)
+	before := f.state()
+	wantOK(t, f.host().Remove())
+	if len(f.calls) != 0 || fmt.Sprint(f.state()) != fmt.Sprint(before) {
+		t.Errorf("remove on a clean host ran %v", f.calls)
+	}
+}
+
+func TestRemoveRepairsInterruptedRemove(t *testing.T) {
+	f := newFake(t)
+	// Files and generated configuration are clean; the incomplete record
+	// says a removal stopped before its reloads were confirmed.
+	if err := os.MkdirAll(filepath.Dir(f.root+antispam.RecordPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTest(t, f.root+antispam.RecordPath, string(antispam.EncodeRecord("")), 0o600)
+	wantOK(t, f.host().Remove())
+	if f.count(BuildEximConf) != 1 || f.count("systemctl reload exim.service") != 1 || f.count("systemctl reload rspamd.service") != 1 {
+		t.Errorf("interrupted remove not repeated: %v", f.calls)
+	}
+	if f.file(antispam.RecordPath) != "<absent>" {
+		t.Error("record kept")
+	}
+}
+
+func TestRemoveLeavesStoppedServicesStopped(t *testing.T) {
+	f := newFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	f.reset()
+	f.fail["systemctl is-active"] = []int{-1}
+	wantOK(t, f.host().Remove())
+	if f.count("systemctl reload") != 0 || f.count("rspamadm") != 0 || f.count(BuildEximConf) != 1 {
+		t.Errorf("stopped services touched: %v", f.calls)
+	}
+	if f.file(antispam.RspamdLocalDir+"/actions.conf") != "<absent>" || f.file(antispam.RecordPath) != "<absent>" {
+		t.Error("files not removed")
+	}
+}
+
+func TestRemoveRollsBack(t *testing.T) {
+	f := newFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	before := f.state()
+	f.reset()
+	f.fail["systemctl reload exim.service"] = []int{1}
+	r := f.host().Remove()
+	if r.FailedStep != StepEximReload || r.Rollback != antispam.RollbackVerified {
+		t.Fatalf("result %+v", r)
+	}
+	if fmt.Sprint(f.state()) != fmt.Sprint(before) {
+		t.Error("remove rollback did not restore the installation and its record")
+	}
+}
+
+func TestRemoveRefusesUnsafeTargets(t *testing.T) {
+	f := newFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	h := f.host()
+	safe := h.targets
+	h.targets = func() []antispam.TargetFacts {
+		ts := safe()
+		ts[6].File.UID = 1000
+		return ts
+	}
+	before := f.state()
+	f.reset()
+	r := h.Remove()
+	if r.FailedStep != StepPreconditions || r.Rollback != antispam.RollbackNone || len(f.calls) != 0 || fmt.Sprint(f.state()) != fmt.Sprint(before) {
+		t.Errorf("result %+v after %v", r, f.calls)
+	}
+}
+
+func TestRemoveVerifiesGeneratedConfig(t *testing.T) {
+	f := newFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	before := f.state()
+	f.reset()
+	f.staleBuilds = []int{f.builds + 1}
+	r := f.host().Remove()
+	if r.FailedStep != StepEximBuild || r.Rollback != antispam.RollbackVerified || fmt.Sprint(f.state()) != fmt.Sprint(before) {
+		t.Errorf("result %+v", r)
 	}
 }

@@ -111,6 +111,7 @@ type tx struct {
 	// Exim was not running.
 	greeting       string
 	rspamdReloaded bool
+	rspamdActive   bool
 	// rspamdProbe confirms rspamd after a reload.
 	rspamdProbe func(context.Context) error
 }
@@ -230,6 +231,11 @@ func (t *tx) writeRecord(generation string) error {
 	}
 	t.recordWritten = true
 	return writeAtomic(p, string(antispam.EncodeRecord(generation)), 0o600, -1, -1)
+}
+
+func (t *tx) removeRecord() error {
+	t.recordWritten = true
+	return deleteFile(t.h.path(antispam.RecordPath))
 }
 
 // listenerProbe reads where Exim listens and checks that one listener greets
