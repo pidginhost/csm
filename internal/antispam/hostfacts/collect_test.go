@@ -312,3 +312,22 @@ func TestRunCommandStopsAtDeadline(t *testing.T) {
 		t.Fatalf("took %s", elapsed)
 	}
 }
+
+// /etc/exim.conf.local owned by a tenant is a problem CheckHost reports, but
+// the collector reads it first: the tenant could have grown it to any size.
+func TestReadTextRejectsOversizedFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "exim.conf.local")
+	write(t, p, "")
+	if err := os.Truncate(p, maxConfigBytes); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readText(p); err != nil || len(got) != maxConfigBytes {
+		t.Fatalf("file at the limit: %d bytes, err %v", len(got), err)
+	}
+	if err := os.Truncate(p, maxConfigBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readText(p); err == nil || got != "" {
+		t.Fatalf("oversized file: %d bytes, err %v; want an error", len(got), err)
+	}
+}

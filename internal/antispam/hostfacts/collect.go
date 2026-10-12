@@ -23,6 +23,10 @@ import (
 // commands other than buildeximconf).
 const commandTimeout = 10 * time.Second
 
+// maxConfigBytes bounds each configuration file the collector reads; cPanel's
+// generated exim.conf is under 100 KiB.
+const maxConfigBytes = 16 << 20
+
 // Layout holds the host files Collect reads.
 type Layout struct {
 	GeneratedConf string
@@ -188,8 +192,14 @@ func readText(p string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", errors.New("configuration is not a regular file")
 	}
-	data, err := io.ReadAll(file)
-	return string(data), err
+	data, err := io.ReadAll(io.LimitReader(file, maxConfigBytes+1))
+	switch {
+	case err != nil:
+		return "", err
+	case len(data) > maxConfigBytes:
+		return "", fmt.Errorf("configuration is larger than %d bytes", maxConfigBytes)
+	}
+	return string(data), nil
 }
 
 // exists reports whether p exists, following symlinks as cPanel's own -e test does.
