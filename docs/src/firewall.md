@@ -180,11 +180,14 @@ its `firewall state` check, naming the kept file, until the next restart.
 `automation.firewall_state_set_aside` carries the same path. Review the kept
 file and add back the entries that must stay. This startup alert bypasses the
 finding queue and finding suppression rules. If the file cannot be renamed
-or synced, startup fails without retrying. A running CSM ruleset stays in
-place with its blocks; after a reboot, CSM installs its base rules without
-the saved entries. Correct the storage problem before restarting CSM. A
-running engine keeps its known state across an unreadable rewrite, including
-failed saves, and writes that state back when storage accepts a later save.
+or synced, startup fails without retrying, even if installing the base rules
+also fails. A running CSM ruleset stays in place with its blocks; after a
+reboot, CSM installs its base rules without saved blocks, allows or port
+exceptions. The failed engine does not adopt replacement state or resume
+management when storage becomes readable. Correct the storage problem before
+restarting CSM. A running engine keeps its known state across an unreadable
+rewrite, including failed saves, and writes that state back when storage
+accepts a later save.
 
 Before restoring blocks at startup, CSM asks the admission ledger about every
 block an automatic response attempt wrote. Blocks whose attempt is still

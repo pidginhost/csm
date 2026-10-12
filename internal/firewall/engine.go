@@ -697,13 +697,20 @@ func (e *Engine) Apply() (resultErr error) {
 	}
 	return e.applyRulesetLocked("")
 }
-func (e *Engine) applyRulesetLocked(marker string) error {
+func (e *Engine) applyRulesetLocked(marker string) (resultErr error) {
 
 	// Compute the elements to seed each set from persisted state
 	// BEFORE touching nft. Pure computation; if state.json is
 	// missing or malformed the slices stay empty and the new table
 	// still applies (no firewall regression on a fresh install).
 	initial := e.computeInitialBlockStateLocked()
+	// Even a failed base install must stop fresh-engine startup retries:
+	// an unsynced rename can leave no file for the next engine to inspect.
+	defer func() {
+		if e.stateAsideErr != nil && !errors.Is(resultErr, ErrStateNotKeptAside) {
+			resultErr = errors.Join(e.stateAsideErr, resultErr)
+		}
+	}()
 
 	// Check if existing CSM table needs replacing.
 	// If so, include the delete in the same atomic batch as the new table.
@@ -712,7 +719,7 @@ func (e *Engine) applyRulesetLocked(marker string) error {
 	// live chains (doubled meters, halved rate limits).
 	tables, err := e.listTablesFn()()
 	if err != nil {
-		return errors.Join(e.stateAsideErr, fmt.Errorf("%w: %v", errTableListing, err))
+		return fmt.Errorf("%w: %v", errTableListing, err)
 	}
 	var running *nftables.Table
 	for _, t := range tables {
@@ -772,7 +779,7 @@ func (e *Engine) applyRulesetLocked(marker string) error {
 	// undo an applied firewall nor bless a later, possibly external edit.
 	e.appliedRuleset, _ = e.readRulesetLocked()
 
-	return e.stateAsideErr
+	return nil
 }
 
 // createSets creates the nftables named sets for IP management.
@@ -4411,6 +4418,11 @@ func (e *Engine) ensureStateCacheAtLocked(now time.Time) {
 		if err == nil {
 			e.installCommittedCacheAtLocked(state, now)
 		}
+		return
+	}
+	// Preservation failure is terminal for this engine. In particular, the
+	// port-allow read during a base install must not adopt replacement state.
+	if e.stateAsideErr != nil {
 		return
 	}
 

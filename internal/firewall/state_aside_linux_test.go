@@ -3,15 +3,20 @@
 package firewall
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/google/nftables"
 	"github.com/mdlayher/netlink"
+	"golang.org/x/sys/unix"
 )
 
 var stateAsideAt = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
@@ -96,6 +101,11 @@ func TestUnreadableRewriteKeepsHeldState(t *testing.T) {
 func TestApplyRefusesStateItCannotKeepAside(t *testing.T) {
 	dir := t.TempDir()
 	e, sent := stateAsideEngine(t, dir)
+	e.appliedRuleset = "running baseline"
+	e.readRuleset = func() (string, error) {
+		t.Fatal("a refused replacement must not capture a new baseline")
+		return "", nil
+	}
 	path := filepath.Join(dir, "state.json")
 	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
@@ -110,6 +120,18 @@ func TestApplyRefusesStateItCannotKeepAside(t *testing.T) {
 	}
 	if got := e.StateSetAside(); got != "" {
 		t.Fatalf("StateSetAside = %q after a failed rename", got)
+	}
+	// Repairing storage must not let this engine replace running rules.
+	e.renameStateAside = os.Rename
+	err = e.Apply()
+	if !errors.Is(err, ErrStateNotKeptAside) || len(*sent) != 0 {
+		t.Fatalf("repeat Apply = %v, sent=%d; want the refusal to remain", err, len(*sent))
+	}
+	e.mu.Lock()
+	err = e.applyRulesetLocked("csm_action_fixture")
+	e.mu.Unlock()
+	if !errors.Is(err, ErrStateNotKeptAside) || len(*sent) != 0 || e.appliedRuleset != "running baseline" {
+		t.Fatalf("marked Apply = %v, sent=%d baseline=%q; want no replacement or marker", err, len(*sent), e.appliedRuleset)
 	}
 }
 
@@ -273,24 +295,32 @@ func TestRawStateReadRefusesUnsyncedKeptStateOnRetry(t *testing.T) {
 
 // After a reboot the kernel has no CSM table. State that can be neither read
 // nor kept aside must not leave the host without its base rules: Apply
-// installs them with no saved entries, still refuses startup, and the bytes
-// stay where they are.
+// installs them with no saved entries, still refuses startup, and keeps the
+// unreadable bytes intact.
 func TestApplyInstallsBaseRulesWhenStateCannotBeKept(t *testing.T) {
-	for _, cause := range []string{"rename", "stat"} {
+	for _, cause := range []string{"rename", "stat", "sync"} {
 		dir := t.TempDir()
 		e, sent := stateAsideEngine(t, dir)
 		e.listTables = func() ([]*nftables.Table, error) { return nil, nil }
 		path := filepath.Join(dir, "state.json")
-		if cause == "rename" {
+		if cause != "stat" {
 			if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			e.renameStateAside = func(string, string) error { return os.ErrPermission }
+			if cause == "rename" {
+				e.renameStateAside = func(string, string) error { return os.ErrPermission }
+			} else {
+				e.syncStateAside = func(string) error { return os.ErrPermission }
+			}
 		} else if err := os.Symlink("state.json", path); err != nil {
 			t.Fatal(err)
 		}
 		if err := e.Apply(); !errors.Is(err, ErrStateNotKeptAside) || len(*sent) == 0 {
 			t.Fatalf("%s: Apply = %v, sent=%d; want the base rules installed and startup refused", cause, err, len(*sent))
+		}
+		if capturedTypes(*sent, unix.NFNL_SUBSYS_NFTABLES<<8|unix.NFT_MSG_NEWTABLE) != 1 ||
+			capturedTypes(*sent, unix.NFNL_SUBSYS_NFTABLES<<8|unix.NFT_MSG_NEWCHAIN) != 2 {
+			t.Fatalf("%s: base table and input/output chains were not installed", cause)
 		}
 		if got := len(newSetElemTimeouts(t, *sent, "blocked_ips")); got != 0 {
 			t.Fatalf("%s: %d blocks seeded from state that was not kept", cause, got)
@@ -298,6 +328,11 @@ func TestApplyInstallsBaseRulesWhenStateCannotBeKept(t *testing.T) {
 		if cause == "rename" {
 			if got, err := os.ReadFile(path); err != nil || string(got) != "{broken" {
 				t.Fatalf("state bytes = %q, %v; want them untouched", got, err)
+			}
+		}
+		if cause == "sync" {
+			if got, err := os.ReadFile(e.StateSetAside()); err != nil || string(got) != "{broken" {
+				t.Fatalf("unsynced kept bytes = %q, %v", got, err)
 			}
 		}
 		if err := e.saveState(&FirewallState{}); !errors.Is(err, ErrStateNotKeptAside) {
@@ -319,5 +354,111 @@ func TestApplyRefusesUnkeptStateWhenListingFails(t *testing.T) {
 	err := e.Apply()
 	if !errors.Is(err, ErrStateNotKeptAside) || !errors.Is(err, errTableListing) || len(*sent) != 0 {
 		t.Fatalf("Apply = %v, sent=%d; want both causes and no change", err, len(*sent))
+	}
+}
+
+// A failed base install must still stop startup retries. In particular, a
+// failed directory sync can leave no state file for a fresh engine to see.
+func TestApplyKeepsPreservationErrorWhenBaseInstallFails(t *testing.T) {
+	e, _ := stateAsideEngine(t, t.TempDir())
+	e.listTables = func() ([]*nftables.Table, error) { return nil, nil }
+	e.conn = nftConnReturningErr(t, syscall.EPERM)
+	e.syncStateAside = func(string) error { return os.ErrPermission }
+	path := filepath.Join(e.statePath, "state.json")
+	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.readRuleset = func() (string, error) {
+		t.Fatal("failed install must not capture a ruleset baseline")
+		return "", nil
+	}
+	err := e.Apply()
+	if !errors.Is(err, ErrStateNotKeptAside) || !errors.Is(err, syscall.EPERM) {
+		t.Fatalf("Apply = %v; want preservation and kernel errors", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("state file remains after the unsynced rename: %v", err)
+	}
+	if got, err := os.ReadFile(e.StateSetAside()); err != nil || string(got) != "{broken" {
+		t.Fatalf("kept bytes = %q, %v", got, err)
+	}
+}
+
+// Once preservation fails, reads in the same engine must not pick up a
+// replacement file, even between set seeding and port-allow rule creation.
+func TestApplyBaseRulesIgnoreStateAfterPreservationFailure(t *testing.T) {
+	for _, timing := range []string{"before apply", "during apply"} {
+		t.Run(timing, func(t *testing.T) {
+			e, sent := stateAsideEngine(t, t.TempDir())
+			e.cfg.IPv6 = true
+			e.renameStateAside = func(string, string) error { return os.ErrPermission }
+			path := filepath.Join(e.statePath, "state.json")
+			if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_ = e.loadStateFile()
+			if !errors.Is(e.stateAsideErr, ErrStateNotKeptAside) {
+				t.Fatal("fixture did not fail preservation")
+			}
+			state := FirewallState{
+				Blocked:    []BlockedEntry{{IP: "192.0.2.31"}, {IP: "2001:db8::31"}},
+				Allowed:    []AllowedEntry{{IP: "198.51.100.32"}, {IP: "2001:db8::32"}},
+				BlockedNet: []SubnetEntry{{CIDR: "203.0.113.0/24"}, {CIDR: "2001:db8:33::/64"}},
+				PortAllowed: []PortAllowEntry{
+					{IP: "192.0.2.34", Port: 3306, Proto: "tcp"},
+					{IP: "2001:db8::34", Port: 3306, Proto: "tcp"},
+				},
+			}
+			data, err := json.Marshal(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rewrite := func() {
+				if err := os.WriteFile(path, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if timing == "before apply" {
+				rewrite()
+			}
+			e.listTables = func() ([]*nftables.Table, error) {
+				if timing == "during apply" {
+					rewrite()
+				}
+				return nil, nil
+			}
+			if err := e.Apply(); !errors.Is(err, ErrStateNotKeptAside) {
+				t.Fatalf("Apply = %v; want preservation refusal", err)
+			}
+			if capturedTypes(*sent, unix.NFNL_SUBSYS_NFTABLES<<8|unix.NFT_MSG_NEWTABLE) != 1 ||
+				capturedTypes(*sent, unix.NFNL_SUBSYS_NFTABLES<<8|unix.NFT_MSG_NEWCHAIN) != 2 {
+				t.Fatal("base table and input/output chains were not installed")
+			}
+			for _, set := range actionSetNames(true) {
+				if got := len(newSetElemTimeouts(t, *sent, set)); got != 0 {
+					t.Errorf("%s seeded %d entries after preservation failed", set, got)
+				}
+			}
+			for _, row := range state.PortAllowed {
+				key := net.ParseIP(row.IP).To4()
+				if key == nil {
+					key = net.ParseIP(row.IP).To16()
+				}
+				for _, msg := range *sent {
+					if uint16(msg.Header.Type) == unix.NFNL_SUBSYS_NFTABLES<<8|unix.NFT_MSG_NEWRULE && bytes.Contains(msg.Data, key) {
+						t.Errorf("port allow for %s installed after preservation failed", row.IP)
+					}
+				}
+			}
+			if e.appliedRuleset != "table inet csm {}" {
+				t.Fatalf("installed base ruleset has no baseline: %q", e.appliedRuleset)
+			}
+			if err := e.saveState(&FirewallState{}); !errors.Is(err, ErrStateNotKeptAside) {
+				t.Fatalf("save = %v; want preservation refusal", err)
+			}
+			if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, data) {
+				t.Fatalf("replacement state changed: %q, %v", got, err)
+			}
+		})
 	}
 }
