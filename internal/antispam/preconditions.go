@@ -42,6 +42,7 @@ const (
 	CodeMarkers        = "markers"
 	CodeNamedList      = "named_list"
 	CodeUnverifiable   = "exim_config_unverifiable"
+	CodeTargets        = "mutation_target"
 )
 
 const (
@@ -116,6 +117,8 @@ type HostFacts struct {
 	RspamdVersion   CommandResult
 	RspamadmVersion CommandResult
 	Socket          SocketFacts
+	// Targets describe the files CSM writes, in MutationTargets order.
+	Targets []TargetFacts
 }
 
 // CheckHost evaluates the host preconditions of spec section 6.2 that hold
@@ -216,6 +219,8 @@ func CheckHost(f HostFacts) []Problem {
 			add(CodeMarkers, Definite, "/etc/exim.conf.local has multiple CSM blocks; only one scanner block is allowed")
 		}
 	}
+
+	out = append(out, checkTargets(f.Targets)...)
 
 	probes := NamedListProbes()
 	if len(f.NamedLists) != len(probes) {

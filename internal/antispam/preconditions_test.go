@@ -39,6 +39,7 @@ func goodFacts() HostFacts {
 			EximUID:   eximUID,
 			EximGID:   eximGID,
 		},
+		Targets: goodTargets(),
 	}
 }
 
