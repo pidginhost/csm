@@ -29,3 +29,10 @@ func TestLockedAdapterSharesTheEximMutationLock(t *testing.T) {
 		t.Fatalf("apply=%v remove=%v rebuilds=%d", applyErr, removeErr, side.rebuilds)
 	}
 }
+
+// Forward guard and the antispam worker must lock the same inode.
+func TestForwardGuardLocksTheSharedEximLock(t *testing.T) {
+	if got := filepath.Dir(defaultBadIPsPath); got != eximlock.Dir {
+		t.Fatalf("forward guard locks %s, antispam locks %s", got, eximlock.Dir)
+	}
+}

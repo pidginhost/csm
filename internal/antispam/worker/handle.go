@@ -60,5 +60,10 @@ func handle(input io.Reader, t Transactor, lock Locker) antispam.Result {
 		result = antispam.Result{Busy: errors.Is(err, eximlock.ErrBusy), FailedStep: "lock", Rollback: antispam.RollbackNone, Error: err.Error()}
 	}
 	result.Operation = req.Operation
+	if err := result.Validate(); err != nil {
+		// The transaction ran but cannot say what it changed.
+		return antispam.Result{Operation: req.Operation, FailedStep: "result", Rollback: antispam.RollbackFailed,
+			Error: "the transaction returned an invalid result: " + err.Error()}
+	}
 	return result
 }

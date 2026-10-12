@@ -62,7 +62,8 @@ var requestKeys = map[string]bool{
 }
 
 // DecodeRequest validates one request before any side effect. Settings is
-// set for an apply. Error messages never repeat the input.
+// set for an apply. Error messages repeat no input except the one invalid
+// socket character ValidateSocket names.
 func DecodeRequest(data []byte) (Request, Settings, error) {
 	if len(data) > MaxRequestBytes {
 		return Request{}, Settings{}, fmt.Errorf("request exceeds %d bytes", MaxRequestBytes)
@@ -180,13 +181,15 @@ func ParseResult(out []byte) (Result, error) {
 	if err := json.Unmarshal(out, &r); err != nil {
 		return Result{}, errors.New("worker result is not valid JSON")
 	}
-	if err := r.validate(); err != nil {
+	if err := r.Validate(); err != nil {
 		return Result{}, err
 	}
 	return r, nil
 }
 
-func (r Result) validate() error {
+// Validate checks a result's invariants: success carries a generation only
+// for apply, failure names its step and rollback, busy only at the lock.
+func (r Result) Validate() error {
 	if r.Operation != OpApply && r.Operation != OpRemove &&
 		(r.Operation != "" || r.OK || r.FailedStep != "request") {
 		return errors.New("worker result has an unsupported operation")

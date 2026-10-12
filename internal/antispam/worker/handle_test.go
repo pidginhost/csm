@@ -205,3 +205,16 @@ func TestHandleFailsWhenResultWriteIsShort(t *testing.T) {
 		t.Fatalf("transactor=%+v, want exactly one removal", tr)
 	}
 }
+
+func TestHandleRejectsInvalidTransactorResult(t *testing.T) {
+	for name, bad := range map[string]antispam.Result{
+		"apply without generation": {OK: true},
+		"failure without step":     {Rollback: antispam.RollbackNone},
+		"unknown rollback":         {FailedStep: "exim_build", Rollback: "maybe"},
+	} {
+		result, code := run(t, applyBody, &fakeTransactor{result: bad}, freeLock)
+		if code != 1 || result.OK || result.FailedStep != "result" || result.Rollback != antispam.RollbackFailed || result.Operation != antispam.OpApply {
+			t.Errorf("%s: code=%d result=%+v", name, code, result)
+		}
+	}
+}
