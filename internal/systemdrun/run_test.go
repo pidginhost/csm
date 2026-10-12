@@ -3,7 +3,9 @@ package systemdrun
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -189,5 +191,96 @@ func TestRunDoesNotStartCommandAfterProbeContextCancellation(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A caller that must not run inside the service sandbox gets ErrUnavailable
+// instead of a direct run, so it can retry once systemd-run works again.
+func TestRunRequiredNeverRunsCommandDirectly(t *testing.T) {
+	for name, tc := range map[string]struct {
+		lookPath   LookPathFunc
+		probeErr   error
+		wantProbes int
+	}{
+		"missing":      {func(string) (string, error) { return "", exec.ErrNotFound }, nil, 0},
+		"probe failed": {func(string) (string, error) { return "/usr/bin/systemd-run", nil }, errors.New("Failed to connect to bus"), 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls []recordedCall
+			run := func(_ context.Context, name string, args ...string) ([]byte, error) {
+				calls = append(calls, recordedCall{name, args})
+				return nil, tc.probeErr
+			}
+			_, err := Run(context.Background(), tc.lookPath, run, Options{Pipe: true, Required: true}, "csm", "antispam-worker")
+			if !errors.Is(err, ErrUnavailable) || len(calls) != tc.wantProbes {
+				t.Fatalf("err=%v calls=%+v", err, calls)
+			}
+			for _, call := range calls {
+				if call.name == "csm" {
+					t.Fatalf("ran the command directly: %+v", calls)
+				}
+			}
+		})
+	}
+}
+
+func TestRunRequiredPreservesProbeError(t *testing.T) {
+	probeErr := &exec.Error{Name: "systemd-run", Err: exec.ErrNotFound}
+	var calls []recordedCall
+	lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
+	out, err := Run(context.Background(), lookPath, func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, recordedCall{name, args})
+		return []byte("probe diagnostics"), probeErr
+	}, Options{Required: true}, "csm", "antispam-worker")
+	var execErr *exec.Error
+	if out != nil || !errors.Is(err, ErrUnavailable) || !errors.Is(err, exec.ErrNotFound) ||
+		!errors.As(err, &execErr) || execErr != probeErr {
+		t.Fatalf("out=%q err=%v, want unavailable with the original probe error", out, err)
+	}
+	if len(calls) != 1 || calls[0].name != "/usr/bin/systemd-run" || calls[0].args[len(calls[0].args)-1] != probeCommand {
+		t.Fatalf("calls=%+v, want only the availability probe", calls)
+	}
+}
+
+func TestRunDoesNotUseRejectedLookupPath(t *testing.T) {
+	for _, required := range []bool{false, true} {
+		t.Run(fmt.Sprintf("required=%t", required), func(t *testing.T) {
+			lookupErr := &exec.Error{Name: "systemd-run", Err: exec.ErrDot}
+			var calls []recordedCall
+			out, err := Run(context.Background(), func(string) (string, error) {
+				return "./bin/systemd-run", lookupErr
+			}, func(_ context.Context, name string, args ...string) ([]byte, error) {
+				calls = append(calls, recordedCall{name, args})
+				return []byte("direct output"), nil
+			}, Options{Required: required}, "/usr/sbin/exim", "-bpc")
+			if required {
+				if out != nil || !errors.Is(err, ErrUnavailable) || !errors.Is(err, lookupErr) || len(calls) != 0 {
+					t.Fatalf("out=%q err=%v calls=%+v, want rejection before any execution", out, err, calls)
+				}
+			} else if err != nil || string(out) != "direct output" || len(calls) != 1 ||
+				calls[0].name != "/usr/sbin/exim" || !reflect.DeepEqual(calls[0].args, []string{"-bpc"}) {
+				t.Fatalf("out=%q err=%v calls=%+v, want the optional wrapper's direct fallback", out, err, calls)
+			}
+		})
+	}
+}
+
+func TestRunRequiredPreservesWrappedCommandFailure(t *testing.T) {
+	commandErr := errors.New("unit failed after the probe")
+	var calls []recordedCall
+	lookPath := func(string) (string, error) { return "/usr/bin/systemd-run", nil }
+	out, err := Run(context.Background(), lookPath, func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, recordedCall{name, args})
+		if args[len(args)-1] == probeCommand {
+			return nil, nil
+		}
+		return []byte("worker diagnostics"), commandErr
+	}, Options{Required: true}, "csm", "antispam-worker")
+	if string(out) != "worker diagnostics" || !errors.Is(err, commandErr) || errors.Is(err, ErrUnavailable) {
+		t.Fatalf("out=%q err=%v, want the command failure without a safe-retry guarantee", out, err)
+	}
+	if len(calls) != 2 || calls[0].name != "/usr/bin/systemd-run" || calls[1].name != "/usr/bin/systemd-run" ||
+		!reflect.DeepEqual(calls[1].args[len(calls[1].args)-3:], []string{"--", "csm", "antispam-worker"}) {
+		t.Fatalf("calls=%+v, want one probe and one wrapped command without a direct retry", calls)
 	}
 }
