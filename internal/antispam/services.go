@@ -47,8 +47,10 @@ func checkServices(f HostFacts) []Problem {
 			add(Temporary, "systemctl show %s failed; check systemd", s.unit)
 		case props["LoadState"] != "loaded":
 			add(Temporary, "%s is not loaded; check that it is installed", s.unit)
-		case props["CanReload"] != "yes":
+		case props["CanReload"] == "no":
 			add(Definite, "%s cannot reload; CSM applies changes only by reload, never by restart", s.unit)
+		case props["CanReload"] != "yes":
+			add(Temporary, "systemctl show %s did not report a readable CanReload property", s.unit)
 		}
 	}
 	return out
@@ -73,11 +75,46 @@ func checkEximLog(settings map[string]string, monitored string) []Problem {
 		add(Temporary, "Exim's log_file_path uses an expansion or list separator CSM does not evaluate")
 		return out
 	}
-	for _, entry := range strings.Split(raw, ":") {
-		if strings.ReplaceAll(strings.TrimSpace(entry), "%s", "main") == monitored {
-			return out
-		}
+	path, found := firstEximLogPath(raw)
+	if found && path == "" {
+		add(Temporary, "Exim uses its default log destination; set an explicit log_file_path so CSM can verify where antispam markers are written")
+		return out
+	}
+	if found && strings.ReplaceAll(path, "%s", "main") == monitored {
+		return out
 	}
 	add(Definite, "Exim does not write its main log to %s, where CSM reads antispam markers; restore log_file_path", monitored)
 	return out
+}
+
+// Exim uses only the first non-syslog item, with doubled colons denoting a
+// literal colon. An empty path selects a build-time default we cannot verify.
+func firstEximLogPath(raw string) (string, bool) {
+	const space = " \t\r\n\v\f"
+	if raw == "" {
+		return "", true
+	}
+	for raw != "" {
+		raw = strings.TrimLeft(raw, space)
+		if raw == "" {
+			break
+		}
+		var entry strings.Builder
+		for raw != "" {
+			c := raw[0]
+			raw = raw[1:]
+			if c == ':' {
+				if !strings.HasPrefix(raw, ":") {
+					break
+				}
+				raw = raw[1:]
+			}
+			entry.WriteByte(c)
+		}
+		path := strings.TrimRight(entry.String(), space)
+		if path != "syslog" {
+			return path, true
+		}
+	}
+	return "", false
 }

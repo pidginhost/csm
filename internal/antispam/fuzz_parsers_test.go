@@ -62,6 +62,27 @@ func FuzzMaxMessage(f *testing.F) {
 	})
 }
 
+func FuzzEximLogFirstDestination(f *testing.F) {
+	for _, seed := range []string{"/var/log/exim_%slog", "syslog", "", ":", ": /var/log/exim_%slog", "${primary_hostname}", "<;"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, suffix string) {
+		// A later destination or an escaped colon cannot redirect the first
+		// file destination to the monitored path.
+		for _, prefix := range []string{"/var/log/other_%slog : ", "/var/log/other::"} {
+			raw := prefix + suffix
+			got := checkEximLog(map[string]string{"log_file_path": raw}, "/var/log/exim_mainlog")
+			want := Definite
+			if strings.ContainsAny(raw, "$<") {
+				want = Temporary
+			}
+			if len(got) != 1 || got[0].Code != CodeEximLog || got[0].Severity != want {
+				t.Fatalf("unmonitored first destination %q reported %+v, want one exim_log/%d problem", raw, got, want)
+			}
+		}
+	})
+}
+
 func FuzzParseRspamdVersion(f *testing.F) {
 	for _, seed := range []string{"Rspamd daemon version 4.2.1\n", "Rspamadm 3.8\n", "Rspamadm 4.2.1-git\n", "Rspamadm 4.2.12345\n", "", "command not found"} {
 		f.Add(seed)
