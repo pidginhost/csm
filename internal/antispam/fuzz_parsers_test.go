@@ -391,3 +391,33 @@ func FuzzSetBlock(f *testing.F) {
 		}
 	})
 }
+
+func FuzzDecodeRecord(f *testing.F) {
+	for _, seed := range []string{
+		`{"format":1,"generation":null}`,
+		`{"format":1,"generation":"` + strings.Repeat("ab", 32) + `"}`,
+		`{"format":1,"format":1,"generation":null}`,
+		`{"format":1.0,"generation":null}`,
+		`{"Format":1,"generation":null}`,
+		`null`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		r, err := DecodeRecord(data)
+		if err != nil {
+			if r != (Record{}) {
+				t.Fatal("rejected record returned a partial value")
+			}
+			return
+		}
+		gen := ""
+		if r.Complete() {
+			gen = *r.Generation
+		}
+		again, err := DecodeRecord(EncodeRecord(gen))
+		if err != nil || again.Complete() != r.Complete() || again.Complete() && *again.Generation != gen {
+			t.Fatalf("round trip changed %+v to %+v, %v", r, again, err)
+		}
+	})
+}
