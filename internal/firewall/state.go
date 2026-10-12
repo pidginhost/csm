@@ -17,6 +17,10 @@ var ErrLongerBlock = errors.New("IP has a longer block; unblock it explicitly be
 // ErrBlockChanged prevents undo from replacing a later firewall decision.
 var ErrBlockChanged = errors.New("block changed since the action; undo is no longer available")
 
+// ErrStateNotKeptAside requires a new startup after unreadable state could
+// not be preserved. Retrying with a fresh engine can miss an unsynced rename.
+var ErrStateNotKeptAside = errors.New("firewall state unreadable and not kept aside")
+
 // SameBlockedEntry compares snapshots without relying on time.Time locations.
 func SameBlockedEntry(a, b BlockedEntry) bool {
 	return a.IP == b.IP && a.Reason == b.Reason && a.Source == b.Source &&

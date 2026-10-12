@@ -4365,6 +4365,9 @@ func (e *Engine) loadStateFileRawLocked() (FirewallState, bool) {
 		state, _, err := e.readCommittedStateLocked()
 		return state, err == nil
 	}
+	if e.stateAsideErr != nil {
+		return FirewallState{}, false
+	}
 
 	stateFile := filepath.Join(e.statePath, "state.json")
 	data, err := os.ReadFile(stateFile) // #nosec G304 -- filepath.Join under operator-configured statePath.
@@ -4430,7 +4433,7 @@ func (e *Engine) ensureStateCacheAtLocked(now time.Time) {
 		if e.stateCache != nil {
 			e.applyExpiryAtLocked(now)
 		} else {
-			e.stateAsideErr = fmt.Errorf("%w: stat: %v", errStateNotKeptAside, statErr)
+			e.stateAsideErr = fmt.Errorf("%w: stat: %v", ErrStateNotKeptAside, statErr)
 		}
 		return
 	}
@@ -4441,10 +4444,6 @@ func (e *Engine) ensureStateCacheAtLocked(now time.Time) {
 	e.applyExpiryAtLocked(now)
 	e.rebuildIndexLocked()
 }
-
-// errStateNotKeptAside refuses Apply over a state file the engine can
-// neither read nor move aside: the next write would replace it.
-var errStateNotKeptAside = errors.New("firewall state unreadable and not kept aside")
 
 // keepPriorStateCacheAtLocked answers a state file the engine cannot read.
 // A held cache stays, and the next write puts it back. Without one, the
@@ -4472,7 +4471,7 @@ func (e *Engine) keepPriorStateCacheAtLocked(now time.Time, path string, cause e
 			if errors.Is(err, os.ErrExist) {
 				continue
 			}
-			e.stateAsideErr = fmt.Errorf("%w: %v; %v", errStateNotKeptAside, cause, err)
+			e.stateAsideErr = fmt.Errorf("%w: %v; %v", ErrStateNotKeptAside, cause, err)
 			return
 		}
 		break
@@ -4484,7 +4483,7 @@ func (e *Engine) keepPriorStateCacheAtLocked(now time.Time, path string, cause e
 		syncDir = syncKeptStateDirectory
 	}
 	if err := syncDir(filepath.Dir(path)); err != nil {
-		e.stateAsideErr = fmt.Errorf("%w: sync kept state: %v", errStateNotKeptAside, err)
+		e.stateAsideErr = fmt.Errorf("%w: sync kept state: %v", ErrStateNotKeptAside, err)
 		return
 	}
 	e.stateAsideErr = nil
@@ -4749,7 +4748,9 @@ func (e *Engine) saveState(s *FirewallState) error {
 			return &stateDurabilityError{cause: err}
 		}
 		fmt.Fprintf(os.Stderr, "firewall: persist state.json failed: %v\n", err)
-		e.clearStateCacheLocked()
+		// A failed write must not make a held engine fresh again: unreadable
+		// external state still needs the last known snapshot for the retry.
+		e.stateCacheKey = stateFileCacheKey{}
 		return err
 	}
 	e.setStateCacheLocked(path, &state)

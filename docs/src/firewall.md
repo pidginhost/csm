@@ -178,8 +178,12 @@ replace it, then starts without the blocked and allowed addresses it held. It
 raises a Critical `firewall_state_unreadable` finding, and `csm doctor` fails
 its `firewall state` check, naming the kept file, until the next restart.
 `automation.firewall_state_set_aside` carries the same path. Review the kept
-file and add back the entries that must stay. If the file cannot be renamed
-or synced, startup fails as above and the kernel keeps its running rules.
+file and add back the entries that must stay. This startup alert bypasses the
+finding queue and finding suppression rules. If the file cannot be renamed
+or synced, startup stops retrying and the kernel keeps its running rules.
+Correct the storage problem before restarting CSM. A running engine keeps
+its known state across an unreadable rewrite, including failed saves, and
+writes that state back when storage accepts a later save.
 
 ## CLI Commands
 

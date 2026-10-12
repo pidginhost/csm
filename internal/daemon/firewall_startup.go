@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -48,7 +49,9 @@ func retryFirewallStartup(stop <-chan struct{}, delays []time.Duration, attempt 
 		if err == nil {
 			return engine, nil
 		}
-		if i == len(delays) {
+		// A fresh engine cannot distinguish a missing file from a rename
+		// whose directory sync failed in the previous attempt.
+		if errors.Is(err, firewall.ErrStateNotKeptAside) || i == len(delays) {
 			return nil, err
 		}
 		timer := time.NewTimer(delays[i])
@@ -73,10 +76,15 @@ func (d *Daemon) startFirewallUsing(ops firewallStartupOps) {
 	engine, err := retryFirewallStartup(d.stopCh, ops.delays, func() (*firewall.Engine, error) {
 		return d.prepareFirewall(effectiveFirewall, ops)
 	})
-	if d.fwStateAside != "" {
-		if !alert.TryEnqueue(d.alertCh, firewallStateSetAsideFinding(d.fwStateAside)) {
-			atomic.AddInt64(&d.droppedAlerts, 1)
-			fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping firewall state finding: %s\n", ts(), d.fwStateAside)
+	if aside := d.firewallStateSetAside(); aside != "" {
+		findings := []alert.Finding{firewallStateSetAsideFinding(aside)}
+		// Startup health owns its delivery, like queue health: the finding
+		// queue and routine suppression must not hide missing firewall state.
+		if d.store != nil {
+			d.store.AppendHistory(findings)
+		}
+		if dispatchErr := alert.Dispatch(d.currentCfg(), findings); dispatchErr != nil {
+			csmlog.Error("firewall state notification failed", "err", dispatchErr)
 		}
 	}
 	if err != nil {
@@ -202,13 +210,21 @@ func (d *Daemon) prepareFirewall(effectiveFirewall *firewall.FirewallConfig, ops
 		setAside = (*firewall.Engine).StateSetAside
 	}
 	if aside := setAside(engine); aside != "" {
+		d.fwStateAsideMu.Lock()
 		d.fwStateAside = aside
+		d.fwStateAsideMu.Unlock()
 	}
 	if err != nil {
 		return nil, fmt.Errorf("applying firewall: %w", err)
 	}
 
 	return engine, nil
+}
+
+func (d *Daemon) firewallStateSetAside() string {
+	d.fwStateAsideMu.RLock()
+	defer d.fwStateAsideMu.RUnlock()
+	return d.fwStateAside
 }
 
 // firewallStateSetAsideFinding reports a state file the engine could not

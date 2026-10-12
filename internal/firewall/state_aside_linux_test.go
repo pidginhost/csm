@@ -98,7 +98,7 @@ func TestApplyRefusesStateItCannotKeepAside(t *testing.T) {
 	}
 	e.renameStateAside = func(string, string) error { return os.ErrPermission }
 	err := e.Apply()
-	if !errors.Is(err, errStateNotKeptAside) || *listed {
+	if !errors.Is(err, ErrStateNotKeptAside) || *listed {
 		t.Fatalf("Apply = %v (kernel reached: %v), want a refusal before the kernel", err, *listed)
 	}
 	if data, readErr := os.ReadFile(path); readErr != nil || string(data) != "{not json" {
@@ -117,7 +117,7 @@ func TestApplyRefusesStateItCannotStat(t *testing.T) {
 		t.Fatal(err)
 	}
 	e, listed := stateAsideEngine(t, file)
-	if err := e.Apply(); !errors.Is(err, errStateNotKeptAside) || *listed {
+	if err := e.Apply(); !errors.Is(err, ErrStateNotKeptAside) || *listed {
 		t.Fatalf("Apply = %v (kernel reached: %v), want a refusal before the kernel", err, *listed)
 	}
 }
@@ -172,7 +172,7 @@ func TestStateWriteRefusesBytesItCannotKeepAside(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.saveState(&FirewallState{}); !errors.Is(err, errStateNotKeptAside) {
+	if err := e.saveState(&FirewallState{}); !errors.Is(err, ErrStateNotKeptAside) {
 		t.Fatalf("save = %v, want refusal", err)
 	}
 	if got, err := os.ReadFile(path); err != nil || string(got) != "{broken" {
@@ -188,7 +188,7 @@ func TestApplyRefusesStatFailureEvenWhenRenameCouldSucceed(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := e.Apply()
-	if !errors.Is(err, errStateNotKeptAside) || *listed || e.StateSetAside() != "" {
+	if !errors.Is(err, ErrStateNotKeptAside) || *listed || e.StateSetAside() != "" {
 		t.Fatalf("Apply = %v, kernel=%v aside=%q; want refusal without a rename", err, *listed, e.StateSetAside())
 	}
 	if target, err := os.Readlink(path); err != nil || target != "state.json" {
@@ -204,13 +204,65 @@ func TestApplyReportsButRefusesUnsyncedKeptState(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Apply(); !errors.Is(err, errStateNotKeptAside) || *listed {
+	if err := e.Apply(); !errors.Is(err, ErrStateNotKeptAside) || *listed {
 		t.Fatalf("Apply = %v, kernel=%v; want refusal", err, *listed)
 	}
 	if got, err := os.ReadFile(e.StateSetAside()); err != nil || string(got) != "{broken" {
 		t.Fatalf("unsynced kept bytes or report lost: %q, %v", got, err)
 	}
-	if err := e.saveState(&FirewallState{}); !errors.Is(err, errStateNotKeptAside) {
+	if err := e.saveState(&FirewallState{}); !errors.Is(err, ErrStateNotKeptAside) {
 		t.Fatalf("save = %v; want refusal until a fresh startup", err)
+	}
+}
+
+func TestFailedStateWriteRetainsHeldStateAcrossUnreadableRewrite(t *testing.T) {
+	dir := t.TempDir()
+	e, _ := stateAsideEngine(t, dir)
+	if err := e.saveBlockedEntry(BlockedEntry{IP: "198.51.100.5", Reason: "operator"}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "state.json")
+	broken := []byte("{broken")
+	if err := os.WriteFile(path, broken, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	write := writeFirewallStateJSON
+	t.Cleanup(func() { writeFirewallStateJSON = write })
+	writeFirewallStateJSON = func(string, os.FileMode, interface{}) error { return os.ErrPermission }
+	if err := e.saveBlockedEntry(BlockedEntry{IP: "198.51.100.6", Reason: "operator"}); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("save = %v, want the write failure", err)
+	}
+	if !e.IsBlocked("198.51.100.5") || e.IsBlocked("198.51.100.6") {
+		t.Error("failed write lost the held block or published the failed block")
+	}
+	if aside := e.StateSetAside(); aside != "" {
+		t.Fatalf("held state was renamed after a write failure: %q", aside)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(broken) {
+		t.Fatalf("failed write changed unreadable bytes: %q, %v", got, err)
+	}
+	writeFirewallStateJSON = write
+	if err := e.saveBlockedEntry(BlockedEntry{IP: "198.51.100.6", Reason: "operator"}); err != nil {
+		t.Fatal(err)
+	}
+	state, ok := e.loadStateFileRawLocked()
+	if !ok || len(state.Blocked) != 2 || !e.IsBlocked("198.51.100.5") || !e.IsBlocked("198.51.100.6") {
+		t.Fatalf("retry did not restore both blocks: %+v, readable=%v", state, ok)
+	}
+}
+
+func TestRawStateReadRefusesUnsyncedKeptStateOnRetry(t *testing.T) {
+	dir := t.TempDir()
+	e, _ := stateAsideEngine(t, dir)
+	e.syncStateAside = func(string) error { return os.ErrPermission }
+	path := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.loadStateFileRawLocked(); ok {
+		t.Fatal("first raw read accepted unreadable state")
+	}
+	if _, ok := e.loadStateFileRawLocked(); ok {
+		t.Fatal("raw retry accepted missing state after the rename failed to sync")
 	}
 }
