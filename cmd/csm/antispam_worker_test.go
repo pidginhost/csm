@@ -22,20 +22,38 @@ func (c *countingTransactor) Remove() antispam.Result {
 
 func unlocked(mutate func() error) error { return mutate() }
 
+type antispamRequestReader struct {
+	reader *strings.Reader
+	reads  int
+}
+
+func (r *antispamRequestReader) Read(p []byte) (int, error) {
+	r.reads++
+	return r.reader.Read(p)
+}
+
 func TestAntispamWorkerRefusesBeforeReading(t *testing.T) {
 	for name, tc := range map[string]struct {
 		euid int
 		args []string
 	}{
 		"not root":       {1000, []string{"antispam-worker"}},
+		"no command":     {0, nil},
 		"extra argument": {0, []string{"antispam-worker", "--force"}},
 	} {
-		var out, errOut bytes.Buffer
-		tr := &countingTransactor{}
-		code := antispamWorker(tc.euid, tc.args, strings.NewReader(`{"operation":"remove"}`), &out, &errOut, tr, unlocked)
-		if code != 1 || out.Len() != 0 || tr.calls != 0 || !strings.Contains(errOut.String(), "requires root") {
-			t.Errorf("%s: code=%d out=%q err=%q calls=%d", name, code, out.String(), errOut.String(), tr.calls)
-		}
+		t.Run(name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			tr := &countingTransactor{}
+			input := &antispamRequestReader{reader: strings.NewReader(`{"operation":"remove"}`)}
+			locked := 0
+			code := antispamWorker(tc.euid, tc.args, input, &out, &errOut, tr, func(mutate func() error) error {
+				locked++
+				return mutate()
+			})
+			if code != 1 || out.Len() != 0 || tr.calls != 0 || input.reads != 0 || locked != 0 || !strings.Contains(errOut.String(), "requires root") {
+				t.Errorf("code=%d out=%q err=%q calls=%d reads=%d locks=%d", code, out.String(), errOut.String(), tr.calls, input.reads, locked)
+			}
+		})
 	}
 }
 
