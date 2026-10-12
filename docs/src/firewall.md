@@ -193,6 +193,10 @@ read, eligible blocks are restored as before and existing unverified marks
 are kept; none of those automatic blocks is evicted to make room for a new one, and `csm doctor` warns until a restart reads the
 ledger. `automation.firewall_ledger_error` carries the reason.
 
+Firewall and threat views omit unverified addresses, including duplicate
+spellings. When firewall state exists, threat views use it alone for block
+status; legacy tracking entries cannot make held-back blocks appear enforced.
+
 ## CLI Commands
 
 ```bash

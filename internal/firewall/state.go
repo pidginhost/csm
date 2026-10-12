@@ -3,6 +3,7 @@ package firewall
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -48,10 +49,27 @@ func LoadState(statePath string) (*FirewallState, error) {
 		return nil, err
 	}
 
+	// The engine keeps an unverified row over its address aliases, even
+	// after expiry. Filtering it alone would expose a duplicate it never seeds.
+	held := make(map[string]bool)
+	for _, entry := range state.Blocked {
+		if !entry.Unverified {
+			continue
+		}
+		if ip := net.ParseIP(entry.IP); ip != nil {
+			held[ip.String()] = true
+		}
+	}
+
 	// Clean expired entries
 	now := time.Now()
 	var active []BlockedEntry
 	for _, entry := range state.Blocked {
+		if len(held) > 0 {
+			if ip := net.ParseIP(entry.IP); ip != nil && held[ip.String()] {
+				continue
+			}
+		}
 		if !entry.Unverified && (entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt)) {
 			active = append(active, entry)
 		}

@@ -264,8 +264,13 @@ func loadFullBlockState(statePath string) map[string]*blockEntry {
 			}
 		}
 	}
+	// A present engine state wins even when its display is empty. Legacy
+	// bookkeeping cannot prove that a held-back or removed block is enforced.
+	if _, err := os.Stat(filepath.Join(statePath, "firewall", "state.json")); !os.IsNotExist(err) {
+		return result
+	}
 
-	// CSM blocked_ips.json (legacy)
+	// CSM blocked_ips.json (legacy fallback when engine state is absent)
 	type csmEntry struct {
 		IP        string    `json:"ip"`
 		Reason    string    `json:"reason"`
