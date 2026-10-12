@@ -9,6 +9,59 @@ import (
 	"testing"
 )
 
+func FuzzParseEximSize(f *testing.F) {
+	for _, seed := range []string{"50M", "+50M", "-0", "-0K", "52428800", " 100k ", "1G", "", "-1", "+-0", "8589934592G", "${if def:x{1}{2}}"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		n, err := ParseEximSize(input)
+		if err != nil {
+			if n != 0 {
+				t.Fatalf("rejected size returned %d", n)
+			}
+			return
+		}
+		if n < 0 || n+sizeHeadroom <= n {
+			t.Fatalf("size %d cannot accommodate headroom", n)
+		}
+		if got, err := ParseEximSize(strconv.FormatInt(n, 10)); err != nil || got != n {
+			t.Fatalf("round trip changed %d to %d, %v", n, got, err)
+		}
+	})
+}
+
+func FuzzMaxMessage(f *testing.F) {
+	for _, seed := range []string{
+		`{"max_message":62914560}`, `{"max_message":0}`, `{"task_timeout":8.0}`,
+		`{"max_message":6.5e7}`, `{"max_message":53477375.99}`, `{"max_message":0.5}`,
+		`{"max_message":9223372036854775807}`, `{"max_message":1e1000}`,
+		`{"dns":{"nameserver":[]},"max_message":62914560}`,
+		`{"max_message":1,"max_message":0}`, `{"max_message":0} trailing`,
+		`{"max_message":-1}`, `{"max_message":null}`, `null`, ``,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, input []byte) {
+		n, err := MaxMessage(input)
+		if err != nil {
+			if n != 0 {
+				t.Fatalf("rejected options returned %d", n)
+			}
+			return
+		}
+		if n < 0 || !json.Valid(input) {
+			t.Fatalf("accepted invalid options with size %d", n)
+		}
+		if _, err := MaxMessage(append(append([]byte(nil), input...), []byte("{}")...)); err == nil {
+			t.Fatal("accepted trailing object")
+		}
+		encoded := []byte(`{"max_message":` + strconv.FormatInt(n, 10) + `}`)
+		if got, err := MaxMessage(encoded); err != nil || got != n {
+			t.Fatalf("round trip changed %d to %d, %v", n, got, err)
+		}
+	})
+}
+
 func FuzzParseRspamdVersion(f *testing.F) {
 	for _, seed := range []string{"Rspamd daemon version 4.2.1\n", "Rspamadm 3.8\n", "Rspamadm 4.2.1-git\n", "Rspamadm 4.2.12345\n", "", "command not found"} {
 		f.Add(seed)

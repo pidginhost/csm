@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -26,8 +27,8 @@ func EximSettingNames() []string {
 	return []string{"message_size_limit", "log_file_path", "exim_user", "exim_group", "system_filter"}
 }
 
-// ParseEximSize reads an Exim size such as message_size_limit: decimal
-// digits with an optional K, M or G suffix in either case (powers of 1024).
+// ParseEximSize reads a non-negative Exim integer with an optional sign
+// and K, M or G suffix in either case (powers of 1024).
 func ParseEximSize(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	shift := 0
@@ -44,28 +45,52 @@ func ParseEximSize(s string) (int64, error) {
 	if shift != 0 {
 		s = s[:len(s)-1]
 	}
-	if s == "" || strings.Trim(s, "0123456789") != "" {
+	digits := s
+	if digits != "" && (digits[0] == '+' || digits[0] == '-') {
+		digits = digits[1:]
+	}
+	if digits == "" || strings.Trim(digits, "0123456789") != "" {
 		return 0, errors.New("not a plain Exim size")
 	}
 	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || n > (1<<62)>>shift {
+	if err != nil || n < 0 || n > (1<<62)>>shift {
 		return 0, errors.New("size out of range")
 	}
 	return n << shift, nil
 }
 
 // MaxMessage reads max_message from `rspamadm configdump -j options`. Zero
-// means unlimited; an absent setting is DefaultMaxMessage. configdump prints
-// a size written with a suffix as a plain integer.
+// means unlimited; an absent setting is DefaultMaxMessage. Rspamd converts
+// numeric values to bytes, discarding any fractional part of a float.
 func MaxMessage(out []byte) (int64, error) {
 	dec := json.NewDecoder(bytes.NewReader(out))
 	dec.UseNumber()
-	var opts map[string]any
-	if err := dec.Decode(&opts); err != nil {
-		return 0, fmt.Errorf("configdump options: %w", err)
-	}
-	if opts == nil {
+	if token, err := dec.Token(); err != nil || token != json.Delim('{') {
 		return 0, errors.New("configdump options: expected an object")
+	}
+	// A duplicate can hide a smaller limit behind an unlimited value.
+	// Decode fields separately so encoding/json cannot choose the last one.
+	opts := make(map[string]any)
+	for dec.More() {
+		token, err := dec.Token()
+		if err != nil {
+			return 0, errors.New("configdump options: invalid JSON")
+		}
+		key, _ := token.(string)
+		if _, seen := opts[key]; seen {
+			return 0, errors.New("configdump options: duplicate field")
+		}
+		var value any
+		if err := dec.Decode(&value); err != nil {
+			return 0, errors.New("configdump options: invalid JSON")
+		}
+		opts[key] = value
+	}
+	if token, err := dec.Token(); err != nil || token != json.Delim('}') {
+		return 0, errors.New("configdump options: invalid JSON")
+	}
+	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return 0, errors.New("configdump options: trailing data")
 	}
 	raw, ok := opts["max_message"]
 	if !ok {
@@ -76,10 +101,16 @@ func MaxMessage(out []byte) (int64, error) {
 		return 0, errors.New("configdump options: max_message is not a number")
 	}
 	n, err := num.Int64()
-	if err != nil || n < 0 {
+	if err == nil && n >= 0 {
+		return n, nil
+	}
+	// Rspamd's UCL integer conversion also accepts floating-point values.
+	// Keep plain integers exact and use the same truncation for floats.
+	size, err := strconv.ParseFloat(num.String(), 64)
+	if err != nil || size < 0 || size >= 1<<63 {
 		return 0, errors.New("configdump options: max_message is not a byte count")
 	}
-	return n, nil
+	return int64(size), nil
 }
 
 // checkMessageSize applies spec section 6.2 item 10: rspamd must accept
