@@ -74,9 +74,13 @@ func fileMode(mode fs.FileMode) fs.FileMode {
 // is never overwritten from a stale snapshot (spec section 6.3 step 1).
 var errConflict = errors.New("changed by another writer during the transaction")
 
+// errDurability means the edit reached the destination but was not fsynced.
+var errDurability = errors.New("file changed but directory sync failed")
+
 // replaceFile makes p hold next, provided p still holds want. An existing
 // file keeps its owner and mode; a new one is 0644 and owned by the worker.
-// next.exists false removes p.
+// The completion record uses next.perm to stay private. next.exists false
+// removes p.
 func replaceFile(p string, want, next fileState) error {
 	cur, err := readFile(p)
 	if err != nil {
@@ -93,12 +97,12 @@ func replaceFile(p string, want, next fileState) error {
 		return err
 	}
 	defer discardTemp(tmp)
-	return replaceStagedFile(p, want, tmp)
+	return replaceStagedFile(p, want, tmp, next.perm)
 }
 
 // Staging and syncing may take long enough for another writer to change p.
 // Recheck its content and refresh its metadata before publishing.
-func replaceStagedFile(p string, want fileState, tmp *os.File) error {
+func replaceStagedFile(p string, want fileState, tmp *os.File, mode fs.FileMode) error {
 	cur, err := readFile(p)
 	if err != nil {
 		return err
@@ -109,6 +113,9 @@ func replaceStagedFile(p string, want fileState, tmp *os.File) error {
 	perm, uid, gid := fs.FileMode(0o644), -1, -1
 	if cur.exists {
 		perm, uid, gid = cur.perm, cur.uid, cur.gid
+	}
+	if mode != 0 {
+		perm = mode
 	}
 	return publishFile(p, tmp, perm, uid, gid, cur.exists)
 }
@@ -183,7 +190,10 @@ func publishFile(p string, tmp *os.File, perm fs.FileMode, uid, gid int, replace
 			return err
 		}
 	}
-	return syncDir(filepath.Dir(p))
+	if err := syncDir(filepath.Dir(p)); err != nil {
+		return fmt.Errorf("%w: %w", errDurability, err)
+	}
+	return nil
 }
 
 // deleteFile removes CSM's own file p, if present, durably.
@@ -194,7 +204,10 @@ func deleteFile(p string) error {
 		}
 		return err
 	}
-	return syncDir(filepath.Dir(p))
+	if err := syncDir(filepath.Dir(p)); err != nil {
+		return fmt.Errorf("%w: %w", errDurability, err)
+	}
+	return nil
 }
 
 func syncDir(dir string) error {

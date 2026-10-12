@@ -20,6 +20,8 @@ func (h *Host) Remove() antispam.Result {
 		}
 		return nil
 	}
+	// A remove request carries no socket, so rollback checks rspamd the same way.
+	t.rspamdRollbackProbe = t.rspamdProbe
 	targets := h.targets()
 	if err := blocking(antispam.CheckRemoval(targets)); err != nil {
 		return failed(StepPreconditions, err)
@@ -74,7 +76,7 @@ func (h *Host) Remove() antispam.Result {
 			if err := t.checkRspamd(t.fwd, nil); err != nil {
 				return t.fail(StepRspamdCheck, err)
 			}
-			if err := t.reloadRspamd(t.fwd); err != nil {
+			if err := t.reloadRspamd(t.fwd, t.rspamdProbe); err != nil {
 				return t.fail(StepRspamdReload, err)
 			}
 		}

@@ -41,6 +41,7 @@ type fakeHost struct {
 type call struct {
 	line     string
 	deadline time.Time
+	limit    time.Duration
 }
 
 func newFake(t *testing.T) *fakeHost {
@@ -75,8 +76,9 @@ func (f *fakeHost) host() *Host {
 		return out
 	}
 	return &Host{
-		root: f.root,
-		run:  f.run,
+		root:    f.root,
+		run:     f.run,
+		replace: replaceFile,
 		preflight: func(context.Context, antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
 			return antispam.HostFacts{Targets: snapshot()}, f.problems
 		},
@@ -113,7 +115,7 @@ func contains(list []int, n int) bool {
 func (f *fakeHost) run(ctx context.Context, limit time.Duration, name string, args ...string) antispam.CommandResult {
 	line := strings.Join(append([]string{name}, args...), " ")
 	deadline, _ := ctx.Deadline()
-	f.calls = append(f.calls, call{line, deadline})
+	f.calls = append(f.calls, call{line: line, deadline: deadline, limit: limit})
 	if f.onCall != nil {
 		f.onCall(line)
 	}
@@ -445,12 +447,40 @@ func TestApplyRollsBackEveryStep(t *testing.T) {
 	}
 }
 
+// Spec 6.3 step 5: when Exim is inactive after the reload, rollback starts
+// it on the restored configuration, and a reload refused because the unit
+// is stopped does not count against the restore.
 func TestApplyStartsEximThatStoppedAfterReload(t *testing.T) {
+	for name, reloadFails := range map[string][]int{"reload accepted": nil, "reload refused": {2}} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			f.fail["systemctl is-active exim.service"] = []int{2, 3}
+			f.fail["systemctl reload exim.service"] = reloadFails
+			r := f.host().Apply(enforce())
+			if r.FailedStep != StepEximProbe || r.Rollback != antispam.RollbackVerified || f.count("systemctl start exim.service") != 1 {
+				t.Errorf("result %+v after %v", r, f.calls)
+			}
+			if f.file(antispam.RecordPath) != "<absent>" {
+				t.Error("verified rollback must restore the absent record")
+			}
+		})
+	}
+}
+
+func TestApplyKeepsIncompleteRecordWhenEximWillNotStart(t *testing.T) {
 	f := newFake(t)
-	f.fail["systemctl is-active exim.service"] = []int{2, 3}
+	f.fail["systemctl is-active exim.service"] = []int{-1}
+	f.fail["systemctl start exim.service"] = []int{1}
 	r := f.host().Apply(enforce())
-	if r.FailedStep != StepEximProbe || r.Rollback != antispam.RollbackVerified || f.count("systemctl start exim.service") != 1 {
-		t.Errorf("result %+v after %v", r, f.calls)
+	if r.OK || r.FailedStep != StepPreconditions {
+		t.Fatalf("apply with Exim down: %+v", r)
+	}
+	f = newFake(t)
+	f.fail["systemctl is-active exim.service"] = []int{2, 3, 4}
+	f.fail["systemctl start exim.service"] = []int{1}
+	r = f.host().Apply(enforce())
+	if r.FailedStep != StepEximProbe || r.Rollback != antispam.RollbackFailed || f.file(antispam.RecordPath) != string(antispam.EncodeRecord("")) {
+		t.Errorf("result %+v; record %q", r, f.file(antispam.RecordPath))
 	}
 }
 
@@ -506,8 +536,13 @@ func TestApplyReservesRollbackTime(t *testing.T) {
 	f.host().Apply(enforce())
 	var builds []time.Time
 	for _, c := range f.calls {
+		wantLimit := commandLimit
 		if c.line == BuildEximConf {
 			builds = append(builds, c.deadline)
+			wantLimit = buildLimit
+		}
+		if c.limit != wantLimit {
+			t.Errorf("%s limit %v, want %v", c.line, c.limit, wantLimit)
 		}
 	}
 	if len(builds) != 2 || !builds[0].Equal(f.start.Add(forwardBudget)) || !builds[1].Equal(f.start.Add(totalBudget)) {

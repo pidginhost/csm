@@ -398,3 +398,22 @@ func TestRunCommandStopsChildrenHoldingOutput(t *testing.T) {
 		})
 	}
 }
+
+func TestRunCommandDeadlineStopsChildWriters(t *testing.T) {
+	dir := t.TempDir()
+	ready, changed := filepath.Join(dir, "ready"), filepath.Join(dir, "changed")
+	r := RunCommand(context.Background(), 300*time.Millisecond, "sh", "-c",
+		`(printf ready > "$1"; sleep 0.6; printf changed > "$2") & wait`, "sh", ready, changed)
+	if !errors.Is(r.Err, context.DeadlineExceeded) {
+		t.Fatalf("command error %v, want deadline exceeded", r.Err)
+	}
+	if data, err := os.ReadFile(ready); err != nil || string(data) != "ready" {
+		t.Fatalf("child did not start before the deadline: %v", err)
+	}
+	// A timed-out builder must not leave children changing files while
+	// rollback rebuilds the prior configuration.
+	time.Sleep(700 * time.Millisecond)
+	if _, err := os.Stat(changed); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("child continued writing after the deadline: %v", err)
+	}
+}

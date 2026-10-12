@@ -50,6 +50,7 @@ type Host struct {
 	// root prefixes every host path; it is "" on a live host.
 	root      string
 	run       func(ctx context.Context, limit time.Duration, name string, args ...string) antispam.CommandResult
+	replace   func(p string, want, next fileState) error
 	preflight func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem)
 	targets   func() []antispam.TargetFacts
 	ping      func(ctx context.Context, socket string) error
@@ -62,7 +63,8 @@ type Host struct {
 // New returns a Host for the live cPanel paths.
 func New() *Host {
 	return &Host{
-		run: hostfacts.RunCommand,
+		run:     hostfacts.RunCommand,
+		replace: replaceFile,
 		preflight: func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
 			f := hostfacts.Collect(ctx, s.Socket)
 			return f, antispam.CheckHost(f)
@@ -102,6 +104,7 @@ type tx struct {
 	cancel context.CancelFunc
 
 	record        fileState
+	recordCurrent fileState
 	recordWritten bool
 	writes        []written
 	eximTouched   bool
@@ -113,7 +116,8 @@ type tx struct {
 	rspamdReloaded bool
 	rspamdActive   bool
 	// rspamdProbe confirms rspamd after a reload.
-	rspamdProbe func(context.Context) error
+	rspamdProbe         func(context.Context) error
+	rspamdRollbackProbe func(context.Context) error
 }
 
 func (h *Host) begin() *tx {
@@ -123,13 +127,27 @@ func (h *Host) begin() *tx {
 }
 
 func (t *tx) cmd(ctx context.Context, limit time.Duration, name string, args ...string) antispam.CommandResult {
-	return t.h.run(ctx, limit, name, args...)
+	if err := ctx.Err(); err != nil {
+		return antispam.CommandResult{Err: err}
+	}
+	r := t.h.run(ctx, limit, name, args...)
+	if err := ctx.Err(); err != nil {
+		r.Err = err
+	}
+	return r
 }
 
-// cmdErr describes a failed command by name and exit status only: command
+// cmdErr describes a failed command by name and timeout only: command
 // output can carry configuration text (spec section 7).
 func cmdErr(what string, r antispam.CommandResult) error {
-	return fmt.Errorf("%s failed: %w", what, r.Err)
+	switch {
+	case errors.Is(r.Err, context.DeadlineExceeded):
+		return fmt.Errorf("%s failed: %w", what, context.DeadlineExceeded)
+	case errors.Is(r.Err, context.Canceled):
+		return fmt.Errorf("%s failed: %w", what, context.Canceled)
+	default:
+		return fmt.Errorf("%s failed", what)
+	}
 }
 
 func failed(step string, err error) antispam.Result {
@@ -200,13 +218,22 @@ func split(changes []change) (rspamd, exim []change) {
 // write applies one planned edit unless another writer changed the file
 // since the snapshot.
 func (t *tx) write(c change) error {
-	p := t.h.path(c.target.Path)
-	before := fileState{exists: !c.target.Missing, content: c.target.Content}
-	if err := replaceFile(p, before, c.next); err != nil {
+	if err := t.fwd.Err(); err != nil {
 		return err
 	}
-	t.writes = append(t.writes, written{path: p, before: before, next: c.next})
-	return nil
+	p := t.h.path(c.target.Path)
+	before := fileState{exists: !c.target.Missing, content: c.target.Content}
+	err := t.h.replace(p, before, c.next)
+	if err == nil || errors.Is(err, errDurability) {
+		t.writes = append(t.writes, written{path: p, before: before, next: c.next})
+		if c.target.Kind != antispam.TargetRspamd {
+			t.eximTouched = true
+		}
+	}
+	if err == nil {
+		return t.fwd.Err()
+	}
+	return err
 }
 
 // readRecord reads the completion record into t.record.
@@ -216,6 +243,7 @@ func (t *tx) readRecord() (antispam.Record, bool, error) {
 		return antispam.Record{}, false, fmt.Errorf("cannot read %s: %w", antispam.RecordPath, err)
 	}
 	t.record = st
+	t.recordCurrent = st
 	if !st.exists {
 		return antispam.Record{}, false, nil
 	}
@@ -225,17 +253,39 @@ func (t *tx) readRecord() (antispam.Record, bool, error) {
 
 // writeRecord persists a record; an empty generation marks work in progress.
 func (t *tx) writeRecord(generation string) error {
+	return t.replaceRecord(t.fwd, generation)
+}
+
+func (t *tx) replaceRecord(ctx context.Context, generation string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	p := t.h.path(antispam.RecordPath)
 	if err := privateDir(filepath.Dir(p)); err != nil {
 		return err
 	}
-	t.recordWritten = true
-	return writeAtomic(p, string(antispam.EncodeRecord(generation)), 0o600, -1, -1)
+	next := fileState{exists: true, content: string(antispam.EncodeRecord(generation)), perm: 0o600}
+	err := t.h.replace(p, t.recordCurrent, next)
+	if err == nil || errors.Is(err, errDurability) {
+		t.recordWritten = true
+		t.recordCurrent = next
+	}
+	if err == nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 func (t *tx) removeRecord() error {
-	t.recordWritten = true
-	return deleteFile(t.h.path(antispam.RecordPath))
+	if err := t.fwd.Err(); err != nil {
+		return err
+	}
+	err := t.h.replace(t.h.path(antispam.RecordPath), t.recordCurrent, fileState{})
+	if err == nil || errors.Is(err, errDurability) {
+		t.recordWritten = true
+		t.recordCurrent = fileState{}
+	}
+	return err
 }
 
 // listenerProbe reads where Exim listens and checks that one listener greets
@@ -278,7 +328,6 @@ func (t *tx) exim(changes []change, verify func(conf, rcptACL, dataACL string) e
 		if err := t.write(c); err != nil {
 			return StepEximFiles, err
 		}
-		t.eximTouched = true
 	}
 	t.eximTouched = true
 	if r := t.cmd(t.fwd, buildLimit, BuildEximConf); r.Err != nil {
@@ -336,7 +385,7 @@ func (t *tx) probeExim(ctx context.Context) error {
 		return nil
 	}
 	if err := retry(ctx, t.h.eximWait, func(ctx context.Context) error { return t.h.greet(ctx, t.greeting) }); err != nil {
-		return fmt.Errorf("exim did not greet on %s after reload", t.greeting)
+		return errors.New("exim SMTP greeting probe failed")
 	}
 	return nil
 }
@@ -356,7 +405,7 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 	}
 	enabled, err := antispam.EnabledModules(mods.Stdout)
 	if err != nil {
-		return err
+		return errors.New("rspamadm configdump -m: rspamd configuration conflict")
 	}
 	acts := t.cmd(ctx, commandLimit, "rspamadm", "configdump", "-j", "actions")
 	if acts.Err != nil {
@@ -365,21 +414,24 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 	actions, err := antispam.ParseActions([]byte(acts.Stdout))
 	if err != nil {
 		// Object-form actions hide their thresholds: a conflict, not drift.
-		return fmt.Errorf("rspamd actions cannot be compared with CSM's: %w", err)
+		return errors.New("rspamadm configdump -j actions: rspamd configuration conflict")
 	}
 	if conflicts := antispam.CheckRspamd(enabled, actions, *s); len(conflicts) > 0 {
-		return errors.New(strings.Join(conflicts, "; "))
+		return errors.New("rspamadm configdump -j actions: rspamd configuration conflict")
 	}
 	return nil
 }
 
 // reloadRspamd reloads rspamd and waits for its probe (spec 6.3 step 2).
-func (t *tx) reloadRspamd(ctx context.Context) error {
+func (t *tx) reloadRspamd(ctx context.Context, probe func(context.Context) error) error {
 	t.rspamdReloaded = true
 	if r := t.cmd(ctx, commandLimit, "systemctl", "reload", antispam.RspamdUnit); r.Err != nil {
 		return cmdErr("systemctl reload rspamd", r)
 	}
-	return t.rspamdProbe(ctx)
+	if err := probe(ctx); err != nil {
+		return errors.New("rspamd /ping probe failed")
+	}
+	return ctx.Err()
 }
 
 // fail rolls back and reports step as the failed step.
@@ -395,16 +447,32 @@ func (t *tx) fail(step string, err error) antispam.Result {
 // rollback restores every change in reverse and reloads each service whose
 // reload was attempted. "verified" needs every restore, rebuild, reload and
 // probe to succeed; otherwise the incomplete record stays for reconcile.
-func (t *tx) rollback() (string, error) {
+func (t *tx) rollback() (state string, rollbackErr error) {
 	if !t.recordWritten && len(t.writes) == 0 && !t.eximTouched && !t.rspamdReloaded {
 		return antispam.RollbackNone, nil
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), t.start.Add(totalBudget))
 	defer cancel()
+	defer func() {
+		if state == antispam.RollbackFailed && t.recordWritten &&
+			t.recordCurrent.content != string(antispam.EncodeRecord("")) {
+			rollbackErr = errors.Join(rollbackErr, t.replaceRecord(ctx, ""))
+		}
+	}()
 	var errs []error
+	// Completion can reach disk before its fsync fails. Invalidate it
+	// before recovery, which may consume the rest of the rollback budget.
+	if t.recordWritten && t.recordCurrent.content != string(antispam.EncodeRecord("")) {
+		if err := t.replaceRecord(ctx, ""); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	for i := len(t.writes) - 1; i >= 0; i-- {
+		if err := ctx.Err(); err != nil {
+			return antispam.RollbackFailed, err
+		}
 		w := t.writes[i]
-		if err := replaceFile(w.path, w.next, w.before); err != nil {
+		if err := t.h.replace(w.path, w.next, w.before); err != nil {
 			errs = append(errs, fmt.Errorf("restoring %s: %w", strings.TrimPrefix(w.path, t.h.root), err))
 		}
 	}
@@ -416,9 +484,15 @@ func (t *tx) rollback() (string, error) {
 		}
 	}
 	if t.eximReloaded {
-		t.cmd(ctx, commandLimit, "systemctl", "reload", antispam.EximUnit)
-		if r := t.cmd(ctx, commandLimit, "systemctl", "is-active", antispam.EximUnit); r.Err != nil {
-			t.cmd(ctx, commandLimit, "systemctl", "start", antispam.EximUnit)
+		reload := t.cmd(ctx, commandLimit, "systemctl", "reload", antispam.EximUnit)
+		if t.cmd(ctx, commandLimit, "systemctl", "is-active", antispam.EximUnit).Err != nil {
+			// Spec 6.3 step 5: an Exim that stopped is started on the restored
+			// configuration; this is not a restart of a running daemon.
+			if r := t.cmd(ctx, commandLimit, "systemctl", "start", antispam.EximUnit); r.Err != nil {
+				errs = append(errs, cmdErr("systemctl start exim", r))
+			}
+		} else if reload.Err != nil {
+			errs = append(errs, cmdErr("systemctl reload exim", reload))
 		}
 		if err := t.probeExim(ctx); err != nil {
 			errs = append(errs, err)
@@ -427,7 +501,8 @@ func (t *tx) rollback() (string, error) {
 	if t.rspamdReloaded {
 		if err := t.checkRspamd(ctx, nil); err != nil {
 			errs = append(errs, err)
-		} else if err := t.reloadRspamd(ctx); err != nil {
+		}
+		if err := t.reloadRspamd(ctx, t.rspamdRollbackProbe); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -435,17 +510,25 @@ func (t *tx) rollback() (string, error) {
 		return antispam.RollbackFailed, errors.Join(errs...)
 	}
 	if t.recordWritten {
-		if err := t.restoreRecord(); err != nil {
+		if err := t.restoreRecord(ctx); err != nil {
 			return antispam.RollbackFailed, err
 		}
 	}
 	return antispam.RollbackVerified, nil
 }
 
-func (t *tx) restoreRecord() error {
-	p := t.h.path(antispam.RecordPath)
-	if !t.record.exists {
-		return deleteFile(p)
+func (t *tx) restoreRecord(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return writeAtomic(p, t.record.content, 0o600, -1, -1)
+	p := t.h.path(antispam.RecordPath)
+	before := t.record
+	if before.exists {
+		before.perm = 0o600
+	}
+	err := t.h.replace(p, t.recordCurrent, before)
+	if err == nil || errors.Is(err, errDurability) {
+		t.recordCurrent = before
+	}
+	return err
 }

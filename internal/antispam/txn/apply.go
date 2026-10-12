@@ -3,6 +3,7 @@ package txn
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/pidginhost/csm/internal/antispam"
 )
@@ -18,8 +19,22 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		return retry(ctx, h.rspamdWait, func(ctx context.Context) error { return h.ping(ctx, s.Socket) })
 	}
 	f, problems := h.preflight(t.fwd, s)
+	if err := t.fwd.Err(); err != nil {
+		return failed(StepPreconditions, err)
+	}
 	if err := blocking(problems); err != nil {
 		return failed(StepPreconditions, err)
+	}
+	installed := antispam.InstalledContent(f.Targets)
+	rollbackSocket := s.Socket
+	// An update can select a new socket. Rollback must probe the scanner
+	// referenced by the hooks it restores, rather than the failed update.
+	address := antispam.ParseEximOptions(installed[antispam.LocalEximConfPath])["spamd_address"]
+	if fields := strings.Fields(address); len(fields) > 0 && antispam.ValidateSocket(fields[0]) == nil {
+		rollbackSocket = fields[0]
+	}
+	t.rspamdRollbackProbe = func(ctx context.Context) error {
+		return retry(ctx, h.rspamdWait, func(ctx context.Context) error { return h.ping(ctx, rollbackSocket) })
 	}
 	hooks, err := antispam.RenderExim(s)
 	if err != nil {
@@ -41,7 +56,7 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	}
 	// A complete record that matches the installed text proves the last
 	// transaction reloaded both services with it.
-	matches := valid && record.Complete() && *record.Generation == antispam.Generation(antispam.InstalledContent(f.Targets))
+	matches := valid && record.Complete() && *record.Generation == antispam.Generation(installed)
 	opts, err := t.eximSettings(t.fwd)
 	if err != nil {
 		return failed(StepPreconditions, err)
@@ -72,7 +87,7 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		if err := t.checkRspamd(t.fwd, &s); err != nil {
 			return t.fail(StepRspamdCheck, err)
 		}
-		if err := t.reloadRspamd(t.fwd); err != nil {
+		if err := t.reloadRspamd(t.fwd, t.rspamdProbe); err != nil {
 			return t.fail(StepRspamdReload, err)
 		}
 	}
