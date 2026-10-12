@@ -704,9 +704,6 @@ func (e *Engine) applyRulesetLocked(marker string) error {
 	// missing or malformed the slices stay empty and the new table
 	// still applies (no firewall regression on a fresh install).
 	initial := e.computeInitialBlockStateLocked()
-	if e.stateAsideErr != nil {
-		return e.stateAsideErr
-	}
 
 	// Check if existing CSM table needs replacing.
 	// If so, include the delete in the same atomic batch as the new table.
@@ -715,13 +712,23 @@ func (e *Engine) applyRulesetLocked(marker string) error {
 	// live chains (doubled meters, halved rate limits).
 	tables, err := e.listTablesFn()()
 	if err != nil {
-		return fmt.Errorf("%w: %v", errTableListing, err)
+		return errors.Join(e.stateAsideErr, fmt.Errorf("%w: %v", errTableListing, err))
 	}
+	var running *nftables.Table
 	for _, t := range tables {
 		if t.Name == "csm" && t.Family == nftables.TableFamilyINet {
-			e.conn.DelTable(t)
+			running = t
 			break
 		}
+	}
+	// State the engine could neither read nor keep aside seeds nothing and
+	// fails startup. A running ruleset keeps its blocks; after a reboot the
+	// kernel has none, so the base rules still go in.
+	if e.stateAsideErr != nil && running != nil {
+		return e.stateAsideErr
+	}
+	if running != nil {
+		e.conn.DelTable(running)
 	}
 
 	// Create table - all operations below are batched, nothing is sent until Flush()
@@ -765,7 +772,7 @@ func (e *Engine) applyRulesetLocked(marker string) error {
 	// undo an applied firewall nor bless a later, possibly external edit.
 	e.appliedRuleset, _ = e.readRulesetLocked()
 
-	return nil
+	return e.stateAsideErr
 }
 
 // createSets creates the nftables named sets for IP management.

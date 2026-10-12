@@ -180,18 +180,22 @@ its `firewall state` check, naming the kept file, until the next restart.
 `automation.firewall_state_set_aside` carries the same path. Review the kept
 file and add back the entries that must stay. This startup alert bypasses the
 finding queue and finding suppression rules. If the file cannot be renamed
-or synced, startup stops retrying and the kernel keeps its running rules.
-Correct the storage problem before restarting CSM. A running engine keeps
-its known state across an unreadable rewrite, including failed saves, and
-writes that state back when storage accepts a later save.
+or synced, startup fails without retrying. A running CSM ruleset stays in
+place with its blocks; after a reboot, CSM installs its base rules without
+the saved entries. Correct the storage problem before restarting CSM. A
+running engine keeps its known state across an unreadable rewrite, including
+failed saves, and writes that state back when storage accepts a later save.
 
 Before restoring blocks at startup, CSM asks the admission ledger about every
 block an automatic response attempt wrote. Blocks whose attempt is still
-running, ended unknown or failed are marked unverified and held back: they are
-neither restored to the kernel nor reported as blocked. If the ledger cannot be
-read, eligible blocks are restored as before and existing unverified marks
-are kept; none of those automatic blocks is evicted to make room for a new one, and `csm doctor` warns until a restart reads the
-ledger. `automation.firewall_ledger_error` carries the reason.
+running, ended unknown or failed are marked unverified and held back from the
+kernel. Firewall views omit them once the mark is saved; if the mark cannot be
+saved, the block still stays out of the kernel, but views can list it until a
+later save succeeds. If the ledger cannot be read, eligible blocks are restored
+as before and existing unverified marks are kept; none of those automatic
+blocks is evicted to make room for a new one, and `csm doctor` warns until a
+restart reads the ledger. `automation.firewall_ledger_error` carries the
+reason.
 
 Firewall and threat views omit unverified addresses, including duplicate
 spellings. When firewall state exists, threat views use it alone for block

@@ -11,24 +11,28 @@ import (
 	"time"
 
 	"github.com/google/nftables"
+	"github.com/mdlayher/netlink"
 )
 
 var stateAsideAt = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
 const stateAsideSuffix = ".unreadable-20260301T120000Z"
 
-func stateAsideEngine(t *testing.T, dir string) (*Engine, *bool) {
+// stateAsideEngine runs against a kernel that already has the CSM table;
+// sent records every message an Apply sends to it.
+func stateAsideEngine(t *testing.T, dir string) (*Engine, *[]netlink.Message) {
 	t.Helper()
-	listed := false
+	conn, sent := nftConnCapturingRules(t)
 	return &Engine{
 		statePath:   dir,
 		cfg:         &FirewallConfig{},
+		conn:        conn,
 		expiryClock: func() time.Time { return stateAsideAt },
 		listTables: func() ([]*nftables.Table, error) {
-			listed = true
-			return nil, errors.New("listing stops the test before the kernel")
+			return []*nftables.Table{{Name: "csm", Family: nftables.TableFamilyINet}}, nil
 		},
-	}, &listed
+		readRuleset: func() (string, error) { return "table inet csm {}", nil },
+	}, sent
 }
 
 // A fresh engine read an unreadable state file as empty, and its next
@@ -91,15 +95,15 @@ func TestUnreadableRewriteKeepsHeldState(t *testing.T) {
 // it has, with its blocks.
 func TestApplyRefusesStateItCannotKeepAside(t *testing.T) {
 	dir := t.TempDir()
-	e, listed := stateAsideEngine(t, dir)
+	e, sent := stateAsideEngine(t, dir)
 	path := filepath.Join(dir, "state.json")
 	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	e.renameStateAside = func(string, string) error { return os.ErrPermission }
 	err := e.Apply()
-	if !errors.Is(err, ErrStateNotKeptAside) || *listed {
-		t.Fatalf("Apply = %v (kernel reached: %v), want a refusal before the kernel", err, *listed)
+	if !errors.Is(err, ErrStateNotKeptAside) || len(*sent) != 0 {
+		t.Fatalf("Apply = %v (%d messages sent), want a refusal that keeps the running rules", err, len(*sent))
 	}
 	if data, readErr := os.ReadFile(path); readErr != nil || string(data) != "{not json" {
 		t.Fatalf("state file = %q, %v; want it untouched", data, readErr)
@@ -116,9 +120,9 @@ func TestApplyRefusesStateItCannotStat(t *testing.T) {
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	e, listed := stateAsideEngine(t, file)
-	if err := e.Apply(); !errors.Is(err, ErrStateNotKeptAside) || *listed {
-		t.Fatalf("Apply = %v (kernel reached: %v), want a refusal before the kernel", err, *listed)
+	e, sent := stateAsideEngine(t, file)
+	if err := e.Apply(); !errors.Is(err, ErrStateNotKeptAside) || len(*sent) != 0 {
+		t.Fatalf("Apply = %v (%d messages sent), want a refusal that keeps the running rules", err, len(*sent))
 	}
 }
 
@@ -182,14 +186,14 @@ func TestStateWriteRefusesBytesItCannotKeepAside(t *testing.T) {
 
 func TestApplyRefusesStatFailureEvenWhenRenameCouldSucceed(t *testing.T) {
 	dir := t.TempDir()
-	e, listed := stateAsideEngine(t, dir)
+	e, sent := stateAsideEngine(t, dir)
 	path := filepath.Join(dir, "state.json")
 	if err := os.Symlink("state.json", path); err != nil {
 		t.Fatal(err)
 	}
 	err := e.Apply()
-	if !errors.Is(err, ErrStateNotKeptAside) || *listed || e.StateSetAside() != "" {
-		t.Fatalf("Apply = %v, kernel=%v aside=%q; want refusal without a rename", err, *listed, e.StateSetAside())
+	if !errors.Is(err, ErrStateNotKeptAside) || len(*sent) != 0 || e.StateSetAside() != "" {
+		t.Fatalf("Apply = %v, sent=%d aside=%q; want refusal without a rename", err, len(*sent), e.StateSetAside())
 	}
 	if target, err := os.Readlink(path); err != nil || target != "state.json" {
 		t.Fatalf("state link changed: %q, %v", target, err)
@@ -198,14 +202,14 @@ func TestApplyRefusesStatFailureEvenWhenRenameCouldSucceed(t *testing.T) {
 
 func TestApplyReportsButRefusesUnsyncedKeptState(t *testing.T) {
 	dir := t.TempDir()
-	e, listed := stateAsideEngine(t, dir)
+	e, sent := stateAsideEngine(t, dir)
 	e.syncStateAside = func(string) error { return errors.New("fixture sync failure") }
 	path := filepath.Join(dir, "state.json")
 	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Apply(); !errors.Is(err, ErrStateNotKeptAside) || *listed {
-		t.Fatalf("Apply = %v, kernel=%v; want refusal", err, *listed)
+	if err := e.Apply(); !errors.Is(err, ErrStateNotKeptAside) || len(*sent) != 0 {
+		t.Fatalf("Apply = %v, sent=%d; want refusal", err, len(*sent))
 	}
 	if got, err := os.ReadFile(e.StateSetAside()); err != nil || string(got) != "{broken" {
 		t.Fatalf("unsynced kept bytes or report lost: %q, %v", got, err)
@@ -264,5 +268,56 @@ func TestRawStateReadRefusesUnsyncedKeptStateOnRetry(t *testing.T) {
 	}
 	if _, ok := e.loadStateFileRawLocked(); ok {
 		t.Fatal("raw retry accepted missing state after the rename failed to sync")
+	}
+}
+
+// After a reboot the kernel has no CSM table. State that can be neither read
+// nor kept aside must not leave the host without its base rules: Apply
+// installs them with no saved entries, still refuses startup, and the bytes
+// stay where they are.
+func TestApplyInstallsBaseRulesWhenStateCannotBeKept(t *testing.T) {
+	for _, cause := range []string{"rename", "stat"} {
+		dir := t.TempDir()
+		e, sent := stateAsideEngine(t, dir)
+		e.listTables = func() ([]*nftables.Table, error) { return nil, nil }
+		path := filepath.Join(dir, "state.json")
+		if cause == "rename" {
+			if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			e.renameStateAside = func(string, string) error { return os.ErrPermission }
+		} else if err := os.Symlink("state.json", path); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.Apply(); !errors.Is(err, ErrStateNotKeptAside) || len(*sent) == 0 {
+			t.Fatalf("%s: Apply = %v, sent=%d; want the base rules installed and startup refused", cause, err, len(*sent))
+		}
+		if got := len(newSetElemTimeouts(t, *sent, "blocked_ips")); got != 0 {
+			t.Fatalf("%s: %d blocks seeded from state that was not kept", cause, got)
+		}
+		if cause == "rename" {
+			if got, err := os.ReadFile(path); err != nil || string(got) != "{broken" {
+				t.Fatalf("state bytes = %q, %v; want them untouched", got, err)
+			}
+		}
+		if err := e.saveState(&FirewallState{}); !errors.Is(err, ErrStateNotKeptAside) {
+			t.Fatalf("%s: save after the base install = %v; want refusal", cause, err)
+		}
+	}
+}
+
+// A listing that fails cannot tell a running ruleset from an empty kernel:
+// nothing is sent and the refusal still stops startup retries.
+func TestApplyRefusesUnkeptStateWhenListingFails(t *testing.T) {
+	dir := t.TempDir()
+	e, sent := stateAsideEngine(t, dir)
+	e.listTables = func() ([]*nftables.Table, error) { return nil, errors.New("netlink: ENOBUFS") }
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	e.renameStateAside = func(string, string) error { return os.ErrPermission }
+	err := e.Apply()
+	if !errors.Is(err, ErrStateNotKeptAside) || !errors.Is(err, errTableListing) || len(*sent) != 0 {
+		t.Fatalf("Apply = %v, sent=%d; want both causes and no change", err, len(*sent))
 	}
 }

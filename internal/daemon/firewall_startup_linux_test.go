@@ -5,6 +5,7 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +35,11 @@ func TestFirewallStartupDoesNotRetryStatePreservationFailure(t *testing.T) {
 			attempts++
 			return firewall.NewEngine(cfg, path)
 		},
-		apply:  (*firewall.Engine).Apply,
+		// Apply's refusal is pinned in the firewall package. Reaching it here
+		// would list, and on a fresh kernel install, the host's ruleset.
+		apply: func(*firewall.Engine) error {
+			return fmt.Errorf("fixture: %w", firewall.ErrStateNotKeptAside)
+		},
 		delays: []time.Duration{0, 0},
 	})
 	if attempts != 1 || d.fwEngine != nil || d.AutomationStatus().FirewallStartupError == "" {
