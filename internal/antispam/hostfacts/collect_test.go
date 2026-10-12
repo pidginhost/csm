@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -313,21 +315,49 @@ func TestRunCommandStopsAtDeadline(t *testing.T) {
 	}
 }
 
-// /etc/exim.conf.local owned by a tenant is a problem CheckHost reports, but
-// the collector reads it first: the tenant could have grown it to any size.
-func TestReadTextRejectsOversizedFile(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "exim.conf.local")
-	write(t, p, "")
-	if err := os.Truncate(p, maxConfigBytes); err != nil {
-		t.Fatal(err)
+// The local Exim configuration is read both as a host fact and as a mutation
+// target. Either read must reject oversized files without returning a prefix.
+func TestConfigurationReadsRejectOversizedFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read func(string) (string, error)
+	}{
+		{"host fact", readText},
+		{"mutation target", readRegularContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "exim.conf.local")
+			write(t, p, "")
+			if err := os.Truncate(p, maxConfigBytes); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := tc.read(p); err != nil || len(got) != maxConfigBytes {
+				t.Fatalf("file at the limit: %d bytes, err %v", len(got), err)
+			}
+			if err := os.Truncate(p, maxConfigBytes+1); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := tc.read(p); err == nil || got != "" {
+				t.Fatalf("oversized file: %d bytes, err %v; want an error", len(got), err)
+			}
+		})
 	}
-	if got, err := readText(p); err != nil || len(got) != maxConfigBytes {
-		t.Fatalf("file at the limit: %d bytes, err %v", len(got), err)
+}
+
+func TestReadConfigContentStopsAtLimit(t *testing.T) {
+	r := strings.NewReader(strings.Repeat("x", maxConfigBytes+2))
+	if got, err := readConfigContent(r); err == nil || got != "" {
+		t.Fatalf("oversized content: %d bytes, err %v; want an error with no content", len(got), err)
 	}
-	if err := os.Truncate(p, maxConfigBytes+1); err != nil {
-		t.Fatal(err)
+	if r.Len() != 1 {
+		t.Fatalf("unread bytes = %d; want 1 so only the limit plus one byte was read", r.Len())
 	}
-	if got, err := readText(p); err == nil || got != "" {
-		t.Fatalf("oversized file: %d bytes, err %v; want an error", len(got), err)
+}
+
+func TestReadConfigContentDiscardsPartialRead(t *testing.T) {
+	wantErr := errors.New("read failure")
+	r := io.MultiReader(strings.NewReader("partial"), iotest.ErrReader(wantErr))
+	if got, err := readConfigContent(r); got != "" || !errors.Is(err, wantErr) {
+		t.Fatalf("failed read: got %q, err %v; want no content and the read error", got, err)
 	}
 }

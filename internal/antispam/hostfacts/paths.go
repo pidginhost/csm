@@ -5,7 +5,6 @@ package hostfacts
 import (
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -140,8 +139,7 @@ func readRegularContent(p string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", errors.New("mutation target is not a regular file")
 	}
-	data, err := io.ReadAll(file)
-	return string(data), err
+	return readConfigContent(file)
 }
 
 // targetFacts describes one mutation target.

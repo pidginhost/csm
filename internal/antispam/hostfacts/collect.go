@@ -192,7 +192,11 @@ func readText(p string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", errors.New("configuration is not a regular file")
 	}
-	data, err := io.ReadAll(io.LimitReader(file, maxConfigBytes+1))
+	return readConfigContent(file)
+}
+
+func readConfigContent(r io.Reader) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxConfigBytes+1))
 	switch {
 	case err != nil:
 		return "", err
