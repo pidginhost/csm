@@ -290,20 +290,21 @@ func checkSocket(s SocketFacts) []Problem {
 	trusted := func(uid int) bool { return uid == 0 || uid == s.RspamdUID }
 	eximKnown := s.EximUID >= 0 && s.EximGID >= 0
 	// Without the rspamd uid, one non-root owner or listener may be rspamd's;
-	// two different ones cannot both be.
+	// two different ones cannot both be. That pair is enough evidence, and
+	// keeping only it bounds the diagnostic even after a long symlink walk.
 	var owners []int
 	if s.RspamdUID < 0 {
-		uids := []int{}
-		if s.Err == nil && !s.Missing {
-			uids = append(uids, s.Socket.UID, s.PeerUID)
-		}
-		for _, p := range s.Parents {
-			uids = append(uids, p.UID)
-		}
-		for _, uid := range uids {
-			if uid > 0 && !slices.Contains(owners, uid) {
+		rememberOwner := func(uid int) {
+			if uid > 0 && len(owners) < 2 && !slices.Contains(owners, uid) {
 				owners = append(owners, uid)
 			}
+		}
+		if s.Err == nil && !s.Missing {
+			rememberOwner(s.Socket.UID)
+			rememberOwner(s.PeerUID)
+		}
+		for _, p := range s.Parents {
+			rememberOwner(p.UID)
 		}
 		slices.Sort(owners)
 	}

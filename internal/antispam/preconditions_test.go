@@ -2,6 +2,7 @@ package antispam
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"strings"
 	"testing"
@@ -428,6 +429,60 @@ func TestCheckHostSocketOwnersWithUnknownRspamdUser(t *testing.T) {
 			got := CheckHost(f)
 			if len(got) != 1 || got[0].Code != CodeSocket || got[0].Severity != tc.sev || !strings.Contains(got[0].Detail, tc.detail) {
 				t.Fatalf("got %+v, want one socket problem of severity %d naming %q", got, tc.sev, tc.detail)
+			}
+		})
+	}
+}
+
+func TestCheckHostSocketOwnerDiagnosticStaysBounded(t *testing.T) {
+	f := goodFacts()
+	f.Socket.RspamdUID = -1
+	for i := range 128 {
+		f.Socket.Parents = append(f.Socket.Parents, PathFacts{
+			Path: fmt.Sprintf("/run/socket-link-%d", i),
+			UID:  1000 + i,
+			Mode: fs.ModeDir | 0o755,
+		})
+	}
+	got := CheckHost(f)
+	if len(got) != 1 || got[0].Code != CodeSocket || got[0].Severity != Definite {
+		t.Fatalf("got %+v, want one definite socket ownership problem", got)
+	}
+	if len(got[0].Detail) > 512 {
+		t.Fatalf("socket ownership diagnostic is %d bytes; want at most 512", len(got[0].Detail))
+	}
+	if !strings.Contains(got[0].Detail, "[979 1000]") {
+		t.Fatalf("diagnostic %q does not name two conflicting owners", got[0].Detail)
+	}
+
+	f.Socket.Parents[len(f.Socket.Parents)-1].Mode = fs.ModeDir | 0o777
+	got = CheckHost(f)
+	if len(got) != 2 || got[0].Code != CodeSocket || got[0].Severity != Definite ||
+		!strings.Contains(got[0].Detail, "writable by group or others") ||
+		got[1].Code != CodeSocket || got[1].Severity != Definite || len(got[1].Detail) > 512 {
+		t.Fatalf("got %+v, want both the later directory conflict and bounded ownership evidence", got)
+	}
+}
+
+func TestCheckHostSocketParentOwnersSurviveUnavailableSocket(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*SocketFacts)
+	}{
+		{"missing", func(s *SocketFacts) { s.Missing = true }},
+		{"stat failed", func(s *SocketFacts) { s.Err = errors.New("stat failed") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := goodFacts()
+			f.Socket.RspamdUID = -1
+			f.Socket.Parents[1].UID = 1001
+			f.Socket.Socket.UID, f.Socket.PeerUID = 1002, 1003
+			tc.mutate(&f.Socket)
+			got := CheckHost(f)
+			if len(got) != 2 || got[0].Code != CodeSocket || got[0].Severity != Temporary ||
+				got[1].Code != CodeSocket || got[1].Severity != Definite ||
+				!strings.Contains(got[1].Detail, "[979 1001]") {
+				t.Fatalf("got %+v, want a temporary socket failure and confirmed parent ownership conflict", got)
 			}
 		})
 	}
