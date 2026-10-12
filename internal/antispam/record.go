@@ -106,8 +106,8 @@ func ManagedContent(s Settings) (map[string]string, error) {
 }
 
 // InstalledContent maps each target to the CSM text found in it, in the
-// form ManagedContent uses. Targets without readable CSM content are absent,
-// which can only make a comparison with a record fail.
+// form ManagedContent uses. Unreadable, inactive or misplaced blocks are
+// absent, so they cannot match a completed installation.
 func InstalledContent(targets []TargetFacts) map[string]string {
 	out := make(map[string]string)
 	for _, t := range targets {
@@ -118,9 +118,31 @@ func InstalledContent(targets []TargetFacts) map[string]string {
 			if IsManaged(t.Content) {
 				out[t.Path] = t.Content
 			}
-		} else if text, ok := BlockText(t.Kind, t.Content); ok {
+		} else if text, ok := installedBlockText(t.Kind, t.Content); ok {
 			out[t.Path] = text
 		}
 	}
 	return out
+}
+
+func installedBlockText(kind TargetKind, content string) (string, bool) {
+	section, acl := "", ""
+	if kind == TargetEximHook {
+		section, acl = "acl", "csm_hook"
+	}
+	// Ownership markers alone cannot prove that Exim runs the rendered text.
+	blocks, err := locateBlocks(content, section, acl, true)
+	if err != nil || len(blocks) != 1 {
+		return "", false
+	}
+	b := blocks[0]
+	lines := strings.SplitAfter(content, "\n")
+	if kind == TargetEximHook {
+		if b.Begin != 1 {
+			return "", false
+		}
+	} else if !oneConfigSection(content) || b.Begin < 2 || lines[b.Begin-2] != "@CONFIG@\n" {
+		return "", false
+	}
+	return strings.Join(lines[b.Begin-1:b.End], ""), true
 }

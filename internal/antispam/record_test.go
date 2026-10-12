@@ -110,10 +110,22 @@ func installedTargets(t *testing.T, s Settings) []TargetFacts {
 }
 
 func TestInstalledContentMatchesManagedContent(t *testing.T) {
-	s := enforceSettings()
-	want, _ := ManagedContent(s)
-	if got := InstalledContent(installedTargets(t, s)); Generation(got) != Generation(want) {
-		t.Errorf("installed content %v differs from managed content", got)
+	for _, dry := range []bool{false, true} {
+		s := enforceSettings()
+		s.DryRun = dry
+		want, err := ManagedContent(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets := installedTargets(t, s)
+		for i := range targets {
+			if targets[i].Kind == TargetEximLocal {
+				targets[i].Content = "@AUTH@\n.ifdef OPTIONAL_SETTING\n# operator content\n.endif\n" + targets[i].Content
+			}
+		}
+		if got := InstalledContent(targets); Generation(got) != Generation(want) {
+			t.Errorf("dry run %t: installed content %v differs from managed content", dry, got)
+		}
 	}
 }
 
@@ -130,5 +142,53 @@ func TestInstalledContentSkipsForeignAndMissing(t *testing.T) {
 	}
 	if len(got) != len(targets)-3 {
 		t.Errorf("installed %d targets, want %d", len(got), len(targets)-3)
+	}
+}
+
+func TestInstalledContentRejectsInactiveOrDisplacedBlocks(t *testing.T) {
+	s := enforceSettings()
+	s.Socket = "/run/rspamd/CSM_SOCKET.sock"
+	want, err := ManagedContent(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		path    string
+		content string
+	}{
+		"RCPT bypass": {HookRCPTPath, "accept\n" + want[HookRCPTPath]},
+		"scan bypass": {HookScanPath, "accept\n" + want[HookScanPath]},
+		"post bypass": {HookPostPath, "accept\n" + want[HookPostPath]},
+		"wrong local section": {
+			LocalEximConfPath, "@CONFIG@\n@AUTH@\n" + want[LocalEximConfPath],
+		},
+		"conditional hook": {
+			HookRCPTPath, ".ifdef CSM_DISABLED_HOOK\n" + want[HookRCPTPath] + ".endif\n",
+		},
+		"conditional local section": {
+			LocalEximConfPath, ".ifdef CSM_DISABLED_HOOK\n@CONFIG@\n" + want[LocalEximConfPath] + ".endif\n",
+		},
+		"macro changes scanner": {
+			LocalEximConfPath, "CSM_SOCKET = other\n@CONFIG@\n" + want[LocalEximConfPath],
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			targets := installedTargets(t, s)
+			for i := range targets {
+				if targets[i].Path == tc.path {
+					targets[i].Content = tc.content
+				}
+			}
+			got := InstalledContent(targets)
+			if _, ok := got[tc.path]; ok {
+				t.Error("inactive or displaced block reported as installed")
+			}
+			if len(got) != len(want)-1 {
+				t.Errorf("installed %d targets, want %d", len(got), len(want)-1)
+			}
+			if Generation(got) == Generation(want) {
+				t.Error("inactive or displaced block matches the completed generation")
+			}
+		})
 	}
 }
