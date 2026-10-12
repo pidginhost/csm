@@ -361,3 +361,11 @@ func TestReadConfigContentDiscardsPartialRead(t *testing.T) {
 		t.Fatalf("failed read: got %q, err %v; want no content and the read error", got, err)
 	}
 }
+
+func TestRunCommandUsesItsLimit(t *testing.T) {
+	start := time.Now()
+	r := RunCommand(context.Background(), 100*time.Millisecond, "sleep", "5")
+	if r.Err == nil || time.Since(start) > 3*time.Second {
+		t.Errorf("sleep ran %v with error %v", time.Since(start), r.Err)
+	}
+}
