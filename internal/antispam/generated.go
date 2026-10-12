@@ -10,17 +10,18 @@ import (
 // hook in the RCPT ACL, and the scan hook before the post hook in the DATA
 // ACL (spec sections 6.2 item 5 and 6.3 step 3). rcptACL and dataACL come
 // from `exim -bP acl_smtp_rcpt acl_smtp_data`. Errors name blocks, never
-// configuration text.
+// configuration text. Conditional blocks or boundaries cannot prove that the
+// hooks are active; macro substitution must leave their statements unchanged.
 func CheckGenerated(conf string, h EximHooks, rcptACL, dataACL string) error {
 	if rcptACL == "" || dataACL == "" || rcptACL == dataACL {
 		return errors.New("the RCPT and DATA ACL names must be two different names")
 	}
-	blocks, err := LocateBlocks(conf)
+	blocks, err := locateBlocks(conf, "", "", true)
 	if err != nil {
 		return err
 	}
 	if err := CheckPlacement(blocks, rcptACL, dataACL); err != nil {
-		return err
+		return errors.New("the CSM blocks are missing, duplicated or in unexpected ACLs")
 	}
 	lines := strings.Split(conf, "\n")
 	text := func(b Placement) string { return strings.Join(lines[b.Begin-1:b.End], "\n") + "\n" }

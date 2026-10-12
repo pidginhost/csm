@@ -193,7 +193,7 @@ func FuzzEximConfigParsers(f *testing.F) {
 				t.Fatalf("block %+v with err %v outside 1..%d", b, errL, total)
 			}
 		}
-		hookBlocks, hookErr := locateBlocks(conf, "acl", "csm_hook")
+		hookBlocks, hookErr := locateBlocks(conf, "acl", "csm_hook", false)
 		for _, b := range hookBlocks {
 			if hookErr != nil || b.Begin < 1 || b.End <= b.Begin || b.End > total {
 				t.Fatalf("hook block %+v with err %v outside 1..%d", b, hookErr, total)
@@ -221,6 +221,37 @@ func FuzzOneConfigSection(f *testing.F) {
 		}
 		if oneConfigSection(strings.ReplaceAll(conf, "@CONFIG@", "@AUTH@")) {
 			t.Fatal("accepted a file without its CONFIG section")
+		}
+	})
+}
+
+func FuzzCheckGenerated(f *testing.F) {
+	h, err := RenderExim(defaults(false))
+	if err != nil {
+		f.Fatal(err)
+	}
+	conf := rebuiltConf(h.Config, h.RCPT, h.Scan, h.Post)
+	for _, seed := range []string{
+		conf,
+		"Yes = No\n" + conf,
+		".ifdef OPTIONAL_HOOKS\n" + conf + ".endif\n",
+		strings.Replace(conf, "acl_smtp_data:", "unexpected_acl:", 1),
+		"A = x\n" + strings.Repeat("A == A A\n", 26) + conf,
+		"",
+	} {
+		f.Add(seed, "acl_smtp_rcpt", "acl_smtp_data")
+	}
+	f.Fuzz(func(t *testing.T, conf, rcptACL, dataACL string) {
+		if err := CheckGenerated(conf, h, rcptACL, dataACL); err != nil {
+			return
+		}
+		if rcptACL == "" || dataACL == "" || rcptACL == dataACL {
+			t.Fatal("accepted invalid ACL names")
+		}
+		for name, block := range map[string]string{"config": h.Config, "rcpt": h.RCPT, "scan": h.Scan, "post": h.Post} {
+			if count := strings.Count(conf, block); count != 1 {
+				t.Fatalf("accepted configuration with %d copies of the rendered %s block", count, name)
+			}
 		}
 	})
 }

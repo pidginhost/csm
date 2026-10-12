@@ -132,7 +132,8 @@ var (
 )
 
 // ErrUnverifiable marks an Exim configuration CSM cannot check: an included
-// file it does not follow, or macros that expand past its parsing bounds.
+// file it does not follow, macros that expand past its parsing bounds, or
+// conditional placement of generated hooks.
 var ErrUnverifiable = errors.New("exim configuration cannot be verified")
 
 const (
@@ -536,14 +537,19 @@ type Placement struct {
 // unpaired or boundary-crossing markers are an error: CSM never edits a file
 // whose blocks it cannot identify.
 func LocateBlocks(conf string) ([]Placement, error) {
-	return locateBlocks(conf, "", "")
+	return locateBlocks(conf, "", "", false)
 }
 
-func locateBlocks(conf, section, acl string) ([]Placement, error) {
+// locateBlocks starts in section and acl, so a hook file parses as the ACL
+// fragment cPanel inlines. Verification needs stronger evidence than
+// ownership: with verify set, it refuses blocks Exim could skip or rewrite,
+// since comments can still identify a block whose statements Exim skips.
+func locateBlocks(conf, section, acl string, verify bool) ([]Placement, error) {
 	var out []Placement
 	var macros []eximMacro
 	depth := 0
 	open := 0
+	conditionalSection, conditionalACL := false, false
 	// afterEnd is set when a block closed inside an ACL: the next line must
 	// start something new, or Exim would join it to CSM's last statement.
 	afterEnd := false
@@ -563,7 +569,27 @@ func locateBlocks(conf, section, acl string) ([]Placement, error) {
 		if raw.continued && (line == MarkerBegin || line == MarkerEnd) {
 			return nil, fmt.Errorf("line %d: CSM marker splits a continued configuration line", number)
 		}
-		depth = eximConditionalDepth(line, depth)
+		if verify {
+			// Exim handles directives before joining continuation lines.
+			for _, physical := range raw.physical {
+				lines, err := expandEximMacros(physical, macros)
+				if err != nil {
+					return nil, fmt.Errorf("line %d: %w", number, err)
+				}
+				nextDepth := eximConditionalDepth(lines[0], depth)
+				for _, expanded := range lines[1:] {
+					if eximConditionalDepth(expanded, depth) != nextDepth {
+						return nil, fmt.Errorf("line %d: %w: ambiguous conditional directive", number, ErrUnverifiable)
+					}
+				}
+				depth = nextDepth
+			}
+		} else {
+			depth = eximConditionalDepth(line, depth)
+		}
+		if verify && (line == MarkerBegin || open != 0) && (depth != 0 || conditionalSection || conditionalACL) {
+			return nil, fmt.Errorf("line %d: %w: a CSM block or its section or ACL is conditional", number, ErrUnverifiable)
+		}
 		if strings.HasPrefix(line, ".") {
 			switch strings.Fields(line)[0] {
 			case ".if", ".ifdef", ".ifndef":
@@ -607,6 +633,9 @@ func locateBlocks(conf, section, acl string) ([]Placement, error) {
 		}
 		boundaries := 0
 		for _, expanded := range lines {
+			if verify && open != 0 && line != "" && line[0] != '#' && expanded != line {
+				return nil, fmt.Errorf("line %d: a macro changes the rendered CSM block", number)
+			}
 			if name, ok := eximSection(expanded); ok {
 				boundaries++
 				if open != 0 {
@@ -617,6 +646,7 @@ func locateBlocks(conf, section, acl string) ([]Placement, error) {
 				}
 				boundary = "section:" + name
 				section, acl = name, ""
+				conditionalSection, conditionalACL = depth != 0, false
 			} else if section == "acl" && aclNameRe.MatchString(expanded) {
 				boundaries++
 				if open != 0 {
@@ -627,6 +657,7 @@ func locateBlocks(conf, section, acl string) ([]Placement, error) {
 					return nil, fmt.Errorf("line %d: ambiguous ACL", number)
 				}
 				boundary, acl = "acl:"+name, name
+				conditionalACL = depth != 0
 			}
 		}
 		if boundaries != 0 && boundaries != len(lines) {

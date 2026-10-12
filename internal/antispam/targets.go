@@ -137,7 +137,7 @@ func checkTargets(targets []TargetFacts) []Problem {
 		case TargetEximHook:
 			// Hook files are ACL fragments, so trailing options can extend
 			// CSM's last statement even without a section header in the file.
-			switch blocks, err := locateBlocks(t.Content, "acl", "csm_hook"); {
+			switch blocks, err := locateBlocks(t.Content, "acl", "csm_hook", false); {
 			case errors.Is(err, ErrUnverifiable):
 				add(CodeUnverifiable, Temporary, "cannot verify %s: %v", t.Path, err)
 			case err != nil:
