@@ -32,6 +32,7 @@ type Engine struct {
 	lifecycle              *Lifecycle
 	unverifiedBlockActions map[string]bool
 	failedBlockActions     map[string]bool
+	blockActionsUnproven   error
 	blockBatchStateErr     error
 	stateRevision          uint64
 	stateReadErr           error
@@ -2822,7 +2823,7 @@ func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipEx
 		if timeout > 0 && e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit {
 			// Validation must stay read-only because verdict and dry-run gates run
 			// after it. The live block path applies this eviction target.
-			victim, ok := soonestExpiringTempIP(st, ip)
+			victim, ok := e.evictionVictimLocked(st, ip)
 			if !ok {
 				return nil, nil, false, "", fmt.Errorf("temporary deny limit reached (%d) and no temp entry to evict", e.cfg.DenyTempIPLimit)
 			}
