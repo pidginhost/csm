@@ -20,7 +20,7 @@ func TestReplaceStagedFileRefusesEditsDuringPreparation(t *testing.T) {
 			}
 			tmp := stagedTestFile(t, p)
 			writeTest(t, p, "external edit", 0o640)
-			if err := replaceStagedFile(p, want, tmp, 0); !errors.Is(err, errConflict) {
+			if err := replaceStagedFile(p, want, tmp, fileState{}); !errors.Is(err, errConflict) {
 				t.Fatalf("staged replacement = %v; want conflict", err)
 			}
 			if st, err := readFile(p); err != nil || st.content != "external edit" || st.perm != 0o640 {
@@ -37,7 +37,7 @@ func TestReplaceStagedFileKeepsLatestMetadata(t *testing.T) {
 	if err := os.Chmod(p, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := replaceStagedFile(p, fileState{exists: true, content: "old"}, tmp, 0); err != nil {
+	if err := replaceStagedFile(p, fileState{exists: true, content: "old"}, tmp, fileState{}); err != nil {
 		t.Fatal(err)
 	}
 	if st, err := readFile(p); err != nil || st.content != "new" || st.perm != 0o600 {

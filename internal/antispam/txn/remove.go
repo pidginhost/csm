@@ -35,7 +35,7 @@ func (h *Host) Remove() antispam.Result {
 		return failed(StepRecord, err)
 	}
 	conf, err := readFile(h.path(antispam.GeneratedEximConfPath))
-	generated := err == nil && !strings.Contains(conf.content, antispam.MarkerBegin) && !strings.Contains(conf.content, antispam.MarkerEnd)
+	generated := err == nil && conf.exists && !strings.Contains(conf.content, antispam.MarkerBegin) && !strings.Contains(conf.content, antispam.MarkerEnd)
 	// A record, complete or not, means an earlier transaction may have
 	// changed files without a confirmed reload.
 	rebuildExim := len(eximChanges) > 0 || t.record.exists || !generated
@@ -43,14 +43,19 @@ func (h *Host) Remove() antispam.Result {
 	if !rebuildExim && !reloadRspamd {
 		return antispam.Result{OK: true}
 	}
-	opts, err := t.eximSettings(t.fwd)
-	if err != nil {
+	// A broken generated configuration must not prevent removing its hooks:
+	// without listener settings the probe after reload checks activity only.
+	opts, _ := t.eximSettings(t.fwd)
+	t.rememberEximBlocks(targets, opts)
+	if t.eximActive, err = t.serviceActive(t.fwd, antispam.EximUnit); err != nil {
 		return failed(StepPreconditions, err)
 	}
-	// Removal proceeds without a greeting; the probe after reload then
-	// checks only that Exim is active.
-	_ = t.listenerProbe(opts)
-	t.rspamdActive = t.cmd(t.fwd, commandLimit, "systemctl", "is-active", antispam.RspamdUnit).Err == nil
+	if t.eximActive {
+		_ = t.listenerGreeting(opts)
+	}
+	if t.rspamdActive, err = t.serviceActive(t.fwd, antispam.RspamdUnit); err != nil {
+		return failed(StepPreconditions, err)
+	}
 
 	if err := t.writeRecord(""); err != nil {
 		return t.fail(StepRecord, err)

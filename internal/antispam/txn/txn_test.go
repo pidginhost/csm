@@ -38,6 +38,12 @@ type fakeHost struct {
 	onCall func(line string)
 }
 
+// inactiveExit is how systemctl is-active reports a unit that is not active.
+type inactiveExit struct{}
+
+func (inactiveExit) Error() string { return "exit status 3" }
+func (inactiveExit) ExitCode() int { return 3 }
+
 type call struct {
 	line     string
 	deadline time.Time
@@ -123,6 +129,9 @@ func (f *fakeHost) run(ctx context.Context, limit time.Duration, name string, ar
 		if strings.HasPrefix(line, prefix) {
 			f.seen[prefix]++
 			if contains(failing, f.seen[prefix]) || contains(failing, -1) {
+				if strings.HasPrefix(line, "systemctl is-active") {
+					return antispam.CommandResult{Stdout: "inactive\n", Err: inactiveExit{}}
+				}
 				return antispam.CommandResult{Stdout: "secret config text", Err: errors.New("exit status 1")}
 			}
 		}

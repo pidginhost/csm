@@ -205,3 +205,18 @@ func TestPrivateDir(t *testing.T) {
 		t.Error("accepted a symbolic link")
 	}
 }
+
+func TestReplaceFileRestoresSnapshotMetadata(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "restored")
+	snapshot := fileState{exists: true, content: "old", uid: -1, gid: -1, perm: 0, metadata: true}
+	if err := replaceFile(p, fileState{}, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0 {
+		t.Errorf("restored mode = %v, want 0000", st.Mode().Perm())
+	}
+}

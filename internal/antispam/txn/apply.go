@@ -61,6 +61,7 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	if err != nil {
 		return failed(StepPreconditions, err)
 	}
+	t.rememberEximBlocks(f.Targets, opts)
 	current, err := readFile(h.path(antispam.GeneratedEximConfPath))
 	generated := err == nil && antispam.CheckGenerated(current.content, hooks, opts["acl_smtp_rcpt"], opts["acl_smtp_data"]) == nil
 	reloadRspamd := len(rspamdChanges) > 0 || !matches

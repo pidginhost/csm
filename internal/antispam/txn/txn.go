@@ -110,6 +110,8 @@ type tx struct {
 	eximTouched   bool
 	eximReloaded  bool
 	eximActive    bool
+	// eximBlocks are the prior CSM blocks per ACL, for rollback.
+	eximBlocks map[string][]string
 	// greeting is the listener that answered before any change; "" when
 	// Exim was not running.
 	greeting       string
@@ -222,8 +224,16 @@ func (t *tx) write(c change) error {
 		return err
 	}
 	p := t.h.path(c.target.Path)
-	before := fileState{exists: !c.target.Missing, content: c.target.Content}
-	err := t.h.replace(p, before, c.next)
+	// Read the file again for the owner and mode a rollback must restore,
+	// including those of a file the transaction deletes.
+	before, err := readFile(p)
+	if err != nil {
+		return err
+	}
+	if !sameContent(before, fileState{exists: !c.target.Missing, content: c.target.Content}) {
+		return fmt.Errorf("%s %w", p, errConflict)
+	}
+	err = t.h.replace(p, before, c.next)
 	if err == nil || errors.Is(err, errDurability) {
 		t.writes = append(t.writes, written{path: p, before: before, next: c.next})
 		if c.target.Kind != antispam.TargetRspamd {
@@ -264,7 +274,7 @@ func (t *tx) replaceRecord(ctx context.Context, generation string) error {
 	if err := privateDir(filepath.Dir(p)); err != nil {
 		return err
 	}
-	next := fileState{exists: true, content: string(antispam.EncodeRecord(generation)), perm: 0o600}
+	next := fileState{exists: true, content: string(antispam.EncodeRecord(generation)), perm: 0o600, uid: -1, gid: -1, metadata: true}
 	err := t.h.replace(p, t.recordCurrent, next)
 	if err == nil || errors.Is(err, errDurability) {
 		t.recordWritten = true
@@ -291,10 +301,15 @@ func (t *tx) removeRecord() error {
 // listenerProbe reads where Exim listens and checks that one listener greets
 // before anything changes, so the probe after reload compares like with like.
 func (t *tx) listenerProbe(opts map[string]string) error {
-	t.eximActive = t.cmd(t.fwd, commandLimit, "systemctl", "is-active", antispam.EximUnit).Err == nil
-	if !t.eximActive {
-		return nil
+	var err error
+	if t.eximActive, err = t.serviceActive(t.fwd, antispam.EximUnit); err != nil || !t.eximActive {
+		return err
 	}
+	return t.listenerGreeting(opts)
+}
+
+// listenerGreeting records the first configured listener that greets.
+func (t *tx) listenerGreeting(opts map[string]string) error {
 	for _, addr := range listeners(opts) {
 		ctx, cancel := context.WithTimeout(t.fwd, t.h.eximWait)
 		err := t.h.greet(ctx, addr)
@@ -305,6 +320,25 @@ func (t *tx) listenerProbe(opts map[string]string) error {
 		}
 	}
 	return errors.New("no configured Exim listener answered with an SMTP greeting")
+}
+
+// serviceActive reads `systemctl is-active`. Exit 3 with "inactive" or
+// "failed", and exit 4 for an unknown unit, mean stopped. A unit that is
+// activating or deactivating, or a failed query, leaves its loaded state
+// unknown, so no transaction may build on it.
+func (t *tx) serviceActive(ctx context.Context, unit string) (bool, error) {
+	r := t.cmd(ctx, commandLimit, "systemctl", "is-active", unit)
+	if r.Err == nil {
+		return true, nil
+	}
+	var exit interface{ ExitCode() int }
+	if errors.As(r.Err, &exit) {
+		state := strings.TrimSpace(r.Stdout)
+		if exit.ExitCode() == 4 || exit.ExitCode() == 3 && (state == "inactive" || state == "failed") {
+			return false, nil
+		}
+	}
+	return false, cmdErr("systemctl is-active "+unit, r)
 }
 
 // listenerSettings are the `exim -bP` options that say where the daemon
@@ -340,7 +374,7 @@ func (t *tx) exim(changes []change, verify func(conf, rcptACL, dataACL string) e
 	if err != nil {
 		return StepEximBuild, err
 	}
-	conf, err := readFile(t.h.path(antispam.GeneratedEximConfPath))
+	conf, err := t.generatedConf()
 	if err != nil {
 		return StepEximBuild, err
 	}
@@ -358,6 +392,70 @@ func (t *tx) exim(changes []change, verify func(conf, rcptACL, dataACL string) e
 		return StepEximProbe, err
 	}
 	return "", nil
+}
+
+// generatedConf reads /etc/exim.conf after a build, which must have written it.
+func (t *tx) generatedConf() (fileState, error) {
+	conf, err := readFile(t.h.path(antispam.GeneratedEximConfPath))
+	if err != nil {
+		return fileState{}, err
+	}
+	if !conf.exists {
+		return fileState{}, errors.New("generated Exim configuration is missing after buildeximconf")
+	}
+	return conf, nil
+}
+
+// rememberEximBlocks keeps the CSM blocks of the shared Exim files before any
+// change, keyed by the ACL that inlines them ("" for the main configuration),
+// so rollback can prove the rebuilt configuration holds them again.
+func (t *tx) rememberEximBlocks(targets []antispam.TargetFacts, opts map[string]string) {
+	t.eximBlocks = make(map[string][]string)
+	for _, target := range targets {
+		if target.Kind == antispam.TargetRspamd {
+			continue
+		}
+		block, ok := antispam.BlockText(target.Kind, target.Content)
+		if !ok {
+			continue
+		}
+		acl := ""
+		switch target.Path {
+		case antispam.HookRCPTPath:
+			acl = opts["acl_smtp_rcpt"]
+		case antispam.HookScanPath, antispam.HookPostPath:
+			acl = opts["acl_smtp_data"]
+		}
+		t.eximBlocks[acl] = append(t.eximBlocks[acl], block)
+	}
+}
+
+// checkRollbackExim compares the rebuilt configuration's CSM blocks with the
+// remembered ones. A builder can exit 0 and leave stale output, and service
+// probes alone cannot show which hooks the reloaded configuration holds.
+func (t *tx) checkRollbackExim() error {
+	conf, err := t.generatedConf()
+	if err != nil {
+		return err
+	}
+	blocks, err := antispam.LocateBlocks(conf.content)
+	if err != nil {
+		return errors.New("cannot verify CSM blocks in the restored Exim configuration")
+	}
+	got := make(map[string][]string)
+	lines := strings.SplitAfter(conf.content, "\n")
+	for _, b := range blocks {
+		got[b.ACL] = append(got[b.ACL], strings.Join(lines[b.Begin-1:b.End], ""))
+	}
+	if len(got) != len(t.eximBlocks) {
+		return errors.New("the restored Exim configuration differs from the prior CSM blocks")
+	}
+	for acl, want := range t.eximBlocks {
+		if !slices.Equal(got[acl], want) {
+			return errors.New("the restored Exim configuration differs from the prior CSM blocks")
+		}
+	}
+	return nil
 }
 
 // validateExim checks the generated configuration and the named lists the
@@ -429,7 +527,7 @@ func (t *tx) reloadRspamd(ctx context.Context, probe func(context.Context) error
 		return cmdErr("systemctl reload rspamd", r)
 	}
 	if err := probe(ctx); err != nil {
-		return errors.New("rspamd /ping probe failed")
+		return errors.New("rspamd did not pass its probe after reload")
 	}
 	return ctx.Err()
 }
@@ -481,17 +579,22 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 			errs = append(errs, cmdErr("buildeximconf", r))
 		} else if r := t.cmd(ctx, commandLimit, "exim", "-bV"); r.Err != nil {
 			errs = append(errs, cmdErr("exim -bV", r))
+		} else if err := t.checkRollbackExim(); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	if t.eximReloaded {
 		reload := t.cmd(ctx, commandLimit, "systemctl", "reload", antispam.EximUnit)
-		if t.cmd(ctx, commandLimit, "systemctl", "is-active", antispam.EximUnit).Err != nil {
+		switch active, err := t.serviceActive(ctx, antispam.EximUnit); {
+		case err != nil:
+			errs = append(errs, err)
+		case !active:
 			// Spec 6.3 step 5: an Exim that stopped is started on the restored
 			// configuration; this is not a restart of a running daemon.
 			if r := t.cmd(ctx, commandLimit, "systemctl", "start", antispam.EximUnit); r.Err != nil {
 				errs = append(errs, cmdErr("systemctl start exim", r))
 			}
-		} else if reload.Err != nil {
+		case reload.Err != nil:
 			errs = append(errs, cmdErr("systemctl reload exim", reload))
 		}
 		if err := t.probeExim(ctx); err != nil {

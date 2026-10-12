@@ -25,6 +25,9 @@ type fileState struct {
 	content  string
 	uid, gid int
 	perm     fs.FileMode
+	// metadata marks perm, uid and gid as the state to write, so a restore
+	// reinstates a deleted file's owner and mode, including mode 0000.
+	metadata bool
 }
 
 // sameContent reports whether two states hold the same bytes, or are both
@@ -59,7 +62,7 @@ func readFile(p string) (fileState, error) {
 	if len(data) > maxFileBytes {
 		return fileState{}, fmt.Errorf("%s is larger than %d bytes", p, maxFileBytes)
 	}
-	st := fileState{exists: true, content: string(data), uid: -1, gid: -1, perm: fileMode(info.Mode())}
+	st := fileState{exists: true, content: string(data), uid: -1, gid: -1, perm: fileMode(info.Mode()), metadata: true}
 	if sys, ok := info.Sys().(*syscall.Stat_t); ok {
 		st.uid, st.gid = int(sys.Uid), int(sys.Gid)
 	}
@@ -78,9 +81,8 @@ var errConflict = errors.New("changed by another writer during the transaction")
 var errDurability = errors.New("file changed but directory sync failed")
 
 // replaceFile makes p hold next, provided p still holds want. An existing
-// file keeps its owner and mode; a new one is 0644 and owned by the worker.
-// The completion record uses next.perm to stay private. next.exists false
-// removes p.
+// file keeps its owner and mode and a new one is 0644 and owned by the
+// worker, unless next carries metadata. next.exists false removes p.
 func replaceFile(p string, want, next fileState) error {
 	cur, err := readFile(p)
 	if err != nil {
@@ -97,12 +99,12 @@ func replaceFile(p string, want, next fileState) error {
 		return err
 	}
 	defer discardTemp(tmp)
-	return replaceStagedFile(p, want, tmp, next.perm)
+	return replaceStagedFile(p, want, tmp, next)
 }
 
 // Staging and syncing may take long enough for another writer to change p.
 // Recheck its content and refresh its metadata before publishing.
-func replaceStagedFile(p string, want fileState, tmp *os.File, mode fs.FileMode) error {
+func replaceStagedFile(p string, want fileState, tmp *os.File, next fileState) error {
 	cur, err := readFile(p)
 	if err != nil {
 		return err
@@ -114,8 +116,8 @@ func replaceStagedFile(p string, want fileState, tmp *os.File, mode fs.FileMode)
 	if cur.exists {
 		perm, uid, gid = cur.perm, cur.uid, cur.gid
 	}
-	if mode != 0 {
-		perm = mode
+	if next.metadata {
+		perm, uid, gid = next.perm, next.uid, next.gid
 	}
 	return publishFile(p, tmp, perm, uid, gid, cur.exists)
 }
