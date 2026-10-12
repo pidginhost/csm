@@ -258,3 +258,55 @@ func TestLoadReputationCacheEmpty(t *testing.T) {
 		t.Errorf("empty dir should return empty cache, got %v", cache.Entries)
 	}
 }
+
+func TestLoadAllBlockedIPsSkipsUnverifiedRows(t *testing.T) {
+	dir := t.TempDir()
+	fwDir := filepath.Join(dir, "firewall")
+	if err := os.MkdirAll(fwDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Hour).Format(time.RFC3339)
+	data := `{"blocked":[
+		{"ip":"203.0.113.1","expires_at":"` + future + `"},
+		{"ip":"203.0.113.3","expires_at":"` + future + `","action_id":"act_unknown","unverified":true}
+	]}`
+	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := loadAllBlockedIPs(dir)
+	if !blocked["203.0.113.1"] || blocked["203.0.113.3"] {
+		t.Fatalf("blocked = %v; an unverified row is not a block", blocked)
+	}
+}
+
+func TestLoadAllBlockedIPsUnverifiedStateOverridesLegacy(t *testing.T) {
+	dir := t.TempDir()
+	fwDir := filepath.Join(dir, "firewall")
+	if err := os.MkdirAll(fwDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"blocked":[
+		{"ip":"203.0.113.1"},
+		{"ip":"203.0.113.3","expires_at":"2099-01-01T00:00:00Z","unverified":true},
+		{"ip":"203.0.113.4","expires_at":"2000-01-01T00:00:00Z","unverified":true},
+		{"ip":"203.0.113.5","unverified":true},
+		{"ip":"2001:db8::3","unverified":true}
+	]}`
+	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"ips":[
+		{"ip":"203.0.113.2","expires_at":"2099-01-01T00:00:00Z"},
+		{"ip":"::ffff:203.0.113.3","expires_at":"2099-01-01T00:00:00Z"},
+		{"ip":"203.0.113.4","expires_at":"2099-01-01T00:00:00Z"},
+		{"ip":"203.0.113.5","expires_at":"2099-01-01T00:00:00Z"},
+		{"ip":"2001:db8:0:0:0:0:0:3","expires_at":"2099-01-01T00:00:00Z"}
+	],"pending":[{"ip":"203.0.113.6"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "blocked_ips.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocked := loadAllBlockedIPs(dir)
+	if len(blocked) != 3 || !blocked["203.0.113.1"] || !blocked["203.0.113.2"] || !blocked["203.0.113.6"] {
+		t.Fatalf("blocks = %v; legacy rows must not override unverified state", blocked)
+	}
+}

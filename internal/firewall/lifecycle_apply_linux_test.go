@@ -257,3 +257,35 @@ func TestActionDeltaPreservesExpiryAndMetadata(t *testing.T) {
 		})
 	}
 }
+
+func TestActionDeltaIgnoresTimeoutRounding(t *testing.T) {
+	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	before := ActionElement{Key: []byte{203, 0, 113, 7}, Comment: "original", ExpiresAt: at.Add(time.Hour)}
+	for _, tc := range []struct {
+		name    string
+		elapsed time.Duration
+	}{
+		{"1us", time.Microsecond},
+		{"500us", 500 * time.Microsecond},
+		{"1900us", 1900 * time.Microsecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			elapsed := tc.elapsed
+			now := at.Add(elapsed)
+			add, remove := actionElementDelta(ActionSet{Elements: []ActionElement{before}}, ActionSet{Elements: []ActionElement{before}}, now)
+			if len(add) != 0 || len(remove) != 0 {
+				t.Fatalf("unchanged timed block: add=%+v remove=%+v; want no changes", add, remove)
+			}
+
+			// Distinct authorized expiries can encode the same timeout.
+			after := before
+			after.ExpiresAt = before.ExpiresAt.Add(-100 * time.Nanosecond)
+			add, remove = actionElementDelta(ActionSet{Elements: []ActionElement{before}}, ActionSet{Elements: []ActionElement{after}}, now)
+			want := (time.Hour - elapsed - 100*time.Nanosecond).Truncate(time.Millisecond)
+			if len(add) != 1 || len(remove) != 1 || !reflect.DeepEqual(remove[0].Key, before.Key) ||
+				!reflect.DeepEqual(add[0].Key, before.Key) || add[0].Comment != before.Comment || add[0].Timeout != want {
+				t.Fatalf("changed expiry: add=%+v remove=%+v; want one replacement with timeout %v", add, remove, want)
+			}
+		})
+	}
+}

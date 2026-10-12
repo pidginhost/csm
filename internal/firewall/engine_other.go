@@ -12,11 +12,13 @@ import (
 type Engine struct{}
 
 type BlockedEntry struct {
-	IP        string    `json:"ip"`
-	Reason    string    `json:"reason"`
-	Source    string    `json:"source,omitempty"`
-	BlockedAt time.Time `json:"blocked_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	IP         string    `json:"ip"`
+	Reason     string    `json:"reason"`
+	Source     string    `json:"source,omitempty"`
+	BlockedAt  time.Time `json:"blocked_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	ActionID   string    `json:"action_id,omitempty"`
+	Unverified bool      `json:"unverified,omitempty"`
 }
 
 type AllowedEntry struct {

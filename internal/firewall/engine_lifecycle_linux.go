@@ -45,9 +45,14 @@ func writeFirewallActionAudit(a FirewallAction) error {
 }
 func (e *Engine) lifecycleEnabled() bool { e.mu.Lock(); defer e.mu.Unlock(); return e.lifecycle != nil }
 func (e *Engine) installCommittedCache(state FirewallState) {
+	e.installCommittedCacheAtLocked(state, e.expiryNow())
+}
+
+func (e *Engine) installCommittedCacheAtLocked(state FirewallState, now time.Time) {
 	state = copyFirewallState(state)
+	e.overlayUnverifiedBlockActionsLocked(&state)
 	e.stateCache = &state
-	e.applyExpiryLocked()
+	e.applyExpiryAtLocked(now)
 	e.rebuildIndexLocked()
 }
 func (e *Engine) lifecycleReadyLocked() error {
@@ -184,7 +189,7 @@ func desiredActionSets(state FirewallState, ipv6 bool, now time.Time) map[string
 		out[name] = nil
 	}
 	for _, b := range state.Blocked {
-		if !b.ExpiresAt.IsZero() && !b.ExpiresAt.After(now) {
+		if b.Unverified || (!b.ExpiresAt.IsZero() && !b.ExpiresAt.After(now)) {
 			continue
 		}
 		ip := net.ParseIP(b.IP)
@@ -390,21 +395,25 @@ func actionElementDelta(before, after ActionSet, now time.Time) (add, remove []n
 		live[actionElementKey(elem)] = elem
 	}
 	intended := make(map[string]ActionElement, len(after.Elements))
-	for _, elem := range actionElements(after.Elements, now) {
-		entry := ActionElement{Key: elem.Key, End: elem.IntervalEnd, Comment: elem.Comment}
-		if elem.Timeout > 0 {
-			entry.ExpiresAt = now.Add(elem.Timeout)
+	var additions []ActionElement
+	for _, entry := range after.Elements {
+		if !entry.ExpiresAt.IsZero() {
+			if _, ok := blockTimeout(entry.ExpiresAt, now); !ok {
+				continue
+			}
 		}
 		key := actionElementKey(entry)
 		intended[key] = entry
 		prior, held := live[key]
+		// Millisecond encoding must not make an unchanged absolute expiry
+		// look like a replacement on every later mutation.
 		if held && prior.Comment == entry.Comment && prior.ExpiresAt.Equal(entry.ExpiresAt) {
 			continue
 		}
 		if held {
 			remove = append(remove, nftables.SetElement{Key: prior.Key, IntervalEnd: prior.End})
 		}
-		add = append(add, elem)
+		additions = append(additions, entry)
 	}
 	for _, elem := range before.Elements {
 		if _, wanted := intended[actionElementKey(elem)]; wanted {
@@ -412,15 +421,15 @@ func actionElementDelta(before, after ActionSet, now time.Time) (add, remove []n
 		}
 		remove = append(remove, nftables.SetElement{Key: elem.Key, IntervalEnd: elem.End})
 	}
-	return add, remove
+	return actionElements(additions, now), remove
 }
 func actionElements(entries []ActionElement, now time.Time) []nftables.SetElement {
 	var out []nftables.SetElement
 	for _, entry := range entries {
 		timeout := time.Duration(0)
 		if !entry.ExpiresAt.IsZero() {
-			timeout = entry.ExpiresAt.Sub(now)
-			if timeout < time.Millisecond {
+			var ok bool
+			if timeout, ok = blockTimeout(entry.ExpiresAt, now); !ok {
 				continue
 			}
 		}

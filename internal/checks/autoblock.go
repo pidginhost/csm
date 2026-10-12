@@ -1126,11 +1126,13 @@ func FlushAutoBlockState(statePath string, flush func() error) (AutoBlockFlushRe
 	result.SnapshotErr = snapshotErr
 	var ips []string
 	if snapshotErr == nil {
-		result.BlockedCount = len(engineState.Blocked)
-		ips = make([]string, 0, result.BlockedCount)
+		ips = make([]string, 0, len(engineState.Blocked))
 		for _, b := range engineState.Blocked {
-			ips = append(ips, b.IP)
+			if !b.Unverified {
+				ips = append(ips, b.IP)
+			}
 		}
+		result.BlockedCount = len(ips)
 	}
 	work.progress()
 	if err := flush(); err != nil {

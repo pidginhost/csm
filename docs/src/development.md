@@ -487,6 +487,38 @@ A missing or inconsistent intent marks only that section unreadable.
 Opening checks retired attempts against the stored clock even after their
 retirement events have been acknowledged.
 
+Firewall startup restores temporary blocks only for their remaining lifetime.
+Timed elements use the same millisecond encoder in legacy and durable state;
+rows with less than a millisecond left or an unrepresentable lifetime are
+skipped. Blocks, operator allows and subnets use one startup clock reading.
+Durable updates compare absolute expiries before encoding timeouts, so
+millisecond rounding does not replace unchanged timed blocks.
+
+The engine also provides internal batch entry points for up to 64 timed
+full-address blocks. No production caller uses them yet. Each member is
+checked against one state and kernel snapshot over bounded fresh sockets;
+unreadable state refuses the whole call. Expired rows remain available for
+kernel cleanup in both the intent and restored state. Rejected members
+consume no slot and cannot exclude a valid member. The batch rechecks, writes one
+intent with expiry instants stored in UTC, refreshes timeouts after the
+write, and uses one atomic transaction
+on a fresh socket with a two-second deadline. Exact-family readback proves
+each applied member's key and timed lifetime. Definitive kernel rejection
+restores state; uncertain exchanges retain unknown rows. Unknown rows are
+marked unverified and excluded from counts and seeding. Expiry retains them
+until the owner retires the matching attempt. A failed state
+write is returned as a state-integrity error and retains live suppression
+until a successful state write; later batches refuse while that error is
+held. The admission owner must reconcile action-linked rows before startup
+or any downgrade to a build that ignores their verification fields.
+The retry marker for a kernel rejection requires a successful state restore.
+Marking with no action IDs still writes the safe state to release a state hold.
+Unverified rows cannot suppress alerts or reputation checks through stale legacy
+tracker entries. They do not count as enforced blocks or select threat evidence
+for operator flush cleanup. Live deny limits count their kernel elements using
+kernel timeouts rather than the unresolved rows' requested lifetimes, including
+replacement accounting. Permanent promotion requires a verified block row.
+
 ### Attack event storage
 
 Attack events live in `attacks:events`; `attacks:events:ip` stores empty values

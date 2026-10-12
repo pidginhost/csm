@@ -563,3 +563,75 @@ func TestEngineBlockedSubnets(t *testing.T) {
 		t.Errorf("want 1 web_ui entry, got %d", sources[SourceWebUI])
 	}
 }
+
+func TestInitialBlockStateEncodesTimeoutsAtOneInstant(t *testing.T) {
+	dir := t.TempDir()
+	// An instant the wall clock has not reached: every timeout must come
+	// from the engine's clock, read once, not from time.Now in the loop.
+	at := time.Now().Add(time.Hour).Truncate(time.Second)
+	writeEngineStateFile(t, dir, FirewallState{
+		Blocked: []BlockedEntry{
+			{IP: "203.0.113.1", Reason: "sub-millisecond", BlockedAt: at.Add(-time.Hour), ExpiresAt: at.Add(500 * time.Microsecond)},
+			{IP: "203.0.113.2", Reason: "truncated", BlockedAt: at.Add(-time.Hour), ExpiresAt: at.Add(1900 * time.Microsecond)},
+			{IP: "2001:db8::2", Reason: "hour", BlockedAt: at.Add(-time.Hour), ExpiresAt: at.Add(time.Hour)},
+			{IP: "203.0.113.3", Reason: "permanent", BlockedAt: at.Add(-time.Hour)},
+		},
+	})
+	e := &Engine{statePath: dir, cfg: &FirewallConfig{IPv6: true}, expiryClock: func() time.Time { return at }}
+
+	e.mu.Lock()
+	initial := e.computeInitialBlockStateLocked()
+	e.mu.Unlock()
+
+	got := map[string]time.Duration{}
+	for _, elem := range append(initial.blocked4, initial.blocked6...) {
+		got[net.IP(elem.Key).String()] = elem.Timeout
+	}
+	want := map[string]time.Duration{"203.0.113.2": time.Millisecond, "2001:db8::2": time.Hour, "203.0.113.3": 0}
+	if len(got) != len(want) {
+		t.Fatalf("seeded timeouts = %v, want %v", got, want)
+	}
+	for ip, timeout := range want {
+		if seeded, ok := got[ip]; !ok || seeded != timeout {
+			t.Fatalf("seeded timeouts = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestInitialBlockStateUsesOneInstantForAllRows(t *testing.T) {
+	for _, durable := range []bool{false, true} {
+		at := time.Now().Add(time.Hour).Truncate(time.Second)
+		dir := t.TempDir()
+		state := FirewallState{
+			Blocked:    []BlockedEntry{{IP: "203.0.113.2", ExpiresAt: at.Add(1900 * time.Microsecond)}},
+			Allowed:    []AllowedEntry{{IP: "203.0.113.3", ExpiresAt: at.Add(time.Millisecond)}},
+			BlockedNet: []SubnetEntry{{CIDR: "198.51.100.0/24", ExpiresAt: at.Add(time.Millisecond)}},
+		}
+		writeEngineStateFile(t, dir, state)
+		reads := 0
+		e := &Engine{statePath: dir, cfg: &FirewallConfig{IPv6: true}, expiryClock: func() time.Time {
+			reads++
+			return at.Add(time.Duration(reads-1) * time.Second)
+		}}
+		if durable {
+			e.lifecycle = &Lifecycle{Store: committedStateOnlyStore{current: &state}}
+		}
+		e.mu.Lock()
+		initial := e.computeInitialBlockStateLocked()
+		e.mu.Unlock()
+		if reads != 1 || len(initial.blocked4) != 1 || initial.blocked4[0].Timeout != time.Millisecond || len(initial.allowed4) != 1 || len(initial.blockedNet4) != 2 {
+			t.Fatalf("durable %t, reads %d, seeded %+v; want one instant for blocks, allows and subnets", durable, reads, initial)
+		}
+	}
+}
+
+func TestActionElementsShareBlockTimeoutEncoding(t *testing.T) {
+	at := time.Now()
+	got := actionElements([]ActionElement{
+		{Key: net.ParseIP("203.0.113.2").To4(), ExpiresAt: at.Add(1900 * time.Microsecond)},
+		{Key: net.ParseIP("203.0.113.3").To4(), ExpiresAt: at.Add(500 * time.Microsecond)},
+	}, at)
+	if len(got) != 1 || got[0].Timeout != time.Millisecond {
+		t.Fatalf("action elements = %+v, want one truncated timed element", got)
+	}
+}

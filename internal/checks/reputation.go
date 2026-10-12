@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -830,6 +831,7 @@ func extractIPAfterKeyword(line, keyword string) string {
 // then merges the legacy blocked_ips.json file.
 func loadAllBlockedIPs(statePath string) map[string]bool {
 	blocked := make(map[string]bool)
+	unverified := make(map[string]bool)
 
 	// Read the authoritative firewall engine state. The engine persists
 	// every block to firewall/state.json; the parallel bbolt fw:blocked
@@ -839,8 +841,9 @@ func loadAllBlockedIPs(statePath string) map[string]bool {
 	if fwData, err := osFS.ReadFile(fwPath); err == nil {
 		var fwState struct {
 			Blocked []struct {
-				IP        string    `json:"ip"`
-				ExpiresAt time.Time `json:"expires_at"`
+				IP         string    `json:"ip"`
+				ExpiresAt  time.Time `json:"expires_at"`
+				Unverified bool      `json:"unverified"`
 			} `json:"blocked"`
 		}
 		if uerr := json.Unmarshal(fwData, &fwState); uerr != nil {
@@ -848,7 +851,12 @@ func loadAllBlockedIPs(statePath string) map[string]bool {
 		} else {
 			now := time.Now()
 			for _, entry := range fwState.Blocked {
-				if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+				// An unverified row's effect is unproven; it is not a block.
+				if entry.Unverified {
+					if ip := net.ParseIP(entry.IP); ip != nil {
+						unverified[ip.String()] = true
+					}
+				} else if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
 					blocked[entry.IP] = true
 				}
 			}
@@ -886,6 +894,12 @@ func loadAllBlockedIPs(statePath string) map[string]bool {
 		}
 	}
 
+	// A stale legacy tracker cannot prove an unresolved firewall effect.
+	for ip := range blocked {
+		if parsed := net.ParseIP(ip); parsed != nil && unverified[parsed.String()] {
+			delete(blocked, ip)
+		}
+	}
 	return blocked
 }
 

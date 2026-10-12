@@ -20,7 +20,8 @@ var ErrBlockChanged = errors.New("block changed since the action; undo is no lon
 // SameBlockedEntry compares snapshots without relying on time.Time locations.
 func SameBlockedEntry(a, b BlockedEntry) bool {
 	return a.IP == b.IP && a.Reason == b.Reason && a.Source == b.Source &&
-		a.BlockedAt.Equal(b.BlockedAt) && a.ExpiresAt.Equal(b.ExpiresAt)
+		a.BlockedAt.Equal(b.BlockedAt) && a.ExpiresAt.Equal(b.ExpiresAt) &&
+		a.ActionID == b.ActionID && a.Unverified == b.Unverified
 }
 
 // LoadState reads the authoritative firewall state file directly without requiring
@@ -46,7 +47,7 @@ func LoadState(statePath string) (*FirewallState, error) {
 	now := time.Now()
 	var active []BlockedEntry
 	for _, entry := range state.Blocked {
-		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+		if entry.Unverified || entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
 			active = append(active, entry)
 		}
 	}

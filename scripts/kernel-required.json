@@ -30,5 +30,17 @@
   {
     "Package": "github.com/pidginhost/csm/internal/daemon",
     "Name": "TestNotificationKernelQueuesExposePendingRecords"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/firewall",
+    "Name": "TestKernelBlockBatchAppliesOnlyValidMembers"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/firewall",
+    "Name": "TestKernelBlockBatchRejectionAppliesNothing"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/firewall",
+    "Name": "TestKernelBlockBatchUnverifiedRowsStayOutOfTheKernel"
   }
 ]

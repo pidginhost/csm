@@ -28,11 +28,14 @@ import (
 // Engine manages the nftables firewall ruleset.
 // Manages the nftables ruleset via netlink.
 type Engine struct {
-	lifecycle     *Lifecycle
-	stateRevision uint64
-	stateReadErr  error
-	mu            sync.Mutex
-	conn          *nftables.Conn
+	lifecycle              *Lifecycle
+	unverifiedBlockActions map[string]bool
+	failedBlockActions     map[string]bool
+	blockBatchStateErr     error
+	stateRevision          uint64
+	stateReadErr           error
+	mu                     sync.Mutex
+	conn                   *nftables.Conn
 	// listTables, when set, replaces conn.ListTables (tests inject a
 	// failing listing).
 	listTables func() ([]*nftables.Table, error)
@@ -228,6 +231,13 @@ type BlockedEntry struct {
 	Source    string    `json:"source,omitempty"`
 	BlockedAt time.Time `json:"blocked_at"`
 	ExpiresAt time.Time `json:"expires_at"` // zero = permanent
+	// ActionID names the admission attempt that wrote the row; empty for
+	// every other block. Older builds ignore it.
+	ActionID string `json:"action_id,omitempty"`
+	// Unverified marks a row whose kernel element is unproven: the attempt
+	// ended unknown or has not been settled. It is not reported as a block
+	// and not restored into the kernel.
+	Unverified bool `json:"unverified,omitempty"`
 }
 
 // AllowedEntry represents an allowed IP with metadata.
@@ -1613,6 +1623,12 @@ func sameIPString(a, b string) bool {
 }
 
 func preferLongerLivedBlock(current, candidate BlockedEntry) BlockedEntry {
+	if current.Unverified != candidate.Unverified {
+		if current.Unverified {
+			return current
+		}
+		return candidate
+	}
 	if current.ExpiresAt.IsZero() {
 		return current
 	}
@@ -2378,7 +2394,7 @@ func (e *Engine) PromoteToPermanentBlockWithFindingID(ip, reason, findingID stri
 	found := false
 	wasTemporary := false
 	for _, b := range priorState.Blocked {
-		if sameIPString(b.IP, ip) {
+		if sameIPString(b.IP, ip) && !b.Unverified {
 			found = true
 			wasTemporary = !b.ExpiresAt.IsZero()
 			entry.BlockedAt = b.BlockedAt
@@ -2734,42 +2750,8 @@ func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipEx
 	}
 	ip = parsed.String()
 
-	// SAFETY: never block infra IPs - prevents admin lockout.
-	// Runs before resolveIPSet so that an IPv6-disabled config (set6 == nil)
-	// cannot bypass the infra guard when the caller passes the canonical
-	// IPv6 form of a listed infra address.
-	for _, cidr := range e.cfg.InfraIPs {
-		_, network, cidrErr := net.ParseCIDR(cidr)
-		if cidrErr != nil {
-			if infraIP := net.ParseIP(cidr); infraIP != nil && infraIP.String() == parsed.String() {
-				return nil, nil, false, "", ipProtectedErrorf("refusing to block infra IP: %s", ip)
-			}
-			continue
-		}
-		if network.Contains(parsed) {
-			return nil, nil, false, "", ipProtectedErrorf("refusing to block infra IP: %s (in %s)", ip, cidr)
-		}
-	}
-	// Hostnames in cfg.InfraIPs are resolved by the DynDNS loop and
-	// pushed in via UpdateInfraResolved. Without this check a hostname
-	// listed as infra would only be honoured when the operator also
-	// pinned the IP, so a moving panel IP would silently drop out of
-	// the lockout guard.
-	if host, ok := e.infraIPResolvedHostLocked(ip); ok {
-		return nil, nil, false, "", ipProtectedErrorf("refusing to block infra IP: %s (resolved from %s)", ip, host)
-	}
-	// Daemon's own interface addresses are always off-limits. Without
-	// this guard a stray request from the host to itself (cron, panel
-	// callback, internal probe) could trigger an auto-block that
-	// firewalls every customer hosted on the same IP.
-	if e.isLocalAddrLocked(ip) {
-		return nil, nil, false, "", ipProtectedErrorf("refusing to block local host IP: %s (own interface address)", ip)
-	}
-	// Loopback and link-local are excluded from the interface set above, so
-	// they need their own refusal: the panel's own proxied requests appear as
-	// loopback, and a WAF denial count for it must not become a block.
-	if isUnblockableAddress(ip) {
-		return nil, nil, false, "", ipProtectedErrorf("refusing to block non-routable address: %s", ip)
+	if err := e.blockProtectionLocked(parsed, ip); err != nil {
+		return nil, nil, false, "", err
 	}
 
 	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
@@ -2797,7 +2779,7 @@ func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipEx
 		perm, temp, ok := e.livePermTempCountsLocked(st)
 		stateEntry, replacingStateEntry := blockedStateEntry(st, ip)
 		if ok && !skipExisting {
-			if replacingStateEntry {
+			if replacingStateEntry && !stateEntry.Unverified {
 				// Replacing an element already occupying a limit slot is not a new
 				// block. Only subtract it when the kernel confirms the state entry
 				// is still live; stale state must not hide some other live element.
@@ -2846,15 +2828,60 @@ func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipEx
 	return targetSet, key, false, "", nil
 }
 
+// blockProtectionLocked refuses an address no block may name: infra,
+// the host's own interfaces and addresses that are never a packet's source.
+func (e *Engine) blockProtectionLocked(parsed net.IP, ip string) error {
+	// SAFETY: never block infra IPs - prevents admin lockout.
+	// Runs before resolveIPSet so that an IPv6-disabled config (set6 == nil)
+	// cannot bypass the infra guard when the caller passes the canonical
+	// IPv6 form of a listed infra address.
+	for _, cidr := range e.cfg.InfraIPs {
+		_, network, cidrErr := net.ParseCIDR(cidr)
+		if cidrErr != nil {
+			if infraIP := net.ParseIP(cidr); infraIP != nil && infraIP.String() == parsed.String() {
+				return ipProtectedErrorf("refusing to block infra IP: %s", ip)
+			}
+			continue
+		}
+		if network.Contains(parsed) {
+			return ipProtectedErrorf("refusing to block infra IP: %s (in %s)", ip, cidr)
+		}
+	}
+	// Hostnames in cfg.InfraIPs are resolved by the DynDNS loop and
+	// pushed in via UpdateInfraResolved. Without this check a hostname
+	// listed as infra would only be honoured when the operator also
+	// pinned the IP, so a moving panel IP would silently drop out of
+	// the lockout guard.
+	if host, ok := e.infraIPResolvedHostLocked(ip); ok {
+		return ipProtectedErrorf("refusing to block infra IP: %s (resolved from %s)", ip, host)
+	}
+	// Daemon's own interface addresses are always off-limits. Without
+	// this guard a stray request from the host to itself (cron, panel
+	// callback, internal probe) could trigger an auto-block that
+	// firewalls every customer hosted on the same IP.
+	if e.isLocalAddrLocked(ip) {
+		return ipProtectedErrorf("refusing to block local host IP: %s (own interface address)", ip)
+	}
+	// Loopback and link-local are excluded from the interface set above, so
+	// they need their own refusal: the panel's own proxied requests appear as
+	// loopback, and a WAF denial count for it must not become a block.
+	if isUnblockableAddress(ip) {
+		return ipProtectedErrorf("refusing to block non-routable address: %s", ip)
+	}
+	return nil
+}
+
 // soonestExpiringTempIP returns the IP of the temporary block closest to
-// expiry, skipping permanent blocks and excludeIP. Pure helper so the
-// eviction policy is unit-testable without nftables.
+// expiry, skipping permanent blocks, unverified rows and excludeIP. Pure
+// helper so the eviction policy is unit-testable without nftables. An
+// unverified row is never an automatic victim: its effect is unproven and
+// only the owner's retirement may remove it.
 func soonestExpiringTempIP(st FirewallState, excludeIP string) (string, bool) {
 	var best string
 	var bestExp time.Time
 	found := false
 	for _, b := range st.Blocked {
-		if sameIPString(b.IP, excludeIP) || b.ExpiresAt.IsZero() {
+		if sameIPString(b.IP, excludeIP) || b.ExpiresAt.IsZero() || b.Unverified {
 			continue
 		}
 		if !found || b.ExpiresAt.Before(bestExp) {
@@ -2887,7 +2914,7 @@ func blockedStatePermTempCounts(state FirewallState, excludeIP string) (perm, te
 	seen := make(map[string]bool, len(state.Blocked))
 	for _, entry := range state.Blocked {
 		key, ok := canonicalIPKey(entry.IP)
-		if !ok {
+		if !ok || entry.Unverified {
 			continue
 		}
 		if excludeIP != "" && sameIPString(key, excludeIP) {
@@ -3054,7 +3081,7 @@ func (e *Engine) IsBlockedLive(ip string) (bool, error) {
 // entries across the blocked v4 + v6 nft sets. Used by blockIPTarget so
 // the deny limits trip against the kernel's actual state instead of
 // stale state.json entries that the kernel already expired. Live keys
-// that still exist in CSM state are classified from state because nft
+// with verified CSM state are classified from state because nft
 // timeout attributes can reflect inherited/default set behaviour rather
 // than the operator's block intent. Out-of-state live keys fall back to
 // the kernel expiration attributes.
@@ -3096,7 +3123,7 @@ func (e *Engine) livePermTempCountsLocked(state FirewallState) (perm, temp int, 
 func blockedStateTempByIP(state FirewallState) map[string]bool {
 	byIP := make(map[string]bool, len(state.Blocked)*2)
 	for _, entry := range state.Blocked {
-		if entry.IP == "" {
+		if entry.IP == "" || entry.Unverified {
 			continue
 		}
 		temp := !entry.ExpiresAt.IsZero()
@@ -4144,7 +4171,7 @@ func (e *Engine) Status() map[string]interface{} {
 		"udp_in":      e.cfg.UDPIn,
 		"udp_out":     e.cfg.UDPOut,
 		"infra_ips":   e.cfg.InfraIPs,
-		"blocked":     len(state.Blocked),
+		"blocked":     len(state.Blocked) - unverifiedRows(state.Blocked),
 		"allowed":     len(state.Allowed),
 		"log_dropped": e.cfg.LogDropped,
 	}
@@ -4168,19 +4195,27 @@ type initialBlockState struct {
 // Apply before any AddTable / AddSet so the result can be queued
 // into the same atomic netlink batch.
 func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
-	state := e.loadStateFile()
+	now := e.expiryNow()
+	state := e.loadStateFileAtLocked(now)
 	if e.lifecycle != nil {
-		now := time.Now()
 		sets := desiredActionSets(state, e.cfg.IPv6, now)
 		return initialBlockState{blocked4: actionElements(sets["blocked_ips"], now), blocked6: actionElements(sets["blocked_ips6"], now), allowed4: actionElements(sets["allowed_ips"], now), allowed6: actionElements(sets["allowed_ips6"], now), blockedNet4: actionElements(sets["blocked_nets"], now), blockedNet6: actionElements(sets["blocked_nets6"], now)}
 	}
 
-	now := time.Now()
+	// One reading for every row: a row must not pass the expiry check and
+	// then encode the time left after a later reading.
 	var ibs initialBlockState
 	restoredBlocked := make(map[string]bool)
 	for _, entry := range state.Blocked {
-		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+		if entry.Unverified {
 			continue
+		}
+		timeout := time.Duration(0)
+		if !entry.ExpiresAt.IsZero() {
+			var ok bool
+			if timeout, ok = blockTimeout(entry.ExpiresAt, now); !ok {
+				continue
+			}
 		}
 		key, ok := canonicalIPKey(entry.IP)
 		if !ok {
@@ -4190,10 +4225,6 @@ func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 			continue
 		}
 		parsed := net.ParseIP(entry.IP)
-		timeout := time.Duration(0)
-		if !entry.ExpiresAt.IsZero() {
-			timeout = time.Until(entry.ExpiresAt)
-		}
 		if ip4 := parsed.To4(); ip4 != nil {
 			ibs.blocked4 = append(ibs.blocked4, nftables.SetElement{Key: ip4, Timeout: timeout})
 		} else if e.cfg.IPv6 {
@@ -4301,7 +4332,11 @@ func logNftSetOpErr(op, target string, err error) {
 // Hot read paths (IsBlocked, IsSubnetBlocked, IsAllowed) bypass this
 // allocation by consulting the index maps directly.
 func (e *Engine) loadStateFile() FirewallState {
-	e.ensureStateCacheLocked()
+	return e.loadStateFileAtLocked(e.expiryNow())
+}
+
+func (e *Engine) loadStateFileAtLocked(now time.Time) FirewallState {
+	e.ensureStateCacheAtLocked(now)
 	if e.stateCache == nil {
 		return FirewallState{}
 	}
@@ -4346,10 +4381,14 @@ func (e *Engine) loadStateFileRawLocked() (FirewallState, bool) {
 // other index-backed lookups never report a stale block. Pruning
 // updates the index maps via rebuildIndexLocked.
 func (e *Engine) ensureStateCacheLocked() {
+	e.ensureStateCacheAtLocked(e.expiryNow())
+}
+
+func (e *Engine) ensureStateCacheAtLocked(now time.Time) {
 	if e.lifecycle != nil {
 		state, _, err := e.readCommittedStateLocked()
 		if err == nil {
-			e.installCommittedCache(state)
+			e.installCommittedCacheAtLocked(state, now)
 		}
 		return
 	}
@@ -4357,7 +4396,7 @@ func (e *Engine) ensureStateCacheLocked() {
 	stateFile := filepath.Join(e.statePath, "state.json")
 	info, statErr := os.Stat(stateFile)
 	if statErr == nil && e.stateCache != nil && e.stateCacheKey.matches(info) {
-		e.applyExpiryLocked()
+		e.applyExpiryAtLocked(now)
 		return
 	}
 
@@ -4367,11 +4406,11 @@ func (e *Engine) ensureStateCacheLocked() {
 		// #nosec G304 -- filepath.Join under operator-configured statePath.
 		data, readErr := os.ReadFile(stateFile)
 		if readErr != nil {
-			e.keepPriorStateCacheLocked()
+			e.keepPriorStateCacheAtLocked(now)
 			return
 		}
 		if err := json.Unmarshal(data, &fresh); err != nil {
-			e.keepPriorStateCacheLocked()
+			e.keepPriorStateCacheAtLocked(now)
 			return
 		}
 		e.stateCacheKey = stateFileCacheKeyFromInfo(info)
@@ -4380,19 +4419,20 @@ func (e *Engine) ensureStateCacheLocked() {
 	case e.stateCache != nil:
 		// Transient stat error (permission, EIO). Keep the prior
 		// cache rather than dropping all blocks.
-		e.applyExpiryLocked()
+		e.applyExpiryAtLocked(now)
 		return
 	}
 
+	e.overlayUnverifiedBlockActionsLocked(&fresh)
 	normalizeFirewallStateIPs(&fresh)
 	e.stateCache = &fresh
-	e.applyExpiryLocked()
+	e.applyExpiryAtLocked(now)
 	e.rebuildIndexLocked()
 }
 
-func (e *Engine) keepPriorStateCacheLocked() {
+func (e *Engine) keepPriorStateCacheAtLocked(now time.Time) {
 	if e.stateCache != nil {
-		e.applyExpiryLocked()
+		e.applyExpiryAtLocked(now)
 		return
 	}
 	e.stateCache = &FirewallState{}
@@ -4400,14 +4440,13 @@ func (e *Engine) keepPriorStateCacheLocked() {
 	e.rebuildIndexLocked()
 }
 
-// applyExpiryLocked prunes expired entries from the cached state in
+// applyExpiryAtLocked prunes expired entries from the cached state in
 // place and rebuilds the index maps when something was dropped. It scans
 // only when an entry is due or the cache was replaced since the last scan.
-func (e *Engine) applyExpiryLocked() {
+func (e *Engine) applyExpiryAtLocked(now time.Time) {
 	if e.stateCache == nil {
 		return
 	}
-	now := e.expiryNow()
 	s := e.stateCache
 	if !e.expiryDue.reached(s, now) {
 		return
@@ -4441,7 +4480,7 @@ func (e *Engine) expiryNow() time.Time {
 
 // expiryDeadline is bound to the cache snapshot it was computed for, so
 // replacing stateCache (reload, save, committed install) forces a fresh
-// scan without each writer having to reset it. Only applyExpiryLocked
+// scan without each writer having to reset it. Only applyExpiryAtLocked
 // changes a cached snapshot in place, and it recomputes the deadline.
 //
 // A cached ExpiresAt carries a monotonic reading when the entry was made
@@ -4489,7 +4528,9 @@ func nextExpiryDeadline(s *FirewallState) expiryDeadline {
 		}
 	}
 	for _, entry := range s.Blocked {
-		consider(entry.ExpiresAt)
+		if !entry.Unverified {
+			consider(entry.ExpiresAt)
+		}
 	}
 	for _, entry := range s.BlockedNet {
 		consider(entry.ExpiresAt)
@@ -4513,6 +4554,9 @@ func (e *Engine) rebuildIndexLocked() {
 	s := e.stateCache
 	blocked := make(map[string]int, len(s.Blocked))
 	for i, entry := range s.Blocked {
+		if entry.Unverified {
+			continue
+		}
 		blocked[entry.IP] = i
 		if key, ok := canonicalIPKey(entry.IP); ok {
 			blocked[key] = i
@@ -4542,14 +4586,13 @@ func (e *Engine) rebuildIndexLocked() {
 	e.blockedCIDRIndex = subnets
 }
 
-// pruneBlocked returns the list with expired blocked-IP entries removed
-// and a flag indicating whether anything was dropped. Returns the
-// original slice when no entries expired so we avoid pointless
-// allocations on the steady-state hot path.
+// pruneBlocked retains unverified rows until their owner retires the
+// matching attempt; expiry alone cannot settle an unknown kernel effect.
+// Return the original slice when no enforced entry expired.
 func pruneBlocked(in []BlockedEntry, now time.Time) ([]BlockedEntry, bool) {
 	expired := 0
 	for _, entry := range in {
-		if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
+		if !entry.Unverified && !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
 			expired++
 		}
 	}
@@ -4558,7 +4601,7 @@ func pruneBlocked(in []BlockedEntry, now time.Time) ([]BlockedEntry, bool) {
 	}
 	out := make([]BlockedEntry, 0, len(in)-expired)
 	for _, entry := range in {
-		if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
+		if !entry.Unverified && !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
 			continue
 		}
 		out = append(out, entry)
@@ -4621,6 +4664,7 @@ func (e *Engine) saveState(s *FirewallState) error {
 	}
 
 	state := copyFirewallState(*s)
+	e.overlayUnverifiedBlockActionsLocked(&state)
 	normalizeFirewallStateIPs(&state)
 	path := filepath.Join(e.statePath, "state.json")
 	if err := writeFirewallStateJSON(path, 0o600, &state); err != nil {
@@ -4633,6 +4677,9 @@ func (e *Engine) saveState(s *FirewallState) error {
 		return err
 	}
 	e.setStateCacheLocked(path, &state)
+	e.unverifiedBlockActions = nil
+	e.failedBlockActions = nil
+	e.blockBatchStateErr = nil
 	return nil
 }
 
@@ -4660,6 +4707,7 @@ func (e *Engine) setStateCacheLocked(path string, s *FirewallState) {
 	}
 
 	state := copyFirewallState(*s)
+	e.overlayUnverifiedBlockActionsLocked(&state)
 	normalizeFirewallStateIPs(&state)
 	e.stateCache = &FirewallState{
 		Blocked:     append([]BlockedEntry(nil), state.Blocked...),
