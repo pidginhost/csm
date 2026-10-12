@@ -79,7 +79,9 @@ type SocketFacts struct {
 	Err     error
 	Missing bool
 	Socket  PathFacts
-	// Parents run from "/" down to the socket's directory.
+	// Parents are every directory the path walk looked a name up in, in
+	// lookup order: "/" first, the socket's directory last, and the directory
+	// of each symlink followed on the way.
 	Parents []PathFacts
 	// RspamdUID is the rspamd service user's uid, or -1 when unknown.
 	RspamdUID int
