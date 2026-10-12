@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // maxFileBytes bounds every file a transaction reads; cPanel's generated
@@ -57,11 +59,15 @@ func readFile(p string) (fileState, error) {
 	if len(data) > maxFileBytes {
 		return fileState{}, fmt.Errorf("%s is larger than %d bytes", p, maxFileBytes)
 	}
-	st := fileState{exists: true, content: string(data), uid: -1, gid: -1, perm: info.Mode().Perm()}
+	st := fileState{exists: true, content: string(data), uid: -1, gid: -1, perm: fileMode(info.Mode())}
 	if sys, ok := info.Sys().(*syscall.Stat_t); ok {
 		st.uid, st.gid = int(sys.Uid), int(sys.Gid)
 	}
 	return st, nil
+}
+
+func fileMode(mode fs.FileMode) fs.FileMode {
+	return mode & (fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky)
 }
 
 // errConflict marks a file someone else changed during the transaction. It
@@ -82,38 +88,76 @@ func replaceFile(p string, want, next fileState) error {
 	if !next.exists {
 		return deleteFile(p)
 	}
+	tmp, err := stageFile(p, next.content)
+	if err != nil {
+		return err
+	}
+	defer discardTemp(tmp)
+	return replaceStagedFile(p, want, tmp)
+}
+
+// Staging and syncing may take long enough for another writer to change p.
+// Recheck its content and refresh its metadata before publishing.
+func replaceStagedFile(p string, want fileState, tmp *os.File) error {
+	cur, err := readFile(p)
+	if err != nil {
+		return err
+	}
+	if !sameContent(cur, want) {
+		return fmt.Errorf("%s %w", p, errConflict)
+	}
 	perm, uid, gid := fs.FileMode(0o644), -1, -1
 	if cur.exists {
 		perm, uid, gid = cur.perm, cur.uid, cur.gid
 	}
-	return writeAtomic(p, next.content, perm, uid, gid)
+	return publishFile(p, tmp, perm, uid, gid, cur.exists)
 }
 
 // writeAtomic writes p through a temporary file in its directory, fsyncs it,
-// renames it into place and fsyncs the directory. uid -1 keeps the owner.
+// renames it into place and fsyncs the directory. IDs of -1 keep the worker's
+// ownership of the temporary file.
 func writeAtomic(p, content string, perm fs.FileMode, uid, gid int) error {
-	dir := filepath.Dir(p)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(p)+".*.csmtmp")
+	tmp, err := stageFile(p, content)
 	if err != nil {
 		return err
 	}
-	name := tmp.Name()
-	done := false
-	defer func() {
-		if !done {
-			_ = tmp.Close()
-			_ = os.Remove(name)
-		}
-	}()
+	defer discardTemp(tmp)
+	return publishFile(p, tmp, perm, uid, gid, true)
+}
+
+func discardTemp(tmp *os.File) {
+	_ = tmp.Close()
+	_ = os.Remove(tmp.Name())
+}
+
+func stageFile(p, content string) (*os.File, error) {
+	if len(content) > maxFileBytes {
+		return nil, fmt.Errorf("%s is larger than %d bytes", p, maxFileBytes)
+	}
+	dir := filepath.Dir(p)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(p)+".*.csmtmp")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.WriteString(tmp, content); err != nil {
+		discardTemp(tmp)
+		return nil, err
+	}
+	if err := tmp.Sync(); err != nil {
+		discardTemp(tmp)
+		return nil, err
+	}
+	return tmp, nil
+}
+
+func publishFile(p string, tmp *os.File, perm fs.FileMode, uid, gid int, replace bool) error {
 	if uid >= 0 {
 		if err := tmp.Chown(uid, gid); err != nil {
 			return err
 		}
 	}
+	// Writing and chown can clear set-id bits, so set the final mode last.
 	if err := tmp.Chmod(perm); err != nil {
-		return err
-	}
-	if _, err := io.WriteString(tmp, content); err != nil {
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
@@ -122,11 +166,24 @@ func writeAtomic(p, content string, perm fs.FileMode, uid, gid int) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(name, p); err != nil {
-		return err
+	if replace {
+		if err := os.Rename(tmp.Name(), p); err != nil {
+			return err
+		}
+	} else {
+		// Linking publishes a new file atomically without overwriting a
+		// destination created after the content check.
+		if err := os.Link(tmp.Name(), p); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				return fmt.Errorf("%s %w", p, errConflict)
+			}
+			return err
+		}
+		if err := os.Remove(tmp.Name()); err != nil {
+			return err
+		}
 	}
-	done = true
-	return syncDir(dir)
+	return syncDir(filepath.Dir(p))
 }
 
 // deleteFile removes CSM's own file p, if present, durably.
@@ -149,22 +206,44 @@ func syncDir(dir string) error {
 	return d.Sync()
 }
 
-// privateDir creates dir as a root-only directory, or checks an existing
-// one is a real directory and narrows it to 0700.
+// privateDir requires worker ownership; the worker runs as root. Ancestors
+// must be real directories, and chmod uses the opened directory's inode.
 func privateDir(dir string) error {
-	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-		return err
-	}
-	info, err := os.Lstat(dir)
+	return privateDirOwned(dir, os.Geteuid())
+}
+
+func privateDirOwned(dir string, uid int) error {
+	parent, err := safepath.OpenDirNoFollow(filepath.Dir(dir))
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("%s is not a directory", dir)
+	defer func() { _ = parent.Close() }()
+	if mkdirErr := os.Mkdir(dir, 0o700); mkdirErr != nil && !errors.Is(mkdirErr, fs.ErrExist) {
+		return mkdirErr
 	}
-	if info.Mode().Perm() != 0o700 {
+	d, err := parent.OpenFile(filepath.Base(dir), os.O_RDONLY|syscall.O_DIRECTORY, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	info, err := d.Stat()
+	if err != nil {
+		return err
+	}
+	owner, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(owner.Uid) != uid {
+		return fmt.Errorf("%s is not owned by the worker", dir)
+	}
+	if fileMode(info.Mode()) != 0o700 {
 		// #nosec G302 -- a directory needs its search bit; 0700 is root-only.
-		return os.Chmod(dir, 0o700)
+		if err := d.Chmod(0o700); err != nil {
+			return err
+		}
 	}
-	return nil
+	if err := d.Sync(); err != nil {
+		return err
+	}
+	// Sync the entry as well as the directory, including a concurrent
+	// creator's entry that might not yet be durable.
+	return parent.Sync()
 }

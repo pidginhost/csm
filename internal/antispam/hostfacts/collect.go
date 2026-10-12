@@ -173,8 +173,23 @@ func RunCommand(ctx context.Context, limit time.Duration, name string, args ...s
 	var stdout, stderr strings.Builder
 	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- fixed tool names; arguments are constants, the validated config path or fixed probe expressions
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	// A timed-out rebuild must not leave children writing during rollback.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
 	cmd.WaitDelay = time.Second
 	err := cmd.Run()
+	if err != nil && cmd.Process != nil {
+		// A failing parent can exit while descendants still hold its pipes.
+		if stopErr := cmd.Cancel(); stopErr != nil && !errors.Is(stopErr, os.ErrProcessDone) {
+			err = errors.Join(err, stopErr)
+		}
+	}
 	if err != nil && ctx.Err() != nil {
 		err = fmt.Errorf("%s: %w", name, ctx.Err())
 	}

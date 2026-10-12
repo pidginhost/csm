@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -365,7 +366,35 @@ func TestReadConfigContentDiscardsPartialRead(t *testing.T) {
 func TestRunCommandUsesItsLimit(t *testing.T) {
 	start := time.Now()
 	r := RunCommand(context.Background(), 100*time.Millisecond, "sleep", "5")
-	if r.Err == nil || time.Since(start) > 3*time.Second {
+	if !errors.Is(r.Err, context.DeadlineExceeded) || time.Since(start) > 3*time.Second {
 		t.Errorf("sleep ran %v with error %v", time.Since(start), r.Err)
+	}
+}
+
+func TestRunCommandDeadlineStopsChildren(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "late-write")
+	r := RunCommand(context.Background(), 250*time.Millisecond, "sh", "-c", `(printf ready; sleep 0.5; printf survived > "$1") & wait`, "sh", p)
+	if !errors.Is(r.Err, context.DeadlineExceeded) || r.Stdout != "ready" {
+		t.Fatalf("command = %+v; want deadline exceeded", r)
+	}
+	time.Sleep(600 * time.Millisecond)
+	if _, err := os.Stat(p); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("child kept running after the deadline: %v", err)
+	}
+}
+
+func TestRunCommandStopsChildrenHoldingOutput(t *testing.T) {
+	for _, exit := range []string{"0", "1"} {
+		t.Run(exit, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "late-write")
+			r := RunCommand(context.Background(), 5*time.Second, "sh", "-c", `(printf ready; sleep 1.5; printf survived > "$1") & exit "$2"`, "sh", p, exit)
+			if r.Stdout != "ready" || r.Err == nil || exit == "0" && !errors.Is(r.Err, exec.ErrWaitDelay) {
+				t.Fatalf("command = %+v; want a pipe-drain failure", r)
+			}
+			time.Sleep(700 * time.Millisecond)
+			if _, err := os.Stat(p); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("child kept running after its parent exited: %v", err)
+			}
+		})
 	}
 }
