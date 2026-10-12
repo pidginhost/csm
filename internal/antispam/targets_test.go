@@ -312,3 +312,32 @@ func TestCheckHostAcceptsIndependentHookStatements(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckRemovalLeavesForeignFiles(t *testing.T) {
+	targets := goodTargets()
+	targets[0].Missing = false
+	targets[0].File = PathFacts{Path: targets[0].Path, Mode: 0o644}
+	targets[0].Content = "reject = 15;\n"
+	targets[1].Err = fs.ErrNotExist
+	targets[len(targets)-1].Content = "@AUTH@\n"
+	if got := CheckRemoval(targets); len(got) != 0 {
+		t.Errorf("removal refused: %+v", got)
+	}
+	if got := checkTargets(targets, false); len(got) != 3 {
+		t.Errorf("apply problems = %+v, want foreign file, missing directory and @CONFIG@", got)
+	}
+}
+
+func TestCheckRemovalRefusesUnsafeEdits(t *testing.T) {
+	for name, edit := range map[string]func([]TargetFacts){
+		"symlinked parent": func(ts []TargetFacts) { ts[6].Parents[2].Mode = fs.ModeSymlink | 0o777 },
+		"tenant file":      func(ts []TargetFacts) { ts[7].File.UID = 1000 },
+		"unpaired marker":  func(ts []TargetFacts) { ts[8].Content = MarkerBegin + "\n" },
+	} {
+		targets := goodTargets()
+		edit(targets)
+		if got := CheckRemoval(targets); len(got) == 0 || got[0].Severity != Definite {
+			t.Errorf("%s: removal problems = %+v", name, got)
+		}
+	}
+}

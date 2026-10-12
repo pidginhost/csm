@@ -2,6 +2,7 @@ package antispam
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -20,8 +21,22 @@ func CheckGenerated(conf string, h EximHooks, rcptACL, dataACL string) error {
 	if err != nil {
 		return err
 	}
-	if err := CheckPlacement(blocks, rcptACL, dataACL); err != nil {
-		return errors.New("the CSM blocks are missing, duplicated or in unexpected ACLs")
+	// Counts name what is missing without repeating ACL names from the file.
+	var nMain, nRCPT, nData, nOther int
+	for _, b := range blocks {
+		switch b.ACL {
+		case "":
+			nMain++
+		case rcptACL:
+			nRCPT++
+		case dataACL:
+			nData++
+		default:
+			nOther++
+		}
+	}
+	if nMain != 1 || nRCPT != 1 || nData != 2 || nOther != 0 {
+		return fmt.Errorf("found %d scanner, %d RCPT, %d DATA and %d misplaced CSM blocks; want 1, 1, 2 and 0", nMain, nRCPT, nData, nOther)
 	}
 	lines := strings.Split(conf, "\n")
 	text := func(b Placement) string { return strings.Join(lines[b.Begin-1:b.End], "\n") + "\n" }

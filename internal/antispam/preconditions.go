@@ -250,7 +250,7 @@ func CheckHost(f HostFacts) []Problem {
 		}
 	}
 
-	out = append(out, checkTargets(f.Targets)...)
+	out = append(out, checkTargets(f.Targets, false)...)
 
 	probes := NamedListProbes()
 	if len(f.NamedLists) != len(probes) {

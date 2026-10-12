@@ -72,10 +72,19 @@ type TargetFacts struct {
 	Content string
 }
 
+// CheckRemoval applies the target rules that still hold when CSM removes its
+// integration (spec section 6.4): it never writes through an unsafe path or
+// edits a file whose markers it cannot identify. A foreign local.d file stays
+// in place and a missing directory has nothing to remove.
+func CheckRemoval(targets []TargetFacts) []Problem {
+	return checkTargets(targets, true)
+}
+
 // checkTargets applies spec section 6.2 item 9: every file CSM writes is a
 // regular root-owned file without symlinks, in root-owned directories nobody
 // else can write, and its content belongs to CSM or has room for CSM's block.
-func checkTargets(targets []TargetFacts) []Problem {
+// For removal only the rules that protect an edit apply.
+func checkTargets(targets []TargetFacts, removal bool) []Problem {
 	var out []Problem
 	add := func(code string, sev Severity, format string, args ...any) {
 		out = append(out, Problem{Code: code, Severity: sev, Detail: fmt.Sprintf(format, args...)})
@@ -116,7 +125,9 @@ func checkTargets(targets []TargetFacts) []Problem {
 		}
 		switch {
 		case errors.Is(t.Err, fs.ErrNotExist):
-			add(CodeTargets, Definite, "the directory for %s is missing", t.Path)
+			if !removal {
+				add(CodeTargets, Definite, "the directory for %s is missing", t.Path)
+			}
 			continue
 		case t.Err != nil:
 			add(CodeTargets, Temporary, "cannot check %s; check file access", t.Path)
@@ -132,7 +143,7 @@ func checkTargets(targets []TargetFacts) []Problem {
 		}
 		switch t.Kind {
 		case TargetRspamd:
-			if !IsManaged(t.Content) {
+			if !removal && !IsManaged(t.Content) {
 				add(CodeTargets, Definite, "%s is not managed by CSM; remove or rename it so CSM can write its own", t.Path)
 			}
 		case TargetEximHook:
@@ -147,7 +158,7 @@ func checkTargets(targets []TargetFacts) []Problem {
 				add(CodeMarkers, Definite, "%s has multiple CSM blocks; only one is allowed", t.Path)
 			}
 		case TargetEximLocal:
-			if !oneConfigSection(t.Content) {
+			if !removal && !oneConfigSection(t.Content) {
 				add(CodeTargets, Definite, "%s must hold exactly one @CONFIG@ line, alone and unindented", t.Path)
 			}
 		}

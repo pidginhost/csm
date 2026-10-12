@@ -354,3 +354,40 @@ func FuzzParseResult(f *testing.F) {
 		}
 	})
 }
+
+func FuzzSetBlock(f *testing.F) {
+	h, err := RenderExim(Settings{Socket: DefaultSocket, RejectScore: 15, TagScore: 6})
+	if err != nil {
+		f.Fatal(err)
+	}
+	for _, seed := range []string{"", "warn\n  log_message = x\n", h.Post + "deny\n", "@CONFIG@\n", "@AUTH@\n@CONFIG@\n" + h.Config, MarkerBegin + "\n", "  message = x\n"} {
+		f.Add(seed, false, false)
+		f.Add(seed, true, true)
+	}
+	f.Fuzz(func(t *testing.T, content string, local, remove bool) {
+		kind, block := TargetEximHook, h.Post
+		if local {
+			kind, block = TargetEximLocal, h.Config
+		}
+		if remove {
+			block = ""
+		}
+		out, err := SetBlock(kind, content, block)
+		if err != nil {
+			return
+		}
+		blocks, err := fileBlocks(kind, out)
+		if err != nil {
+			t.Fatalf("edited file does not parse: %v", err)
+		}
+		if remove && len(blocks) != 0 {
+			t.Fatal("removal left a CSM block")
+		}
+		if text, ok := BlockText(kind, out); !remove && (!ok || text != block) {
+			t.Fatalf("block reads back as %q, %t", text, ok)
+		}
+		if again, err := SetBlock(kind, out, block); err != nil || again != out {
+			t.Fatalf("second edit changed the file: %v", err)
+		}
+	})
+}
