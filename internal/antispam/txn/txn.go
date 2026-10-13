@@ -156,7 +156,13 @@ func cmdErr(what string, r antispam.CommandResult) error {
 }
 
 func failed(step string, err error) antispam.Result {
-	return antispam.Result{FailedStep: step, Rollback: antispam.RollbackNone, Error: err.Error()}
+	return antispam.Result{FailedStep: step, Rollback: antispam.RollbackNone, Error: oneLine(err.Error())}
+}
+
+// oneLine keeps Result.Error a single line for logs and findings; joined
+// errors are separated by newlines.
+func oneLine(s string) string {
+	return strings.ReplaceAll(s, "\n", "; ")
 }
 
 // blocking returns the Definite and Temporary problem codes as one error.
@@ -547,7 +553,7 @@ func (t *tx) fail(step string, err error) antispam.Result {
 	if rbErr != nil {
 		msg += "; rollback: " + rbErr.Error()
 	}
-	return antispam.Result{FailedStep: step, Rollback: state, Error: msg}
+	return antispam.Result{FailedStep: step, Rollback: state, Error: oneLine(msg)}
 }
 
 // rollback restores every change in reverse and reloads each service whose
@@ -588,17 +594,27 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 			errs = append(errs, fmt.Errorf("restoring %s: %w", strings.TrimPrefix(w.path, t.h.root), err))
 		}
 	}
+	loadable := false
 	if t.eximTouched {
 		if r := t.cmd(ctx, buildLimit, BuildEximConf); r.Err != nil {
 			errs = append(errs, cmdErr("buildeximconf", r))
 		} else if err := t.validateExim(ctx, t.eximHadHooks); err != nil {
 			errs = append(errs, err)
-		} else if err := t.checkRollbackExim(ctx); err != nil {
-			errs = append(errs, err)
+		} else {
+			loadable = true
+			if err := t.checkRollbackExim(ctx); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	if t.eximReloaded {
-		reload := t.cmd(ctx, commandLimit, "systemctl", "reload", antispam.EximUnit)
+		// A HUP re-executes Exim with the file on disk. A configuration that
+		// failed its build or validation could stop a running daemon, so
+		// Exim keeps the configuration it loaded and the rollback fails.
+		var reload antispam.CommandResult
+		if loadable {
+			reload = t.cmd(ctx, commandLimit, "systemctl", "reload", antispam.EximUnit)
+		}
 		switch active, err := t.serviceActive(ctx, antispam.EximUnit); {
 		case err != nil:
 			errs = append(errs, err)
