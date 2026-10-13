@@ -105,6 +105,12 @@ func (e *Engine) BlockActionsUnproven() error             { return nil }
 func (e *Engine) MarkBlockActionsUnverified(_ []string) (int, error) {
 	return 0, ErrUnsupportedPlatform
 }
+func (e *Engine) CheckBlockBatch(_ []BlockMember) ([]BlockRefusal, error) {
+	return nil, ErrUnsupportedPlatform
+}
+func (e *Engine) ApplyBlockBatch(_ []BlockMember) ([]BlockResult, error) {
+	return nil, ErrUnsupportedPlatform
+}
 func (e *Engine) IsAllowed(_ string) bool              { return false }
 func (e *Engine) IsBlockedLive(_ string) (bool, error) { return false, ErrUnsupportedPlatform }
 func (e *Engine) LiveBlockedSet() (LiveBlockedSnapshot, error) {
@@ -149,3 +155,5 @@ func (e *Engine) SetDOSExemptProviderNets(_ []*net.IPNet) {}
 func (e *Engine) RefreshDOSExemptSets(_ []*net.IPNet) error {
 	return ErrUnsupportedPlatform
 }
+
+func (e *Engine) ProbeBlockState() error { return ErrUnsupportedPlatform }

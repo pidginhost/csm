@@ -8,10 +8,6 @@ import "errors"
 // owns the state: its batch manifest is not built yet.
 var errDurableBlockRows = errors.New("firewall state is owned by the durable lifecycle")
 
-// ErrBlockBatchState requires the owner to hold automatic execution while
-// the engine's state safety changes lack a durable acknowledgement.
-var ErrBlockBatchState = errors.New("firewall batch state is unproven")
-
 func unverifiedRows(entries []BlockedEntry) int {
 	n := 0
 	for _, entry := range entries {
