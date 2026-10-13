@@ -152,6 +152,17 @@
       "rationale": "Completes bounded HTTP response-body draining after the webhook attempt; carries no finding."
     },
     {
+      "id": "internal/antispam/reconcile/loop.go::NewLoop::wake::channel::1",
+      "path": "internal/antispam/reconcile/loop.go",
+      "owner": "NewLoop",
+      "target": "wake",
+      "kind": "channel",
+      "source": "make(chan struct{}, 1)",
+      "capacity": "1",
+      "class": "maintenance",
+      "rationale": "Coalesces antispam reconcile triggers; each pass reads the latest configuration, so a dropped duplicate loses nothing."
+    },
+    {
       "id": "internal/attackdb/db.go::Init::stopCh::channel::1",
       "path": "internal/attackdb/db.go",
       "owner": "Init",
