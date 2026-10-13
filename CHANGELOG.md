@@ -31,7 +31,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - When the firewall state file is unreadable at startup, CSM now keeps it aside, starts without its blocks and allowed addresses, and raises a critical alert and doctor failure. Re-add needed entries; if it cannot be kept, fix storage and restart CSM.
 - Threat lookups no longer show an address as blocked from stale auto-block records when the firewall does not hold that block.
 - After upgrade, IP reputation stops fetching the retired Spamhaus EDROP list and ignores its cached ranges; Spamhaus DROP carries the merged entries.
-- A failed forward guard install or removal is now retried automatically instead of waiting for the next config reload or restart.
+- Failed forward guard changes now retry automatically with the latest settings, without requiring another config reload or restart.
 
 ## [4.3.0] - 2026-10-08
 

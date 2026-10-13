@@ -56,13 +56,22 @@ func (d *Daemon) forwardGuardBadIPs() []string {
 // the daemon down or block mail (fail-open). A failure, such as a lock held by
 // an antispam transaction, is retried on the next refresh.
 func (d *Daemon) reconcileForwardGuard() {
+	d.forwardGuardRetry.Store(true)
+	// A reload must not wait for an in-flight worker. Leave its request for
+	// the next refresh, and read config only after taking the lock.
+	if !d.forwardGuardMu.TryLock() {
+		return
+	}
+	defer d.forwardGuardMu.Unlock()
+	// Consume pending work before starting so success cannot erase a reload
+	// request that arrives while this attempt is running.
+	d.forwardGuardRetry.Store(false)
 	fg := d.currentCfg().EmailProtection.ForwardGuard
 	if err := d.forwardGuardReconciler().Reconcile(fg); err != nil {
 		d.forwardGuardRetry.Store(true)
 		csmlog.Error("forward-guard reconcile failed", "err", err)
 		return
 	}
-	d.forwardGuardRetry.Store(false)
 }
 
 // forwardQuarantineDir is a var so tests can prune a temporary Maildir.

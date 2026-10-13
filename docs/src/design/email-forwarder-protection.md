@@ -123,6 +123,12 @@ email_protection:
     quarantine_retention_days: 14
 ```
 
+On cPanel hosts in enforce mode, CSM applies these settings at startup and on
+config reload. Failed changes are retried on the next 15-minute lookup refresh,
+using the latest settings. A reload during a running forward-guard change
+returns without waiting and leaves the latest settings pending for that refresh.
+Observe mode and hosts without cPanel leave the installed guard untouched.
+
 ## WebUI surfaces (email page)
 
 - Forwarder table: source -> destination(s); provider badge

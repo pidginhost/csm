@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -179,40 +180,210 @@ func TestPruneForwardQuarantineKeepsEverythingWithoutRetention(t *testing.T) {
 	}
 }
 
-// flakyForwardGuard fails its first fail mutations.
+// flakyForwardGuard fails its first fail reconcile attempts.
 type flakyForwardGuard struct {
-	countingForwardGuard
-	fail int
+	applies, removes, refreshes int
+	fail                        int
 }
 
-func (g *flakyForwardGuard) Remove() error {
-	g.mutations++
-	if g.mutations <= g.fail {
+func (g *flakyForwardGuard) result() error {
+	if g.applies+g.removes <= g.fail {
 		return errors.New("exim mutation lock is held by another CSM transaction")
 	}
 	return nil
+}
+
+func (g *flakyForwardGuard) Apply(policy.Config, []string) error {
+	g.applies++
+	return g.result()
+}
+func (g *flakyForwardGuard) Remove() error {
+	g.removes++
+	return g.result()
+}
+func (g *flakyForwardGuard) RefreshBadIPs([]string) error { g.refreshes++; return nil }
+func (g *flakyForwardGuard) Status() (adapter.Status, error) {
+	return adapter.Status{}, nil
 }
 
 // A failed install or removal, such as one refused while an antispam
 // transaction holds the Exim lock, is retried on the next refresh instead
 // of waiting for a reload or restart.
 func TestForwardGuardRetriesFailedReconcileOnRefresh(t *testing.T) {
-	usePanel(t, platform.PanelCPanel)
-	cfg := &config.Config{}
-	useActiveConfig(t, cfg)
-	g := &flakyForwardGuard{fail: 1}
-	prev := newForwardGuard
-	t.Cleanup(func() { newForwardGuard = prev })
-	newForwardGuard = func() adapter.ForwardGuard { return g }
-	d := &Daemon{cfg: cfg}
+	for _, enabled := range []bool{false, true} {
+		name := "remove"
+		if enabled {
+			name = "apply"
+		}
+		t.Run(name, func(t *testing.T) {
+			usePanel(t, platform.PanelCPanel)
+			cfg := &config.Config{Mode: config.ModeEnforce}
+			cfg.EmailProtection.ForwardGuard.Enabled = enabled
+			cfg.EmailProtection.ForwardGuard.HoldSignals.BounceBackscatter = true
+			useActiveConfig(t, cfg)
+			g := &flakyForwardGuard{fail: 2}
+			prev := newForwardGuard
+			t.Cleanup(func() { newForwardGuard = prev })
+			newForwardGuard = func() adapter.ForwardGuard { return g }
+			d := &Daemon{cfg: cfg}
 
-	d.reconcileForwardGuard()
-	d.refreshForwardGuard()
-	if g.mutations != 2 {
-		t.Fatalf("mutations after a failed reconcile and one refresh = %d, want 2", g.mutations)
+			d.reconcileForwardGuard()
+			for want := 2; want <= 3; want++ {
+				d.refreshForwardGuard()
+				if got := g.applies + g.removes; got != want {
+					t.Fatalf("reconcile attempts = %d, want %d", got, want)
+				}
+			}
+			d.refreshForwardGuard()
+			if got := g.applies + g.removes; got != 3 {
+				t.Fatalf("successful reconcile was retried: %d attempts", got)
+			}
+			if enabled {
+				if g.applies != 3 || g.removes != 0 || g.refreshes != 3 {
+					t.Fatalf("enforcing guard calls: %+v", g)
+				}
+			} else if g.removes != 3 || g.applies != 0 || g.refreshes != 0 {
+				t.Fatalf("disabled guard calls: %+v", g)
+			}
+		})
 	}
-	d.refreshForwardGuard()
-	if g.mutations != 2 {
-		t.Fatalf("a succeeded reconcile was retried: %d mutations", g.mutations)
+}
+
+func TestForwardGuardRetrySkipsInactiveHosts(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		panel platform.Panel
+		mode  string
+	}{
+		{"observe", platform.PanelCPanel, config.ModeObserve},
+		{"no_panel", platform.PanelNone, config.ModeEnforce},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usePanel(t, tc.panel)
+			cfg := &config.Config{Mode: tc.mode}
+			cfg.EmailProtection.ForwardGuard.Enabled = true
+			cfg.EmailProtection.ForwardGuard.HoldSignals.BounceBackscatter = true
+			useActiveConfig(t, cfg)
+			g := &flakyForwardGuard{}
+			prev := newForwardGuard
+			t.Cleanup(func() { newForwardGuard = prev })
+			newForwardGuard = func() adapter.ForwardGuard { return g }
+			d := &Daemon{cfg: cfg}
+			d.forwardGuardRetry.Store(true)
+
+			d.refreshForwardGuard()
+			d.reconcileForwardGuard()
+			if g.applies != 0 || g.removes != 0 || g.refreshes != 0 {
+				t.Fatalf("inactive host ran the forward guard: %+v", g)
+			}
+			if d.forwardGuardRetry.Load() {
+				t.Fatal("inactive host kept retrying")
+			}
+		})
+	}
+}
+
+// overlappingForwardGuard models a busy Exim lock followed by a slow retry.
+type overlappingForwardGuard struct {
+	mu        sync.Mutex
+	entered   chan struct{}
+	release   chan struct{}
+	attempts  int
+	installed policy.Config
+}
+
+func (g *overlappingForwardGuard) mutate(cfg policy.Config) error {
+	if !g.mu.TryLock() {
+		return errors.New("exim mutation lock is busy")
+	}
+	defer g.mu.Unlock()
+	g.attempts++
+	if g.attempts == 1 {
+		return errors.New("exim mutation lock is busy")
+	}
+	if g.attempts == 2 {
+		close(g.entered)
+		<-g.release
+	}
+	g.installed = cfg
+	return nil
+}
+
+func (g *overlappingForwardGuard) Apply(cfg policy.Config, _ []string) error {
+	return g.mutate(cfg)
+}
+func (g *overlappingForwardGuard) Remove() error                { return g.mutate(policy.Config{}) }
+func (g *overlappingForwardGuard) RefreshBadIPs([]string) error { return nil }
+func (g *overlappingForwardGuard) Status() (adapter.Status, error) {
+	return adapter.Status{}, nil
+}
+
+func TestForwardGuardReloadDuringRetryKeepsLatestConfigPending(t *testing.T) {
+	for _, initiallyEnabled := range []bool{false, true} {
+		name := "enable"
+		if initiallyEnabled {
+			name = "disable"
+		}
+		t.Run(name, func(t *testing.T) {
+			usePanel(t, platform.PanelCPanel)
+			cfg := &config.Config{Mode: config.ModeEnforce}
+			cfg.EmailProtection.ForwardGuard.Enabled = initiallyEnabled
+			cfg.EmailProtection.ForwardGuard.HoldSignals.BounceBackscatter = true
+			useActiveConfig(t, cfg)
+			g := &overlappingForwardGuard{entered: make(chan struct{}), release: make(chan struct{})}
+			prev := newForwardGuard
+			t.Cleanup(func() { newForwardGuard = prev })
+			newForwardGuard = func() adapter.ForwardGuard { return g }
+			d := &Daemon{cfg: cfg}
+			d.reconcileForwardGuard()
+
+			finished := make(chan struct{})
+			go func() {
+				d.refreshForwardGuard()
+				close(finished)
+			}()
+			var release sync.Once
+			t.Cleanup(func() {
+				release.Do(func() { close(g.release) })
+				<-finished
+			})
+			select {
+			case <-g.entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("failed reconcile was not retried")
+			}
+
+			next := *cfg
+			next.EmailProtection.ForwardGuard.Enabled = !initiallyEnabled
+			config.SetActive(&next)
+			reloaded := make(chan struct{})
+			go func() {
+				d.reconcileForwardGuard()
+				close(reloaded)
+			}()
+			t.Cleanup(func() {
+				release.Do(func() { close(g.release) })
+				<-reloaded
+			})
+			select {
+			case <-reloaded:
+			case <-time.After(5 * time.Second):
+				t.Fatal("reload waited for the running forward-guard worker")
+			}
+			release.Do(func() { close(g.release) })
+			<-finished
+
+			d.refreshForwardGuard()
+			if g.installed.Enabled != next.EmailProtection.ForwardGuard.Enabled {
+				t.Fatalf("installed enabled = %v, want latest config %v", g.installed.Enabled, next.EmailProtection.ForwardGuard.Enabled)
+			}
+			if g.attempts != 3 {
+				t.Fatalf("mutation attempts = %d, want 3", g.attempts)
+			}
+			d.refreshForwardGuard()
+			if g.attempts != 3 {
+				t.Fatalf("successful latest config was retried: %d attempts", g.attempts)
+			}
+		})
 	}
 }

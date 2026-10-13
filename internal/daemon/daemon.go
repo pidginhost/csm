@@ -131,7 +131,9 @@ type Daemon struct {
 	// antispamHealth tracks rspamd's scan socket and Exim's scan markers
 	// while antispam is enabled.
 	antispamHealth reconcile.Health
-	// forwardGuardRetry is set when the last forward-guard reconcile failed.
+	// forwardGuardMu prevents overlapping attempts from applying stale config.
+	forwardGuardMu sync.Mutex
+	// forwardGuardRetry retains failed or deferred reconcile requests.
 	forwardGuardRetry atomic.Bool
 
 	// yaraSup is the supervised YARA-X worker, wired up when
