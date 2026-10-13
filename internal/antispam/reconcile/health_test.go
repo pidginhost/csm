@@ -328,6 +328,34 @@ func TestHealthIgnoresPingsOfAnotherSocket(t *testing.T) {
 	assertHealthFinding(t, h.Active(), CheckRspamdDown, "rspamd", at(12))
 }
 
+// A late result from the old socket must not interrupt either consecutive
+// probe streak on the new socket.
+func TestHealthStalePingsPreserveCurrentStreaks(t *testing.T) {
+	h := enabledHealth()
+	h.SetEnabled(true, otherSocket)
+	for i := range pingDown - 1 {
+		if got := h.Ping(otherSocket, errRefused, at(i)); len(got) != 0 {
+			t.Fatalf("new socket reported down early: %+v", got)
+		}
+	}
+	if got := h.Ping(testSocket, nil, at(10)); len(got) != 0 {
+		t.Fatalf("stale success reported %+v", got)
+	}
+	assertHealthFinding(t, h.Ping(otherSocket, errRefused, at(11)), CheckRspamdDown, "rspamd", at(11))
+	for i := range pingUp - 1 {
+		if got := h.Ping(otherSocket, nil, at(20+i)); len(got) != 0 {
+			t.Fatalf("new socket recovered early: %+v", got)
+		}
+	}
+	if got := h.Ping(testSocket, errRefused, at(30)); len(got) != 0 {
+		t.Fatalf("stale failure reported %+v", got)
+	}
+	assertHealthFinding(t, h.Ping(otherSocket, nil, at(31)), CheckRspamdRecovered, "", at(31))
+	if active := h.Active(); len(active) != 0 {
+		t.Fatalf("recovery left active findings: %+v", active)
+	}
+}
+
 // Alert text counts in words a reader expects: one failed scan, and the
 // probe counts the tracker uses.
 func TestHealthFindingText(t *testing.T) {
