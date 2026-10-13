@@ -367,3 +367,49 @@ func TestOwnerHoldsIdleProtocolProbeBackoff(t *testing.T) {
 		t.Fatalf("idle probe dispatched uncertain work: %+v checks=%d applies=%d", c, len(checks), len(applies))
 	}
 }
+
+// Without an engine there is nothing to probe: an idle owner commits
+// nothing until the engine starts, and then serves at once.
+func TestOwnerWithoutAnEngineIdlesUntilItStarts(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	var running bool
+	opts := previewOptions(f)
+	opts.Blocks = func() BlockEngine {
+		if !running {
+			return nil
+		}
+		return blocks
+	}
+	o := f.start(opts)
+	mono := heldMono(t, o)
+	id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	run := func() error { o.schedule(); return o.scheduleErr }
+	if err := o.do(run); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.do(func() error { _, err := o.ledger.Terminate(id, admission.ReasonInvalid); return err }); err != nil {
+		t.Fatal(err)
+	}
+	mono.advance(time.Second)
+	if err := o.do(run); err != nil {
+		t.Fatal(err)
+	}
+	writes := f.db.WriteTxID()
+	for i := 0; i < 5; i++ {
+		mono.advance(maxProbeWait)
+		if err := o.do(run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := f.db.WriteTxID() - writes; got != 0 {
+		t.Fatalf("an idle owner without an engine committed %d writes", got)
+	}
+	if err := o.do(func() error { running = true; return run() }); err != nil {
+		t.Fatal(err)
+	}
+	if held := executionHeld(t, o); held != "" || f.db.WriteTxID() == writes {
+		t.Fatalf("a started engine waited: held %q", held)
+	}
+}

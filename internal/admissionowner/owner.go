@@ -657,7 +657,9 @@ func (o *Owner) drainHeld() (err error) {
 // succeeds. A turn that keeps failing is backed off from the default
 // schedule period, as a failing notice delivery is.
 func (o *Owner) schedule() {
-	probeDue := o.execHold != nil && !monoNow().Before(o.probeAt)
+	// Without an engine there is nothing to probe: the turn waits for one.
+	probeDue := o.execHold != nil && !monoNow().Before(o.probeAt) &&
+		(!errors.Is(o.execHold, errNoEngine) || o.opts.Blocks() != nil)
 	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) && !probeDue {
 		return
 	}
