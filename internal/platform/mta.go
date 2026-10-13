@@ -10,6 +10,40 @@ import (
 // EximMainLog is the Exim main log the daemon follows on cPanel hosts.
 const EximMainLog = "/var/log/exim_mainlog"
 
+// EximLocalSkeleton is the full set of cPanel exim.conf.local section
+// markers, written when a host has no exim.conf.local yet. cPanel's
+// buildeximconf injects whatever follows each marker into exim.conf.
+const EximLocalSkeleton = `@AUTH@
+
+@BEGINACL@
+
+@CONFIG@
+
+@DIRECTOREND@
+
+@DIRECTORMIDDLE@
+
+@DIRECTORSTART@
+
+@ENDACL@
+
+@RETRYEND@
+
+@RETRYSTART@
+
+@REWRITE@
+
+@ROUTEREND@
+
+@ROUTERSTART@
+
+@TRANSPORTEND@
+
+@TRANSPORTMIDDLE@
+
+@TRANSPORTSTART@
+`
+
 // MTAIdents lists local users and process basenames belonging to the
 // host's Mail Transfer Agent stack. Direct SMTP egress detection uses
 // this allowlist to skip legitimate local MTA traffic instead of

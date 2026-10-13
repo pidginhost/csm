@@ -54,6 +54,24 @@ func TestPHPShieldInstallRegistersCageFSWithoutMounting(t *testing.T) {
 	t.Fatal("PHP Shield installation is missing from the inventory")
 }
 
+// The standalone root worker does not load config, and no daemon caller
+// schedules it yet. A config switch cannot stop an explicit invocation.
+func TestAntispamInventoryMatchesStandaloneWorker(t *testing.T) {
+	for _, op := range Operations() {
+		if op.ID != "integrate.antispam" {
+			continue
+		}
+		if op.Trigger != Operator {
+			t.Errorf("antispam trigger = %q, want operator", op.Trigger)
+		}
+		if op.DisableKey != "" || op.DisableValue != "" || op.DisableInstruction() != "do not run the command" {
+			t.Errorf("antispam claims a config control for the standalone worker: %q", op.DisableInstruction())
+		}
+		return
+	}
+	t.Fatal("antispam worker is missing from the inventory")
+}
+
 // These expectations come from the runtime paths named below, not from the
 // matrix renderer. They pin claims that internal-consistency checks cannot.
 func TestInventoryMatchesRuntimeContracts(t *testing.T) {
@@ -81,6 +99,7 @@ func TestInventoryMatchesRuntimeContracts(t *testing.T) {
 		{"respond.af_alg_kill", "daemon/af_alg_react.go: separate CopyFailKillProcess gate", "auto_response.copy_fail_kill_process", "false", []Privilege{CapKill}, []string{"process:signal"}},
 		{"respond.af_alg_marker", "checks/af_alg_enforce.go: repairs marker inside daemon sandbox", "auto_response.disable_enforce_af_alg", "true", []Privilege{Root}, []string{"/etc/modprobe.d"}},
 		{"respond.forward_guard", "daemon/forward_guard.go: disabled guard still removes configuration", "mode", "observe", []Privilege{Root}, []string{"/etc/exim.conf.local", "/var/lib/csm"}},
+		{"integrate.antispam", "cmd/csm/antispam_worker.go: standalone root command without a config gate", "", "", []Privilege{Root}, []string{"/etc/rspamd/local.d", "/usr/local/cpanel/etc/exim/acls", "/etc/exim.conf.local", "/etc/exim.conf", "/var/lib/csm"}},
 		{"respond.bpf_deny_egress", "daemon/connection_bpf.go: cgroup socket program", "bpf_enforcement.enabled", "false", []Privilege{"CAP_BPF", "CAP_NET_ADMIN"}, nil},
 		{"respond.mail_delivery_gate", "daemon/spoolwatch.go: FAN_DENY on scanner failure in tempfail mode", "email_av.enabled", "false", []Privilege{CapSysAdmin}, []string{"fanotify:mail delivery decisions"}},
 		{"respond.hold_outgoing_mail", "daemon/watcher.go: maybeHoldOutgoingMail calls whmapi1 hold_outgoing_email", "auto_response.enabled", "false", []Privilege{Root}, []string{"cpanel:account outgoing mail hold"}},
@@ -437,6 +456,7 @@ var reviewedRiskTiers = map[string]RiskTier{
 	"detect.scan_account_files":     RiskObserve,
 	"detect.sensitive_file_writes":  RiskReversible,
 	"integrate.auditd_rules":        RiskDestructive,
+	"integrate.antispam":            RiskDestructive,
 	"integrate.challenge_port_gate": RiskReversible,
 	"integrate.challenge_snippet":   RiskDestructive,
 	"integrate.firewall_ruleset":    RiskDestructive,
@@ -520,6 +540,7 @@ var reviewedRecoveryGaps = map[string]string{
 	"detect.outbound_connections":   "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 	"detect.process_exec":           "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 	"detect.sensitive_file_writes":  "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
+	"integrate.antispam":            "Rollback cannot change existing SMTP sessions; failed rollback or an interrupted worker needs another apply or remove transaction.",
 	"integrate.auditd_rules":        "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 	"integrate.modsec_section":      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 	"integrate.panel_plugin":        "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",

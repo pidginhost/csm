@@ -142,6 +142,15 @@ func readRegularContent(p string) (string, error) {
 	return readConfigContent(file)
 }
 
+// Targets describes each mutation target, in order, as Collect does.
+func Targets(targets []antispam.Target) []antispam.TargetFacts {
+	out := make([]antispam.TargetFacts, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, targetFacts(t))
+	}
+	return out
+}
+
 // targetFacts describes one mutation target.
 func targetFacts(t antispam.Target) antispam.TargetFacts {
 	f := antispam.TargetFacts{Target: t}

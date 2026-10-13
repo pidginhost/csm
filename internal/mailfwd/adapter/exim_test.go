@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/mailfwd/policy"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 func TestBuildEximConfArgv(t *testing.T) {
@@ -496,11 +497,11 @@ func TestApplyFailsBeforeSideEffectsWhenCPanelMarkersMissing(t *testing.T) {
 	}{
 		{
 			name:    "router_marker_missing",
-			content: strings.Replace(eximLocalSkeleton, "@ROUTERSTART@\n", "", 1),
+			content: strings.Replace(platform.EximLocalSkeleton, "@ROUTERSTART@\n", "", 1),
 		},
 		{
 			name:    "transport_marker_missing",
-			content: strings.Replace(eximLocalSkeleton, "@TRANSPORTSTART@\n", "", 1),
+			content: strings.Replace(platform.EximLocalSkeleton, "@TRANSPORTSTART@\n", "", 1),
 		},
 	}
 	for _, tc := range cases {
@@ -554,7 +555,7 @@ func TestApplyRemovesDuplicateManagedBlocksOnReapply(t *testing.T) {
 		t.Fatal(err)
 	}
 	transport := a.renderTransport()
-	existing := strings.Replace(eximLocalSkeleton, "@ROUTERSTART@\n", "@ROUTERSTART@\n"+router+"\n"+router+"\n", 1)
+	existing := strings.Replace(platform.EximLocalSkeleton, "@ROUTERSTART@\n", "@ROUTERSTART@\n"+router+"\n"+router+"\n", 1)
 	existing = strings.Replace(existing, "@TRANSPORTSTART@\n", "@TRANSPORTSTART@\n"+transport+"\n"+transport+"\n", 1)
 	if err = os.WriteFile(a.localConf, []byte(existing), 0644); err != nil {
 		t.Fatal(err)
@@ -579,7 +580,7 @@ func TestApplyRemovesDuplicateManagedBlocksOnReapply(t *testing.T) {
 func TestApplyPreservesExistingLocalConfContent(t *testing.T) {
 	a, _ := testAdapter(t)
 	// Pre-existing exim.conf.local with an operator's own ACL content.
-	existing := strings.Replace(eximLocalSkeleton, "@BEGINACL@\n", "@BEGINACL@\nwarn message = operator rule\n", 1)
+	existing := strings.Replace(platform.EximLocalSkeleton, "@BEGINACL@\n", "@BEGINACL@\nwarn message = operator rule\n", 1)
 	if err := os.WriteFile(a.localConf, []byte(existing), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +598,7 @@ func TestApplyPreservesExistingLocalConfContent(t *testing.T) {
 
 func TestApplyRollsBackOnRebuildFailure(t *testing.T) {
 	a, fs := testAdapter(t)
-	prior := strings.Replace(eximLocalSkeleton, "@CONFIG@\n", "@CONFIG@\n# operator marker\n", 1)
+	prior := strings.Replace(platform.EximLocalSkeleton, "@CONFIG@\n", "@CONFIG@\n# operator marker\n", 1)
 	if err := os.WriteFile(a.localConf, []byte(prior), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -621,7 +622,7 @@ func TestApplyRollsBackOnRebuildFailure(t *testing.T) {
 
 func TestApplyReportsRollbackRebuildFailure(t *testing.T) {
 	a, fs := testAdapter(t)
-	prior := strings.Replace(eximLocalSkeleton, "@CONFIG@\n", "@CONFIG@\n# operator marker\n", 1)
+	prior := strings.Replace(platform.EximLocalSkeleton, "@CONFIG@\n", "@CONFIG@\n# operator marker\n", 1)
 	if err := os.WriteFile(a.localConf, []byte(prior), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -674,7 +675,7 @@ func TestRemoveStripsDuplicateManagedBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	transport := a.renderTransport()
-	existing := strings.Replace(eximLocalSkeleton, "@ROUTERSTART@\n", "@ROUTERSTART@\n"+router+"\n"+router+"\n", 1)
+	existing := strings.Replace(platform.EximLocalSkeleton, "@ROUTERSTART@\n", "@ROUTERSTART@\n"+router+"\n"+router+"\n", 1)
 	existing = strings.Replace(existing, "@TRANSPORTSTART@\n", "@TRANSPORTSTART@\n"+transport+"\n"+transport+"\n", 1)
 	if err = os.WriteFile(a.localConf, []byte(existing), 0644); err != nil {
 		t.Fatal(err)
@@ -748,11 +749,11 @@ func TestStatusErrorsOnPartialInstall(t *testing.T) {
 	}{
 		{
 			name:    "router_only",
-			content: strings.Replace(eximLocalSkeleton, "@ROUTERSTART@\n", "@ROUTERSTART@\n"+routerBegin+"\n"+routerEnd+"\n", 1),
+			content: strings.Replace(platform.EximLocalSkeleton, "@ROUTERSTART@\n", "@ROUTERSTART@\n"+routerBegin+"\n"+routerEnd+"\n", 1),
 		},
 		{
 			name:    "transport_only",
-			content: strings.Replace(eximLocalSkeleton, "@TRANSPORTSTART@\n", "@TRANSPORTSTART@\n"+transportBegin+"\n"+transportEnd+"\n", 1),
+			content: strings.Replace(platform.EximLocalSkeleton, "@TRANSPORTSTART@\n", "@TRANSPORTSTART@\n"+transportBegin+"\n"+transportEnd+"\n", 1),
 		},
 	}
 	for _, tc := range cases {
@@ -770,7 +771,7 @@ func TestStatusErrorsOnPartialInstall(t *testing.T) {
 
 func TestRefreshBadIPsOnlyRewritesLookup(t *testing.T) {
 	a, fs := testAdapter(t)
-	existing := strings.Replace(eximLocalSkeleton, "@CONFIG@\n", "@CONFIG@\n# operator setting\n", 1)
+	existing := strings.Replace(platform.EximLocalSkeleton, "@CONFIG@\n", "@CONFIG@\n# operator setting\n", 1)
 	if err := os.WriteFile(a.localConf, []byte(existing), 0644); err != nil {
 		t.Fatal(err)
 	}

@@ -255,3 +255,15 @@ func TestResolveRequiresDirectoryForTrailingSlash(t *testing.T) {
 		t.Errorf("directory with trailing slash: final=%s err=%v", final, err)
 	}
 }
+
+func TestTargetsKeepsOrder(t *testing.T) {
+	d := t.TempDir()
+	in := []antispam.Target{
+		{Path: filepath.Join(d, "b.conf"), Kind: antispam.TargetRspamd},
+		{Path: filepath.Join(d, "a.conf"), Kind: antispam.TargetEximHook},
+	}
+	got := Targets(in)
+	if len(got) != 2 || got[0].Target != in[0] || got[1].Target != in[1] || !got[0].Missing {
+		t.Errorf("Targets = %+v", got)
+	}
+}

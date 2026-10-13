@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/mailfwd/policy"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
@@ -64,40 +65,6 @@ const (
 	transportBegin = "# CSM-FORWARD-GUARD TRANSPORT BEGIN (managed by csm; do not edit)"
 	transportEnd   = "# CSM-FORWARD-GUARD TRANSPORT END"
 )
-
-// eximLocalSkeleton is the full set of cPanel exim.conf.local section markers,
-// created when the host has no exim.conf.local yet. cPanel's buildeximconf
-// injects whatever follows each marker into the generated exim.conf.
-const eximLocalSkeleton = `@AUTH@
-
-@BEGINACL@
-
-@CONFIG@
-
-@DIRECTOREND@
-
-@DIRECTORMIDDLE@
-
-@DIRECTORSTART@
-
-@ENDACL@
-
-@RETRYEND@
-
-@RETRYSTART@
-
-@REWRITE@
-
-@ROUTEREND@
-
-@ROUTERSTART@
-
-@TRANSPORTEND@
-
-@TRANSPORTMIDDLE@
-
-@TRANSPORTSTART@
-`
 
 // EximAdapter is the cPanel/exim ForwardGuard.
 type EximAdapter struct {
@@ -149,7 +116,7 @@ func (a *EximAdapter) Apply(cfg policy.Config, badIPs []string) error {
 
 	base := prev
 	if !hadPrev || strings.TrimSpace(base) == "" {
-		base = eximLocalSkeleton
+		base = platform.EximLocalSkeleton
 	}
 	next, err := injectBlock(base, "@ROUTERSTART@", router)
 	if err != nil {

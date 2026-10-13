@@ -107,9 +107,7 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	case name != "":
 		f.SystemFilter, f.SystemFilterErr = readText(name)
 	}
-	for _, t := range c.layout.Targets {
-		f.Targets = append(f.Targets, targetFacts(t))
-	}
+	f.Targets = Targets(c.layout.Targets)
 
 	f.Socket = socketFacts(ctx, socket)
 	f.Socket.RspamdUID = c.serviceUser(f.RspamdService)
@@ -163,15 +161,35 @@ func lookupGID(name string) (int, error) {
 	return strconv.Atoi(g.Gid)
 }
 
-// runCommand runs one read-only command with its own time limit.
 func runCommand(ctx context.Context, name string, args ...string) antispam.CommandResult {
-	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	return RunCommand(ctx, commandTimeout, name, args...)
+}
+
+// RunCommand runs one command with its own time limit. Standard input is
+// /dev/null and output goes to fresh pipes, never the caller's streams.
+func RunCommand(ctx context.Context, limit time.Duration, name string, args ...string) antispam.CommandResult {
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	var stdout, stderr strings.Builder
 	cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- fixed tool names; arguments are constants, the validated config path or fixed probe expressions
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	// A timed-out rebuild must not leave children writing during rollback.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
 	cmd.WaitDelay = time.Second
 	err := cmd.Run()
+	if err != nil && cmd.Process != nil {
+		// A failing parent can exit while descendants still hold its pipes.
+		if stopErr := cmd.Cancel(); stopErr != nil && !errors.Is(stopErr, os.ErrProcessDone) {
+			err = errors.Join(err, stopErr)
+		}
+	}
 	if err != nil && ctx.Err() != nil {
 		err = fmt.Errorf("%s: %w", name, ctx.Err())
 	}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -359,5 +360,60 @@ func TestReadConfigContentDiscardsPartialRead(t *testing.T) {
 	r := io.MultiReader(strings.NewReader("partial"), iotest.ErrReader(wantErr))
 	if got, err := readConfigContent(r); got != "" || !errors.Is(err, wantErr) {
 		t.Fatalf("failed read: got %q, err %v; want no content and the read error", got, err)
+	}
+}
+
+func TestRunCommandUsesItsLimit(t *testing.T) {
+	start := time.Now()
+	r := RunCommand(context.Background(), 100*time.Millisecond, "sleep", "5")
+	if !errors.Is(r.Err, context.DeadlineExceeded) || time.Since(start) > 3*time.Second {
+		t.Errorf("sleep ran %v with error %v", time.Since(start), r.Err)
+	}
+}
+
+func TestRunCommandDeadlineStopsChildren(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "late-write")
+	r := RunCommand(context.Background(), 250*time.Millisecond, "sh", "-c", `(printf ready; sleep 0.5; printf survived > "$1") & wait`, "sh", p)
+	if !errors.Is(r.Err, context.DeadlineExceeded) || r.Stdout != "ready" {
+		t.Fatalf("command = %+v; want deadline exceeded", r)
+	}
+	time.Sleep(600 * time.Millisecond)
+	if _, err := os.Stat(p); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("child kept running after the deadline: %v", err)
+	}
+}
+
+func TestRunCommandStopsChildrenHoldingOutput(t *testing.T) {
+	for _, exit := range []string{"0", "1"} {
+		t.Run(exit, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "late-write")
+			r := RunCommand(context.Background(), 5*time.Second, "sh", "-c", `(printf ready; sleep 1.5; printf survived > "$1") & exit "$2"`, "sh", p, exit)
+			if r.Stdout != "ready" || r.Err == nil || exit == "0" && !errors.Is(r.Err, exec.ErrWaitDelay) {
+				t.Fatalf("command = %+v; want a pipe-drain failure", r)
+			}
+			time.Sleep(700 * time.Millisecond)
+			if _, err := os.Stat(p); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("child kept running after its parent exited: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunCommandDeadlineStopsChildWriters(t *testing.T) {
+	dir := t.TempDir()
+	ready, changed := filepath.Join(dir, "ready"), filepath.Join(dir, "changed")
+	r := RunCommand(context.Background(), 300*time.Millisecond, "sh", "-c",
+		`(printf ready > "$1"; sleep 0.6; printf changed > "$2") & wait`, "sh", ready, changed)
+	if !errors.Is(r.Err, context.DeadlineExceeded) {
+		t.Fatalf("command error %v, want deadline exceeded", r.Err)
+	}
+	if data, err := os.ReadFile(ready); err != nil || string(data) != "ready" {
+		t.Fatalf("child did not start before the deadline: %v", err)
+	}
+	// A timed-out builder must not leave children changing files while
+	// rollback rebuilds the prior configuration.
+	time.Sleep(700 * time.Millisecond)
+	if _, err := os.Stat(changed); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("child continued writing after the deadline: %v", err)
 	}
 }

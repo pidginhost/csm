@@ -168,3 +168,11 @@ func TestCheckGeneratedPlacementErrorOmitsConfiguration(t *testing.T) {
 		t.Fatalf("error repeats configuration text: %v", err)
 	}
 }
+
+func TestCheckGeneratedNamesMissingBlock(t *testing.T) {
+	h := renderedHooks(t, enforceSettings())
+	err := CheckGenerated(rebuiltConf(h.Config, h.RCPT, h.Scan, ""), h, "acl_smtp_rcpt", "acl_smtp_data")
+	if err == nil || !strings.Contains(err.Error(), "found 1 scanner, 1 RCPT, 1 DATA and 0 misplaced") {
+		t.Errorf("error %v does not count the blocks found", err)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/mailfwd/policy"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 func mutationBody(t *testing.T, request eximMutation) string {
@@ -24,7 +25,7 @@ func mutationBody(t *testing.T, request eximMutation) string {
 
 func TestEximMutationPreservesTransaction(t *testing.T) {
 	a, side := testAdapter(t)
-	original := eximLocalSkeleton + "# operator setting\n"
+	original := platform.EximLocalSkeleton + "# operator setting\n"
 	if err := os.WriteFile(a.localConf, []byte(original), 0644); err != nil {
 		t.Fatal(err)
 	}

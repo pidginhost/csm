@@ -549,6 +549,18 @@ var operations = []Op{
 		WithoutPrivilege: "no firewall management; another tool owns the host's packet policy",
 	},
 	{
+		ID:               "integrate.antispam",
+		Risk:             RiskDestructive,
+		RecoveryGap:      "Rollback cannot change existing SMTP sessions; failed rollback or an interrupted worker needs another apply or remove transaction.",
+		Subsystem:        "host integration",
+		Summary:          "install, update or remove CSM's rspamd settings and Exim spam-filter hooks, rebuild the Exim configuration and reload Exim and rspamd",
+		Privileges:       []Privilege{Root},
+		Trigger:          Operator,
+		Writes:           []string{"/etc/rspamd/local.d", "/usr/local/cpanel/etc/exim/acls", "/etc/exim.conf.local", "/etc/exim.conf", "/var/lib/csm", "exim:rebuild artifacts and service reload", "service:rspamd reload"},
+		Unsandboxed:      true,
+		WithoutPrivilege: "CSM's spam-filter settings and hooks cannot be installed, updated or removed; existing mail filtering keeps its current configuration",
+	},
+	{
 		ID:               "integrate.auditd_rules",
 		Risk:             RiskDestructive,
 		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
