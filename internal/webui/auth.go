@@ -66,10 +66,17 @@ func (s *Server) cookieSessionToken(r *http.Request, want string, touch bool) (s
 
 func (s *Server) cookieSessionCredential(r *http.Request, want string, touch bool) (config.WebUIToken, bool) {
 	c, err := r.Cookie("csm_auth")
-	if err != nil || s.sessions == nil {
+	if err != nil {
 		return config.WebUIToken{}, false
 	}
-	rec, err := s.sessions.Access(c.Value, s.sessionNow(), touch)
+	return s.sessionCredential(c.Value, want, touch)
+}
+
+func (s *Server) sessionCredential(secret, want string, touch bool) (config.WebUIToken, bool) {
+	if s.sessions == nil {
+		return config.WebUIToken{}, false
+	}
+	rec, err := s.sessions.Access(secret, s.sessionNow(), touch)
 	if err != nil {
 		return config.WebUIToken{}, false
 	}

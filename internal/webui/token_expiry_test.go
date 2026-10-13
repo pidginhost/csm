@@ -180,15 +180,49 @@ func TestCSRFUsesCurrentCredential(t *testing.T) {
 		{Name: "expired", Token: expired, Scope: "admin", IssuedAt: now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)},
 		{Name: "current", Token: current, Scope: "admin", IssuedAt: now.Format(time.RFC3339)},
 	}
-	if s.csrfSecret() != current {
+	cookie := testBrowserCookie(t, s, current)
+	if s.csrfSecret(cookie.Value) != current {
 		t.Fatal("expired credential still signs CSRF tokens")
 	}
 	s.cfg.WebUI.Tokens = nil
 	s.cfg.WebUI.AuthToken = expired
 	s.cfg.WebUI.AuthTokenIssuedAt = now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)
-	if s.csrfSecret() != "" {
+	if s.csrfSecret(cookie.Value) != "" {
 		t.Fatal("expired legacy credential still signs CSRF tokens")
 	}
+}
+
+func TestCSRFSurvivesAnotherAdminCredentialExpiry(t *testing.T) {
+	s := newTestServerWithTemplates(t, "")
+	now := time.Now().UTC().Truncate(time.Second)
+	s.sessionNow = func() time.Time { return now }
+	first, second := randomBrowserCredential(), randomBrowserCredential()
+	s.cfg.WebUI.Tokens = []config.WebUIToken{
+		{Name: "first", Token: first, Scope: "admin", IssuedAt: now.Add(-7*24*time.Hour + time.Minute).Format(time.RFC3339)},
+		{Name: "second", Token: second, Scope: "admin", IssuedAt: now.Format(time.RFC3339)},
+	}
+	firstCookie := loginBrowser(t, s, first, nil)
+	secondCookie := loginBrowser(t, s, second, nil)
+	firstRequest := sessionPost("/api/test", firstCookie.Value)
+	secondRequest := sessionPost("/api/test", secondCookie.Value)
+	setSessionCSRF(s, firstRequest)
+	setSessionCSRF(s, secondRequest)
+	handler := s.requireAuth(s.requireCSRF(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})))
+	check := func(req *http.Request, want int) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != want {
+			t.Fatalf("write status = %d, want %d", w.Code, want)
+		}
+	}
+	check(firstRequest, http.StatusNoContent)
+	check(secondRequest, http.StatusNoContent)
+	now = now.Add(time.Minute)
+	check(secondRequest, http.StatusNoContent)
+	check(firstRequest, http.StatusUnauthorized)
 }
 
 func TestBearerStreamExpiryBetweenAuthorizationAndOpen(t *testing.T) {

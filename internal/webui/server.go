@@ -1079,12 +1079,12 @@ func getOnly(next http.Handler) http.Handler {
 
 // --- CSRF protection ---
 
-// csrfTokenForSession derives the CSRF token of one browser session from an
-// active admin secret and the session's cookie secret. Each session gets its
+// csrfTokenForSession derives the CSRF token of one browser session from its
+// own active admin secret and cookie secret. Each session gets its
 // own token and a new login a new one; knowing a token reveals neither
-// secret. Without both secrets there is no token.
+// secret. Expiry of another administrator's credential cannot invalidate it.
 func (s *Server) csrfTokenForSession(sessionSecret string) string {
-	secret := s.csrfSecret()
+	secret := s.csrfSecret(sessionSecret)
 	if secret == "" || sessionSecret == "" {
 		return ""
 	}
@@ -1102,16 +1102,9 @@ func (s *Server) csrfTokenFor(r *http.Request) string {
 	return s.csrfTokenForSession(c.Value)
 }
 
-func (s *Server) csrfSecret() string {
-	for _, tok := range s.cfg.WebUI.Tokens {
-		if tok.Token != "" && webUITokenAllows(tok, "admin", s.sessionNow()) {
-			return tok.Token
-		}
-	}
-	if len(s.cfg.WebUI.Tokens) == 0 && s.cfg.WebUI.AuthToken != "" && config.WebUITokenCurrent(s.cfg.WebUI.AuthTokenIssuedAt, s.sessionNow()) {
-		return s.cfg.WebUI.AuthToken
-	}
-	return ""
+func (s *Server) csrfSecret(sessionSecret string) string {
+	tok, _ := s.sessionCredential(sessionSecret, "admin", false)
+	return tok.Token
 }
 
 // validateCSRF enforces the browser-session CSRF boundary on state-changing

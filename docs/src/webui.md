@@ -176,6 +176,8 @@ when its random token was generated. The legacy `webui.auth_token` uses
 `webui.metrics_token_issued_at`. Every token expires exactly 168 hours after
 that timestamp. Reloads and restarts preserve the deadline. Active event
 streams recheck the credential before sending each event or heartbeat.
+Browser sessions and their form tokens use the credential that created the
+session. Expiry of another administrator's credential does not interrupt them.
 
 Before upgrading, reduce any `session_lifetime` longer than `168h`; longer
 values are rejected during configuration loading. Replace existing undated

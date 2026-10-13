@@ -60,30 +60,32 @@ func TestRequireScope_EmptyConfiguredTokenDoesNotAuthenticate(t *testing.T) {
 }
 
 func TestCSRFSecretUsesAdminScopedToken(t *testing.T) {
-	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
+	s := newTestServer(t, "")
 	s.cfg.WebUI.Tokens = []config.WebUIToken{
 		{Name: "read", Token: "read-secret", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
 		{Name: "admin", Token: "admin-secret", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
 	}
-	if got := s.csrfSecret(); got != "admin-secret" {
-		t.Fatalf("csrfSecret = %q, want admin token", got)
+	cookie := testBrowserCookie(t, s, "admin-secret")
+	if got := s.csrfSecret(cookie.Value); got != "admin-secret" {
+		t.Fatal("CSRF secret does not match the session's admin credential")
 	}
 }
 
 func TestCSRFSecretIgnoresLegacyAuthTokenWhenScopedTokensConfigured(t *testing.T) {
-	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
+	s := newTestServer(t, "")
 	s.cfg.WebUI.AuthToken = "rotated-legacy-secret"
 	s.cfg.WebUI.Tokens = []config.WebUIToken{
 		{Name: "read", Token: "read-secret", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
 		{Name: "admin", Token: "admin-secret", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
 	}
-	if got := s.csrfSecret(); got != "admin-secret" {
-		t.Fatalf("csrfSecret = %q, want active admin token", got)
+	cookie := testBrowserCookie(t, s, "admin-secret")
+	if got := s.csrfSecret(cookie.Value); got != "admin-secret" {
+		t.Fatal("CSRF secret does not match the session's active admin credential")
 	}
 
 	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "read", Token: "read-secret", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
-	if got := s.csrfSecret(); got != "" {
-		t.Fatalf("csrfSecret with no active admin token = %q, want empty", got)
+	if got := s.csrfSecret(cookie.Value); got != "" {
+		t.Fatal("CSRF secret is not empty after removing the session's credential")
 	}
 }
 
