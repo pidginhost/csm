@@ -20,11 +20,15 @@ const forwardGuardBadIPScore = 50
 // rewrites a file -- no exim rebuild or reload.
 const forwardGuardRefreshInterval = 15 * time.Minute
 
+// newForwardGuard builds the adapter that runs the forward-guard worker;
+// tests replace it.
+var newForwardGuard = adapter.NewEximServiceAdapter
+
 // forwardGuardReconciler builds the reconciler for the current host. The guard
 // is only active on cPanel/exim; elsewhere Reconcile/RefreshBadIPs are no-ops.
 func (d *Daemon) forwardGuardReconciler() guard.Reconciler {
 	return guard.Reconciler{
-		Guard:  adapter.NewEximServiceAdapter(),
+		Guard:  newForwardGuard(),
 		Active: platform.Detect().IsCPanel() && !d.currentCfg().ObserveMode(),
 		BadIPs: d.forwardGuardBadIPs,
 	}
@@ -49,12 +53,16 @@ func (d *Daemon) forwardGuardBadIPs() []string {
 
 // reconcileForwardGuard installs or removes the exim forward-guard to match the
 // current config. Errors are logged, never fatal: a guard failure must not take
-// the daemon down or block mail (fail-open).
+// the daemon down or block mail (fail-open). A failure, such as a lock held by
+// an antispam transaction, is retried on the next refresh.
 func (d *Daemon) reconcileForwardGuard() {
 	fg := d.currentCfg().EmailProtection.ForwardGuard
 	if err := d.forwardGuardReconciler().Reconcile(fg); err != nil {
+		d.forwardGuardRetry.Store(true)
 		csmlog.Error("forward-guard reconcile failed", "err", err)
+		return
 	}
+	d.forwardGuardRetry.Store(false)
 }
 
 // forwardQuarantineDir is a var so tests can prune a temporary Maildir.
@@ -71,13 +79,22 @@ func (d *Daemon) forwardGuardRefresher() {
 		case <-d.stopCh:
 			return
 		case <-ticker.C:
-			fg := d.currentCfg().EmailProtection.ForwardGuard
-			if err := d.forwardGuardReconciler().RefreshBadIPs(fg); err != nil {
-				csmlog.Error("forward-guard bad-IP refresh failed", "err", err)
-			}
-			d.pruneForwardQuarantine()
+			d.refreshForwardGuard()
 		}
 	}
+}
+
+// refreshForwardGuard retries a failed reconcile, refreshes the bad-IP
+// lookup and ages out held copies.
+func (d *Daemon) refreshForwardGuard() {
+	if d.forwardGuardRetry.Load() {
+		d.reconcileForwardGuard()
+	}
+	fg := d.currentCfg().EmailProtection.ForwardGuard
+	if err := d.forwardGuardReconciler().RefreshBadIPs(fg); err != nil {
+		csmlog.Error("forward-guard bad-IP refresh failed", "err", err)
+	}
+	d.pruneForwardQuarantine()
 }
 
 // pruneForwardQuarantine deletes held forward copies older than

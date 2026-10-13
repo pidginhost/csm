@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -175,5 +176,43 @@ func TestPruneForwardQuarantineKeepsEverythingWithoutRetention(t *testing.T) {
 
 	if _, err := os.Stat(old); err != nil {
 		t.Fatalf("retention 0 must keep held copies, got %v", err)
+	}
+}
+
+// flakyForwardGuard fails its first fail mutations.
+type flakyForwardGuard struct {
+	countingForwardGuard
+	fail int
+}
+
+func (g *flakyForwardGuard) Remove() error {
+	g.mutations++
+	if g.mutations <= g.fail {
+		return errors.New("exim mutation lock is held by another CSM transaction")
+	}
+	return nil
+}
+
+// A failed install or removal, such as one refused while an antispam
+// transaction holds the Exim lock, is retried on the next refresh instead
+// of waiting for a reload or restart.
+func TestForwardGuardRetriesFailedReconcileOnRefresh(t *testing.T) {
+	usePanel(t, platform.PanelCPanel)
+	cfg := &config.Config{}
+	useActiveConfig(t, cfg)
+	g := &flakyForwardGuard{fail: 1}
+	prev := newForwardGuard
+	t.Cleanup(func() { newForwardGuard = prev })
+	newForwardGuard = func() adapter.ForwardGuard { return g }
+	d := &Daemon{cfg: cfg}
+
+	d.reconcileForwardGuard()
+	d.refreshForwardGuard()
+	if g.mutations != 2 {
+		t.Fatalf("mutations after a failed reconcile and one refresh = %d, want 2", g.mutations)
+	}
+	d.refreshForwardGuard()
+	if g.mutations != 2 {
+		t.Fatalf("a succeeded reconcile was retried: %d mutations", g.mutations)
 	}
 }
