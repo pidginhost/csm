@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -79,7 +80,7 @@ func TestAdmissionLedgerSettlesWhatAPreviousProcessLeft(t *testing.T) {
 }
 
 // Settlement is one transaction: a failed commit leaves every attempt
-// outstanding.
+// outstanding. A new process settles, as at startup.
 func TestAdmissionLedgerSettleIsAtomic(t *testing.T) {
 	f := newLedgerFixture(t)
 	expires := ledgerT0.Add(time.Hour)
@@ -88,10 +89,20 @@ func TestAdmissionLedgerSettleIsAtomic(t *testing.T) {
 	if _, _, _, err := f.l.Execute(running.Attempt.ID); err != nil {
 		t.Fatal(err)
 	}
+	l, err := OpenAdmissionLedger(f.db, f.reg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	before := f.snapshot()
-	f.failNext("settle")
-	if _, _, err := f.l.Settle(); err == nil {
-		t.Fatal("injected commit failure was ignored")
+	l.failBeforeCommit = func(op string) error {
+		l.failBeforeCommit = nil
+		if op != "settle" {
+			return errors.New("unexpected transaction " + op)
+		}
+		return errors.New("injected failure before commit")
+	}
+	if _, _, err := l.Settle(); err == nil || err.Error() != "injected failure before commit" {
+		t.Fatalf("injected commit failure = %v", err)
 	}
 	if !reflect.DeepEqual(f.snapshot(), before) {
 		t.Fatal("a failed settlement changed the ledger")

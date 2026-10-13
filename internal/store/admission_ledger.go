@@ -80,6 +80,10 @@ type AdmissionLedger struct {
 	// then cannot end an episode.
 	degraded bool
 
+	// reserved is set once this handle granted a reservation: Settle then
+	// refuses, since it would end work this process still runs.
+	reserved bool
+
 	// revalidated is set once this handle has checked every queued
 	// candidate at a current reading. A reopened ledger cannot know what
 	// changed while it was closed, so its first schedule checks them all.

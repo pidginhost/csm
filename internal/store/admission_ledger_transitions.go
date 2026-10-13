@@ -197,6 +197,7 @@ func (l *AdmissionLedger) Reserve(id admission.CandidateID, lane admission.Lane,
 	}); err != nil {
 		return admission.Candidate{}, admission.AttemptRecord{}, false, err
 	}
+	l.reserved = l.reserved || granted
 	return c, a, granted, nil
 }
 
@@ -425,10 +426,14 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 // backoff while attempts remain. A running attempt may have applied its
 // effect: it ends unknown and keeps its intent. Nothing is dispatched
 // again. Called after this handle reserved anything, it would end that
-// work too, so the owner settles once, before its first reservation.
+// work too, so it refuses: the owner settles once, before its first
+// reservation.
 func (l *AdmissionLedger) Settle() (failed, unknown int, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.reserved {
+		return 0, 0, admission.ErrTransitionConflict
+	}
 	err = l.update("settle", func(tx *bolt.Tx) error {
 		failed, unknown = 0, 0
 		var outstanding []admission.ActionID
@@ -560,11 +565,16 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 	// An attempt that never ran returns the slot of its execution row. One
 	// that ran keeps its intent only while its outcome is unknown.
 	var unused uint64
-	if a.State == admission.StateReserved {
+	switch {
+	case a.State == admission.StateReserved:
 		unused = 1
-	} else if d != admission.DispositionUnknown {
+	case d != admission.DispositionUnknown:
 		if err = q.deleteIntent(a.Attempt.ID); err != nil {
 			return false, err
+		}
+	default:
+		if _, found, loadErr := loadIntent(q.tx, a.Attempt.ID); loadErr != nil || !found {
+			return false, admission.ErrCorruptRecord
 		}
 	}
 	a.State, a.Disposition, a.Finished = state, d, q.now

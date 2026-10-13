@@ -302,7 +302,9 @@ call granted the step; reading back an attempt that is already reserved or
 running grants nothing. A new process settles what the previous one left
 outstanding before it reserves anything: a reservation, which recorded no
 intent and so dispatched nothing, fails and may retry; a running attempt
-ends unknown. Nothing is dispatched again.
+ends unknown. Nothing is dispatched again. A handle that has granted a
+reservation refuses to settle, and an unknown outcome needs the intent its
+attempt recorded.
 An empty ledger settles without a clock reading.
 
 Schema 2 of the ledger adds its queue, and the first open upgrades a schema
