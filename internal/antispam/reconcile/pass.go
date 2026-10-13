@@ -57,7 +57,8 @@ type Outcome struct {
 	Findings []alert.Finding
 	// Retry, when set, asks for another pass this soon.
 	Retry time.Duration
-	// Err is the worker error behind a missing result, for the daemon log.
+	// Err is a canceled pass or the worker error behind a missing result,
+	// for the daemon log.
 	Err error
 }
 
@@ -65,11 +66,18 @@ type Outcome struct {
 // disabled pass reads only CSM's own files and runs no command unless it
 // finds something to remove.
 func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
+	if err := ctx.Err(); err != nil {
+		return Outcome{Err: err}
+	}
 	var f antispam.HostFacts
 	if d.Enabled {
 		f = r.Collect(ctx, d.Settings.Socket)
 	} else {
 		f = r.Installed()
+	}
+	// Interrupted probes do not describe the host's preconditions.
+	if err := ctx.Err(); err != nil {
+		return Outcome{Err: err}
 	}
 	assess := r.assess
 	if assess == nil {
@@ -79,7 +87,11 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	now := r.Now()
 	var out Outcome
 	for _, p := range a.Problems {
-		out.Findings = append(out.Findings, problemFinding(p, now))
+		finding := problemFinding(p, now)
+		if d.Observe {
+			finding.Details = clean(p.Detail) + ". CSM changes nothing in observe mode."
+		}
+		out.Findings = append(out.Findings, finding)
 	}
 	if d.Observe {
 		if a.Installed {
@@ -100,6 +112,11 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 		return out
 	}
 	result, err := r.Run(ctx, req)
+	// A canceled caller needs no failure alert. Keep completed worker
+	// reports, which can still carry a failed rollback requiring attention.
+	if err != nil && ctx.Err() != nil {
+		return Outcome{Err: err}
+	}
 	if result.Busy {
 		out.Retry = BusyRetry
 	}
