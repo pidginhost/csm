@@ -428,3 +428,24 @@ func FuzzDecodeRecord(f *testing.F) {
 		}
 	})
 }
+
+func FuzzScanMarker(f *testing.F) {
+	for _, seed := range []string{
+		markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=0 action="no action" decision=none`,
+		markerPrefix + `CSM-ANTISPAM event=scan mode=dry-run policy=off result=error score=none action="unavailable" decision=none`,
+		"2026-10-09 08:19:03 H=(CSM-ANTISPAM event=scan) [192.0.2.1]",
+		"0000-10-01\r0:00:00 0-0-0 CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=0 action=\"\" decision=none",
+		"", "CSM-ANTISPAM", " CSM-ANTISPAM ",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, line string) {
+		marker, ok := ScanMarker(line)
+		if ok && !marker {
+			t.Fatal("a successful scan outside a marker")
+		}
+		if marker && (!strings.Contains(line, " CSM-ANTISPAM event=scan mode=") || strings.ContainsAny(line, "\r\n")) {
+			t.Fatalf("accepted %q", line)
+		}
+	})
+}
