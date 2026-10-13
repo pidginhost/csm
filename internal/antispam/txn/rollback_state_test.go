@@ -199,3 +199,65 @@ func TestRollbackWithoutHooksIgnoresMissingNamedLists(t *testing.T) {
 		t.Errorf("record = %q", got)
 	}
 }
+
+func TestRollbackNamedListsForPartialInstallation(t *testing.T) {
+	hooks, err := antispam.RenderExim(enforce())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, path, content string
+		wantProbes          int
+	}{
+		{"scanner address only", antispam.LocalEximConfPath, "@CONFIG@\n" + hooks.Config, 0},
+		{"RCPT hook only", antispam.HookRCPTPath, hooks.RCPT, 1},
+		{"scan hook only", antispam.HookScanPath, hooks.Scan, 1},
+		{"post hook only", antispam.HookPostPath, hooks.Post, 1},
+	} {
+		for _, operation := range []string{"apply", "remove"} {
+			t.Run(operation+"/"+tc.name, func(t *testing.T) {
+				f := newFake(t)
+				writeTest(t, f.root+tc.path, tc.content, 0o644)
+				f.build()
+				before := f.state()
+				f.fail["systemctl reload exim.service"] = []int{1}
+				h := f.host()
+				run := h.run
+				rollbackProbes := 0
+				h.run = func(ctx context.Context, limit time.Duration, name string, args ...string) antispam.CommandResult {
+					r := run(ctx, limit, name, args...)
+					if f.count(BuildEximConf) == 2 && name == "exim" && len(args) > 0 && args[0] == "-C" {
+						rollbackProbes++
+						r.Stdout, r.Stderr = "Failed: missing list\n", "unknown named list\n"
+					}
+					return r
+				}
+				var r antispam.Result
+				if operation == "apply" {
+					r = h.Apply(enforce())
+				} else {
+					r = h.Remove()
+				}
+				wantRollback := antispam.RollbackVerified
+				if tc.wantProbes > 0 {
+					wantRollback = antispam.RollbackFailed
+					before[antispam.RecordPath] = string(antispam.EncodeRecord(""))
+				}
+				if r.OK || r.FailedStep != StepEximReload || r.Rollback != wantRollback {
+					t.Fatalf("result %+v, want %s with rollback %s", r, StepEximReload, wantRollback)
+				}
+				if rollbackProbes != tc.wantProbes {
+					t.Errorf("rollback ran %d named-list probes, want %d", rollbackProbes, tc.wantProbes)
+				}
+				for path, want := range before {
+					if got := f.file(path); got != want {
+						t.Errorf("%s = %q, want %q", path, got, want)
+					}
+				}
+				if got := f.count("exim -bV"); got != 2 {
+					t.Errorf("Exim configuration validated %d times, want 2", got)
+				}
+			})
+		}
+	}
+}

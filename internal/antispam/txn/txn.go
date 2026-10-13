@@ -113,6 +113,8 @@ type tx struct {
 	// eximBlocks are the prior CSM blocks per ACL, for rollback.
 	eximBlocks               map[string][]string
 	eximRCPTACL, eximDataACL string
+	// The scanner address alone uses no named lists.
+	eximHadHooks bool
 	// greeting is the listener that answered before any change; "" when
 	// Exim was not running.
 	greeting       string
@@ -361,7 +363,7 @@ func (t *tx) eximSettings(ctx context.Context) (map[string]string, error) {
 
 // exim writes the Exim edits, rebuilds and validates the configuration, then
 // reloads Exim and probes it (spec section 6.3 steps 3 to 5). hooks says
-// whether the result holds CSM hooks, which need the named lists.
+// whether the result holds CSM ACL hooks, which need the named lists.
 func (t *tx) exim(changes []change, hooks bool, verify func(conf, rcptACL, dataACL string) error) (string, error) {
 	for _, c := range changes {
 		if err := t.write(c); err != nil {
@@ -416,6 +418,7 @@ func (t *tx) generatedConf() (fileState, error) {
 // so rollback can prove the rebuilt configuration holds them again.
 func (t *tx) rememberEximBlocks(targets []antispam.TargetFacts, opts map[string]string) {
 	t.eximBlocks = make(map[string][]string)
+	t.eximHadHooks = false
 	t.eximRCPTACL, t.eximDataACL = opts["acl_smtp_rcpt"], opts["acl_smtp_data"]
 	for _, target := range targets {
 		if target.Kind == antispam.TargetRspamd {
@@ -424,6 +427,9 @@ func (t *tx) rememberEximBlocks(targets []antispam.TargetFacts, opts map[string]
 		block, ok := antispam.BlockText(target.Kind, target.Content)
 		if !ok {
 			continue
+		}
+		if target.Kind == antispam.TargetEximHook {
+			t.eximHadHooks = true
 		}
 		acl := ""
 		switch target.Path {
@@ -457,7 +463,7 @@ func (t *tx) checkRollbackExim(ctx context.Context) error {
 }
 
 // validateExim checks the generated configuration and, when it holds CSM
-// hooks, the named lists they use (spec section 6.2 item 7). A missing list
+// ACL hooks, the named lists they use (spec section 6.2 item 7). A missing list
 // makes the hooks defer mail, so taking them out must not depend on it.
 func (t *tx) validateExim(ctx context.Context, hooks bool) error {
 	if r := t.cmd(ctx, commandLimit, "exim", "-bV"); r.Err != nil {
@@ -585,7 +591,7 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 	if t.eximTouched {
 		if r := t.cmd(ctx, buildLimit, BuildEximConf); r.Err != nil {
 			errs = append(errs, cmdErr("buildeximconf", r))
-		} else if err := t.validateExim(ctx, len(t.eximBlocks) > 0); err != nil {
+		} else if err := t.validateExim(ctx, t.eximHadHooks); err != nil {
 			errs = append(errs, err)
 		} else if err := t.checkRollbackExim(ctx); err != nil {
 			errs = append(errs, err)
