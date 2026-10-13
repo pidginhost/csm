@@ -365,8 +365,13 @@ func (o *Owner) finishPending() error {
 	for _, outcome := range o.finishes {
 		c, a, finishErr := finishLedger(o.ledger, outcome.id, outcome.disposition)
 		if finishErr != nil {
-			pending = append(pending, outcome)
 			err = errors.Join(err, fmt.Errorf("finishing %s: %w", outcome.id, finishErr))
+			// A damaged record, an attempt already ended another way or a
+			// refused outcome cannot be written by retrying: the attempt
+			// stays unresolved and holds its target until recovery.
+			if _, refused := admission.ReasonOf(finishErr); !refused && !errors.Is(finishErr, admission.ErrCorruptRecord) && !errors.Is(finishErr, admission.ErrTransitionConflict) {
+				pending = append(pending, outcome)
+			}
 			continue
 		}
 		id := a.Attempt.Candidate

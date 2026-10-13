@@ -194,3 +194,54 @@ func TestOwnerPendingOutcomesBlockNewWorkAndSurviveClockFailure(t *testing.T) {
 		t.Fatal("recovery dispatched something other than the waiting member")
 	}
 }
+
+// An outcome the ledger refuses for good (a damaged record, or an attempt
+// it already ended another way) cannot be written by retrying. The attempt
+// stays unresolved and holds its target until recovery, and the owner goes
+// on serving other work.
+func TestOwnerDropsOutcomesTheLedgerCannotRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"damaged", admission.ErrCorruptRecord},
+		{"conflict", admission.ErrTransitionConflict},
+		{"refused", &admission.Error{Reason: admission.ReasonInvalid}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			o := f.start(executeOptions(f, blocks))
+			mono := heldMono(t, o)
+			finish := finishLedger
+			var held admission.ActionID
+			tries := 0
+			setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+				if held == "" {
+					held = id
+				}
+				if id == held {
+					tries++
+					return admission.Candidate{}, admission.AttemptRecord{}, tc.err
+				}
+				return finish(l, id, d)
+			})
+			queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+			if err := o.do(o.turn); !errors.Is(err, tc.err) {
+				t.Fatalf("first outcome: %v", err)
+			}
+			next, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+			mono.advance(time.Second)
+			if err := o.do(o.turn); err != nil {
+				t.Fatalf("a refused outcome stopped later turns: %v", err)
+			}
+			if c := candidate(t, o, next); tries != 1 || c.State != admission.StateVerified || c.Attempts != 1 {
+				t.Fatalf("refused outcome retried or blocked new work: tries=%d next=%+v", tries, c)
+			}
+			if s := ledgerStatus(t, o); s.Unresolved.Running != 1 {
+				t.Fatalf("the unrecorded attempt is no longer unresolved: %+v", s.Unresolved)
+			}
+		})
+	}
+}

@@ -535,7 +535,9 @@ address or a spent lifetime ends it without a charge. The rest are reserved,
 recorded as running with their intents, applied and finished by their own
 effect. Failed outcome writes retry before more work is selected and once at
 shutdown, even without a fresh clock reading; the effect is never dispatched
-again for that attempt. Every other kind is still previewed. A batch the
+again for that attempt. An outcome the ledger refuses for good (a damaged
+record or a conflicting state) is not retried: its attempt stays unresolved
+until recovery. Every other kind is still previewed. A batch the
 kernel rejected fails every member, charged; each then retries alone, one
 per turn, until its next outcome or its expiry. A state write the engine
 could not make, a failed batch check or apply (including per-member
