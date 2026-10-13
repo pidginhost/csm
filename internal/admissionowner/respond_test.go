@@ -363,7 +363,7 @@ func TestOwnerPreviewKeepsASelectedLifetimeAcrossRestart(t *testing.T) {
 	if err = restarted.do(restarted.drain); err != nil {
 		t.Fatal(err)
 	}
-	if err = restarted.do(restarted.preview); err != nil {
+	if err = restarted.do(restarted.turn); err != nil {
 		t.Fatal(err)
 	}
 	rows := pendingAudit(t, restarted)

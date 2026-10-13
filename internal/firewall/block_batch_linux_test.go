@@ -26,7 +26,7 @@ type batchFixture struct {
 	onFlush func() // what an acknowledged batch leaves in the kernel
 }
 
-func newBatchFixture(t *testing.T, state FirewallState) *batchFixture {
+func newBatchFixture(t testing.TB, state FirewallState) *batchFixture {
 	t.Helper()
 	dir := t.TempDir()
 	writeEngineStateFile(t, dir, state)

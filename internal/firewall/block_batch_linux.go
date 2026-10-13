@@ -15,49 +15,6 @@ import (
 	"github.com/mdlayher/netlink"
 )
 
-// MaxBlockBatchMembers bounds one block batch, as the admission ledger
-// bounds an execution batch (spec 5.5).
-const MaxBlockBatchMembers = 64
-
-// MaxBlockReasonBytes bounds the reason a batch member writes on its row.
-const MaxBlockReasonBytes = 256
-
-// BlockMember is one timed full-address block an admission attempt may
-// apply: the attempt's ID, the canonical address, the reason written on
-// its row and the absolute expiry its element never outlives.
-type BlockMember struct {
-	Action    string
-	IP        string
-	Reason    string
-	ExpiresAt time.Time
-}
-
-// BlockRefusal says why a batch member cannot run; empty means it can.
-type BlockRefusal string
-
-const (
-	// BlockRefusedInvalid: a malformed action ID, address, reason or
-	// expiry, or an address not in canonical form.
-	BlockRefusedInvalid BlockRefusal = "invalid"
-	// BlockRefusedExpired: less than a millisecond of the block is left.
-	BlockRefusedExpired BlockRefusal = "expired"
-	// BlockRefusedUnsupported: the address family is not enabled.
-	BlockRefusedUnsupported BlockRefusal = "unsupported"
-	// BlockRefusedProtected: infra, the host's own address or one that is
-	// never a packet's source.
-	BlockRefusedProtected BlockRefusal = "protected"
-	// BlockRefusedAllowed: an operator allow or a verified crawler.
-	BlockRefusedAllowed BlockRefusal = "allowlisted"
-	// BlockRefusedDuplicate: an earlier member names the same address or
-	// action.
-	BlockRefusedDuplicate BlockRefusal = "duplicate"
-	// BlockRefusedExisting: a state row or a kernel element already names
-	// the address.
-	BlockRefusedExisting BlockRefusal = "existing_effect"
-	// BlockRefusedFull: no temporary deny slot is left.
-	BlockRefusedFull BlockRefusal = "set_full"
-)
-
 func validBlockAction(id string) bool {
 	if id == "" || len(id) > 64 {
 		return false
@@ -83,13 +40,16 @@ func validBlockReason(reason string) bool {
 }
 
 // blockSnapshot is the one view a batch is checked against: the state
-// file and the kernel's blocked sets.
+// file and the kernel's blocked sets. blocked and allowed key the checked
+// rows by canonical address once, so each member check is a lookup.
 type blockSnapshot struct {
-	at    time.Time
-	prior FirewallState
-	state FirewallState
-	live  map[string]bool
-	temp  int
+	at      time.Time
+	prior   FirewallState
+	state   FirewallState
+	blocked map[string]bool
+	allowed map[string]bool
+	live    map[string]bool
+	temp    int
 }
 
 func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
@@ -123,7 +83,16 @@ func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
 	state.Blocked, _ = pruneBlocked(state.Blocked, at)
 	state.BlockedNet, _ = pruneBlockedNet(state.BlockedNet, at)
 	state.Allowed, _ = pruneAllowed(state.Allowed, at)
-	snap := blockSnapshot{at: at, prior: prior, state: state, live: map[string]bool{}}
+	snap := blockSnapshot{at: at, prior: prior, state: state, blocked: map[string]bool{}, allowed: map[string]bool{}, live: map[string]bool{}}
+	for _, row := range state.Blocked {
+		snap.blocked[stateIPKey(row.IP)] = true
+	}
+	for _, row := range state.Allowed {
+		snap.allowed[stateIPKey(row.IP)] = true
+	}
+	for _, row := range state.PortAllowed {
+		snap.allowed[stateIPKey(row.IP)] = true
+	}
 	tempByIP := blockedStateTempByIP(snap.state)
 	for _, set := range []*nftables.Set{e.setBlocked, e.setBlocked6} {
 		if set == nil || (set == e.setBlocked6 && !e.cfg.IPv6) {
@@ -207,13 +176,14 @@ func (e *Engine) blockRefusalLocked(m BlockMember, verified bool, snap blockSnap
 	if e.blockProtectionLocked(parsed, m.IP) != nil {
 		return BlockRefusedProtected
 	}
-	if verified || blockSnapshotAllows(snap.state, m.IP) {
+	key := stateIPKey(m.IP)
+	if verified || snap.allowed[key] {
 		return BlockRefusedAllowed
 	}
 	if seenIP[m.IP] || seenAction[m.Action] {
 		return BlockRefusedDuplicate
 	}
-	if firewallStateHasBlocked(snap.state, m.IP) || snap.live[m.IP] {
+	if snap.blocked[key] || snap.live[m.IP] {
 		return BlockRefusedExisting
 	}
 	return ""
@@ -237,33 +207,6 @@ func (e *Engine) CheckBlockBatch(members []BlockMember) ([]BlockRefusal, error) 
 	}
 	return e.checkBlockMembersLocked(members, verified, snap, snap.at), nil
 }
-
-// BlockEffect is what a batch did to one member.
-type BlockEffect string
-
-const (
-	// BlockApplied: the kernel holds the member's element as encoded.
-	BlockApplied BlockEffect = "applied"
-	// BlockFailed: proven not applied; nothing of it is in the kernel.
-	BlockFailed BlockEffect = "failed"
-	// BlockUnknown: the element may or may not be in the kernel. Its row
-	// stays, marked unverified.
-	BlockUnknown BlockEffect = "unknown"
-)
-
-// BlockResult is one member's outcome: its effect, the check that refused
-// it before the kernel batch, or the error behind a failed or unknown one.
-type BlockResult struct {
-	Effect  BlockEffect
-	Refusal BlockRefusal
-	Err     error
-}
-
-// ErrBlockBatchRejected marks a member that failed because the kernel
-// rejected the whole transaction; a failure before the send does not carry
-// it. A failed state restore carries ErrBlockBatchState instead. The owner
-// retries rejected members one at a time (P9).
-var ErrBlockBatchRejected = errors.New("kernel rejected the block batch")
 
 // blockReadbackSlack covers the kernel's timeout granularity and the
 // clock reads around the batch.
@@ -517,24 +460,18 @@ func blockActions(members []BlockMember, indices []int) []string {
 	return out
 }
 
-func blockSnapshotAllows(state FirewallState, ip string) bool {
-	for _, row := range state.Allowed {
-		if sameIPString(row.IP, ip) {
-			return true
-		}
-	}
-	for _, row := range state.PortAllowed {
-		if sameIPString(row.IP, ip) {
-			return true
-		}
-	}
-	return false
-}
-
 // A mapped key in an IPv6 set cannot enforce an IPv4 packet.
 func blockSetIP(set *nftables.Set, key []byte) (string, bool) {
 	if len(key) != int(set.KeyType.Bytes) || (len(key) == net.IPv6len && net.IP(key).To4() != nil) {
 		return "", false
 	}
 	return setElementIPString(key)
+}
+
+// ProbeBlockState proves the current snapshot without sending an action.
+func (e *Engine) ProbeBlockState() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, err := e.blockSnapshotLocked()
+	return err
 }

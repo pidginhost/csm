@@ -168,12 +168,21 @@ type queueTx struct {
 	// outcomes are the events this transaction counts into the outcome
 	// windows when it flushes.
 	outcomes admission.OutcomeCounts
-	// heldTargets is derived once from the intents, never episode rows.
-	heldTargets map[string]bool
+	// held is the handle's recovery hold when the transaction began and
+	// heldDelta its pending changes (see AdmissionLedger.held). Without
+	// them, heldTargets is derived once from the intents, never episode
+	// rows.
+	held, heldDelta map[string]int
+	heldTargets     map[string]bool
 }
 
 func (l *AdmissionLedger) openQueue(tx *bolt.Tx, now time.Time) (*queueTx, error) {
-	return openQueueWith(tx, l.reg, l.Inventory(), now)
+	q, err := openQueueWith(tx, l.reg, l.Inventory(), now)
+	if err != nil {
+		return nil, err
+	}
+	q.held, q.heldDelta = l.held, l.heldDelta
+	return q, nil
 }
 
 func openQueueWith(tx *bolt.Tx, reg *admission.Registry, inv *admission.Inventory, now time.Time) (*queueTx, error) {
@@ -814,6 +823,9 @@ func (q *queueTx) scheduleItems(live []liveCandidate, room uint64) ([]admission.
 // already. The engine's timer ticks and schedules then. ok is false when
 // nothing waits.
 func (l *AdmissionLedger) NextWake() (time.Time, bool, error) {
+	// The lock guards the recovery hold this read shares with writers.
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	var wake time.Time
 	err := l.db.bolt.View(func(tx *bolt.Tx) error {
 		clock, err := loadLedgerClock(tx.Bucket([]byte(admissionMetaBucket)))
@@ -824,6 +836,7 @@ func (l *AdmissionLedger) NextWake() (time.Time, bool, error) {
 		if err != nil {
 			return err
 		}
+		q.held = l.held
 		live, err := q.live()
 		if err != nil {
 			return err

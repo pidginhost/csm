@@ -43,6 +43,9 @@ type AdmissionOwner struct {
 	// It survives recovery from any later failure in that drain and is kept
 	// until the owner restarts.
 	DamageError string `json:"damage_error,omitempty"`
+	// ExecutionHeld is why automatic execution is held: block work waits,
+	// deferred as an unavailable engine, until a probe succeeds.
+	ExecutionHeld string `json:"execution_held,omitempty"`
 }
 
 // AdmissionImport is the legacy hour's spend imported as charges. They

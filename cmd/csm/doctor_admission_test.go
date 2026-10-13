@@ -142,3 +142,20 @@ func TestDoctorOwnerFixesKeepTheStateDatabaseWhileAdmissionPreviews(t *testing.T
 		}
 	}
 }
+
+// Held execution fails its own row with the cause (P8); without a hold
+// there is no row.
+func TestDoctorReportsHeldExecution(t *testing.T) {
+	at := time.Now().UTC()
+	view := func(held string) *health.AdmissionStatus {
+		return &health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{Admitting: true},
+			Owner: &health.AdmissionOwner{ExecutionHeld: held}}
+	}
+	row, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view("applying a block batch: blocked sets unavailable"))), "admission execution")
+	if !ok || row.Status != "fail" || !strings.Contains(row.Message, "blocked sets unavailable") || row.Fix == "" {
+		t.Fatalf("admission execution = %+v (%v)", row, ok)
+	}
+	if _, ok = doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view(""))), "admission execution"); ok {
+		t.Fatal("execution that is not held printed a row")
+	}
+}

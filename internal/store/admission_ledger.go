@@ -80,12 +80,24 @@ type AdmissionLedger struct {
 	// then cannot end an episode.
 	degraded bool
 
+	// reserved is set once this handle granted a reservation: Settle then
+	// refuses, since it would end work this process still runs.
+	reserved bool
+
 	// revalidated is set once this handle has checked every queued
 	// candidate at a current reading. A reopened ledger cannot know what
 	// changed while it was closed, so its first schedule checks them all.
 	revalidated bool
 
 	inv atomic.Pointer[ledgerInventory]
+
+	// held is the recovery hold: how many intents name each target key.
+	// Every intent belongs to an unresolved attempt (opening proves it), so
+	// a counted key is held. Opening derives it once; heldDelta collects a
+	// write transaction's intent changes, applied only after it commits.
+	// Both are guarded by mu.
+	held      map[string]int
+	heldDelta map[string]int
 
 	// failBeforeCommit lets a test fail a write transaction after all of
 	// its writes, to prove that nothing is published.
@@ -285,9 +297,11 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 		if err := proveEpisodes(tx); err != nil {
 			return err
 		}
-		if err := proveIntents(tx); err != nil {
+		held, err := proveIntents(tx)
+		if err != nil {
 			return err
 		}
+		l.held = held
 		meta := tx.Bucket([]byte(admissionMetaBucket))
 		c, err := loadLedgerClock(meta)
 		if err != nil {
@@ -377,7 +391,9 @@ func loadLedgerInventory(meta *bolt.Bucket) (ledgerInventory, error) {
 }
 
 func (l *AdmissionLedger) update(op string, fn func(tx *bolt.Tx) error) error {
-	return l.db.bolt.Update(func(tx *bolt.Tx) error {
+	l.heldDelta = map[string]int{}
+	defer func() { l.heldDelta = nil }()
+	if err := l.db.bolt.Update(func(tx *bolt.Tx) error {
 		if err := fn(tx); err != nil {
 			return err
 		}
@@ -385,7 +401,15 @@ func (l *AdmissionLedger) update(op string, fn func(tx *bolt.Tx) error) error {
 			return l.failBeforeCommit(op)
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	for key, n := range l.heldDelta {
+		if l.held[key] += n; l.held[key] <= 0 {
+			delete(l.held, key)
+		}
+	}
+	return nil
 }
 
 // Tick records a clock reading. The high-water mark it persists is the only

@@ -254,7 +254,8 @@ token.
 The admission ledger (`store.AdmissionLedger`) keeps this state durably in
 the daemon's state database, in `adm:` buckets it creates the first time it
 is opened. The daemon's admission owner (`internal/admissionowner`) opens it
-at startup and holds the only handle: one goroutine makes every change,
+at startup, settles what a previous process left outstanding after its first
+clock reading and ceiling, before ingress or admission, and holds the only handle: one goroutine makes every change,
 records clock readings on a timer, applies the ceiling at startup and, after
 a reading at the saved limit, on reload or the first tick that sees a changed
 configured value, refreshes the inventory from
@@ -302,7 +303,11 @@ call granted the step; reading back an attempt that is already reserved or
 running grants nothing. A new process settles what the previous one left
 outstanding before it reserves anything: a reservation, which recorded no
 intent and so dispatched nothing, fails and may retry; a running attempt
-ends unknown. Nothing is dispatched again.
+ends unknown. Nothing is dispatched again. A handle that has granted a
+reservation refuses to settle, and an unknown outcome needs the intent its
+attempt recorded until that uncertainty is retired, including when reading
+the outcome back. A missing intent or intent bucket returns a corrupt-record
+error without changing the ledger.
 An empty ledger settles without a clock reading.
 
 Schema 2 of the ledger adds its queue, and the first open upgrades a schema
@@ -443,7 +448,10 @@ An attempt still recorded as running, left by a crash before settlement or
 by an outcome that failed to commit, holds its target the same way until
 its outcome is recorded.
 The hold also covers candidates from earlier episodes. A missing intent
-bucket refuses the operation without changing the ledger.
+bucket refuses the operation without changing the ledger. Each handle keeps
+the held targets as an index it builds at open from the proven intents and
+changes only when a transaction that writes or deletes an intent commits, so
+scheduling and reservation look a target up instead of reading every intent.
 A final failure or a retired unknown outcome lets a later
 observation start the next generation. An episode row lives only as long as a
 candidate it names: ring eviction and history retirement clear that
@@ -495,7 +503,8 @@ Durable updates compare absolute expiries before encoding timeouts, so
 millisecond rounding does not replace unchanged timed blocks.
 
 The engine also provides internal batch entry points for up to 64 timed
-full-address blocks. No production caller uses them yet. Each member is
+full-address blocks. The admission owner runs them only when the daemon gives
+it an engine, and production gives none until cutover. Each member is
 checked against one state and kernel snapshot over bounded fresh sockets;
 unreadable state refuses the whole call. Expired rows remain available for
 kernel cleanup in both the intent and restored state. Rejected members
@@ -518,6 +527,36 @@ tracker entries. They do not count as enforced blocks or select threat evidence
 for operator flush cleanup. Live deny limits count their kernel elements using
 kernel timeouts rather than the unresolved rows' requested lifetimes, including
 replacement accounting. Permanent promotion requires a verified block row.
+
+With an engine, each owner turn runs its `block_ip` picks as one batch. The
+engine checks every member against one snapshot before anything is reserved.
+A full set defers a member; an existing effect, an invalid or protected
+address or a spent lifetime ends it without a charge. The rest are reserved,
+recorded as running with their intents, applied and finished by their own
+effect. Failed outcome writes retry before more work is selected and once at
+shutdown, even without a fresh clock reading; the effect is never dispatched
+again for that attempt. An outcome the ledger refuses for good (a damaged
+record or a conflicting state) is not retried: its attempt stays unresolved
+until recovery. Every other kind is still previewed. A batch the
+kernel rejected fails every member, charged; each then retries alone, one
+per turn, until its next outcome or its expiry. A state write the engine
+could not make, a failed batch check or apply (including per-member
+transport and readback errors), or a missing engine holds automatic execution:
+block picks wait, deferred as an unavailable engine, while one probe runs per
+wait, from one second doubling to a minute. A held state write is probed by
+writing the safe state again and checking its snapshot. Without an engine,
+idle scheduling pauses and resumes on the first schedule check that finds
+an engine, without waiting for the old probe deadline. Other idle holds
+still probe on their waits; successful snapshots cannot reset a failing
+member check's backoff.
+A failed apply keeps its cause and backoff through state repair, ledger
+refusals and member refusals until an applied effect proves recovery.
+Hold changes copy the cached owner status without rereading the ledger.
+Status (`admission.owner.execution_held`) and
+the `csm doctor` row `admission execution` name the cause. A degraded
+admission clock cannot bound a lease, so it defers block picks the same
+way. One batch starts a second at most; with an engine, a drain that queues
+new work runs the schedule at once instead of waiting for its timer.
 
 ### Attack event storage
 

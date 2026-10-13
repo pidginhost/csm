@@ -45,18 +45,30 @@ func withTestRegistry(t *testing.T) *admission.Producer {
 // on it, as the routing that 1.4c adds will.
 func queued(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity) (admission.CandidateID, time.Time) {
 	t.Helper()
+	return queuedAt(t, o, p, host, sev, "192.0.2.10")
+}
+
+// queuedAt queues a block of addr from a root of its own.
+func queuedAt(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity, addr string) (admission.CandidateID, time.Time) {
+	t.Helper()
+	return queuedKind(t, o, p, host, sev, addr, admission.KindBlockIP)
+}
+
+// queuedKind queues a candidate of kind at addr from a root of its own.
+func queuedKind(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity, addr string, kind admission.Kind) (admission.CandidateID, time.Time) {
+	t.Helper()
 	var id admission.CandidateID
 	host.mu.Lock()
 	now := host.wall
 	host.mu.Unlock()
 	if err := o.do(func() error {
-		target, err := admission.CanonicalAddress("192.0.2.10", admission.Caps{IPv6: true})
+		target, err := admission.CanonicalAddress(addr, admission.Caps{IPv6: true})
 		if err != nil {
 			return err
 		}
 		e, err := p.Mint(admission.EvidenceInput{
 			Check: "ssh_brute", FindingID: "0123456789abcdef", Severity: sev,
-			Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: "offset=1", Version: 1},
+			Observation: admission.ObservationRef{Stream: "log:sshd_log", Cursor: cursorFor(addr), Version: 1},
 			ObservedAt:  now, Parser: admission.ParserRef{Name: "sshd", Version: 1}, Target: target,
 		})
 		if err != nil {
@@ -69,7 +81,7 @@ func queued(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev a
 		if err != nil {
 			return err
 		}
-		c, _, err := o.ledger.Enqueue(admission.CandidateRequest{Kind: admission.KindBlockIP, Target: target, Episode: ep, Generation: 1, Primary: e.ID()})
+		c, _, err := o.ledger.Enqueue(admission.CandidateRequest{Kind: kind, Target: target, Episode: ep, Generation: 1, Primary: e.ID()})
 		if err != nil {
 			return err
 		}
@@ -79,6 +91,14 @@ func queued(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev a
 		t.Fatal(err)
 	}
 	return id, now
+}
+
+// The first address keeps the cursor older tests recorded.
+func cursorFor(addr string) string {
+	if addr == "192.0.2.10" {
+		return "offset=1"
+	}
+	return "offset=" + addr
 }
 
 // applied takes one candidate through a verified attempt: its reservation,

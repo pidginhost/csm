@@ -397,7 +397,7 @@ func TestComputeInitialBlockStateSkipsIPv6WhenDisabled(t *testing.T) {
 	}
 }
 
-func writeEngineStateFile(t *testing.T, dir string, state FirewallState) {
+func writeEngineStateFile(t testing.TB, dir string, state FirewallState) {
 	t.Helper()
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {

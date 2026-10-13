@@ -52,6 +52,10 @@ var drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items [
 var (
 	scheduleLedger = (*store.AdmissionLedger).Schedule
 	monoNow        = time.Now
+	// executeLedger records a batch as running; tests make it refuse.
+	executeLedger = (*store.AdmissionLedger).ExecuteBatch
+	reserveLedger = (*store.AdmissionLedger).Reserve
+	finishLedger  = (*store.AdmissionLedger).Finish
 )
 
 // previewLimits lets a schedule serve whatever the ledger's budgets allow,
@@ -86,6 +90,10 @@ type Options struct {
 	Expiry func(admission.Candidate) time.Duration
 	// Caps are the firewall's containment capabilities block targets fit.
 	Caps func() admission.Caps
+	// Blocks returns the firewall engine that runs block_ip picks, or nil
+	// while none runs. Without Blocks every pick is a preview: production
+	// passes none until cutover (P2).
+	Blocks func() BlockEngine
 	// Timer periods; zero selects the defaults.
 	TickEvery, InventoryEvery, StatusEvery, DeliverEvery, NoticeEvery, DrainEvery, ScheduleEvery time.Duration
 }
@@ -100,8 +108,8 @@ type request struct {
 // Owner is the daemon's one handle on the admission ledger. One goroutine
 // makes every call that changes the ledger, so sequences such as a tick
 // followed by a new limit never interleave with another change (spec 5.4).
-// It serves its queue as observe previews: nothing it admits is executed
-// until the applier exists.
+// It serves its queue as observe previews unless an engine runs its block
+// picks (Options.Blocks).
 type Owner struct {
 	opts      Options
 	stopping  atomic.Bool
@@ -151,6 +159,24 @@ type Owner struct {
 	// even if another failure stopped that drain. A damaged record stays
 	// damaged, so the cause is kept for the owner's life.
 	damageErr error
+	// isolated holds the candidates whose last batch the kernel rejected,
+	// with their absolute expiry: each runs alone (P9).
+	isolated map[admission.CandidateID]time.Time
+	// finishes retains known outcomes until their writes commit. A turn
+	// retries these before selecting more work, bounding this to one batch.
+	finishes []pendingFinish
+	// execHold is why automatic execution is held (P8), or nil. probeAt is
+	// when the next probe may run, on the monotonic clock, after probeWait.
+	execHold  error
+	probeAt   time.Time
+	probeWait time.Duration
+	// applyHold keeps an apply fault that snapshot repair cannot prove fixed.
+	applyHold  error
+	probeCheck bool
+	// nextBatch is when the next block batch may start, on the monotonic
+	// clock; arrived is set by a drain that queued work.
+	nextBatch time.Time
+	arrived   bool
 }
 
 // Start opens the ledger and runs the startup sequence before it returns,
@@ -255,7 +281,7 @@ func (o *Owner) run() {
 			}
 		case <-drain.C:
 			if o.started {
-				_ = o.drain()
+				o.drainTick()
 			}
 		case <-schedule.C:
 			if o.started {
@@ -284,6 +310,7 @@ func (o *Owner) do(fn func() error) error {
 var (
 	openLedger    = store.OpenAdmissionLedger
 	buildRegistry = Registry
+	settleLedger  = (*store.AdmissionLedger).Settle
 )
 
 // start runs the startup sequence (spec 5.4, handoffs O19-O24). A retry
@@ -307,6 +334,11 @@ func (o *Owner) start() error {
 	}
 	if err = o.applyCeiling(reading.Wall); err != nil {
 		return err
+	}
+	// What a previous process left reserved or running ends before this
+	// handle reserves anything: nothing is dispatched again.
+	if _, _, err = settleLedger(o.ledger); err != nil {
+		return fmt.Errorf("settling outstanding attempts: %w", err)
 	}
 	o.refreshInventory()
 	if _, err = o.ledger.BeginIngress(); err != nil {
@@ -422,6 +454,7 @@ func (o *Owner) publish() error {
 		o.ingress.Publish(nil)
 		return fmt.Errorf("reading the queue snapshot: %w", err)
 	}
+	o.forgetIsolated(snap)
 	o.ingress.Publish(snap)
 	return nil
 }
@@ -498,6 +531,11 @@ func (o *Owner) shutdown() {
 	// No snapshot published during the stop reopens admission, so the
 	// drains below end even if a producer was not stopped first (O30).
 	o.ingress.Close()
+	// An outcome still unwritten stays running for the next start to
+	// settle; the held arrivals are drained regardless.
+	if err := o.finishPending(); err != nil {
+		o.scheduleErr = err
+	}
 	held := o.ingress.Len() != 0
 	for {
 		if o.drainHeld() != nil {
@@ -556,6 +594,18 @@ func (o *Owner) drain() error {
 	return nil
 }
 
+// drainTick drains the ingress on its timer. With an engine, work the
+// drain queued is served at once rather than on the next schedule tick:
+// the first ready batch starts immediately (spec 5.5) and batchEvery
+// spaces the rest. Without one, previews keep the schedule timer.
+func (o *Owner) drainTick() {
+	o.arrived = false
+	_ = o.drain()
+	if o.arrived && o.opts.Blocks != nil {
+		o.schedule()
+	}
+}
+
 // drainHeld persists what the ingress holds, at most maxDrainGroups groups.
 // Every group, even an empty one, checkpoints the ingress decisions. A
 // failed drain closes admission and names its cause until a drain
@@ -591,7 +641,7 @@ func (o *Owner) drainHeld() (err error) {
 			return err
 		}
 		if report.Queued+report.Coalesced > 0 {
-			o.scheduleDue = true
+			o.scheduleDue, o.arrived = true, true
 		}
 		// The group's own snapshot reopened admission.
 		o.drainFailed = false
@@ -608,14 +658,20 @@ func (o *Owner) drainHeld() (err error) {
 // succeeds. A turn that keeps failing is backed off from the default
 // schedule period, as a failing notice delivery is.
 func (o *Owner) schedule() {
-	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) {
+	probeDue := o.execHold != nil && !monoNow().Before(o.probeAt)
+	// Without an engine there is nothing to probe. Once one starts, the
+	// old hold's deadline must not delay its first turn.
+	if errors.Is(o.execHold, errNoEngine) {
+		probeDue = o.opts.Blocks() != nil
+	}
+	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) && !probeDue {
 		return
 	}
 	if !o.scheduleWait.due(monoNow()) {
 		return
 	}
 	o.scheduleDue, o.wakeAt = false, time.Time{}
-	err := o.preview()
+	err := o.turn()
 	if err != nil {
 		o.scheduleDue = true
 		o.scheduleWait.fail(monoNow(), defaultScheduleEvery)
@@ -629,15 +685,21 @@ func (o *Owner) schedule() {
 	o.scheduleErr = err
 }
 
-// preview serves the queue's picks as observe previews, after a fresh
-// reading (O9): each is reserved and charged as live work would be and
-// ends in the same transaction without running (O14). The schedule has
-// already deferred the work its budgets cannot serve and revalidated each
-// pick under the same state. A terminal refusal ends only that pick, so an
-// invalid selected lifetime cannot starve the queue. Other failures retry
-// the turn. The ledger's wake time, converted by the admission clock's
-// elapsed time, sets the next turn (O16).
-func (o *Owner) preview() error {
+// turn serves the queue's picks after a fresh reading (O9). With an engine
+// (Options.Blocks) its block_ip picks run as one batch (execute). Every
+// other pick is an observe preview: reserved and charged as live work
+// would be and ended in the same transaction without running (O14). The
+// schedule has already deferred the work its budgets cannot serve and
+// revalidated each pick under the same state. A terminal refusal ends only
+// that pick, so an invalid selected lifetime cannot starve the queue.
+// Other failures retry the turn. The ledger's wake time, converted by the
+// admission clock's elapsed time, sets the next turn (O16).
+func (o *Owner) turn() error {
+	// Recording an outcome needs only the saved ledger clock. A failed
+	// current reading must not abandon work that already ran.
+	if err := o.finishPending(); err != nil {
+		return err
+	}
 	if err := o.tick(); err != nil {
 		return err
 	}
@@ -645,20 +707,17 @@ func (o *Owner) preview() error {
 	if err != nil {
 		return fmt.Errorf("scheduling the queue: %w", err)
 	}
+	var blocks []execPick
 	for _, p := range picks {
 		c, readErr := o.ledger.Candidate(p.ID)
 		if readErr != nil {
 			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
 		}
-		expires := c.ExpiresAt
-		if c.Attempts == 0 {
-			duration := c.PreviewTTL
-			if duration == 0 {
-				duration = o.opts.Expiry(c)
-			}
-			expires = o.now.Add(duration)
+		if o.opts.Blocks != nil && c.Key.Kind == admission.KindBlockIP {
+			blocks = append(blocks, execPick{pick: p, c: c})
+			continue
 		}
-		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, expires); err != nil {
+		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, o.expiryOf(c)); err != nil {
 			if reason, refused := admission.ReasonOf(err); refused {
 				switch reason.Disposition() {
 				case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
@@ -672,6 +731,15 @@ func (o *Owner) preview() error {
 			return fmt.Errorf("previewing pick %s: %w", p.ID, err)
 		}
 		o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
+	}
+	if len(blocks) > 0 {
+		if err = o.execute(blocks); err != nil {
+			return err
+		}
+	} else if o.opts.Blocks != nil && o.execHold != nil {
+		if o.ready(o.opts.Blocks(), false) && o.execHold != nil {
+			o.hold(o.execHold, o.applyHold != nil)
+		}
 	}
 	if err = o.publish(); err != nil {
 		return err
@@ -688,6 +756,20 @@ func (o *Owner) preview() error {
 		}
 	}
 	return nil
+}
+
+// expiryOf is the absolute expiry of a pick's next attempt: a retry keeps
+// its first attempt's; a first attempt lasts the selected legacy lifetime,
+// or the configured response's.
+func (o *Owner) expiryOf(c admission.Candidate) time.Time {
+	if c.Attempts > 0 {
+		return c.ExpiresAt
+	}
+	duration := c.PreviewTTL
+	if duration == 0 {
+		duration = o.opts.Expiry(c)
+	}
+	return o.now.Add(duration)
 }
 
 // countArrival counts the ledger's decision on one drained arrival.
@@ -842,6 +924,9 @@ func (o *Owner) refreshStatus() {
 	}
 	if o.damageErr != nil {
 		s.Owner.DamageError = o.damageErr.Error()
+	}
+	if o.execHold != nil {
+		s.Owner.ExecutionHeld = o.execHold.Error()
 	}
 	if o.ledger != nil {
 		ls := o.ledger.Status()
