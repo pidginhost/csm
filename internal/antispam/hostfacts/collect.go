@@ -123,13 +123,14 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 
 // CollectInstalled reads only what shows whether CSM's integration is on
 // the host: the files CSM writes, the generated Exim configuration and the
-// completion record. It runs no command.
+// completion record. It leaves other facts unset, including platform facts
+// whose detection can run commands.
 func CollectInstalled() antispam.HostFacts {
 	return live().installed()
 }
 
 func (c collector) installed() antispam.HostFacts {
-	f := antispam.HostFacts{CPanel: c.cpanel(), MTAExim: c.eximMTA()}
+	var f antispam.HostFacts
 	f.GeneratedConf, f.GeneratedErr = readText(c.layout.GeneratedConf)
 	f.Targets = Targets(c.layout.Targets)
 	f.Record = c.record()
@@ -137,7 +138,7 @@ func (c collector) installed() antispam.HostFacts {
 }
 
 func (c collector) record() antispam.RecordFacts {
-	content, err := readText(c.layout.Record)
+	content, err := readRegularContent(c.layout.Record, antispam.MaxRecordBytes)
 	if errors.Is(err, fs.ErrNotExist) {
 		return antispam.RecordFacts{Missing: true}
 	}
@@ -238,16 +239,16 @@ func readText(p string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", errors.New("configuration is not a regular file")
 	}
-	return readConfigContent(file)
+	return readConfigContent(file, maxConfigBytes)
 }
 
-func readConfigContent(r io.Reader) (string, error) {
-	data, err := io.ReadAll(io.LimitReader(r, maxConfigBytes+1))
+func readConfigContent(r io.Reader, maxBytes int64) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
 	switch {
 	case err != nil:
 		return "", err
-	case len(data) > maxConfigBytes:
-		return "", fmt.Errorf("configuration is larger than %d bytes", maxConfigBytes)
+	case int64(len(data)) > maxBytes:
+		return "", fmt.Errorf("file is larger than %d bytes", maxBytes)
 	}
 	return string(data), nil
 }

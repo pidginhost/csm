@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,6 +50,7 @@ func testCollector(d string, run *fakeRun) collector {
 			LocalConf:     filepath.Join(d, "exim.conf.local"),
 			SpamdDisabled: filepath.Join(d, "spamddisable"),
 			GlobalEnable:  filepath.Join(d, "global_spamassassin_enable"),
+			Record:        filepath.Join(d, "installed.json"),
 		},
 		cpanel:   func() bool { return true },
 		eximMTA:  func() bool { return true },
@@ -325,7 +327,7 @@ func TestConfigurationReadsRejectOversizedFiles(t *testing.T) {
 		read func(string) (string, error)
 	}{
 		{"host fact", readText},
-		{"mutation target", readRegularContent},
+		{"mutation target", func(p string) (string, error) { return readRegularContent(p, maxConfigBytes) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := filepath.Join(t.TempDir(), "exim.conf.local")
@@ -347,19 +349,21 @@ func TestConfigurationReadsRejectOversizedFiles(t *testing.T) {
 }
 
 func TestReadConfigContentStopsAtLimit(t *testing.T) {
-	r := strings.NewReader(strings.Repeat("x", maxConfigBytes+2))
-	if got, err := readConfigContent(r); err == nil || got != "" {
-		t.Fatalf("oversized content: %d bytes, err %v; want an error with no content", len(got), err)
-	}
-	if r.Len() != 1 {
-		t.Fatalf("unread bytes = %d; want 1 so only the limit plus one byte was read", r.Len())
+	for _, limit := range []int64{antispam.MaxRecordBytes, maxConfigBytes} {
+		r := strings.NewReader(strings.Repeat("x", int(limit)+2))
+		if got, err := readConfigContent(r, limit); err == nil || got != "" {
+			t.Fatalf("oversized content: %d bytes, err %v; want an error with no content", len(got), err)
+		}
+		if r.Len() != 1 {
+			t.Fatalf("unread bytes = %d; want 1 so only the limit plus one byte was read", r.Len())
+		}
 	}
 }
 
 func TestReadConfigContentDiscardsPartialRead(t *testing.T) {
 	wantErr := errors.New("read failure")
 	r := io.MultiReader(strings.NewReader("partial"), iotest.ErrReader(wantErr))
-	if got, err := readConfigContent(r); got != "" || !errors.Is(err, wantErr) {
+	if got, err := readConfigContent(r, maxConfigBytes); got != "" || !errors.Is(err, wantErr) {
 		t.Fatalf("failed read: got %q, err %v; want no content and the read error", got, err)
 	}
 }
@@ -449,11 +453,22 @@ func TestCollectReadsRecordAndRspamdState(t *testing.T) {
 // check runs no command.
 func TestCollectInstalledRunsNoCommands(t *testing.T) {
 	d := t.TempDir()
+	commandLog := filepath.Join(d, "commands")
+	stub := filepath.Join(d, "systemctl")
+	write(t, stub, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CSM_TEST_COMMAND_LOG\"\nexit 1\n")
+	if err := os.Chmod(stub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", d)
+	t.Setenv("CSM_TEST_COMMAND_LOG", commandLog)
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
 	write(t, filepath.Join(d, "exim.conf"), "generated\n")
 	write(t, filepath.Join(d, "installed.json"), string(antispam.EncodeRecord("")))
 	run := &fakeRun{}
-	c := testCollector(d, run)
-	c.layout.Record = filepath.Join(d, "installed.json")
+	c := live()
+	c.layout = testCollector(d, run).layout
+	c.run = run.run
 	c.layout.Targets = []antispam.Target{{Path: filepath.Join(d, "local.d", "rbl.conf"), Kind: antispam.TargetRspamd}}
 
 	f := c.installed()
@@ -461,8 +476,94 @@ func TestCollectInstalledRunsNoCommands(t *testing.T) {
 	if len(run.calls) != 0 {
 		t.Errorf("commands %q", run.calls)
 	}
-	if !f.CPanel || !f.MTAExim || f.GeneratedConf != "generated\n" || f.GeneratedErr != nil ||
+	if data, err := os.ReadFile(commandLog); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("platform detection ran commands: %q, error %v", data, err)
+	}
+	if f.GeneratedConf != "generated\n" || f.GeneratedErr != nil ||
 		f.Record.Content != string(antispam.EncodeRecord("")) || len(f.Targets) != 1 {
 		t.Errorf("facts %+v", f)
+	}
+}
+
+func TestCollectEximSettingsWithACLNames(t *testing.T) {
+	d := t.TempDir()
+	filter := filepath.Join(d, "filter")
+	write(t, filter, "# system filter\n")
+	write(t, filepath.Join(d, "exim.conf"), "begin acl\n")
+	settings := map[string]string{
+		"acl_smtp_data": "data_check", "acl_smtp_rcpt": "rcpt_check",
+		"exim_user": "mailnull", "exim_group": "mail", "system_filter": filter,
+		"message_size_limit": "50M", "log_file_path": "/var/log/exim_%slog",
+	}
+	// Exim need not print options in the order they were requested.
+	order := []string{"acl_smtp_data", "exim_group", "log_file_path", "acl_smtp_rcpt", "message_size_limit", "system_filter", "exim_user"}
+	for _, missing := range append([]string{""}, order...) {
+		t.Run("missing="+missing, func(t *testing.T) {
+			want := maps.Clone(settings)
+			delete(want, missing)
+			var out strings.Builder
+			for _, key := range order {
+				if value, ok := want[key]; ok {
+					fmt.Fprintf(&out, "%s = %s\n", key, value)
+				}
+			}
+			run := &fakeRun{results: map[string]antispam.CommandResult{
+				"exim -bP message_size_limit log_file_path exim_user exim_group system_filter acl_smtp_rcpt acl_smtp_data": {Stdout: out.String()},
+				"rspamadm configdump -j options": {Stdout: `{"max_message": 62914560}`},
+			}}
+			f := testCollector(d, run).collect(context.Background(), "/csm-antispam-test-missing/s")
+			if got := antispam.ParseEximOptions(f.EximSettings.Stdout); !maps.Equal(got, want) {
+				t.Errorf("settings = %v, want %v", got, want)
+			}
+			uid, gid := 47, 12
+			if missing == "exim_user" {
+				uid = -1
+			}
+			if missing == "exim_group" {
+				gid = -1
+			}
+			if f.Socket.EximUID != uid || f.Socket.EximGID != gid {
+				t.Errorf("Exim identity %d:%d, want %d:%d", f.Socket.EximUID, f.Socket.EximGID, uid, gid)
+			}
+			var wantProblems []string
+			switch missing {
+			case "message_size_limit":
+				wantProblems = []string{antispam.CodeMessageSize}
+			case "log_file_path":
+				wantProblems = []string{antispam.CodeEximLog}
+			case "system_filter":
+				wantProblems = []string{antispam.CodeSpamScoreRules}
+			}
+			var gotProblems []string
+			for _, p := range antispam.CheckHost(f) {
+				if p.Code == antispam.CodeMessageSize || p.Code == antispam.CodeEximLog || p.Code == antispam.CodeSpamScoreRules {
+					gotProblems = append(gotProblems, p.Code)
+					if p.Severity != antispam.Temporary {
+						t.Errorf("missing setting reported as %+v", p)
+					}
+				}
+			}
+			if !slices.Equal(gotProblems, wantProblems) {
+				t.Errorf("settings problems %v, want %v", gotProblems, wantProblems)
+			}
+			if missing != "system_filter" && (f.SystemFilter != "# system filter\n" || f.SystemFilterErr != nil) {
+				t.Errorf("system filter %q, error %v", f.SystemFilter, f.SystemFilterErr)
+			}
+		})
+	}
+}
+
+func TestCollectKeepsRspamdStateErrors(t *testing.T) {
+	boom := errors.New("configdump failed")
+	want := antispam.CommandResult{Stdout: "partial output", Stderr: "diagnostic", Err: boom}
+	run := &fakeRun{results: map[string]antispam.CommandResult{
+		"rspamadm configdump -j actions": want,
+		"rspamadm configdump -m":         want,
+	}}
+	f := testCollector(t.TempDir(), run).collect(context.Background(), "/csm-antispam-test-missing/s")
+	for name, got := range map[string]antispam.CommandResult{"actions": f.RspamdActions, "modules": f.RspamdModules} {
+		if got.Stdout != want.Stdout || got.Stderr != want.Stderr || !errors.Is(got.Err, boom) {
+			t.Errorf("%s = %+v, want %+v", name, got, want)
+		}
 	}
 }

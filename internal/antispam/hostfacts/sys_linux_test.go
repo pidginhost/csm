@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/antispam"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -105,7 +107,7 @@ func TestReadRegularContentRejectsFIFO(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { _, err := readRegularContent(p); done <- err }()
+	go func() { _, err := readRegularContent(p, maxConfigBytes); done <- err }()
 	select {
 	case err := <-done:
 		if err == nil {
@@ -118,5 +120,36 @@ func TestReadRegularContentRejectsFIFO(t *testing.T) {
 			_ = unix.Close(fd)
 		}
 		t.Fatal("content read blocked on a FIFO")
+	}
+}
+
+func TestCollectRecordRejectsSpecialFiles(t *testing.T) {
+	d := t.TempDir()
+	fifo := filepath.Join(d, "fifo")
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{fifo, "/dev/null", "/dev/zero"} {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			c := testCollector(d, &fakeRun{})
+			c.layout.Record = path
+			done := make(chan antispam.RecordFacts, 1)
+			go func() { done <- c.record() }()
+			select {
+			case got := <-done:
+				if got.Missing || got.Err == nil || got.Content != "" {
+					t.Fatalf("special file: missing %t, error %v, %d bytes", got.Missing, got.Err, len(got.Content))
+				}
+			case <-time.After(time.Second):
+				// Release a blocked FIFO reader so the regression leaves no goroutine.
+				if path == fifo {
+					fd, err := unix.Open(fifo, unix.O_WRONLY|unix.O_NONBLOCK, 0)
+					if err == nil {
+						_ = unix.Close(fd)
+					}
+				}
+				t.Fatal("record read blocked on a special file")
+			}
+		})
 	}
 }
