@@ -832,7 +832,14 @@ func DispatchWithSources(cfg *config.Config, findings, sources []Finding) error 
 // They keep their severity and notification settings, but do not spend or
 // wait on the routine alert budget.
 func DispatchNotices(cfg *config.Config, findings []Finding) error {
-	return dispatchWithSources(cfg, findings, nil, findings, nil, false)
+	return DispatchNoticesWithNotificationFilter(cfg, findings, nil)
+}
+
+// DispatchNoticesWithNotificationFilter applies operator notification policy
+// without hiding notices from audit, phpanel or SSE, or spending the routine
+// alert budget.
+func DispatchNoticesWithNotificationFilter(cfg *config.Config, findings []Finding, filter func([]Finding) []Finding) error {
+	return dispatchWithSources(cfg, findings, nil, findings, filter, false)
 }
 
 // DispatchWithEnforcement offers central IP enforcement its own finding set

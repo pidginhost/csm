@@ -24,8 +24,8 @@ const antispamProbeInterval = 20 * time.Second
 
 type antispamHealthState struct {
 	reconcile.Health
-	// Serialize reloads with probe completion and latest-state publication,
-	// but never hold mu across a socket probe or notification delivery.
+	// Serialize reloads, log observations and probe completion with latest
+	// publication, but never hold mu across a probe or notification delivery.
 	mu         sync.Mutex
 	enabled    bool
 	socket     string
@@ -62,6 +62,7 @@ func (d *Daemon) startAntispam() {
 	// Health state starts empty; findings kept from before a restart
 	// describe an outage no longer tracked.
 	checks.StoreLatestScanFindings(d.store, antispamHealthChecks, nil)
+	d.store.RearmAbsentDedupFindings(antispamHealthChecks, nil)
 	r := antispamReconciler()
 	loop := reconcile.NewLoop(func(ctx context.Context) reconcile.Outcome {
 		return r.Pass(ctx, reconcile.DesiredFromConfig(d.currentCfg()))
@@ -120,6 +121,19 @@ func (d *Daemon) antispamHealthLoop(ctx context.Context) {
 			d.probeAntispam(ctx, now)
 		}
 	}
+}
+
+func (d *Daemon) recordAntispamLine(line string, now time.Time) []alert.Finding {
+	h := &d.antispamHealth
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	findings, recovered := h.Line(line, now)
+	if recovered {
+		// Recovery can end before the next probe. Publish it while new log
+		// lines and probes cannot reactivate the condition being rearmed.
+		d.storeAntispamHealthLocked()
+	}
+	return findings
 }
 
 // probeAntispam pings rspamd while antispam is enabled and reports an
@@ -181,7 +195,10 @@ func (d *Daemon) reportAntispamHealth(findings []alert.Finding) {
 	d.store.AppendHistory(findings)
 	// The probe's hysteresis bounds these notices, so they do not spend the
 	// hourly budget: a load-driven flap must not mute other alerts.
-	if err := alert.DispatchNotices(d.currentCfg(), findings); err != nil {
+	suppressions := d.store.LoadSuppressions()
+	if err := alert.DispatchNoticesWithNotificationFilter(d.currentCfg(), findings, func(fs []alert.Finding) []alert.Finding {
+		return filterUnsuppressedFindings(d.store, fs, suppressions)
+	}); err != nil {
 		csmlog.Warn("antispam health notification failed", "err", err)
 	}
 }

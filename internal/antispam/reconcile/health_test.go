@@ -125,11 +125,15 @@ func assertScanErrors(t *testing.T, got []alert.Finding, count int, first, last 
 // and a ping never does (spec section 7).
 func TestHealthTracksScanErrors(t *testing.T) {
 	h := enabledHealth()
-	assertScanErrors(t, h.Line(scanErrorLine, at(0)), 1, at(0), at(0))
+	first, recovered := h.Line(scanErrorLine, at(0))
+	if recovered {
+		t.Fatal("failed scan reported recovery")
+	}
+	assertScanErrors(t, first, 1, at(0), at(0))
 	for i := range 3 {
 		h.Ping(testSocket, errRefused, at(i+1))
 	}
-	if got := h.Line(scanErrorLine, at(5)); len(got) != 0 {
+	if got, _ := h.Line(scanErrorLine, at(5)); len(got) != 0 {
 		t.Fatalf("second error reported again: %+v", got)
 	}
 	if got := h.Ping(testSocket, nil, at(6)); len(got) != 0 {
@@ -137,24 +141,28 @@ func TestHealthTracksScanErrors(t *testing.T) {
 	}
 	assertHealthFinding(t, h.Ping(testSocket, nil, at(7)), CheckRspamdRecovered, "", at(7))
 	assertScanErrors(t, h.Active(), 2, at(0), at(5))
-	if got := h.Line(scanOKLine, at(8)); len(got) != 0 {
-		t.Fatalf("scan success returned a transition: %+v", got)
+	if got, recovered := h.Line(scanOKLine, at(8)); len(got) != 0 || !recovered {
+		t.Fatalf("scan success: notices %+v, recovered %t", got, recovered)
 	}
 	if len(h.Active()) != 0 {
 		t.Fatalf("success left %+v", h.Active())
 	}
-	assertScanErrors(t, h.Line(scanErrorLine, at(9)), 1, at(9), at(9))
+	if got, recovered := h.Line(scanOKLine, at(8)); len(got) != 0 || recovered {
+		t.Fatalf("unchanged healthy state: notices %+v, recovered %t", got, recovered)
+	}
+	next, _ := h.Line(scanErrorLine, at(9))
+	assertScanErrors(t, next, 1, at(9), at(9))
 	assertScanErrors(t, h.Active(), 1, at(9), at(9))
 }
 
 func TestHealthIgnoresForgedMarkers(t *testing.T) {
 	h := enabledHealth()
-	if got := h.Line(forgedLine, at(0)); len(got) != 0 || len(h.Active()) != 0 {
+	if got, _ := h.Line(forgedLine, at(0)); len(got) != 0 || len(h.Active()) != 0 {
 		t.Fatalf("forged marker counted: %+v", got)
 	}
 	h.Line(scanErrorLine, at(1))
 	for _, line := range []string{forgedLine, strings.Replace(forgedLine, "result=error score=none", "result=ok score=0", 1), scanOKLine + " extra"} {
-		if got := h.Line(line, at(2)); len(got) != 0 {
+		if got, _ := h.Line(line, at(2)); len(got) != 0 {
 			t.Fatalf("invalid marker reported: %+v", got)
 		}
 		assertScanErrors(t, h.Active(), 1, at(1), at(1))
@@ -173,15 +181,18 @@ func TestHealthDisableResets(t *testing.T) {
 	if len(h.Active()) != 0 {
 		t.Fatalf("active after disable: %+v", h.Active())
 	}
-	if got := append(h.Line(scanErrorLine, at(5)), h.Ping(testSocket, errRefused, at(6))...); len(got) != 0 {
-		t.Fatalf("disabled tracking reported %+v", got)
+	scanFindings, _ := h.Line(scanErrorLine, at(5))
+	scanFindings = append(scanFindings, h.Ping(testSocket, errRefused, at(6))...)
+	if len(scanFindings) != 0 {
+		t.Fatalf("disabled tracking reported %+v", scanFindings)
 	}
 	h.SetEnabled(true, testSocket)
 	if got := append(h.Ping(testSocket, nil, at(7)), h.Ping(testSocket, nil, at(8))...); len(got) != 0 || len(h.Active()) != 0 {
 		t.Fatalf("recovery reported after a reset: %+v", got)
 	}
-	assertScanErrors(t, h.Line(scanErrorLine, at(9)), 1, at(9), at(9))
-	if got := h.Line(scanErrorLine, at(10)); len(got) != 0 {
+	next, _ := h.Line(scanErrorLine, at(9))
+	assertScanErrors(t, next, 1, at(9), at(9))
+	if got, _ := h.Line(scanErrorLine, at(10)); len(got) != 0 {
 		t.Fatalf("second error reported again after re-enable: %+v", got)
 	}
 	assertScanErrors(t, h.Active(), 2, at(9), at(10))
@@ -224,7 +235,7 @@ func TestHealthSocketChangePreservesScanErrors(t *testing.T) {
 	if !strings.Contains(got[0].Details, "/run/rspamd/other.sock") || strings.Contains(got[0].Details, "/run/rspamd/csm-normal.sock") {
 		t.Fatalf("outage names the wrong socket: %+v", got)
 	}
-	if got := h.Line(scanOKLine, at(6)); len(got) != 0 {
+	if got, _ := h.Line(scanOKLine, at(6)); len(got) != 0 {
 		t.Fatalf("scan success returned a transition: %+v", got)
 	}
 	assertHealthFinding(t, h.Active(), CheckRspamdDown, "rspamd", at(5))
@@ -240,7 +251,8 @@ func TestHealthConcurrentErrorsKeepOneIdentity(t *testing.T) {
 			for range scans {
 				h.SetEnabled(true, testSocket)
 				downNotices.Add(int64(len(h.Ping(testSocket, errRefused, at(0)))))
-				scanNotices.Add(int64(len(h.Line(scanErrorLine, at(0)))))
+				findings, _ := h.Line(scanErrorLine, at(0))
+				scanNotices.Add(int64(len(findings)))
 				h.Active()
 			}
 		})
@@ -286,7 +298,8 @@ func TestHealthConcurrentUse(t *testing.T) {
 		t.Fatalf("active after disabling concurrent tracking: %+v", active)
 	}
 	h.SetEnabled(true, testSocket)
-	assertScanErrors(t, h.Line(scanErrorLine, at(300)), 1, at(300), at(300))
+	next, _ := h.Line(scanErrorLine, at(300))
+	assertScanErrors(t, next, 1, at(300), at(300))
 	assertScanErrors(t, h.Active(), 1, at(300), at(300))
 }
 
@@ -296,7 +309,7 @@ func TestHealthLineIgnoresOrdinaryLinesCheaply(t *testing.T) {
 	h := enabledHealth()
 	line := "2026-10-13 09:00:00 1xF5ol-00000000SdK-2TMA <= sender@example.test H=(mail.example.test) [192.0.2.1] P=esmtp S=1234"
 	if n := testing.AllocsPerRun(100, func() {
-		if got := h.Line(line, testNow); len(got) != 0 {
+		if got, _ := h.Line(line, testNow); len(got) != 0 {
 			t.Fatalf("ordinary line reported: %+v", got)
 		}
 	}); n != 0 {
@@ -360,7 +373,7 @@ func TestHealthStalePingsPreserveCurrentStreaks(t *testing.T) {
 // probe counts the tracker uses.
 func TestHealthFindingText(t *testing.T) {
 	h := enabledHealth()
-	got := h.Line(scanErrorLine, at(0))
+	got, _ := h.Line(scanErrorLine, at(0))
 	if len(got) != 1 || !strings.HasPrefix(got[0].Details, "Exim logged 1 failed scan since ") {
 		t.Fatalf("first scan error: %+v", got)
 	}

@@ -219,6 +219,16 @@ Exim adds no rejection for a scanner failure, and other mail checks keep
 running. Disabling antispam clears the down and scan-error findings without
 a recovery notice. Preconditions or removal failures can still be reported.
 
+Dismissing a scan-error finding acknowledges the current episode. A successful
+scan clears that dismissal immediately, even between health probes. Disabling
+antispam or restarting CSM also resets it. Undismissed scan errors keep the
+normal daily notification deduplication so intermittent failures do not send
+one alert per message.
+
+Rspamd outage and recovery notices do not consume the routine hourly alert
+budget. They honor notification suppressions and email check exclusions.
+Suppressed notices remain in history, the audit log and event streams.
+
 In observe mode CSM reports and changes nothing; an installed integration is
 reported as `observe_mode`.
 

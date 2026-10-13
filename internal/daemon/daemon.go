@@ -2334,7 +2334,7 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 	if at.IsZero() {
 		at = time.Now()
 	}
-	return append(findings, d.antispamHealth.Line(line, at)...)
+	return append(findings, d.recordAntispamLine(line, at)...)
 }
 
 // handleMailLine composes parseDovecotLogLine (preserving email_suspicious_geo)
