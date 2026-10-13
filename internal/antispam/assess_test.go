@@ -390,3 +390,33 @@ func TestAssessDefersLoadedComparisonUntilCurrent(t *testing.T) {
 		})
 	}
 }
+
+// CheckHost and CheckRemoval share the path rules; an unsafe path found
+// by both is one problem, or a pass would raise the same finding twice.
+func TestAssessReportsEachProblemOnce(t *testing.T) {
+	s := enforceSettings()
+	for _, tc := range []struct {
+		name   string
+		mutate func(*HostFacts)
+	}{
+		{"definite problem on an installation", func(f *HostFacts) { f.SpamdDisabled = false }},
+		{"stale installation", func(f *HostFacts) { f.Record = RecordFacts{Content: string(EncodeRecord(""))} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := installedFacts(t, s)
+			tc.mutate(&f)
+			target(&f, TargetEximHook).Parents[1].Mode = fs.ModeDir | 0o777
+			a := Assess(true, s, f)
+			if a.Action != Keep || !hasProblem(a, CodeTargets, Definite) {
+				t.Fatalf("got %+v", a)
+			}
+			seen := make(map[Problem]bool)
+			for _, p := range a.Problems {
+				if seen[p] {
+					t.Errorf("problem reported twice: %+v", p)
+				}
+				seen[p] = true
+			}
+		})
+	}
+}

@@ -2,6 +2,7 @@ package antispam
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 )
 
@@ -59,7 +60,7 @@ func Assess(enabled bool, s Settings, f HostFacts) Assessment {
 	case !isCurrent:
 		// Replacing a shared block must be just as safe as removing it.
 		if removal := CheckRemoval(f.Targets); blocking(removal) {
-			a.Problems = append(a.Problems, removal...)
+			a.report(removal)
 			return a
 		}
 		a.Action = Install
@@ -75,10 +76,20 @@ func (a *Assessment) uninstall(f HostFacts) {
 	}
 	removal := CheckRemoval(f.Targets)
 	if blocking(removal) {
-		a.Problems = append(a.Problems, removal...)
+		a.report(removal)
 		return
 	}
 	a.Action = Uninstall
+}
+
+// report adds the problems not already reported: CheckHost and
+// CheckRemoval share the path rules.
+func (a *Assessment) report(problems []Problem) {
+	for _, p := range problems {
+		if !slices.Contains(a.Problems, p) {
+			a.Problems = append(a.Problems, p)
+		}
+	}
 }
 
 // leftovers reports whether any part of CSM's integration is on the host.
