@@ -299,7 +299,7 @@ func noticesStatus(tx *bolt.Tx, out *admission.NoticesStatus) error {
 func unresolvedStatus(tx *bolt.Tx, out *admission.UnresolvedStatus) error {
 	// Intents alone cannot reveal a missing row or a retired attempt that
 	// incorrectly retained its row. Prove both directions before counting.
-	if err := proveIntents(tx); err != nil {
+	if _, err := proveIntents(tx); err != nil {
 		return err
 	}
 	return tx.Bucket([]byte(admissionIntentsBucket)).ForEach(func(k, _ []byte) error {

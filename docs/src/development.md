@@ -443,7 +443,10 @@ An attempt still recorded as running, left by a crash before settlement or
 by an outcome that failed to commit, holds its target the same way until
 its outcome is recorded.
 The hold also covers candidates from earlier episodes. A missing intent
-bucket refuses the operation without changing the ledger.
+bucket refuses the operation without changing the ledger. Each handle keeps
+the held targets as an index it builds at open from the proven intents and
+changes only when a transaction that writes or deletes an intent commits, so
+scheduling and reservation look a target up instead of reading every intent.
 A final failure or a retired unknown outcome lets a later
 observation start the next generation. An episode row lives only as long as a
 candidate it names: ring eviction and history retirement clear that

@@ -563,7 +563,7 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 	if a.State == admission.StateReserved {
 		unused = 1
 	} else if d != admission.DispositionUnknown {
-		if err = deleteIntent(q.tx, a.Attempt.ID); err != nil {
+		if err = q.deleteIntent(a.Attempt.ID); err != nil {
 			return false, err
 		}
 	}

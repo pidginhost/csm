@@ -83,14 +83,38 @@ func putIntent(tx *bolt.Tx, in admission.Intent) error {
 // deleteIntent removes the intent of an attempt whose outcome is settled.
 // An attempt that ran always has one.
 func deleteIntent(tx *bolt.Tx, id admission.ActionID) error {
-	_, found, err := loadIntent(tx, id)
+	_, err := removeIntent(tx, id)
+	return err
+}
+
+func removeIntent(tx *bolt.Tx, id admission.ActionID) (admission.Intent, error) {
+	in, found, err := loadIntent(tx, id)
 	if err != nil {
-		return corruptRecord(err)
+		return in, corruptRecord(err)
 	}
 	if !found {
-		return admission.ErrCorruptRecord
+		return in, admission.ErrCorruptRecord
 	}
-	return tx.Bucket([]byte(admissionIntentsBucket)).Delete([]byte(id))
+	return in, tx.Bucket([]byte(admissionIntentsBucket)).Delete([]byte(id))
+}
+
+// putIntent and deleteIntent on a transaction of the ledger's handle also
+// record the change to the recovery hold, published when it commits.
+func (q *queueTx) putIntent(in admission.Intent) error {
+	if err := putIntent(q.tx, in); err != nil {
+		return err
+	}
+	q.heldDelta[in.Target.Key()]++
+	return nil
+}
+
+func (q *queueTx) deleteIntent(id admission.ActionID) error {
+	in, err := removeIntent(q.tx, id)
+	if err != nil {
+		return err
+	}
+	q.heldDelta[in.Target.Key()]--
+	return nil
 }
 
 // unsettled reports whether attempt a's outcome is unresolved: it runs, or
@@ -102,9 +126,11 @@ func unsettled(a admission.AttemptRecord) bool {
 // proveIntents checks every intent at open: it decodes under its own
 // action, belongs to the current attempt of a stored candidate whose
 // outcome is unresolved, and names that candidate's kind and target and the
-// attempt's expiry. Every unresolved attempt has its intent.
-func proveIntents(tx *bolt.Tx) error {
+// attempt's expiry. Every unresolved attempt has its intent. It returns the
+// recovery hold those intents make.
+func proveIntents(tx *bolt.Tx) (map[string]int, error) {
 	rows := map[admission.ActionID]bool{}
+	held := map[string]int{}
 	if err := tx.Bucket([]byte(admissionIntentsBucket)).ForEach(func(k, _ []byte) error {
 		id, err := admission.ParseActionID(string(k))
 		if err != nil {
@@ -122,11 +148,12 @@ func proveIntents(tx *bolt.Tx) error {
 			return admission.ErrCorruptRecord
 		}
 		rows[id] = true
+		held[in.Target.Key()]++
 		return nil
 	}); err != nil {
-		return err
+		return nil, err
 	}
-	return tx.Bucket([]byte(admissionAttemptsBucket)).ForEach(func(_, v []byte) error {
+	return held, tx.Bucket([]byte(admissionAttemptsBucket)).ForEach(func(_, v []byte) error {
 		a, err := admission.UnmarshalAttempt(v)
 		if err != nil {
 			return err
@@ -240,7 +267,7 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 			if txErr = putCandidate(tx, c); txErr != nil {
 				return txErr
 			}
-			if txErr = putIntent(tx, intents[i]); txErr != nil {
+			if txErr = q.putIntent(intents[i]); txErr != nil {
 				return txErr
 			}
 			attempts[i], candidates[i] = a, c
@@ -406,7 +433,7 @@ func (l *AdmissionLedger) RetireUnproven(id admission.ActionID) (admission.Candi
 		if txErr != nil {
 			return txErr
 		}
-		if txErr = deleteIntent(tx, id); txErr != nil {
+		if txErr = q.deleteIntent(id); txErr != nil {
 			return txErr
 		}
 		h, found, txErr := loadHistoryEntry(tx, a.Attempt.Candidate)
@@ -458,14 +485,19 @@ func (l *AdmissionLedger) RetireUnproven(id admission.ActionID) (admission.Candi
 // Every unresolved attempt holds its target: an unknown outcome until
 // recovery retires it, and a running attempt, which a crash before Settle or
 // a Finish that failed to commit can leave behind, until its outcome is
-// recorded. Reservation and scheduling reuse this read within their
-// transaction; none of their lookups changes an unresolved attempt.
+// recorded. A transaction of the ledger's handle reads the handle's index
+// as it stood when the transaction began; one without it derives the hold
+// from the intents and their attempts once. Neither sees the transaction's
+// own intent changes; none of their callers' lookups changes one.
 func (q *queueTx) heldTarget(target admission.Target) (bool, error) {
+	intents := q.tx.Bucket([]byte(admissionIntentsBucket))
+	if intents == nil {
+		return false, admission.ErrCorruptRecord
+	}
+	if q.held != nil {
+		return q.held[target.Key()] > 0, nil
+	}
 	if q.heldTargets == nil {
-		intents := q.tx.Bucket([]byte(admissionIntentsBucket))
-		if intents == nil {
-			return false, admission.ErrCorruptRecord
-		}
 		targets := map[string]bool{}
 		if err := intents.ForEach(func(k, v []byte) error {
 			in, err := admission.UnmarshalIntent(v)
