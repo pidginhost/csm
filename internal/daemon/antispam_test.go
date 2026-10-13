@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
@@ -1072,5 +1074,34 @@ func TestDismissedScanErrorNotifiesOnTheNextEpisode(t *testing.T) {
 	d.dispatchBatch(d.handleEximLine(scanErrorLine, alert.Observation{ObservedAt: now.Add(2 * time.Minute)}, cfg))
 	if notices != 2 {
 		t.Fatalf("a new episode after a dismissed one sent %d notices in total, want 2", notices)
+	}
+}
+
+// rspamd that flaps raises an outage notice per cycle. Those notices are
+// bounded by the probe's hysteresis and must not spend the hourly alert
+// budget, or a load-driven flap would mute other alerts for the hour.
+func TestAntispamHealthNoticesSpareTheAlertBudget(t *testing.T) {
+	var posts atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { posts.Add(1) }))
+	t.Cleanup(srv.Close)
+	d := newTestDaemon(t)
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Alerts.MaxPerHour = 1
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = srv.URL
+	useActiveConfig(t, cfg)
+	now := time.Now()
+	for i := range 3 {
+		d.reportAntispamHealth([]alert.Finding{{Severity: alert.Warning, Check: reconcile.CheckRspamdDown, DedupKey: "rspamd",
+			Message: "rspamd does not answer on the antispam scan socket", Timestamp: now.Add(time.Duration(i) * time.Minute)}})
+	}
+	if got := posts.Load(); got != 3 {
+		t.Fatalf("outage notices delivered: %d, want 3", got)
+	}
+	if err := alert.Dispatch(cfg, []alert.Finding{{Severity: alert.Warning, Check: "test_routine", Message: "routine", Timestamp: now}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := posts.Load(); got != 4 {
+		t.Fatalf("a routine alert after the outage notices was dropped: %d deliveries, want 4", got)
 	}
 }

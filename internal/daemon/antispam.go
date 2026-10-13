@@ -179,7 +179,9 @@ func (d *Daemon) reportAntispamHealth(findings []alert.Finding) {
 		return
 	}
 	d.store.AppendHistory(findings)
-	if err := alert.Dispatch(d.currentCfg(), findings); err != nil {
+	// The probe's hysteresis bounds these notices, so they do not spend the
+	// hourly budget: a load-driven flap must not mute other alerts.
+	if err := alert.DispatchNotices(d.currentCfg(), findings); err != nil {
 		csmlog.Warn("antispam health notification failed", "err", err)
 	}
 }
