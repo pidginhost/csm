@@ -84,9 +84,10 @@ definite failure after installation removes owned integration content when safe.
 
    This replaces the normal worker's TCP listener. The socket and every parent
    directory must be owned by root or the rspamd user. Parent directories must
-   not be writable by group or others, including through extra ACL entries,
-   so a hosting account cannot replace the listener. The socket itself needs
-   write permission for Exim to connect; `mode=0666` provides that access.
+   not be writable by group or others, so a hosting account cannot replace the
+   listener. Extra ACL entries on the socket or any parent directory block
+   installation. Exim's runtime user must be able to search every parent
+   directory and write to the socket; `mode=0666` grants socket write access.
 3. **rspamd accepts every message Exim accepts.** rspamd's default
    `max_message` (50 MiB) equals cPanel's default Exim limit, and Exim adds
    headers before scanning. Set `max_message` to Exim's `message_size_limit`
@@ -136,10 +137,11 @@ email_protection:
 - `reject_score` and `tag_score` are whole rspamd scores with
   `0 < tag_score < reject_score <= 1000`.
 
-All five are hot-reloadable: `systemctl reload csm` or a Settings save updates
-health tracking and requests a reconcile pass without waiting for other mail
-configuration work, including saves during startup. `enabled: true` is refused
-in [observe mode](observe-mode.md).
+All five are hot-reloadable: after antispam starts, `systemctl reload csm` or a
+Settings save updates health tracking and requests a reconcile pass before
+forward-guard reconciliation. Settings saved before antispam starts are picked
+up when it initializes, after the startup forward-guard reconciliation.
+`enabled: true` is refused in [observe mode](observe-mode.md).
 
 `rspamd_socket` is not the `reputation.rspamd` controller URL. That optional
 setting reads rspamd's scan history for IP reputation and is unrelated to
