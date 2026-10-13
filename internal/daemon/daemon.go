@@ -128,6 +128,9 @@ type Daemon struct {
 	// antispamLoop runs antispam reconcile passes on a cPanel host. It
 	// stays nil elsewhere and until startup reaches it.
 	antispamLoop atomic.Pointer[reconcile.Loop]
+	// antispamHealth tracks rspamd's scan socket and Exim's scan markers
+	// while antispam is enabled.
+	antispamHealth reconcile.Health
 
 	// yaraSup is the supervised YARA-X worker, wired up when
 	// yaraWorkerOn(cfg) is true (the default; see ROADMAP item 2).
