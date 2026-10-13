@@ -3,6 +3,7 @@ package antispam
 import (
 	"errors"
 	"io/fs"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -391,31 +392,84 @@ func TestAssessDefersLoadedComparisonUntilCurrent(t *testing.T) {
 	}
 }
 
-// CheckHost and CheckRemoval share the path rules; an unsafe path found
-// by both is one problem, or a pass would raise the same finding twice.
+// Shared problems appear once, distinct problems survive, and their order
+// stays stable across passes, including problems found only during removal.
 func TestAssessReportsEachProblemOnce(t *testing.T) {
 	s := enforceSettings()
+	global := Problem{Code: CodeGlobalEnable, Severity: Warning,
+		Detail: "/etc/global_spamassassin_enable exists, so no account can opt out"}
+	unsafe := Problem{Code: CodeTargets, Severity: Definite,
+		Detail: "/usr is writable by group or others"}
+	spanning := Problem{Code: CodeMarkers, Severity: Definite,
+		Detail: LocalEximConfPath + ": a cPanel section starts inside a CSM block"}
+	spanSections := func(f *HostFacts) {
+		tg := target(f, TargetEximLocal)
+		tg.Content = "@CONFIG@\n" + MarkerBegin + "\nspamd_address = " + s.Socket + "\n@ROUTERSTART@\n" + MarkerEnd + "\n"
+		f.LocalConf = tg.Content
+	}
+	unsafeHooks := func(f *HostFacts) {
+		for i := range f.Targets {
+			tg := &f.Targets[i]
+			if tg.Kind == TargetEximHook {
+				tg.Parents[1].Mode = fs.ModeDir | 0o777
+				tg.Content = ""
+			}
+		}
+	}
 	for _, tc := range []struct {
-		name   string
-		mutate func(*HostFacts)
+		name    string
+		enabled bool
+		mutate  func(*HostFacts)
+		action  Action
+		want    []Problem
 	}{
-		{"definite problem on an installation", func(f *HostFacts) { f.SpamdDisabled = false }},
-		{"stale installation", func(f *HostFacts) { f.Record = RecordFacts{Content: string(EncodeRecord(""))} }},
+		{"disabled", false, func(f *HostFacts) {
+			unsafeHooks(f)
+			spanSections(f)
+		}, Keep, []Problem{unsafe, spanning}},
+		{"definite problem on an installation", true, func(f *HostFacts) {
+			f.SpamdDisabled = false
+			unsafeHooks(f)
+			spanSections(f)
+			tg := target(f, TargetRspamd)
+			tg.Content, tg.Err = "", errors.New("permission denied")
+		}, Keep, []Problem{
+			{Code: CodeSpamAssassin, Severity: Definite,
+				Detail: "SpamAssassin is enabled; disable spamd in WHM so /etc/spamddisable exists"},
+			global,
+			{Code: CodeTargets, Severity: Temporary,
+				Detail: "cannot check " + RspamdLocalDir + "/actions.conf; check file access"},
+			unsafe, spanning,
+		}},
+		{"stale installation", true, func(f *HostFacts) {
+			f.Record = RecordFacts{Content: string(EncodeRecord(""))}
+			spanSections(f)
+		}, Keep, []Problem{global, spanning}},
+		{"loaded conflicts", true, func(f *HostFacts) {
+			f.RspamdModules.Stdout = "Modules enabled: rbl, asn, rbl\n"
+			f.RspamdActions.Stdout = `{"greylist": 4, "add_header": 6, "reject": 20, "rewrite_subject": null}`
+		}, Uninstall, []Problem{
+			global,
+			{Code: CodeRspamdConfig, Severity: Definite,
+				Detail: "rspamd module asn is enabled; an override defeats CSM's asn.conf"},
+			{Code: CodeRspamdConfig, Severity: Definite,
+				Detail: "rspamd module rbl is enabled; an override defeats CSM's rbl.conf"},
+			{Code: CodeRspamdConfig, Severity: Definite, Detail: "rspamd reject threshold is 20, want 15"},
+			{Code: CodeRspamdConfig, Severity: Definite, Detail: "rspamd greylist action is enabled"},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := installedFacts(t, s)
+			f.GlobalEnable = true
 			tc.mutate(&f)
-			target(&f, TargetEximHook).Parents[1].Mode = fs.ModeDir | 0o777
-			a := Assess(true, s, f)
-			if a.Action != Keep || !hasProblem(a, CodeTargets, Definite) {
-				t.Fatalf("got %+v", a)
+			if tc.name == "stale installation" && (blocking(CheckHost(f)) || current(s, f)) {
+				t.Fatal("stale case must reach the install branch without a blocking host problem")
 			}
-			seen := make(map[Problem]bool)
-			for _, p := range a.Problems {
-				if seen[p] {
-					t.Errorf("problem reported twice: %+v", p)
+			for pass := range 10 {
+				a := Assess(tc.enabled, s, f)
+				if a.Action != tc.action || !a.Installed || !slices.Equal(a.Problems, tc.want) {
+					t.Fatalf("pass %d: got %+v; want action %d, installed, problems %+v", pass, a, tc.action, tc.want)
 				}
-				seen[p] = true
 			}
 		})
 	}
