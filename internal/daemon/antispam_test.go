@@ -1035,3 +1035,42 @@ func TestEximAntispamWithoutObservationTimeUsesTheClock(t *testing.T) {
 		t.Fatalf("scan error without an observation time: %+v", got)
 	}
 }
+
+// Dismissing a scan error acknowledges that episode only. After scans
+// recover, a new episode must notify again, or failing scans would stay
+// silent for good while mail goes unfiltered.
+func TestDismissedScanErrorNotifiesOnTheNextEpisode(t *testing.T) {
+	const scanOKLine = `2026-10-13 09:00:01 1xF5ol-00000000SdL-2TMA CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=0 action="no action" decision=none`
+	d := newTestDaemon(t)
+	enableAntispam(t, d, true)
+	usePing(t, nil, nil, nil)
+	notices := 0
+	prev := alert.CentralHook
+	t.Cleanup(func() { alert.SetCentralHook(prev) })
+	alert.SetCentralHook(func(f alert.Finding) {
+		if f.Check == reconcile.CheckScanError {
+			notices++
+		}
+	})
+	cfg := d.currentCfg()
+	now := time.Now()
+
+	d.dispatchBatch(d.handleEximLine(scanErrorLine, alert.Observation{ObservedAt: now}, cfg))
+	d.probeAntispam(context.Background(), now)
+	dismissed := false
+	for _, f := range d.store.LatestFindings() {
+		if f.Check == reconcile.CheckScanError {
+			dismissed = d.store.DismissFindingIfLatest(f)
+		}
+	}
+	if notices != 1 || !dismissed {
+		t.Fatalf("first episode: %d notices, dismissed %t", notices, dismissed)
+	}
+
+	d.handleEximLine(scanOKLine, alert.Observation{ObservedAt: now.Add(time.Minute)}, cfg)
+	d.probeAntispam(context.Background(), now.Add(time.Minute))
+	d.dispatchBatch(d.handleEximLine(scanErrorLine, alert.Observation{ObservedAt: now.Add(2 * time.Minute)}, cfg))
+	if notices != 2 {
+		t.Fatalf("a new episode after a dismissed one sent %d notices in total, want 2", notices)
+	}
+}

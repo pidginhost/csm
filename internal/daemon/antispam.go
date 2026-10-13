@@ -165,6 +165,9 @@ func (d *Daemon) storeAntispamHealthLocked() {
 		return
 	}
 	checks.StoreLatestScanFindings(d.store, antispamHealthChecks, active)
+	// A dismissal acknowledges one episode. Once the condition clears,
+	// forget it, so the next episode notifies again.
+	d.store.RearmAbsentDedupFindings(antispamHealthChecks, active)
 	h.latest = state.String()
 }
 
