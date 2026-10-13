@@ -134,6 +134,7 @@ func Validate(cfg *Config) []ValidationResult {
 
 	// --- WebUI ---
 	results = append(results, shortTokenWarnings(cfg)...)
+	results = append(results, tokenExpiryWarnings(cfg, time.Now())...)
 	for _, origin := range cfg.WebUI.AllowedOrigins {
 		if err := validateBrowserOrigin(origin); err != nil {
 			results = append(results, ValidationResult{"error", "webui.allowed_origins", fmt.Sprintf("%q: %v", origin, err)})

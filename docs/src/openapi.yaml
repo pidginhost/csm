@@ -34,10 +34,12 @@ components:
       scheme: bearer
       description: >-
         webui.tokens entry. scope=read authorizes read endpoints; scope=admin
-        authorizes all endpoints.
+        authorizes all endpoints. Each token requires an issued_at RFC3339
+        timestamp and expires 168 hours after that instant. Missing, malformed,
+        future or expired issue times disable the credential.
   responses:
     Unauthorized:
-      description: Missing, invalid, or insufficient-scope token.
+      description: Missing, invalid, expired, or insufficient-scope token.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

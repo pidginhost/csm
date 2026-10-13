@@ -489,7 +489,7 @@ func newTestServer(t *testing.T, token string) *Server {
 	// Mirror applyDefaults: migrate legacy AuthToken into Tokens so that the
 	// scope-aware auth path works in tests without a full config load.
 	if token != "" && len(cfg.WebUI.Tokens) == 0 {
-		cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: token, Scope: "admin"}}
+		cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: token, Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	}
 	cfg.WebUI.UIDir = filepath.Join(t.TempDir(), "ui-missing")
 	store, err := state.Open(t.TempDir())
@@ -603,8 +603,9 @@ func TestRequireAuthPassesAuthenticated(t *testing.T) {
 
 func TestCSRFTokenStable(t *testing.T) {
 	s := newTestServer(t, "t")
-	t1 := s.csrfTokenForSession("session")
-	t2 := s.csrfTokenForSession("session")
+	cookie := testBrowserCookie(t, s, "t")
+	t1 := s.csrfTokenForSession(cookie.Value)
+	t2 := s.csrfTokenForSession(cookie.Value)
 	if t1 != t2 {
 		t.Error("csrfToken should be stable for one session")
 	}
@@ -633,7 +634,7 @@ func TestValidateCSRFBearerBypass(t *testing.T) {
 func TestValidateCSRFHeaderTokenMatch(t *testing.T) {
 	s := newTestServer(t, "t")
 	req := httptest.NewRequest("POST", "/api/x", nil)
-	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "session"})
+	req.AddCookie(testBrowserCookie(t, s, "t"))
 	setSessionCSRF(s, req)
 	if !s.validateCSRF(req) {
 		t.Error("matching header token should pass CSRF")

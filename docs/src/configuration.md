@@ -85,7 +85,8 @@ alerts:
 webui:
   enabled: true
   listen: "0.0.0.0:9443"
-  auth_token: "your-secret-token"
+  auth_token: "<fresh random token>"
+  auth_token_issued_at: "<UTC RFC3339 time when the token was generated>"
 
 infra_ips: ["10.0.0.0/8"]
 ```
@@ -571,10 +572,12 @@ webui:
   enabled: true
   listen: "0.0.0.0:9443"               # address:port for HTTPS server
   auth_token: ""                        # API/login credential (auto-generated on install)
-  session_lifetime: "24h"               # browser absolute expiry; restart required
+  auth_token_issued_at: ""              # UTC RFC3339; expires seven days after issue
+  session_lifetime: "24h"               # browser absolute expiry; maximum 168h; restart required
   session_idle_timeout: "30m"           # browser idle expiry; restart required
-  tokens: []                            # optional scoped tokens: name/token/scope (admin or read)
+  tokens: []                            # scoped tokens: name/token/scope/issued_at (scope: admin or read)
   metrics_token: ""                     # optional Bearer token for /metrics only
+  metrics_token_issued_at: ""           # UTC RFC3339; rotate with metrics_token, then SIGHUP
   tls_cert: ""                          # path to TLS certificate PEM file
   tls_key: ""                           # path to TLS private key PEM file
   ui_dir: ""                            # path to UI files on disk (default: /opt/csm/ui)

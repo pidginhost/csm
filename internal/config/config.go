@@ -22,9 +22,10 @@ import (
 
 // WebUIToken is one entry in WebUI.Tokens. Scope must be "admin" or "read".
 type WebUIToken struct {
-	Name  string `yaml:"name"`
-	Token string `yaml:"token"`
-	Scope string `yaml:"scope"`
+	Name     string `yaml:"name"`
+	Token    string `yaml:"token"`
+	Scope    string `yaml:"scope"`
+	IssuedAt string `yaml:"issued_at"`
 }
 
 const (
@@ -1029,15 +1030,17 @@ type Config struct {
 	} `yaml:"signatures" hotreload:"restart"`
 
 	WebUI struct {
-		SessionLifetime    string `yaml:"session_lifetime"`
-		SessionIdleTimeout string `yaml:"session_idle_timeout"`
-		Enabled            bool   `yaml:"enabled"`
-		Listen             string `yaml:"listen"`
-		AuthToken          string `yaml:"auth_token"`
-		MetricsToken       string `yaml:"metrics_token" hotreload:"safe"` // optional Bearer token for /metrics; rotate via SIGHUP without restart
-		TLSCert            string `yaml:"tls_cert"`
-		TLSKey             string `yaml:"tls_key"`
-		UIDir              string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
+		SessionLifetime      string `yaml:"session_lifetime"`
+		SessionIdleTimeout   string `yaml:"session_idle_timeout"`
+		Enabled              bool   `yaml:"enabled"`
+		Listen               string `yaml:"listen"`
+		AuthToken            string `yaml:"auth_token"`
+		AuthTokenIssuedAt    string `yaml:"auth_token_issued_at"`
+		MetricsToken         string `yaml:"metrics_token" hotreload:"safe"` // optional Bearer token for /metrics; rotate via SIGHUP without restart
+		MetricsTokenIssuedAt string `yaml:"metrics_token_issued_at" hotreload:"safe"`
+		TLSCert              string `yaml:"tls_cert"`
+		TLSKey               string `yaml:"tls_key"`
+		UIDir                string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
 		// AllowedOrigins lists extra browser origins ("https://host[:port]")
 		// whose API requests are accepted besides https://<hostname>:<port>.
 		// Loopback origins (SSH tunnels) are always accepted. Hot-reloadable.
@@ -1748,7 +1751,7 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.WebUI.AuthToken != "" && len(cfg.WebUI.Tokens) == 0 {
 		cfg.WebUI.Tokens = []WebUIToken{{
-			Name: "legacy-auth-token", Token: cfg.WebUI.AuthToken, Scope: "admin",
+			Name: "legacy-auth-token", Token: cfg.WebUI.AuthToken, Scope: "admin", IssuedAt: cfg.WebUI.AuthTokenIssuedAt,
 		}}
 	}
 	if cfg.Thresholds.MailQueueWarn == 0 {

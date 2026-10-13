@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // /metrics takes a bearer token like the API, so guessing it is limited the
@@ -11,6 +12,7 @@ import (
 func TestMetricsIsRateLimitedLikeTheAPI(t *testing.T) {
 	s := newTestServer(t, "tok")
 	s.cfg.WebUI.MetricsToken = "metrics-secret-token-value"
+	s.cfg.WebUI.MetricsTokenIssuedAt = time.Now().UTC().Format(time.RFC3339)
 	var last int
 	for i := 0; i < 601; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)

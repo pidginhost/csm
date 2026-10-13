@@ -50,6 +50,7 @@ func Capabilities() []string {
 		"mode.observe.v1",           // observe posture: detection and alerting without host changes
 		"status.queue_health.v1",
 		"status.admission.v1", // status carries the admission ledger, ingress and owner view
+		"token.expiry.v1",
 	}
 	if firewall.Supported() {
 		caps = append(caps,

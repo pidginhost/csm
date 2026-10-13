@@ -66,15 +66,22 @@ func (s *Server) cookieSessionToken(r *http.Request, want string, touch bool) (s
 
 func (s *Server) cookieSessionCredential(r *http.Request, want string, touch bool) (config.WebUIToken, bool) {
 	c, err := r.Cookie("csm_auth")
-	if err != nil || s.sessions == nil {
+	if err != nil {
 		return config.WebUIToken{}, false
 	}
-	rec, err := s.sessions.Access(c.Value, s.sessionNow(), touch)
+	return s.sessionCredential(c.Value, want, touch)
+}
+
+func (s *Server) sessionCredential(secret, want string, touch bool) (config.WebUIToken, bool) {
+	if s.sessions == nil {
+		return config.WebUIToken{}, false
+	}
+	rec, err := s.sessions.Access(secret, s.sessionNow(), touch)
 	if err != nil {
 		return config.WebUIToken{}, false
 	}
 	for _, tok := range s.cfg.WebUI.Tokens {
-		if tok.Name == rec.Name && session.Hash(tok.Token) == rec.Credential && tok.Scope == "admin" && webUITokenAllows(tok, want) {
+		if tok.Name == rec.Name && session.Hash(tok.Token) == rec.Credential && tok.Scope == "admin" && webUITokenAllows(tok, want, s.sessionNow()) {
 			return tok, true
 		}
 	}
@@ -99,7 +106,7 @@ func (s *Server) bearerCredentialWithScope(r *http.Request, want string) (config
 		return config.WebUIToken{}, false
 	}
 	for _, tok := range s.cfg.WebUI.Tokens {
-		if webUITokenMatches(supplied, tok) && webUITokenAllows(tok, want) {
+		if webUITokenMatches(supplied, tok) && webUITokenAllows(tok, want, s.sessionNow()) {
 			return tok, true
 		}
 	}
@@ -112,7 +119,10 @@ func webUITokenMatches(supplied string, tok config.WebUIToken) bool {
 		subtle.ConstantTimeCompare([]byte(supplied), []byte(tok.Token)) == 1
 }
 
-func webUITokenAllows(tok config.WebUIToken, want string) bool {
+func webUITokenAllows(tok config.WebUIToken, want string, now time.Time) bool {
+	if !config.WebUITokenCurrent(tok.IssuedAt, now) {
+		return false
+	}
 	switch want {
 	case "read":
 		return tok.Scope == "read" || tok.Scope == "admin"
@@ -315,7 +325,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var loginName string
 	if token != "" {
 		for _, tok := range s.cfg.WebUI.Tokens {
-			if tok.Scope == "admin" && webUITokenMatches(token, tok) {
+			if webUITokenMatches(token, tok) && webUITokenAllows(tok, "admin", s.sessionNow()) {
 				loginName = tok.Name
 				break
 			}

@@ -19,8 +19,8 @@ func TestApiEvents_StreamsFindings(t *testing.T) {
 	bus := broadcast.NewBus(8)
 	defer bus.Close()
 
-	s := &Server{cfg: &config.Config{}}
-	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "t", Token: "secret", Scope: "read"}}
+	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "t", Token: "secret", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	s.SetFindingBus(bus)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -51,8 +51,8 @@ func TestApiEvents_StreamsFindings(t *testing.T) {
 }
 
 func TestApiEvents_NilBusReturns503(t *testing.T) {
-	s := &Server{cfg: &config.Config{}}
-	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "t", Token: "secret", Scope: "read"}}
+	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "t", Token: "secret", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	// Do NOT call SetFindingBus — leave nil
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil)
@@ -75,7 +75,7 @@ func TestApiEvents_Returns503WhenSubscriberCapIsFull(t *testing.T) {
 	}
 	defer bus.Unsubscribe(sub)
 
-	s := &Server{cfg: &config.Config{}}
+	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
 	s.SetFindingBus(bus)
 
 	rec := httptest.NewRecorder()
@@ -193,7 +193,7 @@ func TestApiEvents_DeadlineUnsupportedReturns500(t *testing.T) {
 	bus := broadcast.NewBus(8)
 	defer bus.Close()
 
-	s := &Server{cfg: &config.Config{}}
+	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
 	s.SetFindingBus(bus)
 
 	rec := httptest.NewRecorder()
@@ -328,8 +328,8 @@ func TestApiEvents_SendsUTCTimes(t *testing.T) {
 	bus := broadcast.NewBus(8)
 	defer bus.Close()
 
-	s := &Server{cfg: &config.Config{}}
-	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "t", Token: "secret", Scope: "read"}}
+	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "t", Token: "secret", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	s.SetFindingBus(bus)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

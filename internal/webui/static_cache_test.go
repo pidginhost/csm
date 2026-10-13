@@ -25,7 +25,7 @@ func newRealUIServer(t *testing.T) *Server {
 	}
 	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.WebUI.UIDir = uiDir
-	cfg.WebUI.Tokens = []config.WebUIToken{{Name: "ops", Token: "tok", Scope: "admin"}}
+	cfg.WebUI.Tokens = []config.WebUIToken{{Name: "ops", Token: "tok", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

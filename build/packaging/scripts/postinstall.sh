@@ -128,7 +128,13 @@ fi
 # CSRF secret and re-sign the config hash for no reason.
 if [ "$WAS_PLACEHOLDER" = "1" ] && grep -q 'auth_token: ""' "$CONFIG" 2>/dev/null; then
     TOKEN=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)
-    sed -i "s/auth_token: \"\"/auth_token: \"${TOKEN}\"/" "$CONFIG"
+    TOKEN_ISSUED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # Command arguments are visible to other local users. Keep the token
+    # in the shell builtin's pipe, and record its issue time in the same edit.
+    {
+        printf '%s\n' '/^[[:space:]]*auth_token_issued_at:/d'
+        printf 's/^\\([[:space:]]*\\)auth_token: ""/\\1auth_token: "%s"\\n\\1auth_token_issued_at: "%s"/\n' "$TOKEN" "$TOKEN_ISSUED_AT"
+    } | sed -i -f - "$CONFIG"
     echo "Generated WebUI auth token (saved in csm.yaml)"
 fi
 

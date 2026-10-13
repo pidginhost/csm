@@ -46,7 +46,7 @@ func newSettingsTestServer(t *testing.T, token, yamlBody string) (*Server, strin
 	cfg.WebUI.AuthToken = token
 	// Mirror applyDefaults: migrate legacy AuthToken into Tokens so that
 	// scope-aware auth works in tests without a full config reload.
-	cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: token, Scope: "admin"}}
+	cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: token, Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	cfg.WebUI.UIDir = filepath.Join(dir, "ui-missing")
 
 	store, err := state.Open(dir)
@@ -99,7 +99,7 @@ func newSettingsTestServerWithConfDir(t *testing.T, token, yamlBody string, frag
 	}
 	cfg.StatePath = dir
 	cfg.WebUI.AuthToken = token
-	cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: token, Scope: "admin"}}
+	cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: token, Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	cfg.WebUI.UIDir = filepath.Join(dir, "ui-missing")
 
 	store, err := state.Open(dir)

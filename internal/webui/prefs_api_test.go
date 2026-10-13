@@ -7,13 +7,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 )
 
 func TestOperatorKeyHashesCookie(t *testing.T) {
 	s := newTestServer(t, "alpha")
-	s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "beta", Token: "beta", Scope: "admin"})
+	s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "beta", Token: "beta", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)})
 	req := httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(testBrowserCookie(t, s, "alpha"))
 	first := s.operatorKey(req)
@@ -112,7 +113,7 @@ func TestSanitizeUserPrefsAcceptsKnownTimezones(t *testing.T) {
 
 func TestUserPrefsRoundTrip(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
-	s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "other", Token: "different-token", Scope: "admin"})
+	s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "other", Token: "different-token", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)})
 
 	authReq := func(method, path string, body []byte) *http.Request {
 		var br *http.Request

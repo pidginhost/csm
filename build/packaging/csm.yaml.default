@@ -35,12 +35,14 @@ webui:
   enabled: true
   listen: "0.0.0.0:9443"
   auth_token: ""  # auto-generated on install
+  auth_token_issued_at: ""  # UTC RFC3339; token expires seven days after issue
   session_lifetime: "24h"
   session_idle_timeout: "30m"
   # metrics_token gates GET /metrics (Prometheus). Set a long random
   # string here so a scraper does NOT need the admin auth_token. Leave
   # empty to fall back to admin-token/UI-session auth. See the Metrics docs.
   metrics_token: ""
+  metrics_token_issued_at: ""  # rotate with metrics_token; SIGHUP applies both
   tls_cert: ""    # auto-generated self-signed if empty
   tls_key: ""
   ui_dir: "/opt/csm/ui"
