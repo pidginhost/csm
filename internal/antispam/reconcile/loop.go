@@ -32,9 +32,11 @@ func (l *Loop) Trigger() {
 	}
 }
 
-// Run passes until ctx ends.
+// Run passes until ctx ends. A running pass still reports its outcome
+// after cancellation.
 func (l *Loop) Run(ctx context.Context) {
-	for {
+	// A ready wake or timer can win the select even after ctx is canceled.
+	for ctx.Err() == nil {
 		out := l.pass(ctx)
 		l.report(out)
 		wait := l.interval
