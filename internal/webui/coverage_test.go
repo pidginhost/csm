@@ -489,7 +489,7 @@ func newTestServer(t *testing.T, token string) *Server {
 	// Mirror applyDefaults: migrate legacy AuthToken into Tokens so that the
 	// scope-aware auth path works in tests without a full config load.
 	if token != "" && len(cfg.WebUI.Tokens) == 0 {
-		cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: token, Scope: "admin"}}
+		cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: token, Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	}
 	cfg.WebUI.UIDir = filepath.Join(t.TempDir(), "ui-missing")
 	store, err := state.Open(t.TempDir())

@@ -119,12 +119,13 @@ func TestAPIIncidentGroupsReadScopeAccess(t *testing.T) {
 	seedSprayIncidents(t, c, "192.0.2.1", 2)
 
 	srv := &Server{
+		sessionNow:         time.Now,
 		incidentCorrelator: c,
 		cfg:                &config.Config{},
 	}
 	srv.cfg.WebUI.Tokens = []config.WebUIToken{
-		{Name: "admin", Token: "admin-tok", Scope: "admin"},
-		{Name: "read", Token: "read-tok", Scope: "read"},
+		{Name: "admin", Token: "admin-tok", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
+		{Name: "read", Token: "read-tok", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
 	}
 	handler := srv.requireRead(http.HandlerFunc(srv.apiIncidentGroups))
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/incidents/groups", nil)

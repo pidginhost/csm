@@ -215,8 +215,8 @@ func TestModSecEventsExposeISOTimestamp(t *testing.T) {
 func TestModSecBlocksReadScopeAccess(t *testing.T) {
 	s := newTestServerWithBbolt(t, "admin-tok")
 	s.cfg.WebUI.Tokens = []config.WebUIToken{
-		{Name: "admin", Token: "admin-tok", Scope: "admin"},
-		{Name: "read-only", Token: "read-tok", Scope: "read"},
+		{Name: "admin", Token: "admin-tok", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
+		{Name: "read-only", Token: "read-tok", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
 	}
 	sdb := store.Global()
 	now := time.Now()

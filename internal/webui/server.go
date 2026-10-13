@@ -1104,11 +1104,11 @@ func (s *Server) csrfTokenFor(r *http.Request) string {
 
 func (s *Server) csrfSecret() string {
 	for _, tok := range s.cfg.WebUI.Tokens {
-		if tok.Scope == "admin" && tok.Token != "" {
+		if tok.Token != "" && webUITokenAllows(tok, "admin", s.sessionNow()) {
 			return tok.Token
 		}
 	}
-	if len(s.cfg.WebUI.Tokens) == 0 {
+	if len(s.cfg.WebUI.Tokens) == 0 && s.cfg.WebUI.AuthToken != "" && config.WebUITokenCurrent(s.cfg.WebUI.AuthTokenIssuedAt, s.sessionNow()) {
 		return s.cfg.WebUI.AuthToken
 	}
 	return ""

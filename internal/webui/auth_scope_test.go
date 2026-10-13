@@ -4,13 +4,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 )
 
 func TestRequireScope_AllowsAdminEverywhere(t *testing.T) {
-	s := &Server{cfg: &config.Config{}}
-	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "a", Token: "admin-tok", Scope: "admin"}}
+	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "a", Token: "admin-tok", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/findings", nil)
 	req.Header.Set("Authorization", "Bearer admin-tok")
 	if !s.tokenHasScope(req, "read") {
@@ -22,8 +23,8 @@ func TestRequireScope_AllowsAdminEverywhere(t *testing.T) {
 }
 
 func TestRequireScope_ReadDeniesAdmin(t *testing.T) {
-	s := &Server{cfg: &config.Config{}}
-	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "p", Token: "read-tok", Scope: "read"}}
+	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "p", Token: "read-tok", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer read-tok")
 	if !s.tokenHasScope(req, "read") {
@@ -35,8 +36,8 @@ func TestRequireScope_ReadDeniesAdmin(t *testing.T) {
 }
 
 func TestRequireScope_UnknownTokenFails(t *testing.T) {
-	s := &Server{cfg: &config.Config{}}
-	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "a", Token: "x", Scope: "admin"}}
+	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "a", Token: "x", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer wrong-tok")
 	if s.tokenHasScope(req, "read") {
@@ -45,8 +46,8 @@ func TestRequireScope_UnknownTokenFails(t *testing.T) {
 }
 
 func TestRequireScope_EmptyConfiguredTokenDoesNotAuthenticate(t *testing.T) {
-	s := &Server{cfg: &config.Config{}}
-	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "bad", Token: "", Scope: "admin"}}
+	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "bad", Token: "", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer ")
 	if s.tokenHasScope(req, "read") {
@@ -59,10 +60,10 @@ func TestRequireScope_EmptyConfiguredTokenDoesNotAuthenticate(t *testing.T) {
 }
 
 func TestCSRFSecretUsesAdminScopedToken(t *testing.T) {
-	s := &Server{cfg: &config.Config{}}
+	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
 	s.cfg.WebUI.Tokens = []config.WebUIToken{
-		{Name: "read", Token: "read-secret", Scope: "read"},
-		{Name: "admin", Token: "admin-secret", Scope: "admin"},
+		{Name: "read", Token: "read-secret", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
+		{Name: "admin", Token: "admin-secret", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
 	}
 	if got := s.csrfSecret(); got != "admin-secret" {
 		t.Fatalf("csrfSecret = %q, want admin token", got)
@@ -70,25 +71,25 @@ func TestCSRFSecretUsesAdminScopedToken(t *testing.T) {
 }
 
 func TestCSRFSecretIgnoresLegacyAuthTokenWhenScopedTokensConfigured(t *testing.T) {
-	s := &Server{cfg: &config.Config{}}
+	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
 	s.cfg.WebUI.AuthToken = "rotated-legacy-secret"
 	s.cfg.WebUI.Tokens = []config.WebUIToken{
-		{Name: "read", Token: "read-secret", Scope: "read"},
-		{Name: "admin", Token: "admin-secret", Scope: "admin"},
+		{Name: "read", Token: "read-secret", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
+		{Name: "admin", Token: "admin-secret", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
 	}
 	if got := s.csrfSecret(); got != "admin-secret" {
 		t.Fatalf("csrfSecret = %q, want active admin token", got)
 	}
 
-	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "read", Token: "read-secret", Scope: "read"}}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "read", Token: "read-secret", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	if got := s.csrfSecret(); got != "" {
 		t.Fatalf("csrfSecret with no active admin token = %q, want empty", got)
 	}
 }
 
 func TestRequireReadRejectsWriteMethods(t *testing.T) {
-	s := &Server{cfg: &config.Config{}}
-	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "read", Token: "read-secret", Scope: "read"}}
+	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "read", Token: "read-secret", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	called := false
 	handler := s.requireRead(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -111,8 +112,8 @@ func TestRequireReadRejectsWriteMethods(t *testing.T) {
 func TestRequireCSRFDoesNotLetReadBearerBypassAdminCookie(t *testing.T) {
 	s := newTestServer(t, "")
 	s.cfg.WebUI.Tokens = []config.WebUIToken{
-		{Name: "admin", Token: "admin-secret", Scope: "admin"},
-		{Name: "read", Token: "read-secret", Scope: "read"},
+		{Name: "admin", Token: "admin-secret", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
+		{Name: "read", Token: "read-secret", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
 	}
 	called := false
 	handler := s.requireAuth(s.requireCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -137,9 +138,9 @@ func TestRequireCSRFDoesNotLetReadBearerBypassAdminCookie(t *testing.T) {
 func TestRequireScope_LegacyAuthTokenStillWorks(t *testing.T) {
 	// Backward compat: a config with only the legacy auth_token (migrated by
 	// applyDefaults into Tokens) must still authenticate.
-	s := &Server{cfg: &config.Config{}}
+	s := &Server{cfg: &config.Config{}, sessionNow: time.Now}
 	s.cfg.WebUI.AuthToken = "legacy"
-	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: "legacy", Scope: "admin"}}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: "legacy", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/findings", nil)
 	req.Header.Set("Authorization", "Bearer legacy")
 	if !s.tokenHasScope(req, "admin") {

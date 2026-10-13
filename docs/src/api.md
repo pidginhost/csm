@@ -44,12 +44,16 @@ webui:
     - name: "operator"
       token: "..."
       scope: admin       # full read+write
+      issued_at: "<UTC RFC3339 time when this token was generated>"
     - name: "panel-readonly"
       token: "..."
+      issued_at: "<UTC RFC3339 time when this token was generated>"
       scope: read        # status, findings, history, stats, challenge stats, blocked IPs, scan jobs, health, components, capabilities, SSE
 ```
 
-The legacy single-token `webui.auth_token:` is migrated automatically to a `legacy-auth-token` admin entry on first start. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
+Every credential expires seven days after `issued_at`. Replace the timestamp placeholders above when generating fresh random tokens. Missing, malformed, future or expired issue times refuse authentication. See [credential rotation](webui.md#credential-rotation) before upgrading.
+
+The legacy single-token `webui.auth_token:` and its required `webui.auth_token_issued_at` are loaded into a `legacy-auth-token` admin entry. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
 
 ## Errors
 

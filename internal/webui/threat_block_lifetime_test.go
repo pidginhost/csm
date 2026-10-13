@@ -475,7 +475,7 @@ func TestUndoBlockFailureKeepsCurrentEvidence(t *testing.T) {
 
 func TestPermanentBlockRouteRequiresAdminAndCSRF(t *testing.T) {
 	s, rb := threatTestServer(t)
-	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "admin", Token: "tok", Scope: "admin"}, {Name: "reader", Token: "read-tok", Scope: "read"}}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "admin", Token: "tok", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)}, {Name: "reader", Token: "read-tok", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	cookie := loginBrowser(t, s, "tok", nil)
 	for _, tc := range []struct {
 		name, bearer  string

@@ -22,8 +22,8 @@ func auditActorServer(t *testing.T) *Server {
 	t.Helper()
 	s := newTestServer(t, "")
 	s.cfg.WebUI.Tokens = []config.WebUIToken{
-		{Name: "alice", Token: "alice-admin-token-0123456789abcdef", Scope: "admin"},
-		{Name: "phpanel", Token: "phpanel-admin-token-0123456789abc", Scope: "admin"},
+		{Name: "alice", Token: "alice-admin-token-0123456789abcdef", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
+		{Name: "phpanel", Token: "phpanel-admin-token-0123456789abc", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
 	}
 	return s
 }
@@ -144,7 +144,7 @@ func TestAuditActorMatchesAuthorizationAndSurvivesRevocation(t *testing.T) {
 		t.Run(fmt.Sprint(revoke), func(t *testing.T) {
 			s := auditActorServer(t)
 			readToken := newSuppressionID()
-			s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "reader", Token: readToken, Scope: "read"})
+			s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "reader", Token: readToken, Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)})
 			secret, rec, err := s.sessions.Create("alice", session.Hash(s.cfg.WebUI.Tokens[0].Token), "", "192.0.2.10", "test", time.Now())
 			if err != nil {
 				t.Fatal(err)

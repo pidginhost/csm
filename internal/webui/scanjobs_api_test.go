@@ -52,8 +52,8 @@ func newTestServerWithFakeScanJobs(t *testing.T) (*Server, string, string, *fake
 	const readTok = "read-tok"
 	s := newTestServer(t, adminTok)
 	s.cfg.WebUI.Tokens = []config.WebUIToken{
-		{Name: "admin", Token: adminTok, Scope: "admin"},
-		{Name: "reader", Token: readTok, Scope: "read"},
+		{Name: "admin", Token: adminTok, Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
+		{Name: "reader", Token: readTok, Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
 	}
 	dir := t.TempDir()
 	sdb, err := store.Open(dir)
@@ -118,8 +118,8 @@ func newTestServerWithReadToken(t *testing.T) (*Server, string) {
 	s := newTestServer(t, "admin-tok")
 	// Add a read-scope token alongside the admin one.
 	s.cfg.WebUI.Tokens = []config.WebUIToken{
-		{Name: "admin", Token: "admin-tok", Scope: "admin"},
-		{Name: "reader", Token: tok, Scope: "read"},
+		{Name: "admin", Token: "admin-tok", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
+		{Name: "reader", Token: tok, Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
 	}
 	dir := t.TempDir()
 	sdb, err := store.Open(dir)

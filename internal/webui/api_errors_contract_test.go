@@ -23,8 +23,8 @@ func newUIServer(t *testing.T) *Server {
 	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.WebUI.UIDir = "../../ui"
 	cfg.WebUI.Tokens = []config.WebUIToken{
-		{Name: "admin", Token: "admin-secret", Scope: "admin"},
-		{Name: "reader", Token: "read-secret", Scope: "read"},
+		{Name: "admin", Token: "admin-secret", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
+		{Name: "reader", Token: "read-secret", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)},
 	}
 	st, err := state.Open(t.TempDir())
 	if err != nil {

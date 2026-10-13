@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
@@ -32,7 +33,7 @@ func newMetricsTestServer(t *testing.T, cfg *config.Config) *Server {
 	// Mirror applyDefaults: migrate legacy AuthToken into Tokens so that
 	// the scope-aware auth path works in tests without a full config load.
 	if cfg.WebUI.AuthToken != "" && len(cfg.WebUI.Tokens) == 0 {
-		cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: cfg.WebUI.AuthToken, Scope: "admin"}}
+		cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: cfg.WebUI.AuthToken, Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	}
 	st, err := state.Open(t.TempDir())
 	if err != nil {
@@ -69,6 +70,7 @@ func TestMetricsAcceptsDedicatedToken(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.WebUI.AuthToken = "ui-token"
 	cfg.WebUI.MetricsToken = "scrape-token"
+	cfg.WebUI.MetricsTokenIssuedAt = time.Now().UTC().Format(time.RFC3339)
 	s := newMetricsTestServer(t, cfg)
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -97,6 +99,7 @@ func TestMetricsRejectsWrongMetricsToken(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.WebUI.AuthToken = "ui-token"
 	cfg.WebUI.MetricsToken = "correct"
+	cfg.WebUI.MetricsTokenIssuedAt = time.Now().UTC().Format(time.RFC3339)
 	s := newMetricsTestServer(t, cfg)
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -156,6 +159,7 @@ func TestMetricsTokenHotReload(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.WebUI.AuthToken = "ui-token"
 	cfg.WebUI.MetricsToken = "first"
+	cfg.WebUI.MetricsTokenIssuedAt = time.Now().UTC().Format(time.RFC3339)
 	s := newMetricsTestServer(t, cfg)
 
 	// Baseline: the startup token unlocks /metrics.
@@ -170,6 +174,7 @@ func TestMetricsTokenHotReload(t *testing.T) {
 	// Simulate SIGHUP reload: swap to a new cfg with rotated token.
 	rotated := *cfg
 	rotated.WebUI.MetricsToken = "second"
+	rotated.WebUI.MetricsTokenIssuedAt = time.Now().UTC().Format(time.RFC3339)
 	config.SetActive(&rotated)
 	t.Cleanup(func() { config.SetActive(nil) })
 
