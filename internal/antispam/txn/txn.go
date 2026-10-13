@@ -156,13 +156,7 @@ func cmdErr(what string, r antispam.CommandResult) error {
 }
 
 func failed(step string, err error) antispam.Result {
-	return antispam.Result{FailedStep: step, Rollback: antispam.RollbackNone, Error: oneLine(err.Error())}
-}
-
-// oneLine keeps Result.Error a single line for logs and findings; joined
-// errors are separated by newlines.
-func oneLine(s string) string {
-	return strings.ReplaceAll(s, "\n", "; ")
+	return antispam.Result{FailedStep: step, Rollback: antispam.RollbackNone, Error: antispam.ErrorSummary(err.Error())}
 }
 
 // blocking returns the Definite and Temporary problem codes as one error.
@@ -553,7 +547,7 @@ func (t *tx) fail(step string, err error) antispam.Result {
 	if rbErr != nil {
 		msg += "; rollback: " + rbErr.Error()
 	}
-	return antispam.Result{FailedStep: step, Rollback: state, Error: oneLine(msg)}
+	return antispam.Result{FailedStep: step, Rollback: state, Error: antispam.ErrorSummary(msg)}
 }
 
 // rollback restores every change in reverse and reloads each service whose

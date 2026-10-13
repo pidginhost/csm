@@ -175,6 +175,39 @@ func TestHandleReportsLockSetupFailureAsNotBusy(t *testing.T) {
 	}
 }
 
+func TestHandleKeepsResultErrorsOnOneLine(t *testing.T) {
+	for _, source := range []string{"lock", "busy", "transaction"} {
+		t.Run(source, func(t *testing.T) {
+			message := "first\r\nsecond\rthird\nfourth"
+			want := antispam.Result{Operation: antispam.OpRemove, FailedStep: "lock", Rollback: antispam.RollbackNone,
+				Error: "first; second; third; fourth"}
+			tr := &fakeTransactor{}
+			lock := func(func() error) error { return errors.New(message) }
+			switch source {
+			case "busy":
+				lock = func(func() error) error { return errors.Join(eximlock.ErrBusy, errors.New(message)) }
+				want.Busy = true
+				want.Error = eximlock.ErrBusy.Error() + "; " + want.Error
+			case "transaction":
+				tr.result = antispam.Result{FailedStep: "exim_build", Rollback: antispam.RollbackFailed, Error: message}
+				lock = freeLock
+				want.FailedStep, want.Rollback = tr.result.FailedStep, tr.result.Rollback
+			}
+			result, code := run(t, `{"operation":"remove"}`, tr, lock)
+			if code != 1 || result != want {
+				t.Errorf("code=%d result=%+v, want code=1 result=%+v", code, result, want)
+			}
+			wantRemoved := 0
+			if source == "transaction" {
+				wantRemoved = 1
+			}
+			if tr.removed != wantRemoved || len(tr.applied) != 0 {
+				t.Errorf("transactor=%+v, want %d removals and no applies", tr, wantRemoved)
+			}
+		})
+	}
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }

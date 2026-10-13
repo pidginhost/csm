@@ -27,6 +27,7 @@ type Locker func(mutate func() error) error
 // result is OK, 1 otherwise.
 func Handle(input io.Reader, output io.Writer, t Transactor, lock Locker) int {
 	result := handle(input, t, lock)
+	result.Error = antispam.ErrorSummary(result.Error)
 	line, err := json.Marshal(result)
 	if err != nil {
 		return 1

@@ -226,12 +226,24 @@ func TestReplaceFileRestoresSnapshotMetadata(t *testing.T) {
 // leave the new file behind.
 func TestReplaceFilePublishesNewFileWhenTempCleanupFails(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "new.conf")
-	removeTemp = func(string) error { return errors.New("cleanup failed") }
+	var tempName string
+	removeTemp = func(name string) error {
+		tempName = name
+		return errors.New("cleanup failed")
+	}
 	t.Cleanup(func() { removeTemp = os.Remove })
 	if err := replaceFile(p, fileState{}, fileState{exists: true, content: "x\n"}); err != nil {
 		t.Fatalf("published file reported as failed: %v", err)
 	}
 	if got, err := os.ReadFile(p); err != nil || string(got) != "x\n" {
 		t.Fatalf("content %q, %v", got, err)
+	}
+	published, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leftover, err := os.Stat(tempName)
+	if err != nil || !os.SameFile(published, leftover) {
+		t.Fatalf("failed cleanup did not leave the published inode at the temporary name: %v", err)
 	}
 }

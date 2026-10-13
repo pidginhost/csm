@@ -472,6 +472,28 @@ func TestRollbackKeepsLoadedEximWhenRestoreFailsValidation(t *testing.T) {
 	}
 }
 
+func TestRollbackStartsStoppedEximWhenRestoreFailsValidation(t *testing.T) {
+	for _, command := range []string{BuildEximConf, "exim -bV"} {
+		t.Run(command, func(t *testing.T) {
+			f := installedForRemoval(t)
+			f.fail["systemctl reload rspamd.service"] = []int{1}
+			f.fail[command] = []int{2}
+			f.fail["systemctl is-active exim.service"] = []int{3}
+			r := f.host().Remove()
+			if r.FailedStep != StepRspamdReload || r.Rollback != antispam.RollbackFailed {
+				t.Fatalf("result %+v", r)
+			}
+			if f.count("systemctl reload exim.service") != 1 ||
+				f.count("systemctl start exim.service") != 1 || f.count("systemctl restart") != 0 {
+				t.Errorf("rollback did not recover the stopped Exim without a HUP: %v", f.calls)
+			}
+			if f.file(antispam.RecordPath) != string(antispam.EncodeRecord("")) {
+				t.Error("a successful start cleared the unvalidated restore's incomplete record")
+			}
+		})
+	}
+}
+
 func TestResultErrorIsOneLine(t *testing.T) {
 	f := installedForRemoval(t)
 	f.fail["systemctl reload rspamd.service"] = []int{1, 2}
@@ -483,5 +505,33 @@ func TestResultErrorIsOneLine(t *testing.T) {
 	}
 	if strings.ContainsAny(r.Error, "\r\n") {
 		t.Errorf("error spans lines: %q", r.Error)
+	}
+}
+
+func TestResultErrorsNormalizeLineEndings(t *testing.T) {
+	for _, newline := range []string{"\n", "\r", "\r\n"} {
+		t.Run(fmt.Sprintf("%q", newline), func(t *testing.T) {
+			err := errors.New("first" + newline + "second")
+			r := failed(StepPreconditions, err)
+			if r.Error != "first; second" || r.Rollback != antispam.RollbackNone {
+				t.Errorf("precondition result: %+v", r)
+			}
+
+			f := installedForRemoval(t)
+			h := f.host()
+			replace := h.replace
+			h.replace = func(p string, want, next fileState) error {
+				if p == f.root+antispam.RspamdLocalDir+"/actions.conf" {
+					return err
+				}
+				return replace(p, want, next)
+			}
+			f.fail[BuildEximConf] = []int{2}
+			r = h.Remove()
+			if r.FailedStep != StepRspamdFiles || r.Rollback != antispam.RollbackFailed ||
+				r.Error != "first; second; rollback: buildeximconf failed" {
+				t.Errorf("rollback result: %+v", r)
+			}
+		})
 	}
 }
