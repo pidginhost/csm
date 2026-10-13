@@ -19,6 +19,13 @@ const RecordFormat = 1
 // MaxRecordBytes bounds a completion record read from disk.
 const MaxRecordBytes = 4 << 10
 
+// RecordFacts is installed.json as a collector found it.
+type RecordFacts struct {
+	Missing bool
+	Content string
+	Err     error
+}
+
 // Record is CSM's completion record. A nil Generation means an apply or
 // remove started and did not finish, so reconcile must repeat it.
 type Record struct {
