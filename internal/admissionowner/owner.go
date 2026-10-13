@@ -284,6 +284,7 @@ func (o *Owner) do(fn func() error) error {
 var (
 	openLedger    = store.OpenAdmissionLedger
 	buildRegistry = Registry
+	settleLedger  = (*store.AdmissionLedger).Settle
 )
 
 // start runs the startup sequence (spec 5.4, handoffs O19-O24). A retry
@@ -307,6 +308,11 @@ func (o *Owner) start() error {
 	}
 	if err = o.applyCeiling(reading.Wall); err != nil {
 		return err
+	}
+	// What a previous process left reserved or running ends before this
+	// handle reserves anything: nothing is dispatched again.
+	if _, _, err = settleLedger(o.ledger); err != nil {
+		return fmt.Errorf("settling outstanding attempts: %w", err)
 	}
 	o.refreshInventory()
 	if _, err = o.ledger.BeginIngress(); err != nil {
