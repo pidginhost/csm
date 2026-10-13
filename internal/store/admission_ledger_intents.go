@@ -58,7 +58,11 @@ func upgradeLedgerToSchemaSeven(tx *bolt.Tx) error {
 }
 
 func loadIntent(tx *bolt.Tx, id admission.ActionID) (admission.Intent, bool, error) {
-	raw := tx.Bucket([]byte(admissionIntentsBucket)).Get([]byte(id))
+	b := tx.Bucket([]byte(admissionIntentsBucket))
+	if b == nil {
+		return admission.Intent{}, false, admission.ErrCorruptRecord
+	}
+	raw := b.Get([]byte(id))
 	if raw == nil {
 		return admission.Intent{}, false, nil
 	}

@@ -118,6 +118,60 @@ func TestAdmissionLedgerHoldIndexWaitsForCommit(t *testing.T) {
 	wantHolds(t, "failed finish", f.l, f.db, 1)
 }
 
+// Multiple batch members can hold the same target. Finishing one cannot
+// release the others' hold, and reading the batch back cannot add a hold.
+func TestAdmissionLedgerHoldIndexCountsSharedTargets(t *testing.T) {
+	f := newLedgerFixture(t)
+	target := "192.0.2.10"
+	a := f.reservedAt(target, ledgerT0.Add(time.Hour))
+	root := f.published(evidenceSpec{target: target, cursor: "promote"})
+	req := f.request(target, root)
+	req.Kind = admission.KindPromote
+	_, id := f.enqueue(req)
+	_, b, granted, err := f.l.Reserve(id, admission.LaneGeneral, a.ExpiresAt)
+	if err != nil || !granted {
+		t.Fatalf("reserve promotion: %v %v", granted, err)
+	}
+	ids := []admission.ActionID{a.Attempt.ID, b.Attempt.ID}
+	for _, wantGranted := range []bool{true, false} {
+		if intents, executed, execErr := f.l.ExecuteBatch(ids); execErr != nil || executed != wantGranted || len(intents) != 2 {
+			t.Fatalf("execute (want grant=%v): %+v %v %v", wantGranted, intents, executed, execErr)
+		}
+		wantHolds(t, "shared batch", f.l, f.db, 1)
+		if got := publishedHolds(f.l)[req.Target.Key()]; got != 2 {
+			t.Fatalf("shared target holds = %d, want 2", got)
+		}
+	}
+	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionApplied); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = f.l.Finish(b.Attempt.ID, admission.DispositionUnknown); err != nil {
+		t.Fatal(err)
+	}
+	wantHolds(t, "one member remains", f.l, f.db, 1)
+	if got := publishedHolds(f.l)[req.Target.Key()]; got != 1 {
+		t.Fatalf("remaining target holds = %d, want 1", got)
+	}
+	root = f.published(evidenceSpec{target: target, cursor: "challenge"})
+	req = f.request(target, root)
+	req.Kind = admission.KindChallenge
+	_, queued := f.enqueue(req)
+	_, _, granted, err = f.l.Reserve(queued, admission.LaneGeneral, a.ExpiresAt)
+	wantLedgerReason(t, "remaining hold", err, admission.ReasonPendingRecovery)
+	if granted {
+		t.Fatal("one finished member released another member's hold")
+	}
+	f.ackAll()
+	f.tickAt(b.ExpiresAt)
+	if _, _, retired, err := f.l.RetireUnproven(b.Attempt.ID); err != nil || !retired {
+		t.Fatalf("retire: %v %v", retired, err)
+	}
+	wantHolds(t, "last member retired", f.l, f.db, 0)
+	if _, _, granted, err := f.l.Reserve(queued, admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil || !granted {
+		t.Fatalf("released reservation: %v %v", granted, err)
+	}
+}
+
 // fullReserve fills the recovery reserve with unknown outcomes, each with
 // its intent (the fixture gives them one target), and queues work the
 // schedule must check against the hold.

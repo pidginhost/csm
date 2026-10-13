@@ -305,7 +305,9 @@ outstanding before it reserves anything: a reservation, which recorded no
 intent and so dispatched nothing, fails and may retry; a running attempt
 ends unknown. Nothing is dispatched again. A handle that has granted a
 reservation refuses to settle, and an unknown outcome needs the intent its
-attempt recorded.
+attempt recorded until that uncertainty is retired, including when reading
+the outcome back. A missing intent or intent bucket returns a corrupt-record
+error without changing the ledger.
 An empty ledger settles without a clock reading.
 
 Schema 2 of the ledger adds its queue, and the first open upgrades a schema

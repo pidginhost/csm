@@ -549,6 +549,12 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 	case admission.DispositionObserve:
 		state = admission.StateObserved
 	}
+	// An unknown readback still needs its recovery intent until retirement.
+	if d == admission.DispositionUnknown && unsettled(*a) {
+		if _, found, err := loadIntent(q.tx, a.Attempt.ID); err != nil || !found {
+			return false, admission.ErrCorruptRecord
+		}
+	}
 	if a.State.Terminal() {
 		if a.Disposition == d {
 			return false, nil
@@ -565,16 +571,11 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 	// An attempt that never ran returns the slot of its execution row. One
 	// that ran keeps its intent only while its outcome is unknown.
 	var unused uint64
-	switch {
-	case a.State == admission.StateReserved:
+	if a.State == admission.StateReserved {
 		unused = 1
-	case d != admission.DispositionUnknown:
+	} else if d != admission.DispositionUnknown {
 		if err = q.deleteIntent(a.Attempt.ID); err != nil {
 			return false, err
-		}
-	default:
-		if _, found, loadErr := loadIntent(q.tx, a.Attempt.ID); loadErr != nil || !found {
-			return false, admission.ErrCorruptRecord
 		}
 	}
 	a.State, a.Disposition, a.Finished = state, d, q.now
