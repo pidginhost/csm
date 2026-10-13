@@ -73,3 +73,30 @@ func resultFinding(op string, r antispam.Result, err error, now time.Time) (aler
 	}
 	return f, true
 }
+
+// The health findings. Down and scan errors keep one identity each while
+// they last; recovery is a one-time notice.
+func rspamdDownFinding(socket string, since time.Time) alert.Finding {
+	return alert.Finding{
+		Severity: alert.Warning, Check: CheckRspamdDown, DedupKey: "rspamd", Timestamp: since,
+		Message: "rspamd does not answer on the antispam scan socket",
+		Details: "Three /ping probes in a row over " + clean(socket) + " failed. Exim delivers mail without spam filtering until rspamd answers again.",
+	}
+}
+
+func rspamdRecoveredFinding(socket string, now time.Time) alert.Finding {
+	return alert.Finding{
+		Severity: alert.Warning, Check: CheckRspamdRecovered, Timestamp: now,
+		Message: "rspamd answers on the antispam scan socket again",
+		Details: "Two /ping probes in a row over " + clean(socket) + " succeeded.",
+	}
+}
+
+func scanErrorFinding(count int, first, last time.Time) alert.Finding {
+	return alert.Finding{
+		Severity: alert.Warning, Check: CheckScanError, DedupKey: "scan", Timestamp: last,
+		Message: "Antispam scans are failing",
+		Details: fmt.Sprintf("Exim logged %d failed scans since %s, the last at %s. Mail is delivered without spam filtering while scans fail; check rspamd's log.",
+			count, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339)),
+	}
+}
