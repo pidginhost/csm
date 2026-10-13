@@ -3,6 +3,7 @@ package antispam
 import (
 	"errors"
 	"io/fs"
+	"strings"
 	"testing"
 )
 
@@ -110,7 +111,8 @@ func TestAssessDisabled(t *testing.T) {
 		}, Keep, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			a := Assess(false, s, tc.facts(t))
+			f := tc.facts(t)
+			a := Assess(false, s, HostFacts{Targets: f.Targets, GeneratedConf: f.GeneratedConf, Record: f.Record})
 			if a.Action != tc.action || a.Installed != tc.installed || len(a.Problems) != 0 {
 				t.Fatalf("got %+v, want action %d installed %t", a, tc.action, tc.installed)
 			}
@@ -250,6 +252,140 @@ func TestAssessComparesLoadedRspamdSettings(t *testing.T) {
 			a := Assess(true, s, f)
 			if a.Action != tc.action || !hasProblem(a, CodeRspamdConfig, tc.sev) {
 				t.Fatalf("got %+v, want action %d and rspamd_config/%d", a, tc.action, tc.sev)
+			}
+		})
+	}
+}
+
+func TestAssessMalformedActionsAreTemporary(t *testing.T) {
+	s := enforceSettings()
+	for _, out := range []string{"", "not JSON", `{"reject":`, loadedActions + " trailing"} {
+		t.Run(out, func(t *testing.T) {
+			f := installedFacts(t, s)
+			f.RspamdActions.Stdout = out
+			a := Assess(true, s, f)
+			if a.Action != Keep || !a.Installed || len(a.Problems) != 1 || !hasProblem(a, CodeRspamdConfig, Temporary) {
+				t.Fatalf("unreadable actions: %+v; want Keep and one temporary problem", a)
+			}
+		})
+	}
+}
+
+// A failed probe cannot disprove a conflict another probe has confirmed.
+func TestAssessLoadedConflictsSurviveTemporaryProbes(t *testing.T) {
+	s := enforceSettings()
+	for _, tc := range []struct {
+		name     string
+		mutate   func(*HostFacts)
+		tempCode string
+	}{
+		{"socket unavailable", func(f *HostFacts) {
+			f.Socket.PingErr = errors.New("refused")
+			f.RspamdActions.Stdout = strings.Replace(loadedActions, "15", "20", 1)
+		}, CodeSocket},
+		{"actions command failed", func(f *HostFacts) {
+			f.RspamdActions = CommandResult{Err: errors.New("timeout")}
+			f.RspamdModules.Stdout = "Modules enabled: rbl\n"
+		}, CodeRspamdConfig},
+		{"actions malformed", func(f *HostFacts) {
+			f.RspamdActions.Stdout = "{"
+			f.RspamdModules.Stdout = "Modules enabled: rbl\n"
+		}, CodeRspamdConfig},
+		{"modules command failed", func(f *HostFacts) {
+			f.RspamdModules = CommandResult{Err: errors.New("timeout")}
+			f.RspamdActions.Stdout = strings.Replace(loadedActions, "15", "20", 1)
+		}, CodeRspamdConfig},
+		{"modules unreadable with object actions", func(f *HostFacts) {
+			f.RspamdModules.Stdout = "no module list\n"
+			f.RspamdActions.Stdout = `{"reject": {"score": 15}}`
+		}, CodeRspamdConfig},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := installedFacts(t, s)
+			tc.mutate(&f)
+			a := Assess(true, s, f)
+			if a.Action != Uninstall || !a.Installed || len(a.Problems) != 2 ||
+				!hasProblem(a, tc.tempCode, Temporary) || !hasProblem(a, CodeRspamdConfig, Definite) {
+				t.Fatalf("got %+v; want Uninstall with both the temporary failure and definite conflict", a)
+			}
+		})
+	}
+}
+
+func TestAssessUnsafeEditsAlwaysKeep(t *testing.T) {
+	s := enforceSettings()
+	for _, state := range []string{"disabled", "fresh", "current", "host conflict", "loaded conflict"} {
+		for _, tc := range []struct {
+			name   string
+			mutate func(*HostFacts)
+			code   string
+			sev    Severity
+		}{
+			{"local block spans sections", func(f *HostFacts) {
+				tg := target(f, TargetEximLocal)
+				tg.Content = "@CONFIG@\n" + MarkerBegin + "\nspamd_address = " + s.Socket + "\n@ROUTERSTART@\n" + MarkerEnd + "\n"
+				f.LocalConf = tg.Content
+			}, CodeMarkers, Definite},
+			{"local block unpaired", func(f *HostFacts) {
+				tg := target(f, TargetEximLocal)
+				tg.Content = "@CONFIG@\n" + MarkerBegin + "\n"
+				f.LocalConf = tg.Content
+			}, CodeMarkers, Definite},
+			{"hook unreadable", func(f *HostFacts) {
+				tg := target(f, TargetEximHook)
+				tg.Content, tg.Err = "", errors.New("permission denied")
+			}, CodeTargets, Temporary},
+			{"hook includes unchecked content", func(f *HostFacts) {
+				target(f, TargetEximHook).Content += ".include /etc/exim_extra\n"
+			}, CodeUnverifiable, Temporary},
+			{"parent writable", func(f *HostFacts) {
+				target(f, TargetEximHook).Parents[1].Mode = fs.ModeDir | 0o777
+			}, CodeTargets, Definite},
+		} {
+			t.Run(state+"/"+tc.name, func(t *testing.T) {
+				f := installedFacts(t, s)
+				if state == "fresh" {
+					f = freshFacts()
+				}
+				if state == "host conflict" {
+					f.SpamdDisabled = false
+				}
+				if state == "loaded conflict" {
+					f.RspamdModules.Stdout = "Modules enabled: rbl\n"
+				}
+				tc.mutate(&f)
+				a := Assess(state != "disabled", s, f)
+				if a.Action != Keep || !hasProblem(a, tc.code, tc.sev) {
+					t.Fatalf("got %+v; want Keep with %s/%d", a, tc.code, tc.sev)
+				}
+			})
+		}
+	}
+}
+
+func TestAssessDefersLoadedComparisonUntilCurrent(t *testing.T) {
+	s := enforceSettings()
+	for _, state := range []string{"fresh", "record missing", "settings changed", "generated drift"} {
+		t.Run(state, func(t *testing.T) {
+			f := installedFacts(t, s)
+			switch state {
+			case "fresh":
+				f = freshFacts()
+			case "record missing":
+				f.Record = RecordFacts{Missing: true}
+			case "settings changed":
+				other := s
+				other.RejectScore = 20
+				f = installedFacts(t, other)
+			case "generated drift":
+				h := renderedHooks(t, s)
+				f.GeneratedConf = rebuiltConf(h.Config, h.RCPT, h.Scan, "")
+			}
+			f.RspamdActions = CommandResult{Stdout: `{"reject": {"score": 20}}`}
+			f.RspamdModules = CommandResult{Stdout: "Modules enabled: rbl\n"}
+			a := Assess(true, s, f)
+			if a.Action != Install || len(a.Problems) != 0 {
+				t.Fatalf("got %+v; want Install with no loaded-state conflicts", a)
 			}
 		})
 	}

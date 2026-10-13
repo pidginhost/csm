@@ -1,6 +1,7 @@
 package antispam
 
 import (
+	"encoding/json"
 	"strings"
 )
 
@@ -45,21 +46,23 @@ func Assess(enabled bool, s Settings, f HostFacts) Assessment {
 		return a
 	}
 	a.Problems = CheckHost(f)
+	isCurrent := a.Installed && current(s, f)
+	if isCurrent {
+		// A temporary host probe failure cannot hide a confirmed override.
+		a.Problems = append(a.Problems, loadedConflicts(s, f)...)
+	}
 	switch {
 	case hasSeverity(a.Problems, Definite):
 		a.uninstall(f)
-		return a
 	case hasSeverity(a.Problems, Temporary):
 		return a
-	case !a.Installed || !current(s, f):
-		a.Action = Install
-		return a
-	}
-	if conflicts := loadedConflicts(s, f); len(conflicts) > 0 {
-		a.Problems = append(a.Problems, conflicts...)
-		if hasSeverity(conflicts, Definite) {
-			a.uninstall(f)
+	case !isCurrent:
+		// Replacing a shared block must be just as safe as removing it.
+		if removal := CheckRemoval(f.Targets); blocking(removal) {
+			a.Problems = append(a.Problems, removal...)
+			return a
 		}
+		a.Action = Install
 	}
 	return a
 }
@@ -123,23 +126,30 @@ func current(s Settings, f HostFacts) bool {
 // loadedConflicts compares the settings rspamd loaded with CSM's files,
 // as the apply transaction does after staging them.
 func loadedConflicts(s Settings, f HostFacts) []Problem {
-	unreadable := []Problem{{Code: CodeRspamdConfig, Severity: Temporary,
-		Detail: "cannot read the settings rspamd loaded; check rspamadm configdump"}}
-	if f.RspamdModules.Err != nil || f.RspamdActions.Err != nil {
-		return unreadable
-	}
-	modules, err := EnabledModules(f.RspamdModules.Stdout)
-	if err != nil {
-		return unreadable
-	}
-	actions, err := ParseActions([]byte(f.RspamdActions.Stdout))
-	if err != nil {
-		return []Problem{{Code: CodeRspamdConfig, Severity: Definite,
-			Detail: "rspamd actions use a form CSM cannot compare; set them only through CSM's local.d/actions.conf"}}
-	}
 	var out []Problem
-	for _, c := range CheckRspamd(modules, actions, s) {
+	var conflicts []string
+	unreadable := false
+	modules, err := EnabledModules(f.RspamdModules.Stdout)
+	if f.RspamdModules.Err != nil || err != nil {
+		unreadable = true
+	} else {
+		conflicts = append(conflicts, checkRspamdModules(modules)...)
+	}
+	data := []byte(f.RspamdActions.Stdout)
+	if f.RspamdActions.Err != nil || !json.Valid(data) {
+		unreadable = true
+	} else if actions, err := ParseActions(data); err != nil {
+		out = append(out, Problem{Code: CodeRspamdConfig, Severity: Definite,
+			Detail: "rspamd actions use a form CSM cannot compare; set them only through CSM's local.d/actions.conf"})
+	} else {
+		conflicts = append(conflicts, checkRspamdActions(actions, s)...)
+	}
+	for _, c := range conflicts {
 		out = append(out, Problem{Code: CodeRspamdConfig, Severity: Definite, Detail: c})
+	}
+	if unreadable {
+		out = append(out, Problem{Code: CodeRspamdConfig, Severity: Temporary,
+			Detail: "cannot read the settings rspamd loaded; check rspamadm configdump"})
 	}
 	return out
 }
