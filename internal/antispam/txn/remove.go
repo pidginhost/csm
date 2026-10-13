@@ -67,7 +67,7 @@ func (h *Host) Remove() antispam.Result {
 			}
 			return nil
 		}
-		if step, err := t.exim(eximChanges, verify); err != nil {
+		if step, err := t.exim(eximChanges, false, verify); err != nil {
 			return t.fail(step, err)
 		}
 	}

@@ -178,3 +178,24 @@ func TestRecordRestoreRejectsLateSuccess(t *testing.T) {
 		t.Fatal("late record restoration was not tracked")
 	}
 }
+
+func TestRollbackWithoutHooksIgnoresMissingNamedLists(t *testing.T) {
+	f := newFake(t)
+	f.fail["systemctl reload exim.service"] = []int{1}
+	h := f.host()
+	run := h.run
+	h.run = func(ctx context.Context, limit time.Duration, name string, args ...string) antispam.CommandResult {
+		r := run(ctx, limit, name, args...)
+		if f.count(BuildEximConf) == 2 && name == "exim" && len(args) > 0 && args[0] == "-C" {
+			r.Stdout, r.Stderr = "Failed: missing list\n", "unknown named list\n"
+		}
+		return r
+	}
+	r := h.Apply(enforce())
+	if r.FailedStep != StepEximReload || r.Rollback != antispam.RollbackVerified {
+		t.Fatalf("rollback to a configuration without hooks reported as %+v", r)
+	}
+	if got := f.file(antispam.RecordPath); got != "<absent>" {
+		t.Errorf("record = %q", got)
+	}
+}

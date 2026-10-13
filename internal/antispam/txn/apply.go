@@ -96,7 +96,7 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		verify := func(conf, rcptACL, dataACL string) error {
 			return antispam.CheckGenerated(conf, hooks, rcptACL, dataACL)
 		}
-		if step, err := t.exim(eximChanges, verify); err != nil {
+		if step, err := t.exim(eximChanges, true, verify); err != nil {
 			return t.fail(step, err)
 		}
 	}

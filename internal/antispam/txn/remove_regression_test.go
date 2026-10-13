@@ -420,3 +420,22 @@ func TestRemoveWaitsForStableServiceActivity(t *testing.T) {
 		})
 	}
 }
+
+// A missing cPanel list makes installed hooks defer mail (spec 3), so
+// taking the hooks out must not depend on that list.
+func TestRemoveIgnoresMissingNamedLists(t *testing.T) {
+	f := installedForRemoval(t)
+	h := f.host()
+	run := h.run
+	h.run = func(ctx context.Context, limit time.Duration, name string, args ...string) antispam.CommandResult {
+		r := run(ctx, limit, name, args...)
+		if name == "exim" && len(args) > 0 && args[0] == "-C" {
+			r.Stdout, r.Stderr = "Failed: missing list\n", "unknown named list\n"
+		}
+		return r
+	}
+	wantOK(t, h.Remove())
+	if got := f.file(antispam.RecordPath); got != "<absent>" {
+		t.Errorf("record = %q", got)
+	}
+}

@@ -360,8 +360,9 @@ func (t *tx) eximSettings(ctx context.Context) (map[string]string, error) {
 }
 
 // exim writes the Exim edits, rebuilds and validates the configuration, then
-// reloads Exim and probes it (spec section 6.3 steps 3 to 5).
-func (t *tx) exim(changes []change, verify func(conf, rcptACL, dataACL string) error) (string, error) {
+// reloads Exim and probes it (spec section 6.3 steps 3 to 5). hooks says
+// whether the result holds CSM hooks, which need the named lists.
+func (t *tx) exim(changes []change, hooks bool, verify func(conf, rcptACL, dataACL string) error) (string, error) {
 	for _, c := range changes {
 		if err := t.write(c); err != nil {
 			return StepEximFiles, err
@@ -371,7 +372,7 @@ func (t *tx) exim(changes []change, verify func(conf, rcptACL, dataACL string) e
 	if r := t.cmd(t.fwd, buildLimit, BuildEximConf); r.Err != nil {
 		return StepEximBuild, cmdErr("buildeximconf", r)
 	}
-	if err := t.validateExim(t.fwd); err != nil {
+	if err := t.validateExim(t.fwd, hooks); err != nil {
 		return StepEximBuild, err
 	}
 	opts, err := t.eximSettings(t.fwd)
@@ -455,11 +456,15 @@ func (t *tx) checkRollbackExim(ctx context.Context) error {
 	return antispam.CheckGeneratedBlocks(conf.content, t.eximBlocks)
 }
 
-// validateExim checks the generated configuration and the named lists the
-// hooks use (spec section 6.2 item 7).
-func (t *tx) validateExim(ctx context.Context) error {
+// validateExim checks the generated configuration and, when it holds CSM
+// hooks, the named lists they use (spec section 6.2 item 7). A missing list
+// makes the hooks defer mail, so taking them out must not depend on it.
+func (t *tx) validateExim(ctx context.Context, hooks bool) error {
 	if r := t.cmd(ctx, commandLimit, "exim", "-bV"); r.Err != nil {
 		return cmdErr("exim -bV", r)
+	}
+	if !hooks {
+		return nil
 	}
 	for _, probe := range antispam.NamedListProbes() {
 		r := t.cmd(ctx, commandLimit, "exim", "-C", t.h.path(antispam.GeneratedEximConfPath), "-be", probe)
@@ -580,7 +585,7 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 	if t.eximTouched {
 		if r := t.cmd(ctx, buildLimit, BuildEximConf); r.Err != nil {
 			errs = append(errs, cmdErr("buildeximconf", r))
-		} else if err := t.validateExim(ctx); err != nil {
+		} else if err := t.validateExim(ctx, len(t.eximBlocks) > 0); err != nil {
 			errs = append(errs, err)
 		} else if err := t.checkRollbackExim(ctx); err != nil {
 			errs = append(errs, err)
