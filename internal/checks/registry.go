@@ -277,6 +277,11 @@ var checkRegistry = []CheckInfo{
 
 	// --- Email & Phishing -----------------------------------------------
 	{Name: "credential_log_realtime", Category: CategoryEmail, Correlation: CorrelationSecurityEvent},
+	{Name: "antispam_apply_failed", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "antispam_precondition", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "antispam_rspamd_down", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "antispam_rspamd_recovered", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "antispam_scan_error", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "email_auth_failure_realtime", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonAttackerSide},
 	{Name: "email_cloud_relay_abuse", Category: CategoryEmail, Correlation: CorrelationSecurityEvent, Response: ResponsePolicy{Block: BlockAlways, Evidence: admission.FamilyMail, Basis: admission.BasisLocal}},
 	{Name: "email_av_degraded", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},

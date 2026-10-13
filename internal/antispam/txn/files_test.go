@@ -220,3 +220,30 @@ func TestReplaceFileRestoresSnapshotMetadata(t *testing.T) {
 		t.Errorf("restored mode = %v, want 0000", st.Mode().Perm())
 	}
 }
+
+// Once the link publishes a new file, cleaning up the temporary name is
+// housekeeping: the edit happened and must be reported, or rollback would
+// leave the new file behind.
+func TestReplaceFilePublishesNewFileWhenTempCleanupFails(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "new.conf")
+	var tempName string
+	removeTemp = func(name string) error {
+		tempName = name
+		return errors.New("cleanup failed")
+	}
+	t.Cleanup(func() { removeTemp = os.Remove })
+	if err := replaceFile(p, fileState{}, fileState{exists: true, content: "x\n"}); err != nil {
+		t.Fatalf("published file reported as failed: %v", err)
+	}
+	if got, err := os.ReadFile(p); err != nil || string(got) != "x\n" {
+		t.Fatalf("content %q, %v", got, err)
+	}
+	published, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leftover, err := os.Stat(tempName)
+	if err != nil || !os.SameFile(published, leftover) {
+		t.Fatalf("failed cleanup did not leave the published inode at the temporary name: %v", err)
+	}
+}

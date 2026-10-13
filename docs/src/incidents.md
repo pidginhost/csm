@@ -608,6 +608,11 @@ Attribution gaps:
 | `admin_panel_bruteforce` | ignored | attacker-side |  |
 | `af_alg_enforcement_corrected` | ignored | self-health |  |
 | `af_alg_socket_use` | security event |  |  |
+| `antispam_apply_failed` | ignored | self-health |  |
+| `antispam_precondition` | ignored | self-health |  |
+| `antispam_rspamd_down` | ignored | self-health |  |
+| `antispam_rspamd_recovered` | ignored | self-health |  |
+| `antispam_scan_error` | ignored | self-health |  |
 | `api_auth_failure` | ignored | attacker-side |  |
 | `api_auth_failure_realtime` | ignored | attacker-side |  |
 | `api_tokens` | ignored | informational |  |

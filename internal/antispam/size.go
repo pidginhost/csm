@@ -22,9 +22,10 @@ const sizeHeadroom = 1 << 20
 
 // EximSettingNames are the options the collector reads with one `exim -bP`.
 // CheckHost needs message_size_limit and log_file_path; the collector uses
-// the rest for Exim's identity and system filter.
+// exim_user, exim_group and system_filter, and reconcile the ACL names to
+// verify the generated configuration.
 func EximSettingNames() []string {
-	return []string{"message_size_limit", "log_file_path", "exim_user", "exim_group", "system_filter"}
+	return []string{"message_size_limit", "log_file_path", "exim_user", "exim_group", "system_filter", "acl_smtp_rcpt", "acl_smtp_data"}
 }
 
 // ParseEximSize reads a non-negative Exim integer with an optional sign

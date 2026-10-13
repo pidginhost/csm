@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // MaxRequestBytes bounds one worker request (spec section 4.2).
@@ -149,6 +150,11 @@ type Result struct {
 	// Generation identifies the installed content after a successful apply.
 	Generation string `json:"generation,omitempty"`
 	Error      string `json:"error,omitempty"`
+}
+
+// ErrorSummary keeps Result.Error on one line for logs and findings.
+func ErrorSummary(s string) string {
+	return strings.NewReplacer("\r\n", "; ", "\r", "; ", "\n", "; ").Replace(s)
 }
 
 var resultKeys = map[string]bool{

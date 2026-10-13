@@ -55,6 +55,11 @@ func TestPublishFileDoesNotOverwriteNewDestination(t *testing.T) {
 	if st, err := readFile(p); err != nil || st.content != "external creation" {
 		t.Fatalf("external creation overwritten: %+v, %v", st, err)
 	}
+	discardTemp(tmp)
+	entries, err := os.ReadDir(filepath.Dir(p))
+	if err != nil || len(entries) != 1 || entries[0].Name() != "hook" {
+		t.Fatalf("temporary files remain after failed link: %v, %v", entries, err)
+	}
 }
 
 func stagedTestFile(t *testing.T, p string) *os.File {

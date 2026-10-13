@@ -117,6 +117,12 @@ metadata:
 	return out, true
 }
 
+// MessagePrefix reports whether prefix is exactly what Exim writes before a
+// message's log text: date, time, optional zone and PID, and message ID.
+func MessagePrefix(prefix string) bool {
+	return arrivalPrefix(prefix)
+}
+
 // An arrival must start with a date, time, optional zone/PID and message ID.
 // A <= fragment in a delivery reply or subject cannot supply an identity.
 func arrivalPrefix(prefix string) bool {

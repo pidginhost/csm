@@ -428,3 +428,74 @@ func FuzzDecodeRecord(f *testing.F) {
 		}
 	})
 }
+
+func FuzzScanMarker(f *testing.F) {
+	for _, seed := range []string{
+		markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=0 action="no action" decision=none`,
+		markerPrefix + `CSM-ANTISPAM event=scan mode=dry-run policy=off result=error score=none action="unavailable" decision=none`,
+		"2026-10-09 08:19:03 H=(CSM-ANTISPAM event=scan) [192.0.2.1]",
+		"0000-10-01\r0:00:00 0-0-0 CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=0 action=\"\" decision=none",
+		strings.Replace(markerPrefix, " ", "\u0085", 1) + `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=0 action="" decision=none`,
+		"", "CSM-ANTISPAM", " CSM-ANTISPAM ",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, line string) {
+		marker, ok := ScanMarker(line)
+		if ok && !marker {
+			t.Fatal("a successful scan outside a marker")
+		}
+		if marker && (!strings.Contains(line, " CSM-ANTISPAM event=scan mode=") || strings.ContainsAny(line, "\r\n")) {
+			t.Fatalf("accepted %q", line)
+		}
+		if marker {
+			for _, r := range line {
+				if r < ' ' || r > '~' {
+					t.Fatalf("accepted non-printable ASCII character %U", r)
+				}
+			}
+		}
+	})
+}
+
+// Cover every renderer branch with scores from Exim's signed integer output
+// and arbitrary scanner actions sanitized by the hook's [^a-z ] replacement.
+func FuzzScanMarkerValues(f *testing.F) {
+	for _, score := range []int32{-2147483648, -1, 0, 59, 60, 149, 150, 2147483647} {
+		for _, action := range []string{"", "no action", "add header", "soft reject", "reject", "A_1-\"\r\n\x00\u0085"} {
+			f.Add(score, action)
+		}
+	}
+	f.Fuzz(func(t *testing.T, score int32, action string) {
+		var sanitized strings.Builder
+		for i := 0; i < len(action); i++ {
+			c := action[i]
+			if c != ' ' && (c < 'a' || c > 'z') {
+				c = '_'
+			}
+			sanitized.WriteByte(c)
+		}
+		for _, mode := range []string{"enforce", "dry-run"} {
+			for _, policy := range []string{"on", "off"} {
+				decision := "none"
+				switch {
+				case policy == "off":
+					decision = "unfiltered"
+				case score >= DefaultRejectScore*10:
+					decision = "reject"
+				case score >= DefaultTagScore*10:
+					decision = "tag"
+				}
+				prefix := markerPrefix + "CSM-ANTISPAM event=scan mode=" + mode + " policy=" + policy
+				line := prefix + " result=ok score=" + strconv.FormatInt(int64(score), 10) + ` action="` + sanitized.String() + `" decision=` + decision
+				if marker, ok := ScanMarker(line); !marker || !ok {
+					t.Fatalf("rejected successful scan %q: %t, %t", line, marker, ok)
+				}
+				line = prefix + ` result=error score=none action="unavailable" decision=none`
+				if marker, ok := ScanMarker(line); !marker || ok {
+					t.Fatalf("rejected scan error %q: %t, %t", line, marker, ok)
+				}
+			}
+		}
+	})
+}

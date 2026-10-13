@@ -184,20 +184,20 @@ func TestReadRegularContent(t *testing.T) {
 	d := t.TempDir()
 	p := filepath.Join(d, "file")
 	write(t, p, antispam.ManagedHeader+"\n")
-	got, err := readRegularContent(p)
+	got, err := readRegularContent(p, maxConfigBytes)
 	if err != nil || got != antispam.ManagedHeader+"\n" {
 		t.Fatalf("regular file: got=%q err=%v", got, err)
 	}
 	symlink(t, "file", filepath.Join(d, "link"))
-	if got, err := readRegularContent(filepath.Join(d, "link")); err == nil || got != "" {
+	if got, err := readRegularContent(filepath.Join(d, "link"), maxConfigBytes); err == nil || got != "" {
 		t.Errorf("symlink read: got=%q err=%v", got, err)
 	}
 	mkdir(t, filepath.Join(d, "dir"))
-	if got, err := readRegularContent(filepath.Join(d, "dir")); err == nil || got != "" {
+	if got, err := readRegularContent(filepath.Join(d, "dir"), maxConfigBytes); err == nil || got != "" {
 		t.Errorf("directory read: got=%q err=%v", got, err)
 	}
 	symlink(t, ".", filepath.Join(d, "linkdir"))
-	if got, err := readRegularContent(filepath.Join(d, "linkdir", "file")); err == nil || got != "" {
+	if got, err := readRegularContent(filepath.Join(d, "linkdir", "file"), maxConfigBytes); err == nil || got != "" {
 		t.Errorf("symlinked parent read: got=%q err=%v", got, err)
 	}
 }

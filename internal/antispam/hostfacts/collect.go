@@ -33,6 +33,7 @@ type Layout struct {
 	LocalConf     string
 	SpamdDisabled string
 	GlobalEnable  string
+	Record        string
 	Targets       []antispam.Target
 }
 
@@ -53,6 +54,7 @@ func live() collector {
 			LocalConf:     antispam.LocalEximConfPath,
 			SpamdDisabled: "/etc/spamddisable",
 			GlobalEnable:  "/etc/global_spamassassin_enable",
+			Record:        antispam.RecordPath,
 			Targets:       antispam.MutationTargets(),
 		},
 		cpanel:   func() bool { return platform.Detect().IsCPanel() },
@@ -81,6 +83,8 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	f.RspamdVersion = c.run(ctx, "rspamd", "--version")
 	f.RspamadmVersion = c.run(ctx, "rspamadm", "--version")
 	f.RspamdOptions = c.run(ctx, "rspamadm", "configdump", "-j", "options")
+	f.RspamdActions = c.run(ctx, "rspamadm", "configdump", "-j", "actions")
+	f.RspamdModules = c.run(ctx, "rspamadm", "configdump", "-m")
 	f.RspamdService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...)
 	f.EximService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.EximUnit)...)
 	_, f.SystemdRunErr = c.lookPath("systemd-run")
@@ -108,12 +112,37 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 		f.SystemFilter, f.SystemFilterErr = readText(name)
 	}
 	f.Targets = Targets(c.layout.Targets)
+	f.Record = c.record()
 
 	f.Socket = socketFacts(ctx, socket)
 	f.Socket.RspamdUID = c.serviceUser(f.RspamdService)
 	f.Socket.EximUID = id(settings["exim_user"], c.uid)
 	f.Socket.EximGID = id(settings["exim_group"], c.gid)
 	return f
+}
+
+// CollectInstalled reads only what shows whether CSM's integration is on
+// the host: the files CSM writes, the generated Exim configuration and the
+// completion record. It leaves other facts unset, including platform facts
+// whose detection can run commands.
+func CollectInstalled() antispam.HostFacts {
+	return live().installed()
+}
+
+func (c collector) installed() antispam.HostFacts {
+	var f antispam.HostFacts
+	f.GeneratedConf, f.GeneratedErr = readText(c.layout.GeneratedConf)
+	f.Targets = Targets(c.layout.Targets)
+	f.Record = c.record()
+	return f
+}
+
+func (c collector) record() antispam.RecordFacts {
+	content, err := readRegularContent(c.layout.Record, antispam.MaxRecordBytes)
+	if errors.Is(err, fs.ErrNotExist) {
+		return antispam.RecordFacts{Missing: true}
+	}
+	return antispam.RecordFacts{Content: content, Err: err}
 }
 
 // serviceUser returns the scanner uid, or -1 when it cannot be inferred.
@@ -210,16 +239,16 @@ func readText(p string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", errors.New("configuration is not a regular file")
 	}
-	return readConfigContent(file)
+	return readConfigContent(file, maxConfigBytes)
 }
 
-func readConfigContent(r io.Reader) (string, error) {
-	data, err := io.ReadAll(io.LimitReader(r, maxConfigBytes+1))
+func readConfigContent(r io.Reader, maxBytes int64) (string, error) {
+	data, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
 	switch {
 	case err != nil:
 		return "", err
-	case len(data) > maxConfigBytes:
-		return "", fmt.Errorf("configuration is larger than %d bytes", maxConfigBytes)
+	case int64(len(data)) > maxBytes:
+		return "", fmt.Errorf("file is larger than %d bytes", maxBytes)
 	}
 	return string(data), nil
 }

@@ -110,6 +110,13 @@ type HostFacts struct {
 	EximSettings CommandResult
 	// RspamdOptions is `rspamadm configdump -j options`.
 	RspamdOptions CommandResult
+	// RspamdActions is `rspamadm configdump -j actions` and RspamdModules
+	// `rspamadm configdump -m`: the loaded settings reconcile compares with
+	// CSM's once CSM's files are installed.
+	RspamdActions CommandResult
+	RspamdModules CommandResult
+	// Record is CSM's completion record as found on disk.
+	Record RecordFacts
 	// MonitoredLog is the Exim main log CSM reads markers from.
 	MonitoredLog string
 	// SystemdRunErr is nil when systemd-run is on PATH.
@@ -196,7 +203,7 @@ func CheckHost(f HostFacts) []Problem {
 	}
 
 	if f.EximSettings.Err != nil {
-		add(CodeEximOptions, Temporary, "exim -bP failed; check Exim availability and configuration")
+		add(CodeEximOptions, Temporary, "exim -bP for the message size limit, log path and Exim user failed; check Exim availability and configuration")
 	} else {
 		settings := ParseEximOptions(f.EximSettings.Stdout)
 		out = append(out, checkMessageSize(settings, f.RspamdOptions)...)

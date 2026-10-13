@@ -487,3 +487,19 @@ func TestCheckHostSocketParentOwnersSurviveUnavailableSocket(t *testing.T) {
 		})
 	}
 }
+
+// Two different exim -bP commands fail with two different diagnostics.
+func TestCheckHostNamesEachEximOptionQuery(t *testing.T) {
+	f := goodFacts()
+	f.EximOptions.Err = errors.New("exit status 1")
+	f.EximSettings.Err = errors.New("exit status 1")
+	var details []string
+	for _, p := range CheckHost(f) {
+		if p.Code == CodeEximOptions {
+			details = append(details, p.Detail)
+		}
+	}
+	if len(details) != 2 || details[0] == details[1] {
+		t.Fatalf("exim -bP failures: %q", details)
+	}
+}

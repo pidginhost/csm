@@ -134,9 +134,12 @@ func writeAtomic(p, content string, perm fs.FileMode, uid, gid int) error {
 	return publishFile(p, tmp, perm, uid, gid, true)
 }
 
+// removeTemp deletes a temporary file; tests replace it.
+var removeTemp = os.Remove
+
 func discardTemp(tmp *os.File) {
 	_ = tmp.Close()
-	_ = os.Remove(tmp.Name())
+	_ = removeTemp(tmp.Name())
 }
 
 func stageFile(p, content string) (*os.File, error) {
@@ -188,9 +191,8 @@ func publishFile(p string, tmp *os.File, perm fs.FileMode, uid, gid int, replace
 			}
 			return err
 		}
-		if err := os.Remove(tmp.Name()); err != nil {
-			return err
-		}
+		// The file is published; the caller's discardTemp removes the
+		// temporary name, and a failure there leaves only a dotfile.
 	}
 	if err := syncDir(filepath.Dir(p)); err != nil {
 		return fmt.Errorf("%w: %w", errDurability, err)

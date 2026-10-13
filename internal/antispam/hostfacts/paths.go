@@ -121,7 +121,7 @@ func lookupNames(p string) []string {
 	return out
 }
 
-func readRegularContent(p string) (string, error) {
+func readRegularContent(p string, maxBytes int64) (string, error) {
 	dir, err := safepath.OpenDirNoFollow(filepath.Dir(p))
 	if err != nil {
 		return "", err
@@ -137,9 +137,9 @@ func readRegularContent(p string) (string, error) {
 		return "", err
 	}
 	if !info.Mode().IsRegular() {
-		return "", errors.New("mutation target is not a regular file")
+		return "", errors.New("file is not a regular file")
 	}
-	return readConfigContent(file)
+	return readConfigContent(file, maxBytes)
 }
 
 // Targets describes each mutation target, in order, as Collect does.
@@ -171,7 +171,7 @@ func targetFacts(t antispam.Target) antispam.TargetFacts {
 	}
 	f.File = facts
 	if targetSafeToRead(f) {
-		f.Content, f.Err = readRegularContent(t.Path)
+		f.Content, f.Err = readRegularContent(t.Path, maxConfigBytes)
 	}
 	return f
 }
