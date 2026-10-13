@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -368,20 +369,21 @@ func enableAntispam(t *testing.T, d *Daemon, enabled bool) {
 }
 
 // usePing replaces the rspamd probe; each call takes the next result.
-func usePing(t *testing.T, results ...error) *int {
+func usePing(t *testing.T, results ...error) *atomic.Int64 {
 	t.Helper()
-	calls := new(int)
+	calls := new(atomic.Int64)
 	prev := antispamPing
 	t.Cleanup(func() { antispamPing = prev })
 	antispamPing = func(_ context.Context, socket string) (int, error) {
 		if socket != testScanSocket {
 			t.Errorf("probed %q", socket)
 		}
-		if *calls >= len(results) {
-			t.Fatalf("unexpected probe %d", *calls+1)
+		call := calls.Add(1)
+		if call > int64(len(results)) {
+			t.Errorf("unexpected probe %d", call)
+			return -1, errors.New("unexpected probe")
 		}
-		*calls++
-		return 0, results[*calls-1]
+		return 0, results[call-1]
 	}
 	return calls
 }
@@ -400,11 +402,10 @@ func captureDispatch(t *testing.T) *[]alert.Finding {
 	return &delivered
 }
 
-func probeTimes(d *Daemon, n int, start time.Time, last string) string {
+func probeTimes(d *Daemon, n int, start time.Time) {
 	for i := range n {
-		last = d.probeAntispam(context.Background(), start.Add(time.Duration(i)*20*time.Second), last)
+		d.probeAntispam(context.Background(), start.Add(time.Duration(i)*20*time.Second))
 	}
-	return last
 }
 
 // An outage notifies once and a recovery once, through history and
@@ -418,21 +419,21 @@ func TestAntispamProbeReportsOutageAndRecovery(t *testing.T) {
 	delivered := captureDispatch(t)
 	now := time.Now()
 
-	last := probeTimes(d, 4, now, "")
+	probeTimes(d, 4, now)
 	if len(*delivered) != 1 || (*delivered)[0].Check != reconcile.CheckRspamdDown {
 		t.Fatalf("down notices %+v", *delivered)
 	}
 	if got := latestChecks(d); got[reconcile.CheckRspamdDown] != 1 {
 		t.Fatalf("latest during the outage: %v", got)
 	}
-	last = probeTimes(d, 2, now.Add(time.Minute), last)
+	probeTimes(d, 2, now.Add(time.Minute))
 	if len(*delivered) != 2 || (*delivered)[1].Check != reconcile.CheckRspamdRecovered {
 		t.Fatalf("recovery notices %+v", *delivered)
 	}
 	if got := latestChecks(d); got[reconcile.CheckRspamdDown] != 0 || got[reconcile.CheckRspamdRecovered] != 0 {
 		t.Fatalf("latest after recovery: %v", got)
 	}
-	probeTimes(d, 3, now.Add(2*time.Minute), last)
+	probeTimes(d, 3, now.Add(2*time.Minute))
 	if len(*delivered) != 3 || (*delivered)[2].Check != reconcile.CheckRspamdDown {
 		t.Fatalf("second outage the same day: %+v", *delivered)
 	}
@@ -451,15 +452,15 @@ func TestAntispamProbeStopsWhenDisabled(t *testing.T) {
 	calls := usePing(t, refused, refused, refused)
 	delivered := captureDispatch(t)
 	d.antispamHealth.Line(scanErrorLine, time.Now())
-	last := probeTimes(d, 3, time.Now(), "")
+	probeTimes(d, 3, time.Now())
 	if got := latestChecks(d); got[reconcile.CheckRspamdDown] != 1 || got[reconcile.CheckScanError] != 1 {
 		t.Fatalf("latest while enabled: %v", got)
 	}
 
 	enableAntispam(t, d, false)
-	probeTimes(d, 2, time.Now().Add(time.Minute), last)
-	if *calls != 3 {
-		t.Fatalf("probes sent while disabled: %d", *calls-3)
+	probeTimes(d, 2, time.Now().Add(time.Minute))
+	if calls.Load() != 3 {
+		t.Fatalf("probes sent while disabled: %d", calls.Load()-3)
 	}
 	if got := latestChecks(d); got[reconcile.CheckRspamdDown] != 0 || got[reconcile.CheckScanError] != 0 {
 		t.Fatalf("latest after disable: %v", got)
@@ -473,17 +474,32 @@ func TestAntispamProbeStopsWhenDisabled(t *testing.T) {
 func TestAntispamProbeIgnoresCanceledProbe(t *testing.T) {
 	d := newTestDaemon(t)
 	enableAntispam(t, d, true)
-	prev := antispamPing
-	t.Cleanup(func() { antispamPing = prev })
-	antispamPing = func(ctx context.Context, _ string) (int, error) { return -1, ctx.Err() }
+	refused := errors.New("connection refused")
+	usePing(t, refused, refused, refused)
 	delivered := captureDispatch(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	for i := range 5 {
-		d.probeAntispam(ctx, time.Now().Add(time.Duration(i)*time.Second), "")
+	probeTimes(d, 2, time.Now())
+	ping := antispamPing
+	entered, done := make(chan struct{}), make(chan struct{})
+	antispamPing = func(ctx context.Context, _ string) (int, error) {
+		close(entered)
+		<-ctx.Done()
+		return -1, ctx.Err()
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		d.probeAntispam(ctx, time.Now())
+		close(done)
+	}()
+	<-entered
+	cancel()
+	<-done
+	antispamPing = ping
 	if len(*delivered) != 0 || len(d.antispamHealth.Active()) != 0 {
 		t.Fatalf("canceled probes raised %+v", *delivered)
+	}
+	probeTimes(d, 1, time.Now())
+	if len(*delivered) != 1 || (*delivered)[0].Check != reconcile.CheckRspamdDown {
+		t.Fatalf("cancellation changed the previous failure count: %+v", *delivered)
 	}
 }
 
@@ -505,6 +521,29 @@ func TestStartAntispamClearsStaleHealthFindings(t *testing.T) {
 	d.wg.Wait()
 	if got := latestChecks(d); got[reconcile.CheckRspamdDown] != 0 {
 		t.Fatalf("stale health finding survived startup: %v", got)
+	}
+}
+
+// A reload before the loop is published must still reach initial health.
+func TestStartAntispamKeepsReloadDuringSetup(t *testing.T) {
+	usePanel(t, platform.PanelCPanel)
+	useAntispamHost(t)
+	d := newTestDaemon(t)
+	useActiveConfig(t, d.cfg)
+	factory := antispamReconciler
+	antispamReconciler = func() reconcile.Reconciler {
+		cfg := &config.Config{}
+		cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, DryRun: true, RspamdSocket: testScanSocket, RejectScore: 15, TagScore: 6}
+		config.SetActive(cfg)
+		d.reconcileAntispam()
+		return factory()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	d.scanCtx, d.scanCancel = ctx, cancel
+	t.Cleanup(func() { cancel(); d.wg.Wait() })
+	d.startAntispam()
+	if got := d.antispamHealth.Line(scanErrorLine, time.Now()); len(got) != 1 || got[0].Check != reconcile.CheckScanError {
+		t.Fatalf("startup lost the reloaded antispam switch: %+v", got)
 	}
 }
 
@@ -660,5 +699,214 @@ func TestConfigReloadDoesNotWaitForARunningPass(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("reload waited for the running antispam pass")
+	}
+}
+
+func TestAntispamReloadClearsLatestHealth(t *testing.T) {
+	for _, disable := range []bool{true, false} {
+		name := "socket change"
+		if disable {
+			name = "disable"
+		}
+		t.Run(name, func(t *testing.T) {
+			d := newTestDaemon(t)
+			enableAntispam(t, d, true)
+			d.antispamLoop.Store(reconcile.NewLoop(nil, nil))
+			refused := errors.New("connection refused")
+			usePing(t, refused, refused, refused)
+			delivered := captureDispatch(t)
+			d.antispamHealth.Line(scanErrorLine, time.Now())
+			probeTimes(d, 3, time.Now())
+			if got := latestChecks(d); got[reconcile.CheckRspamdDown] != 1 || got[reconcile.CheckScanError] != 1 {
+				t.Fatalf("latest before reload: %v", got)
+			}
+
+			cfg := *d.currentCfg()
+			if disable {
+				cfg.EmailProtection.Antispam.Enabled = false
+			} else {
+				cfg.EmailProtection.Antispam.RspamdSocket = "/run/rspamd/other.sock"
+			}
+			config.SetActive(&cfg)
+			d.reconcileAntispam()
+			wantScans := 1
+			if disable {
+				wantScans = 0
+			}
+			if got := latestChecks(d); got[reconcile.CheckRspamdDown] != 0 || got[reconcile.CheckScanError] != wantScans {
+				t.Fatalf("latest immediately after reload: %v", got)
+			}
+			if len(*delivered) != 1 {
+				t.Fatalf("reload sent a notice: %+v", *delivered)
+			}
+		})
+	}
+}
+
+// Notification sinks must not hold up the current condition or config reload.
+func TestAntispamPublishesHealthBeforeNotification(t *testing.T) {
+	for _, recovery := range []bool{false, true} {
+		name := "down"
+		if recovery {
+			name = "recovery"
+		}
+		t.Run(name, func(t *testing.T) {
+			d := newTestDaemon(t)
+			enableAntispam(t, d, true)
+			refused := errors.New("connection refused")
+			usePing(t, refused, refused, refused, nil, nil)
+			now := time.Now()
+			before := 2
+			if recovery {
+				before = 4
+			}
+			probeTimes(d, before, now)
+			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			releaseDispatch := sync.OnceFunc(func() { close(release) })
+			prev := alert.CentralHook
+			alert.SetCentralHook(func(alert.Finding) {
+				close(entered)
+				<-release
+			})
+			t.Cleanup(func() {
+				releaseDispatch()
+				<-done
+				alert.SetCentralHook(prev)
+			})
+			go func() {
+				d.probeAntispam(context.Background(), now.Add(2*time.Minute))
+				close(done)
+			}()
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatal("notification did not start")
+			}
+			wantDown := 1
+			if recovery {
+				wantDown = 0
+			}
+			if got := latestChecks(d); got[reconcile.CheckRspamdDown] != wantDown {
+				t.Errorf("latest while notification is blocked: %v", got)
+			}
+			cfg := *d.currentCfg()
+			cfg.EmailProtection.Antispam.Enabled = false
+			config.SetActive(&cfg)
+			reloaded := make(chan struct{})
+			t.Cleanup(func() { releaseDispatch(); <-reloaded })
+			go func() {
+				d.syncAntispamHealth()
+				close(reloaded)
+			}()
+			select {
+			case <-reloaded:
+			case <-time.After(5 * time.Second):
+				t.Fatal("notification blocked config reload")
+			}
+			if got := latestChecks(d); got[reconcile.CheckRspamdDown] != 0 {
+				t.Errorf("disable kept latest while notification is blocked: %v", got)
+			}
+		})
+	}
+}
+
+func TestAntispamHealthLoopProbeSchedule(t *testing.T) {
+	d := newTestDaemon(t)
+	enableAntispam(t, d, true)
+	calls := usePing(t, nil, nil)
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			d.antispamHealthLoop(ctx)
+			close(done)
+		}()
+		synctest.Wait()
+		time.Sleep(19 * time.Second)
+		synctest.Wait()
+		if calls.Load() != 0 {
+			t.Fatalf("probe ran before its interval: %d calls", calls.Load())
+		}
+		time.Sleep(time.Second)
+		synctest.Wait()
+		if calls.Load() != 1 {
+			t.Fatalf("first interval: %d calls", calls.Load())
+		}
+		enableAntispam(t, d, false)
+		time.Sleep(40 * time.Second)
+		synctest.Wait()
+		if calls.Load() != 1 {
+			t.Fatalf("disabled loop probed: %d calls", calls.Load())
+		}
+		enableAntispam(t, d, true)
+		time.Sleep(20 * time.Second)
+		synctest.Wait()
+		if calls.Load() != 2 {
+			t.Fatalf("re-enabled loop did not probe: %d calls", calls.Load())
+		}
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("probe loop outlived shutdown")
+		}
+	})
+}
+
+// A socket name can be reused after a reset while an old probe is in flight.
+func TestAntispamProbeIgnoresPreviousGeneration(t *testing.T) {
+	for _, change := range []string{"disable and enable", "socket round trip", "unrelated reload"} {
+		t.Run(change, func(t *testing.T) {
+			d := newTestDaemon(t)
+			enableAntispam(t, d, true)
+			refused := errors.New("connection refused")
+			usePing(t, refused, refused, refused, refused, refused, refused)
+			delivered := captureDispatch(t)
+			now := time.Now()
+			probeTimes(d, 2, now)
+			ping := antispamPing
+			entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			antispamPing = func(context.Context, string) (int, error) {
+				close(entered)
+				<-release
+				return -1, refused
+			}
+			go func() {
+				d.probeAntispam(context.Background(), now.Add(time.Minute))
+				close(done)
+			}()
+			<-entered
+			cfg := *d.currentCfg()
+			switch change {
+			case "disable and enable":
+				cfg.EmailProtection.Antispam.Enabled = false
+			case "socket round trip":
+				cfg.EmailProtection.Antispam.RspamdSocket = "/run/rspamd/other.sock"
+			case "unrelated reload":
+				cfg.EmailProtection.Antispam.TagScore++
+			}
+			config.SetActive(&cfg)
+			d.syncAntispamHealth()
+			enableAntispam(t, d, true)
+			close(release)
+			<-done
+			antispamPing = ping
+			if change == "unrelated reload" {
+				if len(*delivered) != 1 {
+					t.Fatalf("unrelated reload discarded a probe: %+v", *delivered)
+				}
+				return
+			}
+			probeTimes(d, 2, now.Add(2*time.Minute))
+			if len(*delivered) != 0 || len(d.antispamHealth.Active()) != 0 {
+				t.Fatalf("old probe counted toward a new outage: %+v", *delivered)
+			}
+			probeTimes(d, 1, now.Add(3*time.Minute))
+			if len(*delivered) != 1 || (*delivered)[0].Check != reconcile.CheckRspamdDown {
+				t.Fatalf("new outage did not notify: %+v", *delivered)
+			}
+		})
 	}
 }

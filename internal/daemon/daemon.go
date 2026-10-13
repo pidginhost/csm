@@ -130,7 +130,7 @@ type Daemon struct {
 	antispamLoop atomic.Pointer[reconcile.Loop]
 	// antispamHealth tracks rspamd's scan socket and Exim's scan markers
 	// while antispam is enabled.
-	antispamHealth reconcile.Health
+	antispamHealth antispamHealthState
 	// forwardGuardMu prevents overlapping attempts from applying stale config.
 	forwardGuardMu sync.Mutex
 	// forwardGuardRetry retains failed or deferred reconcile requests.
