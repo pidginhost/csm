@@ -65,7 +65,7 @@ func TestOwnerFixtureKeepsPreviewTurnsManual(t *testing.T) {
 		if n := outcomes(ledgerStatus(t, o), admission.DispositionObserve); n != 0 || len(queuedCandidates(t, o)) != 1 {
 			t.Fatalf("manual timers ran a preview: %d observed, %d queued", n, len(queuedCandidates(t, o)))
 		}
-		if err := o.do(o.preview); err != nil {
+		if err := o.do(o.turn); err != nil {
 			t.Fatal(err)
 		}
 		if n := outcomes(ledgerStatus(t, o), admission.DispositionObserve); n != 1 || len(queuedCandidates(t, o)) != 0 {
@@ -419,7 +419,7 @@ func TestOwnerPreviewRetryKeepsItsReservedExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.host.advance(time.Second)
-	if err := o.do(o.preview); err != nil {
+	if err := o.do(o.turn); err != nil {
 		t.Fatal(err)
 	}
 	if err := o.do(func() error {

@@ -501,7 +501,8 @@ Durable updates compare absolute expiries before encoding timeouts, so
 millisecond rounding does not replace unchanged timed blocks.
 
 The engine also provides internal batch entry points for up to 64 timed
-full-address blocks. No production caller uses them yet. Each member is
+full-address blocks. The admission owner runs them only when the daemon gives
+it an engine, and production gives none until cutover. Each member is
 checked against one state and kernel snapshot over bounded fresh sockets;
 unreadable state refuses the whole call. Expired rows remain available for
 kernel cleanup in both the intent and restored state. Rejected members
@@ -524,6 +525,13 @@ tracker entries. They do not count as enforced blocks or select threat evidence
 for operator flush cleanup. Live deny limits count their kernel elements using
 kernel timeouts rather than the unresolved rows' requested lifetimes, including
 replacement accounting. Permanent promotion requires a verified block row.
+
+With an engine, each owner turn runs its `block_ip` picks as one batch. The
+engine checks every member against one snapshot before anything is reserved.
+A full set defers a member; an existing effect, an invalid or protected
+address or a spent lifetime ends it without a charge. The rest are reserved,
+recorded as running with their intents, applied and finished by their own
+effect. Every other kind is still previewed.
 
 ### Attack event storage
 

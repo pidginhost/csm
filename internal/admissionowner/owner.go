@@ -52,6 +52,10 @@ var drainGroupOf = func(in *admission.Ingress, l *store.AdmissionLedger, items [
 var (
 	scheduleLedger = (*store.AdmissionLedger).Schedule
 	monoNow        = time.Now
+	// executeLedger records a batch as running; tests make it refuse.
+	executeLedger = (*store.AdmissionLedger).ExecuteBatch
+	reserveLedger = (*store.AdmissionLedger).Reserve
+	finishLedger  = (*store.AdmissionLedger).Finish
 )
 
 // previewLimits lets a schedule serve whatever the ledger's budgets allow,
@@ -86,6 +90,10 @@ type Options struct {
 	Expiry func(admission.Candidate) time.Duration
 	// Caps are the firewall's containment capabilities block targets fit.
 	Caps func() admission.Caps
+	// Blocks returns the firewall engine that runs block_ip picks, or nil
+	// while none runs. Without Blocks every pick is a preview: production
+	// passes none until cutover (P2).
+	Blocks func() BlockEngine
 	// Timer periods; zero selects the defaults.
 	TickEvery, InventoryEvery, StatusEvery, DeliverEvery, NoticeEvery, DrainEvery, ScheduleEvery time.Duration
 }
@@ -100,8 +108,8 @@ type request struct {
 // Owner is the daemon's one handle on the admission ledger. One goroutine
 // makes every call that changes the ledger, so sequences such as a tick
 // followed by a new limit never interleave with another change (spec 5.4).
-// It serves its queue as observe previews: nothing it admits is executed
-// until the applier exists.
+// It serves its queue as observe previews unless an engine runs its block
+// picks (Options.Blocks).
 type Owner struct {
 	opts      Options
 	stopping  atomic.Bool
@@ -621,7 +629,7 @@ func (o *Owner) schedule() {
 		return
 	}
 	o.scheduleDue, o.wakeAt = false, time.Time{}
-	err := o.preview()
+	err := o.turn()
 	if err != nil {
 		o.scheduleDue = true
 		o.scheduleWait.fail(monoNow(), defaultScheduleEvery)
@@ -635,15 +643,16 @@ func (o *Owner) schedule() {
 	o.scheduleErr = err
 }
 
-// preview serves the queue's picks as observe previews, after a fresh
-// reading (O9): each is reserved and charged as live work would be and
-// ends in the same transaction without running (O14). The schedule has
-// already deferred the work its budgets cannot serve and revalidated each
-// pick under the same state. A terminal refusal ends only that pick, so an
-// invalid selected lifetime cannot starve the queue. Other failures retry
-// the turn. The ledger's wake time, converted by the admission clock's
-// elapsed time, sets the next turn (O16).
-func (o *Owner) preview() error {
+// turn serves the queue's picks after a fresh reading (O9). With an engine
+// (Options.Blocks) its block_ip picks run as one batch (execute). Every
+// other pick is an observe preview: reserved and charged as live work
+// would be and ended in the same transaction without running (O14). The
+// schedule has already deferred the work its budgets cannot serve and
+// revalidated each pick under the same state. A terminal refusal ends only
+// that pick, so an invalid selected lifetime cannot starve the queue.
+// Other failures retry the turn. The ledger's wake time, converted by the
+// admission clock's elapsed time, sets the next turn (O16).
+func (o *Owner) turn() error {
 	if err := o.tick(); err != nil {
 		return err
 	}
@@ -651,20 +660,17 @@ func (o *Owner) preview() error {
 	if err != nil {
 		return fmt.Errorf("scheduling the queue: %w", err)
 	}
+	var blocks []execPick
 	for _, p := range picks {
 		c, readErr := o.ledger.Candidate(p.ID)
 		if readErr != nil {
 			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
 		}
-		expires := c.ExpiresAt
-		if c.Attempts == 0 {
-			duration := c.PreviewTTL
-			if duration == 0 {
-				duration = o.opts.Expiry(c)
-			}
-			expires = o.now.Add(duration)
+		if o.opts.Blocks != nil && c.Key.Kind == admission.KindBlockIP {
+			blocks = append(blocks, execPick{pick: p, c: c})
+			continue
 		}
-		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, expires); err != nil {
+		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, o.expiryOf(c)); err != nil {
 			if reason, refused := admission.ReasonOf(err); refused {
 				switch reason.Disposition() {
 				case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
@@ -678,6 +684,11 @@ func (o *Owner) preview() error {
 			return fmt.Errorf("previewing pick %s: %w", p.ID, err)
 		}
 		o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
+	}
+	if len(blocks) > 0 {
+		if err = o.execute(blocks); err != nil {
+			return err
+		}
 	}
 	if err = o.publish(); err != nil {
 		return err
@@ -694,6 +705,20 @@ func (o *Owner) preview() error {
 		}
 	}
 	return nil
+}
+
+// expiryOf is the absolute expiry of a pick's next attempt: a retry keeps
+// its first attempt's; a first attempt lasts the selected legacy lifetime,
+// or the configured response's.
+func (o *Owner) expiryOf(c admission.Candidate) time.Time {
+	if c.Attempts > 0 {
+		return c.ExpiresAt
+	}
+	duration := c.PreviewTTL
+	if duration == 0 {
+		duration = o.opts.Expiry(c)
+	}
+	return o.now.Add(duration)
 }
 
 // countArrival counts the ledger's decision on one drained arrival.

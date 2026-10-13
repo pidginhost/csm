@@ -51,6 +51,12 @@ func queued(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev a
 // queuedAt queues a block of addr from a root of its own.
 func queuedAt(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity, addr string) (admission.CandidateID, time.Time) {
 	t.Helper()
+	return queuedKind(t, o, p, host, sev, addr, admission.KindBlockIP)
+}
+
+// queuedKind queues a candidate of kind at addr from a root of its own.
+func queuedKind(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity, addr string, kind admission.Kind) (admission.CandidateID, time.Time) {
+	t.Helper()
 	var id admission.CandidateID
 	host.mu.Lock()
 	now := host.wall
@@ -75,7 +81,7 @@ func queuedAt(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev
 		if err != nil {
 			return err
 		}
-		c, _, err := o.ledger.Enqueue(admission.CandidateRequest{Kind: admission.KindBlockIP, Target: target, Episode: ep, Generation: 1, Primary: e.ID()})
+		c, _, err := o.ledger.Enqueue(admission.CandidateRequest{Kind: kind, Target: target, Episode: ep, Generation: 1, Primary: e.ID()})
 		if err != nil {
 			return err
 		}

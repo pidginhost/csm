@@ -46,7 +46,7 @@ func TestDecisionCountsIncludeTerminatedPreviews(t *testing.T) {
 	}
 	f.host.advance(time.Hour)
 	for range 2 {
-		if err := o.do(o.preview); err != nil {
+		if err := o.do(o.turn); err != nil {
 			t.Fatal(err)
 		}
 	}
