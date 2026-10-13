@@ -338,3 +338,41 @@ func TestPassObservePreconditionsDescribeNoChanges(t *testing.T) {
 		})
 	}
 }
+
+// A reporter replaces the latest findings of exactly the checks a pass
+// settled. A canceled pass settles nothing, and a busy one leaves the last
+// apply result in place until the retry.
+func TestPassNamesTheChecksItSettled(t *testing.T) {
+	both := []string{CheckPrecondition, CheckApplyFailed}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, tc := range []struct {
+		name string
+		host *fakeHost
+		ctx  context.Context
+		d    Desired
+		want []string
+	}{
+		{"keep", &fakeHost{}, context.Background(), desired(true), both},
+		{"applied", &fakeHost{assessment: antispam.Assessment{Action: antispam.Install}, result: antispam.Result{OK: true}},
+			context.Background(), desired(true), both},
+		{"failed", &fakeHost{assessment: antispam.Assessment{Action: antispam.Install},
+			result: antispam.Result{Operation: antispam.OpApply, FailedStep: "exim_probe", Rollback: antispam.RollbackVerified}},
+			context.Background(), desired(true), both},
+		{"no result", &fakeHost{assessment: antispam.Assessment{Action: antispam.Uninstall}, err: errors.New("no result")},
+			context.Background(), desired(false), both},
+		{"observe", &fakeHost{assessment: antispam.Assessment{Action: antispam.Uninstall, Installed: true}},
+			context.Background(), Desired{Observe: true}, both},
+		{"busy", &fakeHost{assessment: antispam.Assessment{Action: antispam.Install},
+			result: antispam.Result{Operation: antispam.OpApply, Busy: true, FailedStep: "lock", Rollback: antispam.RollbackNone}},
+			context.Background(), desired(true), []string{CheckPrecondition}},
+		{"canceled", &fakeHost{}, canceled, desired(true), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := tc.host.reconciler().Pass(tc.ctx, tc.d)
+			if !reflect.DeepEqual(out.Checks, tc.want) {
+				t.Fatalf("checks %q, want %q (outcome %+v)", out.Checks, tc.want, out)
+			}
+		})
+	}
+}

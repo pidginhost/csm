@@ -21,9 +21,14 @@ const (
 
 var errRefused = errors.New("connection refused")
 
+const (
+	testSocket  = "/run/rspamd/csm-normal.sock"
+	otherSocket = "/run/rspamd/other.sock"
+)
+
 func enabledHealth() *Health {
 	h := &Health{}
-	h.SetEnabled(true, "/run/rspamd/csm-normal.sock")
+	h.SetEnabled(true, testSocket)
 	return h
 }
 
@@ -40,7 +45,7 @@ func at(sec int) time.Time { return testNow.Add(time.Duration(sec) * time.Second
 func TestHealthRaisesDownOncePerOutage(t *testing.T) {
 	h := enabledHealth()
 	for i, err := range []error{errRefused, errRefused, nil, errRefused, errRefused, errRefused, errRefused, errRefused} {
-		got := h.Ping(err, at(i))
+		got := h.Ping(testSocket, err, at(i))
 		if i == 5 {
 			assertHealthFinding(t, got, CheckRspamdDown, "rspamd", at(5))
 		} else if len(got) != 0 {
@@ -59,10 +64,10 @@ func TestHealthRaisesDownOncePerOutage(t *testing.T) {
 func TestHealthRecoversAfterTwoSuccesses(t *testing.T) {
 	h := enabledHealth()
 	for i := range 3 {
-		h.Ping(errRefused, at(i))
+		h.Ping(testSocket, errRefused, at(i))
 	}
 	for i, err := range []error{nil, errRefused, nil, nil, nil} {
-		got := h.Ping(err, at(10+i))
+		got := h.Ping(testSocket, err, at(10+i))
 		if i == 3 {
 			assertHealthFinding(t, got, CheckRspamdRecovered, "", at(13))
 		} else if len(got) != 0 {
@@ -75,20 +80,20 @@ func TestHealthRecoversAfterTwoSuccesses(t *testing.T) {
 		}
 	}
 	// Successes without an outage report nothing.
-	if got := h.Ping(nil, at(20)); len(got) != 0 {
+	if got := h.Ping(testSocket, nil, at(20)); len(got) != 0 {
 		t.Fatalf("recovery without an outage: %+v", got)
 	}
 	for i := range 2 {
-		if got := h.Ping(errRefused, at(30+i)); len(got) != 0 {
+		if got := h.Ping(testSocket, errRefused, at(30+i)); len(got) != 0 {
 			t.Fatalf("new outage raised early: %+v", got)
 		}
 	}
-	assertHealthFinding(t, h.Ping(errRefused, at(32)), CheckRspamdDown, "rspamd", at(32))
+	assertHealthFinding(t, h.Ping(testSocket, errRefused, at(32)), CheckRspamdDown, "rspamd", at(32))
 	assertHealthFinding(t, h.Active(), CheckRspamdDown, "rspamd", at(32))
-	if got := h.Ping(nil, at(33)); len(got) != 0 {
+	if got := h.Ping(testSocket, nil, at(33)); len(got) != 0 {
 		t.Fatalf("new outage recovered early: %+v", got)
 	}
-	assertHealthFinding(t, h.Ping(nil, at(34)), CheckRspamdRecovered, "", at(34))
+	assertHealthFinding(t, h.Ping(testSocket, nil, at(34)), CheckRspamdRecovered, "", at(34))
 	if active := h.Active(); len(active) != 0 {
 		t.Fatalf("new outage remained after recovery: %+v", active)
 	}
@@ -105,8 +110,12 @@ func assertHealthFinding(t *testing.T, got []alert.Finding, check, key string, w
 func assertScanErrors(t *testing.T, got []alert.Finding, count int, first, last time.Time) {
 	t.Helper()
 	assertHealthFinding(t, got, CheckScanError, "scan", last)
-	want := fmt.Sprintf("Exim logged %d failed scans since %s, the last at %s.",
-		count, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339))
+	scans := "scans"
+	if count == 1 {
+		scans = "scan"
+	}
+	want := fmt.Sprintf("Exim logged %d failed %s since %s, the last at %s.",
+		count, scans, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339))
 	if !strings.HasPrefix(got[0].Details, want) {
 		t.Fatalf("scan error details %q, want prefix %q", got[0].Details, want)
 	}
@@ -118,15 +127,15 @@ func TestHealthTracksScanErrors(t *testing.T) {
 	h := enabledHealth()
 	assertScanErrors(t, h.Line(scanErrorLine, at(0)), 1, at(0), at(0))
 	for i := range 3 {
-		h.Ping(errRefused, at(i+1))
+		h.Ping(testSocket, errRefused, at(i+1))
 	}
 	if got := h.Line(scanErrorLine, at(5)); len(got) != 0 {
 		t.Fatalf("second error reported again: %+v", got)
 	}
-	if got := h.Ping(nil, at(6)); len(got) != 0 {
+	if got := h.Ping(testSocket, nil, at(6)); len(got) != 0 {
 		t.Fatalf("outage recovered early: %+v", got)
 	}
-	assertHealthFinding(t, h.Ping(nil, at(7)), CheckRspamdRecovered, "", at(7))
+	assertHealthFinding(t, h.Ping(testSocket, nil, at(7)), CheckRspamdRecovered, "", at(7))
 	assertScanErrors(t, h.Active(), 2, at(0), at(5))
 	if got := h.Line(scanOKLine, at(8)); len(got) != 0 {
 		t.Fatalf("scan success returned a transition: %+v", got)
@@ -157,18 +166,18 @@ func TestHealthIgnoresForgedMarkers(t *testing.T) {
 func TestHealthDisableResets(t *testing.T) {
 	h := enabledHealth()
 	for i := range 3 {
-		h.Ping(errRefused, at(i))
+		h.Ping(testSocket, errRefused, at(i))
 	}
 	h.Line(scanErrorLine, at(4))
 	h.SetEnabled(false, "")
 	if len(h.Active()) != 0 {
 		t.Fatalf("active after disable: %+v", h.Active())
 	}
-	if got := append(h.Line(scanErrorLine, at(5)), h.Ping(errRefused, at(6))...); len(got) != 0 {
+	if got := append(h.Line(scanErrorLine, at(5)), h.Ping(testSocket, errRefused, at(6))...); len(got) != 0 {
 		t.Fatalf("disabled tracking reported %+v", got)
 	}
-	h.SetEnabled(true, "/run/rspamd/csm-normal.sock")
-	if got := append(h.Ping(nil, at(7)), h.Ping(nil, at(8))...); len(got) != 0 || len(h.Active()) != 0 {
+	h.SetEnabled(true, testSocket)
+	if got := append(h.Ping(testSocket, nil, at(7)), h.Ping(testSocket, nil, at(8))...); len(got) != 0 || len(h.Active()) != 0 {
 		t.Fatalf("recovery reported after a reset: %+v", got)
 	}
 	assertScanErrors(t, h.Line(scanErrorLine, at(9)), 1, at(9), at(9))
@@ -182,17 +191,17 @@ func TestHealthDisableResets(t *testing.T) {
 func TestHealthForgetsOutageOnSocketChange(t *testing.T) {
 	h := enabledHealth()
 	for i := range 3 {
-		h.Ping(errRefused, at(i))
+		h.Ping(testSocket, errRefused, at(i))
 	}
-	h.SetEnabled(true, "/run/rspamd/other.sock")
+	h.SetEnabled(true, otherSocket)
 	if len(h.Active()) != 0 {
 		t.Fatalf("outage of the old socket still active: %+v", h.Active())
 	}
-	h.SetEnabled(true, "/run/rspamd/other.sock")
+	h.SetEnabled(true, otherSocket)
 	for i := range 2 {
-		h.Ping(errRefused, at(10+i))
+		h.Ping(otherSocket, errRefused, at(10+i))
 	}
-	if got := h.Ping(errRefused, at(12)); strings.Join(checksOf(got), ",") != CheckRspamdDown {
+	if got := h.Ping(otherSocket, errRefused, at(12)); strings.Join(checksOf(got), ",") != CheckRspamdDown {
 		t.Fatalf("new outage: %+v", got)
 	}
 }
@@ -201,16 +210,16 @@ func TestHealthSocketChangePreservesScanErrors(t *testing.T) {
 	h := enabledHealth()
 	h.Line(scanErrorLine, at(0))
 	for i := range 2 {
-		h.Ping(errRefused, at(i+1))
+		h.Ping(testSocket, errRefused, at(i+1))
 	}
-	h.SetEnabled(true, "/run/rspamd/other.sock")
+	h.SetEnabled(true, otherSocket)
 	assertScanErrors(t, h.Active(), 1, at(0), at(0))
 	for i := range 2 {
-		if got := h.Ping(errRefused, at(i+3)); len(got) != 0 {
+		if got := h.Ping(otherSocket, errRefused, at(i+3)); len(got) != 0 {
 			t.Fatalf("old socket's failures reached the new target: %+v", got)
 		}
 	}
-	got := h.Ping(errRefused, at(5))
+	got := h.Ping(otherSocket, errRefused, at(5))
 	assertHealthFinding(t, got, CheckRspamdDown, "rspamd", at(5))
 	if !strings.Contains(got[0].Details, "/run/rspamd/other.sock") || strings.Contains(got[0].Details, "/run/rspamd/csm-normal.sock") {
 		t.Fatalf("outage names the wrong socket: %+v", got)
@@ -229,8 +238,8 @@ func TestHealthConcurrentErrorsKeepOneIdentity(t *testing.T) {
 	for range workers {
 		wg.Go(func() {
 			for range scans {
-				h.SetEnabled(true, "/run/rspamd/csm-normal.sock")
-				downNotices.Add(int64(len(h.Ping(errRefused, at(0)))))
+				h.SetEnabled(true, testSocket)
+				downNotices.Add(int64(len(h.Ping(testSocket, errRefused, at(0)))))
 				scanNotices.Add(int64(len(h.Line(scanErrorLine, at(0)))))
 				h.Active()
 			}
@@ -260,13 +269,13 @@ func TestHealthConcurrentUse(t *testing.T) {
 			for i := range 200 {
 				switch (g + i) % 4 {
 				case 0:
-					h.Ping(errRefused, at(i))
+					h.Ping(testSocket, errRefused, at(i))
 				case 1:
 					h.Line(scanErrorLine, at(i))
 				case 2:
 					h.Active()
 				default:
-					h.SetEnabled(i%2 == 0, "/run/rspamd/csm-normal.sock")
+					h.SetEnabled(i%2 == 0, testSocket)
 				}
 			}
 		}()
@@ -276,7 +285,7 @@ func TestHealthConcurrentUse(t *testing.T) {
 	if active := h.Active(); len(active) != 0 {
 		t.Fatalf("active after disabling concurrent tracking: %+v", active)
 	}
-	h.SetEnabled(true, "/run/rspamd/csm-normal.sock")
+	h.SetEnabled(true, testSocket)
 	assertScanErrors(t, h.Line(scanErrorLine, at(300)), 1, at(300), at(300))
 	assertScanErrors(t, h.Active(), 1, at(300), at(300))
 }
@@ -295,5 +304,48 @@ func TestHealthLineIgnoresOrdinaryLinesCheaply(t *testing.T) {
 	}
 	if active := h.Active(); len(active) != 0 {
 		t.Fatalf("ordinary line changed health: %+v", active)
+	}
+}
+
+// A probe of the previous socket can finish after a reload switched
+// sockets; its result says nothing about the socket now tracked.
+func TestHealthIgnoresPingsOfAnotherSocket(t *testing.T) {
+	h := enabledHealth()
+	for i := range 3 {
+		if got := h.Ping(otherSocket, errRefused, at(i)); len(got) != 0 {
+			t.Fatalf("probe of another socket reported %+v", got)
+		}
+	}
+	for i := range 2 {
+		h.Ping(testSocket, errRefused, at(10+i))
+	}
+	assertHealthFinding(t, h.Ping(testSocket, errRefused, at(12)), CheckRspamdDown, "rspamd", at(12))
+	for i := range 2 {
+		if got := h.Ping(otherSocket, nil, at(20+i)); len(got) != 0 {
+			t.Fatalf("probe of another socket recovered %+v", got)
+		}
+	}
+	assertHealthFinding(t, h.Active(), CheckRspamdDown, "rspamd", at(12))
+}
+
+// Alert text counts in words a reader expects: one failed scan, and the
+// probe counts the tracker uses.
+func TestHealthFindingText(t *testing.T) {
+	h := enabledHealth()
+	got := h.Line(scanErrorLine, at(0))
+	if len(got) != 1 || !strings.HasPrefix(got[0].Details, "Exim logged 1 failed scan since ") {
+		t.Fatalf("first scan error: %+v", got)
+	}
+	for i := range pingDown {
+		got = h.Ping(testSocket, errRefused, at(i))
+	}
+	if len(got) != 1 || !strings.HasPrefix(got[0].Details, fmt.Sprintf("%d /ping probes in a row over %s failed.", pingDown, testSocket)) {
+		t.Fatalf("down finding: %+v", got)
+	}
+	for i := range pingUp {
+		got = h.Ping(testSocket, nil, at(10+i))
+	}
+	if len(got) != 1 || got[0].Details != fmt.Sprintf("%d /ping probes in a row over %s succeeded.", pingUp, testSocket) {
+		t.Fatalf("recovery finding: %+v", got)
 	}
 }

@@ -46,13 +46,14 @@ func (h *Health) SetEnabled(enabled bool, socket string) {
 	h.enabled, h.socket = enabled, socket
 }
 
-// Ping records one /ping result and returns the finding to report: rspamd
-// down after pingDown failures in a row, once per outage, and recovered
-// after pingUp successes in a row.
-func (h *Health) Ping(err error, now time.Time) []alert.Finding {
+// Ping records one /ping result for socket and returns the finding to
+// report: rspamd down after pingDown failures in a row, once per outage, and
+// recovered after pingUp successes in a row. A result for a socket no
+// longer tracked, from a probe that outlived a reload, is ignored.
+func (h *Health) Ping(socket string, err error, now time.Time) []alert.Finding {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !h.enabled {
+	if !h.enabled || socket != h.socket {
 		return nil
 	}
 	if err != nil {
