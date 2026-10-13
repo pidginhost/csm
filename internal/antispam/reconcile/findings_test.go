@@ -15,8 +15,13 @@ var testNow = time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
 
 func TestFindingChecksAreRegistered(t *testing.T) {
 	for _, name := range []string{CheckPrecondition, CheckApplyFailed, CheckRspamdDown, CheckRspamdRecovered, CheckScanError} {
-		if _, ok := checks.LookupCheck(name); !ok {
+		info, ok := checks.LookupCheck(name)
+		if !ok {
 			t.Errorf("%s is not registered", name)
+			continue
+		}
+		if info.Category != checks.CategoryEmail || info.Correlation != checks.CorrelationIgnored || info.CorrelationReason != "self-health" {
+			t.Errorf("%s is not classified as email self-health: %+v", name, info)
 		}
 	}
 }
@@ -36,6 +41,9 @@ func TestProblemFinding(t *testing.T) {
 			!strings.Contains(f.Details, tc.effect) {
 			t.Errorf("severity %d: %+v", tc.sev, f)
 		}
+		if tc.sev == antispam.Warning && f.Details != "rspamd socket /run/x does not exist" {
+			t.Errorf("warning-only problem promises an integration change: %q", f.Details)
+		}
 	}
 }
 
@@ -46,6 +54,39 @@ func TestProblemFindingEscapesControlCharacters(t *testing.T) {
 		Detail: "/home/user/evil\nCSM: all clear\x1b[0m is writable by group or others"}, testNow)
 	if strings.ContainsAny(f.Details, "\n\x1b") || !strings.Contains(f.Details, `evil\nCSM`) {
 		t.Fatalf("details %q", f.Details)
+	}
+}
+
+func TestFindingDetailsEscapeTenantPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, escaped string
+	}{
+		{"line controls", "/home/user/a\nb\rc\td", `/home/user/a\nb\rc\td`},
+		{"terminal controls", "/home/user/a\x1b[0m\x00\x7f", `/home/user/a\x1b[0m\x00\x7f`},
+		{"non-ASCII", "/home/user/\u202e\u00e9", `/home/user/\u202e\u00e9`},
+		{"invalid UTF-8", "/home/user/a\xff", `/home/user/a\xff`},
+		{"literal escapes", "/home/user/a\\n\"b", `/home/user/a\\n\"b`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			problem := problemFinding(antispam.Problem{Code: antispam.CodeSocket, Severity: antispam.Warning, Detail: tc.path}, testNow)
+			if problem.Details != tc.escaped {
+				t.Errorf("problem details = %q, want %q", problem.Details, tc.escaped)
+			}
+			result, ok := resultFinding(antispam.OpRemove, antispam.Result{
+				Operation: antispam.OpRemove, FailedStep: "exim_files", Rollback: antispam.RollbackFailed,
+				Error: "restoring " + tc.path + ": conflict",
+			}, nil, testNow)
+			if !ok || result.Severity != alert.Critical || !strings.HasPrefix(result.Details, "restoring "+tc.escaped+": conflict.") {
+				t.Errorf("worker failure lost the escaped path or rollback severity: %+v, %t", result, ok)
+			}
+			for _, f := range []alert.Finding{problem, result} {
+				for _, c := range f.Message + f.Details {
+					if c < ' ' || c > '~' {
+						t.Fatalf("finding contains a control or non-ASCII character: %+v", f)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -69,18 +110,32 @@ func TestResultFinding(t *testing.T) {
 		{"no result", antispam.Result{}, errors.New("antispam worker returned no result: secret stderr"), true, alert.Warning, "no result"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f, ok := resultFinding(antispam.OpApply, tc.result, tc.err, testNow)
+			op := tc.result.Operation
+			if op == "" {
+				op = antispam.OpApply
+			}
+			f, ok := resultFinding(op, tc.result, tc.err, testNow)
 			if ok != tc.want {
 				t.Fatalf("finding %t, want %t: %+v", ok, tc.want, f)
 			}
 			if !ok {
+				if f.Check != "" || f.Message != "" || f.Details != "" || !f.Timestamp.IsZero() {
+					t.Errorf("successful or busy result returned a finding: %+v", f)
+				}
 				return
 			}
-			if f.Check != CheckApplyFailed || f.Severity != tc.severity || !strings.Contains(f.Message+" "+f.Details, tc.text) {
+			if f.Check != CheckApplyFailed || f.Severity != tc.severity || !f.Timestamp.Equal(testNow) || !strings.Contains(f.Message+" "+f.Details, tc.text) {
 				t.Errorf("finding %+v", f)
 			}
-			if strings.Contains(f.Details, "secret") {
-				t.Errorf("worker output reached the finding: %q", f.Details)
+			wantMessage := "Antispam " + op + " failed at " + tc.result.FailedStep
+			if tc.err != nil {
+				wantMessage = "Antispam " + op + " returned no result"
+			}
+			if f.Message != wantMessage {
+				t.Errorf("message = %q, want %q", f.Message, wantMessage)
+			}
+			if strings.Contains(f.Message+f.Details, "secret") {
+				t.Errorf("worker output reached the finding: %+v", f)
 			}
 		})
 	}
