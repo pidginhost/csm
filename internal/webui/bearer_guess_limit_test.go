@@ -106,6 +106,7 @@ func TestRequireReadCountsFailedBearerTokens(t *testing.T) {
 func TestMetricsCountsFailedBearerTokens(t *testing.T) {
 	s := newTestServer(t, "tok")
 	s.cfg.WebUI.MetricsToken = "metrics-secret-value-0123456789abcdef"
+	s.cfg.WebUI.MetricsTokenIssuedAt = time.Now().UTC().Format(time.RFC3339)
 	for i := 0; i < 5; i++ {
 		w := httptest.NewRecorder()
 		s.handleMetrics(w, bearerReq("/metrics", "wrong", "203.0.113.14:4000"))
@@ -124,7 +125,7 @@ func TestMetricsCountsFailedBearerTokens(t *testing.T) {
 // guess; counting it would lock a read-only client out of its own routes.
 func TestKnownTokenOutsideItsScopeIsNotAGuess(t *testing.T) {
 	s := newTestServer(t, "tok")
-	s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "ro", Token: "reader-token-value", Scope: "read"})
+	s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "ro", Token: "reader-token-value", Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)})
 	h := s.requireAuth(okHandler())
 	for i := 0; i < 10; i++ {
 		w := httptest.NewRecorder()
@@ -214,6 +215,7 @@ func TestMetricsTokenOutsideScopeIsNotAGuess(t *testing.T) {
 	s := newTestServer(t, "tok")
 	live := *s.cfg
 	live.WebUI.MetricsToken = "metrics-test-token"
+	live.WebUI.MetricsTokenIssuedAt = time.Now().UTC().Format(time.RFC3339)
 	prev := config.Active()
 	config.SetActive(&live)
 	t.Cleanup(func() { config.SetActive(prev) })

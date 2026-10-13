@@ -329,7 +329,7 @@ func TestBrowserSessionIdleStreamStopsBeforeHeartbeat(t *testing.T) {
 func TestBrowserSessionManagementRejectsAnonymousAndReadBearer(t *testing.T) {
 	s := newTestServer(t, randomBrowserCredential())
 	read := randomBrowserCredential()
-	s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "reader", Token: read, Scope: "read"})
+	s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "reader", Token: read, Scope: "read", IssuedAt: time.Now().UTC().Format(time.RFC3339)})
 	for _, bearer := range []string{"", read} {
 		for _, operation := range []struct{ method, path string }{
 			{http.MethodGet, "/api/v1/sessions"},

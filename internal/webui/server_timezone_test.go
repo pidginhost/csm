@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
@@ -67,7 +68,7 @@ func TestLayoutTellsTheBrowserTheServerTimeZone(t *testing.T) {
 	}
 	cfg := &config.Config{StatePath: t.TempDir()}
 	cfg.WebUI.UIDir = uiDir
-	cfg.WebUI.Tokens = []config.WebUIToken{{Name: "ops", Token: "tok", Scope: "admin"}}
+	cfg.WebUI.Tokens = []config.WebUIToken{{Name: "ops", Token: "tok", Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

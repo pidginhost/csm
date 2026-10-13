@@ -62,11 +62,12 @@ func (s *Server) metricsBearerMatches(r *http.Request) bool {
 	// this reason, even though its WebUI parent is restart-required
 	// for the listener/TLS/auth-token fields. Fall back to s.cfg on
 	// the cold-start window before SetActive is called.
-	tok := s.cfg.WebUI.MetricsToken
+	cfg := s.cfg
 	if live := config.Active(); live != nil {
-		tok = live.WebUI.MetricsToken
+		cfg = live
 	}
-	if tok != "" {
+	tok := cfg.WebUI.MetricsToken
+	if tok != "" && config.WebUITokenCurrent(cfg.WebUI.MetricsTokenIssuedAt, s.sessionNow()) {
 		if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
 			if subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(tok)) == 1 {
 				return true

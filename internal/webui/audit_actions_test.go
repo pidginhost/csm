@@ -134,7 +134,7 @@ func TestBulkFixAuditsEachAppliedFix(t *testing.T) {
 func TestSessionLifecycleIsAudited(t *testing.T) {
 	s := newTestServer(t, "")
 	token := "alice-admin-token-0123456789abcdef"
-	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "alice", Token: token, Scope: "admin"}}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "alice", Token: token, Scope: "admin", IssuedAt: time.Now().UTC().Format(time.RFC3339)}}
 
 	// Login.
 	form := url.Values{"token": {token}}

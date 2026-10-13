@@ -18,7 +18,9 @@ The endpoint has its own auth knob:
 webui:
   enabled: true
   auth_token: "<UI login token>"
+  auth_token_issued_at: "<UTC RFC3339 time when the UI token was generated>"
   metrics_token: "<long random string for Prometheus scraper>"
+  metrics_token_issued_at: "<UTC RFC3339 time when the scrape token was generated>"
 ```
 
 `metrics_token` is optional. When set, a Bearer header containing
@@ -28,6 +30,12 @@ but keeping the two tokens separate is recommended: rotating
 `auth_token` does not then break Prometheus scraping, and giving
 your monitoring stack the scrape token does not also give it UI
 access.
+
+Both credentials expire seven days after their recorded issue times. Rotate
+the metrics token and its timestamp together, update the scraper's secret,
+then send SIGHUP to CSM. A missing, malformed, future or expired issue time
+refuses the metrics credential. See [credential rotation](webui.md#credential-rotation)
+for upgrade and recovery instructions.
 
 ## Prometheus scrape config
 

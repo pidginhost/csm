@@ -28,20 +28,21 @@ func sessionPost(target, sessionSecret string) *http.Request {
 // is useless in another, and a new login gets a new token.
 func TestCSRFTokenIsBoundToTheBrowserSession(t *testing.T) {
 	s := newTestServer(t, "tok")
-	a, b := s.csrfTokenForSession("session-a"), s.csrfTokenForSession("session-b")
+	first, second := testBrowserCookie(t, s, "tok"), testBrowserCookie(t, s, "tok")
+	a, b := s.csrfTokenForSession(first.Value), s.csrfTokenForSession(second.Value)
 	if a == "" || b == "" || a == b {
 		t.Fatal("expected two different non-empty CSRF tokens")
 	}
-	if a != s.csrfTokenForSession("session-a") {
+	if a != s.csrfTokenForSession(first.Value) {
 		t.Fatal("a session's token changed between calls")
 	}
 
-	req := sessionPost("/api/x", "session-a")
+	req := sessionPost("/api/x", first.Value)
 	req.Header.Set("X-CSRF-Token", a)
 	if !s.validateCSRF(req) {
 		t.Fatal("a session's own token was refused")
 	}
-	req = sessionPost("/api/x", "session-b")
+	req = sessionPost("/api/x", second.Value)
 	req.Header.Set("X-CSRF-Token", a)
 	if s.validateCSRF(req) {
 		t.Fatal("another session's token was accepted")
@@ -57,16 +58,17 @@ func TestCSRFTokenIsBoundToTheBrowserSession(t *testing.T) {
 // put it in URLs, logs and Referer headers.
 func TestCSRFFormTokenMustComeFromTheBody(t *testing.T) {
 	s := newTestServer(t, "tok")
-	token := s.csrfTokenForSession("session-a")
+	cookie := testBrowserCookie(t, s, "tok")
+	token := s.csrfTokenForSession(cookie.Value)
 
-	req := sessionPost("/sessions/revoke?csrf_token="+url.QueryEscape(token), "session-a")
+	req := sessionPost("/sessions/revoke?csrf_token="+url.QueryEscape(token), cookie.Value)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if s.validateCSRF(req) {
 		t.Fatal("a token in the query string was accepted")
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/sessions/revoke", strings.NewReader("csrf_token="+url.QueryEscape(token)))
-	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "session-a"})
+	req.AddCookie(cookie)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if !s.validateCSRF(req) {
 		t.Fatal("a token in the form body was refused")
@@ -75,12 +77,20 @@ func TestCSRFFormTokenMustComeFromTheBody(t *testing.T) {
 
 // Pages embed the token of the session that loaded them.
 func TestPagesEmbedTheSessionCSRFToken(t *testing.T) {
+	auth := newTestServer(t, "tok")
 	s := newRealUIServer(t)
+	s.sessions = auth.sessions
+	s.cfg.WebUI.Tokens = auth.cfg.WebUI.Tokens
+	cookie := testBrowserCookie(t, s, "tok")
 	req := httptest.NewRequest(http.MethodGet, "/hardening", nil)
-	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "session-a"})
+	req.AddCookie(cookie)
 	w := httptest.NewRecorder()
 	s.handleHardening(w, req)
-	want := `<meta name="csrf-token" content="` + s.csrfTokenForSession("session-a") + `">`
+	token := s.csrfTokenForSession(cookie.Value)
+	if token == "" {
+		t.Fatal("active browser session has no CSRF token")
+	}
+	want := `<meta name="csrf-token" content="` + token + `">`
 	if !strings.Contains(w.Body.String(), want) {
 		t.Fatal("page does not carry its session CSRF token")
 	}
