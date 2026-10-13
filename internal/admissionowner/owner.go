@@ -162,12 +162,16 @@ type Owner struct {
 	// isolated holds the candidates whose last batch the kernel rejected,
 	// with their absolute expiry: each runs alone (P9).
 	isolated map[admission.CandidateID]time.Time
+	// finishes retains known outcomes until their writes commit. A turn
+	// retries these before selecting more work, bounding this to one batch.
+	finishes []pendingFinish
 	// execHold is why automatic execution is held (P8), or nil. probeAt is
 	// when the next probe may run, on the monotonic clock, after probeWait.
-	execHold   error
-	probeAt    time.Time
-	probeWait  time.Duration
-	probeApply bool
+	execHold  error
+	probeAt   time.Time
+	probeWait time.Duration
+	// applyHold keeps an apply fault that snapshot repair cannot prove fixed.
+	applyHold  error
 	probeCheck bool
 	// nextBatch is when the next block batch may start, on the monotonic
 	// clock; arrived is set by a drain that queued work.
@@ -527,6 +531,10 @@ func (o *Owner) shutdown() {
 	// No snapshot published during the stop reopens admission, so the
 	// drains below end even if a producer was not stopped first (O30).
 	o.ingress.Close()
+	if err := o.finishPending(); err != nil {
+		o.scheduleErr = err
+		return
+	}
 	held := o.ingress.Len() != 0
 	for {
 		if o.drainHeld() != nil {
@@ -681,6 +689,11 @@ func (o *Owner) schedule() {
 // Other failures retry the turn. The ledger's wake time, converted by the
 // admission clock's elapsed time, sets the next turn (O16).
 func (o *Owner) turn() error {
+	// Recording an outcome needs only the saved ledger clock. A failed
+	// current reading must not abandon work that already ran.
+	if err := o.finishPending(); err != nil {
+		return err
+	}
 	if err := o.tick(); err != nil {
 		return err
 	}
@@ -718,8 +731,8 @@ func (o *Owner) turn() error {
 			return err
 		}
 	} else if o.opts.Blocks != nil && o.execHold != nil {
-		if o.ready(o.opts.Blocks()) && o.execHold != nil {
-			o.hold(o.execHold, o.probeApply)
+		if o.ready(o.opts.Blocks(), false) && o.execHold != nil {
+			o.hold(o.execHold, o.applyHold != nil)
 		}
 	}
 	if err = o.publish(); err != nil {

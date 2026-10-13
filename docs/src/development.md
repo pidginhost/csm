@@ -533,14 +533,19 @@ engine checks every member against one snapshot before anything is reserved.
 A full set defers a member; an existing effect, an invalid or protected
 address or a spent lifetime ends it without a charge. The rest are reserved,
 recorded as running with their intents, applied and finished by their own
-effect. Every other kind is still previewed. A batch the kernel rejected
-fails every member, charged; each then retries alone, one per turn, until its
-next outcome or its expiry. A state write the engine could not make, a
-failed batch check or apply, or a missing engine holds automatic execution:
+effect. Failed outcome writes retry before more work is selected and once at
+shutdown, even without a fresh clock reading; the effect is never dispatched
+again for that attempt. Every other kind is still previewed. A batch the
+kernel rejected fails every member, charged; each then retries alone, one
+per turn, until its next outcome or its expiry. A state write the engine
+could not make, a failed batch check or apply (including per-member
+transport and readback errors), or a missing engine holds automatic execution:
 block picks wait, deferred as an unavailable engine, while one probe runs per
 wait, from one second doubling to a minute. A held state write is probed by
 writing the safe state again and checking its snapshot. Idle turns still
-probe; a successful member check cannot reset a failed apply's backoff.
+probe; successful snapshots cannot reset a failing member check's backoff.
+A failed apply keeps its cause and backoff through state repair, ledger
+refusals and member refusals until an applied effect proves recovery.
 Hold changes copy the cached owner status without rereading the ledger.
 Status (`admission.owner.execution_held`) and
 the `csm doctor` row `admission execution` name the cause. A degraded

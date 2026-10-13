@@ -38,6 +38,12 @@ type execPick struct {
 	c    admission.Candidate
 }
 
+type pendingFinish struct {
+	id          admission.ActionID
+	disposition admission.Disposition
+	rejected    bool
+}
+
 // refusalReasons are the admission reasons for the engine's refusals of a
 // member before it is reserved (spec 5.16): a full set defers it; the
 // rest end it without a charge. A refusal missing here (a duplicate
@@ -64,7 +70,7 @@ func (o *Owner) execute(picks []execPick) error {
 	// A degraded clock cannot bound a lease: the admission time stays at
 	// its high-water mark while the wall clock the engine encodes against
 	// is behind it or disagrees with elapsed time.
-	if !o.ready(engine) || o.degraded {
+	if o.degraded || !o.ready(engine, true) {
 		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
 	}
 	// Picks before the next batch start stay queued as they are.
@@ -91,7 +97,7 @@ func (o *Owner) execute(picks []execPick) error {
 		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
 	}
 	o.probeCheck = false
-	if o.execHold != nil && !o.probeApply {
+	if o.execHold != nil && o.applyHold == nil {
 		o.release()
 	}
 	var run []int
@@ -129,7 +135,7 @@ func (o *Owner) execute(picks []execPick) error {
 		run = append(run, i)
 	}
 	if len(run) == 0 {
-		if o.execHold != nil && o.probeApply {
+		if o.execHold != nil && o.applyHold != nil {
 			o.hold(o.execHold, true)
 		}
 		return stopped
@@ -141,6 +147,9 @@ func (o *Owner) execute(picks []execPick) error {
 	}
 	// A batch the ledger will not record as running dispatches nothing.
 	if _, granted, executeErr := executeLedger(o.ledger, ids); executeErr != nil || !granted {
+		if o.execHold != nil && o.applyHold != nil {
+			o.hold(o.execHold, true)
+		}
 		err = executeErr
 		if executeErr == nil {
 			return errors.Join(stopped, admission.ErrTransitionConflict, o.finishAll(ids, admission.DispositionUnknown))
@@ -160,38 +169,38 @@ func (o *Owner) execute(picks []execPick) error {
 	}
 	if err != nil {
 		// An error means nothing was written or sent.
-		o.hold(fmt.Errorf("applying a block batch: %w", err), true)
+		o.hold(fmt.Errorf("applying a block batch: %w", err), !errors.Is(err, firewall.ErrBlockBatchState))
 		return errors.Join(stopped, o.finishAll(ids, admission.DispositionFailed))
 	}
-	var finishErr, stateErr error
+	var stateErr, applyErr error
+	var applied bool
 	for k, r := range results {
+		applied = applied || r.Effect == firewall.BlockApplied
 		if errors.Is(r.Err, firewall.ErrBlockBatchState) {
 			stateErr = r.Err
+		} else if r.Err != nil && !errors.Is(r.Err, firewall.ErrBlockBatchRejected) {
+			applyErr = r.Err
 		}
-		finished, _, finishOneErr := o.finishMember(ids[k], r)
-		if err = finishOneErr; err != nil {
-			finishErr = errors.Join(finishErr, fmt.Errorf("finishing %s: %w", ids[k], err))
-		}
-		id := picks[run[k]].pick.ID
-		if finishOneErr == nil && finished.State == admission.StateQueued && r.Effect == firewall.BlockFailed && errors.Is(r.Err, firewall.ErrBlockBatchRejected) {
-			if o.isolated == nil {
-				o.isolated = map[admission.CandidateID]time.Time{}
-			}
-			expires := batch[k].ExpiresAt
-			if finished.AgeOut.Before(expires) {
-				expires = finished.AgeOut
-			}
-			o.isolated[id] = expires
-		} else {
-			delete(o.isolated, id)
-		}
+		o.finishes = append(o.finishes, pendingFinish{
+			id: ids[k], disposition: effectDisposition(r.Effect),
+			rejected: r.Effect == firewall.BlockFailed && errors.Is(r.Err, firewall.ErrBlockBatchRejected),
+		})
 	}
-	if stateErr != nil {
-		o.hold(stateErr, true)
-	} else if o.execHold != nil {
+	switch {
+	case stateErr != nil:
+		// Repair the state first, retaining any independent apply fault.
+		if applyErr != nil {
+			o.applyHold = applyErr
+		}
+		o.hold(stateErr, false)
+	case applyErr != nil:
+		o.hold(applyErr, true)
+	case o.execHold != nil && o.applyHold != nil && !applied:
+		o.hold(o.execHold, true)
+	case o.execHold != nil:
 		o.release()
 	}
-	return errors.Join(stopped, finishErr)
+	return errors.Join(stopped, o.finishPending())
 }
 
 // ready reports whether automatic execution may run this turn (P8, spec
@@ -199,8 +208,9 @@ func (o *Owner) execute(picks []execPick) error {
 // state repair is followed by a read-only snapshot proof, including on an
 // idle turn. Apply faults keep their wait through a successful snapshot
 // and member check until an apply succeeds. A newly available engine can
-// serve at once.
-func (o *Owner) ready(engine BlockEngine) bool {
+// serve at once. When checking members next, keep the hold until that
+// check succeeds too: a probe alone cannot reset a failing turn's wait.
+func (o *Owner) ready(engine BlockEngine, checking bool) bool {
 	if engine == nil {
 		if !errors.Is(o.execHold, errNoEngine) {
 			o.hold(errNoEngine, false)
@@ -220,15 +230,18 @@ func (o *Owner) ready(engine BlockEngine) bool {
 			o.hold(err, false)
 			return false
 		}
-		o.probeApply = false
 	}
 	if err := engine.ProbeBlockState(); err != nil {
 		o.hold(err, false)
 		return false
 	}
-	if !o.probeApply && !o.probeCheck {
+	if o.applyHold == nil && !o.probeCheck && !checking {
 		o.release()
 	} else {
+		if o.applyHold != nil {
+			o.execHold = o.applyHold
+			o.publishExecutionHold()
+		}
 		o.probeAt = monoNow().Add(o.probeWait)
 	}
 	return true
@@ -241,18 +254,19 @@ func (o *Owner) hold(cause error, apply bool) {
 	switch {
 	case o.execHold == nil:
 		o.probeWait = firstProbeWait
-		o.probeApply = apply
 	case o.probeWait < maxProbeWait:
 		o.probeWait = min(2*o.probeWait, maxProbeWait)
 	}
-	o.probeApply = o.probeApply || apply
+	if apply {
+		o.applyHold = cause
+	}
 	o.execHold, o.probeAt = cause, monoNow().Add(o.probeWait)
 	o.publishExecutionHold()
 }
 
 func (o *Owner) release() {
 	o.execHold, o.probeAt, o.probeWait = nil, time.Time{}, 0
-	o.probeApply, o.probeCheck = false, false
+	o.applyHold, o.probeCheck = nil, false
 	o.publishExecutionHold()
 }
 
@@ -337,16 +351,38 @@ func (o *Owner) deferBlocks(picks []execPick, reason admission.Reason) error {
 }
 
 func (o *Owner) finishAll(ids []admission.ActionID, d admission.Disposition) error {
-	var err error
 	for _, id := range ids {
-		if _, _, finishErr := finishLedger(o.ledger, id, d); finishErr != nil {
-			err = errors.Join(err, fmt.Errorf("finishing %s: %w", id, finishErr))
-		}
+		o.finishes = append(o.finishes, pendingFinish{id: id, disposition: d})
 	}
-	return err
+	return o.finishPending()
 }
 
-// finishMember keeps result metadata and its durable outcome on one path.
-func (o *Owner) finishMember(id admission.ActionID, result firewall.BlockResult) (admission.Candidate, admission.AttemptRecord, error) {
-	return finishLedger(o.ledger, id, effectDisposition(result.Effect))
+// finishPending attempts every outstanding write even if another fails.
+// Only writes retry; the engine is never called again for these attempts.
+func (o *Owner) finishPending() error {
+	var err error
+	pending := o.finishes[:0]
+	for _, outcome := range o.finishes {
+		c, a, finishErr := finishLedger(o.ledger, outcome.id, outcome.disposition)
+		if finishErr != nil {
+			pending = append(pending, outcome)
+			err = errors.Join(err, fmt.Errorf("finishing %s: %w", outcome.id, finishErr))
+			continue
+		}
+		id := a.Attempt.Candidate
+		if c.State == admission.StateQueued && outcome.rejected {
+			if o.isolated == nil {
+				o.isolated = map[admission.CandidateID]time.Time{}
+			}
+			expires := c.ExpiresAt
+			if c.AgeOut.Before(expires) {
+				expires = c.AgeOut
+			}
+			o.isolated[id] = expires
+		} else {
+			delete(o.isolated, id)
+		}
+	}
+	o.finishes = pending
+	return err
 }
