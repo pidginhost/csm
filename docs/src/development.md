@@ -541,7 +541,10 @@ writing the safe state again and checking its snapshot. Idle turns still
 probe; a successful member check cannot reset a failed apply's backoff.
 Hold changes copy the cached owner status without rereading the ledger.
 Status (`admission.owner.execution_held`) and
-the `csm doctor` row `admission execution` name the cause.
+the `csm doctor` row `admission execution` name the cause. A degraded
+admission clock cannot bound a lease, so it defers block picks the same
+way. One batch starts a second at most; with an engine, a drain that queues
+new work runs the schedule at once instead of waiting for its timer.
 
 ### Attack event storage
 

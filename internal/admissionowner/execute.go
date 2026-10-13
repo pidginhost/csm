@@ -29,6 +29,9 @@ const (
 	maxProbeWait   = time.Minute
 )
 
+// batchEvery spaces batch starts (spec 5.5: one a second at most).
+const batchEvery = time.Second
+
 // execPick is a block_ip pick of the turn with its candidate.
 type execPick struct {
 	pick admission.Pick
@@ -58,8 +61,15 @@ var refusalReasons = map[firewall.BlockRefusal]admission.Reason{
 // outcome holds its address until recovery retires it.
 func (o *Owner) execute(picks []execPick) error {
 	engine := o.opts.Blocks()
-	if !o.ready(engine) {
+	// A degraded clock cannot bound a lease: the admission time stays at
+	// its high-water mark while the wall clock the engine encodes against
+	// is behind it or disagrees with elapsed time.
+	if !o.ready(engine) || o.degraded {
 		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
+	}
+	// Picks before the next batch start stay queued as they are.
+	if monoNow().Before(o.nextBatch) {
+		return nil
 	}
 	picks = o.isolate(picks)
 	members := make([]firewall.BlockMember, len(picks))
@@ -141,6 +151,7 @@ func (o *Owner) execute(picks []execPick) error {
 		}
 		return errors.Join(fmt.Errorf("running a block batch: %w", err), stopped, failErr)
 	}
+	o.nextBatch = monoNow().Add(batchEvery)
 	results, err := engine.ApplyBlockBatch(batch)
 	if err == nil && len(results) != len(batch) {
 		// Something may have run: no answer proves which members failed.

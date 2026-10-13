@@ -169,6 +169,10 @@ type Owner struct {
 	probeWait  time.Duration
 	probeApply bool
 	probeCheck bool
+	// nextBatch is when the next block batch may start, on the monotonic
+	// clock; arrived is set by a drain that queued work.
+	nextBatch time.Time
+	arrived   bool
 }
 
 // Start opens the ledger and runs the startup sequence before it returns,
@@ -273,7 +277,7 @@ func (o *Owner) run() {
 			}
 		case <-drain.C:
 			if o.started {
-				_ = o.drain()
+				o.drainTick()
 			}
 		case <-schedule.C:
 			if o.started {
@@ -581,6 +585,18 @@ func (o *Owner) drain() error {
 	return nil
 }
 
+// drainTick drains the ingress on its timer. With an engine, work the
+// drain queued is served at once rather than on the next schedule tick:
+// the first ready batch starts immediately (spec 5.5) and batchEvery
+// spaces the rest. Without one, previews keep the schedule timer.
+func (o *Owner) drainTick() {
+	o.arrived = false
+	_ = o.drain()
+	if o.arrived && o.opts.Blocks != nil {
+		o.schedule()
+	}
+}
+
 // drainHeld persists what the ingress holds, at most maxDrainGroups groups.
 // Every group, even an empty one, checkpoints the ingress decisions. A
 // failed drain closes admission and names its cause until a drain
@@ -616,7 +632,7 @@ func (o *Owner) drainHeld() (err error) {
 			return err
 		}
 		if report.Queued+report.Coalesced > 0 {
-			o.scheduleDue = true
+			o.scheduleDue, o.arrived = true, true
 		}
 		// The group's own snapshot reopened admission.
 		o.drainFailed = false

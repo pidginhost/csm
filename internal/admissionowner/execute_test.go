@@ -239,6 +239,7 @@ func TestOwnerFinishesEachMemberByItsEffect(t *testing.T) {
 	blocks.results["192.0.2.11"] = firewall.BlockResult{Effect: firewall.BlockFailed, Refusal: firewall.BlockRefusedExisting}
 	blocks.results["192.0.2.12"] = firewall.BlockResult{Effect: firewall.BlockUnknown, Err: errors.New("readback lost")}
 	o := f.start(executeOptions(f, blocks))
+	mono := heldMono(t, o)
 	applied, now := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 	failed, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
 	unknown, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.12")
@@ -259,6 +260,7 @@ func TestOwnerFinishesEachMemberByItsEffect(t *testing.T) {
 		t.Fatalf("unresolved %+v, general charges %d", s.Unresolved, s.Ceiling.General.Used)
 	}
 	// A failure the kernel did not reject retries in an ordinary batch.
+	mono.advance(admission.RetryBackoff(1))
 	f.host.advance(admission.RetryBackoff(1))
 	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.13")
 	if err := o.do(o.turn); err != nil {
@@ -369,6 +371,7 @@ func TestOwnerRetriesRejectedMembersAlone(t *testing.T) {
 	blocks := newFakeBlocks()
 	blocks.reject = 1
 	o := f.start(executeOptions(f, blocks))
+	mono := heldMono(t, o)
 	var rejected []admission.CandidateID
 	for _, addr := range []string{"192.0.2.10", "192.0.2.11", "192.0.2.12"} {
 		id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, addr)
@@ -382,9 +385,11 @@ func TestOwnerRetriesRejectedMembersAlone(t *testing.T) {
 			t.Fatalf("rejected member = %+v", c)
 		}
 	}
+	mono.advance(admission.RetryBackoff(1))
 	f.host.advance(admission.RetryBackoff(1))
 	waiting, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.13")
 	for turn := 1; turn <= 3; turn++ {
+		mono.advance(batchEvery)
 		if err := o.do(o.turn); err != nil {
 			t.Fatal(err)
 		}
@@ -405,6 +410,7 @@ func TestOwnerRetriesRejectedMembersAlone(t *testing.T) {
 		t.Fatalf("%d still isolated after their outcomes", n)
 	}
 	later, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.14")
+	mono.advance(batchEvery)
 	if err := o.do(o.turn); err != nil {
 		t.Fatal(err)
 	}
@@ -569,6 +575,7 @@ func TestOwnerIsolationFollowsQueueLifetime(t *testing.T) {
 			opts := executeOptions(f, blocks)
 			opts.Expiry = func(admission.Candidate) time.Duration { return 24 * time.Hour }
 			o := f.start(opts)
+			mono := heldMono(t, o)
 			id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 			if err := o.do(o.turn); err != nil {
 				t.Fatal(err)
@@ -580,6 +587,7 @@ func TestOwnerIsolationFollowsQueueLifetime(t *testing.T) {
 			switch ending {
 			case "attempt_limit":
 				for range admission.MaxAttempts - 1 {
+					mono.advance(2 * time.Second)
 					f.host.advance(2 * time.Second)
 					if err := o.do(o.turn); err != nil {
 						t.Fatal(err)
@@ -589,6 +597,7 @@ func TestOwnerIsolationFollowsQueueLifetime(t *testing.T) {
 				if err := o.do(func() error { blocks.refuse["192.0.2.10"] = firewall.BlockRefusedProtected; return nil }); err != nil {
 					t.Fatal(err)
 				}
+				mono.advance(time.Second)
 				f.host.advance(time.Second)
 				if err := o.do(o.turn); err != nil {
 					t.Fatal(err)
@@ -598,6 +607,7 @@ func TestOwnerIsolationFollowsQueueLifetime(t *testing.T) {
 				if c := candidate(t, o, id); !c.ExpiresAt.After(c.AgeOut) {
 					t.Fatalf("bad age-out fixture: %+v", c)
 				}
+				mono.advance(admission.QueueAgeLimit + time.Second)
 				f.host.advance(admission.QueueAgeLimit + time.Second)
 				if err := o.do(o.turn); err != nil {
 					t.Fatal(err)
