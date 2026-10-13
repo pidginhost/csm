@@ -159,6 +159,9 @@ type Owner struct {
 	// even if another failure stopped that drain. A damaged record stays
 	// damaged, so the cause is kept for the owner's life.
 	damageErr error
+	// isolated holds the candidates whose last batch the kernel rejected,
+	// with their absolute expiry: each runs alone (P9).
+	isolated map[admission.CandidateID]time.Time
 }
 
 // Start opens the ledger and runs the startup sequence before it returns,
@@ -436,6 +439,7 @@ func (o *Owner) publish() error {
 		o.ingress.Publish(nil)
 		return fmt.Errorf("reading the queue snapshot: %w", err)
 	}
+	o.forgetIsolated(snap)
 	o.ingress.Publish(snap)
 	return nil
 }

@@ -531,7 +531,9 @@ engine checks every member against one snapshot before anything is reserved.
 A full set defers a member; an existing effect, an invalid or protected
 address or a spent lifetime ends it without a charge. The rest are reserved,
 recorded as running with their intents, applied and finished by their own
-effect. Every other kind is still previewed.
+effect. Every other kind is still previewed. A batch the kernel rejected
+fails every member, charged; each then retries alone, one per turn, until its
+next outcome or its expiry.
 
 ### Attack event storage
 

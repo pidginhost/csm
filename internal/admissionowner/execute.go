@@ -3,6 +3,7 @@ package admissionowner
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -47,6 +48,7 @@ func (o *Owner) execute(picks []execPick) error {
 	if engine == nil {
 		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
 	}
+	picks = o.isolate(picks)
 	members := make([]firewall.BlockMember, len(picks))
 	for i, p := range picks {
 		next, err := admission.NewAttempt(p.pick.ID, p.c.Attempts+1)
@@ -128,11 +130,55 @@ func (o *Owner) execute(picks []execPick) error {
 	}
 	var finishErr error
 	for k, r := range results {
-		if _, _, err = o.finishMember(ids[k], r); err != nil {
+		finished, _, finishOneErr := o.finishMember(ids[k], r)
+		if err = finishOneErr; err != nil {
 			finishErr = errors.Join(finishErr, fmt.Errorf("finishing %s: %w", ids[k], err))
+		}
+		id := picks[run[k]].pick.ID
+		if finishOneErr == nil && finished.State == admission.StateQueued && r.Effect == firewall.BlockFailed && errors.Is(r.Err, firewall.ErrBlockBatchRejected) {
+			if o.isolated == nil {
+				o.isolated = map[admission.CandidateID]time.Time{}
+			}
+			expires := batch[k].ExpiresAt
+			if finished.AgeOut.Before(expires) {
+				expires = finished.AgeOut
+			}
+			o.isolated[id] = expires
+		} else {
+			delete(o.isolated, id)
 		}
 	}
 	return errors.Join(stopped, finishErr)
+}
+
+// isolate keeps a member the kernel rejected from failing healthy ones
+// again (P9, spec 5.5): while a pick's last batch was rejected, the turn
+// runs that pick alone and leaves the others queued for later turns.
+// Only queued retries remain isolated; terminal, displaced and aged-out
+// candidates leave the index at the next successful queue publication.
+func (o *Owner) isolate(picks []execPick) []execPick {
+	for _, p := range picks {
+		if _, ok := o.isolated[p.pick.ID]; ok {
+			return []execPick{p}
+		}
+	}
+	return picks
+}
+
+// A displaced, terminal or aged-out candidate cannot retry alone.
+func (o *Owner) forgetIsolated(snap *admission.QueueSnapshot) {
+	if len(o.isolated) == 0 {
+		return
+	}
+	live := make(map[admission.CandidateID]bool, len(snap.Items))
+	for _, item := range snap.Items {
+		live[admission.CandidateID(item.Key)] = true
+	}
+	for id, expires := range o.isolated {
+		if !live[id] || !o.now.Before(expires) {
+			delete(o.isolated, id)
+		}
+	}
 }
 
 // effectDisposition is the outcome the ledger records for an effect; one

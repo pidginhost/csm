@@ -21,8 +21,10 @@ type fakeBlocks struct {
 	results  map[string]firewall.BlockResult
 	checkErr error
 	applyErr error
-	checks   [][]firewall.BlockMember
-	applies  [][]firewall.BlockMember
+	// reject is how many coming batches the kernel rejects whole.
+	reject  int
+	checks  [][]firewall.BlockMember
+	applies [][]firewall.BlockMember
 }
 
 func newFakeBlocks() *fakeBlocks {
@@ -51,6 +53,13 @@ func (f *fakeBlocks) ApplyBlockBatch(members []firewall.BlockMember) ([]firewall
 		return nil, f.applyErr
 	}
 	out := make([]firewall.BlockResult, len(members))
+	if f.reject > 0 {
+		f.reject--
+		for i := range out {
+			out[i] = firewall.BlockResult{Effect: firewall.BlockFailed, Err: errors.Join(firewall.ErrBlockBatchRejected, errors.New("invalid argument"))}
+		}
+		return out, nil
+	}
 	for i, m := range members {
 		r, ok := f.results[m.IP]
 		if !ok {
@@ -212,6 +221,15 @@ func TestOwnerFinishesEachMemberByItsEffect(t *testing.T) {
 	if s.Unresolved.Unknown != 1 || s.Ceiling.General.Used != 3 {
 		t.Fatalf("unresolved %+v, general charges %d", s.Unresolved, s.Ceiling.General.Used)
 	}
+	// A failure the kernel did not reject retries in an ordinary batch.
+	f.host.advance(admission.RetryBackoff(1))
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.13")
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	if _, applies := blocks.calls(); len(applies) != 2 || len(applies[1]) != 2 {
+		t.Fatalf("batches = %v", applies)
+	}
 }
 
 // A batch the ledger refuses to run dispatches nothing: its reserved
@@ -298,6 +316,96 @@ func TestOwnerPreviewsOtherKindsBesideABatch(t *testing.T) {
 	if _, applies := blocks.calls(); len(applies) != 1 || len(applies[0]) != 1 {
 		t.Fatalf("applies = %v", applies)
 	}
+}
+
+// A batch the kernel rejected whole fails every member, charged. Each then
+// retries alone, one per turn, so a member the kernel keeps rejecting
+// cannot fail healthy ones again; other work waits, untouched, until the
+// rejected members are done, and then batches again (P9).
+func TestOwnerRetriesRejectedMembersAlone(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.reject = 1
+	o := f.start(executeOptions(f, blocks))
+	var rejected []admission.CandidateID
+	for _, addr := range []string{"192.0.2.10", "192.0.2.11", "192.0.2.12"} {
+		id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, addr)
+		rejected = append(rejected, id)
+	}
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range rejected {
+		if c := candidate(t, o, id); c.State != admission.StateQueued || c.Attempts != 1 {
+			t.Fatalf("rejected member = %+v", c)
+		}
+	}
+	f.host.advance(admission.RetryBackoff(1))
+	waiting, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.13")
+	for turn := 1; turn <= 3; turn++ {
+		if err := o.do(o.turn); err != nil {
+			t.Fatal(err)
+		}
+		_, applies := blocks.calls()
+		if len(applies) != 1+turn || len(applies[turn]) != 1 {
+			t.Fatalf("turn %d batches = %v", turn, applies)
+		}
+		if c := candidate(t, o, waiting); c.State != admission.StateQueued || c.Attempts != 0 || c.Reason != 0 {
+			t.Fatalf("turn %d: waiting work = %+v", turn, c)
+		}
+	}
+	for _, id := range rejected {
+		if c := candidate(t, o, id); c.State != admission.StateVerified || c.Attempts != 2 {
+			t.Fatalf("retried member = %+v", c)
+		}
+	}
+	if n := isolatedCount(t, o); n != 0 {
+		t.Fatalf("%d still isolated after their outcomes", n)
+	}
+	later, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.14")
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	if _, applies := blocks.calls(); len(applies) != 5 || len(applies[4]) != 2 {
+		t.Fatalf("batches after the retries = %v", applies)
+	}
+	for _, id := range []admission.CandidateID{waiting, later} {
+		if c := candidate(t, o, id); c.State != admission.StateVerified {
+			t.Fatalf("batched again = %+v", c)
+		}
+	}
+}
+
+// Isolation ends at the candidate's expiry, whether or not it ran again.
+func TestOwnerForgetsIsolationAtExpiry(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.reject = 1
+	o := f.start(executeOptions(f, blocks))
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	if isolatedCount(t, o) != 1 {
+		t.Fatal("a rejected member was not isolated")
+	}
+	f.host.advance(25 * time.Hour)
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	if n := isolatedCount(t, o); n != 0 {
+		t.Fatalf("%d isolated after the expiry", n)
+	}
+}
+
+func isolatedCount(t *testing.T, o *Owner) (n int) {
+	t.Helper()
+	if err := o.do(func() error { n = len(o.isolated); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
 
 func TestOwnerDoesNotDispatchExecutionReadback(t *testing.T) {
@@ -407,5 +515,57 @@ func TestOwnerFinishesLaterMembersAfterOneFinishFails(t *testing.T) {
 	}
 	if calls != 2 || running != 1 || verified != 1 {
 		t.Fatalf("finishes=%d running=%d verified=%d", calls, running, verified)
+	}
+}
+
+func TestOwnerIsolationFollowsQueueLifetime(t *testing.T) {
+	for _, ending := range []string{"attempt_limit", "refusal", "age_out"} {
+		t.Run(ending, func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			blocks.reject = int(admission.MaxAttempts)
+			opts := executeOptions(f, blocks)
+			opts.Expiry = func(admission.Candidate) time.Duration { return 24 * time.Hour }
+			o := f.start(opts)
+			id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+			if err := o.do(o.turn); err != nil {
+				t.Fatal(err)
+			}
+			if isolatedCount(t, o) != 1 {
+				t.Fatal("retry was not isolated")
+			}
+			want := admission.StateFailed
+			switch ending {
+			case "attempt_limit":
+				for range admission.MaxAttempts - 1 {
+					f.host.advance(2 * time.Second)
+					if err := o.do(o.turn); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "refusal":
+				if err := o.do(func() error { blocks.refuse["192.0.2.10"] = firewall.BlockRefusedProtected; return nil }); err != nil {
+					t.Fatal(err)
+				}
+				f.host.advance(time.Second)
+				if err := o.do(o.turn); err != nil {
+					t.Fatal(err)
+				}
+				want = admission.StateRefused
+			case "age_out":
+				if c := candidate(t, o, id); !c.ExpiresAt.After(c.AgeOut) {
+					t.Fatalf("bad age-out fixture: %+v", c)
+				}
+				f.host.advance(admission.QueueAgeLimit + time.Second)
+				if err := o.do(o.turn); err != nil {
+					t.Fatal(err)
+				}
+				want = admission.StateDropped
+			}
+			if c := candidate(t, o, id); c.State != want || isolatedCount(t, o) != 0 {
+				t.Fatalf("terminal candidate retained isolation: %+v", c)
+			}
+		})
 	}
 }
