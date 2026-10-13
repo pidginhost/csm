@@ -372,3 +372,31 @@ func TestCheckRemovalRefusesAmbiguousLocalBlocks(t *testing.T) {
 		})
 	}
 }
+
+// Forward guard treats a whitespace-only exim.conf.local as absent and
+// writes cPanel's skeleton; antispam does the same.
+func TestCheckHostAcceptsBlankLocalConfig(t *testing.T) {
+	for _, content := range []string{"", "\n", " \n\t\n"} {
+		f := goodFacts()
+		target(&f, TargetEximLocal).Content = content
+		f.LocalConf = content
+		if got := CheckHost(f); len(got) != 0 {
+			t.Errorf("exim.conf.local %q reported %+v", content, got)
+		}
+	}
+}
+
+// Six rspamd files share local.d; a missing directory is one problem.
+func TestCheckHostReportsMissingDirectoryOnce(t *testing.T) {
+	f := goodFacts()
+	for i := range f.Targets {
+		if f.Targets[i].Kind == TargetRspamd {
+			f.Targets[i].Err = fmt.Errorf("%s: %w", RspamdLocalDir, fs.ErrNotExist)
+		}
+	}
+	got := CheckHost(f)
+	if len(got) != 1 || got[0].Code != CodeTargets || got[0].Severity != Definite ||
+		got[0].Detail != "the directory "+RspamdLocalDir+" is missing" {
+		t.Fatalf("got %+v, want one missing-directory problem", got)
+	}
+}

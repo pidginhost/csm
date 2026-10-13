@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 func TestApplyChecksRollbackEximReload(t *testing.T) {
@@ -381,5 +382,22 @@ func TestApplyCannotVerifyAnyFailedRollbackStep(t *testing.T) {
 				t.Error("rollback overwrote another writer's edit")
 			}
 		})
+	}
+}
+
+func TestApplyFillsBlankLocalConfig(t *testing.T) {
+	f := newFake(t)
+	writeTest(t, f.root+antispam.LocalEximConfPath, " \n", 0o644)
+	wantOK(t, f.host().Apply(enforce()))
+	hooks, err := antispam.RenderExim(enforce())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := antispam.SetBlock(antispam.TargetEximLocal, platform.EximLocalSkeleton, hooks.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.file(antispam.LocalEximConfPath); got != want {
+		t.Errorf("exim.conf.local = %q, want the skeleton with CSM's block", got)
 	}
 }

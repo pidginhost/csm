@@ -125,8 +125,9 @@ func checkTargets(targets []TargetFacts, removal bool) []Problem {
 		}
 		switch {
 		case errors.Is(t.Err, fs.ErrNotExist):
-			if !removal {
-				add(CodeTargets, Definite, "the directory for %s is missing", t.Path)
+			if dir := path.Dir(t.Path); !removal && !reported[dir] {
+				reported[dir] = true
+				add(CodeTargets, Definite, "the directory %s is missing", dir)
 			}
 			continue
 		case t.Err != nil:
@@ -148,7 +149,9 @@ func checkTargets(targets []TargetFacts, removal bool) []Problem {
 			}
 		case TargetEximLocal:
 			if !removal {
-				if !oneConfigSection(t.Content) {
+				// A blank file is filled with cPanel's skeleton, as forward
+				// guard does.
+				if strings.TrimSpace(t.Content) != "" && !oneConfigSection(t.Content) {
 					add(CodeTargets, Definite, "%s must hold exactly one @CONFIG@ line, alone and unindented", t.Path)
 				}
 				continue

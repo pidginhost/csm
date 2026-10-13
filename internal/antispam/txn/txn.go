@@ -199,7 +199,7 @@ func plan(targets []antispam.TargetFacts, managed map[string]string) ([]change, 
 		case t.Missing && managed == nil:
 		default:
 			base := t.Content
-			if t.Missing && t.Kind == antispam.TargetEximLocal {
+			if t.Kind == antispam.TargetEximLocal && managed != nil && strings.TrimSpace(base) == "" {
 				base = platform.EximLocalSkeleton
 			}
 			next, err := antispam.SetBlock(t.Kind, base, managed[t.Path])

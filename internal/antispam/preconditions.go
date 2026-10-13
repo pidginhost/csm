@@ -196,7 +196,7 @@ func CheckHost(f HostFacts) []Problem {
 	}
 
 	if f.EximSettings.Err != nil {
-		add(CodeEximOptions, Temporary, "exim -bP failed; check Exim availability and configuration")
+		add(CodeEximOptions, Temporary, "exim -bP for the message size limit, log path and Exim user failed; check Exim availability and configuration")
 	} else {
 		settings := ParseEximOptions(f.EximSettings.Stdout)
 		out = append(out, checkMessageSize(settings, f.RspamdOptions)...)
