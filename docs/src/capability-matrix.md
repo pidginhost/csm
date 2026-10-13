@@ -46,8 +46,9 @@ Apply changes before restarting the daemon: several controls are read only at
 startup. A row saying "not configurable" has no single config switch that stops
 all its callers. `disabled_checks` takes a list and only affects scheduled checks.
 Stopping new work does not undo installed rules, hooks, quarantines or blocks;
-use the subsystem removal commands for that. Disabling the forward guard removes
-its existing Exim configuration, which is itself a host write.
+use the subsystem removal commands for that. Disabling the forward guard or
+antispam removes its existing Exim and rspamd configuration, which is itself a
+host write, so both rows name `mode: observe`.
 
 **Action record** says whether the operation writes to the
 [action log](action-log.md). "no" does not mean the operation is silent; it
@@ -119,7 +120,7 @@ below and the current contracts in the JSON inventory. The TIER column of
 | `detect.read_service_logs`<br>read mail, authentication, web server and ModSecurity logs | root | automatic | 0 | nothing (read-only) | not configurable | no | no mail abuse, brute-force or WAF detection: these logs are root-readable only |
 | `detect.scan_account_files`<br>read every account's files for scheduled, real-time and on-demand scans | CAP_DAC_READ_SEARCH, root | automatic | 0 | nothing (read-only) | not configurable: disabled_checks only suppresses scheduled checks; realtime and requested scans remain | no | only files readable by CSM's own uid are scanned, which on a shared host is close to nothing |
 | `detect.sensitive_file_writes`<br>watch writes to /etc/shadow and comparable files through a BPF LSM hook | CAP_BPF, CAP_PERFMON, root | automatic | 2 | kernel:BPF programs and maps | `detection.sensitive_files_backend: none` | no | sensitive-file changes are found by periodic hashing instead of at the moment of the write |
-| `integrate.antispam`<br>install, update or remove CSM's rspamd settings and Exim spam-filter hooks, rebuild the Exim configuration and reload Exim and rspamd | root | operator | 4 | /etc/rspamd/local.d, /usr/local/cpanel/etc/exim/acls, /etc/exim.conf.local, /etc/exim.conf, /var/lib/csm, exim:rebuild artifacts and service reload, service:rspamd reload (outside the systemd sandbox) | do not run the command | no | CSM's spam-filter settings and hooks cannot be installed, updated or removed; existing mail filtering keeps its current configuration |
+| `integrate.antispam`<br>install, update or remove CSM's rspamd settings and Exim spam-filter hooks, rebuild the Exim configuration and reload Exim and rspamd | root | automatic | 4 | /etc/rspamd/local.d, /usr/local/cpanel/etc/exim/acls, /etc/exim.conf.local, /etc/exim.conf, /var/lib/csm, exim:rebuild artifacts and service reload, service:rspamd reload (outside the systemd sandbox) | `mode: observe` | no | CSM's spam-filter settings and hooks cannot be installed, updated or removed; existing mail filtering keeps its current configuration |
 | `integrate.auditd_rules`<br>write CSM's auditd rules and reload them, so audit-backed detection survives package upgrades | CAP_AUDIT_CONTROL, root | automatic | 4 | /etc/audit, kernel:audit rules | `mode: observe` | no | audit-backed detection layers stay inactive after an upgrade |
 | `integrate.challenge_port_gate`<br>install the separate nftables port gate for the public challenge listener | CAP_NET_ADMIN, root | automatic | 2 | nftables:challenge port gate | `challenge.port_gate.enabled: false` | no | the listener remains reachable without the challenge port filter |
 | `integrate.challenge_snippet`<br>refresh the web server snippet and rewrite maps that route challenged visitors to CSM's proof-of-work listener, and reload the web server when the snippet changed | root | automatic | 4 | /etc/apache2/conf.d, /etc/apache2/conf-enabled, /etc/httpd/conf.d, /etc/nginx/conf.d, /usr/local/lsws/conf/templates, /var/cache/csm, service:web server reload | `mode: observe` | no | suspicious visitors are blocked outright instead of being offered a challenge |

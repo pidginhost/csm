@@ -36,6 +36,7 @@
 - [ModSecurity](modsecurity.md)
 - [Signature Rules](signatures.md)
 - [Email AV](email-av.md)
+- [Inbound Spam Filtering](antispam.md)
 - [Threat Intelligence](threat-intel.md)
 - [GeoIP](geoip.md)
 - [Challenge Pages](challenge.md)

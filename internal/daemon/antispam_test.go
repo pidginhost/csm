@@ -11,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mailfwd/adapter"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -31,7 +32,7 @@ func useActiveConfig(t *testing.T, cfg *config.Config) {
 }
 
 // useAntispamHost replaces the host the reconcile loop works on with one
-// where nothing of CSM's is installed, and counts its disabled passes.
+// where nothing of CSM's is installed, and signals each pass.
 func useAntispamHost(t *testing.T) <-chan struct{} {
 	t.Helper()
 	passes := make(chan struct{}, 16)
@@ -39,7 +40,10 @@ func useAntispamHost(t *testing.T) <-chan struct{} {
 	t.Cleanup(func() { antispamReconciler = prev })
 	antispamReconciler = func() reconcile.Reconciler {
 		return reconcile.Reconciler{
-			Collect: func(context.Context, string) antispam.HostFacts { return antispam.HostFacts{} },
+			Collect: func(context.Context, string) antispam.HostFacts {
+				passes <- struct{}{}
+				return antispam.HostFacts{Record: antispam.RecordFacts{Missing: true}}
+			},
 			Installed: func() antispam.HostFacts {
 				passes <- struct{}{}
 				return antispam.HostFacts{Record: antispam.RecordFacts{Missing: true}}
@@ -330,5 +334,127 @@ func TestReconcileAntispamFollowsTheReloadedSwitch(t *testing.T) {
 	d.reconcileAntispam()
 	if active := d.antispamHealth.Active(); len(active) != 0 {
 		t.Fatalf("disable kept %+v", active)
+	}
+}
+
+// Every Exim main-log line reaches antispam health; scan errors count only
+// while antispam is enabled.
+func TestEximLogFeedsAntispamScanHealth(t *testing.T) {
+	d := newTestDaemon(t)
+	cfg := &config.Config{}
+	scanErrors := func() int {
+		n := 0
+		for _, f := range d.handleEximLine(scanErrorLine, alert.Observation{}, cfg) {
+			if f.Check == reconcile.CheckScanError {
+				n++
+			}
+		}
+		return n
+	}
+	if n := scanErrors(); n != 0 {
+		t.Fatalf("disabled antispam reported %d scan errors", n)
+	}
+	d.antispamHealth.SetEnabled(true, testScanSocket)
+	if n := scanErrors(); n != 1 {
+		t.Fatalf("enabled antispam reported %d scan errors, want 1", n)
+	}
+}
+
+// A config reload, from SIGHUP or a web UI save, starts a pass that reads
+// the new config and points health at the new switch (spec section 4.3).
+func TestConfigReloadReconcilesAntispam(t *testing.T) {
+	usePanel(t, platform.PanelCPanel)
+	passes := useAntispamHost(t)
+	prevGuard := newForwardGuard
+	t.Cleanup(func() { newForwardGuard = prevGuard })
+	newForwardGuard = func() adapter.ForwardGuard { return &countingForwardGuard{} }
+	d := newTestDaemon(t)
+	useActiveConfig(t, d.cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	d.scanCtx, d.scanCancel = ctx, cancel
+	t.Cleanup(func() {
+		cancel()
+		d.wg.Wait()
+	})
+	d.startAntispam()
+	waitPass(t, passes)
+
+	cfg := &config.Config{}
+	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, DryRun: true, RspamdSocket: testScanSocket, RejectScore: 15, TagScore: 6}
+	config.SetActive(cfg)
+	d.reconcileHotReloadables()
+	waitPass(t, passes)
+	if got := d.antispamHealth.Line(scanErrorLine, time.Now()); len(got) != 1 {
+		t.Fatalf("reload left health tracking off: %+v", got)
+	}
+}
+
+// rspamd that fails some scans and passes others raises and clears the scan
+// error with each message. Alert state keeps that to one notice, not one
+// per failed message.
+func TestScanErrorFlappingAlertsOnce(t *testing.T) {
+	const scanOKLine = `2026-10-13 09:00:01 1xF5ol-00000000SdL-2TMA CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=0 action="no action" decision=none`
+	d := newTestDaemon(t)
+	d.antispamHealth.SetEnabled(true, testScanSocket)
+	notices := 0
+	prev := alert.CentralHook
+	t.Cleanup(func() { alert.SetCentralHook(prev) })
+	alert.SetCentralHook(func(f alert.Finding) {
+		if f.Check == reconcile.CheckScanError {
+			notices++
+		}
+	})
+	cfg := &config.Config{}
+	for range 3 {
+		d.dispatchBatch(d.handleEximLine(scanErrorLine, alert.Observation{}, cfg))
+		d.dispatchBatch(d.handleEximLine(scanOKLine, alert.Observation{}, cfg))
+	}
+	if notices != 1 {
+		t.Fatalf("flapping scans sent %d scan-error notices, want 1", notices)
+	}
+}
+
+// A reload, from SIGHUP or a web UI save, must not wait for a running pass:
+// a worker run can take minutes.
+func TestConfigReloadDoesNotWaitForARunningPass(t *testing.T) {
+	usePanel(t, platform.PanelCPanel)
+	prevGuard := newForwardGuard
+	t.Cleanup(func() { newForwardGuard = prevGuard })
+	newForwardGuard = func() adapter.ForwardGuard { return &countingForwardGuard{} }
+	started := make(chan struct{}, 4)
+	release := make(chan struct{})
+	prev := antispamReconciler
+	t.Cleanup(func() { antispamReconciler = prev })
+	antispamReconciler = func() reconcile.Reconciler {
+		return reconcile.Reconciler{
+			Installed: func() antispam.HostFacts {
+				started <- struct{}{}
+				<-release
+				return antispam.HostFacts{Record: antispam.RecordFacts{Missing: true}}
+			},
+			Now: time.Now,
+		}
+	}
+	d := newTestDaemon(t)
+	useActiveConfig(t, d.cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	d.scanCtx, d.scanCancel = ctx, cancel
+	t.Cleanup(func() {
+		cancel()
+		d.wg.Wait()
+	})
+	t.Cleanup(func() { close(release) })
+	d.startAntispam()
+	<-started
+
+	done := make(chan struct{})
+	go func() {
+		d.reconcileHotReloadables()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reload waited for the running antispam pass")
 	}
 }

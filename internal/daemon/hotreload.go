@@ -178,6 +178,10 @@ func (d *Daemon) reconcileHotReloadables() {
 	// so enabling/disabling or toggling enforce takes effect without a restart.
 	d.reconcileForwardGuard()
 
+	// email_protection.antispam is a safe field too: health follows the new
+	// switch at once, and a reconcile pass applies the new settings.
+	d.reconcileAntispam()
+
 	// reputation.verified_bots is a safe field too; push the new list into the
 	// live verifier and re-stamp the PTR cache so changes take effect at once.
 	d.reconcileVerifiedBots()

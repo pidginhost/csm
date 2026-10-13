@@ -43,6 +43,7 @@ func Capabilities() []string {
 		"mail.filter.exfil.v1", // BEC mail-filter exfiltration detection
 		"mail.queue.composition.v1",
 		"mail.forward_guard.v1",          // opt-in MTA-native forward-guard (hold spam/backscatter forward copies)
+		"mail.antispam.v1",               // opt-in inbound spam filtering through rspamd with per-account cPanel opt-out
 		"detect.http_scanner_profile.v1", // URL scanner-profile detector + challenge/block action
 		"challenge.stats.v1",
 		"verified_bots.editor.v1",   // operator-managed verified-bot allowlist (rDNS + IP ranges) with web editor

@@ -851,6 +851,11 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	obs.Go("forward-guard-refresh", d.forwardGuardRefresher)
 
+	// Reconcile the opt-in antispam integration and probe rspamd while it is
+	// enabled. Started after the forward guard's own reconcile, so the two
+	// startup transactions do not contend for the Exim lock. cPanel only.
+	d.startAntispam()
+
 	// Snapshot the live config ONCE for the entire initial-scan tick
 	// (detection + auto-response). Earlier code called d.currentCfg()
 	// for RunTier and then again later for the auto-response batch;
@@ -2319,7 +2324,10 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 	// disqualifies it from the slow-brute block (an office NAT with one
 	// stale device keeps working devices too; a walker never succeeds).
 	recordEximSMTPAuthSuccess(line, cfg, d.smtpAuthTracker)
-	return findings
+
+	// CSM's scan hook logs one marker per scan; a failed scan raises
+	// antispam_scan_error while antispam is enabled.
+	return append(findings, d.antispamHealth.Line(line, time.Now())...)
 }
 
 // handleMailLine composes parseDovecotLogLine (preserving email_suspicious_geo)

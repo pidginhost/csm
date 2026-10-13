@@ -56,16 +56,18 @@ func TestPHPShieldInstallRegistersCageFSWithoutMounting(t *testing.T) {
 
 // The standalone root worker does not load config, and no daemon caller
 // schedules it yet. A config switch cannot stop an explicit invocation.
-func TestAntispamInventoryMatchesStandaloneWorker(t *testing.T) {
+// The daemon reconciles antispam on its own. A disabled integration is still
+// removed, so only observe mode stops the worker.
+func TestAntispamInventoryMatchesDaemonReconcile(t *testing.T) {
 	for _, op := range Operations() {
 		if op.ID != "integrate.antispam" {
 			continue
 		}
-		if op.Trigger != Operator {
-			t.Errorf("antispam trigger = %q, want operator", op.Trigger)
+		if op.Trigger != Automatic {
+			t.Errorf("antispam trigger = %q, want automatic", op.Trigger)
 		}
-		if op.DisableKey != "" || op.DisableValue != "" || op.DisableInstruction() != "do not run the command" {
-			t.Errorf("antispam claims a config control for the standalone worker: %q", op.DisableInstruction())
+		if op.DisableKey != "mode" || op.DisableValue != "observe" {
+			t.Errorf("antispam control = %q, want mode: observe", op.DisableInstruction())
 		}
 		return
 	}
@@ -99,7 +101,7 @@ func TestInventoryMatchesRuntimeContracts(t *testing.T) {
 		{"respond.af_alg_kill", "daemon/af_alg_react.go: separate CopyFailKillProcess gate", "auto_response.copy_fail_kill_process", "false", []Privilege{CapKill}, []string{"process:signal"}},
 		{"respond.af_alg_marker", "checks/af_alg_enforce.go: repairs marker inside daemon sandbox", "auto_response.disable_enforce_af_alg", "true", []Privilege{Root}, []string{"/etc/modprobe.d"}},
 		{"respond.forward_guard", "daemon/forward_guard.go: disabled guard still removes configuration", "mode", "observe", []Privilege{Root}, []string{"/etc/exim.conf.local", "/var/lib/csm"}},
-		{"integrate.antispam", "cmd/csm/antispam_worker.go: standalone root command without a config gate", "", "", []Privilege{Root}, []string{"/etc/rspamd/local.d", "/usr/local/cpanel/etc/exim/acls", "/etc/exim.conf.local", "/etc/exim.conf", "/var/lib/csm"}},
+		{"integrate.antispam", "daemon/antispam.go: disabled antispam still removes the integration; observe mode only reports", "mode", "observe", []Privilege{Root}, []string{"/etc/rspamd/local.d", "/usr/local/cpanel/etc/exim/acls", "/etc/exim.conf.local", "/etc/exim.conf", "/var/lib/csm"}},
 		{"respond.bpf_deny_egress", "daemon/connection_bpf.go: cgroup socket program", "bpf_enforcement.enabled", "false", []Privilege{"CAP_BPF", "CAP_NET_ADMIN"}, nil},
 		{"respond.mail_delivery_gate", "daemon/spoolwatch.go: FAN_DENY on scanner failure in tempfail mode", "email_av.enabled", "false", []Privilege{CapSysAdmin}, []string{"fanotify:mail delivery decisions"}},
 		{"respond.hold_outgoing_mail", "daemon/watcher.go: maybeHoldOutgoingMail calls whmapi1 hold_outgoing_email", "auto_response.enabled", "false", []Privilege{Root}, []string{"cpanel:account outgoing mail hold"}},

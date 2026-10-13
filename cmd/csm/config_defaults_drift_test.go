@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -54,6 +55,13 @@ func loadConfigFile(t *testing.T, path string) []int {
 
 func loadDocumentedReference(t *testing.T) []int {
 	t.Helper()
+	return loadRestrictedTCP(t, "full reference in docs/src/configuration.md", documentedReferenceYAML(t))
+}
+
+// documentedReferenceYAML returns the Full Reference block of the
+// configuration docs.
+func documentedReferenceYAML(t *testing.T) []byte {
+	t.Helper()
 	path := filepath.Join("..", "..", "docs", "src", "configuration.md")
 	data, err := os.ReadFile(path) // #nosec G304 -- repository-owned test fixture path
 	if err != nil {
@@ -69,7 +77,7 @@ func loadDocumentedReference(t *testing.T) []int {
 	if !ok {
 		t.Fatalf("%s: full reference YAML block is not closed", path)
 	}
-	return loadRestrictedTCP(t, "full reference in "+path, []byte(yamlText))
+	return []byte(yamlText)
 }
 
 func loadRestrictedTCP(t *testing.T, name string, data []byte) []int {
@@ -152,5 +160,34 @@ func TestDefaultReferencesRestrictWebUIPort(t *testing.T) {
 				t.Errorf("restricted_tcp = %v, missing web UI port %d", tc.ports, webUIPort)
 			}
 		})
+	}
+}
+
+// The documented antispam block repeats the runtime defaults, so copying it
+// into csm.yaml changes nothing. Shipped templates carry no antispam block
+// (spec section 4.3).
+func TestAntispamReferenceMatchesRuntimeDefaults(t *testing.T) {
+	var ref struct {
+		EmailProtection struct {
+			Antispam map[string]any `yaml:"antispam"`
+		} `yaml:"email_protection"`
+	}
+	if err := yaml.Unmarshal(documentedReferenceYAML(t), &ref); err != nil {
+		t.Fatal(err)
+	}
+	defaults, err := config.LoadBytes([]byte("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	as := defaults.EmailProtection.Antispam
+	want := map[string]any{
+		"enabled":       as.Enabled,
+		"dry_run":       as.DryRun,
+		"rspamd_socket": as.RspamdSocket,
+		"reject_score":  as.RejectScore,
+		"tag_score":     as.TagScore,
+	}
+	if !reflect.DeepEqual(ref.EmailProtection.Antispam, want) {
+		t.Errorf("documented email_protection.antispam = %v, want runtime defaults %v", ref.EmailProtection.Antispam, want)
 	}
 }

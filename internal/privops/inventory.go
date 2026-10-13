@@ -555,9 +555,11 @@ var operations = []Op{
 		Subsystem:        "host integration",
 		Summary:          "install, update or remove CSM's rspamd settings and Exim spam-filter hooks, rebuild the Exim configuration and reload Exim and rspamd",
 		Privileges:       []Privilege{Root},
-		Trigger:          Operator,
+		Trigger:          Automatic,
 		Writes:           []string{"/etc/rspamd/local.d", "/usr/local/cpanel/etc/exim/acls", "/etc/exim.conf.local", "/etc/exim.conf", "/var/lib/csm", "exim:rebuild artifacts and service reload", "service:rspamd reload"},
 		Unsandboxed:      true,
+		DisableKey:       "mode",
+		DisableValue:     "observe",
 		WithoutPrivilege: "CSM's spam-filter settings and hooks cannot be installed, updated or removed; existing mail filtering keeps its current configuration",
 	},
 	{
