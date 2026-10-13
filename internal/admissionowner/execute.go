@@ -329,6 +329,11 @@ func (o *Owner) endPick(p execPick, reason admission.Reason) error {
 	var err error
 	switch reason.Disposition() {
 	case admission.DispositionDeferred:
+		// Deferring again for the same reason changes nothing but still
+		// commits; a long hold would pay that per pick every turn.
+		if p.c.Reason == reason {
+			return nil
+		}
 		_, err = o.ledger.Defer(p.pick.ID, reason)
 	case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
 		_, err = o.ledger.Terminate(p.pick.ID, reason)

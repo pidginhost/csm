@@ -413,3 +413,33 @@ func TestOwnerWithoutAnEngineIdlesUntilItStarts(t *testing.T) {
 		t.Fatalf("a started engine waited: held %q", held)
 	}
 }
+
+// A pick already deferred for the reason a held turn gives is left as it
+// is: a long hold costs the turn's own writes, not one per held pick.
+func TestOwnerDefersAHeldPickOnce(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.checkErr = errors.New("snapshot unreadable")
+	o := f.start(executeOptions(f, blocks))
+	heldMono(t, o)
+	addrs := []string{"192.0.2.10", "192.0.2.11", "192.0.2.12", "192.0.2.13"}
+	for _, ip := range addrs {
+		queuedAt(t, o, p, f.host, admission.SeverityHigh, ip)
+	}
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range queuedCandidates(t, o) {
+		if c.Reason != admission.ReasonEngineUnavailable {
+			t.Fatalf("held pick reason = %q", c.Reason)
+		}
+	}
+	writes := f.db.WriteTxID()
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.db.WriteTxID() - writes; got >= len(addrs) {
+		t.Fatalf("a held turn committed %d writes for %d held picks", got, len(addrs))
+	}
+}
