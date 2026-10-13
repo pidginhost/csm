@@ -174,13 +174,14 @@ func (d *Daemon) reloadConfig() {
 // the edited file is published, and a web UI save after the handler has
 // published the edited config.
 func (d *Daemon) reconcileHotReloadables() {
+	// email_protection.antispam is a safe field: health follows the new
+	// switch at once, and a reconcile pass applies the new settings. It goes
+	// first, so a forward-guard transaction rebuilding Exim cannot delay it.
+	d.reconcileAntispam()
+
 	// A forward-guard config change is a safe (hot-reload) field; re-reconcile
 	// so enabling/disabling or toggling enforce takes effect without a restart.
 	d.reconcileForwardGuard()
-
-	// email_protection.antispam is a safe field too: health follows the new
-	// switch at once, and a reconcile pass applies the new settings.
-	d.reconcileAntispam()
 
 	// reputation.verified_bots is a safe field too; push the new list into the
 	// live verifier and re-stamp the PTR cache so changes take effect at once.

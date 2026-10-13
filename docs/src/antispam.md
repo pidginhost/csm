@@ -15,7 +15,8 @@ them as Spam" (the `~/.spamassassinenable` file). New accounts start opted in.
 Who may change the switch is controlled by the `spamassassin` feature in cPanel
 feature lists; CSM adds no setting for it.
 
-For an opted-in account, inbound mail is scored by rspamd and Exim:
+With `dry_run: false`, inbound mail is scored by rspamd and Exim applies the
+account's choice. For an opted-in account, Exim:
 
 - rejects it with 550 when the score is at or above `reject_score`;
 - adds `X-Spam-Status: Yes` when the score is at or above `tag_score` and below
@@ -68,8 +69,8 @@ never filtered: mail to a domain from that domain's remote MX hosts, hosts in
 Install rspamd from the upstream [rspamd.com](https://rspamd.com/downloads.html)
 repository and keep its systemd unit's `User=` setting (the upstream package
 runs as `_rspamd`); CSM checks the scan socket's owner against it. CSM does not
-install rspamd or Redis, and changes nothing below until every condition is
-met.
+install rspamd or Redis. A first install waits for the conditions below; a
+definite failure after installation removes owned integration content when safe.
 
 1. **SpamAssassin is off.** Disable spamd in WHM so `/etc/spamddisable` exists.
    Otherwise cPanel's own scan uses CSM's scanner and adds its own headers and
@@ -82,9 +83,10 @@ met.
    ```
 
    This replaces the normal worker's TCP listener. The socket and every parent
-   directory must be owned by root or the rspamd user and writable by no one
-   else, so a hosting account cannot put its own listener in its place. Exim
-   must be able to connect.
+   directory must be owned by root or the rspamd user. Parent directories must
+   not be writable by group or others, including through extra ACL entries,
+   so a hosting account cannot replace the listener. The socket itself needs
+   write permission for Exim to connect; `mode=0666` provides that access.
 3. **rspamd accepts every message Exim accepts.** rspamd's default
    `max_message` (50 MiB) equals cPanel's default Exim limit, and Exim adds
    headers before scanning. Set `max_message` to Exim's `message_size_limit`
@@ -97,14 +99,20 @@ met.
 
 CSM also refuses to install while any of these hold, and names the cause:
 
-- Exim settings that already act on spam scores, such as
+- Exim settings, ACLs or filters that already act on spam scores, such as
   `deny_spam_score_over_*`, `ratelimit_spam_score_over_*` or automatic spam
-  deletion;
+  deletion and forwarded-spam restrictions;
 - another `spamd_address` in `/etc/exim.conf.local`;
 - cutthrough delivery, PRDR or CHUNKING enabled;
 - an Exim main log other than the one CSM reads (`log_file_path`);
 - an Exim or rspamd unit that cannot reload;
+- disabled custom ACL hooks or invalid named lists used by the hooks;
+- unsafe mutation targets, malformed CSM markers or foreign rspamd files in
+  the locations CSM manages;
 - an rspamd override that defeats CSM's settings below.
+
+CSM does not change WHM options, account toggles, Redis or rspamd worker
+settings to satisfy these conditions.
 
 ## Configuration
 
@@ -118,8 +126,9 @@ email_protection:
     tag_score: 6
 ```
 
-- `enabled` turns the integration on. Setting it back to `false` removes
-  everything CSM installed.
+- `enabled` turns the integration on. Setting it back to `false` requests
+  removal of CSM's owned content; conflicts or failures can prevent removal
+  and produce findings.
 - `dry_run` scans and logs what would happen without rejecting, tagging or
   splitting recipients.
 - `rspamd_socket` is the scan socket above: an absolute path of at most 107
@@ -127,8 +136,10 @@ email_protection:
 - `reject_score` and `tag_score` are whole rspamd scores with
   `0 < tag_score < reject_score <= 1000`.
 
-All five are hot-reloadable: `systemctl reload csm` or a Settings save applies
-them. `enabled: true` is refused in [observe mode](observe-mode.md).
+All five are hot-reloadable: `systemctl reload csm` or a Settings save updates
+health tracking and requests a reconcile pass without waiting for other mail
+configuration work, including saves during startup. `enabled: true` is refused
+in [observe mode](observe-mode.md).
 
 `rspamd_socket` is not the `reputation.rspamd` controller URL. That optional
 setting reads rspamd's scan history for IP reputation and is unrelated to
@@ -165,22 +176,31 @@ CSM checks the integration at startup, after each config reload and every 15
 minutes, and repairs drift, such as a cPanel rebuild that dropped the hooks.
 When another CSM change holds the lock, it tries again 20 seconds later.
 
-Exim and rspamd keep serving existing SMTP sessions with the configuration
-they started with; changes apply to new sessions.
+Existing Exim SMTP sessions retain their old hooks; new sessions use the
+updated hooks. Account toggles are still read at each recipient. Reloading
+rspamd can change scoring for scans from either generation of Exim hooks.
 
 ## Rolling it out
 
 1. Meet the conditions above and enable with `dry_run: true`.
 2. Leave dry run on for at least 7 days. Review each would-reject decision in
    the Exim main log (`CSM-ANTISPAM event=scan ... decision=reject`), and watch
-   for scan-error findings.
+   for scan-error findings. Do not enforce until all predicted rejects are
+   classified, none rejects legitimate mail, and no scan or configuration
+   failure finding remains.
 3. Review which accounts are opted out today, and decide whether users may use
    the spam box (WHM Tweak Settings, `skipspambox`).
 4. Set `dry_run: false`. Check every 550 for a week. Return to dry run on a
    confirmed false positive.
 
-To roll back at any stage, set `enabled: false`: one Exim reload, and new
-sessions are no longer filtered.
+To roll back, set `enabled: false` while CSM is in enforce mode. Successful
+removal reloads Exim, and new sessions no longer use CSM filtering. Check for
+removal failures before assuming rollback completed. Observe mode leaves the
+installed integration untouched.
+
+Sessions opened before removal retain their old hooks and may still scan.
+Those scans use operator or default rspamd settings after CSM's settings are
+removed; scores can change and external lists can become active again.
 
 ## Findings
 
@@ -194,7 +214,8 @@ sessions are no longer filtered.
 
 While rspamd is down or scans fail, mail is delivered without spam filtering.
 Exim adds no rejection for a scanner failure, and other mail checks keep
-running. Disabling antispam clears these findings without a recovery notice.
+running. Disabling antispam clears the down and scan-error findings without
+a recovery notice. Preconditions or removal failures can still be reported.
 
 In observe mode CSM reports and changes nothing; an installed integration is
 reported as `observe_mode`.

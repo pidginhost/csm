@@ -2328,8 +2328,13 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 	recordEximSMTPAuthSuccess(line, cfg, d.smtpAuthTracker)
 
 	// CSM's scan hook logs one marker per scan; a failed scan raises
-	// antispam_scan_error while antispam is enabled.
-	return append(findings, d.antispamHealth.Line(line, time.Now())...)
+	// antispam_scan_error while antispam is enabled. Some sources carry no
+	// observation time.
+	at := obs.ObservedAt
+	if at.IsZero() {
+		at = time.Now()
+	}
+	return append(findings, d.antispamHealth.Line(line, at)...)
 }
 
 // handleMailLine composes parseDovecotLogLine (preserving email_suspicious_geo)

@@ -910,3 +910,128 @@ func TestAntispamProbeIgnoresPreviousGeneration(t *testing.T) {
 		})
 	}
 }
+
+// The web UI starts before antispam. A settings save during initialization
+// must reach health as well as the first reconcile pass.
+func TestAntispamStartupUsesConfigSavedDuringInitialization(t *testing.T) {
+	usePanel(t, platform.PanelCPanel)
+	passes := useAntispamHost(t)
+	build := antispamReconciler
+	initializing := make(chan struct{})
+	resume := make(chan struct{})
+	antispamReconciler = func() reconcile.Reconciler {
+		close(initializing)
+		<-resume
+		return build()
+	}
+	d := newTestDaemon(t)
+	enableAntispam(t, d, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	d.scanCtx, d.scanCancel = ctx, cancel
+	started := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		<-started
+		d.wg.Wait()
+	})
+	t.Cleanup(func() { close(resume) })
+	go func() {
+		d.startAntispam()
+		close(started)
+	}()
+	select {
+	case <-initializing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("antispam initialization did not start")
+	}
+	config.SetActive(d.cfg)
+	d.reconcileAntispam()
+	resume <- struct{}{}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("antispam initialization did not complete")
+	}
+	waitPass(t, passes)
+	if got := d.handleEximLine(scanErrorLine, alert.Observation{ObservedAt: time.Now()}, d.cfg); len(got) != 0 {
+		t.Fatalf("startup kept antispam health enabled after the settings save: %+v", got)
+	}
+}
+
+func TestEximAntispamUsesObservationTime(t *testing.T) {
+	d := newTestDaemon(t)
+	d.antispamHealth.SetEnabled(true, testScanSocket)
+	observed := time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
+	got := d.handleEximLine(scanErrorLine, alert.Observation{ObservedAt: observed}, d.cfg)
+	if len(got) != 1 || got[0].Check != reconcile.CheckScanError || !got[0].Timestamp.Equal(observed) {
+		t.Fatalf("scan error did not retain its observation time: %+v", got)
+	}
+}
+
+type blockedAntispamForwardGuard struct {
+	countingForwardGuard
+	started chan struct{}
+	release chan struct{}
+}
+
+func (g *blockedAntispamForwardGuard) Remove() error {
+	close(g.started)
+	<-g.release
+	return nil
+}
+
+// Health and the next pass must follow the published config even while a
+// forward-guard transaction is still rebuilding Exim.
+func TestAntispamReloadDoesNotWaitForForwardGuard(t *testing.T) {
+	usePanel(t, platform.PanelCPanel)
+	passes := useAntispamHost(t)
+	d := newTestDaemon(t)
+	enableAntispam(t, d, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	d.scanCtx, d.scanCancel = ctx, cancel
+	t.Cleanup(func() {
+		cancel()
+		d.wg.Wait()
+	})
+	d.startAntispam()
+	waitPass(t, passes)
+	d.handleEximLine(scanErrorLine, alert.Observation{}, d.currentCfg())
+	if got := d.antispamHealth.Active(); len(got) != 1 {
+		t.Fatalf("enabled health did not record the scan error: %+v", got)
+	}
+
+	guard := &blockedAntispamForwardGuard{started: make(chan struct{}), release: make(chan struct{})}
+	prev := newForwardGuard
+	t.Cleanup(func() { newForwardGuard = prev })
+	newForwardGuard = func() adapter.ForwardGuard { return guard }
+	config.SetActive(d.cfg)
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		close(guard.release)
+		<-done
+	})
+	go func() {
+		d.reconcileHotReloadables()
+		close(done)
+	}()
+	select {
+	case <-guard.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("forward-guard transaction did not start")
+	}
+	if got := d.antispamHealth.Active(); len(got) != 0 {
+		t.Fatalf("disabled antispam kept health active during forward-guard reload: %+v", got)
+	}
+	waitPass(t, passes)
+}
+
+// Some log sources carry no observation time. A scan error then uses the
+// clock, so its alert never reports a year-one timestamp.
+func TestEximAntispamWithoutObservationTimeUsesTheClock(t *testing.T) {
+	d := newTestDaemon(t)
+	d.antispamHealth.SetEnabled(true, testScanSocket)
+	got := d.handleEximLine(scanErrorLine, alert.Observation{}, d.cfg)
+	if len(got) != 1 || got[0].Timestamp.IsZero() || strings.Contains(got[0].Details, "0001-01-01") {
+		t.Fatalf("scan error without an observation time: %+v", got)
+	}
+}
