@@ -3,7 +3,14 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
+	"reflect"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -36,26 +43,29 @@ func useActiveConfig(t *testing.T, cfg *config.Config) {
 func useAntispamHost(t *testing.T) <-chan struct{} {
 	t.Helper()
 	passes := make(chan struct{}, 16)
+	useAntispamReconciler(t, reconcile.Reconciler{
+		Collect: func(context.Context, string) antispam.HostFacts {
+			passes <- struct{}{}
+			return antispam.HostFacts{Record: antispam.RecordFacts{Missing: true}}
+		},
+		Installed: func() antispam.HostFacts {
+			passes <- struct{}{}
+			return antispam.HostFacts{Record: antispam.RecordFacts{Missing: true}}
+		},
+		Run: func(context.Context, antispam.Request) (antispam.Result, error) {
+			t.Error("a host with nothing installed sent a worker request")
+			return antispam.Result{}, nil
+		},
+		Now: time.Now,
+	})
+	return passes
+}
+
+func useAntispamReconciler(t *testing.T, r reconcile.Reconciler) {
+	t.Helper()
 	prev := antispamReconciler
 	t.Cleanup(func() { antispamReconciler = prev })
-	antispamReconciler = func() reconcile.Reconciler {
-		return reconcile.Reconciler{
-			Collect: func(context.Context, string) antispam.HostFacts {
-				passes <- struct{}{}
-				return antispam.HostFacts{Record: antispam.RecordFacts{Missing: true}}
-			},
-			Installed: func() antispam.HostFacts {
-				passes <- struct{}{}
-				return antispam.HostFacts{Record: antispam.RecordFacts{Missing: true}}
-			},
-			Run: func(context.Context, antispam.Request) (antispam.Result, error) {
-				t.Error("a host with nothing installed sent a worker request")
-				return antispam.Result{}, nil
-			},
-			Now: time.Now,
-		}
-	}
-	return passes
+	antispamReconciler = func() reconcile.Reconciler { return r }
 }
 
 func waitPass(t *testing.T, passes <-chan struct{}) {
@@ -67,15 +77,43 @@ func waitPass(t *testing.T, passes <-chan struct{}) {
 	}
 }
 
+func antispamTestShutdown(t *testing.T, d *Daemon) func() {
+	t.Helper()
+	d.scanCtx, d.scanCancel = context.WithCancel(context.Background())
+	stop := sync.OnceFunc(func() {
+		close(d.stopCh)
+		d.scanCancel()
+		stopped := make(chan struct{})
+		go func() {
+			d.wg.Wait()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(5 * time.Second):
+			t.Error("antispam loop outlived shutdown")
+		}
+	})
+	// Stop before the state store and host stubs are torn down, even if a
+	// pass assertion fails before the test reaches its shutdown check.
+	t.Cleanup(stop)
+	return stop
+}
+
 func TestStartAntispamSkipsHostsWithoutCPanel(t *testing.T) {
 	usePanel(t, platform.PanelNone)
-	useAntispamHost(t)
+	passes := useAntispamHost(t)
 	d := newTestDaemon(t)
+	stop := antispamTestShutdown(t, d)
 	d.startAntispam()
 	if d.antispamLoop.Load() != nil {
 		t.Fatal("antispam reconcile started on a host without cPanel")
 	}
 	d.reconcileAntispam() // must not block or panic without a loop
+	stop()
+	if len(passes) != 0 {
+		t.Fatal("antispam collected host facts without cPanel")
+	}
 }
 
 // A pass runs at start and after each reload, and shutdown stops the loop.
@@ -84,22 +122,176 @@ func TestAntispamLoopPassesAtStartAndOnReload(t *testing.T) {
 	passes := useAntispamHost(t)
 	d := newTestDaemon(t)
 	useActiveConfig(t, d.cfg)
-	ctx, cancel := context.WithCancel(context.Background())
-	d.scanCtx, d.scanCancel = ctx, cancel
+	stop := antispamTestShutdown(t, d)
 	d.startAntispam()
 	waitPass(t, passes)
 	d.reconcileAntispam()
 	waitPass(t, passes)
-	cancel()
-	stopped := make(chan struct{})
+	stop()
+}
+
+func TestAntispamReloadDuringPassUsesLatestConfig(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		usePanel(t, platform.PanelCPanel)
+		d := newTestDaemon(t)
+		cfg := &config.Config{}
+		cfg.EmailProtection.Antispam.Enabled = true
+		cfg.EmailProtection.Antispam.RspamdSocket = "/run/rspamd/first.sock"
+		useActiveConfig(t, cfg)
+		var sockets []string
+		release := make(chan struct{})
+		useAntispamReconciler(t, reconcile.Reconciler{
+			Collect: func(ctx context.Context, socket string) antispam.HostFacts {
+				sockets = append(sockets, socket)
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+				return antispam.HostFacts{Record: antispam.RecordFacts{Missing: true}}
+			},
+			Now: time.Now,
+		})
+		stop := antispamTestShutdown(t, d)
+		d.startAntispam()
+		synctest.Wait()
+		if !reflect.DeepEqual(sockets, []string{"/run/rspamd/first.sock"}) {
+			t.Fatalf("startup sockets: %v", sockets)
+		}
+		reloaded := *cfg
+		reloaded.EmailProtection.Antispam.RspamdSocket = "/run/rspamd/latest.sock"
+		config.SetActive(&reloaded)
+		for range 20 {
+			go d.reconcileAntispam()
+		}
+		synctest.Wait()
+		if len(sockets) != 1 {
+			t.Fatalf("reload overlapped the running pass: %v", sockets)
+		}
+		close(release)
+		synctest.Wait()
+		if want := []string{"/run/rspamd/first.sock", "/run/rspamd/latest.sock"}; !reflect.DeepEqual(sockets, want) {
+			t.Fatalf("pass sockets: %v, want %v", sockets, want)
+		}
+		stop()
+	})
+}
+
+func TestAntispamShutdownDuringPassPreservesFindings(t *testing.T) {
+	for _, stage := range []string{"collection", "worker"} {
+		t.Run(stage, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				usePanel(t, platform.PanelCPanel)
+				d := newTestDaemon(t)
+				cfg := &config.Config{}
+				cfg.EmailProtection.Antispam.Enabled = stage == "collection"
+				useActiveConfig(t, cfg)
+				d.reportAntispam(reconcile.Outcome{Findings: []alert.Finding{
+					antispamFinding(reconcile.CheckPrecondition, "precondition"),
+					antispamFinding(reconcile.CheckApplyFailed, "apply failed"),
+				}})
+				before := d.store.LatestFindings()
+				drainAlertCh(d)
+				passes := 0
+				useAntispamReconciler(t, reconcile.Reconciler{
+					Collect: func(ctx context.Context, _ string) antispam.HostFacts {
+						passes++
+						<-ctx.Done()
+						return antispam.HostFacts{}
+					},
+					Installed: func() antispam.HostFacts {
+						// A stale record still needs removal after the other
+						// integration directories have disappeared.
+						facts := antispam.HostFacts{Record: antispam.RecordFacts{Content: "stale"}}
+						for _, target := range antispam.MutationTargets() {
+							facts.Targets = append(facts.Targets, antispam.TargetFacts{Target: target, Err: fs.ErrNotExist})
+						}
+						return facts
+					},
+					Run: func(ctx context.Context, req antispam.Request) (antispam.Result, error) {
+						if req.Operation != antispam.OpRemove {
+							t.Errorf("disabled pass requested %q, want remove", req.Operation)
+						}
+						passes++
+						<-ctx.Done()
+						return antispam.Result{}, ctx.Err()
+					},
+					Now: time.Now,
+				})
+				stop := antispamTestShutdown(t, d)
+				d.startAntispam()
+				synctest.Wait()
+				if passes != 1 {
+					t.Fatalf("running passes: %d, want 1", passes)
+				}
+				d.reconcileAntispam()
+				stop()
+				if passes != 1 {
+					t.Fatalf("shutdown ran a queued pass: %d", passes)
+				}
+				if got := d.store.LatestFindings(); !reflect.DeepEqual(got, before) {
+					t.Fatalf("canceled pass changed findings: %+v, want %+v", got, before)
+				}
+				if got := drainAlertCh(d); len(got) != 0 {
+					t.Fatalf("canceled pass sent alerts: %+v", got)
+				}
+			})
+		})
+	}
+}
+
+func TestAntispamReloadConcurrentWithStartup(t *testing.T) {
+	usePanel(t, platform.PanelCPanel)
+	d := newTestDaemon(t)
+	useActiveConfig(t, d.cfg)
+	firstPass := make(chan struct{})
+	recordPass := sync.OnceFunc(func() { close(firstPass) })
+	useAntispamReconciler(t, reconcile.Reconciler{
+		Installed: func() antispam.HostFacts {
+			recordPass()
+			return antispam.HostFacts{Record: antispam.RecordFacts{Missing: true}}
+		},
+		Now: time.Now,
+	})
+	stop := antispamTestShutdown(t, d)
+	started := make(chan struct{})
 	go func() {
-		d.wg.Wait()
-		close(stopped)
+		d.startAntispam()
+		close(started)
 	}()
-	select {
-	case <-stopped:
-	case <-time.After(5 * time.Second):
-		t.Fatal("antispam loop outlived shutdown")
+	for range 100 {
+		d.reconcileAntispam()
+	}
+	<-started
+	if d.antispamLoop.Load() == nil {
+		t.Fatal("startup did not publish the loop")
+	}
+	waitPass(t, firstPass)
+	stop()
+}
+
+func TestReportAntispamLogsErrorsOnOneLine(t *testing.T) {
+	for _, err := range []error{
+		errors.New("worker failed\nforged log\r\x1b[31m"),
+		context.DeadlineExceeded,
+		fmt.Errorf("worker: %w", context.Canceled),
+	} {
+		t.Run(strconv.Quote(err.Error()), func(t *testing.T) {
+			d := newTestDaemon(t)
+			finish := captureCSMLog(t)
+			t.Cleanup(func() { finish() })
+			d.reportAntispam(reconcile.Outcome{Err: err})
+			got := finish()
+			if errors.Is(err, context.Canceled) {
+				if got != "" {
+					t.Fatalf("shutdown error was logged: %q", got)
+				}
+				return
+			}
+			if strings.Count(got, "\n") != 1 || strings.ContainsAny(got, "\r\x1b") ||
+				!strings.Contains(got, strconv.Quote(err.Error())) {
+				t.Fatalf("worker error was not safely logged: %q", got)
+			}
+		})
 	}
 }
 
@@ -120,12 +312,22 @@ func latestChecks(d *Daemon) map[string]int {
 // changes nothing.
 func TestReportAntispamReplacesSettledChecks(t *testing.T) {
 	d := newTestDaemon(t)
+	d.store.PurgeAndMergeFindings(nil, []alert.Finding{
+		antispamFinding(reconcile.CheckRspamdDown, "rspamd down"),
+		antispamFinding("disk_usage", "disk nearly full"),
+	})
+	want := map[string]int{
+		reconcile.CheckRspamdDown:   1,
+		"disk_usage":                1,
+		reconcile.CheckPrecondition: 1,
+		reconcile.CheckApplyFailed:  1,
+	}
 	both := []string{reconcile.CheckPrecondition, reconcile.CheckApplyFailed}
 	d.reportAntispam(reconcile.Outcome{Checks: both, Findings: []alert.Finding{
 		antispamFinding(reconcile.CheckPrecondition, "Antispam precondition not met: rspamd_socket"),
 		antispamFinding(reconcile.CheckApplyFailed, "Antispam apply failed at exim_probe"),
 	}})
-	if got := latestChecks(d); got[reconcile.CheckPrecondition] != 1 || got[reconcile.CheckApplyFailed] != 1 {
+	if got := latestChecks(d); !reflect.DeepEqual(got, want) {
 		t.Fatalf("latest after a failed pass: %v", got)
 	}
 	if got := drainAlertCh(d); len(got) != 2 {
@@ -133,17 +335,19 @@ func TestReportAntispamReplacesSettledChecks(t *testing.T) {
 	}
 
 	d.reportAntispam(reconcile.Outcome{Checks: []string{reconcile.CheckPrecondition}, Retry: reconcile.BusyRetry})
-	if got := latestChecks(d); got[reconcile.CheckPrecondition] != 0 || got[reconcile.CheckApplyFailed] != 1 {
+	delete(want, reconcile.CheckPrecondition)
+	if got := latestChecks(d); !reflect.DeepEqual(got, want) {
 		t.Fatalf("latest after a busy pass: %v", got)
 	}
 
 	d.reportAntispam(reconcile.Outcome{Err: context.Canceled})
-	if got := latestChecks(d); got[reconcile.CheckApplyFailed] != 1 {
+	if got := latestChecks(d); !reflect.DeepEqual(got, want) {
 		t.Fatalf("latest after a canceled pass: %v", got)
 	}
 
 	d.reportAntispam(reconcile.Outcome{Checks: both})
-	if got := latestChecks(d); got[reconcile.CheckPrecondition] != 0 || got[reconcile.CheckApplyFailed] != 0 {
+	delete(want, reconcile.CheckApplyFailed)
+	if got := latestChecks(d); !reflect.DeepEqual(got, want) {
 		t.Fatalf("latest after a clean pass: %v", got)
 	}
 }
