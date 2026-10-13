@@ -533,7 +533,15 @@ address or a spent lifetime ends it without a charge. The rest are reserved,
 recorded as running with their intents, applied and finished by their own
 effect. Every other kind is still previewed. A batch the kernel rejected
 fails every member, charged; each then retries alone, one per turn, until its
-next outcome or its expiry.
+next outcome or its expiry. A state write the engine could not make, a
+failed batch check or apply, or a missing engine holds automatic execution:
+block picks wait, deferred as an unavailable engine, while one probe runs per
+wait, from one second doubling to a minute. A held state write is probed by
+writing the safe state again and checking its snapshot. Idle turns still
+probe; a successful member check cannot reset a failed apply's backoff.
+Hold changes copy the cached owner status without rereading the ledger.
+Status (`admission.owner.execution_held`) and
+the `csm doctor` row `admission execution` name the cause.
 
 ### Attack event storage
 

@@ -86,6 +86,12 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 			Fix: "admission keeps the previous accounts; check the account registry and home directories",
 		})
 	}
+	if o.ExecutionHeld != "" {
+		rows = append(rows, DoctorCheck{
+			Name: "admission execution", Status: "fail", Message: "automatic blocks are held: " + o.ExecutionHeld,
+			Fix: "admission probes the firewall from one second, backing off to once a minute and keeps uncertain actions held; check the firewall rows and the storage under the state directory",
+		})
+	}
 	if o.DamageError != "" {
 		rows = append(rows, DoctorCheck{
 			Name: "admission ledger damage", Status: "warn", Message: "responses naming a damaged ledger record are discarded: " + o.DamageError + "; " + admission.PreviewUnaffected,

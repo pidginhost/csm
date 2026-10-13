@@ -162,6 +162,13 @@ type Owner struct {
 	// isolated holds the candidates whose last batch the kernel rejected,
 	// with their absolute expiry: each runs alone (P9).
 	isolated map[admission.CandidateID]time.Time
+	// execHold is why automatic execution is held (P8), or nil. probeAt is
+	// when the next probe may run, on the monotonic clock, after probeWait.
+	execHold   error
+	probeAt    time.Time
+	probeWait  time.Duration
+	probeApply bool
+	probeCheck bool
 }
 
 // Start opens the ledger and runs the startup sequence before it returns,
@@ -626,7 +633,8 @@ func (o *Owner) drainHeld() (err error) {
 // succeeds. A turn that keeps failing is backed off from the default
 // schedule period, as a failing notice delivery is.
 func (o *Owner) schedule() {
-	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) {
+	probeDue := o.execHold != nil && !monoNow().Before(o.probeAt)
+	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) && !probeDue {
 		return
 	}
 	if !o.scheduleWait.due(monoNow()) {
@@ -692,6 +700,10 @@ func (o *Owner) turn() error {
 	if len(blocks) > 0 {
 		if err = o.execute(blocks); err != nil {
 			return err
+		}
+	} else if o.opts.Blocks != nil && o.execHold != nil {
+		if o.ready(o.opts.Blocks()) && o.execHold != nil {
+			o.hold(o.execHold, o.probeApply)
 		}
 	}
 	if err = o.publish(); err != nil {
@@ -877,6 +889,9 @@ func (o *Owner) refreshStatus() {
 	}
 	if o.damageErr != nil {
 		s.Owner.DamageError = o.damageErr.Error()
+	}
+	if o.execHold != nil {
+		s.Owner.ExecutionHeld = o.execHold.Error()
 	}
 	if o.ledger != nil {
 		ls := o.ledger.Status()

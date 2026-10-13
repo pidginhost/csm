@@ -22,9 +22,14 @@ type fakeBlocks struct {
 	checkErr error
 	applyErr error
 	// reject is how many coming batches the kernel rejects whole.
-	reject  int
-	checks  [][]firewall.BlockMember
-	applies [][]firewall.BlockMember
+	reject       int
+	markErr      error
+	marks        int
+	stateProbes  int
+	shortResults bool
+	shortChecks  bool
+	checks       [][]firewall.BlockMember
+	applies      [][]firewall.BlockMember
 }
 
 func newFakeBlocks() *fakeBlocks {
@@ -41,6 +46,9 @@ func (f *fakeBlocks) CheckBlockBatch(members []firewall.BlockMember) ([]firewall
 	out := make([]firewall.BlockRefusal, len(members))
 	for i, m := range members {
 		out[i] = f.refuse[m.IP]
+	}
+	if f.shortChecks {
+		return out[:len(out)-1], nil
 	}
 	return out, nil
 }
@@ -67,7 +75,36 @@ func (f *fakeBlocks) ApplyBlockBatch(members []firewall.BlockMember) ([]firewall
 		}
 		out[i] = r
 	}
+	if f.shortResults {
+		return out[:len(out)-1], nil
+	}
 	return out, nil
+}
+
+func (f *fakeBlocks) MarkBlockActionsUnverified(actions []string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.marks++
+	return 0, f.markErr
+}
+
+func (f *fakeBlocks) ProbeBlockState() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stateProbes++
+	return f.checkErr
+}
+
+func (f *fakeBlocks) probes() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.marks
+}
+
+func (f *fakeBlocks) set(fn func(*fakeBlocks)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn(f)
 }
 
 func (f *fakeBlocks) calls() (checks, applies [][]firewall.BlockMember) {
@@ -259,7 +296,8 @@ func TestOwnerFailsReservedMembersTheLedgerWillNotRun(t *testing.T) {
 }
 
 // An engine that refuses the whole batch wrote and sent nothing: every
-// reserved member fails and the turn reports the cause.
+// reserved member fails, and automatic execution holds on the cause (P8)
+// while the turn itself goes on.
 func TestOwnerFailsTheBatchTheEngineRefuses(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -267,8 +305,11 @@ func TestOwnerFailsTheBatchTheEngineRefuses(t *testing.T) {
 	blocks.applyErr = errors.New("blocked sets unavailable")
 	o := f.start(executeOptions(f, blocks))
 	id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
-	if err := o.do(o.turn); err == nil || !strings.Contains(err.Error(), "blocked sets unavailable") {
+	if err := o.do(o.turn); err != nil {
 		t.Fatalf("turn = %v", err)
+	}
+	if held := executionHeld(t, o); !strings.Contains(held, "blocked sets unavailable") {
+		t.Fatalf("execution held = %q", held)
 	}
 	if c := candidate(t, o, id); c.State != admission.StateQueued || c.Attempts != 1 || attemptOf(t, o, c).Disposition != admission.DispositionFailed {
 		t.Fatalf("candidate = %+v", c)

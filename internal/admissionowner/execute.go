@@ -14,7 +14,20 @@ import (
 type BlockEngine interface {
 	CheckBlockBatch(members []firewall.BlockMember) ([]firewall.BlockRefusal, error)
 	ApplyBlockBatch(members []firewall.BlockMember) ([]firewall.BlockResult, error)
+	// MarkBlockActionsUnverified with no actions writes the safe state
+	// again while a failed state write holds batches, and so releases it.
+	MarkBlockActionsUnverified(actions []string) (int, error)
+	ProbeBlockState() error
 }
+
+// errNoEngine holds execution while no firewall engine runs.
+var errNoEngine = errors.New("the firewall engine is not running")
+
+// Probe waits while execution is held (spec 5.16: 1 s doubling to 60 s).
+const (
+	firstProbeWait = time.Second
+	maxProbeWait   = time.Minute
+)
 
 // execPick is a block_ip pick of the turn with its candidate.
 type execPick struct {
@@ -45,7 +58,7 @@ var refusalReasons = map[firewall.BlockRefusal]admission.Reason{
 // outcome holds its address until recovery retires it.
 func (o *Owner) execute(picks []execPick) error {
 	engine := o.opts.Blocks()
-	if engine == nil {
+	if !o.ready(engine) {
 		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
 	}
 	picks = o.isolate(picks)
@@ -61,9 +74,15 @@ func (o *Owner) execute(picks []execPick) error {
 	refusals, err := engine.CheckBlockBatch(members)
 	if err == nil && len(refusals) != len(members) {
 		err = fmt.Errorf("%d answers for %d members", len(refusals), len(members))
+		o.probeCheck = true
 	}
 	if err != nil {
-		return errors.Join(fmt.Errorf("checking a block batch: %w", err), o.deferBlocks(picks, admission.ReasonEngineUnavailable))
+		o.hold(fmt.Errorf("checking a block batch: %w", err), false)
+		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
+	}
+	o.probeCheck = false
+	if o.execHold != nil && !o.probeApply {
+		o.release()
 	}
 	var run []int
 	var stopped error
@@ -100,6 +119,9 @@ func (o *Owner) execute(picks []execPick) error {
 		run = append(run, i)
 	}
 	if len(run) == 0 {
+		if o.execHold != nil && o.probeApply {
+			o.hold(o.execHold, true)
+		}
 		return stopped
 	}
 	ids := make([]admission.ActionID, len(run))
@@ -122,14 +144,19 @@ func (o *Owner) execute(picks []execPick) error {
 	results, err := engine.ApplyBlockBatch(batch)
 	if err == nil && len(results) != len(batch) {
 		// Something may have run: no answer proves which members failed.
-		return errors.Join(fmt.Errorf("applying a block batch: %d results for %d members", len(results), len(batch)), stopped, o.finishAll(ids, admission.DispositionUnknown))
+		o.hold(fmt.Errorf("applying a block batch: %d results for %d members", len(results), len(batch)), true)
+		return errors.Join(stopped, o.finishAll(ids, admission.DispositionUnknown))
 	}
 	if err != nil {
 		// An error means nothing was written or sent.
-		return errors.Join(fmt.Errorf("applying a block batch: %w", err), stopped, o.finishAll(ids, admission.DispositionFailed))
+		o.hold(fmt.Errorf("applying a block batch: %w", err), true)
+		return errors.Join(stopped, o.finishAll(ids, admission.DispositionFailed))
 	}
-	var finishErr error
+	var finishErr, stateErr error
 	for k, r := range results {
+		if errors.Is(r.Err, firewall.ErrBlockBatchState) {
+			stateErr = r.Err
+		}
 		finished, _, finishOneErr := o.finishMember(ids[k], r)
 		if err = finishOneErr; err != nil {
 			finishErr = errors.Join(finishErr, fmt.Errorf("finishing %s: %w", ids[k], err))
@@ -148,7 +175,86 @@ func (o *Owner) execute(picks []execPick) error {
 			delete(o.isolated, id)
 		}
 	}
+	if stateErr != nil {
+		o.hold(stateErr, true)
+	} else if o.execHold != nil {
+		o.release()
+	}
 	return errors.Join(stopped, finishErr)
+}
+
+// ready reports whether automatic execution may run this turn (P8, spec
+// 5.16). Without an engine it is held. While held, one probe runs per wait:
+// state repair is followed by a read-only snapshot proof, including on an
+// idle turn. Apply faults keep their wait through a successful snapshot
+// and member check until an apply succeeds. A newly available engine can
+// serve at once.
+func (o *Owner) ready(engine BlockEngine) bool {
+	if engine == nil {
+		if !errors.Is(o.execHold, errNoEngine) {
+			o.hold(errNoEngine, false)
+		}
+		return false
+	}
+	switch {
+	case o.execHold == nil:
+		return true
+	case errors.Is(o.execHold, errNoEngine):
+		o.release()
+		return true
+	case monoNow().Before(o.probeAt):
+		return false
+	case errors.Is(o.execHold, firewall.ErrBlockBatchState):
+		if _, err := engine.MarkBlockActionsUnverified(nil); err != nil {
+			o.hold(err, false)
+			return false
+		}
+		o.probeApply = false
+	}
+	if err := engine.ProbeBlockState(); err != nil {
+		o.hold(err, false)
+		return false
+	}
+	if !o.probeApply && !o.probeCheck {
+		o.release()
+	} else {
+		o.probeAt = monoNow().Add(o.probeWait)
+	}
+	return true
+}
+
+// hold stops automatic execution for cause until a probe succeeds; each
+// hold while already held doubles the wait for the next probe, up to a
+// minute.
+func (o *Owner) hold(cause error, apply bool) {
+	switch {
+	case o.execHold == nil:
+		o.probeWait = firstProbeWait
+		o.probeApply = apply
+	case o.probeWait < maxProbeWait:
+		o.probeWait = min(2*o.probeWait, maxProbeWait)
+	}
+	o.probeApply = o.probeApply || apply
+	o.execHold, o.probeAt = cause, monoNow().Add(o.probeWait)
+	o.publishExecutionHold()
+}
+
+func (o *Owner) release() {
+	o.execHold, o.probeAt, o.probeWait = nil, time.Time{}, 0
+	o.probeApply, o.probeCheck = false, false
+	o.publishExecutionHold()
+}
+
+// publishExecutionHold preserves the age of the cached ledger sample.
+func (o *Owner) publishExecutionHold() {
+	previous := o.current.Load()
+	snapshot, owner := *previous, *previous.Owner
+	owner.ExecutionHeld = ""
+	if o.execHold != nil {
+		owner.ExecutionHeld = o.execHold.Error()
+	}
+	snapshot.Owner = &owner
+	o.current.Store(&snapshot)
 }
 
 // isolate keeps a member the kernel rejected from failing healthy ones
