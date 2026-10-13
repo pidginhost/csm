@@ -544,8 +544,11 @@ could not make, a failed batch check or apply (including per-member
 transport and readback errors), or a missing engine holds automatic execution:
 block picks wait, deferred as an unavailable engine, while one probe runs per
 wait, from one second doubling to a minute. A held state write is probed by
-writing the safe state again and checking its snapshot. Idle turns still
-probe; successful snapshots cannot reset a failing member check's backoff.
+writing the safe state again and checking its snapshot. Without an engine,
+idle scheduling pauses and resumes on the first schedule check that finds
+an engine, without waiting for the old probe deadline. Other idle holds
+still probe on their waits; successful snapshots cannot reset a failing
+member check's backoff.
 A failed apply keeps its cause and backoff through state repair, ledger
 refusals and member refusals until an applied effect proves recovery.
 Hold changes copy the cached owner status without rereading the ledger.

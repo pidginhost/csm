@@ -227,10 +227,11 @@ func TestOwnerDropsOutcomesTheLedgerCannotRecord(t *testing.T) {
 				}
 				return finish(l, id, d)
 			})
-			queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+			first, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 			if err := o.do(o.turn); !errors.Is(err, tc.err) {
 				t.Fatalf("first outcome: %v", err)
 			}
+			overlap, _ := queuedKind(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10", admission.KindPromote)
 			next, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
 			mono.advance(time.Second)
 			if err := o.do(o.turn); err != nil {
@@ -241,6 +242,27 @@ func TestOwnerDropsOutcomesTheLedgerCannotRecord(t *testing.T) {
 			}
 			if s := ledgerStatus(t, o); s.Unresolved.Running != 1 {
 				t.Fatalf("the unrecorded attempt is no longer unresolved: %+v", s.Unresolved)
+			}
+			if c := candidate(t, o, first); c.State != admission.StateExecuting || c.Attempts != 1 || attemptOf(t, o, c).State != admission.StateExecuting {
+				t.Fatalf("discarded outcome changed the running attempt: %+v", c)
+			}
+			if c := candidate(t, o, overlap); c.State != admission.StateQueued || c.Reason != admission.ReasonPendingRecovery || c.Attempts != 0 {
+				t.Fatalf("discarded outcome released its target: %+v", c)
+			}
+			o.Stop()
+			o = f.start(executeOptions(f, blocks))
+			if c := candidate(t, o, first); c.State != admission.StateUnknown || c.Attempts != 1 || attemptOf(t, o, c).Disposition != admission.DispositionUnknown {
+				t.Fatalf("restart did not settle the discarded outcome: %+v", c)
+			}
+			mono.advance(time.Second)
+			if err := o.do(o.turn); err != nil {
+				t.Fatal(err)
+			}
+			if c := candidate(t, o, overlap); c.State != admission.StateQueued || c.Reason != admission.ReasonPendingRecovery || c.Attempts != 0 {
+				t.Fatalf("restart released an unresolved target: %+v", c)
+			}
+			if checks, applies := blocks.calls(); tries != 1 || len(checks) != 2 || len(applies) != 2 || len(applies[0]) != 1 || len(applies[1]) != 1 {
+				t.Fatalf("discarded outcome retried or dispatched again: tries=%d checks=%d applies=%v", tries, len(checks), applies)
 			}
 		})
 	}
@@ -257,14 +279,23 @@ func TestOwnerStopDrainsDespiteAnUnwrittenOutcome(t *testing.T) {
 	setOwnerHook(t, o, &finishLedger, func(*store.AdmissionLedger, admission.ActionID, admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
 		return admission.Candidate{}, admission.AttemptRecord{}, failure
 	})
-	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 	if err := o.do(o.turn); !errors.Is(err, failure) {
 		t.Fatalf("outcome write: %v", err)
 	}
 	submitTo(t, o, p, "192.0.2.77", f.host.now())
 	o.Stop()
+	if s := o.Status(); s.Ledger.Unresolved.Running != 1 || outcomes(*s.Ledger, admission.DispositionUnknown) != 0 {
+		t.Fatalf("stop changed the unwritten outcome: %+v", s.Ledger)
+	}
 	o = f.start(executeOptions(f, blocks))
 	if ls := ledgerStatus(t, o); ls.Ingress.Interrupted != 0 || len(queuedCandidates(t, o)) != 1 {
 		t.Fatalf("stop lost held work: interrupted=%d queued=%d", ls.Ingress.Interrupted, len(queuedCandidates(t, o)))
+	}
+	if c := candidate(t, o, id); c.State != admission.StateUnknown || c.Attempts != 1 || attemptOf(t, o, c).Disposition != admission.DispositionUnknown {
+		t.Fatalf("restart did not settle the unwritten outcome: %+v", c)
+	}
+	if checks, applies := blocks.calls(); len(checks) != 1 || len(applies) != 1 {
+		t.Fatalf("stop or restart dispatched work: checks=%d applies=%d", len(checks), len(applies))
 	}
 }

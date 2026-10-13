@@ -414,6 +414,63 @@ func TestOwnerWithoutAnEngineIdlesUntilItStarts(t *testing.T) {
 	}
 }
 
+// Engine availability ends an idle no-engine hold even before the probe
+// deadline inherited from an earlier fault.
+func TestOwnerStartsEngineBeforeIdleProbeDeadline(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.shortResults = true
+	running := true
+	opts := previewOptions(f)
+	opts.Blocks = func() BlockEngine {
+		if !running {
+			return nil
+		}
+		return blocks
+	}
+	o := f.start(opts)
+	mono := heldMono(t, o)
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	run := func() error { o.schedule(); return o.scheduleErr }
+	if err := o.do(run); err != nil {
+		t.Fatal(err)
+	}
+	mono.advance(firstProbeWait)
+	if err := o.do(func() error { running = false; return run() }); err != nil {
+		t.Fatal(err)
+	}
+	mono.advance(firstProbeWait)
+	if err := o.do(func() error {
+		if !errors.Is(o.execHold, errNoEngine) || !mono.read().Before(o.probeAt) {
+			return errors.New("expected a no-engine hold before its probe deadline")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writes := f.db.WriteTxID()
+	if err := o.do(run); err != nil {
+		t.Fatal(err)
+	}
+	if f.db.WriteTxID() != writes {
+		t.Fatal("idle owner wrote without an engine")
+	}
+	if err := o.do(func() error { running = true; return run() }); err != nil {
+		t.Fatal(err)
+	}
+	if held := executionHeld(t, o); held != "" || f.db.WriteTxID() == writes {
+		t.Fatalf("a started engine waited for the old probe deadline: held %q", held)
+	}
+	writes = f.db.WriteTxID()
+	if err := o.do(run); err != nil {
+		t.Fatal(err)
+	}
+	if checks, applies := blocks.calls(); f.db.WriteTxID() != writes || len(checks) != 1 || len(applies) != 1 {
+		t.Fatalf("engine start repeated work: checks=%d applies=%d", len(checks), len(applies))
+	}
+}
+
 // A pick already deferred for the reason a held turn gives is left as it
 // is: a long hold costs the turn's own writes, not one per held pick.
 func TestOwnerDefersAHeldPickOnce(t *testing.T) {
