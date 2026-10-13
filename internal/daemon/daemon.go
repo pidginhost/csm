@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/admissionowner"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/auditd"
 	"github.com/pidginhost/csm/internal/blockdigest"
@@ -123,6 +124,10 @@ type Daemon struct {
 	mailAuthTracker  *mailAuthTracker
 	authBackend      *authBackendHealth
 	startTime        time.Time
+
+	// antispamLoop runs antispam reconcile passes on a cPanel host. It
+	// stays nil elsewhere and until startup reaches it.
+	antispamLoop atomic.Pointer[reconcile.Loop]
 
 	// yaraSup is the supervised YARA-X worker, wired up when
 	// yaraWorkerOn(cfg) is true (the default; see ROADMAP item 2).
