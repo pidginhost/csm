@@ -531,9 +531,10 @@ func (o *Owner) shutdown() {
 	// No snapshot published during the stop reopens admission, so the
 	// drains below end even if a producer was not stopped first (O30).
 	o.ingress.Close()
+	// An outcome still unwritten stays running for the next start to
+	// settle; the held arrivals are drained regardless.
 	if err := o.finishPending(); err != nil {
 		o.scheduleErr = err
-		return
 	}
 	held := o.ingress.Len() != 0
 	for {

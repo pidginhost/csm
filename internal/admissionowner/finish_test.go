@@ -245,3 +245,26 @@ func TestOwnerDropsOutcomesTheLedgerCannotRecord(t *testing.T) {
 		})
 	}
 }
+
+// An outcome that still cannot be written at stop does not cost what the
+// ingress holds: the stop drains it and closes the generation cleanly.
+func TestOwnerStopDrainsDespiteAnUnwrittenOutcome(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	o := f.start(executeOptions(f, blocks))
+	failure := errors.New("outcome store unavailable")
+	setOwnerHook(t, o, &finishLedger, func(*store.AdmissionLedger, admission.ActionID, admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+		return admission.Candidate{}, admission.AttemptRecord{}, failure
+	})
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	if err := o.do(o.turn); !errors.Is(err, failure) {
+		t.Fatalf("outcome write: %v", err)
+	}
+	submitTo(t, o, p, "192.0.2.77", f.host.now())
+	o.Stop()
+	o = f.start(executeOptions(f, blocks))
+	if ls := ledgerStatus(t, o); ls.Ingress.Interrupted != 0 || len(queuedCandidates(t, o)) != 1 {
+		t.Fatalf("stop lost held work: interrupted=%d queued=%d", ls.Ingress.Interrupted, len(queuedCandidates(t, o)))
+	}
+}
