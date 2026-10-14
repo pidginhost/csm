@@ -3,10 +3,13 @@
 package firewall
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -257,6 +260,43 @@ func TestCheckBlockBatchNeedsABlockThatCoversTheMember(t *testing.T) {
 	results, err := f.e.ApplyBlockBatch(members[:1])
 	if err != nil || len(results) != 1 || results[0].Effect != BlockFailed || results[0].Refusal != BlockRefusedPending {
 		t.Fatalf("apply = %+v, %v; want the short block refused as pending", results, err)
+	}
+}
+
+// An existing effect names the block that holds the address, the same way
+// on every check and after a restart: the admission action that wrote the
+// row, or a digest of an operator or earlier row's identity.
+func TestCheckBlockBatchNamesTheBlockThatHoldsAnAddress(t *testing.T) {
+	act := "act_0123456789abcdef0123456789abcdef"
+	expires := time.Date(2026, 3, 4, 6, 6, 7, 0, time.UTC)
+	blockedAt := time.Date(2026, 3, 1, 2, 3, 4, 5, time.UTC)
+	state := FirewallState{Blocked: []BlockedEntry{
+		{IP: "203.0.113.60", Reason: "automatic", Source: SourceAutoResponse, ActionID: act, ExpiresAt: expires},
+		{IP: "203.0.113.61", Reason: "operator", Source: SourceWebUI, BlockedAt: blockedAt},
+		{IP: "203.0.113.62", Reason: "automatic", ActionID: "act_fedcba9876543210fedcba9876543210", Unverified: true, ExpiresAt: expires},
+	}}
+	sum := sha256.Sum256([]byte("203.0.113.61\x00" + SourceWebUI + "\x00" + blockedAt.Format(time.RFC3339Nano) + "\x00" + time.Time{}.Format(time.RFC3339Nano)))
+	want := []BlockCheck{
+		{Refusal: BlockRefusedExisting, Existing: ExistingBlock{ID: act, ExpiresAt: expires}},
+		{Refusal: BlockRefusedExisting, Existing: ExistingBlock{ID: "eff_" + hex.EncodeToString(sum[:16])}},
+		{Refusal: BlockRefusedPending},
+	}
+	for restart := 0; restart < 2; restart++ {
+		f := newBatchFixture(t, state)
+		f.live["203.0.113.60"] = time.Hour
+		f.live["203.0.113.61"] = 0
+		f.live["203.0.113.62"] = time.Hour
+		members := []BlockMember{f.member("act_n0", "203.0.113.60"), f.member("act_n1", "203.0.113.61"), f.member("act_n2", "203.0.113.62")}
+		for i := 0; i < 2; i++ {
+			got, err := f.e.CheckBlockBatchEffects(members)
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("restart %d, check %d = %+v, %v; want %+v", restart, i, got, err, want)
+			}
+		}
+		results, err := f.e.ApplyBlockBatch(members[:2])
+		if err != nil || len(results) != 2 || results[0].Existing != want[0].Existing || results[1].Existing != want[1].Existing {
+			t.Fatalf("apply = %+v, %v; want each existing effect named", results, err)
+		}
 	}
 }
 

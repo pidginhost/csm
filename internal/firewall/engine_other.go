@@ -108,6 +108,9 @@ func (e *Engine) MarkBlockActionsUnverified(_ []string) (int, error) {
 func (e *Engine) CheckBlockBatch(_ []BlockMember) ([]BlockRefusal, error) {
 	return nil, ErrUnsupportedPlatform
 }
+func (e *Engine) CheckBlockBatchEffects(_ []BlockMember) ([]BlockCheck, error) {
+	return nil, ErrUnsupportedPlatform
+}
 func (e *Engine) ApplyBlockBatch(_ []BlockMember) ([]BlockResult, error) {
 	return nil, ErrUnsupportedPlatform
 }

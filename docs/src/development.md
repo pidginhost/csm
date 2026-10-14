@@ -554,7 +554,11 @@ A timed proof that can already have expired is not coverage, even if its row
 has time left within the readback slack. The row must also last as long as
 the member, within the readback slack: a shorter block holds the address
 until it ends. Any other row or element holding the address refuses the
-member as pending recovery. The batch rechecks, writes one
+member as pending recovery. An existing-effect refusal, at check or apply
+time, names the block that holds the address: the admission action that
+wrote its row, or `eff_` and a digest of an operator or earlier row's
+identity, with its expiry. The same row gets the same name on every check
+and after a restart. The batch rechecks, writes one
 intent with expiry instants stored in UTC, refreshes timeouts after the
 write, and uses one atomic transaction
 on a fresh socket with a two-second deadline. Exact-family readback proves
