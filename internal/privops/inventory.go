@@ -572,6 +572,18 @@ var operations = []Op{
 		WithoutPrivilege: "CSM's spam-filter settings and hooks cannot be installed, updated or removed; existing mail filtering keeps its current configuration",
 	},
 	{
+		ID:               "integrate.antispam_record",
+		Risk:             RiskObserve,
+		Subsystem:        "host integration",
+		Summary:          "record the latest antispam request under the shared Exim lock inside the daemon sandbox, before the worker starts",
+		Privileges:       []Privilege{Root},
+		Trigger:          Automatic,
+		Writes:           []string{"/var/lib/csm/forward_guard"},
+		DisableKey:       "mode",
+		DisableValue:     "observe",
+		WithoutPrivilege: "antispam changes are not handed to the root worker and the installed integration stays as it is",
+	},
+	{
 		ID:               "integrate.auditd_rules",
 		Risk:             RiskDestructive,
 		RecoveryGap:      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",

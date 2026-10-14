@@ -19,8 +19,8 @@ type Transactor interface {
 	Remove() antispam.Result
 }
 
-// Locker runs mutate under the shared Exim mutation lock.
-type Locker func(mutate func() error) error
+// Locker runs mutate for request under the shared Exim mutation lock.
+type Locker func(request []byte, mutate func() error) error
 
 // Handle reads one request from input, runs it under lock and writes one
 // JSON result line to output. It returns the process exit code: 0 when the
@@ -49,7 +49,7 @@ func handle(input io.Reader, t Transactor, lock Locker) antispam.Result {
 		return antispam.Result{FailedStep: "request", Rollback: antispam.RollbackNone, Error: err.Error()}
 	}
 	var result antispam.Result
-	err = lock(func() error {
+	err = lock(data, func() error {
 		if req.Operation == antispam.OpApply {
 			result = t.Apply(settings)
 		} else {
@@ -58,7 +58,8 @@ func handle(input io.Reader, t Transactor, lock Locker) antispam.Result {
 		return nil
 	})
 	if err != nil {
-		result = antispam.Result{Busy: errors.Is(err, eximlock.ErrBusy), FailedStep: "lock", Rollback: antispam.RollbackNone, Error: err.Error()}
+		busy := errors.Is(err, eximlock.ErrBusy) || errors.Is(err, errSuperseded)
+		result = antispam.Result{Busy: busy, FailedStep: "lock", Rollback: antispam.RollbackNone, Error: err.Error()}
 	}
 	result.Operation = req.Operation
 	if err := result.Validate(); err != nil {

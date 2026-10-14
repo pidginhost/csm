@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/eximlock"
 	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
@@ -47,11 +48,14 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// Run sends req to `csm antispam-worker` in a transient systemd unit, outside
-// the daemon's sandbox, and returns the worker's result. A failed or busy
-// result is a Result, not an error; an error means no result came back. A failed
-// systemd-run lookup or availability probe wraps systemdrun.ErrUnavailable and
-// means the worker was not attempted. Other errors may follow state changes.
+// Run records req as the latest request under the shared Exim lock, then
+// sends it to `csm antispam-worker` in a transient systemd unit, outside the
+// daemon's sandbox, and returns the worker's result. A failed or busy result
+// is a Result, not an error; an error means no result came back. A busy lock
+// returns a busy result without starting the worker. A request that cannot be
+// recorded, or a failed systemd-run lookup or availability probe (wrapping
+// systemdrun.ErrUnavailable), means the worker was not attempted. Other
+// errors may follow state changes.
 func Run(ctx context.Context, req antispam.Request) (antispam.Result, error) {
 	binary, err := os.Executable()
 	if err != nil {
@@ -60,6 +64,13 @@ func Run(ctx context.Context, req antispam.Request) (antispam.Result, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return antispam.Result{}, err
+	}
+	recorded, err := recordRequest(requestDir, body)
+	if err != nil {
+		return antispam.Result{}, fmt.Errorf("recording the antispam request: %w", err)
+	}
+	if !recorded {
+		return antispam.Result{Operation: req.Operation, Busy: true, FailedStep: "lock", Rollback: antispam.RollbackNone, Error: eximlock.ErrBusy.Error()}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
