@@ -125,7 +125,7 @@ func TestOwnerExistingEffectWriteFailuresConverge(t *testing.T) {
 // a fresh proof names it; any other answer or a failed check writes the
 // failure, and the ordinary bounded retry runs.
 func TestOwnerExistingEffectNeedsAFreshProof(t *testing.T) {
-	for _, mode := range []string{"gone", "pending", "expired", "error", "short", "unavailable"} {
+	for _, mode := range []string{"gone", "unnamed", "pending", "expired", "error", "short", "unavailable"} {
 		t.Run(mode, func(t *testing.T) {
 			p := withTestRegistry(t)
 			f := newOwnerFixture(t)
@@ -138,6 +138,9 @@ func TestOwnerExistingEffectNeedsAFreshProof(t *testing.T) {
 				b.afterApply = nil
 				delete(b.refuse, "192.0.2.10")
 				switch mode {
+				case "unnamed":
+					b.refuse["192.0.2.10"] = firewall.BlockRefusedExisting
+					b.existing["192.0.2.10"] = firewall.ExistingBlock{}
 				case "pending":
 					b.refuse["192.0.2.10"] = firewall.BlockRefusedPending
 				case "expired":
