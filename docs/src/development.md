@@ -539,7 +539,13 @@ it an engine, and production gives none until cutover. Each member is
 checked against one state and kernel snapshot over bounded fresh sockets;
 unreadable state refuses the whole call. Expired rows remain available for
 kernel cleanup in both the intent and restored state. Rejected members
-consume no slot and cannot exclude a valid member. The batch rechecks, writes one
+consume no slot and cannot exclude a valid member. An address counts as
+already blocked only when a verified row and its kernel element agree: an
+untimed element for a permanent row, or one with the time a timed row has
+left, accounting for elapsed time across both set reads. A timed proof
+that can already have expired is not coverage. Any other row or element
+holding the address refuses the member as
+pending recovery. The batch rechecks, writes one
 intent with expiry instants stored in UTC, refreshes timeouts after the
 write, and uses one atomic transaction
 on a fresh socket with a two-second deadline. Exact-family readback proves

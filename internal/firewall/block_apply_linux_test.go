@@ -124,6 +124,7 @@ func TestApplyBlockBatchAppliesVerifiedMembers(t *testing.T) {
 	f := newBatchFixture(t, FirewallState{Blocked: []BlockedEntry{{IP: "203.0.113.40", Reason: "operator"}}})
 	writes := f.countWrites(t)
 	f.kernelHolds(map[string]time.Duration{"203.0.113.20": time.Hour - 5*time.Millisecond, "2001:db8::20": time.Hour})
+	f.live["203.0.113.40"] = 0 // the operator's permanent block is enforced
 	members := []BlockMember{
 		f.member("act_v4", "203.0.113.20"),
 		f.member("act bad", "203.0.113.21"),
@@ -309,7 +310,8 @@ func TestApplyBlockBatchRevalidatesAgainstTheCurrentState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := effects(results); got != "failed/existing_effect" || *writes != 0 || f.sends != 0 {
+	// An element no row explains proves no effect: it waits for recovery.
+	if got := effects(results); got != "failed/pending_recovery" || *writes != 0 || f.sends != 0 {
 		t.Fatalf("effects = %s after %d writes and %d kernel batches", got, *writes, f.sends)
 	}
 }
@@ -740,5 +742,33 @@ func TestApplyBlockBatchStateRestoreFailureIsNotRetryable(t *testing.T) {
 				t.Fatalf("second release = %d, %v after %d writes", marked, markErr, *releaseWrites)
 			}
 		})
+	}
+}
+
+func TestApplyBlockBatchAgesExistingRefusalBeforeReturn(t *testing.T) {
+	for _, delay := range []time.Duration{time.Second, 3 * time.Second} {
+		at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+		f := newBatchFixture(t, FirewallState{Blocked: []BlockedEntry{{IP: "203.0.113.40", ExpiresAt: at.Add(2 * time.Second)}}})
+		clock := &leaseSteps{wall: at, elapsed: at}
+		f.e.leaseClock, f.e.expiryClock = clock.read, func() time.Time { return clock.wall }
+		f.live["203.0.113.40"] = 2 * time.Second
+		write := writeFirewallStateJSON
+		t.Cleanup(func() { writeFirewallStateJSON = write })
+		writeFirewallStateJSON = func(path string, mode os.FileMode, value any) error {
+			err := write(path, mode, value)
+			clock.advance(delay)
+			clock.step(-time.Hour)
+			return err
+		}
+		f.onFlush = func() { f.live["203.0.113.20"] = time.Hour - delay }
+		results, err := f.e.ApplyBlockBatch([]BlockMember{f.member("act_held", "203.0.113.40"), f.member("act_new", "203.0.113.20")})
+		writeFirewallStateJSON = write
+		want := BlockRefusedExisting
+		if delay > 2*time.Second {
+			want = BlockRefusedPending
+		}
+		if err != nil || len(results) != 2 || results[0].Effect != BlockFailed || results[0].Refusal != want || results[1].Effect != BlockApplied {
+			t.Fatalf("delay %v: stale existing proof: %+v, %v", delay, results, err)
+		}
 	}
 }

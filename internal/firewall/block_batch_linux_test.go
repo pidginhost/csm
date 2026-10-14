@@ -135,9 +135,9 @@ func TestCheckBlockBatchRefusesOnlyInvalidMembers(t *testing.T) {
 		{m("act_bot", "203.0.113.32", nil), BlockRefusedAllowed},
 		{m("act_again", "203.0.113.20", nil), BlockRefusedDuplicate},
 		{m("act_v4", "203.0.113.25", nil), BlockRefusedDuplicate},
-		{m("act_row", "203.0.113.40", nil), BlockRefusedExisting},
-		{m("act_kernel", "203.0.113.41", nil), BlockRefusedExisting},
-		{m("act_unknown", "203.0.113.42", nil), BlockRefusedExisting},
+		{m("act_row", "203.0.113.40", nil), BlockRefusedPending},
+		{m("act_kernel", "203.0.113.41", nil), BlockRefusedPending},
+		{m("act_unknown", "203.0.113.42", nil), BlockRefusedPending},
 		{m("act_v6", "2001:db8::20", nil), ""},
 		{m("act_after", "203.0.113.21", nil), ""},
 	}
@@ -152,6 +152,62 @@ func TestCheckBlockBatchRefusesOnlyInvalidMembers(t *testing.T) {
 	for i, tc := range cases {
 		if got[i] != tc.want {
 			t.Errorf("member %d (%s %s) = %q, want %q", i, tc.member.Action, tc.member.IP, got[i], tc.want)
+		}
+	}
+}
+
+// An address counts as already blocked only when a verified row and its
+// kernel element agree (spec 5.16): a permanent row with an untimed
+// element, or a timed row whose element has the time the row has left.
+// Any other occupancy waits for recovery; an expired row with no element
+// holds nothing.
+func TestCheckBlockBatchNeedsProofOfAnExistingEffect(t *testing.T) {
+	f := newBatchFixture(t, FirewallState{Blocked: []BlockedEntry{
+		{IP: "203.0.113.40", Reason: "operator"},
+		{IP: "203.0.113.41", Reason: "automatic", ActionID: "act_timed", ExpiresAt: time.Date(2026, 3, 4, 6, 6, 7, 0, time.UTC)},
+		{IP: "203.0.113.42", Reason: "operator"},
+		{IP: "203.0.113.43", Reason: "automatic", ExpiresAt: time.Date(2026, 3, 4, 6, 6, 7, 0, time.UTC)},
+		{IP: "203.0.113.44", Reason: "automatic", ExpiresAt: time.Date(2026, 3, 4, 6, 6, 7, 0, time.UTC)},
+		{IP: "203.0.113.45", Reason: "automatic", ActionID: "act_unproven", Unverified: true, ExpiresAt: time.Date(2026, 3, 4, 6, 6, 7, 0, time.UTC)},
+		{IP: "203.0.113.46", Reason: "automatic", ExpiresAt: time.Date(2026, 3, 4, 5, 0, 0, 0, time.UTC)},
+		{IP: "203.0.113.47", Reason: "automatic", ExpiresAt: time.Date(2026, 3, 4, 5, 0, 0, 0, time.UTC)},
+		{IP: "203.0.113.48", Reason: "automatic", ExpiresAt: time.Date(2026, 3, 4, 6, 6, 7, 0, time.UTC)},
+	}})
+	f.live["203.0.113.40"] = 0             // permanent row, untimed element
+	f.live["203.0.113.41"] = time.Hour     // timed row, element with its hour left
+	f.live["203.0.113.42"] = time.Hour     // permanent row, timed element
+	f.live["203.0.113.43"] = 0             // timed row, untimed element
+	f.live["203.0.113.44"] = 2 * time.Hour // timed row, element outlives it
+	f.live["203.0.113.45"] = time.Hour     // unverified row
+	f.live["203.0.113.47"] = time.Hour     // expired row, live element
+	f.live["203.0.113.48"] = time.Hour     // timed row, element ends sooner
+	f.expires["203.0.113.41"] = time.Hour - 500*time.Millisecond
+	f.expires["203.0.113.48"] = 10 * time.Minute
+	cases := []struct {
+		ip   string
+		want BlockRefusal
+	}{
+		{"203.0.113.40", BlockRefusedExisting},
+		{"203.0.113.41", BlockRefusedExisting},
+		{"203.0.113.42", BlockRefusedPending},
+		{"203.0.113.43", BlockRefusedPending},
+		{"203.0.113.44", BlockRefusedPending},
+		{"203.0.113.45", BlockRefusedPending},
+		{"203.0.113.46", ""},
+		{"203.0.113.47", BlockRefusedPending},
+		{"203.0.113.48", BlockRefusedPending},
+	}
+	members := make([]BlockMember, len(cases))
+	for i, tc := range cases {
+		members[i] = f.member(fmt.Sprintf("act_m%d", i), tc.ip)
+	}
+	got, err := f.e.CheckBlockBatch(members)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, tc := range cases {
+		if got[i] != tc.want {
+			t.Errorf("%s = %q, want %q", tc.ip, got[i], tc.want)
 		}
 	}
 }
@@ -250,8 +306,12 @@ func TestCheckBlockBatchUsesOneAllowSnapshot(t *testing.T) {
 				}
 				return nil, nil
 			}
-			got, err := f.e.CheckBlockBatch([]BlockMember{f.member("act_v4", "203.0.113.20"), f.member("act_v6", "2001:db8::20")})
-			if err != nil || reads != 1 || len(got) != 2 || got[0] != BlockRefusedAllowed || got[1] != BlockRefusedAllowed {
+			// Each clock read is an hour later: allows pruned at any read but
+			// the first would be gone. Proof aging reads the clock again.
+			v4, v6 := f.member("act_v4", "203.0.113.20"), f.member("act_v6", "2001:db8::20")
+			v4.ExpiresAt, v6.ExpiresAt = at.Add(24*time.Hour), at.Add(24*time.Hour)
+			got, err := f.e.CheckBlockBatch([]BlockMember{v4, v6})
+			if err != nil || reads == 0 || len(got) != 2 || got[0] != BlockRefusedAllowed || got[1] != BlockRefusedAllowed {
 				t.Fatalf("answers %q, error %v, clock reads %d; want one allow snapshot", got, err, reads)
 			}
 		})
@@ -322,5 +382,57 @@ func TestCheckBlockBatchRefusesStateIntegrityHoldBeforeDump(t *testing.T) {
 	got, err := f.e.CheckBlockBatch([]BlockMember{f.member("act_v4", "203.0.113.20")})
 	if got != nil || !errors.Is(err, ErrBlockBatchState) || !errors.Is(err, cause) {
 		t.Fatalf("answers %q, %v; state-integrity hold must refuse before dump", got, err)
+	}
+}
+
+func TestCheckBlockBatchAgesExistingProofThroughAllSetReads(t *testing.T) {
+	for _, mode := range []string{"slow_dump", "expires_during_v6", "wall_back", "wall_forward"} {
+		t.Run(mode, func(t *testing.T) {
+			at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+			left := time.Hour
+			if mode == "expires_during_v6" {
+				left = 500 * time.Millisecond
+			}
+			f := newBatchFixture(t, FirewallState{Blocked: []BlockedEntry{{IP: "203.0.113.40", Reason: "operator", ExpiresAt: at.Add(left)}}})
+			clock := &leaseSteps{wall: at, elapsed: at}
+			f.e.leaseClock = clock.read
+			f.e.expiryClock = func() time.Time { return clock.wall }
+			leaseNow(f.e)
+			f.live["203.0.113.40"] = left
+			original := f.e.liveBlockedDump
+			f.e.liveBlockedDump = func(set *nftables.Set) ([]nftables.SetElement, error) {
+				if set == f.e.setBlocked && mode == "slow_dump" {
+					clock.advance(2 * time.Second)
+					f.expires["203.0.113.40"] = left - 2*time.Second
+				}
+				if set == f.e.setBlocked6 {
+					switch mode {
+					case "expires_during_v6":
+						clock.advance(time.Second)
+					case "wall_back":
+						clock.step(-time.Hour)
+					case "wall_forward":
+						clock.step(30 * time.Minute)
+					}
+				}
+				return original(set)
+			}
+			want := BlockRefusedExisting
+			if mode == "expires_during_v6" || mode == "wall_forward" {
+				want = BlockRefusedPending
+			}
+			for i := 0; i < 2; i++ {
+				got, err := f.e.CheckBlockBatch([]BlockMember{f.member("act_pick", "203.0.113.40")})
+				if err != nil || len(got) != 1 || got[0] != want {
+					t.Fatalf("check %d: %v, %v; want %s", i, got, err, want)
+				}
+				// Repeat from the same host instant: a slow dump must not
+				// defer a real block on every scheduling turn.
+				if mode != "slow_dump" {
+					break
+				}
+				left -= 2 * time.Second
+			}
+		})
 	}
 }

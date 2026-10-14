@@ -44,9 +44,15 @@ const (
 	// BlockRefusedDuplicate: an earlier member names the same address or
 	// action.
 	BlockRefusedDuplicate BlockRefusal = "duplicate"
-	// BlockRefusedExisting: a state row or a kernel element already names
-	// the address.
+	// BlockRefusedExisting: a verified row and its kernel element already
+	// block the address: an untimed element for a permanent row, or one
+	// with the time a timed row has left (spec 5.16).
 	BlockRefusedExisting BlockRefusal = "existing_effect"
+	// BlockRefusedPending: a row or a kernel element names the address
+	// without proving an enforced block: the row is unverified, has no
+	// element or one with another lifetime, or an element has no row.
+	// Recovery has to settle it first.
+	BlockRefusedPending BlockRefusal = "pending_recovery"
 	// BlockRefusedFull: no temporary deny slot is left.
 	BlockRefusedFull BlockRefusal = "set_full"
 )
