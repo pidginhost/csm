@@ -129,7 +129,9 @@ email_protection:
 
 - `enabled` turns the integration on. Setting it back to `false` requests
   removal of CSM's owned content; conflicts or failures can prevent removal
-  and produce findings.
+  and produce findings. On a host without cPanel it stays inactive; the
+  daemon logs a warning at startup and whenever a configuration change is
+  reloaded.
 - `dry_run` scans and logs what would happen without rejecting, tagging or
   splitting recipients.
 - `rspamd_socket` is the scan socket above: an absolute path of at most 107
