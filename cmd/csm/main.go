@@ -961,19 +961,30 @@ func runRehash() {
 }
 
 // rehashFragmentArgs returns the conf.d file names given with --fragment, or
-// nil for a full rehash.
+// nil for a full rehash. Unknown arguments are refused: a mistyped flag that
+// fell through to a full rehash would sign every change the scoped mode
+// exists to refuse.
 func rehashFragmentArgs(args []string) ([]string, error) {
 	var names []string
 	for i := 2; i < len(args); i++ {
-		switch args[i] {
-		case "--fragment":
+		arg := args[i]
+		switch {
+		case arg == "--fragment":
 			if i+1 >= len(args) {
 				return nil, errors.New("--fragment requires a conf.d file name")
 			}
 			i++
 			names = append(names, args[i])
-		case "--config", "--config-dir":
+		case strings.HasPrefix(arg, "--fragment="):
+			name := strings.TrimPrefix(arg, "--fragment=")
+			if name == "" {
+				return nil, errors.New("--fragment requires a conf.d file name")
+			}
+			names = append(names, name)
+		case arg == "--config" || arg == "--config-dir":
 			i++
+		default:
+			return nil, fmt.Errorf("unknown rehash argument %q (usage: csm rehash [--fragment <file>])", arg)
 		}
 	}
 	return names, nil

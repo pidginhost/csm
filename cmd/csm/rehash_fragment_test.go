@@ -112,4 +112,20 @@ func TestRehashFragmentArgs(t *testing.T) {
 	if _, err := rehashFragmentArgs([]string{"csm", "rehash", "--fragment"}); err == nil {
 		t.Fatal("--fragment without a name must fail")
 	}
+	if names, err := rehashFragmentArgs([]string{"csm", "rehash", "--fragment=10-a.yaml"}); err != nil || !slices.Equal(names, []string{"10-a.yaml"}) {
+		t.Fatalf("--fragment=NAME: names=%v err=%v", names, err)
+	}
+	if _, err := rehashFragmentArgs([]string{"csm", "rehash", "--fragment="}); err == nil {
+		t.Fatal("--fragment= without a name must fail")
+	}
+}
+
+// A mistyped flag must not fall through to a full rehash, which would sign
+// every change the scoped mode exists to refuse.
+func TestRehashRejectsUnknownArgs(t *testing.T) {
+	for _, arg := range []string{"--fragments", "--frag", "-fragment", "10-a.yaml", "--config=/etc/csm/csm.yaml"} {
+		if _, err := rehashFragmentArgs([]string{"csm", "rehash", arg, "10-a.yaml"}); err == nil {
+			t.Errorf("rehash %s: want an error", arg)
+		}
+	}
 }
