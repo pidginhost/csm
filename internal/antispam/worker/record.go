@@ -11,7 +11,7 @@ import (
 )
 
 // RequestFile holds the latest request, or null when reconciliation has
-// invalidated pending workers. It changes only under the shared lock.
+// invalidated pending workers. Publication atomically replaces the record.
 const RequestFile = "antispam-request.json"
 
 // requestDir holds the lock and the request record for Run. Tests point it
@@ -42,6 +42,10 @@ func Invalidate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return err
@@ -49,7 +53,9 @@ func Invalidate(ctx context.Context) error {
 	if err := syncRecordDir(requestDir); err != nil {
 		return err
 	}
-	return eximlock.With(requestDir, func() error { return nil })
+	// A brief record publication must not defer the pass for a full retry
+	// interval. Pending workers are already canceled while this waits.
+	return eximlock.WithRetry(ctx, requestDir, eximlock.RecordWait, func() error { return nil })
 }
 
 // Lock is the worker's Locker: it holds the shared lock in dir and runs

@@ -191,10 +191,18 @@ func TestPassDuringTransactionCancelsAtOnce(t *testing.T) {
 				close(finished)
 			}()
 			synctest.Wait()
+			if got, err := os.ReadFile(filepath.Join(requestDir, RequestFile)); err != nil || string(got) != "null" {
+				t.Errorf("pass waited for the lock to cancel pending workers: record=%q err=%v", got, err)
+			}
+			if reads != 0 {
+				t.Error("pass read the host during a transaction")
+			}
+			time.Sleep(eximlock.RecordWait)
+			synctest.Wait()
 			select {
 			case <-finished:
 			default:
-				t.Error("pass waited for the lock to cancel pending workers")
+				t.Error("pass waited past the lock retry deadline")
 			}
 			<-finished
 			return nil
@@ -310,30 +318,34 @@ func TestRecordRequestCanceledBeforeStaging(t *testing.T) {
 // not wait behind the same holder: when the holder releases, the waiting
 // worker must find the cancellation, not its own request.
 func TestInvalidateLandsBeforeAWaitingStaleWorker(t *testing.T) {
-	prev := requestDir
-	requestDir = t.TempDir()
-	t.Cleanup(func() { requestDir = prev })
-	older := []byte(applyBody)
-	if recorded, err := recordRequest(context.Background(), requestDir, older); err != nil || !recorded {
-		t.Fatalf("recorded=%v err=%v", recorded, err)
-	}
-	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
-	go func() {
-		finished <- eximlock.With(requestDir, func() error { close(entered); <-release; return nil })
-	}()
-	<-entered
-	if err := Invalidate(context.Background()); !errors.Is(err, eximlock.ErrBusy) {
-		t.Fatalf("invalidate during a transaction: %v, want busy", err)
-	}
-	ran := 0
-	stale := make(chan error, 1)
-	go func() { stale <- Lock(requestDir)(older, func() error { ran++; return nil }) }()
-	time.Sleep(50 * time.Millisecond)
-	close(release)
-	if err := <-finished; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-stale; !errors.Is(err, errSuperseded) || ran != 0 {
-		t.Fatalf("stale worker after a busy cancellation: err=%v ran=%d", err, ran)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		prev := requestDir
+		requestDir = t.TempDir()
+		defer func() { requestDir = prev }()
+		older := []byte(applyBody)
+		if recorded, err := recordRequest(context.Background(), requestDir, older); err != nil || !recorded {
+			t.Fatalf("recorded=%v err=%v", recorded, err)
+		}
+		ran := 0
+		stale, invalidated := make(chan error, 1), make(chan error, 1)
+		if err := eximlock.With(requestDir, func() error {
+			go func() { stale <- Lock(requestDir)(older, func() error { ran++; return nil }) }()
+			synctest.Wait()
+			go func() { invalidated <- Invalidate(context.Background()) }()
+			synctest.Wait()
+			if got, err := os.ReadFile(filepath.Join(requestDir, RequestFile)); err != nil || string(got) != "null" {
+				t.Errorf("busy invalidation did not cancel: record=%q err=%v", got, err)
+			}
+			time.Sleep(50 * time.Millisecond)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := <-invalidated; err != nil {
+			t.Errorf("invalidation after the lock released: %v", err)
+		}
+		if err := <-stale; !errors.Is(err, errSuperseded) || ran != 0 {
+			t.Fatalf("stale worker after a busy cancellation: err=%v ran=%d", err, ran)
+		}
+	})
 }
