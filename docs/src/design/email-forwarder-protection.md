@@ -133,7 +133,9 @@ latest settings pending for that refresh. The log reports the refresh
 interval; the next refresh can happen sooner.
 Disabled and dry-run settings start no removal worker when no guard is
 installed. While another CSM change to the Exim configuration runs, even one
-started before a daemon restart, the removal is deferred the same way.
+started before a daemon restart, the removal is deferred the same way. CSM
+records each change before its worker starts, and a worker whose change is
+no longer the latest, such as one started before a restart, changes nothing.
 Observe mode and hosts without cPanel leave the installed guard untouched.
 
 ## WebUI surfaces (email page)

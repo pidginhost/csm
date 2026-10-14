@@ -33,7 +33,7 @@ func WorkerExitCode(err error) int {
 	switch {
 	case err == nil:
 		return 0
-	case errors.Is(err, eximlock.ErrBusy):
+	case errors.Is(err, eximlock.ErrBusy), errors.Is(err, errSuperseded):
 		return workerBusyExit
 	default:
 		return 1
@@ -53,33 +53,47 @@ type eximServiceAdapter struct {
 }
 
 // NewEximServiceAdapter keeps the entire config transaction, including rollback,
-// outside the daemon's mount namespace. Read-only status and lookup refreshes
-// still use the daemon's existing access to the CSM state directory.
+// outside the daemon's mount namespace. Status reads, request records and
+// lookup refreshes still use the daemon's existing access to the CSM state
+// directory.
 func NewEximServiceAdapter() ForwardGuard {
 	return &eximServiceAdapter{EximAdapter: NewEximAdapter(), mutate: runEximMutation}
 }
 
 func (a *eximServiceAdapter) Apply(cfg policy.Config, ips []string) error {
-	return a.mutate(eximMutation{Operation: "apply", Config: cfg, BadIPs: ips})
+	return a.submit(eximMutation{Operation: "apply", Config: cfg, BadIPs: ips})
 }
 
-// Remove checks absence under the worker's lock: a transient worker from an
-// earlier daemon can still install or restore the guard. Release the lock
-// before delegating any removal so the worker can acquire it itself.
 func (a *eximServiceAdapter) Remove() error {
-	absent := false
-	err := eximlock.With(filepath.Dir(a.badIPsPath), func() error {
-		status, err := a.Status()
-		absent = !status.Installed
-		return err
-	})
-	if errors.Is(err, eximlock.ErrBusy) {
+	return a.submit(eximMutation{Operation: "remove"})
+}
+
+// submit records request as the latest one under the shared Exim lock, then
+// hands it to the root worker. A worker started for an older request, such
+// as one from before a daemon restart, finds the newer record and changes
+// nothing. A removal with no rule installed needs no worker. A busy lock
+// defers the request, and a request that cannot be recorded starts no
+// worker, because the worker could not tell that it is current.
+func (a *eximServiceAdapter) submit(request eximMutation) error {
+	body, err := json.Marshal(request)
+	if err != nil {
 		return err
 	}
-	if err == nil && absent {
+	done := false
+	record := func() error {
+		if writeErr := writeFileAtomic(a.requestPath(), body); writeErr != nil {
+			return writeErr
+		}
+		if request.Operation == "remove" {
+			status, statusErr := a.Status()
+			done = statusErr == nil && !status.Installed
+		}
 		return nil
 	}
-	return a.mutate(eximMutation{Operation: "remove"})
+	if err = eximlock.With(filepath.Dir(a.badIPsPath), record); err != nil || done {
+		return err
+	}
+	return a.mutate(request)
 }
 
 func runEximMutation(request eximMutation) error {

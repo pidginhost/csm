@@ -189,8 +189,8 @@ func TestEximServiceAdapterRemoveSkipsWorkerWhenNothingInstalled(t *testing.T) {
 	}
 }
 
-// Inconclusive status or lock access still goes to the root worker, which
-// may have access the daemon lacks.
+// An inconclusive status still goes to the root worker, which may have
+// access the daemon lacks.
 func TestEximServiceAdapterRemoveRunsWorkerUnlessProvenAbsent(t *testing.T) {
 	for name, setup := range map[string]func(*testing.T, *EximAdapter){
 		"installed": func(t *testing.T, a *EximAdapter) { writeInstalledConf(t, a) },
@@ -202,11 +202,6 @@ func TestEximServiceAdapterRemoveRunsWorkerUnlessProvenAbsent(t *testing.T) {
 		},
 		"unreadable": func(t *testing.T, a *EximAdapter) {
 			if err := os.Mkdir(a.localConf, 0o755); err != nil {
-				t.Fatal(err)
-			}
-		},
-		"inaccessible lock": func(t *testing.T, a *EximAdapter) {
-			if err := os.WriteFile(filepath.Dir(a.badIPsPath), nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		},
@@ -362,5 +357,104 @@ func TestEximServiceAdapterRemoveRetriesUnfinishedWorker(t *testing.T) {
 				t.Fatalf("retry left guard installed: %+v, %v", status, err)
 			}
 		})
+	}
+}
+
+// While another CSM transaction holds the lock, the daemon defers the
+// request and starts no worker, for an install and for a removal alike.
+func TestEximServiceAdapterStartsNoWorkerWhileLockIsHeld(t *testing.T) {
+	a, _ := testAdapter(t)
+	writeInstalledConf(t, a)
+	calls := 0
+	service := &eximServiceAdapter{EximAdapter: a, mutate: func(eximMutation) error { calls++; return nil }}
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		finished <- eximlock.With(filepath.Dir(a.badIPsPath), func() error { close(entered); <-release; return nil })
+	}()
+	<-entered
+	applyErr := service.Apply(policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}, nil)
+	removeErr := service.Remove()
+	close(release)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(applyErr, eximlock.ErrBusy) || !errors.Is(removeErr, eximlock.ErrBusy) || calls != 0 {
+		t.Fatalf("apply=%v remove=%v worker calls=%d", applyErr, removeErr, calls)
+	}
+}
+
+// A request the daemon cannot record starts no worker: the worker could not
+// tell whether it is still the latest. It is a failure, not a busy lock.
+func TestEximServiceAdapterStartsNoWorkerForAnUnrecordedRequest(t *testing.T) {
+	a, _ := testAdapter(t)
+	writeInstalledConf(t, a)
+	if err := os.WriteFile(filepath.Dir(a.badIPsPath), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	service := &eximServiceAdapter{EximAdapter: a, mutate: func(eximMutation) error { calls++; return nil }}
+	applyErr := service.Apply(policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}, nil)
+	removeErr := service.Remove()
+	if applyErr == nil || removeErr == nil || errors.Is(applyErr, eximlock.ErrBusy) || errors.Is(removeErr, eximlock.ErrBusy) || calls != 0 {
+		t.Fatalf("apply=%v remove=%v worker calls=%d", applyErr, removeErr, calls)
+	}
+}
+
+// A worker started before a daemon restart can reach the lock after the new
+// daemon has decided. It must change nothing and report busy; the newer
+// request, or the new daemon's absence check, owns the result.
+func TestEximServiceStaleWorkerFromBeforeARestartChangesNothing(t *testing.T) {
+	cfg := policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}
+	for name, tc := range map[string]struct {
+		installed     bool
+		before, after func(ForwardGuard) error
+	}{
+		"install after the guard was turned off": {
+			installed: false,
+			before:    func(g ForwardGuard) error { return g.Apply(cfg, nil) },
+			after:     func(g ForwardGuard) error { return g.Remove() },
+		},
+		"removal after the guard was turned on": {
+			installed: true,
+			before:    func(g ForwardGuard) error { return g.Remove() },
+			after:     func(g ForwardGuard) error { return g.Apply(cfg, nil) },
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, side := testAdapter(t)
+			if tc.installed {
+				writeInstalledConf(t, a)
+			}
+			worker := func(r eximMutation) error {
+				return handleEximMutation(strings.NewReader(mutationBody(t, r)), lockedEximAdapter{a})
+			}
+			var stale []eximMutation
+			oldDaemon := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error { stale = append(stale, r); return nil }}
+			if err := tc.before(oldDaemon); err != nil || len(stale) != 1 {
+				t.Fatalf("old daemon: err=%v requests=%+v", err, stale)
+			}
+			newDaemon := &eximServiceAdapter{EximAdapter: a, mutate: worker}
+			if err := tc.after(newDaemon); err != nil {
+				t.Fatalf("new daemon: %v", err)
+			}
+			rebuilds := side.rebuilds
+			staleErr := worker(stale[0])
+			status, err := a.Status()
+			if !errors.Is(staleErr, errSuperseded) || WorkerExitCode(staleErr) != workerBusyExit || err != nil || status.Installed != tc.installed || side.rebuilds != rebuilds {
+				t.Fatalf("stale worker: err=%v exit=%d installed=%v (want %v) rebuilds %d to %d", staleErr, WorkerExitCode(staleErr), status.Installed, tc.installed, rebuilds, side.rebuilds)
+			}
+		})
+	}
+}
+
+// A worker whose daemon predates the request record still runs its request.
+func TestEximMutationWithoutARecordedRequestRuns(t *testing.T) {
+	a, side := testAdapter(t)
+	request := eximMutation{Operation: "apply", Config: policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}}
+	if err := handleEximMutation(strings.NewReader(mutationBody(t, request)), lockedEximAdapter{a}); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := a.Status(); err != nil || !status.Installed || side.rebuilds != 1 {
+		t.Fatalf("status=%+v err=%v rebuilds=%d", status, err, side.rebuilds)
 	}
 }

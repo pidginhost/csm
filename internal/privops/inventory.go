@@ -81,11 +81,11 @@ var operations = []Op{
 	{
 		ID: "respond.forward_guard_check", Subsystem: "response",
 		Risk:       RiskObserve,
-		Summary:    "check under the shared Exim lock whether a forward-guard rule is installed, inside the daemon sandbox",
+		Summary:    "record the latest forward-guard request and check whether a rule is installed, under the shared Exim lock inside the daemon sandbox",
 		Privileges: []Privilege{Root}, Trigger: Automatic,
 		Writes:     []string{"/var/lib/csm/forward_guard"},
 		DisableKey: "mode", DisableValue: "observe",
-		WithoutPrivilege: "the root worker checks for the rule itself on every reload with the guard off",
+		WithoutPrivilege: "forward-guard changes are not handed to the root worker and the installed guard stays as it is",
 	},
 	{
 		ID: "respond.forward_guard_lookup", Subsystem: "response",
