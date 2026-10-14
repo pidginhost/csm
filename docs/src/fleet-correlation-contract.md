@@ -43,6 +43,13 @@ X-CSM-Hostname: <hostname>
 }
 ```
 
+CSM keeps each finding in a durable queue and delivers them in order.
+A 2xx answer acknowledges a finding. HTTP 400, 413 or 422 refuses the
+record itself: CSM moves it to a bounded local archive, counts it as
+lost and sends the next finding. Any other failure (no connection,
+401, 403, 404, 409, 429, 5xx) is retried with backoff, and later
+findings wait behind it.
+
 Every field phpanel needs to correlate across hosts is present:
 `hostname` identifies the reporting sensor, and `finding.source_ip`
 identifies the attacker when the detector has a remote source. For

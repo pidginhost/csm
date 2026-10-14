@@ -902,8 +902,10 @@ and deliveries awaiting database acknowledgment. Retried findings keep their
 original waiting age; a failed attempt is not a lost finding while its record
 remains durable. An overflowed record counts as lost only when no send was
 acknowledged during this process; an active send settles that count when it
-finishes. Malformed findings count once when removed from delivery;
-their bounded diagnostic archive is retained history, not pending work.
+finishes. Malformed findings, and findings the panel refuses with HTTP 400,
+413 or 422, count once when removed from delivery, and the next record is
+sent at once. Their bounded diagnostic archive is retained history, not
+pending work. Every other failure is retried in order with backoff.
 Waiting age uses the persisted enqueue timestamp after restart. Boundary
 records absent from the accounting rebuilt at open are adopted with the same
 timestamp, so retrying them does not reset their age. Missing, damaged or future

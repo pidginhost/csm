@@ -238,13 +238,13 @@ func TestPhpanelQueueHealthQuarantinesUntrackedRecords(t *testing.T) {
 		before := PhpanelQueueStatus(time.Now()).DroppedTotal
 		if adopted {
 			q.drainQueued()
-		} else if err := q.quarantineMalformed(key, payload, errors.New("invalid record")); err != nil {
+		} else if err := q.quarantine(key, payload, errors.New("invalid record")); err != nil {
 			t.Fatal(err)
 		}
 		// An empty drain and repeated quarantine must not settle or count the
 		// already discarded record a second time.
 		q.drainQueued()
-		if err := q.quarantineMalformed(key, payload, errors.New("invalid record")); err != nil {
+		if err := q.quarantine(key, payload, errors.New("invalid record")); err != nil {
 			t.Fatal(err)
 		}
 		if got := PhpanelQueueStatus(time.Now()).DroppedTotal; got != before+1 {

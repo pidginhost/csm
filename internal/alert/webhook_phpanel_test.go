@@ -364,7 +364,7 @@ func TestPhpanelQueueBoundsMalformedEntryQuarantine(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := queue.quarantineMalformedWithLimit(key[:], payload, decodeErr, limit); err != nil {
+		if err := queue.quarantineWithLimit(key[:], payload, decodeErr, limit); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -584,7 +584,7 @@ func TestQueuedFindingCountTracksEveryProductionDeletePath(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.quarantineMalformed(firstKey, malformed, errors.New("malformed record")); err != nil {
+	if err := q.quarantine(firstKey, malformed, errors.New("malformed record")); err != nil {
 		t.Fatal(err)
 	}
 	assertQueuedFindingCount(t, q, 2)

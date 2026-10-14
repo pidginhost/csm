@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -193,9 +194,33 @@ func sendQueuedPhpanelWebhookFinding(delivery phpanelDeliveryConfig, queued queu
 	}
 	defer closeWebhookResponseBody(resp)
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("phpanel webhook HTTP %d", resp.StatusCode)
+		return &phpanelHTTPError{status: resp.StatusCode}
 	}
 	return nil
+}
+
+// phpanelHTTPError is a panel answer of 400 or above.
+type phpanelHTTPError struct {
+	status int
+}
+
+func (e *phpanelHTTPError) Error() string {
+	return fmt.Sprintf("phpanel webhook HTTP %d", e.status)
+}
+
+// permanentPhpanelRejection reports whether the panel refused the record
+// itself as malformed (400), too large (413) or unprocessable (422). Any other
+// failure, including auth, rate limits and server errors, can clear on retry.
+func permanentPhpanelRejection(err error) bool {
+	var httpErr *phpanelHTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	switch httpErr.status {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
 }
 
 func phpanelWebhookSecret(cfg *config.Config) string {

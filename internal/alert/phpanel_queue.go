@@ -412,30 +412,31 @@ func (q *phpanelQueue) takeDelivery() ([]byte, []byte, *phpanelWork, error) {
 }
 
 func (q *phpanelQueue) deliverQueued(key, payload []byte, work *phpanelWork) bool {
-	sent, removed := false, false
+	sent, removed, refused := false, false, false
 	attempted := false
 	defer func() {
-		if attempted && !sent {
+		// A refused record is a counted loss, not a failing panel.
+		if attempted && !sent && !refused {
 			q.health.sendFailed.Store(true)
 		}
 		q.finishDelivery(work, sent, removed)
 	}()
 	var item queuedPhpanelFinding
 	if err := json.Unmarshal(payload, &item); err != nil {
-		if quarantineErr := q.quarantineMalformed(key, payload, err); quarantineErr != nil {
-			fmt.Fprintf(os.Stderr, "alert: quarantining malformed phpanel webhook: %v\n", quarantineErr)
-			alertDispatchFailures.Inc()
-			return false
-		}
-		fmt.Fprintf(os.Stderr, "alert: quarantined malformed phpanel webhook: %v\n", err)
-		alertDispatchFailures.Inc()
-		return true
+		return q.archive(key, payload, err, "malformed")
 	}
 	q.cfgMu.RLock()
 	delivery := q.cfg
 	q.cfgMu.RUnlock()
 	attempted = true
-	if err := sendQueuedPhpanelWebhookFinding(delivery, item); err != nil {
+	err := sendQueuedPhpanelWebhookFinding(delivery, item)
+	if permanentPhpanelRejection(err) {
+		// The panel refused this record and will refuse every retry of it;
+		// retrying would hold every later finding behind it.
+		refused = true
+		return q.archive(key, payload, err, "rejected")
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "alert: phpanel webhook delivery failed: %v\n", err)
 		alertDispatchFailures.Inc()
 		q.recordRetryFailure()
@@ -443,7 +444,6 @@ func (q *phpanelQueue) deliverQueued(key, payload []byte, work *phpanelWork) boo
 	}
 	sent = true
 	q.health.sendFailed.Store(false)
-	var err error
 	removed, err = q.removeDelivered(key)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "alert: deleting delivered phpanel webhook: %v\n", err)
@@ -466,17 +466,31 @@ func (q *phpanelQueue) removeDelivered(key []byte) (bool, error) {
 	return true, nil
 }
 
-func (q *phpanelQueue) quarantineMalformed(key, payload []byte, decodeErr error) error {
-	return q.quarantineMalformedWithLimit(key, payload, decodeErr, phpanelQuarantineLimit)
+// archive moves a record no retry can deliver into the bounded quarantine,
+// counted as a lost finding, so the records behind it keep moving. what says
+// why in the log.
+func (q *phpanelQueue) archive(key, payload []byte, cause error, what string) bool {
+	if err := q.quarantine(key, payload, cause); err != nil {
+		fmt.Fprintf(os.Stderr, "alert: quarantining %s phpanel webhook: %v\n", what, err)
+		alertDispatchFailures.Inc()
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "alert: quarantined %s phpanel webhook: %v\n", what, cause)
+	alertDispatchFailures.Inc()
+	return true
 }
 
-func (q *phpanelQueue) quarantineMalformedWithLimit(key, payload []byte, decodeErr error, limit int) error {
+func (q *phpanelQueue) quarantine(key, payload []byte, cause error) error {
+	return q.quarantineWithLimit(key, payload, cause, phpanelQuarantineLimit)
+}
+
+func (q *phpanelQueue) quarantineWithLimit(key, payload []byte, cause error, limit int) error {
 	if limit <= 0 {
 		return fmt.Errorf("phpanel quarantine limit must be positive")
 	}
 	record, marshalErr := json.Marshal(quarantinedPhpanelFinding{
 		Payload:       payload,
-		Error:         decodeErr.Error(),
+		Error:         cause.Error(),
 		QuarantinedAt: time.Now().UTC(),
 	})
 	if marshalErr != nil {
