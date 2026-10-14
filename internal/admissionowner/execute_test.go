@@ -22,8 +22,10 @@ type fakeBlocks struct {
 	results  map[string]firewall.BlockResult
 	// afterApply runs, under the lock, once a batch has its results.
 	afterApply func(*fakeBlocks)
-	checkErr   error
-	applyErr   error
+	// lease is the engine's lease clock; executeOptions follows the host.
+	lease    func() time.Time
+	checkErr error
+	applyErr error
 	// reject is how many coming batches the kernel rejects whole.
 	reject       int
 	markErr      error
@@ -99,6 +101,12 @@ func (f *fakeBlocks) ApplyBlockBatch(members []firewall.BlockMember) ([]firewall
 	return out, nil
 }
 
+func (f *fakeBlocks) LeaseNow() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lease()
+}
+
 func (f *fakeBlocks) MarkBlockActionsUnverified(actions []string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -134,6 +142,9 @@ func (f *fakeBlocks) calls() (checks, applies [][]firewall.BlockMember) {
 func executeOptions(f *ownerFixture, blocks *fakeBlocks) Options {
 	opts := previewOptions(f)
 	opts.Blocks = func() BlockEngine { return blocks }
+	if blocks.lease == nil {
+		blocks.lease = f.host.now
+	}
 	return opts
 }
 

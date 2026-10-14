@@ -256,6 +256,7 @@ func TestOwnerDrainRunsAtMostOneTurn(t *testing.T) {
 			f := newOwnerFixture(t)
 			blocks := newFakeBlocks()
 			opts := previewOptions(f)
+			blocks.lease = f.host.now
 			if live {
 				opts = executeOptions(f, blocks)
 			}

@@ -554,9 +554,11 @@ steps can shorten restored leases. After a step back the lease clock stays
 ahead unless wall time catches up through a later correction; elapsed time
 alone does not close the lead. New rows record expiries that far ahead; the
 engine logs the first lead beyond the readback slack once per engine. The
-admission owner still computes expiries from the admission clock, which
-returns to wall time once the wall passes its high-water mark, so the two
-frames must be aligned before the owner gets an engine.
+admission owner reads the engine's lease clock once per batch and sets a
+first attempt's expiry on it, so the lead is not lost from the block's
+lifetime and a short block is not refused as already expired; a retry
+keeps the first expiry. The owner already defers while the admission clock
+is degraded, the only time the lease could trail it.
 
 The engine also provides internal batch entry points for up to 64 timed
 full-address blocks. The admission owner runs them only when the daemon gives

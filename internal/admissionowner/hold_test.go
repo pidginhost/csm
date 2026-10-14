@@ -148,6 +148,7 @@ func TestOwnerHoldsExecutionWithoutAnEngine(t *testing.T) {
 	blocks := newFakeBlocks()
 	var running bool
 	opts := previewOptions(f)
+	blocks.lease = f.host.now
 	opts.Blocks = func() BlockEngine {
 		if !running {
 			return nil
@@ -376,6 +377,7 @@ func TestOwnerWithoutAnEngineIdlesUntilItStarts(t *testing.T) {
 	blocks := newFakeBlocks()
 	var running bool
 	opts := previewOptions(f)
+	blocks.lease = f.host.now
 	opts.Blocks = func() BlockEngine {
 		if !running {
 			return nil
@@ -423,6 +425,7 @@ func TestOwnerStartsEngineBeforeIdleProbeDeadline(t *testing.T) {
 	blocks.shortResults = true
 	running := true
 	opts := previewOptions(f)
+	blocks.lease = f.host.now
 	opts.Blocks = func() BlockEngine {
 		if !running {
 			return nil

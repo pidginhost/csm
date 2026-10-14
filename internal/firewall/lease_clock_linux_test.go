@@ -406,3 +406,19 @@ func TestLeaseClockReportsALeadOnce(t *testing.T) {
 		t.Fatalf("lead report = %q, want one report naming 1h0m1s", out)
 	}
 }
+
+// LeaseNow gives callers outside the engine the clock it encodes timeouts
+// against, so the expiries they set are on that clock.
+func TestEngineLeaseNowNeverRunsBackward(t *testing.T) {
+	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	clock := &leaseSteps{wall: at, elapsed: at}
+	e := &Engine{leaseClock: clock.read}
+	if got := e.LeaseNow(); !got.Equal(at) {
+		t.Fatalf("first reading = %v, want %v", got, at)
+	}
+	clock.advance(time.Minute)
+	clock.step(-time.Hour)
+	if got := e.LeaseNow(); !got.Equal(at.Add(time.Minute)) {
+		t.Fatalf("after a step back = %v, want %v", got, at.Add(time.Minute))
+	}
+}

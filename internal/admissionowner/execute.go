@@ -14,6 +14,9 @@ import (
 type BlockEngine interface {
 	CheckBlockBatchEffects(members []firewall.BlockMember) ([]firewall.BlockCheck, error)
 	ApplyBlockBatch(members []firewall.BlockMember) ([]firewall.BlockResult, error)
+	// LeaseNow is the clock the engine turns expiries into kernel
+	// timeouts against. A first attempt's expiry is set on it.
+	LeaseNow() time.Time
 	// MarkBlockActionsUnverified with no actions writes the safe state
 	// again while a failed state write holds batches, and so releases it.
 	MarkBlockActionsUnverified(actions []string) (int, error)
@@ -84,6 +87,9 @@ func (o *Owner) execute(picks []execPick) error {
 		return nil
 	}
 	picks = o.isolate(picks)
+	// After a step back the engine's clock leads the wall clock: an expiry
+	// set on the admission clock would lose that lead from its lifetime.
+	lease := engine.LeaseNow()
 	members := make([]firewall.BlockMember, len(picks))
 	for i, p := range picks {
 		next, err := admission.NewAttempt(p.pick.ID, p.c.Attempts+1)
@@ -91,7 +97,7 @@ func (o *Owner) execute(picks []execPick) error {
 			return fmt.Errorf("naming the attempt of pick %s: %w", p.pick.ID, err)
 		}
 		addr, _ := p.c.Key.Target.Addr()
-		members[i] = firewall.BlockMember{Action: string(next.ID), IP: addr.String(), Reason: "CSM auto-block: " + p.c.Check, ExpiresAt: o.expiryOf(p.c)}
+		members[i] = firewall.BlockMember{Action: string(next.ID), IP: addr.String(), Reason: "CSM auto-block: " + p.c.Check, ExpiresAt: o.expiryOf(p.c, lease)}
 	}
 	checks, err := engine.CheckBlockBatchEffects(members)
 	if err == nil && len(checks) != len(members) {
