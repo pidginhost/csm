@@ -71,9 +71,11 @@ func TestInvalidateWaitsForActiveTransaction(t *testing.T) {
 		if err := Invalidate(context.Background()); !errors.Is(err, eximlock.ErrBusy) {
 			t.Fatalf("invalidation interrupted an active transaction: %v", err)
 		}
+		// The running transaction already checked its request; the
+		// cancellation lands at once for every worker that checks later.
 		got, err := os.ReadFile(filepath.Join(requestDir, RequestFile))
-		if err != nil || !bytes.Equal(got, older) {
-			t.Fatalf("busy invalidation replaced active request with %q: %v", got, err)
+		if err != nil || string(got) != "null" {
+			t.Fatalf("busy invalidation did not cancel: record %q: %v", got, err)
 		}
 		return nil
 	}); err != nil {
@@ -155,7 +157,10 @@ func TestRecordRequestWaitsOutABriefHolder(t *testing.T) {
 	}
 }
 
-func TestPassCanceledDuringInvalidationPreservesPendingRequest(t *testing.T) {
+// A pass that meets a running transaction cancels pending workers at once,
+// without waiting for the lock, and reports busy before it reads the host.
+// A pass already canceled at shutdown writes nothing.
+func TestPassDuringTransactionCancelsAtOnce(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		prev := requestDir
 		requestDir = t.TempDir()
@@ -170,34 +175,37 @@ func TestPassCanceledDuringInvalidationPreservesPendingRequest(t *testing.T) {
 			Installed:  func() antispam.HostFacts { reads++; return antispam.HostFacts{} },
 			Now:        time.Now,
 		}
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		finished := make(chan struct{})
+		canceled, cancel := context.WithCancel(context.Background())
+		cancel()
+		if out := r.Pass(canceled, reconcile.Desired{}); !errors.Is(out.Err, context.Canceled) || reads != 0 {
+			t.Fatalf("canceled pass: outcome=%+v reads=%d", out, reads)
+		}
+		if got, err := os.ReadFile(filepath.Join(requestDir, RequestFile)); err != nil || !bytes.Equal(got, previous) {
+			t.Fatalf("canceled pass replaced the record with %q: %v", got, err)
+		}
 		var out reconcile.Outcome
 		if err := eximlock.With(requestDir, func() error {
+			finished := make(chan struct{})
 			go func() {
-				out = r.Pass(ctx, reconcile.Desired{})
+				out = r.Pass(context.Background(), reconcile.Desired{})
 				close(finished)
 			}()
-			synctest.Wait()
-			cancel()
 			synctest.Wait()
 			select {
 			case <-finished:
 			default:
-				t.Error("canceled pass still waits to invalidate")
+				t.Error("pass waited for the lock to cancel pending workers")
 			}
+			<-finished
 			return nil
 		}); err != nil {
 			t.Fatal(err)
 		}
-		<-finished
-		if !errors.Is(out.Err, context.Canceled) || len(out.Findings) != 0 || len(out.Checks) != 0 || out.Retry != 0 || reads != 0 {
-			t.Errorf("canceled pass: outcome=%+v reads=%d", out, reads)
+		if out.Err != nil || out.Retry != reconcile.BusyRetry || len(out.Findings) != 0 || len(out.Checks) != 0 || reads != 0 {
+			t.Errorf("pass during a transaction: outcome=%+v reads=%d", out, reads)
 		}
-		got, err := os.ReadFile(filepath.Join(requestDir, RequestFile))
-		if err != nil || !bytes.Equal(got, previous) {
-			t.Errorf("canceled pass invalidated pending request with %q: %v", got, err)
+		if got, err := os.ReadFile(filepath.Join(requestDir, RequestFile)); err != nil || string(got) != "null" {
+			t.Errorf("pass during a transaction left the record %q: %v", got, err)
 		}
 	})
 }
@@ -295,5 +303,37 @@ func TestRecordRequestCanceledBeforeStaging(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A stale worker waits up to RecordWait for a busy lock. Cancellation must
+// not wait behind the same holder: when the holder releases, the waiting
+// worker must find the cancellation, not its own request.
+func TestInvalidateLandsBeforeAWaitingStaleWorker(t *testing.T) {
+	prev := requestDir
+	requestDir = t.TempDir()
+	t.Cleanup(func() { requestDir = prev })
+	older := []byte(applyBody)
+	if recorded, err := recordRequest(context.Background(), requestDir, older); err != nil || !recorded {
+		t.Fatalf("recorded=%v err=%v", recorded, err)
+	}
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		finished <- eximlock.With(requestDir, func() error { close(entered); <-release; return nil })
+	}()
+	<-entered
+	if err := Invalidate(context.Background()); !errors.Is(err, eximlock.ErrBusy) {
+		t.Fatalf("invalidate during a transaction: %v, want busy", err)
+	}
+	ran := 0
+	stale := make(chan error, 1)
+	go func() { stale <- Lock(requestDir)(older, func() error { ran++; return nil }) }()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-stale; !errors.Is(err, errSuperseded) || ran != 0 {
+		t.Fatalf("stale worker after a busy cancellation: err=%v ran=%d", err, ran)
 	}
 }

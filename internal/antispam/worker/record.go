@@ -25,16 +25,31 @@ var errSuperseded = errors.New("a newer antispam request replaced this one")
 
 // Invalidate stops pending workers before reconcile reads the host. Even a
 // pass that needs no worker must supersede requests from an older daemon.
-// An active transaction holds the lock, so the caller retries after it ends.
+// The cancellation is published without waiting for the lock, so a stale
+// worker waiting behind a running transaction finds it once that transaction
+// ends. A running transaction is still reported as busy, so the pass reads
+// the host only after it ends.
 func Invalidate(ctx context.Context) error {
-	recorded, err := recordRequest(ctx, requestDir, []byte("null"))
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// #nosec G301 -- the shared lock directory, created with the mode eximlock uses.
+	if err := os.MkdirAll(requestDir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(requestDir, RequestFile)
+	tmp, err := stageRecord(path, []byte("null"))
 	if err != nil {
 		return err
 	}
-	if !recorded {
-		return eximlock.ErrBusy
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
-	return nil
+	if err := syncRecordDir(requestDir); err != nil {
+		return err
+	}
+	return eximlock.With(requestDir, func() error { return nil })
 }
 
 // Lock is the worker's Locker: it holds the shared lock in dir and runs
