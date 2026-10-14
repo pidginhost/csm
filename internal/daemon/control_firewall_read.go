@@ -31,6 +31,19 @@ func fmtPortsSlice(ports []int) []string {
 	return out
 }
 
+func (c *ControlListener) firewallReadConfig(cfg *config.Config) *firewall.FirewallConfig {
+	// Re-apply changes only the engine snapshot. Wait for its transaction
+	// (including recovery on failure) before reporting that policy.
+	firewallDeadmanMu.Lock()
+	defer firewallDeadmanMu.Unlock()
+	if c.d.fwEngine != nil {
+		if live := c.d.fwEngine.Config(); live != nil {
+			return live
+		}
+	}
+	return config.EffectiveFirewallConfig(cfg)
+}
+
 func (c *ControlListener) handleFirewallStatus(_ json.RawMessage) (any, error) {
 	cfg := c.d.currentCfg()
 
@@ -40,7 +53,7 @@ func (c *ControlListener) handleFirewallStatus(_ json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("loading firewall state: %w", err)
 	}
 
-	fwCfg := config.EffectiveFirewallConfig(cfg)
+	fwCfg := c.firewallReadConfig(cfg)
 
 	result := control.FirewallStatusResult{
 		Enabled:         fwCfg.Enabled,
@@ -86,7 +99,7 @@ func (c *ControlListener) handleFirewallStatus(_ json.RawMessage) (any, error) {
 func (c *ControlListener) handleFirewallPorts(_ json.RawMessage) (any, error) {
 	cfg := c.d.currentCfg()
 	var lines []string
-	fwCfg := config.EffectiveFirewallConfig(cfg)
+	fwCfg := c.firewallReadConfig(cfg)
 
 	lines = append(lines, "TCP Inbound (public):")
 	lines = append(lines, "  "+joinPorts(fwCfg.TCPIn))

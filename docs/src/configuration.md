@@ -1155,7 +1155,7 @@ For each peer the input chain accepts the protocol from that address and the out
 
 The input accepts come right after `infra_ips` and before the blocked address, blocked subnet and country rules. A blocked peer therefore still exchanges VRRP with this host, and only VRRP. Without this, a block on a peer makes both members claim the shared address. Blocks of other addresses do not affect these rules.
 
-`csm firewall status` and `csm firewall ports` list the configured entries. Hosts that support the key report the `firewall.protocol_allow.v1` capability.
+`csm firewall status` and `csm firewall ports` list the applied entries, including changes made by a firewall restart or rollback. Hosts that support the key report the `firewall.protocol_allow.v1` capability.
 
 ## firewall.dos_exempt_ranges
 

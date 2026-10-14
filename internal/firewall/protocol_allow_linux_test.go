@@ -98,6 +98,8 @@ func TestProtocolAllowSkipsWhatItCannotScope(t *testing.T) {
 		{"unparseable peer", vrrpPeers("db1.example.com"), true},
 		{"world-wide ipv4", vrrpPeers("0.0.0.0/0"), true},
 		{"world-wide ipv6", vrrpPeers("::/0"), true},
+		{"mapped world-wide ipv4", vrrpPeers("::ffff:192.0.2.11/96"), true},
+		{"world-wide with host bits", vrrpPeers("192.0.2.11/0"), true},
 		{"no peers", vrrpPeers(), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

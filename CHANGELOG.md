@@ -33,6 +33,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- Firewall status and port listings now reflect applied peer changes and rollbacks without requiring a daemon restart.
 - `csm rehash` now refuses unknown options instead of re-signing the whole configuration.
 - Temporary blocks no longer last longer than set when the system clock is moved back, including after a restart or an undo.
 - A temporary block that expires while the firewall starts can no longer be restored as a permanent block.
