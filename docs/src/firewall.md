@@ -214,8 +214,7 @@ kernel rules. A restart on the same boot resumes no earlier than the saved
 time plus elapsed time since that checkpoint. A reboot supplies no proof of
 elapsed time from the previous boot, so the saved time alone provides that
 bound. The current wall clock and the admission ledger's saved clock can move
-the resumed time forward. The checkpoint cannot retain a forward clock step
-that was corrected before the next save.
+the resumed time forward.
 
 An unreadable or damaged checkpoint logs a warning; restoration uses the
 remaining clock bounds. A save failure after ruleset installation warns
