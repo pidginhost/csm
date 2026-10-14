@@ -72,8 +72,8 @@ var refusalReasons = map[firewall.BlockRefusal]admission.Reason{
 func (o *Owner) execute(picks []execPick) error {
 	engine := o.opts.Blocks()
 	// A degraded clock cannot bound a lease: the admission time stays at
-	// its high-water mark while the wall clock the engine encodes against
-	// is behind it or disagrees with elapsed time.
+	// its high-water mark while the wall clock is behind it or disagrees
+	// with elapsed time. The engine encodes against its own lease clock.
 	if o.degraded || !o.ready(engine, true) {
 		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
 	}
