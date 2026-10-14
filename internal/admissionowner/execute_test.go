@@ -18,9 +18,12 @@ var _ BlockEngine = (*firewall.Engine)(nil)
 type fakeBlocks struct {
 	mu       sync.Mutex
 	refuse   map[string]firewall.BlockRefusal
+	existing map[string]firewall.ExistingBlock
 	results  map[string]firewall.BlockResult
-	checkErr error
-	applyErr error
+	// afterApply runs, under the lock, once a batch has its results.
+	afterApply func(*fakeBlocks)
+	checkErr   error
+	applyErr   error
 	// reject is how many coming batches the kernel rejects whole.
 	reject       int
 	markErr      error
@@ -32,20 +35,29 @@ type fakeBlocks struct {
 	applies      [][]firewall.BlockMember
 }
 
+// fakeExisting names a proven block unless a test names it otherwise.
+var fakeExisting = firewall.ExistingBlock{ID: "eff_00112233445566778899aabbccddeeff", ExpiresAt: time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)}
+
 func newFakeBlocks() *fakeBlocks {
-	return &fakeBlocks{refuse: map[string]firewall.BlockRefusal{}, results: map[string]firewall.BlockResult{}}
+	return &fakeBlocks{refuse: map[string]firewall.BlockRefusal{}, existing: map[string]firewall.ExistingBlock{}, results: map[string]firewall.BlockResult{}}
 }
 
-func (f *fakeBlocks) CheckBlockBatch(members []firewall.BlockMember) ([]firewall.BlockRefusal, error) {
+func (f *fakeBlocks) CheckBlockBatchEffects(members []firewall.BlockMember) ([]firewall.BlockCheck, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.checks = append(f.checks, append([]firewall.BlockMember(nil), members...))
 	if f.checkErr != nil {
 		return nil, f.checkErr
 	}
-	out := make([]firewall.BlockRefusal, len(members))
+	out := make([]firewall.BlockCheck, len(members))
 	for i, m := range members {
-		out[i] = f.refuse[m.IP]
+		out[i].Refusal = f.refuse[m.IP]
+		if out[i].Refusal == firewall.BlockRefusedExisting {
+			out[i].Existing = fakeExisting
+			if named, ok := f.existing[m.IP]; ok {
+				out[i].Existing = named
+			}
+		}
 	}
 	if f.shortChecks {
 		return out[:len(out)-1], nil
@@ -77,6 +89,9 @@ func (f *fakeBlocks) ApplyBlockBatch(members []firewall.BlockMember) ([]firewall
 		if r.Effect == firewall.BlockFailed && r.Refusal == firewall.BlockRefusedExisting {
 			f.refuse[m.IP] = firewall.BlockRefusedExisting
 		}
+	}
+	if f.afterApply != nil {
+		f.afterApply(f)
 	}
 	if f.shortResults {
 		return out[:len(out)-1], nil
@@ -222,6 +237,13 @@ func TestOwnerMapsEngineRefusals(t *testing.T) {
 			c := candidate(t, o, id)
 			if c.State != want.state || c.Reason != want.reason || c.Attempts != 0 {
 				t.Fatalf("candidate = state %s reason %s attempts %d, want %s %s 0", c.State, c.Reason, c.Attempts, want.state, want.reason)
+			}
+			wantLink := admission.EffectLink{}
+			if refusal == firewall.BlockRefusedExisting {
+				wantLink = admission.EffectLink{Effect: fakeExisting.ID, ExpiresAt: fakeExisting.ExpiresAt}
+			}
+			if c.Link != wantLink {
+				t.Fatalf("candidate link = %+v, want %+v", c.Link, wantLink)
 			}
 			if _, applies := blocks.calls(); len(applies) != 0 {
 				t.Fatalf("a refused member was applied: %v", applies)
@@ -656,17 +678,21 @@ func TestOwnerEndsAnExistingEffectFoundAtApply(t *testing.T) {
 				retry()
 			}
 		}
-		blocks.results["192.0.2.10"] = firewall.BlockResult{Effect: firewall.BlockFailed, Refusal: firewall.BlockRefusedExisting}
+		// The apply result's name is stale; the link comes from the fresh proof.
+		proven := firewall.ExistingBlock{ID: "act_0123456789abcdef0123456789abcdef", ExpiresAt: time.Date(2030, 2, 3, 4, 5, 6, 0, time.UTC)}
+		blocks.existing["192.0.2.10"] = proven
+		blocks.results["192.0.2.10"] = firewall.BlockResult{Effect: firewall.BlockFailed, Refusal: firewall.BlockRefusedExisting, Existing: fakeExisting}
 		if err := o.do(o.turn); err != nil {
 			t.Fatalf("last attempt %t: %v", last, err)
 		}
 		c := candidate(t, o, id)
 		want, reason := admission.StateRefused, admission.ReasonExistingEffect
+		link := admission.EffectLink{Effect: proven.ID, ExpiresAt: proven.ExpiresAt}
 		if last {
-			want, reason = admission.StateFailed, 0
+			want, reason, link = admission.StateFailed, 0, admission.EffectLink{}
 		}
-		if c.State != want || c.Reason != reason || c.Attempts != uint32(attempts) || attemptOf(t, o, c).Disposition != admission.DispositionFailed {
-			t.Fatalf("last attempt %t: candidate %s %s after %d attempts, want %s %s", last, c.State, c.Reason, c.Attempts, want, reason)
+		if c.State != want || c.Reason != reason || c.Attempts != uint32(attempts) || attemptOf(t, o, c).Disposition != admission.DispositionFailed || c.Link != link {
+			t.Fatalf("last attempt %t: candidate %s %s %+v after %d attempts, want %s %s %+v", last, c.State, c.Reason, c.Link, c.Attempts, want, reason, link)
 		}
 		if s := ledgerStatus(t, o); s.Ceiling.General.Used != uint32(attempts) || executionHeld(t, o) != "" {
 			t.Fatalf("last attempt %t: charges %d, held %q", last, s.Ceiling.General.Used, executionHeld(t, o))
@@ -680,7 +706,7 @@ func TestOwnerEndsAnExistingEffectFoundAtApply(t *testing.T) {
 		}
 		o.Stop()
 		reopened := f.start(executeOptions(f, blocks))
-		if got := candidate(t, reopened, id); got.State != want || got.Reason != reason || got.Attempts != uint32(attempts) {
+		if got := candidate(t, reopened, id); got.State != want || got.Reason != reason || got.Attempts != uint32(attempts) || got.Link != link {
 			t.Fatalf("persisted ending failed reopening: %+v", got)
 		}
 	}

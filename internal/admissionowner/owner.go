@@ -57,6 +57,10 @@ var (
 	reserveLedger   = (*store.AdmissionLedger).Reserve
 	finishLedger    = (*store.AdmissionLedger).Finish
 	terminateLedger = (*store.AdmissionLedger).Terminate
+	// finishExistingLedger and terminateExistingLedger end a pick linked to
+	// the block that already enforces it; tests make them fail.
+	finishExistingLedger    = (*store.AdmissionLedger).FinishExisting
+	terminateExistingLedger = (*store.AdmissionLedger).TerminateExisting
 )
 
 // previewLimits lets a schedule serve whatever the ledger's budgets allow,

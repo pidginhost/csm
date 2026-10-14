@@ -600,14 +600,17 @@ replacement accounting. Permanent promotion requires a verified block row.
 With an engine, each owner turn runs its `block_ip` picks as one batch. The
 engine checks every member against one snapshot before anything is reserved. A
 full set, or an address a row or element holds without proof, defers a member;
-a block the engine proves already holds the address, an invalid or protected
-address or a spent lifetime ends it without a charge. A proven block found
-only when the batch applies ends the attempt failed, with its charge, and the
-pick refused as an existing effect without a retry, after a fresh check
-following the outcome write. On the last attempt it already ends failed.
-A failed ending is checked again after backoff; if
-proof disappeared, ordinary bounded retries remain possible. No durable
-reference is stored yet. The rest are reserved,
+a block the engine proves already holds the address ends it linked to that
+block, and an invalid or protected address or a spent lifetime ends it, all
+without a charge. A proven block found only when the batch applies is
+checked again when the outcome is written: with a fresh proof the attempt
+fails, with its charge, and the pick ends refused as an existing effect,
+linked to the block, in one ledger write, so nothing retries against it.
+Without a fresh proof, or if that write fails, the failure alone is attempted
+at once. If both writes fail transiently, execution waits for the pending
+outcome; a crash before it is saved leaves an unknown attempt. After a successful
+write the ordinary bounded retry or the next check decides. On the
+last attempt the pick already ends failed. The rest are reserved,
 recorded as running with their intents, applied and finished by their own
 effect. Failed outcome writes retry before more work is selected and once at
 shutdown, even without a fresh clock reading; the effect is never dispatched

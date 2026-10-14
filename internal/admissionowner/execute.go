@@ -12,7 +12,7 @@ import (
 // BlockEngine runs batches of timed full-address blocks. The firewall
 // engine is one on every platform; only Linux runs them.
 type BlockEngine interface {
-	CheckBlockBatch(members []firewall.BlockMember) ([]firewall.BlockRefusal, error)
+	CheckBlockBatchEffects(members []firewall.BlockMember) ([]firewall.BlockCheck, error)
 	ApplyBlockBatch(members []firewall.BlockMember) ([]firewall.BlockResult, error)
 	// MarkBlockActionsUnverified with no actions writes the safe state
 	// again while a failed state write holds batches, and so releases it.
@@ -43,17 +43,19 @@ type pendingFinish struct {
 	disposition admission.Disposition
 	rejected    bool
 	// existing is a failure because a proven block already holds the
-	// address: the pick ends instead of retrying against it.
+	// address: after a fresh proof of member, the pick ends linked to that
+	// block instead of retrying against it.
 	existing bool
+	member   firewall.BlockMember
 }
 
 // refusalReasons are the admission reasons for the engine's refusals of a
-// member before it is reserved (spec 5.16): a full set defers it; the
-// rest end it without a charge. A refusal missing here (a duplicate
+// member before it is reserved (spec 5.16): a full set or an unproven hold
+// defers it; the rest end it without a charge. An existing effect ends
+// linked to its block (endExisting). A refusal missing here (a duplicate
 // address in the batch) leaves the pick queued for a later turn.
 var refusalReasons = map[firewall.BlockRefusal]admission.Reason{
 	firewall.BlockRefusedFull:        admission.ReasonSetFull,
-	firewall.BlockRefusedExisting:    admission.ReasonExistingEffect,
 	firewall.BlockRefusedPending:     admission.ReasonPendingRecovery,
 	firewall.BlockRefusedInvalid:     admission.ReasonInvalid,
 	firewall.BlockRefusedExpired:     admission.ReasonStale,
@@ -91,9 +93,9 @@ func (o *Owner) execute(picks []execPick) error {
 		addr, _ := p.c.Key.Target.Addr()
 		members[i] = firewall.BlockMember{Action: string(next.ID), IP: addr.String(), Reason: "CSM auto-block: " + p.c.Check, ExpiresAt: o.expiryOf(p.c)}
 	}
-	refusals, err := engine.CheckBlockBatch(members)
-	if err == nil && len(refusals) != len(members) {
-		err = fmt.Errorf("%d answers for %d members", len(refusals), len(members))
+	checks, err := engine.CheckBlockBatchEffects(members)
+	if err == nil && len(checks) != len(members) {
+		err = fmt.Errorf("%d answers for %d members", len(checks), len(members))
 		o.probeCheck = true
 	}
 	if err != nil {
@@ -107,8 +109,15 @@ func (o *Owner) execute(picks []execPick) error {
 	var run []int
 	var stopped error
 	for i, p := range picks {
-		if refusals[i] != "" {
-			if reason, known := refusalReasons[refusals[i]]; known {
+		if checks[i].Refusal == firewall.BlockRefusedExisting {
+			if err = o.endExisting(p, linkOf(checks[i].Existing)); err != nil {
+				stopped = err
+				break
+			}
+			continue
+		}
+		if checks[i].Refusal != "" {
+			if reason, known := refusalReasons[checks[i].Refusal]; known {
 				if err = o.endPick(p, reason); err != nil {
 					stopped = err
 					break
@@ -189,6 +198,7 @@ func (o *Owner) execute(picks []execPick) error {
 			id: ids[k], disposition: effectDisposition(r.Effect),
 			rejected: r.Effect == firewall.BlockFailed && errors.Is(r.Err, firewall.ErrBlockBatchRejected),
 			existing: r.Effect == firewall.BlockFailed && r.Refusal == firewall.BlockRefusedExisting,
+			member:   batch[k],
 		})
 	}
 	switch {
@@ -329,6 +339,20 @@ func effectDisposition(e firewall.BlockEffect) admission.Disposition {
 	return admission.DispositionUnknown
 }
 
+// endExisting ends a pick before it is reserved because a proven block
+// already enforces its effect, linked to that block (spec 5.16, 5.17).
+func (o *Owner) endExisting(p execPick, link admission.EffectLink) error {
+	if _, err := terminateExistingLedger(o.ledger, p.pick.ID, link); err != nil {
+		return fmt.Errorf("ending pick %s: %w", p.pick.ID, err)
+	}
+	return nil
+}
+
+// linkOf is the ledger's link to the block the engine named.
+func linkOf(b firewall.ExistingBlock) admission.EffectLink {
+	return admission.EffectLink{Effect: b.ID, ExpiresAt: b.ExpiresAt}
+}
+
 // endPick defers or ends a pick before it is reserved.
 func (o *Owner) endPick(p execPick, reason admission.Reason) error {
 	var err error
@@ -373,7 +397,31 @@ func (o *Owner) finishPending() error {
 	var err error
 	pending := o.finishes[:0]
 	for _, outcome := range o.finishes {
-		c, a, finishErr := finishLedger(o.ledger, outcome.id, outcome.disposition)
+		var c admission.Candidate
+		var a admission.AttemptRecord
+		var finishErr error
+		linked := false
+		if outcome.existing {
+			// Finishing can retry long after the apply-time proof expires.
+			// Only a fresh proof may end the pick as already covered, and
+			// it ends with the attempt's failure in one write. Any failure
+			// of that attempts the plain failure at once. If both writes
+			// fail the pending outcome holds new work until a later retry.
+			link, proofErr := o.proveExisting(outcome.member)
+			switch {
+			case proofErr != nil:
+				err = errors.Join(err, fmt.Errorf("checking existing effect for %s: %w", outcome.id, proofErr))
+			case link != (admission.EffectLink{}):
+				if c, a, finishErr = finishExistingLedger(o.ledger, outcome.id, link); finishErr != nil {
+					err = errors.Join(err, fmt.Errorf("ending %s as an existing effect: %w", outcome.id, finishErr))
+				} else {
+					linked = true
+				}
+			}
+		}
+		if !linked {
+			c, a, finishErr = finishLedger(o.ledger, outcome.id, outcome.disposition)
+		}
 		if finishErr != nil {
 			err = errors.Join(err, fmt.Errorf("finishing %s: %w", outcome.id, finishErr))
 			// A damaged record, an attempt already ended another way or a
@@ -385,18 +433,6 @@ func (o *Owner) finishPending() error {
 			continue
 		}
 		id := a.Attempt.Candidate
-		if c.State == admission.StateQueued && outcome.existing {
-			// Finishing can retry long after the apply-time proof expires.
-			// Only a fresh proof may end the queued pick as already covered.
-			proven, proofErr := o.proveExisting(c, outcome.id)
-			if proofErr != nil {
-				err = errors.Join(err, fmt.Errorf("checking existing effect for %s: %w", id, proofErr))
-			} else if proven {
-				if _, termErr := terminateLedger(o.ledger, id, admission.ReasonExistingEffect); termErr != nil {
-					err = errors.Join(err, fmt.Errorf("ending %s: %w", id, termErr))
-				}
-			}
-		}
 		if c.State == admission.StateQueued && outcome.rejected {
 			if o.isolated == nil {
 				o.isolated = map[admission.CandidateID]time.Time{}
@@ -414,20 +450,20 @@ func (o *Owner) finishPending() error {
 	return err
 }
 
-func (o *Owner) proveExisting(c admission.Candidate, action admission.ActionID) (bool, error) {
+// proveExisting checks member again and links the block that now proves
+// it is already enforced; zero when nothing does (the engine names a block
+// only for an existing effect).
+func (o *Owner) proveExisting(member firewall.BlockMember) (admission.EffectLink, error) {
 	engine := o.opts.Blocks()
 	if engine == nil {
-		return false, errNoEngine
+		return admission.EffectLink{}, errNoEngine
 	}
-	addr, _ := c.Key.Target.Addr()
-	refusals, err := engine.CheckBlockBatch([]firewall.BlockMember{{
-		Action: string(action), IP: addr.String(), Reason: "CSM auto-block: " + c.Check, ExpiresAt: c.ExpiresAt,
-	}})
+	checks, err := engine.CheckBlockBatchEffects([]firewall.BlockMember{member})
 	if err != nil {
-		return false, err
+		return admission.EffectLink{}, err
 	}
-	if len(refusals) != 1 {
-		return false, fmt.Errorf("%d answers for one existing effect", len(refusals))
+	if len(checks) != 1 {
+		return admission.EffectLink{}, fmt.Errorf("%d answers for one existing effect", len(checks))
 	}
-	return refusals[0] == firewall.BlockRefusedExisting, nil
+	return linkOf(checks[0].Existing), nil
 }
