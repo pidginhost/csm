@@ -12,15 +12,16 @@ import (
 )
 
 // errSuperseded reports a request the daemon replaced before this worker
-// reached the lock. The newer request decides, so it is not a failure.
+// checked it. The newer request decides, so it is not a failure.
 var errSuperseded = errors.New("a newer forward-guard request replaced this one")
 
-// requestFile holds the latest request the daemon handed to the worker. It
-// sits next to the shared lock and changes only under it.
+// requestFile holds the latest request the daemon handed to the worker.
+// Submissions replace it under the shared lock. Observe-mode cancellation
+// replaces it atomically without the lock, so busy transactions cannot delay it.
 const requestFile = "request.json"
 
 // lockedEximAdapter runs one worker transaction under the shared Exim lock,
-// and only while its request is still the latest one the daemon recorded.
+// only if its request is current when the transaction begins.
 type lockedEximAdapter struct{ *EximAdapter }
 
 func (a lockedEximAdapter) mutate(request eximMutation) error {

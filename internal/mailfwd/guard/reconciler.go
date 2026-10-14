@@ -12,14 +12,14 @@ import (
 type Reconciler struct {
 	// Guard is the MTA adapter (nil on platforms without one).
 	Guard adapter.ForwardGuard
-	// Active gates the whole reconciler; the daemon sets it true only on a
-	// cPanel/exim host. When false, Reconcile/RefreshBadIPs are no-ops.
+	// Active permits mail changes; the daemon sets it true only on a
+	// cPanel/exim host in enforce mode.
 	Active bool
 	// BadIPs supplies the current bad-sender-IP set (from the reputation DB).
 	BadIPs func() []string
 	// Observe is set on a cPanel host in observe mode. Reconcile then only
-	// cancels requests still waiting for a worker, so a worker started
-	// before the switch changes no mail configuration.
+	// cancels pending requests. Workers that already checked their request
+	// finish their transaction.
 	Observe bool
 }
 

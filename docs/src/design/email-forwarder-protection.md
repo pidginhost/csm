@@ -144,7 +144,10 @@ list match an earlier submission. A delayed worker cannot replace a sender
 list refreshed since the newer submission. If its request record is missing
 or unreadable, the worker leaves the installed guard untouched.
 Observe mode and hosts without cPanel leave the installed guard untouched; in
-observe mode CSM only cancels changes still waiting for a worker.
+observe mode CSM only cancels pending changes. Cancellation does not wait for
+another Exim transaction to finish. A worker that has already checked its
+request under the Exim lock finishes its transaction; later workers cannot
+apply canceled requests.
 
 ## WebUI surfaces (email page)
 

@@ -400,8 +400,9 @@ func TestEximServiceAdapterStartsNoWorkerForAnUnrecordedRequest(t *testing.T) {
 	service := &eximServiceAdapter{EximAdapter: a, mutate: func(eximMutation) error { calls++; return nil }}
 	applyErr := service.Apply(policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}, nil)
 	removeErr := service.Remove()
-	if applyErr == nil || removeErr == nil || errors.Is(applyErr, eximlock.ErrBusy) || errors.Is(removeErr, eximlock.ErrBusy) || calls != 0 {
-		t.Fatalf("apply=%v remove=%v worker calls=%d", applyErr, removeErr, calls)
+	invalidateErr := service.Invalidate()
+	if applyErr == nil || removeErr == nil || invalidateErr == nil || errors.Is(applyErr, eximlock.ErrBusy) || errors.Is(removeErr, eximlock.ErrBusy) || errors.Is(invalidateErr, eximlock.ErrBusy) || calls != 0 {
+		t.Fatalf("apply=%v remove=%v invalidate=%v worker calls=%d", applyErr, removeErr, invalidateErr, calls)
 	}
 }
 
@@ -511,7 +512,7 @@ func TestEximServiceRequestWriteFailureStartsNoWorker(t *testing.T) {
 	}
 	calls := 0
 	service := &eximServiceAdapter{EximAdapter: a, mutate: func(eximMutation) error { calls++; return nil }}
-	for _, submit := range []func() error{func() error { return service.Apply(bothSignals(), nil) }, service.Remove} {
+	for _, submit := range []func() error{func() error { return service.Apply(bothSignals(), nil) }, service.Remove, service.Invalidate} {
 		if err := submit(); err == nil || errors.Is(err, eximlock.ErrBusy) {
 			t.Errorf("recording failure=%v, want a non-busy error", err)
 		}
@@ -641,5 +642,89 @@ func TestEximServiceRequestRecordIsPrivate(t *testing.T) {
 		if err != nil || info.Mode().Perm() != 0o600 {
 			t.Fatalf("%s record mode=%v err=%v, want 0600", name, info.Mode().Perm(), err)
 		}
+	}
+}
+
+// An unrelated Exim transaction must not delay cancellation until the next
+// refresh: a pending worker could start as soon as that transaction ends.
+func TestEximServiceInvalidateWhileEximIsBusy(t *testing.T) {
+	for _, installed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("installed=%t", installed), func(t *testing.T) {
+			a, side := testAdapter(t)
+			if installed {
+				writeInstalledConf(t, a)
+			}
+			var pending []eximMutation
+			service := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error {
+				pending = append(pending, r)
+				return nil
+			}}
+			var err error
+			if installed {
+				err = service.Remove()
+			} else {
+				err = service.Apply(bothSignals(), []string{"192.0.2.1"})
+			}
+			if err != nil || len(pending) != 1 {
+				t.Fatalf("submit: err=%v requests=%d", err, len(pending))
+			}
+			if err = eximlock.With(filepath.Dir(a.badIPsPath), service.Invalidate); err != nil {
+				t.Errorf("cancel while another transaction holds the lock: %v", err)
+			}
+			err = handleEximMutation(strings.NewReader(mutationBody(t, pending[0])), lockedEximAdapter{a}.mutate)
+			if !errors.Is(err, errSuperseded) {
+				t.Errorf("pending worker: %v, want superseded", err)
+			}
+			status, statusErr := a.Status()
+			if statusErr != nil || status.Installed != installed || side.rebuilds != 0 || len(pending) != 1 {
+				t.Fatalf("installed=%v (want %v) err=%v rebuilds=%d worker calls=%d", status.Installed, installed, statusErr, side.rebuilds, len(pending))
+			}
+		})
+	}
+}
+
+// A first start in observe mode must also fence workers from versions that
+// did not record their requests, without creating a mail configuration.
+func TestEximServiceInvalidateWithoutPreviousRequest(t *testing.T) {
+	a, side := testAdapter(t)
+	service := &eximServiceAdapter{EximAdapter: a, mutate: func(eximMutation) error {
+		t.Fatal("invalidation started a worker")
+		return nil
+	}}
+	if err := service.Invalidate(); err != nil {
+		t.Fatal(err)
+	}
+	request := eximMutation{Operation: "apply", Config: bothSignals()}
+	if err := (lockedEximAdapter{a}).mutate(request); !errors.Is(err, errSuperseded) {
+		t.Fatalf("legacy worker: %v, want superseded", err)
+	}
+	if _, err := os.Stat(a.localConf); !errors.Is(err, os.ErrNotExist) || side.rebuilds != 0 {
+		t.Fatalf("mail configuration: err=%v rebuilds=%d", err, side.rebuilds)
+	}
+}
+
+// Cancellation fences pending workers, but must not interrupt a transaction
+// that already passed its request check and started rebuilding Exim.
+func TestEximServiceInvalidateDuringRunningWorker(t *testing.T) {
+	a, _ := testAdapter(t)
+	service := &eximServiceAdapter{EximAdapter: a, mutate: lockedEximAdapter{a}.mutate}
+	rebuilds := 0
+	a.rebuild = func() error {
+		rebuilds++
+		if err := service.Invalidate(); err != nil {
+			t.Errorf("cancel during running transaction: %v", err)
+		}
+		return nil
+	}
+	if err := service.Apply(bothSignals(), nil); err != nil {
+		t.Fatal(err)
+	}
+	status, err := a.Status()
+	if err != nil || !status.Installed || rebuilds != 1 {
+		t.Fatalf("running transaction interrupted: installed=%v err=%v rebuilds=%d", status.Installed, err, rebuilds)
+	}
+	data, err := os.ReadFile(a.requestPath())
+	if err != nil || string(data) != "null" {
+		t.Fatalf("cancellation overwritten: record=%q err=%v", data, err)
 	}
 }
