@@ -244,6 +244,6 @@ raise `task_timeout` or remove the slow rule.
 
 ## Tested versions
 
-cPanel 11.138 on AlmaLinux 8 and 9 with cPanel's Exim 4.100.1, and rspamd
-4.2.1 and 4.2.2. CSM needs Exim 4.97 or later with content scanning and
-rspamd 3 or later.
+cPanel 11.138 with cPanel's Exim 4.100.1: on AlmaLinux 8 with rspamd 4.2.1 and
+4.2.2, and on AlmaLinux 9 with rspamd 4.2.2. CSM needs Exim 4.97 or later with
+content scanning and rspamd 3 or later.
