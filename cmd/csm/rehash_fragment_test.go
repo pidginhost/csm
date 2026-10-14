@@ -129,3 +129,29 @@ func TestRehashRejectsUnknownArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestRehashRejectsMissingOptionValues(t *testing.T) {
+	for _, flag := range []string{"--config", "--config-dir", "--fragment"} {
+		for _, tail := range [][]string{{}, {""}, {"--fragment=10-agent.yaml"}} {
+			args := append([]string{"csm", "rehash", flag}, tail...)
+			if _, err := rehashFragmentArgs(args); err == nil {
+				t.Errorf("args %q accepted a missing value", args)
+			}
+		}
+	}
+}
+
+func TestRehashCorruptRecordIsNotMissingBaseline(t *testing.T) {
+	binPath, cfgPath, confDir := signedFragmentHost(t)
+	record, err := integrity.FragmentRecordPath(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(record, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := rehashFragments(binPath, cfgPath, confDir, []string{"10-agent.yaml"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("corrupt record exit = %d, want 1; stderr: %s", code, stderr.String())
+	}
+}

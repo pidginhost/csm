@@ -4,6 +4,9 @@ Packages and the standalone installer expose `/usr/sbin/csm`, which points to `/
 
 ## Global flags
 
+`csm rehash` and `csm capabilities` reject missing option values before signing
+or printing output. `csm capabilities` accepts but does not read config paths.
+
 | Flag | Description |
 |---------|-------------|
 | `--config <path>` | Override the main config path. Default: `/etc/csm/csm.yaml`, with fallback to `/opt/csm/csm.yaml` on legacy installs. |

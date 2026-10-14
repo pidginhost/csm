@@ -1,6 +1,7 @@
 package integrity
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,12 +33,13 @@ func (e *UnnamedChangesError) Error() string {
 	return "changed besides the named fragments: " + strings.Join(e.Changed, ", ")
 }
 
-// fragmentRecord is the digest of each covered fragment as last signed or
-// verified. ConfdHash binds it to the conf.d digest computed from the same
-// bytes; a record whose digest differs from the signed one is ignored.
+// The original bytes are needed to recompute the signed aggregate digest:
+// independent per-file hashes cannot prove membership in that digest. Like
+// the main config and its backup, this record can contain credentials and
+// must stay private to the daemon user.
 type fragmentRecord struct {
 	ConfdHash string            `json:"confd_hash"`
-	Fragments map[string]string `json:"fragments"`
+	Fragments map[string][]byte `json:"fragments"`
 }
 
 // FragmentRecordPath is where the per-fragment record for configPath lives:
@@ -51,12 +53,12 @@ func FragmentRecordPath(configPath string) (string, error) {
 	return target + fragmentRecordSuffix, nil
 }
 
-func writeFragmentRecord(configPath, confdHash string, digests map[string]string) error {
+func writeFragmentRecord(configPath, confdHash string, contents map[string][]byte) error {
 	path, err := FragmentRecordPath(configPath)
 	if err != nil {
 		return err
 	}
-	data, err := json.Marshal(fragmentRecord{ConfdHash: confdHash, Fragments: digests})
+	data, err := json.Marshal(fragmentRecord{ConfdHash: confdHash, Fragments: contents})
 	if err != nil {
 		return fmt.Errorf("encoding conf.d fragment record: %w", err)
 	}
@@ -79,13 +81,47 @@ func readFragmentRecord(configPath string) (fragmentRecord, error) {
 	if err != nil {
 		return rec, fmt.Errorf("reading conf.d fragment record: %w", err)
 	}
-	if err := json.Unmarshal(data, &rec); err != nil {
+	rec, err = decodeFragmentRecord(data)
+	if err != nil {
 		return rec, fmt.Errorf("decoding conf.d fragment record %s: %w", path, err)
 	}
 	return rec, nil
 }
 
-// RecordVerifiedConfD records the per-fragment digests of a conf.d state the
+func decodeFragmentRecord(data []byte) (fragmentRecord, error) {
+	var wire struct {
+		ConfdHash *string           `json:"confd_hash"`
+		Fragments map[string][]byte `json:"fragments"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return fragmentRecord{}, err
+	}
+	if wire.ConfdHash == nil {
+		return fragmentRecord{}, errors.New("missing conf.d digest")
+	}
+	rec := fragmentRecord{ConfdHash: *wire.ConfdHash, Fragments: wire.Fragments}
+	return rec, rec.validate()
+}
+
+func (rec fragmentRecord) validate() error {
+	if rec.Fragments == nil {
+		return errors.New("missing fragments")
+	}
+	frags := make([]config.ConfDirFragment, 0, len(rec.Fragments))
+	for _, name := range fragmentNames(rec.Fragments, nil) {
+		if !validFragmentName(name) || len(rec.Fragments[name]) == 0 {
+			return fmt.Errorf("invalid fragment %q", name)
+		}
+		frags = append(frags, config.ConfDirFragment{Name: name, Data: rec.Fragments[name]})
+	}
+	digest, _ := confdSnapshot(frags, nil)
+	if digest != rec.ConfdHash {
+		return errors.New("fragment contents do not match the recorded digest")
+	}
+	return nil
+}
+
+// RecordVerifiedConfD records the covered bytes of a conf.d state the
 // caller just verified, so hosts signed before records existed get one
 // without a rehash. It re-reads the fragments and records nothing unless they
 // still hash to the signed digest. A config that was never signed has
@@ -98,14 +134,14 @@ func RecordVerifiedConfD(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("hashing conf.d: %w", err)
 	}
-	digest, digests := confdDigests(frags, cfg.ConfD.IntegrityExempt)
+	digest, contents := confdSnapshot(frags, cfg.ConfD.IntegrityExempt)
 	if digest != cfg.Integrity.ConfdHash {
 		return fmt.Errorf("%w: conf.d changed after verification", ErrConfdHashMismatch)
 	}
 	if rec, readErr := readFragmentRecord(cfg.ConfigFile); readErr == nil && rec.ConfdHash == digest {
 		return nil
 	}
-	return writeFragmentRecord(cfg.ConfigFile, digest, digests)
+	return writeFragmentRecord(cfg.ConfigFile, digest, contents)
 }
 
 // RehashFragments re-signs conf.d after an integration rewrote the named
@@ -176,7 +212,7 @@ func RehashFragments(binaryPath, configPath, confDir string, names []string) err
 	if err != nil {
 		return fmt.Errorf("hashing conf.d: %w", err)
 	}
-	_, current := confdDigests(frags, exempt)
+	_, current := confdSnapshot(frags, exempt)
 	for _, name := range fragmentNames(rec.Fragments, current) {
 		if named[name] {
 			continue
@@ -188,7 +224,7 @@ func RehashFragments(binaryPath, configPath, confDir string, names []string) err
 			changed = append(changed, "fragment "+name+" (added)")
 		case !has:
 			changed = append(changed, "fragment "+name+" (removed)")
-		case was != now:
+		case !bytes.Equal(was, now):
 			changed = append(changed, "fragment "+name+" (edited)")
 		}
 	}
@@ -201,10 +237,11 @@ func RehashFragments(binaryPath, configPath, confDir string, names []string) err
 // validFragmentName accepts what the conf.d loader would merge: a plain
 // .yaml or .yml file name with no directory part.
 func validFragmentName(name string) bool {
-	return (strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml")) && filepath.Base(name) == name
+	// Newlines can impersonate boundaries in the legacy aggregate digest.
+	return (strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml")) && filepath.Base(name) == name && !strings.ContainsAny(name, "\x00\r\n")
 }
 
-func fragmentNames(a, b map[string]string) []string {
+func fragmentNames(a, b map[string][]byte) []string {
 	names := make([]string, 0, len(a)+len(b))
 	for name := range a {
 		names = append(names, name)

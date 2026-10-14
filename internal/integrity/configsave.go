@@ -73,7 +73,7 @@ func signAndSavePreserving(path, confDir string, editedBytes []byte, intendedClo
 	// Cover the conf.d fragments merged on top of this main config. Empty
 	// when there are none, leaving conf.d-free configs byte-identical to
 	// their prior baseline.
-	newConfdHash, fragmentDigests := confdDigests(frags, intendedClone.ConfD.IntegrityExempt)
+	newConfdHash, fragmentContents := confdSnapshot(frags, intendedClone.ConfD.IntegrityExempt)
 
 	patched, err := config.YAMLEdit(editedBytes, []config.YAMLChange{
 		{Path: []string{"integrity", "binary_hash"}, Value: binaryHash},
@@ -113,7 +113,7 @@ func signAndSavePreserving(path, confDir string, editedBytes []byte, intendedClo
 	// The record goes first: if the config write then fails, the record
 	// names a digest the config does not carry and is ignored, rather than
 	// a signed config being left without one.
-	if err := writeFragmentRecord(path, newConfdHash, fragmentDigests); err != nil {
+	if err := writeFragmentRecord(path, newConfdHash, fragmentContents); err != nil {
 		return err
 	}
 	return atomicWriteFile(path, patched, 0o600)

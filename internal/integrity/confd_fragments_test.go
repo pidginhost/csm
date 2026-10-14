@@ -1,7 +1,9 @@
 package integrity
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,83 @@ import (
 
 	"github.com/pidginhost/csm/internal/config"
 )
+
+func TestRehashFragmentsRejectsCorruptRecords(t *testing.T) {
+	for _, body := range []string{"null", "{}", `{"fragments":{}}`, `{"confd_hash":"invalid","fragments":{}}`} {
+		t.Run(body, func(t *testing.T) {
+			cfg, binaryPath, confDir := signFragmentBaseline(t, "hostname: host1\n")
+			path, err := FragmentRecordPath(cfg.ConfigFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err = RehashFragments(binaryPath, cfg.ConfigFile, confDir, []string{agentFragment})
+			if err == nil || errors.Is(err, ErrNoFragmentBaseline) {
+				t.Fatalf("corrupt record: err = %v, want an error that cannot trigger full rehash", err)
+			}
+		})
+	}
+}
+
+// A digest label must not let a record of different bytes vouch for an
+// unnamed edit or deletion, even when the record is otherwise well formed.
+func TestRehashFragmentsBindsRecordContentsToSignedDigest(t *testing.T) {
+	for _, remove := range []bool{false, true} {
+		t.Run(fmt.Sprint("removed=", remove), func(t *testing.T) {
+			cfg, binaryPath, confDir := signFragmentBaseline(t, "hostname: host1\n")
+			before, err := os.ReadFile(cfg.ConfigFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if remove {
+				if err = os.Remove(filepath.Join(confDir, operatorFragment)); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				writeFragment(t, confDir, operatorFragment, "auto_response:\n  enabled: false\n")
+			}
+			if _, _, err = SignConfigFilePreserving(cfg.ConfigFile, confDir, cfg.Integrity.BinaryHash); err != nil {
+				t.Fatal(err)
+			}
+			path, err := FragmentRecordPath(cfg.ConfigFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var object map[string]json.RawMessage
+			if err = json.Unmarshal(record, &object); err != nil {
+				t.Fatal(err)
+			}
+			object["confd_hash"], err = json.Marshal(cfg.Integrity.ConfdHash)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err = json.Marshal(object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(path, record, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(cfg.ConfigFile, before, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err = RehashFragments(binaryPath, cfg.ConfigFile, confDir, []string{agentFragment})
+			if err == nil || errors.Is(err, ErrNoFragmentBaseline) {
+				t.Fatalf("inconsistent record: err = %v, want corruption error", err)
+			}
+			after, err := os.ReadFile(cfg.ConfigFile)
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("refusal changed the signed config: %v", err)
+			}
+		})
+	}
+}
 
 const (
 	agentFragment    = "10-agent.yaml"
@@ -235,7 +314,7 @@ func TestRehashFragmentsRejectsUnknownFragment(t *testing.T) {
 
 func TestRehashFragmentsRejectsInvalidNames(t *testing.T) {
 	cfg, binaryPath, confDir := signFragmentBaseline(t, "hostname: host1\n")
-	for _, name := range []string{"", ".", "..", "../csm.yaml", "sub/10-agent.yaml", "/etc/csm/conf.d/10-agent.yaml", "10-agent.conf"} {
+	for _, name := range []string{"", ".", "..", "../csm.yaml", "sub/10-agent.yaml", "/etc/csm/conf.d/10-agent.yaml", "10-agent.conf", "10-agent\n.yaml", "10-agent\x00.yaml"} {
 		err := RehashFragments(binaryPath, cfg.ConfigFile, confDir, []string{name})
 		if err == nil || errors.Is(err, ErrNoFragmentBaseline) {
 			t.Errorf("name %q: err = %v, want a plain error", name, err)
@@ -243,6 +322,24 @@ func TestRehashFragmentsRejectsInvalidNames(t *testing.T) {
 	}
 	if err := RehashFragments(binaryPath, cfg.ConfigFile, confDir, nil); err == nil {
 		t.Error("no fragment named: want an error")
+	}
+}
+
+func TestFragmentRecordRejectsAmbiguousFilenameBoundaries(t *testing.T) {
+	frags := []config.ConfDirFragment{
+		{Name: "20-first.yaml", Data: []byte("hostname: first.example.com\n")},
+		{Name: "30-second.yaml", Data: []byte("hostname: second.example.com\n")},
+	}
+	digest, _ := confdSnapshot(frags, nil)
+	// Without rejecting newlines, one filename can embed an entire first
+	// fragment and reproduce the aggregate digest of two different files.
+	name := fmt.Sprintf("%s:%d\n%sconfd-fragment:%s", frags[0].Name, len(frags[0].Data), frags[0].Data, frags[1].Name)
+	data, err := json.Marshal(fragmentRecord{ConfdHash: digest, Fragments: map[string][]byte{name: frags[1].Data}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeFragmentRecord(data); err == nil {
+		t.Fatal("a different fragment set reproduced the signed digest")
 	}
 }
 
@@ -327,4 +424,95 @@ func TestRecordVerifiedConfDSkipsUnsignedConfig(t *testing.T) {
 	if _, statErr := os.Stat(record); !os.IsNotExist(statErr) {
 		t.Fatalf("an unsigned config has nothing verified to record: %v", statErr)
 	}
+}
+
+func TestRehashFragmentsChecksSymlinkedConfigAndDirectory(t *testing.T) {
+	cfg, binaryPath, confDir := signFragmentBaseline(t, "hostname: host1\n")
+	aliasDir := t.TempDir()
+	configLink, confLink := filepath.Join(aliasDir, "csm.yaml"), filepath.Join(aliasDir, "conf.d")
+	if err := os.Symlink(cfg.ConfigFile, configLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(confDir, confLink); err != nil {
+		t.Fatal(err)
+	}
+	path, err := FragmentRecordPath(configLink)
+	if err != nil || path != cfg.ConfigFile+fragmentRecordSuffix {
+		t.Fatalf("record path = %q, err = %v; want record beside the target", path, err)
+	}
+	writeFragment(t, confDir, operatorFragment, "auto_response:\n  enabled: false\n")
+	assertUnnamedChanges(t, RehashFragments(binaryPath, configLink, confLink, []string{agentFragment}), operatorFragment)
+	if err = RehashFragments(binaryPath, configLink, confLink, []string{operatorFragment}); err != nil {
+		t.Fatal(err)
+	}
+	if err = Verify(binaryPath, reloadSigned(t, cfg)); err != nil {
+		t.Fatalf("named edit through symlinks must verify: %v", err)
+	}
+	if linkInfo, linkErr := os.Lstat(configLink); linkErr != nil || linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("config symlink was not preserved: %v", linkErr)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("fragment snapshot must be private: %v", err)
+	}
+}
+
+func TestRehashFragmentsCannotExemptAnUnnamedEdit(t *testing.T) {
+	cfg, binaryPath, confDir := signFragmentBaseline(t, "hostname: host1\n")
+	data, err := os.ReadFile(cfg.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, []byte("confd:\n  integrity_exempt:\n    - "+operatorFragment+"\n")...)
+	if err := os.WriteFile(cfg.ConfigFile, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeFragment(t, confDir, operatorFragment, "auto_response:\n  enabled: false\n")
+	assertUnnamedChanges(t, RehashFragments(binaryPath, cfg.ConfigFile, confDir, []string{agentFragment}), "main config", operatorFragment)
+}
+
+func TestScopedSigningDoesNotApproveLaterFragmentBytes(t *testing.T) {
+	cfg, binaryPath, confDir := signFragmentBaseline(t, "hostname: host1\n")
+	data, err := os.ReadFile(cfg.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	main, err := config.LoadBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	main.ConfigFile, main.ConfigDir = cfg.ConfigFile, confDir
+	writeFragment(t, confDir, agentFragment, "hostname: agent.example.com\n")
+	checked, err := config.ConfDirFragmentDigestInput(confDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFragment(t, confDir, operatorFragment, "auto_response:\n  enabled: false\n")
+	if err := signAndSavePreserving(cfg.ConfigFile, confDir, data, main, cfg.Integrity.BinaryHash, checked); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(binaryPath, reloadSigned(t, cfg)); !errors.Is(err, ErrConfdHashMismatch) {
+		t.Fatalf("bytes changed after comparison were approved: %v", err)
+	}
+	assertUnnamedChanges(t, RehashFragments(binaryPath, cfg.ConfigFile, confDir, []string{agentFragment}), operatorFragment)
+}
+
+func TestRecordVerifiedConfDRepairsCorruptMatchingRecord(t *testing.T) {
+	cfg, binaryPath, confDir := signFragmentBaseline(t, "hostname: host1\n")
+	path, err := FragmentRecordPath(cfg.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := fmt.Sprintf(`{"confd_hash":%q,"fragments":{}}`, cfg.Integrity.ConfdHash)
+	if err := os.WriteFile(path, []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordVerifiedConfD(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := RehashFragments(binaryPath, cfg.ConfigFile, confDir, []string{agentFragment}); err != nil {
+		t.Fatalf("verified fragments did not repair the record: %v", err)
+	}
+	writeFragment(t, confDir, operatorFragment, "auto_response:\n  enabled: false\n")
+	assertUnnamedChanges(t, RehashFragments(binaryPath, cfg.ConfigFile, confDir, []string{agentFragment}), operatorFragment)
 }

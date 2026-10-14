@@ -235,23 +235,22 @@ func HashConfDir(confDir string, exempt []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	digest, _ := confdDigests(frags, exempt)
+	digest, _ := confdSnapshot(frags, exempt)
 	return digest, nil
 }
 
-// confdDigests returns the conf.d digest and, from the same bytes, one digest
-// per covered fragment. Deriving both from one read keeps a per-fragment
-// record from describing content the conf.d digest never saw.
-func confdDigests(frags []config.ConfDirFragment, exempt []string) (string, map[string]string) {
+// confdSnapshot retains the covered bytes so a per-fragment record can be
+// checked against the existing conf.d digest without trusting its label.
+func confdSnapshot(frags []config.ConfDirFragment, exempt []string) (string, map[string][]byte) {
 	h := sha256.New()
-	perFragment := make(map[string]string, len(frags))
+	perFragment := make(map[string][]byte, len(frags))
 	for _, f := range frags {
 		if isExemptFragment(f.Name, exempt) {
 			continue
 		}
 		fmt.Fprintf(h, "confd-fragment:%s:%d\n", f.Name, len(f.Data))
 		_, _ = h.Write(f.Data)
-		perFragment[f.Name] = fmt.Sprintf("sha256:%x", sha256.Sum256(f.Data))
+		perFragment[f.Name] = f.Data
 	}
 	if len(perFragment) == 0 {
 		return "", perFragment

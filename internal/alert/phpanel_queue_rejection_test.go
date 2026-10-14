@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/config"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -106,7 +107,7 @@ func TestPhpanelQueueArchivesPermanentRejectionAndDeliversNext(t *testing.T) {
 }
 
 func TestPhpanelQueueRetriesOtherFailuresInOrder(t *testing.T) {
-	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+	for _, code := range []int{http.StatusMultipleChoices, http.StatusFound, http.StatusNotModified, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable} {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {
 			seen := panelReplying(t, func(string) int { return code })
 			q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{hostname: "host", url: "https://panel.invalid/findings", hmacSecret: rand.Text()}, phpanelQueueLimit)
@@ -184,5 +185,140 @@ func TestPhpanelQueueKeepsFindingsAfterARunOfRefusals(t *testing.T) {
 	q.drainQueued()
 	if n := phpanelQuarantineDepthForTest(t, q); n != phpanelMaxRefusalRun+1 {
 		t.Fatalf("quarantined = %d, want an accepted finding to start a new run", n)
+	}
+}
+
+func TestPhpanelQueueRefusalHoldSurvivesReloadAndRestart(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprint("restart=", restart), func(t *testing.T) {
+			accept := false
+			panelReplying(t, func(string) int {
+				if accept {
+					return http.StatusOK
+				}
+				return http.StatusBadRequest
+			})
+			delivery := phpanelDeliveryConfig{hostname: "host", url: "https://panel.invalid/findings", hmacSecret: rand.Text()}
+			q := newUnregisteredPhpanelQueue(t, delivery, phpanelQueueLimit)
+			for range phpanelMaxRefusalRun + 3 {
+				enqueueChecks(t, q, "refused")
+			}
+			q.drainQueued()
+			if restart {
+				path := q.db.Path()
+				if err := q.db.Close(); err != nil {
+					t.Fatal(err)
+				}
+				db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: time.Second})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = db.Close() })
+				q, err = newPhpanelQueue(db, phpanelQueueLimit)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := &config.Config{Hostname: delivery.hostname}
+			cfg.Alerts.Webhook.URL = delivery.url
+			cfg.Alerts.Webhook.HMACSecret = delivery.hmacSecret
+			q.updateConfig(cfg)
+			q.drainQueued()
+			if depth := phpanelActiveDepth(t, q); depth != 3 {
+				t.Fatalf("reconfiguration lost held findings: depth = %d, want 3", depth)
+			}
+			if got := phpanelQuarantineDepthForTest(t, q); got != phpanelMaxRefusalRun {
+				t.Fatalf("quarantine = %d, want unchanged refusal run", got)
+			}
+			accept = true
+			q.updateConfig(cfg)
+			q.drainQueued()
+			if depth := phpanelActiveDepth(t, q); depth != 0 {
+				t.Fatalf("accepted retry left %d findings", depth)
+			}
+			accept = false
+			enqueueChecks(t, q, "new-refusal")
+			q.drainQueued()
+			if got := phpanelQuarantineDepthForTest(t, q); got != phpanelMaxRefusalRun+1 {
+				t.Fatalf("accepted delivery did not reset refusal run: quarantine = %d", got)
+			}
+		})
+	}
+}
+
+func TestPhpanelQueueDoesNotAcknowledgeRedirects(t *testing.T) {
+	calls := 0
+	restore := SetWebhookTransportForTest(phpanelHealthTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		code := http.StatusOK
+		headers := make(http.Header)
+		if r.URL.Path == "/findings" {
+			code = http.StatusFound
+			headers.Set("Location", "/login")
+		}
+		return &http.Response{StatusCode: code, Header: headers, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+	}))
+	t.Cleanup(restore)
+	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{hostname: "host", url: "https://panel.invalid/findings", hmacSecret: rand.Text()}, phpanelQueueLimit)
+	enqueueChecks(t, q, "pending")
+	q.drainQueued()
+	if calls != 1 || phpanelActiveDepth(t, q) != 1 {
+		t.Fatalf("redirect: requests = %d, depth = %d; want one request and the finding retained", calls, phpanelActiveDepth(t, q))
+	}
+	if status := phpanelHealthStatus(t, q, time.Now()); status.DroppedTotal != 0 || status.Reason != "delivery_failed" {
+		t.Fatalf("redirect lost the finding or hid the failure: %+v", status)
+	}
+}
+
+func TestPhpanelQueueFailedArchiveKeepsRefusalBudgetAndFinding(t *testing.T) {
+	panelReplying(t, func(string) int { return http.StatusBadRequest })
+	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{hostname: "host", url: "https://panel.invalid/findings", hmacSecret: rand.Text()}, phpanelQueueLimit)
+	for range phpanelMaxRefusalRun + 1 {
+		enqueueChecks(t, q, "refused")
+	}
+	var head []byte
+	if err := q.db.Update(func(tx *bolt.Tx) error {
+		key, _ := tx.Bucket(phpanelQueueBucket).Cursor().First()
+		head = append([]byte(nil), key...)
+		_, err := tx.Bucket(phpanelQuarantineBucket).CreateBucket(head)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	q.drainQueued()
+	status := phpanelHealthStatus(t, q, time.Now())
+	if status.Reason != "spool_io" || status.Depth != phpanelMaxRefusalRun+1 || status.DroppedTotal != 0 {
+		t.Fatalf("failed archive lost a finding or hid its error: %+v", status)
+	}
+	if err := q.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(phpanelQuarantineBucket).DeleteBucket(head)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	q.drainQueued()
+	status = phpanelHealthStatus(t, q, time.Now())
+	if status.Depth != 1 || status.DroppedTotal != phpanelMaxRefusalRun || status.Reason != "delivery_failed" {
+		t.Fatalf("failed archive spent refusal budget: %+v", status)
+	}
+	if n := phpanelQuarantineDepthForTest(t, q); n != phpanelMaxRefusalRun {
+		t.Fatalf("quarantine depth = %d, want the full refusal budget", n)
+	}
+}
+
+func TestPhpanelQueueArchivedRefusalClearsPriorDeliveryFailure(t *testing.T) {
+	code := http.StatusServiceUnavailable
+	panelReplying(t, func(string) int { return code })
+	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{hostname: "host", url: "https://panel.invalid/findings", hmacSecret: rand.Text()}, phpanelQueueLimit)
+	enqueueChecks(t, q, "refused")
+	q.drainQueued()
+	if status := phpanelHealthStatus(t, q, time.Now()); status.Reason != "delivery_failed" {
+		t.Fatalf("outage not reported: %+v", status)
+	}
+	code = http.StatusBadRequest
+	q.clearRetryFailure()
+	q.drainQueued()
+	status := phpanelHealthStatus(t, q, time.Now().Add(time.Minute))
+	if status.Status != "ok" || status.Depth != 0 || status.DroppedTotal != 1 {
+		t.Fatalf("archived refusal left a stale delivery failure: %+v", status)
 	}
 }

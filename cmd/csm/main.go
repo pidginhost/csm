@@ -970,7 +970,7 @@ func rehashFragmentArgs(args []string) ([]string, error) {
 		arg := args[i]
 		switch {
 		case arg == "--fragment":
-			if i+1 >= len(args) {
+			if i+1 >= len(args) || args[i+1] == "" || strings.HasPrefix(args[i+1], "--") {
 				return nil, errors.New("--fragment requires a conf.d file name")
 			}
 			i++
@@ -982,6 +982,9 @@ func rehashFragmentArgs(args []string) ([]string, error) {
 			}
 			names = append(names, name)
 		case arg == "--config" || arg == "--config-dir":
+			if i+1 >= len(args) || args[i+1] == "" || strings.HasPrefix(args[i+1], "--") {
+				return nil, fmt.Errorf("%s requires a path", arg)
+			}
 			i++
 		default:
 			return nil, fmt.Errorf("unknown rehash argument %q (usage: csm rehash [--fragment <file>])", arg)
@@ -1085,6 +1088,9 @@ func writeCapabilities(w io.Writer, args []string) error {
 		case "--json":
 			asJSON = true
 		case "--config", "--config-dir":
+			if i+1 >= len(args) || args[i+1] == "" || strings.HasPrefix(args[i+1], "--") {
+				return fmt.Errorf("%s requires a path", args[i])
+			}
 			i++
 		default:
 			return errors.New("usage: csm capabilities [--json]")

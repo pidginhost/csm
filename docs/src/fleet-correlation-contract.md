@@ -49,9 +49,10 @@ record itself: CSM moves it to a bounded local archive, counts it as
 lost and sends the next finding. Use these codes only for a problem with
 that one record. After a long run of refusals with nothing accepted, CSM
 stops archiving and retries instead, so a panel that refuses every
-request does not lose the queue. Any other failure (no connection, 401,
-403, 404, 409, 429, 5xx) is retried with backoff, and later findings
-wait behind it.
+request does not lose the queue. The hold survives config reloads and daemon
+restarts and ends after an accepted delivery. Redirects are not followed and
+do not acknowledge findings. Any other failure is retried with backoff, and
+later findings wait behind it.
 
 Every field phpanel needs to correlate across hosts is present:
 `hostname` identifies the reporting sensor, and `finding.source_ip`

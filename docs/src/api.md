@@ -908,8 +908,9 @@ sent at once. Their bounded diagnostic archive is retained history, not
 pending work. A long run of refusals with nothing accepted between them
 looks like a panel refusing every request, so from then on refused findings
 stay queued and are retried as a delivery failure until the panel accepts
-one or the config is reloaded. Every other failure is retried in order with
-backoff.
+one. This hold survives config reloads and daemon restarts. Only a 2xx
+response from the configured endpoint acknowledges a finding; redirects
+are not followed. Every other failure is retried in order with backoff.
 Waiting age uses the persisted enqueue timestamp after restart. Boundary
 records absent from the accounting rebuilt at open are adopted with the same
 timestamp, so retrying them does not reset their age. Missing, damaged or future

@@ -1102,7 +1102,8 @@ The YARA-X worker inherits the daemon's selected directory on every start. If it
   - `0`: re-signed, or nothing had changed.
   - `4`: refused because something besides the named files changed; stderr lists it.
   - `5`: no per-fragment record for the current signed state yet. A full `csm rehash` signs everything and writes one.
-  - Any other non-zero code: an error, such as a name that is not a bare `.yaml` or `.yml` file name or a file that never existed.
+  - Any other non-zero code: an error, including a corrupt record, an incomplete option, an invalid fragment name or a file that never existed. Do not fall back to full signing on these errors.
+- **Record privacy:** the per-fragment record retains covered fragment contents to validate them against the signed digest. It is written with owner-only access beside the resolved main config and must be protected like the config itself. A corrupt record never authorizes fallback signing; a successful startup verification can rebuild it from verified fragments.
 - **Use cases:** packaged integration profiles (e.g. `/usr/lib/csm/profiles/phpanel-agent.yaml` symlinked into `conf.d/`), per-host automation that should not touch the operator's `csm.yaml`, secret material rendered from a vault.
 
 ```bash

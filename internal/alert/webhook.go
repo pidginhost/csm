@@ -188,18 +188,21 @@ func sendQueuedPhpanelWebhookFinding(delivery phpanelDeliveryConfig, queued queu
 	req.Header.Set("User-Agent", "csm")
 
 	client := httpClient(10 * time.Second)
+	// A redirect may turn this POST into a login-page GET. Only the
+	// configured collector can acknowledge receipt of a queued finding.
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("phpanel webhook POST: %w", err)
 	}
 	defer closeWebhookResponseBody(resp)
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &phpanelHTTPError{status: resp.StatusCode}
 	}
 	return nil
 }
 
-// phpanelHTTPError is a panel answer of 400 or above.
+// phpanelHTTPError is a response that does not acknowledge receipt.
 type phpanelHTTPError struct {
 	status int
 }
