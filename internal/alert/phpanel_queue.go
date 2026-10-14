@@ -19,6 +19,13 @@ import (
 const (
 	phpanelQueueLimit      = 100000
 	phpanelQuarantineLimit = 1000
+	// phpanelMaxRefusalRun bounds how many findings in a row the panel may
+	// refuse, with none accepted between them, before refusals stop
+	// archiving records. A panel refusing every request (a wrong URL or
+	// node, a proxy answering 400) looks like a run of bad records; past
+	// this run the queue keeps its findings and retries as for any other
+	// failure, so a misconfiguration cannot empty it.
+	phpanelMaxRefusalRun = 10
 )
 
 var phpanelQueueBucket = []byte("findings")
@@ -53,6 +60,7 @@ type phpanelQueue struct {
 	retryMu    sync.Mutex
 	retryAt    time.Time
 	retryDelay time.Duration
+	refusals   int // consecutive refused findings, guarded by retryMu
 	closed     bool
 	mu         sync.Mutex
 	mutation   sync.Mutex
@@ -218,6 +226,7 @@ func (q *phpanelQueue) updateConfig(cfg *config.Config) {
 	q.retryMu.Lock()
 	q.retryAt = time.Time{}
 	q.retryDelay = 0
+	q.refusals = 0
 	q.retryMu.Unlock()
 }
 
@@ -431,10 +440,13 @@ func (q *phpanelQueue) deliverQueued(key, payload []byte, work *phpanelWork) boo
 	attempted = true
 	err := sendQueuedPhpanelWebhookFinding(delivery, item)
 	if permanentPhpanelRejection(err) {
-		// The panel refused this record and will refuse every retry of it;
-		// retrying would hold every later finding behind it.
-		refused = true
-		return q.archive(key, payload, err, "rejected")
+		if q.countRefusal() {
+			// The panel refused this record and will refuse every retry of
+			// it; retrying would hold every later finding behind it.
+			refused = true
+			return q.archive(key, payload, err, "rejected")
+		}
+		err = fmt.Errorf("%w after %d refused findings in a row; keeping the queue", err, phpanelMaxRefusalRun)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "alert: phpanel webhook delivery failed: %v\n", err)
@@ -566,7 +578,20 @@ func (q *phpanelQueue) clearRetryFailure() {
 	q.retryMu.Lock()
 	q.retryAt = time.Time{}
 	q.retryDelay = 0
+	q.refusals = 0
 	q.retryMu.Unlock()
+}
+
+// countRefusal reports whether a refusal may archive its record, counting it
+// toward the run; false once the run reached phpanelMaxRefusalRun.
+func (q *phpanelQueue) countRefusal() bool {
+	q.retryMu.Lock()
+	defer q.retryMu.Unlock()
+	if q.refusals >= phpanelMaxRefusalRun {
+		return false
+	}
+	q.refusals++
+	return true
 }
 
 func (q *phpanelQueue) close() {

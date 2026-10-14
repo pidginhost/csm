@@ -905,7 +905,11 @@ acknowledged during this process; an active send settles that count when it
 finishes. Malformed findings, and findings the panel refuses with HTTP 400,
 413 or 422, count once when removed from delivery, and the next record is
 sent at once. Their bounded diagnostic archive is retained history, not
-pending work. Every other failure is retried in order with backoff.
+pending work. A long run of refusals with nothing accepted between them
+looks like a panel refusing every request, so from then on refused findings
+stay queued and are retried as a delivery failure until the panel accepts
+one or the config is reloaded. Every other failure is retried in order with
+backoff.
 Waiting age uses the persisted enqueue timestamp after restart. Boundary
 records absent from the accounting rebuilt at open are adopted with the same
 timestamp, so retrying them does not reset their age. Missing, damaged or future

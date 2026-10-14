@@ -132,3 +132,57 @@ func TestPhpanelQueueRetriesOtherFailuresInOrder(t *testing.T) {
 		})
 	}
 }
+
+// A panel that refuses every request (a wrong URL or node, a proxy answering
+// 400) looks like a run of bad records. Past a bounded run the queue keeps
+// its findings and retries, so a misconfiguration cannot empty it.
+func TestPhpanelQueueKeepsFindingsAfterARunOfRefusals(t *testing.T) {
+	accept := false
+	seen := panelReplying(t, func(string) int {
+		if accept {
+			return http.StatusOK
+		}
+		return http.StatusBadRequest
+	})
+	q := newUnregisteredPhpanelQueue(t, phpanelDeliveryConfig{hostname: "host", url: "https://panel.invalid/findings", hmacSecret: rand.Text()}, phpanelQueueLimit)
+	checks := make([]string, phpanelMaxRefusalRun+3)
+	for i := range checks {
+		checks[i] = fmt.Sprint("finding-", i)
+	}
+	enqueueChecks(t, q, checks...)
+
+	q.drainQueued()
+
+	if n := phpanelQuarantineDepthForTest(t, q); n != phpanelMaxRefusalRun {
+		t.Fatalf("quarantined = %d, want the run bound %d", n, phpanelMaxRefusalRun)
+	}
+	if depth := phpanelActiveDepth(t, q); depth != 3 {
+		t.Fatalf("active depth = %d, want the rest kept", depth)
+	}
+	if len(*seen) != phpanelMaxRefusalRun+1 {
+		t.Fatalf("deliveries = %d, want the run plus one held attempt", len(*seen))
+	}
+	q.retryMu.Lock()
+	retryAt := q.retryAt
+	q.retryMu.Unlock()
+	if !retryAt.After(time.Now()) {
+		t.Fatal("a held run must back off")
+	}
+	status := phpanelHealthStatus(t, q, time.Now())
+	if status.Status != "degraded" || status.Reason != "delivery_failed" || status.Depth != 3 {
+		t.Fatalf("health with a held run = %+v, want a visible delivery failure", status)
+	}
+
+	accept = true
+	q.clearRetryFailure()
+	q.drainQueued()
+	if depth := phpanelActiveDepth(t, q); depth != 0 {
+		t.Fatalf("active depth after the panel recovers = %d, want 0", depth)
+	}
+	accept = false
+	enqueueChecks(t, q, "refused-again")
+	q.drainQueued()
+	if n := phpanelQuarantineDepthForTest(t, q); n != phpanelMaxRefusalRun+1 {
+		t.Fatalf("quarantined = %d, want an accepted finding to start a new run", n)
+	}
+}
