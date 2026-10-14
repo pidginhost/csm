@@ -532,11 +532,12 @@ valid but degraded admission clock still supplies that bound and logs the
 discrepancy; a damaged checkpoint or an unreadable ledger logs the missing
 coverage, and without either the engine starts from the wall clock. Forward
 steps can shorten restored leases. After a step back the lease clock stays
-ahead of the wall clock for the rest of the boot, so new rows record
-expiries that far ahead; the engine logs the first lead beyond the readback
-slack once. The admission owner still computes expiries from the admission
-clock, which returns to wall time once the wall passes its high-water mark,
-so the two frames must be aligned before the owner gets an engine.
+ahead unless wall time catches up through a later correction; elapsed time
+alone does not close the lead. New rows record expiries that far ahead; the
+engine logs the first lead beyond the readback slack once per engine. The
+admission owner still computes expiries from the admission clock, which
+returns to wall time once the wall passes its high-water mark, so the two
+frames must be aligned before the owner gets an engine.
 
 The engine also provides internal batch entry points for up to 64 timed
 full-address blocks. The admission owner runs them only when the daemon gives

@@ -200,17 +200,29 @@ blocks is evicted to make room for a new one, and `csm doctor` warns until a
 restart reads the ledger. `automation.firewall_ledger_error` carries the
 reason.
 
-A change of the system clock never lengthens a temporary block. The firewall
-keeps its own clock, which counts elapsed time and never moves backward, and
-saves it in `lease.json` beside the state file after every rule install and
-before every new temporary block. A restart on the same boot resumes that
-clock exactly; after a reboot it resumes no earlier than the saved time. If
-the system clock is set back, the firewall clock stays ahead by that step:
-temporary blocks keep their true lifetime, new ones show expiry times that
-much later, and the journal reports the step once per start. If `lease.json`
-cannot be saved, a new temporary block is refused with an error instead of
-being created. Older CSM versions ignore the file; after a downgrade, blocks
-created while the firewall clock was ahead are restored for that much longer.
+Temporary IP blocks use a firewall clock that counts elapsed time and never
+moves backward. Setting the system clock back does not add that step to their
+lifetime; a forward step can shorten restored blocks. While the firewall clock
+leads system time, new blocks show expiry times that much later. Elapsed time
+alone does not close the lead, but a later clock correction can. The journal
+reports the first lead greater than one second once per firewall start.
+
+`lease.json`, beside the state file, stores the firewall clock reading, boot
+identity and time since boot. CSM attempts to save it after each successful
+ruleset install and saves it before a new temporary block changes state or
+kernel rules. A restart on the same boot resumes no earlier than the saved
+time plus elapsed time since that checkpoint. A reboot supplies no proof of
+elapsed time from the previous boot, so the saved time alone provides that
+bound. The current wall clock and the admission ledger's saved clock can move
+the resumed time forward. The checkpoint cannot retain a forward clock step
+that was corrected before the next save.
+
+An unreadable or damaged checkpoint logs a warning; restoration uses the
+remaining clock bounds. A save failure after ruleset installation warns
+without removing those rules. A save failure before a new temporary block
+refuses that block with an error. Older CSM versions ignore the checkpoint;
+if system time still trails the firewall clock at downgrade, saved temporary
+blocks can be restored for longer by that remaining lead.
 
 Firewall and threat views omit unverified addresses, including duplicate
 spellings. When firewall state exists, threat views use it alone for block
