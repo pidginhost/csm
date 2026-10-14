@@ -389,6 +389,26 @@ func ReadUnprovenBlockActions(db *DB, ids []string) ([]string, error) {
 	return out, nil
 }
 
+// ReadAdmissionClock returns the admission clock the ledger saved, without
+// opening a handle: the daemon reads it before the owner starts, to bound
+// the blocks the firewall restores. A database without a current ledger
+// returns the zero clock.
+func ReadAdmissionClock(db *DB) (admission.Clock, error) {
+	var c admission.Clock
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		if current, err := currentLedger(tx); !current {
+			return err
+		}
+		var err error
+		c, err = loadLedgerClock(tx.Bucket([]byte(admissionMetaBucket)))
+		return err
+	})
+	if err != nil {
+		return admission.Clock{}, err
+	}
+	return c, nil
+}
+
 // RetireUnproven retires the uncertainty of an unknown attempt once nothing
 // it may have applied can remain (spec 5.4). The owner calls it when the
 // attempt's absolute expiry has passed and it found no element of the

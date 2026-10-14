@@ -3,8 +3,11 @@
 package firewall
 
 import (
+	"encoding/json"
 	"errors"
 	"net"
+	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -131,5 +134,49 @@ func TestKernelBlockBatchUnverifiedRowsStayOutOfTheKernel(t *testing.T) {
 	again := []BlockMember{kernelBlockMember("act_c", "203.0.113.21", time.Hour), kernelBlockMember("act_d", "203.0.113.22", time.Hour)}
 	if results, err := e.ApplyBlockBatch(again); err != nil || effects(results) != "failed/existing_effect applied/" {
 		t.Fatalf("second batch = %s, %v", effects(results), err)
+	}
+}
+
+// Apply saves the lease clock with the boot it was read in, so the next
+// engine on the same boot resumes from it.
+func TestKernelApplySavesTheLeaseCheckpoint(t *testing.T) {
+	isolatedFirewallNamespace(t)
+	dir := t.TempDir()
+	e, err := NewEngine(&FirewallConfig{Enabled: true, IPv6: true}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	clock := &leaseSteps{wall: at, elapsed: at}
+	boot := &bootReading{id: leaseBootA, since: time.Hour}
+	e.leaseClock, e.expiryClock = clock.read, func() time.Time { return clock.wall }
+	e.SetBootClock(boot.read)
+	writeEngineStateFile(t, filepath.Join(dir, "firewall"), FirewallState{Blocked: []BlockedEntry{
+		{IP: "203.0.113.2", ExpiresAt: at.Add(time.Hour)},
+	}})
+	for i := range 2 {
+		if err := e.Apply(); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "firewall", leaseCheckpointFile)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ck leaseCheckpoint
+		want := at.Add(time.Duration(i) * time.Minute)
+		if err := json.Unmarshal(data, &ck); err != nil || !ck.Lease.Equal(want) || ck.BootID != leaseBootA || ck.SinceBoot != boot.since {
+			t.Fatalf("apply %d checkpoint %s, %v", i, data, err)
+		}
+		if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("checkpoint permissions: %v, %v", info, err)
+		}
+		got := kernelBlockElements(t, e, e.setBlocked)
+		if len(got) != 1 || got["203.0.113.2"].Timeout != time.Hour-time.Duration(i)*time.Minute {
+			t.Fatalf("apply %d restored the wrong lifetime: %+v", i, got)
+		}
+		clock.advance(time.Minute)
+		clock.step(-time.Hour)
+		boot.since += time.Minute
 	}
 }

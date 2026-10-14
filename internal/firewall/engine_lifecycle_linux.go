@@ -254,7 +254,7 @@ func desiredActionSets(state FirewallState, ipv6 bool, now time.Time) map[string
 	return out
 }
 func (e *Engine) prepareActionKernel(a *FirewallAction) error {
-	now := time.Now()
+	now := e.expiryNow()
 	a.CreatedAt = now
 	desired := desiredActionSets(a.After, e.setBlocked6 != nil, now)
 	expected := desiredActionSets(a.Before, e.setBlocked6 != nil, now)
@@ -267,6 +267,7 @@ func (e *Engine) prepareActionKernel(a *FirewallAction) error {
 	a.KernelBefore = nil
 	a.KernelAfter = nil
 	for _, name := range names {
+		at := e.leaseNowLocked()
 		actual, readErr := readActionSet(conn, name)
 		if readErr != nil {
 			return readErr
@@ -275,11 +276,11 @@ func (e *Engine) prepareActionKernel(a *FirewallAction) error {
 		if !actual.exists && e.actionSet(name) != nil {
 			return fmt.Errorf("%w: set %s disappeared", ErrActionUnknown, name)
 		}
-		if !matchActionElements(expected[name], elems, now) && !matchActionElements(unpruned[name], elems, now) {
+		if !matchActionElements(expected[name], elems, at) && !matchActionElements(unpruned[name], elems, at) {
 			return fmt.Errorf("%w: live set %s differs from committed state", ErrActionUnknown, name)
 		}
 		before := ActionSet{Name: name, Exists: actual.exists}
-		now := time.Now()
+		now := e.leaseNowLocked()
 		for _, elem := range elems {
 			entry := ActionElement{Key: bytes.Clone(elem.Key), End: elem.IntervalEnd, Comment: elem.Comment}
 			if elem.Timeout > 0 {
@@ -333,7 +334,7 @@ func (k engineActionKernel) applyActionSets(a FirewallAction, delta bool) error 
 	if connErr != nil {
 		return connErr
 	}
-	now := time.Now()
+	now := k.e.leaseNowLocked()
 	for i, state := range a.KernelAfter {
 		if !state.Exists {
 			continue
@@ -491,6 +492,7 @@ func (k engineActionKernel) ObserveFirewallAction(a FirewallAction) (ActionObser
 			return ActionObservation{}, connErr
 		}
 		started := time.Now()
+		at := k.e.leaseNowLocked()
 		actual, err := readActionSet(conn, before.Name)
 		if err != nil {
 			return ActionObservation{}, err
@@ -505,8 +507,8 @@ func (k engineActionKernel) ObserveFirewallAction(a FirewallAction) (ActionObser
 		if time.Since(started) > 2*time.Second {
 			return ActionObservation{}, errors.New("firewall verification took too long")
 		}
-		result.Before = result.Before && matchActionElements(before.Elements, elems, started)
-		result.After = result.After && matchActionElements(after.Elements, elems, started)
+		result.Before = result.Before && matchActionElements(before.Elements, elems, at)
+		result.After = result.After && matchActionElements(after.Elements, elems, at)
 	}
 	if a.Request.Operation == "apply" {
 		rules, err := k.e.rulesetEvidenceMatches(a, generation)
@@ -592,7 +594,7 @@ func (e *Engine) applyDurableLocked() error {
 	if evidenceErr := e.prepareRulesetEvidence(&plan); evidenceErr != nil {
 		return evidenceErr
 	}
-	plan.CreatedAt = time.Now()
+	plan.CreatedAt = e.expiryNow()
 	desired := desiredActionSets(state, e.cfg.IPv6, plan.CreatedAt)
 	conn, err := newLifecycleConn(e)
 	if err != nil {
@@ -604,7 +606,7 @@ func (e *Engine) applyDurableLocked() error {
 			return readErr
 		}
 		before := ActionSet{Name: name, Exists: actual.exists}
-		now := time.Now()
+		now := e.leaseNowLocked()
 		for _, elem := range actual.elements {
 			entry := ActionElement{Key: bytes.Clone(elem.Key), End: elem.IntervalEnd, Comment: elem.Comment}
 			if elem.Timeout > 0 {

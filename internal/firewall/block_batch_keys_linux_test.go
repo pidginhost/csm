@@ -82,13 +82,14 @@ func TestBlockSnapshotKeysRowsByCanonicalAddress(t *testing.T) {
 		Allowed:     []AllowedEntry{{IP: "2001:0db8::20", Reason: "operator"}},
 		PortAllowed: []PortAllowEntry{{IP: "203.0.113.30", Port: 22, Proto: "tcp"}},
 	})
+	f.live["2001:db8::10"] = 0 // the operator's permanent block is enforced
 	f.e.mu.Lock()
 	snap, err := f.e.blockSnapshotLocked()
 	f.e.mu.Unlock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snap.blocked["2001:db8::10"] || !snap.allowed["2001:db8::20"] || !snap.allowed["203.0.113.30"] {
+	if _, held := snap.blocked["2001:db8::10"]; !held || !snap.allowed["2001:db8::20"] || !snap.allowed["203.0.113.30"] {
 		t.Fatalf("snapshot keys: blocked %v, allowed %v", snap.blocked, snap.allowed)
 	}
 	got, err := f.e.CheckBlockBatch([]BlockMember{
@@ -155,7 +156,7 @@ func TestBlockSnapshotKeysPreserveAddressEquality(t *testing.T) {
 				}
 				indexed := snap.allowed[stateIPKey(tc.member)]
 				if source == "blocked" {
-					indexed = snap.blocked[stateIPKey(tc.member)]
+					_, indexed = snap.blocked[stateIPKey(tc.member)]
 				}
 				equal := sameIPString(tc.row, tc.member)
 				if indexed != equal {
@@ -166,7 +167,8 @@ func TestBlockSnapshotKeysPreserveAddressEquality(t *testing.T) {
 				if equal {
 					want = BlockRefusedAllowed
 					if source == "blocked" {
-						want = BlockRefusedExisting
+						// The row has no kernel element: it proves nothing.
+						want = BlockRefusedPending
 					}
 				}
 				if err != nil || len(got) != 1 || got[0] != want {

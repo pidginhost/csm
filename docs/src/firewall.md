@@ -200,6 +200,29 @@ blocks is evicted to make room for a new one, and `csm doctor` warns until a
 restart reads the ledger. `automation.firewall_ledger_error` carries the
 reason.
 
+Temporary IP blocks use a firewall clock that counts elapsed time and never
+moves backward. Setting the system clock back does not add that step to their
+lifetime; a forward step can shorten restored blocks. While the firewall clock
+leads system time, new blocks show expiry times that much later. Elapsed time
+alone does not close the lead, but a later clock correction can. The journal
+reports the first lead greater than one second once per firewall start.
+
+`lease.json`, beside the state file, stores the firewall clock reading, boot
+identity and time since boot. CSM attempts to save it after each successful
+ruleset install and saves it before a new temporary block changes state or
+kernel rules. A restart on the same boot resumes no earlier than the saved
+time plus elapsed time since that checkpoint. A reboot supplies no proof of
+elapsed time from the previous boot, so the saved time alone provides that
+bound. The current wall clock and the admission ledger's saved clock can move
+the resumed time forward.
+
+An unreadable or damaged checkpoint logs a warning; restoration uses the
+remaining clock bounds. A save failure after ruleset installation warns
+without removing those rules. A save failure before a new temporary block
+refuses that block with an error. Older CSM versions ignore the checkpoint;
+if system time still trails the firewall clock at downgrade, saved temporary
+blocks can be restored for longer by that remaining lead.
+
 Firewall and threat views omit unverified addresses, including duplicate
 spellings. When firewall state exists, threat views use it alone for block
 status; legacy tracking entries cannot make held-back blocks appear enforced.

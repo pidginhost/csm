@@ -74,6 +74,9 @@ func (f *fakeBlocks) ApplyBlockBatch(members []firewall.BlockMember) ([]firewall
 			r = firewall.BlockResult{Effect: firewall.BlockApplied}
 		}
 		out[i] = r
+		if r.Effect == firewall.BlockFailed && r.Refusal == firewall.BlockRefusedExisting {
+			f.refuse[m.IP] = firewall.BlockRefusedExisting
+		}
 	}
 	if f.shortResults {
 		return out[:len(out)-1], nil
@@ -198,6 +201,7 @@ func TestOwnerMapsEngineRefusals(t *testing.T) {
 	}{
 		firewall.BlockRefusedFull:        {admission.StateQueued, admission.ReasonSetFull},
 		firewall.BlockRefusedExisting:    {admission.StateRefused, admission.ReasonExistingEffect},
+		firewall.BlockRefusedPending:     {admission.StateQueued, admission.ReasonPendingRecovery},
 		firewall.BlockRefusedInvalid:     {admission.StateRefused, admission.ReasonInvalid},
 		firewall.BlockRefusedExpired:     {admission.StateDropped, admission.ReasonStale},
 		firewall.BlockRefusedUnsupported: {admission.StateWithheld, admission.ReasonUnsupportedContainment},
@@ -236,7 +240,7 @@ func TestOwnerFinishesEachMemberByItsEffect(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
-	blocks.results["192.0.2.11"] = firewall.BlockResult{Effect: firewall.BlockFailed, Refusal: firewall.BlockRefusedExisting}
+	blocks.results["192.0.2.11"] = firewall.BlockResult{Effect: firewall.BlockFailed, Refusal: firewall.BlockRefusedFull}
 	blocks.results["192.0.2.12"] = firewall.BlockResult{Effect: firewall.BlockUnknown, Err: errors.New("readback lost")}
 	o := f.start(executeOptions(f, blocks))
 	mono := heldMono(t, o)
@@ -248,6 +252,10 @@ func TestOwnerFinishesEachMemberByItsEffect(t *testing.T) {
 	}
 	if c := candidate(t, o, applied); c.State != admission.StateVerified {
 		t.Fatalf("applied member = %+v", c)
+	}
+	// Only a proven existing block is checked again after its finish.
+	if checks, _ := blocks.calls(); len(checks) != 1 {
+		t.Fatalf("an ordinary failure rechecked the engine: %d checks", len(checks))
 	}
 	if c := candidate(t, o, failed); c.State != admission.StateQueued || c.Attempts != 1 || !c.NotBefore.After(now) || attemptOf(t, o, c).Disposition != admission.DispositionFailed {
 		t.Fatalf("failed member = %+v", c)
@@ -618,5 +626,62 @@ func TestOwnerIsolationFollowsQueueLifetime(t *testing.T) {
 				t.Fatalf("terminal candidate retained isolation: %+v", c)
 			}
 		})
+	}
+}
+
+// An existing block the engine proves only when the batch applies ends the
+// attempt failed, with its charge, and the pick refused as an existing
+// effect: nothing retries against the block that holds the address. On the
+// last attempt the pick has failed already and simply stays failed.
+func TestOwnerEndsAnExistingEffectFoundAtApply(t *testing.T) {
+	for _, wantedAttempts := range []int{1, admission.MaxAttempts - 1, admission.MaxAttempts} {
+		last := wantedAttempts == admission.MaxAttempts
+		p := withTestRegistry(t)
+		f := newOwnerFixture(t)
+		blocks := newFakeBlocks()
+		o := f.start(executeOptions(f, blocks))
+		mono := heldMono(t, o)
+		id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+		retry := func() {
+			mono.advance(admission.RetryBackoff(admission.MaxAttempts))
+			f.host.advance(admission.RetryBackoff(admission.MaxAttempts))
+		}
+		attempts := 1
+		if wantedAttempts > 1 {
+			blocks.results["192.0.2.10"] = firewall.BlockResult{Effect: firewall.BlockFailed}
+			for ; attempts < wantedAttempts; attempts++ {
+				if err := o.do(o.turn); err != nil {
+					t.Fatal(err)
+				}
+				retry()
+			}
+		}
+		blocks.results["192.0.2.10"] = firewall.BlockResult{Effect: firewall.BlockFailed, Refusal: firewall.BlockRefusedExisting}
+		if err := o.do(o.turn); err != nil {
+			t.Fatalf("last attempt %t: %v", last, err)
+		}
+		c := candidate(t, o, id)
+		want, reason := admission.StateRefused, admission.ReasonExistingEffect
+		if last {
+			want, reason = admission.StateFailed, 0
+		}
+		if c.State != want || c.Reason != reason || c.Attempts != uint32(attempts) || attemptOf(t, o, c).Disposition != admission.DispositionFailed {
+			t.Fatalf("last attempt %t: candidate %s %s after %d attempts, want %s %s", last, c.State, c.Reason, c.Attempts, want, reason)
+		}
+		if s := ledgerStatus(t, o); s.Ceiling.General.Used != uint32(attempts) || executionHeld(t, o) != "" {
+			t.Fatalf("last attempt %t: charges %d, held %q", last, s.Ceiling.General.Used, executionHeld(t, o))
+		}
+		retry()
+		if err := o.do(o.turn); err != nil {
+			t.Fatal(err)
+		}
+		if _, applies := blocks.calls(); len(applies) != attempts {
+			t.Fatalf("last attempt %t: the pick retried against the block that holds it: %d batches", last, len(applies))
+		}
+		o.Stop()
+		reopened := f.start(executeOptions(f, blocks))
+		if got := candidate(t, reopened, id); got.State != want || got.Reason != reason || got.Attempts != uint32(attempts) {
+			t.Fatalf("persisted ending failed reopening: %+v", got)
+		}
 	}
 }

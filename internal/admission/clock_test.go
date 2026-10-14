@@ -191,3 +191,61 @@ func TestClockRepresentableBoundaries(t *testing.T) {
 		t.Fatalf("missing boot identity accepted: %v", err)
 	}
 }
+
+// Proven is how far the saved clock and a new reading prove time has
+// passed: within one boot the checkpoint plus the elapsed time since, never
+// less than the high-water mark; a new boot proves no downtime.
+func TestClockProvenCreditsOnlyTheSameBoot(t *testing.T) {
+	if got := (Clock{}).Proven(reading(t0, bootA, time.Hour)); !got.IsZero() {
+		t.Fatalf("an empty clock proves %v", got)
+	}
+	c, _ := advance(t, Clock{}, reading(t0, bootA, time.Hour))
+	for _, tc := range []struct {
+		name string
+		r    ClockReading
+		want time.Time
+	}{
+		{"same boot, wall set back", reading(t0.Add(-time.Hour), bootA, time.Hour+10*time.Minute), t0.Add(10 * time.Minute)},
+		{"same boot, wall ahead", reading(t0.Add(time.Hour), bootA, time.Hour+10*time.Minute), t0.Add(10 * time.Minute)},
+		{"same boot, elapsed behind the checkpoint", reading(t0, bootA, time.Minute), t0},
+		{"new boot", reading(t0.Add(-time.Hour), bootB, 2*time.Hour), t0},
+	} {
+		if got := c.Proven(tc.r); !got.Equal(tc.want) {
+			t.Fatalf("%s: proven %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// A checkpoint behind the high-water mark never lowers it.
+	back, _ := advance(t, c, reading(t0.Add(-time.Hour), bootA, time.Hour+time.Minute))
+	if got := back.Proven(reading(t0.Add(-time.Hour), bootA, time.Hour+2*time.Minute)); !got.Equal(t0) {
+		t.Fatalf("after a step back, proven %v, want the high-water mark %v", got, t0)
+	}
+}
+
+func TestClockProvenForwardCheckpointAndRoundTrip(t *testing.T) {
+	c, _ := advance(t, Clock{}, reading(t0, bootA, time.Hour))
+	c, tick := advance(t, c, reading(t0.Add(24*time.Hour), bootA, time.Hour+time.Second))
+	if !tick.Degraded {
+		t.Fatal("forward checkpoint did not report degraded coverage")
+	}
+	data, err := c.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := UnmarshalClock(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, boot := range []string{bootA, bootB} {
+		r := reading(t0, boot, time.Hour+time.Minute+time.Second)
+		want := t0.Add(24 * time.Hour)
+		if boot == bootA {
+			want = want.Add(time.Minute)
+		}
+		if got := back.Proven(r); !got.Equal(want) {
+			t.Fatalf("boot %s: floor %v, want %v", boot, got, want)
+		}
+		if _, tick := advance(t, back, r); !tick.Degraded {
+			t.Fatal("return from a forward checkpoint lost degraded coverage")
+		}
+	}
+}

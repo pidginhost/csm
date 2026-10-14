@@ -27,7 +27,7 @@ func (e *Engine) BlockIPForUndo(ip, reason string, ttl time.Duration) (before, a
 		before = &entry
 	}
 	_, err = e.blockIPRequestLocked(ip, reason, ttl, false, false,
-		ActionRequest{Operation: "block", Target: ip, Reason: reason, TTL: ttl}, nil, true)
+		ActionRequest{Operation: "block", Target: ip, Reason: reason, TTL: ttl}, nil, true, time.Time{})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -101,15 +101,16 @@ func (e *Engine) RestoreBlockIfUnchanged(ip string, expected, prior *BlockedEntr
 	if prior != nil {
 		ttl := time.Duration(0)
 		if !prior.ExpiresAt.IsZero() {
-			ttl = time.Until(prior.ExpiresAt)
-			if ttl <= 0 {
+			var ok bool
+			ttl, ok = blockTimeout(prior.ExpiresAt, e.leaseNowLocked())
+			if !ok {
 				prior = nil
 			}
 		}
 		if prior != nil {
 			action, reason, duration = "block", prior.Reason, ttl
 			_, err := e.blockIPRequestLocked(ip, prior.Reason, ttl, false, false,
-				ActionRequest{Operation: "block", Target: ip, Reason: prior.Reason, TTL: ttl}, nil, false)
+				ActionRequest{Operation: "block", Target: ip, Reason: prior.Reason, TTL: ttl}, nil, false, prior.ExpiresAt)
 			return err
 		}
 	}

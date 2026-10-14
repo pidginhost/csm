@@ -501,6 +501,43 @@ rows with less than a millisecond left or an unrepresentable lifetime are
 skipped. Blocks, operator allows and subnets use one startup clock reading.
 Durable updates compare absolute expiries before encoding timeouts, so
 millisecond rounding does not replace unchanged timed blocks.
+Kernel timeouts come from a lease clock that never runs backward: the later
+of the wall clock and its last reading advanced by the time elapsed since.
+Reapplying the rules after the wall clock is set back restores each timed
+block for the time it had left, never for the step on top. Batch checks and
+sends read the same clock. Fresh legacy blocks record their deadline on
+that clock too. Operator undo retains the original deadline and refreshes
+its remaining timeout after persistence and before each bounded retry.
+Fresh legacy sends also refresh after persistence. Ruleset installation ages
+precomputed block timeouts after table discovery and rule construction.
+Durable action planning, verification, sends, and whole-set retries use the
+same lease clock for timed blocks. Allow and subnet expiry still use wall
+time. The first Apply resumes the checkpoint before durable planning, so
+its evidence and the installed timeouts share one clock.
+After every ruleset it installs, the engine saves that clock with the boot
+it was read in and the time since boot (`lease.json` beside the state file).
+A timed block saves it before the legacy or durable state intent too, so a
+new deadline created during a forward clock step cannot gain time after
+correction and restart. If that save fails, the new block is refused before
+state or kernel mutation. A save failure after ruleset installation warns
+without undoing the installed rules; the next Apply retries it. Separate clock samples are
+ordered so sampling latency can only shorten restoration.
+A new engine resumes from it before restoring timed blocks: within the same
+boot at the checkpoint plus the time elapsed since it, whatever the wall
+clock did meanwhile; on a new boot at the checkpoint itself, crediting no
+downtime. Before the first Apply the daemon also moves the clock forward to
+the time the admission clock proves has passed: its saved high-water mark
+or, within the same boot, its checkpoint plus the time elapsed since. A
+valid but degraded admission clock still supplies that bound and logs the
+discrepancy; a damaged checkpoint or an unreadable ledger logs the missing
+coverage, and without either the engine starts from the wall clock. Forward
+steps can shorten restored leases. After a step back the lease clock stays
+ahead unless wall time catches up through a later correction; elapsed time
+alone does not close the lead. New rows record expiries that far ahead; the
+engine logs the first lead beyond the readback slack once per engine. The
+admission owner still computes expiries from the admission clock, which
+returns to wall time once the wall passes its high-water mark, so the two
+frames must be aligned before the owner gets an engine.
 
 The engine also provides internal batch entry points for up to 64 timed
 full-address blocks. The admission owner runs them only when the daemon gives
@@ -508,7 +545,15 @@ it an engine, and production gives none until cutover. Each member is
 checked against one state and kernel snapshot over bounded fresh sockets;
 unreadable state refuses the whole call. Expired rows remain available for
 kernel cleanup in both the intent and restored state. Rejected members
-consume no slot and cannot exclude a valid member. The batch rechecks, writes one
+consume no slot and cannot exclude a valid member. An address counts as
+already blocked only when a verified row and its kernel element agree: an
+untimed element for a permanent row, or one with the time a timed row has
+left, accounting for elapsed time across both set reads and all member checks.
+Apply results also age existing-block proofs through the batch's writes.
+A timed proof that can already have expired is not coverage, even if its row
+has time left within the readback slack. Any other row or element
+holding the address refuses the member as
+pending recovery. The batch rechecks, writes one
 intent with expiry instants stored in UTC, refreshes timeouts after the
 write, and uses one atomic transaction
 on a fresh socket with a two-second deadline. Exact-family readback proves
@@ -529,34 +574,40 @@ kernel timeouts rather than the unresolved rows' requested lifetimes, including
 replacement accounting. Permanent promotion requires a verified block row.
 
 With an engine, each owner turn runs its `block_ip` picks as one batch. The
-engine checks every member against one snapshot before anything is reserved.
-A full set defers a member; an existing effect, an invalid or protected
-address or a spent lifetime ends it without a charge. The rest are reserved,
+engine checks every member against one snapshot before anything is reserved. A
+full set, or an address a row or element holds without proof, defers a member;
+a block the engine proves already holds the address, an invalid or protected
+address or a spent lifetime ends it without a charge. A proven block found
+only when the batch applies ends the attempt failed, with its charge, and the
+pick refused as an existing effect without a retry, after a fresh check
+following the outcome write. On the last attempt it already ends failed.
+A failed ending is checked again after backoff; if
+proof disappeared, ordinary bounded retries remain possible. No durable
+reference is stored yet. The rest are reserved,
 recorded as running with their intents, applied and finished by their own
 effect. Failed outcome writes retry before more work is selected and once at
 shutdown, even without a fresh clock reading; the effect is never dispatched
 again for that attempt. An outcome the ledger refuses for good (a damaged
 record or a conflicting state) is not retried: its attempt stays unresolved
-until recovery. Every other kind is still previewed. A batch the
-kernel rejected fails every member, charged; each then retries alone, one
-per turn, until its next outcome or its expiry. A state write the engine
-could not make, a failed batch check or apply (including per-member
-transport and readback errors), or a missing engine holds automatic execution:
-block picks wait, deferred as an unavailable engine, while one probe runs per
-wait, from one second doubling to a minute. A held state write is probed by
-writing the safe state again and checking its snapshot. Without an engine,
-idle scheduling pauses and resumes on the first schedule check that finds
-an engine, without waiting for the old probe deadline. Other idle holds
-still probe on their waits; successful snapshots cannot reset a failing
-member check's backoff.
-A failed apply keeps its cause and backoff through state repair, ledger
-refusals and member refusals until an applied effect proves recovery.
-Hold changes copy the cached owner status without rereading the ledger.
-Status (`admission.owner.execution_held`) and
-the `csm doctor` row `admission execution` name the cause. A degraded
-admission clock cannot bound a lease, so it defers block picks the same
-way. One batch starts a second at most; with an engine, a drain that queues
-new work runs the schedule at once instead of waiting for its timer.
+until recovery. Every other kind is still previewed. A batch the kernel
+rejected fails every member, charged; each then retries alone, one per turn,
+until its next outcome or its expiry. A state write the engine could not make,
+a failed batch check or apply (including per-member transport and readback
+errors), or a missing engine holds automatic execution: block picks wait,
+deferred as an unavailable engine, while one probe runs per wait, from one
+second doubling to a minute. A held state write is probed by writing the safe
+state again and checking its snapshot. Without an engine, idle scheduling
+pauses and resumes on the first schedule check that finds an engine, without
+waiting for the old probe deadline. Other idle holds still probe on their
+waits; successful snapshots cannot reset a failing member check's backoff. A
+failed apply keeps its cause and backoff through state repair, ledger refusals
+and member refusals until an applied effect proves recovery. Hold changes copy
+the cached owner status without rereading the ledger. Status
+(`admission.owner.execution_held`) and the `csm doctor` row `admission
+execution` name the cause. A degraded admission clock cannot bound a lease, so
+it defers block picks the same way. One batch starts a second at most; with an
+engine, a drain that queues new work runs the schedule at once instead of
+waiting for its timer.
 
 ### Attack event storage
 

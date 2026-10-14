@@ -41,15 +41,44 @@ func validBlockReason(reason string) bool {
 
 // blockSnapshot is the one view a batch is checked against: the state
 // file and the kernel's blocked sets. blocked and allowed key the checked
-// rows by canonical address once, so each member check is a lookup.
+// rows by canonical address once, and live the kernel's elements, so each
+// member check is a lookup.
 type blockSnapshot struct {
 	at      time.Time
 	prior   FirewallState
 	state   FirewallState
-	blocked map[string]bool
+	blocked map[string]BlockedEntry
 	allowed map[string]bool
-	live    map[string]bool
+	live    map[string]blockObservation
+	elapsed time.Time
 	temp    int
+}
+
+// proves reports whether row is an enforced block the kernel shows: a
+// verified row whose element is untimed when the row is permanent, or has
+// the time the row has left, within the readback slack, when it is timed.
+type blockObservation struct {
+	el            nftables.SetElement
+	before, after time.Time
+}
+
+func (snap blockSnapshot) proves(row BlockedEntry, observed blockObservation, present bool) bool {
+	el := observed.el
+	switch {
+	case row.Unverified || !present:
+		return false
+	case row.ExpiresAt.IsZero():
+		return el.Timeout == 0 && el.Expires == 0
+	}
+	left := row.ExpiresAt.Sub(snap.at)
+	if left <= 0 || el.Timeout <= 0 || el.Expires <= 0 {
+		return false
+	}
+	// Netlink reports time left, not when in the dump it was sampled.
+	// Bound that instant and age both bounds through the last set read.
+	earliest := el.Expires - snap.elapsed.Sub(observed.before)
+	latest := el.Expires - snap.elapsed.Sub(observed.after)
+	return earliest > 0 && earliest-left <= blockReadbackSlack && latest-left >= -blockReadbackSlack
 }
 
 func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
@@ -76,16 +105,17 @@ func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
 			return blockSnapshot{}, err
 		}
 	}
-	at := e.expiryNow()
+	now := e.expiryNow()
+	at := e.leaseAtLocked(now)
 	// Expired rows still own kernel cleanup, notably untimed subnet elements.
 	// Only the check view is pruned; intent and restore retain the full image.
 	state := copyFirewallState(prior)
 	state.Blocked, _ = pruneBlocked(state.Blocked, at)
-	state.BlockedNet, _ = pruneBlockedNet(state.BlockedNet, at)
-	state.Allowed, _ = pruneAllowed(state.Allowed, at)
-	snap := blockSnapshot{at: at, prior: prior, state: state, blocked: map[string]bool{}, allowed: map[string]bool{}, live: map[string]bool{}}
+	state.BlockedNet, _ = pruneBlockedNet(state.BlockedNet, now)
+	state.Allowed, _ = pruneAllowed(state.Allowed, now)
+	snap := blockSnapshot{at: at, prior: prior, state: state, blocked: map[string]BlockedEntry{}, allowed: map[string]bool{}, live: map[string]blockObservation{}}
 	for _, row := range state.Blocked {
-		snap.blocked[stateIPKey(row.IP)] = true
+		snap.blocked[stateIPKey(row.IP)] = row
 	}
 	for _, row := range state.Allowed {
 		snap.allowed[stateIPKey(row.IP)] = true
@@ -98,19 +128,30 @@ func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
 		if set == nil || (set == e.setBlocked6 && !e.cfg.IPv6) {
 			continue
 		}
+		e.leaseNowLocked()
+		before := e.lease.at
 		elements, err := e.blockSnapshotElementsLocked(conn, set)
+		e.leaseNowLocked()
+		after := e.lease.at
 		if err != nil {
 			return blockSnapshot{}, fmt.Errorf("listing blocked set %s: %w", set.Name, err)
 		}
 		var valid []nftables.SetElement
 		for _, el := range elements {
 			if ip, ok := blockSetIP(set, el.Key); ok {
-				snap.live[ip] = true
+				snap.live[ip] = blockObservation{el: el, before: before, after: after}
 				valid = append(valid, el)
 			}
 		}
 		_, temp := countLiveBlockElements(valid, tempByIP)
 		snap.temp += temp
+	}
+	snap.at = e.leaseNowLocked()
+	snap.elapsed = e.lease.at
+	snap.state.Blocked, _ = pruneBlocked(snap.state.Blocked, snap.at)
+	clear(snap.blocked)
+	for _, row := range snap.state.Blocked {
+		snap.blocked[stateIPKey(row.IP)] = row
 	}
 	return snap, nil
 }
@@ -155,6 +196,20 @@ func (e *Engine) checkBlockMembersLocked(members []BlockMember, verified []bool,
 		temp++
 		seenIP[m.IP], seenAction[m.Action] = true, true
 	}
+	// Protection checks can wait for interface lookups after the set dumps.
+	// Age every proof through all members before the caller can end a pick.
+	snap.at = e.leaseNowLocked()
+	snap.elapsed = e.lease.at
+	for i, refusal := range out {
+		if refusal != BlockRefusedExisting {
+			continue
+		}
+		row := snap.blocked[stateIPKey(members[i].IP)]
+		observed, present := snap.live[members[i].IP]
+		if !snap.proves(row, observed, present) {
+			out[i] = BlockRefusedPending
+		}
+	}
 	return out
 }
 
@@ -183,8 +238,13 @@ func (e *Engine) blockRefusalLocked(m BlockMember, verified bool, snap blockSnap
 	if seenIP[m.IP] || seenAction[m.Action] {
 		return BlockRefusedDuplicate
 	}
-	if snap.blocked[key] || snap.live[m.IP] {
+	el, live := snap.live[m.IP]
+	row, held := snap.blocked[key]
+	switch {
+	case held && snap.proves(row, el, live):
 		return BlockRefusedExisting
+	case held || live:
+		return BlockRefusedPending
 	}
 	return ""
 }
@@ -302,6 +362,21 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 	}
 	now := snap.at
 	results := make([]BlockResult, len(members))
+	defer func() {
+		// Other members can spend a proved block's remaining lifetime.
+		snap.at = e.leaseNowLocked()
+		snap.elapsed = e.lease.at
+		for i, result := range results {
+			if result.Refusal != BlockRefusedExisting {
+				continue
+			}
+			row := snap.blocked[stateIPKey(members[i].IP)]
+			observed, present := snap.live[members[i].IP]
+			if !snap.proves(row, observed, present) {
+				results[i].Refusal = BlockRefusedPending
+			}
+		}
+	}()
 	next := copyFirewallState(snap.prior)
 	encoded := make(map[int]time.Duration)
 	var run []int
@@ -332,7 +407,7 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 		defer func() { _ = conn.CloseLasting() }()
 		// State persistence can consume a member's remaining lifetime.
 		// Refresh at one instant immediately before queueing the send.
-		sendAt := e.expiryNow()
+		sendAt := e.leaseNowLocked()
 		var ready []int
 		for _, i := range run {
 			m := members[i]

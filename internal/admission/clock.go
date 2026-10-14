@@ -51,6 +51,24 @@ func (c Clock) Initialized() bool { return c.rec.V != 0 }
 // Now is the high-water mark; zero before the first reading.
 func (c Clock) Now() time.Time { return fromNano(c.rec.HighWater) }
 
+// Proven is the latest time the saved clock and reading r prove has passed:
+// the high-water mark, raised to the saved checkpoint plus the time elapsed
+// since it when r comes from the same boot. A new boot proves no downtime.
+// The firewall restores timed blocks no earlier than this. Zero before the
+// first reading.
+func (c Clock) Proven(r ClockReading) time.Time {
+	if !c.Initialized() {
+		return time.Time{}
+	}
+	at := fromNano(c.rec.HighWater)
+	if since := int64(r.SinceBoot); r.BootID == c.rec.BootID && since >= c.rec.CheckSince {
+		if checked := fromNano(c.rec.CheckWall).Add(time.Duration(since - c.rec.CheckSince)); checked.After(at) {
+			at = checked
+		}
+	}
+	return at
+}
+
 func validBootID(id string) bool {
 	if len(id) != 36 {
 		return false

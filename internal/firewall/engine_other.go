@@ -157,3 +157,7 @@ func (e *Engine) RefreshDOSExemptSets(_ []*net.IPNet) error {
 }
 
 func (e *Engine) ProbeBlockState() error { return ErrUnsupportedPlatform }
+
+func (e *Engine) SetLeaseFloor(_ time.Time) {}
+
+func (e *Engine) SetBootClock(_ func() (string, time.Duration, error)) {}
