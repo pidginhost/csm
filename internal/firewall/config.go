@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 )
 
@@ -40,6 +41,11 @@ type FirewallConfig struct {
 	// way to state its need without opening every high port to the internet.
 	// Empty means no destination-scoped egress, which is the prior behaviour.
 	TCPOutAllow []OutAllowRule `yaml:"tcp_out_allow"`
+
+	// ProtocolAllow accepts an IP protocol that has no ports, such as VRRP
+	// between the members of a high-availability pair, to and from listed
+	// peers only. tcp/udp/icmp have their own keys and are not accepted here.
+	ProtocolAllow []ProtocolAllowRule `yaml:"protocol_allow"`
 
 	// Passive FTP range
 	PassiveFTPStart int `yaml:"passive_ftp_start"`
@@ -198,6 +204,35 @@ type OutAllowRule struct {
 	Dst       string `yaml:"dst"`
 	PortStart int    `yaml:"port_start"`
 	PortEnd   int    `yaml:"port_end"`
+}
+
+// ProtocolAllowRule accepts one portless IP protocol from and to its peers.
+// Each peer is an IP or CIDR, parsed as a tcp_out_allow destination.
+type ProtocolAllowRule struct {
+	Protocol string   `yaml:"protocol"`
+	Peers    []string `yaml:"peers"`
+}
+
+// allowedProtocol is an IP protocol protocol_allow can name, with the
+// link-local multicast groups it advertises to.
+type allowedProtocol struct {
+	number byte
+	groups []net.IP
+}
+
+var allowedProtocols = map[string]allowedProtocol{
+	// VRRP (RFC 5798) advertises to 224.0.0.18 and, as VRRPv3, ff02::12.
+	"vrrp": {number: 112, groups: []net.IP{net.IPv4(224, 0, 0, 18).To4(), net.ParseIP("ff02::12")}},
+}
+
+// ProtocolAllowNames lists the protocols firewall.protocol_allow accepts.
+func ProtocolAllowNames() []string {
+	names := make([]string, 0, len(allowedProtocols))
+	for name := range allowedProtocols {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 // PortFloodRule defines per-port connection rate limiting.

@@ -58,8 +58,9 @@ func Capabilities() []string {
 	}
 	if firewall.Supported() {
 		caps = append(caps,
-			"firewall.rollback.v1",   // timed config rollback: apply, confirm, revert, survives a restart
-			"firewall.dos_exempt.v1", // ranges exempt from connection-rate and flood metering
+			"firewall.rollback.v1",       // timed config rollback: apply, confirm, revert, survives a restart
+			"firewall.dos_exempt.v1",     // ranges exempt from connection-rate and flood metering
+			"firewall.protocol_allow.v1", // peer-scoped portless protocols such as VRRP
 		)
 	}
 	if maillog.JournalSupported() {

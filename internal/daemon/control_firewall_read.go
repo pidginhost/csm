@@ -52,6 +52,7 @@ func (c *ControlListener) handleFirewallStatus(_ json.RawMessage) (any, error) {
 		PassiveFTPStart: fwCfg.PassiveFTPStart,
 		PassiveFTPEnd:   fwCfg.PassiveFTPEnd,
 		TCPOutAllow:     fmtOutAllow(fwCfg.TCPOutAllow),
+		ProtocolAllow:   fmtProtocolAllow(fwCfg.ProtocolAllow),
 		InfraIPCount:    len(fwCfg.InfraIPs),
 		BlockedCount:    len(state.Blocked),
 		BlockedNetCount: len(state.BlockedNet),
@@ -120,7 +121,25 @@ func (c *ControlListener) handleFirewallPorts(_ json.RawMessage) (any, error) {
 		}
 	}
 
+	if allows := fmtProtocolAllow(fwCfg.ProtocolAllow); len(allows) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Protocols (peer-scoped, in and out):")
+		for _, line := range allows {
+			lines = append(lines, "  "+line)
+		}
+	}
+
 	return control.FirewallListResult{Lines: lines}, nil
+}
+
+// fmtProtocolAllow renders protocol_allow one entry per line: the protocol,
+// then its peers.
+func fmtProtocolAllow(rules []firewall.ProtocolAllowRule) []string {
+	out := make([]string, 0, len(rules))
+	for _, r := range rules {
+		out = append(out, r.Protocol+" "+strings.Join(r.Peers, ", "))
+	}
+	return out
 }
 
 // fmtOutAllow renders tcp_out_allow one rule per line. A single-port range

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -875,7 +876,40 @@ func firewallValueResults(fw *firewall.FirewallConfig) []ValidationResult {
 	}
 
 	results = append(results, outAllowResults(fw)...)
+	results = append(results, protocolAllowResults(fw)...)
 
+	return results
+}
+
+// protocolAllowResults validates firewall.protocol_allow. The engine renders
+// nothing for an entry it cannot scope, and for VRRP that silence is both
+// members claiming the shared address, so every shape error is reported.
+func protocolAllowResults(fw *firewall.FirewallConfig) []ValidationResult {
+	var results []ValidationResult
+	names := firewall.ProtocolAllowNames()
+	for i, r := range fw.ProtocolAllow {
+		prefix := fmt.Sprintf("entry %d (protocol %q)", i, r.Protocol)
+		if !slices.Contains(names, r.Protocol) {
+			results = append(results, ValidationResult{"error", "firewall.protocol_allow",
+				fmt.Sprintf("%s: unknown protocol; supported: %s (tcp, udp and icmp have their own keys)", prefix, strings.Join(names, ", "))})
+		}
+		if len(r.Peers) == 0 {
+			results = append(results, ValidationResult{"error", "firewall.protocol_allow",
+				fmt.Sprintf("%s: peers is required; list the addresses of the other members", prefix)})
+		}
+		for _, peer := range r.Peers {
+			network, err := firewall.ParseOutAllowDst(peer)
+			if err != nil {
+				results = append(results, ValidationResult{"error", "firewall.protocol_allow",
+					fmt.Sprintf("%s: peer %q is not an IP address or CIDR", prefix, peer)})
+				continue
+			}
+			if ones, _ := network.Mask.Size(); ones == 0 {
+				results = append(results, ValidationResult{"error", "firewall.protocol_allow",
+					fmt.Sprintf("%s: peer %q matches every address; list the members", prefix, peer)})
+			}
+		}
+	}
 	return results
 }
 

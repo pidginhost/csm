@@ -727,6 +727,13 @@ firewall:
   #     port_start: 49152
   #     port_end: 65534
 
+  # Peer-scoped protocols without ports, such as VRRP between the members of
+  # a high-availability pair. See firewall.protocol_allow below.
+  protocol_allow: []
+  # protocol_allow:
+  #   - protocol: vrrp
+  #     peers: [192.0.2.11, 2001:db8::11]
+
   # Infra IPs/CIDRs/hostnames for firewall rules
   infra_ips: []
 
@@ -1128,6 +1135,27 @@ The direct SMTP detector's `backend` accepts `auto`, `bpf`, `legacy`, or `none`;
 BPF enforcement requires a BPF-capable connection tracker at
 runtime; `auto` falls back to legacy detection on older servers. See
 [BPF enforcement](bpf-enforcement.md).
+
+## firewall.protocol_allow
+
+`protocol_allow` opens an IP protocol that has no ports to listed peers only. Each entry names a `protocol` and its `peers`:
+
+```yaml
+firewall:
+  protocol_allow:
+    - protocol: vrrp
+      peers:
+        - 192.0.2.11
+        - 2001:db8::11
+```
+
+The only protocol today is `vrrp` (IP protocol 112), for keepalived and other VRRP speakers on database or load-balancer pairs. `tcp`, `udp`, `icmp` and `icmpv6` have their own keys and are refused here. `peers` is required and takes IPv4 and IPv6 addresses or CIDRs. An empty list, an unknown protocol, a malformed address and a world-wide prefix (`0.0.0.0/0`, `::/0`) are validation errors.
+
+For each peer the input chain accepts the protocol from that address and the output chain accepts it to that address. For `vrrp` the output chain also accepts advertisements to the VRRP multicast group of each family that has a peer (`224.0.0.18`, `ff02::12`). Advertisements a peer sends to the group match its input rule. IPv6 peers need `firewall.ipv6: true`; with it off, IPv6 is not filtered at all.
+
+The input accepts come right after `infra_ips` and before the blocked address, blocked subnet and country rules. A blocked peer therefore still exchanges VRRP with this host, and only VRRP. Without this, a block on a peer makes both members claim the shared address. Blocks of other addresses do not affect these rules.
+
+`csm firewall status` and `csm firewall ports` list the configured entries. Hosts that support the key report the `firewall.protocol_allow.v1` capability.
 
 ## firewall.dos_exempt_ranges
 

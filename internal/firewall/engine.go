@@ -1148,6 +1148,15 @@ func (e *Engine) createInputChain() error {
 	e.addSetMatchRule(e.setInfra, expr.VerdictAccept)
 	e.addSetMatchRuleV6(e.setInfra6, expr.VerdictAccept)
 
+	// Peer-scoped protocol allows (VRRP between HA members) also precede the
+	// blocklists. A member that stops hearing its peer claims the shared
+	// address too, so a block on a peer must not cut its advertisements; the
+	// accept covers only that protocol from that peer.
+	protocolIn, _ := protocolAllowRuleExprs(e.cfg.ProtocolAllow, e.cfg.IPv6)
+	for _, exprs := range protocolIn {
+		e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: e.chainIn, Exprs: exprs})
+	}
+
 	// Rule 4: Cloudflare IP whitelist - accept on TCP 80/443 only.
 	// CF IPs can still be blocked on other ports (unlike infra).
 	e.addCFWhitelistRule(e.setCFWhitelist, false)
@@ -1479,6 +1488,13 @@ func (e *Engine) createOutputChain() error {
 	})
 	if !e.cfg.IPv6 {
 		e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: e.chainOut, Exprs: familyBypassRuleExprs(10)})
+	}
+
+	// Peer-scoped protocol allows: advertisements to each peer and to the
+	// protocol's multicast group.
+	_, protocolOut := protocolAllowRuleExprs(e.cfg.ProtocolAllow, e.cfg.IPv6)
+	for _, exprs := range protocolOut {
+		e.conn.AddRule(&nftables.Rule{Table: e.table, Chain: e.chainOut, Exprs: exprs})
 	}
 
 	// SMTP block - restrict outbound mail to allowed users only.
@@ -2162,18 +2178,7 @@ func buildOutAllowExprs(r OutAllowRule, ipv6Enabled bool) []expr.Any {
 
 	// A zero-length prefix means every destination, and the honest encoding of
 	// that is no address match at all rather than a compare against nothing.
-	if ones, _ := mask.Size(); ones > 0 {
-		exprs = append(exprs, &expr.Payload{
-			DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: offset, Len: length,
-		})
-		if ones < int(length)*8 {
-			exprs = append(exprs, &expr.Bitwise{
-				SourceRegister: 1, DestRegister: 1, Len: length,
-				Mask: mask, Xor: make([]byte, length),
-			})
-		}
-		exprs = append(exprs, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: addr.Mask(mask)})
-	}
+	exprs = append(exprs, networkMatchExprs(addr, mask, offset, length)...)
 
 	return append(exprs,
 		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
@@ -2181,6 +2186,87 @@ func buildOutAllowExprs(r OutAllowRule, ipv6Enabled bool) []expr.Any {
 		&expr.Cmp{Op: expr.CmpOpLte, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(r.PortEnd))},
 		&expr.Verdict{Kind: expr.VerdictAccept},
 	)
+}
+
+// networkMatchExprs matches the network-header address at offset against
+// addr/mask: a load, a mask when the prefix is shorter than the address, and
+// a compare. A zero-length prefix matches every address and emits nothing.
+func networkMatchExprs(addr net.IP, mask net.IPMask, offset, length uint32) []expr.Any {
+	ones, _ := mask.Size()
+	if ones == 0 {
+		return nil
+	}
+	exprs := []expr.Any{&expr.Payload{
+		DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: offset, Len: length,
+	}}
+	if ones < int(length)*8 {
+		exprs = append(exprs, &expr.Bitwise{
+			SourceRegister: 1, DestRegister: 1, Len: length,
+			Mask: mask, Xor: make([]byte, length),
+		})
+	}
+	return append(exprs, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: addr.Mask(mask)})
+}
+
+// protocolAllowRuleExprs renders firewall.protocol_allow: per peer, an input
+// accept on the source and an output accept on the destination, plus one
+// output accept per family to each multicast group the protocol advertises
+// to. Inbound advertisements to a group come from a peer and match the
+// source rule. An unknown protocol, an unparseable or world-wide peer, and an
+// IPv6 peer while dual-stack filtering is off render nothing: validation
+// reports the first three, and the family bypass already passes IPv6.
+func protocolAllowRuleExprs(rules []ProtocolAllowRule, ipv6Enabled bool) (input, output [][]expr.Any) {
+	type groupKey struct {
+		proto  byte
+		family byte
+	}
+	grouped := make(map[groupKey]bool)
+	var groups [][]expr.Any
+	match := func(proto, family byte, addr net.IP, mask net.IPMask, offset, length uint32) []expr.Any {
+		exprs := []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{family}},
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
+		}
+		exprs = append(exprs, networkMatchExprs(addr, mask, offset, length)...)
+		return append(exprs, &expr.Verdict{Kind: expr.VerdictAccept})
+	}
+	for _, r := range rules {
+		p, known := allowedProtocols[r.Protocol]
+		if !known {
+			continue
+		}
+		for _, peer := range r.Peers {
+			network, err := ParseOutAllowDst(peer)
+			if err != nil {
+				continue
+			}
+			if ones, _ := network.Mask.Size(); ones == 0 {
+				continue
+			}
+			family, addr, srcOffset, dstOffset, length := byte(2), network.IP.To4(), uint32(12), uint32(16), uint32(4)
+			if addr == nil {
+				if !ipv6Enabled {
+					continue
+				}
+				family, addr, srcOffset, dstOffset, length = 10, network.IP.To16(), 8, 24, 16
+			}
+			input = append(input, match(p.number, family, addr, network.Mask, srcOffset, length))
+			output = append(output, match(p.number, family, addr, network.Mask, dstOffset, length))
+			if grouped[groupKey{p.number, family}] {
+				continue
+			}
+			grouped[groupKey{p.number, family}] = true
+			for _, group := range p.groups {
+				if (group.To4() != nil) == (family == 2) {
+					bits := int(length) * 8
+					groups = append(groups, match(p.number, family, group, net.CIDRMask(bits, bits), dstOffset, length))
+				}
+			}
+		}
+	}
+	return input, append(output, groups...)
 }
 
 // validOutAllowRange mirrors the config validator so a rule that slipped past
