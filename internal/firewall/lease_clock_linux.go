@@ -2,7 +2,11 @@
 
 package firewall
 
-import "time"
+import (
+	"fmt"
+	"os"
+	"time"
+)
 
 // leaseReading is the lease clock's last reading: the time it gave and the
 // elapsed-clock sample it was taken from.
@@ -36,6 +40,12 @@ func (e *Engine) leaseAtLocked(sample time.Time) time.Time {
 		}
 	}
 	e.lease = leaseReading{now: now, at: elapsed}
+	// After a step back the lease stays ahead of the wall clock, and so do
+	// the expiry times of new rows; say so once.
+	if lead := now.Sub(wall); lead > blockReadbackSlack && !e.leaseLeadReported {
+		e.leaseLeadReported = true
+		fmt.Fprintf(os.Stderr, "firewall: system clock is %s behind the lease clock; temporary blocks keep their lifetime, new ones show expiry times that much later\n", lead.Round(time.Second))
+	}
 	return now
 }
 

@@ -5,6 +5,7 @@ package firewall
 import (
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -379,5 +380,29 @@ func TestLeaseClockApplyRefreshesAfterRulesetPreparation(t *testing.T) {
 		if len(timeouts) != 2 || timeouts[0] == nil || *timeouts[0] != 59*time.Minute || timeouts[1] != nil {
 			t.Fatalf("%s renewed or made an expired row permanent: %v", set, timeouts)
 		}
+	}
+}
+
+// A lease clock ahead of the wall clock is reported once: new temporary
+// blocks show expiry times that far ahead of the system clock.
+func TestLeaseClockReportsALeadOnce(t *testing.T) {
+	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	clock := &leaseSteps{wall: at, elapsed: at}
+	e := &Engine{leaseClock: clock.read}
+	if out := captureStderr(t, func() {
+		leaseNow(e)
+		clock.step(-blockReadbackSlack)
+		leaseNow(e)
+	}); out != "" {
+		t.Fatalf("a lead within the readback slack was reported: %q", out)
+	}
+	out := captureStderr(t, func() {
+		clock.step(-time.Hour)
+		leaseNow(e)
+		clock.advance(time.Minute)
+		leaseNow(e)
+	})
+	if strings.Count(out, "behind the lease clock") != 1 || !strings.Contains(out, "1h0m1s") {
+		t.Fatalf("lead report = %q, want one report naming 1h0m1s", out)
 	}
 }

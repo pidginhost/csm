@@ -200,6 +200,18 @@ blocks is evicted to make room for a new one, and `csm doctor` warns until a
 restart reads the ledger. `automation.firewall_ledger_error` carries the
 reason.
 
+A change of the system clock never lengthens a temporary block. The firewall
+keeps its own clock, which counts elapsed time and never moves backward, and
+saves it in `lease.json` beside the state file after every rule install and
+before every new temporary block. A restart on the same boot resumes that
+clock exactly; after a reboot it resumes no earlier than the saved time. If
+the system clock is set back, the firewall clock stays ahead by that step:
+temporary blocks keep their true lifetime, new ones show expiry times that
+much later, and the journal reports the step once per start. If `lease.json`
+cannot be saved, a new temporary block is refused with an error instead of
+being created. Older CSM versions ignore the file; after a downgrade, blocks
+created while the firewall clock was ahead are restored for that much longer.
+
 Firewall and threat views omit unverified addresses, including duplicate
 spellings. When firewall state exists, threat views use it alone for block
 status; legacy tracking entries cannot make held-back blocks appear enforced.

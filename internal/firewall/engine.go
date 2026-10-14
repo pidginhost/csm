@@ -174,6 +174,8 @@ type Engine struct {
 	// without the other.
 	lease      leaseReading
 	leaseClock func() (wall, elapsed time.Time)
+	// leaseLeadReported is set once a lead over the wall clock is logged.
+	leaseLeadReported bool
 	// bootClock reads the boot ID and the time since boot for the lease
 	// checkpoint (lease_checkpoint_linux.go); leaseResumed is set once the
 	// first Apply has read it.
