@@ -60,6 +60,7 @@ empty tree keeps the last loaded actions until a replacement is available.
 | `csm config apply-immutability` | Reapply `integrity.immutable` to `/opt/csm/csm`. Unsupported filesystems or missing tooling produce a warning and a successful exit; permission and other unexpected errors fail. Package transaction hooks use this after upgrades. |
 | `csm verify` | Verify binary and config integrity |
 | `csm version` | Version and build info |
+| `csm capabilities` | Print this build's feature tokens, one per line; `--json` prints a JSON array. Needs no running daemon and no config, so an orchestrator can check a token before it writes a key that depends on it. Tokens for live BPF monitors appear only in the daemon's `GET /api/v1/capabilities`. |
 | `csm incidents ...` | List, show, and update correlated security incidents (`list`, `show <id>`, `status <id> <state>`, `bulk-status`). See [Incidents](incidents.md). |
 | `csm forensic-snapshot <account> --out <archive.tar.gz>` | Evidence archive for incident handoff (triggers, admins, sessions, file mtimes). |
 | `csm webserver-integration <install\|upgrade\|status\|validate\|remove>` | Install, upgrade, or remove the challenge reverse-proxy snippets for the detected web server. |

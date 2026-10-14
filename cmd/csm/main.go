@@ -84,6 +84,11 @@ func main() {
 	switch cmd {
 	case "version":
 		fmt.Printf("csm %s (build: %s, date: %s)\n", Version, BuildHash, BuildTime)
+	case "capabilities":
+		if err := writeCapabilities(os.Stdout, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "daemon":
 		runDaemon()
 	case "forward-guard-worker":
@@ -239,6 +244,7 @@ Commands:
   report enroll Generate an abuse-reporting node key pair
   virtual-patch Deny HTTP access to confirmed web-exposed files (--apply; needs manual/auto mode)
   version       Version info + build hash
+  capabilities  Print this build's feature tokens, one per line (--json for an array; no daemon or config needed)
 
 Options:
   --config <path>      Config file path (default: %s; fallback: %s)
@@ -1056,6 +1062,29 @@ func runVerify() {
 		os.Exit(2)
 	}
 	fmt.Println("Integrity check passed")
+}
+
+// writeCapabilities prints the capability tokens without a daemon or config,
+// so an orchestrator can feature-detect before it renders newer keys.
+// --config and --config-dir are accepted and ignored.
+func writeCapabilities(w io.Writer, args []string) error {
+	asJSON := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			asJSON = true
+		case "--config", "--config-dir":
+			i++
+		default:
+			return errors.New("usage: csm capabilities [--json]")
+		}
+	}
+	caps := health.Capabilities()
+	if asJSON {
+		return json.NewEncoder(w).Encode(caps)
+	}
+	_, err := fmt.Fprintln(w, strings.Join(caps, "\n"))
+	return err
 }
 
 func runUpdateRules() {
