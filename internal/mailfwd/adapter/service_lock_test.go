@@ -19,8 +19,8 @@ func TestLockedAdapterSharesTheEximMutationLock(t *testing.T) {
 		finished <- eximlock.With(filepath.Dir(a.badIPsPath), func() error { close(entered); <-release; return nil })
 	}()
 	<-entered
-	applyErr := locked.Apply(policy.Config{Enabled: true}, nil)
-	removeErr := locked.Remove()
+	applyErr := locked.mutate(eximMutation{Operation: "apply", Config: policy.Config{Enabled: true}})
+	removeErr := locked.mutate(eximMutation{Operation: "remove"})
 	close(release)
 	if err := <-finished; err != nil {
 		t.Fatal(err)

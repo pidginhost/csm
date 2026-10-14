@@ -4,11 +4,13 @@
 package eximlock
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // Dir holds the lock file. Forward guard created this directory first; every
@@ -42,4 +44,50 @@ func With(dir string, mutate func() error) error {
 		return fmt.Errorf("exim mutation lock: %w", err)
 	}
 	return mutate()
+}
+
+// RecordWait bounds how long CSM waits for the lock before it records a
+// request or starts a worker transaction. The daemon's own records hold the
+// lock only for a small unsynced write or a rename; a worker transaction holds
+// it for seconds or minutes and still reads as busy.
+const RecordWait = time.Second
+
+// WithRetry runs mutate under the lock like With, retrying a busy lock until
+// wait has passed or ctx is canceled. Once the lock is acquired, mutate runs
+// at most once; its errors are never retried.
+func WithRetry(ctx context.Context, dir string, wait time.Duration, mutate func() error) error {
+	deadline := time.Now().Add(wait)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		acquired := false
+		err := With(dir, func() error {
+			acquired = true
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return mutate()
+		})
+		if acquired || !errors.Is(err, ErrBusy) {
+			return err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return err
+		}
+		timer := time.NewTimer(min(10*time.Millisecond, remaining))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if !time.Now().Before(deadline) {
+			return err
+		}
+	}
 }

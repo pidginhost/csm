@@ -45,10 +45,11 @@ var antispamPing = hostfacts.Ping
 // tests replace it.
 var antispamReconciler = func() reconcile.Reconciler {
 	return reconcile.Reconciler{
-		Collect:   hostfacts.Collect,
-		Installed: hostfacts.CollectInstalled,
-		Run:       worker.Run,
-		Now:       time.Now,
+		Invalidate: worker.Invalidate,
+		Collect:    hostfacts.Collect,
+		Installed:  hostfacts.CollectInstalled,
+		Run:        worker.Run,
+		Now:        time.Now,
 	}
 }
 

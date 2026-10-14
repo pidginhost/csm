@@ -11,8 +11,7 @@ import (
 )
 
 func runAntispamWorker() {
-	lock := func(mutate func() error) error { return eximlock.With(eximlock.Dir, mutate) }
-	os.Exit(antispamWorker(os.Geteuid(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr, txn.New(), lock))
+	os.Exit(antispamWorker(os.Geteuid(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr, txn.New(), worker.Lock(eximlock.Dir)))
 }
 
 // antispamWorker runs one antispam transaction for a root caller. Nothing

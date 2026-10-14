@@ -180,6 +180,13 @@ CSM checks the integration at startup, after each config reload and every 15
 minutes, and repairs drift, such as a cPanel rebuild that dropped the hooks.
 When another CSM change holds the lock, it tries again 20 seconds later.
 
+Before each check, CSM cancels antispam changes still waiting to run from an
+earlier check or an earlier daemon, also while antispam is disabled or in
+observe mode. A change that is already running finishes first.
+
+If cancelling fails, CSM raises a warning and retries: after 20 seconds while
+antispam is enabled, at the next regular check while it is disabled.
+
 Existing Exim SMTP sessions retain their old hooks; new sessions use the
 updated hooks. Account toggles are still read at each recipient. Reloading
 rspamd can change scoring for scans from either generation of Exim hooks.
@@ -211,7 +218,7 @@ removed; scores can change and external lists can become active again.
 | Check | Severity | Meaning |
 |---|---|---|
 | `antispam_precondition` | Warning | A condition above is not met. The message names the cause, such as `rspamd_socket` or `spamassassin_enabled`. A temporary cause keeps an installed integration; a definite one removes it when that is safe. |
-| `antispam_apply_failed` | Warning, or Critical when the previous state could not be confirmed | An install, update or removal failed at the named step. |
+| `antispam_apply_failed` | Warning, or Critical when the previous state could not be confirmed | An install, update or removal failed at the named step, or pending changes could not be canceled. |
 | `antispam_rspamd_down` | Warning | Three probes of the scan socket in a row failed. CSM probes every 20 seconds while antispam is enabled. |
 | `antispam_rspamd_recovered` | Warning | Two probes in a row succeeded after an outage. |
 | `antispam_scan_error` | Warning | Exim logged a failed scan. One finding covers every failure until a scan succeeds. |
@@ -231,8 +238,8 @@ Rspamd outage and recovery notices do not consume the routine hourly alert
 budget. They honor notification suppressions and email check exclusions.
 Suppressed notices remain in history, the audit log and event streams.
 
-In observe mode CSM reports and changes nothing; an installed integration is
-reported as `observe_mode`.
+In observe mode CSM changes no mail configuration; it only cancels changes
+still waiting to run. An installed integration is reported as `observe_mode`.
 
 ## rspamd timeouts
 

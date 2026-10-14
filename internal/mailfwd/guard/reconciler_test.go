@@ -170,3 +170,42 @@ func TestRefreshBadIPsErrorPropagates(t *testing.T) {
 		t.Fatal("expected refresh error to propagate")
 	}
 }
+
+// invalidatingGuard can also cancel requests still waiting for a worker.
+type invalidatingGuard struct {
+	fakeGuard
+	invalidated   int
+	invalidateErr error
+}
+
+func (g *invalidatingGuard) Invalidate() error {
+	g.invalidated++
+	return g.invalidateErr
+}
+
+// On a cPanel host in observe mode, a worker started before the switch must
+// not change mail configuration. Reconcile cancels pending requests and
+// installs or removes nothing; other inactive hosts do nothing at all.
+func TestReconcileObserveCancelsPendingWorkers(t *testing.T) {
+	g := &invalidatingGuard{}
+	observe := Reconciler{Guard: g, Observe: true}
+	if err := observe.Reconcile(enforceCfg()); err != nil || g.invalidated != 1 || g.applied != nil || g.removed != 0 {
+		t.Fatalf("observe: err=%v invalidated=%d applied=%v removed=%d", err, g.invalidated, g.applied, g.removed)
+	}
+	g.invalidateErr = errors.New("lock busy")
+	if err := observe.Reconcile(config.ForwardGuardConfig{}); !errors.Is(err, g.invalidateErr) || g.invalidated != 2 {
+		t.Fatalf("observe error: err=%v invalidated=%d", err, g.invalidated)
+	}
+	if err := (Reconciler{Guard: g}).Reconcile(enforceCfg()); err != nil || g.invalidated != 2 || g.applied != nil || g.removed != 0 {
+		t.Fatalf("inactive host: err=%v invalidated=%d", err, g.invalidated)
+	}
+}
+
+// The production adapter must keep the optional cancel method: observe mode
+// finds it only by a type assertion, so a rename would silently stop
+// cancelling pending workers while the fakes above kept passing.
+func TestEximServiceAdapterCancelsPendingRequests(t *testing.T) {
+	if _, ok := adapter.NewEximServiceAdapter().(pendingCanceler); !ok {
+		t.Fatal("the exim adapter cannot cancel pending requests")
+	}
+}

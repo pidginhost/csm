@@ -2,11 +2,14 @@ package reconcile
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/eximlock"
 )
 
 // BusyRetry is how soon a pass runs again while another CSM transaction
@@ -39,6 +42,9 @@ func DesiredFromConfig(cfg *config.Config) Desired {
 // Reconciler runs one pass at a time against the host its functions read
 // and change.
 type Reconciler struct {
+	// Invalidate stops pending workers before the host is read, including
+	// in observe mode. It changes only CSM's request record, not mail config.
+	Invalidate func(context.Context) error
 	// Collect reads every precondition fact for the scan socket.
 	Collect func(ctx context.Context, socket string) antispam.HostFacts
 	// Installed reads only what shows CSM's integration on the host.
@@ -57,8 +63,7 @@ type Outcome struct {
 	Findings []alert.Finding
 	// Retry, when set, asks for another pass this soon.
 	Retry time.Duration
-	// Err is a canceled pass or the worker error behind a missing result,
-	// for the daemon log.
+	// Err is the cause of a pass that did not complete, for the daemon log.
 	Err error
 	// Checks are the checks this pass settled: a reporter replaces their
 	// latest findings with Findings. A canceled pass settles none, and a
@@ -72,6 +77,29 @@ type Outcome struct {
 func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
+	}
+	invalidateErr := r.Invalidate(ctx)
+	if err := ctx.Err(); err != nil {
+		return Outcome{Err: err}
+	}
+	if err := invalidateErr; err != nil {
+		out := Outcome{Retry: BusyRetry}
+		if !errors.Is(err, eximlock.ErrBusy) {
+			retryDetails := "CSM retries shortly."
+			if !d.Enabled {
+				// A broken state directory does not heal in seconds. With
+				// antispam off, retry on the normal interval instead.
+				out.Retry = 0
+				retryDetails = "CSM retries at the next regular check or after a config reload."
+			}
+			out.Err = fmt.Errorf("invalidating pending antispam requests: %w", err)
+			out.Findings = []alert.Finding{{
+				Severity: alert.Warning, Check: CheckApplyFailed, Timestamp: r.Now(),
+				Message: "Antispam could not cancel pending changes",
+				Details: "Pending antispam workers may still change mail configuration. Check the daemon log for the recording error; " + retryDetails,
+			}}
+		}
+		return out
 	}
 	var f antispam.HostFacts
 	if d.Enabled {

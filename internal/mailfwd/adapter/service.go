@@ -3,6 +3,7 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,7 +34,7 @@ func WorkerExitCode(err error) int {
 	switch {
 	case err == nil:
 		return 0
-	case errors.Is(err, eximlock.ErrBusy):
+	case errors.Is(err, eximlock.ErrBusy), errors.Is(err, errSuperseded):
 		return workerBusyExit
 	default:
 		return 1
@@ -42,9 +43,18 @@ func WorkerExitCode(err error) int {
 
 // The helper accepts policy data, never a destination path or command.
 type eximMutation struct {
+	RequestID string        `json:"request_id,omitempty"`
 	Operation string        `json:"operation"`
 	Config    policy.Config `json:"config"`
 	BadIPs    []string      `json:"bad_ips"`
+}
+
+// applyTo is called only after validation at the worker boundary.
+func (r eximMutation) applyTo(target ForwardGuard) error {
+	if r.Operation == "apply" {
+		return target.Apply(r.Config, r.BadIPs)
+	}
+	return target.Remove()
 }
 
 type eximServiceAdapter struct {
@@ -53,33 +63,62 @@ type eximServiceAdapter struct {
 }
 
 // NewEximServiceAdapter keeps the entire config transaction, including rollback,
-// outside the daemon's mount namespace. Read-only status and lookup refreshes
-// still use the daemon's existing access to the CSM state directory.
+// outside the daemon's mount namespace. Status reads, request records and
+// lookup refreshes still use the daemon's existing access to the CSM state
+// directory.
 func NewEximServiceAdapter() ForwardGuard {
 	return &eximServiceAdapter{EximAdapter: NewEximAdapter(), mutate: runEximMutation}
 }
 
 func (a *eximServiceAdapter) Apply(cfg policy.Config, ips []string) error {
-	return a.mutate(eximMutation{Operation: "apply", Config: cfg, BadIPs: ips})
+	return a.submit(eximMutation{Operation: "apply", Config: cfg, BadIPs: ips})
 }
 
-// Remove checks absence under the worker's lock: a transient worker from an
-// earlier daemon can still install or restore the guard. Release the lock
-// before delegating any removal so the worker can acquire it itself.
-func (a *eximServiceAdapter) Remove() error {
-	absent := false
-	err := eximlock.With(filepath.Dir(a.badIPsPath), func() error {
-		status, err := a.Status()
-		absent = !status.Installed
-		return err
-	})
-	if errors.Is(err, eximlock.ErrBusy) {
+// Invalidate cancels pending requests without waiting for the Exim lock. A
+// busy lock must not defer cancellation and let an old worker run as soon as
+// the lock is released. Workers that already checked their request finish
+// their transaction; the atomic replacement fences all later checks.
+func (a *eximServiceAdapter) Invalidate() error {
+	// #nosec G301 -- Exim reads the bad-IP lookup in this directory as the mail transport user.
+	if err := os.MkdirAll(filepath.Dir(a.badIPsPath), 0755); err != nil {
 		return err
 	}
-	if err == nil && absent {
+	return writeFileAtomicMode(a.requestPath(), []byte("null"), 0o600)
+}
+
+func (a *eximServiceAdapter) Remove() error {
+	return a.submit(eximMutation{Operation: "remove"})
+}
+
+// submit records request as the latest one under the shared Exim lock, then
+// hands it to the root worker. A worker started for an older request, such
+// as one from before a daemon restart, finds the newer record and changes
+// nothing. A removal with no rule installed needs no worker. A busy lock
+// defers the request, and a request that cannot be recorded starts no
+// worker, because the worker could not tell that it is current.
+func (a *eximServiceAdapter) submit(request eximMutation) error {
+	// Settings can repeat across restarts; each submission must still
+	// supersede earlier workers with the same policy and sender list.
+	request.RequestID = rand.Text()
+	body, err := json.Marshal(request)
+	if err != nil {
+		return err
+	}
+	done := false
+	record := func() error {
+		if writeErr := writeFileAtomicMode(a.requestPath(), body, 0o600); writeErr != nil {
+			return writeErr
+		}
+		if request.Operation == "remove" {
+			status, statusErr := a.Status()
+			done = statusErr == nil && !status.Installed
+		}
 		return nil
 	}
-	return a.mutate(eximMutation{Operation: "remove"})
+	if err = eximlock.WithRetry(context.Background(), filepath.Dir(a.badIPsPath), eximlock.RecordWait, record); err != nil || done {
+		return err
+	}
+	return a.mutate(request)
 }
 
 func runEximMutation(request eximMutation) error {
@@ -120,10 +159,10 @@ func executeEximMutation(ctx context.Context, binary string, lookup systemdrun.L
 // HandleEximMutation handles one bounded request at the privileged CLI boundary.
 // Only the fixed cPanel locations in NewEximAdapter are available to callers.
 func HandleEximMutation(input io.Reader) error {
-	return handleEximMutation(input, lockedEximAdapter{NewEximAdapter()})
+	return handleEximMutation(input, lockedEximAdapter{NewEximAdapter()}.mutate)
 }
 
-func handleEximMutation(input io.Reader, target ForwardGuard) error {
+func handleEximMutation(input io.Reader, mutate func(eximMutation) error) error {
 	body, err := io.ReadAll(io.LimitReader(input, eximMutationLimit+1))
 	if err != nil {
 		return err
@@ -151,13 +190,12 @@ func handleEximMutation(input io.Reader, target ForwardGuard) error {
 				return fmt.Errorf("forward-guard request has an invalid address")
 			}
 		}
-		return target.Apply(request.Config, request.BadIPs)
 	case "remove":
 		if request.Config != (policy.Config{}) || len(request.BadIPs) != 0 {
 			return fmt.Errorf("remove request must not contain policy data")
 		}
-		return target.Remove()
 	default:
 		return fmt.Errorf("unsupported forward-guard operation")
 	}
+	return mutate(request)
 }

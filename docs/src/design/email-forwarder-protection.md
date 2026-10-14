@@ -127,14 +127,29 @@ On cPanel hosts in enforce mode, CSM applies these settings at startup and on
 config reload. Failed changes are retried on the next 15-minute lookup refresh,
 using the latest settings. A change that waits for another CSM change to the
 Exim configuration, such as an antispam one, is logged as deferred, not as a
-failure, and retried the same way. A reload during a running forward-guard
-change returns without waiting, logs that it was deferred, and leaves the
-latest settings pending for that refresh. The log reports the refresh
-interval; the next refresh can happen sooner.
+failure, and retried the same way. CSM waits up to one second for the lock
+before it records a change and before a worker starts one, so short holds do
+not defer a change.
+A reload never waits for a forward-guard change: the change runs in the
+background, and reloads that arrive while one runs are applied right after
+it, with the latest settings. Shutdown lets the running change finish and
+discards queued reloads; startup applies the saved settings.
 Disabled and dry-run settings start no removal worker when no guard is
 installed. While another CSM change to the Exim configuration runs, even one
-started before a daemon restart, the removal is deferred the same way.
-Observe mode and hosts without cPanel leave the installed guard untouched.
+started before a daemon restart, the removal is deferred the same way. CSM
+records each change before its worker starts, and a worker whose change is
+no longer the latest, such as one started before a restart, changes nothing.
+Each submission has a distinct identity, even when its settings and sender
+list match an earlier submission. A delayed worker cannot replace a sender
+list refreshed since the newer submission. If its request record is missing
+or unreadable, the worker leaves the installed guard untouched.
+Request records are readable by root only; the Exim configuration and the
+bad-IP lookup stay readable by the mail transport user.
+Observe mode and hosts without cPanel leave the installed guard untouched; in
+observe mode CSM only cancels pending changes. Cancellation does not wait for
+another Exim transaction to finish. A worker that has already checked its
+request under the Exim lock finishes its transaction; later workers cannot
+apply canceled requests.
 
 ## WebUI surfaces (email page)
 

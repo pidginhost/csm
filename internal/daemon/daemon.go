@@ -135,6 +135,8 @@ type Daemon struct {
 	forwardGuardMu sync.Mutex
 	// forwardGuardRetry retains failed or deferred reconcile requests.
 	forwardGuardRetry atomic.Bool
+	// forwardGuardWake hands reload requests to the forward-guard loop.
+	forwardGuardWake chan struct{}
 
 	// yaraSup is the supervised YARA-X worker, wired up when
 	// yaraWorkerOn(cfg) is true (the default; see ROADMAP item 2).
@@ -226,6 +228,8 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		binaryPath: binaryPath,
 		alertCh:    make(chan alert.Finding, 500),
 		stopCh:     make(chan struct{}),
+
+		forwardGuardWake: make(chan struct{}, 1),
 	}
 	// Remediation records what it wrote here, so the sensitive-file detectors
 	// can tell CSM's own change from a third party's after a restart.

@@ -20,7 +20,7 @@ func (c *countingTransactor) Remove() antispam.Result {
 	return antispam.Result{OK: true}
 }
 
-func unlocked(mutate func() error) error { return mutate() }
+func unlocked(_ []byte, mutate func() error) error { return mutate() }
 
 type antispamRequestReader struct {
 	reader *strings.Reader
@@ -46,7 +46,7 @@ func TestAntispamWorkerRefusesBeforeReading(t *testing.T) {
 			tr := &countingTransactor{}
 			input := &antispamRequestReader{reader: strings.NewReader(`{"operation":"remove"}`)}
 			locked := 0
-			code := antispamWorker(tc.euid, tc.args, input, &out, &errOut, tr, func(mutate func() error) error {
+			code := antispamWorker(tc.euid, tc.args, input, &out, &errOut, tr, func(_ []byte, mutate func() error) error {
 				locked++
 				return mutate()
 			})

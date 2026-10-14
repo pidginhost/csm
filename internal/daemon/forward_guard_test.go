@@ -130,6 +130,32 @@ func TestForwardGuardRefresherStops(t *testing.T) {
 	}
 }
 
+// A queued reload must not start another Exim rebuild once shutdown begins.
+// Both channels are ready, so repeat to exercise either select outcome.
+func TestForwardGuardRefresherDiscardsReloadsOnShutdown(t *testing.T) {
+	usePanel(t, platform.PanelCPanel)
+	cfg := &config.Config{Mode: config.ModeEnforce}
+	cfg.EmailProtection.ForwardGuard.Enabled = true
+	cfg.EmailProtection.ForwardGuard.HoldSignals.BounceBackscatter = true
+	useActiveConfig(t, cfg)
+	g := &countingForwardGuard{}
+	prev := newForwardGuard
+	t.Cleanup(func() { newForwardGuard = prev })
+	newForwardGuard = func() adapter.ForwardGuard { return g }
+	d := newTestDaemon(t)
+	close(d.stopCh)
+
+	for range 100 {
+		d.wakeForwardGuard()
+		d.wg.Add(1)
+		d.forwardGuardRefresher()
+	}
+	d.wg.Wait()
+	if g.mutations != 0 {
+		t.Fatalf("shutdown started %d forward-guard mutations, want none", g.mutations)
+	}
+}
+
 func seedForwardQuarantine(t *testing.T, retentionDays int) (old, fresh string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -209,9 +235,8 @@ func (g *flakyForwardGuard) Status() (adapter.Status, error) {
 	return adapter.Status{}, nil
 }
 
-// A failed install or removal, such as one refused while an antispam
-// transaction holds the Exim lock, is retried on the next refresh instead
-// of waiting for a reload or restart.
+// A failed install or removal, such as one whose Exim rebuild failed, is
+// retried on the next refresh instead of waiting for a reload or restart.
 func TestForwardGuardRetriesFailedReconcileOnRefresh(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		name := "remove"
@@ -452,6 +477,132 @@ func TestForwardGuardBusyLockIsDeferredNotFailed(t *testing.T) {
 			}
 			if !d.forwardGuardRetry.Load() {
 				t.Fatal("refused change was not kept for the next refresh")
+			}
+		})
+	}
+}
+
+// blockingForwardGuard holds each install until release closes and reports
+// the config of every attempt.
+type blockingForwardGuard struct {
+	countingForwardGuard
+	started chan policy.Config
+	release chan struct{}
+}
+
+func (g *blockingForwardGuard) Apply(cfg policy.Config, _ []string) error {
+	g.started <- cfg
+	<-g.release
+	return nil
+}
+
+// startForwardGuardLoop runs the forward-guard loop until the test ends.
+func startForwardGuardLoop(t *testing.T, d *Daemon) {
+	t.Helper()
+	d.wg.Add(1)
+	go d.forwardGuardRefresher()
+	t.Cleanup(func() {
+		close(d.stopCh)
+		d.wg.Wait()
+	})
+}
+
+// A reload, from SIGHUP or a web UI save, must not wait for a forward-guard
+// worker, which can rebuild Exim for minutes. Reloads that arrive while one
+// runs are applied right after it, once, with the latest config.
+func TestForwardGuardReloadsDoNotWaitAndApplyTheLatestConfig(t *testing.T) {
+	usePanel(t, platform.PanelCPanel)
+	cfg := &config.Config{Mode: config.ModeEnforce}
+	cfg.EmailProtection.ForwardGuard.Enabled = true
+	cfg.EmailProtection.ForwardGuard.HoldSignals.BounceBackscatter = true
+	useActiveConfig(t, cfg)
+	g := &blockingForwardGuard{started: make(chan policy.Config, 4), release: make(chan struct{})}
+	prev := newForwardGuard
+	t.Cleanup(func() { newForwardGuard = prev })
+	newForwardGuard = func() adapter.ForwardGuard { return g }
+	d := newTestDaemon(t)
+	startForwardGuardLoop(t, d)
+	var release sync.Once
+	t.Cleanup(func() { release.Do(func() { close(g.release) }) })
+
+	reload := func() {
+		t.Helper()
+		done := make(chan struct{})
+		go func() {
+			d.reconcileHotReloadables()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			// Let the stuck reload finish before failing, so it does not
+			// outlive the test's cleanup.
+			release.Do(func() { close(g.release) })
+			<-done
+			t.Fatal("reload waited for the forward-guard worker")
+		}
+	}
+	nextInstall := func() policy.Config {
+		t.Helper()
+		select {
+		case got := <-g.started:
+			return got
+		case <-time.After(5 * time.Second):
+			t.Fatal("forward-guard install did not start")
+			return policy.Config{}
+		}
+	}
+
+	reload()
+	nextInstall()
+	reload()
+	next := *cfg
+	next.EmailProtection.ForwardGuard.HoldSignals.BadSenderIP = true
+	config.SetActive(&next)
+	reload()
+	release.Do(func() { close(g.release) })
+	if got := nextInstall(); !got.HoldSignals.BadSenderIP {
+		t.Fatalf("reload during an install applied %+v, want the latest config", got)
+	}
+	select {
+	case extra := <-g.started:
+		t.Fatalf("reloads during one install ran more than one more install: %+v", extra)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// cancelingForwardGuard can also cancel requests still waiting for a worker.
+type cancelingForwardGuard struct {
+	countingForwardGuard
+	canceled int
+}
+
+func (g *cancelingForwardGuard) Invalidate() error { g.canceled++; return nil }
+
+// On a cPanel host in observe mode, a reconcile cancels forward-guard requests
+// still waiting for a worker and changes nothing else. Hosts without cPanel
+// do neither.
+func TestObserveModeCancelsPendingForwardGuardWorkers(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		panel platform.Panel
+		want  int
+	}{
+		{"cpanel", platform.PanelCPanel, 1},
+		{"no_panel", platform.PanelNone, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usePanel(t, tc.panel)
+			cfg := &config.Config{Mode: config.ModeObserve}
+			useActiveConfig(t, cfg)
+			g := &cancelingForwardGuard{}
+			prev := newForwardGuard
+			t.Cleanup(func() { newForwardGuard = prev })
+			newForwardGuard = func() adapter.ForwardGuard { return g }
+			d := &Daemon{cfg: cfg}
+			d.reconcileForwardGuard()
+			if g.canceled != tc.want || g.mutations != 0 || d.forwardGuardRetry.Load() {
+				t.Fatalf("canceled=%d (want %d) mutations=%d retry=%v", g.canceled, tc.want, g.mutations, d.forwardGuardRetry.Load())
 			}
 		})
 	}

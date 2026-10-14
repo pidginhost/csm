@@ -81,11 +81,11 @@ var operations = []Op{
 	{
 		ID: "respond.forward_guard_check", Subsystem: "response",
 		Risk:       RiskObserve,
-		Summary:    "check under the shared Exim lock whether a forward-guard rule is installed, inside the daemon sandbox",
+		Summary:    "record the latest forward-guard request and check whether a rule is installed under the shared Exim lock; cancel pending requests in observe mode without waiting for the lock, inside the daemon sandbox",
 		Privileges: []Privilege{Root}, Trigger: Automatic,
-		Writes:     []string{"/var/lib/csm/forward_guard"},
-		DisableKey: "mode", DisableValue: "observe",
-		WithoutPrivilege: "the root worker checks for the rule itself on every reload with the guard off",
+		Writes:           []string{"/var/lib/csm/forward_guard"},
+		DisableReason:    "pending forward-guard workers must be canceled even in observe mode",
+		WithoutPrivilege: "forward-guard changes are not handed to the root worker, pending workers cannot be canceled, and the installed guard stays as it is",
 	},
 	{
 		ID: "respond.forward_guard_lookup", Subsystem: "response",
@@ -570,6 +570,17 @@ var operations = []Op{
 		DisableKey:       "mode",
 		DisableValue:     "observe",
 		WithoutPrivilege: "CSM's spam-filter settings and hooks cannot be installed, updated or removed; existing mail filtering keeps its current configuration",
+	},
+	{
+		ID:               "integrate.antispam_record",
+		Risk:             RiskObserve,
+		Subsystem:        "host integration",
+		Summary:          "invalidate pending antispam workers before reconciliation and record each new request under the shared Exim lock inside the daemon sandbox",
+		Privileges:       []Privilege{Root},
+		Trigger:          Automatic,
+		Writes:           []string{"/var/lib/csm/forward_guard"},
+		DisableReason:    "pending workers must be invalidated even when antispam is disabled or mode is observe",
+		WithoutPrivilege: "pending antispam workers cannot be invalidated and new antispam changes are not handed to the root worker",
 	},
 	{
 		ID:               "integrate.auditd_rules",

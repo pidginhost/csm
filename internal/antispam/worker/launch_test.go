@@ -13,9 +13,11 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/eximlock"
 	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
@@ -32,7 +34,7 @@ func TestMain(m *testing.M) {
 		os.Exit(2)
 	}
 	if len(os.Args) != 2 {
-		os.Exit(m.Run())
+		os.Exit(runTests(m))
 	}
 	if os.Args[1] == "antispam-test-pipe-holder" {
 		ready := os.Getenv("CSM_ANTISPAM_TEST_READY")
@@ -51,7 +53,7 @@ func TestMain(m *testing.M) {
 		os.Exit(2)
 	}
 	if os.Args[1] != Command {
-		os.Exit(m.Run())
+		os.Exit(runTests(m))
 	}
 	switch os.Getenv("CSM_ANTISPAM_TEST_MODE") {
 	case "protocol":
@@ -75,6 +77,10 @@ func TestMain(m *testing.M) {
 	case "wait":
 		time.Sleep(5 * time.Second)
 		os.Exit(0)
+	case "mark":
+		// Proves a launch happened: the caller expected none.
+		_ = os.WriteFile(os.Getenv("CSM_ANTISPAM_TEST_MARK"), nil, 0o600)
+		os.Exit(2)
 	case "inherited pipes":
 		// Model a transient unit that keeps the descriptors after systemd-run dies.
 		child := exec.Command(os.Args[0], "antispam-test-pipe-holder")
@@ -88,6 +94,18 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	os.Exit(2)
+}
+
+// runTests points Run's request record at a temporary directory, so tests
+// never touch the host's CSM state.
+func runTests(m *testing.M) int {
+	dir, err := os.MkdirTemp("", "csm-antispam-worker-")
+	if err != nil {
+		return 2
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	requestDir = dir
+	return m.Run()
 }
 
 // launchWorker makes Run find a systemd-run that is this test binary, so the
@@ -363,4 +381,133 @@ func TestRunNeverStartsTheWorkerInsideTheSandbox(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Run records the exact request it sends before it starts the worker.
+func TestRunRecordsTheRequestItSends(t *testing.T) {
+	launchWorker(t, "protocol")
+	req := antispam.ApplyRequest(antispam.Settings{DryRun: false, Socket: "/var/run/rspamd/scan.sock", RejectScore: 20, TagScore: 8})
+	if result, err := Run(context.Background(), req); err != nil || !result.OK {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := os.ReadFile(filepath.Join(requestDir, RequestFile))
+	if err != nil || !bytes.Equal(recorded, body) {
+		t.Fatalf("recorded %q (%v), want %q", recorded, err, body)
+	}
+}
+
+func TestRunCanceledRequestDoesNotReplacePendingRequest(t *testing.T) {
+	mark := launchMarker(t)
+	previous := []byte(applyBody)
+	if recorded, err := recordRequest(context.Background(), requestDir, previous); err != nil || !recorded {
+		t.Fatalf("recorded=%v err=%v", recorded, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := Run(ctx, antispam.RemoveRequest())
+	if !errors.Is(err, context.Canceled) || result != (antispam.Result{}) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	got, err := os.ReadFile(filepath.Join(requestDir, RequestFile))
+	if err != nil || !bytes.Equal(got, previous) {
+		t.Fatalf("canceled request replaced pending request with %q: %v", got, err)
+	}
+	assertNoLaunch(t, mark)
+}
+
+func TestRunCanceledDuringRecordWaitPreservesPendingRequest(t *testing.T) {
+	mark := launchMarker(t)
+	synctest.Test(t, func(t *testing.T) {
+		previous := []byte(applyBody)
+		if recorded, err := recordRequest(context.Background(), requestDir, previous); err != nil || !recorded {
+			t.Fatalf("recorded=%v err=%v", recorded, err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		finished := make(chan struct{})
+		var result antispam.Result
+		var runErr error
+		if err := eximlock.With(requestDir, func() error {
+			go func() {
+				result, runErr = Run(ctx, antispam.RemoveRequest())
+				close(finished)
+			}()
+			synctest.Wait()
+			cancel()
+			synctest.Wait()
+			select {
+			case <-finished:
+			default:
+				t.Error("canceled Run still waits for the lock")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		<-finished
+		if !errors.Is(runErr, context.Canceled) || result != (antispam.Result{}) {
+			t.Errorf("result=%+v err=%v", result, runErr)
+		}
+		got, err := os.ReadFile(filepath.Join(requestDir, RequestFile))
+		if err != nil || !bytes.Equal(got, previous) {
+			t.Errorf("canceled request replaced pending request with %q: %v", got, err)
+		}
+		assertNoLaunch(t, mark)
+	})
+}
+
+// launchMarker makes any worker launch leave a marker file, for tests that
+// expect Run to start no worker.
+func launchMarker(t *testing.T) string {
+	t.Helper()
+	launchWorker(t, "mark")
+	mark := filepath.Join(t.TempDir(), "launched")
+	t.Setenv("CSM_ANTISPAM_TEST_MARK", mark)
+	return mark
+}
+
+func assertNoLaunch(t *testing.T, mark string) {
+	t.Helper()
+	if _, err := os.Stat(mark); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Run started a worker: %v", err)
+	}
+}
+
+// While another CSM transaction holds the lock, Run reports busy and starts
+// no worker.
+func TestRunReportsBusyWithoutStartingTheWorker(t *testing.T) {
+	mark := launchMarker(t)
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() { finished <- eximlock.With(requestDir, func() error { close(entered); <-release; return nil }) }()
+	<-entered
+	result, err := Run(context.Background(), antispam.RemoveRequest())
+	close(release)
+	if lockErr := <-finished; lockErr != nil {
+		t.Fatal(lockErr)
+	}
+	if err != nil || !result.Busy || result.OK || result.FailedStep != "lock" || result.Rollback != antispam.RollbackNone || result.Operation != antispam.OpRemove {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertNoLaunch(t, mark)
+}
+
+// A request Run cannot record starts no worker: the worker could not tell
+// whether it is still the latest. It is an error, not a busy result.
+func TestRunStartsNoWorkerForAnUnrecordedRequest(t *testing.T) {
+	mark := launchMarker(t)
+	prev := requestDir
+	t.Cleanup(func() { requestDir = prev })
+	requestDir = filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(requestDir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Run(context.Background(), antispam.RemoveRequest())
+	if err == nil || result != (antispam.Result{}) || errors.Is(err, eximlock.ErrBusy) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	assertNoLaunch(t, mark)
 }

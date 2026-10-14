@@ -528,6 +528,17 @@
       "queue": "findings.ingest"
     },
     {
+      "id": "internal/daemon/daemon.go::New::forwardGuardWake::channel::1",
+      "path": "internal/daemon/daemon.go",
+      "owner": "New",
+      "target": "forwardGuardWake",
+      "kind": "channel",
+      "source": "make(chan struct{}, 1)",
+      "capacity": "1",
+      "class": "maintenance",
+      "rationale": "Coalesces forward-guard reconcile requests from config reloads; each reconcile reads the latest configuration, so a dropped duplicate loses nothing."
+    },
+    {
       "id": "internal/daemon/daemon.go::New::stopCh::channel::1",
       "path": "internal/daemon/daemon.go",
       "owner": "New",
