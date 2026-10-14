@@ -79,7 +79,7 @@ func (a *eximServiceAdapter) Apply(cfg policy.Config, ips []string) error {
 // change mail configuration afterwards.
 func (a *eximServiceAdapter) Invalidate() error {
 	return eximlock.WithRetry(context.Background(), filepath.Dir(a.badIPsPath), eximlock.RecordWait, func() error {
-		return writeFileAtomic(a.requestPath(), []byte("null"))
+		return writeFileAtomicMode(a.requestPath(), []byte("null"), 0o600)
 	})
 }
 
@@ -103,7 +103,7 @@ func (a *eximServiceAdapter) submit(request eximMutation) error {
 	}
 	done := false
 	record := func() error {
-		if writeErr := writeFileAtomic(a.requestPath(), body); writeErr != nil {
+		if writeErr := writeFileAtomicMode(a.requestPath(), body, 0o600); writeErr != nil {
 			return writeErr
 		}
 		if request.Operation == "remove" {

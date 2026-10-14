@@ -397,13 +397,19 @@ func stripBlock(conf, begin, end string) string {
 }
 
 func writeFileAtomic(path string, data []byte) error {
+	return writeFileAtomicMode(path, data, 0644)
+}
+
+// writeFileAtomicMode is writeFileAtomic with the file mode chosen by the
+// caller, for CSM state that only root reads.
+func writeFileAtomicMode(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.csmtmp") // #nosec G304 -- caller owns the destination path
 	if err != nil {
 		return fmt.Errorf("opening temp file for %s: %w", path, err)
 	}
 	tmp := f.Name()
-	if err := f.Chmod(0644); err != nil {
+	if err := f.Chmod(perm); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return fmt.Errorf("chmod temp file for %s: %w", path, err)

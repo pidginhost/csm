@@ -622,3 +622,24 @@ func TestEximMutationWorkerWaitsOutABriefHolder(t *testing.T) {
 		t.Fatalf("err=%v rebuilds=%d", err, side.rebuilds)
 	}
 }
+
+// The request record is CSM state for the root worker, readable by root only,
+// whether it holds a request or a cancellation.
+func TestEximServiceRequestRecordIsPrivate(t *testing.T) {
+	a, _ := testAdapter(t)
+	service := &eximServiceAdapter{EximAdapter: a, mutate: func(eximMutation) error { return nil }}
+	for name, record := range map[string]func() error{
+		"request": func() error {
+			return service.Apply(policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}, nil)
+		},
+		"cancellation": service.Invalidate,
+	} {
+		if err := record(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		info, err := os.Stat(a.requestPath())
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s record mode=%v err=%v, want 0600", name, info.Mode().Perm(), err)
+		}
+	}
+}
