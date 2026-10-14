@@ -69,6 +69,9 @@ func newBlockedSetWireTestEngine(t *testing.T, conn *nftables.Conn) *Engine {
 	// Most wire tests model a new block. Avoid turning their synthetic ACK-only
 	// connection into a set-dump fixture; replacement tests override this seam.
 	e.liveBlockLookup = func(*nftables.Set, []byte) (bool, error) { return false, nil }
+	// Wire tests assert exact durations; elapsed-time tests advance their own clock.
+	at := time.Now()
+	e.expiryClock = func() time.Time { return at }
 	return e
 }
 

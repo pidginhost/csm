@@ -168,6 +168,13 @@ type Engine struct {
 	expiryClock func() time.Time
 	expiryScans uint64
 
+	// lease is the last reading of the clock that turns absolute expiries
+	// into kernel timeouts (lease_clock_linux.go). leaseClock, when
+	// non-nil, samples the wall and elapsed clocks so tests can step one
+	// without the other.
+	lease      leaseReading
+	leaseClock func() (wall, elapsed time.Time)
+
 	liveBlockLookup func(set *nftables.Set, key []byte) (bool, error)
 
 	// liveBlockedDump, when non-nil, replaces the netlink dump of one
@@ -2511,11 +2518,11 @@ func (e *Engine) blockIPLockedRequestGuarded(ip string, reason string, timeout t
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	return e.blockIPRequestLocked(ip, reason, timeout, skipExisting, enforceSoftAllow, req, budget, preserveLifetime)
+	return e.blockIPRequestLocked(ip, reason, timeout, skipExisting, enforceSoftAllow, req, budget, preserveLifetime, time.Time{})
 }
 
 // blockIPRequestLocked runs with e.mu held, including snapshot-checked undo.
-func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Duration, skipExisting bool, enforceSoftAllow bool, req ActionRequest, budget *ScanAdmission, preserveLifetime bool) (BlockOutcome, error) {
+func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Duration, skipExisting bool, enforceSoftAllow bool, req ActionRequest, budget *ScanAdmission, preserveLifetime bool, expiresAt time.Time) (BlockOutcome, error) {
 	req.Target = ip
 	req = normalizeActionRequest(req)
 	if found, replayErr := e.replayActionLocked(req); found || replayErr != nil {
@@ -2542,7 +2549,7 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 			if entry.ExpiresAt.IsZero() {
 				return BlockOutcomeNoop, ErrPermanentBlock
 			}
-			if time.Until(entry.ExpiresAt) > timeout {
+			if entry.ExpiresAt.Sub(e.leaseNowLocked()) > timeout {
 				return BlockOutcomeNoop, ErrLongerBlock
 			}
 		} else {
@@ -2580,15 +2587,20 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 	// produced a permanent kernel block with no state row: it never expired
 	// (timeout 0) yet a later state-seeded Apply would silently drop it.
 	// Zero ExpiresAt means permanent.
+	at := e.leaseNowLocked()
 	entry := BlockedEntry{
 		IP:        ip,
 		Reason:    reason,
 		Source:    InferProvenance("block", reason),
-		BlockedAt: time.Now(),
+		BlockedAt: at,
 	}
 	if timeout > 0 {
-		entry.ExpiresAt = time.Now().Add(timeout)
+		entry.ExpiresAt = at.Add(timeout)
 	}
+	if !expiresAt.IsZero() {
+		entry.ExpiresAt = expiresAt
+	}
+	expiresAt = entry.ExpiresAt
 
 	var evictSet *nftables.Set
 	var evictKey []byte
@@ -2636,6 +2648,13 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 		return BlockOutcomeNoop, fmt.Errorf("persisting block for %s: %w", ip, err)
 	}
 
+	if !expiresAt.IsZero() {
+		var ok bool
+		if timeout, ok = blockTimeout(expiresAt, e.leaseNowLocked()); !ok {
+			restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip)
+			return BlockOutcomeNoop, errors.Join(errors.New("restored block expired before send"), restoreErr)
+		}
+	}
 	elem := []nftables.SetElement{{Key: key, Timeout: timeout}}
 	if replaceExisting {
 		if err := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: key}}); err != nil {
@@ -2664,7 +2683,7 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 			// state.json said blocked but the kernel had already expired the
 			// replacement or eviction element, so the whole batch was rejected
 			// on that delete. Retry without whichever stale delete failed.
-			err = e.retryBlockAddAfterMissingElement(targetSet, elem, evictSet, evictKey, replaceExisting)
+			err = e.retryBlockAddAfterMissingElement(targetSet, elem, evictSet, evictKey, replaceExisting, expiresAt)
 		}
 		if err != nil {
 			if restoreErr := e.restoreBlockStateAfterFailureLocked(priorState, ip); restoreErr != nil {
@@ -2683,8 +2702,21 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 
 // retryBlockAddAfterMissingElement re-queues a block batch without the
 // delete of an element the kernel no longer holds. Caller must hold e.mu.
-func (e *Engine) retryBlockAddAfterMissingElement(targetSet *nftables.Set, elem []nftables.SetElement, evictSet *nftables.Set, evictKey []byte, replaceExisting bool) error {
+func (e *Engine) retryBlockAddAfterMissingElement(targetSet *nftables.Set, elem []nftables.SetElement, evictSet *nftables.Set, evictKey []byte, replaceExisting bool, expiresAt time.Time) error {
+	refresh := func() error {
+		if !expiresAt.IsZero() {
+			timeout, ok := blockTimeout(expiresAt, e.leaseNowLocked())
+			if !ok {
+				return errors.New("restored block expired before retry")
+			}
+			elem[0].Timeout = timeout
+		}
+		return nil
+	}
 	queueAdd := func() error {
+		if err := refresh(); err != nil {
+			return err
+		}
 		if err := e.conn.SetAddElements(targetSet, elem); err != nil {
 			return fmt.Errorf("retry adding to blocked set: %w", err)
 		}
@@ -2724,12 +2756,15 @@ func (e *Engine) retryBlockAddAfterMissingElement(targetSet *nftables.Set, elem 
 
 	// The eviction victim was the stale element instead. Replace the target
 	// without repeating the eviction delete, keeping a live target blocked for
-	// the whole atomic transaction.
+	// the whole atomic transaction. Validate the lease before queueing a delete.
+	if err := refresh(); err != nil {
+		return err
+	}
 	if err := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: elem[0].Key}}); err != nil {
 		return fmt.Errorf("retry deleting replacement target: %w", err)
 	}
-	if err := queueAdd(); err != nil {
-		return err
+	if err := e.conn.SetAddElements(targetSet, elem); err != nil {
+		return fmt.Errorf("retry adding to blocked set: %w", err)
 	}
 	if err := flush("retry flushing block without eviction"); err == nil {
 		return nil
@@ -4207,6 +4242,7 @@ func (e *Engine) Status() map[string]interface{} {
 // computeInitialBlockStateLocked and consumed by
 // queueInitialBlockStateLocked.
 type initialBlockState struct {
+	leaseAt                  time.Time
 	blocked4, blocked6       []nftables.SetElement
 	allowed4, allowed6       []nftables.SetElement
 	blockedNet4, blockedNet6 []nftables.SetElement
@@ -4220,14 +4256,17 @@ type initialBlockState struct {
 func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 	now := e.expiryNow()
 	state := e.loadStateFileAtLocked(now)
+	// Timeouts come from the lease clock, which a step back of the wall
+	// clock cannot rewind: a reapplied block keeps only the time it had.
+	lease := e.leaseAtLocked(now)
 	if e.lifecycle != nil {
 		sets := desiredActionSets(state, e.cfg.IPv6, now)
-		return initialBlockState{blocked4: actionElements(sets["blocked_ips"], now), blocked6: actionElements(sets["blocked_ips6"], now), allowed4: actionElements(sets["allowed_ips"], now), allowed6: actionElements(sets["allowed_ips6"], now), blockedNet4: actionElements(sets["blocked_nets"], now), blockedNet6: actionElements(sets["blocked_nets6"], now)}
+		return initialBlockState{leaseAt: lease, blocked4: actionElements(sets["blocked_ips"], lease), blocked6: actionElements(sets["blocked_ips6"], lease), allowed4: actionElements(sets["allowed_ips"], now), allowed6: actionElements(sets["allowed_ips6"], now), blockedNet4: actionElements(sets["blocked_nets"], now), blockedNet6: actionElements(sets["blocked_nets6"], now)}
 	}
 
 	// One reading for every row: a row must not pass the expiry check and
 	// then encode the time left after a later reading.
-	var ibs initialBlockState
+	ibs := initialBlockState{leaseAt: lease}
 	restoredBlocked := make(map[string]bool)
 	for _, entry := range state.Blocked {
 		if entry.Unverified {
@@ -4236,7 +4275,7 @@ func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 		timeout := time.Duration(0)
 		if !entry.ExpiresAt.IsZero() {
 			var ok bool
-			if timeout, ok = blockTimeout(entry.ExpiresAt, now); !ok {
+			if timeout, ok = blockTimeout(entry.ExpiresAt, lease); !ok {
 				continue
 			}
 		}
@@ -4283,6 +4322,23 @@ func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 // elements into the still-pending Apply netlink batch. Apply Flushes
 // the whole batch as one transaction. No Flush here.
 func (e *Engine) queueInitialBlockStateLocked(ibs initialBlockState) error {
+	// Table discovery and rule construction can consume the saved lifetime.
+	at := e.leaseNowLocked()
+	refresh := func(elements []nftables.SetElement) []nftables.SetElement {
+		live := elements[:0]
+		for _, el := range elements {
+			if el.Timeout > 0 {
+				timeout, ok := blockTimeout(ibs.leaseAt.Add(el.Timeout), at)
+				if !ok {
+					continue
+				}
+				el.Timeout = timeout
+			}
+			live = append(live, el)
+		}
+		return live
+	}
+	ibs.blocked4, ibs.blocked6 = refresh(ibs.blocked4), refresh(ibs.blocked6)
 	if err := e.addElementsChunked(e.setBlocked, ibs.blocked4); err != nil {
 		return err
 	}

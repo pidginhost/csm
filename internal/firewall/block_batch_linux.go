@@ -76,13 +76,14 @@ func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
 			return blockSnapshot{}, err
 		}
 	}
-	at := e.expiryNow()
+	now := e.expiryNow()
+	at := e.leaseAtLocked(now)
 	// Expired rows still own kernel cleanup, notably untimed subnet elements.
 	// Only the check view is pruned; intent and restore retain the full image.
 	state := copyFirewallState(prior)
 	state.Blocked, _ = pruneBlocked(state.Blocked, at)
-	state.BlockedNet, _ = pruneBlockedNet(state.BlockedNet, at)
-	state.Allowed, _ = pruneAllowed(state.Allowed, at)
+	state.BlockedNet, _ = pruneBlockedNet(state.BlockedNet, now)
+	state.Allowed, _ = pruneAllowed(state.Allowed, now)
 	snap := blockSnapshot{at: at, prior: prior, state: state, blocked: map[string]bool{}, allowed: map[string]bool{}, live: map[string]bool{}}
 	for _, row := range state.Blocked {
 		snap.blocked[stateIPKey(row.IP)] = true
@@ -332,7 +333,7 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 		defer func() { _ = conn.CloseLasting() }()
 		// State persistence can consume a member's remaining lifetime.
 		// Refresh at one instant immediately before queueing the send.
-		sendAt := e.expiryNow()
+		sendAt := e.leaseNowLocked()
 		var ready []int
 		for _, i := range run {
 			m := members[i]

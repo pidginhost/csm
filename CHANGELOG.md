@@ -27,6 +27,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- Temporary blocks no longer last longer than set when the system clock is moved back, including after an undo.
 - A temporary block that expires while the firewall starts can no longer be restored as a permanent block.
 - When the firewall state file is unreadable at startup, CSM now keeps it aside, starts without its blocks and allowed addresses, and raises a critical alert and doctor failure. Re-add needed entries; if it cannot be kept, fix storage and restart CSM.
 - Threat lookups no longer show an address as blocked from stale auto-block records when the firewall does not hold that block.

@@ -501,6 +501,15 @@ rows with less than a millisecond left or an unrepresentable lifetime are
 skipped. Blocks, operator allows and subnets use one startup clock reading.
 Durable updates compare absolute expiries before encoding timeouts, so
 millisecond rounding does not replace unchanged timed blocks.
+Kernel timeouts come from a lease clock that never runs backward: the later
+of the wall clock and its last reading advanced by the time elapsed since.
+Reapplying the rules after the wall clock is set back restores each timed
+block for the time it had left, never for the step on top. Batch checks and
+sends read the same clock. Fresh legacy blocks record their deadline on
+that clock too. Operator undo retains the original deadline and refreshes
+its remaining timeout after persistence and before each bounded retry.
+Fresh legacy sends also refresh after persistence. Ruleset installation ages
+precomputed block timeouts after table discovery and rule construction.
 
 The engine also provides internal batch entry points for up to 64 timed
 full-address blocks. The admission owner runs them only when the daemon gives
