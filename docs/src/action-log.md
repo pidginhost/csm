@@ -70,11 +70,11 @@ through the pinned file handles. Directories and symlinks have no digest.
 ## What is covered
 
 The [capability matrix](capability-matrix.md) has an "Action record" column.
-Six operations write here today: firewall blocks and unblocks (automatic and
-operator), whole-ruleset changes, file quarantine, surgical file cleaning, and
-process termination. Everything else appears in the daemon log only. The column
-is the authoritative list. Tests exercise the operation paths, including
-failures and concurrent blocks.
+Seven operations write here today: firewall blocks and unblocks (automatic and
+operator), whole-ruleset changes, file quarantine, surgical file cleaning,
+process termination, and mailbox suspension. Everything else appears in the
+daemon log only. The column is the authoritative list. Tests exercise the
+operation paths, including failures and concurrent blocks.
 
 The firewall keeps its own audit file because the web UI and the API read it.
 Its entries also appear here; dry-run decisions, failed attempts and whole

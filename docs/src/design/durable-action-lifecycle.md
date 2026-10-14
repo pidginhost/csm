@@ -55,4 +55,4 @@ jobs or sessions as executable or authenticated live state; what is disarmed
 and what requires review is defined per record type.
 
 The open work is tracked in the
-[roadmap](https://github.com/pidginhost/csm/blob/main/ROADMAP.md#action-log-covers-six-of-41-host-changing-operations).
+[roadmap](https://github.com/pidginhost/csm/blob/main/ROADMAP.md#action-log-covers-seven-of-43-host-changing-operations).
