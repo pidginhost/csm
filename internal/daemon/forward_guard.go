@@ -60,6 +60,8 @@ func (d *Daemon) reconcileForwardGuard() {
 	// A reload must not wait for an in-flight worker. Leave its request for
 	// the next refresh, and read config only after taking the lock.
 	if !d.forwardGuardMu.TryLock() {
+		csmlog.Info("forward-guard reconcile deferred to the next refresh: another reconcile is running",
+			"retry_in", forwardGuardRefreshInterval)
 		return
 	}
 	defer d.forwardGuardMu.Unlock()
