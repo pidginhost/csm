@@ -241,12 +241,20 @@ func (e *Engine) blockRefusalLocked(m BlockMember, verified bool, snap blockSnap
 	el, live := snap.live[m.IP]
 	row, held := snap.blocked[key]
 	switch {
-	case held && snap.proves(row, el, live):
+	case held && snap.proves(row, el, live) && covers(row, m):
 		return BlockRefusedExisting
 	case held || live:
 		return BlockRefusedPending
 	}
 	return ""
+}
+
+// covers reports whether row lasts as long as member m (spec 5.16: only
+// the exact effect is already enforced): a permanent row, or a timed row
+// ending no earlier than the member within the readback slack. A shorter
+// block holds the address until it ends.
+func covers(row BlockedEntry, m BlockMember) bool {
+	return row.ExpiresAt.IsZero() || !row.ExpiresAt.Before(m.ExpiresAt.Add(-blockReadbackSlack))
 }
 
 // CheckBlockBatch answers, before anything is reserved, which members of a

@@ -551,9 +551,10 @@ untimed element for a permanent row, or one with the time a timed row has
 left, accounting for elapsed time across both set reads and all member checks.
 Apply results also age existing-block proofs through the batch's writes.
 A timed proof that can already have expired is not coverage, even if its row
-has time left within the readback slack. Any other row or element
-holding the address refuses the member as
-pending recovery. The batch rechecks, writes one
+has time left within the readback slack. The row must also last as long as
+the member, within the readback slack: a shorter block holds the address
+until it ends. Any other row or element holding the address refuses the
+member as pending recovery. The batch rechecks, writes one
 intent with expiry instants stored in UTC, refreshes timeouts after the
 write, and uses one atomic transaction
 on a fresh socket with a two-second deadline. Exact-family readback proves
