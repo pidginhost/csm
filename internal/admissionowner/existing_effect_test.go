@@ -245,10 +245,18 @@ func TestOwnerExistingEffectLastFinishAckFailure(t *testing.T) {
 }
 
 // A successful plain fallback clears a pending outcome even if the linked
-// write keeps failing. Later turns must use the ordinary check-time path.
+// write keeps failing or refusing. A failed fallback still fails the turn.
+// Later turns must use the ordinary check-time path.
 func TestOwnerExistingEffectFallbackClearsPending(t *testing.T) {
-	for _, delayed := range []bool{false, true} {
-		t.Run(map[bool]string{false: "immediate", true: "pending_retry"}[delayed], func(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		delayed, refused bool
+	}{
+		{name: "immediate"},
+		{name: "pending_retry", delayed: true},
+		{name: "refused_pending_retry", delayed: true, refused: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			p := withTestRegistry(t)
 			f := newOwnerFixture(t)
 			blocks := newFakeBlocks()
@@ -261,11 +269,14 @@ func TestOwnerExistingEffectFallbackClearsPending(t *testing.T) {
 			finish, terminateExisting := finishLedger, terminateExistingLedger
 			setOwnerHook(t, o, &finishExistingLedger, func(*store.AdmissionLedger, admission.ActionID, admission.EffectLink) (admission.Candidate, admission.AttemptRecord, error) {
 				linkedCalls++
+				if tc.refused {
+					return admission.Candidate{}, admission.AttemptRecord{}, &admission.Error{Reason: admission.ReasonStorageShare}
+				}
 				return admission.Candidate{}, admission.AttemptRecord{}, failure
 			})
 			setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, action admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
 				plainCalls++
-				if delayed && plainCalls == 1 {
+				if tc.delayed && plainCalls == 1 {
 					return admission.Candidate{}, admission.AttemptRecord{}, failure
 				}
 				return finish(l, action, d)
@@ -278,7 +289,7 @@ func TestOwnerExistingEffectFallbackClearsPending(t *testing.T) {
 				t.Fatalf("missing linked write failure: %v", turnErr)
 			}
 			wantWrites := 1
-			if delayed {
+			if tc.delayed {
 				if inspectErr := o.do(func() error {
 					if len(o.finishes) != 1 {
 						t.Errorf("failed writes retained %d outcomes, want 1", len(o.finishes))
@@ -290,7 +301,12 @@ func TestOwnerExistingEffectFallbackClearsPending(t *testing.T) {
 				if c := candidate(t, o, id); c.State != admission.StateExecuting {
 					t.Fatalf("both failed writes lost the executing attempt: %+v", c)
 				}
-				if turnErr := o.do(o.turn); !errors.Is(turnErr, failure) {
+				turnErr := o.do(o.turn)
+				if tc.refused {
+					if turnErr != nil {
+						t.Fatalf("refused link failed a successful fallback: %v", turnErr)
+					}
+				} else if !errors.Is(turnErr, failure) {
 					t.Fatalf("pending retry lost linked write failure: %v", turnErr)
 				}
 				wantWrites++
@@ -339,33 +355,67 @@ func TestOwnerExistingEffectFallbackClearsPending(t *testing.T) {
 // refused linked ending falls back to the plain failure without failing
 // the turn either.
 func TestOwnerRefusedLinkDefersOnlyItsPick(t *testing.T) {
-	for _, mode := range []string{"budget", "unnamed", "apply"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		retry      bool
+	}{
+		{name: "budget", mode: "budget"},
+		{name: "unnamed", mode: "unnamed"},
+		{name: "apply", mode: "apply"},
+		{name: "retry_budget", mode: "budget", retry: true},
+		{name: "retry_unnamed", mode: "unnamed", retry: true},
+		{name: "retry_apply", mode: "apply", retry: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			p := withTestRegistry(t)
 			f := newOwnerFixture(t)
 			blocks := newFakeBlocks()
-			switch mode {
-			case "apply":
-				blocks.results["192.0.2.11"] = firewall.BlockResult{Effect: firewall.BlockFailed, Refusal: firewall.BlockRefusedExisting}
-			case "unnamed":
-				blocks.refuse["192.0.2.11"] = firewall.BlockRefusedExisting
-				blocks.existing["192.0.2.11"] = firewall.ExistingBlock{}
-			default:
-				blocks.refuse["192.0.2.11"] = firewall.BlockRefusedExisting
-			}
 			o := f.start(executeOptions(f, blocks))
+			mono := heldMono(t, o)
 			held, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+			priorAttempts := uint32(0)
+			if tc.retry {
+				blocks.set(func(b *fakeBlocks) {
+					b.results["192.0.2.11"] = firewall.BlockResult{Effect: firewall.BlockFailed}
+				})
+				if err := o.do(o.turn); err != nil {
+					t.Fatal(err)
+				}
+				if c := candidate(t, o, held); c.State != admission.StateQueued || c.Attempts != 1 || attemptOf(t, o, c).State != admission.StateFailed {
+					t.Fatalf("retry was not queued after a failed attempt: %+v", c)
+				}
+				priorAttempts = 1
+				mono.advance(admission.RetryBackoff(1) + time.Second)
+				f.host.advance(admission.RetryBackoff(1) + time.Second)
+				if err := o.do(o.tick); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := candidate(t, o, held)
+			blocks.set(func(b *fakeBlocks) {
+				delete(b.results, "192.0.2.11")
+				switch tc.mode {
+				case "apply":
+					b.results["192.0.2.11"] = firewall.BlockResult{Effect: firewall.BlockFailed, Refusal: firewall.BlockRefusedExisting}
+				case "unnamed":
+					b.refuse["192.0.2.11"] = firewall.BlockRefusedExisting
+					b.existing["192.0.2.11"] = firewall.ExistingBlock{}
+				default:
+					b.refuse["192.0.2.11"] = firewall.BlockRefusedExisting
+				}
+			})
 			other, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 			budget := &admission.Error{Reason: admission.ReasonStorageShare, Detail: "fixture lane has no history budget for the link"}
+			refuseLink := true
 			terminateExisting, finishExisting := terminateExistingLedger, finishExistingLedger
 			setOwnerHook(t, o, &terminateExistingLedger, func(l *store.AdmissionLedger, id admission.CandidateID, link admission.EffectLink) (admission.Candidate, error) {
-				if mode == "budget" {
+				if tc.mode == "budget" && refuseLink {
 					return admission.Candidate{}, budget
 				}
 				return terminateExisting(l, id, link)
 			})
 			setOwnerHook(t, o, &finishExistingLedger, func(l *store.AdmissionLedger, id admission.ActionID, link admission.EffectLink) (admission.Candidate, admission.AttemptRecord, error) {
-				if mode == "apply" {
+				if tc.mode == "apply" {
 					return admission.Candidate{}, admission.AttemptRecord{}, budget
 				}
 				return finishExisting(l, id, link)
@@ -373,20 +423,28 @@ func TestOwnerRefusedLinkDefersOnlyItsPick(t *testing.T) {
 			if err := o.do(o.turn); err != nil {
 				t.Fatalf("a refused link failed the turn: %v", err)
 			}
-			checks, _ := blocks.calls()
-			if len(checks) == 0 || len(checks[0]) != 2 || checks[0][0].IP != "192.0.2.11" {
+			checks, applies := blocks.calls()
+			wantChecks, wantMembers := int(priorAttempts)+1, 1
+			if tc.mode == "apply" {
+				wantChecks++ // The apply-time refusal needs a fresh proof.
+				wantMembers++
+			}
+			if len(checks) != wantChecks || len(checks[priorAttempts]) != 2 || checks[priorAttempts][0].IP != "192.0.2.11" {
 				t.Fatalf("the refused pick was not checked first: %+v", checks)
+			}
+			if len(applies) != int(priorAttempts)+1 || len(applies[priorAttempts]) != wantMembers {
+				t.Fatalf("refused link dispatched unexpected work: %+v", applies)
 			}
 			if c := candidate(t, o, other); c.State != admission.StateVerified || c.Attempts != 1 {
 				t.Fatalf("the rest of the batch did not run: %+v", c)
 			}
 			c := candidate(t, o, held)
-			wantAttempts, wantReason := uint32(0), admission.Reason(0)
-			switch mode {
+			wantAttempts, wantReason := priorAttempts, admission.Reason(0)
+			switch tc.mode {
 			case "budget":
 				wantReason = admission.ReasonStorageShare
 			case "apply":
-				wantAttempts = 1
+				wantAttempts++
 			}
 			if c.State != admission.StateQueued || c.Attempts != wantAttempts || c.Reason != wantReason || c.Link != (admission.EffectLink{}) {
 				t.Fatalf("refused link = %+v, want queued with %d attempts and reason %s", c, wantAttempts, wantReason)
@@ -394,6 +452,85 @@ func TestOwnerRefusedLinkDefersOnlyItsPick(t *testing.T) {
 			if wantAttempts > 0 && attemptOf(t, o, c).State != admission.StateFailed {
 				t.Fatalf("refused apply-time link left the attempt %+v", attemptOf(t, o, c))
 			}
+			if tc.mode != "apply" && (!c.NotBefore.Equal(before.NotBefore) || !c.ExpiresAt.Equal(before.ExpiresAt)) {
+				t.Fatalf("refused link changed retry deadlines: before=%+v after=%+v", before, c)
+			}
+			if st := ledgerStatus(t, o); st.Ceiling.General.Used != wantAttempts+1 || st.Unresolved.Running != 0 {
+				t.Fatalf("refused link changed charges or retained an intent: %+v", st)
+			}
+			if err := o.do(func() error {
+				if len(o.finishes) != 0 {
+					t.Errorf("refused link retained %d pending outcomes", len(o.finishes))
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.mode != "apply" {
+				// With no other picks left, a persistent refusal must still
+				// return after one check, without reserving another attempt.
+				mono.advance(batchEvery)
+				f.host.advance(batchEvery)
+				if err := o.do(o.turn); err != nil {
+					t.Fatal(err)
+				}
+				wantChecks++
+				if again := candidate(t, o, held); again.State != admission.StateQueued || again.Attempts != wantAttempts || again.Reason != wantReason {
+					t.Fatalf("persistent refusal changed the queued pick: %+v", again)
+				}
+				if checks, laterApplies := blocks.calls(); len(checks) != wantChecks || len(laterApplies) != len(applies) {
+					t.Fatalf("persistent refusal repeated work: checks=%d applies=%d", len(checks), len(laterApplies))
+				}
+			}
+			if err := o.do(func() error { refuseLink = false; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			blocks.set(func(b *fakeBlocks) { delete(b.existing, "192.0.2.11") })
+			mono.advance(admission.RetryBackoff(wantAttempts) + batchEvery)
+			f.host.advance(admission.RetryBackoff(wantAttempts) + batchEvery)
+			if err := o.do(o.turn); err != nil {
+				t.Fatal(err)
+			}
+			wantLink := admission.EffectLink{Effect: fakeExisting.ID, ExpiresAt: fakeExisting.ExpiresAt}
+			if c := candidate(t, o, held); c.State != admission.StateRefused || c.Reason != admission.ReasonExistingEffect || c.Attempts != wantAttempts || c.Link != wantLink {
+				t.Fatalf("refused link did not converge after recovery: %+v", c)
+			}
+			if checks, laterApplies := blocks.calls(); len(checks) != wantChecks+1 || len(laterApplies) != len(applies) {
+				t.Fatalf("link recovery repeated work: checks=%d applies=%d", len(checks), len(laterApplies))
+			}
+			if st := ledgerStatus(t, o); st.Ceiling.General.Used != wantAttempts+1 || st.Unresolved.Running != 0 {
+				t.Fatalf("link recovery changed charges or retained an intent: %+v", st)
+			}
 		})
+	}
+}
+
+// A write failure is not a refused link: later picks stay untouched and
+// the turn reports the storage error.
+func TestOwnerExistingLinkWriteFailureStopsBatch(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.refuse["192.0.2.11"] = firewall.BlockRefusedExisting
+	o := f.start(executeOptions(f, blocks))
+	held, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+	other, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	failure := errors.New("fixture linked ending write failure")
+	setOwnerHook(t, o, &terminateExistingLedger, func(*store.AdmissionLedger, admission.CandidateID, admission.EffectLink) (admission.Candidate, error) {
+		return admission.Candidate{}, failure
+	})
+	if err := o.do(o.turn); !errors.Is(err, failure) {
+		t.Fatalf("missing linked write failure: %v", err)
+	}
+	if checks, applies := blocks.calls(); len(checks) != 1 || len(checks[0]) != 2 || checks[0][0].IP != "192.0.2.11" || len(applies) != 0 {
+		t.Fatalf("write failure did not stop the batch: checks=%+v applies=%+v", checks, applies)
+	}
+	for _, id := range []admission.CandidateID{held, other} {
+		if c := candidate(t, o, id); c.State != admission.StateQueued || c.Attempts != 0 || c.Reason != 0 || c.Link != (admission.EffectLink{}) {
+			t.Fatalf("write failure changed the queued pick: %+v", c)
+		}
+	}
+	if st := ledgerStatus(t, o); st.Ceiling.General.Used != 0 || st.Unresolved.Running != 0 {
+		t.Fatalf("write failure charged or started an attempt: %+v", st)
 	}
 }
