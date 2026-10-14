@@ -1105,3 +1105,52 @@ func TestAntispamHealthNoticesSpareTheAlertBudget(t *testing.T) {
 		t.Fatalf("a routine alert after the outage notices was dropped: %d deliveries, want 4", got)
 	}
 }
+
+// Antispam integrates with cPanel's Exim only. Enabling it elsewhere does
+// nothing, so the daemon says why at startup and on each reload.
+func TestAntispamEnabledWithoutCPanelLogsWhyItIsInactive(t *testing.T) {
+	usePanel(t, platform.PanelNone)
+	useAntispamHost(t)
+	d := newTestDaemon(t)
+	cfg := &config.Config{}
+	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, DryRun: true, RspamdSocket: testScanSocket, RejectScore: 15, TagScore: 6}
+	useActiveConfig(t, cfg)
+	finish := captureCSMLog(t)
+	t.Cleanup(func() { finish() })
+	d.startAntispam()
+	d.reconcileAntispam()
+	if got := finish(); strings.Count(got, "antispam is enabled but inactive: it supports cPanel hosts only") != 2 {
+		t.Fatalf("startup and reload did not each explain inactive antispam: %q", got)
+	}
+}
+
+// The explanation is only for an enabled switch on a host without cPanel. A
+// cPanel host whose reload arrives before antispam starts is not inactive.
+func TestAntispamInactiveReasonOnlyWithoutCPanel(t *testing.T) {
+	enabled := &config.Config{}
+	enabled.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, DryRun: true, RspamdSocket: testScanSocket, RejectScore: 15, TagScore: 6}
+	for _, tc := range []struct {
+		name  string
+		panel platform.Panel
+		cfg   *config.Config
+	}{
+		{"disabled without cPanel", platform.PanelNone, &config.Config{}},
+		{"cPanel reload before start", platform.PanelCPanel, enabled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usePanel(t, tc.panel)
+			useAntispamHost(t)
+			d := newTestDaemon(t)
+			useActiveConfig(t, tc.cfg)
+			finish := captureCSMLog(t)
+			t.Cleanup(func() { finish() })
+			d.reconcileAntispam()
+			if tc.panel == platform.PanelNone {
+				d.startAntispam()
+			}
+			if got := finish(); strings.Contains(got, "antispam is enabled but inactive") {
+				t.Fatalf("logged an inactive reason: %q", got)
+			}
+		})
+	}
+}

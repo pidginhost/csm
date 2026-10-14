@@ -13,6 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/antispam/worker"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
@@ -57,6 +58,7 @@ var antispamReconciler = func() reconcile.Reconciler {
 // cancels a running pass or probe.
 func (d *Daemon) startAntispam() {
 	if !platform.Detect().IsCPanel() {
+		warnAntispamWithoutCPanel(d.currentCfg())
 		return
 	}
 	// Health state starts empty; findings kept from before a restart
@@ -89,6 +91,20 @@ func (d *Daemon) reconcileAntispam() {
 	if loop := d.antispamLoop.Load(); loop != nil {
 		d.syncAntispamHealth()
 		loop.Trigger()
+		return
+	}
+	// A cPanel host can reload before startAntispam publishes the loop;
+	// startup then reads the new config itself.
+	if !platform.Detect().IsCPanel() {
+		warnAntispamWithoutCPanel(d.currentCfg())
+	}
+}
+
+// warnAntispamWithoutCPanel explains an enabled switch that does nothing:
+// the integration exists only for cPanel's Exim.
+func warnAntispamWithoutCPanel(cfg *config.Config) {
+	if cfg.EmailProtection.Antispam.Enabled {
+		csmlog.Warn("antispam is enabled but inactive: it supports cPanel hosts only")
 	}
 }
 

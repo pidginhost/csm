@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -385,5 +386,24 @@ func TestForwardGuardReloadDuringRetryKeepsLatestConfigPending(t *testing.T) {
 				t.Fatalf("successful latest config was retried: %d attempts", g.attempts)
 			}
 		})
+	}
+}
+
+// A reload that finds a forward-guard reconcile running leaves its change for
+// the next refresh, and says so, so a delayed change is not a silent one.
+// The ticker runs independently, so the log must label its cadence as an interval.
+func TestForwardGuardReloadDuringReconcileLogsTheDeferral(t *testing.T) {
+	d := newTestDaemon(t)
+	d.forwardGuardMu.Lock()
+	finish := captureCSMLog(t)
+	t.Cleanup(func() { finish() })
+	d.reconcileForwardGuard()
+	got := finish()
+	d.forwardGuardMu.Unlock()
+	if strings.Count(got, "forward-guard reconcile deferred to the next refresh") != 1 || !strings.Contains(got, "refresh_interval=15m0s") {
+		t.Fatalf("deferred reconcile was not logged once with its refresh interval: %q", got)
+	}
+	if !d.forwardGuardRetry.Load() {
+		t.Fatal("deferred change was not kept for the next refresh")
 	}
 }
