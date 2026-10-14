@@ -41,11 +41,15 @@ func (e *Engine) leaseAtLocked(sample time.Time) time.Time {
 
 // SetLeaseFloor moves the lease clock forward to floor when it is behind
 // it. The daemon passes the admission clock's saved time before the first
-// Apply. This is only a lower bound; the caller must separately prove
-// restart continuity before claiming that restoration cannot renew a lease.
+// Apply: a lower bound for a new boot, where the lease checkpoint proves no
+// downtime (lease_checkpoint_linux.go).
 func (e *Engine) SetLeaseFloor(floor time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.raiseLeaseLocked(floor)
+}
+
+func (e *Engine) raiseLeaseLocked(floor time.Time) {
 	if now := e.leaseNowLocked(); floor.After(now) {
 		e.lease.now = floor.Round(0)
 	}

@@ -174,6 +174,11 @@ type Engine struct {
 	// without the other.
 	lease      leaseReading
 	leaseClock func() (wall, elapsed time.Time)
+	// bootClock reads the boot ID and the time since boot for the lease
+	// checkpoint (lease_checkpoint_linux.go); leaseResumed is set once the
+	// first Apply has read it.
+	bootClock    func() (bootID string, sinceBoot time.Duration, err error)
+	leaseResumed bool
 
 	liveBlockLookup func(set *nftables.Set, key []byte) (bool, error)
 
@@ -781,6 +786,9 @@ func (e *Engine) applyRulesetLocked(marker string) (resultErr error) {
 	// Apply atomically - if this fails, nftables keeps whatever was running before
 	if err := e.conn.Flush(); err != nil {
 		return fmt.Errorf("applying ruleset: %w", err)
+	}
+	if err := e.saveLeaseLocked(); err != nil {
+		fmt.Fprintf(os.Stderr, "firewall: lease checkpoint not saved: %v\n", err)
 	}
 	// A failed capture leaves monitoring visibly unbaselined; it must neither
 	// undo an applied firewall nor bless a later, possibly external edit.
@@ -2644,6 +2652,13 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 		return BlockOutcomeLive, nil
 	}
 
+	// A new deadline may use a forward-ratcheted lease. Save its clock
+	// before the intent so a crash cannot restore more than authorized.
+	if !expiresAt.IsZero() {
+		if err := e.saveLeaseLocked(); err != nil {
+			return BlockOutcomeNoop, fmt.Errorf("saving block lease: %w", err)
+		}
+	}
 	if err := e.persistFirewallIntent(priorState, nextState); err != nil {
 		return BlockOutcomeNoop, fmt.Errorf("persisting block for %s: %w", ip, err)
 	}
@@ -4254,6 +4269,10 @@ type initialBlockState struct {
 // Apply before any AddTable / AddSet so the result can be queued
 // into the same atomic netlink batch.
 func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
+	// A restart resumes the lease clock before restoring timed blocks.
+	if err := e.resumeLeaseLocked(); err != nil {
+		fmt.Fprintf(os.Stderr, "firewall: restoring timed blocks without the lease checkpoint: %v\n", err)
+	}
 	now := e.expiryNow()
 	state := e.loadStateFileAtLocked(now)
 	// Timeouts come from the lease clock, which a step back of the wall

@@ -510,6 +510,24 @@ that clock too. Operator undo retains the original deadline and refreshes
 its remaining timeout after persistence and before each bounded retry.
 Fresh legacy sends also refresh after persistence. Ruleset installation ages
 precomputed block timeouts after table discovery and rule construction.
+After every ruleset it installs, the engine saves that clock with the boot
+it was read in and the time since boot (`lease.json` beside the state file).
+A timed legacy block saves it before the state intent too, so a new deadline
+created during a forward clock step cannot gain time after correction and
+restart. If that save fails, the new block is refused before state or kernel
+mutation. A save failure after ruleset installation warns without undoing
+the installed rules; the next Apply retries it. Separate clock samples are
+ordered so sampling latency can only shorten restoration.
+A new engine resumes from it before restoring timed blocks: within the same
+boot at the checkpoint plus the time elapsed since it, whatever the wall
+clock did meanwhile; on a new boot at the checkpoint itself, crediting no
+downtime. Before the first Apply the daemon also moves the clock forward to
+the time the admission clock proves has passed: its saved high-water mark
+or, within the same boot, its checkpoint plus the time elapsed since. A
+valid but degraded admission clock still supplies that bound and logs the
+discrepancy; a damaged checkpoint or an unreadable ledger logs the missing
+coverage, and without either the engine starts from the wall clock. Forward
+steps can shorten restored leases.
 
 The engine also provides internal batch entry points for up to 64 timed
 full-address blocks. The admission owner runs them only when the daemon gives

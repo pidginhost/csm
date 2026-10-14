@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/admissionowner"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -27,7 +29,14 @@ type firewallStartupOps struct {
 	setAside func(*firewall.Engine) string
 	// unproven, when set, replaces readUnprovenBlockActions.
 	unproven func([]string) ([]string, error)
-	delays   []time.Duration
+	// leaseFloor, when set, replaces readFirewallLeaseFloor, and
+	// setLeaseFloor replaces (*firewall.Engine).SetLeaseFloor.
+	leaseFloor    func() (time.Time, error)
+	setLeaseFloor func(*firewall.Engine, time.Time)
+	// setBootClock, when set, replaces (*firewall.Engine).SetBootClock.
+	setBootClock func(*firewall.Engine, func() (string, time.Duration, error))
+	leaseWarning func(error)
+	delays       []time.Duration
 }
 
 func (d *Daemon) startFirewall() {
@@ -204,6 +213,7 @@ func (d *Daemon) prepareFirewall(effectiveFirewall *firewall.FirewallConfig, ops
 	d.fwActions, _ = any(engine).(firewallActionBoundary)
 	recoverFirewallActions(d.fwActions)
 	gateFirewallRows(d.cfg.StatePath, engine, ops)
+	seedFirewallLease(engine, ops)
 
 	err = ops.apply(engine)
 	// Report a kept file even when this attempt fails: the next attempt
@@ -260,6 +270,74 @@ func gateFirewallRows(statePath string, engine *firewall.Engine, ops firewallSta
 	if _, err := engine.MarkBlockActionsUnverified(unproven); err != nil {
 		csmlog.Warn("firewall holds unproven blocks back in memory only", "err", err)
 	}
+}
+
+// seedFirewallLease gives the engine, before Apply restores timed blocks,
+// the lower bound supplied by the saved admission clock. It composes with
+// the engine's own checkpoint; an unreadable ledger adds no floor.
+func seedFirewallLease(engine *firewall.Engine, ops firewallStartupOps) {
+	// The engine's own checkpoint resumes the lease within one boot; the
+	// ledger's saved clock bounds it on a new boot.
+	setBoot := ops.setBootClock
+	if setBoot == nil {
+		setBoot = (*firewall.Engine).SetBootClock
+	}
+	setBoot(engine, readBootClock)
+	read, set := ops.leaseFloor, ops.setLeaseFloor
+	if read == nil {
+		read = readFirewallLeaseFloor
+	}
+	if set == nil {
+		set = (*firewall.Engine).SetLeaseFloor
+	}
+	floor, err := read()
+	if err != nil {
+		if ops.leaseWarning != nil {
+			ops.leaseWarning(err)
+		} else {
+			csmlog.Warn("firewall lease clock coverage degraded", "err", err)
+		}
+	}
+	if floor.IsZero() {
+		return
+	}
+	set(engine, floor)
+}
+
+func readBootClock() (string, time.Duration, error) {
+	r, err := admissionowner.ReadClock()
+	return r.BootID, r.SinceBoot, err
+}
+
+func readFirewallLeaseFloor() (time.Time, error) {
+	db := store.Global()
+	if db == nil {
+		return time.Time{}, errors.New("state database unavailable")
+	}
+	clock, err := store.ReadAdmissionClock(db)
+	if err != nil {
+		return time.Time{}, err
+	}
+	reading, err := admissionowner.ReadClock()
+	if err != nil {
+		return time.Time{}, err
+	}
+	return provenFirewallLease(clock, reading)
+}
+
+func provenFirewallLease(clock admission.Clock, reading admission.ClockReading) (time.Time, error) {
+	if !clock.Initialized() {
+		return time.Time{}, errors.New("no saved admission clock; no ledger lease floor")
+	}
+	_, tick, err := clock.Advance(reading)
+	if err != nil {
+		return time.Time{}, err
+	}
+	floor := clock.Proven(reading)
+	if tick.Degraded {
+		return floor, errors.New("host clock disagrees with the saved checkpoint; using its proven floor")
+	}
+	return floor, nil
 }
 
 func readUnprovenBlockActions(ids []string) ([]string, error) {

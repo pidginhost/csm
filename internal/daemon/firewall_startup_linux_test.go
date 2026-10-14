@@ -303,3 +303,130 @@ func TestFirewallStartupReadsLedgerWithoutReadableRows(t *testing.T) {
 		}
 	}
 }
+
+// Each startup attempt gives its engine the time the admission clock proves
+// before Apply restores timed blocks; without a readable clock Apply still
+// runs, against the wall clock.
+func TestFirewallStartupSeedsTheLeaseFloorBeforeApply(t *testing.T) {
+	for _, mode := range []string{"valid", "damaged", "degraded"} {
+		var floorErr error
+		if mode != "valid" {
+			floorErr = errors.New("fixture clock " + mode)
+		}
+		cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: true}, StatePath: t.TempDir()}
+		d := New(cfg, nil, nil, "")
+		floor := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+		var calls []string
+		warnings := 0
+		var seeded *firewall.Engine
+		_, err := d.prepareFirewall(cfg.Firewall, firewallStartupOps{
+			newEngine: firewall.NewEngine,
+			leaseWarning: func(err error) {
+				warnings++
+				if !errors.Is(err, floorErr) {
+					t.Errorf("warning lost cause: %v", err)
+				}
+			},
+			unproven: func([]string) ([]string, error) { return nil, nil },
+			leaseFloor: func() (time.Time, error) {
+				calls = append(calls, "read")
+				if mode == "damaged" {
+					return time.Time{}, floorErr
+				}
+				return floor, floorErr
+			},
+			setLeaseFloor: func(engine *firewall.Engine, at time.Time) {
+				calls = append(calls, "seed")
+				if !at.Equal(floor) {
+					t.Errorf("seeded %v, want %v", at, floor)
+				}
+				seeded = engine
+			},
+			apply: func(engine *firewall.Engine) error {
+				calls = append(calls, "apply")
+				if mode != "damaged" && engine != seeded {
+					t.Error("the floor was given to another engine")
+				}
+				return nil
+			},
+		})
+		want := "read,seed,apply"
+		if mode == "damaged" {
+			want = "read,apply"
+		}
+		wantWarnings := 0
+		if floorErr != nil {
+			wantWarnings = 1
+		}
+		if warnings != wantWarnings {
+			t.Fatalf("warnings=%d, want %d", warnings, wantWarnings)
+		}
+		if err != nil || strings.Join(calls, ",") != want {
+			t.Fatalf("ledger error %v: calls %v, %v; want %s", floorErr, calls, err, want)
+		}
+	}
+}
+
+func TestFirewallStartupSeedsTheLeaseFloorOnEveryRetry(t *testing.T) {
+	cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: true}, StatePath: t.TempDir()}
+	d := New(cfg, nil, nil, "")
+	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	reads, applies := 0, 0
+	seeded := map[*firewall.Engine]time.Time{}
+	ops := firewallStartupOps{
+		newEngine: firewall.NewEngine,
+		unproven:  func([]string) ([]string, error) { return nil, nil },
+		leaseFloor: func() (time.Time, error) {
+			reads++
+			return at.Add(time.Duration(reads) * time.Second), nil
+		},
+		setLeaseFloor: func(e *firewall.Engine, floor time.Time) { seeded[e] = floor },
+		apply: func(e *firewall.Engine) error {
+			applies++
+			if floor, ok := seeded[e]; !ok || !floor.Equal(at.Add(time.Duration(applies)*time.Second)) {
+				t.Fatalf("attempt %d applied without its fresh floor: %v", applies, floor)
+			}
+			if applies == 1 {
+				return errors.New("fixture first apply failure")
+			}
+			return nil
+		},
+	}
+	_, err := retryFirewallStartup(make(chan struct{}), []time.Duration{0}, func() (*firewall.Engine, error) {
+		return d.prepareFirewall(cfg.Firewall, ops)
+	})
+	if err != nil || reads != 2 || applies != 2 || len(seeded) != 2 {
+		t.Fatalf("retry calls: reads=%d applies=%d engines=%d err=%v", reads, applies, len(seeded), err)
+	}
+}
+
+// The engine keeps its lease checkpoint with the boot it was read in: the
+// daemon gives it the boot clock before Apply.
+func TestFirewallStartupGivesTheEngineItsBootClock(t *testing.T) {
+	cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: true}, StatePath: t.TempDir()}
+	d := New(cfg, nil, nil, "")
+	var calls []string
+	var given *firewall.Engine
+	_, err := d.prepareFirewall(cfg.Firewall, firewallStartupOps{
+		newEngine:  firewall.NewEngine,
+		unproven:   func([]string) ([]string, error) { return nil, nil },
+		leaseFloor: func() (time.Time, error) { return time.Time{}, nil },
+		setBootClock: func(engine *firewall.Engine, read func() (string, time.Duration, error)) {
+			calls = append(calls, "boot")
+			if read == nil {
+				t.Error("no boot clock")
+			}
+			given = engine
+		},
+		apply: func(engine *firewall.Engine) error {
+			calls = append(calls, "apply")
+			if engine != given {
+				t.Error("the boot clock was given to another engine")
+			}
+			return nil
+		},
+	})
+	if err != nil || strings.Join(calls, ",") != "boot,apply" {
+		t.Fatalf("calls %v, %v; want the boot clock before Apply", calls, err)
+	}
+}
