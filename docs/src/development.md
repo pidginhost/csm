@@ -470,6 +470,20 @@ an hour after the last observation, even while work of another kind is
 queued or in flight; an unknown outcome or a response of another kind does
 not end it.
 
+A candidate refused as an existing effect can name the block that enforces
+it: the admission action that wrote it, or the firewall's `eff_` name of an
+operator or earlier block, with its expiry. `TerminateExisting` ends a
+queued pick that way, including a retry whose earlier attempt never ran;
+`FinishExisting` fails the current attempt, keeping its charge, and ends
+the pick linked in the same transaction, or leaves it
+failed on its last attempt. A historical result cannot end a later retry;
+a repeated linked ending must name the same block and expiry instant. A linked record is candidate version 2 and an
+admitted candidate's history pays for its bytes; without room the
+transaction changes nothing. The first linked record moves the ledger to
+schema 8, with the same buckets; this build opens schema 7 and 8, and older
+builds refuse schema 8 rather than misread it. A ledger stays at schema 7,
+and can be read by an older build, until something is linked.
+
 Schema 7 adds execution intents; the first open upgrades a schema 1 to 6
 ledger in the same transaction. Execution marks a batch of up to 64
 reserved attempts as running and records, in the same transaction and

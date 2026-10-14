@@ -32,6 +32,10 @@ const (
 	admissionEpisodesBucket   = "adm:episodes"
 	admissionIntentsBucket    = "adm:intents"
 	admissionSchemaVersion    = 7
+	// admissionSchemaLinked is the schema of a ledger holding a candidate
+	// linked to the block that enforces it. The first linked candidate
+	// writes it; older builds refuse it rather than misread the record.
+	admissionSchemaLinked = 8
 )
 
 var (
@@ -265,7 +269,7 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaSeven(tx); err != nil {
 					return err
 				}
-			case len(schema) == 1 && schema[0] == admissionSchemaVersion:
+			case len(schema) == 1 && (schema[0] == admissionSchemaVersion || schema[0] == admissionSchemaLinked):
 				if existing != len(admissionBuckets) {
 					return admission.ErrCorruptRecord
 				}
