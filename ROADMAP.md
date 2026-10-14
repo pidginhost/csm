@@ -47,11 +47,13 @@ on fresh servers. Two gates are open:
 - [ ] A licensed cPanel/CloudLinux environment behind the protected
   `INTEGRATION_CPANEL_IMAGE` variable; see
   [cPanel acceptance](docs/src/cpanel-release-tests.md). **Blocked:** no
-  licence exists for disposable CI clones and the cloud catalogue has no
-  cPanel image, so a tag must set `CSM_RELEASE_WITHOUT_CPANEL` with a reason
-  and record `cpanel_coverage: "absent"`. A permanent licensed test server is
-  the realistic fix; the gate covers install, upgrade, rollback, panel
-  layouts, a WordPress workload, the attack replay corpus and reinstall.
+  licence covers disposable CI clones and the cloud catalogue has no cPanel
+  image, so a tag must set `CSM_RELEASE_WITHOUT_CPANEL` with a reason and
+  record `cpanel_coverage: "absent"`. A single-account licensed test server
+  now exists for manual end-to-end runs; CI creates fresh servers per run, so
+  wiring a fixed licensed host into the pipeline is the open decision. The
+  gate covers install, upgrade, rollback, panel layouts, a WordPress
+  workload, the attack replay corpus and reinstall.
 - [ ] Detection-quality evidence per release, as defined under
   [detection quality metrics](#detection-quality-metrics-per-release).
 
@@ -82,28 +84,35 @@ Design: [auto-response safety model](docs/src/design/auto-response-safety-model.
 
 **Problem:** file responses share persistent budgets, failure pauses and
 identity revalidation, and the risk tier table in `internal/privops` has a
-completeness test; other response families have no shared limits or failure
-pause, not every action has a rollback and identity proof, and the
-reputation escalation loop has no feedback-lifecycle guard.
+completeness test. Automatic IP responses also pass through the admission
+ledger, which previews them under one persistent hourly ceiling and executes
+none, so the existing blocking paths still decide every block. Other
+response families have no shared limits or failure pause, not every action
+has a rollback and identity proof, and the reputation escalation loop has no
+feedback-lifecycle guard.
 
 **Acceptance:** every reversible tier 2 to 4 action has a rollback test; a
 broken detector cannot exceed its breaker; PID reuse, symlink swap, CageFS
 bind-mount ambiguity and a file replaced after detection are each refused by
 test; withheld Critical responses stay visible under overload.
 
-**Depends on:** [durable action lifecycle](#action-log-covers-six-of-41-host-changing-operations).
+**Depends on:** [durable action lifecycle](#action-log-covers-seven-of-43-host-changing-operations).
 **Size:** L.
 
-## Action log covers six of 41 host-changing operations
+## Action log covers seven of 43 host-changing operations
 
 Design: [durable action lifecycle](docs/src/design/durable-action-lifecycle.md).
 
-**Problem:** `internal/actionlog` records six operations; the privops
-inventory has 58, 41 of them tier 2 to 4, so 35 `respond.*` and
-`integrate.*` operations leave only a daemon log line, and a JSONL outcome
-cannot tell a refused request from a mutation applied just before a crash.
-The durable firewall action service exists behind engine injection;
-production activation, reader cutover, migration, restore, downgrade and
+**Problem:** `internal/actionlog` records seven operations; the privops
+inventory has 59, 43 of them tier 2 to 4, so the other 36 leave only a
+daemon log line, and a JSONL outcome cannot tell a refused request from a
+mutation applied just before a crash. The durable firewall action service
+exists behind engine injection. The admission ledger records each automatic
+IP response's intent before execution, settles attempts left by a crash and
+holds blocks from unresolved attempts out of the kernel at startup. Its
+block executor (per-member batch checks, kernel readback, proof of an
+existing block) is not wired in production, so every pick is a preview.
+Execution cutover, reader cutover, migration, restore, downgrade and
 operator recovery interfaces remain open.
 
 **Acceptance:** every tier 2 to 4 operation maps to the lifecycle from every
@@ -121,11 +130,15 @@ Design: [firewall state migration](docs/src/design/firewall-state-migration.md).
 **Problem:** the lossless storage contract is implemented and tested without
 runtime callers, but the engine still keeps its authoritative state in
 `state.json`; cutover, migration, restore, downgrade and recovery are open.
+The contract predates the unverified mark on block rows and the firewall
+clock checkpoint in `lease.json`, so the cutover must carry both.
 
 **Acceptance:** every engine state field round-trips with original
-timestamps; corrupt rows, read failures, concurrent requests, crashes around
-commit, downgrade and backup restore are tested; migration resets no
-response budget or failure pause.
+timestamps, including unverified marks; corrupt rows, read failures,
+concurrent requests, crashes around commit, downgrade and backup restore
+are tested; an unreadable store keeps the `state.json` set-aside behaviour;
+migration resets no response budget or failure pause and never moves the
+firewall clock backward.
 
 **Depends on:** the firewall slice of the item above. **Size:** M.
 
@@ -243,7 +256,7 @@ through symlinks, bind mounts and PID reuse; forged intent, replay, budget
 reset and unauthorized peers are refused; the root code is readable in one
 sitting.
 
-**Depends on:** [durable action lifecycle](#action-log-covers-six-of-41-host-changing-operations).
+**Depends on:** [durable action lifecycle](#action-log-covers-seven-of-43-host-changing-operations).
 **Size:** L.
 
 ## Optional MFA for browser administrators
