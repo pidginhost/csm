@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/eximlock"
 	"github.com/pidginhost/csm/internal/mailfwd/adapter"
 	"github.com/pidginhost/csm/internal/mailfwd/policy"
 	"github.com/pidginhost/csm/internal/platform"
@@ -405,5 +407,52 @@ func TestForwardGuardReloadDuringReconcileLogsTheDeferral(t *testing.T) {
 	}
 	if !d.forwardGuardRetry.Load() {
 		t.Fatal("deferred change was not kept for the next refresh")
+	}
+}
+
+// failingForwardGuard refuses every change with err.
+type failingForwardGuard struct{ err error }
+
+func (g failingForwardGuard) Apply(policy.Config, []string) error { return g.err }
+func (g failingForwardGuard) Remove() error                       { return g.err }
+func (g failingForwardGuard) RefreshBadIPs([]string) error        { return nil }
+func (g failingForwardGuard) Status() (adapter.Status, error)     { return adapter.Status{}, nil }
+
+// A change refused because another CSM transaction holds the Exim lock is
+// deferred, not failed: it logs at info and stays pending for the next
+// refresh. Any other failure still logs an error.
+func TestForwardGuardBusyLockIsDeferredNotFailed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err  error
+		want string
+	}{
+		"busy":   {fmt.Errorf("forward-guard worker: %w", eximlock.ErrBusy), "] forward-guard reconcile deferred to the next refresh: another CSM transaction holds the Exim lock  refresh_interval=15m0s"},
+		"failed": {errors.New("forward-guard worker failed: exit status 1: buildeximconf failed"), "] ERROR: forward-guard reconcile failed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			usePanel(t, platform.PanelCPanel)
+			cfg := &config.Config{Mode: config.ModeEnforce}
+			cfg.EmailProtection.ForwardGuard.Enabled = true
+			cfg.EmailProtection.ForwardGuard.HoldSignals.BounceBackscatter = true
+			useActiveConfig(t, cfg)
+			prev := newForwardGuard
+			t.Cleanup(func() { newForwardGuard = prev })
+			newForwardGuard = func() adapter.ForwardGuard { return failingForwardGuard{tc.err} }
+			d := &Daemon{cfg: cfg}
+			finish := captureCSMLog(t)
+			t.Cleanup(func() { finish() })
+
+			d.reconcileForwardGuard()
+			got := finish()
+			if strings.Count(got, tc.want) != 1 {
+				t.Fatalf("log = %q, want one %q", got, tc.want)
+			}
+			if name == "busy" && (strings.Contains(got, "ERROR:") || strings.Contains(got, "WARN:")) {
+				t.Fatalf("busy lock logged as a problem: %q", got)
+			}
+			if !d.forwardGuardRetry.Load() {
+				t.Fatal("refused change was not kept for the next refresh")
+			}
+		})
 	}
 }
