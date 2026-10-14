@@ -33,10 +33,13 @@ components:
       type: http
       scheme: bearer
       description: >-
-        webui.tokens entry. scope=read authorizes read endpoints; scope=admin
-        authorizes all endpoints. Each token requires an issued_at RFC3339
-        timestamp and expires 168 hours after that instant. Missing, malformed,
-        future or expired issue times disable the credential.
+        webui.tokens entry. scope=read authorizes read endpoints; scope=unban
+        authorizes only GET /api/v1/firewall/check and POST
+        /api/v1/firewall/unban; scope=admin authorizes all endpoints. Each
+        token requires an issued_at RFC3339 timestamp and expires at its
+        optional expires_at, or 168 hours after issued_at. Missing, malformed,
+        future or expired dates disable the credential. allowed_ips limits a
+        token to those addresses and CIDR ranges.
   responses:
     Unauthorized:
       description: Missing, invalid, expired, or insufficient-scope token.
@@ -630,8 +633,8 @@ paths:
   "/api/v1/firewall/check":
     get:
       operationId: get_firewall_check
-      summary: "get /api/v1/firewall/check (scope: admin)"
-      x-csm-scope: admin
+      summary: "get /api/v1/firewall/check (scope: unban)"
+      x-csm-scope: unban
       security:
         - bearerAuth: []
       responses:
@@ -775,8 +778,8 @@ paths:
   "/api/v1/firewall/unban":
     post:
       operationId: post_firewall_unban
-      summary: "post /api/v1/firewall/unban (scope: admin)"
-      x-csm-scope: admin
+      summary: "post /api/v1/firewall/unban (scope: unban)"
+      x-csm-scope: unban
       security:
         - bearerAuth: []
       requestBody:

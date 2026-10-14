@@ -19,6 +19,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Added
 
 - Inbound spam filtering on cPanel through an rspamd you install, where each account's Spam Filters switch decides; existing hosts are unchanged until `email_protection.antispam.enabled` is set.
+- API credentials can now set their own expiry with `expires_at`, accept only listed addresses with `allowed_ips`, and use an `unban` scope limited to checking and lifting firewall blocks. Credentials without `expires_at` still expire seven days after issue.
 
 ### Changed
 

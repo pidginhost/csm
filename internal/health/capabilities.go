@@ -52,6 +52,9 @@ func Capabilities() []string {
 		"status.queue_health.v1",
 		"status.admission.v1", // status carries the admission ledger, ingress and owner view
 		"token.expiry.v1",
+		"token.expires_at.v1",  // per-credential expiry
+		"token.scope.unban.v1", // firewall check and unban only
+		"token.allowed_ips.v1", // per-token source addresses
 	}
 	if firewall.Supported() {
 		caps = append(caps,

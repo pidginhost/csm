@@ -67,7 +67,7 @@ func (s *Server) metricsBearerMatches(r *http.Request) bool {
 		cfg = live
 	}
 	tok := cfg.WebUI.MetricsToken
-	if tok != "" && config.WebUITokenCurrent(cfg.WebUI.MetricsTokenIssuedAt, s.sessionNow()) {
+	if tok != "" && config.WebUITokenCurrent(cfg.WebUI.MetricsTokenIssuedAt, cfg.WebUI.MetricsTokenExpiresAt, s.sessionNow()) {
 		if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
 			if subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(tok)) == 1 {
 				return true

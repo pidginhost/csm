@@ -8,6 +8,9 @@ import (
 const DefaultBrowserSessionLifetime = "24h"
 const DefaultBrowserSessionIdleTimeout = "30m"
 
+// MaxBrowserSessionLifetime bounds webui.session_lifetime.
+const MaxBrowserSessionLifetime = 7 * 24 * time.Hour
+
 // BrowserSessionDurations also accepts an un-defaulted configuration, as used
 // by embedded callers. Explicit zero durations never disable session expiry.
 func (c *Config) BrowserSessionDurations() (time.Duration, time.Duration, error) {
@@ -19,7 +22,7 @@ func (c *Config) BrowserSessionDurations() (time.Duration, time.Duration, error)
 		idleText = DefaultBrowserSessionIdleTimeout
 	}
 	lifetime, err := time.ParseDuration(lifetimeText)
-	if err != nil || lifetime < time.Second || lifetime > MaxWebUITokenLifetime {
+	if err != nil || lifetime < time.Second || lifetime > MaxBrowserSessionLifetime {
 		return 0, 0, fmt.Errorf("webui.session_lifetime must be between 1s and 168h")
 	}
 	idle, err := time.ParseDuration(idleText)

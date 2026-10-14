@@ -775,6 +775,7 @@ webui:
   listen: "0.0.0.0:9443"
   auth_token: ""  # auto-generated on install
   auth_token_issued_at: ""
+  auth_token_expires_at: ""
   session_lifetime: "24h"
   session_idle_timeout: "30m"
   # metrics_token gates GET /metrics (Prometheus). Set a long random
@@ -782,6 +783,7 @@ webui:
   # empty to fall back to admin-token/UI-session auth. See the Metrics docs.
   metrics_token: ""
   metrics_token_issued_at: ""
+  metrics_token_expires_at: ""
   tls_cert: ""    # auto-generated self-signed if empty
   tls_key: ""
   ui_dir: "/opt/csm/ui"

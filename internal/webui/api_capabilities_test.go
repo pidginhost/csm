@@ -34,7 +34,7 @@ func TestApiCapabilities_ReturnsList(t *testing.T) {
 	if !capsContains(got.Capabilities, "capabilities.v1") {
 		t.Fatalf("capabilities.v1 should always be present, got %v", got.Capabilities)
 	}
-	for _, want := range []string{"webhook.phpanel.v1", "events.sse.v1", "token.scope.readonly.v1", "token.expiry.v1", "audit.fields.tenant.v1"} {
+	for _, want := range []string{"webhook.phpanel.v1", "events.sse.v1", "token.scope.readonly.v1", "token.expiry.v1", "token.expires_at.v1", "token.scope.unban.v1", "token.allowed_ips.v1", "audit.fields.tenant.v1"} {
 		if !capsContains(got.Capabilities, want) {
 			t.Errorf("missing %q in capabilities, got %v", want, got.Capabilities)
 		}

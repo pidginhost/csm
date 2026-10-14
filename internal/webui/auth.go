@@ -17,10 +17,11 @@ import (
 // --- Authentication ---
 
 // tokenHasScope reports whether the credentials in r grant at least the
-// requested scope. "read" is granted by any token; "admin" is granted only
-// by admin-scope tokens. Constant-time compare against every configured
-// token. Browser sessions bind to the named administrator credential that
-// created them; the API credential itself is never accepted from a cookie.
+// requested scope. "read" is granted by read and admin tokens, "unban" by
+// unban and admin tokens, and "admin" only by admin-scope tokens.
+// Constant-time compare against every configured token. Browser sessions
+// bind to the named administrator credential that created them; the API
+// credential itself is never accepted from a cookie.
 func (s *Server) tokenHasScope(r *http.Request, want string) bool {
 	// Browser cookie session
 	if _, ok := s.cookieTokenWithScope(r, want); ok {
@@ -69,7 +70,23 @@ func (s *Server) cookieSessionCredential(r *http.Request, want string, touch boo
 	if err != nil {
 		return config.WebUIToken{}, false
 	}
-	return s.sessionCredential(c.Value, want, touch)
+	// Check the source before touching, so a cookie used from outside the
+	// credential's addresses cannot keep its session from idling out.
+	tok, ok := s.sessionCredential(c.Value, want, false)
+	if !ok || !tok.AcceptsFrom(requestAddr(r)) {
+		return config.WebUIToken{}, false
+	}
+	if touch {
+		return s.sessionCredential(c.Value, want, true)
+	}
+	return tok, true
+}
+
+// requestAddr is the TCP peer. Credential decisions never trust forwarded
+// headers.
+func requestAddr(r *http.Request) netip.Addr {
+	addr, _ := netip.ParseAddr(clientIPKey(r.RemoteAddr))
+	return addr
 }
 
 func (s *Server) sessionCredential(secret, want string, touch bool) (config.WebUIToken, bool) {
@@ -106,7 +123,7 @@ func (s *Server) bearerCredentialWithScope(r *http.Request, want string) (config
 		return config.WebUIToken{}, false
 	}
 	for _, tok := range s.cfg.WebUI.Tokens {
-		if webUITokenMatches(supplied, tok) && webUITokenAllows(tok, want, s.sessionNow()) {
+		if webUITokenMatches(supplied, tok) && webUITokenAllows(tok, want, s.sessionNow()) && tok.AcceptsFrom(requestAddr(r)) {
 			return tok, true
 		}
 	}
@@ -120,12 +137,14 @@ func webUITokenMatches(supplied string, tok config.WebUIToken) bool {
 }
 
 func webUITokenAllows(tok config.WebUIToken, want string, now time.Time) bool {
-	if !config.WebUITokenCurrent(tok.IssuedAt, now) {
+	if !config.WebUITokenCurrent(tok.IssuedAt, tok.ExpiresAt, now) {
 		return false
 	}
 	switch want {
 	case "read":
 		return tok.Scope == "read" || tok.Scope == "admin"
+	case "unban":
+		return tok.Scope == "unban" || tok.Scope == "admin"
 	case "admin":
 		return tok.Scope == "admin"
 	default:
@@ -189,6 +208,9 @@ func (s *Server) refuseSpentBearer(w http.ResponseWriter, r *http.Request) bool 
 	spent := len(recent) >= credentialAttemptsPerMinute
 	if !spent {
 		_, known := s.bearerCredentialWithScope(r, "read")
+		if !known {
+			_, known = s.bearerCredentialWithScope(r, "unban")
+		}
 		// A valid credential outside its scope is not a guess, including
 		// the independently rotatable metrics credential on a UI route.
 		if !known && !s.metricsBearerMatches(r) {
@@ -211,15 +233,21 @@ func (s *Server) refuseSpentBearer(w http.ResponseWriter, r *http.Request) bool 
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
+	return s.requireScope("admin", next)
+}
+
+// requireScope admits browser sessions, which are always admin, and bearer
+// tokens that grant want.
+func (s *Server) requireScope(want string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.refuseSpentBearer(w, r) {
 			return
 		}
-		if tok, ok := s.cookieSessionCredential(r, "admin", sessionActivity(r)); ok {
+		if tok, ok := s.cookieSessionCredential(r, want, sessionActivity(r)); ok {
 			next.ServeHTTP(w, withAuditActor(r, tok.Name, "browser"))
 			return
 		}
-		if tok, ok := s.bearerCredentialWithScope(r, "admin"); ok {
+		if tok, ok := s.bearerCredentialWithScope(r, want); ok {
 			next.ServeHTTP(w, withAuditActor(r, tok.Name, "api"))
 			return
 		}
@@ -325,7 +353,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var loginName string
 	if token != "" {
 		for _, tok := range s.cfg.WebUI.Tokens {
-			if webUITokenMatches(token, tok) && webUITokenAllows(tok, "admin", s.sessionNow()) {
+			if webUITokenMatches(token, tok) && webUITokenAllows(tok, "admin", s.sessionNow()) && tok.AcceptsFrom(requestAddr(r)) {
 				loginName = tok.Name
 				break
 			}

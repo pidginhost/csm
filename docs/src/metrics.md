@@ -21,6 +21,7 @@ webui:
   auth_token_issued_at: "<UTC RFC3339 time when the UI token was generated>"
   metrics_token: "<long random string for Prometheus scraper>"
   metrics_token_issued_at: "<UTC RFC3339 time when the scrape token was generated>"
+  metrics_token_expires_at: "<optional UTC RFC3339 expiry; default seven days after issue>"
 ```
 
 `metrics_token` is optional. When set, a Bearer header containing

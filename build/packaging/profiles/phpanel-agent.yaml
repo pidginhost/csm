@@ -49,7 +49,8 @@ account_roots:
 # (10-phpanel-runtime.yaml). Do not put active placeholder secrets in this
 # profile: conf.d sequence merging appends token lists, so placeholders can
 # remain valid after a later fragment adds the real token.
-# Rotate the token and its issue time together before seven days elapse.
+# Rotate the token and its issue time together before it expires: seven
+# days after issue unless the entry sets expires_at.
 # Restart CSM after replacing the runtime token entry.
 #
 # alerts:

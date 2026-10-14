@@ -136,8 +136,10 @@ func registeredAPIRoutes(t *testing.T) map[string]apiRouteContract {
 				route.Scope = "read"
 			case exprContainsCall(call.Args[1], "requireAuth"):
 				route.Scope = "admin"
+			case requireScopeArg(call.Args[1]) != "":
+				route.Scope = requireScopeArg(call.Args[1])
 			default:
-				t.Errorf("%s has no requireRead/requireAuth wrapper", route.Source)
+				t.Errorf("%s has no requireRead/requireAuth/requireScope wrapper", route.Source)
 			}
 
 			// Method-qualified patterns for the same path are allowed to
@@ -224,6 +226,20 @@ func exprContainsCall(expr ast.Expr, name string) bool {
 	return found
 }
 
+// requireScopeArg returns the literal scope of a requireScope wrapper in expr.
+func requireScopeArg(expr ast.Expr) string {
+	scope := ""
+	ast.Inspect(expr, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok && scope == "" {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "requireScope" && len(call.Args) > 0 {
+				scope, _ = stringLiteral(call.Args[0])
+			}
+		}
+		return scope == ""
+	})
+	return scope
+}
+
 func loadOpenAPIDocument(t *testing.T) openAPIDocument {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "src", "openapi.yaml"))
@@ -269,8 +285,8 @@ func documentedAPIRoutes(t *testing.T) map[string]apiRouteContract {
 		multiMethod := len(methods) > 1
 		for _, method := range methods {
 			op := item[method]
-			if op.Scope != "read" && op.Scope != "admin" {
-				t.Errorf("%s %s has x-csm-scope = %q, want read or admin", method, path, op.Scope)
+			if op.Scope != "read" && op.Scope != "admin" && op.Scope != "unban" {
+				t.Errorf("%s %s has x-csm-scope = %q, want read, admin or unban", method, path, op.Scope)
 			}
 			// Multi-method paths have both a plain-path GET entry and a
 			// "method:path" key for non-GET so they match the method-qualified

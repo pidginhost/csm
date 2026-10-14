@@ -395,7 +395,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/firewall/allowed", s.requireAuth(getOnly(http.HandlerFunc(s.apiFirewallAllowed))))
 	mux.Handle("/api/v1/firewall/audit", s.requireAuth(getOnly(http.HandlerFunc(s.apiFirewallAudit))))
 	mux.Handle("/api/v1/firewall/subnets", s.requireAuth(getOnly(http.HandlerFunc(s.apiFirewallSubnets))))
-	mux.Handle("/api/v1/firewall/check", s.requireAuth(getOnly(http.HandlerFunc(s.apiFirewallCheck))))
+	mux.Handle("/api/v1/firewall/check", s.requireScope("unban", getOnly(http.HandlerFunc(s.apiFirewallCheck))))
 
 	// Settings API
 	mux.Handle("/api/v1/settings/restart", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiSettingsRestart))))
@@ -432,7 +432,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/firewall/remove-subnet", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallRemoveSubnet))))
 	mux.Handle("/api/v1/firewall/cphulk-clear", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallFlushCphulk))))
 	mux.Handle("/api/v1/firewall/flush", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallFlush))))
-	mux.Handle("/api/v1/firewall/unban", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallUnban))))
+	mux.Handle("/api/v1/firewall/unban", s.requireScope("unban", s.requireCSRF(http.HandlerFunc(s.apiFirewallUnban))))
 
 	// Operator preferences (P5.2 saved views, P5.4 user prefs).
 	mux.Handle("/api/v1/prefs/user", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPrefsUser))))
@@ -1121,6 +1121,11 @@ func (s *Server) validateCSRF(r *http.Request) bool {
 	// the cookie-authenticated request into a CSRF-exempt API call.
 	// CSRF protection is only needed for cookie-based browser sessions.
 	if s.isAdminBearerAuth(r) {
+		return true
+	}
+	// A scoped bearer is exempt only where the route's middleware accepted
+	// that bearer, never beside a browser session that authorized the write.
+	if actor, ok := r.Context().Value(auditActorKey{}).(auditActor); ok && actor.via == "api" {
 		return true
 	}
 

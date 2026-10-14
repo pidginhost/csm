@@ -36,7 +36,7 @@ the current session and clears the cookie. `GET /logout` cannot log users out.
 
 ### Token scopes
 
-Configure tokens under `webui.tokens:` with a `scope` of `admin` or `read`:
+Configure tokens under `webui.tokens:` with a `scope` of `admin`, `read` or `unban`:
 
 ```yaml
 webui:
@@ -49,9 +49,19 @@ webui:
       token: "..."
       issued_at: "<UTC RFC3339 time when this token was generated>"
       scope: read        # status, findings, history, stats, challenge stats, blocked IPs, scan jobs, health, components, capabilities, SSE
+    - name: "panel-unban"
+      token: "..."
+      scope: unban       # GET /api/v1/firewall/check and POST /api/v1/firewall/unban only
+      issued_at: "<UTC RFC3339 time when this token was generated>"
+      expires_at: "<UTC RFC3339 time when this token stops working>"
+      allowed_ips: ["203.0.113.10", "198.51.100.0/24"]
 ```
 
-Every credential expires seven days after `issued_at`. Replace the timestamp placeholders above when generating fresh random tokens. Missing, malformed, future or expired issue times refuse authentication. See [credential rotation](webui.md#credential-rotation) before upgrading.
+A credential expires at `expires_at` when set, otherwise seven days after `issued_at`. Replace the timestamp placeholders above when generating fresh random tokens. Missing, malformed or future issue times, an `expires_at` that is malformed or not after `issued_at`, and past expiry times refuse authentication. See [credential rotation](webui.md#credential-rotation) before upgrading.
+
+`allowed_ips` limits a token to the listed addresses and CIDR ranges, for API calls, browser login and the browser sessions it starts. CSM matches the TCP peer address and ignores forwarded headers. A token without `allowed_ips` is accepted from any address. An entry that is not an address or CIDR fails configuration loading.
+
+Unban-scope tokens are meant for hosting panels that let customers lift their own blocks. They cannot log in to the dashboard, read status or reach any other route, and they are exempt from CSRF only on those two routes.
 
 The legacy single-token `webui.auth_token:` and its required `webui.auth_token_issued_at` are loaded into a `legacy-auth-token` admin entry. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
 
@@ -1085,7 +1095,7 @@ GET  /api/v1/firewall/status         Config, blocked/allowed counts
 GET  /api/v1/firewall/allowed        Whitelisted IPs
 GET  /api/v1/firewall/subnets        Blocked subnets
 GET  /api/v1/firewall/audit          Firewall audit log
-GET  /api/v1/firewall/check          Check if IP is blocked (?ip=)
+GET  /api/v1/firewall/check          Check if IP is blocked (?ip=); admin or unban scope
 POST /api/v1/block-ip                Block an IP
 POST /api/v1/unblock-ip              Unblock an IP
 POST /api/v1/unblock-bulk            Bulk unblock IPs
@@ -1094,7 +1104,7 @@ POST /api/v1/firewall/remove-allow   Remove IP from allow list
 POST /api/v1/firewall/deny-subnet    Block subnet
 POST /api/v1/firewall/remove-subnet  Remove subnet block
 POST /api/v1/firewall/flush          Clear all blocks
-POST /api/v1/firewall/unban          Unblock IP + flush cphulk
+POST /api/v1/firewall/unban          Unblock IP + flush cphulk; admin or unban scope
 POST /api/v1/firewall/cphulk-clear   Flush cphulk bans only
 ```
 

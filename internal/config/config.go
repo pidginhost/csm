@@ -20,12 +20,15 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
-// WebUIToken is one entry in WebUI.Tokens. Scope must be "admin" or "read".
+// WebUIToken is one entry in WebUI.Tokens. Scope must be "admin", "read" or
+// "unban". AllowedIPs, when set, limits where the token is accepted from.
 type WebUIToken struct {
-	Name     string `yaml:"name"`
-	Token    string `yaml:"token"`
-	Scope    string `yaml:"scope"`
-	IssuedAt string `yaml:"issued_at"`
+	Name       string   `yaml:"name"`
+	Token      string   `yaml:"token"`
+	Scope      string   `yaml:"scope"`
+	IssuedAt   string   `yaml:"issued_at"`
+	ExpiresAt  string   `yaml:"expires_at,omitempty"`
+	AllowedIPs []string `yaml:"allowed_ips,omitempty"`
 }
 
 const (
@@ -1030,17 +1033,19 @@ type Config struct {
 	} `yaml:"signatures" hotreload:"restart"`
 
 	WebUI struct {
-		SessionLifetime      string `yaml:"session_lifetime"`
-		SessionIdleTimeout   string `yaml:"session_idle_timeout"`
-		Enabled              bool   `yaml:"enabled"`
-		Listen               string `yaml:"listen"`
-		AuthToken            string `yaml:"auth_token"`
-		AuthTokenIssuedAt    string `yaml:"auth_token_issued_at"`
-		MetricsToken         string `yaml:"metrics_token" hotreload:"safe"` // optional Bearer token for /metrics; rotate via SIGHUP without restart
-		MetricsTokenIssuedAt string `yaml:"metrics_token_issued_at" hotreload:"safe"`
-		TLSCert              string `yaml:"tls_cert"`
-		TLSKey               string `yaml:"tls_key"`
-		UIDir                string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
+		SessionLifetime       string `yaml:"session_lifetime"`
+		SessionIdleTimeout    string `yaml:"session_idle_timeout"`
+		Enabled               bool   `yaml:"enabled"`
+		Listen                string `yaml:"listen"`
+		AuthToken             string `yaml:"auth_token"`
+		AuthTokenIssuedAt     string `yaml:"auth_token_issued_at"`
+		AuthTokenExpiresAt    string `yaml:"auth_token_expires_at"`
+		MetricsToken          string `yaml:"metrics_token" hotreload:"safe"` // optional Bearer token for /metrics; rotate via SIGHUP without restart
+		MetricsTokenIssuedAt  string `yaml:"metrics_token_issued_at" hotreload:"safe"`
+		MetricsTokenExpiresAt string `yaml:"metrics_token_expires_at" hotreload:"safe"`
+		TLSCert               string `yaml:"tls_cert"`
+		TLSKey                string `yaml:"tls_key"`
+		UIDir                 string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
 		// AllowedOrigins lists extra browser origins ("https://host[:port]")
 		// whose API requests are accepted besides https://<hostname>:<port>.
 		// Loopback origins (SSH tunnels) are always accepted. Hot-reloadable.
@@ -1751,7 +1756,8 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.WebUI.AuthToken != "" && len(cfg.WebUI.Tokens) == 0 {
 		cfg.WebUI.Tokens = []WebUIToken{{
-			Name: "legacy-auth-token", Token: cfg.WebUI.AuthToken, Scope: "admin", IssuedAt: cfg.WebUI.AuthTokenIssuedAt,
+			Name: "legacy-auth-token", Token: cfg.WebUI.AuthToken, Scope: "admin",
+			IssuedAt: cfg.WebUI.AuthTokenIssuedAt, ExpiresAt: cfg.WebUI.AuthTokenExpiresAt,
 		}}
 	}
 	if cfg.Thresholds.MailQueueWarn == 0 {
@@ -2748,8 +2754,13 @@ func validateWebUITokens(cfg *Config) error {
 		if name == "" {
 			return fmt.Errorf("webui.tokens[%d]: empty name", i)
 		}
-		if tok.Scope != "admin" && tok.Scope != "read" {
-			return fmt.Errorf("webui.tokens[%d]: unknown scope %q (use admin or read)", i, tok.Scope)
+		if tok.Scope != "admin" && tok.Scope != "read" && tok.Scope != "unban" {
+			return fmt.Errorf("webui.tokens[%d]: unknown scope %q (use admin, read or unban)", i, tok.Scope)
+		}
+		for j, src := range tok.AllowedIPs {
+			if _, err := parseTokenSource(src); err != nil {
+				return fmt.Errorf("webui.tokens[%d].allowed_ips[%d]: %q is not an IP address or CIDR", i, j, src)
+			}
 		}
 		if tok.Token == "" {
 			return fmt.Errorf("webui.tokens[%d]: empty token", i)

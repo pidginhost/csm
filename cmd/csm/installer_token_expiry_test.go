@@ -26,7 +26,7 @@ func TestInstallerRecordsTokenIssueTime(t *testing.T) {
 	if err != nil || issued.Before(before) || issued.After(time.Now()) {
 		t.Fatal("installer did not record the credential issue time")
 	}
-	if !config.WebUITokenCurrent(tok.IssuedAt, issued) || config.WebUITokenCurrent(tok.IssuedAt, issued.Add(7*24*time.Hour)) {
+	if !config.WebUITokenCurrent(tok.IssuedAt, tok.ExpiresAt, issued) || config.WebUITokenCurrent(tok.IssuedAt, tok.ExpiresAt, issued.Add(7*24*time.Hour)) {
 		t.Fatal("installer credential does not expire within seven days")
 	}
 }
