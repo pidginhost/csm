@@ -21,7 +21,7 @@ webui:
   auth_token_issued_at: "<UTC RFC3339 time when the UI token was generated>"
   metrics_token: "<long random string for Prometheus scraper>"
   metrics_token_issued_at: "<UTC RFC3339 time when the scrape token was generated>"
-  metrics_token_expires_at: "<optional UTC RFC3339 expiry; default seven days after issue>"
+  metrics_token_expires_at: "<optional UTC RFC3339 expiry; leave empty for none>"
 ```
 
 `metrics_token` is optional. When set, a Bearer header containing
@@ -32,11 +32,11 @@ but keeping the two tokens separate is recommended: rotating
 your monitoring stack the scrape token does not also give it UI
 access.
 
-Both credentials expire seven days after their recorded issue times. Rotate
-the metrics token and its timestamp together, update the scraper's secret,
-then send SIGHUP to CSM. A missing, malformed, future or expired issue time
-refuses the metrics credential. See [credential rotation](webui.md#credential-rotation)
-for upgrade and recovery instructions.
+Each credential expires at its `expires_at` setting and never expires
+without one. Rotate the metrics token and its dates together, update the
+scraper's secret, then send SIGHUP to CSM. A malformed or future issue time,
+or a malformed or past expiry, refuses the metrics credential. See
+[credential rotation](webui.md#credential-rotation) for recovery instructions.
 
 ## Prometheus scrape config
 

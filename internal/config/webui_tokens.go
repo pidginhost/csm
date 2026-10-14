@@ -7,13 +7,10 @@ import (
 	"time"
 )
 
-// DefaultWebUITokenLifetime is how long a credential without an explicit
-// expiry stays valid after its issue time.
-const DefaultWebUITokenLifetime = 7 * 24 * time.Hour
-
-// WebUITokenCurrent uses the persisted issue time so restarting or reloading
-// cannot renew a stolen credential. An explicit expiry replaces the default
-// lifetime. Missing or malformed dates fail closed.
+// WebUITokenCurrent reports whether a credential is usable at now. It expires
+// only at its expires_at; issued_at records when it was generated. Credentials
+// without dates never expire, as in configurations written before dates
+// existed. Malformed or future dates fail closed.
 func WebUITokenCurrent(issuedAt, expiresAt string, now time.Time) bool {
 	field, _ := webUITokenProblem(issuedAt, expiresAt, now)
 	return field == ""
@@ -22,20 +19,23 @@ func WebUITokenCurrent(issuedAt, expiresAt string, now time.Time) bool {
 // webUITokenProblem names the date field that disables a credential and why,
 // or returns an empty field for a current credential.
 func webUITokenProblem(issuedAt, expiresAt string, now time.Time) (field, problem string) {
-	issued, err := time.Parse(time.RFC3339, issuedAt)
-	if err != nil || issued.IsZero() || now.Before(issued) {
-		return "issued_at", "issued_at must be a valid RFC3339 issue time that is not in the future"
-	}
-	deadline, deadlineField := issued.Add(DefaultWebUITokenLifetime), "issued_at"
-	if expiresAt != "" {
-		deadline, err = time.Parse(time.RFC3339, expiresAt)
-		if err != nil || !deadline.After(issued) {
-			return "expires_at", "expires_at must be a valid RFC3339 time after issued_at"
+	var issued time.Time
+	if issuedAt != "" {
+		var err error
+		issued, err = time.Parse(time.RFC3339, issuedAt)
+		if err != nil || issued.IsZero() || now.Before(issued) {
+			return "issued_at", "issued_at must be a valid RFC3339 issue time that is not in the future"
 		}
-		deadlineField = "expires_at"
+	}
+	if expiresAt == "" {
+		return "", ""
+	}
+	deadline, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil || !deadline.After(issued) {
+		return "expires_at", "expires_at must be a valid RFC3339 time after issued_at"
 	}
 	if !now.Before(deadline) {
-		return deadlineField, "expired at " + deadline.UTC().Format(time.RFC3339)
+		return "expires_at", "expired at " + deadline.UTC().Format(time.RFC3339)
 	}
 	return "", ""
 }
@@ -48,7 +48,7 @@ func tokenExpiryWarnings(cfg *Config, now time.Time) []ValidationResult {
 		}
 		if field, problem := webUITokenProblem(issuedAt, expiresAt, now); field != "" {
 			out = append(out, ValidationResult{"warn", prefix + field,
-				"credential disabled: " + problem + "; replace the token and its issue time together"})
+				"credential disabled: " + problem + "; correct the date or replace the token"})
 		}
 	}
 	for i, tok := range cfg.WebUI.Tokens {

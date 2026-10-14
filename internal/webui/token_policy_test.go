@@ -256,7 +256,7 @@ func TestExplicitExpiryAuthenticates(t *testing.T) {
 	}{
 		{"future", now.Add(300 * 24 * time.Hour).Format(time.RFC3339), http.StatusNoContent},
 		{"past", now.Add(-time.Second).Format(time.RFC3339), http.StatusUnauthorized},
-		{"default", "", http.StatusUnauthorized},
+		{"none", "", http.StatusNoContent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			token := randomBrowserCredential()
@@ -291,7 +291,7 @@ func TestMetricsTokenExplicitExpiry(t *testing.T) {
 	}{
 		{now.Add(time.Hour).Format(time.RFC3339), true},
 		{now.Format(time.RFC3339), false},
-		{"", false},
+		{"", true},
 	} {
 		cfg := &config.Config{}
 		cfg.WebUI.MetricsToken = token

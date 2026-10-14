@@ -35,11 +35,11 @@ components:
       description: >-
         webui.tokens entry. scope=read authorizes read endpoints; scope=unban
         authorizes only GET /api/v1/firewall/check and POST
-        /api/v1/firewall/unban; scope=admin authorizes all endpoints. Each
-        token requires an issued_at RFC3339 timestamp and expires at its
-        optional expires_at, or 168 hours after issued_at. Missing, malformed,
-        future or expired dates disable the credential. allowed_ips limits a
-        token to those addresses and CIDR ranges.
+        /api/v1/firewall/unban; scope=admin authorizes all endpoints. A
+        token expires at its optional expires_at RFC3339 time and never
+        expires without one. A malformed date, a future issued_at or a past
+        expires_at disables the credential. allowed_ips limits a token to
+        those addresses and CIDR ranges.
   responses:
     Unauthorized:
       description: Missing, invalid, expired, or insufficient-scope token.

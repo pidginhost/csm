@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestWebUICredentialExplicitExpiry(t *testing.T) {
+func TestWebUICredentialExpiry(t *testing.T) {
 	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
 	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339) }
 	day := 24 * time.Hour
@@ -17,15 +17,18 @@ func TestWebUICredentialExplicitExpiry(t *testing.T) {
 		name, issued, expires string
 		current               bool
 	}{
-		{"default inside seven days", at(-6 * day), "", true},
-		{"default after seven days", at(-7 * day), "", false},
+		{"undated", "", "", true},
+		{"issue time only", at(-365 * day), "", true},
+		{"expiry only", "", at(day), true},
+		{"expiry only, passed", "", at(-time.Second), false},
 		{"explicit year", at(-30 * day), at(335 * day), true},
 		{"explicit last second", at(-30 * day), at(time.Second), true},
 		{"explicit exact deadline", at(-30 * day), at(0), false},
-		{"explicit shorter than default", at(-2 * day), at(-day), false},
+		{"explicit passed", at(-2 * day), at(-day), false},
 		{"expiry before issue", at(-time.Hour), at(-2 * time.Hour), false},
 		{"malformed expiry", at(-day), "next year", false},
-		{"undated with expiry", "", at(day), false},
+		{"malformed issue", "yesterday", "", false},
+		{"future issue", at(time.Hour), "", false},
 		{"future issue with expiry", at(time.Hour), at(30 * day), false},
 	} {
 		if got := WebUITokenCurrent(tc.issued, tc.expires, now); got != tc.current {

@@ -8,31 +8,44 @@ import (
 	"time"
 )
 
-func TestWebUICredentialExpiryWarnings(t *testing.T) {
-	// Missing dates must refuse authentication without stopping monitoring.
-	for _, field := range []string{"auth_token", "metrics_token"} {
-		cfg, err := LoadBytes(fmt.Appendf(nil, "webui:\n  %s: %q\n", field, rand.Text()))
+func TestWebUICredentialWithoutDatesStaysValid(t *testing.T) {
+	// Configurations written before credential dates existed keep working.
+	for _, yamlText := range []string{
+		fmt.Sprintf("webui:\n  auth_token: %q\n", longToken()),
+		fmt.Sprintf("webui:\n  metrics_token: %q\n", longToken()),
+		fmt.Sprintf("webui:\n  tokens:\n    - name: a\n      token: %q\n      scope: admin\n", longToken()),
+		fmt.Sprintf("webui:\n  auth_token: %q\n  auth_token_issued_at: %q\n", longToken(), time.Now().UTC().Add(-365*24*time.Hour).Format(time.RFC3339)),
+	} {
+		for _, w := range webUIWarnings(t, yamlText) {
+			t.Errorf("unexpected warning %s: %s", w.Field, w.Message)
+		}
+	}
+}
+
+func TestWebUICredentialBadIssueTimeWarns(t *testing.T) {
+	for _, issued := range []string{"yesterday", time.Now().UTC().Add(time.Hour).Format(time.RFC3339)} {
+		cfg, err := LoadBytes(fmt.Appendf(nil, "webui:\n  auth_token: %q\n  auth_token_issued_at: %q\n", rand.Text(), issued))
 		if err != nil {
 			t.Fatal(err)
 		}
 		found := false
 		for _, r := range Validate(cfg) {
-			if r.Level == "warn" && (r.Field == "webui."+field+"_issued_at" || strings.HasPrefix(r.Field, "webui.tokens[")) && strings.Contains(r.Message, "issued_at") {
+			if r.Level == "warn" && strings.HasPrefix(r.Field, "webui.tokens[") && strings.Contains(r.Message, "issued_at") {
 				found = true
 			}
 		}
 		if !found {
-			t.Errorf("undated %s was not reported", field)
+			t.Errorf("issue time %q was not reported", issued)
 		}
 	}
 }
 
-func TestBrowserSessionSevenDayMaximum(t *testing.T) {
+func TestBrowserSessionLifetimeMaximum(t *testing.T) {
 	for _, tc := range []struct {
 		duration string
 		allowed  bool
 	}{
-		{"168h", true}, {"168h1s", false}, {"720h", false},
+		{"168h", true}, {"720h", true}, {"720h1s", false},
 	} {
 		cfg := &Config{}
 		cfg.WebUI.SessionLifetime = tc.duration

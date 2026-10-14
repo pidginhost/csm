@@ -572,14 +572,14 @@ webui:
   enabled: true
   listen: "0.0.0.0:9443"               # address:port for HTTPS server
   auth_token: ""                        # API/login credential (auto-generated on install)
-  auth_token_issued_at: ""              # UTC RFC3339; expires seven days after issue
-  auth_token_expires_at: ""             # optional UTC RFC3339 expiry; replaces the seven-day default
-  session_lifetime: "24h"               # browser absolute expiry; maximum 168h; restart required
+  auth_token_issued_at: ""              # optional UTC RFC3339 issue time; recorded on install
+  auth_token_expires_at: ""             # optional UTC RFC3339 expiry; empty never expires
+  session_lifetime: "24h"               # browser absolute expiry; maximum 720h; restart required
   session_idle_timeout: "30m"           # browser idle expiry; restart required
-  tokens: []                            # scoped tokens: name/token/scope/issued_at, optional expires_at and allowed_ips (scope: admin, read or unban)
+  tokens: []                            # scoped tokens: name/token/scope, optional issued_at, expires_at and allowed_ips (scope: admin, read or unban)
   metrics_token: ""                     # optional Bearer token for /metrics only
-  metrics_token_issued_at: ""           # UTC RFC3339; rotate with metrics_token, then SIGHUP
-  metrics_token_expires_at: ""          # optional UTC RFC3339 expiry; replaces the seven-day default
+  metrics_token_issued_at: ""           # optional UTC RFC3339 issue time; rotate with metrics_token, then SIGHUP
+  metrics_token_expires_at: ""          # optional UTC RFC3339 expiry; empty never expires
   tls_cert: ""                          # path to TLS certificate PEM file
   tls_key: ""                           # path to TLS private key PEM file
   ui_dir: ""                            # path to UI files on disk (default: /opt/csm/ui)

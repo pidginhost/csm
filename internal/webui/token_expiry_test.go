@@ -17,9 +17,9 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-func configureExpiringToken(t *testing.T, s *Server, token, scope, issued string) {
+func configureExpiringToken(t *testing.T, s *Server, token, scope, issued, expires string) {
 	t.Helper()
-	data := fmt.Sprintf("tokens:\n  - name: audit\n    token: %q\n    scope: %s\n    issued_at: %q\n", token, scope, issued)
+	data := fmt.Sprintf("tokens:\n  - name: audit\n    token: %q\n    scope: %s\n    issued_at: %q\n    expires_at: %q\n", token, scope, issued, expires)
 	if err := yaml.Unmarshal([]byte(data), &s.cfg.WebUI); err != nil {
 		t.Fatal("cannot configure test credential")
 	}
@@ -28,23 +28,26 @@ func configureExpiringToken(t *testing.T, s *Server, token, scope, issued string
 func TestAccessTokenExpiry(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	for _, scope := range []string{"admin", "read"} {
+		at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339) }
 		for _, tc := range []struct {
-			name, issued string
-			allowed      bool
+			name, issued, expires string
+			allowed               bool
 		}{
-			{"new", now.Format(time.RFC3339), true},
-			{"last second", now.Add(-7*24*time.Hour + time.Second).Format(time.RFC3339), true},
-			{"exact deadline", now.Add(-7 * 24 * time.Hour).Format(time.RFC3339), false},
-			{"expired", now.Add(-8 * 24 * time.Hour).Format(time.RFC3339), false},
-			{"future", now.Add(time.Second).Format(time.RFC3339), false},
-			{"undated", "", false},
-			{"malformed", "not-a-date", false},
+			{"new", at(0), "", true},
+			{"issued long ago", at(-365 * 24 * time.Hour), "", true},
+			{"undated", "", "", true},
+			{"last second", at(-time.Hour), at(time.Second), true},
+			{"exact deadline", at(-time.Hour), at(0), false},
+			{"expired", "", at(-time.Second), false},
+			{"future", at(time.Second), "", false},
+			{"malformed issue", "not-a-date", "", false},
+			{"malformed expiry", at(-time.Hour), "not-a-date", false},
 		} {
 			t.Run(scope+"/"+tc.name, func(t *testing.T) {
 				token := randomBrowserCredential()
 				s := newTestServer(t, token)
 				s.sessionNow = func() time.Time { return now }
-				configureExpiringToken(t, s, token, scope, tc.issued)
+				configureExpiringToken(t, s, token, scope, tc.issued, tc.expires)
 				req := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
 				req.Header.Set("Authorization", "Bearer "+token)
 				rec := httptest.NewRecorder()
@@ -68,7 +71,7 @@ func TestBrowserSessionCannotOutliveCredential(t *testing.T) {
 	s := newTestServerWithTemplates(t, token)
 	now := time.Now().UTC().Truncate(time.Second)
 	s.sessionNow = func() time.Time { return now }
-	configureExpiringToken(t, s, token, "admin", now.Add(-7*24*time.Hour+time.Minute).Format(time.RFC3339))
+	configureExpiringToken(t, s, token, "admin", "", now.Add(time.Minute).Format(time.RFC3339))
 	cookie := loginBrowser(t, s, token, nil)
 	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
 	req.AddCookie(cookie)
@@ -89,7 +92,7 @@ func TestExpiredTokenCannotLogin(t *testing.T) {
 	s := newTestServerWithTemplates(t, token)
 	now := time.Now().UTC().Truncate(time.Second)
 	s.sessionNow = func() time.Time { return now }
-	configureExpiringToken(t, s, token, "admin", now.Add(-7*24*time.Hour).Format(time.RFC3339))
+	configureExpiringToken(t, s, token, "admin", "", now.Format(time.RFC3339))
 	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("token="+token))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
@@ -110,16 +113,17 @@ func TestMetricsTokenExpiryAndReload(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	s.sessionNow = func() time.Time { return now }
 	for _, tc := range []struct {
-		issued  string
-		allowed bool
+		issued, expires string
+		allowed         bool
 	}{
-		{now.Format(time.RFC3339), true},
-		{now.Add(-7 * 24 * time.Hour).Format(time.RFC3339), false},
-		{"", false},
-		{now.Add(time.Hour).Format(time.RFC3339), false},
+		{now.Format(time.RFC3339), "", true},
+		{now.Add(-365 * 24 * time.Hour).Format(time.RFC3339), "", true},
+		{"", "", true},
+		{now.Add(time.Hour).Format(time.RFC3339), "", false},
+		{"", now.Format(time.RFC3339), false},
 	} {
 		cfg := &config.Config{}
-		data := fmt.Sprintf("metrics_token: %q\nmetrics_token_issued_at: %q\n", token, tc.issued)
+		data := fmt.Sprintf("metrics_token: %q\nmetrics_token_issued_at: %q\nmetrics_token_expires_at: %q\n", token, tc.issued, tc.expires)
 		if err := yaml.Unmarshal([]byte(data), &cfg.WebUI); err != nil {
 			t.Fatal("cannot configure metrics credential")
 		}
@@ -127,7 +131,7 @@ func TestMetricsTokenExpiryAndReload(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
 		if s.isMetricsAuthenticated(req) != tc.allowed {
-			t.Errorf("metrics authentication for issued_at %q: want allowed=%v", tc.issued, tc.allowed)
+			t.Errorf("metrics authentication for issued_at %q expires_at %q: want allowed=%v", tc.issued, tc.expires, tc.allowed)
 		}
 	}
 }
@@ -139,7 +143,7 @@ func TestBearerStreamStopsAtCredentialExpiry(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(now.Unix())
 	s.sessionNow = func() time.Time { return time.Unix(clock.Load(), 0) }
-	configureExpiringToken(t, s, token, "read", now.Add(-7*24*time.Hour+time.Minute).Format(time.RFC3339))
+	configureExpiringToken(t, s, token, "read", "", now.Add(time.Minute).Format(time.RFC3339))
 	bus := broadcast.NewBus(8)
 	defer bus.Close()
 	s.SetFindingBus(bus)
@@ -177,8 +181,8 @@ func TestCSRFUsesCurrentCredential(t *testing.T) {
 	s.sessionNow = func() time.Time { return now }
 	expired, current := randomBrowserCredential(), randomBrowserCredential()
 	s.cfg.WebUI.Tokens = []config.WebUIToken{
-		{Name: "expired", Token: expired, Scope: "admin", IssuedAt: now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)},
-		{Name: "current", Token: current, Scope: "admin", IssuedAt: now.Format(time.RFC3339)},
+		{Name: "expired", Token: expired, Scope: "admin", ExpiresAt: now.Format(time.RFC3339)},
+		{Name: "current", Token: current, Scope: "admin"},
 	}
 	cookie := testBrowserCookie(t, s, current)
 	if s.csrfSecret(cookie.Value) != current {
@@ -186,7 +190,7 @@ func TestCSRFUsesCurrentCredential(t *testing.T) {
 	}
 	s.cfg.WebUI.Tokens = nil
 	s.cfg.WebUI.AuthToken = expired
-	s.cfg.WebUI.AuthTokenIssuedAt = now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)
+	s.cfg.WebUI.AuthTokenExpiresAt = now.Format(time.RFC3339)
 	if s.csrfSecret(cookie.Value) != "" {
 		t.Fatal("expired legacy credential still signs CSRF tokens")
 	}
@@ -198,8 +202,8 @@ func TestCSRFSurvivesAnotherAdminCredentialExpiry(t *testing.T) {
 	s.sessionNow = func() time.Time { return now }
 	first, second := randomBrowserCredential(), randomBrowserCredential()
 	s.cfg.WebUI.Tokens = []config.WebUIToken{
-		{Name: "first", Token: first, Scope: "admin", IssuedAt: now.Add(-7*24*time.Hour + time.Minute).Format(time.RFC3339)},
-		{Name: "second", Token: second, Scope: "admin", IssuedAt: now.Format(time.RFC3339)},
+		{Name: "first", Token: first, Scope: "admin", ExpiresAt: now.Add(time.Minute).Format(time.RFC3339)},
+		{Name: "second", Token: second, Scope: "admin"},
 	}
 	firstCookie := loginBrowser(t, s, first, nil)
 	secondCookie := loginBrowser(t, s, second, nil)
@@ -230,7 +234,7 @@ func TestBearerStreamExpiryBetweenAuthorizationAndOpen(t *testing.T) {
 	s := newTestServer(t, token)
 	now := time.Now().UTC().Truncate(time.Second)
 	s.sessionNow = func() time.Time { return now }
-	configureExpiringToken(t, s, token, "read", now.Add(-7*24*time.Hour+time.Second).Format(time.RFC3339))
+	configureExpiringToken(t, s, token, "read", "", now.Add(time.Second).Format(time.RFC3339))
 	bus := broadcast.NewBus(8)
 	defer bus.Close()
 	s.SetFindingBus(bus)
@@ -256,5 +260,17 @@ func TestBearerStreamExpiryBetweenAuthorizationAndOpen(t *testing.T) {
 	}
 	if rec.status != http.StatusOK {
 		t.Fatalf("stream was not reached: status %d", rec.status)
+	}
+}
+
+func TestUndatedCredentialLogsIn(t *testing.T) {
+	token := randomBrowserCredential()
+	s := newTestServerWithTemplates(t, token)
+	configureExpiringToken(t, s, token, "admin", "", "")
+	cookie := loginBrowser(t, s, token, nil)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	req.AddCookie(cookie)
+	if !s.isAuthenticated(req) {
+		t.Fatal("credential without dates cannot log in")
 	}
 }

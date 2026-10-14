@@ -57,7 +57,7 @@ webui:
       allowed_ips: ["203.0.113.10", "198.51.100.0/24"]
 ```
 
-A credential expires at `expires_at` when set, otherwise seven days after `issued_at`. Replace the timestamp placeholders above when generating fresh random tokens. Missing, malformed or future issue times, an `expires_at` that is malformed or not after `issued_at`, and past expiry times refuse authentication. See [credential rotation](webui.md#credential-rotation) before upgrading.
+A credential expires at its `expires_at` and never expires without one. The optional `issued_at` records when the token was generated. Replace the placeholders above with fresh random tokens and real times. A malformed or future `issued_at`, an `expires_at` that is malformed or not after `issued_at`, and a past `expires_at` refuse authentication. See [credential rotation](webui.md#credential-rotation).
 
 `allowed_ips` limits a token to the listed addresses and CIDR ranges, for API calls, browser login and the browser sessions it starts. CSM matches the TCP peer address and ignores forwarded headers. A token without `allowed_ips` is accepted from any address. An entry that is not an address or CIDR fails configuration loading.
 
@@ -65,7 +65,7 @@ IPv4-mapped addresses and CIDRs within the mapped range match IPv4 peers: `::fff
 
 Unban-scope tokens are meant for hosting panels that let customers lift their own blocks. They cannot log in to the dashboard, read status or reach any other route, and they are exempt from CSRF only on those two routes.
 
-The legacy single-token `webui.auth_token:` and its required `webui.auth_token_issued_at` are loaded into a `legacy-auth-token` admin entry. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
+The legacy single-token `webui.auth_token:`, with its optional `webui.auth_token_issued_at` and `webui.auth_token_expires_at`, is loaded into a `legacy-auth-token` admin entry. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
 
 ## Errors
 
