@@ -167,8 +167,7 @@ func writeInstalledConf(t *testing.T, a *EximAdapter) string {
 	return conf
 }
 
-// With no rule installed, Remove starts no root worker, so a reload with the
-// guard off never contends for the Exim lock.
+// A stable absence needs no root worker or rebuild on config reload.
 func TestEximServiceAdapterRemoveSkipsWorkerWhenNothingInstalled(t *testing.T) {
 	for name, setup := range map[string]func(*testing.T, *EximAdapter){
 		"no file": func(*testing.T, *EximAdapter) {},
@@ -190,8 +189,8 @@ func TestEximServiceAdapterRemoveSkipsWorkerWhenNothingInstalled(t *testing.T) {
 	}
 }
 
-// A rule Remove cannot prove absent still goes to the worker: an installed
-// rule, half of one, or a file the daemon cannot read.
+// Inconclusive status or lock access still goes to the root worker, which
+// may have access the daemon lacks.
 func TestEximServiceAdapterRemoveRunsWorkerUnlessProvenAbsent(t *testing.T) {
 	for name, setup := range map[string]func(*testing.T, *EximAdapter){
 		"installed": func(t *testing.T, a *EximAdapter) { writeInstalledConf(t, a) },
@@ -203,6 +202,11 @@ func TestEximServiceAdapterRemoveRunsWorkerUnlessProvenAbsent(t *testing.T) {
 		},
 		"unreadable": func(t *testing.T, a *EximAdapter) {
 			if err := os.Mkdir(a.localConf, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"inaccessible lock": func(t *testing.T, a *EximAdapter) {
+			if err := os.WriteFile(filepath.Dir(a.badIPsPath), nil, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		},
@@ -285,5 +289,78 @@ func TestEximServiceSeparatesBusyWorkerFromFailedWorker(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A transient worker can outlive its daemon. A new daemon must retry removal
+// if that worker can still install the guard or restore it during rollback.
+func TestEximServiceAdapterRemoveRetriesUnfinishedWorker(t *testing.T) {
+	for _, operation := range []string{"apply", "remove rollback"} {
+		t.Run(operation, func(t *testing.T) {
+			a, _ := testAdapter(t)
+			worker := lockedEximAdapter{a}
+			cfg := policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}
+			entered, release := make(chan struct{}), make(chan struct{})
+			failure := errors.New("rebuild failed")
+			var run func() error
+			if operation == "apply" {
+				a.chown = func(string, string) error {
+					close(entered)
+					<-release
+					return nil
+				}
+				run = func() error { return worker.Apply(cfg, nil) }
+			} else {
+				if err := worker.Apply(cfg, nil); err != nil {
+					t.Fatal(err)
+				}
+				calls := 0
+				a.rebuild = func() error {
+					calls++
+					if calls == 1 {
+						close(entered)
+						<-release
+						return failure
+					}
+					return nil
+				}
+				run = worker.Remove
+			}
+			finished := make(chan error, 1)
+			go func() { finished <- run() }()
+			select {
+			case <-entered:
+			case err := <-finished:
+				t.Fatalf("worker finished before reaching the barrier: %v", err)
+			}
+			status, statusErr := a.Status()
+			service := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error {
+				if r.Operation != "remove" {
+					return errors.New("unexpected operation: " + r.Operation)
+				}
+				return worker.Remove()
+			}}
+			removeErr := service.Remove()
+			close(release)
+			workerErr := <-finished
+			if statusErr != nil || status.Installed {
+				t.Fatalf("guard must be absent during transaction: %+v, %v", status, statusErr)
+			}
+			if operation == "apply" && workerErr != nil || operation == "remove rollback" && !errors.Is(workerErr, failure) {
+				t.Fatalf("worker error = %v", workerErr)
+			}
+			if status, err := a.Status(); err != nil || !status.Installed {
+				t.Fatalf("worker did not leave an installed guard: %+v, %v", status, err)
+			}
+			if !errors.Is(removeErr, eximlock.ErrBusy) {
+				t.Fatalf("remove error = %v, want busy so the daemon retries", removeErr)
+			}
+			if err := service.Remove(); err != nil {
+				t.Fatalf("retry removal: %v", err)
+			}
+			if status, err := a.Status(); err != nil || status.Installed {
+				t.Fatalf("retry left guard installed: %+v, %v", status, err)
+			}
+		})
 	}
 }

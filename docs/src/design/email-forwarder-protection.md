@@ -131,6 +131,9 @@ failure, and retried the same way. A reload during a running forward-guard
 change returns without waiting, logs that it was deferred, and leaves the
 latest settings pending for that refresh. The log reports the refresh
 interval; the next refresh can happen sooner.
+Disabled and dry-run settings start no removal worker when no guard is
+installed. While another CSM change to the Exim configuration runs, even one
+started before a daemon restart, the removal is deferred the same way.
 Observe mode and hosts without cPanel leave the installed guard untouched.
 
 ## WebUI surfaces (email page)

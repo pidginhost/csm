@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/pidginhost/csm/internal/eximlock"
@@ -62,12 +63,20 @@ func (a *eximServiceAdapter) Apply(cfg policy.Config, ips []string) error {
 	return a.mutate(eximMutation{Operation: "apply", Config: cfg, BadIPs: ips})
 }
 
-// Remove starts the root worker only when a rule may be installed. Only that
-// worker writes the managed blocks, and the daemon runs one at a time, so a
-// rule read as absent stays absent. A partial or unreadable file goes to the
-// worker, which strips both blocks.
+// Remove checks absence under the worker's lock: a transient worker from an
+// earlier daemon can still install or restore the guard. Release the lock
+// before delegating any removal so the worker can acquire it itself.
 func (a *eximServiceAdapter) Remove() error {
-	if status, err := a.Status(); err == nil && !status.Installed {
+	absent := false
+	err := eximlock.With(filepath.Dir(a.badIPsPath), func() error {
+		status, err := a.Status()
+		absent = !status.Installed
+		return err
+	})
+	if errors.Is(err, eximlock.ErrBusy) {
+		return err
+	}
+	if err == nil && absent {
 		return nil
 	}
 	return a.mutate(eximMutation{Operation: "remove"})
