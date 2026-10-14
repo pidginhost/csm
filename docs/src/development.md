@@ -566,34 +566,40 @@ kernel timeouts rather than the unresolved rows' requested lifetimes, including
 replacement accounting. Permanent promotion requires a verified block row.
 
 With an engine, each owner turn runs its `block_ip` picks as one batch. The
-engine checks every member against one snapshot before anything is reserved.
-A full set defers a member; an existing effect, an invalid or protected
-address or a spent lifetime ends it without a charge. The rest are reserved,
+engine checks every member against one snapshot before anything is reserved. A
+full set, or an address a row or element holds without proof, defers a member;
+a block the engine proves already holds the address, an invalid or protected
+address or a spent lifetime ends it without a charge. A proven block found
+only when the batch applies ends the attempt failed, with its charge, and the
+pick refused as an existing effect without a retry, after a fresh check
+following the outcome write. On the last attempt it already ends failed.
+A failed ending is checked again after backoff; if
+proof disappeared, ordinary bounded retries remain possible. No durable
+reference is stored yet. The rest are reserved,
 recorded as running with their intents, applied and finished by their own
 effect. Failed outcome writes retry before more work is selected and once at
 shutdown, even without a fresh clock reading; the effect is never dispatched
 again for that attempt. An outcome the ledger refuses for good (a damaged
 record or a conflicting state) is not retried: its attempt stays unresolved
-until recovery. Every other kind is still previewed. A batch the
-kernel rejected fails every member, charged; each then retries alone, one
-per turn, until its next outcome or its expiry. A state write the engine
-could not make, a failed batch check or apply (including per-member
-transport and readback errors), or a missing engine holds automatic execution:
-block picks wait, deferred as an unavailable engine, while one probe runs per
-wait, from one second doubling to a minute. A held state write is probed by
-writing the safe state again and checking its snapshot. Without an engine,
-idle scheduling pauses and resumes on the first schedule check that finds
-an engine, without waiting for the old probe deadline. Other idle holds
-still probe on their waits; successful snapshots cannot reset a failing
-member check's backoff.
-A failed apply keeps its cause and backoff through state repair, ledger
-refusals and member refusals until an applied effect proves recovery.
-Hold changes copy the cached owner status without rereading the ledger.
-Status (`admission.owner.execution_held`) and
-the `csm doctor` row `admission execution` name the cause. A degraded
-admission clock cannot bound a lease, so it defers block picks the same
-way. One batch starts a second at most; with an engine, a drain that queues
-new work runs the schedule at once instead of waiting for its timer.
+until recovery. Every other kind is still previewed. A batch the kernel
+rejected fails every member, charged; each then retries alone, one per turn,
+until its next outcome or its expiry. A state write the engine could not make,
+a failed batch check or apply (including per-member transport and readback
+errors), or a missing engine holds automatic execution: block picks wait,
+deferred as an unavailable engine, while one probe runs per wait, from one
+second doubling to a minute. A held state write is probed by writing the safe
+state again and checking its snapshot. Without an engine, idle scheduling
+pauses and resumes on the first schedule check that finds an engine, without
+waiting for the old probe deadline. Other idle holds still probe on their
+waits; successful snapshots cannot reset a failing member check's backoff. A
+failed apply keeps its cause and backoff through state repair, ledger refusals
+and member refusals until an applied effect proves recovery. Hold changes copy
+the cached owner status without rereading the ledger. Status
+(`admission.owner.execution_held`) and the `csm doctor` row `admission
+execution` name the cause. A degraded admission clock cannot bound a lease, so
+it defers block picks the same way. One batch starts a second at most; with an
+engine, a drain that queues new work runs the schedule at once instead of
+waiting for its timer.
 
 ### Attack event storage
 

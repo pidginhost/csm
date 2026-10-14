@@ -42,6 +42,9 @@ type pendingFinish struct {
 	id          admission.ActionID
 	disposition admission.Disposition
 	rejected    bool
+	// existing is a failure because a proven block already holds the
+	// address: the pick ends instead of retrying against it.
+	existing bool
 }
 
 // refusalReasons are the admission reasons for the engine's refusals of a
@@ -51,6 +54,7 @@ type pendingFinish struct {
 var refusalReasons = map[firewall.BlockRefusal]admission.Reason{
 	firewall.BlockRefusedFull:        admission.ReasonSetFull,
 	firewall.BlockRefusedExisting:    admission.ReasonExistingEffect,
+	firewall.BlockRefusedPending:     admission.ReasonPendingRecovery,
 	firewall.BlockRefusedInvalid:     admission.ReasonInvalid,
 	firewall.BlockRefusedExpired:     admission.ReasonStale,
 	firewall.BlockRefusedUnsupported: admission.ReasonUnsupportedContainment,
@@ -184,6 +188,7 @@ func (o *Owner) execute(picks []execPick) error {
 		o.finishes = append(o.finishes, pendingFinish{
 			id: ids[k], disposition: effectDisposition(r.Effect),
 			rejected: r.Effect == firewall.BlockFailed && errors.Is(r.Err, firewall.ErrBlockBatchRejected),
+			existing: r.Effect == firewall.BlockFailed && r.Refusal == firewall.BlockRefusedExisting,
 		})
 	}
 	switch {
@@ -336,7 +341,7 @@ func (o *Owner) endPick(p execPick, reason admission.Reason) error {
 		}
 		_, err = o.ledger.Defer(p.pick.ID, reason)
 	case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
-		_, err = o.ledger.Terminate(p.pick.ID, reason)
+		_, err = terminateLedger(o.ledger, p.pick.ID, reason)
 	default:
 		err = fmt.Errorf("reason %s ends nothing", reason)
 	}
@@ -380,6 +385,18 @@ func (o *Owner) finishPending() error {
 			continue
 		}
 		id := a.Attempt.Candidate
+		if c.State == admission.StateQueued && outcome.existing {
+			// Finishing can retry long after the apply-time proof expires.
+			// Only a fresh proof may end the queued pick as already covered.
+			proven, proofErr := o.proveExisting(c, outcome.id)
+			if proofErr != nil {
+				err = errors.Join(err, fmt.Errorf("checking existing effect for %s: %w", id, proofErr))
+			} else if proven {
+				if _, termErr := terminateLedger(o.ledger, id, admission.ReasonExistingEffect); termErr != nil {
+					err = errors.Join(err, fmt.Errorf("ending %s: %w", id, termErr))
+				}
+			}
+		}
 		if c.State == admission.StateQueued && outcome.rejected {
 			if o.isolated == nil {
 				o.isolated = map[admission.CandidateID]time.Time{}
@@ -395,4 +412,22 @@ func (o *Owner) finishPending() error {
 	}
 	o.finishes = pending
 	return err
+}
+
+func (o *Owner) proveExisting(c admission.Candidate, action admission.ActionID) (bool, error) {
+	engine := o.opts.Blocks()
+	if engine == nil {
+		return false, errNoEngine
+	}
+	addr, _ := c.Key.Target.Addr()
+	refusals, err := engine.CheckBlockBatch([]firewall.BlockMember{{
+		Action: string(action), IP: addr.String(), Reason: "CSM auto-block: " + c.Check, ExpiresAt: c.ExpiresAt,
+	}})
+	if err != nil {
+		return false, err
+	}
+	if len(refusals) != 1 {
+		return false, fmt.Errorf("%d answers for one existing effect", len(refusals))
+	}
+	return refusals[0] == firewall.BlockRefusedExisting, nil
 }

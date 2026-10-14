@@ -53,9 +53,10 @@ var (
 	scheduleLedger = (*store.AdmissionLedger).Schedule
 	monoNow        = time.Now
 	// executeLedger records a batch as running; tests make it refuse.
-	executeLedger = (*store.AdmissionLedger).ExecuteBatch
-	reserveLedger = (*store.AdmissionLedger).Reserve
-	finishLedger  = (*store.AdmissionLedger).Finish
+	executeLedger   = (*store.AdmissionLedger).ExecuteBatch
+	reserveLedger   = (*store.AdmissionLedger).Reserve
+	finishLedger    = (*store.AdmissionLedger).Finish
+	terminateLedger = (*store.AdmissionLedger).Terminate
 )
 
 // previewLimits lets a schedule serve whatever the ledger's budgets allow,
