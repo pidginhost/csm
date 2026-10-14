@@ -204,7 +204,8 @@ Commands:
   check-deep      Test deep checks only
   status        Show current state, last run, active findings
   baseline      Reset state - mark current state as "known good" (use --confirm if history exists)
-  rehash        Re-sign binary, csm.yaml and conf.d hashes after an intentional change (no scan)
+  rehash        Re-sign binary, csm.yaml and conf.d hashes after an intentional change (no scan;
+                --fragment <file> re-signs only when that conf.d file is all that changed)
   validate      Validate config (--deep for connectivity probes)
   config        Config display (config show [--no-redact] [--json])
   verify        Verify binary + config integrity
@@ -884,11 +885,25 @@ func runBaseline() {
 	fmt.Printf("Config hash: %s\n", r.ConfigHash)
 }
 
+// Exit codes of `csm rehash --fragment`. The phpanel agent branches on them.
+const (
+	exitRehashUnnamedChanges = 4
+	exitRehashNoBaseline     = 5
+)
+
 // runRehash updates only the binary and config hashes without running a full
 // scan. Use this after upgrading the binary or editing csm.yaml - it's instant
 // compared to baseline which re-scans the entire server.
 func runRehash() {
+	names, err := rehashFragmentArgs(os.Args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	cfg := loadConfigLite()
+	if names != nil {
+		os.Exit(rehashFragments(binaryPath, cfg.ConfigFile, cfg.ConfigDir, names, os.Stdout, os.Stderr))
+	}
 
 	binaryHash, err := integrity.HashFile(binaryPath)
 	if err != nil {
@@ -937,6 +952,46 @@ func runRehash() {
 	fmt.Printf("Hashes updated (no scan performed)\n")
 	fmt.Printf("Binary hash: %s\n", binaryHash)
 	fmt.Printf("Config hash: %s\n", cfg.Integrity.ConfigHash)
+}
+
+// rehashFragmentArgs returns the conf.d file names given with --fragment, or
+// nil for a full rehash.
+func rehashFragmentArgs(args []string) ([]string, error) {
+	var names []string
+	for i := 2; i < len(args); i++ {
+		switch args[i] {
+		case "--fragment":
+			if i+1 >= len(args) {
+				return nil, errors.New("--fragment requires a conf.d file name")
+			}
+			i++
+			names = append(names, args[i])
+		case "--config", "--config-dir":
+			i++
+		}
+	}
+	return names, nil
+}
+
+// rehashFragments re-signs conf.d when only the named fragments changed and
+// maps the outcome to the exit code the phpanel agent expects.
+func rehashFragments(binPath, cfgPath, confDir string, names []string, stdout, stderr io.Writer) int {
+	err := integrity.RehashFragments(binPath, cfgPath, confDir, names)
+	var unnamed *integrity.UnnamedChangesError
+	switch {
+	case err == nil:
+		fmt.Fprintf(stdout, "Re-signed conf.d fragments: %s\n", strings.Join(names, ", "))
+		return 0
+	case errors.As(err, &unnamed):
+		fmt.Fprintf(stderr, "Refusing to re-sign: %v\nReview these changes, then run `csm rehash` to sign everything.\n", err)
+		return exitRehashUnnamedChanges
+	case errors.Is(err, integrity.ErrNoFragmentBaseline):
+		fmt.Fprintf(stderr, "Cannot re-sign by fragment: %v\nRun `csm rehash` to sign the current state.\n", err)
+		return exitRehashNoBaseline
+	default:
+		fmt.Fprintf(stderr, "Error re-signing conf.d fragments: %v\n", err)
+		return 1
+	}
 }
 
 func runValidate() {

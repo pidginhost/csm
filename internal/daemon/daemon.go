@@ -677,7 +677,7 @@ func (d *Daemon) Run() error {
 	}
 
 	// Verify integrity on startup
-	if err := integrity.Verify(d.binaryPath, d.cfg); err != nil {
+	if err := verifyStartupIntegrity(d.binaryPath, d.cfg); err != nil {
 		tamper := alert.Finding{
 			Severity:  alert.Critical,
 			Check:     "integrity",
@@ -1912,6 +1912,21 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 	scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
 	findings, purgeChecks := checks.RunTierWithContext(scanCtx, cfg, d.store, tier)
 	d.processScanFindingsWithCoverage(cfg, findings, purgeChecks, gaps.Snapshot(), "periodic")
+}
+
+// verifyStartupIntegrity verifies the binary, main config and conf.d, then
+// records the per-fragment digests of the verified conf.d. Hosts signed by a
+// release without that record get one here, so `csm rehash --fragment` works
+// after an upgrade without a full rehash. A record that cannot be written
+// only costs the scoped rehash, never the start.
+func verifyStartupIntegrity(binaryPath string, cfg *config.Config) error {
+	if err := integrity.Verify(binaryPath, cfg); err != nil {
+		return err
+	}
+	if err := integrity.RecordVerifiedConfD(cfg); err != nil {
+		csmlog.Warn("conf.d fragment record not written; csm rehash --fragment needs a full csm rehash first", "err", err)
+	}
+	return nil
 }
 
 func (d *Daemon) verifyPeriodicIntegritySnapshot(cfg *config.Config) (*config.Config, error) {

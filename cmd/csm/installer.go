@@ -427,8 +427,15 @@ func (inst *Installer) Uninstall(purge bool) error {
 		if err := purgeInstallTree(filepath.Dir(inst.BinaryPath), inst.StatePath, ops.removeAll); err != nil {
 			return err
 		}
-		if err := removeInstallerPath(ops.remove, inst.ConfigPath); err != nil {
+		// Resolve before removing the config: the record sits beside its target.
+		record, err := integrity.FragmentRecordPath(inst.ConfigPath)
+		if err != nil {
 			return err
+		}
+		for _, target := range []string{record, inst.ConfigPath} {
+			if err := removeInstallerPath(ops.remove, target); err != nil {
+				return err
+			}
 		}
 		fmt.Println("  Config, state, and logs purged")
 	} else {

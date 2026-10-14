@@ -189,3 +189,10 @@ func TestCapabilitiesHaveNoDuplicates(t *testing.T) {
 		seen[capability] = true
 	}
 }
+
+// The phpanel agent checks this before relying on `csm rehash --fragment`.
+func TestConfdRehashFragmentCapabilityAlwaysPresent(t *testing.T) {
+	if !contains(Capabilities(), "confd.rehash.fragment.v1") {
+		t.Error("confd.rehash.fragment.v1 capability missing")
+	}
+}

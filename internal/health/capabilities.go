@@ -50,10 +50,11 @@ func Capabilities() []string {
 		"status.firewall_health.v1", // status snapshot reports firewall enabled/managed state + block counts
 		"mode.observe.v1",           // observe posture: detection and alerting without host changes
 		"status.queue_health.v1",
-		"status.admission.v1",  // status carries the admission ledger, ingress and owner view
-		"token.expires_at.v1",  // per-credential expiry
-		"token.scope.unban.v1", // firewall check and unban only
-		"token.allowed_ips.v1", // per-token source addresses
+		"status.admission.v1",      // status carries the admission ledger, ingress and owner view
+		"token.expires_at.v1",      // per-credential expiry
+		"token.scope.unban.v1",     // firewall check and unban only
+		"token.allowed_ips.v1",     // per-token source addresses
+		"confd.rehash.fragment.v1", // csm rehash --fragment re-signs one integration's conf.d files
 	}
 	if firewall.Supported() {
 		caps = append(caps,
