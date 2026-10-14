@@ -74,6 +74,15 @@ func (a *eximServiceAdapter) Apply(cfg policy.Config, ips []string) error {
 	return a.submit(eximMutation{Operation: "apply", Config: cfg, BadIPs: ips})
 }
 
+// Invalidate cancels any request still waiting for a worker, without starting
+// one. Observe mode calls it: a worker started before the switch must not
+// change mail configuration afterwards.
+func (a *eximServiceAdapter) Invalidate() error {
+	return eximlock.WithRetry(context.Background(), filepath.Dir(a.badIPsPath), eximlock.RecordWait, func() error {
+		return writeFileAtomic(a.requestPath(), []byte("null"))
+	})
+}
+
 func (a *eximServiceAdapter) Remove() error {
 	return a.submit(eximMutation{Operation: "remove"})
 }

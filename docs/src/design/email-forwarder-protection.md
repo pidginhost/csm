@@ -142,7 +142,8 @@ Each submission has a distinct identity, even when its settings and sender
 list match an earlier submission. A delayed worker cannot replace a sender
 list refreshed since the newer submission. If its request record is missing
 or unreadable, the worker leaves the installed guard untouched.
-Observe mode and hosts without cPanel leave the installed guard untouched.
+Observe mode and hosts without cPanel leave the installed guard untouched; in
+observe mode CSM only cancels changes still waiting for a worker.
 
 ## WebUI surfaces (email page)
 

@@ -570,3 +570,40 @@ func TestForwardGuardReloadsDoNotWaitAndApplyTheLatestConfig(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+// cancelingForwardGuard can also cancel requests still waiting for a worker.
+type cancelingForwardGuard struct {
+	countingForwardGuard
+	canceled int
+}
+
+func (g *cancelingForwardGuard) Invalidate() error { g.canceled++; return nil }
+
+// On a cPanel host in observe mode, a reconcile cancels forward-guard requests
+// still waiting for a worker and changes nothing else. Hosts without cPanel
+// do neither.
+func TestObserveModeCancelsPendingForwardGuardWorkers(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		panel platform.Panel
+		want  int
+	}{
+		{"cpanel", platform.PanelCPanel, 1},
+		{"no_panel", platform.PanelNone, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usePanel(t, tc.panel)
+			cfg := &config.Config{Mode: config.ModeObserve}
+			useActiveConfig(t, cfg)
+			g := &cancelingForwardGuard{}
+			prev := newForwardGuard
+			t.Cleanup(func() { newForwardGuard = prev })
+			newForwardGuard = func() adapter.ForwardGuard { return g }
+			d := &Daemon{cfg: cfg}
+			d.reconcileForwardGuard()
+			if g.canceled != tc.want || g.mutations != 0 || d.forwardGuardRetry.Load() {
+				t.Fatalf("canceled=%d (want %d) mutations=%d retry=%v", g.canceled, tc.want, g.mutations, d.forwardGuardRetry.Load())
+			}
+		})
+	}
+}

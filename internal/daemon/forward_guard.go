@@ -28,11 +28,14 @@ var newForwardGuard = adapter.NewEximServiceAdapter
 
 // forwardGuardReconciler builds the reconciler for the current host. The guard
 // is only active on cPanel/exim; elsewhere Reconcile/RefreshBadIPs are no-ops.
+// In observe mode on cPanel, Reconcile only cancels pending worker requests.
 func (d *Daemon) forwardGuardReconciler() guard.Reconciler {
+	cpanel, observe := platform.Detect().IsCPanel(), d.currentCfg().ObserveMode()
 	return guard.Reconciler{
-		Guard:  newForwardGuard(),
-		Active: platform.Detect().IsCPanel() && !d.currentCfg().ObserveMode(),
-		BadIPs: d.forwardGuardBadIPs,
+		Guard:   newForwardGuard(),
+		Active:  cpanel && !observe,
+		BadIPs:  d.forwardGuardBadIPs,
+		Observe: cpanel && observe,
 	}
 }
 

@@ -17,13 +17,27 @@ type Reconciler struct {
 	Active bool
 	// BadIPs supplies the current bad-sender-IP set (from the reputation DB).
 	BadIPs func() []string
+	// Observe is set on a cPanel host in observe mode. Reconcile then only
+	// cancels requests still waiting for a worker, so a worker started
+	// before the switch changes no mail configuration.
+	Observe bool
 }
+
+// pendingCanceler is a guard that can cancel requests still waiting for a
+// worker without starting one.
+type pendingCanceler interface{ Invalidate() error }
 
 // Reconcile installs the guard when it is enabled and enforcing, and removes it
 // otherwise (disabled or dry-run). Dry-run never installs an MTA rule -- its
 // accounting is CSM-side only.
 func (r Reconciler) Reconcile(fg config.ForwardGuardConfig) error {
-	if !r.Active || r.Guard == nil {
+	if r.Guard == nil {
+		return nil
+	}
+	if !r.Active {
+		if canceler, ok := r.Guard.(pendingCanceler); ok && r.Observe {
+			return canceler.Invalidate()
+		}
 		return nil
 	}
 	if fg.Enabled && !fg.DryRun {

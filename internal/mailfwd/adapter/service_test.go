@@ -581,3 +581,24 @@ func TestEximServiceAdapterWaitsOutABriefLockHolder(t *testing.T) {
 		t.Fatalf("err=%v worker calls=%d", err, calls)
 	}
 }
+
+// Observe mode cancels a request still waiting for its worker without
+// starting one, so a worker from before the switch changes nothing.
+func TestEximServiceInvalidateSupersedesPendingWorker(t *testing.T) {
+	a, side := testAdapter(t)
+	var pending []eximMutation
+	before := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error { pending = append(pending, r); return nil }}
+	if err := before.Apply(policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}, nil); err != nil || len(pending) != 1 {
+		t.Fatalf("submit: err=%v requests=%d", err, len(pending))
+	}
+	calls := 0
+	observe := &eximServiceAdapter{EximAdapter: a, mutate: func(eximMutation) error { calls++; return nil }}
+	if err := observe.Invalidate(); err != nil || calls != 0 {
+		t.Fatalf("invalidate: err=%v worker calls=%d", err, calls)
+	}
+	err := handleEximMutation(strings.NewReader(mutationBody(t, pending[0])), lockedEximAdapter{a}.mutate)
+	status, statusErr := a.Status()
+	if !errors.Is(err, errSuperseded) || statusErr != nil || status.Installed || side.rebuilds != 0 {
+		t.Fatalf("pending worker after invalidate: err=%v installed=%v rebuilds=%d", err, status.Installed, side.rebuilds)
+	}
+}

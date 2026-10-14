@@ -81,11 +81,11 @@ var operations = []Op{
 	{
 		ID: "respond.forward_guard_check", Subsystem: "response",
 		Risk:       RiskObserve,
-		Summary:    "record the latest forward-guard request and check whether a rule is installed, under the shared Exim lock inside the daemon sandbox",
+		Summary:    "record the latest forward-guard request, check whether a rule is installed, and in observe mode cancel pending requests, under the shared Exim lock inside the daemon sandbox",
 		Privileges: []Privilege{Root}, Trigger: Automatic,
-		Writes:     []string{"/var/lib/csm/forward_guard"},
-		DisableKey: "mode", DisableValue: "observe",
-		WithoutPrivilege: "forward-guard changes are not handed to the root worker and the installed guard stays as it is",
+		Writes:           []string{"/var/lib/csm/forward_guard"},
+		DisableReason:    "pending forward-guard workers must be canceled even in observe mode",
+		WithoutPrivilege: "forward-guard changes are not handed to the root worker, pending workers cannot be canceled, and the installed guard stays as it is",
 	},
 	{
 		ID: "respond.forward_guard_lookup", Subsystem: "response",
