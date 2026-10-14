@@ -16,6 +16,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - CSM is now built with Go 1.27.2, which fixes standard library security flaws in HTTP/2, TLS and HTML templates.
 - Scans report cron entries that download and run a script on any numeric or `@` schedule, including every minute, hourly, daily, at boot and with a month or weekday name. The rules update queues a rescan of existing files.
 
+### Added
+
+- Inbound spam filtering on cPanel through an rspamd you install, where each account's Spam Filters switch decides; existing hosts are unchanged until `email_protection.antispam.enabled` is set.
+
 ### Changed
 
 - Deep phishing scans use less memory and CPU per page.
@@ -27,6 +31,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - When the firewall state file is unreadable at startup, CSM now keeps it aside, starts without its blocks and allowed addresses, and raises a critical alert and doctor failure. Re-add needed entries; if it cannot be kept, fix storage and restart CSM.
 - Threat lookups no longer show an address as blocked from stale auto-block records when the firewall does not hold that block.
 - After upgrade, IP reputation stops fetching the retired Spamhaus EDROP list and ignores its cached ranges; Spamhaus DROP carries the merged entries.
+- Failed forward guard changes now retry automatically with the latest settings, without requiring another config reload or restart.
 
 ## [4.3.0] - 2026-10-08
 

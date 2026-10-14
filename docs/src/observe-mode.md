@@ -29,6 +29,9 @@ Observe mode skips host integration work that otherwise runs automatically:
   rules during periodic scans.
 - The Exim forward guard is reconciled, including removing an installed guard
   when its switch is disabled.
+- The antispam integration is reconciled, including removing it when its
+  switch is disabled. An installed integration is reported as `observe_mode`
+  and left in place.
 - The AF_ALG kernel mitigation is re-applied on each critical tick when an
   opted-in hardening marker is present.
 
@@ -52,7 +55,8 @@ auto_response.enabled (set false), firewall.enabled (set false)
 
 The keys checked are `auto_response.enabled`, `firewall.enabled`,
 `php_shield.enabled`, `bpf_enforcement.enabled`,
-`email_protection.forward_guard.enabled`, `email_av.quarantine_infected`,
+`email_protection.forward_guard.enabled`, `email_protection.antispam.enabled`,
+`email_av.quarantine_infected`,
 `auto_response.php_relay.freeze`,
 `auto_response.mail_auth_recovery.restart_enabled`, and
 `auto_response.virtual_patch_exposed_files` set to `auto`. It also refuses

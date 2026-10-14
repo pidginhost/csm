@@ -664,6 +664,17 @@ email_protection:
       bad_sender_ip: true               # originating IP has bad reputation (enforceable)
       auth_fail: true                   # sender failed SPF/DKIM/DMARC auth (dry-run/accounting only)
 
+  # Inbound spam filtering through rspamd (cPanel only). Opt-in. The operator
+  # installs rspamd and adds the scan socket; CSM writes the Exim hooks and its
+  # own rspamd settings. Each account's cPanel Spam Filters switch decides
+  # whether its mail is filtered. See docs/src/antispam.md.
+  antispam:
+    enabled: false                      # master switch (default off)
+    dry_run: true                       # scan and log only; no reject, tag or split (default true)
+    rspamd_socket: /run/rspamd/csm-normal.sock  # rspamd scan socket, not the reputation.rspamd controller
+    reject_score: 15                    # reject at or above this rspamd score (default 15)
+    tag_score: 6                        # add X-Spam-Status: Yes at or above this score (default 6)
+
 # --- Firewall ---
 firewall:
   enabled: false

@@ -46,13 +46,14 @@ func (h *Health) SetEnabled(enabled bool, socket string) {
 	h.enabled, h.socket = enabled, socket
 }
 
-// Ping records one /ping result and returns the finding to report: rspamd
-// down after pingDown failures in a row, once per outage, and recovered
-// after pingUp successes in a row.
-func (h *Health) Ping(err error, now time.Time) []alert.Finding {
+// Ping records one /ping result for socket and returns the finding to
+// report: rspamd down after pingDown failures in a row, once per outage, and
+// recovered after pingUp successes in a row. A result for a socket no
+// longer tracked, from a probe that outlived a reload, is ignored.
+func (h *Health) Ping(socket string, err error, now time.Time) []alert.Finding {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !h.enabled {
+	if !h.enabled || socket != h.socket {
 		return nil
 	}
 	if err != nil {
@@ -74,29 +75,30 @@ func (h *Health) Ping(err error, now time.Time) []alert.Finding {
 }
 
 // Line records one Exim main-log line and returns the finding to report
-// when scans start failing. A successful scan clears the failure; only a
-// scan marker Exim wrote counts.
-func (h *Health) Line(line string, now time.Time) []alert.Finding {
+// when scans start failing, and whether a successful scan cleared a failure.
+// Only a scan marker Exim wrote counts.
+func (h *Health) Line(line string, now time.Time) (findings []alert.Finding, recovered bool) {
 	marker, ok := antispam.ScanMarker(line)
 	if !marker {
-		return nil
+		return nil, false
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	switch {
 	case !h.enabled:
-		return nil
+		return nil, false
 	case ok:
+		recovered = h.scanErrors > 0
 		h.scanErrors = 0
-		return nil
+		return nil, recovered
 	}
 	h.scanErrors++
 	h.lastErr = now
 	if h.scanErrors > 1 {
-		return nil
+		return nil, false
 	}
 	h.firstErr = now
-	return []alert.Finding{scanErrorFinding(1, now, now)}
+	return []alert.Finding{scanErrorFinding(1, now, now)}, false
 }
 
 // Active returns the health conditions true now.

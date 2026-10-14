@@ -60,6 +60,10 @@ type Outcome struct {
 	// Err is a canceled pass or the worker error behind a missing result,
 	// for the daemon log.
 	Err error
+	// Checks are the checks this pass settled: a reporter replaces their
+	// latest findings with Findings. A canceled pass settles none, and a
+	// busy one leaves the last apply result until its retry.
+	Checks []string
 }
 
 // Pass brings the host towards d once (spec sections 6.1 and 6.5). A
@@ -85,7 +89,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	a := assess(d.Enabled, d.Settings, f)
 	now := r.Now()
-	var out Outcome
+	out := Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed}}
 	for _, p := range a.Problems {
 		finding := problemFinding(p, now)
 		if d.Observe {
@@ -119,6 +123,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	if result.Busy {
 		out.Retry = BusyRetry
+		out.Checks = []string{CheckPrecondition}
 	}
 	if finding, ok := resultFinding(req.Operation, result, err, now); ok {
 		out.Findings = append(out.Findings, finding)

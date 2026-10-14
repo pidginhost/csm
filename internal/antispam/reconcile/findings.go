@@ -80,7 +80,7 @@ func rspamdDownFinding(socket string, since time.Time) alert.Finding {
 	return alert.Finding{
 		Severity: alert.Warning, Check: CheckRspamdDown, DedupKey: "rspamd", Timestamp: since,
 		Message: "rspamd does not answer on the antispam scan socket",
-		Details: "Three /ping probes in a row over " + clean(socket) + " failed. Exim delivers mail without spam filtering until rspamd answers again.",
+		Details: fmt.Sprintf("%d /ping probes in a row over %s failed. Exim delivers mail without spam filtering until rspamd answers again.", pingDown, clean(socket)),
 	}
 }
 
@@ -88,15 +88,19 @@ func rspamdRecoveredFinding(socket string, now time.Time) alert.Finding {
 	return alert.Finding{
 		Severity: alert.Warning, Check: CheckRspamdRecovered, Timestamp: now,
 		Message: "rspamd answers on the antispam scan socket again",
-		Details: "Two /ping probes in a row over " + clean(socket) + " succeeded.",
+		Details: fmt.Sprintf("%d /ping probes in a row over %s succeeded.", pingUp, clean(socket)),
 	}
 }
 
 func scanErrorFinding(count int, first, last time.Time) alert.Finding {
+	scans := "scans"
+	if count == 1 {
+		scans = "scan"
+	}
 	return alert.Finding{
 		Severity: alert.Warning, Check: CheckScanError, DedupKey: "scan", Timestamp: last,
 		Message: "Antispam scans are failing",
-		Details: fmt.Sprintf("Exim logged %d failed scans since %s, the last at %s. Mail is delivered without spam filtering while scans fail; check rspamd's log.",
-			count, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339)),
+		Details: fmt.Sprintf("Exim logged %d failed %s since %s, the last at %s. Mail is delivered without spam filtering while scans fail; check rspamd's log.",
+			count, scans, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339)),
 	}
 }
