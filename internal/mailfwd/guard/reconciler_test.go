@@ -200,3 +200,12 @@ func TestReconcileObserveCancelsPendingWorkers(t *testing.T) {
 		t.Fatalf("inactive host: err=%v invalidated=%d", err, g.invalidated)
 	}
 }
+
+// The production adapter must keep the optional cancel method: observe mode
+// finds it only by a type assertion, so a rename would silently stop
+// cancelling pending workers while the fakes above kept passing.
+func TestEximServiceAdapterCancelsPendingRequests(t *testing.T) {
+	if _, ok := adapter.NewEximServiceAdapter().(pendingCanceler); !ok {
+		t.Fatal("the exim adapter cannot cancel pending requests")
+	}
+}
