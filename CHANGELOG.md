@@ -18,7 +18,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Added
 
 - Inbound spam filtering on cPanel through an rspamd you install, where each account's Spam Filters switch decides; existing hosts are unchanged until `email_protection.antispam.enabled` is set.
-- Dashboard, API and metrics credentials can now expire at a set `expires_at`, which also ends browser sessions and event streams using them. Credentials without it never expire.
+- Dashboard, API and metrics credentials can use `expires_at` to end access, browser sessions and event streams, while credentials without it never expire.
 - API credentials can now accept only listed addresses with `allowed_ips` and use an `unban` scope limited to checking and lifting firewall blocks.
 
 ### Changed

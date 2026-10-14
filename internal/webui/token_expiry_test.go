@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/broadcast"
 	"github.com/pidginhost/csm/internal/config"
+	sessionstore "github.com/pidginhost/csm/internal/store"
 )
 
 func configureExpiringToken(t *testing.T, s *Server, token, scope, issued, expires string) {
@@ -272,5 +273,111 @@ func TestUndatedCredentialLogsIn(t *testing.T) {
 	req.AddCookie(cookie)
 	if !s.isAuthenticated(req) {
 		t.Fatal("credential without dates cannot log in")
+	}
+}
+
+func TestUndatedConfigurationAuthPaths(t *testing.T) {
+	previous := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(previous) })
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
+			admin, metricsToken := randomBrowserCredential(), randomBrowserCredential()
+			credentials := fmt.Sprintf("  tokens:\n    - name: operator\n      token: %q\n      scope: admin\n", admin)
+			if legacy {
+				credentials = fmt.Sprintf("  auth_token: %q\n", admin)
+			}
+			cfg, err := config.LoadBytes(fmt.Appendf(nil,
+				"webui:\n  session_lifetime: 720h\n  session_idle_timeout: 720h\n  metrics_token: %q\n%s", metricsToken, credentials))
+			if err != nil {
+				t.Fatal("older configuration failed to load:", err)
+			}
+			for _, result := range config.Validate(cfg) {
+				if strings.HasPrefix(result.Field, "webui.") {
+					t.Fatalf("older configuration has a web UI diagnostic: %s: %s", result.Field, result.Message)
+				}
+			}
+			base := newTestServer(t, "")
+			cfg.WebUI.UIDir = base.cfg.WebUI.UIDir
+			db, err := sessionstore.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			priorStore := sessionstore.Global()
+			sessionstore.SetGlobal(db)
+			t.Cleanup(func() { sessionstore.SetGlobal(priorStore); _ = db.Close() })
+			s, err := New(cfg, base.store)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
+			now := time.Now().UTC().Truncate(time.Second)
+			s.sessionNow = func() time.Time { return now }
+			cookie := loginBrowser(t, s, admin, nil)
+			if cookie.MaxAge != int((720 * time.Hour).Seconds()) {
+				t.Fatal("configured browser lifetime was not preserved")
+			}
+			csrf := s.csrfTokenForSession(cookie.Value)
+			if csrf == "" {
+				t.Fatal("undated credential did not sign a CSRF token")
+			}
+			now = now.Add(720*time.Hour - time.Second)
+			for _, via := range []string{"bearer", "cookie", "metrics"} {
+				req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+				switch via {
+				case "bearer":
+					req.Header.Set("Authorization", "Bearer "+admin)
+				case "cookie":
+					req.AddCookie(cookie)
+				case "metrics":
+					req.Header.Set("Authorization", "Bearer "+metricsToken)
+				}
+				rec := httptest.NewRecorder()
+				s.handleMetrics(rec, req)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("undated %s metrics authentication: status %d", via, rec.Code)
+				}
+				if via == "metrics" {
+					continue
+				}
+				req.Method = http.MethodPost
+				req.URL.Path = "/api/test"
+				req.Header.Set("X-CSRF-Token", csrf)
+				rec = httptest.NewRecorder()
+				s.requireAuth(s.requireCSRF(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusNoContent)
+				}))).ServeHTTP(rec, req)
+				if rec.Code != http.StatusNoContent {
+					t.Fatalf("undated %s write authentication: status %d", via, rec.Code)
+				}
+				bus := broadcast.NewBus(8)
+				s.SetFindingBus(bus)
+				ctx, cancel := context.WithCancel(context.Background())
+				stream := httptest.NewRequest(http.MethodGet, "/api/v1/events", nil).WithContext(ctx)
+				stream.Header = req.Header.Clone()
+				streamRec := newDeadlineRecorder()
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					s.requireRead(http.HandlerFunc(s.apiEvents)).ServeHTTP(streamRec, stream)
+				}()
+				t.Cleanup(func() { cancel(); <-done; bus.Close() })
+				waitForRecorderFlush(t, streamRec, 1)
+				bus.Publish(alert.Finding{Check: "undated_credential", Severity: alert.High})
+				waitForRecorderBodyContains(t, streamRec, `"check":"undated_credential"`)
+				cancel()
+				<-done
+			}
+			now = now.Add(time.Second)
+			req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+			req.AddCookie(cookie)
+			if s.isAuthenticated(req) || s.csrfSecret(cookie.Value) != "" {
+				t.Fatal("undated credential bypassed the browser session deadline")
+			}
+			req.Header.Set("Authorization", "Bearer "+admin)
+			if !s.isAuthenticated(req) {
+				t.Fatal("browser session expiry disabled the undated API credential")
+			}
+		})
 	}
 }

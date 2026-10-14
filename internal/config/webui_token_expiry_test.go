@@ -3,6 +3,8 @@ package config
 import (
 	"crypto/rand"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +71,62 @@ func TestLegacyTokenKeepsIssueTimeAcrossLoads(t *testing.T) {
 		}
 		if cfg.WebUI.Tokens[0].IssuedAt != issued {
 			t.Fatal("legacy token lost its fixed issue time")
+		}
+	}
+}
+
+func TestWebUICredentialDateInputsFailClosed(t *testing.T) {
+	for _, kind := range []string{"scoped", "legacy", "metrics"} {
+		for _, field := range []string{"issued_at", "expires_at"} {
+			for _, value := range []string{`"not-a-date"`, `" "`, "false", "0", "[]", "{}"} {
+				t.Run(kind+"/"+field+"/"+value, func(t *testing.T) {
+					key, indent := field, "      "
+					body := fmt.Sprintf("webui:\n  tokens:\n    - name: operator\n      scope: admin\n      token: %q\n", longToken())
+					if kind != "scoped" {
+						prefix := "auth_token"
+						if kind == "metrics" {
+							prefix = "metrics_token"
+						}
+						key, indent = prefix+"_"+field, "  "
+						body = fmt.Sprintf("webui:\n  %s: %q\n", prefix, longToken())
+					}
+					data := []byte(body + indent + key + ": " + value + "\n")
+					dir := t.TempDir()
+					if err := os.WriteFile(filepath.Join(dir, "token.yaml"), data, 0600); err != nil {
+						t.Fatal(err)
+					}
+					for _, dropIn := range []bool{false, true} {
+						cfg, err := LoadBytes(data)
+						if dropIn {
+							cfg, err = LoadBytesWithDir(nil, dir)
+						}
+						if err != nil {
+							continue // Invalid YAML types may reject the configuration outright.
+						}
+						issued, expires := cfg.WebUI.MetricsTokenIssuedAt, cfg.WebUI.MetricsTokenExpiresAt
+						warningField := "webui.metrics_token_" + field
+						if kind != "metrics" {
+							if len(cfg.WebUI.Tokens) != 1 {
+								t.Fatal("credential missing after loading")
+							}
+							issued, expires = cfg.WebUI.Tokens[0].IssuedAt, cfg.WebUI.Tokens[0].ExpiresAt
+							warningField = "webui.tokens[0]." + field
+						}
+						if WebUITokenCurrent(issued, expires, time.Now()) {
+							t.Fatalf("malformed date authenticated (drop-in=%v)", dropIn)
+						}
+						found := false
+						for _, warning := range Validate(cfg) {
+							if warning.Level == "warn" && warning.Field == warningField && strings.Contains(warning.Message, "credential disabled") {
+								found = true
+							}
+						}
+						if !found {
+							t.Fatalf("missing disabled credential warning (drop-in=%v)", dropIn)
+						}
+					}
+				})
+			}
 		}
 	}
 }
