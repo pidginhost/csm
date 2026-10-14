@@ -241,19 +241,59 @@ func TestRecordRequestRemovesAnUnpublishedStage(t *testing.T) {
 	go func() { finished <- eximlock.With(dir, func() error { close(entered); <-release; return nil }) }()
 	<-entered
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	defer cancel()
+	prev := stageRecord
+	t.Cleanup(func() { stageRecord = prev })
+	staged := 0
+	stageRecord = func(path string, body []byte) (string, error) {
+		tmp, err := prev(path, body)
+		staged++
+		cancel()
+		return tmp, err
+	}
 	recorded, err := recordRequest(ctx, dir, []byte(applyBody))
 	close(release)
 	if lockErr := <-finished; lockErr != nil {
 		t.Fatal(lockErr)
 	}
 	entries, readErr := os.ReadDir(dir)
-	if recorded || !errors.Is(err, context.Canceled) || readErr != nil {
-		t.Fatalf("recorded=%v err=%v readErr=%v", recorded, err, readErr)
+	if recorded || !errors.Is(err, context.Canceled) || readErr != nil || staged != 1 {
+		t.Fatalf("recorded=%v err=%v readErr=%v staged=%d", recorded, err, readErr, staged)
 	}
 	for _, e := range entries {
 		if e.Name() != "mutation.lock" {
 			t.Fatalf("left %s behind", e.Name())
 		}
+	}
+}
+
+func TestRecordRequestCanceledBeforeStaging(t *testing.T) {
+	for _, name := range []string{"missing directory", "invalid directory"} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "requests")
+			if name == "invalid directory" {
+				if err := os.WriteFile(dir, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			prev := stageRecord
+			t.Cleanup(func() { stageRecord = prev })
+			staged := 0
+			stageRecord = func(path string, body []byte) (string, error) {
+				staged++
+				return prev(path, body)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			recorded, err := recordRequest(ctx, dir, []byte(applyBody))
+			if recorded || !errors.Is(err, context.Canceled) || staged != 0 {
+				t.Errorf("recorded=%v err=%v staged=%d", recorded, err, staged)
+			}
+			if name == "missing directory" {
+				if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("canceled request created its directory: %v", err)
+				}
+			}
+		})
 	}
 }

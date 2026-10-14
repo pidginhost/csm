@@ -60,8 +60,11 @@ func Lock(dir string) Locker {
 // dir. It reports false without an error while another transaction holds
 // the lock for longer than eximlock.RecordWait. The record is written and
 // flushed before the lock is taken; under the lock it is only renamed into
-// place, so a slow disk never lengthens the hold.
+// place. The directory is flushed after unlocking, before reporting success.
 func recordRequest(ctx context.Context, dir string, body []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	// #nosec G301 -- the shared lock directory, created with the mode eximlock uses.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return false, err
@@ -85,6 +88,10 @@ func recordRequest(ctx context.Context, dir string, body []byte) (bool, error) {
 	if errors.Is(err, eximlock.ErrBusy) {
 		return false, nil
 	}
+	if err != nil {
+		return false, err
+	}
+	err = syncRecordDir(dir)
 	return err == nil, err
 }
 
@@ -109,4 +116,19 @@ var stageRecord = func(path string, body []byte) (string, error) {
 		return "", err
 	}
 	return tmp, nil
+}
+
+// A file flush alone does not persist the rename. Keep the directory flush
+// outside the shared lock, too, so it cannot delay another record writer.
+var syncRecordDir = func(dir string) error {
+	// #nosec G304 -- fixed CSM state directory, opened only to persist the rename.
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if closeErr := d.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }
