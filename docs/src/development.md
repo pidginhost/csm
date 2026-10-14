@@ -310,6 +310,11 @@ the outcome back. A missing intent or intent bucket returns a corrupt-record
 error without changing the ledger.
 An empty ledger settles without a clock reading.
 
+Candidate records without an existing-effect link keep version 1 and their
+original encoding. A refused existing-effect candidate can carry the block
+name and expiry in version 2. Its maximum encoded size includes the link
+only when present; attempts and audit rows keep their existing formats.
+
 Schema 2 of the ledger adds its queue, and the first open upgrades a schema
 1 ledger in the same transaction; legacy work that cannot fit the unassessed
 general partition refuses the upgrade intact. Ingress, queued and in-flight
@@ -465,6 +470,20 @@ an hour after the last observation, even while work of another kind is
 queued or in flight; an unknown outcome or a response of another kind does
 not end it.
 
+A candidate refused as an existing effect can name the block that enforces
+it: the admission action that wrote it, or the firewall's `eff_` name of an
+operator or earlier block, with its expiry. `TerminateExisting` ends a
+queued pick that way, including a retry whose earlier attempt never ran;
+`FinishExisting` fails the current attempt, keeping its charge, and ends
+the pick linked in the same transaction, or leaves it
+failed on its last attempt. A historical result cannot end a later retry;
+a repeated linked ending must name the same block and expiry instant. A linked record is candidate version 2 and an
+admitted candidate's history pays for its bytes; without room the
+transaction changes nothing. The first linked record moves the ledger to
+schema 8, with the same buckets; this build opens schema 7 and 8, and older
+builds refuse schema 8 rather than misread it. A ledger stays at schema 7,
+and can be read by an older build, until something is linked.
+
 Schema 7 adds execution intents; the first open upgrades a schema 1 to 6
 ledger in the same transaction. Execution marks a batch of up to 64
 reserved attempts as running and records, in the same transaction and
@@ -535,9 +554,11 @@ steps can shorten restored leases. After a step back the lease clock stays
 ahead unless wall time catches up through a later correction; elapsed time
 alone does not close the lead. New rows record expiries that far ahead; the
 engine logs the first lead beyond the readback slack once per engine. The
-admission owner still computes expiries from the admission clock, which
-returns to wall time once the wall passes its high-water mark, so the two
-frames must be aligned before the owner gets an engine.
+admission owner reads the engine's lease clock once per batch and sets a
+first attempt's expiry on it, so the lead is not lost from the block's
+lifetime and a short block is not refused as already expired; a retry
+keeps the first expiry. The owner already defers while the admission clock
+is degraded, the only time the lease could trail it.
 
 The engine also provides internal batch entry points for up to 64 timed
 full-address blocks. The admission owner runs them only when the daemon gives
@@ -551,9 +572,14 @@ untimed element for a permanent row, or one with the time a timed row has
 left, accounting for elapsed time across both set reads and all member checks.
 Apply results also age existing-block proofs through the batch's writes.
 A timed proof that can already have expired is not coverage, even if its row
-has time left within the readback slack. Any other row or element
-holding the address refuses the member as
-pending recovery. The batch rechecks, writes one
+has time left within the readback slack. The row must also last as long as
+the member, within the readback slack: a shorter block holds the address
+until it ends. Any other row or element holding the address refuses the
+member as pending recovery. An existing-effect refusal, at check or apply
+time, names the block that holds the address: the admission action that
+wrote its row, or `eff_` and a digest of an operator or earlier row's
+identity, with its expiry. The same row gets the same name on every check
+and after a restart. The batch rechecks, writes one
 intent with expiry instants stored in UTC, refreshes timeouts after the
 write, and uses one atomic transaction
 on a fresh socket with a two-second deadline. Exact-family readback proves
@@ -576,14 +602,19 @@ replacement accounting. Permanent promotion requires a verified block row.
 With an engine, each owner turn runs its `block_ip` picks as one batch. The
 engine checks every member against one snapshot before anything is reserved. A
 full set, or an address a row or element holds without proof, defers a member;
-a block the engine proves already holds the address, an invalid or protected
-address or a spent lifetime ends it without a charge. A proven block found
-only when the batch applies ends the attempt failed, with its charge, and the
-pick refused as an existing effect without a retry, after a fresh check
-following the outcome write. On the last attempt it already ends failed.
-A failed ending is checked again after backoff; if
-proof disappeared, ordinary bounded retries remain possible. No durable
-reference is stored yet. The rest are reserved,
+a block the engine proves already holds the address ends it linked to that
+block, and an invalid or protected address or a spent lifetime ends it, all
+without a charge. If the ledger refuses that link (no history budget for
+it), the pick stays queued with the deferral reason and the rest of the
+batch runs; the next check tries again. A proven block found only when the batch applies is
+checked again when the outcome is written: with a fresh proof the attempt
+fails, with its charge, and the pick ends refused as an existing effect,
+linked to the block, in one ledger write, so nothing retries against it.
+Without a fresh proof, or if that write fails, the failure alone is attempted
+at once. If both writes fail transiently, execution waits for the pending
+outcome; a crash before it is saved leaves an unknown attempt. After a successful
+write the ordinary bounded retry or the next check decides. On the
+last attempt the pick already ends failed. The rest are reserved,
 recorded as running with their intents, applied and finished by their own
 effect. Failed outcome writes retry before more work is selected and once at
 shutdown, even without a fresh clock reading; the effect is never dispatched

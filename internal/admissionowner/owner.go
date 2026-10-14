@@ -57,6 +57,10 @@ var (
 	reserveLedger   = (*store.AdmissionLedger).Reserve
 	finishLedger    = (*store.AdmissionLedger).Finish
 	terminateLedger = (*store.AdmissionLedger).Terminate
+	// finishExistingLedger and terminateExistingLedger end a pick linked to
+	// the block that already enforces it; tests make them fail.
+	finishExistingLedger    = (*store.AdmissionLedger).FinishExisting
+	terminateExistingLedger = (*store.AdmissionLedger).TerminateExisting
 )
 
 // previewLimits lets a schedule serve whatever the ledger's budgets allow,
@@ -718,7 +722,7 @@ func (o *Owner) turn() error {
 			blocks = append(blocks, execPick{pick: p, c: c})
 			continue
 		}
-		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, o.expiryOf(c)); err != nil {
+		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, o.expiryOf(c, o.now)); err != nil {
 			if reason, refused := admission.ReasonOf(err); refused {
 				switch reason.Disposition() {
 				case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
@@ -761,8 +765,8 @@ func (o *Owner) turn() error {
 
 // expiryOf is the absolute expiry of a pick's next attempt: a retry keeps
 // its first attempt's; a first attempt lasts the selected legacy lifetime,
-// or the configured response's.
-func (o *Owner) expiryOf(c admission.Candidate) time.Time {
+// or the configured response's, from now.
+func (o *Owner) expiryOf(c admission.Candidate, now time.Time) time.Time {
 	if c.Attempts > 0 {
 		return c.ExpiresAt
 	}
@@ -770,7 +774,7 @@ func (o *Owner) expiryOf(c admission.Candidate) time.Time {
 	if duration == 0 {
 		duration = o.opts.Expiry(c)
 	}
-	return o.now.Add(duration)
+	return now.Add(duration)
 }
 
 // countArrival counts the ledger's decision on one drained arrival.

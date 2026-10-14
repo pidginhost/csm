@@ -612,22 +612,57 @@ func (q *queueTx) chargeHistory(id admission.CandidateID, c admission.Candidate,
 	if c.Attempts > 1 && !found || found && !h.Ended.IsZero() {
 		return admission.ErrCorruptRecord
 	}
-	s, err := q.storageState()
-	if err != nil {
-		return err
-	}
 	if room, roomErr := q.recoveryRoom(); roomErr != nil {
 		return roomErr
 	} else if uint64(max(cost, h.Charged()))+admission.AttemptRecoveryBytes > room {
 		err = refusal(admission.ReasonPendingRecovery, "outstanding outcomes fill the recovery reserve")
 		return err
 	}
+	return q.growHistory(id, c, h, lane, cost)
+}
+
+// chargeLink charges an admitted candidate's history for the link it now
+// carries, on the lane its last attempt was admitted on (the general one
+// for an attempt reserved before lanes were kept).
+func (q *queueTx) chargeLink(id admission.CandidateID, c admission.Candidate) error {
+	// The caller counts termination after this charge; cost validation
+	// needs the complete ending even when the failed attempt never ran.
+	c.Transitions++
+	cost, err := historyCostOf(q.tx, c)
+	if err != nil {
+		return err
+	}
+	h, found, err := loadHistoryEntry(q.tx, id)
+	if err != nil {
+		return err
+	}
+	if !found || !h.Ended.IsZero() {
+		return admission.ErrCorruptRecord
+	}
+	a, err := currentAttempt(q.tx, c)
+	if err != nil {
+		return err
+	}
+	lane := a.Lane
+	if lane == 0 {
+		lane = admission.LaneGeneral
+	}
+	return q.growHistory(id, c, h, lane, cost)
+}
+
+// growHistory raises entry h of admitted candidate c to cost on lane: what
+// its history grew by, from the lane's credit and within its allowance.
+func (q *queueTx) growHistory(id admission.CandidateID, c admission.Candidate, h admission.HistoryEntry, lane admission.Lane, cost uint32) error {
 	if cost <= h.Charged() {
 		return nil
 	}
+	s, err := q.storageState()
+	if err != nil {
+		return err
+	}
 	grown := cost - h.Charged()
 	// A charge the credit cannot cover is refused after this, and the
-	// whole reservation, retirements included, rolls back.
+	// whole transaction, retirements included, rolls back.
 	if err = q.retireForRoom(lane, uint64(grown)); err != nil {
 		return err
 	}

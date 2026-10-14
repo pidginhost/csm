@@ -770,9 +770,13 @@ func TestApplyBlockBatchAgesExistingRefusalBeforeReturn(t *testing.T) {
 			return err
 		}
 		f.onFlush = func() { f.live["203.0.113.20"] = time.Hour - tc.delay }
-		results, err := f.e.ApplyBlockBatch([]BlockMember{f.member("act_held", "203.0.113.40"), f.member("act_new", "203.0.113.20")})
+		// The held member ends with the row, so the row covers it.
+		held := f.member("act_held", "203.0.113.40")
+		held.ExpiresAt = at.Add(2 * time.Second)
+		results, err := f.e.ApplyBlockBatch([]BlockMember{held, f.member("act_new", "203.0.113.20")})
 		writeFirewallStateJSON = write
-		if err != nil || len(results) != 2 || results[0].Effect != BlockFailed || results[0].Refusal != tc.want || results[1].Effect != BlockApplied {
+		if err != nil || len(results) != 2 || results[0].Effect != BlockFailed || results[0].Refusal != tc.want || results[1].Effect != BlockApplied ||
+			(results[0].Existing != ExistingBlock{}) != (tc.want == BlockRefusedExisting) {
 			t.Fatalf("left %v, delay %v: stale existing proof: %+v, %v", tc.left, tc.delay, results, err)
 		}
 	}

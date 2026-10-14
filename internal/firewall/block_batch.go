@@ -45,13 +45,15 @@ const (
 	// action.
 	BlockRefusedDuplicate BlockRefusal = "duplicate"
 	// BlockRefusedExisting: a verified row and its kernel element already
-	// block the address: an untimed element for a permanent row, or one
-	// with the time a timed row has left (spec 5.16).
+	// block the address for at least the member's lifetime: an untimed
+	// element for a permanent row, or one with the time a timed row has
+	// left when that row ends no earlier than the member (spec 5.16).
 	BlockRefusedExisting BlockRefusal = "existing_effect"
 	// BlockRefusedPending: a row or a kernel element names the address
-	// without proving an enforced block: the row is unverified, has no
-	// element or one with another lifetime, or an element has no row.
-	// Recovery has to settle it first.
+	// without proving an enforced block that covers the member: the row is
+	// unverified, has no element or one with another lifetime, an element
+	// has no row, or the proven block ends before the member. Recovery or
+	// that block's end has to settle it first.
 	BlockRefusedPending BlockRefusal = "pending_recovery"
 	// BlockRefusedFull: no temporary deny slot is left.
 	BlockRefusedFull BlockRefusal = "set_full"
@@ -72,10 +74,29 @@ const (
 
 // BlockResult is one member's outcome: its effect, the check that refused
 // it before the kernel batch, or the error behind a failed or unknown one.
+// Existing names the block behind an existing-effect refusal.
 type BlockResult struct {
-	Effect  BlockEffect
-	Refusal BlockRefusal
-	Err     error
+	Effect   BlockEffect
+	Refusal  BlockRefusal
+	Existing ExistingBlock
+	Err      error
+}
+
+// ExistingBlock names the block that already holds an address, so a member
+// refused as an existing effect can link to it (spec 5.17): the admission
+// action that wrote its row, or "eff_" and a digest of an operator or
+// earlier row's identity, and when it ends (zero: permanent). The same row
+// gets the same ID on every check and after a restart.
+type ExistingBlock struct {
+	ID        string
+	ExpiresAt time.Time
+}
+
+// BlockCheck is the batch check's answer for one member: its refusal and,
+// for an existing effect, the block that holds the address.
+type BlockCheck struct {
+	Refusal  BlockRefusal
+	Existing ExistingBlock
 }
 
 // ErrBlockBatchRejected marks a member that failed because the kernel

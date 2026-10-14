@@ -3,10 +3,13 @@
 package firewall
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -208,6 +211,91 @@ func TestCheckBlockBatchNeedsProofOfAnExistingEffect(t *testing.T) {
 	for i, tc := range cases {
 		if got[i] != tc.want {
 			t.Errorf("%s = %q, want %q", tc.ip, got[i], tc.want)
+		}
+	}
+}
+
+// Only the exact effect counts as existing (spec 5.16): a proven block that
+// ends before the member defers it until that block has ended.
+func TestCheckBlockBatchNeedsABlockThatCoversTheMember(t *testing.T) {
+	f := newBatchFixture(t, FirewallState{Blocked: []BlockedEntry{
+		{IP: "203.0.113.50", Reason: "automatic", ExpiresAt: time.Date(2026, 3, 4, 5, 56, 7, 0, time.UTC)},
+		{IP: "203.0.113.51", Reason: "automatic", ExpiresAt: time.Date(2026, 3, 4, 6, 6, 6, 500_000_000, time.UTC)},
+		{IP: "203.0.113.52", Reason: "automatic", ExpiresAt: time.Date(2026, 3, 4, 7, 6, 7, 0, time.UTC)},
+		{IP: "203.0.113.53", Reason: "operator"},
+		{IP: "203.0.113.54", Reason: "automatic", ExpiresAt: time.Date(2026, 3, 4, 6, 6, 6, 0, time.UTC)},
+		{IP: "203.0.113.55", Reason: "automatic", ExpiresAt: time.Date(2026, 3, 4, 6, 6, 5, 999_999_999, time.UTC)},
+	}})
+	f.live["203.0.113.50"] = 50 * time.Minute // ten minutes short of the member
+	f.live["203.0.113.51"] = time.Hour - 500*time.Millisecond
+	f.live["203.0.113.52"] = 2 * time.Hour
+	f.live["203.0.113.53"] = 0
+	f.live["203.0.113.54"] = time.Hour - time.Second
+	f.live["203.0.113.55"] = time.Hour - time.Second - time.Nanosecond
+	cases := []struct {
+		ip   string
+		want BlockRefusal
+	}{
+		{"203.0.113.50", BlockRefusedPending},
+		{"203.0.113.51", BlockRefusedExisting},
+		{"203.0.113.52", BlockRefusedExisting},
+		{"203.0.113.53", BlockRefusedExisting},
+		{"203.0.113.54", BlockRefusedExisting},
+		{"203.0.113.55", BlockRefusedPending},
+	}
+	members := make([]BlockMember, len(cases))
+	for i, tc := range cases {
+		members[i] = f.member(fmt.Sprintf("act_c%d", i), tc.ip)
+	}
+	got, err := f.e.CheckBlockBatch(members)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, tc := range cases {
+		if got[i] != tc.want {
+			t.Errorf("%s = %q, want %q", tc.ip, got[i], tc.want)
+		}
+	}
+	// The same rule holds when the batch applies.
+	results, err := f.e.ApplyBlockBatch(members[:1])
+	if err != nil || len(results) != 1 || results[0].Effect != BlockFailed || results[0].Refusal != BlockRefusedPending {
+		t.Fatalf("apply = %+v, %v; want the short block refused as pending", results, err)
+	}
+}
+
+// An existing effect names the block that holds the address, the same way
+// on every check and after a restart: the admission action that wrote the
+// row, or a digest of an operator or earlier row's identity.
+func TestCheckBlockBatchNamesTheBlockThatHoldsAnAddress(t *testing.T) {
+	act := "act_0123456789abcdef0123456789abcdef"
+	expires := time.Date(2026, 3, 4, 6, 6, 7, 0, time.UTC)
+	blockedAt := time.Date(2026, 3, 1, 2, 3, 4, 5, time.UTC)
+	state := FirewallState{Blocked: []BlockedEntry{
+		{IP: "203.0.113.60", Reason: "automatic", Source: SourceAutoResponse, ActionID: act, ExpiresAt: expires},
+		{IP: "203.0.113.61", Reason: "operator", Source: SourceWebUI, BlockedAt: blockedAt},
+		{IP: "203.0.113.62", Reason: "automatic", ActionID: "act_fedcba9876543210fedcba9876543210", Unverified: true, ExpiresAt: expires},
+	}}
+	sum := sha256.Sum256([]byte("203.0.113.61\x00" + SourceWebUI + "\x00" + blockedAt.Format(time.RFC3339Nano) + "\x00" + time.Time{}.Format(time.RFC3339Nano)))
+	want := []BlockCheck{
+		{Refusal: BlockRefusedExisting, Existing: ExistingBlock{ID: act, ExpiresAt: expires}},
+		{Refusal: BlockRefusedExisting, Existing: ExistingBlock{ID: "eff_" + hex.EncodeToString(sum[:16])}},
+		{Refusal: BlockRefusedPending},
+	}
+	for restart := 0; restart < 2; restart++ {
+		f := newBatchFixture(t, state)
+		f.live["203.0.113.60"] = time.Hour
+		f.live["203.0.113.61"] = 0
+		f.live["203.0.113.62"] = time.Hour
+		members := []BlockMember{f.member("act_n0", "203.0.113.60"), f.member("act_n1", "203.0.113.61"), f.member("act_n2", "203.0.113.62")}
+		for i := 0; i < 2; i++ {
+			got, err := f.e.CheckBlockBatchEffects(members)
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Fatalf("restart %d, check %d = %+v, %v; want %+v", restart, i, got, err, want)
+			}
+		}
+		results, err := f.e.ApplyBlockBatch(members[:2])
+		if err != nil || len(results) != 2 || results[0].Existing != want[0].Existing || results[1].Existing != want[1].Existing {
+			t.Fatalf("apply = %+v, %v; want each existing effect named", results, err)
 		}
 	}
 }
@@ -471,7 +559,10 @@ func TestCheckBlockBatchAgesExistingProofThroughMemberChecks(t *testing.T) {
 						return nil, errors.New("fixture interface lookup failure")
 					}
 					writes := f.countWrites(t)
-					got, err := f.e.CheckBlockBatch([]BlockMember{f.member("act_held", ip), f.member("act_new", "203.0.113.20")})
+					// The held member ends with the row, so the row covers it.
+					held := f.member("act_held", ip)
+					held.ExpiresAt = at.Add(2 * time.Second)
+					got, err := f.e.CheckBlockBatch([]BlockMember{held, f.member("act_new", "203.0.113.20")})
 					want := BlockRefusedExisting
 					if delay > 2*time.Second {
 						want = BlockRefusedPending
@@ -485,5 +576,32 @@ func TestCheckBlockBatchAgesExistingProofThroughMemberChecks(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// Deferral ends when the short row and its element expire. The first
+// apply changes neither state nor the kernel; the later apply runs once.
+func TestCheckBlockBatchShortBlockEventuallyReleasesMember(t *testing.T) {
+	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	f := newBatchFixture(t, FirewallState{Blocked: []BlockedEntry{{
+		IP: "203.0.113.50", Reason: "automatic", ExpiresAt: at.Add(time.Minute),
+	}}})
+	f.live["203.0.113.50"] = time.Minute
+	m := f.member("act_waiting", "203.0.113.50")
+	writes := f.countWrites(t)
+	results, err := f.e.ApplyBlockBatch([]BlockMember{m})
+	if err != nil || len(results) != 1 || results[0].Refusal != BlockRefusedPending || f.sends != 0 || *writes != 0 {
+		t.Fatalf("short hold applied: %+v, %v, sends=%d writes=%d", results, err, f.sends, *writes)
+	}
+	f.at = at.Add(time.Minute + time.Second)
+	delete(f.live, m.IP)
+	refusals, err := f.e.CheckBlockBatch([]BlockMember{m})
+	if err != nil || len(refusals) != 1 || refusals[0] != "" {
+		t.Fatalf("expired hold still defers: %v, %v", refusals, err)
+	}
+	f.onFlush = func() { f.live[m.IP] = m.ExpiresAt.Sub(f.at) }
+	results, err = f.e.ApplyBlockBatch([]BlockMember{m})
+	if err != nil || len(results) != 1 || results[0].Effect != BlockApplied || f.sends != 1 {
+		t.Fatalf("released member = %+v, %v, sends=%d", results, err, f.sends)
 	}
 }

@@ -3,9 +3,12 @@
 package firewall
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"syscall"
 	"time"
 	"unicode"
@@ -241,12 +244,20 @@ func (e *Engine) blockRefusalLocked(m BlockMember, verified bool, snap blockSnap
 	el, live := snap.live[m.IP]
 	row, held := snap.blocked[key]
 	switch {
-	case held && snap.proves(row, el, live):
+	case held && snap.proves(row, el, live) && covers(row, m):
 		return BlockRefusedExisting
 	case held || live:
 		return BlockRefusedPending
 	}
 	return ""
+}
+
+// covers reports whether row lasts as long as member m (spec 5.16: only
+// the exact effect is already enforced): a permanent row, or a timed row
+// ending no earlier than the member within the readback slack. A shorter
+// block holds the address until it ends.
+func covers(row BlockedEntry, m BlockMember) bool {
+	return row.ExpiresAt.IsZero() || !row.ExpiresAt.Before(m.ExpiresAt.Add(-blockReadbackSlack))
 }
 
 // CheckBlockBatch answers, before anything is reserved, which members of a
@@ -255,6 +266,20 @@ func (e *Engine) blockRefusalLocked(m BlockMember, verified bool, snap blockSnap
 // An error refuses the whole call: an empty or oversized batch, durable
 // state, or no snapshot.
 func (e *Engine) CheckBlockBatch(members []BlockMember) ([]BlockRefusal, error) {
+	checks, err := e.CheckBlockBatchEffects(members)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BlockRefusal, len(checks))
+	for i, c := range checks {
+		out[i] = c.Refusal
+	}
+	return out, nil
+}
+
+// CheckBlockBatchEffects is CheckBlockBatch with the block that holds the
+// address of each member refused as an existing effect.
+func (e *Engine) CheckBlockBatchEffects(members []BlockMember) ([]BlockCheck, error) {
 	if len(members) == 0 || len(members) > MaxBlockBatchMembers {
 		return nil, fmt.Errorf("a block batch has 1 to %d members", MaxBlockBatchMembers)
 	}
@@ -265,7 +290,48 @@ func (e *Engine) CheckBlockBatch(members []BlockMember) ([]BlockRefusal, error) 
 	if err != nil {
 		return nil, err
 	}
-	return e.checkBlockMembersLocked(members, verified, snap, snap.at), nil
+	out := make([]BlockCheck, len(members))
+	for i, refusal := range e.checkBlockMembersLocked(members, verified, snap, snap.at) {
+		out[i] = BlockCheck{Refusal: refusal, Existing: snap.existing(members[i], refusal)}
+	}
+	return out, nil
+}
+
+// existing names the block that holds m's address when m is refused as an
+// existing effect.
+func (snap blockSnapshot) existing(m BlockMember, refusal BlockRefusal) ExistingBlock {
+	if refusal != BlockRefusedExisting {
+		return ExistingBlock{}
+	}
+	row := snap.blocked[stateIPKey(m.IP)]
+	return ExistingBlock{ID: blockEffectID(row), ExpiresAt: row.ExpiresAt}
+}
+
+// blockEffectID names the block row holds: the admission action that wrote
+// it, or for an operator or earlier row a digest of its identity, which
+// stays the same while the row does.
+func blockEffectID(row BlockedEntry) string {
+	if admissionAction(row.ActionID) {
+		return row.ActionID
+	}
+	identity := strings.Join([]string{stateIPKey(row.IP), row.Source, row.BlockedAt.UTC().Format(time.RFC3339Nano), row.ExpiresAt.UTC().Format(time.RFC3339Nano)}, "\x00")
+	sum := sha256.Sum256([]byte(identity))
+	return "eff_" + hex.EncodeToString(sum[:16])
+}
+
+// admissionAction reports whether id has the form of an admission action
+// ID: "act_" and 32 lowercase hex digits.
+func admissionAction(id string) bool {
+	rest, ok := strings.CutPrefix(id, "act_")
+	if !ok || len(rest) != 32 {
+		return false
+	}
+	for _, c := range rest {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // blockReadbackSlack covers the kernel's timeout granularity and the
@@ -373,7 +439,7 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 			row := snap.blocked[stateIPKey(members[i].IP)]
 			observed, present := snap.live[members[i].IP]
 			if !snap.proves(row, observed, present) {
-				results[i].Refusal = BlockRefusedPending
+				results[i].Refusal, results[i].Existing = BlockRefusedPending, ExistingBlock{}
 			}
 		}
 	}()
@@ -383,7 +449,7 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 	var elems4, elems6 []nftables.SetElement
 	for i, refusal := range e.checkBlockMembersLocked(members, verified, snap, now) {
 		if refusal != "" {
-			results[i] = BlockResult{Effect: BlockFailed, Refusal: refusal}
+			results[i] = BlockResult{Effect: BlockFailed, Refusal: refusal, Existing: snap.existing(members[i], refusal)}
 			continue
 		}
 		m := members[i]

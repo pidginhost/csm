@@ -149,22 +149,60 @@ func (l *AdmissionLedger) Terminate(id admission.CandidateID, reason admission.R
 		case c.State != admission.StateQueued:
 			return false, admission.ErrTransitionConflict
 		}
-		e, err := loadQueueEntry(q.tx, id)
-		if err != nil {
-			return false, err
-		}
-		if err = q.trimUnreservedRoots(c); err != nil {
-			return false, err
-		}
-		c.State, c.Disposition, c.Reason, c.NotBefore = state, d, reason, time.Time{}
-		if err = q.release(id, e, admission.EventEnded, reason); err != nil {
-			return false, err
-		}
-		if err = q.gap(admission.GapEnded, reason, 0, e, id, *c, c.Transitions+1); err != nil {
-			return false, err
-		}
-		return true, q.ended(id, *c)
+		return true, q.terminate(id, c, state, reason, admission.EffectLink{})
 	})
+}
+
+// TerminateExisting ends a queued candidate refused as an existing effect,
+// linked to the block that enforces it (spec 5.17). The same ending again
+// is a no-op; any other ending refuses like every call on an ended
+// candidate. An admitted candidate's history pays for the link.
+func (l *AdmissionLedger) TerminateExisting(id admission.CandidateID, link admission.EffectLink) (admission.Candidate, error) {
+	if link == (admission.EffectLink{}) {
+		return admission.Candidate{}, refusal(admission.ReasonInvalid, "an existing effect needs the block that enforces it")
+	}
+	return l.modify("terminate", id, func(q *queueTx, c *admission.Candidate) (bool, error) {
+		switch {
+		case c.State == admission.StateRefused && c.Reason == admission.ReasonExistingEffect && c.Link.Effect == link.Effect && c.Link.ExpiresAt.Equal(link.ExpiresAt):
+			return false, nil
+		case c.State.Terminal():
+			return false, admission.ErrCandidateTerminal
+		case c.State != admission.StateQueued:
+			return false, admission.ErrTransitionConflict
+		}
+		return true, q.terminate(id, c, admission.StateRefused, admission.ReasonExistingEffect, link)
+	})
+}
+
+// terminate ends queued candidate c as reason, linked when link is set,
+// and releases its queue position. The caller counts the transition.
+func (q *queueTx) terminate(id admission.CandidateID, c *admission.Candidate, state admission.State, reason admission.Reason, link admission.EffectLink) error {
+	e, err := loadQueueEntry(q.tx, id)
+	if err != nil {
+		return err
+	}
+	if err = q.trimUnreservedRoots(c); err != nil {
+		return err
+	}
+	c.State, c.Disposition, c.Reason, c.NotBefore, c.Link = state, reason.Disposition(), reason, time.Time{}, link
+	if link != (admission.EffectLink{}) {
+		if c.Attempts > 0 {
+			if err = q.chargeLink(id, *c); err != nil {
+				return err
+			}
+		}
+		// Older builds cannot read the linked record: refuse them the ledger.
+		if err = q.tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaLinked}); err != nil {
+			return err
+		}
+	}
+	if err = q.release(id, e, admission.EventEnded, reason); err != nil {
+		return err
+	}
+	if err = q.gap(admission.GapEnded, reason, 0, e, id, *c, c.Transitions+1); err != nil {
+		return err
+	}
+	return q.ended(id, *c)
 }
 
 // Reserve admits the next attempt of a queued candidate on lane and reports
@@ -418,6 +456,80 @@ func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition)
 		return q.finishAttempt(a, c, d)
 	})
 	return cand, att, err
+}
+
+// FinishExisting records that the current attempt found its effect already
+// enforced (spec 5.16): the attempt fails, keeping its charge, and with
+// attempts left the pick ends refused as an existing effect, linked to the
+// block, in the same transaction, so it is never retried against that
+// block. On the last attempt the pick fails as with Finish. The same
+// ending again is a no-op; a historical attempt or a different terminal
+// link is a conflict. Expiry equality compares instants, not locations.
+func (l *AdmissionLedger) FinishExisting(id admission.ActionID, link admission.EffectLink) (admission.Candidate, admission.AttemptRecord, error) {
+	if link == (admission.EffectLink{}) {
+		return admission.Candidate{}, admission.AttemptRecord{}, refusal(admission.ReasonInvalid, "an existing effect needs the block that enforces it")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now, err := l.recordedClock()
+	if err != nil {
+		return admission.Candidate{}, admission.AttemptRecord{}, err
+	}
+	var outC admission.Candidate
+	var outA admission.AttemptRecord
+	err = l.update("finish", func(tx *bolt.Tx) error {
+		a, c, loadErr := attemptAndCandidate(tx, id)
+		if loadErr != nil {
+			return loadErr
+		}
+		// A delayed result must not end a later retry of this candidate.
+		if a.Attempt.Seq != c.Attempts {
+			return admission.ErrTransitionConflict
+		}
+		if c.State.Terminal() && c.State != admission.StateFailed &&
+			(c.State != admission.StateRefused || c.Reason != admission.ReasonExistingEffect ||
+				c.Link.Effect != link.Effect || !c.Link.ExpiresAt.Equal(link.ExpiresAt)) {
+			return admission.ErrCandidateTerminal
+		}
+		q, loadErr := l.openQueue(tx, now)
+		if loadErr != nil {
+			return loadErr
+		}
+		from := c.State
+		changed, stepErr := q.finishAttempt(&a, &c, admission.DispositionFailed)
+		if stepErr != nil {
+			return stepErr
+		}
+		if changed {
+			if !admission.CanTransition(from, c.State) {
+				return admission.ErrTransitionConflict
+			}
+			c.Transitions++
+			// The ending below reads the finished attempt.
+			if putErr := putAttempt(tx, a); putErr != nil {
+				return putErr
+			}
+		}
+		if c.State == admission.StateQueued {
+			if stepErr = q.terminate(a.Attempt.Candidate, &c, admission.StateRefused, admission.ReasonExistingEffect, link); stepErr != nil {
+				return stepErr
+			}
+			c.Transitions++
+			changed = true
+		}
+		outC, outA = c, a
+		if !changed {
+			return nil
+		}
+		if putErr := putCandidate(tx, c); putErr != nil {
+			return putErr
+		}
+		return q.flush()
+	})
+	if err != nil {
+		return admission.Candidate{}, admission.AttemptRecord{}, err
+	}
+	return outC, outA, nil
 }
 
 // Settle ends every attempt a previous process left outstanding, in one

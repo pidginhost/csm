@@ -49,6 +49,15 @@ func (e *Engine) leaseAtLocked(sample time.Time) time.Time {
 	return now
 }
 
+// LeaseNow reads the lease clock for a caller outside the engine: the
+// admission owner sets new expiries on it, so a wall clock step back cannot
+// shorten them once the engine encodes their timeouts.
+func (e *Engine) LeaseNow() time.Time {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.leaseNowLocked()
+}
+
 // SetLeaseFloor moves the lease clock forward to floor when it is behind
 // it. The daemon passes the admission clock's saved time before the first
 // Apply: a lower bound for a new boot, where the lease checkpoint proves no

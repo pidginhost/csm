@@ -26,6 +26,10 @@ const MaxAttempts = 3
 const maxRetryBackoff = time.Minute
 
 const candidateVersion = 1
+
+// linkedCandidateVersion encodes a candidate that carries an EffectLink.
+// Older builds refuse it, and the ledger's schema says so first.
+const linkedCandidateVersion = 2
 const attemptVersion = 1
 
 // RetryBackoff is the wait after the proven failure of attempt seq: one
@@ -83,6 +87,32 @@ type Candidate struct {
 	// Transitions counts recorded changes; (ID, Transitions) keys an
 	// idempotent audit event.
 	Transitions uint32
+	// Link names the block that already enforces the effect of a candidate
+	// refused as an existing effect; zero otherwise.
+	Link EffectLink
+}
+
+// EffectLink names the block that already enforces a refused candidate's
+// effect (spec 5.17: an existing exact effect with its verified action
+// link): the admission action that wrote it, or the firewall's "eff_" name
+// of an operator or earlier block, and when it ends (zero: permanent).
+type EffectLink struct {
+	Effect    string
+	ExpiresAt time.Time
+}
+
+type linkRecord struct {
+	Effect    string `json:"effect"`
+	ExpiresAt int64  `json:"expires_at,omitempty"`
+}
+
+// validEffectName accepts "act_" or "eff_" and 32 lowercase hex digits.
+func validEffectName(s string) bool {
+	rest, ok := strings.CutPrefix(s, "act_")
+	if !ok {
+		rest, ok = strings.CutPrefix(s, "eff_")
+	}
+	return ok && lowerHex(rest, 32)
 }
 
 // ID derives the candidate ID from its key.
@@ -111,6 +141,7 @@ type candidateRecord struct {
 	PreviewTTL      int64        `json:"preview_ttl,omitempty"`
 	NotBefore       int64        `json:"not_before,omitempty"`
 	Transitions     uint32       `json:"transitions"`
+	Link            *linkRecord  `json:"link,omitempty"`
 }
 
 // Validate checks the record's invariants.
@@ -210,13 +241,30 @@ func (c Candidate) record() (candidateRecord, error) {
 	if c.Transitions < minimumTransitions {
 		return bad("candidate has too few transitions for its state and attempts")
 	}
-	return candidateRecord{
+	rec := candidateRecord{
 		V: candidateVersion, Kind: c.Key.Kind, Target: c.Key.Target.Key(), Episode: c.Key.Episode.String(),
 		Generation: c.Key.Generation, OwnerAccount: c.Scope.Owner.account, OwnerGeneration: c.Scope.Owner.generation,
 		Effect: c.Scope.Effect, Entry: c.Entry, Check: c.Check, FindingID: c.FindingID, Roots: c.Roots,
 		FirstQueued: first, AgeOut: ageOut, State: c.State, Reason: c.Reason, Disposition: c.Disposition,
 		Attempts: c.Attempts, ExpiresAt: expires, PreviewTTL: int64(c.PreviewTTL), NotBefore: notBefore, Transitions: c.Transitions,
-	}, nil
+	}
+	if c.Link != (EffectLink{}) {
+		if c.State != StateRefused || c.Reason != ReasonExistingEffect {
+			return bad("only a refusal as an existing effect names a block")
+		}
+		link := linkRecord{Effect: c.Link.Effect}
+		if !c.Link.ExpiresAt.IsZero() {
+			var ok bool
+			if link.ExpiresAt, ok = unixNano(c.Link.ExpiresAt); !ok || link.ExpiresAt <= 0 {
+				return bad("linked block expiry is out of range")
+			}
+		}
+		if !validEffectName(link.Effect) {
+			return bad("linked block name is malformed")
+		}
+		rec.V, rec.Link = linkedCandidateVersion, &link
+	}
+	return rec, nil
 }
 
 // MarshalBinary validates and encodes c. The invariants keep every valid
@@ -241,6 +289,9 @@ func (c Candidate) MaxBytes() (int, error) {
 	}
 	rec.State, rec.Reason, rec.Disposition = stateEnd-1, reasonEnd-1, dispositionEnd-1
 	rec.Attempts, rec.ExpiresAt, rec.NotBefore, rec.Transitions = MaxAttempts, math.MaxInt64, math.MaxInt64, math.MaxUint32
+	if rec.Link != nil {
+		rec.Link = &linkRecord{Effect: rec.Link.Effect, ExpiresAt: math.MaxInt64}
+	}
 	data, err := sealRecord(rec)
 	return len(data), err
 }
@@ -251,7 +302,7 @@ func UnmarshalCandidate(data []byte) (Candidate, error) {
 	if err := openRecord(data, &rec); err != nil {
 		return Candidate{}, err
 	}
-	if rec.V != candidateVersion || rec.Roots == nil {
+	if (rec.V != candidateVersion && rec.V != linkedCandidateVersion) || rec.Roots == nil {
 		return Candidate{}, ErrCorruptRecord
 	}
 	target, err := ParseTargetKey(rec.Target, Caps{IPv6: true})
@@ -269,6 +320,9 @@ func UnmarshalCandidate(data []byte) (Candidate, error) {
 		FirstQueued: fromNano(rec.FirstQueued), AgeOut: fromNano(rec.AgeOut), State: rec.State, Reason: rec.Reason,
 		Disposition: rec.Disposition, Attempts: rec.Attempts, ExpiresAt: fromNano(rec.ExpiresAt), PreviewTTL: time.Duration(rec.PreviewTTL),
 		NotBefore: fromNano(rec.NotBefore), Transitions: rec.Transitions,
+	}
+	if rec.Link != nil {
+		c.Link = EffectLink{Effect: rec.Link.Effect, ExpiresAt: fromNano(rec.Link.ExpiresAt)}
 	}
 	// Re-encoding must reproduce the stored bytes: every field survived
 	// decoding and passes the invariants.

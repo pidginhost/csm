@@ -108,6 +108,9 @@ func (e *Engine) MarkBlockActionsUnverified(_ []string) (int, error) {
 func (e *Engine) CheckBlockBatch(_ []BlockMember) ([]BlockRefusal, error) {
 	return nil, ErrUnsupportedPlatform
 }
+func (e *Engine) CheckBlockBatchEffects(_ []BlockMember) ([]BlockCheck, error) {
+	return nil, ErrUnsupportedPlatform
+}
 func (e *Engine) ApplyBlockBatch(_ []BlockMember) ([]BlockResult, error) {
 	return nil, ErrUnsupportedPlatform
 }
@@ -159,5 +162,7 @@ func (e *Engine) RefreshDOSExemptSets(_ []*net.IPNet) error {
 func (e *Engine) ProbeBlockState() error { return ErrUnsupportedPlatform }
 
 func (e *Engine) SetLeaseFloor(_ time.Time) {}
+
+func (e *Engine) LeaseNow() time.Time { return time.Now() }
 
 func (e *Engine) SetBootClock(_ func() (string, time.Duration, error)) {}
