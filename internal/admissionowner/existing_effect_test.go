@@ -332,3 +332,68 @@ func TestOwnerExistingEffectFallbackClearsPending(t *testing.T) {
 		})
 	}
 }
+
+// A link the ledger refuses (no history budget for it, or no name to
+// record) leaves that pick queued, with a deferral reason when it has one,
+// and the rest of the batch runs; the turn does not fail. At apply time a
+// refused linked ending falls back to the plain failure without failing
+// the turn either.
+func TestOwnerRefusedLinkDefersOnlyItsPick(t *testing.T) {
+	for _, mode := range []string{"budget", "unnamed", "apply"} {
+		t.Run(mode, func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			switch mode {
+			case "apply":
+				blocks.results["192.0.2.11"] = firewall.BlockResult{Effect: firewall.BlockFailed, Refusal: firewall.BlockRefusedExisting}
+			case "unnamed":
+				blocks.refuse["192.0.2.11"] = firewall.BlockRefusedExisting
+				blocks.existing["192.0.2.11"] = firewall.ExistingBlock{}
+			default:
+				blocks.refuse["192.0.2.11"] = firewall.BlockRefusedExisting
+			}
+			o := f.start(executeOptions(f, blocks))
+			held, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+			other, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+			budget := &admission.Error{Reason: admission.ReasonStorageShare, Detail: "fixture lane has no history budget for the link"}
+			terminateExisting, finishExisting := terminateExistingLedger, finishExistingLedger
+			setOwnerHook(t, o, &terminateExistingLedger, func(l *store.AdmissionLedger, id admission.CandidateID, link admission.EffectLink) (admission.Candidate, error) {
+				if mode == "budget" {
+					return admission.Candidate{}, budget
+				}
+				return terminateExisting(l, id, link)
+			})
+			setOwnerHook(t, o, &finishExistingLedger, func(l *store.AdmissionLedger, id admission.ActionID, link admission.EffectLink) (admission.Candidate, admission.AttemptRecord, error) {
+				if mode == "apply" {
+					return admission.Candidate{}, admission.AttemptRecord{}, budget
+				}
+				return finishExisting(l, id, link)
+			})
+			if err := o.do(o.turn); err != nil {
+				t.Fatalf("a refused link failed the turn: %v", err)
+			}
+			checks, _ := blocks.calls()
+			if len(checks) == 0 || len(checks[0]) != 2 || checks[0][0].IP != "192.0.2.11" {
+				t.Fatalf("the refused pick was not checked first: %+v", checks)
+			}
+			if c := candidate(t, o, other); c.State != admission.StateVerified || c.Attempts != 1 {
+				t.Fatalf("the rest of the batch did not run: %+v", c)
+			}
+			c := candidate(t, o, held)
+			wantAttempts, wantReason := uint32(0), admission.Reason(0)
+			switch mode {
+			case "budget":
+				wantReason = admission.ReasonStorageShare
+			case "apply":
+				wantAttempts = 1
+			}
+			if c.State != admission.StateQueued || c.Attempts != wantAttempts || c.Reason != wantReason || c.Link != (admission.EffectLink{}) {
+				t.Fatalf("refused link = %+v, want queued with %d attempts and reason %s", c, wantAttempts, wantReason)
+			}
+			if wantAttempts > 0 && attemptOf(t, o, c).State != admission.StateFailed {
+				t.Fatalf("refused apply-time link left the attempt %+v", attemptOf(t, o, c))
+			}
+		})
+	}
+}

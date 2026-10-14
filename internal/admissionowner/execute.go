@@ -117,8 +117,21 @@ func (o *Owner) execute(picks []execPick) error {
 	for i, p := range picks {
 		if checks[i].Refusal == firewall.BlockRefusedExisting {
 			if err = o.endExisting(p, linkOf(checks[i].Existing)); err != nil {
-				stopped = err
-				break
+				// A link the ledger refuses (no history budget for it, or
+				// no name) leaves the pick queued, deferred when the reason
+				// is a deferral; the next check tries again. Only a failed
+				// write stops the batch.
+				reason, refused := admission.ReasonOf(err)
+				if !refused {
+					stopped = err
+					break
+				}
+				if reason.Disposition() == admission.DispositionDeferred {
+					if err = o.endPick(p, reason); err != nil {
+						stopped = err
+						break
+					}
+				}
 			}
 			continue
 		}
@@ -419,7 +432,11 @@ func (o *Owner) finishPending() error {
 				err = errors.Join(err, fmt.Errorf("checking existing effect for %s: %w", outcome.id, proofErr))
 			case link != (admission.EffectLink{}):
 				if c, a, finishErr = finishExistingLedger(o.ledger, outcome.id, link); finishErr != nil {
-					err = errors.Join(err, fmt.Errorf("ending %s as an existing effect: %w", outcome.id, finishErr))
+					// A refused link is expected (no history budget): the
+					// plain failure below records the outcome instead.
+					if _, refused := admission.ReasonOf(finishErr); !refused {
+						err = errors.Join(err, fmt.Errorf("ending %s as an existing effect: %w", outcome.id, finishErr))
+					}
 				} else {
 					linked = true
 				}

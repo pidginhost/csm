@@ -604,7 +604,9 @@ engine checks every member against one snapshot before anything is reserved. A
 full set, or an address a row or element holds without proof, defers a member;
 a block the engine proves already holds the address ends it linked to that
 block, and an invalid or protected address or a spent lifetime ends it, all
-without a charge. A proven block found only when the batch applies is
+without a charge. If the ledger refuses that link (no history budget for
+it), the pick stays queued with the deferral reason and the rest of the
+batch runs; the next check tries again. A proven block found only when the batch applies is
 checked again when the outcome is written: with a fresh proof the attempt
 fails, with its charge, and the pick ends refused as an existing effect,
 linked to the block, in one ledger write, so nothing retries against it.
