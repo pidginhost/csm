@@ -42,7 +42,14 @@ func (a *eximServiceAdapter) Apply(cfg policy.Config, ips []string) error {
 	return a.mutate(eximMutation{Operation: "apply", Config: cfg, BadIPs: ips})
 }
 
+// Remove starts the root worker only when a rule may be installed. Only that
+// worker writes the managed blocks, and the daemon runs one at a time, so a
+// rule read as absent stays absent. A partial or unreadable file goes to the
+// worker, which strips both blocks.
 func (a *eximServiceAdapter) Remove() error {
+	if status, err := a.Status(); err == nil && !status.Installed {
+		return nil
+	}
 	return a.mutate(eximMutation{Operation: "remove"})
 }
 

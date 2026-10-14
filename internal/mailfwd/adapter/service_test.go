@@ -95,6 +95,7 @@ func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
 
 func TestEximServiceAdapterDelegatesMutationsOnly(t *testing.T) {
 	a, side := testAdapter(t)
+	writeInstalledConf(t, a)
 	var got []eximMutation
 	service := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error { got = append(got, r); return io.ErrClosedPipe }}
 	cfg := policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}
@@ -116,7 +117,7 @@ func TestEximServiceAdapterDelegatesMutationsOnly(t *testing.T) {
 		t.Fatalf("lookup=%s %v", data, err)
 	}
 	status, err := service.Status()
-	if err != nil || status.Installed || side.rebuilds != 0 || len(got) != 2 {
+	if err != nil || !status.Installed || side.rebuilds != 0 || len(got) != 2 {
 		t.Fatalf("status=%+v err=%v", status, err)
 	}
 }
@@ -137,5 +138,78 @@ func TestEximServiceUsesFixedBoundedTransientCommand(t *testing.T) {
 	}
 	if !errors.Is(err, failure) || !strings.Contains(err.Error(), "rollback complete") || !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%q error=%v", calls, err)
+	}
+}
+
+// writeInstalledConf puts both managed blocks into exim.conf.local, as an
+// earlier apply would, without a rebuild.
+func writeInstalledConf(t *testing.T, a *EximAdapter) string {
+	t.Helper()
+	router, err := a.renderRouter(policy.HoldSignals{BounceBackscatter: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf, err := injectBlock(platform.EximLocalSkeleton, "@ROUTERSTART@", router)
+	if err == nil {
+		conf, err = injectBlock(conf, "@TRANSPORTSTART@", a.renderTransport())
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(a.localConf, []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return conf
+}
+
+// With no rule installed, Remove starts no root worker, so a reload with the
+// guard off never contends for the Exim lock.
+func TestEximServiceAdapterRemoveSkipsWorkerWhenNothingInstalled(t *testing.T) {
+	for name, setup := range map[string]func(*testing.T, *EximAdapter){
+		"no file": func(*testing.T, *EximAdapter) {},
+		"no blocks": func(t *testing.T, a *EximAdapter) {
+			if err := os.WriteFile(a.localConf, []byte(platform.EximLocalSkeleton+"# operator setting\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, side := testAdapter(t)
+			setup(t, a)
+			calls := 0
+			service := &eximServiceAdapter{EximAdapter: a, mutate: func(eximMutation) error { calls++; return io.ErrClosedPipe }}
+			if err := service.Remove(); err != nil || calls != 0 || side.rebuilds != 0 {
+				t.Fatalf("err=%v worker calls=%d rebuilds=%d", err, calls, side.rebuilds)
+			}
+		})
+	}
+}
+
+// A rule Remove cannot prove absent still goes to the worker: an installed
+// rule, half of one, or a file the daemon cannot read.
+func TestEximServiceAdapterRemoveRunsWorkerUnlessProvenAbsent(t *testing.T) {
+	for name, setup := range map[string]func(*testing.T, *EximAdapter){
+		"installed": func(t *testing.T, a *EximAdapter) { writeInstalledConf(t, a) },
+		"partial": func(t *testing.T, a *EximAdapter) {
+			conf := stripBlock(writeInstalledConf(t, a), transportBegin, transportEnd)
+			if err := os.WriteFile(a.localConf, []byte(conf), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"unreadable": func(t *testing.T, a *EximAdapter) {
+			if err := os.Mkdir(a.localConf, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, _ := testAdapter(t)
+			setup(t, a)
+			var got []eximMutation
+			service := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error { got = append(got, r); return io.ErrClosedPipe }}
+			if err := service.Remove(); !errors.Is(err, io.ErrClosedPipe) || !reflect.DeepEqual(got, []eximMutation{{Operation: "remove"}}) {
+				t.Fatalf("err=%v requests=%+v", err, got)
+			}
+		})
 	}
 }
