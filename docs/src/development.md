@@ -310,6 +310,11 @@ the outcome back. A missing intent or intent bucket returns a corrupt-record
 error without changing the ledger.
 An empty ledger settles without a clock reading.
 
+Candidate records without an existing-effect link keep version 1 and their
+original encoding. A refused existing-effect candidate can carry the block
+name and expiry in version 2. Its maximum encoded size includes the link
+only when present; attempts and audit rows keep their existing formats.
+
 Schema 2 of the ledger adds its queue, and the first open upgrades a schema
 1 ledger in the same transaction; legacy work that cannot fit the unassessed
 general partition refuses the upgrade intact. Ingress, queued and in-flight
