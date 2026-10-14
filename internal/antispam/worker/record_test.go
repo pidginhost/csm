@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -25,7 +26,7 @@ func TestReconcileWithoutWorkerSupersedesPendingRequest(t *testing.T) {
 			prev := requestDir
 			requestDir = dir
 			t.Cleanup(func() { requestDir = prev })
-			if recorded, err := recordRequest(dir, []byte(applyBody)); err != nil || !recorded {
+			if recorded, err := recordRequest(context.Background(), dir, []byte(applyBody)); err != nil || !recorded {
 				t.Fatalf("recorded=%v err=%v", recorded, err)
 			}
 			r := reconcile.Reconciler{
@@ -62,12 +63,12 @@ func TestInvalidateWaitsForActiveTransaction(t *testing.T) {
 	requestDir = t.TempDir()
 	t.Cleanup(func() { requestDir = prev })
 	older := []byte(applyBody)
-	if recorded, err := recordRequest(requestDir, older); err != nil || !recorded {
+	if recorded, err := recordRequest(context.Background(), requestDir, older); err != nil || !recorded {
 		t.Fatalf("recorded=%v err=%v", recorded, err)
 	}
 	lock := Lock(requestDir)
 	if err := lock(older, func() error {
-		if err := Invalidate(); !errors.Is(err, eximlock.ErrBusy) {
+		if err := Invalidate(context.Background()); !errors.Is(err, eximlock.ErrBusy) {
 			t.Fatalf("invalidation interrupted an active transaction: %v", err)
 		}
 		got, err := os.ReadFile(filepath.Join(requestDir, RequestFile))
@@ -78,7 +79,7 @@ func TestInvalidateWaitsForActiveTransaction(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Invalidate(); err != nil {
+	if err := Invalidate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	ran := 0
@@ -87,7 +88,7 @@ func TestInvalidateWaitsForActiveTransaction(t *testing.T) {
 		t.Fatalf("invalidated worker: err=%v ran=%d", err, ran)
 	}
 	latest := []byte(`{"operation":"remove"}`)
-	if recorded, err := recordRequest(requestDir, latest); err != nil || !recorded {
+	if recorded, err := recordRequest(context.Background(), requestDir, latest); err != nil || !recorded {
 		t.Fatalf("recorded=%v err=%v", recorded, err)
 	}
 	if err := lock(latest, mutate); err != nil || ran != 1 {
@@ -112,7 +113,7 @@ func TestRecordRequestPreservesPreviousOnWriteFailure(t *testing.T) {
 	}
 	dir := t.TempDir()
 	previous := []byte(applyBody)
-	if recorded, err := recordRequest(dir, previous); err != nil || !recorded {
+	if recorded, err := recordRequest(context.Background(), dir, previous); err != nil || !recorded {
 		t.Fatalf("recorded=%v err=%v", recorded, err)
 	}
 	var limit syscall.Rlimit
@@ -124,7 +125,7 @@ func TestRecordRequestPreservesPreviousOnWriteFailure(t *testing.T) {
 	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limited); err != nil {
 		t.Fatal(err)
 	}
-	recorded, err := recordRequest(dir, []byte(`{"operation":"remove"}`))
+	recorded, err := recordRequest(context.Background(), dir, []byte(`{"operation":"remove"}`))
 	if restoreErr := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &limit); restoreErr != nil {
 		t.Fatal(restoreErr)
 	}
@@ -145,11 +146,58 @@ func TestRecordRequestWaitsOutABriefHolder(t *testing.T) {
 	go func() { finished <- eximlock.With(dir, func() error { close(entered); <-release; return nil }) }()
 	<-entered
 	time.AfterFunc(50*time.Millisecond, func() { close(release) })
-	recorded, err := recordRequest(dir, []byte(applyBody))
+	recorded, err := recordRequest(context.Background(), dir, []byte(applyBody))
 	if lockErr := <-finished; lockErr != nil {
 		t.Fatal(lockErr)
 	}
 	if !recorded || err != nil {
 		t.Fatalf("recorded=%v err=%v", recorded, err)
 	}
+}
+
+func TestPassCanceledDuringInvalidationPreservesPendingRequest(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		prev := requestDir
+		requestDir = t.TempDir()
+		defer func() { requestDir = prev }()
+		previous := []byte(applyBody)
+		if recorded, err := recordRequest(context.Background(), requestDir, previous); err != nil || !recorded {
+			t.Fatalf("recorded=%v err=%v", recorded, err)
+		}
+		reads := 0
+		r := reconcile.Reconciler{
+			Invalidate: Invalidate,
+			Installed:  func() antispam.HostFacts { reads++; return antispam.HostFacts{} },
+			Now:        time.Now,
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		finished := make(chan struct{})
+		var out reconcile.Outcome
+		if err := eximlock.With(requestDir, func() error {
+			go func() {
+				out = r.Pass(ctx, reconcile.Desired{})
+				close(finished)
+			}()
+			synctest.Wait()
+			cancel()
+			synctest.Wait()
+			select {
+			case <-finished:
+			default:
+				t.Error("canceled pass still waits to invalidate")
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		<-finished
+		if !errors.Is(out.Err, context.Canceled) || len(out.Findings) != 0 || len(out.Checks) != 0 || out.Retry != 0 || reads != 0 {
+			t.Errorf("canceled pass: outcome=%+v reads=%d", out, reads)
+		}
+		got, err := os.ReadFile(filepath.Join(requestDir, RequestFile))
+		if err != nil || !bytes.Equal(got, previous) {
+			t.Errorf("canceled pass invalidated pending request with %q: %v", got, err)
+		}
+	})
 }

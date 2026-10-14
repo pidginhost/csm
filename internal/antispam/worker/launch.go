@@ -68,7 +68,7 @@ func Run(ctx context.Context, req antispam.Request) (antispam.Result, error) {
 	if err != nil {
 		return antispam.Result{}, err
 	}
-	recorded, err := recordRequest(requestDir, body)
+	recorded, err := recordRequest(ctx, requestDir, body)
 	if err != nil {
 		return antispam.Result{}, fmt.Errorf("recording the antispam request: %w", err)
 	}

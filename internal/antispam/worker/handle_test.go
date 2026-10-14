@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -276,7 +277,7 @@ func TestLockRunsOnlyTheLatestRequest(t *testing.T) {
 		t.Fatalf("without a record: err=%v ran=%d", err, ran)
 	}
 	for _, body := range [][]byte{older, latest} {
-		if recorded, err := recordRequest(dir, body); err != nil || !recorded {
+		if recorded, err := recordRequest(context.Background(), dir, body); err != nil || !recorded {
 			t.Fatalf("record: recorded=%v err=%v", recorded, err)
 		}
 	}
@@ -295,7 +296,7 @@ func TestRecordRequestWaitsForNoTransaction(t *testing.T) {
 	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() { finished <- eximlock.With(dir, func() error { close(entered); <-release; return nil }) }()
 	<-entered
-	recorded, err := recordRequest(dir, []byte(applyBody))
+	recorded, err := recordRequest(context.Background(), dir, []byte(applyBody))
 	close(release)
 	if lockErr := <-finished; lockErr != nil {
 		t.Fatal(lockErr)
@@ -315,7 +316,7 @@ func TestStaleRequestFromBeforeARestartChangesNothing(t *testing.T) {
 	dir := t.TempDir()
 	older, latest := []byte(applyBody), []byte(`{"operation":"remove"}`)
 	for _, body := range [][]byte{older, latest} {
-		if recorded, err := recordRequest(dir, body); err != nil || !recorded {
+		if recorded, err := recordRequest(context.Background(), dir, body); err != nil || !recorded {
 			t.Fatalf("record: recorded=%v err=%v", recorded, err)
 		}
 	}

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -26,8 +27,8 @@ var errSuperseded = errors.New("a newer antispam request replaced this one")
 // Invalidate stops pending workers before reconcile reads the host. Even a
 // pass that needs no worker must supersede requests from an older daemon.
 // An active transaction holds the lock, so the caller retries after it ends.
-func Invalidate() error {
-	recorded, err := recordRequest(requestDir, []byte("null"))
+func Invalidate(ctx context.Context) error {
+	recorded, err := recordRequest(ctx, requestDir, []byte("null"))
 	if err != nil {
 		return err
 	}
@@ -59,8 +60,8 @@ func Lock(dir string) Locker {
 // recordRequest records body as the latest request under the shared lock in
 // dir. It reports false without an error while another transaction holds
 // the lock for longer than eximlock.RecordWait.
-func recordRequest(dir string, body []byte) (bool, error) {
-	err := eximlock.WithRetry(dir, eximlock.RecordWait, func() error {
+func recordRequest(ctx context.Context, dir string, body []byte) (bool, error) {
+	err := eximlock.WithRetry(ctx, dir, eximlock.RecordWait, func() error {
 		return atomicio.AtomicWrite(filepath.Join(dir, RequestFile), 0o600, body)
 	})
 	if errors.Is(err, eximlock.ErrBusy) {

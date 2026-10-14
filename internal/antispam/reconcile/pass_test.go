@@ -29,7 +29,7 @@ type fakeHost struct {
 
 func (h *fakeHost) reconciler() Reconciler {
 	return Reconciler{
-		Invalidate: func() error { h.invalidated++; return nil },
+		Invalidate: func(context.Context) error { h.invalidated++; return nil },
 		Collect: func(_ context.Context, socket string) antispam.HostFacts {
 			h.collected = append(h.collected, socket)
 			return antispam.HostFacts{}
@@ -75,7 +75,7 @@ func TestPassRetriesInvalidationBeforeReadingHost(t *testing.T) {
 		t.Run(failure.Error(), func(t *testing.T) {
 			h := &fakeHost{}
 			r := h.reconciler()
-			r.Invalidate = func() error { h.invalidated++; return failure }
+			r.Invalidate = func(context.Context) error { h.invalidated++; return failure }
 			out := r.Pass(context.Background(), desired(false))
 			if out.Retry != BusyRetry || len(out.Checks) != 0 ||
 				h.invalidated != 1 || h.installed != 0 || len(h.collected) != 0 || len(h.requests) != 0 {

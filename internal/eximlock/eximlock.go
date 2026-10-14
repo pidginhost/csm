@@ -4,6 +4,7 @@
 package eximlock
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -51,14 +52,41 @@ func With(dir string, mutate func() error) error {
 const RecordWait = time.Second
 
 // WithRetry runs mutate under the lock like With, retrying a busy lock until
-// wait has passed. Workers keep the non-blocking With.
-func WithRetry(dir string, wait time.Duration, mutate func() error) error {
+// wait has passed or ctx is canceled. Once the lock is acquired, mutate runs
+// at most once; its errors are never retried. Workers keep the non-blocking With.
+func WithRetry(ctx context.Context, dir string, wait time.Duration, mutate func() error) error {
 	deadline := time.Now().Add(wait)
 	for {
-		err := With(dir, mutate)
-		if !errors.Is(err, ErrBusy) || !time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		time.Sleep(10 * time.Millisecond)
+		acquired := false
+		err := With(dir, func() error {
+			acquired = true
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return mutate()
+		})
+		if acquired || !errors.Is(err, ErrBusy) {
+			return err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return err
+		}
+		timer := time.NewTimer(min(10*time.Millisecond, remaining))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if !time.Now().Before(deadline) {
+			return err
+		}
 	}
 }

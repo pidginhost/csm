@@ -44,7 +44,7 @@ func DesiredFromConfig(cfg *config.Config) Desired {
 type Reconciler struct {
 	// Invalidate stops pending workers before the host is read, including
 	// in observe mode. It changes only CSM's request record, not mail config.
-	Invalidate func() error
+	Invalidate func(context.Context) error
 	// Collect reads every precondition fact for the scan socket.
 	Collect func(ctx context.Context, socket string) antispam.HostFacts
 	// Installed reads only what shows CSM's integration on the host.
@@ -78,7 +78,11 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
 	}
-	if err := r.Invalidate(); err != nil {
+	invalidateErr := r.Invalidate(ctx)
+	if err := ctx.Err(); err != nil {
+		return Outcome{Err: err}
+	}
+	if err := invalidateErr; err != nil {
 		out := Outcome{Retry: BusyRetry}
 		if !errors.Is(err, eximlock.ErrBusy) {
 			out.Err = fmt.Errorf("invalidating pending antispam requests: %w", err)
