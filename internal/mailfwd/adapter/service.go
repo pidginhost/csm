@@ -10,14 +10,35 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
+	"github.com/pidginhost/csm/internal/eximlock"
 	"github.com/pidginhost/csm/internal/mailfwd/policy"
 	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 const eximMutationLimit = 8 << 20
 const eximMutationTimeout = 5 * time.Minute
+
+// workerBusyExit is the worker's exit status when another CSM transaction
+// holds the Exim lock (EX_TEMPFAIL). systemd-run --pipe returns the unit's
+// exit status unchanged, and systemd's own exit codes for a unit it could
+// not start begin at 200.
+const workerBusyExit = 75
+
+// WorkerExitCode is the forward-guard worker's exit status for the error
+// HandleEximMutation returned.
+func WorkerExitCode(err error) int {
+	switch {
+	case err == nil:
+		return 0
+	case errors.Is(err, eximlock.ErrBusy):
+		return workerBusyExit
+	default:
+		return 1
+	}
+}
 
 // The helper accepts policy data, never a destination path or command.
 type eximMutation struct {
@@ -42,7 +63,22 @@ func (a *eximServiceAdapter) Apply(cfg policy.Config, ips []string) error {
 	return a.mutate(eximMutation{Operation: "apply", Config: cfg, BadIPs: ips})
 }
 
+// Remove checks absence under the worker's lock: a transient worker from an
+// earlier daemon can still install or restore the guard. Release the lock
+// before delegating any removal so the worker can acquire it itself.
 func (a *eximServiceAdapter) Remove() error {
+	absent := false
+	err := eximlock.With(filepath.Dir(a.badIPsPath), func() error {
+		status, err := a.Status()
+		absent = !status.Installed
+		return err
+	})
+	if errors.Is(err, eximlock.ErrBusy) {
+		return err
+	}
+	if err == nil && absent {
+		return nil
+	}
 	return a.mutate(eximMutation{Operation: "remove"})
 }
 
@@ -71,6 +107,10 @@ func runEximMutation(request eximMutation) error {
 
 func executeEximMutation(ctx context.Context, binary string, lookup systemdrun.LookPathFunc, run systemdrun.RunnerFunc) error {
 	output, err := systemdrun.Run(ctx, lookup, run, systemdrun.Options{Pipe: true, RuntimeMax: eximMutationTimeout}, binary, "forward-guard-worker")
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == workerBusyExit {
+		return fmt.Errorf("forward-guard worker: %w", eximlock.ErrBusy)
+	}
 	if err != nil {
 		return commandFailure("forward-guard worker", output, err)
 	}

@@ -79,6 +79,15 @@ var operations = []Op{
 		WithoutPrivilege: "a changed module blacklist is reported but cannot be repaired",
 	},
 	{
+		ID: "respond.forward_guard_check", Subsystem: "response",
+		Risk:       RiskObserve,
+		Summary:    "check under the shared Exim lock whether a forward-guard rule is installed, inside the daemon sandbox",
+		Privileges: []Privilege{Root}, Trigger: Automatic,
+		Writes:     []string{"/var/lib/csm/forward_guard"},
+		DisableKey: "mode", DisableValue: "observe",
+		WithoutPrivilege: "the root worker checks for the rule itself on every reload with the guard off",
+	},
+	{
 		ID: "respond.forward_guard_lookup", Subsystem: "response",
 		Risk:       RiskObserve,
 		Summary:    "refresh the forward-guard bad-sender lookup inside the daemon sandbox",

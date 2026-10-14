@@ -11,7 +11,10 @@ func FuzzEximMutation(f *testing.F) {
 	f.Add(`{"operation":"remove","command":"anything"}`)
 	f.Fuzz(func(t *testing.T, input string) {
 		calls := 0
-		target := &eximServiceAdapter{mutate: func(r eximMutation) error {
+		a, _ := testAdapter(t)
+		// Remove passes a request on only while a rule is installed.
+		writeInstalledConf(t, a)
+		target := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error {
 			calls++
 			if r.Operation != "apply" && r.Operation != "remove" {
 				t.Fatalf("arbitrary operation escaped validation: %q", r.Operation)

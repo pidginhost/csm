@@ -4,14 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/eximlock"
 	"github.com/pidginhost/csm/internal/mailfwd/policy"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 func mutationBody(t *testing.T, request eximMutation) string {
@@ -95,6 +100,7 @@ func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
 
 func TestEximServiceAdapterDelegatesMutationsOnly(t *testing.T) {
 	a, side := testAdapter(t)
+	writeInstalledConf(t, a)
 	var got []eximMutation
 	service := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error { got = append(got, r); return io.ErrClosedPipe }}
 	cfg := policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}
@@ -116,7 +122,7 @@ func TestEximServiceAdapterDelegatesMutationsOnly(t *testing.T) {
 		t.Fatalf("lookup=%s %v", data, err)
 	}
 	status, err := service.Status()
-	if err != nil || status.Installed || side.rebuilds != 0 || len(got) != 2 {
+	if err != nil || !status.Installed || side.rebuilds != 0 || len(got) != 2 {
 		t.Fatalf("status=%+v err=%v", status, err)
 	}
 }
@@ -137,5 +143,224 @@ func TestEximServiceUsesFixedBoundedTransientCommand(t *testing.T) {
 	}
 	if !errors.Is(err, failure) || !strings.Contains(err.Error(), "rollback complete") || !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls=%q error=%v", calls, err)
+	}
+}
+
+// writeInstalledConf puts both managed blocks into exim.conf.local, as an
+// earlier apply would, without a rebuild.
+func writeInstalledConf(t *testing.T, a *EximAdapter) string {
+	t.Helper()
+	router, err := a.renderRouter(policy.HoldSignals{BounceBackscatter: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf, err := injectBlock(platform.EximLocalSkeleton, "@ROUTERSTART@", router)
+	if err == nil {
+		conf, err = injectBlock(conf, "@TRANSPORTSTART@", a.renderTransport())
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(a.localConf, []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return conf
+}
+
+// A stable absence needs no root worker or rebuild on config reload.
+func TestEximServiceAdapterRemoveSkipsWorkerWhenNothingInstalled(t *testing.T) {
+	for name, setup := range map[string]func(*testing.T, *EximAdapter){
+		"no file": func(*testing.T, *EximAdapter) {},
+		"no blocks": func(t *testing.T, a *EximAdapter) {
+			if err := os.WriteFile(a.localConf, []byte(platform.EximLocalSkeleton+"# operator setting\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, side := testAdapter(t)
+			setup(t, a)
+			calls := 0
+			service := &eximServiceAdapter{EximAdapter: a, mutate: func(eximMutation) error { calls++; return io.ErrClosedPipe }}
+			if err := service.Remove(); err != nil || calls != 0 || side.rebuilds != 0 {
+				t.Fatalf("err=%v worker calls=%d rebuilds=%d", err, calls, side.rebuilds)
+			}
+		})
+	}
+}
+
+// Inconclusive status or lock access still goes to the root worker, which
+// may have access the daemon lacks.
+func TestEximServiceAdapterRemoveRunsWorkerUnlessProvenAbsent(t *testing.T) {
+	for name, setup := range map[string]func(*testing.T, *EximAdapter){
+		"installed": func(t *testing.T, a *EximAdapter) { writeInstalledConf(t, a) },
+		"partial": func(t *testing.T, a *EximAdapter) {
+			conf := stripBlock(writeInstalledConf(t, a), transportBegin, transportEnd)
+			if err := os.WriteFile(a.localConf, []byte(conf), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"unreadable": func(t *testing.T, a *EximAdapter) {
+			if err := os.Mkdir(a.localConf, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"inaccessible lock": func(t *testing.T, a *EximAdapter) {
+			if err := os.WriteFile(filepath.Dir(a.badIPsPath), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, _ := testAdapter(t)
+			setup(t, a)
+			var got []eximMutation
+			service := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error { got = append(got, r); return io.ErrClosedPipe }}
+			if err := service.Remove(); !errors.Is(err, io.ErrClosedPipe) || !reflect.DeepEqual(got, []eximMutation{{Operation: "remove"}}) {
+				t.Fatalf("err=%v requests=%+v", err, got)
+			}
+		})
+	}
+}
+
+// The worker's exit status tells a busy Exim lock apart from a failed change.
+func TestWorkerExitCodeSeparatesBusyFromFailure(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		{nil, 0},
+		{fmt.Errorf("%w: resource temporarily unavailable", eximlock.ErrBusy), workerBusyExit},
+		{errors.New("buildeximconf failed"), 1},
+	} {
+		if got := WorkerExitCode(tc.err); got != tc.want {
+			t.Errorf("WorkerExitCode(%v) = %d, want %d", tc.err, got, tc.want)
+		}
+	}
+}
+
+// A request refused at the lock ends with the busy status and changes nothing.
+func TestEximMutationRefusedAtTheLockExitsBusy(t *testing.T) {
+	a, side := testAdapter(t)
+	writeInstalledConf(t, a)
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		finished <- eximlock.With(filepath.Dir(a.badIPsPath), func() error { close(entered); <-release; return nil })
+	}()
+	<-entered
+	busyErr := handleEximMutation(strings.NewReader(`{"operation":"remove"}`), lockedEximAdapter{a})
+	close(release)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if code := WorkerExitCode(busyErr); code != workerBusyExit || side.rebuilds != 0 {
+		t.Fatalf("exit=%d err=%v rebuilds=%d", code, busyErr, side.rebuilds)
+	}
+	if code := WorkerExitCode(handleEximMutation(strings.NewReader(`{"operation":"remove"}`), lockedEximAdapter{a})); code != 0 || side.rebuilds != 1 {
+		t.Fatalf("unlocked remove exit=%d rebuilds=%d", code, side.rebuilds)
+	}
+}
+
+// The daemon reads the busy status as eximlock.ErrBusy whether the worker ran
+// through systemd-run or directly. Any other exit stays a failure that carries
+// the worker's output.
+func TestEximServiceSeparatesBusyWorkerFromFailedWorker(t *testing.T) {
+	lookups := map[string]systemdrun.LookPathFunc{
+		"systemd-run": func(string) (string, error) { return "/usr/bin/systemd-run", nil },
+		"direct":      func(string) (string, error) { return "", exec.ErrNotFound },
+	}
+	for path, lookup := range lookups {
+		for _, code := range []int{workerBusyExit, 1} {
+			t.Run(fmt.Sprintf("%s/exit-%d", path, code), func(t *testing.T) {
+				// A real child process, so the runner returns a real *exec.ExitError.
+				run := func(ctx context.Context, _ string, args ...string) ([]byte, error) {
+					if len(args) > 0 && args[len(args)-1] == "/bin/true" {
+						return nil, nil // systemd-run availability probe
+					}
+					return exec.CommandContext(ctx, "/bin/sh", "-c", fmt.Sprintf("echo worker output; exit %d", code)).CombinedOutput()
+				}
+				err := executeEximMutation(context.Background(), "/opt/csm/csm", lookup, run)
+				busy := code == workerBusyExit
+				if err == nil || errors.Is(err, eximlock.ErrBusy) != busy {
+					t.Fatalf("err=%v, want busy=%v", err, busy)
+				}
+				if !busy && !strings.Contains(err.Error(), "worker output") {
+					t.Fatalf("failure lost the worker output: %v", err)
+				}
+			})
+		}
+	}
+}
+
+// A transient worker can outlive its daemon. A new daemon must retry removal
+// if that worker can still install the guard or restore it during rollback.
+func TestEximServiceAdapterRemoveRetriesUnfinishedWorker(t *testing.T) {
+	for _, operation := range []string{"apply", "remove rollback"} {
+		t.Run(operation, func(t *testing.T) {
+			a, _ := testAdapter(t)
+			worker := lockedEximAdapter{a}
+			cfg := policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}
+			entered, release := make(chan struct{}), make(chan struct{})
+			failure := errors.New("rebuild failed")
+			var run func() error
+			if operation == "apply" {
+				a.chown = func(string, string) error {
+					close(entered)
+					<-release
+					return nil
+				}
+				run = func() error { return worker.Apply(cfg, nil) }
+			} else {
+				if err := worker.Apply(cfg, nil); err != nil {
+					t.Fatal(err)
+				}
+				calls := 0
+				a.rebuild = func() error {
+					calls++
+					if calls == 1 {
+						close(entered)
+						<-release
+						return failure
+					}
+					return nil
+				}
+				run = worker.Remove
+			}
+			finished := make(chan error, 1)
+			go func() { finished <- run() }()
+			select {
+			case <-entered:
+			case err := <-finished:
+				t.Fatalf("worker finished before reaching the barrier: %v", err)
+			}
+			status, statusErr := a.Status()
+			service := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error {
+				if r.Operation != "remove" {
+					return errors.New("unexpected operation: " + r.Operation)
+				}
+				return worker.Remove()
+			}}
+			removeErr := service.Remove()
+			close(release)
+			workerErr := <-finished
+			if statusErr != nil || status.Installed {
+				t.Fatalf("guard must be absent during transaction: %+v, %v", status, statusErr)
+			}
+			if operation == "apply" && workerErr != nil || operation == "remove rollback" && !errors.Is(workerErr, failure) {
+				t.Fatalf("worker error = %v", workerErr)
+			}
+			if status, err := a.Status(); err != nil || !status.Installed {
+				t.Fatalf("worker did not leave an installed guard: %+v, %v", status, err)
+			}
+			if !errors.Is(removeErr, eximlock.ErrBusy) {
+				t.Fatalf("remove error = %v, want busy so the daemon retries", removeErr)
+			}
+			if err := service.Remove(); err != nil {
+				t.Fatalf("retry removal: %v", err)
+			}
+			if status, err := a.Status(); err != nil || status.Installed {
+				t.Fatalf("retry left guard installed: %+v, %v", status, err)
+			}
+		})
 	}
 }

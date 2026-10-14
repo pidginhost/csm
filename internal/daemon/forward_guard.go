@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"errors"
 	"time"
 
+	"github.com/pidginhost/csm/internal/eximlock"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/mailfwd/adapter"
 	"github.com/pidginhost/csm/internal/mailfwd/guard"
@@ -53,8 +55,9 @@ func (d *Daemon) forwardGuardBadIPs() []string {
 
 // reconcileForwardGuard installs or removes the exim forward-guard to match the
 // current config. Errors are logged, never fatal: a guard failure must not take
-// the daemon down or block mail (fail-open). A failure, such as a lock held by
-// an antispam transaction, is retried on the next refresh.
+// the daemon down or block mail (fail-open). A change refused because another
+// CSM transaction, such as an antispam one, holds the Exim lock is logged as
+// deferred; it and any failure are retried on the next refresh.
 func (d *Daemon) reconcileForwardGuard() {
 	d.forwardGuardRetry.Store(true)
 	// A reload must not wait for an in-flight worker. Leave its request for
@@ -71,6 +74,11 @@ func (d *Daemon) reconcileForwardGuard() {
 	fg := d.currentCfg().EmailProtection.ForwardGuard
 	if err := d.forwardGuardReconciler().Reconcile(fg); err != nil {
 		d.forwardGuardRetry.Store(true)
+		if errors.Is(err, eximlock.ErrBusy) {
+			csmlog.Info("forward-guard reconcile deferred to the next refresh: another CSM transaction holds the Exim lock",
+				"refresh_interval", forwardGuardRefreshInterval)
+			return
+		}
 		csmlog.Error("forward-guard reconcile failed", "err", err)
 		return
 	}
