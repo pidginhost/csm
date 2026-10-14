@@ -4,15 +4,15 @@
 #
 # This profile assumes:
 #   - The host is NOT running cPanel/WHM.
-#   - Web roots live under /var/www/<domain>/ (not /home/*/public_html).
+#   - Tenant web roots live under <home_base>/<user>/public_html.
 #   - Mail logs are read from systemd-journald (configured in P4).
 #   - phpanel-server-agent owns its own conf.d fragments under /etc/csm/conf.d/
 #     and never edits the operator's main config directly.
 
-# Web account roots. phpanel hosts vhosts under /var/www/<domain>/.
-# Add more roots in a higher-numbered conf.d fragment if your layout differs.
-account_roots:
-  - /var/www/*
+# Web account roots are not set here. The agent renders account_roots in its
+# runtime fragment, because only the agent knows the panel's home_base
+# (/home unless changed). Lists append across conf.d fragments, so a default
+# in this profile could not be replaced, only added to.
 
 # Future schema, kept as comments until P4 wires the journald reader.
 #
@@ -29,9 +29,15 @@ account_roots:
 #   - <panel ip>
 #   - <agent control plane ip>
 #
-# The agent rewrites 10-phpanel-runtime.yaml on every bootstrap. A static
-# conf.d hash cannot cover a file like that without making each rewrite a
-# failed restart, so list it in the MAIN config (not in a fragment) and
+# The agent rewrites 10-phpanel-runtime.yaml on every bootstrap. After a
+# rewrite it re-signs only its own fragments:
+#
+#   csm rehash --fragment 10-phpanel-runtime.yaml
+#
+# That refuses when anything else under conf.d, the main config or the binary
+# changed, so the agent never approves an edit it did not make. Where
+# `csm capabilities` lacks confd.rehash.fragment.v1, leave the file out of the
+# conf.d hash instead: list it in the MAIN config (not in a fragment) and
 # rehash once:
 #
 #   confd:
@@ -49,9 +55,12 @@ account_roots:
 # (10-phpanel-runtime.yaml). Do not put active placeholder secrets in this
 # profile: conf.d sequence merging appends token lists, so placeholders can
 # remain valid after a later fragment adds the real token.
-# Tokens expire only when expires_at is set; issued_at is optional.
-# When rotating, replace the token and update any dates together.
-# Restart CSM after replacing the runtime token entry.
+#
+# The agent renders an admin token that only it holds and binds the web UI to
+# loopback. The panel never talks to CSM directly; it reaches CSM through the
+# agent. Tokens expire only when expires_at is set; issued_at is optional.
+# When rotating, replace the token and update any dates together, then
+# restart CSM.
 #
 # alerts:
 #   webhook:
@@ -62,10 +71,11 @@ account_roots:
 #
 # webui:
 #   enabled: true
+#   listen: 127.0.0.1:9443
 #   tokens:
-#     - name: phpanel-readonly
+#     - name: phpanel-agent
 #       token: <agent-generated-secret>
-#       scope: read
+#       scope: admin
 #       issued_at: ""   # optional UTC RFC3339 issue time
 #       expires_at: ""  # optional UTC RFC3339 expiry; empty never expires
 
@@ -85,17 +95,18 @@ thresholds:
 
 # Rspamd scoring source. Agent supplies token_env via runtime fragment / env.
 #
-# Upstream threat-intel: phpanel runs an aggregating cache that every
-# agent in the fleet queries. The agent supplies the URL via runtime
-# fragment; the token is resolved from CSM_UPSTREAM_TOKEN at query time.
+# Upstream threat-intel stays off. phpanel does not serve an upstream lookup;
+# an operator who runs a service implementing the upstream contract sets its
+# URL in a higher-numbered fragment. The token is resolved from
+# CSM_UPSTREAM_TOKEN at query time.
 reputation:
   rspamd:
     enabled: true
     url: http://127.0.0.1:11334
     # token_env: CSM_RSPAMD_TOKEN  # operator/agent supplies
   upstream:
-    enabled: false        # operator/agent flips on after the panel endpoint is deployed
-    # url: https://panel.example.com/api/csm/ti  # supplied by agent
+    enabled: false
+    # url: https://ti.example.com/csm
     token_env: CSM_UPSTREAM_TOKEN
     cache_ttl_min: 15
     timeout_sec: 5
@@ -107,15 +118,16 @@ reputation:
 # soak period confirms the would-be blocks look right in the dry-run log.
 #
 # Verdict callback: phpanel can observe each block decision before it's
-# applied. Disabled by default; the agent flips on after the panel
-# endpoint verifies requests and signs responses. Token resolves from
+# applied. Disabled here; the agent turns it on and supplies the URL in its
+# runtime fragment. The panel signs its responses, so
+# require_response_signature stays true. Token resolves from
 # CSM_VERDICT_HMAC at call time.
 auto_response:
   enabled: true
   block_ips: true
   dry_run: true
   verdict_callback:
-    enabled: false                       # operator/agent flips on after response signing is deployed
+    enabled: false                       # the agent turns it on with the runtime URL
     # url: https://panel.example.com/api/csm/verdict
     hmac_secret_env: CSM_VERDICT_HMAC
     allow_unsigned: false

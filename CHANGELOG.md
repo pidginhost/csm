@@ -28,6 +28,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - After the system clock is set back, new temporary blocks show expiry times later by that step, and the journal notes it once per start.
 - Deep phishing scans use less memory and CPU per page.
 - After upgrade, IP response previews use a new storage format; going back to 4.3.0 or earlier stops the previews, while live blocking keeps working.
+- The phpanel agent profile no longer sets account roots; the agent supplies them to match the panel's home directory layout.
 
 ### Fixed
 

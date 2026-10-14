@@ -186,8 +186,10 @@ func TestLoadWithDir_PackagedPHPPanelProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadWithDir with packaged phpanel profile: %v", err)
 	}
-	if len(cfg.AccountRoots) != 1 || cfg.AccountRoots[0] != "/var/www/*" {
-		t.Fatalf("AccountRoots = %v, want [/var/www/*]", cfg.AccountRoots)
+	// Lists append across fragments, so a default here could never be
+	// replaced: only the agent knows home_base and renders the roots.
+	if len(cfg.AccountRoots) != 0 {
+		t.Fatalf("AccountRoots = %v, want none from the packaged profile", cfg.AccountRoots)
 	}
 	if cfg.Alerts.Webhook.Enabled {
 		t.Fatal("packaged phpanel profile must not enable a placeholder webhook")
@@ -212,6 +214,9 @@ func TestLoadWithDir_PackagedPHPPanelProfile(t *testing.T) {
 	}
 	if cfg.AutoResponse.VerdictCallback.HMACSecretEnv != "CSM_VERDICT_HMAC" {
 		t.Fatalf("VerdictCallback.HMACSecretEnv = %q, want CSM_VERDICT_HMAC", cfg.AutoResponse.VerdictCallback.HMACSecretEnv)
+	}
+	if cfg.AutoResponse.VerdictCallback.RequireResponseSignature == nil || !*cfg.AutoResponse.VerdictCallback.RequireResponseSignature {
+		t.Fatal("packaged phpanel profile must require signed verdict responses")
 	}
 	if cfg.AutoResponse.VerdictCallback.TimeoutSec != 2 {
 		t.Fatalf("VerdictCallback.TimeoutSec = %d, want 2", cfg.AutoResponse.VerdictCallback.TimeoutSec)
