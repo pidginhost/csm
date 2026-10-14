@@ -130,6 +130,32 @@ func TestForwardGuardRefresherStops(t *testing.T) {
 	}
 }
 
+// A queued reload must not start another Exim rebuild once shutdown begins.
+// Both channels are ready, so repeat to exercise either select outcome.
+func TestForwardGuardRefresherDiscardsReloadsOnShutdown(t *testing.T) {
+	usePanel(t, platform.PanelCPanel)
+	cfg := &config.Config{Mode: config.ModeEnforce}
+	cfg.EmailProtection.ForwardGuard.Enabled = true
+	cfg.EmailProtection.ForwardGuard.HoldSignals.BounceBackscatter = true
+	useActiveConfig(t, cfg)
+	g := &countingForwardGuard{}
+	prev := newForwardGuard
+	t.Cleanup(func() { newForwardGuard = prev })
+	newForwardGuard = func() adapter.ForwardGuard { return g }
+	d := newTestDaemon(t)
+	close(d.stopCh)
+
+	for range 100 {
+		d.wakeForwardGuard()
+		d.wg.Add(1)
+		d.forwardGuardRefresher()
+	}
+	d.wg.Wait()
+	if g.mutations != 0 {
+		t.Fatalf("shutdown started %d forward-guard mutations, want none", g.mutations)
+	}
+}
+
 func seedForwardQuarantine(t *testing.T, retentionDays int) (old, fresh string) {
 	t.Helper()
 	dir := t.TempDir()

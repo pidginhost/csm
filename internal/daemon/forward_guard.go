@@ -111,6 +111,13 @@ func (d *Daemon) forwardGuardRefresher() {
 		case <-d.stopCh:
 			return
 		case <-d.forwardGuardWake:
+			// A queued reload can win the select after shutdown starts.
+			// Do not launch another potentially slow Exim rebuild then.
+			select {
+			case <-d.stopCh:
+				return
+			default:
+			}
 			d.reconcileForwardGuard()
 		case <-ticker.C:
 			d.refreshForwardGuard()
