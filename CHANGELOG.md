@@ -36,6 +36,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - After upgrade, IP reputation stops fetching the retired Spamhaus EDROP list and ignores its cached ranges; Spamhaus DROP carries the merged entries.
 - Forward guard changes that fail, or wait for another CSM change to Exim, now retry automatically with the latest settings, and a wait is logged as information, not an error.
 - A forward guard change still running when CSM restarts can no longer override the settings the restarted CSM applies.
+- Config reloads and settings saves no longer wait while the forward guard rebuilds the Exim configuration.
 
 ## [4.3.0] - 2026-10-08
 

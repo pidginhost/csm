@@ -127,10 +127,9 @@ On cPanel hosts in enforce mode, CSM applies these settings at startup and on
 config reload. Failed changes are retried on the next 15-minute lookup refresh,
 using the latest settings. A change that waits for another CSM change to the
 Exim configuration, such as an antispam one, is logged as deferred, not as a
-failure, and retried the same way. A reload during a running forward-guard
-change returns without waiting, logs that it was deferred, and leaves the
-latest settings pending for that refresh. The log reports the refresh
-interval; the next refresh can happen sooner.
+failure, and retried the same way. A reload never waits for a forward-guard
+change: the change runs in the background, and reloads that arrive while one
+runs are applied right after it, with the latest settings.
 Disabled and dry-run settings start no removal worker when no guard is
 installed. While another CSM change to the Exim configuration runs, even one
 started before a daemon restart, the removal is deferred the same way. CSM

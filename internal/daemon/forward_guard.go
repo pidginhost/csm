@@ -60,8 +60,9 @@ func (d *Daemon) forwardGuardBadIPs() []string {
 // deferred; it and any failure are retried on the next refresh.
 func (d *Daemon) reconcileForwardGuard() {
 	d.forwardGuardRetry.Store(true)
-	// A reload must not wait for an in-flight worker. Leave its request for
-	// the next refresh, and read config only after taking the lock.
+	// No caller waits for an in-flight worker. Reloads reach here through the
+	// loop, one at a time; any other overlapping call leaves its request for
+	// the next refresh. Read config only after taking the lock.
 	if !d.forwardGuardMu.TryLock() {
 		csmlog.Info("forward-guard reconcile deferred to the next refresh: another reconcile is running",
 			"refresh_interval", forwardGuardRefreshInterval)
@@ -87,8 +88,20 @@ func (d *Daemon) reconcileForwardGuard() {
 // forwardQuarantineDir is a var so tests can prune a temporary Maildir.
 var forwardQuarantineDir = adapter.QuarantineDir
 
-// forwardGuardRefresher periodically refreshes the bad-IP lookup file while the
-// guard is enforcing and ages held copies out of the quarantine.
+// wakeForwardGuard asks the forward-guard loop to reconcile with the latest
+// config. It never blocks: a reload must not wait for a worker that can
+// rebuild Exim for minutes. Wakes that arrive during a reconcile become one
+// more reconcile after it.
+func (d *Daemon) wakeForwardGuard() {
+	select {
+	case d.forwardGuardWake <- struct{}{}:
+	default:
+	}
+}
+
+// forwardGuardRefresher reconciles the guard when a reload wakes it, and
+// periodically refreshes the bad-IP lookup file while the guard is enforcing
+// and ages held copies out of the quarantine.
 func (d *Daemon) forwardGuardRefresher() {
 	defer d.wg.Done()
 	ticker := time.NewTicker(forwardGuardRefreshInterval)
@@ -97,6 +110,8 @@ func (d *Daemon) forwardGuardRefresher() {
 		select {
 		case <-d.stopCh:
 			return
+		case <-d.forwardGuardWake:
+			d.reconcileForwardGuard()
 		case <-ticker.C:
 			d.refreshForwardGuard()
 		}

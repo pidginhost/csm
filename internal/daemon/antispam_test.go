@@ -1012,6 +1012,10 @@ func TestAntispamReloadDoesNotWaitForForwardGuard(t *testing.T) {
 		close(guard.release)
 		<-done
 	})
+	// Reloads hand forward-guard changes to its own loop.
+	d.wg.Add(1)
+	go d.forwardGuardRefresher()
+	t.Cleanup(func() { close(d.stopCh) })
 	go func() {
 		d.reconcileHotReloadables()
 		close(done)
