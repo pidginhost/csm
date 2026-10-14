@@ -39,16 +39,42 @@ func TestUnbanScopeReachesOnlyCheckAndUnban(t *testing.T) {
 	if got := serve(http.MethodPost, "/api/v1/firewall/unban", `{"ip":"bad"}`); got != http.StatusBadRequest {
 		t.Errorf("unban = %d, want 400 from the handler", got)
 	}
+	// Use the complete registration inventory, including method-qualified
+	// patterns and registrations outside server.go.
+	for _, route := range registeredAPIRoutes(t) {
+		method := strings.ToUpper(route.Method)
+		want := http.StatusUnauthorized
+		if (route.Path == "/api/v1/firewall/check" && method == http.MethodGet) ||
+			(route.Path == "/api/v1/firewall/unban" && method == http.MethodPost) {
+			want = http.StatusBadRequest
+		}
+		for _, rawCookie := range []bool{false, true} {
+			req := httptest.NewRequest(method, route.Path+"?ip=bad", strings.NewReader(`{"ip":"bad"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+unban)
+			if rawCookie {
+				req.AddCookie(&http.Cookie{Name: "csm_auth", Value: unban})
+			}
+			w := httptest.NewRecorder()
+			s.httpSrv.Handler.ServeHTTP(w, req)
+			if w.Code != want {
+				t.Errorf("%s %s (raw cookie=%v) = %d, want %d", method, route.Path, rawCookie, w.Code, want)
+			}
+		}
+	}
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		if got := serve(method, "/metrics", ""); got != http.StatusUnauthorized {
+			t.Errorf("%s /metrics = %d, want 401", method, got)
+		}
+	}
 	for _, route := range []struct{ method, path string }{
-		{http.MethodGet, "/api/v1/firewall/status"},
-		{http.MethodPost, "/api/v1/firewall/flush"},
-		{http.MethodPost, "/api/v1/firewall/allow-ip"},
-		{http.MethodPost, "/api/v1/unblock-ip"},
-		{http.MethodGet, "/api/v1/status"},
-		{http.MethodGet, "/api/v1/findings"},
+		{http.MethodPost, "/api/v1/firewall/check"},
+		{http.MethodHead, "/api/v1/firewall/check"},
+		{http.MethodGet, "/api/v1/firewall/unban"},
+		{http.MethodDelete, "/api/v1/firewall/unban"},
 	} {
-		if got := serve(route.method, route.path, `{}`); got != http.StatusUnauthorized {
-			t.Errorf("%s %s = %d, want 401", route.method, route.path, got)
+		if got := serve(route.method, route.path, `{}`); got != http.StatusMethodNotAllowed {
+			t.Errorf("%s %s = %d, want 405", route.method, route.path, got)
 		}
 	}
 	login := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("token="+unban))
@@ -60,7 +86,7 @@ func TestUnbanScopeReachesOnlyCheckAndUnban(t *testing.T) {
 	}
 }
 
-// Admin tokens and browser sessions keep both routes.
+// Admin tokens can unban; read tokens cannot.
 func TestUnbanRoutesStillAcceptAdmin(t *testing.T) {
 	s := newUIServer(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/firewall/unban", strings.NewReader(`{"ip":"bad"}`))
@@ -80,37 +106,87 @@ func TestUnbanRoutesStillAcceptAdmin(t *testing.T) {
 	}
 }
 
-// A browser session with a scoped bearer beside it still needs CSRF on
-// routes the bearer cannot authorize.
+// Cookie-first authorization still needs CSRF with a scoped bearer beside it.
 func TestUnbanBearerDoesNotExemptCookieWrites(t *testing.T) {
-	s := newTestServerWithTemplates(t, "")
+	s := newUIServer(t)
 	admin, unban := randomBrowserCredential(), randomBrowserCredential()
-	addPolicyToken(s, config.WebUIToken{Name: "admin", Token: admin, Scope: "admin"})
+	addPolicyToken(s, config.WebUIToken{Name: "browser-admin", Token: admin, Scope: "admin"})
 	addPolicyToken(s, config.WebUIToken{Name: "panel", Token: unban, Scope: "unban"})
 	cookie := loginBrowser(t, s, admin, nil)
-	req := sessionPost("/api/test", cookie.Value)
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPost, "/api/v1/firewall/unban"},
+		{http.MethodPost, "/api/v1/firewall/flush"},
+		{http.MethodPost, "/api/v1/scan-jobs"},
+		{http.MethodPut, "/api/v1/prefs/user"},
+		{http.MethodDelete, "/api/v1/sessions"},
+	} {
+		req := httptest.NewRequest(route.method, route.path, strings.NewReader(`{}`))
+		req.AddCookie(cookie)
+		req.Header.Set("Authorization", "Bearer "+unban)
+		w := httptest.NewRecorder()
+		s.httpSrv.Handler.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s %s with cookie, unban bearer and no CSRF = %d, want 403", route.method, route.path, w.Code)
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/firewall/unban", strings.NewReader(`{"ip":"bad"}`))
+	req.AddCookie(cookie)
 	req.Header.Set("Authorization", "Bearer "+unban)
+	req.Header.Set("X-CSRF-Token", s.csrfTokenFor(req))
 	w := httptest.NewRecorder()
-	s.requireAuth(s.requireCSRF(okHandler())).ServeHTTP(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("cookie write with unban bearer and no CSRF = %d, want 403", w.Code)
+	s.httpSrv.Handler.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("cookie unban with valid CSRF = %d, want 400 from the handler", w.Code)
 	}
 }
 
 // Valid scoped calls are not credential guesses, so a busy panel never
 // spends the per-client guess budget.
 func TestUnbanCallsDoNotSpendGuessBudget(t *testing.T) {
+	for _, path := range []string{"/api/v1/firewall/check?ip=bad", "/api/v1/status", "/api/v1/events", "/api/v1/firewall/status", "/api/v1/unknown", "/metrics"} {
+		t.Run(path, func(t *testing.T) {
+			s := newUIServer(t)
+			unban := randomBrowserCredential()
+			addPolicyToken(s, config.WebUIToken{Name: "panel", Token: unban, Scope: "unban", AllowedIPs: []string{"::ffff:203.0.113.0/120"}})
+			want := http.StatusUnauthorized
+			if strings.HasPrefix(path, "/api/v1/firewall/check?") {
+				want = http.StatusBadRequest
+			}
+			for i := range 2 * credentialAttemptsPerMinute {
+				req := bearerReq(path, unban, "203.0.113.20:4000")
+				w := httptest.NewRecorder()
+				s.httpSrv.Handler.ServeHTTP(w, req)
+				if w.Code != want {
+					t.Fatalf("call %d = %d, want %d", i+1, w.Code, want)
+				}
+			}
+			s.loginMu.Lock()
+			attempts := len(s.loginAttempts["203.0.113.20"])
+			s.loginMu.Unlock()
+			if attempts != 0 {
+				t.Fatalf("valid token spent %d guesses", attempts)
+			}
+		})
+	}
+}
+
+func TestDisallowedTokenSourceSpendsGuessBudget(t *testing.T) {
 	s := newUIServer(t)
 	unban := randomBrowserCredential()
-	addPolicyToken(s, config.WebUIToken{Name: "panel", Token: unban, Scope: "unban"})
-	for i := range 2 * credentialAttemptsPerMinute {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/firewall/check?ip=bad", nil)
-		req.Header.Set("Authorization", "Bearer "+unban)
-		req.RemoteAddr = "203.0.113.20:4000"
+	addPolicyToken(s, config.WebUIToken{Name: "panel", Token: unban, Scope: "unban", AllowedIPs: []string{"203.0.113.20"}})
+	for i := range credentialAttemptsPerMinute + 1 {
+		req := bearerReq("/api/v1/firewall/check?ip=bad", unban, "[::ffff:192.0.2.20]:4000")
+		req.Header.Set("X-Forwarded-For", "203.0.113.20")
+		req.Header.Set("X-Real-IP", "203.0.113.20")
+		req.Header.Set("Forwarded", "for=203.0.113.20")
 		w := httptest.NewRecorder()
 		s.httpSrv.Handler.ServeHTTP(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("call %d = %d, want 400 from the handler", i+1, w.Code)
+		want := http.StatusUnauthorized
+		if i == credentialAttemptsPerMinute {
+			want = http.StatusTooManyRequests
+		}
+		if w.Code != want {
+			t.Fatalf("disallowed source call %d = %d, want %d", i+1, w.Code, want)
 		}
 	}
 }

@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/rand"
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -110,9 +111,44 @@ func TestWebUITokenScopeAndSourceValidation(t *testing.T) {
 		{"bad address", "admin", "      allowed_ips: [\"not-an-ip\"]\n", false},
 		{"bad prefix", "admin", "      allowed_ips: [\"203.0.113.0/33\"]\n", false},
 		{"empty entry", "read", "      allowed_ips: [\"\"]\n", false},
+		{"zoned address", "admin", "      allowed_ips: [\"2001:db8::1%eth0\"]\n", false},
+		{"zoned mapped address", "admin", "      allowed_ips: [\"::ffff:192.0.2.1%eth0\"]\n", false},
+		{"zoned prefix", "admin", "      allowed_ips: [\"2001:db8::1%eth0/128\"]\n", false},
 	} {
 		if err := load(tc.scope, tc.extra); (err == nil) != tc.ok {
 			t.Errorf("%s: err = %v, want ok=%v", tc.name, err, tc.ok)
 		}
+	}
+}
+
+func TestWebUITokenSourceMatching(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, allowed, denied string
+	}{
+		{"IPv4 address", "192.0.2.10", "::ffff:192.0.2.10", "192.0.2.11"},
+		{"mapped address", "::ffff:192.0.2.10", "192.0.2.10", "192.0.2.11"},
+		{"IPv4 prefix host bits", "192.0.2.129/25", "::ffff:192.0.2.255", "192.0.2.127"},
+		{"mapped prefix host bits", "::ffff:192.0.2.129/121", "192.0.2.255", "192.0.2.127"},
+		{"mapped host prefix", "::ffff:192.0.2.10/128", "::ffff:192.0.2.10", "192.0.2.11"},
+		{"IPv6 prefix host bits", "2001:db8:1::1234/48", "2001:db8:1::ffff%eth0", "2001:db8:2::1"},
+		{"IPv6 address", "2001:db8::1", "2001:db8::1%eth0", "2001:db8::2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadBytes(fmt.Appendf(nil, "webui:\n  tokens:\n    - name: panel\n      token: %q\n      scope: unban\n      issued_at: %q\n      allowed_ips: [%q]\n",
+				longToken(), time.Now().UTC().Format(time.RFC3339), tc.source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tok := cfg.WebUI.Tokens[0]
+			if !tok.AcceptsFrom(netip.MustParseAddr(tc.allowed)) {
+				t.Errorf("source %s rejected peer %s", tc.source, tc.allowed)
+			}
+			if tok.AcceptsFrom(netip.MustParseAddr(tc.denied)) {
+				t.Errorf("source %s admitted peer %s", tc.source, tc.denied)
+			}
+			if tok.AcceptsFrom(netip.Addr{}) {
+				t.Error("restricted token admitted an invalid peer")
+			}
+		})
 	}
 }

@@ -68,11 +68,22 @@ func parseTokenSource(src string) (netip.Prefix, error) {
 		if err != nil {
 			return netip.Prefix{}, err
 		}
-		return p.Masked(), nil
+		p = p.Masked()
+		// Peers are unmapped before matching. Keep mapped networks in
+		// the same address family, including their effective mask width.
+		if p.Addr().Is4In6() {
+			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
+		return p, nil
 	}
 	addr, err := netip.ParseAddr(src)
 	if err != nil {
 		return netip.Prefix{}, err
+	}
+	// PrefixFrom drops zones, which would silently widen an entry meant
+	// to restrict a credential to one interface.
+	if addr.Zone() != "" {
+		return netip.Prefix{}, fmt.Errorf("token source addresses must not include a zone")
 	}
 	addr = addr.Unmap()
 	return netip.PrefixFrom(addr, addr.BitLen()), nil

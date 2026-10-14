@@ -61,6 +61,8 @@ A credential expires at `expires_at` when set, otherwise seven days after `issue
 
 `allowed_ips` limits a token to the listed addresses and CIDR ranges, for API calls, browser login and the browser sessions it starts. CSM matches the TCP peer address and ignores forwarded headers. A token without `allowed_ips` is accepted from any address. An entry that is not an address or CIDR fails configuration loading.
 
+IPv4-mapped addresses and CIDRs within the mapped range match IPv4 peers: `::ffff:192.0.2.0/120` matches the same peers as `192.0.2.0/24`. CIDR host bits are masked. Entries with interface zones, such as `2001:db8::1%eth0`, fail configuration loading; use an address without a zone. A peer's interface zone does not affect address matching.
+
 Unban-scope tokens are meant for hosting panels that let customers lift their own blocks. They cannot log in to the dashboard, read status or reach any other route, and they are exempt from CSRF only on those two routes.
 
 The legacy single-token `webui.auth_token:` and its required `webui.auth_token_issued_at` are loaded into a `legacy-auth-token` admin entry. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, challenge stats, blocked-IP summaries, scan jobs, health, components, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, account detail, exports, incident timelines, and audit history. (ModSecurity `stats`/`blocks`/`events` are read scope; only the ModSecurity rules and escalation routes need admin.) `metrics_token:` is a separate, read-only credential for `/metrics` only.
