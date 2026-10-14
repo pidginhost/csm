@@ -700,6 +700,10 @@ func (e *Engine) Apply() (resultErr error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// Durable planning and verification need the same clock as installation.
+	if err := e.resumeLeaseLocked(); err != nil {
+		fmt.Fprintf(os.Stderr, "firewall: restoring timed blocks without the lease checkpoint: %v\n", err)
+	}
 	if err := e.lifecycleReadyLocked(); err != nil {
 		return err
 	}
@@ -2642,6 +2646,13 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 		removeBlockedIPFromState(&nextState, evictTempIP)
 	}
 	upsertBlockedEntryInState(&nextState, entry)
+	// A new deadline may use a forward-ratcheted lease. Save its clock
+	// before either intent so a crash cannot restore more than authorized.
+	if !expiresAt.IsZero() {
+		if err := e.saveLeaseLocked(); err != nil {
+			return BlockOutcomeNoop, fmt.Errorf("saving block lease: %w", err)
+		}
+	}
 	if e.lifecycle != nil {
 		if err := e.runDurableLocked(req, budget, nextState); err != nil {
 			if errors.Is(err, ErrActionAuditPending) {
@@ -2652,13 +2663,6 @@ func (e *Engine) blockIPRequestLocked(ip string, reason string, timeout time.Dur
 		return BlockOutcomeLive, nil
 	}
 
-	// A new deadline may use a forward-ratcheted lease. Save its clock
-	// before the intent so a crash cannot restore more than authorized.
-	if !expiresAt.IsZero() {
-		if err := e.saveLeaseLocked(); err != nil {
-			return BlockOutcomeNoop, fmt.Errorf("saving block lease: %w", err)
-		}
-	}
 	if err := e.persistFirewallIntent(priorState, nextState); err != nil {
 		return BlockOutcomeNoop, fmt.Errorf("persisting block for %s: %w", ip, err)
 	}
@@ -4269,10 +4273,6 @@ type initialBlockState struct {
 // Apply before any AddTable / AddSet so the result can be queued
 // into the same atomic netlink batch.
 func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
-	// A restart resumes the lease clock before restoring timed blocks.
-	if err := e.resumeLeaseLocked(); err != nil {
-		fmt.Fprintf(os.Stderr, "firewall: restoring timed blocks without the lease checkpoint: %v\n", err)
-	}
 	now := e.expiryNow()
 	state := e.loadStateFileAtLocked(now)
 	// Timeouts come from the lease clock, which a step back of the wall

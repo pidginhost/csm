@@ -73,6 +73,10 @@ func TestLeaseFloorOnlyMovesTheClockForward(t *testing.T) {
 func seededTimeouts(t *testing.T, e *Engine) map[string]time.Duration {
 	t.Helper()
 	e.mu.Lock()
+	if err := e.resumeLeaseLocked(); err != nil {
+		e.mu.Unlock()
+		t.Fatal(err)
+	}
 	initial := e.computeInitialBlockStateLocked()
 	e.mu.Unlock()
 	out := map[string]time.Duration{}

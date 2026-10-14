@@ -76,7 +76,7 @@ func (e *Engine) resumeLeaseLocked() error {
 }
 
 // saveLeaseLocked records the lease clock and the boot reading taken with
-// it. Apply saves after installation; timed legacy intents save first so
+// it. Apply saves after installation; timed block intents save first so
 // their new absolute deadlines cannot outlive the authorized duration.
 func (e *Engine) saveLeaseLocked() error {
 	if e.bootClock == nil {
