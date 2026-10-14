@@ -184,6 +184,9 @@ Before each check, CSM cancels antispam changes still waiting to run from an
 earlier check or an earlier daemon, also while antispam is disabled or in
 observe mode. A change that is already running finishes first.
 
+If cancelling fails, CSM raises a warning and retries: after 20 seconds while
+antispam is enabled, at the next regular check while it is disabled.
+
 Existing Exim SMTP sessions retain their old hooks; new sessions use the
 updated hooks. Account toggles are still read at each recipient. Reloading
 rspamd can change scoring for scans from either generation of Exim hooks.

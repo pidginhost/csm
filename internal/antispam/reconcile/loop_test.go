@@ -2,11 +2,15 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/pidginhost/csm/internal/eximlock"
 )
 
 // recorder blocks each pass until released or canceled. Tests inspect it
@@ -154,6 +158,71 @@ func TestLoopRetriesWhenAsked(t *testing.T) {
 		time.Sleep(time.Nanosecond)
 		r.check(t, 4, 3)
 	})
+}
+
+// A failed invalidation must describe the scheduled retry, and a reload
+// must still wake the loop while disabled antispam waits for its next check.
+func TestLoopInvalidationRetryGuidance(t *testing.T) {
+	failure := errors.New("read-only file system")
+	for _, tc := range []struct {
+		name      string
+		enabled   bool
+		failure   error
+		wait      time.Duration
+		retryText string
+	}{
+		{"disabled failure", false, failure, Interval, "CSM retries at the next regular check or after a config reload."},
+		{"enabled failure", true, failure, BusyRetry, "CSM retries shortly."},
+		{"disabled busy", false, eximlock.ErrBusy, BusyRetry, ""},
+		{"enabled busy", true, eximlock.ErrBusy, BusyRetry, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				h := &fakeHost{}
+				r := h.reconciler()
+				r.Invalidate = func(context.Context) error { h.invalidated++; return tc.failure }
+				var mu sync.Mutex
+				var reports []Outcome
+				l := NewLoop(func(ctx context.Context) Outcome {
+					mu.Lock()
+					defer mu.Unlock()
+					return r.Pass(ctx, desired(tc.enabled))
+				}, func(out Outcome) {
+					mu.Lock()
+					defer mu.Unlock()
+					reports = append(reports, out)
+				})
+				run(t, l)
+				check := func(want int) Outcome {
+					t.Helper()
+					synctest.Wait()
+					mu.Lock()
+					defer mu.Unlock()
+					if h.invalidated != want || len(reports) != want {
+						t.Fatalf("invalidations=%d reports=%d, want %d each", h.invalidated, len(reports), want)
+					}
+					if h.installed != 0 || len(h.collected) != 0 || len(h.requests) != 0 {
+						t.Fatalf("failed invalidation used the host: %+v", h)
+					}
+					return reports[len(reports)-1]
+				}
+				first := check(1)
+				if got := first.Findings; tc.retryText == "" {
+					if len(got) != 0 {
+						t.Fatalf("busy lock produced findings: %+v", got)
+					}
+				} else if len(got) != 1 || !strings.HasSuffix(got[0].Details, tc.retryText) {
+					t.Fatalf("findings=%+v, want retry guidance %q", got, tc.retryText)
+				}
+				time.Sleep(tc.wait - time.Nanosecond)
+				check(1)
+				time.Sleep(time.Nanosecond)
+				check(2)
+				l.Trigger()
+				check(3)
+			})
+		})
+	}
 }
 
 func TestLoopRepeatsOnInterval(t *testing.T) {

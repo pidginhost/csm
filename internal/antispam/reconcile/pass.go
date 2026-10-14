@@ -85,16 +85,18 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if err := invalidateErr; err != nil {
 		out := Outcome{Retry: BusyRetry}
 		if !errors.Is(err, eximlock.ErrBusy) {
+			retryDetails := "CSM retries shortly."
 			if !d.Enabled {
 				// A broken state directory does not heal in seconds. With
 				// antispam off, retry on the normal interval instead.
 				out.Retry = 0
+				retryDetails = "CSM retries at the next regular check or after a config reload."
 			}
 			out.Err = fmt.Errorf("invalidating pending antispam requests: %w", err)
 			out.Findings = []alert.Finding{{
 				Severity: alert.Warning, Check: CheckApplyFailed, Timestamp: r.Now(),
 				Message: "Antispam could not cancel pending changes",
-				Details: "Pending antispam workers may still change mail configuration. Check the daemon log for the recording error; CSM retries shortly.",
+				Details: "Pending antispam workers may still change mail configuration. Check the daemon log for the recording error; " + retryDetails,
 			}}
 		}
 		return out
