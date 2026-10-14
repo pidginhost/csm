@@ -4,14 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/pidginhost/csm/internal/eximlock"
 	"github.com/pidginhost/csm/internal/mailfwd/policy"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/systemdrun"
 )
 
 func mutationBody(t *testing.T, request eximMutation) string {
@@ -211,5 +216,74 @@ func TestEximServiceAdapterRemoveRunsWorkerUnlessProvenAbsent(t *testing.T) {
 				t.Fatalf("err=%v requests=%+v", err, got)
 			}
 		})
+	}
+}
+
+// The worker's exit status tells a busy Exim lock apart from a failed change.
+func TestWorkerExitCodeSeparatesBusyFromFailure(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		{nil, 0},
+		{fmt.Errorf("%w: resource temporarily unavailable", eximlock.ErrBusy), workerBusyExit},
+		{errors.New("buildeximconf failed"), 1},
+	} {
+		if got := WorkerExitCode(tc.err); got != tc.want {
+			t.Errorf("WorkerExitCode(%v) = %d, want %d", tc.err, got, tc.want)
+		}
+	}
+}
+
+// A request refused at the lock ends with the busy status and changes nothing.
+func TestEximMutationRefusedAtTheLockExitsBusy(t *testing.T) {
+	a, side := testAdapter(t)
+	writeInstalledConf(t, a)
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		finished <- eximlock.With(filepath.Dir(a.badIPsPath), func() error { close(entered); <-release; return nil })
+	}()
+	<-entered
+	busyErr := handleEximMutation(strings.NewReader(`{"operation":"remove"}`), lockedEximAdapter{a})
+	close(release)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if code := WorkerExitCode(busyErr); code != workerBusyExit || side.rebuilds != 0 {
+		t.Fatalf("exit=%d err=%v rebuilds=%d", code, busyErr, side.rebuilds)
+	}
+	if code := WorkerExitCode(handleEximMutation(strings.NewReader(`{"operation":"remove"}`), lockedEximAdapter{a})); code != 0 || side.rebuilds != 1 {
+		t.Fatalf("unlocked remove exit=%d rebuilds=%d", code, side.rebuilds)
+	}
+}
+
+// The daemon reads the busy status as eximlock.ErrBusy whether the worker ran
+// through systemd-run or directly. Any other exit stays a failure that carries
+// the worker's output.
+func TestEximServiceSeparatesBusyWorkerFromFailedWorker(t *testing.T) {
+	lookups := map[string]systemdrun.LookPathFunc{
+		"systemd-run": func(string) (string, error) { return "/usr/bin/systemd-run", nil },
+		"direct":      func(string) (string, error) { return "", exec.ErrNotFound },
+	}
+	for path, lookup := range lookups {
+		for _, code := range []int{workerBusyExit, 1} {
+			t.Run(fmt.Sprintf("%s/exit-%d", path, code), func(t *testing.T) {
+				// A real child process, so the runner returns a real *exec.ExitError.
+				run := func(ctx context.Context, _ string, args ...string) ([]byte, error) {
+					if len(args) > 0 && args[len(args)-1] == "/bin/true" {
+						return nil, nil // systemd-run availability probe
+					}
+					return exec.CommandContext(ctx, "/bin/sh", "-c", fmt.Sprintf("echo worker output; exit %d", code)).CombinedOutput()
+				}
+				err := executeEximMutation(context.Background(), "/opt/csm/csm", lookup, run)
+				busy := code == workerBusyExit
+				if err == nil || errors.Is(err, eximlock.ErrBusy) != busy {
+					t.Fatalf("err=%v, want busy=%v", err, busy)
+				}
+				if !busy && !strings.Contains(err.Error(), "worker output") {
+					t.Fatalf("failure lost the worker output: %v", err)
+				}
+			})
+		}
 	}
 }
