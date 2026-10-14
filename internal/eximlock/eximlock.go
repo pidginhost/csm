@@ -46,15 +46,15 @@ func With(dir string, mutate func() error) error {
 	return mutate()
 }
 
-// RecordWait bounds how long the daemon waits for the lock before it records
-// a request. The daemon's own records hold the lock only for a small unsynced
-// write or a rename; a worker transaction holds it for seconds or minutes and
-// still reads as busy.
+// RecordWait bounds how long CSM waits for the lock before it records a
+// request or starts a worker transaction. The daemon's own records hold the
+// lock only for a small unsynced write or a rename; a worker transaction holds
+// it for seconds or minutes and still reads as busy.
 const RecordWait = time.Second
 
 // WithRetry runs mutate under the lock like With, retrying a busy lock until
 // wait has passed or ctx is canceled. Once the lock is acquired, mutate runs
-// at most once; its errors are never retried. Workers keep the non-blocking With.
+// at most once; its errors are never retried.
 func WithRetry(ctx context.Context, dir string, wait time.Duration, mutate func() error) error {
 	deadline := time.Now().Add(wait)
 	for {

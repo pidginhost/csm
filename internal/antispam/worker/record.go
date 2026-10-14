@@ -42,7 +42,7 @@ func Invalidate(ctx context.Context) error {
 // record comes from a daemon that predates it, so the request runs.
 func Lock(dir string) Locker {
 	return func(request []byte, mutate func() error) error {
-		return eximlock.With(dir, func() error {
+		return eximlock.WithRetry(context.Background(), dir, eximlock.RecordWait, func() error {
 			// #nosec G304 -- fixed CSM state path next to the lock.
 			recorded, err := os.ReadFile(filepath.Join(dir, RequestFile))
 			if err != nil && !errors.Is(err, os.ErrNotExist) {

@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -23,7 +24,7 @@ const requestFile = "request.json"
 type lockedEximAdapter struct{ *EximAdapter }
 
 func (a lockedEximAdapter) mutate(request eximMutation) error {
-	return eximlock.With(filepath.Dir(a.badIPsPath), func() error {
+	return eximlock.WithRetry(context.Background(), filepath.Dir(a.badIPsPath), eximlock.RecordWait, func() error {
 		latest, err := a.isLatest(request)
 		if err != nil {
 			return err

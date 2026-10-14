@@ -602,3 +602,23 @@ func TestEximServiceInvalidateSupersedesPendingWorker(t *testing.T) {
 		t.Fatalf("pending worker after invalidate: err=%v installed=%v rebuilds=%d", err, status.Installed, side.rebuilds)
 	}
 }
+
+// The worker meets the daemon's own record writes, which hold the lock
+// briefly. It waits them out instead of reporting busy.
+func TestEximMutationWorkerWaitsOutABriefHolder(t *testing.T) {
+	a, side := testAdapter(t)
+	writeInstalledConf(t, a)
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		finished <- eximlock.With(filepath.Dir(a.badIPsPath), func() error { close(entered); <-release; return nil })
+	}()
+	<-entered
+	time.AfterFunc(50*time.Millisecond, func() { close(release) })
+	err := handleEximMutation(strings.NewReader(`{"operation":"remove"}`), lockedEximAdapter{a}.mutate)
+	if lockErr := <-finished; lockErr != nil {
+		t.Fatal(lockErr)
+	}
+	if err != nil || side.rebuilds != 1 {
+		t.Fatalf("err=%v rebuilds=%d", err, side.rebuilds)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/eximlock"
@@ -328,5 +329,23 @@ func TestStaleRequestFromBeforeARestartChangesNothing(t *testing.T) {
 	result, code = run(t, string(latest), tr, Lock(dir))
 	if code != 0 || !result.OK || tr.removed != 1 {
 		t.Fatalf("latest request: code=%d result=%+v transactor=%+v", code, result, tr)
+	}
+}
+
+// The worker waits out a brief hold by the daemon's record writer instead of
+// reporting busy.
+func TestLockWaitsOutABriefHolder(t *testing.T) {
+	dir := t.TempDir()
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() { finished <- eximlock.With(dir, func() error { close(entered); <-release; return nil }) }()
+	<-entered
+	time.AfterFunc(50*time.Millisecond, func() { close(release) })
+	ran := 0
+	err := Lock(dir)([]byte(applyBody), func() error { ran++; return nil })
+	if lockErr := <-finished; lockErr != nil {
+		t.Fatal(lockErr)
+	}
+	if err != nil || ran != 1 {
+		t.Fatalf("err=%v ran=%d", err, ran)
 	}
 }
