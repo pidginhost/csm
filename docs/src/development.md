@@ -542,8 +542,10 @@ kernel cleanup in both the intent and restored state. Rejected members
 consume no slot and cannot exclude a valid member. An address counts as
 already blocked only when a verified row and its kernel element agree: an
 untimed element for a permanent row, or one with the time a timed row has
-left, accounting for elapsed time across both set reads. A timed proof
-that can already have expired is not coverage. Any other row or element
+left, accounting for elapsed time across both set reads and all member checks.
+Apply results also age existing-block proofs through the batch's writes.
+A timed proof that can already have expired is not coverage, even if its row
+has time left within the readback slack. Any other row or element
 holding the address refuses the member as
 pending recovery. The batch rechecks, writes one
 intent with expiry instants stored in UTC, refreshes timeouts after the

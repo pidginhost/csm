@@ -386,12 +386,15 @@ func TestCheckBlockBatchRefusesStateIntegrityHoldBeforeDump(t *testing.T) {
 }
 
 func TestCheckBlockBatchAgesExistingProofThroughAllSetReads(t *testing.T) {
-	for _, mode := range []string{"slow_dump", "expires_during_v6", "wall_back", "wall_forward"} {
+	for _, mode := range []string{"slow_dump", "elapsed_during_v6", "expires_during_v6", "element_expires_first", "different_deadline", "wall_back", "wall_forward"} {
 		t.Run(mode, func(t *testing.T) {
 			at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 			left := time.Hour
-			if mode == "expires_during_v6" {
+			switch mode {
+			case "expires_during_v6":
 				left = 500 * time.Millisecond
+			case "element_expires_first":
+				left = 2 * time.Second
 			}
 			f := newBatchFixture(t, FirewallState{Blocked: []BlockedEntry{{IP: "203.0.113.40", Reason: "operator", ExpiresAt: at.Add(left)}}})
 			clock := &leaseSteps{wall: at, elapsed: at}
@@ -399,6 +402,12 @@ func TestCheckBlockBatchAgesExistingProofThroughAllSetReads(t *testing.T) {
 			f.e.expiryClock = func() time.Time { return clock.wall }
 			leaseNow(f.e)
 			f.live["203.0.113.40"] = left
+			switch mode {
+			case "element_expires_first":
+				f.expires["203.0.113.40"] = time.Second
+			case "different_deadline":
+				f.expires["203.0.113.40"] = left - 2*time.Second
+			}
 			original := f.e.liveBlockedDump
 			f.e.liveBlockedDump = func(set *nftables.Set) ([]nftables.SetElement, error) {
 				if set == f.e.setBlocked && mode == "slow_dump" {
@@ -407,8 +416,12 @@ func TestCheckBlockBatchAgesExistingProofThroughAllSetReads(t *testing.T) {
 				}
 				if set == f.e.setBlocked6 {
 					switch mode {
+					case "elapsed_during_v6", "different_deadline":
+						clock.advance(2 * time.Second)
 					case "expires_during_v6":
 						clock.advance(time.Second)
+					case "element_expires_first":
+						clock.advance(1500 * time.Millisecond)
 					case "wall_back":
 						clock.step(-time.Hour)
 					case "wall_forward":
@@ -418,7 +431,7 @@ func TestCheckBlockBatchAgesExistingProofThroughAllSetReads(t *testing.T) {
 				return original(set)
 			}
 			want := BlockRefusedExisting
-			if mode == "expires_during_v6" || mode == "wall_forward" {
+			if mode == "expires_during_v6" || mode == "element_expires_first" || mode == "different_deadline" || mode == "wall_forward" {
 				want = BlockRefusedPending
 			}
 			for i := 0; i < 2; i++ {
@@ -434,5 +447,43 @@ func TestCheckBlockBatchAgesExistingProofThroughAllSetReads(t *testing.T) {
 				left -= 2 * time.Second
 			}
 		})
+	}
+}
+
+func TestCheckBlockBatchAgesExistingProofThroughMemberChecks(t *testing.T) {
+	for _, ip := range []string{"203.0.113.40", "2001:db8::40"} {
+		for _, delayedLookup := range []int{1, 2} {
+			for _, delay := range []time.Duration{time.Second, 3 * time.Second} {
+				t.Run(fmt.Sprintf("%s/lookup%d/%s", ip, delayedLookup, delay), func(t *testing.T) {
+					at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+					f := newBatchFixture(t, FirewallState{Blocked: []BlockedEntry{{IP: ip, ExpiresAt: at.Add(2 * time.Second)}}})
+					clock := &leaseSteps{wall: at, elapsed: at}
+					f.e.leaseClock, f.e.expiryClock = clock.read, func() time.Time { return clock.wall }
+					f.live[ip] = 2 * time.Second
+					lookups := 0
+					f.e.localAddrsLookup = func() ([]string, error) {
+						lookups++
+						if lookups == delayedLookup {
+							clock.advance(delay)
+							clock.step(-time.Hour)
+						}
+						// A failed refresh is retried by the next member.
+						return nil, errors.New("fixture interface lookup failure")
+					}
+					writes := f.countWrites(t)
+					got, err := f.e.CheckBlockBatch([]BlockMember{f.member("act_held", ip), f.member("act_new", "203.0.113.20")})
+					want := BlockRefusedExisting
+					if delay > 2*time.Second {
+						want = BlockRefusedPending
+					}
+					if err != nil || len(got) != 2 || got[0] != want || got[1] != "" {
+						t.Fatalf("refusals %v, %v; want [%s, accepted]", got, err, want)
+					}
+					if lookups != 2 || *writes != 0 || f.sends != 0 {
+						t.Fatalf("check made %d lookups, %d writes and %d sends", lookups, *writes, f.sends)
+					}
+				})
+			}
+		}
 	}
 }

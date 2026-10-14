@@ -196,6 +196,20 @@ func (e *Engine) checkBlockMembersLocked(members []BlockMember, verified []bool,
 		temp++
 		seenIP[m.IP], seenAction[m.Action] = true, true
 	}
+	// Protection checks can wait for interface lookups after the set dumps.
+	// Age every proof through all members before the caller can end a pick.
+	snap.at = e.leaseNowLocked()
+	snap.elapsed = e.lease.at
+	for i, refusal := range out {
+		if refusal != BlockRefusedExisting {
+			continue
+		}
+		row := snap.blocked[stateIPKey(members[i].IP)]
+		observed, present := snap.live[members[i].IP]
+		if !snap.proves(row, observed, present) {
+			out[i] = BlockRefusedPending
+		}
+	}
 	return out
 }
 

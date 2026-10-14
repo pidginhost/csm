@@ -746,29 +746,34 @@ func TestApplyBlockBatchStateRestoreFailureIsNotRetryable(t *testing.T) {
 }
 
 func TestApplyBlockBatchAgesExistingRefusalBeforeReturn(t *testing.T) {
-	for _, delay := range []time.Duration{time.Second, 3 * time.Second} {
+	for _, tc := range []struct {
+		left, delay time.Duration
+		want        BlockRefusal
+	}{
+		{2 * time.Second, time.Second, BlockRefusedExisting},
+		{2 * time.Second, 3 * time.Second, BlockRefusedPending},
+		// The element can expire inside the slack while its row is still live.
+		{time.Second, 1500 * time.Millisecond, BlockRefusedPending},
+	} {
 		at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 		f := newBatchFixture(t, FirewallState{Blocked: []BlockedEntry{{IP: "203.0.113.40", ExpiresAt: at.Add(2 * time.Second)}}})
 		clock := &leaseSteps{wall: at, elapsed: at}
 		f.e.leaseClock, f.e.expiryClock = clock.read, func() time.Time { return clock.wall }
 		f.live["203.0.113.40"] = 2 * time.Second
+		f.expires["203.0.113.40"] = tc.left
 		write := writeFirewallStateJSON
 		t.Cleanup(func() { writeFirewallStateJSON = write })
 		writeFirewallStateJSON = func(path string, mode os.FileMode, value any) error {
 			err := write(path, mode, value)
-			clock.advance(delay)
+			clock.advance(tc.delay)
 			clock.step(-time.Hour)
 			return err
 		}
-		f.onFlush = func() { f.live["203.0.113.20"] = time.Hour - delay }
+		f.onFlush = func() { f.live["203.0.113.20"] = time.Hour - tc.delay }
 		results, err := f.e.ApplyBlockBatch([]BlockMember{f.member("act_held", "203.0.113.40"), f.member("act_new", "203.0.113.20")})
 		writeFirewallStateJSON = write
-		want := BlockRefusedExisting
-		if delay > 2*time.Second {
-			want = BlockRefusedPending
-		}
-		if err != nil || len(results) != 2 || results[0].Effect != BlockFailed || results[0].Refusal != want || results[1].Effect != BlockApplied {
-			t.Fatalf("delay %v: stale existing proof: %+v, %v", delay, results, err)
+		if err != nil || len(results) != 2 || results[0].Effect != BlockFailed || results[0].Refusal != tc.want || results[1].Effect != BlockApplied {
+			t.Fatalf("left %v, delay %v: stale existing proof: %+v, %v", tc.left, tc.delay, results, err)
 		}
 	}
 }
