@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	"github.com/pidginhost/csm/internal/eximlock"
-	"github.com/pidginhost/csm/internal/mailfwd/policy"
 )
 
 // errSuperseded reports a request the daemon replaced before this worker
@@ -23,15 +22,7 @@ const requestFile = "request.json"
 // and only while its request is still the latest one the daemon recorded.
 type lockedEximAdapter struct{ *EximAdapter }
 
-func (a lockedEximAdapter) Apply(cfg policy.Config, ips []string) error {
-	return a.whileCurrent(eximMutation{Operation: "apply", Config: cfg, BadIPs: ips}, func() error { return a.EximAdapter.Apply(cfg, ips) })
-}
-
-func (a lockedEximAdapter) Remove() error {
-	return a.whileCurrent(eximMutation{Operation: "remove"}, a.EximAdapter.Remove)
-}
-
-func (a lockedEximAdapter) whileCurrent(request eximMutation, mutate func() error) error {
+func (a lockedEximAdapter) mutate(request eximMutation) error {
 	return eximlock.With(filepath.Dir(a.badIPsPath), func() error {
 		latest, err := a.isLatest(request)
 		if err != nil {
@@ -40,7 +31,7 @@ func (a lockedEximAdapter) whileCurrent(request eximMutation, mutate func() erro
 		if !latest {
 			return errSuperseded
 		}
-		return mutate()
+		return request.applyTo(a.EximAdapter)
 	})
 }
 
@@ -49,12 +40,12 @@ func (a *EximAdapter) requestPath() string {
 }
 
 // isLatest reports whether request is the one the daemon recorded last. The
-// daemon records the same encoding it sends. A missing record comes from a
-// daemon that predates it, so the request runs.
+// daemon records the same encoding it sends, including the submission ID.
+// Only a request without an ID can predate request recording.
 func (a *EximAdapter) isLatest(request eximMutation) (bool, error) {
 	recorded, err := os.ReadFile(a.requestPath()) // #nosec G304 -- fixed CSM state path next to the lock
 	if errors.Is(err, os.ErrNotExist) {
-		return true, nil
+		return request.RequestID == "", nil
 	}
 	if err != nil {
 		return false, err

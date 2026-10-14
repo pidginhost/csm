@@ -24,7 +24,7 @@ func FuzzEximMutation(f *testing.F) {
 			}
 			return nil
 		}}
-		err := handleEximMutation(strings.NewReader(input), target)
+		err := handleEximMutation(strings.NewReader(input), mutationTarget(target))
 		if err == nil && calls != 1 || err != nil && calls != 0 {
 			t.Fatalf("error=%v calls=%d", err, calls)
 		}

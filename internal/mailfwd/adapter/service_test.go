@@ -28,6 +28,10 @@ func mutationBody(t *testing.T, request eximMutation) string {
 	return string(data)
 }
 
+func mutationTarget(target ForwardGuard) func(eximMutation) error {
+	return func(r eximMutation) error { return r.applyTo(target) }
+}
+
 func TestEximMutationPreservesTransaction(t *testing.T) {
 	a, side := testAdapter(t)
 	original := platform.EximLocalSkeleton + "# operator setting\n"
@@ -36,14 +40,14 @@ func TestEximMutationPreservesTransaction(t *testing.T) {
 	}
 	request := eximMutation{Operation: "apply", Config: policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}, BadIPs: []string{"192.0.2.1"}}
 	body := mutationBody(t, request)
-	if err := handleEximMutation(strings.NewReader(body), a); err != nil {
+	if err := handleEximMutation(strings.NewReader(body), mutationTarget(a)); err != nil {
 		t.Fatal(err)
 	}
 	status, err := a.Status()
 	if err != nil || !status.Installed || side.rebuilds != 1 {
 		t.Fatalf("status=%+v error=%v rebuilds=%d", status, err, side.rebuilds)
 	}
-	if err = handleEximMutation(strings.NewReader(`{"operation":"remove"}`), a); err != nil {
+	if err = handleEximMutation(strings.NewReader(`{"operation":"remove"}`), mutationTarget(a)); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(a.localConf)
@@ -59,7 +63,7 @@ func TestEximMutationPreservesTransaction(t *testing.T) {
 		}
 		return nil
 	}
-	if err = handleEximMutation(strings.NewReader(body), a); !errors.Is(err, failure) {
+	if err = handleEximMutation(strings.NewReader(body), mutationTarget(a)); !errors.Is(err, failure) {
 		t.Fatalf("error=%v", err)
 	}
 	data, err = os.ReadFile(a.localConf)
@@ -80,7 +84,7 @@ func TestEximMutationRejectsInvalidRequestsBeforeSideEffects(t *testing.T) {
 	}
 	for i, input := range cases {
 		a, side := testAdapter(t)
-		if err := handleEximMutation(strings.NewReader(input), a); err == nil {
+		if err := handleEximMutation(strings.NewReader(input), mutationTarget(a)); err == nil {
 			t.Errorf("case %d accepted", i)
 		}
 		entries, err := os.ReadDir(strings.TrimSuffix(a.localConf, "/exim.conf.local"))
@@ -111,7 +115,7 @@ func TestEximServiceAdapterDelegatesMutationsOnly(t *testing.T) {
 	if err := service.Remove(); !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, []eximMutation{{Operation: "apply", Config: cfg, BadIPs: ips}, {Operation: "remove"}}) {
+	if len(got) != 2 || got[0].RequestID == "" || got[1].RequestID == "" || got[0].RequestID == got[1].RequestID || !reflect.DeepEqual(got, []eximMutation{{RequestID: got[0].RequestID, Operation: "apply", Config: cfg, BadIPs: ips}, {RequestID: got[1].RequestID, Operation: "remove"}}) {
 		t.Fatalf("requests=%+v", got)
 	}
 	if err := service.RefreshBadIPs(ips); err != nil {
@@ -211,7 +215,7 @@ func TestEximServiceAdapterRemoveRunsWorkerUnlessProvenAbsent(t *testing.T) {
 			setup(t, a)
 			var got []eximMutation
 			service := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error { got = append(got, r); return io.ErrClosedPipe }}
-			if err := service.Remove(); !errors.Is(err, io.ErrClosedPipe) || !reflect.DeepEqual(got, []eximMutation{{Operation: "remove"}}) {
+			if err := service.Remove(); !errors.Is(err, io.ErrClosedPipe) || len(got) != 1 || got[0].RequestID == "" || !reflect.DeepEqual(got, []eximMutation{{RequestID: got[0].RequestID, Operation: "remove"}}) {
 				t.Fatalf("err=%v requests=%+v", err, got)
 			}
 		})
@@ -243,7 +247,7 @@ func TestEximMutationRefusedAtTheLockExitsBusy(t *testing.T) {
 		finished <- eximlock.With(filepath.Dir(a.badIPsPath), func() error { close(entered); <-release; return nil })
 	}()
 	<-entered
-	busyErr := handleEximMutation(strings.NewReader(`{"operation":"remove"}`), lockedEximAdapter{a})
+	busyErr := handleEximMutation(strings.NewReader(`{"operation":"remove"}`), lockedEximAdapter{a}.mutate)
 	close(release)
 	if err := <-finished; err != nil {
 		t.Fatal(err)
@@ -251,7 +255,7 @@ func TestEximMutationRefusedAtTheLockExitsBusy(t *testing.T) {
 	if code := WorkerExitCode(busyErr); code != workerBusyExit || side.rebuilds != 0 {
 		t.Fatalf("exit=%d err=%v rebuilds=%d", code, busyErr, side.rebuilds)
 	}
-	if code := WorkerExitCode(handleEximMutation(strings.NewReader(`{"operation":"remove"}`), lockedEximAdapter{a})); code != 0 || side.rebuilds != 1 {
+	if code := WorkerExitCode(handleEximMutation(strings.NewReader(`{"operation":"remove"}`), lockedEximAdapter{a}.mutate)); code != 0 || side.rebuilds != 1 {
 		t.Fatalf("unlocked remove exit=%d rebuilds=%d", code, side.rebuilds)
 	}
 }
@@ -304,9 +308,9 @@ func TestEximServiceAdapterRemoveRetriesUnfinishedWorker(t *testing.T) {
 					<-release
 					return nil
 				}
-				run = func() error { return worker.Apply(cfg, nil) }
+				run = func() error { return worker.mutate(eximMutation{Operation: "apply", Config: cfg}) }
 			} else {
-				if err := worker.Apply(cfg, nil); err != nil {
+				if err := worker.mutate(eximMutation{Operation: "apply", Config: cfg}); err != nil {
 					t.Fatal(err)
 				}
 				calls := 0
@@ -319,7 +323,7 @@ func TestEximServiceAdapterRemoveRetriesUnfinishedWorker(t *testing.T) {
 					}
 					return nil
 				}
-				run = worker.Remove
+				run = func() error { return worker.mutate(eximMutation{Operation: "remove"}) }
 			}
 			finished := make(chan error, 1)
 			go func() { finished <- run() }()
@@ -333,7 +337,7 @@ func TestEximServiceAdapterRemoveRetriesUnfinishedWorker(t *testing.T) {
 				if r.Operation != "remove" {
 					return errors.New("unexpected operation: " + r.Operation)
 				}
-				return worker.Remove()
+				return worker.mutate(r)
 			}}
 			removeErr := service.Remove()
 			close(release)
@@ -426,7 +430,7 @@ func TestEximServiceStaleWorkerFromBeforeARestartChangesNothing(t *testing.T) {
 				writeInstalledConf(t, a)
 			}
 			worker := func(r eximMutation) error {
-				return handleEximMutation(strings.NewReader(mutationBody(t, r)), lockedEximAdapter{a})
+				return handleEximMutation(strings.NewReader(mutationBody(t, r)), lockedEximAdapter{a}.mutate)
 			}
 			var stale []eximMutation
 			oldDaemon := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error { stale = append(stale, r); return nil }}
@@ -451,10 +455,106 @@ func TestEximServiceStaleWorkerFromBeforeARestartChangesNothing(t *testing.T) {
 func TestEximMutationWithoutARecordedRequestRuns(t *testing.T) {
 	a, side := testAdapter(t)
 	request := eximMutation{Operation: "apply", Config: policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}}
-	if err := handleEximMutation(strings.NewReader(mutationBody(t, request)), lockedEximAdapter{a}); err != nil {
+	if err := handleEximMutation(strings.NewReader(mutationBody(t, request)), lockedEximAdapter{a}.mutate); err != nil {
 		t.Fatal(err)
 	}
 	if status, err := a.Status(); err != nil || !status.Installed || side.rebuilds != 1 {
 		t.Fatalf("status=%+v err=%v rebuilds=%d", status, err, side.rebuilds)
+	}
+}
+
+// Equal settings do not make an old worker current again: it must not
+// rebuild Exim or replace sender intelligence refreshed by the new daemon.
+func TestEximServiceIdenticalRequestSupersedesOldWorker(t *testing.T) {
+	a, side := testAdapter(t)
+	cfg := bothSignals()
+	initialIPs := []string{"192.0.2.1"}
+	var pending []eximMutation
+	oldDaemon := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error {
+		pending = append(pending, r)
+		return nil
+	}}
+	if err := oldDaemon.Apply(cfg, initialIPs); err != nil || len(pending) != 1 {
+		t.Fatalf("old daemon: err=%v requests=%d", err, len(pending))
+	}
+	worker := func(r eximMutation) error {
+		return handleEximMutation(strings.NewReader(mutationBody(t, r)), lockedEximAdapter{a}.mutate)
+	}
+	newDaemon := &eximServiceAdapter{EximAdapter: a, mutate: worker}
+	if err := newDaemon.Apply(cfg, initialIPs); err != nil {
+		t.Fatal(err)
+	}
+	if err := newDaemon.RefreshBadIPs([]string{"192.0.2.2"}); err != nil {
+		t.Fatal(err)
+	}
+	err := worker(pending[0])
+	if !errors.Is(err, errSuperseded) || WorkerExitCode(err) != workerBusyExit {
+		t.Errorf("old worker: err=%v exit=%d, want superseded", err, WorkerExitCode(err))
+	}
+	if side.rebuilds != 1 {
+		t.Errorf("rebuilds=%d, want only the new worker's rebuild", side.rebuilds)
+	}
+	data, err := os.ReadFile(a.badIPsPath)
+	if err != nil || string(data) != "192.0.2.2: 1\n" {
+		t.Errorf("old worker replaced refreshed lookup: %q, err=%v", data, err)
+	}
+}
+
+// A writable lock does not imply that the request can be committed. Failure
+// to replace its destination must preserve the guard and start no worker.
+func TestEximServiceRequestWriteFailureStartsNoWorker(t *testing.T) {
+	a, side := testAdapter(t)
+	original := writeInstalledConf(t, a)
+	if err := os.MkdirAll(a.requestPath(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	service := &eximServiceAdapter{EximAdapter: a, mutate: func(eximMutation) error { calls++; return nil }}
+	for _, submit := range []func() error{func() error { return service.Apply(bothSignals(), nil) }, service.Remove} {
+		if err := submit(); err == nil || errors.Is(err, eximlock.ErrBusy) {
+			t.Errorf("recording failure=%v, want a non-busy error", err)
+		}
+	}
+	data, err := os.ReadFile(a.localConf)
+	if err != nil || string(data) != original || calls != 0 || side.rebuilds != 0 {
+		t.Fatalf("guard changed: err=%v calls=%d rebuilds=%d conf=%q", err, calls, side.rebuilds, data)
+	}
+	if err := eximlock.With(filepath.Dir(a.badIPsPath), func() error { return nil }); err != nil {
+		t.Fatalf("recording failure left lock held: %v", err)
+	}
+}
+
+// An identified request cannot use the legacy missing-record allowance.
+// Losing or failing to read its record must leave the installed guard alone.
+func TestEximServiceWorkerRequiresItsRecordedRequest(t *testing.T) {
+	for _, unreadable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unreadable=%t", unreadable), func(t *testing.T) {
+			a, side := testAdapter(t)
+			original := writeInstalledConf(t, a)
+			var pending []eximMutation
+			service := &eximServiceAdapter{EximAdapter: a, mutate: func(r eximMutation) error {
+				pending = append(pending, r)
+				return nil
+			}}
+			if err := service.Remove(); err != nil || len(pending) != 1 {
+				t.Fatalf("submit removal: err=%v requests=%d", err, len(pending))
+			}
+			if err := os.Rename(a.requestPath(), a.requestPath()+".saved"); err != nil {
+				t.Fatal(err)
+			}
+			if unreadable {
+				if err := os.Mkdir(a.requestPath(), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := handleEximMutation(strings.NewReader(mutationBody(t, pending[0])), lockedEximAdapter{a}.mutate)
+			if err == nil || errors.Is(err, errSuperseded) == unreadable {
+				t.Errorf("worker error=%v, want superseded only for a missing record", err)
+			}
+			data, readErr := os.ReadFile(a.localConf)
+			if readErr != nil || string(data) != original || side.rebuilds != 0 {
+				t.Fatalf("guard changed: err=%v rebuilds=%d conf=%q", readErr, side.rebuilds, data)
+			}
+		})
 	}
 }

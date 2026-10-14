@@ -3,6 +3,7 @@ package adapter
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,9 +43,18 @@ func WorkerExitCode(err error) int {
 
 // The helper accepts policy data, never a destination path or command.
 type eximMutation struct {
+	RequestID string        `json:"request_id,omitempty"`
 	Operation string        `json:"operation"`
 	Config    policy.Config `json:"config"`
 	BadIPs    []string      `json:"bad_ips"`
+}
+
+// applyTo is called only after validation at the worker boundary.
+func (r eximMutation) applyTo(target ForwardGuard) error {
+	if r.Operation == "apply" {
+		return target.Apply(r.Config, r.BadIPs)
+	}
+	return target.Remove()
 }
 
 type eximServiceAdapter struct {
@@ -75,6 +85,9 @@ func (a *eximServiceAdapter) Remove() error {
 // defers the request, and a request that cannot be recorded starts no
 // worker, because the worker could not tell that it is current.
 func (a *eximServiceAdapter) submit(request eximMutation) error {
+	// Settings can repeat across restarts; each submission must still
+	// supersede earlier workers with the same policy and sender list.
+	request.RequestID = rand.Text()
 	body, err := json.Marshal(request)
 	if err != nil {
 		return err
@@ -134,10 +147,10 @@ func executeEximMutation(ctx context.Context, binary string, lookup systemdrun.L
 // HandleEximMutation handles one bounded request at the privileged CLI boundary.
 // Only the fixed cPanel locations in NewEximAdapter are available to callers.
 func HandleEximMutation(input io.Reader) error {
-	return handleEximMutation(input, lockedEximAdapter{NewEximAdapter()})
+	return handleEximMutation(input, lockedEximAdapter{NewEximAdapter()}.mutate)
 }
 
-func handleEximMutation(input io.Reader, target ForwardGuard) error {
+func handleEximMutation(input io.Reader, mutate func(eximMutation) error) error {
 	body, err := io.ReadAll(io.LimitReader(input, eximMutationLimit+1))
 	if err != nil {
 		return err
@@ -165,13 +178,12 @@ func handleEximMutation(input io.Reader, target ForwardGuard) error {
 				return fmt.Errorf("forward-guard request has an invalid address")
 			}
 		}
-		return target.Apply(request.Config, request.BadIPs)
 	case "remove":
 		if request.Config != (policy.Config{}) || len(request.BadIPs) != 0 {
 			return fmt.Errorf("remove request must not contain policy data")
 		}
-		return target.Remove()
 	default:
 		return fmt.Errorf("unsupported forward-guard operation")
 	}
+	return mutate(request)
 }
