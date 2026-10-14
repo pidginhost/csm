@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestWithRejectsConcurrentTransaction(t *testing.T) {
@@ -50,5 +51,45 @@ func TestWithKeepsTheLockFile(t *testing.T) {
 	info, err := os.Stat(filepath.Join(dir, "mutation.lock"))
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("lock file: %v %v", info, err)
+	}
+}
+
+// holdFor holds the lock in dir until release closes, after entered closes.
+func holdFor(t *testing.T, dir string) (release func()) {
+	t.Helper()
+	entered, done, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() { finished <- With(dir, func() error { close(entered); <-done; return nil }) }()
+	<-entered
+	return func() {
+		close(done)
+		if err := <-finished; err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+// The daemon's own record writes hold the lock for microseconds. Two of them
+// started by one reload must wait for each other, not report busy.
+func TestWithRetryWaitsOutABriefHolder(t *testing.T) {
+	dir := t.TempDir()
+	release := holdFor(t, dir)
+	time.AfterFunc(50*time.Millisecond, release)
+	calls := 0
+	if err := WithRetry(dir, time.Second, func() error { calls++; return nil }); err != nil || calls != 1 {
+		t.Fatalf("err=%v calls=%d", err, calls)
+	}
+}
+
+// A worker transaction holds the lock for seconds or minutes: past the wait
+// it still reads as busy, and mutate never runs.
+func TestWithRetryReportsALongHolderBusy(t *testing.T) {
+	dir := t.TempDir()
+	release := holdFor(t, dir)
+	defer release()
+	calls := 0
+	start := time.Now()
+	err := WithRetry(dir, 100*time.Millisecond, func() error { calls++; return nil })
+	if !errors.Is(err, ErrBusy) || calls != 0 || time.Since(start) < 100*time.Millisecond {
+		t.Fatalf("err=%v calls=%d after %v", err, calls, time.Since(start))
 	}
 }

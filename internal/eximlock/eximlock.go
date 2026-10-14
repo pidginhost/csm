@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 // Dir holds the lock file. Forward guard created this directory first; every
@@ -42,4 +43,22 @@ func With(dir string, mutate func() error) error {
 		return fmt.Errorf("exim mutation lock: %w", err)
 	}
 	return mutate()
+}
+
+// RecordWait bounds how long the daemon waits for the lock before it records
+// a request. The daemon's own records hold the lock for microseconds; a worker
+// transaction holds it for seconds or minutes and still reads as busy.
+const RecordWait = time.Second
+
+// WithRetry runs mutate under the lock like With, retrying a busy lock until
+// wait has passed. Workers keep the non-blocking With.
+func WithRetry(dir string, wait time.Duration, mutate func() error) error {
+	deadline := time.Now().Add(wait)
+	for {
+		err := With(dir, mutate)
+		if !errors.Is(err, ErrBusy) || !time.Now().Before(deadline) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

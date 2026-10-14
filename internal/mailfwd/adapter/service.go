@@ -103,7 +103,7 @@ func (a *eximServiceAdapter) submit(request eximMutation) error {
 		}
 		return nil
 	}
-	if err = eximlock.With(filepath.Dir(a.badIPsPath), record); err != nil || done {
+	if err = eximlock.WithRetry(filepath.Dir(a.badIPsPath), eximlock.RecordWait, record); err != nil || done {
 		return err
 	}
 	return a.mutate(request)

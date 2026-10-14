@@ -58,9 +58,9 @@ func Lock(dir string) Locker {
 
 // recordRequest records body as the latest request under the shared lock in
 // dir. It reports false without an error while another transaction holds
-// the lock.
+// the lock for longer than eximlock.RecordWait.
 func recordRequest(dir string, body []byte) (bool, error) {
-	err := eximlock.With(dir, func() error {
+	err := eximlock.WithRetry(dir, eximlock.RecordWait, func() error {
 		return atomicio.AtomicWrite(filepath.Join(dir, RequestFile), 0o600, body)
 	})
 	if errors.Is(err, eximlock.ErrBusy) {

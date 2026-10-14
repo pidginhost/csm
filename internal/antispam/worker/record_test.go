@@ -136,3 +136,20 @@ func TestRecordRequestPreservesPreviousOnWriteFailure(t *testing.T) {
 		t.Fatalf("failed write replaced previous request with %q: %v", got, err)
 	}
 }
+
+// Run and Invalidate record from the daemon. A brief hold by the daemon's
+// other record writer must not turn into a busy retry.
+func TestRecordRequestWaitsOutABriefHolder(t *testing.T) {
+	dir := t.TempDir()
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() { finished <- eximlock.With(dir, func() error { close(entered); <-release; return nil }) }()
+	<-entered
+	time.AfterFunc(50*time.Millisecond, func() { close(release) })
+	recorded, err := recordRequest(dir, []byte(applyBody))
+	if lockErr := <-finished; lockErr != nil {
+		t.Fatal(lockErr)
+	}
+	if !recorded || err != nil {
+		t.Fatalf("recorded=%v err=%v", recorded, err)
+	}
+}

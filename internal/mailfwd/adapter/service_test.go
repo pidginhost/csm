@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/eximlock"
 	"github.com/pidginhost/csm/internal/mailfwd/policy"
@@ -556,5 +557,27 @@ func TestEximServiceWorkerRequiresItsRecordedRequest(t *testing.T) {
 				t.Fatalf("guard changed: err=%v rebuilds=%d conf=%q", readErr, side.rebuilds, data)
 			}
 		})
+	}
+}
+
+// A reload starts the antispam pass and the forward-guard reconcile at once.
+// Their daemon-side record writes must wait for each other briefly, not defer
+// the forward-guard change.
+func TestEximServiceAdapterWaitsOutABriefLockHolder(t *testing.T) {
+	a, _ := testAdapter(t)
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		finished <- eximlock.With(filepath.Dir(a.badIPsPath), func() error { close(entered); <-release; return nil })
+	}()
+	<-entered
+	time.AfterFunc(50*time.Millisecond, func() { close(release) })
+	calls := 0
+	service := &eximServiceAdapter{EximAdapter: a, mutate: func(eximMutation) error { calls++; return nil }}
+	err := service.Apply(policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}, nil)
+	if lockErr := <-finished; lockErr != nil {
+		t.Fatal(lockErr)
+	}
+	if err != nil || calls != 1 {
+		t.Fatalf("err=%v worker calls=%d", err, calls)
 	}
 }
