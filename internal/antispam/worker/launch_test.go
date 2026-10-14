@@ -399,6 +399,25 @@ func TestRunRecordsTheRequestItSends(t *testing.T) {
 	}
 }
 
+func TestRunCanceledRequestDoesNotReplacePendingRequest(t *testing.T) {
+	mark := launchMarker(t)
+	previous := []byte(applyBody)
+	if recorded, err := recordRequest(requestDir, previous); err != nil || !recorded {
+		t.Fatalf("recorded=%v err=%v", recorded, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := Run(ctx, antispam.RemoveRequest())
+	if !errors.Is(err, context.Canceled) || result != (antispam.Result{}) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	got, err := os.ReadFile(filepath.Join(requestDir, RequestFile))
+	if err != nil || !bytes.Equal(got, previous) {
+		t.Fatalf("canceled request replaced pending request with %q: %v", got, err)
+	}
+	assertNoLaunch(t, mark)
+}
+
 // launchMarker makes any worker launch leave a marker file, for tests that
 // expect Run to start no worker.
 func launchMarker(t *testing.T) string {

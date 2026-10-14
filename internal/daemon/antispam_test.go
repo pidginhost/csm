@@ -66,6 +66,7 @@ func useAntispamHost(t *testing.T) <-chan struct{} {
 
 func useAntispamReconciler(t *testing.T, r reconcile.Reconciler) {
 	t.Helper()
+	r.Invalidate = func() error { return nil }
 	prev := antispamReconciler
 	t.Cleanup(func() { antispamReconciler = prev })
 	antispamReconciler = func() reconcile.Reconciler { return r }
@@ -672,6 +673,7 @@ func TestConfigReloadDoesNotWaitForARunningPass(t *testing.T) {
 	t.Cleanup(func() { antispamReconciler = prev })
 	antispamReconciler = func() reconcile.Reconciler {
 		return reconcile.Reconciler{
+			Invalidate: func() error { return nil },
 			Installed: func() antispam.HostFacts {
 				started <- struct{}{}
 				<-release

@@ -57,6 +57,9 @@ func (b *cappedBuffer) Write(p []byte) (int, error) {
 // systemdrun.ErrUnavailable), means the worker was not attempted. Other
 // errors may follow state changes.
 func Run(ctx context.Context, req antispam.Request) (antispam.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return antispam.Result{}, err
+	}
 	binary, err := os.Executable()
 	if err != nil {
 		return antispam.Result{}, err

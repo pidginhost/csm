@@ -12,21 +12,24 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/eximlock"
 )
 
 // fakeHost records what a pass asked of the host.
 type fakeHost struct {
-	assessment antispam.Assessment
-	result     antispam.Result
-	err        error
-	collected  []string
-	installed  int
-	requests   []antispam.Request
-	enabled    []bool
+	assessment  antispam.Assessment
+	result      antispam.Result
+	err         error
+	collected   []string
+	installed   int
+	requests    []antispam.Request
+	enabled     []bool
+	invalidated int
 }
 
 func (h *fakeHost) reconciler() Reconciler {
 	return Reconciler{
+		Invalidate: func() error { h.invalidated++; return nil },
 		Collect: func(_ context.Context, socket string) antispam.HostFacts {
 			h.collected = append(h.collected, socket)
 			return antispam.HostFacts{}
@@ -49,6 +52,49 @@ func (h *fakeHost) reconciler() Reconciler {
 
 func desired(enabled bool) Desired {
 	return Desired{Enabled: enabled, Settings: antispam.Settings{Socket: antispam.DefaultSocket, RejectScore: 15, TagScore: 6}}
+}
+
+func TestPassInvalidatesBeforeReadingHost(t *testing.T) {
+	h := &fakeHost{}
+	r := h.reconciler()
+	reads := 0
+	r.Collect = func(context.Context, string) antispam.HostFacts {
+		reads++
+		if h.invalidated != 1 {
+			t.Fatalf("read host after %d invalidations, want 1", h.invalidated)
+		}
+		return antispam.HostFacts{}
+	}
+	if out := r.Pass(context.Background(), desired(true)); out.Err != nil || out.Retry != 0 || h.invalidated != 1 || reads != 1 {
+		t.Fatalf("invalidations=%d reads=%d outcome=%+v", h.invalidated, reads, out)
+	}
+}
+
+func TestPassRetriesInvalidationBeforeReadingHost(t *testing.T) {
+	for _, failure := range []error{eximlock.ErrBusy, errors.New("read-only file system")} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			h := &fakeHost{}
+			r := h.reconciler()
+			r.Invalidate = func() error { h.invalidated++; return failure }
+			out := r.Pass(context.Background(), desired(false))
+			if out.Retry != BusyRetry || len(out.Checks) != 0 ||
+				h.invalidated != 1 || h.installed != 0 || len(h.collected) != 0 || len(h.requests) != 0 {
+				t.Fatalf("outcome=%+v host=%+v", out, h)
+			}
+			switch {
+			case errors.Is(failure, eximlock.ErrBusy):
+				if out.Err != nil || len(out.Findings) != 0 {
+					t.Fatalf("busy became a failure: %v", out.Err)
+				}
+			case !errors.Is(out.Err, failure):
+				t.Fatalf("lost invalidation error: %v", out.Err)
+			case len(out.Findings) != 1 || out.Findings[0].Check != CheckApplyFailed ||
+				out.Findings[0].Severity != alert.Warning || !out.Findings[0].Timestamp.Equal(testNow) ||
+				!strings.Contains(out.Findings[0].Details, "may still change"):
+				t.Fatalf("invalidation failure was not reported: %+v", out.Findings)
+			}
+		})
+	}
 }
 
 func TestPassReadsWhatTheStateNeeds(t *testing.T) {
@@ -201,7 +247,7 @@ func TestPassCanceledBeforeHostRead(t *testing.T) {
 			if !errors.Is(out.Err, context.Canceled) || len(out.Findings) != 0 || len(out.Checks) != 0 || out.Retry != 0 {
 				t.Fatalf("outcome %+v", out)
 			}
-			if len(h.collected) != 0 || h.installed != 0 || len(h.enabled) != 0 || len(h.requests) != 0 {
+			if h.invalidated != 0 || len(h.collected) != 0 || h.installed != 0 || len(h.enabled) != 0 || len(h.requests) != 0 {
 				t.Fatalf("canceled pass used the host: %+v", h)
 			}
 		})

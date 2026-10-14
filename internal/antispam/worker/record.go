@@ -6,11 +6,12 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/eximlock"
 )
 
-// RequestFile holds the latest request the daemon handed to the worker. It
-// sits next to the shared lock and changes only under it.
+// RequestFile holds the latest request, or null when reconciliation has
+// invalidated pending workers. It changes only under the shared lock.
 const RequestFile = "antispam-request.json"
 
 // requestDir holds the lock and the request record for Run. Tests point it
@@ -21,6 +22,20 @@ var requestDir = eximlock.Dir
 // reached the lock, for example one from before a daemon restart. The newer
 // request decides, so the worker reports busy and changes nothing.
 var errSuperseded = errors.New("a newer antispam request replaced this one")
+
+// Invalidate stops pending workers before reconcile reads the host. Even a
+// pass that needs no worker must supersede requests from an older daemon.
+// An active transaction holds the lock, so the caller retries after it ends.
+func Invalidate() error {
+	recorded, err := recordRequest(requestDir, []byte("null"))
+	if err != nil {
+		return err
+	}
+	if !recorded {
+		return eximlock.ErrBusy
+	}
+	return nil
+}
 
 // Lock is the worker's Locker: it holds the shared lock in dir and runs
 // mutate only while request is the latest one recorded there. A missing
@@ -46,7 +61,7 @@ func Lock(dir string) Locker {
 // the lock.
 func recordRequest(dir string, body []byte) (bool, error) {
 	err := eximlock.With(dir, func() error {
-		return os.WriteFile(filepath.Join(dir, RequestFile), body, 0o600)
+		return atomicio.AtomicWrite(filepath.Join(dir, RequestFile), 0o600, body)
 	})
 	if errors.Is(err, eximlock.ErrBusy) {
 		return false, nil
