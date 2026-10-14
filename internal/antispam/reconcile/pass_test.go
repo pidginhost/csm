@@ -70,30 +70,41 @@ func TestPassInvalidatesBeforeReadingHost(t *testing.T) {
 	}
 }
 
+// A busy lock retries in 20 seconds. A failed invalidation also retries in
+// 20 seconds while antispam is enabled; while it is disabled, a broken state
+// directory retries on the normal interval, so a host that never used
+// antispam does not log a warning every 20 seconds.
 func TestPassRetriesInvalidationBeforeReadingHost(t *testing.T) {
-	for _, failure := range []error{eximlock.ErrBusy, errors.New("read-only file system")} {
-		t.Run(failure.Error(), func(t *testing.T) {
-			h := &fakeHost{}
-			r := h.reconciler()
-			r.Invalidate = func(context.Context) error { h.invalidated++; return failure }
-			out := r.Pass(context.Background(), desired(false))
-			if out.Retry != BusyRetry || len(out.Checks) != 0 ||
-				h.invalidated != 1 || h.installed != 0 || len(h.collected) != 0 || len(h.requests) != 0 {
-				t.Fatalf("outcome=%+v host=%+v", out, h)
-			}
-			switch {
-			case errors.Is(failure, eximlock.ErrBusy):
-				if out.Err != nil || len(out.Findings) != 0 {
-					t.Fatalf("busy became a failure: %v", out.Err)
+	for _, enabled := range []bool{false, true} {
+		for _, failure := range []error{eximlock.ErrBusy, errors.New("read-only file system")} {
+			t.Run(fmt.Sprintf("enabled=%t/%s", enabled, failure), func(t *testing.T) {
+				h := &fakeHost{}
+				r := h.reconciler()
+				r.Invalidate = func(context.Context) error { h.invalidated++; return failure }
+				out := r.Pass(context.Background(), desired(enabled))
+				busy := errors.Is(failure, eximlock.ErrBusy)
+				wantRetry := BusyRetry
+				if !busy && !enabled {
+					wantRetry = 0
 				}
-			case !errors.Is(out.Err, failure):
-				t.Fatalf("lost invalidation error: %v", out.Err)
-			case len(out.Findings) != 1 || out.Findings[0].Check != CheckApplyFailed ||
-				out.Findings[0].Severity != alert.Warning || !out.Findings[0].Timestamp.Equal(testNow) ||
-				!strings.Contains(out.Findings[0].Details, "may still change"):
-				t.Fatalf("invalidation failure was not reported: %+v", out.Findings)
-			}
-		})
+				if out.Retry != wantRetry || len(out.Checks) != 0 ||
+					h.invalidated != 1 || h.installed != 0 || len(h.collected) != 0 || len(h.requests) != 0 {
+					t.Fatalf("outcome=%+v host=%+v, want retry %v", out, h, wantRetry)
+				}
+				switch {
+				case busy:
+					if out.Err != nil || len(out.Findings) != 0 {
+						t.Fatalf("busy became a failure: %v", out.Err)
+					}
+				case !errors.Is(out.Err, failure):
+					t.Fatalf("lost invalidation error: %v", out.Err)
+				case len(out.Findings) != 1 || out.Findings[0].Check != CheckApplyFailed ||
+					out.Findings[0].Severity != alert.Warning || !out.Findings[0].Timestamp.Equal(testNow) ||
+					!strings.Contains(out.Findings[0].Details, "may still change"):
+					t.Fatalf("invalidation failure was not reported: %+v", out.Findings)
+				}
+			})
+		}
 	}
 }
 

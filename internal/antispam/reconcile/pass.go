@@ -85,6 +85,11 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if err := invalidateErr; err != nil {
 		out := Outcome{Retry: BusyRetry}
 		if !errors.Is(err, eximlock.ErrBusy) {
+			if !d.Enabled {
+				// A broken state directory does not heal in seconds. With
+				// antispam off, retry on the normal interval instead.
+				out.Retry = 0
+			}
 			out.Err = fmt.Errorf("invalidating pending antispam requests: %w", err)
 			out.Findings = []alert.Finding{{
 				Severity: alert.Warning, Check: CheckApplyFailed, Timestamp: r.Now(),
