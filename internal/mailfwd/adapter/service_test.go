@@ -627,20 +627,56 @@ func TestEximMutationWorkerWaitsOutABriefHolder(t *testing.T) {
 // The request record is CSM state for the root worker, readable by root only,
 // whether it holds a request or a cancellation.
 func TestEximServiceRequestRecordIsPrivate(t *testing.T) {
-	a, _ := testAdapter(t)
-	service := &eximServiceAdapter{EximAdapter: a, mutate: func(eximMutation) error { return nil }}
-	for name, record := range map[string]func() error{
-		"request": func() error {
-			return service.Apply(policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}, nil)
-		},
-		"cancellation": service.Invalidate,
-	} {
-		if err := record(); err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		info, err := os.Stat(a.requestPath())
-		if err != nil || info.Mode().Perm() != 0o600 {
-			t.Fatalf("%s record mode=%v err=%v, want 0600", name, info.Mode().Perm(), err)
+	for _, operation := range []string{"apply", "remove", "remove absent", "cancel"} {
+		for _, replace := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/replace=%t", operation, replace), func(t *testing.T) {
+				a, _ := testAdapter(t)
+				service := &eximServiceAdapter{EximAdapter: a, mutate: lockedEximAdapter{a}.mutate}
+				if operation == "remove" {
+					writeInstalledConf(t, a)
+				}
+				if replace {
+					if err := os.MkdirAll(filepath.Dir(a.requestPath()), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(a.requestPath(), []byte("null"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Chmod(a.requestPath(), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				var err error
+				switch operation {
+				case "apply":
+					err = service.Apply(policy.Config{Enabled: true, HoldSignals: policy.HoldSignals{BounceBackscatter: true}}, nil)
+				case "remove", "remove absent":
+					err = service.Remove()
+				case "cancel":
+					err = service.Invalidate()
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				info, err := os.Stat(a.requestPath())
+				if err != nil {
+					t.Fatalf("stat request record: %v", err)
+				}
+				if got := info.Mode().Perm(); got != 0o600 {
+					t.Fatalf("record mode=%04o, want 0600", got)
+				}
+				if operation == "apply" {
+					for _, path := range []string{a.localConf, a.badIPsPath} {
+						info, err := os.Stat(path)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if got := info.Mode().Perm(); got != 0o644 {
+							t.Errorf("Exim file %s mode=%04o, want 0644", path, got)
+						}
+					}
+				}
+			})
 		}
 	}
 }

@@ -143,6 +143,8 @@ Each submission has a distinct identity, even when its settings and sender
 list match an earlier submission. A delayed worker cannot replace a sender
 list refreshed since the newer submission. If its request record is missing
 or unreadable, the worker leaves the installed guard untouched.
+Request records are readable by root only; the Exim configuration and the
+bad-IP lookup stay readable by the mail transport user.
 Observe mode and hosts without cPanel leave the installed guard untouched; in
 observe mode CSM only cancels pending changes. Cancellation does not wait for
 another Exim transaction to finish. A worker that has already checked its
