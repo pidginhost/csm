@@ -47,8 +47,9 @@ func With(dir string, mutate func() error) error {
 }
 
 // RecordWait bounds how long the daemon waits for the lock before it records
-// a request. The daemon's own records hold the lock for microseconds; a worker
-// transaction holds it for seconds or minutes and still reads as busy.
+// a request. The daemon's own records hold the lock only for a small unsynced
+// write or a rename; a worker transaction holds it for seconds or minutes and
+// still reads as busy.
 const RecordWait = time.Second
 
 // WithRetry runs mutate under the lock like With, retrying a busy lock until

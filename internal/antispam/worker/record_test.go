@@ -201,3 +201,59 @@ func TestPassCanceledDuringInvalidationPreservesPendingRequest(t *testing.T) {
 		}
 	})
 }
+
+// Writing and flushing the record can take long on a busy disk. That work
+// happens before the lock is taken, so the shared lock is held only for the
+// rename that publishes the record.
+func TestRecordRequestHoldsTheLockOnlyToPublish(t *testing.T) {
+	dir := t.TempDir()
+	prev := stageRecord
+	t.Cleanup(func() { stageRecord = prev })
+	staged := 0
+	stageRecord = func(path string, body []byte) (string, error) {
+		staged++
+		if err := eximlock.With(dir, func() error { return nil }); err != nil {
+			t.Errorf("lock held while staging the record: %v", err)
+		}
+		return prev(path, body)
+	}
+	recorded, err := recordRequest(context.Background(), dir, []byte(applyBody))
+	got, readErr := os.ReadFile(filepath.Join(dir, RequestFile))
+	if !recorded || err != nil || staged != 1 || readErr != nil || string(got) != applyBody {
+		t.Fatalf("recorded=%v err=%v staged=%d record=%q (%v)", recorded, err, staged, got, readErr)
+	}
+}
+
+// The first record on a host creates the lock directory, as the lock does.
+func TestRecordRequestCreatesItsDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "forward_guard")
+	recorded, err := recordRequest(context.Background(), dir, []byte(applyBody))
+	got, readErr := os.ReadFile(filepath.Join(dir, RequestFile))
+	if !recorded || err != nil || readErr != nil || string(got) != applyBody {
+		t.Fatalf("recorded=%v err=%v record=%q (%v)", recorded, err, got, readErr)
+	}
+}
+
+// A record that loses the race for the lock leaves no staged file behind.
+func TestRecordRequestRemovesAnUnpublishedStage(t *testing.T) {
+	dir := t.TempDir()
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() { finished <- eximlock.With(dir, func() error { close(entered); <-release; return nil }) }()
+	<-entered
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	recorded, err := recordRequest(ctx, dir, []byte(applyBody))
+	close(release)
+	if lockErr := <-finished; lockErr != nil {
+		t.Fatal(lockErr)
+	}
+	entries, readErr := os.ReadDir(dir)
+	if recorded || !errors.Is(err, context.Canceled) || readErr != nil {
+		t.Fatalf("recorded=%v err=%v readErr=%v", recorded, err, readErr)
+	}
+	for _, e := range entries {
+		if e.Name() != "mutation.lock" {
+			t.Fatalf("left %s behind", e.Name())
+		}
+	}
+}

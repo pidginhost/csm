@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/eximlock"
 )
 
@@ -59,13 +58,55 @@ func Lock(dir string) Locker {
 
 // recordRequest records body as the latest request under the shared lock in
 // dir. It reports false without an error while another transaction holds
-// the lock for longer than eximlock.RecordWait.
+// the lock for longer than eximlock.RecordWait. The record is written and
+// flushed before the lock is taken; under the lock it is only renamed into
+// place, so a slow disk never lengthens the hold.
 func recordRequest(ctx context.Context, dir string, body []byte) (bool, error) {
-	err := eximlock.WithRetry(ctx, dir, eximlock.RecordWait, func() error {
-		return atomicio.AtomicWrite(filepath.Join(dir, RequestFile), 0o600, body)
+	// #nosec G301 -- the shared lock directory, created with the mode eximlock uses.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false, err
+	}
+	path := filepath.Join(dir, RequestFile)
+	tmp, err := stageRecord(path, body)
+	if err != nil {
+		return false, err
+	}
+	published := false
+	err = eximlock.WithRetry(ctx, dir, eximlock.RecordWait, func() error {
+		if renameErr := os.Rename(tmp, path); renameErr != nil {
+			return renameErr
+		}
+		published = true
+		return nil
 	})
+	if !published {
+		_ = os.Remove(tmp)
+	}
 	if errors.Is(err, eximlock.ErrBusy) {
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// stageRecord writes body to a new 0600 temporary file next to path and
+// flushes it. An interrupted write leaves the previous record in place.
+// Tests replace it.
+var stageRecord = func(path string, body []byte) (string, error) {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return "", err
+	}
+	tmp := f.Name()
+	_, err = f.Write(body)
+	if err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	return tmp, nil
 }
