@@ -58,6 +58,7 @@ func TestMutationTargetsCoverSpecFiles(t *testing.T) {
 		"/etc/rspamd/local.d/emails.conf":      TargetRspamd,
 		"/etc/rspamd/local.d/fuzzy_check.conf": TargetRspamd,
 		"/etc/rspamd/local.d/asn.conf":         TargetRspamd,
+		"/etc/rspamd/local.d/phishing.conf":    TargetRspamd,
 		"/usr/local/cpanel/etc/exim/acls/ACL_SPAM_SCAN_CHECK_BLOCK/custom_begin_spam_scan_check":       TargetEximHook,
 		"/usr/local/cpanel/etc/exim/acls/ACL_SPAM_SCAN_BLOCK/custom_begin_spam_scan":                   TargetEximHook,
 		"/usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_POST_BLOCK/custom_begin_check_message_post": TargetEximHook,

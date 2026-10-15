@@ -209,6 +209,16 @@ func TestTransactionErrorsOmitCommandAndProbeData(t *testing.T) {
 			t.Errorf("unsafe ping result: %+v", r)
 		}
 	})
+	for _, dump := range []string{`{"phishtank_enabled":true}`, `{"phishtank_enabled":"SENSITIVE_TEST_DATA"}`, `SENSITIVE_TEST_DATA`} {
+		t.Run("phishing "+dump, func(t *testing.T) {
+			f := newFake(t)
+			f.phishing = dump
+			r := f.host().Apply(enforce())
+			if r.FailedStep != StepRspamdCheck || r.Error != "rspamadm configdump -j phishing: rspamd configuration conflict" {
+				t.Errorf("phishing conflict must fail the check without dump values: %+v", r)
+			}
+		})
+	}
 	for _, dump := range []string{`{"reject":1e300,"add_header":6}`, `{"reject":"SENSITIVE_TEST_DATA"}`, `SENSITIVE_TEST_DATA`} {
 		t.Run("actions "+dump, func(t *testing.T) {
 			f := newFake(t)

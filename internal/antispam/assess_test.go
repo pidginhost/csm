@@ -10,8 +10,9 @@ import (
 
 // loadedRspamd is configdump output matching CSM's files at default scores.
 const (
-	loadedActions = `{"reject": 15, "add_header": 6, "greylist": null, "rewrite_subject": null}`
-	loadedModules = "Modules enabled: dkim, spf, dmarc, arc\nModules disabled (explicitly): asn, emails, fuzzy_check, greylist, rbl\n"
+	loadedActions  = `{"reject": 15, "add_header": 6, "greylist": null, "rewrite_subject": null}`
+	loadedModules  = "Modules enabled: dkim, spf, dmarc, arc\nModules disabled (explicitly): asn, emails, fuzzy_check, greylist, rbl\n"
+	loadedPhishing = `{"openphish_enabled": false, "phishtank_enabled": false}`
 )
 
 // installedFacts is a host where CSM's integration for s is installed,
@@ -43,6 +44,7 @@ func installedFacts(t *testing.T, s Settings) HostFacts {
 	f.Record = RecordFacts{Content: string(EncodeRecord(Generation(managed)))}
 	f.RspamdActions = CommandResult{Stdout: loadedActions}
 	f.RspamdModules = CommandResult{Stdout: loadedModules}
+	f.RspamdPhishing = CommandResult{Stdout: loadedPhishing}
 	return f
 }
 
@@ -258,6 +260,66 @@ func TestAssessComparesLoadedRspamdSettings(t *testing.T) {
 	}
 }
 
+// An override.d phishing.conf can turn phishtank lookups back on, which
+// sends message URLs to rspamd.com.
+func TestAssessComparesLoadedPhishtank(t *testing.T) {
+	s := enforceSettings()
+	for _, tc := range []struct {
+		name     string
+		phishing CommandResult
+		action   Action
+		sev      Severity
+	}{
+		{"phishtank re-enabled", CommandResult{Stdout: `{"phishtank_enabled": true}`}, Uninstall, Definite},
+		{"phishing dump failed", CommandResult{Err: errors.New("exit status 1")}, Keep, Temporary},
+		{"failed phishing dump with partial output", CommandResult{Stdout: `{"phishtank_enabled": true}`, Err: errors.New("timeout")}, Keep, Temporary},
+		{"phishing dump unreadable", CommandResult{Stdout: `{"phishtank_enabled":`}, Keep, Temporary},
+		{"phishing dump empty", CommandResult{}, Keep, Temporary},
+		{"phishing dump trailing data", CommandResult{Stdout: loadedPhishing + " trailing"}, Keep, Temporary},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := installedFacts(t, s)
+			f.RspamdPhishing = tc.phishing
+			a := Assess(true, s, f)
+			if a.Action != tc.action || !hasProblem(a, CodeRspamdConfig, tc.sev) {
+				t.Fatalf("got %+v, want action %d and rspamd_config/%d", a, tc.action, tc.sev)
+			}
+		})
+	}
+	f := installedFacts(t, s)
+	f.RspamdPhishing.Stdout = `{"phishtank_enabled": true}`
+	want := "rspamd phishtank lookups are enabled; an override defeats CSM's phishing.conf"
+	if a := Assess(true, s, f); !slices.ContainsFunc(a.Problems, func(p Problem) bool { return p.Detail == want }) {
+		t.Fatalf("problems %+v do not name the phishtank override", a.Problems)
+	}
+	if a := Assess(true, s, installedFacts(t, s)); len(a.Problems) != 0 {
+		t.Fatalf("installed host reported %+v", a.Problems)
+	}
+}
+
+// Lua treats strings, numbers and tables as true. A successful dump with
+// an invalid setting is an override, not a temporary collection failure.
+func TestAssessRejectsUnverifiablePhishtank(t *testing.T) {
+	s := enforceSettings()
+	for _, out := range []string{
+		`{"phishtank_enabled": "false"}`, `{"phishtank_enabled": 0}`,
+		`{"phishtank_enabled": []}`, `{"phishtank_enabled": {}}`,
+		`{"phishtank_enabled": null}`, `{}`, `null`, `[]`,
+		`{"phishtank_enabled": false, "phishtank_enabled": true}`,
+	} {
+		t.Run(out, func(t *testing.T) {
+			f := installedFacts(t, s)
+			f.RspamdPhishing.Stdout = out
+			a := Assess(true, s, f)
+			want := []Problem{{Code: CodeRspamdConfig, Severity: Definite,
+				Detail: "rspamd phishtank setting is missing or not a single boolean; remove overrides of CSM's phishing.conf"}}
+			if a.Action != Uninstall || !a.Installed || !slices.Equal(a.Problems, want) {
+				t.Fatalf("got %+v; want Uninstall with problems %+v", a, want)
+			}
+		})
+	}
+}
+
 func TestAssessMalformedActionsAreTemporary(t *testing.T) {
 	s := enforceSettings()
 	for _, out := range []string{"", "not JSON", `{"reject":`, loadedActions + " trailing"} {
@@ -299,6 +361,10 @@ func TestAssessLoadedConflictsSurviveTemporaryProbes(t *testing.T) {
 		{"modules unreadable with object actions", func(f *HostFacts) {
 			f.RspamdModules.Stdout = "no module list\n"
 			f.RspamdActions.Stdout = `{"reject": {"score": 15}}`
+		}, CodeRspamdConfig},
+		{"actions command failed with invalid phishtank setting", func(f *HostFacts) {
+			f.RspamdActions = CommandResult{Err: errors.New("timeout")}
+			f.RspamdPhishing.Stdout = `{"phishtank_enabled": 0}`
 		}, CodeRspamdConfig},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

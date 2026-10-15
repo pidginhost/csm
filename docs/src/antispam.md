@@ -159,16 +159,22 @@ integration; it does not mean filtering is installed on the host.
   `custom_begin_check_message_post`), inside `# CSM-ANTISPAM BEGIN` and
   `# CSM-ANTISPAM END` markers;
 - one `spamd_address` line in the `@CONFIG@` section of `/etc/exim.conf.local`;
-- `actions.conf`, `greylist.conf`, `rbl.conf`, `emails.conf`, `asn.conf` and
-  `fuzzy_check.conf` in `/etc/rspamd/local.d`, each starting with
-  `# csm-managed-version: 1`. Greylisting, DNS block lists, the emails module,
-  sender-IP lookups to rspamd.com and public fuzzy storage are off;
+- `actions.conf`, `greylist.conf`, `rbl.conf`, `emails.conf`, `asn.conf`,
+  `fuzzy_check.conf` and `phishing.conf` in `/etc/rspamd/local.d`, each
+  starting with `# csm-managed-version: 1`. Greylisting, DNS block lists, the
+  emails module, sender-IP lookups to rspamd.com, phishtank URL lookups to
+  rspamd.com and public fuzzy storage are off;
 - a completion record in `/var/lib/csm/antispam`.
 
 Content outside CSM's markers, including forward-guard blocks, is preserved.
 CSM regenerates its own blocks and files, so manual edits to them are
 overwritten. A file of the same name without CSM's header blocks the install;
 removal leaves it alone.
+
+The loaded `phishtank_enabled` setting must be the boolean `false`. Missing,
+duplicate or non-boolean values are configuration conflicts, just like `true`.
+CSM reports them and removes its integration when safe. Failed commands or
+malformed command output leave the integration in place for a later check.
 
 Each change runs as one transaction in a short-lived root helper started by
 systemd outside CSM's sandbox, under the same lock as the forward guard. It

@@ -64,34 +64,9 @@ func ParseEximSize(s string) (int64, error) {
 // means unlimited; an absent setting is DefaultMaxMessage. Rspamd converts
 // numeric values to bytes, discarding any fractional part of a float.
 func MaxMessage(out []byte) (int64, error) {
-	dec := json.NewDecoder(bytes.NewReader(out))
-	dec.UseNumber()
-	if token, err := dec.Token(); err != nil || token != json.Delim('{') {
-		return 0, errors.New("configdump options: expected an object")
-	}
-	// A duplicate can hide a smaller limit behind an unlimited value.
-	// Decode fields separately so encoding/json cannot choose the last one.
-	opts := make(map[string]any)
-	for dec.More() {
-		token, err := dec.Token()
-		if err != nil {
-			return 0, errors.New("configdump options: invalid JSON")
-		}
-		key, _ := token.(string)
-		if _, seen := opts[key]; seen {
-			return 0, errors.New("configdump options: duplicate field")
-		}
-		var value any
-		if err := dec.Decode(&value); err != nil {
-			return 0, errors.New("configdump options: invalid JSON")
-		}
-		opts[key] = value
-	}
-	if token, err := dec.Token(); err != nil || token != json.Delim('}') {
-		return 0, errors.New("configdump options: invalid JSON")
-	}
-	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
-		return 0, errors.New("configdump options: trailing data")
+	opts, err := dumpObject(out, "options")
+	if err != nil {
+		return 0, err
 	}
 	raw, ok := opts["max_message"]
 	if !ok {
@@ -112,6 +87,40 @@ func MaxMessage(out []byte) (int64, error) {
 		return 0, errors.New("configdump options: max_message is not a byte count")
 	}
 	return int64(size), nil
+}
+
+// dumpObject decodes one `rspamadm configdump -j <section>` object. A
+// duplicate can hide one value behind another, so fields are decoded
+// separately and a repeated name is an error, not the last one winning.
+func dumpObject(out []byte, section string) (map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(out))
+	dec.UseNumber()
+	if token, err := dec.Token(); err != nil || token != json.Delim('{') {
+		return nil, fmt.Errorf("configdump %s: expected an object", section)
+	}
+	fields := make(map[string]any)
+	for dec.More() {
+		token, err := dec.Token()
+		if err != nil {
+			return nil, fmt.Errorf("configdump %s: invalid JSON", section)
+		}
+		key, _ := token.(string)
+		if _, seen := fields[key]; seen {
+			return nil, fmt.Errorf("configdump %s: duplicate field", section)
+		}
+		var value any
+		if err := dec.Decode(&value); err != nil {
+			return nil, fmt.Errorf("configdump %s: invalid JSON", section)
+		}
+		fields[key] = value
+	}
+	if token, err := dec.Token(); err != nil || token != json.Delim('}') {
+		return nil, fmt.Errorf("configdump %s: invalid JSON", section)
+	}
+	if err := dec.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("configdump %s: trailing data", section)
+	}
+	return fields, nil
 }
 
 // checkMessageSize applies spec section 6.2 item 10: rspamd must accept

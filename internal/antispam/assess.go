@@ -155,6 +155,17 @@ func loadedConflicts(s Settings, f HostFacts) []Problem {
 	} else {
 		conflicts = append(conflicts, checkRspamdActions(actions, s)...)
 	}
+	data = []byte(f.RspamdPhishing.Stdout)
+	if f.RspamdPhishing.Err != nil || !json.Valid(data) {
+		unreadable = true
+	} else if on, err := PhishtankEnabled(data); err != nil {
+		// Lua treats strings, numbers and tables as true, so an override
+		// cannot be left active as though collection had merely failed.
+		out = append(out, Problem{Code: CodeRspamdConfig, Severity: Definite,
+			Detail: "rspamd phishtank setting is missing or not a single boolean; remove overrides of CSM's phishing.conf"})
+	} else if on {
+		conflicts = append(conflicts, "rspamd phishtank lookups are enabled; an override defeats CSM's phishing.conf")
+	}
 	for _, c := range conflicts {
 		out = append(out, Problem{Code: CodeRspamdConfig, Severity: Definite, Detail: c})
 	}

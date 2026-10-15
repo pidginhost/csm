@@ -100,6 +100,21 @@ func ParseActions(out []byte) (Actions, error) {
 	return a, nil
 }
 
+// PhishtankEnabled reads `rspamadm configdump -j phishing` and reports
+// whether the phishing module looks up message URLs in rspamd.com's
+// phishtank zone. A missing or non-boolean setting is an error.
+func PhishtankEnabled(out []byte) (bool, error) {
+	fields, err := dumpObject(out, "phishing")
+	if err != nil {
+		return false, err
+	}
+	on, ok := fields["phishtank_enabled"].(bool)
+	if !ok {
+		return false, errors.New("configdump phishing: phishtank_enabled is not a boolean")
+	}
+	return on, nil
+}
+
 // modulesOff must be inactive in the loaded configuration: core makes no
 // third-party lookups and never defers mail.
 var modulesOff = []string{"asn", "emails", "fuzzy_check", "greylist", "rbl"}

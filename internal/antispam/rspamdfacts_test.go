@@ -190,3 +190,25 @@ func TestCheckRspamdDetectsAllDisabledModules(t *testing.T) {
 		t.Fatalf("CheckRspamd = %v, want %v", got, want)
 	}
 }
+
+func TestPhishtankEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		out  string
+		want bool
+	}{
+		{`{"openphish_enabled": false, "phishtank_enabled": false, "phishing_feed_exclusion_enabled": false}`, false},
+		{`{"phishtank_enabled": true}`, true},
+	} {
+		got, err := PhishtankEnabled([]byte(tc.out))
+		if err != nil || got != tc.want {
+			t.Errorf("PhishtankEnabled(%s) = %v, %v; want %v", tc.out, got, err, tc.want)
+		}
+	}
+	for _, out := range []string{"", "null", "[]", "not JSON", `{}`, `{"phishtank_enabled": "yes"}`,
+		`{"phishtank_enabled": null}`, `{"phishtank_enabled": false} trailing`,
+		`{"phishtank_enabled": false, "phishtank_enabled": true}`} {
+		if on, err := PhishtankEnabled([]byte(out)); err == nil {
+			t.Errorf("PhishtankEnabled(%q) = %v, nil; want an error", out, on)
+		}
+	}
+}

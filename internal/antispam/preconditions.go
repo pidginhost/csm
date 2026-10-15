@@ -115,6 +115,9 @@ type HostFacts struct {
 	// CSM's once CSM's files are installed.
 	RspamdActions CommandResult
 	RspamdModules CommandResult
+	// RspamdPhishing is `rspamadm configdump -j phishing`, compared the same
+	// way.
+	RspamdPhishing CommandResult
 	// Record is CSM's completion record as found on disk.
 	Record RecordFacts
 	// MonitoredLog is the Exim main log CSM reads markers from.

@@ -497,7 +497,8 @@ func (t *tx) probeExim(ctx context.Context) error {
 }
 
 // checkRspamd validates staged rspamd files and, for an apply, compares the
-// loaded thresholds and modules with CSM's settings (spec 6.2 item 10).
+// loaded thresholds, modules and phishtank switch with CSM's settings (spec
+// 6.2 item 10).
 func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 	if r := t.cmd(ctx, commandLimit, "rspamadm", "configtest"); r.Err != nil {
 		return cmdErr("rspamadm configtest", r)
@@ -524,6 +525,13 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 	}
 	if conflicts := antispam.CheckRspamd(enabled, actions, *s); len(conflicts) > 0 {
 		return errors.New("rspamadm configdump -j actions: rspamd configuration conflict")
+	}
+	phishing := t.cmd(ctx, commandLimit, "rspamadm", "configdump", "-j", "phishing")
+	if phishing.Err != nil {
+		return cmdErr("rspamadm configdump -j phishing", phishing)
+	}
+	if on, err := antispam.PhishtankEnabled([]byte(phishing.Stdout)); err != nil || on {
+		return errors.New("rspamadm configdump -j phishing: rspamd configuration conflict")
 	}
 	return nil
 }
