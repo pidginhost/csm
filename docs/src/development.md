@@ -640,6 +640,13 @@ it defers block picks the same way. One batch starts a second at most; with an
 engine, a drain that queues new work runs the schedule at once instead of
 waiting for its timer.
 
+The admission ledger exposes two row-recovery reads. `ReadSettledBlockActions`
+names failed attempts and retired unknown outcomes among the supplied action
+IDs; `ReadUnprovenBlockActions` continues to include every non-verified
+attempt. `UnresolvedIntents` gives the owner the same ordered intents as the
+handle-free startup reader. Callers must inspect each attempt's outcome:
+an executing intent is unresolved but cannot be retired as unknown.
+
 ### Attack event storage
 
 Attack events live in `attacks:events`; `attacks:events:ip` stores empty values
