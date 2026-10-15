@@ -85,6 +85,20 @@ type ScheduleItem struct {
 	Ready bool
 }
 
+// Answer is an outside answer a queued candidate waits on, such as the
+// panel's verdict on a block.
+type Answer uint8
+
+const (
+	// AnswerPending: the question is outstanding. The candidate is never
+	// picked or deferred, and its scope keeps its turns.
+	AnswerPending Answer = iota + 1
+	// AnswerAllow: the answer ends the candidate without a charge. A
+	// schedule picks it as uncharged work, at no ceiling or history cost,
+	// whatever the live budgets; it still takes a member and a fair turn.
+	AnswerAllow
+)
+
 // ScheduleLimits bound one schedule.
 type ScheduleLimits struct {
 	// General and Reserved are the block units each lane may serve. The

@@ -1,18 +1,50 @@
 package store
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 )
 
-func pendingSet(ids ...admission.CandidateID) map[admission.CandidateID]bool {
-	out := map[admission.CandidateID]bool{}
+func pendingSet(ids ...admission.CandidateID) map[admission.CandidateID]admission.Answer {
+	out := map[admission.CandidateID]admission.Answer{}
 	for _, id := range ids {
-		out[id] = true
+		out[id] = admission.AnswerPending
 	}
 	return out
+}
+
+// A panel allow ends its candidate without a charge, so a schedule selects
+// it as uncharged work with the live ceiling and history spent: it costs
+// nothing, takes no deferral and wakes the owner now. Charged work still
+// waits for budget, and nothing is charged.
+func TestAdmissionLedgerScheduleSelectsAllowsUncharged(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	ids := f.criticalArrivals("192.0.2.10", "192.0.2.11")
+	f.leaveCeilingCredit(0, 0)
+	f.adjustStorage(func(s *admission.StorageState) { s.General.Credit, s.Reserved.Credit = 0, 0 })
+	allowed := map[admission.CandidateID]admission.Answer{ids[0]: admission.AnswerAllow}
+	ceiling, storage := f.ceilingState(), f.storageState()
+	if wake, ok, err := f.l.NextWake(allowed); err != nil || !ok || !wake.Equal(f.wall) {
+		t.Fatalf("wake with an allow = %v %v %v, want now", wake, ok, err)
+	}
+	picks, err := f.l.Schedule(fullSchedule, allowed)
+	if err != nil || len(picks) != 1 || picks[0].ID != ids[0] || picks[0].Cost != 0 || picks[0].Bytes != 0 {
+		t.Fatalf("picks = %+v, %v", picks, err)
+	}
+	if c := f.candidateOf(ids[0]); c.State != admission.StateQueued || c.Reason != 0 {
+		t.Fatalf("allowed pick = %+v", c)
+	}
+	if c := f.candidateOf(ids[1]); c.Reason != admission.ReasonCeiling {
+		t.Fatalf("charged work = %+v, want a ceiling deferral", c)
+	}
+	// The charged pick's deferral records its notice; nothing is charged.
+	if after := f.storageState(); !reflect.DeepEqual(f.ceilingState(), ceiling) || after.General != storage.General || after.Reserved != storage.Reserved || after.Recovery != storage.Recovery {
+		t.Fatal("selecting an allow charged capacity")
+	}
 }
 
 // A candidate waiting on the panel's verdict is never picked, so it cannot

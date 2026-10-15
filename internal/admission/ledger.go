@@ -148,14 +148,13 @@ type Ledger interface {
 	// Schedule picks the next candidates to serve within the lane budgets,
 	// each at most what the ceiling can charge and the history allowance
 	// can take now, and records the scheduler's position. Picks stay queued until the engine reserves or
-	// ends them. Every pick is revalidated first. Pending candidates wait
-	// on an outside answer: never picked or deferred, their scopes keep
-	// their turns.
-	Schedule(ScheduleLimits, map[CandidateID]bool) ([]Pick, error)
+	// ends them. Every pick is revalidated first. Candidates with an
+	// Answer are scheduled as it says.
+	Schedule(ScheduleLimits, map[CandidateID]Answer) ([]Pick, error)
 	// NextWake is when queued work next changes without a new report: a
 	// retry wait ends, a queued deadline passes or ready work gains ceiling
 	// or history budget. Pending work wakes only at its deadlines.
-	NextWake(map[CandidateID]bool) (time.Time, bool, error)
+	NextWake(map[CandidateID]Answer) (time.Time, bool, error)
 	// BeginIngress starts an ingress generation. A previous generation
 	// still open was interrupted: its unpersisted items are lost.
 	BeginIngress() (IngressState, error)

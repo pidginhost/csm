@@ -619,8 +619,9 @@ const unitCost = 1
 // that no longer qualifies ends, and its turn goes to the next candidate.
 // Pending candidates wait on an outside answer, such as the panel's
 // verdict: they are passed over as a retry in its backoff is, never picked
-// or deferred, and their scopes keep their turns.
-func (l *AdmissionLedger) Schedule(lim admission.ScheduleLimits, pending map[admission.CandidateID]bool) ([]admission.Pick, error) {
+// or deferred, and their scopes keep their turns. An allowed candidate is
+// picked as uncharged work whatever the budgets.
+func (l *AdmissionLedger) Schedule(lim admission.ScheduleLimits, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now, err := l.clock()
@@ -633,7 +634,7 @@ func (l *AdmissionLedger) Schedule(lim admission.ScheduleLimits, pending map[adm
 		if txErr != nil {
 			return txErr
 		}
-		if picks, txErr = l.scheduleTx(q, lim, pending); txErr != nil {
+		if picks, txErr = l.scheduleTx(q, lim, answers); txErr != nil {
 			return txErr
 		}
 		return q.flush()
@@ -644,7 +645,7 @@ func (l *AdmissionLedger) Schedule(lim admission.ScheduleLimits, pending map[adm
 	return picks, nil
 }
 
-func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits, pending map[admission.CandidateID]bool) ([]admission.Pick, error) {
+func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
 	// Revalidate directly rather than through sweep: an upgraded ledger's
 	// unassessed candidates are due before any deadline is recorded.
 	if err := q.revalidate(!l.revalidated); err != nil {
@@ -662,7 +663,7 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits, p
 	if err != nil {
 		return nil, err
 	}
-	items, byID, err := q.scheduleItems(live, lim.RecoveryBytes, pending)
+	items, byID, err := q.scheduleItems(live, lim.RecoveryBytes, answers)
 	if err != nil {
 		return nil, err
 	}
@@ -688,7 +689,7 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits, p
 			refused[p.ID] = true
 		}
 		if len(refused) == 0 {
-			if err = q.deferUnserved(items, byID, picks, lim, pending); err != nil {
+			if err = q.deferUnserved(items, byID, picks, lim, answers); err != nil {
 				return nil, err
 			}
 			return picks, putScheduleState(q.tx, next)
@@ -719,7 +720,7 @@ const previewReservedMembers = 13
 // backoff and recovery holds gate it as they gate Schedule, a held target
 // is deferred as pending recovery, a stale live budget wait clears, and
 // pending work is passed over.
-func (l *AdmissionLedger) SchedulePreview(pending map[admission.CandidateID]bool) ([]admission.Pick, error) {
+func (l *AdmissionLedger) SchedulePreview(answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now, err := l.clock()
@@ -732,7 +733,7 @@ func (l *AdmissionLedger) SchedulePreview(pending map[admission.CandidateID]bool
 		if txErr != nil {
 			return txErr
 		}
-		if picks, txErr = l.previewTx(q, pending); txErr != nil {
+		if picks, txErr = l.previewTx(q, answers); txErr != nil {
 			return txErr
 		}
 		return q.flush()
@@ -743,7 +744,7 @@ func (l *AdmissionLedger) SchedulePreview(pending map[admission.CandidateID]bool
 	return picks, nil
 }
 
-func (l *AdmissionLedger) previewTx(q *queueTx, pending map[admission.CandidateID]bool) ([]admission.Pick, error) {
+func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
 	if err := q.revalidate(!l.revalidated); err != nil {
 		return nil, err
 	}
@@ -773,7 +774,7 @@ func (l *AdmissionLedger) previewTx(q *queueTx, pending map[admission.CandidateI
 		items = append(items, admission.ScheduleItem{
 			ID: lc.id, Scope: lc.c.Scope.Key(), Tier: lc.entry.Tier, Direct: lc.entry.Direct, Corroborated: lc.entry.Corroborated,
 			Queued: lc.c.FirstQueued, Cost: unitCost, CeilingCost: unitCost,
-			Ready: !h && !q.now.Before(lc.c.NotBefore) && !pending[lc.id],
+			Ready: !h && !q.now.Before(lc.c.NotBefore) && answers[lc.id] != admission.AnswerPending,
 		})
 	}
 	lim := admission.ScheduleLimits{General: admission.MaxBatchMembers, Reserved: previewReservedMembers, Members: admission.MaxBatchMembers}
@@ -799,7 +800,7 @@ func (l *AdmissionLedger) previewTx(q *queueTx, pending map[admission.CandidateI
 			refused[p.ID] = true
 		}
 		if len(refused) == 0 {
-			if err = q.deferHeld(items, byID, held, pending); err != nil {
+			if err = q.deferHeld(items, byID, held, answers); err != nil {
 				return nil, err
 			}
 			return picks, putScheduleState(q.tx, next)
@@ -838,10 +839,10 @@ func (q *queueTx) checkPreviewStorage(live []liveCandidate) error {
 // budget, so it records no other reason, and a live ceiling or storage
 // share wait left on other work is stale: it clears as a schedule clears
 // a resolved one. Pending work keeps its reason.
-func (q *queueTx) deferHeld(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate, held, pending map[admission.CandidateID]bool) error {
+func (q *queueTx) deferHeld(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate, held map[admission.CandidateID]bool, answers map[admission.CandidateID]admission.Answer) error {
 	for _, it := range items {
 		lc := byID[it.ID]
-		if pending[it.ID] {
+		if answers[it.ID] == admission.AnswerPending {
 			continue
 		}
 		c := lc.c
@@ -871,7 +872,7 @@ func (q *queueTx) deferHeld(items []admission.ScheduleItem, byID map[admission.C
 // retry's backoff end or a queued deadline. Live budgets never delay it,
 // and pending work wakes only at its deadlines. ok is false when nothing
 // waits.
-func (l *AdmissionLedger) PreviewWake(pending map[admission.CandidateID]bool) (time.Time, bool, error) {
+func (l *AdmissionLedger) PreviewWake(answers map[admission.CandidateID]admission.Answer) (time.Time, bool, error) {
 	// The lock guards the recovery hold this read shares with writers.
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -900,7 +901,7 @@ func (l *AdmissionLedger) PreviewWake(pending map[admission.CandidateID]bool) (t
 				continue
 			}
 			q.noteDeadlines(lc.c, lc.entry)
-			if pending[lc.id] {
+			if answers[lc.id] == admission.AnswerPending {
 				continue
 			}
 			held, heldErr := q.heldTarget(lc.c.Key.Target)
@@ -932,7 +933,7 @@ func (l *AdmissionLedger) PreviewWake(pending map[admission.CandidateID]bool) (t
 // bound or another scope's fair turn waits without a reason, and so does a
 // retry in its backoff. A changed reason is one transition, counted and
 // announced once, as Defer records it. Pending work keeps its reason.
-func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate, picks []admission.Pick, lim admission.ScheduleLimits, pending map[admission.CandidateID]bool) error {
+func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate, picks []admission.Pick, lim admission.ScheduleLimits, answers map[admission.CandidateID]admission.Answer) error {
 	picked := make(map[admission.CandidateID]bool, len(picks))
 	general, reserved := lim.General, lim.Reserved
 	generalBytes, reservedBytes := lim.GeneralBytes, lim.ReservedBytes
@@ -951,7 +952,7 @@ func (q *queueTx) deferUnserved(items []admission.ScheduleItem, byID map[admissi
 		}
 	}
 	for _, it := range items {
-		if pending[it.ID] {
+		if answers[it.ID] == admission.AnswerPending {
 			continue
 		}
 		lc := byID[it.ID]
@@ -1019,8 +1020,9 @@ func (q *queueTx) scheduleLimits(lim admission.ScheduleLimits) (admission.Schedu
 // scheduleItems are the queued candidates as the scheduler sees them, each
 // with the history a reservation of it would charge now. One whose details
 // would not fit the recovery reserve is not ready: it waits for recovery to
-// settle unresolved outcomes. Nor is pending work.
-func (q *queueTx) scheduleItems(live []liveCandidate, room uint64, pending map[admission.CandidateID]bool) ([]admission.ScheduleItem, map[admission.CandidateID]liveCandidate, error) {
+// settle unresolved outcomes. Nor is pending work. An allowed candidate
+// ends without a charge: it needs no ceiling, history or recovery room.
+func (q *queueTx) scheduleItems(live []liveCandidate, room uint64, answers map[admission.CandidateID]admission.Answer) ([]admission.ScheduleItem, map[admission.CandidateID]liveCandidate, error) {
 	byID := map[admission.CandidateID]liveCandidate{}
 	var items []admission.ScheduleItem
 	for _, lc := range live {
@@ -1036,10 +1038,14 @@ func (q *queueTx) scheduleItems(live []liveCandidate, room uint64, pending map[a
 			return nil, nil, err
 		}
 		byID[lc.id] = lc
+		cost := lc.c.Key.Kind.CeilingCost()
+		if answers[lc.id] == admission.AnswerAllow {
+			cost, bytes, recovery, fits = 0, 0, 0, true
+		}
 		items = append(items, admission.ScheduleItem{
 			ID: lc.id, Scope: lc.c.Scope.Key(), Tier: lc.entry.Tier, Direct: lc.entry.Direct,
-			Corroborated: lc.entry.Corroborated, Queued: lc.c.FirstQueued, Cost: unitCost, CeilingCost: lc.c.Key.Kind.CeilingCost(), Bytes: bytes, Recovery: recovery,
-			Ready: fits && !held && !q.now.Before(lc.c.NotBefore) && !pending[lc.id],
+			Corroborated: lc.entry.Corroborated, Queued: lc.c.FirstQueued, Cost: unitCost, CeilingCost: cost, Bytes: bytes, Recovery: recovery,
+			Ready: fits && !held && !q.now.Before(lc.c.NotBefore) && answers[lc.id] != admission.AnswerPending,
 		})
 	}
 	return items, byID, nil
@@ -1052,7 +1058,7 @@ func (q *queueTx) scheduleItems(live []liveCandidate, room uint64, pending map[a
 // already. The engine's timer ticks and schedules then. ok is false when
 // nothing waits. Pending work, as Schedule passes it over, wakes only at
 // its deadlines: its answer brings its next turn.
-func (l *AdmissionLedger) NextWake(pending map[admission.CandidateID]bool) (time.Time, bool, error) {
+func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.Answer) (time.Time, bool, error) {
 	// The lock guards the recovery hold this read shares with writers.
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -1089,7 +1095,7 @@ func (l *AdmissionLedger) NextWake(pending map[admission.CandidateID]bool) (time
 		if err != nil {
 			return err
 		}
-		items, byID, err := q.scheduleItems(live, lim.RecoveryBytes, pending)
+		items, byID, err := q.scheduleItems(live, lim.RecoveryBytes, answers)
 		if err != nil {
 			return err
 		}
@@ -1104,7 +1110,7 @@ func (l *AdmissionLedger) NextWake(pending map[admission.CandidateID]bool) (time
 			// A retry cannot become ready at its backoff while recovery
 			// space is unavailable, nor while it waits on an outside
 			// answer. Its validity deadlines still apply.
-			if uint64(it.Recovery) > lim.RecoveryBytes || pending[it.ID] {
+			if uint64(it.Recovery) > lim.RecoveryBytes || answers[it.ID] == admission.AnswerPending {
 				continue
 			}
 			if nb := byID[it.ID].c.NotBefore; nb.After(clock.Now()) {

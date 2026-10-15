@@ -11,7 +11,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-func (f *ledgerFixture) preview(pending map[admission.CandidateID]bool) []admission.Pick {
+func (f *ledgerFixture) preview(pending map[admission.CandidateID]admission.Answer) []admission.Pick {
 	f.t.Helper()
 	picks, err := f.l.SchedulePreview(pending)
 	if err != nil {

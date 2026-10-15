@@ -265,7 +265,7 @@ func TestOwnerDrainRunsAtMostOneTurn(t *testing.T) {
 			setOwnerHook(t, o, &drainGroup, 1)
 			schedule := scheduleLedger
 			turns := 0
-			setOwnerHook(t, o, &scheduleLedger, func(l *store.AdmissionLedger, limits admission.ScheduleLimits, pending map[admission.CandidateID]bool) ([]admission.Pick, error) {
+			setOwnerHook(t, o, &scheduleLedger, func(l *store.AdmissionLedger, limits admission.ScheduleLimits, pending map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
 				turns++
 				return schedule(l, limits, pending)
 			})
