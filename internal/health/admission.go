@@ -46,6 +46,39 @@ type AdmissionOwner struct {
 	// ExecutionHeld is why automatic execution is held: block work waits,
 	// deferred as an unavailable engine, until a probe succeeds.
 	ExecutionHeld string `json:"execution_held,omitempty"`
+	// Verdict is the panel verdict stage of an owner that executes.
+	Verdict *AdmissionVerdict `json:"verdict,omitempty"`
+}
+
+// AdmissionVerdict is the verdict callback stage (spec 4.4). The gauges
+// are its current state. The counters and the failure window count this
+// process's calls and start from zero at a restart; committed refusals
+// stay in the ledger. Errors are fixed classes, never response text.
+type AdmissionVerdict struct {
+	Enabled       bool   `json:"enabled"`
+	Epoch         uint64 `json:"epoch"`
+	Pending       int    `json:"pending"`
+	InFlight      uint64 `json:"in_flight"`
+	Ready         int    `json:"ready"`
+	StageRetiring bool   `json:"stage_retiring"`
+	// Asked counts calls a worker started; each ends as one response,
+	// failure or cancellation.
+	Asked            uint64 `json:"asked"`
+	ResponsesAllow   uint64 `json:"responses_allow"`
+	ResponsesDefault uint64 `json:"responses_default"`
+	Failed           uint64 `json:"failed"`
+	Cancelled        uint64 `json:"cancelled"`
+	// Discarded counts jobs cancelled before their call and answers no
+	// longer usable when they arrived or were due.
+	Discarded    uint64 `json:"discarded"`
+	ReadyEvicted uint64 `json:"ready_evicted"`
+	// AllowEndings counts committed verdict_allow refusals.
+	AllowEndings uint64     `json:"allow_endings"`
+	LastError    *string    `json:"last_error"`
+	LastErrorAt  *time.Time `json:"last_error_at"`
+	// LastHourFailed counts failures in the sixty minutes of process
+	// monotonic time up to now.
+	LastHourFailed uint64 `json:"last_hour_failed"`
 }
 
 // AdmissionImport is the legacy hour's spend imported as charges. They
@@ -90,6 +123,18 @@ func cloneAdmissionStatus(in *AdmissionStatus) *AdmissionStatus {
 		if in.Owner.Import != nil {
 			imp := *in.Owner.Import
 			owner.Import = &imp
+		}
+		if in.Owner.Verdict != nil {
+			v := *in.Owner.Verdict
+			if v.LastError != nil {
+				class := *v.LastError
+				v.LastError = &class
+			}
+			if v.LastErrorAt != nil {
+				at := *v.LastErrorAt
+				v.LastErrorAt = &at
+			}
+			owner.Verdict = &v
 		}
 		out.Owner = &owner
 	}

@@ -762,6 +762,30 @@ refusal at reload as a `config_reload_error` finding. Under a dry-run
 policy block picks stay queued and never reach the engine. A
 comparison-only owner never reads the policy.
 
+With the policy's verdict callback on, a live owner asks the panel about
+each `block_ip` pick before anything is reserved. One read-only admission
+snapshot answers the turn's local checks without giving any pick a slot:
+a refused, protected or already enforced target ends or waits as a batch
+check would have it, and a full set defers the pick, all without a call.
+Any other pick is asked about, as `CSM auto-block: <check>` for its
+canonical address, and stays queued; the schedule passes it over until
+the answer arrives. Four workers make the calls, with at most 64 jobs
+outstanding and 128 answers kept; a full stage leaves picks queued and
+is never read as an answer. Each answer is keyed by candidate, attempt
+and policy epoch and lasts thirty seconds from its receipt. A valid allow
+ends the pick as one `verdict_allow` refusal with no attempt or charge,
+even with the ceiling spent: the schedule picks it as uncharged work.
+Block, an empty verdict or a failed exchange continues the local path,
+and the reservation consumes the answer. Local checks run again before an
+answer is used. A pick that stops being eligible has its call cancelled.
+A new epoch, a mode change included, cancels every call, drops every
+answer and starts new workers only after the old ones return; Stop
+cancels the calls and joins the workers. A cancellation is never an
+answer. The owner status carries a `verdict` object for an executing
+owner: stage gauges, process counters and the last failure as a fixed
+class, never response text. Its outstanding jobs are also the
+`admission.verdicts` queue row.
+
 The admission ledger exposes two row-recovery reads. `ReadSettledBlockActions`
 names failed attempts and retired unknown outcomes among the supplied action
 IDs; `ReadUnprovenBlockActions` continues to include every non-verified

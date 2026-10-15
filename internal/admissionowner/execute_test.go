@@ -42,6 +42,10 @@ type fakeBlocks struct {
 	retireShort bool
 	retireStep  func([]firewall.BlockAction)
 	retires     [][]firewall.BlockAction
+	// temp and limit are the temporary occupancy an admission snapshot
+	// reports; snapshots records its calls.
+	temp, limit int
+	snapshots   [][]firewall.BlockMember
 }
 
 // fakeExisting names a proven block unless a test names it otherwise.
@@ -70,6 +74,35 @@ func (f *fakeBlocks) CheckBlockBatchEffects(members []firewall.BlockMember) ([]f
 	}
 	if f.shortChecks {
 		return out[:len(out)-1], nil
+	}
+	return out, nil
+}
+
+// BlockAdmissionSnapshot answers each member as a check would, without
+// the capacity refusals a check makes as it gives members slots.
+func (f *fakeBlocks) BlockAdmissionSnapshot(members []firewall.BlockMember, _ []string) (firewall.BlockAdmission, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshots = append(f.snapshots, append([]firewall.BlockMember(nil), members...))
+	if f.checkErr != nil {
+		return firewall.BlockAdmission{}, f.checkErr
+	}
+	out := firewall.BlockAdmission{Answers: make([]firewall.BlockAnswer, len(members)), Temporary: f.temp, Limit: f.limit}
+	for i, m := range members {
+		out.Answers[i] = firewall.BlockAnswer{Action: m.Action, IP: m.IP}
+		switch refusal := f.refuse[m.IP]; refusal {
+		case firewall.BlockRefusedFull, firewall.BlockRefusedDuplicate:
+		case firewall.BlockRefusedExisting:
+			out.Answers[i].Refusal, out.Answers[i].Existing = refusal, fakeExisting
+			if named, ok := f.existing[m.IP]; ok {
+				out.Answers[i].Existing = named
+			}
+		default:
+			out.Answers[i].Refusal = refusal
+		}
+	}
+	if f.shortChecks {
+		out.Answers = out.Answers[:len(out.Answers)-1]
 	}
 	return out, nil
 }

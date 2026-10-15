@@ -105,6 +105,41 @@
       "rationale": "Hands one request to the owner goroutine, which makes every ledger change; the caller waits for the owner and stops waiting once the owner has stopped. Nothing queues."
     },
     {
+      "id": "internal/admissionowner/verdicts.go::*Owner.startVerdicts::done::channel::1",
+      "path": "internal/admissionowner/verdicts.go",
+      "owner": "*Owner.startVerdicts",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Closed by the one joiner once a retiring stage's workers have returned, so the owner starts their replacement."
+    },
+    {
+      "id": "internal/admissionowner/verdicts.go::*Owner.startVerdicts::jobs::channel::1",
+      "path": "internal/admissionowner/verdicts.go",
+      "owner": "*Owner.startVerdicts",
+      "target": "jobs",
+      "kind": "channel",
+      "source": "make(chan *verdictJob, verdictPending)",
+      "capacity": "64",
+      "class": "work",
+      "rationale": "Hands panel verdict jobs to the four workers; a job keeps its pending slot until its completion is received, so at most 64 are outstanding.",
+      "queue": "admission.verdicts"
+    },
+    {
+      "id": "internal/admissionowner/verdicts.go::*Owner.startVerdicts::results::channel::1",
+      "path": "internal/admissionowner/verdicts.go",
+      "owner": "*Owner.startVerdicts",
+      "target": "results",
+      "kind": "channel",
+      "source": "make(chan verdictResult, verdictResults)",
+      "capacity": "64",
+      "class": "work",
+      "rationale": "Returns each job's normalized completion to the owner; 64 outstanding jobs always find room.",
+      "queue": "admission.verdicts"
+    },
+    {
       "id": "internal/alert/phpanel_queue.go::newPhpanelQueue::done::channel::1",
       "path": "internal/alert/phpanel_queue.go",
       "owner": "newPhpanelQueue",
@@ -1296,6 +1331,47 @@
           "path": "internal/admissionowner/notice.go",
           "symbol": "sender.queue",
           "shape": "*queuehealth.Sampled"
+        }
+      ]
+    },
+    {
+      "id": "admission.verdicts",
+      "rows": [
+        "admission.verdicts"
+      ],
+      "bounds": "Four workers and 64 outstanding jobs, queued, running or completed and not yet received; cancelled jobs keep their slot until their completion arrives. A full stage leaves picks queued. Each epoch's stage is retired before the next starts.",
+      "publication": [
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerPublishesTheVerdictQueue",
+          "mode": "portable"
+        }
+      ],
+      "lifecycle": [
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerBoundsVerdictCalls",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerRetiresVerdictsOnANewEpoch",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerCancelsCallsOfIneligiblePicks",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerStopCancelsVerdictCalls",
+          "mode": "portable"
+        },
+        {
+          "package": "github.com/pidginhost/csm/internal/admissionowner",
+          "name": "TestOwnerStopJoinsTheRealClient",
+          "mode": "portable"
         }
       ]
     },

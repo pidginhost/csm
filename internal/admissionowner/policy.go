@@ -99,15 +99,19 @@ func (o *Owner) refreshPolicy() error {
 	case p.Epoch == o.seenEpoch && p.Epoch != 0:
 		if o.policyErr == nil && !o.policy.same(p) {
 			o.policyErr = fmt.Errorf("%w: epoch %d was published again with other settings", ErrPolicy, p.Epoch)
+			o.retireVerdicts()
 		}
 		return o.policyErr
 	}
 	o.seenEpoch = p.Epoch
+	// Every new epoch, a mode change included, invalidates callback work.
+	o.retireVerdicts()
 	if err := p.validate(); err != nil {
 		o.policyErr = err
 		return err
 	}
 	o.policy, o.policyErr = p, nil
+	o.startVerdicts()
 	return nil
 }
 

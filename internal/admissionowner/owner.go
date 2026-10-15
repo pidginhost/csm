@@ -136,7 +136,9 @@ type Owner struct {
 	current   atomic.Pointer[health.AdmissionStatus]
 	audit     *queuehealth.Sampled
 	notices   *sender
-	compare   comparison
+	// verdictQueue samples the verdict jobs of an executing owner.
+	verdictQueue *queuehealth.Sampled
+	compare      comparison
 
 	// Owned by the owner goroutine.
 	ledger        *store.AdmissionLedger
@@ -191,6 +193,7 @@ type Owner struct {
 	policy    ExecutionPolicy
 	seenEpoch uint64
 	policyErr error
+	verdicts  verdicts
 	// nextBatch is when the next block batch may start, on the monotonic
 	// clock; arrived is set by a drain that queued work.
 	nextBatch time.Time
@@ -237,6 +240,9 @@ func Start(opts Options) *Owner {
 		opts: opts, requests: make(chan request), quit: make(chan bool), done: make(chan struct{}),
 		audit: queuehealth.NewSampled(int(admission.MaxAuditSlots), "rows", deliveryLag),
 	}
+	if opts.Blocks != nil {
+		o.verdictQueue = queuehealth.NewSampled(verdictPending, "jobs", deliveryLag)
+	}
 	o.reg, o.producers, o.startErr = buildRegistry()
 	if o.startErr == nil {
 		o.ingress, o.startErr = admission.NewIngress(o.reg)
@@ -274,6 +280,7 @@ func (o *Owner) run() {
 	for {
 		select {
 		case clean := <-o.quit:
+			o.stopVerdicts()
 			if clean {
 				o.shutdown()
 			}
@@ -316,6 +323,10 @@ func (o *Owner) run() {
 			if o.started {
 				o.schedule()
 			}
+		case r := <-o.stageResults():
+			o.receiveVerdict(r)
+		case <-o.stageRetired():
+			o.verdictsRetired()
 		}
 	}
 }
@@ -699,6 +710,7 @@ func (o *Owner) drainHeld() (err error) {
 // succeeds. A turn that keeps failing is backed off from the default
 // schedule period, as a failing notice delivery is.
 func (o *Owner) schedule() {
+	o.expireVerdicts()
 	probeDue := o.execHold != nil && !monoNow().Before(o.probeAt)
 	// Without an engine there is nothing to probe. Once one starts, the
 	// old hold's deadline must not delay its first turn.
@@ -754,7 +766,10 @@ func (o *Owner) turn() error {
 	}
 	// Retirement first: it can release the holds pending_recovery waits on.
 	retireErr := o.retire()
-	picks, err := scheduleLedger(o.ledger, previewLimits, nil)
+	if o.executable() {
+		o.sweepVerdicts()
+	}
+	picks, err := scheduleLedger(o.ledger, previewLimits, o.answers())
 	if err != nil {
 		return fmt.Errorf("scheduling the queue: %w", err)
 	}
@@ -795,7 +810,7 @@ func (o *Owner) turn() error {
 	if err = o.publish(); err != nil {
 		return err
 	}
-	wake, ok, err := o.ledger.NextWake(nil)
+	wake, ok, err := o.ledger.NextWake(o.answers())
 	if err != nil {
 		return fmt.Errorf("reading the next wake time: %w", err)
 	}
@@ -983,6 +998,9 @@ func (o *Owner) refreshStatus() {
 	}
 	if cause := o.heldCause(); cause != nil {
 		s.Owner.ExecutionHeld = cause.Error()
+	}
+	if o.executable() {
+		s.Owner.Verdict = o.verdictStatus()
 	}
 	if o.ledger != nil {
 		ls := o.ledger.Status()
