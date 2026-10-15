@@ -43,9 +43,17 @@ func (r resetReason) String() string {
 // status shows (spec 3.8).
 type forecastError string
 
-// forecastModelError: the session's model could not be metered, so the
-// session was dropped.
-const forecastModelError forecastError = "model_error"
+const (
+	forecastEngineUnavailable forecastError = "engine_unavailable"
+	forecastClockDegraded     forecastError = "clock_degraded"
+	forecastLedgerUnavailable forecastError = "ledger_unavailable"
+	forecastSnapshotMismatch  forecastError = "snapshot_mismatch"
+	forecastSessionID         forecastError = "session_id_unavailable"
+	forecastInvalidPolicy     forecastError = "invalid_policy"
+	// forecastModelError: the session's model could not be metered, so the
+	// session was dropped.
+	forecastModelError forecastError = "model_error"
+)
 
 // newSessionID reads a random 128-bit forecast session ID.
 func newSessionID(r io.Reader) (string, error) {
@@ -87,6 +95,9 @@ type shadow struct {
 	entries map[string]shadowEntry
 	picks   [admission.PredictionSlots]uint64
 	recent  minuteCounts
+	// adm is the occupancy of the last admission snapshot, nil while none
+	// could be read; its answers are dropped.
+	adm *firewall.BlockAdmission
 }
 
 // newShadow starts session id at wall time since from the real ceiling and

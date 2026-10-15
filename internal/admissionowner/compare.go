@@ -41,6 +41,8 @@ type comparison struct {
 	counts    map[compareKey]uint64
 	next      uint64
 	unwritten []comparisonRow
+	// dropped counts the rows retention discarded unwritten.
+	dropped uint64
 }
 
 type comparisonRow struct {
@@ -121,7 +123,15 @@ func (c *comparison) closeHour() {
 		}
 		copy(c.unwritten, c.unwritten[cut:])
 		c.unwritten = c.unwritten[:len(c.unwritten)-cut]
+		saturatingAdd(&c.dropped, uint64(cut))
 	}
+}
+
+// droppedRows is how many rows retention discarded unwritten.
+func (c *comparison) droppedRows() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dropped
 }
 
 // take returns the rows still to write and the sequence they end at: those

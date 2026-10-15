@@ -90,3 +90,40 @@ func TestBuildCarriesAdmissionOnlyFromAnOwner(t *testing.T) {
 		t.Fatalf("owned snapshot: %s, %v", data, err)
 	}
 }
+
+// Spec 3.8, 6.4: the dry-run object is an immutable copy. Mutating the
+// provider's collections, pointers and counters after a build changes no
+// published snapshot.
+func TestBuildOwnsTheDryRunObject(t *testing.T) {
+	id, reason, code := "0123456789abcdef0123456789abcdef", "startup", "engine_unavailable"
+	since, at := time.Unix(10, 0).UTC(), time.Unix(20, 0).UTC()
+	status := &AdmissionStatus{CheckedAt: time.Unix(100, 0), Owner: &AdmissionOwner{DryRun: &AdmissionDryRun{
+		Active: true, SessionID: &id, Since: &since, ResetReason: &reason,
+		ModelledKinds: []string{"block_ip"}, PredictionScope: "ceiling_and_temporary_capacity",
+		Occupancy: &AdmissionDryRunOccupancy{Actual: 8, ShadowOnly: 2, Predicted: 10, Limit: 10},
+		Ceiling:   &AdmissionDryRunCeiling{Limit: 5, GeneralUsed: 1},
+		Picks:     map[string]uint64{"capacity_admit": 2}, LastHour: map[string]uint64{"capacity_admit": 1},
+		ForecastError: &code, LastErrorAt: &at,
+	}}}
+	snapshot := Build(admissionFakeProvider{&fakeProvider{}, status}, "v", nil)
+	before, err := json.Marshal(snapshot.Admission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := status.Owner.DryRun
+	*d.SessionID, *d.Since, *d.ResetReason = "fedcba9876543210fedcba9876543210", time.Unix(11, 0), "mode_change"
+	d.ModelledKinds[0] = "promote"
+	d.Occupancy.Actual++
+	d.Ceiling.GeneralUsed++
+	d.Picks["capacity_admit"]++
+	d.LastHour["set_full"] = 4
+	*d.ForecastError, *d.LastErrorAt = "clock_degraded", time.Unix(21, 0)
+	d.ExamplesLost++
+	after, err := json.Marshal(snapshot.Admission)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before, after) {
+		t.Fatalf("provider mutation changed a published snapshot: before=%s after=%s", before, after)
+	}
+}

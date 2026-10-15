@@ -37,8 +37,20 @@ type dryRunOutput struct {
 	// stale is set from a purge request until a purge pass completes.
 	stale bool
 	// examplesLost counts examples not written; recordErrors counts failed
-	// writes and maintenance steps.
-	examplesLost, recordErrors uint64
+	// writes and maintenance steps; summariesLost counts summaries a stop
+	// discarded or a full count could not carry.
+	examplesLost, recordErrors, summariesLost uint64
+	// last is the session status shows once none runs; restarted is set
+	// when an earlier process opened the ledger.
+	last      sessionInfo
+	restarted bool
+}
+
+// sessionInfo identifies a forecast session for status.
+type sessionInfo struct {
+	id    string
+	since time.Time
+	reset resetReason
 }
 
 // noteExample adds p's committed capacity admission to the turn's

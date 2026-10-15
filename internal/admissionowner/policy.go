@@ -82,7 +82,12 @@ func (o *Owner) executable() bool { return o.opts.Blocks != nil }
 // execution until a valid newer epoch is installed.
 func (o *Owner) refreshPolicy() error {
 	before := o.policyErr
+	var p ExecutionPolicy
 	defer func() {
+		// A refusal that stops a dry run is a forecast error too.
+		if o.policyErr != nil && before == nil && (o.policy.DryRun || p.DryRun) {
+			o.noteForecastError(forecastInvalidPolicy)
+		}
 		// Status shows the refusal while it holds execution.
 		if o.policyErr != before && o.current.Load() != nil {
 			o.publishExecutionHold()
@@ -92,7 +97,7 @@ func (o *Owner) refreshPolicy() error {
 		o.policyErr = fmt.Errorf("%w: no policy provider", ErrPolicy)
 		return o.policyErr
 	}
-	p := o.opts.Policy()
+	p = o.opts.Policy()
 	switch {
 	case p.Epoch == 0:
 		o.policyErr = p.validate()
@@ -125,7 +130,7 @@ func (o *Owner) refreshPolicy() error {
 		// A live policy ends the forecast; a later dry run starts anew.
 		// Its examples are purged at this boundary, as are those a dry run
 		// before a restart left.
-		o.shadow, o.forecastReset = nil, resetModeChange
+		o.endSession(resetModeChange)
 		if prev.Epoch == 0 || prev.DryRun {
 			o.requestPurge()
 		}

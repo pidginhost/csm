@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -157,5 +158,113 @@ func TestDoctorReportsHeldExecution(t *testing.T) {
 	}
 	if _, ok = doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view(""))), "admission execution"); ok {
 		t.Fatal("execution that is not held printed a row")
+	}
+}
+
+// dryRunView is an owner forecasting in dry run with a healthy model.
+func dryRunView(at time.Time) *health.AdmissionStatus {
+	id, reset := "0123456789abcdef0123456789abcdef", "startup"
+	since := at.Add(-time.Hour)
+	zero := map[string]uint64{}
+	for p := admission.Prediction(1); p.Valid(); p++ {
+		zero[p.String()] = 0
+	}
+	picks, recent := maps.Clone(zero), maps.Clone(zero)
+	picks["capacity_admit"], recent["capacity_admit"] = 7, 3
+	return &health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{Admitting: true}, Owner: &health.AdmissionOwner{
+		DryRun: &health.AdmissionDryRun{Active: true, SessionID: &id, Since: &since, ResetReason: &reset,
+			ModelledKinds: []string{"block_ip"}, PredictionScope: "ceiling_and_temporary_capacity",
+			Occupancy: &health.AdmissionDryRunOccupancy{Actual: 8, ShadowOnly: 2, Predicted: 10, Limit: 50},
+			Ceiling:   &health.AdmissionDryRunCeiling{Limit: 2000, GeneralUsed: 7, GeneralBudget: 259, ReservedBudget: 66},
+			Picks:     picks, LastHour: recent},
+	}}
+}
+
+// Spec 3.8: a dry run alone is not a failure. Doctor names the forecast's
+// session and coverage, actual against predicted capacity and the modelled
+// ceiling, and says a prediction is not a block.
+func TestDoctorRendersAHealthyDryRun(t *testing.T) {
+	at := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	report := doctorReportForSnapshot(t, admissionSnapshot(dryRunView(at)))
+	run, ok := doctorCheckNamed(report, "admission dry run")
+	if !ok || run.Status != "ok" || !strings.Contains(run.Message, "0123456789abcdef0123456789abcdef") || !strings.Contains(run.Message, "startup") ||
+		!strings.Contains(run.Message, "block_ip") || !strings.Contains(run.Message, "not blocks") || run.Fix != "" {
+		t.Fatalf("admission dry run = %+v (%v)", run, ok)
+	}
+	capacity, ok := doctorCheckNamed(report, "admission dry-run capacity")
+	if !ok || capacity.Status != "ok" || !strings.Contains(capacity.Message, "8 real") || !strings.Contains(capacity.Message, "10 of 50 predicted") ||
+		!strings.Contains(capacity.Message, "259 general") || !strings.Contains(capacity.Message, "66 reserved") {
+		t.Fatalf("admission dry-run capacity = %+v (%v)", capacity, ok)
+	}
+	examples, ok := doctorCheckNamed(report, "admission dry-run examples")
+	if !ok || examples.Status != "ok" {
+		t.Fatalf("admission dry-run examples = %+v (%v)", examples, ok)
+	}
+	for _, c := range report.Checks {
+		if strings.HasPrefix(c.Name, "admission ") && c.Status == "fail" {
+			t.Fatalf("a dry run failed doctor: %+v", c)
+		}
+	}
+}
+
+// Spec 3.8: model limits, modelled waits, a held forecast and lost or
+// stale examples warn; they never hide a real safety failure, which still
+// fails its own row.
+func TestDoctorWarnsOnDryRunModelProblems(t *testing.T) {
+	at := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, row, text string
+		mutate          func(*health.AdmissionDryRun)
+	}{
+		{"modelled waits", "admission dry-run capacity", "would have waited", func(d *health.AdmissionDryRun) {
+			d.LastHour["ceiling"], d.LastHour["set_full"] = 2, 1
+		}},
+		{"model bound", "admission dry-run capacity", "models no more", func(d *health.AdmissionDryRun) { d.Occupancy.Limited = true }},
+		{"unlimited set", "admission dry-run capacity", "unlimited", func(d *health.AdmissionDryRun) {
+			d.Occupancy.Limit, d.Occupancy.Unlimited = 0, true
+		}},
+		{"held forecast", "admission dry run", "engine_unavailable", func(d *health.AdmissionDryRun) {
+			code, when := "engine_unavailable", at.Add(-time.Minute)
+			d.ForecastError, d.LastErrorAt = &code, &when
+		}},
+		{"lost examples", "admission dry-run examples", "3 examples", func(d *health.AdmissionDryRun) {
+			d.ExamplesLost, d.RecordErrors, d.ComparisonIncomplete = 3, 1, true
+		}},
+		{"lost summaries", "admission dry-run examples", "2 summaries", func(d *health.AdmissionDryRun) { d.SummariesLost = 2 }},
+		{"stale examples", "admission dry-run examples", "purge", func(d *health.AdmissionDryRun) { d.ExamplesStale = true }},
+	} {
+		view := dryRunView(at)
+		tc.mutate(view.Owner.DryRun)
+		view.Owner.ExecutionHeld = "applying a block batch: blocked sets unavailable"
+		report := doctorReportForSnapshot(t, admissionSnapshot(view))
+		row, ok := doctorCheckNamed(report, tc.row)
+		if !ok || row.Status != "warn" || !strings.Contains(row.Message, tc.text) || row.Fix == "" {
+			t.Errorf("%s: %s = %+v (%v), want a warning naming %q with a fix", tc.name, tc.row, row, ok, tc.text)
+		}
+		if held, ok := doctorCheckNamed(report, "admission execution"); !ok || held.Status != "fail" {
+			t.Errorf("%s: a dry-run warning hid held execution: %+v", tc.name, held)
+		}
+	}
+}
+
+// Leaving dry run shows the last session and no forecast; a comparison
+// owner shows no dry-run rows at all.
+func TestDoctorRendersAnInactiveDryRun(t *testing.T) {
+	at := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	view := dryRunView(at)
+	d := view.Owner.DryRun
+	d.Active, d.Occupancy, d.Ceiling = false, nil, nil
+	report := doctorReportForSnapshot(t, admissionSnapshot(view))
+	if run, ok := doctorCheckNamed(report, "admission dry run"); !ok || run.Status != "ok" || !strings.Contains(run.Message, "off") || !strings.Contains(run.Message, *d.SessionID) {
+		t.Fatalf("admission dry run = %+v (%v)", run, ok)
+	}
+	if _, ok := doctorCheckNamed(report, "admission dry-run capacity"); ok {
+		t.Fatal("an inactive dry run printed its capacity")
+	}
+	view.Owner.DryRun = nil
+	for _, c := range doctorReportForSnapshot(t, admissionSnapshot(view)).Checks {
+		if strings.HasPrefix(c.Name, "admission dry") {
+			t.Fatalf("a comparison owner printed %+v", c)
+		}
 	}
 }

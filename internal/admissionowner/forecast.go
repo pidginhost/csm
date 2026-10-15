@@ -4,11 +4,15 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/firewall"
 )
+
+// sessionRand is where forecast session IDs come from; tests make it fail.
+var sessionRand io.Reader = rand.Reader
 
 // forecasting reports whether the turn forecasts its picks instead of
 // running them: an executable owner under an installed dry-run policy.
@@ -25,16 +29,19 @@ func (o *Owner) beginForecast() error {
 	if o.shadow != nil {
 		return nil
 	}
-	id, err := newSessionID(rand.Reader)
+	id, err := newSessionID(sessionRand)
 	if err != nil {
+		o.noteForecastError(forecastSessionID)
 		return fmt.Errorf("naming a forecast session: %w", err)
 	}
 	ceiling, charges, err := o.ledger.CeilingSnapshot()
 	if err != nil {
+		o.noteForecastError(forecastLedgerUnavailable)
 		return fmt.Errorf("reading the ceiling for a forecast: %w", err)
 	}
 	s, err := newShadow(id, time.Now(), o.forecastReset, ceiling, charges)
 	if err != nil {
+		o.noteForecastError(forecastLedgerUnavailable)
 		return fmt.Errorf("starting a forecast: %w", err)
 	}
 	o.shadow, o.forecastReset = s, resetModeChange
@@ -45,8 +52,17 @@ func (o *Owner) beginForecast() error {
 // dropForecast ends a session whose model cannot go on. The next session
 // starts from the real state and names the failure as its reset.
 func (o *Owner) dropForecast() {
-	o.shadow, o.forecastReset = nil, resetModelError
+	o.endSession(resetModelError)
 	o.noteForecastError(forecastModelError)
+}
+
+// endSession discards the forecast session, keeping its identity for
+// status, and names why the next one starts.
+func (o *Owner) endSession(next resetReason) {
+	if s := o.shadow; s != nil {
+		o.out.last = sessionInfo{id: s.id, since: s.since, reset: s.reset}
+	}
+	o.shadow, o.forecastReset = nil, next
 }
 
 // noteForecastError records why forecasting failed, for status.
@@ -59,10 +75,18 @@ func (o *Owner) noteForecastError(e forecastError) {
 // block_ip pick is forecast against the session's model; another firewall
 // kind ends as not_modelled; a challenge keeps its comparison preview.
 // Nothing is reserved, charged or applied, and the engine is only read.
-func (o *Owner) forecast() error {
-	if err := o.beginForecast(); err != nil {
+func (o *Owner) forecast() (err error) {
+	if err = o.beginForecast(); err != nil {
 		return err
 	}
+	// A turn that ends without naming another cause clears the error; one
+	// that fails anywhere else could not use the ledger.
+	o.forecastErr = ""
+	defer func() {
+		if err != nil && o.forecastErr == "" {
+			o.noteForecastError(forecastLedgerUnavailable)
+		}
+	}()
 	// Examples of committed endings are written even when a later pick
 	// stops the turn.
 	defer o.flushExamples()
@@ -92,6 +116,7 @@ func (o *Owner) forecast() error {
 			}
 		case o.degraded:
 			// A degraded clock freezes every prediction.
+			o.noteForecastError(forecastClockDegraded)
 			err = o.endPick(pick, admission.ReasonEngineUnavailable)
 		default:
 			err = o.endForecast(pick, admission.PredictNotModelled, nil)
@@ -121,6 +146,12 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 	}
 	engine := o.opts.Blocks()
 	if o.degraded || engine == nil {
+		cause := forecastEngineUnavailable
+		if o.degraded {
+			cause = forecastClockDegraded
+		}
+		o.noteForecastError(cause)
+		o.shadow.adm = nil
 		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
 	}
 	lease := engine.LeaseNow()
@@ -135,8 +166,17 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 	}
 	adm, err := engine.BlockAdmissionSnapshot(members, o.shadow.ips())
 	if err != nil || !answersMatch(adm.Answers, members) {
+		cause := forecastSnapshotMismatch
+		if err != nil {
+			cause = forecastEngineUnavailable
+		}
+		o.noteForecastError(cause)
+		o.shadow.adm = nil
 		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
 	}
+	occupancy := adm
+	occupancy.Answers = nil
+	o.shadow.adm = &occupancy
 	for i, p := range picks {
 		m, check := members[i], adm.Answers[i].BlockCheck
 		if check.Refusal != "" && check.Refusal != firewall.BlockRefusedExisting {
@@ -165,6 +205,7 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 			continue
 		default:
 			if pred, change, err = o.shadow.admit(m.IP, p.c.Key.Kind, m.ExpiresAt, lanesOf(p.pick), o.now, adm); err != nil {
+				o.noteForecastError(forecastModelError)
 				return fmt.Errorf("forecasting pick %s: %w", p.pick.ID, err)
 			}
 		}

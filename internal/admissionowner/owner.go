@@ -411,9 +411,12 @@ func (o *Owner) start() error {
 		return fmt.Errorf("settling outstanding attempts: %w", err)
 	}
 	o.refreshInventory()
-	if _, err = o.ledger.BeginIngress(); err != nil {
+	generation, err := o.ledger.BeginIngress()
+	if err != nil {
 		return fmt.Errorf("beginning an ingress generation: %w", err)
 	}
+	// An earlier process's comparison counts and examples may be lost.
+	o.out.restarted = generation.Generation > 1
 	if err = o.ledger.Revalidate(); err != nil {
 		return fmt.Errorf("revalidating the queue: %w", err)
 	}
@@ -1102,7 +1105,7 @@ func (o *Owner) refreshStatus() {
 		s.Owner.ExecutionHeld = cause.Error()
 	}
 	if o.executable() {
-		s.Owner.Verdict = o.verdictStatus()
+		s.Owner.Verdict, s.Owner.DryRun = o.verdictStatus(), o.dryRunStatus()
 	}
 	if o.ledger != nil {
 		ls := o.ledger.Status()

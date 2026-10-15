@@ -549,8 +549,8 @@ writing; one bad record refuses the batch. A full bucket makes room by
 evicting its first keys in key order, at most the batch's size, in the same
 transaction; a bucket above its cap takes no example until maintenance trims
 it. `MaintainDryRunBlocks` runs one bounded step of a pass over the bucket:
-at most 256 records visited or deleted, trimming an oversized bucket from its
-first keys, removing records whose key time is strictly older than a cutoff,
+a fixed number of records visited or deleted, trimming an oversized bucket
+from its first keys, removing records whose key time is strictly older than a cutoff,
 and, for a purge, every record of a session other than the one it keeps,
 legacy records included. It resumes after the last key it visited, writes
 nothing when nothing is due, and a failed step changes nothing.
@@ -838,6 +838,16 @@ the purge pass starts over whenever the active session changes, so a dry run
 that resumes keeps its own examples whatever their times, and the examples
 are stale until a purge pass completes. The daemon's legacy prune and live
 purge leave the bucket to such an owner.
+
+Such an owner reports its forecast as `owner.dry_run` in status: whether it
+forecasts, the session and why it started, the model's coverage, real
+against predicted temporary occupancy from the turn's snapshot, the
+forecast's own ceiling, each prediction's session and last-hour counts, lost
+examples and summaries, failed writes, a pending purge, and a fixed code
+for why forecasting last failed. A turn that succeeds clears the code; a new
+session clears its time too. Leaving dry run clears the forecast and keeps
+the last session's identity, while the loss counters cover the process.
+`csm doctor` renders it in three rows that warn and never fail.
 
 With the policy's verdict callback on, a live owner asks the panel about
 each `block_ip` pick before anything is reserved, as a dry run does before
