@@ -640,23 +640,47 @@ func TestConfigReloadReconcilesAntispam(t *testing.T) {
 // foreign rspamd file, reloads CSM without editing csm.yaml. That reload
 // must re-check the integration instead of waiting for the next interval.
 func TestUnchangedConfigReloadRechecksAntispam(t *testing.T) {
-	usePanel(t, platform.PanelCPanel)
-	passes := useAntispamHost(t)
-	cfgPath := filepath.Join(t.TempDir(), "csm.yaml")
-	seedConfigAtPath(t, cfgPath, &config.Config{})
-	loaded, err := config.Load(cfgPath)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	d := newTestDaemon(t)
-	d.cfg = loaded
-	useActiveConfig(t, loaded)
-	antispamTestShutdown(t, d)
-	d.startAntispam()
-	waitPass(t, passes)
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			usePanel(t, platform.PanelCPanel)
+			passes := useAntispamHost(t)
+			cfgPath := filepath.Join(t.TempDir(), "csm.yaml")
+			cfg := &config.Config{}
+			cfg.EmailProtection.Antispam = config.AntispamConfig{
+				Enabled: enabled, DryRun: true, RspamdSocket: testScanSocket, RejectScore: 15, TagScore: 6,
+			}
+			seedConfigAtPath(t, cfgPath, cfg)
+			loaded, err := config.Load(cfgPath)
+			if err != nil {
+				t.Fatalf("load: %v", err)
+			}
+			d := newTestDaemon(t)
+			d.cfg = loaded
+			useActiveConfig(t, loaded)
+			antispamTestShutdown(t, d)
+			d.startAntispam()
+			waitPass(t, passes)
 
-	d.reloadConfig()
-	waitPass(t, passes)
+			if enabled {
+				if got := d.recordAntispamLine(scanErrorLine, time.Now()); len(got) != 1 || got[0].Check != reconcile.CheckScanError {
+					t.Fatalf("enabled antispam did not record a scan error: %+v", got)
+				}
+			}
+			healthBefore := d.antispamHealth.Active()
+			before := scrapeReloadResults(t)
+			d.reloadConfig()
+			if got := scrapeReloadResults(t)[reloadResultNoop] - before[reloadResultNoop]; got != 1 {
+				t.Fatalf("no-change reload count increased by %g, want 1", got)
+			}
+			if config.Active() != loaded {
+				t.Fatal("no-change reload replaced the live config")
+			}
+			waitPass(t, passes)
+			if got := d.antispamHealth.Active(); !reflect.DeepEqual(got, healthBefore) {
+				t.Fatalf("no-change reload changed health: %+v, want %+v", got, healthBefore)
+			}
+		})
+	}
 }
 
 // rspamd that fails some scans and passes others raises and clears the scan
