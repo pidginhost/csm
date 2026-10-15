@@ -195,3 +195,32 @@ func TestAdmissionLedgerRetiredRowActionCannotRepeat(t *testing.T) {
 		})
 	}
 }
+
+// A candidate whose live attempt failed can be previewed on its retry, for
+// instance after execution is switched off. It then ends observed, but the
+// failed attempt's row can still be on disk, so its history stays until
+// that row's expiry like any other ending that ran.
+func TestAdmissionLedgerPreviewAfterAFailedAttemptKeepsRowHistory(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	id, a := f.admitted(30 * 24 * time.Hour)
+	if _, _, _, err := f.l.Execute(a.Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	queued, _, err := f.l.Finish(a.Attempt.ID, admission.DispositionFailed)
+	if err != nil || queued.State != admission.StateQueued {
+		t.Fatalf("failed attempt requeued = %+v, %v", queued, err)
+	}
+	f.tickAt(queued.NotBefore)
+	c, _, granted, err := f.l.Observe(id, admission.LaneGeneral, a.ExpiresAt)
+	if err != nil || !granted || c.State != admission.StateObserved || c.Attempts != 2 {
+		t.Fatalf("preview of the retry = %+v, %t, %v", c, granted, err)
+	}
+	h, found := f.historyEntry(id)
+	if !found || !h.Eligible.Equal(a.ExpiresAt) {
+		t.Fatalf("previewed retry history eligible at %v, want the failed row's expiry %v", h.Eligible, a.ExpiresAt)
+	}
+	if _, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatalf("kept history does not prove its storage: %v", err)
+	}
+}

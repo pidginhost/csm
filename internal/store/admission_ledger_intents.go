@@ -500,7 +500,7 @@ func (l *AdmissionLedger) RetireUnproven(id admission.ActionID) (admission.Candi
 		}
 		q.storageDirty = true
 		h.Pinned = false
-		h.Eligible, _ = admission.HistoryTimes(h.Ended, c.ExpiresAt, admission.HistoryUntilExpiry(c.State))
+		h.Eligible, _ = admission.HistoryTimes(h.Ended, c.ExpiresAt, admission.HistoryUntilExpiry(c))
 		a.Retired = true
 		// The event row names the retirement; the attempt keeps its
 		// unknown outcome. Its slot was held since that outcome.

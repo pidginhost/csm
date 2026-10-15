@@ -309,14 +309,17 @@ func TestHistoryEntryRetireKeys(t *testing.T) {
 
 // Every ending whose attempt may have written a firewall row keeps its
 // history until that row's expiry; only a preview, which writes none,
-// keeps just the review window.
+// keeps just the review window. A preview of a retry had a live attempt.
 func TestHistoryUntilExpiry(t *testing.T) {
 	for _, s := range []State{StateVerified, StateFailed, StateUnknown, StateRefused, StateWithheld, StateDropped} {
-		if !HistoryUntilExpiry(s) {
+		if !HistoryUntilExpiry(Candidate{State: s, Attempts: 1}) {
 			t.Errorf("%s ending may have a row but keeps only the review window", s)
 		}
 	}
-	if HistoryUntilExpiry(StateObserved) {
+	if HistoryUntilExpiry(Candidate{State: StateObserved, Attempts: 1}) {
 		t.Error("a preview keeps its history until an expiry it never enforced")
+	}
+	if !HistoryUntilExpiry(Candidate{State: StateObserved, Attempts: 2}) {
+		t.Error("a preview after a live attempt keeps only the review window")
 	}
 }

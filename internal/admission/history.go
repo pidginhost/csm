@@ -51,11 +51,12 @@ func HistoryTimes(ended, expires time.Time, holdsRow bool) (eligible, target tim
 	return eligible, retireTarget(ended, eligible)
 }
 
-// HistoryUntilExpiry reports whether an admitted candidate ending in s
-// keeps its history until its expiry: every attempt that ran may have
-// written a firewall row, verified or not, and startup must still know its
-// action while that row could be restored. Only a preview writes none.
-func HistoryUntilExpiry(s State) bool { return s != StateObserved }
+// HistoryUntilExpiry reports whether an ended admitted candidate keeps its
+// history until its expiry: every attempt that ran may have written a
+// firewall row, verified or not, and startup must still know its action
+// while that row could be restored. Only a preview writes none, and a
+// candidate previewed on a retry had a live attempt before it.
+func HistoryUntilExpiry(c Candidate) bool { return c.State != StateObserved || c.Attempts > 1 }
 
 func retireTarget(ended, eligible time.Time) time.Time {
 	if target := ended.Add(HistoryTarget); target.After(eligible) {
