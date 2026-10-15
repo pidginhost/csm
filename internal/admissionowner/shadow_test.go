@@ -229,12 +229,15 @@ func TestShadowClocks(t *testing.T) {
 	if len(s.charges) != 1 || s.ceiling.General.Used != 1 {
 		t.Fatal("a reduced limit dropped a retained charge")
 	}
-	credit = s.ceiling.General.Credit
-	if err := tickBy(s, shadowT0.Add(3*time.Hour), time.Nanosecond); err != nil {
+	want, err := s.ceiling.Advance(time.Nanosecond)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.charges) != 0 || s.ceiling.General.Used != 0 || s.ceiling.General.Credit < credit || s.ceiling.General.Credit > credit+5 {
-		t.Fatalf("release: %d charges, %+v (credit was %d)", len(s.charges), s.ceiling.General, credit)
+	if err = tickBy(s, shadowT0.Add(3*time.Hour), time.Nanosecond); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.charges) != 0 || s.ceiling.General.Used != 0 || s.ceiling.General.Credit != want.General.Credit {
+		t.Fatalf("release: %d charges, %+v; want credit %d, no refund", len(s.charges), s.ceiling.General, want.General.Credit)
 	}
 }
 
@@ -245,7 +248,7 @@ func TestShadowForecastBound(t *testing.T) {
 	for _, limit := range []int{0, firewall.MaxShadowBlocks + 5000} {
 		s := testShadow(t, freshCeiling(t, 2000), nil)
 		for i := range forecastEntries {
-			s.entries[fmt.Sprintf("10.%d.%d.%d", i>>16, (i>>8)&0xff, i&0xff)] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry.Add(time.Duration(i))}
+			s.entries[fmt.Sprintf("2001:db8::%x", i+1)] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry.Add(time.Duration(i))}
 		}
 		adm := firewall.BlockAdmission{Limit: limit}
 		used := s.ceiling
@@ -350,7 +353,7 @@ func TestShadowLimitPrecedence(t *testing.T) {
 		t.Fatalf("spending the credit = %s", p)
 	}
 	for i := len(s.entries); i < forecastEntries; i++ {
-		s.entries[fmt.Sprintf("10.%d.%d.%d", i>>16, (i>>8)&0xff, i&0xff)] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry}
+		s.entries[fmt.Sprintf("2001:db8::%x", i+1)] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry}
 	}
 	if p := admitNow(t, s, "203.0.113.2", generalOnly, shadowT0, firewall.BlockAdmission{Limit: forecastEntries}); p != predictSetFull {
 		t.Fatalf("full, limited and spent = %s, want set_full", p)

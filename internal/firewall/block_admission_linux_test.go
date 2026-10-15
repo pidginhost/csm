@@ -91,7 +91,7 @@ func TestBlockAdmissionSnapshotRefusesTheWholeCall(t *testing.T) {
 	}
 	shadow := make([]string, MaxShadowBlocks+1)
 	for i := range shadow {
-		shadow[i] = fmt.Sprintf("10.%d.%d.%d", i>>16, (i>>8)&0xff, i&0xff)
+		shadow[i] = fmt.Sprintf("2001:db8::%x", i+1)
 	}
 	dumps := 0
 	f.e.liveBlockedDump = func(*nftables.Set) ([]nftables.SetElement, error) {

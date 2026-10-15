@@ -97,8 +97,8 @@ func TestAdmissionLedgerPreviewKeepsSafetyGates(t *testing.T) {
 	waitingRoot := f.published(evidenceSpec{target: "192.0.2.14", cursor: "waiting", severity: admission.SeverityCritical})
 	_, waiting := f.enqueue(f.request("192.0.2.14", waitingRoot))
 	pending := pendingSet(waiting)
-	if got := pickIDs(f.preview(pending)); len(got) != 2 {
-		t.Fatalf("first selection = %v, want the two fresh picks", got)
+	if got := pickIDs(f.preview(pending)); len(got) != 2 || !slices.Contains(got, high) || !slices.Contains(got, kept) {
+		t.Fatalf("first selection = %v, want the two fresh picks %s and %s", got, high, kept)
 	}
 	if c := f.candidateOf(held); c.Reason != 0 {
 		t.Fatalf("a held retry in its backoff was deferred: %+v", c)
