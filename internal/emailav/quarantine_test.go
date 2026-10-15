@@ -158,6 +158,60 @@ func TestReleaseMessage(t *testing.T) {
 	}
 }
 
+// With split_spool_directory on (the cPanel default) Exim keeps a message in
+// input/<c>, where c is the sixth character of its ID. Release must put it
+// back there, and only there.
+func TestReleaseMessageSplitSpool(t *testing.T) {
+	msgID := "2jKPFm-000abc-1X"
+	for _, tc := range []struct {
+		name    string
+		subdir  string
+		wantErr bool
+	}{
+		{"hash dir of the message", "m", false},
+		{"hash dir of another message", "x", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			spoolDir := filepath.Join(root, tc.subdir)
+			if err := os.Mkdir(spoolDir, 0750); err != nil {
+				t.Fatal(err)
+			}
+			for _, suffix := range []string{"-H", "-D"} {
+				if err := os.WriteFile(filepath.Join(spoolDir, msgID+suffix), []byte("spool"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			q := NewQuarantine(filepath.Join(t.TempDir(), "quarantine", "email"))
+			q.allowedSpoolDirs = []string{root}
+			result := &ScanResult{MessageID: msgID, Infected: true}
+			env := QuarantineEnvelope{From: "a@b.com", To: []string{"c@d.com"}, Subject: "test", Direction: "inbound"}
+			if err := q.QuarantineMessage(msgID, spoolDir, result, env); err != nil {
+				t.Fatalf("QuarantineMessage: %v", err)
+			}
+
+			err := q.ReleaseMessage(msgID)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("ReleaseMessage() = nil error, want untrusted spool directory")
+				}
+				if _, statErr := os.Stat(filepath.Join(q.baseDir, msgID, msgID+"-H")); statErr != nil {
+					t.Fatalf("quarantine -H file should remain in place: %v", statErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReleaseMessage: %v", err)
+			}
+			for _, suffix := range []string{"-H", "-D"} {
+				if _, statErr := os.Stat(filepath.Join(spoolDir, msgID+suffix)); statErr != nil {
+					t.Errorf("spool %s file should be restored: %v", suffix, statErr)
+				}
+			}
+		})
+	}
+}
+
 func TestDeleteMessage(t *testing.T) {
 	qDir := filepath.Join(t.TempDir(), "quarantine", "email")
 	q := NewQuarantine(qDir)
@@ -381,7 +435,7 @@ func TestValidateReleaseSpoolDirFailsClosedOnResolveError(t *testing.T) {
 
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	q.allowedSpoolDirs = []string{missing}
-	if got, err := q.validateReleaseSpoolDir(missing); err == nil {
+	if got, err := q.validateReleaseSpoolDir(missing, "2jKPFm-000abc-1X"); err == nil {
 		t.Errorf("validateReleaseSpoolDir(%q) = %q, nil error; want fail-closed on unresolved allowed path", missing, got)
 	}
 }
@@ -399,7 +453,7 @@ func TestValidateReleaseSpoolDirAcceptsRealDirEvenWhenSomeAllowedMissing(t *test
 		real,
 	}
 
-	got, err := q.validateReleaseSpoolDir(real)
+	got, err := q.validateReleaseSpoolDir(real, "2jKPFm-000abc-1X")
 	if err != nil {
 		t.Fatalf("validateReleaseSpoolDir(%q) err = %v, want nil", real, err)
 	}

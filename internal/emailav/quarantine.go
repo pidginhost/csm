@@ -179,7 +179,7 @@ func (q *Quarantine) ReleaseMessage(msgID string) error {
 	if err != nil {
 		return fmt.Errorf("reading metadata: %w", err)
 	}
-	spoolDir, err := q.validateReleaseSpoolDir(meta.OriginalSpoolDir)
+	spoolDir, err := q.validateReleaseSpoolDir(meta.OriginalSpoolDir, msgID)
 	if err != nil {
 		return err
 	}
@@ -441,7 +441,7 @@ func rollbackMovedFiles(moved []movedFile) error {
 	return nil
 }
 
-func (q *Quarantine) validateReleaseSpoolDir(spoolDir string) (string, error) {
+func (q *Quarantine) validateReleaseSpoolDir(spoolDir, msgID string) (string, error) {
 	cleanDir := filepath.Clean(spoolDir)
 	if cleanDir == "" || !filepath.IsAbs(cleanDir) {
 		return "", fmt.Errorf("invalid original spool directory")
@@ -472,6 +472,12 @@ func (q *Quarantine) validateReleaseSpoolDir(spoolDir string) (string, error) {
 			continue
 		}
 		if resolvedDir == resolvedAllowed {
+			return resolvedDir, nil
+		}
+		// With split_spool_directory (the cPanel default) Exim keeps the
+		// message in a hash subdirectory named after the sixth character
+		// of its ID, and looks for it nowhere else under that root.
+		if len(msgID) > 5 && resolvedDir == filepath.Join(resolvedAllowed, msgID[5:6]) {
 			return resolvedDir, nil
 		}
 	}

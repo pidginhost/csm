@@ -37,6 +37,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Forward guard changes that fail, or wait for another CSM change to Exim, now retry automatically with the latest settings, and a wait is logged as information, not an error.
 - A forward guard change still running when CSM restarts can no longer override the settings or sender list the restarted CSM applies.
 - Config reloads and settings saves no longer wait while the forward guard rebuilds the Exim configuration.
+- Releasing a quarantined email no longer fails with an untrusted spool directory error on cPanel hosts; emails already in quarantine can be released after upgrade.
 
 ## [4.3.0] - 2026-10-08
 
