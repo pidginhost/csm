@@ -11,23 +11,26 @@ import (
 )
 
 // Decisions the comparison counts. A preview is the decision a live
-// attempt would have been executed on.
+// attempt would have been executed on; a dry run is a forecast ending,
+// counted with its prediction.
 const (
 	decisionRefused   = "refused"
 	decisionQueued    = "queued"
 	decisionCoalesced = "coalesced"
 	decisionObserve   = "observe"
+	decisionDryRun    = "dry_run"
 )
 
 // maxUnwrittenRows bounds history while the action log cannot be written.
 const maxUnwrittenRows = 4096
 
 type compareKey struct {
-	entry    admission.Entry
-	check    string
-	kind     admission.Kind
-	decision string
-	reason   admission.Reason
+	entry      admission.Entry
+	check      string
+	kind       admission.Kind
+	decision   string
+	reason     admission.Reason
+	prediction admission.Prediction
 }
 
 // Funnels count without waiting on the owner. The fixed check vocabulary
@@ -38,11 +41,22 @@ type comparison struct {
 	counts    map[compareKey]uint64
 	next      uint64
 	unwritten []comparisonRow
+	// dropped counts the rows retention discarded unwritten.
+	dropped uint64
 }
 
 type comparisonRow struct {
 	actionlog.Record
 	sequence uint64
+}
+
+// registeredCheck is name when it is a registered check and "unknown"
+// otherwise, so no free text reaches a summary or an example.
+func registeredCheck(name string) string {
+	if _, registered := checks.LookupCheck(name); !registered {
+		return "unknown"
+	}
+	return name
 }
 
 func (c *comparison) add(k compareKey) { c.addAt(k, deliveryNow()) }
@@ -55,9 +69,7 @@ func (c *comparison) addCountAt(k compareKey, n uint64, now time.Time) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, registered := checks.LookupCheck(k.check); !registered {
-		k.check = "unknown"
-	}
+	k.check = registeredCheck(k.check)
 	hour := now.UTC().Truncate(time.Hour)
 	if c.start.IsZero() {
 		c.start = hour
@@ -96,6 +108,9 @@ func (c *comparison) closeHour() {
 		if k.reason != 0 {
 			r.Error = k.reason.String()
 		}
+		if k.prediction != 0 {
+			r.Prediction = k.prediction.String()
+		}
 		c.next++
 		c.unwritten = append(c.unwritten, comparisonRow{Record: r, sequence: c.next})
 	}
@@ -108,7 +123,15 @@ func (c *comparison) closeHour() {
 		}
 		copy(c.unwritten, c.unwritten[cut:])
 		c.unwritten = c.unwritten[:len(c.unwritten)-cut]
+		saturatingAdd(&c.dropped, uint64(cut))
 	}
+}
+
+// droppedRows is how many rows retention discarded unwritten.
+func (c *comparison) droppedRows() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dropped
 }
 
 // take returns the rows still to write and the sequence they end at: those

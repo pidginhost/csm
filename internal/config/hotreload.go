@@ -2,6 +2,7 @@ package config
 
 import (
 	"reflect"
+	"sync"
 	"sync/atomic"
 )
 
@@ -30,19 +31,61 @@ const (
 // tick handlers, alert dispatchers, metrics-auth) call Active() to
 // pick up the latest snapshot after a SIGHUP. Writers (daemon
 // startup, SIGHUP reload) call SetActive.
-var active atomic.Pointer[Config]
+var active atomic.Pointer[publication]
+
+// publication is one live config with the response epoch it was
+// published under.
+type publication struct {
+	cfg   *Config
+	epoch uint64
+}
+
+// publishMu orders publications, so each epoch is assigned against the
+// config it follows.
+var publishMu sync.Mutex
 
 // Active returns the current live Config pointer. Returns nil if
 // SetActive has not been called; callers on hot paths are expected
 // to nil-check once per call. Daemon startup calls SetActive before
 // any tick runs, so a nil return in production is a bug.
 func Active() *Config {
-	return active.Load()
+	if p := active.Load(); p != nil {
+		return p.cfg
+	}
+	return nil
+}
+
+// ActiveEpoch returns the live config with its response epoch, both from
+// one publication. The epoch grows with every publication that changes
+// auto_response or the mode, the settings automatic execution is bound to,
+// so a quick change and change back is still seen as two changes. It is
+// zero before the first publication.
+func ActiveEpoch() (*Config, uint64) {
+	if p := active.Load(); p != nil {
+		return p.cfg, p.epoch
+	}
+	return nil, 0
 }
 
 // SetActive installs cfg as the current live config.
 func SetActive(cfg *Config) {
-	active.Store(cfg)
+	publishMu.Lock()
+	defer publishMu.Unlock()
+	next := &publication{cfg: cfg, epoch: 1}
+	if prev := active.Load(); prev != nil {
+		next.epoch = prev.epoch
+		if responseChanged(prev.cfg, cfg) {
+			next.epoch++
+		}
+	}
+	active.Store(next)
+}
+
+func responseChanged(a, b *Config) bool {
+	if a == nil || b == nil {
+		return a != b
+	}
+	return a.ObserveMode() != b.ObserveMode() || !reflect.DeepEqual(a.AutoResponse, b.AutoResponse)
 }
 
 // Change describes a single top-level field that differs between an

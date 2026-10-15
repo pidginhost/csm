@@ -40,7 +40,7 @@ func (k OutcomeKey) Valid() bool {
 		return k.Event.Valid() && k.Reason.Valid() && k.Outcome == 0
 	}
 	switch k.Outcome {
-	case DispositionApplied, DispositionNarrowed, DispositionFailed, DispositionUnknown, DispositionObserve:
+	case DispositionApplied, DispositionNarrowed, DispositionFailed, DispositionUnknown, DispositionObserve, DispositionDryRun:
 		return k.Reason == 0
 	}
 	return false
@@ -61,12 +61,13 @@ func (k OutcomeKey) less(o OutcomeKey) bool {
 }
 
 // MaxOutcomeKeys is the size of the key space: every queue event with
-// every reason and the five attempt outcomes, unassessed or at each tier.
-const MaxOutcomeKeys = (int(queueEventEnd-EventRefused)*int(reasonEnd-ReasonCeiling) + 5) * (1 + 3*3)
+// every reason and the six attempt and preview outcomes, unassessed or at
+// each tier.
+const MaxOutcomeKeys = (int(queueEventEnd-EventRefused)*int(reasonEnd-ReasonCeiling) + 6) * (1 + 3*3)
 
 // MaxOutcomeBucketBytes bounds one encoded bucket: every key at its
 // largest count.
-const MaxOutcomeBucketBytes = 29 << 10
+const MaxOutcomeBucketBytes = 31 << 10
 
 // OutcomeCounts are saturating counts by OutcomeKey. The zero value is
 // empty and ready to use.

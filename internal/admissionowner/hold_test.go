@@ -20,7 +20,7 @@ func executionHeld(t *testing.T, o *Owner) string {
 	return s.Owner.ExecutionHeld
 }
 
-func heldMono(t *testing.T, o *Owner) *fakeMono {
+func heldMono(t testing.TB, o *Owner) *fakeMono {
 	t.Helper()
 	mono := &fakeMono{now: time.Unix(1000, 0)}
 	setOwnerHook(t, o, &monoNow, mono.read)
@@ -310,14 +310,15 @@ func TestOwnerHoldsPublishCachedStatus(t *testing.T) {
 	f := newOwnerFixture(t)
 	o := f.start(f.options())
 	if err := o.do(func() error {
-		before := o.Status()
+		// Inspect the cache itself: the public getter returns owned copies.
+		before := o.current.Load()
 		o.hold(errors.New("blocked sets unavailable"), true)
-		held := o.Status()
+		held := o.current.Load()
 		if held.Ledger != before.Ledger || !held.CheckedAt.Equal(before.CheckedAt) || before.Owner.ExecutionHeld != "" || held.Owner.ExecutionHeld == "" || held.Owner == before.Owner {
 			return errors.New("hold changed or reread the cached ledger sample")
 		}
 		o.release()
-		after := o.Status()
+		after := o.current.Load()
 		if after.Ledger != before.Ledger || !after.CheckedAt.Equal(before.CheckedAt) || after.Owner.ExecutionHeld != "" || held.Owner.ExecutionHeld == "" {
 			return errors.New("release changed the cached ledger sample or a published owner")
 		}

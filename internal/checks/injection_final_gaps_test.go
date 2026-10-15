@@ -32,10 +32,16 @@ func TestCheckFirewallDisabledReturnsNil(t *testing.T) {
 }
 
 func TestCheckFirewallEnabledNftMissingProducesCritical(t *testing.T) {
-	// On macOS (or any system without nft), exec.Command fails and we get
-	// the "CSM firewall table not found" Critical finding.
+	calls := 0
+	withMockCmd(t, &mockCmd{runAllowNonZero: func(name string, _ ...string) ([]byte, error) {
+		calls++
+		if name != "nft" {
+			t.Fatalf("unexpected command %q", name)
+		}
+		return nil, os.ErrNotExist
+	}})
 	cfg := &config.Config{}
-	cfg.Firewall = &firewall.FirewallConfig{Enabled: true}
+	cfg.Firewall = &firewall.FirewallConfig{Enabled: true, IPv6: true}
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -43,16 +49,11 @@ func TestCheckFirewallEnabledNftMissingProducesCritical(t *testing.T) {
 	defer func() { _ = st.Close() }()
 
 	findings := CheckFirewall(context.Background(), cfg, st)
-	// Should have at least one Critical finding with check=firewall
-	foundCrit := false
-	for _, f := range findings {
-		if f.Check == "firewall" && f.Severity == alert.Critical {
-			foundCrit = true
-			break
-		}
+	if calls != 1 {
+		t.Fatalf("nft calls = %d, want 1", calls)
 	}
-	if !foundCrit {
-		t.Errorf("expected Critical 'firewall' finding when nft absent, got %+v", findings)
+	if len(findings) != 1 || findings[0].Check != "firewall" || findings[0].Severity != alert.Critical {
+		t.Fatalf("expected one Critical firewall finding when nft is absent, got %+v", findings)
 	}
 }
 

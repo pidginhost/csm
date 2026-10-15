@@ -771,7 +771,7 @@ func TestAdmissionLedgerScheduleServesWithinTheCeiling(t *testing.T) {
 	}
 	// The general lane earns a unit every 450 seconds, the reserved lane
 	// one every 1800: the ready work wakes the owner for the first.
-	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(f.wall.Add(450*time.Second)) {
+	if wake, ok, err := f.l.NextWake(nil); err != nil || !ok || !wake.Equal(f.wall.Add(450*time.Second)) {
 		t.Fatalf("budget wake = %v %v, %v", wake, ok, err)
 	}
 	f.tickAt(f.wall.Add(450 * time.Second))
@@ -792,13 +792,13 @@ func TestAdmissionLedgerCeilingOfOneServesOnlyTheReservedLane(t *testing.T) {
 	if picks := f.schedule(admission.ScheduleLimits{General: 10, Reserved: 10, Members: 10}); len(picks) != 0 {
 		t.Fatalf("general work picked with no general lane: %+v", picks)
 	}
-	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(f.wall.Add(admission.QueueAgeLimit)) {
+	if wake, ok, err := f.l.NextWake(nil); err != nil || !ok || !wake.Equal(f.wall.Add(admission.QueueAgeLimit)) {
 		t.Fatalf("wake = %v %v, %v; want only the age-out", wake, ok, err)
 	}
 	// The reserved lane's history credit does not wake work that cannot
 	// use that lane.
 	f.adjustStorage(func(s *admission.StorageState) { s.Reserved.Credit -= 1000 * uint64(time.Second) })
-	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(f.wall.Add(admission.QueueAgeLimit)) {
+	if wake, ok, err := f.l.NextWake(nil); err != nil || !ok || !wake.Equal(f.wall.Add(admission.QueueAgeLimit)) {
 		t.Fatalf("with reserved credit short, wake = %v %v, %v; want only the age-out", wake, ok, err)
 	}
 	direct := f.published(evidenceSpec{producer: f.mail, check: "mail_takeover", target: "192.0.2.11", cursor: "direct", severity: admission.SeverityCritical})
@@ -811,7 +811,7 @@ func TestAdmissionLedgerCeilingOfOneServesOnlyTheReservedLane(t *testing.T) {
 	if _, _, _, err := f.l.Reserve(id, admission.LaneDirect, f.wall.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(f.wall.Add(admission.QueueAgeLimit)) {
+	if wake, ok, err := f.l.NextWake(nil); err != nil || !ok || !wake.Equal(f.wall.Add(admission.QueueAgeLimit)) {
 		t.Fatalf("with the reserved lane spent, wake = %v %v, %v; want only the age-out", wake, ok, err)
 	}
 }
@@ -946,7 +946,7 @@ func TestAdmissionLedgerNextWakeWaitsForTheWindow(t *testing.T) {
 	if s := f.ceilingState(); s.General.Units() != 1 || s.Budget(admission.LaneGeneral) != 0 {
 		t.Fatalf("setup: %+v", s)
 	}
-	wake, ok, err := f.l.NextWake()
+	wake, ok, err := f.l.NextWake(nil)
 	if err != nil || !ok || !wake.Equal(f.wall.Add(admission.CeilingWindow)) {
 		t.Fatalf("wake = %v %v %v, want the window's end", wake, ok, err)
 	}
@@ -968,7 +968,7 @@ func TestAdmissionLedgerNextWakeServesTheReservedLane(t *testing.T) {
 	if _, _, _, err := f.l.Reserve(ids[0], admission.LaneDirect, f.wall.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	wake, ok, err := f.l.NextWake()
+	wake, ok, err := f.l.NextWake(nil)
 	if err != nil || !ok || !wake.Equal(f.wall.Add(admission.CeilingWindow)) {
 		t.Fatalf("reserved wake = %v %v %v, want the window's end", wake, ok, err)
 	}

@@ -1905,9 +1905,7 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 	// over from a previous dry-run window. Keeping a 7-day rolling
 	// window matches the operator workflow of reviewing a week of
 	// would-have-been-blocks before flipping to live.
-	if sdb := store.Global(); sdb != nil {
-		sdb.PurgeDryRunBlocksOlderThan(time.Now().Add(-7 * 24 * time.Hour))
-	}
+	pruneLegacyDryRunBlocks()
 
 	scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
 	findings, purgeChecks := checks.RunTierWithContext(scanCtx, cfg, d.store, tier)
@@ -3159,16 +3157,7 @@ func (d *Daemon) askVerdictCallback(ctx context.Context, ip, reason string) (str
 	if cfg == nil || !cfg.AutoResponse.VerdictCallback.Enabled {
 		return "", "", "", nil
 	}
-	vcCfg := cfg.AutoResponse.VerdictCallback
-	vc := verdict.New(verdict.Config{
-		URL:                      vcCfg.URL,
-		HMACSecret:               vcCfg.HMACSecret,
-		HMACSecretEnv:            vcCfg.HMACSecretEnv,
-		RequireResponseSignature: vcCfg.RequireResponseSignature,
-		AllowUnsigned:            vcCfg.AllowUnsigned,
-		Timeout:                  time.Duration(vcCfg.TimeoutSec) * time.Second,
-	})
-	resp, err := vc.Ask(ctx, verdict.Request{
+	resp, err := newVerdictClient(cfg).Ask(ctx, verdict.Request{
 		IP:       ip,
 		Reason:   reason,
 		Severity: "auto",

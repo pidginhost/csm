@@ -603,3 +603,31 @@ func TestAdmissionLedgerUpgradeSweepsBeforeEnqueue(t *testing.T) {
 		t.Fatalf("upgraded candidate was not swept: %+v %v", c, err)
 	}
 }
+
+// Schema 8 and 9 add record values, not buckets. This build opens schema
+// 7, 8 and 9 without rewriting a record, and so does a read without a
+// handle; only a write that needs a later schema raises the marker.
+func TestAdmissionLedgerOpensSchemasSevenToNineUnchanged(t *testing.T) {
+	for _, schema := range []byte{admissionSchemaVersion, admissionSchemaLinked, admissionSchemaShadow} {
+		f := newLedgerFixture(t)
+		f.queued()
+		if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{schema})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		before := f.snapshot()
+		if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+			t.Fatalf("schema %d: %v", schema, err)
+		}
+		if _, err := ReadAdmissionClock(f.db); err != nil {
+			t.Fatalf("schema %d read without a handle: %v", schema, err)
+		}
+		if _, err := ReadUnprovenBlockActions(f.db, nil); err != nil {
+			t.Fatalf("schema %d unproven read: %v", schema, err)
+		}
+		if !reflect.DeepEqual(before, f.snapshot()) || f.schema() != schema {
+			t.Fatalf("opening schema %d changed the ledger", schema)
+		}
+	}
+}

@@ -199,7 +199,7 @@ func (c Candidate) record() (candidateRecord, error) {
 		return bad("candidate failed before exhausting its attempts")
 	case c.State == StateQueued && c.Attempts > 0 && (c.Attempts == MaxAttempts || c.NotBefore.IsZero()):
 		return bad("queued retry has no delay or has exhausted its attempts")
-	case c.Attempts == MaxAttempts && (c.State == StateRefused || c.State == StateWithheld || c.State == StateDropped):
+	case c.Attempts == MaxAttempts && (c.State == StateRefused || c.State == StateWithheld || c.State == StateDropped || c.State == StateDryRun):
 		return bad("exhausted candidate cannot end through the queue")
 	}
 	// Even immediate failures must wait out each preceding retry backoff.
@@ -231,7 +231,7 @@ func (c Candidate) record() (candidateRecord, error) {
 	switch c.State {
 	case StateReserved:
 		minimumTransitions--
-	case StateVerified, StateUnknown, StateRefused, StateWithheld, StateDropped:
+	case StateVerified, StateUnknown, StateRefused, StateWithheld, StateDropped, StateDryRun:
 		minimumTransitions++
 	case StateQueued:
 		if c.Reason != 0 {
