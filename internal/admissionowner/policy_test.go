@@ -317,3 +317,43 @@ func TestExecutableOwnerTakesItsPolicyCeiling(t *testing.T) {
 		t.Fatalf("ceiling after a new epoch = %d", limit)
 	}
 }
+
+// Losing the snapshot or a required dependency is an invalid installation
+// even without an epoch advance. Cached answers must be retired.
+func TestOwnerRejectsMissingPolicyDependencies(t *testing.T) {
+	for _, missing := range []string{"asker", "expiry", "snapshot"} {
+		t.Run(missing, func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			o, reader, _ := verdictOwner(t, f, blocks, newFakePanel("allow"))
+			id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+			if err := o.do(o.turn); err != nil {
+				t.Fatal(err)
+			}
+			readyAnswers(t, o, 1)
+			invalid := reader.read()
+			switch missing {
+			case "asker":
+				invalid.AskVerdict = nil
+			case "expiry":
+				invalid.Expiry = nil
+			case "snapshot":
+				invalid = ExecutionPolicy{}
+			}
+			reader.publish(invalid)
+			if err := o.Reload(); !errors.Is(err, ErrPolicy) {
+				t.Fatalf("invalid repeated policy accepted: %v", err)
+			}
+			if err := o.do(o.turn); err != nil {
+				t.Fatal(err)
+			}
+			if c := candidate(t, o, id); c.State != admission.StateQueued || c.Attempts != 0 {
+				t.Fatalf("invalid policy consumed an old answer: %+v", c)
+			}
+			if s := verdictState(t, o); s.Ready != 0 || s.Enabled {
+				t.Fatalf("invalid policy kept its verdict stage: %+v", s)
+			}
+		})
+	}
+}

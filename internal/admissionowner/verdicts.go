@@ -25,7 +25,7 @@ const (
 	verdictPending = 64
 	verdictResults = 64
 	verdictReady   = 128
-	// verdictTTL is how long a received answer may be used.
+	// verdictTTL is how long a completed answer may be used.
 	verdictTTL = 30 * time.Second
 	// verdictTextBytes bounds the panel's tenant and note, and
 	// verdictResultBytes one encoded result.
@@ -78,8 +78,8 @@ type verdictResult struct {
 	Class  verdict.ErrorClass `json:"class,omitempty"`
 	Tenant string             `json:"tenant,omitempty"`
 	Note   string             `json:"note,omitempty"`
-	// received is when the owner received it, on the monotonic clock.
-	received time.Time
+	// completed includes time spent waiting for the owner to receive it.
+	completed time.Time
 }
 
 // verdictStage is one policy epoch's workers and channels. The owner alone
@@ -97,7 +97,7 @@ type verdictStage struct {
 }
 
 // verdictTally holds the process counters. Workers count the calls they
-// start; the owner counts what each completion said when it receives it.
+// start and finish, independently of when the owner receives their results.
 type verdictTally struct {
 	mu                                         sync.Mutex
 	asked, inFlight                            uint64
@@ -120,7 +120,7 @@ func (t *verdictTally) add(n *uint64) {
 	saturating(n)
 }
 
-// complete counts one completion the owner received, at mono and wall.
+// complete counts one call when its worker finishes, at mono and wall.
 func (t *verdictTally) complete(r verdictResult, mono, wall time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -271,6 +271,8 @@ func (s *verdictStage) run(j *verdictJob) verdictResult {
 		r.Tenant, r.Note = boundedText(resp.TenantID), boundedText(resp.Note)
 		fitResult(&r)
 	}
+	r.completed = monoNow()
+	s.tally.complete(r, r.completed, time.Now())
 	return r
 }
 
@@ -385,7 +387,6 @@ func (o *Owner) drainStage(s *verdictStage) {
 		case <-s.jobs:
 			v.tally.add(&v.tally.discarded)
 		case r := <-s.results:
-			v.tally.complete(r, monoNow(), time.Now())
 			if r.Answer != answerSkipped && r.Answer != answerCancelled {
 				v.tally.add(&v.tally.discarded)
 			}
@@ -408,6 +409,9 @@ func (o *Owner) stopVerdicts() {
 	}
 	v.stage, v.retiring = nil, nil
 	clear(v.pending)
+	for range v.ready {
+		v.tally.add(&v.tally.discarded)
+	}
 	clear(v.ready)
 	o.observeVerdicts()
 }
@@ -459,11 +463,10 @@ func (o *Owner) askVerdict(id admission.CandidateID, c admission.Candidate, ip, 
 // completion is discarded. A received answer wakes the schedule.
 func (o *Owner) receiveVerdict(r verdictResult) {
 	v := &o.verdicts
-	v.tally.complete(r, monoNow(), time.Now())
 	v.received++
 	defer o.observeVerdicts()
 	j := v.pending[r.Key.Candidate]
-	if j == nil || j.id != r.Job {
+	if j == nil || j.id != r.Job || j.key != r.Key || j.ip != r.IP || j.reason != r.Reason {
 		if r.Answer != answerSkipped && r.Answer != answerCancelled {
 			v.tally.add(&v.tally.discarded)
 		}
@@ -475,11 +478,11 @@ func (o *Owner) receiveVerdict(r verdictResult) {
 	switch {
 	case r.Answer == answerSkipped || r.Answer == answerCancelled:
 		return
-	case swept:
+	case swept || !monoNow().Before(r.completed.Add(verdictTTL)):
 		v.tally.add(&v.tally.discarded)
+		o.scheduleDue = true
 		return
 	}
-	r.received = monoNow()
 	if v.ready == nil {
 		v.ready = map[admission.CandidateID]verdictResult{}
 	}
@@ -491,7 +494,7 @@ func (o *Owner) receiveVerdict(r verdictResult) {
 }
 
 // evictReady makes room for one answer: expired answers go first, then the
-// oldest received, the earlier job first. The evicted candidate asks again
+// oldest completed, the earlier job first. The evicted candidate asks again
 // when it is next selected.
 func (o *Owner) evictReady() {
 	v := &o.verdicts
@@ -499,7 +502,7 @@ func (o *Owner) evictReady() {
 		return
 	}
 	oldest := slices.MinFunc(slices.Collect(maps.Values(v.ready)), func(a, b verdictResult) int {
-		if c := a.received.Compare(b.received); c != 0 {
+		if c := a.completed.Compare(b.completed); c != 0 {
 			return c
 		}
 		return cmpUint(a.Job, b.Job)
@@ -526,7 +529,7 @@ func (o *Owner) expireVerdicts() bool {
 	now := monoNow()
 	expired := false
 	for id, r := range v.ready {
-		if !now.Before(r.received.Add(verdictTTL)) {
+		if !now.Before(r.completed.Add(verdictTTL)) {
 			delete(v.ready, id)
 			expired = true
 		}
@@ -566,7 +569,7 @@ func (o *Owner) sweepVerdicts() {
 }
 
 // readyVerdict is the usable answer for pick c lasting as member: same
-// attempt, epoch, address and reason, received less than verdictTTL ago.
+// attempt, epoch, address and reason, completed less than verdictTTL ago.
 // Any other answer for c is discarded.
 func (o *Owner) readyVerdict(id admission.CandidateID, c admission.Candidate, ip, reason string) (verdictResult, bool) {
 	v := &o.verdicts
@@ -574,7 +577,7 @@ func (o *Owner) readyVerdict(id admission.CandidateID, c admission.Candidate, ip
 	if !ok {
 		return r, false
 	}
-	if !monoNow().Before(r.received.Add(verdictTTL)) || !o.usable(c, r.Key) || r.IP != ip || r.Reason != reason {
+	if !monoNow().Before(r.completed.Add(verdictTTL)) || !o.usable(c, r.Key) || r.Key.Candidate != id || r.IP != ip || r.Reason != reason {
 		delete(v.ready, id)
 		v.tally.add(&v.tally.discarded)
 		return r, false
@@ -592,7 +595,7 @@ func (o *Owner) answers() map[admission.CandidateID]admission.Answer {
 	out := make(map[admission.CandidateID]admission.Answer, len(v.pending)+len(v.ready))
 	now := monoNow()
 	for id, r := range v.ready {
-		if r.Answer == answerAllow && now.Before(r.received.Add(verdictTTL)) {
+		if r.Answer == answerAllow && now.Before(r.completed.Add(verdictTTL)) {
 			out[id] = admission.AnswerAllow
 		}
 	}

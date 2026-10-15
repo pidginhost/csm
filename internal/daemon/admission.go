@@ -55,7 +55,13 @@ func (d *Daemon) executionPolicy() admissionowner.ExecutionPolicy {
 		return admissionowner.ExecutionPolicy{}
 	}
 	limit, source := cfg.AdmissionCeiling()
-	client := newVerdictClient(cfg)
+	// Admission allows must authenticate this exchange. Legacy callback
+	// signing opt-outs do not authorize an admission refusal.
+	vc := cfg.AutoResponse.VerdictCallback
+	client := verdict.New(verdict.Config{
+		URL: vc.URL, HMACSecret: vc.HMACSecret, HMACSecretEnv: vc.HMACSecretEnv,
+		Timeout: time.Duration(vc.TimeoutSec) * time.Second,
+	})
 	return admissionowner.ExecutionPolicy{
 		Epoch: epoch, Observe: cfg.ObserveMode(), DryRun: cfg.AutoResponseDryRunEnabled(),
 		VerdictEnabled: cfg.AutoResponse.VerdictCallback.Enabled,

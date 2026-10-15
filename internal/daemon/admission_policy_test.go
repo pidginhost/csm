@@ -70,8 +70,8 @@ func TestExecutionPolicyFollowsThePublishedConfig(t *testing.T) {
 		p.CeilingSource != config.CeilingConfigured || p.Expiry == nil || p.Expiry(scan) != 2*time.Hour || p.AskVerdict == nil {
 		t.Fatalf("policy from %+v = %+v", cfg.AutoResponse, p)
 	}
-	first, firstSeen := verdictServer(t, "allow")
-	second, secondSeen := verdictServer(t, "block")
+	first, firstSeen := verdictServer(t, "block")
+	second, secondSeen := verdictServer(t, "")
 	callback := func(url string) string {
 		return "auto_response:\n  dry_run: false\n  verdict_callback:\n    enabled: true\n    url: " + url + "\n    timeout_sec: 5\n    allow_unsigned: true\n"
 	}
@@ -82,7 +82,7 @@ func TestExecutionPolicyFollowsThePublishedConfig(t *testing.T) {
 	}
 	publishTestConfig(t, callback(second.URL))
 	resp, err := live.AskVerdict(context.Background(), "192.0.2.10", "CSM auto-block: ssh_brute")
-	if err != nil || resp.Verdict != "allow" {
+	if err != nil || resp.Verdict != "block" {
 		t.Fatalf("asker = %+v, %v", resp, err)
 	}
 	if got := firstSeen(); len(got) != 1 || got[0].IP != "192.0.2.10" || got[0].Reason != "CSM auto-block: ssh_brute" || got[0].Source != "auto_response" {

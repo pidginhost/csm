@@ -94,12 +94,21 @@ func (o *Owner) refreshPolicy() error {
 	}
 	p := o.opts.Policy()
 	switch {
+	case p.Epoch == 0:
+		o.policyErr = p.validate()
+		o.retireVerdicts()
+		return o.policyErr
 	case p.Epoch < o.seenEpoch:
 		return o.policyErr
-	case p.Epoch == o.seenEpoch && p.Epoch != 0:
-		if o.policyErr == nil && !o.policy.same(p) {
-			o.policyErr = fmt.Errorf("%w: epoch %d was published again with other settings", ErrPolicy, p.Epoch)
-			o.retireVerdicts()
+	case p.Epoch == o.seenEpoch:
+		if o.policyErr == nil {
+			o.policyErr = p.validate()
+			if o.policyErr == nil && !o.policy.same(p) {
+				o.policyErr = fmt.Errorf("%w: epoch %d was published again with other settings", ErrPolicy, p.Epoch)
+			}
+			if o.policyErr != nil {
+				o.retireVerdicts()
+			}
 		}
 		return o.policyErr
 	}

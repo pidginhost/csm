@@ -754,9 +754,9 @@ not start without a valid policy; it names the refusal instead, even with
 the callback off, and `mode: observe` is refused. Each turn and reload
 installs a newer epoch before it selects work, and the turn uses that
 policy for every pick; a reload returns once the policy is installed,
-after any turn already running. An older epoch is ignored. Different
-settings under an installed epoch, or an invalid newer policy, hold
-execution as a missing engine does, with the refusal in
+after any turn already running. An older epoch is ignored. Changed settings
+or missing required dependencies under an installed epoch hold execution,
+as does an invalid newer policy, with the refusal in
 `execution_held`, until a valid newer epoch arrives; the daemon reports a
 refusal at reload as a `config_reload_error` finding. Under a dry-run
 policy block picks stay queued and never reach the engine. A
@@ -769,11 +769,12 @@ a refused, protected or already enforced target ends or waits as a batch
 check would have it, and a full set defers the pick, all without a call.
 Any other pick is asked about, as `CSM auto-block: <check>` for its
 canonical address, and stays queued; the schedule passes it over until
-the answer arrives. Four workers make the calls, with at most 64 jobs
-outstanding and 128 answers kept; a full stage leaves picks queued and
-is never read as an answer. Each answer is keyed by candidate, attempt
-and policy epoch and lasts thirty seconds from its receipt. A valid allow
-ends the pick as one `verdict_allow` refusal with no attempt or charge,
+the answer arrives. Workers, outstanding jobs and cached answers are bounded;
+a full stage leaves picks queued and is never read as an answer. Each answer
+is keyed by candidate, attempt and policy epoch and expires from completion,
+including time awaiting receipt. Admission requires a signed, request-bound
+allow even when legacy callback signing exceptions are configured. A valid
+allow ends the pick as one `verdict_allow` refusal with no attempt or charge,
 even with the ceiling spent: the schedule picks it as uncharged work.
 Block, an empty verdict or a failed exchange continues the local path,
 and the reservation consumes the answer. Local checks run again before an
@@ -784,7 +785,8 @@ cancels the calls and joins the workers. A cancellation is never an
 answer. The owner status carries a `verdict` object for an executing
 owner: stage gauges, process counters and the last failure as a fixed
 class, never response text. Its outstanding jobs are also the
-`admission.verdicts` queue row.
+`admission.verdicts` queue row. Workers count completed calls before delivery;
+late or duplicate results cannot count another call or consume a different job.
 
 The admission ledger exposes two row-recovery reads. `ReadSettledBlockActions`
 names failed attempts and retired unknown outcomes among the supplied action

@@ -284,18 +284,43 @@ func TestOwnerChecksLocallyAroundTheCallback(t *testing.T) {
 	}
 }
 
-// An allow ends its pick uncharged even with the live ceiling spent: the
-// schedule picks it as uncharged work. Charged work waits.
+// An allow ends its pick uncharged even if its ceiling lane and real set
+// fill while HTTP runs. Charged work keeps its earlier charge.
 func TestOwnerSchedulesAllowsUncharged(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
 	panel := newFakePanel("allow")
-	o, _, _ := verdictOwner(t, f, blocks, panel)
+	panel.hold = make(chan struct{})
+	r := &policyReader{p: verdictPolicy(1, panel)}
+	// One general unit; this producer cannot spend the reserved unit.
+	r.p.CeilingLimit = 2
+	opts := executeOptions(f, blocks)
+	opts.Policy = r.read
+	o := f.start(opts)
+	heldMono(t, o)
 	id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 	if err := o.do(o.turn); err != nil {
 		t.Fatal(err)
 	}
+	eventually(t, "the call", func() bool { _, active, _, _ := panel.state(); return active == 1 })
+	charged, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+	if err := o.do(func() error {
+		_, a, granted, err := o.ledger.Reserve(charged, admission.LaneGeneral, o.now.Add(time.Hour))
+		if err != nil || !granted {
+			return fmt.Errorf("spending the remaining ceiling: granted %t, error %v", granted, err)
+		}
+		_, _, err = o.ledger.Finish(a.Attempt.ID, admission.DispositionFailed)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := ceiling(t, o)
+	if before.Budget(admission.LaneGeneral) != 0 {
+		t.Fatal("fixture: ceiling is not exhausted")
+	}
+	blocks.set(func(b *fakeBlocks) { b.temp, b.limit = 4, 4 })
+	close(panel.hold)
 	readyAnswers(t, o, 1)
 	var seen map[admission.CandidateID]admission.Answer
 	schedule := scheduleLedger
@@ -311,6 +336,12 @@ func TestOwnerSchedulesAllowsUncharged(t *testing.T) {
 	}
 	if c := candidate(t, o, id); c.State != admission.StateRefused || c.Reason != admission.ReasonVerdictAllow {
 		t.Fatalf("pick = %+v", c)
+	}
+	if after := ceiling(t, o); after != before {
+		t.Fatalf("an allow changed the exhausted ceiling: before %+v, after %+v", before, after)
+	}
+	if _, applies := blocks.calls(); len(applies) != 0 {
+		t.Fatal("an allow applied a block")
 	}
 }
 
@@ -602,7 +633,7 @@ func TestVerdictResultsStayBounded(t *testing.T) {
 // A completion answers only its candidate's outstanding job: a duplicate,
 // a late one for a replaced job and one for an unknown candidate are
 // discarded. A full ready cache evicts expired answers first, then the
-// oldest received, the earlier job first.
+// oldest completed, the earlier job first.
 func TestOwnerReceivesOnlyOutstandingAnswers(t *testing.T) {
 	mono := &fakeMono{now: time.Unix(1000, 0)}
 	previous := monoNow
@@ -621,10 +652,9 @@ func TestOwnerReceivesOnlyOutstandingAnswers(t *testing.T) {
 		return id, j
 	}
 	result := func(j *verdictJob) verdictResult {
-		return verdictResult{Job: j.id, Key: j.key, Answer: answerDefault}
+		return verdictResult{Job: j.id, Key: j.key, Answer: answerDefault, completed: mono.read()}
 	}
 	id, old := submit(1)
-	o.verdicts.tally.inFlight = 1
 	_, newer := submit(1)
 	if newer.key.Candidate != id {
 		t.Fatal("fixture: the replacement names another candidate")
@@ -633,9 +663,7 @@ func TestOwnerReceivesOnlyOutstandingAnswers(t *testing.T) {
 	if len(o.verdicts.ready) != 0 || o.verdicts.tally.discarded != 1 {
 		t.Fatalf("a replaced job answered: ready %d, discarded %d", len(o.verdicts.ready), o.verdicts.tally.discarded)
 	}
-	o.verdicts.tally.inFlight = 1
 	o.receiveVerdict(result(newer))
-	o.verdicts.tally.inFlight = 1
 	o.receiveVerdict(result(newer))
 	if len(o.verdicts.ready) != 1 || o.verdicts.tally.discarded != 2 {
 		t.Fatalf("duplicate: ready %d, discarded %d", len(o.verdicts.ready), o.verdicts.tally.discarded)
@@ -643,7 +671,6 @@ func TestOwnerReceivesOnlyOutstandingAnswers(t *testing.T) {
 	for n := 2; n <= verdictReady; n++ {
 		mono.advance(time.Millisecond)
 		_, j := submit(n)
-		o.verdicts.tally.inFlight = 1
 		o.receiveVerdict(result(j))
 	}
 	if len(o.verdicts.ready) != verdictReady || o.verdicts.tally.evicted != 0 {
@@ -651,14 +678,12 @@ func TestOwnerReceivesOnlyOutstandingAnswers(t *testing.T) {
 	}
 	mono.advance(time.Millisecond)
 	_, j := submit(verdictReady + 1)
-	o.verdicts.tally.inFlight = 1
 	o.receiveVerdict(result(j))
 	if _, kept := o.verdicts.ready[id]; kept || len(o.verdicts.ready) != verdictReady || o.verdicts.tally.evicted != 1 {
 		t.Fatalf("eviction kept the oldest: ready %d, evicted %d", len(o.verdicts.ready), o.verdicts.tally.evicted)
 	}
 	mono.advance(verdictTTL)
 	_, j = submit(verdictReady + 2)
-	o.verdicts.tally.inFlight = 1
 	o.receiveVerdict(result(j))
 	if len(o.verdicts.ready) != 1 || o.verdicts.tally.evicted != 1 {
 		t.Fatalf("expired answers were not dropped first: ready %d, evicted %d", len(o.verdicts.ready), o.verdicts.tally.evicted)
