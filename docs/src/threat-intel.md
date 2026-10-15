@@ -246,7 +246,8 @@ The collector must implement the
 target, so one node can report to the central database and a private
 collector at the same time. Give each target a unique, stable `name`:
 duplicate names select only the last usable target, and removing or
-renaming a target discards its queued reports on the next delivery pass.
+renaming a target, or a key error that makes it unusable at startup,
+discards its queued reports on the next delivery pass.
 The `spool_max` capacity is shared across all targets, not reserved per
 collector. Overflow drops the oldest entries across that shared queue.
 

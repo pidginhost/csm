@@ -1,8 +1,8 @@
 # Abuse Report Contract (v1)
 
-When `reputation.report.enabled: true`, CSM queues minimized reports for
-eligible confirmed-abuse findings, with one copy per usable target. This page defines
-the request a collector receives and the answers CSM understands. Use it to
+When `reputation.report.enabled: true`, CSM queues a minimized report for
+each eligible confirmed-abuse finding, one copy per usable target. This page
+defines the request a collector receives and the answers CSM understands. Use it to
 build a private collector. The central abuse database implements the same
 contract and accepts `ed25519` targets only. Node setup is in
 [Threat Intelligence](threat-intel.md#abuse-reporting).
@@ -173,7 +173,8 @@ grow while a collector keeps throttling.
   entries across the whole queue, including entries for other targets.
 - Target names identify queued destinations. Use unique, stable names:
   the last usable target with a duplicate name wins. Removing or renaming
-  a target discards its queued entries on the next delivery pass.
+  a target, or a key error that makes it unusable at startup, discards its
+  queued entries on the next delivery pass.
 - A retry sends the same body with a new nonce, timestamp and signature, so
   the same report can arrive more than once, for example when an answer is
   lost. Deduplicate on node and body hash, and answer 409
