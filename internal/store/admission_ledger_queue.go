@@ -703,6 +703,192 @@ func (l *AdmissionLedger) scheduleTx(q *queueTx, lim admission.ScheduleLimits, p
 	}
 }
 
+// previewReservedMembers bounds the reserved lane's share of a preview
+// selection: an unlimited reserved lane could starve general work, and the
+// bound is not ceiling credit.
+const previewReservedMembers = 13
+
+// SchedulePreview selects up to MaxBatchMembers queued candidates for a
+// dry-run forecast and records the scheduler's new position. Selection is
+// not admission: the live ceiling and history budgets do not bound it, and
+// it reserves, charges and defers nothing for capacity; the forecast ends
+// each pick. Every candidate weighs one fair unit and no history. The
+// reserved lane alternates direct and corroborated work for at most 13
+// members, then the general lane serves the rest by class and severity;
+// reserved-eligible work competes there too. Revalidation, age-out, retry
+// backoff and recovery holds gate it as they gate Schedule, a held target
+// is deferred as pending recovery, and pending work is passed over.
+func (l *AdmissionLedger) SchedulePreview(pending map[admission.CandidateID]bool) ([]admission.Pick, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now, err := l.clock()
+	if err != nil {
+		return nil, err
+	}
+	var picks []admission.Pick
+	if err = l.update("preview", func(tx *bolt.Tx) error {
+		q, txErr := l.openQueue(tx, now)
+		if txErr != nil {
+			return txErr
+		}
+		if picks, txErr = l.previewTx(q, pending); txErr != nil {
+			return txErr
+		}
+		return q.flush()
+	}); err != nil {
+		return nil, err
+	}
+	l.revalidated = true
+	return picks, nil
+}
+
+func (l *AdmissionLedger) previewTx(q *queueTx, pending map[admission.CandidateID]bool) ([]admission.Pick, error) {
+	if err := q.revalidate(!l.revalidated); err != nil {
+		return nil, err
+	}
+	st, err := loadScheduleState(q.tx)
+	if err != nil {
+		return nil, err
+	}
+	live, err := q.live()
+	if err != nil {
+		return nil, err
+	}
+	byID := map[admission.CandidateID]liveCandidate{}
+	held := map[admission.CandidateID]bool{}
+	var items []admission.ScheduleItem
+	for _, lc := range live {
+		if lc.c.State != admission.StateQueued {
+			continue
+		}
+		h, heldErr := q.heldTarget(lc.c.Key.Target)
+		if heldErr != nil {
+			return nil, heldErr
+		}
+		byID[lc.id], held[lc.id] = lc, h
+		items = append(items, admission.ScheduleItem{
+			ID: lc.id, Scope: lc.c.Scope.Key(), Tier: lc.entry.Tier, Direct: lc.entry.Direct, Corroborated: lc.entry.Corroborated,
+			Queued: lc.c.FirstQueued, Cost: unitCost, CeilingCost: unitCost,
+			Ready: !h && !q.now.Before(lc.c.NotBefore) && !pending[lc.id],
+		})
+	}
+	lim := admission.ScheduleLimits{General: admission.MaxBatchMembers, Reserved: previewReservedMembers, Members: admission.MaxBatchMembers}
+	// As in a schedule, a pick that fails revalidation ends and the
+	// selection is computed again from the stored position without it.
+	for {
+		picks, next, schedErr := admission.Schedule(items, st, lim)
+		if schedErr != nil {
+			return nil, schedErr
+		}
+		refused := map[admission.CandidateID]bool{}
+		for _, p := range picks {
+			_, reason, checkErr := q.check(byID[p.ID], true)
+			if checkErr != nil {
+				return nil, checkErr
+			}
+			if reason == 0 {
+				continue
+			}
+			if checkErr = q.end(byID[p.ID], reason); checkErr != nil {
+				return nil, checkErr
+			}
+			refused[p.ID] = true
+		}
+		if len(refused) == 0 {
+			if err = q.deferHeld(items, byID, held, pending); err != nil {
+				return nil, err
+			}
+			return picks, putScheduleState(q.tx, next)
+		}
+		kept := items[:0:0]
+		for _, it := range items {
+			if !refused[it.ID] {
+				kept = append(kept, it)
+			}
+		}
+		items = kept
+	}
+}
+
+// deferHeld records the real holds a preview selection passed over, as a
+// schedule records them: work an unresolved attempt holds waits as pending
+// recovery once its retry backoff is over. A selection judges no live
+// budget, so it records no other reason.
+func (q *queueTx) deferHeld(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate, held, pending map[admission.CandidateID]bool) error {
+	for _, it := range items {
+		lc := byID[it.ID]
+		if !held[it.ID] || pending[it.ID] || q.now.Before(lc.c.NotBefore) || lc.c.Reason == admission.ReasonPendingRecovery {
+			continue
+		}
+		c := lc.c
+		if err := q.deferred(lc.id, &c, lc.entry, admission.ReasonPendingRecovery); err != nil {
+			return err
+		}
+		c.Transitions++
+		if err := putCandidate(q.tx, c); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// PreviewWake is the earliest admission time at which a dry-run forecast
+// has work without a new report: now while selectable work waits, or a
+// retry's backoff end or a queued deadline. Live budgets never delay it,
+// and pending work wakes only at its deadlines. ok is false when nothing
+// waits.
+func (l *AdmissionLedger) PreviewWake(pending map[admission.CandidateID]bool) (time.Time, bool, error) {
+	// The lock guards the recovery hold this read shares with writers.
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var wake time.Time
+	err := l.db.bolt.View(func(tx *bolt.Tx) error {
+		clock, err := loadLedgerClock(tx.Bucket([]byte(admissionMetaBucket)))
+		if err != nil {
+			return err
+		}
+		now := clock.Now()
+		q, err := openQueueWith(tx, l.reg, l.Inventory(), now)
+		if err != nil {
+			return err
+		}
+		q.held = l.held
+		live, err := q.live()
+		if err != nil {
+			return err
+		}
+		q.state.NextSweep = time.Time{}
+		for _, lc := range live {
+			if lc.c.State != admission.StateQueued {
+				continue
+			}
+			q.noteDeadlines(lc.c, lc.entry)
+			if pending[lc.id] {
+				continue
+			}
+			held, heldErr := q.heldTarget(lc.c.Key.Target)
+			if heldErr != nil {
+				return heldErr
+			}
+			switch {
+			case held:
+			case lc.c.NotBefore.After(now):
+				if q.state.NextSweep.IsZero() || lc.c.NotBefore.Before(q.state.NextSweep) {
+					q.state.NextSweep = lc.c.NotBefore
+				}
+			default:
+				q.state.NextSweep = now
+			}
+		}
+		wake = q.state.NextSweep
+		if !wake.IsZero() && wake.Before(now) {
+			wake = now
+		}
+		return nil
+	})
+	return wake, !wake.IsZero(), err
+}
+
 // deferUnserved records why ready work the schedule left queued waits: its
 // lanes ran out of ceiling budget or history budget, or its details do not
 // fit the recovery reserve (spec 5.17). Work passed over for the member

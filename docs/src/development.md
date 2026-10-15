@@ -511,6 +511,19 @@ unresolved attempt still holds the target, and stale work is refused. The
 same ending again changes nothing. The episode is not answered, and the
 first dry-run ending also moves the ledger to schema 9.
 
+`SchedulePreview` selects queued work for a dry-run forecast. It is not
+admission: spent live ceiling and history budgets do not stop it, and it
+reserves, charges and defers nothing for capacity. Every candidate, a
+challenge included, weighs one fair unit and no history. Direct and
+corroborated work alternates in the reserved lane for at most 13 of the 64
+members, and the general lane serves the rest by class and severity, where
+reserved-eligible work competes too. Revalidation, age-out, retry backoff
+and recovery holds gate it as they gate a schedule, a held target is
+deferred as `pending_recovery`, pending work is passed over, and the shared
+fair position advances once per selection. `PreviewWake` is the matching
+wake: now while selectable work waits, otherwise a backoff end or a queued
+deadline, whatever the live budgets.
+
 Schema 7 adds execution intents; the first open upgrades a schema 1 to 6
 ledger in the same transaction. Execution marks a batch of up to 64
 reserved attempts as running and records, in the same transaction and
