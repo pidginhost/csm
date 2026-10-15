@@ -303,6 +303,56 @@ func TestAdmissionLedgerEndDryRunRollsBack(t *testing.T) {
 	}
 }
 
+// A retry's ending that fails to commit leaves its failed attempt, its
+// charge and its open history as they were, with the schema unraised; the
+// retry commits once and ends that history once.
+func TestAdmissionLedgerEndDryRunRollsBackARetry(t *testing.T) {
+	f := newLedgerFixture(t)
+	id, a := f.admitted(time.Hour)
+	if _, _, err := f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
+		t.Fatal(err)
+	}
+	f.tickAt(f.candidateOf(id).NotBefore)
+	tier := f.entryTier(id)
+	schema, before := f.schema(), f.snapshot()
+	if h, found := f.historyOf(id); !found || !h.Ended.IsZero() {
+		t.Fatalf("fixture: retry history = %+v, %v", h, found)
+	}
+	f.failNext("dry_run")
+	if _, changed, err := f.l.EndDryRun(id); err == nil || changed {
+		t.Fatalf("the ending did not hit the commit failure: %v %v", changed, err)
+	}
+	if got := f.schema(); got != schema || !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatalf("a rolled-back retry ending changed the ledger: schema %d -> %d", schema, got)
+	}
+	c, changed, err := f.l.EndDryRun(id)
+	if err != nil || !changed || c.State != admission.StateDryRun || c.Attempts != 1 {
+		t.Fatalf("retry = %+v, %v, %v", c, changed, err)
+	}
+	if h, found := f.historyOf(id); !found || !h.Ended.Equal(f.wall) {
+		t.Fatalf("history after the retry = %+v, %v", h, found)
+	}
+	if n := f.outcomesAt(admission.SpanDay, f.wall).Count(admission.AttemptOutcome(admission.DispositionDryRun, tier)); n != 1 {
+		t.Fatalf("dry-run outcomes = %d", n)
+	}
+}
+
+// Spec 6.4: a comparison-only owner previews and refuses its picks; neither
+// needs the dry-run vocabulary, so a schema 7 ledger stays at 7.
+func TestAdmissionLedgerPreviewsKeepSchemaSeven(t *testing.T) {
+	f := newLedgerFixture(t)
+	if _, _, _, err := f.l.Observe(f.queued(), admission.LaneGeneral, f.wall.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	f.nextGeneration()
+	if _, err := f.l.Terminate(f.queued(), admission.ReasonProtected); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.schema(); got != admissionSchemaVersion {
+		t.Fatalf("schema = %d after previews and refusals", got)
+	}
+}
+
 // A dry-run ending survives a reopen, is never scheduled or reserved, and
 // does not answer the episode: a later observation queues the next
 // generation, which can run live.
