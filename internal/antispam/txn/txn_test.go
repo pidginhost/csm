@@ -430,18 +430,21 @@ func TestApplyRollsBackEveryStep(t *testing.T) {
 		rspamdLoad int // rspamd reloads, forward and rollback
 		eximLoad   int
 	}{
-		"rspamd configtest":   {func(f *fakeHost) { f.fail["rspamadm configtest"] = []int{1} }, StepRspamdCheck, 0, 0},
-		"rspamd conflict":     {func(f *fakeHost) { f.actions = `{"reject":20,"add_header":6}` }, StepRspamdCheck, 0, 0},
-		"object-form actions": {func(f *fakeHost) { f.actions = `{"reject":{"score":15},"add_header":6}` }, StepRspamdCheck, 0, 0},
-		"rspamd reload":       {func(f *fakeHost) { f.fail["systemctl reload rspamd.service"] = []int{1} }, StepRspamdReload, 2, 0},
-		"rspamd ping":         {func(f *fakeHost) { f.pingFail = []int{1} }, StepRspamdReload, 2, 0},
-		"buildeximconf":       {func(f *fakeHost) { f.fail[BuildEximConf] = []int{1} }, StepEximBuild, 2, 0},
-		"exim -bV":            {func(f *fakeHost) { f.fail["exim -bV"] = []int{1} }, StepEximBuild, 2, 0},
-		"named list":          {func(f *fakeHost) { f.fail["exim -C"] = []int{1} }, StepEximBuild, 2, 0},
-		"hooks not inlined":   {func(f *fakeHost) { f.dropHooks = []int{2} }, StepEximBuild, 2, 0},
-		"exim reload":         {func(f *fakeHost) { f.fail["systemctl reload exim.service"] = []int{1} }, StepEximReload, 2, 2},
-		"exim inactive":       {func(f *fakeHost) { f.fail["systemctl is-active exim.service"] = []int{2} }, StepEximProbe, 2, 2},
-		"exim silent":         {func(f *fakeHost) { f.greetFail = []int{2} }, StepEximProbe, 2, 2},
+		"rspamd configtest":     {func(f *fakeHost) { f.fail["rspamadm configtest"] = []int{1} }, StepRspamdCheck, 0, 0},
+		"rspamd conflict":       {func(f *fakeHost) { f.actions = `{"reject":20,"add_header":6}` }, StepRspamdCheck, 0, 0},
+		"object-form actions":   {func(f *fakeHost) { f.actions = `{"reject":{"score":15},"add_header":6}` }, StepRspamdCheck, 0, 0},
+		"phishing dump failed":  {func(f *fakeHost) { f.fail["rspamadm configdump -j phishing"] = []int{1} }, StepRspamdCheck, 0, 0},
+		"phishtank enabled":     {func(f *fakeHost) { f.phishing = `{"phishtank_enabled":true}` }, StepRspamdCheck, 0, 0},
+		"non-boolean phishtank": {func(f *fakeHost) { f.phishing = `{"phishtank_enabled":0}` }, StepRspamdCheck, 0, 0},
+		"rspamd reload":         {func(f *fakeHost) { f.fail["systemctl reload rspamd.service"] = []int{1} }, StepRspamdReload, 2, 0},
+		"rspamd ping":           {func(f *fakeHost) { f.pingFail = []int{1} }, StepRspamdReload, 2, 0},
+		"buildeximconf":         {func(f *fakeHost) { f.fail[BuildEximConf] = []int{1} }, StepEximBuild, 2, 0},
+		"exim -bV":              {func(f *fakeHost) { f.fail["exim -bV"] = []int{1} }, StepEximBuild, 2, 0},
+		"named list":            {func(f *fakeHost) { f.fail["exim -C"] = []int{1} }, StepEximBuild, 2, 0},
+		"hooks not inlined":     {func(f *fakeHost) { f.dropHooks = []int{2} }, StepEximBuild, 2, 0},
+		"exim reload":           {func(f *fakeHost) { f.fail["systemctl reload exim.service"] = []int{1} }, StepEximReload, 2, 2},
+		"exim inactive":         {func(f *fakeHost) { f.fail["systemctl is-active exim.service"] = []int{2} }, StepEximProbe, 2, 2},
+		"exim silent":           {func(f *fakeHost) { f.greetFail = []int{2} }, StepEximProbe, 2, 2},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)

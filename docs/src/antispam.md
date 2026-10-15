@@ -171,6 +171,11 @@ CSM regenerates its own blocks and files, so manual edits to them are
 overwritten. A file of the same name without CSM's header blocks the install;
 removal leaves it alone.
 
+The loaded `phishtank_enabled` setting must be the boolean `false`. Missing,
+duplicate or non-boolean values are configuration conflicts, just like `true`.
+CSM reports them and removes its integration when safe. Failed commands or
+malformed command output leave the integration in place for a later check.
+
 Each change runs as one transaction in a short-lived root helper started by
 systemd outside CSM's sandbox, under the same lock as the forward guard. It
 rebuilds the Exim configuration, checks it, reloads Exim and rspamd only when

@@ -62,6 +62,43 @@ func FuzzMaxMessage(f *testing.F) {
 	})
 }
 
+func FuzzPhishtankEnabled(f *testing.F) {
+	for _, seed := range []string{
+		`{"phishtank_enabled":false}`, `{"phishtank_enabled":true}`,
+		`{"phishtank_enabled":0}`, `{"phishtank_enabled":"false"}`,
+		`{"phishtank_enabled":[]}`, `{"phishtank_enabled":null}`,
+		`{"phishtank_enabled":false,"phishtank_enabled":true}`,
+		`{"phishtank_enabled":false} trailing`, `{}`, `null`, ``,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		on, err := PhishtankEnabled(data)
+		if err != nil {
+			if on {
+				t.Fatal("rejected setting returned enabled")
+			}
+			return
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil {
+			t.Fatalf("accepted invalid JSON: %v", err)
+		}
+		var value *bool
+		if err := json.Unmarshal(fields["phishtank_enabled"], &value); err != nil || value == nil || *value != on {
+			t.Fatalf("accepted a missing, non-boolean or mismatched setting: %q", data)
+		}
+		duplicate := strings.TrimSpace(string(data))
+		duplicate = duplicate[:len(duplicate)-1] + `,"phishtank_enabled":false}`
+		if _, err := PhishtankEnabled([]byte(duplicate)); err == nil {
+			t.Fatal("accepted a duplicate setting")
+		}
+		if _, err := PhishtankEnabled(append(append([]byte(nil), data...), []byte("{}")...)); err == nil {
+			t.Fatal("accepted a trailing object")
+		}
+	})
+}
+
 func FuzzEximLogFirstDestination(f *testing.F) {
 	for _, seed := range []string{"/var/log/exim_%slog", "syslog", "", ":", ": /var/log/exim_%slog", "${primary_hostname}", "<;"} {
 		f.Add(seed)
