@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -53,6 +54,9 @@ func TestActionShowRecordsRejectOtherClaims(t *testing.T) {
 		func(r *actionlog.Record) { r.Op = "operate.manual_firewall" },
 		func(r *actionlog.Record) { r.Actor = actionlog.Daemon },
 		func(r *actionlog.Record) { r.Result = actionlog.Applied },
+		func(r *actionlog.Record) { r.Result = actionlog.Failed },
+		func(r *actionlog.Record) { r.Error = "fixture enforcement failure" },
+		func(r *actionlog.Record) { r.Reason = "general lane, expires fixture" },
 		func(r *actionlog.Record) { r.ActionID = "act_11111111111111111111111111111111" },
 		func(r *actionlog.Record) { r.ActionVersion = 1 },
 		func(r *actionlog.Record) { r.Count = 1 },
@@ -73,6 +77,12 @@ func TestActionShowRecordsRejectOtherClaims(t *testing.T) {
 		func(o *anonAction) { o.Op = "operate.manual_firewall" },
 		func(o *anonAction) { o.Actor = string(actionlog.Daemon) },
 		func(o *anonAction) { o.Result = string(actionlog.Applied) },
+		func(o *anonAction) { o.Result = string(actionlog.Failed) },
+		func(o *anonAction) { o.HasError = true },
+		func(o *anonAction) { o.ReasonKind = "admission_general" },
+		func(o *anonAction) {
+			o.anonTarget = anonTarget{TargetKind: "ip", Target: a.mapAddr(netip.MustParseAddr("192.0.2.1"))}
+		},
 		func(o *anonAction) { o.ActionID = a.ID(idAction, "act_11111111111111111111111111111111") },
 		func(o *anonAction) { o.ActionVersion = 1 },
 		func(o *anonAction) { o.Count = 1 },

@@ -685,7 +685,10 @@ whose retirement the ledger refuses (undelivered outcomes, or a ledger clock
 that cannot yet prove the expiry) is asked again after one second, doubling
 to a minute. A damaged record or an attempt that ended another way is asked
 again a minute later and reported once, so it does not fail every turn. A
-stop between the row removal and the ledger retirement leaves a
+missing or unreadable attempt uses the same wait without preventing other
+attempts from retiring. An unreadable intent list delays the whole pass;
+damage is reported once until a readable list proves recovery. A stop
+between the row removal and the ledger retirement leaves a
 row-less unknown that the next pass retires. The turn wakes for the earliest
 expiry or monotonic retry. With one noted, a turn lists no intents until it
 is due; with none noted, every turn lists them. A turn that fails after its

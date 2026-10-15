@@ -208,6 +208,8 @@ type Owner struct {
 	// was already reported.
 	retireDelay  map[admission.ActionID]time.Duration
 	retireFaults map[admission.ActionID]bool
+	// A damaged intent list has no readable action to key a fault by.
+	retireReadFault bool
 	// Resume after the last checked action even if its retry is already due.
 	retireAfter admission.ActionID
 }

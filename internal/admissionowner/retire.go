@@ -35,13 +35,26 @@ func (o *Owner) retire() error {
 	}
 	intents, err := unresolvedIntents(o.ledger)
 	if err != nil {
+		if errors.Is(err, admission.ErrCorruptRecord) {
+			o.retireAt = monoNow().Add(retireRecheck)
+			o.noteRetirementRetry(o.retireAt)
+			if o.retireReadFault {
+				return nil
+			}
+			o.retireReadFault = true
+		} else {
+			o.backoffRetirement()
+		}
 		return fmt.Errorf("reading unresolved intents: %w", err)
 	}
+	o.retireReadFault = false
 	o.retireDue, o.retireNext = time.Time{}, time.Time{}
-	waiting := make(map[admission.ActionID]time.Time)
-	delays := make(map[admission.ActionID]time.Duration)
-	faults := make(map[admission.ActionID]bool)
+	waiting, delays, faults := o.retireRetry, o.retireDelay, o.retireFaults
+	o.retireRetry = make(map[admission.ActionID]time.Time)
+	o.retireDelay = make(map[admission.ActionID]time.Duration)
+	o.retireFaults = make(map[admission.ActionID]bool)
 	var due []admission.Intent
+	var errs error
 	// Intents are in action order. Rotate the scan so due retries cannot
 	// starve the tail when a turn takes longer than their waits.
 	start := sort.Search(len(intents), func(i int) bool { return intents[i].Action > o.retireAfter })
@@ -50,26 +63,34 @@ func (o *Owner) retire() error {
 		if in.Kind != admission.KindBlockIP {
 			continue
 		}
+		if d, ok := delays[in.Action]; ok {
+			o.retireDelay[in.Action] = d
+		}
+		if faults[in.Action] {
+			o.retireFaults[in.Action] = true
+		}
+		// A damaged attempt can fail to decode before retirement reaches
+		// the ledger write. Respect its wait before reading it again.
+		if at := waiting[in.Action]; monoNow().Before(at) {
+			o.retireRetry[in.Action] = at
+			o.noteRetirementRetry(at)
+			continue
+		}
 		a, readErr := o.ledger.Attempt(in.Action)
 		if readErr != nil {
-			return fmt.Errorf("reading retirement attempt %s: %w", in.Action, readErr)
+			if reason, refused := admission.ReasonOf(readErr); refused && reason == admission.ReasonInvalid {
+				readErr = fmt.Errorf("%w: intent is missing its attempt", admission.ErrCorruptRecord)
+			}
+			errs = errors.Join(errs, o.retirementResult(in.Action, fmt.Errorf("reading retirement attempt %s: %w", in.Action, readErr)))
+			continue
 		}
 		if a.State != admission.StateUnknown || a.Retired {
+			delete(o.retireDelay, in.Action)
+			delete(o.retireFaults, in.Action)
 			continue
 		}
 		if o.now.Before(in.ExpiresAt) {
 			o.noteRetirement(in.ExpiresAt)
-			continue
-		}
-		if d, ok := o.retireDelay[in.Action]; ok {
-			delays[in.Action] = d
-		}
-		if o.retireFaults[in.Action] {
-			faults[in.Action] = true
-		}
-		if at := o.retireRetry[in.Action]; monoNow().Before(at) {
-			waiting[in.Action] = at
-			o.noteRetirementRetry(at)
 			continue
 		}
 		if len(due) == firewall.MaxBlockBatchMembers {
@@ -78,18 +99,17 @@ func (o *Owner) retire() error {
 		}
 		due = append(due, in)
 	}
-	o.retireRetry, o.retireDelay, o.retireFaults = waiting, delays, faults
 	if len(due) == 0 {
-		return nil
+		return errs
 	}
 	if o.degraded {
 		o.backoffRetirement()
-		return nil
+		return errs
 	}
 	engine := o.opts.Blocks()
 	if engine == nil {
 		o.backoffRetirement()
-		return nil
+		return errs
 	}
 	members := make([]firewall.BlockAction, len(due))
 	for i, in := range due {
@@ -98,39 +118,46 @@ func (o *Owner) retire() error {
 	}
 	gone, checked := o.checkRetirements(engine, members)
 	if !checked {
-		return nil
+		return errs
 	}
 	o.retireAfter = due[len(due)-1].Action
-	var errs error
 	for i, in := range due {
 		if !gone[i] {
 			o.retryRetirement(in.Action, retireRecheck)
 			continue
 		}
 		_, _, _, err = retireLedger(o.ledger, in.Action)
-		switch _, refused := admission.ReasonOf(err); {
-		case err == nil:
-			delete(o.retireDelay, in.Action)
-			delete(o.retireFaults, in.Action)
-		case errors.Is(err, admission.ErrCorruptRecord), errors.Is(err, admission.ErrTransitionConflict):
-			// A damaged record or an attempt that ended another way is not
-			// mended by asking again soon: ask a minute later and report it
-			// once, so it does not fail every turn and slow all owner work.
-			if !o.retireFaults[in.Action] {
-				errs = errors.Join(errs, fmt.Errorf("retiring %s: %w", in.Action, err))
-			}
-			o.retireFaults[in.Action] = true
-			o.retryRetirement(in.Action, retireRecheck)
-		case errors.Is(err, admission.ErrNotReady), refused:
-			// Delivery or the ledger clock has not caught up. Keep a
-			// future wake even if no new candidates arrive.
-			o.retryRetirementLater(in.Action)
-		default:
-			errs = errors.Join(errs, fmt.Errorf("retiring %s: %w", in.Action, err))
-			o.retryRetirementLater(in.Action)
+		if err != nil {
+			err = fmt.Errorf("retiring %s: %w", in.Action, err)
 		}
+		errs = errors.Join(errs, o.retirementResult(in.Action, err))
 	}
 	return errs
+}
+
+// Reads and writes share the same retry policy: damage must not fail every
+// turn or keep unrelated attempts from reaching the engine.
+func (o *Owner) retirementResult(id admission.ActionID, err error) error {
+	switch _, refused := admission.ReasonOf(err); {
+	case err == nil:
+		delete(o.retireDelay, id)
+		delete(o.retireFaults, id)
+	case errors.Is(err, admission.ErrCorruptRecord), errors.Is(err, admission.ErrTransitionConflict):
+		reported := o.retireFaults[id]
+		o.retireFaults[id] = true
+		o.retryRetirement(id, retireRecheck)
+		if !reported {
+			return err
+		}
+	case errors.Is(err, admission.ErrNotReady), refused:
+		// Delivery or the ledger clock has not caught up. Keep a future
+		// wake even if no new candidates arrive.
+		o.retryRetirementLater(id)
+	default:
+		o.retryRetirementLater(id)
+		return err
+	}
+	return nil
 }
 
 // checkRetirements asks the engine about members. A failed or short answer
