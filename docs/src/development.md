@@ -827,6 +827,18 @@ committed clock reading or a new limit ends too: the forecast error is
 `model_error` until the next session starts, and that session names
 `model_error` as its reset rather than a mode change.
 
+Each committed `capacity_admit` leaves one example in `dry_run_blocks`. A
+turn writes its examples in one batch after its endings, also when a later
+pick stops the turn; a failed write loses them without undoing the endings
+or the forecast, and nothing retries it. An owner that runs blocks keeps the
+bucket alone: one bounded maintenance step a second trims it to its cap and
+removes examples older than a week. Installing a live policy after a dry run,
+or at startup, asks for a purge of every example but the active session's;
+the purge pass starts over whenever the active session changes, so a dry run
+that resumes keeps its own examples whatever their times, and the examples
+are stale until a purge pass completes. The daemon's legacy prune and live
+purge leave the bucket to such an owner.
+
 With the policy's verdict callback on, a live owner asks the panel about
 each `block_ip` pick before anything is reserved, as a dry run does before
 it forecasts one. One read-only admission

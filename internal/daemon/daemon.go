@@ -1905,9 +1905,7 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 	// over from a previous dry-run window. Keeping a 7-day rolling
 	// window matches the operator workflow of reviewing a week of
 	// would-have-been-blocks before flipping to live.
-	if sdb := store.Global(); sdb != nil {
-		sdb.PurgeDryRunBlocksOlderThan(time.Now().Add(-7 * 24 * time.Hour))
-	}
+	pruneLegacyDryRunBlocks()
 
 	scanCtx, gaps := checks.WithCoverageGaps(d.scanContext())
 	findings, purgeChecks := checks.RunTierWithContext(scanCtx, cfg, d.store, tier)

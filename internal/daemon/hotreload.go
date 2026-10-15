@@ -246,7 +246,7 @@ func publishActiveConfig(cfg *config.Config, source string) {
 }
 
 func purgeDryRunBlocksIfAutoResponseLive(cfg *config.Config, source string) {
-	if cfg == nil || cfg.AutoResponseDryRunEnabled() {
+	if cfg == nil || cfg.AutoResponseDryRunEnabled() || ownerKeepsDryRunExamples.Load() {
 		return
 	}
 	if sdb := store.Global(); sdb != nil {

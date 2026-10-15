@@ -210,6 +210,7 @@ type Owner struct {
 	forecastReset resetReason
 	forecastErr   forecastError
 	forecastErrAt time.Time
+	out           dryRunOutput
 	// policyHeld is the firewall work a refused policy holds. It waits for
 	// a valid policy as pending work waits for its answer.
 	policyHeld map[admission.CandidateID]bool
@@ -344,6 +345,7 @@ func (o *Owner) run() {
 		case <-schedule.C:
 			if o.started {
 				o.schedule()
+				o.maintainExamples()
 			}
 		case r := <-o.stageResults():
 			o.receiveVerdict(r)

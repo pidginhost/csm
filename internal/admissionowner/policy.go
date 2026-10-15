@@ -119,10 +119,16 @@ func (o *Owner) refreshPolicy() error {
 		o.policyErr = err
 		return err
 	}
+	prev := o.policy
 	o.policy, o.policyErr, o.policyHeld = p, nil, nil
 	if !p.DryRun {
 		// A live policy ends the forecast; a later dry run starts anew.
+		// Its examples are purged at this boundary, as are those a dry run
+		// before a restart left.
 		o.shadow, o.forecastReset = nil, resetModeChange
+		if prev.Epoch == 0 || prev.DryRun {
+			o.requestPurge()
+		}
 	}
 	o.startVerdicts()
 	return nil

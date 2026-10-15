@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/actionlog"
@@ -18,6 +19,19 @@ import (
 )
 
 var _ health.AdmissionProvider = (*Daemon)(nil)
+
+// ownerKeepsDryRunExamples is set once an admission owner that runs blocks
+// starts. It then writes, prunes and purges the dry_run_blocks bucket alone
+// (spec 3.6), and the legacy prune and purge leave the bucket to it.
+var ownerKeepsDryRunExamples atomic.Bool
+
+// pruneLegacyDryRunBlocks ages out dry_run_blocks records older than a
+// week, unless an admission owner keeps the bucket.
+func pruneLegacyDryRunBlocks() {
+	if sdb := store.Global(); sdb != nil && !ownerKeepsDryRunExamples.Load() {
+		sdb.PurgeDryRunBlocksOlderThan(time.Now().Add(-7 * 24 * time.Hour))
+	}
+}
 
 // setResponseAdmission wires the response funnels; tests observe it.
 var setResponseAdmission = checks.SetResponseAdmission
@@ -108,6 +122,7 @@ func (d *Daemon) startAdmissionWith(opts admissionowner.Options) {
 		return
 	}
 	d.admission = admissionowner.Start(opts)
+	ownerKeepsDryRunExamples.Store(d.admission.OwnsDryRunExamples())
 	setResponseAdmission(d.admission)
 	d.registerQueueSource("admission", d.admission)
 	if st := d.admission.Status(); st != nil && st.Owner != nil && st.Owner.Error != "" {

@@ -48,6 +48,15 @@ type comparisonRow struct {
 	sequence uint64
 }
 
+// registeredCheck is name when it is a registered check and "unknown"
+// otherwise, so no free text reaches a summary or an example.
+func registeredCheck(name string) string {
+	if _, registered := checks.LookupCheck(name); !registered {
+		return "unknown"
+	}
+	return name
+}
+
 func (c *comparison) add(k compareKey) { c.addAt(k, deliveryNow()) }
 
 func (c *comparison) addAt(k compareKey, now time.Time) { c.addCountAt(k, 1, now) }
@@ -58,9 +67,7 @@ func (c *comparison) addCountAt(k compareKey, n uint64, now time.Time) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, registered := checks.LookupCheck(k.check); !registered {
-		k.check = "unknown"
-	}
+	k.check = registeredCheck(k.check)
 	hour := now.UTC().Truncate(time.Hour)
 	if c.start.IsZero() {
 		c.start = hour

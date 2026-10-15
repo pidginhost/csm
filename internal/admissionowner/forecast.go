@@ -63,6 +63,9 @@ func (o *Owner) forecast() error {
 	if err := o.beginForecast(); err != nil {
 		return err
 	}
+	// Examples of committed endings are written even when a later pick
+	// stops the turn.
+	defer o.flushExamples()
 	picks, err := previewLedger(o.ledger, o.answers())
 	if err != nil {
 		return fmt.Errorf("selecting dry-run work: %w", err)
@@ -202,6 +205,9 @@ func (o *Owner) endForecast(p execPick, pred admission.Prediction, change *shado
 		return fmt.Errorf("ending pick %s as a dry run: %w", p.pick.ID, err)
 	case changed:
 		delete(o.verdicts.ready, p.pick.ID)
+		if change != nil {
+			o.noteExample(p, change)
+		}
 		o.shadow.commit(pred, change, monoNow())
 		c := p.c
 		o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionDryRun, prediction: pred}, o.now)
