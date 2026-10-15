@@ -776,15 +776,20 @@ that lasts as long predicts `existing_shadow` and a shorter one
 `pending_recovery`, and neither is renewed. Other picks are checked
 against the modelled temporary capacity, the bound on forecast blocks and
 the modelled ceiling, and only `capacity_admit` adds a forecast block and
-a simulated charge. Other firewall kinds end as `not_modelled`; a
-challenge keeps its comparison preview. Without an engine or snapshot, or
+a simulated charge. With the verdict callback on, a pick the model would
+judge is asked about first and waits for its answer with no forecast
+change; a usable allow ends it as `verdict_allow` before any modelled
+capacity is judged, and a covering forecast block or a full modelled set
+ends it without a call. Other firewall kinds end as `not_modelled`, with
+no call; a challenge keeps its comparison preview. Without an engine or snapshot, or
 with a degraded clock, picks wait as `engine_unavailable` and the forecast
 does not change. A decision is installed only once its ending commits. A
 live policy ends the session and never replays a dry-run ending; a later
 observation of the target is a new generation.
 
 With the policy's verdict callback on, a live owner asks the panel about
-each `block_ip` pick before anything is reserved. One read-only admission
+each `block_ip` pick before anything is reserved, as a dry run does before
+it forecasts one. One read-only admission
 snapshot answers the turn's local checks without giving any pick a slot:
 a refused, protected or already enforced target ends or waits as a batch
 check would have it, and a full set defers the pick, all without a call.

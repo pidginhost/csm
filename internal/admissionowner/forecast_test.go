@@ -1,6 +1,7 @@
 package admissionowner
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -10,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/verdict"
 )
 
 func dryPolicy(epoch uint64) ExecutionPolicy {
@@ -489,5 +491,213 @@ func TestOwnerForecastCountsRealBlocksOfForecastAddresses(t *testing.T) {
 	turn(t, o)
 	if fc := forecastOf(t, o); fc.picks[predictCapacityAdmit] != 3 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 3 {
 		t.Fatalf("forecast after a manual untimed block = %+v", fc)
+	}
+}
+
+func dryVerdictPolicy(epoch uint64, panel *fakePanel) ExecutionPolicy {
+	p := verdictPolicy(epoch, panel)
+	p.DryRun = true
+	return p
+}
+
+// D8, spec 3.3 step 6: a dry run asks the panel about each pick the model
+// would otherwise judge, and the pick waits for its answer with no
+// forecast change. Block, an empty verdict or a failed exchange continues
+// the forecast, which consumes the answer.
+func TestOwnerForecastAsksThePanel(t *testing.T) {
+	for name, answer := range map[string]func(string) (verdict.Response, error){
+		"block": func(string) (verdict.Response, error) { return verdict.Response{Verdict: "block"}, nil },
+		"empty": func(string) (verdict.Response, error) { return verdict.Response{}, nil },
+		"error": func(string) (verdict.Response, error) {
+			return unconfiguredClient.Ask(context.Background(), verdict.Request{})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			panel := newFakePanel("")
+			panel.answer = answer
+			o, _, _ := policyOwner(t, f, blocks, dryVerdictPolicy(1, panel))
+			id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+			turn(t, o)
+			if c := candidate(t, o, id); c.State != admission.StateQueued || c.Reason != 0 || c.Attempts != 0 {
+				t.Fatalf("asked pick = %+v", c)
+			}
+			if fc := forecastOf(t, o); len(fc.entries) != 0 || fc.picks != ([predictionEnd]uint64{}) {
+				t.Fatalf("a pending pick changed the forecast: %+v", fc)
+			}
+			readyAnswers(t, o, 1)
+			turn(t, o)
+			if c := candidate(t, o, id); c.State != admission.StateDryRun || c.Attempts != 0 {
+				t.Fatalf("answered pick = %+v", c)
+			}
+			if fc := forecastOf(t, o); fc.picks[predictCapacityAdmit] != 1 || len(fc.entries) != 1 {
+				t.Fatalf("forecast = %+v", fc)
+			}
+			if s := verdictState(t, o); s.Asked != 1 || s.Ready != 0 || s.Pending != 0 {
+				t.Fatalf("verdict status = %+v", s)
+			}
+			if _, applies := blocks.calls(); len(applies) != 0 || liveUsed(t, o) != 0 {
+				t.Fatalf("a dry run applied %v", applies)
+			}
+		})
+	}
+}
+
+// D5, spec 3.3 step 3, 4.1: a ready allow ends its pick as verdict_allow
+// before any modelled capacity is judged, so it takes no forecast slot or
+// charge, even once the set is full. Ready block answers then meet the
+// model in order: a decision committed earlier in the turn fills the set
+// for the next.
+func TestOwnerForecastEndsPanelAllowsFirst(t *testing.T) {
+	for name, temp := range map[string]int{"room": 9, "full": 10} {
+		t.Run(name, func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			blocks.temp, blocks.limit = 8, 10
+			panel := newFakePanel("block")
+			panel.answer = func(ip string) (verdict.Response, error) {
+				if ip == "192.0.2.10" {
+					return verdict.Response{Verdict: "allow"}, nil
+				}
+				return verdict.Response{Verdict: "block"}, nil
+			}
+			o, _, _ := policyOwner(t, f, blocks, dryVerdictPolicy(1, panel))
+			allowed, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.10")
+			queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+			queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.12")
+			turn(t, o)
+			readyAnswers(t, o, 3)
+			blocks.set(func(b *fakeBlocks) { b.temp = temp })
+			turn(t, o)
+			if c := candidate(t, o, allowed); c.State != admission.StateRefused || c.Reason != admission.ReasonVerdictAllow || c.Attempts != 0 {
+				t.Fatalf("allowed pick = %+v", c)
+			}
+			fc := forecastOf(t, o)
+			want := [predictionEnd]uint64{}
+			want[predictCapacityAdmit], want[predictSetFull] = 1, 1
+			if temp == 10 {
+				want[predictCapacityAdmit], want[predictSetFull] = 0, 2
+			}
+			if fc.picks != want || uint64(len(fc.entries)) != want[predictCapacityAdmit] || uint64(fc.ceiling.General.Used+fc.ceiling.Reserved.Used) != want[predictCapacityAdmit] {
+				t.Fatalf("forecast = %+v, want picks %v", fc, want)
+			}
+			if s := verdictState(t, o); s.AllowEndings != 1 || s.Asked != 3 || s.Ready != 0 {
+				t.Fatalf("verdict status = %+v", s)
+			}
+			if len(queuedCandidates(t, o)) != 0 || liveUsed(t, o) != 0 {
+				t.Fatal("picks left queued or the live ceiling was charged")
+			}
+		})
+	}
+}
+
+// Spec 3.2, 3.3: a pick waiting for its answer is passed over and takes no
+// forecast slot, so later picks with answers fit before it.
+func TestOwnerForecastPendingPicksTakeNoSlot(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.temp, blocks.limit = 8, 10
+	gate := make(chan struct{})
+	panel := newFakePanel("block")
+	panel.answer = func(ip string) (verdict.Response, error) {
+		if ip == "192.0.2.10" {
+			<-gate
+		}
+		return verdict.Response{Verdict: "block"}, nil
+	}
+	o, _, _ := policyOwner(t, f, blocks, dryVerdictPolicy(1, panel))
+	t.Cleanup(func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	})
+	waiting, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.10")
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.12")
+	turn(t, o)
+	readyAnswers(t, o, 2)
+	turn(t, o)
+	if c := candidate(t, o, waiting); c.State != admission.StateQueued || c.Reason != 0 {
+		t.Fatalf("pending pick = %+v", c)
+	}
+	if fc := forecastOf(t, o); fc.picks[predictCapacityAdmit] != 2 || fc.picks[predictSetFull] != 0 {
+		t.Fatalf("forecast = %+v", fc)
+	}
+	close(gate)
+	readyAnswers(t, o, 1)
+	turn(t, o)
+	if fc := forecastOf(t, o); fc.picks[predictSetFull] != 1 || len(queuedCandidates(t, o)) != 0 {
+		t.Fatalf("forecast after the answer = %+v", fc)
+	}
+}
+
+// Spec 3.3 steps 1-5: a real block that covers the address, a forecast
+// block that holds it, a full modelled set and a kind without a model end
+// without a call.
+func TestOwnerForecastAsksNothingItNeedNotAsk(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.refuse["192.0.2.11"] = firewall.BlockRefusedExisting
+	panel := newFakePanel("block")
+	o, _, _ := policyOwner(t, f, blocks, dryVerdictPolicy(1, panel))
+	observe(t, o, p, f, "192.0.2.10", "offset=1")
+	turn(t, o)
+	readyAnswers(t, o, 1)
+	turn(t, o)
+	f.host.advance(time.Second)
+	observe(t, o, p, f, "192.0.2.10", "offset=2")
+	observe(t, o, p, f, "192.0.2.11", "offset=1")
+	queuedKind(t, o, p, f.host, admission.SeverityHigh, "192.0.2.12", admission.KindPromote)
+	turn(t, o)
+	blocks.set(func(b *fakeBlocks) { b.temp, b.limit = 4, 4 })
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.13")
+	turn(t, o)
+	fc := forecastOf(t, o)
+	// The repeat asks a day from a second later: the forecast block holds it.
+	if fc.picks[predictCapacityAdmit] != 1 || fc.picks[predictPendingRecovery] != 1 || fc.picks[predictExistingActual] != 1 || fc.picks[predictNotModelled] != 1 || fc.picks[predictSetFull] != 1 {
+		t.Fatalf("forecast = %+v", fc)
+	}
+	if asked, _, _, _ := panel.state(); len(asked) != 1 || len(queuedCandidates(t, o)) != 0 {
+		t.Fatalf("asked %v", asked)
+	}
+}
+
+// Spec 3.7: no answer from a dry run authorizes a live attempt. A live
+// epoch drops it, and the pick asks again before it runs.
+func TestOwnerForecastAnswersDoNotCarryIntoLive(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	panel := newFakePanel("allow")
+	o, r, _ := policyOwner(t, f, blocks, dryVerdictPolicy(1, panel))
+	id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	turn(t, o)
+	readyAnswers(t, o, 1)
+	panel.set(func(p *fakePanel) {
+		p.answer = func(string) (verdict.Response, error) { return verdict.Response{Verdict: "block"}, nil }
+	})
+	r.publish(verdictPolicy(2, panel))
+	if err := o.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the dry-run stage to retire", func() bool { return !verdictState(t, o).StageRetiring })
+	turn(t, o)
+	if c := candidate(t, o, id); c.State != admission.StateQueued || c.Reason != 0 {
+		t.Fatalf("a dry-run allow ended a live pick: %+v", c)
+	}
+	readyAnswers(t, o, 1)
+	turn(t, o)
+	if c := candidate(t, o, id); c.State != admission.StateVerified {
+		t.Fatalf("live pick = %+v", c)
+	}
+	if asked, _, _, _ := panel.state(); len(asked) != 2 {
+		t.Fatalf("asked %v", asked)
 	}
 }

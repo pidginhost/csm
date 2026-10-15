@@ -90,11 +90,14 @@ func (o *Owner) forecast() error {
 // (spec 3.3). One read-only snapshot answers their local checks and the
 // real temporary occupancy, with the real blocks of forecast addresses. A
 // refused target ends or waits as a live check has it. A real block that
-// already covers the address, a covering or shorter forecast block, a full
-// modelled set, the forecast bound or the modelled ceiling ends the pick
-// as a dry run with that prediction; only a capacity admission changes the
-// model. Without an engine, snapshot or sound clock the picks wait, with
-// no forecast change.
+// already covers the address ends the pick as existing_actual, and a
+// usable panel allow as verdict_allow, before any modelled capacity is
+// judged. A covering or shorter forecast block or a full modelled set ends
+// it without a call. With the callback on, any other pick is asked about
+// first (D8) and waits for its answer with no forecast change; then the
+// forecast bound or the modelled ceiling can still end it. Only a capacity
+// admission changes the model. Without an engine, snapshot or sound clock
+// the picks wait, with no call or forecast change.
 func (o *Owner) forecastBlocks(picks []execPick) error {
 	if len(picks) == 0 {
 		return nil
@@ -125,12 +128,25 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 			}
 			continue
 		}
+		r, answered := o.readyVerdict(p.pick.ID, p.c, m.IP, m.Reason)
 		var change *shadowChange
 		pred := o.shadow.covering(m.IP, m.ExpiresAt)
 		switch {
 		case check.Refusal == firewall.BlockRefusedExisting:
 			pred = predictExistingActual
-		case pred == 0:
+		case answered && r.Answer == answerAllow:
+			if err = o.endAllowed(p, r); err != nil {
+				return err
+			}
+			continue
+		case pred != 0:
+			// A forecast block holds the address: nothing to ask.
+		case o.shadow.full(adm):
+			pred = predictSetFull
+		case o.policy.VerdictEnabled && !answered:
+			o.askVerdict(p.pick.ID, p.c, m.IP, m.Reason)
+			continue
+		default:
 			if pred, change, err = o.shadow.admit(m.IP, p.c.Key.Kind, m.ExpiresAt, lanesOf(p.pick), o.now, adm); err != nil {
 				return fmt.Errorf("forecasting pick %s: %w", p.pick.ID, err)
 			}
