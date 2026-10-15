@@ -14,7 +14,13 @@ CSM scans email attachments in real-time using ClamAV and YARA-X on the Exim mai
 7. Sender, recipient, and message ID are logged
 
 Quarantine and release preserve each queue file's ownership, permissions, and
-modification time, including when the move crosses filesystems.
+modification time, including when the move crosses filesystems. Release returns
+the message to the queue directory it came from, including the hash directory
+Exim uses when `split_spool_directory` is on.
+
+Release accepts the flat queue root or the message's hash directory, named for
+the sixth character in both 16- and 23-character Exim IDs. Other subdirectories
+and hash-directory symlinks outside the trusted queue roots are rejected.
 
 Quarantine persists recovery metadata before moving spool files and syncs file
 contents and directory changes. A failed rollback retains the remaining

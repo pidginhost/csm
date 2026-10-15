@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -155,6 +156,103 @@ func TestReleaseMessage(t *testing.T) {
 	// Verify quarantine directory removed
 	if _, err := os.Stat(filepath.Join(qDir, msgID)); !os.IsNotExist(err) {
 		t.Error("quarantine directory should be removed after release")
+	}
+}
+
+// With split_spool_directory on (the cPanel default) Exim keeps a message in
+// input/<c>, where c is the sixth character of both old and new-format IDs.
+// Release must accept only that hash directory or the flat spool root.
+func TestReleaseMessageSplitSpool(t *testing.T) {
+	for _, msgID := range []string{"2jKPFm-000abc-1X", "2jKPFm-00000000abc-1XyZ"} {
+		t.Run(msgID, func(t *testing.T) {
+			testReleaseMessageSplitSpool(t, msgID)
+		})
+	}
+}
+
+func testReleaseMessageSplitSpool(t *testing.T, msgID string) {
+	t.Helper()
+	for _, tc := range []struct {
+		name    string
+		subdir  string
+		symlink bool
+		wantErr bool
+	}{
+		{name: "flat spool"},
+		{name: "hash dir of the message", subdir: "m"},
+		{name: "hash dir of another message", subdir: "x", wantErr: true},
+		{name: "first ID character", subdir: "2", wantErr: true},
+		{name: "last ID character", subdir: msgID[len(msgID)-1:], wantErr: true},
+		{name: "hash prefix", subdir: "mm", wantErr: true},
+		{name: "nested under hash", subdir: filepath.Join("m", "child"), wantErr: true},
+		{name: "nested hash", subdir: filepath.Join("child", "m"), wantErr: true},
+		{name: "hash symlink outside root", subdir: "m", symlink: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			spoolDir := filepath.Join(root, tc.subdir)
+			if err := os.MkdirAll(spoolDir, 0750); err != nil {
+				t.Fatal(err)
+			}
+			for _, suffix := range []string{"-H", "-D"} {
+				if err := os.WriteFile(filepath.Join(spoolDir, msgID+suffix), []byte("spool"+suffix), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			q := NewQuarantine(filepath.Join(t.TempDir(), "quarantine", "email"))
+			q.allowedSpoolDirs = []string{root}
+			result := &ScanResult{MessageID: msgID, Infected: true}
+			env := QuarantineEnvelope{From: "sender@example.com", To: []string{"recipient@example.com"}, Subject: "test", Direction: "inbound"}
+			if err := q.QuarantineMessage(msgID, spoolDir, result, env); err != nil {
+				t.Fatalf("QuarantineMessage: %v", err)
+			}
+			msgDir := filepath.Join(q.baseDir, msgID)
+			metaPath := filepath.Join(msgDir, "metadata.json")
+			metadata, err := os.ReadFile(metaPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.symlink {
+				if removeErr := os.Remove(spoolDir); removeErr != nil {
+					t.Fatal(removeErr)
+				}
+				if linkErr := os.Symlink(t.TempDir(), spoolDir); linkErr != nil {
+					t.Fatal(linkErr)
+				}
+			}
+
+			err = q.ReleaseMessage(msgID)
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "original spool directory is not trusted") {
+					t.Fatalf("ReleaseMessage() = %v, want untrusted spool directory", err)
+				}
+				for _, suffix := range []string{"-H", "-D"} {
+					data, readErr := os.ReadFile(filepath.Join(msgDir, msgID+suffix))
+					if readErr != nil || string(data) != "spool"+suffix {
+						t.Errorf("quarantine %s = %q, error=%v; want unchanged content", suffix, data, readErr)
+					}
+				}
+				if data, readErr := os.ReadFile(metaPath); readErr != nil || string(data) != string(metadata) {
+					t.Errorf("quarantine metadata changed or was lost: %v", readErr)
+				}
+				if entries, readErr := os.ReadDir(spoolDir); readErr != nil || len(entries) != 0 {
+					t.Errorf("rejected spool destination should remain empty: entries=%v, error=%v", entries, readErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReleaseMessage: %v", err)
+			}
+			for _, suffix := range []string{"-H", "-D"} {
+				data, readErr := os.ReadFile(filepath.Join(spoolDir, msgID+suffix))
+				if readErr != nil || string(data) != "spool"+suffix {
+					t.Errorf("spool %s = %q, error=%v; want restored content", suffix, data, readErr)
+				}
+			}
+			if _, statErr := os.Stat(msgDir); !os.IsNotExist(statErr) {
+				t.Errorf("quarantine directory should be removed after release: %v", statErr)
+			}
+		})
 	}
 }
 
@@ -381,7 +479,7 @@ func TestValidateReleaseSpoolDirFailsClosedOnResolveError(t *testing.T) {
 
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 	q.allowedSpoolDirs = []string{missing}
-	if got, err := q.validateReleaseSpoolDir(missing); err == nil {
+	if got, err := q.validateReleaseSpoolDir(missing, "2jKPFm-000abc-1X"); err == nil {
 		t.Errorf("validateReleaseSpoolDir(%q) = %q, nil error; want fail-closed on unresolved allowed path", missing, got)
 	}
 }
@@ -399,7 +497,7 @@ func TestValidateReleaseSpoolDirAcceptsRealDirEvenWhenSomeAllowedMissing(t *test
 		real,
 	}
 
-	got, err := q.validateReleaseSpoolDir(real)
+	got, err := q.validateReleaseSpoolDir(real, "2jKPFm-000abc-1X")
 	if err != nil {
 		t.Fatalf("validateReleaseSpoolDir(%q) err = %v, want nil", real, err)
 	}
