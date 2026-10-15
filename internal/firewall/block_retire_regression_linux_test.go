@@ -147,12 +147,30 @@ func TestRetireBlockActionsRequiresIPv6Snapshot(t *testing.T) {
 			}
 			writes := f.countWrites(t)
 			clear, err := f.e.RetireBlockActions([]BlockAction{{Action: "act_own", IP: "2001:db8::103"}})
-			if err == nil || clear != nil {
+			if err != nil || len(clear) != 1 || clear[0] {
 				t.Fatalf("missing snapshot authorized retirement: %v, %v", clear, err)
 			}
 			if got := readRawFirewallState(t, f.e); !reflect.DeepEqual(got, state) || *writes != 0 {
 				t.Fatalf("missing snapshot changed rows: %+v, writes %d", got, *writes)
 			}
 		})
+	}
+}
+
+// An address family the snapshot cannot read holds only its own members:
+// the rest of the batch still gets its answer, so one such attempt cannot
+// stall every retirement behind it.
+func TestRetireBlockActionsUnreadableFamilyHoldsOnlyItsMembers(t *testing.T) {
+	f := newBatchFixture(t, FirewallState{Blocked: []BlockedEntry{
+		{IP: "203.0.113.105", ActionID: "act_four", Unverified: true},
+		{IP: "2001:db8::105", ActionID: "act_six", Unverified: true},
+	}})
+	f.e.cfg.IPv6 = false
+	clear, err := f.e.RetireBlockActions([]BlockAction{{Action: "act_six", IP: "2001:db8::105"}, {Action: "act_four", IP: "203.0.113.105"}})
+	if err != nil || len(clear) != 2 || clear[0] || !clear[1] {
+		t.Fatalf("retirement = %v, %v; want the IPv6 attempt held and the IPv4 one clear", clear, err)
+	}
+	if got := readRawFirewallState(t, f.e).Blocked; len(got) != 1 || got[0].ActionID != "act_six" {
+		t.Fatalf("remaining rows = %+v; want only the held IPv6 row", got)
 	}
 }

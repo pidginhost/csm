@@ -608,7 +608,8 @@ engine lock: an attempt is clear when its address has no element, or the
 element matches a verified row of another action, remaining lifetime included,
 and its own row then goes in one write. An element still present keeps it
 held. Retirement requires a kernel snapshot of the target's address family;
-a missing or disabled IPv6 set cannot prove absence. Cleanup resumes and
+a missing or disabled IPv6 set cannot prove absence, so it holds that
+attempt while the rest of the batch is answered. Cleanup resumes and
 saves the lease checkpoint first; an unreadable clock or checkpoint
 authorizes no removal. Address matching for recovery
 accepts legacy mapped, uppercase and zoned spellings within the engine's

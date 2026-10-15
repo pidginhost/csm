@@ -64,8 +64,8 @@ func (e *Engine) RemoveBlockActionRows(actions []string) (int, error) {
 // (same action ID and address) goes in one state write, under the same
 // engine lock as the snapshot, so no batch writes the address in between.
 // An element still there otherwise keeps the attempt held, as after a
-// forward wall step that made its expiry look past. An error answers
-// nothing.
+// forward wall step that made its expiry look past, and so does an address
+// whose family the snapshot cannot read. An error answers nothing.
 func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 	if len(actions) > MaxBlockBatchMembers {
 		return nil, fmt.Errorf("a retirement checks at most %d attempts", MaxBlockBatchMembers)
@@ -76,15 +76,16 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 		return nil, errDurableBlockRows
 	}
 	canonical := make([]BlockAction, len(actions))
+	unread := make([]bool, len(actions))
 	for i, m := range actions {
 		addr, err := netip.ParseAddr(m.IP)
 		if err != nil {
 			return nil, fmt.Errorf("retiring %s: %w", m.Action, err)
 		}
 		addr = addr.WithZone("").Unmap()
-		if addr.Is6() && (!e.cfg.IPv6 || e.setBlocked6 == nil) {
-			return nil, errors.New("IPv6 blocked set unavailable for retirement")
-		}
+		// The snapshot skips a missing or disabled IPv6 set, so it cannot
+		// prove such an address absent; the rest of the batch still answers.
+		unread[i] = addr.Is6() && (!e.cfg.IPv6 || e.setBlocked6 == nil)
 		canonical[i] = BlockAction{Action: m.Action, IP: addr.String()}
 	}
 	if err := e.checkpointBlockRemovalLocked(); err != nil {
@@ -105,6 +106,9 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 	out := make([]bool, len(actions))
 	gone := make(map[BlockAction]bool, len(actions))
 	for i, m := range canonical {
+		if unread[i] {
+			continue
+		}
 		_, live := snap.live[m.IP]
 		out[i] = !live
 		for _, owner := range owners[m.IP] {
