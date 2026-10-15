@@ -1,6 +1,7 @@
 package store
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -199,28 +200,88 @@ func TestAdmissionLedgerRetiredRowActionCannotRepeat(t *testing.T) {
 // A candidate whose live attempt failed can be previewed on its retry, for
 // instance after execution is switched off. It then ends observed, but the
 // failed attempt's row can still be on disk, so its history stays until
-// that row's expiry like any other ending that ran.
+// that row's expiry, including after a schema upgrade. Earlier history
+// keeps its stored review window; other retirement times are corruption.
 func TestAdmissionLedgerPreviewAfterAFailedAttemptKeepsRowHistory(t *testing.T) {
-	f := newLedgerFixture(t)
-	f.begin()
-	id, a := f.admitted(30 * 24 * time.Hour)
-	if _, _, _, err := f.l.Execute(a.Attempt.ID); err != nil {
-		t.Fatal(err)
-	}
-	queued, _, err := f.l.Finish(a.Attempt.ID, admission.DispositionFailed)
-	if err != nil || queued.State != admission.StateQueued {
-		t.Fatalf("failed attempt requeued = %+v, %v", queued, err)
-	}
-	f.tickAt(queued.NotBefore)
-	c, _, granted, err := f.l.Observe(id, admission.LaneGeneral, a.ExpiresAt)
-	if err != nil || !granted || c.State != admission.StateObserved || c.Attempts != 2 {
-		t.Fatalf("preview of the retry = %+v, %t, %v", c, granted, err)
-	}
-	h, found := f.historyEntry(id)
-	if !found || !h.Eligible.Equal(a.ExpiresAt) {
-		t.Fatalf("previewed retry history eligible at %v, want the failed row's expiry %v", h.Eligible, a.ExpiresAt)
-	}
-	if _, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
-		t.Fatalf("kept history does not prove its storage: %v", err)
+	for _, mode := range []string{"current", "schema three", "earlier history", "invalid time"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.begin()
+			id, a := f.admitted(40 * 24 * time.Hour)
+			if _, _, _, err := f.l.Execute(a.Attempt.ID); err != nil {
+				t.Fatal(err)
+			}
+			queued, _, err := f.l.Finish(a.Attempt.ID, admission.DispositionFailed)
+			if err != nil || queued.State != admission.StateQueued {
+				t.Fatalf("failed attempt requeued = %+v, %v", queued, err)
+			}
+			f.tickAt(queued.NotBefore)
+			c, preview, granted, err := f.l.Observe(id, admission.LaneGeneral, time.Time{})
+			if err != nil || !granted || c.State != admission.StateObserved || c.Attempts != 2 || !c.ExpiresAt.Equal(a.ExpiresAt) || !preview.ExpiresAt.Equal(a.ExpiresAt) {
+				t.Fatalf("preview of the retry = %+v, %+v, %t, %v", c, preview, granted, err)
+			}
+			eligible, target := a.ExpiresAt, a.ExpiresAt
+			if mode == "earlier history" || mode == "invalid time" {
+				h, found := f.historyEntry(id)
+				if !found {
+					t.Fatal("previewed retry lost its history")
+				}
+				eligible, target = h.Ended.Add(admission.HistoryRetention), h.Ended.Add(admission.HistoryTarget)
+				h.Eligible = eligible
+				if mode == "invalid time" {
+					h.Eligible = h.Eligible.Add(time.Hour)
+				}
+				// No retirement keys exist while the audit rows are pending.
+				if err = f.db.bolt.Update(func(tx *bolt.Tx) error { return putHistoryEntry(tx, id, h) }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.ackAll()
+			if mode == "schema three" {
+				f.schemaThree()
+				if f.l, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+					t.Fatalf("previewed retry cannot upgrade: %v", err)
+				}
+			}
+			before := f.snapshot()
+			reopened, err := OpenAdmissionLedger(f.db, f.reg)
+			if !reflect.DeepEqual(f.snapshot(), before) {
+				t.Fatal("opening changed stored history or its retirement index")
+			}
+			if mode == "invalid time" {
+				if !isCorrupt(err) {
+					t.Fatalf("invalid retirement time opened: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("kept history does not prove its storage: %v", err)
+			}
+			f.l = reopened
+			h, found := f.historyEntry(id)
+			if !found || !h.Eligible.Equal(eligible) || !h.Target().Equal(target) {
+				t.Fatalf("history = %+v, want eligibility %v and target %v", h, eligible, target)
+			}
+			f.tickAt(target.Add(-time.Nanosecond))
+			ids := []string{string(a.Attempt.ID), string(preview.Attempt.ID)}
+			if got, readErr := ReadSettledBlockActions(f.db, ids); readErr != nil || !reflect.DeepEqual(got, ids[:1]) {
+				t.Fatalf("failed row lost its history before retirement: %v, %v", got, readErr)
+			}
+			f.tickAt(target)
+			if _, err = f.l.Candidate(id); err != errCandidateMissing {
+				t.Fatalf("history did not retire at its target: %v", err)
+			}
+			for _, attempt := range []admission.AttemptRecord{a, preview} {
+				if _, err = f.l.Attempt(attempt.Attempt.ID); err == nil {
+					t.Fatalf("retired history kept attempt %s", attempt.Attempt.ID)
+				}
+			}
+			if _, found = f.historyEntry(id); found || len(retireKeysIn(t, f.db)) != 0 {
+				t.Fatal("retired history kept its entry or index")
+			}
+			if _, err = OpenAdmissionLedger(f.db, f.reg); err != nil {
+				t.Fatalf("retired history cannot reopen: %v", err)
+			}
+		})
 	}
 }
