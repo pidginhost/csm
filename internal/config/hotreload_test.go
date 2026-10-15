@@ -26,6 +26,60 @@ func TestActiveRoundTrip(t *testing.T) {
 	}
 }
 
+// Each publication that changes auto_response or the mode gets a new
+// response epoch, assigned with the config it describes. An unrelated
+// change or the same settings again keep the epoch, and every step of a
+// rapid live, dry-run, live sequence is a new one.
+func TestSetActiveNumbersResponseEpochs(t *testing.T) {
+	t.Cleanup(func() { SetActive(nil) })
+	live := func(dryRun bool) *Config {
+		cfg := &Config{Hostname: "a"}
+		cfg.AutoResponse.DryRun = &dryRun
+		return cfg
+	}
+	epoch := func(want *Config) uint64 {
+		t.Helper()
+		cfg, e := ActiveEpoch()
+		if cfg != want || e == 0 {
+			t.Fatalf("ActiveEpoch = %p, %d; want %p", cfg, e, want)
+		}
+		return e
+	}
+	first := live(false)
+	SetActive(first)
+	e1 := epoch(first)
+	other := live(false)
+	other.Hostname = "b"
+	SetActive(other)
+	if e := epoch(other); e != e1 {
+		t.Fatalf("an unrelated change moved the epoch from %d to %d", e1, e)
+	}
+	same := live(false)
+	SetActive(same)
+	if e := epoch(same); e != e1 {
+		t.Fatalf("the same settings moved the epoch from %d to %d", e1, e)
+	}
+	dry := live(true)
+	SetActive(dry)
+	e2 := epoch(dry)
+	back := live(false)
+	SetActive(back)
+	e3 := epoch(back)
+	if e1 >= e2 || e2 >= e3 {
+		t.Fatalf("live, dry-run, live epochs = %d, %d, %d", e1, e2, e3)
+	}
+	observe := live(false)
+	observe.Mode = ModeObserve
+	SetActive(observe)
+	if e := epoch(observe); e <= e3 {
+		t.Fatalf("a mode change kept epoch %d", e)
+	}
+	SetActive(nil)
+	if cfg, e := ActiveEpoch(); cfg != nil || e == 0 {
+		t.Fatalf("after nil = %p, %d", cfg, e)
+	}
+}
+
 func TestActiveIsConcurrentSafe(t *testing.T) {
 	t.Cleanup(func() { SetActive(nil) })
 
