@@ -461,6 +461,36 @@ func TestAdmissionLedgerPreviewSkipsChallengesHistoryCannotServe(t *testing.T) {
 	}
 }
 
+// Challenge previews share the same live history budget within a turn.
+// Individually affordable challenges must not collectively overspend it.
+func TestAdmissionLedgerPreviewBoundsCombinedChallengeHistory(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	var challenges []admission.CandidateID
+	for i := range 2 {
+		ip := fmt.Sprintf("192.0.2.%d", 90+i)
+		req := f.request(ip, f.published(evidenceSpec{target: ip, cursor: ip}))
+		req.Kind = admission.KindChallenge
+		_, id := f.enqueue(req)
+		challenges = append(challenges, id)
+	}
+	need := max(f.cost(challenges[0]), f.cost(challenges[1]))
+	f.adjustStorage(func(s *admission.StorageState) {
+		s.General.Credit = uint64(need) * uint64(time.Second)
+		s.Reserved.Credit = 0
+	})
+	block := f.criticalArrivals("192.0.2.10")[0]
+	picks := f.preview(nil)
+	if len(picks) != 2 || !slices.Contains(pickIDs(picks), block) {
+		t.Fatalf("picks = %+v, want one challenge and the block", picks)
+	}
+	for _, id := range challenges {
+		if c := f.candidateOf(id); c.Reason != 0 || c.Transitions != 1 {
+			t.Fatalf("challenge changed during selection: %+v", c)
+		}
+	}
+}
+
 // A reserved-eligible challenge is selected only on a lane whose live
 // history can pay for its preview: the reserved lane while only it can,
 // even when the reserved lane's selection bound left it to the general

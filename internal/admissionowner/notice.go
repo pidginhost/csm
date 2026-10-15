@@ -87,11 +87,16 @@ func (s *sender) run() {
 }
 
 func (s *sender) cycle() {
-	if s.o.opts.Deliver == nil || s.o.stopping.Load() {
+	if s.o.stopping.Load() {
 		return
 	}
-	s.announceStop()
+	if s.o.opts.Deliver != nil {
+		s.announceStop()
+	}
 	s.sendSummary()
+	if s.o.opts.Deliver == nil {
+		return
+	}
 	if len(s.unacked) > 0 {
 		if err := s.o.do(func() error { return ackNotices(s.o.ledger, s.unacked) }); err != nil {
 			return

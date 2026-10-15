@@ -764,9 +764,6 @@ func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateI
 	}
 	byID := map[admission.CandidateID]liveCandidate{}
 	held := map[admission.CandidateID]bool{}
-	// A challenge whose general lane cannot pay is served on its reserved
-	// lane when the general lane selects it.
-	reservedOnly := map[admission.CandidateID]bool{}
 	var history liveHistory
 	var items []admission.ScheduleItem
 	for _, lc := range live {
@@ -793,7 +790,6 @@ func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateI
 			if !reserved {
 				item.Direct, item.Corroborated = false, false
 			}
-			reservedOnly[lc.id] = !general
 		}
 		items = append(items, item)
 	}
@@ -806,12 +802,27 @@ func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateI
 			return nil, schedErr
 		}
 		refused := map[admission.CandidateID]bool{}
-		for _, p := range picks {
+		remaining := history
+		skipped := map[admission.CandidateID]bool{}
+		for i, p := range picks {
 			_, reason, checkErr := q.check(byID[p.ID], true)
 			if checkErr != nil {
 				return nil, checkErr
 			}
 			if reason == 0 {
+				if byID[p.ID].c.Key.Kind == admission.KindChallenge {
+					lane, fits, budgetErr := remaining.take(q, byID[p.ID], p)
+					if budgetErr != nil {
+						return nil, budgetErr
+					}
+					if !fits {
+						// Recompute from the original fair position without
+						// spending a turn on an unaffordable comparison.
+						skipped[p.ID] = true
+					} else {
+						picks[i].Lane = lane
+					}
+				}
 				continue
 			}
 			if checkErr = q.end(byID[p.ID], reason); checkErr != nil {
@@ -819,20 +830,18 @@ func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateI
 			}
 			refused[p.ID] = true
 		}
-		if len(refused) == 0 {
+		if len(refused) == 0 && len(skipped) == 0 {
 			if err = q.deferHeld(items, byID, held, answers); err != nil {
 				return nil, err
-			}
-			for i, p := range picks {
-				if reservedOnly[p.ID] && p.Lane == admission.LaneGeneral {
-					picks[i].Lane = p.Reserved
-				}
 			}
 			return picks, putScheduleState(q.tx, next)
 		}
 		kept := items[:0:0]
 		for _, it := range items {
 			if !refused[it.ID] {
+				if skipped[it.ID] {
+					it.Ready = false
+				}
 				kept = append(kept, it)
 			}
 		}
@@ -846,6 +855,33 @@ func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateI
 type liveHistory struct {
 	loaded                  bool
 	room, general, reserved uint64
+}
+
+// take accounts for earlier challenge picks in this selection, without
+// charging the ledger or changing their unit fair-turn weight.
+func (h *liveHistory) take(q *queueTx, lc liveCandidate, p admission.Pick) (admission.Lane, bool, error) {
+	bytes, recovery, fits, err := q.historyNeed(lc, h.room)
+	if err != nil || !fits {
+		return 0, false, err
+	}
+	lanes := []admission.Lane{p.Lane}
+	if p.Lane != admission.LaneGeneral {
+		lanes = append(lanes, admission.LaneGeneral)
+	} else if p.Reserved != 0 {
+		lanes = append(lanes, p.Reserved)
+	}
+	for _, lane := range lanes {
+		budget := &h.general
+		if lane != admission.LaneGeneral {
+			budget = &h.reserved
+		}
+		if uint64(bytes) <= *budget {
+			*budget -= uint64(bytes)
+			h.room -= uint64(recovery)
+			return lane, true, nil
+		}
+	}
+	return 0, false, nil
 }
 
 // challenge judges queued challenge lc as a schedule judges its item: the

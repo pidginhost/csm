@@ -1,6 +1,7 @@
 package admissionowner
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -16,7 +17,15 @@ const (
 	summaryEvery = time.Minute
 	// summaryExamples bounds the distinct examples one summary names.
 	summaryExamples = 20
+	// Shutdown bounds the final history attempt; normal delivery is
+	// cancelled through the owner's context before its sender is joined.
+	summaryStopTimeout = time.Second
 )
+
+type summaryResult struct {
+	summary *dryRunSummary
+	err     error
+}
 
 // summaryExample is one capacity admission a summary names.
 type summaryExample struct {
@@ -158,14 +167,19 @@ func (o *Owner) mergeSummary(s, later *dryRunSummary) {
 
 // finishSummary settles the pending summary when the owner stops: one its
 // minute allows is delivered, any other is counted discarded. Stop never
-// sends a summary early.
+// sends a summary early. The caller runs this after joining the owner and
+// sender, so delivery never occupies the owner goroutine.
 func (o *Owner) finishSummary() {
 	if o.summary.pending == nil {
 		return
 	}
-	if o.summaryDue() && o.opts.Deliver != nil && o.opts.Deliver([]alert.Finding{summaryFinding(o.summary.pending, time.Now())}, true) == nil {
-		o.summary.pending = nil
-		return
+	if o.summaryDue() && o.opts.DeliverSummary != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), summaryStopTimeout)
+		defer cancel()
+		if o.opts.DeliverSummary(ctx, summaryFinding(o.summary.pending, time.Now())) == nil {
+			o.summary.pending = nil
+			return
+		}
 	}
 	o.summary.pending = nil
 	saturating(&o.out.summariesLost)
@@ -199,6 +213,9 @@ func summaryFinding(s *dryRunSummary, now time.Time) alert.Finding {
 // independent path, never to an alert channel. A summary waiting for its
 // delivery counts in the notice queue, so a failing delivery shows there.
 func (s *sender) sendSummary() {
+	if s.o.opts.DeliverSummary == nil {
+		return
+	}
 	var due *dryRunSummary
 	if s.o.do(func() error {
 		due = s.o.takeSummary()
@@ -209,14 +226,16 @@ func (s *sender) sendSummary() {
 		return
 	}
 	s.observe()
-	err := s.o.opts.Deliver([]alert.Finding{summaryFinding(due, time.Now())}, true)
+	err := s.o.opts.DeliverSummary(s.o.summaryCtx, summaryFinding(due, time.Now()))
 	if err == nil {
 		s.delivered++
 	}
-	_ = s.o.do(func() error {
+	if ackErr := s.o.do(func() error {
 		s.o.summaryDelivered(due, err)
 		s.summaryWaiting = s.o.summary.pending != nil
 		return nil
-	})
+	}); ackErr != nil {
+		s.o.summaryResult <- summaryResult{summary: due, err: err}
+	}
 	s.observe()
 }

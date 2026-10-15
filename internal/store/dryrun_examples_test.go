@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/admission"
 	bolt "go.etcd.io/bbolt"
+	bolterrors "go.etcd.io/bbolt/errors"
 )
 
 const (
@@ -127,6 +128,7 @@ func TestRecordDryRunBlocksRefusesInvalidRecords(t *testing.T) {
 		"upper-case session":  func(b *DryRunBlock) { b.Session = strings.ToUpper(exampleSession) },
 		"kind":                func(b *DryRunBlock) { b.Kind = 0 },
 		"expired":             func(b *DryRunBlock) { b.ExpiresAt = b.At },
+		"unencodable expiry":  func(b *DryRunBlock) { b.ExpiresAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC) },
 		"oversized value":     func(b *DryRunBlock) { b.Check = strings.Repeat("a", maxDryRunValueBytes) },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -308,5 +310,115 @@ func TestMaintainDryRunBlocksPurgesOtherSessions(t *testing.T) {
 	// An empty or missing bucket is a finished pass.
 	if res, err = exampleDB(t).MaintainDryRunBlocks(DryRunMaintenance{Cutoff: cutoff, Purge: true}); err != nil || !res.Done || res.Removed != 0 {
 		t.Fatalf("missing bucket = %+v, %v", res, err)
+	}
+}
+
+func TestDryRunPurgeWithoutSessionRemovesLegacyRecords(t *testing.T) {
+	db := exampleDB(t)
+	seedExamples(t, db, map[string]string{"legacy": `{}`, "unreadable": `not json`})
+	res, err := db.MaintainDryRunBlocks(DryRunMaintenance{Purge: true})
+	if err != nil || !res.Done || res.Removed != 2 || db.DryRunBlocksCount() != 0 {
+		t.Fatalf("purge left legacy records: %+v, %v", res, err)
+	}
+}
+
+func TestDryRunWritesPreserveActiveSessionAtCapacity(t *testing.T) {
+	for _, allActive := range []bool{false, true} {
+		t.Run(fmt.Sprintf("all_active=%v", allActive), func(t *testing.T) {
+			db := exampleDB(t)
+			active := example(exampleT0.Add(-time.Hour), "192.0.2.10", 1)
+			key, value, err := active.encode()
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored := string(value)
+			if !allActive {
+				stored = strings.ReplaceAll(stored, exampleSession, otherSession)
+			}
+			rows := map[string]string{string(key): stored}
+			for i := range maxDryRunBlocks - 1 {
+				v := `{}`
+				if allActive {
+					v = string(value)
+				}
+				rows[fmt.Sprintf("z%08d", i)] = v
+			}
+			seedExamples(t, db, rows)
+			// Updating an existing key must not make an evicted key new again.
+			err = db.RecordDryRunBlocks([]DryRunBlock{active, example(exampleT0, "192.0.2.11", 2)})
+			if allActive && !errors.Is(err, ErrDryRunBlocksFull) || !allActive && err != nil {
+				t.Fatalf("write = %v", err)
+			}
+			if n := db.DryRunBlocksCount(); n != maxDryRunBlocks {
+				t.Fatalf("count = %d", n)
+			}
+			if err := db.bolt.View(func(tx *bolt.Tx) error {
+				if string(tx.Bucket([]byte(dryRunBlocksBucket)).Get(key)) != string(value) {
+					t.Error("active record was evicted")
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestDryRunMaintenanceProtectsActiveSessionAndResumes(t *testing.T) {
+	db := exampleDB(t)
+	rows := map[string]string{}
+	for i := range maxDryRunBlocks + 2 {
+		v := `{}`
+		if i < maxDryRunMaintenance+1 {
+			v = `{"session_id":"` + exampleSession + `"}`
+		}
+		rows[fmt.Sprintf("2026-10-01T00:00:00.%09dZ:192.0.2.1", i)] = v
+	}
+	seedExamples(t, db, rows)
+	step := DryRunMaintenance{Purge: true, Keep: exampleSession, Cutoff: exampleT0}
+	removed := 0
+	for turns := 0; ; turns++ {
+		if turns > 100 {
+			t.Fatal("maintenance did not progress past protected records")
+		}
+		res, err := db.MaintainDryRunBlocks(step)
+		if err != nil || res.Visited > maxDryRunMaintenance || res.Removed > maxDryRunMaintenance {
+			t.Fatalf("step = %+v, %v", res, err)
+		}
+		if turns == 0 && (res.Removed != 0 || res.Done || len(res.Next) == 0) {
+			t.Fatalf("protected prefix: %+v", res)
+		}
+		removed += res.Removed
+		if res.Done {
+			break
+		}
+		step.Cursor = res.Next
+	}
+	if removed != maxDryRunBlocks+2-(maxDryRunMaintenance+1) || db.DryRunBlocksCount() != maxDryRunMaintenance+1 {
+		t.Fatalf("removed %d, retained %d", removed, db.DryRunBlocksCount())
+	}
+}
+
+func TestDryRunMaintenanceFailureRollsBackCursorAndDeletes(t *testing.T) {
+	db := exampleDB(t)
+	seedExamples(t, db, map[string]string{"first": `{}`})
+	if err := db.bolt.Update(func(tx *bolt.Tx) error {
+		_, err := tx.Bucket([]byte(dryRunBlocksBucket)).CreateBucket([]byte("last"))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := db.MaintainDryRunBlocks(DryRunMaintenance{Purge: true})
+	if !errors.Is(err, bolterrors.ErrIncompatibleValue) || res.Next != nil || res.Done || res.Visited != 0 || res.Removed != 0 {
+		t.Fatalf("failed transaction advanced maintenance: %+v, %v", res, err)
+	}
+	if err := db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(dryRunBlocksBucket))
+		if string(b.Get([]byte("first"))) != `{}` || b.Bucket([]byte("last")) == nil {
+			t.Error("failed maintenance partially deleted records")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

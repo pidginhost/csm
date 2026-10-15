@@ -105,7 +105,7 @@ func (o *Owner) maintainExamples() {
 		o.out.cursor, o.out.purging, o.out.keep = nil, true, keep
 	}
 	res, err := maintainStore(o.opts.DB, store.DryRunMaintenance{
-		Cursor: o.out.cursor, Cutoff: o.now.Add(-dryRunRetention), Purge: o.out.purging, Keep: o.out.keep,
+		Cursor: o.out.cursor, Cutoff: o.now.Add(-dryRunRetention), Purge: o.out.purging, Keep: keep,
 	})
 	if err != nil {
 		saturating(&o.out.recordErrors)

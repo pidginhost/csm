@@ -1,6 +1,7 @@
 package admissionowner
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +12,90 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
+// A summary sink must be cancellable both during ordinary delivery and
+// during the final flush. No cancelled summary disappears from health.
+func TestSummaryStopCancelsDelivery(t *testing.T) {
+	for _, inFlight := range []bool{false, true} {
+		t.Run(fmt.Sprintf("in_flight=%v", inFlight), func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			opts := executeOptions(f, blocks)
+			opts.Policy = func() ExecutionPolicy { return dryPolicy(1) }
+			entered := make(chan struct{}, 1)
+			opts.DeliverSummary = func(ctx context.Context, _ alert.Finding) error {
+				entered <- struct{}{}
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			if inFlight {
+				opts.NoticeEvery = time.Millisecond
+			}
+			o := f.start(opts)
+			mono := heldMono(t, o)
+			queueMany(t, o, p, f, 1, 1)
+			turn(t, o)
+			mono.advance(summaryEvery)
+			if inFlight {
+				select {
+				case <-entered:
+				case <-time.After(2 * time.Second):
+					t.Fatal("summary delivery did not start")
+				}
+				if err := o.do(func() error { return nil }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			stopped := make(chan struct{})
+			go func() { o.Stop(); close(stopped) }()
+			select {
+			case <-stopped:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Stop blocked on summary delivery")
+			}
+			d := o.Status().Owner.DryRun
+			if d.SummariesLost != 1 || !d.ComparisonIncomplete {
+				t.Fatalf("cancelled summary not counted: %+v", d)
+			}
+		})
+	}
+}
+
+// A sink may commit just as shutdown cancels its context. Its success
+// receipt must still settle once, without retrying or reporting a loss.
+func TestSummaryStopSettlesACommittedDelivery(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	opts := executeOptions(f, newFakeBlocks())
+	opts.Policy = func() ExecutionPolicy { return dryPolicy(1) }
+	opts.NoticeEvery = time.Millisecond
+	entered := make(chan alert.Finding, 1)
+	calls := 0
+	opts.DeliverSummary = func(ctx context.Context, finding alert.Finding) error {
+		calls++
+		entered <- finding
+		<-ctx.Done()
+		return nil
+	}
+	o := f.start(opts)
+	mono := heldMono(t, o)
+	queueMany(t, o, p, f, 2, 1)
+	turn(t, o)
+	mono.advance(summaryEvery)
+	select {
+	case finding := <-entered:
+		if finding.Message != "Dry-run capacity forecast: 2 responses passed modelled capacity checks" {
+			t.Fatalf("summary = %+v", finding)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("summary delivery did not start")
+	}
+	o.Stop()
+	if calls != 1 || o.Status().Owner.DryRun.SummariesLost != 0 {
+		t.Fatalf("committed delivery: %d calls, %d lost", calls, o.Status().Owner.DryRun.SummariesLost)
+	}
+}
+
 // summaryOwner is a dry-run owner whose notices sink records deliveries.
 func summaryOwner(t *testing.T, f *ownerFixture, blocks *fakeBlocks) (*Owner, *policyReader, *fakeMono, *noticeSink) {
 	t.Helper()
@@ -18,6 +103,9 @@ func summaryOwner(t *testing.T, f *ownerFixture, blocks *fakeBlocks) (*Owner, *p
 	r := &policyReader{p: dryPolicy(1)}
 	opts := executeOptions(f, blocks)
 	opts.Policy, opts.Deliver = r.read, sink.deliver
+	opts.DeliverSummary = func(_ context.Context, f alert.Finding) error {
+		return sink.deliver([]alert.Finding{f}, true)
+	}
 	o := f.start(opts)
 	return o, r, heldMono(t, o), sink
 }
@@ -137,12 +225,12 @@ func TestOwnerSummaryDeliversAnImmutableCopy(t *testing.T) {
 	turn(t, o)
 	mono.advance(summaryEvery)
 	var during func()
-	inner := o.opts.Deliver
-	setOwnerHook(t, o, &o.opts.Deliver, func(fs []alert.Finding, preview bool) error {
+	inner := o.opts.DeliverSummary
+	setOwnerHook(t, o, &o.opts.DeliverSummary, func(ctx context.Context, finding alert.Finding) error {
 		if during != nil {
 			during()
 		}
-		return inner(fs, preview)
+		return inner(ctx, finding)
 	})
 	during = func() {
 		// The owner forecasts while the sender delivers.

@@ -187,7 +187,8 @@ type AdmissionProvider interface {
 	AdmissionStatus() *AdmissionStatus
 }
 
-func cloneAdmissionStatus(in *AdmissionStatus) *AdmissionStatus {
+// Clone returns a snapshot whose pointers and collections belong to the caller.
+func (in *AdmissionStatus) Clone() *AdmissionStatus {
 	if in == nil {
 		return nil
 	}

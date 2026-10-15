@@ -39,6 +39,28 @@ func forecastErrorOf(d *health.AdmissionDryRun) string {
 	return *d.ForecastError
 }
 
+func TestOwnerStatusDoesNotExposeCachedForecast(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	o, _, _ := policyOwner(t, f, newFakeBlocks(), dryPolicy(1))
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	turn(t, o)
+	before := dryRunState(t, o)
+	id := *before.SessionID
+	returned := o.Status().Owner.DryRun
+	returned.Picks["capacity_admit"] = 99
+	returned.LastHour["capacity_admit"] = 99
+	returned.ModelledKinds[0] = "changed"
+	*returned.SessionID = "changed"
+	returned.Occupancy.Predicted = 99
+	returned.Ceiling.Limit = 99
+	got := o.Status().Owner.DryRun
+	if got.Picks["capacity_admit"] != 1 || got.LastHour["capacity_admit"] != 1 || got.ModelledKinds[0] != "block_ip" ||
+		*got.SessionID != id || got.Occupancy.Predicted != 1 || got.Ceiling.Limit != 2000 {
+		t.Fatalf("caller mutated the cached forecast: %+v", got)
+	}
+}
+
 // Spec 3.8: an executable owner in dry run shows its session, the model's
 // fixed coverage, real against predicted temporary occupancy, the modelled
 // ceiling, every prediction counter including zeros, and its process

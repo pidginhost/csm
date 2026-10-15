@@ -35,9 +35,9 @@ const (
 // key, so keys sort by time within the format.
 const dryRunKeyTime = "2006-01-02T15:04:05.000000000Z"
 
-// ErrDryRunBlocksFull refuses new examples while the bucket holds more than
-// its cap, until maintenance trims it.
-var ErrDryRunBlocksFull = errors.New("dry-run examples are above their cap")
+// ErrDryRunBlocksFull refuses a batch that cannot fit without evicting
+// examples belonging to a session in that batch.
+var ErrDryRunBlocksFull = errors.New("dry-run examples have no room")
 
 var errNoStore = errors.New("the state database is not open")
 
@@ -84,6 +84,8 @@ func (b DryRunBlock) encode() (key, value []byte, err error) {
 		return nil, nil, errors.New("example kind is unknown")
 	case !b.ExpiresAt.After(b.At):
 		return nil, nil, errors.New("example has no lifetime left")
+	case b.ExpiresAt.UTC().Year() > 9999:
+		return nil, nil, errors.New("example expiry is out of range")
 	}
 	if _, err = admission.ParseCandidateID(string(b.Candidate)); err != nil {
 		return nil, nil, err
@@ -116,8 +118,9 @@ func lowerHexText(s string, n int) bool {
 // RecordDryRunBlocks writes one turn's forecast examples in one
 // transaction, at most one batch. Every record is validated before anything
 // is written, and a bad one refuses the batch. A full bucket makes room by
-// evicting its first keys in key order, at most the batch's size; one above
-// its cap takes nothing (ErrDryRunBlocksFull) until maintenance trims it.
+// evicting earlier sessions' first keys in key order, at most the batch's
+// size. A bucket above its cap, or without enough evictable records,
+// refuses the batch with ErrDryRunBlocksFull.
 func (db *DB) RecordDryRunBlocks(blocks []DryRunBlock) error {
 	if db == nil || db.bolt == nil {
 		return errNoStore
@@ -126,11 +129,13 @@ func (db *DB) RecordDryRunBlocks(blocks []DryRunBlock) error {
 		return fmt.Errorf("%d examples exceed one batch", len(blocks))
 	}
 	keys, values := make([][]byte, len(blocks)), make([][]byte, len(blocks))
+	keep := make(map[string]bool)
 	for i, b := range blocks {
 		var err error
 		if keys[i], values[i], err = b.encode(); err != nil {
 			return err
 		}
+		keep[b.Session] = true
 	}
 	return db.bolt.Update(func(tx *bolt.Tx) error {
 		bucket, err := tx.CreateBucketIfNotExists([]byte(dryRunBlocksBucket))
@@ -142,15 +147,23 @@ func (db *DB) RecordDryRunBlocks(blocks []DryRunBlock) error {
 			return ErrDryRunBlocksFull
 		}
 		fresh := map[string]bool{}
+		incoming := map[string]bool{}
 		for _, k := range keys {
+			incoming[string(k)] = true
 			if bucket.Get(k) == nil {
 				fresh[string(k)] = true
 			}
 		}
 		var evict [][]byte
 		c := bucket.Cursor()
-		for k, _ := c.First(); k != nil && len(evict) < held+len(fresh)-maxDryRunBlocks; k, _ = c.Next() {
-			evict = append(evict, append([]byte(nil), k...))
+		needed := held + len(fresh) - maxDryRunBlocks
+		for k, v := c.First(); k != nil && len(evict) < needed; k, v = c.Next() {
+			if !incoming[string(k)] && !keep[dryRunSession(v)] {
+				evict = append(evict, append([]byte(nil), k...))
+			}
+		}
+		if len(evict) < needed {
+			return ErrDryRunBlocksFull
 		}
 		for _, k := range evict {
 			if err = bucket.Delete(k); err != nil {
@@ -190,8 +203,9 @@ type DryRunMaintained struct {
 }
 
 // MaintainDryRunBlocks runs one step of the maintenance pass: at most 256
-// records visited or deleted, first trimming a bucket above its cap from
-// its first keys, then resuming the pass after Cursor. A read decides
+// records visited or deleted, resuming the pass after Cursor. Cap eviction
+// and purging preserve Keep even if its timestamps precede the cutoff.
+// Ordinary time pruning still applies outside a purge. A read decides
 // whether anything is due, so a step that removes nothing writes nothing.
 // A failed step changes nothing; resume from the same cursor.
 func (db *DB) MaintainDryRunBlocks(step DryRunMaintenance) (DryRunMaintained, error) {
@@ -207,14 +221,8 @@ func (db *DB) MaintainDryRunBlocks(step DryRunMaintenance) (DryRunMaintained, er
 			res.Done, res.Next = true, nil
 			return nil
 		}
-		trimmed := map[string]bool{}
 		c := bucket.Cursor()
 		over := bucket.Stats().KeyN - maxDryRunBlocks
-		for k, _ := c.First(); k != nil && over > 0 && res.Visited < maxDryRunMaintenance; k, _ = c.Next() {
-			victims, trimmed[string(k)] = append(victims, append([]byte(nil), k...)), true
-			over--
-			res.Visited++
-		}
 		k, v := c.First()
 		if step.Cursor != nil {
 			if k, v = c.Seek(step.Cursor); k != nil && string(k) == string(step.Cursor) {
@@ -222,13 +230,16 @@ func (db *DB) MaintainDryRunBlocks(step DryRunMaintenance) (DryRunMaintained, er
 			}
 		}
 		for ; k != nil && res.Visited < maxDryRunMaintenance; k, v = c.Next() {
-			if trimmed[string(k)] {
-				continue
-			}
 			res.Visited++
 			res.Next = append([]byte(nil), k...)
-			if dryRunKeyBefore(k, step.Cutoff) || (step.Purge && dryRunSession(v) != step.Keep) {
+			kept := step.Keep != "" && dryRunSession(v) == step.Keep
+			remove := !kept && (over > 0 || step.Purge)
+			if !step.Purge && dryRunKeyBefore(k, step.Cutoff) {
+				remove = true
+			}
+			if remove {
 				victims = append(victims, res.Next)
+				over--
 			}
 		}
 		if k == nil {
@@ -283,7 +294,7 @@ func dryRunSession(value []byte) string {
 	var rec struct {
 		SessionID string `json:"session_id"`
 	}
-	if json.Unmarshal(value, &rec) != nil {
+	if len(value) > maxDryRunValueBytes || json.Unmarshal(value, &rec) != nil {
 		return ""
 	}
 	return rec.SessionID

@@ -519,7 +519,9 @@ reserves, charges and defers nothing for capacity. Every candidate, a
 challenge included, weighs one fair unit and no history. A challenge's
 comparison preview still spends live history, so the selection passes one
 over, with no wait or fair turn, while the live history budget cannot pay
-for it, as a schedule does, and serves it on a lane that can. Direct and
+for it, as a schedule does, and serves it on a lane that can. Challenge
+picks share that live allowance within a selection; an earlier pick leaves
+less for the next. Direct and
 corroborated work alternates within a bounded reserved share of each batch,
 and the general lane serves the rest by class and severity, where
 reserved-eligible work competes too. Revalidation, age-out, retry backoff
@@ -546,13 +548,16 @@ fixed-width UTC time with nanoseconds, the canonical address and the
 candidate, so two decisions for one target never overwrite each other. The
 writer validates every record and the encoded key and value bounds before
 writing; one bad record refuses the batch. A full bucket makes room by
-evicting its first keys in key order, at most the batch's size, in the same
-transaction; a bucket above its cap takes no example until maintenance trims
-it. `MaintainDryRunBlocks` runs one bounded step of a pass over the bucket:
-a fixed number of records visited or deleted, trimming an oversized bucket
-from its first keys, removing records whose key time is strictly older than a cutoff,
+evicting earlier sessions' first keys in key order in the same transaction.
+It refuses a batch when no room can be made without evicting its active
+session, or while the bucket remains above its cap.
+`MaintainDryRunBlocks` runs one bounded step of a pass over the bucket,
+trimming an oversized bucket without evicting the active session,
+removing records whose key time is strictly older than a cutoff,
 and, for a purge, every record of a session other than the one it keeps,
-legacy records included. It resumes after the last key it visited, writes
+legacy records included. A purge with no active session removes everything;
+a purge with an active session preserves that session regardless of time.
+It resumes after the last key it visited, including protected keys, writes
 nothing when nothing is due, and a failed step changes nothing.
 
 The forecast model keeps charges in admission-time order, including when
@@ -861,7 +866,12 @@ sender takes it whole, later predictions start the next one, and a failed
 delivery goes back in front of them as one summary, retried with the notice
 backoff and counted in the notice queue while it waits. A mode change never
 flushes or relabels a pending summary; Stop sends one its minute allows and
-counts any other as lost.
+counts any other as lost. Executable owners supply a cancellation-aware,
+history-only summary sink separately from legacy notice delivery. An error
+must mean the summary was not committed. Stop cancels an active delivery,
+settles its receipt, and bounds the final attempt outside the owner
+goroutine. Failed or cancelled summaries remain counted until delivered or
+reported lost. The status getter returns a deep copy of its cached snapshot.
 
 With the policy's verdict callback on, a live owner asks the panel about
 each `block_ip` pick before anything is reserved, as a dry run does before

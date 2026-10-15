@@ -1,6 +1,7 @@
 package admissionowner
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -100,6 +101,10 @@ type Options struct {
 	// A preview is recorded in history only: legacy blocking enforces, so
 	// the gap it describes is not an outage (R10).
 	Deliver func(findings []alert.Finding, preview bool) error
+	// DeliverSummary records a dry-run summary in history only. It must
+	// return promptly when ctx is cancelled, and an error must mean the
+	// record was not committed. The owner cancels it during shutdown.
+	DeliverSummary func(ctx context.Context, finding alert.Finding) error
 	// Expiry is how long the response a candidate asks for would last
 	// under the current configuration. A preview records the expiry a
 	// live attempt would have. An executable owner reads its policy's.
@@ -212,6 +217,9 @@ type Owner struct {
 	forecastErrAt time.Time
 	out           dryRunOutput
 	summary       summaryState
+	summaryCtx    context.Context
+	summaryCancel context.CancelFunc
+	summaryResult chan summaryResult
 	// policyHeld is the firewall work a refused policy holds. It waits for
 	// a valid policy as pending work waits for its answer.
 	policyHeld map[admission.CandidateID]bool
@@ -263,7 +271,9 @@ func Start(opts Options) *Owner {
 		opts: opts, requests: make(chan request), quit: make(chan bool), done: make(chan struct{}),
 		audit:         queuehealth.NewSampled(int(admission.MaxAuditSlots), "rows", deliveryLag),
 		forecastReset: resetStartup,
+		summaryResult: make(chan summaryResult, 1),
 	}
+	o.summaryCtx, o.summaryCancel = context.WithCancel(context.Background())
 	if opts.Blocks != nil {
 		o.verdictQueue = queuehealth.NewSampled(verdictPending, "jobs", deliveryLag)
 	}
@@ -307,7 +317,6 @@ func (o *Owner) run() {
 			o.stopVerdicts()
 			if clean {
 				o.shutdown()
-				o.finishSummary()
 			}
 			if o.ingress != nil {
 				o.ingress.Publish(nil)
@@ -607,9 +616,21 @@ func (o *Owner) Stop() { o.halt(true) }
 func (o *Owner) halt(clean bool) {
 	o.stopOnce.Do(func() {
 		o.stopping.Store(true)
+		o.summaryCancel()
 		o.quit <- clean
 		<-o.done
 		<-o.notices.done
+		// Both writers have stopped. Settle any delivery whose receipt
+		// could no longer reach the owner, before the final flush.
+		select {
+		case result := <-o.summaryResult:
+			o.summaryDelivered(result.summary, result.err)
+		default:
+		}
+		if clean {
+			o.finishSummary()
+			o.refreshStatus()
+		}
 	})
 }
 
@@ -1068,8 +1089,8 @@ func (o *Owner) Respond(kind admission.Kind, e admission.Evidence, via admission
 	return err
 }
 
-// Status is the last status the owner read.
-func (o *Owner) Status() *health.AdmissionStatus { return o.current.Load() }
+// Status copies the last status the owner read.
+func (o *Owner) Status() *health.AdmissionStatus { return o.current.Load().Clone() }
 
 // status reads the status now, on the owner goroutine.
 func (o *Owner) status() *health.AdmissionStatus {
