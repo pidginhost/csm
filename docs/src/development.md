@@ -497,6 +497,17 @@ episode is not answered, so a later observation can queue the next
 generation. The first such record moves the ledger to schema 9, with the
 same buckets; older builds refuse it.
 
+`EndDryRun` ends queued work that dry-run mode forecast instead of running:
+the candidate moves to `dry_run` without an attempt, ceiling charge,
+history allocation, audit row or notice. The ending counts one `dry_run`
+outcome in the windows and no queue event. A retry keeps its failed
+attempts, their charges and the history they paid for, which ends; roots it
+gained while it waited are dropped as on other endings. The work must be
+ready as a reservation requires: a retry waits out its backoff, an
+unresolved attempt still holds the target, and stale work is refused. The
+same ending again changes nothing. The episode is not answered, and the
+first dry-run ending also moves the ledger to schema 9.
+
 Schema 7 adds execution intents; the first open upgrades a schema 1 to 6
 ledger in the same transaction. Execution marks a batch of up to 64
 reserved attempts as running and records, in the same transaction and

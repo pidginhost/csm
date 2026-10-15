@@ -205,6 +205,85 @@ func (q *queueTx) terminate(id admission.CandidateID, c *admission.Candidate, st
 	return q.ended(id, *c)
 }
 
+// EndDryRun ends a queued candidate as a dry run (D1): dry-run mode
+// forecast it instead of running it. Nothing is reserved, charged or
+// allocated; a retry keeps its failed attempts, their charges and the
+// history they paid for, which ends. The ending counts one dry-run
+// outcome and no queue event, raises no notice and writes no audit row,
+// and the episode stays open to a later observation's next generation.
+// The work must be ready as for a reservation: a retry waits out its
+// backoff, a held target waits for recovery and stale work is refused.
+// changed is false for the same ending again; any other ended candidate
+// is terminal, and one in flight is a conflict.
+func (l *AdmissionLedger) EndDryRun(id admission.CandidateID) (admission.Candidate, bool, error) {
+	var changed bool
+	c, err := l.modify("dry_run", id, func(q *queueTx, c *admission.Candidate) (bool, error) {
+		switch {
+		case c.State == admission.StateDryRun:
+			return false, nil
+		case c.State.Terminal():
+			return false, admission.ErrCandidateTerminal
+		case c.State != admission.StateQueued:
+			return false, admission.ErrTransitionConflict
+		}
+		if _, err := l.clock(); err != nil {
+			return false, err
+		}
+		if err := q.ready(*c); err != nil {
+			return false, err
+		}
+		changed = true
+		return true, q.endDryRun(id, c)
+	})
+	if err != nil {
+		return admission.Candidate{}, false, err
+	}
+	return c, changed, nil
+}
+
+// ready refuses queued candidate c as a reservation of it would before
+// charging anything: during its retry backoff, once stale, or while an
+// unresolved attempt holds its target.
+func (q *queueTx) ready(c admission.Candidate) error {
+	switch {
+	case q.now.Before(c.NotBefore):
+		return admission.ErrNotReady
+	case !q.now.Before(c.AgeOut):
+		return refusal(admission.ReasonStale, "candidate aged out of the queue")
+	case c.Attempts > 0 && !q.now.Before(c.ExpiresAt):
+		return refusal(admission.ReasonStale, "absolute expiry has passed")
+	}
+	held, err := q.heldTarget(c.Key.Target)
+	if err != nil {
+		return err
+	}
+	if held {
+		return refusal(admission.ReasonPendingRecovery, "an unresolved attempt holds the target")
+	}
+	return nil
+}
+
+// endDryRun ends queued candidate c as a dry run and releases its queue
+// position without a queue event: its one count is the dry-run outcome.
+// The caller counts the transition.
+func (q *queueTx) endDryRun(id admission.CandidateID, c *admission.Candidate) error {
+	e, err := loadQueueEntry(q.tx, id)
+	if err != nil {
+		return err
+	}
+	if err = q.trimUnreservedRoots(c); err != nil {
+		return err
+	}
+	c.State, c.Disposition, c.Reason, c.NotBefore = admission.StateDryRun, admission.DispositionDryRun, 0, time.Time{}
+	if err = q.release(id, e, 0, 0); err != nil {
+		return err
+	}
+	if err = q.outcomes.Add(admission.AttemptOutcome(admission.DispositionDryRun, e.Tier)); err != nil {
+		return err
+	}
+	return q.ended(id, *c)
+}
+
 // Reserve admits the next attempt of a queued candidate on lane and reports
 // true. The first reservation fixes the absolute expiry, which must be in
 // the future; retries keep it and refuse once it has passed. Every attempt
@@ -359,7 +438,7 @@ func currentAttempt(tx *bolt.Tx, c admission.Candidate) (admission.AttemptRecord
 	switch c.State {
 	case admission.StateQueued:
 		valid = prev.State == admission.StateFailed && c.NotBefore.Equal(prev.Finished.Add(admission.RetryBackoff(c.Attempts)))
-	case admission.StateRefused, admission.StateWithheld, admission.StateDropped:
+	case admission.StateRefused, admission.StateWithheld, admission.StateDropped, admission.StateDryRun:
 		valid = prev.State == admission.StateFailed
 	default:
 		valid = prev.State == c.State && prev.Disposition == c.Disposition
