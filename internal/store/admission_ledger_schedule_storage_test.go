@@ -70,7 +70,7 @@ func TestAdmissionLedgerScheduleWaitsForTheRecoveryReserve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wake, ok, err := f.l.NextWake()
+	wake, ok, err := f.l.NextWake(nil)
 	if err != nil || !ok || !wake.Equal(c.AgeOut) {
 		t.Fatalf("wake = %v %v %v, want only the age-out %v", wake, ok, err, c.AgeOut)
 	}
@@ -86,12 +86,12 @@ func TestAdmissionLedgerNextWakeWaitsForHistoryCredit(t *testing.T) {
 	f.adjustStorage(func(s *admission.StorageState) { s.General.Credit = 0 })
 	rate := admission.HistoryRate(general)
 	want := time.Duration((uint64(f.cost(id))*uint64(time.Second) + rate - 1) / rate)
-	wake, ok, err := f.l.NextWake()
+	wake, ok, err := f.l.NextWake(nil)
 	if err != nil || !ok || !wake.Equal(f.wall.Add(want)) {
 		t.Fatalf("wake = %v %v %v, want %v", wake, ok, err, f.wall.Add(want))
 	}
 	f.tickAt(wake)
-	if wake, ok, err = f.l.NextWake(); err != nil || !ok || !wake.Equal(f.wall) {
+	if wake, ok, err = f.l.NextWake(nil); err != nil || !ok || !wake.Equal(f.wall) {
 		t.Fatalf("with the credit earned, wake = %v %v %v, want now", wake, ok, err)
 	}
 }
@@ -118,7 +118,7 @@ func TestAdmissionLedgerNextWakeWaitsForRetirableHistory(t *testing.T) {
 		f.adjustStorage(func(s *admission.StorageState) {
 			s.General.Credit = admission.NewStorageState().General.Credit - short*uint64(time.Second)
 		})
-		wake, ok, err := f.l.NextWake()
+		wake, ok, err := f.l.NextWake(nil)
 		if err != nil || !ok || !wake.Equal(eligible) {
 			t.Fatalf("credit %d bytes short: wake = %v %v %v, want %v", short, wake, ok, err, eligible)
 		}
@@ -141,7 +141,7 @@ func TestAdmissionLedgerScheduleClearsUpgradeExcess(t *testing.T) {
 		s.General.Used = general + cost/2
 		s.General.Credit = cost * uint64(time.Second)
 	})
-	wake, ok, err := f.l.NextWake()
+	wake, ok, err := f.l.NextWake(nil)
 	if err != nil || !ok || !wake.Equal(f.wall) {
 		t.Fatalf("eligible excess wake: %v %v %v", wake, ok, err)
 	}
@@ -164,12 +164,12 @@ func TestAdmissionLedgerNextWakeAtExactHistoryCredit(t *testing.T) {
 	general, _ := admission.HistoryLanes()
 	rate := admission.HistoryRate(general)
 	delay := time.Duration((uint64(time.Second) - 1 + rate - 1) / rate)
-	wake, ok, err := f.l.NextWake()
+	wake, ok, err := f.l.NextWake(nil)
 	if err != nil || !ok || !wake.Equal(f.wall.Add(delay)) {
 		t.Fatalf("exact credit wake: %v %v %v; want %v", wake, ok, err, f.wall.Add(delay))
 	}
 	before := f.snapshot()
-	if _, _, err = f.l.NextWake(); err != nil {
+	if _, _, err = f.l.NextWake(nil); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(before, f.snapshot()) {
@@ -200,7 +200,7 @@ func TestAdmissionLedgerScheduleRespectsOutstandingRecovery(t *testing.T) {
 	if picks = f.schedule(admission.ScheduleLimits{General: 3, Members: 3}); len(picks) != 0 {
 		t.Fatalf("outstanding recovery ignored: %+v", picks)
 	}
-	wake, ok, err := f.l.NextWake()
+	wake, ok, err := f.l.NextWake(nil)
 	if err != nil || !ok || !wake.Equal(f.wall.Add(admission.QueueAgeLimit)) {
 		t.Fatalf("recovery-only wake: %v %v %v", wake, ok, err)
 	}
@@ -217,10 +217,10 @@ func TestAdmissionLedgerSchedulingRefusesMissingHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := f.snapshot()
-	if _, _, err := f.l.NextWake(); !isCorrupt(err) {
+	if _, _, err := f.l.NextWake(nil); !isCorrupt(err) {
 		t.Fatalf("missing history wake: %v", err)
 	}
-	if _, err := f.l.Schedule(admission.ScheduleLimits{General: 1, Members: 1}); !isCorrupt(err) {
+	if _, err := f.l.Schedule(admission.ScheduleLimits{General: 1, Members: 1}, nil); !isCorrupt(err) {
 		t.Fatalf("missing history schedule: %v", err)
 	}
 	if !reflect.DeepEqual(before, f.snapshot()) {
@@ -238,7 +238,7 @@ func TestAdmissionLedgerRecoveryBlockedHeadDoesNotHold(t *testing.T) {
 	f.adjustStorage(func(s *admission.StorageState) {
 		leaveRecoveryRoom(s, uint64(f.cost(id))+admission.AttemptRecoveryBytes)
 	})
-	wake, ok, err := f.l.NextWake()
+	wake, ok, err := f.l.NextWake(nil)
 	if err != nil || !ok || !wake.Equal(f.wall) {
 		t.Fatalf("affordable recovery head wake: %v %v %v", wake, ok, err)
 	}
@@ -340,7 +340,7 @@ func TestAdmissionLedgerNextWakeUnassessedUpgrade(t *testing.T) {
 	}
 	f.tickAt(f.wall.Add(11 * time.Second))
 	before := f.snapshot()
-	wake, ok, err := f.l.NextWake()
+	wake, ok, err := f.l.NextWake(nil)
 	if err != nil || !ok || !wake.Equal(f.wall) {
 		t.Fatalf("unassessed work wake = %v %v %v, want now", wake, ok, err)
 	}
@@ -356,14 +356,14 @@ func TestAdmissionLedgerNextWakeClampsExpiredDeadline(t *testing.T) {
 	f := newLedgerFixture(t)
 	f.queued()
 	f.tickAt(f.wall.Add(admission.QueueAgeLimit + time.Second))
-	wake, ok, err := f.l.NextWake()
+	wake, ok, err := f.l.NextWake(nil)
 	if err != nil || !ok || !wake.Equal(f.wall) {
 		t.Fatalf("expired work wake = %v %v %v, want now", wake, ok, err)
 	}
 	if picks := f.schedule(oneEach); len(picks) != 0 {
 		t.Fatalf("expired work served: %+v", picks)
 	}
-	if wake, ok, err = f.l.NextWake(); err != nil || ok {
+	if wake, ok, err = f.l.NextWake(nil); err != nil || ok {
 		t.Fatalf("ended work still wakes: %v %v %v", wake, ok, err)
 	}
 }
@@ -406,7 +406,7 @@ func TestAdmissionLedgerNextWakeRecoveryBlockedRetry(t *testing.T) {
 		want = e.NextChange
 	}
 	before := f.snapshot()
-	wake, ok, err := f.l.NextWake()
+	wake, ok, err := f.l.NextWake(nil)
 	if err != nil || !ok || !wake.Equal(want) {
 		t.Fatalf("recovery-blocked retry wake = %v %v %v, want deadline %v", wake, ok, err, want)
 	}

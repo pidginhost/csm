@@ -69,9 +69,9 @@ func TestAdmissionLedgerRecoveryHoldRejectsBrokenIntentLinks(t *testing.T) {
 				before := dbSnapshot(t, f.db)
 				switch operation {
 				case "schedule":
-					_, err = f.l.Schedule(fullSchedule)
+					_, err = f.l.Schedule(fullSchedule, nil)
 				case "wake":
-					_, _, err = f.l.NextWake()
+					_, _, err = f.l.NextWake(nil)
 				case "reserve":
 					_, _, _, err = f.l.Reserve(queued.Candidate, admission.LaneGeneral, f.wall.Add(time.Hour))
 				case "execute":
@@ -161,7 +161,7 @@ func TestAdmissionLedgerUnknownTargetDefersOtherKinds(t *testing.T) {
 			if picks = f.schedule(fullSchedule); len(picks) != 0 {
 				t.Fatalf("expired but unresolved: %+v", picks)
 			}
-			if wake, ok, wakeErr := f.l.NextWake(); wakeErr != nil || !ok || !wake.After(f.wall) {
+			if wake, ok, wakeErr := f.l.NextWake(nil); wakeErr != nil || !ok || !wake.After(f.wall) {
 				t.Fatalf("held wake: %v %v %v", wake, ok, wakeErr)
 			}
 			if _, _, granted, err = f.l.RetireUnproven(a.Attempt.ID); err != nil || !granted {

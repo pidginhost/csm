@@ -162,7 +162,9 @@ func TestOwnerReportsAFailedSchedule(t *testing.T) {
 		f := newOwnerFixture(t)
 		failing := errors.New("injected schedule failure")
 		prev := scheduleLedger
-		scheduleLedger = func(*store.AdmissionLedger, admission.ScheduleLimits) ([]admission.Pick, error) { return nil, failing }
+		scheduleLedger = func(*store.AdmissionLedger, admission.ScheduleLimits, map[admission.CandidateID]bool) ([]admission.Pick, error) {
+			return nil, failing
+		}
 		t.Cleanup(func() { scheduleLedger = prev })
 		opts := previewOptions(f)
 		opts.ScheduleEvery = time.Second
@@ -194,7 +196,7 @@ func TestOwnerBacksOffAFailingPreviewTurn(t *testing.T) {
 	f := newOwnerFixture(t)
 	mono := &fakeMono{now: time.Now()}
 	var attempts atomic.Int64
-	failing := func(*store.AdmissionLedger, admission.ScheduleLimits) ([]admission.Pick, error) {
+	failing := func(*store.AdmissionLedger, admission.ScheduleLimits, map[admission.CandidateID]bool) ([]admission.Pick, error) {
 		attempts.Add(1)
 		return nil, errors.New("injected schedule failure")
 	}
@@ -229,9 +231,9 @@ func TestOwnerBacksOffAFailingPreviewTurn(t *testing.T) {
 		t.Fatal("a failing turn left no owner error")
 	}
 	// The attempt after 4096 s waits the hour cap, not 4096 s more.
-	setOwnerHook(t, o, &scheduleLedger, func(l *store.AdmissionLedger, limits admission.ScheduleLimits) ([]admission.Pick, error) {
+	setOwnerHook(t, o, &scheduleLedger, func(l *store.AdmissionLedger, limits admission.ScheduleLimits, pending map[admission.CandidateID]bool) ([]admission.Pick, error) {
 		attempts.Add(1)
-		return prevSchedule(l, limits)
+		return prevSchedule(l, limits, pending)
 	})
 	mono.advance(4096*time.Second + time.Hour - 2*time.Hour - time.Second)
 	before := attempts.Load()

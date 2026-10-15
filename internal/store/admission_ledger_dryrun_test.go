@@ -323,7 +323,7 @@ func TestAdmissionLedgerEndDryRunDoesNotAnswerTheEpisode(t *testing.T) {
 	if n := f.outcomesAt(admission.SpanDay, f.wall).Count(admission.AttemptOutcome(admission.DispositionDryRun, tier)); n != 1 {
 		t.Fatalf("dry-run outcomes after reopen = %d", n)
 	}
-	if picks, schedErr := f.l.Schedule(fullSchedule); schedErr != nil || len(picks) != 0 {
+	if picks, schedErr := f.l.Schedule(fullSchedule, nil); schedErr != nil || len(picks) != 0 {
 		t.Fatalf("schedule after a dry run = %+v, %v", picks, schedErr)
 	}
 	if _, _, _, reserveErr := f.l.Reserve(first, admission.LaneGeneral, f.wall.Add(time.Hour)); reserveErr != admission.ErrCandidateTerminal {

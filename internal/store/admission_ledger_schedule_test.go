@@ -13,7 +13,7 @@ var oneEach = admission.ScheduleLimits{General: 10, Reserved: 10, Members: 1}
 
 func (f *ledgerFixture) schedule(lim admission.ScheduleLimits) []admission.Pick {
 	f.t.Helper()
-	picks, err := f.l.Schedule(lim)
+	picks, err := f.l.Schedule(lim, nil)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestAdmissionLedgerScheduleRecoversAfterReopen(t *testing.T) {
 	if err = f.l.SetCeiling(fixtureCeiling); err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.l.Schedule(oneEach)
+	_, err = f.l.Schedule(oneEach, nil)
 	wantLedgerReason(t, "schedule without a current reading", err, admission.ReasonEngineUnavailable)
 	f.tickAt(f.wall.Add(11 * time.Second))
 	if picks := f.schedule(oneEach); !reflect.DeepEqual(pickIDs(picks), []admission.CandidateID{id}) {
@@ -170,11 +170,11 @@ func TestAdmissionLedgerScheduleChecksEveryCandidateAfterReopen(t *testing.T) {
 // serve is due at once.
 func TestAdmissionLedgerScheduleRetryTimer(t *testing.T) {
 	f := newLedgerFixture(t)
-	if _, ok, err := f.l.NextWake(); err != nil || ok {
+	if _, ok, err := f.l.NextWake(nil); err != nil || ok {
 		t.Fatalf("empty ledger wake = %v, %v", ok, err)
 	}
 	id := f.queued()
-	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(ledgerT0) {
+	if wake, ok, err := f.l.NextWake(nil); err != nil || !ok || !wake.Equal(ledgerT0) {
 		t.Fatalf("queued wake = %v %v, %v", wake, ok, err)
 	}
 	_, a, _, err := f.l.Reserve(id, admission.LaneGeneral, ledgerT0.Add(time.Hour))
@@ -185,7 +185,7 @@ func TestAdmissionLedgerScheduleRetryTimer(t *testing.T) {
 		t.Fatal(err)
 	}
 	retry := ledgerT0.Add(admission.RetryBackoff(1))
-	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(retry) {
+	if wake, ok, err := f.l.NextWake(nil); err != nil || !ok || !wake.Equal(retry) {
 		t.Fatalf("retry wake = %v %v, %v; want %v", wake, ok, err, retry)
 	}
 	if picks := f.schedule(oneEach); len(picks) != 0 {
@@ -205,13 +205,13 @@ func TestAdmissionLedgerScheduleIsAtomic(t *testing.T) {
 	f.tickAt(ledgerT0.Add(time.Minute))
 	before := f.snapshot()
 	f.failNext("schedule")
-	if _, err := f.l.Schedule(oneEach); err == nil {
+	if _, err := f.l.Schedule(oneEach, nil); err == nil {
 		t.Fatal("injected failure did not fail the schedule")
 	}
 	if !reflect.DeepEqual(before, f.snapshot()) {
 		t.Fatal("a failed schedule changed records")
 	}
-	if _, err := f.l.Schedule(admission.ScheduleLimits{}); err == nil {
+	if _, err := f.l.Schedule(admission.ScheduleLimits{}, nil); err == nil {
 		t.Fatal("a schedule without a member bound was accepted")
 	}
 	var damaged []byte
@@ -227,7 +227,7 @@ func TestAdmissionLedgerScheduleIsAtomic(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.l.Schedule(oneEach); !isCorrupt(err) {
+	if _, err := f.l.Schedule(oneEach, nil); !isCorrupt(err) {
 		t.Fatalf("damaged scheduler state: %v", err)
 	}
 	if _, err := OpenAdmissionLedger(f.db, f.reg); !isCorrupt(err) {
@@ -244,7 +244,7 @@ func TestAdmissionLedgerNextWakeTracksPendingChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, wakeErr := f.l.NextWake(); wakeErr != nil || ok {
+	if _, ok, wakeErr := f.l.NextWake(nil); wakeErr != nil || ok {
 		t.Fatalf("in-flight wake = %v, %v", ok, wakeErr)
 	}
 	if _, _, err = f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
@@ -254,14 +254,14 @@ func TestAdmissionLedgerNextWakeTracksPendingChanges(t *testing.T) {
 	for _, at := range []time.Time{retry, retry.Add(time.Second)} {
 		f.tickAt(at)
 		f.schedule(admission.ScheduleLimits{Members: 1})
-		if wake, ok, wakeErr := f.l.NextWake(); wakeErr != nil || !ok || !wake.Equal(at) {
+		if wake, ok, wakeErr := f.l.NextWake(nil); wakeErr != nil || !ok || !wake.Equal(at) {
 			t.Fatalf("ready retry wake = %v %v, %v", wake, ok, wakeErr)
 		}
 	}
 	if _, err = f.l.Terminate(id, admission.ReasonProtected); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, wakeErr := f.l.NextWake(); wakeErr != nil || ok {
+	if _, ok, wakeErr := f.l.NextWake(nil); wakeErr != nil || ok {
 		t.Fatalf("ended candidate wake = %v, %v", ok, wakeErr)
 	}
 }
@@ -275,7 +275,7 @@ func TestAdmissionLedgerNextWakeRefusesDamagedClock(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := f.l.NextWake(); !isCorrupt(err) {
+	if _, _, err := f.l.NextWake(nil); !isCorrupt(err) {
 		t.Fatalf("wake without a valid clock = %v", err)
 	}
 }
@@ -290,7 +290,7 @@ func TestAdmissionLedgerFailedScheduleRetriesRecovery(t *testing.T) {
 	raise(admission.SeverityCritical)
 	before := f.snapshot()
 	f.failNext("schedule")
-	if _, err := f.l.Schedule(oneEach); err == nil {
+	if _, err := f.l.Schedule(oneEach, nil); err == nil {
 		t.Fatal("injected failure did not fail recovery")
 	}
 	if f.l.revalidated || !reflect.DeepEqual(before, f.snapshot()) {

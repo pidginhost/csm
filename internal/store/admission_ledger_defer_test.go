@@ -336,7 +336,7 @@ func challengeWaitingOnBlockCredit(t *testing.T) (*ledgerFixture, admission.Cand
 
 func TestAdmissionLedgerScheduleChallengeUsesNoBlockCredit(t *testing.T) {
 	f, id := challengeWaitingOnBlockCredit(t)
-	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(f.wall) {
+	if wake, ok, err := f.l.NextWake(nil); err != nil || !ok || !wake.Equal(f.wall) {
 		t.Fatalf("free challenge wake: %v %v %v", wake, ok, err)
 	}
 	picks := f.schedule(fullSchedule)
@@ -362,7 +362,7 @@ func TestAdmissionLedgerScheduleChallengeWaitsForHistoryWithoutBlockCredit(t *te
 	general, _ := admission.HistoryLanes()
 	rate := admission.HistoryRate(general)
 	wait := time.Duration((uint64(f.cost(id))*uint64(time.Second) + rate - 1) / rate)
-	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(f.wall.Add(wait)) {
+	if wake, ok, err := f.l.NextWake(nil); err != nil || !ok || !wake.Equal(f.wall.Add(wait)) {
 		t.Fatalf("challenge history wake: %v %v %v, want %v", wake, ok, err, f.wall.Add(wait))
 	}
 	f.tickAt(f.wall.Add(wait))
@@ -384,7 +384,7 @@ func TestAdmissionLedgerScheduleChallengeKeepsItsBackoff(t *testing.T) {
 	if picks := f.schedule(fullSchedule); len(picks) != 0 || f.candidateOf(id).Reason != 0 {
 		t.Fatalf("backoff challenge: %+v %s", picks, f.candidateOf(id).Reason)
 	}
-	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(retry) {
+	if wake, ok, err := f.l.NextWake(nil); err != nil || !ok || !wake.Equal(retry) {
 		t.Fatalf("challenge retry wake: %v %v %v, want %v", wake, ok, err, retry)
 	}
 	f.tickAt(retry)
@@ -471,7 +471,7 @@ func TestAdmissionLedgerNextWakeTracksChargedWorkBesideChallenges(t *testing.T) 
 	// The retry already paid its history. One general ceiling unit accrues
 	// before the new challenge earns its history credit.
 	want := f.wall.Add(2250 * time.Millisecond)
-	if wake, ok, err := f.l.NextWake(); err != nil || !ok || !wake.Equal(want) {
+	if wake, ok, err := f.l.NextWake(nil); err != nil || !ok || !wake.Equal(want) {
 		t.Fatalf("wake = %v %v %v, want %v", wake, ok, err, want)
 	}
 	f.tickAt(want)

@@ -333,7 +333,10 @@ Inside a class, verified scopes rotate, a scope serves Critical:High:Warning
 4:2:1 and a severity serves its oldest candidate; deficit accounting lets a
 candidate that costs several block units wait its turn without starving. The
 scheduler's position persists, and every pick is revalidated before it is
-returned. Detectors hand work to a nonblocking ingress that applies the same
+returned. A schedule passes over candidates the caller names as pending,
+such as one waiting for the panel's verdict: they are never picked or
+deferred, their scopes keep their turns, and the next wake waits only for
+their deadlines. Detectors hand work to a nonblocking ingress that applies the same
 fair shares against the owner's latest snapshot of the queue. It judges
 freshness at that snapshot's admission time advanced by elapsed monotonic
 time, so an idle owner does not make new evidence look future-dated. Durable

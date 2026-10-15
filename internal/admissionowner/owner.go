@@ -728,7 +728,7 @@ func (o *Owner) turn() error {
 	}
 	// Retirement first: it can release the holds pending_recovery waits on.
 	retireErr := o.retire()
-	picks, err := scheduleLedger(o.ledger, previewLimits)
+	picks, err := scheduleLedger(o.ledger, previewLimits, nil)
 	if err != nil {
 		return fmt.Errorf("scheduling the queue: %w", err)
 	}
@@ -769,7 +769,7 @@ func (o *Owner) turn() error {
 	if err = o.publish(); err != nil {
 		return err
 	}
-	wake, ok, err := o.ledger.NextWake()
+	wake, ok, err := o.ledger.NextWake(nil)
 	if err != nil {
 		return fmt.Errorf("reading the next wake time: %w", err)
 	}
