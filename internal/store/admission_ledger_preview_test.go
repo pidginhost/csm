@@ -273,6 +273,28 @@ func TestAdmissionLedgerPreviewBoundsAndRotates(t *testing.T) {
 	}
 }
 
+// Dry-run and live selection share one stored fair position: each resumes
+// the scope rotation where the other one stopped.
+func TestAdmissionLedgerPreviewSharesTheFairPosition(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.fill(30, evidenceSpec{owner: f.owner("alice")})
+	f.fill(30, evidenceSpec{owner: f.owner("bob")})
+	f.fill(30, evidenceSpec{})
+	first := f.preview(nil)
+	order := []string{f.scopeOf(first[0].ID), f.scopeOf(first[1].ID), f.scopeOf(first[2].ID)}
+	after := func(picks []admission.Pick) string {
+		i := slices.Index(order, f.scopeOf(picks[len(picks)-1].ID))
+		return order[(i+1)%len(order)]
+	}
+	live := f.schedule(admission.ScheduleLimits{General: 5, Members: admission.MaxBatchMembers})
+	if len(live) != 5 || f.scopeOf(live[0].ID) != after(first) {
+		t.Fatalf("live schedule after a selection starts with %s, want %s", f.scopeOf(live[0].ID), after(first))
+	}
+	if again := f.preview(nil); f.scopeOf(again[0].ID) != after(live) {
+		t.Fatalf("selection after a live schedule starts with %s, want %s", f.scopeOf(again[0].ID), after(live))
+	}
+}
+
 // Direct and corroborated work alternates in the reserved lane for at most
 // 13 of a selection's members; the general lane serves the rest by class
 // and severity, where reserved-eligible work competes as well. A general
