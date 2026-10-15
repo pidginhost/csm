@@ -243,8 +243,10 @@ func TestOwnerFailedClockCannotExecuteWithCachedTime(t *testing.T) {
 	}
 }
 
-// NextWake can leave scheduleDue set when cadence blocks execution. One
-// drain still runs at most one extra turn, even across several groups.
+// An executable owner runs at most one turn per monotonic second (spec
+// 3.2), whatever made it due: a drain that queues work in the second of
+// the last turn keeps the schedule due and runs no turn, even across
+// several groups, and the next second serves the work.
 func TestOwnerDrainRunsAtMostOneTurn(t *testing.T) {
 	for _, live := range []bool{false, true} {
 		name := "preview"
@@ -304,17 +306,61 @@ func TestOwnerDrainRunsAtMostOneTurn(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, applies := blocks.calls(); turns != 2 || len(applies) != 1 {
-				t.Fatalf("cadence-blocked drain repeated: turns=%d applies=%d", turns, len(applies))
+			if _, applies := blocks.calls(); turns != 1 || len(applies) != 1 {
+				t.Fatalf("a drain ran a second turn in one second: turns=%d applies=%d", turns, len(applies))
 			}
 			mono.advance(batchEvery)
 			f.host.advance(batchEvery)
 			if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
 				t.Fatal(err)
 			}
-			if _, applies := blocks.calls(); turns != 3 || len(applies) != 2 || len(applies[1]) != 1 {
+			if _, applies := blocks.calls(); turns != 2 || len(applies) != 2 || len(applies[1]) != 1 {
 				t.Fatalf("schedule did not serve waiting work: turns=%d applies=%v", turns, applies)
 			}
 		})
+	}
+}
+
+// Spec 3.2: a forecast turn counts as a turn although it reserves nothing.
+// However often the schedule falls due, as received answers make it, a
+// second forecast turn waits for the next monotonic second.
+func TestOwnerRunsOneForecastTurnASecond(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	o, _, mono := policyOwner(t, f, blocks, dryPolicy(1))
+	selections := 0
+	preview := previewLedger
+	setOwnerHook(t, o, &previewLedger, func(l *store.AdmissionLedger, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+		selections++
+		return preview(l, answers)
+	})
+	schedule := func() {
+		t.Helper()
+		if err := o.do(func() error { o.scheduleDue = true; o.schedule(); return o.scheduleErr }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	schedule()
+	waiting, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+	schedule()
+	mono.advance(time.Second - time.Nanosecond)
+	schedule()
+	if c := candidate(t, o, waiting); selections != 1 || c.State != admission.StateQueued {
+		t.Fatalf("%d forecast turns in one second; waiting pick %+v", selections, c)
+	}
+	if err := o.do(func() error {
+		if !o.scheduleDue {
+			t.Error("a turn held back by the second lost its schedule")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mono.advance(time.Nanosecond)
+	schedule()
+	if c := candidate(t, o, waiting); selections != 2 || c.State != admission.StateDryRun {
+		t.Fatalf("after a second: %d forecast turns; waiting pick %+v", selections, c)
 	}
 }

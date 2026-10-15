@@ -29,6 +29,9 @@ const (
 	// defaultScheduleEvery bounds the owner to one batch start a second
 	// (spec 5.5).
 	defaultScheduleEvery = time.Second
+	// turnEvery spaces an executable owner's selection, check and forecast
+	// turns, including those that dispatch nothing (spec 3.2).
+	turnEvery = time.Second
 )
 
 // maxDrainGroups bounds the groups one drain persists, so a busy ingress
@@ -205,9 +208,11 @@ type Owner struct {
 	// policyHeld is the firewall work a refused policy holds. It waits for
 	// a valid policy as pending work waits for its answer.
 	policyHeld map[admission.CandidateID]bool
-	// nextBatch is when the next block batch may start, on the monotonic
-	// clock; arrived is set by a drain that queued work.
+	// nextBatch is when the next block batch may start and nextTurn when an
+	// executable owner's next selection may, on the monotonic clock;
+	// arrived is set by a drain that queued work.
 	nextBatch time.Time
+	nextTurn  time.Time
 	arrived   bool
 	// retireDue is the next admission expiry; retireNext is the next
 	// monotonic retry. They must not be converted into each other when
@@ -750,7 +755,14 @@ func (o *Owner) schedule() {
 		return
 	}
 	o.scheduleDue, o.wakeAt = false, time.Time{}
-	err := o.turn()
+	// An executable owner selects, checks and forecasts once a second at
+	// most, whatever made the turn due (spec 3.2). Retirement of earlier
+	// work keeps its own waits.
+	selecting := !o.executable() || !monoNow().Before(o.nextTurn)
+	if selecting && o.executable() {
+		o.nextTurn = monoNow().Add(turnEvery)
+	}
+	err := o.runTurn(selecting)
 	if err != nil {
 		o.scheduleDue = true
 		o.scheduleWait.fail(monoNow(), defaultScheduleEvery)
@@ -770,7 +782,11 @@ func (o *Owner) schedule() {
 // run as one batch (execute). Every other pick is an observe preview. The
 // ledger's wake time, converted by the admission clock's elapsed time,
 // sets the next turn (O16); a forecast wakes whatever the live budgets.
-func (o *Owner) turn() error {
+func (o *Owner) turn() error { return o.runTurn(true) }
+
+// runTurn is a turn that selects work only when selecting is set; otherwise
+// the queue stays due for a later turn.
+func (o *Owner) runTurn(selecting bool) error {
 	// Recording an outcome needs only the saved ledger clock. A failed
 	// current reading must not abandon work that already ran.
 	if err := o.finishPending(); err != nil {
@@ -793,12 +809,19 @@ func (o *Owner) turn() error {
 	}
 	nextWake := (*store.AdmissionLedger).NextWake
 	if o.forecasting() {
+		nextWake = (*store.AdmissionLedger).PreviewWake
+	}
+	switch {
+	case !selecting:
+		o.scheduleDue = true
+	case o.forecasting():
 		if err := o.forecast(); err != nil {
 			return err
 		}
-		nextWake = (*store.AdmissionLedger).PreviewWake
-	} else if err := o.serve(); err != nil {
-		return err
+	default:
+		if err := o.serve(); err != nil {
+			return err
+		}
 	}
 	if err := o.publish(); err != nil {
 		return err

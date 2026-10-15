@@ -748,7 +748,11 @@ the cached owner status without rereading the ledger. Status
 execution` name the cause. A degraded admission clock cannot bound a lease, so
 it defers block picks the same way. One batch starts a second at most; with an
 engine, a drain that queues new work runs the schedule at once instead of
-waiting for its timer.
+waiting for its timer. An owner with an engine also selects, checks or
+forecasts work once a second at most, including turns that dispatch
+nothing: work that falls due sooner, from a drain or a panel answer, stays
+due for the next second, while retirement of earlier attempts keeps its own
+waits.
 
 An owner with an engine binds to one execution policy: the dry-run mode,
 the verdict callback and its timeout, the hourly ceiling and the response
