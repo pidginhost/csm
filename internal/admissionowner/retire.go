@@ -19,9 +19,9 @@ const retireRecheck = time.Minute
 // clear attempt's own row first, then the ledger retires it: a stop between
 // the two leaves an unknown attempt without a row, which the next pass
 // finds clear again. Running attempts are never sent. A degraded clock or a
-// missing engine retires nothing and tries again a second later; a held
-// attempt waits a minute on its own, so a held batch cannot starve the
-// intents behind it.
+// missing engine retires nothing and tries again after a backoff from one
+// second to a minute; a held attempt waits a minute on its own, so a held
+// batch cannot starve the intents behind it.
 func (o *Owner) retire() error {
 	if o.opts.Blocks == nil || monoNow().Before(o.retireAt) {
 		return nil
@@ -39,6 +39,8 @@ func (o *Owner) retire() error {
 	}
 	o.retireDue, o.retireNext = time.Time{}, time.Time{}
 	waiting := make(map[admission.ActionID]time.Time)
+	delays := make(map[admission.ActionID]time.Duration)
+	faults := make(map[admission.ActionID]bool)
 	var due []admission.Intent
 	// Intents are in action order. Rotate the scan so due retries cannot
 	// starve the tail when a turn takes longer than their waits.
@@ -59,6 +61,12 @@ func (o *Owner) retire() error {
 			o.noteRetirement(in.ExpiresAt)
 			continue
 		}
+		if d, ok := o.retireDelay[in.Action]; ok {
+			delays[in.Action] = d
+		}
+		if o.retireFaults[in.Action] {
+			faults[in.Action] = true
+		}
 		if at := o.retireRetry[in.Action]; monoNow().Before(at) {
 			waiting[in.Action] = at
 			o.noteRetirementRetry(at)
@@ -70,19 +78,17 @@ func (o *Owner) retire() error {
 		}
 		due = append(due, in)
 	}
-	o.retireRetry = waiting
+	o.retireRetry, o.retireDelay, o.retireFaults = waiting, delays, faults
 	if len(due) == 0 {
 		return nil
 	}
 	if o.degraded {
-		o.retireAt = monoNow().Add(firstProbeWait)
-		o.noteRetirementRetry(o.retireAt)
+		o.backoffRetirement()
 		return nil
 	}
 	engine := o.opts.Blocks()
 	if engine == nil {
-		o.retireAt = monoNow().Add(firstProbeWait)
-		o.noteRetirementRetry(o.retireAt)
+		o.backoffRetirement()
 		return nil
 	}
 	members := make([]firewall.BlockAction, len(due))
@@ -104,30 +110,56 @@ func (o *Owner) retire() error {
 		_, _, _, err = retireLedger(o.ledger, in.Action)
 		switch _, refused := admission.ReasonOf(err); {
 		case err == nil:
+			delete(o.retireDelay, in.Action)
+			delete(o.retireFaults, in.Action)
+		case errors.Is(err, admission.ErrCorruptRecord), errors.Is(err, admission.ErrTransitionConflict):
+			// A damaged record or an attempt that ended another way is not
+			// mended by asking again soon: ask a minute later and report it
+			// once, so it does not fail every turn and slow all owner work.
+			if !o.retireFaults[in.Action] {
+				errs = errors.Join(errs, fmt.Errorf("retiring %s: %w", in.Action, err))
+			}
+			o.retireFaults[in.Action] = true
+			o.retryRetirement(in.Action, retireRecheck)
 		case errors.Is(err, admission.ErrNotReady), refused:
 			// Delivery or the ledger clock has not caught up. Keep a
 			// future wake even if no new candidates arrive.
-			o.retryRetirement(in.Action, firstProbeWait)
+			o.retryRetirementLater(in.Action)
 		default:
 			errs = errors.Join(errs, fmt.Errorf("retiring %s: %w", in.Action, err))
-			o.retryRetirement(in.Action, firstProbeWait)
+			o.retryRetirementLater(in.Action)
 		}
 	}
 	return errs
 }
 
 // checkRetirements asks the engine about members. A failed or short answer
-// backs off (1 s doubling to 60 s) without failing the turn.
+// backs off without failing the turn.
 func (o *Owner) checkRetirements(engine BlockEngine, members []firewall.BlockAction) ([]bool, bool) {
 	gone, err := engine.RetireBlockActions(members)
 	if err != nil || len(gone) != len(members) {
-		o.retireWait = min(max(2*o.retireWait, firstProbeWait), maxProbeWait)
-		o.retireAt = monoNow().Add(o.retireWait)
-		o.noteRetirementRetry(o.retireAt)
+		o.backoffRetirement()
 		return nil, false
 	}
 	o.retireWait, o.retireAt = 0, time.Time{}
 	return gone, true
+}
+
+// backoffRetirement delays the next pass while nothing can be checked: an
+// engine that fails or is missing, or a degraded clock. The wait starts at
+// one second and doubles to a minute; a successful check resets it.
+func (o *Owner) backoffRetirement() {
+	o.retireWait = min(max(2*o.retireWait, firstProbeWait), maxProbeWait)
+	o.retireAt = monoNow().Add(o.retireWait)
+	o.noteRetirementRetry(o.retireAt)
+}
+
+// retryRetirementLater holds one attempt back while the ledger refuses
+// to retire it: one second, doubling to retireRecheck.
+func (o *Owner) retryRetirementLater(id admission.ActionID) {
+	wait := min(max(2*o.retireDelay[id], firstProbeWait), retireRecheck)
+	o.retireDelay[id] = wait
+	o.retryRetirement(id, wait)
 }
 
 // retryRetirement holds one attempt back for wait on the monotonic clock.

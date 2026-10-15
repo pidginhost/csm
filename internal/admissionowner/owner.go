@@ -203,6 +203,11 @@ type Owner struct {
 	retireWait time.Duration
 	// Per-action monotonic waits keep held entries from monopolizing a batch.
 	retireRetry map[admission.ActionID]time.Time
+	// retireDelay is each action's current wait while the ledger refuses
+	// its retirement; retireFaults names the actions whose damaged record
+	// was already reported.
+	retireDelay  map[admission.ActionID]time.Duration
+	retireFaults map[admission.ActionID]bool
 	// Resume after the last checked action even if its retry is already due.
 	retireAfter admission.ActionID
 }
@@ -735,16 +740,17 @@ func (o *Owner) turn() error {
 		return err
 	}
 	// Retirement first: it can release the holds pending_recovery waits on.
+	// Its error is kept when a later step fails.
 	retireErr := o.retire()
 	picks, err := scheduleLedger(o.ledger, previewLimits)
 	if err != nil {
-		return fmt.Errorf("scheduling the queue: %w", err)
+		return errors.Join(retireErr, fmt.Errorf("scheduling the queue: %w", err))
 	}
 	var blocks []execPick
 	for _, p := range picks {
 		c, readErr := o.ledger.Candidate(p.ID)
 		if readErr != nil {
-			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
+			return errors.Join(retireErr, fmt.Errorf("reading pick %s: %w", p.ID, readErr))
 		}
 		if o.opts.Blocks != nil && c.Key.Kind == admission.KindBlockIP {
 			blocks = append(blocks, execPick{pick: p, c: c})
@@ -755,19 +761,19 @@ func (o *Owner) turn() error {
 				switch reason.Disposition() {
 				case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
 					if _, endErr := o.ledger.Terminate(p.ID, reason); endErr != nil {
-						return fmt.Errorf("ending pick %s: %w", p.ID, endErr)
+						return errors.Join(retireErr, fmt.Errorf("ending pick %s: %w", p.ID, endErr))
 					}
 					o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionRefused, reason: reason}, o.now)
 					continue
 				}
 			}
-			return fmt.Errorf("previewing pick %s: %w", p.ID, err)
+			return errors.Join(retireErr, fmt.Errorf("previewing pick %s: %w", p.ID, err))
 		}
 		o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
 	}
 	if len(blocks) > 0 {
 		if err = o.execute(blocks); err != nil {
-			return err
+			return errors.Join(retireErr, err)
 		}
 	} else if o.opts.Blocks != nil && o.execHold != nil {
 		if o.ready(o.opts.Blocks(), false) && o.execHold != nil {
@@ -775,11 +781,11 @@ func (o *Owner) turn() error {
 		}
 	}
 	if err = o.publish(); err != nil {
-		return err
+		return errors.Join(retireErr, err)
 	}
 	wake, ok, err := o.ledger.NextWake()
 	if err != nil {
-		return fmt.Errorf("reading the next wake time: %w", err)
+		return errors.Join(retireErr, fmt.Errorf("reading the next wake time: %w", err))
 	}
 	if ok {
 		if d := wake.Sub(o.now); d > 0 {

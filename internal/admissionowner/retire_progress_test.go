@@ -102,6 +102,10 @@ func TestOwnerRetirementPassesDueRetries(t *testing.T) {
 			if err := o.do(o.deliverAudit); err != nil {
 				t.Fatal(err)
 			}
+			if !held {
+				// A second refusal doubles the ledger wait (M2).
+				wait *= 2
+			}
 			f.host.advance(wait)
 			mono.advance(wait)
 			if err := o.do(func() error {

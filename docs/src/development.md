@@ -679,14 +679,18 @@ then retires it (`RetireUnproven`). An element still present, as after a
 forward wall step, keeps that attempt for a minute on its own wait, so a held
 batch cannot starve the intents behind it. Each checked batch advances through
 action order, wrapping around, even when its retries are due by the next turn.
-A degraded clock or a missing engine retires nothing and tries again a second
-later, as do undelivered
-outcomes and a ledger clock that cannot yet prove the expiry. An engine that
-cannot check is asked again after a backoff of one second doubling to a
-minute. A stop between the row removal and the ledger retirement leaves a
+A degraded clock, a missing engine or an engine that cannot check retires
+nothing; the next pass waits one second, doubling to a minute. An attempt
+whose retirement the ledger refuses (undelivered outcomes, or a ledger clock
+that cannot yet prove the expiry) is asked again after one second, doubling
+to a minute. A damaged record or an attempt that ended another way is asked
+again a minute later and reported once, so it does not fail every turn. A
+stop between the row removal and the ledger retirement leaves a
 row-less unknown that the next pass retires. The turn wakes for the earliest
-expiry or monotonic retry, and until one of them is due a turn lists no
-intents. It never rebases a retry on admission time or adds time spent inside
+expiry or monotonic retry. With one noted, a turn lists no intents until it
+is due; with none noted, every turn lists them. A turn that fails after its
+retirement pass still reports that pass's error. It never rebases a retry on
+admission time or adds time spent inside
 an engine call. Expiry conversion uses a monotonic sample taken before reading
 the admission clock, so a slow tick or later call cannot postpone another
 expiry. Running attempts create no retirement wake; retired attempts leave no
