@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -633,6 +634,29 @@ func TestConfigReloadReconcilesAntispam(t *testing.T) {
 	if got := d.recordAntispamLine(scanErrorLine, time.Now()); len(got) != 1 {
 		t.Fatalf("reload left health tracking off: %+v", got)
 	}
+}
+
+// An operator who fixes a host condition that blocked antispam, such as a
+// foreign rspamd file, reloads CSM without editing csm.yaml. That reload
+// must re-check the integration instead of waiting for the next interval.
+func TestUnchangedConfigReloadRechecksAntispam(t *testing.T) {
+	usePanel(t, platform.PanelCPanel)
+	passes := useAntispamHost(t)
+	cfgPath := filepath.Join(t.TempDir(), "csm.yaml")
+	seedConfigAtPath(t, cfgPath, &config.Config{})
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	d := newTestDaemon(t)
+	d.cfg = loaded
+	useActiveConfig(t, loaded)
+	antispamTestShutdown(t, d)
+	d.startAntispam()
+	waitPass(t, passes)
+
+	d.reloadConfig()
+	waitPass(t, passes)
 }
 
 // rspamd that fails some scans and passes others raises and clears the scan

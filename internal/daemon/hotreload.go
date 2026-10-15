@@ -86,6 +86,9 @@ func (d *Daemon) reloadConfig() {
 	if len(changes) == 0 {
 		recordReloadResult(reloadResultNoop)
 		fmt.Fprintf(os.Stderr, "[%s] SIGHUP: no config changes detected\n", ts())
+		// An operator who fixed a host condition that blocked antispam
+		// reloads to have it checked again; do not wait for the interval.
+		d.reconcileAntispam()
 		return
 	}
 
