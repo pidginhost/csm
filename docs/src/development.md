@@ -640,6 +640,10 @@ tracker entries. They do not count as enforced blocks or select threat evidence
 for operator flush cleanup. Live deny limits count their kernel elements using
 kernel timeouts rather than the unresolved rows' requested lifetimes, including
 replacement accounting. Permanent promotion requires a verified block row.
+An executed admission block writes no legacy tracker (`blocked_ips.json`)
+entry. Reputation, alert suppression and its injected loader, flush cleanup,
+threat lookups and the blocked list read the verified firewall row instead,
+so it counts without one.
 
 With an engine, each owner turn runs its `block_ip` picks as one batch. The
 engine checks every member against one snapshot before anything is reserved. A
