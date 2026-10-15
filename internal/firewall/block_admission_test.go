@@ -3,6 +3,7 @@ package firewall
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 func readyMember(action, ip string) BlockMember {
@@ -60,6 +61,27 @@ func TestBlockAdmissionFull(t *testing.T) {
 		}
 		if got := a.ReadyCapacity([]BlockMember{readyMember("act_one", "203.0.113.20")}); (got[0] == BlockRefusedFull) != tc.full {
 			t.Errorf("%d of %d: ready member = %q", tc.temp, tc.limit, got[0])
+		}
+	}
+}
+
+// An effect covers a request when it is permanent or ends no earlier than
+// the request within the readback slack; the forecast judges its own
+// blocks by the same rule.
+func TestCoversExpiryAllowsTheReadbackSlack(t *testing.T) {
+	wanted := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		held time.Time
+		want bool
+	}{
+		{time.Time{}, true},
+		{wanted.Add(time.Hour), true},
+		{wanted, true},
+		{wanted.Add(-blockReadbackSlack), true},
+		{wanted.Add(-blockReadbackSlack - time.Nanosecond), false},
+	} {
+		if got := CoversExpiry(tc.held, wanted); got != tc.want {
+			t.Errorf("held %v before the request: %v, want %v", wanted.Sub(tc.held), got, tc.want)
 		}
 	}
 }

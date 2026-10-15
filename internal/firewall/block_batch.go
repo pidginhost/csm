@@ -115,6 +115,18 @@ var ErrBlockBatchRejected = errors.New("kernel rejected the block batch")
 // the engine's state safety changes lack a durable acknowledgement.
 var ErrBlockBatchState = errors.New("firewall batch state is unproven")
 
+// blockReadbackSlack covers the kernel's timeout granularity and the
+// clock reads around the batch.
+const blockReadbackSlack = time.Second
+
+// CoversExpiry reports whether an effect ending at held lasts as long as
+// one asked to end at wanted: a permanent effect, zero held, or one ending
+// no earlier than wanted within the readback slack. A dry-run forecast
+// judges its own blocks by it, so they cover exactly as real ones do.
+func CoversExpiry(held, wanted time.Time) bool {
+	return held.IsZero() || !held.Before(wanted.Add(-blockReadbackSlack))
+}
+
 // MaxShadowBlocks bounds the forecast addresses one admission snapshot
 // counts: a dry-run forecast models at most this many active blocks.
 const MaxShadowBlocks = 20000

@@ -141,14 +141,15 @@ func (s *shadow) expire(lease time.Time) {
 func (s *shadow) ips() []string { return slices.Sorted(maps.Keys(s.entries)) }
 
 // covering says how a forecast block holds ip for a pick lasting until
-// expires: one that lasts at least as long answers it, a shorter one holds
-// the address as live work would wait for it. Zero when none holds it.
+// expires: one that covers it as a real block would, within the engine's
+// readback slack, answers it; a shorter one holds the address as live work
+// would wait for it. Zero when none holds it.
 func (s *shadow) covering(ip string, expires time.Time) admission.Prediction {
 	e, ok := s.entries[ip]
 	switch {
 	case !ok:
 		return 0
-	case e.expires.Before(expires):
+	case !firewall.CoversExpiry(e.expires, expires):
 		return admission.PredictPendingRecovery
 	}
 	return admission.PredictExistingShadow

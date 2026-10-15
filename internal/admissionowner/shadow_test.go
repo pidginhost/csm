@@ -165,7 +165,8 @@ func TestShadowFillsTheTemporarySet(t *testing.T) {
 	}
 }
 
-// A shadow block that covers a repeat's lifetime answers it; a shorter one
+// A shadow block that covers a repeat's lifetime answers it, within the
+// readback slack the engine's own covering check allows; a shorter one
 // holds the address. A repeat never renews or extends the entry.
 func TestShadowCoversRepeats(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 2000), nil)
@@ -179,10 +180,16 @@ func TestShadowCoversRepeats(t *testing.T) {
 	}{
 		{shadowExpiry, admission.PredictExistingShadow},
 		{shadowExpiry.Add(-time.Minute), admission.PredictExistingShadow},
-		{shadowExpiry.Add(time.Nanosecond), admission.PredictPendingRecovery},
+		{shadowExpiry.Add(time.Nanosecond), admission.PredictExistingShadow},
+		{shadowExpiry.Add(time.Second), admission.PredictExistingShadow},
+		{shadowExpiry.Add(time.Second + time.Nanosecond), admission.PredictPendingRecovery},
 	} {
 		if got := s.covering("203.0.113.1", tc.expires); got != tc.want {
 			t.Errorf("expiry %v = %s, want %s", tc.expires.Sub(shadowExpiry), got, tc.want)
+		}
+		// The engine judges a real block of the same expiry the same way.
+		if real := firewall.CoversExpiry(entry.expires, tc.expires); real != (tc.want == admission.PredictExistingShadow) {
+			t.Errorf("expiry %v: the engine covers %v, the forecast predicts %s", tc.expires.Sub(shadowExpiry), real, tc.want)
 		}
 	}
 	if got := s.covering("203.0.113.2", shadowExpiry); got != 0 {

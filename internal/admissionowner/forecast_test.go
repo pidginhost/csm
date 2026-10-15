@@ -646,12 +646,16 @@ func TestOwnerForecastAsksNothingItNeedNotAsk(t *testing.T) {
 	blocks := newFakeBlocks()
 	blocks.refuse["192.0.2.11"] = firewall.BlockRefusedExisting
 	panel := newFakePanel("block")
-	o, _, _ := policyOwner(t, f, blocks, dryVerdictPolicy(1, panel))
+	o, _, mono := policyOwner(t, f, blocks, dryVerdictPolicy(1, panel))
 	observe(t, o, p, f, "192.0.2.10", "offset=1")
 	turn(t, o)
 	readyAnswers(t, o, 1)
 	turn(t, o)
-	f.host.advance(time.Second)
+	mono.advance(2 * time.Second)
+	f.host.advance(2 * time.Second)
+	if err := o.do(o.tick); err != nil {
+		t.Fatal(err)
+	}
 	observe(t, o, p, f, "192.0.2.10", "offset=2")
 	observe(t, o, p, f, "192.0.2.11", "offset=1")
 	queuedKind(t, o, p, f.host, admission.SeverityHigh, "192.0.2.12", admission.KindPromote)
@@ -660,7 +664,8 @@ func TestOwnerForecastAsksNothingItNeedNotAsk(t *testing.T) {
 	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.13")
 	turn(t, o)
 	fc := forecastOf(t, o)
-	// The repeat asks a day from a second later: the forecast block holds it.
+	// The repeat asks a day from two seconds later, beyond the readback
+	// slack: the forecast block holds it.
 	if fc.picks[admission.PredictCapacityAdmit] != 1 || fc.picks[admission.PredictPendingRecovery] != 1 || fc.picks[admission.PredictExistingActual] != 1 || fc.picks[admission.PredictNotModelled] != 1 || fc.picks[admission.PredictSetFull] != 1 {
 		t.Fatalf("forecast = %+v", fc)
 	}

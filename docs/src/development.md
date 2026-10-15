@@ -786,8 +786,9 @@ read-only admission snapshot answers a turn's `block_ip` picks, with the
 real temporary occupancy and the real blocks of forecast addresses. A
 refused target ends or waits as a live check has it. A real block that
 covers the address predicts `existing_actual`, unlinked; a forecast block
-that lasts as long predicts `existing_shadow` and a shorter one
-`pending_recovery`, and neither is renewed. Other picks are checked against
+that lasts as long, within the readback slack a real block is allowed,
+predicts `existing_shadow` and a shorter one `pending_recovery`, and
+neither is renewed. Other picks are checked against
 the modelled temporary capacity, the bound on forecast blocks and the
 modelled ceiling, and only `capacity_admit` adds a forecast block and a
 simulated charge. With the verdict callback on, a pick the model would

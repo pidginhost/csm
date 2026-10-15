@@ -263,12 +263,9 @@ func (e *Engine) blockRefusalLocked(m BlockMember, verified bool, snap blockSnap
 }
 
 // covers reports whether row lasts as long as member m (spec 5.16: only
-// the exact effect is already enforced): a permanent row, or a timed row
-// ending no earlier than the member within the readback slack. A shorter
-// block holds the address until it ends.
-func covers(row BlockedEntry, m BlockMember) bool {
-	return row.ExpiresAt.IsZero() || !row.ExpiresAt.Before(m.ExpiresAt.Add(-blockReadbackSlack))
-}
+// the exact effect is already enforced). A shorter block holds the address
+// until it ends.
+func covers(row BlockedEntry, m BlockMember) bool { return CoversExpiry(row.ExpiresAt, m.ExpiresAt) }
 
 // CheckBlockBatch answers, before anything is reserved, which members of a
 // batch can run: each is checked on its own against one snapshot of the
@@ -394,10 +391,6 @@ func admissionAction(id string) bool {
 	}
 	return true
 }
-
-// blockReadbackSlack covers the kernel's timeout granularity and the
-// clock reads around the batch.
-const blockReadbackSlack = time.Second
 
 // kernelRejected follows error provenance: a definitive reply proves the
 // atomic transaction failed even if later acknowledgements were lost.
