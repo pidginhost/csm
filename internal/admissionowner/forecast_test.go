@@ -701,3 +701,61 @@ func TestOwnerForecastAnswersDoNotCarryIntoLive(t *testing.T) {
 		t.Fatalf("asked %v", asked)
 	}
 }
+
+// Spec 3.7, 6.4: a flip to dry run first finishes the live outcome a
+// failed write left pending, without a refund or a second dispatch, and
+// the forecast then starts from the ceiling that includes its charge. An
+// unknown attempt from live work is still retired once its expiry passes,
+// a bookkeeping write about earlier real work, not a new effect.
+func TestOwnerFinishesLiveWorkAfterAFlipToDryRun(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.results["192.0.2.11"] = firewall.BlockResult{Effect: firewall.BlockUnknown}
+	o, r, mono := policyOwner(t, f, blocks, validPolicy(1))
+	failed := false
+	finish := finishLedger
+	setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+		if d == admission.DispositionApplied && !failed {
+			failed = true
+			return admission.Candidate{}, admission.AttemptRecord{}, errors.New("disk full")
+		}
+		return finish(l, id, d)
+	})
+	applied, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	unknown, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+	if err := o.do(o.turn); err == nil {
+		t.Fatal("a failed outcome write did not fail the turn")
+	}
+	if c := candidate(t, o, applied); c.State != admission.StateExecuting {
+		t.Fatalf("pending outcome = %+v", c)
+	}
+	r.publish(dryPolicy(2))
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.12")
+	turn(t, o)
+	if c := candidate(t, o, applied); c.State != admission.StateVerified || c.Attempts != 1 {
+		t.Fatalf("live outcome after the flip = %+v", c)
+	}
+	_, applies := blocks.calls()
+	if len(applies) != 1 || liveUsed(t, o) != 2 {
+		t.Fatalf("%d applies, live used %d after the flip", len(applies), liveUsed(t, o))
+	}
+	fc := forecastOf(t, o)
+	if fc.reset != resetModeChange || fc.picks[predictCapacityAdmit] != 1 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 3 {
+		t.Fatalf("forecast = %+v", fc)
+	}
+	c := candidate(t, o, unknown)
+	// Retirement waits for the attempt's audit rows to be delivered.
+	if err := o.do(o.deliverAudit); err != nil {
+		t.Fatal(err)
+	}
+	mono.advance(25 * time.Hour)
+	f.host.advance(25 * time.Hour)
+	turn(t, o)
+	if a := attemptOf(t, o, c); !a.Retired || len(blocks.retireCalls()) != 1 {
+		t.Fatalf("unknown attempt in a dry run = %+v, %d retirement calls", a, len(blocks.retireCalls()))
+	}
+	if _, applies = blocks.calls(); len(applies) != 1 || blocks.marks != 0 {
+		t.Fatalf("a dry run dispatched or repaired: %d applies, %d marks", len(applies), blocks.marks)
+	}
+}
