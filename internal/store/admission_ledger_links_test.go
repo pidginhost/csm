@@ -533,3 +533,37 @@ func TestAdmissionLedgerTerminateExistingFirstWriteRollback(t *testing.T) {
 		})
 	}
 }
+
+// A linked ending records that the ledger needs at least schema 8. It must
+// never lower a later marker: a build that reads a lowered ledger would
+// misread the records the later schema introduced.
+func TestAdmissionLedgerLinkedEndingNeverLowersTheSchema(t *testing.T) {
+	f := newLedgerFixture(t)
+	const later = admissionSchemaLinked + 1
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{later})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.l.TerminateExisting(f.queued(), testLink("eff_", time.Time{})); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.schema(); got != later {
+		t.Fatalf("schema after a linked ending = %d, want %d kept", got, later)
+	}
+	// A marker lost under a running handle is damage, not a fresh ledger.
+	f.nextGeneration()
+	id := f.queued()
+	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(admissionMetaBucket)).Delete(admissionSchemaKey)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := f.snapshot()
+	if _, err := f.l.TerminateExisting(id, testLink("eff_", time.Time{})); !isCorrupt(err) {
+		t.Fatalf("linked ending without a schema marker: %v, want a corrupt record", err)
+	}
+	if !reflect.DeepEqual(before, f.snapshot()) {
+		t.Fatal("a refused linked ending changed the ledger")
+	}
+}

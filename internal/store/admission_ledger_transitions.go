@@ -192,7 +192,7 @@ func (q *queueTx) terminate(id admission.CandidateID, c *admission.Candidate, st
 			}
 		}
 		// Older builds cannot read the linked record: refuse them the ledger.
-		if err = q.tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaLinked}); err != nil {
+		if err = raiseSchema(q.tx, admissionSchemaLinked); err != nil {
 			return err
 		}
 	}

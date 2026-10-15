@@ -325,6 +325,21 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 	return l, nil
 }
 
+// raiseSchema records, in tx, that the ledger holds a record only schema n
+// or later reads. It never lowers the marker: a later schema's records stay
+// unreadable to builds that predate it.
+func raiseSchema(tx *bolt.Tx, n byte) error {
+	meta := tx.Bucket([]byte(admissionMetaBucket))
+	schema := meta.Get(admissionSchemaKey)
+	if len(schema) != 1 {
+		return admission.ErrCorruptRecord
+	}
+	if schema[0] >= n {
+		return nil
+	}
+	return meta.Put(admissionSchemaKey, []byte{n})
+}
+
 func initializeLedgerMeta(meta *bolt.Bucket) error {
 	inv, err := admission.NewInventory(nil, nil)
 	if err != nil {
