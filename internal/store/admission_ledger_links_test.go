@@ -539,7 +539,7 @@ func TestAdmissionLedgerTerminateExistingFirstWriteRollback(t *testing.T) {
 // misread the records the later schema introduced.
 func TestAdmissionLedgerLinkedEndingNeverLowersTheSchema(t *testing.T) {
 	f := newLedgerFixture(t)
-	const later = admissionSchemaLinked + 1
+	const later = admissionSchemaShadow
 	if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{later})
 	}); err != nil {

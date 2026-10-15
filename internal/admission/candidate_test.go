@@ -2,6 +2,7 @@ package admission
 
 import (
 	"bytes"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -130,6 +131,23 @@ func TestCandidateInvariants(t *testing.T) {
 		}, false},
 		{"retry wait without attempt", func(c *Candidate) { c.NotBefore = later }, false},
 		{"no transition", func(c *Candidate) { c.Transitions = 0 }, false},
+		{"dry run", func(c *Candidate) { c.State, c.Disposition, c.Transitions = StateDryRun, DispositionDryRun, 2 }, true},
+		{"dry run after a failure", func(c *Candidate) {
+			c.State, c.Disposition, c.Attempts, c.ExpiresAt, c.Transitions = StateDryRun, DispositionDryRun, MaxAttempts-1, later, 6
+		}, true},
+		{"dry run with a reason", func(c *Candidate) {
+			c.State, c.Disposition, c.Reason, c.Transitions = StateDryRun, DispositionDryRun, ReasonCeiling, 2
+		}, false},
+		{"dry run with a retry wait", func(c *Candidate) {
+			c.State, c.Disposition, c.Attempts, c.ExpiresAt, c.Transitions = StateDryRun, DispositionDryRun, 1, later, 4
+			c.NotBefore = t0.Add(time.Second)
+		}, false},
+		{"dry run without its expiry", func(c *Candidate) {
+			c.State, c.Disposition, c.Attempts, c.Transitions = StateDryRun, DispositionDryRun, 1, 4
+		}, false},
+		{"verdict allow", func(c *Candidate) {
+			c.State, c.Disposition, c.Reason, c.Transitions = StateRefused, DispositionRefused, ReasonVerdictAllow, 2
+		}, true},
 	} {
 		cand := queuedCandidate(t)
 		c.mutate(&cand)
@@ -323,6 +341,9 @@ func TestCandidateTransitionCountProvesMinimumHistory(t *testing.T) {
 		{"later verification", StateVerified, DispositionApplied, 0, 2, 6},
 		{"observed", StateObserved, DispositionObserve, 0, 1, 3},
 		{"later observation", StateObserved, DispositionObserve, 0, 2, 5},
+		{"dry run", StateDryRun, DispositionDryRun, 0, 0, 2},
+		{"dry run retry", StateDryRun, DispositionDryRun, 0, 1, 4},
+		{"verdict allow", StateRefused, DispositionRefused, ReasonVerdictAllow, 0, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := queuedCandidate(t)
@@ -377,18 +398,20 @@ func TestCandidateOutcomeNeedsAnAttempt(t *testing.T) {
 }
 
 func TestCandidateCannotTerminateQueueAfterExhaustion(t *testing.T) {
-	for _, reason := range []Reason{ReasonProtected, ReasonCollateral, ReasonStale} {
-		t.Run(reason.String(), func(t *testing.T) {
+	for _, end := range []struct {
+		state       State
+		disposition Disposition
+		reason      Reason
+	}{
+		{StateRefused, DispositionRefused, ReasonProtected},
+		{StateRefused, DispositionRefused, ReasonVerdictAllow},
+		{StateWithheld, DispositionWithheld, ReasonCollateral},
+		{StateDropped, DispositionDropped, ReasonStale},
+		{StateDryRun, DispositionDryRun, 0},
+	} {
+		t.Run(end.state.String()+"/"+end.reason.String(), func(t *testing.T) {
 			c := queuedCandidate(t)
-			c.Disposition, c.Reason = reason.Disposition(), reason
-			switch reason {
-			case ReasonProtected:
-				c.State = StateRefused
-			case ReasonCollateral:
-				c.State = StateWithheld
-			case ReasonStale:
-				c.State = StateDropped
-			}
+			c.State, c.Disposition, c.Reason = end.state, end.disposition, end.reason
 			c.Attempts, c.ExpiresAt, c.Transitions = MaxAttempts-1, t0.Add(time.Hour), 10
 			rec, err := c.record()
 			if err != nil {
@@ -482,5 +505,41 @@ func TestCandidatePreservesRegisteredEvidenceCheck(t *testing.T) {
 	back, err := UnmarshalCandidate(data)
 	if err != nil || back.Check != check {
 		t.Fatalf("registered check changed on reload: %q, %v", back.Check, err)
+	}
+}
+
+// Storage accounting reserved MaxBytes for candidates an older build stored,
+// so the appended state and reason must not widen it: the reservation of the
+// fixture stays what it was before they existed. The encoded maximum is
+// measured over every state, reason and outcome value, not assumed.
+func TestCandidateMaxBytesCoversEveryValue(t *testing.T) {
+	c := queuedCandidate(t)
+	bound, err := c.MaxBytes()
+	if err != nil || bound != 522 {
+		t.Fatalf("MaxBytes = %d, %v; want the earlier reservation 522", bound, err)
+	}
+	rec, err := c.record()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.Attempts, rec.ExpiresAt, rec.NotBefore, rec.Transitions = MaxAttempts, math.MaxInt64, math.MaxInt64, math.MaxUint32
+	widest := 0
+	for s := State(0); s <= stateEnd; s++ {
+		for r := Reason(0); r <= reasonEnd; r++ {
+			for d := Disposition(0); d <= dispositionEnd; d++ {
+				rec.State, rec.Reason, rec.Disposition = s, r, d
+				data, sealErr := sealRecord(rec)
+				if sealErr != nil {
+					t.Fatal(sealErr)
+				}
+				if len(data) > bound {
+					t.Fatalf("state %d reason %d disposition %d encodes %d bytes, over %d", s, r, d, len(data), bound)
+				}
+				widest = max(widest, len(data))
+			}
+		}
+	}
+	if widest != bound {
+		t.Fatalf("widest encoding %d, reservation %d: the bound is not tight", widest, bound)
 	}
 }

@@ -62,8 +62,9 @@ func TestAdmissionLedgerRefusesUnsealedRegistryAndUnknownSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mutate := range map[string]func(meta *bolt.Bucket) error{
-		// Schema 8 holds linked candidates; 9 is the first this build cannot read.
-		"future schema": func(meta *bolt.Bucket) error { return meta.Put(admissionSchemaKey, []byte{admissionSchemaVersion + 2}) },
+		// Schema 9 holds dry-run endings; 10 is the first this build cannot read.
+		"future schema": func(meta *bolt.Bucket) error { return meta.Put(admissionSchemaKey, []byte{admissionSchemaShadow + 1}) },
+		"zero schema":   func(meta *bolt.Bucket) error { return meta.Put(admissionSchemaKey, []byte{0}) },
 		"missing schema with data": func(meta *bolt.Bucket) error {
 			if err := meta.Delete(admissionSchemaKey); err != nil {
 				return err
@@ -74,8 +75,30 @@ func TestAdmissionLedgerRefusesUnsealedRegistryAndUnknownSchema(t *testing.T) {
 		if err := db.bolt.Update(func(tx *bolt.Tx) error { return mutate(tx.Bucket([]byte(admissionMetaBucket))) }); err != nil {
 			t.Fatal(err)
 		}
+		before := map[string]string{}
+		readAll := func(into map[string]string) {
+			if err := db.bolt.View(func(tx *bolt.Tx) error {
+				return tx.ForEach(func(bucket []byte, b *bolt.Bucket) error {
+					return b.ForEach(func(k, v []byte) error {
+						into[string(bucket)+":"+string(k)] = string(v)
+						return nil
+					})
+				})
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		readAll(before)
 		if _, err := OpenAdmissionLedger(db, reg); err != ErrAdmissionSchema {
 			t.Errorf("%s: err = %v, want ErrAdmissionSchema", name, err)
+		}
+		if _, err := ReadAdmissionClock(db); err != ErrAdmissionSchema {
+			t.Errorf("%s: a read without a handle: err = %v, want ErrAdmissionSchema", name, err)
+		}
+		after := map[string]string{}
+		readAll(after)
+		if !reflect.DeepEqual(before, after) {
+			t.Errorf("%s: a refused open changed the database", name)
 		}
 		_ = db.bolt.Update(func(tx *bolt.Tx) error {
 			meta := tx.Bucket([]byte(admissionMetaBucket))

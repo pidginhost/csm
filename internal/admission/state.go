@@ -20,10 +20,14 @@ const (
 	// StateObserved ends an attempt that was reserved as live work would
 	// be and never ran: an observe preview, never an applied outcome.
 	StateObserved
+	// StateDryRun ends queued work that dry-run mode forecast instead of
+	// running. It makes no attempt and charges nothing; attempts that
+	// failed before it keep their records.
+	StateDryRun
 	stateEnd
 )
 
-var stateNames = [...]string{"", "queued", "reserved", "executing", "verified", "failed", "unknown", "refused", "withheld", "dropped", "observed"}
+var stateNames = [...]string{"", "queued", "reserved", "executing", "verified", "failed", "unknown", "refused", "withheld", "dropped", "observed", "dry_run"}
 
 func (s State) Valid() bool { return s >= StateQueued && s < stateEnd }
 
@@ -43,11 +47,12 @@ func (s State) Terminal() bool { return s >= StateVerified && s < stateEnd }
 // queued records a changed deferral reason. A proven failure with attempts
 // left returns the candidate to the queue; an unknown outcome never does.
 // Only a reservation can end as a preview: an attempt that ran may have
-// applied something.
+// applied something. A dry run ends only queued work, before any attempt
+// of its own.
 func CanTransition(from, to State) bool {
 	switch from {
 	case StateQueued:
-		return to == StateQueued || to == StateReserved || to == StateRefused || to == StateWithheld || to == StateDropped
+		return to == StateQueued || to == StateReserved || to == StateRefused || to == StateWithheld || to == StateDropped || to == StateDryRun
 	case StateReserved:
 		return to == StateExecuting || to == StateFailed || to == StateQueued || to == StateObserved
 	case StateExecuting:
@@ -76,6 +81,8 @@ func terminalDisposition(s State, d Disposition) bool {
 		return d == DispositionDropped
 	case StateObserved:
 		return d == DispositionObserve
+	case StateDryRun:
+		return d == DispositionDryRun
 	}
 	return false
 }

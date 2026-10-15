@@ -484,9 +484,18 @@ failed on its last attempt. A historical result cannot end a later retry;
 a repeated linked ending must name the same block and expiry instant. A linked record is candidate version 2 and an
 admitted candidate's history pays for its bytes; without room the
 transaction changes nothing. The first linked record moves the ledger to
-schema 8, with the same buckets; this build opens schema 7 and 8, and older
-builds refuse schema 8 rather than misread it. A ledger stays at schema 7,
-and can be read by an older build, until something is linked.
+schema 8, with the same buckets; this build opens schema 7, 8 and 9 without
+rewriting them, and older builds refuse a schema they do not know rather
+than misread it. A ledger stays at schema 7, and can be read by an older
+build, until something is linked. A write never lowers the schema.
+
+A panel verdict that allows a queued candidate ends it refused as
+`verdict_allow`, like any other refusal: no attempt, charge or history
+allocation, one ended count, and the notice that Critical or C3 work raises
+when it is refused. A retry keeps the charge of its failed attempt. The
+episode is not answered, so a later observation can queue the next
+generation. The first such record moves the ledger to schema 9, with the
+same buckets; older builds refuse it.
 
 Schema 7 adds execution intents; the first open upgrades a schema 1 to 6
 ledger in the same transaction. Execution marks a batch of up to 64
