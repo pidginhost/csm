@@ -131,14 +131,28 @@ func TestScheduleReservedLane(t *testing.T) {
 	if st.NextCorroborated {
 		t.Fatal("after a corroborated turn the direct turn is next")
 	}
+	for i, p := range picks {
+		if p.Reserved != p.Lane {
+			t.Fatalf("reserved pick %d names reserved lane %s", i, p.Reserved)
+		}
+	}
 	picks, _ = mustSchedule(t, items, ScheduleState{}, ScheduleLimits{Reserved: 1, General: 1, Members: 2})
 	if got := picked(picks); !reflect.DeepEqual(got, []string{"d1", "d2"}) || picks[1].Lane != LaneGeneral {
 		t.Fatalf("reserved then general = %v", picks)
+	}
+	// A general pick of reserved-eligible work still names the reserved lane
+	// it may draw on; general-only work names none.
+	if picks[1].Reserved != LaneDirect {
+		t.Fatalf("general pick of direct work = %+v", picks[1])
 	}
 	general := schedItem("g", "s", ClassC3, SeverityCritical, 2*time.Hour)
 	picks, _ = mustSchedule(t, []ScheduleItem{general}, ScheduleState{}, ScheduleLimits{Reserved: 5, Members: 5})
 	if len(picks) != 0 {
 		t.Fatalf("reserved budget served a general candidate: %v", picks)
+	}
+	picks, _ = mustSchedule(t, []ScheduleItem{general, corroborated("k3")}, ScheduleState{}, ScheduleLimits{General: 5, Members: 5})
+	if len(picks) != 2 || picks[0].Reserved != 0 || picks[1].Reserved != LaneCorroborated {
+		t.Fatalf("general picks = %+v", picks)
 	}
 }
 
