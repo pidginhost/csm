@@ -388,7 +388,11 @@ rate, so a flood cannot fill a week of history in an hour. Scopes earn
 history turns in fixed quanta, so large records cannot take more than their
 share, and a record that has earned its turn holds its lane until the
 credit covers it. An ended candidate's details are kept through the review
-window and, for a verified effect, for as long as the effect can last. They
+window and, unless the candidate was only previewed, for as long as the
+firewall row its attempt may have written can last: a failed attempt's row
+can outlive a failed restore write, and startup must still know its action
+while the row could be restored. Endings written before this rule keep
+their earlier time. They
 are retired after thirty days, or earlier when an allowance needs the room,
 oldest first. An unresolved outcome is pinned in a separate recovery reserve
 until recovery settles it, and new work waits while that reserve is full.

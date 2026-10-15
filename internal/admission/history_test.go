@@ -306,3 +306,17 @@ func TestHistoryEntryRetireKeys(t *testing.T) {
 		}
 	}
 }
+
+// Every ending whose attempt may have written a firewall row keeps its
+// history until that row's expiry; only a preview, which writes none,
+// keeps just the review window.
+func TestHistoryUntilExpiry(t *testing.T) {
+	for _, s := range []State{StateVerified, StateFailed, StateUnknown, StateRefused, StateWithheld, StateDropped} {
+		if !HistoryUntilExpiry(s) {
+			t.Errorf("%s ending may have a row but keeps only the review window", s)
+		}
+	}
+	if HistoryUntilExpiry(StateObserved) {
+		t.Error("a preview keeps its history until an expiry it never enforced")
+	}
+}
