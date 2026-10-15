@@ -600,12 +600,17 @@ Marking with no action IDs still writes the safe state to release a state hold.
 `RemoveBlockActionRows` removes, in one state write, the rows of attempts the
 ledger has settled (failed, or retired after their expiry); an error reports
 no completed removal, including a durability failure after rename.
+An unconfirmed removal is written again on retry even if its rows already
+appear absent. Cleanup preserves other actions' rows, including distinct
+actions sharing one address.
 `RetireBlockActions` checks the kernel for up to 64 unknown attempts under one
 engine lock: an attempt is clear when its address has no element, or the
 element matches a verified row of another action, remaining lifetime included,
 and its own row then goes in one write. An element still present keeps it
-held. Cleanup resumes and saves the lease checkpoint first; an unreadable
-clock or checkpoint authorizes no removal. Address matching for recovery
+held. Retirement requires a kernel snapshot of the target's address family;
+a missing or disabled IPv6 set cannot prove absence. Cleanup resumes and
+saves the lease checkpoint first; an unreadable clock or checkpoint
+authorizes no removal. Address matching for recovery
 accepts legacy mapped, uppercase and zoned spellings within the engine's
 namespace; this does not relax the admission parser.
 Unverified rows cannot suppress alerts or reputation checks through stale legacy

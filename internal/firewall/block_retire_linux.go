@@ -26,7 +26,7 @@ func (e *Engine) RemoveBlockActionRows(actions []string) (int, error) {
 			named[id] = true
 		}
 	}
-	if len(named) == 0 {
+	if len(named) == 0 && !e.blockRemovalPending {
 		return 0, nil
 	}
 	state, ok := e.loadStateFileRawLocked()
@@ -42,14 +42,15 @@ func (e *Engine) RemoveBlockActionRows(actions []string) (int, error) {
 		}
 		kept = append(kept, row)
 	}
-	if removed == 0 {
+	if removed == 0 && !e.blockRemovalPending {
 		return 0, nil
 	}
 	if err := e.checkpointBlockRemovalLocked(); err != nil {
 		return 0, err
 	}
 	state.Blocked = kept
-	if err := e.saveState(&state); err != nil {
+	e.overlayUnverifiedBlockActionsLocked(&state)
+	if err := e.saveBlockRemovalLocked(state); err != nil {
 		return 0, err
 	}
 	e.forgetBlockActionsLocked(named)
@@ -74,6 +75,18 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 	if e.lifecycle != nil {
 		return nil, errDurableBlockRows
 	}
+	canonical := make([]BlockAction, len(actions))
+	for i, m := range actions {
+		addr, err := netip.ParseAddr(m.IP)
+		if err != nil {
+			return nil, fmt.Errorf("retiring %s: %w", m.Action, err)
+		}
+		addr = addr.WithZone("").Unmap()
+		if addr.Is6() && (!e.cfg.IPv6 || e.setBlocked6 == nil) {
+			return nil, errors.New("IPv6 blocked set unavailable for retirement")
+		}
+		canonical[i] = BlockAction{Action: m.Action, IP: addr.String()}
+	}
 	if err := e.checkpointBlockRemovalLocked(); err != nil {
 		return nil, err
 	}
@@ -81,21 +94,28 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 	if err != nil {
 		return nil, err
 	}
+	owners := make(map[string][]string)
+	for _, row := range snap.prior.Blocked {
+		ip := retirementIPKey(row.IP)
+		observed, live := snap.live[ip]
+		if snap.proves(row, observed, live) {
+			owners[ip] = append(owners[ip], row.ActionID)
+		}
+	}
 	out := make([]bool, len(actions))
 	gone := make(map[BlockAction]bool, len(actions))
-	for i, m := range actions {
-		addr, ipErr := netip.ParseAddr(m.IP)
-		if ipErr != nil {
-			return nil, fmt.Errorf("retiring %s: %w", m.Action, ipErr)
+	for i, m := range canonical {
+		_, live := snap.live[m.IP]
+		out[i] = !live
+		for _, owner := range owners[m.IP] {
+			if owner != m.Action {
+				out[i] = true
+				break
+			}
 		}
-		ip := addr.WithZone("").Unmap().String()
-		observed, live := snap.live[ip]
-		row, held := snap.blocked[stateIPKey(ip)]
-		if live && (!held || row.ActionID == m.Action || !snap.proves(row, observed, live)) {
-			continue
+		if out[i] {
+			gone[m] = true
 		}
-		out[i] = true
-		gone[BlockAction{Action: m.Action, IP: stateIPKey(ip)}] = true
 	}
 	next := copyFirewallState(snap.prior)
 	kept := next.Blocked[:0]
@@ -105,14 +125,22 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 		}
 		kept = append(kept, row)
 	}
-	if len(kept) == len(next.Blocked) {
+	if len(kept) == len(next.Blocked) && !e.blockRemovalPending {
 		return out, nil
 	}
 	next.Blocked = kept
-	if err = e.saveState(&next); err != nil {
+	if err = e.saveBlockRemovalLocked(next); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// A failed rename durability check can leave no rows for the retry to
+// remove. Keep requiring a full state write until one confirms durability.
+func (e *Engine) saveBlockRemovalLocked(state FirewallState) error {
+	err := e.writeStateLocked(state)
+	e.blockRemovalPending = err != nil
+	return err
 }
 
 // forgetBlockActionsLocked drops the in-memory marks of attempts whose rows
