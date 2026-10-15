@@ -427,7 +427,10 @@ marks the address blocked in the attack database and, while the action's
 verified firewall row still stands, records a threat database row that ends
 at the block's absolute expiry. One durable transaction per delivery batch
 precedes memory publication; read or write errors leave delivery pending.
-Local threat writers serialize separately from lookups. An applied batch
+Local threat writers serialize separately from lookups. The consumer reads
+the firewall state under the threat writer lock, and unblocks and flush
+cleanup remove the stored row under that lock after the firewall row, so an
+unblock that lands during delivery removes what the batch wrote. An applied batch
 does not hold the lookup mutex during its durable write, so reputation reads
 and whitelist reload continue while that batch waits. Store transaction callbacks do not call back
 into threat mutations; loaders finish reading the store before publishing an

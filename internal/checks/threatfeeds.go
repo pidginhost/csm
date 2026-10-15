@@ -262,8 +262,17 @@ var persistAppliedThreats = (*store.DB).AddAppliedTempBlocks
 // AddTemporaryBatch publishes memory only after the batch's durable write.
 // The outbox retries on error, including after a process restart.
 func (db *ThreatDB) AddTemporaryBatch(entries []store.PermanentBlockEntry) error {
+	return db.AddTemporaryBatchFrom(func() []store.PermanentBlockEntry { return entries })
+}
+
+// AddTemporaryBatchFrom is AddTemporaryBatch over the entries choose returns
+// under the writer lock. A caller that chooses from the firewall state reads
+// it there: a removal after that read waits for the commit and then removes
+// what the batch wrote.
+func (db *ThreatDB) AddTemporaryBatchFrom(choose func() []store.PermanentBlockEntry) error {
 	db.writeMu.Lock()
 	defer db.writeMu.Unlock()
+	entries := choose()
 	if sdb := store.Global(); sdb != nil {
 		if err := persistAppliedThreats(sdb, entries); err != nil {
 			return err
@@ -356,6 +365,19 @@ func (db *ThreatDB) RemoveTemporary(ip string) {
 		}
 	}
 	db.mu.Unlock()
+}
+
+// RemoveStoredTemporaryBlock removes ip's auto-block store row under the
+// threat writer lock. An unblock removes the firewall row first, so an
+// applied batch that read the row as standing commits before this removal
+// and cannot write the threat row back after it.
+func RemoveStoredTemporaryBlock(sdb *store.DB, ip string) error {
+	if tdb := GetThreatDB(); tdb != nil {
+		tdb.writeMu.Lock()
+		defer tdb.writeMu.Unlock()
+	}
+	_, err := sdb.RemoveTemporaryBlock(ip)
+	return err
 }
 
 // RemovePermanent removes an IP from the permanent blocklist and in-memory DB.
