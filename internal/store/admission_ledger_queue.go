@@ -717,7 +717,8 @@ const previewReservedMembers = 13
 // members, then the general lane serves the rest by class and severity;
 // reserved-eligible work competes there too. Revalidation, age-out, retry
 // backoff and recovery holds gate it as they gate Schedule, a held target
-// is deferred as pending recovery, and pending work is passed over.
+// is deferred as pending recovery, a stale live budget wait clears, and
+// pending work is passed over.
 func (l *AdmissionLedger) SchedulePreview(pending map[admission.CandidateID]bool) ([]admission.Pick, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -834,16 +835,28 @@ func (q *queueTx) checkPreviewStorage(live []liveCandidate) error {
 // deferHeld records the real holds a preview selection passed over, as a
 // schedule records them: work an unresolved attempt holds waits as pending
 // recovery once its retry backoff is over. A selection judges no live
-// budget, so it records no other reason.
+// budget, so it records no other reason, and a live ceiling or storage
+// share wait left on other work is stale: it clears as a schedule clears
+// a resolved one. Pending work keeps its reason.
 func (q *queueTx) deferHeld(items []admission.ScheduleItem, byID map[admission.CandidateID]liveCandidate, held, pending map[admission.CandidateID]bool) error {
 	for _, it := range items {
 		lc := byID[it.ID]
-		if !held[it.ID] || pending[it.ID] || q.now.Before(lc.c.NotBefore) || lc.c.Reason == admission.ReasonPendingRecovery {
+		if pending[it.ID] {
 			continue
 		}
 		c := lc.c
-		if err := q.deferred(lc.id, &c, lc.entry, admission.ReasonPendingRecovery); err != nil {
-			return err
+		switch {
+		case held[it.ID] && !q.now.Before(c.NotBefore):
+			if c.Reason == admission.ReasonPendingRecovery {
+				continue
+			}
+			if err := q.deferred(lc.id, &c, lc.entry, admission.ReasonPendingRecovery); err != nil {
+				return err
+			}
+		case c.Reason == admission.ReasonCeiling, c.Reason == admission.ReasonStorageShare:
+			c.Reason = 0
+		default:
+			continue
 		}
 		c.Transitions++
 		if err := putCandidate(q.tx, c); err != nil {

@@ -33,7 +33,8 @@ func TestAdmissionLedgerPreviewIgnoresLiveBudgets(t *testing.T) {
 	if picks := f.schedule(fullSchedule); len(picks) != 0 {
 		t.Fatalf("fixture: live budgets still serve %+v", picks)
 	}
-	// The live schedule deferred them; a forecast leaves those reasons.
+	// The live schedule deferred them. A selection clears those stale
+	// reasons with no count or notice.
 	counters, ceiling, storage := f.countersSnapshot(), f.ceilingState(), f.storageState()
 	notices, err := f.l.PendingNotices()
 	if err != nil {
@@ -134,6 +135,61 @@ func TestAdmissionLedgerPreviewKeepsSafetyGates(t *testing.T) {
 	}
 	if c := f.candidateOf(kept); c.State != admission.StateDropped || c.Reason != admission.ReasonStale {
 		t.Fatalf("aged-out pick = %+v", c)
+	}
+}
+
+// A selection judges no live budget, so a live ceiling or storage-share
+// wait on work it passes over is stale. It clears as a schedule clears a
+// resolved budget reason, on a pick and on a retry in its backoff: one
+// transition, no count and no notice. Pending work and outside reasons
+// keep theirs.
+func TestAdmissionLedgerPreviewClearsLiveBudgetReasons(t *testing.T) {
+	for _, reason := range []admission.Reason{admission.ReasonCeiling, admission.ReasonStorageShare} {
+		t.Run(reason.String(), func(t *testing.T) {
+			f := newLedgerFixture(t)
+			retry, a := f.admitted(time.Hour)
+			if _, _, err := f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
+				t.Fatal(err)
+			}
+			f.begin()
+			ids := f.criticalArrivals("192.0.2.20", "192.0.2.21", "192.0.2.22")
+			picked, pending, external := ids[0], ids[1], ids[2]
+			before := map[admission.CandidateID]admission.Candidate{}
+			for _, id := range []admission.CandidateID{retry, picked, pending} {
+				c, err := f.l.Defer(id, reason)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before[id] = c
+			}
+			if _, err := f.l.Defer(external, admission.ReasonSetFull); err != nil {
+				t.Fatal(err)
+			}
+			counters, notices := f.countersSnapshot(), f.notices()
+			if got := pickIDs(f.preview(pendingSet(pending))); len(got) != 2 || !slices.Contains(got, picked) || !slices.Contains(got, external) {
+				t.Fatalf("picks = %v", got)
+			}
+			for _, id := range []admission.CandidateID{retry, picked} {
+				if c := f.candidateOf(id); c.Reason != 0 || c.Transitions != before[id].Transitions+1 {
+					t.Fatalf("%s kept reason %s, transitions %d, want %d", id, c.Reason, c.Transitions, before[id].Transitions+1)
+				}
+			}
+			if c := f.candidateOf(pending); c.Reason != reason || c.Transitions != before[pending].Transitions {
+				t.Fatalf("pending work = %+v", c)
+			}
+			if c := f.candidateOf(external); c.Reason != admission.ReasonSetFull {
+				t.Fatalf("outside reason = %s", c.Reason)
+			}
+			if !reflect.DeepEqual(f.countersSnapshot(), counters) || !reflect.DeepEqual(f.notices(), notices) {
+				t.Fatal("clearing a reason changed counts or notices")
+			}
+			f.preview(pendingSet(pending))
+			for _, id := range []admission.CandidateID{retry, picked} {
+				if c := f.candidateOf(id); c.Transitions != before[id].Transitions+1 {
+					t.Fatalf("%s cleared again", id)
+				}
+			}
+		})
 	}
 }
 

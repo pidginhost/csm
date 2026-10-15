@@ -519,8 +519,10 @@ corroborated work alternates within a bounded reserved share of each batch,
 and the general lane serves the rest by class and severity, where
 reserved-eligible work competes too. Revalidation, age-out, retry backoff
 and recovery holds gate it as they gate a schedule, a held target is
-deferred as `pending_recovery`, pending work is passed over, and the shared
-fair position advances once per selection. `PreviewWake` is the matching
+deferred as `pending_recovery`, a stale live `ceiling` or `storage_share`
+wait clears as a schedule clears it, pending work is passed over, and the
+live schedule and the selection share one fair position, which advances
+once per selection. `PreviewWake` is the matching
 wake: now while selectable work waits, otherwise a backoff end or a queued
 deadline, whatever the live budgets. `CeilingSnapshot` reads the committed
 ceiling and its retained charges in one read transaction, proven against
