@@ -415,7 +415,14 @@ and a summary once a minute after acknowledged delivery. Acknowledgements
 carry the count and first-event time of the record read, so a repeated
 acknowledgement cannot consume a later record under a reused key. An audit
 row's acknowledgement carries the row's time as well, so one held past the
-row's retirement cannot remove the row a re-minted attempt writes later. Queue
+row's retirement cannot remove the row a re-minted attempt writes later.
+After the action log write and before the acknowledgement, the owner hands
+the applied `block_ip` rows of each batch to `Options.Applied`; no other
+row reaches it. A failed call acknowledges nothing, so its consumers see the
+same row again and must be idempotent by action and transition. Delivery
+errors remain visible in `admission.owner.audit_error` until a pass succeeds;
+the independent audit queue reports a stall if a pending batch cannot advance.
+Queue
 events and attempt outcomes are also counted into five-minute, hourly and
 daily buckets. `Status` reads every section in one read transaction without
 the ledger's lock or a current clock, each section with its own error, and

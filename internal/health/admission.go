@@ -21,6 +21,9 @@ type AdmissionStatus struct {
 // show: why it is not running, its clock readings, where the ceiling came
 // from, the legacy import and the inventory reads.
 type AdmissionOwner struct {
+	// AuditError is the last delivery failure, including applied consumers.
+	// It clears only when a delivery pass succeeds.
+	AuditError string `json:"audit_error,omitempty"`
 	// Error is why the owner is not running; empty once it is.
 	Error string `json:"error,omitempty"`
 	// TickError is why the last clock reading was refused. Nothing is

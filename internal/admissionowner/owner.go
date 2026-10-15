@@ -87,6 +87,13 @@ type Options struct {
 	// WriteAudit writes audit rows to the action log in one durable write
 	// (actionlog.WriteDurableBatch).
 	WriteAudit func([]actionlog.Record) error
+	// Applied receives the applied block_ip rows of each delivered batch
+	// after their action log write and before their acknowledgement, so the
+	// consumers of a verified block see each one at least once (spec 5.5,
+	// P14). A failed call acknowledges nothing and the rows come again with
+	// the same identity: consumers must be idempotent by action and
+	// transition. Nil hands them to no one.
+	Applied func([]admission.AuditRow) error
 	// Deliver sends notices through the daemon's independent health path,
 	// as protection_queue_degraded is sent: history and direct dispatch,
 	// never the finding channel, suppressions or the routine rate limit.
@@ -158,6 +165,7 @@ type Owner struct {
 	inventoryAt  time.Time
 	inventoryErr error
 	auditAcked   uint64
+	auditErr     error
 	// drained is the ingress decision sequence the last drain persisted.
 	drained uint64
 	// drainFailed holds admission closed until a drain succeeds. drainErr
@@ -945,6 +953,9 @@ func (o *Owner) refreshStatus() {
 		s.Owner.Error = o.snapshotErr.Error()
 	case o.scheduleErr != nil:
 		s.Owner.Error = o.scheduleErr.Error()
+	}
+	if o.auditErr != nil {
+		s.Owner.AuditError = o.auditErr.Error()
 	}
 	if o.tickErr != nil {
 		s.Owner.TickError = o.tickErr.Error()

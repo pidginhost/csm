@@ -1,0 +1,245 @@
+package admissionowner
+
+import (
+	"errors"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/pidginhost/csm/internal/admission"
+)
+
+// appliedSink records every batch of applied rows the owner hands over and
+// fails as told.
+type appliedSink struct {
+	mu      sync.Mutex
+	batches [][]admission.AuditRow
+	err     error
+}
+
+func (s *appliedSink) consume(rows []admission.AuditRow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.batches = append(s.batches, append([]admission.AuditRow(nil), rows...))
+	return s.err
+}
+
+func (s *appliedSink) set(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
+}
+
+func (s *appliedSink) seen() [][]admission.AuditRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([][]admission.AuditRow(nil), s.batches...)
+}
+
+// ended takes a candidate of kind at addr through one attempt that ends d.
+func ended(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, addr string, kind admission.Kind, d admission.Disposition) {
+	t.Helper()
+	id, now := queuedKind(t, o, p, host, admission.SeverityHigh, addr, kind)
+	if err := o.do(func() error {
+		_, a, _, err := o.ledger.Reserve(id, admission.LaneGeneral, now.Add(time.Hour))
+		if err != nil {
+			return err
+		}
+		if _, _, _, err = o.ledger.Execute(a.Attempt.ID); err != nil {
+			return err
+		}
+		_, _, err = o.ledger.Finish(a.Attempt.ID, d)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Spec 5.5 and design P14: a verified block's consumers see its applied
+// row after the action log write and before the acknowledgement, and only
+// that row: reservations, executions, failures, unknown outcomes and other
+// kinds never reach them. A failed consumer acknowledges nothing, so the
+// same row comes again with the same identity.
+func TestOwnerHandsAppliedBlocksToTheirConsumer(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink, consumer := &auditSink{}, &appliedSink{}
+	opts := f.options()
+	opts.WriteAudit, opts.Applied = sink.write, consumer.consume
+	o := f.start(opts)
+	ended(t, o, p, f.host, "192.0.2.11", admission.KindBlockIP, admission.DispositionFailed)
+	ended(t, o, p, f.host, "192.0.2.12", admission.KindBlockIP, admission.DispositionUnknown)
+	ended(t, o, p, f.host, "192.0.2.13", admission.KindChallenge, admission.DispositionApplied)
+	if err := o.do(o.deliverAudit); err != nil {
+		t.Fatal(err)
+	}
+	if got := consumer.seen(); len(got) != 0 {
+		t.Fatalf("consumers saw rows of no applied block: %+v", got)
+	}
+	applied(t, o, p, f.host)
+	ended(t, o, p, f.host, "192.0.2.14", admission.KindBlockIP, admission.DispositionFailed)
+	rows := pendingAudit(t, o)
+	var want admission.AuditRow
+	for _, r := range rows {
+		if r.Kind == admission.KindBlockIP && r.State == admission.StateVerified {
+			want = r
+		}
+	}
+	if want.Disposition != admission.DispositionApplied {
+		t.Fatalf("fixture has no applied block row: %+v", rows)
+	}
+
+	sink.set(errors.New("disk full"))
+	if err := o.do(o.deliverAudit); err == nil {
+		t.Fatal("a failed write reported delivery")
+	}
+	if got := consumer.seen(); len(got) != 0 {
+		t.Fatalf("consumers saw rows the action log did not record: %+v", got)
+	}
+
+	sink.set(nil)
+	cause := errors.New("fixture consumer failure")
+	consumer.set(cause)
+	if err := o.do(o.deliverAudit); !errors.Is(err, cause) {
+		t.Fatalf("delivery error = %v, want the consumer failure", err)
+	}
+	if status := o.Status(); status.Owner == nil || !strings.Contains(status.Owner.AuditError, cause.Error()) {
+		t.Fatalf("consumer failure is not visible: %+v", status.Owner)
+	}
+	if got := pendingAudit(t, o); len(got) != len(rows) {
+		t.Fatalf("a failed consumer acknowledged rows: %d of %d left", len(got), len(rows))
+	}
+
+	consumer.set(nil)
+	if err := o.do(o.deliverAudit); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.Status().Owner.AuditError; got != "" {
+		t.Fatalf("recovered delivery still reports %q", got)
+	}
+	if got := pendingAudit(t, o); len(got) != 0 {
+		t.Fatalf("delivered rows still pending: %+v", got)
+	}
+	batches := consumer.seen()
+	if len(batches) != 2 {
+		t.Fatalf("consumer batches = %+v, want the failed one repeated", batches)
+	}
+	for i, batch := range batches {
+		if len(batch) != 1 || batch[0].ID() != want.ID() || !batch[0].At.Equal(want.At) || batch[0].Target != want.Target || !batch[0].ExpiresAt.Equal(want.ExpiresAt) {
+			t.Fatalf("batch %d = %+v, want only the applied block %+v", i, batch, want)
+		}
+	}
+
+	if err := o.do(o.deliverAudit); err != nil || len(consumer.seen()) != 2 {
+		t.Fatalf("an acknowledged row reached its consumer again: %d batches, %v", len(consumer.seen()), err)
+	}
+}
+
+// Without a consumer, applied rows are delivered and acknowledged as
+// before.
+func TestOwnerWithoutAnAppliedConsumerAcknowledges(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink := &auditSink{}
+	opts := f.options()
+	opts.WriteAudit = sink.write
+	o := f.start(opts)
+	applied(t, o, p, f.host)
+	if err := o.do(o.deliverAudit); err != nil {
+		t.Fatal(err)
+	}
+	if got := pendingAudit(t, o); len(got) != 0 {
+		t.Fatalf("rows still pending: %+v", got)
+	}
+}
+
+func TestOwnerReportsAppliedConsumerBacklog(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	cause := errors.New("recording applied threat batch: damaged threat entry")
+	consumer := &appliedSink{err: cause}
+	opts := f.options()
+	opts.Applied = consumer.consume
+	o := f.start(opts)
+	setOwnerHook(t, o, &auditBatch, 1)
+	for _, ip := range []string{"192.0.2.15", "192.0.2.16", "192.0.2.17"} {
+		ended(t, o, p, f.host, ip, admission.KindBlockIP, admission.DispositionApplied)
+	}
+	if got := len(pendingAudit(t, o)); got != 9 {
+		t.Fatalf("fixture has %d rows, want three complete attempts", got)
+	}
+	if err := o.do(o.deliverAudit); !errors.Is(err, cause) {
+		t.Fatalf("delivery = %v", err)
+	}
+	pending := pendingAudit(t, o)
+	if len(pending) != 7 || pending[0].Disposition != admission.DispositionApplied {
+		t.Fatalf("head did not hold two later attempts: %+v", pending)
+	}
+	if err := o.do(o.deliverAudit); !errors.Is(err, cause) || !reflect.DeepEqual(pending, pendingAudit(t, o)) {
+		t.Fatalf("retry lost or acknowledged the blocked batch: %v", err)
+	}
+	if got := o.Status().Owner.AuditError; got != cause.Error() {
+		t.Fatalf("blocked delivery cause = %q", got)
+	}
+	later := time.Now().Add(10 * time.Minute)
+	if q := o.QueueStatuses(later)["audit"]; q.Status != "degraded" || q.Depth == 0 {
+		t.Fatalf("blocked delivery queue = %+v", q)
+	}
+	consumer.set(nil)
+	if err := o.do(o.deliverAudit); err != nil {
+		t.Fatal(err)
+	}
+	if len(pendingAudit(t, o)) != 0 || o.Status().Owner.AuditError != "" {
+		t.Fatal("recovery left pending rows or a stale error")
+	}
+	if q := o.QueueStatuses(later)["audit"]; q.Status == "degraded" || q.Depth != 0 {
+		t.Fatalf("recovered delivery queue = %+v", q)
+	}
+}
+
+// Audit delivery runs every second; status reads the whole ledger and runs
+// on its own slower timer. A delivery publishes only a change of its error,
+// copying the cached status, so steady deliveries read no ledger status.
+func TestOwnerDeliveryPublishesOnlyAChangedError(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink := &auditSink{}
+	opts := f.options()
+	opts.WriteAudit = sink.write
+	o := f.start(opts)
+	applied(t, o, p, f.host)
+	before := o.Status()
+	for range 3 {
+		if err := o.do(o.deliverAudit); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if o.Status() != before {
+		t.Fatal("a steady delivery republished the status")
+	}
+	cause := errors.New("fixture delivery failure")
+	sink.set(cause)
+	ended(t, o, p, f.host, "192.0.2.15", admission.KindBlockIP, admission.DispositionApplied)
+	_ = o.do(o.deliverAudit)
+	failed := o.Status()
+	if failed == before || failed.Owner.AuditError != cause.Error() || failed.Ledger != before.Ledger {
+		t.Fatalf("a new delivery error was published as %+v; want the cached ledger view with the error", failed.Owner)
+	}
+	_ = o.do(o.deliverAudit)
+	if o.Status() != failed {
+		t.Fatal("the same delivery error republished the status")
+	}
+	sink.set(nil)
+	if err := o.do(o.deliverAudit); err != nil {
+		t.Fatal(err)
+	}
+	recovered := o.Status()
+	if recovered == failed || recovered.Owner.AuditError != "" {
+		t.Fatalf("recovery was published as %+v", recovered.Owner)
+	}
+	if err := o.do(o.deliverAudit); err != nil || o.Status() != recovered {
+		t.Fatalf("a steady delivery after recovery republished the status: %v", err)
+	}
+}
