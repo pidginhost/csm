@@ -4,13 +4,17 @@ package admissionowner
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,6 +32,12 @@ import (
 // namespace until the test ends and returns a handle on it.
 func kernelNamespace(t *testing.T) int {
 	t.Helper()
+	if os.Geteuid() != 0 {
+		t.Skip("kernel firewall tests require root")
+	}
+	if _, err := exec.LookPath("nft"); err != nil {
+		t.Skip("kernel firewall tests require nft")
+	}
 	runtime.LockOSThread()
 	orig, err := unix.Open("/proc/thread-self/ns/net", unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -37,24 +47,35 @@ func kernelNamespace(t *testing.T) int {
 	if err = unix.Unshare(unix.CLONE_NEWNET); err != nil {
 		_ = unix.Close(orig)
 		runtime.UnlockOSThread()
+		if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
+			t.Skip("kernel firewall tests require CAP_SYS_ADMIN")
+		}
 		t.Fatalf("kernel firewall tests require CAP_SYS_ADMIN and CAP_NET_ADMIN: %v", err)
 	}
-	ns, err := unix.Open("/proc/thread-self/ns/net", unix.O_RDONLY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		_ = unix.Setns(orig, unix.CLONE_NEWNET)
-		_ = unix.Close(orig)
-		runtime.UnlockOSThread()
-		t.Fatal(err)
-	}
 	t.Cleanup(func() {
-		_ = unix.Close(ns)
 		err := unix.Setns(orig, unix.CLONE_NEWNET)
 		_ = unix.Close(orig)
 		if err != nil {
+			// Keep the thread locked so the runtime discards it instead of
+			// scheduling unrelated work inside the test namespace.
 			t.Fatalf("restore network namespace: %v", err)
 		}
 		runtime.UnlockOSThread()
 	})
+	ns, err := unix.Open("/proc/thread-self/ns/net", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unix.Close(ns) })
+	conn, err := nftables.New(nftables.WithNetNSFd(ns))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = conn.ListTables(); errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
+		t.Skip("kernel firewall tests require CAP_NET_ADMIN")
+	} else if err != nil {
+		t.Fatal(err)
+	}
 	return ns
 }
 
@@ -69,6 +90,45 @@ func enterNamespace(t *testing.T, o *Owner, ns int) {
 		return unix.Setns(ns, unix.CLONE_NEWNET)
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A fatal assertion must still restore the test thread's namespace. Run
+// that assertion in a child so its expected failure cannot fail this test.
+func TestKernelNamespaceCleanupAfterFailure(t *testing.T) {
+	const marker = "CSM_TEST_NAMESPACE_FAILURE"
+	const restored = "test namespace restored after failure"
+	if os.Getenv(marker) == "1" {
+		before, err := os.Readlink("/proc/thread-self/ns/net")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			after, err := os.Readlink("/proc/thread-self/ns/net")
+			if err != nil || after != before {
+				t.Errorf("namespace cleanup: %q -> %q, %v", before, after, err)
+				return
+			}
+			t.Log(restored)
+		})
+		kernelNamespace(t)
+		t.Fatal("injected failure inside the network namespace")
+	}
+	// Check prerequisites before expecting the child's intentional failure.
+	kernelNamespace(t)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable, "-test.run=^TestKernelNamespaceCleanupAfterFailure$", "-test.v")
+	cmd.Env = append(os.Environ(), marker+"=1")
+	output, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || ctx.Err() != nil ||
+		!strings.Contains(string(output), restored) || !strings.Contains(string(output), "injected failure inside the network namespace") {
+		t.Fatalf("namespace failure test: %v\n%s", err, output)
 	}
 }
 

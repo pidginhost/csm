@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
-	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/health"
 )
 
@@ -51,11 +50,10 @@ func TestAPIStatusCopiesAdmission(t *testing.T) {
 	}
 }
 
-// Spec 3.8, 6.4: /api/v1/status and the control socket's status carry the
-// same admission object, built from one provider: the dry-run and verdict
-// objects agree field by field, nulls and zero counters included, for an
-// active and an inactive forecast.
-func TestAPIStatusAdmissionMatchesTheControlSocket(t *testing.T) {
+// Spec 3.8, 6.4: HTTP preserves the provider's admission object and its
+// required wire fields, including nulls and zeros. The daemon socket test
+// checks the real control transport against the same provider contract.
+func TestAPIStatusAdmissionMatchesTheProvider(t *testing.T) {
 	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
 	session, reset, class := "0123456789abcdef0123456789abcdef", "mode_change", "timeout"
 	kinds, scope := []string{"block_ip"}, "ceiling_and_temporary_capacity"
@@ -80,27 +78,37 @@ func TestAPIStatusAdmissionMatchesTheControlSocket(t *testing.T) {
 			s.SetHealthProvider(p)
 			rec := httptest.NewRecorder()
 			s.apiStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("HTTP status = %d", rec.Code)
+			}
 			var api map[string]any
 			if err := json.Unmarshal(rec.Body.Bytes(), &api); err != nil {
 				t.Fatal(err)
 			}
-			snap := health.Build(p, "test", health.Capabilities())
-			data, err := json.Marshal(control.StatusResult{Snapshot: &snap})
+			data, err := json.Marshal(p.status)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var socket struct {
-				Snapshot map[string]any `json:"snapshot"`
-			}
-			if err = json.Unmarshal(data, &socket); err != nil {
+			var want map[string]any
+			if err = json.Unmarshal(data, &want); err != nil {
 				t.Fatal(err)
 			}
-			if api["admission"] == nil || !reflect.DeepEqual(api["admission"], socket.Snapshot["admission"]) {
-				t.Fatalf("HTTP admission %v, control socket %v", api["admission"], socket.Snapshot["admission"])
+			if !reflect.DeepEqual(api["admission"], want) {
+				t.Fatalf("HTTP admission %v, provider %v", api["admission"], want)
 			}
 			owner := api["admission"].(map[string]any)["owner"].(map[string]any)
-			if d := owner["dry_run"].(map[string]any); d["forecast_error"] != nil || d["last_error_at"] != nil || (name == "inactive" && (d["occupancy"] != nil || d["ceiling"] != nil)) {
-				t.Fatalf("absent dry-run values are not null: %v", d)
+			d := owner["dry_run"].(map[string]any)
+			for _, key := range []string{"forecast_error", "last_error_at", "occupancy", "ceiling"} {
+				value, exists := d[key]
+				if !exists || ((key == "forecast_error" || key == "last_error_at" || name == "inactive") && value != nil) {
+					t.Fatalf("dry-run %s is missing or has the wrong nullability: %v", key, d)
+				}
+			}
+			v := owner["verdict"].(map[string]any)
+			for _, key := range []string{"pending", "in_flight", "ready", "responses_allow", "responses_default", "cancelled", "discarded", "ready_evicted", "allow_endings", "last_hour_failed"} {
+				if value, exists := v[key]; !exists || value != float64(0) {
+					t.Fatalf("verdict %s is not an explicit zero: %v", key, v)
+				}
 			}
 		})
 	}

@@ -158,7 +158,7 @@ func ledgerStatus(t *testing.T, o *Owner) admission.LedgerStatus {
 	return s
 }
 
-func eventually(t *testing.T, what string, cond func() bool) {
+func eventually(t testing.TB, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for !cond() {

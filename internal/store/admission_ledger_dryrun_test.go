@@ -335,6 +335,11 @@ func TestAdmissionLedgerEndDryRunRollsBackARetry(t *testing.T) {
 	if n := f.outcomesAt(admission.SpanDay, f.wall).Count(admission.AttemptOutcome(admission.DispositionDryRun, tier)); n != 1 {
 		t.Fatalf("dry-run outcomes = %d", n)
 	}
+	committed := f.snapshot()
+	again, changed, err := f.l.EndDryRun(id)
+	if err != nil || changed || !reflect.DeepEqual(again, c) || !reflect.DeepEqual(committed, f.snapshot()) {
+		t.Fatalf("repeating the retry ending changed committed state: %+v, %v, %v", again, changed, err)
+	}
 }
 
 // Spec 6.4: a comparison-only owner previews and refuses its picks; neither

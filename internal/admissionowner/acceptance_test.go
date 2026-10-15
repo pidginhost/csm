@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -302,6 +303,9 @@ func TestOwnerFinishesADispatchedBatchAcrossAFlipToDryRun(t *testing.T) {
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
 	reached, release := make(chan struct{}), make(chan struct{})
+	var released sync.Once
+	unblock := func() { released.Do(func() { close(release) }) }
+	defer unblock()
 	blocks.afterApply = func(*fakeBlocks) {
 		close(reached)
 		<-release
@@ -311,21 +315,31 @@ func TestOwnerFinishesADispatchedBatchAcrossAFlipToDryRun(t *testing.T) {
 	v6, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "2001:db8::10")
 	turned := make(chan error, 1)
 	go func() { turned <- o.do(o.turn) }()
-	<-reached
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the live batch never reached the engine")
+	}
 	r.publish(dryPolicy(2))
 	reloaded := make(chan error, 1)
-	go func() { reloaded <- o.Reload() }()
+	reloading := make(chan struct{})
+	go func() { close(reloading); reloaded <- o.Reload() }()
+	<-reloading
 	select {
 	case err := <-reloaded:
 		t.Fatalf("reload acknowledged while a live batch ran: %v", err)
-	default:
+	case <-time.After(20 * time.Millisecond):
 	}
-	close(release)
-	if err := <-turned; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-reloaded; err != nil {
-		t.Fatal(err)
+	unblock()
+	for name, done := range map[string]<-chan error{"turn": turned, "reload": reloaded} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s did not finish after the batch was released", name)
+		}
 	}
 	blocks.set(func(b *fakeBlocks) { b.afterApply = nil })
 	for _, id := range []admission.CandidateID{v4, v6} {

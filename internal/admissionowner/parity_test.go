@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -141,6 +142,11 @@ func TestOwnerKeepsTheLegacyGates(t *testing.T) {
 			dry:  "dry_run capacity_admit=1 asked=1 applies=0 examples=1",
 		},
 		{
+			legacy: "TestBlockIP_VerdictBlockProceedsToDefault/empty", answer: answerWith(""), addr: "192.0.2.1",
+			live: "verified asked=1 applies=1 examples=0",
+			dry:  "dry_run capacity_admit=1 asked=1 applies=0 examples=1",
+		},
+		{
 			legacy: "TestBlockIP_VerdictNotCalledWhenLocalValidationFails", answer: answerWith("allow"), refusal: firewall.BlockRefusedProtected, addr: "192.0.2.10",
 			live: "refused protected asked=0 applies=0 examples=0",
 			dry:  "refused protected asked=0 applies=0 examples=0",
@@ -193,8 +199,27 @@ func TestOwnerKeepsTheLegacyGates(t *testing.T) {
 				if got := pt.outcome(t, id); got != want {
 					t.Fatalf("outcome = %q, want %q", got, want)
 				}
-				if used := liveUsed(t, pt.o); dry && used != 0 {
-					t.Fatalf("a dry run charged %d live units", used)
+				var attempts uint32
+				if strings.HasPrefix(want, "verified ") {
+					attempts = 1
+				}
+				c := candidate(t, pt.o, id)
+				if used := liveUsed(t, pt.o); used != attempts || c.Attempts != attempts {
+					t.Fatalf("%d live units, %d attempts; want %d of each", used, c.Attempts, attempts)
+				}
+				if rows := pendingAudit(t, pt.o); len(rows) != 3*int(attempts) {
+					t.Fatalf("%d attempt audit rows, want %d", len(rows), 3*attempts)
+				}
+				if attempts != 0 {
+					_, batches := pt.blocks.calls()
+					a, err := admission.NewAttempt(id, 1)
+					if err != nil {
+						t.Fatal(err)
+					}
+					wantMember := firewall.BlockMember{Action: string(a.ID), IP: tc.addr, Reason: "CSM auto-block: ssh_brute", ExpiresAt: pt.f.host.now().Add(24 * time.Hour)}
+					if len(batches) != 1 || len(batches[0]) != 1 || batches[0][0] != wantMember {
+						t.Fatalf("applied %v, want exactly %v", batches, wantMember)
+					}
 				}
 			})
 		}
