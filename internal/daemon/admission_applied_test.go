@@ -224,3 +224,50 @@ func TestAdmissionAppliedBlockAddressFamilies(t *testing.T) {
 		})
 	}
 }
+
+// A replayed applied row can be delivered before the daemon opens its threat
+// or attack database. It stays pending until both exist: acknowledging it
+// would lose its evidence for good.
+func TestAdmissionAppliedWaitsForItsDestinations(t *testing.T) {
+	for _, missing := range []string{"threat", "attack"} {
+		t.Run(missing, func(t *testing.T) {
+			dir := t.TempDir()
+			sdb, cleanup := openTestBoltStore(t, t.TempDir())
+			t.Cleanup(cleanup)
+			row := appliedRow(t, "7", "203.0.113.47", time.Now().Add(time.Hour).UTC())
+			data, err := json.Marshal(firewall.FirewallState{Blocked: []firewall.BlockedEntry{{
+				IP: "203.0.113.47", Reason: "CSM auto-block: ssh_brute", Source: firewall.SourceAutoResponse,
+				ActionID: string(row.Attempt.ID), ExpiresAt: row.ExpiresAt,
+			}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.MkdirAll(filepath.Join(dir, "firewall"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(filepath.Join(dir, "firewall", "state.json"), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			adb := attackdb.NewForTest(map[string]*attackdb.IPRecord{"203.0.113.47": {IP: "203.0.113.47"}})
+			previous := attackdb.Global()
+			t.Cleanup(func() { attackdb.SetGlobal(previous) })
+			if missing == "threat" {
+				t.Cleanup(checks.ClearGlobalThreatDBForTest())
+				attackdb.SetGlobal(adb)
+			} else {
+				t.Cleanup(checks.SetGlobalThreatDBForTest(dir))
+				attackdb.SetGlobal(nil)
+			}
+			d := New(&config.Config{StatePath: dir}, nil, nil, "")
+			if err = d.consumeAppliedBlocks([]admission.AuditRow{row}); err == nil {
+				t.Fatalf("an applied row was consumed without the %s database", missing)
+			}
+			if _, found := sdb.GetPermanentBlock("203.0.113.47"); found {
+				t.Errorf("a refused delivery stored threat evidence")
+			}
+			if rec := adb.LookupIP("203.0.113.47"); rec.AutoBlocked {
+				t.Errorf("a refused delivery marked the attack record")
+			}
+		})
+	}
+}

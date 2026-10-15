@@ -112,6 +112,14 @@ func SetGlobalThreatDBForTest(statePath string) func() {
 	return func() { globalThreatDB = prev }
 }
 
+// ClearGlobalThreatDBForTest unsets the global threat DB, as before the
+// daemon initializes it, and returns a function that restores it.
+func ClearGlobalThreatDBForTest() func() {
+	prev := globalThreatDB
+	globalThreatDB = nil
+	return func() { globalThreatDB = prev }
+}
+
 func configWhitelistSet(ips []string) map[string]bool {
 	set := make(map[string]bool, len(ips))
 	for _, raw := range ips {

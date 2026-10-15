@@ -28,7 +28,10 @@ var (
 // time with one durable write each, and acknowledges each row by its ID
 // and time only after its write (spec 5.5, O49, ruling R1). A failed or
 // unacknowledged write acknowledges nothing: the rows are written again,
-// with the same identity, and readers drop the copy.
+// with the same identity, and readers drop the copy. Rows this process wrote
+// whose consumers then failed are not written again before their ack, so a
+// long consumer outage cannot flood the action log; a restart writes them
+// once more.
 func (o *Owner) deliverAudit() (err error) {
 	defer func() { o.noteAuditError(err) }()
 	for range auditBatchesPerRun {
@@ -40,13 +43,24 @@ func (o *Owner) deliverAudit() (err error) {
 		if len(rows) == 0 {
 			return nil
 		}
-		records := make([]actionlog.Record, len(rows))
+		records := make([]actionlog.Record, 0, len(rows))
 		acks := make([]admission.AuditAck, len(rows))
 		for i, r := range rows {
-			records[i], acks[i] = auditRecord(r), r.Ack()
+			acks[i] = r.Ack()
+			if !o.auditWritten[auditKeyOf(acks[i])] {
+				records = append(records, auditRecord(r))
+			}
 		}
-		if err = o.opts.WriteAudit(records); err != nil {
-			return err
+		if len(records) > 0 {
+			if err = o.opts.WriteAudit(records); err != nil {
+				return err
+			}
+			if o.auditWritten == nil {
+				o.auditWritten = make(map[auditKey]bool, len(acks))
+			}
+			for _, a := range acks {
+				o.auditWritten[auditKeyOf(a)] = true
+			}
 		}
 		if err = o.consumeApplied(rows); err != nil {
 			return err
@@ -54,9 +68,21 @@ func (o *Owner) deliverAudit() (err error) {
 		if err = o.ledger.AckAudit(acks); err != nil {
 			return err
 		}
+		clear(o.auditWritten)
 		o.auditAcked += uint64(len(rows))
 	}
 	return nil
+}
+
+// auditKey names one audit row as its ack does: its identity and its time,
+// which tells a re-minted attempt's rows apart.
+type auditKey struct {
+	id admission.AuditID
+	at int64
+}
+
+func auditKeyOf(a admission.AuditAck) auditKey {
+	return auditKey{id: a.ID, at: a.At.UnixNano()}
 }
 
 // noteAuditError keeps the last delivery failure for status. Delivery runs

@@ -701,6 +701,17 @@ func (d *Daemon) Run() error {
 		return err
 	}
 
+	// The threat and attack databases record applied blocks; open them
+	// before the owner delivers rows a previous run left pending.
+	checks.InitThreatDB(d.cfg.StatePath, d.cfg.Reputation.Whitelist)
+
+	if db := checks.GetThreatDB(); db != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Threat DB initialized (%d entries)\n", ts(), db.Count())
+	}
+	if adb := attackdb.Init(d.cfg.StatePath); adb != nil {
+		d.prepareAttackDatabase(adb)
+	}
+
 	// Own the admission ledger before anything can respond automatically.
 	d.startAdmission()
 
@@ -723,14 +734,6 @@ func (d *Daemon) Run() error {
 		fmt.Fprintf(os.Stderr, "[%s] PHP taint worker init: %v\n", ts(), err)
 	} else {
 		defer d.stopPHPTaintAnalyzer()
-	}
-	checks.InitThreatDB(d.cfg.StatePath, d.cfg.Reputation.Whitelist)
-
-	if db := checks.GetThreatDB(); db != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Threat DB initialized (%d entries)\n", ts(), db.Count())
-	}
-	if adb := attackdb.Init(d.cfg.StatePath); adb != nil {
-		d.prepareAttackDatabase(adb)
 	}
 
 	// Install operator verified-bot ranges before the firewall engine is

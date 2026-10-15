@@ -2,6 +2,7 @@ package admissionowner
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -204,7 +205,7 @@ func TestOwnerReplaysAppliedBlocksAfterLostAckAndRestart(t *testing.T) {
 func TestOwnerReportsAppliedConsumerBacklog(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
-	cause := errors.New("recording applied threat batch: damaged threat entry")
+	cause := errors.New("recording applied threat batch: disk full")
 	consumer := &appliedSink{err: cause}
 	opts := f.options()
 	opts.Applied = consumer.consume
@@ -287,5 +288,60 @@ func TestOwnerDeliveryPublishesOnlyAChangedError(t *testing.T) {
 	}
 	if err := o.do(o.deliverAudit); err != nil || o.Status() != recovered {
 		t.Fatalf("a steady delivery after recovery republished the status: %v", err)
+	}
+}
+
+// A consumer failure after the action log write keeps the rows pending.
+// Retries hand them to the consumer again without writing them to the action
+// log again, so a long consumer outage cannot rotate the operator's history
+// out; a row that arrives meanwhile is written once.
+func TestOwnerWritesAPendingRowOnceWhileItsConsumerFails(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink, consumer := &auditSink{}, &appliedSink{err: errors.New("fixture consumer failure")}
+	opts := f.options()
+	opts.WriteAudit, opts.Applied = sink.write, consumer.consume
+	o := f.start(opts)
+	applied(t, o, p, f.host)
+	first := len(pendingAudit(t, o))
+	for range 3 {
+		if err := o.do(o.deliverAudit); err == nil {
+			t.Fatal("a failed consumer reported delivery")
+		}
+	}
+	ended(t, o, p, f.host, "192.0.2.18", admission.KindBlockIP, admission.DispositionFailed)
+	total := len(pendingAudit(t, o))
+	if err := o.do(o.deliverAudit); err == nil {
+		t.Fatal("a failed consumer reported delivery")
+	}
+	consumer.set(nil)
+	if err := o.do(o.deliverAudit); err != nil {
+		t.Fatal(err)
+	}
+	if got := pendingAudit(t, o); len(got) != 0 {
+		t.Fatalf("delivered rows still pending: %+v", got)
+	}
+	if err := o.do(func() error {
+		if len(o.auditWritten) != 0 {
+			return fmt.Errorf("acknowledged rows stay in the written set: %d", len(o.auditWritten))
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	seen, written := map[string]int{}, 0
+	for _, b := range sink.batches {
+		for _, r := range b {
+			seen[fmt.Sprintf("%+v", r)]++
+			written++
+		}
+	}
+	if written != total || len(seen) != total || first >= total {
+		t.Fatalf("action log got %d records (%d distinct) for %d rows (%d in the first batch); want each once", written, len(seen), total, first)
+	}
+	if got := len(consumer.seen()); got != 5 {
+		t.Fatalf("consumer saw %d batches, want every retry", got)
 	}
 }

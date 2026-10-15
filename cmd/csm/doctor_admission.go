@@ -69,7 +69,7 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 		rows = append(rows, DoctorCheck{
 			Name: "admission audit delivery", Status: "warn",
 			Message: "audit delivery is pending: " + o.AuditError + "; " + closing,
-			Fix:     "keep the state database and pending rows; repair the named storage error or damaged threat entry; delivery retries automatically and never repeats enforcement",
+			Fix:     "keep the state database and pending rows; repair the named storage error; delivery retries automatically and never repeats enforcement",
 		})
 	}
 	if a.Ledger != nil && a.Ledger.Ceiling.Error == "" && a.Ledger.Ceiling.Limit > 0 {

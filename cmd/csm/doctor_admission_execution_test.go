@@ -77,7 +77,7 @@ func TestDoctorFailsFirewallLedgerUnreadableWhileExecuting(t *testing.T) {
 func TestDoctorReportsAppliedConsumerFailure(t *testing.T) {
 	for _, executing := range []bool{false, true} {
 		a := &health.AdmissionStatus{Owner: &health.AdmissionOwner{
-			Executing: executing, AuditError: "recording applied threat batch: damaged threat entry",
+			Executing: executing, AuditError: "recording applied threat batch: disk full",
 		}}
 		r, ok := doctorCheckNamed(DoctorReport{Checks: ownerDoctorChecks(a)}, "admission audit delivery")
 		closing, _ := admission.DoctorImpact(executing)

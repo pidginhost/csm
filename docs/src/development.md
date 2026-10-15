@@ -419,7 +419,11 @@ row's retirement cannot remove the row a re-minted attempt writes later.
 After the action log write and before the acknowledgement, the owner hands
 the applied `block_ip` rows of each batch to `Options.Applied`; no other
 row reaches it. A failed call acknowledges nothing, so its consumers see the
-same row again and must be idempotent by action and transition. Delivery
+same row again and must be idempotent by action and transition. A row this
+process already wrote to the action log is not written again while its
+consumer fails; a restart writes it once more. The daemon opens the threat and
+attack databases before the owner starts, and the consumer refuses rows while
+either is missing. Delivery
 errors remain visible in `admission.owner.audit_error` until a pass succeeds;
 the independent audit queue reports a stall if a pending batch cannot advance.
 The daemon marks the address blocked in the attack database, as the legacy

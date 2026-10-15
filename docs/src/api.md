@@ -322,8 +322,7 @@ admission records to the [action log](action-log.md) and of admission notices.
 an applied-block consumer's state read or threat-store write. The batch stays
 pending and later rows can wait behind it; `queues["admission.audit"]` reports
 no-progress stalls. Successful delivery clears the error. Keep the database
-and pending rows; repair the reported storage failure before retrying. A
-malformed threat entry needs operator repair, not repeated daemon restarts.
+and pending rows; repair the reported storage failure before retrying.
 
 A ledger that cannot start, or admission that stops, raises one Warning
 `auto_response_withheld` alert through the same path as protection queue

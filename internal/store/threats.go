@@ -159,9 +159,6 @@ func addExpiringThreatTx(tx *bolt.Tx, ip, reason, source string, expiresAt time.
 	if existing != nil {
 		var cur PermanentBlockEntry
 		decodeErr := json.Unmarshal(existing, &cur)
-		if replay && decodeErr != nil {
-			return fmt.Errorf("reading threat entry %s: %w", ip, decodeErr)
-		}
 		if replay && decodeErr == nil && cur.Source == source && cur.Reason == reason && cur.ExpiresAt.Equal(expiresAt) {
 			return nil
 		}

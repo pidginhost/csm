@@ -166,6 +166,9 @@ type Owner struct {
 	inventoryErr error
 	auditAcked   uint64
 	auditErr     error
+	// auditWritten holds the pending rows this process wrote whose
+	// acknowledgement has not landed yet.
+	auditWritten map[auditKey]bool
 	// drained is the ingress decision sequence the last drain persisted.
 	drained uint64
 	// drainFailed holds admission closed until a drain succeeds. drainErr

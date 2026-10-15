@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
@@ -21,6 +22,9 @@ func TestAdmissionAppliedBlockYieldsToAConcurrentUnblock(t *testing.T) {
 	sdb, cleanup := openTestBoltStore(t, t.TempDir())
 	t.Cleanup(cleanup)
 	t.Cleanup(checks.SetGlobalThreatDBForTest(dir))
+	previousAttack := attackdb.Global()
+	attackdb.SetGlobal(attackdb.NewForTest(nil))
+	t.Cleanup(func() { attackdb.SetGlobal(previousAttack) })
 	const ip = "203.0.113.48"
 	row := appliedRow(t, "8", ip, time.Now().Add(time.Hour).UTC())
 	path := filepath.Join(dir, "firewall", "state.json")

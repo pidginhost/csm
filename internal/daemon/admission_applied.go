@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -19,18 +20,21 @@ var loadAppliedState = firewall.LoadState
 // so an unblock that removes the firewall row after that read waits for the
 // batch to commit and then removes what it wrote.
 func (d *Daemon) consumeAppliedBlocks(rows []admission.AuditRow) error {
+	// A destination the daemon has not opened cannot record the block, and
+	// acknowledging the rows now would lose their evidence for good.
+	tdb, adb := checks.GetThreatDB(), attackdb.Global()
+	switch {
+	case tdb == nil:
+		return errors.New("the threat database is not open yet")
+	case adb == nil:
+		return errors.New("the attack database is not open yet")
+	}
 	var readErr error
-	choose := func() []store.PermanentBlockEntry {
+	writeErr := tdb.AddTemporaryBatchFrom(func() []store.PermanentBlockEntry {
 		var entries []store.PermanentBlockEntry
 		entries, readErr = d.standingAppliedBlocks(rows)
 		return entries
-	}
-	var writeErr error
-	if tdb := checks.GetThreatDB(); tdb != nil {
-		writeErr = tdb.AddTemporaryBatchFrom(choose)
-	} else {
-		choose()
-	}
+	})
 	if readErr != nil {
 		return readErr
 	}
@@ -38,11 +42,9 @@ func (d *Daemon) consumeAppliedBlocks(rows []admission.AuditRow) error {
 	// path marks it at block time: a block removed or expired before
 	// delivery is still marked, and the mark does not wait for the threat
 	// store.
-	if adb := attackdb.Global(); adb != nil {
-		for _, r := range rows {
-			if addr, ok := r.Target.Addr(); ok {
-				adb.MarkBlocked(addr.String())
-			}
+	for _, r := range rows {
+		if addr, ok := r.Target.Addr(); ok {
+			adb.MarkBlocked(addr.String())
 		}
 	}
 	if writeErr != nil {
