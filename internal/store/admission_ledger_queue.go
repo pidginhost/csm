@@ -754,6 +754,9 @@ func (l *AdmissionLedger) previewTx(q *queueTx, pending map[admission.CandidateI
 	if err != nil {
 		return nil, err
 	}
+	if err = q.checkPreviewStorage(live); err != nil {
+		return nil, err
+	}
 	byID := map[admission.CandidateID]liveCandidate{}
 	held := map[admission.CandidateID]bool{}
 	var items []admission.ScheduleItem
@@ -810,6 +813,24 @@ func (l *AdmissionLedger) previewTx(q *queueTx, pending map[admission.CandidateI
 	}
 }
 
+// Preview ignores capacity pressure, not damaged accounting. Read the same
+// ceiling, storage and live-history records as live scheduling without granting
+// any history or recovery budget.
+func (q *queueTx) checkPreviewStorage(live []liveCandidate) error {
+	if _, err := loadCeilingState(q.tx); err != nil {
+		return err
+	}
+	if _, err := q.storageState(); err != nil {
+		return err
+	}
+	for _, lc := range live {
+		if _, _, _, err := q.historyNeed(lc, 0); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // deferHeld records the real holds a preview selection passed over, as a
 // schedule records them: work an unresolved attempt holds waits as pending
 // recovery once its retry backoff is over. A selection judges no live
@@ -855,6 +876,9 @@ func (l *AdmissionLedger) PreviewWake(pending map[admission.CandidateID]bool) (t
 		q.held = l.held
 		live, err := q.live()
 		if err != nil {
+			return err
+		}
+		if err = q.checkPreviewStorage(live); err != nil {
 			return err
 		}
 		q.state.NextSweep = time.Time{}

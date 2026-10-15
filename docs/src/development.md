@@ -526,6 +526,17 @@ deadline, whatever the live budgets. `CeilingSnapshot` reads the committed
 ceiling and its retained charges in one read transaction, proven against
 each other, for a forecast to start from.
 
+Preview selection and wake calculations check saved ceiling, storage and
+live candidate history even though live budgets do not limit them. Damaged
+accounting refuses the operation without advancing the fair position.
+
+The forecast model keeps charges in admission-time order, including when
+imported legacy spend is dated in the future. Earlier simulated charges can
+leave their window while that spend remains. Only `block_ip` consumes
+simulated ceiling credit and temporary address space; other kinds return
+`not_modelled` without changing capacity. These primitives do not activate
+owner execution or replace the comparison-only challenge path.
+
 Schema 7 adds execution intents; the first open upgrades a schema 1 to 6
 ledger in the same transaction. Execution marks a batch of up to 64
 reserved attempts as running and records, in the same transaction and

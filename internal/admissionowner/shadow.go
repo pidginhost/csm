@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"sort"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -205,9 +207,11 @@ func (s *shadow) limited() bool { return len(s.entries) >= forecastEntries }
 // admission time now, against this turn's snapshot: a full set first, then
 // the modelling bound, then the ceiling on each of lanes in order, the
 // selected lane first. Only a capacity admission returns a change; nothing
-// is installed until commit.
+// is installed until commit. Kinds outside the address model take no capacity.
 func (s *shadow) admit(ip string, kind admission.Kind, expires time.Time, lanes []admission.Lane, now time.Time, adm firewall.BlockAdmission) (prediction, *shadowChange, error) {
 	switch {
+	case kind != admission.KindBlockIP:
+		return predictNotModelled, nil, nil
 	case s.full(adm):
 		return predictSetFull, nil, nil
 	case s.limited():
@@ -235,7 +239,10 @@ func (s *shadow) admit(ip string, kind admission.Kind, expires time.Time, lanes 
 func (s *shadow) commit(p prediction, change *shadowChange, mono time.Time) {
 	if change != nil {
 		s.ceiling = change.next
-		s.charges = append(s.charges, change.charge)
+		// Imported legacy spend can be dated at the end of the current
+		// hour. Keep earlier predictions ahead of it for window release.
+		at := sort.Search(len(s.charges), func(i int) bool { return s.charges[i].At.After(change.charge.At) })
+		s.charges = slices.Insert(s.charges, at, change.charge)
 		s.entries[change.ip] = change.entry
 	}
 	if s.picks[p] != ^uint64(0) {

@@ -3,6 +3,7 @@ package admissionowner
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -425,5 +426,53 @@ func TestShadowSimulatedChargesNeedBothClocks(t *testing.T) {
 		if len(s.charges) != 1 {
 			t.Fatalf("%s released a simulated charge", tc.name)
 		}
+	}
+}
+
+// A legacy hour can end after the session starts. Its future-dated charge
+// must not hold an earlier simulated charge past its own window.
+func TestShadowOrdersChargesBeforeFutureLegacySpend(t *testing.T) {
+	ceiling, charges, err := (admission.CeilingState{Fill: true}).Import(100, admission.LegacySpend{
+		Units: 1, At: shadowT0.Add(20 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := testShadow(t, ceiling, charges)
+	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != predictCapacityAdmit {
+		t.Fatalf("first prediction = %s", p)
+	}
+	if err = tickBy(s, shadowT0.Add(time.Hour), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if s.ceiling.General.Used != 1 || !reflect.DeepEqual(s.charges, charges) {
+		t.Fatalf("after the simulated window: used %d, charges %+v; want only the imported charge", s.ceiling.General.Used, s.charges)
+	}
+	if err = tickBy(s, shadowT0.Add(80*time.Minute), 20*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if s.ceiling.General.Used != 0 || len(s.charges) != 0 {
+		t.Fatalf("after both windows: used %d, charges %+v", s.ceiling.General.Used, s.charges)
+	}
+}
+
+// Kinds outside the address model never claim admission or take capacity,
+// even when a modelled limit would otherwise refuse the pick.
+func TestShadowDoesNotModelOtherKinds(t *testing.T) {
+	for _, kind := range []admission.Kind{admission.KindBlockSubnet, admission.KindPromote, admission.KindBlockService, admission.KindChallenge} {
+		t.Run(kind.String(), func(t *testing.T) {
+			for _, adm := range []firewall.BlockAdmission{room, {Temporary: 1, Limit: 1}} {
+				s := testShadow(t, freshCeiling(t, 10), nil)
+				before := s.ceiling
+				p, change, err := s.admit("203.0.113.1", kind, shadowExpiry, generalOnly, shadowT0, adm)
+				if err != nil || p != predictNotModelled || change != nil {
+					t.Fatalf("prediction = %s, change %+v, error %v", p, change, err)
+				}
+				s.commit(p, change, shadowT0)
+				if s.ceiling != before || len(s.entries) != 0 || len(s.charges) != 0 || s.picks[predictNotModelled] != 1 {
+					t.Fatal("an unmodelled kind changed forecast capacity or counted the wrong outcome")
+				}
+			}
+		})
 	}
 }

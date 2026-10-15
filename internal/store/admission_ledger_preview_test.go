@@ -176,6 +176,57 @@ func TestAdmissionLedgerPreviewRefusesDamage(t *testing.T) {
 	}
 }
 
+// Ignoring live budgets must not bypass the storage checks a live schedule
+// performs, including the paid history of retries and in-flight attempts.
+func TestAdmissionLedgerPreviewRefusesStorageDamage(t *testing.T) {
+	for _, state := range []admission.State{admission.StateQueued, admission.StateReserved, admission.StateExecuting} {
+		for _, damage := range []string{"ceiling", "storage", "history", "missing history"} {
+			t.Run(state.String()+"/"+damage, func(t *testing.T) {
+				f := newLedgerFixture(t)
+				id, a := f.admitted(time.Hour)
+				switch state {
+				case admission.StateQueued:
+					if _, _, err := f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
+						t.Fatal(err)
+					}
+					f.tickAt(f.candidateOf(id).NotBefore)
+				case admission.StateExecuting:
+					if _, _, _, err := f.l.Execute(a.Attempt.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+					switch damage {
+					case "ceiling":
+						return tx.Bucket([]byte(admissionQueueStateBucket)).Put(ceilingStateKey, []byte("{}"))
+					case "storage":
+						return tx.Bucket([]byte(admissionQueueStateBucket)).Put(storageStateKey, []byte("{}"))
+					case "history":
+						return tx.Bucket([]byte(admissionHistoryBucket)).Put([]byte(id), []byte("{}"))
+					default:
+						return tx.Bucket([]byte(admissionHistoryBucket)).Delete([]byte(id))
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+				before := f.snapshot()
+				if _, err := f.l.Schedule(fullSchedule, nil); !isCorrupt(err) {
+					t.Fatalf("live schedule accepted damaged %s: %v", damage, err)
+				}
+				if _, _, err := f.l.PreviewWake(nil); !isCorrupt(err) {
+					t.Errorf("preview wake accepted damaged %s: %v", damage, err)
+				}
+				if picks, err := f.l.SchedulePreview(nil); !isCorrupt(err) || len(picks) != 0 {
+					t.Errorf("preview accepted damaged %s: picks %v, error %v", damage, picks, err)
+				}
+				if !reflect.DeepEqual(before, f.snapshot()) {
+					t.Fatal("a refused selection changed the ledger")
+				}
+			})
+		}
+	}
+}
+
 // A selection takes at most 64 picks and advances the shared fair
 // position once: scopes rotate across selections as they do across
 // schedules, every candidate weighing one unit whatever it asks for.
