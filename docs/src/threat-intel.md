@@ -136,6 +136,24 @@ count per crawler, and the last successful refresh time -- under the
 database or private collector. It is off by default. Remote targets must use
 HTTPS; plain HTTP is accepted only for loopback collectors. Keys and target
 wiring are read at daemon startup, so changes to this block require a restart.
+The central abuse database accepts `ed25519` targets only; its report URL ends
+in `/report` and its scored-set URL in `/decisions`.
+
+Reports wait in a durable queue and are delivered once a minute. When a target
+is down, throttling, or refuses the node (for example before the node is
+approved, or when the node's clock is wrong), that target's reports stay
+queued in order and it is retried a minute later; other targets keep
+receiving theirs. A target that answers HTTP 429 with `Retry-After`, in
+seconds or as an HTTP date, is retried after that wait instead, up to an
+hour. Throttling while the target still accepts reports is not logged. If it
+keeps throttling without accepting any, the delay doubles on each attempt up
+to a minute, or the requested wait if longer, with a warning at most once a
+minute per target. A report the collector refuses as invalid (HTTP 422)
+would be refused again, so it is dropped and counted as lost.
+
+Non-public and protected infrastructure addresses are excluded from reports
+and central intelligence actions. For NAT64 and 6to4 sources, protection of
+either the original IPv6 address or its embedded IPv4 address applies.
 
 ## Web UI
 

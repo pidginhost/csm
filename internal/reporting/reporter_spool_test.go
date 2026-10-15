@@ -6,13 +6,16 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -168,6 +171,7 @@ func TestSpoolerRetryBuildsFreshEnvelope(t *testing.T) {
 	})
 	tgt := Target{Name: "central", URL: srv.URL + "/report", Transport: TransportEd25519, NodeID: "n1", KeyID: "k1", Ed25519Key: priv}
 	sp := NewSpooler(spool, sender, []Target{tgt}, time.Minute)
+	sp.now = func() time.Time { return now }
 
 	if err := sp.Enqueue(Report{IP: "203.0.113.5", Class: ClassBruteforce, Count: 1, FirstSeen: time.Unix(1, 0), LastSeen: time.Unix(1, 0)}); err != nil {
 		t.Fatal(err)
@@ -176,6 +180,7 @@ func TestSpoolerRetryBuildsFreshEnvelope(t *testing.T) {
 	if spool.Len() != 1 {
 		t.Fatalf("spool len after failed drain = %d, want 1", spool.Len())
 	}
+	now = now.Add(time.Minute)
 	sp.DrainOnce(context.Background())
 	if spool.Len() != 0 {
 		t.Fatalf("spool len after retry = %d, want 0", spool.Len())
@@ -249,5 +254,79 @@ func TestSpoolerDeduplicatesTargetNames(t *testing.T) {
 
 	if spool.Len() != 1 {
 		t.Fatalf("spool len = %d, want one item for duplicate target names", spool.Len())
+	}
+}
+
+// A collector that throttles with Retry-After gets the next pass when it asked,
+// with intervening passes at the regular interval. Throttling after progress
+// is flow control, so it is not logged.
+func TestSpoolerDrainOnceSchedulesNextPass(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	type reply struct {
+		status     int
+		retryAfter string
+	}
+	for _, tc := range []struct {
+		name    string
+		replies []reply // one collector each; every collector accepts its first report
+		want    time.Duration
+		left    int
+		logs    []string
+	}{
+		{"delivered", []reply{{http.StatusAccepted, ""}}, time.Minute, 0, nil},
+		{"throttled", []reply{{http.StatusTooManyRequests, "2"}}, 2 * time.Second, 2, nil},
+		{"shortest wait wins", []reply{{http.StatusTooManyRequests, "5"}, {http.StatusTooManyRequests, "2"}}, 2 * time.Second, 4, nil},
+		{"capped at interval", []reply{{http.StatusTooManyRequests, "3600"}}, time.Minute, 2, nil},
+		{"throttled without wait", []reply{{http.StatusTooManyRequests, ""}}, time.Minute, 2,
+			[]string{"reporting: delivery incomplete: target c0: reporting: report rejected: status 429"}},
+		{"server error", []reply{{http.StatusInternalServerError, "2"}}, time.Minute, 2,
+			[]string{"reporting: delivery incomplete: target c0: reporting: report rejected: status 500"}},
+		{"throttle beside failure", []reply{{http.StatusTooManyRequests, "2"}, {http.StatusInternalServerError, ""}}, 2 * time.Second, 4,
+			[]string{"reporting: delivery incomplete: target c1: reporting: report rejected: status 500"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spool, err := NewSpool(filepath.Join(t.TempDir(), "s.db"), "reports", 100)
+			if err != nil {
+				t.Fatalf("spool: %v", err)
+			}
+			defer func() { _ = spool.Close() }()
+			var targets []Target
+			var client *http.Client
+			for i, r := range tc.replies {
+				var calls atomic.Int32
+				srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					if calls.Add(1) == 1 {
+						w.WriteHeader(http.StatusAccepted)
+						return
+					}
+					if r.retryAfter != "" {
+						w.Header().Set("Retry-After", r.retryAfter)
+					}
+					w.WriteHeader(r.status)
+				}))
+				defer srv.Close()
+				client = srv.Client() // httptest TLS servers share one test CA
+				targets = append(targets, Target{Name: fmt.Sprintf("c%d", i), URL: srv.URL + "/report", Transport: TransportEd25519, NodeID: "n1", KeyID: "k1", Ed25519Key: priv})
+			}
+			sp := NewSpooler(spool, NewSender(client, fixedClock()), targets, time.Minute)
+			sp.now = fixedClock()
+			var logs []string
+			sp.logf = func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+			for _, ip := range []string{"203.0.113.1", "203.0.113.2", "203.0.113.3"} {
+				if err := sp.Enqueue(Report{IP: ip, Class: ClassBruteforce, Count: 1, FirstSeen: time.Unix(1, 0), LastSeen: time.Unix(1, 0)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if got := sp.DrainOnce(context.Background()); got != tc.want {
+				t.Fatalf("next pass in %v, want %v", got, tc.want)
+			}
+			if spool.Len() != tc.left {
+				t.Fatalf("spool len = %d, want %d", spool.Len(), tc.left)
+			}
+			if !slices.Equal(logs, tc.logs) {
+				t.Fatalf("logs = %q, want %q", logs, tc.logs)
+			}
+		})
 	}
 }

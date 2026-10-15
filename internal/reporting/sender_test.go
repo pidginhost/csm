@@ -124,6 +124,89 @@ func TestSendRejectsServerError(t *testing.T) {
 	}
 }
 
+// Only 422 says the collector read and refused this report. 400 and 413 can
+// come from a proxy, a version mismatch, or a read failure that hits every
+// report alike, so they pause the target instead of dropping reports.
+func TestSendClassifiesRefusedReports(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	for _, tc := range []struct {
+		status  int
+		refused bool
+	}{
+		{http.StatusUnprocessableEntity, true},
+		{http.StatusBadRequest, false},
+		{http.StatusRequestEntityTooLarge, false},
+		{http.StatusUnauthorized, false},
+		{http.StatusNotFound, false},
+		{http.StatusTooManyRequests, false},
+		{http.StatusInternalServerError, false},
+		{http.StatusServiceUnavailable, false},
+	} {
+		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
+			srv := verifyingServer(t, pub, nil, tc.status)
+			defer srv.Close()
+			s := NewSender(srv.Client(), fixedClock())
+			tgt := Target{URL: srv.URL + "/report", Transport: TransportEd25519, NodeID: "n1", KeyID: "k1", Ed25519Key: priv}
+			err := s.Send(context.Background(), tgt, []byte(`{}`))
+			if !errors.Is(err, ErrRejected) {
+				t.Fatalf("err = %v, want ErrRejected", err)
+			}
+			if got := errors.Is(err, ErrReportRefused); got != tc.refused {
+				t.Fatalf("refused = %v, want %v (err %v)", got, tc.refused, err)
+			}
+		})
+	}
+}
+
+// A 429 carries the wait the collector asked for, so delivery can resume as
+// soon as it allows instead of a full pass later. Both HTTP date and seconds
+// forms must preserve the collector's minimum wait.
+func TestSendReportsThrottleDelay(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	for _, tc := range []struct {
+		header string
+		want   time.Duration
+	}{
+		{"7", 7 * time.Second},
+		{" 2 ", 2 * time.Second},
+		{"86400", 24 * time.Hour},
+		{"", 0},
+		{"0", 0},
+		{"-3", 0},
+		{"soon", 0},
+		{fixedClock()().Add(2 * time.Minute).Format(http.TimeFormat), 2 * time.Minute},
+		{fixedClock()().Add(-time.Minute).Format(http.TimeFormat), 0},
+		{"99999999999999999999", time.Duration(1<<63 - 1)},
+		{"99999999999999999999garbage", 0},
+	} {
+		t.Run(tc.header, func(t *testing.T) {
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tc.header != "" {
+					w.Header().Set("Retry-After", tc.header)
+				}
+				w.WriteHeader(http.StatusTooManyRequests)
+			}))
+			defer srv.Close()
+			s := NewSender(srv.Client(), fixedClock())
+			tgt := Target{URL: srv.URL + "/report", Transport: TransportEd25519, NodeID: "n1", KeyID: "k1", Ed25519Key: priv}
+			err := s.Send(context.Background(), tgt, []byte(`{}`))
+			if !errors.Is(err, ErrRejected) || errors.Is(err, ErrReportRefused) {
+				t.Fatalf("err = %v, want a retryable rejection", err)
+			}
+			var throttled *ThrottledError
+			if !errors.As(err, &throttled) {
+				t.Fatalf("err = %v, want ThrottledError", err)
+			}
+			if throttled.RetryAfter != tc.want {
+				t.Fatalf("RetryAfter = %v, want %v", throttled.RetryAfter, tc.want)
+			}
+			if got := err.Error(); got != "reporting: report rejected: status 429" {
+				t.Fatalf("message = %q", got)
+			}
+		})
+	}
+}
+
 func TestSendDoesNotFollowRedirectsWithSignedHeaders(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	var leaked atomic.Bool

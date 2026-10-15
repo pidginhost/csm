@@ -526,7 +526,7 @@ reputation:
     targets:
       - name: ""                        # stable target name
         url: ""                         # HTTPS collector URL; HTTP only allowed for loopback
-        transport: "hmac"               # hmac | ed25519
+        transport: "hmac"               # hmac | ed25519 (the central abuse database accepts ed25519 only)
         node_id: ""                     # sender node ID
         key_id: ""                      # receiver key ID
         key_env: ""                     # HMAC secret or Ed25519 private key env var
@@ -537,7 +537,7 @@ reputation:
     pubkey_env: ""                      # env var with Ed25519 public key hex
     refresh_interval: 6h                # pull interval; default 6h
     action: "challenge"                 # off | challenge | block_if_local_corroborated
-    block_threshold: 80                 # score needed before local corroboration can block
+    block_threshold: 60                 # score needed before local corroboration can block
 
 # --- Signatures ---
 signatures:

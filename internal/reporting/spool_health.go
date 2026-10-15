@@ -69,10 +69,10 @@ func (s *Spool) applyEnqueue(key string, ticket queuehealth.Ticket, evicted []st
 	}
 }
 
-func (s *Spool) finishDelivery(work *spoolWork, sent, removed bool) {
+func (s *Spool) finishDelivery(work *spoolWork, sent, refused, removed bool) {
 	s.mutation.Lock()
 	defer s.mutation.Unlock()
-	if !sent {
+	if !sent && !refused {
 		s.health.sendFailed.Store(true)
 	}
 	now := time.Now()
@@ -80,6 +80,10 @@ func (s *Spool) finishDelivery(work *spoolWork, sent, removed bool) {
 	// retry must not turn that earlier acknowledgement into a lost report.
 	work.delivered = work.delivered || sent
 	switch {
+	case removed && refused:
+		// Lost unless an earlier attempt was acknowledged before a failed
+		// removal left this retry behind.
+		work.discard(now)
 	case removed:
 		work.ticket.Finish(now)
 	case work.evicted:
