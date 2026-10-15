@@ -89,6 +89,10 @@ const (
 	CmdIncidentsStatus     = "incidents.status"
 	CmdIncidentsBulkStatus = "incidents.bulk_status"
 
+	// CmdActionShow reads one admitted candidate and its attempts from the
+	// admission ledger by candidate or action ID.
+	CmdActionShow = "action.show"
+
 	// Full-scan job commands (uncapped-full-scan feature).
 	CmdScanEnqueue = "scan.enqueue"
 	CmdScanStatus  = "scan.status"
@@ -408,6 +412,11 @@ type PHPRelayThawRequest struct {
 
 type PHPRelayThawResponse struct {
 	Stderr string `json:"stderr,omitempty"`
+}
+
+// ActionShowArgs names the candidate or action CmdActionShow reads.
+type ActionShowArgs struct {
+	ID string `json:"id"`
 }
 
 // IncidentShowArgs targets a single incident by id.

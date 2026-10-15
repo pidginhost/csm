@@ -13,6 +13,7 @@ csm actions                      # recent actions, one line each
 csm actions --since 24h          # RFC 3339 timestamp or a duration
 csm actions --op respond.block_ip
 csm actions --json               # the raw records
+csm action show <action_id>      # one admission response and its attempts
 ```
 
 ## Schema
@@ -92,6 +93,45 @@ crash it can appear twice; drop a copy whose `action_id`, `action_version` and
 `ts` match another. Existing blocking paths still decide every block: the
 ledger previews each response they hand it, so an admitted response is
 `reserved` and then `observe`, and is never executed.
+
+`csm action show <id>` asks the daemon for what the ledger holds on one
+response, by the `action_id` of an admission record or by its candidate ID.
+It prints JSON: the candidate's kind, target, check, state, reason, outcome and
+expiry, each attempt with its lane, reservation, finish and outcome, and for a
+response refused because a block already enforced it, that block's action and
+end (`link`). A response whose history has retired, or that was never
+admitted, is reported as not recorded. A retained retired attempt still has
+its unknown outcome and `retired: true`; retirement is not proof of success.
+Retention removes the candidate and all its attempts together. If a retained
+candidate is missing an earlier attempt, the command reports ledger damage;
+it does not claim the missing part aged out or return a truncated history.
+
+The command uses `candidate_id` for the candidate and `attempts[].action_id`
+for each attempt, matching the action log's `action_id`. It never uses the
+log's `action` operation field for an identifier. The other top-level fields
+are `kind`, `target`, optional `check` and `finding_id`, `state`, optional
+`reason`, `disposition`, `expires_at` and `link`, and `attempts` (always an
+array, including when empty). Each attempt has `seq`, `state`, optional
+`disposition` and `lane`, `reserved`, optional `finished`, `expires_at`, and
+`retired` only when true. Times use RFC 3339. `link.effect` identifies the
+existing block; an omitted `link.expires_at` means permanent. Omitted
+candidate expiry means no expiry was assigned; it is not a permanent block.
+
+This command requires a running daemon and never changes admission or
+firewall state. Each read is audited with `op: respond.block_ip`, `action:
+show`, `actor: cli`, `actor_detail: csm action show`, and the requested ID as
+`target`. `result: read` means the lookup succeeded, never that a block was
+applied; failed lookups use `result: failed` and `error`. These read records
+have no lifecycle `action_id` or transition version. They use the existing
+bounded, best-effort action log outside the admission outbox, so a sink
+failure does not disable the diagnostic read. The finding-stream exporter
+accepts these records as reads, salts their targets as opaque references and
+drops error text; they cannot claim a block was applied.
+
+It offers no resolve,
+retry or undo operation; durable firewall actions remain under
+`csm firewall actions`. The `admission.action_show.v1` capability advertises
+this local read command; it does not indicate that automatic execution is on.
 
 Once an hour the ledger owner appends `respond.block_ip` summary records that
 count its decisions on the responses handed to it during the hour ending at

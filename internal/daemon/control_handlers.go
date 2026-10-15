@@ -119,6 +119,8 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleIncidentsList(req.Args)
 	case control.CmdIncidentsShow:
 		result, err = c.handleIncidentsShow(req.Args)
+	case control.CmdActionShow:
+		result, err = c.handleActionShow(req.Args)
 	case control.CmdIncidentsStatus:
 		result, err = c.handleIncidentsStatus(req.Args)
 	case control.CmdIncidentsBulkStatus:

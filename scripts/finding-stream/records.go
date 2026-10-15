@@ -325,6 +325,9 @@ func validateAction(r actionlog.Record) (parsedTarget, error) {
 	if !ok {
 		return parsedTarget{}, errUnknownOp
 	}
+	if r.Action == "show" {
+		return validateActionShow(r)
+	}
 	if r.Count != 0 {
 		return parsedTarget{kind: "empty"}, validateSummary(r)
 	}
@@ -628,6 +631,8 @@ func (a *Anonymizer) VerifyAction(o anonAction) error {
 		a.emittedID(o.FindingID, idFinding) && a.emittedID(o.IncidentID, idIncident) &&
 		a.emittedID(o.ActionID, idAction) && a.emittedID(o.UndoOf, idAction)
 	switch {
+	case o.Action == "show":
+		valid = valid && a.verifyActionShow(o)
 	case o.Count != 0 || o.Check != "" || o.Entry != "" || o.Refusal != "":
 		valid = valid && a.verifySummary(o)
 	case strings.HasPrefix(o.ReasonKind, "admission_"):
