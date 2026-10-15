@@ -34,8 +34,9 @@ func appliedRow(t *testing.T, digit, addr string, expires time.Time) admission.A
 
 // Design P14: the production owner hands each applied block to the
 // daemon, which records it where the legacy path records its own: the
-// attack database's blocked marker, and a threat database row that lapses
-// with the block. Both are written only while the action's
+// attack database's blocked marker for every applied row, as the legacy
+// path marks a block that applied, and a threat database row that lapses
+// with the block. The threat row is written only while the action's
 // verified firewall row still stands and before its expiry. A repeated
 // row changes nothing.
 func TestAdmissionRecordsAppliedBlocks(t *testing.T) {
@@ -112,12 +113,11 @@ func TestAdmissionRecordsAppliedBlocks(t *testing.T) {
 		if match, ok := tdb.LookupMatch(ip); ok {
 			t.Errorf("%s: a block that no longer stands recorded threat evidence %+v", ip, match)
 		}
-		if rec := adb.LookupIP(ip); rec == nil || rec.AutoBlocked || rec.ThreatScore != 0 {
-			t.Errorf("%s: a block that no longer stands changed the attack record: %+v", ip, rec)
-		}
 	}
-	if rec := adb.LookupIP("203.0.113.40"); rec == nil || !rec.AutoBlocked {
-		t.Errorf("standing block not marked in the attack database: %+v", rec)
+	for _, ip := range []string{"203.0.113.40", "203.0.113.41", "203.0.113.42", "203.0.113.44"} {
+		if rec := adb.LookupIP(ip); rec == nil || !rec.AutoBlocked {
+			t.Errorf("%s: applied block not marked in the attack database: %+v", ip, rec)
+		}
 	}
 	if rec := adb.LookupIP("203.0.113.43"); rec == nil || rec.AutoBlocked {
 		t.Fatalf("an address no block named was marked: %+v", rec)
@@ -136,11 +136,8 @@ func TestAdmissionAppliedReadAndWriteFailures(t *testing.T) {
 	attackdb.SetGlobal(adb)
 	t.Cleanup(func() { attackdb.SetGlobal(previous) })
 	before := adb.LookupIP("203.0.113.46")
-	assertUnchanged := func() {
+	assertNoThreat := func() {
 		t.Helper()
-		if after := adb.LookupIP("203.0.113.46"); !reflect.DeepEqual(before, after) {
-			t.Errorf("failed delivery changed the attack record: %+v -> %+v", before, after)
-		}
 		if match, ok := checks.GetThreatDB().LookupMatch("203.0.113.46"); ok {
 			t.Errorf("failed delivery published threat evidence: %+v", match)
 		}
@@ -155,7 +152,10 @@ func TestAdmissionAppliedReadAndWriteFailures(t *testing.T) {
 	if err := d.consumeAppliedBlocks([]admission.AuditRow{row}); err == nil {
 		t.Fatal("an unreadable state image reported consumption")
 	}
-	assertUnchanged()
+	assertNoThreat()
+	if after := adb.LookupIP("203.0.113.46"); !reflect.DeepEqual(before, after) {
+		t.Errorf("an unreadable state image changed the attack record: %+v -> %+v", before, after)
+	}
 	data, err := json.Marshal(firewall.FirewallState{Blocked: []firewall.BlockedEntry{{
 		IP: "203.0.113.46", Reason: "CSM auto-block: ssh_brute", Source: firewall.SourceAutoResponse,
 		ActionID: string(row.Attempt.ID), ExpiresAt: row.ExpiresAt,
@@ -172,7 +172,12 @@ func TestAdmissionAppliedReadAndWriteFailures(t *testing.T) {
 	if err = d.consumeAppliedBlocks([]admission.AuditRow{row}); err == nil {
 		t.Fatal("a failed threat write reported consumption")
 	}
-	assertUnchanged()
+	assertNoThreat()
+	// The attack database is its own destination: the block applied, so it
+	// is marked whatever the threat store does.
+	if rec := adb.LookupIP("203.0.113.46"); rec == nil || !rec.AutoBlocked {
+		t.Errorf("a failed threat write held back the attack mark: %+v", rec)
+	}
 }
 
 func TestAdmissionAppliedBlockAddressFamilies(t *testing.T) {

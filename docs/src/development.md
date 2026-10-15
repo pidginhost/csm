@@ -422,11 +422,12 @@ row reaches it. A failed call acknowledges nothing, so its consumers see the
 same row again and must be idempotent by action and transition. Delivery
 errors remain visible in `admission.owner.audit_error` until a pass succeeds;
 the independent audit queue reports a stall if a pending batch cannot advance.
-While the action's verified firewall row still stands, the daemon records a
-threat database row that ends at the block's absolute expiry and marks the
-address blocked in the attack database. One durable transaction per delivery
-batch precedes both memory updates; read or write errors leave delivery
-pending and memory unchanged. Local evidence survives feed withdrawal;
+The daemon marks the address blocked in the attack database, as the legacy
+path marks a block that applied, and, while the action's verified firewall
+row still stands, records a threat database row that ends at the block's
+absolute expiry. One durable transaction per delivery batch precedes threat
+memory publication; read or write errors leave delivery pending and threat
+memory unchanged. Local evidence survives feed withdrawal;
 permanent local evidence and longer temporary rows remain unchanged.
 Local threat writers serialize separately from lookups. The consumer reads
 the firewall state under the threat writer lock, and unblocks and flush
