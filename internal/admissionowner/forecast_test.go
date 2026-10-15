@@ -35,7 +35,7 @@ type forecastView struct {
 	id      string
 	reset   resetReason
 	entries map[string]shadowEntry
-	picks   [predictionEnd]uint64
+	picks   [admission.PredictionSlots]uint64
 	ceiling admission.CeilingState
 }
 
@@ -128,7 +128,7 @@ func TestOwnerEndsDryRunPicksAsForecasts(t *testing.T) {
 		t.Fatalf("dry-run outcomes = %d", n)
 	}
 	fc := forecastOf(t, o)
-	if fc == nil || fc.reset != resetStartup || len(fc.entries) != 2 || fc.picks[predictCapacityAdmit] != 2 || fc.picks[predictSetFull] != 1 {
+	if fc == nil || fc.reset != resetStartup || len(fc.entries) != 2 || fc.picks[admission.PredictCapacityAdmit] != 2 || fc.picks[admission.PredictSetFull] != 1 {
 		t.Fatalf("forecast = %+v", fc)
 	}
 	if fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 2 {
@@ -163,7 +163,7 @@ func TestOwnerForecastStartsFromTheRealCeiling(t *testing.T) {
 	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
 	turn(t, o)
 	fc := forecastOf(t, o)
-	if fc == nil || fc.reset != resetModeChange || fc.picks[predictCeiling] != 1 || len(fc.entries) != 0 || fc.ceiling.General.Used != 1 {
+	if fc == nil || fc.reset != resetModeChange || fc.picks[admission.PredictCeiling] != 1 || len(fc.entries) != 0 || fc.ceiling.General.Used != 1 {
 		t.Fatalf("forecast after a live block = %+v", fc)
 	}
 	mono.advance(15 * time.Minute)
@@ -176,7 +176,7 @@ func TestOwnerForecastStartsFromTheRealCeiling(t *testing.T) {
 	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.13")
 	turn(t, o)
 	fc = forecastOf(t, o)
-	if fc.picks[predictCapacityAdmit] != 1 || fc.picks[predictCeiling] != 2 || len(fc.entries) != 1 || fc.ceiling.General.Used != 2 {
+	if fc.picks[admission.PredictCapacityAdmit] != 1 || fc.picks[admission.PredictCeiling] != 2 || len(fc.entries) != 1 || fc.ceiling.General.Used != 2 {
 		t.Fatalf("forecast = %+v", fc)
 	}
 	if budget := ceiling(t, o).Budget(admission.LaneGeneral); budget != 1 || liveUsed(t, o) != 1 {
@@ -209,7 +209,7 @@ func TestOwnerForecastsExistingAndCoveringBlocks(t *testing.T) {
 	observe(t, o, p, f, "192.0.2.10", "offset=1")
 	turn(t, o)
 	fc := forecastOf(t, o)
-	if fc.picks[predictExistingActual] != 2 || fc.picks[predictCapacityAdmit] != 1 || !fc.entries["192.0.2.10"].expires.Equal(first) {
+	if fc.picks[admission.PredictExistingActual] != 2 || fc.picks[admission.PredictCapacityAdmit] != 1 || !fc.entries["192.0.2.10"].expires.Equal(first) {
 		t.Fatalf("forecast = %+v", fc)
 	}
 	session := fc.id
@@ -227,7 +227,7 @@ func TestOwnerForecastsExistingAndCoveringBlocks(t *testing.T) {
 	observe(t, o, p, f, "192.0.2.10", "offset=3")
 	turn(t, o)
 	fc = forecastOf(t, o)
-	if fc.id != session || fc.picks[predictExistingShadow] != 1 || fc.picks[predictPendingRecovery] != 1 || fc.picks[predictCapacityAdmit] != 1 || !fc.entries["192.0.2.10"].expires.Equal(first) {
+	if fc.id != session || fc.picks[admission.PredictExistingShadow] != 1 || fc.picks[admission.PredictPendingRecovery] != 1 || fc.picks[admission.PredictCapacityAdmit] != 1 || !fc.entries["192.0.2.10"].expires.Equal(first) {
 		t.Fatalf("forecast after repeats = %+v", fc)
 	}
 	if shadows := blocks.shadows[len(blocks.shadows)-1]; len(shadows) != 1 || shadows[0] != "192.0.2.10" {
@@ -240,7 +240,7 @@ func TestOwnerForecastsExistingAndCoveringBlocks(t *testing.T) {
 	}
 	observe(t, o, p, f, "192.0.2.10", "offset=4")
 	turn(t, o)
-	if fc = forecastOf(t, o); fc.picks[predictCapacityAdmit] != 2 || !fc.entries["192.0.2.10"].expires.Equal(f.host.now().Add(48*time.Hour)) {
+	if fc = forecastOf(t, o); fc.picks[admission.PredictCapacityAdmit] != 2 || !fc.entries["192.0.2.10"].expires.Equal(f.host.now().Add(48*time.Hour)) {
 		t.Fatalf("forecast after the lease ended = %+v", fc)
 	}
 }
@@ -272,7 +272,7 @@ func TestOwnerForecastsEveryKindWithoutEffects(t *testing.T) {
 		t.Fatalf("challenge = %+v", c)
 	}
 	fc := forecastOf(t, o)
-	if before != nil || fc == nil || fc.picks[predictNotModelled] != 2 || len(fc.entries) != 0 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 0 {
+	if before != nil || fc == nil || fc.picks[admission.PredictNotModelled] != 2 || len(fc.entries) != 0 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 0 {
 		t.Fatalf("forecast = %+v", fc)
 	}
 	checks, applies := blocks.calls()
@@ -331,7 +331,7 @@ func TestOwnerForecastWaitsForTheEngineAndClock(t *testing.T) {
 			}
 			after := forecastOf(t, o)
 			if fault != "clock" {
-				after.picks[predictNotModelled]--
+				after.picks[admission.PredictNotModelled]--
 			}
 			if !maps.Equal(after.entries, before.entries) || after.picks != before.picks || after.ceiling != before.ceiling {
 				t.Fatalf("forecast changed: before %+v, after %+v", before, after)
@@ -377,12 +377,12 @@ func TestOwnerForecastInstallsOnlyCommittedEndings(t *testing.T) {
 		}
 	}
 	fc := forecastOf(t, o)
-	if len(fc.entries) != 1 || fc.picks[predictCapacityAdmit] != 1 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 1 {
+	if len(fc.entries) != 1 || fc.picks[admission.PredictCapacityAdmit] != 1 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 1 {
 		t.Fatalf("forecast after a failed ending = %+v", fc)
 	}
 	turn(t, o)
 	fc = forecastOf(t, o)
-	if len(queuedCandidates(t, o)) != 0 || len(fc.entries) != 3 || fc.picks[predictCapacityAdmit] != 3 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 3 {
+	if len(queuedCandidates(t, o)) != 0 || len(fc.entries) != 3 || fc.picks[admission.PredictCapacityAdmit] != 3 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 3 {
 		t.Fatalf("forecast after the retry = %+v", fc)
 	}
 	if n := outcomes(ledgerStatus(t, o), admission.DispositionDryRun); n != 3 {
@@ -409,7 +409,7 @@ func TestOwnerRestartStartsANewForecast(t *testing.T) {
 	observe(t, o, p, f, "192.0.2.10", "offset=2")
 	turn(t, o)
 	fc := forecastOf(t, o)
-	if fc.id == old.id || fc.reset != resetStartup || fc.picks[predictCapacityAdmit] != 1 || fc.picks[predictExistingShadow] != 0 || len(fc.entries) != 1 {
+	if fc.id == old.id || fc.reset != resetStartup || fc.picks[admission.PredictCapacityAdmit] != 1 || fc.picks[admission.PredictExistingShadow] != 0 || len(fc.entries) != 1 {
 		t.Fatalf("forecast after a restart = %+v, before %+v", fc, old)
 	}
 	if fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 1 || liveUsed(t, o) != 0 {
@@ -456,7 +456,7 @@ func TestOwnerForecastIgnoresLiveBudgets(t *testing.T) {
 	if n := len(queuedCandidates(t, o)); n != 0 {
 		t.Fatalf("the forecast did not wake for the rest: %d queued", n)
 	}
-	if fc := forecastOf(t, o); fc.picks[predictCeiling] != admission.MaxBatchMembers+1 {
+	if fc := forecastOf(t, o); fc.picks[admission.PredictCeiling] != admission.MaxBatchMembers+1 {
 		t.Fatalf("forecast = %+v", fc)
 	}
 	for _, row := range ledgerStatus(t, o).Counters.Rows {
@@ -483,13 +483,13 @@ func TestOwnerForecastCountsRealBlocksOfForecastAddresses(t *testing.T) {
 	blocks.set(func(b *fakeBlocks) { b.temp, b.liveTemp["192.0.2.10"] = 9, true })
 	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.12")
 	turn(t, o)
-	if fc := forecastOf(t, o); fc.picks[predictCapacityAdmit] != 2 || fc.picks[predictSetFull] != 1 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 2 {
+	if fc := forecastOf(t, o); fc.picks[admission.PredictCapacityAdmit] != 2 || fc.picks[admission.PredictSetFull] != 1 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 2 {
 		t.Fatalf("forecast after a manual timed block = %+v", fc)
 	}
 	blocks.set(func(b *fakeBlocks) { b.livePerm["192.0.2.11"] = true })
 	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.13")
 	turn(t, o)
-	if fc := forecastOf(t, o); fc.picks[predictCapacityAdmit] != 3 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 3 {
+	if fc := forecastOf(t, o); fc.picks[admission.PredictCapacityAdmit] != 3 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 3 {
 		t.Fatalf("forecast after a manual untimed block = %+v", fc)
 	}
 }
@@ -524,7 +524,7 @@ func TestOwnerForecastAsksThePanel(t *testing.T) {
 			if c := candidate(t, o, id); c.State != admission.StateQueued || c.Reason != 0 || c.Attempts != 0 {
 				t.Fatalf("asked pick = %+v", c)
 			}
-			if fc := forecastOf(t, o); len(fc.entries) != 0 || fc.picks != ([predictionEnd]uint64{}) {
+			if fc := forecastOf(t, o); len(fc.entries) != 0 || fc.picks != ([admission.PredictionSlots]uint64{}) {
 				t.Fatalf("a pending pick changed the forecast: %+v", fc)
 			}
 			readyAnswers(t, o, 1)
@@ -532,7 +532,7 @@ func TestOwnerForecastAsksThePanel(t *testing.T) {
 			if c := candidate(t, o, id); c.State != admission.StateDryRun || c.Attempts != 0 {
 				t.Fatalf("answered pick = %+v", c)
 			}
-			if fc := forecastOf(t, o); fc.picks[predictCapacityAdmit] != 1 || len(fc.entries) != 1 {
+			if fc := forecastOf(t, o); fc.picks[admission.PredictCapacityAdmit] != 1 || len(fc.entries) != 1 {
 				t.Fatalf("forecast = %+v", fc)
 			}
 			if s := verdictState(t, o); s.Asked != 1 || s.Ready != 0 || s.Pending != 0 {
@@ -576,12 +576,12 @@ func TestOwnerForecastEndsPanelAllowsFirst(t *testing.T) {
 				t.Fatalf("allowed pick = %+v", c)
 			}
 			fc := forecastOf(t, o)
-			want := [predictionEnd]uint64{}
-			want[predictCapacityAdmit], want[predictSetFull] = 1, 1
+			want := [admission.PredictionSlots]uint64{}
+			want[admission.PredictCapacityAdmit], want[admission.PredictSetFull] = 1, 1
 			if temp == 10 {
-				want[predictCapacityAdmit], want[predictSetFull] = 0, 2
+				want[admission.PredictCapacityAdmit], want[admission.PredictSetFull] = 0, 2
 			}
-			if fc.picks != want || uint64(len(fc.entries)) != want[predictCapacityAdmit] || uint64(fc.ceiling.General.Used+fc.ceiling.Reserved.Used) != want[predictCapacityAdmit] {
+			if fc.picks != want || uint64(len(fc.entries)) != want[admission.PredictCapacityAdmit] || uint64(fc.ceiling.General.Used+fc.ceiling.Reserved.Used) != want[admission.PredictCapacityAdmit] {
 				t.Fatalf("forecast = %+v, want picks %v", fc, want)
 			}
 			if s := verdictState(t, o); s.AllowEndings != 1 || s.Asked != 3 || s.Ready != 0 {
@@ -626,13 +626,13 @@ func TestOwnerForecastPendingPicksTakeNoSlot(t *testing.T) {
 	if c := candidate(t, o, waiting); c.State != admission.StateQueued || c.Reason != 0 {
 		t.Fatalf("pending pick = %+v", c)
 	}
-	if fc := forecastOf(t, o); fc.picks[predictCapacityAdmit] != 2 || fc.picks[predictSetFull] != 0 {
+	if fc := forecastOf(t, o); fc.picks[admission.PredictCapacityAdmit] != 2 || fc.picks[admission.PredictSetFull] != 0 {
 		t.Fatalf("forecast = %+v", fc)
 	}
 	close(gate)
 	readyAnswers(t, o, 1)
 	turn(t, o)
-	if fc := forecastOf(t, o); fc.picks[predictSetFull] != 1 || len(queuedCandidates(t, o)) != 0 {
+	if fc := forecastOf(t, o); fc.picks[admission.PredictSetFull] != 1 || len(queuedCandidates(t, o)) != 0 {
 		t.Fatalf("forecast after the answer = %+v", fc)
 	}
 }
@@ -661,7 +661,7 @@ func TestOwnerForecastAsksNothingItNeedNotAsk(t *testing.T) {
 	turn(t, o)
 	fc := forecastOf(t, o)
 	// The repeat asks a day from a second later: the forecast block holds it.
-	if fc.picks[predictCapacityAdmit] != 1 || fc.picks[predictPendingRecovery] != 1 || fc.picks[predictExistingActual] != 1 || fc.picks[predictNotModelled] != 1 || fc.picks[predictSetFull] != 1 {
+	if fc.picks[admission.PredictCapacityAdmit] != 1 || fc.picks[admission.PredictPendingRecovery] != 1 || fc.picks[admission.PredictExistingActual] != 1 || fc.picks[admission.PredictNotModelled] != 1 || fc.picks[admission.PredictSetFull] != 1 {
 		t.Fatalf("forecast = %+v", fc)
 	}
 	if asked, _, _, _ := panel.state(); len(asked) != 1 || len(queuedCandidates(t, o)) != 0 {
@@ -741,7 +741,7 @@ func TestOwnerFinishesLiveWorkAfterAFlipToDryRun(t *testing.T) {
 		t.Fatalf("%d applies, live used %d after the flip", len(applies), liveUsed(t, o))
 	}
 	fc := forecastOf(t, o)
-	if fc.reset != resetModeChange || fc.picks[predictCapacityAdmit] != 1 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 3 {
+	if fc.reset != resetModeChange || fc.picks[admission.PredictCapacityAdmit] != 1 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 3 {
 		t.Fatalf("forecast = %+v", fc)
 	}
 	c := candidate(t, o, unknown)
@@ -869,7 +869,7 @@ func TestOwnerForecastSurvivesARefusal(t *testing.T) {
 	r.publish(dryPolicy(2))
 	turn(t, o)
 	fc := forecastOf(t, o)
-	if fc.id != before.id || len(fc.entries) != 2 || fc.picks[predictCapacityAdmit] != 2 {
+	if fc.id != before.id || len(fc.entries) != 2 || fc.picks[admission.PredictCapacityAdmit] != 2 {
 		t.Fatalf("forecast after the refusal = %+v, before %+v", fc, before)
 	}
 	r.publish(validPolicy(3))
@@ -906,7 +906,7 @@ func TestOwnerForecastOrdersAllowsBetweenRealAndForecastBlocks(t *testing.T) {
 		t.Fatalf("allowed pick under a real block = %+v", c)
 	}
 	fc := forecastOf(t, o)
-	if fc.picks[predictExistingActual] != 1 || fc.picks[predictExistingShadow]+fc.picks[predictPendingRecovery] != 0 || verdictState(t, o).AllowEndings != 1 {
+	if fc.picks[admission.PredictExistingActual] != 1 || fc.picks[admission.PredictExistingShadow]+fc.picks[admission.PredictPendingRecovery] != 0 || verdictState(t, o).AllowEndings != 1 {
 		t.Fatalf("forecast = %+v", fc)
 	}
 }

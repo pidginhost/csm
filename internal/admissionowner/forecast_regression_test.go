@@ -197,12 +197,12 @@ func TestOwnerForecastIgnoresAnUnchangedEnding(t *testing.T) {
 	})
 	turn(t, o)
 	before := forecastOf(t, o)
-	if before.picks[predictCapacityAdmit] != 2 || len(before.entries) != 2 || change == nil {
+	if before.picks[admission.PredictCapacityAdmit] != 2 || len(before.entries) != 2 || change == nil {
 		t.Fatalf("fixture: forecast = %+v, change = %+v", before, change)
 	}
 	// Restore the real ending so the replay keeps its captured delta.
 	setOwnerHook(t, o, &endDryRunLedger, end)
-	if err := o.do(func() error { return o.endForecast(first, predictCapacityAdmit, change) }); err != nil {
+	if err := o.do(func() error { return o.endForecast(first, admission.PredictCapacityAdmit, change) }); err != nil {
 		t.Fatal(err)
 	}
 	after := forecastOf(t, o)

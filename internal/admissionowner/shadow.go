@@ -3,7 +3,6 @@ package admissionowner
 import (
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"maps"
 	"slices"
@@ -13,43 +12,6 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/firewall"
 )
-
-// prediction is what a dry-run forecast says live admission would have done
-// with a pick. It is not a terminal reason: every forecast pick ends as a
-// dry run, and the prediction only counts.
-type prediction uint8
-
-const (
-	// predictCapacityAdmit: the pick passes the modelled ceiling and
-	// temporary-capacity checks. It is not proof a block would apply.
-	predictCapacityAdmit prediction = iota + 1
-	// predictExistingActual: a real proven block already covers it.
-	predictExistingActual
-	// predictExistingShadow: this session already forecast a covering block.
-	predictExistingShadow
-	// predictCeiling: it would wait for modelled usage or paced credit.
-	predictCeiling
-	// predictSetFull: it would wait for real-plus-forecast temporary room.
-	predictSetFull
-	// predictPendingRecovery: a shorter forecast block holds the address.
-	predictPendingRecovery
-	// predictForecastLimited: the forecast models no more active blocks.
-	predictForecastLimited
-	// predictNotModelled: the kind has no capacity model.
-	predictNotModelled
-	predictionEnd
-)
-
-var predictionNames = [...]string{"", "capacity_admit", "existing_actual", "existing_shadow", "ceiling", "set_full", "pending_recovery", "forecast_limited", "not_modelled"}
-
-func (p prediction) Valid() bool { return p >= predictCapacityAdmit && p < predictionEnd }
-
-func (p prediction) String() string {
-	if p.Valid() {
-		return predictionNames[p]
-	}
-	return fmt.Sprintf("prediction(%d)", uint8(p))
-}
 
 // forecastEntries bounds the active blocks one forecast models. It is a
 // modelling bound, never a real set limit.
@@ -111,7 +73,7 @@ type shadow struct {
 	// leave the window, at most MaxCeiling.
 	charges []admission.Charge
 	entries map[string]shadowEntry
-	picks   [predictionEnd]uint64
+	picks   [admission.PredictionSlots]uint64
 	recent  minuteCounts
 }
 
@@ -181,15 +143,15 @@ func (s *shadow) ips() []string { return slices.Sorted(maps.Keys(s.entries)) }
 // covering says how a forecast block holds ip for a pick lasting until
 // expires: one that lasts at least as long answers it, a shorter one holds
 // the address as live work would wait for it. Zero when none holds it.
-func (s *shadow) covering(ip string, expires time.Time) prediction {
+func (s *shadow) covering(ip string, expires time.Time) admission.Prediction {
 	e, ok := s.entries[ip]
 	switch {
 	case !ok:
 		return 0
 	case e.expires.Before(expires):
-		return predictPendingRecovery
+		return admission.PredictPendingRecovery
 	}
-	return predictExistingShadow
+	return admission.PredictExistingShadow
 }
 
 // occupancy is the predicted temporary occupancy: the real one, plus the
@@ -213,14 +175,14 @@ func (s *shadow) limited() bool { return len(s.entries) >= forecastEntries }
 // the modelling bound, then the ceiling on each of lanes in order, the
 // selected lane first. Only a capacity admission returns a change; nothing
 // is installed until commit. Kinds outside the address model take no capacity.
-func (s *shadow) admit(ip string, kind admission.Kind, expires time.Time, lanes []admission.Lane, now time.Time, adm firewall.BlockAdmission) (prediction, *shadowChange, error) {
+func (s *shadow) admit(ip string, kind admission.Kind, expires time.Time, lanes []admission.Lane, now time.Time, adm firewall.BlockAdmission) (admission.Prediction, *shadowChange, error) {
 	switch {
 	case kind != admission.KindBlockIP:
-		return predictNotModelled, nil, nil
+		return admission.PredictNotModelled, nil, nil
 	case s.full(adm):
-		return predictSetFull, nil, nil
+		return admission.PredictSetFull, nil, nil
 	case s.limited():
-		return predictForecastLimited, nil, nil
+		return admission.PredictForecastLimited, nil, nil
 	}
 	cost := kind.CeilingCost()
 	for _, lane := range lanes {
@@ -231,17 +193,17 @@ func (s *shadow) admit(ip string, kind admission.Kind, expires time.Time, lanes 
 		if err != nil {
 			return 0, nil, err
 		}
-		return predictCapacityAdmit, &shadowChange{
+		return admission.PredictCapacityAdmit, &shadowChange{
 			ip: ip, entry: shadowEntry{kind: kind, expires: expires}, next: next,
 			charge: admission.Charge{At: now, Lane: lane, Cost: cost, Elapsed: s.ceiling.Elapsed},
 		}, nil
 	}
-	return predictCeiling, nil, nil
+	return admission.PredictCeiling, nil, nil
 }
 
 // commit installs a decision whose ending committed, and counts it at the
 // process's monotonic time mono.
-func (s *shadow) commit(p prediction, change *shadowChange, mono time.Time) {
+func (s *shadow) commit(p admission.Prediction, change *shadowChange, mono time.Time) {
 	if change != nil {
 		s.ceiling = change.next
 		// Imported legacy spend can be dated at the end of the current
@@ -267,14 +229,14 @@ type minuteCounts struct {
 type minuteBucket struct {
 	set    bool
 	minute int64
-	counts [predictionEnd]uint64
+	counts [admission.PredictionSlots]uint64
 }
 
 func (m *minuteCounts) minute(mono time.Time) int64 {
 	return int64(max(mono.Sub(m.base), 0) / time.Minute)
 }
 
-func (m *minuteCounts) add(mono time.Time, p prediction) {
+func (m *minuteCounts) add(mono time.Time, p admission.Prediction) {
 	if m.base.IsZero() {
 		m.base = mono
 	}
@@ -289,8 +251,8 @@ func (m *minuteCounts) add(mono time.Time, p prediction) {
 }
 
 // total sums the sixty minutes up to and including mono's.
-func (m *minuteCounts) total(mono time.Time) [predictionEnd]uint64 {
-	var out [predictionEnd]uint64
+func (m *minuteCounts) total(mono time.Time) [admission.PredictionSlots]uint64 {
+	var out [admission.PredictionSlots]uint64
 	if m.base.IsZero() {
 		return out
 	}

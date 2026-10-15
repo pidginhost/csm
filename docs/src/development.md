@@ -798,7 +798,10 @@ ends it without a call. Other firewall kinds end as `not_modelled`, with no
 call; a challenge keeps its comparison preview. Without an engine or
 snapshot, or with a degraded clock, picks wait as `engine_unavailable` and
 the forecast does not change. A decision is installed only once its ending
-commits. A forecast neither probes nor repairs the engine: a hold from live
+commits, and only then counted in the hourly comparison summaries as a
+`dry_run` decision with its prediction, a field apart from the refusal
+reason. The prediction names live in the admission package, which the
+finding stream tool reads too. A forecast neither probes nor repairs the engine: a hold from live
 work stays in `execution_held` until the next live turn. A live policy ends
 the session and never replays a dry-run ending; a later observation of the
 target is a new generation.

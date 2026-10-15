@@ -78,7 +78,7 @@ func (o *Owner) forecast() error {
 			// A degraded clock freezes every prediction.
 			err = o.endPick(pick, admission.ReasonEngineUnavailable)
 		default:
-			err = o.endForecast(pick, predictNotModelled, nil)
+			err = o.endForecast(pick, admission.PredictNotModelled, nil)
 		}
 		if err != nil {
 			return err
@@ -134,7 +134,7 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 		pred := o.shadow.covering(m.IP, m.ExpiresAt)
 		switch {
 		case check.Refusal == firewall.BlockRefusedExisting:
-			pred = predictExistingActual
+			pred = admission.PredictExistingActual
 		case answered && r.Answer == answerAllow:
 			if err = o.endAllowed(p, r); err != nil {
 				return err
@@ -143,7 +143,7 @@ func (o *Owner) forecastBlocks(picks []execPick) error {
 		case pred != 0:
 			// A forecast block holds the address: nothing to ask.
 		case o.shadow.full(adm):
-			pred = predictSetFull
+			pred = admission.PredictSetFull
 		case o.policy.VerdictEnabled && !answered:
 			o.askVerdict(p.pick.ID, p.c, m.IP, m.Reason)
 			continue
@@ -173,11 +173,11 @@ func lanesOf(p admission.Pick) []admission.Lane {
 }
 
 // endForecast ends p as a dry run with its prediction and installs the
-// decision in the forecast once the ending commits, so a retried ending
-// never counts or charges twice (spec 3.5). A refusal the ending meets
-// defers or ends p as a reservation would. A failed write stops the turn
-// and leaves the forecast as it was.
-func (o *Owner) endForecast(p execPick, pred prediction, change *shadowChange) error {
+// decision in the forecast and the comparison once the ending commits, so
+// a retried ending never counts or charges twice (spec 3.5). A refusal the
+// ending meets defers or ends p as a reservation would. A failed write
+// stops the turn and leaves the forecast as it was.
+func (o *Owner) endForecast(p execPick, pred admission.Prediction, change *shadowChange) error {
 	_, changed, err := endDryRunLedger(o.ledger, p.pick.ID)
 	if reason, refused := admission.ReasonOf(err); refused {
 		return o.endPick(p, reason)
@@ -190,6 +190,8 @@ func (o *Owner) endForecast(p execPick, pred prediction, change *shadowChange) e
 	case changed:
 		delete(o.verdicts.ready, p.pick.ID)
 		o.shadow.commit(pred, change, monoNow())
+		c := p.c
+		o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionDryRun, prediction: pred}, o.now)
 	}
 	return nil
 }

@@ -11,23 +11,26 @@ import (
 )
 
 // Decisions the comparison counts. A preview is the decision a live
-// attempt would have been executed on.
+// attempt would have been executed on; a dry run is a forecast ending,
+// counted with its prediction.
 const (
 	decisionRefused   = "refused"
 	decisionQueued    = "queued"
 	decisionCoalesced = "coalesced"
 	decisionObserve   = "observe"
+	decisionDryRun    = "dry_run"
 )
 
 // maxUnwrittenRows bounds history while the action log cannot be written.
 const maxUnwrittenRows = 4096
 
 type compareKey struct {
-	entry    admission.Entry
-	check    string
-	kind     admission.Kind
-	decision string
-	reason   admission.Reason
+	entry      admission.Entry
+	check      string
+	kind       admission.Kind
+	decision   string
+	reason     admission.Reason
+	prediction admission.Prediction
 }
 
 // Funnels count without waiting on the owner. The fixed check vocabulary
@@ -95,6 +98,9 @@ func (c *comparison) closeHour() {
 		}
 		if k.reason != 0 {
 			r.Error = k.reason.String()
+		}
+		if k.prediction != 0 {
+			r.Prediction = k.prediction.String()
 		}
 		c.next++
 		c.unwritten = append(c.unwritten, comparisonRow{Record: r, sequence: c.next})

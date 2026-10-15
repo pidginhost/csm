@@ -164,9 +164,9 @@ scrubbed:
   unknown outcome (`expired_unproven`). An audit row's target maps like a
   firewall target, so it joins the legacy row for the same address, and its
   reason category names the lane. An hourly summary, which sets `count`,
-  keeps its check, entry, decision, refusal reason and count and names no
-  target; a check that matches a learned account, host or domain refuses the
-  run.
+  keeps its check, entry, decision, refusal reason, dry-run prediction and
+  count and names no target; a check that matches a learned account, host or
+  domain refuses the run.
 - An operation, action, actor, result or source the tool has not been
   reviewed against refuses the run instead of passing through.
 

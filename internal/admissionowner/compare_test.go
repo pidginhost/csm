@@ -3,6 +3,7 @@ package admissionowner
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"sync"
@@ -434,5 +435,53 @@ func TestDecisionCountsKeepTheAdmissionHourFloor(t *testing.T) {
 	rows, _ = c.take(at.Add(-time.Hour), true)
 	if len(rows) != 1 || rows[0].Timestamp != at.Add(time.Hour) || rows[0].Count != 1 {
 		t.Fatalf("a final flush rewound the summary clock: %+v", rows)
+	}
+}
+
+// Spec 3.5: a dry run counts each committed forecast ending as a dry_run
+// decision with its prediction, a fixed field apart from the refusal
+// reason, so set_full never reads as a terminal reason. A pick waiting for
+// the engine is not counted until it ends.
+func TestOwnerCountsDryRunEndingsByPrediction(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	comparisonClock(t, f.host.now)
+	blocks := newFakeBlocks()
+	blocks.temp, blocks.limit = 8, 10
+	sink := &actionSink{}
+	opts := executeOptions(f, blocks)
+	opts.WriteAudit = sink.write
+	opts.Policy = (&policyReader{p: dryPolicy(1)}).read
+	o := f.start(opts)
+	heldMono(t, o)
+	for _, addr := range []string{"192.0.2.10", "192.0.2.11", "192.0.2.12"} {
+		queuedAt(t, o, p, f.host, admission.SeverityHigh, addr)
+	}
+	queuedKind(t, o, p, f.host, admission.SeverityHigh, "192.0.2.13", admission.KindPromote)
+	turn(t, o)
+	f.host.advance(time.Hour)
+	if err := o.do(o.tick); err != nil {
+		t.Fatal(err)
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	got := map[string]uint64{}
+	for _, r := range sink.recs {
+		if r.Result != "dry_run" {
+			continue
+		}
+		if r.Error != "" || r.Count == 0 || r.Target != "" {
+			t.Fatalf("malformed dry-run row %+v", r)
+		}
+		got[r.Action+" "+r.Prediction] += r.Count
+	}
+	want := map[string]uint64{"block_ip capacity_admit": 2, "block_ip set_full": 1, "promote not_modelled": 1}
+	if !maps.Equal(got, want) {
+		t.Fatalf("dry-run rows = %v, want %v", got, want)
+	}
+	for _, r := range sink.recs {
+		if r.Result != "dry_run" && r.Prediction != "" {
+			t.Fatalf("a %s row names a prediction: %+v", r.Result, r)
+		}
 	}
 }

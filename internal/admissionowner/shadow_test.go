@@ -41,7 +41,7 @@ var (
 )
 
 // admitNow decides and commits one pick, returning its prediction.
-func admitNow(t *testing.T, s *shadow, ip string, lanes []admission.Lane, now time.Time, adm firewall.BlockAdmission) prediction {
+func admitNow(t *testing.T, s *shadow, ip string, lanes []admission.Lane, now time.Time, adm firewall.BlockAdmission) admission.Prediction {
 	t.Helper()
 	p, change, err := s.admit(ip, admission.KindBlockIP, now.Add(time.Hour), lanes, now, adm)
 	if err != nil {
@@ -65,14 +65,14 @@ func TestShadowStartsFromTheRealCeiling(t *testing.T) {
 	}
 	charges := []admission.Charge{{At: shadowT0.Add(-time.Minute), Lane: admission.LaneGeneral, Cost: 1}}
 	s := testShadow(t, real, charges)
-	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != predictCeiling {
+	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != admission.PredictCeiling {
 		t.Fatalf("spent real credit = %s, want ceiling", p)
 	}
 	// G=8 refills a unit every 7.5 minutes of running time.
 	if err = tickBy(s, shadowT0.Add(7*time.Minute+30*time.Second), 7*time.Minute+30*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0.Add(7*time.Minute+30*time.Second), room); p != predictCapacityAdmit {
+	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0.Add(7*time.Minute+30*time.Second), room); p != admission.PredictCapacityAdmit {
 		t.Fatalf("after refill = %s", p)
 	}
 	if real.General.Used != 1 || s.ceiling.General.Used != 2 || len(s.charges) != 2 {
@@ -98,10 +98,10 @@ func TestShadowStartsFromTheRealCeiling(t *testing.T) {
 // never borrows.
 func TestShadowPacesTheCeiling(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 5), nil)
-	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != predictCapacityAdmit {
+	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != admission.PredictCapacityAdmit {
 		t.Fatalf("first = %s", p)
 	}
-	if p := admitNow(t, s, "203.0.113.2", generalOnly, shadowT0, room); p != predictCeiling {
+	if p := admitNow(t, s, "203.0.113.2", generalOnly, shadowT0, room); p != admission.PredictCeiling {
 		t.Fatalf("second at once = %s, want ceiling", p)
 	}
 	at := shadowT0
@@ -110,14 +110,14 @@ func TestShadowPacesTheCeiling(t *testing.T) {
 		if err := tickBy(s, at, 15*time.Minute); err != nil {
 			t.Fatal(err)
 		}
-		if p := admitNow(t, s, fmt.Sprintf("203.0.113.%d", i), generalOnly, at, room); p != predictCapacityAdmit {
+		if p := admitNow(t, s, fmt.Sprintf("203.0.113.%d", i), generalOnly, at, room); p != admission.PredictCapacityAdmit {
 			t.Fatalf("pick at %v = %s", at.Sub(shadowT0), p)
 		}
 	}
-	if p := admitNow(t, s, "203.0.113.9", generalOnly, at, room); p != predictCeiling {
+	if p := admitNow(t, s, "203.0.113.9", generalOnly, at, room); p != admission.PredictCeiling {
 		t.Fatalf("fifth general pick = %s, want ceiling", p)
 	}
-	if p := admitNow(t, s, "203.0.113.10", directGen, at, room); p != predictCapacityAdmit {
+	if p := admitNow(t, s, "203.0.113.10", directGen, at, room); p != admission.PredictCapacityAdmit {
 		t.Fatalf("eligible pick = %s", p)
 	}
 	if last := s.charges[len(s.charges)-1]; last.Lane != admission.LaneDirect || s.ceiling.Reserved.Used != 1 || s.ceiling.General.Used != 4 {
@@ -128,11 +128,11 @@ func TestShadowPacesTheCeiling(t *testing.T) {
 // With L=1 only the reserved lane exists.
 func TestShadowReservedOnlyCeiling(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 1), nil)
-	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != predictCeiling {
+	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != admission.PredictCeiling {
 		t.Fatalf("general-only = %s", p)
 	}
 	reserved := []admission.Lane{admission.LaneCorroborated, admission.LaneGeneral}
-	if p := admitNow(t, s, "203.0.113.2", reserved, shadowT0, room); p != predictCapacityAdmit || s.charges[0].Lane != admission.LaneCorroborated {
+	if p := admitNow(t, s, "203.0.113.2", reserved, shadowT0, room); p != admission.PredictCapacityAdmit || s.charges[0].Lane != admission.LaneCorroborated {
 		t.Fatalf("corroborated = %s, charges %+v", p, s.charges)
 	}
 }
@@ -144,12 +144,12 @@ func TestShadowFillsTheTemporarySet(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 2000), nil)
 	adm := firewall.BlockAdmission{Temporary: 8, Limit: 10}
 	for i, ip := range []string{"203.0.113.1", "2001:db8::1"} {
-		if p := admitNow(t, s, ip, generalOnly, shadowT0, adm); p != predictCapacityAdmit {
+		if p := admitNow(t, s, ip, generalOnly, shadowT0, adm); p != admission.PredictCapacityAdmit {
 			t.Fatalf("pick %d = %s", i, p)
 		}
 	}
 	used := s.ceiling
-	if p := admitNow(t, s, "203.0.113.3", generalOnly, shadowT0, adm); p != predictSetFull {
+	if p := admitNow(t, s, "203.0.113.3", generalOnly, shadowT0, adm); p != admission.PredictSetFull {
 		t.Fatalf("third = %s, want set_full", p)
 	}
 	if s.ceiling != used || !s.full(adm) || len(s.entries) != 2 {
@@ -169,17 +169,17 @@ func TestShadowFillsTheTemporarySet(t *testing.T) {
 // holds the address. A repeat never renews or extends the entry.
 func TestShadowCoversRepeats(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 2000), nil)
-	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != predictCapacityAdmit {
+	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != admission.PredictCapacityAdmit {
 		t.Fatalf("first = %s", p)
 	}
 	entry := s.entries["203.0.113.1"]
 	for _, tc := range []struct {
 		expires time.Time
-		want    prediction
+		want    admission.Prediction
 	}{
-		{shadowExpiry, predictExistingShadow},
-		{shadowExpiry.Add(-time.Minute), predictExistingShadow},
-		{shadowExpiry.Add(time.Nanosecond), predictPendingRecovery},
+		{shadowExpiry, admission.PredictExistingShadow},
+		{shadowExpiry.Add(-time.Minute), admission.PredictExistingShadow},
+		{shadowExpiry.Add(time.Nanosecond), admission.PredictPendingRecovery},
 	} {
 		if got := s.covering("203.0.113.1", tc.expires); got != tc.want {
 			t.Errorf("expiry %v = %s, want %s", tc.expires.Sub(shadowExpiry), got, tc.want)
@@ -200,7 +200,7 @@ func TestShadowCoversRepeats(t *testing.T) {
 // charges until they age out.
 func TestShadowClocks(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 10), nil)
-	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != predictCapacityAdmit {
+	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != admission.PredictCapacityAdmit {
 		t.Fatalf("admit = %s", p)
 	}
 	s.expire(shadowExpiry.Add(-time.Nanosecond))
@@ -253,14 +253,14 @@ func TestShadowForecastBound(t *testing.T) {
 		}
 		adm := firewall.BlockAdmission{Limit: limit}
 		used := s.ceiling
-		if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, adm); p != predictForecastLimited {
+		if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, adm); p != admission.PredictForecastLimited {
 			t.Fatalf("limit %d: next unique = %s", limit, p)
 		}
 		if s.ceiling != used || len(s.entries) != forecastEntries || !s.limited() {
 			t.Fatal("a limited forecast consumed something")
 		}
 		s.expire(shadowExpiry)
-		if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, adm); p != predictCapacityAdmit {
+		if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, adm); p != admission.PredictCapacityAdmit {
 			t.Fatalf("limit %d: after an expiry = %s", limit, p)
 		}
 	}
@@ -272,19 +272,19 @@ func TestShadowForecastBound(t *testing.T) {
 func TestShadowDecisionsAreSpeculative(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 5), nil)
 	p, change, err := s.admit("203.0.113.1", admission.KindBlockIP, shadowExpiry, generalOnly, shadowT0, room)
-	if err != nil || p != predictCapacityAdmit || change == nil {
+	if err != nil || p != admission.PredictCapacityAdmit || change == nil {
 		t.Fatalf("decision = %s %+v %v", p, change, err)
 	}
 	again, _, err := s.admit("203.0.113.2", admission.KindBlockIP, shadowExpiry, generalOnly, shadowT0, room)
-	if err != nil || again != predictCapacityAdmit || len(s.entries) != 0 || len(s.charges) != 0 || s.picks[predictCapacityAdmit] != 0 {
+	if err != nil || again != admission.PredictCapacityAdmit || len(s.entries) != 0 || len(s.charges) != 0 || s.picks[admission.PredictCapacityAdmit] != 0 {
 		t.Fatalf("an uncommitted decision changed the shadow: %s %v", again, err)
 	}
 	s.commit(p, change, shadowT0)
-	if after, _, _ := s.admit("203.0.113.2", admission.KindBlockIP, shadowExpiry, generalOnly, shadowT0, room); after != predictCeiling {
+	if after, _, _ := s.admit("203.0.113.2", admission.KindBlockIP, shadowExpiry, generalOnly, shadowT0, room); after != admission.PredictCeiling {
 		t.Fatalf("after the commit = %s", after)
 	}
-	s.commit(predictSetFull, nil, shadowT0)
-	if s.picks[predictCapacityAdmit] != 1 || s.picks[predictSetFull] != 1 || len(s.entries) != 1 {
+	s.commit(admission.PredictSetFull, nil, shadowT0)
+	if s.picks[admission.PredictCapacityAdmit] != 1 || s.picks[admission.PredictSetFull] != 1 || len(s.entries) != 1 {
 		t.Fatalf("counters %v, %d entries", s.picks, len(s.entries))
 	}
 }
@@ -294,41 +294,21 @@ func TestShadowDecisionsAreSpeculative(t *testing.T) {
 func TestShadowCountsPredictions(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 5), nil)
 	mono := time.Unix(0, 0)
-	s.commit(predictCeiling, nil, mono)
-	s.commit(predictCeiling, nil, mono.Add(59*time.Minute))
-	if got := s.recent.total(mono.Add(59 * time.Minute)); got[predictCeiling] != 2 {
+	s.commit(admission.PredictCeiling, nil, mono)
+	s.commit(admission.PredictCeiling, nil, mono.Add(59*time.Minute))
+	if got := s.recent.total(mono.Add(59 * time.Minute)); got[admission.PredictCeiling] != 2 {
 		t.Fatalf("last hour = %v", got)
 	}
-	if got := s.recent.total(mono.Add(60 * time.Minute)); got[predictCeiling] != 1 {
+	if got := s.recent.total(mono.Add(60 * time.Minute)); got[admission.PredictCeiling] != 1 {
 		t.Fatalf("an hour later = %v", got)
 	}
-	if got := s.recent.total(mono.Add(200 * time.Minute)); got[predictCeiling] != 0 {
+	if got := s.recent.total(mono.Add(200 * time.Minute)); got[admission.PredictCeiling] != 0 {
 		t.Fatalf("much later = %v", got)
 	}
-	s.picks[predictSetFull] = ^uint64(0)
-	s.commit(predictSetFull, nil, mono)
-	if s.picks[predictSetFull] != ^uint64(0) || s.picks[predictCeiling] != 2 {
+	s.picks[admission.PredictSetFull] = ^uint64(0)
+	s.commit(admission.PredictSetFull, nil, mono)
+	if s.picks[admission.PredictSetFull] != ^uint64(0) || s.picks[admission.PredictCeiling] != 2 {
 		t.Fatalf("counters = %v", s.picks)
-	}
-}
-
-// Every prediction has a fixed, distinct name.
-func TestPredictionNames(t *testing.T) {
-	want := map[prediction]string{
-		predictCapacityAdmit: "capacity_admit", predictExistingActual: "existing_actual", predictExistingShadow: "existing_shadow",
-		predictCeiling: "ceiling", predictSetFull: "set_full", predictPendingRecovery: "pending_recovery",
-		predictForecastLimited: "forecast_limited", predictNotModelled: "not_modelled",
-	}
-	if len(want) != int(predictionEnd)-1 {
-		t.Fatalf("%d names for %d predictions", len(want), predictionEnd-1)
-	}
-	for p, name := range want {
-		if got := p.String(); got != name || !p.Valid() {
-			t.Errorf("prediction %d = %q, want %q", p, got, name)
-		}
-	}
-	if prediction(0).Valid() || predictionEnd.Valid() {
-		t.Fatal("an out-of-range prediction is valid")
 	}
 }
 
@@ -350,16 +330,16 @@ func TestShadowSessionID(t *testing.T) {
 // bound, then the ceiling.
 func TestShadowLimitPrecedence(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 5), nil)
-	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != predictCapacityAdmit {
+	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != admission.PredictCapacityAdmit {
 		t.Fatalf("spending the credit = %s", p)
 	}
 	for i := len(s.entries); i < forecastEntries; i++ {
 		s.entries[fmt.Sprintf("2001:db8::%x", i+1)] = shadowEntry{kind: admission.KindBlockIP, expires: shadowExpiry}
 	}
-	if p := admitNow(t, s, "203.0.113.2", generalOnly, shadowT0, firewall.BlockAdmission{Limit: forecastEntries}); p != predictSetFull {
+	if p := admitNow(t, s, "203.0.113.2", generalOnly, shadowT0, firewall.BlockAdmission{Limit: forecastEntries}); p != admission.PredictSetFull {
 		t.Fatalf("full, limited and spent = %s, want set_full", p)
 	}
-	if p := admitNow(t, s, "203.0.113.2", generalOnly, shadowT0, room); p != predictForecastLimited {
+	if p := admitNow(t, s, "203.0.113.2", generalOnly, shadowT0, room); p != admission.PredictForecastLimited {
 		t.Fatalf("limited and spent = %s, want forecast_limited", p)
 	}
 }
@@ -372,7 +352,7 @@ func TestShadowSimulatedChargesAge(t *testing.T) {
 	if err := tickBy(s, at, 30*time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if p := admitNow(t, s, "203.0.113.1", generalOnly, at, room); p != predictCapacityAdmit {
+	if p := admitNow(t, s, "203.0.113.1", generalOnly, at, room); p != admission.PredictCapacityAdmit {
 		t.Fatalf("admit = %s", p)
 	}
 	if err := tickBy(s, at.Add(59*time.Minute), 59*time.Minute); err != nil {
@@ -394,9 +374,9 @@ func TestShadowSimulatedChargesAge(t *testing.T) {
 func TestShadowReusesMinuteBuckets(t *testing.T) {
 	s := testShadow(t, freshCeiling(t, 5), nil)
 	mono := time.Unix(0, 0)
-	s.commit(predictCeiling, nil, mono)
-	s.commit(predictCeiling, nil, mono.Add(time.Hour))
-	if got := s.recent.total(mono.Add(time.Hour)); got[predictCeiling] != 1 {
+	s.commit(admission.PredictCeiling, nil, mono)
+	s.commit(admission.PredictCeiling, nil, mono.Add(time.Hour))
+	if got := s.recent.total(mono.Add(time.Hour)); got[admission.PredictCeiling] != 1 {
 		t.Fatalf("last hour = %v", got)
 	}
 }
@@ -417,7 +397,7 @@ func TestShadowSimulatedChargesNeedBothClocks(t *testing.T) {
 		if err := tickBy(s, at, 30*time.Minute); err != nil {
 			t.Fatal(err)
 		}
-		if p := admitNow(t, s, "203.0.113.1", generalOnly, at, room); p != predictCapacityAdmit {
+		if p := admitNow(t, s, "203.0.113.1", generalOnly, at, room); p != admission.PredictCapacityAdmit {
 			t.Fatalf("admit = %s", p)
 		}
 		if err := tickBy(s, at.Add(tc.wall), tc.elapsed); err != nil {
@@ -439,7 +419,7 @@ func TestShadowOrdersChargesBeforeFutureLegacySpend(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := testShadow(t, ceiling, charges)
-	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != predictCapacityAdmit {
+	if p := admitNow(t, s, "203.0.113.1", generalOnly, shadowT0, room); p != admission.PredictCapacityAdmit {
 		t.Fatalf("first prediction = %s", p)
 	}
 	if err = tickBy(s, shadowT0.Add(time.Hour), time.Hour); err != nil {
@@ -465,11 +445,11 @@ func TestShadowDoesNotModelOtherKinds(t *testing.T) {
 				s := testShadow(t, freshCeiling(t, 10), nil)
 				before := s.ceiling
 				p, change, err := s.admit("203.0.113.1", kind, shadowExpiry, generalOnly, shadowT0, adm)
-				if err != nil || p != predictNotModelled || change != nil {
+				if err != nil || p != admission.PredictNotModelled || change != nil {
 					t.Fatalf("prediction = %s, change %+v, error %v", p, change, err)
 				}
 				s.commit(p, change, shadowT0)
-				if s.ceiling != before || len(s.entries) != 0 || len(s.charges) != 0 || s.picks[predictNotModelled] != 1 {
+				if s.ceiling != before || len(s.entries) != 0 || len(s.charges) != 0 || s.picks[admission.PredictNotModelled] != 1 {
 					t.Fatal("an unmodelled kind changed forecast capacity or counted the wrong outcome")
 				}
 			}
