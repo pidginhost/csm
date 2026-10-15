@@ -23,6 +23,8 @@ type resetReason uint8
 const (
 	resetStartup resetReason = iota + 1
 	resetModeChange
+	// resetModelError: the previous session's model could not be metered.
+	resetModelError
 )
 
 func (r resetReason) String() string {
@@ -31,9 +33,19 @@ func (r resetReason) String() string {
 		return "startup"
 	case resetModeChange:
 		return "mode_change"
+	case resetModelError:
+		return "model_error"
 	}
 	return ""
 }
+
+// forecastError is why a forecast could not run or go on, a fixed code
+// status shows (spec 3.8).
+type forecastError string
+
+// forecastModelError: the session's model could not be metered, so the
+// session was dropped.
+const forecastModelError forecastError = "model_error"
 
 // newSessionID reads a random 128-bit forecast session ID.
 func newSessionID(r io.Reader) (string, error) {

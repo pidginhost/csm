@@ -805,7 +805,10 @@ reason. The prediction names live in the admission package, which the
 finding stream tool reads too. A forecast neither probes nor repairs the engine: a hold from live
 work stays in `execution_held` until the next live turn. A live policy ends
 the session and never replays a dry-run ending; a later observation of the
-target is a new generation.
+target is a new generation. A session whose model cannot be metered by a
+committed clock reading or a new limit ends too: the forecast error is
+`model_error` until the next session starts, and that session names
+`model_error` as its reset rather than a mode change.
 
 With the policy's verdict callback on, a live owner asks the panel about
 each `block_ip` pick before anything is reserved, as a dry run does before

@@ -38,7 +38,20 @@ func (o *Owner) beginForecast() error {
 		return fmt.Errorf("starting a forecast: %w", err)
 	}
 	o.shadow, o.forecastReset = s, resetModeChange
+	o.forecastErr, o.forecastErrAt = "", time.Time{}
 	return nil
+}
+
+// dropForecast ends a session whose model cannot go on. The next session
+// starts from the real state and names the failure as its reset.
+func (o *Owner) dropForecast() {
+	o.shadow, o.forecastReset = nil, resetModelError
+	o.noteForecastError(forecastModelError)
+}
+
+// noteForecastError records why forecasting failed, for status.
+func (o *Owner) noteForecastError(e forecastError) {
+	o.forecastErr, o.forecastErrAt = e, time.Now().UTC()
 }
 
 // forecast serves the turn under a dry-run policy (spec 3.1-3.5). The

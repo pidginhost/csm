@@ -203,8 +203,13 @@ type Owner struct {
 	verdicts  verdicts
 	// shadow is the forecast session while a dry-run policy is installed,
 	// and forecastReset why the next session starts (spec 3.4, 3.7).
+	// forecastErr is why forecasting last failed, cleared once a session
+	// starts or a forecast turn succeeds; forecastErrAt is when, kept until
+	// the next session starts.
 	shadow        *shadow
 	forecastReset resetReason
+	forecastErr   forecastError
+	forecastErrAt time.Time
 	// policyHeld is the firewall work a refused policy holds. It waits for
 	// a valid policy as pending work waits for its answer.
 	policyHeld map[admission.CandidateID]bool
@@ -469,7 +474,7 @@ func (o *Owner) readTick() (admission.ClockReading, error) {
 	// A forecast meters the committed clock as the ledger's ceiling does.
 	// One that cannot starts over at its next turn.
 	if o.shadow != nil && o.shadow.advance(t) != nil {
-		o.shadow = nil
+		o.dropForecast()
 	}
 	o.compare.begin(o.now)
 	return reading, nil
@@ -575,7 +580,7 @@ func (o *Owner) reloadCeiling() error {
 	o.limit, o.source = limit, source
 	// A forecast takes the new limit without new credit.
 	if o.shadow != nil && o.shadow.setLimit(limit) != nil {
-		o.shadow = nil
+		o.dropForecast()
 	}
 	if err := o.ledger.Revalidate(); err != nil {
 		return err

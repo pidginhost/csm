@@ -213,3 +213,55 @@ func TestOwnerForecastIgnoresAnUnchangedEnding(t *testing.T) {
 		t.Fatalf("unchanged ending changed durable accounting: %d outcomes", n)
 	}
 }
+
+// A session whose model cannot be metered is dropped with a forecast error
+// of its own, and the session that replaces it names that cause, not a
+// mode change. The new session starts from the real ceiling.
+func TestOwnerForecastModelFailureNamesTheReset(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	o, _, mono := policyOwner(t, f, blocks, dryPolicy(1))
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	turn(t, o)
+	old := forecastOf(t, o)
+	if old == nil || old.reset != resetStartup {
+		t.Fatalf("fixture: forecast = %+v", old)
+	}
+	if err := o.do(func() error { o.shadow.ceiling.Elapsed = time.Duration(1<<63 - 1); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	mono.advance(time.Second)
+	f.host.advance(time.Second)
+	if err := o.do(o.tick); err != nil {
+		t.Fatal(err)
+	}
+	if fc := forecastOf(t, o); fc != nil {
+		t.Fatalf("a session whose model failed kept running: %+v", fc)
+	}
+	if err := o.do(func() error {
+		if o.forecastErr != forecastModelError || o.forecastErrAt.IsZero() {
+			t.Errorf("forecast error = %q at %v, want %q", o.forecastErr, o.forecastErrAt, forecastModelError)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+	turn(t, o)
+	fc := forecastOf(t, o)
+	if fc == nil || fc.id == old.id || fc.reset != resetModelError || resetModelError.String() != "model_error" {
+		t.Fatalf("replacement forecast = %+v, want a new %q session", fc, "model_error")
+	}
+	if fc.picks[admission.PredictCapacityAdmit] != 1 || fc.ceiling.General.Used+fc.ceiling.Reserved.Used != 1 {
+		t.Fatalf("replacement forecast = %+v, want a fresh session from the real ceiling", fc)
+	}
+	if err := o.do(func() error {
+		if o.forecastErr != "" {
+			t.Errorf("a started session kept forecast error %q", o.forecastErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
