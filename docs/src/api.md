@@ -880,20 +880,24 @@ This row measures the memory queue, not reports already retained on disk for
 retry; normal shutdown does not count those durable reports as lost.
 `abuse_reporting.spool` measures durable reports per destination, with the
 configured spool capacity. Reports already being sent remain in flight through
-the database acknowledgment. Failed admission and discarded records count as
-losses; a delivery retry, failed acknowledgment or normal shutdown retains the
-report and does not count it as lost. An evicted record counts as lost only if
-no send was acknowledged during this process. An active send settles that count
-when it finishes; a failed retry cannot undo a prior acknowledgment.
+the database acknowledgment. Failed admission, discarded records and reports
+the collector refuses as invalid count as losses; a delivery retry, failed
+acknowledgment or normal shutdown retains the report and does not count it as
+lost. A failing destination pauses only its own reports for the rest of a
+pass. An evicted or refused record counts as lost only if no send was
+acknowledged during this process. An active send settles that count when it
+finishes; a failed retry cannot undo a prior acknowledgment.
 `lag_basis: observed_age` means waiting age starts when this process first sees
 the record. Existing records start at spool open; retries keep that age. Doctor
 labels this as `observed_lag`, since time spent waiting before restart is unknown.
 Waiting or running work degrades after two minutes, allowing for the normal
 one-minute delivery interval. The common full-queue and recent-loss thresholds
 also apply. `spool_io` names failed admission, read or acknowledgment operations;
-`delivery_failed` names a failed or panicking sender. These states clear when
-the affected operation recovers. Health reads remain independent of database
-writes and outbound requests. Reopening with a smaller cap preserves existing
+`delivery_failed` names a failed or panicking sender and stays set while any
+destination failed in the last pass or is waiting for its retry deadline.
+Throttling without progress remains visible here even between log warnings.
+These states clear when the affected operation recovers. Health reads remain
+independent of database writes and outbound requests. Reopening with a smaller cap preserves existing
 records until the next admission applies the configured overflow policy.
 `phpanel.spool` measures the durable panel webhook queue, capped at 100,000
 records per state directory. In-flight work includes writes waiting to commit

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -109,6 +110,14 @@ func TestStartCentralConsumeMisconfiguredReturnsNil(t *testing.T) {
 	d := New(cfg, nil, nil, "")
 	if loop := d.startCentralConsume(); loop != nil {
 		t.Fatal("misconfigured consumer returned a loop")
+	}
+}
+
+// The default must sit within reach of the central's corroborated scores, or
+// a locally corroborated block would never fire without operator tuning.
+func TestCentralDefaultBlockThresholdIsReachable(t *testing.T) {
+	if centralBlockThreshold != 60 {
+		t.Fatalf("default central block threshold = %d, want 60", centralBlockThreshold)
 	}
 }
 
@@ -255,6 +264,55 @@ func TestApplyCentralRespectsFirebreak(t *testing.T) {
 
 	if d.ipList.Contains("203.0.113.5") {
 		t.Fatal("firebreak-protected IP was challenged")
+	}
+}
+
+// Non-public sources are never reported or acted on. The central service
+// refuses them, so reporting one would only be dropped and counted as a loss,
+// and an attacker can choose such source addresses.
+func TestCentralFirebreakExcludesNonPublicRanges(t *testing.T) {
+	fb := New(&config.Config{}, nil, nil, "").centralFirebreak()
+	for _, group := range [][]*net.IPNet{nonPublicNets, documentationNets} {
+		for _, prefix := range group {
+			// The last address of the IETF assignment range is outside the
+			// Teredo exception. It also exercises each excluded upper bound.
+			ip := append(net.IP(nil), prefix.IP...)
+			for i := range ip {
+				ip[i] |= ^prefix.Mask[i]
+			}
+			if !fb(ip.String()) {
+				t.Errorf("firebreak does not protect %s", prefix)
+			}
+		}
+	}
+	for _, ip := range []net.IP{net.IPv4zero, net.IPv4bcast, net.IPv6linklocalallnodes, net.IPv6loopback} {
+		if !fb(ip.String()) {
+			t.Errorf("firebreak does not protect non-public source %s", ip)
+		}
+	}
+	ipv4 := net.ParseIP("192.0.2.1").To4()
+	nat64 := append(net.IP(nil), nat64Net.IP...)
+	copy(nat64[12:], ipv4)
+	sixToFour := append(net.IP(nil), sixToFourNet.IP...)
+	copy(sixToFour[2:6], ipv4)
+	sources := []string{ipv4.String(), "::ffff:" + ipv4.String(), nat64.String(), sixToFour.String()}
+	for _, ip := range sources {
+		if !fb(ip) {
+			t.Errorf("embedded documentation address was not protected: %s", ip)
+		}
+	}
+
+	// Use documentation IPv4 as the public fixture without publishing real
+	// routable hosts. Teredo remains outside the IETF assignment exclusion.
+	saved := documentationNets
+	documentationNets = nil
+	t.Cleanup(func() { documentationNets = saved })
+	teredo := append(net.IP(nil), teredoNet.IP...)
+	teredo[len(teredo)-1] = 1
+	for _, ip := range append(sources, teredo.String()) {
+		if fb(ip) {
+			t.Errorf("firebreak protects actionable fixture %s", ip)
+		}
 	}
 }
 

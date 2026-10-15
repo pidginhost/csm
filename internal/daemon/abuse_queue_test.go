@@ -62,7 +62,7 @@ func TestAbuseQueueShutdownPersistsEveryAcceptedReport(t *testing.T) {
 			<-release
 			persisted = append(persisted, r.IP)
 			return nil
-		}, func(context.Context) {})
+		}, func(context.Context) time.Duration { return time.Hour })
 		done := make(chan struct{})
 		go func() { defer close(done); consumer.run() }()
 		defer func() { stopLoop(); releaseWrite(); <-done }()
@@ -117,7 +117,7 @@ func TestAbuseQueueRetainsReportsDuringDeliveryAndCancelsOnStop(t *testing.T) {
 		consumer := newAbuseReportConsumer(stop, 2, time.Minute, func(r reporting.Report) error {
 			persisted = append(persisted, r.IP)
 			return nil
-		}, func(ctx context.Context) { deliveries++; <-ctx.Done() })
+		}, func(ctx context.Context) time.Duration { deliveries++; <-ctx.Done(); return time.Minute })
 		done := make(chan struct{})
 		go func() { defer close(done); consumer.run() }()
 		synctest.Wait()
@@ -142,6 +142,32 @@ func TestAbuseQueueRetainsReportsDuringDeliveryAndCancelsOnStop(t *testing.T) {
 	})
 }
 
+// Each delivery pass names when the next one runs, so a throttled collector is
+// retried when it allows rather than a full interval later.
+func TestAbuseQueueDrainRunsWhenPassAsks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stop := make(chan struct{})
+		start := time.Now()
+		var passes []time.Duration
+		delays := []time.Duration{2 * time.Second, 3 * time.Second, time.Minute}
+		consumer := newAbuseReportConsumer(stop, 1, time.Minute, func(reporting.Report) error { return nil },
+			func(context.Context) time.Duration {
+				passes = append(passes, time.Since(start))
+				return delays[min(len(passes), len(delays))-1]
+			})
+		done := make(chan struct{})
+		go func() { defer close(done); consumer.run() }()
+		time.Sleep(2*time.Minute + 6*time.Second)
+		synctest.Wait()
+		close(stop)
+		<-done
+		want := []time.Duration{time.Minute, time.Minute + 2*time.Second, time.Minute + 5*time.Second, 2*time.Minute + 5*time.Second}
+		if !reflect.DeepEqual(passes, want) {
+			t.Fatalf("passes ran at %v, want %v", passes, want)
+		}
+	})
+}
+
 func TestAbuseQueuePersistenceFailureContinuesShutdownDrain(t *testing.T) {
 	stop := make(chan struct{})
 	var attempted []string
@@ -151,7 +177,7 @@ func TestAbuseQueuePersistenceFailureContinuesShutdownDrain(t *testing.T) {
 			return errors.New("spool write failed")
 		}
 		return nil
-	}, func(context.Context) {})
+	}, func(context.Context) time.Duration { return time.Hour })
 	for _, ip := range []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"} {
 		if !consumer.enqueue(reporting.Report{IP: ip}) {
 			t.Fatal("initial report refused")
@@ -169,7 +195,7 @@ func TestAbuseQueuePanicAccountsForUnpersistedReports(t *testing.T) {
 	for _, at := range []string{"running", "shutdown"} {
 		t.Run(at, func(t *testing.T) {
 			stop := make(chan struct{})
-			consumer := newAbuseReportConsumer(stop, 3, time.Hour, func(reporting.Report) error { panic("spool failed") }, func(context.Context) {})
+			consumer := newAbuseReportConsumer(stop, 3, time.Hour, func(reporting.Report) error { panic("spool failed") }, func(context.Context) time.Duration { return time.Hour })
 			for range 3 {
 				if !consumer.enqueue(reporting.Report{IP: "192.0.2.1"}) {
 					t.Fatal("initial report refused")
@@ -206,7 +232,7 @@ func TestAbuseQueueConcurrentShutdownConservesReports(t *testing.T) {
 			return errors.New("spool write failed")
 		}
 		return nil
-	}, func(context.Context) {})
+	}, func(context.Context) time.Duration { return time.Hour })
 	go func() { defer close(done); consumer.run() }()
 	start := make(chan struct{})
 	var producers sync.WaitGroup
