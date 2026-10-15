@@ -828,3 +828,85 @@ func TestOwnerServesHeldWorkOnANewerEpochWithoutAReload(t *testing.T) {
 		t.Fatalf("held pick after a newer epoch = %+v", c)
 	}
 }
+
+// A refusal during a dry run keeps the forecast session and the work it
+// held; a valid dry-run epoch continues the same session, and a live one
+// ends it. Held work that leaves the queue leaves the hold.
+func TestOwnerForecastSurvivesARefusal(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	o, r, _ := policyOwner(t, f, blocks, dryPolicy(1))
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	turn(t, o)
+	before := forecastOf(t, o)
+	conflict := dryPolicy(1)
+	conflict.CeilingLimit = 100
+	r.publish(conflict)
+	held, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+	stale, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.12")
+	turn(t, o)
+	if err := o.do(func() error {
+		if !o.policyHeld[held] || !o.policyHeld[stale] {
+			return fmt.Errorf("held = %v", o.policyHeld)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.do(func() error { _, err := o.ledger.Terminate(stale, admission.ReasonStale); return err }); err != nil {
+		t.Fatal(err)
+	}
+	turn(t, o)
+	if err := o.do(func() error {
+		if o.policyHeld[stale] || !o.policyHeld[held] {
+			return fmt.Errorf("held after an ending = %v", o.policyHeld)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.publish(dryPolicy(2))
+	turn(t, o)
+	fc := forecastOf(t, o)
+	if fc.id != before.id || len(fc.entries) != 2 || fc.picks[predictCapacityAdmit] != 2 {
+		t.Fatalf("forecast after the refusal = %+v, before %+v", fc, before)
+	}
+	r.publish(validPolicy(3))
+	turn(t, o)
+	if fc = forecastOf(t, o); fc != nil {
+		t.Fatalf("a live epoch kept the forecast: %+v", fc)
+	}
+}
+
+// Spec 3.3 steps 2-4: a real covering block comes before a ready allow, and
+// a ready allow before a forecast block that covers the address. The
+// forecast block here appears while the call runs.
+func TestOwnerForecastOrdersAllowsBetweenRealAndForecastBlocks(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	o, _, _ := policyOwner(t, f, blocks, dryVerdictPolicy(1, newFakePanel("allow")))
+	covered, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	existing, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+	turn(t, o)
+	readyAnswers(t, o, 2)
+	if err := o.do(func() error {
+		o.shadow.entries["192.0.2.10"] = shadowEntry{kind: admission.KindBlockIP, expires: f.host.now().Add(48 * time.Hour)}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blocks.set(func(b *fakeBlocks) { b.refuse["192.0.2.11"] = firewall.BlockRefusedExisting })
+	turn(t, o)
+	if c := candidate(t, o, covered); c.State != admission.StateRefused || c.Reason != admission.ReasonVerdictAllow {
+		t.Fatalf("allowed pick under a forecast block = %+v", c)
+	}
+	if c := candidate(t, o, existing); c.State != admission.StateDryRun {
+		t.Fatalf("allowed pick under a real block = %+v", c)
+	}
+	fc := forecastOf(t, o)
+	if fc.picks[predictExistingActual] != 1 || fc.picks[predictExistingShadow]+fc.picks[predictPendingRecovery] != 0 || verdictState(t, o).AllowEndings != 1 {
+		t.Fatalf("forecast = %+v", fc)
+	}
+}
