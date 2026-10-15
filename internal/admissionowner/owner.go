@@ -741,7 +741,10 @@ func (o *Owner) schedule() {
 	// A forecast neither probes nor repairs the engine (spec 1.2): a hold
 	// from live work waits for the next live turn.
 	probeDue = probeDue && !o.forecasting()
-	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) && !probeDue {
+	// Work a refused policy holds waits on no ledger time; a newer epoch,
+	// published with or without a reload, serves it.
+	policyDue := o.policyErr != nil && o.opts.Policy().Epoch > o.seenEpoch
+	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) && !probeDue && !policyDue {
 		return
 	}
 	if !o.scheduleWait.due(monoNow()) {

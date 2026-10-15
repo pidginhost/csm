@@ -797,3 +797,34 @@ func TestOwnerForecastLeavesALiveHoldAlone(t *testing.T) {
 		t.Fatalf("%d forecast turns, %d repairs, %d probes, held %q", selections, blocks.marks, blocks.stateProbes, executionHeld(t, o))
 	}
 }
+
+// Spec 2: work a refused policy holds is served once a valid epoch is
+// published, even without a reload: the schedule checks for a newer epoch
+// while a refusal holds work.
+func TestOwnerServesHeldWorkOnANewerEpochWithoutAReload(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	o, r, mono := policyOwner(t, f, blocks, validPolicy(1))
+	id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	conflict := validPolicy(1)
+	conflict.CeilingLimit = 100
+	r.publish(conflict)
+	if err := o.Reload(); !errors.Is(err, ErrPolicy) {
+		t.Fatalf("conflicting reload = %v", err)
+	}
+	if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
+		t.Fatal(err)
+	}
+	if c := candidate(t, o, id); c.Reason != admission.ReasonEngineUnavailable {
+		t.Fatalf("held pick = %+v", c)
+	}
+	r.publish(validPolicy(2))
+	mono.advance(time.Second)
+	if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
+		t.Fatal(err)
+	}
+	if c := candidate(t, o, id); c.State != admission.StateVerified {
+		t.Fatalf("held pick after a newer epoch = %+v", c)
+	}
+}

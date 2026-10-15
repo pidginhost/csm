@@ -753,17 +753,18 @@ that changes `auto_response` or the mode gets a new epoch. The owner does
 not start without a valid policy; it names the refusal instead, even with
 the callback off, and `mode: observe` is refused. Each turn and reload
 installs a newer epoch before it selects work, and the turn uses that
-policy for every pick; a reload returns once the policy is installed,
-after any turn already running. An older epoch is ignored. Changed settings
-or missing required dependencies under an installed epoch hold execution,
-as does an invalid newer policy, with the refusal in
-`execution_held`, until a valid newer epoch arrives; the daemon reports a
-refusal at reload as a `config_reload_error` finding. While a refusal holds
-execution, a selected pick of any firewall kind is deferred as
-`engine_unavailable` with nothing previewed, reserved or charged, and the
-schedule then passes it over, as it passes over work waiting for the
-panel, until a valid policy is installed; a challenge keeps its comparison
-preview. A comparison-only owner never reads the policy.
+policy for every pick; a reload returns once the policy is installed, after
+any turn already running. An older epoch is ignored. Changed settings or
+missing required dependencies under an installed epoch hold execution, as
+does an invalid newer policy, with the refusal in `execution_held`, until a
+valid newer epoch arrives; the daemon reports a refusal at reload as a
+`config_reload_error` finding. While a refusal holds execution, a selected
+pick of any firewall kind is deferred as `engine_unavailable` with nothing
+previewed, reserved or charged, and the schedule then passes it over, as it
+passes over work waiting for the panel, until a valid policy is installed;
+while it waits the schedule checks each second for a newer epoch, so a
+publication without a reload serves it too. A challenge keeps its
+comparison preview. A comparison-only owner never reads the policy.
 
 Under a dry-run policy the owner forecasts instead of running. It selects
 work with `SchedulePreview`, whatever the live budgets, and ends each pick
