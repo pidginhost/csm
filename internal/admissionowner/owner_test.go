@@ -103,9 +103,13 @@ func (f *ownerFixture) options() Options {
 }
 
 // start runs an owner the test drives step by step; it stops at cleanup
-// unless the test stopped it.
+// unless the test stopped it. An executable owner without a policy gets a
+// live one built from its options, as the daemon builds one from config.
 func (f *ownerFixture) start(opts Options) *Owner {
 	f.t.Helper()
+	if opts.Blocks != nil && opts.Policy == nil {
+		opts.Policy = livePolicy(opts)
+	}
 	o := Start(opts)
 	f.t.Cleanup(o.Stop)
 	return o

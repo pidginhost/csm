@@ -744,6 +744,21 @@ it defers block picks the same way. One batch starts a second at most; with an
 engine, a drain that queues new work runs the schedule at once instead of
 waiting for its timer.
 
+An owner with an engine binds to one execution policy: the dry-run mode,
+the verdict callback and its timeout, the hourly ceiling and the response
+lifetimes, read together from one config publication. Every publication
+that changes `auto_response` or the mode gets a new epoch. The owner does
+not start without a valid policy; it names the refusal instead, even with
+the callback off, and `mode: observe` is refused. Each turn and reload
+installs a newer epoch before it selects work, and the turn uses that
+policy for every pick; a reload returns once the policy is installed,
+after any turn already running. An older epoch is ignored. Different
+settings under an installed epoch, or an invalid newer policy, hold
+execution as a missing engine does, with the refusal in
+`execution_held`, until a valid newer epoch arrives. Under a dry-run
+policy block picks stay queued and never reach the engine. A
+comparison-only owner never reads the policy.
+
 The admission ledger exposes two row-recovery reads. `ReadSettledBlockActions`
 names failed attempts and retired unknown outcomes among the supplied action
 IDs; `ReadUnprovenBlockActions` continues to include every non-verified

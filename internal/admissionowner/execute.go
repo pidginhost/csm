@@ -78,6 +78,14 @@ var refusalReasons = map[firewall.BlockRefusal]admission.Reason{
 // its charge and the ledger retries it after its backoff, and an unknown
 // outcome holds its address until recovery retires it.
 func (o *Owner) execute(picks []execPick) error {
+	// A refused policy holds execution as an unavailable engine does. A
+	// dry-run policy never reaches the engine: its picks stay queued.
+	switch {
+	case o.policyErr != nil:
+		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
+	case o.policy.DryRun:
+		return nil
+	}
 	engine := o.opts.Blocks()
 	// A degraded clock cannot bound a lease: the admission time stays at
 	// its high-water mark while the wall clock is behind it or disagrees
@@ -312,8 +320,8 @@ func (o *Owner) publishExecutionHold() {
 	previous := o.current.Load()
 	snapshot, owner := *previous, *previous.Owner
 	owner.ExecutionHeld = ""
-	if o.execHold != nil {
-		owner.ExecutionHeld = o.execHold.Error()
+	if cause := o.heldCause(); cause != nil {
+		owner.ExecutionHeld = cause.Error()
 	}
 	snapshot.Owner = &owner
 	o.current.Store(&snapshot)

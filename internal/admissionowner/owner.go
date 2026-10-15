@@ -76,7 +76,7 @@ type Options struct {
 	DB        *store.DB
 	StatePath string
 	// Ceiling is the configured hourly ceiling and its source, read at
-	// start and at every reload.
+	// start and at every reload. An executable owner reads its policy's.
 	Ceiling func() (uint32, string)
 	// Clock reads the host clocks (ReadClock).
 	Clock func() (admission.ClockReading, error)
@@ -95,7 +95,7 @@ type Options struct {
 	Deliver func(findings []alert.Finding, preview bool) error
 	// Expiry is how long the response a candidate asks for would last
 	// under the current configuration. A preview records the expiry a
-	// live attempt would have.
+	// live attempt would have. An executable owner reads its policy's.
 	Expiry func(admission.Candidate) time.Duration
 	// Caps are the firewall's containment capabilities block targets fit.
 	Caps func() admission.Caps
@@ -103,6 +103,10 @@ type Options struct {
 	// while none runs. Without Blocks every pick is a preview: production
 	// passes none until cutover (P2).
 	Blocks func() BlockEngine
+	// Policy reads the published execution policy (D11). An owner with
+	// Blocks binds to it at every turn and reload, and does not start
+	// without a valid one; a comparison-only owner never reads it.
+	Policy func() ExecutionPolicy
 	// Timer periods; zero selects the defaults.
 	TickEvery, InventoryEvery, StatusEvery, DeliverEvery, NoticeEvery, DrainEvery, ScheduleEvery time.Duration
 }
@@ -182,6 +186,11 @@ type Owner struct {
 	// applyHold keeps an apply fault that snapshot repair cannot prove fixed.
 	applyHold  error
 	probeCheck bool
+	// policy is the installed execution policy and seenEpoch the newest
+	// epoch read, valid or not. policyErr holds execution while set.
+	policy    ExecutionPolicy
+	seenEpoch uint64
+	policyErr error
 	// nextBatch is when the next block batch may start, on the monotonic
 	// clock; arrived is set by a drain that queued work.
 	nextBatch time.Time
@@ -336,6 +345,12 @@ var (
 // start runs the startup sequence (spec 5.4, handoffs O19-O24). A retry
 // keeps the handle it opened: one database has one ledger handle (O1).
 func (o *Owner) start() error {
+	// An executable owner never starts on settings it cannot bind to.
+	if o.executable() {
+		if err := o.refreshPolicy(); err != nil {
+			return err
+		}
+	}
 	if o.opts.DB == nil {
 		return errors.New("the state database is not open")
 	}
@@ -379,7 +394,7 @@ func (o *Owner) start() error {
 // counter starts it without credit. Once a limit is set, a retried start
 // only applies the limit again.
 func (o *Owner) applyCeiling(now time.Time) error {
-	limit, source := o.opts.Ceiling()
+	limit, source := o.ceilingConfig()
 	c, err := o.ledger.Ceiling()
 	if err != nil {
 		return fmt.Errorf("reading the ceiling: %w", err)
@@ -444,7 +459,7 @@ func (o *Owner) tick() error {
 	}
 	// A ceiling changed by any config path, not only a reload, applies
 	// after this reading at the saved limit.
-	if limit, source := o.opts.Ceiling(); limit != o.limit || source != o.source {
+	if limit, source := o.ceilingConfig(); limit != o.limit || source != o.source {
 		o.reloadPending = true
 	}
 	if o.reloadPending {
@@ -501,20 +516,26 @@ func (o *Owner) refreshInventory() {
 
 // Reload records a reading under the saved limit, then applies the
 // configured one and revalidates the queue against it (O3, O13).
-// A failed reload is retried on ticks before admission can resume.
+// A failed reload is retried on ticks before admission can resume. An
+// executable owner first installs the published policy: Reload returns
+// once it is installed, or with the ErrPolicy that holds execution.
 func (o *Owner) Reload() error {
 	return o.do(func() error {
 		if !o.started {
-			return errors.New("the admission owner has not started")
+			return fmt.Errorf("the admission owner has not started: %w", o.startErr)
 		}
 		defer o.refreshStatus()
+		var policyErr error
+		if o.executable() {
+			policyErr = o.refreshPolicy()
+		}
 		o.reloadPending = true
-		return o.tick()
+		return errors.Join(policyErr, o.tick())
 	})
 }
 
 func (o *Owner) reloadCeiling() error {
-	limit, source := o.opts.Ceiling()
+	limit, source := o.ceilingConfig()
 	if err := o.ledger.SetCeiling(limit); err != nil {
 		return fmt.Errorf("setting the ceiling: %w", err)
 	}
@@ -706,7 +727,8 @@ func (o *Owner) schedule() {
 }
 
 // turn serves the queue's picks after a fresh reading (O9). With an engine
-// (Options.Blocks) its block_ip picks run as one batch (execute). Every
+// (Options.Blocks) its block_ip picks run as one batch (execute), under
+// the policy installed when the turn starts. Every
 // other pick is an observe preview: reserved and charged as live work
 // would be and ended in the same transaction without running (O14). The
 // schedule has already deferred the work its budgets cannot serve and
@@ -719,6 +741,10 @@ func (o *Owner) turn() error {
 	// current reading must not abandon work that already ran.
 	if err := o.finishPending(); err != nil {
 		return err
+	}
+	if o.executable() {
+		// A refused policy holds execution; the turn goes on without it.
+		_ = o.refreshPolicy()
 	}
 	// Anchor before the reading: a slow clock or durable tick must not add
 	// its latency to an unknown attempt's expiry wake.
@@ -797,7 +823,7 @@ func (o *Owner) expiryOf(c admission.Candidate, now time.Time) time.Time {
 	}
 	duration := c.PreviewTTL
 	if duration == 0 {
-		duration = o.opts.Expiry(c)
+		duration = o.expiry(c)
 	}
 	return now.Add(duration)
 }
@@ -955,8 +981,8 @@ func (o *Owner) refreshStatus() {
 	if o.damageErr != nil {
 		s.Owner.DamageError = o.damageErr.Error()
 	}
-	if o.execHold != nil {
-		s.Owner.ExecutionHeld = o.execHold.Error()
+	if cause := o.heldCause(); cause != nil {
+		s.Owner.ExecutionHeld = cause.Error()
 	}
 	if o.ledger != nil {
 		ls := o.ledger.Status()
