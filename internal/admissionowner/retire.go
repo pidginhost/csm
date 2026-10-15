@@ -3,6 +3,7 @@ package admissionowner
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -39,7 +40,11 @@ func (o *Owner) retire() error {
 	o.retireDue, o.retireNext = time.Time{}, time.Time{}
 	waiting := make(map[admission.ActionID]time.Time)
 	var due []admission.Intent
-	for _, in := range intents {
+	// Intents are in action order. Rotate the scan so due retries cannot
+	// starve the tail when a turn takes longer than their waits.
+	start := sort.Search(len(intents), func(i int) bool { return intents[i].Action > o.retireAfter })
+	for offset := range len(intents) {
+		in := intents[(start+offset)%len(intents)]
 		if in.Kind != admission.KindBlockIP {
 			continue
 		}
@@ -89,6 +94,7 @@ func (o *Owner) retire() error {
 	if !checked {
 		return nil
 	}
+	o.retireAfter = due[len(due)-1].Action
 	var errs error
 	for i, in := range due {
 		if !gone[i] {

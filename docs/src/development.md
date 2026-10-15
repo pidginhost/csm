@@ -650,17 +650,20 @@ whether anything of them remains (`RetireBlockActions`); running attempts are
 never sent. The engine removes each clear attempt's own row, and the ledger
 then retires it (`RetireUnproven`). An element still present, as after a
 forward wall step, keeps that attempt for a minute on its own wait, so a held
-batch cannot starve the intents behind it. A degraded clock or a missing
-engine retires nothing and tries again a second later, as do undelivered
+batch cannot starve the intents behind it. Each checked batch advances through
+action order, wrapping around, even when its retries are due by the next turn.
+A degraded clock or a missing engine retires nothing and tries again a second
+later, as do undelivered
 outcomes and a ledger clock that cannot yet prove the expiry. An engine that
 cannot check is asked again after a backoff of one second doubling to a
 minute. A stop between the row removal and the ledger retirement leaves a
 row-less unknown that the next pass retires. The turn wakes for the earliest
 expiry or monotonic retry, and until one of them is due a turn lists no
 intents. It never rebases a retry on admission time or adds time spent inside
-an engine call. Expiry conversion uses the turn's initial monotonic sample, so
-a later call cannot postpone another expiry. Running attempts create no
-retirement wake; retired attempts leave no retry entry.
+an engine call. Expiry conversion uses a monotonic sample taken before reading
+the admission clock, so a slow tick or later call cannot postpone another
+expiry. Running attempts create no retirement wake; retired attempts leave no
+retry entry.
 Every other kind is still previewed. A batch the kernel
 rejected fails every member, charged; each then retries alone, one per turn,
 until its next outcome or its expiry. A state write the engine could not make,

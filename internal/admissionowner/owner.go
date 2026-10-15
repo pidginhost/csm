@@ -195,6 +195,8 @@ type Owner struct {
 	retireWait time.Duration
 	// Per-action monotonic waits keep held entries from monopolizing a batch.
 	retireRetry map[admission.ActionID]time.Time
+	// Resume after the last checked action even if its retry is already due.
+	retireAfter admission.ActionID
 }
 
 // Start opens the ledger and runs the startup sequence before it returns,
@@ -718,11 +720,13 @@ func (o *Owner) turn() error {
 	if err := o.finishPending(); err != nil {
 		return err
 	}
+	// Anchor before the reading: a slow clock or durable tick must not add
+	// its latency to an unknown attempt's expiry wake.
+	retireSample := monoNow()
 	if err := o.tick(); err != nil {
 		return err
 	}
 	// Retirement first: it can release the holds pending_recovery waits on.
-	retireSample := monoNow()
 	retireErr := o.retire()
 	picks, err := scheduleLedger(o.ledger, previewLimits)
 	if err != nil {
