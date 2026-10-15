@@ -46,6 +46,8 @@ type sender struct {
 	pendingStop   *alert.Finding
 	pendingSince  time.Time
 	ledgerPending int
+	// summaryWaiting is set while a dry-run summary waits for delivery.
+	summaryWaiting bool
 	// The independent stop alert must not inherit a ledger delivery's wait,
 	// and its successful delivery must not reset that ledger retry.
 	ledgerRetry retryBackoff
@@ -89,6 +91,7 @@ func (s *sender) cycle() {
 		return
 	}
 	s.announceStop()
+	s.sendSummary()
 	if len(s.unacked) > 0 {
 		if err := s.o.do(func() error { return ackNotices(s.o.ledger, s.unacked) }); err != nil {
 			return
@@ -134,6 +137,9 @@ func (s *sender) cycle() {
 func (s *sender) observe() {
 	depth := s.ledgerPending
 	if s.pendingStop != nil {
+		depth++
+	}
+	if s.summaryWaiting {
 		depth++
 	}
 	s.queue.Observe(deliveryNow(), depth, s.delivered)

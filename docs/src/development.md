@@ -849,6 +849,20 @@ session clears its time too. Leaving dry run clears the forecast and keeps
 the last session's identity, while the loss counters cover the process.
 `csm doctor` renders it in three rows that warn and never fail.
 
+The forecast's committed predictions are also summarized in history, never
+sent to an alert channel: one `auto_block` Warning, "Dry-run capacity
+forecast: N responses passed modelled capacity checks", with the other
+predictions' counts, its interval, a session count and a bounded list of
+distinct examples in committed order, each naming its candidate, finding,
+target and check. The first summary is due a minute after the first
+prediction it counts, and each later one a minute after the previous
+attempt, a failed one included. One summary is pending at a time: the
+sender takes it whole, later predictions start the next one, and a failed
+delivery goes back in front of them as one summary, retried with the notice
+backoff and counted in the notice queue while it waits. A mode change never
+flushes or relabels a pending summary; Stop sends one its minute allows and
+counts any other as lost.
+
 With the policy's verdict callback on, a live owner asks the panel about
 each `block_ip` pick before anything is reserved, as a dry run does before
 it forecasts one. One read-only admission

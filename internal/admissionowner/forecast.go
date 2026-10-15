@@ -249,6 +249,7 @@ func (o *Owner) endForecast(p execPick, pred admission.Prediction, change *shado
 		if change != nil {
 			o.noteExample(p, change)
 		}
+		o.noteSummary(p, pred, change)
 		o.shadow.commit(pred, change, monoNow())
 		c := p.c
 		o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionDryRun, prediction: pred}, o.now)
