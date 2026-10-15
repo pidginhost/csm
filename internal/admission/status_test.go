@@ -23,7 +23,7 @@ func rowsByName(rows []DoctorRow) map[string]DoctorRow {
 }
 
 func TestDoctorChecksPassAHealthyLedgerThatPreviews(t *testing.T) {
-	rows := DoctorChecks(healthyStatus(), &IngressHealth{Admitting: true}, t0)
+	rows := DoctorChecks(healthyStatus(), &IngressHealth{Admitting: true}, t0, false)
 	if len(rows) != 5 {
 		t.Fatalf("rows = %+v", rows)
 	}
@@ -32,10 +32,10 @@ func TestDoctorChecksPassAHealthyLedgerThatPreviews(t *testing.T) {
 			t.Errorf("%+v", r)
 		}
 	}
-	if DoctorChecks(nil, nil, t0) != nil {
+	if DoctorChecks(nil, nil, t0, false) != nil {
 		t.Fatal("rows without a ledger or an ingress")
 	}
-	if rows := DoctorChecks(nil, &IngressHealth{Admitting: true}, t0); len(rows) != 1 || rows[0].Name != "admission ingress" || rows[0].Status != DoctorOK || rows[0].Message != PreviewUnaffected || rows[0].Fix != "" {
+	if rows := DoctorChecks(nil, &IngressHealth{Admitting: true}, t0, false); len(rows) != 1 || rows[0].Name != "admission ingress" || rows[0].Status != DoctorOK || rows[0].Message != PreviewUnaffected || rows[0].Fix != "" {
 		t.Fatalf("ingress alone: %+v", rows)
 	}
 }
@@ -57,7 +57,7 @@ func TestDoctorChecksWarnOnDamagedSections(t *testing.T) {
 	} {
 		s := healthyStatus()
 		damage(s)
-		row := rowsByName(DoctorChecks(s, &IngressHealth{Admitting: true}, t0))["admission ledger"]
+		row := rowsByName(DoctorChecks(s, &IngressHealth{Admitting: true}, t0, false))["admission ledger"]
 		if row.Status != DoctorWarn || !strings.Contains(row.Message, name) || !strings.Contains(row.Message, PreviewUnaffected) || row.Fix == "" {
 			t.Errorf("%s: %+v", name, row)
 		}
@@ -65,18 +65,18 @@ func TestDoctorChecksWarnOnDamagedSections(t *testing.T) {
 }
 
 func TestDoctorChecksWarnOnAStoppedIngress(t *testing.T) {
-	row := rowsByName(DoctorChecks(healthyStatus(), &IngressHealth{StoppedSince: t0.Add(-time.Minute), CriticalRefused: 7}, t0))["admission ingress"]
+	row := rowsByName(DoctorChecks(healthyStatus(), &IngressHealth{StoppedSince: t0.Add(-time.Minute), CriticalRefused: 7}, t0, false))["admission ingress"]
 	if row.Status != DoctorWarn || !strings.Contains(row.Message, "7 Critical") || !strings.Contains(row.Message, PreviewUnaffected) || row.Fix == "" {
 		t.Fatalf("%+v", row)
 	}
 	s := healthyStatus()
 	s.Ingress.Resumed = s.Ingress.Generation
-	row = rowsByName(DoctorChecks(s, &IngressHealth{Admitting: true}, t0))["admission ingress"]
+	row = rowsByName(DoctorChecks(s, &IngressHealth{Admitting: true}, t0, false))["admission ingress"]
 	if row.Status != DoctorWarn || !strings.Contains(row.Message, "interrupted") || !strings.HasSuffix(row.Message, PreviewUnaffected) || row.Fix == "" {
 		t.Fatalf("after an interruption: %+v", row)
 	}
 	s.Ingress.Resumed = s.Ingress.Generation - 1
-	if row = rowsByName(DoctorChecks(s, &IngressHealth{Admitting: true}, t0))["admission ingress"]; row.Status != DoctorOK || row.Message != PreviewUnaffected || row.Fix != "" {
+	if row = rowsByName(DoctorChecks(s, &IngressHealth{Admitting: true}, t0, false))["admission ingress"]; row.Status != DoctorOK || row.Message != PreviewUnaffected || row.Fix != "" {
 		t.Fatalf("an older interruption still warns: %+v", row)
 	}
 }
@@ -86,7 +86,7 @@ func TestDoctorChecksNeverFailWhileAdmissionPreviews(t *testing.T) {
 	s.Queue.Error, s.Notices.LastCriticalGap = "x", t0
 	s.Ingress.Resumed = s.Ingress.Generation
 	s.Storage.Pinned, s.Outbox.AuditBytes = 1, RecoveryReserveBytes
-	for _, r := range DoctorChecks(s, &IngressHealth{StoppedSince: t0}, t0) {
+	for _, r := range DoctorChecks(s, &IngressHealth{StoppedSince: t0}, t0, false) {
 		if r.Status != DoctorWarn || !strings.HasSuffix(r.Message, PreviewUnaffected) || strings.Count(r.Message, PreviewUnaffected) != 1 {
 			t.Errorf("%+v", r)
 		}
@@ -96,12 +96,12 @@ func TestDoctorChecksNeverFailWhileAdmissionPreviews(t *testing.T) {
 func TestDoctorChecksWarnOnARecentCriticalGap(t *testing.T) {
 	s := healthyStatus()
 	s.Notices.LastCriticalGap = t0.Add(-time.Hour + time.Second)
-	if row := rowsByName(DoctorChecks(s, nil, t0))["admission response gaps"]; row.Status != DoctorWarn ||
+	if row := rowsByName(DoctorChecks(s, nil, t0, false))["admission response gaps"]; row.Status != DoctorWarn ||
 		!strings.Contains(row.Message, "would not have received") || !strings.Contains(row.Message, PreviewUnaffected) {
 		t.Fatalf("a gap inside the hour: %+v", row)
 	}
 	s.Notices.LastCriticalGap = t0.Add(-time.Hour)
-	if row := rowsByName(DoctorChecks(s, nil, t0))["admission response gaps"]; row.Status != DoctorOK || row.Message != PreviewUnaffected || row.Fix != "" {
+	if row := rowsByName(DoctorChecks(s, nil, t0, false))["admission response gaps"]; row.Status != DoctorOK || row.Message != PreviewUnaffected || row.Fix != "" {
 		t.Fatalf("a gap an hour old: %+v", row)
 	}
 }
@@ -109,25 +109,25 @@ func TestDoctorChecksWarnOnARecentCriticalGap(t *testing.T) {
 func TestDoctorChecksWarnOnReservePressure(t *testing.T) {
 	s := healthyStatus()
 	s.Storage.Pinned = 1
-	if row := rowsByName(DoctorChecks(s, nil, t0))["admission recovery reserve"]; row.Status != DoctorWarn || !strings.HasPrefix(row.Message, "1 bytes of unresolved outcomes are pinned;") || !strings.HasSuffix(row.Message, PreviewUnaffected) || row.Fix == "" {
+	if row := rowsByName(DoctorChecks(s, nil, t0, false))["admission recovery reserve"]; row.Status != DoctorWarn || !strings.HasPrefix(row.Message, "1 bytes of unresolved outcomes are pinned;") || !strings.HasSuffix(row.Message, PreviewUnaffected) || row.Fix == "" {
 		t.Fatalf("pinned outcomes: %+v", row)
 	}
 	s = healthyStatus()
 	s.Storage.RecoveryRoom = MaxRecoveryNeed - 1
-	if row := rowsByName(DoctorChecks(s, nil, t0))["admission recovery reserve"]; row.Status != DoctorWarn || !strings.Contains(row.Message, "bytes of room remain") || !strings.HasSuffix(row.Message, PreviewUnaffected) || row.Fix == "" {
+	if row := rowsByName(DoctorChecks(s, nil, t0, false))["admission recovery reserve"]; row.Status != DoctorWarn || !strings.Contains(row.Message, "bytes of room remain") || !strings.HasSuffix(row.Message, PreviewUnaffected) || row.Fix == "" {
 		t.Fatalf("no room for the largest reservation: %+v", row)
 	}
 	s.Storage.RecoveryRoom = MaxRecoveryNeed
-	if row := rowsByName(DoctorChecks(s, nil, t0))["admission recovery reserve"]; row.Status != DoctorOK || row.Message != PreviewUnaffected || row.Fix != "" {
+	if row := rowsByName(DoctorChecks(s, nil, t0, false))["admission recovery reserve"]; row.Status != DoctorOK || row.Message != PreviewUnaffected || row.Fix != "" {
 		t.Fatalf("room for the largest reservation: %+v", row)
 	}
 	s = healthyStatus()
 	s.Outbox.AuditBytes, s.Outbox.NoticeBytes = RecoveryReserveBytes/4, RecoveryReserveBytes/4+1
-	if row := rowsByName(DoctorChecks(s, nil, t0))["admission outbox"]; row.Status != DoctorWarn || !strings.Contains(row.Message, "over half the reserve") || !strings.HasSuffix(row.Message, PreviewUnaffected) || row.Fix == "" {
+	if row := rowsByName(DoctorChecks(s, nil, t0, false))["admission outbox"]; row.Status != DoctorWarn || !strings.Contains(row.Message, "over half the reserve") || !strings.HasSuffix(row.Message, PreviewUnaffected) || row.Fix == "" {
 		t.Fatalf("outbox over half the reserve: %+v", row)
 	}
 	s.Outbox.NoticeBytes--
-	if row := rowsByName(DoctorChecks(s, nil, t0))["admission outbox"]; row.Status != DoctorOK || row.Message != PreviewUnaffected || row.Fix != "" {
+	if row := rowsByName(DoctorChecks(s, nil, t0, false))["admission outbox"]; row.Status != DoctorOK || row.Message != PreviewUnaffected || row.Fix != "" {
 		t.Fatalf("outbox at half the reserve: %+v", row)
 	}
 }
@@ -139,7 +139,7 @@ func TestDoctorFixesKeepTheStateDatabaseWhileAdmissionPreviews(t *testing.T) {
 	s := healthyStatus()
 	s.Queue.Error, s.Notices.LastCriticalGap = "admission record is corrupt", t0
 	s.Storage.Pinned, s.Outbox.AuditBytes = 1, RecoveryReserveBytes
-	for _, r := range DoctorChecks(s, &IngressHealth{StoppedSince: t0}, t0) {
+	for _, r := range DoctorChecks(s, &IngressHealth{StoppedSince: t0}, t0, false) {
 		if strings.Contains(r.Fix, "restore") || strings.Contains(r.Fix, "stop csm.service") {
 			t.Errorf("%s advises: %s", r.Name, r.Fix)
 		}

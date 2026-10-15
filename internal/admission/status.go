@@ -264,48 +264,77 @@ type DoctorRow struct {
 	Fix     string `json:"fix,omitempty"`
 }
 
-// PreviewUnaffected ends every admission row: legacy blocking enforces
+// PreviewUnaffected labels preview rows: legacy blocking enforces
 // while admission previews, so a healthy row says so and an outage only
 // warns (R10).
 const PreviewUnaffected = "existing blocking is unaffected while admission previews"
 
+// ExecutionAffected ends every admission row once admission runs automatic
+// blocks: an admission outage is then an outage of automatic blocking, so
+// an unavailable ledger, ingress, owner or clock fails (spec 5.17).
+const ExecutionAffected = "admission decides automatic blocks"
+
+// DoctorImpact is how admission rows close and how badly an outage rates:
+// a preview only warns, since legacy blocking enforces (R10); execution
+// fails.
+func DoctorImpact(executing bool) (closing, outage string) {
+	if executing {
+		return ExecutionAffected, DoctorFail
+	}
+	return PreviewUnaffected, DoctorWarn
+}
+
 // DoctorChecks turns a ledger status and the ingress health into fixed
 // doctor rows (ruling 10). Either may be nil: then its rows are left out,
 // so a daemon without an admission owner prints none. now is the time the
-// Critical-gap rule looks back from.
-func DoctorChecks(s *LedgerStatus, in *IngressHealth, now time.Time) []DoctorRow {
+// Critical-gap rule looks back from; executing says whether admission runs
+// automatic blocks (DoctorImpact).
+func DoctorChecks(s *LedgerStatus, in *IngressHealth, now time.Time, executing bool) []DoctorRow {
+	closing, outage := DoctorImpact(executing)
 	var rows []DoctorRow
 	if s != nil {
-		rows = append(rows, ledgerRow(s))
+		rows = append(rows, ledgerRow(s, executing))
 	}
 	if in != nil {
-		rows = append(rows, ingressRow(s, in))
+		rows = append(rows, ingressRow(s, in, executing))
 	}
 	if s == nil {
 		return rows
 	}
-	gap := DoctorRow{Name: "admission response gaps", Status: DoctorOK, Message: PreviewUnaffected}
+	gap := DoctorRow{Name: "admission response gaps", Status: DoctorOK, Message: closing}
 	if last := s.Notices.LastCriticalGap; !last.IsZero() && now.Before(last.Add(time.Hour)) {
-		gap.Status = DoctorWarn
-		gap.Message = "a Critical finding would not have received its response at " + last.UTC().Format(time.RFC3339) + "; " + PreviewUnaffected
+		gap.Status = outage
+		gap.Message = "a Critical finding would not have received its response at " + last.UTC().Format(time.RFC3339) + "; " + closing
+		if executing {
+			gap.Message = "a Critical finding did not receive its response at " + last.UTC().Format(time.RFC3339) + "; " + closing
+		}
 		gap.Fix = "inspect the auto_response_withheld and response_capacity_exhausted notices for the reason"
 	}
-	reserve := DoctorRow{Name: "admission recovery reserve", Status: DoctorOK, Message: PreviewUnaffected}
+	reserve := DoctorRow{Name: "admission recovery reserve", Status: DoctorOK, Message: closing}
 	if s.Storage.Pinned > 0 || s.Storage.RecoveryRoom < MaxRecoveryNeed {
 		reserve.Status = DoctorWarn
-		reserve.Message = fmt.Sprintf("%d bytes of unresolved outcomes are pinned; %d bytes of room remain", s.Storage.Pinned, s.Storage.RecoveryRoom) + "; " + PreviewUnaffected
+		reserve.Message = fmt.Sprintf("%d bytes of unresolved outcomes are pinned; %d bytes of room remain", s.Storage.Pinned, s.Storage.RecoveryRoom) + "; " + closing
 		reserve.Fix = "resolve unknown outcomes and confirm the audit consumer acknowledges rows; new reservations wait while the reserve is full"
 	}
-	outbox := DoctorRow{Name: "admission outbox", Status: DoctorOK, Message: PreviewUnaffected}
+	outbox := DoctorRow{Name: "admission outbox", Status: DoctorOK, Message: closing}
 	if used := s.Outbox.AuditBytes + s.Outbox.NoticeBytes; used > RecoveryReserveBytes/2 {
 		outbox.Status = DoctorWarn
-		outbox.Message = fmt.Sprintf("the outbox holds %d bytes, over half the reserve", used) + "; " + PreviewUnaffected
+		outbox.Message = fmt.Sprintf("the outbox holds %d bytes, over half the reserve", used) + "; " + closing
 		outbox.Fix = "confirm audit and notice delivery is running and acknowledging"
 	}
-	return append(rows, gap, reserve, outbox)
+	rows = append(rows, gap, reserve, outbox)
+	if u := s.Unresolved; u.Unknown > 0 {
+		rows = append(rows, DoctorRow{
+			Name: "admission unresolved outcomes", Status: DoctorWarn,
+			Message: fmt.Sprintf("%d automatic blocks have an unproven outcome; each holds its address until it has expired and the firewall shows nothing of it; the next can retire at %s", u.Unknown, u.Retires.UTC().Format(time.RFC3339)) + "; " + closing,
+			Fix:     "none needed while the count falls; if it keeps growing, check the firewall rows and the admission execution row",
+		})
+	}
+	return rows
 }
 
-func ledgerRow(s *LedgerStatus) DoctorRow {
+func ledgerRow(s *LedgerStatus, executing bool) DoctorRow {
+	closing, outage := DoctorImpact(executing)
 	var damaged []string
 	for _, section := range []struct{ name, err string }{
 		{"clock", s.Clock.Error}, {"queue", s.Queue.Error}, {"counters", s.Counters.Error},
@@ -318,28 +347,30 @@ func ledgerRow(s *LedgerStatus) DoctorRow {
 		}
 	}
 	if len(damaged) == 0 {
-		return DoctorRow{Name: "admission ledger", Status: DoctorOK, Message: PreviewUnaffected}
+		return DoctorRow{Name: "admission ledger", Status: DoctorOK, Message: closing}
 	}
-	return DoctorRow{
-		Name: "admission ledger", Status: DoctorWarn, Message: strings.Join(damaged, "; ") + "; " + PreviewUnaffected,
-		Fix: "previews are refused while the ledger is damaged; restart csm.service so opening the ledger proves every record, and keep the state database, which existing blocking still uses",
+	fix := "previews are refused while the ledger is damaged; restart csm.service so opening the ledger proves every record, and keep the state database, which existing blocking still uses"
+	if executing {
+		fix = "automatic blocks are refused while the ledger is damaged; restart csm.service so opening the ledger proves every record, and keep the state database"
 	}
+	return DoctorRow{Name: "admission ledger", Status: outage, Message: strings.Join(damaged, "; ") + "; " + closing, Fix: fix}
 }
 
-func ingressRow(s *LedgerStatus, in *IngressHealth) DoctorRow {
+func ingressRow(s *LedgerStatus, in *IngressHealth, executing bool) DoctorRow {
+	closing, outage := DoctorImpact(executing)
 	switch {
 	case !in.Admitting:
 		return DoctorRow{
-			Name: "admission ingress", Status: DoctorWarn,
-			Message: fmt.Sprintf("refusing every automatic response since %s; %d Critical arrivals refused; %s", in.StoppedSince.UTC().Format(time.RFC3339), in.CriticalRefused, PreviewUnaffected),
+			Name: "admission ingress", Status: outage,
+			Message: fmt.Sprintf("refusing every automatic response since %s; %d Critical arrivals refused; %s", in.StoppedSince.UTC().Format(time.RFC3339), in.CriticalRefused, closing),
 			Fix:     "the ledger owner has no usable queue snapshot; inspect the daemon log and the admission ledger row",
 		}
 	case s != nil && s.Ingress.Resumed != 0 && s.Ingress.Resumed == s.Ingress.Generation:
 		return DoctorRow{
 			Name: "admission ingress", Status: DoctorWarn,
-			Message: "the previous ingress generation was interrupted; its held arrivals were lost and counts are lower bounds; " + PreviewUnaffected,
+			Message: "the previous ingress generation was interrupted; its held arrivals were lost and counts are lower bounds; " + closing,
 			Fix:     "stop csm.service cleanly next time; the warning clears after a clean restart",
 		}
 	}
-	return DoctorRow{Name: "admission ingress", Status: DoctorOK, Message: PreviewUnaffected}
+	return DoctorRow{Name: "admission ingress", Status: DoctorOK, Message: closing}
 }

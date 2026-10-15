@@ -941,6 +941,7 @@ func (o *Owner) status() *health.AdmissionStatus {
 // ledger's read takes no lock and needs no current clock.
 func (o *Owner) refreshStatus() {
 	s := &health.AdmissionStatus{CheckedAt: time.Now(), Owner: &health.AdmissionOwner{
+		Executing:     o.opts.Blocks != nil,
 		ClockDegraded: o.degraded, LastTick: o.lastTick, CeilingSource: o.source,
 		Import: o.imported, InventoryAt: o.inventoryAt,
 	}}

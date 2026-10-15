@@ -277,16 +277,21 @@ the ledger would have done.
 
 - `ledger` holds the stored admission time, queue, counters, hourly and daily
   outcomes, ingress generations, the hourly ceiling with its general and
-  reserved lanes, storage, the outbox and notice records. Each section carries
-  its own `error`, so one damaged record does not hide the rest.
+  reserved lanes, storage, the outbox, notice records and `unresolved`
+  outcomes (`running` and `unknown` counts and when the next unknown one can
+  retire). Each section carries its own `error`, so one damaged record does
+  not hide the rest.
 - `ingress` says whether automatic responses are admitted and, while they are
   not, since when and how many Critical arrivals were refused.
-- `owner` names why the ledger owner is not running (`error`), why the last
+- `owner` says whether admission runs automatic blocks (`executing`) and
+  names why the ledger owner is not running (`error`), why the last
   clock reading was refused (`tick_error`), whether the clock is degraded,
   where the ceiling came from (`ceiling_source`: `default`, `configured` or
   `clamped`), the legacy hourly count imported at the first start (`import`,
   which counts at least until an hour after `at`, or names why the count
-  could not be read) and the last inventory read.
+  could not be read), the last inventory read, why responses naming a
+  damaged record were discarded (`damage_error`) and why automatic blocks
+  are held (`execution_held`).
 
 The hourly ceiling follows `auto_response.max_blocks_per_hour`, capped at 20000.
 An omitted or zero value selects 2000 for the ledger and 50 for the shared
@@ -295,14 +300,21 @@ scan-driven block budget. After editing the configuration, run
 Existing blocking paths still decide every block; see
 [automatic response](auto-response.md) for the scope of the current budget.
 
-Existing blocking paths still decide every block, so no admission row fails
-doctor and every row says existing blocking is unaffected. Rows warn when
-the ledger owner is not running, its clock reading
+While admission previews, existing blocking paths still decide every
+block. Admission rows say existing blocking is unaffected, except the
+execution-hold row, which reports the hold directly. Rows
+warn when the ledger owner is not running, its clock reading
 is refused, the ledger is damaged, admission has stopped or a Critical
 finding would not have received its response in the last hour. They also
 show a degraded clock, a clamped ceiling, a ceiling of 1 (only the reserved
-lane runs), a legacy hourly count that could not be read and a failed
-inventory read.
+lane runs), a legacy hourly count that could not be read, a failed
+inventory read and automatic blocks with an unproven outcome, which hold
+their addresses until they expire and the firewall shows nothing of them.
+The `admission execution` row fails while automatic blocks are held. Once
+`owner.executing` is set, rows say admission decides automatic blocks, and
+a stopped owner, a refused clock reading, a damaged ledger, stopped
+admission, discarded responses, a Critical gap in the last hour and a ledger
+the firewall could not read at startup fail.
 
 `admission.audit` and `admission.notices` in `queues` report the delivery of
 admission records to the [action log](action-log.md) and of admission notices.
