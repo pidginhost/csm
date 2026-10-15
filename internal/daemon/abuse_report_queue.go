@@ -14,13 +14,13 @@ type abuseReportConsumer struct {
 	stop     <-chan struct{}
 	interval time.Duration
 	persist  func(reporting.Report) error
-	drain    func(context.Context)
+	drain    func(context.Context) time.Duration
 	queue    *queuehealth.Channel[reporting.Report]
 	mu       sync.Mutex
 	closed   bool
 }
 
-func newAbuseReportConsumer(stop <-chan struct{}, capacity int, interval time.Duration, persist func(reporting.Report) error, drain func(context.Context)) *abuseReportConsumer {
+func newAbuseReportConsumer(stop <-chan struct{}, capacity int, interval time.Duration, persist func(reporting.Report) error, drain func(context.Context) time.Duration) *abuseReportConsumer {
 	return &abuseReportConsumer{
 		stop: stop, interval: interval, persist: persist, drain: drain,
 		queue: queuehealth.NewChannel[reporting.Report](capacity, time.Minute),
@@ -75,8 +75,10 @@ func (c *abuseReportConsumer) run() {
 		c.queue.DiscardPending()
 		c.logDropped(&loggedLoss)
 	}()
-	ticker := time.NewTicker(c.interval)
-	defer ticker.Stop()
+	// Each pass says when the next one runs, so a throttled collector is
+	// retried when it allows while intake keeps running in between.
+	timer := time.NewTimer(c.interval)
+	defer timer.Stop()
 	for {
 		select {
 		case <-c.stop:
@@ -90,9 +92,9 @@ func (c *abuseReportConsumer) run() {
 			return
 		case work := <-c.queue.Items():
 			c.process(work)
-		case <-ticker.C:
+		case <-timer.C:
 			c.logDropped(&loggedLoss)
-			c.drain(ctx)
+			timer.Reset(c.drain(ctx))
 		}
 	}
 }
