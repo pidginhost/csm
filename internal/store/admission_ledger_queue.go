@@ -1065,8 +1065,9 @@ func (l *AdmissionLedger) NextWake(pending map[admission.CandidateID]bool) (time
 		var general, reserved bool
 		for _, it := range items {
 			// A retry cannot become ready at its backoff while recovery
-			// space is unavailable. Its validity deadlines still apply.
-			if uint64(it.Recovery) > lim.RecoveryBytes {
+			// space is unavailable, nor while it waits on an outside
+			// answer. Its validity deadlines still apply.
+			if uint64(it.Recovery) > lim.RecoveryBytes || pending[it.ID] {
 				continue
 			}
 			if nb := byID[it.ID].c.NotBefore; nb.After(clock.Now()) {

@@ -78,3 +78,18 @@ func TestAdmissionLedgerNextWakeSkipsPendingWork(t *testing.T) {
 		t.Fatalf("ready wake = %v %v %v, want now", wake, ok, err)
 	}
 }
+
+// A pending retry needs no wake at its backoff end either: only its
+// deadline, here the expiry of its first attempt.
+func TestAdmissionLedgerNextWakeSkipsPendingRetries(t *testing.T) {
+	f := newLedgerFixture(t)
+	id, a := f.admitted(time.Minute)
+	if _, _, err := f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
+		t.Fatal(err)
+	}
+	c := f.candidateOf(id)
+	wake, ok, err := f.l.NextWake(pendingSet(id))
+	if err != nil || !ok || !wake.Equal(c.ExpiresAt) {
+		t.Fatalf("pending retry wake = %v %v %v, want its expiry %v, not its backoff end %v", wake, ok, err, c.ExpiresAt, c.NotBefore)
+	}
+}
