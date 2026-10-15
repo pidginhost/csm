@@ -18,7 +18,7 @@ import (
 
 const (
 	centralRefreshDefault = 6 * time.Hour
-	centralBlockThreshold = 80
+	centralBlockThreshold = 60
 	centralChallengeTTL   = 6 * time.Hour
 	centralBlockTTL       = 24 * time.Hour
 	centralActionQueue    = 1024
@@ -39,6 +39,30 @@ type centralQueuedAction struct {
 // on; they are not routable real attackers.
 var documentationNets = mustCIDRs(
 	"192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24", "198.18.0.0/15", "2001:db8::/32",
+)
+
+// nonPublicNets are special-purpose ranges (IANA special-purpose registries)
+// that net.IP's unicast and private predicates miss: "this network",
+// carrier-grade NAT, IETF protocol assignments, the deprecated 6to4 relay
+// anycast, the reserved block, deprecated IPv4-compatible and site-local IPv6,
+// IPv6 discard-only and dummy sources, IETF IPv6 assignments, local-use
+// translation and segment routing. None is a public source to report or act
+// on; the central collector refuses them too.
+var nonPublicNets = mustCIDRs(
+	"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.88.99.0/24", "240.0.0.0/4",
+	"::/96", "fec0::/10", "100::/64", "100:0:0:1::/64", "2001::/23",
+	"64:ff9b:1::/48", "5f00::/16",
+)
+
+// teredoNet is carved out of 2001::/23: Teredo clients are real hosts that can
+// send abusive traffic.
+var teredoNet = mustCIDRs("2001::/32")[0]
+
+// nat64Net and sixToFourNet embed an IPv4 source (RFC 6052, RFC 3056); the
+// firebreak judges the embedded address.
+var (
+	nat64Net     = mustCIDRs("64:ff9b::/96")[0]
+	sixToFourNet = mustCIDRs("2002::/16")[0]
 )
 
 func mustCIDRs(cidrs ...string) []*net.IPNet {
@@ -187,8 +211,9 @@ func isCentralBlockRefusal(err error) bool {
 }
 
 // centralFirebreak returns a predicate that reports whether an IP must never be
-// acted on from central data: loopback/unspecified/private, documentation
-// ranges, or an operator infra_ips entry.
+// acted on from central data or reported to it: anything not global unicast,
+// private and other non-public ranges, documentation ranges, or an operator
+// infra_ips entry.
 func (d *Daemon) centralFirebreak() func(string) bool {
 	infraEntries := d.cfg.InfraIPs
 	if d.cfg.Firewall != nil {
@@ -209,13 +234,15 @@ func (d *Daemon) centralFirebreak() func(string) bool {
 			infra = append(infra, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
 		}
 	}
-	return func(s string) bool {
-		ip := net.ParseIP(s)
-		if ip == nil {
-			return true // unparseable: never act
-		}
-		if ip.IsLoopback() || ip.IsUnspecified() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+	var protected func(ip net.IP) bool
+	protected = func(ip net.IP) bool {
+		if !ip.IsGlobalUnicast() || ip.IsPrivate() {
 			return true
+		}
+		for _, n := range nonPublicNets {
+			if n.Contains(ip) && !teredoNet.Contains(ip) {
+				return true
+			}
 		}
 		for _, n := range documentationNets {
 			if n.Contains(ip) {
@@ -233,6 +260,21 @@ func (d *Daemon) centralFirebreak() func(string) bool {
 		if checks.IsCloudflareIP(ip) || threatintel.IPInAnyVerifiedBotRange(ip) {
 			return true
 		}
+		// Check the original address before its embedded IPv4: operators
+		// can protect the IPv6 host or prefix independently of that IPv4.
+		if nat64Net.Contains(ip) {
+			return protected(net.IPv4(ip[12], ip[13], ip[14], ip[15]))
+		}
+		if sixToFourNet.Contains(ip) {
+			return protected(net.IPv4(ip[2], ip[3], ip[4], ip[5]))
+		}
 		return false
+	}
+	return func(s string) bool {
+		ip := net.ParseIP(s)
+		if ip == nil {
+			return true // unparseable: never act
+		}
+		return protected(ip)
 	}
 }

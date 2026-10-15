@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -46,7 +47,46 @@ var (
 	ErrInsecureURL = errors.New("reporting: target URL must be https")
 	// ErrRejected means the collector rejected the report (non-2xx, non-conflict).
 	ErrRejected = errors.New("reporting: report rejected")
+	// ErrReportRefused marks a 422: the collector read this report and refused
+	// it, so resending the same body would be refused again. Other statuses can
+	// come from a proxy, a version mismatch, an outage, throttling, or the node
+	// not being approved yet, and hit every report alike.
+	ErrReportRefused = errors.New("reporting: report refused as invalid")
 )
+
+// ThrottledError is a 429 from the collector. RetryAfter is the wait its
+// Retry-After asked for, or zero when the header is missing or invalid.
+type ThrottledError struct {
+	RetryAfter time.Duration
+}
+
+func (e *ThrottledError) Error() string {
+	return fmt.Sprintf("status %d", http.StatusTooManyRequests)
+}
+
+func retryAfter(h http.Header, now time.Time) time.Duration {
+	value := strings.TrimSpace(h.Get("Retry-After"))
+	n, err := strconv.ParseUint(value, 10, 64)
+	if errors.Is(err, strconv.ErrRange) {
+		// ParseUint can stop at overflow before checking the suffix.
+		for _, digit := range value {
+			if digit < '0' || digit > '9' {
+				return 0
+			}
+		}
+	}
+	if err == nil || errors.Is(err, strconv.ErrRange) {
+		const longest = time.Duration(1<<63 - 1)
+		if n > uint64(longest/time.Second) {
+			return longest
+		}
+		return time.Duration(n) * time.Second
+	}
+	if deadline, err := http.ParseTime(value); err == nil {
+		return max(0, deadline.Sub(now))
+	}
+	return 0
+}
 
 // Sender delivers a signed report body to a target over HTTP.
 type Sender struct {
@@ -76,8 +116,10 @@ func ValidateTargetURL(raw string) error {
 }
 
 // Send signs body for t and POSTs it. A 2xx is success; 409 Conflict (the
-// collector already has this report) is treated as success. Other statuses and
-// transport errors are failures the caller should retry from the spool.
+// collector already has this report) is treated as success. A 422 refusal of
+// the report itself wraps ErrReportRefused and is not worth retrying. A 429
+// wraps a ThrottledError. Other statuses and transport errors are failures the
+// caller retries from the spool.
 func (s *Sender) Send(ctx context.Context, t Target, body []byte) error {
 	u, err := url.Parse(t.URL)
 	if err != nil {
@@ -129,6 +171,10 @@ func (s *Sender) Send(ctx context.Context, t Target, body []byte) error {
 		return nil
 	case resp.StatusCode == http.StatusConflict:
 		return nil // collector already recorded this report (replay/dup)
+	case resp.StatusCode == http.StatusUnprocessableEntity:
+		return fmt.Errorf("%w (%w): status %d", ErrRejected, ErrReportRefused, resp.StatusCode)
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return fmt.Errorf("%w: %w", ErrRejected, &ThrottledError{RetryAfter: retryAfter(resp.Header, s.now())})
 	default:
 		return fmt.Errorf("%w: status %d", ErrRejected, resp.StatusCode)
 	}

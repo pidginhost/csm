@@ -1001,7 +1001,7 @@ type Config struct {
 			PubkeyEnv       string `yaml:"pubkey_env"`       // env holding the central Ed25519 public key (hex)
 			RefreshInterval string `yaml:"refresh_interval"` // e.g. "6h"; default 6h
 			Action          string `yaml:"action"`           // off | challenge | block_if_local_corroborated
-			BlockThreshold  int    `yaml:"block_threshold"`  // node-local score threshold for block (default 80)
+			BlockThreshold  int    `yaml:"block_threshold"`  // node-local score threshold for block (default 60)
 		} `yaml:"central" hotreload:"restart"`
 	} `yaml:"reputation" hotreload:"safe"`
 

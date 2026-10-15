@@ -1,8 +1,13 @@
 package reporting
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -126,46 +131,101 @@ func (s *Spool) Len() int {
 }
 
 // Drain processes queued items in FIFO order, calling send for each. An item is
-// removed only when send returns nil; on the first send error Drain stops and
-// leaves that item (and the rest) for a later retry, preserving order. It
-// returns how many were delivered.
+// removed when send returns nil. A send error pauses that item's target for
+// the rest of the pass: the item and the target's later items stay queued, in
+// order, for the next pass, while other targets keep draining. An item the
+// collector refused as invalid (ErrReportRefused) is dropped, since the same
+// body would be refused again; it counts as lost unless an earlier send of it
+// was acknowledged. A spool read or removal
+// failure stops the pass. Drain returns how many items were delivered and the
+// failures it met.
 func (s *Spool) Drain(send func(target string, body []byte) error) (delivered int, err error) {
 	s.drain.Lock()
 	defer s.drain.Unlock()
 
+	paused := make(map[string]bool)
+	refused := make(map[string]int)
+	var failures []error
+	// A paused target contributes one failure per pass; refusals are counted
+	// per target so a burst of them stays one entry.
+	result := func(extra error) error {
+		errs := append(slices.Clone(failures), extra)
+		for _, target := range slices.Sorted(maps.Keys(refused)) {
+			errs = append(errs, fmt.Errorf("target %s: %d reports refused as invalid and dropped: %w",
+				target, refused[target], ErrReportRefused))
+		}
+		return errors.Join(errs...)
+	}
+	var after []byte
 	for {
-		key, item, work, err := s.next()
+		key, item, work, err := s.next(after, paused)
 		if err != nil {
-			return delivered, err
+			return delivered, result(err)
 		}
 		if work == nil {
-			return delivered, nil
+			// One target's success must not hide another target's stall.
+			s.health.sendFailed.Store(len(paused) > 0)
+			return delivered, result(nil)
 		}
-		if err := s.deliver(key, item, work, send); err != nil {
-			return delivered, err
+		after = key
+		sendErr, ioErr := s.deliver(key, item, work, send)
+		switch {
+		case sendErr == nil:
+		case errors.Is(sendErr, ErrReportRefused):
+			// A refused item the spool failed to remove is still queued.
+			if ioErr == nil {
+				refused[item.Target]++
+			}
+		default:
+			failures = append(failures, fmt.Errorf("target %s: %w", item.Target, sendErr))
+			paused[item.Target] = true
 		}
-		delivered++
+		if ioErr != nil {
+			return delivered, result(ioErr)
+		}
+		if sendErr == nil {
+			delivered++
+		}
 	}
 }
 
-func (s *Spool) next() (key []byte, item spoolItem, work *spoolWork, err error) {
+// next returns the first queued item after the key `after` (from the start
+// when nil) whose target is not paused in this pass.
+func (s *Spool) next(after []byte, paused map[string]bool) (key []byte, item spoolItem, work *spoolWork, err error) {
 	s.mutation.Lock()
 	defer s.mutation.Unlock()
+	empty := false
 	err = s.db.View(func(tx *bolt.Tx) error {
-		k, v := tx.Bucket(s.bucket).Cursor().First()
-		if k == nil {
+		c := tx.Bucket(s.bucket).Cursor()
+		var k, v []byte
+		if after == nil {
+			k, v = c.First()
+			empty = k == nil
+		} else if k, v = c.Seek(after); k != nil && bytes.Equal(k, after) {
+			k, v = c.Next()
+		}
+		for ; k != nil; k, v = c.Next() {
+			var it spoolItem
+			if decodeErr := json.Unmarshal(v, &it); decodeErr != nil {
+				return decodeErr
+			}
+			if paused[it.Target] {
+				continue
+			}
+			key, item = append([]byte(nil), k...), it
 			return nil
 		}
-		key = append([]byte(nil), k...)
-		return json.Unmarshal(v, &item)
+		return nil
 	})
 	s.health.readFailed.Store(err != nil)
 	if err != nil {
 		return nil, item, nil, err
 	}
-	if key == nil {
+	if empty {
 		s.health.sendFailed.Store(false)
 		s.health.removeFailed.Store(false)
+	}
+	if key == nil {
 		return nil, item, nil, nil
 	}
 	work = s.health.pending[string(key)]
@@ -181,14 +241,19 @@ func (s *Spool) next() (key []byte, item spoolItem, work *spoolWork, err error) 
 	return key, item, work, nil
 }
 
-func (s *Spool) deliver(key []byte, item spoolItem, work *spoolWork, send func(string, []byte) error) error {
-	sent, removed := false, false
-	defer func() { s.finishDelivery(work, sent, removed) }()
+// deliver sends one item. sendErr is the collector's answer when it did not
+// accept the item; a refused item is still removed. ioErr is a spool failure.
+func (s *Spool) deliver(key []byte, item spoolItem, work *spoolWork, send func(string, []byte) error) (sendErr, ioErr error) {
+	sent, refused, removed := false, false, false
+	defer func() { s.finishDelivery(work, sent, refused, removed) }()
 	if err := send(item.Target, item.Body); err != nil {
-		return err
+		if !errors.Is(err, ErrReportRefused) {
+			return err, nil
+		}
+		refused, sendErr = true, err
+	} else {
+		sent = true
 	}
-	sent = true
-	s.health.sendFailed.Store(false)
 	s.mutation.Lock()
 	defer s.mutation.Unlock()
 	if !work.evicted {
@@ -197,10 +262,10 @@ func (s *Spool) deliver(key []byte, item spoolItem, work *spoolWork, send func(s
 		})
 		s.health.removeFailed.Store(err != nil)
 		if err != nil {
-			return err
+			return sendErr, err
 		}
 		delete(s.health.pending, string(key))
 	}
 	removed = true
-	return nil
+	return sendErr, nil
 }
