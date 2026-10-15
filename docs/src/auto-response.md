@@ -370,7 +370,8 @@ findings history and the [action log](action-log.md) show the preview.
 The resulting `auto_block` findings are output evidence, not new local
 corroboration for central intelligence or incident correlation. They are
 deduplicated before the digest, attack database, history, and alert sinks
-receive them.
+receive them. Only a block that applied marks its address as auto-blocked in
+the attack database; a dry-run "would be blocked" warning does not.
 
 Central intelligence and incident auto-blocking act on an address only when
 a finding names it as an attacker. The remote end of an outbound connection,
