@@ -105,6 +105,17 @@
       "rationale": "Hands one request to the owner goroutine, which makes every ledger change; the caller waits for the owner and stops waiting once the owner has stopped. Nothing queues."
     },
     {
+      "id": "internal/admissionowner/owner.go::Start::summaryResult::channel::1",
+      "path": "internal/admissionowner/owner.go",
+      "owner": "Start",
+      "target": "summaryResult",
+      "kind": "channel",
+      "source": "make(chan summaryResult, 1)",
+      "capacity": "1",
+      "class": "lifecycle",
+      "rationale": "Hands Stop the receipt of the one dry-run summary delivery the stopped owner goroutine could not settle; one delivery runs at a time, so the send never blocks."
+    },
+    {
       "id": "internal/admissionowner/verdicts.go::*Owner.startVerdicts::done::channel::1",
       "path": "internal/admissionowner/verdicts.go",
       "owner": "*Owner.startVerdicts",
