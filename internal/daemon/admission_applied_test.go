@@ -21,7 +21,7 @@ import (
 // action named by digit.
 func appliedRow(t *testing.T, digit, addr string, expires time.Time) admission.AuditRow {
 	t.Helper()
-	target, err := admission.CanonicalAddress(addr, admission.Caps{})
+	target, err := admission.CanonicalAddress(addr, admission.Caps{IPv6: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func appliedRow(t *testing.T, digit, addr string, expires time.Time) admission.A
 // Design P14: the production owner hands each applied block to the
 // daemon, which records it where the legacy path records its own: the
 // attack database's blocked marker, and a threat database row that lapses
-// with the block. The threat row is written only while the action's
+// with the block. Both are written only while the action's
 // verified firewall row still stands and before its expiry. A repeated
 // row changes nothing.
 func TestAdmissionRecordsAppliedBlocks(t *testing.T) {
@@ -62,6 +62,7 @@ func TestAdmissionRecordsAppliedBlocks(t *testing.T) {
 	t.Cleanup(checks.SetGlobalThreatDBForTest(dir))
 	adb := attackdb.NewForTest(map[string]*attackdb.IPRecord{
 		"203.0.113.40": {IP: "203.0.113.40"}, "203.0.113.41": {IP: "203.0.113.41"}, "203.0.113.42": {IP: "203.0.113.42"}, "203.0.113.43": {IP: "203.0.113.43"},
+		"203.0.113.44": {IP: "203.0.113.44"},
 	})
 	previous := attackdb.Global()
 	attackdb.SetGlobal(adb)
@@ -111,11 +112,12 @@ func TestAdmissionRecordsAppliedBlocks(t *testing.T) {
 		if match, ok := tdb.LookupMatch(ip); ok {
 			t.Errorf("%s: a block that no longer stands recorded threat evidence %+v", ip, match)
 		}
-	}
-	for _, ip := range []string{"203.0.113.40", "203.0.113.41", "203.0.113.42"} {
-		if rec := adb.LookupIP(ip); rec == nil || !rec.AutoBlocked {
-			t.Errorf("%s: applied block not marked in the attack database: %+v", ip, rec)
+		if rec := adb.LookupIP(ip); rec == nil || rec.AutoBlocked || rec.ThreatScore != 0 {
+			t.Errorf("%s: a block that no longer stands changed the attack record: %+v", ip, rec)
 		}
+	}
+	if rec := adb.LookupIP("203.0.113.40"); rec == nil || !rec.AutoBlocked {
+		t.Errorf("standing block not marked in the attack database: %+v", rec)
 	}
 	if rec := adb.LookupIP("203.0.113.43"); rec == nil || rec.AutoBlocked {
 		t.Fatalf("an address no block named was marked: %+v", rec)
@@ -129,6 +131,20 @@ func TestAdmissionAppliedReadAndWriteFailures(t *testing.T) {
 	t.Cleanup(checks.SetGlobalThreatDBForTest(dir))
 	d := New(&config.Config{StatePath: dir}, nil, nil, "")
 	row := appliedRow(t, "6", "203.0.113.46", time.Now().Add(time.Hour).UTC())
+	adb := attackdb.NewForTest(map[string]*attackdb.IPRecord{"203.0.113.46": {IP: "203.0.113.46"}})
+	previous := attackdb.Global()
+	attackdb.SetGlobal(adb)
+	t.Cleanup(func() { attackdb.SetGlobal(previous) })
+	before := adb.LookupIP("203.0.113.46")
+	assertUnchanged := func() {
+		t.Helper()
+		if after := adb.LookupIP("203.0.113.46"); !reflect.DeepEqual(before, after) {
+			t.Errorf("failed delivery changed the attack record: %+v -> %+v", before, after)
+		}
+		if match, ok := checks.GetThreatDB().LookupMatch("203.0.113.46"); ok {
+			t.Errorf("failed delivery published threat evidence: %+v", match)
+		}
+	}
 	path := filepath.Join(dir, "firewall", "state.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
@@ -139,6 +155,7 @@ func TestAdmissionAppliedReadAndWriteFailures(t *testing.T) {
 	if err := d.consumeAppliedBlocks([]admission.AuditRow{row}); err == nil {
 		t.Fatal("an unreadable state image reported consumption")
 	}
+	assertUnchanged()
 	data, err := json.Marshal(firewall.FirewallState{Blocked: []firewall.BlockedEntry{{
 		IP: "203.0.113.46", Reason: "CSM auto-block: ssh_brute", Source: firewall.SourceAutoResponse,
 		ActionID: string(row.Attempt.ID), ExpiresAt: row.ExpiresAt,
@@ -154,5 +171,51 @@ func TestAdmissionAppliedReadAndWriteFailures(t *testing.T) {
 	}
 	if err = d.consumeAppliedBlocks([]admission.AuditRow{row}); err == nil {
 		t.Fatal("a failed threat write reported consumption")
+	}
+	assertUnchanged()
+}
+
+func TestAdmissionAppliedBlockAddressFamilies(t *testing.T) {
+	for _, raw := range []string{"2001:db8::46", "::ffff:203.0.113.46"} {
+		t.Run(raw, func(t *testing.T) {
+			dir := t.TempDir()
+			sdb, cleanup := openTestBoltStore(t, t.TempDir())
+			t.Cleanup(cleanup)
+			t.Cleanup(checks.SetGlobalThreatDBForTest(dir))
+			row := appliedRow(t, "6", raw, time.Now().Add(time.Hour).UTC())
+			addr, _ := row.Target.Addr()
+			ip := addr.String()
+			adb := attackdb.NewForTest(map[string]*attackdb.IPRecord{ip: {IP: ip}})
+			previous := attackdb.Global()
+			attackdb.SetGlobal(adb)
+			t.Cleanup(func() { attackdb.SetGlobal(previous) })
+			data, err := json.Marshal(firewall.FirewallState{Blocked: []firewall.BlockedEntry{{
+				IP: ip, Reason: "CSM auto-block: ssh_brute", Source: firewall.SourceAutoResponse,
+				ActionID: string(row.Attempt.ID), ExpiresAt: row.ExpiresAt,
+			}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "firewall", "state.json")
+			if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			d := New(&config.Config{StatePath: dir}, nil, nil, "")
+			if err = d.consumeAppliedBlocks([]admission.AuditRow{row}); err != nil {
+				t.Fatal(err)
+			}
+			if entry, ok := sdb.GetPermanentBlock(ip); !ok || !entry.ExpiresAt.Equal(row.ExpiresAt) {
+				t.Errorf("canonical address has no stored evidence: %+v, %t", entry, ok)
+			}
+			if match, ok := checks.GetThreatDB().LookupMatch(ip); !ok || !match.ExpiresAt.Equal(row.ExpiresAt) {
+				t.Errorf("canonical address has no threat evidence: %+v, %t", match, ok)
+			}
+			if rec := adb.LookupIP(ip); rec == nil || !rec.AutoBlocked {
+				t.Errorf("canonical address was not marked: %+v", rec)
+			}
+		})
 	}
 }

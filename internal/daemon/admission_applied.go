@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/attackdb"
@@ -19,9 +20,9 @@ var loadAppliedState = firewall.LoadState
 // so an unblock that removes the firewall row after that read waits for the
 // batch to commit and then removes what it wrote.
 func (d *Daemon) consumeAppliedBlocks(rows []admission.AuditRow) error {
+	var entries []store.PermanentBlockEntry
 	var readErr error
 	choose := func() []store.PermanentBlockEntry {
-		var entries []store.PermanentBlockEntry
 		entries, readErr = d.standingAppliedBlocks(rows)
 		return entries
 	}
@@ -34,15 +35,15 @@ func (d *Daemon) consumeAppliedBlocks(rows []admission.AuditRow) error {
 	if readErr != nil {
 		return readErr
 	}
-	if adb := attackdb.Global(); adb != nil {
-		for _, r := range rows {
-			if addr, ok := r.Target.Addr(); ok {
-				adb.MarkBlocked(addr.String())
-			}
-		}
-	}
 	if writeErr != nil {
 		return fmt.Errorf("recording applied threat batch: %w", writeErr)
+	}
+	if adb := attackdb.Global(); adb != nil {
+		for _, entry := range entries {
+			if time.Now().Before(entry.ExpiresAt) {
+				adb.MarkBlocked(entry.IP)
+			}
+		}
 	}
 	return nil
 }

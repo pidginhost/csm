@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // appliedSink records every batch of applied rows the owner hands over and
@@ -152,6 +153,51 @@ func TestOwnerWithoutAnAppliedConsumerAcknowledges(t *testing.T) {
 	}
 	if got := pendingAudit(t, o); len(got) != 0 {
 		t.Fatalf("rows still pending: %+v", got)
+	}
+}
+
+func TestOwnerReplaysAppliedBlocksAfterLostAckAndRestart(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	sink, consumer := &auditSink{}, &appliedSink{}
+	opts := f.options()
+	opts.WriteAudit = sink.write
+	opts.Applied = func(rows []admission.AuditRow) error {
+		if err := consumer.consume(rows); err != nil {
+			return err
+		}
+		// Delivery succeeded, but the acknowledgement cannot reach disk.
+		return f.db.Close()
+	}
+	o := f.start(opts)
+	applied(t, o, p, f.host)
+	want := pendingAudit(t, o)
+	if err := o.do(o.deliverAudit); err == nil {
+		t.Fatal("the closed store accepted an acknowledgement")
+	}
+	if got := consumer.seen(); len(got) != 1 || len(got[0]) != 1 {
+		t.Fatalf("consumer did not finish before acknowledgement: %+v", got)
+	}
+	o.Stop()
+	db, err := store.Open(f.statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	opts.DB, opts.Applied = db, consumer.consume
+	restarted := f.start(opts)
+	if got := pendingAudit(t, restarted); !reflect.DeepEqual(got, want) {
+		t.Fatalf("restart lost unacknowledged rows: %+v, want %+v", got, want)
+	}
+	if err = restarted.do(restarted.deliverAudit); err != nil {
+		t.Fatal(err)
+	}
+	batches := consumer.seen()
+	if len(batches) != 2 || !reflect.DeepEqual(batches[0], batches[1]) {
+		t.Fatalf("restart did not replay the same applied row: %+v", batches)
+	}
+	if got := pendingAudit(t, restarted); len(got) != 0 {
+		t.Fatalf("successful replay left pending rows: %+v", got)
 	}
 }
 

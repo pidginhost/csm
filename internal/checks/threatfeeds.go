@@ -287,7 +287,9 @@ func (db *ThreatDB) AddTemporaryBatchFrom(choose func() []store.PermanentBlockEn
 		}
 		if source, exists := db.badIPs[ip]; exists {
 			cur, isTemp := db.badIPExpiry[ip]
-			if !isTemp || cur.After(expiresAt) {
+			// Keep local permanent evidence, but retain the applied row
+			// independently of feeds that may withdraw this address.
+			if (!isTemp && !isFeedSourceName(source)) || cur.After(expiresAt) {
 				continue
 			}
 			// Reloaded evidence uses this source label. Replaying its

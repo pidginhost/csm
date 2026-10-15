@@ -90,6 +90,65 @@ func TestThreatDBAddTemporaryUntilRetriesFailedStore(t *testing.T) {
 	}
 }
 
+func TestAppliedThreatSurvivesFeedWithdrawal(t *testing.T) {
+	withTestThreatStore(t)
+	db := newTestThreatDB(t)
+	const ip = "192.0.2.77"
+	db.feedIPs = map[string]map[string]struct{}{"cins-army": {ip: {}}}
+	db.badIPs[ip] = "cins-army"
+	expires := time.Now().Add(time.Hour)
+	if err := db.AddTemporaryUntil(ip, "CSM auto-block: ssh_brute", expires); err != nil {
+		t.Fatal(err)
+	}
+	// A feed update must not discard the independent local block evidence.
+	delete(db.feedIPs["cins-army"], ip)
+	db.rebuildFeedLookup(map[string]bool{"cins-army": true})
+	if match, ok := db.LookupMatch(ip); !ok || !match.ExpiresAt.Equal(expires) || match.Permanent {
+		t.Errorf("feed withdrawal lost the applied block: %+v, %t", match, ok)
+	}
+	if entry, ok := store.Global().GetPermanentBlock(ip); !ok || !entry.ExpiresAt.Equal(expires) {
+		t.Errorf("applied block has no stored evidence: %+v, %t", entry, ok)
+	}
+	// A surviving feed still counts after the local block is removed.
+	db.feedIPs["cins-army"][ip] = struct{}{}
+	db.RemoveTemporary(ip)
+	if match, ok := db.LookupMatch(ip); !ok || match.Source != "cins-army" || !match.ExpiresAt.IsZero() {
+		t.Errorf("removing applied evidence lost the feed: %+v, %t", match, ok)
+	}
+}
+
+func TestAppliedThreatPreservesStrongerLocalEvidence(t *testing.T) {
+	for _, permanent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "longer", true: "permanent"}[permanent], func(t *testing.T) {
+			withTestThreatStore(t)
+			db := newTestThreatDB(t)
+			const ip = "192.0.2.78"
+			if permanent {
+				db.AddPermanent(ip, "operator block")
+			} else {
+				db.AddOperatorTemporary(ip, "operator block", 2*time.Hour)
+			}
+			first, _ := store.Global().GetPermanentBlock(ip)
+			before, _ := db.LookupMatch(ip)
+			if _, err := store.Global().AppendUndoEntry("operator", store.UndoEntry{Inverse: "test", Targets: []string{ip}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.AddTemporaryUntil(ip, "CSM auto-block: ssh_brute", time.Now().Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			if after, _ := db.LookupMatch(ip); after != before {
+				t.Errorf("applied block replaced stronger evidence: %+v -> %+v", before, after)
+			}
+			if after, _ := store.Global().GetPermanentBlock(ip); after != first {
+				t.Errorf("applied block replaced stronger stored evidence: %+v -> %+v", first, after)
+			}
+			if _, ok, err := store.Global().LatestUndoEntry("operator"); err != nil || !ok {
+				t.Errorf("no-op invalidated operator undo: %t, %v", ok, err)
+			}
+		})
+	}
+}
+
 // A held write must not stop reputation lookups or whitelist reload. A
 // concurrent removal must run after publication, so it cannot be undone
 // by the older batch finishing later.
