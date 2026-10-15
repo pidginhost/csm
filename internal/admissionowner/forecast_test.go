@@ -759,3 +759,41 @@ func TestOwnerFinishesLiveWorkAfterAFlipToDryRun(t *testing.T) {
 		t.Fatalf("a dry run dispatched or repaired: %d applies, %d marks", len(applies), blocks.marks)
 	}
 }
+
+// Spec 1.2, 3.7: a forecast neither probes nor repairs an engine a live
+// hold names, so the hold's probe deadline does not run a turn every
+// second while the dry run lasts; the hold stays for the next live turn.
+func TestOwnerForecastLeavesALiveHoldAlone(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.results["192.0.2.10"] = firewall.BlockResult{Effect: firewall.BlockUnknown, Err: fmt.Errorf("%w: no space left on device", firewall.ErrBlockBatchState)}
+	o, r, mono := policyOwner(t, f, blocks, validPolicy(1))
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	turn(t, o)
+	if executionHeld(t, o) == "" {
+		t.Fatal("fixture: no execution hold")
+	}
+	r.publish(dryPolicy(2))
+	if err := o.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	selections := 0
+	preview := previewLedger
+	setOwnerHook(t, o, &previewLedger, func(l *store.AdmissionLedger, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+		selections++
+		return preview(l, answers)
+	})
+	if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		mono.advance(maxProbeWait)
+		if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if selections != 1 || blocks.marks != 0 || blocks.stateProbes != 0 || executionHeld(t, o) == "" {
+		t.Fatalf("%d forecast turns, %d repairs, %d probes, held %q", selections, blocks.marks, blocks.stateProbes, executionHeld(t, o))
+	}
+}

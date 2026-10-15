@@ -738,6 +738,9 @@ func (o *Owner) schedule() {
 	if errors.Is(o.execHold, errNoEngine) {
 		probeDue = o.opts.Blocks() != nil
 	}
+	// A forecast neither probes nor repairs the engine (spec 1.2): a hold
+	// from live work waits for the next live turn.
+	probeDue = probeDue && !o.forecasting()
 	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) && !probeDue {
 		return
 	}

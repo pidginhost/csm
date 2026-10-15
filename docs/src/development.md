@@ -768,28 +768,30 @@ preview. A comparison-only owner never reads the policy.
 Under a dry-run policy the owner forecasts instead of running. It selects
 work with `SchedulePreview`, whatever the live budgets, and ends each pick
 as a dry run with a prediction: no attempt, charge, history, audit row or
-mutating engine call. A forecast session starts at startup or on entry
-into dry-run from the committed ceiling and its retained charges, then
-lives in memory apart from it: the same committed clock meters it, a new
-limit applies without new credit, and live credit is never copied over it.
-One read-only admission snapshot answers a turn's `block_ip` picks, with
-the real temporary occupancy and the real blocks of forecast addresses. A
+mutating engine call. A forecast session starts at startup or on entry into
+dry-run from the committed ceiling and its retained charges, then lives in
+memory apart from it: the same committed clock meters it, a new limit
+applies without new credit, and live credit is never copied over it. One
+read-only admission snapshot answers a turn's `block_ip` picks, with the
+real temporary occupancy and the real blocks of forecast addresses. A
 refused target ends or waits as a live check has it. A real block that
 covers the address predicts `existing_actual`, unlinked; a forecast block
 that lasts as long predicts `existing_shadow` and a shorter one
-`pending_recovery`, and neither is renewed. Other picks are checked
-against the modelled temporary capacity, the bound on forecast blocks and
-the modelled ceiling, and only `capacity_admit` adds a forecast block and
-a simulated charge. With the verdict callback on, a pick the model would
+`pending_recovery`, and neither is renewed. Other picks are checked against
+the modelled temporary capacity, the bound on forecast blocks and the
+modelled ceiling, and only `capacity_admit` adds a forecast block and a
+simulated charge. With the verdict callback on, a pick the model would
 judge is asked about first and waits for its answer with no forecast
 change; a usable allow ends it as `verdict_allow` before any modelled
 capacity is judged, and a covering forecast block or a full modelled set
-ends it without a call. Other firewall kinds end as `not_modelled`, with
-no call; a challenge keeps its comparison preview. Without an engine or snapshot, or
-with a degraded clock, picks wait as `engine_unavailable` and the forecast
-does not change. A decision is installed only once its ending commits. A
-live policy ends the session and never replays a dry-run ending; a later
-observation of the target is a new generation.
+ends it without a call. Other firewall kinds end as `not_modelled`, with no
+call; a challenge keeps its comparison preview. Without an engine or
+snapshot, or with a degraded clock, picks wait as `engine_unavailable` and
+the forecast does not change. A decision is installed only once its ending
+commits. A forecast neither probes nor repairs the engine: a hold from live
+work stays in `execution_held` until the next live turn. A live policy ends
+the session and never replays a dry-run ending; a later observation of the
+target is a new generation.
 
 With the policy's verdict callback on, a live owner asks the panel about
 each `block_ip` pick before anything is reserved, as a dry run does before
