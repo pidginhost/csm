@@ -85,6 +85,7 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	f.RspamdOptions = c.run(ctx, "rspamadm", "configdump", "-j", "options")
 	f.RspamdActions = c.run(ctx, "rspamadm", "configdump", "-j", "actions")
 	f.RspamdModules = c.run(ctx, "rspamadm", "configdump", "-m")
+	f.RspamdPhishing = c.run(ctx, "rspamadm", "configdump", "-j", "phishing")
 	f.RspamdService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...)
 	f.EximService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.EximUnit)...)
 	_, f.SystemdRunErr = c.lookPath("systemd-run")

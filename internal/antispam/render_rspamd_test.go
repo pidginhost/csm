@@ -14,6 +14,7 @@ func TestRenderRspamdMatchesVerifiedFiles(t *testing.T) {
 		"emails.conf":      "# csm-managed-version: 1\nenabled = false;\n",
 		"fuzzy_check.conf": "# csm-managed-version: 1\nenabled = false;\n",
 		"asn.conf":         "# csm-managed-version: 1\nenabled = false;\n",
+		"phishing.conf":    "# csm-managed-version: 1\nphishtank_enabled = false;\n",
 	}
 	if len(files) != len(want) {
 		t.Fatalf("rendered %d files, want %d: %v", len(files), len(want), files)

@@ -9,7 +9,7 @@ import (
 const ManagedHeader = "# csm-managed-version: 1"
 
 // RspamdFiles lists the local.d files CSM owns, in write order.
-var RspamdFiles = []string{"actions.conf", "greylist.conf", "rbl.conf", "emails.conf", "fuzzy_check.conf", "asn.conf"}
+var RspamdFiles = []string{"actions.conf", "greylist.conf", "rbl.conf", "emails.conf", "fuzzy_check.conf", "asn.conf", "phishing.conf"}
 
 // disabledModule turns one rspamd module off. Core makes no third-party
 // lookups: rbl, emails and fuzzy_check query outside lists, asn sends sender
@@ -26,6 +26,9 @@ func RenderRspamd(s Settings) (map[string]string, error) {
 	for _, name := range RspamdFiles {
 		files[name] = disabledModule
 	}
+	// The phishing module keeps its local checks; only its URL lookups in
+	// rspamd.com's phishtank zone go off.
+	files["phishing.conf"] = ManagedHeader + "\nphishtank_enabled = false;\n"
 	files["actions.conf"] = ManagedHeader + "\n" +
 		"reject = " + strconv.Itoa(s.RejectScore) + ";\n" +
 		"add_header = " + strconv.Itoa(s.TagScore) + ";\n" +

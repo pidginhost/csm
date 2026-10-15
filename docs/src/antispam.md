@@ -159,10 +159,11 @@ integration; it does not mean filtering is installed on the host.
   `custom_begin_check_message_post`), inside `# CSM-ANTISPAM BEGIN` and
   `# CSM-ANTISPAM END` markers;
 - one `spamd_address` line in the `@CONFIG@` section of `/etc/exim.conf.local`;
-- `actions.conf`, `greylist.conf`, `rbl.conf`, `emails.conf`, `asn.conf` and
-  `fuzzy_check.conf` in `/etc/rspamd/local.d`, each starting with
-  `# csm-managed-version: 1`. Greylisting, DNS block lists, the emails module,
-  sender-IP lookups to rspamd.com and public fuzzy storage are off;
+- `actions.conf`, `greylist.conf`, `rbl.conf`, `emails.conf`, `asn.conf`,
+  `fuzzy_check.conf` and `phishing.conf` in `/etc/rspamd/local.d`, each
+  starting with `# csm-managed-version: 1`. Greylisting, DNS block lists, the
+  emails module, sender-IP lookups to rspamd.com, phishtank URL lookups to
+  rspamd.com and public fuzzy storage are off;
 - a completion record in `/var/lib/csm/antispam`.
 
 Content outside CSM's markers, including forward-guard blocks, is preserved.

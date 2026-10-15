@@ -25,7 +25,9 @@ type fakeHost struct {
 	fail map[string][]int
 	seen map[string]int
 	// actions replaces the configdump of local.d/actions.conf when set.
-	actions  string
+	actions string
+	// phishing replaces the configdump of local.d/phishing.conf when set.
+	phishing string
 	problems []antispam.Problem
 	// pingFail and greetFail list the 1-based probe calls that fail.
 	pingFail, greetFail []int
@@ -148,6 +150,8 @@ func (f *fakeHost) run(ctx context.Context, limit time.Duration, name string, ar
 		return antispam.CommandResult{Stdout: "Modules enabled: dkim, spf, dmarc\n"}
 	case line == "rspamadm configdump -j actions":
 		return antispam.CommandResult{Stdout: f.dumpActions()}
+	case line == "rspamadm configdump -j phishing":
+		return antispam.CommandResult{Stdout: f.dumpPhishing()}
 	}
 	return antispam.CommandResult{}
 }
@@ -165,6 +169,17 @@ func (f *fakeHost) dumpActions() string {
 		}
 	}
 	return "{" + strings.Join(fields, ",") + "}"
+}
+
+// dumpPhishing is configdump -j phishing: phishtank stays on, rspamd's
+// default, unless local.d/phishing.conf turns it off.
+func (f *fakeHost) dumpPhishing() string {
+	if f.phishing != "" {
+		return f.phishing
+	}
+	st, _ := readFile(f.root + antispam.RspamdLocalDir + "/phishing.conf")
+	on := !strings.Contains(st.content, "\nphishtank_enabled = false;\n")
+	return fmt.Sprintf(`{"openphish_enabled": false, "phishtank_enabled": %t}`, on)
 }
 
 // build is buildeximconf: the @CONFIG@ block and the hook files inlined

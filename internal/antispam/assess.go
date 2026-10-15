@@ -155,6 +155,11 @@ func loadedConflicts(s Settings, f HostFacts) []Problem {
 	} else {
 		conflicts = append(conflicts, checkRspamdActions(actions, s)...)
 	}
+	if on, err := PhishtankEnabled([]byte(f.RspamdPhishing.Stdout)); f.RspamdPhishing.Err != nil || err != nil {
+		unreadable = true
+	} else if on {
+		conflicts = append(conflicts, "rspamd phishtank lookups are enabled; an override defeats CSM's phishing.conf")
+	}
 	for _, c := range conflicts {
 		out = append(out, Problem{Code: CodeRspamdConfig, Severity: Definite, Detail: c})
 	}

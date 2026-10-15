@@ -140,7 +140,7 @@ func TestCollectReadsEveryFact(t *testing.T) {
 		want = append(want, "exim -C "+conf+" -be "+probe)
 	}
 	want = append(want, "rspamd --version", "rspamadm --version", "rspamadm configdump -j options",
-		"rspamadm configdump -j actions", "rspamadm configdump -m",
+		"rspamadm configdump -j actions", "rspamadm configdump -m", "rspamadm configdump -j phishing",
 		"systemctl show -p LoadState -p User -p CanReload rspamd.service",
 		"systemctl show -p LoadState -p User -p CanReload exim.service")
 	if !slices.Equal(run.calls, want) {
@@ -428,8 +428,9 @@ func TestCollectReadsRecordAndRspamdState(t *testing.T) {
 	record := filepath.Join(d, "installed.json")
 	write(t, record, string(antispam.EncodeRecord("")))
 	run := &fakeRun{results: map[string]antispam.CommandResult{
-		"rspamadm configdump -j actions": {Stdout: `{"reject": 15}`},
-		"rspamadm configdump -m":         {Stdout: "Modules enabled: dkim\n"},
+		"rspamadm configdump -j actions":  {Stdout: `{"reject": 15}`},
+		"rspamadm configdump -m":          {Stdout: "Modules enabled: dkim\n"},
+		"rspamadm configdump -j phishing": {Stdout: `{"phishtank_enabled": false}`},
 	}}
 	c := testCollector(d, run)
 	c.layout.Record = record
@@ -439,8 +440,9 @@ func TestCollectReadsRecordAndRspamdState(t *testing.T) {
 	if f.Record.Missing || f.Record.Err != nil || f.Record.Content != string(antispam.EncodeRecord("")) {
 		t.Errorf("record %+v", f.Record)
 	}
-	if f.RspamdActions.Stdout != `{"reject": 15}` || f.RspamdModules.Stdout != "Modules enabled: dkim\n" {
-		t.Errorf("rspamd state %+v %+v", f.RspamdActions, f.RspamdModules)
+	if f.RspamdActions.Stdout != `{"reject": 15}` || f.RspamdModules.Stdout != "Modules enabled: dkim\n" ||
+		f.RspamdPhishing.Stdout != `{"phishtank_enabled": false}` {
+		t.Errorf("rspamd state %+v %+v %+v", f.RspamdActions, f.RspamdModules, f.RspamdPhishing)
 	}
 
 	c.layout.Record = filepath.Join(d, "absent.json")
@@ -557,11 +559,12 @@ func TestCollectKeepsRspamdStateErrors(t *testing.T) {
 	boom := errors.New("configdump failed")
 	want := antispam.CommandResult{Stdout: "partial output", Stderr: "diagnostic", Err: boom}
 	run := &fakeRun{results: map[string]antispam.CommandResult{
-		"rspamadm configdump -j actions": want,
-		"rspamadm configdump -m":         want,
+		"rspamadm configdump -j actions":  want,
+		"rspamadm configdump -m":          want,
+		"rspamadm configdump -j phishing": want,
 	}}
 	f := testCollector(t.TempDir(), run).collect(context.Background(), "/csm-antispam-test-missing/s")
-	for name, got := range map[string]antispam.CommandResult{"actions": f.RspamdActions, "modules": f.RspamdModules} {
+	for name, got := range map[string]antispam.CommandResult{"actions": f.RspamdActions, "modules": f.RspamdModules, "phishing": f.RspamdPhishing} {
 		if got.Stdout != want.Stdout || got.Stderr != want.Stderr || !errors.Is(got.Err, boom) {
 			t.Errorf("%s = %+v, want %+v", name, got, want)
 		}
