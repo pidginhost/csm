@@ -738,12 +738,11 @@ func (o *Owner) schedule() {
 	if errors.Is(o.execHold, errNoEngine) {
 		probeDue = o.opts.Blocks() != nil
 	}
-	// A forecast neither probes nor repairs the engine (spec 1.2): a hold
-	// from live work waits for the next live turn.
-	probeDue = probeDue && !o.forecasting()
-	// Work a refused policy holds waits on no ledger time; a newer epoch,
-	// published with or without a reload, serves it.
-	policyDue := o.policyErr != nil && o.opts.Policy().Epoch > o.seenEpoch
+	// Only a valid live policy may probe or repair a retained engine hold.
+	probeDue = probeDue && o.policyErr == nil && !o.forecasting()
+	// A policy change can resume held work or probes without an arrival,
+	// reload or ledger deadline, including after an idle dry run.
+	policyDue := o.executable() && o.opts.Policy().Epoch > o.seenEpoch
 	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) && !probeDue && !policyDue {
 		return
 	}
@@ -856,7 +855,7 @@ func (o *Owner) serve() error {
 	switch {
 	case len(blocks) > 0:
 		return o.execute(blocks)
-	case o.executable() && o.execHold != nil:
+	case o.executable() && o.policyErr == nil && o.execHold != nil:
 		if o.ready(o.opts.Blocks(), false) && o.execHold != nil {
 			o.hold(o.execHold, o.applyHold != nil)
 		}

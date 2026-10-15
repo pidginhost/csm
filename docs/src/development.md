@@ -762,9 +762,10 @@ valid newer epoch arrives; the daemon reports a refusal at reload as a
 pick of any firewall kind is deferred as `engine_unavailable` with nothing
 previewed, reserved or charged, and the schedule then passes it over, as it
 passes over work waiting for the panel, until a valid policy is installed;
-while it waits the schedule checks each second for a newer epoch, so a
-publication without a reload serves it too. A challenge keeps its
-comparison preview. A comparison-only owner never reads the policy.
+a refused policy also suspends engine probes and repairs. The schedule
+checks for newer epochs even while idle, so a publication without a reload
+resumes held work and any probes suspended by dry-run. A challenge keeps
+its comparison preview. A comparison-only owner never reads the policy.
 
 Under a dry-run policy the owner forecasts instead of running. It selects
 work with `SchedulePreview`, whatever the live budgets, and ends each pick
