@@ -83,13 +83,9 @@ var refusalReasons = map[firewall.BlockRefusal]admission.Reason{
 // its charge and the ledger retries it after its backoff, and an unknown
 // outcome holds its address until recovery retires it.
 func (o *Owner) execute(picks []execPick) error {
-	// A refused policy holds execution as an unavailable engine does. A
-	// dry-run policy never reaches the engine: its picks stay queued.
-	switch {
-	case o.policyErr != nil:
+	// A refused policy holds execution as an unavailable engine does.
+	if o.policyErr != nil {
 		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
-	case o.policy.DryRun:
-		return nil
 	}
 	engine := o.opts.Blocks()
 	// A degraded clock cannot bound a lease: the admission time stays at

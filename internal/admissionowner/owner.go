@@ -65,6 +65,10 @@ var (
 	retireLedger = (*store.AdmissionLedger).RetireUnproven
 	// unresolvedIntents lists a retirement pass's intents; tests count it.
 	unresolvedIntents = (*store.AdmissionLedger).UnresolvedIntents
+	// previewLedger selects work for a dry-run forecast and endDryRunLedger
+	// ends a forecast pick; tests make them fail.
+	previewLedger   = (*store.AdmissionLedger).SchedulePreview
+	endDryRunLedger = (*store.AdmissionLedger).EndDryRun
 )
 
 // previewLimits lets a schedule serve whatever the ledger's budgets allow,
@@ -194,6 +198,10 @@ type Owner struct {
 	seenEpoch uint64
 	policyErr error
 	verdicts  verdicts
+	// shadow is the forecast session while a dry-run policy is installed,
+	// and forecastReset why the next session starts (spec 3.4, 3.7).
+	shadow        *shadow
+	forecastReset resetReason
 	// nextBatch is when the next block batch may start, on the monotonic
 	// clock; arrived is set by a drain that queued work.
 	nextBatch time.Time
@@ -238,7 +246,8 @@ func Start(opts Options) *Owner {
 	}
 	o := &Owner{
 		opts: opts, requests: make(chan request), quit: make(chan bool), done: make(chan struct{}),
-		audit: queuehealth.NewSampled(int(admission.MaxAuditSlots), "rows", deliveryLag),
+		audit:         queuehealth.NewSampled(int(admission.MaxAuditSlots), "rows", deliveryLag),
+		forecastReset: resetStartup,
 	}
 	if opts.Blocks != nil {
 		o.verdictQueue = queuehealth.NewSampled(verdictPending, "jobs", deliveryLag)
@@ -449,6 +458,11 @@ func (o *Owner) readTick() (admission.ClockReading, error) {
 		return reading, fmt.Errorf("reading the admission clock: %w", err)
 	}
 	o.tickErr, o.degraded, o.lastTick, o.now = nil, t.Degraded, reading.Wall, t.Now
+	// A forecast meters the committed clock as the ledger's ceiling does.
+	// One that cannot starts over at its next turn.
+	if o.shadow != nil && o.shadow.advance(t) != nil {
+		o.shadow = nil
+	}
 	o.compare.begin(o.now)
 	return reading, nil
 }
@@ -551,6 +565,10 @@ func (o *Owner) reloadCeiling() error {
 		return fmt.Errorf("setting the ceiling: %w", err)
 	}
 	o.limit, o.source = limit, source
+	// A forecast takes the new limit without new credit.
+	if o.shadow != nil && o.shadow.setLimit(limit) != nil {
+		o.shadow = nil
+	}
 	if err := o.ledger.Revalidate(); err != nil {
 		return err
 	}
@@ -739,15 +757,11 @@ func (o *Owner) schedule() {
 }
 
 // turn serves the queue's picks after a fresh reading (O9). With an engine
-// (Options.Blocks) its block_ip picks run as one batch (execute), under
-// the policy installed when the turn starts. Every
-// other pick is an observe preview: reserved and charged as live work
-// would be and ended in the same transaction without running (O14). The
-// schedule has already deferred the work its budgets cannot serve and
-// revalidated each pick under the same state. A terminal refusal ends only
-// that pick, so an invalid selected lifetime cannot starve the queue.
-// Other failures retry the turn. The ledger's wake time, converted by the
-// admission clock's elapsed time, sets the next turn (O16).
+// (Options.Blocks) the policy installed when the turn starts decides how:
+// a dry-run policy forecasts its picks (forecast); otherwise block_ip picks
+// run as one batch (execute). Every other pick is an observe preview. The
+// ledger's wake time, converted by the admission clock's elapsed time,
+// sets the next turn (O16); a forecast wakes whatever the live budgets.
 func (o *Owner) turn() error {
 	// Recording an outcome needs only the saved ledger clock. A failed
 	// current reading must not abandon work that already ran.
@@ -769,48 +783,19 @@ func (o *Owner) turn() error {
 	if o.executable() {
 		o.sweepVerdicts()
 	}
-	picks, err := scheduleLedger(o.ledger, previewLimits, o.answers())
-	if err != nil {
-		return fmt.Errorf("scheduling the queue: %w", err)
-	}
-	var blocks []execPick
-	for _, p := range picks {
-		c, readErr := o.ledger.Candidate(p.ID)
-		if readErr != nil {
-			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
-		}
-		if o.opts.Blocks != nil && c.Key.Kind == admission.KindBlockIP {
-			blocks = append(blocks, execPick{pick: p, c: c})
-			continue
-		}
-		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, o.expiryOf(c, o.now)); err != nil {
-			if reason, refused := admission.ReasonOf(err); refused {
-				switch reason.Disposition() {
-				case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
-					if _, endErr := o.ledger.Terminate(p.ID, reason); endErr != nil {
-						return fmt.Errorf("ending pick %s: %w", p.ID, endErr)
-					}
-					o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionRefused, reason: reason}, o.now)
-					continue
-				}
-			}
-			return fmt.Errorf("previewing pick %s: %w", p.ID, err)
-		}
-		o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
-	}
-	if len(blocks) > 0 {
-		if err = o.execute(blocks); err != nil {
+	nextWake := (*store.AdmissionLedger).NextWake
+	if o.forecasting() {
+		if err := o.forecast(); err != nil {
 			return err
 		}
-	} else if o.opts.Blocks != nil && o.execHold != nil {
-		if o.ready(o.opts.Blocks(), false) && o.execHold != nil {
-			o.hold(o.execHold, o.applyHold != nil)
-		}
-	}
-	if err = o.publish(); err != nil {
+		nextWake = (*store.AdmissionLedger).PreviewWake
+	} else if err := o.serve(); err != nil {
 		return err
 	}
-	wake, ok, err := o.ledger.NextWake(o.answers())
+	if err := o.publish(); err != nil {
+		return err
+	}
+	wake, ok, err := nextWake(o.ledger, o.answers())
 	if err != nil {
 		return fmt.Errorf("reading the next wake time: %w", err)
 	}
@@ -827,6 +812,64 @@ func (o *Owner) turn() error {
 		}
 	}
 	return retireErr
+}
+
+// serve runs the schedule's picks. With an engine its block_ip picks run
+// as one batch; every other pick is previewed. The schedule has already
+// deferred the work its budgets cannot serve and revalidated each pick
+// under the same state.
+func (o *Owner) serve() error {
+	picks, err := scheduleLedger(o.ledger, previewLimits, o.answers())
+	if err != nil {
+		return fmt.Errorf("scheduling the queue: %w", err)
+	}
+	var blocks []execPick
+	for _, p := range picks {
+		c, readErr := o.ledger.Candidate(p.ID)
+		if readErr != nil {
+			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
+		}
+		pick := execPick{pick: p, c: c}
+		if o.executable() && c.Key.Kind == admission.KindBlockIP {
+			blocks = append(blocks, pick)
+			continue
+		}
+		if err = o.preview(pick); err != nil {
+			return err
+		}
+	}
+	switch {
+	case len(blocks) > 0:
+		return o.execute(blocks)
+	case o.executable() && o.execHold != nil:
+		if o.ready(o.opts.Blocks(), false) && o.execHold != nil {
+			o.hold(o.execHold, o.applyHold != nil)
+		}
+	}
+	return nil
+}
+
+// preview is an observe preview of p: reserved and charged as live work
+// would be and ended in the same transaction without running (O14). A
+// terminal refusal ends only that pick, so an invalid selected lifetime
+// cannot starve the queue; any other failure is returned.
+func (o *Owner) preview(p execPick) error {
+	c := p.c
+	if _, _, _, err := o.ledger.Observe(p.pick.ID, p.pick.Lane, o.expiryOf(c, o.now)); err != nil {
+		if reason, refused := admission.ReasonOf(err); refused {
+			switch reason.Disposition() {
+			case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
+				if _, endErr := o.ledger.Terminate(p.pick.ID, reason); endErr != nil {
+					return fmt.Errorf("ending pick %s: %w", p.pick.ID, endErr)
+				}
+				o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionRefused, reason: reason}, o.now)
+				return nil
+			}
+		}
+		return fmt.Errorf("previewing pick %s: %w", p.pick.ID, err)
+	}
+	o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
+	return nil
 }
 
 // expiryOf is the absolute expiry of a pick's next attempt: a retry keeps

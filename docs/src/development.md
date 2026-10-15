@@ -758,9 +758,30 @@ after any turn already running. An older epoch is ignored. Changed settings
 or missing required dependencies under an installed epoch hold execution,
 as does an invalid newer policy, with the refusal in
 `execution_held`, until a valid newer epoch arrives; the daemon reports a
-refusal at reload as a `config_reload_error` finding. Under a dry-run
-policy block picks stay queued and never reach the engine. A
-comparison-only owner never reads the policy.
+refusal at reload as a `config_reload_error` finding. A comparison-only
+owner never reads the policy.
+
+Under a dry-run policy the owner forecasts instead of running. It selects
+work with `SchedulePreview`, whatever the live budgets, and ends each pick
+as a dry run with a prediction: no attempt, charge, history, audit row or
+mutating engine call. A forecast session starts at startup or on entry
+into dry-run from the committed ceiling and its retained charges, then
+lives in memory apart from it: the same committed clock meters it, a new
+limit applies without new credit, and live credit is never copied over it.
+One read-only admission snapshot answers a turn's `block_ip` picks, with
+the real temporary occupancy and the real blocks of forecast addresses. A
+refused target ends or waits as a live check has it. A real block that
+covers the address predicts `existing_actual`, unlinked; a forecast block
+that lasts as long predicts `existing_shadow` and a shorter one
+`pending_recovery`, and neither is renewed. Other picks are checked
+against the modelled temporary capacity, the bound on forecast blocks and
+the modelled ceiling, and only `capacity_admit` adds a forecast block and
+a simulated charge. Other firewall kinds end as `not_modelled`; a
+challenge keeps its comparison preview. Without an engine or snapshot, or
+with a degraded clock, picks wait as `engine_unavailable` and the forecast
+does not change. A decision is installed only once its ending commits. A
+live policy ends the session and never replays a dry-run ending; a later
+observation of the target is a new generation.
 
 With the policy's verdict callback on, a live owner asks the panel about
 each `block_ip` pick before anything is reserved. One read-only admission

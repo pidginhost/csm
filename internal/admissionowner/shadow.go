@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"sort"
 	"time"
@@ -172,6 +173,10 @@ func (s *shadow) expire(lease time.Time) {
 		}
 	}
 }
+
+// ips are the forecast addresses, in order, for an admission snapshot to
+// count the real blocks of.
+func (s *shadow) ips() []string { return slices.Sorted(maps.Keys(s.entries)) }
 
 // covering says how a forecast block holds ip for a pick lasting until
 // expires: one that lasts at least as long answers it, a shorter one holds

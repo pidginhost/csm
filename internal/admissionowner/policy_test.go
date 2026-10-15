@@ -260,8 +260,10 @@ func TestOwnerHoldsExecutionOnARefusedPolicy(t *testing.T) {
 	}
 }
 
-// A dry-run policy never reaches the engine: its block picks stay queued
-// without an attempt, charge or deferral. A newer live epoch runs them.
+// A dry-run policy never reaches a mutating engine method: its pick ends
+// as a dry run without an attempt, charge or deferral (D1). A newer live
+// epoch does not replay it; a later observation of the target is served
+// live.
 func TestOwnerDryRunPolicyNeverReachesTheEngine(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -273,11 +275,11 @@ func TestOwnerDryRunPolicyNeverReachesTheEngine(t *testing.T) {
 	opts.Policy = r.read
 	o := f.start(opts)
 	heldMono(t, o)
-	id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	id := observe(t, o, p, f, "192.0.2.10", "offset=1")
 	if err := o.do(o.turn); err != nil {
 		t.Fatal(err)
 	}
-	if c := candidate(t, o, id); c.State != admission.StateQueued || c.Reason != 0 || c.Attempts != 0 {
+	if c := candidate(t, o, id); c.State != admission.StateDryRun || c.Reason != 0 || c.Attempts != 0 {
 		t.Fatalf("dry-run pick = %+v", c)
 	}
 	if checks, applies := blocks.calls(); len(checks) != 0 || len(applies) != 0 || ledgerStatus(t, o).Ceiling.General.Used != 0 {
@@ -287,7 +289,19 @@ func TestOwnerDryRunPolicyNeverReachesTheEngine(t *testing.T) {
 	if err := o.do(o.turn); err != nil {
 		t.Fatal(err)
 	}
-	if c := candidate(t, o, id); c.State != admission.StateVerified {
+	if c := candidate(t, o, id); c.State != admission.StateDryRun {
+		t.Fatalf("a live epoch replayed a dry run: %+v", c)
+	}
+	if _, applies := blocks.calls(); len(applies) != 0 {
+		t.Fatalf("a live epoch applied a dry run: %v", applies)
+	}
+	// A later observation is one made after the ending.
+	f.host.advance(time.Second)
+	next := observe(t, o, p, f, "192.0.2.10", "offset=2")
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	if c := candidate(t, o, next); next == id || c.State != admission.StateVerified || c.Key.Generation != 2 {
 		t.Fatalf("live pick = %+v", c)
 	}
 }

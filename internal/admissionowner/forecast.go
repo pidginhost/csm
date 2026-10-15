@@ -1,0 +1,178 @@
+package admissionowner
+
+import (
+	"crypto/rand"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/firewall"
+)
+
+// forecasting reports whether the turn forecasts its picks instead of
+// running them: an executable owner under an installed dry-run policy.
+func (o *Owner) forecasting() bool {
+	return o.executable() && o.policyErr == nil && o.policy.DryRun
+}
+
+// beginForecast starts a forecast session unless one runs (spec 3.4, 3.7).
+// The turn has finished the live outcomes already returned and made a
+// reading, so the session copies the committed ceiling and its charges,
+// spent credit included; nothing is copied again while it runs. A failure
+// holds forecasting and fails the turn.
+func (o *Owner) beginForecast() error {
+	if o.shadow != nil {
+		return nil
+	}
+	id, err := newSessionID(rand.Reader)
+	if err != nil {
+		return fmt.Errorf("naming a forecast session: %w", err)
+	}
+	ceiling, charges, err := o.ledger.CeilingSnapshot()
+	if err != nil {
+		return fmt.Errorf("reading the ceiling for a forecast: %w", err)
+	}
+	s, err := newShadow(id, time.Now(), o.forecastReset, ceiling, charges)
+	if err != nil {
+		return fmt.Errorf("starting a forecast: %w", err)
+	}
+	o.shadow, o.forecastReset = s, resetModeChange
+	return nil
+}
+
+// forecast serves the turn under a dry-run policy (spec 3.1-3.5). The
+// selection ignores live budgets and defers nothing for capacity. A
+// block_ip pick is forecast against the session's model; another firewall
+// kind ends as not_modelled; a challenge keeps its comparison preview.
+// Nothing is reserved, charged or applied, and the engine is only read.
+func (o *Owner) forecast() error {
+	if err := o.beginForecast(); err != nil {
+		return err
+	}
+	picks, err := previewLedger(o.ledger, o.answers())
+	if err != nil {
+		return fmt.Errorf("selecting dry-run work: %w", err)
+	}
+	var blocks []execPick
+	for _, p := range picks {
+		c, readErr := o.ledger.Candidate(p.ID)
+		if readErr != nil {
+			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
+		}
+		pick := execPick{pick: p, c: c}
+		switch {
+		case c.Key.Kind == admission.KindBlockIP:
+			blocks = append(blocks, pick)
+		case c.Key.Kind == admission.KindChallenge:
+			// The selection judged no live budget: a challenge its
+			// reservation cannot take yet waits as a schedule defers it.
+			err = o.preview(pick)
+			if reason, refused := admission.ReasonOf(err); refused {
+				err = o.endPick(pick, reason)
+			} else if errors.Is(err, admission.ErrNotReady) || errors.Is(err, admission.ErrLaneIneligible) {
+				err = nil
+			}
+		case o.degraded:
+			// A degraded clock freezes every prediction.
+			err = o.endPick(pick, admission.ReasonEngineUnavailable)
+		default:
+			err = o.endForecast(pick, predictNotModelled, nil)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return o.forecastBlocks(blocks)
+}
+
+// forecastBlocks forecasts the turn's block_ip picks in scheduler order
+// (spec 3.3). One read-only snapshot answers their local checks and the
+// real temporary occupancy, with the real blocks of forecast addresses. A
+// refused target ends or waits as a live check has it. A real block that
+// already covers the address, a covering or shorter forecast block, a full
+// modelled set, the forecast bound or the modelled ceiling ends the pick
+// as a dry run with that prediction; only a capacity admission changes the
+// model. Without an engine, snapshot or sound clock the picks wait, with
+// no forecast change.
+func (o *Owner) forecastBlocks(picks []execPick) error {
+	if len(picks) == 0 {
+		return nil
+	}
+	engine := o.opts.Blocks()
+	if o.degraded || engine == nil {
+		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
+	}
+	lease := engine.LeaseNow()
+	o.shadow.expire(lease)
+	members := make([]firewall.BlockMember, len(picks))
+	for i, p := range picks {
+		m, err := o.memberOf(p, lease)
+		if err != nil {
+			return err
+		}
+		members[i] = m
+	}
+	adm, err := engine.BlockAdmissionSnapshot(members, o.shadow.ips())
+	if err != nil || !answersMatch(adm.Answers, members) {
+		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
+	}
+	for i, p := range picks {
+		m, check := members[i], adm.Answers[i].BlockCheck
+		if check.Refusal != "" && check.Refusal != firewall.BlockRefusedExisting {
+			if _, err = o.endRefused(p, check); err != nil {
+				return err
+			}
+			continue
+		}
+		var change *shadowChange
+		pred := o.shadow.covering(m.IP, m.ExpiresAt)
+		switch {
+		case check.Refusal == firewall.BlockRefusedExisting:
+			pred = predictExistingActual
+		case pred == 0:
+			if pred, change, err = o.shadow.admit(m.IP, p.c.Key.Kind, m.ExpiresAt, lanesOf(p.pick), o.now, adm); err != nil {
+				return fmt.Errorf("forecasting pick %s: %w", p.pick.ID, err)
+			}
+		}
+		if err = o.endForecast(p, pred, change); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// lanesOf is the order a forecast charges p: the lane the selection served
+// it on, then the other allowance it is eligible for. General-only work
+// never borrows reserved credit.
+func lanesOf(p admission.Pick) []admission.Lane {
+	switch {
+	case p.Lane != admission.LaneGeneral:
+		return []admission.Lane{p.Lane, admission.LaneGeneral}
+	case p.Reserved != 0:
+		return []admission.Lane{admission.LaneGeneral, p.Reserved}
+	}
+	return []admission.Lane{admission.LaneGeneral}
+}
+
+// endForecast ends p as a dry run with its prediction and installs the
+// decision in the forecast once the ending commits, so a retried ending
+// never counts or charges twice (spec 3.5). A refusal the ending meets
+// defers or ends p as a reservation would. A failed write stops the turn
+// and leaves the forecast as it was.
+func (o *Owner) endForecast(p execPick, pred prediction, change *shadowChange) error {
+	_, changed, err := endDryRunLedger(o.ledger, p.pick.ID)
+	if reason, refused := admission.ReasonOf(err); refused {
+		return o.endPick(p, reason)
+	}
+	switch {
+	case errors.Is(err, admission.ErrNotReady):
+		return nil
+	case err != nil:
+		return fmt.Errorf("ending pick %s as a dry run: %w", p.pick.ID, err)
+	case changed:
+		delete(o.verdicts.ready, p.pick.ID)
+		o.shadow.commit(pred, change, monoNow())
+	}
+	return nil
+}
