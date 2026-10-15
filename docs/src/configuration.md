@@ -522,7 +522,7 @@ reputation:
     enabled: false                      # opt-in abuse report delivery; restart required
     classes: []                         # bruteforce | php_relay | credential_stuffing | bad_asn_egress
     spool_path: ""                      # default: <state_path>/abuse_reports.db
-    spool_max: 10000                    # max queued reports per target
+    spool_max: 10000                    # max queued reports, shared by all targets
     targets:
       - name: ""                        # stable target name
         url: ""                         # HTTPS collector URL; HTTP only allowed for loopback

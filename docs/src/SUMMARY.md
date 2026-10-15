@@ -55,6 +55,7 @@
 - [Upstream Threat-Intel Contract](upstream-threat-intel-contract.md)
 - [Verdict Callback Contract](verdict-callback-contract.md)
 - [Fleet Correlation Contract](fleet-correlation-contract.md)
+- [Abuse Report Contract](abuse-report-contract.md)
 
 # Development
 

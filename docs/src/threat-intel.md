@@ -137,7 +137,134 @@ database or private collector. It is off by default. Remote targets must use
 HTTPS; plain HTTP is accepted only for loopback collectors. Keys and target
 wiring are read at daemon startup, so changes to this block require a restart.
 The central abuse database accepts `ed25519` targets only; its report URL ends
-in `/report` and its scored-set URL in `/decisions`.
+in `/report` and its scored-set URL in `/decisions`. The request format is in
+the [Abuse Report Contract](abuse-report-contract.md).
+
+### Reported findings
+
+Each class covers these checks. Only Critical findings are reported, except
+`bad_asn_egress`, which reports High findings too.
+
+| Class | Checks |
+|---|---|
+| `bruteforce` | `pam_bruteforce`, `wp_login_bruteforce`, `xmlrpc_abuse`, `ftp_bruteforce`, `smtp_bruteforce`, `mail_bruteforce`, `admin_panel_bruteforce` |
+| `credential_stuffing` | `credential_stuffing` |
+| `php_relay` | `email_php_relay_abuse` |
+| `bad_asn_egress` | `bad_asn_outbound` |
+
+A report carries only the source address, the class, a count and the time.
+List the classes to send in `reputation.report.classes`. An empty list keeps
+reporting off.
+
+### Set up the central abuse database
+
+1. On the node, generate a key pair:
+
+   ```bash
+   csm report enroll
+   ```
+
+   It prints a 64-byte private key as 128 hex characters and a 32-byte
+   public key as 64 hex characters. Put the private key in the CSM
+   environment file described in
+   [credential rotation](credential-rotation.md#configure-a-systemd-environment-file),
+   for example as `CSM_REPORT_KEY`. The private key is a secret: never paste
+   it into a ticket or chat. Give only the public key to the central
+   operator.
+2. The central operator approves the node and returns its `node_id` and
+   `key_id`, the report and scored-set URLs, and the central public key.
+   Add the central public key, encoded as 64 hex characters, to the same
+   environment file, for example as `CSM_CENTRAL_PUBKEY`.
+3. Configure the target. The `central` block is optional; it is described
+   below.
+
+   ```yaml
+   reputation:
+     report:
+       enabled: true
+       classes: [bruteforce, credential_stuffing, php_relay, bad_asn_egress]
+       targets:
+         - name: central
+           url: https://abuse.example.net/report
+           transport: ed25519
+           node_id: "<node_id from the operator>"
+           key_id: "<key_id from the operator>"
+           key_env: CSM_REPORT_KEY
+     central:
+       enabled: true
+       set_url: https://abuse.example.net/decisions
+       pubkey_env: CSM_CENTRAL_PUBKEY
+       action: challenge
+   ```
+
+4. Restart CSM: `systemctl restart csm.service`.
+
+`reputation.central` pulls the database's signed list of scored addresses.
+With `action: challenge`, a qualifying local attacker finding for an
+unprotected listed address adds it to the challenge list. This requires
+`challenge.enabled: true`, an active firewall and a working
+[challenge setup](challenge.md).
+
+With `action: block_if_local_corroborated`, CSM attempts a block instead
+once the central score reaches `reputation.central.block_threshold`;
+below that score it still uses the challenge path. A live block also
+requires an active firewall, `auto_response.enabled: true`,
+`auto_response.block_ips: true` and `auto_response.dry_run: false`, and
+remains subject to the normal block protections. Dry-run records what
+would have been blocked. Central data alone never blocks. `action: off`
+pulls the list without taking central-driven actions.
+
+To rotate the node key, run `csm report enroll` again and have the central
+operator register the new public key. Then update `key_id` and the
+environment file, and restart CSM.
+
+### Send to a private collector
+
+Use `transport: hmac` with a shared secret. You choose `node_id` and
+`key_id`; the collector uses them to find the secret. Set the named secret
+and optional token in CSM's
+[environment file](credential-rotation.md#configure-a-systemd-environment-file)
+and restart CSM. The secret is used as raw string bytes, not hex-decoded.
+
+```yaml
+reputation:
+  report:
+    enabled: true
+    classes: [bruteforce, credential_stuffing]
+    targets:
+      - name: collector
+        url: https://collector.example.net/csm/report
+        transport: hmac
+        node_id: web-01
+        key_id: k1
+        key_env: CSM_COLLECTOR_SECRET
+        token_env: CSM_COLLECTOR_TOKEN   # optional bearer token
+```
+
+The collector must implement the
+[Abuse Report Contract](abuse-report-contract.md). CSM queues one copy per
+target, so one node can report to the central database and a private
+collector at the same time. Give each target a unique, stable `name`:
+duplicate names select only the last usable target, and removing or
+renaming a target, or a key error that makes it unusable at startup,
+discards its queued reports on the next delivery pass.
+The `spool_max` capacity is shared across all targets, not reserved per
+collector. Overflow drops the oldest entries across that shared queue.
+
+### Check delivery
+
+When reporting starts successfully, the log shows
+`abuse-reporting: enabled for 1 target(s), 4 class(es)` with your counts.
+A target with a missing field, a non-HTTPS remote URL, an unknown transport
+or an unusable key is skipped with a log line. Reporting stays off when
+no usable targets or valid classes remain, or when its spool cannot be
+opened. Failed deliveries are logged as
+`reporting: delivery incomplete`. The `abuse_reporting.ingress` and
+`abuse_reporting.spool` entries in
+[protection queue health](api.md#protection-queue-health) show waiting and
+lost reports.
+
+### Delivery and retries
 
 Reports wait in a durable queue and are delivered once a minute. When a target
 is down, throttling, or refuses the node (for example before the node is
@@ -151,9 +278,12 @@ to a minute, or the requested wait if longer, with a warning at most once a
 minute per target. A report the collector refuses as invalid (HTTP 422)
 would be refused again, so it is dropped and counted as lost.
 
-Non-public and protected infrastructure addresses are excluded from reports
-and central intelligence actions. For NAT64 and 6to4 sources, protection of
-either the original IPv6 address or its embedded IPv4 address applies.
+Reporting and central intelligence actions share the
+[address protection checks](abuse-report-contract.md#what-csm-reports).
+These cover literal infrastructure IPs/CIDRs and crawler IP ranges, not
+infrastructure hostname resolution or rDNS crawler results. For NAT64 and
+6to4 sources, protection of either the original IPv6 address or its
+embedded IPv4 address applies.
 
 ## Web UI
 
