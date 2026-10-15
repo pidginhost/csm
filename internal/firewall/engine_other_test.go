@@ -134,3 +134,11 @@ func TestNonLinuxStubReadsStayInert(t *testing.T) {
 		t.Error("CloudflareCovers should return false")
 	}
 }
+
+// An admission snapshot is unavailable, never an empty set with room.
+func TestNonLinuxBlockAdmissionSnapshotIsUnavailable(t *testing.T) {
+	got, err := (&Engine{}).BlockAdmissionSnapshot([]BlockMember{{Action: "act_one", IP: "203.0.113.5"}}, nil)
+	if !errors.Is(err, ErrUnsupportedPlatform) || got.Answers != nil {
+		t.Fatalf("snapshot = %+v, %v; want ErrUnsupportedPlatform", got, err)
+	}
+}

@@ -63,6 +63,8 @@ type blockSnapshot struct {
 type blockObservation struct {
 	el            nftables.SetElement
 	before, after time.Time
+	// temporary classifies the element as the temporary count does.
+	temporary bool
 }
 
 func (snap blockSnapshot) proves(row BlockedEntry, observed blockObservation, present bool) bool {
@@ -144,7 +146,7 @@ func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
 		var valid []nftables.SetElement
 		for _, el := range elements {
 			if ip, ok := blockSetIP(set, el.Key); ok {
-				snap.live[ip] = blockObservation{el: el, before: before, after: after}
+				snap.live[ip] = blockObservation{el: el, before: before, after: after, temporary: liveBlockTemporary(el, ip, tempByIP)}
 				valid = append(valid, el)
 			}
 		}
@@ -201,8 +203,15 @@ func (e *Engine) checkBlockMembersLocked(members []BlockMember, verified []bool,
 		temp++
 		seenIP[m.IP], seenAction[m.Action] = true, true
 	}
-	// Protection checks can wait for interface lookups after the set dumps.
-	// Age every proof through all members before the caller can end a pick.
+	e.ageExistingLocked(members, out, snap)
+	return out
+}
+
+// ageExistingLocked proves each existing effect again at a fresh lease
+// reading: protection checks can wait for interface lookups after the set
+// dumps, so every proof ages through all members before the caller can
+// end a pick.
+func (e *Engine) ageExistingLocked(members []BlockMember, out []BlockRefusal, snap blockSnapshot) {
 	snap.at = e.leaseNowLocked()
 	snap.elapsed = e.lease.at
 	for i, refusal := range out {
@@ -215,7 +224,6 @@ func (e *Engine) checkBlockMembersLocked(members []BlockMember, verified []bool,
 			out[i] = BlockRefusedPending
 		}
 	}
-	return out
 }
 
 func (e *Engine) blockRefusalLocked(m BlockMember, verified bool, snap blockSnapshot, now time.Time, seenIP, seenAction map[string]bool) BlockRefusal {
@@ -295,6 +303,57 @@ func (e *Engine) CheckBlockBatchEffects(members []BlockMember) ([]BlockCheck, er
 	out := make([]BlockCheck, len(members))
 	for i, refusal := range e.checkBlockMembersLocked(members, verified, snap, snap.at) {
 		out[i] = BlockCheck{Refusal: refusal, Existing: snap.existing(members[i], refusal)}
+	}
+	return out, nil
+}
+
+// BlockAdmissionSnapshot answers an admission turn without changing
+// anything: each member's local checks against one snapshot of the state
+// file and the kernel, as a batch check makes them, and the temporary
+// occupancy from the same snapshot. No member takes a slot and no repeat
+// is a duplicate (BlockAdmission.ReadyCapacity checks the members the
+// caller is ready to run). shadow names the canonical addresses a
+// forecast holds, at most MaxShadowBlocks; the answer counts those the
+// sets already hold. An error refuses the whole call: too many members or
+// addresses, a malformed or repeated address, durable state, or no
+// snapshot. Remote checks run outside the engine lock.
+func (e *Engine) BlockAdmissionSnapshot(members []BlockMember, shadow []string) (BlockAdmission, error) {
+	if len(members) > MaxBlockBatchMembers || len(shadow) > MaxShadowBlocks {
+		return BlockAdmission{}, fmt.Errorf("an admission snapshot has at most %d members and %d forecast addresses", MaxBlockBatchMembers, MaxShadowBlocks)
+	}
+	seen := make(map[string]bool, len(shadow))
+	for _, ip := range shadow {
+		if canon, err := canonicalFirewallIP(ip); err != nil || canon != ip || seen[ip] {
+			return BlockAdmission{}, errors.New("a forecast address is malformed or repeated")
+		}
+		seen[ip] = true
+	}
+	verified := e.verifiedRanges(members)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	snap, err := e.blockSnapshotLocked()
+	if err != nil {
+		return BlockAdmission{}, err
+	}
+	refusals := make([]BlockRefusal, len(members))
+	for i, m := range members {
+		// Without seen members nothing is a duplicate.
+		refusals[i] = e.blockRefusalLocked(m, verified[i], snap, snap.at, nil, nil)
+	}
+	e.ageExistingLocked(members, refusals, snap)
+	out := BlockAdmission{Answers: make([]BlockAnswer, len(members)), Temporary: snap.temp, Limit: e.cfg.DenyTempIPLimit}
+	for i, m := range members {
+		out.Answers[i] = BlockAnswer{Action: m.Action, IP: m.IP, BlockCheck: BlockCheck{Refusal: refusals[i], Existing: snap.existing(m, refusals[i])}}
+	}
+	for _, ip := range shadow {
+		observed, present := snap.live[ip]
+		switch {
+		case !present:
+		case observed.temporary:
+			out.ShadowTemporary++
+		default:
+			out.ShadowPermanent++
+		}
 	}
 	return out, nil
 }

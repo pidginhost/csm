@@ -114,3 +114,56 @@ var ErrBlockBatchRejected = errors.New("kernel rejected the block batch")
 // ErrBlockBatchState requires the owner to hold automatic execution while
 // the engine's state safety changes lack a durable acknowledgement.
 var ErrBlockBatchState = errors.New("firewall batch state is unproven")
+
+// MaxShadowBlocks bounds the forecast addresses one admission snapshot
+// counts: a dry-run forecast models at most this many active blocks.
+const MaxShadowBlocks = 20000
+
+// BlockAnswer is an admission snapshot's answer for one member, naming
+// the member it answers.
+type BlockAnswer struct {
+	Action, IP string
+	BlockCheck
+}
+
+// BlockAdmission is a read-only answer for one admission turn, from one
+// snapshot of the state file and the kernel: each member's local checks
+// and the temporary occupancy. No member takes a temporary slot and no
+// repeated member is refused: the caller decides which members are ready
+// and checks them with ReadyCapacity.
+type BlockAdmission struct {
+	// Answers holds one answer per member, in member order.
+	Answers []BlockAnswer
+	// Temporary is how many timed elements the blocked sets hold, both
+	// address families together; Limit is the configured temporary limit,
+	// zero for none.
+	Temporary, Limit int
+	// ShadowTemporary and ShadowPermanent count the forecast addresses the
+	// sets already hold as a timed element and as an untimed one.
+	ShadowTemporary, ShadowPermanent int
+}
+
+// Full reports whether the temporary set has no slot left for any member.
+func (a BlockAdmission) Full() bool { return a.Limit > 0 && a.Temporary >= a.Limit }
+
+// ReadyCapacity answers the members a turn is ready to run, in order, as a
+// batch check answers its capacity: a member repeating an earlier one's
+// address or action is a duplicate, and once the occupancy reaches the
+// limit the rest find the set full. Only a member that passes takes a slot.
+func (a BlockAdmission) ReadyCapacity(ready []BlockMember) []BlockRefusal {
+	out := make([]BlockRefusal, len(ready))
+	seenIP, seenAction := map[string]bool{}, map[string]bool{}
+	temp := a.Temporary
+	for i, m := range ready {
+		switch {
+		case seenIP[m.IP] || seenAction[m.Action]:
+			out[i] = BlockRefusedDuplicate
+		case a.Limit > 0 && temp >= a.Limit:
+			out[i] = BlockRefusedFull
+		default:
+			temp++
+			seenIP[m.IP], seenAction[m.Action] = true, true
+		}
+	}
+	return out
+}

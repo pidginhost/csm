@@ -659,6 +659,15 @@ for operator flush cleanup. Live deny limits count their kernel elements using
 kernel timeouts rather than the unresolved rows' requested lifetimes, including
 replacement accounting. Permanent promotion requires a verified block row.
 
+A read-only admission snapshot answers the same local checks for up to 64
+members, each answer naming its member, with the temporary occupancy and
+limit from the same snapshot. No member takes a slot and no repeat is a
+duplicate there: the caller checks only the members it is ready to run,
+in order, for repeats and capacity. The snapshot also counts which of up to
+20000 forecast addresses the sets already hold as a timed or an untimed
+element. A malformed or repeated forecast address refuses the call before
+any read, and other platforms report the snapshot unavailable.
+
 With an engine, each owner turn runs its `block_ip` picks as one batch. The
 engine checks every member against one snapshot before anything is reserved. A
 full set, or an address a row or element holds without proof, defers a member;
