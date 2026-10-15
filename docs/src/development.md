@@ -515,8 +515,8 @@ first dry-run ending also moves the ledger to schema 9.
 admission: spent live ceiling and history budgets do not stop it, and it
 reserves, charges and defers nothing for capacity. Every candidate, a
 challenge included, weighs one fair unit and no history. Direct and
-corroborated work alternates in the reserved lane for at most 13 of the 64
-members, and the general lane serves the rest by class and severity, where
+corroborated work alternates within a bounded reserved share of each batch,
+and the general lane serves the rest by class and severity, where
 reserved-eligible work competes too. Revalidation, age-out, retry backoff
 and recovery holds gate it as they gate a schedule, a held target is
 deferred as `pending_recovery`, pending work is passed over, and the shared
@@ -672,12 +672,12 @@ for operator flush cleanup. Live deny limits count their kernel elements using
 kernel timeouts rather than the unresolved rows' requested lifetimes, including
 replacement accounting. Permanent promotion requires a verified block row.
 
-A read-only admission snapshot answers the same local checks for up to 64
-members, each answer naming its member, with the temporary occupancy and
+A read-only admission snapshot answers the same local checks for a bounded
+batch, each answer naming its member, with the temporary occupancy and
 limit from the same snapshot. No member takes a slot and no repeat is a
 duplicate there: the caller checks only the members it is ready to run,
-in order, for repeats and capacity. The snapshot also counts which of up to
-20000 forecast addresses the sets already hold as a timed or an untimed
+in order, for repeats and capacity. The snapshot also counts which of the
+bounded forecast addresses the sets already hold as a timed or an untimed
 element. A malformed or repeated forecast address refuses the call before
 any read, and other platforms report the snapshot unavailable.
 

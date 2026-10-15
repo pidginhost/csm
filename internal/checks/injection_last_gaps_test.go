@@ -10,24 +10,36 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
 
 // --- firewall.go ------------------------------------------------------
 
-// TestCheckFirewallEnabled_NftablesSuccess covers the happy path where nft
-// returns a table with all required components. We can't easily override the
-// nft binary, but the default PATH lookup fails on most dev hosts, so this
-// exercises the "nft unavailable" critical-finding path when firewall is on.
 func TestCheckFirewallEnabled_MissingNftCriticalFinding(t *testing.T) {
-	// Ensure nft returns error -- realOS is fine; dev hosts rarely have CSM nft.
-	cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: true}}
-	findings := CheckFirewall(context.Background(), cfg, nil)
-	// We either get a single critical (nft missing) or additional components.
-	if len(findings) == 0 {
-		t.Fatal("expected at least one finding when nft is unavailable")
+	calls := 0
+	withMockCmd(t, &mockCmd{runAllowNonZero: func(name string, _ ...string) ([]byte, error) {
+		calls++
+		if name != "nft" {
+			t.Fatalf("unexpected command %q", name)
+		}
+		return nil, os.ErrNotExist
+	}})
+	cfg := &config.Config{Firewall: &firewall.FirewallConfig{Enabled: true, IPv6: true}}
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	findings := CheckFirewall(context.Background(), cfg, st)
+	if calls != 1 {
+		t.Fatalf("nft calls = %d, want 1", calls)
+	}
+	if len(findings) != 1 || findings[0].Check != "firewall" || findings[0].Severity != alert.Critical {
+		t.Fatalf("expected one Critical firewall finding when nft is absent, got %+v", findings)
 	}
 }
 
