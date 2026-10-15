@@ -92,6 +92,12 @@ type ExistingBlock struct {
 	ExpiresAt time.Time
 }
 
+// BlockAction names the row an admission attempt wrote: its action ID and
+// address.
+type BlockAction struct {
+	Action, IP string
+}
+
 // BlockCheck is the batch check's answer for one member: its refusal and,
 // for an existing effect, the block that holds the address.
 type BlockCheck struct {

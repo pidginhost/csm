@@ -597,6 +597,17 @@ held. The admission owner must reconcile action-linked rows before startup
 or any downgrade to a build that ignores their verification fields.
 The retry marker for a kernel rejection requires a successful state restore.
 Marking with no action IDs still writes the safe state to release a state hold.
+`RemoveBlockActionRows` removes, in one state write, the rows of attempts the
+ledger has settled (failed, or retired after their expiry); an error reports
+no completed removal, including a durability failure after rename.
+`RetireBlockActions` checks the kernel for up to 64 unknown attempts under one
+engine lock: an attempt is clear when its address has no element, or the
+element matches a verified row of another action, remaining lifetime included,
+and its own row then goes in one write. An element still present keeps it
+held. Cleanup resumes and saves the lease checkpoint first; an unreadable
+clock or checkpoint authorizes no removal. Address matching for recovery
+accepts legacy mapped, uppercase and zoned spellings within the engine's
+namespace; this does not relax the admission parser.
 Unverified rows cannot suppress alerts or reputation checks through stale legacy
 tracker entries. They do not count as enforced blocks or select threat evidence
 for operator flush cleanup. Live deny limits count their kernel elements using
