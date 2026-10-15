@@ -125,3 +125,36 @@ func TestAdmissionLedgerNextWakeSkipsPendingRetries(t *testing.T) {
 		t.Fatalf("pending retry wake = %v %v %v, want its expiry %v, not its backoff end %v", wake, ok, err, c.ExpiresAt, c.NotBefore)
 	}
 }
+
+// An allow behind charged work in its own scope is still served with the
+// budgets spent: the scope's head waits for budget and would hold the
+// allow behind it, so the schedule adds the allows its lanes left.
+func TestAdmissionLedgerScheduleServesAllowsBehindChargedWork(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	ids := f.criticalArrivals("192.0.2.10", "192.0.2.11")
+	// Queued together, the lower ID is the scope's head.
+	head, behind := ids[0], ids[1]
+	if behind < head {
+		head, behind = behind, head
+	}
+	if f.scopeOf(head) != f.scopeOf(behind) || !f.candidateOf(head).FirstQueued.Equal(f.candidateOf(behind).FirstQueued) {
+		t.Fatal("fixture: the candidates do not share a scope and queue time")
+	}
+	f.leaveCeilingCredit(0, 0)
+	allowed := map[admission.CandidateID]admission.Answer{behind: admission.AnswerAllow}
+	if wake, ok, err := f.l.NextWake(allowed); err != nil || !ok || !wake.Equal(f.wall) {
+		t.Fatalf("wake with an allow behind charged work = %v %v %v, want now", wake, ok, err)
+	}
+	picks, err := f.l.Schedule(fullSchedule, allowed)
+	if err != nil || len(picks) != 1 || picks[0].ID != behind || picks[0].Cost != 0 || picks[0].Bytes != 0 {
+		t.Fatalf("picks = %+v, %v", picks, err)
+	}
+	if c := f.candidateOf(head); c.Reason != admission.ReasonCeiling {
+		t.Fatalf("charged head = %+v, want a ceiling deferral", c)
+	}
+	both := map[admission.CandidateID]admission.Answer{head: admission.AnswerAllow, behind: admission.AnswerAllow}
+	if picks, err = f.l.Schedule(admission.ScheduleLimits{Members: 1}, both); err != nil || len(picks) != 1 || picks[0].ID != head {
+		t.Fatalf("allows past the member bound = %+v, %v", picks, err)
+	}
+}
