@@ -755,7 +755,8 @@ policy for every pick; a reload returns once the policy is installed,
 after any turn already running. An older epoch is ignored. Different
 settings under an installed epoch, or an invalid newer policy, hold
 execution as a missing engine does, with the refusal in
-`execution_held`, until a valid newer epoch arrives. Under a dry-run
+`execution_held`, until a valid newer epoch arrives; the daemon reports a
+refusal at reload as a `config_reload_error` finding. Under a dry-run
 policy block picks stay queued and never reach the engine. A
 comparison-only owner never reads the policy.
 

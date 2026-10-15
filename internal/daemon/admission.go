@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"context"
+	"errors"
 	"time"
 
 	"github.com/pidginhost/csm/internal/actionlog"
@@ -12,6 +14,7 @@ import (
 	"github.com/pidginhost/csm/internal/health"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/verdict"
 )
 
 var _ health.AdmissionProvider = (*Daemon)(nil)
@@ -40,7 +43,42 @@ func (d *Daemon) admissionOptions(db *store.DB) admissionowner.Options {
 		Deliver:     d.deliverAdmissionNotices,
 		Expiry:      func(c admission.Candidate) time.Duration { return previewExpiry(d.currentCfg(), c) },
 		Caps:        func() admission.Caps { return admission.Caps{IPv6: ipv6} },
+		Policy:      d.executionPolicy,
 	}
+}
+
+// executionPolicy is the execution policy of the live config, read with its
+// response epoch from one publication (D11).
+func (d *Daemon) executionPolicy() admissionowner.ExecutionPolicy {
+	cfg, epoch := config.ActiveEpoch()
+	if cfg == nil {
+		return admissionowner.ExecutionPolicy{}
+	}
+	limit, source := cfg.AdmissionCeiling()
+	client := newVerdictClient(cfg)
+	return admissionowner.ExecutionPolicy{
+		Epoch: epoch, Observe: cfg.ObserveMode(), DryRun: cfg.AutoResponseDryRunEnabled(),
+		VerdictEnabled: cfg.AutoResponse.VerdictCallback.Enabled,
+		VerdictTimeout: time.Duration(cfg.AutoResponse.VerdictCallback.TimeoutSec) * time.Second,
+		CeilingLimit:   limit, CeilingSource: source,
+		Expiry: func(c admission.Candidate) time.Duration { return previewExpiry(cfg, c) },
+		AskVerdict: func(ctx context.Context, ip, reason string) (verdict.Response, error) {
+			return client.Ask(ctx, verdict.Request{IP: ip, Reason: reason, Severity: "auto", Source: "auto_response"})
+		},
+	}
+}
+
+// newVerdictClient is the verdict callback client cfg configures.
+func newVerdictClient(cfg *config.Config) *verdict.Client {
+	vc := cfg.AutoResponse.VerdictCallback
+	return verdict.New(verdict.Config{
+		URL:                      vc.URL,
+		HMACSecret:               vc.HMACSecret,
+		HMACSecretEnv:            vc.HMACSecretEnv,
+		RequireResponseSignature: vc.RequireResponseSignature,
+		AllowUnsigned:            vc.AllowUnsigned,
+		Timeout:                  time.Duration(vc.TimeoutSec) * time.Second,
+	})
 }
 
 // previewExpiry is how long the response c asks for would last under cfg:
@@ -96,7 +134,12 @@ func (d *Daemon) reloadAdmission() {
 	if d.admission == nil {
 		return
 	}
-	if err := d.admission.Reload(); err != nil {
+	err := d.admission.Reload()
+	switch {
+	case errors.Is(err, admissionowner.ErrPolicy):
+		d.emitReloadFinding(alert.Critical, "config_reload_error",
+			"config reload: automatic execution is held: "+err.Error())
+	case err != nil:
 		csmlog.Warn("admission ceiling not reloaded", "err", err)
 	}
 }

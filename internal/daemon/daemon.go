@@ -3159,16 +3159,7 @@ func (d *Daemon) askVerdictCallback(ctx context.Context, ip, reason string) (str
 	if cfg == nil || !cfg.AutoResponse.VerdictCallback.Enabled {
 		return "", "", "", nil
 	}
-	vcCfg := cfg.AutoResponse.VerdictCallback
-	vc := verdict.New(verdict.Config{
-		URL:                      vcCfg.URL,
-		HMACSecret:               vcCfg.HMACSecret,
-		HMACSecretEnv:            vcCfg.HMACSecretEnv,
-		RequireResponseSignature: vcCfg.RequireResponseSignature,
-		AllowUnsigned:            vcCfg.AllowUnsigned,
-		Timeout:                  time.Duration(vcCfg.TimeoutSec) * time.Second,
-	})
-	resp, err := vc.Ask(ctx, verdict.Request{
+	resp, err := newVerdictClient(cfg).Ask(ctx, verdict.Request{
 		IP:       ip,
 		Reason:   reason,
 		Severity: "auto",

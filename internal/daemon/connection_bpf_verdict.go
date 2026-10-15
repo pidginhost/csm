@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -29,16 +28,7 @@ func askBPFVerdict(ctx context.Context, cfg *config.Config, req verdict.Request)
 	if cfg == nil {
 		return verdict.Response{}, errBPFVerdictDisabled
 	}
-	vcCfg := cfg.AutoResponse.VerdictCallback
-	vc := verdict.New(verdict.Config{
-		URL:                      vcCfg.URL,
-		HMACSecret:               vcCfg.HMACSecret,
-		HMACSecretEnv:            vcCfg.HMACSecretEnv,
-		RequireResponseSignature: vcCfg.RequireResponseSignature,
-		AllowUnsigned:            vcCfg.AllowUnsigned,
-		Timeout:                  time.Duration(vcCfg.TimeoutSec) * time.Second,
-	})
-	return vc.Ask(ctx, req)
+	return newVerdictClient(cfg).Ask(ctx, req)
 }
 
 // bpfVerdictReason is the callback's reason string for one event.
