@@ -15,8 +15,10 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -60,6 +62,53 @@ type Config struct {
 	RequireResponseSignature *bool
 	AllowUnsigned            bool
 	Timeout                  time.Duration
+}
+
+// ErrorClass is the fixed class of a failed exchange. A caller reports the
+// class, never the error text, which can carry a URL or panel text.
+type ErrorClass string
+
+const (
+	ClassNonce         ErrorClass = "nonce_generation"
+	ClassTimeout       ErrorClass = "timeout"
+	ClassTransport     ErrorClass = "transport"
+	ClassHTTPStatus    ErrorClass = "http_status"
+	ClassBodySize      ErrorClass = "body_size"
+	ClassDecode        ErrorClass = "decode"
+	ClassSignature     ErrorClass = "signature"
+	ClassReplay        ErrorClass = "replay"
+	ClassConfiguration ErrorClass = "configuration"
+	ClassProtocol      ErrorClass = "protocol"
+)
+
+type classedError struct {
+	class ErrorClass
+	err   error
+}
+
+func (e *classedError) Error() string { return e.err.Error() }
+func (e *classedError) Unwrap() error { return e.err }
+
+// ClassOf is the class of an error Ask returned, or empty for any other.
+func ClassOf(err error) ErrorClass {
+	var c *classedError
+	if errors.As(err, &c) {
+		return c.class
+	}
+	return ""
+}
+
+func fail(class ErrorClass, err error) (Response, error) {
+	return Response{}, &classedError{class: class, err: err}
+}
+
+// exchangeClass classes a failure to send the request or read its reply.
+func exchangeClass(err error) ErrorClass {
+	var ne net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) {
+		return ClassTimeout
+	}
+	return ClassTransport
 }
 
 // requireResponseSig returns the effective response-signature requirement,
@@ -160,33 +209,33 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 	// this re-check defends against misconfiguration via cfg corruption).
 	rawURL := strings.TrimSpace(c.cfg.URL)
 	if rawURL == "" {
-		return Response{}, fmt.Errorf("verdict callback URL not configured")
+		return fail(ClassConfiguration, fmt.Errorf("verdict callback URL not configured"))
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return Response{}, fmt.Errorf("verdict callback URL parse: %w", err)
+		return fail(ClassConfiguration, fmt.Errorf("verdict callback URL parse: %w", err))
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return Response{}, fmt.Errorf("verdict callback URL must use http or https")
+		return fail(ClassConfiguration, fmt.Errorf("verdict callback URL must use http or https"))
 	}
 	if parsed.Host == "" {
-		return Response{}, fmt.Errorf("verdict callback URL must include host")
+		return fail(ClassConfiguration, fmt.Errorf("verdict callback URL must include host"))
 	}
 
 	nonce, err := newNonce()
 	if err != nil {
-		return Response{}, fmt.Errorf("verdict callback nonce generation: %w", err)
+		return fail(ClassNonce, fmt.Errorf("verdict callback nonce generation: %w", err))
 	}
 	req.Nonce = nonce
 	req.Timestamp = time.Now().Unix()
 	body, err := json.Marshal(req)
 	if err != nil {
-		return Response{}, err
+		return fail(ClassProtocol, err)
 	}
 	secret := c.resolveSecret()
 	r, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(body))
 	if err != nil {
-		return Response{}, err
+		return fail(ClassConfiguration, err)
 	}
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Accept", "application/json")
@@ -198,20 +247,20 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 
 	resp, err := c.client.Do(r)
 	if err != nil {
-		return Response{}, fmt.Errorf("verdict callback: %w", err)
+		return fail(exchangeClass(err), fmt.Errorf("verdict callback: %w", err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		// Return the IP in the error so the caller logs it through the
 		// structured audit path instead of leaking it to raw stderr.
-		return Response{}, fmt.Errorf("verdict callback HTTP %d for %s", resp.StatusCode, req.IP)
+		return fail(ClassHTTPStatus, fmt.Errorf("verdict callback HTTP %d for %s", resp.StatusCode, req.IP))
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, verdictMaxResponseBytes+1))
 	if err != nil {
-		return Response{}, fmt.Errorf("verdict callback read: %w", err)
+		return fail(exchangeClass(err), fmt.Errorf("verdict callback read: %w", err))
 	}
 	if int64(len(data)) > verdictMaxResponseBytes {
-		return Response{}, fmt.Errorf("verdict callback response exceeds %d bytes", verdictMaxResponseBytes)
+		return fail(ClassBodySize, fmt.Errorf("verdict callback response exceeds %d bytes", verdictMaxResponseBytes))
 	}
 	if secret != "" && c.cfg.requireResponseSig() {
 		// Verify the panel signed its response with the same secret used
@@ -219,7 +268,7 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 		// downgrade block to allow on every call. Rejecting the reply keeps
 		// the engine on its default block path.
 		if err := verifyResponseSignature(secret, data, resp.Header.Get("X-CSM-Signature")); err != nil {
-			return Response{}, err
+			return fail(ClassSignature, err)
 		}
 	}
 	strictReplay := secret != "" && c.cfg.requireResponseSig()
@@ -229,16 +278,16 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 	var out Response
 	dec := json.NewDecoder(bytes.NewReader(data))
 	if err := dec.Decode(&out); err != nil {
-		return Response{}, fmt.Errorf("verdict callback decode: %w", err)
+		return fail(ClassDecode, fmt.Errorf("verdict callback decode: %w", err))
 	}
 	var trailing struct{}
 	if err := dec.Decode(&trailing); err != io.EOF {
-		return Response{}, fmt.Errorf("verdict callback decode: trailing JSON")
+		return fail(ClassDecode, fmt.Errorf("verdict callback decode: trailing JSON"))
 	}
 	// Validate response shape. Unknown verdict strings are rejected
 	// defensively rather than silently treated as "block".
 	if out.Verdict != "" && out.Verdict != "block" && out.Verdict != "allow" {
-		return Response{}, fmt.Errorf("verdict callback returned unknown verdict %q", out.Verdict)
+		return fail(ClassProtocol, fmt.Errorf("verdict callback returned unknown verdict %q", out.Verdict))
 	}
 	// Fail closed on an unsigned allow. Without a secret there is no replay or
 	// signature protection (the checks below are gated on secret != ""), so an
@@ -246,7 +295,7 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 	// auto-blocking. Returning an error keeps the engine on its default block
 	// path unless the config explicitly opted in to unsigned callback verdicts.
 	if secret == "" && out.Verdict == "allow" && !c.cfg.AllowUnsigned {
-		return Response{}, fmt.Errorf("verdict callback: refusing unsigned allow (no HMAC secret configured)")
+		return fail(ClassSignature, fmt.Errorf("verdict callback: refusing unsigned allow (no HMAC secret configured)"))
 	}
 	// Replay protection runs whenever a secret is configured. Strict
 	// mode (response signing required) demands the panel echo nonce and
@@ -257,10 +306,10 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 	if secret != "" {
 		if out.Nonce != "" {
 			if subtle.ConstantTimeCompare([]byte(out.Nonce), []byte(req.Nonce)) != 1 {
-				return Response{}, fmt.Errorf("verdict callback response nonce mismatch")
+				return fail(ClassReplay, fmt.Errorf("verdict callback response nonce mismatch"))
 			}
 		} else if strictReplay {
-			return Response{}, fmt.Errorf("verdict callback response missing nonce")
+			return fail(ClassReplay, fmt.Errorf("verdict callback response missing nonce"))
 		}
 		if out.Timestamp != 0 {
 			drift := time.Since(time.Unix(out.Timestamp, 0))
@@ -268,10 +317,10 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 				drift = -drift
 			}
 			if drift > verdictMaxResponseSkew {
-				return Response{}, fmt.Errorf("verdict callback response timestamp drift %s exceeds %s", drift, verdictMaxResponseSkew)
+				return fail(ClassReplay, fmt.Errorf("verdict callback response timestamp drift %s exceeds %s", drift, verdictMaxResponseSkew))
 			}
 		} else if strictReplay {
-			return Response{}, fmt.Errorf("verdict callback response missing timestamp")
+			return fail(ClassReplay, fmt.Errorf("verdict callback response missing timestamp"))
 		}
 		// An "allow" is the only verdict an on-path attacker gains from
 		// forging. In best-effort mode (signing not required) the replay
@@ -281,7 +330,7 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 		// treat it like the no-secret case and refuse, keeping the engine on
 		// its default block path.
 		if out.Verdict == "allow" && out.Nonce == "" && out.Timestamp == 0 {
-			return Response{}, fmt.Errorf("verdict callback: refusing allow with no replay binding (nonce/timestamp)")
+			return fail(ClassReplay, fmt.Errorf("verdict callback: refusing allow with no replay binding (nonce/timestamp)"))
 		}
 	}
 	return out, nil
