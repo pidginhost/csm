@@ -3303,23 +3303,24 @@ func blockedStateTempByIP(state FirewallState) map[string]bool {
 
 func countLiveBlockElements(elements []nftables.SetElement, stateTempByIP map[string]bool) (perm, temp int) {
 	for _, el := range elements {
-		if ip, ok := setElementIPString(el.Key); ok {
-			if stateTemp, found := stateTempByIP[ip]; found {
-				if stateTemp {
-					temp++
-				} else {
-					perm++
-				}
-				continue
-			}
-		}
-		if el.Timeout > 0 || el.Expires > 0 {
+		ip, _ := setElementIPString(el.Key)
+		if liveBlockTemporary(el, ip, stateTempByIP) {
 			temp++
 		} else {
 			perm++
 		}
 	}
 	return perm, temp
+}
+
+// liveBlockTemporary classifies a blocked-set element with address ip
+// ("" when its key is none): by the verified row that names the address,
+// otherwise by the element's own timeout.
+func liveBlockTemporary(el nftables.SetElement, ip string, stateTempByIP map[string]bool) bool {
+	if stateTemp, found := stateTempByIP[ip]; found {
+		return stateTemp
+	}
+	return el.Timeout > 0 || el.Expires > 0
 }
 
 func (e *Engine) liveBlockElementKindLocked(set *nftables.Set, key []byte) (live, temporary, classified bool) {

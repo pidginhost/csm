@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
@@ -126,6 +127,55 @@ func TestPublishActiveConfigKeepsDryRunBlocksInDryRunMode(t *testing.T) {
 
 	if got := db.DryRunBlocksCount(); got != 1 {
 		t.Fatalf("dry_run_blocks after dry-run publish = %d, want 1", got)
+	}
+}
+
+// Spec 3.6: an admission owner that runs blocks keeps the dry_run_blocks
+// bucket alone, so neither the live publication purge nor the periodic
+// prune touches it; without such an owner both still run.
+func TestLegacyDryRunPurgeLeavesAnOwnedBucket(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	prevStore := store.Global()
+	prevActive := config.Active()
+	store.SetGlobal(db)
+	t.Cleanup(func() {
+		config.SetActive(prevActive)
+		store.SetGlobal(prevStore)
+		ownerKeepsDryRunExamples.Store(false)
+		_ = db.Close()
+	})
+	db.RecordDryRunBlock("198.51.100.52", "test", time.Hour)
+	ownerKeepsDryRunExamples.Store(true)
+	live := false
+	cfg := &config.Config{}
+	cfg.AutoResponse.DryRun = &live
+	publishActiveConfig(cfg, "test")
+	if got := db.DryRunBlocksCount(); got != 1 {
+		t.Fatalf("dry_run_blocks after a live publish under an owner = %d, want 1", got)
+	}
+	// The legacy prune would remove an example dated a month ago.
+	month := time.Now().Add(-30 * 24 * time.Hour)
+	if err := db.RecordDryRunBlocks([]store.DryRunBlock{{
+		At: month, IP: "198.51.100.53", Check: "ssh_brute", Candidate: "cand_00000000000000000000000000000001",
+		Session: "0123456789abcdef0123456789abcdef", Kind: admission.KindBlockIP, ExpiresAt: month.Add(time.Hour),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	pruneLegacyDryRunBlocks()
+	if got := db.DryRunBlocksCount(); got != 2 {
+		t.Fatalf("dry_run_blocks after a prune under an owner = %d, want 2", got)
+	}
+	ownerKeepsDryRunExamples.Store(false)
+	pruneLegacyDryRunBlocks()
+	if got := db.DryRunBlocksCount(); got != 1 {
+		t.Fatalf("dry_run_blocks after a legacy prune = %d, want 1", got)
+	}
+	publishActiveConfig(cfg, "test")
+	if got := db.DryRunBlocksCount(); got != 0 {
+		t.Fatalf("dry_run_blocks after a legacy live publish = %d, want 0", got)
 	}
 }
 

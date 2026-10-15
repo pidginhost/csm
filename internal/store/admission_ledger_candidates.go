@@ -40,6 +40,13 @@ func putCandidate(tx *bolt.Tx, c admission.Candidate) error {
 	if err != nil {
 		return err
 	}
+	// A dry-run ending or a panel allow is unknown to schema 8 readers of
+	// the candidate and of the counts and notices written with it.
+	if c.State == admission.StateDryRun || c.Reason == admission.ReasonVerdictAllow {
+		if err = raiseSchema(tx, admissionSchemaShadow); err != nil {
+			return err
+		}
+	}
 	return tx.Bucket([]byte(admissionCandidatesBucket)).Put([]byte(id), data)
 }
 

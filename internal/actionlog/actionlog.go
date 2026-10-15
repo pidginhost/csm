@@ -113,6 +113,9 @@ type Record struct {
 	// Count is how many events a summary record stands for. Only a
 	// summary sets it, and a summary names no target.
 	Count uint64 `json:"count,omitempty"`
+	// Prediction is what a dry-run forecast said live admission would have
+	// done, from its fixed vocabulary. Only a dry_run summary sets it.
+	Prediction string `json:"prediction,omitempty"`
 }
 
 // Sink writes records. The daemon installs a file sink at startup; tests

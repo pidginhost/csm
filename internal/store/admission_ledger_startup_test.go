@@ -63,8 +63,8 @@ func TestReadUnprovenBlockActions(t *testing.T) {
 	}
 	for name, damage := range map[string]func(*bolt.Tx) error{
 		"future schema": func(tx *bolt.Tx) error {
-			// Schema 8 holds linked candidates; 9 is the first this build cannot read.
-			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaVersion + 2})
+			// Schema 9 holds dry-run endings; 10 is the first this build cannot read.
+			return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{admissionSchemaShadow + 1})
 		},
 		"intents without a ledger": func(tx *bolt.Tx) error { return tx.DeleteBucket([]byte(admissionMetaBucket)) },
 		"no attempts":              func(tx *bolt.Tx) error { return tx.DeleteBucket([]byte(admissionAttemptsBucket)) },

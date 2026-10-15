@@ -129,6 +129,8 @@ func TestLineStateFollowsTheCandidate(t *testing.T) {
 		{StateDropped, 0, false, LineEnded},
 		{StateRefused, 0, false, LineEnded},
 		{StateWithheld, 0, false, LineEnded},
+		{StateDryRun, 0, false, LineEnded},
+		{StateDryRun, 1, false, LineEnded},
 	} {
 		c.State, c.Attempts = tc.state, tc.attempts
 		if got := LineStateOf(c, tc.retired); got != tc.want {

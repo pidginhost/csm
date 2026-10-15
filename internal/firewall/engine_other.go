@@ -118,6 +118,9 @@ func (e *Engine) RetireBlockActions(_ []BlockAction) ([]bool, error) {
 func (e *Engine) ApplyBlockBatch(_ []BlockMember) ([]BlockResult, error) {
 	return nil, ErrUnsupportedPlatform
 }
+func (e *Engine) BlockAdmissionSnapshot(_ []BlockMember, _ []string) (BlockAdmission, error) {
+	return BlockAdmission{}, ErrUnsupportedPlatform
+}
 func (e *Engine) IsAllowed(_ string) bool              { return false }
 func (e *Engine) IsBlockedLive(_ string) (bool, error) { return false, ErrUnsupportedPlatform }
 func (e *Engine) LiveBlockedSet() (LiveBlockedSnapshot, error) {

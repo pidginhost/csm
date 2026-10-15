@@ -43,6 +43,10 @@ func TestGapNoticeClassifiesEvents(t *testing.T) {
 		{"critical applied", GapOutcome, 0, DispositionApplied, crit, 0},
 		{"critical narrowed", GapOutcome, 0, DispositionNarrowed, crit, 0},
 		{"unassessed dropped", GapEnded, ReasonStale, 0, Tier{}, 0},
+		{"critical allowed by the panel", GapEnded, ReasonVerdictAllow, 0, crit, NoticeWithheld},
+		{"c3 allowed by the panel", GapEnded, ReasonVerdictAllow, 0, c3, NoticeWithheldWarning},
+		{"c2 allowed by the panel", GapEnded, ReasonVerdictAllow, 0, c2, 0},
+		{"critical dry run", GapOutcome, 0, DispositionDryRun, crit, 0},
 	} {
 		if got := GapNotice(tc.event, tc.reason, tc.outcome, tc.tier); got != tc.want {
 			t.Errorf("%s: %v, want %v", tc.name, got, tc.want)
@@ -79,6 +83,7 @@ func TestNoticeKeysValidateAndEncode(t *testing.T) {
 		{Kind: NoticeWithheld, Reason: ReasonEngineUnavailable},
 		{Kind: NoticeWithheld, Outcome: DispositionUnknown, Check: "ssh_brute", Effect: EffectAddress},
 		{Kind: NoticeWithheldWarning, Outcome: DispositionFailed, Check: "ssh_brute", Effect: EffectService},
+		{Kind: NoticeWithheld, Reason: ReasonVerdictAllow, Check: "ssh_brute", Effect: EffectAddress},
 		OverflowKey(NoticeCapacity), OverflowKey(NoticeWithheldWarning),
 		{Kind: NoticeCriticalSummary}, {Kind: NoticeAppliedSummary},
 	}
@@ -107,6 +112,7 @@ func TestNoticeKeysValidateAndEncode(t *testing.T) {
 		"outcome with a reason":     {Kind: NoticeWithheld, Reason: ReasonStale, Outcome: DispositionUnknown},
 		"capacity for an outcome":   {Kind: NoticeCapacity, Outcome: DispositionFailed},
 		"applied is no gap":         {Kind: NoticeWithheld, Outcome: DispositionApplied},
+		"dry run is no gap":         {Kind: NoticeWithheld, Outcome: DispositionDryRun},
 		"summary with an outcome":   {Kind: NoticeCriticalSummary, Outcome: DispositionUnknown},
 	} {
 		if _, err := k.Bytes(); err == nil {

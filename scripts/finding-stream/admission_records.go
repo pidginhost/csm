@@ -18,6 +18,9 @@ var (
 	admissionKinds    = ledgerNames(func(i int) (string, bool) { k := admission.Kind(i); return k.String(), k.Valid() })
 	admissionEntries  = ledgerNames(func(i int) (string, bool) { e := admission.Entry(i); return e.String(), e.Valid() })
 	admissionRefusals = ledgerNames(func(i int) (string, bool) { r := admission.Reason(i); return r.String(), r.Valid() })
+	// admissionPredictions are what a dry-run summary says live admission
+	// would have done with the work it counts.
+	admissionPredictions = ledgerNames(func(i int) (string, bool) { p := admission.Prediction(i); return p.String(), p.Valid() })
 )
 
 // unknown is the fixed summary value for absent or unregistered checks.
@@ -39,7 +42,10 @@ var admissionAttemptResults = map[string]bool{
 }
 
 // admissionDecisions are what a summary counts.
-var admissionDecisions = map[string]bool{"queued": true, "coalesced": true, "observe": true, "refused": true}
+var admissionDecisions = map[string]bool{"queued": true, "coalesced": true, "observe": true, "refused": true, "dry_run": true}
+
+// dryRunDecision is the summary decision that carries a prediction.
+const dryRunDecision = "dry_run"
 
 const (
 	errSummary       recordError = "record: malformed admission summary"
@@ -117,8 +123,9 @@ func parseAdmissionTarget(kind, raw string) (parsedTarget, error) {
 }
 
 // validateSummary checks an hourly summary. It carries the check that asked
-// in reason, the entry in actor_detail and a refusal's reason in error, each
-// from a closed form, and nothing that names a target, finding or account.
+// in reason, the entry in actor_detail, a refusal's reason in error and a
+// dry run's prediction, each from a closed form, and nothing that names a
+// target, finding or account.
 func validateSummary(r actionlog.Record) error {
 	switch {
 	case r.Op != "respond.block_ip":
@@ -138,6 +145,8 @@ func validateSummary(r actionlog.Record) error {
 		return errSummary
 	case (r.Result == actionlog.Refused) != admissionRefusals[r.Error], r.Result != actionlog.Refused && r.Error != "":
 		return errSummary
+	case (r.Result == dryRunDecision) != admissionPredictions[r.Prediction], r.Result != dryRunDecision && r.Prediction != "":
+		return errSummary
 	}
 	return nil
 }
@@ -153,6 +162,7 @@ func (a *Anonymizer) verifySummary(o anonAction) bool {
 		o.Timestamp.Equal(o.Timestamp.UTC().Truncate(time.Hour)) &&
 		admissionEntries[o.Entry] && o.ReasonKind == "check" && o.anonTarget == anonTarget{TargetKind: "empty"} &&
 		((o.Result == string(actionlog.Refused) && admissionRefusals[o.Refusal]) || (o.Result != string(actionlog.Refused) && o.Refusal == "")) &&
+		((o.Result == dryRunDecision && admissionPredictions[o.Prediction]) || (o.Result != dryRunDecision && o.Prediction == "")) &&
 		o.HasError == (o.Refusal != "") &&
 		o.Account == "" && o.ActorIP == "" && o.DurationNS == 0 && o.FindingID == "" && o.IncidentID == "" &&
 		o.ActionID == "" && o.ActionVersion == 0 && o.UndoOf == "" && o.BeforeExists == nil && o.AfterExists == nil

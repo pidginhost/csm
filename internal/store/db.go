@@ -396,7 +396,7 @@ func (db *DB) RecordDryRunBlock(ip, reason string, timeout time.Duration) {
 		return
 	}
 	_ = db.bolt.Update(func(tx *bolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists([]byte("dry_run_blocks"))
+		b, err := tx.CreateBucketIfNotExists([]byte(dryRunBlocksBucket))
 		if err != nil {
 			return err
 		}
@@ -417,12 +417,12 @@ func (db *DB) PurgeAllDryRunBlocks() int {
 	}
 	removed := 0
 	_ = db.bolt.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("dry_run_blocks"))
+		b := tx.Bucket([]byte(dryRunBlocksBucket))
 		if b == nil {
 			return nil
 		}
 		removed = b.Stats().KeyN
-		return tx.DeleteBucket([]byte("dry_run_blocks"))
+		return tx.DeleteBucket([]byte(dryRunBlocksBucket))
 	})
 	return removed
 }
@@ -438,7 +438,7 @@ func (db *DB) PurgeDryRunBlocksOlderThan(cutoff time.Time) int {
 	}
 	removed := 0
 	_ = db.bolt.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("dry_run_blocks"))
+		b := tx.Bucket([]byte(dryRunBlocksBucket))
 		if b == nil {
 			return nil
 		}
@@ -485,7 +485,7 @@ func (db *DB) DryRunBlocksCount() int {
 	}
 	count := 0
 	_ = db.bolt.View(func(tx *bolt.Tx) error {
-		if b := tx.Bucket([]byte("dry_run_blocks")); b != nil {
+		if b := tx.Bucket([]byte(dryRunBlocksBucket)); b != nil {
 			count = b.Stats().KeyN
 		}
 		return nil

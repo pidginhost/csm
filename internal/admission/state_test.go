@@ -4,7 +4,7 @@ import "testing"
 
 func TestStateLifecycle(t *testing.T) {
 	allowed := map[State][]State{
-		StateQueued:    {StateQueued, StateReserved, StateRefused, StateWithheld, StateDropped},
+		StateQueued:    {StateQueued, StateReserved, StateRefused, StateWithheld, StateDropped, StateDryRun},
 		StateReserved:  {StateExecuting, StateFailed, StateQueued, StateObserved},
 		StateExecuting: {StateVerified, StateFailed, StateUnknown, StateQueued},
 	}
@@ -61,6 +61,11 @@ func TestStateDispositionAndReason(t *testing.T) {
 		{StateObserved, DispositionApplied, 0, false},
 		{StateObserved, DispositionObserve, ReasonStale, false},
 		{StateVerified, DispositionObserve, 0, false},
+		{StateDryRun, DispositionDryRun, 0, true},
+		{StateDryRun, DispositionDryRun, ReasonCeiling, false},
+		{StateDryRun, DispositionRefused, 0, false},
+		{StateRefused, DispositionRefused, ReasonVerdictAllow, true},
+		{StateQueued, 0, ReasonVerdictAllow, false},
 	} {
 		if got := terminalDisposition(c.s, c.d) && stateReason(c.s, c.r); got != c.ok {
 			t.Errorf("state %s disposition %s reason %s: valid = %v, want %v", c.s, c.d, c.r, got, c.ok)

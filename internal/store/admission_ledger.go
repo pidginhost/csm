@@ -36,6 +36,10 @@ const (
 	// linked to the block that enforces it. The first linked candidate
 	// writes it; older builds refuse it rather than misread the record.
 	admissionSchemaLinked = 8
+	// admissionSchemaShadow is the schema of a ledger holding a dry-run
+	// ending or a candidate the panel's verdict allowed. Its first such
+	// record writes it, with the same buckets.
+	admissionSchemaShadow = 9
 )
 
 var (
@@ -269,7 +273,7 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaSeven(tx); err != nil {
 					return err
 				}
-			case len(schema) == 1 && (schema[0] == admissionSchemaVersion || schema[0] == admissionSchemaLinked):
+			case len(schema) == 1 && schema[0] >= admissionSchemaVersion && schema[0] <= admissionSchemaShadow:
 				if existing != len(admissionBuckets) {
 					return admission.ErrCorruptRecord
 				}
@@ -323,6 +327,21 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 	}
 	l.inv.Store(&published)
 	return l, nil
+}
+
+// raiseSchema records, in tx, that the ledger holds a record only schema n
+// or later reads. It never lowers the marker: a later schema's records stay
+// unreadable to builds that predate it.
+func raiseSchema(tx *bolt.Tx, n byte) error {
+	meta := tx.Bucket([]byte(admissionMetaBucket))
+	schema := meta.Get(admissionSchemaKey)
+	if len(schema) != 1 {
+		return admission.ErrCorruptRecord
+	}
+	if schema[0] >= n {
+		return nil
+	}
+	return meta.Put(admissionSchemaKey, []byte{n})
 }
 
 func initializeLedgerMeta(meta *bolt.Bucket) error {

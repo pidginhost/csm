@@ -175,6 +175,26 @@ func (l *AdmissionLedger) Ceiling() (admission.CeilingState, error) {
 	return s, err
 }
 
+// CeilingSnapshot is the committed ceiling with the charges it retains, in
+// key order, read in one transaction and proven against each other. A
+// dry-run forecast starts from it.
+func (l *AdmissionLedger) CeilingSnapshot() (admission.CeilingState, []admission.Charge, error) {
+	var s admission.CeilingState
+	var charges []admission.Charge
+	err := l.db.bolt.View(func(tx *bolt.Tx) error {
+		var err error
+		if s, err = loadCeiling(tx); err != nil {
+			return err
+		}
+		charges, err = loadCharges(tx)
+		return err
+	})
+	if err != nil {
+		return admission.CeilingState{}, nil, err
+	}
+	return s, charges, nil
+}
+
 // laneFits checks that a queued candidate may be reserved on lane. Any
 // candidate may use the general lane. A reserved lane is rechecked against
 // the candidate's assessment at now, since the pick was made in an earlier
