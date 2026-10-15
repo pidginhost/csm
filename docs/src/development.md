@@ -522,7 +522,9 @@ and recovery holds gate it as they gate a schedule, a held target is
 deferred as `pending_recovery`, pending work is passed over, and the shared
 fair position advances once per selection. `PreviewWake` is the matching
 wake: now while selectable work waits, otherwise a backoff end or a queued
-deadline, whatever the live budgets.
+deadline, whatever the live budgets. `CeilingSnapshot` reads the committed
+ceiling and its retained charges in one read transaction, proven against
+each other, for a forecast to start from.
 
 Schema 7 adds execution intents; the first open upgrades a schema 1 to 6
 ledger in the same transaction. Execution marks a batch of up to 64
