@@ -29,7 +29,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Reloading CSM retries antispam checks even when settings are unchanged; use it after correcting a condition that blocked filtering.
 - Temporary blocks no longer last longer than set when the system clock is moved back, including after a restart or an undo.
 - A temporary block that expires while the firewall starts can no longer be restored as a permanent block.
 - When the firewall state file is unreadable at startup, CSM now keeps it aside, starts without its blocks and allowed addresses, and raises a critical alert and doctor failure. Re-add needed entries; if it cannot be kept, fix storage and restart CSM.
