@@ -401,6 +401,136 @@ func TestAdmissionLedgerPreviewBoundsTheReservedLane(t *testing.T) {
 	}
 }
 
+// Spec 3.2 amendment: a challenge's comparison preview spends live history,
+// so a selection skips one the live history budget cannot serve, the check
+// a live schedule makes. Without that the forecast reselects it every
+// second: the wake says now, the selection picks it and its preview fails
+// again. A skipped challenge records no wait and takes no fair turn, block
+// work beside it is still selected, and the wake is when the budget can pay
+// for it, so a budget change brings it back without new input.
+func TestAdmissionLedgerPreviewSkipsChallengesHistoryCannotServe(t *testing.T) {
+	f := newLedgerFixture(t)
+	f.begin()
+	req := f.request("192.0.2.99", f.published(evidenceSpec{target: "192.0.2.99", cursor: "challenge"}))
+	req.Kind = admission.KindChallenge
+	_, challenge := f.enqueue(req)
+	f.adjustStorage(func(s *admission.StorageState) { s.General.Credit, s.Reserved.Credit = 0, 0 })
+	if picks := f.schedule(fullSchedule); len(picks) != 0 {
+		t.Fatalf("fixture: live history still serves the challenge: %+v", picks)
+	}
+	// The first selection clears the live schedule's wait, as it clears
+	// every live budget wait; then nothing changes.
+	if picks := f.preview(nil); len(picks) != 0 {
+		t.Fatalf("the selection picked a challenge history cannot serve: %+v", picks)
+	}
+	before, counters, notices := f.candidateOf(challenge), f.countersSnapshot(), f.notices()
+	readPosition := func() admission.ScheduleState {
+		var st admission.ScheduleState
+		if err := f.db.bolt.View(func(tx *bolt.Tx) (err error) { st, err = loadScheduleState(tx); return err }); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	position := readPosition()
+	for range 3 {
+		if picks := f.preview(nil); len(picks) != 0 {
+			t.Fatalf("the selection picked a challenge history cannot serve: %+v", picks)
+		}
+	}
+	if c := f.candidateOf(challenge); !reflect.DeepEqual(c, before) {
+		t.Fatalf("a skipped challenge changed: %+v, before %+v", c, before)
+	}
+	if !reflect.DeepEqual(readPosition(), position) || !reflect.DeepEqual(f.countersSnapshot(), counters) || !reflect.DeepEqual(f.notices(), notices) {
+		t.Fatal("a skipped challenge took a fair turn, a count or a notice")
+	}
+	need, ok := f.storageState().UntilHistoryCost(admission.LaneGeneral, f.cost(challenge))
+	if !ok || need <= 0 {
+		t.Fatalf("fixture: no history wait for the challenge: %v %v", need, ok)
+	}
+	wake, ok, err := f.l.PreviewWake(nil)
+	if err != nil || !ok || !wake.Equal(f.wall.Add(need)) {
+		t.Fatalf("wake = %v %v %v, want when the history credit pays for the challenge, %v", wake, ok, err, f.wall.Add(need))
+	}
+	block := f.criticalArrivals("192.0.2.10")[0]
+	if got := pickIDs(f.preview(nil)); !reflect.DeepEqual(got, []admission.CandidateID{block}) {
+		t.Fatalf("picks beside the skipped challenge = %v, want only the block %s", got, block)
+	}
+	f.tickAt(wake)
+	if got := pickIDs(f.preview(nil)); !slices.Contains(got, challenge) {
+		t.Fatalf("picks once the budget can pay = %v, want the challenge", got)
+	}
+}
+
+// A reserved-eligible challenge is selected only on a lane whose live
+// history can pay for its preview: the reserved lane while only it can,
+// even when the reserved lane's selection bound left it to the general
+// lane, the general lane while only it can, and neither once both are
+// spent.
+func TestAdmissionLedgerPreviewServesAChallengeOnALaneThatCanPay(t *testing.T) {
+	const keep = ^uint64(0)
+	for _, tc := range []struct {
+		name    string
+		credit  [2]uint64
+		crowded bool
+		want    admission.Lane
+	}{
+		{name: "reserved only", credit: [2]uint64{0, keep}, want: admission.LaneDirect},
+		{name: "reserved only, reserved bound spent", credit: [2]uint64{0, keep}, crowded: true, want: admission.LaneDirect},
+		{name: "general only", credit: [2]uint64{keep, 0}, want: admission.LaneGeneral},
+		{name: "neither", credit: [2]uint64{0, 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.begin()
+			var crowd []admission.CandidateID
+			if tc.crowded {
+				// Thirteen reserved scopes sort before the challenge's and
+				// take every reserved slot of the selection.
+				var accounts []string
+				for i := range previewReservedMembers {
+					accounts = append(accounts, fmt.Sprintf("a%02d", i))
+				}
+				f.refresh(accounts, nil)
+				for i, account := range accounts {
+					res := f.arrive(f.arrival(evidenceSpec{producer: f.mail, check: "mail_takeover", owner: f.owner(account), target: fmt.Sprintf("198.51.100.%d", i+1), cursor: "crowd=" + account, severity: admission.SeverityCritical}))[0]
+					if res.Err != nil || !res.Created {
+						t.Fatalf("arrival %s = %+v", account, res)
+					}
+					crowd = append(crowd, res.Candidate)
+				}
+			}
+			root := f.published(evidenceSpec{producer: f.mail, check: "mail_takeover", target: "192.0.2.99", cursor: "challenge", severity: admission.SeverityCritical})
+			req := f.request("192.0.2.99", root)
+			req.Kind = admission.KindChallenge
+			_, challenge := f.enqueue(req)
+			if e, err := f.entry(challenge); err != nil || !e.Direct {
+				t.Fatalf("fixture: challenge entry %+v %v is not reserved-eligible", e, err)
+			}
+			f.adjustStorage(func(s *admission.StorageState) {
+				s.General.Credit = min(s.General.Credit, tc.credit[0])
+				s.Reserved.Credit = min(s.Reserved.Credit, tc.credit[1])
+			})
+			var got *admission.Pick
+			reserved := 0
+			for _, p := range f.preview(nil) {
+				if p.ID == challenge {
+					got = &p
+				} else if p.Lane != admission.LaneGeneral {
+					reserved++
+				}
+			}
+			switch {
+			case tc.want == 0 && got != nil:
+				t.Fatalf("picked %+v, want no pick", *got)
+			case tc.want != 0 && (got == nil || got.Lane != tc.want):
+				t.Fatalf("challenge pick = %+v, want lane %s", got, tc.want)
+			case tc.crowded && reserved != previewReservedMembers:
+				t.Fatalf("fixture: %d of %d crowd picks took the reserved lane", reserved, len(crowd))
+			}
+		})
+	}
+}
+
 // Without reserved work the general lane takes all 64 members.
 func TestAdmissionLedgerPreviewLendsReservedMembers(t *testing.T) {
 	f := newLedgerFixture(t)

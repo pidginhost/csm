@@ -713,7 +713,10 @@ const previewReservedMembers = 13
 // dry-run forecast and records the scheduler's new position. Selection is
 // not admission: the live ceiling and history budgets do not bound it, and
 // it reserves, charges and defers nothing for capacity; the forecast ends
-// each pick. Every candidate weighs one fair unit and no history. The
+// each pick. Every candidate weighs one fair unit and no history. A
+// challenge's comparison preview spends live history, so a challenge the
+// live history budget cannot pay for is passed over as pending work is,
+// and one only its reserved lane can pay for is served on that lane. The
 // reserved lane alternates direct and corroborated work for at most 13
 // members, then the general lane serves the rest by class and severity;
 // reserved-eligible work competes there too. Revalidation, age-out, retry
@@ -761,6 +764,10 @@ func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateI
 	}
 	byID := map[admission.CandidateID]liveCandidate{}
 	held := map[admission.CandidateID]bool{}
+	// A challenge whose general lane cannot pay is served on its reserved
+	// lane when the general lane selects it.
+	reservedOnly := map[admission.CandidateID]bool{}
+	var history liveHistory
 	var items []admission.ScheduleItem
 	for _, lc := range live {
 		if lc.c.State != admission.StateQueued {
@@ -771,11 +778,24 @@ func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateI
 			return nil, heldErr
 		}
 		byID[lc.id], held[lc.id] = lc, h
-		items = append(items, admission.ScheduleItem{
+		item := admission.ScheduleItem{
 			ID: lc.id, Scope: lc.c.Scope.Key(), Tier: lc.entry.Tier, Direct: lc.entry.Direct, Corroborated: lc.entry.Corroborated,
 			Queued: lc.c.FirstQueued, Cost: unitCost, CeilingCost: unitCost,
 			Ready: !h && !q.now.Before(lc.c.NotBefore) && answers[lc.id] != admission.AnswerPending,
-		})
+		}
+		if lc.c.Key.Kind == admission.KindChallenge {
+			_, fits, general, reserved, judgeErr := history.challenge(q, lc)
+			if judgeErr != nil {
+				return nil, judgeErr
+			}
+			// Not ready: passed over without a wait or a fair turn.
+			item.Ready = item.Ready && fits && (general || reserved)
+			if !reserved {
+				item.Direct, item.Corroborated = false, false
+			}
+			reservedOnly[lc.id] = !general
+		}
+		items = append(items, item)
 	}
 	lim := admission.ScheduleLimits{General: admission.MaxBatchMembers, Reserved: previewReservedMembers, Members: admission.MaxBatchMembers}
 	// As in a schedule, a pick that fails revalidation ends and the
@@ -803,6 +823,11 @@ func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateI
 			if err = q.deferHeld(items, byID, held, answers); err != nil {
 				return nil, err
 			}
+			for i, p := range picks {
+				if reservedOnly[p.ID] && p.Lane == admission.LaneGeneral {
+					picks[i].Lane = p.Reserved
+				}
+			}
 			return picks, putScheduleState(q.tx, next)
 		}
 		kept := items[:0:0]
@@ -813,6 +838,35 @@ func (l *AdmissionLedger) previewTx(q *queueTx, answers map[admission.CandidateI
 		}
 		items = kept
 	}
+}
+
+// liveHistory is the live history budget a challenge's comparison preview
+// spends, read once for a selection or a wake: what the recovery reserve
+// has left and what each lane may charge now.
+type liveHistory struct {
+	loaded                  bool
+	room, general, reserved uint64
+}
+
+// challenge judges queued challenge lc as a schedule judges its item: the
+// history bytes its comparison preview charges, whether the recovery
+// reserve takes it, and whether the general lane and, when lc is eligible
+// for one, its reserved lane can pay for it now.
+func (h *liveHistory) challenge(q *queueTx, lc liveCandidate) (bytes uint32, fits, general, reserved bool, err error) {
+	if !h.loaded {
+		if h.room, err = q.recoveryRoom(); err != nil {
+			return 0, false, false, false, err
+		}
+		if h.general, h.reserved, err = q.historyBudgets(); err != nil {
+			return 0, false, false, false, err
+		}
+		h.loaded = true
+	}
+	if bytes, _, fits, err = q.historyNeed(lc, h.room); err != nil {
+		return 0, false, false, false, err
+	}
+	eligible := lc.entry.Direct || lc.entry.Corroborated
+	return bytes, fits, uint64(bytes) <= h.general, eligible && uint64(bytes) <= h.reserved, nil
 }
 
 // Preview ignores capacity pressure, not damaged accounting. Read the same
@@ -869,9 +923,10 @@ func (q *queueTx) deferHeld(items []admission.ScheduleItem, byID map[admission.C
 
 // PreviewWake is the earliest admission time at which a dry-run forecast
 // has work without a new report: now while selectable work waits, or a
-// retry's backoff end or a queued deadline. Live budgets never delay it,
-// and pending work wakes only at its deadlines. ok is false when nothing
-// waits.
+// retry's backoff end, a queued deadline, or when the live history budget
+// can pay for a challenge the selection passes over. Other live budgets
+// never delay it, and pending work wakes only at its deadlines. ok is
+// false when nothing waits.
 func (l *AdmissionLedger) PreviewWake(answers map[admission.CandidateID]admission.Answer) (time.Time, bool, error) {
 	// The lock guards the recovery hold this read shares with writers.
 	l.mu.Lock()
@@ -896,6 +951,12 @@ func (l *AdmissionLedger) PreviewWake(answers map[admission.CandidateID]admissio
 			return err
 		}
 		q.state.NextSweep = time.Time{}
+		earliest := func(t time.Time) {
+			if q.state.NextSweep.IsZero() || t.Before(q.state.NextSweep) {
+				q.state.NextSweep = t
+			}
+		}
+		var history liveHistory
 		for _, lc := range live {
 			if lc.c.State != admission.StateQueued {
 				continue
@@ -911,11 +972,13 @@ func (l *AdmissionLedger) PreviewWake(answers map[admission.CandidateID]admissio
 			switch {
 			case held:
 			case lc.c.NotBefore.After(now):
-				if q.state.NextSweep.IsZero() || lc.c.NotBefore.Before(q.state.NextSweep) {
-					q.state.NextSweep = lc.c.NotBefore
+				earliest(lc.c.NotBefore)
+			case lc.c.Key.Kind == admission.KindChallenge:
+				if err = q.challengeWake(&history, lc, earliest); err != nil {
+					return err
 				}
 			default:
-				q.state.NextSweep = now
+				earliest(now)
 			}
 		}
 		wake = q.state.NextSweep
@@ -925,6 +988,45 @@ func (l *AdmissionLedger) PreviewWake(answers map[admission.CandidateID]admissio
 		return nil
 	})
 	return wake, !wake.IsZero(), err
+}
+
+// challengeWake notes when queued challenge lc can be selected: now when
+// the live history budget can pay for its comparison preview, otherwise
+// when a lane it may use can. Like a schedule's wake, it notes nothing
+// while the recovery reserve cannot take it.
+func (q *queueTx) challengeWake(history *liveHistory, lc liveCandidate, earliest func(time.Time)) error {
+	bytes, fits, general, reserved, err := history.challenge(q, lc)
+	switch {
+	case err != nil:
+		return err
+	case !fits:
+		return nil
+	case general || reserved:
+		earliest(q.now)
+		return nil
+	}
+	storage, err := q.storageState()
+	if err != nil {
+		return err
+	}
+	lanes := []admission.Lane{admission.LaneGeneral}
+	if lc.entry.Direct || lc.entry.Corroborated {
+		lanes = append(lanes, admission.LaneDirect)
+	}
+	for _, lane := range lanes {
+		room := history.general
+		if lane != admission.LaneGeneral {
+			room = history.reserved
+		}
+		at, ok, wakeErr := q.historyWake(storage, lane, room, bytes, 0)
+		if wakeErr != nil {
+			return wakeErr
+		}
+		if ok {
+			earliest(at)
+		}
+	}
+	return nil
 }
 
 // deferUnserved records why ready work the schedule left queued waits: its
@@ -1192,39 +1294,11 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 					return probeErr
 				}
 				if len(heads) > 0 {
-					need := uint64(heads[0].Bytes)
-					if room < need {
-						// Recompute room without the credit cap, including an
-						// upgrade's excess, before choosing credit or retirement.
-						copy := *storage
-						full := admission.NewStorageState()
-						copy.General.Credit, copy.Reserved.Credit = full.General.Credit, full.Reserved.Credit
-						size, _ := admission.HistoryLanes()
-						used := copy.General.Used
-						if lane != admission.LaneGeneral {
-							_, size = admission.HistoryLanes()
-							used = copy.Reserved.Used
-						}
-						r, retErr := q.retirable(lane, used-min(used, size-need))
-						if retErr != nil {
-							return retErr
-						}
-						room = copy.HistoryBudget(lane, r)
+					at, ok, wakeErr := q.historyWake(storage, lane, room, heads[0].Bytes, budget.wait)
+					if wakeErr != nil {
+						return wakeErr
 					}
-					if room >= need {
-						wait := budget.wait
-						if d, ok := storage.UntilHistoryCost(lane, heads[0].Bytes); ok {
-							wait = max(wait, d)
-						}
-						if wait > 0 {
-							earliest(clock.Now().Add(wait))
-						}
-					} else if at, ok, nextErr := q.nextRetirable(lane); nextErr != nil {
-						return nextErr
-					} else if ok {
-						if ceilingAt := clock.Now().Add(budget.wait); at.Before(ceilingAt) {
-							at = ceilingAt
-						}
+					if ok {
 						earliest(at)
 					}
 				}
@@ -1233,4 +1307,45 @@ func (l *AdmissionLedger) NextWake(answers map[admission.CandidateID]admission.A
 		return nil
 	})
 	return wake, !wake.IsZero(), err
+}
+
+// historyWake is when lane can pay need bytes of history, no sooner than
+// after from now. room is what the lane may charge now. When its allowance
+// has room for need once retirable history is retired, that is when its
+// credit covers need, and nothing when no wait is needed; otherwise it is
+// when its oldest history that may not be retired yet becomes retirable.
+func (q *queueTx) historyWake(storage *admission.StorageState, lane admission.Lane, room uint64, need uint32, after time.Duration) (time.Time, bool, error) {
+	if room < uint64(need) {
+		// Recompute room without the credit cap, including an
+		// upgrade's excess, before choosing credit or retirement.
+		copy := *storage
+		full := admission.NewStorageState()
+		copy.General.Credit, copy.Reserved.Credit = full.General.Credit, full.Reserved.Credit
+		size, _ := admission.HistoryLanes()
+		used := copy.General.Used
+		if lane != admission.LaneGeneral {
+			_, size = admission.HistoryLanes()
+			used = copy.Reserved.Used
+		}
+		r, err := q.retirable(lane, used-min(used, size-uint64(need)))
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		room = copy.HistoryBudget(lane, r)
+	}
+	if room >= uint64(need) {
+		wait := after
+		if d, ok := storage.UntilHistoryCost(lane, need); ok {
+			wait = max(wait, d)
+		}
+		return q.now.Add(wait), wait > 0, nil
+	}
+	at, ok, err := q.nextRetirable(lane)
+	if err != nil || !ok {
+		return time.Time{}, false, err
+	}
+	if ceilingAt := q.now.Add(after); at.Before(ceilingAt) {
+		at = ceilingAt
+	}
+	return at, true, nil
 }

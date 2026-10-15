@@ -65,8 +65,9 @@ func (o *Owner) forecast() error {
 		case c.Key.Kind == admission.KindBlockIP:
 			blocks = append(blocks, pick)
 		case c.Key.Kind == admission.KindChallenge:
-			// The selection judged no live budget: a challenge its
-			// reservation cannot take yet waits as a schedule defers it.
+			// The selection passes over a challenge the live history
+			// budget cannot pay for; one its reservation still cannot
+			// take waits as a schedule defers it.
 			err = o.preview(pick)
 			if reason, refused := admission.ReasonOf(err); refused {
 				err = o.endPick(pick, reason)
