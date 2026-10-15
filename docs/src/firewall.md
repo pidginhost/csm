@@ -194,7 +194,10 @@ block an automatic response attempt wrote. Blocks whose attempt is still
 running, ended unknown or failed are marked unverified and held back from the
 kernel. Firewall views omit them once the mark is saved; if the mark cannot be
 saved, the block still stays out of the kernel, but views can list it until a
-later save succeeds. If the ledger cannot be read, eligible blocks are restored
+later save succeeds. Blocks whose attempt failed, or ended unknown and was
+later found expired and absent, are then removed from the saved state; if that
+removal cannot be saved, they stay held back and the next start removes them.
+If the ledger cannot be read, eligible blocks are restored
 as before and existing unverified marks are kept; none of those automatic
 blocks is evicted to make room for a new one, and `csm doctor` warns until a
 restart reads the ledger. `automation.firewall_ledger_error` carries the

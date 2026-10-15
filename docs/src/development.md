@@ -599,7 +599,10 @@ The retry marker for a kernel rejection requires a successful state restore.
 Marking with no action IDs still writes the safe state to release a state hold.
 `RemoveBlockActionRows` removes, in one state write, the rows of attempts the
 ledger has settled (failed, or retired after their expiry); an error reports
-no completed removal, including a durability failure after rename.
+no completed removal, including a durability failure after rename. Startup
+calls it after marking every unproven row, with the settled subset
+`store.ReadSettledBlockActions` returns, so a start that stops between the two
+leaves the rows held back and the next start removes them.
 An unconfirmed removal is written again on retry even if its rows already
 appear absent. Cleanup preserves other actions' rows, including distinct
 actions sharing one address.
