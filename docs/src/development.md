@@ -422,7 +422,18 @@ row reaches it. A failed call acknowledges nothing, so its consumers see the
 same row again and must be idempotent by action and transition. Delivery
 errors remain visible in `admission.owner.audit_error` until a pass succeeds;
 the independent audit queue reports a stall if a pending batch cannot advance.
-Queue
+The daemon
+marks the address blocked in the attack database and, while the action's
+verified firewall row still stands, records a threat database row that ends
+at the block's absolute expiry. One durable transaction per delivery batch
+precedes memory publication; read or write errors leave delivery pending.
+Local threat writers serialize separately from lookups. An applied batch
+does not hold the lookup mutex during its durable write, so reputation reads
+and whitelist reload continue while that batch waits. Store transaction callbacks do not call back
+into threat mutations; loaders finish reading the store before publishing an
+instance, and reload changes the existing instance's config whitelist only.
+Repeats preserve the stored timestamp, counters and undo entries, including
+after restart. Queue
 events and attempt outcomes are also counted into five-minute, hourly and
 daily buckets. `Status` reads every section in one read transaction without
 the ledger's lock or a current clock, each section with its own error, and

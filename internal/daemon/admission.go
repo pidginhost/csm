@@ -37,6 +37,7 @@ func (d *Daemon) admissionOptions(db *store.DB) admissionowner.Options {
 		Inventory:   admissionowner.Inventory,
 		LegacySpend: checks.LegacyBlockSpend,
 		WriteAudit:  actionlog.WriteDurableBatch,
+		Applied:     d.consumeAppliedBlocks,
 		Deliver:     d.deliverAdmissionNotices,
 		Expiry:      func(c admission.Candidate) time.Duration { return previewExpiry(d.currentCfg(), c) },
 		Caps:        func() admission.Caps { return admission.Caps{IPv6: ipv6} },

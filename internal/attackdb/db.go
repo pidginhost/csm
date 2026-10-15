@@ -410,7 +410,7 @@ func (db *DB) RecordFinding(f alert.Finding) {
 // MarkBlocked sets the auto-blocked flag on an IP record.
 func (db *DB) MarkBlocked(ip string) {
 	db.mu.Lock()
-	if rec, ok := db.records[ip]; ok {
+	if rec, ok := db.records[ip]; ok && !rec.AutoBlocked {
 		rec.AutoBlocked = true
 		rec.ThreatScore = ComputeScore(rec)
 		delete(db.deletedIPs, ip)

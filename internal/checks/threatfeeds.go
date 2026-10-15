@@ -22,6 +22,9 @@ import (
 // 2. Public threat intelligence feeds (updated daily)
 // 3. AbuseIPDB as fallback for unknown IPs
 type ThreatDB struct {
+	// writeMu orders local threat mutations across persistence and publication.
+	// Lookup and config reload use mu only; applied batches persist outside it.
+	writeMu       sync.Mutex
 	mu            sync.RWMutex
 	badIPs        map[string]string              // ip -> source/reason
 	badIPExpiry   map[string]time.Time           // ip -> temp-entry expiry; absent = permanent
@@ -203,6 +206,8 @@ func (db *ThreatDB) LookupMatch(ip string) (ThreatMatch, bool) {
 // Called for deliberate operator blocks - persists across restarts and
 // never expires. Upgrades an existing temp entry to permanent.
 func (db *ThreatDB) AddPermanent(ip, reason string) {
+	db.writeMu.Lock()
+	defer db.writeMu.Unlock()
 	db.mu.Lock()
 	_, exists := db.badIPs[ip]
 	_, wasTemp := db.badIPExpiry[ip]
@@ -246,6 +251,48 @@ func (db *ThreatDB) AddTemporary(ip, reason string, ttl time.Duration) {
 	})
 }
 
+// AddTemporaryUntil records one applied block through the batch consumer.
+func (db *ThreatDB) AddTemporaryUntil(ip, reason string, expiresAt time.Time) error {
+	return db.AddTemporaryBatch([]store.PermanentBlockEntry{{IP: ip, Reason: reason, ExpiresAt: expiresAt}})
+}
+
+// persistAppliedThreats lets tests hold a durable write before publication.
+var persistAppliedThreats = (*store.DB).AddAppliedTempBlocks
+
+// AddTemporaryBatch publishes memory only after the batch's durable write.
+// The outbox retries on error, including after a process restart.
+func (db *ThreatDB) AddTemporaryBatch(entries []store.PermanentBlockEntry) error {
+	db.writeMu.Lock()
+	defer db.writeMu.Unlock()
+	if sdb := store.Global(); sdb != nil {
+		if err := persistAppliedThreats(sdb, entries); err != nil {
+			return err
+		}
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	for _, entry := range entries {
+		ip, reason, expiresAt := entry.IP, entry.Reason, entry.ExpiresAt
+		if !time.Now().Before(expiresAt) {
+			continue
+		}
+		if source, exists := db.badIPs[ip]; exists {
+			cur, isTemp := db.badIPExpiry[ip]
+			if !isTemp || cur.After(expiresAt) {
+				continue
+			}
+			// Reloaded evidence uses this source label. Replaying its
+			// outcome must not change the in-memory view either.
+			if cur.Equal(expiresAt) && (source == reason || source == "permanent-blocklist") {
+				continue
+			}
+		}
+		db.badIPs[ip] = reason
+		db.badIPExpiry[ip] = expiresAt
+	}
+	return nil
+}
+
 // AddOperatorTemporary records a timed operator block (the Web UI 24h block)
 // for the lifetime of its firewall block. The evidence is operator-sourced
 // but lapses with the block, so a mistaken 24h block of a customer address
@@ -259,6 +306,8 @@ func (db *ThreatDB) AddOperatorTemporary(ip, reason string, ttl time.Duration) {
 }
 
 func (db *ThreatDB) addExpiring(ip, reason string, ttl time.Duration, operator bool, persist func(time.Time)) {
+	db.writeMu.Lock()
+	defer db.writeMu.Unlock()
 	if ttl <= 0 {
 		return
 	}
@@ -295,6 +344,8 @@ func (db *ThreatDB) addExpiring(ip, reason string, ttl time.Duration, operator b
 // evidence untouched and restores feed ownership when the IP is
 // independently present in a threat feed.
 func (db *ThreatDB) RemoveTemporary(ip string) {
+	db.writeMu.Lock()
+	defer db.writeMu.Unlock()
 	db.mu.Lock()
 	if _, isTemp := db.badIPExpiry[ip]; isTemp {
 		delete(db.badIPExpiry, ip)
@@ -309,6 +360,8 @@ func (db *ThreatDB) RemoveTemporary(ip string) {
 
 // RemovePermanent removes an IP from the permanent blocklist and in-memory DB.
 func (db *ThreatDB) RemovePermanent(ip string) {
+	db.writeMu.Lock()
+	defer db.writeMu.Unlock()
 	db.mu.Lock()
 	delete(db.badIPExpiry, ip)
 	if feed, ok := db.feedSourceLocked(ip); ok {
@@ -432,6 +485,8 @@ func (db *ThreatDB) PruneExpiredWhitelist() int {
 // lifecycle cleanup, not data retention, so it does not sit behind the
 // opt-in retention sweeps.
 func (db *ThreatDB) PruneExpiredThreats() int {
+	db.writeMu.Lock()
+	defer db.writeMu.Unlock()
 	now := time.Now()
 	pruned := 0
 	db.mu.Lock()
