@@ -13,6 +13,9 @@ import (
 // engine is one on every platform; only Linux runs them.
 type BlockEngine interface {
 	CheckBlockBatchEffects(members []firewall.BlockMember) ([]firewall.BlockCheck, error)
+	// RetireBlockActions reports which unknown attempts left nothing in the
+	// kernel and removes their own rows.
+	RetireBlockActions(actions []firewall.BlockAction) ([]bool, error)
 	ApplyBlockBatch(members []firewall.BlockMember) ([]firewall.BlockResult, error)
 	// LeaseNow is the clock the engine turns expiries into kernel
 	// timeouts against. A first attempt's expiry is set on it.
@@ -456,6 +459,9 @@ func (o *Owner) finishPending() error {
 			continue
 		}
 		id := a.Attempt.Candidate
+		if c.State == admission.StateUnknown {
+			o.noteRetirement(c.ExpiresAt)
+		}
 		if c.State == admission.StateQueued && outcome.rejected {
 			if o.isolated == nil {
 				o.isolated = map[admission.CandidateID]time.Time{}

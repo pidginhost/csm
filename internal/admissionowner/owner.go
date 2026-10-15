@@ -61,6 +61,10 @@ var (
 	// the block that already enforces it; tests make them fail.
 	finishExistingLedger    = (*store.AdmissionLedger).FinishExisting
 	terminateExistingLedger = (*store.AdmissionLedger).TerminateExisting
+	// retireLedger retires an unknown attempt; tests make it fail.
+	retireLedger = (*store.AdmissionLedger).RetireUnproven
+	// unresolvedIntents lists a retirement pass's intents; tests count it.
+	unresolvedIntents = (*store.AdmissionLedger).UnresolvedIntents
 )
 
 // previewLimits lets a schedule serve whatever the ledger's budgets allow,
@@ -182,6 +186,17 @@ type Owner struct {
 	// clock; arrived is set by a drain that queued work.
 	nextBatch time.Time
 	arrived   bool
+	// retireDue is the next admission expiry; retireNext is the next
+	// monotonic retry. They must not be converted into each other when
+	// admission time stalls or an engine call takes time.
+	retireDue  time.Time
+	retireNext time.Time
+	retireAt   time.Time
+	retireWait time.Duration
+	// Per-action monotonic waits keep held entries from monopolizing a batch.
+	retireRetry map[admission.ActionID]time.Time
+	// Resume after the last checked action even if its retry is already due.
+	retireAfter admission.ActionID
 }
 
 // Start opens the ledger and runs the startup sequence before it returns,
@@ -705,9 +720,14 @@ func (o *Owner) turn() error {
 	if err := o.finishPending(); err != nil {
 		return err
 	}
+	// Anchor before the reading: a slow clock or durable tick must not add
+	// its latency to an unknown attempt's expiry wake.
+	retireSample := monoNow()
 	if err := o.tick(); err != nil {
 		return err
 	}
+	// Retirement first: it can release the holds pending_recovery waits on.
+	retireErr := o.retire()
 	picks, err := scheduleLedger(o.ledger, previewLimits)
 	if err != nil {
 		return fmt.Errorf("scheduling the queue: %w", err)
@@ -760,7 +780,12 @@ func (o *Owner) turn() error {
 			o.scheduleDue = true
 		}
 	}
-	return nil
+	if at := o.retirementWake(retireSample); !at.IsZero() {
+		if o.wakeAt.IsZero() || at.Before(o.wakeAt) {
+			o.wakeAt = at
+		}
+	}
+	return retireErr
 }
 
 // expiryOf is the absolute expiry of a pick's next attempt: a retry keeps

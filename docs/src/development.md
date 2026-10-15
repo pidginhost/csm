@@ -388,7 +388,11 @@ rate, so a flood cannot fill a week of history in an hour. Scopes earn
 history turns in fixed quanta, so large records cannot take more than their
 share, and a record that has earned its turn holds its lane until the
 credit covers it. An ended candidate's details are kept through the review
-window and, for a verified effect, for as long as the effect can last. They
+window and, unless the candidate was only previewed, for as long as the
+firewall row its attempt may have written can last: a failed attempt's row
+can outlive a failed restore write, and startup must still know its action
+while the row could be restored. Endings written before this rule keep
+their earlier time. They
 are retired after thirty days, or earlier when an allowance needs the room,
 oldest first. An unresolved outcome is pinned in a separate recovery reserve
 until recovery settles it, and new work waits while that reserve is full.
@@ -593,6 +597,26 @@ held. The admission owner must reconcile action-linked rows before startup
 or any downgrade to a build that ignores their verification fields.
 The retry marker for a kernel rejection requires a successful state restore.
 Marking with no action IDs still writes the safe state to release a state hold.
+`RemoveBlockActionRows` removes, in one state write, the rows of attempts the
+ledger has settled (failed, or retired after their expiry); an error reports
+no completed removal, including a durability failure after rename. Startup
+calls it after marking every unproven row, with the settled subset
+`store.ReadSettledBlockActions` returns, so a start that stops between the two
+leaves the rows held back and the next start removes them.
+An unconfirmed removal is written again on retry even if its rows already
+appear absent. Cleanup preserves other actions' rows, including distinct
+actions sharing one address.
+`RetireBlockActions` checks the kernel for up to 64 unknown attempts under one
+engine lock: an attempt is clear when its address has no element, or the
+element matches a verified row of another action, remaining lifetime included,
+and its own row then goes in one write. An element still present keeps it
+held. Retirement requires a kernel snapshot of the target's address family;
+a missing or disabled IPv6 set cannot prove absence, so it holds that
+attempt while the rest of the batch is answered. Cleanup resumes and
+saves the lease checkpoint first; an unreadable clock or checkpoint
+authorizes no removal. Address matching for recovery
+accepts legacy mapped, uppercase and zoned spellings within the engine's
+namespace; this does not relax the admission parser.
 Unverified rows cannot suppress alerts or reputation checks through stale legacy
 tracker entries. They do not count as enforced blocks or select threat evidence
 for operator flush cleanup. Live deny limits count their kernel elements using
@@ -620,7 +644,27 @@ effect. Failed outcome writes retry before more work is selected and once at
 shutdown, even without a fresh clock reading; the effect is never dispatched
 again for that attempt. An outcome the ledger refuses for good (a damaged
 record or a conflicting state) is not retried: its attempt stays unresolved
-until recovery. Every other kind is still previewed. A batch the kernel
+until recovery. Each turn, before scheduling, the owner retires unknown
+outcomes whose expiry has passed: it asks the engine, for up to 64 at a time,
+whether anything of them remains (`RetireBlockActions`); running attempts are
+never sent. The engine removes each clear attempt's own row, and the ledger
+then retires it (`RetireUnproven`). An element still present, as after a
+forward wall step, keeps that attempt for a minute on its own wait, so a held
+batch cannot starve the intents behind it. Each checked batch advances through
+action order, wrapping around, even when its retries are due by the next turn.
+A degraded clock or a missing engine retires nothing and tries again a second
+later, as do undelivered
+outcomes and a ledger clock that cannot yet prove the expiry. An engine that
+cannot check is asked again after a backoff of one second doubling to a
+minute. A stop between the row removal and the ledger retirement leaves a
+row-less unknown that the next pass retires. The turn wakes for the earliest
+expiry or monotonic retry, and until one of them is due a turn lists no
+intents. It never rebases a retry on admission time or adds time spent inside
+an engine call. Expiry conversion uses a monotonic sample taken before reading
+the admission clock, so a slow tick or later call cannot postpone another
+expiry. Running attempts create no retirement wake; retired attempts leave no
+retry entry.
+Every other kind is still previewed. A batch the kernel
 rejected fails every member, charged; each then retries alone, one per turn,
 until its next outcome or its expiry. A state write the engine could not make,
 a failed batch check or apply (including per-member transport and readback
@@ -639,6 +683,13 @@ execution` name the cause. A degraded admission clock cannot bound a lease, so
 it defers block picks the same way. One batch starts a second at most; with an
 engine, a drain that queues new work runs the schedule at once instead of
 waiting for its timer.
+
+The admission ledger exposes two row-recovery reads. `ReadSettledBlockActions`
+names failed attempts and retired unknown outcomes among the supplied action
+IDs; `ReadUnprovenBlockActions` continues to include every non-verified
+attempt. `UnresolvedIntents` gives the owner the same ordered intents as the
+handle-free startup reader. Callers must inspect each attempt's outcome:
+an executing intent is unresolved but cannot be retired as unknown.
 
 ### Attack event storage
 

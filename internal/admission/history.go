@@ -41,15 +41,22 @@ const HistoryIndexKeyLen = 1 + 19 + candidateIDLen
 
 // HistoryTimes is when the details of an admitted candidate that ended at
 // ended may first be retired, and when they are retired without pressure.
-// They stay through the review window, and a verified effect's for as long
-// as the effect can last.
-func HistoryTimes(ended, expires time.Time, verified bool) (eligible, target time.Time) {
+// They stay through the review window and, when holdsRow, for as long as
+// the firewall row its attempt may have written can last.
+func HistoryTimes(ended, expires time.Time, holdsRow bool) (eligible, target time.Time) {
 	eligible = ended.Add(HistoryRetention)
-	if verified && expires.After(eligible) {
+	if holdsRow && expires.After(eligible) {
 		eligible = expires
 	}
 	return eligible, retireTarget(ended, eligible)
 }
+
+// HistoryUntilExpiry reports whether an ended admitted candidate keeps its
+// history until its expiry: every attempt that ran may have written a
+// firewall row, verified or not, and startup must still know its action
+// while that row could be restored. Only a preview writes none, and a
+// candidate previewed on a retry had a live attempt before it.
+func HistoryUntilExpiry(c Candidate) bool { return c.State != StateObserved || c.Attempts > 1 }
 
 func retireTarget(ended, eligible time.Time) time.Time {
 	if target := ended.Add(HistoryTarget); target.After(eligible) {

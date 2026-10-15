@@ -169,7 +169,7 @@ func upgradeLedgerToSchemaFour(tx *bolt.Tx) error {
 					return walkErr
 				}
 			} else {
-				h.Eligible, _ = admission.HistoryTimes(h.Ended, c.ExpiresAt, c.State == admission.StateVerified)
+				h.Eligible, _ = admission.HistoryTimes(h.Ended, c.ExpiresAt, admission.HistoryUntilExpiry(c))
 			}
 		}
 		return putHistoryEntry(tx, id, h)
@@ -484,7 +484,7 @@ func (q *queueTx) ended(id admission.CandidateID, c admission.Candidate) error {
 			}
 			h.Pinned, q.storageDirty = true, true
 		} else {
-			h.Eligible, _ = admission.HistoryTimes(q.now, c.ExpiresAt, c.State == admission.StateVerified)
+			h.Eligible, _ = admission.HistoryTimes(q.now, c.ExpiresAt, admission.HistoryUntilExpiry(c))
 		}
 		return putHistoryEntry(q.tx, id, h)
 	}
@@ -1130,8 +1130,11 @@ func proveStorageLinks(tx *bolt.Tx) error {
 				return admission.ErrCorruptRecord
 			}
 			if !h.Pinned {
-				eligible, _ := admission.HistoryTimes(h.Ended, c.ExpiresAt, c.State == admission.StateVerified)
-				if !h.Eligible.Equal(eligible) {
+				// Endings before the row rule kept only verified history
+				// until expiry; such an entry keeps its time.
+				eligible, _ := admission.HistoryTimes(h.Ended, c.ExpiresAt, admission.HistoryUntilExpiry(c))
+				earlier, _ := admission.HistoryTimes(h.Ended, c.ExpiresAt, c.State == admission.StateVerified)
+				if !h.Eligible.Equal(eligible) && !h.Eligible.Equal(earlier) {
 					return admission.ErrCorruptRecord
 				}
 			}

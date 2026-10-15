@@ -34,6 +34,7 @@ type Engine struct {
 	failedBlockActions     map[string]bool
 	blockActionsUnproven   error
 	blockBatchStateErr     error
+	blockRemovalPending    bool
 	stateRevision          uint64
 	stateReadErr           error
 	stateSetAside          string
@@ -4838,6 +4839,12 @@ func (e *Engine) saveState(s *FirewallState) error {
 	state := copyFirewallState(*s)
 	e.overlayUnverifiedBlockActionsLocked(&state)
 	normalizeFirewallStateIPs(&state)
+	return e.writeStateLocked(state)
+}
+
+// writeStateLocked persists a prepared state without merging rows. Callers
+// must first load the prior state and preserve any pending action marks.
+func (e *Engine) writeStateLocked(state FirewallState) error {
 	path := filepath.Join(e.statePath, "state.json")
 	if err := writeFirewallStateJSON(path, 0o600, &state); err != nil {
 		if firewallStateFileMatches(path, 0o600, &state) {
@@ -4854,6 +4861,7 @@ func (e *Engine) saveState(s *FirewallState) error {
 	e.unverifiedBlockActions = nil
 	e.failedBlockActions = nil
 	e.blockBatchStateErr = nil
+	e.blockRemovalPending = false
 	return nil
 }
 

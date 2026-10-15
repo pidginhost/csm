@@ -66,7 +66,8 @@ func TestAdmissionLedgerEndingsDateTheirHistory(t *testing.T) {
 	if _, _, err := f.l.Finish(a.Attempt.ID, admission.DispositionUnknown); err != nil {
 		t.Fatal(err)
 	}
-	// A failure has no effect to outlast, however long it would have been.
+	// A failure applied nothing, but its row can outlast a failed restore
+	// write: its history stays until that row's expiry.
 	failedID, a := f.admitted(10 * 24 * time.Hour)
 	if _, _, err := f.l.Finish(a.Attempt.ID, admission.DispositionFailed); err != nil {
 		t.Fatal(err)
@@ -83,7 +84,7 @@ func TestAdmissionLedgerEndingsDateTheirHistory(t *testing.T) {
 		{short, admission.HistoryEntry{RootMask: 1, General: f.cost(short), Ended: now, Eligible: now.Add(admission.HistoryRetention)}},
 		{long, admission.HistoryEntry{RootMask: 1, General: f.cost(long), Ended: now, Eligible: now.Add(10 * 24 * time.Hour)}},
 		{unknownID, admission.HistoryEntry{RootMask: 1, General: f.cost(unknownID), Ended: now, Pinned: true}},
-		{failedID, admission.HistoryEntry{RootMask: 1, General: f.cost(failedID), Ended: now, Eligible: now.Add(admission.HistoryRetention)}},
+		{failedID, admission.HistoryEntry{RootMask: 1, General: f.cost(failedID), Ended: now, Eligible: now.Add(10 * 24 * time.Hour)}},
 	} {
 		if h, found := f.historyEntry(tc.id); !found || h != tc.want {
 			t.Errorf("history of %s = %+v (found %t), want %+v", tc.id, h, found, tc.want)

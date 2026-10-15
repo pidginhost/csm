@@ -35,13 +35,20 @@ type fakeBlocks struct {
 	shortChecks  bool
 	checks       [][]firewall.BlockMember
 	applies      [][]firewall.BlockMember
+	// present names addresses whose element the kernel still holds when
+	// the owner asks to retire; retireErr fails that call.
+	present     map[string]bool
+	retireErr   error
+	retireShort bool
+	retireStep  func([]firewall.BlockAction)
+	retires     [][]firewall.BlockAction
 }
 
 // fakeExisting names a proven block unless a test names it otherwise.
 var fakeExisting = firewall.ExistingBlock{ID: "eff_00112233445566778899aabbccddeeff", ExpiresAt: time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)}
 
 func newFakeBlocks() *fakeBlocks {
-	return &fakeBlocks{refuse: map[string]firewall.BlockRefusal{}, existing: map[string]firewall.ExistingBlock{}, results: map[string]firewall.BlockResult{}}
+	return &fakeBlocks{refuse: map[string]firewall.BlockRefusal{}, existing: map[string]firewall.ExistingBlock{}, results: map[string]firewall.BlockResult{}, present: map[string]bool{}}
 }
 
 func (f *fakeBlocks) CheckBlockBatchEffects(members []firewall.BlockMember) ([]firewall.BlockCheck, error) {
@@ -99,6 +106,32 @@ func (f *fakeBlocks) ApplyBlockBatch(members []firewall.BlockMember) ([]firewall
 		return out[:len(out)-1], nil
 	}
 	return out, nil
+}
+
+func (f *fakeBlocks) RetireBlockActions(actions []firewall.BlockAction) ([]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retires = append(f.retires, append([]firewall.BlockAction(nil), actions...))
+	if f.retireStep != nil {
+		f.retireStep(actions)
+	}
+	if f.retireErr != nil {
+		return nil, f.retireErr
+	}
+	out := make([]bool, len(actions))
+	for i, a := range actions {
+		out[i] = !f.present[a.IP]
+	}
+	if f.retireShort {
+		return out[:len(out)-1], nil
+	}
+	return out, nil
+}
+
+func (f *fakeBlocks) retireCalls() [][]firewall.BlockAction {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.retires
 }
 
 func (f *fakeBlocks) LeaseNow() time.Time {

@@ -99,7 +99,6 @@ func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
 		return blockSnapshot{}, fmt.Errorf("%w: firewall state unavailable", ErrBlockBatchState)
 	}
 	e.overlayUnverifiedBlockActionsLocked(&prior)
-	normalizeFirewallStateIPs(&prior)
 	var conn *nftables.Conn
 	if e.liveBlockedDump == nil {
 		var err error
@@ -113,6 +112,9 @@ func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
 	// Expired rows still own kernel cleanup, notably untimed subnet elements.
 	// Only the check view is pruned; intent and restore retain the full image.
 	state := copyFirewallState(prior)
+	// Recovery needs every action's row, including rows sharing an address.
+	// Only the admission check view may merge those rows.
+	normalizeFirewallStateIPs(&state)
 	state.Blocked, _ = pruneBlocked(state.Blocked, at)
 	state.BlockedNet, _ = pruneBlockedNet(state.BlockedNet, now)
 	state.Allowed, _ = pruneAllowed(state.Allowed, now)

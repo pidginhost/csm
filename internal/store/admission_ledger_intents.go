@@ -284,6 +284,13 @@ func (l *AdmissionLedger) execute(ids []admission.ActionID) ([]admission.Intent,
 	return intents, attempts, candidates, running == 0, nil
 }
 
+// UnresolvedIntents reads, through the handle, the intent of every attempt
+// whose outcome is unresolved, in action order: the owner retires the
+// unknown ones once nothing of them can remain.
+func (l *AdmissionLedger) UnresolvedIntents() ([]admission.Intent, error) {
+	return ReadUnresolvedIntents(l.db)
+}
+
 // ReadUnresolvedIntents reads the intent of every attempt whose outcome is
 // unresolved, in action order, without a ledger handle: startup reads them
 // before the firewall restores its state, whether or not the ledger owner
@@ -350,6 +357,23 @@ func currentLedger(tx *bolt.Tx) (bool, error) {
 // returned: no attempt claims its row. An error means the ledger cannot be
 // read.
 func ReadUnprovenBlockActions(db *DB, ids []string) ([]string, error) {
+	return readBlockActions(db, ids, func(a admission.AttemptRecord) bool { return a.State != admission.StateVerified })
+}
+
+// ReadSettledBlockActions returns, in order, the actions among ids whose
+// attempt can have left nothing in the kernel: it failed, or ended unknown
+// and was retired after its expiry found nothing of it. Startup removes
+// their firewall rows; the other unproven ones stay held. A name the ledger
+// never recorded is not returned. An error means the ledger cannot be read.
+func ReadSettledBlockActions(db *DB, ids []string) ([]string, error) {
+	return readBlockActions(db, ids, func(a admission.AttemptRecord) bool {
+		return a.State == admission.StateFailed || (a.State == admission.StateUnknown && a.Retired)
+	})
+}
+
+// readBlockActions returns, in order, the recorded actions among ids whose
+// attempt keep accepts.
+func readBlockActions(db *DB, ids []string, keep func(admission.AttemptRecord) bool) ([]string, error) {
 	var out []string
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		if current, err := currentLedger(tx); !current {
@@ -377,7 +401,7 @@ func ReadUnprovenBlockActions(db *DB, ids []string) ([]string, error) {
 			if string(a.Attempt.ID) != id {
 				return admission.ErrCorruptRecord
 			}
-			if a.State != admission.StateVerified {
+			if keep(a) {
 				out = append(out, id)
 			}
 		}
@@ -476,7 +500,7 @@ func (l *AdmissionLedger) RetireUnproven(id admission.ActionID) (admission.Candi
 		}
 		q.storageDirty = true
 		h.Pinned = false
-		h.Eligible, _ = admission.HistoryTimes(h.Ended, c.ExpiresAt, false)
+		h.Eligible, _ = admission.HistoryTimes(h.Ended, c.ExpiresAt, admission.HistoryUntilExpiry(c))
 		a.Retired = true
 		// The event row names the retirement; the attempt keeps its
 		// unknown outcome. Its slot was held since that outcome.

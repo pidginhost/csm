@@ -27,8 +27,12 @@ type firewallStartupOps struct {
 	apply     func(*firewall.Engine) error
 	// setAside, when set, replaces (*firewall.Engine).StateSetAside.
 	setAside func(*firewall.Engine) string
-	// unproven, when set, replaces readUnprovenBlockActions.
-	unproven func([]string) ([]string, error)
+	// unproven, when set, replaces readUnprovenBlockActions; settled
+	// replaces readSettledBlockActions and removeRows
+	// (*firewall.Engine).RemoveBlockActionRows.
+	unproven   func([]string) ([]string, error)
+	settled    func([]string) ([]string, error)
+	removeRows func(*firewall.Engine, []string) (int, error)
 	// leaseFloor, when set, replaces readFirewallLeaseFloor, and
 	// setLeaseFloor replaces (*firewall.Engine).SetLeaseFloor.
 	leaseFloor    func() (time.Time, error)
@@ -212,8 +216,8 @@ func (d *Daemon) prepareFirewall(effectiveFirewall *firewall.FirewallConfig, ops
 	// retaining the boundary for operator resolution even if Apply fails.
 	d.fwActions, _ = any(engine).(firewallActionBoundary)
 	recoverFirewallActions(d.fwActions)
-	gateFirewallRows(d.cfg.StatePath, engine, ops)
 	seedFirewallLease(engine, ops)
+	gateFirewallRows(d.cfg.StatePath, engine, ops)
 
 	err = ops.apply(engine)
 	// Report a kept file even when this attempt fails: the next attempt
@@ -267,8 +271,29 @@ func gateFirewallRows(statePath string, engine *firewall.Engine, ops firewallSta
 	if stateErr != nil || len(unproven) == 0 {
 		return // Apply preserves an unreadable state file.
 	}
-	if _, err := engine.MarkBlockActionsUnverified(unproven); err != nil {
-		csmlog.Warn("firewall holds unproven blocks back in memory only", "err", err)
+	if _, markErr := engine.MarkBlockActionsUnverified(unproven); markErr != nil {
+		csmlog.Warn("firewall holds unproven blocks back in memory only", "err", markErr)
+	}
+	// Settled attempts (failed, or retired after their expiry) applied
+	// nothing that can remain: their rows go. The removal's write also
+	// carries the marks a failed write above kept in memory.
+	readSettled, remove := ops.settled, ops.removeRows
+	if readSettled == nil {
+		readSettled = readSettledBlockActions
+	}
+	if remove == nil {
+		remove = (*firewall.Engine).RemoveBlockActionRows
+	}
+	settled, err := readSettled(unproven)
+	if err != nil {
+		csmlog.Warn("firewall keeps settled blocks held back until the ledger can be read", "err", err)
+		return
+	}
+	if len(settled) == 0 {
+		return
+	}
+	if _, err := remove(engine, settled); err != nil {
+		csmlog.Warn("firewall keeps settled blocks held back until their rows can be removed", "err", err)
 	}
 }
 
@@ -338,6 +363,14 @@ func provenFirewallLease(clock admission.Clock, reading admission.ClockReading) 
 		return floor, errors.New("host clock disagrees with the saved checkpoint; using its proven floor")
 	}
 	return floor, nil
+}
+
+func readSettledBlockActions(ids []string) ([]string, error) {
+	db := store.Global()
+	if db == nil {
+		return nil, errors.New("state database unavailable")
+	}
+	return store.ReadSettledBlockActions(db, ids)
 }
 
 func readUnprovenBlockActions(ids []string) ([]string, error) {
