@@ -80,6 +80,22 @@ func TestBlockAdmissionSnapshotCountsShadowOverlap(t *testing.T) {
 	}
 }
 
+// Only an address element counts as coverage. A forecast address inside a
+// real permanent subnet block counts in neither overlap, so the forecast
+// still models it as temporary demand.
+func TestBlockAdmissionSnapshotIgnoresSubnetCoverage(t *testing.T) {
+	f := newBatchFixture(t, FirewallState{
+		BlockedNet: []SubnetEntry{{CIDR: "203.0.113.0/24", Reason: "operator"}, {CIDR: "2001:db8::/64", Reason: "operator"}},
+	})
+	got, err := f.e.BlockAdmissionSnapshot(nil, []string{"203.0.113.70", "2001:db8::70"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Temporary != 0 || got.ShadowTemporary != 0 || got.ShadowPermanent != 0 {
+		t.Fatalf("snapshot = %+v, want no coverage from subnet blocks", got)
+	}
+}
+
 // A malformed call refuses before any snapshot: too many members or
 // forecast addresses, or an address not in canonical form. A failed
 // snapshot refuses the whole call.
