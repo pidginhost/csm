@@ -178,6 +178,9 @@ not available, CSM changes nothing.
 
 CSM checks the integration at startup, after each config reload and every 15
 minutes, and repairs drift, such as a cPanel rebuild that dropped the hooks.
+After fixing a condition that blocked it, run `systemctl reload csm` to request
+another check, even when `csm.yaml` is unchanged. A check already running finishes
+first; the reload does not wait for it.
 When another CSM change holds the lock, it tries again 20 seconds later.
 
 Before each check, CSM cancels antispam changes still waiting to run from an
