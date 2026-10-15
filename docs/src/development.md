@@ -538,6 +538,23 @@ Preview selection and wake calculations check saved ceiling, storage and
 live candidate history even though live budgets do not limit them. Damaged
 accounting refuses the operation without advancing the fair position.
 
+`RecordDryRunBlocks` writes one turn's forecast examples, at most one batch,
+into the `dry_run_blocks` bucket the legacy writer also uses. A record keeps
+the legacy `ip`, `reason` (the registered check) and `timeout_sec`, and adds
+`candidate_id`, `session_id`, `kind` and `expires_at`; its key is a
+fixed-width UTC time with nanoseconds, the canonical address and the
+candidate, so two decisions for one target never overwrite each other. The
+writer validates every record and the encoded key and value bounds before
+writing; one bad record refuses the batch. A full bucket makes room by
+evicting its first keys in key order, at most the batch's size, in the same
+transaction; a bucket above its cap takes no example until maintenance trims
+it. `MaintainDryRunBlocks` runs one bounded step of a pass over the bucket:
+at most 256 records visited or deleted, trimming an oversized bucket from its
+first keys, removing records whose key time is strictly older than a cutoff,
+and, for a purge, every record of a session other than the one it keeps,
+legacy records included. It resumes after the last key it visited, writes
+nothing when nothing is due, and a failed step changes nothing.
+
 The forecast model keeps charges in admission-time order, including when
 imported legacy spend is dated in the future. Earlier simulated charges can
 leave their window while that spend remains. Only `block_ip` consumes
