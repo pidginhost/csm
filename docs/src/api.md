@@ -295,7 +295,8 @@ the ledger would have done.
 `owner.dry_run` is a capacity forecast, not a record of blocks. `active` is
 true while the owner forecasts instead of blocking. `session_id`, `since`
 and `reset_reason` (`startup`, `mode_change` or `model_error`) name the
-forecast session and are null before one starts; a session starts at
+forecast session and are null while none has started, including after a
+failed start; a session starts at
 startup, on entry into dry run or after its model failed, and leaving dry
 run keeps the last session's identity. `modelled_kinds` and
 `prediction_scope` say what the model covers: `block_ip` against the hourly

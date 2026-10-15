@@ -851,7 +851,8 @@ forecast's own ceiling, each prediction's session and last-hour counts, lost
 examples and summaries, failed writes, a pending purge, and a fixed code
 for why forecasting last failed. A turn that succeeds clears the code; a new
 session clears its time too. Leaving dry run clears the forecast and keeps
-the last session's identity, while the loss counters cover the process.
+the last session's identity; a dry run whose session has not started shows
+none. The loss counters cover the process.
 `csm doctor` renders it in three rows that warn and never fail.
 
 The forecast's committed predictions are also summarized in history, never

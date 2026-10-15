@@ -275,7 +275,9 @@ func TestOwnerSessionIDFailureHoldsTheForecast(t *testing.T) {
 	if asked, _, _, _ := panel.state(); len(asked) != 1 || len(w.written()) != batches {
 		t.Fatalf("an unnamed session asked %v or wrote %d example batches", asked, len(w.written())-batches)
 	}
-	if d := dryRunState(t, o); forecastErrorOf(d) != "session_id_unavailable" {
+	// An active forecast without a session shows no earlier session's
+	// identity, as before a first session.
+	if d := dryRunState(t, o); forecastErrorOf(d) != "session_id_unavailable" || !d.Active || d.SessionID != nil || d.Since != nil || d.ResetReason != nil {
 		t.Fatalf("status = %+v", d)
 	}
 	setOwnerHook(t, o, &sessionRand, io.Reader(strings.NewReader(strings.Repeat("b", 16))))

@@ -9,8 +9,9 @@ import (
 const predictionScope = "ceiling_and_temporary_capacity"
 
 // dryRunStatus reads the forecast for status (spec 3.8). While the owner
-// forecasts it shows the session's model and counts; otherwise only the
-// last session's identity. Loss and error counters cover the process.
+// forecasts it shows the session's model and counts, and no identity until
+// a session starts; otherwise only the last session's identity. Loss and
+// error counters cover the process.
 func (o *Owner) dryRunStatus() *health.AdmissionDryRun {
 	d := &health.AdmissionDryRun{
 		Active: o.forecasting(), ModelledKinds: []string{admission.KindBlockIP.String()}, PredictionScope: predictionScope,
@@ -18,7 +19,12 @@ func (o *Owner) dryRunStatus() *health.AdmissionDryRun {
 		ComparisonIncomplete: o.out.restarted || o.out.examplesLost > 0 || o.out.summariesLost > 0 || o.compare.droppedRows() > 0,
 	}
 	var picks, recent [admission.PredictionSlots]uint64
-	session := o.out.last
+	// An earlier session's identity shows only once the owner stops
+	// forecasting; an active forecast without a session shows none.
+	var session sessionInfo
+	if !d.Active {
+		session = o.out.last
+	}
 	if s := o.shadow; s != nil {
 		session = sessionInfo{id: s.id, since: s.since, reset: s.reset}
 		if d.Active {
