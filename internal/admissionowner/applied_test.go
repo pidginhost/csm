@@ -200,6 +200,11 @@ func TestOwnerReplaysAppliedBlocksAfterLostAckAndRestart(t *testing.T) {
 	if got := pendingAudit(t, restarted); len(got) != 0 {
 		t.Fatalf("successful replay left pending rows: %+v", got)
 	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.batches) != 2 || !reflect.DeepEqual(sink.batches[0], sink.batches[1]) {
+		t.Fatalf("restart did not rewrite the unacknowledged action-log batch: %+v", sink.batches)
+	}
 }
 
 func TestOwnerReportsAppliedConsumerBacklog(t *testing.T) {
@@ -343,5 +348,85 @@ func TestOwnerWritesAPendingRowOnceWhileItsConsumerFails(t *testing.T) {
 	}
 	if got := len(consumer.seen()); got != 5 {
 		t.Fatalf("consumer saw %d batches, want every retry", got)
+	}
+}
+
+// New attempts can sort before written rows and displace all or part of a
+// failed batch. Acknowledging the newcomers must not forget those writes.
+func TestOwnerKeepsWrittenRowsAcrossReorderedBatches(t *testing.T) {
+	for _, batchSize := range []int{3, 4} {
+		t.Run(fmt.Sprint(batchSize), func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			cause := errors.New("fixture consumer failure")
+			sink, consumer := &auditSink{}, &appliedSink{err: cause}
+			opts := f.options()
+			opts.WriteAudit, opts.Applied = sink.write, consumer.consume
+			o := f.start(opts)
+			setOwnerHook(t, o, &auditBatch, batchSize)
+			first, now := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.19")
+			second, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.20")
+			a, err := admission.NewAttempt(first, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := admission.NewAttempt(second, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.ID < b.ID {
+				first, second = second, first
+			}
+			finish := func(id admission.CandidateID, disposition admission.Disposition) {
+				t.Helper()
+				if err := o.do(func() error {
+					_, attempt, _, err := o.ledger.Reserve(id, admission.LaneGeneral, now.Add(time.Hour))
+					if err != nil {
+						return err
+					}
+					if _, _, _, err = o.ledger.Execute(attempt.Attempt.ID); err != nil {
+						return err
+					}
+					_, _, err = o.ledger.Finish(attempt.Attempt.ID, disposition)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			finish(first, admission.DispositionApplied)
+			if err := o.do(o.deliverAudit); !errors.Is(err, cause) {
+				t.Fatalf("first delivery = %v, want consumer failure", err)
+			}
+			finish(second, admission.DispositionFailed)
+			rows := pendingAudit(t, o)
+			if len(rows) != 6 || rows[0].Attempt.Candidate != second {
+				t.Fatalf("new rows did not precede the written batch: %+v", rows)
+			}
+			if err := o.do(o.deliverAudit); !errors.Is(err, cause) {
+				t.Fatalf("reordered delivery = %v, want consumer failure", err)
+			}
+			consumer.set(nil)
+			if err := o.do(o.deliverAudit); err != nil {
+				t.Fatal(err)
+			}
+			if got := pendingAudit(t, o); len(got) != 0 {
+				t.Fatalf("recovery left pending rows: %+v", got)
+			}
+			sink.mu.Lock()
+			defer sink.mu.Unlock()
+			for _, row := range rows {
+				writes := 0
+				for _, batch := range sink.batches {
+					for _, record := range batch {
+						if record.ActionID == string(row.Attempt.ID) && record.ActionVersion == uint64(row.Transition) && record.Timestamp.Equal(row.At) {
+							writes++
+						}
+					}
+				}
+				if writes != 1 {
+					t.Errorf("row %+v written %d times, want once", row.ID(), writes)
+				}
+			}
+		})
 	}
 }

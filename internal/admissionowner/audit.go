@@ -68,7 +68,11 @@ func (o *Owner) deliverAudit() (err error) {
 		if err = o.ledger.AckAudit(acks); err != nil {
 			return err
 		}
-		clear(o.auditWritten)
+		// New rows can sort before a failed batch and displace its written
+		// rows. Keep their write receipts until their own acknowledgements.
+		for _, a := range acks {
+			delete(o.auditWritten, auditKeyOf(a))
+		}
 		o.auditAcked += uint64(len(rows))
 	}
 	return nil
