@@ -55,7 +55,7 @@ func forecastOf(t *testing.T, o *Owner) *forecastView {
 	return v
 }
 
-func turn(t *testing.T, o *Owner) {
+func turn(t testing.TB, o *Owner) {
 	t.Helper()
 	if err := o.do(o.turn); err != nil {
 		t.Fatal(err)

@@ -20,7 +20,7 @@ func executionHeld(t *testing.T, o *Owner) string {
 	return s.Owner.ExecutionHeld
 }
 
-func heldMono(t *testing.T, o *Owner) *fakeMono {
+func heldMono(t testing.TB, o *Owner) *fakeMono {
 	t.Helper()
 	mono := &fakeMono{now: time.Unix(1000, 0)}
 	setOwnerHook(t, o, &monoNow, mono.read)

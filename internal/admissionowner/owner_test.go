@@ -75,13 +75,13 @@ func (h *fakeHost) advance(d time.Duration) {
 }
 
 type ownerFixture struct {
-	t         *testing.T
+	t         testing.TB
 	db        *store.DB
 	statePath string
 	host      *fakeHost
 }
 
-func newOwnerFixture(t *testing.T) *ownerFixture {
+func newOwnerFixture(t testing.TB) *ownerFixture {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := store.Open(dir)
@@ -117,7 +117,7 @@ func (f *ownerFixture) start(opts Options) *Owner {
 
 // setOwnerHook serializes a hook change with the owner's timers. Only use
 // it for hooks read on that goroutine; cleanup joins it before restoration.
-func setOwnerHook[T any](t *testing.T, o *Owner, hook *T, next T) {
+func setOwnerHook[T any](t testing.TB, o *Owner, hook *T, next T) {
 	t.Helper()
 	var previous T
 	if err := o.do(func() error {

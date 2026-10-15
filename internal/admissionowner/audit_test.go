@@ -13,7 +13,7 @@ import (
 
 // withTestRegistry makes the owner register one test producer, whose
 // minting capability the test keeps.
-func withTestRegistry(t *testing.T) *admission.Producer {
+func withTestRegistry(t testing.TB) *admission.Producer {
 	t.Helper()
 	reg, err := admission.NewRegistry(func(check string) (string, admission.Policy, bool) {
 		if check == "ssh_brute" {
@@ -49,13 +49,13 @@ func queued(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev a
 }
 
 // queuedAt queues a block of addr from a root of its own.
-func queuedAt(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity, addr string) (admission.CandidateID, time.Time) {
+func queuedAt(t testing.TB, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity, addr string) (admission.CandidateID, time.Time) {
 	t.Helper()
 	return queuedKind(t, o, p, host, sev, addr, admission.KindBlockIP)
 }
 
 // queuedKind queues a candidate of kind at addr from a root of its own.
-func queuedKind(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity, addr string, kind admission.Kind) (admission.CandidateID, time.Time) {
+func queuedKind(t testing.TB, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity, addr string, kind admission.Kind) (admission.CandidateID, time.Time) {
 	t.Helper()
 	target, err := admission.CanonicalAddress(addr, admission.Caps{IPv6: true})
 	if err != nil {
@@ -66,7 +66,7 @@ func queuedKind(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, s
 
 // queuedTarget queues a candidate of kind for target from a root that
 // observed addr.
-func queuedTarget(t *testing.T, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity, addr string, kind admission.Kind, candidate admission.Target) (admission.CandidateID, time.Time) {
+func queuedTarget(t testing.TB, o *Owner, p *admission.Producer, host *fakeHost, sev admission.Severity, addr string, kind admission.Kind, candidate admission.Target) (admission.CandidateID, time.Time) {
 	t.Helper()
 	var id admission.CandidateID
 	host.mu.Lock()
