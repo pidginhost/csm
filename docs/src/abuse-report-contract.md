@@ -1,7 +1,7 @@
 # Abuse Report Contract (v1)
 
-When `reputation.report.enabled: true`, CSM sends a minimized report for
-each confirmed-abuse finding to every configured target. This page defines
+When `reputation.report.enabled: true`, CSM queues minimized reports for
+eligible confirmed-abuse findings, with one copy per usable target. This page defines
 the request a collector receives and the answers CSM understands. Use it to
 build a private collector. The central abuse database implements the same
 contract and accepts `ed25519` targets only. Node setup is in
@@ -15,11 +15,15 @@ CSM reports a finding only when all of these hold:
   mapping is in [Threat Intelligence](threat-intel.md#reported-findings).
 - It is Critical, or High or above for `bad_asn_egress`.
 - It names a source address that parses as an IP address.
-- That address is public and not protected. CSM never reports private,
+- Its finding timestamp is not zero.
+- That address passes CSM's protection checks. CSM excludes private,
   loopback, link-local, multicast, carrier-grade NAT, documentation,
-  benchmarking, reserved or other special-purpose addresses, `infra_ips`
-  entries, Cloudflare edges, or verified crawlers. For NAT64 and 6to4
-  sources, the same rules also apply to the embedded IPv4 address.
+  benchmarking and selected special-purpose ranges, literal IPs and
+  CIDRs in `infra_ips` and `firewall.infra_ips`, Cloudflare edges, and
+  built-in or operator-configured crawler IP ranges. This check does not
+  resolve infrastructure hostnames or consult rDNS crawler results.
+  Teredo clients are not excluded solely for using Teredo. For NAT64 and
+  6to4 sources, the same checks also apply to the embedded IPv4 address.
 
 ## Request
 
@@ -79,9 +83,10 @@ rewrites the path must verify against the original path.
 The transport selects the algorithm:
 
 - `ed25519`: an Ed25519 signature (RFC 8032, not prehashed) with the node's
-  private key, sent as `X-CSM-Signature: ed25519=<128 hex characters>`. The
-  collector verifies it with the public key it registered for that node and
-  key ID.
+  private key. `key_env` must hold the 64-byte private key encoded as 128
+  hex characters, not a 32-byte seed. The signature is sent as
+  `X-CSM-Signature: ed25519=<128 hex characters>`. The collector verifies it
+  with the public key it registered for that node and key ID.
 - `hmac`: HMAC-SHA256 keyed with the `key_env` value exactly as set, not
   hex-decoded, sent as `X-CSM-Signature: sha256=<64 hex characters>`.
 
@@ -98,11 +103,14 @@ A collector must:
    either side of your clock.
 4. Remember each node and nonce pair for that window and reject a repeat.
 
-Answer these failures with 401 or 403, never 422. CSM keeps the report
-queued and retries it, so a node that is not yet approved or has a wrong
-clock loses no reports once the problem is fixed.
+Answer these failures with 401 or 403, never 422. CSM keeps retrying queued
+reports so approval or clock repair can restore delivery. Queue overflow
+can still discard reports during the outage; see [Delivery](#delivery).
 
 ## Test vector
+
+This is a signature test using a documentation address. CSM's reporting
+gate excludes that address from real reports.
 
 Inputs:
 
@@ -146,7 +154,7 @@ CSM ignores the response body.
 | 2xx | Delivered. The report leaves the queue. |
 | 409 | Treated as delivered. Use it only for a report already stored. |
 | 422 | Dropped and counted as lost, never resent. Use it only for a body you will never accept. |
-| 429 | Retried after `Retry-After`, in seconds or as an HTTP date, up to one hour. Without it, retried after one minute. |
+| 429 | Retried after a positive `Retry-After`, in seconds or as an HTTP date, capped at one hour. A missing, invalid, zero or past value uses one minute. Repeated throttling can increase short waits as described below. |
 | Any other status, timeout or network error | Retried after one minute. |
 
 [Threat Intelligence](threat-intel.md#abuse-reporting) describes how waits
@@ -154,11 +162,18 @@ grow while a collector keeps throttling.
 
 ## Delivery
 
-- CSM keeps reports in an on-disk queue that survives restarts and sends
-  each target its reports in queue order. When a target fails, its later
-  reports wait for the next pass while other targets keep receiving theirs.
-- When the queue is full (`reputation.report.spool_max`), CSM drops the
-  oldest queued reports.
+- Reports first enter a bounded memory queue before being written to disk.
+  Memory overflow, failed persistence or a crash before persistence can
+  lose reports. Normal shutdown drains accepted memory work to disk.
+- Persisted reports survive restarts and are sent to each target in queue
+  order. When a target fails, its later reports wait for the next pass
+  while other targets can continue receiving theirs.
+- `reputation.report.spool_max` is one shared capacity across all targets.
+  Each report uses one entry per target. When full, CSM drops the oldest
+  entries across the whole queue, including entries for other targets.
+- Target names identify queued destinations. Use unique, stable names:
+  the last usable target with a duplicate name wins. Removing or renaming
+  a target discards its queued entries on the next delivery pass.
 - A retry sends the same body with a new nonce, timestamp and signature, so
   the same report can arrive more than once, for example when an answer is
   lost. Deduplicate on node and body hash, and answer 409
@@ -166,8 +181,13 @@ grow while a collector keeps throttling.
 
 ## Sample collector (Go)
 
-An HMAC collector for the request above. `secretFor` returns the shared
-secret for a node and key ID, or nil when unknown.
+This HMAC signature-verification skeleton is not a complete collector.
+`secretFor` returns the shared secret for a node and key ID, or nil when
+unknown. Before using it, implement the timestamp and replay checks above,
+body validation, duplicate detection and durable storage at the marked
+point. Return 2xx only after storing the report. If configured, also verify
+the bearer token. The body limit rejects oversized requests rather than
+verifying a truncated prefix.
 
 ```go
 // signedMessage rebuilds the bytes CSM signed for this request.
@@ -197,7 +217,7 @@ func handleReport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
 	if err != nil {
 		http.Error(w, "read failed", http.StatusBadRequest)
 		return
