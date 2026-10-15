@@ -25,6 +25,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - `csm rehash --fragment <file>` re-signs an integration's own conf.d file and refuses when anything else changed since the last signing.
 - `csm capabilities` lists the features this build supports without a running daemon or config.
 - The firewall can allow VRRP to and from listed peers with `firewall.protocol_allow`, so high-availability pairs keep one owner of their shared address.
+- The documentation now explains how to connect a host to the central abuse database or a private collector, and the report format a collector must accept.
 
 ### Changed
 

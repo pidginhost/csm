@@ -137,7 +137,115 @@ database or private collector. It is off by default. Remote targets must use
 HTTPS; plain HTTP is accepted only for loopback collectors. Keys and target
 wiring are read at daemon startup, so changes to this block require a restart.
 The central abuse database accepts `ed25519` targets only; its report URL ends
-in `/report` and its scored-set URL in `/decisions`.
+in `/report` and its scored-set URL in `/decisions`. The request format is in
+the [Abuse Report Contract](abuse-report-contract.md).
+
+### Reported findings
+
+Each class covers these checks. Only Critical findings are reported, except
+`bad_asn_egress`, which reports High findings too.
+
+| Class | Checks |
+|---|---|
+| `bruteforce` | `pam_bruteforce`, `wp_login_bruteforce`, `xmlrpc_abuse`, `ftp_bruteforce`, `smtp_bruteforce`, `mail_bruteforce`, `admin_panel_bruteforce` |
+| `credential_stuffing` | `credential_stuffing` |
+| `php_relay` | `email_php_relay_abuse` |
+| `bad_asn_egress` | `bad_asn_outbound` |
+
+A report carries only the source address, the class, a count and the time.
+List the classes to send in `reputation.report.classes`. An empty list keeps
+reporting off.
+
+### Set up the central abuse database
+
+1. On the node, generate a key pair:
+
+   ```bash
+   csm report enroll
+   ```
+
+   It prints a private key and a public key. Put the private key in the CSM
+   environment file described in
+   [credential rotation](credential-rotation.md#configure-a-systemd-environment-file),
+   for example as `CSM_REPORT_KEY`. The private key is a secret: never paste
+   it into a ticket or chat. Give only the public key to the central
+   operator.
+2. The central operator approves the node and returns its `node_id` and
+   `key_id`, the report and scored-set URLs, and the central public key.
+   Add the central public key to the same environment file, for example as
+   `CSM_CENTRAL_PUBKEY`.
+3. Configure the target. The `central` block is optional; it is described
+   below.
+
+   ```yaml
+   reputation:
+     report:
+       enabled: true
+       classes: [bruteforce, credential_stuffing, php_relay, bad_asn_egress]
+       targets:
+         - name: central
+           url: https://abuse.example.net/report
+           transport: ed25519
+           node_id: "<node_id from the operator>"
+           key_id: "<key_id from the operator>"
+           key_env: CSM_REPORT_KEY
+     central:
+       enabled: true
+       set_url: https://abuse.example.net/decisions
+       pubkey_env: CSM_CENTRAL_PUBKEY
+       action: challenge
+   ```
+
+4. Restart CSM: `systemctl restart csm.service`.
+
+`reputation.central` pulls the database's signed list of scored addresses.
+When a local finding names a listed address as an attacker, CSM challenges
+it. With `action: block_if_local_corroborated`, CSM blocks it instead once
+its score reaches `block_threshold`. Central data alone never blocks. `action: off`
+pulls the list without acting on it.
+
+To rotate the node key, run `csm report enroll` again and have the central
+operator register the new public key. Then update `key_id` and the
+environment file, and restart CSM.
+
+### Send to a private collector
+
+Use `transport: hmac` with a shared secret. You choose `node_id` and
+`key_id`; the collector uses them to find the secret.
+
+```yaml
+reputation:
+  report:
+    enabled: true
+    classes: [bruteforce, credential_stuffing]
+    targets:
+      - name: collector
+        url: https://collector.example.net/csm/report
+        transport: hmac
+        node_id: web-01
+        key_id: k1
+        key_env: CSM_COLLECTOR_SECRET
+        token_env: CSM_COLLECTOR_TOKEN   # optional bearer token
+```
+
+The collector must implement the
+[Abuse Report Contract](abuse-report-contract.md). Every target in the list
+receives every report, so one node can report to the central database and
+a private collector at the same time.
+
+### Check delivery
+
+After the restart, the log shows
+`abuse-reporting: enabled for 1 target(s), 4 class(es)` with your counts.
+A target with a missing field, a non-HTTPS remote URL, an unknown transport
+or an unusable key is skipped with a log line. When no target is left,
+reporting stays off. Failed deliveries are logged as
+`reporting: delivery incomplete`. The `abuse_reporting.ingress` and
+`abuse_reporting.spool` entries in
+[protection queue health](api.md#protection-queue-health) show waiting and
+lost reports.
+
+### Delivery and retries
 
 Reports wait in a durable queue and are delivered once a minute. When a target
 is down, throttling, or refuses the node (for example before the node is
