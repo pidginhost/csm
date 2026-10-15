@@ -4,6 +4,9 @@ Packages and the standalone installer expose `/usr/sbin/csm`, which points to `/
 
 ## Global flags
 
+`csm rehash` and `csm capabilities` reject missing option values before signing
+or printing output. `csm capabilities` accepts but does not read config paths.
+
 | Flag | Description |
 |---------|-------------|
 | `--config <path>` | Override the main config path. Default: `/etc/csm/csm.yaml`, with fallback to `/opt/csm/csm.yaml` on legacy installs. |
@@ -46,7 +49,7 @@ empty tree keeps the last loaded actions until a replacement is available.
 | `csm install` | Deploy config, systemd, auditd rules, logrotate, WHM plugin |
 | `csm uninstall [--purge]` | Remove the executable and CSM-owned service, audit, logrotate, webserver, and ModSecurity integrations. Config, drop-ins, state, logs, signature rules, and quarantine data are preserved by default. `--purge` removes all CSM-owned data. Operator ModSecurity rules are never removed. |
 | `csm baseline` | Full server scan via the daemon, records current state for change tracking. Dangerous privileged accounts or WHM root tokens can still be reported on first scan. Takes 5-10 min on large servers. Required on first install. Add `--confirm` when existing history would be cleared. The daemon must be running. |
-| `csm rehash` | Re-sign the binary, `csm.yaml` and conf.d hashes without scanning. Use once after editing restart-required config, changing a drop-in by hand, or replacing the binary; a stale hash makes the next restart refuse to start. It also applies `integrity.immutable` to the installed binary. |
+| `csm rehash` | Re-sign the binary, `csm.yaml` and conf.d hashes without scanning. Use once after editing restart-required config, changing a drop-in by hand, or replacing the binary; a stale hash makes the next restart refuse to start. It also applies `integrity.immutable` to the installed binary. `csm rehash --fragment <file>` re-signs only when the named conf.d files are the only change; see [conf.d drop-ins](configuration.md#confd-drop-ins) for its exit codes. Unknown arguments are refused rather than ignored. |
 | `csm status` | Show current state, last run, active findings, and automation rollout state. Add `--json` for the full health snapshot (watchers, severity counts, store health, blocklist size, capabilities, version, hashes, automation). |
 | `csm verify-release <key.pem> <file.sig> <file>` | Verify a release artifact's Ed25519 signature without OpenSSL; the supported verification path on EL8 and CloudLinux 8. |
 | `csm systemd-roots` | Print a validated systemd drop-in granting write access to configured account trees; see [custom account roots](custom-account-roots.md). |
@@ -60,6 +63,7 @@ empty tree keeps the last loaded actions until a replacement is available.
 | `csm config apply-immutability` | Reapply `integrity.immutable` to `/opt/csm/csm`. Unsupported filesystems or missing tooling produce a warning and a successful exit; permission and other unexpected errors fail. Package transaction hooks use this after upgrades. |
 | `csm verify` | Verify binary and config integrity |
 | `csm version` | Version and build info |
+| `csm capabilities` | Print this build's feature tokens, one per line; `--json` prints a JSON array. Needs no running daemon and no config, so an orchestrator can check a token before it writes a key that depends on it. Tokens for live BPF monitors appear only in the daemon's `GET /api/v1/capabilities`. |
 | `csm incidents ...` | List, show, and update correlated security incidents (`list`, `show <id>`, `status <id> <state>`, `bulk-status`). See [Incidents](incidents.md). |
 | `csm forensic-snapshot <account> --out <archive.tar.gz>` | Evidence archive for incident handoff (triggers, admins, sessions, file mtimes). |
 | `csm webserver-integration <install\|upgrade\|status\|validate\|remove>` | Install, upgrade, or remove the challenge reverse-proxy snippets for the detected web server. |

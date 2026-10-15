@@ -84,6 +84,11 @@ func main() {
 	switch cmd {
 	case "version":
 		fmt.Printf("csm %s (build: %s, date: %s)\n", Version, BuildHash, BuildTime)
+	case "capabilities":
+		if err := writeCapabilities(os.Stdout, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	case "daemon":
 		runDaemon()
 	case "forward-guard-worker":
@@ -204,7 +209,8 @@ Commands:
   check-deep      Test deep checks only
   status        Show current state, last run, active findings
   baseline      Reset state - mark current state as "known good" (use --confirm if history exists)
-  rehash        Re-sign binary, csm.yaml and conf.d hashes after an intentional change (no scan)
+  rehash        Re-sign binary, csm.yaml and conf.d hashes after an intentional change (no scan;
+                --fragment <file> re-signs only when that conf.d file is all that changed)
   validate      Validate config (--deep for connectivity probes)
   config        Config display (config show [--no-redact] [--json])
   verify        Verify binary + config integrity
@@ -238,6 +244,7 @@ Commands:
   report enroll Generate an abuse-reporting node key pair
   virtual-patch Deny HTTP access to confirmed web-exposed files (--apply; needs manual/auto mode)
   version       Version info + build hash
+  capabilities  Print this build's feature tokens, one per line (--json for an array; no daemon or config needed)
 
 Options:
   --config <path>      Config file path (default: %s; fallback: %s)
@@ -884,11 +891,25 @@ func runBaseline() {
 	fmt.Printf("Config hash: %s\n", r.ConfigHash)
 }
 
+// Exit codes of `csm rehash --fragment`. The phpanel agent branches on them.
+const (
+	exitRehashUnnamedChanges = 4
+	exitRehashNoBaseline     = 5
+)
+
 // runRehash updates only the binary and config hashes without running a full
 // scan. Use this after upgrading the binary or editing csm.yaml - it's instant
 // compared to baseline which re-scans the entire server.
 func runRehash() {
+	names, err := rehashFragmentArgs(os.Args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	cfg := loadConfigLite()
+	if names != nil {
+		os.Exit(rehashFragments(binaryPath, cfg.ConfigFile, cfg.ConfigDir, names, os.Stdout, os.Stderr))
+	}
 
 	binaryHash, err := integrity.HashFile(binaryPath)
 	if err != nil {
@@ -937,6 +958,60 @@ func runRehash() {
 	fmt.Printf("Hashes updated (no scan performed)\n")
 	fmt.Printf("Binary hash: %s\n", binaryHash)
 	fmt.Printf("Config hash: %s\n", cfg.Integrity.ConfigHash)
+}
+
+// rehashFragmentArgs returns the conf.d file names given with --fragment, or
+// nil for a full rehash. Unknown arguments are refused: a mistyped flag that
+// fell through to a full rehash would sign every change the scoped mode
+// exists to refuse.
+func rehashFragmentArgs(args []string) ([]string, error) {
+	var names []string
+	for i := 2; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--fragment":
+			if i+1 >= len(args) || args[i+1] == "" || strings.HasPrefix(args[i+1], "--") {
+				return nil, errors.New("--fragment requires a conf.d file name")
+			}
+			i++
+			names = append(names, args[i])
+		case strings.HasPrefix(arg, "--fragment="):
+			name := strings.TrimPrefix(arg, "--fragment=")
+			if name == "" {
+				return nil, errors.New("--fragment requires a conf.d file name")
+			}
+			names = append(names, name)
+		case arg == "--config" || arg == "--config-dir":
+			if i+1 >= len(args) || args[i+1] == "" || strings.HasPrefix(args[i+1], "--") {
+				return nil, fmt.Errorf("%s requires a path", arg)
+			}
+			i++
+		default:
+			return nil, fmt.Errorf("unknown rehash argument %q (usage: csm rehash [--fragment <file>])", arg)
+		}
+	}
+	return names, nil
+}
+
+// rehashFragments re-signs conf.d when only the named fragments changed and
+// maps the outcome to the exit code the phpanel agent expects.
+func rehashFragments(binPath, cfgPath, confDir string, names []string, stdout, stderr io.Writer) int {
+	err := integrity.RehashFragments(binPath, cfgPath, confDir, names)
+	var unnamed *integrity.UnnamedChangesError
+	switch {
+	case err == nil:
+		fmt.Fprintf(stdout, "Re-signed conf.d fragments: %s\n", strings.Join(names, ", "))
+		return 0
+	case errors.As(err, &unnamed):
+		fmt.Fprintf(stderr, "Refusing to re-sign: %v\nReview these changes, then run `csm rehash` to sign everything.\n", err)
+		return exitRehashUnnamedChanges
+	case errors.Is(err, integrity.ErrNoFragmentBaseline):
+		fmt.Fprintf(stderr, "Cannot re-sign by fragment: %v\nRun `csm rehash` to sign the current state.\n", err)
+		return exitRehashNoBaseline
+	default:
+		fmt.Fprintf(stderr, "Error re-signing conf.d fragments: %v\n", err)
+		return 1
+	}
 }
 
 func runValidate() {
@@ -1001,6 +1076,32 @@ func runVerify() {
 		os.Exit(2)
 	}
 	fmt.Println("Integrity check passed")
+}
+
+// writeCapabilities prints the capability tokens without a daemon or config,
+// so an orchestrator can feature-detect before it renders newer keys.
+// --config and --config-dir are accepted and ignored.
+func writeCapabilities(w io.Writer, args []string) error {
+	asJSON := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			asJSON = true
+		case "--config", "--config-dir":
+			if i+1 >= len(args) || args[i+1] == "" || strings.HasPrefix(args[i+1], "--") {
+				return fmt.Errorf("%s requires a path", args[i])
+			}
+			i++
+		default:
+			return errors.New("usage: csm capabilities [--json]")
+		}
+	}
+	caps := health.Capabilities()
+	if asJSON {
+		return json.NewEncoder(w).Encode(caps)
+	}
+	_, err := fmt.Fprintln(w, strings.Join(caps, "\n"))
+	return err
 }
 
 func runUpdateRules() {

@@ -397,7 +397,7 @@ func TestPhpanelQueueHealthArchiveCountsMalformedFindingOnce(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := q.quarantineMalformedWithLimit(key, payload, errors.New("malformed finding"), 1); err != nil {
+		if err := q.quarantineWithLimit(key, payload, errors.New("malformed finding"), 1); err != nil {
 			t.Fatal(err)
 		}
 	}

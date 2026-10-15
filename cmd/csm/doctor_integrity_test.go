@@ -198,7 +198,7 @@ func TestUsageListsEveryDispatchedCommand(t *testing.T) {
 		"clean", "db-clean", "scan", "firewall", "harden", "incidents", "enable",
 		"disable", "config", "store", "export", "phprelay", "doctor", "backup",
 		"forensic-snapshot", "restore", "webserver-integration", "pam", "report",
-		"virtual-patch", "version",
+		"virtual-patch", "version", "capabilities",
 	} {
 		if !strings.Contains(usage, "\n  "+cmd) {
 			t.Errorf("csm --help does not list %q", cmd)

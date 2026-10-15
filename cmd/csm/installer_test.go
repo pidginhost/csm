@@ -911,6 +911,106 @@ func TestInstallerUninstallPurgeUsesResolvedConfigDirectory(t *testing.T) {
 	}
 }
 
+// Signing keeps a per-fragment conf.d record beside the main config; a purge
+// that leaves it behind leaves CSM config on the host.
+func TestInstallerUninstallPurgeRemovesFragmentRecord(t *testing.T) {
+	var removed []string
+	inst := &Installer{
+		BinaryPath: "/opt/csm/csm",
+		ConfigPath: filepath.Join(t.TempDir(), "csm.yaml"),
+		ConfigDir:  "/etc/csm/conf.d",
+		StatePath:  "/srv/csm/state",
+		LogPath:    "/var/log/csm/monitor.log",
+		operations: &installerOperations{
+			getuid:           func() int { return 0 },
+			runCommand:       func(string, ...string) error { return nil },
+			daemonLive:       func() bool { return false },
+			setImmutable:     func(string, bool) error { return nil },
+			removeAuditd:     func() error { return nil },
+			acquireStateLock: func(string) (func(), error) { return func() {}, nil },
+			glob:             func(string) ([]string, error) { return nil, nil },
+			remove: func(path string) error {
+				removed = append(removed, path)
+				return nil
+			},
+			removeAll: func(string) error { return nil },
+		},
+	}
+
+	if err := inst.Uninstall(true); err != nil {
+		t.Fatal(err)
+	}
+	record, err := integrity.FragmentRecordPath(inst.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(removed, record) || !slices.Contains(removed, inst.ConfigPath) {
+		t.Fatalf("purge removed %v, want the config and its fragment record", removed)
+	}
+}
+
+// A config linked into the install tree loses its target once that tree is
+// purged; the record beside the target must be found before then.
+func TestInstallerUninstallPurgeRemovesRecordOfLinkedConfig(t *testing.T) {
+	root := t.TempDir()
+	installRoot := filepath.Join(root, "opt", "csm")
+	target := filepath.Join(installRoot, "csm.yaml")
+	link := filepath.Join(root, "etc", "csm.yaml")
+	for _, dir := range []string{installRoot, filepath.Dir(link)} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(target, []byte("hostname: host.example\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	record, err := integrity.FragmentRecordPath(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var removed []string
+	inside := func(path string) bool { return strings.HasPrefix(path, root+string(filepath.Separator)) }
+	inst := &Installer{
+		BinaryPath: filepath.Join(installRoot, "csm"),
+		ConfigPath: link,
+		ConfigDir:  filepath.Join(root, "etc", "conf.d"),
+		StatePath:  filepath.Join(root, "state"),
+		LogPath:    filepath.Join(root, "log", "monitor.log"),
+		operations: &installerOperations{
+			getuid:           func() int { return 0 },
+			runCommand:       func(string, ...string) error { return nil },
+			daemonLive:       func() bool { return false },
+			setImmutable:     func(string, bool) error { return nil },
+			removeAuditd:     func() error { return nil },
+			acquireStateLock: func(string) (func(), error) { return func() {}, nil },
+			glob:             func(string) ([]string, error) { return nil, nil },
+			remove: func(path string) error {
+				removed = append(removed, path)
+				if inside(path) {
+					return os.Remove(path)
+				}
+				return nil
+			},
+			removeAll: func(path string) error {
+				if inside(path) {
+					return os.RemoveAll(path)
+				}
+				return nil
+			},
+		},
+	}
+
+	if err := inst.Uninstall(true); err != nil {
+		t.Fatalf("purge with a config linked into the install tree: %v", err)
+	}
+	if !slices.Contains(removed, record) || !slices.Contains(removed, link) {
+		t.Fatalf("purge removed %v, want the link and its fragment record", removed)
+	}
+}
+
 func TestPurgeStateDirContentsRetainsAuthoritativeLock(t *testing.T) {
 	statePath := t.TempDir()
 	if err := os.WriteFile(filepath.Join(statePath, daemonStateLockFileName), []byte("lock"), 0o600); err != nil {

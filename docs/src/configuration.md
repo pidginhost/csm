@@ -727,6 +727,13 @@ firewall:
   #     port_start: 49152
   #     port_end: 65534
 
+  # Peer-scoped protocols without ports, such as VRRP between the members of
+  # a high-availability pair. See firewall.protocol_allow below.
+  protocol_allow: []
+  # protocol_allow:
+  #   - protocol: vrrp
+  #     peers: [192.0.2.11, 2001:db8::11]
+
   # Infra IPs/CIDRs/hostnames for firewall rules
   infra_ips: []
 
@@ -1098,6 +1105,12 @@ The YARA-X worker inherits the daemon's selected directory on every start. If it
 - **Integrity ownership:** drop-ins cannot set the `integrity` block. Integrity metadata is stored only in the main config.
 - **Hash:** `integrity.config_hash` covers the main file and `integrity.confd_hash` covers loaded drop-ins. After editing a drop-in by hand, run `csm rehash` before restarting, or use `systemctl reload csm` so the daemon can re-sign after validating the merged config. Rehash re-signs the resolved main file only; when a real legacy copy still exists at `/opt/csm/csm.yaml` with the same operator content, rehash replaces it with the compatibility symlink so the two never drift. Web settings saves refuse to bless a drop-in change that has not already been re-signed. A mismatch is refused at the next daemon start with an error that names `csm rehash`. Until then the running daemon keeps its old hashes, but its periodic integrity check raises a tamper finding and skips the scheduled checks on every cycle; `csm doctor` reports the same mismatch, so it can be fixed before a restart turns it into an outage.
 - **Integration-owned fragments:** a fragment its owning package rewrites on its own schedule (phpanel-server-agent rewrites `10-phpanel-runtime.yaml` on every bootstrap) cannot be pinned by a static hash without making every one of those rewrites a failed restart. List such fragments by bare filename under `confd.integrity_exempt` in the main config, then run `csm rehash` once. Their content is left out of `confd_hash`; every other fragment stays covered. The list lives in the main config, outside the `integrity` block, so it is itself covered by `config_hash`, and a fragment cannot set `confd` to exempt itself.
+- **Scoped re-sign:** an integration that rewrites a covered fragment of its own runs `csm rehash --fragment <file>` (repeat the flag for several files) instead of a full `csm rehash`. It re-signs only when the named files are the only change since the last signed state. If the binary, the main config or any other fragment changed, it signs nothing and names what changed. A named file may be new, edited or deleted; a deleted one must have been part of the signed state. Fragments under `confd.integrity_exempt` stay outside the signed state either way. CSM keeps a per-fragment record in `csm.yaml.confd-fragments.json` beside the main config. Every signing writes it, and each daemon start that verifies conf.d writes one when it is missing or out of date, so upgraded hosts need no extra step. Exit codes:
+  - `0`: re-signed, or nothing had changed.
+  - `4`: refused because something besides the named files changed; stderr lists it.
+  - `5`: no per-fragment record for the current signed state yet. A full `csm rehash` signs everything and writes one.
+  - Any other non-zero code: an error, including a corrupt record, an incomplete option, an invalid fragment name or a file that never existed. Do not fall back to full signing on these errors.
+- **Record privacy:** the per-fragment record retains covered fragment contents to validate them against the signed digest. It is written with owner-only access beside the resolved main config and must be protected like the config itself. A corrupt record never authorizes fallback signing; a successful startup verification can rebuild it from verified fragments.
 - **Use cases:** packaged integration profiles (e.g. `/usr/lib/csm/profiles/phpanel-agent.yaml` symlinked into `conf.d/`), per-host automation that should not touch the operator's `csm.yaml`, secret material rendered from a vault.
 
 ```bash
@@ -1122,6 +1135,27 @@ The direct SMTP detector's `backend` accepts `auto`, `bpf`, `legacy`, or `none`;
 BPF enforcement requires a BPF-capable connection tracker at
 runtime; `auto` falls back to legacy detection on older servers. See
 [BPF enforcement](bpf-enforcement.md).
+
+## firewall.protocol_allow
+
+`protocol_allow` opens an IP protocol that has no ports to listed peers only. Each entry names a `protocol` and its `peers`:
+
+```yaml
+firewall:
+  protocol_allow:
+    - protocol: vrrp
+      peers:
+        - 192.0.2.11
+        - 2001:db8::11
+```
+
+The only protocol today is `vrrp` (IP protocol 112), for keepalived and other VRRP speakers on database or load-balancer pairs. `tcp`, `udp`, `icmp` and `icmpv6` have their own keys and are refused here. `peers` is required and takes IPv4 and IPv6 addresses or CIDRs. An empty list, an unknown protocol, a malformed address and a world-wide prefix (`0.0.0.0/0`, `::/0`) are validation errors.
+
+For each peer the input chain accepts the protocol from that address and the output chain accepts it to that address. For `vrrp` the output chain also accepts advertisements to the VRRP multicast group of each family that has a peer (`224.0.0.18`, `ff02::12`). Advertisements a peer sends to the group match its input rule. IPv6 peers need `firewall.ipv6: true`; with it off, IPv6 is not filtered at all.
+
+The input accepts come right after `infra_ips` and before the blocked address, blocked subnet and country rules. A blocked peer therefore still exchanges VRRP with this host, and only VRRP. Without this, a block on a peer makes both members claim the shared address. Blocks of other addresses do not affect these rules.
+
+`csm firewall status` and `csm firewall ports` list the applied entries, including changes made by a firewall restart or rollback. Hosts that support the key report the `firewall.protocol_allow.v1` capability.
 
 ## firewall.dos_exempt_ranges
 

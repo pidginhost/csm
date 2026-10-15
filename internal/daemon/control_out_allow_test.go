@@ -32,3 +32,15 @@ func TestFmtOutAllowEmptyRendersNothing(t *testing.T) {
 		t.Errorf("got %v, want no lines", got)
 	}
 }
+
+func TestFmtProtocolAllowRendersProtocolAndPeers(t *testing.T) {
+	got := fmtProtocolAllow([]firewall.ProtocolAllowRule{
+		{Protocol: "vrrp", Peers: []string{"192.0.2.11", "2001:db8::11"}},
+	})
+	if len(got) != 1 || got[0] != "vrrp 192.0.2.11, 2001:db8::11" {
+		t.Fatalf("got %q, want one line naming the protocol and its peers", got)
+	}
+	if got := fmtProtocolAllow(nil); len(got) != 0 {
+		t.Errorf("got %v, want no lines", got)
+	}
+}

@@ -10,6 +10,26 @@ CSM runs its local block validation before calling the endpoint.
 Malformed IPs, disabled IPv6 targets, infra IPs, and configured block
 limits are rejected locally and are not sent to the callback.
 
+## Callers
+
+Two parts of CSM call the endpoint, told apart by the request `source`:
+
+- `auto_response`: each automatic block of a single address, after local
+  validation and before the `auto_response.dry_run` gate. `severity` is
+  `"auto"`. An `allow` verdict skips that block.
+- `bpf_enforcement`: only when `bpf_enforcement.verdict_callback: true` is
+  also set. CSM asks about the destination of an outbound connection the BPF
+  hook denied, or would have denied in dry-run. `reason` is
+  `bpf_enforcement:<check>:<port>` and `severity` is the finding's severity
+  (`WARNING`, `HIGH` or `CRITICAL`). The answer only annotates findings: the
+  verdict, `tenant_id` and `note` are added to the finding details. It never
+  changes the kernel decision, which is made before the call. Answers are
+  cached for one minute per destination, reason and severity, and the
+  finding that triggers a lookup is sent without one.
+
+Subnet blocks, promotion of an existing block to permanent, and manual
+blocks from the CLI, web UI or API do not call the endpoint.
+
 ## Endpoint
 
 ```
@@ -67,7 +87,7 @@ skew window. A legacy response that omits both fields keeps working.
 
 ```json
 {
-  "ip": "1.2.3.4",
+  "ip": "203.0.113.10",
   "reason": "mail_bruteforce",
   "severity": "auto",
   "source": "auto_response",
@@ -76,10 +96,10 @@ skew window. A legacy response that omits both fields keeps working.
 }
 ```
 
-- `ip` (required): the IP CSM is about to block.
+- `ip` (required): the address CSM is about to block, or for `bpf_enforcement` the connection's destination.
 - `reason` (required): short reason string (`mail_bruteforce`, `wp_login_bruteforce`, etc.).
-- `severity` (optional): `"auto"` for auto-response decisions; reserved for future use.
-- `source` (optional): `"auto_response"` (the only current emitter).
+- `severity` (optional): `"auto"` for auto-response decisions; the finding's severity for `bpf_enforcement`.
+- `source` (optional): `"auto_response"` or `"bpf_enforcement"`; see [Callers](#callers).
 - `nonce` (always sent): a 128-bit hex random value unique to this call. The panel MUST echo it verbatim when response signing is on. When response signing is disabled, CSM still checks the value if the panel echoes it.
 - `timestamp` (always sent): unix seconds when CSM produced the request. The panel does not need to validate it but MAY use it to reject stale calls.
 

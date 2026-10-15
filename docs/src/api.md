@@ -184,7 +184,8 @@ GET  /api/v1/capabilities        Static feature list (e.g. `confd.dropins.v1`, `
                                  `mail.queue.composition.v1`,
                                  `detect.http_scanner_profile.v1`, `challenge.stats.v1`,
                                  `firewall.rollback.v1`, `firewall.dos_exempt.v1` on Linux builds).
-                                 Use for orchestrator feature-detect.
+                                 Use for orchestrator feature-detect. `csm capabilities` prints
+                                 the same build tokens without a running daemon.
 GET  /api/v1/components          Watcher/component matrix with attachment, event, and upstream freshness state.
 GET  /api/v1/events              Server-Sent Events stream of findings as they dispatch.
                                  Read-scope token sufficient. One JSON event per `data:` line.
@@ -905,8 +906,15 @@ and deliveries awaiting database acknowledgment. Retried findings keep their
 original waiting age; a failed attempt is not a lost finding while its record
 remains durable. An overflowed record counts as lost only when no send was
 acknowledged during this process; an active send settles that count when it
-finishes. Malformed findings count once when removed from delivery;
-their bounded diagnostic archive is retained history, not pending work.
+finishes. Malformed findings, and findings the panel refuses with HTTP 400,
+413 or 422, count once when removed from delivery, and the next record is
+sent at once. Their bounded diagnostic archive is retained history, not
+pending work. A long run of refusals with nothing accepted between them
+looks like a panel refusing every request, so from then on refused findings
+stay queued and are retried as a delivery failure until the panel accepts
+one. This hold survives config reloads and daemon restarts. Only a 2xx
+response from the configured endpoint acknowledges a finding; redirects
+are not followed. Every other failure is retried in order with backoff.
 Waiting age uses the persisted enqueue timestamp after restart. Boundary
 records absent from the accounting rebuilt at open are adopted with the same
 timestamp, so retrying them does not reset their age. Missing, damaged or future

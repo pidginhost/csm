@@ -22,6 +22,9 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Inbound spam filtering on cPanel through an rspamd you install, where each account's Spam Filters switch decides; existing hosts are unchanged until `email_protection.antispam.enabled` is set.
 - Dashboard, API and metrics credentials can use `expires_at` to end access, browser sessions and event streams, while credentials without it never expire.
 - API credentials can now accept only listed addresses with `allowed_ips` and use an `unban` scope limited to checking and lifting firewall blocks.
+- `csm rehash --fragment <file>` re-signs an integration's own conf.d file and refuses when anything else changed since the last signing.
+- `csm capabilities` lists the features this build supports without a running daemon or config.
+- The firewall can allow VRRP to and from listed peers with `firewall.protocol_allow`, so high-availability pairs keep one owner of their shared address.
 
 ### Changed
 
@@ -29,9 +32,12 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Deep phishing scans use less memory and CPU per page.
 - With central blocking on, an address reported by several trusted nodes can now be blocked when local evidence agrees; an explicit `block_threshold` is kept.
 - After upgrade, IP response previews use a new storage format; going back to 4.3.0 or earlier stops the previews, while live blocking keeps working.
+- The phpanel agent profile no longer sets account roots; the agent supplies them to match the panel's home directory layout.
 
 ### Fixed
 
+- Firewall status and port listings now reflect applied peer changes and rollbacks without requiring a daemon restart.
+- `csm rehash` now refuses unknown options instead of re-signing the whole configuration.
 - Temporary blocks no longer last longer than set when the system clock is moved back, including after a restart or an undo.
 - A temporary block that expires while the firewall starts can no longer be restored as a permanent block.
 - When the firewall state file is unreadable at startup, CSM now keeps it aside, starts without its blocks and allowed addresses, and raises a critical alert and doctor failure. Re-add needed entries; if it cannot be kept, fix storage and restart CSM.
@@ -42,6 +48,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Config reloads and settings saves no longer wait while the forward guard rebuilds the Exim configuration.
 - Abuse reports to a busy collector now resume as soon as it allows instead of a minute later, without flooding the log while it stays busy.
 - Releasing a quarantined email from the Email page no longer fails with an untrusted spool directory error on cPanel hosts; emails already in quarantine can be released after upgrade.
+- A finding the panel webhook refuses as invalid no longer holds back later findings, and a redirected delivery no longer counts as delivered.
 
 ## [4.3.0] - 2026-10-08
 

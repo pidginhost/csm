@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,10 +20,20 @@ import (
 const (
 	phpanelQueueLimit      = 100000
 	phpanelQuarantineLimit = 1000
+	// phpanelMaxRefusalRun bounds how many findings in a row the panel may
+	// refuse, with none accepted between them, before refusals stop
+	// archiving records. A panel refusing every request (a wrong URL or
+	// node, a proxy answering 400) looks like a run of bad records; past
+	// this run the queue keeps its findings and retries as for any other
+	// failure, so a misconfiguration cannot empty it.
+	phpanelMaxRefusalRun = 10
 )
 
 var phpanelQueueBucket = []byte("findings")
 var phpanelQuarantineBucket = []byte("quarantine")
+var phpanelDeliveryStateBucket = []byte("delivery_state")
+var phpanelRefusalsKey = []byte("refusals")
+var errPhpanelRefusalRun = errors.New("panel refusal run reached; keeping the queue")
 
 type queuedPhpanelFinding struct {
 	Finding   Finding   `json:"finding"`
@@ -179,7 +190,10 @@ func newPhpanelQueue(db *bolt.DB, limit int) (*phpanelQueue, error) {
 		if _, err := tx.CreateBucketIfNotExists(phpanelQueueBucket); err != nil {
 			return err
 		}
-		_, err := tx.CreateBucketIfNotExists(phpanelQuarantineBucket)
+		if _, err := tx.CreateBucketIfNotExists(phpanelQuarantineBucket); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucketIfNotExists(phpanelDeliveryStateBucket)
 		return err
 	}); err != nil {
 		return nil, err
@@ -412,30 +426,38 @@ func (q *phpanelQueue) takeDelivery() ([]byte, []byte, *phpanelWork, error) {
 }
 
 func (q *phpanelQueue) deliverQueued(key, payload []byte, work *phpanelWork) bool {
-	sent, removed := false, false
+	sent, removed, refused := false, false, false
 	attempted := false
 	defer func() {
-		if attempted && !sent {
+		// A refused record is a counted loss, not a failing panel.
+		if attempted && !sent && !refused {
 			q.health.sendFailed.Store(true)
 		}
 		q.finishDelivery(work, sent, removed)
 	}()
 	var item queuedPhpanelFinding
 	if err := json.Unmarshal(payload, &item); err != nil {
-		if quarantineErr := q.quarantineMalformed(key, payload, err); quarantineErr != nil {
-			fmt.Fprintf(os.Stderr, "alert: quarantining malformed phpanel webhook: %v\n", quarantineErr)
-			alertDispatchFailures.Inc()
-			return false
-		}
-		fmt.Fprintf(os.Stderr, "alert: quarantined malformed phpanel webhook: %v\n", err)
-		alertDispatchFailures.Inc()
-		return true
+		return q.archive(key, payload, err, false) == nil
 	}
 	q.cfgMu.RLock()
 	delivery := q.cfg
 	q.cfgMu.RUnlock()
 	attempted = true
-	if err := sendQueuedPhpanelWebhookFinding(delivery, item); err != nil {
+	err := sendQueuedPhpanelWebhookFinding(delivery, item)
+	if permanentPhpanelRejection(err) {
+		archiveErr := q.archive(key, payload, err, true)
+		if archiveErr == nil {
+			refused = true
+			q.health.sendFailed.Store(false)
+			q.clearRetryFailure()
+			return true
+		}
+		if !errors.Is(archiveErr, errPhpanelRefusalRun) {
+			return false
+		}
+		err = fmt.Errorf("%w: %w", err, archiveErr)
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "alert: phpanel webhook delivery failed: %v\n", err)
 		alertDispatchFailures.Inc()
 		q.recordRetryFailure()
@@ -443,7 +465,6 @@ func (q *phpanelQueue) deliverQueued(key, payload []byte, work *phpanelWork) boo
 	}
 	sent = true
 	q.health.sendFailed.Store(false)
-	var err error
 	removed, err = q.removeDelivered(key)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "alert: deleting delivered phpanel webhook: %v\n", err)
@@ -457,7 +478,14 @@ func (q *phpanelQueue) deliverQueued(key, payload []byte, work *phpanelWork) boo
 func (q *phpanelQueue) removeDelivered(key []byte) (bool, error) {
 	q.mutation.Lock()
 	defer q.mutation.Unlock()
-	err := q.db.Update(func(tx *bolt.Tx) error { return tx.Bucket(phpanelQueueBucket).Delete(key) })
+	err := q.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.Bucket(phpanelQueueBucket).Delete(key); err != nil {
+			return err
+		}
+		// Only an accepted delivery ends the refusal run. Persist this with
+		// its acknowledgment so reloads and restarts cannot bypass a hold.
+		return tx.Bucket(phpanelDeliveryStateBucket).Delete(phpanelRefusalsKey)
+	})
 	q.health.removeFailed.Store(err != nil)
 	if err != nil {
 		return false, err
@@ -466,17 +494,41 @@ func (q *phpanelQueue) removeDelivered(key []byte) (bool, error) {
 	return true, nil
 }
 
-func (q *phpanelQueue) quarantineMalformed(key, payload []byte, decodeErr error) error {
-	return q.quarantineMalformedWithLimit(key, payload, decodeErr, phpanelQuarantineLimit)
+// archive moves a record no retry can deliver into the bounded quarantine,
+// counted as a lost finding, so the records behind it keep moving.
+func (q *phpanelQueue) archive(key, payload []byte, cause error, refused bool) error {
+	what := "malformed"
+	if refused {
+		what = "rejected"
+	}
+	if err := q.quarantineRecord(key, payload, cause, phpanelQuarantineLimit, refused); err != nil {
+		if errors.Is(err, errPhpanelRefusalRun) {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "alert: quarantining %s phpanel webhook: %v\n", what, err)
+		alertDispatchFailures.Inc()
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "alert: quarantined %s phpanel webhook: %v\n", what, cause)
+	alertDispatchFailures.Inc()
+	return nil
 }
 
-func (q *phpanelQueue) quarantineMalformedWithLimit(key, payload []byte, decodeErr error, limit int) error {
+func (q *phpanelQueue) quarantine(key, payload []byte, cause error) error {
+	return q.quarantineWithLimit(key, payload, cause, phpanelQuarantineLimit)
+}
+
+func (q *phpanelQueue) quarantineWithLimit(key, payload []byte, cause error, limit int) error {
+	return q.quarantineRecord(key, payload, cause, limit, false)
+}
+
+func (q *phpanelQueue) quarantineRecord(key, payload []byte, cause error, limit int, refused bool) error {
 	if limit <= 0 {
 		return fmt.Errorf("phpanel quarantine limit must be positive")
 	}
 	record, marshalErr := json.Marshal(quarantinedPhpanelFinding{
 		Payload:       payload,
-		Error:         decodeErr.Error(),
+		Error:         cause.Error(),
 		QuarantinedAt: time.Now().UTC(),
 	})
 	if marshalErr != nil {
@@ -493,6 +545,24 @@ func (q *phpanelQueue) quarantineMalformedWithLimit(key, payload []byte, decodeE
 		}
 		if !bytes.Equal(current, payload) {
 			return fmt.Errorf("phpanel queue entry changed while being quarantined")
+		}
+		if refused {
+			state := tx.Bucket(phpanelDeliveryStateBucket)
+			var count uint64
+			if raw := state.Get(phpanelRefusalsKey); raw != nil {
+				if len(raw) != 8 {
+					return errors.New("invalid phpanel refusal count")
+				}
+				count = binary.BigEndian.Uint64(raw)
+			}
+			if count >= phpanelMaxRefusalRun {
+				return errPhpanelRefusalRun
+			}
+			var next [8]byte
+			binary.BigEndian.PutUint64(next[:], count+1)
+			if err := state.Put(phpanelRefusalsKey, next[:]); err != nil {
+				return err
+			}
 		}
 		quarantine := tx.Bucket(phpanelQuarantineBucket)
 		if quarantine.Get(key) == nil {
@@ -517,7 +587,7 @@ func (q *phpanelQueue) quarantineMalformedWithLimit(key, payload []byte, decodeE
 		removed = true
 		return nil
 	})
-	q.health.removeFailed.Store(updateErr != nil)
+	q.health.removeFailed.Store(updateErr != nil && !errors.Is(updateErr, errPhpanelRefusalRun))
 	if updateErr == nil && removed {
 		work := q.health.pending[string(key)]
 		delete(q.health.pending, string(key))

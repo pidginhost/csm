@@ -235,20 +235,27 @@ func HashConfDir(confDir string, exempt []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	digest, _ := confdSnapshot(frags, exempt)
+	return digest, nil
+}
+
+// confdSnapshot retains the covered bytes so a per-fragment record can be
+// checked against the existing conf.d digest without trusting its label.
+func confdSnapshot(frags []config.ConfDirFragment, exempt []string) (string, map[string][]byte) {
 	h := sha256.New()
-	covered := 0
+	perFragment := make(map[string][]byte, len(frags))
 	for _, f := range frags {
 		if isExemptFragment(f.Name, exempt) {
 			continue
 		}
-		covered++
 		fmt.Fprintf(h, "confd-fragment:%s:%d\n", f.Name, len(f.Data))
 		_, _ = h.Write(f.Data)
+		perFragment[f.Name] = f.Data
 	}
-	if covered == 0 {
-		return "", nil
+	if len(perFragment) == 0 {
+		return "", perFragment
 	}
-	return fmt.Sprintf("sha256:%x", h.Sum(nil)), nil
+	return fmt.Sprintf("sha256:%x", h.Sum(nil)), perFragment
 }
 
 // hashOrNone keeps "expected , got ..." out of operator-facing errors when one

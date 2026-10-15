@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -187,15 +188,42 @@ func sendQueuedPhpanelWebhookFinding(delivery phpanelDeliveryConfig, queued queu
 	req.Header.Set("User-Agent", "csm")
 
 	client := httpClient(10 * time.Second)
+	// A redirect may turn this POST into a login-page GET. Only the
+	// configured collector can acknowledge receipt of a queued finding.
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("phpanel webhook POST: %w", err)
 	}
 	defer closeWebhookResponseBody(resp)
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("phpanel webhook HTTP %d", resp.StatusCode)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &phpanelHTTPError{status: resp.StatusCode}
 	}
 	return nil
+}
+
+// phpanelHTTPError is a response that does not acknowledge receipt.
+type phpanelHTTPError struct {
+	status int
+}
+
+func (e *phpanelHTTPError) Error() string {
+	return fmt.Sprintf("phpanel webhook HTTP %d", e.status)
+}
+
+// permanentPhpanelRejection reports whether the panel refused the record
+// itself as malformed (400), too large (413) or unprocessable (422). Any other
+// failure, including auth, rate limits and server errors, can clear on retry.
+func permanentPhpanelRejection(err error) bool {
+	var httpErr *phpanelHTTPError
+	if !errors.As(err, &httpErr) {
+		return false
+	}
+	switch httpErr.status {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
 }
 
 func phpanelWebhookSecret(cfg *config.Config) string {

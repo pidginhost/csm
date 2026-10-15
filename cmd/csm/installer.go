@@ -413,6 +413,13 @@ func (inst *Installer) Uninstall(purge bool) error {
 	}
 	fmt.Println("  Binary removed")
 	if purge {
+		// The per-fragment record sits beside the config's target, which the
+		// purge below may delete, so find it first. A link already dangling
+		// has no target and no record beside it to find.
+		configFiles := []string{inst.ConfigPath}
+		if record, recordErr := integrity.FragmentRecordPath(inst.ConfigPath); recordErr == nil {
+			configFiles = append(configFiles, record)
+		}
 		if err := purgeStateDirContents(inst.StatePath, ops.removeAll); err != nil {
 			return err
 		}
@@ -427,8 +434,10 @@ func (inst *Installer) Uninstall(purge bool) error {
 		if err := purgeInstallTree(filepath.Dir(inst.BinaryPath), inst.StatePath, ops.removeAll); err != nil {
 			return err
 		}
-		if err := removeInstallerPath(ops.remove, inst.ConfigPath); err != nil {
-			return err
+		for _, target := range configFiles {
+			if err := removeInstallerPath(ops.remove, target); err != nil {
+				return err
+			}
 		}
 		fmt.Println("  Config, state, and logs purged")
 	} else {

@@ -193,6 +193,13 @@ func fwStatus() {
 		}
 		fmt.Printf("%-12s %s\n", label, line)
 	}
+	for i, line := range s.ProtocolAllow {
+		label := ""
+		if i == 0 {
+			label = "Proto Allow:"
+		}
+		fmt.Printf("%-12s %s\n", label, line)
+	}
 	fmt.Printf("Infra IPs:   %d entries\n", s.InfraIPCount)
 	fmt.Printf("Blocked:     %d IPs, %d subnets\n", s.BlockedCount, s.BlockedNetCount)
 	fmt.Printf("Allowed:     %d IPs\n", s.AllowedCount)

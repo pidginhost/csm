@@ -171,7 +171,7 @@ func contains(haystack []string, needle string) bool {
 
 func TestFirewallCapabilitiesMatchPlatformSupport(t *testing.T) {
 	caps := Capabilities()
-	for _, want := range []string{"firewall.rollback.v1", "firewall.dos_exempt.v1"} {
+	for _, want := range []string{"firewall.rollback.v1", "firewall.dos_exempt.v1", "firewall.protocol_allow.v1"} {
 		if got := contains(caps, want); got != firewall.Supported() {
 			t.Errorf("%s present = %t, firewall supported = %t", want, got, firewall.Supported())
 		}
@@ -187,5 +187,12 @@ func TestCapabilitiesHaveNoDuplicates(t *testing.T) {
 			t.Errorf("duplicate capability %q", capability)
 		}
 		seen[capability] = true
+	}
+}
+
+// The phpanel agent checks this before relying on `csm rehash --fragment`.
+func TestConfdRehashFragmentCapabilityAlwaysPresent(t *testing.T) {
+	if !contains(Capabilities(), "confd.rehash.fragment.v1") {
+		t.Error("confd.rehash.fragment.v1 capability missing")
 	}
 }
