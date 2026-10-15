@@ -758,8 +758,12 @@ after any turn already running. An older epoch is ignored. Changed settings
 or missing required dependencies under an installed epoch hold execution,
 as does an invalid newer policy, with the refusal in
 `execution_held`, until a valid newer epoch arrives; the daemon reports a
-refusal at reload as a `config_reload_error` finding. A comparison-only
-owner never reads the policy.
+refusal at reload as a `config_reload_error` finding. While a refusal holds
+execution, a selected pick of any firewall kind is deferred as
+`engine_unavailable` with nothing previewed, reserved or charged, and the
+schedule then passes it over, as it passes over work waiting for the
+panel, until a valid policy is installed; a challenge keeps its comparison
+preview. A comparison-only owner never reads the policy.
 
 Under a dry-run policy the owner forecasts instead of running. It selects
 work with `SchedulePreview`, whatever the live budgets, and ends each pick

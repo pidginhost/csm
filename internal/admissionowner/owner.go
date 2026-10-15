@@ -202,6 +202,9 @@ type Owner struct {
 	// and forecastReset why the next session starts (spec 3.4, 3.7).
 	shadow        *shadow
 	forecastReset resetReason
+	// policyHeld is the firewall work a refused policy holds. It waits for
+	// a valid policy as pending work waits for its answer.
+	policyHeld map[admission.CandidateID]bool
 	// nextBatch is when the next block batch may start, on the monotonic
 	// clock; arrived is set by a drain that queued work.
 	nextBatch time.Time
@@ -815,9 +818,9 @@ func (o *Owner) turn() error {
 }
 
 // serve runs the schedule's picks. With an engine its block_ip picks run
-// as one batch; every other pick is previewed. The schedule has already
-// deferred the work its budgets cannot serve and revalidated each pick
-// under the same state.
+// as one batch, and a refused policy holds every firewall pick; any other
+// pick is previewed. The schedule has already deferred the work its
+// budgets cannot serve and revalidated each pick under the same state.
 func (o *Owner) serve() error {
 	picks, err := scheduleLedger(o.ledger, previewLimits, o.answers())
 	if err != nil {
@@ -830,11 +833,17 @@ func (o *Owner) serve() error {
 			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
 		}
 		pick := execPick{pick: p, c: c}
-		if o.executable() && c.Key.Kind == admission.KindBlockIP {
+		switch {
+		case !o.executable() || c.Key.Kind == admission.KindChallenge:
+			err = o.preview(pick)
+		case o.policyErr != nil:
+			err = o.holdForPolicy(pick)
+		case c.Key.Kind == admission.KindBlockIP:
 			blocks = append(blocks, pick)
-			continue
+		default:
+			err = o.preview(pick)
 		}
-		if err = o.preview(pick); err != nil {
+		if err != nil {
 			return err
 		}
 	}
@@ -846,6 +855,21 @@ func (o *Owner) serve() error {
 			o.hold(o.execHold, o.applyHold != nil)
 		}
 	}
+	return nil
+}
+
+// holdForPolicy defers p while a refused policy holds execution, as an
+// unavailable engine defers it: nothing is previewed, reserved or charged.
+// Until a valid policy is installed the schedule passes p over, so it is
+// not selected again at every turn.
+func (o *Owner) holdForPolicy(p execPick) error {
+	if err := o.endPick(p, admission.ReasonEngineUnavailable); err != nil {
+		return err
+	}
+	if o.policyHeld == nil {
+		o.policyHeld = map[admission.CandidateID]bool{}
+	}
+	o.policyHeld[p.pick.ID] = true
 	return nil
 }
 

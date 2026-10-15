@@ -586,13 +586,14 @@ func (o *Owner) readyVerdict(id admission.CandidateID, c admission.Candidate, ip
 }
 
 // answers are the outside answers the schedule judges queued work by:
-// outstanding jobs wait, and allows are picked uncharged.
+// outstanding jobs and the work a refused policy holds wait, and allows
+// are picked uncharged.
 func (o *Owner) answers() map[admission.CandidateID]admission.Answer {
 	v := &o.verdicts
-	if len(v.pending) == 0 && len(v.ready) == 0 {
+	if len(v.pending) == 0 && len(v.ready) == 0 && len(o.policyHeld) == 0 {
 		return nil
 	}
-	out := make(map[admission.CandidateID]admission.Answer, len(v.pending)+len(v.ready))
+	out := make(map[admission.CandidateID]admission.Answer, len(v.pending)+len(v.ready)+len(o.policyHeld))
 	now := monoNow()
 	for id, r := range v.ready {
 		if r.Answer == answerAllow && now.Before(r.completed.Add(verdictTTL)) {
@@ -600,6 +601,9 @@ func (o *Owner) answers() map[admission.CandidateID]admission.Answer {
 		}
 	}
 	for id := range v.pending {
+		out[id] = admission.AnswerPending
+	}
+	for id := range o.policyHeld {
 		out[id] = admission.AnswerPending
 	}
 	return out

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
+	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/verdict"
 )
 
@@ -367,6 +368,95 @@ func TestOwnerRejectsMissingPolicyDependencies(t *testing.T) {
 			}
 			if s := verdictState(t, o); s.Ready != 0 || s.Enabled {
 				t.Fatalf("invalid policy kept its verdict stage: %+v", s)
+			}
+		})
+	}
+}
+
+// A refused policy holds every firewall kind, not only block_ip: nothing is
+// previewed, reserved or charged for it, live or dry run alike. Held work
+// waits for a valid policy as pending work waits for its answer: later
+// schedule ticks do not select it again. A challenge keeps its comparison
+// preview. A valid epoch serves the held work at once.
+func TestOwnerHoldsFirewallWorkOnARefusedPolicy(t *testing.T) {
+	for _, dry := range []bool{false, true} {
+		name := "live"
+		if dry {
+			name = "dry_run"
+		}
+		t.Run(name, func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			first := validPolicy(1)
+			first.DryRun = dry
+			o, r, mono := policyOwner(t, f, blocks, first)
+			selections := 0
+			schedule := scheduleLedger
+			setOwnerHook(t, o, &scheduleLedger, func(l *store.AdmissionLedger, lim admission.ScheduleLimits, answers map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+				selections++
+				return schedule(l, lim, answers)
+			})
+			block, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+			promote, _ := queuedKind(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11", admission.KindPromote)
+			challenge, _ := queuedKind(t, o, p, f.host, admission.SeverityHigh, "192.0.2.12", admission.KindChallenge)
+			conflict := first
+			conflict.CeilingLimit = 100
+			r.publish(conflict)
+			if err := o.Reload(); !errors.Is(err, ErrPolicy) {
+				t.Fatalf("conflicting reload = %v", err)
+			}
+			mono.advance(time.Second)
+			if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
+				t.Fatal(err)
+			}
+			held := map[admission.CandidateID]admission.Candidate{}
+			for _, id := range []admission.CandidateID{block, promote} {
+				c := candidate(t, o, id)
+				if c.State != admission.StateQueued || c.Reason != admission.ReasonEngineUnavailable || c.Attempts != 0 {
+					t.Fatalf("held pick = %+v", c)
+				}
+				held[id] = c
+			}
+			if c := candidate(t, o, challenge); c.State != admission.StateObserved {
+				t.Fatalf("challenge = %+v", c)
+			}
+			if liveUsed(t, o) != 0 || selections != 1 {
+				t.Fatalf("live used %d, %d selections", liveUsed(t, o), selections)
+			}
+			for range 3 {
+				mono.advance(time.Second)
+				if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for id, before := range held {
+				if c := candidate(t, o, id); c.Transitions != before.Transitions {
+					t.Fatalf("held work changed: %+v", c)
+				}
+			}
+			if selections != 1 {
+				t.Fatalf("held work was selected %d times", selections)
+			}
+			next := validPolicy(2)
+			next.DryRun = dry
+			r.publish(next)
+			if err := o.Reload(); err != nil {
+				t.Fatal(err)
+			}
+			mono.advance(time.Second)
+			if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
+				t.Fatal(err)
+			}
+			want := admission.StateVerified
+			if dry {
+				want = admission.StateDryRun
+			}
+			if c := candidate(t, o, block); c.State != want {
+				t.Fatalf("block after a valid epoch = %+v", c)
+			}
+			if c := candidate(t, o, promote); c.State == admission.StateQueued {
+				t.Fatalf("promotion after a valid epoch = %+v", c)
 			}
 		})
 	}

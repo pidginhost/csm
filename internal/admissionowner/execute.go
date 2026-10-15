@@ -83,10 +83,6 @@ var refusalReasons = map[firewall.BlockRefusal]admission.Reason{
 // its charge and the ledger retries it after its backoff, and an unknown
 // outcome holds its address until recovery retires it.
 func (o *Owner) execute(picks []execPick) error {
-	// A refused policy holds execution as an unavailable engine does.
-	if o.policyErr != nil {
-		return o.deferBlocks(picks, admission.ReasonEngineUnavailable)
-	}
 	engine := o.opts.Blocks()
 	// A degraded clock cannot bound a lease: the admission time stays at
 	// its high-water mark while the wall clock is behind it or disagrees
@@ -463,9 +459,10 @@ func (o *Owner) isolate(picks []execPick) []execPick {
 	return picks
 }
 
-// A displaced, terminal or aged-out candidate cannot retry alone.
+// A displaced, terminal or aged-out candidate cannot retry alone, nor wait
+// for a valid policy.
 func (o *Owner) forgetIsolated(snap *admission.QueueSnapshot) {
-	if len(o.isolated) == 0 {
+	if len(o.isolated) == 0 && len(o.policyHeld) == 0 {
 		return
 	}
 	live := make(map[admission.CandidateID]bool, len(snap.Items))
@@ -475,6 +472,11 @@ func (o *Owner) forgetIsolated(snap *admission.QueueSnapshot) {
 	for id, expires := range o.isolated {
 		if !live[id] || !o.now.Before(expires) {
 			delete(o.isolated, id)
+		}
+	}
+	for id := range o.policyHeld {
+		if !live[id] {
+			delete(o.policyHeld, id)
 		}
 	}
 }
