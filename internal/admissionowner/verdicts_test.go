@@ -697,3 +697,127 @@ func TestOwnerPublishesTheVerdictQueue(t *testing.T) {
 		t.Fatalf("drained verdict queue = %+v", q)
 	}
 }
+
+// Rapid reloads while a stage retires coalesce to the latest policy: no
+// stage starts until the old workers return, an invalid policy installed
+// meanwhile starts none, and the next valid epoch starts one stage.
+func TestOwnerCoalescesReloadsWhileRetiring(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	panel := newFakePanel("block")
+	held, drag := make(chan struct{}), make(chan struct{})
+	panel.hold = held
+	slow := func(ctx context.Context, ip, reason string) (verdict.Response, error) {
+		resp, err := panel.ask(ctx, ip, reason)
+		if ctx.Err() != nil {
+			<-drag
+		}
+		return resp, err
+	}
+	policy := func(epoch uint64) ExecutionPolicy {
+		p := verdictPolicy(epoch, panel)
+		p.AskVerdict = slow
+		return p
+	}
+	r := &policyReader{p: policy(1)}
+	opts := executeOptions(f, blocks)
+	opts.Policy = r.read
+	o := f.start(opts)
+	heldMono(t, o)
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the call", func() bool { _, active, _, _ := panel.state(); return active == 1 })
+	for epoch := uint64(2); epoch <= 3; epoch++ {
+		r.publish(policy(epoch))
+		if err := o.Reload(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	invalid := policy(4)
+	invalid.AskVerdict = nil
+	r.publish(invalid)
+	if err := o.Reload(); !errors.Is(err, ErrPolicy) {
+		t.Fatalf("invalid reload = %v", err)
+	}
+	if s := verdictState(t, o); !s.StageRetiring || s.Enabled {
+		t.Fatalf("status while retiring = %+v", s)
+	}
+	close(drag)
+	eventually(t, "the retirement", func() bool { return !verdictState(t, o).StageRetiring })
+	if err := o.do(func() error {
+		if o.verdicts.stage != nil {
+			return errors.New("a stage started under a refused policy")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.publish(policy(5))
+	close(held)
+	if err := o.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	readyAnswers(t, o, 1)
+	if asked, _, peak, _ := panel.state(); len(asked) != 2 || peak != 1 {
+		t.Fatalf("asked %d times, %d at once", len(asked), peak)
+	}
+	if s := verdictState(t, o); s.Epoch != 5 || !s.Enabled || s.Cancelled != 1 {
+		t.Fatalf("status = %+v", s)
+	}
+}
+
+// An answer serves only its attempt. While that attempt waits for room it
+// is used again within its lifetime without a new call; a failed attempt's
+// retry asks anew.
+func TestOwnerAsksAgainForARetry(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.refuse["192.0.2.10"] = firewall.BlockRefusedFull
+	blocks.results["192.0.2.10"] = firewall.BlockResult{Effect: firewall.BlockFailed, Err: errors.New("no room")}
+	panel := newFakePanel("block")
+	o, _, mono := verdictOwner(t, f, blocks, panel)
+	id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	readyAnswers(t, o, 1)
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	if c := candidate(t, o, id); c.State != admission.StateQueued || c.Reason != admission.ReasonSetFull || c.Attempts != 0 {
+		t.Fatalf("pick waiting for room = %+v", c)
+	}
+	blocks.set(func(b *fakeBlocks) { delete(b.refuse, "192.0.2.10") })
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	if asked, _, _, _ := panel.state(); len(asked) != 1 {
+		t.Fatalf("the same attempt asked %d times", len(asked))
+	}
+	c := candidate(t, o, id)
+	if c.State != admission.StateQueued || c.Attempts != 1 {
+		t.Fatalf("failed attempt = %+v", c)
+	}
+	f.host.advance(admission.RetryBackoff(1) + time.Second)
+	mono.advance(admission.RetryBackoff(1) + time.Second)
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the retry's call", func() bool { a, _, _, _ := panel.state(); return len(a) == 2 })
+	readyAnswers(t, o, 1)
+	if err := o.do(func() error {
+		if r := o.verdicts.ready[id]; r.Key.Attempt != 2 {
+			return fmt.Errorf("retry answer keyed %+v", r.Key)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
