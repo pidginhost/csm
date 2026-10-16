@@ -95,3 +95,25 @@ func TestThreatDBMapSourcesWhitelistExpiry(t *testing.T) {
 		})
 	}
 }
+
+// The recorder skips exactly the addresses MapSources keeps out of the map:
+// operator and config entries, and temporary entries until they expire.
+func TestThreatDBIsWhitelisted(t *testing.T) {
+	now := time.Now()
+	db := &ThreatDB{
+		whitelist: map[string]bool{"192.0.2.10": true, "192.0.2.12": true, "192.0.2.13": true},
+		whitelistMeta: map[string]*whitelistEntry{
+			"192.0.2.12": {ExpiresAt: now.Add(time.Hour)},
+			"192.0.2.13": {ExpiresAt: now.Add(-time.Hour)},
+		},
+		configWhitelist: map[string]bool{"192.0.2.11": true},
+	}
+	for ip, want := range map[string]bool{
+		"192.0.2.10": true, "192.0.2.11": true, "192.0.2.12": true,
+		"192.0.2.13": false, "192.0.2.14": false,
+	} {
+		if got := db.IsWhitelisted(ip); got != want {
+			t.Errorf("IsWhitelisted(%s) = %v, want %v", ip, got, want)
+		}
+	}
+}

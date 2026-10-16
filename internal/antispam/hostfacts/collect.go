@@ -76,6 +76,13 @@ func live() collector {
 	}
 }
 
+// RspamdGroup is rspamd's service group, or -1 when unknown (a root-started
+// rspamd, or systemctl failing).
+func RspamdGroup(ctx context.Context) int {
+	c := live()
+	return c.serviceGroup(c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...))
+}
+
 // Collect reads every fact antispam.CheckHost evaluates for the scan socket.
 // It changes nothing on the host.
 func Collect(ctx context.Context, socket string) antispam.HostFacts {

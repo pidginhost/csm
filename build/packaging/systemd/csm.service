@@ -25,6 +25,9 @@ KillMode=mixed
 # The state root is searchable, not listable: exim delivers forward-guard
 # holds below it as its own non-root user. The state database stays 0700.
 StateDirectory=csm
+# rspamd reads the CSM IP map here. systemd creates it before the sandbox
+# is set up, so it is writable without a grant that could fail unit start.
+StateDirectory=csm-rspamd
 StateDirectoryMode=0711
 RuntimeDirectory=csm
 RuntimeDirectoryMode=0755

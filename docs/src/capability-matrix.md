@@ -121,6 +121,7 @@ below and the current contracts in the JSON inventory. The TIER column of
 | `detect.scan_account_files`<br>read every account's files for scheduled, real-time and on-demand scans | CAP_DAC_READ_SEARCH, root | automatic | 0 | nothing (read-only) | not configurable: disabled_checks only suppresses scheduled checks; realtime and requested scans remain | no | only files readable by CSM's own uid are scanned, which on a shared host is close to nothing |
 | `detect.sensitive_file_writes`<br>watch writes to /etc/shadow and comparable files through a BPF LSM hook | CAP_BPF, CAP_PERFMON, root | automatic | 2 | kernel:BPF programs and maps | `detection.sensitive_files_backend: none` | no | sensitive-file changes are found by periodic hashing instead of at the moment of the write |
 | `integrate.antispam`<br>install, update or remove CSM's rspamd settings, optional feeds and Exim spam-filter hooks, rebuild the Exim configuration and reload Exim and rspamd | root | automatic | 4 | /etc/rspamd/local.d, /etc/rspamd/override.d, /usr/local/cpanel/etc/exim/acls, /etc/exim.conf.local, /etc/exim.conf, /var/lib/csm, exim:rebuild artifacts and service reload, service:rspamd reload (outside the systemd sandbox) | `mode: observe` | no | CSM's spam-filter settings and hooks cannot be installed, updated or removed; existing mail filtering keeps its current configuration |
+| `integrate.antispam_ip_map`<br>write the CSM IP map rspamd reads, readable only by root and rspamd's group, and delete it once no rule reads it | root | automatic | 2 | /var/lib/csm-rspamd | `mode: observe` | no | rspamd gets no scores from CSM's own evidence; other filtering is unchanged |
 | `integrate.antispam_record`<br>invalidate pending antispam workers before reconciliation and record each new request under the shared Exim lock inside the daemon sandbox | root | automatic | 0 | /var/lib/csm/forward_guard | not configurable: pending workers must be invalidated even when antispam is disabled or mode is observe | no | pending antispam workers cannot be invalidated and new antispam changes are not handed to the root worker |
 | `integrate.auditd_rules`<br>write CSM's auditd rules and reload them, so audit-backed detection survives package upgrades | CAP_AUDIT_CONTROL, root | automatic | 4 | /etc/audit, kernel:audit rules | `mode: observe` | no | audit-backed detection layers stay inactive after an upgrade |
 | `integrate.challenge_port_gate`<br>install the separate nftables port gate for the public challenge listener | CAP_NET_ADMIN, root | automatic | 2 | nftables:challenge port gate | `challenge.port_gate.enabled: false` | no | the listener remains reachable without the challenge port filter |
@@ -172,10 +173,11 @@ inventory, so a release never ships one. The tier is the operation's maximum
 live effect on a wrong target. It is not the severity of the finding that
 triggered the operation.
 
-Seven operations carry a safety contract in the JSON inventory:
+Eight operations carry a safety contract in the JSON inventory:
 `respond.block_ip`, `operate.manual_firewall`, `integrate.firewall_ruleset`,
 `integrate.challenge_port_gate`, `integrate.challenge_snippet`,
-`respond.quarantine_file` and `respond.clean_file`. Each states the authority it
+`integrate.antispam_ip_map`, `respond.quarantine_file` and
+`respond.clean_file`. Each states the authority it
 needs, how the target is revalidated before the change, how the change is
 reversed, and the limit that bounds it. The contracts describe current
 behaviour, including what it does not cover. Every other operation that changes

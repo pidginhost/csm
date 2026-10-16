@@ -567,6 +567,21 @@ func isFeedSourceName(source string) bool {
 	return false
 }
 
+// IsWhitelisted reports whether ip is on the operator, temporary or config
+// whitelist. Expired temporary entries no longer count, as in MapSources.
+func (db *ThreatDB) IsWhitelisted(ip string) bool {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.configWhitelist[ip] {
+		return true
+	}
+	if !db.whitelist[ip] {
+		return false
+	}
+	entry := db.whitelistMeta[ip]
+	return entry == nil || entry.ExpiresAt.IsZero() || time.Now().Before(entry.ExpiresAt)
+}
+
 // ThreatMapSources is what the CSM IP map takes from the threat DB (feeds
 // spec 6.1): CSM's permanent block history, each feed's addresses and
 // networks by feed name, and every currently whitelisted address. All sorted copies.

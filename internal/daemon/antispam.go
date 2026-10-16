@@ -3,18 +3,24 @@ package daemon
 import (
 	"context"
 	"errors"
+	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/antispam/hostfacts"
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/antispam/worker"
+	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/ipmap"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
 )
@@ -40,6 +46,22 @@ var antispamHealthChecks = []string{reconcile.CheckRspamdDown, reconcile.CheckSc
 
 // antispamPing probes rspamd's scan socket; tests replace it.
 var antispamPing = hostfacts.Ping
+
+// The IP map's canary probe, rspamd group lookup and file path; tests
+// replace them.
+var (
+	antispamCanary      = hostfacts.Canary
+	antispamRspamdGroup = hostfacts.RspamdGroup
+	antispamIPMapPath   = ipmap.DefaultPath
+)
+
+// antispamIPMapInterval is how often the CSM IP map is rebuilt (feeds spec
+// 6.2); antispamCanaryDelay is how long after a write the canary checks
+// that rspamd loaded it.
+const (
+	antispamIPMapInterval = 10 * time.Minute
+	antispamCanaryDelay   = 30 * time.Second
+)
 
 // antispamReconciler returns the host the antispam reconcile loop works on;
 // tests replace it.
@@ -69,7 +91,7 @@ func (d *Daemon) startAntispam() {
 	// describe an outage no longer tracked.
 	checks.StoreLatestScanFindings(d.store, antispamHealthChecks, nil)
 	d.store.RearmAbsentDedupFindings(antispamHealthChecks, nil)
-	r := antispamReconciler()
+	r := d.withIPMap(antispamReconciler())
 	loop := reconcile.NewLoop(func(ctx context.Context) reconcile.Outcome {
 		return r.Pass(ctx, reconcile.DesiredFromConfig(d.currentCfg()))
 	}, d.reportAntispam)
@@ -78,7 +100,7 @@ func (d *Daemon) startAntispam() {
 	// reload during setup is either picked up here or applies itself.
 	d.syncAntispamHealth()
 	ctx := d.scanContext()
-	d.wg.Add(2)
+	d.wg.Add(3)
 	obs.Go("antispam-reconcile", func() {
 		defer d.wg.Done()
 		loop.Run(ctx)
@@ -87,6 +109,108 @@ func (d *Daemon) startAntispam() {
 		defer d.wg.Done()
 		d.antispamHealthLoop(ctx)
 	})
+	obs.Go("antispam-ipmap", func() {
+		defer d.wg.Done()
+		d.antispamIPMapLoop(ctx)
+	})
+}
+
+// withIPMap gives the reconciler the IP map writer's hooks and shares its
+// feed memory with the IP map loop.
+func (d *Daemon) withIPMap(r reconcile.Reconciler) reconcile.Reconciler {
+	if r.Feeds == nil {
+		r.Feeds = reconcile.NewFeedState()
+	}
+	w := ipmap.NewWriter(antispamIPMapPath)
+	d.ipmapWriter.Store(w)
+	d.antispamFeeds = r.Feeds
+	r.IPMap = reconcile.IPMapHooks{
+		Write: func(ctx context.Context) error {
+			_, err := d.writeIPMap(ctx, time.Now())
+			return err
+		},
+		Remove: w.Remove,
+	}
+	return r
+}
+
+// antispamIPMapLoop refreshes the CSM IP map at start and every 10
+// minutes, and checks with the canary that rspamd uses it, again 30
+// seconds after each write (feeds spec 6.2, 8.4).
+func (d *Daemon) antispamIPMapLoop(ctx context.Context) {
+	ticker := time.NewTicker(antispamIPMapInterval)
+	defer ticker.Stop()
+	var soon <-chan time.Time
+	for {
+		if d.refreshIPMap(ctx, time.Now()) {
+			soon = time.After(antispamCanaryDelay)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		case <-soon:
+			soon = nil
+		}
+	}
+}
+
+// ipMapWanted reports whether the configuration asks for the CSM IP map.
+func ipMapWanted(cfg *config.Config) bool {
+	as := cfg.EmailProtection.Antispam
+	return as.Enabled && !cfg.ObserveMode() && slices.Contains(as.Feeds.Enabled, antispam.FeedCSMIPMap)
+}
+
+// writeIPMap builds the map from CSM's sources and writes it if changed.
+func (d *Daemon) writeIPMap(ctx context.Context, now time.Time) (bool, error) {
+	return d.ipmapWriter.Load().Write(ipmap.Build(ipmapSources(now)), antispamRspamdGroup(ctx), now)
+}
+
+// refreshIPMap writes the map while the feed is wanted, runs the canary
+// while the rule is in use, and settles antispam_ip_map. It reports
+// whether it wrote a new map.
+func (d *Daemon) refreshIPMap(ctx context.Context, now time.Time) bool {
+	cfg := d.currentCfg()
+	var findings []alert.Finding
+	wrote := false
+	if ipMapWanted(cfg) {
+		wrote, _ = d.writeIPMap(ctx, now)
+		st := d.ipmapWriter.Load().State()
+		// Until the rule is in use only a write failure counts.
+		seen, probeErr := st.Gen, error(nil)
+		if d.antispamFeeds.IPMapActive() {
+			seen, probeErr = antispamCanary(ctx, cfg.EmailProtection.Antispam.RspamdSocket)
+		}
+		if p := ipmap.CanaryProblem(st, seen, probeErr, now); p != "" {
+			findings = append(findings, reconcile.IPMapFinding(p, now))
+		}
+	}
+	if ctx.Err() == nil {
+		d.processScanFindings(cfg, findings, []string{reconcile.CheckIPMap}, "antispam")
+	}
+	return wrote
+}
+
+// ipmapSources gathers what the CSM IP map lists (feeds spec 6.1).
+func ipmapSources(now time.Time) ipmap.Sources {
+	src := ipmap.Sources{Entries: map[string][]string{}}
+	if tdb := checks.GetThreatDB(); tdb != nil {
+		ts := tdb.MapSources()
+		src.Entries[ipmap.Drop.Name] = slices.Concat(ts.FeedNets["spamhaus-drop"], ts.FeedIPs["spamhaus-drop"])
+		src.Entries[ipmap.Blocked.Name] = ts.Permanent
+		src.Entries[ipmap.BlocklistDE.Name] = slices.Concat(ts.FeedIPs["blocklist-de"], ts.FeedNets["blocklist-de"])
+		src.Entries[ipmap.CINS.Name] = slices.Concat(ts.FeedIPs["cins-army"], ts.FeedNets["cins-army"])
+		for _, w := range ts.Whitelist {
+			if a, err := netip.ParseAddr(w); err == nil {
+				src.Never = append(src.Never, a.Unmap())
+			}
+		}
+	}
+	if adb := attackdb.Global(); adb != nil {
+		src.Entries[ipmap.MailAuth.Name], src.Entries[ipmap.Spam.Name] = adb.MapSources(now)
+	}
+	src.Never = append(src.Never, netutil.HostAddresses()...)
+	return src
 }
 
 // reconcileAntispam applies a config reload: health tracking follows the

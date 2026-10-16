@@ -63,6 +63,8 @@ type Reconciler struct {
 	Feeds *FeedState
 	// Probe asks server one DNS question; nil disables the feed probe.
 	Probe func(ctx context.Context, server netip.AddrPort, name string) antispam.ProbeAnswer
+	// IPMap writes and removes the CSM IP map; unset hooks do nothing.
+	IPMap IPMapHooks
 	// assess replaces antispam.Assess in tests.
 	assess func(enabled bool, s antispam.Settings, f antispam.HostFacts) antispam.Assessment
 }
@@ -116,6 +118,11 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	var f antispam.HostFacts
 	if d.Enabled {
+		if !d.Observe && d.Settings.HasFeed(antispam.FeedCSMIPMap) && r.IPMap.Write != nil {
+			// A write failure is the IP map loop's to report; the feed's
+			// preconditions keep the rule off without its file.
+			_ = r.IPMap.Write(ctx)
+		}
 		f = r.Collect(ctx, d.Settings.Socket)
 		if d.Settings.HasFeed(antispam.FeedSpamhausDQS) && r.ReadKey != nil {
 			f.DQSKey = r.ReadKey(d.Settings.DQSKeyFile)
@@ -179,6 +186,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 				Detail: "CSM's antispam integration is installed and observe mode leaves it in place; leave observe mode so CSM can update or remove it",
 			}, now))
 		}
+		r.settleIPMap(d, settings, a, false)
 		return out
 	}
 	var req antispam.Request
@@ -188,6 +196,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	case antispam.Uninstall:
 		req = antispam.RemoveRequest()
 	default:
+		r.settleIPMap(d, settings, a, false)
 		return out
 	}
 	result, err := r.Run(ctx, req)
@@ -206,6 +215,25 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if finding, ok := resultFinding(req.Operation, result, err, now); ok {
 		out.Findings = append(out.Findings, finding)
 	}
+	r.settleIPMap(d, settings, a, err == nil && result.OK)
 	out.Err = err
 	return out
+}
+
+// settleIPMap records whether the CSM_IP rule is in use once a pass leaves
+// the host matching settings: a Keep without blocking problems, or a
+// successful apply or removal. The map is deleted once the host holds
+// settings without the rule; observe mode changes nothing.
+func (r Reconciler) settleIPMap(d Desired, settings antispam.Settings, a antispam.Assessment, applied bool) {
+	if !applied && (a.Action != antispam.Keep || blockingProblems(a.Problems)) {
+		return
+	}
+	if d.Enabled && !d.Observe && settings.HasFeed(antispam.FeedCSMIPMap) && (a.Installed || applied) {
+		r.Feeds.setIPMapActive(true)
+		return
+	}
+	r.Feeds.setIPMapActive(false)
+	if !d.Observe && r.IPMap.Remove != nil {
+		_ = r.IPMap.Remove()
+	}
 }

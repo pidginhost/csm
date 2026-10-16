@@ -17,6 +17,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/eximlock"
+	"github.com/pidginhost/csm/internal/ipmap"
 )
 
 func feedDesired(feeds ...string) Desired {
@@ -667,5 +668,83 @@ func TestUnexpectedEmptyAnswerSaysSo(t *testing.T) {
 	f, ok := NewFeedState().probeFinding(psbl, q, antispam.ProbeUnexpected, "", antispam.ProbeAnswer{}, testNow)
 	if !ok || strings.Contains(f.Details, "Answer: .") || !strings.Contains(f.Details, "no address") {
 		t.Fatalf("details %q", f.Details)
+	}
+}
+
+func TestPassWritesTheMapBeforeCollecting(t *testing.T) {
+	h := &fakeHost{}
+	r := h.reconciler()
+	var order []string
+	r.IPMap = IPMapHooks{Write: func(context.Context) error { order = append(order, "write"); return nil }}
+	collect := r.Collect
+	r.Collect = func(ctx context.Context, socket string) antispam.HostFacts {
+		order = append(order, "collect")
+		return collect(ctx, socket)
+	}
+	r.Pass(context.Background(), feedDesired(antispam.FeedCSMIPMap))
+	if !slices.Equal(order, []string{"write", "collect"}) {
+		t.Fatalf("order %v", order)
+	}
+	order = nil
+	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
+	if slices.Contains(order, "write") {
+		t.Fatal("wrote the map without the feed")
+	}
+}
+
+func TestPassRemovesTheMapOnceNoRuleReadsIt(t *testing.T) {
+	removed := 0
+	h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Keep, Installed: true}}
+	r := h.reconciler()
+	r.Feeds = NewFeedState()
+	r.IPMap = IPMapHooks{Write: func(context.Context) error { return nil }, Remove: func() error { removed++; return nil }}
+	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
+	if removed != 1 || r.Feeds.IPMapActive() {
+		t.Fatalf("removed %d, active %v", removed, r.Feeds.IPMapActive())
+	}
+	h.assessment = antispam.Assessment{Action: antispam.Install}
+	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
+	if removed != 1 {
+		t.Fatal("removed the map before the pass that drops the rule completed")
+	}
+	h.result = antispam.Result{Operation: antispam.OpApply, OK: true, Generation: strings.Repeat("a", 64)}
+	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
+	if removed != 2 {
+		t.Fatal("kept the map after the rule was removed")
+	}
+}
+
+func TestPassMarksTheIPMapActive(t *testing.T) {
+	h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Keep, Installed: true}}
+	r := h.reconciler()
+	r.Feeds = NewFeedState()
+	r.Collect = func(context.Context, string) antispam.HostFacts {
+		f := goodFeedFacts()
+		f.IPMap = antispam.FileFacts{File: antispam.PathFacts{Path: ipmap.DefaultPath, Mode: 0o640, GID: 974},
+			Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}}
+		return f
+	}
+	r.IPMap = IPMapHooks{Write: func(context.Context) error { return nil }, Remove: func() error { return nil }}
+	r.Pass(context.Background(), feedDesired(antispam.FeedCSMIPMap))
+	if !r.Feeds.IPMapActive() {
+		t.Fatal("an installed, current csm_ip_map is not active")
+	}
+	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
+	if r.Feeds.IPMapActive() {
+		t.Fatal("csm_ip_map stays active after the feed is dropped")
+	}
+}
+
+// A failed CSM_IP rule check holds the IP map off like the DNS feeds, so the
+// next pass applies without it instead of failing the same check again
+// (feeds spec 8.2).
+func TestHeldFeedsDropTheIPMap(t *testing.T) {
+	st := NewFeedState()
+	configured := feedDesired(antispam.FeedCSMIPMap, antispam.FeedRspamdMaps).Settings
+	st.hold(configured)
+	got, problems := st.apply(configured, configured, nil)
+	if got.HasFeed(antispam.FeedCSMIPMap) || !got.HasFeed(antispam.FeedRspamdMaps) || len(problems) != 1 ||
+		problems[0].Key != antispam.FeedCSMIPMap || !strings.Contains(problems[0].Detail, "CSM_IP rule") {
+		t.Fatalf("held settings %+v, problems %+v", got, problems)
 	}
 }

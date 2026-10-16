@@ -36,6 +36,7 @@ import (
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/integrity"
+	"github.com/pidginhost/csm/internal/ipmap"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/mailranges"
@@ -131,6 +132,12 @@ type Daemon struct {
 	// antispamHealth tracks rspamd's scan socket and Exim's scan markers
 	// while antispam is enabled.
 	antispamHealth antispamHealthState
+	// ipmapWriter writes the CSM IP map; the Exim log path reads its last
+	// map before startAntispam sets it, so it is atomic.
+	ipmapWriter atomic.Pointer[ipmap.Writer]
+	// antispamFeeds is the reconcile loop's feed memory, which tells the IP
+	// map loop whether rspamd should answer the canary.
+	antispamFeeds *reconcile.FeedState
 	// forwardGuardMu prevents overlapping attempts from applying stale config.
 	forwardGuardMu sync.Mutex
 	// forwardGuardRetry retains failed or deferred reconcile requests.
@@ -2348,6 +2355,7 @@ func (d *Daemon) handleEximLine(line string, obs alert.Observation, cfg *config.
 	if at.IsZero() {
 		at = time.Now()
 	}
+	d.recordSpamEvidence(line, at, cfg)
 	return append(findings, d.recordAntispamLine(line, at)...)
 }
 
