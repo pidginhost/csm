@@ -422,17 +422,83 @@ func TestResolveFeedsReportsUnreadableResolvConf(t *testing.T) {
 	f.ResolvConf, f.ResolvConfErr = "", errors.New("permission denied")
 	s := defaults(false)
 	s.Feeds = []string{FeedPSBL}
-	_, problems := ResolveFeeds(s, f)
-	if len(problems) != 1 || !strings.Contains(problems[0].Detail, "/etc/resolv.conf") {
-		t.Fatalf("problems %+v", problems)
+	got, problems := ResolveFeeds(s, f)
+	if len(got.Feeds) != 0 || len(problems) != 1 || problems[0].Key != FeedPSBL ||
+		problems[0].Severity != Warning || !strings.Contains(problems[0].Detail, "CSM cannot read /etc/resolv.conf") {
+		t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+	}
+}
+
+func TestResolveFeedsPreservesExplicitResolverErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name, options, want string
+	}{
+		{"invalid endpoint", `{"dns":{"nameserver":"127.0.0.1:invalid"}}`, "invalid nameserver"},
+		{"invalid alias", `{"dns":{"server":"127.0.0.1:invalid"}}`, "invalid nameserver"},
+		{"competing aliases", `{"dns_nameserver":"[::1]","dns":{"nameserver":"127.0.0.1"}}`, "multiple nameserver settings"},
+		{"invalid type", `{"dns":{"nameserver":false}}`, "neither a string nor a list"},
+		{"empty list", `{"dns":{"nameserver":[]}}`, "no nameserver"},
+		{"unreadable options", `not json`, "options are not readable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := feedFacts()
+			f.RspamdOptions.Stdout = tc.options
+			f.ResolvConf, f.ResolvConfErr = "", fs.ErrPermission
+			s := defaults(false)
+			s.Feeds = []string{FeedPSBL}
+			got, problems := ResolveFeeds(s, f)
+			if len(got.Feeds) != 0 || len(problems) != 1 {
+				t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+			}
+			if detail := problems[0].Detail; !strings.Contains(detail, tc.want) || strings.Contains(detail, "/etc/resolv.conf") {
+				t.Fatalf("detail %q, want explicit resolver error %q", detail, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveFeedsIgnoresUnusedResolvConfErrors(t *testing.T) {
+	for _, options := range []string{
+		`{"dns":{"nameserver":"127.0.0.1:5353"}}`,
+		`{"dns":{"server":"[::1]:5353"}}`,
+		`{"dns_nameserver":"127.0.0.1:5353"}`,
+	} {
+		f := feedFacts()
+		f.RspamdOptions.Stdout = options
+		f.ResolvConf, f.ResolvConfErr = "", fs.ErrPermission
+		s := defaults(false)
+		s.Feeds = []string{FeedPSBL}
+		got, problems := ResolveFeeds(s, f)
+		if !slices.Equal(got.Feeds, s.Feeds) || len(problems) != 0 {
+			t.Fatalf("feeds %v, problems %+v", got.Feeds, problems)
+		}
 	}
 }
 
 func TestNameserversAcceptsEveryRotation(t *testing.T) {
-	for _, entry := range []string{"sequential:127.0.0.1,10.0.0.2", "SEQUENTIAL:127.0.0.1,10.0.0.2", "Round-Robin:127.0.0.1,10.0.0.2"} {
-		got, err := Nameservers([]byte(`{"dns":{"nameserver":"`+entry+`"}}`), "")
-		if err != nil || len(got) != 2 || got[0].String() != "127.0.0.1:53" {
-			t.Errorf("%s = %v, %v", entry, got, err)
+	for _, rotation := range []string{"master-slave", "round-robin", "random", "hash"} {
+		for _, prefix := range []string{rotation, strings.ToUpper(rotation), strings.ToUpper(rotation[:1]) + rotation[1:]} {
+			entry := prefix + ":127.0.0.1:5353,192.0.2.53"
+			got, err := Nameservers([]byte(`{"dns":{"nameserver":"`+entry+`"}}`), "")
+			want := []netip.AddrPort{netip.MustParseAddrPort("127.0.0.1:5353"), netip.MustParseAddrPort("192.0.2.53:53")}
+			if err != nil || !slices.Equal(got, want) {
+				t.Errorf("%s = %v, %v; want %v", entry, got, err, want)
+			}
+		}
+	}
+}
+
+// Rspamd 4.2.2 has no sequential rotation prefix. Treating it as one
+// would let CSM probe an address rspamd skipped while parsing the list.
+func TestResolveFeedsRejectsUnsupportedRotation(t *testing.T) {
+	for _, prefix := range []string{"sequential", "SEQUENTIAL", "Sequential"} {
+		f := feedFacts()
+		f.RspamdOptions.Stdout = `{"dns":{"nameserver":"` + prefix + `:127.0.0.1:5353,[::1]:5354"}}`
+		s := defaults(false)
+		s.Feeds = []string{FeedPSBL}
+		got, problems := ResolveFeeds(s, f)
+		if len(got.Feeds) != 0 || len(problems) != 1 || !strings.Contains(problems[0].Detail, "invalid nameserver") {
+			t.Errorf("%s: feeds %v, problems %+v", prefix, got.Feeds, problems)
 		}
 	}
 }

@@ -66,6 +66,8 @@ func secretFileOK(f HostFacts) bool {
 	return false
 }
 
+var errNoSystemNameserver = errors.New("rspamd has no nameserver in /etc/resolv.conf")
+
 // Nameservers returns the resolvers rspamd uses: options.dns.nameserver
 // (or its aliases) when set, else the nameserver lines of resolv.conf. An
 // entry CSM cannot parse is an error, never proof of a private resolver.
@@ -110,11 +112,14 @@ func Nameservers(options []byte, resolvConf string) ([]netip.AddrPort, error) {
 				entries = append(entries, fields[1])
 			}
 		}
+		if len(entries) == 0 {
+			return nil, errNoSystemNameserver
+		}
 	}
 	var out []netip.AddrPort
 	for _, entry := range entries {
 		// rspamd compares rotation names without case.
-		for _, prefix := range []string{"master-slave:", "round-robin:", "random:", "hash:", "sequential:"} {
+		for _, prefix := range []string{"master-slave:", "round-robin:", "random:", "hash:"} {
 			if len(entry) >= len(prefix) && strings.EqualFold(entry[:len(prefix)], prefix) {
 				entry = entry[len(prefix):]
 				break
@@ -247,7 +252,7 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 			switch {
 			case f.RspamdOptions.Err != nil:
 				reason = "CSM cannot read which nameservers rspamd uses. " + resolverFix
-			case err != nil && f.ResolvConfErr != nil:
+			case errors.Is(err, errNoSystemNameserver) && f.ResolvConfErr != nil:
 				reason = "CSM cannot read /etc/resolv.conf, which rspamd uses without dns.nameserver. " + resolverFix
 			case err != nil:
 				reason = err.Error() + ". " + resolverFix

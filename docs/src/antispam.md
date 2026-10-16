@@ -226,6 +226,12 @@ address check, but a resolver that forwards to a public resolver can still
 be refused. CSM never edits `options.inc`. After changing it, run
 `rspamadm configtest`, reload rspamd, then reload CSM to request a check.
 
+Resolver lists accept `master-slave:`, `round-robin:`, `random:`, and `hash:`
+prefixes without regard to case. Rspamd 4.2.2 does not support `sequential:`;
+CSM leaves DNS feeds off for that setting. A warning about an unreadable
+`/etc/resolv.conf` applies only when no explicit nameserver setting exists;
+invalid explicit settings get their own warning.
+
 ### Spamhaus DQS
 
 Put the key alone in a root-owned file, mode 600, and name the file in
