@@ -194,6 +194,7 @@ previously observed code always override inert-content filtering.
 - Per-path alert deduplication (30s cooldown)
 - Process info enrichment (PID, command, UID)
 - Auto-quarantine on high-confidence realtime signature matches (category, size, entropy, and hex/execution validation)
+- Auto-quarantine on confirmed PHP request-to-execution flows and executable packed payloads, using the stable file version that was inspected
 
 ## Sensitive System File Watcher
 

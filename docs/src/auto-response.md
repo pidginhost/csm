@@ -72,17 +72,22 @@ failure limit is also reached. Automatic directory and special-file quarantine
 is refused because one directory move can affect an unbounded number of files.
 Manual remediation remains available after reviewing the original detection.
 
-A busy safety lock refuses that attempt without waiting behind another file
-operation. Unreadable, incomplete or unwritable safety state also refuses
-mutations. The original detections remain visible and a deduplicated
-`auto_response_paused` warning reports the cause. Account-limit notices are
+A brief shared lock protects each safety reservation and outcome update. The
+file action runs after reservation without holding that lock, so a slow copy
+does not block another available slot. Pending actions hold failure capacity
+until their outcome is saved, so concurrent failures cannot pass the configured
+ceiling. If the state lock remains busy, the next attempt is refused. Unreadable,
+incomplete or unwritable safety state also refuses mutations. The original
+detections remain visible, and a deduplicated `auto_response_paused` warning
+reports the cause. Account-limit notices are
 grouped at host scope so a fault across many accounts cannot flood the alert
 budget. A pause does not create a retry job; new eligible detections can act
 after capacity returns. Review outstanding findings and recovery evidence before
 manual remediation. Do not delete safety state to clear a pause; repair storage
 faults and let reservations expire.
 
-Duplicate detections of one path share a single response attempt in each batch.
+Duplicate detections of one stable file version share a single realtime response
+attempt. A different file planted at the same path remains eligible.
 Within one daemon run, alert delivery does not repeat a file response already
 evaluated by a scan or admitted to the realtime safety gate, including budget
 refusals. A realtime detection rejected using sampled content remains eligible
@@ -93,6 +98,14 @@ the next daemon run evaluates them again under the same persisted limits.
 Parked findings also keep the offending subnets and targeted accounts needed for
 subnet response and credential spray correlation. Older parked findings replay
 without that data. The subnets also appear in the public `cidrs` field.
+
+Critical realtime PHP findings that prove request data reaches an execution
+primitive, or that executable PHP unwraps and runs encoded content, enter this
+file-response gate immediately. Quarantine uses a stable version of the open file
+that produced the finding. It refuses when Linux cannot exclude other open writers
+through final removal, or when the content or path identity changes.
+Comment-only matches, URL-only droppers, filename-only checks, tail-window matches
+and YARA-only findings remain available for review without an automatic move.
 
 Parked reputation findings keep their intelligence source and expiry. If an
 expiry cannot be encoded, only that intelligence metadata is dropped; the

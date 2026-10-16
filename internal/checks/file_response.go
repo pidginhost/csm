@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,6 +26,8 @@ type fileResponseAttempt struct {
 	At      time.Time `json:"at"`
 	Account string    `json:"account"`
 	Failed  bool      `json:"failed"`
+	ID      string    `json:"id,omitempty"`
+	Pending bool      `json:"pending,omitempty"`
 }
 
 type fileResponseState struct {
@@ -34,6 +37,7 @@ type fileResponseState struct {
 
 var fileResponseNow = time.Now
 var writeFileResponseState = atomicio.AtomicWriteJSON
+var activeFileResponses sync.Map
 
 // A refusal leaves the customer file untouched and consumes attempt capacity,
 // but does not indicate a failed response mechanism.
@@ -63,8 +67,8 @@ func fileResponseSourceError(err error) error {
 
 // runAutoFileResponse is shared by the automatic PHP/access-file cleaners and
 // both quarantine entry points. Manual remediation does not enter this gate.
-// A nonblocking process-shared lock keeps concurrency from spending the same
-// slot twice, without making a detector wait behind filesystem remediation.
+// A bounded process-shared lock protects reservation and outcome updates. The
+// file action runs outside the lock, so a slow copy does not stall other slots.
 func runAutoFileResponse(cfg *config.Config, path string, info os.FileInfo, apply func() error) *alert.Finding {
 	now := fileResponseNow()
 	notice := func(reason, account, detail string) *alert.Finding {
@@ -83,54 +87,50 @@ func runAutoFileResponse(cfg *config.Config, path string, info os.FileInfo, appl
 	// The operator-owned state directory is provisioned at daemon startup.
 	// Never create a new directory here and silently reset a missing state root.
 	lockPath := filepath.Join(cfg.StatePath, "file-response.lock")
-	// #nosec G304 -- fixed filename inside the operator-configured state directory.
-	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0600)
-	if err != nil {
-		return notice("state", "", "Automatic file response is paused because its safety state cannot be locked. Detection continues.")
-	}
-	defer lock.Close()
-	lockInfo, err := lock.Stat()
-	if err != nil || !lockInfo.Mode().IsRegular() {
-		return notice("state", "", "Automatic file response is paused because its safety lock is not a regular file. Detection continues.")
-	}
-	// #nosec G115 -- an open POSIX file descriptor fits in int.
-	if err = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		return notice("busy", "", "Automatic file response refused an attempt while its safety state was busy. Detection continues; review the original finding before retrying manually.")
-	}
-	// Close releases the flock. The lock file stays in place so all processes
-	// keep locking the same inode, including callers that already opened it.
 	statePath := filepath.Join(cfg.StatePath, fileResponseStateName)
-	state, err := readFileResponseState(statePath, now)
-	if err != nil {
-		csmlog.Warn("automatic file response state unreadable", "err", err)
-		return notice("state", "", "Automatic file response is paused because its safety state cannot be read. Repair the state storage; detection continues.")
-	}
 	_, account, _ := accountRootOf(path)
-	// Unknown paths share one budget. Finding text/TenantID must not select a
-	// fresh account bucket, and UID alone conflates root-owned tenant files.
-	used, failures := 0, 0
-	for _, attempt := range state.Attempts {
-		if attempt.Account == account {
-			used++
+	attemptID := rand.Text()
+	admitted := false
+	reserved := func() *alert.Finding {
+		lock, err := acquireFileResponseLock(lockPath)
+		if err != nil {
+			return notice("busy", "", "Automatic file response refused an attempt while its safety state was busy. Detection continues; review the original finding before retrying manually.")
 		}
-		if attempt.Failed {
-			failures++
+		defer lock.Close()
+		state, err := readFileResponseState(statePath, now)
+		if err != nil {
+			csmlog.Warn("automatic file response state unreadable", "err", err)
+			return notice("state", "", "Automatic file response is paused because its safety state cannot be read. Repair the state storage; detection continues.")
 		}
+		// Unknown paths share one budget. Finding text/TenantID must not select a
+		// fresh account bucket, and UID alone conflates root-owned tenant files.
+		used, failures, pending := fileResponseUsage(state, account)
+		if failures >= failureLimit {
+			return notice("failures", "", "Automatic file response is paused after repeated action failures in the rolling hour. Detection continues; inspect the action log and recovery copies before manual remediation.")
+		}
+		if failures+pending >= failureLimit {
+			return notice("pending", "", "Automatic file response is paused while earlier file actions use the available failure capacity. Detection continues; review the original finding before manual remediation.")
+		}
+		if len(state.Attempts) >= hostLimit {
+			return notice("host_limit", "", "Automatic file response reached its host limit for the rolling hour. Detection continues; review outstanding findings for manual remediation.")
+		}
+		if used >= accountLimit {
+			return notice("account_limit", account, "Automatic file response reached its account limit for the rolling hour. Other accounts remain eligible; detection continues.")
+		}
+		state.Attempts = append(state.Attempts, fileResponseAttempt{At: now, Account: account, Failed: true, ID: attemptID, Pending: true})
+		activeFileResponses.Store(attemptID, struct{}{})
+		if err = writeFileResponseState(statePath, 0600, state); err != nil {
+			activeFileResponses.Delete(attemptID)
+			csmlog.Warn("automatic file response reservation failed", "err", err)
+			return notice("state", "", "Automatic file response is paused because its safety reservation could not be saved. Detection continues.")
+		}
+		admitted = true
+		return nil
+	}()
+	if !admitted {
+		return reserved
 	}
-	if failures >= failureLimit {
-		return notice("failures", "", "Automatic file response is paused after repeated action failures in the rolling hour. Detection continues; inspect the action log and recovery copies before manual remediation.")
-	}
-	if len(state.Attempts) >= hostLimit {
-		return notice("host_limit", "", "Automatic file response reached its host limit for the rolling hour. Detection continues; review outstanding findings for manual remediation.")
-	}
-	if used >= accountLimit {
-		return notice("account_limit", account, "Automatic file response reached its account limit for the rolling hour. Other accounts remain eligible; detection continues.")
-	}
-	state.Attempts = append(state.Attempts, fileResponseAttempt{At: now, Account: account, Failed: true})
-	if err = writeFileResponseState(statePath, 0600, state); err != nil {
-		csmlog.Warn("automatic file response reservation failed", "err", err)
-		return notice("state", "", "Automatic file response is paused because its safety reservation could not be saved. Detection continues.")
-	}
+	defer activeFileResponses.Delete(attemptID)
 	// The caller's snapshot predates budget persistence. Recheck it after that
 	// I/O; the descriptor-based quarantine/cleaner checks it again when opening.
 	current, err := os.Lstat(path)
@@ -141,24 +141,111 @@ func runAutoFileResponse(cfg *config.Config, path string, info os.FileInfo, appl
 	if err == nil {
 		err = apply()
 	}
-	if err != nil && !errors.Is(err, errFileResponseRefused) {
+	failed := err != nil && !errors.Is(err, errFileResponseRefused)
+	refused := errors.Is(err, errFileResponseRefused)
+	if failed {
 		csmlog.Warn("automatic file response failed", "path", path, "err", err)
-		if failures+1 >= failureLimit {
-			return notice("failures", "", "Automatic file response is paused after repeated action failures in the rolling hour. Detection continues; inspect the action log and recovery copies before manual remediation.")
-		}
-		return nil
-	}
-	if err != nil {
+	} else if refused {
 		csmlog.Warn("automatic file response refused", "path", path, "err", err)
 	}
-	state.Attempts[len(state.Attempts)-1].Failed = false
-	if err = writeFileResponseState(statePath, 0600, state); err != nil {
+	failures, err := finishFileResponseAttempt(lockPath, statePath, attemptID, now, failed)
+	if err != nil {
 		// The durable reservation remains charged even when outcome persistence
 		// fails. Never retry the action or refund its slot based on this error.
 		csmlog.Warn("automatic file response outcome save failed", "err", err)
 		return notice("state", "", "An automatic file response completed but its safety outcome could not be saved. Its reservation remains charged; inspect storage and recovery evidence.")
 	}
+	if failed && failures >= failureLimit {
+		return notice("failures", "", "Automatic file response is paused after repeated action failures in the rolling hour. Detection continues; inspect the action log and recovery copies before manual remediation.")
+	}
 	return nil
+}
+
+func acquireFileResponseLock(path string) (*os.File, error) {
+	// #nosec G304 -- fixed filename inside the operator-configured state directory.
+	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0600)
+	if err != nil {
+		return nil, err
+	}
+	info, err := lock.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		_ = lock.Close()
+		return nil, errors.New("safety lock is not a regular file")
+	}
+	// #nosec G115 -- an open POSIX file descriptor fits in int.
+	if err := waitForFileResponseLock(int(lock.Fd()), 5*time.Second); err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	return lock, nil
+}
+
+func fileResponseUsage(state *fileResponseState, account string) (used, failures, pending int) {
+	for _, attempt := range state.Attempts {
+		if attempt.Account == account {
+			used++
+		}
+		if !attempt.Failed {
+			continue
+		}
+		if attempt.Pending {
+			if _, active := activeFileResponses.Load(attempt.ID); active {
+				pending++
+				continue
+			}
+		}
+		failures++
+	}
+	return used, failures, pending
+}
+
+func finishFileResponseAttempt(lockPath, statePath, attemptID string, now time.Time, failed bool) (int, error) {
+	lock, err := acquireFileResponseLock(lockPath)
+	if err != nil {
+		return 0, err
+	}
+	defer lock.Close()
+	state, err := readFileResponseState(statePath, now)
+	if err != nil {
+		return 0, err
+	}
+	found := false
+	for i := range state.Attempts {
+		if state.Attempts[i].ID != attemptID {
+			continue
+		}
+		if found {
+			return 0, errors.New("duplicate safety reservation")
+		}
+		found = true
+		state.Attempts[i].Pending = false
+		state.Attempts[i].Failed = failed
+	}
+	if !found {
+		return 0, errors.New("safety reservation disappeared")
+	}
+	if err := writeFileResponseState(statePath, 0600, state); err != nil {
+		return 0, err
+	}
+	_, failures, _ := fileResponseUsage(state, "")
+	return failures, nil
+}
+
+func waitForFileResponseLock(fd int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, unix.EINTR) && !errors.Is(err, unix.EWOULDBLOCK) {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func fileResponseLimits(cfg *config.Config) (host, account, failures int) {
@@ -221,6 +308,8 @@ func readFileResponseState(path string, now time.Time) (*fileResponseState, erro
 		At      time.Time `json:"at"`
 		Account *string   `json:"account"`
 		Failed  *bool     `json:"failed"`
+		ID      string    `json:"id"`
+		Pending bool      `json:"pending"`
 	}
 	if err := json.Unmarshal(stored.Attempts, &attempts); err != nil {
 		return nil, err
@@ -233,12 +322,13 @@ func readFileResponseState(path string, now time.Time) (*fileResponseState, erro
 		if attempt.At.IsZero() {
 			return nil, errors.New("safety state has an undated reservation")
 		}
-		if attempt.Account == nil || attempt.Failed == nil {
+		if attempt.Account == nil || attempt.Failed == nil || attempt.Pending && attempt.ID == "" {
 			return nil, errors.New("safety state has an incomplete reservation")
 		}
 		// Future entries remain charged when the clock moves backwards.
-		if attempt.At.After(now.Add(-time.Hour)) {
-			state.Attempts = append(state.Attempts, fileResponseAttempt{At: attempt.At, Account: *attempt.Account, Failed: *attempt.Failed})
+		_, active := activeFileResponses.Load(attempt.ID)
+		if attempt.At.After(now.Add(-time.Hour)) || attempt.Pending && active {
+			state.Attempts = append(state.Attempts, fileResponseAttempt{At: attempt.At, Account: *attempt.Account, Failed: *attempt.Failed, ID: attempt.ID, Pending: attempt.Pending})
 		}
 	}
 	return state, nil

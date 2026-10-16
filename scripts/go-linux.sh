@@ -152,8 +152,8 @@ fi
 trust_git_paths
 
 # Fanotify and isolated network namespaces need CAP_SYS_ADMIN; nftables
-# transactions need CAP_NET_ADMIN even inside those namespaces.
-privilege_args=(--cap-add CAP_SYS_ADMIN --cap-add CAP_NET_ADMIN)
+# transactions need CAP_NET_ADMIN; quarantine tests lease account-owned files.
+privilege_args=(--cap-add CAP_SYS_ADMIN --cap-add CAP_NET_ADMIN --cap-add CAP_LEASE)
 if [[ "${GO_LINUX_PRIVILEGED:-0}" == 1 ]]; then
   if [[ "$runtime" != docker ]]; then
     printf 'GO_LINUX_PRIVILEGED requires Docker on a dedicated test host.\n' >&2

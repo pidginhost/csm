@@ -3,6 +3,7 @@
 package checks
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,7 +152,7 @@ func TestQuarantineFileTOCTOUSafe_CopyUsesOpenFD(t *testing.T) {
 	// opened: the copy must still come from the open fd, and the swap is
 	// reported rather than passed off as a completed quarantine.
 	qErr := quarantineFileTOCTOUSafe(src, dst, info, []byte("{}"))
-	if qErr == nil || !strings.Contains(qErr.Error(), "replaced before unlink") {
+	if qErr == nil || !strings.Contains(qErr.Error(), "replaced before atomic capture") {
 		t.Fatalf("swap after open not reported: %v", qErr)
 	}
 	got, err := os.ReadFile(dst)
@@ -167,5 +168,167 @@ func TestQuarantineFileTOCTOUSafe_CopyUsesOpenFD(t *testing.T) {
 	}
 	if string(replacement) != "replacement" {
 		t.Fatalf("source replacement = %q, want replacement", replacement)
+	}
+}
+
+func TestQuarantineFileVersionedTOCTOUSafeRefusesSameInodeRewrite(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "drop.php")
+	original := []byte("<?php system($_POST['command']);")
+	replacement := []byte("<?php system($_POST['payload']);")
+	if err := os.WriteFile(src, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(tmp, "q", "out.php")
+	if err = os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	oldHook := quarantineBeforeLease
+	quarantineBeforeLease = func(string) error {
+		if writeErr := os.WriteFile(src, replacement, 0644); writeErr != nil {
+			return writeErr
+		}
+		if timeErr := os.Chtimes(src, info.ModTime(), info.ModTime()); timeErr != nil {
+			return timeErr
+		}
+		return nil
+	}
+	t.Cleanup(func() { quarantineBeforeLease = oldHook })
+
+	err = quarantineFileVersionedTOCTOUSafe(src, dst, info, []byte("{}"))
+	if err == nil || !strings.Contains(err.Error(), "changed before atomic capture") {
+		t.Fatalf("same-inode rewrite was not refused: %v", err)
+	}
+	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
+		t.Fatalf("untrustworthy quarantine copy remains: %v", statErr)
+	}
+	got, err := os.ReadFile(src)
+	if err != nil || string(got) != string(replacement) {
+		t.Fatalf("replacement source=%q, %v", got, err)
+	}
+}
+
+func TestQuarantineFileVersionedTOCTOUSafePreservesFinalPathReplacement(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "drop.php")
+	original := []byte("<?php system($_POST['command']);")
+	replacement := []byte("customer content")
+	if err := os.WriteFile(src, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(tmp, "q", "out.php")
+	if err = os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	oldHook := quarantineBeforeCapturedUnlink
+	quarantineBeforeCapturedUnlink = func(path string) error {
+		if writeErr := os.WriteFile(path, replacement, 0644); writeErr != nil {
+			return writeErr
+		}
+		return nil
+	}
+	t.Cleanup(func() { quarantineBeforeCapturedUnlink = oldHook })
+
+	_ = quarantineFileVersionedTOCTOUSafe(src, dst, info, []byte("{}"))
+	got, err := os.ReadFile(src)
+	if err != nil || string(got) != string(replacement) {
+		t.Fatalf("final path replacement was removed: content=%q error=%v", got, err)
+	}
+	got, err = os.ReadFile(dst)
+	if err != nil || string(got) != string(original) {
+		t.Fatalf("recovery copy=%q, error=%v", got, err)
+	}
+}
+
+func TestQuarantineFileVersionedTOCTOUSafeRefusesPreOpenWriter(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "drop.php")
+	original := []byte("<?php system($_POST['command']);")
+	replacement := []byte("customer content written through an open descriptor")
+	if err := os.WriteFile(src, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := os.OpenFile(src, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	dst := filepath.Join(tmp, "q", "out.php")
+	if err = os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	oldHook := quarantineBeforeCapturedUnlink
+	hookCalled := false
+	quarantineBeforeCapturedUnlink = func(string) error {
+		hookCalled = true
+		if _, writeErr := writer.WriteAt(replacement, 0); writeErr != nil {
+			return writeErr
+		}
+		return writer.Truncate(int64(len(replacement)))
+	}
+	t.Cleanup(func() { quarantineBeforeCapturedUnlink = oldHook })
+
+	err = quarantineFileVersionedTOCTOUSafe(src, dst, info, []byte("{}"))
+	if err == nil || !errors.Is(err, errFileResponseRefused) {
+		t.Fatalf("pre-open writer was not refused: %v", err)
+	}
+	if hookCalled {
+		t.Fatal("quarantine started deleting while another writable descriptor was open")
+	}
+	got, readErr := os.ReadFile(src)
+	if readErr != nil || string(got) != string(original) {
+		t.Fatalf("source=%q, error=%v", got, readErr)
+	}
+	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
+		t.Fatalf("refused quarantine left a copy: %v", statErr)
+	}
+}
+
+func TestQuarantineFileVersionedTOCTOUSafeUsesPinnedDescriptorLease(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "drop.php")
+	original := []byte("<?php system($_POST['command']);")
+	if err := os.WriteFile(src, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := os.Open(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pinned.Close()
+	info, err := pinned.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(tmp, "q", "out.php")
+	if err = os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	err = quarantineFileVersionedTOCTOUSafeFD(src, dst, info, []byte("{}"), int(pinned.Fd()))
+	if err != nil {
+		t.Fatalf("quarantine through pinned descriptor: %v", err)
+	}
+	if _, statErr := os.Stat(src); !os.IsNotExist(statErr) {
+		t.Fatalf("source still present: %v", statErr)
+	}
+	got, readErr := os.ReadFile(dst)
+	if readErr != nil || string(got) != string(original) {
+		t.Fatalf("quarantine content=%q, error=%v", got, readErr)
 	}
 }
