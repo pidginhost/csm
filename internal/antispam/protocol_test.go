@@ -79,6 +79,8 @@ func TestDecodeRequestErrorsDoNotEchoInput(t *testing.T) {
 		`{"csm_secret_key":"remove"}`,
 		`{"operation":"csm_secret_op"}`,
 		strings.Replace(validApply, `/run/rspamd/csm-normal.sock`, `/run/csm_secret_path.sock x`, 1),
+		strings.TrimSuffix(validApply, "}") + `,"feeds":"csm_secret_feed"}`,
+		strings.TrimSuffix(validApply, "}") + `,"skip_maps":"csm_secret_map"}`,
 	} {
 		if _, _, err := DecodeRequest([]byte(body)); err == nil || strings.Contains(err.Error(), "csm_secret") {
 			t.Errorf("DecodeRequest(%s) = %v", body, err)
@@ -230,12 +232,23 @@ func TestDecodeRequestRejectsBadFeedFields(t *testing.T) {
 		`,"feeds":"spamhaus_dqs"}`,
 		`,"skip_maps":"nope"}`,
 		`,"feeds":["psbl"]}`,
+		`,"feeds":null}`,
+		`,"skip_maps":null}`,
+		`,"dqs_key_file":null}`,
 	} {
-		if _, _, err := DecodeRequest([]byte(base + extra)); err == nil {
-			t.Errorf("accepted %s", extra)
+		if req, s, err := DecodeRequest([]byte(base + extra)); err == nil || !reflect.DeepEqual(req, Request{}) || !reflect.DeepEqual(s, Settings{}) {
+			t.Errorf("expected rejection without a partial request for %s", extra)
 		}
 	}
 	if _, _, err := DecodeRequest([]byte(`{"operation":"remove","feeds":"psbl"}`)); err == nil {
 		t.Error("remove accepted feeds")
+	}
+}
+
+func TestDecodeRequestEmptyFeedFields(t *testing.T) {
+	body := strings.TrimSuffix(validApply, "}") + `,"feeds":"","skip_maps":"","dqs_key_file":""}`
+	req, s, err := DecodeRequest([]byte(body))
+	if err != nil || req.Operation != OpApply || !reflect.DeepEqual(s, defaults(false)) {
+		t.Fatalf("expected default settings, got %+v, %v", s, err)
 	}
 }

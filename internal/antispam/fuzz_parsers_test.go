@@ -319,6 +319,11 @@ func FuzzCheckGenerated(f *testing.F) {
 func FuzzDecodeRequest(f *testing.F) {
 	for _, seed := range []string{
 		`{"operation":"apply","enabled":true,"dry_run":false,"rspamd_socket":"/run/rspamd/csm-normal.sock","reject_score":15,"tag_score":6}`,
+		strings.TrimSuffix(validApply, "}") + `,"feeds":"psbl,spamhaus_dqs","skip_maps":"whitelist","dqs_key_file":"/etc/csm/dqs.key"}`,
+		strings.TrimSuffix(validApply, "}") + `,"feeds":null}`,
+		strings.TrimSuffix(validApply, "}") + `,"skip_maps":null}`,
+		strings.TrimSuffix(validApply, "}") + `,"dqs_key_file":null}`,
+		strings.TrimSuffix(validApply, "}") + `,"feeds":"psbl,"}`,
 		`{"operation":"remove"}`,
 		`{"operation":"remove","operation":"apply"}`,
 		`{"Operation":"remove"}`,

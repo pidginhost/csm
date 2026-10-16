@@ -2403,6 +2403,11 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 	if node, ok := as["rspamd_socket"]; ok && !yamlNodeIsNull(&node) && yamlResolvedTag(&node) != "!!str" {
 		return presence, fmt.Errorf("email_protection.antispam.rspamd_socket must be a string")
 	}
+	if node, ok := as["feeds"]; ok {
+		if err := validateAntispamFeedTypes(node); err != nil {
+			return presence, err
+		}
+	}
 	presence.antispam = antispamPresence{
 		dryRun:      set("dry_run"),
 		socket:      set("rspamd_socket"),

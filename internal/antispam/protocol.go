@@ -101,6 +101,13 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 	if err != nil {
 		return Request{}, Settings{}, err
 	}
+	for _, key := range []string{"feeds", "skip_maps", "dqs_key_file"} {
+		if value, present := fields[key]; present {
+			if _, ok := value.(string); !ok {
+				return Request{}, Settings{}, errors.New("request has a value of the wrong type")
+			}
+		}
+	}
 	var r Request
 	if err := json.Unmarshal(data, &r); err != nil {
 		return Request{}, Settings{}, errors.New("request has a value of the wrong type")

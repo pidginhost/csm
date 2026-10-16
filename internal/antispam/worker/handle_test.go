@@ -138,8 +138,13 @@ func TestHandleRejectsReadFailureBeforeSideEffects(t *testing.T) {
 // A bad request is refused before the lock is taken or anything runs.
 func TestHandleRejectsBadRequestBeforeSideEffects(t *testing.T) {
 	for name, body := range map[string]string{
-		"invalid":   `{"operation":"remove","path":"/etc/exim.conf"}`,
-		"oversized": `{"operation":"remove"}` + strings.Repeat(" ", 10<<20),
+		"invalid":      `{"operation":"remove","path":"/etc/exim.conf"}`,
+		"oversized":    `{"operation":"remove"}` + strings.Repeat(" ", 10<<20),
+		"unknown feed": strings.TrimSuffix(applyBody, "}") + `,"feeds":"csm_secret_feed"}`,
+		"unknown map":  strings.TrimSuffix(applyBody, "}") + `,"skip_maps":"csm_secret_map"}`,
+		"null feeds":   strings.TrimSuffix(applyBody, "}") + `,"feeds":null}`,
+		"null maps":    strings.TrimSuffix(applyBody, "}") + `,"skip_maps":null}`,
+		"null path":    strings.TrimSuffix(applyBody, "}") + `,"dqs_key_file":null}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			tr := &fakeTransactor{result: antispam.Result{OK: true}}
@@ -148,6 +153,9 @@ func TestHandleRejectsBadRequestBeforeSideEffects(t *testing.T) {
 			if code != 1 || result.OK || result.FailedStep != "request" || result.Rollback != antispam.RollbackNone ||
 				locked != 0 || tr.removed != 0 || len(tr.applied) != 0 {
 				t.Fatalf("code=%d result=%+v locked=%d transactor=%+v", code, result, locked, tr)
+			}
+			if strings.Contains(result.Error, "csm_secret") {
+				t.Fatal("worker error echoed an invalid setting")
 			}
 		})
 	}

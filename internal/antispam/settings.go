@@ -78,7 +78,7 @@ func ValidateSkipMaps(names []string) error {
 	seen := make(map[string]bool, len(names))
 	for _, name := range names {
 		if !slices.Contains(MapRedirectNames(), name) {
-			return fmt.Errorf("unknown map redirect %q", name)
+			return errors.New("unknown map redirect")
 		}
 		if seen[name] {
 			return fmt.Errorf("map redirect %q is listed twice", name)

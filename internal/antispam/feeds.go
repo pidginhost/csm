@@ -291,7 +291,7 @@ func ValidateFeeds(names []string, keyFile string) error {
 	seen := make(map[string]bool, len(names))
 	for _, name := range names {
 		if _, ok := FeedByName(name); !ok {
-			return fmt.Errorf("unknown feed %q; known feeds: %s", name, strings.Join(FeedNames(), ", "))
+			return fmt.Errorf("unknown feed; known feeds: %s", strings.Join(FeedNames(), ", "))
 		}
 		if seen[name] {
 			return fmt.Errorf("feed %q is listed twice", name)

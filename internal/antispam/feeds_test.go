@@ -207,7 +207,7 @@ func TestValidateFeeds(t *testing.T) {
 	}{
 		{nil, "", ""},
 		{[]string{FeedPSBL, FeedRspamdMaps}, "", ""},
-		{[]string{"nope"}, "", `unknown feed "nope"`},
+		{[]string{"nope"}, "", "unknown feed; known feeds: " + strings.Join(FeedNames(), ", ")},
 		{[]string{FeedPSBL, FeedPSBL}, "", "listed twice"},
 		{[]string{FeedSpamhausDQS}, "", "needs spamhaus_dqs_key_file"},
 		{[]string{FeedSpamhausDQS}, "etc/key", "clean absolute path"},
