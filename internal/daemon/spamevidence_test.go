@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -14,8 +16,10 @@ import (
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/attackdb"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/ipmap"
+	"github.com/pidginhost/csm/internal/netutil"
 )
 
 const evidencePrefix = "2026-10-13 09:00:00 1xF5ol-00000000SdK-2TMA "
@@ -181,33 +185,47 @@ func ipmapTestDaemon(t *testing.T) (*Daemon, *config.Config, reconcile.Reconcile
 	return d, cfg, d.withIPMap(reconcile.Reconciler{})
 }
 
+// A failed reconcile write is checked by the canary tick without a rebuild
+// while the map is in use. After a removal it stays removed: the feed's
+// preconditions report the cause, so antispam_ip_map does not flicker on
+// every pass.
 func TestIPMapLoopChecksReconcileWritesWithoutRebuilding(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		d, cfg, r := ipmapTestDaemon(t)
-		useActiveConfig(t, cfg)
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		go d.antispamIPMapLoop(ctx)
-		synctest.Wait()
-		if err := r.IPMap.Remove(); err != nil {
-			t.Fatal(err)
-		}
-		calls := 0
-		antispamRspamdGroup = func(context.Context) int { calls++; return -1 }
-		if err := r.IPMap.Write(ctx); err == nil {
-			t.Fatal("unknown group did not fail the write")
-		}
-		time.Sleep(antispamCanaryDelay)
-		synctest.Wait()
-		if got := latestChecks(d)[reconcile.CheckIPMap]; got != 1 {
-			t.Fatalf("reconcile write failure not checked within the probe interval: %d findings", got)
-		}
-		if calls != 1 {
-			t.Fatalf("canary check rebuilt the map: %d group lookups", calls)
-		}
-		cancel()
-		synctest.Wait()
-	})
+	for _, removed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("removed=%t", removed), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				d, cfg, r := ipmapTestDaemon(t)
+				useActiveConfig(t, cfg)
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				go d.antispamIPMapLoop(ctx)
+				synctest.Wait()
+				if removed {
+					if err := r.IPMap.Remove(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				calls := 0
+				antispamRspamdGroup = func(context.Context) int { calls++; return -1 }
+				if err := r.IPMap.Write(ctx); err == nil {
+					t.Fatal("unknown group did not fail the write")
+				}
+				time.Sleep(antispamCanaryDelay)
+				synctest.Wait()
+				want := 1
+				if removed {
+					want = 0
+				}
+				if got := latestChecks(d)[reconcile.CheckIPMap]; got != want {
+					t.Fatalf("antispam_ip_map findings after a failed reconcile write = %d, want %d", got, want)
+				}
+				if calls != 1 {
+					t.Fatalf("canary check rebuilt the map: %d group lookups", calls)
+				}
+				cancel()
+				synctest.Wait()
+			})
+		})
+	}
 }
 
 // The 30-second canary tick does nothing on hosts that do not use the map:
@@ -225,5 +243,68 @@ func TestIPMapProbeIdlesWithoutTheMap(t *testing.T) {
 	d.refreshIPMap(context.Background(), time.Now())
 	if got := latestChecks(d)[reconcile.CheckIPMap]; got != 0 {
 		t.Fatalf("refresh kept a finding without the feed: %d", got)
+	}
+}
+
+// ipmapSources reads the real threat and attack databases: each source maps
+// to its symbol, and whitelisted, host and infra addresses never appear,
+// even when a feed or the attack DB lists them (feeds spec 6.1).
+func TestIPMapSourcesFromTheThreatAndAttackDBs(t *testing.T) {
+	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
+	tdb := checks.GetThreatDB()
+	tdb.AddPermanent("203.0.113.101", "test")
+	tdb.AddWhitelist("203.0.113.102")
+	checks.SetThreatFeedForTest("spamhaus-drop", nil, []string{"198.51.100.0/24", "2001:db8:1::/48"})
+	checks.SetThreatFeedForTest("blocklist-de", []string{"203.0.113.103", "203.0.113.102"}, nil)
+	checks.SetThreatFeedForTest("cins-army", []string{"203.0.113.104", "203.0.113.107", "203.0.113.108"}, nil)
+	now := time.Now()
+	prevADB := attackdb.Global()
+	attackdb.SetGlobal(attackdb.NewForTest(map[string]*attackdb.IPRecord{
+		"203.0.113.105": {IP: "203.0.113.105", Mail: &attackdb.MailEvidence{AuthAttacks: 1, LastAuthAttack: now}},
+		"203.0.113.106": {IP: "203.0.113.106", Mail: &attackdb.MailEvidence{Spam: 2, SpamMass: 2, MassAt: now}},
+		"203.0.113.102": {IP: "203.0.113.102", Mail: &attackdb.MailEvidence{Spam: 2, SpamMass: 2, MassAt: now}},
+	}))
+	t.Cleanup(func() { attackdb.SetGlobal(prevADB) })
+	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) { return []net.IP{net.ParseIP("203.0.113.107")}, nil }))
+
+	m := ipmap.Build(ipmapSources(now, []string{"203.0.113.108", "2001:db8:1:5::/64"}))
+	for ip, want := range map[string]int{
+		"203.0.113.101": ipmap.Blocked.Tenths(),
+		"198.51.100.7":  ipmap.Drop.Tenths(),
+		"203.0.113.103": ipmap.BlocklistDE.Tenths(),
+		"203.0.113.104": ipmap.CINS.Tenths(),
+		"203.0.113.105": ipmap.MailAuth.Tenths(),
+		"203.0.113.106": ipmap.Spam.Tenths(),
+		"203.0.113.102": 0, // whitelisted
+		"203.0.113.107": 0, // the host's own address
+		"203.0.113.108": 0, // infra_ips address
+		"2001:db8:1::9": 0, // DROP network overlapping an infra_ips network
+	} {
+		if got := m.Weight(netip.MustParseAddr(ip)); got != want {
+			t.Errorf("weight(%s) = %d, want %d", ip, got, want)
+		}
+	}
+}
+
+// The recorder skips the same senders the map never lists: whitelisted,
+// the host's own and infra_ips addresses.
+func TestRecorderSkipsWhitelistedHostAndInfraSenders(t *testing.T) {
+	d := newTestDaemon(t)
+	adb := useTestAttackDB(t)
+	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
+	checks.GetThreatDB().AddWhitelist("203.0.113.110")
+	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) { return []net.IP{net.ParseIP("203.0.113.111")}, nil }))
+	cfg := &config.Config{InfraIPs: []string{"203.0.113.112/32"}}
+	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, RejectScore: 15, TagScore: 6}
+	for _, ip := range []string{"203.0.113.110", "203.0.113.111", "203.0.113.112", "203.0.113.113"} {
+		d.handleEximLine(spamLine(ip), alert.Observation{}, cfg)
+	}
+	for _, ip := range []string{"203.0.113.110", "203.0.113.111", "203.0.113.112"} {
+		if rec := adb.LookupIP(ip); rec != nil {
+			t.Errorf("%s recorded: %+v", ip, rec.Mail)
+		}
+	}
+	if rec := adb.LookupIP("203.0.113.113"); rec == nil || rec.Mail == nil || rec.Mail.Spam != 1 {
+		t.Fatalf("control sender not recorded: %+v", rec)
 	}
 }

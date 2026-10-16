@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
@@ -828,5 +829,14 @@ func TestPassDoesNotWriteHeldIPMap(t *testing.T) {
 	r.Pass(context.Background(), d)
 	if writes != 0 {
 		t.Fatalf("held map was recreated %d times", writes)
+	}
+}
+
+// A persistent IP map failure is one finding: details vary per attempt
+// (temporary file names, probe errors) and must not make a new one each time.
+func TestIPMapFindingKeyIgnoresDetails(t *testing.T) {
+	a, b := IPMapFinding("first cause", testNow), IPMapFinding("second cause", testNow.Add(time.Hour))
+	if a.Key() != b.Key() {
+		t.Fatalf("keys differ: %q vs %q", a.Key(), b.Key())
 	}
 }

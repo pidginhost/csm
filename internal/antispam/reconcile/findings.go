@@ -50,6 +50,7 @@ func IPMapFinding(detail string, now time.Time) alert.Finding {
 	return alert.Finding{
 		Severity:  alert.Warning,
 		Check:     CheckIPMap,
+		DedupKey:  "ip_map",
 		Message:   "Antispam IP map problem",
 		Details:   clean(detail) + ". Core spam filtering is unaffected.",
 		Timestamp: now,

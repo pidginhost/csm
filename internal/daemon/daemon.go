@@ -139,6 +139,8 @@ type Daemon struct {
 	// A removed map stays absent until reconciliation requests it again.
 	ipmapMu      sync.Mutex
 	ipmapRemoved atomic.Bool
+	// ipmapCanaryMisses counts bad canary answers in a row; ipmapMu guards it.
+	ipmapCanaryMisses int
 	// antispamFeeds is the reconcile loop's feed memory, which tells the IP
 	// map loop whether rspamd should answer the canary.
 	antispamFeeds *reconcile.FeedState

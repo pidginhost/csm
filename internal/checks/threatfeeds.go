@@ -567,6 +567,30 @@ func isFeedSourceName(source string) bool {
 	return false
 }
 
+// SetThreatFeedForTest replaces one feed's addresses and networks in the
+// global threat DB. For tests only, like SetGlobalThreatDBForTest.
+func SetThreatFeedForTest(name string, ips, nets []string) {
+	db := globalThreatDB
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.feedIPs == nil {
+		db.feedIPs = make(map[string]map[string]struct{})
+	}
+	if db.feedNets == nil {
+		db.feedNets = make(map[string][]*net.IPNet)
+	}
+	db.feedIPs[name] = make(map[string]struct{}, len(ips))
+	for _, ip := range ips {
+		db.feedIPs[name][ip] = struct{}{}
+	}
+	db.feedNets[name] = nil
+	for _, raw := range nets {
+		if _, n, err := net.ParseCIDR(raw); err == nil {
+			db.feedNets[name] = append(db.feedNets[name], n)
+		}
+	}
+}
+
 // IsWhitelisted reports whether ip is on the operator, temporary or config
 // whitelist. Expired temporary entries no longer count, as in MapSources.
 func (db *ThreatDB) IsWhitelisted(ip string) bool {

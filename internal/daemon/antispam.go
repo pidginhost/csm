@@ -128,8 +128,13 @@ func (d *Daemon) withIPMap(r reconcile.Reconciler) reconcile.Reconciler {
 		Write: func(ctx context.Context) error {
 			d.ipmapMu.Lock()
 			defer d.ipmapMu.Unlock()
-			d.ipmapRemoved.Store(false)
-			_, err := d.writeIPMap(ctx, time.Now())
+			// A failed write after a removal stays removed: the feed's
+			// preconditions report the cause, and the canary tick must not
+			// flicker antispam_ip_map on every pass.
+			wrote, err := d.writeIPMap(ctx, time.Now())
+			if wrote || err == nil {
+				d.ipmapRemoved.Store(false)
+			}
 			return err
 		},
 		Remove: func() error {
@@ -172,7 +177,7 @@ func ipMapWanted(cfg *config.Config) bool {
 // writeIPMap builds the map from CSM's sources and writes it if changed.
 // The caller holds ipmapMu so removal cannot overtake a pending write.
 func (d *Daemon) writeIPMap(ctx context.Context, now time.Time) (bool, error) {
-	return d.ipmapWriter.Load().Write(ipmap.Build(ipmapSources(now)), antispamRspamdGroup(ctx), now)
+	return d.ipmapWriter.Load().Write(ipmap.Build(ipmapSources(now, d.currentCfg().InfraIPs)), antispamRspamdGroup(ctx), now)
 }
 
 // refreshIPMap writes the map while the feed is wanted, runs the canary
@@ -202,7 +207,15 @@ func (d *Daemon) checkIPMap(ctx context.Context, now time.Time, rebuild bool) bo
 		if d.antispamFeeds.IPMapActive() {
 			seen, probeErr = antispamCanary(ctx, cfg.EmailProtection.Antispam.RspamdSocket)
 		}
-		if p := ipmap.CanaryProblem(st, seen, probeErr, now); p != "" {
+		p := ipmap.CanaryProblem(st, seen, probeErr, now)
+		// One bad canary answer, such as during an rspamd reload, is not a
+		// problem; two in a row are. Write failures count at once.
+		if p != "" && st.Err == nil {
+			d.ipmapCanaryMisses++
+		} else {
+			d.ipmapCanaryMisses = 0
+		}
+		if p != "" && (st.Err != nil || d.ipmapCanaryMisses >= 2) {
 			findings = append(findings, reconcile.IPMapFinding(p, now))
 		}
 	}
@@ -213,9 +226,20 @@ func (d *Daemon) checkIPMap(ctx context.Context, now time.Time, rebuild bool) bo
 	return wrote
 }
 
-// ipmapSources gathers what the CSM IP map lists (feeds spec 6.1).
-func ipmapSources(now time.Time) ipmap.Sources {
+// ipmapSources gathers what the CSM IP map lists (feeds spec 6.1). infra
+// holds infra_ips entries: like whitelisted and host addresses, nothing in
+// them is listed.
+func ipmapSources(now time.Time, infra []string) ipmap.Sources {
 	src := ipmap.Sources{Entries: map[string][]string{}}
+	for _, raw := range infra {
+		raw = strings.TrimSpace(raw)
+		if p, err := netip.ParsePrefix(raw); err == nil {
+			src.NeverNets = append(src.NeverNets, p.Masked())
+		} else if a, err := netip.ParseAddr(raw); err == nil && a.Zone() == "" {
+			a = a.Unmap()
+			src.NeverNets = append(src.NeverNets, netip.PrefixFrom(a, a.BitLen()))
+		}
+	}
 	if tdb := checks.GetThreatDB(); tdb != nil {
 		ts := tdb.MapSources()
 		src.Entries[ipmap.Drop.Name] = slices.Concat(ts.FeedNets["spamhaus-drop"], ts.FeedIPs["spamhaus-drop"])

@@ -55,6 +55,9 @@ func rank(name string) int {
 type Sources struct {
 	Entries map[string][]string
 	Never   []netip.Addr
+	// NeverNets are networks nothing inside may be listed from, such as
+	// infra_ips ranges.
+	NeverNets []netip.Prefix
 }
 
 type entry struct {
@@ -115,7 +118,7 @@ func Build(src Sources) Map {
 			if !ok || !listable(p.Addr()) {
 				continue
 			}
-			if slices.ContainsFunc(excludedNetworks, p.Overlaps) || slices.ContainsFunc(never, p.Contains) {
+			if slices.ContainsFunc(excludedNetworks, p.Overlaps) || slices.ContainsFunc(src.NeverNets, p.Overlaps) || slices.ContainsFunc(never, p.Contains) {
 				continue
 			}
 			if cur, ok := best[p]; !ok || rank(s.Name) < rank(cur.Name) {

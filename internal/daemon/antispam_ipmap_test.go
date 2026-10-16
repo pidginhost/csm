@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"os"
 	"sync/atomic"
@@ -129,4 +130,46 @@ func TestIPMapRemovalWaitsForInFlightRefresh(t *testing.T) {
 	if _, err := os.Stat(antispamIPMapPath); !os.IsNotExist(err) {
 		t.Fatalf("in-flight refresh outlived map removal: %v", err)
 	}
+}
+
+// One failed canary probe, such as during an rspamd reload, is not an IP
+// map problem; two in a row are.
+func TestCanaryProbeFailureNeedsTwoInARow(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d, cfg, r := ipmapTestDaemon(t)
+		useActiveConfig(t, cfg)
+		installTestIPMap(t, cfg, r)
+		prev := antispamCanary
+		t.Cleanup(func() { antispamCanary = prev })
+		var failures atomic.Int32
+		antispamCanary = func(context.Context, string) (string, error) {
+			if failures.Load() > 0 {
+				failures.Add(-1)
+				return "", errors.New("connection refused")
+			}
+			return d.ipmapWriter.Load().State().Gen, nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go d.antispamIPMapLoop(ctx)
+		synctest.Wait()
+		time.Sleep(ipmap.CanaryGrace + antispamCanaryDelay)
+		synctest.Wait()
+		failures.Store(1)
+		time.Sleep(antispamCanaryDelay)
+		synctest.Wait()
+		if got := latestChecks(d)[reconcile.CheckIPMap]; got != 0 {
+			t.Fatalf("one failed probe raised %d findings", got)
+		}
+		time.Sleep(antispamCanaryDelay)
+		synctest.Wait()
+		failures.Store(2)
+		time.Sleep(2 * antispamCanaryDelay)
+		synctest.Wait()
+		if got := latestChecks(d)[reconcile.CheckIPMap]; got != 1 {
+			t.Fatalf("two failed probes raised %d findings, want 1", got)
+		}
+		cancel()
+		synctest.Wait()
+	})
 }

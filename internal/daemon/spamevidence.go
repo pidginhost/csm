@@ -46,7 +46,8 @@ func (d *Daemon) recordSpamEvidence(line string, at time.Time, cfg *config.Confi
 	if w != nil && !removed {
 		weight = w.Weight
 	}
-	ip, v := spamEvidence(line, cfg.EmailProtection.Antispam, notRecordable, weight)
+	never := func(a netip.Addr) bool { return notRecordable(a) || isInfraIPDaemon(a.String(), cfg.InfraIPs) }
+	ip, v := spamEvidence(line, cfg.EmailProtection.Antispam, never, weight)
 	if v != ipmap.NoVerdict {
 		adb.RecordMailVerdict(ip, v == ipmap.SpamVerdict, at)
 	}

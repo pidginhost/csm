@@ -276,9 +276,9 @@ one rule, `CSM_IP`:
 
 Each address or network gets one line with its strongest symbol, so the map
 adds at most 4 to a message. Whitelisted addresses (operator, temporary and
-`reputation.whitelist`), private, loopback and link-local addresses and the
-server's own addresses are never listed, and neither is a network that
-contains one of them.
+`reputation.whitelist`), `infra_ips`, private, loopback and link-local
+addresses and the server's own addresses are never listed, and neither is a
+network that contains one of them.
 
 The feed stays off with a warning until the map exists as a regular
 root-owned file, mode 0640, in rspamd's service group, without extra ACLs. Every parent must be a root-owned directory with
@@ -312,7 +312,8 @@ score, ham when it stays below the tag score, and nothing in between or when
 the scan failed. The score the CSM IP map gave the sender is subtracted
 first, so the map never feeds its own evidence. Dry run and enforce record
 the same way, and so do recipients with filtering off: the verdict is about
-the sender. Whitelisted, private and the server's own addresses are skipped.
+the sender. Whitelisted, `infra_ips`, private and the server's own addresses
+are skipped.
 This works with or without `csm_ip_map`, so you can review the data before
 turning the map on. After a CSM restart with `csm_ip_map` enabled, verdicts
 are not recorded until CSM has written the map again, because the map's
@@ -326,8 +327,10 @@ spam verdicts and no ham reach 50, which lists the sender as `CSM_IP_SPAM`.
 Spam evidence never blocks an address, never changes its threat score and is
 never reported to AbuseIPDB.
 
-The Threat page's Spam column shows spam and ham counts, the spam score and
-whether the map lists the sender. The "Spam evidence only" filter lists
+The Threat page's Spam column shows spam and ham counts and the spam score,
+with a badge once the score reaches the listing threshold of 50. The badge
+does not confirm a listing: the feed may be off, and the map still skips
+excluded addresses. The "Spam evidence only" filter lists
 senders by spam score. The IP lookup shows mail login attacks and spam
 verdicts.
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -285,5 +286,20 @@ func TestWriterRepairsAChangedMode(t *testing.T) {
 	}
 	if wrote, err := w.Write(m, 974, now.Add(2*time.Minute)); wrote || err != nil {
 		t.Fatalf("unchanged map rewritten after repair: wrote=%v err=%v", wrote, err)
+	}
+}
+
+// Write errors name the map, never the random temporary file, so the same
+// failure reads the same on every attempt.
+func TestWriterErrorsNameTheMapFile(t *testing.T) {
+	w := testWriter(t)
+	w.chown = func(p string, _ int) error {
+		return &os.PathError{Op: "chown", Path: p, Err: errors.New("operation not permitted")}
+	}
+	m := Build(Sources{Entries: map[string][]string{Spam.Name: {"203.0.113.46"}}})
+	_, err1 := w.Write(m, 974, now)
+	_, err2 := w.Write(m, 974, now.Add(time.Minute))
+	if err1 == nil || err2 == nil || err1.Error() != err2.Error() || strings.Contains(err1.Error(), ".csm_ip.map.") || !strings.Contains(err1.Error(), w.Path) {
+		t.Fatalf("errors %v / %v", err1, err2)
 	}
 }

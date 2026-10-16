@@ -3,6 +3,7 @@ package ipmap
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -72,7 +73,7 @@ func (w *Writer) replace(content []byte, gid int) (bool, error) {
 	dir := filepath.Dir(w.Path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(w.Path)+".*")
 	if err != nil {
-		return false, err
+		return false, w.writeErr(err)
 	}
 	name := tmp.Name()
 	defer func() { _ = os.Remove(name) }()
@@ -92,12 +93,26 @@ func (w *Writer) replace(content []byte, gid int) (bool, error) {
 		err = os.Rename(name, w.Path)
 	}
 	if err != nil {
-		return false, fmt.Errorf("writing %s: %w", w.Path, err)
+		return false, w.writeErr(err)
 	}
 	if err := w.syncDir(dir); err != nil {
 		return true, fmt.Errorf("syncing %s: %w", dir, err)
 	}
 	return true, nil
+}
+
+// writeErr names the map in err instead of the random temporary file, so a
+// persistent failure reads the same on every attempt.
+func (w *Writer) writeErr(err error) error {
+	var pe *fs.PathError
+	var le *os.LinkError
+	switch {
+	case errors.As(err, &pe):
+		err = fmt.Errorf("%s: %w", pe.Op, pe.Err)
+	case errors.As(err, &le):
+		err = fmt.Errorf("%s: %w", le.Op, le.Err)
+	}
+	return fmt.Errorf("writing %s: %w", w.Path, err)
 }
 
 func syncDirectory(dir string) error {
