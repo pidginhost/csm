@@ -112,6 +112,12 @@ func renderRBL(s Settings, feeds []Feed) string {
 			if z.Domain {
 				b.WriteString("    ignore_defaults = true;\n    no_ip = true;\n    exclude_users = false;\n    emails_domainonly = true;\n" +
 					"    checks = [\"emails\", \"dkim\", \"helo\", \"rdns\", \"replyto\", \"urls\", \"content_urls\"];\n")
+				// The emails check extracts body addresses, not sender headers.
+				b.WriteString("    selector {\n" +
+					"      from_smtp = \"from('smtp'):domain\";\n" +
+					"      from_mime = \"from('mime'):domain\";\n" +
+					"      mid = \"header(Message-Id).regexp('@([^\\\\.]+\\\\.[^>]+)').last\";\n" +
+					"    }\n")
 				if z.FullHostname {
 					b.WriteString("    url_full_hostname = true;\n")
 				}
@@ -126,9 +132,11 @@ func renderRBL(s Settings, feeds []Feed) string {
 			b.WriteString("    }\n  }\n")
 		}
 	}
+	// The legacy rules alias would otherwise merge unselected lists back in.
+	b.WriteString("}\nrules {};\n")
 	// attached_maps is SURBL's hashbl map, fetched over plain HTTP whenever
 	// rbl runs; only override.d can clear it.
-	b.WriteString("}\nattached_maps = [];\n")
+	b.WriteString("attached_maps = [];\n")
 	if s.Redirects() {
 		b.WriteString("url_whitelist = \"/etc/rspamd/maps.d/surbl-whitelist.inc\";\n" +
 			"disabled_rbl_suffixes_map = \"/etc/rspamd/local.d/maps.d/disabled_rbls.inc\";\n")

@@ -5,6 +5,81 @@ import (
 	"testing"
 )
 
+func TestRenderFeedsClearsLegacyRules(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedPSBL}
+	files, err := RenderFeeds(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(files[FeedRBLPath], "\nrules {};\n") {
+		t.Fatal("legacy rules can merge unselected lists back into rbls")
+	}
+}
+
+func TestRenderFeedsDomainSenderSelectors(t *testing.T) {
+	for _, name := range []string{FeedURIBL, FeedSURBL, FeedSpamhausDQS} {
+		t.Run(name, func(t *testing.T) {
+			s := defaults(false)
+			s.Feeds = []string{name}
+			s.DQSKeyFile = "/etc/csm/test.key"
+			s.DQSKey = NewSecret(strings.Repeat("x", dqsKeyLen))
+			files, err := RenderFeeds(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCount := 1
+			if name == FeedSpamhausDQS {
+				wantCount = 2
+			}
+			for _, selector := range []string{
+				`from_smtp = "from('smtp'):domain";`,
+				`from_mime = "from('mime'):domain";`,
+				`mid = "header(Message-Id).regexp('@([^\\.]+\\.[^>]+)').last";`,
+			} {
+				if got := strings.Count(files[FeedRBLPath], selector); got != wantCount {
+					t.Errorf("%s rendered %d times, want %d", selector, got, wantCount)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderFeedsDQSKeyValidation(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedSpamhausDQS}
+	s.DQSKeyFile = "/etc/csm/test.key"
+	for _, key := range []string{"", strings.Repeat("x", dqsKeyLen-1), strings.Repeat("X", dqsKeyLen), strings.Repeat("x", dqsKeyLen-1) + `"`} {
+		s.DQSKey = NewSecret(key)
+		files, err := RenderFeeds(s)
+		if err == nil || files != nil {
+			t.Fatal("invalid DQS key must fail without rendering any files")
+		}
+		if key != "" && strings.Contains(err.Error(), key) {
+			t.Fatal("rendering error discloses the key")
+		}
+	}
+	key := strings.Repeat("x", dqsKeyLen)
+	s.DQSKey = NewSecret(key)
+	files, err := RenderFeeds(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p, content := range files {
+		if strings.Contains(content, key) != (p == FeedRBLPath) {
+			t.Errorf("%s: key must occur only in the RBL configuration", p)
+		}
+		if strings.Contains(content, dqsKeyMark) {
+			t.Errorf("%s still contains a key placeholder", p)
+		}
+	}
+	for _, zone := range []string{"zen", "dbl", "zrd"} {
+		if !strings.Contains(files[FeedRBLPath], `rbl = "`+key+"."+zone+`.dq.spamhaus.net";`) {
+			t.Errorf("%s zone was not rendered with the loaded key", zone)
+		}
+	}
+}
+
 const psblRBL = `# csm-managed-version: 1
 rbls {
   csm_psbl {
@@ -21,6 +96,7 @@ rbls {
     }
   }
 }
+rules {};
 attached_maps = [];
 url_whitelist = "/etc/rspamd/maps.d/surbl-whitelist.inc";
 disabled_rbl_suffixes_map = "/etc/rspamd/local.d/maps.d/disabled_rbls.inc";
@@ -94,7 +170,10 @@ func TestRenderFeedsRedirectFiles(t *testing.T) {
 func TestRenderFeedsHonoursRspamdMapsAndSkipMaps(t *testing.T) {
 	s := defaults(false)
 	s.Feeds = []string{FeedPSBL, FeedRspamdMaps}
-	files, _ := RenderFeeds(s)
+	files, err := RenderFeeds(s)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(files) != 2 {
 		t.Fatalf("rspamd_maps must leave only the DNS files: %v", files)
 	}
@@ -106,7 +185,10 @@ func TestRenderFeedsHonoursRspamdMapsAndSkipMaps(t *testing.T) {
 	}
 	s = defaults(false)
 	s.SkipMaps = []string{RedirectWhitelist}
-	files, _ = RenderFeeds(s)
+	files, err = RenderFeeds(s)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := files[RedirectPath(RedirectWhitelist)]; ok || len(files) != 4 {
 		t.Fatalf("skipped redirect rendered: %v", files)
 	}
@@ -115,7 +197,10 @@ func TestRenderFeedsHonoursRspamdMapsAndSkipMaps(t *testing.T) {
 func TestRenderFeedsDomainRuleShape(t *testing.T) {
 	s := defaults(false)
 	s.Feeds = []string{FeedSURBL}
-	files, _ := RenderFeeds(s)
+	files, err := RenderFeeds(s)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rbl := files[FeedRBLPath]
 	for _, line := range []string{
 		`    ignore_defaults = true;`, `    no_ip = true;`, `    exclude_users = false;`, `    emails_domainonly = true;`,
@@ -134,7 +219,10 @@ func TestRenderFeedsDomainRuleShape(t *testing.T) {
 func TestRenderRspamdSwitchesRBLForDNSFeeds(t *testing.T) {
 	s := defaults(false)
 	s.Feeds = []string{FeedRspamdMaps}
-	files, _ := RenderRspamd(s)
+	files, err := RenderRspamd(s)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if files["rbl.conf"] != "# csm-managed-version: 1\nenabled = false;\n" {
 		t.Errorf("rspamd_maps alone must keep rbl off: %q", files["rbl.conf"])
 	}
@@ -142,7 +230,10 @@ func TestRenderRspamdSwitchesRBLForDNSFeeds(t *testing.T) {
 		t.Errorf("rspamd_maps keeps phishing's rspamd.com maps: %q", files["phishing.conf"])
 	}
 	s.Feeds = []string{FeedPSBL}
-	files, _ = RenderRspamd(s)
+	files, err = RenderRspamd(s)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if files["rbl.conf"] != "# csm-managed-version: 1\nenabled = true;\n" {
 		t.Errorf("a DNS feed turns rbl on: %q", files["rbl.conf"])
 	}
