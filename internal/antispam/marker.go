@@ -16,7 +16,7 @@ var scanMarker = regexp.MustCompile(`^CSM-ANTISPAM event=scan mode=(?:enforce|dr
 	`result=error score=none action="unavailable" decision=none)(?: ip=([0-9A-Fa-f.:]*))?$`)
 
 // Scan is one scan marker. Score is in Exim's integer tenths and valid only
-// when OK; IP is invalid when the marker names no usable sender.
+// when OK; IP is invalid when the sender field is absent or empty.
 type Scan struct {
 	OK       bool
 	Policy   string
@@ -40,7 +40,11 @@ func ParseScan(line string) (Scan, bool) {
 		return Scan{}, false
 	}
 	s := Scan{Policy: m[1], Decision: "none"}
-	if ip, err := netip.ParseAddr(m[4]); err == nil {
+	if m[4] != "" {
+		ip, err := netip.ParseAddr(m[4])
+		if err != nil {
+			return Scan{}, false
+		}
 		s.IP = ip.Unmap()
 	}
 	if m[3] == "" {

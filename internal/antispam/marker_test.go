@@ -205,3 +205,20 @@ func TestParseScanWithoutUsableSender(t *testing.T) {
 		}
 	}
 }
+
+func TestParseScanRejectsMalformedSender(t *testing.T) {
+	for _, ip := range []string{"192.0.2", "192.0.2.256", "192.0.002.1", "2001:db8:::1", "2001:db8", "deadbeef", "."} {
+		for _, result := range []string{
+			`result=ok score=20 action="no action" decision=none`,
+			`result=error score=none action="unavailable" decision=none`,
+		} {
+			line := markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on ` + result + " ip=" + ip
+			if got, marker := ParseScan(line); marker || got != (Scan{}) {
+				t.Errorf("malformed sender %q returned %+v, %v", ip, got, marker)
+			}
+			if marker, ok := ScanMarker(line); marker || ok {
+				t.Errorf("malformed sender %q counted as a scan: %t, %t", ip, marker, ok)
+			}
+		}
+	}
+}

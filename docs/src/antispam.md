@@ -419,6 +419,10 @@ Exim adds no rejection for a scanner failure, and other mail checks keep
 running. Disabling antispam clears the down and scan-error findings without
 a recovery notice. Preconditions or removal failures can still be reported.
 
+Scan records in the Exim main log include the connecting sender's address as
+`ip=`. Scan health ignores records with a malformed non-empty address. Older
+records without that field, and records with an empty address, still count.
+
 Dismissing a scan-error finding acknowledges the current episode. A successful
 scan clears that dismissal immediately, even between health probes. Disabling
 antispam or restarting CSM also resets it. Undismissed scan errors keep the

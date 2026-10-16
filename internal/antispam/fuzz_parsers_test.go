@@ -684,6 +684,8 @@ func FuzzParseScan(f *testing.F) {
 		markerPrefix + `CSM-ANTISPAM event=scan mode=dry-run policy=on result=ok score=150 action="reject" decision=reject ip=198.51.100.7`,
 		markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=off result=ok score=-5 action="no action" decision=unfiltered ip=2001:db8::25`,
 		markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=error score=none action="unavailable" decision=none ip=203.0.113.9`,
+		markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=0 action="no action" decision=none ip=192.0.2.256`,
+		markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=error score=none action="unavailable" decision=none ip=2001:db8:::1`,
 	} {
 		f.Add(seed)
 	}
@@ -691,6 +693,13 @@ func FuzzParseScan(f *testing.F) {
 		s, marker := ParseScan(line)
 		if m, ok := ScanMarker(line); m != marker || ok != s.OK {
 			t.Fatalf("ScanMarker = %v, %v; ParseScan = %+v, %v", m, ok, s, marker)
+		}
+		if marker {
+			if _, rawIP, present := strings.Cut(line, " ip="); present && rawIP != "" {
+				if _, err := netip.ParseAddr(rawIP); err != nil || !s.IP.IsValid() {
+					t.Fatalf("accepted malformed sender %q: %+v", rawIP, s)
+				}
+			}
 		}
 		if s.IP.IsValid() {
 			i := strings.LastIndex(line, " ip=")

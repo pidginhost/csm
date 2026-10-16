@@ -169,6 +169,34 @@ func TestHealthIgnoresForgedMarkers(t *testing.T) {
 	}
 }
 
+func TestHealthIgnoresMalformedScanSenders(t *testing.T) {
+	for _, suffix := range []string{" ip=192.0.2.256", " ip=2001:db8:::1"} {
+		t.Run(suffix, func(t *testing.T) {
+			t.Run("cannot raise an error", func(t *testing.T) {
+				h := enabledHealth()
+				got, recovered := h.Line(scanErrorLine+suffix, at(0))
+				if len(got) != 0 || recovered || len(h.Active()) != 0 {
+					t.Fatalf("malformed sender changed health: findings %+v, recovered %t, active %+v", got, recovered, h.Active())
+				}
+			})
+			t.Run("cannot clear an error", func(t *testing.T) {
+				h := enabledHealth()
+				first, _ := h.Line(scanErrorLine+" ip=192.0.2.1", at(0))
+				assertScanErrors(t, first, 1, at(0), at(0))
+				got, recovered := h.Line(scanOKLine+suffix, at(1))
+				if len(got) != 0 || recovered {
+					t.Fatalf("malformed sender recovered health: findings %+v, recovered %t", got, recovered)
+				}
+				assertScanErrors(t, h.Active(), 1, at(0), at(0))
+				got, recovered = h.Line(scanOKLine+" ip=2001:db8::1", at(2))
+				if len(got) != 0 || !recovered || len(h.Active()) != 0 {
+					t.Fatalf("valid sender did not recover health: findings %+v, recovered %t, active %+v", got, recovered, h.Active())
+				}
+			})
+		})
+	}
+}
+
 // Disabling forgets every count and active finding without a recovery
 // notice, and markers after it are ignored (spec section 7).
 func TestHealthDisableResets(t *testing.T) {
