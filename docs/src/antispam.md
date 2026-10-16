@@ -158,6 +158,9 @@ integration; it does not mean filtering is installed on the host.
 
 ## Feeds
 
+Feeds and map redirects need rspamd 4 or later. On an older or unreadable
+rspamd version CSM leaves rspamd's own lists and maps alone and reports it.
+
 Every feed is off until you name it:
 
 ```yaml
@@ -231,10 +234,13 @@ and rspamd's group. CSM must know that group: set `User=` (and optionally
 `Group=`) in the rspamd unit. A root-started rspamd that changes user itself
 leaves the group unknown, and the feed stays off.
 
-rspamd itself can write lookup names, which contain the key, to its log when
-a lookup fails. Keep its log readable only by root and rspamd, for example
-`chmod 750 /var/log/rspamd` and `chmod 640` on the files in it, and check
-that log rotation keeps those modes.
+rspamd writes the name of every failed lookup, which contains the key, to its
+log. CSM keeps `spamhaus_dqs` off, with a feed warning, while that log file
+can be read by other users, which is the rspamd package's default. Make it
+private, for example `chmod 750 /var/log/rspamd` and `chmod 640` on the files
+in it, and set rspamd's log rotation to create new files with mode 640. The
+DQS rules also run without rspamd's own list monitoring; CSM's probe asks the
+same questions.
 
 ### Scores
 
