@@ -295,11 +295,14 @@ The feed needs CSM to own `/etc/rspamd/local.d/multimap.conf`, even with
 Like the other feeds, it needs rspamd 4 or later.
 
 CSM checks that rspamd uses the current map by scanning a canary message
-from 192.0.2.255 every 10 minutes and 30 seconds after each write. The scan
-stays out of rspamd's history and statistics. `antispam_ip_map` reports a
-map CSM could not write, or rspamd still not using the current map 5 minutes
-after a write. A failed write keeps the previous map, which rspamd keeps
-using.
+from 192.0.2.255 every 30 seconds while the rule is in use. The scan stays
+out of rspamd's history and statistics. `antispam_ip_map` reports a map CSM
+could not write, or rspamd still not using the current map 5 minutes after a
+write; a matching answer clears it. A failed write keeps the previous map,
+which rspamd keeps using. A missing map, a changed file mode or a changed
+rspamd group makes CSM write the map again even when its content is the
+same. Once no installed rule reads the map, CSM deletes it; a failed removal
+raises `antispam_apply_failed` and is retried on the next pass.
 
 ### Spam evidence
 
@@ -311,7 +314,9 @@ first, so the map never feeds its own evidence. Dry run and enforce record
 the same way, and so do recipients with filtering off: the verdict is about
 the sender. Whitelisted, private and the server's own addresses are skipped.
 This works with or without `csm_ip_map`, so you can review the data before
-turning the map on.
+turning the map on. After a CSM restart with `csm_ip_map` enabled, verdicts
+are not recorded until CSM has written the map again, because the map's
+share of a score is unknown until then.
 
 A spam verdict creates or updates the sender's record on the Threat page.
 Ham only updates a record that already exists, so busy legitimate senders do
@@ -396,8 +401,9 @@ Each `antispam_feed` finding names the feed, `rspamd_maps` for maps, or
 An apply that fails at `feeds_check` is reported as `antispam_apply_failed`
 and attempts to roll back. CSM omits DNS feeds and `csm_ip_map` from subsequent
 applies until the enabled feed names or DQS key-file path changes, or CSM
-restarts. Fix the override before retrying. Reloading unchanged settings or
-replacing the key's contents does not clear this hold.
+restarts, and does not rewrite the IP map meanwhile. Fix the override before
+retrying. Reloading unchanged settings or replacing the key's contents does not
+clear this hold.
 
 CSM probes only while antispam is enabled outside observe mode and the
 installed integration is current without blocking preconditions. It checks
@@ -490,7 +496,7 @@ removed; scores can change and external lists can become active again.
 | `antispam_rspamd_recovered` | Warning | Two probes in a row succeeded after an outage. |
 | `antispam_scan_error` | Warning | Exim logged a failed scan. One finding covers every failure until a scan succeeds. |
 | `antispam_feed` | Warning, or Critical when a list answers for everything | A feed or map redirect is off, loaded rules differ, a list misbehaves, or rspamd still fetches maps from rspamd.com. These findings alone do not disable filtering. See [Feeds](#feeds). |
-| `antispam_ip_map` | Warning | The IP map could not be written or rspamd has not confirmed the current map. |
+| `antispam_ip_map` | Warning | The IP map could not be written, or rspamd has not confirmed the current map 5 minutes after a write. Core filtering is unaffected. See [CSM IP map](#csm-ip-map). |
 
 While rspamd is down or scans fail, mail is delivered without spam filtering.
 Exim adds no rejection for a scanner failure, and other mail checks keep

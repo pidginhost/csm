@@ -118,7 +118,8 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	var f antispam.HostFacts
 	if d.Enabled {
-		if !d.Observe && d.Settings.HasFeed(antispam.FeedCSMIPMap) && r.IPMap.Write != nil {
+		writable, _ := r.Feeds.apply(d.Settings, d.Settings, nil)
+		if !d.Observe && writable.HasFeed(antispam.FeedCSMIPMap) && r.IPMap.Write != nil {
 			// A write failure is the IP map loop's to report; the feed's
 			// preconditions keep the rule off without its file.
 			_ = r.IPMap.Write(ctx)
@@ -186,7 +187,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 				Detail: "CSM's antispam integration is installed and observe mode leaves it in place; leave observe mode so CSM can update or remove it",
 			}, now))
 		}
-		r.settleIPMap(d, settings, a, false)
+		r.settleIPMap(d, settings, a, false, &out)
 		return out
 	}
 	var req antispam.Request
@@ -196,7 +197,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	case antispam.Uninstall:
 		req = antispam.RemoveRequest()
 	default:
-		r.settleIPMap(d, settings, a, false)
+		r.settleIPMap(d, settings, a, false, &out)
 		return out
 	}
 	result, err := r.Run(ctx, req)
@@ -215,8 +216,8 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if finding, ok := resultFinding(req.Operation, result, err, now); ok {
 		out.Findings = append(out.Findings, finding)
 	}
-	r.settleIPMap(d, settings, a, err == nil && result.OK)
 	out.Err = err
+	r.settleIPMap(d, settings, a, err == nil && result.OK, &out)
 	return out
 }
 
@@ -224,16 +225,23 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 // the host matching settings: a Keep without blocking problems, or a
 // successful apply or removal. The map is deleted once the host holds
 // settings without the rule; observe mode changes nothing.
-func (r Reconciler) settleIPMap(d Desired, settings antispam.Settings, a antispam.Assessment, applied bool) {
+func (r Reconciler) settleIPMap(d Desired, settings antispam.Settings, a antispam.Assessment, applied bool, out *Outcome) {
 	if !applied && (a.Action != antispam.Keep || blockingProblems(a.Problems)) {
 		return
 	}
-	if d.Enabled && !d.Observe && settings.HasFeed(antispam.FeedCSMIPMap) && (a.Installed || applied) {
+	if a.Action != antispam.Uninstall && d.Enabled && !d.Observe && settings.HasFeed(antispam.FeedCSMIPMap) && (a.Installed || applied) {
 		r.Feeds.setIPMapActive(true)
 		return
 	}
 	r.Feeds.setIPMapActive(false)
 	if !d.Observe && r.IPMap.Remove != nil {
-		_ = r.IPMap.Remove()
+		if err := r.IPMap.Remove(); err != nil {
+			out.Err = errors.Join(out.Err, fmt.Errorf("removing the antispam IP map: %w", err))
+			out.Findings = append(out.Findings, alert.Finding{
+				Severity: alert.Warning, Check: CheckApplyFailed, Timestamp: r.Now(),
+				Message: "Antispam IP map removal failed",
+				Details: "The unused IP map remains on disk. Check the daemon log for the removal error; CSM retries on its next pass.",
+			})
+		}
 	}
 }

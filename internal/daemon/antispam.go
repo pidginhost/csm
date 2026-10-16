@@ -56,8 +56,8 @@ var (
 )
 
 // antispamIPMapInterval is how often the CSM IP map is rebuilt (feeds spec
-// 6.2); antispamCanaryDelay is how long after a write the canary checks
-// that rspamd loaded it.
+// 6.2); antispamCanaryDelay bounds the wait for a canary check, including
+// after writes made by reconciliation and after the load grace expires.
 const (
 	antispamIPMapInterval = 10 * time.Minute
 	antispamCanaryDelay   = 30 * time.Second
@@ -126,31 +126,39 @@ func (d *Daemon) withIPMap(r reconcile.Reconciler) reconcile.Reconciler {
 	d.antispamFeeds = r.Feeds
 	r.IPMap = reconcile.IPMapHooks{
 		Write: func(ctx context.Context) error {
+			d.ipmapMu.Lock()
+			defer d.ipmapMu.Unlock()
+			d.ipmapRemoved.Store(false)
 			_, err := d.writeIPMap(ctx, time.Now())
 			return err
 		},
-		Remove: w.Remove,
+		Remove: func() error {
+			d.ipmapMu.Lock()
+			defer d.ipmapMu.Unlock()
+			d.ipmapRemoved.Store(true)
+			return w.Remove()
+		},
 	}
 	return r
 }
 
 // antispamIPMapLoop refreshes the CSM IP map at start and every 10
-// minutes, and checks with the canary that rspamd uses it, again 30
-// seconds after each write (feeds spec 6.2, 8.4).
+// minutes. Independent canary checks cannot be hidden by a new write
+// resetting the load grace, and also see writes made by reconciliation.
 func (d *Daemon) antispamIPMapLoop(ctx context.Context) {
 	ticker := time.NewTicker(antispamIPMapInterval)
 	defer ticker.Stop()
-	var soon <-chan time.Time
-	for {
-		if d.refreshIPMap(ctx, time.Now()) {
-			soon = time.After(antispamCanaryDelay)
-		}
+	probe := time.NewTicker(antispamCanaryDelay)
+	defer probe.Stop()
+	d.refreshIPMap(ctx, time.Now())
+	for ctx.Err() == nil {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-		case <-soon:
-			soon = nil
+			d.refreshIPMap(ctx, time.Now())
+		case <-probe.C:
+			d.checkIPMap(ctx, time.Now(), false)
 		}
 	}
 }
@@ -162,6 +170,7 @@ func ipMapWanted(cfg *config.Config) bool {
 }
 
 // writeIPMap builds the map from CSM's sources and writes it if changed.
+// The caller holds ipmapMu so removal cannot overtake a pending write.
 func (d *Daemon) writeIPMap(ctx context.Context, now time.Time) (bool, error) {
 	return d.ipmapWriter.Load().Write(ipmap.Build(ipmapSources(now)), antispamRspamdGroup(ctx), now)
 }
@@ -170,11 +179,23 @@ func (d *Daemon) writeIPMap(ctx context.Context, now time.Time) (bool, error) {
 // while the rule is in use, and settles antispam_ip_map. It reports
 // whether it wrote a new map.
 func (d *Daemon) refreshIPMap(ctx context.Context, now time.Time) bool {
+	return d.checkIPMap(ctx, now, true)
+}
+
+func (d *Daemon) checkIPMap(ctx context.Context, now time.Time, rebuild bool) bool {
 	cfg := d.currentCfg()
+	if !rebuild && !ipMapWanted(cfg) {
+		// Only hosts configured for the map pay for the frequent canary
+		// tick; the 10-minute refresh settles the check everywhere else.
+		return false
+	}
+	d.ipmapMu.Lock()
 	var findings []alert.Finding
 	wrote := false
-	if ipMapWanted(cfg) {
-		wrote, _ = d.writeIPMap(ctx, now)
+	if ctx.Err() == nil && ipMapWanted(cfg) && !d.ipmapRemoved.Load() {
+		if rebuild {
+			wrote, _ = d.writeIPMap(ctx, now)
+		}
 		st := d.ipmapWriter.Load().State()
 		// Until the rule is in use only a write failure counts.
 		seen, probeErr := st.Gen, error(nil)
@@ -185,6 +206,7 @@ func (d *Daemon) refreshIPMap(ctx context.Context, now time.Time) bool {
 			findings = append(findings, reconcile.IPMapFinding(p, now))
 		}
 	}
+	d.ipmapMu.Unlock()
 	if ctx.Err() == nil {
 		d.processScanFindings(cfg, findings, []string{reconcile.CheckIPMap}, "antispam")
 	}

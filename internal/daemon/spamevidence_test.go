@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -111,5 +112,118 @@ func TestEximLogRecordsSpamEvidence(t *testing.T) {
 	d.handleEximLine(spamLine("198.51.100.72"), alert.Observation{}, cfg)
 	if rec := adb.LookupIP("198.51.100.72"); rec == nil || rec.Mail == nil || rec.Mail.Spam != 1 {
 		t.Fatalf("record after a spam scan: %+v", rec)
+	}
+}
+
+func TestSpamEvidenceWaitsForInitialIPMap(t *testing.T) {
+	d := newTestDaemon(t)
+	adb := useTestAttackDB(t)
+	prevPath := antispamIPMapPath
+	t.Cleanup(func() { antispamIPMapPath = prevPath })
+	antispamIPMapPath = filepath.Join(t.TempDir(), "csm_ip.map")
+	cfg := &config.Config{}
+	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, RejectScore: 15, TagScore: 6,
+		Feeds: config.AntispamFeedsConfig{Enabled: []string{antispam.FeedCSMIPMap}}}
+	line := strings.Replace(spamLine("198.51.100.73"), "score=200", "score=170", 1)
+	// A surviving rspamd map can supply enough score to cross the reject
+	// boundary before the daemon has reconstructed its own lookup.
+	d.recordSpamEvidence(line, time.Now(), cfg)
+	r := d.withIPMap(reconcile.Reconciler{})
+	d.recordSpamEvidence(line, time.Now(), cfg)
+	if rec := adb.LookupIP("198.51.100.73"); rec != nil {
+		t.Fatalf("unknown map weight became spam evidence: %+v", rec.Mail)
+	}
+	// Reconciliation can remove the rule while the feed remains configured,
+	// for example after a failed rule check. Its contribution is then zero.
+	if err := r.IPMap.Remove(); err != nil {
+		t.Fatal(err)
+	}
+	d.recordSpamEvidence(line, time.Now(), cfg)
+	if rec := adb.LookupIP("198.51.100.73"); rec == nil || rec.Mail.Spam != 1 {
+		t.Fatalf("evidence after removal was lost: %+v", rec)
+	}
+	// Without the local feed, evidence does not depend on a map writer.
+	cfg.EmailProtection.Antispam.Feeds.Enabled = nil
+	d.recordSpamEvidence(line, time.Now(), cfg)
+	if rec := adb.LookupIP("198.51.100.73"); rec == nil || rec.Mail.Spam != 2 {
+		t.Fatalf("independent spam evidence was lost: %+v", rec)
+	}
+}
+
+func TestRefreshIPMapDoesNotRecreateRemovedMap(t *testing.T) {
+	d, cfg, r := ipmapTestDaemon(t)
+	useActiveConfig(t, cfg)
+	if err := r.IPMap.Write(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.IPMap.Remove(); err != nil {
+		t.Fatal(err)
+	}
+	// A held feed remains configured even after its rule has been removed.
+	if d.refreshIPMap(context.Background(), time.Now()) {
+		t.Fatal("periodic refresh recreated a removed map")
+	}
+	if _, err := os.Stat(antispamIPMapPath); !os.IsNotExist(err) {
+		t.Fatalf("removed map exists: %v", err)
+	}
+}
+
+func ipmapTestDaemon(t *testing.T) (*Daemon, *config.Config, reconcile.Reconciler) {
+	t.Helper()
+	d := newTestDaemon(t)
+	prevPath, prevGroup := antispamIPMapPath, antispamRspamdGroup
+	t.Cleanup(func() { antispamIPMapPath, antispamRspamdGroup = prevPath, prevGroup })
+	antispamIPMapPath = filepath.Join(t.TempDir(), "csm_ip.map")
+	antispamRspamdGroup = func(context.Context) int { return os.Getgid() }
+	cfg := &config.Config{StatePath: d.cfg.StatePath}
+	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, RspamdSocket: testScanSocket, RejectScore: 15, TagScore: 6,
+		Feeds: config.AntispamFeedsConfig{Enabled: []string{antispam.FeedCSMIPMap}}}
+	return d, cfg, d.withIPMap(reconcile.Reconciler{})
+}
+
+func TestIPMapLoopChecksReconcileWritesWithoutRebuilding(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		d, cfg, r := ipmapTestDaemon(t)
+		useActiveConfig(t, cfg)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go d.antispamIPMapLoop(ctx)
+		synctest.Wait()
+		if err := r.IPMap.Remove(); err != nil {
+			t.Fatal(err)
+		}
+		calls := 0
+		antispamRspamdGroup = func(context.Context) int { calls++; return -1 }
+		if err := r.IPMap.Write(ctx); err == nil {
+			t.Fatal("unknown group did not fail the write")
+		}
+		time.Sleep(antispamCanaryDelay)
+		synctest.Wait()
+		if got := latestChecks(d)[reconcile.CheckIPMap]; got != 1 {
+			t.Fatalf("reconcile write failure not checked within the probe interval: %d findings", got)
+		}
+		if calls != 1 {
+			t.Fatalf("canary check rebuilt the map: %d group lookups", calls)
+		}
+		cancel()
+		synctest.Wait()
+	})
+}
+
+// The 30-second canary tick does nothing on hosts that do not use the map:
+// no store write every 30 seconds. The 10-minute refresh still settles
+// antispam_ip_map, so a finding left from an earlier configuration clears.
+func TestIPMapProbeIdlesWithoutTheMap(t *testing.T) {
+	d := newTestDaemon(t)
+	d.withIPMap(reconcile.Reconciler{})
+	useActiveConfig(t, &config.Config{StatePath: d.cfg.StatePath})
+	d.store.PurgeAndMergeFindings(nil, []alert.Finding{reconcile.IPMapFinding("stale", time.Now())})
+	d.checkIPMap(context.Background(), time.Now(), false)
+	if got := latestChecks(d)[reconcile.CheckIPMap]; got != 1 {
+		t.Fatalf("idle canary tick settled antispam_ip_map: %d findings", got)
+	}
+	d.refreshIPMap(context.Background(), time.Now())
+	if got := latestChecks(d)[reconcile.CheckIPMap]; got != 0 {
+		t.Fatalf("refresh kept a finding without the feed: %d", got)
 	}
 }

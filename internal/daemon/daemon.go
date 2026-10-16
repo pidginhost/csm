@@ -135,6 +135,10 @@ type Daemon struct {
 	// ipmapWriter writes the CSM IP map; the Exim log path reads its last
 	// map before startAntispam sets it, so it is atomic.
 	ipmapWriter atomic.Pointer[ipmap.Writer]
+	// ipmapMu orders refreshes with reconciliation's writes and removals.
+	// A removed map stays absent until reconciliation requests it again.
+	ipmapMu      sync.Mutex
+	ipmapRemoved atomic.Bool
 	// antispamFeeds is the reconcile loop's feed memory, which tells the IP
 	// map loop whether rspamd should answer the canary.
 	antispamFeeds *reconcile.FeedState

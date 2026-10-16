@@ -27,6 +27,7 @@ type Writer struct {
 	mu    sync.Mutex
 	last  Map
 	state State
+	file  os.FileInfo
 	gid   int
 }
 
@@ -35,11 +36,12 @@ func NewWriter(path string) *Writer {
 	return &Writer{Path: path, chown: func(p string, gid int) error { return os.Chown(p, -1, gid) }, syncDir: syncDirectory}
 }
 
-// Write replaces the map when its content or group changes, or it is missing.
-// Failures before rename keep the previous file and lookup. After rename,
-// wrote is true and the lookup follows the published file even if syncing
-// the directory fails; err then reports uncertain durability. gid is
-// rspamd's group; without it the file would be unreadable to rspamd.
+// Write replaces the map when its content, service group or file metadata no
+// longer match what it last wrote, or the file is missing. Failures before
+// rename keep the previous file and lookup. After rename, wrote is true and
+// the lookup follows the published file even if syncing the directory fails;
+// err then reports uncertain durability. gid is rspamd's group; without it
+// the file would be unreadable to rspamd.
 func (w *Writer) Write(m Map, gid int, now time.Time) (bool, error) {
 	content, gen := m.Render()
 	w.mu.Lock()
@@ -48,17 +50,19 @@ func (w *Writer) Write(m Map, gid int, now time.Time) (bool, error) {
 		w.state.Err = errors.New("rspamd's group is unknown")
 		return false, w.state.Err
 	}
-	if gen == w.state.Gen && gid == w.gid && w.state.Err == nil {
-		if _, err := os.Stat(w.Path); err == nil {
+	if gen == w.state.Gen && gid == w.gid && w.state.Err == nil && w.file != nil {
+		// Content alone does not prove the map is still present and readable
+		// after a package change or an operator replacing the file.
+		if info, err := os.Lstat(w.Path); err == nil && os.SameFile(info, w.file) &&
+			info.Mode() == w.file.Mode() && info.Size() == w.file.Size() && info.ModTime().Equal(w.file.ModTime()) {
 			return false, nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			w.state.Err = err
-			return false, err
 		}
 	}
 	wrote, err := w.replace(content, gid)
 	if wrote {
 		w.last, w.state, w.gid = m, State{Gen: gen, WrittenAt: now}, gid
+		// A lost stat only disables the no-op check on the next write.
+		w.file, _ = os.Lstat(w.Path)
 	}
 	w.state.Err = err
 	return wrote, err
@@ -127,5 +131,6 @@ func (w *Writer) Remove() error {
 		return err
 	}
 	w.last, w.state = Map{}, State{}
+	w.file = nil
 	return nil
 }

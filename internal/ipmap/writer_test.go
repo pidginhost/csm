@@ -225,3 +225,65 @@ func TestWriterConcurrentAccess(t *testing.T) {
 		t.Fatal("map and lookup disagree after concurrent access")
 	}
 }
+
+func TestWriterRepairsMissingMap(t *testing.T) {
+	w := testWriter(t)
+	m := Build(Sources{Entries: map[string][]string{Spam.Name: {"203.0.113.44"}}})
+	if _, err := w.Write(m, 974, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(w.Path); err != nil {
+		t.Fatal(err)
+	}
+	if wrote, err := w.Write(m, 974, now.Add(time.Minute)); !wrote || err != nil {
+		t.Fatalf("missing map was not rebuilt: wrote=%v err=%v", wrote, err)
+	}
+	want, _ := m.Render()
+	if got, err := os.ReadFile(w.Path); err != nil || string(got) != string(want) {
+		t.Fatalf("rebuilt map = %q, err=%v", got, err)
+	}
+}
+
+func TestWriterRevalidatesGroupForUnchangedContent(t *testing.T) {
+	w := testWriter(t)
+	m := Build(Sources{})
+	var groups []int
+	w.chown = func(_ string, gid int) error { groups = append(groups, gid); return nil }
+	if _, err := w.Write(m, 974, now); err != nil {
+		t.Fatal(err)
+	}
+	if wrote, err := w.Write(m, -1, now.Add(time.Minute)); wrote || err == nil || w.State().Err == nil {
+		t.Fatalf("unknown group was hidden by content cache: wrote=%v err=%v", wrote, err)
+	}
+	if _, err := w.Write(m, 974, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if wrote, err := w.Write(m, 975, now.Add(3*time.Minute)); !wrote || err != nil {
+		t.Fatalf("changed group was ignored: wrote=%v err=%v", wrote, err)
+	}
+	if groups[len(groups)-1] != 975 {
+		t.Fatalf("map groups = %v, want last group 975", groups)
+	}
+}
+
+// An operator or package change to the published file's mode makes rspamd
+// unable to read it; the next write restores it even with unchanged content.
+func TestWriterRepairsAChangedMode(t *testing.T) {
+	w := testWriter(t)
+	m := Build(Sources{Entries: map[string][]string{Spam.Name: {"203.0.113.45"}}})
+	if _, err := w.Write(m, 974, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(w.Path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if wrote, err := w.Write(m, 974, now.Add(time.Minute)); !wrote || err != nil {
+		t.Fatalf("changed mode was not repaired: wrote=%v err=%v", wrote, err)
+	}
+	if info, err := os.Stat(w.Path); err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("repaired map %v, %v", info, err)
+	}
+	if wrote, err := w.Write(m, 974, now.Add(2*time.Minute)); wrote || err != nil {
+		t.Fatalf("unchanged map rewritten after repair: wrote=%v err=%v", wrote, err)
+	}
+}

@@ -785,3 +785,48 @@ func ipMapFeedFacts() antispam.HostFacts {
 		Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}}
 	return f
 }
+
+func TestPassRemovesIPMapAfterPreconditionUninstall(t *testing.T) {
+	h := &fakeHost{
+		assessment: antispam.Assessment{Action: antispam.Uninstall, Installed: true,
+			Problems: []antispam.Problem{{Code: antispam.CodeSpamAssassin, Severity: antispam.Definite}}},
+		result: antispam.Result{Operation: antispam.OpRemove, OK: true},
+	}
+	r := h.reconciler()
+	r.Feeds = NewFeedState()
+	r.Feeds.setIPMapActive(true)
+	r.Collect = func(context.Context, string) antispam.HostFacts { return ipMapFeedFacts() }
+	removed := 0
+	r.IPMap.Remove = func() error { removed++; return nil }
+	r.Pass(context.Background(), feedDesired(antispam.FeedCSMIPMap))
+	if removed != 1 || r.Feeds.IPMapActive() {
+		t.Fatalf("successful uninstall left map: removals=%d active=%v", removed, r.Feeds.IPMapActive())
+	}
+}
+
+func TestPassReportsIPMapRemovalFailure(t *testing.T) {
+	r := (&fakeHost{}).reconciler()
+	boom := errors.New("map directory is read-only")
+	r.IPMap.Remove = func() error { return boom }
+	out := r.Pass(context.Background(), desired(false))
+	if !errors.Is(out.Err, boom) || len(out.Findings) != 1 || out.Findings[0].Check != CheckApplyFailed {
+		t.Fatalf("map removal failure was hidden: %+v", out)
+	}
+	r.IPMap.Remove = func() error { return nil }
+	if out = r.Pass(context.Background(), desired(false)); out.Err != nil || len(out.Findings) != 0 {
+		t.Fatalf("successful retry did not clear removal failure: %+v", out)
+	}
+}
+
+func TestPassDoesNotWriteHeldIPMap(t *testing.T) {
+	r := (&fakeHost{}).reconciler()
+	r.Feeds = NewFeedState()
+	d := feedDesired(antispam.FeedCSMIPMap)
+	r.Feeds.hold(d.Settings)
+	writes := 0
+	r.IPMap.Write = func(context.Context) error { writes++; return nil }
+	r.Pass(context.Background(), d)
+	if writes != 0 {
+		t.Fatalf("held map was recreated %d times", writes)
+	}
+}

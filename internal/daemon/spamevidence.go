@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -34,7 +35,15 @@ func (d *Daemon) recordSpamEvidence(line string, at time.Time, cfg *config.Confi
 		return
 	}
 	weight := func(netip.Addr) int { return 0 }
-	if w := d.ipmapWriter.Load(); w != nil {
+	w := d.ipmapWriter.Load()
+	removed := d.ipmapRemoved.Load()
+	if !removed && slices.Contains(cfg.EmailProtection.Antispam.Feeds.Enabled, antispam.FeedCSMIPMap) && (w == nil || w.State().Gen == "") {
+		// rspamd can retain a map across daemon restarts. Until its local
+		// lookup is rebuilt, treating the unknown contribution as zero
+		// would let the map reinforce its own spam evidence.
+		return
+	}
+	if w != nil && !removed {
 		weight = w.Weight
 	}
 	ip, v := spamEvidence(line, cfg.EmailProtection.Antispam, notRecordable, weight)
