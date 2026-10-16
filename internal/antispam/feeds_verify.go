@@ -8,18 +8,52 @@ import (
 	"sort"
 )
 
-// LoadedRBLRules reads `rspamadm configdump -j rbl` and returns its rbls
-// rule names, sorted.
+// LoadedRBLRules reads `rspamadm configdump -j rbl` and returns the rules
+// rspamd runs, sorted. rbl.lua merges the legacy rules key over rbls and
+// skips a rule that is not an object, has disabled = true or enabled =
+// false.
 func LoadedRBLRules(out []byte) ([]string, error) {
 	var dump struct {
-		RBLs map[string]json.RawMessage `json:"rbls"`
+		RBLs  map[string]json.RawMessage `json:"rbls"`
+		Rules map[string]json.RawMessage `json:"rules"`
 	}
 	if err := json.Unmarshal(out, &dump); err != nil || dump.RBLs == nil {
 		return nil, errors.New("configdump rbl has no rbls object")
 	}
-	names := make([]string, 0, len(dump.RBLs))
-	for name := range dump.RBLs {
-		names = append(names, name)
+	type state struct {
+		object            bool
+		enabled, disabled *bool
+	}
+	rules := make(map[string]state, len(dump.RBLs))
+	for _, set := range []map[string]json.RawMessage{dump.RBLs, dump.Rules} {
+		for name, raw := range set {
+			var fields struct {
+				Enabled  *bool `json:"enabled"`
+				Disabled *bool `json:"disabled"`
+			}
+			if len(raw) == 0 || raw[0] != '{' || json.Unmarshal(raw, &fields) != nil {
+				// A value of another shape replaces the rule and never runs.
+				rules[name] = state{}
+				continue
+			}
+			st := rules[name]
+			if !st.object {
+				st = state{object: true}
+			}
+			if fields.Enabled != nil {
+				st.enabled = fields.Enabled
+			}
+			if fields.Disabled != nil {
+				st.disabled = fields.Disabled
+			}
+			rules[name] = st
+		}
+	}
+	names := make([]string, 0, len(rules))
+	for name, st := range rules {
+		if st.object && (st.enabled == nil || *st.enabled) && (st.disabled == nil || !*st.disabled) {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
 	return names, nil
