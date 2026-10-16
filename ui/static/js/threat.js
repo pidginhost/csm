@@ -78,35 +78,20 @@ function attackerURLInputs(countrySel, fromEl, toEl) {
         q: document.getElementById('attackers-search'),
         country: countrySel,
         verdict: document.getElementById('attackers-verdict'),
-        spam: document.getElementById('attackers-spam'),
         from: fromEl,
         to: toEl
     };
 }
 
-// spamCell shows a sender's scan verdicts: counts, the spam score and a
-// badge once the score lists it in the CSM IP map (50).
+// A qualifying score alone does not prove the feed is active or the address
+// survives the IP map's exclusions.
 function spamCell(r) {
     var m = r.mail || {};
-    if (!m.spam && !m.ham) return '<td class="spam-cell">\u2014</td>';
+    if (!m.spam && !m.ham) return '<td class="spam-cell" data-sort="0">\u2014</td>';
     var score = r.spam_score || 0;
-    var html = '<td class="spam-cell text-nowrap small">' + (m.spam || 0) + ' spam, ' + (m.ham || 0) + ' ham, score ' + score;
-    if (score >= 50) html += ' <span class="badge bg-warning text-dark" title="Listed in the CSM IP map">Listed</span>';
+    var html = '<td class="spam-cell text-nowrap small" data-sort="' + score + '">' + (m.spam || 0) + ' spam, ' + (m.ham || 0) + ' ham, score ' + score;
+    if (score >= 50) html += ' <span class="badge bg-warning text-dark" title="Meets the CSM IP map spam score threshold; actual listing depends on the feed configuration and address exclusions">Listing threshold</span>';
     return html + '</td>';
-}
-
-// The spam filter is answered by the server: spam-only senders score 0 and
-// would never reach the top of the attacker list. The first load takes the
-// filter from the URL, before URL state is bound.
-var _attackerSpamFromURL = false;
-function attackerSpamOnly() {
-    var sel = document.getElementById('attackers-spam');
-    if (!sel) return false;
-    if (!_attackerSpamFromURL) {
-        _attackerSpamFromURL = true;
-        if (CSM.urlState.get('spam') === 'spam') sel.value = 'spam';
-    }
-    return sel.value === 'spam';
 }
 
 // Re-binding URL state on every re-render would stack listeners, so drop the
@@ -284,9 +269,10 @@ function loadThreatStats() {
 // Load top attackers
 function loadTopAttackers() {
     var seq = ++_attackersLoadSeq;
+    var spamOnly = attackerSpamSelect.value === 'spam';
     if (_attackersTable) { _attackersTable.destroy(); _attackersTable = null; }
     resetAttackerSelection();
-    CSM.get('/api/v1/threat/top-attackers?limit=50' + (attackerSpamOnly() ? '&spam_only=1' : '')).then(function(resp){
+    CSM.get('/api/v1/threat/top-attackers?limit=50' + (spamOnly ? '&spam_only=1' : '')).then(function(resp){
     var data = resp.items;
     if (seq !== _attackersLoadSeq) return;
     var tbody=document.getElementById('attackers-tbody');
@@ -295,7 +281,7 @@ function loadTopAttackers() {
     var countrySel = populateAttackerCountryFilter(data || []);
     if(!data||data.length===0){
         _threatAttackerData = [];
-        tbody.innerHTML='<tr><td colspan="12" class="text-center text-muted">No attack data recorded yet</td></tr>';
+        tbody.innerHTML='<tr><td colspan="12" class="text-center text-muted">'+(spamOnly ? 'No spam evidence recorded yet' : 'No attack data recorded yet')+'</td></tr>';
         _bindAttackerURLState(countrySel, fromEl, toEl);
         resetAttackerSelection();
         return;
@@ -396,10 +382,20 @@ function loadTopAttackers() {
 }).catch(function(err){ if (seq !== _attackersLoadSeq) return; console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody'), loadTopAttackers, { title: 'Failed to load top attackers', error: err }); });
 }
 
+// Bind the server filter before loading and keep that binding across renders.
+// Rebinding would cancel its pending URL write and restore the previous value.
+var attackerSpamSelect = document.getElementById('attackers-spam');
+CSM.urlState.bind({ inputs: { spam: attackerSpamSelect } });
+attackerSpamSelect.addEventListener('change', function() {
+    // Old rows must not be actionable or exported under a new server filter.
+    _threatAttackerData = [];
+    document.getElementById('attackers-tbody').innerHTML = '<tr><td colspan="12" class="text-center text-muted">Loading...</td></tr>';
+    loadTopAttackers();
+});
+
 // Initial load (re-run in place after bulk block/whitelist).
 loadThreatStats();
 loadTopAttackers();
-document.getElementById('attackers-spam').addEventListener('change', loadTopAttackers);
 if (CSM.refresh) CSM.refresh.onRefresh(function() {
     loadThreatStats();
     loadTopAttackers();
