@@ -53,12 +53,13 @@ func OptionalUsable(t TargetFacts) error {
 const SecretFileMode fs.FileMode = 0o640
 
 // secretFileOK reports whether override.d/rbl.conf is root-owned, in
-// rspamd's group and mode SecretFileMode.
+// rspamd's group and exactly mode SecretFileMode, without set-id or sticky
+// bits.
 func secretFileOK(f HostFacts) bool {
 	for _, t := range f.Targets {
 		if t.Path == FeedRBLPath {
 			return t.Err == nil && !t.Missing && t.File.UID == 0 && f.RspamdGID >= 0 &&
-				t.File.GID == f.RspamdGID && t.File.Mode.Perm() == SecretFileMode
+				t.File.GID == f.RspamdGID && t.File.Mode == SecretFileMode
 		}
 	}
 	return false

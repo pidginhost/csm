@@ -247,7 +247,7 @@ func secureSecret(changes []change, targets []antispam.TargetFacts, gid int) []c
 	}
 	for _, t := range targets {
 		if t.Path == antispam.FeedRBLPath && !t.Missing &&
-			(t.File.GID != gid || t.File.Mode.Perm() != antispam.SecretFileMode) {
+			(t.File.GID != gid || t.File.Mode != antispam.SecretFileMode) {
 			return append(changes, change{t, meta(t.Content)})
 		}
 	}
@@ -643,9 +643,17 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 		}
 		w := t.writes[i]
 		before := w.before
-		// Surviving files keep later owner and mode changes. Only a
-		// deleted file needs its snapshot metadata reinstated.
-		if w.next.exists {
+		switch {
+		case w.path == t.h.path(antispam.FeedRBLPath):
+			// Rollback can put the DQS key back into this file, so it never
+			// keeps a mode someone loosened meanwhile: it gets the private
+			// metadata this apply wrote, or the snapshot's.
+			if w.next.metadata {
+				before.uid, before.gid, before.perm = w.next.uid, w.next.gid, w.next.perm
+			}
+		case w.next.exists:
+			// Other surviving files keep later owner and mode changes. Only
+			// a deleted file needs its snapshot metadata reinstated.
 			before.metadata = false
 		}
 		if err := t.h.replace(w.path, w.next, before); err != nil {
