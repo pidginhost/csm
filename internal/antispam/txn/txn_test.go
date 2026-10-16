@@ -31,7 +31,9 @@ type fakeHost struct {
 	// rbl replaces the configdump of the rbl module ({"rbls":{}} by
 	// default) and modules the module list when set.
 	rbl, modules string
-	problems     []antispam.Problem
+	// key is the DQS key file preflight reports.
+	key      antispam.KeyFacts
+	problems []antispam.Problem
 	// pingFail and greetFail list the 1-based probe calls that fail.
 	pingFail, greetFail []int
 	pings, greets       int
@@ -57,7 +59,8 @@ type call struct {
 
 func newFake(t *testing.T) *fakeHost {
 	t.Helper()
-	f := &fakeHost{t: t, root: t.TempDir(), start: time.Now(), fail: map[string][]int{}, seen: map[string]int{}}
+	f := &fakeHost{t: t, root: t.TempDir(), start: time.Now(), fail: map[string][]int{}, seen: map[string]int{},
+		key: antispam.KeyFacts{Path: "/etc/csm/k", UID: 0, Mode: 0o600, Key: antispam.NewSecret("abcdefghijklmnopqrstu23456")}}
 	for _, dir := range []string{antispam.RspamdLocalDir, antispam.RspamdOverrideDir, "/var/lib/csm"} {
 		if err := os.MkdirAll(f.root+dir, 0o755); err != nil {
 			t.Fatal(err)
@@ -97,7 +100,7 @@ func (f *fakeHost) host() *Host {
 		run:     f.run,
 		replace: replaceFile,
 		preflight: func(context.Context, antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
-			return antispam.HostFacts{Targets: snapshot(), RspamdGID: os.Getgid()}, f.problems
+			return antispam.HostFacts{Targets: snapshot(), RspamdGID: os.Getgid(), DQSKey: f.key}, f.problems
 		},
 		targets: snapshot,
 		ping: func(context.Context, string) error {
@@ -772,7 +775,7 @@ func TestApplyFixesSecretFileModeWithoutContentChange(t *testing.T) {
 	f.modules = "Modules enabled: dkim, spf, rbl\n"
 	f.rbl = `{"rbls":{"csm_dqs_zen":{},"csm_dqs_dbl":{},"csm_dqs_zrd":{}}}`
 	s := enforce()
-	s.Feeds, s.DQSKeyFile, s.DQSKey = []string{antispam.FeedSpamhausDQS}, "/etc/csm/k", antispam.NewSecret("abcdefghijklmnopqrstu23456")
+	s.Feeds, s.DQSKeyFile = []string{antispam.FeedSpamhausDQS}, "/etc/csm/k"
 	wantOK(t, f.host().Apply(s))
 	p := f.root + antispam.FeedRBLPath
 	if info, _ := os.Stat(p); info.Mode().Perm() != antispam.SecretFileMode {
@@ -785,5 +788,33 @@ func TestApplyFixesSecretFileModeWithoutContentChange(t *testing.T) {
 	wantOK(t, f.host().Apply(s))
 	if info, _ := os.Stat(p); info.Mode().Perm() != antispam.SecretFileMode {
 		t.Fatalf("mode not restored: %v", info.Mode().Perm())
+	}
+}
+
+func TestApplyLoadsTheDQSKey(t *testing.T) {
+	dqs := func() antispam.Settings {
+		s := enforce()
+		s.Feeds, s.DQSKeyFile = []string{antispam.FeedSpamhausDQS}, "/etc/csm/k"
+		return s
+	}
+	f := newFake(t)
+	f.modules = "Modules enabled: dkim, spf, rbl\n"
+	f.rbl = `{"rbls":{"csm_dqs_zen":{},"csm_dqs_dbl":{},"csm_dqs_zrd":{}}}`
+	wantOK(t, f.host().Apply(dqs()))
+	if got := f.file(antispam.FeedRBLPath); !strings.Contains(got, "abcdefghijklmnopqrstu23456.zen.dq.spamhaus.net") {
+		t.Fatal("override.d/rbl.conf lacks the key")
+	}
+
+	f = newFake(t)
+	f.key.UID = 1000
+	r := f.host().Apply(dqs())
+	if r.OK || r.FailedStep != StepPreconditions || strings.Contains(r.Error, "abcdefghijklmnopqrstu23456") {
+		t.Fatalf("result %+v", r)
+	}
+	if got := f.file(antispam.FeedRBLPath); got != "<absent>" {
+		t.Fatal("rbl override written with a key file not owned by root")
+	}
+	if got := f.file(antispam.RspamdLocalDir + "/actions.conf"); got != "<absent>" {
+		t.Fatal("apply wrote core files after refusing the key")
 	}
 }

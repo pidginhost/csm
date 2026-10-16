@@ -67,6 +67,9 @@ func New() *Host {
 		replace: replaceFile,
 		preflight: func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
 			f := hostfacts.Collect(ctx, s.Socket)
+			if s.HasFeed(antispam.FeedSpamhausDQS) {
+				f.DQSKey = hostfacts.ReadDQSKey(s.DQSKeyFile)
+			}
 			return f, antispam.CheckHost(f)
 		},
 		targets: func() []antispam.TargetFacts { return hostfacts.Targets(antispam.MutationTargets()) },

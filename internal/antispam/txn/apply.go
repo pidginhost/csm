@@ -25,6 +25,13 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	if err := blocking(problems); err != nil {
 		return failed(StepPreconditions, err)
 	}
+	if s.HasFeed(antispam.FeedSpamhausDQS) {
+		key, err := antispam.LoadDQSKey(f.DQSKey)
+		if err != nil {
+			return failed(StepPreconditions, err)
+		}
+		s.DQSKey = key
+	}
 	installed := antispam.InstalledContent(f.Targets)
 	rollbackSocket := s.Socket
 	// An update can select a new socket. Rollback must probe the scanner

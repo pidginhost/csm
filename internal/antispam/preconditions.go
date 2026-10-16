@@ -118,6 +118,17 @@ type HostFacts struct {
 	// RspamdPhishing is `rspamadm configdump -j phishing`, compared the same
 	// way.
 	RspamdPhishing CommandResult
+	// RspamdRBL is `rspamadm configdump -j rbl`, compared with CSM's feeds.
+	RspamdRBL CommandResult
+	// RspamdConfig is `rspamadm configdump -j`, read for rspamd.com paths.
+	RspamdConfig CommandResult
+	// ResolvConf is /etc/resolv.conf: rspamd's nameservers unless
+	// options.dns.nameserver is set.
+	ResolvConf    string
+	ResolvConfErr error
+	// DQSKey is the Spamhaus DQS key file. Collect leaves it unset; the
+	// caller reads it only when spamhaus_dqs is enabled.
+	DQSKey KeyFacts
 	// Record is CSM's completion record as found on disk.
 	Record RecordFacts
 	// MonitoredLog is the Exim main log CSM reads markers from.

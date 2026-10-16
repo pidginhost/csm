@@ -51,13 +51,15 @@ func testCollector(d string, run *fakeRun) collector {
 			SpamdDisabled: filepath.Join(d, "spamddisable"),
 			GlobalEnable:  filepath.Join(d, "global_spamassassin_enable"),
 			Record:        filepath.Join(d, "installed.json"),
+			ResolvConf:    filepath.Join(d, "resolv.conf"),
 		},
-		cpanel:   func() bool { return true },
-		eximMTA:  func() bool { return true },
-		run:      run.run,
-		lookPath: func(string) (string, error) { return "/usr/bin/systemd-run", nil },
-		uid:      lookup(map[string]int{"_rspamd": 979, "mailnull": 47}),
-		gid:      lookup(map[string]int{"mail": 12}),
+		cpanel:     func() bool { return true },
+		eximMTA:    func() bool { return true },
+		run:        run.run,
+		lookPath:   func(string) (string, error) { return "/usr/bin/systemd-run", nil },
+		uid:        lookup(map[string]int{"_rspamd": 979, "mailnull": 47}),
+		gid:        lookup(map[string]int{"mail": 12}),
+		primaryGID: lookup(map[string]int{"_rspamd": 974}),
 	}
 }
 
@@ -82,8 +84,8 @@ func TestCollectReadsEveryFact(t *testing.T) {
 		"rspamd --version":               {Stdout: "Rspamd daemon version 4.2.1\n"},
 		"rspamadm --version":             {Stdout: "Rspamadm 4.2.1\n"},
 		"rspamadm configdump -j options": {Stdout: `{"max_message": 62914560}`},
-		"systemctl show -p LoadState -p User -p CanReload rspamd.service": {Stdout: "User=_rspamd\nLoadState=loaded\nCanReload=yes\n"},
-		"systemctl show -p LoadState -p User -p CanReload exim.service":   {Stdout: "User=\nLoadState=loaded\nCanReload=yes\n"},
+		"systemctl show -p LoadState -p User -p Group -p CanReload rspamd.service": {Stdout: "User=_rspamd\nLoadState=loaded\nCanReload=yes\n"},
+		"systemctl show -p LoadState -p User -p Group -p CanReload exim.service":   {Stdout: "User=\nLoadState=loaded\nCanReload=yes\n"},
 	}
 	for i, probe := range antispam.NamedListProbes() {
 		results["exim -C "+conf+" -be "+probe] = antispam.CommandResult{Stdout: fmt.Sprintf("probe %d\n", i)}
@@ -141,8 +143,9 @@ func TestCollectReadsEveryFact(t *testing.T) {
 	}
 	want = append(want, "rspamd --version", "rspamadm --version", "rspamadm configdump -j options",
 		"rspamadm configdump -j actions", "rspamadm configdump -m", "rspamadm configdump -j phishing",
-		"systemctl show -p LoadState -p User -p CanReload rspamd.service",
-		"systemctl show -p LoadState -p User -p CanReload exim.service")
+		"rspamadm configdump -j rbl", "rspamadm configdump -j",
+		"systemctl show -p LoadState -p User -p Group -p CanReload rspamd.service",
+		"systemctl show -p LoadState -p User -p Group -p CanReload exim.service")
 	if !slices.Equal(run.calls, want) {
 		t.Errorf("commands\n got %q\nwant %q", run.calls, want)
 	}
@@ -567,6 +570,44 @@ func TestCollectKeepsRspamdStateErrors(t *testing.T) {
 	for name, got := range map[string]antispam.CommandResult{"actions": f.RspamdActions, "modules": f.RspamdModules, "phishing": f.RspamdPhishing} {
 		if got.Stdout != want.Stdout || got.Stderr != want.Stderr || !errors.Is(got.Err, boom) {
 			t.Errorf("%s = %+v, want %+v", name, got, want)
+		}
+	}
+}
+
+func TestCollectReadsFeedFacts(t *testing.T) {
+	d := t.TempDir()
+	write(t, filepath.Join(d, "resolv.conf"), "nameserver 127.0.0.1\n")
+	run := &fakeRun{results: map[string]antispam.CommandResult{
+		"rspamadm configdump -j rbl": {Stdout: `{"rbls":{}}`},
+		"rspamadm configdump -j":     {Stdout: `{"multimap":{}}`},
+		"systemctl show -p LoadState -p User -p Group -p CanReload rspamd.service": {Stdout: "LoadState=loaded\nUser=_rspamd\nGroup=\nCanReload=yes\n"},
+	}}
+	f := testCollector(d, run).collect(context.Background(), filepath.Join(d, "sock"))
+	if f.ResolvConf != "nameserver 127.0.0.1\n" || f.ResolvConfErr != nil {
+		t.Fatalf("resolv.conf = %q, %v", f.ResolvConf, f.ResolvConfErr)
+	}
+	if f.RspamdRBL.Stdout != `{"rbls":{}}` || f.RspamdConfig.Stdout != `{"multimap":{}}` {
+		t.Fatalf("configdumps = %+v, %+v", f.RspamdRBL, f.RspamdConfig)
+	}
+	if f.RspamdGID != 974 {
+		t.Fatalf("RspamdGID = %d, want the user's primary group", f.RspamdGID)
+	}
+}
+
+func TestServiceGroupPrefersUnitGroup(t *testing.T) {
+	c := testCollector(t.TempDir(), &fakeRun{})
+	c.gid = lookup(map[string]int{"mail": 12, "rspamdgrp": 900})
+	for _, tc := range []struct {
+		show string
+		want int
+	}{
+		{"LoadState=loaded\nUser=_rspamd\nGroup=rspamdgrp\n", 900},
+		{"LoadState=loaded\nUser=_rspamd\nGroup=\n", 974},
+		{"LoadState=loaded\nUser=\nGroup=\n", -1},
+		{"LoadState=not-found\n", -1},
+	} {
+		if got := c.serviceGroup(antispam.CommandResult{Stdout: tc.show}); got != tc.want {
+			t.Errorf("%q = %d, want %d", tc.show, got, tc.want)
 		}
 	}
 }

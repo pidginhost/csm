@@ -34,6 +34,7 @@ type Layout struct {
 	SpamdDisabled string
 	GlobalEnable  string
 	Record        string
+	ResolvConf    string
 	Targets       []antispam.Target
 }
 
@@ -45,6 +46,8 @@ type collector struct {
 	lookPath func(string) (string, error)
 	uid      func(name string) (int, error)
 	gid      func(name string) (int, error)
+	// primaryGID is a user's primary group.
+	primaryGID func(user string) (int, error)
 }
 
 func live() collector {
@@ -55,14 +58,16 @@ func live() collector {
 			SpamdDisabled: "/etc/spamddisable",
 			GlobalEnable:  "/etc/global_spamassassin_enable",
 			Record:        antispam.RecordPath,
+			ResolvConf:    "/etc/resolv.conf",
 			Targets:       antispam.MutationTargets(),
 		},
-		cpanel:   func() bool { return platform.Detect().IsCPanel() },
-		eximMTA:  func() bool { return platform.DetectMTA() == platform.MTAExim },
-		run:      runCommand,
-		lookPath: exec.LookPath,
-		uid:      lookupUID,
-		gid:      lookupGID,
+		cpanel:     func() bool { return platform.Detect().IsCPanel() },
+		eximMTA:    func() bool { return platform.DetectMTA() == platform.MTAExim },
+		run:        runCommand,
+		lookPath:   exec.LookPath,
+		uid:        lookupUID,
+		gid:        lookupGID,
+		primaryGID: lookupPrimaryGID,
 	}
 }
 
@@ -86,6 +91,8 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	f.RspamdActions = c.run(ctx, "rspamadm", "configdump", "-j", "actions")
 	f.RspamdModules = c.run(ctx, "rspamadm", "configdump", "-m")
 	f.RspamdPhishing = c.run(ctx, "rspamadm", "configdump", "-j", "phishing")
+	f.RspamdRBL = c.run(ctx, "rspamadm", "configdump", "-j", "rbl")
+	f.RspamdConfig = c.run(ctx, "rspamadm", "configdump", "-j")
 	f.RspamdService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...)
 	f.EximService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.EximUnit)...)
 	_, f.SystemdRunErr = c.lookPath("systemd-run")
@@ -96,6 +103,7 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	}
 	f.SpamdDisabled, f.SpamdDisabledErr = exists(c.layout.SpamdDisabled)
 	f.GlobalEnable, f.GlobalEnableErr = exists(c.layout.GlobalEnable)
+	f.ResolvConf, f.ResolvConfErr = readText(c.layout.ResolvConf)
 
 	settings := map[string]string{}
 	if f.EximSettings.Err == nil {
@@ -117,6 +125,7 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 
 	f.Socket = socketFacts(ctx, socket)
 	f.Socket.RspamdUID = c.serviceUser(f.RspamdService)
+	f.RspamdGID = c.serviceGroup(f.RspamdService)
 	f.Socket.EximUID = id(settings["exim_user"], c.uid)
 	f.Socket.EximGID = id(settings["exim_group"], c.gid)
 	return f
@@ -158,6 +167,33 @@ func (c collector) serviceUser(show antispam.CommandResult) int {
 		return -1
 	}
 	return uid
+}
+
+// serviceGroup returns the rspamd service's group: the unit's Group, else
+// the primary group of its User, else -1.
+func (c collector) serviceGroup(show antispam.CommandResult) int {
+	props := antispam.ParseUnitShow(show.Stdout)
+	if show.Err != nil || props["LoadState"] != "loaded" {
+		return -1
+	}
+	if g := props["Group"]; g != "" {
+		return id(g, c.gid)
+	}
+	if u := props["User"]; u != "" {
+		return id(u, c.primaryGID)
+	}
+	return -1
+}
+
+func lookupPrimaryGID(name string) (int, error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		u, err = user.LookupId(name)
+	}
+	if err != nil {
+		return -1, err
+	}
+	return strconv.Atoi(u.Gid)
 }
 
 // id resolves a user or group given by name or number, or returns -1.
