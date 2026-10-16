@@ -33,7 +33,8 @@ func goodFeedFacts() antispam.HostFacts {
 			Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}})
 	}
 	return antispam.HostFacts{Targets: targets, RspamdOptions: antispam.CommandResult{Stdout: `{"dns":{}}`},
-		ResolvConf: "nameserver 127.0.0.1\n", RspamdGID: 974}
+		RspamdVersion: antispam.CommandResult{Stdout: "Rspamd daemon version 4.2.2\n"},
+		ResolvConf:    "nameserver 127.0.0.1\n", RspamdGID: 974}
 }
 
 func TestPassSendsResolvedFeeds(t *testing.T) {

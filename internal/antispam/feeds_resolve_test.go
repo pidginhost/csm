@@ -184,6 +184,7 @@ func feedFacts() HostFacts {
 	return HostFacts{
 		Targets:       targets,
 		RspamdOptions: CommandResult{Stdout: `{"dns":{}}`},
+		RspamdVersion: CommandResult{Stdout: "Rspamd daemon version 4.2.2\n"},
 		ResolvConf:    "nameserver 127.0.0.1\n",
 		RspamdGID:     974,
 		DQSKey:        KeyFacts{Path: "/etc/csm/k", UID: 0, Mode: 0o600, Key: NewSecret(testKey)},
@@ -332,5 +333,33 @@ func TestResolveFeedsDropsDQSWhileRspamdLogIsReadable(t *testing.T) {
 	f.RspamdLog.File.Mode = 0o640
 	if got, problems := ResolveFeeds(dqsSettings(), f); !got.HasFeed(FeedSpamhausDQS) || len(problems) != 0 {
 		t.Fatalf("private log: got %+v, problems %+v", got, problems)
+	}
+}
+
+// Feed files and map redirects were verified on rspamd 4; below that CSM
+// leaves rspamd's own maps and lists alone rather than risk a rejected
+// configuration that would block core.
+func TestResolveFeedsNeedsRspamd4(t *testing.T) {
+	for _, version := range []CommandResult{
+		{Stdout: "Rspamd daemon version 3.8.4\n"},
+		{Stdout: "nonsense\n"},
+		{Err: errors.New("exit status 1")},
+	} {
+		f := feedFacts()
+		f.RspamdVersion = version
+		got, problems := ResolveFeeds(dqsSettings(), f)
+		if len(got.DNSFeeds()) != 0 || got.Redirects() || got.DQSKey.Reveal() != "" {
+			t.Errorf("%+v: got %+v", version, got)
+		}
+		keys := map[string]bool{}
+		for _, p := range problems {
+			keys[p.Key] = true
+		}
+		if !keys[FeedPSBL] || !keys[FeedSpamhausDQS] || !keys[FeedRspamdMaps] {
+			t.Errorf("%+v: problems %+v", version, problems)
+		}
+	}
+	if got, problems := ResolveFeeds(defaults(false), feedFacts()); !got.Redirects() || len(problems) != 0 {
+		t.Fatalf("rspamd 4: got %+v, problems %+v", got, problems)
 	}
 }

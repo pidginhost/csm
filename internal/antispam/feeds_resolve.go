@@ -198,6 +198,9 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 	// Dropping a temporarily unusable feed must not alter the desired settings
 	// that callers retain for the next pass.
 	s.Feeds = slices.Clone(s.Feeds)
+	if ok, why := feedsSupported(f.RspamdVersion); !ok {
+		return withoutFeeds(s, why)
+	}
 	var problems []Problem
 	targets := make(map[string]TargetFacts, len(f.Targets))
 	for _, t := range f.Targets {
@@ -307,4 +310,47 @@ func (l LogFacts) Exposed() (bool, string) {
 		return true, "rspamd's log " + l.Path + " is readable by other users"
 	}
 	return false, ""
+}
+
+// minFeedsRspamdMajor is the rspamd release CSM's feed files and map
+// redirects were verified on.
+const minFeedsRspamdMajor = 4
+
+// feedsSupported reports whether rspamd is recent enough for feed files
+// and map redirects, and why not.
+func feedsSupported(version CommandResult) (bool, string) {
+	if version.Err != nil {
+		return false, "rspamd's version is unknown"
+	}
+	v, major, err := ParseRspamdVersion(version.Stdout)
+	switch {
+	case err != nil:
+		return false, "rspamd's version is unknown"
+	case major < minFeedsRspamdMajor:
+		return false, "rspamd " + v + " is older than 4"
+	}
+	return true, ""
+}
+
+// withoutFeeds leaves rspamd's own lists and maps alone, as rspamd_maps
+// does, rather than risk files rspamd rejects, which would block core.
+func withoutFeeds(s Settings, why string) (Settings, []Problem) {
+	var problems []Problem
+	for _, feed := range s.DNSFeeds() {
+		problems = append(problems, Problem{Code: CodeFeed, Severity: Warning, Key: feed.Name,
+			Detail: "feed " + feed.Name + " is off: " + why + "; CSM's feed rules need rspamd 4 or later"})
+	}
+	if s.Redirects() {
+		problems = append(problems, Problem{Code: CodeFeed, Severity: Warning, Key: FeedRspamdMaps,
+			Detail: why + ", so CSM leaves rspamd's own maps alone and they keep downloading from rspamd.com; upgrade rspamd to 4 or later"})
+	}
+	s.Feeds = slices.DeleteFunc(slices.Clone(s.Feeds), func(name string) bool {
+		f, _ := FeedByName(name)
+		return f.DNS()
+	})
+	if !s.HasFeed(FeedRspamdMaps) {
+		s.Feeds = append(s.Feeds, FeedRspamdMaps)
+	}
+	s.SkipMaps, s.DQSKey = nil, Secret{}
+	return s, problems
 }
