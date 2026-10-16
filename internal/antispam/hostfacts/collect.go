@@ -170,19 +170,17 @@ func (c collector) serviceUser(show antispam.CommandResult) int {
 }
 
 // serviceGroup returns the rspamd service's group: the unit's Group, else
-// the primary group of its User, else -1.
+// the primary group of its User, else -1. A root-started rspamd drops to a
+// user and group of its own choosing, so its group is unknown.
 func (c collector) serviceGroup(show antispam.CommandResult) int {
-	props := antispam.ParseUnitShow(show.Stdout)
-	if show.Err != nil || props["LoadState"] != "loaded" {
+	if c.serviceUser(show) < 0 {
 		return -1
 	}
+	props := antispam.ParseUnitShow(show.Stdout)
 	if g := props["Group"]; g != "" {
 		return id(g, c.gid)
 	}
-	if u := props["User"]; u != "" {
-		return id(u, c.primaryGID)
-	}
-	return -1
+	return id(props["User"], c.primaryGID)
 }
 
 func lookupPrimaryGID(name string) (int, error) {

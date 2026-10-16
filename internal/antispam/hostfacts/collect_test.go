@@ -604,6 +604,9 @@ func TestServiceGroupPrefersUnitGroup(t *testing.T) {
 		{"LoadState=loaded\nUser=_rspamd\nGroup=rspamdgrp\n", 900},
 		{"LoadState=loaded\nUser=_rspamd\nGroup=\n", 974},
 		{"LoadState=loaded\nUser=\nGroup=\n", -1},
+		// A root-started rspamd drops to a user and group the unit does not show.
+		{"LoadState=loaded\nUser=0\nGroup=\n", -1},
+		{"LoadState=loaded\nUser=0\nGroup=mail\n", -1},
 		{"LoadState=not-found\n", -1},
 	} {
 		if got := c.serviceGroup(antispam.CommandResult{Stdout: tc.show}); got != tc.want {
