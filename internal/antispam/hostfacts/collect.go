@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -37,6 +38,8 @@ type Layout struct {
 	Record        string
 	ResolvConf    string
 	Targets       []antispam.Target
+	// IPMap is the CSM IP map file rspamd reads.
+	IPMap string
 }
 
 type collector struct {
@@ -61,6 +64,7 @@ func live() collector {
 			Record:        antispam.RecordPath,
 			ResolvConf:    "/etc/resolv.conf",
 			Targets:       antispam.MutationTargets(),
+			IPMap:         ipmap.DefaultPath,
 		},
 		cpanel:     func() bool { return platform.Detect().IsCPanel() },
 		eximMTA:    func() bool { return platform.DetectMTA() == platform.MTAExim },
@@ -95,6 +99,7 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	f.RspamdRBL = c.run(ctx, "rspamadm", "configdump", "-j", "rbl")
 	f.RspamdConfig = c.run(ctx, "rspamadm", "configdump", "-j")
 	f.RspamdLog = rspamdLog(f.RspamdConfig)
+	f.IPMap = fileFacts(c.layout.IPMap)
 	f.RspamdService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...)
 	f.EximService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.EximUnit)...)
 	_, f.SystemdRunErr = c.lookPath("systemd-run")
@@ -341,4 +346,16 @@ func rspamdLog(dump antispam.CommandResult) antispam.LogFacts {
 		out.File = facts
 	}
 	return out
+}
+
+// fileFacts lstats p without following a final link.
+func fileFacts(p string) antispam.FileFacts {
+	switch facts, err := pathFacts(p); {
+	case errors.Is(err, fs.ErrNotExist):
+		return antispam.FileFacts{Missing: true}
+	case err != nil:
+		return antispam.FileFacts{Err: err}
+	default:
+		return antispam.FileFacts{File: facts}
+	}
 }

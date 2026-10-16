@@ -288,3 +288,29 @@ func TestRenderFeedsDQSDisablesMonitoring(t *testing.T) {
 		t.Error("free lists keep rspamd's monitoring")
 	}
 }
+
+func TestRenderFeedsIPMapRule(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedCSMIPMap}
+	files, err := RenderFeeds(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mm := files[RedirectPath(RedirectMultimap)]
+	rule := "CSM_IP {\n  type = \"ip\";\n  map = \"/var/lib/csm-rspamd/csm_ip.map\";\n" +
+		"  symbols = [\"CSM_IP_DROP\", \"CSM_IP_BLOCKED\", \"CSM_IP_MAIL_AUTH\", \"CSM_IP_SPAM\", \"CSM_IP_BLOCKLISTDE\", \"CSM_IP_CINS\", \"CSM_IP_CANARY\"];\n" +
+		"  score = 5.0;\n  description = \"CSM IP map\";\n}\n"
+	if !strings.HasPrefix(mm, ManagedHeader+"\nredirector {") || !strings.HasSuffix(mm, rule) {
+		t.Fatalf("multimap.conf =\n%s", mm)
+	}
+	s.Feeds = []string{FeedCSMIPMap, FeedRspamdMaps}
+	files, _ = RenderFeeds(s)
+	if got := files[RedirectPath(RedirectMultimap)]; got != ManagedHeader+"\n"+rule {
+		t.Fatalf("with rspamd_maps the file holds only the rule:\n%s", got)
+	}
+	s.Feeds = nil
+	files, _ = RenderFeeds(s)
+	if strings.Contains(files[RedirectPath(RedirectMultimap)], "CSM_IP") {
+		t.Fatal("rule rendered without the feed")
+	}
+}

@@ -264,6 +264,16 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 			drop(dns, reason)
 		}
 	}
+	if s.HasFeed(FeedCSMIPMap) {
+		switch err := usable(RedirectPath(RedirectMultimap)); {
+		case err != nil:
+			drop([]string{FeedCSMIPMap}, err.Error())
+		case f.RspamdGID < 0:
+			drop([]string{FeedCSMIPMap}, "rspamd's group is unknown, so CSM cannot make the IP map readable by rspamd only")
+		case f.IPMap.Missing || f.IPMap.Err != nil:
+			drop([]string{FeedCSMIPMap}, "CSM has not written the IP map yet")
+		}
+	}
 	if s.HasFeed(FeedSpamhausDQS) {
 		key, err := LoadDQSKey(f.DQSKey)
 		exposed, why := f.RspamdLog.Exposed(f.Socket.RspamdUID, f.RspamdGID)
@@ -283,6 +293,14 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 		s.DQSKey = Secret{}
 	}
 	return s, problems
+}
+
+// FileFacts is one file as the collector found it; File is set unless
+// Missing or Err.
+type FileFacts struct {
+	Missing bool
+	File    PathFacts
+	Err     error
 }
 
 // LogFacts is rspamd's log destination as the collector found it. Type is
@@ -365,13 +383,17 @@ func withoutFeeds(s Settings, why string) (Settings, []Problem) {
 		problems = append(problems, Problem{Code: CodeFeed, Severity: Warning, Key: feed.Name,
 			Detail: "feed " + feed.Name + " is off: " + why + "; CSM's feed rules need rspamd 4 or later"})
 	}
+	if s.HasFeed(FeedCSMIPMap) {
+		problems = append(problems, Problem{Code: CodeFeed, Severity: Warning, Key: FeedCSMIPMap,
+			Detail: "feed " + FeedCSMIPMap + " is off: " + why + "; CSM's feed rules need rspamd 4 or later"})
+	}
 	if s.Redirects() {
 		problems = append(problems, Problem{Code: CodeFeed, Severity: Warning, Key: FeedRspamdMaps,
 			Detail: why + ", so CSM leaves rspamd's own maps alone and they keep downloading from rspamd.com; upgrade rspamd to 4 or later"})
 	}
 	s.Feeds = slices.DeleteFunc(slices.Clone(s.Feeds), func(name string) bool {
 		f, _ := FeedByName(name)
-		return f.DNS()
+		return f.DNS() || name == FeedCSMIPMap
 	})
 	if !s.HasFeed(FeedRspamdMaps) {
 		s.Feeds = append(s.Feeds, FeedRspamdMaps)

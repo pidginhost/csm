@@ -136,6 +136,8 @@ type HostFacts struct {
 	// RspamdLog is where rspamd writes its log, which can hold DQS lookup
 	// names.
 	RspamdLog LogFacts
+	// IPMap is the CSM IP map file rspamd reads (feeds spec 6).
+	IPMap FileFacts
 	// Record is CSM's completion record as found on disk.
 	Record RecordFacts
 	// MonitoredLog is the Exim main log CSM reads markers from.

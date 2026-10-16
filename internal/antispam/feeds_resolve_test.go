@@ -502,3 +502,43 @@ func TestResolveFeedsRejectsUnsupportedRotation(t *testing.T) {
 		}
 	}
 }
+
+func ipMapFacts() HostFacts {
+	f := feedFacts()
+	f.IPMap = FileFacts{File: PathFacts{Path: "/var/lib/csm-rspamd/csm_ip.map", Mode: 0o640, GID: 974}}
+	return f
+}
+
+func TestResolveFeedsKeepsTheIPMapOnAGoodHost(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedCSMIPMap}
+	got, problems := ResolveFeeds(s, ipMapFacts())
+	if !got.HasFeed(FeedCSMIPMap) || len(problems) != 0 {
+		t.Fatalf("got %+v, problems %+v", got, problems)
+	}
+}
+
+func TestResolveFeedsDropsTheIPMap(t *testing.T) {
+	for name, mutate := range map[string]func(*HostFacts){
+		"map missing":    func(f *HostFacts) { f.IPMap = FileFacts{Missing: true} },
+		"map unreadable": func(f *HostFacts) { f.IPMap = FileFacts{Err: errors.New("boom")} },
+		"group unknown":  func(f *HostFacts) { f.RspamdGID = -1 },
+		"multimap foreign": func(f *HostFacts) {
+			for i := range f.Targets {
+				if f.Targets[i].Path == RedirectPath(RedirectMultimap) {
+					f.Targets[i].Missing, f.Targets[i].File, f.Targets[i].Content = false, PathFacts{Path: f.Targets[i].Path, Mode: 0o644}, "operator\n"
+				}
+			}
+		},
+		"old rspamd": func(f *HostFacts) { f.RspamdVersion = CommandResult{Stdout: "Rspamd daemon version 3.8.4\n"} },
+	} {
+		f := ipMapFacts()
+		mutate(&f)
+		s := defaults(false)
+		s.Feeds = []string{FeedCSMIPMap, FeedPSBL}
+		got, problems := ResolveFeeds(s, f)
+		if got.HasFeed(FeedCSMIPMap) || !slices.ContainsFunc(problems, func(p Problem) bool { return p.Key == FeedCSMIPMap }) {
+			t.Errorf("%s: got %+v, problems %+v", name, got, problems)
+		}
+	}
+}

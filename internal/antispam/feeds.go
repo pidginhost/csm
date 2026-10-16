@@ -23,6 +23,7 @@ const (
 	FeedURIBL       = "uribl"
 	FeedSURBL       = "surbl"
 	FeedSpamhausDQS = "spamhaus_dqs"
+	FeedCSMIPMap    = "csm_ip_map"
 	FeedRspamdMaps  = "rspamd_maps"
 )
 
@@ -249,6 +250,10 @@ var catalogue = []Feed{
 		},
 		Errors: spamhausErrors,
 		Terms:  "Needs a DQS key. The free key covers non-commercial use under 100,000 queries a day; commercial use needs a paid key.",
+	},
+	{
+		Name:  FeedCSMIPMap,
+		Terms: "Local data only: CSM's block history, its threat feeds and the spam evidence it records.",
 	},
 	{
 		Name:  FeedRspamdMaps,
