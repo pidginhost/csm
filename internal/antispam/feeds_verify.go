@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // LoadedRBLRules reads `rspamadm configdump -j rbl` and returns enabled
@@ -88,4 +90,39 @@ func CheckFeedsLoaded(enabled map[string]bool, rules []string, s Settings) []str
 		out = append(out, fmt.Sprintf("rspamd loaded %d blocklist rules CSM did not write; an override adds them next to CSM's override.d/rbl.conf", extra))
 	}
 	return out
+}
+
+// RspamdComPaths walks `rspamadm configdump -j` and returns the JSON paths
+// of string values naming rspamd.com inside enabled modules, sorted.
+// Symbol descriptions under group are not modules and are skipped.
+func RspamdComPaths(dump []byte, enabled map[string]bool) ([]string, error) {
+	var root map[string]any
+	if err := json.Unmarshal(dump, &root); err != nil {
+		return nil, errors.New("configdump is not a JSON object")
+	}
+	var out []string
+	var walk func(prefix string, v any)
+	walk = func(prefix string, v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			for k, child := range x {
+				walk(prefix+"."+k, child)
+			}
+		case []any:
+			for i, child := range x {
+				walk(prefix+"."+strconv.Itoa(i), child)
+			}
+		case string:
+			if strings.Contains(strings.ToLower(x), "rspamd.com") {
+				out = append(out, prefix)
+			}
+		}
+	}
+	for module, v := range root {
+		if enabled[module] {
+			walk(module, v)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }

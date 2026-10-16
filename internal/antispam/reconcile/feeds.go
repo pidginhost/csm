@@ -1,6 +1,8 @@
 package reconcile
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -81,4 +83,33 @@ func mergeByKey(problems []antispam.Problem) []antispam.Problem {
 		out = append(out, p)
 	}
 	return out
+}
+
+// blockingProblems reports a Definite or Temporary problem: the host is
+// not known to be current.
+func blockingProblems(problems []antispam.Problem) bool {
+	return slices.ContainsFunc(problems, func(p antispam.Problem) bool { return p.Severity != antispam.Warning })
+}
+
+// leftoverMaps reports rspamd.com paths still loaded in enabled modules.
+// Unreadable dumps say nothing: the next pass retries.
+func leftoverMaps(f antispam.HostFacts) (antispam.Problem, bool) {
+	if f.RspamdConfig.Err != nil || f.RspamdModules.Err != nil {
+		return antispam.Problem{}, false
+	}
+	enabled, err := antispam.EnabledModules(f.RspamdModules.Stdout)
+	if err != nil {
+		return antispam.Problem{}, false
+	}
+	paths, err := antispam.RspamdComPaths([]byte(f.RspamdConfig.Stdout), enabled)
+	if err != nil || len(paths) == 0 {
+		return antispam.Problem{}, false
+	}
+	shown := paths[:min(len(paths), 10)]
+	detail := "rspamd still fetches from rspamd.com at " + strings.Join(shown, ", ")
+	if len(paths) > len(shown) {
+		detail += fmt.Sprintf(" and %d more", len(paths)-len(shown))
+	}
+	detail += "; CSM points only the maps it knows at local copies. Enable the rspamd_maps feed to accept rspamd.com's terms, or redirect these maps yourself"
+	return antispam.Problem{Code: antispam.CodeFeed, Severity: antispam.Warning, Key: antispam.FeedRspamdMaps, Detail: detail}, true
 }

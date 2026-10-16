@@ -123,3 +123,20 @@ func TestLoadedRBLRulesErrorsDoNotExposeConfiguration(t *testing.T) {
 		}
 	}
 }
+
+func TestRspamdComPaths(t *testing.T) {
+	dump := []byte(`{
+		"multimap": {"freemail_from": {"map": "https://maps.rspamd.com/freemail/free.txt.zst"}, "local": {"map": "/etc/x"}},
+		"whitelist": {"rules": {"WHITELIST_DMARC": {"domains": ["https://maps.rspamd.com/rspamd/dmarc_whitelist_new.inc.zst"]}}},
+		"fuzzy_check": {"rule": {"rspamd.com": {"servers": "service=fuzzy+rspamd.com"}}},
+		"group": {"fuzzy": {"symbols": {"FUZZY_DENIED": {"description": "Denied by fuzzy from bl.rspamd.com"}}}}
+	}`)
+	got, err := RspamdComPaths(dump, map[string]bool{"multimap": true, "whitelist": true})
+	want := []string{"multimap.freemail_from.map", "whitelist.rules.WHITELIST_DMARC.domains.0"}
+	if err != nil || !slices.Equal(got, want) {
+		t.Fatalf("got %v, %v; want %v", got, err, want)
+	}
+	if _, err := RspamdComPaths([]byte("nope"), nil); err == nil {
+		t.Fatal("accepted invalid JSON")
+	}
+}

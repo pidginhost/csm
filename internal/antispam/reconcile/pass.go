@@ -138,6 +138,13 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 			feedProblems = append(feedProblems, p)
 		}
 	}
+	// Leftover maps mean something only once CSM's files are installed and
+	// current, which a Keep without blocking problems shows.
+	if d.Enabled && !d.Observe && settings.Redirects() && a.Action == antispam.Keep && a.Installed && !blockingProblems(a.Problems) {
+		if p, ok := leftoverMaps(f); ok {
+			feedProblems = append(feedProblems, p)
+		}
+	}
 	for _, p := range mergeByKey(feedProblems) {
 		out.Findings = append(out.Findings, feedFinding(p, now))
 	}

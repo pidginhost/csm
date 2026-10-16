@@ -155,3 +155,44 @@ func TestPassMergesFeedProblemsSharingAKey(t *testing.T) {
 		t.Errorf("rbl finding must carry both differences: %s", rbl)
 	}
 }
+
+func TestPassReportsLeftoverRspamdComMaps(t *testing.T) {
+	leftover := func(d Desired, action antispam.Action) []alert.Finding {
+		h := &fakeHost{}
+		r := h.reconciler()
+		r.Collect = func(context.Context, string) antispam.HostFacts {
+			f := goodFeedFacts()
+			f.RspamdModules = antispam.CommandResult{Stdout: "Modules enabled: multimap, dkim\nModules disabled (explicitly): fuzzy_check\n"}
+			f.RspamdConfig = antispam.CommandResult{Stdout: `{"multimap":{"custom":{"map":"https://maps.rspamd.com/custom.txt"}},` +
+				`"fuzzy_check":{"rule":{"rspamd.com":{"servers":"service=fuzzy+rspamd.com"}}}}`}
+			return f
+		}
+		r.assess = func(bool, antispam.Settings, antispam.HostFacts) antispam.Assessment {
+			return antispam.Assessment{Action: action, Installed: true,
+				Problems: []antispam.Problem{{Code: antispam.CodeGlobalEnable, Severity: antispam.Warning, Detail: "w"}}}
+		}
+		var out []alert.Finding
+		for _, f := range r.Pass(context.Background(), d).Findings {
+			if f.Check == CheckFeed {
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+	got := leftover(feedDesired(), antispam.Keep)
+	if len(got) != 1 || got[0].DedupKey != antispam.FeedRspamdMaps || !strings.Contains(got[0].Details, "multimap.custom.map") ||
+		strings.Contains(got[0].Details, "fuzzy_check") {
+		t.Fatalf("leftover findings %+v", got)
+	}
+	if got := leftover(feedDesired(antispam.FeedRspamdMaps), antispam.Keep); len(got) != 0 {
+		t.Fatalf("rspamd_maps accepts rspamd.com maps: %+v", got)
+	}
+	if got := leftover(feedDesired(), antispam.Install); len(got) != 0 {
+		t.Fatalf("a pass that installs has not loaded CSM's files yet: %+v", got)
+	}
+	observe := feedDesired()
+	observe.Observe = true
+	if got := leftover(observe, antispam.Keep); len(got) != 0 {
+		t.Fatalf("observe mode reports no leftovers: %+v", got)
+	}
+}
