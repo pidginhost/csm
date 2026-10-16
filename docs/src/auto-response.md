@@ -101,11 +101,18 @@ without that data. The subnets also appear in the public `cidrs` field.
 
 Critical realtime PHP findings that prove request data reaches an execution
 primitive, or that executable PHP unwraps and runs encoded content, enter this
-file-response gate immediately. Quarantine uses a stable version of the open file
-that produced the finding. It refuses when Linux cannot exclude other open writers
-through final removal, or when the content or path identity changes.
-Comment-only matches, URL-only droppers, filename-only checks, tail-window matches
-and YARA-only findings remain available for review without an automatic move.
+file-response gate immediately. Quarantine holds an exclusive Linux lease on the
+open file that produced the finding until that file is removed. It refuses while
+another process has the file open or is running it, and when the content or path
+identity changes. Other quarantines do not take this lease, so they can still
+move a file that is open or running. Comment-only matches, URL-only droppers,
+filename-only checks, tail-window matches and YARA-only findings remain
+available for review without an automatic move.
+
+File quarantine copies only the file size it verified and checks the file again
+before removing it. A file that changed is restored and its copy discarded. If
+its name was recreated meanwhile, the error names the private directory that
+holds the changed file.
 
 Parked reputation findings keep their intelligence source and expiry. If an
 expiry cannot be encoded, only that intelligence metadata is dropped; the

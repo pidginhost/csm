@@ -88,6 +88,38 @@ func TestInlineQuarantine_MovesTheScannedFile(t *testing.T) {
 	}
 }
 
+// The fanotify analyzer holds the event descriptor until the event's scan
+// returns, so a signature match is quarantined while CSM has the file open.
+func TestInlineQuarantine_MovesTheScannedFileWhileEventDescriptorOpen(t *testing.T) {
+	withQuarantineDirIdentity(t)
+	dir := t.TempDir()
+	target := filepath.Join(dir, "evil.php")
+	payload := []byte(generateHighEntropyPHP(8000))
+	writeTestFile(t, target, payload)
+	event, err := os.Open(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer event.Close()
+	scanned, err := event.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	f := alert.Finding{
+		Severity: alert.Critical,
+		Check:    "signature_match_realtime",
+		Details:  "Category: dropper\nDescription: PHP goto obfuscation\nMatched: goto",
+		FilePath: target,
+	}
+	if qPath, ok := InlineQuarantineIdentified(f, target, payload, scanned); !ok || qPath == "" {
+		t.Fatal("signature match was not quarantined while the event descriptor was open")
+	}
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Errorf("original still present after quarantine: %v", err)
+	}
+}
+
 func TestInlineQuarantineAcceptsConfirmedCriticalPHPContent(t *testing.T) {
 	for _, check := range []string{
 		"webshell_content_realtime",

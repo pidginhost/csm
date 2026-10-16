@@ -6,18 +6,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/pidginhost/csm/internal/quarantinefs"
 	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // var so Linux tests can interleave a source-path mutation after the verified
 // fd is open without racing the test process itself.
-var quarantineCopyByFD = copyQuarantineFileByFD
+var quarantineCopyByFD = func(fd *os.File, qPath string, metadata []byte, size int64) error {
+	// Generic quarantine permits open writers. Bound the read to the verified
+	// size so a growing file cannot keep capture copying indefinitely.
+	return quarantinefs.Store(qPath, io.NewSectionReader(fd, 0, size), metadata, 0600)
+}
 
 // quarantineFileTOCTOUSafe moves a single regular file into quarantine in
 // a way that defends against the classic detect-then-quarantine race: an
@@ -30,8 +36,10 @@ var quarantineCopyByFD = copyQuarantineFileByFD
 //     open time.
 //  2. Fstat the fd and verify it still matches the inode we detected
 //     earlier (sameFileIdentity). A late swap loses here.
-//  3. Take an exclusive Linux file lease so a pre-open writer refuses the
-//     action and a later open cannot change content before removal.
+//  3. Realtime PHP response takes an exclusive Linux file lease, so another
+//     open descriptor refuses the action and a later open breaks the lease
+//     before removal. Other callers skip it: Linux never grants the lease
+//     while any other process has the file open or is executing it.
 //  4. Copy from that verified fd into a private, independent quarantine
 //     inode. A hardlink is never used: the account could add another name
 //     after the initial fstat and keep the quarantine inode writable.
@@ -100,13 +108,17 @@ func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, 
 	if !cur.Mode().IsRegular() {
 		return fmt.Errorf("quarantine: refusing non-regular file at %s (mode=%v)", path, cur.Mode())
 	}
-	if prepareErr := quarantineBeforeLease(path); prepareErr != nil {
-		return fmt.Errorf("quarantine: prepare stable content for %s: %w", path, prepareErr)
+	var leased *os.File
+	if requireVersion {
+		if prepareErr := quarantineBeforeLease(path); prepareErr != nil {
+			return fmt.Errorf("quarantine: prepare stable content for %s: %w", path, prepareErr)
+		}
+		if leaseErr := acquireQuarantineLease(fd); leaseErr != nil {
+			return refuseFileResponse(fmt.Errorf("quarantine: cannot hold stable content for %s while another descriptor is open: %w", path, leaseErr))
+		}
+		defer releaseQuarantineLease(fd)
+		leased = fd
 	}
-	if leaseErr := acquireQuarantineLease(fd); leaseErr != nil {
-		return refuseFileResponse(fmt.Errorf("quarantine: cannot hold stable content for %s while another descriptor is open: %w", path, leaseErr))
-	}
-	defer releaseQuarantineLease(fd)
 	stable, err := fd.Stat()
 	if err != nil {
 		return fmt.Errorf("quarantine: fstat stable source %s: %w", path, err)
@@ -120,11 +132,11 @@ func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, 
 	// Always create an independent root-owned copy. Checking st_nlink before a
 	// hardlink is not sufficient: the account can add another name after the
 	// check and retain write access to the inode placed in quarantine.
-	if err = quarantineCopyByFD(fd, qPath, metadata); err != nil {
+	if err = quarantineCopyByFD(fd, qPath, metadata, cur.Size()); err != nil {
 		return fmt.Errorf("quarantine: copy %s -> %s: %w", path, qPath, err)
 	}
 
-	err = removeQuarantinedSourcePinned(source, filepath.Base(path), path, qPath, cur, requireVersion, fd)
+	err = removeQuarantinedSourcePinned(source, filepath.Base(path), path, qPath, cur, requireVersion, leased)
 	if err != nil {
 		return err
 	}
@@ -160,17 +172,22 @@ func removeQuarantinedSourcePlatform(path, qPath string, original os.FileInfo, r
 	if !sameContentShape(opened, original) || versionChanged && (requireVersion || fileLinkCount(opened) <= 1) {
 		return discardUntrustworthyQuarantineCopy(qPath, fmt.Errorf("quarantine: source changed before stable-content removal %s", path))
 	}
-	if err := acquireQuarantineLease(fd); err != nil {
-		return refuseFileResponse(fmt.Errorf("quarantine: cannot hold stable content for %s while another descriptor is open: %w", path, err))
+	var leased *os.File
+	if requireVersion {
+		if err := acquireQuarantineLease(fd); err != nil {
+			return refuseFileResponse(fmt.Errorf("quarantine: cannot hold stable content for %s while another descriptor is open: %w", path, err))
+		}
+		defer releaseQuarantineLease(fd)
+		leased = fd
 	}
-	defer releaseQuarantineLease(fd)
-	return removeQuarantinedSourcePinned(source, filepath.Base(path), path, qPath, original, requireVersion, fd)
+	return removeQuarantinedSourcePinned(source, filepath.Base(path), path, qPath, original, requireVersion, leased)
 }
 
 // removeQuarantinedSourcePinned atomically captures the live directory entry
 // into a private same-filesystem directory before checking and removing it.
 // Validation and unlink therefore operate on one name that tenant writers
-// cannot swap between syscalls.
+// cannot swap between syscalls. A nil leased file means the caller holds no
+// lease to recheck.
 func removeQuarantinedSourcePinned(source *safepath.Dir, sourceName, path, qPath string, original os.FileInfo, requireVersion bool, leased *os.File) error {
 	currentParent, err := safepath.OpenDirNoFollow(filepath.Dir(path))
 	if err != nil {
@@ -269,8 +286,8 @@ func removeQuarantinedSourcePinned(source *safepath.Dir, sourceName, path, qPath
 		}
 		return fmt.Errorf("quarantine: unlink source %s; recovery copy retained at %s: %w", path, qPath, err)
 	}
-	if err := requireQuarantineLease(leased); err != nil {
-		cause := fmt.Errorf("quarantine: stable content lease broke before unlink %s: %w", path, err)
+	if err := validateCapturedQuarantineSource(stage, capturedName, captured, leased); err != nil {
+		cause := fmt.Errorf("quarantine: verify captured source before unlink %s: %w", path, err)
 		if rollbackErr := restoreCapturedSource(stage, capturedName, source, sourceName); rollbackErr != nil {
 			keepStage = true
 			return fmt.Errorf("%w; captured source retained in private directory %s and recovery copy retained at %s: %v", cause, stageName, qPath, rollbackErr)
@@ -299,6 +316,22 @@ func removeQuarantinedSourcePinned(source *safepath.Dir, sourceName, path, qPath
 	return nil
 }
 
+func validateCapturedQuarantineSource(stage *safepath.Dir, name string, captured os.FileInfo, leased *os.File) error {
+	if leased != nil {
+		return requireQuarantineLease(leased)
+	}
+	// Moving a name into a private directory does not revoke existing writers.
+	// Compare against the post-rename stat because rename itself changes ctime.
+	current, err := stage.Lstat(name)
+	if err != nil {
+		return err
+	}
+	if !SameFileVersion(current, captured) {
+		return errors.New("source changed after atomic capture")
+	}
+	return nil
+}
+
 func openQuarantineSource(source *safepath.Dir, name string, sourceFD int) (*os.File, error) {
 	if sourceFD < 0 {
 		return source.OpenFile(name, os.O_RDONLY, 0)
@@ -316,6 +349,9 @@ func acquireQuarantineLease(file *os.File) error {
 }
 
 func requireQuarantineLease(file *os.File) error {
+	if file == nil {
+		return nil
+	}
 	lease, err := unix.FcntlInt(file.Fd(), unix.F_GETLEASE, 0)
 	if err != nil {
 		return err

@@ -322,7 +322,7 @@ var operations = []Op{
 		Risk: RiskContain,
 		Contract: &SafetyContract{
 			Authority: "automatic quarantine requires auto_response.enabled, quarantine_files and non-observe mode; the batch path selects eligible Critical findings and realtime signatures pass the high-confidence validator; directories and special files are refused by the automatic gate",
-			Identity:  "device/inode plus size and modification time are captured before reservation and rechecked after it and when opening the source; realtime PHP also pins ctime; quarantine requires an exclusive Linux lease on the verified descriptor through removal",
+			Identity:  "device/inode plus size and modification time are captured before reservation and rechecked after it and when opening the source; quarantine copies from the verified descriptor and checks again before removal; realtime PHP also pins ctime and holds an exclusive Linux lease on that descriptor through removal",
 			Recovery:  "successful quarantine retains a recovery copy and owner, permissions and modification time for restore; failures can retain a copy or occur after source removal, so inspect action evidence before retrying",
 			Limit:     "shared persisted rolling-hour host and account attempt limits and a host-wide failure pause; pending actions hold failure capacity, and failed and interrupted attempts remain charged; dry_run does not preview file actions",
 		},
@@ -709,7 +709,7 @@ var operations = []Op{
 		RecoveryGap:      "Current remediation may retain local recovery evidence, but per-operation identity-checked undo and partial-failure recovery are not specified by this inventory.",
 		Subsystem:        "operator commands",
 		Summary:          "clean or quarantine files and spool messages, truncate malicious crontabs, kill verified malware processes, or change database objects on request",
-		Privileges:       []Privilege{CapKill, CapLease, Root},
+		Privileges:       []Privilege{CapKill, Root},
 		Trigger:          Operator,
 		Writes:           []string{"/home", "/tmp", "/var/tmp", "/dev/shm", "/var/spool/cron", "/var/spool/exim/input", "/var/spool/exim4/input", "/opt/csm/quarantine", "mysql:account databases", "process:signal"},
 		WithoutPrivilege: "remediation is done by hand over SSH",

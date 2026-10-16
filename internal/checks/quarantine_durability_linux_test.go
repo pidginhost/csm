@@ -35,13 +35,13 @@ func TestQuarantineMetadataFailureKeepsOriginal(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			quarantineCopyByFD = func(src *os.File, destination string, metadata []byte) error {
+			quarantineCopyByFD = func(src *os.File, destination string, metadata []byte, size int64) error {
 				// A real filesystem failure, including when tests run as root:
 				// the sidecar name cannot be opened as a regular output file.
 				if err := os.Mkdir(destination+".meta", 0700); err != nil {
 					return err
 				}
-				return oldCopy(src, destination, metadata)
+				return oldCopy(src, destination, metadata, size)
 			}
 			if automatic {
 				cfg := &config.Config{StatePath: t.TempDir()}

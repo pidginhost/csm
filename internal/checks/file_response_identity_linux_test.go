@@ -77,8 +77,8 @@ func TestAutoFileResponseChangedSourceAfterCopyDoesNotTripBreaker(t *testing.T) 
 			sink := withActionSink(t)
 			f := responseFile(t, homes, "alice", "source.bin", []byte("original content"))
 			oldCopy := quarantineCopyByFD
-			quarantineCopyByFD = func(file *os.File, path string, metadata []byte) error {
-				if err := oldCopy(file, path, metadata); err != nil {
+			quarantineCopyByFD = func(file *os.File, path string, metadata []byte, size int64) error {
+				if err := oldCopy(file, path, metadata, size); err != nil {
 					return err
 				}
 				if replace {
@@ -174,8 +174,8 @@ func TestAutoFileResponseParentReplacementAfterCopyDoesNotTripBreaker(t *testing
 			parent := filepath.Dir(f.FilePath)
 			moved := parent + ".moved"
 			oldCopy := quarantineCopyByFD
-			quarantineCopyByFD = func(file *os.File, path string, metadata []byte) error {
-				if err := oldCopy(file, path, metadata); err != nil {
+			quarantineCopyByFD = func(file *os.File, path string, metadata []byte, size int64) error {
+				if err := oldCopy(file, path, metadata, size); err != nil {
 					return err
 				}
 				if err := os.Rename(parent, moved); err != nil {

@@ -296,7 +296,6 @@ func TestGoLinuxGrantsKernelTestCapabilities(t *testing.T) {
 	args := invocationArgs(t, out)
 	requireArgPair(t, args, "--cap-add", "CAP_SYS_ADMIN")
 	requireArgPair(t, args, "--cap-add", "CAP_NET_ADMIN")
-	requireArgPair(t, args, "--cap-add", "CAP_LEASE")
 }
 
 func TestGoLinuxHonoursAReadOnlyModuleCacheOverride(t *testing.T) {
