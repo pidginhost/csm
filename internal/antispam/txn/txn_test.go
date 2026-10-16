@@ -805,11 +805,19 @@ func TestApplyLoadsTheDQSKey(t *testing.T) {
 	if got := f.file(antispam.FeedRBLPath); !strings.Contains(got, "abcdefghijklmnopqrstu23456.zen.dq.spamhaus.net") {
 		t.Fatal("override.d/rbl.conf lacks the key")
 	}
+	for path, content := range f.state() {
+		if path != antispam.FeedRBLPath && strings.Contains(content, f.key.Key.Reveal()) {
+			t.Fatalf("DQS key leaked into %s", path)
+		}
+	}
 
 	f = newFake(t)
 	f.key.UID = 1000
 	r := f.host().Apply(dqs())
-	if r.OK || r.FailedStep != StepPreconditions || strings.Contains(r.Error, "abcdefghijklmnopqrstu23456") {
+	if strings.Contains(r.Error, f.key.Key.Reveal()) {
+		t.Fatal("apply error disclosed the DQS key")
+	}
+	if r.OK || r.FailedStep != StepPreconditions {
 		t.Fatalf("result %+v", r)
 	}
 	if got := f.file(antispam.FeedRBLPath); got != "<absent>" {

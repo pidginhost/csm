@@ -166,6 +166,9 @@ func TestCollectFailedProbesStayTemporary(t *testing.T) {
 	if s.RspamdUID != -1 || s.EximUID != -1 || s.EximGID != -1 || s.PeerUID != -1 || !s.Missing {
 		t.Errorf("socket %+v", s)
 	}
+	if f.RspamdGID != -1 || f.ResolvConf != "" || !errors.Is(f.ResolvConfErr, fs.ErrNotExist) {
+		t.Errorf("feed identity or resolver failure was lost: gid %d, resolver error %v", f.RspamdGID, f.ResolvConfErr)
+	}
 	if f.SystemFilter != "" || f.SystemFilterErr != nil || f.GeneratedErr == nil || f.LocalErr != nil || f.SystemdRunErr == nil {
 		t.Errorf("facts %+v", f)
 	}
@@ -565,9 +568,14 @@ func TestCollectKeepsRspamdStateErrors(t *testing.T) {
 		"rspamadm configdump -j actions":  want,
 		"rspamadm configdump -m":          want,
 		"rspamadm configdump -j phishing": want,
+		"rspamadm configdump -j rbl":      want,
+		"rspamadm configdump -j":          want,
 	}}
 	f := testCollector(t.TempDir(), run).collect(context.Background(), "/csm-antispam-test-missing/s")
-	for name, got := range map[string]antispam.CommandResult{"actions": f.RspamdActions, "modules": f.RspamdModules, "phishing": f.RspamdPhishing} {
+	for name, got := range map[string]antispam.CommandResult{
+		"actions": f.RspamdActions, "modules": f.RspamdModules, "phishing": f.RspamdPhishing,
+		"rbl": f.RspamdRBL, "config": f.RspamdConfig,
+	} {
 		if got.Stdout != want.Stdout || got.Stderr != want.Stderr || !errors.Is(got.Err, boom) {
 			t.Errorf("%s = %+v, want %+v", name, got, want)
 		}
@@ -592,24 +600,37 @@ func TestCollectReadsFeedFacts(t *testing.T) {
 	if f.RspamdGID != 974 {
 		t.Fatalf("RspamdGID = %d, want the user's primary group", f.RspamdGID)
 	}
+	if f.DQSKey != (antispam.KeyFacts{}) {
+		t.Fatal("general host collection populated the DQS key facts")
+	}
 }
 
 func TestServiceGroupPrefersUnitGroup(t *testing.T) {
 	c := testCollector(t.TempDir(), &fakeRun{})
 	c.gid = lookup(map[string]int{"mail": 12, "rspamdgrp": 900})
+	c.primaryGID = lookup(map[string]int{"_rspamd": 974, "979": 974})
 	for _, tc := range []struct {
 		show string
+		err  error
 		want int
 	}{
-		{"LoadState=loaded\nUser=_rspamd\nGroup=rspamdgrp\n", 900},
-		{"LoadState=loaded\nUser=_rspamd\nGroup=\n", 974},
-		{"LoadState=loaded\nUser=\nGroup=\n", -1},
+		{"LoadState=loaded\nUser=_rspamd\nGroup=rspamdgrp\n", nil, 900},
+		{"LoadState=loaded\nUser=_rspamd\nGroup=900\n", nil, 900},
+		{"LoadState=loaded\nUser=_rspamd\nGroup=\n", nil, 974},
+		// A numeric User is a uid, not its primary gid.
+		{"LoadState=loaded\nUser=979\nGroup=\n", nil, 974},
+		{"LoadState=loaded\nUser=979\nGroup=rspamdgrp\n", nil, 900},
+		{"LoadState=loaded\nUser=12345\nGroup=\n", nil, -1},
+		{"LoadState=loaded\nUser=unknown\nGroup=\n", nil, -1},
+		{"LoadState=loaded\nUser=_rspamd\nGroup=unknown\n", nil, -1},
+		{"LoadState=loaded\nUser=\nGroup=\n", nil, -1},
 		// A root-started rspamd drops to a user and group the unit does not show.
-		{"LoadState=loaded\nUser=0\nGroup=\n", -1},
-		{"LoadState=loaded\nUser=0\nGroup=mail\n", -1},
-		{"LoadState=not-found\n", -1},
+		{"LoadState=loaded\nUser=0\nGroup=\n", nil, -1},
+		{"LoadState=loaded\nUser=0\nGroup=mail\n", nil, -1},
+		{"LoadState=not-found\n", nil, -1},
+		{"LoadState=loaded\nUser=_rspamd\nGroup=rspamdgrp\n", errors.New("query failed"), -1},
 	} {
-		if got := c.serviceGroup(antispam.CommandResult{Stdout: tc.show}); got != tc.want {
+		if got := c.serviceGroup(antispam.CommandResult{Stdout: tc.show, Err: tc.err}); got != tc.want {
 			t.Errorf("%q = %d, want %d", tc.show, got, tc.want)
 		}
 	}

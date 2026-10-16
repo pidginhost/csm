@@ -180,7 +180,12 @@ func (c collector) serviceGroup(show antispam.CommandResult) int {
 	if g := props["Group"]; g != "" {
 		return id(g, c.gid)
 	}
-	return id(props["User"], c.primaryGID)
+	// A numeric User is a uid, not its primary gid.
+	gid, err := c.primaryGID(props["User"])
+	if err != nil || gid < 0 {
+		return -1
+	}
+	return gid
 }
 
 func lookupPrimaryGID(name string) (int, error) {

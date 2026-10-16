@@ -127,3 +127,53 @@ func TestRollbackKeepsDQSPrivate(t *testing.T) {
 		})
 	}
 }
+
+func TestSecretMetadataDriftPlansOnlyRBLReplacement(t *testing.T) {
+	const serviceGID = 974
+	for _, tc := range []struct {
+		name string
+		gid  int
+		mode fs.FileMode
+	}{
+		{"group", 979, antispam.SecretFileMode},
+		{"mode", serviceGID, 0o644},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake(t)
+			f.modules = "Modules enabled: dkim, spf, rbl\n"
+			f.rbl = `{"rbls":{"csm_dqs_zen":{},"csm_dqs_dbl":{},"csm_dqs_zrd":{}}}`
+			s := enforce()
+			s.Feeds = []string{antispam.FeedSpamhausDQS}
+			s.DQSKeyFile, s.DQSKey = f.key.Path, f.key.Key
+			managed, err := antispam.ManagedContent(s)
+			if err != nil {
+				t.Fatal("cannot render DQS configuration")
+			}
+			if result := f.host().Apply(s); !result.OK {
+				t.Fatal("cannot install DQS configuration")
+			}
+			targets := f.host().targets()
+			for i := range targets {
+				target := &targets[i]
+				if target.Path == antispam.FeedRBLPath {
+					target.File.GID, target.File.Mode = tc.gid, tc.mode
+				}
+			}
+			changes, err := plan(targets, managed)
+			if err != nil || len(changes) != 0 {
+				t.Fatal("unchanged content produced edits or failed planning")
+			}
+			changes = secureSecret(changes, targets, serviceGID)
+			if len(changes) != 1 || changes[0].target.Path != antispam.FeedRBLPath {
+				t.Fatal("metadata drift must replace only the DQS configuration")
+			}
+			next := changes[0].next
+			if !next.exists || !next.metadata || next.uid != -1 || next.gid != serviceGID || next.perm != antispam.SecretFileMode {
+				t.Fatal("replacement must retain worker ownership and restrict access to the service group")
+			}
+			if next.content != managed[antispam.FeedRBLPath] {
+				t.Fatal("metadata repair changed the DQS configuration content")
+			}
+		})
+	}
+}
