@@ -470,7 +470,7 @@ func TestOptionalUsable(t *testing.T) {
 	}
 }
 
-func TestCheckTargetsJudgesUnsafeOptionalFilesOnlyForRemoval(t *testing.T) {
+func TestCheckTargetsLetsRemovalDeleteLoosenedOptionalFiles(t *testing.T) {
 	targets := goodTargets()
 	for i := range targets {
 		if targets[i].Kind == TargetRspamdOptional {
@@ -482,7 +482,18 @@ func TestCheckTargetsJudgesUnsafeOptionalFilesOnlyForRemoval(t *testing.T) {
 	if problems := checkTargets(targets, false); len(problems) != 0 {
 		t.Fatalf("an unsafe optional file blocked core: %+v", problems)
 	}
+	// Removal only deletes these files, which needs a safe directory, not a
+	// safe file: a loosened file can hold the DQS key and must go.
+	if problems := checkTargets(targets, true); len(problems) != 0 {
+		t.Fatalf("removal refused to delete a loosened CSM file: %+v", problems)
+	}
+	for i := range targets {
+		if targets[i].Kind == TargetRspamdOptional {
+			targets[i].Parents = rootChain(path.Dir(targets[i].Path))
+			targets[i].Parents[2].Mode |= 0o002
+		}
+	}
 	if problems := checkTargets(targets, true); len(problems) == 0 || problems[0].Severity != Definite {
-		t.Fatalf("removal must refuse to edit an unsafe CSM file: %+v", problems)
+		t.Fatalf("removal through an unsafe directory must stay refused: %+v", problems)
 	}
 }

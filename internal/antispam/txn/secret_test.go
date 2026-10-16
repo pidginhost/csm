@@ -173,3 +173,29 @@ func TestSecretMetadataDriftPlansOnlyRBLReplacement(t *testing.T) {
 		})
 	}
 }
+
+// A loosened override.d/rbl.conf can hold the key; CSM still owns it and
+// deletes it, on apply once the daemon drops the feeds and on removal.
+func TestLoosenedKeyFileIsDeleted(t *testing.T) {
+	for _, mode := range []os.FileMode{0o664, 0o666} {
+		for _, remove := range []bool{false, true} {
+			f := newFake(t)
+			s := dqsApply(f)
+			wantOK(t, f.host().Apply(s))
+			p := f.root + antispam.FeedRBLPath
+			if err := os.Chmod(p, mode); err != nil {
+				t.Fatal(err)
+			}
+			f.reset()
+			f.modules, f.rbl = "", ""
+			if remove {
+				wantOK(t, f.host().Remove())
+			} else {
+				wantOK(t, f.host().Apply(enforce()))
+			}
+			if got := f.file(antispam.FeedRBLPath); got != "<absent>" {
+				t.Fatalf("mode %v remove=%t: key file left behind", mode, remove)
+			}
+		}
+	}
+}

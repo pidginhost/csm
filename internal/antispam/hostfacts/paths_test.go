@@ -267,3 +267,39 @@ func TestTargetsKeepsOrder(t *testing.T) {
 		t.Errorf("Targets = %+v", got)
 	}
 }
+
+func TestOptionalTargetReadThroughProtectedParents(t *testing.T) {
+	optional := func(file antispam.PathFacts) antispam.TargetFacts {
+		return antispam.TargetFacts{
+			Target: antispam.Target{Kind: antispam.TargetRspamdOptional},
+			File:   file,
+			Parents: []antispam.PathFacts{
+				{Path: "/", Mode: fs.ModeDir | 0o755},
+				{Path: "/etc", Mode: fs.ModeDir | 0o755},
+			},
+		}
+	}
+	for name, file := range map[string]antispam.PathFacts{
+		"group writable": {Mode: 0o664},
+		"world writable": {Mode: 0o666},
+		"foreign owner":  {UID: 1000, Mode: 0o640},
+		"extra ACL":      {Mode: 0o640, ExtACL: true},
+	} {
+		if !ContentReadable(optional(file)) {
+			t.Errorf("%s: a loosened optional file must still be read", name)
+		}
+		core := optional(file)
+		core.Kind = antispam.TargetRspamd
+		if ContentReadable(core) {
+			t.Errorf("%s: a core file keeps the strict rule", name)
+		}
+	}
+	unsafeParent := optional(antispam.PathFacts{Mode: 0o640})
+	unsafeParent.Parents[1].Mode |= 0o002
+	if ContentReadable(unsafeParent) {
+		t.Error("an optional file under an unsafe directory was read")
+	}
+	if ContentReadable(optional(antispam.PathFacts{Mode: fs.ModeSymlink | 0o777})) {
+		t.Error("a symlink was read")
+	}
+}

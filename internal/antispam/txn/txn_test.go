@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/antispam/hostfacts"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -88,11 +89,16 @@ func (f *fakeHost) host() *Host {
 			if st.exists {
 				file.Mode, file.GID = st.perm, st.gid
 			}
-			out = append(out, antispam.TargetFacts{
+			facts := antispam.TargetFacts{
 				Target: target, Missing: !st.exists, Content: st.content,
 				File:    file,
 				Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}},
-			})
+			}
+			// The collector reads only what it can trust, so mirror it.
+			if st.exists && !hostfacts.ContentReadable(facts) {
+				facts.Content = ""
+			}
+			out = append(out, facts)
 		}
 		return out
 	}
