@@ -10,6 +10,44 @@ import (
 	"testing"
 )
 
+func FuzzRspamdComPaths(f *testing.F) {
+	for _, seed := range []string{
+		`{"multimap":"https://maps.rspamd.com/custom.txt"}`,
+		`{"multimap":{"custom":{"map":"https://maps.rspamd.com/custom.txt"}}}`,
+		`{"multimap":{"custom":{"map":"glob;/etc/rspamd/maps.rspamd.com.txt"}}}`,
+		`{"multimap":{"custom":{"map":{"url":["sign+https://maps.rspamd.com/map","/etc/local"]}}}}`,
+		`{"multimap":{"` + testKey + `":{"map":"https://maps.rspamd.com/"}}}`,
+		`{"multimap":{"value":1e1000}}`, `null`, `[]`, `{}`, ``,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, dump []byte) {
+		on := map[string]bool{"multimap": true}
+		paths, err := RspamdComPaths(dump, on)
+		if err != nil {
+			if len(paths) != 0 || strings.Contains(err.Error(), testKey) {
+				t.Fatal("invalid config returned paths or exposed configuration")
+			}
+			return
+		}
+		var root map[string]any
+		if json.Unmarshal(dump, &root) != nil || root == nil || !slices.IsSorted(paths) {
+			t.Fatal("accepted a non-object or returned unsorted paths")
+		}
+		for _, p := range paths {
+			if p != "multimap" && !strings.HasPrefix(p, "multimap.") || strings.Contains(p, testKey) {
+				t.Fatal("path is outside the enabled module or exposes configuration")
+			}
+		}
+		if again, err := RspamdComPaths(dump, on); err != nil || !slices.Equal(again, paths) {
+			t.Fatal("path ordering is not stable")
+		}
+		if off, err := RspamdComPaths(dump, nil); err != nil || len(off) != 0 {
+			t.Fatal("disabled modules returned paths")
+		}
+	})
+}
+
 func FuzzNameservers(f *testing.F) {
 	for _, options := range []string{
 		`{}`, `null`, `{"dns":null}`,

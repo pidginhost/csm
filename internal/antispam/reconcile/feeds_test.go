@@ -3,6 +3,9 @@ package reconcile
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io/fs"
 	"net/netip"
 	"slices"
@@ -390,5 +393,76 @@ func TestPassProbesThroughTheResolverPort(t *testing.T) {
 	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
 	if len(servers) != 2 || servers[0] != "127.0.0.1:5353" || servers[1] != "127.0.0.1:5353" {
 		t.Fatalf("probed %v", servers)
+	}
+}
+
+func TestPassLeftoverMapsRequireCurrentReadableState(t *testing.T) {
+	for _, name := range []string{"disabled", "not installed", "definite problem", "temporary problem", "config failed", "modules failed", "invalid config", "invalid modules"} {
+		t.Run(name, func(t *testing.T) {
+			h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Keep, Installed: true}}
+			r := h.reconciler()
+			d := feedDesired()
+			f := goodFeedFacts()
+			f.RspamdModules.Stdout = "Modules enabled: multimap\n"
+			f.RspamdConfig.Stdout = `{"multimap":{"custom":{"map":"https://maps.rspamd.com/custom.txt"}}}`
+			switch name {
+			case "disabled":
+				d.Enabled = false
+			case "not installed":
+				h.assessment.Installed = false
+			case "definite problem":
+				h.assessment.Problems = []antispam.Problem{{Code: antispam.CodeRspamdConfig, Severity: antispam.Definite}}
+			case "temporary problem":
+				h.assessment.Problems = []antispam.Problem{{Code: antispam.CodeRspamdConfig, Severity: antispam.Temporary}}
+			case "config failed":
+				f.RspamdConfig.Err = errors.New("command failed")
+			case "modules failed":
+				f.RspamdModules.Err = errors.New("command failed")
+			case "invalid config":
+				f.RspamdConfig.Stdout = `{"multimap":`
+			case "invalid modules":
+				f.RspamdModules.Stdout = "no module inventory"
+			}
+			r.Collect = func(context.Context, string) antispam.HostFacts { return f }
+			r.Installed = func() antispam.HostFacts { return f }
+			out := r.Pass(context.Background(), d)
+			if hasFindingKey(out.Findings, CheckFeed, antispam.FeedRspamdMaps) || len(h.requests) != 0 || out.Err != nil {
+				t.Fatal("unsettled or unreadable state reported leftover maps or changed core")
+			}
+		})
+	}
+}
+
+func TestPassLeftoverMapDetailsAreBoundedAndRedacted(t *testing.T) {
+	h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Keep, Installed: true}}
+	r := h.reconciler()
+	key := strings.Repeat("a", 26)
+	maps := map[string]any{key: map[string]string{"map": "https://maps.rspamd.com/" + key}}
+	for i := range 11 {
+		maps[fmt.Sprintf("custom%02d", i)] = map[string]string{"map": "https://maps.rspamd.com/custom.txt"}
+	}
+	dump, err := json.Marshal(map[string]any{"multimap": maps})
+	if err != nil {
+		t.Fatal("cannot encode test configuration")
+	}
+	f := goodFeedFacts()
+	f.RspamdModules.Stdout = "Modules enabled: multimap\n"
+	f.RspamdConfig.Stdout = string(dump)
+	r.Collect = func(context.Context, string) antispam.HostFacts { return f }
+	out := r.Pass(context.Background(), feedDesired())
+	if out.Err != nil || len(h.requests) != 0 || len(out.Findings) != 1 {
+		t.Fatal("leftover maps must produce one warning without changing core")
+	}
+	finding := out.Findings[0]
+	if finding.Check != CheckFeed || finding.DedupKey != antispam.FeedRspamdMaps || finding.Severity != alert.Warning ||
+		strings.Contains(finding.Details+finding.Message+finding.DedupKey, key) ||
+		!strings.Contains(finding.Details, "multimap.[redacted].map") ||
+		strings.Count(finding.Details, "multimap.") != 10 || !strings.Contains(finding.Details, "and 2 more") {
+		t.Fatal("leftover warning lost its identity, exposed configuration, or did not bound its paths")
+	}
+	f.RspamdConfig.Stdout = `{"multimap":{"custom":{"map":"/etc/rspamd/maps.d/local.inc"}}}`
+	out = r.Pass(context.Background(), feedDesired())
+	if len(out.Findings) != 0 || !containsCheck(out.Checks, CheckFeed) || len(h.requests) != 0 {
+		t.Fatal("redirecting the last remote map did not clear its warning without changing core")
 	}
 }

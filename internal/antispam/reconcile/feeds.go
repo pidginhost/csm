@@ -110,7 +110,7 @@ func leftoverMaps(f antispam.HostFacts) (antispam.Problem, bool) {
 		return antispam.Problem{}, false
 	}
 	shown := paths[:min(len(paths), 10)]
-	detail := "rspamd still fetches from rspamd.com at " + strings.Join(shown, ", ")
+	detail := "rspamd configuration still references rspamd.com at " + strings.Join(shown, ", ")
 	if len(paths) > len(shown) {
 		detail += fmt.Sprintf(" and %d more", len(paths)-len(shown))
 	}

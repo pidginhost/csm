@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -92,12 +93,12 @@ func CheckFeedsLoaded(enabled map[string]bool, rules []string, s Settings) []str
 	return out
 }
 
-// RspamdComPaths walks `rspamadm configdump -j` and returns the JSON paths
-// of string values naming rspamd.com inside enabled modules, sorted.
-// Symbol descriptions under group are not modules and are skipped.
+// RspamdComPaths walks `rspamadm configdump -j` and returns sorted paths
+// of remote rspamd.com references inside enabled modules. Sensitive object
+// keys are redacted. Symbol descriptions under group are not modules.
 func RspamdComPaths(dump []byte, enabled map[string]bool) ([]string, error) {
 	var root map[string]any
-	if err := json.Unmarshal(dump, &root); err != nil {
+	if err := json.Unmarshal(dump, &root); err != nil || root == nil {
 		return nil, errors.New("configdump is not a JSON object")
 	}
 	var out []string
@@ -106,23 +107,74 @@ func RspamdComPaths(dump []byte, enabled map[string]bool) ([]string, error) {
 		switch x := v.(type) {
 		case map[string]any:
 			for k, child := range x {
-				walk(prefix+"."+k, child)
+				walk(prefix+"."+configPathKey(k), child)
 			}
 		case []any:
 			for i, child := range x {
 				walk(prefix+"."+strconv.Itoa(i), child)
 			}
 		case string:
-			if strings.Contains(strings.ToLower(x), "rspamd.com") {
+			if rspamdComReference(x) {
 				out = append(out, prefix)
 			}
 		}
 	}
 	for module, v := range root {
-		if enabled[module] {
-			walk(module, v)
+		if module != "group" && enabled[module] {
+			walk(configPathKey(module), v)
 		}
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// Object keys can hold DQS credentials or whole URLs. Keep short plain
+// identifiers so neither is copied into a finding.
+func configPathKey(key string) string {
+	if len(key) == 0 || len(key) >= dqsKeyLen {
+		return redacted
+	}
+	for _, c := range key {
+		if c != '_' && c != '-' && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
+			return redacted
+		}
+	}
+	return key
+}
+
+// Map types and signing/fallback prefixes precede the URL. Match its host,
+// not a local filename, description, URL path, or similarly named domain.
+// Bare hosts and service discovery references cover DNS and fuzzy servers.
+func rspamdComReference(value string) bool {
+	value = strings.TrimSpace(value)
+	if kind, rest, ok := strings.Cut(value, ";"); ok && slices.Contains([]string{
+		"set", "hash", "radix", "regexp", "regexp_multi", "glob", "glob_multi", "plain", "cdb",
+	}, kind) {
+		value = rest
+	}
+	for {
+		prefix, rest, ok := strings.Cut(value, "+")
+		if !ok || prefix != "sign" && prefix != "fallback" && !strings.HasPrefix(prefix, "key=") && !strings.HasPrefix(prefix, "service=") {
+			break
+		}
+		value = rest
+	}
+	if !strings.Contains(value, "://") {
+		value = "//" + value
+	}
+	u, err := url.Parse(value)
+	if err != nil {
+		return false
+	}
+	switch u.Scheme {
+	case "http", "https":
+	case "":
+		if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+			return false
+		}
+	default:
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	return host == "rspamd.com" || strings.HasSuffix(host, ".rspamd.com")
 }

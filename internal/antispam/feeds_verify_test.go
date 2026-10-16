@@ -1,6 +1,7 @@
 package antispam
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -138,5 +139,85 @@ func TestRspamdComPaths(t *testing.T) {
 	}
 	if _, err := RspamdComPaths([]byte("nope"), nil); err == nil {
 		t.Fatal("accepted invalid JSON")
+	}
+}
+
+func TestRspamdComPathsRemoteReferences(t *testing.T) {
+	for name, tc := range map[string]struct {
+		value string
+		want  bool
+	}{
+		"https":          {"https://maps.rspamd.com/custom.txt", true},
+		"http":           {"http://rspamd.com/custom.txt", true},
+		"case and port":  {"https://MAPS.RSPAMD.COM.:443/custom.txt", true},
+		"typed map":      {"glob;https://maps.rspamd.com/custom.txt", true},
+		"signed map":     {"sign+key=example+https://maps.rspamd.com/custom.txt", true},
+		"fallback map":   {"fallback+https://maps.rspamd.com/custom.txt", true},
+		"DNS zone":       {"bl.rspamd.com", true},
+		"server port":    {"fuzzy.rspamd.com:11335", true},
+		"service":        {"service=fuzzy+rspamd.com", true},
+		"local file":     {"/etc/rspamd/maps.d/maps.rspamd.com/custom.txt", false},
+		"file URL":       {"file:///etc/rspamd/maps.rspamd.com.txt", false},
+		"typed local":    {"glob;/etc/rspamd/maps.rspamd.com.txt", false},
+		"fallback local": {"fallback+file:///etc/rspamd/maps.rspamd.com.txt", false},
+		"description":    {"Local copy of maps.rspamd.com", false},
+		"other host":     {"https://notrspamd.com/custom.txt", false},
+		"host suffix":    {"https://rspamd.com.example.org/custom.txt", false},
+		"URL path":       {"https://example.org/rspamd.com/custom.txt", false},
+		"URL query":      {"https://example.org/map?source=rspamd.com", false},
+		"URL user":       {"https://rspamd.com@example.org/custom.txt", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dump, err := json.Marshal(map[string]any{"multimap": map[string]any{"custom": map[string]string{"map": tc.value}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := RspamdComPaths(dump, map[string]bool{"multimap": true})
+			var want []string
+			if tc.want {
+				want = []string{"multimap.custom.map"}
+			}
+			if err != nil || !slices.Equal(got, want) {
+				t.Fatalf("paths = %v, error = %v; want %v", got, err, want)
+			}
+		})
+	}
+}
+
+func TestRspamdComPathsRedactsSensitiveKeys(t *testing.T) {
+	for name, key := range map[string]string{
+		"DQS key":      testKey,
+		"embedded key": "prefix_" + testKey + "_suffix",
+		"URL key":      "https://example.org/private",
+		"control key":  "custom\nprivate",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dump, err := json.Marshal(map[string]any{
+				"multimap": map[string]any{key: map[string]string{"map": "https://maps.rspamd.com/" + testKey}},
+			})
+			if err != nil {
+				t.Fatal("cannot encode test configuration")
+			}
+			got, err := RspamdComPaths(dump, map[string]bool{"multimap": true})
+			if err != nil || !slices.Equal(got, []string{"multimap.[redacted].map"}) {
+				t.Fatal("sensitive object key was not redacted, or the remote map was lost")
+			}
+		})
+	}
+}
+
+func TestRspamdComPathsIgnoresSymbolGroups(t *testing.T) {
+	dump := []byte(`{"group":{"symbols":{"description":"https://rspamd.com"}}}`)
+	got, err := RspamdComPaths(dump, map[string]bool{"group": true})
+	if err != nil || len(got) != 0 {
+		t.Fatal("symbol group was treated as an enabled module")
+	}
+}
+
+func TestRspamdComPathsRejectsNonObjects(t *testing.T) {
+	for _, dump := range []string{`null`, `[]`, `true`, `"text"`, `{`, `{} {}`} {
+		if got, err := RspamdComPaths([]byte(dump), nil); err == nil || len(got) != 0 {
+			t.Fatal("invalid configuration must return an error without paths")
+		}
 	}
 }
