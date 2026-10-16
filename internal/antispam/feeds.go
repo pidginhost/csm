@@ -228,7 +228,7 @@ var catalogue = []Feed{
 			),
 			TestName: "test.surbl.org", TestAnswers: []string{"127.0.0.254"}}},
 		Errors: map[string]string{"127.0.0.1": "SURBL refuses this resolver"},
-		Terms:  "Free only for organisations under 1,000 users or 250,000 messages a day; not for ISPs or mail filtering providers of 1,000 users or more.",
+		Terms:  "Free only for organisations under 1,000 users or 250,000 messages a day, and never inside a product or service sold for a fee; other use needs SURBL's paid data service.",
 	},
 	{
 		Name:     FeedSpamhausDQS,
@@ -252,7 +252,7 @@ var catalogue = []Feed{
 	},
 	{
 		Name:  FeedRspamdMaps,
-		Terms: "Keeps rspamd's own map downloads from maps.rspamd.com; free use is non-commercial and under 5,000 queries a day.",
+		Terms: "Keeps rspamd's own map downloads from maps.rspamd.com; free use is non-commercial and under 5,000 queries a day, other use needs an agreement with rspamd.",
 	},
 }
 
