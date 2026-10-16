@@ -105,7 +105,14 @@ file-response gate immediately. Quarantine holds an exclusive Linux lease on the
 open file that produced the finding until that file is removed. It refuses while
 another process has the file open or is running it, and when the content or path
 identity changes. Other quarantines do not take this lease, so they can still
-move a file that is open or running. Comment-only matches, URL-only droppers, filename-only checks, tail-window matches
+move a file that is open or running. Copies stop at the verified file size, so
+continued growth cannot keep copying indefinitely. They recheck the captured
+file before removing it and restore it if a change is detected. If the original name has
+been recreated, the changed file stays in a private recovery directory reported
+by the error. These checks do not exclude concurrent writers or stop an already
+running process.
+
+Comment-only matches, URL-only droppers, filename-only checks, tail-window matches
 and YARA-only findings remain available for review without an automatic move.
 
 Parked reputation findings keep their intelligence source and expiry. If an

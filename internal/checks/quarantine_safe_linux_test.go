@@ -140,14 +140,14 @@ func TestQuarantineFileTOCTOUSafe_CopyUsesOpenFD(t *testing.T) {
 	}
 
 	oldCopy := quarantineCopyByFD
-	quarantineCopyByFD = func(fd *os.File, qPath string, metadata []byte) error {
+	quarantineCopyByFD = func(fd *os.File, qPath string, metadata []byte, size int64) error {
 		if rmErr := os.Remove(src); rmErr != nil {
 			return rmErr
 		}
 		if wrErr := os.WriteFile(src, []byte("replacement"), 0644); wrErr != nil {
 			return wrErr
 		}
-		return oldCopy(fd, qPath, metadata)
+		return oldCopy(fd, qPath, metadata, size)
 	}
 	t.Cleanup(func() { quarantineCopyByFD = oldCopy })
 

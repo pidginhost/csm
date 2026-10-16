@@ -93,11 +93,11 @@ func TestQuarantineFileTOCTOUSafe_CopiesLinkAddedAfterFstat(t *testing.T) {
 	}
 
 	oldCopy := quarantineCopyByFD
-	quarantineCopyByFD = func(fd *os.File, dst string, metadata []byte) error {
+	quarantineCopyByFD = func(fd *os.File, dst string, metadata []byte, size int64) error {
 		if linkErr := os.Link(src, other); linkErr != nil {
 			return linkErr
 		}
-		return oldCopy(fd, dst, metadata)
+		return oldCopy(fd, dst, metadata, size)
 	}
 	t.Cleanup(func() { quarantineCopyByFD = oldCopy })
 

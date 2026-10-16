@@ -6,18 +6,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/pidginhost/csm/internal/quarantinefs"
 	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // var so Linux tests can interleave a source-path mutation after the verified
 // fd is open without racing the test process itself.
-var quarantineCopyByFD = copyQuarantineFileByFD
+var quarantineCopyByFD = func(fd *os.File, qPath string, metadata []byte, size int64) error {
+	// Generic quarantine permits open writers. Bound the read to the verified
+	// size so a growing file cannot keep capture copying indefinitely.
+	return quarantinefs.Store(qPath, io.NewSectionReader(fd, 0, size), metadata, 0600)
+}
 
 // quarantineFileTOCTOUSafe moves a single regular file into quarantine in
 // a way that defends against the classic detect-then-quarantine race: an
@@ -126,7 +132,7 @@ func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, 
 	// Always create an independent root-owned copy. Checking st_nlink before a
 	// hardlink is not sufficient: the account can add another name after the
 	// check and retain write access to the inode placed in quarantine.
-	if err = quarantineCopyByFD(fd, qPath, metadata); err != nil {
+	if err = quarantineCopyByFD(fd, qPath, metadata, cur.Size()); err != nil {
 		return fmt.Errorf("quarantine: copy %s -> %s: %w", path, qPath, err)
 	}
 
@@ -280,8 +286,8 @@ func removeQuarantinedSourcePinned(source *safepath.Dir, sourceName, path, qPath
 		}
 		return fmt.Errorf("quarantine: unlink source %s; recovery copy retained at %s: %w", path, qPath, err)
 	}
-	if err := requireQuarantineLease(leased); err != nil {
-		cause := fmt.Errorf("quarantine: stable content lease broke before unlink %s: %w", path, err)
+	if err := validateCapturedQuarantineSource(stage, capturedName, captured, leased); err != nil {
+		cause := fmt.Errorf("quarantine: verify captured source before unlink %s: %w", path, err)
 		if rollbackErr := restoreCapturedSource(stage, capturedName, source, sourceName); rollbackErr != nil {
 			keepStage = true
 			return fmt.Errorf("%w; captured source retained in private directory %s and recovery copy retained at %s: %v", cause, stageName, qPath, rollbackErr)
@@ -306,6 +312,22 @@ func removeQuarantinedSourcePinned(source *safepath.Dir, sourceName, path, qPath
 	}
 	if _, err := source.Lstat(sourceName); err == nil || !os.IsNotExist(err) {
 		return &quarantineCompletedWarning{message: fmt.Sprintf("quarantine: removed the captured file at %s, but another entry now occupies that name; recovery copy retained at %s", path, qPath)}
+	}
+	return nil
+}
+
+func validateCapturedQuarantineSource(stage *safepath.Dir, name string, captured os.FileInfo, leased *os.File) error {
+	if leased != nil {
+		return requireQuarantineLease(leased)
+	}
+	// Moving a name into a private directory does not revoke existing writers.
+	// Compare against the post-rename stat because rename itself changes ctime.
+	current, err := stage.Lstat(name)
+	if err != nil {
+		return err
+	}
+	if !SameFileVersion(current, captured) {
+		return errors.New("source changed after atomic capture")
 	}
 	return nil
 }
