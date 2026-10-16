@@ -1,7 +1,9 @@
 package antispam
 
 import (
+	"encoding/json"
 	"net/netip"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -50,7 +52,6 @@ func TestCatalogueInvariants(t *testing.T) {
 				}
 			}
 			seen := map[string]bool{}
-			var largest float64
 			for _, c := range z.Codes {
 				if !strings.HasPrefix(c.Symbol, "CSM_") || symbols[c.Symbol] {
 					t.Errorf("%s: symbol %q must be unique and start with CSM_", f.Name, c.Symbol)
@@ -78,9 +79,10 @@ func TestCatalogueInvariants(t *testing.T) {
 						t.Errorf("%s: error answer %s must never score", f.Name, a)
 					}
 				}
-				largest = max(largest, c.Weight)
+				// Different domains in one message can trigger every symbol
+				// in a zone, even when each answer selects just one symbol.
+				total += max(0, c.Weight)
 			}
-			total += largest
 		}
 		if f.DNS() && !probed {
 			t.Errorf("%s has no zone the probe can test", f.Name)
@@ -137,6 +139,66 @@ func TestFeedByName(t *testing.T) {
 	}
 }
 
+func TestFeedByNameReturnsIndependentData(t *testing.T) {
+	// Preserve the catalogue even if a shallow copy lets this test change it.
+	original := catalogue
+	data, err := json.Marshal(catalogue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var testCatalogue []Feed
+	if err := json.Unmarshal(data, &testCatalogue); err != nil {
+		t.Fatal(err)
+	}
+	catalogue = testCatalogue
+	t.Cleanup(func() { catalogue = original })
+
+	for _, want := range original {
+		f, ok := FeedByName(want.Name)
+		if !ok {
+			t.Fatalf("missing feed %s", want.Name)
+		}
+		for i := range f.Zones {
+			z := &f.Zones[i]
+			z.Zone = "changed.invalid"
+			for j := range z.TestAnswers {
+				z.TestAnswers[j] = "changed"
+			}
+			for j := range z.Codes {
+				z.Codes[j].Weight = 100
+				for k := range z.Codes[j].Answers {
+					z.Codes[j].Answers[k] = "changed"
+				}
+			}
+		}
+		for answer := range f.Errors {
+			f.Errors[answer] = "changed"
+		}
+		got, ok := FeedByName(want.Name)
+		if !ok || !reflect.DeepEqual(got, want) {
+			t.Errorf("mutating returned feed changed catalogue entry %s", want.Name)
+		}
+	}
+}
+
+func TestSpamhausZENIncludesBCL(t *testing.T) {
+	f, ok := FeedByName(FeedSpamhausDQS)
+	if !ok {
+		t.Fatal("missing Spamhaus DQS feed")
+	}
+	// Spamhaus documents BCL as part of ZEN at:
+	// https://docs.spamhaus.com/datasets/docs/source/10-data-type-documentation/datasets/040-zones.html
+	for _, z := range f.Zones {
+		if z.Rule == "csm_dqs_zen" {
+			if got := symbolFor(z, "127.0.0.30"); got != "CSM_DQS_ZEN" {
+				t.Fatalf("BCL answer mapped to %q, want CSM_DQS_ZEN", got)
+			}
+			return
+		}
+	}
+	t.Fatal("missing ZEN zone")
+}
+
 func TestValidateFeeds(t *testing.T) {
 	for _, tc := range []struct {
 		names   []string
@@ -150,6 +212,8 @@ func TestValidateFeeds(t *testing.T) {
 		{[]string{FeedSpamhausDQS}, "", "needs spamhaus_dqs_key_file"},
 		{[]string{FeedSpamhausDQS}, "etc/key", "clean absolute path"},
 		{[]string{FeedSpamhausDQS}, "/etc/csm/../key", "clean absolute path"},
+		{[]string{FeedSpamhausDQS}, "/", "file path"},
+		{[]string{FeedSpamhausDQS}, "/etc/csm/key\x00", "file path"},
 		{[]string{FeedSpamhausDQS}, "/etc/csm/spamhaus-dqs.key", ""},
 	} {
 		err := ValidateFeeds(tc.names, tc.keyFile)

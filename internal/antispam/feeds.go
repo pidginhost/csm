@@ -3,6 +3,7 @@ package antispam
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"path"
 	"slices"
 	"strconv"
@@ -144,8 +145,11 @@ var spamhausErrors = map[string]string{
 	"127.0.2.255":     "the domain age list was asked about an IP address",
 }
 
-// catalogue lists every feed (feeds spec section 4.2). Weights are rspamd's
-// stock weights, or Spamhaus's for DQS, capped at 5.
+// catalogue lists every feed (feeds spec section 4.2). Weights start from
+// rspamd's stock weights, or Spamhaus's for DQS, capped at 5. SURBL and DQS
+// are reduced further so all positive symbols together stay below the
+// default reject score. Domain lists can hit several symbols per message;
+// consumers must also make each symbol one_shot to bound repeated hits.
 var catalogue = []Feed{
 	{
 		Name: FeedMailspike,
@@ -215,10 +219,10 @@ var catalogue = []Feed{
 		Name: FeedSURBL,
 		Zones: []Zone{{Rule: "csm_surbl", Zone: "multi.surbl.org", Domain: true, FullHostname: true,
 			Codes: exclusiveBits(
-				bit{8, "CSM_SURBL_PH", 5.0, "SURBL: phishing"},
-				bit{16, "CSM_SURBL_MW", 5.0, "SURBL: malware"},
-				bit{64, "CSM_SURBL_ABUSE", 5.0, "SURBL: abuse"},
-				bit{128, "CSM_SURBL_CRACKED", 5.0, "SURBL: cracked site"},
+				bit{8, "CSM_SURBL_PH", 3.5, "SURBL: phishing"},
+				bit{16, "CSM_SURBL_MW", 3.5, "SURBL: malware"},
+				bit{64, "CSM_SURBL_ABUSE", 3.5, "SURBL: abuse"},
+				bit{128, "CSM_SURBL_CRACKED", 3.5, "SURBL: cracked site"},
 				bit{32, "CSM_SURBL_CT", 0, "SURBL: click tracker"},
 				bit{4, "CSM_SURBL_DM", 0, "SURBL: disposable mail"},
 			),
@@ -232,15 +236,15 @@ var catalogue = []Feed{
 		Zones: []Zone{
 			{Rule: "csm_dqs_zen", Zone: dqsKeyMark + ".zen.dq.spamhaus.net", IPv4: true, IPv6: true,
 				Codes: []Code{code("CSM_DQS_ZEN", 5.0, "Spamhaus ZEN: listed",
-					"127.0.0.2", "127.0.0.3", "127.0.0.4", "127.0.0.5", "127.0.0.6", "127.0.0.7", "127.0.0.9", "127.0.0.10", "127.0.0.11")},
+					"127.0.0.2", "127.0.0.3", "127.0.0.4", "127.0.0.5", "127.0.0.6", "127.0.0.7", "127.0.0.9", "127.0.0.10", "127.0.0.11", "127.0.0.30")},
 				TestName: "2.0.0.127", TestAnswers: []string{"127.0.0.2"}},
 			{Rule: "csm_dqs_dbl", Zone: dqsKeyMark + ".dbl.dq.spamhaus.net", Domain: true, Codes: []Code{
-				code("CSM_DQS_DBL", 5.0, "Spamhaus DBL: spam, phishing, malware or botnet domain", "127.0.1.2", "127.0.1.4", "127.0.1.5", "127.0.1.6"),
-				code("CSM_DQS_DBL_ABUSED", 3.0, "Spamhaus DBL: abused legitimate domain", answerRange("127.0.1.", 102, 106)...),
+				code("CSM_DQS_DBL", 3.0, "Spamhaus DBL: spam, phishing, malware or botnet domain", "127.0.1.2", "127.0.1.4", "127.0.1.5", "127.0.1.6"),
+				code("CSM_DQS_DBL_ABUSED", 2.0, "Spamhaus DBL: abused legitimate domain", answerRange("127.0.1.", 102, 106)...),
 			}},
 			{Rule: "csm_dqs_zrd", Zone: dqsKeyMark + ".zrd.dq.spamhaus.net", Domain: true, Codes: []Code{
-				code("CSM_DQS_ZRD_VERY_FRESH", 4.0, "Spamhaus ZRD: domain first seen in the last 4 hours", answerRange("127.0.2.", 2, 4)...),
-				code("CSM_DQS_ZRD_FRESH", 2.0, "Spamhaus ZRD: domain first seen in the last 24 hours", answerRange("127.0.2.", 5, 24)...),
+				code("CSM_DQS_ZRD_VERY_FRESH", 3.0, "Spamhaus ZRD: domain first seen in the last 4 hours", answerRange("127.0.2.", 2, 4)...),
+				code("CSM_DQS_ZRD_FRESH", 1.0, "Spamhaus ZRD: domain first seen in the last 24 hours", answerRange("127.0.2.", 5, 24)...),
 			}},
 		},
 		Errors: spamhausErrors,
@@ -252,13 +256,24 @@ var catalogue = []Feed{
 	},
 }
 
-// FeedByName returns the catalogue entry named name.
+// FeedByName returns an independent copy of the catalogue entry named name.
 func FeedByName(name string) (Feed, bool) {
 	i := slices.IndexFunc(catalogue, func(f Feed) bool { return f.Name == name })
 	if i < 0 {
 		return Feed{}, false
 	}
-	return catalogue[i], true
+	f := catalogue[i]
+	f.Errors = maps.Clone(f.Errors)
+	f.Zones = slices.Clone(f.Zones)
+	for i := range f.Zones {
+		z := &f.Zones[i]
+		z.TestAnswers = slices.Clone(z.TestAnswers)
+		z.Codes = slices.Clone(z.Codes)
+		for j := range z.Codes {
+			z.Codes[j].Answers = slices.Clone(z.Codes[j].Answers)
+		}
+	}
+	return f, true
 }
 
 // FeedNames lists every catalogue name in catalogue order.
@@ -271,7 +286,7 @@ func FeedNames() []string {
 }
 
 // ValidateFeeds checks feed names and the DQS key path: every name is in
-// the catalogue once, and spamhaus_dqs needs a clean absolute key path.
+// the catalogue once, and spamhaus_dqs needs a clean absolute key file path.
 func ValidateFeeds(names []string, keyFile string) error {
 	seen := make(map[string]bool, len(names))
 	for _, name := range names {
@@ -291,6 +306,8 @@ func ValidateFeeds(names []string, keyFile string) error {
 		return errors.New("feed spamhaus_dqs needs spamhaus_dqs_key_file")
 	case !path.IsAbs(keyFile) || path.Clean(keyFile) != keyFile:
 		return errors.New("spamhaus_dqs_key_file must be a clean absolute path")
+	case keyFile == "/" || strings.ContainsRune(keyFile, 0):
+		return errors.New("spamhaus_dqs_key_file must be a file path without NUL bytes")
 	}
 	return nil
 }
