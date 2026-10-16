@@ -569,7 +569,7 @@ func isFeedSourceName(source string) bool {
 
 // ThreatMapSources is what the CSM IP map takes from the threat DB (feeds
 // spec 6.1): CSM's permanent block history, each feed's addresses and
-// networks by feed name, and every whitelisted address. All sorted copies.
+// networks by feed name, and every currently whitelisted address. All sorted copies.
 type ThreatMapSources struct {
 	Permanent []string
 	FeedIPs   map[string][]string
@@ -599,13 +599,20 @@ func (db *ThreatDB) MapSources() ThreatMapSources {
 		}
 		slices.Sort(out.FeedNets[name])
 	}
+	// A snapshot may outlive the next cleanup, so expired temporary entries
+	// must not become exceptions in a newly built map.
+	now := time.Now()
 	for ip := range db.whitelist {
-		out.Whitelist = append(out.Whitelist, ip)
-	}
-	for ip := range db.configWhitelist {
-		if !db.whitelist[ip] {
+		entry := db.whitelistMeta[ip]
+		if entry != nil && !entry.ExpiresAt.IsZero() && !now.Before(entry.ExpiresAt) {
+			continue
+		}
+		if !db.configWhitelist[ip] {
 			out.Whitelist = append(out.Whitelist, ip)
 		}
+	}
+	for ip := range db.configWhitelist {
+		out.Whitelist = append(out.Whitelist, ip)
 	}
 	slices.Sort(out.Permanent)
 	slices.Sort(out.Whitelist)
