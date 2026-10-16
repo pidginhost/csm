@@ -28,6 +28,10 @@ const (
 	RollbackFailed = "failed"
 )
 
+// FeedsCheckStep is the failed step of an apply whose rspamd loaded other
+// blocklist rules than CSM wrote; the daemon then holds feeds off.
+const FeedsCheckStep = "feeds_check"
+
 // Request is the one JSON object the daemon sends to the antispam worker. It
 // carries settings only: no command or Exim text. Its paths are the scan
 // socket and the DQS key file; the key itself never travels, because the

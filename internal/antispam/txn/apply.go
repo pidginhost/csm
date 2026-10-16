@@ -99,7 +99,11 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 			}
 		}
 		if err := t.checkRspamd(t.fwd, &s); err != nil {
-			return t.fail(StepRspamdCheck, err)
+			step := StepRspamdCheck
+			if errors.Is(err, errFeedsLoaded) {
+				step = StepFeedsCheck
+			}
+			return t.fail(step, err)
 		}
 		if err := t.reloadRspamd(t.fwd, t.rspamdProbe); err != nil {
 			return t.fail(StepRspamdReload, err)

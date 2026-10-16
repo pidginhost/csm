@@ -572,3 +572,22 @@ func setTargetFile(targets []TargetFacts, p string, file PathFacts) {
 		}
 	}
 }
+
+func TestAssessFeedDriftWarnsWithoutUninstall(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedPSBL}
+	f := installedFacts(t, s)
+	f.RspamdModules = CommandResult{Stdout: "Modules enabled: dkim, spf, rbl\nModules disabled (explicitly): asn, emails, fuzzy_check, greylist\n"}
+	f.RspamdRBL = CommandResult{Stdout: `{"rbls":{"csm_psbl":{},"spamhaus":{}}}`}
+	a := Assess(true, s, f)
+	if a.Action != Keep || len(a.Problems) != 1 {
+		t.Fatalf("assessment %+v", a)
+	}
+	if p := a.Problems[0]; p.Code != CodeFeed || p.Severity != Warning || p.Key != "rbl" {
+		t.Fatalf("problem %+v", p)
+	}
+	f.RspamdRBL = CommandResult{Stdout: `{"rbls":{"csm_psbl":{}}}`}
+	if a := Assess(true, s, f); a.Action != Keep || len(a.Problems) != 0 {
+		t.Fatalf("exact rules: %+v", a)
+	}
+}

@@ -148,6 +148,17 @@ func loadedConflicts(s Settings, f HostFacts) []Problem {
 		unreadable = true
 	} else {
 		conflicts = append(conflicts, checkRspamdModules(modules, s)...)
+		if len(s.DNSFeeds()) > 0 {
+			if rules, err := LoadedRBLRules([]byte(f.RspamdRBL.Stdout)); f.RspamdRBL.Err != nil || err != nil {
+				out = append(out, Problem{Code: CodeFeed, Severity: Warning, Key: "rbl",
+					Detail: "cannot read the blocklist rules rspamd loaded; check rspamadm configdump"})
+			} else {
+				for _, c := range CheckFeedsLoaded(modules, rules, s) {
+					// Feed drift never removes core (feeds spec 8.2).
+					out = append(out, Problem{Code: CodeFeed, Severity: Warning, Key: "rbl", Detail: c})
+				}
+			}
+		}
 	}
 	data := []byte(f.RspamdActions.Stdout)
 	if f.RspamdActions.Err != nil || !json.Valid(data) {

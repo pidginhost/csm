@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -816,5 +817,22 @@ func TestApplyLoadsTheDQSKey(t *testing.T) {
 	}
 	if got := f.file(antispam.RspamdLocalDir + "/actions.conf"); got != "<absent>" {
 		t.Fatal("apply wrote core files after refusing the key")
+	}
+}
+
+func TestApplyFeedsCheckRollsBack(t *testing.T) {
+	f := newFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	before := f.state()
+	f.modules = "Modules enabled: dkim, spf, rbl\n"
+	f.rbl = `{"rbls":{"csm_psbl":{},"spamhaus":{}}}`
+	s := enforce()
+	s.Feeds = []string{antispam.FeedPSBL}
+	r := f.host().Apply(s)
+	if r.OK || r.FailedStep != StepFeedsCheck || r.Rollback != antispam.RollbackVerified {
+		t.Fatalf("result %+v", r)
+	}
+	if after := f.state(); !maps.Equal(before, after) {
+		t.Fatal("rollback left changes")
 	}
 }

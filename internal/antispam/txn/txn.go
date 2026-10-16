@@ -42,7 +42,12 @@ const (
 	StepEximReload    = "exim_reload"
 	StepEximProbe     = "exim_probe"
 	StepComplete      = "complete"
+	StepFeedsCheck    = antispam.FeedsCheckStep
 )
+
+// errFeedsLoaded marks an apply whose rspamd loaded other blocklist rules
+// than CSM wrote.
+var errFeedsLoaded = errors.New("rspamd loaded other blocklist rules than CSM wrote")
 
 // Host runs transactions against the host. Every function field is a side
 // effect; tests replace them and set root to a temporary directory.
@@ -573,6 +578,16 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 	}
 	if on, err := antispam.PhishtankEnabled([]byte(phishing.Stdout)); err != nil || on {
 		return errors.New("rspamadm configdump -j phishing: rspamd configuration conflict")
+	}
+	if len(s.DNSFeeds()) > 0 {
+		dump := t.cmd(ctx, commandLimit, "rspamadm", "configdump", "-j", "rbl")
+		if dump.Err != nil {
+			return cmdErr("rspamadm configdump -j rbl", dump)
+		}
+		rules, err := antispam.LoadedRBLRules([]byte(dump.Stdout))
+		if err != nil || len(antispam.CheckFeedsLoaded(enabled, rules, *s)) > 0 {
+			return errFeedsLoaded
+		}
 	}
 	return nil
 }
