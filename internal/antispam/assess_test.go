@@ -557,6 +557,9 @@ func TestCurrentNeedsSecretFileMode(t *testing.T) {
 	for name, file := range map[string]PathFacts{
 		"world readable": {Path: FeedRBLPath, UID: 0, GID: 974, Mode: 0o644},
 		"wrong group":    {Path: FeedRBLPath, UID: 0, GID: 0, Mode: 0o640},
+		"setgid":         {Path: FeedRBLPath, UID: 0, GID: 974, Mode: fs.ModeSetgid | 0o640},
+		"setuid":         {Path: FeedRBLPath, UID: 0, GID: 974, Mode: fs.ModeSetuid | 0o640},
+		"sticky":         {Path: FeedRBLPath, UID: 0, GID: 974, Mode: fs.ModeSticky | 0o640},
 	} {
 		setTargetFile(f.Targets, FeedRBLPath, file)
 		if current(s, f) {
