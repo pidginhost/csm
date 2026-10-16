@@ -68,13 +68,22 @@ func ProbeQueries(s Settings) []ProbeQuery {
 // ClassifyProbe judges one answer. The second result is the meaning of an
 // error answer, from the catalogue.
 func ClassifyProbe(f Feed, q ProbeQuery, a ProbeAnswer) (ProbeStatus, string) {
-	for _, addr := range a.Addrs {
-		if meaning, ok := f.Errors[addr]; ok {
-			return ProbeRefused, meaning
-		}
-	}
 	scores := func(addr string) bool {
 		return slices.ContainsFunc(q.Zone.Codes, func(c Code) bool { return slices.Contains(c.Answers, addr) })
+	}
+	// Rspamd scores each returned address independently. A refusal alongside
+	// a listing does not make a listing of the negative test point harmless.
+	hasListing := slices.ContainsFunc(a.Addrs, scores)
+	if !q.Listed && hasListing {
+		return ProbeListsAll, ""
+	}
+	for _, addr := range a.Addrs {
+		if meaning, ok := f.Errors[addr]; ok {
+			if hasListing {
+				return ProbeUnexpected, ""
+			}
+			return ProbeRefused, meaning
+		}
 	}
 	switch {
 	case a.Failed:
@@ -85,8 +94,6 @@ func ClassifyProbe(f Feed, q ProbeQuery, a ProbeAnswer) (ProbeStatus, string) {
 		return ProbeOK, ""
 	case !q.Listed && a.NXDomain:
 		return ProbeOK, ""
-	case !q.Listed && slices.ContainsFunc(a.Addrs, scores):
-		return ProbeListsAll, ""
 	}
 	return ProbeUnexpected, ""
 }

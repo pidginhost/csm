@@ -286,8 +286,12 @@ Each `antispam_feed` finding names the feed, `rspamd_maps` for maps, or
   resolver. Check that the resolver recurses and can reach the list.
 - unexpected answer: the test point returned an unrecognised answer. Check
   the provider and resolver; only the configured listing codes can score.
+  A listed test point returning both listing and refusal codes also raises
+  this warning; it does not prove that the list stopped scoring.
 - answers for addresses it never lists (Critical): turn the feed off and
   reload CSM. CSM's probes only report findings; they do not disable feeds.
+  A listing code still triggers this warning when the reply also contains
+  a refusal code, since rspamd can score the listing code independently.
   rspamd stops querying a list only after its own monitoring detects it.
 
 An apply that fails at `feeds_check` is reported as `antispam_apply_failed`

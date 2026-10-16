@@ -54,3 +54,29 @@ func TestClassifyProbe(t *testing.T) {
 		t.Errorf("meaning %q", meaning)
 	}
 }
+
+func TestClassifyProbeMixedRefusalAndListing(t *testing.T) {
+	for _, name := range []string{FeedURIBL, FeedSURBL, FeedDNSWL, FeedSpamhausDQS} {
+		feed, _ := FeedByName(name)
+		zone := feed.Zones[0]
+		for refusal := range feed.Errors {
+			for _, code := range zone.Codes {
+				for _, answers := range [][]string{
+					{refusal, code.Answers[0]},
+					{code.Answers[0], refusal},
+				} {
+					q := ProbeQuery{Feed: name, Zone: zone}
+					got, _ := ClassifyProbe(feed, q, ProbeAnswer{Addrs: answers})
+					if got != ProbeListsAll {
+						t.Errorf("%s: mixed refusal and listing = %v, want lists-all", name, got)
+					}
+					q.Listed = true
+					got, _ = ClassifyProbe(feed, q, ProbeAnswer{Addrs: answers})
+					if got != ProbeUnexpected {
+						t.Errorf("%s: mixed reply for listed point = %v, want unexpected", name, got)
+					}
+				}
+			}
+		}
+	}
+}

@@ -241,6 +241,19 @@ func TestPassReportsListsAllAsCritical(t *testing.T) {
 	t.Fatalf("no critical finding: %+v", out.Findings)
 }
 
+func TestPassReportsMixedRefusalAndListingAsCritical(t *testing.T) {
+	r := probeReconciler(&fakeHost{}, func(name string) antispam.ProbeAnswer {
+		if strings.HasPrefix(name, "test.uribl.com.") {
+			return antispam.ProbeAnswer{Addrs: []string{"127.0.0.14"}}
+		}
+		return antispam.ProbeAnswer{Addrs: []string{"127.0.0.1", "127.0.0.2"}}
+	})
+	out := r.Pass(context.Background(), feedDesired(antispam.FeedURIBL))
+	if len(out.Findings) != 1 || out.Findings[0].DedupKey != "uribl:lists_all" || out.Findings[0].Severity != alert.Critical {
+		t.Fatalf("mixed reply must report one critical lists-all finding: %+v", out.Findings)
+	}
+}
+
 func TestProbeFindingsNeverCarryTheKey(t *testing.T) {
 	key := strings.ToLower(rand.Text())[:26]
 	for _, echo := range []func(name string) []string{
