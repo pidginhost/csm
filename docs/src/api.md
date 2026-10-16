@@ -1132,7 +1132,7 @@ POST /api/v1/geoip/batch         Batch GeoIP lookup (body: {"ips":["192.0.2.1"]}
 
 ```
 GET  /api/v1/threat/stats        Attack stats, type breakdown, hourly trend
-GET  /api/v1/threat/top-attackers Top attacking IPs with GeoIP (?limit=)
+GET  /api/v1/threat/top-attackers Top attacking IPs with GeoIP (?limit=&spam_only=1)
 GET  /api/v1/threat/ip           IP threat lookup (?ip=)
 GET  /api/v1/threat/events       IP event history (?ip=&limit=)
 GET  /api/v1/threat/whitelist    Whitelisted IPs

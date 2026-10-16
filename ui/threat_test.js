@@ -217,3 +217,47 @@ test('select-all never checks rows hidden by paging or filters', async () => {
     const boxes = Array.from(page.document.querySelectorAll('.bulk-ip-cb'));
     assert.deepEqual(boxes.filter(cb => cb.checked).map(cb => cb.getAttribute('data-ip')).sort(), ['192.0.2.1', '192.0.2.2']);
 });
+
+test('Spam column shows verdict counts, score and listing', async () => {
+    const row = attacker('198.51.100.80');
+    row.mail = { spam: 3, ham: 1 };
+    row.spam_score = 60;
+    const { page } = await threatPage([row, attacker('198.51.100.81')]);
+    const cells = page.document.querySelectorAll('#attackers-tbody tr');
+    const spamCell = cells[0].querySelector('td.spam-cell');
+    assert.match(spamCell.textContent, /3 spam/);
+    assert.match(spamCell.textContent, /1 ham/);
+    assert.match(spamCell.textContent, /score 60/);
+    assert.ok(spamCell.querySelector('.badge'), 'a listed sender shows a badge');
+    assert.equal(cells[1].querySelector('td.spam-cell').textContent.trim(), '—');
+});
+
+test('Spam evidence only asks the server for spam senders', async () => {
+    const { page } = await threatPage([attacker('198.51.100.82')]);
+    const select = page.document.getElementById('attackers-spam');
+    select.value = 'spam';
+    select.dispatchEvent(new page.window.Event('change'));
+    await settle();
+    assert.ok(page.requests.some((r) => r.url.includes('/api/v1/threat/top-attackers') && r.url.includes('spam_only=1')));
+});
+
+test('Spam evidence filter survives a reload', async () => {
+    const { page } = await threatPage([], { url: 'https://csm.example.test/threat?spam=spam' });
+    assert.equal(page.document.getElementById('attackers-spam').value, 'spam');
+    assert.ok(page.requests.some((r) => r.url.includes('/api/v1/threat/top-attackers') && r.url.includes('spam_only=1')));
+});
+
+test('IP detail lists mail login attacks and spam verdicts', async () => {
+    const { page } = await threatPage([], { url: 'https://csm.example.test/threat?ip=203.0.113.90' });
+    page.respond('/api/v1/threat/ip?ip=203.0.113.90', 200, {
+        ip: '203.0.113.90', verdict: 'suspicious', unified_score: 40, spam_score: 50,
+        attack_record: { event_count: 1, attack_counts: {}, accounts: {},
+            mail: { auth_attacks: 4, last_auth_attack: '2026-10-16T10:00:00Z', spam: 2, ham: 0 } }
+    });
+    page.respond('/api/v1/threat/events?ip=203.0.113.90', 200, items([]));
+    await settle();
+    const text = page.document.body.textContent;
+    assert.match(text, /Mail login attacks/);
+    assert.match(text, /Spam verdicts/);
+    assert.match(text, /2 spam, 0 ham, score 50/);
+});

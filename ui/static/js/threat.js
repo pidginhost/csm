@@ -78,9 +78,35 @@ function attackerURLInputs(countrySel, fromEl, toEl) {
         q: document.getElementById('attackers-search'),
         country: countrySel,
         verdict: document.getElementById('attackers-verdict'),
+        spam: document.getElementById('attackers-spam'),
         from: fromEl,
         to: toEl
     };
+}
+
+// spamCell shows a sender's scan verdicts: counts, the spam score and a
+// badge once the score lists it in the CSM IP map (50).
+function spamCell(r) {
+    var m = r.mail || {};
+    if (!m.spam && !m.ham) return '<td class="spam-cell">\u2014</td>';
+    var score = r.spam_score || 0;
+    var html = '<td class="spam-cell text-nowrap small">' + (m.spam || 0) + ' spam, ' + (m.ham || 0) + ' ham, score ' + score;
+    if (score >= 50) html += ' <span class="badge bg-warning text-dark" title="Listed in the CSM IP map">Listed</span>';
+    return html + '</td>';
+}
+
+// The spam filter is answered by the server: spam-only senders score 0 and
+// would never reach the top of the attacker list. The first load takes the
+// filter from the URL, before URL state is bound.
+var _attackerSpamFromURL = false;
+function attackerSpamOnly() {
+    var sel = document.getElementById('attackers-spam');
+    if (!sel) return false;
+    if (!_attackerSpamFromURL) {
+        _attackerSpamFromURL = true;
+        if (CSM.urlState.get('spam') === 'spam') sel.value = 'spam';
+    }
+    return sel.value === 'spam';
 }
 
 // Re-binding URL state on every re-render would stack listeners, so drop the
@@ -260,7 +286,7 @@ function loadTopAttackers() {
     var seq = ++_attackersLoadSeq;
     if (_attackersTable) { _attackersTable.destroy(); _attackersTable = null; }
     resetAttackerSelection();
-    CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(resp){
+    CSM.get('/api/v1/threat/top-attackers?limit=50' + (attackerSpamOnly() ? '&spam_only=1' : '')).then(function(resp){
     var data = resp.items;
     if (seq !== _attackersLoadSeq) return;
     var tbody=document.getElementById('attackers-tbody');
@@ -269,13 +295,15 @@ function loadTopAttackers() {
     var countrySel = populateAttackerCountryFilter(data || []);
     if(!data||data.length===0){
         _threatAttackerData = [];
-        tbody.innerHTML='<tr><td colspan="11" class="text-center text-muted">No attack data recorded yet</td></tr>';
+        tbody.innerHTML='<tr><td colspan="12" class="text-center text-muted">No attack data recorded yet</td></tr>';
         _bindAttackerURLState(countrySel, fromEl, toEl);
         resetAttackerSelection();
         return;
     }
     _threatAttackerData = data.map(function(r) {
-        return { ip: r.ip, hits: r.event_count, score: r.unified_score, country: r.country || '', blocked: r.currently_blocked ? 'Yes' : 'No' };
+        var m = r.mail || {};
+        return { ip: r.ip, hits: r.event_count, score: r.unified_score, country: r.country || '', blocked: r.currently_blocked ? 'Yes' : 'No',
+            spam: m.spam || 0, ham: m.ham || 0, spam_score: r.spam_score || 0 };
     });
     var html='';
     for(var i=0;i<data.length;i++){
@@ -291,6 +319,7 @@ function loadTopAttackers() {
         html+='<td>'+r.event_count+'</td>';
         html+='<td>'+typeBadges(r.attack_counts)+'</td>';
         html+='<td>'+(r.accounts?Object.keys(r.accounts).length:0)+'</td>';
+        html+=spamCell(r);
         html+='<td class="text-nowrap small">'+fmtDate(r.first_seen)+'</td>';
         html+='<td class="text-nowrap small">'+fmtDate(r.last_seen)+'</td>';
         html+='<td>'+statusBadge+'</td>';
@@ -370,6 +399,7 @@ function loadTopAttackers() {
 // Initial load (re-run in place after bulk block/whitelist).
 loadThreatStats();
 loadTopAttackers();
+document.getElementById('attackers-spam').addEventListener('change', loadTopAttackers);
 if (CSM.refresh) CSM.refresh.onRefresh(function() {
     loadThreatStats();
     loadTopAttackers();
@@ -418,6 +448,11 @@ document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
             html+='<tr><td class="text-muted">Accounts Targeted</td><td>'+(rec.accounts?Object.keys(rec.accounts).map(accountHTML).join(', '):'-')+'</td></tr>';
             html+='<tr><td class="text-muted">First Seen</td><td>'+fmtDate(rec.first_seen)+'</td></tr>';
             html+='<tr><td class="text-muted">Last Seen</td><td>'+fmtDate(rec.last_seen)+'</td></tr>';
+            if(rec.mail){
+                var mail=rec.mail;
+                if(mail.auth_attacks)html+='<tr><td class="text-muted">Mail login attacks</td><td>'+mail.auth_attacks+', last '+fmtDate(mail.last_auth_attack)+'</td></tr>';
+                if(mail.spam||mail.ham)html+='<tr><td class="text-muted">Spam verdicts</td><td>'+(mail.spam||0)+' spam, '+(mail.ham||0)+' ham, score '+(intel.spam_score||0)+'</td></tr>';
+            }
         }
         html+='</table>';
         html+='<div class="mt-3 d-flex gap-2 flex-wrap">';
@@ -612,7 +647,10 @@ document.getElementById('bulk-whitelist-btn').addEventListener('click', function
         {key:'hits', label:'Hits'},
         {key:'score', label:'Score'},
         {key:'country', label:'Country'},
-        {key:'blocked', label:'Blocked'}
+        {key:'blocked', label:'Blocked'},
+        {key:'spam', label:'Spam verdicts'},
+        {key:'ham', label:'Ham verdicts'},
+        {key:'spam_score', label:'Spam score'}
     ];
     document.querySelectorAll('[data-export]').forEach(function(el) {
         el.addEventListener('click', function(e) {

@@ -31,7 +31,7 @@ func (s *Server) apiThreatStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, adb.Stats())
 }
 
-// GET /api/v1/threat/top-attackers?limit=25
+// GET /api/v1/threat/top-attackers?limit=25[&spam_only=1]
 func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
 	limit := queryInt(r, "limit", 25)
 	if limit > 200 {
@@ -43,8 +43,15 @@ func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// One record past the limit tells whether the list was cut.
-	recs := adb.TopAttackers(limit + 1)
+	// One record past the limit tells whether the list was cut. Spam-only
+	// records score 0, so the spam filter lists them by spam score instead.
+	now := time.Now()
+	var recs []*attackdb.IPRecord
+	if r.URL.Query().Get("spam_only") == "1" {
+		recs = adb.TopSpamSenders(limit+1, now)
+	} else {
+		recs = adb.TopAttackers(limit + 1)
+	}
 	truncated := len(recs) > limit
 	if truncated {
 		recs = recs[:limit]
@@ -66,6 +73,7 @@ func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
 		Blocked      bool   `json:"currently_blocked"`
 		Country      string `json:"country,omitempty"`
 		ASOrg        string `json:"as_org,omitempty"`
+		SpamScore    int    `json:"spam_score,omitempty"`
 	}
 
 	results := make([]enriched, len(recs))
@@ -77,6 +85,7 @@ func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
 			AbuseScore:   intels[i].AbuseScore,
 			InThreatDB:   intels[i].InThreatDB,
 			Blocked:      intels[i].CurrentlyBlocked,
+			SpamScore:    attackdb.SpamScore(rec.Mail, now),
 		}
 		if gdb := s.geoIPDB.Load(); gdb != nil {
 			geo := gdb.Lookup(rec.IP)
