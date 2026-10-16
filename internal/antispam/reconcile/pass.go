@@ -62,7 +62,7 @@ type Reconciler struct {
 	// Feeds remembers feed holds and probe counts between passes.
 	Feeds *FeedState
 	// Probe asks server one DNS question; nil disables the feed probe.
-	Probe func(ctx context.Context, server netip.Addr, name string) antispam.ProbeAnswer
+	Probe func(ctx context.Context, server netip.AddrPort, name string) antispam.ProbeAnswer
 	// assess replaces antispam.Assess in tests.
 	assess func(enabled bool, s antispam.Settings, f antispam.HostFacts) antispam.Assessment
 }

@@ -275,3 +275,24 @@ func TestResolveFeedsDropsOnlyDQSForKeyProblems(t *testing.T) {
 		}
 	}
 }
+
+// A local resolver on a cPanel host often cannot use port 53, which
+// PowerDNS holds, so the probe must ask the port rspamd uses.
+func TestProbeServerKeepsThePort(t *testing.T) {
+	for _, tc := range []struct {
+		options, resolv, want string
+	}{
+		{`{"dns":{"nameserver":"127.0.0.1:5353:10"}}`, "", "127.0.0.1:5353"},
+		{`{"dns":{"nameserver":["[::1]:5300","10.0.0.2"]}}`, "", "[::1]:5300"},
+		{`{"dns":{"nameserver":"master-slave:10.0.0.2,127.0.0.1:5353"}}`, "", "10.0.0.2:53"},
+		{`{"dns":{}}`, "nameserver 127.0.0.1\n", "127.0.0.1:53"},
+	} {
+		got, err := ProbeServer([]byte(tc.options), tc.resolv)
+		if err != nil || got.String() != tc.want {
+			t.Errorf("ProbeServer(%s, %q) = %v, %v; want %s", tc.options, tc.resolv, got, err, tc.want)
+		}
+	}
+	if _, err := ProbeServer([]byte(`{"dns":{"nameserver":"ns1.example.com"}}`), ""); err == nil {
+		t.Error("accepted a host name")
+	}
+}

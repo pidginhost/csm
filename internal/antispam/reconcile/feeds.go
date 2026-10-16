@@ -126,7 +126,7 @@ func (r Reconciler) probeFeeds(ctx context.Context, s antispam.Settings, f antis
 	if r.Probe == nil || len(queries) == 0 {
 		return nil
 	}
-	servers, err := antispam.Nameservers([]byte(f.RspamdOptions.Stdout), f.ResolvConf)
+	server, err := antispam.ProbeServer([]byte(f.RspamdOptions.Stdout), f.ResolvConf)
 	if err != nil {
 		return nil // ResolveFeeds already turned DNS feeds off
 	}
@@ -136,7 +136,7 @@ func (r Reconciler) probeFeeds(ctx context.Context, s antispam.Settings, f antis
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			answers[i] = r.Probe(ctx, servers[0], q.Name)
+			answers[i] = r.Probe(ctx, server, q.Name)
 		}()
 	}
 	wg.Wait()

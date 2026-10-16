@@ -70,6 +70,28 @@ func secretFileOK(f HostFacts) bool {
 // (or its aliases) when set, else the nameserver lines of resolv.conf. An
 // entry CSM cannot parse is an error, never proof of a private resolver.
 func Nameservers(options []byte, resolvConf string) ([]netip.Addr, error) {
+	servers, err := nameservers(options, resolvConf)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]netip.Addr, len(servers))
+	for i, s := range servers {
+		out[i] = s.Addr()
+	}
+	return out, nil
+}
+
+// ProbeServer returns the first resolver rspamd uses, with its port: a
+// local resolver on a cPanel host often cannot listen on port 53.
+func ProbeServer(options []byte, resolvConf string) (netip.AddrPort, error) {
+	servers, err := nameservers(options, resolvConf)
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	return servers[0], nil
+}
+
+func nameservers(options []byte, resolvConf string) ([]netip.AddrPort, error) {
 	opts, err := dumpObjectAs[json.RawMessage](options, "options")
 	if err != nil {
 		return nil, errors.New("rspamd's options are not readable")
@@ -111,7 +133,7 @@ func Nameservers(options []byte, resolvConf string) ([]netip.Addr, error) {
 			}
 		}
 	}
-	var out []netip.Addr
+	var out []netip.AddrPort
 	for _, entry := range entries {
 		for _, prefix := range []string{"master-slave:", "round-robin:", "random:", "hash:"} {
 			if rest, ok := strings.CutPrefix(entry, prefix); ok {
@@ -139,45 +161,50 @@ func Nameservers(options []byte, resolvConf string) ([]netip.Addr, error) {
 
 // nameserverAddr reads one rspamd nameserver entry: an address, optionally
 // with a port and a weight (host:port:weight), IPv6 in brackets when a port
-// follows. A zone suffix (fe80::1%eth0) is dropped.
-func nameserverAddr(s string) (netip.Addr, error) {
+// follows. The port defaults to 53; a zone suffix (fe80::1%eth0) is dropped.
+func nameserverAddr(s string) (netip.AddrPort, error) {
 	if addr, err := netip.ParseAddr(s); err == nil {
-		return addr.WithZone(""), nil
+		return netip.AddrPortFrom(addr.WithZone(""), 53), nil
 	}
 	invalid := errors.New("rspamd has an invalid nameserver; use an IP address with an optional numeric port and weight")
 	host, suffix := s, ""
 	if strings.HasPrefix(s, "[") {
 		end := strings.IndexByte(s, ']')
 		if end < 0 {
-			return netip.Addr{}, invalid
+			return netip.AddrPort{}, invalid
 		}
 		host, suffix = s[1:end], s[end+1:]
 	} else if i := strings.Index(s, ":"); i > 0 {
 		host, suffix = s[:i], s[i:]
 	}
+	port := uint64(53)
 	if suffix != "" {
 		if suffix[0] != ':' {
-			return netip.Addr{}, invalid
+			return netip.AddrPort{}, invalid
 		}
 		parts := strings.Split(suffix[1:], ":")
 		if len(parts) > 2 {
-			return netip.Addr{}, invalid
+			return netip.AddrPort{}, invalid
 		}
 		for i, part := range parts {
 			bits := 32 // rspamd weights are unsigned integers.
 			if i == 0 {
 				bits = 16
 			}
-			if _, err := strconv.ParseUint(part, 10, bits); err != nil {
-				return netip.Addr{}, invalid
+			n, err := strconv.ParseUint(part, 10, bits)
+			if err != nil {
+				return netip.AddrPort{}, invalid
+			}
+			if i == 0 {
+				port = n
 			}
 		}
 	}
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
-		return netip.Addr{}, invalid
+		return netip.AddrPort{}, invalid
 	}
-	return addr.WithZone(""), nil
+	return netip.AddrPortFrom(addr.WithZone(""), uint16(port)), nil
 }
 
 // localResolver reports whether rspamd's queries stay on this host or a

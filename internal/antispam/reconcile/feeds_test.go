@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -207,7 +208,7 @@ func probeReconciler(h *fakeHost, answer func(name string) antispam.ProbeAnswer)
 	r.assess = func(bool, antispam.Settings, antispam.HostFacts) antispam.Assessment {
 		return antispam.Assessment{Action: antispam.Keep, Installed: true}
 	}
-	r.Probe = func(_ context.Context, _ netip.Addr, name string) antispam.ProbeAnswer { return answer(name) }
+	r.Probe = func(_ context.Context, _ netip.AddrPort, name string) antispam.ProbeAnswer { return answer(name) }
 	return r
 }
 
@@ -368,5 +369,26 @@ func TestPassSendsDQSOnlyWithAKeyReader(t *testing.T) {
 	}
 	if feeds := send(nil); feeds != nil {
 		t.Fatalf("no key reader: feeds %q", *feeds)
+	}
+}
+
+func TestPassProbesThroughTheResolverPort(t *testing.T) {
+	r := probeReconciler(&fakeHost{}, nil)
+	r.Collect = func(context.Context, string) antispam.HostFacts {
+		f := goodFeedFacts()
+		f.RspamdOptions = antispam.CommandResult{Stdout: `{"dns":{"nameserver":"127.0.0.1:5353"}}`}
+		return f
+	}
+	var mu sync.Mutex
+	var servers []string
+	r.Probe = func(_ context.Context, server netip.AddrPort, _ string) antispam.ProbeAnswer {
+		mu.Lock()
+		defer mu.Unlock()
+		servers = append(servers, server.String())
+		return antispam.ProbeAnswer{NXDomain: true}
+	}
+	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
+	if len(servers) != 2 || servers[0] != "127.0.0.1:5353" || servers[1] != "127.0.0.1:5353" {
+		t.Fatalf("probed %v", servers)
 	}
 }

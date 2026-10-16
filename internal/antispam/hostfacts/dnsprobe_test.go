@@ -63,18 +63,15 @@ func startDNS(t *testing.T, answers map[string]string, silent map[string]bool) n
 
 func TestQueryDNS(t *testing.T) {
 	addr := startDNS(t, map[string]string{"2.0.0.127.psbl.surriel.com.": "127.0.0.2"}, map[string]bool{"slow.example.": true})
-	old := dnsPort
-	dnsPort = addr.Port()
-	defer func() { dnsPort = old }()
 	ctx := context.Background()
-	if a := QueryDNS(ctx, addr.Addr(), "2.0.0.127.psbl.surriel.com"); a.Failed || a.NXDomain || len(a.Addrs) != 1 || a.Addrs[0] != "127.0.0.2" {
+	if a := QueryDNS(ctx, addr, "2.0.0.127.psbl.surriel.com"); a.Failed || a.NXDomain || len(a.Addrs) != 1 || a.Addrs[0] != "127.0.0.2" {
 		t.Fatalf("listed = %+v", a)
 	}
-	if a := QueryDNS(ctx, addr.Addr(), "1.0.0.127.psbl.surriel.com"); !a.NXDomain {
+	if a := QueryDNS(ctx, addr, "1.0.0.127.psbl.surriel.com"); !a.NXDomain {
 		t.Fatalf("unlisted = %+v", a)
 	}
 	start := time.Now()
-	if a := QueryDNS(ctx, addr.Addr(), "slow.example"); !a.Failed || time.Since(start) > 5*time.Second {
+	if a := QueryDNS(ctx, addr, "slow.example"); !a.Failed || time.Since(start) > 5*time.Second {
 		t.Fatalf("silent server = %+v after %v", a, time.Since(start))
 	}
 }
