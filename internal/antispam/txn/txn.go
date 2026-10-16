@@ -593,7 +593,7 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 		if dump.Err != nil {
 			return errors.Join(errFeedsLoaded, cmdErr("rspamadm configdump -j multimap", dump))
 		}
-		if len(antispam.CheckIPMapLoaded([]byte(dump.Stdout))) > 0 {
+		if len(antispam.CheckIPMapLoaded(enabled, []byte(dump.Stdout))) > 0 {
 			return errFeedsLoaded
 		}
 	}

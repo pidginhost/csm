@@ -27,6 +27,7 @@ func TestApplyRechecksIPMapPreconditions(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newFake(t)
 			f.multimap = loadedIPMapRule
+			f.modules = "Modules enabled: dkim, spf, multimap\n"
 			s := enforce()
 			s.Feeds = []string{antispam.FeedCSMIPMap, antispam.FeedRspamdMaps}
 			h := f.host()

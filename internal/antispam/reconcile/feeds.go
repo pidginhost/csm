@@ -20,7 +20,7 @@ import (
 type FeedState struct {
 	mu sync.Mutex
 	// held is the feed configuration whose apply failed the feeds check;
-	// DNS feeds stay off while the configuration is unchanged.
+	// Scoring feeds stay off while the configuration is unchanged.
 	held string
 	// scope fingerprints the resolver and queries without retaining a key.
 	scope [32]byte
@@ -66,7 +66,7 @@ func (st *FeedState) hold(configured antispam.Settings) {
 	st.held = feedConfig(configured)
 }
 
-// apply drops DNS feeds from resolved while the configured feeds are held,
+// apply drops scoring feeds from resolved while the configured feeds are held,
 // with one Warning per feed. A changed configuration lifts the hold.
 func (st *FeedState) apply(configured, resolved antispam.Settings, problems []antispam.Problem) (antispam.Settings, []antispam.Problem) {
 	if st == nil {

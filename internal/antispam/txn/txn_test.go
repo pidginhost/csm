@@ -929,6 +929,7 @@ func TestApplyIPMapRuleCheckRollsBack(t *testing.T) {
 	f := newFake(t)
 	wantOK(t, f.host().Apply(enforce()))
 	before := f.state()
+	f.modules = "Modules enabled: dkim, spf, multimap\n"
 	s := enforce()
 	s.Feeds = []string{antispam.FeedCSMIPMap}
 	r := f.host().Apply(s)
@@ -943,5 +944,41 @@ func TestApplyIPMapRuleCheckRollsBack(t *testing.T) {
 	wantOK(t, f.host().Apply(s))
 }
 
+func TestApplyIPMapOverridesRollBack(t *testing.T) {
+	for _, name := range []string{"module disabled", "score changed", "dump failed"} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			wantOK(t, f.host().Apply(enforce()))
+			before := f.state()
+			f.reset()
+			f.modules = "Modules enabled: dkim, spf, multimap\n"
+			f.multimap = loadedIPMapRule
+			switch name {
+			case "module disabled":
+				f.modules = "Modules enabled: dkim, spf\n"
+			case "score changed":
+				f.multimap = strings.Replace(f.multimap, `"score":5`, `"score":0`, 1)
+			case "dump failed":
+				f.fail["rspamadm configdump -j multimap"] = []int{1}
+			}
+			s := enforce()
+			s.Feeds = []string{antispam.FeedCSMIPMap}
+			r := f.host().Apply(s)
+			if r.OK || r.FailedStep != StepFeedsCheck || r.Rollback != antispam.RollbackVerified {
+				t.Fatalf("result %+v", r)
+			}
+			if !maps.Equal(before, f.state()) {
+				t.Fatal("rollback left changes")
+			}
+			if strings.Contains(r.Error, "secret config text") {
+				t.Fatal("result exposed command output")
+			}
+			if f.count("systemctl reload") != 0 || f.count(BuildEximConf) != 0 {
+				t.Fatal("unverified IP map reached a reload or Exim rebuild")
+			}
+		})
+	}
+}
+
 // loadedIPMapRule is configdump -j multimap with CSM's CSM_IP rule loaded.
-const loadedIPMapRule = `{"CSM_IP":{"type":"ip","map":"/var/lib/csm-rspamd/csm_ip.map","symbols":["CSM_IP_DROP","CSM_IP_BLOCKED","CSM_IP_MAIL_AUTH","CSM_IP_SPAM","CSM_IP_BLOCKLISTDE","CSM_IP_CINS","CSM_IP_CANARY"]}}`
+const loadedIPMapRule = `{"CSM_IP":{"type":"ip","score":5,"map":"/var/lib/csm-rspamd/csm_ip.map","symbols":["CSM_IP_DROP","CSM_IP_BLOCKED","CSM_IP_MAIL_AUTH","CSM_IP_SPAM","CSM_IP_BLOCKLISTDE","CSM_IP_CINS","CSM_IP_CANARY"]}}`

@@ -635,9 +635,36 @@ func TestAssessIPMapRuleDriftWarns(t *testing.T) {
 	if p := a.Problems[0]; p.Code != CodeFeed || p.Severity != Warning || p.Key != FeedCSMIPMap {
 		t.Fatalf("problem %+v", p)
 	}
-	f.RspamdConfig = CommandResult{Stdout: `{"multimap":{"redirector":{},"CSM_IP":{"type":"ip","map":"/var/lib/csm-rspamd/csm_ip.map",` +
+	f.RspamdConfig = CommandResult{Stdout: `{"multimap":{"redirector":{},"CSM_IP":{"type":"ip","score":5,"map":"/var/lib/csm-rspamd/csm_ip.map",` +
 		`"symbols":["CSM_IP_DROP","CSM_IP_BLOCKED","CSM_IP_MAIL_AUTH","CSM_IP_SPAM","CSM_IP_BLOCKLISTDE","CSM_IP_CINS","CSM_IP_CANARY"]}}}`}
 	if a := Assess(true, s, f); a.Action != Keep || len(a.Problems) != 0 {
 		t.Fatalf("loaded rule: %+v", a)
+	}
+}
+
+func TestAssessIPMapUnavailableWarns(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedCSMIPMap}
+	for _, name := range []string{"module disabled", "dump failed", "score changed"} {
+		t.Run(name, func(t *testing.T) {
+			f := installedFacts(t, s)
+			f.RspamdModules = CommandResult{Stdout: "Modules enabled: dkim, spf, multimap\n"}
+			f.RspamdConfig = CommandResult{Stdout: `{"multimap":{"CSM_IP":{"type":"ip","score":5,"map":"/var/lib/csm-rspamd/csm_ip.map","symbols":["CSM_IP_DROP","CSM_IP_BLOCKED","CSM_IP_MAIL_AUTH","CSM_IP_SPAM","CSM_IP_BLOCKLISTDE","CSM_IP_CINS","CSM_IP_CANARY"]}}}`}
+			switch name {
+			case "module disabled":
+				f.RspamdModules.Stdout = loadedModules
+			case "dump failed":
+				f.RspamdConfig.Err = errors.New("exit status 1")
+			case "score changed":
+				f.RspamdConfig.Stdout = strings.Replace(f.RspamdConfig.Stdout, `"score":5`, `"score":0`, 1)
+			}
+			a := Assess(true, s, f)
+			if a.Action != Keep || len(a.Problems) != 1 {
+				t.Fatalf("assessment %+v", a)
+			}
+			if p := a.Problems[0]; p.Code != CodeFeed || p.Severity != Warning || p.Key != FeedCSMIPMap {
+				t.Fatalf("problem %+v", p)
+			}
+		})
 	}
 }

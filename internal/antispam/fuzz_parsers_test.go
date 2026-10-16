@@ -11,6 +11,44 @@ import (
 	"testing"
 )
 
+func FuzzCheckIPMapLoaded(f *testing.F) {
+	for _, seed := range []string{
+		`{"CSM_IP":{"type":"ip","map":"/var/lib/csm-rspamd/csm_ip.map","score":5,"symbols":["CSM_IP_DROP","CSM_IP_BLOCKED","CSM_IP_MAIL_AUTH","CSM_IP_SPAM","CSM_IP_BLOCKLISTDE","CSM_IP_CINS","CSM_IP_CANARY"]}}`,
+		`{"CSM_IP":{"type":"ip","type":"from"}}`, `{"CSM_IP":null}`, `{}`, `null`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		on := map[string]bool{"multimap": true}
+		if len(CheckIPMapLoaded(nil, data)) == 0 {
+			t.Fatal("accepted a disabled module")
+		}
+		if len(CheckIPMapLoaded(on, data)) != 0 {
+			return
+		}
+		var sections map[string]json.RawMessage
+		if err := json.Unmarshal(data, &sections); err != nil {
+			t.Fatal("accepted invalid JSON")
+		}
+		var rule map[string]json.RawMessage
+		if err := json.Unmarshal(sections["CSM_IP"], &rule); err != nil || rule == nil {
+			t.Fatal("accepted a non-object rule")
+		}
+		for _, key := range []string{"type", "map", "symbols", "score"} {
+			value := rule[key]
+			delete(rule, key)
+			mutated, err := json.Marshal(map[string]any{"CSM_IP": rule})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(CheckIPMapLoaded(on, mutated)) == 0 {
+				t.Fatalf("accepted a rule without %s", key)
+			}
+			rule[key] = value
+		}
+	})
+}
+
 func FuzzRspamdComPaths(f *testing.F) {
 	for _, seed := range []string{
 		`{"multimap":"https://maps.rspamd.com/custom.txt"}`,

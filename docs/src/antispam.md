@@ -304,7 +304,7 @@ enabling antispam.
 ### Feed findings
 
 Each `antispam_feed` finding names the feed, `rspamd_maps` for maps, or
-`rbl` for loaded-rule checks:
+`rbl` for loaded DNS-rule checks:
 
 - feed off: the reason is in the details, such as a public resolver, a key
   file with the wrong owner or mode, or a file CSM cannot own. Fix it; the feed
@@ -319,6 +319,13 @@ Each `antispam_feed` finding names the feed, `rspamd_maps` for maps, or
   of blocklist rules from those CSM wrote, usually through an operator
   override. This is a warning only; CSM leaves the installed filtering in
   place. Correct the overrides, validate and reload rspamd, then reload CSM.
+- IP-map rule differs or cannot be verified: with `csm_ip_map` enabled,
+  CSM checks that multimap is enabled and that `CSM_IP` uses the managed
+  map, expected score and complete symbol set. Symbol order does not matter.
+  Extra rule options that can change matching or force an action are
+  conflicts. Failed configuration dumps also produce a warning. Routine
+  checks leave core filtering installed; correct the override or command
+  failure before retrying an apply.
 - refuses CSM's queries: the list answered with an error code, such as a
   refused resolver, a query limit or a rejected key. Those error-code answers
   add no score.
@@ -336,10 +343,10 @@ Each `antispam_feed` finding names the feed, `rspamd_maps` for maps, or
   DQS monitoring is disabled, so its lookups continue until you turn it off.
 
 An apply that fails at `feeds_check` is reported as `antispam_apply_failed`
-and attempts to roll back. CSM omits DNS feeds from subsequent applies until
-the enabled feed names or DQS key-file path changes, or CSM restarts. Fix
-the override before retrying. Reloading unchanged settings or replacing the
-key's contents does not clear this hold.
+and attempts to roll back. CSM omits DNS feeds and `csm_ip_map` from subsequent
+applies until the enabled feed names or DQS key-file path changes, or CSM
+restarts. Fix the override before retrying. Reloading unchanged settings or
+replacing the key's contents does not clear this hold.
 
 CSM probes only while antispam is enabled outside observe mode and the
 installed integration is current without blocking preconditions. It checks
