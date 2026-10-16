@@ -619,3 +619,25 @@ func TestAssessUnusableFeedRulesKeepCore(t *testing.T) {
 		})
 	}
 }
+
+// An override that drops or changes the CSM_IP rule is feed drift: core
+// stays and the operator gets a warning (feeds spec 8.2).
+func TestAssessIPMapRuleDriftWarns(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedCSMIPMap}
+	f := installedFacts(t, s)
+	f.RspamdModules = CommandResult{Stdout: "Modules enabled: dkim, spf, multimap\nModules disabled (explicitly): asn, emails, fuzzy_check, greylist\n"}
+	f.RspamdConfig = CommandResult{Stdout: `{"multimap":{"redirector":{}}}`}
+	a := Assess(true, s, f)
+	if a.Action != Keep || len(a.Problems) != 1 {
+		t.Fatalf("assessment %+v", a)
+	}
+	if p := a.Problems[0]; p.Code != CodeFeed || p.Severity != Warning || p.Key != FeedCSMIPMap {
+		t.Fatalf("problem %+v", p)
+	}
+	f.RspamdConfig = CommandResult{Stdout: `{"multimap":{"redirector":{},"CSM_IP":{"type":"ip","map":"/var/lib/csm-rspamd/csm_ip.map",` +
+		`"symbols":["CSM_IP_DROP","CSM_IP_BLOCKED","CSM_IP_MAIL_AUTH","CSM_IP_SPAM","CSM_IP_BLOCKLISTDE","CSM_IP_CINS","CSM_IP_CANARY"]}}}`}
+	if a := Assess(true, s, f); a.Action != Keep || len(a.Problems) != 0 {
+		t.Fatalf("loaded rule: %+v", a)
+	}
+}

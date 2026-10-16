@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/pidginhost/csm/internal/ipmap"
 )
 
 // LoadedRBLRules reads `rspamadm configdump -j rbl` and returns enabled
@@ -177,4 +179,42 @@ func rspamdComReference(value string) bool {
 	}
 	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	return host == "rspamd.com" || strings.HasSuffix(host, ".rspamd.com")
+}
+
+// CheckIPMapLoaded compares rspamd's loaded multimap rules with the CSM_IP
+// rule CSM writes. Each string names one difference; none repeats
+// configuration text.
+func CheckIPMapLoaded(multimap []byte) []string {
+	rules, err := dumpObjectAs[json.RawMessage](multimap, "multimap")
+	if err != nil {
+		return []string{"rspamd's multimap rules are not readable"}
+	}
+	raw, ok := rules["CSM_IP"]
+	if !ok {
+		return []string{"rspamd did not load CSM's CSM_IP rule"}
+	}
+	var rule struct {
+		Type    string          `json:"type"`
+		Map     json.RawMessage `json:"map"`
+		Symbols []string        `json:"symbols"`
+		Enabled *bool           `json:"enabled"`
+	}
+	if json.Unmarshal(raw, &rule) != nil {
+		return []string{"rspamd's CSM_IP rule is not a rule CSM wrote"}
+	}
+	var path string
+	if json.Unmarshal(rule.Map, &path) != nil {
+		var paths []string
+		if json.Unmarshal(rule.Map, &paths) == nil && len(paths) == 1 {
+			path = paths[0]
+		}
+	}
+	var want []string
+	for _, s := range ipmap.Symbols() {
+		want = append(want, s.Name)
+	}
+	if rule.Type != "ip" || path != ipmap.DefaultPath || !slices.Equal(rule.Symbols, want) || rule.Enabled != nil && !*rule.Enabled {
+		return []string{"rspamd's CSM_IP rule differs from the one CSM wrote; an override changes it"}
+	}
+	return nil
 }

@@ -46,7 +46,7 @@ const (
 )
 
 // errFeedsLoaded distinguishes feed verification failures from core failures.
-var errFeedsLoaded = errors.New("rspamd blocklist rules could not be verified against CSM's settings")
+var errFeedsLoaded = errors.New("rspamd feed rules could not be verified against CSM's settings")
 
 // Host runs transactions against the host. Every function field is a side
 // effect; tests replace them and set root to a temporary directory.
@@ -585,6 +585,15 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 		}
 		rules, err := antispam.LoadedRBLRules([]byte(dump.Stdout))
 		if err != nil || len(antispam.CheckFeedsLoaded(enabled, rules, *s)) > 0 {
+			return errFeedsLoaded
+		}
+	}
+	if s.HasFeed(antispam.FeedCSMIPMap) {
+		dump := t.cmd(ctx, commandLimit, "rspamadm", "configdump", "-j", "multimap")
+		if dump.Err != nil {
+			return errors.Join(errFeedsLoaded, cmdErr("rspamadm configdump -j multimap", dump))
+		}
+		if len(antispam.CheckIPMapLoaded([]byte(dump.Stdout))) > 0 {
 			return errFeedsLoaded
 		}
 	}

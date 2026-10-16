@@ -33,6 +33,9 @@ type fakeHost struct {
 	// rbl replaces the configdump of the rbl module ({"rbls":{}} by
 	// default) and modules the module list when set.
 	rbl, modules string
+	// multimap replaces the configdump of the multimap module ({} by
+	// default).
+	multimap string
 	// key is the DQS key file preflight reports.
 	key      antispam.KeyFacts
 	problems []antispam.Problem
@@ -177,6 +180,10 @@ func (f *fakeHost) run(ctx context.Context, limit time.Duration, name string, ar
 		return antispam.CommandResult{Stdout: f.rbl}
 	case line == "rspamadm configdump -j rbl":
 		return antispam.CommandResult{Stdout: `{"rbls":{}}`}
+	case line == "rspamadm configdump -j multimap" && f.multimap != "":
+		return antispam.CommandResult{Stdout: f.multimap}
+	case line == "rspamadm configdump -j multimap":
+		return antispam.CommandResult{Stdout: `{}`}
 	case line == "rspamadm configdump -j actions":
 		return antispam.CommandResult{Stdout: f.dumpActions()}
 	case line == "rspamadm configdump -j phishing":
@@ -912,4 +919,22 @@ func TestApplyFeedDumpFailureDoesNotExposeKey(t *testing.T) {
 	if r.OK || r.FailedStep != StepFeedsCheck || r.Rollback != antispam.RollbackVerified {
 		t.Fatalf("result %+v", r)
 	}
+}
+
+func TestApplyIPMapRuleCheckRollsBack(t *testing.T) {
+	f := newFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	before := f.state()
+	s := enforce()
+	s.Feeds = []string{antispam.FeedCSMIPMap}
+	r := f.host().Apply(s)
+	if r.OK || r.FailedStep != StepFeedsCheck || r.Rollback != antispam.RollbackVerified {
+		t.Fatalf("result %+v", r)
+	}
+	if !maps.Equal(before, f.state()) {
+		t.Fatal("rollback left changes")
+	}
+	f.reset()
+	f.multimap = `{"CSM_IP":{"type":"ip","map":"/var/lib/csm-rspamd/csm_ip.map","symbols":["CSM_IP_DROP","CSM_IP_BLOCKED","CSM_IP_MAIL_AUTH","CSM_IP_SPAM","CSM_IP_BLOCKLISTDE","CSM_IP_CINS","CSM_IP_CANARY"]}}`
+	wantOK(t, f.host().Apply(s))
 }

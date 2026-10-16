@@ -159,6 +159,17 @@ func loadedConflicts(s Settings, f HostFacts) []Problem {
 				}
 			}
 		}
+		if s.HasFeed(FeedCSMIPMap) {
+			// An unreadable full dump leaves the section empty and so reports
+			// the rule as not loaded.
+			section := []byte("{}")
+			if root, err := dumpObjectAs[json.RawMessage]([]byte(f.RspamdConfig.Stdout), "config"); err == nil && root["multimap"] != nil {
+				section = root["multimap"]
+			}
+			for _, c := range CheckIPMapLoaded(section) {
+				out = append(out, Problem{Code: CodeFeed, Severity: Warning, Key: FeedCSMIPMap, Detail: c})
+			}
+		}
 	}
 	data := []byte(f.RspamdActions.Stdout)
 	if f.RspamdActions.Err != nil || !json.Valid(data) {

@@ -221,3 +221,24 @@ func TestRspamdComPathsRejectsNonObjects(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckIPMapLoaded(t *testing.T) {
+	good := `{"CSM_IP":{"type":"ip","map":"/var/lib/csm-rspamd/csm_ip.map","score":5.0,` +
+		`"symbols":["CSM_IP_DROP","CSM_IP_BLOCKED","CSM_IP_MAIL_AUTH","CSM_IP_SPAM","CSM_IP_BLOCKLISTDE","CSM_IP_CINS","CSM_IP_CANARY"]},"freemail_from":{}}`
+	if got := CheckIPMapLoaded([]byte(good)); len(got) != 0 {
+		t.Fatalf("good rule flagged: %v", got)
+	}
+	for name, dump := range map[string]string{
+		"missing":     `{"freemail_from":{}}`,
+		"other map":   strings.Replace(good, "/var/lib/csm-rspamd/csm_ip.map", "/tmp/x.map", 1),
+		"other type":  strings.Replace(good, `"type":"ip"`, `"type":"from"`, 1),
+		"disabled":    strings.Replace(good, `"type":"ip"`, `"type":"ip","enabled":false`, 1),
+		"symbol lost": strings.Replace(good, `,"CSM_IP_CANARY"`, ``, 1),
+		"not a rule":  `{"CSM_IP":false}`,
+		"unreadable":  `nope`,
+	} {
+		if got := CheckIPMapLoaded([]byte(dump)); len(got) == 0 {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}
