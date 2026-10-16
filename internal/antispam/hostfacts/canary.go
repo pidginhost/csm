@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	canaryTimeout = 5 * time.Second
-	maxCanaryBody = 64 << 10
+	canaryTimeout  = 5 * time.Second
+	maxCanaryBody  = 64 << 10
+	maxCanaryReply = 2 * maxCanaryBody
 	// canaryMessage is the smallest message rspamd scans.
 	canaryMessage = "From: <canary@csm.invalid>\r\nSubject: csm canary\r\n\r\ncanary\r\n"
 )
@@ -44,18 +45,30 @@ func Canary(ctx context.Context, socket string) (string, error) {
 	if _, err = io.WriteString(conn, req); err != nil {
 		return "", err
 	}
-	reply := &io.LimitedReader{R: conn, N: 2*maxCanaryBody + 1}
+	return readCanaryReply(conn)
+}
+
+func readCanaryReply(conn io.ReadCloser) (string, error) {
+	reply := &io.LimitedReader{R: conn, N: maxCanaryReply + 1}
 	resp, err := http.ReadResponse(bufio.NewReader(reply), nil)
 	if err != nil {
 		return "", errors.New("rspamd /checkv2 returned an invalid HTTP response")
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		// Closing an unread HTTP body can drain it. This connection is never
+		// reused, so close it first rather than wait for a rejected reply.
+		_ = conn.Close()
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("rspamd /checkv2 returned HTTP %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCanaryBody+1))
 	if err != nil || len(body) > maxCanaryBody {
 		return "", errors.New("rspamd /checkv2 reply could not be read")
+	}
+	if reply.N == 0 {
+		return "", errors.New("rspamd /checkv2 reply is too large")
 	}
 	var result struct {
 		Symbols map[string]struct {
@@ -67,6 +80,13 @@ func Canary(ctx context.Context, socket string) (string, error) {
 	}
 	for _, o := range result.Symbols["CSM_IP_CANARY"].Options {
 		if gen, ok := strings.CutPrefix(o, "g"); ok {
+			// The writer emits a truncated SHA-256, not arbitrary reply text
+			// that could otherwise be repeated in a stale-map finding.
+			if len(gen) != 12 || strings.IndexFunc(gen, func(c rune) bool {
+				return (c < '0' || c > '9') && (c < 'a' || c > 'f')
+			}) >= 0 {
+				return "", errors.New("rspamd /checkv2 returned an invalid map generation")
+			}
 			return gen, nil
 		}
 	}

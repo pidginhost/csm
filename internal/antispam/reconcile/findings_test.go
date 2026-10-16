@@ -14,7 +14,7 @@ import (
 var testNow = time.Date(2026, 10, 13, 9, 0, 0, 0, time.UTC)
 
 func TestFindingChecksAreRegistered(t *testing.T) {
-	for _, name := range []string{CheckPrecondition, CheckApplyFailed, CheckRspamdDown, CheckRspamdRecovered, CheckScanError} {
+	for _, name := range []string{CheckPrecondition, CheckApplyFailed, CheckRspamdDown, CheckRspamdRecovered, CheckScanError, CheckIPMap} {
 		info, ok := checks.LookupCheck(name)
 		if !ok {
 			t.Errorf("%s is not registered", name)
@@ -79,7 +79,12 @@ func TestFindingDetailsEscapeTenantPaths(t *testing.T) {
 			if !ok || result.Severity != alert.Critical || !strings.HasPrefix(result.Details, "restoring "+tc.escaped+": conflict.") {
 				t.Errorf("worker failure lost the escaped path or rollback severity: %+v, %t", result, ok)
 			}
-			for _, f := range []alert.Finding{problem, result} {
+			ipMap := IPMapFinding(tc.path, testNow)
+			if ipMap.Check != CheckIPMap || ipMap.Severity != alert.Warning || !ipMap.Timestamp.Equal(testNow) ||
+				ipMap.Message != "Antispam IP map problem" || ipMap.Details != tc.escaped+". Core spam filtering is unaffected." {
+				t.Errorf("IP map finding lost its classification or escaped details: %+v", ipMap)
+			}
+			for _, f := range []alert.Finding{problem, result, ipMap} {
 				for _, c := range f.Message + f.Details {
 					if c < ' ' || c > '~' {
 						t.Fatalf("finding contains a control or non-ASCII character: %+v", f)

@@ -106,3 +106,39 @@ func FuzzReadPingReply(f *testing.F) {
 		}
 	})
 }
+
+func FuzzReadCanaryReply(f *testing.F) {
+	for _, reply := range []string{
+		"HTTP/1.1 200 OK\r\n\r\n" + `{"symbols":{"CSM_IP_CANARY":{"options":["gabcdef012345"]}}}`,
+		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n",
+		"HTTP/1.1 200 OK\r\n\r\n" + `{"symbols":{"CSM_IP_CANARY":{"options":["garbitrary reply text"]}}}`,
+		"HTTP/1.1 200 OK\r\nX-Padding: " + strings.Repeat("a", maxCanaryBody+100) + "\r\n\r\n{}" + strings.Repeat(" ", maxCanaryBody),
+		"HTTP/1.1 200 OK\r\nContent-Length: reply-marker\r\n\r\n",
+		"", "reply-marker\r\n\r\n",
+	} {
+		f.Add(reply)
+	}
+	f.Fuzz(func(t *testing.T, reply string) {
+		r := &countedReader{Reader: strings.NewReader(reply)}
+		gen, err := readCanaryReply(io.NopCloser(r))
+		if r.read > maxCanaryReply+1 {
+			t.Fatalf("read %d bytes beyond the reply budget", r.read)
+		}
+		if err != nil {
+			if gen != "" {
+				t.Fatal("failed probe returned a generation")
+			}
+			switch message := err.Error(); message {
+			case "rspamd /checkv2 returned an invalid HTTP response", "rspamd /checkv2 reply could not be read",
+				"rspamd /checkv2 reply is too large", "rspamd /checkv2 reply is not JSON",
+				"rspamd /checkv2 returned an invalid map generation":
+			default:
+				if !strings.HasPrefix(message, "rspamd /checkv2 returned HTTP ") || len(message) > 33 {
+					t.Fatalf("unexpected error text: %q", message)
+				}
+			}
+		} else if gen != "" && (len(gen) != 12 || strings.Trim(gen, "0123456789abcdef") != "") {
+			t.Fatalf("reply returned an invalid generation: %q", gen)
+		}
+	})
+}

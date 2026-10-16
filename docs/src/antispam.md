@@ -439,6 +439,12 @@ removed; scores can change and external lists can become active again.
 | `antispam_rspamd_recovered` | Warning | Two probes in a row succeeded after an outage. |
 | `antispam_scan_error` | Warning | Exim logged a failed scan. One finding covers every failure until a scan succeeds. |
 | `antispam_feed` | Warning, or Critical when a list answers for everything | A feed or map redirect is off, loaded rules differ, a list misbehaves, or rspamd still fetches maps from rspamd.com. These findings alone do not disable filtering. See [Feeds](#feeds). |
+| `antispam_ip_map` | Warning | The IP map could not be written or rspamd has not confirmed the current map. |
+
+The IP map probe accepts only a complete, bounded reply and a valid map
+generation. Rejected replies close the connection immediately; malformed
+generation text is never repeated in warnings. This check does not change
+mail filtering.
 
 While rspamd is down or scans fail, mail is delivered without spam filtering.
 Exim adds no rejection for a scanner failure, and other mail checks keep

@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/textproto"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // serveRspamd answers one request on a unix socket with body and sends the
@@ -78,5 +80,135 @@ func TestCanaryWithoutTheSymbol(t *testing.T) {
 	sock, _ = serveRspamd(t, `not json`)
 	if _, err := Canary(context.Background(), sock); err == nil || strings.Contains(err.Error(), "not json") {
 		t.Fatalf("bad reply = %v", err)
+	}
+}
+
+func TestCanaryDoesNotDrainRejectedReply(t *testing.T) {
+	for name, reply := range map[string]string{
+		"status": "HTTP/1.1 503 Unavailable\r\nContent-Length: 1048576\r\n\r\n",
+		"body": "HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\n" +
+			strings.Repeat("a", maxCanaryBody+1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			sock := serveReply(t, reply, true)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { _, err := Canary(ctx, sock); done <- err }()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("rejected reply accepted")
+				}
+			case <-time.After(time.Second):
+				cancel()
+				<-done
+				t.Fatal("Canary drained the rejected reply instead of closing the connection")
+			}
+		})
+	}
+}
+
+func TestCanaryDoesNotTreatWireLimitAsEOF(t *testing.T) {
+	body := `{"symbols":{"CSM_IP_CANARY":{"options":["gabcdef012345"]}}}`
+	reply := "HTTP/1.1 200 OK\r\nX-Padding: " + strings.Repeat("a", maxCanaryBody+100) +
+		"\r\n\r\n" + body + strings.Repeat(" ", maxCanaryBody)
+	gen, err := Canary(context.Background(), serveReply(t, reply, false))
+	if err == nil || gen != "" {
+		t.Fatalf("truncated oversized reply accepted: generation=%q err=%v", gen, err)
+	}
+}
+
+func TestCanaryRejectsMalformedGeneration(t *testing.T) {
+	for _, option := range []string{"g", "gshort", "gabcdef0123450", "gABCDEF012345", "gabcdef01234z", "g\nreply-marker"} {
+		t.Run(strconv.Quote(option), func(t *testing.T) {
+			body := fmt.Sprintf(`{"symbols":{"CSM_IP_CANARY":{"options":[%s]}}}`, strconv.Quote(option))
+			gen, err := Canary(context.Background(), serveReply(t,
+				fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n%s", len(body), body), false))
+			if gen != "" || err == nil || strings.Contains(err.Error(), "reply-marker") {
+				t.Fatalf("malformed generation not safely rejected: generation=%q err=%v", gen, err)
+			}
+		})
+	}
+}
+
+func TestReadCanaryReplyAcceptsValidFraming(t *testing.T) {
+	const body = `{"symbols":{"CSM_IP_CANARY":{"options":["gabcdef012345"]}}}`
+	for name, reply := range map[string]string{
+		"chunked": fmt.Sprintf("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n0\r\n\r\n", len(body), body),
+		"body boundary": fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Length: %d\r\n\r\n", maxCanaryBody) +
+			body + strings.Repeat(" ", maxCanaryBody-len(body)),
+		"EOF": "HTTP/1.1 200 OK\r\n\r\n" + body,
+	} {
+		t.Run(name, func(t *testing.T) {
+			gen, err := readCanaryReply(io.NopCloser(strings.NewReader(reply)))
+			if err != nil || gen != "abcdef012345" {
+				t.Fatalf("valid reply refused: generation=%q err=%v", gen, err)
+			}
+		})
+	}
+}
+
+func TestCanaryRejectsInvalidReplies(t *testing.T) {
+	const marker = "reply-marker"
+	for name, reply := range map[string]string{
+		"status line": marker + "\r\n\r\n",
+		"header":      "HTTP/1.1 200 OK\r\n" + marker + "\r\n\r\n",
+		"length":      "HTTP/1.1 200 OK\r\nContent-Length: " + marker + "\r\n\r\n",
+		"headers too large": "HTTP/1.1 200 OK\r\nX-Padding: " +
+			strings.Repeat("a", maxCanaryReply) + "\r\n\r\n{}",
+		"truncated": "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{}",
+		"JSON":      "HTTP/1.1 200 OK\r\n\r\n" + marker,
+		"options type": "HTTP/1.1 200 OK\r\n\r\n" +
+			`{"symbols":{"CSM_IP_CANARY":{"options":"` + marker + `"}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			gen, err := readCanaryReply(io.NopCloser(strings.NewReader(reply)))
+			if err == nil || gen != "" || strings.Contains(err.Error(), marker) {
+				t.Fatalf("invalid reply not safely rejected: generation=%q err=%v", gen, err)
+			}
+		})
+	}
+}
+
+func TestCanaryCancelsPendingReply(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		t.Run(fmt.Sprintf("deadline=%t", deadline), func(t *testing.T) {
+			entered := make(chan struct{})
+			sock := serve(t, t.TempDir(), func(_ http.ResponseWriter, r *http.Request) {
+				if _, err := io.Copy(io.Discard, r.Body); err != nil {
+					t.Errorf("read request body: %v", err)
+					return
+				}
+				close(entered)
+				<-r.Context().Done()
+			})
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if deadline {
+				ctx, cancel = context.WithTimeout(context.Background(), 200*time.Millisecond)
+			} else {
+				ctx, cancel = context.WithCancel(context.Background())
+			}
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { _, err := Canary(ctx, sock); done <- err }()
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("probe did not reach the server")
+			}
+			if !deadline {
+				cancel()
+			}
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("canceled probe succeeded")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("canceled probe waited for its timeout")
+			}
+		})
 	}
 }
