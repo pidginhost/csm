@@ -20,6 +20,7 @@ const (
 	CheckRspamdDown      = "antispam_rspamd_down"
 	CheckRspamdRecovered = "antispam_rspamd_recovered"
 	CheckScanError       = "antispam_scan_error"
+	CheckFeed            = "antispam_feed"
 )
 
 // clean escapes control and non-ASCII characters: problem details and
@@ -27,6 +28,19 @@ const (
 func clean(s string) string {
 	q := strconv.QuoteToASCII(s)
 	return q[1 : len(q)-1]
+}
+
+// feedFinding reports a feed or map redirect CSM left out, or loaded
+// blocklist rules that differ from CSM's. Feed problems never block core.
+func feedFinding(p antispam.Problem, now time.Time) alert.Finding {
+	return alert.Finding{
+		Severity:  alert.Warning,
+		Check:     CheckFeed,
+		DedupKey:  p.Key,
+		Message:   "Antispam feed problem: " + clean(p.Key),
+		Details:   clean(p.Detail) + ". Core spam filtering is unaffected.",
+		Timestamp: now,
+	}
 }
 
 // problemFinding reports one failed precondition and what CSM does about it.

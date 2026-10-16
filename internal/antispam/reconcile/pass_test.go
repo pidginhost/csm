@@ -32,7 +32,7 @@ func (h *fakeHost) reconciler() Reconciler {
 		Invalidate: func(context.Context) error { h.invalidated++; return nil },
 		Collect: func(_ context.Context, socket string) antispam.HostFacts {
 			h.collected = append(h.collected, socket)
-			return antispam.HostFacts{}
+			return goodFeedFacts()
 		},
 		Installed: func() antispam.HostFacts {
 			h.installed++
@@ -332,7 +332,7 @@ func TestPassReportsWorkerTimeout(t *testing.T) {
 	out := h.reconciler().Pass(context.Background(), desired(true))
 	if !errors.Is(out.Err, context.DeadlineExceeded) || out.Retry != 0 || len(out.Findings) != 1 ||
 		out.Findings[0].Check != CheckApplyFailed || out.Findings[0].Message != "Antispam apply returned no result" ||
-		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed}) {
+		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed}) {
 		t.Fatalf("outcome %+v", out)
 	}
 }
@@ -357,7 +357,7 @@ func TestPassKeepsWorkerResultAfterCancellation(t *testing.T) {
 	if out.Err != nil || out.Retry != 0 || len(out.Findings) != 1 ||
 		out.Findings[0].Check != CheckApplyFailed || out.Findings[0].Severity != alert.Critical ||
 		!strings.Contains(out.Findings[0].Details, "could not confirm") ||
-		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed}) {
+		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed}) {
 		t.Fatalf("outcome %+v", out)
 	}
 }
@@ -404,7 +404,7 @@ func TestPassObservePreconditionsDescribeNoChanges(t *testing.T) {
 // settled. A canceled pass settles nothing, and a busy one leaves the last
 // apply result in place until the retry.
 func TestPassNamesTheChecksItSettled(t *testing.T) {
-	both := []string{CheckPrecondition, CheckApplyFailed}
+	both := []string{CheckPrecondition, CheckApplyFailed, CheckFeed}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, tc := range []struct {
@@ -426,7 +426,7 @@ func TestPassNamesTheChecksItSettled(t *testing.T) {
 			context.Background(), Desired{Observe: true}, both},
 		{"busy", &fakeHost{assessment: antispam.Assessment{Action: antispam.Install},
 			result: antispam.Result{Operation: antispam.OpApply, Busy: true, FailedStep: "lock", Rollback: antispam.RollbackNone}},
-			context.Background(), desired(true), []string{CheckPrecondition}},
+			context.Background(), desired(true), []string{CheckPrecondition, CheckFeed}},
 		{"canceled", &fakeHost{}, canceled, desired(true), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

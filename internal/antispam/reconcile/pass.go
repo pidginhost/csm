@@ -56,6 +56,10 @@ type Reconciler struct {
 	Run func(ctx context.Context, req antispam.Request) (antispam.Result, error)
 	// Now stamps findings.
 	Now func() time.Time
+	// ReadKey reads the Spamhaus DQS key file; nil disables spamhaus_dqs.
+	ReadKey func(path string) antispam.KeyFacts
+	// Feeds remembers feed holds and probe counts between passes.
+	Feeds *FeedState
 	// assess replaces antispam.Assess in tests.
 	assess func(enabled bool, s antispam.Settings, f antispam.HostFacts) antispam.Assessment
 }
@@ -107,6 +111,9 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	var f antispam.HostFacts
 	if d.Enabled {
 		f = r.Collect(ctx, d.Settings.Socket)
+		if d.Settings.HasFeed(antispam.FeedSpamhausDQS) && r.ReadKey != nil {
+			f.DQSKey = r.ReadKey(d.Settings.DQSKeyFile)
+		}
 	} else {
 		f = r.Installed()
 	}
@@ -118,10 +125,26 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if assess == nil {
 		assess = antispam.Assess
 	}
-	a := assess(d.Enabled, d.Settings, f)
+	settings, feedProblems := d.Settings, []antispam.Problem(nil)
+	if d.Enabled {
+		settings, feedProblems = antispam.ResolveFeeds(d.Settings, f)
+		settings, feedProblems = r.Feeds.apply(d.Settings, settings, feedProblems)
+	}
+	a := assess(d.Enabled, settings, f)
 	now := r.Now()
-	out := Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed}}
+	out := Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed}}
 	for _, p := range a.Problems {
+		if p.Code == antispam.CodeFeed {
+			feedProblems = append(feedProblems, p)
+		}
+	}
+	for _, p := range mergeByKey(feedProblems) {
+		out.Findings = append(out.Findings, feedFinding(p, now))
+	}
+	for _, p := range a.Problems {
+		if p.Code == antispam.CodeFeed {
+			continue
+		}
 		finding := problemFinding(p, now)
 		if d.Observe {
 			finding.Details = clean(p.Detail) + ". CSM changes nothing in observe mode."
@@ -140,7 +163,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	var req antispam.Request
 	switch a.Action {
 	case antispam.Install:
-		req = antispam.ApplyRequest(d.Settings)
+		req = antispam.ApplyRequest(settings)
 	case antispam.Uninstall:
 		req = antispam.RemoveRequest()
 	default:
@@ -154,7 +177,10 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	if result.Busy {
 		out.Retry = BusyRetry
-		out.Checks = []string{CheckPrecondition}
+		out.Checks = []string{CheckPrecondition, CheckFeed}
+	}
+	if result.FailedStep == antispam.FeedsCheckStep {
+		r.Feeds.hold(d.Settings)
 	}
 	if finding, ok := resultFinding(req.Operation, result, err, now); ok {
 		out.Findings = append(out.Findings, finding)
