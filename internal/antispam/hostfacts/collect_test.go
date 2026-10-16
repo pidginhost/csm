@@ -635,3 +635,32 @@ func TestServiceGroupPrefersUnitGroup(t *testing.T) {
 		}
 	}
 }
+
+func TestRspamdLogFacts(t *testing.T) {
+	d := t.TempDir()
+	logDir := filepath.Join(d, "rspamd")
+	mkdir(t, logDir)
+	logFile := filepath.Join(logDir, "rspamd.log")
+	write(t, logFile, "")
+	if err := os.Chmod(logFile, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dump := func(typ, file string) antispam.CommandResult {
+		return antispam.CommandResult{Stdout: `{"logging":{"type":"` + typ + `","filename":"` + file + `","level":"info"}}`}
+	}
+	l := rspamdLog(dump("file", logFile))
+	if l.Err != nil || l.Type != "file" || l.Path != logFile || l.Missing || l.File.Mode.Perm() != 0o644 || len(l.Parents) == 0 {
+		t.Fatalf("file log = %+v", l)
+	}
+	if l := rspamdLog(dump("file", filepath.Join(logDir, "absent.log"))); l.Err != nil || !l.Missing {
+		t.Fatalf("absent log = %+v", l)
+	}
+	if l := rspamdLog(dump("console", "")); l.Err != nil || l.Type != "console" {
+		t.Fatalf("console log = %+v", l)
+	}
+	for _, bad := range []antispam.CommandResult{{Err: errors.New("boom")}, {Stdout: "nope"}, {Stdout: `{"logging":{}}`}, dump("file", "relative.log")} {
+		if l := rspamdLog(bad); l.Err == nil {
+			t.Errorf("accepted %+v", bad)
+		}
+	}
+}

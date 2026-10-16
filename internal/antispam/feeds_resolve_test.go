@@ -2,6 +2,7 @@ package antispam
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/netip"
@@ -294,5 +295,42 @@ func TestFirstNameserverKeepsThePort(t *testing.T) {
 	}
 	if _, err := Nameservers([]byte(`{"dns":{"nameserver":"ns1.example.com"}}`), ""); err == nil {
 		t.Error("accepted a host name")
+	}
+}
+
+func TestLogFactsExposed(t *testing.T) {
+	dirs := []PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}, {Path: "/var/log/rspamd", Mode: fs.ModeDir | 0o755}}
+	closed := []PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}, {Path: "/var/log/rspamd", Mode: fs.ModeDir | 0o750}}
+	for name, tc := range map[string]struct {
+		l    LogFacts
+		want bool
+	}{
+		"not collected":    {LogFacts{}, false},
+		"console":          {LogFacts{Type: "console"}, false},
+		"syslog":           {LogFacts{Type: "syslog"}, false},
+		"private file":     {LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", File: PathFacts{Mode: 0o640}, Parents: dirs}, false},
+		"world readable":   {LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", File: PathFacts{Mode: 0o644}, Parents: dirs}, true},
+		"closed directory": {LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", File: PathFacts{Mode: 0o644}, Parents: closed}, false},
+		"not created yet":  {LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", Missing: true, Parents: dirs}, true},
+		"unreadable":       {LogFacts{Err: errors.New("configdump failed")}, true},
+	} {
+		if got, _ := tc.l.Exposed(); got != tc.want {
+			t.Errorf("%s: exposed = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+func TestResolveFeedsDropsDQSWhileRspamdLogIsReadable(t *testing.T) {
+	f := feedFacts()
+	f.RspamdLog = LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", File: PathFacts{Mode: 0o644},
+		Parents: []PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}, {Path: "/var/log/rspamd", Mode: fs.ModeDir | 0o755}}}
+	got, problems := ResolveFeeds(dqsSettings(), f)
+	if !slices.Equal(got.Feeds, []string{FeedPSBL}) || got.DQSKey.Reveal() != "" || len(problems) != 1 ||
+		problems[0].Key != FeedSpamhausDQS || !strings.Contains(problems[0].Detail, "/var/log/rspamd/rspamd.log") {
+		t.Fatalf("got %+v, problems %+v", got, problems)
+	}
+	f.RspamdLog.File.Mode = 0o640
+	if got, problems := ResolveFeeds(dqsSettings(), f); !got.HasFeed(FeedSpamhausDQS) || len(problems) != 0 {
+		t.Fatalf("private log: got %+v, problems %+v", got, problems)
 	}
 }

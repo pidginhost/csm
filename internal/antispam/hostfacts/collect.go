@@ -2,6 +2,7 @@ package hostfacts
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -93,6 +94,7 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	f.RspamdPhishing = c.run(ctx, "rspamadm", "configdump", "-j", "phishing")
 	f.RspamdRBL = c.run(ctx, "rspamadm", "configdump", "-j", "rbl")
 	f.RspamdConfig = c.run(ctx, "rspamadm", "configdump", "-j")
+	f.RspamdLog = rspamdLog(f.RspamdConfig)
 	f.RspamdService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...)
 	f.EximService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.EximUnit)...)
 	_, f.SystemdRunErr = c.lookPath("systemd-run")
@@ -303,4 +305,40 @@ func exists(p string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+// rspamdLog reads rspamd's log destination from `rspamadm configdump -j`
+// and, for a file, the file and its directories.
+func rspamdLog(dump antispam.CommandResult) antispam.LogFacts {
+	var out antispam.LogFacts
+	var d struct {
+		Logging struct {
+			Type     string `json:"type"`
+			Filename string `json:"filename"`
+		} `json:"logging"`
+	}
+	if dump.Err != nil || json.Unmarshal([]byte(dump.Stdout), &d) != nil || d.Logging.Type == "" {
+		out.Err = errors.New("rspamd's logging settings are not readable")
+		return out
+	}
+	out.Type, out.Path = d.Logging.Type, d.Logging.Filename
+	if out.Type != "file" {
+		return out
+	}
+	if !filepath.IsAbs(out.Path) {
+		out.Err = errors.New("rspamd's log file is not an absolute path")
+		return out
+	}
+	if out.Parents, out.Err = chain(filepath.Dir(out.Path)); out.Err != nil {
+		return out
+	}
+	switch facts, err := pathFacts(out.Path); {
+	case errors.Is(err, fs.ErrNotExist):
+		out.Missing = true
+	case err != nil:
+		out.Err = err
+	default:
+		out.File = facts
+	}
+	return out
 }

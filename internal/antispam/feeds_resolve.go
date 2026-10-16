@@ -255,9 +255,13 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 	}
 	if s.HasFeed(FeedSpamhausDQS) {
 		key, err := LoadDQSKey(f.DQSKey)
+		exposed, why := f.RspamdLog.Exposed()
 		switch {
 		case err != nil:
 			drop([]string{FeedSpamhausDQS}, err.Error())
+		case exposed:
+			drop([]string{FeedSpamhausDQS}, why+", and rspamd writes failed DQS lookups, which contain the key, to it; "+
+				"make the log readable only by root and rspamd, for example chmod 750 on its directory")
 		case f.RspamdGID < 0:
 			drop([]string{FeedSpamhausDQS}, "rspamd's group is unknown, so CSM cannot make the key file readable by rspamd only")
 		default:
@@ -268,4 +272,39 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 		s.DQSKey = Secret{}
 	}
 	return s, problems
+}
+
+// LogFacts is rspamd's log destination as the collector found it. Type is
+// rspamd's logging.type; for a file, File and Parents describe the log
+// file (unset when Missing) and its directories.
+type LogFacts struct {
+	Type    string
+	Path    string
+	Missing bool
+	File    PathFacts
+	Parents []PathFacts
+	Err     error
+}
+
+// Exposed reports whether users other than root and rspamd may read
+// rspamd's log: rspamd writes every failed lookup name there, and DQS
+// lookup names hold the key. A log CSM cannot check counts as exposed; a
+// file rspamd has yet to create counts as readable. Only file logs are
+// judged: console output goes to the journal.
+func (l LogFacts) Exposed() (bool, string) {
+	switch {
+	case l.Err != nil:
+		return true, "CSM cannot check who can read rspamd's log"
+	case l.Type != "file":
+		return false, ""
+	}
+	for _, p := range l.Parents {
+		if p.Mode.Perm()&0o001 == 0 {
+			return false, ""
+		}
+	}
+	if l.Missing || l.File.Mode.Perm()&0o004 != 0 {
+		return true, "rspamd's log " + l.Path + " is readable by other users"
+	}
+	return false, ""
 }

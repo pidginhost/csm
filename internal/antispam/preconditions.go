@@ -133,6 +133,9 @@ type HostFacts struct {
 	// DQSKey is the Spamhaus DQS key file. Collect leaves it unset; the
 	// caller reads it only when spamhaus_dqs is enabled.
 	DQSKey KeyFacts
+	// RspamdLog is where rspamd writes its log, which can hold DQS lookup
+	// names.
+	RspamdLog LogFacts
 	// Record is CSM's completion record as found on disk.
 	Record RecordFacts
 	// MonitoredLog is the Exim main log CSM reads markers from.

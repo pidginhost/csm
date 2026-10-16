@@ -125,6 +125,11 @@ func renderRBL(s Settings, feeds []Feed) string {
 				fmt.Fprintf(&b, "    checks = [\"from\"];\n    ipv4 = %t;\n    ipv6 = %t;\n"+
 					"    exclude_local = true;\n    exclude_users = true;\n    unknown = false;\n", z.IPv4, z.IPv6)
 			}
+			if f.NeedsKey {
+				// rspamd's monitor logs a failing lookup name, which here holds
+				// the key; CSM's probe asks the same questions.
+				b.WriteString("    disable_monitoring = true;\n")
+			}
 			b.WriteString("    returncodes {\n")
 			for _, c := range z.Codes {
 				fmt.Fprintf(&b, "      %s = [\"%s\"];\n", c.Symbol, strings.Join(c.Answers, "\", \""))
