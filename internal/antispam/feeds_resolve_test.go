@@ -187,7 +187,9 @@ func feedFacts() HostFacts {
 		RspamdVersion: CommandResult{Stdout: "Rspamd daemon version 4.2.2\n"},
 		ResolvConf:    "nameserver 127.0.0.1\n",
 		RspamdGID:     974,
-		DQSKey:        KeyFacts{Path: "/etc/csm/k", UID: 0, Mode: 0o600, Key: NewSecret(testKey)},
+		RspamdLog: LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log",
+			File: PathFacts{GID: 974, Mode: 0o640}, Parents: protectedParents()},
+		DQSKey: KeyFacts{Path: "/etc/csm/k", UID: 0, Mode: 0o600, Key: NewSecret(testKey)},
 	}
 }
 
@@ -306,16 +308,17 @@ func TestLogFactsExposed(t *testing.T) {
 		l    LogFacts
 		want bool
 	}{
-		"not collected":    {LogFacts{}, false},
-		"console":          {LogFacts{Type: "console"}, false},
-		"syslog":           {LogFacts{Type: "syslog"}, false},
+		"not collected":    {LogFacts{}, true},
+		"console":          {LogFacts{Type: "console"}, true},
+		"syslog":           {LogFacts{Type: "syslog"}, true},
+		"rspamd owner":     {LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", File: PathFacts{UID: 974, GID: 974, Mode: 0o640}, Parents: dirs}, false},
 		"private file":     {LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", File: PathFacts{Mode: 0o640}, Parents: dirs}, false},
 		"world readable":   {LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", File: PathFacts{Mode: 0o644}, Parents: dirs}, true},
 		"closed directory": {LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", File: PathFacts{Mode: 0o644}, Parents: closed}, false},
 		"not created yet":  {LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log", Missing: true, Parents: dirs}, true},
 		"unreadable":       {LogFacts{Err: errors.New("configdump failed")}, true},
 	} {
-		if got, _ := tc.l.Exposed(); got != tc.want {
+		if got, _ := tc.l.Exposed(974, 974); got != tc.want {
 			t.Errorf("%s: exposed = %v, want %v", name, got, tc.want)
 		}
 	}
@@ -333,6 +336,56 @@ func TestResolveFeedsDropsDQSWhileRspamdLogIsReadable(t *testing.T) {
 	f.RspamdLog.File.Mode = 0o640
 	if got, problems := ResolveFeeds(dqsSettings(), f); !got.HasFeed(FeedSpamhausDQS) || len(problems) != 0 {
 		t.Fatalf("private log: got %+v, problems %+v", got, problems)
+	}
+}
+
+func TestResolveFeedsChecksAllLogReaders(t *testing.T) {
+	for name, change := range map[string]func(*LogFacts){
+		"uncollected":             func(l *LogFacts) { *l = LogFacts{} },
+		"syslog":                  func(l *LogFacts) { *l = LogFacts{Type: "syslog"} },
+		"console routing unknown": func(l *LogFacts) { *l = LogFacts{Type: "console"} },
+		"unknown destination":     func(l *LogFacts) { l.Type = "other" },
+		"foreign owner":           func(l *LogFacts) { l.File.UID = 1001 },
+		"foreign group":           func(l *LogFacts) { l.File.GID = 1001 },
+		"file ACL":                func(l *LogFacts) { l.File.ExtACL = true },
+		"directory ACL": func(l *LogFacts) {
+			l.Parents[1].Mode = fs.ModeDir | 0o750
+			l.Parents[1].ExtACL = true
+			l.File.Mode = 0o644
+		},
+		"foreign directory group": func(l *LogFacts) {
+			l.Parents[1].Mode = fs.ModeDir | 0o750
+			l.Parents[1].GID = 1001
+			l.File.Mode = 0o644
+		},
+		"foreign directory owner": func(l *LogFacts) { l.Parents[1].UID = 1001 },
+		"writable directory":      func(l *LogFacts) { l.Parents[1].Mode |= 0o002 },
+		"directory symlink":       func(l *LogFacts) { l.Parents[1].Mode = fs.ModeSymlink | 0o777 },
+		"file symlink behind private directory": func(l *LogFacts) {
+			l.Parents[1].Mode = fs.ModeDir | 0o750
+			l.File.Mode = fs.ModeSymlink | 0o777
+		},
+		"unchecked parents": func(l *LogFacts) { l.Parents = nil },
+		"unclean path": func(l *LogFacts) {
+			l.Path = "/var/log/rspamd/link/../rspamd.log"
+			l.Parents[1].Mode = fs.ModeDir | 0o750
+			l.File.Mode = 0o644
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := feedFacts()
+			f.Socket.RspamdUID = 974
+			f.RspamdLog = LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log",
+				File: PathFacts{UID: 974, GID: 974, Mode: 0o640},
+				Parents: []PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755},
+					{Path: "/var/log/rspamd", UID: 974, GID: 974, Mode: fs.ModeDir | 0o755}}}
+			change(&f.RspamdLog)
+			got, problems := ResolveFeeds(dqsSettings(), f)
+			if !slices.Equal(got.Feeds, []string{FeedPSBL}) || got.DQSKey.Reveal() != "" ||
+				len(problems) != 1 || problems[0].Key != FeedSpamhausDQS || problems[0].Severity != Warning {
+				t.Fatal("untrusted log access did not disable only DQS with one warning")
+			}
+		})
 	}
 }
 

@@ -107,7 +107,11 @@ func (f *fakeHost) host() *Host {
 		run:     f.run,
 		replace: replaceFile,
 		preflight: func(context.Context, antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
-			return antispam.HostFacts{Targets: snapshot(), RspamdGID: os.Getgid(), DQSKey: f.key}, f.problems
+			return antispam.HostFacts{Targets: snapshot(), RspamdGID: os.Getgid(), DQSKey: f.key,
+				RspamdVersion: antispam.CommandResult{Stdout: "Rspamd daemon version 4.2.2\n"},
+				RspamdLog: antispam.LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log",
+					File:    antispam.PathFacts{GID: os.Getgid(), Mode: 0o640},
+					Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}}}, f.problems
 		},
 		targets: snapshot,
 		ping: func(context.Context, string) error {

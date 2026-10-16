@@ -25,10 +25,19 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	if err := blocking(problems); err != nil {
 		return failed(StepPreconditions, err)
 	}
+	// The host can change while the resolved request waits for the worker.
+	if len(s.DNSFeeds()) > 0 || s.Redirects() {
+		if ok, why := antispam.FeedsSupported(f.RspamdVersion); !ok {
+			return failed(StepPreconditions, errors.New(why+"; CSM's feeds and map redirects need rspamd 4 or later"))
+		}
+	}
 	if s.HasFeed(antispam.FeedSpamhausDQS) {
 		key, err := antispam.LoadDQSKey(f.DQSKey)
 		if err != nil {
 			return failed(StepPreconditions, err)
+		}
+		if exposed, why := f.RspamdLog.Exposed(f.Socket.RspamdUID, f.RspamdGID); exposed {
+			return failed(StepPreconditions, errors.New(why+"; refusing to enable DQS lookups"))
 		}
 		s.DQSKey = key
 	}

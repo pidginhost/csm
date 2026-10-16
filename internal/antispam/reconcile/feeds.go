@@ -212,6 +212,9 @@ func (st *FeedState) probeFinding(feed antispam.Feed, q antispam.ProbeQuery, sta
 		f.DedupKey = feed.Name + ":lists_all"
 		f.Message = "Antispam feed " + feed.Name + " answers for addresses it never lists"
 		f.Details = "The list returned a listing for its never-listed test point. rspamd stops querying a list that does this once its own check sees it; turn the feed off if this persists."
+		if feed.NeedsKey {
+			f.Details = "The list returned a listing for its never-listed test point. DQS monitoring in rspamd is disabled to keep the key out of its monitor log; turn the feed off now. CSM's probe reports this condition but does not stop lookups."
+		}
 	default:
 		f.DedupKey = feed.Name + ":unexpected"
 		f.Message = "Antispam feed " + feed.Name + " gave an unexpected answer"

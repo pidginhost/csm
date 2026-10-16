@@ -34,7 +34,10 @@ func goodFeedFacts() antispam.HostFacts {
 	}
 	return antispam.HostFacts{Targets: targets, RspamdOptions: antispam.CommandResult{Stdout: `{"dns":{}}`},
 		RspamdVersion: antispam.CommandResult{Stdout: "Rspamd daemon version 4.2.2\n"},
-		ResolvConf:    "nameserver 127.0.0.1\n", RspamdGID: 974}
+		RspamdLog: antispam.LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log",
+			File:    antispam.PathFacts{GID: 974, Mode: 0o640},
+			Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}},
+		ResolvConf: "nameserver 127.0.0.1\n", RspamdGID: 974}
 }
 
 func TestPassSendsResolvedFeeds(t *testing.T) {
@@ -240,6 +243,16 @@ func TestPassReportsListsAllAsCritical(t *testing.T) {
 		}
 	}
 	t.Fatalf("no critical finding: %+v", out.Findings)
+}
+
+func TestDQSListsAllWarningRequiresOperatorAction(t *testing.T) {
+	feed, _ := antispam.FeedByName(antispam.FeedSpamhausDQS)
+	finding, ok := NewFeedState().probeFinding(feed, antispam.ProbeQuery{Zone: feed.Zones[0]},
+		antispam.ProbeListsAll, "", antispam.ProbeAnswer{}, testNow)
+	if !ok || finding.Severity != alert.Critical || strings.Contains(finding.Details, "rspamd stops") ||
+		!strings.Contains(finding.Details, "turn the feed off") {
+		t.Fatalf("DQS warning promised automatic protection: %+v", finding)
+	}
 }
 
 func TestPassReportsMixedRefusalAndListingAsCritical(t *testing.T) {

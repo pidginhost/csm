@@ -239,8 +239,16 @@ log. CSM keeps `spamhaus_dqs` off, with a feed warning, while that log file
 can be read by other users, which is the rspamd package's default. Make it
 private, for example `chmod 750 /var/log/rspamd` and `chmod 640` on the files
 in it, and set rspamd's log rotation to create new files with mode 640. The
-DQS rules also run without rspamd's own list monitoring; CSM's probe asks the
-same questions.
+DQS rules also run without rspamd's own list monitoring. CSM probes ZEN's
+test points and reports failures without stopping lookups. Turn the feed off
+when a critical warning reports listings for a never-listed test point.
+
+The log and its directories must be owned by root or rspamd, with no extra
+ACLs or write access for other users. A private file or enclosing directory
+must restrict readers to root and rspamd, including group access. Symlinks
+and paths with dot components cannot establish privacy. CSM cannot verify
+syslog or console routing; use `logging.type = file` with a private log.
+The worker rechecks log privacy and rspamd version before applying feeds.
 
 ### Scores
 
@@ -299,6 +307,7 @@ Each `antispam_feed` finding names the feed, `rspamd_maps` for maps, or
   A listing code still triggers this warning when the reply also contains
   a refusal code, since rspamd can score the listing code independently.
   rspamd stops querying a list only after its own monitoring detects it.
+  DQS monitoring is disabled, so its lookups continue until you turn it off.
 
 An apply that fails at `feeds_check` is reported as `antispam_apply_failed`
 and attempts to roll back. CSM omits DNS feeds from subsequent applies until

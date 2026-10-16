@@ -198,7 +198,7 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 	// Dropping a temporarily unusable feed must not alter the desired settings
 	// that callers retain for the next pass.
 	s.Feeds = slices.Clone(s.Feeds)
-	if ok, why := feedsSupported(f.RspamdVersion); !ok {
+	if ok, why := FeedsSupported(f.RspamdVersion); !ok {
 		return withoutFeeds(s, why)
 	}
 	var problems []Problem
@@ -258,13 +258,13 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 	}
 	if s.HasFeed(FeedSpamhausDQS) {
 		key, err := LoadDQSKey(f.DQSKey)
-		exposed, why := f.RspamdLog.Exposed()
+		exposed, why := f.RspamdLog.Exposed(f.Socket.RspamdUID, f.RspamdGID)
 		switch {
 		case err != nil:
 			drop([]string{FeedSpamhausDQS}, err.Error())
 		case exposed:
 			drop([]string{FeedSpamhausDQS}, why+", and rspamd writes failed DQS lookups, which contain the key, to it; "+
-				"make the log readable only by root and rspamd, for example chmod 750 on its directory")
+				"use a private file log owned by root or rspamd, with only root or rspamd group access and no extra ACLs")
 		case f.RspamdGID < 0:
 			drop([]string{FeedSpamhausDQS}, "rspamd's group is unknown, so CSM cannot make the key file readable by rspamd only")
 		default:
@@ -292,21 +292,38 @@ type LogFacts struct {
 // Exposed reports whether users other than root and rspamd may read
 // rspamd's log: rspamd writes every failed lookup name there, and DQS
 // lookup names hold the key. A log CSM cannot check counts as exposed; a
-// file rspamd has yet to create counts as readable. Only file logs are
-// judged: console output goes to the journal.
-func (l LogFacts) Exposed() (bool, string) {
+// file rspamd has yet to create counts as readable unless a private parent
+// protects it. Console and syslog routing cannot establish file privacy.
+func (l LogFacts) Exposed(uid, gid int) (bool, string) {
+	unknown := "CSM cannot check who can read rspamd's log"
 	switch {
 	case l.Err != nil:
-		return true, "CSM cannot check who can read rspamd's log"
-	case l.Type != "file":
-		return false, ""
+		return true, unknown
+	case l.Type != "file" || !path.IsAbs(l.Path) || len(l.Parents) == 0:
+		return true, unknown
+	case path.Clean(l.Path) != l.Path:
+		// Cleaned parent facts can omit a symlink traversed before "..".
+		return true, unknown
 	}
+	trustedGroup := func(id int) bool { return id == 0 || gid >= 0 && id == gid }
+	protected := func(p PathFacts) bool {
+		return (p.UID == 0 || uid >= 0 && p.UID == uid) && !p.ExtACL &&
+			p.Mode.Perm()&0o002 == 0 && (p.Mode.Perm()&0o020 == 0 || trustedGroup(p.GID))
+	}
+	private := func(p PathFacts, other, group fs.FileMode) bool {
+		return p.Mode.Perm()&other == 0 && (p.Mode.Perm()&group == 0 || trustedGroup(p.GID))
+	}
+	closed := false
 	for _, p := range l.Parents {
-		if p.Mode.Perm()&0o001 == 0 {
-			return false, ""
+		if !p.Mode.IsDir() || !protected(p) {
+			return true, unknown
 		}
+		closed = closed || private(p, 0o001, 0o010)
 	}
-	if l.Missing || l.File.Mode.Perm()&0o004 != 0 {
+	if !l.Missing && (!l.File.Mode.IsRegular() || !protected(l.File)) {
+		return true, unknown
+	}
+	if !closed && (l.Missing || !private(l.File, 0o004, 0o040)) {
 		return true, "rspamd's log " + l.Path + " is readable by other users"
 	}
 	return false, ""
@@ -316,9 +333,9 @@ func (l LogFacts) Exposed() (bool, string) {
 // redirects were verified on.
 const minFeedsRspamdMajor = 4
 
-// feedsSupported reports whether rspamd is recent enough for feed files
+// FeedsSupported reports whether rspamd is recent enough for feed files
 // and map redirects, and why not.
-func feedsSupported(version CommandResult) (bool, string) {
+func FeedsSupported(version CommandResult) (bool, string) {
 	if version.Err != nil {
 		return false, "rspamd's version is unknown"
 	}

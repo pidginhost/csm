@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"strings"
 	"testing"
@@ -13,6 +14,73 @@ import (
 )
 
 const otherKey = "zyxwvutsrqponmlkjihgf65432"
+
+func TestApplyRechecksDQSLogPrivacy(t *testing.T) {
+	f := newFake(t)
+	s := dqsApply(f)
+	h := f.host()
+	preflight := h.preflight
+	h.preflight = func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
+		facts, problems := preflight(ctx, s)
+		facts.RspamdLog = antispam.LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log",
+			File:    antispam.PathFacts{Mode: 0o644},
+			Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}}
+		return facts, problems
+	}
+	before := f.state()
+	r := h.Apply(s)
+	if r.OK || r.FailedStep != StepPreconditions || r.Rollback != antispam.RollbackNone {
+		t.Fatalf("exposed log was not rejected before mutation: %+v", r)
+	}
+	if len(f.calls) != 0 || !maps.Equal(before, f.state()) {
+		t.Fatal("exposed log request ran commands or changed files")
+	}
+}
+
+func TestApplyRechecksFeedVersion(t *testing.T) {
+	for _, feeds := range [][]string{nil, {antispam.FeedPSBL, antispam.FeedRspamdMaps}, {antispam.FeedRspamdMaps}} {
+		f := newFake(t)
+		f.modules, f.rbl = "Modules enabled: dkim, spf, rbl\n", `{"rbls":{"csm_psbl":{}}}`
+		s := enforce()
+		s.Feeds = feeds
+		if len(s.DNSFeeds()) == 0 {
+			f.modules, f.rbl = "", ""
+		}
+		h := f.host()
+		preflight := h.preflight
+		h.preflight = func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
+			facts, problems := preflight(ctx, s)
+			facts.RspamdVersion.Stdout = "Rspamd daemon version 3.8.4\n"
+			return facts, problems
+		}
+		before := f.state()
+		r := h.Apply(s)
+		if len(s.DNSFeeds()) == 0 && !s.Redirects() {
+			wantOK(t, r)
+		} else if r.OK || r.FailedStep != StepPreconditions || len(f.calls) != 0 || !maps.Equal(before, f.state()) {
+			t.Fatal("unsupported feed or map request changed the host")
+		}
+	}
+}
+
+func TestDQSFeedTogglesLeaveEximAlone(t *testing.T) {
+	f := newFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	for _, on := range []bool{true, false, true} {
+		f.reset()
+		s := enforce()
+		if on {
+			s = dqsApply(f)
+		} else {
+			f.modules, f.rbl = "", ""
+		}
+		wantOK(t, f.host().Apply(s))
+		if f.count(BuildEximConf) != 0 || f.count("systemctl reload exim.service") != 0 ||
+			f.count("systemctl reload rspamd.service") != 1 {
+			t.Fatalf("on=%t: feed toggle did not reload only rspamd", on)
+		}
+	}
+}
 
 // dqsApply sets f up for a DQS apply whose rbl rules load as rendered.
 func dqsApply(f *fakeHost) antispam.Settings {

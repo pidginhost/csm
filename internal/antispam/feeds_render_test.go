@@ -264,8 +264,7 @@ func TestRenderFeedsKeyOnlyInRBLFile(t *testing.T) {
 	}
 }
 
-// rspamd's monitor logs a failing lookup name, which for DQS carries the
-// key; CSM's own probe covers that check instead.
+// rspamd's monitor logs a failing lookup name, which for DQS carries the key.
 func TestRenderFeedsDQSDisablesMonitoring(t *testing.T) {
 	s := defaults(false)
 	s.Feeds, s.DQSKeyFile, s.DQSKey = []string{FeedPSBL, FeedSpamhausDQS}, "/etc/csm/k", NewSecret(testKey)
@@ -277,9 +276,15 @@ func TestRenderFeedsDQSDisablesMonitoring(t *testing.T) {
 	if got := strings.Count(rbl, "    disable_monitoring = true;\n"); got != 3 {
 		t.Fatalf("disable_monitoring on %d rules, want the 3 DQS rules", got)
 	}
-	_, psbl, found := strings.Cut(rbl, "  csm_psbl {")
-	psbl, _, _ = strings.Cut(psbl, "\n  }\n")
-	if !found || strings.Contains(psbl, "disable_monitoring") {
+	_, psbl, found := strings.Cut(rbl, "  csm_psbl {\n")
+	if !found {
+		t.Fatal("PSBL rule is missing")
+	}
+	psbl, _, found = strings.Cut(psbl, "\n  }\n")
+	if !found {
+		t.Fatal("PSBL rule is unterminated")
+	}
+	if strings.Contains(psbl, "disable_monitoring") {
 		t.Error("free lists keep rspamd's monitoring")
 	}
 }
