@@ -217,8 +217,9 @@ Run a recursive resolver on the host and add this line to
 dns { nameserver = ["127.0.0.1"]; }
 ```
 
-cPanel's local BIND usually recurses for localhost; cPanel's PowerDNS and the
-systemd-resolved stub do not. When PowerDNS holds port 53, run the resolver
+cPanel's local BIND usually recurses for localhost; cPanel's PowerDNS does
+not, and the systemd-resolved stub forwards to its upstream resolvers, which
+are usually public. When PowerDNS holds port 53, run the resolver
 on another port and name it with that port, for example
 `dns { nameserver = ["127.0.0.1:5353"]; }`. A loopback or private address passes CSM's
 address check, but a resolver that forwards to a public resolver can still
