@@ -189,7 +189,7 @@ enable it:
 | `uribl` | Free for low-volume use only; URIBL blocks public and large shared resolvers. |
 | `surbl` | Free only for organisations under 1,000 users or 250,000 messages a day, and never inside a product or service sold for a fee; other use needs SURBL's paid data service. See the [SURBL usage policy](https://www.surbl.org/usage-policy). |
 | `spamhaus_dqs` | Needs a DQS key. The free key covers non-commercial use under 100,000 queries a day; commercial use needs a paid key. |
-| `csm_ip_map` | Local CSM IP data; no external map downloads. |
+| `csm_ip_map` | Local data only: CSM's block history, its threat feeds and the spam evidence it records. |
 | `rspamd_maps` | Keeps rspamd's own map downloads from maps.rspamd.com; free use is non-commercial and under 5,000 queries a day, other use needs an agreement with rspamd. See [rspamd's usage policy](https://docs.rspamd.com/other/usage_policy/). |
 
 ### Maps without any feed
@@ -258,12 +258,30 @@ and paths with dot components cannot establish privacy. CSM cannot verify
 syslog or console routing; use `logging.type = file` with a private log.
 The worker rechecks log privacy and rspamd version before applying feeds.
 
-### Local IP map
+### CSM IP map
 
-Select `csm_ip_map` in `email_protection.antispam.feeds.enabled` to use
-`/var/lib/csm-rspamd/csm_ip.map`. The feed stays off with a warning until
-the map exists as a regular root-owned file, mode 0640, in rspamd's service
-group, without extra ACLs. Every parent must be a root-owned directory with
+`csm_ip_map` gives rspamd CSM's own evidence about sender addresses. CSM
+rebuilds the map at start and every 10 minutes into
+`/var/lib/csm-rspamd/csm_ip.map`, and rspamd scores listed senders through
+one rule, `CSM_IP`:
+
+| Symbol | Listed when | Score |
+|---|---|---|
+| `CSM_IP_DROP` | the address is in a Spamhaus DROP network from CSM's threat feeds | 4 |
+| `CSM_IP_BLOCKED` | CSM blocked the address permanently | 3 |
+| `CSM_IP_MAIL_AUTH` | the address attacked SMTP or mail logins in the last 30 days | 3 |
+| `CSM_IP_SPAM` | its spam evidence score is 50 or more, see [Spam evidence](#spam-evidence) | 3 |
+| `CSM_IP_BLOCKLISTDE` | blocklist.de lists it in CSM's threat feeds | 2 |
+| `CSM_IP_CINS` | CINS Army lists it in CSM's threat feeds | 2 |
+
+Each address or network gets one line with its strongest symbol, so the map
+adds at most 4 to a message. Whitelisted addresses (operator, temporary and
+`reputation.whitelist`), private, loopback and link-local addresses and the
+server's own addresses are never listed, and neither is a network that
+contains one of them.
+
+The feed stays off with a warning until the map exists as a regular
+root-owned file, mode 0640, in rspamd's service group, without extra ACLs. Every parent must be a root-owned directory with
 no group or other write access or extra ACLs, and rspamd must be able to
 traverse it. Symlinks cannot establish safe map access.
 
@@ -274,6 +292,39 @@ with the current host facts.
 
 The feed needs CSM to own `/etc/rspamd/local.d/multimap.conf`, even with
 `rspamd_maps` selected. An operator-owned file there leaves the feed off.
+Like the other feeds, it needs rspamd 4 or later.
+
+CSM checks that rspamd uses the current map by scanning a canary message
+from 192.0.2.255 every 10 minutes and 30 seconds after each write. The scan
+stays out of rspamd's history and statistics. `antispam_ip_map` reports a
+map CSM could not write, or rspamd still not using the current map 5 minutes
+after a write. A failed write keeps the previous map, which rspamd keeps
+using.
+
+### Spam evidence
+
+While antispam is enabled, CSM reads each scan result Exim logs and records
+a verdict about the sending address: spam when the score reaches the reject
+score, ham when it stays below the tag score, and nothing in between or when
+the scan failed. The score the CSM IP map gave the sender is subtracted
+first, so the map never feeds its own evidence. Dry run and enforce record
+the same way, and so do recipients with filtering off: the verdict is about
+the sender. Whitelisted, private and the server's own addresses are skipped.
+This works with or without `csm_ip_map`, so you can review the data before
+turning the map on.
+
+A spam verdict creates or updates the sender's record on the Threat page.
+Ham only updates a record that already exists, so busy legitimate senders do
+not fill the attack database. The spam score is the share of spam among
+recent verdicts, each verdict losing half its weight every 7 days; two recent
+spam verdicts and no ham reach 50, which lists the sender as `CSM_IP_SPAM`.
+Spam evidence never blocks an address, never changes its threat score and is
+never reported to AbuseIPDB.
+
+The Threat page's Spam column shows spam and ham counts, the spam score and
+whether the map lists the sender. The "Spam evidence only" filter lists
+senders by spam score. The IP lookup shows mail login attacks and spam
+verdicts.
 
 ### Scores
 
@@ -440,11 +491,6 @@ removed; scores can change and external lists can become active again.
 | `antispam_scan_error` | Warning | Exim logged a failed scan. One finding covers every failure until a scan succeeds. |
 | `antispam_feed` | Warning, or Critical when a list answers for everything | A feed or map redirect is off, loaded rules differ, a list misbehaves, or rspamd still fetches maps from rspamd.com. These findings alone do not disable filtering. See [Feeds](#feeds). |
 | `antispam_ip_map` | Warning | The IP map could not be written or rspamd has not confirmed the current map. |
-
-The IP map probe accepts only a complete, bounded reply and a valid map
-generation. Rejected replies close the connection immediately; malformed
-generation text is never repeated in warnings. This check does not change
-mail filtering.
 
 While rspamd is down or scans fail, mail is delivered without spam filtering.
 Exim adds no rejection for a scanner failure, and other mail checks keep

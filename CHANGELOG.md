@@ -21,6 +21,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Inbound spam filtering on cPanel through an rspamd you install, where each account's Spam Filters switch decides; existing hosts are unchanged until `email_protection.antispam.enabled` is set.
 - Antispam can use vetted DNS blocklists and a Spamhaus DQS key, each off until named, and points rspamd's hosted maps at local copies where it can.
+- With antispam enabled, the Threat page shows each sender's spam history, and the `csm_ip_map` feed scores mail by CSM's own block and spam evidence.
 - Dashboard, API and metrics credentials can use `expires_at` to end access, browser sessions and event streams, while credentials without it never expire.
 - API credentials can now accept only listed addresses with `allowed_ips` and use an `unban` scope limited to checking and lifting firewall blocks.
 - `csm rehash --fragment <file>` re-signs an integration's own conf.d file and refuses when anything else changed since the last signing.
