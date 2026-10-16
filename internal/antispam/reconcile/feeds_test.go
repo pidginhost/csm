@@ -2,8 +2,10 @@ package reconcile
 
 import (
 	"context"
+	"crypto/rand"
 	"io/fs"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
@@ -274,5 +276,97 @@ func TestProbeFindingsOncePerKey(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("%d dnswl:refused findings in %+v", n, out.Findings)
+	}
+}
+
+func TestPassPreservesConfiguredFeedsAcrossResolverRecovery(t *testing.T) {
+	h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Install},
+		result: antispam.Result{Operation: antispam.OpApply, OK: true, Generation: strings.Repeat("a", 64)}}
+	r := h.reconciler()
+	f := goodFeedFacts()
+	f.ResolvConf = "nameserver 198.51.100.53\n"
+	r.Collect = func(context.Context, string) antispam.HostFacts { return f }
+	d := feedDesired(antispam.FeedPSBL, antispam.FeedRspamdMaps)
+	want := slices.Clone(d.Settings.Feeds)
+	for range 2 {
+		out := r.Pass(context.Background(), d)
+		if !slices.Equal(d.Settings.Feeds, want) {
+			t.Errorf("configured feeds changed: %v", d.Settings.Feeds)
+		}
+		if !hasFindingKey(out.Findings, CheckFeed, antispam.FeedPSBL) {
+			t.Error("unavailable configured feed lost its warning")
+		}
+	}
+	f.ResolvConf = "nameserver 127.0.0.1\n"
+	out := r.Pass(context.Background(), d)
+	if len(h.requests) != 3 {
+		t.Fatalf("worker requests = %d, want 3", len(h.requests))
+	}
+	last := h.requests[2]
+	if last.Feeds == nil || *last.Feeds != strings.Join(want, ",") {
+		t.Error("resolver recovery did not restore the configured feeds")
+	}
+	if hasFindingKey(out.Findings, CheckFeed, antispam.FeedPSBL) {
+		t.Error("recovered feed still has a warning")
+	}
+}
+
+func TestPassHoldsOriginalConfigurationAfterDroppingOneFeed(t *testing.T) {
+	h := &fakeHost{
+		assessment: antispam.Assessment{Action: antispam.Install},
+		result: antispam.Result{Operation: antispam.OpApply, FailedStep: antispam.FeedsCheckStep,
+			Rollback: antispam.RollbackVerified, Error: "loaded rules differ"},
+	}
+	r := h.reconciler()
+	r.Feeds = NewFeedState()
+	key := antispam.KeyFacts{Path: "/etc/csm/k", Missing: true}
+	r.ReadKey = func(string) antispam.KeyFacts { return key }
+	desiredFeeds := func() Desired {
+		d := feedDesired(antispam.FeedPSBL, antispam.FeedSpamhausDQS)
+		d.Settings.DQSKeyFile = "/etc/csm/k"
+		return d
+	}
+	r.Pass(context.Background(), desiredFeeds())
+	if len(h.requests) != 1 || h.requests[0].Feeds == nil || *h.requests[0].Feeds != antispam.FeedPSBL {
+		t.Fatal("first apply must try only the usable feed")
+	}
+	h.result = antispam.Result{Operation: antispam.OpApply, OK: true, Generation: strings.Repeat("a", 64)}
+	key = antispam.KeyFacts{Path: "/etc/csm/k", Mode: 0o600,
+		Key: antispam.NewSecret(strings.ToLower(rand.Text()[:26]))}
+	// The daemon takes a fresh configuration snapshot for every pass.
+	out := r.Pass(context.Background(), desiredFeeds())
+	if len(h.requests) != 2 || h.requests[1].Feeds != nil {
+		t.Fatal("unchanged configuration retried DNS feeds after a failed feeds check")
+	}
+	if !hasFindingKey(out.Findings, CheckFeed, antispam.FeedPSBL) ||
+		!hasFindingKey(out.Findings, CheckFeed, antispam.FeedSpamhausDQS) {
+		t.Fatal("both configured feeds must retain their hold warnings")
+	}
+}
+
+// The daemon reads the DQS key file each pass; without a reader the feed
+// can never pass its preconditions.
+func TestPassSendsDQSOnlyWithAKeyReader(t *testing.T) {
+	const key = "abcdefghijklmnopqrstu23456"
+	send := func(read func(string) antispam.KeyFacts) *string {
+		h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Install},
+			result: antispam.Result{Operation: antispam.OpApply, OK: true, Generation: strings.Repeat("a", 64)}}
+		r := h.reconciler()
+		r.ReadKey = read
+		d := feedDesired(antispam.FeedSpamhausDQS)
+		d.Settings.DQSKeyFile = "/etc/csm/k"
+		r.Pass(context.Background(), d)
+		if len(h.requests) != 1 {
+			t.Fatalf("requests %+v", h.requests)
+		}
+		return h.requests[0].Feeds
+	}
+	if feeds := send(func(string) antispam.KeyFacts {
+		return antispam.KeyFacts{Path: "/etc/csm/k", Mode: 0o600, Key: antispam.NewSecret(key)}
+	}); feeds == nil || *feeds != antispam.FeedSpamhausDQS {
+		t.Fatalf("readable key: feeds %v", feeds)
+	}
+	if feeds := send(nil); feeds != nil {
+		t.Fatalf("no key reader: feeds %q", *feeds)
 	}
 }
