@@ -45,9 +45,8 @@ const (
 	StepFeedsCheck    = antispam.FeedsCheckStep
 )
 
-// errFeedsLoaded marks an apply whose rspamd loaded other blocklist rules
-// than CSM wrote.
-var errFeedsLoaded = errors.New("rspamd loaded other blocklist rules than CSM wrote")
+// errFeedsLoaded distinguishes feed verification failures from core failures.
+var errFeedsLoaded = errors.New("rspamd blocklist rules could not be verified against CSM's settings")
 
 // Host runs transactions against the host. Every function field is a side
 // effect; tests replace them and set root to a temporary directory.
@@ -582,7 +581,7 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 	if len(s.DNSFeeds()) > 0 {
 		dump := t.cmd(ctx, commandLimit, "rspamadm", "configdump", "-j", "rbl")
 		if dump.Err != nil {
-			return cmdErr("rspamadm configdump -j rbl", dump)
+			return errors.Join(errFeedsLoaded, cmdErr("rspamadm configdump -j rbl", dump))
 		}
 		rules, err := antispam.LoadedRBLRules([]byte(dump.Stdout))
 		if err != nil || len(antispam.CheckFeedsLoaded(enabled, rules, *s)) > 0 {

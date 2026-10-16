@@ -40,12 +40,8 @@ func TestApplyFeedCheckDoesNotExposeDQSKey(t *testing.T) {
 			}
 			return run(ctx, limit, name, args...)
 		}
-		want := StepFeedsCheck
-		if commandFailed {
-			want = StepRspamdCheck
-		}
 		r := h.Apply(s)
-		if r.OK || r.FailedStep != want || r.Rollback != antispam.RollbackVerified || strings.Contains(r.Error, key) {
+		if r.OK || r.FailedStep != StepFeedsCheck || r.Rollback != antispam.RollbackVerified || strings.Contains(r.Error, key) {
 			t.Fatalf("commandFailed=%t: result %+v", commandFailed, r)
 		}
 	}

@@ -8,50 +8,46 @@ import (
 	"sort"
 )
 
-// LoadedRBLRules reads `rspamadm configdump -j rbl` and returns the rules
-// rspamd runs, sorted. rbl.lua merges the legacy rules key over rbls and
-// skips a rule that is not an object, has disabled = true or enabled =
-// false.
+// LoadedRBLRules reads `rspamadm configdump -j rbl` and returns enabled
+// rbls rule names, sorted. Ambiguous entries and legacy overrides are errors.
 func LoadedRBLRules(out []byte) ([]string, error) {
-	var dump struct {
-		RBLs  map[string]json.RawMessage `json:"rbls"`
-		Rules map[string]json.RawMessage `json:"rules"`
+	dump, err := dumpObjectAs[json.RawMessage](out, "rbl")
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(out, &dump); err != nil || dump.RBLs == nil {
-		return nil, errors.New("configdump rbl has no rbls object")
+	rules, err := dumpObjectAs[json.RawMessage](dump["rbls"], "rbl rules")
+	if err != nil {
+		return nil, err
 	}
-	type state struct {
-		object            bool
-		enabled, disabled *bool
-	}
-	rules := make(map[string]state, len(dump.RBLs))
-	for _, set := range []map[string]json.RawMessage{dump.RBLs, dump.Rules} {
-		for name, raw := range set {
-			var fields struct {
-				Enabled  *bool `json:"enabled"`
-				Disabled *bool `json:"disabled"`
-			}
-			if len(raw) == 0 || raw[0] != '{' || json.Unmarshal(raw, &fields) != nil {
-				// A value of another shape replaces the rule and never runs.
-				rules[name] = state{}
-				continue
-			}
-			st := rules[name]
-			if !st.object {
-				st = state{object: true}
-			}
-			if fields.Enabled != nil {
-				st.enabled = fields.Enabled
-			}
-			if fields.Disabled != nil {
-				st.disabled = fields.Disabled
-			}
-			rules[name] = st
+	if raw, present := dump["rules"]; present {
+		// Rspamd merges the legacy alias into rbls, including overrides
+		// of names already there. CSM renders this object empty.
+		legacy, err := dumpObjectAs[json.RawMessage](raw, "rbl legacy rules")
+		if err != nil || len(legacy) != 0 {
+			return nil, errors.New("configdump rbl has legacy rule overrides")
 		}
 	}
 	names := make([]string, 0, len(rules))
-	for name, st := range rules {
-		if st.object && (st.enabled == nil || *st.enabled) && (st.disabled == nil || !*st.disabled) {
+	for name, raw := range rules {
+		rule, err := dumpObjectAs[json.RawMessage](raw, "rbl rule")
+		if err != nil {
+			return nil, err
+		}
+		enabled, disabled := true, false
+		for _, flag := range []struct {
+			key   string
+			value *bool
+		}{{"enabled", &enabled}, {"disabled", &disabled}} {
+			if raw, present := rule[flag.key]; present {
+				// A null or non-boolean flag cannot prove the rule is on.
+				var value *bool
+				if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+					return nil, errors.New("configdump rbl has a non-boolean rule switch")
+				}
+				*flag.value = *value
+			}
+		}
+		if enabled && !disabled {
 			names = append(names, name)
 		}
 	}

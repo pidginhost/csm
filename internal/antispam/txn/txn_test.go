@@ -844,3 +844,62 @@ func TestApplyFeedsCheckRollsBack(t *testing.T) {
 		t.Fatal("rollback left changes")
 	}
 }
+
+func TestApplyUnusableFeedRulesRollBackBeforeReload(t *testing.T) {
+	for name, dump := range map[string]antispam.CommandResult{
+		"legacy rules":   {Stdout: `{"rbls":{"csm_psbl":{}},"rules":{"foreign":{}}}`},
+		"disabled rule":  {Stdout: `{"rbls":{"csm_psbl":{"enabled":false}}}`},
+		"duplicate rule": {Stdout: `{"rbls":{"csm_psbl":{},"csm_psbl":{}}}`},
+		"invalid rule":   {Stdout: `{"rbls":{"csm_psbl":null}}`},
+		"failed dump":    {Err: errors.New("command failed")},
+		"dump timeout":   {Err: context.DeadlineExceeded},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			wantOK(t, f.host().Apply(enforce()))
+			before := f.state()
+			f.reset()
+			f.modules = "Modules enabled: dkim, spf, rbl\n"
+			h := f.host()
+			h.run = func(ctx context.Context, limit time.Duration, name string, args ...string) antispam.CommandResult {
+				if name == "rspamadm" && strings.Join(args, " ") == "configdump -j rbl" {
+					return dump
+				}
+				return f.run(ctx, limit, name, args...)
+			}
+			s := enforce()
+			s.Feeds = []string{antispam.FeedPSBL}
+			r := h.Apply(s)
+			if r.OK || r.FailedStep != StepFeedsCheck || r.Rollback != antispam.RollbackVerified {
+				t.Fatalf("result %+v", r)
+			}
+			if !maps.Equal(before, f.state()) {
+				t.Fatal("rollback did not restore files and completion record")
+			}
+			if f.count("systemctl reload") != 0 || f.count(BuildEximConf) != 0 {
+				t.Fatal("unverified feeds reached a reload or Exim rebuild")
+			}
+		})
+	}
+}
+
+func TestApplyFeedDumpFailureDoesNotExposeKey(t *testing.T) {
+	f := newFake(t)
+	f.modules = "Modules enabled: dkim, spf, rbl\n"
+	h := f.host()
+	h.run = func(ctx context.Context, limit time.Duration, name string, args ...string) antispam.CommandResult {
+		if name == "rspamadm" && strings.Join(args, " ") == "configdump -j rbl" {
+			return antispam.CommandResult{Stdout: f.key.Key.Reveal(), Stderr: f.key.Key.Reveal(), Err: errors.New(f.key.Key.Reveal())}
+		}
+		return f.run(ctx, limit, name, args...)
+	}
+	s := enforce()
+	s.Feeds, s.DQSKeyFile = []string{antispam.FeedSpamhausDQS}, f.key.Path
+	r := h.Apply(s)
+	if strings.Contains(r.Error, f.key.Key.Reveal()) {
+		t.Fatal("feed verification failure exposed key material")
+	}
+	if r.OK || r.FailedStep != StepFeedsCheck || r.Rollback != antispam.RollbackVerified {
+		t.Fatalf("result %+v", r)
+	}
+}

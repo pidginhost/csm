@@ -594,3 +594,28 @@ func TestAssessFeedDriftWarnsWithoutUninstall(t *testing.T) {
 		t.Fatalf("exact rules: %+v", a)
 	}
 }
+
+func TestAssessUnusableFeedRulesKeepCore(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedPSBL}
+	for name, dump := range map[string]CommandResult{
+		"legacy rules":   {Stdout: `{"rbls":{"csm_psbl":{}},"rules":{"foreign":{}}}`},
+		"disabled rule":  {Stdout: `{"rbls":{"csm_psbl":{"enabled":false}}}`},
+		"duplicate rule": {Stdout: `{"rbls":{"csm_psbl":{},"csm_psbl":{}}}`},
+		"invalid rule":   {Stdout: `{"rbls":{"csm_psbl":null}}`},
+		"failed dump":    {Err: errors.New("command failed")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := installedFacts(t, s)
+			f.RspamdModules = CommandResult{Stdout: "Modules enabled: dkim, spf, rbl\n"}
+			f.RspamdRBL = dump
+			a := Assess(true, s, f)
+			if a.Action != Keep || !a.Installed || len(a.Problems) != 1 {
+				t.Fatalf("feed drift must keep core and report one warning: %+v", a)
+			}
+			if p := a.Problems[0]; p.Code != CodeFeed || p.Severity != Warning || p.Key != "rbl" {
+				t.Fatalf("feed drift misclassified: %+v", p)
+			}
+		})
+	}
+}

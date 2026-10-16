@@ -50,6 +50,39 @@ func FuzzNameservers(f *testing.F) {
 	})
 }
 
+func FuzzLoadedRBLRules(f *testing.F) {
+	for _, seed := range []string{
+		`{"rbls":{"csm_psbl":{}},"rules":{}}`,
+		`{"rbls":{"csm_psbl":{"enabled":false}}}`,
+		`{"rbls":{"csm_psbl":{"disabled":true}}}`,
+		`{"rbls":{"csm_psbl":{}},"rules":{"foreign":{}}}`,
+		`{"rbls":{"csm_psbl":{},"csm_psbl":{}}}`,
+		`{"rbls":{"csm_psbl":null}}`, `{"rbls":{}}`, `null`, ``,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		names, err := LoadedRBLRules(data)
+		if err != nil {
+			if names != nil {
+				t.Fatal("unverifiable inventory returned rule names")
+			}
+			return
+		}
+		if !json.Valid(data) || !slices.IsSorted(names) || len(slices.Compact(slices.Clone(names))) != len(names) {
+			t.Fatal("accepted invalid JSON or returned unsorted or duplicate rule names")
+		}
+		duplicate := strings.TrimSpace(string(data))
+		duplicate = duplicate[:len(duplicate)-1] + `,"rbls":{}}`
+		if _, err := LoadedRBLRules([]byte(duplicate)); err == nil {
+			t.Fatal("accepted a duplicate rule inventory")
+		}
+		if _, err := LoadedRBLRules(append(append([]byte(nil), data...), []byte("{}")...)); err == nil {
+			t.Fatal("accepted a trailing object")
+		}
+	})
+}
+
 func FuzzLoadDQSKey(f *testing.F) {
 	for _, key := range []string{testKey, "", testKey[:25], testKey + "a", strings.ToUpper(testKey),
 		strings.Repeat("0", 26), strings.Repeat("9", 26), strings.Repeat("z", 26),
