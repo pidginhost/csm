@@ -113,9 +113,10 @@ func Nameservers(options []byte, resolvConf string) ([]netip.AddrPort, error) {
 	}
 	var out []netip.AddrPort
 	for _, entry := range entries {
-		for _, prefix := range []string{"master-slave:", "round-robin:", "random:", "hash:"} {
-			if rest, ok := strings.CutPrefix(entry, prefix); ok {
-				entry = rest
+		// rspamd compares rotation names without case.
+		for _, prefix := range []string{"master-slave:", "round-robin:", "random:", "hash:", "sequential:"} {
+			if len(entry) >= len(prefix) && strings.EqualFold(entry[:len(prefix)], prefix) {
+				entry = entry[len(prefix):]
 				break
 			}
 		}
@@ -246,6 +247,8 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 			switch {
 			case f.RspamdOptions.Err != nil:
 				reason = "CSM cannot read which nameservers rspamd uses. " + resolverFix
+			case err != nil && f.ResolvConfErr != nil:
+				reason = "CSM cannot read /etc/resolv.conf, which rspamd uses without dns.nameserver. " + resolverFix
 			case err != nil:
 				reason = err.Error() + ". " + resolverFix
 			case slices.ContainsFunc(servers, func(a netip.AddrPort) bool { return !localResolver(a.Addr()) }):

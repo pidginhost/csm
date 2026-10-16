@@ -62,7 +62,7 @@ func (st *FeedState) apply(configured, resolved antispam.Settings, problems []an
 	for _, name := range resolved.Feeds {
 		if f, _ := antispam.FeedByName(name); f.DNS() {
 			problems = append(problems, antispam.Problem{Code: antispam.CodeFeed, Severity: antispam.Warning, Key: name,
-				Detail: "feed " + name + " is off: rspamd loaded other blocklist rules than CSM wrote at the last apply; CSM keeps DNS feeds off until the feed configuration changes"})
+				Detail: "feed " + name + " is off: at the last apply CSM could not confirm the blocklist rules rspamd loaded, or they differed from CSM's; CSM keeps DNS feeds off until the feed configuration changes or CSM restarts"})
 			continue
 		}
 		keep = append(keep, name)
@@ -203,6 +203,9 @@ func (st *FeedState) probeFinding(feed antispam.Feed, q antispam.ProbeQuery, sta
 		f.DedupKey = feed.Name + ":no_answer"
 		f.Message = "Antispam feed " + feed.Name + " does not answer"
 		f.Details = "Three checks in a row got no answer from the list through rspamd's resolver. The list adds no score meanwhile; check that rspamd's resolver recurses and can reach the list."
+		if feed.NeedsKey {
+			f.Details += " Spamhaus also answers nothing for a wrong or disabled DQS key; check the key."
+		}
 	case antispam.ProbeRefused:
 		f.DedupKey = feed.Name + ":refused"
 		f.Message = "Antispam feed " + feed.Name + " refuses CSM's queries"
@@ -218,7 +221,11 @@ func (st *FeedState) probeFinding(feed antispam.Feed, q antispam.ProbeQuery, sta
 	default:
 		f.DedupKey = feed.Name + ":unexpected"
 		f.Message = "Antispam feed " + feed.Name + " gave an unexpected answer"
-		f.Details = "Answer: " + clean(strings.Join(slices.DeleteFunc(slices.Clone(a.Addrs), func(s string) bool { _, err := netip.ParseAddr(s); return err != nil }), ", ")) + ". CSM scores only the list's documented codes."
+		addrs := slices.DeleteFunc(slices.Clone(a.Addrs), func(s string) bool { _, err := netip.ParseAddr(s); return err != nil })
+		f.Details = "Answer: " + clean(strings.Join(addrs, ", ")) + ". CSM scores only the list's documented codes."
+		if len(addrs) == 0 {
+			f.Details = "The list answered with no address. CSM scores only the list's documented codes."
+		}
 	}
 	if status != antispam.ProbeNoAnswer {
 		st.count(counter, false)

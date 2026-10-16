@@ -634,3 +634,38 @@ func TestResolverAdviceIsPasteable(t *testing.T) {
 		t.Fatalf("details %q", got)
 	}
 }
+
+// A hold also follows a failed or unreadable check, so its text must not
+// claim the rules differed.
+func TestHeldFeedsDescribeTheFailedCheck(t *testing.T) {
+	st := NewFeedState()
+	configured := feedDesired(antispam.FeedPSBL).Settings
+	st.hold(configured)
+	_, problems := st.apply(configured, configured, nil)
+	if len(problems) != 1 || !strings.Contains(problems[0].Detail, "could not confirm the blocklist rules rspamd loaded") {
+		t.Fatalf("problems %+v", problems)
+	}
+}
+
+// A wrong DQS key makes Spamhaus answer nothing, so the advice names the key.
+func TestNoAnswerMentionsTheKeyForDQS(t *testing.T) {
+	st := NewFeedState()
+	dqs, _ := antispam.FeedByName(antispam.FeedSpamhausDQS)
+	q := antispam.ProbeQuery{Feed: dqs.Name, Zone: dqs.Zones[0], Listed: true}
+	var f alert.Finding
+	for range 3 {
+		f, _ = st.probeFinding(dqs, q, antispam.ProbeNoAnswer, "", antispam.ProbeAnswer{NXDomain: true}, testNow)
+	}
+	if !strings.Contains(f.Details, "DQS key") {
+		t.Fatalf("details %q", f.Details)
+	}
+}
+
+func TestUnexpectedEmptyAnswerSaysSo(t *testing.T) {
+	psbl, _ := antispam.FeedByName(antispam.FeedPSBL)
+	q := antispam.ProbeQuery{Feed: psbl.Name, Zone: psbl.Zones[0]}
+	f, ok := NewFeedState().probeFinding(psbl, q, antispam.ProbeUnexpected, "", antispam.ProbeAnswer{}, testNow)
+	if !ok || strings.Contains(f.Details, "Answer: .") || !strings.Contains(f.Details, "no address") {
+		t.Fatalf("details %q", f.Details)
+	}
+}

@@ -416,3 +416,23 @@ func TestResolveFeedsNeedsRspamd4(t *testing.T) {
 		t.Fatalf("rspamd 4: got %+v, problems %+v", got, problems)
 	}
 }
+
+func TestResolveFeedsReportsUnreadableResolvConf(t *testing.T) {
+	f := feedFacts()
+	f.ResolvConf, f.ResolvConfErr = "", errors.New("permission denied")
+	s := defaults(false)
+	s.Feeds = []string{FeedPSBL}
+	_, problems := ResolveFeeds(s, f)
+	if len(problems) != 1 || !strings.Contains(problems[0].Detail, "/etc/resolv.conf") {
+		t.Fatalf("problems %+v", problems)
+	}
+}
+
+func TestNameserversAcceptsEveryRotation(t *testing.T) {
+	for _, entry := range []string{"sequential:127.0.0.1,10.0.0.2", "SEQUENTIAL:127.0.0.1,10.0.0.2", "Round-Robin:127.0.0.1,10.0.0.2"} {
+		got, err := Nameservers([]byte(`{"dns":{"nameserver":"`+entry+`"}}`), "")
+		if err != nil || len(got) != 2 || got[0].String() != "127.0.0.1:53" {
+			t.Errorf("%s = %v, %v", entry, got, err)
+		}
+	}
+}
