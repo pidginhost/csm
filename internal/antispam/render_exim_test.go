@@ -79,3 +79,13 @@ func TestRenderEximRejectsInvalidSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderEximScanLogsTheSender(t *testing.T) {
+	h, err := RenderExim(defaults(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(h.Scan, `decision=none}} ip=$sender_host_address`+"\n") {
+		t.Fatalf("scan hook logwrite does not end with the sender:\n%s", h.Scan)
+	}
+}

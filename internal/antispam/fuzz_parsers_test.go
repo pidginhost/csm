@@ -3,6 +3,7 @@ package antispam
 import (
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"reflect"
 	"slices"
 	"strconv"
@@ -674,6 +675,34 @@ func FuzzScanMarkerValues(f *testing.F) {
 					t.Fatalf("rejected scan error %q: %t, %t", line, marker, ok)
 				}
 			}
+		}
+	})
+}
+
+func FuzzParseScan(f *testing.F) {
+	for _, seed := range []string{
+		markerPrefix + `CSM-ANTISPAM event=scan mode=dry-run policy=on result=ok score=150 action="reject" decision=reject ip=198.51.100.7`,
+		markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=off result=ok score=-5 action="no action" decision=unfiltered ip=2001:db8::25`,
+		markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=error score=none action="unavailable" decision=none ip=203.0.113.9`,
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, line string) {
+		s, marker := ParseScan(line)
+		if m, ok := ScanMarker(line); m != marker || ok != s.OK {
+			t.Fatalf("ScanMarker = %v, %v; ParseScan = %+v, %v", m, ok, s, marker)
+		}
+		if s.IP.IsValid() {
+			i := strings.LastIndex(line, " ip=")
+			if i < 0 {
+				t.Fatalf("sender %v without an ip= field in %q", s.IP, line)
+			}
+			if a, err := netip.ParseAddr(line[i+len(" ip="):]); err != nil || a.Unmap() != s.IP {
+				t.Fatalf("sender %v does not match the ip= field in %q", s.IP, line)
+			}
+		}
+		if int(int32(s.Score)) != s.Score {
+			t.Fatalf("score %d overflows int32", s.Score)
 		}
 	})
 }
