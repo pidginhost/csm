@@ -277,9 +277,9 @@ func TestRenderFeedsDQSDisablesMonitoring(t *testing.T) {
 	if got := strings.Count(rbl, "    disable_monitoring = true;\n"); got != 3 {
 		t.Fatalf("disable_monitoring on %d rules, want the 3 DQS rules", got)
 	}
-	psbl := rbl[strings.Index(rbl, "  csm_psbl {"):]
-	psbl = psbl[:strings.Index(psbl, "\n  }\n")]
-	if strings.Contains(psbl, "disable_monitoring") {
+	_, psbl, found := strings.Cut(rbl, "  csm_psbl {")
+	psbl, _, _ = strings.Cut(psbl, "\n  }\n")
+	if !found || strings.Contains(psbl, "disable_monitoring") {
 		t.Error("free lists keep rspamd's monitoring")
 	}
 }

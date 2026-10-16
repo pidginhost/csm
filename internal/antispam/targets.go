@@ -131,7 +131,7 @@ func checkTargets(targets []TargetFacts, removal bool) []Problem {
 		// A later read error must not hide unsafe metadata already collected.
 		// Removal only deletes an optional file, which needs a safe
 		// directory, not a safe file: a loosened one must still go.
-		if !t.Missing && t.File.Path != "" && !(removal && t.Kind == TargetRspamdOptional) {
+		if !t.Missing && t.File.Path != "" && (!removal || t.Kind != TargetRspamdOptional) {
 			if !t.File.Mode.IsRegular() {
 				add(CodeTargets, Definite, "%s is not a regular file; CSM does not write through symbolic links", t.Path)
 				continue
