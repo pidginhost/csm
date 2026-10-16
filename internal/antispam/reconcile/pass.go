@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"slices"
 	"time"
 
@@ -60,6 +61,8 @@ type Reconciler struct {
 	ReadKey func(path string) antispam.KeyFacts
 	// Feeds remembers feed holds and probe counts between passes.
 	Feeds *FeedState
+	// Probe asks server one DNS question; nil disables the feed probe.
+	Probe func(ctx context.Context, server netip.Addr, name string) antispam.ProbeAnswer
 	// assess replaces antispam.Assess in tests.
 	assess func(enabled bool, s antispam.Settings, f antispam.HostFacts) antispam.Assessment
 }
@@ -147,6 +150,9 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	for _, p := range mergeByKey(feedProblems) {
 		out.Findings = append(out.Findings, feedFinding(p, now))
+	}
+	if d.Enabled && !d.Observe && a.Action == antispam.Keep && a.Installed && !blockingProblems(a.Problems) {
+		out.Findings = append(out.Findings, r.probeFeeds(ctx, settings, f, now)...)
 	}
 	for _, p := range a.Problems {
 		if p.Code == antispam.CodeFeed {

@@ -1,11 +1,15 @@
 package reconcile
 
 import (
+	"context"
 	"fmt"
+	"net/netip"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
 )
 
@@ -112,4 +116,97 @@ func leftoverMaps(f antispam.HostFacts) (antispam.Problem, bool) {
 	}
 	detail += "; CSM points only the maps it knows at local copies. Enable the rspamd_maps feed to accept rspamd.com's terms, or redirect these maps yourself"
 	return antispam.Problem{Code: antispam.CodeFeed, Severity: antispam.Warning, Key: antispam.FeedRspamdMaps, Detail: detail}, true
+}
+
+// probeFeeds asks every probed zone's test points through rspamd's first
+// nameserver, concurrently, and reports what is wrong. No-answer counts
+// carry across passes; three in a row raise a finding.
+func (r Reconciler) probeFeeds(ctx context.Context, s antispam.Settings, f antispam.HostFacts, now time.Time) []alert.Finding {
+	queries := antispam.ProbeQueries(s)
+	if r.Probe == nil || len(queries) == 0 {
+		return nil
+	}
+	servers, err := antispam.Nameservers([]byte(f.RspamdOptions.Stdout), f.ResolvConf)
+	if err != nil {
+		return nil // ResolveFeeds already turned DNS feeds off
+	}
+	answers := make([]antispam.ProbeAnswer, len(queries))
+	var wg sync.WaitGroup
+	for i, q := range queries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			answers[i] = r.Probe(ctx, servers[0], q.Name)
+		}()
+	}
+	wg.Wait()
+	var out []alert.Finding
+	seen := make(map[string]bool)
+	for i, q := range queries {
+		feed, _ := antispam.FeedByName(q.Feed)
+		status, meaning := antispam.ClassifyProbe(feed, q, answers[i])
+		// Both queries of a zone can fail alike; findings with one key
+		// collapse, so keep the first.
+		if finding, ok := r.Feeds.probeFinding(feed, q, status, meaning, answers[i], now); ok && !seen[finding.DedupKey] {
+			seen[finding.DedupKey] = true
+			out = append(out, finding)
+		}
+	}
+	return out
+}
+
+// probeFinding turns one probe status into a finding. Messages name the
+// feed and the answer addresses only, never the query name, which can hold
+// the DQS key.
+func (st *FeedState) probeFinding(feed antispam.Feed, q antispam.ProbeQuery, status antispam.ProbeStatus, meaning string, a antispam.ProbeAnswer, now time.Time) (alert.Finding, bool) {
+	kind := "unlisted"
+	if q.Listed {
+		kind = "listed"
+	}
+	counter := feed.Name + ":" + q.Zone.Rule + ":" + kind
+	f := alert.Finding{Severity: alert.Warning, Check: CheckFeed, Timestamp: now}
+	switch status {
+	case antispam.ProbeOK:
+		st.count(counter, false)
+		return alert.Finding{}, false
+	case antispam.ProbeNoAnswer:
+		if st.count(counter, true) < 3 {
+			return alert.Finding{}, false
+		}
+		f.DedupKey = feed.Name + ":no_answer"
+		f.Message = "Antispam feed " + feed.Name + " does not answer"
+		f.Details = "Three checks in a row got no answer from the list through rspamd's resolver. The list adds no score meanwhile; check that rspamd's resolver recurses and can reach the list."
+	case antispam.ProbeRefused:
+		f.DedupKey = feed.Name + ":refused"
+		f.Message = "Antispam feed " + feed.Name + " refuses CSM's queries"
+		f.Details = clean(meaning) + ". The list adds no score while it refuses."
+	case antispam.ProbeListsAll:
+		f.Severity = alert.Critical
+		f.DedupKey = feed.Name + ":lists_all"
+		f.Message = "Antispam feed " + feed.Name + " answers for addresses it never lists"
+		f.Details = "The list returned a listing for its never-listed test point. rspamd stops querying a list that does this once its own check sees it; turn the feed off if this persists."
+	default:
+		f.DedupKey = feed.Name + ":unexpected"
+		f.Message = "Antispam feed " + feed.Name + " gave an unexpected answer"
+		f.Details = "Answer: " + clean(strings.Join(slices.DeleteFunc(slices.Clone(a.Addrs), func(s string) bool { _, err := netip.ParseAddr(s); return err != nil }), ", ")) + ". CSM scores only the list's documented codes."
+	}
+	if status != antispam.ProbeNoAnswer {
+		st.count(counter, false)
+	}
+	return f, true
+}
+
+// count updates the consecutive no-answer count and returns it.
+func (st *FeedState) count(key string, failed bool) int {
+	if st == nil {
+		return 0
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if !failed {
+		delete(st.noAnswer, key)
+		return 0
+	}
+	st.noAnswer[key]++
+	return st.noAnswer[key]
 }

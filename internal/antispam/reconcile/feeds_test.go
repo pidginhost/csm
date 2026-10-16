@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"io/fs"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -194,5 +195,84 @@ func TestPassReportsLeftoverRspamdComMaps(t *testing.T) {
 	observe.Observe = true
 	if got := leftover(observe, antispam.Keep); len(got) != 0 {
 		t.Fatalf("observe mode reports no leftovers: %+v", got)
+	}
+}
+
+func probeReconciler(h *fakeHost, answer func(name string) antispam.ProbeAnswer) Reconciler {
+	r := h.reconciler()
+	r.Feeds = NewFeedState()
+	r.Collect = func(context.Context, string) antispam.HostFacts { return goodFeedFacts() }
+	r.assess = func(bool, antispam.Settings, antispam.HostFacts) antispam.Assessment {
+		return antispam.Assessment{Action: antispam.Keep, Installed: true}
+	}
+	r.Probe = func(_ context.Context, _ netip.Addr, name string) antispam.ProbeAnswer { return answer(name) }
+	return r
+}
+
+func TestPassReportsNoAnswerOnThirdPass(t *testing.T) {
+	r := probeReconciler(&fakeHost{}, func(string) antispam.ProbeAnswer { return antispam.ProbeAnswer{Failed: true} })
+	d := feedDesired(antispam.FeedPSBL)
+	for pass := 1; pass <= 3; pass++ {
+		out := r.Pass(context.Background(), d)
+		if got := hasFindingKey(out.Findings, CheckFeed, "psbl:no_answer"); got != (pass == 3) {
+			t.Fatalf("pass %d: finding %v", pass, got)
+		}
+	}
+}
+
+func TestPassReportsListsAllAsCritical(t *testing.T) {
+	r := probeReconciler(&fakeHost{}, func(name string) antispam.ProbeAnswer {
+		return antispam.ProbeAnswer{Addrs: []string{"127.0.0.2"}}
+	})
+	out := r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
+	for _, f := range out.Findings {
+		if f.DedupKey == "psbl:lists_all" && f.Severity == alert.Critical {
+			return
+		}
+	}
+	t.Fatalf("no critical finding: %+v", out.Findings)
+}
+
+func TestProbeFindingsNeverCarryTheKey(t *testing.T) {
+	const key = "abcdefghijklmnopqrstu23456"
+	for _, echo := range []func(name string) []string{
+		func(name string) []string { return []string{"127.255.255.254", name} },
+		func(name string) []string { return []string{name} },
+	} {
+		h := &fakeHost{}
+		r := probeReconciler(h, func(name string) antispam.ProbeAnswer {
+			return antispam.ProbeAnswer{Addrs: echo(name)}
+		})
+		r.ReadKey = func(string) antispam.KeyFacts {
+			return antispam.KeyFacts{Path: "/etc/csm/k", UID: 0, Mode: 0o600, Key: antispam.NewSecret(key)}
+		}
+		d := feedDesired(antispam.FeedSpamhausDQS)
+		d.Settings.DQSKeyFile = "/etc/csm/k"
+		out := r.Pass(context.Background(), d)
+		if len(out.Findings) == 0 {
+			t.Fatal("no findings")
+		}
+		for _, f := range out.Findings {
+			if strings.Contains(f.Message+f.Details+f.DedupKey, key) {
+				t.Fatalf("finding carries the key: %+v", f)
+			}
+		}
+	}
+}
+
+// Both queries of a zone can fail the same way; one finding per key.
+func TestProbeFindingsOncePerKey(t *testing.T) {
+	r := probeReconciler(&fakeHost{}, func(string) antispam.ProbeAnswer {
+		return antispam.ProbeAnswer{Addrs: []string{"127.0.0.255"}}
+	})
+	out := r.Pass(context.Background(), feedDesired(antispam.FeedDNSWL))
+	n := 0
+	for _, f := range out.Findings {
+		if f.DedupKey == "dnswl:refused" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d dnswl:refused findings in %+v", n, out.Findings)
 	}
 }
