@@ -29,7 +29,9 @@ const (
 )
 
 // Request is the one JSON object the daemon sends to the antispam worker. It
-// carries settings only: no path, command or Exim text.
+// carries settings only: no command or Exim text. Its paths are the scan
+// socket and the DQS key file; the key itself never travels, because the
+// request is recorded on disk.
 type Request struct {
 	Operation    string  `json:"operation"`
 	Enabled      *bool   `json:"enabled,omitempty"`
@@ -37,12 +39,16 @@ type Request struct {
 	RspamdSocket *string `json:"rspamd_socket,omitempty"`
 	RejectScore  *int    `json:"reject_score,omitempty"`
 	TagScore     *int    `json:"tag_score,omitempty"`
+	// Feeds and SkipMaps are comma-separated names.
+	Feeds      *string `json:"feeds,omitempty"`
+	SkipMaps   *string `json:"skip_maps,omitempty"`
+	DQSKeyFile *string `json:"dqs_key_file,omitempty"`
 }
 
 // ApplyRequest is the request that installs s.
 func ApplyRequest(s Settings) Request {
 	enabled := true
-	return Request{
+	r := Request{
 		Operation:    OpApply,
 		Enabled:      &enabled,
 		DryRun:       &s.DryRun,
@@ -50,6 +56,19 @@ func ApplyRequest(s Settings) Request {
 		RejectScore:  &s.RejectScore,
 		TagScore:     &s.TagScore,
 	}
+	if len(s.Feeds) > 0 {
+		v := strings.Join(s.Feeds, ",")
+		r.Feeds = &v
+	}
+	if len(s.SkipMaps) > 0 {
+		v := strings.Join(s.SkipMaps, ",")
+		r.SkipMaps = &v
+	}
+	if s.DQSKeyFile != "" {
+		v := s.DQSKeyFile
+		r.DQSKeyFile = &v
+	}
+	return r
 }
 
 // RemoveRequest is the request that removes CSM's antispam integration.
@@ -60,6 +79,15 @@ func RemoveRequest() Request {
 var requestKeys = map[string]bool{
 	"operation": true, "enabled": true, "dry_run": true,
 	"rspamd_socket": true, "reject_score": true, "tag_score": true,
+	"feeds": true, "skip_maps": true, "dqs_key_file": true,
+}
+
+// splitNames reads a comma-separated request field.
+func splitNames(p *string) []string {
+	if p == nil || *p == "" {
+		return nil
+	}
+	return strings.Split(*p, ",")
 }
 
 // DecodeRequest validates one request before any side effect. Settings is
@@ -85,7 +113,11 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 		if !*r.Enabled {
 			return Request{}, Settings{}, errors.New("apply needs enabled true")
 		}
-		s := Settings{DryRun: *r.DryRun, Socket: *r.RspamdSocket, RejectScore: *r.RejectScore, TagScore: *r.TagScore}
+		s := Settings{DryRun: *r.DryRun, Socket: *r.RspamdSocket, RejectScore: *r.RejectScore, TagScore: *r.TagScore,
+			Feeds: splitNames(r.Feeds), SkipMaps: splitNames(r.SkipMaps)}
+		if r.DQSKeyFile != nil {
+			s.DQSKeyFile = *r.DQSKeyFile
+		}
 		if err := s.Validate(); err != nil {
 			return Request{}, Settings{}, err
 		}

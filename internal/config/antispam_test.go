@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -46,7 +48,7 @@ func TestLoadBytesAntispamExplicitValuesKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := AntispamConfig{Enabled: true, DryRun: false, RspamdSocket: "/var/run/rspamd/scan.sock", RejectScore: 20, TagScore: 8}
-	if cfg.EmailProtection.Antispam != want {
+	if !reflect.DeepEqual(cfg.EmailProtection.Antispam, want) {
 		t.Errorf("got %+v, want %+v", cfg.EmailProtection.Antispam, want)
 	}
 }
@@ -184,5 +186,39 @@ func TestAntispamChangesAreHotReloadable(t *testing.T) {
 	on := load("    enabled: true\n    dry_run: false\n    reject_score: 20\n")
 	if RestartRequired(Diff(off, on)) {
 		t.Fatal("antispam changes must apply on reload; the reconciler handles them")
+	}
+}
+
+func TestLoadBytesAntispamFeeds(t *testing.T) {
+	cfg, err := LoadBytes([]byte("email_protection:\n  antispam:\n    enabled: true\n    feeds:\n      enabled: [psbl, spamhaus_dqs]\n      spamhaus_dqs_key_file: /etc/csm/spamhaus-dqs.key\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeds := cfg.EmailProtection.Antispam.Feeds
+	if !slices.Equal(feeds.Enabled, []string{"psbl", "spamhaus_dqs"}) || feeds.SpamhausDQSKeyFile != "/etc/csm/spamhaus-dqs.key" {
+		t.Fatalf("feeds = %+v", feeds)
+	}
+}
+
+func TestLoadBytesAntispamFeedsRejectsBadValues(t *testing.T) {
+	for _, body := range []string{
+		"feeds:\n      enabled: [nope]\n",
+		"feeds:\n      enabled: [spamhaus_dqs]\n",
+		"feeds:\n      enabled: [spamhaus_dqs]\n      spamhaus_dqs_key_file: relative.key\n",
+	} {
+		_, err := LoadBytes([]byte("email_protection:\n  antispam:\n    enabled: true\n    " + body))
+		if err == nil || !strings.Contains(err.Error(), "email_protection.antispam.feeds") {
+			t.Errorf("%q: err = %v", body, err)
+		}
+	}
+}
+
+func TestLoadBytesAntispamFeedsDefaultsEmpty(t *testing.T) {
+	cfg, err := LoadBytes([]byte("email_protection:\n  antispam:\n    enabled: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := cfg.EmailProtection.Antispam.Feeds; len(f.Enabled) != 0 || f.SpamhausDQSKeyFile != "" {
+		t.Fatalf("feeds = %+v", f)
 	}
 }

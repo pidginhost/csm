@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -55,7 +56,7 @@ func TestHandleRunsApplyWithValidatedSettings(t *testing.T) {
 	result, code := run(t, applyBody, tr, freeLock)
 	want := antispam.Settings{DryRun: true, Socket: antispam.DefaultSocket, RejectScore: 15, TagScore: 6}
 	if code != 0 || !result.OK || result.Operation != antispam.OpApply || result.Generation != "g1" ||
-		len(tr.applied) != 1 || tr.applied[0] != want || tr.removed != 0 {
+		len(tr.applied) != 1 || !reflect.DeepEqual(tr.applied[0], want) || tr.removed != 0 {
 		t.Fatalf("code=%d result=%+v transactor=%+v", code, result, tr)
 	}
 }

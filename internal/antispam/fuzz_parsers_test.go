@@ -330,7 +330,7 @@ func FuzzDecodeRequest(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		req, s, err := DecodeRequest(data)
 		if err != nil {
-			if req != (Request{}) || s != (Settings{}) {
+			if !reflect.DeepEqual(req, Request{}) || !reflect.DeepEqual(s, Settings{}) {
 				t.Fatal("rejected input returned a partial request")
 			}
 			return
@@ -344,11 +344,11 @@ func FuzzDecodeRequest(f *testing.F) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, s2, err := DecodeRequest(again); err != nil || s2 != s {
+			if _, s2, err := DecodeRequest(again); err != nil || !reflect.DeepEqual(s2, s) {
 				t.Fatalf("re-encoded apply: %+v %v", s2, err)
 			}
 		case OpRemove:
-			if s != (Settings{}) {
+			if !reflect.DeepEqual(s, Settings{}) {
 				t.Fatalf("remove carried settings %+v", s)
 			}
 		default:

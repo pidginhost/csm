@@ -1662,11 +1662,19 @@ type ForwardGuardConfig struct {
 // the master switch (default off); DryRun (default true) scans and logs
 // without changing delivery.
 type AntispamConfig struct {
-	Enabled      bool   `yaml:"enabled"`
-	DryRun       bool   `yaml:"dry_run"`
-	RspamdSocket string `yaml:"rspamd_socket"`
-	RejectScore  int    `yaml:"reject_score"`
-	TagScore     int    `yaml:"tag_score"`
+	Enabled      bool                `yaml:"enabled"`
+	DryRun       bool                `yaml:"dry_run"`
+	RspamdSocket string              `yaml:"rspamd_socket"`
+	RejectScore  int                 `yaml:"reject_score"`
+	TagScore     int                 `yaml:"tag_score"`
+	Feeds        AntispamFeedsConfig `yaml:"feeds"`
+}
+
+// AntispamFeedsConfig selects optional anti-spam data sources. Every feed
+// is off until named; the key file is read only for spamhaus_dqs.
+type AntispamFeedsConfig struct {
+	Enabled            []string `yaml:"enabled"`
+	SpamhausDQSKeyFile string   `yaml:"spamhaus_dqs_key_file"`
 }
 
 // ForwardHoldSignals toggles which layered signals may hold a forward copy.
@@ -2551,6 +2559,9 @@ func validateAntispam(cfg *Config) error {
 	}
 	if err := antispam.ValidateScores(as.RejectScore, as.TagScore); err != nil {
 		return fmt.Errorf("email_protection.antispam: %w", err)
+	}
+	if err := antispam.ValidateFeeds(as.Feeds.Enabled, as.Feeds.SpamhausDQSKeyFile); err != nil {
+		return fmt.Errorf("email_protection.antispam.feeds: %w", err)
 	}
 	return nil
 }

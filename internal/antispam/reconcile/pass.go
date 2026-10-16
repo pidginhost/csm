@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -35,6 +36,8 @@ func DesiredFromConfig(cfg *config.Config) Desired {
 		Settings: antispam.Settings{
 			DryRun: as.DryRun, Socket: as.RspamdSocket,
 			RejectScore: as.RejectScore, TagScore: as.TagScore,
+			Feeds:      slices.Sorted(slices.Values(as.Feeds.Enabled)),
+			DQSKeyFile: as.Feeds.SpamhausDQSKeyFile,
 		},
 	}
 }

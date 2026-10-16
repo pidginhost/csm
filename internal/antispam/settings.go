@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 )
 
 const (
@@ -28,6 +29,16 @@ type Settings struct {
 	Socket      string
 	RejectScore int
 	TagScore    int
+	// Feeds are the feed names to render (feeds spec section 4); the daemon
+	// has already dropped those whose preconditions fail.
+	Feeds []string
+	// SkipMaps names map redirects left out because CSM cannot own their
+	// file (feeds spec section 5.3).
+	SkipMaps []string
+	// DQSKeyFile holds the Spamhaus DQS key. DQSKey is its validated
+	// content: the caller loads it, and it never travels in a request.
+	DQSKeyFile string
+	DQSKey     Secret
 }
 
 // Validate checks every value that reaches a rendered file.
@@ -35,7 +46,46 @@ func (s Settings) Validate() error {
 	if err := ValidateSocket(s.Socket); err != nil {
 		return err
 	}
-	return ValidateScores(s.RejectScore, s.TagScore)
+	if err := ValidateScores(s.RejectScore, s.TagScore); err != nil {
+		return err
+	}
+	if err := ValidateFeeds(s.Feeds, s.DQSKeyFile); err != nil {
+		return err
+	}
+	return ValidateSkipMaps(s.SkipMaps)
+}
+
+// HasFeed reports whether name is among s.Feeds.
+func (s Settings) HasFeed(name string) bool { return slices.Contains(s.Feeds, name) }
+
+// DNSFeeds returns the catalogue entries of s's DNS feeds in catalogue
+// order, so rendering never depends on the order the operator wrote.
+func (s Settings) DNSFeeds() []Feed {
+	var out []Feed
+	for _, f := range catalogue {
+		if f.DNS() && s.HasFeed(f.Name) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// Redirects reports whether rspamd.com maps are pointed at local copies.
+func (s Settings) Redirects() bool { return !s.HasFeed(FeedRspamdMaps) }
+
+// ValidateSkipMaps accepts known map redirect names, once each.
+func ValidateSkipMaps(names []string) error {
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		if !slices.Contains(MapRedirectNames(), name) {
+			return fmt.Errorf("unknown map redirect %q", name)
+		}
+		if seen[name] {
+			return fmt.Errorf("map redirect %q is listed twice", name)
+		}
+		seen[name] = true
+	}
+	return nil
 }
 
 // ValidateSocket accepts a clean absolute path made only of ASCII letters,

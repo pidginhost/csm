@@ -192,9 +192,11 @@ func TestPassObserveReportsOnly(t *testing.T) {
 
 func TestDesiredFromConfig(t *testing.T) {
 	cfg := &config.Config{Mode: config.ModeObserve}
-	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, DryRun: true, RspamdSocket: "/run/x.sock", RejectScore: 20, TagScore: 5}
-	want := Desired{Enabled: true, Observe: true, Settings: antispam.Settings{DryRun: true, Socket: "/run/x.sock", RejectScore: 20, TagScore: 5}}
-	if got := DesiredFromConfig(cfg); got != want {
+	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, DryRun: true, RspamdSocket: "/run/x.sock", RejectScore: 20, TagScore: 5,
+		Feeds: config.AntispamFeedsConfig{Enabled: []string{"uribl", "psbl"}, SpamhausDQSKeyFile: "/etc/csm/k"}}
+	want := Desired{Enabled: true, Observe: true, Settings: antispam.Settings{DryRun: true, Socket: "/run/x.sock", RejectScore: 20, TagScore: 5,
+		Feeds: []string{"psbl", "uribl"}, DQSKeyFile: "/etc/csm/k"}}
+	if got := DesiredFromConfig(cfg); !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }
