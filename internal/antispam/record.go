@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"path"
 	"strings"
 )
@@ -90,7 +91,8 @@ func Generation(content map[string]string) string {
 }
 
 // ManagedContent maps each file CSM writes to the text it owns there: a
-// whole local.d file, or the CSM block of a shared Exim file.
+// whole rspamd file, or the CSM block of a shared Exim file. Optional files
+// appear only while a feed or map redirect needs them.
 func ManagedContent(s Settings) (map[string]string, error) {
 	hooks, err := RenderExim(s)
 	if err != nil {
@@ -109,6 +111,11 @@ func ManagedContent(s Settings) (map[string]string, error) {
 	for name, text := range files {
 		out[path.Join(RspamdLocalDir, name)] = text
 	}
+	feeds, err := RenderFeeds(s)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(out, feeds)
 	return out, nil
 }
 
@@ -121,7 +128,7 @@ func InstalledContent(targets []TargetFacts) map[string]string {
 		if t.Err != nil || t.Missing {
 			continue
 		}
-		if t.Kind == TargetRspamd {
+		if t.Kind.WholeFile() {
 			if IsManaged(t.Content) {
 				out[t.Path] = t.Content
 			}

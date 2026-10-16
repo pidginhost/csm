@@ -32,6 +32,10 @@ func installedFacts(t *testing.T, s Settings) HostFacts {
 		switch tg.Kind {
 		case TargetRspamd:
 			tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, managed[tg.Path]
+		case TargetRspamdOptional:
+			if text, ok := managed[tg.Path]; ok {
+				tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, text
+			}
 		case TargetEximHook:
 			tg.Content = managed[tg.Path]
 		case TargetEximLocal:
@@ -538,5 +542,33 @@ func TestAssessReportsEachProblemOnce(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCurrentNeedsSecretFileMode(t *testing.T) {
+	s := defaults(false)
+	s.Feeds, s.DQSKeyFile, s.DQSKey = []string{FeedSpamhausDQS}, "/etc/csm/k", Secret(testKey)
+	f := installedFacts(t, s)
+	f.RspamdGID = 974
+	setTargetFile(f.Targets, FeedRBLPath, PathFacts{Path: FeedRBLPath, UID: 0, GID: 974, Mode: 0o640})
+	if !current(s, f) {
+		t.Fatal("0640 root:rspamd is current")
+	}
+	for name, file := range map[string]PathFacts{
+		"world readable": {Path: FeedRBLPath, UID: 0, GID: 974, Mode: 0o644},
+		"wrong group":    {Path: FeedRBLPath, UID: 0, GID: 0, Mode: 0o640},
+	} {
+		setTargetFile(f.Targets, FeedRBLPath, file)
+		if current(s, f) {
+			t.Errorf("%s counts as current", name)
+		}
+	}
+}
+
+func setTargetFile(targets []TargetFacts, p string, file PathFacts) {
+	for i := range targets {
+		if targets[i].Path == p {
+			targets[i].File = file
+		}
 	}
 }

@@ -63,7 +63,9 @@ func TestGenerationIsCanonical(t *testing.T) {
 }
 
 func TestManagedContentCoversEveryTarget(t *testing.T) {
+	// A DNS feed makes every optional file wanted.
 	s := enforceSettings()
+	s.Feeds = []string{FeedPSBL}
 	content, err := ManagedContent(s)
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +132,9 @@ func TestInstalledContentMatchesManagedContent(t *testing.T) {
 }
 
 func TestInstalledContentSkipsForeignAndMissing(t *testing.T) {
-	targets := installedTargets(t, enforceSettings())
+	s := enforceSettings()
+	s.Feeds = []string{FeedPSBL}
+	targets := installedTargets(t, s)
 	targets[0].Content = "reject = 15;\n"
 	targets[1].Missing = true
 	targets[6].Content = "warn\n  log_message = operator rule\n"
@@ -190,5 +194,19 @@ func TestInstalledContentRejectsInactiveOrDisplacedBlocks(t *testing.T) {
 				t.Error("inactive or displaced block matches the completed generation")
 			}
 		})
+	}
+}
+
+func TestManagedContentIncludesFeedFiles(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedPSBL}
+	managed, err := ManagedContent(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{FeedRBLPath, FeedRBLGroupPath, RedirectPath(RedirectMultimap)} {
+		if _, ok := managed[p]; !ok {
+			t.Errorf("ManagedContent lacks %s", p)
+		}
 	}
 }

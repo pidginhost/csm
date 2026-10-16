@@ -30,7 +30,14 @@ const (
 	TargetEximHook
 	// TargetEximLocal is /etc/exim.conf.local: shared, with one @CONFIG@ line.
 	TargetEximLocal
+	// TargetRspamdOptional is an rspamd file CSM owns outright while a feed
+	// or map redirect needs it. A file CSM cannot own never blocks core: the
+	// daemon leaves the feed or redirect out instead (feeds spec 5.3).
+	TargetRspamdOptional
 )
+
+// WholeFile reports whether CSM owns the target's entire content.
+func (k TargetKind) WholeFile() bool { return k == TargetRspamd || k == TargetRspamdOptional }
 
 // Target is one file CSM writes.
 type Target struct {
@@ -41,9 +48,13 @@ type Target struct {
 // MutationTargets lists every file CSM writes, rspamd first as in the apply
 // transaction (spec section 6.3).
 func MutationTargets() []Target {
-	out := make([]Target, 0, len(RspamdFiles)+4)
+	optional := OptionalRspamdPaths()
+	out := make([]Target, 0, len(RspamdFiles)+len(optional)+4)
 	for _, name := range RspamdFiles {
 		out = append(out, Target{Path: path.Join(RspamdLocalDir, name), Kind: TargetRspamd})
+	}
+	for _, p := range optional {
+		out = append(out, Target{Path: p, Kind: TargetRspamdOptional})
 	}
 	return append(out,
 		Target{Path: HookRCPTPath, Kind: TargetEximHook},
@@ -94,6 +105,11 @@ func checkTargets(targets []TargetFacts, removal bool) []Problem {
 	}
 	reported := make(map[string]bool)
 	for _, t := range targets {
+		// Optional files are the daemon's to judge (OptionalUsable). Removal
+		// edits only files CSM wrote, and must not do so through an unsafe path.
+		if t.Kind == TargetRspamdOptional && (!removal || !IsManaged(t.Content)) {
+			continue
+		}
 		safe := true
 		for _, p := range t.Parents {
 			problem := unprotected(p)
@@ -143,7 +159,7 @@ func checkTargets(targets []TargetFacts, removal bool) []Problem {
 			continue
 		}
 		switch t.Kind {
-		case TargetRspamd:
+		case TargetRspamd, TargetRspamdOptional:
 			if !removal && !IsManaged(t.Content) {
 				add(CodeTargets, Definite, "%s is not managed by CSM; remove or rename it so CSM can write its own", t.Path)
 			}

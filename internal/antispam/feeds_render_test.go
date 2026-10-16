@@ -147,3 +147,28 @@ func TestRenderRspamdSwitchesRBLForDNSFeeds(t *testing.T) {
 		t.Errorf("a DNS feed turns rbl on: %q", files["rbl.conf"])
 	}
 }
+
+func TestRenderFeedsKeyOnlyInRBLFile(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedSpamhausDQS}
+	s.DQSKeyFile = "/etc/csm/k"
+	if _, err := RenderFeeds(s); err == nil {
+		t.Fatal("DQS rendered without a key")
+	}
+	s.DQSKey = Secret(testKey)
+	managed, err := ManagedContent(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for p, content := range managed {
+		if strings.Contains(content, testKey) != (p == FeedRBLPath) {
+			t.Errorf("%s: key present = %v", p, strings.Contains(content, testKey))
+		}
+	}
+	if !strings.Contains(managed[FeedRBLPath], `rbl = "`+testKey+`.zen.dq.spamhaus.net";`) {
+		t.Error("ZEN zone lacks the key")
+	}
+	if strings.Contains(managed[FeedRBLPath], dqsKeyMark) {
+		t.Error("placeholder left in output")
+	}
+}

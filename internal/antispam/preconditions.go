@@ -143,6 +143,8 @@ type HostFacts struct {
 	// GlobalEnableErr is a stat failure other than absence.
 	GlobalEnableErr error
 	// RspamdVersion is `rspamd --version`; RspamadmVersion `rspamadm --version`.
+	// RspamdGID is the rspamd service's group, or -1 when unknown.
+	RspamdGID       int
 	RspamdVersion   CommandResult
 	RspamadmVersion CommandResult
 	Socket          SocketFacts

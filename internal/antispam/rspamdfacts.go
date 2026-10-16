@@ -122,12 +122,17 @@ var modulesOff = []string{"asn", "emails", "fuzzy_check", "greylist", "rbl"}
 // CheckRspamd compares staged rspamd state with what CSM wrote. Each string
 // names one conflict, such as an override.d file defeating a CSM setting.
 func CheckRspamd(enabled map[string]bool, a Actions, s Settings) []string {
-	return append(checkRspamdModules(enabled), checkRspamdActions(a, s)...)
+	return append(checkRspamdModules(enabled, s), checkRspamdActions(a, s)...)
 }
 
-func checkRspamdModules(enabled map[string]bool) []string {
+func checkRspamdModules(enabled map[string]bool, s Settings) []string {
 	var out []string
+	dns := len(s.DNSFeeds()) > 0
 	for _, m := range modulesOff {
+		// With a DNS feed rbl runs CSM's rules; CheckFeedsLoaded checks them.
+		if m == "rbl" && dns {
+			continue
+		}
 		if enabled[m] {
 			out = append(out, fmt.Sprintf("rspamd module %s is enabled; an override defeats CSM's %s.conf", m, m))
 		}

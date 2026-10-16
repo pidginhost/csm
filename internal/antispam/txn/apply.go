@@ -49,6 +49,12 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	if err != nil {
 		return failed(StepPreconditions, err)
 	}
+	if s.HasFeed(antispam.FeedSpamhausDQS) {
+		if f.RspamdGID < 0 {
+			return failed(StepPreconditions, errors.New("rspamd's group is unknown, so the DQS key file cannot be restricted to it"))
+		}
+		changes = secureSecret(changes, f.Targets, f.RspamdGID)
+	}
 	rspamdChanges, eximChanges := split(changes)
 	record, valid, err := t.readRecord()
 	if err != nil {

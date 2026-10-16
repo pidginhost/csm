@@ -163,7 +163,7 @@ func stageFile(p, content string) (*os.File, error) {
 }
 
 func publishFile(p string, tmp *os.File, perm fs.FileMode, uid, gid int, replace bool) error {
-	if uid >= 0 {
+	if uid >= 0 || gid >= 0 {
 		if err := tmp.Chown(uid, gid); err != nil {
 			return err
 		}

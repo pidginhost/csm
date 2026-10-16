@@ -99,7 +99,7 @@ func leftovers(f HostFacts) bool {
 		return true
 	}
 	for _, t := range f.Targets {
-		if t.Kind == TargetRspamd && IsManaged(t.Content) || t.Kind != TargetRspamd && hasMarker(t.Content) {
+		if t.Kind.WholeFile() && IsManaged(t.Content) || !t.Kind.WholeFile() && hasMarker(t.Content) {
 			return true
 		}
 	}
@@ -126,6 +126,9 @@ func current(s Settings, f HostFacts) bool {
 	if err != nil || !r.Complete() || *r.Generation != want {
 		return false
 	}
+	if s.HasFeed(FeedSpamhausDQS) && !secretFileOK(f) {
+		return false
+	}
 	hooks, err := RenderExim(s)
 	if err != nil || f.GeneratedErr != nil || f.EximSettings.Err != nil {
 		return false
@@ -144,7 +147,7 @@ func loadedConflicts(s Settings, f HostFacts) []Problem {
 	if f.RspamdModules.Err != nil || err != nil {
 		unreadable = true
 	} else {
-		conflicts = append(conflicts, checkRspamdModules(modules)...)
+		conflicts = append(conflicts, checkRspamdModules(modules, s)...)
 	}
 	data := []byte(f.RspamdActions.Stdout)
 	if f.RspamdActions.Err != nil || !json.Valid(data) {
