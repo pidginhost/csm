@@ -46,13 +46,15 @@ const (
 	CapSysModule Privilege = "CAP_SYS_MODULE"
 	// CapLinuxImmutable permits changing the executable's immutable flag.
 	CapLinuxImmutable Privilege = "CAP_LINUX_IMMUTABLE"
+	// CapLease permits exclusive file leases across account-owned files.
+	CapLease Privilege = "CAP_LEASE"
 	// Unprivileged marks work CSM does inside its own directories.
 	Unprivileged Privilege = "none"
 )
 
 // KnownPrivileges lists every privilege an operation may declare.
 func KnownPrivileges() []Privilege {
-	return []Privilege{Root, CapDACReadSearch, CapSysAdmin, CapNetAdmin, CapKill, CapBPF, CapPerfmon, CapSyslog, CapAuditControl, CapSysModule, CapLinuxImmutable, Unprivileged}
+	return []Privilege{Root, CapDACReadSearch, CapSysAdmin, CapNetAdmin, CapKill, CapBPF, CapPerfmon, CapSyslog, CapAuditControl, CapSysModule, CapLinuxImmutable, CapLease, Unprivileged}
 }
 
 // Trigger says who starts an operation.

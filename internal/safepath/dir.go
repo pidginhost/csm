@@ -50,6 +50,19 @@ func (d *Dir) Close() error { return d.file.Close() }
 
 func (d *Dir) Sync() error { return d.file.Sync() }
 
+// SameFile reports whether two pinned handles name the same directory.
+func (d *Dir) SameFile(other *Dir) (bool, error) {
+	want, err := d.file.Stat()
+	if err != nil {
+		return false, err
+	}
+	got, err := other.file.Stat()
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(want, got), nil
+}
+
 func validName(name string) bool {
 	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\x00")
 }

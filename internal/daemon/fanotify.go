@@ -3,16 +3,19 @@
 package daemon
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -1297,6 +1300,23 @@ func readFromFd(fd int, maxBytes int) []byte {
 	return buf[:n]
 }
 
+func readVersionedFromFd(fd, maxBytes int, stat func(int) os.FileInfo) ([]byte, os.FileInfo) {
+	before := stat(fd)
+	data := readFromFd(fd, maxBytes)
+	if data == nil {
+		return nil, nil
+	}
+	after := stat(fd)
+	if !checks.SameFileVersion(before, after) {
+		return data, nil
+	}
+	return data, after
+}
+
+func readVersionedFileFromFd(fd, maxBytes int) ([]byte, os.FileInfo) {
+	return readVersionedFromFd(fd, maxBytes, scannedIdentity)
+}
+
 const readCompleteMaxInterrupts = 8
 
 // readExactSize reads exactly the snapshotted size. Its buffer is fixed before
@@ -1538,10 +1558,14 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// eval/assert wrapping a base64/gzinflate decoder).
 	if knownWebshells[nameLower] {
 		recordReadTruncation(event.fd, 65536, "phpcontent_inline")
-		if data := readFromFd(event.fd, 65536); looksLikePHPWebshell(data) {
+		if data, scanned := readVersionedFileFromFd(event.fd, 65536); looksLikePHPWebshell(data) {
 			markDropperContentSuspicious()
-			fm.sendAlertWithPath(alert.Critical, "webshell_realtime",
-				fmt.Sprintf("Webshell file created: %s", path), "", path, procInfo)
+			message := fmt.Sprintf("Webshell file created: %s", path)
+			if confirmedPHPExecutionData(data) {
+				fm.sendConfirmedPHPFinding(event.fd, data, scanned, "webshell_realtime", message, "", path, procInfo)
+			} else {
+				fm.sendAlertWithPath(alert.Critical, "webshell_realtime", message, "", path, procInfo)
+			}
 			return
 		}
 	}
@@ -1643,13 +1667,16 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		// content/signature/YARA path before downgrading clean PHP to
 		// a Warning.
 		recordReadTruncation(event.fd, 65536, "phpcontent_uploads")
-		data := readFromFd(event.fd, 65536)
+		data, scanned := readVersionedFileFromFd(event.fd, 65536)
 		if looksLikePHPWebshell(data) {
 			markDropperContentSuspicious()
-			fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime",
-				fmt.Sprintf("PHP file created in uploads: %s", path),
-				"Webshell markers in content (request superglobal -> dangerous function, or eval/assert + decoder chain)",
-				path, procInfo)
+			message := fmt.Sprintf("PHP file created in uploads: %s", path)
+			details := "Webshell markers in content (request superglobal -> dangerous function, or eval/assert + decoder chain)"
+			if confirmedPHPExecutionData(data) {
+				fm.sendConfirmedPHPFinding(event.fd, data, scanned, "php_in_uploads_realtime", message, details, path, procInfo)
+			} else {
+				fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime", message, details, path, procInfo)
+			}
 		} else {
 			if fm.checkPHPContent(event.fd, path, procInfo) {
 				markDropperContentSuspicious()
@@ -1878,20 +1905,304 @@ func (fm *FileMonitor) checkUserINI(fd int, path, procInfo string) {
 	fm.runEventSignatureScan(fd, data, path, ".ini", procInfo)
 }
 
+var realtimePHPDecoders = [...]string{"base64_decode", "gzinflate", "gzuncompress", "str_rot13", "gzdecode"}
+
+var directPHPDecoderExecutionRE = regexp.MustCompile(
+	`(?i)\b(?:eval|assert)\s*\(\s*@?\s*(?:` +
+		strings.Join(realtimePHPDecoders[:], "|") + `)\s*\(`,
+)
+
+const packedPHPLiteral = `(?:'[a-z0-9+/=]{12,}'|"[a-z0-9+/=]{12,}")`
+
+var packedLiteralPHPExecutionRE = regexp.MustCompile(
+	`(?i)^(?:eval|assert)\s*\(\s*@?\s*` +
+		`(?:base64_decode\s*\(\s*` + packedPHPLiteral + `\s*\)` +
+		`|(?:gzinflate|gzuncompress|str_rot13|gzdecode)\s*\(\s*` +
+		`base64_decode\s*\(\s*` + packedPHPLiteral + `\s*\)\s*\))\s*\)`,
+)
+
+var confirmedPHPExecNames = map[string]struct{}{
+	"assert": {}, "create_function": {}, "eval": {}, "exec": {},
+	"passthru": {}, "popen": {}, "proc_open": {}, "shell_exec": {},
+	"system": {},
+}
+
+var (
+	phpFunctionImportRE = regexp.MustCompile(`(?is)\buse\s+function\s+([^;]+);`)
+	phpGroupImportRE    = regexp.MustCompile(`(?is)\buse\s+[a-z_\\][a-z0-9_\\]*\s*\{([^{}]*)\}\s*;`)
+	phpIdentifierRE     = regexp.MustCompile(`[a-z_][a-z0-9_]*`)
+)
+
+type phpNamespaceScope struct {
+	id         int
+	start, end int
+	named      bool
+}
+
+func directPHPDecoderExecutionMatches(code string) [][]int {
+	var confirmed [][]int
+	for _, match := range directPHPDecoderExecutionRE.FindAllStringIndex(code, -1) {
+		previous := match[0] - 1
+		for previous >= 0 {
+			switch code[previous] {
+			case ' ', '\t', '\n', '\r':
+				previous--
+				continue
+			}
+			break
+		}
+		if previous >= 0 {
+			switch code[previous] {
+			case '$', '>', ':':
+				continue
+			case '\\':
+				if strings.HasPrefix(code[match[0]:], "eval") || !isExplicitGlobalPHPCall(code, match[0]) {
+					continue
+				}
+			}
+		}
+		confirmed = append(confirmed, match)
+	}
+	return confirmed
+}
+
+func hasPackedLiteralPHPExecution(executable, structure string) bool {
+	for _, match := range directPHPDecoderExecutionMatches(structure) {
+		if packedLiteralPHPExecutionRE.MatchString(executable[match[0]:]) {
+			return true
+		}
+	}
+	return false
+}
+
+func maskUserDispatchedPHPCalls(code string) string {
+	masked := []byte(code)
+	scopes := phpNamespaceScopes(code)
+	importedAliases := importedPHPFunctionAliases(code, scopes)
+	for i := 0; i < len(code); {
+		if !isPHPIdentifierStart(code[i]) {
+			i++
+			continue
+		}
+		end := i + 1
+		for end < len(code) && isPHPIdentifierPart(code[end]) {
+			end++
+		}
+		name := code[i:end]
+		if _, dangerous := confirmedPHPExecNames[name]; !dangerous {
+			i = end
+			continue
+		}
+		next := end
+		for next < len(code) && isPHPSpace(code[next]) {
+			next++
+		}
+		previous := i - 1
+		for previous >= 0 && isPHPSpace(code[previous]) {
+			previous--
+		}
+		if next >= len(code) || code[next] != '(' {
+			i = end
+			continue
+		}
+		unsafeDispatch := previous >= 0 && strings.ContainsRune("$>:", rune(code[previous]))
+		qualified := previous >= 0 && code[previous] == '\\'
+		if qualified && (name == "eval" || !isExplicitGlobalPHPCall(code, i)) {
+			unsafeDispatch = true
+		}
+		if !qualified && name != "eval" {
+			scopeID, named := phpNamespaceAt(scopes, i)
+			if named || importedAliases[scopeID][name] {
+				unsafeDispatch = true
+			}
+		}
+		if unsafeDispatch {
+			for j := i; j < end; j++ {
+				masked[j] = ' '
+			}
+		}
+		i = end
+	}
+	return string(masked)
+}
+
+func importedPHPFunctionAliases(code string, scopes []phpNamespaceScope) map[int]map[string]bool {
+	aliases := make(map[int]map[string]bool)
+	addAliases := func(scopeID int, clauses string) {
+		if aliases[scopeID] == nil {
+			aliases[scopeID] = make(map[string]bool)
+		}
+		for clause := range strings.SplitSeq(clauses, ",") {
+			identifiers := phpIdentifierRE.FindAllString(clause, -1)
+			if len(identifiers) > 0 {
+				aliases[scopeID][identifiers[len(identifiers)-1]] = true
+			}
+		}
+	}
+	for _, match := range phpFunctionImportRE.FindAllStringSubmatchIndex(code, -1) {
+		if len(match) < 4 || match[2] < 0 {
+			continue
+		}
+		scopeID, _ := phpNamespaceAt(scopes, match[0])
+		addAliases(scopeID, code[match[2]:match[3]])
+	}
+	for _, match := range phpGroupImportRE.FindAllStringSubmatchIndex(code, -1) {
+		if len(match) < 4 || match[2] < 0 {
+			continue
+		}
+		scopeID, _ := phpNamespaceAt(scopes, match[0])
+		for clause := range strings.SplitSeq(code[match[2]:match[3]], ",") {
+			clause = strings.TrimSpace(clause)
+			const keyword = "function"
+			if !strings.HasPrefix(clause, keyword) || len(clause) == len(keyword) || !isPHPSpace(clause[len(keyword)]) {
+				continue
+			}
+			addAliases(scopeID, clause[len(keyword):])
+		}
+	}
+	return aliases
+}
+
+func phpNamespaceScopes(code string) []phpNamespaceScope {
+	type declaration struct {
+		start, body int
+		brace       bool
+		named       bool
+	}
+	var declarations []declaration
+	for i := 0; i < len(code); {
+		if !isPHPIdentifierStart(code[i]) {
+			i++
+			continue
+		}
+		end := i + 1
+		for end < len(code) && isPHPIdentifierPart(code[end]) {
+			end++
+		}
+		if code[i:end] != "namespace" {
+			i = end
+			continue
+		}
+		previous := i - 1
+		for previous >= 0 && isPHPSpace(code[previous]) {
+			previous--
+		}
+		if previous >= 0 && code[previous] == '\\' {
+			i = end
+			continue
+		}
+		cursor := end
+		for cursor < len(code) && isPHPSpace(code[cursor]) {
+			cursor++
+		}
+		named := false
+		if cursor < len(code) && isPHPIdentifierStart(code[cursor]) {
+			named = true
+			for cursor < len(code) {
+				if isPHPIdentifierPart(code[cursor]) || code[cursor] == '\\' {
+					cursor++
+					continue
+				}
+				break
+			}
+			for cursor < len(code) && isPHPSpace(code[cursor]) {
+				cursor++
+			}
+		}
+		if cursor >= len(code) || code[cursor] != ';' && code[cursor] != '{' {
+			i = end
+			continue
+		}
+		declarations = append(declarations, declaration{start: i, body: cursor + 1, brace: code[cursor] == '{', named: named})
+		i = cursor + 1
+	}
+
+	scopes := make([]phpNamespaceScope, 0, len(declarations))
+	for index, declaration := range declarations {
+		end := len(code)
+		if declaration.brace {
+			depth := 1
+			for cursor := declaration.body; cursor < len(code); cursor++ {
+				switch code[cursor] {
+				case '{':
+					depth++
+				case '}':
+					depth--
+					if depth == 0 {
+						end = cursor
+						cursor = len(code)
+					}
+				}
+			}
+		} else if index+1 < len(declarations) {
+			end = declarations[index+1].start
+		}
+		scopes = append(scopes, phpNamespaceScope{id: index + 1, start: declaration.body, end: end, named: declaration.named})
+	}
+	return scopes
+}
+
+func phpNamespaceAt(scopes []phpNamespaceScope, offset int) (int, bool) {
+	for _, scope := range scopes {
+		if offset >= scope.start && offset < scope.end {
+			return scope.id, scope.named
+		}
+	}
+	return 0, false
+}
+
+func isExplicitGlobalPHPCall(code string, nameStart int) bool {
+	slash := nameStart - 1
+	if slash < 0 || code[slash] != '\\' {
+		return false
+	}
+	return slash == 0 || code[slash-1] != '\\' && !isPHPIdentifierPart(code[slash-1])
+}
+
+func isPHPIdentifierStart(b byte) bool {
+	return b == '_' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
+
+func isPHPIdentifierPart(b byte) bool {
+	return isPHPIdentifierStart(b) || b >= '0' && b <= '9'
+}
+
+func isPHPSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+}
+
+func confirmedPHPExecution(executable, structure string) bool {
+	requestFlow := maskUserDispatchedPHPCalls(structure)
+	return looksLikePHPWebshell([]byte(requestFlow)) || hasPackedLiteralPHPExecution(executable, requestFlow)
+}
+
+func confirmedPHPExecutionData(data []byte) bool {
+	executable := strings.ToLower(checks.PHPExecutableCode(string(data)))
+	structure := strings.ToLower(checks.PHPExecutableStructure(string(data)))
+	return confirmedPHPExecution(executable, structure)
+}
+
 // checkPHPContent reads PHP content from the event fd and checks for malicious patterns.
 // C3 - reads from fd, not path. M4 - 32KB scan size.
 func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	recordReadTruncation(fd, 32768, "php_check")
-	data := readFromFd(fd, 32768)
+	data, scanned := readVersionedFileFromFd(fd, 32768)
 	if data == nil {
 		return false
 	}
 	content := strings.ToLower(string(data))
+	executable := strings.ToLower(checks.PHPExecutableCode(string(data)))
+	structure := strings.ToLower(checks.PHPExecutableStructure(string(data)))
+	confirmedExecution := confirmedPHPExecution(executable, structure)
 
 	if looksLikePHPWebshell(data) {
-		fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime",
-			fmt.Sprintf("Webshell pattern detected: %s", path),
-			"Request input reaches a dangerous PHP execution primitive", path, procInfo)
+		message := fmt.Sprintf("Webshell pattern detected: %s", path)
+		details := "Request input reaches a dangerous PHP execution primitive"
+		if confirmedExecution {
+			fm.sendConfirmedPHPFinding(fd, data, scanned, "webshell_content_realtime", message, details, path, procInfo)
+		} else {
+			fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime", message, details, path, procInfo)
+		}
 		return true
 	}
 
@@ -1932,12 +2243,12 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	// legitimate plugins that use these functions in unrelated contexts.
 	evalStr := "eval("     // search target for PHP eval function calls
 	assertStr := "assert(" // search target for PHP assert function calls
-	decoders := []string{"base64_decode", "gzinflate", "gzuncompress", "str_rot13", "gzdecode"}
+	decoders := realtimePHPDecoders[:]
 	// Library docblocks show decoder usage examples on one line, so this
 	// test reads executable code only. The head starts at byte 0, where tag,
 	// string and comment boundaries are known; the tail check below stays on
 	// raw bytes because its window can open inside a string.
-	code := strings.ToLower(checks.PHPExecutableCode(string(data)))
+	code := executable
 	for _, line := range strings.Split(code, "\n") {
 		lineHasEval := strings.Contains(line, evalStr) || strings.Contains(line, assertStr)
 		if !lineHasEval {
@@ -1945,9 +2256,13 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 		}
 		for _, dec := range decoders {
 			if strings.Contains(line, dec) {
-				fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
-					fmt.Sprintf("Obfuscated PHP detected: %s", path),
-					fmt.Sprintf("PHP code execution with %s on same line", dec), path, procInfo)
+				message := fmt.Sprintf("Obfuscated PHP detected: %s", path)
+				details := fmt.Sprintf("PHP code execution with %s on same line", dec)
+				if confirmedExecution {
+					fm.sendConfirmedPHPFinding(fd, data, scanned, "obfuscated_php_realtime", message, details, path, procInfo)
+				} else {
+					fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime", message, details, path, procInfo)
+				}
 				return true
 			}
 		}
@@ -2561,18 +2876,82 @@ func (fm *FileMonitor) sendAlertWithPath(severity alert.Severity, check, message
 	})
 }
 
+var inlineQuarantineConfirmedPHP = checks.InlineQuarantineConfirmedPHPGatedIdentifiedFD
+
+// sendConfirmedPHPFinding gives the existing automatic file-response policy
+// the exact content window and file identity that proved a Critical PHP
+// execution finding. The finding is published after the response decision so
+// alert delivery cannot retry an attempt that already consumed the budget.
+func (fm *FileMonitor) sendConfirmedPHPFinding(fd int, data []byte, scanned os.FileInfo, check, message, details, filePath, processInfo string) {
+	finding := alert.Finding{
+		Severity:    alert.Critical,
+		Check:       check,
+		Message:     message,
+		Details:     details,
+		FilePath:    filePath,
+		ProcessInfo: processInfo,
+	}
+	if !fm.prepareFileFindingWithDedup(&finding, confirmedPHPDedupPath(filePath, data, scanned)) {
+		return
+	}
+	if scanned == nil {
+		fm.enqueuePreparedFileFinding(finding)
+		return
+	}
+	qPath, quarantined, paused := inlineQuarantineConfirmedPHP(
+		fm.currentCfg(), &finding, filePath, data, scanned, fd,
+	)
+	fm.enqueuePreparedFileFinding(finding)
+	if paused != nil && !alert.TryEnqueue(fm.alertCh, *paused) {
+		atomic.AddInt64(&fm.droppedAlerts, 1)
+	}
+	if !quarantined {
+		return
+	}
+	fm.recordDropperQuarantine(filePath, qPath)
+	fm.sendAlert(alert.Critical, "auto_response",
+		fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", filePath),
+		fmt.Sprintf("Quarantined to: %s\nDetection: %s", qPath, check))
+}
+
 func (fm *FileMonitor) sendFileFinding(finding alert.Finding) {
+	if !fm.prepareFileFinding(&finding) {
+		return
+	}
+	fm.enqueuePreparedFileFinding(finding)
+}
+
+func (fm *FileMonitor) prepareFileFinding(finding *alert.Finding) bool {
 	dedupPath := finding.FilePath
 	if finding.DedupKey != "" {
 		// A later header or digest can change a staged finding's identity
 		// within the path cooldown. Let persistent dedup see that evidence.
 		dedupPath = finding.Key()
 	}
+	return fm.prepareFileFindingWithDedup(finding, dedupPath)
+}
+
+func (fm *FileMonitor) prepareFileFindingWithDedup(finding *alert.Finding, dedupPath string) bool {
 	if !fm.shouldAlert(finding.Check, dedupPath) {
-		return
+		return false
 	}
 	finding.Timestamp = time.Now()
-	checks.StampContentFingerprint(&finding)
+	checks.StampContentFingerprint(finding)
+	return true
+}
+
+func confirmedPHPDedupPath(path string, data []byte, scanned os.FileInfo) string {
+	digest := sha256.Sum256(data)
+	if scanned == nil {
+		return fmt.Sprintf("%s\x00unstable:%x", path, digest)
+	}
+	if stat, ok := scanned.Sys().(*syscall.Stat_t); ok {
+		return fmt.Sprintf("%s\x00%d:%d:%d:%d:%d:%x", path, stat.Dev, stat.Ino, stat.Ctim.Sec, stat.Ctim.Nsec, scanned.Size(), digest)
+	}
+	return fmt.Sprintf("%s\x00%d:%d:%x", path, scanned.Size(), scanned.ModTime().UnixNano(), digest)
+}
+
+func (fm *FileMonitor) enqueuePreparedFileFinding(finding alert.Finding) {
 	if !alert.TryEnqueue(fm.alertCh, finding) {
 		atomic.AddInt64(&fm.droppedAlerts, 1)
 	}
@@ -2583,18 +2962,26 @@ func (fm *FileMonitor) sendFileFinding(finding alert.Finding) {
 // Uses LoadOrStore for atomic initial insertion to avoid TOCTOU races
 // between concurrent analyzer workers.
 func (fm *FileMonitor) shouldAlert(check, filePath string) bool {
+	return fm.shouldAlertAt(check, filePath, time.Now())
+}
+
+func (fm *FileMonitor) shouldAlertAt(check, filePath string, now time.Time) bool {
 	if filePath == "" {
 		return true // no path = no dedup possible
 	}
 	key := check + ":" + filePath
-	now := time.Now()
-	if v, loaded := fm.alertDedup.LoadOrStore(key, now); loaded {
+	for {
+		v, loaded := fm.alertDedup.LoadOrStore(key, now)
+		if !loaded {
+			return true
+		}
 		if now.Sub(v.(time.Time)) < alertDedupTTL {
 			return false
 		}
-		fm.alertDedup.Store(key, now) // refresh TTL on expiry
+		if fm.alertDedup.CompareAndSwap(key, v, now) {
+			return true
+		}
 	}
-	return true
 }
 
 // M7 - overflowReporter reports dropped events and alerts separately.
@@ -2647,7 +3034,7 @@ func (fm *FileMonitor) overflowReporter() {
 			now := time.Now()
 			fm.alertDedup.Range(func(key, value any) bool {
 				if now.Sub(value.(time.Time)) > alertDedupTTL {
-					fm.alertDedup.Delete(key)
+					fm.alertDedup.CompareAndDelete(key, value)
 				}
 				return true
 			})

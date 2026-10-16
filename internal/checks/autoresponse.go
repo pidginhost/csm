@@ -653,11 +653,45 @@ func InlineQuarantineGatedIdentified(cfg *config.Config, f *alert.Finding, path 
 	if !ok {
 		return "", false, nil
 	}
+	return inlineQuarantineGatedWithInfo(cfg, f, path, info)
+}
+
+// InlineQuarantineConfirmedPHPGatedIdentified applies automatic quarantine to
+// a Critical PHP execution finding that the realtime detector confirmed from
+// an open file snapshot. It accepts only the two high-confidence content
+// families and requires both the inspected bytes and identity. Scanner rules,
+// URL-only droppers and path-based findings retain their existing gates.
+func InlineQuarantineConfirmedPHPGatedIdentified(cfg *config.Config, f *alert.Finding, path string, data []byte, scanned os.FileInfo) (string, bool, *alert.Finding) {
+	return InlineQuarantineConfirmedPHPGatedIdentifiedFD(cfg, f, path, data, scanned, -1)
+}
+
+// InlineQuarantineConfirmedPHPGatedIdentifiedFD keeps the detector's open
+// description through quarantine so Linux can exclude other writers without
+// treating the fanotify descriptor itself as a conflict.
+func InlineQuarantineConfirmedPHPGatedIdentifiedFD(cfg *config.Config, f *alert.Finding, path string, data []byte, scanned os.FileInfo, sourceFD int) (string, bool, *alert.Finding) {
+	if f == nil || cfg == nil || !cfg.AutoResponse.Enabled || !cfg.AutoResponse.QuarantineFiles || cfg.ObserveMode() {
+		return "", false, nil
+	}
+	if !isPinnedCriticalPHPContent(*f, data, scanned) {
+		return "", false, nil
+	}
+	info, err := osFS.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !SameFileVersion(info, scanned) {
+		return "", false, nil
+	}
+	return inlineQuarantineGatedWithInfoFD(cfg, f, path, info, sourceFD)
+}
+
+func inlineQuarantineGatedWithInfo(cfg *config.Config, f *alert.Finding, path string, info os.FileInfo) (string, bool, *alert.Finding) {
+	return inlineQuarantineGatedWithInfoFD(cfg, f, path, info, -1)
+}
+
+func inlineQuarantineGatedWithInfoFD(cfg *config.Config, f *alert.Finding, path string, info os.FileInfo, sourceFD int) (string, bool, *alert.Finding) {
 	var qPath string
 	f.AutoFileResponseEvaluated = true
 	paused := runAutoFileResponse(cfg, path, info, func() error {
 		var err error
-		qPath, err = quarantineInlineTarget(*f, path, info)
+		qPath, err = quarantineInlineTargetFD(*f, path, info, sourceFD)
 		return err
 	})
 	return qPath, qPath != "", paused
@@ -706,11 +740,45 @@ func inlineQuarantineInfo(f alert.Finding, path string, data []byte, scanned os.
 	return info, true
 }
 
+// isPinnedCriticalPHPContent accepts only the strongest realtime PHP findings
+// when the caller supplies the exact bytes and file identity it inspected.
+// The detector has already proved the execution dataflow or packed execution;
+// this gate proves that quarantine still names that same object. URL-only
+// droppers, filename checks and scanner matches keep their existing review or
+// scanner-specific confidence paths.
+func isPinnedCriticalPHPContent(f alert.Finding, data []byte, scanned os.FileInfo) bool {
+	if f.Severity != alert.Critical || len(data) == 0 || scanned == nil {
+		return false
+	}
+	return isConfirmedPHPResponseCheck(f.Check)
+}
+
+func isConfirmedPHPResponseCheck(check string) bool {
+	switch check {
+	case "webshell_content_realtime", "obfuscated_php_realtime", "webshell_realtime", "php_in_uploads_realtime":
+		return true
+	default:
+		return false
+	}
+}
+
 func quarantineInlineTarget(f alert.Finding, path string, info os.FileInfo) (string, error) {
+	return quarantineInlineTargetFD(f, path, info, -1)
+}
+
+func quarantineInlineTargetFD(f alert.Finding, path string, info os.FileInfo, sourceFD int) (string, error) {
 	qPath := newQuarantinePath(quarantineDir, path)
-	meta := quarantineMetadata(path, info, "Inline quarantine: high-confidence realtime signature match")
+	reason := "Inline quarantine: high-confidence realtime signature match"
+	move := quarantineTarget
+	if isConfirmedPHPResponseCheck(f.Check) {
+		reason = "Inline quarantine: confirmed realtime PHP content"
+		move = func(path, qPath string, info os.FileInfo, metadata QuarantineMeta) error {
+			return quarantineVersionedTargetFD(path, qPath, info, metadata, sourceFD)
+		}
+	}
+	meta := quarantineMetadata(path, info, reason)
 	meta.FindingID = alert.FindingID(f)
-	if err := quarantineTarget(path, qPath, info, meta); err != nil {
+	if err := move(path, qPath, info, meta); err != nil {
 		if warning, completed := completedQuarantineWarning(err); completed {
 			csmlog.Warn("inline quarantine completed with warning", "warning", warning)
 		} else {

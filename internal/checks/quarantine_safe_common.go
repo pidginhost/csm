@@ -51,50 +51,33 @@ func copyQuarantineFileByFD(src *os.File, qPath string, metadata []byte) error {
 	return quarantinefs.Store(qPath, src, metadata, 0600)
 }
 
-var quarantineUnlinkSource = os.Remove
-var quarantineSyncSourceDir = quarantinefs.SyncDir
+// Test hooks fail a transaction at the two durability boundaries without
+// replacing the descriptor-relative operations used in production.
+var quarantineBeforeLease = func(string) error { return nil }
+var quarantineBeforeCapturedUnlink = func(string) error { return nil }
+var quarantineBeforeSourceSync = func(string) error { return nil }
 
-// removeQuarantinedSource unlinks the detected name once the content sits in
-// quarantine, only if the name still resolves to the inode that was captured.
-// A source that vanished is done. A source that now resolves to something
-// else was swapped in by an attacker racing the unlink: the replacement is
-// left alone, the captured copy is kept as evidence, and the caller is told
-// the remediation did not complete instead of a silent success that left the
-// replacement live under the detected name.
+// removeQuarantinedSource removes the detected name once the content sits in
+// quarantine. Production Linux capture binds the final identity check and
+// unlink to a private descriptor-relative name. A replacement at the original
+// name is left alone and the caller is told what completed.
 func removeQuarantinedSource(path, qPath string, original os.FileInfo) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			if syncErr := quarantineSyncSourceDir(filepath.Dir(path)); syncErr != nil {
-				return fmt.Errorf("quarantine: source vanished but removal is not durable; recovery copy retained at %s: %w", qPath, syncErr)
-			}
-			return nil
-		}
-		return fmt.Errorf("quarantine: stat source before unlink %s; recovery copy retained at %s: %w", path, qPath, fileResponseSourceError(err))
+	return removeQuarantinedSourceMode(path, qPath, original, false)
+}
+
+func removeQuarantinedSourceMode(path, qPath string, original os.FileInfo, requireVersion bool) error {
+	return removeQuarantinedSourcePlatform(path, qPath, original, requireVersion)
+}
+
+func discardUntrustworthyQuarantineCopy(qPath string, cause error) error {
+	if err := os.Remove(qPath); err != nil && !os.IsNotExist(err) {
+		return errors.Join(cause, err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !sameFileIdentity(info, original) {
-		return refuseFileResponse(fmt.Errorf("quarantine: source at %s was replaced before unlink; the detected content is kept at %s and the replacement was left in place", path, qPath))
+	if err := os.Remove(qPath + ".meta"); err != nil && !os.IsNotExist(err) {
+		return errors.Join(cause, err)
 	}
-	if !sameContentShape(info, original) {
-		// A copy made while the source changed may mix old and new bytes.
-		// Keep the live source and discard this untrustworthy recovery copy.
-		cause := fmt.Errorf("quarantine: source changed before unlink %s", path)
-		if err := os.Remove(qPath); err != nil && !os.IsNotExist(err) {
-			return errors.Join(cause, err)
-		}
-		if err := os.Remove(qPath + ".meta"); err != nil && !os.IsNotExist(err) {
-			return errors.Join(cause, err)
-		}
-		if err := quarantinefs.SyncDir(filepath.Dir(qPath)); err != nil {
-			return errors.Join(cause, err)
-		}
-		return refuseFileResponse(cause)
+	if err := quarantinefs.SyncDir(filepath.Dir(qPath)); err != nil {
+		return errors.Join(cause, err)
 	}
-	if err := quarantineUnlinkSource(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("quarantine: unlink source %s; recovery copy retained at %s: %w", path, qPath, err)
-	}
-	if err := quarantineSyncSourceDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("quarantine: source removal is not durable; recovery copy retained at %s, inspect original path %s before retrying: %w", qPath, path, err)
-	}
-	return nil
+	return refuseFileResponse(cause)
 }

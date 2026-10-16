@@ -264,9 +264,9 @@ func TestQuarantineAuditCoversSetupAndCompletedWarnings(t *testing.T) {
 					t.Fatal(err)
 				}
 			case "unlink":
-				old := quarantineUnlinkSource
-				quarantineUnlinkSource = func(string) error { return syscall.EIO }
-				t.Cleanup(func() { quarantineUnlinkSource = old })
+				old := quarantineBeforeCapturedUnlink
+				quarantineBeforeCapturedUnlink = func(string) error { return syscall.EIO }
+				t.Cleanup(func() { quarantineBeforeCapturedUnlink = old })
 				want = actionlog.Failed
 			case "symlink":
 				want = actionlog.Failed
