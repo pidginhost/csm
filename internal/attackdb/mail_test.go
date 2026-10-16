@@ -162,3 +162,24 @@ func TestCloneCopiesMail(t *testing.T) {
 		t.Fatal("clone shares the mail section")
 	}
 }
+
+// One spam verdict among many ham never lists a busy legitimate sender, and
+// the listing starts exactly at a spam score of 50 (feeds spec 7.4).
+func TestSpamListingNeedsScoreFifty(t *testing.T) {
+	db := newTestDB(t)
+	db.RecordMailVerdict("198.51.100.90", true, mailNow)
+	for range 200 {
+		db.RecordMailVerdict("198.51.100.90", false, mailNow)
+	}
+	for range 2 {
+		db.RecordMailVerdict("198.51.100.91", true, mailNow)
+		db.RecordMailVerdict("198.51.100.92", true, mailNow)
+	}
+	db.RecordMailVerdict("198.51.100.92", false, mailNow)
+	if _, spam := db.MapSources(mailNow); !reflect.DeepEqual(spam, []string{"198.51.100.91"}) {
+		t.Fatalf("listed spam senders = %v, want only the one at score 50", spam)
+	}
+	if got := SpamScore(db.records["198.51.100.92"].Mail, mailNow); got != 40 {
+		t.Fatalf("two spam and one ham = %d, want 40", got)
+	}
+}
