@@ -20,69 +20,83 @@ type State struct {
 // Writer writes the map when its content changes and keeps the last written
 // map as the lookup spam evidence subtracts (spec 7.2).
 type Writer struct {
-	Path  string
-	chown func(path string, gid int) error
+	Path    string
+	chown   func(path string, gid int) error
+	syncDir func(path string) error
 
 	mu    sync.Mutex
 	last  Map
 	state State
+	gid   int
 }
 
 // NewWriter returns a writer for path.
 func NewWriter(path string) *Writer {
-	return &Writer{Path: path, chown: func(p string, gid int) error { return os.Chown(p, -1, gid) }}
+	return &Writer{Path: path, chown: func(p string, gid int) error { return os.Chown(p, -1, gid) }, syncDir: syncDirectory}
 }
 
-// Write renders m and replaces the file when the content changed: a
-// temporary file in the same directory, fsync, mode 0640, group gid, rename
-// and a directory fsync. A failure keeps the previous file, which rspamd
-// keeps using. gid is rspamd's group; without it the file would be
-// unreadable to rspamd, so nothing is written.
+// Write replaces the map when its content or group changes, or it is missing.
+// Failures before rename keep the previous file and lookup. After rename,
+// wrote is true and the lookup follows the published file even if syncing
+// the directory fails; err then reports uncertain durability. gid is
+// rspamd's group; without it the file would be unreadable to rspamd.
 func (w *Writer) Write(m Map, gid int, now time.Time) (bool, error) {
 	content, gen := m.Render()
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if gen == w.state.Gen && w.state.Err == nil {
-		return false, nil
+	if gid < 0 {
+		w.state.Err = errors.New("rspamd's group is unknown")
+		return false, w.state.Err
 	}
-	err := w.replace(content, gid)
-	if err != nil {
-		w.state.Err = err
-		return false, err
+	if gen == w.state.Gen && gid == w.gid && w.state.Err == nil {
+		if _, err := os.Stat(w.Path); err == nil {
+			return false, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			w.state.Err = err
+			return false, err
+		}
 	}
-	w.last, w.state = m, State{Gen: gen, WrittenAt: now}
-	return true, nil
+	wrote, err := w.replace(content, gid)
+	if wrote {
+		w.last, w.state, w.gid = m, State{Gen: gen, WrittenAt: now}, gid
+	}
+	w.state.Err = err
+	return wrote, err
 }
 
-func (w *Writer) replace(content []byte, gid int) error {
-	if gid < 0 {
-		return errors.New("rspamd's group is unknown")
-	}
+func (w *Writer) replace(content []byte, gid int) (bool, error) {
 	dir := filepath.Dir(w.Path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(w.Path)+".*")
 	if err != nil {
-		return err
+		return false, err
 	}
 	name := tmp.Name()
 	defer func() { _ = os.Remove(name) }()
 	if _, err = tmp.Write(content); err == nil {
-		err = tmp.Sync()
-	}
-	if err == nil {
 		err = tmp.Chmod(0o640)
-	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
 	}
 	if err == nil {
 		err = w.chown(name, gid)
 	}
 	if err == nil {
+		err = tmp.Sync()
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
 		err = os.Rename(name, w.Path)
 	}
 	if err != nil {
-		return fmt.Errorf("writing %s: %w", w.Path, err)
+		return false, fmt.Errorf("writing %s: %w", w.Path, err)
 	}
+	if err := w.syncDir(dir); err != nil {
+		return true, fmt.Errorf("syncing %s: %w", dir, err)
+	}
+	return true, nil
+}
+
+func syncDirectory(dir string) error {
 	d, err := os.Open(dir) // #nosec G304 -- the map's own directory
 	if err != nil {
 		return err

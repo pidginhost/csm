@@ -71,27 +71,51 @@ type Map struct {
 
 var canaryAddr = netip.MustParseAddr(CanaryAddr)
 
+// Include both the non-listable ranges and the reserved canary. Check
+// overlap too: a listable network address can still contain private hosts.
+var excludedNetworks = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/32"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("224.0.0.0/4"),
+	netip.MustParsePrefix("255.255.255.255/32"),
+	netip.MustParsePrefix("::/128"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("fc00::/7"),
+	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("ff00::/8"),
+	netip.PrefixFrom(canaryAddr, canaryAddr.BitLen()),
+}
+
 // listable reports whether a can ever be listed: global unicast, not
 // private, and not the canary, which only the canary line names.
 func listable(a netip.Addr) bool {
 	return a.IsGlobalUnicast() && !a.IsPrivate() && a != canaryAddr
 }
 
-// Build makes the map from src: one line per address or network, the
-// strongest symbol winning, nothing excluded, and an address or network
-// inside a listed network kept only when its symbol is stronger, because
-// rspamd uses the most specific match (spec 6.1).
+// Build makes the map from src: one line per address or network, with the
+// strongest symbol winning and excluded addresses omitted. A nested address
+// or network is kept only when its symbol is stronger, because rspamd uses
+// the most specific match (spec 6.1).
 func Build(src Sources) Map {
+	never := make([]netip.Addr, len(src.Never))
+	for i, a := range src.Never {
+		never[i] = a.WithZone("").Unmap()
+	}
 	best := map[netip.Prefix]Symbol{}
 	for _, s := range Symbols() {
+		if s == Canary {
+			continue
+		}
 		for _, raw := range src.Entries[s.Name] {
 			p, ok := parse(raw)
 			if !ok || !listable(p.Addr()) {
 				continue
 			}
-			if slices.ContainsFunc(src.Never, func(a netip.Addr) bool {
-				return p.Contains(a) || p.Contains(a.Unmap())
-			}) {
+			if slices.ContainsFunc(excludedNetworks, p.Overlaps) || slices.ContainsFunc(never, p.Contains) {
 				continue
 			}
 			if cur, ok := best[p]; !ok || rank(s.Name) < rank(cur.Name) {
@@ -106,19 +130,18 @@ func Build(src Sources) Map {
 			nets = append(nets, entry{p, s})
 		}
 	}
-	slices.SortFunc(nets, func(a, b entry) int { return b.prefix.Bits() - a.prefix.Bits() })
-	// ponytail: addresses x networks scan; Spamhaus DROP is about a
-	// thousand networks, so this stays well under a second every 10 minutes.
-	covering := func(p netip.Prefix) (Symbol, bool) {
+	// Check every ancestor: the nearest one may itself be removed because
+	// a broader network has a stronger symbol.
+	covered := func(p netip.Prefix, s Symbol) bool {
 		for _, n := range nets {
-			if n.prefix != p && n.prefix.Bits() < p.Bits() && n.prefix.Contains(p.Addr()) {
-				return n.symbol, true
+			if n.prefix.Bits() < p.Bits() && n.prefix.Contains(p.Addr()) && rank(n.symbol.Name) <= rank(s.Name) {
+				return true
 			}
 		}
-		return Symbol{}, false
+		return false
 	}
 	for p, s := range best {
-		if outer, ok := covering(p); ok && rank(outer.Name) <= rank(s.Name) {
+		if covered(p, s) {
 			continue
 		}
 		m.lines = append(m.lines, entry{p, s})
@@ -144,7 +167,10 @@ func Build(src Sources) Map {
 func parse(raw string) (netip.Prefix, bool) {
 	if p, err := netip.ParsePrefix(raw); err == nil {
 		// Keep IPv4 entries in the same form as sender lookups and exclusions.
-		if p.Addr().Is4In6() && p.Bits() >= 96 {
+		if p.Addr().Is4In6() {
+			if p.Bits() < 96 {
+				return netip.Prefix{}, false
+			}
 			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
 		}
 		return p.Masked(), true

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -44,17 +45,27 @@ func TestWriterKeepsTheOldFileOnFailure(t *testing.T) {
 	if _, err := w.Write(old, 974, now); err != nil {
 		t.Fatal(err)
 	}
-	before, _ := os.ReadFile(w.Path)
+	before, readErr := os.ReadFile(w.Path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	previous := w.State()
 	w.chown = func(string, int) error { return errors.New("operation not permitted") }
 	if wrote, err := w.Write(Build(Sources{Entries: map[string][]string{Spam.Name: {"203.0.113.42"}}}), 974, now.Add(time.Minute)); wrote || err == nil {
 		t.Fatalf("failed write = %v, %v", wrote, err)
 	}
-	after, _ := os.ReadFile(w.Path)
+	after, readErr := os.ReadFile(w.Path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if st := w.State(); st.Gen != previous.Gen || !st.WrittenAt.Equal(previous.WrittenAt) {
+		t.Fatalf("failed write advanced state: %+v", st)
+	}
 	if string(after) != string(before) || w.Weight(addr("203.0.113.41")) != Spam.Tenths() || w.State().Err == nil {
 		t.Fatal("a failed write changed the file, the lookup or hid the error")
 	}
-	if matches, _ := filepath.Glob(filepath.Join(filepath.Dir(w.Path), ".csm_ip.map.*")); len(matches) != 0 {
-		t.Fatalf("temporary files left: %v", matches)
+	if matches, err := filepath.Glob(filepath.Join(filepath.Dir(w.Path), ".csm_ip.map.*")); err != nil || len(matches) != 0 {
+		t.Fatalf("temporary files left: %v, %v", matches, err)
 	}
 }
 
@@ -78,5 +89,139 @@ func TestWriterRemove(t *testing.T) {
 	}
 	if err := w.Remove(); err != nil {
 		t.Fatalf("second remove: %v", err)
+	}
+}
+
+func TestWriterValidatesGroupForUnchangedMap(t *testing.T) {
+	w := testWriter(t)
+	m := Build(Sources{})
+	if _, err := w.Write(m, 974, now); err != nil {
+		t.Fatal(err)
+	}
+	if wrote, err := w.Write(m, -1, now.Add(time.Minute)); wrote || err == nil || w.State().Err == nil {
+		t.Fatalf("unknown group accepted: wrote %v, error %v, state %+v", wrote, err, w.State())
+	}
+}
+
+func TestWriterUpdatesGroupForUnchangedMap(t *testing.T) {
+	w := testWriter(t)
+	var groups []int
+	w.chown = func(_ string, gid int) error {
+		groups = append(groups, gid)
+		return nil
+	}
+	m := Build(Sources{})
+	if _, err := w.Write(m, 974, now); err != nil {
+		t.Fatal(err)
+	}
+	if wrote, err := w.Write(m, 975, now.Add(time.Minute)); !wrote || err != nil {
+		t.Fatalf("group change = %v, %v", wrote, err)
+	}
+	if len(groups) != 2 || groups[0] != 974 || groups[1] != 975 {
+		t.Fatalf("groups = %v", groups)
+	}
+}
+
+func TestWriterRecreatesMissingUnchangedMap(t *testing.T) {
+	w := testWriter(t)
+	m := Build(Sources{})
+	if _, err := w.Write(m, 974, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(w.Path); err != nil {
+		t.Fatal(err)
+	}
+	if wrote, err := w.Write(m, 974, now.Add(time.Minute)); !wrote || err != nil {
+		t.Fatalf("missing file not recreated: %v, %v", wrote, err)
+	}
+	got, err := os.ReadFile(w.Path)
+	want, _ := m.Render()
+	if err != nil || string(got) != string(want) {
+		t.Fatalf("recreated map = %q, %v", got, err)
+	}
+}
+
+func TestWriterTracksPublishedMapOnDirectorySyncFailure(t *testing.T) {
+	w := testWriter(t)
+	old := Build(Sources{Entries: map[string][]string{Spam.Name: {"203.0.113.41"}}})
+	if _, err := w.Write(old, 974, now); err != nil {
+		t.Fatal(err)
+	}
+	failedSync := errors.New("directory sync failed")
+	syncDir := w.syncDir
+	w.syncDir = func(string) error { return failedSync }
+	updated := Build(Sources{Entries: map[string][]string{Spam.Name: {"203.0.113.42"}}})
+	at := now.Add(time.Minute)
+	if wrote, err := w.Write(updated, 974, at); !wrote || !errors.Is(err, failedSync) {
+		t.Fatalf("published write = %v, %v", wrote, err)
+	}
+	content, gen := updated.Render()
+	got, err := os.ReadFile(w.Path)
+	if err != nil || string(got) != string(content) {
+		t.Fatalf("published map = %q, %v", got, err)
+	}
+	st := w.State()
+	if st.Gen != gen || !st.WrittenAt.Equal(at) || !errors.Is(st.Err, failedSync) {
+		t.Fatalf("state does not describe published map: %+v", st)
+	}
+	if w.Weight(addr("203.0.113.41")) != 0 || w.Weight(addr("203.0.113.42")) != Spam.Tenths() {
+		t.Fatal("lookup does not describe published map")
+	}
+	w.syncDir = syncDir
+	if wrote, err := w.Write(updated, 974, at.Add(time.Minute)); !wrote || err != nil || w.State().Err != nil {
+		t.Fatalf("retry = %v, %v, state %+v", wrote, err, w.State())
+	}
+}
+
+func TestWriterRealFileOperations(t *testing.T) {
+	w := NewWriter(filepath.Join(t.TempDir(), "csm_ip.map"))
+	m := Build(Sources{Entries: map[string][]string{Spam.Name: {"203.0.113.40"}}})
+	if wrote, err := w.Write(m, os.Getgid(), now); !wrote || err != nil {
+		t.Fatalf("write with real chown = %v, %v", wrote, err)
+	}
+	info, err := os.Stat(w.Path)
+	if err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("published mode = %v, %v", info, err)
+	}
+	got, err := os.ReadFile(w.Path)
+	want, _ := m.Render()
+	if err != nil || string(got) != string(want) {
+		t.Fatalf("published map = %q, %v", got, err)
+	}
+}
+
+func TestWriterConcurrentAccess(t *testing.T) {
+	w := testWriter(t)
+	m := Build(Sources{Entries: map[string][]string{Spam.Name: {"203.0.113.40"}}})
+	content, gen := m.Render()
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			for range 10 {
+				if _, err := w.Write(m, 974, now); err != nil {
+					t.Error(err)
+				}
+				if got := w.Weight(addr("203.0.113.40")); got != 0 && got != Spam.Tenths() {
+					t.Errorf("unexpected weight: %d", got)
+				}
+				if st := w.State(); st.Err != nil || (st.Gen != "" && st.Gen != gen) {
+					t.Errorf("unexpected state: %+v", st)
+				}
+				if err := w.Remove(); err != nil {
+					t.Error(err)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if _, err := os.Stat(w.Path); !errors.Is(err, os.ErrNotExist) || w.State().Gen != "" || w.Weight(addr("203.0.113.40")) != 0 {
+		t.Fatal("last remove did not clear the map and lookup")
+	}
+	if wrote, err := w.Write(m, 974, now); !wrote || err != nil {
+		t.Fatalf("write after concurrent removals = %v, %v", wrote, err)
+	}
+	got, err := os.ReadFile(w.Path)
+	if err != nil || string(got) != string(content) || w.State().Gen != gen || w.Weight(addr("203.0.113.40")) != Spam.Tenths() {
+		t.Fatal("map and lookup disagree after concurrent access")
 	}
 }

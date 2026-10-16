@@ -20,6 +20,10 @@ func TestBuildStrongestSourceWins(t *testing.T) {
 	if got := m.Weight(addr("203.0.113.11")); got != BlocklistDE.Tenths() {
 		t.Errorf("tie between equal symbols must pick rule order: %d", got)
 	}
+	content, _ := m.Render()
+	if !strings.Contains(string(content), "\n203.0.113.11 CSM_IP_BLOCKLISTDE:0.4\n") {
+		t.Fatalf("equal-score sources did not follow rule order:\n%s", content)
+	}
 	if got := m.Weight(addr("203.0.113.12")); got != 0 {
 		t.Errorf("unlisted = %d", got)
 	}
@@ -156,5 +160,98 @@ func TestSymbolsMatchTheSpec(t *testing.T) {
 	}
 	if Symbols()[len(Symbols())-1] != Canary {
 		t.Error("the canary must come last in rule order")
+	}
+}
+
+func TestBuildNestedNetworksKeepStrongestAncestor(t *testing.T) {
+	for _, tc := range []struct {
+		name, outer, middle, inner, probe string
+	}{
+		{"IPv4 address", "198.51.100.0/24", "198.51.100.0/25", "198.51.100.7", "198.51.100.7"},
+		{"IPv4 network", "198.51.100.0/24", "198.51.100.0/25", "198.51.100.0/26", "198.51.100.7"},
+		{"IPv6 address", "2001:db8::/32", "2001:db8:1::/48", "2001:db8:1::7", "2001:db8:1::7"},
+		{"IPv6 network", "2001:db8::/32", "2001:db8:1::/48", "2001:db8:1::/64", "2001:db8:1::7"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := Build(Sources{Entries: map[string][]string{
+				Drop.Name: {tc.outer}, CINS.Name: {tc.middle}, Blocked.Name: {tc.inner},
+			}})
+			if got := m.Weight(addr(tc.probe)); got != Drop.Tenths() {
+				t.Errorf("weight = %d, want %d", got, Drop.Tenths())
+			}
+			content, _ := m.Render()
+			if m.Len() != 1 || !strings.HasSuffix(string(content), tc.outer+" CSM_IP_DROP:0.8\n") {
+				t.Fatalf("redundant weaker entries remain:\n%s", content)
+			}
+		})
+	}
+}
+
+func TestBuildNormalizesMappedPrefixesAcrossSymbols(t *testing.T) {
+	m := Build(Sources{Entries: map[string][]string{
+		Drop.Name:    {"::ffff:198.51.100.123/120"},
+		Blocked.Name: {"::ffff:203.0.113.9/128"},
+		CINS.Name:    {"198.51.100.0/24", "203.0.113.9"},
+	}})
+	for _, tc := range []struct {
+		ip   string
+		want int
+	}{
+		{"198.51.100.7", Drop.Tenths()}, {"::ffff:198.51.100.7", Drop.Tenths()},
+		{"203.0.113.9", Blocked.Tenths()}, {"::ffff:203.0.113.9", Blocked.Tenths()},
+	} {
+		if got := m.Weight(addr(tc.ip)); got != tc.want {
+			t.Errorf("weight(%s) = %d, want %d", tc.ip, got, tc.want)
+		}
+	}
+	content, _ := m.Render()
+	if m.Len() != 2 || strings.Contains(string(content), "::ffff:") {
+		t.Fatalf("mapped entries were not canonicalized:\n%s", content)
+	}
+}
+
+func TestBuildNormalizesZonedAndMappedExclusions(t *testing.T) {
+	for _, ip := range []string{"198.51.100.7", "::ffff:198.51.100.7"} {
+		for _, raw := range []string{"198.51.100.7", "198.51.100.0/24", "::ffff:198.51.100.7/128", "::ffff:198.51.100.0/120"} {
+			t.Run(ip+"/"+raw, func(t *testing.T) {
+				m := Build(Sources{Entries: map[string][]string{Drop.Name: {raw}}, Never: []netip.Addr{addr(ip)}})
+				if m.Len() != 0 || m.Weight(addr(ip)) != 0 {
+					t.Fatal("excluded address remains listed")
+				}
+			})
+		}
+	}
+	m := Build(Sources{
+		Entries: map[string][]string{Drop.Name: {"2001:db8::/32"}},
+		Never:   []netip.Addr{addr("2001:db8::7%eth0")},
+	})
+	if m.Len() != 0 {
+		t.Fatal("a zone on an excluded address bypassed the exclusion")
+	}
+}
+
+func TestBuildRejectsNetworksContainingExcludedAddresses(t *testing.T) {
+	for _, raw := range []string{
+		"192.0.2.0/24", "::ffff:192.0.2.255/128",
+		netip.PrefixFrom(addr("198.51.100.1"), 5).Masked().String(),
+		// A public base can cover private or loopback addresses farther in.
+		netip.PrefixFrom(netip.AddrFrom4([4]byte{172}), 11).String(),
+		netip.PrefixFrom(netip.AddrFrom4([4]byte{126}), 7).String(),
+		netip.PrefixFrom(netip.AddrFrom16([16]byte{0xe0}), 3).String(),
+	} {
+		t.Run(raw, func(t *testing.T) {
+			m := Build(Sources{Entries: map[string][]string{Drop.Name: {raw}}})
+			if m.Len() != 0 || m.Weight(addr(CanaryAddr)) != 0 {
+				t.Fatal("a network containing excluded addresses remains listed")
+			}
+		})
+	}
+}
+
+func TestBuildCanaryIsNotASource(t *testing.T) {
+	m := Build(Sources{Entries: map[string][]string{Canary.Name: {"203.0.113.7", "2001:db8::/32"}}})
+	content, _ := m.Render()
+	if m.Len() != 0 || strings.Count(string(content), "CSM_IP_CANARY") != 1 {
+		t.Fatalf("canary symbol was used for data entries:\n%s", content)
 	}
 }
