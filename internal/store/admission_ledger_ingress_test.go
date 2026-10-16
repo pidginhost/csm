@@ -611,7 +611,7 @@ func TestAdmissionLedgerUpgradeInitializesIngress(t *testing.T) {
 	}
 	f.tickAt(f.wall)
 	f.begin()
-	if _, err = f.l.Schedule(admission.ScheduleLimits{Members: 1}); err != nil {
+	if _, err = f.l.Schedule(admission.ScheduleLimits{Members: 1}, nil); err != nil {
 		t.Fatal(err)
 	}
 	in := f.ingress()

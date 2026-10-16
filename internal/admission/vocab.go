@@ -335,6 +335,9 @@ const (
 	ReasonQueueOverflow
 	ReasonStale
 	ReasonIngressInterruption
+	// ReasonVerdictAllow: the panel's verdict callback allowed the target.
+	// It refuses, although appended after the dropped group.
+	ReasonVerdictAllow
 	reasonEnd
 )
 
@@ -343,7 +346,7 @@ var reasonNames = [...]string{
 	"pending_recovery", "protected", "attribution", "invalid", "policy",
 	"stale_identity", "existing_effect", "collateral", "breaker",
 	"envelope_no_alternative", "unsupported_containment", "queue_overflow",
-	"stale", "ingress_interruption",
+	"stale", "ingress_interruption", "verdict_allow",
 }
 
 func (r Reason) Valid() bool { return r >= ReasonCeiling && r < reasonEnd }
@@ -360,7 +363,7 @@ func (r Reason) Disposition() Disposition {
 	switch {
 	case r >= ReasonCeiling && r <= ReasonPendingRecovery:
 		return DispositionDeferred
-	case r >= ReasonProtected && r <= ReasonExistingEffect:
+	case r >= ReasonProtected && r <= ReasonExistingEffect, r == ReasonVerdictAllow:
 		return DispositionRefused
 	case r >= ReasonCollateral && r <= ReasonUnsupportedContainment:
 		return DispositionWithheld

@@ -75,7 +75,7 @@ func BenchmarkAdmissionLedgerScheduleFullQueue(b *testing.B) {
 	lim := admission.ScheduleLimits{General: admission.MaxBatchMembers, Members: admission.MaxBatchMembers}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if picks, err := f.l.Schedule(lim); err != nil || len(picks) == 0 {
+		if picks, err := f.l.Schedule(lim, nil); err != nil || len(picks) == 0 {
 			b.Fatalf("schedule: %d picks, %v", len(picks), err)
 		}
 	}
@@ -169,7 +169,7 @@ func BenchmarkAdmissionLedgerNextWakeFullWindow(b *testing.B) {
 	f.queued()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, ok, err := f.l.NextWake(); err != nil || !ok {
+		if _, ok, err := f.l.NextWake(nil); err != nil || !ok {
 			b.Fatalf("wake: %v %v", ok, err)
 		}
 	}
@@ -210,7 +210,7 @@ func BenchmarkAdmissionLedgerNextWakeFullQueue(b *testing.B) {
 	f := fullLedger(b)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, ok, err := f.l.NextWake(); err != nil || !ok {
+		if _, ok, err := f.l.NextWake(nil); err != nil || !ok {
 			b.Fatalf("wake: %v %v", ok, err)
 		}
 	}

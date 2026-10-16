@@ -38,9 +38,12 @@ func TestAdmissionVocabulariesMatchTheLedger(t *testing.T) {
 	if got := sortedKeys(admissionChecks); !slices.Equal(got, wantChecks) {
 		t.Fatalf("checks = %v, want %v", got, wantChecks)
 	}
-	var kinds, entries, reasons, lanes []string
+	var kinds, entries, reasons, lanes, predictions []string
 	for k := admission.Kind(1); k.Valid(); k++ {
 		kinds = append(kinds, k.String())
+	}
+	for p := admission.Prediction(1); p.Valid(); p++ {
+		predictions = append(predictions, p.String())
 	}
 	for e := admission.Entry(1); e.Valid(); e++ {
 		entries = append(entries, e.String())
@@ -58,7 +61,8 @@ func TestAdmissionVocabulariesMatchTheLedger(t *testing.T) {
 	}{
 		{"kinds", admissionKinds, kinds}, {"entries", admissionEntries, entries}, {"reasons", admissionRefusals, reasons},
 		{"attempt results", admissionAttemptResults, []string{"applied", "dry_run", "executing", "expired_unproven", "failed", "narrowed", "observe", "reserved", "unknown"}},
-		{"decisions", admissionDecisions, []string{"coalesced", "observe", "queued", "refused"}},
+		{"decisions", admissionDecisions, []string{"coalesced", "dry_run", "observe", "queued", "refused"}},
+		{"predictions", admissionPredictions, predictions},
 	} {
 		slices.Sort(tc.want)
 		if got := sortedKeys(tc.got); !slices.Equal(got, tc.want) {
@@ -178,13 +182,87 @@ func TestAdmissionSummaryRows(t *testing.T) {
 		if decision == "refused" {
 			continue
 		}
-		out, err := a.Action(summaryRow(actionlog.Result(decision), ""))
+		r := summaryRow(actionlog.Result(decision), "")
+		if decision == "dry_run" {
+			r.Prediction = "set_full"
+		}
+		out, err := a.Action(r)
 		if err != nil || out.Count != 3 || out.Refusal != "" || a.VerifyAction(out) != nil {
 			t.Errorf("%s summary -> %+v %v", decision, out, err)
 		}
 	}
 	if d := a.Dropped(); d["action.reason"] != 0 || d["action.error"] != 0 || d["action.actor_detail"] != 0 {
 		t.Errorf("typed summary fields counted as dropped: %v", d)
+	}
+}
+
+// A dry-run summary keeps its prediction, from the forecast's fixed
+// vocabulary, as a typed field beside the decision; it is not a refusal.
+func TestAdmissionDryRunSummaryRows(t *testing.T) {
+	a := NewAnonymizer(testSalt())
+	for p := admission.Prediction(1); p.Valid(); p++ {
+		r := summaryRow("dry_run", "")
+		r.Prediction = p.String()
+		out, err := a.Action(r)
+		if err != nil {
+			t.Fatalf("%s: %v", p, err)
+		}
+		got, _ := marshalMap(t, out)
+		if got["prediction"] != p.String() || got["result"] != "dry_run" || got["refusal"] != nil || got["has_error"] != false || got["count"] != 3.0 {
+			t.Errorf("%s summary -> %v", p, got)
+		}
+		if err = a.VerifyAction(out); err != nil {
+			t.Errorf("%s: verifier refused %+v: %v", p, out, err)
+		}
+	}
+	for name, mutate := range map[string]func(*actionlog.Record){
+		"no prediction":        func(r *actionlog.Record) { r.Prediction = "" },
+		"unknown prediction":   func(r *actionlog.Record) { r.Prediction = "would_block" },
+		"free prediction":      func(r *actionlog.Record) { r.Prediction = "set full for 203.0.113.9" },
+		"refusal reason":       func(r *actionlog.Record) { r.Error = "set_full" },
+		"prediction on queued": func(r *actionlog.Record) { r.Result = "queued" },
+		"prediction refused": func(r *actionlog.Record) {
+			r.Result, r.Error = actionlog.Refused, "policy"
+		},
+	} {
+		r := summaryRow("dry_run", "")
+		r.Prediction = "capacity_admit"
+		mutate(&r)
+		if _, err := NewAnonymizer(testSalt()).Action(r); err == nil {
+			t.Errorf("%s: accepted %+v", name, r)
+		}
+	}
+	for _, r := range []actionlog.Record{fullRecord(), admissionRow("block_ip", "ip:203.0.113.9", "dry_run")} {
+		r.Prediction = "capacity_admit"
+		if _, err := NewAnonymizer(testSalt()).Action(r); err == nil {
+			t.Errorf("a row that is not a summary carried a prediction: %+v", r)
+		}
+	}
+	r := summaryRow("dry_run", "")
+	r.Prediction = "capacity_admit"
+	good, err := a.Action(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*anonAction){
+		"unknown prediction": func(o *anonAction) { o.Prediction = "would_block" },
+		"no prediction":      func(o *anonAction) { o.Prediction = "" },
+		"observe decision":   func(o *anonAction) { o.Result = "observe" },
+		"refusal":            func(o *anonAction) { o.Refusal, o.HasError = "set_full", true },
+	} {
+		row := good
+		mutate(&row)
+		if a.VerifyAction(row) == nil {
+			t.Errorf("%s: verifier accepted %+v", name, row)
+		}
+	}
+	legacy, err := a.Action(fullRecord())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.Prediction = "capacity_admit"
+	if a.VerifyAction(legacy) == nil {
+		t.Errorf("verifier accepted a prediction on an action: %+v", legacy)
 	}
 }
 

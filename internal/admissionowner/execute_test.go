@@ -42,6 +42,14 @@ type fakeBlocks struct {
 	retireShort bool
 	retireStep  func([]firewall.BlockAction)
 	retires     [][]firewall.BlockAction
+	// temp and limit are the temporary occupancy an admission snapshot
+	// reports; snapshots records its calls and shadows the forecast
+	// addresses each call named. liveTemp and livePerm are the addresses
+	// the sets hold as a timed and an untimed element.
+	temp, limit        int
+	snapshots          [][]firewall.BlockMember
+	shadows            [][]string
+	liveTemp, livePerm map[string]bool
 }
 
 // fakeExisting names a proven block unless a test names it otherwise.
@@ -70,6 +78,44 @@ func (f *fakeBlocks) CheckBlockBatchEffects(members []firewall.BlockMember) ([]f
 	}
 	if f.shortChecks {
 		return out[:len(out)-1], nil
+	}
+	return out, nil
+}
+
+// BlockAdmissionSnapshot answers each member as a check would, without
+// the capacity refusals a check makes as it gives members slots.
+func (f *fakeBlocks) BlockAdmissionSnapshot(members []firewall.BlockMember, shadow []string) (firewall.BlockAdmission, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshots = append(f.snapshots, append([]firewall.BlockMember(nil), members...))
+	f.shadows = append(f.shadows, append([]string(nil), shadow...))
+	if f.checkErr != nil {
+		return firewall.BlockAdmission{}, f.checkErr
+	}
+	out := firewall.BlockAdmission{Answers: make([]firewall.BlockAnswer, len(members)), Temporary: f.temp, Limit: f.limit}
+	for _, ip := range shadow {
+		switch {
+		case f.liveTemp[ip]:
+			out.ShadowTemporary++
+		case f.livePerm[ip]:
+			out.ShadowPermanent++
+		}
+	}
+	for i, m := range members {
+		out.Answers[i] = firewall.BlockAnswer{Action: m.Action, IP: m.IP}
+		switch refusal := f.refuse[m.IP]; refusal {
+		case firewall.BlockRefusedFull, firewall.BlockRefusedDuplicate:
+		case firewall.BlockRefusedExisting:
+			out.Answers[i].Refusal, out.Answers[i].Existing = refusal, fakeExisting
+			if named, ok := f.existing[m.IP]; ok {
+				out.Answers[i].Existing = named
+			}
+		default:
+			out.Answers[i].Refusal = refusal
+		}
+	}
+	if f.shortChecks {
+		out.Answers = out.Answers[:len(out.Answers)-1]
 	}
 	return out, nil
 }

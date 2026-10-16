@@ -85,6 +85,20 @@ type ScheduleItem struct {
 	Ready bool
 }
 
+// Answer is an outside answer a queued candidate waits on, such as the
+// panel's verdict on a block.
+type Answer uint8
+
+const (
+	// AnswerPending: the question is outstanding. The candidate is never
+	// picked or deferred, and its scope keeps its turns.
+	AnswerPending Answer = iota + 1
+	// AnswerAllow: the answer ends the candidate without a charge. A
+	// schedule picks it as uncharged work, at no ceiling or history cost,
+	// whatever the live budgets; it still takes a member and a fair turn.
+	AnswerAllow
+)
+
 // ScheduleLimits bound one schedule.
 type ScheduleLimits struct {
 	// General and Reserved are the block units each lane may serve. The
@@ -107,6 +121,9 @@ type Pick struct {
 	Lane  Lane
 	Cost  uint32
 	Bytes uint32
+	// Reserved is the reserved lane the candidate is eligible for, direct
+	// or corroborated, whichever lane served it; zero for general-only work.
+	Reserved Lane
 }
 
 // ScopeTurn is a scope's persisted place in one ring.
@@ -348,7 +365,14 @@ func Schedule(items []ScheduleItem, st ScheduleState, lim ScheduleLimits) ([]Pic
 	take := func(it *ScheduleItem, lane Lane) {
 		lim.RecoveryBytes -= uint64(it.Recovery)
 		s.picked[it.ID] = true
-		picks = append(picks, Pick{ID: it.ID, Lane: lane, Cost: it.CeilingCost, Bytes: it.Bytes})
+		var eligible Lane
+		switch {
+		case it.Direct:
+			eligible = LaneDirect
+		case it.Corroborated:
+			eligible = LaneCorroborated
+		}
+		picks = append(picks, Pick{ID: it.ID, Lane: lane, Cost: it.CeilingCost, Bytes: it.Bytes, Reserved: eligible})
 	}
 	for _, reserved := range []bool{true, false} {
 		budget, bytes := lim.General, lim.GeneralBytes

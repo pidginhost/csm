@@ -289,9 +289,41 @@ the ledger would have done.
   where the ceiling came from (`ceiling_source`: `default`, `configured` or
   `clamped`), the legacy hourly count imported at the first start (`import`,
   which counts at least until an hour after `at`, or names why the count
-  could not be read), the last inventory read, why responses naming a
-  damaged record were discarded (`damage_error`) and why automatic blocks
-  are held (`execution_held`).
+  could not be read), the last inventory read and why responses naming a
+  damaged record were discarded (`damage_error`).
+- An owner that runs automatic blocks itself, which no release enables yet,
+  adds `execution_held`, a `verdict` object for the panel verdict callback,
+  whose counters count this process and restart at zero, and a `dry_run`
+  object for its dry-run forecast, described below.
+
+`owner.dry_run` is a capacity forecast, not a record of blocks. `active` is
+true while the owner forecasts instead of blocking. `session_id`, `since`
+and `reset_reason` (`startup`, `mode_change` or `model_error`) name the
+forecast session and are null while none has started, including after a
+failed start; a session starts at
+startup, on entry into dry run or after its model failed, and leaving dry
+run keeps the last session's identity. `modelled_kinds` and
+`prediction_scope` say what the model covers: `block_ip` against the hourly
+ceiling and the temporary block capacity. `occupancy` gives the real
+temporary blocks (`actual`), the forecast blocks the real sets do not hold
+(`shadow_only`), their sum (`predicted`), the `limit`, whether the set is
+`unlimited` and whether the model holds as many blocks as it can (`limited`);
+it is null while no snapshot is available. `ceiling` is the forecast's own
+copy of the hourly ceiling: `limit`, `general_used`, `reserved_used`,
+`general_budget` and `reserved_budget`, null while no forecast runs. `picks`
+counts the session's predictions by name and `last_hour` the last sixty
+one-minute buckets of process monotonic time, an approximation that a
+wall-clock change cannot age; every prediction name is present, and both
+are zero while no forecast runs. `examples_lost`, `summaries_lost` and
+`record_errors` count this process's losses and failed writes,
+`examples_stale` is true while a purge of earlier sessions' examples is
+pending, and `comparison_incomplete` is true after a restart or any loss.
+`forecast_error` names why forecasting last failed (`engine_unavailable`,
+`clock_degraded`, `ledger_unavailable`, `snapshot_mismatch`,
+`session_id_unavailable`, `invalid_policy` or `model_error`) until a turn
+succeeds, and `last_error_at` keeps its time until the next session starts.
+Absent values are null, never missing keys. The durable outcome windows in
+`ledger` keep counting dry-run endings across sessions and restarts.
 
 The hourly ceiling follows `auto_response.max_blocks_per_hour`, capped at 20000.
 An omitted or zero value selects 2000 for the ledger and 50 for the shared
@@ -301,9 +333,14 @@ Existing blocking paths still decide every block; see
 [automatic response](auto-response.md) for the scope of the current budget.
 
 While admission previews, existing blocking paths still decide every
-block. Admission rows say existing blocking is unaffected, except the
-execution-hold row, which reports the hold directly. Rows
-warn when the ledger owner is not running, its clock reading
+block. Admission rows say existing blocking is unaffected, except the rows of
+an owner that runs blocks: `admission execution` fails while execution is
+held, and the dry-run rows (`admission dry run`, `admission dry-run
+capacity` and `admission dry-run examples`) show the forecast's session,
+real against predicted capacity and lost examples. A dry run alone is not a
+failure; a held forecast, model limits, waits the model predicts and lost
+or stale examples warn. Rows warn when
+the ledger owner is not running, its clock reading
 is refused, the ledger is damaged, admission has stopped or a Critical
 finding would not have received its response in the last hour. They also
 show a degraded clock, a clamped ceiling, a ceiling of 1 (only the reserved

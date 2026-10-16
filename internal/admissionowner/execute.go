@@ -7,6 +7,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/firewall"
+	csmlog "github.com/pidginhost/csm/internal/log"
 )
 
 // BlockEngine runs batches of timed full-address blocks. The firewall
@@ -16,6 +17,10 @@ type BlockEngine interface {
 	// RetireBlockActions reports which unknown attempts left nothing in the
 	// kernel and removes their own rows.
 	RetireBlockActions(actions []firewall.BlockAction) ([]bool, error)
+	// BlockAdmissionSnapshot answers members' local checks and the
+	// temporary occupancy without changing anything or giving any member
+	// a slot.
+	BlockAdmissionSnapshot(members []firewall.BlockMember, shadow []string) (firewall.BlockAdmission, error)
 	ApplyBlockBatch(members []firewall.BlockMember) ([]firewall.BlockResult, error)
 	// LeaseNow is the clock the engine turns expiries into kernel
 	// timeouts against. A first attempt's expiry is set on it.
@@ -89,18 +94,23 @@ func (o *Owner) execute(picks []execPick) error {
 	if monoNow().Before(o.nextBatch) {
 		return nil
 	}
-	picks = o.isolate(picks)
 	// After a step back the engine's clock leads the wall clock: an expiry
 	// set on the admission clock would lose that lead from its lifetime.
 	lease := engine.LeaseNow()
+	if o.policy.VerdictEnabled {
+		var err error
+		if picks, err = o.gateVerdicts(engine, picks, lease); err != nil || len(picks) == 0 {
+			return err
+		}
+	}
+	picks = o.isolate(picks)
 	members := make([]firewall.BlockMember, len(picks))
 	for i, p := range picks {
-		next, err := admission.NewAttempt(p.pick.ID, p.c.Attempts+1)
+		m, err := o.memberOf(p, lease)
 		if err != nil {
-			return fmt.Errorf("naming the attempt of pick %s: %w", p.pick.ID, err)
+			return err
 		}
-		addr, _ := p.c.Key.Target.Addr()
-		members[i] = firewall.BlockMember{Action: string(next.ID), IP: addr.String(), Reason: "CSM auto-block: " + p.c.Check, ExpiresAt: o.expiryOf(p.c, lease)}
+		members[i] = m
 	}
 	checks, err := engine.CheckBlockBatchEffects(members)
 	if err == nil && len(checks) != len(members) {
@@ -118,33 +128,12 @@ func (o *Owner) execute(picks []execPick) error {
 	var run []int
 	var stopped error
 	for i, p := range picks {
-		if checks[i].Refusal == firewall.BlockRefusedExisting {
-			if err = o.endExisting(p, linkOf(checks[i].Existing)); err != nil {
-				// A link the ledger refuses (no history budget for it, or
-				// no name) leaves the pick queued, deferred when the reason
-				// is a deferral; the next check tries again. Only a failed
-				// write stops the batch.
-				reason, refused := admission.ReasonOf(err)
-				if !refused {
-					stopped = err
-					break
-				}
-				if reason.Disposition() == admission.DispositionDeferred {
-					if err = o.endPick(p, reason); err != nil {
-						stopped = err
-						break
-					}
-				}
-			}
-			continue
+		refused, endErr := o.endRefused(p, checks[i])
+		if endErr != nil {
+			stopped = endErr
+			break
 		}
-		if checks[i].Refusal != "" {
-			if reason, known := refusalReasons[checks[i].Refusal]; known {
-				if err = o.endPick(p, reason); err != nil {
-					stopped = err
-					break
-				}
-			}
+		if refused {
 			continue
 		}
 		_, a, granted, reserveErr := reserveLedger(o.ledger, p.pick.ID, p.pick.Lane, members[i].ExpiresAt)
@@ -166,6 +155,8 @@ func (o *Owner) execute(picks []execPick) error {
 			stopped = fmt.Errorf("reserving pick %s: %w", p.pick.ID, admission.ErrTransitionConflict)
 			break
 		}
+		// The reservation consumes the panel's answer for this attempt.
+		delete(o.verdicts.ready, p.pick.ID)
 		members[i].Action = string(a.Attempt.ID)
 		run = append(run, i)
 	}
@@ -240,6 +231,141 @@ func (o *Owner) execute(picks []execPick) error {
 	return errors.Join(stopped, o.finishPending())
 }
 
+// memberOf is p's next attempt as a block member, lasting from lease.
+func (o *Owner) memberOf(p execPick, lease time.Time) (firewall.BlockMember, error) {
+	next, err := admission.NewAttempt(p.pick.ID, p.c.Attempts+1)
+	if err != nil {
+		return firewall.BlockMember{}, fmt.Errorf("naming the attempt of pick %s: %w", p.pick.ID, err)
+	}
+	addr, _ := p.c.Key.Target.Addr()
+	return firewall.BlockMember{Action: string(next.ID), IP: addr.String(), Reason: "CSM auto-block: " + p.c.Check, ExpiresAt: o.expiryOf(p.c, lease)}, nil
+}
+
+// endRefused ends or defers a pick the engine refused before anything was
+// reserved, without a charge, and reports whether it was refused. An
+// existing effect ends linked to its block. A link the ledger refuses (no
+// history budget for it, or no name) leaves the pick queued, deferred when
+// the reason is a deferral; the next check tries again. A refusal the
+// owner does not know (a repeated address) leaves the pick queued. Only a
+// failed write is an error.
+func (o *Owner) endRefused(p execPick, check firewall.BlockCheck) (bool, error) {
+	switch {
+	case check.Refusal == firewall.BlockRefusedExisting:
+		if err := o.endExisting(p, linkOf(check.Existing)); err != nil {
+			reason, refused := admission.ReasonOf(err)
+			if !refused {
+				return true, err
+			}
+			if reason.Disposition() == admission.DispositionDeferred {
+				return true, o.endPick(p, reason)
+			}
+		}
+		return true, nil
+	case check.Refusal != "":
+		if reason, known := refusalReasons[check.Refusal]; known {
+			return true, o.endPick(p, reason)
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// gateVerdicts asks the panel about the turn's picks before anything is
+// reserved (spec 3.3, 4.1) and returns those ready to run: the picks with
+// a default answer for this attempt. One read-only snapshot answers every
+// pick's local checks without giving any pick a slot, so a pick waiting
+// for its answer takes no room from a ready one. A refused or already
+// enforced pick ends or waits as a batch check would have it, with no
+// call; an allowed pick ends uncharged as verdict_allow, whatever the
+// capacity; a pick a full set cannot take waits as set_full, with no call;
+// any other pick is asked about and stays queued until its answer
+// arrives. A failed write stops the turn.
+func (o *Owner) gateVerdicts(engine BlockEngine, picks []execPick, lease time.Time) ([]execPick, error) {
+	members := make([]firewall.BlockMember, len(picks))
+	for i, p := range picks {
+		m, err := o.memberOf(p, lease)
+		if err != nil {
+			return nil, err
+		}
+		members[i] = m
+	}
+	adm, err := engine.BlockAdmissionSnapshot(members, nil)
+	if err == nil && !answersMatch(adm.Answers, members) {
+		err = fmt.Errorf("%d answers for %d members", len(adm.Answers), len(members))
+		o.probeCheck = true
+	}
+	if err != nil {
+		o.hold(fmt.Errorf("checking a block batch: %w", err), false)
+		return nil, o.deferBlocks(picks, admission.ReasonEngineUnavailable)
+	}
+	o.probeCheck = false
+	if o.execHold != nil && o.applyHold == nil {
+		o.release()
+	}
+	var ready []execPick
+	for i, p := range picks {
+		refused, err := o.endRefused(p, adm.Answers[i].BlockCheck)
+		if err != nil {
+			return nil, err
+		}
+		if refused {
+			continue
+		}
+		r, ok := o.readyVerdict(p.pick.ID, p.c, members[i].IP, members[i].Reason)
+		switch {
+		case ok && r.Answer == answerAllow:
+			err = o.endAllowed(p, r)
+		case ok:
+			ready = append(ready, p)
+		case adm.Full():
+			err = o.endPick(p, admission.ReasonSetFull)
+		default:
+			o.askVerdict(p.pick.ID, p.c, members[i].IP, members[i].Reason)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(ready) == 0 && o.execHold != nil && o.applyHold != nil {
+		o.hold(o.execHold, true)
+	}
+	return ready, nil
+}
+
+// answersMatch reports whether a snapshot answered exactly members, in
+// order.
+func answersMatch(answers []firewall.BlockAnswer, members []firewall.BlockMember) bool {
+	if len(answers) != len(members) {
+		return false
+	}
+	for i, a := range answers {
+		if a.Action != members[i].Action || a.IP != members[i].IP {
+			return false
+		}
+	}
+	return true
+}
+
+// endAllowed ends a pick the panel allowed (D5): one verdict_allow refusal
+// with no reservation, attempt or charge. It is counted and logged once,
+// after the ending commits.
+func (o *Owner) endAllowed(p execPick, r verdictResult) error {
+	if _, err := terminateLedger(o.ledger, p.pick.ID, admission.ReasonVerdictAllow); err != nil {
+		return fmt.Errorf("ending pick %s: %w", p.pick.ID, err)
+	}
+	delete(o.verdicts.ready, p.pick.ID)
+	o.verdicts.tally.add(&o.verdicts.tally.endings)
+	logVerdictAllow(p.pick.ID, p.c.Check, r)
+	return nil
+}
+
+// logVerdictAllow logs one committed allow; tests capture it. The panel's
+// tenant and note arrive escaped and bounded, and never reach the ledger.
+var logVerdictAllow = func(id admission.CandidateID, check string, r verdictResult) {
+	csmlog.Info("verdict callback allowed an automatic block; not blocking",
+		"candidate", string(id), "check", check, "ip", r.IP, "tenant", r.Tenant, "note", r.Note)
+}
+
 // ready reports whether automatic execution may run this turn (P8, spec
 // 5.16). Without an engine it is held. While held, one probe runs per wait:
 // state repair is followed by a read-only snapshot proof, including on an
@@ -312,8 +438,8 @@ func (o *Owner) publishExecutionHold() {
 	previous := o.current.Load()
 	snapshot, owner := *previous, *previous.Owner
 	owner.ExecutionHeld = ""
-	if o.execHold != nil {
-		owner.ExecutionHeld = o.execHold.Error()
+	if cause := o.heldCause(); cause != nil {
+		owner.ExecutionHeld = cause.Error()
 	}
 	snapshot.Owner = &owner
 	o.current.Store(&snapshot)
@@ -333,9 +459,10 @@ func (o *Owner) isolate(picks []execPick) []execPick {
 	return picks
 }
 
-// A displaced, terminal or aged-out candidate cannot retry alone.
+// A displaced, terminal or aged-out candidate cannot retry alone, nor wait
+// for a valid policy.
 func (o *Owner) forgetIsolated(snap *admission.QueueSnapshot) {
-	if len(o.isolated) == 0 {
+	if len(o.isolated) == 0 && len(o.policyHeld) == 0 {
 		return
 	}
 	live := make(map[admission.CandidateID]bool, len(snap.Items))
@@ -345,6 +472,11 @@ func (o *Owner) forgetIsolated(snap *admission.QueueSnapshot) {
 	for id, expires := range o.isolated {
 		if !live[id] || !o.now.Before(expires) {
 			delete(o.isolated, id)
+		}
+	}
+	for id := range o.policyHeld {
+		if !live[id] {
+			delete(o.policyHeld, id)
 		}
 	}
 }

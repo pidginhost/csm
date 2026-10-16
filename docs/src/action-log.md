@@ -139,7 +139,12 @@ count its decisions on the responses handed to it during the hour ending at
 target: `action` is the kind of response, `reason` the check that asked for
 it, `actor_detail` the entry it came through (`scan`, or a derived entry such
 as `challenge_timeout` or `central`), `result` the decision (`queued`,
-`coalesced`, `observe` or `refused`) and `error` the refusal reason. A clean
+`coalesced`, `observe` or `refused`) and `error` the refusal reason. An
+owner that runs automatic blocks and forecasts them in dry-run mode also
+counts `dry_run` decisions, each with a `prediction` of what live admission
+would have done: `capacity_admit`, `existing_actual`, `existing_shadow`,
+`ceiling`, `set_full`, `pending_recovery`, `forecast_limited` or
+`not_modelled`. A prediction is not a refusal reason. A clean
 stop writes the open hour early, so summaries for the same hour add up; a
 crash loses the open hour, so the counts are lower bounds.
 

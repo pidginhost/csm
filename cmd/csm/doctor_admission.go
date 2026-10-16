@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -121,5 +122,90 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 			Fix: "restart csm.service so opening the ledger proves every record; " + keep + ", and report the damage",
 		})
 	}
-	return rows
+	return append(rows, dryRunDoctorChecks(o.DryRun)...)
+}
+
+// dryRunDoctorChecks renders the dry-run forecast of an owner that runs
+// blocks (spec 3.8). A dry run alone is not a failure, and a prediction is
+// never a block: a held forecast, model limits, modelled waits and lost or
+// stale examples warn. Real safety state keeps its own rows.
+func dryRunDoctorChecks(d *health.AdmissionDryRun) []DoctorCheck {
+	if d == nil {
+		return nil
+	}
+	session := "no forecast session has started"
+	if d.SessionID != nil && d.Since != nil && d.ResetReason != nil {
+		session = fmt.Sprintf("forecast session %s, started %s (%s)", *d.SessionID, d.Since.UTC().Format(time.RFC3339), *d.ResetReason)
+	}
+	run := DoctorCheck{Name: "admission dry run", Status: "ok",
+		Message: fmt.Sprintf("dry run: %s; it models %s capacity for %s only; predictions are forecasts, not blocks",
+			session, strings.ReplaceAll(d.PredictionScope, "_", " "), strings.Join(d.ModelledKinds, ", "))}
+	if !d.Active {
+		run.Message = "dry run is off; " + session + "; nothing is forecast"
+	}
+	if d.ForecastError != nil {
+		run.Status = "warn"
+		run.Message += "; forecasting is held: " + *d.ForecastError
+		if d.LastErrorAt != nil {
+			run.Message += " since " + d.LastErrorAt.UTC().Format(time.RFC3339)
+		}
+		run.Fix = "the owner retries at its next turn; check the firewall engine, the admission clock, the state database or the configuration the code names"
+	}
+	rows := []DoctorCheck{run}
+	if d.Active && d.Occupancy != nil && d.Ceiling != nil {
+		rows = append(rows, dryRunCapacityCheck(d))
+	}
+	examples := DoctorCheck{Name: "admission dry-run examples", Status: "ok", Message: "no forecast examples or summaries were lost"}
+	var problems []string
+	if d.ExamplesLost > 0 || d.RecordErrors > 0 {
+		problems = append(problems, fmt.Sprintf("%d examples lost, %d failed example writes or maintenance steps", d.ExamplesLost, d.RecordErrors))
+	}
+	if d.SummariesLost > 0 {
+		problems = append(problems, fmt.Sprintf("%d summaries lost", d.SummariesLost))
+	}
+	if d.ExamplesStale {
+		problems = append(problems, "examples of earlier sessions wait for a purge")
+	}
+	if len(problems) > 0 {
+		examples.Status, examples.Message = "warn", strings.Join(problems, "; ")
+		examples.Fix = "examples are previews only; check that the state database is writable, and expect the purge to resume on its own"
+	}
+	if d.ComparisonIncomplete {
+		examples.Message += "; examples and comparison counts are incomplete after a restart or a loss"
+	}
+	return append(rows, examples)
+}
+
+// dryRunCapacityCheck compares real and predicted temporary capacity and
+// the modelled ceiling, and warns on model limits and modelled waits.
+func dryRunCapacityCheck(d *health.AdmissionDryRun) DoctorCheck {
+	occ, ceil := d.Occupancy, d.Ceiling
+	limit := fmt.Sprintf("of %d", occ.Limit)
+	if occ.Unlimited {
+		limit = "of an unlimited set"
+	}
+	c := DoctorCheck{Name: "admission dry-run capacity", Status: "ok", Message: fmt.Sprintf(
+		"%d real temporary blocks, %d %s predicted with %d forecast blocks; the modelled ceiling has %d general and %d reserved units left",
+		occ.Actual, occ.Predicted, limit, occ.ShadowOnly, ceil.GeneralBudget, ceil.ReservedBudget)}
+	var warnings []string
+	if occ.Unlimited {
+		warnings = append(warnings, "the temporary set is unlimited, which the forecast follows only in staging")
+	}
+	if occ.Limited {
+		warnings = append(warnings, "the forecast models no more active blocks")
+	}
+	var waits []string
+	for _, name := range []string{"ceiling", "set_full", "pending_recovery", "forecast_limited"} {
+		if n := d.LastHour[name]; n > 0 {
+			waits = append(waits, fmt.Sprintf("%d %s", n, name))
+		}
+	}
+	if len(waits) > 0 {
+		warnings = append(warnings, "in the last hour live admission would have waited: "+strings.Join(waits, ", "))
+	}
+	if len(warnings) > 0 {
+		c.Status, c.Message = "warn", c.Message+"; "+strings.Join(warnings, "; ")
+		c.Fix = "a forecast wait is a model result, not a block; review auto_response.max_blocks_per_hour and firewall.deny_temp_ip_limit before going live"
+	}
+	return c
 }

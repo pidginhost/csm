@@ -254,6 +254,7 @@ func TestOwnerReportsAppliedConsumerBacklog(t *testing.T) {
 // Audit delivery runs every second; status reads the whole ledger and runs
 // on its own slower timer. A delivery publishes only a change of its error,
 // copying the cached status, so steady deliveries read no ledger status.
+// Status() returns a copy, so the test watches the published snapshot.
 func TestOwnerDeliveryPublishesOnlyAChangedError(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -262,36 +263,36 @@ func TestOwnerDeliveryPublishesOnlyAChangedError(t *testing.T) {
 	opts.WriteAudit = sink.write
 	o := f.start(opts)
 	applied(t, o, p, f.host)
-	before := o.Status()
+	before := o.current.Load()
 	for range 3 {
 		if err := o.do(o.deliverAudit); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if o.Status() != before {
+	if o.current.Load() != before {
 		t.Fatal("a steady delivery republished the status")
 	}
 	cause := errors.New("fixture delivery failure")
 	sink.set(cause)
 	ended(t, o, p, f.host, "192.0.2.15", admission.KindBlockIP, admission.DispositionApplied)
 	_ = o.do(o.deliverAudit)
-	failed := o.Status()
+	failed := o.current.Load()
 	if failed == before || failed.Owner.AuditError != cause.Error() || failed.Ledger != before.Ledger {
 		t.Fatalf("a new delivery error was published as %+v; want the cached ledger view with the error", failed.Owner)
 	}
 	_ = o.do(o.deliverAudit)
-	if o.Status() != failed {
+	if o.current.Load() != failed {
 		t.Fatal("the same delivery error republished the status")
 	}
 	sink.set(nil)
 	if err := o.do(o.deliverAudit); err != nil {
 		t.Fatal(err)
 	}
-	recovered := o.Status()
+	recovered := o.current.Load()
 	if recovered == failed || recovered.Owner.AuditError != "" {
 		t.Fatalf("recovery was published as %+v", recovered.Owner)
 	}
-	if err := o.do(o.deliverAudit); err != nil || o.Status() != recovered {
+	if err := o.do(o.deliverAudit); err != nil || o.current.Load() != recovered {
 		t.Fatalf("a steady delivery after recovery republished the status: %v", err)
 	}
 }

@@ -202,7 +202,7 @@ func BenchmarkAdmissionLedgerScheduleFullReserve(b *testing.B) {
 	f := fullReserve(b)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := f.l.Schedule(fullSchedule); err != nil {
+		if _, err := f.l.Schedule(fullSchedule, nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -212,7 +212,7 @@ func BenchmarkAdmissionLedgerNextWakeFullReserve(b *testing.B) {
 	f := fullReserve(b)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, _, err := f.l.NextWake(); err != nil {
+		if _, _, err := f.l.NextWake(nil); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -293,7 +293,7 @@ func TestAdmissionLedgerHoldIndexNextWakeWithConcurrentTransitions(t *testing.T)
 	go func() {
 		<-start
 		for range 64 {
-			if _, _, err := f.l.NextWake(); err != nil {
+			if _, _, err := f.l.NextWake(nil); err != nil {
 				done <- err
 				return
 			}

@@ -389,7 +389,7 @@ func TestOwnerTurnKeepsItsRetirementError(t *testing.T) {
 			f.host.advance(25 * time.Hour)
 			mono.advance(25 * time.Hour)
 			if step == "schedule" {
-				setOwnerHook(t, o, &scheduleLedger, func(*store.AdmissionLedger, admission.ScheduleLimits) ([]admission.Pick, error) {
+				setOwnerHook(t, o, &scheduleLedger, func(*store.AdmissionLedger, admission.ScheduleLimits, map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
 					return nil, stepCause
 				})
 			} else {

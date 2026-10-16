@@ -63,7 +63,7 @@ func submitObservationError(o *Owner, p *admission.Producer, addr, cursor string
 
 // queuedCandidates reads the durable queue's candidates on the owner
 // goroutine.
-func queuedCandidates(t *testing.T, o *Owner) []admission.Candidate {
+func queuedCandidates(t testing.TB, o *Owner) []admission.Candidate {
 	t.Helper()
 	var out []admission.Candidate
 	if err := o.do(func() error {

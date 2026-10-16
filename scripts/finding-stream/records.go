@@ -246,11 +246,13 @@ type anonAction struct {
 	BeforeExists *bool  `json:"before_exists,omitempty"`
 	AfterExists  *bool  `json:"after_exists,omitempty"`
 	// An admission summary's typed fields: the check that asked, the entry
-	// it came through, a refusal's reason and how many responses it counts.
-	Check   string `json:"check,omitempty"`
-	Entry   string `json:"entry,omitempty"`
-	Refusal string `json:"refusal,omitempty"`
-	Count   uint64 `json:"count,omitempty"`
+	// it came through, a refusal's reason, a dry run's prediction and how
+	// many responses it counts.
+	Check      string `json:"check,omitempty"`
+	Entry      string `json:"entry,omitempty"`
+	Refusal    string `json:"refusal,omitempty"`
+	Prediction string `json:"prediction,omitempty"`
+	Count      uint64 `json:"count,omitempty"`
 }
 
 // anonFirewallAudit is the only shape a firewall audit entry leaves in. The
@@ -331,6 +333,9 @@ func validateAction(r actionlog.Record) (parsedTarget, error) {
 	if r.Count != 0 {
 		return parsedTarget{kind: "empty"}, validateSummary(r)
 	}
+	if r.Prediction != "" {
+		return parsedTarget{}, errSummary
+	}
 	if r.Op == "respond.block_ip" && isAdmissionKey(r.Target) {
 		return validateAdmissionStep(r)
 	}
@@ -364,6 +369,7 @@ func (a *Anonymizer) Action(r actionlog.Record) (anonAction, error) {
 	kept := summary || a.actorDetail(&out, r.ActorDetail)
 	if summary {
 		out.Check, out.Entry, out.Refusal, out.Count, out.ReasonKind = r.Reason, r.ActorDetail, r.Error, r.Count, "check"
+		out.Prediction = r.Prediction
 	}
 	if r.Before != nil {
 		exists := r.Before.Exists
@@ -633,7 +639,7 @@ func (a *Anonymizer) VerifyAction(o anonAction) error {
 	switch {
 	case o.Action == "show":
 		valid = valid && a.verifyActionShow(o)
-	case o.Count != 0 || o.Check != "" || o.Entry != "" || o.Refusal != "":
+	case o.Count != 0 || o.Check != "" || o.Entry != "" || o.Refusal != "" || o.Prediction != "":
 		valid = valid && a.verifySummary(o)
 	case strings.HasPrefix(o.ReasonKind, "admission_"):
 		valid = valid && o.Op == "respond.block_ip" && admissionKinds[o.Action] && o.Actor == string(actionlog.Daemon) &&

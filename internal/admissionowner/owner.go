@@ -1,6 +1,7 @@
 package admissionowner
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -29,6 +30,9 @@ const (
 	// defaultScheduleEvery bounds the owner to one batch start a second
 	// (spec 5.5).
 	defaultScheduleEvery = time.Second
+	// turnEvery spaces an executable owner's selection, check and forecast
+	// turns, including those that dispatch nothing (spec 3.2).
+	turnEvery = time.Second
 )
 
 // maxDrainGroups bounds the groups one drain persists, so a busy ingress
@@ -65,6 +69,10 @@ var (
 	retireLedger = (*store.AdmissionLedger).RetireUnproven
 	// unresolvedIntents lists a retirement pass's intents; tests count it.
 	unresolvedIntents = (*store.AdmissionLedger).UnresolvedIntents
+	// previewLedger selects work for a dry-run forecast and endDryRunLedger
+	// ends a forecast pick; tests make them fail.
+	previewLedger   = (*store.AdmissionLedger).SchedulePreview
+	endDryRunLedger = (*store.AdmissionLedger).EndDryRun
 )
 
 // previewLimits lets a schedule serve whatever the ledger's budgets allow,
@@ -76,7 +84,7 @@ type Options struct {
 	DB        *store.DB
 	StatePath string
 	// Ceiling is the configured hourly ceiling and its source, read at
-	// start and at every reload.
+	// start and at every reload. An executable owner reads its policy's.
 	Ceiling func() (uint32, string)
 	// Clock reads the host clocks (ReadClock).
 	Clock func() (admission.ClockReading, error)
@@ -100,9 +108,13 @@ type Options struct {
 	// A preview is recorded in history only: legacy blocking enforces, so
 	// the gap it describes is not an outage (R10).
 	Deliver func(findings []alert.Finding, preview bool) error
+	// DeliverSummary records a dry-run summary in history only. It must
+	// return promptly when ctx is cancelled, and an error must mean the
+	// record was not committed. The owner cancels it during shutdown.
+	DeliverSummary func(ctx context.Context, finding alert.Finding) error
 	// Expiry is how long the response a candidate asks for would last
 	// under the current configuration. A preview records the expiry a
-	// live attempt would have.
+	// live attempt would have. An executable owner reads its policy's.
 	Expiry func(admission.Candidate) time.Duration
 	// Caps are the firewall's containment capabilities block targets fit.
 	Caps func() admission.Caps
@@ -110,6 +122,10 @@ type Options struct {
 	// while none runs. Without Blocks every pick is a preview: production
 	// passes none until cutover (P2).
 	Blocks func() BlockEngine
+	// Policy reads the published execution policy (D11). An owner with
+	// Blocks binds to it at every turn and reload, and does not start
+	// without a valid one; a comparison-only owner never reads it.
+	Policy func() ExecutionPolicy
 	// Timer periods; zero selects the defaults.
 	TickEvery, InventoryEvery, StatusEvery, DeliverEvery, NoticeEvery, DrainEvery, ScheduleEvery time.Duration
 }
@@ -139,7 +155,9 @@ type Owner struct {
 	current   atomic.Pointer[health.AdmissionStatus]
 	audit     *queuehealth.Sampled
 	notices   *sender
-	compare   comparison
+	// verdictQueue samples the verdict jobs of an executing owner.
+	verdictQueue *queuehealth.Sampled
+	compare      comparison
 
 	// Owned by the owner goroutine.
 	ledger        *store.AdmissionLedger
@@ -193,9 +211,34 @@ type Owner struct {
 	// applyHold keeps an apply fault that snapshot repair cannot prove fixed.
 	applyHold  error
 	probeCheck bool
-	// nextBatch is when the next block batch may start, on the monotonic
-	// clock; arrived is set by a drain that queued work.
+	// policy is the installed execution policy and seenEpoch the newest
+	// epoch read, valid or not. policyErr holds execution while set.
+	policy    ExecutionPolicy
+	seenEpoch uint64
+	policyErr error
+	verdicts  verdicts
+	// shadow is the forecast session while a dry-run policy is installed,
+	// and forecastReset why the next session starts (spec 3.4, 3.7).
+	// forecastErr is why forecasting last failed, cleared once a session
+	// starts or a forecast turn succeeds; forecastErrAt is when, kept until
+	// the next session starts.
+	shadow        *shadow
+	forecastReset resetReason
+	forecastErr   forecastError
+	forecastErrAt time.Time
+	out           dryRunOutput
+	summary       summaryState
+	summaryCtx    context.Context
+	summaryCancel context.CancelFunc
+	summaryResult chan summaryResult
+	// policyHeld is the firewall work a refused policy holds. It waits for
+	// a valid policy as pending work waits for its answer.
+	policyHeld map[admission.CandidateID]bool
+	// nextBatch is when the next block batch may start and nextTurn when an
+	// executable owner's next selection may, on the monotonic clock;
+	// arrived is set by a drain that queued work.
 	nextBatch time.Time
+	nextTurn  time.Time
 	arrived   bool
 	// retireDue is the next admission expiry; retireNext is the next
 	// monotonic retry. They must not be converted into each other when
@@ -244,7 +287,13 @@ func Start(opts Options) *Owner {
 	}
 	o := &Owner{
 		opts: opts, requests: make(chan request), quit: make(chan bool), done: make(chan struct{}),
-		audit: queuehealth.NewSampled(int(admission.MaxAuditSlots), "rows", deliveryLag),
+		audit:         queuehealth.NewSampled(int(admission.MaxAuditSlots), "rows", deliveryLag),
+		forecastReset: resetStartup,
+		summaryResult: make(chan summaryResult, 1),
+	}
+	o.summaryCtx, o.summaryCancel = context.WithCancel(context.Background())
+	if opts.Blocks != nil {
+		o.verdictQueue = queuehealth.NewSampled(verdictPending, "jobs", deliveryLag)
 	}
 	o.reg, o.producers, o.startErr = buildRegistry()
 	if o.startErr == nil {
@@ -283,6 +332,7 @@ func (o *Owner) run() {
 	for {
 		select {
 		case clean := <-o.quit:
+			o.stopVerdicts()
 			if clean {
 				o.shutdown()
 			}
@@ -324,7 +374,12 @@ func (o *Owner) run() {
 		case <-schedule.C:
 			if o.started {
 				o.schedule()
+				o.maintainExamples()
 			}
+		case r := <-o.stageResults():
+			o.receiveVerdict(r)
+		case <-o.stageRetired():
+			o.verdictsRetired()
 		}
 	}
 }
@@ -354,6 +409,12 @@ var (
 // start runs the startup sequence (spec 5.4, handoffs O19-O24). A retry
 // keeps the handle it opened: one database has one ledger handle (O1).
 func (o *Owner) start() error {
+	// An executable owner never starts on settings it cannot bind to.
+	if o.executable() {
+		if err := o.refreshPolicy(); err != nil {
+			return err
+		}
+	}
 	if o.opts.DB == nil {
 		return errors.New("the state database is not open")
 	}
@@ -379,9 +440,12 @@ func (o *Owner) start() error {
 		return fmt.Errorf("settling outstanding attempts: %w", err)
 	}
 	o.refreshInventory()
-	if _, err = o.ledger.BeginIngress(); err != nil {
+	generation, err := o.ledger.BeginIngress()
+	if err != nil {
 		return fmt.Errorf("beginning an ingress generation: %w", err)
 	}
+	// An earlier process's comparison counts and examples may be lost.
+	o.out.restarted = generation.Generation > 1
 	if err = o.ledger.Revalidate(); err != nil {
 		return fmt.Errorf("revalidating the queue: %w", err)
 	}
@@ -397,7 +461,7 @@ func (o *Owner) start() error {
 // counter starts it without credit. Once a limit is set, a retried start
 // only applies the limit again.
 func (o *Owner) applyCeiling(now time.Time) error {
-	limit, source := o.opts.Ceiling()
+	limit, source := o.ceilingConfig()
 	c, err := o.ledger.Ceiling()
 	if err != nil {
 		return fmt.Errorf("reading the ceiling: %w", err)
@@ -441,6 +505,11 @@ func (o *Owner) readTick() (admission.ClockReading, error) {
 		return reading, fmt.Errorf("reading the admission clock: %w", err)
 	}
 	o.tickErr, o.degraded, o.lastTick, o.now = nil, t.Degraded, reading.Wall, t.Now
+	// A forecast meters the committed clock as the ledger's ceiling does.
+	// One that cannot starts over at its next turn.
+	if o.shadow != nil && o.shadow.advance(t) != nil {
+		o.dropForecast()
+	}
 	o.compare.begin(o.now)
 	return reading, nil
 }
@@ -462,7 +531,7 @@ func (o *Owner) tick() error {
 	}
 	// A ceiling changed by any config path, not only a reload, applies
 	// after this reading at the saved limit.
-	if limit, source := o.opts.Ceiling(); limit != o.limit || source != o.source {
+	if limit, source := o.ceilingConfig(); limit != o.limit || source != o.source {
 		o.reloadPending = true
 	}
 	if o.reloadPending {
@@ -519,24 +588,34 @@ func (o *Owner) refreshInventory() {
 
 // Reload records a reading under the saved limit, then applies the
 // configured one and revalidates the queue against it (O3, O13).
-// A failed reload is retried on ticks before admission can resume.
+// A failed reload is retried on ticks before admission can resume. An
+// executable owner first installs the published policy: Reload returns
+// once it is installed, or with the ErrPolicy that holds execution.
 func (o *Owner) Reload() error {
 	return o.do(func() error {
 		if !o.started {
-			return errors.New("the admission owner has not started")
+			return fmt.Errorf("the admission owner has not started: %w", o.startErr)
 		}
 		defer o.refreshStatus()
+		var policyErr error
+		if o.executable() {
+			policyErr = o.refreshPolicy()
+		}
 		o.reloadPending = true
-		return o.tick()
+		return errors.Join(policyErr, o.tick())
 	})
 }
 
 func (o *Owner) reloadCeiling() error {
-	limit, source := o.opts.Ceiling()
+	limit, source := o.ceilingConfig()
 	if err := o.ledger.SetCeiling(limit); err != nil {
 		return fmt.Errorf("setting the ceiling: %w", err)
 	}
 	o.limit, o.source = limit, source
+	// A forecast takes the new limit without new credit.
+	if o.shadow != nil && o.shadow.setLimit(limit) != nil {
+		o.dropForecast()
+	}
 	if err := o.ledger.Revalidate(); err != nil {
 		return err
 	}
@@ -555,9 +634,21 @@ func (o *Owner) Stop() { o.halt(true) }
 func (o *Owner) halt(clean bool) {
 	o.stopOnce.Do(func() {
 		o.stopping.Store(true)
+		o.summaryCancel()
 		o.quit <- clean
 		<-o.done
 		<-o.notices.done
+		// Both writers have stopped. Settle any delivery whose receipt
+		// could no longer reach the owner, before the final flush.
+		select {
+		case result := <-o.summaryResult:
+			o.summaryDelivered(result.summary, result.err)
+		default:
+		}
+		if clean {
+			o.finishSummary()
+			o.refreshStatus()
+		}
 	})
 }
 
@@ -696,20 +787,33 @@ func (o *Owner) drainHeld() (err error) {
 // succeeds. A turn that keeps failing is backed off from the default
 // schedule period, as a failing notice delivery is.
 func (o *Owner) schedule() {
+	o.expireVerdicts()
 	probeDue := o.execHold != nil && !monoNow().Before(o.probeAt)
 	// Without an engine there is nothing to probe. Once one starts, the
 	// old hold's deadline must not delay its first turn.
 	if errors.Is(o.execHold, errNoEngine) {
 		probeDue = o.opts.Blocks() != nil
 	}
-	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) && !probeDue {
+	// Only a valid live policy may probe or repair a retained engine hold.
+	probeDue = probeDue && o.policyErr == nil && !o.forecasting()
+	// A policy change can resume held work or probes without an arrival,
+	// reload or ledger deadline, including after an idle dry run.
+	policyDue := o.executable() && o.opts.Policy().Epoch > o.seenEpoch
+	if !o.scheduleDue && (o.wakeAt.IsZero() || monoNow().Before(o.wakeAt)) && !probeDue && !policyDue {
 		return
 	}
 	if !o.scheduleWait.due(monoNow()) {
 		return
 	}
 	o.scheduleDue, o.wakeAt = false, time.Time{}
-	err := o.turn()
+	// An executable owner selects, checks and forecasts once a second at
+	// most, whatever made the turn due (spec 3.2). Retirement of earlier
+	// work keeps its own waits.
+	selecting := !o.executable() || !monoNow().Before(o.nextTurn)
+	if selecting && o.executable() {
+		o.nextTurn = monoNow().Add(turnEvery)
+	}
+	err := o.runTurn(selecting)
 	if err != nil {
 		o.scheduleDue = true
 		o.scheduleWait.fail(monoNow(), defaultScheduleEvery)
@@ -724,19 +828,24 @@ func (o *Owner) schedule() {
 }
 
 // turn serves the queue's picks after a fresh reading (O9). With an engine
-// (Options.Blocks) its block_ip picks run as one batch (execute). Every
-// other pick is an observe preview: reserved and charged as live work
-// would be and ended in the same transaction without running (O14). The
-// schedule has already deferred the work its budgets cannot serve and
-// revalidated each pick under the same state. A terminal refusal ends only
-// that pick, so an invalid selected lifetime cannot starve the queue.
-// Other failures retry the turn. The ledger's wake time, converted by the
-// admission clock's elapsed time, sets the next turn (O16).
-func (o *Owner) turn() error {
+// (Options.Blocks) the policy installed when the turn starts decides how:
+// a dry-run policy forecasts its picks (forecast); otherwise block_ip picks
+// run as one batch (execute). Every other pick is an observe preview. The
+// ledger's wake time, converted by the admission clock's elapsed time,
+// sets the next turn (O16); a forecast wakes whatever the live budgets.
+func (o *Owner) turn() error { return o.runTurn(true) }
+
+// runTurn is a turn that selects work only when selecting is set; otherwise
+// the queue stays due for a later turn.
+func (o *Owner) runTurn(selecting bool) error {
 	// Recording an outcome needs only the saved ledger clock. A failed
 	// current reading must not abandon work that already ran.
 	if err := o.finishPending(); err != nil {
 		return err
+	}
+	if o.executable() {
+		// A refused policy holds execution; the turn goes on without it.
+		_ = o.refreshPolicy()
 	}
 	// Anchor before the reading: a slow clock or durable tick must not add
 	// its latency to an unknown attempt's expiry wake.
@@ -747,48 +856,29 @@ func (o *Owner) turn() error {
 	// Retirement first: it can release the holds pending_recovery waits on.
 	// Its error is kept when a later step fails.
 	retireErr := o.retire()
-	picks, err := scheduleLedger(o.ledger, previewLimits)
-	if err != nil {
-		return errors.Join(retireErr, fmt.Errorf("scheduling the queue: %w", err))
+	if o.executable() {
+		o.sweepVerdicts()
 	}
-	var blocks []execPick
-	for _, p := range picks {
-		c, readErr := o.ledger.Candidate(p.ID)
-		if readErr != nil {
-			return errors.Join(retireErr, fmt.Errorf("reading pick %s: %w", p.ID, readErr))
-		}
-		if o.opts.Blocks != nil && c.Key.Kind == admission.KindBlockIP {
-			blocks = append(blocks, execPick{pick: p, c: c})
-			continue
-		}
-		if _, _, _, err = o.ledger.Observe(p.ID, p.Lane, o.expiryOf(c, o.now)); err != nil {
-			if reason, refused := admission.ReasonOf(err); refused {
-				switch reason.Disposition() {
-				case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
-					if _, endErr := o.ledger.Terminate(p.ID, reason); endErr != nil {
-						return errors.Join(retireErr, fmt.Errorf("ending pick %s: %w", p.ID, endErr))
-					}
-					o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionRefused, reason: reason}, o.now)
-					continue
-				}
-			}
-			return errors.Join(retireErr, fmt.Errorf("previewing pick %s: %w", p.ID, err))
-		}
-		o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
+	nextWake := (*store.AdmissionLedger).NextWake
+	if o.forecasting() {
+		nextWake = (*store.AdmissionLedger).PreviewWake
 	}
-	if len(blocks) > 0 {
-		if err = o.execute(blocks); err != nil {
+	switch {
+	case !selecting:
+		o.scheduleDue = true
+	case o.forecasting():
+		if err := o.forecast(); err != nil {
 			return errors.Join(retireErr, err)
 		}
-	} else if o.opts.Blocks != nil && o.execHold != nil {
-		if o.ready(o.opts.Blocks(), false) && o.execHold != nil {
-			o.hold(o.execHold, o.applyHold != nil)
+	default:
+		if err := o.serve(); err != nil {
+			return errors.Join(retireErr, err)
 		}
 	}
-	if err = o.publish(); err != nil {
+	if err := o.publish(); err != nil {
 		return errors.Join(retireErr, err)
 	}
-	wake, ok, err := o.ledger.NextWake()
+	wake, ok, err := nextWake(o.ledger, o.answers())
 	if err != nil {
 		return errors.Join(retireErr, fmt.Errorf("reading the next wake time: %w", err))
 	}
@@ -807,6 +897,85 @@ func (o *Owner) turn() error {
 	return retireErr
 }
 
+// serve runs the schedule's picks. With an engine its block_ip picks run
+// as one batch, and a refused policy holds every firewall pick; any other
+// pick is previewed. The schedule has already deferred the work its
+// budgets cannot serve and revalidated each pick under the same state.
+func (o *Owner) serve() error {
+	picks, err := scheduleLedger(o.ledger, previewLimits, o.answers())
+	if err != nil {
+		return fmt.Errorf("scheduling the queue: %w", err)
+	}
+	var blocks []execPick
+	for _, p := range picks {
+		c, readErr := o.ledger.Candidate(p.ID)
+		if readErr != nil {
+			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
+		}
+		pick := execPick{pick: p, c: c}
+		switch {
+		case !o.executable() || c.Key.Kind == admission.KindChallenge:
+			err = o.preview(pick)
+		case o.policyErr != nil:
+			err = o.holdForPolicy(pick)
+		case c.Key.Kind == admission.KindBlockIP:
+			blocks = append(blocks, pick)
+		default:
+			err = o.preview(pick)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	switch {
+	case len(blocks) > 0:
+		return o.execute(blocks)
+	case o.executable() && o.policyErr == nil && o.execHold != nil:
+		if o.ready(o.opts.Blocks(), false) && o.execHold != nil {
+			o.hold(o.execHold, o.applyHold != nil)
+		}
+	}
+	return nil
+}
+
+// holdForPolicy defers p while a refused policy holds execution, as an
+// unavailable engine defers it: nothing is previewed, reserved or charged.
+// Until a valid policy is installed the schedule passes p over, so it is
+// not selected again at every turn.
+func (o *Owner) holdForPolicy(p execPick) error {
+	if err := o.endPick(p, admission.ReasonEngineUnavailable); err != nil {
+		return err
+	}
+	if o.policyHeld == nil {
+		o.policyHeld = map[admission.CandidateID]bool{}
+	}
+	o.policyHeld[p.pick.ID] = true
+	return nil
+}
+
+// preview is an observe preview of p: reserved and charged as live work
+// would be and ended in the same transaction without running (O14). A
+// terminal refusal ends only that pick, so an invalid selected lifetime
+// cannot starve the queue; any other failure is returned.
+func (o *Owner) preview(p execPick) error {
+	c := p.c
+	if _, _, _, err := o.ledger.Observe(p.pick.ID, p.pick.Lane, o.expiryOf(c, o.now)); err != nil {
+		if reason, refused := admission.ReasonOf(err); refused {
+			switch reason.Disposition() {
+			case admission.DispositionRefused, admission.DispositionWithheld, admission.DispositionDropped:
+				if _, endErr := o.ledger.Terminate(p.pick.ID, reason); endErr != nil {
+					return fmt.Errorf("ending pick %s: %w", p.pick.ID, endErr)
+				}
+				o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionRefused, reason: reason}, o.now)
+				return nil
+			}
+		}
+		return fmt.Errorf("previewing pick %s: %w", p.pick.ID, err)
+	}
+	o.compare.addAt(compareKey{entry: c.Entry, check: c.Check, kind: c.Key.Kind, decision: decisionObserve}, o.now)
+	return nil
+}
+
 // expiryOf is the absolute expiry of a pick's next attempt: a retry keeps
 // its first attempt's; a first attempt lasts the selected legacy lifetime,
 // or the configured response's, from now.
@@ -816,7 +985,7 @@ func (o *Owner) expiryOf(c admission.Candidate, now time.Time) time.Time {
 	}
 	duration := c.PreviewTTL
 	if duration == 0 {
-		duration = o.opts.Expiry(c)
+		duration = o.expiry(c)
 	}
 	return now.Add(duration)
 }
@@ -939,8 +1108,8 @@ func (o *Owner) Respond(kind admission.Kind, e admission.Evidence, via admission
 	return err
 }
 
-// Status is the last status the owner read.
-func (o *Owner) Status() *health.AdmissionStatus { return o.current.Load() }
+// Status copies the last status the owner read.
+func (o *Owner) Status() *health.AdmissionStatus { return o.current.Load().Clone() }
 
 // status reads the status now, on the owner goroutine.
 func (o *Owner) status() *health.AdmissionStatus {
@@ -978,8 +1147,11 @@ func (o *Owner) refreshStatus() {
 	if o.damageErr != nil {
 		s.Owner.DamageError = o.damageErr.Error()
 	}
-	if o.execHold != nil {
-		s.Owner.ExecutionHeld = o.execHold.Error()
+	if cause := o.heldCause(); cause != nil {
+		s.Owner.ExecutionHeld = cause.Error()
+	}
+	if o.executable() {
+		s.Owner.Verdict, s.Owner.DryRun = o.verdictStatus(), o.dryRunStatus()
 	}
 	if o.ledger != nil {
 		ls := o.ledger.Status()

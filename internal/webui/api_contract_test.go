@@ -26,10 +26,17 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 	s := &Server{cfg: capsTestCfg(), startTime: now.Add(-time.Hour), version: "test"}
 	// The admission view is present only from a ledger owner; the contract
 	// covers it too.
+	verdictClass := "timeout"
+	session, reset := "0123456789abcdef0123456789abcdef", "startup"
 	adm := &health.AdmissionStatus{CheckedAt: now, Ledger: &admission.LedgerStatus{}, Ingress: &admission.IngressHealth{Admitting: true},
 		Owner: &health.AdmissionOwner{Error: "fixture start failure", TickError: "fixture clock failure", ClockDegraded: true, LastTick: now,
 			CeilingSource: "default", Import: &health.AdmissionImport{Units: 1, At: now, Error: "fixture read failure"}, InventoryAt: now, InventoryError: "fixture inventory failure",
-			DamageError: "fixture ledger damage", ExecutionHeld: "fixture execution hold", AuditError: "fixture audit delivery failure"}}
+			DamageError: "fixture ledger damage", ExecutionHeld: "fixture execution hold", AuditError: "fixture audit delivery failure",
+			Verdict: &health.AdmissionVerdict{Enabled: true, LastError: &verdictClass, LastErrorAt: &now},
+			DryRun: &health.AdmissionDryRun{Active: true, SessionID: &session, Since: &now, ResetReason: &reset,
+				ModelledKinds: []string{"block_ip"}, PredictionScope: "ceiling_and_temporary_capacity",
+				Occupancy: &health.AdmissionDryRunOccupancy{Actual: 8}, Ceiling: &health.AdmissionDryRunCeiling{Limit: 5},
+				Picks: map[string]uint64{"capacity_admit": 1}, LastHour: map[string]uint64{"capacity_admit": 1}}}}
 	s.SetHealthProvider(admissionStatusProvider{status: adm, statusFakeProvider: statusFakeProvider{
 		wordpress:            map[string]health.WPVerificationCounts{"core": {Verified: 3, Unverified: 2, LastAttempt: now}},
 		queues:               queues,
@@ -109,6 +116,27 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 		t.Fatalf("admission owner payload = %T, want object", admissionView["owner"])
 	}
 	assertJSONKeys(t, owner, jsonStructKeys(reflect.TypeOf(health.AdmissionOwner{})))
+	verdictView, ok := owner["verdict"].(map[string]any)
+	if !ok {
+		t.Fatalf("admission verdict payload = %T, want object", owner["verdict"])
+	}
+	assertJSONKeys(t, verdictView, jsonStructKeys(reflect.TypeOf(health.AdmissionVerdict{})))
+	dryRunView, ok := owner["dry_run"].(map[string]any)
+	if !ok {
+		t.Fatalf("admission dry_run payload = %T, want object", owner["dry_run"])
+	}
+	// Absent values are null, never missing keys.
+	assertJSONKeys(t, dryRunView, jsonStructKeys(reflect.TypeOf(health.AdmissionDryRun{})))
+	if dryRunView["forecast_error"] != nil || dryRunView["last_error_at"] != nil {
+		t.Fatalf("absent forecast error = %v at %v, want null", dryRunView["forecast_error"], dryRunView["last_error_at"])
+	}
+	for key, typ := range map[string]reflect.Type{"occupancy": reflect.TypeOf(health.AdmissionDryRunOccupancy{}), "ceiling": reflect.TypeOf(health.AdmissionDryRunCeiling{})} {
+		nested, ok := dryRunView[key].(map[string]any)
+		if !ok {
+			t.Fatalf("dry_run %s payload = %T, want object", key, dryRunView[key])
+		}
+		assertJSONKeys(t, nested, jsonStructKeys(typ))
+	}
 }
 
 func TestAPICapabilitiesContract(t *testing.T) {
