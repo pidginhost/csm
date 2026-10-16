@@ -5,9 +5,12 @@ package checks
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // TestQuarantineFileTOCTOUSafe_HappyPath asserts the safe helper moves
@@ -137,14 +140,14 @@ func TestQuarantineFileTOCTOUSafe_CopyUsesOpenFD(t *testing.T) {
 	}
 
 	oldCopy := quarantineCopyByFD
-	quarantineCopyByFD = func(fd *os.File, qPath string, metadata []byte) error {
+	quarantineCopyByFD = func(fd *os.File, qPath string, metadata []byte, size int64) error {
 		if rmErr := os.Remove(src); rmErr != nil {
 			return rmErr
 		}
 		if wrErr := os.WriteFile(src, []byte("replacement"), 0644); wrErr != nil {
 			return wrErr
 		}
-		return oldCopy(fd, qPath, metadata)
+		return oldCopy(fd, qPath, metadata, size)
 	}
 	t.Cleanup(func() { quarantineCopyByFD = oldCopy })
 
@@ -330,5 +333,94 @@ func TestQuarantineFileVersionedTOCTOUSafeUsesPinnedDescriptorLease(t *testing.T
 	got, readErr := os.ReadFile(dst)
 	if readErr != nil || string(got) != string(original) {
 		t.Fatalf("quarantine content=%q, error=%v", got, readErr)
+	}
+}
+
+// Generic quarantine runs while other descriptors are open: a web server
+// worker, a backup reader, or the fanotify event that produced the finding.
+// Only the realtime PHP response requires an exclusive lease.
+func TestQuarantineFileTOCTOUSafeAllowsOpenReader(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "shell.php")
+	original := []byte("<?php /* malware */ ?>")
+	if err := os.WriteFile(src, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := os.Open(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	dst := filepath.Join(tmp, "q", "out.php")
+	if err = os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = quarantineFileTOCTOUSafe(src, dst, info, []byte("{}")); err != nil {
+		t.Fatalf("quarantine with another reader open: %v", err)
+	}
+	if _, statErr := os.Lstat(src); !os.IsNotExist(statErr) {
+		t.Fatalf("source still present: %v", statErr)
+	}
+	if got, readErr := os.ReadFile(dst); readErr != nil || string(got) != string(original) {
+		t.Fatalf("quarantine content=%q, error=%v", got, readErr)
+	}
+}
+
+// A dropped miner or backdoor is usually running when it is found. Linux never
+// grants a write lease on an executing file, so generic quarantine must not
+// depend on one.
+func TestQuarantineFileTOCTOUSafeMovesRunningExecutable(t *testing.T) {
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(sleepPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "miner")
+	if err = os.WriteFile(src, body, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var cmd *exec.Cmd
+	for attempt := 0; ; attempt++ {
+		cmd = &exec.Cmd{Path: src, Args: []string{"sleep", "60"}}
+		err = cmd.Start()
+		// A concurrent fork can briefly inherit the write descriptor (golang/go#22315).
+		if !errors.Is(err, syscall.ETXTBSY) || attempt == 20 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	info, err := os.Lstat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(tmp, "q", "miner")
+	if err = os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = quarantineFileTOCTOUSafe(src, dst, info, []byte("{}")); err != nil {
+		t.Fatalf("quarantine of a running executable: %v", err)
+	}
+	if _, statErr := os.Lstat(src); !os.IsNotExist(statErr) {
+		t.Fatalf("source still present: %v", statErr)
+	}
+	if got, readErr := os.ReadFile(dst); readErr != nil || string(got) != string(body) {
+		t.Fatalf("quarantine copy differs from the executable: error=%v", readErr)
 	}
 }
