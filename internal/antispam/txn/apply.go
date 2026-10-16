@@ -26,9 +26,14 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		return failed(StepPreconditions, err)
 	}
 	// The host can change while the resolved request waits for the worker.
-	if len(s.DNSFeeds()) > 0 || s.Redirects() {
+	if len(s.DNSFeeds()) > 0 || s.Redirects() || s.HasFeed(antispam.FeedCSMIPMap) {
 		if ok, why := antispam.FeedsSupported(f.RspamdVersion); !ok {
 			return failed(StepPreconditions, errors.New(why+"; CSM's feeds and map redirects need rspamd 4 or later"))
+		}
+	}
+	if s.HasFeed(antispam.FeedCSMIPMap) {
+		if err := f.IPMap.UsableByRspamd(f.RspamdGID); err != nil {
+			return failed(StepPreconditions, err)
 		}
 	}
 	if s.HasFeed(antispam.FeedSpamhausDQS) {

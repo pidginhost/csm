@@ -348,14 +348,26 @@ func rspamdLog(dump antispam.CommandResult) antispam.LogFacts {
 	return out
 }
 
-// fileFacts lstats p without following a final link.
+// fileFacts records the file and its directories without following links.
 func fileFacts(p string) antispam.FileFacts {
+	var out antispam.FileFacts
+	if out.Parents, out.Err = chain(filepath.Dir(p)); out.Err != nil {
+		if errors.Is(out.Err, fs.ErrNotExist) {
+			out.Missing, out.Err = true, nil
+		}
+		return out
+	}
+	if last := out.Parents[len(out.Parents)-1]; !last.Mode.IsDir() {
+		out.Err = fmt.Errorf("%s is not a directory", last.Path)
+		return out
+	}
 	switch facts, err := pathFacts(p); {
 	case errors.Is(err, fs.ErrNotExist):
-		return antispam.FileFacts{Missing: true}
+		out.Missing = true
 	case err != nil:
-		return antispam.FileFacts{Err: err}
+		out.Err = err
 	default:
-		return antispam.FileFacts{File: facts}
+		out.File = facts
 	}
+	return out
 }

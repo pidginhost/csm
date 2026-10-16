@@ -265,13 +265,10 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 		}
 	}
 	if s.HasFeed(FeedCSMIPMap) {
-		switch err := usable(RedirectPath(RedirectMultimap)); {
-		case err != nil:
+		if err := usable(RedirectPath(RedirectMultimap)); err != nil {
 			drop([]string{FeedCSMIPMap}, err.Error())
-		case f.RspamdGID < 0:
-			drop([]string{FeedCSMIPMap}, "rspamd's group is unknown, so CSM cannot make the IP map readable by rspamd only")
-		case f.IPMap.Missing || f.IPMap.Err != nil:
-			drop([]string{FeedCSMIPMap}, "CSM has not written the IP map yet")
+		} else if err := f.IPMap.UsableByRspamd(f.RspamdGID); err != nil {
+			drop([]string{FeedCSMIPMap}, err.Error())
 		}
 	}
 	if s.HasFeed(FeedSpamhausDQS) {
@@ -300,7 +297,43 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 type FileFacts struct {
 	Missing bool
 	File    PathFacts
+	Parents []PathFacts
 	Err     error
+}
+
+// UsableByRspamd checks the IP map's private, root-owned file contract.
+// Both resolution and the worker check it because the file can change
+// while a request waits to apply.
+func (f FileFacts) UsableByRspamd(gid int) error {
+	switch {
+	case gid < 0:
+		return errors.New("rspamd's group is unknown, so CSM cannot make the IP map readable by rspamd only")
+	case f.Missing:
+		return errors.New("CSM has not written the IP map yet")
+	case f.Err != nil || f.File.Path == "":
+		return errors.New("CSM cannot check the IP map; check file access")
+	case f.File.Mode != 0o640 || f.File.UID != 0 || f.File.GID != gid || f.File.ExtACL:
+		return errors.New("the IP map must be a regular root-owned file, mode 0640, in rspamd's group, with no extra ACLs")
+	}
+	if len(f.Parents) == 0 {
+		return errors.New("the IP map's parent directories were not checked")
+	}
+	for _, p := range f.Parents {
+		if !p.Mode.IsDir() {
+			return fmt.Errorf("IP map parent %s is not a directory", p.Path)
+		}
+		if why := unprotected(p); why != "" {
+			return fmt.Errorf("IP map parent %s %s", p.Path, why)
+		}
+		search := fs.FileMode(0o001)
+		if p.GID == gid {
+			search = 0o010
+		}
+		if p.Mode&search == 0 {
+			return fmt.Errorf("rspamd cannot traverse IP map parent %s", p.Path)
+		}
+	}
+	return nil
 }
 
 // LogFacts is rspamd's log destination as the collector found it. Type is

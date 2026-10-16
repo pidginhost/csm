@@ -189,6 +189,7 @@ enable it:
 | `uribl` | Free for low-volume use only; URIBL blocks public and large shared resolvers. |
 | `surbl` | Free only for organisations under 1,000 users or 250,000 messages a day, and never inside a product or service sold for a fee; other use needs SURBL's paid data service. See the [SURBL usage policy](https://www.surbl.org/usage-policy). |
 | `spamhaus_dqs` | Needs a DQS key. The free key covers non-commercial use under 100,000 queries a day; commercial use needs a paid key. |
+| `csm_ip_map` | Local CSM IP data; no external map downloads. |
 | `rspamd_maps` | Keeps rspamd's own map downloads from maps.rspamd.com; free use is non-commercial and under 5,000 queries a day, other use needs an agreement with rspamd. See [rspamd's usage policy](https://docs.rspamd.com/other/usage_policy/). |
 
 ### Maps without any feed
@@ -257,6 +258,23 @@ and paths with dot components cannot establish privacy. CSM cannot verify
 syslog or console routing; use `logging.type = file` with a private log.
 The worker rechecks log privacy and rspamd version before applying feeds.
 
+### Local IP map
+
+Select `csm_ip_map` in `email_protection.antispam.feeds.enabled` to use
+`/var/lib/csm-rspamd/csm_ip.map`. The feed stays off with a warning until
+the map exists as a regular root-owned file, mode 0640, in rspamd's service
+group, without extra ACLs. Every parent must be a root-owned directory with
+no group or other write access or extra ACLs, and rspamd must be able to
+traverse it. Symlinks cannot establish safe map access.
+
+CSM must know rspamd's group, as for DQS above. The worker rechecks map
+access and rspamd version before applying a queued request. A failed check
+leaves the installed configuration intact. The next regular check retries
+with the current host facts.
+
+The feed needs CSM to own `/etc/rspamd/local.d/multimap.conf`, even with
+`rspamd_maps` selected. An operator-owned file there leaves the feed off.
+
 ### Scores
 
 No feed symbol weighs more than 5, and the symbols of one feed add up to at
@@ -274,6 +292,7 @@ CSM owns these files while a feed or map redirect needs them:
   the feeds you named run;
 - `forged_recipients.conf`, `mid.conf`, `mime_types.conf`, `whitelist.conf`
   and `multimap.conf` in `/etc/rspamd/local.d`, without `rspamd_maps`.
+  The local IP feed also needs `multimap.conf` when `rspamd_maps` is selected.
 
 An operator-owned file at one of these optional locations is left alone:
 CSM omits DNS feeds or the affected map redirect. Its contents can still

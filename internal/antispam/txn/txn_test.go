@@ -14,6 +14,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/antispam/hostfacts"
+	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -114,6 +115,9 @@ func (f *fakeHost) host() *Host {
 				RspamdVersion: antispam.CommandResult{Stdout: "Rspamd daemon version 4.2.2\n"},
 				RspamdLog: antispam.LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log",
 					File:    antispam.PathFacts{GID: os.Getgid(), Mode: 0o640},
+					Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}},
+				// The daemon writes the IP map before a pass that adds its rule.
+				IPMap: antispam.FileFacts{File: antispam.PathFacts{Path: ipmap.DefaultPath, Mode: 0o640, GID: os.Getgid()},
 					Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}}}, f.problems
 		},
 		targets: snapshot,
@@ -935,6 +939,9 @@ func TestApplyIPMapRuleCheckRollsBack(t *testing.T) {
 		t.Fatal("rollback left changes")
 	}
 	f.reset()
-	f.multimap = `{"CSM_IP":{"type":"ip","map":"/var/lib/csm-rspamd/csm_ip.map","symbols":["CSM_IP_DROP","CSM_IP_BLOCKED","CSM_IP_MAIL_AUTH","CSM_IP_SPAM","CSM_IP_BLOCKLISTDE","CSM_IP_CINS","CSM_IP_CANARY"]}}`
+	f.multimap = loadedIPMapRule
 	wantOK(t, f.host().Apply(s))
 }
+
+// loadedIPMapRule is configdump -j multimap with CSM's CSM_IP rule loaded.
+const loadedIPMapRule = `{"CSM_IP":{"type":"ip","map":"/var/lib/csm-rspamd/csm_ip.map","symbols":["CSM_IP_DROP","CSM_IP_BLOCKED","CSM_IP_MAIL_AUTH","CSM_IP_SPAM","CSM_IP_BLOCKLISTDE","CSM_IP_CINS","CSM_IP_CANARY"]}}`

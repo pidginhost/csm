@@ -681,7 +681,31 @@ func TestCollectReadsTheIPMap(t *testing.T) {
 	if f.IPMap.Missing || f.IPMap.Err != nil || f.IPMap.File.Mode.Perm() != 0o640 || f.IPMap.File.Path != c.layout.IPMap {
 		t.Fatalf("written map = %+v", f.IPMap)
 	}
+	if len(f.IPMap.Parents) == 0 || f.IPMap.Parents[0].Path != "/" || f.IPMap.Parents[len(f.IPMap.Parents)-1].Path != d {
+		t.Fatalf("map directory chain not collected: %+v", f.IPMap.Parents)
+	}
 	if live().layout.IPMap != ipmap.DefaultPath {
 		t.Fatalf("live collector reads %q", live().layout.IPMap)
+	}
+}
+
+func TestCollectIPMapDoesNotFollowDirectorySymlink(t *testing.T) {
+	d := t.TempDir()
+	actual := filepath.Join(d, "actual")
+	mkdir(t, actual)
+	write(t, filepath.Join(actual, "csm_ip.map"), "192.0.2.255 CSM_IP_CANARY:0:g000000000000\n")
+	link := filepath.Join(d, "link")
+	if err := os.Symlink(actual, link); err != nil {
+		t.Fatal(err)
+	}
+	c := testCollector(d, &fakeRun{results: map[string]antispam.CommandResult{}})
+	c.layout.IPMap = filepath.Join(link, "csm_ip.map")
+	f := c.collect(context.Background(), filepath.Join(d, "missing.sock"))
+	if f.IPMap.Err == nil || f.IPMap.File.Path != "" || len(f.IPMap.Parents) == 0 {
+		t.Fatalf("collector followed a map directory symlink: %+v", f.IPMap)
+	}
+	last := f.IPMap.Parents[len(f.IPMap.Parents)-1]
+	if last.Path != link || last.Mode&fs.ModeSymlink == 0 {
+		t.Fatalf("unsafe map parent was not recorded: %+v", last)
 	}
 }
