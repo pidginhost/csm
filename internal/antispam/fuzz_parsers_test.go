@@ -9,6 +9,30 @@ import (
 	"testing"
 )
 
+func FuzzLoadDQSKey(f *testing.F) {
+	for _, key := range []string{testKey, "", testKey[:25], testKey + "a", strings.ToUpper(testKey),
+		strings.Repeat("0", 26), strings.Repeat("9", 26), strings.Repeat("z", 26),
+		testKey[:25] + "\x00", testKey[:25] + "\"", testKey[:25] + "\n"} {
+		f.Add(key)
+	}
+	f.Fuzz(func(t *testing.T, content string) {
+		wantValid := len(content) == 26 && strings.Trim(content, "abcdefghijklmnopqrstuvwxyz0123456789") == ""
+		key, err := LoadDQSKey(KeyFacts{Path: "/etc/csm/k", UID: 0, Mode: 0o600, Key: NewSecret(content)})
+		if (err == nil) != wantValid {
+			t.Fatal("key validation disagrees with the required alphabet and length")
+		}
+		if err != nil {
+			if key.Reveal() != "" {
+				t.Fatal("rejected input returned a key")
+			}
+			return
+		}
+		if key.Reveal() != content {
+			t.Fatal("validated key changed its content")
+		}
+	})
+}
+
 func FuzzParseEximSize(f *testing.F) {
 	for _, seed := range []string{"50M", "+50M", "-0", "-0K", "52428800", " 100k ", "1G", "", "-1", "+-0", "8589934592G", "${if def:x{1}{2}}"} {
 		f.Add(seed)

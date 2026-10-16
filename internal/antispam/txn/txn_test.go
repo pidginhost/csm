@@ -772,7 +772,7 @@ func TestApplyFixesSecretFileModeWithoutContentChange(t *testing.T) {
 	f.modules = "Modules enabled: dkim, spf, rbl\n"
 	f.rbl = `{"rbls":{"csm_dqs_zen":{},"csm_dqs_dbl":{},"csm_dqs_zrd":{}}}`
 	s := enforce()
-	s.Feeds, s.DQSKeyFile, s.DQSKey = []string{antispam.FeedSpamhausDQS}, "/etc/csm/k", antispam.Secret("abcdefghijklmnopqrstu23456")
+	s.Feeds, s.DQSKeyFile, s.DQSKey = []string{antispam.FeedSpamhausDQS}, "/etc/csm/k", antispam.NewSecret("abcdefghijklmnopqrstu23456")
 	wantOK(t, f.host().Apply(s))
 	p := f.root + antispam.FeedRBLPath
 	if info, _ := os.Stat(p); info.Mode().Perm() != antispam.SecretFileMode {

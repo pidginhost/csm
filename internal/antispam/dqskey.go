@@ -5,9 +5,21 @@ import (
 	"io/fs"
 )
 
-// Secret is the Spamhaus DQS key. It prints and encodes as [redacted], so a
-// log line, %v or JSON of Settings cannot leak it; Reveal is for rendering.
-type Secret string
+// Secret holds a Spamhaus DQS key with redacted formatting and encoding.
+// Its zero value is empty; Reveal is for rendering.
+type Secret struct {
+	// fmt bypasses methods for invalid verbs and unexported fields. An
+	// indirect value keeps those reflection fallbacks from printing the key.
+	value *string
+}
+
+// NewSecret wraps a key without validating it. LoadDQSKey validates file facts.
+func NewSecret(key string) Secret {
+	if key == "" {
+		return Secret{}
+	}
+	return Secret{value: &key}
+}
 
 const redacted = "[redacted]"
 
@@ -17,7 +29,12 @@ func (Secret) MarshalJSON() ([]byte, error) { return []byte(`"` + redacted + `"`
 func (Secret) MarshalText() ([]byte, error) { return []byte(redacted), nil }
 
 // Reveal returns the key for rendering into rspamd configuration.
-func (s Secret) Reveal() string { return string(s) }
+func (s Secret) Reveal() string {
+	if s.value == nil {
+		return ""
+	}
+	return *s.value
+}
 
 // KeyFacts is the DQS key file as a collector found it. Key is set only for
 // a regular file small enough to hold a key.
@@ -38,17 +55,17 @@ const dqsKeyLen = 26
 func LoadDQSKey(k KeyFacts) (Secret, error) {
 	switch {
 	case k.Missing:
-		return "", fmt.Errorf("the Spamhaus DQS key file %s does not exist", k.Path)
+		return Secret{}, fmt.Errorf("the Spamhaus DQS key file %s does not exist", k.Path)
 	case k.Err != nil:
-		return "", fmt.Errorf("cannot read the Spamhaus DQS key file %s; it must be a regular file", k.Path)
+		return Secret{}, fmt.Errorf("cannot read the Spamhaus DQS key file %s; it must be a regular file", k.Path)
 	case k.UID != 0:
-		return "", fmt.Errorf("the Spamhaus DQS key file %s is owned by uid %d; want root", k.Path, k.UID)
+		return Secret{}, fmt.Errorf("the Spamhaus DQS key file %s is owned by uid %d; want root", k.Path, k.UID)
 	case k.Mode.Perm()&0o022 != 0:
-		return "", fmt.Errorf("the Spamhaus DQS key file %s is writable by group or others", k.Path)
+		return Secret{}, fmt.Errorf("the Spamhaus DQS key file %s is writable by group or others", k.Path)
 	case k.Mode.Perm()&0o004 != 0:
-		return "", fmt.Errorf("the Spamhaus DQS key file %s is readable by others; make it mode 600", k.Path)
+		return Secret{}, fmt.Errorf("the Spamhaus DQS key file %s is readable by others; make it mode 600", k.Path)
 	case !validDQSKey(k.Key.Reveal()):
-		return "", fmt.Errorf("the Spamhaus DQS key file %s does not hold a %d-character key of lowercase letters and digits", k.Path, dqsKeyLen)
+		return Secret{}, fmt.Errorf("the Spamhaus DQS key file %s does not hold a %d-character key of lowercase letters and digits", k.Path, dqsKeyLen)
 	}
 	return k.Key, nil
 }
@@ -60,7 +77,7 @@ func validDQSKey(key string) bool {
 		return false
 	}
 	for i := 0; i < len(key); i++ {
-		if c := key[i]; !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9') {
+		if c := key[i]; (c < 'a' || c > 'z') && (c < '0' || c > '9') {
 			return false
 		}
 	}

@@ -39,7 +39,7 @@ func TestReadDQSKey(t *testing.T) {
 	if err := os.WriteFile(big, []byte(strings.Repeat("a", 200)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if k := ReadDQSKey(big); k.Err == nil || k.Key != "" {
+	if k := ReadDQSKey(big); k.Err == nil || k.Key.Reveal() != "" {
 		t.Fatalf("oversized = %+v", k)
 	}
 }

@@ -50,7 +50,7 @@ func ReadDQSKey(p string) antispam.KeyFacts {
 	case len(data) > maxKeyBytes:
 		k.Err = errors.New("larger than a DQS key")
 	default:
-		k.Key = antispam.Secret(strings.TrimSpace(string(data)))
+		k.Key = antispam.NewSecret(strings.TrimSpace(string(data)))
 	}
 	return k
 }

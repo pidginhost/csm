@@ -198,7 +198,7 @@ func TestApplyRequestCarriesFeedsButNeverTheKey(t *testing.T) {
 	s.Feeds = []string{FeedPSBL, FeedSpamhausDQS}
 	s.SkipMaps = []string{RedirectWhitelist}
 	s.DQSKeyFile = "/etc/csm/spamhaus-dqs.key"
-	s.DQSKey = Secret("abcdefghijklmnopqrstu23456")
+	s.DQSKey = NewSecret("abcdefghijklmnopqrstu23456")
 	data, err := json.Marshal(ApplyRequest(s))
 	if err != nil {
 		t.Fatal(err)
@@ -210,7 +210,7 @@ func TestApplyRequestCarriesFeedsButNeverTheKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(got.Feeds, s.Feeds) || !slices.Equal(got.SkipMaps, s.SkipMaps) || got.DQSKeyFile != s.DQSKeyFile || got.DQSKey != "" {
+	if !slices.Equal(got.Feeds, s.Feeds) || !slices.Equal(got.SkipMaps, s.SkipMaps) || got.DQSKeyFile != s.DQSKeyFile || got.DQSKey.Reveal() != "" {
 		t.Fatalf("decoded %+v", got)
 	}
 }

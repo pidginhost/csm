@@ -155,7 +155,7 @@ func TestRenderFeedsKeyOnlyInRBLFile(t *testing.T) {
 	if _, err := RenderFeeds(s); err == nil {
 		t.Fatal("DQS rendered without a key")
 	}
-	s.DQSKey = Secret(testKey)
+	s.DQSKey = NewSecret(testKey)
 	managed, err := ManagedContent(s)
 	if err != nil {
 		t.Fatal(err)

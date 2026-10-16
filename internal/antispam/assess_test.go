@@ -547,7 +547,7 @@ func TestAssessReportsEachProblemOnce(t *testing.T) {
 
 func TestCurrentNeedsSecretFileMode(t *testing.T) {
 	s := defaults(false)
-	s.Feeds, s.DQSKeyFile, s.DQSKey = []string{FeedSpamhausDQS}, "/etc/csm/k", Secret(testKey)
+	s.Feeds, s.DQSKeyFile, s.DQSKey = []string{FeedSpamhausDQS}, "/etc/csm/k", NewSecret(testKey)
 	f := installedFacts(t, s)
 	f.RspamdGID = 974
 	setTargetFile(f.Targets, FeedRBLPath, PathFacts{Path: FeedRBLPath, UID: 0, GID: 974, Mode: 0o640})
