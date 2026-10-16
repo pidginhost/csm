@@ -125,6 +125,9 @@ email_protection:
     rspamd_socket: /run/rspamd/csm-normal.sock
     reject_score: 15
     tag_score: 6
+    feeds:
+      enabled: []
+      spamhaus_dqs_key_file: ""
 ```
 
 - `enabled` turns the integration on. Setting it back to `false` requests
@@ -138,8 +141,9 @@ email_protection:
   characters using letters, digits, `/`, `.`, `_` and `-`.
 - `reject_score` and `tag_score` are whole rspamd scores with
   `0 < tag_score < reject_score <= 1000`.
+- `feeds` selects optional blocklists; see [Feeds](#feeds).
 
-All five are hot-reloadable: after antispam starts, `systemctl reload csm` or a
+All of these are hot-reloadable: after antispam starts, `systemctl reload csm` or a
 Settings save updates health tracking and requests a reconcile pass before
 forward-guard reconciliation. Settings saved before antispam starts are picked
 up when it initializes, after the startup forward-guard reconciliation.
@@ -152,6 +156,117 @@ filtering.
 The capabilities API lists `mail.antispam.v1` when a build supports this
 integration; it does not mean filtering is installed on the host.
 
+## Feeds
+
+Every feed is off until you name it:
+
+```yaml
+email_protection:
+  antispam:
+    feeds:
+      enabled: [psbl, mailspike]
+      spamhaus_dqs_key_file: ""   # only for spamhaus_dqs
+```
+
+`enabled` is a list of feed names; an unknown or repeated name, or
+`spamhaus_dqs` without a clean absolute `spamhaus_dqs_key_file`, makes the
+configuration invalid. Check each list's terms against your use before you
+enable it:
+
+| Name | Terms |
+|---|---|
+| `mailspike` | Free for sites under 100,000 messages and 100,000 DNS queries a day; contact Mailspike above that. |
+| `psbl` | Free for anyone. |
+| `uceprotect1` | Free for private and commercial use; above 100,000 requests a day UCEPROTECT asks for its rsync feed. Level 1 also lists some forwarders that break SPF. |
+| `nordspam` | Free for commercial and non-commercial use; contact Nordspam above 10,000 queries a day. |
+| `sem` | Free; for scoring only, never to reject mail on its own. Tell Spam Eating Monkey before going above 100,000 queries a day. |
+| `spamcop` | Free; SpamCop calls its list aggressive and recommends tagging, not rejecting. |
+| `barracuda` | Free after registering the addresses of the resolvers that query it with Barracuda. |
+| `dnswl` | Free through DNS under 100,000 queries a day; its pages conflict on non-commercial use. A listing lowers the score slightly. |
+| `uribl` | Free for low-volume use only; URIBL blocks public and large shared resolvers. |
+| `surbl` | Free only for organisations under 1,000 users or 250,000 messages a day; not for ISPs or mail filtering providers of 1,000 users or more. |
+| `spamhaus_dqs` | Needs a DQS key. The free key covers non-commercial use under 100,000 queries a day; commercial use needs a paid key. |
+| `rspamd_maps` | Keeps rspamd's own map downloads from maps.rspamd.com; free use is non-commercial and under 5,000 queries a day. |
+
+### Maps without any feed
+
+Without `rspamd_maps`, CSM points rspamd's map downloads from rspamd.com at
+local files: the copies the rspamd package installs in `/etc/rspamd/maps.d`,
+refreshed by package updates. The freemail and disposable-address rules stay
+quiet until you put your own lists in
+`/etc/rspamd/local.d/maps.d/freemail.map` and
+`/etc/rspamd/local.d/maps.d/disposable.map`. Phishing exceptions read
+`/etc/rspamd/local.d/maps.d/phishing_whitelist.inc` when it exists.
+
+### DNS feeds need a local resolver
+
+Blocklists refuse queries from public resolvers. CSM enables a DNS feed only
+when every nameserver rspamd uses is loopback or private. rspamd uses
+`dns.nameserver` from its options, or `/etc/resolv.conf` when that is unset.
+Run a recursive resolver on the host and add this line to
+`/etc/rspamd/local.d/options.inc`:
+
+```
+dns { nameserver = ["127.0.0.1"]; }
+```
+
+cPanel's local BIND usually recurses for localhost; cPanel's PowerDNS and the
+systemd-resolved stub do not. CSM never edits `options.inc`.
+
+### Spamhaus DQS
+
+Put the key alone in a root-owned file, mode 600, and name the file in
+`spamhaus_dqs_key_file`. CSM reads it on every check, never logs it, and
+writes it only into `/etc/rspamd/override.d/rbl.conf`, mode 640, owned by root
+and rspamd's group. CSM must know that group: set `User=` (and optionally
+`Group=`) in the rspamd unit. A root-started rspamd that changes user itself
+leaves the group unknown, and the feed stays off.
+
+### Scores
+
+No feed symbol weighs more than 5, and the symbols of one feed add up to at
+most 14, so no feed alone reaches the default reject score of 15. Each symbol
+counts once per message. SURBL's four scoring categories weigh 3.5 each;
+Spamhaus DQS gives 5 for ZEN, 3 and 2 for the DBL categories and 3 and 1 for
+newly seen domains.
+
+### Files
+
+CSM owns these files while a feed or map redirect needs them:
+
+- `/etc/rspamd/override.d/rbl.conf` and `/etc/rspamd/override.d/rbl_group.conf`,
+  with a DNS feed. They replace rspamd's own lists and their weights, so only
+  the feeds you named run;
+- `forged_recipients.conf`, `mid.conf`, `mime_types.conf`, `whitelist.conf`
+  and `multimap.conf` in `/etc/rspamd/local.d`, without `rspamd_maps`.
+
+A file of the same name that you wrote never blocks core filtering. CSM leaves
+it alone: a blocklist file of yours turns the DNS feeds off, and a redirect
+file of yours means rspamd keeps that map from rspamd.com.
+
+### Feed findings
+
+Each `antispam_feed` finding names the feed, or `rspamd_maps` for maps:
+
+- feed off: the reason is in the details, such as a public resolver, a key
+  file with the wrong owner or mode, or a file CSM cannot own. Fix it; the feed
+  returns on the next check.
+- map redirect skipped, or rspamd.com paths still loaded: rspamd still fetches
+  those maps from rspamd.com. Rename your file, redirect the named maps
+  yourself, or enable `rspamd_maps` to accept rspamd.com's terms.
+- loaded rules differ: rspamd runs other blocklist rules than CSM wrote,
+  usually through an override of yours. The apply rolls back, and CSM keeps
+  DNS feeds off until the feed settings change or CSM restarts.
+- refuses CSM's queries: the list answered with an error code, such as a
+  refused resolver, a query limit or a rejected key. The list adds no score.
+- does not answer: three checks in a row got no answer through rspamd's
+  resolver. Check that the resolver recurses and can reach the list.
+- answers for addresses it never lists (Critical): turn the feed off. rspamd
+  also stops querying a list that does this.
+
+CSM asks each list its documented test points through rspamd's first
+nameserver on every check, two queries per list.
+
 ## What CSM writes
 
 - three Exim ACL hooks under `/usr/local/cpanel/etc/exim/acls`
@@ -161,9 +276,12 @@ integration; it does not mean filtering is installed on the host.
 - one `spamd_address` line in the `@CONFIG@` section of `/etc/exim.conf.local`;
 - `actions.conf`, `greylist.conf`, `rbl.conf`, `emails.conf`, `asn.conf`,
   `fuzzy_check.conf` and `phishing.conf` in `/etc/rspamd/local.d`, each
-  starting with `# csm-managed-version: 1`. Greylisting, DNS block lists, the
-  emails module, sender-IP lookups to rspamd.com, phishtank URL lookups to
-  rspamd.com and public fuzzy storage are off;
+  starting with `# csm-managed-version: 1`. Greylisting, the emails module,
+  sender-IP lookups to rspamd.com, phishtank URL lookups to rspamd.com and
+  public fuzzy storage are off. DNS block lists stay off unless a DNS feed is
+  enabled;
+- the map redirect files and, with a DNS feed, the blocklist files listed
+  under [Feeds](#feeds);
 - a completion record in `/var/lib/csm/antispam`.
 
 Content outside CSM's markers, including forward-guard blocks, is preserved.
@@ -231,6 +349,7 @@ removed; scores can change and external lists can become active again.
 | `antispam_rspamd_down` | Warning | Three probes of the scan socket in a row failed. CSM probes every 20 seconds while antispam is enabled. |
 | `antispam_rspamd_recovered` | Warning | Two probes in a row succeeded after an outage. |
 | `antispam_scan_error` | Warning | Exim logged a failed scan. One finding covers every failure until a scan succeeds. |
+| `antispam_feed` | Warning, or Critical when a list answers for everything | A feed or map redirect is off, a list misbehaves, or rspamd still fetches maps from rspamd.com. Feed problems never block core filtering. See [Feeds](#feeds). |
 
 While rspamd is down or scans fail, mail is delivered without spam filtering.
 Exim adds no rejection for a scanner failure, and other mail checks keep
