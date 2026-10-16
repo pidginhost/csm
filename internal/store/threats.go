@@ -106,49 +106,88 @@ func (db *DB) AddOperatorTempBlock(ip, reason string, expiresAt time.Time) error
 	return db.addExpiringThreat(ip, reason, ThreatSourceOperator, expiresAt)
 }
 
+// AddAppliedTempBlock records one admission outcome without rewriting a repeat.
+func (db *DB) AddAppliedTempBlock(ip, reason string, expiresAt time.Time) error {
+	return db.AddAppliedTempBlocks([]PermanentBlockEntry{{IP: ip, Reason: reason, ExpiresAt: expiresAt}})
+}
+
+// AddAppliedTempBlocks commits one delivery batch together. No-op rows do not
+// change their timestamp, counters or undo entries created after the block.
+func (db *DB) AddAppliedTempBlocks(entries []PermanentBlockEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		for _, entry := range entries {
+			if !time.Now().Before(entry.ExpiresAt) {
+				continue
+			}
+			if err := addExpiringThreatTx(tx, entry.IP, entry.Reason, ThreatSourceAutoBlock, entry.ExpiresAt, true); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (db *DB) addExpiringThreat(ip, reason, source string, expiresAt time.Time) error {
 	if expiresAt.IsZero() {
 		return nil
 	}
 	return db.bolt.Update(func(tx *bolt.Tx) error {
+		return addExpiringThreatTx(tx, ip, reason, source, expiresAt, false)
+	})
+}
+
+func addExpiringThreatTx(tx *bolt.Tx, ip, reason, source string, expiresAt time.Time, replay bool) error {
+	if !replay {
 		if err := invalidateUndoTargets(tx, []string{ip}); err != nil {
 			return err
 		}
-		b := tx.Bucket([]byte("threats"))
+	}
+	b := tx.Bucket([]byte("threats"))
 
-		entry := PermanentBlockEntry{
-			IP:        ip,
-			Reason:    reason,
-			BlockedAt: time.Now(),
-			Source:    source,
-			ExpiresAt: expiresAt,
+	entry := PermanentBlockEntry{
+		IP:        ip,
+		Reason:    reason,
+		BlockedAt: time.Now(),
+		Source:    source,
+		ExpiresAt: expiresAt,
+	}
+
+	existing := b.Get([]byte(ip))
+	if existing != nil {
+		var cur PermanentBlockEntry
+		decodeErr := json.Unmarshal(existing, &cur)
+		if replay && decodeErr == nil && cur.Source == source && cur.Reason == reason && cur.ExpiresAt.Equal(expiresAt) {
+			return nil
 		}
-
-		existing := b.Get([]byte(ip))
-		if existing != nil {
-			var cur PermanentBlockEntry
-			if json.Unmarshal(existing, &cur) == nil && !cur.Expired(time.Now()) {
-				if cur.ExpiresAt.IsZero() {
-					return nil
-				}
-				if cur.ExpiresAt.After(expiresAt) {
-					return nil
-				}
+		if decodeErr == nil && !cur.Expired(time.Now()) {
+			if cur.ExpiresAt.IsZero() {
+				return nil
+			}
+			if cur.ExpiresAt.After(expiresAt) {
+				return nil
 			}
 		}
+	}
 
-		val, err := json.Marshal(entry)
-		if err != nil {
+	if replay {
+		if err := invalidateUndoTargets(tx, []string{ip}); err != nil {
 			return err
 		}
-		if err := b.Put([]byte(ip), val); err != nil {
-			return err
-		}
-		if existing == nil {
-			return incrCounter(tx, "threats:count", 1)
-		}
-		return nil
-	})
+	}
+	val, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	if err := b.Put([]byte(ip), val); err != nil {
+		return err
+	}
+	if existing == nil {
+		return incrCounter(tx, "threats:count", 1)
+	}
+	return nil
 }
 
 // putThreatEntry writes an entry as-is. Only increments threats:count if

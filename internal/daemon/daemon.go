@@ -701,6 +701,17 @@ func (d *Daemon) Run() error {
 		return err
 	}
 
+	// The threat and attack databases record applied blocks; open them
+	// before the owner delivers rows a previous run left pending.
+	checks.InitThreatDB(d.cfg.StatePath, d.cfg.Reputation.Whitelist)
+
+	if db := checks.GetThreatDB(); db != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Threat DB initialized (%d entries)\n", ts(), db.Count())
+	}
+	if adb := attackdb.Init(d.cfg.StatePath); adb != nil {
+		d.prepareAttackDatabase(adb)
+	}
+
 	// Own the admission ledger before anything can respond automatically.
 	d.startAdmission()
 
@@ -723,14 +734,6 @@ func (d *Daemon) Run() error {
 		fmt.Fprintf(os.Stderr, "[%s] PHP taint worker init: %v\n", ts(), err)
 	} else {
 		defer d.stopPHPTaintAnalyzer()
-	}
-	checks.InitThreatDB(d.cfg.StatePath, d.cfg.Reputation.Whitelist)
-
-	if db := checks.GetThreatDB(); db != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Threat DB initialized (%d entries)\n", ts(), db.Count())
-	}
-	if adb := attackdb.Init(d.cfg.StatePath); adb != nil {
-		d.prepareAttackDatabase(adb)
 	}
 
 	// Install operator verified-bot ranges before the firewall engine is
@@ -1537,13 +1540,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, remediableFindings)
 
 	// Mark auto-blocked IPs in attack database
-	if adb := attackdb.Global(); adb != nil {
-		for _, f := range blockActions {
-			if ip := checks.ExtractIPFromFinding(f); ip != "" {
-				adb.MarkBlocked(ip)
-			}
-		}
-	}
+	markAppliedBlocks(blockActions)
 
 	// Dismiss auto-fixed findings from the Findings page
 	for _, key := range permFixedKeys {
@@ -2910,6 +2907,25 @@ func (d *Daemon) escalateExpiredChallenges(expiry time.Duration) {
 	d.recordAppliedBlocks(recorded)
 }
 
+// markAppliedBlocks sets the attack database's blocked marker for each
+// address a Critical auto_block finding names: a block that applied. A
+// dry-run "would be blocked" Warning never marks an address blocked
+// (spec 5.5: only verified full-address blocks call MarkBlocked).
+func markAppliedBlocks(findings []alert.Finding) {
+	adb := attackdb.Global()
+	if adb == nil {
+		return
+	}
+	for _, f := range findings {
+		if f.Check != "auto_block" || f.Severity != alert.Critical {
+			continue
+		}
+		if ip := checks.ExtractIPFromFinding(f); ip != "" {
+			adb.MarkBlocked(ip)
+		}
+	}
+}
+
 // recordAppliedBlocks routes chokepoint findings from async block sources
 // (challenge escalation, central intel, incident spray) through the same
 // bookkeeping dispatchBatch gives scan blocks: block digest, attack-DB
@@ -2924,16 +2940,7 @@ func (d *Daemon) recordAppliedBlocks(findings []alert.Finding) {
 		return
 	}
 	d.observeBlocks(findings)
-	if adb := attackdb.Global(); adb != nil {
-		for _, f := range findings {
-			if f.Check != "auto_block" || f.Severity != alert.Critical {
-				continue
-			}
-			if ip := checks.ExtractIPFromFinding(f); ip != "" {
-				adb.MarkBlocked(ip)
-			}
-		}
-	}
+	markAppliedBlocks(findings)
 	if d.store != nil {
 		d.store.AppendHistory(findings)
 	}

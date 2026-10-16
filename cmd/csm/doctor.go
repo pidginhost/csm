@@ -191,10 +191,13 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 			})
 		}
 		if automation.FirewallLedgerError != "" {
+			// 1.5c-1 ruling 7: a warning while admission previews, a
+			// failure once it executes automatic blocks.
+			closing, outage := admission.DoctorImpact(admissionExecuting(sr.Snapshot.Admission))
 			report.Checks = append(report.Checks, DoctorCheck{
 				Name:    "firewall automatic blocks",
-				Status:  "warn",
-				Message: "the admission ledger could not be read when the firewall started: " + automation.FirewallLedgerError + "; the automatic blocks it wrote were restored without proof of their outcome and none is evicted until a restart reads it; " + admission.PreviewUnaffected,
+				Status:  outage,
+				Message: "the admission ledger could not be read when the firewall started: " + automation.FirewallLedgerError + "; the automatic blocks it wrote were restored without proof of their outcome and none is evicted until a restart reads it; " + closing,
 				Fix:     "resolve the ledger error the admission checks report, then restart csm.service",
 			})
 		}

@@ -29,7 +29,7 @@ func dropAutoBlockThreatRow(ip string) {
 		ip = parsed.String()
 	}
 	if sdb := store.Global(); sdb != nil {
-		_, _ = sdb.RemoveTemporaryBlock(ip)
+		_ = checks.RemoveStoredTemporaryBlock(sdb, ip)
 	}
 	if tdb := checks.GetThreatDB(); tdb != nil {
 		tdb.RemoveTemporary(ip)

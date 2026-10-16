@@ -420,7 +420,36 @@ and a summary once a minute after acknowledged delivery. Acknowledgements
 carry the count and first-event time of the record read, so a repeated
 acknowledgement cannot consume a later record under a reused key. An audit
 row's acknowledgement carries the row's time as well, so one held past the
-row's retirement cannot remove the row a re-minted attempt writes later. Queue
+row's retirement cannot remove the row a re-minted attempt writes later.
+After the action log write and before the acknowledgement, the owner hands
+the applied `block_ip` rows of each batch to `Options.Applied`; no other
+row reaches it. A failed call acknowledges nothing, so its consumers see the
+same row again and must be idempotent by action and transition. A row this
+process already wrote to the action log is not written again while its
+consumer or acknowledgement fails, even if new rows sort ahead of it into
+another batch. Each row's successful acknowledgement clears only that row's
+write receipt; a restart writes pending rows once more. The daemon opens the
+threat and attack databases before the owner starts, and the consumer refuses
+rows while either is missing. Delivery
+errors remain visible in `admission.owner.audit_error` until a pass succeeds;
+the independent audit queue reports a stall if a pending batch cannot advance.
+The daemon marks the address blocked in the attack database, as the legacy
+path marks a block that applied, and, while the action's verified firewall
+row still stands, records a threat database row that ends at the block's
+absolute expiry. One durable transaction per delivery batch precedes threat
+memory publication; read or write errors leave delivery pending and threat
+memory unchanged. Local evidence survives feed withdrawal;
+permanent local evidence and longer temporary rows remain unchanged.
+Local threat writers serialize separately from lookups. The consumer reads
+the firewall state under the threat writer lock, and unblocks and flush
+cleanup remove the stored row under that lock after the firewall row, so an
+unblock that lands during delivery removes what the batch wrote. An applied batch
+does not hold the lookup mutex during its durable write, so reputation reads
+and whitelist reload continue while that batch waits. Store transaction callbacks do not call back
+into threat mutations; loaders finish reading the store before publishing an
+instance, and reload changes the existing instance's config whitelist only.
+Repeats preserve the stored timestamp, counters and undo entries, including
+after restart. Queue
 events and attempt outcomes are also counted into five-minute, hourly and
 daily buckets. `Status` reads every section in one read transaction without
 the ledger's lock or a current clock, each section with its own error, and
@@ -701,6 +730,10 @@ tracker entries. They do not count as enforced blocks or select threat evidence
 for operator flush cleanup. Live deny limits count their kernel elements using
 kernel timeouts rather than the unresolved rows' requested lifetimes, including
 replacement accounting. Permanent promotion requires a verified block row.
+An executed admission block writes no legacy tracker (`blocked_ips.json`)
+entry. Reputation, alert suppression and its injected loader, flush cleanup,
+threat lookups and the blocked list read the verified firewall row instead,
+so it counts without one.
 
 A read-only admission snapshot answers the same local checks for a bounded
 batch, each answer naming its member, with the temporary occupancy and
@@ -740,14 +773,21 @@ then retires it (`RetireUnproven`). An element still present, as after a
 forward wall step, keeps that attempt for a minute on its own wait, so a held
 batch cannot starve the intents behind it. Each checked batch advances through
 action order, wrapping around, even when its retries are due by the next turn.
-A degraded clock or a missing engine retires nothing and tries again a second
-later, as do undelivered
-outcomes and a ledger clock that cannot yet prove the expiry. An engine that
-cannot check is asked again after a backoff of one second doubling to a
-minute. A stop between the row removal and the ledger retirement leaves a
+A degraded clock, a missing engine or an engine that cannot check retires
+nothing; the next pass waits one second, doubling to a minute. An attempt
+whose retirement the ledger refuses (undelivered outcomes, or a ledger clock
+that cannot yet prove the expiry) is asked again after one second, doubling
+to a minute. A damaged record or an attempt that ended another way is asked
+again a minute later and reported once, so it does not fail every turn. A
+missing or unreadable attempt uses the same wait without preventing other
+attempts from retiring. An unreadable intent list delays the whole pass;
+damage is reported once until a readable list proves recovery. A stop
+between the row removal and the ledger retirement leaves a
 row-less unknown that the next pass retires. The turn wakes for the earliest
-expiry or monotonic retry, and until one of them is due a turn lists no
-intents. It never rebases a retry on admission time or adds time spent inside
+expiry or monotonic retry. With one noted, a turn lists no intents until it
+is due; with none noted, every turn lists them. A turn that fails after its
+retirement pass still reports that pass's error. It never rebases a retry on
+admission time or adds time spent inside
 an engine call. Expiry conversion uses a monotonic sample taken before reading
 the admission clock, so a slow tick or later call cannot postpone another
 expiry. Running attempts create no retirement wake; retired attempts leave no
@@ -767,7 +807,11 @@ failed apply keeps its cause and backoff through state repair, ledger refusals
 and member refusals until an applied effect proves recovery. Hold changes copy
 the cached owner status without rereading the ledger. Status
 (`admission.owner.execution_held`) and the `csm doctor` row `admission
-execution` name the cause. A degraded admission clock cannot bound a lease, so
+execution` name the cause. An owner with `Options.Blocks` publishes
+`admission.owner.executing`; `admission.DoctorImpact` then closes every
+admission row with `ExecutionAffected` instead of `PreviewUnaffected` and
+turns the outages that stop automatic blocks from warnings into failures.
+A degraded admission clock cannot bound a lease, so
 it defers block picks the same way. One batch starts a second at most; with an
 engine, a drain that queues new work runs the schedule at once instead of
 waiting for its timer. An owner with an engine also selects, checks or

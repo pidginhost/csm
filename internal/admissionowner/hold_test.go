@@ -504,3 +504,19 @@ func TestOwnerDefersAHeldPickOnce(t *testing.T) {
 		t.Fatalf("a held turn committed %d writes for %d held picks", got, len(addrs))
 	}
 }
+
+// Status says whether admission executes automatic blocks: an owner with
+// an engine callback does, a previewing one does not (doctor's mode).
+func TestOwnerStatusSaysWhetherItExecutes(t *testing.T) {
+	withTestRegistry(t)
+	f := newOwnerFixture(t)
+	o := f.start(f.options())
+	if s := o.Status(); s == nil || s.Owner == nil || s.Owner.Executing {
+		t.Fatalf("previewing owner status = %+v", s)
+	}
+	o.Stop()
+	o = f.start(executeOptions(f, newFakeBlocks()))
+	if s := o.Status(); s == nil || s.Owner == nil || !s.Owner.Executing {
+		t.Fatalf("executing owner status = %+v", s)
+	}
+}

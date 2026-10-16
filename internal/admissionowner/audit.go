@@ -28,8 +28,12 @@ var (
 // time with one durable write each, and acknowledges each row by its ID
 // and time only after its write (spec 5.5, O49, ruling R1). A failed or
 // unacknowledged write acknowledges nothing: the rows are written again,
-// with the same identity, and readers drop the copy.
-func (o *Owner) deliverAudit() error {
+// with the same identity, and readers drop the copy. Rows this process wrote
+// whose consumers then failed are not written again before their ack, so a
+// long consumer outage cannot flood the action log; a restart writes them
+// once more.
+func (o *Owner) deliverAudit() (err error) {
+	defer func() { o.noteAuditError(err) }()
 	for range auditBatchesPerRun {
 		rows, err := o.ledger.PendingAudit(auditBatch)
 		if err != nil {
@@ -39,20 +43,96 @@ func (o *Owner) deliverAudit() error {
 		if len(rows) == 0 {
 			return nil
 		}
-		records := make([]actionlog.Record, len(rows))
+		records := make([]actionlog.Record, 0, len(rows))
 		acks := make([]admission.AuditAck, len(rows))
 		for i, r := range rows {
-			records[i], acks[i] = auditRecord(r), r.Ack()
+			acks[i] = r.Ack()
+			if !o.auditWritten[auditKeyOf(acks[i])] {
+				records = append(records, auditRecord(r))
+			}
 		}
-		if err = o.opts.WriteAudit(records); err != nil {
+		if len(records) > 0 {
+			if err = o.opts.WriteAudit(records); err != nil {
+				return err
+			}
+			if o.auditWritten == nil {
+				o.auditWritten = make(map[auditKey]bool, len(acks))
+			}
+			for _, a := range acks {
+				o.auditWritten[auditKeyOf(a)] = true
+			}
+		}
+		if err = o.consumeApplied(rows); err != nil {
 			return err
 		}
 		if err = o.ledger.AckAudit(acks); err != nil {
 			return err
 		}
+		// New rows can sort before a failed batch and displace its written
+		// rows. Keep their write receipts until their own acknowledgements.
+		for _, a := range acks {
+			delete(o.auditWritten, auditKeyOf(a))
+		}
 		o.auditAcked += uint64(len(rows))
 	}
 	return nil
+}
+
+// auditKey names one audit row as its ack does: its identity and its time,
+// which tells a re-minted attempt's rows apart.
+type auditKey struct {
+	id admission.AuditID
+	at int64
+}
+
+func auditKeyOf(a admission.AuditAck) auditKey {
+	return auditKey{id: a.ID, at: a.At.UnixNano()}
+}
+
+// noteAuditError keeps the last delivery failure for status. Delivery runs
+// every second and status reads the whole ledger on its own timer, so only a
+// change is published, on a copy of the cached status.
+func (o *Owner) noteAuditError(err error) {
+	if errorText(err) == errorText(o.auditErr) {
+		o.auditErr = err
+		return
+	}
+	o.auditErr = err
+	previous := o.current.Load()
+	if previous == nil || previous.Owner == nil {
+		return
+	}
+	snapshot, owner := *previous, *previous.Owner
+	owner.AuditError = errorText(err)
+	snapshot.Owner = &owner
+	o.current.Store(&snapshot)
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// consumeApplied hands the applied block_ip rows among rows to the
+// configured consumer. Only a verified full-address block reaches it:
+// reservations, executions, failures, unknown outcomes and other kinds
+// never mark an address blocked (spec 5.5).
+func (o *Owner) consumeApplied(rows []admission.AuditRow) error {
+	if o.opts.Applied == nil {
+		return nil
+	}
+	var applied []admission.AuditRow
+	for _, r := range rows {
+		if r.Kind == admission.KindBlockIP && r.State == admission.StateVerified && r.Disposition == admission.DispositionApplied {
+			applied = append(applied, r)
+		}
+	}
+	if len(applied) == 0 {
+		return nil
+	}
+	return o.opts.Applied(applied)
 }
 
 // auditRecord is the action log record of one admitted transition: the

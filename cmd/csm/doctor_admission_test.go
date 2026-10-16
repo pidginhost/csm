@@ -36,7 +36,7 @@ func TestBuildDoctorReportRendersAdmissionRows(t *testing.T) {
 		CheckedAt: at, Ledger: ledger,
 		Ingress: &admission.IngressHealth{StoppedSince: at.Add(-time.Hour), CriticalRefused: 4},
 	}))
-	want := admission.DoctorChecks(ledger, &admission.IngressHealth{StoppedSince: at.Add(-time.Hour), CriticalRefused: 4}, at)
+	want := admission.DoctorChecks(ledger, &admission.IngressHealth{StoppedSince: at.Add(-time.Hour), CriticalRefused: 4}, at, false)
 	for _, row := range want {
 		got, ok := doctorCheckNamed(report, row.Name)
 		if !ok || got != (DoctorCheck{Name: row.Name, Status: row.Status, Message: row.Message, Fix: row.Fix}) || !strings.HasSuffix(got.Message, admission.PreviewUnaffected) {

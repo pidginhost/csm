@@ -628,8 +628,9 @@ func TestOwnerRetirementRetryUsesElapsedTime(t *testing.T) {
 	}
 }
 
-// A prolonged rollback cannot turn a one-second degraded retry into a
-// wake that disappears or moves farther into the future on each turn.
+// A prolonged rollback cannot turn the degraded retry into a wake that
+// disappears: it backs off from one second, doubling, and recovery is
+// found on the next wake without a new arrival (M2).
 func TestOwnerRetirementKeepsDegradedWakes(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -646,29 +647,29 @@ func TestOwnerRetirementKeepsDegradedWakes(t *testing.T) {
 	if err := o.do(func() error { o.scheduleDue = true; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	for range 3 {
+	for _, wait := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second} {
 		if err := o.do(func() error {
 			o.schedule()
-			if !o.wakeAt.Equal(mono.read().Add(time.Second)) {
-				t.Errorf("degraded retry wake = %v, now %v", o.wakeAt, mono.read())
+			if !o.wakeAt.Equal(mono.read().Add(wait)) {
+				t.Errorf("degraded retry wake = %v, now %v, want %v later", o.wakeAt, mono.read(), wait)
 			}
 			return o.scheduleErr
 		}); err != nil {
 			t.Fatal(err)
 		}
-		f.host.advance(time.Second)
-		mono.advance(time.Second)
+		f.host.advance(wait)
+		mono.advance(wait)
 	}
 	if len(blocks.retireCalls()) != 0 || attemptOf(t, o, c).Retired {
 		t.Fatal("degraded clock permitted retirement")
 	}
 	f.host.set(func(h *fakeHost) { h.wall = h.wall.Add(time.Hour) })
-	for range 2 {
+	for _, wait := range []time.Duration{8 * time.Second, time.Second} {
 		if err := o.do(func() error { o.schedule(); return o.scheduleErr }); err != nil {
 			t.Fatal(err)
 		}
-		f.host.advance(time.Second)
-		mono.advance(time.Second)
+		f.host.advance(wait)
+		mono.advance(wait)
 	}
 	if !attemptOf(t, o, c).Retired {
 		t.Fatal("clock recovery lost retirement without a new arrival")

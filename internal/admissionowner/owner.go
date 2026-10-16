@@ -95,6 +95,13 @@ type Options struct {
 	// WriteAudit writes audit rows to the action log in one durable write
 	// (actionlog.WriteDurableBatch).
 	WriteAudit func([]actionlog.Record) error
+	// Applied receives the applied block_ip rows of each delivered batch
+	// after their action log write and before their acknowledgement, so the
+	// consumers of a verified block see each one at least once (spec 5.5,
+	// P14). A failed call acknowledges nothing and the rows come again with
+	// the same identity: consumers must be idempotent by action and
+	// transition. Nil hands them to no one.
+	Applied func([]admission.AuditRow) error
 	// Deliver sends notices through the daemon's independent health path,
 	// as protection_queue_degraded is sent: history and direct dispatch,
 	// never the finding channel, suppressions or the routine rate limit.
@@ -176,6 +183,10 @@ type Owner struct {
 	inventoryAt  time.Time
 	inventoryErr error
 	auditAcked   uint64
+	auditErr     error
+	// auditWritten holds the pending rows this process wrote whose
+	// acknowledgement has not landed yet.
+	auditWritten map[auditKey]bool
 	// drained is the ingress decision sequence the last drain persisted.
 	drained uint64
 	// drainFailed holds admission closed until a drain succeeds. drainErr
@@ -238,6 +249,13 @@ type Owner struct {
 	retireWait time.Duration
 	// Per-action monotonic waits keep held entries from monopolizing a batch.
 	retireRetry map[admission.ActionID]time.Time
+	// retireDelay is each action's current wait while the ledger refuses
+	// its retirement; retireFaults names the actions whose damaged record
+	// was already reported.
+	retireDelay  map[admission.ActionID]time.Duration
+	retireFaults map[admission.ActionID]bool
+	// A damaged intent list has no readable action to key a fault by.
+	retireReadFault bool
 	// Resume after the last checked action even if its retry is already due.
 	retireAfter admission.ActionID
 }
@@ -836,6 +854,7 @@ func (o *Owner) runTurn(selecting bool) error {
 		return err
 	}
 	// Retirement first: it can release the holds pending_recovery waits on.
+	// Its error is kept when a later step fails.
 	retireErr := o.retire()
 	if o.executable() {
 		o.sweepVerdicts()
@@ -849,19 +868,19 @@ func (o *Owner) runTurn(selecting bool) error {
 		o.scheduleDue = true
 	case o.forecasting():
 		if err := o.forecast(); err != nil {
-			return err
+			return errors.Join(retireErr, err)
 		}
 	default:
 		if err := o.serve(); err != nil {
-			return err
+			return errors.Join(retireErr, err)
 		}
 	}
 	if err := o.publish(); err != nil {
-		return err
+		return errors.Join(retireErr, err)
 	}
 	wake, ok, err := nextWake(o.ledger, o.answers())
 	if err != nil {
-		return fmt.Errorf("reading the next wake time: %w", err)
+		return errors.Join(retireErr, fmt.Errorf("reading the next wake time: %w", err))
 	}
 	if ok {
 		if d := wake.Sub(o.now); d > 0 {
@@ -1102,6 +1121,7 @@ func (o *Owner) status() *health.AdmissionStatus {
 // ledger's read takes no lock and needs no current clock.
 func (o *Owner) refreshStatus() {
 	s := &health.AdmissionStatus{CheckedAt: time.Now(), Owner: &health.AdmissionOwner{
+		Executing:     o.opts.Blocks != nil,
 		ClockDegraded: o.degraded, LastTick: o.lastTick, CeilingSource: o.source,
 		Import: o.imported, InventoryAt: o.inventoryAt,
 	}}
@@ -1114,6 +1134,9 @@ func (o *Owner) refreshStatus() {
 		s.Owner.Error = o.snapshotErr.Error()
 	case o.scheduleErr != nil:
 		s.Owner.Error = o.scheduleErr.Error()
+	}
+	if o.auditErr != nil {
+		s.Owner.AuditError = o.auditErr.Error()
 	}
 	if o.tickErr != nil {
 		s.Owner.TickError = o.tickErr.Error()

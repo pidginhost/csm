@@ -277,16 +277,20 @@ the ledger would have done.
 
 - `ledger` holds the stored admission time, queue, counters, hourly and daily
   outcomes, ingress generations, the hourly ceiling with its general and
-  reserved lanes, storage, the outbox and notice records. Each section carries
-  its own `error`, so one damaged record does not hide the rest.
+  reserved lanes, storage, the outbox, notice records and `unresolved`
+  outcomes (`running` and `unknown` counts and when the next unknown one can
+  retire). Each section carries its own `error`, so one damaged record does
+  not hide the rest.
 - `ingress` says whether automatic responses are admitted and, while they are
   not, since when and how many Critical arrivals were refused.
-- `owner` names why the ledger owner is not running (`error`), why the last
+- `owner` says whether admission runs automatic blocks (`executing`) and
+  names why the ledger owner is not running (`error`), why the last
   clock reading was refused (`tick_error`), whether the clock is degraded,
   where the ceiling came from (`ceiling_source`: `default`, `configured` or
   `clamped`), the legacy hourly count imported at the first start (`import`,
   which counts at least until an hour after `at`, or names why the count
-  could not be read) and the last inventory read.
+  could not be read), the last inventory read and why responses naming a
+  damaged record were discarded (`damage_error`).
 - An owner that runs automatic blocks itself, which no release enables yet,
   adds `execution_held`, a `verdict` object for the panel verdict callback,
   whose counters count this process and restart at zero, and a `dry_run`
@@ -328,8 +332,8 @@ scan-driven block budget. After editing the configuration, run
 Existing blocking paths still decide every block; see
 [automatic response](auto-response.md) for the scope of the current budget.
 
-Existing blocking paths still decide every block, so no admission row fails
-doctor and every row says existing blocking is unaffected, except the rows of
+While admission previews, existing blocking paths still decide every
+block. Admission rows say existing blocking is unaffected, except the rows of
 an owner that runs blocks: `admission execution` fails while execution is
 held, and the dry-run rows (`admission dry run`, `admission dry-run
 capacity` and `admission dry-run examples`) show the forecast's session,
@@ -340,11 +344,23 @@ the ledger owner is not running, its clock reading
 is refused, the ledger is damaged, admission has stopped or a Critical
 finding would not have received its response in the last hour. They also
 show a degraded clock, a clamped ceiling, a ceiling of 1 (only the reserved
-lane runs), a legacy hourly count that could not be read and a failed
-inventory read.
+lane runs), a legacy hourly count that could not be read, a failed
+inventory read and automatic blocks with an unproven outcome, which hold
+their addresses until they expire and the firewall shows nothing of them.
+The `admission execution` row fails while automatic blocks are held. Once
+`owner.executing` is set, rows say admission decides automatic blocks, and
+a stopped owner, a refused clock reading, a damaged ledger, stopped
+admission, discarded responses, a Critical gap in the last hour and a ledger
+the firewall could not read at startup fail.
 
 `admission.audit` and `admission.notices` in `queues` report the delivery of
 admission records to the [action log](action-log.md) and of admission notices.
+`admission.owner.audit_error` names the last failed audit delivery, including
+an applied-block consumer's state read or threat-store write. The batch stays
+pending and later rows can wait behind it; `queues["admission.audit"]` reports
+no-progress stalls. Successful delivery clears the error. Keep the database
+and pending rows; repair the reported storage failure before retrying.
+
 A ledger that cannot start, or admission that stops, raises one Warning
 `auto_response_withheld` alert through the same path as protection queue
 alerts; it follows the notification channel settings but bypasses

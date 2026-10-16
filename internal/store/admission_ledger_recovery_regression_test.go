@@ -119,7 +119,7 @@ func TestAdmissionLedgerUnresolvedStatusProvesIntentLinks(t *testing.T) {
 				if s.Clock.Error != "" || s.Queue.Error != "" || s.Storage.Error != "" || s.Outbox.Error != "" {
 					t.Fatalf("intent damage affected another section: %+v", s)
 				}
-				row := admission.DoctorChecks(&s, nil, f.wall)[0]
+				row := admission.DoctorChecks(&s, nil, f.wall, false)[0]
 				if row.Status != admission.DoctorWarn || !strings.Contains(row.Message, "unresolved:") {
 					t.Fatalf("doctor hid the damaged section: %+v", row)
 				}
