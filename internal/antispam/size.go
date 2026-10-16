@@ -93,12 +93,17 @@ func MaxMessage(out []byte) (int64, error) {
 // duplicate can hide one value behind another, so fields are decoded
 // separately and a repeated name is an error, not the last one winning.
 func dumpObject(out []byte, section string) (map[string]any, error) {
+	return dumpObjectAs[any](out, section)
+}
+
+// RawMessage values let nested sections receive the same duplicate checks.
+func dumpObjectAs[T any](out []byte, section string) (map[string]T, error) {
 	dec := json.NewDecoder(bytes.NewReader(out))
 	dec.UseNumber()
 	if token, err := dec.Token(); err != nil || token != json.Delim('{') {
 		return nil, fmt.Errorf("configdump %s: expected an object", section)
 	}
-	fields := make(map[string]any)
+	fields := make(map[string]T)
 	for dec.More() {
 		token, err := dec.Token()
 		if err != nil {
@@ -108,7 +113,7 @@ func dumpObject(out []byte, section string) (map[string]any, error) {
 		if _, seen := fields[key]; seen {
 			return nil, fmt.Errorf("configdump %s: duplicate field", section)
 		}
-		var value any
+		var value T
 		if err := dec.Decode(&value); err != nil {
 			return nil, fmt.Errorf("configdump %s: invalid JSON", section)
 		}

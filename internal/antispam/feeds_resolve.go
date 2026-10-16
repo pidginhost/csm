@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"path"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -66,19 +67,36 @@ func secretFileOK(f HostFacts) bool {
 }
 
 // Nameservers returns the resolvers rspamd uses: options.dns.nameserver
-// when set, else the nameserver lines of resolv.conf. An entry CSM cannot
-// parse is an error, so an unreadable setting never passes as private.
+// (or its aliases) when set, else the nameserver lines of resolv.conf. An
+// entry CSM cannot parse is an error, never proof of a private resolver.
 func Nameservers(options []byte, resolvConf string) ([]netip.Addr, error) {
-	var opts struct {
-		DNS struct {
-			Nameserver json.RawMessage `json:"nameserver"`
-		} `json:"dns"`
-	}
-	if err := json.Unmarshal(options, &opts); err != nil {
+	opts, err := dumpObjectAs[json.RawMessage](options, "options")
+	if err != nil {
 		return nil, errors.New("rspamd's options are not readable")
 	}
+	var settings []json.RawMessage
+	if raw, ok := opts["dns_nameserver"]; ok {
+		settings = append(settings, raw)
+	}
+	if raw, ok := opts["dns"]; ok {
+		dns, err := dumpObjectAs[json.RawMessage](raw, "dns")
+		if err != nil {
+			return nil, errors.New("rspamd's DNS options are not readable")
+		}
+		for _, name := range []string{"nameserver", "server"} {
+			if raw, ok := dns[name]; ok {
+				settings = append(settings, raw)
+			}
+		}
+	}
+	// configdump omits UCL priorities, so competing aliases cannot establish
+	// which resolver rspamd selected.
+	if len(settings) > 1 {
+		return nil, errors.New("rspamd has multiple nameserver settings; use only dns.nameserver")
+	}
 	var entries []string
-	if raw := opts.DNS.Nameserver; len(raw) > 0 {
+	if len(settings) == 1 {
+		raw := settings[0]
 		var one string
 		if err := json.Unmarshal(raw, &one); err == nil {
 			entries = []string{one}
@@ -87,6 +105,7 @@ func Nameservers(options []byte, resolvConf string) ([]netip.Addr, error) {
 		}
 	} else {
 		for _, line := range strings.Split(resolvConf, "\n") {
+			line, _, _ = strings.Cut(line, "#")
 			if fields := strings.Fields(line); len(fields) >= 2 && fields[0] == "nameserver" {
 				entries = append(entries, fields[1])
 			}
@@ -94,11 +113,18 @@ func Nameservers(options []byte, resolvConf string) ([]netip.Addr, error) {
 	}
 	var out []netip.Addr
 	for _, entry := range entries {
-		for _, prefix := range []string{"master-slave:", "round-robin:", "random:"} {
-			entry = strings.TrimPrefix(entry, prefix)
+		for _, prefix := range []string{"master-slave:", "round-robin:", "random:", "hash:"} {
+			if rest, ok := strings.CutPrefix(entry, prefix); ok {
+				entry = rest
+				break
+			}
 		}
-		for _, part := range strings.Split(entry, ",") {
-			addr, err := nameserverAddr(strings.TrimSpace(part))
+		parts := strings.FieldsFunc(entry, func(r rune) bool { return strings.ContainsRune(";, \n\r\t", r) })
+		if len(parts) == 0 {
+			return nil, errors.New("rspamd has an empty nameserver entry")
+		}
+		for _, part := range parts {
+			addr, err := nameserverAddr(part)
 			if err != nil {
 				return nil, err
 			}
@@ -118,17 +144,38 @@ func nameserverAddr(s string) (netip.Addr, error) {
 	if addr, err := netip.ParseAddr(s); err == nil {
 		return addr.WithZone(""), nil
 	}
-	host := s
+	invalid := errors.New("rspamd has an invalid nameserver; use an IP address with an optional numeric port and weight")
+	host, suffix := s, ""
 	if strings.HasPrefix(s, "[") {
-		if end := strings.Index(s, "]"); end > 0 {
-			host = s[1:end]
+		end := strings.IndexByte(s, ']')
+		if end < 0 {
+			return netip.Addr{}, invalid
 		}
+		host, suffix = s[1:end], s[end+1:]
 	} else if i := strings.Index(s, ":"); i > 0 {
-		host = s[:i]
+		host, suffix = s[:i], s[i:]
+	}
+	if suffix != "" {
+		if suffix[0] != ':' {
+			return netip.Addr{}, invalid
+		}
+		parts := strings.Split(suffix[1:], ":")
+		if len(parts) > 2 {
+			return netip.Addr{}, invalid
+		}
+		for i, part := range parts {
+			bits := 32 // rspamd weights are unsigned integers.
+			if i == 0 {
+				bits = 16
+			}
+			if _, err := strconv.ParseUint(part, 10, bits); err != nil {
+				return netip.Addr{}, invalid
+			}
+		}
 	}
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
-		return netip.Addr{}, fmt.Errorf("rspamd nameserver %q is not an IP address", s)
+		return netip.Addr{}, invalid
 	}
 	return addr.WithZone(""), nil
 }
@@ -145,6 +192,9 @@ const resolverFix = "DNS blocklists refuse queries from public resolvers. Run a 
 // its key file or rspamd's group is unusable. Each is a Warning: a feed
 // problem never blocks core (feeds spec section 8.1).
 func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
+	// Dropping a temporarily unusable feed must not alter the desired settings
+	// that callers retain for the next pass.
+	s.Feeds = slices.Clone(s.Feeds)
 	var problems []Problem
 	targets := make(map[string]TargetFacts, len(f.Targets))
 	for _, t := range f.Targets {

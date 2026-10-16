@@ -1,6 +1,7 @@
 package antispam
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/netip"
@@ -8,6 +9,138 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestResolveFeedsPreservesRequestedSettings(t *testing.T) {
+	for _, failure := range []string{"resolver", "key", "optional file"} {
+		t.Run(failure, func(t *testing.T) {
+			s := dqsSettings()
+			s.Feeds = append(s.Feeds, FeedRspamdMaps)
+			want := slices.Clone(s.Feeds)
+			remaining := []string{FeedRspamdMaps}
+			f := feedFacts()
+			switch failure {
+			case "resolver":
+				f.ResolvConf = "nameserver 198.51.100.53\n"
+			case "key":
+				f.DQSKey.Missing = true
+				remaining = []string{FeedPSBL, FeedRspamdMaps}
+			case "optional file":
+				for i := range f.Targets {
+					if f.Targets[i].Path == FeedRBLPath {
+						f.Targets[i].Err = fs.ErrPermission
+					}
+				}
+			}
+			got, problems := ResolveFeeds(s, f)
+			if len(problems) != len(want)-len(remaining) || !slices.Equal(got.Feeds, remaining) {
+				t.Fatal("host failure did not drop exactly the affected feeds")
+			}
+			for _, p := range problems {
+				if p.Code != CodeFeed || p.Severity != Warning {
+					t.Fatal("feed failure blocks core")
+				}
+			}
+			if !slices.Equal(s.Feeds, want) {
+				t.Fatalf("requested feeds changed: %v; want %v", s.Feeds, want)
+			}
+			got, problems = ResolveFeeds(s, feedFacts())
+			if len(problems) != 0 || !slices.Equal(got.Feeds, want) {
+				t.Fatal("healthy host did not restore all requested feeds")
+			}
+		})
+	}
+}
+
+func TestNameserversReadsEveryUpstream(t *testing.T) {
+	for _, prefix := range []string{"", "master-slave:", "round-robin:", "random:", "hash:"} {
+		for _, sep := range []string{",", ";", " ", "\t", "\n", "\r", ",; \t"} {
+			options, err := json.Marshal(map[string]any{"dns": map[string]string{
+				"nameserver": prefix + "[::1]:53:10" + sep + "192.0.2.53:53:1",
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := Nameservers(options, "")
+			want := []netip.Addr{netip.MustParseAddr("::1"), netip.MustParseAddr("192.0.2.53")}
+			if err != nil || !slices.Equal(got, want) {
+				t.Errorf("prefix %q, separator %q: got %v, %v; want %v", prefix, sep, got, err, want)
+			}
+		}
+	}
+}
+
+func TestNameserversAliases(t *testing.T) {
+	for _, options := range []string{
+		`{"dns_nameserver":"192.0.2.53"}`,
+		`{"dns":{"server":["192.0.2.53"]}}`,
+	} {
+		got, err := Nameservers([]byte(options), "nameserver 127.0.0.1\n")
+		if err != nil || !slices.Equal(got, []netip.Addr{netip.MustParseAddr("192.0.2.53")}) {
+			t.Errorf("alias ignored: got %v, %v", got, err)
+		}
+	}
+}
+
+func TestNameserversRejectsAmbiguousOptions(t *testing.T) {
+	for _, options := range []string{
+		`null`,
+		`{"dns":null}`,
+		`{"dns":{"nameserver":"192.0.2.53","nameserver":"127.0.0.1"}}`,
+		`{"dns":{"nameserver":"192.0.2.53"},"dns":{"nameserver":"127.0.0.1"}}`,
+		`{"dns_nameserver":"192.0.2.53","dns":{"nameserver":"127.0.0.1"}}`,
+		`{"dns":{"server":"192.0.2.53","nameserver":"127.0.0.1"}}`,
+	} {
+		if got, err := Nameservers([]byte(options), "nameserver 127.0.0.1\n"); err == nil || len(got) != 0 {
+			t.Errorf("ambiguous resolver configuration accepted: %s", options)
+		}
+	}
+}
+
+func TestNameserversRejectsMalformedEndpoint(t *testing.T) {
+	for _, endpoint := range []string{
+		"127.0.0.1:invalid", "127.0.0.1:53:invalid", "127.0.0.1:65536",
+		"127.0.0.1:", "127.0.0.1:53:", "127.0.0.1:53:1:2",
+		"[::1]junk", "[::1]:invalid", "[::1]:53:invalid", "[::1]:65536",
+	} {
+		options, err := json.Marshal(map[string]any{"dns": map[string]string{"nameserver": endpoint}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := Nameservers(options, ""); err == nil || len(got) != 0 {
+			t.Errorf("malformed endpoint accepted: %q", endpoint)
+		}
+	}
+}
+
+func TestResolveFeedsRejectsPublicUpstreamForms(t *testing.T) {
+	for _, options := range []string{
+		`{"dns":{"nameserver":"127.0.0.1:53;198.51.100.53"}}`,
+		`{"dns":{"nameserver":"[::1]:53 198.51.100.53"}}`,
+		`{"dns_nameserver":"198.51.100.53"}`,
+		`{"dns":{"server":"198.51.100.53"}}`,
+		`{"dns":{"nameserver":"198.51.100.53","Nameserver":"127.0.0.1"}}`,
+	} {
+		f := feedFacts()
+		f.RspamdOptions.Stdout = options
+		got, problems := ResolveFeeds(dqsSettings(), f)
+		if len(got.Feeds) != 0 || len(problems) != 2 || got.DQSKey.Reveal() != "" {
+			t.Errorf("DNS feeds retained with a public upstream: %s", options)
+		}
+	}
+}
+
+func TestNameserversErrorsDoNotEchoInput(t *testing.T) {
+	for _, entry := range []string{testKey, "127.0.0.1:" + testKey, "[::1]:" + testKey} {
+		options, err := json.Marshal(map[string]any{"dns": map[string]string{"nameserver": entry}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = Nameservers(options, "")
+		if err == nil || strings.Contains(err.Error(), testKey) {
+			t.Fatal("resolver error is missing or exposes input")
+		}
+	}
+}
 
 func TestNameservers(t *testing.T) {
 	addrs := func(ss ...string) []netip.Addr {
@@ -30,6 +163,7 @@ func TestNameservers(t *testing.T) {
 		{`{"dns":{"nameserver":"ns1.example.com"}}`, "", nil, true},
 		{`{"dns":{}}`, "search example.com\n", nil, true},
 		{`{"dns":{}}`, "nameserver fe80::1%eth0\n", addrs("fe80::1"), false},
+		{`{"dns":{}}`, "nameserver 192.0.2.53#resolver\n", addrs("192.0.2.53"), false},
 		{`not json`, "nameserver 127.0.0.1\n", nil, true},
 	} {
 		got, err := Nameservers([]byte(tc.options), tc.resolv)

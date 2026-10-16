@@ -4,10 +4,51 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func FuzzNameservers(f *testing.F) {
+	for _, options := range []string{
+		`{}`, `null`, `{"dns":null}`,
+		`{"dns":{"nameserver":["127.0.0.1","192.0.2.53"]}}`,
+		`{"dns":{"nameserver":"master-slave:[::1]:53:10;192.0.2.53:53:1"}}`,
+		`{"dns":{"server":["2001:db8::53"]}}`,
+		`{"dns_nameserver":"192.0.2.53"}`,
+		`{"dns":{"nameserver":"192.0.2.53","nameserver":"127.0.0.1"}}`,
+		`{"dns":{"nameserver":"[::1]:invalid"}}`,
+	} {
+		f.Add(options, "nameserver 127.0.0.1\n")
+	}
+	f.Fuzz(func(t *testing.T, options, resolv string) {
+		got, err := Nameservers([]byte(options), resolv)
+		if err != nil {
+			if len(got) != 0 {
+				t.Fatal("unreadable nameservers returned a partial list")
+			}
+			return
+		}
+		if len(got) == 0 {
+			t.Fatal("accepted an empty resolver list")
+		}
+		var entries []string
+		for _, addr := range got {
+			if !addr.IsValid() || addr.Zone() != "" {
+				t.Fatal("accepted an invalid or scoped resolver address")
+			}
+			entries = append(entries, addr.String())
+		}
+		encoded, err := json.Marshal(map[string]any{"dns": map[string]string{"nameserver": strings.Join(entries, ";")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again, err := Nameservers(encoded, ""); err != nil || !slices.Equal(again, got) {
+			t.Fatal("resolver list changed after re-encoding")
+		}
+	})
+}
 
 func FuzzLoadDQSKey(f *testing.F) {
 	for _, key := range []string{testKey, "", testKey[:25], testKey + "a", strings.ToUpper(testKey),
