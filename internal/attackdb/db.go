@@ -170,6 +170,7 @@ type IPRecord struct {
 	AuthSuccessAccounts map[string]int     `json:"auth_success_accounts,omitempty"`
 	ThreatScore         int                `json:"threat_score"`
 	AutoBlocked         bool               `json:"auto_blocked"`
+	Mail                *MailEvidence      `json:"mail,omitempty"`
 }
 
 // DB is the in-memory attack database backed by JSON files.
@@ -391,6 +392,7 @@ func (db *DB) RecordFinding(f alert.Finding) {
 	rec.LastSeen = now
 	rec.EventCount++
 	rec.AttackCounts[attackType]++
+	recordMailAuthLocked(rec, f.Check, now)
 	if account != "" {
 		rec.Accounts[account]++
 		if attackType == AttackAuthSuccess {
@@ -654,5 +656,9 @@ func cloneIPRecord(rec *IPRecord) *IPRecord {
 		cp.Accounts = make(map[string]int)
 	}
 	cp.AuthSuccessAccounts = maps.Clone(rec.AuthSuccessAccounts)
+	if rec.Mail != nil {
+		m := *rec.Mail
+		cp.Mail = &m
+	}
 	return &cp
 }

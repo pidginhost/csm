@@ -96,6 +96,10 @@ func fromStoreIPRecord(sr *store.IPRecord) *IPRecord {
 	for k, v := range sr.AttackCounts {
 		rec.AttackCounts[AttackType(k)] = v
 	}
+	if sr.Mail != nil {
+		m := *sr.Mail
+		rec.Mail = &m
+	}
 	return rec
 }
 
@@ -127,7 +131,7 @@ func normalizeLoadedRecord(rec *IPRecord) (changed, emptied bool) {
 	if dropped > 0 {
 		rec.EventCount = max(0, rec.EventCount-dropped)
 		changed = true
-		if rec.EventCount == 0 {
+		if rec.EventCount == 0 && rec.Mail == nil {
 			return true, true
 		}
 	}
@@ -308,6 +312,10 @@ func toStoreIPRecord(rec *IPRecord) store.IPRecord {
 	}
 	for k, v := range rec.Accounts {
 		sr.Accounts[k] = v
+	}
+	if rec.Mail != nil {
+		m := *rec.Mail
+		sr.Mail = &m
 	}
 	return sr
 }

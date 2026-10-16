@@ -24,6 +24,20 @@ type AttackEvent struct {
 	Message    string    `json:"message,omitempty"`
 }
 
+// MailEvidence is what CSM learned about an address as a mail sender:
+// mail login attacks and the spam verdicts of its scanned messages (feeds
+// spec 7.3). Masses are decayed to MassAt.
+type MailEvidence struct {
+	AuthAttacks    int       `json:"auth_attacks,omitempty"`
+	LastAuthAttack time.Time `json:"last_auth_attack,omitzero"`
+	Spam           int       `json:"spam,omitempty"`
+	Ham            int       `json:"ham,omitempty"`
+	SpamMass       float64   `json:"spam_mass,omitempty"`
+	HamMass        float64   `json:"ham_mass,omitempty"`
+	MassAt         time.Time `json:"mass_at,omitzero"`
+	LastSpam       time.Time `json:"last_spam,omitzero"`
+}
+
 // IPRecord is the store-layer representation of an IP attack record.
 type IPRecord struct {
 	IP                  string         `json:"ip"`
@@ -35,6 +49,7 @@ type IPRecord struct {
 	AuthSuccessAccounts map[string]int `json:"auth_success_accounts,omitempty"`
 	ThreatScore         int            `json:"threat_score"`
 	AutoBlocked         bool           `json:"auto_blocked,omitempty"`
+	Mail                *MailEvidence  `json:"mail,omitempty"`
 	// NeedsRewrite marks retired persisted state even when rescoring leaves
 	// the score unchanged. It is load metadata, never part of the record.
 	NeedsRewrite bool `json:"-"`
