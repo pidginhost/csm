@@ -1,11 +1,14 @@
 package checks
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func withQuarantineDirIdentity(t *testing.T) string {
@@ -82,5 +85,105 @@ func TestInlineQuarantine_MovesTheScannedFile(t *testing.T) {
 	}
 	if _, err := os.Lstat(target); !os.IsNotExist(err) {
 		t.Errorf("original still present after quarantine: %v", err)
+	}
+}
+
+func TestInlineQuarantineAcceptsConfirmedCriticalPHPContent(t *testing.T) {
+	for _, check := range []string{
+		"webshell_content_realtime",
+		"obfuscated_php_realtime",
+		"webshell_realtime",
+		"php_in_uploads_realtime",
+	} {
+		t.Run(check, func(t *testing.T) {
+			qdir := withQuarantineDirIdentity(t)
+			target := filepath.Join(t.TempDir(), "payload.php")
+			payload := []byte("<?php confirmed malicious content")
+			if err := os.WriteFile(target, payload, 0600); err != nil {
+				t.Fatal(err)
+			}
+			scanned, err := os.Stat(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{StatePath: t.TempDir()}
+			cfg.AutoResponse.Enabled = true
+			cfg.AutoResponse.QuarantineFiles = true
+			finding := alert.Finding{
+				Check: check, Severity: alert.Critical, FilePath: target,
+				Timestamp: time.Unix(1_700_000_000, 0),
+			}
+
+			qpath, ok, paused := InlineQuarantineConfirmedPHPGatedIdentified(cfg, &finding, target, payload, scanned)
+			if !ok || paused != nil {
+				t.Fatalf("qpath=%q ok=%v paused=%+v, want applied", qpath, ok, paused)
+			}
+			if !finding.AutoFileResponseEvaluated {
+				t.Fatal("applied response was not marked evaluated")
+			}
+			if filepath.Dir(qpath) != qdir {
+				t.Fatalf("qpath=%q, want direct child of %q", qpath, qdir)
+			}
+			if _, statErr := os.Stat(target); !os.IsNotExist(statErr) {
+				t.Fatalf("source still present: %v", statErr)
+			}
+			if got, readErr := os.ReadFile(qpath); readErr != nil || string(got) != string(payload) {
+				t.Fatalf("quarantine content=%q err=%v", got, readErr)
+			}
+			metaData, err := os.ReadFile(qpath + ".meta")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var meta QuarantineMeta
+			if err := json.Unmarshal(metaData, &meta); err != nil {
+				t.Fatal(err)
+			}
+			if meta.Reason != "Inline quarantine: confirmed realtime PHP content" {
+				t.Errorf("reason=%q, want confirmed realtime PHP content", meta.Reason)
+			}
+			if meta.FindingID != alert.FindingID(finding) {
+				t.Errorf("finding id=%q, want %q", meta.FindingID, alert.FindingID(finding))
+			}
+		})
+	}
+}
+
+func TestConfirmedCriticalPHPContentRequiresPinnedSnapshot(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		check   string
+		data    []byte
+		scanned bool
+	}{
+		{name: "missing data", check: "webshell_content_realtime", scanned: true},
+		{name: "missing identity", check: "webshell_content_realtime", data: []byte("payload")},
+		{name: "review-only dropper", check: "php_dropper_realtime", data: []byte("payload"), scanned: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withQuarantineDirIdentity(t)
+			target := filepath.Join(t.TempDir(), "payload.php")
+			if err := os.WriteFile(target, []byte("payload"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var scanned os.FileInfo
+			if tc.scanned {
+				var err error
+				scanned, err = os.Stat(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := &config.Config{StatePath: t.TempDir()}
+			cfg.AutoResponse.Enabled = true
+			cfg.AutoResponse.QuarantineFiles = true
+			finding := alert.Finding{Check: tc.check, Severity: alert.Critical, FilePath: target}
+
+			if qpath, ok, paused := InlineQuarantineConfirmedPHPGatedIdentified(cfg, &finding, target, tc.data, scanned); ok || qpath != "" || paused != nil {
+				t.Fatalf("qpath=%q ok=%v paused=%+v, want refusal", qpath, ok, paused)
+			}
+			if _, err := os.Stat(target); err != nil {
+				t.Fatalf("refusal changed source: %v", err)
+			}
+		})
 	}
 }

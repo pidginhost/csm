@@ -19,6 +19,16 @@ import (
 // action. It is the single point every quarantine passes through, which is why
 // the action record is taken here rather than at each caller.
 func quarantineTarget(path, qPath string, info os.FileInfo, metadata QuarantineMeta) (err error) {
+	return quarantineTargetWith(path, qPath, info, metadata, quarantineTargetFn)
+}
+
+func quarantineVersionedTargetFD(path, qPath string, info os.FileInfo, metadata QuarantineMeta, sourceFD int) (err error) {
+	return quarantineTargetWith(path, qPath, info, metadata, func(path, qPath string, info os.FileInfo, data []byte) error {
+		return quarantineFileVersionedTOCTOUSafeFD(path, qPath, info, data, sourceFD)
+	})
+}
+
+func quarantineTargetWith(path, qPath string, info os.FileInfo, metadata QuarantineMeta, move func(string, string, os.FileInfo, []byte) error) (err error) {
 	before := actionlog.FromInfo(info)
 	existed := actionlog.Metadata(qPath).Exists
 	defer func() { recordQuarantineAction(path, qPath, metadata, before, existed, err) }()
@@ -30,7 +40,7 @@ func quarantineTarget(path, qPath string, info os.FileInfo, metadata QuarantineM
 		return err
 	}
 
-	return quarantineTargetFn(path, qPath, info, data)
+	return move(path, qPath, info, data)
 }
 
 // quarantineTargetFn performs the move. It is indirected so the action record

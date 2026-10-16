@@ -305,8 +305,8 @@ func TestAutoFileResponseConcurrentAttemptsStayWithinBudget(t *testing.T) {
 			assertResponseFile(t, f.FilePath, body)
 		}
 	}
-	if moved < 1 || moved > 3 {
-		t.Fatalf("concurrent actions moved %d files; budget permits at most 3", moved)
+	if moved != 3 {
+		t.Fatalf("concurrent actions moved %d files; want all 3 available slots used", moved)
 	}
 	// Retry the refused attempts sequentially. Contention must not lose the
 	// available slots or allow more than the remaining capacity.
@@ -319,6 +319,123 @@ func TestAutoFileResponseConcurrentAttemptsStayWithinBudget(t *testing.T) {
 	}
 	if moved != 3 {
 		t.Fatalf("moved %d files after retry; want exactly 3", moved)
+	}
+}
+
+func TestAutoFileResponseSlowActionDoesNotBlockAnotherReservation(t *testing.T) {
+	cfg, homes := fileResponseFixture(t, "  max_file_actions_per_hour: 2\n  max_file_actions_per_account_per_hour: 2\n  max_file_action_failures_per_hour: 2\n")
+	first := responseFile(t, homes, "alice", "slow.bin", []byte("first"))
+	second := responseFile(t, homes, "alice", "fast.bin", []byte("second"))
+	firstInfo, err := os.Lstat(first.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondInfo, err := os.Lstat(second.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstEntered := make(chan struct{})
+	secondEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	finished := make(chan struct{}, 2)
+	go func() {
+		defer func() { finished <- struct{}{} }()
+		runAutoFileResponse(cfg, first.FilePath, firstInfo, func() error {
+			close(firstEntered)
+			<-releaseFirst
+			return nil
+		})
+	}()
+	<-firstEntered
+	go func() {
+		defer func() { finished <- struct{}{} }()
+		runAutoFileResponse(cfg, second.FilePath, secondInfo, func() error {
+			close(secondEntered)
+			return nil
+		})
+	}()
+
+	secondReserved := false
+	select {
+	case <-secondEntered:
+		secondReserved = true
+	case <-time.After(250 * time.Millisecond):
+	}
+	close(releaseFirst)
+	<-finished
+	<-finished
+	if !secondReserved {
+		t.Fatal("a slow file response held the safety-state lock across the action")
+	}
+	ledger, err := readFileResponseState(filepath.Join(cfg.StatePath, fileResponseStateName), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.Attempts) != 2 {
+		t.Fatalf("attempts=%d, want 2", len(ledger.Attempts))
+	}
+	for _, attempt := range ledger.Attempts {
+		if attempt.Failed {
+			t.Fatal("completed concurrent response remained charged as failed")
+		}
+	}
+}
+
+func TestAutoFileResponsePendingAttemptHoldsFailureCapacity(t *testing.T) {
+	cfg, homes := fileResponseFixture(t, "  max_file_actions_per_hour: 2\n  max_file_actions_per_account_per_hour: 2\n  max_file_action_failures_per_hour: 1\n")
+	first := responseFile(t, homes, "alice", "slow.bin", []byte("first"))
+	second := responseFile(t, homes, "alice", "fast.bin", []byte("second"))
+	firstInfo, err := os.Lstat(first.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondInfo, err := os.Lstat(second.FilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		runAutoFileResponse(cfg, first.FilePath, firstInfo, func() error {
+			close(firstEntered)
+			<-releaseFirst
+			return nil
+		})
+	}()
+	<-firstEntered
+
+	secondApplied := false
+	paused := runAutoFileResponse(cfg, second.FilePath, secondInfo, func() error {
+		secondApplied = true
+		return nil
+	})
+	close(releaseFirst)
+	<-finished
+	if secondApplied {
+		t.Fatal("a concurrent pending attempt exceeded the failure ceiling")
+	}
+	if paused == nil || paused.Check != "auto_response_paused" {
+		t.Fatalf("pending capacity refusal=%+v, want pause finding", paused)
+	}
+}
+
+func TestAutoFileResponseInterruptedReservationCountsAsFailure(t *testing.T) {
+	cfg, homes := fileResponseFixture(t, "  max_file_action_failures_per_hour: 1\n")
+	state := fileResponseState{Version: 1, Attempts: []fileResponseAttempt{{
+		At: time.Now(), Account: "alice", Failed: true, ID: "interrupted", Pending: true,
+	}}}
+	if err := writeFileResponseState(filepath.Join(cfg.StatePath, fileResponseStateName), 0600, &state); err != nil {
+		t.Fatal(err)
+	}
+	f := responseFile(t, homes, "bob", "keep.bin", []byte("customer content"))
+	actions := AutoQuarantineFiles(cfg, []alert.Finding{f})
+	assertResponseFile(t, f.FilePath, []byte("customer content"))
+	if responsePauses(actions) != 1 {
+		t.Fatalf("interrupted reservation did not open the failure breaker: %+v", actions)
 	}
 }
 

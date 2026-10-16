@@ -73,12 +73,13 @@ func TestAutoFileResponseScanDeliveryDoesNotRetryCleaning(t *testing.T) {
 func TestAutoFileResponseIncompleteStateRefusesMutation(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for name, body := range map[string]string{
-		"missing attempts": `{"version":1}`,
-		"null attempts":    `{"version":1,"attempts":null}`,
-		"missing account":  fmt.Sprintf(`{"version":1,"attempts":[{"at":%q,"failed":false}]}`, now),
-		"null account":     fmt.Sprintf(`{"version":1,"attempts":[{"at":%q,"account":null,"failed":false}]}`, now),
-		"missing outcome":  fmt.Sprintf(`{"version":1,"attempts":[{"at":%q,"account":"alice"}]}`, now),
-		"null outcome":     fmt.Sprintf(`{"version":1,"attempts":[{"at":%q,"account":"alice","failed":null}]}`, now),
+		"missing attempts":   `{"version":1}`,
+		"null attempts":      `{"version":1,"attempts":null}`,
+		"missing account":    fmt.Sprintf(`{"version":1,"attempts":[{"at":%q,"failed":false}]}`, now),
+		"null account":       fmt.Sprintf(`{"version":1,"attempts":[{"at":%q,"account":null,"failed":false}]}`, now),
+		"missing outcome":    fmt.Sprintf(`{"version":1,"attempts":[{"at":%q,"account":"alice"}]}`, now),
+		"null outcome":       fmt.Sprintf(`{"version":1,"attempts":[{"at":%q,"account":"alice","failed":null}]}`, now),
+		"pending missing id": fmt.Sprintf(`{"version":1,"attempts":[{"at":%q,"account":"alice","failed":true,"pending":true}]}`, now),
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg, homes := fileResponseFixture(t, "  max_file_actions_per_account_per_hour: 1\n  max_file_action_failures_per_hour: 1\n")

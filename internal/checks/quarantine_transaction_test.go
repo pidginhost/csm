@@ -13,11 +13,11 @@ import (
 )
 
 func TestQuarantineUnlinkFailuresRetainRecoverableCopy(t *testing.T) {
-	oldUnlink, oldSync := quarantineUnlinkSource, quarantineSyncSourceDir
-	t.Cleanup(func() { quarantineUnlinkSource, quarantineSyncSourceDir = oldUnlink, oldSync })
+	oldUnlink, oldSync := quarantineBeforeCapturedUnlink, quarantineBeforeSourceSync
+	t.Cleanup(func() { quarantineBeforeCapturedUnlink, quarantineBeforeSourceSync = oldUnlink, oldSync })
 	for _, phase := range []string{"unlink", "source-sync"} {
 		t.Run(phase, func(t *testing.T) {
-			quarantineUnlinkSource, quarantineSyncSourceDir = oldUnlink, oldSync
+			quarantineBeforeCapturedUnlink, quarantineBeforeSourceSync = oldUnlink, oldSync
 			root := t.TempDir()
 			source, qPath := filepath.Join(root, "source"), filepath.Join(root, "quarantine", "captured")
 			if err := os.WriteFile(source, []byte("evidence"), 0600); err != nil {
@@ -40,7 +40,7 @@ func TestQuarantineUnlinkFailuresRetainRecoverableCopy(t *testing.T) {
 				}
 			}
 			unlinkCalled := false
-			quarantineUnlinkSource = func(path string) error {
+			quarantineBeforeCapturedUnlink = func(path string) error {
 				unlinkCalled = true
 				verifyRecovery()
 				if phase == "unlink" {
@@ -48,7 +48,7 @@ func TestQuarantineUnlinkFailuresRetainRecoverableCopy(t *testing.T) {
 				}
 				return oldUnlink(path)
 			}
-			quarantineSyncSourceDir = func(path string) error {
+			quarantineBeforeSourceSync = func(path string) error {
 				if !unlinkCalled {
 					t.Error("source sync preceded unlink")
 				}
