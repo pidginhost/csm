@@ -374,7 +374,7 @@ func TestOwnerRetirementReportsADamagedRecordOnce(t *testing.T) {
 // A turn that fails after its retirement pass still reports the pass's
 // error, whether the schedule or the block batch fails (1.5c-3a review M7).
 func TestOwnerTurnKeepsItsRetirementError(t *testing.T) {
-	for _, step := range []string{"schedule", "execute"} {
+	for _, step := range []string{"schedule", "execute", "publish"} {
 		t.Run(step, func(t *testing.T) {
 			p := withTestRegistry(t)
 			f := newOwnerFixture(t)
@@ -383,16 +383,29 @@ func TestOwnerTurnKeepsItsRetirementError(t *testing.T) {
 			mono := heldMono(t, o)
 			unknownBlock(t, o, p, f, blocks, "192.0.2.98")
 			retireCause, stepCause := errors.New("fixture retirement failure"), errors.New("fixture "+step+" failure")
+			retired := false
 			setOwnerHook(t, o, &retireLedger, func(*store.AdmissionLedger, admission.ActionID) (admission.Candidate, admission.AttemptRecord, bool, error) {
+				retired = true
 				return admission.Candidate{}, admission.AttemptRecord{}, false, retireCause
 			})
 			f.host.advance(25 * time.Hour)
 			mono.advance(25 * time.Hour)
-			if step == "schedule" {
+			switch step {
+			case "schedule":
 				setOwnerHook(t, o, &scheduleLedger, func(*store.AdmissionLedger, admission.ScheduleLimits, map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
 					return nil, stepCause
 				})
-			} else {
+			case "publish":
+				// The tick reads the snapshot too; fail only the read after
+				// retirement ran.
+				read := readSnapshot
+				setOwnerHook(t, o, &readSnapshot, func(l *store.AdmissionLedger) (*admission.QueueSnapshot, error) {
+					if retired {
+						return nil, stepCause
+					}
+					return read(l)
+				})
+			default:
 				if err := o.do(o.tick); err != nil {
 					t.Fatal(err)
 				}
@@ -470,5 +483,32 @@ func TestOwnerRetirementLedgerBackoffKeepsWakeAndScanGate(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A dry-run policy still retires earlier unknown blocks, so a forecast
+// failure keeps the turn's retirement error too.
+func TestOwnerForecastTurnKeepsItsRetirementError(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	o, r, mono := policyOwner(t, f, blocks, validPolicy(1))
+	unknownBlock(t, o, p, f, blocks, "192.0.2.97")
+	r.publish(dryPolicy(2))
+	if err := o.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	retireCause, forecastCause := errors.New("fixture retirement failure"), errors.New("fixture forecast failure")
+	setOwnerHook(t, o, &retireLedger, func(*store.AdmissionLedger, admission.ActionID) (admission.Candidate, admission.AttemptRecord, bool, error) {
+		return admission.Candidate{}, admission.AttemptRecord{}, false, retireCause
+	})
+	setOwnerHook(t, o, &previewLedger, func(*store.AdmissionLedger, map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
+		return nil, forecastCause
+	})
+	f.host.advance(25 * time.Hour)
+	mono.advance(25 * time.Hour)
+	err := o.do(o.turn)
+	if !errors.Is(err, retireCause) || !errors.Is(err, forecastCause) {
+		t.Fatalf("turn error = %v; want both the retirement and the forecast failure", err)
 	}
 }
