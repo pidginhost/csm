@@ -24,6 +24,18 @@ from multi-IP alerts. For a confirmed false positive, follow
 That operation preserves historical events and does not remove firewall or
 permanent-blocklist entries; review those separately.
 
+### Mail evidence
+
+The attack database keeps mail login attacks and spam/ham verdicts in a
+separate mail section. Equivalent IPv4 and IPv6 spellings share one record;
+invalid sender addresses are ignored. Spam and ham do not change the local
+threat score or add attack events. Ham only updates an existing record.
+
+Verdict weights decay from their observation times, including when older
+verdicts arrive after newer ones. A missing observation time uses the current
+time. Spam refreshes the record's activity time; ham does not extend retention.
+Mail evidence survives a restart with its original counts and observation times.
+
 ## IP Intelligence
 
 Combines multiple sources into a unified verdict:

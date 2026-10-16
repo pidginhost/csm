@@ -63,8 +63,16 @@ func decayTo(m *MailEvidence, at time.Time) {
 // RecordMailVerdict adds one scan verdict for ip. Spam creates the record;
 // ham only updates a record that exists, so large legitimate senders never
 // fill the attack DB. Neither touches EventCount, AttackCounts or
-// ThreatScore, and no event is queued (feeds spec 7.3).
+// ThreatScore, and no event is queued (feeds spec 7.3). Invalid addresses are
+// ignored; a zero timestamp uses the current time, as RecordFinding does.
 func (db *DB) RecordMailVerdict(ip string, spam bool, at time.Time) {
+	ip = normalizeRecordIP(ip)
+	if ip == "" {
+		return
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	rec, ok := db.records[ip]
@@ -77,9 +85,11 @@ func (db *DB) RecordMailVerdict(ip string, spam bool, at time.Time) {
 	}
 	m := rec.mail()
 	decayTo(m, at)
+	// Delayed verdicts must have the same age as the accumulated evidence.
+	weight := spamscore.Recency(m.MassAt.Sub(at))
 	if spam {
 		m.Spam++
-		m.SpamMass++
+		m.SpamMass += weight
 		if at.After(m.LastSpam) {
 			m.LastSpam = at
 		}
@@ -89,7 +99,7 @@ func (db *DB) RecordMailVerdict(ip string, spam bool, at time.Time) {
 		}
 	} else {
 		m.Ham++
-		m.HamMass++
+		m.HamMass += weight
 	}
 	delete(db.deletedIPs, ip)
 	db.markDirtyLocked(ip)
@@ -132,8 +142,12 @@ func (db *DB) MapSources(now time.Time) (auth, spam []string) {
 }
 
 // TopSpamSenders returns copies of up to n records with spam verdicts,
-// highest spam score first, then most spam, then address.
+// highest spam score first, then most spam, then address. Non-positive n
+// returns no records.
 func (db *DB) TopSpamSenders(n int, now time.Time) []*IPRecord {
+	if n <= 0 {
+		return nil
+	}
 	db.mu.RLock()
 	var out []*IPRecord
 	for _, rec := range db.records {
