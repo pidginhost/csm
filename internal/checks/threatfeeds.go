@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -564,6 +565,51 @@ func isFeedSourceName(source string) bool {
 		}
 	}
 	return false
+}
+
+// ThreatMapSources is what the CSM IP map takes from the threat DB (feeds
+// spec 6.1): CSM's permanent block history, each feed's addresses and
+// networks by feed name, and every whitelisted address. All sorted copies.
+type ThreatMapSources struct {
+	Permanent []string
+	FeedIPs   map[string][]string
+	FeedNets  map[string][]string
+	Whitelist []string
+}
+
+// MapSources copies the entries the CSM IP map is built from.
+func (db *ThreatDB) MapSources() ThreatMapSources {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	out := ThreatMapSources{FeedIPs: map[string][]string{}, FeedNets: map[string][]string{}}
+	for ip, source := range db.badIPs {
+		if _, temporary := db.badIPExpiry[ip]; !temporary && !isFeedSourceName(source) {
+			out.Permanent = append(out.Permanent, ip)
+		}
+	}
+	for name, ips := range db.feedIPs {
+		for ip := range ips {
+			out.FeedIPs[name] = append(out.FeedIPs[name], ip)
+		}
+		slices.Sort(out.FeedIPs[name])
+	}
+	for name, nets := range db.feedNets {
+		for _, n := range nets {
+			out.FeedNets[name] = append(out.FeedNets[name], n.String())
+		}
+		slices.Sort(out.FeedNets[name])
+	}
+	for ip := range db.whitelist {
+		out.Whitelist = append(out.Whitelist, ip)
+	}
+	for ip := range db.configWhitelist {
+		if !db.whitelist[ip] {
+			out.Whitelist = append(out.Whitelist, ip)
+		}
+	}
+	slices.Sort(out.Permanent)
+	slices.Sort(out.Whitelist)
+	return out
 }
 
 // feedSourceLocked reports which feed lists ip, if any. Caller holds db.mu.

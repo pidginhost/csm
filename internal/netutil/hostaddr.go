@@ -2,9 +2,32 @@ package netutil
 
 import (
 	"net"
+	"net/netip"
+	"slices"
 	"sync"
 	"time"
 )
+
+// HostAddresses lists the addresses bound to this host's interfaces,
+// sorted, including loopback. A lookup failure gives an empty list, as
+// IsHostAddress fails open.
+func HostAddresses() []netip.Addr {
+	hostAddrMu.Lock()
+	lookup := hostAddrLookup
+	hostAddrMu.Unlock()
+	ips, err := lookup()
+	if err != nil {
+		return nil
+	}
+	out := make([]netip.Addr, 0, len(ips))
+	for _, ip := range ips {
+		if a, ok := netip.AddrFromSlice(ip); ok {
+			out = append(out, a.Unmap())
+		}
+	}
+	slices.SortFunc(out, func(a, b netip.Addr) int { return a.Compare(b) })
+	return slices.Compact(out)
+}
 
 // hostAddrCacheTTL bounds how long a cached interface enumeration is reused.
 // Alias IPs come and go on panel hosts, so the set cannot be read once at
