@@ -607,3 +607,17 @@ func TestPassLeftoverMapDetailsAreBoundedAndRedacted(t *testing.T) {
 		t.Fatal("redirecting the last remote map did not clear its warning without changing core")
 	}
 }
+
+// The resolver advice must survive the finding text as a line an operator
+// can paste into options.inc.
+func TestResolverAdviceIsPasteable(t *testing.T) {
+	f := goodFeedFacts()
+	f.ResolvConf = "nameserver 198.51.100.53\n"
+	_, problems := antispam.ResolveFeeds(feedDesired(antispam.FeedPSBL).Settings, f)
+	if len(problems) != 1 {
+		t.Fatalf("problems %+v", problems)
+	}
+	if got := feedFinding(problems[0], testNow).Details; !strings.Contains(got, "dns { nameserver = ['127.0.0.1']; }") {
+		t.Fatalf("details %q", got)
+	}
+}

@@ -187,7 +187,7 @@ func nameserverEndpoint(s string) (netip.AddrPort, error) {
 // private network. Lists refuse public resolvers (feeds spec 4.4).
 func localResolver(a netip.Addr) bool { return a.IsLoopback() || a.IsPrivate() }
 
-const resolverFix = "DNS blocklists refuse queries from public resolvers. Run a local recursive resolver and add dns { nameserver = [\"127.0.0.1\"]; } to /etc/rspamd/local.d/options.inc"
+const resolverFix = "DNS blocklists refuse queries from public resolvers. Run a local recursive resolver and add dns { nameserver = ['127.0.0.1']; } to /etc/rspamd/local.d/options.inc"
 
 // ResolveFeeds returns the settings this host can take. Map redirects whose
 // file CSM cannot own are skipped; DNS feeds go off when their files cannot
