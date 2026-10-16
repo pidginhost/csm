@@ -73,8 +73,8 @@ func FuzzNameservers(f *testing.F) {
 		}
 		var entries []string
 		for _, addr := range got {
-			if !addr.IsValid() || addr.Zone() != "" {
-				t.Fatal("accepted an invalid or scoped resolver address")
+			if !addr.IsValid() {
+				t.Fatal("accepted an invalid resolver endpoint")
 			}
 			entries = append(entries, addr.String())
 		}

@@ -61,7 +61,7 @@ func TestNameserversReadsEveryUpstream(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, err := Nameservers(options, "")
-			want := []netip.Addr{netip.MustParseAddr("::1"), netip.MustParseAddr("192.0.2.53")}
+			want := []netip.AddrPort{netip.MustParseAddrPort("[::1]:53"), netip.MustParseAddrPort("192.0.2.53:53")}
 			if err != nil || !slices.Equal(got, want) {
 				t.Errorf("prefix %q, separator %q: got %v, %v; want %v", prefix, sep, got, err, want)
 			}
@@ -75,7 +75,7 @@ func TestNameserversAliases(t *testing.T) {
 		`{"dns":{"server":["192.0.2.53"]}}`,
 	} {
 		got, err := Nameservers([]byte(options), "nameserver 127.0.0.1\n")
-		if err != nil || !slices.Equal(got, []netip.Addr{netip.MustParseAddr("192.0.2.53")}) {
+		if err != nil || !slices.Equal(got, []netip.AddrPort{netip.MustParseAddrPort("192.0.2.53:53")}) {
 			t.Errorf("alias ignored: got %v, %v", got, err)
 		}
 	}
@@ -143,16 +143,16 @@ func TestNameserversErrorsDoNotEchoInput(t *testing.T) {
 }
 
 func TestNameservers(t *testing.T) {
-	addrs := func(ss ...string) []netip.Addr {
-		var out []netip.Addr
+	addrs := func(ss ...string) []netip.AddrPort {
+		var out []netip.AddrPort
 		for _, s := range ss {
-			out = append(out, netip.MustParseAddr(s))
+			out = append(out, netip.AddrPortFrom(netip.MustParseAddr(s), 53))
 		}
 		return out
 	}
 	for _, tc := range []struct {
 		options, resolv string
-		want            []netip.Addr
+		want            []netip.AddrPort
 		wantErr         bool
 	}{
 		{`{"dns":{"timeout":1.0}}`, "# c\nnameserver 192.0.2.53\nnameserver 2001:db8::53\nsearch example.com\n", addrs("192.0.2.53", "2001:db8::53"), false},
@@ -162,7 +162,7 @@ func TestNameservers(t *testing.T) {
 		{`{"dns":{"nameserver":"round-robin:[::1]:53,10.1.1.1"}}`, "", addrs("::1", "10.1.1.1"), false},
 		{`{"dns":{"nameserver":"ns1.example.com"}}`, "", nil, true},
 		{`{"dns":{}}`, "search example.com\n", nil, true},
-		{`{"dns":{}}`, "nameserver fe80::1%eth0\n", addrs("fe80::1"), false},
+		{`{"dns":{}}`, "nameserver fe80::1%eth0\n", addrs("fe80::1%eth0"), false},
 		{`{"dns":{}}`, "nameserver 192.0.2.53#resolver\n", addrs("192.0.2.53"), false},
 		{`not json`, "nameserver 127.0.0.1\n", nil, true},
 	} {
@@ -278,7 +278,7 @@ func TestResolveFeedsDropsOnlyDQSForKeyProblems(t *testing.T) {
 
 // A local resolver on a cPanel host often cannot use port 53, which
 // PowerDNS holds, so the probe must ask the port rspamd uses.
-func TestProbeServerKeepsThePort(t *testing.T) {
+func TestFirstNameserverKeepsThePort(t *testing.T) {
 	for _, tc := range []struct {
 		options, resolv, want string
 	}{
@@ -287,12 +287,12 @@ func TestProbeServerKeepsThePort(t *testing.T) {
 		{`{"dns":{"nameserver":"master-slave:10.0.0.2,127.0.0.1:5353"}}`, "", "10.0.0.2:53"},
 		{`{"dns":{}}`, "nameserver 127.0.0.1\n", "127.0.0.1:53"},
 	} {
-		got, err := ProbeServer([]byte(tc.options), tc.resolv)
-		if err != nil || got.String() != tc.want {
-			t.Errorf("ProbeServer(%s, %q) = %v, %v; want %s", tc.options, tc.resolv, got, err, tc.want)
+		got, err := Nameservers([]byte(tc.options), tc.resolv)
+		if err != nil || got[0].String() != tc.want {
+			t.Errorf("Nameservers(%s, %q) = %v, %v; want first %s", tc.options, tc.resolv, got, err, tc.want)
 		}
 	}
-	if _, err := ProbeServer([]byte(`{"dns":{"nameserver":"ns1.example.com"}}`), ""); err == nil {
+	if _, err := Nameservers([]byte(`{"dns":{"nameserver":"ns1.example.com"}}`), ""); err == nil {
 		t.Error("accepted a host name")
 	}
 }

@@ -43,7 +43,7 @@ func startDNS(t *testing.T, answers map[string]string, silent map[string]bool) n
 			addr, known := answers[q.Name.String()]
 			switch {
 			case !known:
-				reply.Header.RCode = dnsmessage.RCodeNameError
+				reply.RCode = dnsmessage.RCodeNameError
 			case q.Type == dnsmessage.TypeA:
 				ip := netip.MustParseAddr(addr).As4()
 				reply.Answers = []dnsmessage.Resource{{

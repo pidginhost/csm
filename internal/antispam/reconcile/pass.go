@@ -88,6 +88,9 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
 	}
+	if !d.Enabled || d.Observe {
+		r.Feeds.setProbeScope([32]byte{})
+	}
 	invalidateErr := r.Invalidate(ctx)
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
@@ -153,6 +156,11 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	if d.Enabled && !d.Observe && a.Action == antispam.Keep && a.Installed && !blockingProblems(a.Problems) {
 		out.Findings = append(out.Findings, r.probeFeeds(ctx, settings, f, now)...)
+		if err := ctx.Err(); err != nil {
+			return Outcome{Err: err}
+		}
+	} else {
+		r.Feeds.setProbeScope([32]byte{})
 	}
 	for _, p := range a.Problems {
 		if p.Code == antispam.CodeFeed {

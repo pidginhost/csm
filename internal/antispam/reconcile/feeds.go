@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -20,8 +21,9 @@ type FeedState struct {
 	// held is the feed configuration whose apply failed the feeds check;
 	// DNS feeds stay off while the configuration is unchanged.
 	held string
-	// noAnswer counts consecutive passes a probe got no answer, per
-	// feed and query kind (Task 11).
+	// scope fingerprints the resolver and queries without retaining a key.
+	scope [32]byte
+	// noAnswer counts consecutive completed probes, per zone and query kind.
 	noAnswer map[string]int
 }
 
@@ -124,10 +126,12 @@ func leftoverMaps(f antispam.HostFacts) (antispam.Problem, bool) {
 func (r Reconciler) probeFeeds(ctx context.Context, s antispam.Settings, f antispam.HostFacts, now time.Time) []alert.Finding {
 	queries := antispam.ProbeQueries(s)
 	if r.Probe == nil || len(queries) == 0 {
+		r.Feeds.setProbeScope([32]byte{})
 		return nil
 	}
-	server, err := antispam.ProbeServer([]byte(f.RspamdOptions.Stdout), f.ResolvConf)
+	servers, err := antispam.Nameservers([]byte(f.RspamdOptions.Stdout), f.ResolvConf)
 	if err != nil {
+		r.Feeds.setProbeScope([32]byte{})
 		return nil // ResolveFeeds already turned DNS feeds off
 	}
 	answers := make([]antispam.ProbeAnswer, len(queries))
@@ -136,10 +140,20 @@ func (r Reconciler) probeFeeds(ctx context.Context, s antispam.Settings, f antis
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			answers[i] = r.Probe(ctx, server, q.Name)
+			answers[i] = r.Probe(ctx, servers[0], q.Name)
 		}()
 	}
 	wg.Wait()
+	if ctx.Err() != nil {
+		return nil
+	}
+	var scope strings.Builder
+	scope.WriteString(servers[0].String())
+	for _, q := range queries {
+		scope.WriteByte(0)
+		scope.WriteString(q.Name)
+	}
+	r.Feeds.setProbeScope(sha256.Sum256([]byte(scope.String())))
 	var out []alert.Finding
 	seen := make(map[string]bool)
 	for i, q := range queries {
@@ -153,6 +167,19 @@ func (r Reconciler) probeFeeds(ctx context.Context, s antispam.Settings, f antis
 		}
 	}
 	return out
+}
+
+// A changed resolver or query set starts a new sequence of observations.
+func (st *FeedState) setProbeScope(scope [32]byte) {
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.scope != scope {
+		clear(st.noAnswer)
+		st.scope = scope
+	}
 }
 
 // probeFinding turns one probe status into a finding. Messages name the

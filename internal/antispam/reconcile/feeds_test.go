@@ -11,10 +11,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/eximlock"
 )
 
 func feedDesired(feeds ...string) Desired {
@@ -240,7 +242,7 @@ func TestPassReportsListsAllAsCritical(t *testing.T) {
 }
 
 func TestProbeFindingsNeverCarryTheKey(t *testing.T) {
-	const key = "abcdefghijklmnopqrstu23456"
+	key := strings.ToLower(rand.Text())[:26]
 	for _, echo := range []func(name string) []string{
 		func(name string) []string { return []string{"127.255.255.254", name} },
 		func(name string) []string { return []string{name} },
@@ -260,9 +262,134 @@ func TestProbeFindingsNeverCarryTheKey(t *testing.T) {
 		}
 		for _, f := range out.Findings {
 			if strings.Contains(f.Message+f.Details+f.DedupKey, key) {
-				t.Fatalf("finding carries the key: %+v", f)
+				t.Fatal("finding carries the key")
 			}
 		}
+	}
+}
+
+func TestPassResetsFeedProbesAfterKeyRotation(t *testing.T) {
+	r := probeReconciler(&fakeHost{}, func(string) antispam.ProbeAnswer {
+		return antispam.ProbeAnswer{Failed: true}
+	})
+	key := strings.ToLower(rand.Text())[:26]
+	r.ReadKey = func(string) antispam.KeyFacts {
+		return antispam.KeyFacts{Path: "/etc/csm/k", UID: 0, Mode: 0o600, Key: antispam.NewSecret(key)}
+	}
+	d := feedDesired(antispam.FeedSpamhausDQS)
+	d.Settings.DQSKeyFile = "/etc/csm/k"
+	r.Pass(context.Background(), d)
+	r.Pass(context.Background(), d)
+	key = strings.ToLower(rand.Text())[:26]
+	for pass := 1; pass <= 3; pass++ {
+		out := r.Pass(context.Background(), d)
+		if got := hasFindingKey(out.Findings, CheckFeed, "spamhaus_dqs:no_answer"); got != (pass == 3) {
+			t.Fatalf("pass %d after key rotation: finding %v", pass, got)
+		}
+	}
+}
+
+func TestPassCanceledFeedProbesSettleNothing(t *testing.T) {
+	r := probeReconciler(&fakeHost{}, func(string) antispam.ProbeAnswer {
+		return antispam.ProbeAnswer{Failed: true}
+	})
+	d := feedDesired(antispam.FeedPSBL)
+	r.Pass(context.Background(), d)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	probe := r.Probe
+	r.Probe = func(ctx context.Context, server netip.AddrPort, name string) antispam.ProbeAnswer {
+		cancel()
+		return probe(ctx, server, name)
+	}
+	out := r.Pass(ctx, d)
+	if !errors.Is(out.Err, context.Canceled) || len(out.Checks) != 0 || len(out.Findings) != 0 {
+		t.Errorf("canceled probes settled checks or reported findings: %+v", out)
+	}
+	r.Probe = probe
+	if out := r.Pass(context.Background(), d); hasFindingKey(out.Findings, CheckFeed, "psbl:no_answer") {
+		t.Fatal("canceled probes counted toward the no-answer warning")
+	}
+	if out := r.Pass(context.Background(), d); !hasFindingKey(out.Findings, CheckFeed, "psbl:no_answer") {
+		t.Fatal("completed probes did not retain their no-answer count")
+	}
+}
+
+func TestPassResetsFeedProbesAfterInterruption(t *testing.T) {
+	for _, interruption := range []string{"disabled", "disabled while busy", "observe", "feed removed", "feed unusable", "install", "blocked", "resolver changed"} {
+		t.Run(interruption, func(t *testing.T) {
+			r := probeReconciler(&fakeHost{}, func(string) antispam.ProbeAnswer {
+				return antispam.ProbeAnswer{Failed: true}
+			})
+			d := feedDesired(antispam.FeedPSBL)
+			r.Pass(context.Background(), d)
+			r.Pass(context.Background(), d)
+			interrupted := d
+			collect, assess := r.Collect, r.assess
+			invalidate := r.Invalidate
+			switch interruption {
+			case "disabled":
+				interrupted.Enabled = false
+			case "disabled while busy":
+				interrupted.Enabled = false
+				r.Invalidate = func(context.Context) error { return eximlock.ErrBusy }
+			case "observe":
+				interrupted.Observe = true
+			case "feed removed":
+				interrupted.Settings.Feeds = nil
+			case "feed unusable":
+				r.Collect = func(context.Context, string) antispam.HostFacts {
+					f := goodFeedFacts()
+					f.ResolvConf = "nameserver 192.0.2.53\n"
+					return f
+				}
+			case "install", "blocked":
+				r.assess = func(bool, antispam.Settings, antispam.HostFacts) antispam.Assessment {
+					if interruption == "install" {
+						return antispam.Assessment{Action: antispam.Install, Installed: true}
+					}
+					return antispam.Assessment{Installed: true, Problems: []antispam.Problem{{Severity: antispam.Temporary}}}
+				}
+			case "resolver changed":
+				r.Collect = func(context.Context, string) antispam.HostFacts {
+					f := goodFeedFacts()
+					f.RspamdOptions.Stdout = `{"dns":{"nameserver":"[::1]:5353"}}`
+					return f
+				}
+			}
+			if out := r.Pass(context.Background(), interrupted); hasFindingKey(out.Findings, CheckFeed, "psbl:no_answer") {
+				t.Fatal("interrupted or changed probes retained the old failure count")
+			}
+			r.Collect, r.assess = collect, assess
+			r.Invalidate = invalidate
+			for pass := 1; pass <= 3; pass++ {
+				out := r.Pass(context.Background(), d)
+				if got := hasFindingKey(out.Findings, CheckFeed, "psbl:no_answer"); got != (pass == 3) {
+					t.Fatalf("resumed pass %d: finding %v", pass, got)
+				}
+			}
+		})
+	}
+}
+
+func TestPassProbesConfiguredResolverEndpoint(t *testing.T) {
+	r := probeReconciler(&fakeHost{}, nil)
+	r.Collect = func(context.Context, string) antispam.HostFacts {
+		f := goodFeedFacts()
+		f.RspamdOptions.Stdout = `{"dns":{"nameserver":"[::1]:5353:10"}}`
+		return f
+	}
+	var calls atomic.Int32
+	r.Probe = func(_ context.Context, server netip.AddrPort, _ string) antispam.ProbeAnswer {
+		calls.Add(1)
+		if server.String() != "[::1]:5353" {
+			t.Errorf("probe endpoint = %s, want [::1]:5353", server)
+		}
+		return antispam.ProbeAnswer{NXDomain: true}
+	}
+	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
+	if calls.Load() != 2 {
+		t.Fatalf("got %d queries, want 2", calls.Load())
 	}
 }
 

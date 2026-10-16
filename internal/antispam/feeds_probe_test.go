@@ -20,7 +20,7 @@ func TestProbeQueries(t *testing.T) {
 		"2.0.0.127." + testKey + ".zen.dq.spamhaus.net", "1.0.0.127." + testKey + ".zen.dq.spamhaus.net",
 	}
 	if strings.Join(names, " ") != strings.Join(want, " ") {
-		t.Fatalf("queries\n%v\nwant\n%v", names, want)
+		t.Fatal("probe queries differ from the expected test points")
 	}
 }
 
@@ -38,6 +38,7 @@ func TestClassifyProbe(t *testing.T) {
 		{listed, ProbeAnswer{Addrs: []string{"127.0.0.1"}}, ProbeRefused},
 		{listed, ProbeAnswer{NXDomain: true}, ProbeNoAnswer},
 		{listed, ProbeAnswer{Failed: true}, ProbeNoAnswer},
+		{listed, ProbeAnswer{}, ProbeNoAnswer},
 		{listed, ProbeAnswer{Addrs: []string{"127.0.0.4"}}, ProbeUnexpected},
 		{unlisted, ProbeAnswer{NXDomain: true}, ProbeOK},
 		{unlisted, ProbeAnswer{Addrs: []string{"127.0.0.2"}}, ProbeListsAll},

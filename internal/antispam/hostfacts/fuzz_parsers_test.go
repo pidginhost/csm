@@ -2,11 +2,39 @@ package hostfacts
 
 import (
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
+
+func FuzzParseProbeReply(f *testing.F) {
+	question := dnsmessage.Question{Name: dnsmessage.MustNewName("probe.example."), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}
+	for _, rcode := range []dnsmessage.RCode{dnsmessage.RCodeSuccess, dnsmessage.RCodeNameError, dnsmessage.RCodeServerFailure} {
+		m := dnsmessage.Message{Header: dnsmessage.Header{ID: 42, Response: true, RCode: rcode}, Questions: []dnsmessage.Question{question}}
+		packet, err := m.Pack()
+		if err != nil {
+			f.Fatal(err)
+		}
+		f.Add(packet)
+	}
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, packet []byte) {
+		reply := parseProbeReply(packet, 42, question)
+		if (!reply.matched || reply.truncated || reply.answer.Failed || reply.answer.NXDomain) && len(reply.answer.Addrs) != 0 {
+			t.Fatal("incomplete or unsuccessful reply returned listing addresses")
+		}
+		for _, value := range reply.answer.Addrs {
+			addr, err := netip.ParseAddr(value)
+			if err != nil || !addr.Is4() || addr.String() != value {
+				t.Fatal("reply returned a noncanonical A record")
+			}
+		}
+	})
+}
 
 type countedReader struct {
 	io.Reader

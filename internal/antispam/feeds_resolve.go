@@ -69,29 +69,7 @@ func secretFileOK(f HostFacts) bool {
 // Nameservers returns the resolvers rspamd uses: options.dns.nameserver
 // (or its aliases) when set, else the nameserver lines of resolv.conf. An
 // entry CSM cannot parse is an error, never proof of a private resolver.
-func Nameservers(options []byte, resolvConf string) ([]netip.Addr, error) {
-	servers, err := nameservers(options, resolvConf)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]netip.Addr, len(servers))
-	for i, s := range servers {
-		out[i] = s.Addr()
-	}
-	return out, nil
-}
-
-// ProbeServer returns the first resolver rspamd uses, with its port: a
-// local resolver on a cPanel host often cannot listen on port 53.
-func ProbeServer(options []byte, resolvConf string) (netip.AddrPort, error) {
-	servers, err := nameservers(options, resolvConf)
-	if err != nil {
-		return netip.AddrPort{}, err
-	}
-	return servers[0], nil
-}
-
-func nameservers(options []byte, resolvConf string) ([]netip.AddrPort, error) {
+func Nameservers(options []byte, resolvConf string) ([]netip.AddrPort, error) {
 	opts, err := dumpObjectAs[json.RawMessage](options, "options")
 	if err != nil {
 		return nil, errors.New("rspamd's options are not readable")
@@ -146,7 +124,7 @@ func nameservers(options []byte, resolvConf string) ([]netip.AddrPort, error) {
 			return nil, errors.New("rspamd has an empty nameserver entry")
 		}
 		for _, part := range parts {
-			addr, err := nameserverAddr(part)
+			addr, err := nameserverEndpoint(part)
 			if err != nil {
 				return nil, err
 			}
@@ -159,15 +137,16 @@ func nameservers(options []byte, resolvConf string) ([]netip.AddrPort, error) {
 	return out, nil
 }
 
-// nameserverAddr reads one rspamd nameserver entry: an address, optionally
+// nameserverEndpoint reads one rspamd nameserver entry: an address, optionally
 // with a port and a weight (host:port:weight), IPv6 in brackets when a port
-// follows. The port defaults to 53; a zone suffix (fe80::1%eth0) is dropped.
-func nameserverAddr(s string) (netip.AddrPort, error) {
+// follows. Keep the port and IPv6 scope so probes reach the same resolver.
+func nameserverEndpoint(s string) (netip.AddrPort, error) {
 	if addr, err := netip.ParseAddr(s); err == nil {
-		return netip.AddrPortFrom(addr.WithZone(""), 53), nil
+		return netip.AddrPortFrom(addr, 53), nil
 	}
 	invalid := errors.New("rspamd has an invalid nameserver; use an IP address with an optional numeric port and weight")
 	host, suffix := s, ""
+	port := uint16(53)
 	if strings.HasPrefix(s, "[") {
 		end := strings.IndexByte(s, ']')
 		if end < 0 {
@@ -177,7 +156,6 @@ func nameserverAddr(s string) (netip.AddrPort, error) {
 	} else if i := strings.Index(s, ":"); i > 0 {
 		host, suffix = s[:i], s[i:]
 	}
-	port := uint64(53)
 	if suffix != "" {
 		if suffix[0] != ':' {
 			return netip.AddrPort{}, invalid
@@ -186,17 +164,15 @@ func nameserverAddr(s string) (netip.AddrPort, error) {
 		if len(parts) > 2 {
 			return netip.AddrPort{}, invalid
 		}
-		for i, part := range parts {
-			bits := 32 // rspamd weights are unsigned integers.
-			if i == 0 {
-				bits = 16
-			}
-			n, err := strconv.ParseUint(part, 10, bits)
-			if err != nil {
+		value, err := strconv.ParseUint(parts[0], 10, 16)
+		if err != nil {
+			return netip.AddrPort{}, invalid
+		}
+		port = uint16(value)
+		if len(parts) == 2 {
+			// rspamd weights are unsigned integers.
+			if _, err := strconv.ParseUint(parts[1], 10, 32); err != nil {
 				return netip.AddrPort{}, invalid
-			}
-			if i == 0 {
-				port = n
 			}
 		}
 	}
@@ -204,7 +180,7 @@ func nameserverAddr(s string) (netip.AddrPort, error) {
 	if err != nil {
 		return netip.AddrPort{}, invalid
 	}
-	return netip.AddrPortFrom(addr.WithZone(""), uint16(port)), nil
+	return netip.AddrPortFrom(addr, port), nil
 }
 
 // localResolver reports whether rspamd's queries stay on this host or a
@@ -269,7 +245,7 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 				reason = "CSM cannot read which nameservers rspamd uses. " + resolverFix
 			case err != nil:
 				reason = err.Error() + ". " + resolverFix
-			case slices.ContainsFunc(servers, func(a netip.Addr) bool { return !localResolver(a) }):
+			case slices.ContainsFunc(servers, func(a netip.AddrPort) bool { return !localResolver(a.Addr()) }):
 				reason = "rspamd uses a public nameserver. " + resolverFix
 			}
 		}

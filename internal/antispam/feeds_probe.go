@@ -79,7 +79,7 @@ func ClassifyProbe(f Feed, q ProbeQuery, a ProbeAnswer) (ProbeStatus, string) {
 	switch {
 	case a.Failed:
 		return ProbeNoAnswer, ""
-	case q.Listed && a.NXDomain:
+	case q.Listed && (a.NXDomain || len(a.Addrs) == 0):
 		return ProbeNoAnswer, ""
 	case q.Listed && slices.ContainsFunc(a.Addrs, func(addr string) bool { return slices.Contains(q.Zone.TestAnswers, addr) }):
 		return ProbeOK, ""
