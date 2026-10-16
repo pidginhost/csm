@@ -36,6 +36,11 @@ func Judge(scanOK bool, score, mapTenths, rejectScore, tagScore int) Verdict {
 // Recordable reports whether evidence about a may be recorded: only
 // addresses the map could ever list (spec 7.2).
 func Recordable(a netip.Addr, never []netip.Addr) bool {
+	if a.Zone() != "" {
+		return false
+	}
 	a = a.Unmap()
-	return listable(a) && !slices.Contains(never, a)
+	return listable(a) && !slices.ContainsFunc(never, func(excluded netip.Addr) bool {
+		return excluded.Unmap() == a
+	})
 }

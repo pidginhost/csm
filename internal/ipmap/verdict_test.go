@@ -58,3 +58,34 @@ func TestRecordable(t *testing.T) {
 		t.Error("a marker without a sender is recordable")
 	}
 }
+
+func TestRecordableNormalizesExcludedAddresses(t *testing.T) {
+	for _, excluded := range []string{"203.0.113.60", "::ffff:203.0.113.60"} {
+		t.Run(excluded, func(t *testing.T) {
+			never := []netip.Addr{{}, netip.MustParseAddr(excluded)}
+			for _, ip := range []string{"203.0.113.60", "::ffff:203.0.113.60"} {
+				if Recordable(netip.MustParseAddr(ip), never) {
+					t.Errorf("Recordable(%s, %s) = true, want false", ip, excluded)
+				}
+			}
+			for _, ip := range []string{"203.0.113.61", "::ffff:203.0.113.61", "2001:db8::61"} {
+				if !Recordable(netip.MustParseAddr(ip), never) {
+					t.Errorf("Recordable(%s, %s) = false, want true", ip, excluded)
+				}
+			}
+			if never[1] != netip.MustParseAddr(excluded) {
+				t.Fatal("Recordable changed the caller's exclusions")
+			}
+		})
+	}
+}
+
+func TestRecordableRejectsZonedAddresses(t *testing.T) {
+	for _, ip := range []string{"2001:db8::61%eth0", "::ffff:203.0.113.61%eth0"} {
+		t.Run(ip, func(t *testing.T) {
+			if Recordable(netip.MustParseAddr(ip), nil) {
+				t.Fatal("a zoned sender is recordable")
+			}
+		})
+	}
+}

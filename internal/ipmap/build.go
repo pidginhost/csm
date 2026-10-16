@@ -89,7 +89,9 @@ func Build(src Sources) Map {
 			if !ok || !listable(p.Addr()) {
 				continue
 			}
-			if slices.ContainsFunc(src.Never, p.Contains) {
+			if slices.ContainsFunc(src.Never, func(a netip.Addr) bool {
+				return p.Contains(a) || p.Contains(a.Unmap())
+			}) {
 				continue
 			}
 			if cur, ok := best[p]; !ok || rank(s.Name) < rank(cur.Name) {
@@ -141,6 +143,10 @@ func Build(src Sources) Map {
 // map is a line-oriented file.
 func parse(raw string) (netip.Prefix, bool) {
 	if p, err := netip.ParsePrefix(raw); err == nil {
+		// Keep IPv4 entries in the same form as sender lookups and exclusions.
+		if p.Addr().Is4In6() && p.Bits() >= 96 {
+			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
 		return p.Masked(), true
 	}
 	a, err := netip.ParseAddr(raw)

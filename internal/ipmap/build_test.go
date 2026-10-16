@@ -71,6 +71,46 @@ func TestBuildNeverListsExcludedAddresses(t *testing.T) {
 	}
 }
 
+func TestBuildNormalizesExcludedAddresses(t *testing.T) {
+	for _, excluded := range []string{"203.0.113.60", "::ffff:203.0.113.60"} {
+		for _, entry := range []string{"203.0.113.60", "::ffff:203.0.113.60", "203.0.113.0/24", "::ffff:203.0.113.0/120"} {
+			t.Run(excluded+"/"+entry, func(t *testing.T) {
+				never := []netip.Addr{{}, addr(excluded)}
+				m := Build(Sources{
+					Entries: map[string][]string{Spam.Name: {entry, "198.51.100.61"}},
+					Never:   never,
+				})
+				if m.Len() != 1 || m.Weight(addr("203.0.113.60")) != 0 || m.Weight(addr("198.51.100.61")) != Spam.Tenths() {
+					content, _ := m.Render()
+					t.Fatalf("map must omit the excluded address or its containing network and keep the unrelated address:\n%s", content)
+				}
+				if never[1] != addr(excluded) {
+					t.Fatal("Build changed the caller's exclusions")
+				}
+			})
+		}
+	}
+}
+
+func TestBuildNormalizesMappedPrefixes(t *testing.T) {
+	m := Build(Sources{Entries: map[string][]string{
+		Spam.Name: {"::ffff:203.0.113.0/120", "::ffff:198.51.100.61/128"},
+	}})
+	if m.Len() != 2 {
+		t.Fatalf("got %d entries, want 2", m.Len())
+	}
+	for _, ip := range []string{"203.0.113.60", "::ffff:203.0.113.60", "198.51.100.61", "::ffff:198.51.100.61"} {
+		if got := m.Weight(addr(ip)); got != Spam.Tenths() {
+			t.Errorf("Weight(%s) = %d, want %d", ip, got, Spam.Tenths())
+		}
+	}
+	want, _ := Build(Sources{Entries: map[string][]string{Spam.Name: {"203.0.113.0/24", "198.51.100.61"}}}).Render()
+	got, _ := m.Render()
+	if string(got) != string(want) {
+		t.Fatalf("mapped prefixes render differently from IPv4:\n%s", got)
+	}
+}
+
 // netip accepts any text after an IPv6 zone separator, newlines included;
 // a zoned address must never reach the map file as a line of its own.
 func TestBuildRefusesZonedAddresses(t *testing.T) {
