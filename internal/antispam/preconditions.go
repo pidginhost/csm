@@ -26,6 +26,9 @@ type Problem struct {
 	Code     string
 	Severity Severity
 	Detail   string
+	// Key separates findings of one code: the feed name, or rspamd_maps
+	// for a map redirect (feeds spec section 8).
+	Key string
 }
 
 // Problem codes.
@@ -47,6 +50,7 @@ const (
 	CodeMessageSize    = "message_size"
 	CodeEximLog        = "exim_log"
 	CodeSystemd        = "systemd"
+	CodeFeed           = "feed"
 )
 
 const (
