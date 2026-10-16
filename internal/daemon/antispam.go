@@ -122,15 +122,14 @@ func (d *Daemon) withIPMap(r reconcile.Reconciler) reconcile.Reconciler {
 		r.Feeds = reconcile.NewFeedState()
 	}
 	w := ipmap.NewWriter(antispamIPMapPath)
+	d.antispamFeeds.Store(r.Feeds)
 	d.ipmapWriter.Store(w)
-	d.antispamFeeds = r.Feeds
 	r.IPMap = reconcile.IPMapHooks{
 		Write: func(ctx context.Context) error {
 			d.ipmapMu.Lock()
 			defer d.ipmapMu.Unlock()
-			// A failed write after a removal stays removed: the feed's
-			// preconditions report the cause, and the canary tick must not
-			// flicker antispam_ip_map on every pass.
+			// Without a surviving map, a failed write must not restart
+			// canary warnings before feed preconditions allow the rule back.
 			wrote, err := d.writeIPMap(ctx, time.Now())
 			if wrote || err == nil {
 				d.ipmapRemoved.Store(false)
@@ -141,6 +140,7 @@ func (d *Daemon) withIPMap(r reconcile.Reconciler) reconcile.Reconciler {
 			d.ipmapMu.Lock()
 			defer d.ipmapMu.Unlock()
 			d.ipmapRemoved.Store(true)
+			d.ipmapCanaryMisses = 0
 			return w.Remove()
 		},
 	}
@@ -174,10 +174,25 @@ func ipMapWanted(cfg *config.Config) bool {
 	return as.Enabled && !cfg.ObserveMode() && slices.Contains(as.Feeds.Enabled, antispam.FeedCSMIPMap)
 }
 
+// A rule can reuse a surviving map after both removal and a later write
+// fail. Its active state then overrides the earlier removal request.
+func (d *Daemon) ipMapRemoved() bool {
+	return d.ipmapRemoved.Load() && !d.antispamFeeds.Load().IPMapActive()
+}
+
 // writeIPMap builds the map from CSM's sources and writes it if changed.
 // The caller holds ipmapMu so removal cannot overtake a pending write.
 func (d *Daemon) writeIPMap(ctx context.Context, now time.Time) (bool, error) {
-	return d.ipmapWriter.Load().Write(ipmap.Build(ipmapSources(now, d.currentCfg().InfraIPs)), antispamRspamdGroup(ctx), now)
+	return d.ipmapWriter.Load().Write(ipmap.Build(ipmapSources(now, d.antispamInfraIPs(d.currentCfg()))), antispamRspamdGroup(ctx), now)
+}
+
+// Reuse the firewall's last successful DNS answers without resolving names
+// on the mail log path. Firewall-only entries must not suppress evidence.
+func (d *Daemon) antispamInfraIPs(cfg *config.Config) []string {
+	if d.fwEngine == nil {
+		return cfg.InfraIPs
+	}
+	return slices.Concat(cfg.InfraIPs, d.fwEngine.ResolvedInfraIPs(infraHostnames(cfg.InfraIPs)))
 }
 
 // refreshIPMap writes the map while the feed is wanted, runs the canary
@@ -189,22 +204,27 @@ func (d *Daemon) refreshIPMap(ctx context.Context, now time.Time) bool {
 
 func (d *Daemon) checkIPMap(ctx context.Context, now time.Time, rebuild bool) bool {
 	cfg := d.currentCfg()
+	d.ipmapMu.Lock()
+	if !ipMapWanted(cfg) || d.ipMapRemoved() || d.ipmapCanarySocket != cfg.EmailProtection.Antispam.RspamdSocket {
+		d.ipmapCanaryMisses = 0
+	}
+	d.ipmapCanarySocket = cfg.EmailProtection.Antispam.RspamdSocket
 	if !rebuild && !ipMapWanted(cfg) {
 		// Only hosts configured for the map pay for the frequent canary
 		// tick; the 10-minute refresh settles the check everywhere else.
+		d.ipmapMu.Unlock()
 		return false
 	}
-	d.ipmapMu.Lock()
 	var findings []alert.Finding
 	wrote := false
-	if ctx.Err() == nil && ipMapWanted(cfg) && !d.ipmapRemoved.Load() {
+	if ctx.Err() == nil && ipMapWanted(cfg) && !d.ipMapRemoved() {
 		if rebuild {
 			wrote, _ = d.writeIPMap(ctx, now)
 		}
 		st := d.ipmapWriter.Load().State()
 		// Until the rule is in use only a write failure counts.
 		seen, probeErr := st.Gen, error(nil)
-		if d.antispamFeeds.IPMapActive() {
+		if d.antispamFeeds.Load().IPMapActive() {
 			seen, probeErr = antispamCanary(ctx, cfg.EmailProtection.Antispam.RspamdSocket)
 		}
 		p := ipmap.CanaryProblem(st, seen, probeErr, now)
@@ -221,6 +241,9 @@ func (d *Daemon) checkIPMap(ctx context.Context, now time.Time, rebuild bool) bo
 	}
 	d.ipmapMu.Unlock()
 	if ctx.Err() == nil {
+		// A dismissal acknowledges this outage, not every future failure
+		// that shares the map's stable finding identity.
+		d.store.RearmAbsentDedupFindings([]string{reconcile.CheckIPMap}, findings)
 		d.processScanFindings(cfg, findings, []string{reconcile.CheckIPMap}, "antispam")
 	}
 	return wrote

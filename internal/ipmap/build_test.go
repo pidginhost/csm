@@ -96,6 +96,28 @@ func TestBuildNormalizesExcludedAddresses(t *testing.T) {
 	}
 }
 
+func TestBuildNormalizesExcludedNetworks(t *testing.T) {
+	for _, raw := range []string{"203.0.113.64/26", "::ffff:203.0.113.64/122"} {
+		t.Run(raw, func(t *testing.T) {
+			never := []netip.Prefix{netip.MustParsePrefix(raw)}
+			m := Build(Sources{
+				Entries: map[string][]string{
+					Drop.Name: {"203.0.113.0/24"},
+					Spam.Name: {"203.0.113.70", "::ffff:203.0.113.80/128", "203.0.113.64/27", "198.51.100.61"},
+				},
+				NeverNets: never,
+			})
+			if m.Len() != 1 || m.Weight(addr("203.0.113.70")) != 0 || m.Weight(addr("198.51.100.61")) != Spam.Tenths() {
+				content, _ := m.Render()
+				t.Fatalf("excluded network or overlapping entry remains listed:\n%s", content)
+			}
+			if never[0].String() != raw {
+				t.Fatal("Build changed the caller's exclusions")
+			}
+		})
+	}
+}
+
 func TestBuildNormalizesMappedPrefixes(t *testing.T) {
 	m := Build(Sources{Entries: map[string][]string{
 		Spam.Name: {"::ffff:203.0.113.0/120", "::ffff:198.51.100.61/128"},

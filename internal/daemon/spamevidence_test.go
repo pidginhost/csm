@@ -18,6 +18,7 @@ import (
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/netutil"
 )
@@ -63,8 +64,8 @@ func TestRecorderSubtractsTheMapWeight(t *testing.T) {
 func TestAntispamWiresTheIPMap(t *testing.T) {
 	d := newTestDaemon(t)
 	r := d.withIPMap(reconcile.Reconciler{})
-	if r.IPMap.Write == nil || r.IPMap.Remove == nil || r.Feeds == nil || d.antispamFeeds != r.Feeds || d.ipmapWriter.Load() == nil {
-		t.Fatalf("IP map hooks: %+v, feeds %p/%p, writer %v", r.IPMap, r.Feeds, d.antispamFeeds, d.ipmapWriter.Load())
+	if r.IPMap.Write == nil || r.IPMap.Remove == nil || r.Feeds == nil || d.antispamFeeds.Load() != r.Feeds || d.ipmapWriter.Load() == nil {
+		t.Fatalf("IP map hooks: %+v, feeds %p/%p, writer %v", r.IPMap, r.Feeds, d.antispamFeeds.Load(), d.ipmapWriter.Load())
 	}
 }
 
@@ -306,5 +307,49 @@ func TestRecorderSkipsWhitelistedHostAndInfraSenders(t *testing.T) {
 	}
 	if rec := adb.LookupIP("203.0.113.113"); rec == nil || rec.Mail == nil || rec.Mail.Spam != 1 {
 		t.Fatalf("control sender not recorded: %+v", rec)
+	}
+}
+
+func TestIPMapAndRecorderFollowResolvedInfraHosts(t *testing.T) {
+	d, cfg, r := ipmapTestDaemon(t)
+	useActiveConfig(t, cfg)
+	adb := useTestAttackDB(t)
+	t.Cleanup(checks.SetGlobalThreatDBForTest(t.TempDir()))
+	t.Cleanup(netutil.SetHostAddressLookup(func() ([]net.IP, error) { return nil, nil }))
+	cfg.InfraIPs = []string{" panel.example.net "}
+	d.fwEngine = &firewall.Engine{}
+	d.fwEngine.UpdateInfraResolved("firewall-only.example.net", []string{"203.0.113.122"})
+	checks.SetThreatFeedForTest("cins-army", []string{"203.0.113.120", "203.0.113.121", "203.0.113.122"}, nil)
+	checks.SetThreatFeedForTest("spamhaus-drop", nil, []string{"2001:db8:1::/48"})
+	for _, protected := range []string{"203.0.113.120", "203.0.113.121"} {
+		d.fwEngine.UpdateInfraResolved("panel.example.net", []string{protected, "2001:db8:1::7"})
+		if err := r.IPMap.Write(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		for _, ip := range []string{"203.0.113.120", "203.0.113.121", "203.0.113.122", "2001:db8:1::7"} {
+			want := ipmap.CINS.Tenths()
+			if ip == protected || ip == "2001:db8:1::7" {
+				want = 0
+			}
+			if got := d.ipmapWriter.Load().Weight(netip.MustParseAddr(ip)); got != want {
+				t.Errorf("weight(%s) = %d, want %d with %s protected", ip, got, want, protected)
+			}
+			before := 0
+			if rec := adb.LookupIP(ip); rec != nil && rec.Mail != nil {
+				before = int(rec.Mail.Spam)
+			}
+			d.recordSpamEvidence(spamLine(ip), time.Now(), cfg)
+			after := 0
+			if rec := adb.LookupIP(ip); rec != nil && rec.Mail != nil {
+				after = int(rec.Mail.Spam)
+			}
+			increment := 1
+			if want == 0 {
+				increment = 0
+			}
+			if after != before+increment {
+				t.Errorf("spam count for %s = %d, want %d with %s protected", ip, after, before+increment, protected)
+			}
+		}
 	}
 }

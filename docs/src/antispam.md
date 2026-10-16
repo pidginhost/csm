@@ -280,6 +280,14 @@ adds at most 4 to a message. Whitelisted addresses (operator, temporary and
 addresses and the server's own addresses are never listed, and neither is a
 network that contains one of them.
 
+IPv4-mapped IPv6 addresses and CIDRs in `infra_ips` protect the same senders
+as their IPv4 forms. Infrastructure hostnames use the last successful DNS
+answers from CSM's firewall resolver. This requires a running CSM firewall;
+without it, use literal addresses or CIDRs. DNS changes affect the map on
+its next rebuild and spam evidence on the next scan record. Entries only in
+`firewall.infra_ips` grant firewall access without suppressing spam evidence
+or map listings.
+
 The feed stays off with a warning until the map exists as a regular
 root-owned file, mode 0640, in rspamd's service group, without extra ACLs. Every parent must be a root-owned directory with
 no group or other write access or extra ACLs, and rspamd must be able to
@@ -297,12 +305,19 @@ Like the other feeds, it needs rspamd 4 or later.
 CSM checks that rspamd uses the current map by scanning a canary message
 from 192.0.2.255 every 30 seconds while the rule is in use. The scan stays
 out of rspamd's history and statistics. `antispam_ip_map` reports a map CSM
-could not write, or rspamd still not using the current map 5 minutes after a
-write; a matching answer clears it. A failed write keeps the previous map,
-which rspamd keeps using. A missing map, a changed file mode or a changed
+could not write, or two consecutive probes showing rspamd still not using
+the current map after its 5-minute load grace; a matching answer clears it.
+Earlier probe failures are forgotten when the map is removed, monitoring is
+disabled, observe mode is entered, or the scan socket changes.
+Dismissing the warning acknowledges the current outage; recovery clears the
+dismissal so a later failure can notify again.
+A failed write keeps the previous map, which rspamd keeps using. A missing
+map, a changed file mode or a changed
 rspamd group makes CSM write the map again even when its content is the
 same. Once no installed rule reads the map, CSM deletes it; a failed removal
 raises `antispam_apply_failed` and is retried on the next pass.
+If removal fails and a later apply reuses the surviving map, CSM resumes
+monitoring it and subtracts its score from new spam evidence.
 
 ### Spam evidence
 

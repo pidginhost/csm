@@ -5,11 +5,14 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/config"
@@ -172,4 +175,130 @@ func TestCanaryProbeFailureNeedsTwoInARow(t *testing.T) {
 		cancel()
 		synctest.Wait()
 	})
+}
+
+func TestCanaryMissesResetWhenTrackingStops(t *testing.T) {
+	for _, change := range []string{"removed", "disabled", "observe", "socket"} {
+		t.Run(change, func(t *testing.T) {
+			d, cfg, r := ipmapTestDaemon(t)
+			useActiveConfig(t, cfg)
+			installTestIPMap(t, cfg, r)
+			prev := antispamCanary
+			t.Cleanup(func() { antispamCanary = prev })
+			antispamCanary = func(context.Context, string) (string, error) { return "", errors.New("connection refused") }
+			ctx := context.Background()
+			check := func(want int) {
+				t.Helper()
+				d.checkIPMap(ctx, d.ipmapWriter.Load().State().WrittenAt.Add(ipmap.CanaryGrace), false)
+				if got := latestChecks(d)[reconcile.CheckIPMap]; got != want {
+					t.Fatalf("canary findings = %d, want %d", got, want)
+				}
+			}
+			check(0)
+			check(1)
+			next := *cfg
+			switch change {
+			case "removed":
+				if err := r.IPMap.Remove(); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.IPMap.Write(ctx); err != nil {
+					t.Fatal(err)
+				}
+			case "disabled", "observe":
+				if change == "disabled" {
+					next.EmailProtection.Antispam.Enabled = false
+				} else {
+					next.Mode = "observe"
+				}
+				useActiveConfig(t, &next)
+				d.checkIPMap(ctx, time.Now(), false)
+				useActiveConfig(t, cfg)
+			case "socket":
+				next.EmailProtection.Antispam.RspamdSocket = "/run/rspamd/other.sock"
+				useActiveConfig(t, &next)
+			}
+			check(0)
+			check(1)
+		})
+	}
+}
+
+// A failed removal can leave a valid map for the next apply to reuse even
+// if its write fails. The active rule still needs monitoring and subtraction.
+func TestIPMapMonitorsRetainedMapAfterFailedRemoval(t *testing.T) {
+	d, cfg, r := ipmapTestDaemon(t)
+	useActiveConfig(t, cfg)
+	prev := antispamCanary
+	t.Cleanup(func() { antispamCanary = prev })
+	antispamCanary = func(context.Context, string) (string, error) { return "", errors.New("connection refused") }
+	adb := useTestAttackDB(t)
+	w := d.ipmapWriter.Load()
+	m := ipmap.Build(ipmap.Sources{Entries: map[string][]string{ipmap.Spam.Name: {"203.0.113.130"}}})
+	if _, err := w.Write(m, os.Getgid(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// A nonempty directory gives a deterministic removal error, including
+	// when tests run as root. The old map and writer state remain intact.
+	path := w.Path
+	w.Path = t.TempDir()
+	if err := os.WriteFile(filepath.Join(w.Path, "occupied"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := r.IPMap.Remove()
+	w.Path = path
+	if err == nil {
+		t.Fatal("expected removal failure")
+	}
+	antispamRspamdGroup = func(context.Context) int { return -1 }
+	installTestIPMap(t, cfg, r)
+	d.checkIPMap(context.Background(), time.Now(), false)
+	if got := latestChecks(d)[reconcile.CheckIPMap]; got != 1 {
+		t.Errorf("active retained map write failure raised %d findings, want 1", got)
+	}
+	line := strings.Replace(spamLine("203.0.113.130"), "score=200", "score=170", 1)
+	d.recordSpamEvidence(line, time.Now(), cfg)
+	if rec := adb.LookupIP("203.0.113.130"); rec != nil {
+		t.Errorf("retained map's own score became spam evidence: %+v", rec.Mail)
+	}
+	antispamRspamdGroup = func(context.Context) int { return os.Getgid() }
+	if !d.refreshIPMap(context.Background(), time.Now()) {
+		t.Error("active retained map did not retry its failed write")
+	}
+	if got := latestChecks(d)[reconcile.CheckIPMap]; got != 0 {
+		t.Errorf("successful retry left %d write failure findings", got)
+	}
+}
+
+func TestIPMapDismissalEndsAfterRecovery(t *testing.T) {
+	d, cfg, _ := ipmapTestDaemon(t)
+	useActiveConfig(t, cfg)
+	antispamRspamdGroup = func(context.Context) int { return -1 }
+	d.refreshIPMap(context.Background(), time.Now())
+	findings := d.store.LatestFindings()
+	if len(findings) != 1 || findings[0].Check != reconcile.CheckIPMap {
+		t.Fatalf("write failure findings: %+v", findings)
+	}
+	d.dispatchBatch(findings)
+	if !d.store.DismissFindingIfLatest(findings[0]) {
+		t.Fatalf("could not dismiss the write failure: %+v", findings)
+	}
+	d.checkIPMap(context.Background(), time.Now(), false)
+	if got := d.store.FilterNew(findings); len(got) != 0 {
+		t.Fatal("ongoing failure lost its dismissal")
+	}
+	antispamRspamdGroup = func(context.Context) int { return os.Getgid() }
+	if !d.refreshIPMap(context.Background(), time.Now()) {
+		t.Fatal("map did not recover")
+	}
+	d.ipmapWriter.Load().Path = filepath.Join(t.TempDir(), "missing", "csm_ip.map")
+	d.refreshIPMap(context.Background(), time.Now())
+	st := d.ipmapWriter.Load().State()
+	if st.Err == nil {
+		t.Fatal("expected a new write failure")
+	}
+	next := reconcile.IPMapFinding(st.Err.Error(), time.Now())
+	if got := d.store.FilterNew([]alert.Finding{next}); len(got) != 1 {
+		t.Fatal("recovered episode's dismissal hid the next failure")
+	}
 }

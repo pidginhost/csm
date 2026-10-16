@@ -108,6 +108,10 @@ func Build(src Sources) Map {
 	for i, a := range src.Never {
 		never[i] = a.WithZone("").Unmap()
 	}
+	neverNets := make([]netip.Prefix, len(src.NeverNets))
+	for i, p := range src.NeverNets {
+		neverNets[i] = unmapPrefix(p)
+	}
 	best := map[netip.Prefix]Symbol{}
 	for _, s := range Symbols() {
 		if s == Canary {
@@ -118,7 +122,7 @@ func Build(src Sources) Map {
 			if !ok || !listable(p.Addr()) {
 				continue
 			}
-			if slices.ContainsFunc(excludedNetworks, p.Overlaps) || slices.ContainsFunc(src.NeverNets, p.Overlaps) || slices.ContainsFunc(never, p.Contains) {
+			if slices.ContainsFunc(excludedNetworks, p.Overlaps) || slices.ContainsFunc(neverNets, p.Overlaps) || slices.ContainsFunc(never, p.Contains) {
 				continue
 			}
 			if cur, ok := best[p]; !ok || rank(s.Name) < rank(cur.Name) {
@@ -169,14 +173,8 @@ func Build(src Sources) Map {
 // map is a line-oriented file.
 func parse(raw string) (netip.Prefix, bool) {
 	if p, err := netip.ParsePrefix(raw); err == nil {
-		// Keep IPv4 entries in the same form as sender lookups and exclusions.
-		if p.Addr().Is4In6() {
-			if p.Bits() < 96 {
-				return netip.Prefix{}, false
-			}
-			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
-		}
-		return p.Masked(), true
+		p = unmapPrefix(p)
+		return p, p.IsValid()
 	}
 	a, err := netip.ParseAddr(raw)
 	if err != nil || a.Zone() != "" {
@@ -184,6 +182,17 @@ func parse(raw string) (netip.Prefix, bool) {
 	}
 	a = a.Unmap()
 	return netip.PrefixFrom(a, a.BitLen()), true
+}
+
+// Keep IPv4 entries in the same form as sender lookups and exclusions.
+func unmapPrefix(p netip.Prefix) netip.Prefix {
+	if p.Addr().Is4In6() {
+		if p.Bits() < 96 {
+			return netip.Prefix{}
+		}
+		p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+	}
+	return p.Masked()
 }
 
 // Len is the number of data lines.

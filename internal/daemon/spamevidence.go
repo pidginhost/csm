@@ -36,7 +36,7 @@ func (d *Daemon) recordSpamEvidence(line string, at time.Time, cfg *config.Confi
 	}
 	weight := func(netip.Addr) int { return 0 }
 	w := d.ipmapWriter.Load()
-	removed := d.ipmapRemoved.Load()
+	removed := d.ipMapRemoved()
 	if !removed && slices.Contains(cfg.EmailProtection.Antispam.Feeds.Enabled, antispam.FeedCSMIPMap) && (w == nil || w.State().Gen == "") {
 		// rspamd can retain a map across daemon restarts. Until its local
 		// lookup is rebuilt, treating the unknown contribution as zero
@@ -46,7 +46,9 @@ func (d *Daemon) recordSpamEvidence(line string, at time.Time, cfg *config.Confi
 	if w != nil && !removed {
 		weight = w.Weight
 	}
-	never := func(a netip.Addr) bool { return notRecordable(a) || isInfraIPDaemon(a.String(), cfg.InfraIPs) }
+	never := func(a netip.Addr) bool {
+		return notRecordable(a) || isInfraIPDaemon(a.String(), d.antispamInfraIPs(cfg))
+	}
 	ip, v := spamEvidence(line, cfg.EmailProtection.Antispam, never, weight)
 	if v != ipmap.NoVerdict {
 		adb.RecordMailVerdict(ip, v == ipmap.SpamVerdict, at)
