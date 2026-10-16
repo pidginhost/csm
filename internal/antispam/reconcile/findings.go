@@ -21,6 +21,7 @@ const (
 	CheckRspamdRecovered = "antispam_rspamd_recovered"
 	CheckScanError       = "antispam_scan_error"
 	CheckFeed            = "antispam_feed"
+	CheckIPMap           = "antispam_ip_map"
 )
 
 // clean escapes control and non-ASCII characters: problem details and
@@ -39,6 +40,18 @@ func feedFinding(p antispam.Problem, now time.Time) alert.Finding {
 		DedupKey:  p.Key,
 		Message:   "Antispam feed problem: " + clean(p.Key),
 		Details:   clean(p.Detail) + ". Core spam filtering is unaffected.",
+		Timestamp: now,
+	}
+}
+
+// IPMapFinding reports that rspamd is not using CSM's current IP map, or
+// that the map could not be written (feeds spec 8.4, 8.5).
+func IPMapFinding(detail string, now time.Time) alert.Finding {
+	return alert.Finding{
+		Severity:  alert.Warning,
+		Check:     CheckIPMap,
+		Message:   "Antispam IP map problem",
+		Details:   clean(detail) + ". Core spam filtering is unaffected.",
 		Timestamp: now,
 	}
 }
