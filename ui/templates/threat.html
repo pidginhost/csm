@@ -100,6 +100,10 @@
                 <option value="blocked">Blocked</option>
                 <option value="clean">Clean</option>
             </select>
+            <select id="attackers-spam" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by spam evidence">
+                <option value="">All attackers</option>
+                <option value="spam">Spam evidence only</option>
+            </select>
             <input type="date" id="attackers-from" class="form-control form-control-sm csm-toolbar__filter" aria-label="Last seen from">
             <input type="date" id="attackers-to" class="form-control form-control-sm csm-toolbar__filter" aria-label="Last seen to">
             <span class="csm-toolbar__spacer"></span>
@@ -129,6 +133,7 @@
                         <th>Events</th>
                         <th>Attack Types</th>
                         <th>Accounts</th>
+                        <th>Spam</th>
                         <th>First Seen</th>
                         <th>Last Seen</th>
                         <th>Status</th>

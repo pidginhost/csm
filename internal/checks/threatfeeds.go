@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -564,6 +565,97 @@ func isFeedSourceName(source string) bool {
 		}
 	}
 	return false
+}
+
+// SetThreatFeedForTest replaces one feed's addresses and networks in the
+// global threat DB. For tests only, like SetGlobalThreatDBForTest.
+func SetThreatFeedForTest(name string, ips, nets []string) {
+	db := globalThreatDB
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.feedIPs == nil {
+		db.feedIPs = make(map[string]map[string]struct{})
+	}
+	if db.feedNets == nil {
+		db.feedNets = make(map[string][]*net.IPNet)
+	}
+	db.feedIPs[name] = make(map[string]struct{}, len(ips))
+	for _, ip := range ips {
+		db.feedIPs[name][ip] = struct{}{}
+	}
+	db.feedNets[name] = nil
+	for _, raw := range nets {
+		if _, n, err := net.ParseCIDR(raw); err == nil {
+			db.feedNets[name] = append(db.feedNets[name], n)
+		}
+	}
+}
+
+// IsWhitelisted reports whether ip is on the operator, temporary or config
+// whitelist. Expired temporary entries no longer count, as in MapSources.
+func (db *ThreatDB) IsWhitelisted(ip string) bool {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.configWhitelist[ip] {
+		return true
+	}
+	if !db.whitelist[ip] {
+		return false
+	}
+	entry := db.whitelistMeta[ip]
+	return entry == nil || entry.ExpiresAt.IsZero() || time.Now().Before(entry.ExpiresAt)
+}
+
+// ThreatMapSources is what the CSM IP map takes from the threat DB (feeds
+// spec 6.1): CSM's permanent block history, each feed's addresses and
+// networks by feed name, and every currently whitelisted address. All sorted copies.
+type ThreatMapSources struct {
+	Permanent []string
+	FeedIPs   map[string][]string
+	FeedNets  map[string][]string
+	Whitelist []string
+}
+
+// MapSources copies the entries the CSM IP map is built from.
+func (db *ThreatDB) MapSources() ThreatMapSources {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	out := ThreatMapSources{FeedIPs: map[string][]string{}, FeedNets: map[string][]string{}}
+	for ip, source := range db.badIPs {
+		if _, temporary := db.badIPExpiry[ip]; !temporary && !isFeedSourceName(source) {
+			out.Permanent = append(out.Permanent, ip)
+		}
+	}
+	for name, ips := range db.feedIPs {
+		for ip := range ips {
+			out.FeedIPs[name] = append(out.FeedIPs[name], ip)
+		}
+		slices.Sort(out.FeedIPs[name])
+	}
+	for name, nets := range db.feedNets {
+		for _, n := range nets {
+			out.FeedNets[name] = append(out.FeedNets[name], n.String())
+		}
+		slices.Sort(out.FeedNets[name])
+	}
+	// A snapshot may outlive the next cleanup, so expired temporary entries
+	// must not become exceptions in a newly built map.
+	now := time.Now()
+	for ip := range db.whitelist {
+		entry := db.whitelistMeta[ip]
+		if entry != nil && !entry.ExpiresAt.IsZero() && !now.Before(entry.ExpiresAt) {
+			continue
+		}
+		if !db.configWhitelist[ip] {
+			out.Whitelist = append(out.Whitelist, ip)
+		}
+	}
+	for ip := range db.configWhitelist {
+		out.Whitelist = append(out.Whitelist, ip)
+	}
+	slices.Sort(out.Permanent)
+	slices.Sort(out.Whitelist)
+	return out
 }
 
 // feedSourceLocked reports which feed lists ip, if any. Caller holds db.mu.

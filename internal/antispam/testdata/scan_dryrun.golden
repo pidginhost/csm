@@ -15,5 +15,5 @@ warn
   !authenticated = *
   !hosts = <; 127.0.0.0/8 ; ::1 ; +trustedmailhosts ; +cpanel_mail_netblocks
   condition = ${if or{{eq{$acl_m_csm_policy}{on}}{eq{$acl_m_csm_policy}{off}}}}
-  logwrite = :main: CSM-ANTISPAM event=scan mode=dry-run policy=$acl_m_csm_policy ${if eq{$acl_m_csm_scan_ok}{1}{result=ok score=$acl_m_csm_score action="${sg{$spam_action}{[^a-z ]}{_}}" decision=${if eq{$acl_m_csm_policy}{off}{unfiltered}{${if >={$acl_m_csm_score}{150}{reject}{${if >={$acl_m_csm_score}{60}{tag}{none}}}}}}}{result=error score=none action="unavailable" decision=none}}
+  logwrite = :main: CSM-ANTISPAM event=scan mode=dry-run policy=$acl_m_csm_policy ${if eq{$acl_m_csm_scan_ok}{1}{result=ok score=$acl_m_csm_score action="${sg{$spam_action}{[^a-z ]}{_}}" decision=${if eq{$acl_m_csm_policy}{off}{unfiltered}{${if >={$acl_m_csm_score}{150}{reject}{${if >={$acl_m_csm_score}{60}{tag}{none}}}}}}}{result=error score=none action="unavailable" decision=none}} ip=$sender_host_address
 # CSM-ANTISPAM END

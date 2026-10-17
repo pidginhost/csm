@@ -92,7 +92,7 @@ func renderScan(s Settings) string {
 		"${if eq{$acl_m_csm_scan_ok}{1}{result=ok score=$acl_m_csm_score action=\"${sg{$spam_action}{[^a-z ]}{_}}\" " +
 		"decision=${if eq{$acl_m_csm_policy}{off}{unfiltered}{${if >={$acl_m_csm_score}{" + reject + "}{reject}" +
 		"{${if >={$acl_m_csm_score}{" + tag + "}{tag}{none}}}}}}}" +
-		"{result=error score=none action=\"unavailable\" decision=none}}\n")
+		"{result=error score=none action=\"unavailable\" decision=none}} ip=$sender_host_address\n")
 	b.WriteString(MarkerEnd + "\n")
 	return b.String()
 }

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -662,5 +663,49 @@ func TestRspamdLogFacts(t *testing.T) {
 		if l := rspamdLog(bad); l.Err == nil {
 			t.Errorf("accepted %+v", bad)
 		}
+	}
+}
+
+func TestCollectReadsTheIPMap(t *testing.T) {
+	d := t.TempDir()
+	c := testCollector(d, &fakeRun{results: map[string]antispam.CommandResult{}})
+	c.layout.IPMap = filepath.Join(d, "csm_ip.map")
+	if f := c.collect(context.Background(), filepath.Join(d, "missing.sock")); !f.IPMap.Missing || f.IPMap.Err != nil {
+		t.Fatalf("absent map = %+v", f.IPMap)
+	}
+	write(t, c.layout.IPMap, "192.0.2.255 CSM_IP_CANARY:0:g000000000000\n")
+	if err := os.Chmod(c.layout.IPMap, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	f := c.collect(context.Background(), filepath.Join(d, "missing.sock"))
+	if f.IPMap.Missing || f.IPMap.Err != nil || f.IPMap.File.Mode.Perm() != 0o640 || f.IPMap.File.Path != c.layout.IPMap {
+		t.Fatalf("written map = %+v", f.IPMap)
+	}
+	if len(f.IPMap.Parents) == 0 || f.IPMap.Parents[0].Path != "/" || f.IPMap.Parents[len(f.IPMap.Parents)-1].Path != d {
+		t.Fatalf("map directory chain not collected: %+v", f.IPMap.Parents)
+	}
+	if live().layout.IPMap != ipmap.DefaultPath {
+		t.Fatalf("live collector reads %q", live().layout.IPMap)
+	}
+}
+
+func TestCollectIPMapDoesNotFollowDirectorySymlink(t *testing.T) {
+	d := t.TempDir()
+	actual := filepath.Join(d, "actual")
+	mkdir(t, actual)
+	write(t, filepath.Join(actual, "csm_ip.map"), "192.0.2.255 CSM_IP_CANARY:0:g000000000000\n")
+	link := filepath.Join(d, "link")
+	if err := os.Symlink(actual, link); err != nil {
+		t.Fatal(err)
+	}
+	c := testCollector(d, &fakeRun{results: map[string]antispam.CommandResult{}})
+	c.layout.IPMap = filepath.Join(link, "csm_ip.map")
+	f := c.collect(context.Background(), filepath.Join(d, "missing.sock"))
+	if f.IPMap.Err == nil || f.IPMap.File.Path != "" || len(f.IPMap.Parents) == 0 {
+		t.Fatalf("collector followed a map directory symlink: %+v", f.IPMap)
+	}
+	last := f.IPMap.Parents[len(f.IPMap.Parents)-1]
+	if last.Path != link || last.Mode&fs.ModeSymlink == 0 {
+		t.Fatalf("unsafe map parent was not recorded: %+v", last)
 	}
 }

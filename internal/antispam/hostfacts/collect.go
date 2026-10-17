@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -37,6 +38,8 @@ type Layout struct {
 	Record        string
 	ResolvConf    string
 	Targets       []antispam.Target
+	// IPMap is the CSM IP map file rspamd reads.
+	IPMap string
 }
 
 type collector struct {
@@ -61,6 +64,7 @@ func live() collector {
 			Record:        antispam.RecordPath,
 			ResolvConf:    "/etc/resolv.conf",
 			Targets:       antispam.MutationTargets(),
+			IPMap:         ipmap.DefaultPath,
 		},
 		cpanel:     func() bool { return platform.Detect().IsCPanel() },
 		eximMTA:    func() bool { return platform.DetectMTA() == platform.MTAExim },
@@ -70,6 +74,13 @@ func live() collector {
 		gid:        lookupGID,
 		primaryGID: lookupPrimaryGID,
 	}
+}
+
+// RspamdGroup is rspamd's service group, or -1 when unknown (a root-started
+// rspamd, or systemctl failing).
+func RspamdGroup(ctx context.Context) int {
+	c := live()
+	return c.serviceGroup(c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...))
 }
 
 // Collect reads every fact antispam.CheckHost evaluates for the scan socket.
@@ -95,6 +106,7 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	f.RspamdRBL = c.run(ctx, "rspamadm", "configdump", "-j", "rbl")
 	f.RspamdConfig = c.run(ctx, "rspamadm", "configdump", "-j")
 	f.RspamdLog = rspamdLog(f.RspamdConfig)
+	f.IPMap = fileFacts(c.layout.IPMap)
 	f.RspamdService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...)
 	f.EximService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.EximUnit)...)
 	_, f.SystemdRunErr = c.lookPath("systemd-run")
@@ -333,6 +345,30 @@ func rspamdLog(dump antispam.CommandResult) antispam.LogFacts {
 		return out
 	}
 	switch facts, err := pathFacts(out.Path); {
+	case errors.Is(err, fs.ErrNotExist):
+		out.Missing = true
+	case err != nil:
+		out.Err = err
+	default:
+		out.File = facts
+	}
+	return out
+}
+
+// fileFacts records the file and its directories without following links.
+func fileFacts(p string) antispam.FileFacts {
+	var out antispam.FileFacts
+	if out.Parents, out.Err = chain(filepath.Dir(p)); out.Err != nil {
+		if errors.Is(out.Err, fs.ErrNotExist) {
+			out.Missing, out.Err = true, nil
+		}
+		return out
+	}
+	if last := out.Parents[len(out.Parents)-1]; !last.Mode.IsDir() {
+		out.Err = fmt.Errorf("%s is not a directory", last.Path)
+		return out
+	}
+	switch facts, err := pathFacts(p); {
 	case errors.Is(err, fs.ErrNotExist):
 		out.Missing = true
 	case err != nil:

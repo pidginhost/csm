@@ -2,6 +2,7 @@ package antispam
 
 import (
 	"fmt"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -158,6 +159,66 @@ func BenchmarkScanMarkerWithoutMarker(b *testing.B) {
 	for b.Loop() {
 		if marker, ok := ScanMarker(line); marker || ok {
 			b.Fatal("accepted ordinary mail")
+		}
+	}
+}
+
+func TestParseScanReadsTheSender(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want Scan
+	}{
+		{markerPrefix + `CSM-ANTISPAM event=scan mode=dry-run policy=on result=ok score=150 action="reject" decision=reject ip=198.51.100.7`,
+			Scan{OK: true, Policy: "on", Score: 150, Decision: "reject", IP: netip.MustParseAddr("198.51.100.7")}},
+		{markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=off result=ok score=-5 action="no action" decision=unfiltered ip=2001:db8::25`,
+			Scan{OK: true, Policy: "off", Score: -5, Decision: "unfiltered", IP: netip.MustParseAddr("2001:db8::25")}},
+		{markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=error score=none action="unavailable" decision=none ip=203.0.113.9`,
+			Scan{Policy: "on", Decision: "none", IP: netip.MustParseAddr("203.0.113.9")}},
+	} {
+		got, ok := ParseScan(tc.line)
+		if !ok || got != tc.want {
+			t.Errorf("ParseScan(%q) = %+v, %v; want %+v", tc.line, got, ok, tc.want)
+		}
+	}
+}
+
+// Exim keeps logging the old marker until the rebuilt configuration loads;
+// health must keep counting it, and it names no sender.
+func TestParseScanAcceptsOldGrammar(t *testing.T) {
+	got, ok := ParseScan(markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=20 action="no action" decision=none`)
+	if !ok || !got.OK || got.Score != 20 || got.IP.IsValid() {
+		t.Fatalf("old marker = %+v, %v", got, ok)
+	}
+	if marker, scanOK := ScanMarker(markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=error score=none action="unavailable" decision=none`); !marker || scanOK {
+		t.Fatal("old error marker no longer counts")
+	}
+}
+
+func TestParseScanWithoutUsableSender(t *testing.T) {
+	got, ok := ParseScan(markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=20 action="no action" decision=none ip=`)
+	if !ok || got.IP.IsValid() {
+		t.Fatalf("empty ip = %+v, %v", got, ok)
+	}
+	for _, bad := range []string{"ip=192.0.2.1 x", "ip=192.0.2.1;", "ip=not-an-address", " ip=192.0.2.1"} {
+		if _, ok := ParseScan(markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=20 action="no action" decision=none ` + bad); ok {
+			t.Errorf("accepted %q", bad)
+		}
+	}
+}
+
+func TestParseScanRejectsMalformedSender(t *testing.T) {
+	for _, ip := range []string{"192.0.2", "192.0.2.256", "192.0.002.1", "2001:db8:::1", "2001:db8", "deadbeef", "."} {
+		for _, result := range []string{
+			`result=ok score=20 action="no action" decision=none`,
+			`result=error score=none action="unavailable" decision=none`,
+		} {
+			line := markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on ` + result + " ip=" + ip
+			if got, marker := ParseScan(line); marker || got != (Scan{}) {
+				t.Errorf("malformed sender %q returned %+v, %v", ip, got, marker)
+			}
+			if marker, ok := ScanMarker(line); marker || ok {
+				t.Errorf("malformed sender %q counted as a scan: %t, %t", ip, marker, ok)
+			}
 		}
 	}
 }

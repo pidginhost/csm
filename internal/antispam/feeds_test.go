@@ -131,8 +131,8 @@ func TestFeedByName(t *testing.T) {
 	if f, ok := FeedByName(FeedPSBL); !ok || f.Name != FeedPSBL {
 		t.Fatalf("psbl = %+v, %v", f, ok)
 	}
-	if _, ok := FeedByName("csm_ip_map"); ok {
-		t.Fatal("csm_ip_map belongs to plan B")
+	if f, ok := FeedByName(FeedCSMIPMap); !ok || f.DNS() || f.Terms == "" {
+		t.Fatalf("csm_ip_map = %+v, %v", f, ok)
 	}
 	if got := FeedNames(); len(got) != len(catalogue) || got[0] != FeedMailspike {
 		t.Fatalf("FeedNames = %v", got)

@@ -13,10 +13,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/eximlock"
+	"github.com/pidginhost/csm/internal/ipmap"
 )
 
 func feedDesired(feeds ...string) Desired {
@@ -91,6 +93,40 @@ func TestPassBlocksFeedsAfterFeedsCheck(t *testing.T) {
 	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL, antispam.FeedSEM))
 	if last := h.requests[len(h.requests)-1]; last.Feeds == nil {
 		t.Fatal("a feed config change must lift the hold")
+	}
+}
+
+func TestPassHoldsIPMapAfterFeedsCheck(t *testing.T) {
+	h := &fakeHost{}
+	r := h.reconciler()
+	r.Feeds = NewFeedState()
+	r.Collect = func(context.Context, string) antispam.HostFacts { return ipMapFeedFacts() }
+	r.assess = func(bool, antispam.Settings, antispam.HostFacts) antispam.Assessment {
+		return antispam.Assessment{Action: antispam.Install}
+	}
+	r.Run = func(_ context.Context, req antispam.Request) (antispam.Result, error) {
+		h.requests = append(h.requests, req)
+		if req.Feeds != nil && strings.Contains(*req.Feeds, antispam.FeedCSMIPMap) {
+			return antispam.Result{Operation: antispam.OpApply, FailedStep: antispam.FeedsCheckStep,
+				Rollback: antispam.RollbackVerified, Error: "feed conflict"}, nil
+		}
+		return antispam.Result{Operation: antispam.OpApply, OK: true, Generation: strings.Repeat("a", 64)}, nil
+	}
+	d := feedDesired(antispam.FeedCSMIPMap, antispam.FeedRspamdMaps)
+	r.Pass(context.Background(), d)
+	for pass := 0; pass < 2; pass++ {
+		out := r.Pass(context.Background(), d)
+		last := h.requests[len(h.requests)-1]
+		if last.Feeds == nil || *last.Feeds != antispam.FeedRspamdMaps {
+			t.Fatalf("held IP map sent again: %+v", last)
+		}
+		if !hasFindingKey(out.Findings, CheckFeed, antispam.FeedCSMIPMap) || hasFindingKey(out.Findings, CheckFeed, antispam.FeedRspamdMaps) {
+			t.Fatalf("held feed findings: %+v", out.Findings)
+		}
+	}
+	r.Pass(context.Background(), feedDesired(antispam.FeedCSMIPMap))
+	if last := h.requests[len(h.requests)-1]; last.Feeds == nil || *last.Feeds != antispam.FeedCSMIPMap {
+		t.Fatal("a feed configuration change must lift the IP map hold")
 	}
 }
 
@@ -667,5 +703,140 @@ func TestUnexpectedEmptyAnswerSaysSo(t *testing.T) {
 	f, ok := NewFeedState().probeFinding(psbl, q, antispam.ProbeUnexpected, "", antispam.ProbeAnswer{}, testNow)
 	if !ok || strings.Contains(f.Details, "Answer: .") || !strings.Contains(f.Details, "no address") {
 		t.Fatalf("details %q", f.Details)
+	}
+}
+
+func TestPassWritesTheMapBeforeCollecting(t *testing.T) {
+	h := &fakeHost{}
+	r := h.reconciler()
+	var order []string
+	r.IPMap = IPMapHooks{Write: func(context.Context) error { order = append(order, "write"); return nil }}
+	collect := r.Collect
+	r.Collect = func(ctx context.Context, socket string) antispam.HostFacts {
+		order = append(order, "collect")
+		return collect(ctx, socket)
+	}
+	r.Pass(context.Background(), feedDesired(antispam.FeedCSMIPMap))
+	if !slices.Equal(order, []string{"write", "collect"}) {
+		t.Fatalf("order %v", order)
+	}
+	order = nil
+	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
+	if slices.Contains(order, "write") {
+		t.Fatal("wrote the map without the feed")
+	}
+}
+
+func TestPassRemovesTheMapOnceNoRuleReadsIt(t *testing.T) {
+	removed := 0
+	h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Keep, Installed: true}}
+	r := h.reconciler()
+	r.Feeds = NewFeedState()
+	r.IPMap = IPMapHooks{Write: func(context.Context) error { return nil }, Remove: func() error { removed++; return nil }}
+	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
+	if removed != 1 || r.Feeds.IPMapActive() {
+		t.Fatalf("removed %d, active %v", removed, r.Feeds.IPMapActive())
+	}
+	h.assessment = antispam.Assessment{Action: antispam.Install}
+	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
+	if removed != 1 {
+		t.Fatal("removed the map before the pass that drops the rule completed")
+	}
+	h.result = antispam.Result{Operation: antispam.OpApply, OK: true, Generation: strings.Repeat("a", 64)}
+	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
+	if removed != 2 {
+		t.Fatal("kept the map after the rule was removed")
+	}
+}
+
+func TestPassMarksTheIPMapActive(t *testing.T) {
+	h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Keep, Installed: true}}
+	r := h.reconciler()
+	r.Feeds = NewFeedState()
+	r.Collect = func(context.Context, string) antispam.HostFacts { return ipMapFeedFacts() }
+	r.IPMap = IPMapHooks{Write: func(context.Context) error { return nil }, Remove: func() error { return nil }}
+	r.Pass(context.Background(), feedDesired(antispam.FeedCSMIPMap))
+	if !r.Feeds.IPMapActive() {
+		t.Fatal("an installed, current csm_ip_map is not active")
+	}
+	r.Pass(context.Background(), feedDesired(antispam.FeedPSBL))
+	if r.Feeds.IPMapActive() {
+		t.Fatal("csm_ip_map stays active after the feed is dropped")
+	}
+}
+
+// A failed CSM_IP rule check holds the IP map off like the DNS feeds, so the
+// next pass applies without it instead of failing the same check again
+// (feeds spec 8.2).
+func TestHeldFeedsDropTheIPMap(t *testing.T) {
+	st := NewFeedState()
+	configured := feedDesired(antispam.FeedCSMIPMap, antispam.FeedRspamdMaps).Settings
+	st.hold(configured)
+	got, problems := st.apply(configured, configured, nil)
+	if got.HasFeed(antispam.FeedCSMIPMap) || !got.HasFeed(antispam.FeedRspamdMaps) || len(problems) != 1 ||
+		problems[0].Key != antispam.FeedCSMIPMap || !strings.Contains(problems[0].Detail, "CSM_IP rule") {
+		t.Fatalf("held settings %+v, problems %+v", got, problems)
+	}
+}
+
+// ipMapFeedFacts is goodFeedFacts with a CSM IP map rspamd can read.
+func ipMapFeedFacts() antispam.HostFacts {
+	f := goodFeedFacts()
+	f.IPMap = antispam.FileFacts{File: antispam.PathFacts{Path: ipmap.DefaultPath, Mode: 0o640, GID: 974},
+		Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}}
+	return f
+}
+
+func TestPassRemovesIPMapAfterPreconditionUninstall(t *testing.T) {
+	h := &fakeHost{
+		assessment: antispam.Assessment{Action: antispam.Uninstall, Installed: true,
+			Problems: []antispam.Problem{{Code: antispam.CodeSpamAssassin, Severity: antispam.Definite}}},
+		result: antispam.Result{Operation: antispam.OpRemove, OK: true},
+	}
+	r := h.reconciler()
+	r.Feeds = NewFeedState()
+	r.Feeds.setIPMapActive(true)
+	r.Collect = func(context.Context, string) antispam.HostFacts { return ipMapFeedFacts() }
+	removed := 0
+	r.IPMap.Remove = func() error { removed++; return nil }
+	r.Pass(context.Background(), feedDesired(antispam.FeedCSMIPMap))
+	if removed != 1 || r.Feeds.IPMapActive() {
+		t.Fatalf("successful uninstall left map: removals=%d active=%v", removed, r.Feeds.IPMapActive())
+	}
+}
+
+func TestPassReportsIPMapRemovalFailure(t *testing.T) {
+	r := (&fakeHost{}).reconciler()
+	boom := errors.New("map directory is read-only")
+	r.IPMap.Remove = func() error { return boom }
+	out := r.Pass(context.Background(), desired(false))
+	if !errors.Is(out.Err, boom) || len(out.Findings) != 1 || out.Findings[0].Check != CheckApplyFailed {
+		t.Fatalf("map removal failure was hidden: %+v", out)
+	}
+	r.IPMap.Remove = func() error { return nil }
+	if out = r.Pass(context.Background(), desired(false)); out.Err != nil || len(out.Findings) != 0 {
+		t.Fatalf("successful retry did not clear removal failure: %+v", out)
+	}
+}
+
+func TestPassDoesNotWriteHeldIPMap(t *testing.T) {
+	r := (&fakeHost{}).reconciler()
+	r.Feeds = NewFeedState()
+	d := feedDesired(antispam.FeedCSMIPMap)
+	r.Feeds.hold(d.Settings)
+	writes := 0
+	r.IPMap.Write = func(context.Context) error { writes++; return nil }
+	r.Pass(context.Background(), d)
+	if writes != 0 {
+		t.Fatalf("held map was recreated %d times", writes)
+	}
+}
+
+// A persistent IP map failure is one finding: details vary per attempt
+// (temporary file names, probe errors) and must not make a new one each time.
+func TestIPMapFindingKeyIgnoresDetails(t *testing.T) {
+	a, b := IPMapFinding("first cause", testNow), IPMapFinding("second cause", testNow.Add(time.Hour))
+	if a.Key() != b.Key() {
+		t.Fatalf("keys differ: %q vs %q", a.Key(), b.Key())
 	}
 }

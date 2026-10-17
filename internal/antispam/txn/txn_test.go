@@ -14,6 +14,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/antispam/hostfacts"
+	"github.com/pidginhost/csm/internal/ipmap"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -33,6 +34,9 @@ type fakeHost struct {
 	// rbl replaces the configdump of the rbl module ({"rbls":{}} by
 	// default) and modules the module list when set.
 	rbl, modules string
+	// multimap replaces the configdump of the multimap module ({} by
+	// default).
+	multimap string
 	// key is the DQS key file preflight reports.
 	key      antispam.KeyFacts
 	problems []antispam.Problem
@@ -111,6 +115,9 @@ func (f *fakeHost) host() *Host {
 				RspamdVersion: antispam.CommandResult{Stdout: "Rspamd daemon version 4.2.2\n"},
 				RspamdLog: antispam.LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log",
 					File:    antispam.PathFacts{GID: os.Getgid(), Mode: 0o640},
+					Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}},
+				// The daemon writes the IP map before a pass that adds its rule.
+				IPMap: antispam.FileFacts{File: antispam.PathFacts{Path: ipmap.DefaultPath, Mode: 0o640, GID: os.Getgid()},
 					Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}}}, f.problems
 		},
 		targets: snapshot,
@@ -177,6 +184,10 @@ func (f *fakeHost) run(ctx context.Context, limit time.Duration, name string, ar
 		return antispam.CommandResult{Stdout: f.rbl}
 	case line == "rspamadm configdump -j rbl":
 		return antispam.CommandResult{Stdout: `{"rbls":{}}`}
+	case line == "rspamadm configdump -j multimap" && f.multimap != "":
+		return antispam.CommandResult{Stdout: f.multimap}
+	case line == "rspamadm configdump -j multimap":
+		return antispam.CommandResult{Stdout: `{}`}
 	case line == "rspamadm configdump -j actions":
 		return antispam.CommandResult{Stdout: f.dumpActions()}
 	case line == "rspamadm configdump -j phishing":
@@ -913,3 +924,61 @@ func TestApplyFeedDumpFailureDoesNotExposeKey(t *testing.T) {
 		t.Fatalf("result %+v", r)
 	}
 }
+
+func TestApplyIPMapRuleCheckRollsBack(t *testing.T) {
+	f := newFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	before := f.state()
+	f.modules = "Modules enabled: dkim, spf, multimap\n"
+	s := enforce()
+	s.Feeds = []string{antispam.FeedCSMIPMap}
+	r := f.host().Apply(s)
+	if r.OK || r.FailedStep != StepFeedsCheck || r.Rollback != antispam.RollbackVerified {
+		t.Fatalf("result %+v", r)
+	}
+	if !maps.Equal(before, f.state()) {
+		t.Fatal("rollback left changes")
+	}
+	f.reset()
+	f.multimap = loadedIPMapRule
+	wantOK(t, f.host().Apply(s))
+}
+
+func TestApplyIPMapOverridesRollBack(t *testing.T) {
+	for _, name := range []string{"module disabled", "score changed", "dump failed"} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			wantOK(t, f.host().Apply(enforce()))
+			before := f.state()
+			f.reset()
+			f.modules = "Modules enabled: dkim, spf, multimap\n"
+			f.multimap = loadedIPMapRule
+			switch name {
+			case "module disabled":
+				f.modules = "Modules enabled: dkim, spf\n"
+			case "score changed":
+				f.multimap = strings.Replace(f.multimap, `"score":5`, `"score":0`, 1)
+			case "dump failed":
+				f.fail["rspamadm configdump -j multimap"] = []int{1}
+			}
+			s := enforce()
+			s.Feeds = []string{antispam.FeedCSMIPMap}
+			r := f.host().Apply(s)
+			if r.OK || r.FailedStep != StepFeedsCheck || r.Rollback != antispam.RollbackVerified {
+				t.Fatalf("result %+v", r)
+			}
+			if !maps.Equal(before, f.state()) {
+				t.Fatal("rollback left changes")
+			}
+			if strings.Contains(r.Error, "secret config text") {
+				t.Fatal("result exposed command output")
+			}
+			if f.count("systemctl reload") != 0 || f.count(BuildEximConf) != 0 {
+				t.Fatal("unverified IP map reached a reload or Exim rebuild")
+			}
+		})
+	}
+}
+
+// loadedIPMapRule is configdump -j multimap with CSM's CSM_IP rule loaded.
+const loadedIPMapRule = `{"CSM_IP":{"type":"ip","score":5,"map":"/var/lib/csm-rspamd/csm_ip.map","symbols":["CSM_IP_DROP","CSM_IP_BLOCKED","CSM_IP_MAIL_AUTH","CSM_IP_SPAM","CSM_IP_BLOCKLISTDE","CSM_IP_CINS","CSM_IP_CANARY"]}}`

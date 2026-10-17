@@ -221,3 +221,44 @@ func TestRspamdComPathsRejectsNonObjects(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckIPMapLoaded(t *testing.T) {
+	good := `{"CSM_IP":{"type":"ip","map":"/var/lib/csm-rspamd/csm_ip.map","score":5.0,` +
+		`"symbols":["CSM_IP_DROP","CSM_IP_BLOCKED","CSM_IP_MAIL_AUTH","CSM_IP_SPAM","CSM_IP_BLOCKLISTDE","CSM_IP_CINS","CSM_IP_CANARY"]},"freemail_from":{}}`
+	if got := CheckIPMapLoaded(map[string]bool{"multimap": true}, []byte(good)); len(got) != 0 {
+		t.Fatalf("good rule flagged: %v", got)
+	}
+	for name, dump := range map[string]string{
+		"map list":          strings.Replace(good, `"map":"/var/lib/csm-rspamd/csm_ip.map"`, `"map":["/var/lib/csm-rspamd/csm_ip.map"]`, 1),
+		"reordered symbols": strings.Replace(good, `"CSM_IP_DROP","CSM_IP_BLOCKED"`, `"CSM_IP_BLOCKED","CSM_IP_DROP"`, 1),
+		"integer score":     strings.Replace(good, `"score":5.0`, `"score":5`, 1),
+		"enabled":           strings.Replace(good, `"type":"ip"`, `"type":"ip","enabled":true`, 1),
+	} {
+		if got := CheckIPMapLoaded(map[string]bool{"multimap": true}, []byte(dump)); len(got) != 0 {
+			t.Errorf("%s flagged: %v", name, got)
+		}
+	}
+	for name, dump := range map[string]string{
+		"zero score":  strings.Replace(good, `"score":5.0`, `"score":0`, 1),
+		"high score":  strings.Replace(good, `"score":5.0`, `"score":50`, 1),
+		"no score":    strings.Replace(good, `"score":5.0,`, ``, 1),
+		"null score":  strings.Replace(good, `"score":5.0`, `"score":null`, 1),
+		"score alias": strings.Replace(good, `"score":5.0`, `"Score":5.0`, 1),
+		"type alias":  strings.Replace(good, `"type":"ip"`, `"Type":"ip"`, 1),
+		"duplicate":   strings.Replace(good, `"type":"ip"`, `"type":"from","type":"ip"`, 1),
+		"action":      strings.Replace(good, `"type":"ip"`, `"type":"ip","action":"accept"`, 1),
+		"condition":   strings.Replace(good, `"type":"ip"`, `"type":"ip","require_symbols":"NEVER"`, 1),
+		"null switch": strings.Replace(good, `"type":"ip"`, `"type":"ip","enabled":null`, 1),
+		"missing":     `{"freemail_from":{}}`,
+		"other map":   strings.Replace(good, "/var/lib/csm-rspamd/csm_ip.map", "/tmp/x.map", 1),
+		"other type":  strings.Replace(good, `"type":"ip"`, `"type":"from"`, 1),
+		"disabled":    strings.Replace(good, `"type":"ip"`, `"type":"ip","enabled":false`, 1),
+		"symbol lost": strings.Replace(good, `,"CSM_IP_CANARY"`, ``, 1),
+		"not a rule":  `{"CSM_IP":false}`,
+		"unreadable":  `nope`,
+	} {
+		if got := CheckIPMapLoaded(map[string]bool{"multimap": true}, []byte(dump)); len(got) == 0 {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}

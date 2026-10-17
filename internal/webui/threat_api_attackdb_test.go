@@ -145,3 +145,46 @@ func TestAPIThreatStatsReturnsStatsWhenInitialized(t *testing.T) {
 		t.Errorf("expected stats payload, got error response: %+v", out)
 	}
 }
+
+// Spam-only records score 0 and never reach a top-N list by threat score,
+// so the spam filter asks the server for spam senders (feeds spec 7.5).
+func TestTopAttackersSpamOnly(t *testing.T) {
+	now := time.Now()
+	seedAttackDB(t, map[string]*attackdb.IPRecord{
+		"198.51.100.30": {IP: "198.51.100.30", ThreatScore: 80, EventCount: 5, FirstSeen: now, LastSeen: now},
+		"198.51.100.31": {IP: "198.51.100.31", FirstSeen: now, LastSeen: now,
+			Mail: &attackdb.MailEvidence{Spam: 3, SpamMass: 3, MassAt: now, LastSpam: now}},
+		"198.51.100.32": {IP: "198.51.100.32", FirstSeen: now, LastSeen: now,
+			Mail: &attackdb.MailEvidence{Spam: 2, SpamMass: 2, MassAt: now, LastSpam: now}},
+	})
+	s := newTestServer(t, "tok")
+
+	w := httptest.NewRecorder()
+	s.apiThreatTopAttackers(w, httptest.NewRequest("GET", "/?limit=50&spam_only=1", nil))
+	var spam []map[string]any
+	decodeItems(t, w.Body.Bytes(), &spam)
+	if len(spam) != 2 || spam[0]["ip"] != "198.51.100.31" || spam[1]["ip"] != "198.51.100.32" {
+		t.Fatalf("spam senders = %+v", spam)
+	}
+	for i, want := range []float64{60, 50} {
+		if spam[i]["spam_score"] != want || spam[i]["mail"] == nil {
+			t.Errorf("row %d = %+v, want spam_score %v and a mail section", i, spam[i], want)
+		}
+	}
+
+	w = httptest.NewRecorder()
+	s.apiThreatTopAttackers(w, httptest.NewRequest("GET", "/?limit=50", nil))
+	var all []map[string]any
+	decodeItems(t, w.Body.Bytes(), &all)
+	if len(all) != 3 || all[0]["ip"] != "198.51.100.30" {
+		t.Fatalf("all attackers = %+v", all)
+	}
+	for _, row := range all[1:] {
+		if row["spam_score"] == nil {
+			t.Errorf("spam-only row without spam_score: %+v", row)
+		}
+	}
+	if _, ok := all[0]["spam_score"]; ok {
+		t.Errorf("attacked row without mail evidence carries spam_score: %+v", all[0])
+	}
+}

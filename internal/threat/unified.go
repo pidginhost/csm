@@ -19,6 +19,8 @@ type IPIntelligence struct {
 	// Internal attack history
 	AttackRecord *attackdb.IPRecord `json:"attack_record,omitempty"`
 	LocalScore   int                `json:"local_score"`
+	// SpamScore is the record's spam evidence score (feeds spec 7.4).
+	SpamScore int `json:"spam_score,omitempty"`
 
 	// ThreatDB (feeds + permanent blocklist)
 	InThreatDB     bool   `json:"in_threat_db"`
@@ -71,6 +73,7 @@ func Lookup(ip, statePath string) *IPIntelligence {
 		if rec := adb.LookupIP(ip); rec != nil {
 			intel.AttackRecord = rec
 			intel.LocalScore = rec.ThreatScore
+			intel.SpamScore = attackdb.SpamScore(rec.Mail, time.Now())
 		}
 	}
 
@@ -110,6 +113,7 @@ func LookupBatch(ips []string, statePath string) []*IPIntelligence {
 			if rec := adb.LookupIP(ip); rec != nil {
 				intel.AttackRecord = rec
 				intel.LocalScore = rec.ThreatScore
+				intel.SpamScore = attackdb.SpamScore(rec.Mail, time.Now())
 			}
 		}
 

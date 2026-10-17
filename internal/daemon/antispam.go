@@ -3,18 +3,24 @@ package daemon
 import (
 	"context"
 	"errors"
+	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/antispam/hostfacts"
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/antispam/worker"
+	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/ipmap"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/netutil"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
 )
@@ -40,6 +46,22 @@ var antispamHealthChecks = []string{reconcile.CheckRspamdDown, reconcile.CheckSc
 
 // antispamPing probes rspamd's scan socket; tests replace it.
 var antispamPing = hostfacts.Ping
+
+// The IP map's canary probe, rspamd group lookup and file path; tests
+// replace them.
+var (
+	antispamCanary      = hostfacts.Canary
+	antispamRspamdGroup = hostfacts.RspamdGroup
+	antispamIPMapPath   = ipmap.DefaultPath
+)
+
+// antispamIPMapInterval is how often the CSM IP map is rebuilt (feeds spec
+// 6.2); antispamCanaryDelay bounds the wait for a canary check, including
+// after writes made by reconciliation and after the load grace expires.
+const (
+	antispamIPMapInterval = 10 * time.Minute
+	antispamCanaryDelay   = 30 * time.Second
+)
 
 // antispamReconciler returns the host the antispam reconcile loop works on;
 // tests replace it.
@@ -69,7 +91,7 @@ func (d *Daemon) startAntispam() {
 	// describe an outage no longer tracked.
 	checks.StoreLatestScanFindings(d.store, antispamHealthChecks, nil)
 	d.store.RearmAbsentDedupFindings(antispamHealthChecks, nil)
-	r := antispamReconciler()
+	r := d.withIPMap(antispamReconciler())
 	loop := reconcile.NewLoop(func(ctx context.Context) reconcile.Outcome {
 		return r.Pass(ctx, reconcile.DesiredFromConfig(d.currentCfg()))
 	}, d.reportAntispam)
@@ -78,7 +100,7 @@ func (d *Daemon) startAntispam() {
 	// reload during setup is either picked up here or applies itself.
 	d.syncAntispamHealth()
 	ctx := d.scanContext()
-	d.wg.Add(2)
+	d.wg.Add(3)
 	obs.Go("antispam-reconcile", func() {
 		defer d.wg.Done()
 		loop.Run(ctx)
@@ -87,6 +109,177 @@ func (d *Daemon) startAntispam() {
 		defer d.wg.Done()
 		d.antispamHealthLoop(ctx)
 	})
+	obs.Go("antispam-ipmap", func() {
+		defer d.wg.Done()
+		d.antispamIPMapLoop(ctx)
+	})
+}
+
+// withIPMap gives the reconciler the IP map writer's hooks and shares its
+// feed memory with the IP map loop.
+func (d *Daemon) withIPMap(r reconcile.Reconciler) reconcile.Reconciler {
+	if r.Feeds == nil {
+		r.Feeds = reconcile.NewFeedState()
+	}
+	w := ipmap.NewWriter(antispamIPMapPath)
+	d.antispamFeeds.Store(r.Feeds)
+	d.ipmapWriter.Store(w)
+	r.IPMap = reconcile.IPMapHooks{
+		Write: func(ctx context.Context) error {
+			d.ipmapMu.Lock()
+			defer d.ipmapMu.Unlock()
+			// Without a surviving map, a failed write must not restart
+			// canary warnings before feed preconditions allow the rule back.
+			wrote, err := d.writeIPMap(ctx, time.Now())
+			if wrote || err == nil {
+				d.ipmapRemoved.Store(false)
+			}
+			return err
+		},
+		Remove: func() error {
+			d.ipmapMu.Lock()
+			defer d.ipmapMu.Unlock()
+			d.ipmapRemoved.Store(true)
+			d.ipmapCanaryMisses = 0
+			return w.Remove()
+		},
+	}
+	return r
+}
+
+// antispamIPMapLoop refreshes the CSM IP map at start and every 10
+// minutes. Independent canary checks cannot be hidden by a new write
+// resetting the load grace, and also see writes made by reconciliation.
+func (d *Daemon) antispamIPMapLoop(ctx context.Context) {
+	ticker := time.NewTicker(antispamIPMapInterval)
+	defer ticker.Stop()
+	probe := time.NewTicker(antispamCanaryDelay)
+	defer probe.Stop()
+	d.refreshIPMap(ctx, time.Now())
+	for ctx.Err() == nil {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.refreshIPMap(ctx, time.Now())
+		case <-probe.C:
+			d.checkIPMap(ctx, time.Now(), false)
+		}
+	}
+}
+
+// ipMapWanted reports whether the configuration asks for the CSM IP map.
+func ipMapWanted(cfg *config.Config) bool {
+	as := cfg.EmailProtection.Antispam
+	return as.Enabled && !cfg.ObserveMode() && slices.Contains(as.Feeds.Enabled, antispam.FeedCSMIPMap)
+}
+
+// A rule can reuse a surviving map after both removal and a later write
+// fail. Its active state then overrides the earlier removal request.
+func (d *Daemon) ipMapRemoved() bool {
+	return d.ipmapRemoved.Load() && !d.antispamFeeds.Load().IPMapActive()
+}
+
+// writeIPMap builds the map from CSM's sources and writes it if changed.
+// The caller holds ipmapMu so removal cannot overtake a pending write.
+func (d *Daemon) writeIPMap(ctx context.Context, now time.Time) (bool, error) {
+	return d.ipmapWriter.Load().Write(ipmap.Build(ipmapSources(now, d.antispamInfraIPs(d.currentCfg()))), antispamRspamdGroup(ctx), now)
+}
+
+// Reuse the firewall's last successful DNS answers without resolving names
+// on the mail log path. Firewall-only entries must not suppress evidence.
+func (d *Daemon) antispamInfraIPs(cfg *config.Config) []string {
+	if d.fwEngine == nil {
+		return cfg.InfraIPs
+	}
+	return slices.Concat(cfg.InfraIPs, d.fwEngine.ResolvedInfraIPs(infraHostnames(cfg.InfraIPs)))
+}
+
+// refreshIPMap writes the map while the feed is wanted, runs the canary
+// while the rule is in use, and settles antispam_ip_map. It reports
+// whether it wrote a new map.
+func (d *Daemon) refreshIPMap(ctx context.Context, now time.Time) bool {
+	return d.checkIPMap(ctx, now, true)
+}
+
+func (d *Daemon) checkIPMap(ctx context.Context, now time.Time, rebuild bool) bool {
+	cfg := d.currentCfg()
+	d.ipmapMu.Lock()
+	if !ipMapWanted(cfg) || d.ipMapRemoved() || d.ipmapCanarySocket != cfg.EmailProtection.Antispam.RspamdSocket {
+		d.ipmapCanaryMisses = 0
+	}
+	d.ipmapCanarySocket = cfg.EmailProtection.Antispam.RspamdSocket
+	if !rebuild && !ipMapWanted(cfg) {
+		// Only hosts configured for the map pay for the frequent canary
+		// tick; the 10-minute refresh settles the check everywhere else.
+		d.ipmapMu.Unlock()
+		return false
+	}
+	var findings []alert.Finding
+	wrote := false
+	if ctx.Err() == nil && ipMapWanted(cfg) && !d.ipMapRemoved() {
+		if rebuild {
+			wrote, _ = d.writeIPMap(ctx, now)
+		}
+		st := d.ipmapWriter.Load().State()
+		// Until the rule is in use only a write failure counts.
+		seen, probeErr := st.Gen, error(nil)
+		if d.antispamFeeds.Load().IPMapActive() {
+			seen, probeErr = antispamCanary(ctx, cfg.EmailProtection.Antispam.RspamdSocket)
+		}
+		p := ipmap.CanaryProblem(st, seen, probeErr, now)
+		// One bad canary answer, such as during an rspamd reload, is not a
+		// problem; two in a row are. Write failures count at once.
+		if p != "" && st.Err == nil {
+			d.ipmapCanaryMisses++
+		} else {
+			d.ipmapCanaryMisses = 0
+		}
+		if p != "" && (st.Err != nil || d.ipmapCanaryMisses >= 2) {
+			findings = append(findings, reconcile.IPMapFinding(p, now))
+		}
+	}
+	d.ipmapMu.Unlock()
+	if ctx.Err() == nil {
+		// A dismissal acknowledges this outage, not every future failure
+		// that shares the map's stable finding identity.
+		d.store.RearmAbsentDedupFindings([]string{reconcile.CheckIPMap}, findings)
+		d.processScanFindings(cfg, findings, []string{reconcile.CheckIPMap}, "antispam")
+	}
+	return wrote
+}
+
+// ipmapSources gathers what the CSM IP map lists (feeds spec 6.1). infra
+// holds infra_ips entries: like whitelisted and host addresses, nothing in
+// them is listed.
+func ipmapSources(now time.Time, infra []string) ipmap.Sources {
+	src := ipmap.Sources{Entries: map[string][]string{}}
+	for _, raw := range infra {
+		raw = strings.TrimSpace(raw)
+		if p, err := netip.ParsePrefix(raw); err == nil {
+			src.NeverNets = append(src.NeverNets, p.Masked())
+		} else if a, err := netip.ParseAddr(raw); err == nil && a.Zone() == "" {
+			a = a.Unmap()
+			src.NeverNets = append(src.NeverNets, netip.PrefixFrom(a, a.BitLen()))
+		}
+	}
+	if tdb := checks.GetThreatDB(); tdb != nil {
+		ts := tdb.MapSources()
+		src.Entries[ipmap.Drop.Name] = slices.Concat(ts.FeedNets["spamhaus-drop"], ts.FeedIPs["spamhaus-drop"])
+		src.Entries[ipmap.Blocked.Name] = ts.Permanent
+		src.Entries[ipmap.BlocklistDE.Name] = slices.Concat(ts.FeedIPs["blocklist-de"], ts.FeedNets["blocklist-de"])
+		src.Entries[ipmap.CINS.Name] = slices.Concat(ts.FeedIPs["cins-army"], ts.FeedNets["cins-army"])
+		for _, w := range ts.Whitelist {
+			if a, err := netip.ParseAddr(w); err == nil {
+				src.Never = append(src.Never, a.Unmap())
+			}
+		}
+	}
+	if adb := attackdb.Global(); adb != nil {
+		src.Entries[ipmap.MailAuth.Name], src.Entries[ipmap.Spam.Name] = adb.MapSources(now)
+	}
+	src.Never = append(src.Never, netutil.HostAddresses()...)
+	return src
 }
 
 // reconcileAntispam applies a config reload: health tracking follows the

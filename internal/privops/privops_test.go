@@ -103,6 +103,7 @@ func TestInventoryMatchesRuntimeContracts(t *testing.T) {
 		{"respond.forward_guard", "daemon/forward_guard.go: disabled guard still removes configuration", "mode", "observe", []Privilege{Root}, []string{"/etc/exim.conf.local", "/var/lib/csm"}},
 		{"respond.forward_guard_check", "mailfwd/adapter/service.go: Apply and Remove record the request under the shared Exim lock, Remove checks for an installed rule, and observe mode cancels pending requests without that lock inside the daemon sandbox", "", "", []Privilege{Root}, []string{"/var/lib/csm/forward_guard"}},
 		{"integrate.antispam", "daemon/antispam.go: disabled antispam still removes the integration; observe mode only reports", "mode", "observe", []Privilege{Root}, []string{"/etc/rspamd/local.d", "/etc/rspamd/override.d", "/usr/local/cpanel/etc/exim/acls", "/etc/exim.conf.local", "/etc/exim.conf", "/var/lib/csm"}},
+		{"integrate.antispam_ip_map", "daemon/antispam.go: a feed list without csm_ip_map still deletes a leftover map; observe mode leaves it", "mode", "observe", []Privilege{Root}, []string{"/var/lib/csm-rspamd"}},
 		{"integrate.antispam_record", "antispam/reconcile/pass.go: every pass invalidates pending workers under the shared Exim lock, including disabled antispam and observe mode", "", "", []Privilege{Root}, []string{"/var/lib/csm/forward_guard"}},
 		{"respond.bpf_deny_egress", "daemon/connection_bpf.go: cgroup socket program", "bpf_enforcement.enabled", "false", []Privilege{"CAP_BPF", "CAP_NET_ADMIN"}, nil},
 		{"respond.mail_delivery_gate", "daemon/spoolwatch.go: FAN_DENY on scanner failure in tempfail mode", "email_av.enabled", "false", []Privilege{CapSysAdmin}, []string{"fanotify:mail delivery decisions"}},
@@ -420,6 +421,7 @@ func TestSafetyContractsArePinnedAndComplete(t *testing.T) {
 		}
 	}
 	want := []string{
+		"integrate.antispam_ip_map",
 		"integrate.challenge_port_gate",
 		"integrate.challenge_snippet",
 		"integrate.firewall_ruleset",
@@ -461,6 +463,7 @@ var reviewedRiskTiers = map[string]RiskTier{
 	"detect.sensitive_file_writes":  RiskReversible,
 	"integrate.auditd_rules":        RiskDestructive,
 	"integrate.antispam":            RiskDestructive,
+	"integrate.antispam_ip_map":     RiskReversible,
 	"integrate.antispam_record":     RiskObserve,
 	"integrate.challenge_port_gate": RiskReversible,
 	"integrate.challenge_snippet":   RiskDestructive,
@@ -819,6 +822,12 @@ func TestBlockIPContractStatesRegistryAndBudgetScope(t *testing.T) {
 // checked against the code it describes; a change to one needs the same
 // review, so it must be made here too.
 var reviewedSafetyContracts = map[string]SafetyContract{
+	"integrate.antispam_ip_map": {
+		Authority: "the daemon writes the map only while antispam is enabled outside observe mode with csm_ip_map in feeds.enabled; a reconcile pass deletes it once the installed rules no longer read it",
+		Identity:  "one fixed path in CSM's own state directory, replaced by renaming a temporary file from the same directory",
+		Recovery:  "the map is rebuilt from the threat and attack databases every 10 minutes; a failed write keeps the previous file, which rspamd keeps using, and raises antispam_ip_map",
+		Limit:     "only global unicast addresses and networks outside the whitelist and the host's own addresses are listed; one sender gains at most 4 from the map",
+	},
 	"integrate.challenge_port_gate": {
 		Authority: "challenge startup with challenge.enabled and challenge.port_gate.enabled; a loopback-only listener or non-Linux build has no gate",
 		Identity:  "Allow validates the address and listener family; IPList adds membership before calling Allow after unlocking; the gate itself does not revalidate list membership; loopback and configured infrastructure ranges have accept rules",

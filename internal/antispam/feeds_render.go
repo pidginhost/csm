@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/pidginhost/csm/internal/ipmap"
 )
 
 // Map redirect names, for Settings.SkipMaps (feeds spec section 5.4).
@@ -89,14 +91,31 @@ func RenderFeeds(s Settings) (map[string]string, error) {
 		files[FeedRBLPath] = renderRBL(s, feeds)
 		files[FeedRBLGroupPath] = renderRBLGroup(feeds)
 	}
-	if s.Redirects() {
-		for _, name := range MapRedirectNames() {
-			if !slices.Contains(s.SkipMaps, name) {
-				files[RedirectPath(name)] = ManagedHeader + "\n" + mapRedirects[name]
-			}
+	for _, name := range MapRedirectNames() {
+		text := ""
+		if s.Redirects() && !slices.Contains(s.SkipMaps, name) {
+			text = mapRedirects[name]
+		}
+		if name == RedirectMultimap && s.HasFeed(FeedCSMIPMap) {
+			text += ipMapRule()
+		}
+		if text != "" {
+			files[RedirectPath(name)] = ManagedHeader + "\n" + text
 		}
 	}
 	return files, nil
+}
+
+// ipMapRule is the multimap rule that reads the CSM IP map: each line names
+// one of these symbols with a multiplier on the rule's score (spec 6.1).
+func ipMapRule() string {
+	var names []string
+	for _, s := range ipmap.Symbols() {
+		names = append(names, strconv.Quote(s.Name))
+	}
+	return "CSM_IP {\n  type = \"ip\";\n  map = \"" + ipmap.DefaultPath + "\";\n" +
+		"  symbols = [" + strings.Join(names, ", ") + "];\n" +
+		"  score = " + formatWeight(ipmap.RuleScore) + ";\n  description = \"CSM IP map\";\n}\n"
 }
 
 // renderRBL writes only CSM's lists: override.d replaces rspamd's whole

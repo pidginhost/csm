@@ -264,6 +264,13 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 			drop(dns, reason)
 		}
 	}
+	if s.HasFeed(FeedCSMIPMap) {
+		if err := usable(RedirectPath(RedirectMultimap)); err != nil {
+			drop([]string{FeedCSMIPMap}, err.Error())
+		} else if err := f.IPMap.UsableByRspamd(f.RspamdGID); err != nil {
+			drop([]string{FeedCSMIPMap}, err.Error())
+		}
+	}
 	if s.HasFeed(FeedSpamhausDQS) {
 		key, err := LoadDQSKey(f.DQSKey)
 		exposed, why := f.RspamdLog.Exposed(f.Socket.RspamdUID, f.RspamdGID)
@@ -283,6 +290,50 @@ func ResolveFeeds(s Settings, f HostFacts) (Settings, []Problem) {
 		s.DQSKey = Secret{}
 	}
 	return s, problems
+}
+
+// FileFacts is one file as the collector found it; File is set unless
+// Missing or Err.
+type FileFacts struct {
+	Missing bool
+	File    PathFacts
+	Parents []PathFacts
+	Err     error
+}
+
+// UsableByRspamd checks the IP map's private, root-owned file contract.
+// Both resolution and the worker check it because the file can change
+// while a request waits to apply.
+func (f FileFacts) UsableByRspamd(gid int) error {
+	switch {
+	case gid < 0:
+		return errors.New("rspamd's group is unknown, so CSM cannot make the IP map readable by rspamd only")
+	case f.Missing:
+		return errors.New("CSM has not written the IP map yet")
+	case f.Err != nil || f.File.Path == "":
+		return errors.New("CSM cannot check the IP map; check file access")
+	case f.File.Mode != 0o640 || f.File.UID != 0 || f.File.GID != gid || f.File.ExtACL:
+		return errors.New("the IP map must be a regular root-owned file, mode 0640, in rspamd's group, with no extra ACLs")
+	}
+	if len(f.Parents) == 0 {
+		return errors.New("the IP map's parent directories were not checked")
+	}
+	for _, p := range f.Parents {
+		if !p.Mode.IsDir() {
+			return fmt.Errorf("IP map parent %s is not a directory", p.Path)
+		}
+		if why := unprotected(p); why != "" {
+			return fmt.Errorf("IP map parent %s %s", p.Path, why)
+		}
+		search := fs.FileMode(0o001)
+		if p.GID == gid {
+			search = 0o010
+		}
+		if p.Mode&search == 0 {
+			return fmt.Errorf("rspamd cannot traverse IP map parent %s", p.Path)
+		}
+	}
+	return nil
 }
 
 // LogFacts is rspamd's log destination as the collector found it. Type is
@@ -365,13 +416,17 @@ func withoutFeeds(s Settings, why string) (Settings, []Problem) {
 		problems = append(problems, Problem{Code: CodeFeed, Severity: Warning, Key: feed.Name,
 			Detail: "feed " + feed.Name + " is off: " + why + "; CSM's feed rules need rspamd 4 or later"})
 	}
+	if s.HasFeed(FeedCSMIPMap) {
+		problems = append(problems, Problem{Code: CodeFeed, Severity: Warning, Key: FeedCSMIPMap,
+			Detail: "feed " + FeedCSMIPMap + " is off: " + why + "; CSM's feed rules need rspamd 4 or later"})
+	}
 	if s.Redirects() {
 		problems = append(problems, Problem{Code: CodeFeed, Severity: Warning, Key: FeedRspamdMaps,
 			Detail: why + ", so CSM leaves rspamd's own maps alone and they keep downloading from rspamd.com; upgrade rspamd to 4 or later"})
 	}
 	s.Feeds = slices.DeleteFunc(slices.Clone(s.Feeds), func(name string) bool {
 		f, _ := FeedByName(name)
-		return f.DNS()
+		return f.DNS() || name == FeedCSMIPMap
 	})
 	if !s.HasFeed(FeedRspamdMaps) {
 		s.Feeds = append(s.Feeds, FeedRspamdMaps)

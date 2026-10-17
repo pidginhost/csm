@@ -3,12 +3,51 @@ package antispam
 import (
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func FuzzCheckIPMapLoaded(f *testing.F) {
+	for _, seed := range []string{
+		`{"CSM_IP":{"type":"ip","map":"/var/lib/csm-rspamd/csm_ip.map","score":5,"symbols":["CSM_IP_DROP","CSM_IP_BLOCKED","CSM_IP_MAIL_AUTH","CSM_IP_SPAM","CSM_IP_BLOCKLISTDE","CSM_IP_CINS","CSM_IP_CANARY"]}}`,
+		`{"CSM_IP":{"type":"ip","type":"from"}}`, `{"CSM_IP":null}`, `{}`, `null`,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		on := map[string]bool{"multimap": true}
+		if len(CheckIPMapLoaded(nil, data)) == 0 {
+			t.Fatal("accepted a disabled module")
+		}
+		if len(CheckIPMapLoaded(on, data)) != 0 {
+			return
+		}
+		var sections map[string]json.RawMessage
+		if err := json.Unmarshal(data, &sections); err != nil {
+			t.Fatal("accepted invalid JSON")
+		}
+		var rule map[string]json.RawMessage
+		if err := json.Unmarshal(sections["CSM_IP"], &rule); err != nil || rule == nil {
+			t.Fatal("accepted a non-object rule")
+		}
+		for _, key := range []string{"type", "map", "symbols", "score"} {
+			value := rule[key]
+			delete(rule, key)
+			mutated, err := json.Marshal(map[string]any{"CSM_IP": rule})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(CheckIPMapLoaded(on, mutated)) == 0 {
+				t.Fatalf("accepted a rule without %s", key)
+			}
+			rule[key] = value
+		}
+	})
+}
 
 func FuzzRspamdComPaths(f *testing.F) {
 	for _, seed := range []string{
@@ -674,6 +713,43 @@ func FuzzScanMarkerValues(f *testing.F) {
 					t.Fatalf("rejected scan error %q: %t, %t", line, marker, ok)
 				}
 			}
+		}
+	})
+}
+
+func FuzzParseScan(f *testing.F) {
+	for _, seed := range []string{
+		markerPrefix + `CSM-ANTISPAM event=scan mode=dry-run policy=on result=ok score=150 action="reject" decision=reject ip=198.51.100.7`,
+		markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=off result=ok score=-5 action="no action" decision=unfiltered ip=2001:db8::25`,
+		markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=error score=none action="unavailable" decision=none ip=203.0.113.9`,
+		markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=0 action="no action" decision=none ip=192.0.2.256`,
+		markerPrefix + `CSM-ANTISPAM event=scan mode=enforce policy=on result=error score=none action="unavailable" decision=none ip=2001:db8:::1`,
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, line string) {
+		s, marker := ParseScan(line)
+		if m, ok := ScanMarker(line); m != marker || ok != s.OK {
+			t.Fatalf("ScanMarker = %v, %v; ParseScan = %+v, %v", m, ok, s, marker)
+		}
+		if marker {
+			if _, rawIP, present := strings.Cut(line, " ip="); present && rawIP != "" {
+				if _, err := netip.ParseAddr(rawIP); err != nil || !s.IP.IsValid() {
+					t.Fatalf("accepted malformed sender %q: %+v", rawIP, s)
+				}
+			}
+		}
+		if s.IP.IsValid() {
+			i := strings.LastIndex(line, " ip=")
+			if i < 0 {
+				t.Fatalf("sender %v without an ip= field in %q", s.IP, line)
+			}
+			if a, err := netip.ParseAddr(line[i+len(" ip="):]); err != nil || a.Unmap() != s.IP {
+				t.Fatalf("sender %v does not match the ip= field in %q", s.IP, line)
+			}
+		}
+		if int(int32(s.Score)) != s.Score {
+			t.Fatalf("score %d overflows int32", s.Score)
 		}
 	})
 }

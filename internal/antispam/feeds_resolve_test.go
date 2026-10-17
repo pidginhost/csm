@@ -502,3 +502,116 @@ func TestResolveFeedsRejectsUnsupportedRotation(t *testing.T) {
 		}
 	}
 }
+
+func ipMapFacts() HostFacts {
+	f := feedFacts()
+	f.IPMap = FileFacts{
+		File: PathFacts{Path: "/var/lib/csm-rspamd/csm_ip.map", Mode: 0o640, GID: 974},
+		Parents: []PathFacts{
+			{Path: "/", Mode: fs.ModeDir | 0o755},
+			{Path: "/var", Mode: fs.ModeDir | 0o755},
+			{Path: "/var/lib", Mode: fs.ModeDir | 0o755},
+			{Path: "/var/lib/csm-rspamd", Mode: fs.ModeDir | 0o750, GID: 974},
+		},
+	}
+	return f
+}
+
+func TestResolveFeedsKeepsTheIPMapOnAGoodHost(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedCSMIPMap}
+	got, problems := ResolveFeeds(s, ipMapFacts())
+	if !got.HasFeed(FeedCSMIPMap) || len(problems) != 0 {
+		t.Fatalf("got %+v, problems %+v", got, problems)
+	}
+}
+
+func TestResolveFeedsDropsTheIPMap(t *testing.T) {
+	for name, mutate := range map[string]func(*HostFacts){
+		"map missing":    func(f *HostFacts) { f.IPMap = FileFacts{Missing: true} },
+		"map unreadable": func(f *HostFacts) { f.IPMap = FileFacts{Err: errors.New("boom")} },
+		"group unknown":  func(f *HostFacts) { f.RspamdGID = -1 },
+		"multimap foreign": func(f *HostFacts) {
+			for i := range f.Targets {
+				if f.Targets[i].Path == RedirectPath(RedirectMultimap) {
+					f.Targets[i].Missing, f.Targets[i].File, f.Targets[i].Content = false, PathFacts{Path: f.Targets[i].Path, Mode: 0o644}, "operator\n"
+				}
+			}
+		},
+		"old rspamd": func(f *HostFacts) { f.RspamdVersion = CommandResult{Stdout: "Rspamd daemon version 3.8.4\n"} },
+	} {
+		f := ipMapFacts()
+		mutate(&f)
+		s := defaults(false)
+		s.Feeds = []string{FeedCSMIPMap, FeedPSBL}
+		got, problems := ResolveFeeds(s, f)
+		if got.HasFeed(FeedCSMIPMap) || !slices.ContainsFunc(problems, func(p Problem) bool { return p.Key == FeedCSMIPMap }) {
+			t.Errorf("%s: got %+v, problems %+v", name, got, problems)
+		}
+	}
+}
+
+func TestResolveFeedsRejectsUnsafeIPMap(t *testing.T) {
+	for name, mutate := range map[string]func(*HostFacts){
+		"unchecked":      func(f *HostFacts) { f.IPMap = FileFacts{} },
+		"directory":      func(f *HostFacts) { f.IPMap.File.Mode |= fs.ModeDir },
+		"symlink":        func(f *HostFacts) { f.IPMap.File.Mode |= fs.ModeSymlink },
+		"fifo":           func(f *HostFacts) { f.IPMap.File.Mode |= fs.ModeNamedPipe },
+		"foreign owner":  func(f *HostFacts) { f.IPMap.File.UID = 1000 },
+		"wrong group":    func(f *HostFacts) { f.IPMap.File.GID++ },
+		"root only":      func(f *HostFacts) { f.IPMap.File.Mode = 0o600 },
+		"group writable": func(f *HostFacts) { f.IPMap.File.Mode = 0o660 },
+		"world readable": func(f *HostFacts) { f.IPMap.File.Mode = 0o644 },
+		"world writable": func(f *HostFacts) { f.IPMap.File.Mode = 0o642 },
+		"extra ACL":      func(f *HostFacts) { f.IPMap.File.ExtACL = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := ipMapFacts()
+			mutate(&f)
+			s := defaults(false)
+			s.Feeds = []string{FeedCSMIPMap, FeedPSBL, FeedRspamdMaps}
+			got, problems := ResolveFeeds(s, f)
+			if !slices.Equal(got.Feeds, []string{FeedPSBL, FeedRspamdMaps}) || len(problems) != 1 ||
+				problems[0].Key != FeedCSMIPMap || problems[0].Severity != Warning {
+				t.Fatalf("unsafe map accepted or unrelated feeds changed: feeds %v, problems %+v", got.Feeds, problems)
+			}
+			if !slices.Equal(s.Feeds, []string{FeedCSMIPMap, FeedPSBL, FeedRspamdMaps}) {
+				t.Fatal("requested feeds changed")
+			}
+		})
+	}
+}
+
+func TestResolveFeedsChecksIPMapDirectories(t *testing.T) {
+	for name, mutate := range map[string]func(*FileFacts){
+		"unchecked":           func(f *FileFacts) { f.Parents = nil },
+		"root only":           func(f *FileFacts) { f.Parents[3].Mode = fs.ModeDir | 0o700 },
+		"wrong group":         func(f *FileFacts) { f.Parents[3].GID++ },
+		"group denies search": func(f *FileFacts) { f.Parents[3].Mode = fs.ModeDir | 0o701 },
+		"foreign owner":       func(f *FileFacts) { f.Parents[3].UID = 1000 },
+		"writable ancestor":   func(f *FileFacts) { f.Parents[1].Mode |= 0o020 },
+		"ancestor ACL":        func(f *FileFacts) { f.Parents[1].ExtACL = true },
+		"symlink":             func(f *FileFacts) { f.Parents[3].Mode = fs.ModeSymlink | 0o777 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := ipMapFacts()
+			mutate(&f.IPMap)
+			s := defaults(false)
+			s.Feeds = []string{FeedCSMIPMap, FeedRspamdMaps}
+			got, problems := ResolveFeeds(s, f)
+			if !slices.Equal(got.Feeds, []string{FeedRspamdMaps}) || len(problems) != 1 || problems[0].Key != FeedCSMIPMap {
+				t.Fatalf("unsafe or inaccessible directory accepted: feeds %v, problems %+v", got.Feeds, problems)
+			}
+		})
+	}
+	for _, mode := range []fs.FileMode{0o750, 0o755, 0o710} {
+		f := ipMapFacts()
+		f.IPMap.Parents[3].Mode = fs.ModeDir | mode
+		s := defaults(false)
+		s.Feeds = []string{FeedCSMIPMap, FeedRspamdMaps}
+		got, problems := ResolveFeeds(s, f)
+		if !got.HasFeed(FeedCSMIPMap) || len(problems) != 0 {
+			t.Fatalf("accessible directory mode %o rejected: %+v", mode, problems)
+		}
+	}
+}

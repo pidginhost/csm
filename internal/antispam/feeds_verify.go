@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/pidginhost/csm/internal/ipmap"
 )
 
 // LoadedRBLRules reads `rspamadm configdump -j rbl` and returns enabled
@@ -177,4 +179,64 @@ func rspamdComReference(value string) bool {
 	}
 	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	return host == "rspamd.com" || strings.HasSuffix(host, ".rspamd.com")
+}
+
+// CheckIPMapLoaded compares rspamd's loaded multimap rules with the CSM_IP
+// rule CSM writes. Each string names one difference; none repeats
+// configuration text.
+func CheckIPMapLoaded(enabled map[string]bool, multimap []byte) []string {
+	if !enabled["multimap"] {
+		return []string{"rspamd's multimap module is off, so CSM's IP map cannot score mail"}
+	}
+	rules, err := dumpObjectAs[json.RawMessage](multimap, "multimap")
+	if err != nil {
+		return []string{"rspamd's multimap rules are not readable"}
+	}
+	raw, ok := rules["CSM_IP"]
+	if !ok {
+		return []string{"rspamd did not load CSM's CSM_IP rule"}
+	}
+	fields, err := dumpObjectAs[json.RawMessage](raw, "CSM_IP")
+	if err != nil {
+		return []string{"rspamd's CSM_IP rule is not a rule CSM wrote"}
+	}
+	// Extra options can change matching or force an action independently
+	// of the score. Only the description is free to differ from CSM's rule.
+	for key := range fields {
+		switch key {
+		case "type", "map", "symbols", "score", "description", "enabled":
+		default:
+			return []string{"rspamd's CSM_IP rule has options CSM did not write; an override changes it"}
+		}
+	}
+	var rule struct {
+		Type    string          `json:"type"`
+		Map     json.RawMessage `json:"map"`
+		Symbols []string        `json:"symbols"`
+		Score   *float64        `json:"score"`
+		Enabled *bool           `json:"enabled"`
+	}
+	if json.Unmarshal(raw, &rule) != nil {
+		return []string{"rspamd's CSM_IP rule is not a rule CSM wrote"}
+	}
+	var path string
+	if json.Unmarshal(rule.Map, &path) != nil {
+		var paths []string
+		if json.Unmarshal(rule.Map, &paths) == nil && len(paths) == 1 {
+			path = paths[0]
+		}
+	}
+	var want []string
+	for _, s := range ipmap.Symbols() {
+		want = append(want, s.Name)
+	}
+	// Rspamd registers each symbol independently; array order has no effect.
+	slices.Sort(want)
+	slices.Sort(rule.Symbols)
+	if rule.Type != "ip" || path != ipmap.DefaultPath || !slices.Equal(rule.Symbols, want) ||
+		rule.Score == nil || *rule.Score != ipmap.RuleScore ||
+		fields["enabled"] != nil && (rule.Enabled == nil || !*rule.Enabled) {
+		return []string{"rspamd's CSM_IP rule differs from the one CSM wrote; an override changes it"}
+	}
+	return nil
 }

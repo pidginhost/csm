@@ -1,10 +1,28 @@
 package netutil
 
 import (
+	"errors"
 	"net"
+	"net/netip"
+	"slices"
 	"testing"
 	"time"
 )
+
+func TestHostAddressesListsBoundAddresses(t *testing.T) {
+	SetHostAddressLookupForTest(t, func() ([]net.IP, error) {
+		return []net.IP{net.ParseIP("203.0.113.5"), net.ParseIP("2001:db8::5"), net.ParseIP("127.0.0.1"), net.ParseIP("203.0.113.5")}, nil
+	})
+	got := HostAddresses()
+	want := []netip.Addr{netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("203.0.113.5"), netip.MustParseAddr("2001:db8::5")}
+	if !slices.Equal(got, want) {
+		t.Fatalf("HostAddresses = %v, want %v", got, want)
+	}
+	SetHostAddressLookupForTest(t, func() ([]net.IP, error) { return nil, errors.New("boom") })
+	if got := HostAddresses(); len(got) != 0 {
+		t.Fatalf("lookup failure = %v, want none", got)
+	}
+}
 
 func TestIsHostAddress(t *testing.T) {
 	SetHostAddressLookupForTest(t, func() ([]net.IP, error) {

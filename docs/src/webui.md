@@ -62,6 +62,19 @@ Account views use the recorded finding owner when available, with account paths
 as a fallback. They also recognize resolved paths under linked account roots,
 including files already moved into quarantine.
 
+## Threat intelligence spam evidence
+
+The Spam column shows spam and ham verdict counts and the current spam score.
+Click its heading to sort by score. The **Spam evidence only** filter requests
+senders with spam verdicts, including those with no attack events. The filter
+is kept in the URL for bookmarks and history navigation. When switching filters,
+previous rows stay unavailable for actions and export until a load succeeds.
+
+The **Listing threshold** badge means the spam score qualifies for the CSM IP
+map. It does not confirm an active listing: the feed must be configured and
+working, and address exclusions still apply. Spam scores remain separate from
+the unified threat score and firewall block status.
+
 ## Dates and time zones
 
 Every page shows dates in the time zone chosen under Preferences: the browser's,

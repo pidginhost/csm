@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -19,12 +20,34 @@ import (
 type FeedState struct {
 	mu sync.Mutex
 	// held is the feed configuration whose apply failed the feeds check;
-	// DNS feeds stay off while the configuration is unchanged.
+	// Scoring feeds stay off while the configuration is unchanged.
 	held string
 	// scope fingerprints the resolver and queries without retaining a key.
 	scope [32]byte
 	// noAnswer counts consecutive completed probes, per zone and query kind.
 	noAnswer map[string]int
+	// ipMapActive is set while the installed integration holds the CSM_IP
+	// rule, so the IP map loop knows rspamd should answer its canary.
+	ipMapActive atomic.Bool
+}
+
+// IPMapHooks keep the CSM IP map in step with the CSM_IP rule.
+type IPMapHooks struct {
+	// Write builds and writes the map now, so a pass that adds the rule
+	// never applies it without its file (feeds spec 6.2).
+	Write func(ctx context.Context) error
+	// Remove deletes the map once no rule reads it.
+	Remove func() error
+}
+
+// IPMapActive reports whether the installed integration holds the CSM_IP
+// rule.
+func (st *FeedState) IPMapActive() bool { return st != nil && st.ipMapActive.Load() }
+
+func (st *FeedState) setIPMapActive(v bool) {
+	if st != nil {
+		st.ipMapActive.Store(v)
+	}
 }
 
 // NewFeedState returns empty feed memory.
@@ -43,7 +66,7 @@ func (st *FeedState) hold(configured antispam.Settings) {
 	st.held = feedConfig(configured)
 }
 
-// apply drops DNS feeds from resolved while the configured feeds are held,
+// apply drops scoring feeds from resolved while the configured feeds are held,
 // with one Warning per feed. A changed configuration lifts the hold.
 func (st *FeedState) apply(configured, resolved antispam.Settings, problems []antispam.Problem) (antispam.Settings, []antispam.Problem) {
 	if st == nil {
@@ -60,6 +83,11 @@ func (st *FeedState) apply(configured, resolved antispam.Settings, problems []an
 	}
 	var keep []string
 	for _, name := range resolved.Feeds {
+		if name == antispam.FeedCSMIPMap {
+			problems = append(problems, antispam.Problem{Code: antispam.CodeFeed, Severity: antispam.Warning, Key: name,
+				Detail: "feed " + name + " is off: at the last apply CSM could not confirm the CSM_IP rule rspamd loaded, or it differed from CSM's; CSM keeps the IP map off until the feed configuration changes or CSM restarts"})
+			continue
+		}
 		if f, _ := antispam.FeedByName(name); f.DNS() {
 			problems = append(problems, antispam.Problem{Code: antispam.CodeFeed, Severity: antispam.Warning, Key: name,
 				Detail: "feed " + name + " is off: at the last apply CSM could not confirm the blocklist rules rspamd loaded, or they differed from CSM's; CSM keeps DNS feeds off until the feed configuration changes or CSM restarts"})
