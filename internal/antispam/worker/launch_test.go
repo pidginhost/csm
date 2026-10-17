@@ -61,7 +61,7 @@ func TestMain(m *testing.M) {
 		var out bytes.Buffer
 		code := Handle(os.Stdin, &out, tr, freeLock)
 		want := antispam.Settings{DryRun: false, Socket: "/var/run/rspamd/scan.sock", RejectScore: 20, TagScore: 8}
-		if len(tr.applied) != 1 || tr.applied[0] != want || tr.removed != 0 {
+		if len(tr.applied) != 1 || !reflect.DeepEqual(tr.applied[0], want) || tr.removed != 0 {
 			os.Exit(2)
 		}
 		if _, err := os.Stdout.Write(out.Bytes()); err != nil {
@@ -329,7 +329,7 @@ func TestRunAndHandleShareTheProtocol(t *testing.T) {
 			return out.Bytes(), nil
 		})
 	if err != nil || !result.OK || result.Operation != antispam.OpApply || result.Generation != "g2" ||
-		len(tr.applied) != 1 || tr.applied[0] != settings {
+		len(tr.applied) != 1 || !reflect.DeepEqual(tr.applied[0], settings) {
 		t.Fatalf("result=%+v err=%v transactor=%+v", result, err, tr)
 	}
 }

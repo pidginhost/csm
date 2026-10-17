@@ -42,7 +42,11 @@ const (
 	StepEximReload    = "exim_reload"
 	StepEximProbe     = "exim_probe"
 	StepComplete      = "complete"
+	StepFeedsCheck    = antispam.FeedsCheckStep
 )
+
+// errFeedsLoaded distinguishes feed verification failures from core failures.
+var errFeedsLoaded = errors.New("rspamd blocklist rules could not be verified against CSM's settings")
 
 // Host runs transactions against the host. Every function field is a side
 // effect; tests replace them and set root to a temporary directory.
@@ -67,6 +71,9 @@ func New() *Host {
 		replace: replaceFile,
 		preflight: func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
 			f := hostfacts.Collect(ctx, s.Socket)
+			if s.HasFeed(antispam.FeedSpamhausDQS) {
+				f.DQSKey = hostfacts.ReadDQSKey(s.DQSKeyFile)
+			}
 			return f, antispam.CheckHost(f)
 		},
 		targets: func() []antispam.TargetFacts { return hostfacts.Targets(antispam.MutationTargets()) },
@@ -176,17 +183,33 @@ func blocking(problems []antispam.Problem) error {
 
 // plan lists the edits that bring targets to managed, keyed by target
 // path. A nil managed map plans removal: CSM blocks are stripped, managed
-// local.d files deleted and foreign ones left in place.
+// rspamd files deleted and foreign ones left in place. Optional files CSM
+// wrote but no longer needs are deleted on apply too.
 func plan(targets []antispam.TargetFacts, managed map[string]string) ([]change, error) {
 	var out []change
 	for _, t := range targets {
 		before := fileState{exists: !t.Missing, content: t.Content}
 		switch {
-		case t.Kind == antispam.TargetRspamd && managed != nil:
+		case t.Kind == antispam.TargetRspamdOptional && managed != nil:
+			want, wanted := managed[t.Path]
+			switch {
+			case wanted:
+				// The daemon left out what CSM cannot own; a file that
+				// changed since then is refused, never overwritten.
+				if err := antispam.OptionalUsable(t); err != nil {
+					return nil, err
+				}
+				if !sameContent(before, fileState{exists: true, content: want}) {
+					out = append(out, change{t, fileState{exists: true, content: want}})
+				}
+			case !t.Missing && antispam.IsManaged(t.Content):
+				out = append(out, change{t, fileState{}})
+			}
+		case t.Kind.WholeFile() && managed != nil:
 			if want := managed[t.Path]; !sameContent(before, fileState{exists: true, content: want}) {
 				out = append(out, change{t, fileState{exists: true, content: want}})
 			}
-		case t.Kind == antispam.TargetRspamd:
+		case t.Kind.WholeFile():
 			if !t.Missing && antispam.IsManaged(t.Content) {
 				out = append(out, change{t, fileState{}})
 			}
@@ -208,10 +231,32 @@ func plan(targets []antispam.TargetFacts, managed map[string]string) ([]change, 
 	return out, nil
 }
 
+// secureSecret gives override.d/rbl.conf the group and mode that keep the
+// DQS key from other users, also when only its mode or group is wrong.
+// The worker runs as root, so uid -1 keeps root as owner.
+func secureSecret(changes []change, targets []antispam.TargetFacts, gid int) []change {
+	meta := func(content string) fileState {
+		return fileState{exists: true, content: content, uid: -1, gid: gid, perm: antispam.SecretFileMode, metadata: true}
+	}
+	for i, c := range changes {
+		if c.target.Path == antispam.FeedRBLPath && c.next.exists {
+			changes[i].next = meta(c.next.content)
+			return changes
+		}
+	}
+	for _, t := range targets {
+		if t.Path == antispam.FeedRBLPath && !t.Missing &&
+			(t.File.GID != gid || t.File.Mode != antispam.SecretFileMode) {
+			return append(changes, change{t, meta(t.Content)})
+		}
+	}
+	return changes
+}
+
 // split separates rspamd edits from Exim edits.
 func split(changes []change) (rspamd, exim []change) {
 	for _, c := range changes {
-		if c.target.Kind == antispam.TargetRspamd {
+		if c.target.Kind.WholeFile() {
 			rspamd = append(rspamd, c)
 		} else {
 			exim = append(exim, c)
@@ -239,7 +284,7 @@ func (t *tx) write(c change) error {
 	err = t.h.replace(p, before, c.next)
 	if err == nil || errors.Is(err, errDurability) {
 		t.writes = append(t.writes, written{path: p, before: before, next: c.next})
-		if c.target.Kind != antispam.TargetRspamd {
+		if !c.target.Kind.WholeFile() {
 			t.eximTouched = true
 		}
 	}
@@ -421,7 +466,7 @@ func (t *tx) rememberEximBlocks(targets []antispam.TargetFacts, opts map[string]
 	t.eximHadHooks = false
 	t.eximRCPTACL, t.eximDataACL = opts["acl_smtp_rcpt"], opts["acl_smtp_data"]
 	for _, target := range targets {
-		if target.Kind == antispam.TargetRspamd {
+		if target.Kind.WholeFile() {
 			continue
 		}
 		block, ok := antispam.BlockText(target.Kind, target.Content)
@@ -533,6 +578,16 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 	if on, err := antispam.PhishtankEnabled([]byte(phishing.Stdout)); err != nil || on {
 		return errors.New("rspamadm configdump -j phishing: rspamd configuration conflict")
 	}
+	if len(s.DNSFeeds()) > 0 {
+		dump := t.cmd(ctx, commandLimit, "rspamadm", "configdump", "-j", "rbl")
+		if dump.Err != nil {
+			return errors.Join(errFeedsLoaded, cmdErr("rspamadm configdump -j rbl", dump))
+		}
+		rules, err := antispam.LoadedRBLRules([]byte(dump.Stdout))
+		if err != nil || len(antispam.CheckFeedsLoaded(enabled, rules, *s)) > 0 {
+			return errFeedsLoaded
+		}
+	}
 	return nil
 }
 
@@ -587,9 +642,17 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 		}
 		w := t.writes[i]
 		before := w.before
-		// Surviving files keep later owner and mode changes. Only a
-		// deleted file needs its snapshot metadata reinstated.
-		if w.next.exists {
+		switch {
+		case w.path == t.h.path(antispam.FeedRBLPath):
+			// Rollback can put the DQS key back into this file, so it never
+			// keeps a mode someone loosened meanwhile: it gets the private
+			// metadata this apply wrote, or the snapshot's.
+			if w.next.metadata {
+				before.uid, before.gid, before.perm = w.next.uid, w.next.gid, w.next.perm
+			}
+		case w.next.exists:
+			// Other surviving files keep later owner and mode changes. Only
+			// a deleted file needs its snapshot metadata reinstated.
 			before.metadata = false
 		}
 		if err := t.h.replace(w.path, w.next, before); err != nil {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
+	"slices"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -35,6 +37,8 @@ func DesiredFromConfig(cfg *config.Config) Desired {
 		Settings: antispam.Settings{
 			DryRun: as.DryRun, Socket: as.RspamdSocket,
 			RejectScore: as.RejectScore, TagScore: as.TagScore,
+			Feeds:      slices.Sorted(slices.Values(as.Feeds.Enabled)),
+			DQSKeyFile: as.Feeds.SpamhausDQSKeyFile,
 		},
 	}
 }
@@ -53,6 +57,12 @@ type Reconciler struct {
 	Run func(ctx context.Context, req antispam.Request) (antispam.Result, error)
 	// Now stamps findings.
 	Now func() time.Time
+	// ReadKey reads the Spamhaus DQS key file; nil disables spamhaus_dqs.
+	ReadKey func(path string) antispam.KeyFacts
+	// Feeds remembers feed holds and probe counts between passes.
+	Feeds *FeedState
+	// Probe asks server one DNS question; nil disables the feed probe.
+	Probe func(ctx context.Context, server netip.AddrPort, name string) antispam.ProbeAnswer
 	// assess replaces antispam.Assess in tests.
 	assess func(enabled bool, s antispam.Settings, f antispam.HostFacts) antispam.Assessment
 }
@@ -77,6 +87,9 @@ type Outcome struct {
 func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
+	}
+	if !d.Enabled || d.Observe {
+		r.Feeds.setProbeScope([32]byte{})
 	}
 	invalidateErr := r.Invalidate(ctx)
 	if err := ctx.Err(); err != nil {
@@ -104,6 +117,9 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	var f antispam.HostFacts
 	if d.Enabled {
 		f = r.Collect(ctx, d.Settings.Socket)
+		if d.Settings.HasFeed(antispam.FeedSpamhausDQS) && r.ReadKey != nil {
+			f.DQSKey = r.ReadKey(d.Settings.DQSKeyFile)
+		}
 	} else {
 		f = r.Installed()
 	}
@@ -115,10 +131,41 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if assess == nil {
 		assess = antispam.Assess
 	}
-	a := assess(d.Enabled, d.Settings, f)
+	settings, feedProblems := d.Settings, []antispam.Problem(nil)
+	if d.Enabled {
+		settings, feedProblems = antispam.ResolveFeeds(d.Settings, f)
+		settings, feedProblems = r.Feeds.apply(d.Settings, settings, feedProblems)
+	}
+	a := assess(d.Enabled, settings, f)
 	now := r.Now()
-	out := Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed}}
+	out := Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed}}
 	for _, p := range a.Problems {
+		if p.Code == antispam.CodeFeed {
+			feedProblems = append(feedProblems, p)
+		}
+	}
+	// Leftover maps mean something only once CSM's files are installed and
+	// current, which a Keep without blocking problems shows.
+	if d.Enabled && !d.Observe && settings.Redirects() && a.Action == antispam.Keep && a.Installed && !blockingProblems(a.Problems) {
+		if p, ok := leftoverMaps(f); ok {
+			feedProblems = append(feedProblems, p)
+		}
+	}
+	for _, p := range mergeByKey(feedProblems) {
+		out.Findings = append(out.Findings, feedFinding(p, now))
+	}
+	if d.Enabled && !d.Observe && a.Action == antispam.Keep && a.Installed && !blockingProblems(a.Problems) {
+		out.Findings = append(out.Findings, r.probeFeeds(ctx, settings, f, now)...)
+		if err := ctx.Err(); err != nil {
+			return Outcome{Err: err}
+		}
+	} else {
+		r.Feeds.setProbeScope([32]byte{})
+	}
+	for _, p := range a.Problems {
+		if p.Code == antispam.CodeFeed {
+			continue
+		}
 		finding := problemFinding(p, now)
 		if d.Observe {
 			finding.Details = clean(p.Detail) + ". CSM changes nothing in observe mode."
@@ -137,7 +184,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	var req antispam.Request
 	switch a.Action {
 	case antispam.Install:
-		req = antispam.ApplyRequest(d.Settings)
+		req = antispam.ApplyRequest(settings)
 	case antispam.Uninstall:
 		req = antispam.RemoveRequest()
 	default:
@@ -151,7 +198,10 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	if result.Busy {
 		out.Retry = BusyRetry
-		out.Checks = []string{CheckPrecondition}
+		out.Checks = []string{CheckPrecondition, CheckFeed}
+	}
+	if result.FailedStep == antispam.FeedsCheckStep {
+		r.Feeds.hold(d.Settings)
 	}
 	if finding, ok := resultFinding(req.Operation, result, err, now); ok {
 		out.Findings = append(out.Findings, finding)

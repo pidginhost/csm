@@ -2,6 +2,7 @@ package hostfacts
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +35,7 @@ type Layout struct {
 	SpamdDisabled string
 	GlobalEnable  string
 	Record        string
+	ResolvConf    string
 	Targets       []antispam.Target
 }
 
@@ -45,6 +47,8 @@ type collector struct {
 	lookPath func(string) (string, error)
 	uid      func(name string) (int, error)
 	gid      func(name string) (int, error)
+	// primaryGID is a user's primary group.
+	primaryGID func(user string) (int, error)
 }
 
 func live() collector {
@@ -55,14 +59,16 @@ func live() collector {
 			SpamdDisabled: "/etc/spamddisable",
 			GlobalEnable:  "/etc/global_spamassassin_enable",
 			Record:        antispam.RecordPath,
+			ResolvConf:    "/etc/resolv.conf",
 			Targets:       antispam.MutationTargets(),
 		},
-		cpanel:   func() bool { return platform.Detect().IsCPanel() },
-		eximMTA:  func() bool { return platform.DetectMTA() == platform.MTAExim },
-		run:      runCommand,
-		lookPath: exec.LookPath,
-		uid:      lookupUID,
-		gid:      lookupGID,
+		cpanel:     func() bool { return platform.Detect().IsCPanel() },
+		eximMTA:    func() bool { return platform.DetectMTA() == platform.MTAExim },
+		run:        runCommand,
+		lookPath:   exec.LookPath,
+		uid:        lookupUID,
+		gid:        lookupGID,
+		primaryGID: lookupPrimaryGID,
 	}
 }
 
@@ -86,6 +92,9 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	f.RspamdActions = c.run(ctx, "rspamadm", "configdump", "-j", "actions")
 	f.RspamdModules = c.run(ctx, "rspamadm", "configdump", "-m")
 	f.RspamdPhishing = c.run(ctx, "rspamadm", "configdump", "-j", "phishing")
+	f.RspamdRBL = c.run(ctx, "rspamadm", "configdump", "-j", "rbl")
+	f.RspamdConfig = c.run(ctx, "rspamadm", "configdump", "-j")
+	f.RspamdLog = rspamdLog(f.RspamdConfig)
 	f.RspamdService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.RspamdUnit)...)
 	f.EximService = c.run(ctx, "systemctl", antispam.UnitShowArgs(antispam.EximUnit)...)
 	_, f.SystemdRunErr = c.lookPath("systemd-run")
@@ -96,6 +105,7 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	}
 	f.SpamdDisabled, f.SpamdDisabledErr = exists(c.layout.SpamdDisabled)
 	f.GlobalEnable, f.GlobalEnableErr = exists(c.layout.GlobalEnable)
+	f.ResolvConf, f.ResolvConfErr = readText(c.layout.ResolvConf)
 
 	settings := map[string]string{}
 	if f.EximSettings.Err == nil {
@@ -117,6 +127,7 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 
 	f.Socket = socketFacts(ctx, socket)
 	f.Socket.RspamdUID = c.serviceUser(f.RspamdService)
+	f.RspamdGID = c.serviceGroup(f.RspamdService)
 	f.Socket.EximUID = id(settings["exim_user"], c.uid)
 	f.Socket.EximGID = id(settings["exim_group"], c.gid)
 	return f
@@ -158,6 +169,36 @@ func (c collector) serviceUser(show antispam.CommandResult) int {
 		return -1
 	}
 	return uid
+}
+
+// serviceGroup returns the rspamd service's group: the unit's Group, else
+// the primary group of its User, else -1. A root-started rspamd drops to a
+// user and group of its own choosing, so its group is unknown.
+func (c collector) serviceGroup(show antispam.CommandResult) int {
+	if c.serviceUser(show) < 0 {
+		return -1
+	}
+	props := antispam.ParseUnitShow(show.Stdout)
+	if g := props["Group"]; g != "" {
+		return id(g, c.gid)
+	}
+	// A numeric User is a uid, not its primary gid.
+	gid, err := c.primaryGID(props["User"])
+	if err != nil || gid < 0 {
+		return -1
+	}
+	return gid
+}
+
+func lookupPrimaryGID(name string) (int, error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		u, err = user.LookupId(name)
+	}
+	if err != nil {
+		return -1, err
+	}
+	return strconv.Atoi(u.Gid)
 }
 
 // id resolves a user or group given by name or number, or returns -1.
@@ -264,4 +305,40 @@ func exists(p string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+// rspamdLog reads rspamd's log destination from `rspamadm configdump -j`
+// and, for a file, the file and its directories.
+func rspamdLog(dump antispam.CommandResult) antispam.LogFacts {
+	var out antispam.LogFacts
+	var d struct {
+		Logging struct {
+			Type     string `json:"type"`
+			Filename string `json:"filename"`
+		} `json:"logging"`
+	}
+	if dump.Err != nil || json.Unmarshal([]byte(dump.Stdout), &d) != nil || d.Logging.Type == "" {
+		out.Err = errors.New("rspamd's logging settings are not readable")
+		return out
+	}
+	out.Type, out.Path = d.Logging.Type, d.Logging.Filename
+	if out.Type != "file" {
+		return out
+	}
+	if !filepath.IsAbs(out.Path) {
+		out.Err = errors.New("rspamd's log file is not an absolute path")
+		return out
+	}
+	if out.Parents, out.Err = chain(filepath.Dir(out.Path)); out.Err != nil {
+		return out
+	}
+	switch facts, err := pathFacts(out.Path); {
+	case errors.Is(err, fs.ErrNotExist):
+		out.Missing = true
+	case err != nil:
+		out.Err = err
+	default:
+		out.File = facts
+	}
+	return out
 }

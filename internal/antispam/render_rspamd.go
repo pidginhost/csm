@@ -13,7 +13,8 @@ var RspamdFiles = []string{"actions.conf", "greylist.conf", "rbl.conf", "emails.
 
 // disabledModule turns one rspamd module off. Core makes no third-party
 // lookups: rbl, emails and fuzzy_check query outside lists, asn sends sender
-// IPs to rspamd.com, and greylist would defer mail.
+// IPs to rspamd.com, and greylist would defer mail. rbl stays off unless the
+// operator enables a DNS feed.
 const disabledModule = ManagedHeader + "\nenabled = false;\n"
 
 // RenderRspamd returns the content of each file in RspamdFiles, keyed by its
@@ -29,6 +30,12 @@ func RenderRspamd(s Settings) (map[string]string, error) {
 	// The phishing module keeps its local checks; only its URL lookups in
 	// rspamd.com's phishtank zone go off.
 	files["phishing.conf"] = ManagedHeader + "\nphishtank_enabled = false;\n"
+	if s.Redirects() {
+		files["phishing.conf"] += phishingExceptions
+	}
+	if len(s.DNSFeeds()) > 0 {
+		files["rbl.conf"] = ManagedHeader + "\nenabled = true;\n"
+	}
 	files["actions.conf"] = ManagedHeader + "\n" +
 		"reject = " + strconv.Itoa(s.RejectScore) + ";\n" +
 		"add_header = " + strconv.Itoa(s.TagScore) + ";\n" +

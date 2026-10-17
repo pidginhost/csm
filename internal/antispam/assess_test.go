@@ -32,6 +32,10 @@ func installedFacts(t *testing.T, s Settings) HostFacts {
 		switch tg.Kind {
 		case TargetRspamd:
 			tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, managed[tg.Path]
+		case TargetRspamdOptional:
+			if text, ok := managed[tg.Path]; ok {
+				tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, text
+			}
 		case TargetEximHook:
 			tg.Content = managed[tg.Path]
 		case TargetEximLocal:
@@ -536,6 +540,81 @@ func TestAssessReportsEachProblemOnce(t *testing.T) {
 				if a.Action != tc.action || !a.Installed || !slices.Equal(a.Problems, tc.want) {
 					t.Fatalf("pass %d: got %+v; want action %d, installed, problems %+v", pass, a, tc.action, tc.want)
 				}
+			}
+		})
+	}
+}
+
+func TestCurrentNeedsSecretFileMode(t *testing.T) {
+	s := defaults(false)
+	s.Feeds, s.DQSKeyFile, s.DQSKey = []string{FeedSpamhausDQS}, "/etc/csm/k", NewSecret(testKey)
+	f := installedFacts(t, s)
+	f.RspamdGID = 974
+	setTargetFile(f.Targets, FeedRBLPath, PathFacts{Path: FeedRBLPath, UID: 0, GID: 974, Mode: 0o640})
+	if !current(s, f) {
+		t.Fatal("0640 root:rspamd is current")
+	}
+	for name, file := range map[string]PathFacts{
+		"world readable": {Path: FeedRBLPath, UID: 0, GID: 974, Mode: 0o644},
+		"wrong group":    {Path: FeedRBLPath, UID: 0, GID: 0, Mode: 0o640},
+		"setgid":         {Path: FeedRBLPath, UID: 0, GID: 974, Mode: fs.ModeSetgid | 0o640},
+		"setuid":         {Path: FeedRBLPath, UID: 0, GID: 974, Mode: fs.ModeSetuid | 0o640},
+		"sticky":         {Path: FeedRBLPath, UID: 0, GID: 974, Mode: fs.ModeSticky | 0o640},
+	} {
+		setTargetFile(f.Targets, FeedRBLPath, file)
+		if current(s, f) {
+			t.Errorf("%s counts as current", name)
+		}
+	}
+}
+
+func setTargetFile(targets []TargetFacts, p string, file PathFacts) {
+	for i := range targets {
+		if targets[i].Path == p {
+			targets[i].File = file
+		}
+	}
+}
+
+func TestAssessFeedDriftWarnsWithoutUninstall(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedPSBL}
+	f := installedFacts(t, s)
+	f.RspamdModules = CommandResult{Stdout: "Modules enabled: dkim, spf, rbl\nModules disabled (explicitly): asn, emails, fuzzy_check, greylist\n"}
+	f.RspamdRBL = CommandResult{Stdout: `{"rbls":{"csm_psbl":{},"spamhaus":{}}}`}
+	a := Assess(true, s, f)
+	if a.Action != Keep || len(a.Problems) != 1 {
+		t.Fatalf("assessment %+v", a)
+	}
+	if p := a.Problems[0]; p.Code != CodeFeed || p.Severity != Warning || p.Key != "rbl" {
+		t.Fatalf("problem %+v", p)
+	}
+	f.RspamdRBL = CommandResult{Stdout: `{"rbls":{"csm_psbl":{}}}`}
+	if a := Assess(true, s, f); a.Action != Keep || len(a.Problems) != 0 {
+		t.Fatalf("exact rules: %+v", a)
+	}
+}
+
+func TestAssessUnusableFeedRulesKeepCore(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedPSBL}
+	for name, dump := range map[string]CommandResult{
+		"legacy rules":   {Stdout: `{"rbls":{"csm_psbl":{}},"rules":{"foreign":{}}}`},
+		"disabled rule":  {Stdout: `{"rbls":{"csm_psbl":{"enabled":false}}}`},
+		"duplicate rule": {Stdout: `{"rbls":{"csm_psbl":{},"csm_psbl":{}}}`},
+		"invalid rule":   {Stdout: `{"rbls":{"csm_psbl":null}}`},
+		"failed dump":    {Err: errors.New("command failed")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := installedFacts(t, s)
+			f.RspamdModules = CommandResult{Stdout: "Modules enabled: dkim, spf, rbl\n"}
+			f.RspamdRBL = dump
+			a := Assess(true, s, f)
+			if a.Action != Keep || !a.Installed || len(a.Problems) != 1 {
+				t.Fatalf("feed drift must keep core and report one warning: %+v", a)
+			}
+			if p := a.Problems[0]; p.Code != CodeFeed || p.Severity != Warning || p.Key != "rbl" {
+				t.Fatalf("feed drift misclassified: %+v", p)
 			}
 		})
 	}

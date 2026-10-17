@@ -676,6 +676,9 @@ email_protection:
     rspamd_socket: /run/rspamd/csm-normal.sock  # rspamd scan socket, not the reputation.rspamd controller
     reject_score: 15                    # reject at or above this rspamd score (default 15)
     tag_score: 6                        # add X-Spam-Status: Yes at or above this score (default 6)
+    feeds:
+      enabled: []                       # optional feeds, e.g. [mailspike, psbl]; see docs/src/antispam.md
+      spamhaus_dqs_key_file: ""         # root-owned file holding the Spamhaus DQS key; needed only for spamhaus_dqs
 
 # --- Firewall ---
 firewall:

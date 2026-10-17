@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -27,7 +28,7 @@ func goodTargets() []TargetFacts {
 	for _, t := range MutationTargets() {
 		f := TargetFacts{Target: t, Parents: rootChain(path.Dir(t.Path))}
 		switch t.Kind {
-		case TargetRspamd:
+		case TargetRspamd, TargetRspamdOptional:
 			f.Missing = true
 		case TargetEximHook:
 			f.File = PathFacts{Path: t.Path, Mode: 0o644}
@@ -52,13 +53,20 @@ func target(f *HostFacts, k TargetKind) *TargetFacts {
 
 func TestMutationTargetsCoverSpecFiles(t *testing.T) {
 	want := map[string]TargetKind{
-		"/etc/rspamd/local.d/actions.conf":     TargetRspamd,
-		"/etc/rspamd/local.d/greylist.conf":    TargetRspamd,
-		"/etc/rspamd/local.d/rbl.conf":         TargetRspamd,
-		"/etc/rspamd/local.d/emails.conf":      TargetRspamd,
-		"/etc/rspamd/local.d/fuzzy_check.conf": TargetRspamd,
-		"/etc/rspamd/local.d/asn.conf":         TargetRspamd,
-		"/etc/rspamd/local.d/phishing.conf":    TargetRspamd,
+		"/etc/rspamd/local.d/actions.conf":           TargetRspamd,
+		"/etc/rspamd/local.d/greylist.conf":          TargetRspamd,
+		"/etc/rspamd/local.d/rbl.conf":               TargetRspamd,
+		"/etc/rspamd/local.d/emails.conf":            TargetRspamd,
+		"/etc/rspamd/local.d/fuzzy_check.conf":       TargetRspamd,
+		"/etc/rspamd/local.d/asn.conf":               TargetRspamd,
+		"/etc/rspamd/local.d/phishing.conf":          TargetRspamd,
+		"/etc/rspamd/override.d/rbl.conf":            TargetRspamdOptional,
+		"/etc/rspamd/override.d/rbl_group.conf":      TargetRspamdOptional,
+		"/etc/rspamd/local.d/forged_recipients.conf": TargetRspamdOptional,
+		"/etc/rspamd/local.d/mid.conf":               TargetRspamdOptional,
+		"/etc/rspamd/local.d/mime_types.conf":        TargetRspamdOptional,
+		"/etc/rspamd/local.d/whitelist.conf":         TargetRspamdOptional,
+		"/etc/rspamd/local.d/multimap.conf":          TargetRspamdOptional,
 		"/usr/local/cpanel/etc/exim/acls/ACL_SPAM_SCAN_CHECK_BLOCK/custom_begin_spam_scan_check":       TargetEximHook,
 		"/usr/local/cpanel/etc/exim/acls/ACL_SPAM_SCAN_BLOCK/custom_begin_spam_scan":                   TargetEximHook,
 		"/usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_POST_BLOCK/custom_begin_check_message_post": TargetEximHook,
@@ -335,10 +343,12 @@ func TestCheckRemovalLeavesForeignFiles(t *testing.T) {
 }
 
 func TestCheckRemovalRefusesUnsafeEdits(t *testing.T) {
+	// The three ACL hook files follow the rspamd files.
+	hook := len(MutationTargets()) - 4
 	for name, edit := range map[string]func([]TargetFacts){
 		"symlinked parent": func(ts []TargetFacts) { ts[6].Parents[2].Mode = fs.ModeSymlink | 0o777 },
-		"tenant file":      func(ts []TargetFacts) { ts[7].File.UID = 1000 },
-		"unpaired marker":  func(ts []TargetFacts) { ts[8].Content = MarkerBegin + "\n" },
+		"tenant file":      func(ts []TargetFacts) { ts[hook].File.UID = 1000 },
+		"unpaired marker":  func(ts []TargetFacts) { ts[hook+1].Content = MarkerBegin + "\n" },
 	} {
 		targets := goodTargets()
 		edit(targets)
@@ -399,5 +409,91 @@ func TestCheckHostReportsMissingDirectoryOnce(t *testing.T) {
 	if len(got) != 1 || got[0].Code != CodeTargets || got[0].Severity != Definite ||
 		got[0].Detail != "the directory "+RspamdLocalDir+" is missing" {
 		t.Fatalf("got %+v, want one missing-directory problem", got)
+	}
+}
+
+func TestMutationTargetsListOptionalFiles(t *testing.T) {
+	var optional []string
+	for _, tgt := range MutationTargets() {
+		if tgt.Kind == TargetRspamdOptional {
+			optional = append(optional, tgt.Path)
+		}
+	}
+	if !slices.Equal(optional, OptionalRspamdPaths()) {
+		t.Fatalf("optional targets = %v", optional)
+	}
+}
+
+func protectedParents() []PathFacts {
+	return []PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}, {Path: "/etc", Mode: fs.ModeDir | 0o755}}
+}
+
+func TestCheckTargetsIgnoresForeignOptionalFiles(t *testing.T) {
+	targets := goodTargets()
+	for i := range targets {
+		if targets[i].Kind == TargetRspamdOptional {
+			targets[i].Missing = false
+			targets[i].File = PathFacts{Path: targets[i].Path, Mode: 0o644}
+			targets[i].Content = "operator text\n"
+		}
+	}
+	if problems := checkTargets(targets, false); len(problems) != 0 {
+		t.Fatalf("foreign optional files blocked core: %+v", problems)
+	}
+	if problems := checkTargets(targets, true); len(problems) != 0 {
+		t.Fatalf("removal must leave foreign optional files alone: %+v", problems)
+	}
+}
+
+func TestOptionalUsable(t *testing.T) {
+	ok := TargetFacts{Target: Target{Path: FeedRBLPath, Kind: TargetRspamdOptional}, Missing: true, Parents: protectedParents()}
+	if err := OptionalUsable(ok); err != nil {
+		t.Fatalf("missing file in a safe directory: %v", err)
+	}
+	for name, mutate := range map[string]func(*TargetFacts){
+		"missing dir":   func(f *TargetFacts) { f.Err = fmt.Errorf("lstat: %w", fs.ErrNotExist) },
+		"unsafe parent": func(f *TargetFacts) { f.Parents[1].Mode = fs.ModeDir | 0o777 },
+		"foreign": func(f *TargetFacts) {
+			f.Missing, f.File, f.Content = false, PathFacts{Path: f.Path, Mode: 0o644}, "x\n"
+		},
+		"symlink": func(f *TargetFacts) { f.Missing, f.File = false, PathFacts{Path: f.Path, Mode: fs.ModeSymlink | 0o777} },
+		"group writable": func(f *TargetFacts) {
+			f.Missing, f.File, f.Content = false, PathFacts{Path: f.Path, Mode: 0o664}, ManagedHeader+"\n"
+		},
+	} {
+		f := ok
+		f.Parents = protectedParents()
+		mutate(&f)
+		if err := OptionalUsable(f); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+func TestCheckTargetsLetsRemovalDeleteLoosenedOptionalFiles(t *testing.T) {
+	targets := goodTargets()
+	for i := range targets {
+		if targets[i].Kind == TargetRspamdOptional {
+			targets[i].Missing = false
+			targets[i].File = PathFacts{Path: targets[i].Path, Mode: 0o666}
+			targets[i].Content = ManagedHeader + "\n"
+		}
+	}
+	if problems := checkTargets(targets, false); len(problems) != 0 {
+		t.Fatalf("an unsafe optional file blocked core: %+v", problems)
+	}
+	// Removal only deletes these files, which needs a safe directory, not a
+	// safe file: a loosened file can hold the DQS key and must go.
+	if problems := checkTargets(targets, true); len(problems) != 0 {
+		t.Fatalf("removal refused to delete a loosened CSM file: %+v", problems)
+	}
+	for i := range targets {
+		if targets[i].Kind == TargetRspamdOptional {
+			targets[i].Parents = rootChain(path.Dir(targets[i].Path))
+			targets[i].Parents[2].Mode |= 0o002
+		}
+	}
+	if problems := checkTargets(targets, true); len(problems) == 0 || problems[0].Severity != Definite {
+		t.Fatalf("removal through an unsafe directory must stay refused: %+v", problems)
 	}
 }

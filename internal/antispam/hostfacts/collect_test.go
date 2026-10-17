@@ -51,13 +51,15 @@ func testCollector(d string, run *fakeRun) collector {
 			SpamdDisabled: filepath.Join(d, "spamddisable"),
 			GlobalEnable:  filepath.Join(d, "global_spamassassin_enable"),
 			Record:        filepath.Join(d, "installed.json"),
+			ResolvConf:    filepath.Join(d, "resolv.conf"),
 		},
-		cpanel:   func() bool { return true },
-		eximMTA:  func() bool { return true },
-		run:      run.run,
-		lookPath: func(string) (string, error) { return "/usr/bin/systemd-run", nil },
-		uid:      lookup(map[string]int{"_rspamd": 979, "mailnull": 47}),
-		gid:      lookup(map[string]int{"mail": 12}),
+		cpanel:     func() bool { return true },
+		eximMTA:    func() bool { return true },
+		run:        run.run,
+		lookPath:   func(string) (string, error) { return "/usr/bin/systemd-run", nil },
+		uid:        lookup(map[string]int{"_rspamd": 979, "mailnull": 47}),
+		gid:        lookup(map[string]int{"mail": 12}),
+		primaryGID: lookup(map[string]int{"_rspamd": 974}),
 	}
 }
 
@@ -82,8 +84,8 @@ func TestCollectReadsEveryFact(t *testing.T) {
 		"rspamd --version":               {Stdout: "Rspamd daemon version 4.2.1\n"},
 		"rspamadm --version":             {Stdout: "Rspamadm 4.2.1\n"},
 		"rspamadm configdump -j options": {Stdout: `{"max_message": 62914560}`},
-		"systemctl show -p LoadState -p User -p CanReload rspamd.service": {Stdout: "User=_rspamd\nLoadState=loaded\nCanReload=yes\n"},
-		"systemctl show -p LoadState -p User -p CanReload exim.service":   {Stdout: "User=\nLoadState=loaded\nCanReload=yes\n"},
+		"systemctl show -p LoadState -p User -p Group -p CanReload rspamd.service": {Stdout: "User=_rspamd\nLoadState=loaded\nCanReload=yes\n"},
+		"systemctl show -p LoadState -p User -p Group -p CanReload exim.service":   {Stdout: "User=\nLoadState=loaded\nCanReload=yes\n"},
 	}
 	for i, probe := range antispam.NamedListProbes() {
 		results["exim -C "+conf+" -be "+probe] = antispam.CommandResult{Stdout: fmt.Sprintf("probe %d\n", i)}
@@ -141,8 +143,9 @@ func TestCollectReadsEveryFact(t *testing.T) {
 	}
 	want = append(want, "rspamd --version", "rspamadm --version", "rspamadm configdump -j options",
 		"rspamadm configdump -j actions", "rspamadm configdump -m", "rspamadm configdump -j phishing",
-		"systemctl show -p LoadState -p User -p CanReload rspamd.service",
-		"systemctl show -p LoadState -p User -p CanReload exim.service")
+		"rspamadm configdump -j rbl", "rspamadm configdump -j",
+		"systemctl show -p LoadState -p User -p Group -p CanReload rspamd.service",
+		"systemctl show -p LoadState -p User -p Group -p CanReload exim.service")
 	if !slices.Equal(run.calls, want) {
 		t.Errorf("commands\n got %q\nwant %q", run.calls, want)
 	}
@@ -162,6 +165,9 @@ func TestCollectFailedProbesStayTemporary(t *testing.T) {
 	s := f.Socket
 	if s.RspamdUID != -1 || s.EximUID != -1 || s.EximGID != -1 || s.PeerUID != -1 || !s.Missing {
 		t.Errorf("socket %+v", s)
+	}
+	if f.RspamdGID != -1 || f.ResolvConf != "" || !errors.Is(f.ResolvConfErr, fs.ErrNotExist) {
+		t.Errorf("feed identity or resolver failure was lost: gid %d, resolver error %v", f.RspamdGID, f.ResolvConfErr)
 	}
 	if f.SystemFilter != "" || f.SystemFilterErr != nil || f.GeneratedErr == nil || f.LocalErr != nil || f.SystemdRunErr == nil {
 		t.Errorf("facts %+v", f)
@@ -562,11 +568,99 @@ func TestCollectKeepsRspamdStateErrors(t *testing.T) {
 		"rspamadm configdump -j actions":  want,
 		"rspamadm configdump -m":          want,
 		"rspamadm configdump -j phishing": want,
+		"rspamadm configdump -j rbl":      want,
+		"rspamadm configdump -j":          want,
 	}}
 	f := testCollector(t.TempDir(), run).collect(context.Background(), "/csm-antispam-test-missing/s")
-	for name, got := range map[string]antispam.CommandResult{"actions": f.RspamdActions, "modules": f.RspamdModules, "phishing": f.RspamdPhishing} {
+	for name, got := range map[string]antispam.CommandResult{
+		"actions": f.RspamdActions, "modules": f.RspamdModules, "phishing": f.RspamdPhishing,
+		"rbl": f.RspamdRBL, "config": f.RspamdConfig,
+	} {
 		if got.Stdout != want.Stdout || got.Stderr != want.Stderr || !errors.Is(got.Err, boom) {
 			t.Errorf("%s = %+v, want %+v", name, got, want)
+		}
+	}
+}
+
+func TestCollectReadsFeedFacts(t *testing.T) {
+	d := t.TempDir()
+	write(t, filepath.Join(d, "resolv.conf"), "nameserver 127.0.0.1\n")
+	run := &fakeRun{results: map[string]antispam.CommandResult{
+		"rspamadm configdump -j rbl": {Stdout: `{"rbls":{}}`},
+		"rspamadm configdump -j":     {Stdout: `{"multimap":{}}`},
+		"systemctl show -p LoadState -p User -p Group -p CanReload rspamd.service": {Stdout: "LoadState=loaded\nUser=_rspamd\nGroup=\nCanReload=yes\n"},
+	}}
+	f := testCollector(d, run).collect(context.Background(), filepath.Join(d, "sock"))
+	if f.ResolvConf != "nameserver 127.0.0.1\n" || f.ResolvConfErr != nil {
+		t.Fatalf("resolv.conf = %q, %v", f.ResolvConf, f.ResolvConfErr)
+	}
+	if f.RspamdRBL.Stdout != `{"rbls":{}}` || f.RspamdConfig.Stdout != `{"multimap":{}}` {
+		t.Fatalf("configdumps = %+v, %+v", f.RspamdRBL, f.RspamdConfig)
+	}
+	if f.RspamdGID != 974 {
+		t.Fatalf("RspamdGID = %d, want the user's primary group", f.RspamdGID)
+	}
+	if f.DQSKey != (antispam.KeyFacts{}) {
+		t.Fatal("general host collection populated the DQS key facts")
+	}
+}
+
+func TestServiceGroupPrefersUnitGroup(t *testing.T) {
+	c := testCollector(t.TempDir(), &fakeRun{})
+	c.gid = lookup(map[string]int{"mail": 12, "rspamdgrp": 900})
+	c.primaryGID = lookup(map[string]int{"_rspamd": 974, "979": 974})
+	for _, tc := range []struct {
+		show string
+		err  error
+		want int
+	}{
+		{"LoadState=loaded\nUser=_rspamd\nGroup=rspamdgrp\n", nil, 900},
+		{"LoadState=loaded\nUser=_rspamd\nGroup=900\n", nil, 900},
+		{"LoadState=loaded\nUser=_rspamd\nGroup=\n", nil, 974},
+		// A numeric User is a uid, not its primary gid.
+		{"LoadState=loaded\nUser=979\nGroup=\n", nil, 974},
+		{"LoadState=loaded\nUser=979\nGroup=rspamdgrp\n", nil, 900},
+		{"LoadState=loaded\nUser=12345\nGroup=\n", nil, -1},
+		{"LoadState=loaded\nUser=unknown\nGroup=\n", nil, -1},
+		{"LoadState=loaded\nUser=_rspamd\nGroup=unknown\n", nil, -1},
+		{"LoadState=loaded\nUser=\nGroup=\n", nil, -1},
+		// A root-started rspamd drops to a user and group the unit does not show.
+		{"LoadState=loaded\nUser=0\nGroup=\n", nil, -1},
+		{"LoadState=loaded\nUser=0\nGroup=mail\n", nil, -1},
+		{"LoadState=not-found\n", nil, -1},
+		{"LoadState=loaded\nUser=_rspamd\nGroup=rspamdgrp\n", errors.New("query failed"), -1},
+	} {
+		if got := c.serviceGroup(antispam.CommandResult{Stdout: tc.show, Err: tc.err}); got != tc.want {
+			t.Errorf("%q = %d, want %d", tc.show, got, tc.want)
+		}
+	}
+}
+
+func TestRspamdLogFacts(t *testing.T) {
+	d := t.TempDir()
+	logDir := filepath.Join(d, "rspamd")
+	mkdir(t, logDir)
+	logFile := filepath.Join(logDir, "rspamd.log")
+	write(t, logFile, "")
+	if err := os.Chmod(logFile, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dump := func(typ, file string) antispam.CommandResult {
+		return antispam.CommandResult{Stdout: `{"logging":{"type":"` + typ + `","filename":"` + file + `","level":"info"}}`}
+	}
+	l := rspamdLog(dump("file", logFile))
+	if l.Err != nil || l.Type != "file" || l.Path != logFile || l.Missing || l.File.Mode.Perm() != 0o644 || len(l.Parents) == 0 {
+		t.Fatalf("file log = %+v", l)
+	}
+	if l := rspamdLog(dump("file", filepath.Join(logDir, "absent.log"))); l.Err != nil || !l.Missing {
+		t.Fatalf("absent log = %+v", l)
+	}
+	if l := rspamdLog(dump("console", "")); l.Err != nil || l.Type != "console" {
+		t.Fatalf("console log = %+v", l)
+	}
+	for _, bad := range []antispam.CommandResult{{Err: errors.New("boom")}, {Stdout: "nope"}, {Stdout: `{"logging":{}}`}, dump("file", "relative.log")} {
+		if l := rspamdLog(bad); l.Err == nil {
+			t.Errorf("accepted %+v", bad)
 		}
 	}
 }

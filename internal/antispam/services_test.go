@@ -111,3 +111,10 @@ func TestCheckHostAcceptsSyslogDuplication(t *testing.T) {
 		t.Fatalf("syslog plus the main log reported %+v", got)
 	}
 }
+
+func TestUnitShowArgsIncludesGroup(t *testing.T) {
+	got := strings.Join(UnitShowArgs(RspamdUnit), " ")
+	if want := "show -p LoadState -p User -p Group -p CanReload " + RspamdUnit; got != want {
+		t.Fatalf("UnitShowArgs = %q, want %q", got, want)
+	}
+}

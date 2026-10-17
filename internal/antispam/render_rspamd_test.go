@@ -14,7 +14,9 @@ func TestRenderRspamdMatchesVerifiedFiles(t *testing.T) {
 		"emails.conf":      "# csm-managed-version: 1\nenabled = false;\n",
 		"fuzzy_check.conf": "# csm-managed-version: 1\nenabled = false;\n",
 		"asn.conf":         "# csm-managed-version: 1\nenabled = false;\n",
-		"phishing.conf":    "# csm-managed-version: 1\nphishtank_enabled = false;\n",
+		"phishing.conf": "# csm-managed-version: 1\nphishtank_enabled = false;\nexceptions {\n" +
+			"  REDIRECTOR_FALSE = \"/etc/rspamd/maps.d/redirectors.inc\";\n" +
+			"  PHISHED_WHITELISTED = \"glob;/etc/rspamd/local.d/maps.d/phishing_whitelist.inc\";\n}\n",
 	}
 	if len(files) != len(want) {
 		t.Fatalf("rendered %d files, want %d: %v", len(files), len(want), files)

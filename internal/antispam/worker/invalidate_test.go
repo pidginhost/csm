@@ -89,7 +89,7 @@ func TestInvalidateWaitsOutABriefHolder(t *testing.T) {
 			t.Fatal(err)
 		}
 		out := <-finished
-		if out.Err != nil || out.Retry != 0 || len(out.Findings) != 0 || len(out.Checks) != 2 || reads.Load() != 1 {
+		if out.Err != nil || out.Retry != 0 || len(out.Findings) != 0 || len(out.Checks) != 3 || reads.Load() != 1 {
 			t.Errorf("pass after a brief lock: outcome=%+v reads=%d", out, reads.Load())
 		}
 	})

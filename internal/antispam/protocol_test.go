@@ -2,6 +2,8 @@ package antispam
 
 import (
 	"encoding/json"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -16,7 +18,7 @@ func TestApplyRequestRoundTrip(t *testing.T) {
 		t.Fatalf("wire form = %s", data)
 	}
 	req, got, err := DecodeRequest(data)
-	if err != nil || req.Operation != OpApply || got != want {
+	if err != nil || req.Operation != OpApply || !reflect.DeepEqual(got, want) {
 		t.Fatalf("DecodeRequest = %+v, %+v, %v", req, got, err)
 	}
 }
@@ -30,7 +32,7 @@ func TestRemoveRequestRoundTrip(t *testing.T) {
 		t.Fatalf("wire form = %s", data)
 	}
 	req, s, err := DecodeRequest(data)
-	if err != nil || req.Operation != OpRemove || s != (Settings{}) {
+	if err != nil || req.Operation != OpRemove || !reflect.DeepEqual(s, Settings{}) {
 		t.Fatalf("DecodeRequest = %+v, %+v, %v", req, s, err)
 	}
 }
@@ -77,6 +79,8 @@ func TestDecodeRequestErrorsDoNotEchoInput(t *testing.T) {
 		`{"csm_secret_key":"remove"}`,
 		`{"operation":"csm_secret_op"}`,
 		strings.Replace(validApply, `/run/rspamd/csm-normal.sock`, `/run/csm_secret_path.sock x`, 1),
+		strings.TrimSuffix(validApply, "}") + `,"feeds":"csm_secret_feed"}`,
+		strings.TrimSuffix(validApply, "}") + `,"skip_maps":"csm_secret_map"}`,
 	} {
 		if _, _, err := DecodeRequest([]byte(body)); err == nil || strings.Contains(err.Error(), "csm_secret") {
 			t.Errorf("DecodeRequest(%s) = %v", body, err)
@@ -186,5 +190,65 @@ func TestParseResultErrorsDoNotEchoOutput(t *testing.T) {
 		if _, err := ParseResult([]byte(out)); err == nil || strings.Contains(err.Error(), "csm_private") {
 			t.Fatalf("ParseResult = %v; want an error without worker output", err)
 		}
+	}
+}
+
+func TestApplyRequestCarriesFeedsButNeverTheKey(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedPSBL, FeedSpamhausDQS}
+	s.SkipMaps = []string{RedirectWhitelist}
+	s.DQSKeyFile = "/etc/csm/spamhaus-dqs.key"
+	s.DQSKey = NewSecret("abcdefghijklmnopqrstu23456")
+	data, err := json.Marshal(ApplyRequest(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "abcdefghijklmnopqrstu23456") {
+		t.Fatalf("request carries the key: %s", data)
+	}
+	_, got, err := DecodeRequest(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.Feeds, s.Feeds) || !slices.Equal(got.SkipMaps, s.SkipMaps) || got.DQSKeyFile != s.DQSKeyFile || got.DQSKey.Reveal() != "" {
+		t.Fatalf("decoded %+v", got)
+	}
+}
+
+func TestApplyRequestWithoutFeedsKeepsItsFormat(t *testing.T) {
+	data, _ := json.Marshal(ApplyRequest(defaults(true)))
+	want := `{"operation":"apply","enabled":true,"dry_run":true,"rspamd_socket":"/run/rspamd/csm-normal.sock","reject_score":15,"tag_score":6}`
+	if string(data) != want {
+		t.Fatalf("got %s, want %s", data, want)
+	}
+}
+
+func TestDecodeRequestRejectsBadFeedFields(t *testing.T) {
+	base := `{"operation":"apply","enabled":true,"dry_run":true,"rspamd_socket":"/run/rspamd/csm-normal.sock","reject_score":15,"tag_score":6`
+	for _, extra := range []string{
+		`,"feeds":"nope"}`,
+		`,"feeds":"psbl,psbl"}`,
+		`,"feeds":"psbl,"}`,
+		`,"feeds":"spamhaus_dqs"}`,
+		`,"skip_maps":"nope"}`,
+		`,"feeds":["psbl"]}`,
+		`,"feeds":null}`,
+		`,"skip_maps":null}`,
+		`,"dqs_key_file":null}`,
+	} {
+		if req, s, err := DecodeRequest([]byte(base + extra)); err == nil || !reflect.DeepEqual(req, Request{}) || !reflect.DeepEqual(s, Settings{}) {
+			t.Errorf("expected rejection without a partial request for %s", extra)
+		}
+	}
+	if _, _, err := DecodeRequest([]byte(`{"operation":"remove","feeds":"psbl"}`)); err == nil {
+		t.Error("remove accepted feeds")
+	}
+}
+
+func TestDecodeRequestEmptyFeedFields(t *testing.T) {
+	body := strings.TrimSuffix(validApply, "}") + `,"feeds":"","skip_maps":"","dqs_key_file":""}`
+	req, s, err := DecodeRequest([]byte(body))
+	if err != nil || req.Operation != OpApply || !reflect.DeepEqual(s, defaults(false)) {
+		t.Fatalf("expected default settings, got %+v, %v", s, err)
 	}
 }

@@ -50,6 +50,9 @@ var antispamReconciler = func() reconcile.Reconciler {
 		Installed:  hostfacts.CollectInstalled,
 		Run:        worker.Run,
 		Now:        time.Now,
+		ReadKey:    hostfacts.ReadDQSKey,
+		Probe:      hostfacts.QueryDNS,
+		Feeds:      reconcile.NewFeedState(),
 	}
 }
 

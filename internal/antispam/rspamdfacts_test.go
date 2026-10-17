@@ -212,3 +212,14 @@ func TestPhishtankEnabled(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckRspamdModulesAllowsRBLWithDNSFeeds(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedPSBL}
+	if got := checkRspamdModules(map[string]bool{"rbl": true}, s); len(got) != 0 {
+		t.Fatalf("rbl with a DNS feed flagged: %v", got)
+	}
+	if got := checkRspamdModules(map[string]bool{"rbl": true}, defaults(false)); len(got) != 1 {
+		t.Fatalf("rbl without feeds must stay a core conflict: %v", got)
+	}
+}

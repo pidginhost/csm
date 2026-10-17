@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/antispam/hostfacts"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -28,6 +30,11 @@ type fakeHost struct {
 	actions string
 	// phishing replaces the configdump of local.d/phishing.conf when set.
 	phishing string
+	// rbl replaces the configdump of the rbl module ({"rbls":{}} by
+	// default) and modules the module list when set.
+	rbl, modules string
+	// key is the DQS key file preflight reports.
+	key      antispam.KeyFacts
 	problems []antispam.Problem
 	// pingFail and greetFail list the 1-based probe calls that fail.
 	pingFail, greetFail []int
@@ -54,8 +61,9 @@ type call struct {
 
 func newFake(t *testing.T) *fakeHost {
 	t.Helper()
-	f := &fakeHost{t: t, root: t.TempDir(), start: time.Now(), fail: map[string][]int{}, seen: map[string]int{}}
-	for _, dir := range []string{antispam.RspamdLocalDir, "/var/lib/csm"} {
+	f := &fakeHost{t: t, root: t.TempDir(), start: time.Now(), fail: map[string][]int{}, seen: map[string]int{},
+		key: antispam.KeyFacts{Path: "/etc/csm/k", UID: 0, Mode: 0o600, Key: antispam.NewSecret("abcdefghijklmnopqrstu23456")}}
+	for _, dir := range []string{antispam.RspamdLocalDir, antispam.RspamdOverrideDir, "/var/lib/csm"} {
 		if err := os.MkdirAll(f.root+dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -75,11 +83,22 @@ func (f *fakeHost) host() *Host {
 			if err != nil {
 				f.t.Fatal(err)
 			}
-			out = append(out, antispam.TargetFacts{
+			// The real mode and group, so a loosened file shows; uid stays
+			// 0 so test files count as protected.
+			file := antispam.PathFacts{Path: target.Path, Mode: 0o644}
+			if st.exists {
+				file.Mode, file.GID = st.perm, st.gid
+			}
+			facts := antispam.TargetFacts{
 				Target: target, Missing: !st.exists, Content: st.content,
-				File:    antispam.PathFacts{Path: target.Path, Mode: 0o644},
+				File:    file,
 				Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}},
-			})
+			}
+			// The collector reads only what it can trust, so mirror it.
+			if st.exists && !hostfacts.ContentReadable(facts) {
+				facts.Content = ""
+			}
+			out = append(out, facts)
 		}
 		return out
 	}
@@ -88,7 +107,11 @@ func (f *fakeHost) host() *Host {
 		run:     f.run,
 		replace: replaceFile,
 		preflight: func(context.Context, antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
-			return antispam.HostFacts{Targets: snapshot()}, f.problems
+			return antispam.HostFacts{Targets: snapshot(), RspamdGID: os.Getgid(), DQSKey: f.key,
+				RspamdVersion: antispam.CommandResult{Stdout: "Rspamd daemon version 4.2.2\n"},
+				RspamdLog: antispam.LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log",
+					File:    antispam.PathFacts{GID: os.Getgid(), Mode: 0o640},
+					Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}}}, f.problems
 		},
 		targets: snapshot,
 		ping: func(context.Context, string) error {
@@ -146,8 +169,14 @@ func (f *fakeHost) run(ctx context.Context, limit time.Duration, name string, ar
 			"daemon_smtp_ports = 25 : 465 : 587\nlocal_interfaces = <; 0.0.0.0 ; ::0\ntls_on_connect_ports = 465\n"}
 	case strings.HasPrefix(line, "exim -C"):
 		return antispam.CommandResult{Stdout: "n\n"}
+	case line == "rspamadm configdump -m" && f.modules != "":
+		return antispam.CommandResult{Stdout: f.modules}
 	case line == "rspamadm configdump -m":
 		return antispam.CommandResult{Stdout: "Modules enabled: dkim, spf, dmarc\n"}
+	case line == "rspamadm configdump -j rbl" && f.rbl != "":
+		return antispam.CommandResult{Stdout: f.rbl}
+	case line == "rspamadm configdump -j rbl":
+		return antispam.CommandResult{Stdout: `{"rbls":{}}`}
 	case line == "rspamadm configdump -j actions":
 		return antispam.CommandResult{Stdout: f.dumpActions()}
 	case line == "rspamadm configdump -j phishing":
@@ -699,5 +728,188 @@ func TestRemoveVerifiesGeneratedConfig(t *testing.T) {
 	r := f.host().Remove()
 	if r.FailedStep != StepEximBuild || r.Rollback != antispam.RollbackVerified || fmt.Sprint(f.state()) != fmt.Sprint(before) {
 		t.Errorf("result %+v", r)
+	}
+}
+
+func TestApplyWritesRedirectsByDefault(t *testing.T) {
+	f := newFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	for _, name := range antispam.MapRedirectNames() {
+		if got := f.file(antispam.RedirectPath(name)); !antispam.IsManaged(got) {
+			t.Errorf("%s = %q", name, got)
+		}
+	}
+	if got := f.file(antispam.FeedRBLPath); got != "<absent>" {
+		t.Errorf("rbl override written without DNS feeds: %q", got)
+	}
+}
+
+func TestApplySkipsNothingCoreWhenRedirectForeign(t *testing.T) {
+	f := newFake(t)
+	writeTest(t, f.root+antispam.RedirectPath(antispam.RedirectWhitelist), "operator\n", 0o644)
+	s := enforce()
+	s.SkipMaps = []string{antispam.RedirectWhitelist}
+	wantOK(t, f.host().Apply(s))
+	if got := f.file(antispam.RedirectPath(antispam.RedirectWhitelist)); got != "operator\n" {
+		t.Fatalf("operator file changed: %q", got)
+	}
+}
+
+func TestApplyRefusesForeignWantedOptionalFile(t *testing.T) {
+	f := newFake(t)
+	writeTest(t, f.root+antispam.RedirectPath(antispam.RedirectWhitelist), "operator\n", 0o644)
+	r := f.host().Apply(enforce()) // the request did not skip it: a race with the daemon
+	if r.OK || r.FailedStep != StepPreconditions {
+		t.Fatalf("result %+v", r)
+	}
+	if got := f.file(antispam.RedirectPath(antispam.RedirectWhitelist)); got != "operator\n" {
+		t.Fatalf("operator file changed: %q", got)
+	}
+}
+
+func TestApplyRemovesFeedFilesNoLongerWanted(t *testing.T) {
+	f := newFake(t)
+	f.modules = "Modules enabled: dkim, spf, rbl\n"
+	f.rbl = `{"rbls":{"csm_psbl":{}}}`
+	s := enforce()
+	s.Feeds = []string{antispam.FeedPSBL}
+	wantOK(t, f.host().Apply(s))
+	f.modules, f.rbl = "", ""
+	wantOK(t, f.host().Apply(enforce()))
+	if got := f.file(antispam.FeedRBLPath); got != "<absent>" {
+		t.Fatalf("rbl override left behind: %q", got)
+	}
+}
+
+func TestApplyFixesSecretFileModeWithoutContentChange(t *testing.T) {
+	f := newFake(t)
+	f.modules = "Modules enabled: dkim, spf, rbl\n"
+	f.rbl = `{"rbls":{"csm_dqs_zen":{},"csm_dqs_dbl":{},"csm_dqs_zrd":{}}}`
+	s := enforce()
+	s.Feeds, s.DQSKeyFile = []string{antispam.FeedSpamhausDQS}, "/etc/csm/k"
+	wantOK(t, f.host().Apply(s))
+	p := f.root + antispam.FeedRBLPath
+	if info, _ := os.Stat(p); info.Mode().Perm() != antispam.SecretFileMode {
+		t.Fatalf("mode %v", info.Mode().Perm())
+	}
+	if err := os.Chmod(p, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.reset()
+	wantOK(t, f.host().Apply(s))
+	if info, _ := os.Stat(p); info.Mode().Perm() != antispam.SecretFileMode {
+		t.Fatalf("mode not restored: %v", info.Mode().Perm())
+	}
+}
+
+func TestApplyLoadsTheDQSKey(t *testing.T) {
+	dqs := func() antispam.Settings {
+		s := enforce()
+		s.Feeds, s.DQSKeyFile = []string{antispam.FeedSpamhausDQS}, "/etc/csm/k"
+		return s
+	}
+	f := newFake(t)
+	f.modules = "Modules enabled: dkim, spf, rbl\n"
+	f.rbl = `{"rbls":{"csm_dqs_zen":{},"csm_dqs_dbl":{},"csm_dqs_zrd":{}}}`
+	wantOK(t, f.host().Apply(dqs()))
+	if got := f.file(antispam.FeedRBLPath); !strings.Contains(got, "abcdefghijklmnopqrstu23456.zen.dq.spamhaus.net") {
+		t.Fatal("override.d/rbl.conf lacks the key")
+	}
+	for path, content := range f.state() {
+		if path != antispam.FeedRBLPath && strings.Contains(content, f.key.Key.Reveal()) {
+			t.Fatalf("DQS key leaked into %s", path)
+		}
+	}
+
+	f = newFake(t)
+	f.key.UID = 1000
+	r := f.host().Apply(dqs())
+	if strings.Contains(r.Error, f.key.Key.Reveal()) {
+		t.Fatal("apply error disclosed the DQS key")
+	}
+	if r.OK || r.FailedStep != StepPreconditions {
+		t.Fatalf("result %+v", r)
+	}
+	if got := f.file(antispam.FeedRBLPath); got != "<absent>" {
+		t.Fatal("rbl override written with a key file not owned by root")
+	}
+	if got := f.file(antispam.RspamdLocalDir + "/actions.conf"); got != "<absent>" {
+		t.Fatal("apply wrote core files after refusing the key")
+	}
+}
+
+func TestApplyFeedsCheckRollsBack(t *testing.T) {
+	f := newFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	before := f.state()
+	f.modules = "Modules enabled: dkim, spf, rbl\n"
+	f.rbl = `{"rbls":{"csm_psbl":{},"spamhaus":{}}}`
+	s := enforce()
+	s.Feeds = []string{antispam.FeedPSBL}
+	r := f.host().Apply(s)
+	if r.OK || r.FailedStep != StepFeedsCheck || r.Rollback != antispam.RollbackVerified {
+		t.Fatalf("result %+v", r)
+	}
+	if after := f.state(); !maps.Equal(before, after) {
+		t.Fatal("rollback left changes")
+	}
+}
+
+func TestApplyUnusableFeedRulesRollBackBeforeReload(t *testing.T) {
+	for name, dump := range map[string]antispam.CommandResult{
+		"legacy rules":   {Stdout: `{"rbls":{"csm_psbl":{}},"rules":{"foreign":{}}}`},
+		"disabled rule":  {Stdout: `{"rbls":{"csm_psbl":{"enabled":false}}}`},
+		"duplicate rule": {Stdout: `{"rbls":{"csm_psbl":{},"csm_psbl":{}}}`},
+		"invalid rule":   {Stdout: `{"rbls":{"csm_psbl":null}}`},
+		"failed dump":    {Err: errors.New("command failed")},
+		"dump timeout":   {Err: context.DeadlineExceeded},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			wantOK(t, f.host().Apply(enforce()))
+			before := f.state()
+			f.reset()
+			f.modules = "Modules enabled: dkim, spf, rbl\n"
+			h := f.host()
+			h.run = func(ctx context.Context, limit time.Duration, name string, args ...string) antispam.CommandResult {
+				if name == "rspamadm" && strings.Join(args, " ") == "configdump -j rbl" {
+					return dump
+				}
+				return f.run(ctx, limit, name, args...)
+			}
+			s := enforce()
+			s.Feeds = []string{antispam.FeedPSBL}
+			r := h.Apply(s)
+			if r.OK || r.FailedStep != StepFeedsCheck || r.Rollback != antispam.RollbackVerified {
+				t.Fatalf("result %+v", r)
+			}
+			if !maps.Equal(before, f.state()) {
+				t.Fatal("rollback did not restore files and completion record")
+			}
+			if f.count("systemctl reload") != 0 || f.count(BuildEximConf) != 0 {
+				t.Fatal("unverified feeds reached a reload or Exim rebuild")
+			}
+		})
+	}
+}
+
+func TestApplyFeedDumpFailureDoesNotExposeKey(t *testing.T) {
+	f := newFake(t)
+	f.modules = "Modules enabled: dkim, spf, rbl\n"
+	h := f.host()
+	h.run = func(ctx context.Context, limit time.Duration, name string, args ...string) antispam.CommandResult {
+		if name == "rspamadm" && strings.Join(args, " ") == "configdump -j rbl" {
+			return antispam.CommandResult{Stdout: f.key.Key.Reveal(), Stderr: f.key.Key.Reveal(), Err: errors.New(f.key.Key.Reveal())}
+		}
+		return f.run(ctx, limit, name, args...)
+	}
+	s := enforce()
+	s.Feeds, s.DQSKeyFile = []string{antispam.FeedSpamhausDQS}, f.key.Path
+	r := h.Apply(s)
+	if strings.Contains(r.Error, f.key.Key.Reveal()) {
+		t.Fatal("feed verification failure exposed key material")
+	}
+	if r.OK || r.FailedStep != StepFeedsCheck || r.Rollback != antispam.RollbackVerified {
+		t.Fatalf("result %+v", r)
 	}
 }

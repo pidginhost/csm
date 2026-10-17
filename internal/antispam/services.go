@@ -13,7 +13,7 @@ const (
 
 // UnitShowArgs are the `systemctl` arguments the collector runs per unit.
 func UnitShowArgs(unit string) []string {
-	return []string{"show", "-p", "LoadState", "-p", "User", "-p", "CanReload", unit}
+	return []string{"show", "-p", "LoadState", "-p", "User", "-p", "Group", "-p", "CanReload", unit}
 }
 
 // ParseUnitShow reads `systemctl show -p ...` output: one Key=Value per line.

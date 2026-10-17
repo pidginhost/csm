@@ -4,10 +4,146 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func FuzzRspamdComPaths(f *testing.F) {
+	for _, seed := range []string{
+		`{"multimap":"https://maps.rspamd.com/custom.txt"}`,
+		`{"multimap":{"custom":{"map":"https://maps.rspamd.com/custom.txt"}}}`,
+		`{"multimap":{"custom":{"map":"glob;/etc/rspamd/maps.rspamd.com.txt"}}}`,
+		`{"multimap":{"custom":{"map":{"url":["sign+https://maps.rspamd.com/map","/etc/local"]}}}}`,
+		`{"multimap":{"` + testKey + `":{"map":"https://maps.rspamd.com/"}}}`,
+		`{"multimap":{"value":1e1000}}`, `null`, `[]`, `{}`, ``,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, dump []byte) {
+		on := map[string]bool{"multimap": true}
+		paths, err := RspamdComPaths(dump, on)
+		if err != nil {
+			if len(paths) != 0 || strings.Contains(err.Error(), testKey) {
+				t.Fatal("invalid config returned paths or exposed configuration")
+			}
+			return
+		}
+		var root map[string]any
+		if json.Unmarshal(dump, &root) != nil || root == nil || !slices.IsSorted(paths) {
+			t.Fatal("accepted a non-object or returned unsorted paths")
+		}
+		for _, p := range paths {
+			if p != "multimap" && !strings.HasPrefix(p, "multimap.") || strings.Contains(p, testKey) {
+				t.Fatal("path is outside the enabled module or exposes configuration")
+			}
+		}
+		if again, err := RspamdComPaths(dump, on); err != nil || !slices.Equal(again, paths) {
+			t.Fatal("path ordering is not stable")
+		}
+		if off, err := RspamdComPaths(dump, nil); err != nil || len(off) != 0 {
+			t.Fatal("disabled modules returned paths")
+		}
+	})
+}
+
+func FuzzNameservers(f *testing.F) {
+	for _, options := range []string{
+		`{}`, `null`, `{"dns":null}`,
+		`{"dns":{"nameserver":["127.0.0.1","192.0.2.53"]}}`,
+		`{"dns":{"nameserver":"master-slave:[::1]:53:10;192.0.2.53:53:1"}}`,
+		`{"dns":{"server":["2001:db8::53"]}}`,
+		`{"dns_nameserver":"192.0.2.53"}`,
+		`{"dns":{"nameserver":"192.0.2.53","nameserver":"127.0.0.1"}}`,
+		`{"dns":{"nameserver":"[::1]:invalid"}}`,
+	} {
+		f.Add(options, "nameserver 127.0.0.1\n")
+	}
+	f.Fuzz(func(t *testing.T, options, resolv string) {
+		got, err := Nameservers([]byte(options), resolv)
+		if err != nil {
+			if len(got) != 0 {
+				t.Fatal("unreadable nameservers returned a partial list")
+			}
+			return
+		}
+		if len(got) == 0 {
+			t.Fatal("accepted an empty resolver list")
+		}
+		var entries []string
+		for _, addr := range got {
+			if !addr.IsValid() {
+				t.Fatal("accepted an invalid resolver endpoint")
+			}
+			entries = append(entries, addr.String())
+		}
+		encoded, err := json.Marshal(map[string]any{"dns": map[string]string{"nameserver": strings.Join(entries, ";")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again, err := Nameservers(encoded, ""); err != nil || !slices.Equal(again, got) {
+			t.Fatal("resolver list changed after re-encoding")
+		}
+	})
+}
+
+func FuzzLoadedRBLRules(f *testing.F) {
+	for _, seed := range []string{
+		`{"rbls":{"csm_psbl":{}},"rules":{}}`,
+		`{"rbls":{"csm_psbl":{"enabled":false}}}`,
+		`{"rbls":{"csm_psbl":{"disabled":true}}}`,
+		`{"rbls":{"csm_psbl":{}},"rules":{"foreign":{}}}`,
+		`{"rbls":{"csm_psbl":{},"csm_psbl":{}}}`,
+		`{"rbls":{"csm_psbl":null}}`, `{"rbls":{}}`, `null`, ``,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		names, err := LoadedRBLRules(data)
+		if err != nil {
+			if names != nil {
+				t.Fatal("unverifiable inventory returned rule names")
+			}
+			return
+		}
+		if !json.Valid(data) || !slices.IsSorted(names) || len(slices.Compact(slices.Clone(names))) != len(names) {
+			t.Fatal("accepted invalid JSON or returned unsorted or duplicate rule names")
+		}
+		duplicate := strings.TrimSpace(string(data))
+		duplicate = duplicate[:len(duplicate)-1] + `,"rbls":{}}`
+		if _, err := LoadedRBLRules([]byte(duplicate)); err == nil {
+			t.Fatal("accepted a duplicate rule inventory")
+		}
+		if _, err := LoadedRBLRules(append(append([]byte(nil), data...), []byte("{}")...)); err == nil {
+			t.Fatal("accepted a trailing object")
+		}
+	})
+}
+
+func FuzzLoadDQSKey(f *testing.F) {
+	for _, key := range []string{testKey, "", testKey[:25], testKey + "a", strings.ToUpper(testKey),
+		strings.Repeat("0", 26), strings.Repeat("9", 26), strings.Repeat("z", 26),
+		testKey[:25] + "\x00", testKey[:25] + "\"", testKey[:25] + "\n"} {
+		f.Add(key)
+	}
+	f.Fuzz(func(t *testing.T, content string) {
+		wantValid := len(content) == 26 && strings.Trim(content, "abcdefghijklmnopqrstuvwxyz0123456789") == ""
+		key, err := LoadDQSKey(KeyFacts{Path: "/etc/csm/k", UID: 0, Mode: 0o600, Key: NewSecret(content)})
+		if (err == nil) != wantValid {
+			t.Fatal("key validation disagrees with the required alphabet and length")
+		}
+		if err != nil {
+			if key.Reveal() != "" {
+				t.Fatal("rejected input returned a key")
+			}
+			return
+		}
+		if key.Reveal() != content {
+			t.Fatal("validated key changed its content")
+		}
+	})
+}
 
 func FuzzParseEximSize(f *testing.F) {
 	for _, seed := range []string{"50M", "+50M", "-0", "-0K", "52428800", " 100k ", "1G", "", "-1", "+-0", "8589934592G", "${if def:x{1}{2}}"} {
@@ -319,6 +455,11 @@ func FuzzCheckGenerated(f *testing.F) {
 func FuzzDecodeRequest(f *testing.F) {
 	for _, seed := range []string{
 		`{"operation":"apply","enabled":true,"dry_run":false,"rspamd_socket":"/run/rspamd/csm-normal.sock","reject_score":15,"tag_score":6}`,
+		strings.TrimSuffix(validApply, "}") + `,"feeds":"psbl,spamhaus_dqs","skip_maps":"whitelist","dqs_key_file":"/etc/csm/dqs.key"}`,
+		strings.TrimSuffix(validApply, "}") + `,"feeds":null}`,
+		strings.TrimSuffix(validApply, "}") + `,"skip_maps":null}`,
+		strings.TrimSuffix(validApply, "}") + `,"dqs_key_file":null}`,
+		strings.TrimSuffix(validApply, "}") + `,"feeds":"psbl,"}`,
 		`{"operation":"remove"}`,
 		`{"operation":"remove","operation":"apply"}`,
 		`{"Operation":"remove"}`,
@@ -330,7 +471,7 @@ func FuzzDecodeRequest(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		req, s, err := DecodeRequest(data)
 		if err != nil {
-			if req != (Request{}) || s != (Settings{}) {
+			if !reflect.DeepEqual(req, Request{}) || !reflect.DeepEqual(s, Settings{}) {
 				t.Fatal("rejected input returned a partial request")
 			}
 			return
@@ -344,11 +485,11 @@ func FuzzDecodeRequest(f *testing.F) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, s2, err := DecodeRequest(again); err != nil || s2 != s {
+			if _, s2, err := DecodeRequest(again); err != nil || !reflect.DeepEqual(s2, s) {
 				t.Fatalf("re-encoded apply: %+v %v", s2, err)
 			}
 		case OpRemove:
-			if s != (Settings{}) {
+			if !reflect.DeepEqual(s, Settings{}) {
 				t.Fatalf("remove carried settings %+v", s)
 			}
 		default:

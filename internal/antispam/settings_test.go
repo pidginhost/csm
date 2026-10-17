@@ -1,6 +1,7 @@
 package antispam
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -47,5 +48,43 @@ func TestSettingsValidate(t *testing.T) {
 	s.Socket = "relative.sock"
 	if err := s.Validate(); err == nil {
 		t.Fatal("relative socket accepted")
+	}
+}
+
+func TestSettingsFeedHelpers(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{FeedURIBL, FeedRspamdMaps, FeedPSBL}
+	if !s.HasFeed(FeedPSBL) || s.HasFeed(FeedSEM) {
+		t.Fatal("HasFeed")
+	}
+	var got []string
+	for _, f := range s.DNSFeeds() {
+		got = append(got, f.Name)
+	}
+	if want := []string{FeedPSBL, FeedURIBL}; !slices.Equal(got, want) {
+		t.Fatalf("DNSFeeds = %v, want catalogue order %v", got, want)
+	}
+	if s.Redirects() {
+		t.Fatal("rspamd_maps keeps rspamd.com maps")
+	}
+	if !defaults(false).Redirects() {
+		t.Fatal("no feeds means local map copies")
+	}
+}
+
+func TestSettingsValidateFeedsAndSkipMaps(t *testing.T) {
+	s := defaults(false)
+	s.Feeds = []string{"nope"}
+	if err := s.Validate(); err == nil {
+		t.Fatal("unknown feed accepted")
+	}
+	s = defaults(false)
+	s.SkipMaps = []string{RedirectWhitelist, "nope"}
+	if err := s.Validate(); err == nil {
+		t.Fatal("unknown map redirect accepted")
+	}
+	s.SkipMaps = []string{RedirectWhitelist, RedirectWhitelist}
+	if err := s.Validate(); err == nil {
+		t.Fatal("duplicate map redirect accepted")
 	}
 }
