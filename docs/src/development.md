@@ -309,6 +309,15 @@ attempt recorded until that uncertainty is retired, including when reading
 the outcome back. A missing intent or intent bucket returns a corrupt-record
 error without changing the ledger.
 An empty ledger settles without a clock reading.
+The owner's kill-point tests stop it at each step of a block turn and of
+audit delivery, then start a new owner on the same ledger. After the
+restart a reservation has failed and retries as its next attempt, a running
+attempt is unknown and holds its address until it retires, the startup
+reads hold back every row not finished applied, the consumers see only
+outcomes finished applied, and no attempt reaches the engine twice.
+Original attempts keep their charges, and retries consume new charges
+without renewing the original expiry. Synthetic clocks keep the scenarios
+independent of runner load.
 
 Candidate records without an existing-effect link keep version 1 and their
 original encoding. A refused existing-effect candidate can carry the block
