@@ -38,8 +38,10 @@ var quarantineCopyByFD = func(fd *os.File, qPath string, metadata []byte, size i
 //     earlier (sameFileIdentity). A late swap loses here.
 //  3. Realtime PHP response takes an exclusive Linux file lease, so another
 //     open descriptor refuses the action and a later open breaks the lease
-//     before removal. Other callers skip it: Linux never grants the lease
-//     while any other process has the file open or is executing it.
+//     before removal. Under the lease it checks the file still starts with
+//     the scanned bytes, because a coarse-clock kernel can rewrite it within
+//     one timestamp tick. Other callers skip both: Linux never grants the
+//     lease while any other process has the file open or is executing it.
 //  4. Copy from that verified fd into a private, independent quarantine
 //     inode. A hardlink is never used: the account could add another name
 //     after the initial fstat and keep the quarantine inode writable.
@@ -51,18 +53,18 @@ var quarantineCopyByFD = func(fd *os.File, qPath string, metadata []byte, size i
 // Returns nil on success. Errors describe what failed; callers should
 // not retry blindly because a failure usually means the file moved.
 func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, metadata []byte) error {
-	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, false, -1)
+	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, false, -1, nil)
 }
 
-func quarantineFileVersionedTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, metadata []byte) error {
-	return quarantineFileVersionedTOCTOUSafeFD(path, qPath, originalInfo, metadata, -1)
+func quarantineFileVersionedTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, metadata, scannedHead []byte) error {
+	return quarantineFileVersionedTOCTOUSafeFD(path, qPath, originalInfo, metadata, -1, scannedHead)
 }
 
-func quarantineFileVersionedTOCTOUSafeFD(path, qPath string, originalInfo os.FileInfo, metadata []byte, sourceFD int) error {
-	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, true, sourceFD)
+func quarantineFileVersionedTOCTOUSafeFD(path, qPath string, originalInfo os.FileInfo, metadata []byte, sourceFD int, scannedHead []byte) error {
+	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, true, sourceFD, scannedHead)
 }
 
-func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, metadata []byte, requireVersion bool, sourceFD int) error {
+func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, metadata []byte, requireVersion bool, sourceFD int, scannedHead []byte) error {
 	if originalInfo == nil {
 		return fmt.Errorf("quarantine: missing original stat")
 	}
@@ -118,6 +120,9 @@ func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, 
 		}
 		defer releaseQuarantineLease(fd)
 		leased = fd
+		if contentErr := requireScannedHead(fd, scannedHead); contentErr != nil {
+			return refuseFileResponse(fmt.Errorf("quarantine: file at %s changed before atomic capture: %w", path, contentErr))
+		}
 	}
 	stable, err := fd.Stat()
 	if err != nil {

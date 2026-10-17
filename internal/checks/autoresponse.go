@@ -679,19 +679,19 @@ func InlineQuarantineConfirmedPHPGatedIdentifiedFD(cfg *config.Config, f *alert.
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !SameFileVersion(info, scanned) {
 		return "", false, nil
 	}
-	return inlineQuarantineGatedWithInfoFD(cfg, f, path, info, sourceFD)
+	return inlineQuarantineGatedWithInfoFD(cfg, f, path, info, sourceFD, data)
 }
 
 func inlineQuarantineGatedWithInfo(cfg *config.Config, f *alert.Finding, path string, info os.FileInfo) (string, bool, *alert.Finding) {
-	return inlineQuarantineGatedWithInfoFD(cfg, f, path, info, -1)
+	return inlineQuarantineGatedWithInfoFD(cfg, f, path, info, -1, nil)
 }
 
-func inlineQuarantineGatedWithInfoFD(cfg *config.Config, f *alert.Finding, path string, info os.FileInfo, sourceFD int) (string, bool, *alert.Finding) {
+func inlineQuarantineGatedWithInfoFD(cfg *config.Config, f *alert.Finding, path string, info os.FileInfo, sourceFD int, scannedHead []byte) (string, bool, *alert.Finding) {
 	var qPath string
 	f.AutoFileResponseEvaluated = true
 	paused := runAutoFileResponse(cfg, path, info, func() error {
 		var err error
-		qPath, err = quarantineInlineTargetFD(*f, path, info, sourceFD)
+		qPath, err = quarantineInlineTargetFD(*f, path, info, sourceFD, scannedHead)
 		return err
 	})
 	return qPath, qPath != "", paused
@@ -763,17 +763,17 @@ func isConfirmedPHPResponseCheck(check string) bool {
 }
 
 func quarantineInlineTarget(f alert.Finding, path string, info os.FileInfo) (string, error) {
-	return quarantineInlineTargetFD(f, path, info, -1)
+	return quarantineInlineTargetFD(f, path, info, -1, nil)
 }
 
-func quarantineInlineTargetFD(f alert.Finding, path string, info os.FileInfo, sourceFD int) (string, error) {
+func quarantineInlineTargetFD(f alert.Finding, path string, info os.FileInfo, sourceFD int, scannedHead []byte) (string, error) {
 	qPath := newQuarantinePath(quarantineDir, path)
 	reason := "Inline quarantine: high-confidence realtime signature match"
 	move := quarantineTarget
 	if isConfirmedPHPResponseCheck(f.Check) {
 		reason = "Inline quarantine: confirmed realtime PHP content"
 		move = func(path, qPath string, info os.FileInfo, metadata QuarantineMeta) error {
-			return quarantineVersionedTargetFD(path, qPath, info, metadata, sourceFD)
+			return quarantineVersionedTargetFD(path, qPath, info, metadata, sourceFD, scannedHead)
 		}
 	}
 	meta := quarantineMetadata(path, info, reason)

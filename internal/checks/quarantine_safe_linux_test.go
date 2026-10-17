@@ -203,7 +203,7 @@ func TestQuarantineFileVersionedTOCTOUSafeRefusesSameInodeRewrite(t *testing.T) 
 	}
 	t.Cleanup(func() { quarantineBeforeLease = oldHook })
 
-	err = quarantineFileVersionedTOCTOUSafe(src, dst, info, []byte("{}"))
+	err = quarantineFileVersionedTOCTOUSafe(src, dst, info, []byte("{}"), original)
 	if err == nil || !strings.Contains(err.Error(), "changed before atomic capture") {
 		t.Fatalf("same-inode rewrite was not refused: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestQuarantineFileVersionedTOCTOUSafePreservesFinalPathReplacement(t *testi
 	}
 	t.Cleanup(func() { quarantineBeforeCapturedUnlink = oldHook })
 
-	_ = quarantineFileVersionedTOCTOUSafe(src, dst, info, []byte("{}"))
+	_ = quarantineFileVersionedTOCTOUSafe(src, dst, info, []byte("{}"), original)
 	got, err := os.ReadFile(src)
 	if err != nil || string(got) != string(replacement) {
 		t.Fatalf("final path replacement was removed: content=%q error=%v", got, err)
@@ -286,7 +286,7 @@ func TestQuarantineFileVersionedTOCTOUSafeRefusesPreOpenWriter(t *testing.T) {
 	}
 	t.Cleanup(func() { quarantineBeforeCapturedUnlink = oldHook })
 
-	err = quarantineFileVersionedTOCTOUSafe(src, dst, info, []byte("{}"))
+	err = quarantineFileVersionedTOCTOUSafe(src, dst, info, []byte("{}"), original)
 	if err == nil || !errors.Is(err, errFileResponseRefused) {
 		t.Fatalf("pre-open writer was not refused: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestQuarantineFileVersionedTOCTOUSafeUsesPinnedDescriptorLease(t *testing.T
 		t.Fatal(err)
 	}
 
-	err = quarantineFileVersionedTOCTOUSafeFD(src, dst, info, []byte("{}"), int(pinned.Fd()))
+	err = quarantineFileVersionedTOCTOUSafeFD(src, dst, info, []byte("{}"), int(pinned.Fd()), original)
 	if err != nil {
 		t.Fatalf("quarantine through pinned descriptor: %v", err)
 	}
