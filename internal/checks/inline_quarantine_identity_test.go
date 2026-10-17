@@ -219,3 +219,47 @@ func TestConfirmedCriticalPHPContentRequiresPinnedSnapshot(t *testing.T) {
 		})
 	}
 }
+
+// Coarse-clock kernels can rewrite a file within one timestamp tick, leaving
+// its stat identical to the scan. Only the scanned bytes tell them apart.
+func TestConfirmedCriticalPHPContentComparesScannedBytes(t *testing.T) {
+	scannedHead := []byte("<?php system($_POST['command']); /* ")
+	for _, tc := range []struct {
+		name    string
+		onDisk  []byte
+		applied bool
+	}{
+		{name: "rewritten with identical stat", onDisk: []byte("<?php system($_POST['payload']); /* "), applied: false},
+		{name: "scanned window is a prefix", onDisk: append(append([]byte{}, scannedHead...), "tail beyond the scan window */"...), applied: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withQuarantineDirIdentity(t)
+			target := filepath.Join(t.TempDir(), "payload.php")
+			if err := os.WriteFile(target, tc.onDisk, 0600); err != nil {
+				t.Fatal(err)
+			}
+			scanned, err := os.Stat(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{StatePath: t.TempDir()}
+			cfg.AutoResponse.Enabled = true
+			cfg.AutoResponse.QuarantineFiles = true
+			finding := alert.Finding{Check: "webshell_content_realtime", Severity: alert.Critical, FilePath: target}
+
+			qpath, ok, _ := InlineQuarantineConfirmedPHPGatedIdentified(cfg, &finding, target, scannedHead, scanned)
+			if ok != tc.applied {
+				t.Fatalf("qpath=%q ok=%v, want applied=%v", qpath, ok, tc.applied)
+			}
+			if tc.applied {
+				if got, readErr := os.ReadFile(qpath); readErr != nil || string(got) != string(tc.onDisk) {
+					t.Fatalf("quarantine content=%q err=%v", got, readErr)
+				}
+				return
+			}
+			if got, readErr := os.ReadFile(target); readErr != nil || string(got) != string(tc.onDisk) {
+				t.Fatalf("refusal changed source: content=%q err=%v", got, readErr)
+			}
+		})
+	}
+}

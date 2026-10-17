@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +50,23 @@ func copyQuarantineFileByFD(src *os.File, qPath string, metadata []byte) error {
 		return fmt.Errorf("seek source: %w", err)
 	}
 	return quarantinefs.Store(qPath, src, metadata, 0600)
+}
+
+// requireScannedHead checks that the file still starts with the bytes the
+// detector scanned. Stat identity cannot see a rewrite within one timestamp
+// tick, and the detector reads only a leading window of the file.
+func requireScannedHead(fd *os.File, head []byte) error {
+	if len(head) == 0 {
+		return errors.New("no scanned content to compare")
+	}
+	current := make([]byte, len(head))
+	if _, err := fd.ReadAt(current, 0); err != nil {
+		return fmt.Errorf("read scanned window: %w", err)
+	}
+	if !bytes.Equal(current, head) {
+		return errors.New("content differs from the scanned bytes")
+	}
+	return nil
 }
 
 // Test hooks fail a transaction at the two durability boundaries without

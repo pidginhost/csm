@@ -14,7 +14,7 @@ import (
 // Non-Linux builds share the private-copy transaction, without Linux's
 // surviving-hardlink warning used by production hosts.
 func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, metadata []byte) error {
-	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, false)
+	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, false, nil)
 }
 
 func removeQuarantinedSourcePlatform(path, qPath string, original os.FileInfo, requireVersion bool) error {
@@ -49,16 +49,16 @@ func removeQuarantinedSourcePlatform(path, qPath string, original os.FileInfo, r
 	return nil
 }
 
-func quarantineFileVersionedTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, metadata []byte) error {
-	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, true)
+func quarantineFileVersionedTOCTOUSafe(path, qPath string, originalInfo os.FileInfo, metadata, scannedHead []byte) error {
+	return quarantineFileTOCTOUSafeMode(path, qPath, originalInfo, metadata, true, scannedHead)
 }
 
-func quarantineFileVersionedTOCTOUSafeFD(path, qPath string, originalInfo os.FileInfo, metadata []byte, sourceFD int) error {
+func quarantineFileVersionedTOCTOUSafeFD(path, qPath string, originalInfo os.FileInfo, metadata []byte, sourceFD int, scannedHead []byte) error {
 	_ = sourceFD
-	return quarantineFileVersionedTOCTOUSafe(path, qPath, originalInfo, metadata)
+	return quarantineFileVersionedTOCTOUSafe(path, qPath, originalInfo, metadata, scannedHead)
 }
 
-func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, metadata []byte, requireVersion bool) error {
+func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, metadata []byte, requireVersion bool, scannedHead []byte) error {
 	if originalInfo == nil {
 		return fmt.Errorf("quarantine: missing original stat")
 	}
@@ -86,6 +86,11 @@ func quarantineFileTOCTOUSafeMode(path, qPath string, originalInfo os.FileInfo, 
 	}
 	if !cur.Mode().IsRegular() {
 		return fmt.Errorf("quarantine: refusing non-regular file at %s (mode=%v)", path, cur.Mode())
+	}
+	if requireVersion {
+		if err := requireScannedHead(fd, scannedHead); err != nil {
+			return refuseFileResponse(fmt.Errorf("quarantine: file at %s changed before atomic capture: %w", path, err))
+		}
 	}
 
 	if err := copyQuarantineFileByFD(fd, qPath, metadata); err != nil {
