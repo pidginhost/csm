@@ -720,6 +720,20 @@ no completed removal, including a durability failure after rename. Startup
 calls it after marking every unproven row, with the settled subset
 `store.ReadSettledBlockActions` returns, so a start that stops between the two
 leaves the rows held back and the next start removes them.
+The engine's kill-point tests stop a batch around its intent write, kernel
+batch, readback, unknown marking and rejected-state restoration, then start
+the ledger and a new engine over the same state, after a process restart or
+after a reboot that empties the kernel. An unreadable ledger restores
+unexpired unmarked rows with degraded coverage; a readable ledger keeps a
+committed applied outcome and holds the rest. Attempts without a committed
+outcome are unknown. Their rows are held back, a new block of an address a
+held row names waits, and once the expiry passes retirement removes the
+rows and the ledger retires the attempts. A new boot retains the saved
+lease floor. The test kernel reads emitted transactions, including set
+families, timeouts and base chains, instead of assuming a successful send
+installed the requested effects. In a real kernel, a batch killed after the
+kernel took it leaves its element until a new engine's Apply replaces the
+table without the marked row.
 An unconfirmed removal is written again on retry even if its rows already
 appear absent. Cleanup preserves other actions' rows, including distinct
 actions sharing one address.

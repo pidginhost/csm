@@ -42,5 +42,9 @@
   {
     "Package": "github.com/pidginhost/csm/internal/firewall",
     "Name": "TestKernelBlockBatchUnverifiedRowsStayOutOfTheKernel"
+  },
+  {
+    "Package": "github.com/pidginhost/csm/internal/firewall",
+    "Name": "TestKernelKilledBatchLeavesNothingAfterRestart"
   }
 ]
