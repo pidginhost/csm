@@ -22,9 +22,9 @@ func quarantineTarget(path, qPath string, info os.FileInfo, metadata QuarantineM
 	return quarantineTargetWith(path, qPath, info, metadata, quarantineTargetFn)
 }
 
-func quarantineVersionedTargetFD(path, qPath string, info os.FileInfo, metadata QuarantineMeta, sourceFD int) (err error) {
+func quarantineVersionedTargetFD(path, qPath string, info os.FileInfo, metadata QuarantineMeta, sourceFD int, scannedHead []byte) (err error) {
 	return quarantineTargetWith(path, qPath, info, metadata, func(path, qPath string, info os.FileInfo, data []byte) error {
-		return quarantineFileVersionedTOCTOUSafeFD(path, qPath, info, data, sourceFD)
+		return quarantineFileVersionedTOCTOUSafeFD(path, qPath, info, data, sourceFD, scannedHead)
 	})
 }
 
