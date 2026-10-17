@@ -7,6 +7,8 @@ import (
 	"maps"
 	"net"
 	"os"
+	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -55,15 +57,17 @@ func KillPointTestEngine(t *testing.T, dir string, wall time.Time, boot string, 
 	flushed := false
 	if !rejected {
 		f.reply = func(req []netlink.Message) ([]netlink.Message, error) {
-			for _, msg := range req {
-				for ip, ttl := range killElements(t, msg) {
-					// Loss may remove a sent element, never invent one.
-					if wantTTL, retained := keep[ip]; retained {
-						if ttl != wantTTL {
-							t.Fatalf("batch sent %s with timeout %v; want %v", ip, ttl, wantTTL)
-						}
-						kernel[ip] = ttl
+			elements, valid := killBatchElements(t, req)
+			if !valid {
+				return nltest.Error(int(syscall.EINVAL), req)
+			}
+			for ip, ttl := range elements {
+				// Loss may remove a sent element, never invent one.
+				if wantTTL, retained := keep[ip]; retained {
+					if ttl != wantTTL {
+						t.Fatalf("batch sent %s with timeout %v; want %v", ip, ttl, wantTTL)
 					}
+					kernel[ip] = ttl
 				}
 			}
 			flushed = true
@@ -156,6 +160,11 @@ func killElements(t *testing.T, msg netlink.Message) map[string]time.Duration {
 		if len(key) != wantLen {
 			t.Fatalf("set %q received a key of length %d; want %d", set, len(key), wantLen)
 		}
+		// String canonicalizes mapped keys to IPv4. Such a key in the
+		// IPv6 set cannot enforce either family's packets.
+		if wantLen == net.IPv6len && net.IP(key).To4() != nil {
+			continue
+		}
 		var ttl time.Duration
 		if data := el[unix.NFTA_SET_ELEM_TIMEOUT]; data != nil {
 			if len(data) != 8 {
@@ -166,6 +175,130 @@ func killElements(t *testing.T, msg netlink.Message) map[string]time.Duration {
 		out[net.IP(key).String()] = ttl
 	}
 	return out
+}
+
+// Batch sends can only add to the existing blocked sets. Validate every
+// message before any effect: one bad family must reject the other too.
+func killBatchElements(t *testing.T, req []netlink.Message) (map[string]time.Duration, bool) {
+	t.Helper()
+	if len(req) < 3 || req[0].Header.Type != unix.NFNL_MSG_BATCH_BEGIN || req[len(req)-1].Header.Type != unix.NFNL_MSG_BATCH_END {
+		return nil, false
+	}
+	out := map[string]time.Duration{}
+	for _, msg := range req[1 : len(req)-1] {
+		if msg.Header.Type != netlink.HeaderType(unix.NFNL_SUBSYS_NFTABLES<<8|unix.NFT_MSG_NEWSETELEM) || len(msg.Data) < 4 || msg.Data[0] != byte(nftables.TableFamilyINet) {
+			return nil, false
+		}
+		attrs := killAttrs(t, msg.Data[4:])
+		table, set := string(attrs[unix.NFTA_SET_ELEM_LIST_TABLE]), string(attrs[unix.NFTA_SET_ELEM_LIST_SET])
+		if table != "csm\x00" || (set != "blocked_ips\x00" && set != "blocked_ips6\x00") {
+			return nil, false
+		}
+		maps.Copy(out, killElements(t, msg))
+	}
+	return out, true
+}
+
+// An IPv4-mapped key in the IPv6 set cannot enforce an IPv4 block. The
+// fake kernel must preserve that distinction when it reads emitted keys.
+func TestKillPointKernelPreservesAddressFamilies(t *testing.T) {
+	for _, tc := range []struct {
+		name, ip string
+		v6       bool
+		wantLive bool
+	}{
+		{"IPv4", "203.0.113.90", false, true},
+		{"IPv6", "2001:db8::90", true, true},
+		{"mapped IPv4 in IPv6 set", "203.0.113.90", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kernel := map[string]time.Duration{}
+			e, _ := KillPointTestEngine(t, t.TempDir(), time.Unix(1000, 0), leaseBootA, time.Minute,
+				kernel, map[string]time.Duration{tc.ip: time.Hour}, "")
+			set, key := e.setBlocked, net.ParseIP(tc.ip).To4()
+			if tc.v6 {
+				set, key = e.setBlocked6, net.ParseIP(tc.ip).To16()
+			}
+			if err := e.conn.SetAddElements(set, []nftables.SetElement{{Key: key, Timeout: time.Hour}}); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.conn.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			want := map[string]time.Duration{}
+			if tc.wantLive {
+				want[tc.ip] = time.Hour
+			}
+			if !maps.Equal(kernel, want) {
+				t.Fatalf("kernel = %v; want %v", kernel, want)
+			}
+		})
+	}
+}
+
+// Reject the whole transaction before changing membership, as the kernel
+// does when one family's send names an absent set or lacks batch framing.
+func TestKillPointKernelRejectsMalformedBatch(t *testing.T) {
+	for _, fault := range []string{"missing begin", "missing end", "wrong family", "missing IPv6 set"} {
+		t.Run(fault, func(t *testing.T) {
+			const operator, v4, v6 = "198.51.100.90", "203.0.113.90", "2001:db8::90"
+			kernel := map[string]time.Duration{operator: 0}
+			e, _ := KillPointTestEngine(t, t.TempDir(), time.Unix(1000, 0), leaseBootA, time.Minute,
+				kernel, map[string]time.Duration{v4: time.Hour, v6: time.Hour}, "")
+			reply := e.conn.TestDial
+			injected := false
+			e.conn.TestDial = func(req []netlink.Message) ([]netlink.Message, error) {
+				if len(req) == 0 {
+					return reply(req)
+				}
+				switch fault {
+				case "missing begin":
+					req = req[1:]
+					injected = true
+				case "missing end":
+					req = req[:len(req)-1]
+					injected = true
+				default:
+					for i, msg := range req {
+						if msg.Header.Type != netlink.HeaderType(unix.NFNL_SUBSYS_NFTABLES<<8|unix.NFT_MSG_NEWSETELEM) {
+							continue
+						}
+						attrs := killAttrs(t, msg.Data[4:])
+						if string(attrs[unix.NFTA_SET_ELEM_LIST_SET]) != "blocked_ips6\x00" {
+							continue
+						}
+						msg.Data = slices.Clone(msg.Data)
+						if fault == "wrong family" {
+							msg.Data[0] = byte(nftables.TableFamilyIPv4)
+						} else {
+							// Keep the wire length valid while naming an absent set.
+							msg.Data = []byte(strings.Replace(string(msg.Data), "blocked_ips6\x00", "missing_ips6\x00", 1))
+						}
+						req[i] = msg
+						injected = true
+					}
+				}
+				return reply(req)
+			}
+			for _, member := range []struct {
+				set *nftables.Set
+				key net.IP
+			}{{e.setBlocked, net.ParseIP(v4).To4()}, {e.setBlocked6, net.ParseIP(v6).To16()}} {
+				if err := e.conn.SetAddElements(member.set, []nftables.SetElement{{Key: member.key, Timeout: time.Hour}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := e.conn.Flush(); err == nil {
+				t.Error("malformed batch was acknowledged")
+			}
+			if !injected {
+				t.Fatal("malformed send was not injected")
+			}
+			if !maps.Equal(kernel, map[string]time.Duration{operator: 0}) {
+				t.Fatalf("rejected batch changed kernel membership: %v", kernel)
+			}
+		})
+	}
 }
 
 // Apply must delete the old table and install hooked base chains with

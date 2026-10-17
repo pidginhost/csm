@@ -731,9 +731,11 @@ held row names waits, and once the expiry passes retirement removes the
 rows and the ledger retires the attempts. A new boot retains the saved
 lease floor. The test kernel reads emitted transactions, including set
 families, timeouts and base chains, instead of assuming a successful send
-installed the requested effects. In a real kernel, a batch killed after the
-kernel took it leaves its element until a new engine's Apply replaces the
-table without the marked row.
+installed the requested effects. It rejects incomplete batches and wrong
+set destinations before modeling loss. Mapped IPv6 keys never become IPv4
+blocks. In a real kernel, a batch killed after the kernel took it leaves
+its element until a new engine's Apply replaces the table without the
+marked row.
 An unconfirmed removal is written again on retry even if its rows already
 appear absent. Cleanup preserves other actions' rows, including distinct
 actions sharing one address.
