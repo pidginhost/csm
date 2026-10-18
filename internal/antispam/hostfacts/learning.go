@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -187,8 +188,10 @@ func (c collector) accountNames() (map[string]bool, error) {
 	return out, nil
 }
 
-// redis identifies the fuzzy worker's Redis backend and probes it. A Unix
-// socket's facts and group members feed the isolation check.
+// redis identifies the fuzzy worker's Redis backend and probes it. CSM
+// sends the password only to a Unix socket nobody but its owner or root could
+// have put there, owned by a user that is not a cPanel account; a TCP
+// endpoint is never probed, it fails isolation anyway.
 func (c collector) redis(ctx context.Context, f antispam.HostFacts) antispam.RedisFacts {
 	if f.LearningDumps.Err != nil {
 		return antispam.RedisFacts{ServiceUID: -1, Err: errors.New("rspamd's redis settings were not read")}
@@ -197,14 +200,60 @@ func (c collector) redis(ctx context.Context, f antispam.HostFacts) antispam.Red
 	if err != nil {
 		return antispam.RedisFacts{ServiceUID: -1, Err: err}
 	}
-	r := c.redisProbe(ctx, endpoint, password)
-	r.Endpoint, r.Unix = endpoint, unix
-	if unix {
-		r.Socket = unixSocketFacts(endpoint)
-		if r.Socket.Err == nil && !r.Socket.Missing {
-			gid := r.Socket.Socket.GID
-			r.GroupMembers = c.groupMembers(map[int]bool{gid: true})[gid]
+	r := antispam.RedisFacts{Endpoint: endpoint, Unix: unix, ServiceUID: -1}
+	if !unix {
+		return r
+	}
+	r.Socket = unixSocketFacts(endpoint)
+	if r.Socket.Err != nil || r.Socket.Missing {
+		r.Err = errors.New("redis socket cannot be checked")
+		return r
+	}
+	owner := r.Socket.Socket.UID
+	gid := r.Socket.Socket.GID
+	r.GroupMembers = c.groupMembers(map[int]bool{gid: true})[gid]
+	if !c.trustedRedisOwner(owner, f) || !protectedChain(r.Socket.Parents, r.Socket.Socket, owner) {
+		r.Err = errors.New("redis socket is not protected; CSM sends it no password")
+		return r
+	}
+	probed := c.redisProbe(ctx, endpoint, password, owner)
+	probed.Endpoint, probed.Unix, probed.Socket, probed.GroupMembers = endpoint, unix, r.Socket, r.GroupMembers
+	return probed
+}
+
+// trustedRedisOwner reports whether uid may serve the Redis socket: root,
+// or a named user that is not a cPanel account.
+func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) bool {
+	if uid == 0 || uid == keyOwner {
+		return true
+	}
+	if f.AccountNamesErr != nil {
+		return false
+	}
+	name, err := c.userName(strconv.Itoa(uid))
+	return err == nil && name != "" && !f.AccountNames[name]
+}
+
+// protectedChain reports whether only root or owner could have created the
+// socket: every directory looked up is theirs and closed to other writers,
+// except a sticky directory whose next entry is theirs, which others cannot
+// remove or rename.
+func protectedChain(parents []antispam.PathFacts, socket antispam.PathFacts, owner int) bool {
+	trusted := func(uid int) bool { return uid == 0 || uid == keyOwner || uid == owner }
+	for i, p := range parents {
+		if !p.Mode.IsDir() || p.ExtACL || !trusted(p.UID) {
+			return false
+		}
+		if p.Mode.Perm()&0o022 == 0 {
+			continue
+		}
+		next := socket
+		if i+1 < len(parents) {
+			next = parents[i+1]
+		}
+		if p.Mode&fs.ModeSticky == 0 || !trusted(next.UID) {
+			return false
 		}
 	}
-	return r
+	return len(parents) > 0
 }

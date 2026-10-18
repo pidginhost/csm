@@ -135,7 +135,7 @@ func healthyRedis() *respServer {
 func TestRedisProbeReadsLiveValues(t *testing.T) {
 	srv := healthyRedis()
 	sock := srv.serve(t)
-	r := RedisProbe(context.Background(), sock, antispam.NewSecret(srv.password))
+	r := RedisProbe(context.Background(), sock, antispam.NewSecret(srv.password), os.Getuid())
 	if r.Err != nil {
 		t.Fatal(r.Err)
 	}
@@ -164,7 +164,7 @@ func TestRedisProbeErrorKeepsNoPassword(t *testing.T) {
 		"bad maxmemory":  func() *respServer { s := healthyRedis(); s.config["maxmemory"] = "lots"; return s }(),
 	} {
 		t.Run(name, func(t *testing.T) {
-			r := RedisProbe(context.Background(), srv.serve(t), antispam.NewSecret(secret))
+			r := RedisProbe(context.Background(), srv.serve(t), antispam.NewSecret(secret), os.Getuid())
 			if r.Err == nil {
 				t.Fatalf("facts = %+v, want an error", r)
 			}
@@ -173,8 +173,26 @@ func TestRedisProbeErrorKeepsNoPassword(t *testing.T) {
 			}
 		})
 	}
-	r := RedisProbe(context.Background(), filepath.Join(t.TempDir(), "absent.sock"), antispam.NewSecret(secret))
+	r := RedisProbe(context.Background(), filepath.Join(t.TempDir(), "absent.sock"), antispam.NewSecret(secret), os.Getuid())
 	if r.Err == nil || strings.Contains(r.Err.Error(), secret) {
 		t.Fatalf("absent socket: %v", r.Err)
+	}
+}
+
+// A process that is not the expected Redis owner never receives the
+// password, even if it answers at the configured path.
+func TestRedisProbeRejectsWrongPeer(t *testing.T) {
+	srv := healthyRedis()
+	r := RedisProbe(context.Background(), srv.serve(t), antispam.NewSecret(srv.password), os.Getuid()+1)
+	if r.Err == nil {
+		t.Fatalf("facts = %+v, want a peer error", r)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if len(srv.commands) != 0 {
+		t.Fatalf("an unverified peer received %q", srv.commands)
+	}
+	if r := RedisProbe(context.Background(), "127.0.0.1:6379", antispam.NewSecret(srv.password), 0); r.Err == nil {
+		t.Fatal("a TCP endpoint was probed")
 	}
 }

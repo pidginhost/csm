@@ -65,7 +65,7 @@ type collector struct {
 	readGroup      func() ([]byte, error)
 	readPasswd     func() ([]byte, error)
 	// redisProbe reads the live Redis values learning depends on.
-	redisProbe func(ctx context.Context, endpoint string, password antispam.Secret) antispam.RedisFacts
+	redisProbe func(ctx context.Context, endpoint string, password antispam.Secret, peer int) antispam.RedisFacts
 }
 
 func live() collector {

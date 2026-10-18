@@ -20,7 +20,7 @@ func learningCollector(t *testing.T, run *fakeRun) (collector, string) {
 	c.layout.RoundcubeConfig = filepath.Join(d, "roundcube", "config.inc.php")
 	c.layout.CPanelPHP = filepath.Join(d, "php")
 	c.layout.CPanelUsers = filepath.Join(d, "users")
-	c.redisProbe = func(_ context.Context, endpoint string, _ antispam.Secret) antispam.RedisFacts {
+	c.redisProbe = func(_ context.Context, endpoint string, _ antispam.Secret, _ int) antispam.RedisFacts {
 		return antispam.RedisFacts{Endpoint: endpoint, Port: "0"}
 	}
 	return c, d
@@ -254,5 +254,67 @@ func TestCollectAccountNames(t *testing.T) {
 	c.layout.CPanelUsers = filepath.Join(t.TempDir(), "absent")
 	if _, err := c.accountNames(); err == nil {
 		t.Fatal("unreadable users directory accepted")
+	}
+}
+
+// CSM sends the Redis password only to a socket nobody but its owner or root
+// could have created, owned by a user that is not a cPanel account.
+func TestCollectRedisProbesOnlyProtectedSockets(t *testing.T) {
+	setup := func(t *testing.T, dirMode os.FileMode, owner string, accounts ...string) (collector, antispam.HostFacts, *int) {
+		t.Helper()
+		c, d := learningCollector(t, &fakeRun{})
+		probes := 0
+		c.redisProbe = func(_ context.Context, endpoint string, _ antispam.Secret, peer int) antispam.RedisFacts {
+			probes++
+			if peer != os.Getuid() {
+				t.Errorf("probe expects peer %d, want the socket owner %d", peer, os.Getuid())
+			}
+			return antispam.RedisFacts{Endpoint: endpoint, Port: "0"}
+		}
+		c.userName = func(uid string) (string, error) { return owner, nil }
+		dir := filepath.Join(d, "redis")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		sock := serve(t, dir, pong)
+		if err := os.Chmod(dir, dirMode); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(c.layout.CPanelUsers, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range accounts {
+			if err := os.WriteFile(filepath.Join(c.layout.CPanelUsers, a), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f := antispam.HostFacts{
+			RspamdConfig:  antispam.CommandResult{Stdout: fuzzyWorkerDump("")},
+			LearningDumps: antispam.LearningDumps{Redis: []byte(`{"servers":"` + sock + `","password":"pw"}`)},
+		}
+		f.AccountNames, f.AccountNamesErr = c.accountNames()
+		return c, f, &probes
+	}
+	// The test's own uid owns the socket and its directories, as a redis
+	// user would; it is not root here.
+	prev := keyOwner
+	keyOwner = os.Getuid() + 1
+	t.Cleanup(func() { keyOwner = prev })
+	c, f, probes := setup(t, 0o750, "redis")
+	if r := c.redis(context.Background(), f); r.Err != nil || *probes != 1 {
+		t.Fatalf("protected socket: probes=%d facts=%+v", *probes, r)
+	}
+	c, f, probes = setup(t, 0o777, "redis")
+	if r := c.redis(context.Background(), f); r.Err == nil || *probes != 0 {
+		t.Fatalf("world-writable parent: probes=%d facts=%+v", *probes, r)
+	}
+	c, f, probes = setup(t, 0o750, "tenant", "tenant")
+	if r := c.redis(context.Background(), f); r.Err == nil || *probes != 0 {
+		t.Fatalf("account-owned socket: probes=%d facts=%+v", *probes, r)
+	}
+	c, f, probes = setup(t, 0o750, "redis")
+	f.LearningDumps.Redis = []byte(`{"servers":"127.0.0.1:6379","password":"pw"}`)
+	if r := c.redis(context.Background(), f); *probes != 0 || r.Unix {
+		t.Fatalf("TCP endpoint: probes=%d facts=%+v", *probes, r)
 	}
 }

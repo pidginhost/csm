@@ -19,17 +19,30 @@ import (
 const redisTimeout = 500 * time.Millisecond
 
 // RedisProbe reads the live settings learning depends on from the Redis
-// instance at endpoint. It only reads: CONFIG GET and INFO. Errors are fixed
-// text naming the step; the password never appears in them.
-func RedisProbe(ctx context.Context, endpoint string, password antispam.Secret) antispam.RedisFacts {
+// Unix socket at endpoint. The password is sent only on a connection whose
+// peer is uid peer, the socket's verified owner: a process squatting the path
+// gets nothing. It only reads: CONFIG GET and INFO. Errors are fixed text
+// naming the step; the password never appears in them.
+func RedisProbe(ctx context.Context, endpoint string, password antispam.Secret, peer int) antispam.RedisFacts {
 	r := antispam.RedisFacts{Endpoint: endpoint, Unix: strings.HasPrefix(endpoint, "/"), ServiceUID: -1}
-	network := "tcp"
-	if r.Unix {
-		network = "unix"
-		r.ServiceUID = redisPeerUID(ctx, endpoint)
+	if !r.Unix {
+		r.Err = errors.New("redis: CSM probes only a Unix socket")
+		return r
 	}
+	errPeer := errors.New("redis: the socket is not served by its owner")
 	client := redis.NewClient(&redis.Options{
-		Network: network, Addr: endpoint, Password: password.Reveal(),
+		Network: "unix", Addr: endpoint, Password: password.Reveal(),
+		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn, err := (&net.Dialer{Timeout: redisTimeout}).DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			if peerUID(conn) != peer {
+				_ = conn.Close()
+				return nil, errPeer
+			}
+			return conn, nil
+		},
 		// RESP2 without CLIENT SETINFO: the probe must work on Redis 5 and
 		// send nothing but reads.
 		Protocol: 2, DisableIdentity: true,
@@ -37,6 +50,14 @@ func RedisProbe(ctx context.Context, endpoint string, password antispam.Secret) 
 		MaxRetries: -1, PoolSize: 1,
 	})
 	defer func() { _ = client.Close() }()
+	if err := client.Ping(ctx).Err(); err != nil {
+		r.Err = errors.New("redis: cannot connect to the socket as its owner")
+		if errors.Is(err, errPeer) {
+			r.Err = errPeer
+		}
+		return r
+	}
+	r.ServiceUID = peer
 	values := map[string]string{}
 	for _, name := range []string{"port", "maxmemory", "maxmemory-policy", "appendonly", "save"} {
 		got, err := client.ConfigGet(ctx, name).Result()
@@ -77,17 +98,6 @@ func RedisProbe(ctx context.Context, endpoint string, password antispam.Secret) 
 		r.Err = errors.New("redis: INFO server has no redis_version")
 	}
 	return r
-}
-
-// redisPeerUID is the uid of the process listening on a Redis Unix socket.
-func redisPeerUID(ctx context.Context, endpoint string) int {
-	d := net.Dialer{Timeout: redisTimeout}
-	conn, err := d.DialContext(ctx, "unix", endpoint)
-	if err != nil {
-		return -1
-	}
-	defer func() { _ = conn.Close() }()
-	return peerUID(conn)
 }
 
 func infoField(info, name string) (string, bool) {
