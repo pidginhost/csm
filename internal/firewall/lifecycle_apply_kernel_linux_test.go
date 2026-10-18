@@ -19,17 +19,17 @@ func TestKernelDurableBulkRemoval(t *testing.T) {
 	e := deltaTestEngine(t, conn)
 	table := conn.AddTable(&nftables.Table{Name: "csm", Family: nftables.TableFamilyINet})
 	e.setBlocked6 = &nftables.Set{Name: "blocked_ips6", Table: table, KeyType: nftables.TypeIP6Addr}
-	if err := conn.AddSet(e.setBlocked6, nil); err != nil {
+	if err = conn.AddSet(e.setBlocked6, nil); err != nil {
 		t.Fatal(err)
 	}
 	a := bulkRemovalAction()
-	if err := addElementsChunked(conn, e.setBlocked6, actionElements(a.KernelBefore[0].Elements, time.Now())); err != nil {
+	if err = addElementsChunked(conn, e.setBlocked6, actionElements(a.KernelBefore[0].Elements, time.Now())); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err = conn.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	if err := (engineActionKernel{e}).ApplyFirewallAction(a); err != nil {
+	if err = (engineActionKernel{e}).ApplyFirewallAction(a); err != nil {
 		t.Fatal(err)
 	}
 	elements, err := conn.GetSetElements(e.setBlocked6)

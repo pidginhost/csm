@@ -29,10 +29,10 @@ func TestKernelDurablePlanningKeepsSafetySnapshot(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := e.AttachLifecycle(&firewall.Lifecycle{Store: s, Audit: func(firewall.FirewallAction) error { return nil }}); err != nil {
+				if err = e.AttachLifecycle(&firewall.Lifecycle{Store: s, Audit: func(firewall.FirewallAction) error { return nil }}); err != nil {
 					t.Fatal(err)
 				}
-				if err := e.Apply(); err != nil {
+				if err = e.Apply(); err != nil {
 					t.Fatal(err)
 				}
 				s.admitted = nil
@@ -52,8 +52,8 @@ func TestKernelDurablePlanningKeepsSafetySnapshot(t *testing.T) {
 						return nil
 					}
 					state.PortAllowed = append(state.PortAllowed, firewall.PortAllowEntry{IP: "192.0.2.183", Port: 443, Proto: "tcp", Reason: "operator policy"})
-					if _, err := db.ReplaceFirewallState(revision, state); err != nil {
-						t.Fatal(err)
+					if _, replaceErr := db.ReplaceFirewallState(revision, state); replaceErr != nil {
+						t.Fatal(replaceErr)
 					}
 					changed = true
 					if failRead {
@@ -132,10 +132,10 @@ func TestKernelDurableNoopRemovalRefusesLiveDrift(t *testing.T) {
 			if operation == "unblock_subnet" {
 				elements = []nftables.SetElement{{Key: []byte{192, 0, 2, 0}}, {Key: []byte{192, 0, 3, 0}, IntervalEnd: true}}
 			}
-			if err := conn.SetAddElements(set, elements); err != nil {
+			if err = conn.SetAddElements(set, elements); err != nil {
 				t.Fatal(err)
 			}
-			if err := conn.Flush(); err != nil {
+			if err = conn.Flush(); err != nil {
 				t.Fatal(err)
 			}
 			_, revision, err := db.ReadFirewallState()

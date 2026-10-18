@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
@@ -94,7 +93,7 @@ func TestCSMInstallVerification(t *testing.T) {
 	}
 
 	cfgPath := "/etc/csm/csm.yaml"
-	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+	if _, err = os.Stat(cfgPath); os.IsNotExist(err) {
 		cfgPath = "/opt/csm/csm.yaml"
 	}
 	cfg, err := config.Load(cfgPath)
@@ -230,10 +229,4 @@ func TestRealDNSConnections(t *testing.T) {
 func TestRealPHPProcesses(t *testing.T) {
 	findings := checks.CheckPHPProcesses(context.Background(), &config.Config{}, nil)
 	t.Logf("PHPProcesses: %d findings", len(findings))
-}
-
-// testTimeout returns a context that cancels after the given duration.
-func testTimeout(d time.Duration) context.Context {
-	ctx, _ := context.WithTimeout(context.Background(), d)
-	return ctx
 }
