@@ -194,6 +194,9 @@ func TestAntispamReferenceMatchesRuntimeDefaults(t *testing.T) {
 			"enabled":               feeds,
 			"spamhaus_dqs_key_file": as.Feeds.SpamhausDQSKeyFile,
 		},
+		"learning": map[string]any{
+			"enabled": as.Learning.Enabled,
+		},
 	}
 	if !reflect.DeepEqual(ref.EmailProtection.Antispam, want) {
 		t.Errorf("documented email_protection.antispam = %v, want runtime defaults %v", ref.EmailProtection.Antispam, want)
