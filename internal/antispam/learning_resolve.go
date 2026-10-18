@@ -330,14 +330,12 @@ func checkLearningConflicts(c *learningCheck, f HostFacts) {
 	if learningInstalled(f) || f.LearningDumps.Err != nil {
 		return
 	}
-	var dump struct {
-		Rule map[string]json.RawMessage `json:"rule"`
-	}
-	if f.LearningDumps.FuzzyCheck != nil && json.Unmarshal(f.LearningDumps.FuzzyCheck, &dump) != nil {
+	rules, err := loadedFuzzyRules(f.LearningDumps.FuzzyCheck)
+	if err != nil {
 		c.add(ReasonConfigConflict, "CSM cannot read rspamd's loaded fuzzy rules")
 		return
 	}
-	for name := range dump.Rule {
+	for name := range rules {
 		if name != stockFuzzyRule {
 			c.add(ReasonConfigConflict, "rspamd loads a local fuzzy rule that CSM's override would hide")
 			return
@@ -349,6 +347,45 @@ func checkLearningConflicts(c *learningCheck, f HostFacts) {
 	} else if enabled {
 		c.add(ReasonConfigConflict, "rspamd runs a local fuzzy worker that CSM's override would replace")
 	}
+}
+
+// loadedFuzzyRules reads the rules of `rspamadm configdump -j fuzzy_check`:
+// an object keyed by rule name with one rule, a list of single-key objects
+// with several. A rule name seen twice is an error.
+func loadedFuzzyRules(dump []byte) (map[string]map[string]json.RawMessage, error) {
+	out := map[string]map[string]json.RawMessage{}
+	if len(dump) == 0 {
+		return out, nil
+	}
+	root, err := dumpObjectAs[json.RawMessage](dump, "fuzzy_check")
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := root["rule"]
+	if !ok {
+		return out, nil
+	}
+	var entries []json.RawMessage
+	if json.Unmarshal(raw, &entries) != nil {
+		entries = []json.RawMessage{raw}
+	}
+	for _, entry := range entries {
+		named, err := dumpObjectAs[json.RawMessage](entry, "fuzzy_check rule")
+		if err != nil {
+			return nil, err
+		}
+		for name, body := range named {
+			fields, err := dumpObjectAs[json.RawMessage](body, "fuzzy_check rule")
+			if err != nil {
+				return nil, err
+			}
+			if _, dup := out[name]; dup {
+				return nil, errors.New("fuzzy_check names a rule twice")
+			}
+			out[name] = fields
+		}
+	}
+	return out, nil
 }
 
 func isLearningPath(p string) bool {

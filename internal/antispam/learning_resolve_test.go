@@ -224,6 +224,20 @@ func TestResolveLearningLogsCageFSProtected(t *testing.T) {
 	}
 }
 
+// rspamd prints rule as an object with one rule and as a list of single-key
+// objects with several (recorded on 4912 and cluster6).
+func TestResolveLearningRuleListForm(t *testing.T) {
+	f := safeLearningFacts()
+	f.LearningDumps.FuzzyCheck = []byte(`{"rule": [{"rspamd.com": {}}, {"ops_rule": {}}]}`)
+	if _, gate, problems := ResolveLearning(learningSettings(), f); gate.Install || len(problems) != 1 || problems[0].Key != ReasonConfigConflict {
+		t.Fatalf("list-form foreign rule: gate=%+v problems=%+v", gate, problems)
+	}
+	f.LearningDumps.FuzzyCheck = []byte(`{"rule": [{"rspamd.com": {}}]}`)
+	if _, gate, problems := ResolveLearning(learningSettings(), f); !gate.Install || len(problems) != 0 {
+		t.Fatalf("list-form stock rule: gate=%+v problems=%+v", gate, problems)
+	}
+}
+
 func TestResolveLearningStockRuleIsNotConflict(t *testing.T) {
 	f := safeLearningFacts()
 	f.LearningDumps.FuzzyCheck = []byte(`{"rule": {"rspamd.com": {}}}`)
