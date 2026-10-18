@@ -60,6 +60,7 @@ func TestMutationTargetsCoverSpecFiles(t *testing.T) {
 		"/etc/rspamd/local.d/fuzzy_check.conf":       TargetRspamd,
 		"/etc/rspamd/local.d/asn.conf":               TargetRspamd,
 		"/etc/rspamd/local.d/phishing.conf":          TargetRspamd,
+		"/etc/rspamd/local.d/regexp.conf":            TargetRspamd,
 		"/etc/rspamd/override.d/rbl.conf":            TargetRspamdOptional,
 		"/etc/rspamd/override.d/rbl_group.conf":      TargetRspamdOptional,
 		"/etc/rspamd/local.d/forged_recipients.conf": TargetRspamdOptional,
