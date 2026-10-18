@@ -59,8 +59,9 @@ func safeLearningFacts() HostFacts {
 				Parents: append(append([]PathFacts{}, root...), dir("/run/redis-rspamd", testRedisUID, testRedisGID, 0o750)),
 			},
 			GroupMembers: []string{"redis", "_rspamd"},
-			Port:         "0", Policy: "noeviction", AppendOnly: "yes", Save: "", SaveKnown: true,
-			Version: "5.0.3", MaxMemory: 4 << 30, Used: 1 << 20, ServiceUID: testRedisUID, TLSPort: "0",
+			Port:         "0", TLSPort: "0", Policy: "noeviction", AppendOnly: "yes", Save: "", SaveKnown: true,
+			MaxMemoryKnown: true,
+			Version:        "5.0.3", MaxMemory: 4 << 30, Used: 1 << 20, ServiceUID: testRedisUID,
 		},
 		RspamdLog: LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log",
 			File: PathFacts{Path: "/var/log/rspamd/rspamd.log", GID: testRspamdGID, Mode: 0o640},
@@ -208,7 +209,7 @@ func TestResolveLearningLogsCageFSProtected(t *testing.T) {
 	f := safeLearningFacts()
 	f.RspamdLog.File.Mode = 0o644
 	f.RspamdLog.Parents[3].Mode = fs.ModeDir | 0o755
-	f.CageFS = CageFSFacts{Enabled: true}
+	f.CageFS = CageFSFacts{Enabled: true, ExcludedLogDir: "/var/log/rspamd"}
 	if _, gate, problems := ResolveLearning(learningSettings(), f); !gate.Install || len(problems) != 0 {
 		t.Fatalf("CageFS-protected log: gate=%+v problems=%+v", gate, problems)
 	}

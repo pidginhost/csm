@@ -498,19 +498,21 @@ type RedisFacts struct {
 	Socket   SocketFacts
 	Port     string
 	// TLSPort is empty when CONFIG GET reports no TLS port setting (Redis 5).
-	TLSPort      string
-	Policy       string
-	AppendOnly   string
-	Save         string
-	SaveKnown    bool
-	Version      string
-	MaxMemory    uint64
-	Used         uint64
-	GroupMembers []string
+	TLSPort    string
+	Policy     string
+	AppendOnly string
+	Save       string
+	SaveKnown  bool
+	Version    string
+	MaxMemory  uint64
+	// MaxMemoryKnown distinguishes a measured zero limit from a failed probe.
+	MaxMemoryKnown bool
+	Used           uint64
+	GroupMembers   []string
 	// ServiceUID is the uid of the process serving the socket, or -1.
 	ServiceUID int
 	// Unprotected is set when the collector refused to send the password:
-	// the socket's owner or directories do not prove who placed it.
+	// the socket's owner, directories or peer do not prove who serves it.
 	Unprotected bool
 	Err         error
 }
@@ -521,7 +523,9 @@ type CageFSFacts struct {
 	Enabled              bool
 	DisabledUsers        int
 	SkeletonHasRspamdLog bool
-	Err                  error
+	// ExcludedLogDir is the host log directory checked in the skeleton.
+	ExcludedLogDir string
+	Err            error
 }
 
 // RoundcubeFacts describe cPanel's Roundcube include mechanism and the

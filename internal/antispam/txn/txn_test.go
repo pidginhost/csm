@@ -124,7 +124,8 @@ func (f *fakeHost) host() *Host {
 					{Raw: fakeControllerSocket + " mode=0600", Unix: true, Path: fakeControllerSocket, Mode: 0o600}}},
 				ControllerHost: antispam.ControllerHostFacts{RspamdUID: 979, Sockets: map[string]antispam.SocketFacts{
 					fakeControllerSocket: {Socket: antispam.PathFacts{Path: fakeControllerSocket, UID: 979, Mode: fs.ModeSocket | 0o600},
-						Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}}}},
+						Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}, {Path: "/run", Mode: fs.ModeDir | 0o755},
+							{Path: "/run/rspamd", UID: 979, Mode: fs.ModeDir | 0o755}}}}},
 				RspamdVersion: antispam.CommandResult{Stdout: "Rspamd daemon version 4.2.2\n"},
 				RspamdLog: antispam.LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log",
 					File:    antispam.PathFacts{GID: os.Getgid(), Mode: 0o640},

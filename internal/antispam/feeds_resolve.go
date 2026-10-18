@@ -372,6 +372,10 @@ type LogFacts struct {
 // file rspamd has yet to create counts as readable unless a private parent
 // protects it. Console and syslog routing cannot establish file privacy.
 func (l LogFacts) Exposed(uid, gid int) (bool, string) {
+	return l.exposed(uid, func(id int) bool { return id == 0 || gid >= 0 && id == gid })
+}
+
+func (l LogFacts) exposed(uid int, trustedGroup func(int) bool) (bool, string) {
 	unknown := "CSM cannot check who can read rspamd's log"
 	switch {
 	case l.Err != nil:
@@ -382,7 +386,6 @@ func (l LogFacts) Exposed(uid, gid int) (bool, string) {
 		// Cleaned parent facts can omit a symlink traversed before "..".
 		return true, unknown
 	}
-	trustedGroup := func(id int) bool { return id == 0 || gid >= 0 && id == gid }
 	protected := func(p PathFacts) bool {
 		return (p.UID == 0 || uid >= 0 && p.UID == uid) && !p.ExtACL &&
 			p.Mode.Perm()&0o002 == 0 && (p.Mode.Perm()&0o020 == 0 || trustedGroup(p.GID))

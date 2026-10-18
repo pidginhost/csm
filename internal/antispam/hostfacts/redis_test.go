@@ -216,6 +216,7 @@ func TestRedisProbeRejectsWrongPeer(t *testing.T) {
 		err         error
 	}
 	done := make(chan received, 1)
+	accepted := make(chan struct{}, 8)
 	go func() {
 		var got received
 		defer func() { done <- got }()
@@ -225,6 +226,7 @@ func TestRedisProbeRejectsWrongPeer(t *testing.T) {
 				return
 			}
 			got.connections++
+			accepted <- struct{}{}
 			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 			n, err := io.Copy(io.Discard, conn)
 			_ = conn.Close()
@@ -236,6 +238,12 @@ func TestRedisProbeRejectsWrongPeer(t *testing.T) {
 		}
 	}()
 	r := RedisProbe(context.Background(), sock, antispam.NewSecret(healthyRedis().password), os.Getuid()+1)
+	// The probe's dial can finish in the listen backlog before Accept runs;
+	// wait for it so closing the listener does not drop it uncounted.
+	select {
+	case <-accepted:
+	case <-time.After(2 * time.Second):
+	}
 	_ = l.Close()
 	got := <-done
 	if r.Err == nil || r.ServiceUID != -1 {
@@ -244,7 +252,62 @@ func TestRedisProbeRejectsWrongPeer(t *testing.T) {
 	if got.err != nil || got.connections < 1 || got.bytes != 0 {
 		t.Fatalf("unverified peer: connections=%d bytes=%d err=%v", got.connections, got.bytes, got.err)
 	}
+	if !r.Unprotected {
+		t.Fatal("a wrong peer must count as unsafe, not a transient outage")
+	}
 	if r := RedisProbe(context.Background(), "192.0.2.1:6379", antispam.NewSecret(healthyRedis().password), 0); r.Err == nil {
 		t.Fatal("a TCP endpoint was probed")
+	}
+}
+
+func TestRedisProbeChecksTLSListener(t *testing.T) {
+	for _, port := range []string{"0", "6380", ""} {
+		t.Run("port="+port, func(t *testing.T) {
+			srv := healthyRedis()
+			if port != "" {
+				srv.config["tls-port"] = port
+			}
+			r := RedisProbe(context.Background(), srv.serve(t), antispam.Secret{}, os.Getuid())
+			srv.mu.Lock()
+			defer srv.mu.Unlock()
+			found := false
+			for _, cmd := range srv.commands {
+				found = found || cmd == "CONFIG GET TLS-PORT"
+			}
+			if !found || r.Err != nil {
+				t.Fatalf("TLS listener was not checked: checked=%v err=%v", found, r.Err)
+			}
+			want := port
+			if want == "" {
+				want = "0" // An absent option means this Redis build has no TLS.
+			}
+			if r.TLSPort != want {
+				t.Fatalf("TLS port = %q, want %q", r.TLSPort, want)
+			}
+		})
+	}
+}
+
+func TestRedisProbeRetainsMemoryLimit(t *testing.T) {
+	for _, value := range []string{"0", "4294967296", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			srv := healthyRedis()
+			srv.config["maxmemory"] = value
+			srv.fail = "INFO MEMORY"
+			r := RedisProbe(context.Background(), srv.serve(t), antispam.Secret{}, os.Getuid())
+			if r.Err == nil || r.MaxMemoryKnown != (value != "invalid") {
+				t.Fatalf("limit=%s: known=%v err=%v", value, r.MaxMemoryKnown, r.Err)
+			}
+		})
+	}
+}
+
+func TestRedisProbeRetainsKnownUnsafeValues(t *testing.T) {
+	srv := healthyRedis()
+	srv.config["port"] = "6379"
+	srv.fail = "CONFIG GET MAXMEMORY"
+	r := RedisProbe(context.Background(), srv.serve(t), antispam.Secret{}, os.Getuid())
+	if r.Err == nil || r.Port != "6379" {
+		t.Fatalf("lost known TCP listener after later probe error: port=%q err=%v", r.Port, r.Err)
 	}
 }

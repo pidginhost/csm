@@ -350,3 +350,21 @@ func TestCollectControlSocketGroup(t *testing.T) {
 		t.Fatalf("group members = %v", f.ControllerHost.GroupMembers)
 	}
 }
+
+func TestCollectLearningLogGroups(t *testing.T) {
+	c, _ := learningCollector(t, &fakeRun{})
+	c.readGroup = func() ([]byte, error) {
+		return []byte("log:x:974:alpha\nparent:x:975:bravo\n"), nil
+	}
+	c.readPasswd = func() ([]byte, error) { return []byte("root:x:0:0::/root:/bin/sh\n"), nil }
+	f := antispam.HostFacts{RspamdLog: antispam.LogFacts{
+		File:    antispam.PathFacts{GID: 974},
+		Parents: []antispam.PathFacts{{GID: 975}},
+	}}
+	c.learningFacts(context.Background(), &f)
+	for gid, member := range map[int]string{974: "alpha", 975: "bravo"} {
+		if got := f.ControllerHost.GroupMembers[gid]; len(got) != 1 || got[0] != member {
+			t.Errorf("group %d members = %v, want %s", gid, got, member)
+		}
+	}
+}

@@ -38,6 +38,7 @@ func (c collector) learningFacts(ctx context.Context, f *antispam.HostFacts) {
 	c.learningDumps(ctx, f)
 	c.controlSocket(f)
 	c.controlSocketGroup(f)
+	c.logGroups(f)
 	f.FuzzyListening, f.FuzzyListenErr = c.fuzzyListening()
 	f.CageFS = c.cageFS(ctx)
 	f.Roundcube = c.roundcube(*f)
@@ -145,6 +146,21 @@ func (c collector) controlSocketGroup(f *antispam.HostFacts) {
 	f.ControllerHost.GroupMembers[gid] = members
 }
 
+// Log privacy depends on group membership, including the groups of every
+// parent that can grant traversal or replacement access.
+func (c collector) logGroups(f *antispam.HostFacts) {
+	gids := map[int]bool{f.RspamdLog.File.GID: true}
+	for _, p := range f.RspamdLog.Parents {
+		gids[p.GID] = true
+	}
+	if f.ControllerHost.GroupMembers == nil {
+		f.ControllerHost.GroupMembers = map[int][]string{}
+	}
+	for gid, members := range c.groupMembers(gids) {
+		f.ControllerHost.GroupMembers[gid] = members
+	}
+}
+
 // fuzzyListening reports whether a UDP socket is bound to 127.0.0.1:11335.
 // rspamd does not respawn a fuzzy worker that exited (spike S4).
 func (c collector) fuzzyListening() (bool, error) {
@@ -247,6 +263,7 @@ func (c collector) cageFS(ctx context.Context) antispam.CageFSFacts {
 		}
 	}
 	out.Enabled = true
+	out.ExcludedLogDir = strings.TrimPrefix(cageFSSkeletonLog, "/usr/share/cagefs-skeleton")
 	return out
 }
 

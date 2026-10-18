@@ -1,10 +1,13 @@
 package antispam
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 // CodeLearning is the problem code of every learning finding (spec 10).
@@ -125,12 +128,14 @@ func RedisGuard(used, max uint64, paused bool) bool {
 	if max == 0 {
 		return true
 	}
-	// Compare used/max against 3/4 and 7/10 without overflow.
-	ratio := float64(used) / float64(max)
+	// Compare against the ceiling of the threshold, without overflowing
+	// uint64 or rounding away a byte near the boundary.
+	numerator, denominator := uint64(3), uint64(4)
 	if paused {
-		return ratio >= 0.70
+		numerator, denominator = 7, 10
 	}
-	return ratio >= 0.75
+	limit := max/denominator*numerator + (max%denominator*numerator+denominator-1)/denominator
+	return used >= limit
 }
 
 // learningInstalled reports whether CSM's learning worker file is on the
@@ -147,10 +152,14 @@ func learningInstalled(f HostFacts) bool {
 func checkLearningVersions(c *learningCheck, f HostFacts) {
 	if f.RspamdVersion.Err != nil {
 		c.add(ReasonBackendUnavailable, "rspamd's version is unknown")
-	} else if v, _, err := ParseRspamdVersion(f.RspamdVersion.Stdout); err != nil || !learningRspamdVersion.MatchString(v) {
+	} else if v, _, err := ParseRspamdVersion(f.RspamdVersion.Stdout); err != nil {
+		c.add(ReasonBackendUnavailable, "rspamd's version is unknown")
+	} else if !learningRspamdVersion.MatchString(v) {
 		c.add(ReasonUnsupported, "learning is qualified on rspamd 4.2 only")
 	}
-	if f.Redis.Version != "" && !learningRedisVersion.MatchString(f.Redis.Version) {
+	if f.Redis.Version == "" && f.Redis.Err == nil && f.Redis.Unix {
+		c.add(ReasonBackendUnavailable, "Redis's version is unknown")
+	} else if f.Redis.Version != "" && !learningRedisVersion.MatchString(f.Redis.Version) {
 		c.add(ReasonUnsupported, "learning is qualified on Redis 5.0 and 6.2 only")
 	}
 }
@@ -159,34 +168,73 @@ func checkLearningVersions(c *learningCheck, f HostFacts) {
 // Unix controller socket owned by rspamd with mode 0600, and a private
 // rspamadm control socket.
 func checkLearningController(c *learningCheck, f HostFacts) {
-	switch {
-	case f.ControllerErr != nil:
-		c.add(ReasonBackendUnavailable, "CSM cannot read rspamd's controller configuration")
-		return
-	case f.ControllerUnverifiable != nil:
+	// The control socket is independent of controller config discovery. A
+	// failed controller probe must not mask a known unsafe control socket.
+	checkLearningControlSocket(c, f)
+	if f.ControllerUnverifiable != nil {
 		c.add(ReasonUnsafe, "CSM cannot verify rspamd's controller configuration")
 		return
-	case len(ControllerExposure(f.Controller, f.ControllerHost)) > 0:
-		c.add(ReasonUnsafe, "rspamd's controller is reachable by other users; see antispam_controller_open")
-		return
+	}
+	if f.ControllerErr != nil {
+		c.add(ReasonBackendUnavailable, "CSM cannot read rspamd's controller configuration")
 	}
 	host := f.ControllerHost
 	if host.RspamdUID < 0 {
 		c.add(ReasonBackendUnavailable, "rspamd's service user is unknown")
-		return
 	}
-	if len(privateControllerSockets(f)) != 1 {
+	unknownSocket := false
+	for _, l := range f.Controller.Listeners {
+		if !l.Unix {
+			if tcpExposure(f.Controller, host) != "" {
+				c.add(ReasonUnsafe, "rspamd's controller is reachable by other users; see antispam_controller_open")
+			}
+			continue
+		}
+		if host.RspamdUID < 0 {
+			continue
+		}
+		s, ok := host.Sockets[l.Path]
+		if !ok || s.Err != nil || s.Missing {
+			unknownSocket = true
+			c.add(ReasonBackendUnavailable, "CSM cannot check rspamd's controller socket")
+			continue
+		}
+		if unixExposure(l, host) != "" {
+			c.add(ReasonUnsafe, "rspamd's controller is reachable by other users; see antispam_controller_open")
+		}
+	}
+	private := len(privateControllerSockets(f))
+	if private > 1 || private == 0 && !unknownSocket && f.ControllerErr == nil && host.RspamdUID >= 0 {
 		c.add(ReasonUnsafe, "learning needs exactly one private controller socket owned by rspamd with mode 0600")
 	}
+}
+
+func learningSocketProtected(l ControllerListener, s SocketFacts, host ControllerHostFacts) bool {
+	if s.Socket.ExtACL || len(s.Parents) == 0 || !directSocketPath(l, s) {
+		return false
+	}
+	for _, p := range s.Parents {
+		if p.ExtACL || !p.Mode.IsDir() || p.UID != 0 && p.UID != host.RspamdUID {
+			return false
+		}
+	}
+	return unixExposure(l, host) == ""
+}
+
+func checkLearningControlSocket(c *learningCheck, f HostFacts) {
+	host := f.ControllerHost
 	// The control socket gets the same checks as the controller socket:
 	// root or rspamd's, mode 0600, no ACL, protected directories.
 	cs := f.ControlSocket
 	switch {
 	case cs.Err != nil || cs.Missing:
 		c.add(ReasonBackendUnavailable, "CSM cannot check rspamd's control socket")
+	case cs.Socket.Mode.Perm()&0o077 != 0, cs.Socket.ExtACL:
+		c.add(ReasonUnsafe, "rspamd's control socket is not private to root and rspamd")
+	case host.RspamdUID < 0:
+		c.add(ReasonBackendUnavailable, "rspamd's service user is unknown")
 	case cs.Socket.UID != 0 && cs.Socket.UID != host.RspamdUID,
-		cs.Socket.Mode.Perm()&0o077 != 0, cs.Socket.ExtACL,
-		unixExposure(ControllerListener{Unix: true, Path: cs.Socket.Path}, withSocket(host, cs.Socket.Path, cs)) != "":
+		!learningSocketProtected(ControllerListener{Unix: true, Path: cs.Socket.Path}, cs, withSocket(host, cs.Socket.Path, cs)):
 		c.add(ReasonUnsafe, "rspamd's control socket is not private to root and rspamd")
 	}
 }
@@ -203,7 +251,7 @@ func privateControllerSockets(f HostFacts) []string {
 		}
 		s, ok := host.Sockets[l.Path]
 		if ok && s.Err == nil && !s.Missing && s.Socket.UID == host.RspamdUID &&
-			s.Socket.Mode.Perm() == 0o600 && unixExposure(l, host) == "" {
+			s.Socket.Mode.Perm() == 0o600 && learningSocketProtected(l, s, host) {
 			out = append(out, l.Path)
 		}
 	}
@@ -245,7 +293,7 @@ func checkLearningRedis(c *learningCheck, f HostFacts) {
 		c.add(ReasonUnsafe, "fuzzy storage uses Redis over TCP; learning needs a Unix socket only")
 		return
 	case r.Unprotected:
-		c.add(ReasonUnsafe, "the Redis socket's owner or directories let other users replace it")
+		c.add(ReasonUnsafe, "the Redis socket's owner, directories or peer do not prove that Redis serves it")
 		return
 	case r.Socket.Err != nil || r.Socket.Missing:
 		c.add(ReasonBackendUnavailable, "the Redis socket cannot be checked")
@@ -260,6 +308,18 @@ func checkLearningRedis(c *learningCheck, f HostFacts) {
 	if why := redisExposure(r, f.ControllerHost.RspamdUser, f.AccountNames, f.AccountNamesErr); why != "" {
 		c.add(ReasonUnsafe, why)
 		return
+	}
+	// Successful CONFIG reads remain evidence even when a later INFO
+	// request fails. Definite exposure takes precedence over that outage.
+	switch {
+	case r.Port != "" && r.Port != "0":
+		c.add(ReasonUnsafe, "Redis also listens on TCP; set port 0")
+	case r.TLSPort != "" && r.TLSPort != "0":
+		c.add(ReasonUnsafe, "Redis also listens on TLS TCP; set tls-port 0")
+	case r.MaxMemoryKnown && r.MaxMemory == 0:
+		c.add(ReasonUnsafe, "Redis has no maxmemory limit")
+	case r.Policy != "" && r.Policy != "noeviction":
+		c.add(ReasonUnsafe, "Redis can evict keys; set maxmemory-policy noeviction")
 	}
 	if r.Err != nil {
 		c.add(ReasonBackendUnavailable, "Redis did not answer CSM's read-only checks")
@@ -317,12 +377,14 @@ func redisExposure(r RedisFacts, rspamdUser string, accounts map[string]bool, ac
 // 11): file permissions, or CageFS confining every account with no rspamd
 // log in its skeleton.
 func checkLearningLogs(c *learningCheck, f HostFacts) {
-	exposed, _ := f.RspamdLog.Exposed(f.Socket.RspamdUID, f.RspamdGID)
+	exposed, _ := f.RspamdLog.exposed(f.Socket.RspamdUID, func(gid int) bool {
+		return !f.ControllerHost.groupHasOthers(gid)
+	})
 	if !exposed {
 		return
 	}
 	cage := f.CageFS
-	if cage.Err == nil && cage.Enabled && cage.DisabledUsers == 0 && !cage.SkeletonHasRspamdLog {
+	if cage.Err == nil && cage.Enabled && cage.DisabledUsers == 0 && !cage.SkeletonHasRspamdLog && cageFSProtectsLog(cage, f.RspamdLog) {
 		return
 	}
 	if f.RspamdLog.Err != nil || cage.Err != nil {
@@ -330,6 +392,22 @@ func checkLearningLogs(c *learningCheck, f HostFacts) {
 		return
 	}
 	c.add(ReasonUnsafe, "rspamd's log, which records learned digests, is readable by other users")
+}
+
+func cageFSProtectsLog(cage CageFSFacts, log LogFacts) bool {
+	// The skeleton probe proves exclusion of one directory, not syslog,
+	// journal output, arbitrary log files or symlink destinations.
+	if log.Err != nil || log.Type != "file" || cage.ExcludedLogDir == "" ||
+		!filepath.IsAbs(log.Path) || filepath.Clean(log.Path) != log.Path ||
+		!ancestorOf(cage.ExcludedLogDir, log.Path) || len(log.Parents) == 0 {
+		return false
+	}
+	for _, p := range log.Parents {
+		if !p.Mode.IsDir() {
+			return false
+		}
+	}
+	return log.Missing || log.File.Mode.IsRegular()
 }
 
 // checkLearningConflicts finds operator fuzzy configuration CSM's override
@@ -383,6 +461,9 @@ func loadedFuzzyRules(dump []byte) (map[string]map[string]json.RawMessage, error
 	if !ok {
 		return out, nil
 	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, errors.New("fuzzy_check rule is null")
+	}
 	var entries []json.RawMessage
 	if json.Unmarshal(raw, &entries) != nil {
 		entries = []json.RawMessage{raw}
@@ -421,25 +502,34 @@ func fuzzyWorkerEnabled(section json.RawMessage) (bool, error) {
 	if len(section) == 0 {
 		return false, nil
 	}
-	var entries []map[string]json.RawMessage
-	if json.Unmarshal(section, &entries) != nil {
-		var keyed map[string]json.RawMessage
-		if json.Unmarshal(section, &keyed) != nil {
+	var entries []json.RawMessage
+	if trimmed := bytes.TrimSpace(section); len(trimmed) > 0 && trimmed[0] == '[' {
+		if json.Unmarshal(section, &entries) != nil {
 			return false, errors.New("worker section is not readable")
 		}
-		entries = []map[string]json.RawMessage{keyed}
+	} else {
+		entries = []json.RawMessage{section}
 	}
 	for _, entry := range entries {
-		fields := entry
-		if raw, ok := entry["fuzzy"]; ok {
-			if json.Unmarshal(raw, &fields) != nil {
-				return false, errors.New("fuzzy worker is not readable")
-			}
-		} else {
+		fields, err := dumpObjectAs[json.RawMessage](entry, "worker")
+		if err != nil {
+			return false, err
+		}
+		if raw, typed := fields["type"]; typed {
 			var kind string
-			if json.Unmarshal(entry["type"], &kind) != nil || kind != "fuzzy" {
+			if json.Unmarshal(raw, &kind) != nil || kind == "" || strings.ContainsRune(kind, '\x00') {
+				return false, errors.New("worker type is not readable")
+			}
+			if kind != "fuzzy" {
 				continue
 			}
+		} else if raw, ok := fields["fuzzy"]; ok {
+			fields, err = dumpObjectAs[json.RawMessage](raw, "fuzzy worker")
+			if err != nil {
+				return false, err
+			}
+		} else {
+			continue
 		}
 		disabled, err := disabledWorker(fields)
 		if err != nil {

@@ -59,49 +59,62 @@ func RedisProbe(ctx context.Context, endpoint string, password antispam.Secret, 
 		r.Err = errors.New("redis: cannot connect to the socket as its owner")
 		if errors.Is(err, errPeer) {
 			r.Err = errPeer
+			r.Unprotected = true
 		}
 		return r
 	}
 	r.ServiceUID = peer
-	values := map[string]string{}
-	for _, name := range []string{"port", "maxmemory", "maxmemory-policy", "appendonly", "save"} {
+	// Each value is kept as soon as it is read: a later failure must not
+	// erase evidence such as a TCP listener.
+	for _, name := range []string{"port", "tls-port", "maxmemory", "maxmemory-policy", "appendonly", "save"} {
 		got, err := probe.ConfigGet(ctx, name).Result()
 		if err != nil {
 			r.Err = errors.New("redis: CONFIG GET " + name + " failed")
 			return r
 		}
 		value, ok := got[name]
+		// Redis builds without TLS omit this option entirely.
+		if name == "tls-port" && !ok {
+			value, ok = "0", true
+		}
 		if !ok {
 			r.Err = errors.New("redis: CONFIG GET " + name + " returned no value")
 			return r
 		}
-		values[name] = value
-	}
-	tls, err := probe.ConfigGet(ctx, "tls-port").Result()
-	if err != nil {
-		r.Err = errors.New("redis: CONFIG GET tls-port failed")
-		return r
-	}
-	if value, ok := tls["tls-port"]; ok {
-		if _, err = strconv.ParseUint(value, 10, 16); err != nil {
-			r.Err = errors.New("redis: tls-port is not a port number")
-			return r
+		switch name {
+		case "port":
+			if _, err = strconv.ParseUint(value, 10, 16); err != nil {
+				r.Err = errors.New("redis: port is not a port number")
+				return r
+			}
+			r.Port = value
+		case "tls-port":
+			if _, err = strconv.ParseUint(value, 10, 16); err != nil {
+				r.Err = errors.New("redis: tls-port is not a port number")
+				return r
+			}
+			r.TLSPort = value
+		case "maxmemory":
+			if r.MaxMemory, err = strconv.ParseUint(value, 10, 64); err != nil {
+				r.Err = errors.New("redis: maxmemory is not a number")
+				return r
+			}
+			r.MaxMemoryKnown = true
+		case "maxmemory-policy":
+			if strings.TrimSpace(value) == "" {
+				r.Err = errors.New("redis: memory policy is not readable")
+				return r
+			}
+			r.Policy = value
+		case "appendonly":
+			if value != "yes" && value != "no" {
+				r.Err = errors.New("redis: persistence setting is not readable")
+				return r
+			}
+			r.AppendOnly = value
+		case "save":
+			r.Save, r.SaveKnown = value, true
 		}
-		r.TLSPort = value
-	}
-	r.Port, r.Policy, r.AppendOnly = values["port"], values["maxmemory-policy"], values["appendonly"]
-	r.Save, r.SaveKnown = values["save"], true
-	if _, err = strconv.ParseUint(r.Port, 10, 16); err != nil {
-		r.Err = errors.New("redis: port is not a port number")
-		return r
-	}
-	if strings.TrimSpace(r.Policy) == "" || (r.AppendOnly != "yes" && r.AppendOnly != "no") {
-		r.Err = errors.New("redis: memory policy or persistence setting is not readable")
-		return r
-	}
-	if r.MaxMemory, err = strconv.ParseUint(values["maxmemory"], 10, 64); err != nil {
-		r.Err = errors.New("redis: maxmemory is not a number")
-		return r
 	}
 	memory, err := probe.Info(ctx, "memory").Result()
 	if err != nil {

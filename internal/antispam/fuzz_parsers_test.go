@@ -833,3 +833,26 @@ func FuzzControllerTrustEntries(f *testing.F) {
 		}
 	})
 }
+
+func FuzzFuzzyWorkerEnabled(f *testing.F) {
+	for _, seed := range []string{
+		`{"fuzzy":{"count":-1}}`, `{"type":"fuzzy","count":1}`,
+		`{"fuzzy":{"count":1,"count":-1}}`, `null`, `[]`,
+		`{"type":null}`, `{"type":"normal","fuzzy":{"count":1}}`,
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, entry string) {
+		// No preceding worker may hide a later enabled fuzzy worker. Parse
+		// failures are safe because the resolver treats them as conflicts.
+		section := []byte("[" + entry + `,{"fuzzy":{"count":1}}]`)
+		if enabled, err := fuzzyWorkerEnabled(section); err == nil && !enabled {
+			t.Fatal("accepted a worker section without detecting its enabled fuzzy worker")
+		}
+		if enabled, err := fuzzyWorkerEnabled([]byte(entry)); err == nil && enabled {
+			if !json.Valid([]byte(entry)) {
+				t.Fatal("accepted malformed JSON")
+			}
+		}
+	})
+}
