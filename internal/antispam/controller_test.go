@@ -334,3 +334,12 @@ func TestControllerExposureAbsentSocketFile(t *testing.T) {
 func TestControllerExposureNoPasswordsOutranksUnresolved(t *testing.T) {
 	onlyReason(t, ControllerExposure(tcpController([]string{"localhost"}, false, false), hostFacts()), "localhost:11334", "no passwords configured")
 }
+
+func TestControllerExposureMappedHostAddress(t *testing.T) {
+	for _, entry := range []string{"::ffff:203.0.113.10", "::ffff:203.0.113.0/120", "::ffff:0:0/95"} {
+		onlyReason(t, ControllerExposure(tcpController([]string{entry}, true, true), hostFacts()), "localhost:11334", "trusted address reachable by local processes")
+	}
+	if got := ControllerExposure(tcpController([]string{"::ffff:198.51.100.7"}, true, true), hostFacts()); len(got) != 0 {
+		t.Fatalf("mapped remote address: problems = %+v, want none", got)
+	}
+}

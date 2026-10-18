@@ -259,9 +259,15 @@ func trustPrefix(entry string) (netip.Prefix, bool) {
 	return netip.Prefix{}, false
 }
 
+// reachable also compares each IPv4 address in its IPv4-mapped IPv6 form:
+// Overlaps never matches across families, and a trust entry may name a host
+// address either way.
 func reachable(p netip.Prefix, hostAddrs []netip.Prefix) bool {
 	for _, local := range append(slices.Clone(localPrefixes), hostAddrs...) {
 		if p.Overlaps(local) {
+			return true
+		}
+		if local.Addr().Is4() && p.Overlaps(netip.PrefixFrom(netip.AddrFrom16(local.Addr().As16()), local.Bits()+96)) {
 			return true
 		}
 	}
