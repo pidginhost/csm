@@ -92,7 +92,8 @@ func Generation(content map[string]string) string {
 
 // ManagedContent maps each file CSM writes to the text it owns there: a
 // whole rspamd file, or the CSM block of a shared Exim file. Optional files
-// appear only while a feed, map redirect or learning needs them.
+// appear only while a feed, map redirect, learning or the Roundcube include
+// needs them.
 func ManagedContent(s Settings) (map[string]string, error) {
 	hooks, err := RenderExim(s)
 	if err != nil {
@@ -121,6 +122,9 @@ func ManagedContent(s Settings) (map[string]string, error) {
 		return nil, err
 	}
 	maps.Copy(out, learning)
+	if s.Roundcube {
+		out[RoundcubeIncludePath] = RenderRoundcube()
+	}
 	return out, nil
 }
 
@@ -134,7 +138,7 @@ func InstalledContent(targets []TargetFacts) map[string]string {
 			continue
 		}
 		if t.Kind.WholeFile() {
-			if IsManaged(t.Content) {
+			if ManagedFor(t.Kind, t.Content) {
 				out[t.Path] = t.Content
 			}
 		} else if text, ok := installedBlockText(t.Kind, t.Content); ok {

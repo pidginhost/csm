@@ -32,7 +32,7 @@ func installedFacts(t *testing.T, s Settings) HostFacts {
 		switch tg.Kind {
 		case TargetRspamd:
 			tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, managed[tg.Path]
-		case TargetRspamdOptional:
+		case TargetRspamdOptional, TargetLuaOptional, TargetRoundcube:
 			if text, ok := managed[tg.Path]; ok {
 				tg.Missing, tg.File, tg.Content = false, PathFacts{Path: tg.Path, Mode: 0o644}, text
 			}
@@ -666,5 +666,24 @@ func TestAssessIPMapUnavailableWarns(t *testing.T) {
 				t.Fatalf("problem %+v", p)
 			}
 		})
+	}
+}
+
+func TestCurrentNeedsLearningSecretMode(t *testing.T) {
+	s := learningSettings()
+	f := installedFacts(t, s)
+	f.RspamdGID = 974
+	for _, p := range []string{LearningCheckPath, LearningWorkerPath} {
+		setTargetFile(f.Targets, p, PathFacts{Path: p, UID: 0, GID: 974, Mode: SecretFileMode})
+	}
+	if !current(s, f) {
+		t.Fatal("0640 root:rspamd learning files are current")
+	}
+	for _, p := range []string{LearningCheckPath, LearningWorkerPath} {
+		setTargetFile(f.Targets, p, PathFacts{Path: p, UID: 0, GID: 974, Mode: 0o644})
+		if current(s, f) {
+			t.Errorf("world-readable %s counts as current", p)
+		}
+		setTargetFile(f.Targets, p, PathFacts{Path: p, UID: 0, GID: 974, Mode: SecretFileMode})
 	}
 }

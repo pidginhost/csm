@@ -43,22 +43,40 @@ func OptionalUsable(t TargetFacts) error {
 	if problem := unprotected(t.File); problem != "" {
 		return fmt.Errorf("%s %s", t.Path, problem)
 	}
-	if !IsManaged(t.Content) {
+	if !ManagedFor(t.Kind, t.Content) {
 		return fmt.Errorf("%s is not managed by CSM", t.Path)
 	}
 	return nil
 }
 
-// SecretFileMode is the mode of override.d/rbl.conf while it holds the DQS
-// key: rspamd reads it through its group, nobody else can.
+// SecretFileMode is the mode of a file holding a secret, such as
+// override.d/rbl.conf with the DQS key: rspamd reads it through its group,
+// nobody else can.
 const SecretFileMode fs.FileMode = 0o640
 
-// secretFileOK reports whether override.d/rbl.conf is root-owned, in
-// rspamd's group and exactly mode SecretFileMode, without set-id or sticky
-// bits.
-func secretFileOK(f HostFacts) bool {
+// SecretPaths lists every file that can hold a secret: the DQS key in the
+// rbl override, the learning keys in the fuzzy rules and worker.
+func SecretPaths() []string {
+	return []string{FeedRBLPath, LearningCheckPath, LearningWorkerPath}
+}
+
+// SecretTargets lists the SecretPaths that hold a secret under s.
+func (s Settings) SecretTargets() []string {
+	var out []string
+	if s.HasFeed(FeedSpamhausDQS) {
+		out = append(out, FeedRBLPath)
+	}
+	if s.Learning {
+		out = append(out, LearningCheckPath, LearningWorkerPath)
+	}
+	return out
+}
+
+// secretFileOK reports whether secret file p is root-owned, in rspamd's
+// group and exactly mode SecretFileMode, without set-id or sticky bits.
+func secretFileOK(f HostFacts, p string) bool {
 	for _, t := range f.Targets {
-		if t.Path == FeedRBLPath {
+		if t.Path == p {
 			return t.Err == nil && !t.Missing && t.File.UID == 0 && f.RspamdGID >= 0 &&
 				t.File.GID == f.RspamdGID && t.File.Mode == SecretFileMode
 		}

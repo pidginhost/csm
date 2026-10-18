@@ -41,6 +41,7 @@ const (
 	StepEximBuild     = "exim_build"
 	StepEximReload    = "exim_reload"
 	StepEximProbe     = "exim_probe"
+	StepRoundcube     = "roundcube_files"
 	StepComplete      = "complete"
 	StepFeedsCheck    = antispam.FeedsCheckStep
 )
@@ -73,6 +74,9 @@ func New() *Host {
 			f := hostfacts.Collect(ctx, s.Socket)
 			if s.HasFeed(antispam.FeedSpamhausDQS) {
 				f.DQSKey = hostfacts.ReadDQSKey(s.DQSKeyFile)
+			}
+			if s.Learning {
+				f.LearningKeys, f.LearningKeysErr = hostfacts.LoadLearningKeys(s.LearningDir)
 			}
 			return f, antispam.CheckHost(f)
 		},
@@ -190,7 +194,7 @@ func plan(targets []antispam.TargetFacts, managed map[string]string) ([]change, 
 	for _, t := range targets {
 		before := fileState{exists: !t.Missing, content: t.Content}
 		switch {
-		case t.Kind == antispam.TargetRspamdOptional && managed != nil:
+		case t.Kind.Optional() && managed != nil:
 			want, wanted := managed[t.Path]
 			switch {
 			case wanted:
@@ -202,7 +206,7 @@ func plan(targets []antispam.TargetFacts, managed map[string]string) ([]change, 
 				if !sameContent(before, fileState{exists: true, content: want}) {
 					out = append(out, change{t, fileState{exists: true, content: want}})
 				}
-			case !t.Missing && antispam.IsManaged(t.Content):
+			case !t.Missing && antispam.ManagedFor(t.Kind, t.Content):
 				out = append(out, change{t, fileState{}})
 			}
 		case t.Kind.WholeFile() && managed != nil:
@@ -210,7 +214,7 @@ func plan(targets []antispam.TargetFacts, managed map[string]string) ([]change, 
 				out = append(out, change{t, fileState{exists: true, content: want}})
 			}
 		case t.Kind.WholeFile():
-			if !t.Missing && antispam.IsManaged(t.Content) {
+			if !t.Missing && antispam.ManagedFor(t.Kind, t.Content) {
 				out = append(out, change{t, fileState{}})
 			}
 		case t.Missing && managed == nil:
@@ -231,38 +235,50 @@ func plan(targets []antispam.TargetFacts, managed map[string]string) ([]change, 
 	return out, nil
 }
 
-// secureSecret gives override.d/rbl.conf the group and mode that keep the
-// DQS key from other users, also when only its mode or group is wrong.
+// secureSecret gives each secret file in paths the group and mode that keep
+// its secret from other users, also when only its mode or group is wrong.
 // The worker runs as root, so uid -1 keeps root as owner.
-func secureSecret(changes []change, targets []antispam.TargetFacts, gid int) []change {
+func secureSecret(changes []change, targets []antispam.TargetFacts, gid int, paths []string) []change {
 	meta := func(content string) fileState {
 		return fileState{exists: true, content: content, uid: -1, gid: gid, perm: antispam.SecretFileMode, metadata: true}
 	}
+	for _, p := range paths {
+		changes = secureOne(changes, targets, p, meta)
+	}
+	return changes
+}
+
+func secureOne(changes []change, targets []antispam.TargetFacts, p string, meta func(string) fileState) []change {
 	for i, c := range changes {
-		if c.target.Path == antispam.FeedRBLPath && c.next.exists {
+		if c.target.Path == p && c.next.exists {
 			changes[i].next = meta(c.next.content)
 			return changes
 		}
 	}
 	for _, t := range targets {
-		if t.Path == antispam.FeedRBLPath && !t.Missing &&
-			(t.File.GID != gid || t.File.Mode != antispam.SecretFileMode) {
-			return append(changes, change{t, meta(t.Content)})
+		if t.Path == p && !t.Missing {
+			if want := meta(t.Content); t.File.GID != want.gid || t.File.Mode != antispam.SecretFileMode {
+				return append(changes, change{t, want})
+			}
 		}
 	}
 	return changes
 }
 
-// split separates rspamd edits from Exim edits.
-func split(changes []change) (rspamd, exim []change) {
+// split separates edits that need an rspamd reload, edits that need an Exim
+// rebuild, and Roundcube edits that need neither.
+func split(changes []change) (rspamd, exim, roundcube []change) {
 	for _, c := range changes {
-		if c.target.Kind.WholeFile() {
+		switch {
+		case c.target.Kind.ReloadsRspamd():
 			rspamd = append(rspamd, c)
-		} else {
+		case c.target.Kind == antispam.TargetRoundcube:
+			roundcube = append(roundcube, c)
+		default:
 			exim = append(exim, c)
 		}
 	}
-	return rspamd, exim
+	return rspamd, exim, roundcube
 }
 
 // write applies one planned edit unless another writer changed the file

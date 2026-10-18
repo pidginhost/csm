@@ -177,12 +177,12 @@ func targetFacts(t antispam.Target) antispam.TargetFacts {
 }
 
 // ContentReadable reports whether the collector reads target f's content.
-// An optional rspamd file is read whenever its directories are protected,
-// even if the file itself was loosened: CSM must still recognise its own
-// file, which can hold the DQS key, to delete or replace it. Deciding that
-// needs only a safe directory, and the file is never edited in place.
+// An optional file is read whenever its directories are protected, even if
+// the file itself was loosened: CSM must still recognise its own file, which
+// can hold a secret, to delete or replace it. Deciding that needs only a
+// safe directory, and the file is never edited in place.
 func ContentReadable(f antispam.TargetFacts) bool {
-	if f.Kind != antispam.TargetRspamdOptional {
+	if !f.Kind.Optional() {
 		return targetSafeToRead(f)
 	}
 	relaxed := f

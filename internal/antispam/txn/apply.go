@@ -46,6 +46,12 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		}
 		s.DQSKey = key
 	}
+	if s.Learning {
+		if f.LearningKeysErr != nil {
+			return failed(StepPreconditions, f.LearningKeysErr)
+		}
+		s.LearningKeys = f.LearningKeys
+	}
 	installed := antispam.InstalledContent(f.Targets)
 	rollbackSocket := s.Socket
 	// An update can select a new socket. Rollback must probe the scanner
@@ -70,13 +76,13 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	if err != nil {
 		return failed(StepPreconditions, err)
 	}
-	if s.HasFeed(antispam.FeedSpamhausDQS) {
+	if secrets := s.SecretTargets(); len(secrets) > 0 {
 		if f.RspamdGID < 0 {
-			return failed(StepPreconditions, errors.New("rspamd's group is unknown, so the DQS key file cannot be restricted to it"))
+			return failed(StepPreconditions, errors.New("rspamd's group is unknown, so secret files cannot be restricted to it"))
 		}
-		changes = secureSecret(changes, f.Targets, f.RspamdGID)
+		changes = secureSecret(changes, f.Targets, f.RspamdGID, secrets)
 	}
-	rspamdChanges, eximChanges := split(changes)
+	rspamdChanges, eximChanges, roundcubeChanges := split(changes)
 	record, valid, err := t.readRecord()
 	if err != nil {
 		return failed(StepRecord, err)
@@ -93,7 +99,7 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	generated := err == nil && antispam.CheckGenerated(current.content, hooks, opts["acl_smtp_rcpt"], opts["acl_smtp_data"]) == nil
 	reloadRspamd := len(rspamdChanges) > 0 || !matches
 	rebuildExim := len(eximChanges) > 0 || !matches || !generated
-	if !reloadRspamd && !rebuildExim {
+	if !reloadRspamd && !rebuildExim && len(roundcubeChanges) == 0 {
 		return antispam.Result{OK: true, Generation: generation}
 	}
 	if err := t.listenerProbe(opts); err != nil {
@@ -129,6 +135,11 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		}
 		if step, err := t.exim(eximChanges, true, verify); err != nil {
 			return t.fail(step, err)
+		}
+	}
+	for _, c := range roundcubeChanges {
+		if err := t.write(c); err != nil {
+			return t.fail(StepRoundcube, err)
 		}
 	}
 	if err := t.writeRecord(generation); err != nil {

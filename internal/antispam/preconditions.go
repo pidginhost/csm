@@ -180,6 +180,10 @@ type HostFacts struct {
 	// controller in it could not be understood; unlike ControllerErr it is
 	// reported, not waited out.
 	ControllerUnverifiable error
+	// LearningKeys are loaded from the learning directory when learning is
+	// requested; LearningKeysErr says why they could not be.
+	LearningKeys    LearningKeys
+	LearningKeysErr error
 }
 
 // CheckHost evaluates the host preconditions of spec section 6.2 that hold

@@ -30,7 +30,7 @@ func (h *Host) Remove() antispam.Result {
 	if err != nil {
 		return failed(StepPreconditions, err)
 	}
-	rspamdChanges, eximChanges := split(changes)
+	rspamdChanges, eximChanges, roundcubeChanges := split(changes)
 	if _, _, err = t.readRecord(); err != nil {
 		return failed(StepRecord, err)
 	}
@@ -40,7 +40,7 @@ func (h *Host) Remove() antispam.Result {
 	// changed files without a confirmed reload.
 	rebuildExim := len(eximChanges) > 0 || t.record.exists || !generated
 	reloadRspamd := len(rspamdChanges) > 0 || t.record.exists
-	if !rebuildExim && !reloadRspamd {
+	if !rebuildExim && !reloadRspamd && len(roundcubeChanges) == 0 {
 		return antispam.Result{OK: true}
 	}
 	// A broken generated configuration must not prevent removing its hooks:
@@ -84,6 +84,11 @@ func (h *Host) Remove() antispam.Result {
 			if err := t.reloadRspamd(t.fwd, t.rspamdProbe); err != nil {
 				return t.fail(StepRspamdReload, err)
 			}
+		}
+	}
+	for _, c := range roundcubeChanges {
+		if err := t.write(c); err != nil {
+			return t.fail(StepRoundcube, err)
 		}
 	}
 	if err := t.removeRecord(); err != nil {

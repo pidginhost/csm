@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,8 +39,11 @@ type fakeHost struct {
 	// default).
 	multimap string
 	// key is the DQS key file preflight reports.
-	key      antispam.KeyFacts
-	problems []antispam.Problem
+	key antispam.KeyFacts
+	// learning and learningErr are the learning keys preflight reports.
+	learning    antispam.LearningKeys
+	learningErr error
+	problems    []antispam.Problem
 	// pingFail and greetFail list the 1-based probe calls that fail.
 	pingFail, greetFail []int
 	pings, greets       int
@@ -67,7 +71,7 @@ func newFake(t *testing.T) *fakeHost {
 	t.Helper()
 	f := &fakeHost{t: t, root: t.TempDir(), start: time.Now(), fail: map[string][]int{}, seen: map[string]int{},
 		key: antispam.KeyFacts{Path: "/etc/csm/k", UID: 0, Mode: 0o600, Key: antispam.NewSecret("abcdefghijklmnopqrstu23456")}}
-	for _, dir := range []string{antispam.RspamdLocalDir, antispam.RspamdOverrideDir, "/var/lib/csm"} {
+	for _, dir := range []string{antispam.RspamdLocalDir, antispam.RspamdOverrideDir, antispam.RspamdLuaDir, path.Dir(antispam.RoundcubeIncludePath), "/var/lib/csm"} {
 		if err := os.MkdirAll(f.root+dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -112,6 +116,7 @@ func (f *fakeHost) host() *Host {
 		replace: replaceFile,
 		preflight: func(context.Context, antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
 			return antispam.HostFacts{Targets: snapshot(), RspamdGID: os.Getgid(), DQSKey: f.key,
+				LearningKeys: f.learning, LearningKeysErr: f.learningErr,
 				RspamdVersion: antispam.CommandResult{Stdout: "Rspamd daemon version 4.2.2\n"},
 				RspamdLog: antispam.LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log",
 					File:    antispam.PathFacts{GID: os.Getgid(), Mode: 0o640},
