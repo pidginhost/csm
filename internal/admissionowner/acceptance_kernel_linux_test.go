@@ -337,7 +337,8 @@ func TestKernelDryRunLeavesTheFirewallUnchanged(t *testing.T) {
 	}
 	opts := previewOptions(f)
 	opts.Blocks = func() BlockEngine { return engine }
-	opts.Policy = (&policyReader{p: dryVerdictPolicy(1, panel)}).read
+	r := &policyReader{p: dryVerdictPolicy(1, panel)}
+	opts.Policy = r.read
 	o := f.start(opts)
 	enterNamespace(t, o, ns)
 	heldMono(t, o)
@@ -352,6 +353,14 @@ func TestKernelDryRunLeavesTheFirewallUnchanged(t *testing.T) {
 	readyAnswers(t, o, 4)
 	turn(t, o)
 	f.host.advance(time.Second)
+	// The engine's lease clock is real time, and durable writes on a loaded
+	// host can pass its one-second readback slack between turns. Repeats
+	// under a shorter lifetime stay covered by the forecast blocks; the wait
+	// keeps the test on that slow path.
+	shorter := dryVerdictPolicy(2, panel)
+	shorter.Expiry = func(admission.Candidate) time.Duration { return time.Hour }
+	r.publish(shorter)
+	time.Sleep(1500 * time.Millisecond)
 	for _, addr := range []string{"192.0.2.10", "2001:db8::10"} {
 		ids[addr+" repeat"] = observe(t, o, p, f, addr, "offset=2")
 	}
