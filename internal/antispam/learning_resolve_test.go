@@ -60,7 +60,7 @@ func safeLearningFacts() HostFacts {
 			},
 			GroupMembers: []string{"redis", "_rspamd"},
 			Port:         "0", Policy: "noeviction", AppendOnly: "yes", Save: "", SaveKnown: true,
-			Version: "5.0.3", MaxMemory: 4 << 30, Used: 1 << 20, ServiceUID: testRedisUID,
+			Version: "5.0.3", MaxMemory: 4 << 30, Used: 1 << 20, ServiceUID: testRedisUID, TLSPort: "0",
 		},
 		RspamdLog: LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log",
 			File: PathFacts{Path: "/var/log/rspamd/rspamd.log", GID: testRspamdGID, Mode: 0o640},
@@ -165,11 +165,17 @@ func TestResolveLearningDefiniteFailures(t *testing.T) {
 		"RedisGroupMemberIsAccount": {func(f *HostFacts) { f.Redis.GroupMembers = []string{"redis", "alpha"} }, ReasonUnsafe},
 		// Tenant code can run as shared users such as nobody or mailnull.
 		"RedisGroupMemberShared": {func(f *HostFacts) { f.Redis.GroupMembers = []string{"redis", "_rspamd", "nobody"} }, ReasonUnsafe},
-		"RedisGroupUnknown":      {func(f *HostFacts) { f.Redis.GroupMembers = nil }, ReasonUnsafe},
-		"RedisACL":               {func(f *HostFacts) { f.Redis.Socket.Socket.ExtACL = true }, ReasonUnsafe},
-		"RedisParentACL":         {func(f *HostFacts) { f.Redis.Socket.Parents[2].ExtACL = true }, ReasonUnsafe},
-		"RedisParentWritable":    {func(f *HostFacts) { f.Redis.Socket.Parents[2].Mode = fs.ModeDir | 0o777 }, ReasonUnsafe},
-		"RedisSocketOthers":      {func(f *HostFacts) { f.Redis.Socket.Socket.Mode = fs.ModeSocket | 0o777 }, ReasonUnsafe},
+		// A cPanel account can carry a trusted name; then the name proves nothing.
+		"RedisGroupAccountNamedRedis": {func(f *HostFacts) { f.AccountNames["redis"] = true }, ReasonUnsafe},
+		"RedisGroupAccountsUnread": {func(f *HostFacts) {
+			f.AccountNames, f.AccountNamesErr = nil, errors.New("cannot list cPanel accounts")
+		}, ReasonUnsafe},
+		"RedisTLSPort":        {func(f *HostFacts) { f.Redis.TLSPort = "6380" }, ReasonUnsafe},
+		"RedisGroupUnknown":   {func(f *HostFacts) { f.Redis.GroupMembers = nil }, ReasonUnsafe},
+		"RedisACL":            {func(f *HostFacts) { f.Redis.Socket.Socket.ExtACL = true }, ReasonUnsafe},
+		"RedisParentACL":      {func(f *HostFacts) { f.Redis.Socket.Parents[2].ExtACL = true }, ReasonUnsafe},
+		"RedisParentWritable": {func(f *HostFacts) { f.Redis.Socket.Parents[2].Mode = fs.ModeDir | 0o777 }, ReasonUnsafe},
+		"RedisSocketOthers":   {func(f *HostFacts) { f.Redis.Socket.Socket.Mode = fs.ModeSocket | 0o777 }, ReasonUnsafe},
 		"RedisUnprotected": {func(f *HostFacts) {
 			f.Redis.Unprotected, f.Redis.Err = true, errors.New("redis socket is not protected")
 		}, ReasonUnsafe},

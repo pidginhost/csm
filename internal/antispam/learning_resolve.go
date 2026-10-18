@@ -239,7 +239,7 @@ func checkLearningRedis(c *learningCheck, f HostFacts) {
 		c.add(ReasonUnsafe, "the Redis socket is open to other users or carries extra ACL entries")
 		return
 	}
-	if why := redisExposure(r, f.ControllerHost.RspamdUser); why != "" {
+	if why := redisExposure(r, f.ControllerHost.RspamdUser, f.AccountNames, f.AccountNamesErr); why != "" {
 		c.add(ReasonUnsafe, why)
 		return
 	}
@@ -250,6 +250,8 @@ func checkLearningRedis(c *learningCheck, f HostFacts) {
 	switch {
 	case r.Port != "0":
 		c.add(ReasonUnsafe, "Redis also listens on TCP; set port 0")
+	case r.TLSPort != "" && r.TLSPort != "0":
+		c.add(ReasonUnsafe, "Redis also listens on TLS over TCP; set tls-port 0")
 	case r.MaxMemory == 0:
 		c.add(ReasonUnsafe, "Redis has no maxmemory limit")
 	case r.Policy != "noeviction":
@@ -262,15 +264,25 @@ func checkLearningRedis(c *learningCheck, f HostFacts) {
 // redisExposure judges the Redis socket like a controller socket: its owner
 // and root are trusted, and a group member counts as another user unless it
 // is root, redis or rspamd's service user. Shared users such as nobody can
-// run tenant code, so only these names are trusted. Unknown group members
-// count as other users.
-func redisExposure(r RedisFacts, rspamdUser string) string {
+// run tenant code, so only these names are trusted, and redis or rspamd's
+// user only while the account list is readable and no account carries the
+// name. Unknown group members count as other users.
+func redisExposure(r RedisFacts, rspamdUser string, accounts map[string]bool, accountsErr error) string {
 	owner := r.Socket.Socket.UID
 	host := ControllerHostFacts{Sockets: map[string]SocketFacts{r.Endpoint: r.Socket}, RspamdUID: owner, GroupMembers: map[int][]string{}}
+	trusted := func(m string) bool {
+		if m == "root" {
+			return true
+		}
+		if accountsErr != nil || accounts[m] {
+			return false
+		}
+		return m == "redis" || (rspamdUser != "" && m == rspamdUser)
+	}
 	if r.GroupMembers != nil {
 		others := []string{}
 		for _, m := range r.GroupMembers {
-			if m != "root" && m != "redis" && (rspamdUser == "" || m != rspamdUser) {
+			if !trusted(m) {
 				others = append(others, m)
 			}
 		}
