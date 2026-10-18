@@ -320,6 +320,11 @@ func TestCollectRedisProbesOnlyProtectedSockets(t *testing.T) {
 	if r := c.redis(context.Background(), f); r.Err == nil || *probes != 0 {
 		t.Fatalf("account-owned socket: probes=%d facts=%+v", *probes, r)
 	}
+	// A cPanel account named redis is a tenant, not the service.
+	c, f, probes = setup(t, 0o750, "redis", "redis")
+	if r := c.redis(context.Background(), f); r.Err == nil || *probes != 0 {
+		t.Fatalf("account named redis: probes=%d facts=%+v", *probes, r)
+	}
 	// Tenant code can run as shared service users such as nobody.
 	c, f, probes = setup(t, 0o750, "nobody")
 	if r := c.redis(context.Background(), f); r.Err == nil || *probes != 0 {

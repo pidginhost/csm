@@ -231,6 +231,11 @@ func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) bool {
 	if f.Socket.RspamdUID >= 0 && uid == f.Socket.RspamdUID {
 		return true
 	}
+	// A cPanel account can carry the name redis on a host without the
+	// service user; that account is a tenant.
+	if f.AccountNamesErr != nil || f.AccountNames["redis"] {
+		return false
+	}
 	redisUID, err := c.uid("redis")
 	return err == nil && redisUID >= 0 && uid == redisUID
 }
