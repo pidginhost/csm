@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -190,8 +189,8 @@ func (c collector) accountNames() (map[string]bool, error) {
 
 // redis identifies the fuzzy worker's Redis backend and probes it. CSM
 // sends the password only to a Unix socket nobody but its owner or root could
-// have put there, owned by a user that is not a cPanel account; a TCP
-// endpoint is never probed, it fails isolation anyway.
+// have put there, owned by a pinned service user; a TCP endpoint is never
+// probed, it fails isolation anyway.
 func (c collector) redis(ctx context.Context, f antispam.HostFacts) antispam.RedisFacts {
 	if f.LearningDumps.Err != nil {
 		return antispam.RedisFacts{ServiceUID: -1, Err: errors.New("rspamd's redis settings were not read")}
@@ -222,16 +221,18 @@ func (c collector) redis(ctx context.Context, f antispam.HostFacts) antispam.Red
 }
 
 // trustedRedisOwner reports whether uid may serve the Redis socket: root,
-// or a named user that is not a cPanel account.
+// rspamd's service user or the system user named redis. Any other owner,
+// including shared users such as nobody that can run tenant code, gets no
+// password.
 func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) bool {
 	if uid == 0 || uid == keyOwner {
 		return true
 	}
-	if f.AccountNamesErr != nil {
-		return false
+	if f.Socket.RspamdUID >= 0 && uid == f.Socket.RspamdUID {
+		return true
 	}
-	name, err := c.userName(strconv.Itoa(uid))
-	return err == nil && name != "" && !f.AccountNames[name]
+	redisUID, err := c.uid("redis")
+	return err == nil && redisUID >= 0 && uid == redisUID
 }
 
 // protectedChain reports whether only root or owner could have created the

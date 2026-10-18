@@ -261,6 +261,8 @@ func TestCollectAccountNames(t *testing.T) {
 // could have created, owned by a user that is not a cPanel account.
 func TestCollectRedisProbesOnlyProtectedSockets(t *testing.T) {
 	setup := func(t *testing.T, dirMode os.FileMode, owner string, accounts ...string) (collector, antispam.HostFacts, *int) {
+		// owner is the user name the test's uid resolves to: "redis" is a
+		// pinned Redis service user, anything else is not.
 		t.Helper()
 		c, d := learningCollector(t, &fakeRun{})
 		probes := 0
@@ -272,6 +274,12 @@ func TestCollectRedisProbesOnlyProtectedSockets(t *testing.T) {
 			return antispam.RedisFacts{Endpoint: endpoint, Port: "0"}
 		}
 		c.userName = func(uid string) (string, error) { return owner, nil }
+		c.uid = func(name string) (int, error) {
+			if name == owner {
+				return os.Getuid(), nil
+			}
+			return -1, errors.New("unknown user")
+		}
 		dir := filepath.Join(d, "redis")
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatal(err)
@@ -311,6 +319,11 @@ func TestCollectRedisProbesOnlyProtectedSockets(t *testing.T) {
 	c, f, probes = setup(t, 0o750, "tenant", "tenant")
 	if r := c.redis(context.Background(), f); r.Err == nil || *probes != 0 {
 		t.Fatalf("account-owned socket: probes=%d facts=%+v", *probes, r)
+	}
+	// Tenant code can run as shared service users such as nobody.
+	c, f, probes = setup(t, 0o750, "nobody")
+	if r := c.redis(context.Background(), f); r.Err == nil || *probes != 0 {
+		t.Fatalf("socket owned by an unpinned user: probes=%d facts=%+v", *probes, r)
 	}
 	c, f, probes = setup(t, 0o750, "redis")
 	f.LearningDumps.Redis = []byte(`{"servers":"127.0.0.1:6379","password":"pw"}`)
