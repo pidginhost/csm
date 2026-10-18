@@ -913,6 +913,12 @@ func (o *Owner) serve() error {
 			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
 		}
 		pick := execPick{pick: p, c: c}
+		if o.executable() && o.policyErr == nil && !o.policy.Allows(c) {
+			if err = o.endPick(pick, admission.ReasonDisabled); err != nil {
+				return err
+			}
+			continue
+		}
 		switch {
 		case !o.executable() || c.Key.Kind == admission.KindChallenge:
 			err = o.preview(pick)

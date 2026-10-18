@@ -102,6 +102,8 @@ func (o *Owner) forecast() (err error) {
 		}
 		pick := execPick{pick: p, c: c}
 		switch {
+		case !o.policy.Allows(c):
+			err = o.endPick(pick, admission.ReasonDisabled)
 		case c.Key.Kind == admission.KindBlockIP:
 			blocks = append(blocks, pick)
 		case c.Key.Kind == admission.KindChallenge:

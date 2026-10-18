@@ -20,12 +20,15 @@ func noVerdict(context.Context, string, string) (verdict.Response, error) {
 	return verdict.Response{}, errNoCallback
 }
 
-// validPolicy is a live policy with the callback off.
+func allowAll(admission.Candidate) bool { return true }
+
+// validPolicy is a live policy with the callback off that allows every
+// response.
 func validPolicy(epoch uint64) ExecutionPolicy {
 	return ExecutionPolicy{
 		Epoch: epoch, VerdictTimeout: 2 * time.Second, CeilingLimit: 2000, CeilingSource: "default",
 		Expiry:     func(admission.Candidate) time.Duration { return 24 * time.Hour },
-		AskVerdict: noVerdict,
+		AskVerdict: noVerdict, Allows: allowAll,
 	}
 }
 
@@ -83,15 +86,16 @@ func ownerStarted(t *testing.T, o *Owner) bool {
 
 // D11: an owner with Blocks binds to one coherent policy. It does not
 // start without a provider or with a policy that is unpublished, lacks
-// its asker or expiry, runs in mode: observe or carries a ceiling or
-// timeout out of range, even with the callback off. It names the refusal,
-// opens nothing and never reaches the engine.
+// its asker, expiry or allowed responses, runs in mode: observe or
+// carries a ceiling or timeout out of range, even with the callback off.
+// It names the refusal, opens nothing and never reaches the engine.
 func TestExecutableOwnerRefusesStartWithoutAValidPolicy(t *testing.T) {
 	for name, mutate := range map[string]func(*Options, *ExecutionPolicy){
 		"no provider": func(o *Options, _ *ExecutionPolicy) { o.Policy = nil },
 		"unpublished": func(_ *Options, p *ExecutionPolicy) { p.Epoch = 0 },
 		"no asker":    func(_ *Options, p *ExecutionPolicy) { p.AskVerdict = nil },
 		"no expiry":   func(_ *Options, p *ExecutionPolicy) { p.Expiry = nil },
+		"no allows":   func(_ *Options, p *ExecutionPolicy) { p.Allows = nil },
 		"observe":     func(_ *Options, p *ExecutionPolicy) { p.Observe = true },
 		"no ceiling":  func(_ *Options, p *ExecutionPolicy) { p.CeilingLimit = 0 },
 		"big ceiling": func(_ *Options, p *ExecutionPolicy) { p.CeilingLimit = admission.MaxCeiling + 1 },

@@ -35,6 +35,9 @@ type ExecutionPolicy struct {
 	// AskVerdict asks the callback this policy configures, with the
 	// client's own validation.
 	AskVerdict Asker
+	// Allows reports whether the configuration still allows the response
+	// a queued candidate asks for (admission-gates section 8, row 1).
+	Allows func(admission.Candidate) bool
 }
 
 // ErrPolicy marks an execution policy the owner refused to install.
@@ -52,8 +55,8 @@ func (p ExecutionPolicy) validate() error {
 		problem = "no policy is published"
 	case p.Observe:
 		problem = "mode: observe forbids automatic execution"
-	case p.Expiry == nil || p.AskVerdict == nil:
-		problem = "the policy has no expiry or verdict asker"
+	case p.Expiry == nil || p.AskVerdict == nil || p.Allows == nil:
+		problem = "the policy has no expiry, verdict asker or allowed responses"
 	case p.CeilingLimit == 0 || p.CeilingLimit > admission.MaxCeiling:
 		problem = "the hourly ceiling is out of range"
 	case p.VerdictTimeout < minVerdictTimeout || p.VerdictTimeout > maxVerdictTimeout:

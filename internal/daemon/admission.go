@@ -70,13 +70,8 @@ func (d *Daemon) executionPolicy() admissionowner.ExecutionPolicy {
 		return admissionowner.ExecutionPolicy{}
 	}
 	limit, source := cfg.AdmissionCeiling()
-	// Admission allows must authenticate this exchange. Legacy callback
-	// signing opt-outs do not authorize an admission refusal.
-	vc := cfg.AutoResponse.VerdictCallback
-	client := verdict.New(verdict.Config{
-		URL: vc.URL, HMACSecret: vc.HMACSecret, HMACSecretEnv: vc.HMACSecretEnv,
-		Timeout: time.Duration(vc.TimeoutSec) * time.Second,
-	})
+	// The epoch-bound client preserves the configured signature policy.
+	client := newVerdictClient(cfg)
 	return admissionowner.ExecutionPolicy{
 		Epoch: epoch, Observe: cfg.ObserveMode(), DryRun: cfg.AutoResponseDryRunEnabled(),
 		VerdictEnabled: cfg.AutoResponse.VerdictCallback.Enabled,
@@ -85,6 +80,9 @@ func (d *Daemon) executionPolicy() admissionowner.ExecutionPolicy {
 		Expiry: func(c admission.Candidate) time.Duration { return previewExpiry(cfg, c) },
 		AskVerdict: func(ctx context.Context, ip, reason string) (verdict.Response, error) {
 			return client.Ask(ctx, verdict.Request{IP: ip, Reason: reason, Severity: "auto", Source: "auto_response"})
+		},
+		Allows: func(c admission.Candidate) bool {
+			return checks.AutomaticResponseAllowed(cfg, c.Key.Kind, c.Entry, c.Check)
 		},
 	}
 }

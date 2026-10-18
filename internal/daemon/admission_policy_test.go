@@ -97,6 +97,30 @@ func TestExecutionPolicyFollowsThePublishedConfig(t *testing.T) {
 	}
 }
 
+// The policy allows what the published switches allow, through the same
+// rule the legacy funnels apply, and keeps the configuration it was built
+// with after a later publication.
+func TestExecutionPolicyAllowsWhatTheConfigAllows(t *testing.T) {
+	prev := config.Active()
+	t.Cleanup(func() { config.SetActive(prev) })
+	d := &Daemon{}
+	block := func(check string) admission.Candidate {
+		return admission.Candidate{Key: admission.CandidateKey{Kind: admission.KindBlockIP}, Entry: admission.EntryScan, Check: check}
+	}
+	publishTestConfig(t, "auto_response:\n  enabled: true\n  block_ips: true\n")
+	on := d.executionPolicy()
+	if on.Allows == nil || !on.Allows(block("ftp_bruteforce")) || on.Allows(block("cpanel_multi_ip_login")) {
+		t.Fatal("the policy does not follow the block switches")
+	}
+	publishTestConfig(t, "auto_response:\n  enabled: false\n  block_ips: true\n")
+	if off := d.executionPolicy(); off.Allows(block("ftp_bruteforce")) {
+		t.Fatal("a policy with blocking off allows a block")
+	}
+	if !on.Allows(block("ftp_bruteforce")) {
+		t.Fatal("an earlier policy followed a later publication")
+	}
+}
+
 // The owner's refusal of a published policy reaches the reload health
 // path as a config_reload_error finding.
 func TestDaemonReportsARefusedExecutionPolicy(t *testing.T) {

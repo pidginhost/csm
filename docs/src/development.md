@@ -882,6 +882,17 @@ checks for newer epochs even while idle, so a publication without a reload
 resumes held work and any probes suspended by dry-run. A challenge keeps
 its comparison preview. A comparison-only owner never reads the policy.
 
+The policy also carries whether the configuration still allows each queued
+response: `checks.AutomaticResponseAllowed`, the switches the legacy funnels
+test before they act (`auto_response.enabled` and `block_ips` for every
+firewall kind, `block_cpanel_logins` for the checks that need it, and each
+derived entry's own opt-in; challenges follow challenge routing). Under a
+valid policy, a pick it no longer allows ends refused as `disabled` before
+any panel ask, engine check, forecast, preview or reservation, live or dry
+run. Most of these switches change only with an epoch; challenge, incident
+and central settings change only at a restart, which is why every pick is
+tested rather than every epoch.
+
 Under a dry-run policy the owner forecasts instead of running. It selects
 work with `SchedulePreview`, whatever the live budgets, and ends each pick
 as a dry run with a prediction: no attempt, charge, history, audit row or
@@ -970,9 +981,10 @@ canonical address, and stays queued; the schedule passes it over until
 the answer arrives. Workers, outstanding jobs and cached answers are bounded;
 a full stage leaves picks queued and is never read as an answer. Each answer
 is keyed by candidate, attempt and policy epoch and expires from completion,
-including time awaiting receipt. Admission requires a signed, request-bound
-allow even when legacy callback signing exceptions are configured. A valid
-allow ends the pick as one `verdict_allow` refusal with no attempt or charge,
+including time awaiting receipt. Admission uses the configured signature
+and replay validation, including explicit signing exceptions, through the
+same client as legacy blocking. A valid allow ends the pick as one
+`verdict_allow` refusal with no attempt or charge,
 even with the ceiling spent: the schedule picks it as uncharged work.
 Block, an empty verdict or a failed exchange continues the local path,
 and the reservation consumes the answer. Local checks run again before an
@@ -980,8 +992,8 @@ answer is used. A pick that stops being eligible has its call cancelled.
 A new epoch, a mode change included, cancels every call, drops every
 answer and starts new workers only after the old ones return; Stop
 cancels the calls and joins the workers. A cancellation is never an
-answer. The owner status carries a `verdict` object for an executing
-owner: stage gauges, process counters and the last failure as a fixed
+answer. The owner status carries a `verdict` object for an owner with an
+engine provider: stage gauges, process counters and the last failure as a fixed
 class, never response text. Its outstanding jobs are also the
 `admission.verdicts` queue row. Workers count completed calls before delivery;
 late or duplicate results cannot count another call or consume a different job.
