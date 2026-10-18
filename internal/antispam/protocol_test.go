@@ -273,7 +273,7 @@ func TestRequestRoundTripLearning(t *testing.T) {
 	if _, _, err := DecodeRequest([]byte(strings.Replace(string(data), `"roundcube"`, `"Roundcube"`, 1))); err == nil {
 		t.Fatal("case-folded key accepted")
 	}
-	for _, bad := range []string{`"learning":"true"`, `"learning_dir":7`, `"roundcube":1`, `"learning_keys":"x"`} {
+	for _, bad := range []string{`"learning":"true"`, `"learning":null`, `"learning_dir":7`, `"roundcube":1`, `"roundcube":null`, `"learning_keys":"x"`} {
 		body := validApply[:len(validApply)-1] + `,` + bad + `}`
 		if _, _, err := DecodeRequest([]byte(body)); err == nil {
 			t.Fatalf("accepted %s", bad)
@@ -282,6 +282,22 @@ func TestRequestRoundTripLearning(t *testing.T) {
 	off, _ := json.Marshal(ApplyRequest(defaults(true)))
 	if strings.Contains(string(off), "learning") || strings.Contains(string(off), "roundcube") {
 		t.Fatalf("request without learning changed format: %s", off)
+	}
+}
+
+func TestDecodeRequestInactiveLearningDir(t *testing.T) {
+	for _, flags := range []string{"", `,"learning":false,"roundcube":false`} {
+		t.Run(flags, func(t *testing.T) {
+			body := strings.TrimSuffix(validApply, "}") + flags + `,"learning_dir":"/var/lib/csm/antispam/learning"}`
+			_, got, err := DecodeRequest([]byte(body))
+			if err != nil || !reflect.DeepEqual(got, defaults(false)) {
+				t.Fatalf("inactive learning changed settings: %+v, %v", got, err)
+			}
+			encoded, err := json.Marshal(ApplyRequest(got))
+			if err != nil || string(encoded) != validApply {
+				t.Fatalf("inactive learning changed request: %s, %v", encoded, err)
+			}
+		})
 	}
 }
 

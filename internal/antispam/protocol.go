@@ -34,8 +34,8 @@ const FeedsCheckStep = "feeds_check"
 
 // Request is the one JSON object the daemon sends to the antispam worker. It
 // carries settings only: no command or Exim text. Its paths are the scan
-// socket and the DQS key file; the key itself never travels, because the
-// request is recorded on disk.
+// socket, DQS key file and learning directory; keys never travel, because
+// the request is recorded on disk.
 type Request struct {
 	Operation    string  `json:"operation"`
 	Enabled      *bool   `json:"enabled,omitempty"`
@@ -119,9 +119,15 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 	if err != nil {
 		return Request{}, Settings{}, err
 	}
-	for _, key := range []string{"feeds", "skip_maps", "dqs_key_file", "learning_dir"} {
+	for _, key := range []string{"feeds", "skip_maps", "dqs_key_file", "learning_dir", "learning", "roundcube"} {
 		if value, present := fields[key]; present {
-			if _, ok := value.(string); !ok {
+			var valid bool
+			if key == "learning" || key == "roundcube" {
+				_, valid = value.(bool)
+			} else {
+				_, valid = value.(string)
+			}
+			if !valid {
 				return Request{}, Settings{}, errors.New("request has a value of the wrong type")
 			}
 		}
@@ -145,7 +151,7 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 		}
 		s.Learning = r.Learning != nil && *r.Learning
 		s.Roundcube = r.Roundcube != nil && *r.Roundcube
-		if r.LearningDir != nil {
+		if s.Learning && r.LearningDir != nil {
 			s.LearningDir = *r.LearningDir
 		}
 		if err := s.Validate(); err != nil {
