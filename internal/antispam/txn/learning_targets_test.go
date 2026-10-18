@@ -321,9 +321,28 @@ func TestApplyLearningDumpFailuresAreRedacted(t *testing.T) {
 			if strings.Contains(r.Error, secret) {
 				t.Fatal("learning failure exposed command output or error text")
 			}
-			if r.OK || r.FailedStep != antispam.LearningCheckStep || r.Rollback != antispam.RollbackVerified || !maps.Equal(before, f.state()) {
+			// A failed read is an outage, not a mismatch: no learning hold.
+			if r.OK || r.FailedStep != antispam.LearningProbeStep || r.Rollback != antispam.RollbackVerified || !maps.Equal(before, f.state()) {
 				t.Fatalf("dump failure did not roll back: %+v", r)
 			}
 		})
+	}
+}
+
+// A controller that never answers within the reload window is an outage.
+func TestApplyLearningControllerDownIsProbeFailure(t *testing.T) {
+	f := newFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	before := f.state()
+	f.reset()
+	s := learningApply(f)
+	h := f.host()
+	h.rspamdWait = 50 * time.Millisecond
+	h.controllerGet = func(context.Context, string, string, int64, int) ([]byte, error) {
+		return nil, errors.New("rspamd's controller did not answer")
+	}
+	r := h.Apply(s)
+	if r.OK || r.FailedStep != antispam.LearningProbeStep || r.Rollback != antispam.RollbackVerified || !maps.Equal(before, f.state()) {
+		t.Fatalf("result = %+v", r)
 	}
 }

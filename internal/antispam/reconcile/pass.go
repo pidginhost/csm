@@ -305,10 +305,13 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 		r.Feeds.hold(d.Settings)
 	}
 	out.LearningGate.Publish = gate.Publish && req.Operation == antispam.OpApply && err == nil && result.OK
-	if result.FailedStep == antispam.LearningCheckStep {
+	switch result.FailedStep {
+	case antispam.LearningCheckStep:
 		r.Learning.hold(learningGeneration(settings))
 		out.LearningGate = antispam.LearningGate{}
 		learningProblems = append(learningProblems, learningHoldProblem())
+	case antispam.LearningProbeStep:
+		learningProblems = append(learningProblems, learningProbeProblem())
 	}
 	if strings.HasPrefix(result.Roundcube, antispam.RoundcubeUnavailable) {
 		why := strings.TrimPrefix(result.Roundcube, antispam.RoundcubeUnavailable)

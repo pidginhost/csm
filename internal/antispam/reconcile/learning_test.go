@@ -52,6 +52,32 @@ func TestPassHoldsLearningAfterCheck(t *testing.T) {
 	}
 }
 
+// A learning probe failure (controller or dump unreadable) is retried on
+// the next pass with learning still requested.
+func TestPassLearningProbeFailureDoesNotHold(t *testing.T) {
+	h := newLearningHost(antispam.Assessment{Action: antispam.Install})
+	h.result = antispam.Result{Operation: antispam.OpApply, FailedStep: antispam.LearningProbeStep,
+		Rollback: antispam.RollbackVerified, Error: "rspamd's loaded learning configuration could not be read"}
+	r := h.reconciler()
+	d := learningDesired()
+	out := r.Pass(context.Background(), d)
+	found := false
+	for _, p := range out.LearningProblems {
+		found = found || p.Key == antispam.ReasonBackendUnavailable
+		if p.Key == antispam.ReasonApplyFailed {
+			t.Fatalf("probe failure reported as a hold: %+v", out.LearningProblems)
+		}
+	}
+	if !found || out.LearningGate.Publish {
+		t.Fatalf("problems=%+v gate=%+v", out.LearningProblems, out.LearningGate)
+	}
+	h.result = antispam.Result{Operation: antispam.OpApply, OK: true}
+	r.Pass(context.Background(), d)
+	if len(h.requests) != 2 || h.requests[1].Learning == nil || !*h.requests[1].Learning {
+		t.Fatalf("second pass request = %+v, want learning", h.requests[1])
+	}
+}
+
 func TestLearningStateNilIsInert(t *testing.T) {
 	var st *LearningState
 	st.hold("g")

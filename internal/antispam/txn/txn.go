@@ -45,10 +45,15 @@ const (
 	StepComplete      = "complete"
 	StepFeedsCheck    = antispam.FeedsCheckStep
 	StepLearningCheck = antispam.LearningCheckStep
+	StepLearningProbe = antispam.LearningProbeStep
 )
 
 // errLearningLoaded distinguishes learning verification failures.
 var errLearningLoaded = errors.New("rspamd's loaded learning configuration could not be verified against CSM's files")
+
+// errLearningProbe marks a learning check that could not read rspamd's
+// loaded configuration at all.
+var errLearningProbe = errors.New("rspamd's loaded learning configuration could not be read")
 
 // maxSymbolsReply bounds the controller's /symbols reply.
 const maxSymbolsReply = 4 << 20
@@ -640,7 +645,7 @@ func (t *tx) checkLearning(ctx context.Context, f antispam.HostFacts, keys antis
 	dump := func(args ...string) (string, error) {
 		r := t.cmd(ctx, commandLimit, "rspamadm", append([]string{"configdump", "-j"}, args...)...)
 		if r.Err != nil {
-			return "", errors.Join(errLearningLoaded, cmdErr("rspamadm configdump -j "+strings.Join(args, " "), r))
+			return "", errors.Join(errLearningProbe, cmdErr("rspamadm configdump -j "+strings.Join(args, " "), r))
 		}
 		return r.Stdout, nil
 	}
@@ -673,14 +678,17 @@ func (t *tx) checkLearning(ctx context.Context, f antispam.HostFacts, keys antis
 	err = retry(ctx, t.h.rspamdWait, func(ctx context.Context) error {
 		symbols, getErr := t.h.controllerGet(ctx, socket, "/symbols", maxSymbolsReply, f.ControllerHost.RspamdUID)
 		if getErr != nil {
-			return getErr
+			return errors.Join(errLearningProbe, getErr)
 		}
 		return antispam.CheckLearningLoaded([]byte(fuzzyCheck), root["worker"], []byte(group), symbols, actions, keys)
 	})
-	if err != nil {
-		return errors.Join(errLearningLoaded, err)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, errLearningProbe):
+		return err
 	}
-	return nil
+	return errors.Join(errLearningLoaded, err)
 }
 
 // reloadRspamd reloads rspamd and waits for its probe (spec 6.3 step 2).

@@ -134,7 +134,11 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		}
 		if s.Learning {
 			if err := t.checkLearning(t.fwd, f, s.LearningKeys); err != nil {
-				return t.fail(StepLearningCheck, err)
+				step := StepLearningCheck
+				if errors.Is(err, errLearningProbe) {
+					step = StepLearningProbe
+				}
+				return t.fail(step, err)
 			}
 		}
 	}

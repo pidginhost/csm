@@ -128,6 +128,11 @@ func learningHoldProblem() antispam.Problem {
 		Detail: "rspamd did not load CSM's learning configuration as written; learning stays off until its configuration changes or CSM restarts"}
 }
 
+func learningProbeProblem() antispam.Problem {
+	return antispam.Problem{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonBackendUnavailable,
+		Detail: "CSM could not read rspamd's loaded learning configuration after the reload; the next pass retries"}
+}
+
 func roundcubeHoldProblem(why string) antispam.Problem {
 	return antispam.Problem{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonRoundcube,
 		Detail: why + "; the webmail Junk-button include stays off until the learning configuration changes or CSM restarts"}

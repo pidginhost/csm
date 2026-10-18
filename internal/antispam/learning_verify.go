@@ -15,6 +15,11 @@ import (
 // off until the learning configuration changes.
 const LearningCheckStep = "learning_check"
 
+// LearningProbeStep is the failed step of an apply that could not read
+// rspamd's loaded learning configuration (a dump command or the controller
+// failed). It is an outage, so learning is not held.
+const LearningProbeStep = "learning_probe"
+
 // learningExpireSeconds is the worker's expire = 90d as configdump prints it.
 const learningExpireSeconds = 90 * 24 * 3600
 
