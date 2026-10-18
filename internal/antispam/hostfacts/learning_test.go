@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
 )
@@ -366,5 +368,24 @@ func TestCollectLearningLogGroups(t *testing.T) {
 		if got := f.ControllerHost.GroupMembers[gid]; len(got) != 1 || got[0] != member {
 			t.Errorf("group %d members = %v, want %s", gid, got, member)
 		}
+	}
+}
+
+// Hosts without CloudLinux have no cagefsctl: CageFS is absent, not an
+// unreadable fact. Found on the AlmaLinux scratch host.
+func TestCollectCageFSNotInstalled(t *testing.T) {
+	missing := antispam.CommandResult{Err: &exec.Error{Name: "cagefsctl", Err: exec.ErrNotFound}}
+	c, _ := learningCollector(t, &fakeRun{results: map[string]antispam.CommandResult{"cagefsctl --cagefs-status": missing}})
+	if got := c.cageFS(context.Background()); got.Err != nil || got.Enabled {
+		t.Fatalf("missing cagefsctl: %+v", got)
+	}
+	// The live runner keeps exec's not-found error for this check to see.
+	if r := RunCommand(context.Background(), time.Second, "csm-test-no-such-binary"); !errors.Is(r.Err, exec.ErrNotFound) {
+		t.Fatalf("RunCommand lost exec.ErrNotFound: %v", r.Err)
+	}
+	failing := antispam.CommandResult{Err: errors.New("exit status 1")}
+	c, _ = learningCollector(t, &fakeRun{results: map[string]antispam.CommandResult{"cagefsctl --cagefs-status": failing}})
+	if got := c.cageFS(context.Background()); got.Err == nil {
+		t.Fatalf("failed cagefsctl read as known: %+v", got)
 	}
 }

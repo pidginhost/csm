@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -222,6 +223,10 @@ func (c collector) cageFS(ctx context.Context) antispam.CageFSFacts {
 		return out
 	}
 	status := c.run(ctx, "cagefsctl", "--cagefs-status")
+	if errors.Is(status.Err, exec.ErrNotFound) {
+		// No cagefsctl: CageFS is not installed, which is a known fact.
+		return out
+	}
 	if status.Err != nil {
 		out.Err = errors.New("cagefsctl --cagefs-status failed")
 		return out
