@@ -151,12 +151,14 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		return t.fail(StepRoundcube, rcErr)
 	}
 	if roundcube != "" && s.Roundcube {
-		// The include came back out; record what is installed without it.
-		withoutInclude := s
-		withoutInclude.Roundcube = false
-		if installed, renderErr := antispam.ManagedContent(withoutInclude); renderErr == nil {
-			generation = antispam.Generation(installed)
+		// Verification restored the snapshot, which may hold an older
+		// owned include rather than absence. Record that exact state.
+		if prior, present := installed[antispam.RoundcubeIncludePath]; present {
+			managed[antispam.RoundcubeIncludePath] = prior
+		} else {
+			delete(managed, antispam.RoundcubeIncludePath)
 		}
+		generation = antispam.Generation(managed)
 	}
 	if err := t.writeRecord(generation); err != nil {
 		return t.fail(StepComplete, err)

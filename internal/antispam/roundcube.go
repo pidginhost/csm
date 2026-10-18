@@ -47,9 +47,13 @@ const (
 const roundcubeScript = `define('RCMAIL_VERSION', '1.6');
 define('RCUBE_INSTALL_PATH', '` + roundcubeDir + `');
 $config = array();
-include RCUBE_INSTALL_PATH . 'config/defaults.inc.php';
-include RCUBE_INSTALL_PATH . 'config/config.inc.php';
-$line = function ($v) { return is_string($v) ? str_replace(array("\r", "\n"), '', $v) : ''; };
+require RCUBE_INSTALL_PATH . 'config/defaults.inc.php';
+require RCUBE_INSTALL_PATH . 'config/config.inc.php';
+$line = function ($v) {
+    if (!is_string($v)) { return ''; }
+    if (strpbrk($v, "\r\n") !== false) { exit(1); }
+    return $v;
+};
 $plugins = isset($config['plugins']) && is_array($config['plugins']) ? $config['plugins'] : array();
 echo 'junk_mbox=', $line(isset($config['junk_mbox']) ? $config['junk_mbox'] : ''), "\n";
 echo 'spam_mbox=', $line(isset($config['markasjunk_spam_mbox']) ? $config['markasjunk_spam_mbox'] : ''), "\n";
@@ -71,7 +75,7 @@ func RoundcubeEffective(ctx context.Context, run func(context.Context, time.Dura
 func ParseRoundcubeState(out string) (RoundcubeState, error) {
 	var st RoundcubeState
 	seen := map[string]bool{}
-	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok || seen[key] {
 			return RoundcubeState{}, errors.New("the Roundcube check printed unexpected output")

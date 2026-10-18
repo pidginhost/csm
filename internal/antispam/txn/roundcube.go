@@ -1,6 +1,7 @@
 package txn
 
 import (
+	"errors"
 	"slices"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -24,7 +25,7 @@ func (t *tx) roundcube(changes []change) (string, error) {
 		switch {
 		case !install && !checked:
 			return antispam.RoundcubeUnavailable + "CSM could not confirm that Roundcube stopped loading the include", nil
-		case !install && state.JunkMbox == antispam.RoundcubeJunkFolder:
+		case !install && (state.JunkMbox == antispam.RoundcubeJunkFolder || state.SpamMbox == antispam.RoundcubeJunkFolder):
 			return antispam.RoundcubeUnavailable + "Roundcube still sends Junk to INBOX.spam through another include", nil
 		case !install:
 			continue
@@ -46,10 +47,16 @@ func (t *tx) roundcube(changes []change) (string, error) {
 // restoreLast puts the last written file back to its snapshot and drops it
 // from the rollback list, so an enclosing rollback does not find it changed.
 func (t *tx) restoreLast() error {
-	w := t.writes[len(t.writes)-1]
+	last := len(t.writes) - 1
+	w := t.writes[last]
 	if err := t.h.replace(w.path, w.next, w.before); err != nil {
+		if errors.Is(err, errDurability) {
+			// The snapshot reached disk. An enclosing rollback must retry
+			// against it, not mistake our own restore for a foreign edit.
+			t.writes[last].next = w.before
+		}
 		return err
 	}
-	t.writes = slices.Delete(t.writes, len(t.writes)-1, len(t.writes))
+	t.writes = slices.Delete(t.writes, last, len(t.writes))
 	return nil
 }

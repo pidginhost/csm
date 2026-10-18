@@ -247,9 +247,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 		learningProblems = append(learningProblems, removalIncomplete())
 	}
 	out.LearningProblems = learningProblems
-	for _, p := range learningProblems {
-		out.Findings = append(out.Findings, learningFinding(p, now))
-	}
+	out.setLearningFindings(now)
 	if d.Observe {
 		if a.Installed {
 			out.Findings = append(out.Findings, problemFinding(antispam.Problem{
@@ -290,16 +288,22 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if result.FailedStep == antispam.LearningCheckStep {
 		r.Learning.hold(learningGeneration(settings))
 	}
-	if settings.Roundcube && strings.HasPrefix(result.Roundcube, antispam.RoundcubeUnavailable) {
-		r.Learning.holdRoundcube(learningGeneration(settings), strings.TrimPrefix(result.Roundcube, antispam.RoundcubeUnavailable))
+	if result.OK && strings.HasPrefix(result.Roundcube, antispam.RoundcubeUnavailable) {
+		why := strings.TrimPrefix(result.Roundcube, antispam.RoundcubeUnavailable)
+		if req.Operation == antispam.OpApply && settings.Roundcube {
+			r.Learning.holdRoundcube(learningGeneration(settings), why)
+		}
+		out.LearningProblems = mergeByKey(append(out.LearningProblems, antispam.Problem{
+			Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonRoundcube, Detail: why,
+		}))
+		out.setLearningFindings(now)
 	}
 	if finding, ok := resultFinding(req.Operation, result, err, now); ok {
 		out.Findings = append(out.Findings, finding)
 	}
 	if scoringLeft && !result.Busy && (err != nil || !result.OK) {
-		p := removalIncomplete()
-		out.LearningProblems = append(out.LearningProblems, p)
-		out.Findings = append(out.Findings, learningFinding(p, now))
+		out.LearningProblems = mergeByKey(append(out.LearningProblems, removalIncomplete()))
+		out.setLearningFindings(now)
 	}
 	out.Err = err
 	r.settleIPMap(d, settings, a, err == nil && result.OK, &out)
@@ -375,4 +379,20 @@ func (r Reconciler) resolveLearningState(s antispam.Settings, f antispam.HostFac
 func removalIncomplete() antispam.Problem {
 	return antispam.Problem{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonRemovalIncomplete,
 		Detail: "learning is off but rspamd still loads CSM's learned scoring; a learning file CSM wrote may have been replaced, so CSM cannot remove it"}
+}
+
+// setLearningFindings replaces the outcome's learning findings with one per
+// learning problem, so a problem added after the apply merges with one the
+// resolver found earlier.
+func (out *Outcome) setLearningFindings(now time.Time) {
+	findings := out.Findings[:0:0]
+	for _, f := range out.Findings {
+		if f.Check != CheckLearning {
+			findings = append(findings, f)
+		}
+	}
+	for _, p := range out.LearningProblems {
+		findings = append(findings, learningFinding(p, now))
+	}
+	out.Findings = findings
 }

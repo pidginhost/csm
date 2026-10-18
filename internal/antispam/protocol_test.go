@@ -102,15 +102,17 @@ func TestParseResult(t *testing.T) {
 
 func TestParseResultRoundTrip(t *testing.T) {
 	for name, want := range map[string]Result{
-		"apply":         {Operation: OpApply, OK: true, Generation: "g1"},
-		"remove":        {Operation: OpRemove, OK: true},
-		"unchanged":     {Operation: OpApply, OK: true, Rollback: RollbackNone, Generation: "g1"},
-		"request error": {FailedStep: "request", Rollback: RollbackNone, Error: "invalid request"},
-		"lock error":    {Operation: OpRemove, FailedStep: "lock", Rollback: RollbackNone, Error: "cannot lock"},
-		"busy":          {Operation: OpApply, Busy: true, FailedStep: "lock", Rollback: RollbackNone, Error: "held"},
-		"precondition":  {Operation: OpApply, FailedStep: "preconditions", Rollback: RollbackNone},
-		"rolled back":   {Operation: OpRemove, FailedStep: "reload", Rollback: RollbackVerified, Error: "reload failed"},
-		"unverified":    {Operation: OpApply, FailedStep: "probe", Rollback: RollbackFailed, Error: "probe failed"},
+		"apply":            {Operation: OpApply, OK: true, Generation: "g1"},
+		"remove":           {Operation: OpRemove, OK: true},
+		"unchanged":        {Operation: OpApply, OK: true, Rollback: RollbackNone, Generation: "g1"},
+		"request error":    {FailedStep: "request", Rollback: RollbackNone, Error: "invalid request"},
+		"lock error":       {Operation: OpRemove, FailedStep: "lock", Rollback: RollbackNone, Error: "cannot lock"},
+		"busy":             {Operation: OpApply, Busy: true, FailedStep: "lock", Rollback: RollbackNone, Error: "held"},
+		"precondition":     {Operation: OpApply, FailedStep: "preconditions", Rollback: RollbackNone},
+		"rolled back":      {Operation: OpRemove, FailedStep: "reload", Rollback: RollbackVerified, Error: "reload failed"},
+		"unverified":       {Operation: OpApply, FailedStep: "probe", Rollback: RollbackFailed, Error: "probe failed"},
+		"Roundcube apply":  {Operation: OpApply, OK: true, Generation: "g1", Roundcube: RoundcubeUnavailable + "PHP failed"},
+		"Roundcube remove": {Operation: OpRemove, OK: true, Roundcube: RoundcubeUnavailable + "another include sets the folder"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			data, err := json.Marshal(want)
@@ -154,6 +156,8 @@ func TestParseResultRejectsMalformedReports(t *testing.T) {
 		"busy outside lock":         `{"operation":"apply","ok":false,"busy":true,"failed_step":"probe","rollback":"none"}`,
 		"request changed state":     `{"ok":false,"failed_step":"request","rollback":"failed"}`,
 		"lock changed state":        `{"operation":"remove","ok":false,"failed_step":"lock","rollback":"verified"}`,
+		"Roundcube unknown":         `{"operation":"remove","ok":true,"roundcube":"installed"}`,
+		"Roundcube failed":          `{"operation":"remove","ok":false,"failed_step":"probe","rollback":"failed","roundcube":"unavailable: PHP failed"}`,
 		"trailing null":             success + `null`,
 		"trailing junk":             success + `x`,
 	} {
@@ -164,7 +168,7 @@ func TestParseResultRejectsMalformedReports(t *testing.T) {
 			}
 		})
 	}
-	for _, field := range []string{"operation", "ok", "busy", "failed_step", "rollback", "generation", "error"} {
+	for _, field := range []string{"operation", "ok", "busy", "failed_step", "rollback", "generation", "error", "roundcube"} {
 		for name, value := range map[string]any{"null": nil, "wrong type": 123, "nested": map[string]any{"x": true}} {
 			t.Run(name+" "+field, func(t *testing.T) {
 				fields := map[string]any{"operation": "remove", "ok": false, "failed_step": "lock", "rollback": "none"}

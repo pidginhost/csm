@@ -86,11 +86,12 @@ func (h *Host) Remove() antispam.Result {
 			}
 		}
 	}
-	if _, err := t.roundcube(roundcubeChanges); err != nil {
-		return t.fail(StepRoundcube, err)
+	roundcube, rcErr := t.roundcube(roundcubeChanges)
+	if rcErr != nil {
+		return t.fail(StepRoundcube, rcErr)
 	}
 	if err := t.removeRecord(); err != nil {
 		return t.fail(StepComplete, err)
 	}
-	return antispam.Result{OK: true}
+	return antispam.Result{OK: true, Roundcube: roundcube}
 }

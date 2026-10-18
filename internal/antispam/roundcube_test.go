@@ -34,6 +34,7 @@ func TestParseRoundcubeState(t *testing.T) {
 		"garbage":      "PHP Warning: something\n",
 		"bad flag":     "junk_mbox=a\nspam_mbox=b\nmarkasjunk=yes\n",
 		"empty":        "",
+		"blank line":   "junk_mbox=a\nspam_mbox=b\nmarkasjunk=1\n\n",
 	} {
 		if _, err := ParseRoundcubeState(out); err == nil {
 			t.Errorf("%s accepted", name)

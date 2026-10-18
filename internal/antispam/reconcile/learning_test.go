@@ -349,3 +349,37 @@ func TestPassBusyKeepsLearningFindings(t *testing.T) {
 		t.Fatalf("busy pass settled learning findings: %v", out.Checks)
 	}
 }
+
+// The worker's Roundcube report is published in the same pass; only an
+// install of the include is held, so a later install can try again.
+func TestPassReportsRoundcubeResultImmediately(t *testing.T) {
+	for _, operation := range []string{"install", "disable", "remove"} {
+		t.Run(operation, func(t *testing.T) {
+			h := newLearningHost(antispam.Assessment{Action: antispam.Install})
+			h.result = antispam.Result{Operation: antispam.OpApply, OK: true, Generation: "g",
+				Roundcube: antispam.RoundcubeUnavailable + "PHP could not verify the include"}
+			roundcube := operation != "disable"
+			h.resolve = func(s antispam.Settings, _ antispam.HostFacts) (antispam.Settings, antispam.LearningGate, []antispam.Problem) {
+				s.Roundcube = roundcube
+				return s, antispam.LearningGate{Install: true, Publish: true, Roundcube: roundcube}, nil
+			}
+			if operation == "remove" {
+				h.assessment.Action = antispam.Uninstall
+				h.result.Operation, h.result.Generation = antispam.OpRemove, ""
+			}
+			r := h.reconciler()
+			d := learningDesired()
+			out := r.Pass(context.Background(), d)
+			f, ok := learningFindings(out)[antispam.ReasonRoundcube]
+			if !ok || !strings.Contains(f.Details, "PHP could not verify the include") {
+				t.Errorf("current pass lost the Roundcube result: %+v", out.Findings)
+			}
+			s := d.Settings
+			s.LearningKeys = syntheticKeys()
+			_, held := r.Learning.roundcubeHeld(learningGeneration(s))
+			if held != (operation == "install") {
+				t.Errorf("Roundcube held=%t after %s", held, operation)
+			}
+		})
+	}
+}
