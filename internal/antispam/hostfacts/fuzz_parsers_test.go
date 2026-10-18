@@ -11,7 +11,57 @@ import (
 	"testing"
 
 	"golang.org/x/net/dns/dnsmessage"
+
+	"github.com/pidginhost/csm/internal/antispam"
 )
+
+func FuzzRedisEndpoint(f *testing.F) {
+	for _, config := range []string{`{"servers":"/r.sock"}`, `{"servers":["192.0.2.1"]}`, `{"fuzzy":null}`, `null`, `{}`} {
+		f.Add(config, fuzzyWorkerDump(""))
+	}
+	f.Add(`{"servers":"/r.sock"}`, `{"worker":[{"fuzzy":{}},{"fuzzy":{}}]}`)
+	f.Fuzz(func(t *testing.T, config, full string) {
+		endpoint, unix, password, err := redisEndpoint(antispam.LearningDumps{Redis: []byte(config)}, []byte(full))
+		if err != nil {
+			if endpoint != "" || unix || password.Reveal() != "" {
+				t.Fatal("failed Redis selection returned usable backend settings")
+			}
+			return
+		}
+		if !json.Valid([]byte(config)) || !json.Valid([]byte(full)) || endpoint == "" || unix != strings.HasPrefix(endpoint, "/") {
+			t.Fatal("Redis selection accepted malformed configuration")
+		}
+	})
+}
+
+func FuzzLearningUDP(f *testing.F) {
+	f.Add(udpHeader)
+	f.Add(udpHeader + "12: 0100007F:2C47 00000000:0000 07 0:0 0:0 0 979 0 1\n")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, data string) {
+		found, err := parseFuzzyListening(data)
+		if err != nil && found {
+			t.Fatal("unreadable UDP table reported a listener")
+		}
+		if _, err := parseFuzzyListening(data + "\ntruncated\n"); err == nil {
+			t.Fatal("truncated UDP table accepted")
+		}
+	})
+}
+
+func FuzzRedisInfo(f *testing.F) {
+	for _, data := range []string{"used_memory:0\r\n", "used_memory:\n", "used_memory:1\nused_memory:2\n", ""} {
+		f.Add(data)
+	}
+	f.Fuzz(func(t *testing.T, data string) {
+		if value, ok := infoField(data, "used_memory"); ok && value == "" {
+			t.Fatal("empty INFO value accepted")
+		}
+		if _, ok := infoField(data+"\nused_memory:1\nused_memory:2\n", "used_memory"); ok {
+			t.Fatal("ambiguous INFO values accepted")
+		}
+	})
+}
 
 func FuzzParseStoredKeypair(f *testing.F) {
 	data, err := json.Marshal(storedKeypair{Pubkey: base32Key(1), Privkey: base32Key(2)})

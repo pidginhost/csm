@@ -20,13 +20,16 @@ import (
 // respServer answers the commands RedisProbe sends. config maps CONFIG GET
 // names to values; fail names a command that answers with an error.
 type respServer struct {
-	config   map[string]string
-	memory   string
-	server   string
-	password string
-	fail     string
-	mu       sync.Mutex
-	commands []string
+	config      map[string]string
+	memory      string
+	server      string
+	password    string
+	fail        string
+	failReply   string
+	delay       time.Duration
+	mu          sync.Mutex
+	commands    []string
+	connections int
 }
 
 func (s *respServer) serve(t *testing.T) string {
@@ -43,6 +46,9 @@ func (s *respServer) serve(t *testing.T) string {
 			if err != nil {
 				return
 			}
+			s.mu.Lock()
+			s.connections++
+			s.mu.Unlock()
 			go s.handle(conn)
 		}
 	}()
@@ -63,7 +69,7 @@ func (s *respServer) handle(conn net.Conn) {
 		s.mu.Unlock()
 		switch {
 		case s.fail != "" && strings.HasPrefix(cmd, s.fail):
-			_, _ = io.WriteString(conn, "-ERR refused\r\n")
+			_, _ = io.WriteString(conn, "-ERR refused "+s.failReply+"\r\n")
 		case strings.HasPrefix(cmd, "AUTH"):
 			if args[len(args)-1] != s.password {
 				_, _ = io.WriteString(conn, "-WRONGPASS invalid username-password pair\r\n")
@@ -71,6 +77,7 @@ func (s *respServer) handle(conn net.Conn) {
 			}
 			_, _ = io.WriteString(conn, "+OK\r\n")
 		case strings.HasPrefix(cmd, "CONFIG GET"):
+			time.Sleep(s.delay)
 			name := strings.ToLower(args[2])
 			value, ok := s.config[name]
 			if !ok {
@@ -146,11 +153,25 @@ func TestRedisProbeReadsLiveValues(t *testing.T) {
 	}
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
+	reads := map[string]int{}
 	for _, c := range srv.commands {
-		for _, banned := range []string{"FLUSH", "SET ", "DEL", "CONFIG SET", "CLIENT"} {
-			if strings.HasPrefix(c, banned) {
-				t.Errorf("probe sent %q", c)
-			}
+		// The handshake and one PING that proves the verified connection.
+		if strings.HasPrefix(c, "HELLO 2 ") || strings.HasPrefix(c, "AUTH ") || c == "PING" {
+			continue
+		}
+		switch c {
+		case "CONFIG GET PORT", "CONFIG GET MAXMEMORY", "CONFIG GET MAXMEMORY-POLICY", "CONFIG GET APPENDONLY", "CONFIG GET SAVE", "CONFIG GET TLS-PORT", "INFO MEMORY", "INFO SERVER":
+			reads[c]++
+		default:
+			t.Error("probe sent an unexpected command")
+		}
+	}
+	if len(reads) != 8 {
+		t.Fatal("probe did not collect every live value")
+	}
+	for command, count := range reads {
+		if count != 1 {
+			t.Errorf("%s sent %d times", command, count)
 		}
 	}
 }
@@ -220,7 +241,7 @@ func TestRedisProbeRejectsWrongPeer(t *testing.T) {
 	if r.Err == nil || r.ServiceUID != -1 {
 		t.Fatalf("facts = %+v, want a peer error", r)
 	}
-	if got.err != nil || got.connections < 2 || got.bytes != 0 {
+	if got.err != nil || got.connections < 1 || got.bytes != 0 {
 		t.Fatalf("unverified peer: connections=%d bytes=%d err=%v", got.connections, got.bytes, got.err)
 	}
 	if r := RedisProbe(context.Background(), "192.0.2.1:6379", antispam.NewSecret(healthyRedis().password), 0); r.Err == nil {

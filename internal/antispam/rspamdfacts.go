@@ -11,6 +11,12 @@ import (
 
 var rspamdVersionRe = regexp.MustCompile(`(?i)\brspam(?:d daemon version|adm)\s+(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?(?:[ \t\r\n+-]|$)`)
 
+// ParseRspamdDumpObject rejects ambiguous fields while preserving nested
+// settings for the caller. Parse errors never include the dump's contents.
+func ParseRspamdDumpObject(out []byte) (map[string]json.RawMessage, error) {
+	return dumpObjectAs[json.RawMessage](out, "object")
+}
+
 // ParseRspamdVersion reads `rspamd --version` or `rspamadm --version` and
 // returns the dotted version and its major number.
 func ParseRspamdVersion(out string) (string, int, error) {

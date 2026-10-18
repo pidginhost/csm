@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/admission"
@@ -54,44 +56,72 @@ func (c collector) learningDumps(ctx context.Context, f *antispam.HostFacts) {
 			errs = append(errs, errors.New("rspamadm configdump -j "+section+" failed"))
 			return nil
 		}
+		if !readableDump(r.Stdout, section == "group") {
+			errs = append(errs, errors.New("rspamadm configdump -j "+section+" is not readable"))
+		}
 		return []byte(r.Stdout)
 	}
 	d.FuzzyCheck = read("fuzzy_check")
 	d.Group = read("group")
 	d.Redis = read("redis")
-	var root map[string]json.RawMessage
+	root, parseErr := antispam.ParseRspamdDumpObject([]byte(f.RspamdConfig.Stdout))
 	switch {
 	case f.RspamdConfig.Err != nil:
 		errs = append(errs, errors.New("rspamadm configdump -j failed"))
-	case json.Unmarshal([]byte(f.RspamdConfig.Stdout), &root) != nil:
+	case parseErr != nil:
 		errs = append(errs, errors.New("rspamadm configdump -j is not readable"))
 	default:
 		d.Worker = root["worker"]
+		if _, err := workerEntries(d.Worker); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	d.Err = errors.Join(errs...)
 	f.LearningDumps = d
 }
 
+// The group command emits a stream of objects, not a JSON array. Validate
+// the envelopes without rewriting bytes or interpreting module settings.
+func readableDump(data string, stream bool) bool {
+	d := json.NewDecoder(strings.NewReader(data))
+	count := 0
+	for {
+		var object json.RawMessage
+		err := d.Decode(&object)
+		if errors.Is(err, io.EOF) {
+			return count > 0
+		}
+		if err != nil || (!stream && count > 0) {
+			return false
+		}
+		if _, err := antispam.ParseRspamdDumpObject(object); err != nil {
+			return false
+		}
+		count++
+	}
+}
+
 // controlSocket reads options.control_socket, without its mode option.
 func (c collector) controlSocket(f *antispam.HostFacts) {
-	var opts map[string]json.RawMessage
+	f.ControlSocket = antispam.SocketFacts{}
+	opts, parseErr := antispam.ParseRspamdDumpObject([]byte(f.RspamdOptions.Stdout))
 	var value string
 	switch {
 	case f.RspamdOptions.Err != nil:
 		f.ControlSocket.Err = errors.New("rspamadm configdump -j options failed")
-	case json.Unmarshal([]byte(f.RspamdOptions.Stdout), &opts) != nil:
+	case parseErr != nil:
 		f.ControlSocket.Err = errors.New("rspamd's options are not readable")
 	case opts["control_socket"] == nil:
 		f.ControlSocket.Err = errors.New("rspamd reports no control_socket")
 	case json.Unmarshal(opts["control_socket"], &value) != nil:
 		f.ControlSocket.Err = errors.New("control_socket is not a string")
 	default:
-		path, _, _ := strings.Cut(strings.TrimSpace(value), " ")
-		if !strings.HasPrefix(path, "/") {
+		fields := strings.Fields(value)
+		if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
 			f.ControlSocket.Err = errors.New("control_socket is not a Unix socket path")
 			return
 		}
-		f.ControlSocket = unixSocketFacts(path)
+		f.ControlSocket = unixSocketFacts(fields[0])
 	}
 }
 
@@ -118,17 +148,50 @@ func (c collector) controlSocketGroup(f *antispam.HostFacts) {
 // fuzzyListening reports whether a UDP socket is bound to 127.0.0.1:11335.
 // rspamd does not respawn a fuzzy worker that exited (spike S4).
 func (c collector) fuzzyListening() (bool, error) {
-	data, err := os.ReadFile(c.layout.ProcNetUDP)
+	data, err := readText(c.layout.ProcNetUDP)
 	if err != nil {
 		return false, errors.New("cannot read the UDP socket table")
 	}
-	for _, line := range strings.Split(string(data), "\n")[1:] {
+	return parseFuzzyListening(data)
+}
+
+func parseFuzzyListening(data string) (bool, error) {
+	lines := strings.Split(data, "\n")
+	header := strings.Fields(lines[0])
+	bad := errors.New("the UDP socket table is not readable")
+	if len(header) < 4 || strings.Join(header[:4], " ") != "sl local_address rem_address st" {
+		return false, bad
+	}
+	found := false
+	for _, line := range lines[1:] {
 		fields := strings.Fields(line)
-		if len(fields) > 3 && fields[1] == fuzzyListenAddr && fields[3] == "07" {
-			return true, nil
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) < 10 || !strings.HasSuffix(fields[0], ":") ||
+			!udpAddress(fields[1]) || !udpAddress(fields[2]) || len(fields[3]) != 2 {
+			return false, bad
+		}
+		if _, err := strconv.ParseUint(strings.TrimSuffix(fields[0], ":"), 10, 64); err != nil {
+			return false, bad
+		}
+		if _, err := strconv.ParseUint(fields[3], 16, 8); err != nil {
+			return false, bad
+		}
+		if fields[1] == fuzzyListenAddr && fields[3] == "07" {
+			found = true
 		}
 	}
-	return false, nil
+	return found, nil
+}
+
+func udpAddress(value string) bool {
+	if len(value) != 13 || value[8] != ':' {
+		return false
+	}
+	_, addrErr := strconv.ParseUint(value[:8], 16, 32)
+	_, portErr := strconv.ParseUint(value[9:], 16, 16)
+	return addrErr == nil && portErr == nil
 }
 
 // cageFS reads whether CageFS confines every account: enabled, in Enable
@@ -143,11 +206,29 @@ func (c collector) cageFS(ctx context.Context) antispam.CageFSFacts {
 		return out
 	}
 	status := c.run(ctx, "cagefsctl", "--cagefs-status")
-	if status.Err != nil || strings.TrimSpace(status.Stdout) != "Enabled" {
+	if status.Err != nil {
+		out.Err = errors.New("cagefsctl --cagefs-status failed")
+		return out
+	}
+	switch strings.TrimSpace(status.Stdout) {
+	case "Disabled":
+		return out
+	case "Enabled":
+	default:
+		out.Err = errors.New("cagefsctl --cagefs-status is not readable")
 		return out
 	}
 	mode := c.run(ctx, "cagefsctl", "--display-user-mode")
-	if mode.Err != nil || strings.TrimSpace(mode.Stdout) != "Mode: Enable All" {
+	if mode.Err != nil {
+		out.Err = errors.New("cagefsctl --display-user-mode failed")
+		return out
+	}
+	switch strings.TrimSpace(mode.Stdout) {
+	case "Mode: Disable All":
+		return out
+	case "Mode: Enable All":
+	default:
+		out.Err = errors.New("cagefsctl --display-user-mode is not readable")
 		return out
 	}
 	disabled := c.run(ctx, "cagefsctl", "--list-disabled")
@@ -187,8 +268,12 @@ func (c collector) roundcube(f antispam.HostFacts) antispam.RoundcubeFacts {
 	} else {
 		out.IncludeMechanism = strings.Contains(conf, roundcubeIncludeGlob)
 	}
-	if info, err := os.Stat(c.layout.CPanelPHP); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
-		out.PHP = true
+	info, err := os.Stat(c.layout.CPanelPHP)
+	switch {
+	case err == nil:
+		out.PHP = info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+	case !errors.Is(err, fs.ErrNotExist):
+		out.Err = errors.Join(out.Err, errors.New("cannot check cPanel's PHP executable"))
 	}
 	return out
 }

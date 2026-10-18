@@ -493,10 +493,12 @@ type LearningDumps struct {
 // RedisFacts are the live values of the Redis instance the fuzzy worker
 // stores hashes in. Save is meaningful only when SaveKnown.
 type RedisFacts struct {
-	Endpoint     string
-	Unix         bool
-	Socket       SocketFacts
-	Port         string
+	Endpoint string
+	Unix     bool
+	Socket   SocketFacts
+	Port     string
+	// TLSPort is empty when CONFIG GET reports no TLS port setting (Redis 5).
+	TLSPort      string
 	Policy       string
 	AppendOnly   string
 	Save         string
