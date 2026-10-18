@@ -641,8 +641,10 @@ build does not rebuild lost hashes after a Redis restart.
   path alone. The `markasjunk` plugin must already be enabled; CSM does not
   enable it.
 
-If Roundcube does not load the Junk settings, or cPanel's PHP cannot verify
-them, CSM restores the previous include and reports `roundcube_unavailable`.
+CSM checks the include by loading Roundcube's configuration with cPanel's
+PHP as the `nobody` user, never as root. If Roundcube does not load the Junk
+settings, or the check fails, CSM restores the previous include and reports
+`roundcube_unavailable`.
 The rest of the learning configuration stays installed. Later passes omit
 CSM's include until the learning configuration changes or CSM restarts.
 A later include can override the settings.
