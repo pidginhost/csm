@@ -20,6 +20,7 @@ func learningCollector(t *testing.T, run *fakeRun) (collector, string) {
 	d := t.TempDir()
 	c := testCollector(d, run)
 	c.layout.ProcNetUDP = filepath.Join(d, "udp")
+	c.layout.ProcNetUDP6 = filepath.Join(d, "udp6")
 	c.layout.CageFSSkeletonLog = filepath.Join(d, "skeleton", "var", "log", "rspamd")
 	c.layout.RoundcubeConfig = filepath.Join(d, "roundcube", "config.inc.php")
 	c.layout.CPanelPHP = filepath.Join(d, "php")
@@ -404,5 +405,47 @@ func TestCollectCageFSNotInstalled(t *testing.T) {
 	c, _ = learningCollector(t, &fakeRun{results: map[string]antispam.CommandResult{"cagefsctl --cagefs-status": failing}})
 	if got := c.cageFS(context.Background()); got.Err == nil {
 		t.Fatalf("failed cagefsctl read as known: %+v", got)
+	}
+}
+
+// udp6Header is /proc/net/udp6's header line.
+const udp6Header = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n"
+
+// A dual-stack or IPv6 socket of another user on the port also receives the
+// worker's traffic. A missing udp6 table means IPv6 is off.
+func TestCollectFuzzyListeningIPv6(t *testing.T) {
+	const rspamd = 979
+	v4 := udpHeader + fmt.Sprintf("  12: 0100007F:2C47 00000000:0000 07 00000000:00000000 00:00000000 00000000 %5d        0 1 2 0000000000000000 0\n", rspamd)
+	line6 := func(addr string, uid int) string {
+		return fmt.Sprintf("  40: %s 00000000000000000000000000000000:0000 07 00000000:00000000 00:00000000 00000000 %5d        0 1 2 0000000000000000 0\n", addr, uid)
+	}
+	for name, tc := range map[string]struct {
+		udp6    string
+		foreign bool
+	}{
+		"rspamd wildcard": {udp6Header + line6("00000000000000000000000000000000:2C47", rspamd), false},
+		"tenant wildcard": {udp6Header + line6("00000000000000000000000000000000:2C47", 4321), true},
+		"tenant mapped":   {udp6Header + line6("0000000000000000FFFF00000100007F:2C47", 4321), true},
+		"tenant loopback": {udp6Header + line6("00000000000000000000000001000000:2C47", 4321), true},
+		"tenant other":    {udp6Header + line6("00000000000000000000000000000000:2C46", 4321), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _ := learningCollector(t, &fakeRun{})
+			write(t, c.layout.ProcNetUDP, v4)
+			write(t, c.layout.ProcNetUDP6, tc.udp6)
+			listening, foreign, err := c.fuzzyListening(rspamd)
+			if err != nil || !listening || foreign != tc.foreign {
+				t.Fatalf("listening=%v foreign=%v err=%v, want foreign %v", listening, foreign, err, tc.foreign)
+			}
+		})
+	}
+	c, _ := learningCollector(t, &fakeRun{})
+	write(t, c.layout.ProcNetUDP, v4)
+	if listening, foreign, err := c.fuzzyListening(rspamd); err != nil || !listening || foreign {
+		t.Fatalf("no udp6 table: listening=%v foreign=%v err=%v", listening, foreign, err)
+	}
+	write(t, c.layout.ProcNetUDP6, "garbage\n")
+	if _, _, err := c.fuzzyListening(rspamd); err == nil {
+		t.Fatal("unreadable udp6 table accepted")
 	}
 }

@@ -43,6 +43,7 @@ type Layout struct {
 	IPMap string
 	// Learning fact sources.
 	ProcNetUDP        string
+	ProcNetUDP6       string
 	CageFSSkeletonLog string
 	RoundcubeConfig   string
 	CPanelPHP         string
@@ -80,6 +81,7 @@ func live() collector {
 			Targets:           antispam.MutationTargets(),
 			IPMap:             ipmap.DefaultPath,
 			ProcNetUDP:        procNetUDP,
+			ProcNetUDP6:       procNetUDP6,
 			CageFSSkeletonLog: cageFSSkeletonLog,
 			RoundcubeConfig:   roundcubeConfig,
 			CPanelPHP:         cpanelPHP,

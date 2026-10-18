@@ -18,6 +18,7 @@ import (
 // Learning fact sources on a live cPanel host.
 const (
 	procNetUDP        = "/proc/net/udp"
+	procNetUDP6       = "/proc/net/udp6"
 	cageFSSkeletonLog = "/usr/share/cagefs-skeleton/var/log/rspamd"
 	roundcubeConfig   = "/usr/local/cpanel/base/3rdparty/roundcube/config/config.inc.php"
 	cpanelPHP         = "/usr/local/cpanel/3rdparty/bin/php"
@@ -173,11 +174,76 @@ func (c collector) fuzzyListening(rspamdUID int) (listening, foreign bool, err e
 	if rspamdUID < 0 {
 		return false, false, errors.New("rspamd's service user is unknown, so the fuzzy worker's socket cannot be judged")
 	}
+	trusted := func(uid int) bool { return uid == 0 || uid == rspamdUID }
 	data, err := readText(c.layout.ProcNetUDP)
 	if err != nil {
 		return false, false, errors.New("cannot read the UDP socket table")
 	}
-	return parseFuzzyListening(data, func(uid int) bool { return uid == 0 || uid == rspamdUID })
+	if listening, foreign, err = parseFuzzyListening(data, trusted); err != nil {
+		return false, false, err
+	}
+	// Without IPv6 there is no udp6 table; any other failure is unknown.
+	data6, err := readText(c.layout.ProcNetUDP6)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return listening, foreign, nil
+	case err != nil:
+		return false, false, errors.New("cannot read the UDP6 socket table")
+	}
+	foreign6, err := parseUDP6Foreign(data6, trusted)
+	if err != nil {
+		return false, false, err
+	}
+	return listening, foreign || foreign6, nil
+}
+
+// IPv6 addresses on the fuzzy port that also receive its traffic: the
+// wildcard (dual-stack), IPv4-mapped 127.0.0.1 and ::1, as /proc prints them.
+var fuzzyPort6Addrs = map[string]bool{
+	"00000000000000000000000000000000:2C47": true,
+	"0000000000000000FFFF00000100007F:2C47": true,
+	"00000000000000000000000001000000:2C47": true,
+}
+
+// parseUDP6Foreign reports whether another user's IPv6 socket sits on one of
+// the fuzzy port's addresses.
+func parseUDP6Foreign(data string, trusted func(uid int) bool) (bool, error) {
+	lines := strings.Split(data, "\n")
+	header := strings.Fields(lines[0])
+	bad := errors.New("the UDP6 socket table is not readable")
+	if len(header) < 4 || strings.Join(header[:4], " ") != "sl local_address remote_address st" {
+		return false, bad
+	}
+	foreign := false
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) < 10 || !udp6Address(fields[1]) || !udp6Address(fields[2]) {
+			return false, bad
+		}
+		uid, err := strconv.Atoi(fields[7])
+		if err != nil || uid < 0 {
+			return false, bad
+		}
+		if fuzzyPort6Addrs[fields[1]] && !trusted(uid) {
+			foreign = true
+		}
+	}
+	return foreign, nil
+}
+
+func udp6Address(value string) bool {
+	if len(value) != 37 || value[32] != ':' {
+		return false
+	}
+	for _, c := range value[:32] + value[33:] {
+		if !strings.ContainsRune("0123456789ABCDEF", c) {
+			return false
+		}
+	}
+	return true
 }
 
 func parseFuzzyListening(data string, trusted func(uid int) bool) (listening, foreign bool, err error) {
