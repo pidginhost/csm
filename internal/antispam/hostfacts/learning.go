@@ -35,6 +35,7 @@ func CollectLearning(ctx context.Context, f *antispam.HostFacts) {
 func (c collector) learningFacts(ctx context.Context, f *antispam.HostFacts) {
 	c.learningDumps(ctx, f)
 	c.controlSocket(f)
+	c.controlSocketGroup(f)
 	f.FuzzyListening, f.FuzzyListenErr = c.fuzzyListening()
 	f.CageFS = c.cageFS(ctx)
 	f.Roundcube = c.roundcube(*f)
@@ -92,6 +93,26 @@ func (c collector) controlSocket(f *antispam.HostFacts) {
 		}
 		f.ControlSocket = unixSocketFacts(path)
 	}
+}
+
+// controlSocketGroup adds the control socket's group members to the
+// controller facts, so one exposure check judges both sockets.
+func (c collector) controlSocketGroup(f *antispam.HostFacts) {
+	if f.ControlSocket.Err != nil || f.ControlSocket.Missing {
+		return
+	}
+	gid := f.ControlSocket.Socket.GID
+	if _, known := f.ControllerHost.GroupMembers[gid]; known {
+		return
+	}
+	members, ok := c.groupMembers(map[int]bool{gid: true})[gid]
+	if !ok {
+		return
+	}
+	if f.ControllerHost.GroupMembers == nil {
+		f.ControllerHost.GroupMembers = map[int][]string{}
+	}
+	f.ControllerHost.GroupMembers[gid] = members
 }
 
 // fuzzyListening reports whether a UDP socket is bound to 127.0.0.1:11335.
@@ -212,6 +233,7 @@ func (c collector) redis(ctx context.Context, f antispam.HostFacts) antispam.Red
 	gid := r.Socket.Socket.GID
 	r.GroupMembers = c.groupMembers(map[int]bool{gid: true})[gid]
 	if !c.trustedRedisOwner(owner, f) || !protectedChain(r.Socket.Parents, r.Socket.Socket, owner) {
+		r.Unprotected = true
 		r.Err = errors.New("redis socket is not protected; CSM sends it no password")
 		return r
 	}

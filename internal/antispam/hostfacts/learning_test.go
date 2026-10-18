@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -334,5 +335,19 @@ func TestCollectRedisProbesOnlyProtectedSockets(t *testing.T) {
 	f.LearningDumps.Redis = []byte(`{"servers":"127.0.0.1:6379","password":"pw"}`)
 	if r := c.redis(context.Background(), f); *probes != 0 || r.Unix {
 		t.Fatalf("TCP endpoint: probes=%d facts=%+v", *probes, r)
+	}
+}
+
+func TestCollectControlSocketGroup(t *testing.T) {
+	c, d := learningCollector(t, &fakeRun{})
+	sock := serve(t, d, pong)
+	gid := os.Getgid()
+	c.readGroup = func() ([]byte, error) { return []byte("ctl:x:" + strconv.Itoa(gid) + ":member\n"), nil }
+	c.readPasswd = func() ([]byte, error) { return []byte("root:x:0:0::/root:/bin/sh\n"), nil }
+	f := antispam.HostFacts{RspamdOptions: antispam.CommandResult{Stdout: `{"control_socket": "` + sock + `"}`}}
+	c.controlSocket(&f)
+	c.controlSocketGroup(&f)
+	if got := f.ControllerHost.GroupMembers[gid]; len(got) != 1 || got[0] != "member" {
+		t.Fatalf("group members = %v", f.ControllerHost.GroupMembers)
 	}
 }

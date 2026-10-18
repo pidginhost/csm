@@ -194,6 +194,9 @@ type HostFacts struct {
 	Roundcube       RoundcubeFacts
 	AccountNames    map[string]bool
 	AccountNamesErr error
+	// RedisGuardPaused is the pass's last memory-guard state, so the guard
+	// keeps its hysteresis between passes.
+	RedisGuardPaused bool
 }
 
 // CheckHost evaluates the host preconditions of spec section 6.2 that hold
@@ -504,7 +507,10 @@ type RedisFacts struct {
 	GroupMembers []string
 	// ServiceUID is the uid of the process serving the socket, or -1.
 	ServiceUID int
-	Err        error
+	// Unprotected is set when the collector refused to send the password:
+	// the socket's owner or directories do not prove who placed it.
+	Unprotected bool
+	Err         error
 }
 
 // CageFSFacts say whether CloudLinux CageFS confines every account and
