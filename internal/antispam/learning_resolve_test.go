@@ -1,6 +1,7 @@
 package antispam
 
 import (
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"testing"
@@ -249,9 +250,7 @@ func TestResolveLearningStockRuleIsNotConflict(t *testing.T) {
 	}
 	// Once CSM's override is installed, the loaded rules are csm and
 	// csm_learn; verification checks them, not the conflict scan.
-	installLearning(t, &f)
-	f.LearningDumps.FuzzyCheck = []byte(`{"rule": {"csm": {}, "csm_learn": {}}}`)
-	f.LearningDumps.Worker = []byte(`[{"fuzzy": {"count": 1}}]`)
+	withLoadedLearning(t, &f)
 	if _, gate, problems := ResolveLearning(learningSettings(), f); !gate.Install || len(problems) != 0 {
 		t.Fatalf("installed learning: gate=%+v problems=%+v", gate, problems)
 	}
@@ -318,8 +317,7 @@ func TestResolveLearningFuzzyNotListening(t *testing.T) {
 	if _, gate, problems := ResolveLearning(learningSettings(), f); !gate.Install || !gate.Publish || len(problems) != 0 {
 		t.Fatalf("before install: gate=%+v problems=%+v", gate, problems)
 	}
-	installLearning(t, &f)
-	f.LearningDumps.FuzzyCheck = []byte(`{"rule": {"csm": {}, "csm_learn": {}}}`)
+	withLoadedLearning(t, &f)
 	_, gate, problems := ResolveLearning(learningSettings(), f)
 	if !gate.Install || gate.Publish {
 		t.Fatalf("after install: gate = %+v", gate)
@@ -372,8 +370,7 @@ func TestResolveLearningProbeErrors(t *testing.T) {
 			for _, installed := range []bool{false, true} {
 				f := safeLearningFacts()
 				if installed {
-					installLearning(t, &f)
-					f.LearningDumps.FuzzyCheck = []byte(`{"rule": {"csm": {}, "csm_learn": {}}}`)
+					withLoadedLearning(t, &f)
 				}
 				change(&f)
 				s, gate, problems := ResolveLearning(learningSettings(), f)
@@ -406,5 +403,78 @@ func TestResolveLearningReportsEachReasonOnce(t *testing.T) {
 	f.Redis.Policy = "allkeys-lru"
 	if _, _, problems := ResolveLearning(learningSettings(), f); len(problems) != 1 || problems[0].Key != ReasonUnsafe {
 		t.Fatalf("problems = %+v", problems)
+	}
+}
+
+// withLoadedLearning installs CSM's learning files and makes rspamd report
+// them loaded exactly as written, in the shapes recorded on rspamd 4.2.
+func withLoadedLearning(t *testing.T, f *HostFacts) *loadedDumps {
+	t.Helper()
+	installLearning(t, f)
+	d := newLoadedDumps(syntheticLearningKeys())
+	d.apply(f)
+	return d
+}
+
+func (d *loadedDumps) apply(f *HostFacts) {
+	enc := func(v any) []byte { b, _ := json.Marshal(v); return b }
+	var group []byte
+	for _, g := range d.groups {
+		group = append(append(group, enc(g)...), '\n')
+	}
+	f.LearningDumps.FuzzyCheck, f.LearningDumps.Worker, f.LearningDumps.Group = enc(d.fuzzyCheck), enc(d.worker), group
+	f.LearningDumps.Symbols, f.LearningDumps.SymbolsErr = enc(d.symbols), nil
+	f.RspamdActions = CommandResult{Stdout: `{"reject": 15, "add_header": 6, "greylist": null, "rewrite_subject": null}`}
+}
+
+// After install, rspamd can stop loading what CSM wrote: a runtime weight
+// change, a higher-priority group cap or score rescaling. Every pass checks.
+func TestResolveLearningKeepVerifiesLoaded(t *testing.T) {
+	f := safeLearningFacts()
+	withLoadedLearning(t, &f)
+	if _, gate, problems := ResolveLearning(learningSettings(), f); !gate.Install || !gate.Publish || len(problems) != 0 {
+		t.Fatalf("loaded as written: gate=%+v problems=%+v", gate, problems)
+	}
+	for name, change := range map[string]func(d *loadedDumps, f *HostFacts){
+		"DynamicWeight": func(d *loadedDumps, _ *HostFacts) {
+			d.symbols[1].(map[string]any)["rules"].([]any)[0].(map[string]any)["weight"] = 20.0
+		},
+		"GroupCap":  func(d *loadedDumps, _ *HostFacts) { d.groups[1]["fuzzy"].(map[string]any)["max_score"] = 20.0 },
+		"ModuleOff": func(d *loadedDumps, _ *HostFacts) { d.fuzzyCheck["enabled"] = false },
+		"GrowFactor": func(_ *loadedDumps, f *HostFacts) {
+			f.RspamdActions.Stdout = `{"reject": 15, "add_header": 6, "grow_factor": 1.5}`
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			facts := safeLearningFacts()
+			d := withLoadedLearning(t, &facts)
+			change(d, &facts)
+			if name != "GrowFactor" {
+				d.apply(&facts)
+			}
+			s, gate, problems := ResolveLearning(learningSettings(), facts)
+			if gate.Install || s.Learning {
+				t.Fatalf("gate = %+v", gate)
+			}
+			onlyLearningReason(t, problems, ReasonConfigConflict)
+		})
+	}
+	f = safeLearningFacts()
+	withLoadedLearning(t, &f)
+	f.LearningDumps.Symbols, f.LearningDumps.SymbolsErr = nil, errors.New("rspamd's controller reply could not be read")
+	_, gate, problems := ResolveLearning(learningSettings(), f)
+	if !gate.Install || gate.Publish {
+		t.Fatalf("symbols unreadable: gate = %+v", gate)
+	}
+	onlyLearningReason(t, problems, ReasonBackendUnavailable)
+	// A drifted CSM file is repaired by the next apply, whose own check
+	// verifies the result; the loaded state is not judged meanwhile.
+	f = safeLearningFacts()
+	d := withLoadedLearning(t, &f)
+	d.symbols[1].(map[string]any)["rules"].([]any)[0].(map[string]any)["weight"] = 20.0
+	d.apply(&f)
+	setTarget(&f, LearningGroupPath, ManagedHeader+"\nmax_score = 12.0;\n")
+	if _, gate, problems := ResolveLearning(learningSettings(), f); !gate.Install || len(problems) != 0 {
+		t.Fatalf("drifted files: gate=%+v problems=%+v", gate, problems)
 	}
 }

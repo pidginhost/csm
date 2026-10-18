@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -423,11 +424,12 @@ func TestCollectFuzzyListeningIPv6(t *testing.T) {
 		udp6    string
 		foreign bool
 	}{
-		"rspamd wildcard": {udp6Header + line6("00000000000000000000000000000000:2C47", rspamd), false},
-		"tenant wildcard": {udp6Header + line6("00000000000000000000000000000000:2C47", 4321), true},
-		"tenant mapped":   {udp6Header + line6("0000000000000000FFFF00000100007F:2C47", 4321), true},
-		"tenant loopback": {udp6Header + line6("00000000000000000000000001000000:2C47", 4321), true},
-		"tenant other":    {udp6Header + line6("00000000000000000000000000000000:2C46", 4321), false},
+		"rspamd wildcard":   {udp6Header + line6("00000000000000000000000000000000:2C47", rspamd), false},
+		"tenant wildcard":   {udp6Header + line6("00000000000000000000000000000000:2C47", 4321), true},
+		"tenant mapped":     {udp6Header + line6("0000000000000000FFFF00000100007F:2C47", 4321), true},
+		"tenant loopback":   {udp6Header + line6("00000000000000000000000001000000:2C47", 4321), true},
+		"tenant mapped any": {udp6Header + line6("0000000000000000FFFF000000000000:2C47", 4321), true},
+		"tenant other":      {udp6Header + line6("00000000000000000000000000000000:2C46", 4321), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, _ := learningCollector(t, &fakeRun{})
@@ -447,5 +449,58 @@ func TestCollectFuzzyListeningIPv6(t *testing.T) {
 	write(t, c.layout.ProcNetUDP6, "garbage\n")
 	if _, _, err := c.fuzzyListening(rspamd); err == nil {
 		t.Fatal("unreadable udp6 table accepted")
+	}
+}
+
+// While CSM's learning worker file is installed the collector reads the
+// effective weights over the one private controller socket, from rspamd.
+func TestCollectLearningSymbols(t *testing.T) {
+	const ctl = "/run/rspamd/csm-controller.sock"
+	facts := func(installed bool) antispam.HostFacts {
+		f := antispam.HostFacts{
+			Controller: antispam.ControllerConfig{Present: true, PasswordSet: true, Listeners: []antispam.ControllerListener{
+				{Raw: ctl + " mode=0600", Unix: true, Path: ctl, Mode: 0o600}}},
+			ControllerHost: antispam.ControllerHostFacts{RspamdUID: 979, GroupMembers: map[int][]string{0: {"root"}}, Sockets: map[string]antispam.SocketFacts{
+				ctl: {Socket: antispam.PathFacts{Path: ctl, UID: 979, Mode: fs.ModeSocket | 0o600},
+					Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}, {Path: "/run", Mode: fs.ModeDir | 0o755},
+						{Path: "/run/rspamd", UID: 979, Mode: fs.ModeDir | 0o755}}}}},
+		}
+		target := antispam.TargetFacts{Target: antispam.Target{Path: antispam.LearningWorkerPath, Kind: antispam.TargetRspamdOptional}, Missing: true}
+		if installed {
+			target.Missing, target.Content = false, antispam.ManagedHeader+"\ncount = 1;\n"
+		}
+		f.Targets = []antispam.TargetFacts{target}
+		return f
+	}
+	c, _ := learningCollector(t, &fakeRun{})
+	var calls []string
+	c.controllerGet = func(_ context.Context, socket, path string, _ int64, peer int) ([]byte, error) {
+		calls = append(calls, fmt.Sprintf("%s %s %d", socket, path, peer))
+		return []byte(`[]`), nil
+	}
+	f := facts(true)
+	c.learningSymbols(context.Background(), &f)
+	if len(calls) != 1 || calls[0] != ctl+" /symbols 979" || string(f.LearningDumps.Symbols) != "[]" || f.LearningDumps.SymbolsErr != nil {
+		t.Fatalf("calls=%v symbols=%q err=%v", calls, f.LearningDumps.Symbols, f.LearningDumps.SymbolsErr)
+	}
+	calls = nil
+	f = facts(false)
+	c.learningSymbols(context.Background(), &f)
+	if len(calls) != 0 || f.LearningDumps.Symbols != nil || f.LearningDumps.SymbolsErr != nil {
+		t.Fatalf("not installed: calls=%v", calls)
+	}
+	f = facts(true)
+	f.Controller.Listeners = nil
+	c.learningSymbols(context.Background(), &f)
+	if f.LearningDumps.SymbolsErr == nil {
+		t.Fatal("no private controller socket left no error")
+	}
+	c.controllerGet = func(context.Context, string, string, int64, int) ([]byte, error) {
+		return nil, errors.New("rspamd's controller socket is not served by rspamd")
+	}
+	f = facts(true)
+	c.learningSymbols(context.Background(), &f)
+	if f.LearningDumps.SymbolsErr == nil {
+		t.Fatal("failed read left no error")
 	}
 }

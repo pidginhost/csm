@@ -139,12 +139,9 @@ func checkRspamdModules(enabled map[string]bool, s Settings) []string {
 		if m == "rbl" && dns {
 			continue
 		}
-		// With learning fuzzy_check runs CSM's rules; CheckLearningLoaded
-		// checks them.
+		// With learning fuzzy_check runs CSM's rules; learning verifies it,
+		// and a learning fault never removes core filtering.
 		if m == "fuzzy_check" && s.Learning {
-			if !enabled[m] {
-				out = append(out, "rspamd module fuzzy_check is disabled; learning needs it")
-			}
 			continue
 		}
 		if enabled[m] {

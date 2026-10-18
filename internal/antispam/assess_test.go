@@ -687,3 +687,28 @@ func TestCurrentNeedsLearningSecretMode(t *testing.T) {
 		setTargetFile(f.Targets, p, PathFacts{Path: p, UID: 0, GID: 974, Mode: SecretFileMode})
 	}
 }
+
+// A learning-only fault on an installed, current host must not remove core
+// filtering: learning resolves it alone.
+func TestAssessLearningModuleOffKeepsCore(t *testing.T) {
+	s := learningSettings()
+	f := installedFacts(t, s)
+	f.RspamdGID = 974
+	for _, p := range s.SecretTargets() {
+		setTargetFile(f.Targets, p, PathFacts{Path: p, UID: 0, GID: 974, Mode: SecretFileMode})
+	}
+	// installedFacts reports fuzzy_check explicitly disabled.
+	a := Assess(true, s, f)
+	if a.Action != Keep || blockingProblem(a.Problems) {
+		t.Fatalf("assessment = %+v", a)
+	}
+}
+
+func blockingProblem(problems []Problem) bool {
+	for _, p := range problems {
+		if p.Severity != Warning {
+			return true
+		}
+	}
+	return false
+}

@@ -40,6 +40,7 @@ func CollectLearning(ctx context.Context, f *antispam.HostFacts) {
 
 func (c collector) learningFacts(ctx context.Context, f *antispam.HostFacts) {
 	c.learningDumps(ctx, f)
+	c.learningSymbols(ctx, f)
 	c.controlSocket(f)
 	c.controlSocketGroup(f)
 	c.logGroups(f)
@@ -104,6 +105,29 @@ func readableDump(data string, stream bool) bool {
 		}
 		count++
 	}
+}
+
+// maxSymbolsReply bounds the controller's /symbols reply.
+const maxSymbolsReply = 4 << 20
+
+// learningSymbols reads the controller's effective weights while CSM's
+// learning worker file is installed, so a pass can see a runtime change.
+func (c collector) learningSymbols(ctx context.Context, f *antispam.HostFacts) {
+	installed := false
+	for _, t := range f.Targets {
+		if t.Path == antispam.LearningWorkerPath {
+			installed = !t.Missing && t.Err == nil && antispam.ManagedFor(t.Kind, t.Content)
+		}
+	}
+	if !installed {
+		return
+	}
+	socket, ok := antispam.PrivateControllerSocket(*f)
+	if !ok {
+		f.LearningDumps.SymbolsErr = errors.New("learning has no private controller socket to read weights from")
+		return
+	}
+	f.LearningDumps.Symbols, f.LearningDumps.SymbolsErr = c.controllerGet(ctx, socket, "/symbols", maxSymbolsReply, f.ControllerHost.RspamdUID)
 }
 
 // controlSocket reads options.control_socket, without its mode option.
@@ -197,11 +221,13 @@ func (c collector) fuzzyListening(rspamdUID int) (listening, foreign bool, err e
 	return listening, foreign || foreign6, nil
 }
 
-// IPv6 addresses on the fuzzy port that also receive its traffic: the
-// wildcard (dual-stack), IPv4-mapped 127.0.0.1 and ::1, as /proc prints them.
+// IPv6 bindings on the fuzzy port, as /proc prints them, that can receive
+// traffic for 127.0.0.1:11335: the wildcard (dual-stack), IPv4-mapped
+// 127.0.0.1 and 0.0.0.0, and ::1. Other 127/8 addresses receive none of it.
 var fuzzyPort6Addrs = map[string]bool{
 	"00000000000000000000000000000000:2C47": true,
 	"0000000000000000FFFF00000100007F:2C47": true,
+	"0000000000000000FFFF000000000000:2C47": true,
 	"00000000000000000000000001000000:2C47": true,
 }
 

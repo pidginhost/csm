@@ -92,7 +92,7 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 	checkLearningController(&c, f)
 	checkLearningRedis(&c, f)
 	checkLearningLogs(&c, f)
-	checkLearningConflicts(&c, f)
+	checkLearningConflicts(&c, s, f)
 	if f.FuzzyListenErr != nil {
 		c.add(ReasonBackendUnavailable, "CSM cannot read the UDP socket table to find the fuzzy worker")
 	} else if f.FuzzyListenForeign {
@@ -415,7 +415,7 @@ func cageFSProtectsLog(cage CageFSFacts, log LogFacts) bool {
 // checkLearningConflicts finds operator fuzzy configuration CSM's override
 // would hide (spec 6.1). Once CSM's files are installed, verification of the
 // loaded rules takes over.
-func checkLearningConflicts(c *learningCheck, f HostFacts) {
+func checkLearningConflicts(c *learningCheck, s Settings, f HostFacts) {
 	for _, t := range f.Targets {
 		if t.Path == RoundcubeIncludePath || !isLearningPath(t.Path) {
 			continue
@@ -425,7 +425,11 @@ func checkLearningConflicts(c *learningCheck, f HostFacts) {
 			return
 		}
 	}
-	if learningInstalled(f) || f.LearningDumps.Err != nil {
+	if f.LearningDumps.Err != nil {
+		return
+	}
+	if learningInstalled(f) {
+		checkLearningStillLoaded(c, s, f)
 		return
 	}
 	rules, err := loadedFuzzyRules(f.LearningDumps.FuzzyCheck)
@@ -445,6 +449,45 @@ func checkLearningConflicts(c *learningCheck, f HostFacts) {
 	} else if enabled {
 		c.add(ReasonConfigConflict, "rspamd runs a local fuzzy worker that CSM's override would replace")
 	}
+}
+
+// checkLearningStillLoaded compares what rspamd loads now with CSM's files,
+// on every pass after install (spec 6.1, 6.2): a runtime weight change, a
+// higher-priority group cap or score rescaling is a conflict. Files that
+// drifted from CSM's text are left to the next apply, whose own check
+// verifies the result.
+func checkLearningStillLoaded(c *learningCheck, s Settings, f HostFacts) {
+	if !learningFilesCurrent(s, f) {
+		return
+	}
+	d := f.LearningDumps
+	if d.SymbolsErr != nil {
+		c.add(ReasonBackendUnavailable, "CSM cannot read the effective learning weights from rspamd's controller")
+		return
+	}
+	actions, err := ParseActions([]byte(f.RspamdActions.Stdout))
+	if f.RspamdActions.Err != nil || err != nil {
+		c.add(ReasonBackendUnavailable, "rspamd's actions are not readable")
+		return
+	}
+	if err := CheckLearningLoaded(d.FuzzyCheck, d.Worker, d.Group, d.Symbols, actions, s.LearningKeys); err != nil {
+		c.add(ReasonConfigConflict, "rspamd no longer loads CSM's learning configuration as written: "+err.Error())
+	}
+}
+
+// learningFilesCurrent reports whether every learning file holds exactly the
+// text CSM renders for s.
+func learningFilesCurrent(s Settings, f HostFacts) bool {
+	files, err := RenderLearning(s)
+	if err != nil {
+		return false
+	}
+	for _, t := range f.Targets {
+		if want, ok := files[t.Path]; ok && (t.Missing || t.Err != nil || t.Content != want) {
+			return false
+		}
+	}
+	return true
 }
 
 // loadedFuzzyRules reads the rules of `rspamadm configdump -j fuzzy_check`:

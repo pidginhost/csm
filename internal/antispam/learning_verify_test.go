@@ -203,8 +203,11 @@ func TestCheckRspamdLearningModule(t *testing.T) {
 	if conflicts := CheckRspamd(map[string]bool{"dkim": true, "fuzzy_check": true}, defaultActions(s), s); len(conflicts) != 0 {
 		t.Fatalf("learning with fuzzy_check enabled: %v", conflicts)
 	}
-	if conflicts := CheckRspamd(map[string]bool{"dkim": true}, defaultActions(s), s); len(conflicts) == 0 {
-		t.Fatal("learning with fuzzy_check disabled accepted")
+	// With learning, fuzzy_check is learning's to judge (CheckLearningLoaded
+	// and the learning check): a disabled module must not read as a core
+	// conflict that uninstalls filtering.
+	if conflicts := CheckRspamd(map[string]bool{"dkim": true}, defaultActions(s), s); len(conflicts) != 0 {
+		t.Fatalf("learning with fuzzy_check disabled raised a core conflict: %v", conflicts)
 	}
 	core := defaults(true)
 	if conflicts := CheckRspamd(map[string]bool{"fuzzy_check": true}, defaultActions(core), core); len(conflicts) == 0 {

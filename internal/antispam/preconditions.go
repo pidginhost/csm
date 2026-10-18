@@ -491,6 +491,10 @@ func checkRspamdVersions(daemon, adm CommandResult) []Problem {
 type LearningDumps struct {
 	FuzzyCheck, Worker, Group, Redis []byte
 	Err                              error
+	// Symbols is the controller's /symbols reply, read while CSM's learning
+	// worker file is installed; it shows runtime weight changes.
+	Symbols    []byte
+	SymbolsErr error
 }
 
 // RedisFacts are the live values of the Redis instance the fuzzy worker
