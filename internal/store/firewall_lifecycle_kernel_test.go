@@ -4,7 +4,6 @@ package store
 
 import (
 	"errors"
-	"github.com/pidginhost/csm/internal/actionlog"
 	"reflect"
 	"runtime"
 	"sync"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/nftables"
+	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/firewall"
 	bolt "go.etcd.io/bbolt"
 	"golang.org/x/sys/unix"
@@ -85,7 +85,7 @@ func TestKernelDurableBlockReplaceUndo(t *testing.T) {
 	}
 	req.ID = "replacement"
 	req.TTL = 0
-	if _, err := d.BlockIPRequest(req, nil); err != nil {
+	if _, err = d.BlockIPRequest(req, nil); err != nil {
 		t.Fatal(err)
 	}
 	second, err := db.ReadFirewallAction(req.ID)
@@ -96,7 +96,7 @@ func TestKernelDurableBlockReplaceUndo(t *testing.T) {
 		t.Fatal("replacement retained timeout")
 	}
 	undo := firewall.ActionRequest{ID: "undo", Operation: "undo", Actor: "cli", Source: "cli", UndoOf: req.ID}
-	if _, err := d.UndoAction(undo); err != nil {
+	if _, err = d.UndoAction(undo); err != nil {
 		t.Fatal(err)
 	}
 	state, _, err := db.ReadFirewallState()
@@ -137,14 +137,14 @@ func TestKernelDurableUnknownPreventsOtherMutations(t *testing.T) {
 	elems[0].Comment = "changed externally"
 	elems[0].Timeout = time.Hour
 	conn.FlushSet(set)
-	if err := conn.SetAddElements(set, elems); err != nil {
+	if err = conn.SetAddElements(set, elems); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err = conn.Flush(); err != nil {
 		t.Fatal(err)
 	}
 	undo := firewall.ActionRequest{ID: "undo-changed", Operation: "undo", Actor: "cli", Source: "cli", UndoOf: a.Request.ID}
-	if _, err := d.UndoAction(undo); err == nil {
+	if _, err = d.UndoAction(undo); err == nil {
 		t.Fatal("undo accepted changed provenance")
 	}
 	// Inject an unfinished intent to prove every block-affecting entry point gates it.
@@ -194,17 +194,18 @@ func TestKernelDurableRestartRecoversWithoutReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	next := any(restarted).(durableEngine)
-	if err := next.AttachLifecycle(&firewall.Lifecycle{Store: db, Audit: func(firewall.FirewallAction) error { return nil }}); err != nil {
+	if err = next.AttachLifecycle(&firewall.Lifecycle{Store: db, Audit: func(firewall.FirewallAction) error { return nil }}); err != nil {
 		t.Fatal(err)
 	}
-	if err := next.RecoverActions(); err != nil {
+	if err = next.RecoverActions(); err != nil {
 		t.Fatalf("restart recovery: %v", err)
 	}
 	a, err := db.ReadFirewallAction(req.ID)
 	if err != nil || a.Phase != "verified" {
 		t.Fatalf("recovered=%#v,%v", a, err)
 	}
-	if outcome, err := next.BlockIPRequest(req, nil); err != nil || outcome != firewall.BlockOutcomeNoop {
+	outcome, err := next.BlockIPRequest(req, nil)
+	if err != nil || outcome != firewall.BlockOutcomeNoop {
 		t.Fatalf("replay outcome=%s,%v", outcome, err)
 	}
 	again, err := db.ReadFirewallAction(req.ID)
@@ -220,13 +221,13 @@ func TestKernelDurableBlockRefusesUntrackedLiveEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.SetAddElements(set, []nftables.SetElement{{Key: []byte{192, 0, 2, 79}, Comment: "untracked"}}); err != nil {
+	if err = conn.SetAddElements(set, []nftables.SetElement{{Key: []byte{192, 0, 2, 79}, Comment: "untracked"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err = conn.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.BlockIPRequest(firewall.ActionRequest{ID: "different-target", Operation: "block", Target: "192.0.2.80", Actor: "cli", Source: "cli"}, nil); err == nil {
+	if _, err = d.BlockIPRequest(firewall.ActionRequest{ID: "different-target", Operation: "block", Target: "192.0.2.80", Actor: "cli", Source: "cli"}, nil); err == nil {
 		t.Fatal("mutation overwrote untracked live state")
 	}
 	elems, err := conn.GetSetElements(set)
@@ -315,7 +316,8 @@ func TestKernelDurableRequestDefaultsReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := d.BlockIPRequest(req, nil); err != nil || out != firewall.BlockOutcomeNoop {
+	out, err := d.BlockIPRequest(req, nil)
+	if err != nil || out != firewall.BlockOutcomeNoop {
 		t.Fatalf("retry=%s,%v", out, err)
 	}
 	last, err := db.ReadFirewallAction(req.ID)
@@ -348,7 +350,7 @@ func TestKernelDurableSubnetRequestReplayAndDryRun(t *testing.T) {
 	}
 	e.SetDryRunEnabledFunc(func() bool { return true })
 
-	if err := e.BlockSubnetRequest(req, budget); err != nil {
+	if err = e.BlockSubnetRequest(req, budget); err != nil {
 		a, _ := db.ReadFirewallAction(req.ID)
 		t.Fatalf("%v detail=%s", err, a.Detail)
 	}
@@ -372,7 +374,7 @@ func TestKernelDurableReplacementRestoresEviction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := d.BlockIPRequest(firewall.ActionRequest{ID: "replacement-with-eviction", Target: "192.0.2.113", TTL: 3 * time.Hour}, nil); err != nil {
+	if _, err = d.BlockIPRequest(firewall.ActionRequest{ID: "replacement-with-eviction", Target: "192.0.2.113", TTL: 3 * time.Hour}, nil); err != nil {
 		t.Fatal(err)
 	}
 	a, err := db.ReadFirewallAction("replacement-with-eviction")
@@ -382,7 +384,7 @@ func TestKernelDurableReplacementRestoresEviction(t *testing.T) {
 	if len(a.Before.Blocked) != 3 || len(a.After.Blocked) != 2 {
 		t.Fatalf("missing eviction evidence: %#v", a)
 	}
-	if _, err := d.UndoAction(firewall.ActionRequest{ID: "undo-eviction", Operation: "undo", Actor: "cli", Source: "cli", UndoOf: a.Request.ID}); err != nil {
+	if _, err = d.UndoAction(firewall.ActionRequest{ID: "undo-eviction", Operation: "undo", Actor: "cli", Source: "cli", UndoOf: a.Request.ID}); err != nil {
 		t.Fatal(err)
 	}
 	after, _, err := db.ReadFirewallState()

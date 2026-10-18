@@ -40,7 +40,7 @@ func TestFanotifyDetectsPHPWrite(t *testing.T) {
 	if err := os.WriteFile(phpPath, phpContent, 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	defer os.Remove(phpPath)
+	defer func() { _ = os.Remove(phpPath) }()
 
 	// Ignore unrelated host activity and wait up to 10 seconds for the seeded
 	// file's finding.
@@ -86,7 +86,7 @@ func TestFanotifyIgnoresNonPHP(t *testing.T) {
 	if err := os.WriteFile(txtPath, []byte("just text"), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	defer os.Remove(txtPath)
+	defer func() { _ = os.Remove(txtPath) }()
 
 	select {
 	case f := <-ch:

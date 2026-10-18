@@ -53,12 +53,12 @@ func kernelNamespace(t *testing.T) int {
 		t.Fatalf("kernel firewall tests require CAP_SYS_ADMIN and CAP_NET_ADMIN: %v", err)
 	}
 	t.Cleanup(func() {
-		err := unix.Setns(orig, unix.CLONE_NEWNET)
+		restoreErr := unix.Setns(orig, unix.CLONE_NEWNET)
 		_ = unix.Close(orig)
-		if err != nil {
+		if restoreErr != nil {
 			// Keep the thread locked so the runtime discards it instead of
 			// scheduling unrelated work inside the test namespace.
-			t.Fatalf("restore network namespace: %v", err)
+			t.Fatalf("restore network namespace: %v", restoreErr)
 		}
 		runtime.UnlockOSThread()
 	})
