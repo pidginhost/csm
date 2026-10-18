@@ -88,6 +88,8 @@ func TestAdmissionSummaryGoesToHistory(t *testing.T) {
 // A failed forecasting owner keeps ownership. Its storage error must not
 // silently restart the legacy writer alongside an owner retry.
 func TestFailedForecastOwnerKeepsExampleOwnership(t *testing.T) {
+	previousOwnership := ownerKeepsDryRunExamples.Load()
+	t.Cleanup(func() { ownerKeepsDryRunExamples.Store(previousOwnership) })
 	dir := t.TempDir()
 	db, restore := openTestBoltStore(t, dir)
 	defer restore()
@@ -110,5 +112,87 @@ func TestFailedForecastOwnerKeepsExampleOwnership(t *testing.T) {
 	recordLegacyDryRunBlock("198.51.100.62", "CSM auto-block: ftp_bruteforce", time.Hour)
 	if db.DryRunBlocksCount() != 0 {
 		t.Fatal("failed owner reactivated the legacy example writer")
+	}
+}
+
+// Startup publishes the policy before starting admission. A live firewall
+// host must leave old examples for the owner's bounded purge even if the
+// owner cannot open its ledger yet.
+func TestStartupPublicationLeavesForecastExamplesToOwner(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		firewall bool
+		observe  bool
+		failed   bool
+	}{
+		{name: "forecast owner", firewall: true},
+		{name: "failed forecast owner", firewall: true, failed: true},
+		{name: "firewall disabled"},
+		{name: "observe mode", firewall: true, observe: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			db, restore := openTestBoltStore(t, dir)
+			defer restore()
+			previousConfig := config.Active()
+			previousOwnership := ownerKeepsDryRunExamples.Swap(false)
+			t.Cleanup(func() {
+				config.SetActive(previousConfig)
+				ownerKeepsDryRunExamples.Store(previousOwnership)
+			})
+			cfg, err := config.LoadBytes([]byte("auto_response:\n  dry_run: false\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.StatePath = dir
+			cfg.Firewall.Enabled = tc.firewall
+			if tc.observe {
+				cfg.Mode = "observe"
+			}
+			db.RecordDryRunBlock("198.51.100.63", "CSM auto-block: ftp_bruteforce", time.Hour)
+			if got := db.DryRunBlocksCount(); got != 1 {
+				t.Fatalf("seeded examples = %d, want 1", got)
+			}
+			publishActiveConfig(cfg, "startup")
+			want := 0
+			if tc.firewall && !tc.observe {
+				want = 1
+			}
+			if got := db.DryRunBlocksCount(); got != want {
+				t.Fatalf("examples after startup publication = %d, want %d", got, want)
+			}
+			if want == 0 {
+				return
+			}
+			d := New(cfg, nil, nil, "")
+			opts := testAdmissionOptions(d, db)
+			if tc.failed {
+				opts.DB = nil
+			} else {
+				opts.ScheduleEvery = time.Millisecond
+			}
+			d.startAdmissionWith(opts)
+			defer d.stopAdmission()
+			if !ownerKeepsDryRunExamples.Load() {
+				t.Fatal("the forecast owner did not take example ownership")
+			}
+			if tc.failed {
+				if status := d.AdmissionStatus(); status.Owner.Error == "" {
+					t.Fatal("the unavailable ledger was not reported")
+				}
+				publishActiveConfig(cfg, "reload")
+				if got := db.DryRunBlocksCount(); got != 1 {
+					t.Fatalf("examples while the owner retries = %d, want 1", got)
+				}
+				return
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for db.DryRunBlocksCount() != 0 {
+				if time.Now().After(deadline) {
+					t.Fatal("the owner never purged examples from the previous dry run")
+				}
+				time.Sleep(time.Millisecond)
+			}
+		})
 	}
 }

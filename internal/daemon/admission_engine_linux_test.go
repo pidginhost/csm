@@ -61,6 +61,8 @@ func TestAdmissionOwnerGetsTheEngineOnceTheFirewallStarts(t *testing.T) {
 // fixture. Owner startup precedes firewall publication and owns examples
 // even while the engine is absent.
 func TestDaemonForecastOwnerStartsAfterConfigPublication(t *testing.T) {
+	previousOwnership := ownerKeepsDryRunExamples.Load()
+	t.Cleanup(func() { ownerKeepsDryRunExamples.Store(previousOwnership) })
 	dir := t.TempDir()
 	db, restore := openTestBoltStore(t, dir)
 	defer restore()

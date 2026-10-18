@@ -55,11 +55,15 @@ func (d *Daemon) startAdmission() {
 	d.startAdmissionWith(d.admissionOptions(store.Global()))
 }
 
+func admissionUsesFirewall(cfg *config.Config) bool {
+	return cfg != nil && cfg.Firewall != nil && cfg.Firewall.Enabled && !cfg.ObserveMode()
+}
+
 func (d *Daemon) admissionOptions(db *store.DB) admissionowner.Options {
 	// The firewall reads its family settings at start, as this does.
 	ipv6 := d.cfg.Firewall != nil && d.cfg.Firewall.IPv6
 	var blocks func() admissionowner.BlockEngine
-	if d.cfg.Firewall != nil && d.cfg.Firewall.Enabled && !d.cfg.ObserveMode() {
+	if admissionUsesFirewall(d.cfg) {
 		blocks = d.admissionBlocks
 	}
 	return admissionowner.Options{
