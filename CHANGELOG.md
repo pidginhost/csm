@@ -41,11 +41,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - The phpanel agent profile no longer sets account roots; the agent supplies them to match the panel's home directory layout.
 - Dry-run hosts with the firewall on can see automatic block capacity forecasts in status, diagnostics and findings history.
 - Verdict callback panels can receive an additional request for an eligible dry-run block, using their configured signature settings.
-- Queued automatic responses the configuration no longer allows, for example after turning blocking off, are now refused instead of forecast or previewed.
+- With the firewall on, queued automatic responses the configuration no longer allows, for example after turning blocking off, are refused instead of forecast or previewed.
 
 ### Fixed
 
-- Turning automatic blocking off no longer produces withheld-response notices for queued work that expires during a restart or configuration reload.
 - Dry-run automatic responses no longer mark addresses as auto-blocked in the attack database.
 - Firewall status and port listings now reflect applied peer changes and rollbacks without requiring a daemon restart.
 - `csm rehash` now refuses unknown options instead of re-signing the whole configuration.
