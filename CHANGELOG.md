@@ -21,6 +21,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
+- With anti-spam on, CSM warns when other users on the server can reach rspamd's admin interface; hosts using rspamd's default local trust see this after upgrading.
 - Inbound spam filtering on cPanel through an rspamd you install, where each account's Spam Filters switch decides; existing hosts are unchanged until `email_protection.antispam.enabled` is set.
 - Antispam scores subjects that hide invisible characters inside Chinese, Japanese or Korean words, a common way to slip spam past filters.
 - Antispam can use vetted DNS blocklists and a Spamhaus DQS key, each off until named, and points rspamd's hosted maps at local copies where it can.

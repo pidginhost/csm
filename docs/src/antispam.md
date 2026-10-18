@@ -515,6 +515,48 @@ Sessions opened before removal retain their old hooks and may still scan.
 Those scans use operator or default rspamd settings after CSM's settings are
 removed; scores can change and external lists can become active again.
 
+## rspamd admin interface
+
+rspamd's controller answers admin and statistics requests. By default it
+trusts every connection from `127.0.0.1` and `::1` without a password, and
+every process on the server can connect there, including customer scripts.
+Such a process could read rspamd's history, which lists senders and
+recipients of scanned mail, or change scores and actions at runtime.
+
+While antispam is enabled, CSM reports each controller listener that other
+users can reach as an `antispam_controller_open` finding. The finding names
+the listener and the reason:
+
+- a trusted address that local processes can use (loopback, a wildcard, or
+  one of the server's own addresses);
+- a trust entry CSM cannot resolve, such as a map file or a hostname;
+- no controller password at all, or only an enable password;
+- a Unix socket, or one of its parent directories, that other users can
+  write to.
+
+To close TCP access, keep a controller password set and put this in
+`/etc/rspamd/override.d/worker-controller.inc`:
+
+```
+secure_ip = [];
+```
+
+rspamd ships with a placeholder password that it refuses from every
+client, so this also works without setting your own. Without any password,
+an empty `secure_ip` opens every command to everyone.
+
+For local administration add a private Unix socket in the same file. A
+process that can connect to a Unix socket gets admin access without a
+password, so keep its mode at 0600:
+
+```
+bind_socket = "/run/rspamd/csm-controller.sock mode=0600";
+bind_socket = "localhost:11334";
+secure_ip = [];
+```
+
+Reload rspamd after the change. CSM never edits the controller settings.
+
 ## Findings
 
 | Check | Severity | Meaning |
@@ -524,6 +566,7 @@ removed; scores can change and external lists can become active again.
 | `antispam_rspamd_down` | Warning | Three probes of the scan socket in a row failed. CSM probes every 20 seconds while antispam is enabled. |
 | `antispam_rspamd_recovered` | Warning | Two probes in a row succeeded after an outage. |
 | `antispam_scan_error` | Warning | Exim logged a failed scan. One finding covers every failure until a scan succeeds. |
+| `antispam_controller_open` | Warning | Other users on the server can reach rspamd's admin interface through the named listener. See [rspamd admin interface](#rspamd-admin-interface). |
 | `antispam_feed` | Warning, or Critical when a list answers for everything | A feed or map redirect is off, loaded rules differ, a list misbehaves, or rspamd still fetches maps from rspamd.com. These findings alone do not disable filtering. See [Feeds](#feeds). |
 | `antispam_ip_map` | Warning | The IP map could not be written, or rspamd has not confirmed the current map 5 minutes after a write. Core filtering is unaffected. See [CSM IP map](#csm-ip-map). |
 

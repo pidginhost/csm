@@ -147,6 +147,18 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	a := assess(d.Enabled, settings, f)
 	now := r.Now()
 	out := Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed}}
+	// Controller exposure needs no install: it is reported whenever
+	// antispam is on and cleared when it is off. An unreadable controller
+	// keeps the last result.
+	controllerSettled := !d.Enabled || f.ControllerErr == nil
+	if controllerSettled {
+		out.Checks = append(out.Checks, CheckControllerOpen)
+	}
+	if d.Enabled && f.ControllerErr == nil {
+		for _, p := range antispam.ControllerExposure(f.Controller, f.ControllerHost) {
+			out.Findings = append(out.Findings, controllerFinding(p, now))
+		}
+	}
 	for _, p := range a.Problems {
 		if p.Code == antispam.CodeFeed {
 			feedProblems = append(feedProblems, p)
@@ -209,6 +221,9 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if result.Busy {
 		out.Retry = BusyRetry
 		out.Checks = []string{CheckPrecondition, CheckFeed}
+		if controllerSettled {
+			out.Checks = append(out.Checks, CheckControllerOpen)
+		}
 	}
 	if result.FailedStep == antispam.FeedsCheckStep {
 		r.Feeds.hold(d.Settings)
