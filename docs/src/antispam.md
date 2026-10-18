@@ -438,11 +438,17 @@ those zones or of other configured resolvers.
   `# CSM-ANTISPAM END` markers;
 - one `spamd_address` line in the `@CONFIG@` section of `/etc/exim.conf.local`;
 - `actions.conf`, `greylist.conf`, `rbl.conf`, `emails.conf`, `asn.conf`,
-  `fuzzy_check.conf` and `phishing.conf` in `/etc/rspamd/local.d`, each
-  starting with `# csm-managed-version: 1`. Greylisting, the emails module,
-  sender-IP lookups to rspamd.com, phishtank URL lookups to rspamd.com and
-  public fuzzy storage are off. DNS block lists stay off unless a DNS feed is
-  enabled;
+  `fuzzy_check.conf`, `phishing.conf` and `regexp.conf` in
+  `/etc/rspamd/local.d`, each starting with `# csm-managed-version: 1`.
+  Greylisting, the emails module, sender-IP lookups to rspamd.com, phishtank
+  URL lookups to rspamd.com and public fuzzy storage are off. DNS block lists
+  stay off unless a DNS feed is enabled. `regexp.conf` holds the
+  `CSM_INVISIBLE_CJK_SUBJECT` rule: a Subject with an invisible character,
+  such as a zero-width space, next to a Chinese, Japanese or Korean letter.
+  Spam uses such characters to split words so filters miss them. On its own
+  the rule lifts a message above the default `tag_score` but not to the
+  default `reject_score`. Keep your own regexp rules in
+  `/etc/rspamd/override.d/regexp.conf`;
 - the map redirect files and, with a DNS feed, the blocklist files listed
   under [Feeds](#feeds);
 - a completion record in `/var/lib/csm/antispam`.
@@ -491,7 +497,10 @@ rspamd can change scoring for scans from either generation of Exim hooks.
    classified, none rejects legitimate mail, and no scan or configuration
    failure finding remains.
 3. Review which accounts are opted out today, and decide whether users may use
-   the spam box (WHM Tweak Settings, `skipspambox`).
+   the spam box (WHM Tweak Settings, `skipspambox`). That setting only shows or
+   hides the choice: accounts that already have `~/.spamassassinboxenable`
+   get tagged mail in their Spam folder either way, and turning the spam box
+   off in WHM deletes that file from every account.
 4. Set `dry_run: false`. Check every 550 for a week. Return to dry run on a
    confirmed false positive.
 
