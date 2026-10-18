@@ -343,9 +343,18 @@ func unixExposure(l ControllerListener, f ControllerHostFacts) string {
 		return exposureSocketUnknown
 	}
 	trusted := func(uid int) bool { return uid == 0 || uid == f.RspamdUID }
+	var privateDirs []string
+parents:
 	for _, p := range s.Parents {
 		if !p.Mode.IsDir() {
 			return exposureSocketUnknown
+		}
+		// A private detour still hides its own descendants, even when it
+		// does not hide the socket at the end of the resolved path.
+		for _, dir := range privateDirs {
+			if ancestorOf(dir, p.Path) {
+				continue parents
+			}
 		}
 		if !trusted(p.UID) || p.ExtACL {
 			return exposureSocketParent
@@ -356,6 +365,7 @@ func unixExposure(l ControllerListener, f ControllerHostFacts) string {
 			if ancestorOf(p.Path, s.Socket.Path) {
 				return ""
 			}
+			privateDirs = append(privateDirs, p.Path)
 			continue
 		}
 		if f.othersPermit(p, 0o3) {

@@ -534,6 +534,10 @@ the listener and the reason, including cases where CSM cannot prove isolation:
 - a Unix socket, or one of its parent directories, that other users can
   write to, or whose access CSM cannot verify.
 
+For symlinked Unix sockets, a private directory protects only its own
+descendants. CSM also checks the resolved socket path: a private directory
+on a detour does not hide a socket reachable through its real path.
+
 These warnings also update in observe mode and when an apply is busy. An
 unreadable controller configuration leaves the previous warnings in place.
 Turning antispam off clears them even if CSM cannot cancel pending changes.
