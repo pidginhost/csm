@@ -753,3 +753,33 @@ func FuzzParseScan(f *testing.F) {
 		}
 	})
 }
+
+func FuzzParseControllerConfig(f *testing.F) {
+	for _, seed := range []string{
+		workerDump(`{"bind_socket":"localhost:11334","count":1,"password":"q1","secure_ip":["127.0.0.1","::1"]}`),
+		workerDump(`{"bind_socket":["/run/rspamd/csm-controller.sock mode=0600","localhost:11334"],"secure_ip":[]}`),
+		`{"worker":{"controller":{"bind_socket":"*:11334"}}}`,
+		`{"worker":[{"controller":{"bind_socket":"/run/x.sock mode=`,
+		`{}`,
+		``,
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, dump string) {
+		cfg, err := ParseControllerConfig([]byte(dump))
+		if err != nil {
+			return
+		}
+		for _, l := range cfg.Listeners {
+			if l.Unix && (l.Path == "" || !strings.HasPrefix(l.Path, "/")) {
+				t.Fatalf("Unix listener without an absolute path: %+v", l)
+			}
+			if !l.Unix && l.HostPort == "" {
+				t.Fatalf("TCP listener without host:port: %+v", l)
+			}
+		}
+		if cfg.Present && len(cfg.Listeners) == 0 {
+			t.Fatalf("controller present without listeners: %+v", cfg)
+		}
+	})
+}
