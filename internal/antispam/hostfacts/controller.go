@@ -103,7 +103,7 @@ func unixSocketFacts(p string) antispam.SocketFacts {
 	}
 	s.Socket, s.Err = pathFacts(final)
 	if s.Err == nil && s.Socket.Mode.Type() != fs.ModeSocket {
-		s.Err = errors.New("controller path is not a Unix socket")
+		s.Err = errors.New("the path is not a Unix socket")
 	}
 	return s
 }

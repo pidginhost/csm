@@ -41,6 +41,12 @@ type Layout struct {
 	Targets       []antispam.Target
 	// IPMap is the CSM IP map file rspamd reads.
 	IPMap string
+	// Learning fact sources.
+	ProcNetUDP        string
+	CageFSSkeletonLog string
+	RoundcubeConfig   string
+	CPanelPHP         string
+	CPanelUsers       string
 }
 
 type collector struct {
@@ -58,20 +64,28 @@ type collector struct {
 	interfaceAddrs func() ([]net.Addr, error)
 	readGroup      func() ([]byte, error)
 	readPasswd     func() ([]byte, error)
+	// redisProbe reads the live Redis values learning depends on.
+	redisProbe func(ctx context.Context, endpoint string, password antispam.Secret) antispam.RedisFacts
 }
 
 func live() collector {
 	return collector{
 		layout: Layout{
-			GeneratedConf: antispam.GeneratedEximConfPath,
-			LocalConf:     antispam.LocalEximConfPath,
-			SpamdDisabled: "/etc/spamddisable",
-			GlobalEnable:  "/etc/global_spamassassin_enable",
-			Record:        antispam.RecordPath,
-			ResolvConf:    "/etc/resolv.conf",
-			Targets:       antispam.MutationTargets(),
-			IPMap:         ipmap.DefaultPath,
+			GeneratedConf:     antispam.GeneratedEximConfPath,
+			LocalConf:         antispam.LocalEximConfPath,
+			SpamdDisabled:     "/etc/spamddisable",
+			GlobalEnable:      "/etc/global_spamassassin_enable",
+			Record:            antispam.RecordPath,
+			ResolvConf:        "/etc/resolv.conf",
+			Targets:           antispam.MutationTargets(),
+			IPMap:             ipmap.DefaultPath,
+			ProcNetUDP:        procNetUDP,
+			CageFSSkeletonLog: cageFSSkeletonLog,
+			RoundcubeConfig:   roundcubeConfig,
+			CPanelPHP:         cpanelPHP,
+			CPanelUsers:       cpanelUsers,
 		},
+		redisProbe:     RedisProbe,
 		cpanel:         func() bool { return platform.Detect().IsCPanel() },
 		eximMTA:        func() bool { return platform.DetectMTA() == platform.MTAExim },
 		run:            runCommand,
