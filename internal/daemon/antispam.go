@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"net/netip"
 	"slices"
@@ -76,6 +77,14 @@ var antispamReconciler = func() reconcile.Reconciler {
 		Probe:      hostfacts.QueryDNS,
 		Feeds:      reconcile.NewFeedState(),
 		Learning:   reconcile.NewLearningState(),
+		EnsureKeys: func(ctx context.Context, dir string) (bool, error) {
+			newKeypair := func(ctx context.Context) (antispam.Keypair, error) {
+				return hostfacts.NewFuzzyKeypair(ctx, hostfacts.RunCommand)
+			}
+			return hostfacts.EnsureLearningKeys(ctx, dir, newKeypair, rand.Reader)
+		},
+		LoadKeys:        hostfacts.LoadLearningKeys,
+		CollectLearning: hostfacts.CollectLearning,
 	}
 }
 

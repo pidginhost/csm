@@ -552,3 +552,32 @@ func roundcubeUsable(c *learningCheck, f HostFacts) bool {
 	}
 	return true
 }
+
+// LearningScoringLoaded reports whether the full `rspamadm configdump -j`
+// shows CSM's learning rules loaded in an enabled fuzzy_check module. An
+// unreadable dump says nothing.
+func LearningScoringLoaded(fullDump []byte) bool {
+	root, err := dumpObjectAs[json.RawMessage](fullDump, "configdump")
+	if err != nil {
+		return false
+	}
+	section, ok := root["fuzzy_check"]
+	if !ok {
+		return false
+	}
+	fields, err := dumpObjectAs[json.RawMessage](section, "fuzzy_check")
+	if err != nil {
+		return false
+	}
+	var enabled bool
+	if raw, ok := fields["enabled"]; ok && json.Unmarshal(raw, &enabled) == nil && !enabled {
+		return false
+	}
+	rules, err := loadedFuzzyRules(section)
+	if err != nil {
+		return false
+	}
+	_, scan := rules["csm"]
+	_, learn := rules["csm_learn"]
+	return scan || learn
+}

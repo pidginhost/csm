@@ -16,6 +16,26 @@ type LearningState struct {
 	// roundcube is the learning configuration whose webmail include did not
 	// take effect, and why.
 	roundcube, roundcubeWhy string
+	// paused is the Redis memory guard's last state.
+	paused bool
+}
+
+func (st *LearningState) setRedisPaused(paused bool) {
+	if st == nil {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.paused = paused
+}
+
+func (st *LearningState) redisPaused() bool {
+	if st == nil {
+		return false
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.paused
 }
 
 // NewLearningState returns empty learning memory.
@@ -82,19 +102,23 @@ func learningGeneration(s antispam.Settings) string {
 	return "dir:" + s.LearningDir
 }
 
-// applyLearningHold turns learning off while its configuration is held, and
-// the webmail include off while it is held.
+// applyLearningHold turns learning off while its configuration is held.
 func (st *LearningState) applyLearningHold(s antispam.Settings) (antispam.Settings, []antispam.Problem) {
-	generation := learningGeneration(s)
-	if st.held(generation) {
-		s.Learning, s.Roundcube = false, false
-		return s, []antispam.Problem{{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonApplyFailed,
-			Detail: "rspamd did not load CSM's learning configuration as written; learning stays off until its configuration changes or CSM restarts"}}
+	if !st.held(learningGeneration(s)) {
+		return s, nil
 	}
-	if why, held := st.roundcubeHeld(generation); held && s.Roundcube {
-		s.Roundcube = false
-		return s, []antispam.Problem{{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonRoundcube,
-			Detail: why + "; the webmail Junk-button include stays off until the learning configuration changes or CSM restarts"}}
+	s.Learning, s.Roundcube = false, false
+	return s, []antispam.Problem{{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonApplyFailed,
+		Detail: "rspamd did not load CSM's learning configuration as written; learning stays off until its configuration changes or CSM restarts"}}
+}
+
+// applyRoundcubeHold turns the webmail include off while it is held.
+func (st *LearningState) applyRoundcubeHold(s antispam.Settings) (antispam.Settings, []antispam.Problem) {
+	why, held := st.roundcubeHeld(learningGeneration(s))
+	if !held || !s.Roundcube {
+		return s, nil
 	}
-	return s, nil
+	s.Roundcube = false
+	return s, []antispam.Problem{{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonRoundcube,
+		Detail: why + "; the webmail Junk-button include stays off until the learning configuration changes or CSM restarts"}}
 }

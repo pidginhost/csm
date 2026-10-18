@@ -89,7 +89,7 @@ func TestPassRetriesInvalidationBeforeReadingHost(t *testing.T) {
 				}
 				var wantChecks []string
 				if !enabled {
-					wantChecks = []string{CheckControllerOpen}
+					wantChecks = []string{CheckControllerOpen, CheckLearning}
 				}
 				if out.Retry != wantRetry || !reflect.DeepEqual(out.Checks, wantChecks) ||
 					h.invalidated != 1 || h.installed != 0 || len(h.collected) != 0 || len(h.requests) != 0 {
@@ -336,7 +336,7 @@ func TestPassReportsWorkerTimeout(t *testing.T) {
 	out := h.reconciler().Pass(context.Background(), desired(true))
 	if !errors.Is(out.Err, context.DeadlineExceeded) || out.Retry != 0 || len(out.Findings) != 1 ||
 		out.Findings[0].Check != CheckApplyFailed || out.Findings[0].Message != "Antispam apply returned no result" ||
-		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckControllerOpen}) {
+		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning, CheckControllerOpen}) {
 		t.Fatalf("outcome %+v", out)
 	}
 }
@@ -361,7 +361,7 @@ func TestPassKeepsWorkerResultAfterCancellation(t *testing.T) {
 	if out.Err != nil || out.Retry != 0 || len(out.Findings) != 1 ||
 		out.Findings[0].Check != CheckApplyFailed || out.Findings[0].Severity != alert.Critical ||
 		!strings.Contains(out.Findings[0].Details, "could not confirm") ||
-		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckControllerOpen}) {
+		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning, CheckControllerOpen}) {
 		t.Fatalf("outcome %+v", out)
 	}
 }
@@ -408,7 +408,7 @@ func TestPassObservePreconditionsDescribeNoChanges(t *testing.T) {
 // settled. A canceled pass settles nothing, and a busy one leaves the last
 // apply result in place until the retry.
 func TestPassNamesTheChecksItSettled(t *testing.T) {
-	both := []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckControllerOpen}
+	both := []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning, CheckControllerOpen}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, tc := range []struct {

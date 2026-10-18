@@ -281,6 +281,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "antispam_feed", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "antispam_ip_map", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "antispam_controller_open", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
+	{Name: "antispam_learning", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "antispam_precondition", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "antispam_rspamd_down", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},
 	{Name: "antispam_rspamd_recovered", Category: CategoryEmail, Correlation: CorrelationIgnored, CorrelationReason: reasonSelfHealth},

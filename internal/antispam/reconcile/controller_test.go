@@ -155,7 +155,7 @@ func TestPassControllerClearedWhenDisabledInvalidationFails(t *testing.T) {
 			r := h.reconciler()
 			r.Invalidate = func(context.Context) error { return failure }
 			out := r.Pass(context.Background(), desired(false))
-			if !slices.Equal(out.Checks, []string{CheckControllerOpen}) || len(controllerFindings(out)) != 0 {
+			if !slices.Equal(out.Checks, []string{CheckControllerOpen, CheckLearning}) || len(controllerFindings(out)) != 0 {
 				t.Fatalf("disabled pass left controller warnings unsettled: %+v", out)
 			}
 			if h.installed != 0 || len(h.collected) != 0 || len(h.requests) != 0 {

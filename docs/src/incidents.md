@@ -612,6 +612,7 @@ Attribution gaps:
 | `antispam_controller_open` | ignored | self-health |  |
 | `antispam_feed` | ignored | self-health |  |
 | `antispam_ip_map` | ignored | self-health |  |
+| `antispam_learning` | ignored | self-health |  |
 | `antispam_precondition` | ignored | self-health |  |
 | `antispam_rspamd_down` | ignored | self-health |  |
 | `antispam_rspamd_recovered` | ignored | self-health |  |
