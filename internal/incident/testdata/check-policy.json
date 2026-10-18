@@ -11,6 +11,7 @@
       "af_alg_enforcement_corrected",
       "af_alg_socket_use",
       "antispam_apply_failed",
+      "antispam_controller_open",
       "antispam_feed",
       "antispam_ip_map",
       "antispam_precondition",
