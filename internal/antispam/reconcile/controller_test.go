@@ -223,3 +223,16 @@ func TestControllerFindingExplainsUnixProtection(t *testing.T) {
 		}
 	}
 }
+
+func TestPassReportsUnverifiableController(t *testing.T) {
+	f := goodFeedFacts()
+	f.ControllerUnverifiable = errors.New("configdump worker controller: bind_socket systemd endpoint is unresolved")
+	out := passWithFacts(f, antispam.Keep)
+	got := controllerFindings(out)
+	if len(got) != 1 || got[0].DedupKey != "controller" || !strings.Contains(got[0].Details, "controller configuration CSM cannot verify") {
+		t.Fatalf("controller findings = %+v, want one cannot-verify warning", got)
+	}
+	if !slices.Contains(out.Checks, CheckControllerOpen) {
+		t.Fatalf("Checks = %v, want the check settled with the warning", out.Checks)
+	}
+}

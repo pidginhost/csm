@@ -530,7 +530,10 @@ the listener and the reason, including cases where CSM cannot prove isolation:
 - a trusted address that local processes can use (loopback, a wildcard, or
   one of the server's own addresses);
 - a trust entry CSM cannot resolve, such as a map file or a hostname;
-- no controller password at all, or only an enable password;
+- no controller password at all, only an enable password, or an empty
+  password;
+- a controller configuration CSM cannot read in full, such as a systemd
+  socket or a second controller worker;
 - a Unix socket, or one of its parent directories, that other users can
   write to, or whose access CSM cannot verify.
 
@@ -538,8 +541,8 @@ For symlinked Unix sockets, a private directory protects only its own
 descendants. CSM also checks the resolved socket path: a private directory
 on a detour does not hide a socket reachable through its real path.
 
-These warnings also update in observe mode and when an apply is busy. An
-unreadable controller configuration leaves the previous warnings in place.
+These warnings also update in observe mode and when an apply is busy. When
+`rspamadm` cannot run, CSM keeps the previous warnings until it can.
 Turning antispam off clears them even if CSM cannot cancel pending changes.
 
 To close TCP access, keep a controller password set and put this in

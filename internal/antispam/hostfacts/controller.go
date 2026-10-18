@@ -42,7 +42,7 @@ func (c collector) controllerFacts(f *antispam.HostFacts) {
 	}
 	cfg, err := antispam.ParseControllerConfig([]byte(f.RspamdConfig.Stdout))
 	if err != nil {
-		f.ControllerErr = err
+		f.ControllerUnverifiable = err
 		return
 	}
 	f.Controller = cfg

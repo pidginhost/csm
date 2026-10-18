@@ -176,6 +176,10 @@ type HostFacts struct {
 	Controller     ControllerConfig
 	ControllerErr  error
 	ControllerHost ControllerHostFacts
+	// ControllerUnverifiable is set when the dump was read but the
+	// controller in it could not be understood; unlike ControllerErr it is
+	// reported, not waited out.
+	ControllerUnverifiable error
 }
 
 // CheckHost evaluates the host preconditions of spec section 6.2 that hold

@@ -328,11 +328,20 @@ func TestControllerFactsDoNotKeepPasswords(t *testing.T) {
 			if f.ControllerErr != nil || !f.Controller.PasswordSet || !f.Controller.EnablePasswordSet {
 				t.Fatal("valid passwords did not produce presence facts")
 			}
-		} else if f.ControllerErr == nil {
-			t.Fatal("malformed dump did not produce an error")
+		} else if f.ControllerUnverifiable == nil {
+			t.Fatal("malformed dump was not flagged unverifiable")
 		}
-		if strings.Contains(fmt.Sprintf("%+v %+v %v", f.Controller, f.ControllerHost, f.ControllerErr), marker) {
+		if strings.Contains(fmt.Sprintf("%+v %+v %v %v", f.Controller, f.ControllerHost, f.ControllerErr, f.ControllerUnverifiable), marker) {
 			t.Fatal("controller facts or error contain a password")
 		}
+	}
+}
+
+func TestCollectControllerUnparseableIsUnverifiable(t *testing.T) {
+	d := t.TempDir()
+	dump := `{"worker":[{"controller":{"bind_socket":"systemd:controller","password":"x"}}]}`
+	f := testCollector(d, &fakeRun{results: map[string]antispam.CommandResult{"rspamadm configdump -j": {Stdout: dump}}}).collect(context.Background(), antispam.DefaultSocket)
+	if f.ControllerUnverifiable == nil || f.ControllerErr != nil {
+		t.Fatalf("ControllerUnverifiable = %v, ControllerErr = %v; want the dump flagged unverifiable, not transient", f.ControllerUnverifiable, f.ControllerErr)
 	}
 }

@@ -33,6 +33,17 @@ type ControllerConfig struct {
 	TrustEntries      []string
 	PasswordSet       bool
 	EnablePasswordSet bool
+	// PasswordEmpty and EnablePasswordEmpty mark a password given as an
+	// empty string: present, but no secret.
+	PasswordEmpty       bool
+	EnablePasswordEmpty bool
+}
+
+// ControllerUnverifiableProblem reports a loaded controller configuration
+// CSM read but could not understand. A form rspamd accepts but CSM cannot
+// parse must not read as a safe controller.
+func ControllerUnverifiableProblem() Problem {
+	return Problem{Code: CodeControllerOpen, Severity: Warning, Key: "controller", Detail: exposureUnverifiable}
 }
 
 // ParseControllerConfig reads the controller worker from the full
@@ -58,10 +69,21 @@ func ParseControllerConfig(fullDump []byte) (ControllerConfig, error) {
 	if err != nil {
 		return cfg, err
 	}
+	// rspamd skips a worker with enabled = false or count <= 0.
+	if disabledWorker(fields) {
+		return cfg, nil
+	}
 	cfg.Present = true
-	binds, err := stringOrList(fields, "bind_socket")
-	if err != nil {
-		return ControllerConfig{}, err
+	// rspamd looks the bind address up as bind_socket, then listen, then bind.
+	var binds []string
+	for _, key := range []string{"bind_socket", "listen", "bind"} {
+		if _, ok := fields[key]; !ok {
+			continue
+		}
+		if binds, err = stringOrList(fields, key); err != nil {
+			return ControllerConfig{}, err
+		}
+		break
 	}
 	if len(binds) == 0 {
 		return ControllerConfig{}, errors.New("configdump worker controller: bind_socket is missing")
@@ -73,16 +95,34 @@ func ParseControllerConfig(fullDump []byte) (ControllerConfig, error) {
 		}
 		cfg.Listeners = append(cfg.Listeners, l)
 	}
-	if cfg.TrustEntries, err = stringOrList(fields, "secure_ip"); err != nil {
+	// trusted_ips is an alias that writes the same setting; rspamd keeps
+	// whichever it parses last, so both count.
+	for _, key := range []string{"secure_ip", "trusted_ips"} {
+		entries, listErr := stringOrList(fields, key)
+		if listErr != nil {
+			return ControllerConfig{}, listErr
+		}
+		cfg.TrustEntries = append(cfg.TrustEntries, entries...)
+	}
+	if cfg.PasswordSet, cfg.PasswordEmpty, err = passwordState(fields, "password"); err != nil {
 		return ControllerConfig{}, err
 	}
-	if cfg.PasswordSet, err = passwordSet(fields, "password"); err != nil {
-		return ControllerConfig{}, err
-	}
-	if cfg.EnablePasswordSet, err = passwordSet(fields, "enable_password"); err != nil {
+	if cfg.EnablePasswordSet, cfg.EnablePasswordEmpty, err = passwordState(fields, "enable_password"); err != nil {
 		return ControllerConfig{}, err
 	}
 	return cfg, nil
+}
+
+func disabledWorker(fields map[string]json.RawMessage) bool {
+	var enabled bool
+	if raw, ok := fields["enabled"]; ok && json.Unmarshal(raw, &enabled) == nil && !enabled {
+		return true
+	}
+	var count float64
+	if raw, ok := fields["count"]; ok && json.Unmarshal(raw, &count) == nil && count <= 0 {
+		return true
+	}
+	return false
 }
 
 // controllerSection returns the controller object from the worker section,
@@ -106,7 +146,12 @@ func controllerSection(section json.RawMessage) (json.RawMessage, error) {
 		}
 		c, ok := workers["controller"]
 		if !ok {
-			continue
+			// worker { type = "controller"; ... } keeps its fields in place.
+			var kind string
+			if raw, typed := workers["type"]; !typed || json.Unmarshal(raw, &kind) != nil || kind != "controller" {
+				continue
+			}
+			c = entry
 		}
 		if found != nil {
 			return nil, errors.New("configdump worker: more than one controller worker")
@@ -139,16 +184,26 @@ func stringOrList(fields map[string]json.RawMessage, name string) ([]string, err
 	return values, nil
 }
 
-func passwordSet(fields map[string]json.RawMessage, name string) (bool, error) {
+// passwordState follows rspamd's reading: null is unset, a number or a
+// boolean is a set password, and an empty string is present but empty.
+func passwordState(fields map[string]json.RawMessage, name string) (set, empty bool, err error) {
 	raw, ok := fields[name]
 	if !ok {
-		return false, nil
+		return false, false, nil
 	}
-	var value *string
-	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
-		return false, fmt.Errorf("configdump worker controller: %s is not a string", name)
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return false, false, fmt.Errorf("configdump worker controller: %s is not readable", name)
 	}
-	return *value != "", nil
+	switch v := value.(type) {
+	case nil:
+		return false, false, nil
+	case string:
+		return v != "", v == "", nil
+	case float64, bool:
+		return true, false, nil
+	}
+	return false, false, fmt.Errorf("configdump worker controller: %s is not a string", name)
 }
 
 func parseControllerBind(raw string) (ControllerListener, error) {
@@ -239,6 +294,8 @@ const (
 	exposureSocket        = "socket reachable by other users"
 	exposureSocketParent  = "socket parent writable by other users"
 	exposureSocketUnknown = "socket facts unavailable"
+	exposureEmptyPassword = "empty password configured"
+	exposureUnverifiable  = "controller configuration CSM cannot verify"
 )
 
 // Local processes reach these through loopback, whatever the bind address.
@@ -284,8 +341,12 @@ func tcpExposure(c ControllerConfig, f ControllerHostFacts) string {
 		}
 	}
 	switch {
-	case !c.PasswordSet && !c.EnablePasswordSet:
+	case !c.PasswordSet && !c.EnablePasswordSet && !c.PasswordEmpty && !c.EnablePasswordEmpty:
 		return exposureNoPasswords
+	case c.PasswordEmpty || c.EnablePasswordEmpty:
+		// rspamd compares an empty configured password by length; CSM cannot
+		// show that an empty client password is refused.
+		return exposureEmptyPassword
 	case unresolved:
 		return exposureUnresolved
 	case !c.PasswordSet:

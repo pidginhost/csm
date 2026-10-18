@@ -159,7 +159,11 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if controllerSettled {
 		out.Checks = append(out.Checks, CheckControllerOpen)
 	}
-	if d.Enabled && f.ControllerErr == nil {
+	switch {
+	case !d.Enabled || f.ControllerErr != nil:
+	case f.ControllerUnverifiable != nil:
+		out.Findings = append(out.Findings, controllerFinding(antispam.ControllerUnverifiableProblem(), now))
+	default:
 		for _, p := range antispam.ControllerExposure(f.Controller, f.ControllerHost) {
 			out.Findings = append(out.Findings, controllerFinding(p, now))
 		}

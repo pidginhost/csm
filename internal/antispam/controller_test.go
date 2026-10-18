@@ -24,6 +24,9 @@ func workerDump(controller string) string {
 func TestParseControllerRejectsNullFields(t *testing.T) {
 	for _, field := range []string{"bind_socket", "secure_ip", "password", "enable_password"} {
 		for _, value := range []string{`null`, `[null]`, `["localhost:11334",null]`} {
+			if value == `null` && (field == "password" || field == "enable_password") {
+				continue // rspamd reads a null password as unset; see TestParseControllerNullPasswordIsUnset
+			}
 			t.Run(field+"/"+value, func(t *testing.T) {
 				fields := `"` + field + `":` + value
 				if field != "bind_socket" {
@@ -178,14 +181,14 @@ func TestParseControllerEmptyTrust(t *testing.T) {
 }
 
 func TestParseControllerScalarFields(t *testing.T) {
-	cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"*:11334","secure_ip":"10.0.0.0/8","enable_password":"y"}`)))
+	cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"*:11334","secure_ip":"198.51.100.0/24","enable_password":"y"}`)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(cfg.Listeners) != 1 || cfg.Listeners[0].HostPort != "*:11334" {
 		t.Fatalf("Listeners = %+v", cfg.Listeners)
 	}
-	if len(cfg.TrustEntries) != 1 || cfg.TrustEntries[0] != "10.0.0.0/8" {
+	if len(cfg.TrustEntries) != 1 || cfg.TrustEntries[0] != "198.51.100.0/24" {
 		t.Fatalf("TrustEntries = %q", cfg.TrustEntries)
 	}
 	if cfg.PasswordSet || !cfg.EnablePasswordSet {
@@ -302,7 +305,7 @@ func TestParseControllerRejectsGarbage(t *testing.T) {
 		"duplicate worker": `{"worker":[{"controller":{"bind_socket":"a:1"}},{"controller":{"bind_socket":"b:2"}}]}`,
 		"relative unix":    workerDump(`{"bind_socket":"run/x.sock mode=0600"}`),
 		"bad mode":         workerDump(`{"bind_socket":"/run/x.sock mode=09"}`),
-		"password type":    workerDump(`{"bind_socket":"localhost:11334","password":7}`),
+		"password type":    workerDump(`{"bind_socket":"localhost:11334","password":[7]}`),
 		"bind type":        workerDump(`{"bind_socket":7}`),
 		"trust type":       workerDump(`{"bind_socket":"localhost:11334","secure_ip":[7]}`),
 		"no bind":          workerDump(`{"password":"x"}`),
@@ -527,5 +530,111 @@ func TestControllerExposureSymlinkDetourDoesNotHide(t *testing.T) {
 	}
 	if got := ControllerExposure(l, f); len(got) != 0 {
 		t.Fatalf("socket behind an unsearchable ancestor: problems = %+v, want none", got)
+	}
+}
+
+func TestParseControllerNullPasswordIsUnset(t *testing.T) {
+	cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"localhost:11334","password":null,"enable_password":null}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PasswordSet || cfg.EnablePasswordSet || cfg.PasswordEmpty || cfg.EnablePasswordEmpty {
+		t.Fatalf("null passwords: %+v, want both unset", cfg)
+	}
+}
+
+func TestParseControllerNumericPasswordIsSet(t *testing.T) {
+	cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"localhost:11334","password":12345,"enable_password":true}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.PasswordSet || !cfg.EnablePasswordSet {
+		t.Fatalf("numeric and boolean passwords: %+v, want both set", cfg)
+	}
+}
+
+func TestParseControllerEmptyPasswordFlagged(t *testing.T) {
+	cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"localhost:11334","password":"x","enable_password":""}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.PasswordSet || cfg.EnablePasswordSet || !cfg.EnablePasswordEmpty || cfg.PasswordEmpty {
+		t.Fatalf("empty enable_password: %+v", cfg)
+	}
+}
+
+func TestParseControllerTrustedIPsAlias(t *testing.T) {
+	cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"localhost:11334","password":"q1","secure_ip":[],"trusted_ips":"127.0.0.1"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(cfg.TrustEntries, ",") != "127.0.0.1" {
+		t.Fatalf("TrustEntries = %q, want trusted_ips counted with secure_ip", cfg.TrustEntries)
+	}
+	cfg, err = ParseControllerConfig([]byte(workerDump(`{"bind_socket":"localhost:11334","secure_ip":"198.51.100.1","trusted_ips":["127.0.0.1"]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(cfg.TrustEntries, ",") != "198.51.100.1,127.0.0.1" {
+		t.Fatalf("TrustEntries = %q, want the union", cfg.TrustEntries)
+	}
+}
+
+func TestParseControllerTypeKeyForm(t *testing.T) {
+	dump := `{"worker":[{"type":"normal","bind_socket":"localhost:11333"},{"type":"controller","bind_socket":"localhost:11334","password":"x"}]}`
+	cfg, err := ParseControllerConfig([]byte(dump))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Present || len(cfg.Listeners) != 1 || cfg.Listeners[0].HostPort != "localhost:11334" || !cfg.PasswordSet {
+		t.Fatalf("type-key controller: %+v", cfg)
+	}
+	both := `{"worker":[{"controller":{"bind_socket":"a:1"}},{"type":"controller","bind_socket":"b:2"}]}`
+	if _, err := ParseControllerConfig([]byte(both)); err == nil {
+		t.Fatal("two controllers in different forms accepted")
+	}
+}
+
+func TestParseControllerListenAliases(t *testing.T) {
+	for _, key := range []string{"listen", "bind"} {
+		cfg, err := ParseControllerConfig([]byte(workerDump(`{"` + key + `":"localhost:11334","password":"x"}`)))
+		if err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
+		if len(cfg.Listeners) != 1 || cfg.Listeners[0].HostPort != "localhost:11334" {
+			t.Fatalf("%s: Listeners = %+v", key, cfg.Listeners)
+		}
+	}
+}
+
+func TestParseControllerDisabledIsAbsent(t *testing.T) {
+	for _, extra := range []string{`"enabled":false`, `"count":0`, `"count":-1`} {
+		cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"localhost:11334",` + extra + `}`)))
+		if err != nil {
+			t.Fatalf("%s: %v", extra, err)
+		}
+		if cfg.Present {
+			t.Fatalf("%s: controller present, want a disabled worker treated as absent", extra)
+		}
+	}
+	cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"localhost:11334","count":1,"enabled":true}`)))
+	if err != nil || !cfg.Present {
+		t.Fatalf("enabled controller: cfg=%+v err=%v", cfg, err)
+	}
+}
+
+func TestControllerExposureEmptyPassword(t *testing.T) {
+	c := tcpController(nil, true, false)
+	c.EnablePasswordEmpty = true
+	onlyReason(t, ControllerExposure(c, hostFacts()), "localhost:11334", "empty password configured")
+	c = tcpController(nil, false, true)
+	c.PasswordEmpty = true
+	onlyReason(t, ControllerExposure(c, hostFacts()), "localhost:11334", "empty password configured")
+}
+
+func TestControllerUnverifiableProblem(t *testing.T) {
+	p := ControllerUnverifiableProblem()
+	if p.Code != CodeControllerOpen || p.Severity != Warning || p.Key != "controller" || p.Detail != "controller configuration CSM cannot verify" {
+		t.Fatalf("problem = %+v", p)
 	}
 }
