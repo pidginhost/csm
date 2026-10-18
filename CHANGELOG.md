@@ -41,6 +41,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- CI image rebuilds finish before checks and release builds start using them.
+- Arm64 release builds no longer wait past the deadline when the image registry stalls.
 - Dry-run automatic responses no longer mark addresses as auto-blocked in the attack database.
 - Firewall status and port listings now reflect applied peer changes and rollbacks without requiring a daemon restart.
 - `csm rehash` now refuses unknown options instead of re-signing the whole configuration.

@@ -161,10 +161,10 @@ GitLab CI (`.gitlab-ci.yml`) is the internal build pipeline. It runs lint/test/p
 
 | Stage | What it does |
 |-------|-------------|
-| **.pre** | Release preflight rejects version tags without a usable cPanel image. |
+| **.pre** | Manual CI tools and amd64 builder image rebuilds when needed. Release preflight rejects version tags without a usable cPanel image. |
 | **lint** | Pinned golangci-lint and formatter, vet, blocking gosec/govulncheck, fixture privacy, and Prometheus config validation. |
 | **test** | Full default-tag race/coverage suite (30-minute package timeout), shipped-tag lint/security/race gate, required kernel/service gate, and four pinned clean-application gates. |
-| **build-image** | Build CSM builder Docker image with YARA-X (manual trigger) |
+| **build-image** | Build the arm64 builder image with YARA-X (manual trigger). |
 | **build** | amd64 and arm64 release binaries with YARA-X CGO and the `yara journal bpf` build tags. arm64 builds run under QEMU in rootless BuildKit. |
 | **package** | RPM + DEB via nFPM |
 | **integration** | Spin up cloudv-1 AlmaLinux and Ubuntu hosts plus the configured clean cPanel image via phctl, install the pipeline-built amd64 packages, run the integration test binary, collect coverage, and confirm every test server was really deleted. `main` integration is manual and can omit cPanel; version tags require the cPanel image, baseline-to-candidate package upgrade, installer, WHM, mail watcher and forward guard checks. |
@@ -175,6 +175,18 @@ GitLab CI (`.gitlab-ci.yml`) is the internal build pipeline. It runs lint/test/p
 | **cleanup** | Remove old package versions |
 | **release** | GitLab release on tags matching `v*` |
 | **github** | Mirror to GitHub + upload release artifacts (auto on tag push) |
+
+On branch pushes, changes to an image recipe or `.gitlab-ci.yml` require its
+manual image build to succeed before consumers start. CI configuration changes
+require both `build-ci-tools-image` and `build-builder-image`, since that file
+holds both image tags. Preflight waits for CI tools; the early amd64 build
+waits for its builder. Other checks wait for the `.pre` stage. Unchanged-image
+pipelines reuse published images without waiting for optional manual jobs.
+
+When changing `CSM_BUILDER_TAG`, also run `build-builder-image-arm64`. The arm64
+release build polls for that image, retries failed or empty token responses,
+and bounds registry requests by the remaining 90-minute wait. It fails if the
+image is still unavailable at the deadline. Re-run it after publishing the image.
 
 ## Public Releases
 
