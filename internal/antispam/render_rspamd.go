@@ -17,13 +17,14 @@ var RspamdFiles = []string{"actions.conf", "greylist.conf", "rbl.conf", "emails.
 // operator enables a DNS feed.
 const disabledModule = ManagedHeader + "\nenabled = false;\n"
 
-// invisibleCJK matches an invisible character next to a Chinese, Japanese
-// or Korean letter. Spam puts them inside subject words to split them for
-// filters; legitimate subjects use them beside Latin text or inside emoji.
+// Script properties cover half-width and supplementary letters too. Restrict
+// them to letters so punctuation, radicals and combining marks do not score.
+// Kana prolonged sound marks have the Common script, so include them explicitly.
+// Marks after a letter keep decomposed kana and Han variation sequences intact.
 const (
-	cjkLetters     = `\x{3040}-\x{30FF}\x{4E00}-\x{9FFF}\x{AC00}-\x{D7AF}`
+	cjkLetter      = `(?=[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}\x{30FC}\x{FF70}])\p{L}`
 	invisibleChars = `\x{200B}-\x{200D}\x{2060}\x{FEFF}`
-	invisibleCJK   = `[` + cjkLetters + `][` + invisibleChars + `]|[` + invisibleChars + `][` + cjkLetters + `]`
+	invisibleCJK   = cjkLetter + `\p{M}*[` + invisibleChars + `]|[` + invisibleChars + `]` + cjkLetter
 )
 
 // subjectRules scores the decoded Subject. On its own the weight lifts an
