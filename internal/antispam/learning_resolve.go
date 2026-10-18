@@ -175,18 +175,7 @@ func checkLearningController(c *learningCheck, f HostFacts) {
 		c.add(ReasonBackendUnavailable, "rspamd's service user is unknown")
 		return
 	}
-	private := 0
-	for _, l := range f.Controller.Listeners {
-		if !l.Unix {
-			continue
-		}
-		s, ok := host.Sockets[l.Path]
-		if ok && s.Err == nil && !s.Missing && s.Socket.UID == host.RspamdUID &&
-			s.Socket.Mode.Perm() == 0o600 && unixExposure(l, host) == "" {
-			private++
-		}
-	}
-	if private != 1 {
+	if len(privateControllerSockets(f)) != 1 {
 		c.add(ReasonUnsafe, "learning needs exactly one private controller socket owned by rspamd with mode 0600")
 	}
 	// The control socket gets the same checks as the controller socket:
@@ -200,6 +189,35 @@ func checkLearningController(c *learningCheck, f HostFacts) {
 		unixExposure(ControllerListener{Unix: true, Path: cs.Socket.Path}, withSocket(host, cs.Socket.Path, cs)) != "":
 		c.add(ReasonUnsafe, "rspamd's control socket is not private to root and rspamd")
 	}
+}
+
+// privateControllerSockets lists the controller's Unix sockets that only
+// root and rspamd can use: owned by rspamd, mode 0600, behind protected
+// directories (spec 9).
+func privateControllerSockets(f HostFacts) []string {
+	host := f.ControllerHost
+	var out []string
+	for _, l := range f.Controller.Listeners {
+		if !l.Unix || host.RspamdUID < 0 {
+			continue
+		}
+		s, ok := host.Sockets[l.Path]
+		if ok && s.Err == nil && !s.Missing && s.Socket.UID == host.RspamdUID &&
+			s.Socket.Mode.Perm() == 0o600 && unixExposure(l, host) == "" {
+			out = append(out, l.Path)
+		}
+	}
+	return out
+}
+
+// PrivateControllerSocket returns the one private controller socket learning
+// talks to, or false when there is none or more than one.
+func PrivateControllerSocket(f HostFacts) (string, bool) {
+	paths := privateControllerSockets(f)
+	if len(paths) != 1 {
+		return "", false
+	}
+	return paths[0], true
 }
 
 func withSocket(host ControllerHostFacts, p string, s SocketFacts) ControllerHostFacts {

@@ -55,6 +55,9 @@ func EnabledModules(out string) (map[string]bool, error) {
 // action is disabled or absent.
 type Actions struct {
 	Reject, AddHeader, Greylist, RewriteSubject *float64
+	// GrowFactor rescales scores above the reject threshold; learning's
+	// score table assumes none (spec 6.2).
+	GrowFactor *float64
 }
 
 // ParseActions reads `rspamadm configdump -j actions`. Keys other than the
@@ -98,7 +101,7 @@ func ParseActions(out []byte) (Actions, error) {
 	for _, field := range []struct {
 		key string
 		dst **float64
-	}{{"reject", &a.Reject}, {"add_header", &a.AddHeader}, {"greylist", &a.Greylist}, {"rewrite_subject", &a.RewriteSubject}} {
+	}{{"reject", &a.Reject}, {"add_header", &a.AddHeader}, {"greylist", &a.Greylist}, {"rewrite_subject", &a.RewriteSubject}, {"grow_factor", &a.GrowFactor}} {
 		if *field.dst, err = get(field.key); err != nil {
 			return Actions{}, err
 		}
@@ -137,6 +140,14 @@ func checkRspamdModules(enabled map[string]bool, s Settings) []string {
 	for _, m := range modulesOff {
 		// With a DNS feed rbl runs CSM's rules; CheckFeedsLoaded checks them.
 		if m == "rbl" && dns {
+			continue
+		}
+		// With learning fuzzy_check runs CSM's rules; CheckLearningLoaded
+		// checks them.
+		if m == "fuzzy_check" && s.Learning {
+			if !enabled[m] {
+				out = append(out, "rspamd module fuzzy_check is disabled; learning needs it")
+			}
 			continue
 		}
 		if enabled[m] {

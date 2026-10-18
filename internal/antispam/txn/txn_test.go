@@ -43,7 +43,10 @@ type fakeHost struct {
 	// learning and learningErr are the learning keys preflight reports.
 	learning    antispam.LearningKeys
 	learningErr error
-	problems    []antispam.Problem
+	// spamWeight is the effective CSM_FUZZY_SPAM weight /symbols reports
+	// once learning is loaded (10 unless set).
+	spamWeight float64
+	problems   []antispam.Problem
 	// pingFail and greetFail list the 1-based probe calls that fail.
 	pingFail, greetFail []int
 	pings, greets       int
@@ -117,6 +120,11 @@ func (f *fakeHost) host() *Host {
 		preflight: func(context.Context, antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
 			return antispam.HostFacts{Targets: snapshot(), RspamdGID: os.Getgid(), DQSKey: f.key,
 				LearningKeys: f.learning, LearningKeysErr: f.learningErr,
+				Controller: antispam.ControllerConfig{Present: true, PasswordSet: true, Listeners: []antispam.ControllerListener{
+					{Raw: fakeControllerSocket + " mode=0600", Unix: true, Path: fakeControllerSocket, Mode: 0o600}}},
+				ControllerHost: antispam.ControllerHostFacts{RspamdUID: 979, Sockets: map[string]antispam.SocketFacts{
+					fakeControllerSocket: {Socket: antispam.PathFacts{Path: fakeControllerSocket, UID: 979, Mode: fs.ModeSocket | 0o600},
+						Parents: []antispam.PathFacts{{Path: "/", Mode: fs.ModeDir | 0o755}}}}},
 				RspamdVersion: antispam.CommandResult{Stdout: "Rspamd daemon version 4.2.2\n"},
 				RspamdLog: antispam.LogFacts{Type: "file", Path: "/var/log/rspamd/rspamd.log",
 					File:    antispam.PathFacts{GID: os.Getgid(), Mode: 0o640},
@@ -139,6 +147,12 @@ func (f *fakeHost) host() *Host {
 				return errors.New("no greeting")
 			}
 			return nil
+		},
+		controllerGet: func(_ context.Context, socket, p string, _ int64) ([]byte, error) {
+			if socket != fakeControllerSocket || p != "/symbols" {
+				return nil, errors.New("unexpected controller request")
+			}
+			return []byte(f.loaded().symbols), nil
 		},
 		now:        func() time.Time { return f.start },
 		rspamdWait: 100 * time.Millisecond,
@@ -184,7 +198,12 @@ func (f *fakeHost) run(ctx context.Context, limit time.Duration, name string, ar
 	case line == "rspamadm configdump -m" && f.modules != "":
 		return antispam.CommandResult{Stdout: f.modules}
 	case line == "rspamadm configdump -m":
-		return antispam.CommandResult{Stdout: "Modules enabled: dkim, spf, dmarc\n"}
+		// fuzzy_check follows CSM's core file, as rspamd would load it.
+		modules := "Modules enabled: dkim, spf, dmarc"
+		if st, _ := readFile(f.root + antispam.RspamdLocalDir + "/fuzzy_check.conf"); strings.Contains(st.content, "\nenabled = true;") {
+			modules += ", fuzzy_check"
+		}
+		return antispam.CommandResult{Stdout: modules + "\n"}
 	case line == "rspamadm configdump -j rbl" && f.rbl != "":
 		return antispam.CommandResult{Stdout: f.rbl}
 	case line == "rspamadm configdump -j rbl":
@@ -195,6 +214,12 @@ func (f *fakeHost) run(ctx context.Context, limit time.Duration, name string, ar
 		return antispam.CommandResult{Stdout: `{}`}
 	case line == "rspamadm configdump -j actions":
 		return antispam.CommandResult{Stdout: f.dumpActions()}
+	case line == "rspamadm configdump -j fuzzy_check":
+		return antispam.CommandResult{Stdout: f.loaded().fuzzyCheck}
+	case line == "rspamadm configdump -j group":
+		return antispam.CommandResult{Stdout: f.loaded().group}
+	case line == "rspamadm configdump -j":
+		return antispam.CommandResult{Stdout: `{"worker":` + f.loaded().worker + `}`}
 	case line == "rspamadm configdump -j phishing":
 		return antispam.CommandResult{Stdout: f.dumpPhishing()}
 	}

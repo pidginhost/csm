@@ -1,7 +1,9 @@
 package txn
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"strings"
@@ -142,5 +144,78 @@ func TestRemoveLeavesForeignRoundcubeFile(t *testing.T) {
 	wantOK(t, f.host().Remove())
 	if got := f.file(antispam.RoundcubeIncludePath); got != foreign {
 		t.Fatalf("foreign include changed: %q", got)
+	}
+}
+
+const fakeControllerSocket = "/run/rspamd/csm-controller.sock"
+
+// fakeLoaded is what rspamd would load from the files on disk, in the shapes
+// rspamd 4.2.2 printed on the scratch host.
+type fakeLoaded struct{ fuzzyCheck, worker, group, symbols string }
+
+func (f *fakeHost) loaded() fakeLoaded {
+	weight := f.spamWeight
+	if weight == 0 {
+		weight = 10
+	}
+	symbols := fmt.Sprintf(`[{"group":"fuzzy","rules":[{"symbol":"CSM_FUZZY_SPAM","weight":%v},{"symbol":"CSM_FUZZY_LEARN","weight":0}]}]`, weight)
+	if st, _ := readFile(f.root + antispam.LearningCheckPath); !st.exists {
+		return fakeLoaded{fuzzyCheck: `{"rule":{"rspamd.com":{}}}`, worker: `[{"fuzzy":{"count":-1}}]`, group: `{"fuzzy":{"max_score":12.0}}`, symbols: `[]`}
+	}
+	k := f.learning
+	rule := func(extra string) string {
+		return fmt.Sprintf(`{"servers":"127.0.0.1:11335","fuzzy_key":%q,"fuzzy_shingles_key":%q,"read_encryption_key":%q,`+
+			`"skip_unknown":true,"max_score":18.0,"min_length":32,"text_hashes":true,"text_shingles":true,"html_shingles":false,`+
+			`"skip_images":true,"mime_types":[],"scan_archives":false,%s}`, k.Fuzzy.Reveal(), k.Shingles.Reveal(), k.Read.Public, extra)
+	}
+	return fakeLoaded{
+		fuzzyCheck: `{"enabled":true,"rule":[{"csm":` + rule(`"read_only":true,"fuzzy_map":{"CSM_FUZZY_SPAM":{"flag":1,"max_score":18.0}}`) + `},` +
+			`{"csm_learn":` + rule(fmt.Sprintf(`"mode":"write_only","retransmits":0,"write_encryption_key":%q,"fuzzy_map":{"CSM_FUZZY_LEARN":{"flag":1,"max_score":18.0}}`, k.Write.Public)) + `}]}`,
+		worker: fmt.Sprintf(`[{"fuzzy":{"allow_update":[],"backend":"redis","bind_socket":"127.0.0.1:11335","count":1,"encrypted_only":true,`+
+			`"expire":7776000.0,"prefix":%q,"keypair":[{"extensions":{"allowed_ops":["read"]},"privkey":%q,"pubkey":%q},`+
+			`{"extensions":{"allowed_ops":["read","write","delete"]},"privkey":%q,"pubkey":%q}]}}]`,
+			k.Prefix, k.Read.Private.Reveal(), k.Read.Public, k.Write.Private.Reveal(), k.Write.Public),
+		group:   `{"headers":{"max_score":8.0}}` + "\n" + `{"fuzzy":{"max_score":10.0,"symbols":{"CSM_FUZZY_SPAM":{"weight":10.0},"CSM_FUZZY_LEARN":{"weight":0.0}}}}`,
+		symbols: symbols,
+	}
+}
+
+func TestApplyLearningCheckRollsBack(t *testing.T) {
+	f := newFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	before := f.state()
+	f.reset()
+	s := learningApply(f)
+	// A dynamic /savesymbols override changed the effective weight.
+	f.spamWeight = 20
+	r := f.host().Apply(s)
+	if r.OK || r.FailedStep != antispam.LearningCheckStep || r.Rollback != antispam.RollbackVerified {
+		t.Fatalf("result = %+v", r)
+	}
+	if !maps.Equal(before, f.state()) {
+		t.Fatal("learning check failure left files changed")
+	}
+	for _, secret := range []string{f.learning.Fuzzy.Reveal(), f.learning.Write.Private.Reveal()} {
+		if strings.Contains(r.Error, secret) {
+			t.Fatal("result carries a key")
+		}
+	}
+	if f.count(BuildEximConf) != 0 {
+		t.Fatal("a learning check failure rebuilt Exim")
+	}
+}
+
+func TestApplyLearningNeedsPrivateController(t *testing.T) {
+	f := newFake(t)
+	s := learningApply(f)
+	h := f.host()
+	preflight := h.preflight
+	h.preflight = func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem) {
+		facts, problems := preflight(ctx, s)
+		facts.Controller.Listeners = nil
+		return facts, problems
+	}
+	if r := h.Apply(s); r.OK || r.FailedStep != antispam.LearningCheckStep {
+		t.Fatalf("result = %+v", r)
 	}
 }

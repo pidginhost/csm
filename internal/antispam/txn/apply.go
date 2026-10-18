@@ -130,6 +130,11 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		if err := t.reloadRspamd(t.fwd, t.rspamdProbe); err != nil {
 			return t.fail(StepRspamdReload, err)
 		}
+		if s.Learning {
+			if err := t.checkLearning(t.fwd, f); err != nil {
+				return t.fail(StepLearningCheck, err)
+			}
+		}
 	}
 	if rebuildExim {
 		verify := func(conf, rcptACL, dataACL string) error {

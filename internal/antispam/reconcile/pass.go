@@ -69,6 +69,8 @@ type Reconciler struct {
 	Probe func(ctx context.Context, server netip.AddrPort, name string) antispam.ProbeAnswer
 	// IPMap writes and removes the CSM IP map; unset hooks do nothing.
 	IPMap IPMapHooks
+	// Learning remembers a learning configuration held after a failed check.
+	Learning *LearningState
 	// assess replaces antispam.Assess in tests.
 	assess func(enabled bool, s antispam.Settings, f antispam.HostFacts) antispam.Assessment
 }
@@ -85,6 +87,8 @@ type Outcome struct {
 	// latest findings with Findings. A canceled pass settles none, and a
 	// busy one leaves the last apply result until its retry.
 	Checks []string
+	// LearningProblems are this pass's learning conditions.
+	LearningProblems []antispam.Problem
 }
 
 // Pass brings the host towards d once (spec sections 6.1 and 6.5). A
@@ -149,13 +153,15 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 		assess = antispam.Assess
 	}
 	settings, feedProblems := d.Settings, []antispam.Problem(nil)
+	var learningProblems []antispam.Problem
 	if d.Enabled {
 		settings, feedProblems = antispam.ResolveFeeds(d.Settings, f)
 		settings, feedProblems = r.Feeds.apply(d.Settings, settings, feedProblems)
+		settings, learningProblems = r.Learning.applyLearningHold(settings)
 	}
 	a := assess(d.Enabled, settings, f)
 	now := r.Now()
-	out := Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed}}
+	out := Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed}, LearningProblems: learningProblems}
 	// Controller exposure needs no install: it is reported whenever
 	// antispam is on and cleared when it is off. An unreadable controller
 	// keeps the last result.
@@ -240,6 +246,9 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	if result.FailedStep == antispam.FeedsCheckStep {
 		r.Feeds.hold(d.Settings)
+	}
+	if result.FailedStep == antispam.LearningCheckStep {
+		r.Learning.hold(learningGeneration(settings))
 	}
 	if finding, ok := resultFinding(req.Operation, result, err, now); ok {
 		out.Findings = append(out.Findings, finding)

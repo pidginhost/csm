@@ -2,6 +2,7 @@ package txn
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -44,7 +45,14 @@ const (
 	StepRoundcube     = "roundcube_files"
 	StepComplete      = "complete"
 	StepFeedsCheck    = antispam.FeedsCheckStep
+	StepLearningCheck = antispam.LearningCheckStep
 )
+
+// errLearningLoaded distinguishes learning verification failures.
+var errLearningLoaded = errors.New("rspamd's loaded learning configuration could not be verified against CSM's files")
+
+// maxSymbolsReply bounds the controller's /symbols reply.
+const maxSymbolsReply = 4 << 20
 
 // errFeedsLoaded distinguishes feed verification failures from core failures.
 var errFeedsLoaded = errors.New("rspamd feed rules could not be verified against CSM's settings")
@@ -59,8 +67,10 @@ type Host struct {
 	preflight func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem)
 	targets   func() []antispam.TargetFacts
 	ping      func(ctx context.Context, socket string) error
-	greet     func(ctx context.Context, addr string) error
-	now       func() time.Time
+	// controllerGet reads one controller path over a private Unix socket.
+	controllerGet func(ctx context.Context, socket, path string, limit int64) ([]byte, error)
+	greet         func(ctx context.Context, addr string) error
+	now           func() time.Time
 	// rspamdWait and eximWait bound the service probes after a reload.
 	rspamdWait, eximWait time.Duration
 }
@@ -85,10 +95,11 @@ func New() *Host {
 			_, err := hostfacts.Ping(ctx, socket)
 			return err
 		},
-		greet:      smtpGreeting,
-		now:        time.Now,
-		rspamdWait: rspamdWait,
-		eximWait:   eximWait,
+		greet:         smtpGreeting,
+		controllerGet: hostfacts.ControllerGet,
+		now:           time.Now,
+		rspamdWait:    rspamdWait,
+		eximWait:      eximWait,
 	}
 }
 
@@ -612,6 +623,55 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 		if len(antispam.CheckIPMapLoaded(enabled, []byte(dump.Stdout))) > 0 {
 			return errFeedsLoaded
 		}
+	}
+	return nil
+}
+
+// checkLearning compares what rspamd loaded after the reload with CSM's
+// learning files, including the effective weight only the controller shows.
+// Errors carry no command output: the dumps hold keys.
+func (t *tx) checkLearning(ctx context.Context, f antispam.HostFacts) error {
+	socket, ok := antispam.PrivateControllerSocket(f)
+	if !ok {
+		return errors.Join(errLearningLoaded, errors.New("learning needs one private controller socket"))
+	}
+	dump := func(args ...string) (string, error) {
+		r := t.cmd(ctx, commandLimit, "rspamadm", append([]string{"configdump", "-j"}, args...)...)
+		if r.Err != nil {
+			return "", errors.Join(errLearningLoaded, cmdErr("rspamadm configdump -j "+strings.Join(args, " "), r))
+		}
+		return r.Stdout, nil
+	}
+	fuzzyCheck, err := dump("fuzzy_check")
+	if err != nil {
+		return err
+	}
+	full, err := dump()
+	if err != nil {
+		return err
+	}
+	group, err := dump("group")
+	if err != nil {
+		return err
+	}
+	acts, err := dump("actions")
+	if err != nil {
+		return err
+	}
+	var root map[string]json.RawMessage
+	if json.Unmarshal([]byte(full), &root) != nil {
+		return errors.Join(errLearningLoaded, errors.New("rspamadm configdump -j is not readable"))
+	}
+	actions, err := antispam.ParseActions([]byte(acts))
+	if err != nil {
+		return errors.Join(errLearningLoaded, errors.New("rspamd's actions are not readable"))
+	}
+	symbols, err := t.h.controllerGet(ctx, socket, "/symbols", maxSymbolsReply)
+	if err != nil {
+		return errors.Join(errLearningLoaded, err)
+	}
+	if err := antispam.CheckLearningLoaded([]byte(fuzzyCheck), root["worker"], []byte(group), symbols, actions); err != nil {
+		return errors.Join(errLearningLoaded, err)
 	}
 	return nil
 }
