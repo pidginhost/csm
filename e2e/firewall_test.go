@@ -127,7 +127,7 @@ func TestNFTablesConnectExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
-	if err := engine1.Apply(); err != nil {
+	if err = engine1.Apply(); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 

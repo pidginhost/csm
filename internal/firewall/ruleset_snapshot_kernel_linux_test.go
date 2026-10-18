@@ -16,23 +16,23 @@ func TestKernelRulesetSnapshotTracksApplyAndDetectsTamper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Apply(); err != nil {
+	if err = e.Apply(); err != nil {
 		t.Fatal(err)
 	}
 	current, applied, err := e.RulesetSnapshot()
 	if err != nil || applied == "" || current != applied {
 		t.Fatalf("initial snapshot current=%q applied=%q err=%v", current, applied, err)
 	}
-	if err := e.BlockIPForce("198.51.100.9", "test", time.Hour); err != nil {
+	if err = e.BlockIPForce("198.51.100.9", "test", time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	if current, _, err := e.RulesetSnapshot(); err != nil || current != applied {
+	if current, _, err = e.RulesetSnapshot(); err != nil || current != applied {
 		t.Fatalf("dynamic set membership changed structural snapshot: err=%v", err)
 	}
 	e.conn.InsertRule(&nftables.Rule{Table: e.table, Chain: e.chainIn, Exprs: []expr.Any{
 		&expr.Verdict{Kind: expr.VerdictAccept},
 	}})
-	if err := e.conn.Flush(); err != nil {
+	if err = e.conn.Flush(); err != nil {
 		t.Fatal(err)
 	}
 	current, baseline, err := e.RulesetSnapshot()
