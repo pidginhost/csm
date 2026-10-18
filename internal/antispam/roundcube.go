@@ -3,6 +3,7 @@ package antispam
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,6 +29,22 @@ func RenderRoundcube() string {
 type RoundcubeState struct {
 	JunkMbox, SpamMbox string
 	MarkAsJunk         bool
+}
+
+// Describe names the loaded settings for a finding: each value quoted, kept
+// to printable ASCII and cut to 64 characters.
+func (r RoundcubeState) Describe() string {
+	quote := func(v string) string {
+		if len(v) > 64 {
+			v = v[:64]
+		}
+		return strconv.QuoteToASCII(v)
+	}
+	plugin := "off"
+	if r.MarkAsJunk {
+		plugin = "on"
+	}
+	return "Roundcube loads junk_mbox " + quote(r.JunkMbox) + ", markasjunk_spam_mbox " + quote(r.SpamMbox) + ", markasjunk " + plugin
 }
 
 // Applied reports whether the Junk button reaches the Spam folder.

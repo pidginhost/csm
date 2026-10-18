@@ -541,5 +541,8 @@ type RoundcubeFacts struct {
 	Include          TargetFacts
 	IncludeMechanism bool
 	PHP              bool
-	Err              error
+	// Observed is what Roundcube loads while a foreign file holds CSM's
+	// include path, when cPanel's PHP could evaluate it.
+	Observed *RoundcubeState
+	Err      error
 }

@@ -32,7 +32,7 @@ func (t *tx) roundcube(changes []change) (string, error) {
 		case checked && state.Applied():
 			continue
 		}
-		reason := "Roundcube does not load the include's Junk folder; another include may override it"
+		reason := "Roundcube does not load the include's Junk folder, another include may override it; " + state.Describe()
 		if !checked {
 			reason = "cPanel's PHP could not verify the include"
 		}

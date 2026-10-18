@@ -131,8 +131,8 @@ func TestRoundcubeVerifyLaterOverride(t *testing.T) {
 	s := roundcubeApply(f)
 	r := f.host().Apply(s)
 	wantOK(t, r)
-	if !strings.HasPrefix(r.Roundcube, "unavailable: ") {
-		t.Fatalf("result Roundcube = %q", r.Roundcube)
+	if !strings.HasPrefix(r.Roundcube, "unavailable: ") || !strings.Contains(r.Roundcube, `"INBOX.Trash"`) {
+		t.Fatalf("result Roundcube = %q, want the loaded junk folder", r.Roundcube)
 	}
 	if f.file(antispam.RoundcubeIncludePath) != "<absent>" {
 		t.Fatal("unverified include left in place")

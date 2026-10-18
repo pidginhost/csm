@@ -48,7 +48,7 @@ func TestLearningUnreadableFacts(t *testing.T) {
 			t.Fatal(err)
 		}
 		f := antispam.HostFacts{Targets: []antispam.TargetFacts{{Target: antispam.Target{Path: antispam.RoundcubeIncludePath}}}}
-		if got := c.roundcube(f); got.Err == nil || got.PHP {
+		if got := c.roundcube(context.Background(), f); got.Err == nil || got.PHP {
 			t.Fatal("unreadable PHP returned a known state")
 		}
 	})

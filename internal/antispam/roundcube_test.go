@@ -75,3 +75,14 @@ func TestRoundcubeEffectiveRunsPHP(t *testing.T) {
 		t.Fatal("failed PHP accepted")
 	}
 }
+
+func TestRoundcubeStateDescribe(t *testing.T) {
+	got := RoundcubeState{JunkMbox: "INBOX.Trash", SpamMbox: "", MarkAsJunk: true}.Describe()
+	if got != `Roundcube loads junk_mbox "INBOX.Trash", markasjunk_spam_mbox "", markasjunk on` {
+		t.Fatalf("describe = %q", got)
+	}
+	long := RoundcubeState{JunkMbox: strings.Repeat("x", 300) + "\u202e"}.Describe()
+	if len(long) > 200 || strings.ContainsRune(long, '\u202e') {
+		t.Fatalf("describe kept a long or control value: %q", long)
+	}
+}
