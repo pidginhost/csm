@@ -16,10 +16,11 @@ const controllerTimeout = 5 * time.Second
 
 // ControllerGet sends GET path to rspamd's controller over its private Unix
 // socket and returns the body of an HTTP 200 reply of at most limit bytes.
-// It sends no forwarded header, so rspamd treats the request as local root
-// access, and never a password. Errors are fixed text; they never repeat the
-// reply.
-func ControllerGet(ctx context.Context, socket, path string, limit int64) ([]byte, error) {
+// The socket must be served by uid peer (SO_PEERCRED), so a process squatting
+// the path after a restart gets nothing. It sends no forwarded header, so
+// rspamd treats the request as local root access, and never a password.
+// Errors are fixed text; they never repeat the reply.
+func ControllerGet(ctx context.Context, socket, path string, limit int64, peer int) ([]byte, error) {
 	if !strings.HasPrefix(path, "/") || strings.ContainsFunc(path, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
 		return nil, errors.New("controller path is not a plain absolute path")
 	}
@@ -31,6 +32,9 @@ func ControllerGet(ctx context.Context, socket, path string, limit int64) ([]byt
 		return nil, errors.New("cannot connect to rspamd's controller socket")
 	}
 	defer func() { _ = conn.Close() }()
+	if peerUID(conn) != peer {
+		return nil, errors.New("rspamd's controller socket is not served by rspamd")
+	}
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}

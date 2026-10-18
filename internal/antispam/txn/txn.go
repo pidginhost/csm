@@ -67,7 +67,7 @@ type Host struct {
 	targets   func() []antispam.TargetFacts
 	ping      func(ctx context.Context, socket string) error
 	// controllerGet reads one controller path over a private Unix socket.
-	controllerGet func(ctx context.Context, socket, path string, limit int64) ([]byte, error)
+	controllerGet func(ctx context.Context, socket, path string, limit int64, peer int) ([]byte, error)
 	greet         func(ctx context.Context, addr string) error
 	now           func() time.Time
 	// rspamdWait and eximWait bound the service probes after a reload.
@@ -671,7 +671,7 @@ func (t *tx) checkLearning(ctx context.Context, f antispam.HostFacts, keys antis
 	// A successful scan ping can still come from the old workers while the
 	// controller is reloading. Use the same bounded service-probe window.
 	err = retry(ctx, t.h.rspamdWait, func(ctx context.Context) error {
-		symbols, getErr := t.h.controllerGet(ctx, socket, "/symbols", maxSymbolsReply)
+		symbols, getErr := t.h.controllerGet(ctx, socket, "/symbols", maxSymbolsReply, f.ControllerHost.RspamdUID)
 		if getErr != nil {
 			return getErr
 		}

@@ -151,8 +151,8 @@ func (f *fakeHost) host() *Host {
 			}
 			return nil
 		},
-		controllerGet: func(_ context.Context, socket, p string, _ int64) ([]byte, error) {
-			if socket != fakeControllerSocket || p != "/symbols" {
+		controllerGet: func(_ context.Context, socket, p string, _ int64, peer int) ([]byte, error) {
+			if socket != fakeControllerSocket || p != "/symbols" || peer != 979 {
 				return nil, errors.New("unexpected controller request")
 			}
 			return []byte(f.loaded().symbols), nil

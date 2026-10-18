@@ -279,7 +279,7 @@ func TestApplyLearningWaitsForControllerReload(t *testing.T) {
 			h.rspamdWait = time.Second
 			get := h.controllerGet
 			calls := 0
-			h.controllerGet = func(ctx context.Context, socket, path string, limit int64) ([]byte, error) {
+			h.controllerGet = func(ctx context.Context, socket, path string, limit int64, peer int) ([]byte, error) {
 				calls++
 				if calls == 1 {
 					if unavailable {
@@ -289,7 +289,7 @@ func TestApplyLearningWaitsForControllerReload(t *testing.T) {
 					// worker is starting after systemctl reload returns.
 					return []byte(`[]`), nil
 				}
-				return get(ctx, socket, path, limit)
+				return get(ctx, socket, path, limit, peer)
 			}
 			r := h.Apply(s)
 			if !r.OK || calls != 2 || f.count("systemctl reload rspamd.service") != 1 {
