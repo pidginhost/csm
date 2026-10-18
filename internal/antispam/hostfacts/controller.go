@@ -31,6 +31,9 @@ func (c collector) controllerFacts(f *antispam.HostFacts) {
 	}
 	if props := antispam.ParseUnitShow(f.RspamdService.Stdout); f.RspamdService.Err == nil && h.RspamdUID >= 0 {
 		h.RspamdUser = props["User"]
+		if _, err := strconv.Atoi(h.RspamdUser); err == nil {
+			h.RspamdUser, _ = c.userName(strconv.Itoa(h.RspamdUID))
+		}
 	}
 	defer func() { f.ControllerHost = h }()
 	if f.RspamdConfig.Err != nil {
@@ -43,19 +46,12 @@ func (c collector) controllerFacts(f *antispam.HostFacts) {
 		return
 	}
 	f.Controller = cfg
-	if addrs, err := c.interfaceAddrs(); err == nil {
-		for _, a := range addrs {
-			if n, ok := a.(*net.IPNet); ok {
-				if ip, ok := netip.AddrFromSlice(n.IP); ok {
-					ip = ip.Unmap()
-					h.Addrs = append(h.Addrs, netip.PrefixFrom(ip, ip.BitLen()))
-				}
-			}
-		}
-	}
+	f.ControllerErr = nil
 	gids := map[int]bool{}
+	hasTCP := false
 	for _, l := range cfg.Listeners {
 		if !l.Unix {
+			hasTCP = true
 			continue
 		}
 		s := unixSocketFacts(l.Path)
@@ -66,6 +62,21 @@ func (c collector) controllerFacts(f *antispam.HostFacts) {
 	}
 	if len(gids) > 0 {
 		h.GroupMembers = c.groupMembers(gids)
+	}
+	if hasTCP {
+		addrs, err := c.interfaceAddrs()
+		if err != nil {
+			f.ControllerErr = errors.New("host interface addresses unavailable; controller exposure is unknown")
+			return
+		}
+		for _, a := range addrs {
+			if n, ok := a.(*net.IPNet); ok {
+				if ip, ok := netip.AddrFromSlice(n.IP); ok {
+					ip = ip.Unmap()
+					h.Addrs = append(h.Addrs, netip.PrefixFrom(ip, ip.BitLen()))
+				}
+			}
+		}
 	}
 }
 
@@ -91,6 +102,9 @@ func unixSocketFacts(p string) antispam.SocketFacts {
 		return s
 	}
 	s.Socket, s.Err = pathFacts(final)
+	if s.Err == nil && s.Socket.Mode.Type() != fs.ModeSocket {
+		s.Err = errors.New("controller path is not a Unix socket")
+	}
 	return s
 }
 
@@ -98,47 +112,80 @@ func unixSocketFacts(p string) antispam.SocketFacts {
 // entry plus every user whose primary group it is. A gid that cannot be
 // read is left out, which exposure treats as possibly holding a tenant.
 func (c collector) groupMembers(want map[int]bool) map[int][]string {
-	out := map[int][]string{}
 	groups, err := c.readGroup()
 	if err != nil {
-		return out
+		return nil
 	}
 	passwd, err := c.readPasswd()
 	if err != nil {
-		return out
+		return nil
 	}
-	for _, line := range strings.Split(string(groups), "\n") {
-		fields := strings.Split(line, ":")
-		if len(fields) < 4 {
+	return parseGroupMembers(string(groups), string(passwd), want)
+}
+
+// A malformed record may hide a member, so no group is known complete
+// unless both account files parse in full. Split lazily to bound temporary
+// allocations even when a file is mostly delimiters.
+func parseGroupMembers(groups, passwd string, want map[int]bool) map[int][]string {
+	out := map[int][]string{}
+	for line := range strings.SplitSeq(groups, "\n") {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		gid, err := strconv.Atoi(fields[2])
-		if err != nil || !want[gid] {
-			continue
+		fields := strings.SplitN(line, ":", 5)
+		if len(fields) != 4 || !accountName(fields[0]) {
+			return nil
+		}
+		gid, ok := accountID(fields[2])
+		if !ok {
+			return nil
 		}
 		// Several group names can share a gid; keep every list.
-		if _, listed := out[gid]; !listed {
+		if _, listed := out[gid]; want[gid] && !listed {
 			out[gid] = []string{}
 		}
-		for _, m := range strings.Split(fields[3], ",") {
-			if m = strings.TrimSpace(m); m != "" {
+		if fields[3] == "" {
+			continue
+		}
+		for m := range strings.SplitSeq(fields[3], ",") {
+			if !accountName(m) {
+				return nil
+			}
+			if want[gid] {
 				out[gid] = append(out[gid], m)
 			}
 		}
 	}
-	for _, line := range strings.Split(string(passwd), "\n") {
-		fields := strings.Split(line, ":")
-		if len(fields) < 4 {
+	for line := range strings.SplitSeq(passwd, "\n") {
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		gid, err := strconv.Atoi(fields[3])
-		if err != nil || !want[gid] {
-			continue
+		fields := strings.SplitN(line, ":", 8)
+		if len(fields) != 7 || !accountName(fields[0]) {
+			return nil
 		}
-		if _, listed := out[gid]; !listed {
-			out[gid] = []string{}
+		if _, ok := accountID(fields[2]); !ok {
+			return nil
 		}
-		out[gid] = append(out[gid], fields[0])
+		gid, ok := accountID(fields[3])
+		if !ok {
+			return nil
+		}
+		if want[gid] {
+			out[gid] = append(out[gid], fields[0])
+		}
 	}
 	return out
+}
+
+func accountName(name string) bool {
+	return name != "" && !strings.ContainsAny(name, ":,\x00 \t\r\n\v\f")
+}
+
+func accountID(raw string) (int, bool) {
+	if _, err := strconv.ParseUint(raw, 10, 32); err != nil {
+		return 0, false
+	}
+	id, err := strconv.Atoi(raw)
+	return id, err == nil
 }

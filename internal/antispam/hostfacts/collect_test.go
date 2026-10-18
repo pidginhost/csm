@@ -61,6 +61,7 @@ func testCollector(d string, run *fakeRun) collector {
 		lookPath:       func(string) (string, error) { return "/usr/bin/systemd-run", nil },
 		uid:            lookup(map[string]int{"_rspamd": 979, "mailnull": 47}),
 		gid:            lookup(map[string]int{"mail": 12}),
+		userName:       func(string) (string, error) { return "", errors.New("unknown uid") },
 		primaryGID:     lookup(map[string]int{"_rspamd": 974}),
 		interfaceAddrs: func() ([]net.Addr, error) { return nil, nil },
 		readGroup:      func() ([]byte, error) { return nil, nil },

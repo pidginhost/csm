@@ -51,6 +51,7 @@ type collector struct {
 	lookPath func(string) (string, error)
 	uid      func(name string) (int, error)
 	gid      func(name string) (int, error)
+	userName func(uid string) (string, error)
 	// primaryGID is a user's primary group.
 	primaryGID func(user string) (int, error)
 	// interfaceAddrs, readGroup and readPasswd feed controller exposure.
@@ -77,6 +78,7 @@ func live() collector {
 		lookPath:       exec.LookPath,
 		uid:            lookupUID,
 		gid:            lookupGID,
+		userName:       lookupUserName,
 		primaryGID:     lookupPrimaryGID,
 		interfaceAddrs: net.InterfaceAddrs,
 		readGroup:      func() ([]byte, error) { return readAccountFile("/etc/group") },
@@ -243,6 +245,14 @@ func lookupUID(name string) (int, error) {
 		return -1, err
 	}
 	return strconv.Atoi(u.Uid)
+}
+
+func lookupUserName(uid string) (string, error) {
+	u, err := user.LookupId(uid)
+	if err != nil {
+		return "", err
+	}
+	return u.Username, nil
 }
 
 func lookupGID(name string) (int, error) {
