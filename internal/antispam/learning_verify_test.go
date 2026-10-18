@@ -17,6 +17,7 @@ type loadedDumps struct {
 	groups     []map[string]any
 	symbols    []any
 	actions    Actions
+	keys       LearningKeys
 }
 
 func newLoadedDumps(k LearningKeys) *loadedDumps {
@@ -33,6 +34,7 @@ func newLoadedDumps(k LearningKeys) *loadedDumps {
 		return r
 	}
 	return &loadedDumps{
+		keys: k,
 		fuzzyCheck: map[string]any{"enabled": true, "min_bytes": 1000, "retransmits": 1, "timeout": 2.0, "rule": []any{
 			map[string]any{"csm": rule(map[string]any{"read_only": true,
 				"fuzzy_map": map[string]any{"CSM_FUZZY_SPAM": map[string]any{"flag": 1, "max_score": 18.0}}})},
@@ -85,7 +87,7 @@ func (d *loadedDumps) check() error {
 		group.Write(enc(g))
 		group.WriteString("\n")
 	}
-	return CheckLearningLoaded(enc(d.fuzzyCheck), enc(d.worker), []byte(group.String()), enc(d.symbols), d.actions)
+	return CheckLearningLoaded(enc(d.fuzzyCheck), enc(d.worker), []byte(group.String()), enc(d.symbols), d.actions, d.keys)
 }
 
 func TestCheckLearningLoadedExact(t *testing.T) {
@@ -219,5 +221,54 @@ func TestParseActionsGrowFactor(t *testing.T) {
 	a, err := ParseActions([]byte(`{"reject": 15, "add_header": 6, "grow_factor": 1.5}`))
 	if err != nil || a.GrowFactor == nil || *a.GrowFactor != 1.5 {
 		t.Fatalf("actions = %+v, err = %v", a, err)
+	}
+}
+
+func TestCheckLearningRejectsMalformedOperations(t *testing.T) {
+	d := newLoadedDumps(syntheticLearningKeys())
+	d.fuzzyWorker()["keypair"].([]any)[1].(map[string]any)["extensions"] = map[string]any{"allowed_ops": []any{"read,write,delete"}}
+	if err := d.check(); err == nil {
+		t.Fatal("one invalid operation accepted as three permissions")
+	}
+}
+
+func TestCheckLearningRejectsAmbiguousFields(t *testing.T) {
+	for name, change := range map[string]func(*loadedDumps){
+		"mapping": func(d *loadedDumps) {
+			d.rule("csm")["fuzzy_map"] = json.RawMessage(`{"CSM_FUZZY_SPAM":{"flag":2,"flag":1,"max_score":18}}`)
+		},
+		"keypair": func(d *loadedDumps) {
+			pair := d.fuzzyWorker()["keypair"].([]any)[0]
+			b, _ := json.Marshal(pair)
+			d.fuzzyWorker()["keypair"].([]any)[0] = json.RawMessage(strings.Replace(string(b), `"extensions":`, `"extensions":{"allowed_ops":["write"]},"extensions":`, 1))
+		},
+		"group cap": func(d *loadedDumps) {
+			d.groups[1]["fuzzy"].(map[string]any)["max_score"] = 10
+			b, _ := json.Marshal(d.groups[1]["fuzzy"])
+			d.groups[1]["fuzzy"] = json.RawMessage(strings.Replace(string(b), `"max_score":10`, `"max_score":20,"max_score":10`, 1))
+		},
+		"configured weight": func(d *loadedDumps) {
+			d.groups[1]["fuzzy"].(map[string]any)["symbols"].(map[string]any)["CSM_FUZZY_SPAM"] = json.RawMessage(`{"weight":20,"weight":10}`)
+		},
+		"effective weight": func(d *loadedDumps) {
+			d.symbols[1].(map[string]any)["rules"].([]any)[0] = json.RawMessage(`{"symbol":"CSM_FUZZY_SPAM","weight":20,"weight":10}`)
+		},
+		"effective symbol alias": func(d *loadedDumps) {
+			d.symbols[1].(map[string]any)["rules"].([]any)[0] = json.RawMessage(`{"symbol":"OTHER","SYMBOL":"CSM_FUZZY_SPAM","weight":10}`)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := newLoadedDumps(syntheticLearningKeys())
+			change(d)
+			if err := d.check(); err == nil {
+				t.Fatal("ambiguous loaded configuration accepted")
+			}
+		})
+	}
+}
+
+func TestParseActionsRejectsAmbiguousGrowFactor(t *testing.T) {
+	if _, err := ParseActions([]byte(`{"reject":15,"add_header":6,"grow_factor":2,"grow_factor":1}`)); err == nil {
+		t.Fatal("ambiguous score rescaling accepted")
 	}
 }

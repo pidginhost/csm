@@ -75,6 +75,7 @@ var antispamReconciler = func() reconcile.Reconciler {
 		ReadKey:    hostfacts.ReadDQSKey,
 		Probe:      hostfacts.QueryDNS,
 		Feeds:      reconcile.NewFeedState(),
+		Learning:   reconcile.NewLearningState(),
 	}
 }
 

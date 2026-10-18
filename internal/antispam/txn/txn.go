@@ -2,7 +2,6 @@ package txn
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -586,6 +585,9 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 	if err != nil {
 		return errors.New("rspamadm configdump -m: rspamd configuration conflict")
 	}
+	if s.Learning && !enabled["fuzzy_check"] {
+		return errors.Join(errLearningLoaded, errors.New("rspamd module fuzzy_check is disabled"))
+	}
 	acts := t.cmd(ctx, commandLimit, "rspamadm", "configdump", "-j", "actions")
 	if acts.Err != nil {
 		return cmdErr("rspamadm configdump -j actions", acts)
@@ -630,7 +632,7 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 // checkLearning compares what rspamd loaded after the reload with CSM's
 // learning files, including the effective weight only the controller shows.
 // Errors carry no command output: the dumps hold keys.
-func (t *tx) checkLearning(ctx context.Context, f antispam.HostFacts) error {
+func (t *tx) checkLearning(ctx context.Context, f antispam.HostFacts, keys antispam.LearningKeys) error {
 	socket, ok := antispam.PrivateControllerSocket(f)
 	if !ok {
 		return errors.Join(errLearningLoaded, errors.New("learning needs one private controller socket"))
@@ -658,19 +660,24 @@ func (t *tx) checkLearning(ctx context.Context, f antispam.HostFacts) error {
 	if err != nil {
 		return err
 	}
-	var root map[string]json.RawMessage
-	if json.Unmarshal([]byte(full), &root) != nil {
+	root, err := antispam.ParseRspamdDumpObject([]byte(full))
+	if err != nil {
 		return errors.Join(errLearningLoaded, errors.New("rspamadm configdump -j is not readable"))
 	}
 	actions, err := antispam.ParseActions([]byte(acts))
 	if err != nil {
 		return errors.Join(errLearningLoaded, errors.New("rspamd's actions are not readable"))
 	}
-	symbols, err := t.h.controllerGet(ctx, socket, "/symbols", maxSymbolsReply)
+	// A successful scan ping can still come from the old workers while the
+	// controller is reloading. Use the same bounded service-probe window.
+	err = retry(ctx, t.h.rspamdWait, func(ctx context.Context) error {
+		symbols, getErr := t.h.controllerGet(ctx, socket, "/symbols", maxSymbolsReply)
+		if getErr != nil {
+			return getErr
+		}
+		return antispam.CheckLearningLoaded([]byte(fuzzyCheck), root["worker"], []byte(group), symbols, actions, keys)
+	})
 	if err != nil {
-		return errors.Join(errLearningLoaded, err)
-	}
-	if err := antispam.CheckLearningLoaded([]byte(fuzzyCheck), root["worker"], []byte(group), symbols, actions); err != nil {
 		return errors.Join(errLearningLoaded, err)
 	}
 	return nil

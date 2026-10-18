@@ -124,6 +124,8 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 			step := StepRspamdCheck
 			if errors.Is(err, errFeedsLoaded) {
 				step = StepFeedsCheck
+			} else if errors.Is(err, errLearningLoaded) {
+				step = StepLearningCheck
 			}
 			return t.fail(step, err)
 		}
@@ -131,7 +133,7 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 			return t.fail(StepRspamdReload, err)
 		}
 		if s.Learning {
-			if err := t.checkLearning(t.fwd, f); err != nil {
+			if err := t.checkLearning(t.fwd, f, s.LearningKeys); err != nil {
 				return t.fail(StepLearningCheck, err)
 			}
 		}

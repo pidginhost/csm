@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -84,5 +85,39 @@ func TestPassHoldsRoundcubeAfterUnavailable(t *testing.T) {
 	}
 	if !reported {
 		t.Fatalf("problems = %+v", out.LearningProblems)
+	}
+}
+
+func TestPassReportsLearningHoldWithoutRepeatedApplies(t *testing.T) {
+	h := &fakeHost{assessment: antispam.Assessment{Action: antispam.Keep, Installed: true}}
+	r := h.reconciler()
+	r.Learning = NewLearningState()
+	d := learningDesired()
+	r.Learning.hold(learningGeneration(d.Settings))
+	for i := 0; i < 2; i++ {
+		out := r.Pass(context.Background(), d)
+		found := 0
+		for _, f := range out.Findings {
+			if f.Check == CheckPrecondition && strings.Contains(f.Details, "learning") {
+				found++
+			}
+		}
+		if found != 1 || len(h.requests) != 0 {
+			t.Fatalf("held pass: findings=%+v requests=%d", out.Findings, len(h.requests))
+		}
+	}
+}
+
+func TestPassDisablingAntispamClearsLearningHold(t *testing.T) {
+	h := &fakeHost{}
+	r := h.reconciler()
+	r.Learning = NewLearningState()
+	d := learningDesired()
+	r.Learning.hold(learningGeneration(d.Settings))
+	d.Enabled = false
+	r.Pass(context.Background(), d)
+	d.Enabled = true
+	if out := r.Pass(context.Background(), d); len(out.LearningProblems) != 0 {
+		t.Fatal("disable and re-enable retained the old learning hold")
 	}
 }

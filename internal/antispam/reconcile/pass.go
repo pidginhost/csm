@@ -102,6 +102,9 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if !d.Enabled || d.Observe {
 		r.Feeds.setProbeScope([32]byte{})
 	}
+	if !d.Enabled {
+		r.Learning.held("")
+	}
 	invalidateErr := r.Invalidate(ctx)
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
@@ -202,7 +205,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	} else {
 		r.Feeds.setProbeScope([32]byte{})
 	}
-	for _, p := range a.Problems {
+	for _, p := range append(slices.Clone(a.Problems), learningProblems...) {
 		if p.Code == antispam.CodeFeed {
 			continue
 		}

@@ -61,15 +61,13 @@ type Actions struct {
 }
 
 // ParseActions reads `rspamadm configdump -j actions`. Keys other than the
-// four CSM sets are ignored. Both underscored and spaced names are accepted;
-// ambiguous aliases or a non-numeric, non-null value are errors.
+// four CSM sets and grow_factor are ignored. Underscored and spaced names
+// are accepted; duplicate fields, ambiguous aliases and non-numeric,
+// non-null values are errors.
 func ParseActions(out []byte) (Actions, error) {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return Actions{}, fmt.Errorf("configdump actions: %w", err)
-	}
-	if raw == nil {
-		return Actions{}, errors.New("configdump actions: expected an object")
+	raw, err := dumpObjectAs[json.RawMessage](out, "actions")
+	if err != nil {
+		return Actions{}, err
 	}
 	get := func(key string) (*float64, error) {
 		names := []string{key}
@@ -84,8 +82,8 @@ func ParseActions(out []byte) (Actions, error) {
 				continue
 			}
 			var f *float64
-			if err := json.Unmarshal(v, &f); err != nil {
-				return nil, fmt.Errorf("configdump action %s: %w", name, err)
+			if decodeErr := json.Unmarshal(v, &f); decodeErr != nil {
+				return nil, fmt.Errorf("configdump action %s: %w", name, decodeErr)
 			}
 			same := value == nil && f == nil || value != nil && f != nil && *value == *f
 			if seen && !same {
@@ -97,7 +95,6 @@ func ParseActions(out []byte) (Actions, error) {
 		return value, nil
 	}
 	var a Actions
-	var err error
 	for _, field := range []struct {
 		key string
 		dst **float64

@@ -856,3 +856,38 @@ func FuzzFuzzyWorkerEnabled(f *testing.F) {
 		}
 	})
 }
+
+func FuzzCheckLearningLoaded(f *testing.F) {
+	d := newLoadedDumps(syntheticLearningKeys())
+	enc := func(v any) []byte { b, _ := json.Marshal(v); return b }
+	var group []byte
+	for _, g := range d.groups {
+		group = append(group, enc(g)...)
+	}
+	baseline := [][]byte{enc(d.fuzzyCheck), enc(d.worker), group, enc(d.symbols)}
+	for i, data := range baseline {
+		f.Add(uint8(i), data)
+		f.Add(uint8(i), []byte(`null`))
+		f.Add(uint8(i), []byte(`{"weight":20,"weight":10}`))
+	}
+	f.Fuzz(func(t *testing.T, section uint8, data []byte) {
+		inputs := slices.Clone(baseline)
+		inputs[int(section)%len(inputs)] = data
+		err := CheckLearningLoaded(inputs[0], inputs[1], inputs[2], inputs[3], Actions{}, d.keys)
+		if err != nil {
+			for _, key := range []string{d.keys.Fuzzy.Reveal(), d.keys.Shingles.Reveal(), d.keys.Read.Private.Reveal(), d.keys.Write.Private.Reveal()} {
+				if strings.Contains(err.Error(), key) {
+					t.Fatal("verification error disclosed key material")
+				}
+			}
+			return
+		}
+		// Even self-consistent dumps must be bound to the installation's
+		// keys rather than treating the loaded values as their own authority.
+		other := d.keys
+		other.Fuzzy = NewSecret(strings.Repeat("7a", 32))
+		if CheckLearningLoaded(inputs[0], inputs[1], inputs[2], inputs[3], Actions{}, other) == nil {
+			t.Fatal("accepted the same dumps for a different hash generation")
+		}
+	})
+}

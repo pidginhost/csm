@@ -34,12 +34,12 @@ var (
 // and two keypairs, the fuzzy group cap, the effective CSM_FUZZY_SPAM weight
 // from the controller's /symbols, and no score rescaling. Errors name the
 // attribute, never a value that could be a key.
-func CheckLearningLoaded(fuzzyCheck, worker, group, symbols []byte, a Actions) error {
-	scan, learn, err := checkLearningRules(fuzzyCheck)
+func CheckLearningLoaded(fuzzyCheck, worker, group, symbols []byte, a Actions, keys LearningKeys) error {
+	scan, learn, err := checkLearningRules(fuzzyCheck, keys)
 	if err != nil {
 		return err
 	}
-	if err := checkLearningWorker(worker, scan, learn); err != nil {
+	if err := checkLearningWorker(worker, scan, learn, keys); err != nil {
 		return err
 	}
 	if err := checkLearningGroup(group); err != nil {
@@ -68,7 +68,7 @@ func isString(raw json.RawMessage) (string, bool) {
 }
 
 // checkLearningRules returns the scan and learning rules once both match.
-func checkLearningRules(dump []byte) (scan, learn map[string]json.RawMessage, err error) {
+func checkLearningRules(dump []byte, keys LearningKeys) (scan, learn map[string]json.RawMessage, err error) {
 	root, err := dumpObjectAs[json.RawMessage](dump, "fuzzy_check")
 	if err != nil {
 		return nil, nil, errors.New("loaded fuzzy_check is not readable")
@@ -99,13 +99,15 @@ func checkLearningRules(dump []byte) (scan, learn map[string]json.RawMessage, er
 	if value(learn["retransmits"]) != 0.0 {
 		return nil, nil, errors.New("fuzzy rule csm_learn: retransmits is not 0")
 	}
-	if _, ok := isString(learn["write_encryption_key"]); !ok {
-		return nil, nil, errors.New("fuzzy rule csm_learn: write_encryption_key is missing")
+	if key, ok := isString(learn["write_encryption_key"]); !ok || key != keys.Write.Public {
+		return nil, nil, errors.New("fuzzy rule csm_learn: write_encryption_key differs from CSM's")
 	}
-	// Both rules must hash alike and reach the worker with the same read key.
-	for _, key := range []string{"fuzzy_key", "fuzzy_shingles_key", "read_encryption_key"} {
-		if !reflect.DeepEqual(value(scan[key]), value(learn[key])) {
-			return nil, nil, fmt.Errorf("fuzzy rules csm and csm_learn differ in %s", key)
+	// Agreement between rules cannot detect an override replacing both keys.
+	for key, expected := range map[string]string{
+		"fuzzy_key": keys.Fuzzy.Reveal(), "fuzzy_shingles_key": keys.Shingles.Reveal(), "read_encryption_key": keys.Read.Public,
+	} {
+		if value(scan[key]) != expected || value(learn[key]) != expected {
+			return nil, nil, fmt.Errorf("fuzzy rules: %s differs from CSM's", key)
 		}
 	}
 	return scan, learn, nil
@@ -135,9 +137,13 @@ func checkRule(name string, rule map[string]json.RawMessage, attrs []string, sym
 			return fmt.Errorf("fuzzy rule %s: %s is missing", name, key)
 		}
 	}
-	m, ok := value(rule["fuzzy_map"]).(map[string]any)
-	wantMap := map[string]any{symbol: map[string]any{"flag": float64(LearningFlag), "max_score": 18.0}}
-	if !ok || !reflect.DeepEqual(m, wantMap) {
+	m, err := dumpObjectAs[json.RawMessage](rule["fuzzy_map"], "fuzzy_map")
+	if err != nil || len(m) != 1 {
+		return fmt.Errorf("fuzzy rule %s: fuzzy_map must map only flag 1 to %s", name, symbol)
+	}
+	mapping, err := dumpObjectAs[float64](m[symbol], "fuzzy mapping")
+	wantMap := map[string]float64{"flag": float64(LearningFlag), "max_score": 18.0}
+	if err != nil || !reflect.DeepEqual(mapping, wantMap) {
 		return fmt.Errorf("fuzzy rule %s: fuzzy_map must map only flag 1 to %s", name, symbol)
 	}
 	return nil
@@ -145,7 +151,7 @@ func checkRule(name string, rule map[string]json.RawMessage, attrs []string, sym
 
 // checkLearningWorker requires exactly one fuzzy worker with the pinned
 // transport and the two keypairs the rules use.
-func checkLearningWorker(section []byte, scan, learn map[string]json.RawMessage) error {
+func checkLearningWorker(section []byte, scan, learn map[string]json.RawMessage, keys LearningKeys) error {
 	workers, err := fuzzyWorkers(section)
 	if err != nil {
 		return errors.New("loaded fuzzy worker is not readable")
@@ -164,35 +170,37 @@ func checkLearningWorker(section []byte, scan, learn map[string]json.RawMessage)
 			return fmt.Errorf("fuzzy worker: %s differs from CSM's", attr)
 		}
 	}
-	if p, ok := isString(w["prefix"]); !ok || !learningPrefixPattern.MatchString(p) {
-		return errors.New("fuzzy worker: prefix is not a CSM prefix")
+	if p, ok := isString(w["prefix"]); !ok || p != keys.Prefix {
+		return errors.New("fuzzy worker: prefix differs from CSM's")
 	}
-	var pairs []map[string]json.RawMessage
+	var pairs []json.RawMessage
 	if json.Unmarshal(w["keypair"], &pairs) != nil || len(pairs) != 2 {
 		return errors.New("fuzzy worker: want exactly two keypairs")
 	}
 	readKey, _ := isString(scan["read_encryption_key"])
 	writeKey, _ := isString(learn["write_encryption_key"])
 	seen := map[string]bool{}
-	for _, kp := range pairs {
+	for _, raw := range pairs {
+		kp, err := dumpObjectAs[json.RawMessage](raw, "fuzzy keypair")
+		if err != nil {
+			return errors.New("fuzzy worker: a keypair is not readable")
+		}
 		pub, ok := isString(kp["pubkey"])
 		if _, priv := isString(kp["privkey"]); !ok || !priv {
 			return errors.New("fuzzy worker: a keypair is incomplete")
 		}
-		var ext struct {
-			AllowedOps []string `json:"allowed_ops"`
-		}
-		if json.Unmarshal(kp["extensions"], &ext) != nil {
+		ext, err := dumpObjectAs[json.RawMessage](kp["extensions"], "keypair extensions")
+		var ops []string
+		if err != nil || json.Unmarshal(ext["allowed_ops"], &ops) != nil {
 			return errors.New("fuzzy worker: keypair extensions are not readable")
 		}
-		ops := strings.Join(ext.AllowedOps, ",")
 		switch {
-		case ops == "read" && pub == readKey:
+		case slices.Equal(ops, []string{"read"}) && pub == readKey && value(kp["privkey"]) == keys.Read.Private.Reveal():
 			seen["read"] = true
-		case ops == "read,write,delete" && pub == writeKey:
+		case slices.Equal(ops, []string{"read", "write", "delete"}) && pub == writeKey && value(kp["privkey"]) == keys.Write.Private.Reveal():
 			seen["write"] = true
 		default:
-			return errors.New("fuzzy worker: a keypair's allowed_ops or public key differs from CSM's")
+			return errors.New("fuzzy worker: a keypair's allowed_ops or keys differ from CSM's")
 		}
 	}
 	if !seen["read"] || !seen["write"] {
@@ -236,17 +244,21 @@ func checkLearningGroup(dump []byte) error {
 	var fuzzy map[string]json.RawMessage
 	found := 0
 	for {
-		var obj map[string]json.RawMessage
-		err := d.Decode(&obj)
+		var entry json.RawMessage
+		err := d.Decode(&entry)
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
 			return errors.New("loaded symbol groups are not readable")
 		}
+		obj, err := dumpObjectAs[json.RawMessage](entry, "symbol group")
+		if err != nil {
+			return errors.New("loaded symbol groups are not readable")
+		}
 		if raw, ok := obj["fuzzy"]; ok {
 			found++
-			if json.Unmarshal(raw, &fuzzy) != nil {
+			if fuzzy, err = dumpObjectAs[json.RawMessage](raw, "fuzzy group"); err != nil {
 				return errors.New("loaded fuzzy group is not readable")
 			}
 		}
@@ -257,17 +269,15 @@ func checkLearningGroup(dump []byte) error {
 	if value(fuzzy["max_score"]) != 10.0 {
 		return errors.New("fuzzy group: max_score is not 10")
 	}
-	var syms map[string]struct {
-		Weight *float64 `json:"weight"`
-	}
-	if json.Unmarshal(fuzzy["symbols"], &syms) != nil {
+	syms, err := dumpObjectAs[json.RawMessage](fuzzy["symbols"], "fuzzy symbols")
+	if err != nil {
 		return errors.New("fuzzy group: symbols are not readable")
 	}
-	if s, ok := syms["CSM_FUZZY_SPAM"]; !ok || s.Weight == nil || *s.Weight != 10 {
-		return errors.New("fuzzy group: CSM_FUZZY_SPAM weight is not 10")
-	}
-	if s, ok := syms["CSM_FUZZY_LEARN"]; !ok || s.Weight == nil || *s.Weight != 0 {
-		return errors.New("fuzzy group: CSM_FUZZY_LEARN weight is not 0")
+	for symbol, weight := range map[string]float64{"CSM_FUZZY_SPAM": 10, "CSM_FUZZY_LEARN": 0} {
+		s, err := dumpObjectAs[json.RawMessage](syms[symbol], "fuzzy symbol")
+		if err != nil || value(s["weight"]) != weight {
+			return fmt.Errorf("fuzzy group: %s weight is not %g", symbol, weight)
+		}
 	}
 	return nil
 }
@@ -275,23 +285,27 @@ func checkLearningGroup(dump []byte) error {
 // checkLearningSymbols reads the controller's /symbols reply, which shows
 // dynamic weight overrides configdump cannot (spike S2).
 func checkLearningSymbols(reply []byte) error {
-	var groups []struct {
-		Rules []struct {
-			Symbol string   `json:"symbol"`
-			Weight *float64 `json:"weight"`
-		} `json:"rules"`
-	}
+	var groups []json.RawMessage
 	if json.Unmarshal(reply, &groups) != nil {
 		return errors.New("the controller's /symbols reply is not readable")
 	}
 	found := 0
-	for _, g := range groups {
-		for _, r := range g.Rules {
-			if r.Symbol != "CSM_FUZZY_SPAM" {
+	for _, raw := range groups {
+		g, err := dumpObjectAs[json.RawMessage](raw, "controller group")
+		var rules []json.RawMessage
+		if err != nil || json.Unmarshal(g["rules"], &rules) != nil {
+			return errors.New("the controller's /symbols group is not readable")
+		}
+		for _, raw := range rules {
+			r, err := dumpObjectAs[json.RawMessage](raw, "controller symbol")
+			if err != nil {
+				return errors.New("the controller's /symbols rule is not readable")
+			}
+			if value(r["symbol"]) != "CSM_FUZZY_SPAM" {
 				continue
 			}
 			found++
-			if r.Weight == nil || *r.Weight != 10 {
+			if value(r["weight"]) != 10.0 {
 				return errors.New("the effective CSM_FUZZY_SPAM weight is not 10")
 			}
 		}

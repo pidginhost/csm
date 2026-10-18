@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
 )
@@ -217,5 +218,112 @@ func TestApplyLearningNeedsPrivateController(t *testing.T) {
 	}
 	if r := h.Apply(s); r.OK || r.FailedStep != antispam.LearningCheckStep {
 		t.Fatalf("result = %+v", r)
+	}
+}
+
+func TestApplyLearningRejectsReplacedKeys(t *testing.T) {
+	for name, change := range map[string]func(*antispam.LearningKeys){
+		"hash":          func(k *antispam.LearningKeys) { k.Fuzzy = antispam.NewSecret(strings.Repeat("7a", 32)) },
+		"shingles":      func(k *antispam.LearningKeys) { k.Shingles = antispam.NewSecret(strings.Repeat("8b", 32)) },
+		"prefix":        func(k *antispam.LearningKeys) { k.Prefix = "csmfz_" + strings.Repeat("9c", 16) },
+		"read public":   func(k *antispam.LearningKeys) { k.Read.Public = txnBase32(5) },
+		"read private":  func(k *antispam.LearningKeys) { k.Read.Private = antispam.NewSecret(txnBase32(6)) },
+		"write public":  func(k *antispam.LearningKeys) { k.Write.Public = txnBase32(7) },
+		"write private": func(k *antispam.LearningKeys) { k.Write.Private = antispam.NewSecret(txnBase32(8)) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t)
+			wantOK(t, f.host().Apply(enforce()))
+			before := f.state()
+			f.reset()
+			s := learningApply(f)
+			f.onCall = func(line string) {
+				if line == "rspamadm configtest" {
+					// Model an override replacing the staged keys in every dump.
+					change(&f.learning)
+				}
+			}
+			r := f.host().Apply(s)
+			if r.OK || r.FailedStep != antispam.LearningCheckStep || r.Rollback != antispam.RollbackVerified {
+				t.Fatalf("replaced %s accepted: ok=%v step=%s rollback=%s", name, r.OK, r.FailedStep, r.Rollback)
+			}
+			if !maps.Equal(before, f.state()) {
+				t.Fatal("verification failure left files changed")
+			}
+		})
+	}
+}
+
+func TestApplyDisabledLearningModuleUsesLearningCheck(t *testing.T) {
+	f := newFake(t)
+	wantOK(t, f.host().Apply(enforce()))
+	before := f.state()
+	f.reset()
+	s := learningApply(f)
+	f.modules = "Modules enabled: dkim, spf, dmarc\n"
+	r := f.host().Apply(s)
+	if r.OK || r.FailedStep != antispam.LearningCheckStep || r.Rollback != antispam.RollbackVerified {
+		t.Fatalf("disabled learning module: %+v", r)
+	}
+	if !maps.Equal(before, f.state()) || f.count(BuildEximConf) != 0 {
+		t.Fatal("disabled learning module changed the previous integration")
+	}
+}
+
+func TestApplyLearningWaitsForControllerReload(t *testing.T) {
+	for _, unavailable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unavailable=%t", unavailable), func(t *testing.T) {
+			f := newFake(t)
+			s := learningApply(f)
+			h := f.host()
+			h.rspamdWait = time.Second
+			get := h.controllerGet
+			calls := 0
+			h.controllerGet = func(ctx context.Context, socket, path string, limit int64) ([]byte, error) {
+				calls++
+				if calls == 1 {
+					if unavailable {
+						return nil, errors.New("controller is restarting")
+					}
+					// The old controller can still answer while the new
+					// worker is starting after systemctl reload returns.
+					return []byte(`[]`), nil
+				}
+				return get(ctx, socket, path, limit)
+			}
+			r := h.Apply(s)
+			if !r.OK || calls != 2 || f.count("systemctl reload rspamd.service") != 1 {
+				t.Fatalf("controller reload was not awaited: result=%+v calls=%d", r, calls)
+			}
+		})
+	}
+}
+
+func TestApplyLearningDumpFailuresAreRedacted(t *testing.T) {
+	for _, command := range []string{"rspamadm configdump -j fuzzy_check", "rspamadm configdump -j", "rspamadm configdump -j group", "rspamadm configdump -j actions"} {
+		t.Run(command, func(t *testing.T) {
+			f := newFake(t)
+			wantOK(t, f.host().Apply(enforce()))
+			before := f.state()
+			f.reset()
+			s := learningApply(f)
+			h := f.host()
+			run := h.run
+			secret := f.learning.Write.Private.Reveal()
+			h.run = func(ctx context.Context, limit time.Duration, name string, args ...string) antispam.CommandResult {
+				result := run(ctx, limit, name, args...)
+				if f.count("systemctl reload rspamd.service") != 0 && name+" "+strings.Join(args, " ") == command {
+					return antispam.CommandResult{Stdout: secret, Stderr: secret, Err: errors.New(secret)}
+				}
+				return result
+			}
+			r := h.Apply(s)
+			if strings.Contains(r.Error, secret) {
+				t.Fatal("learning failure exposed command output or error text")
+			}
+			if r.OK || r.FailedStep != antispam.LearningCheckStep || r.Rollback != antispam.RollbackVerified || !maps.Equal(before, f.state()) {
+				t.Fatalf("dump failure did not roll back: %+v", r)
+			}
+		})
 	}
 }
