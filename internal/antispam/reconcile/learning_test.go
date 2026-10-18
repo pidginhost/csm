@@ -55,3 +55,34 @@ func TestLearningStateNilIsInert(t *testing.T) {
 		t.Fatal("nil state held learning")
 	}
 }
+
+// An include that did not take effect stays off, with learning on, until
+// the learning configuration changes: no reinstall loop.
+func TestPassHoldsRoundcubeAfterUnavailable(t *testing.T) {
+	h := &fakeHost{
+		assessment: antispam.Assessment{Action: antispam.Install},
+		result: antispam.Result{Operation: antispam.OpApply, OK: true, Generation: "g",
+			Roundcube: antispam.RoundcubeUnavailable + "Roundcube does not load the include's Junk folder"},
+	}
+	r := h.reconciler()
+	r.Learning = NewLearningState()
+	d := learningDesired()
+	d.Settings.Roundcube = true
+	r.Pass(context.Background(), d)
+	if h.requests[0].Roundcube == nil || !*h.requests[0].Roundcube {
+		t.Fatalf("first request = %+v, want Roundcube", h.requests[0])
+	}
+	h.result = antispam.Result{Operation: antispam.OpApply, OK: true, Generation: "g"}
+	out := r.Pass(context.Background(), d)
+	second := h.requests[1]
+	if second.Roundcube != nil || second.Learning == nil || !*second.Learning {
+		t.Fatalf("second request = %+v, want learning without Roundcube", second)
+	}
+	reported := false
+	for _, p := range out.LearningProblems {
+		reported = reported || p.Key == antispam.ReasonRoundcube
+	}
+	if !reported {
+		t.Fatalf("problems = %+v", out.LearningProblems)
+	}
+}

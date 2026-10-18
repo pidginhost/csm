@@ -46,7 +46,9 @@ type fakeHost struct {
 	// spamWeight is the effective CSM_FUZZY_SPAM weight /symbols reports
 	// once learning is loaded (10 unless set).
 	spamWeight float64
-	problems   []antispam.Problem
+	// roundcubeOverride, when set, is a later include's junk_mbox.
+	roundcubeOverride string
+	problems          []antispam.Problem
 	// pingFail and greetFail list the 1-based probe calls that fail.
 	pingFail, greetFail []int
 	pings, greets       int
@@ -215,6 +217,8 @@ func (f *fakeHost) run(ctx context.Context, limit time.Duration, name string, ar
 		return antispam.CommandResult{Stdout: `{}`}
 	case line == "rspamadm configdump -j actions":
 		return antispam.CommandResult{Stdout: f.dumpActions()}
+	case strings.HasPrefix(line, "env DNS=localhost /usr/local/cpanel/3rdparty/bin/php "):
+		return antispam.CommandResult{Stdout: f.roundcubeState()}
 	case line == "rspamadm configdump -j fuzzy_check":
 		return antispam.CommandResult{Stdout: f.loaded().fuzzyCheck}
 	case line == "rspamadm configdump -j group":

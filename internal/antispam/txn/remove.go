@@ -86,10 +86,8 @@ func (h *Host) Remove() antispam.Result {
 			}
 		}
 	}
-	for _, c := range roundcubeChanges {
-		if err := t.write(c); err != nil {
-			return t.fail(StepRoundcube, err)
-		}
+	if _, err := t.roundcube(roundcubeChanges); err != nil {
+		return t.fail(StepRoundcube, err)
 	}
 	if err := t.removeRecord(); err != nil {
 		return t.fail(StepComplete, err)

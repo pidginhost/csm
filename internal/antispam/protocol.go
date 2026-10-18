@@ -218,6 +218,9 @@ type Result struct {
 	// Generation identifies the installed content after a successful apply.
 	Generation string `json:"generation,omitempty"`
 	Error      string `json:"error,omitempty"`
+	// Roundcube is set when a successful transaction could not verify the
+	// webmail include; the rest of the change stands (spec 6.4).
+	Roundcube string `json:"roundcube,omitempty"`
 }
 
 // ErrorSummary keeps Result.Error on one line for logs and findings.
@@ -227,7 +230,7 @@ func ErrorSummary(s string) string {
 
 var resultKeys = map[string]bool{
 	"operation": true, "ok": true, "busy": true, "failed_step": true,
-	"rollback": true, "generation": true, "error": true,
+	"rollback": true, "generation": true, "error": true, "roundcube": true,
 }
 
 // ParseResult reads one unambiguous worker report. Invalid or contradictory
@@ -267,6 +270,9 @@ func (r Result) Validate() error {
 	if r.Operation != OpApply && r.Operation != OpRemove &&
 		(r.Operation != "" || r.OK || r.FailedStep != "request") {
 		return errors.New("worker result has an unsupported operation")
+	}
+	if r.Roundcube != "" && (!r.OK || !strings.HasPrefix(r.Roundcube, RoundcubeUnavailable)) {
+		return errors.New("worker result reports an unexpected Roundcube state")
 	}
 	if r.OK {
 		if r.Busy || r.FailedStep != "" || r.Error != "" || (r.Rollback != "" && r.Rollback != RollbackNone) {

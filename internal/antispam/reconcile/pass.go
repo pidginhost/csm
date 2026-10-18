@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -249,6 +250,9 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	if result.FailedStep == antispam.LearningCheckStep {
 		r.Learning.hold(learningGeneration(settings))
+	}
+	if settings.Roundcube && strings.HasPrefix(result.Roundcube, antispam.RoundcubeUnavailable) {
+		r.Learning.holdRoundcube(learningGeneration(settings), strings.TrimPrefix(result.Roundcube, antispam.RoundcubeUnavailable))
 	}
 	if finding, ok := resultFinding(req.Operation, result, err, now); ok {
 		out.Findings = append(out.Findings, finding)

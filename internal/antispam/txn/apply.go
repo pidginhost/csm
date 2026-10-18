@@ -144,13 +144,20 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 			return t.fail(step, err)
 		}
 	}
-	for _, c := range roundcubeChanges {
-		if err := t.write(c); err != nil {
-			return t.fail(StepRoundcube, err)
+	roundcube, rcErr := t.roundcube(roundcubeChanges)
+	if rcErr != nil {
+		return t.fail(StepRoundcube, rcErr)
+	}
+	if roundcube != "" && s.Roundcube {
+		// The include came back out; record what is installed without it.
+		withoutInclude := s
+		withoutInclude.Roundcube = false
+		if installed, renderErr := antispam.ManagedContent(withoutInclude); renderErr == nil {
+			generation = antispam.Generation(installed)
 		}
 	}
 	if err := t.writeRecord(generation); err != nil {
 		return t.fail(StepComplete, err)
 	}
-	return antispam.Result{OK: true, Generation: generation}
+	return antispam.Result{OK: true, Generation: generation, Roundcube: roundcube}
 }
