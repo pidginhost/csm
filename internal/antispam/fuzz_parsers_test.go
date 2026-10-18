@@ -352,6 +352,7 @@ func FuzzEnabledModules(f *testing.F) {
 
 func FuzzParseActions(f *testing.F) {
 	for _, seed := range []string{
+		`{"reject":15,"add_header":6,"grow_factor":1.5}`,
 		`{"reject":15,"add_header":6,"greylist":null,"rewrite_subject":null}`,
 		`{"reject":20.5,"add header":8,"rewrite subject":10}`,
 		`{"rewrite_subject":null,"rewrite subject":8}`,
@@ -369,7 +370,7 @@ func FuzzParseActions(f *testing.F) {
 		}
 		encoded, err := json.Marshal(map[string]*float64{
 			"reject": a.Reject, "add_header": a.AddHeader,
-			"greylist": a.Greylist, "rewrite_subject": a.RewriteSubject,
+			"greylist": a.Greylist, "rewrite_subject": a.RewriteSubject, "grow_factor": a.GrowFactor,
 		})
 		if err != nil {
 			t.Fatalf("parsed non-JSON thresholds: %v", err)
