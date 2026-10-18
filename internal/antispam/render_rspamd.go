@@ -17,14 +17,21 @@ var RspamdFiles = []string{"actions.conf", "greylist.conf", "rbl.conf", "emails.
 // operator enables a DNS feed.
 const disabledModule = ManagedHeader + "\nenabled = false;\n"
 
-// Script properties cover half-width and supplementary letters too. Restrict
-// them to letters so punctuation, radicals and combining marks do not score.
-// Kana prolonged sound marks have the Common script, so include them explicitly.
-// Marks after a letter keep decomposed kana and Han variation sequences intact.
+// invisibleCJK matches an invisible character next to a Chinese, Japanese
+// or Korean letter. Spam puts them inside subject words to split them for
+// filters; legitimate subjects use them beside Latin text or inside emoji.
+// Letters are code point ranges, not script properties, so RE2, PCRE and
+// Hyperscan read the same set: kana with the prolonged sound mark and
+// half-width forms, Han with its extensions and compatibility ideographs,
+// Hangul syllables and jamo. Punctuation, radicals and spacing marks stay
+// out. Kana voicing marks and variation selectors may follow a letter.
 const (
-	cjkLetter      = `(?=[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}\x{30FC}\x{FF70}])\p{L}`
+	cjkLetters = `\x{3041}-\x{3096}\x{309D}-\x{309F}\x{30A1}-\x{30FA}\x{30FC}-\x{30FF}\x{31F0}-\x{31FF}\x{FF66}-\x{FF9D}` +
+		`\x{3400}-\x{4DBF}\x{4E00}-\x{9FFF}\x{F900}-\x{FAFF}\x{20000}-\x{323AF}` +
+		`\x{1100}-\x{11FF}\x{3131}-\x{318E}\x{A960}-\x{A97C}\x{AC00}-\x{D7A3}\x{D7B0}-\x{D7FB}\x{FFA0}-\x{FFDC}`
+	letterMarks    = `\x{3099}\x{309A}\x{FE00}-\x{FE0F}\x{E0100}-\x{E01EF}`
 	invisibleChars = `\x{200B}-\x{200D}\x{2060}\x{FEFF}`
-	invisibleCJK   = cjkLetter + `\p{M}*[` + invisibleChars + `]|[` + invisibleChars + `]` + cjkLetter
+	invisibleCJK   = `[` + cjkLetters + `][` + letterMarks + `]*[` + invisibleChars + `]|[` + invisibleChars + `][` + cjkLetters + `]`
 )
 
 // subjectRules scores the decoded Subject. On its own the weight lifts an
