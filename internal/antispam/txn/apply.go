@@ -87,9 +87,11 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	if err != nil {
 		return failed(StepRecord, err)
 	}
-	// A complete record that matches the installed text proves the last
-	// transaction reloaded both services with it.
-	matches := valid && record.Complete() && *record.Generation == antispam.Generation(installed)
+	// A completed installed or desired generation proves the unchanged
+	// services were already reloaded. Repairing drift in just one target
+	// must not reload the others. An incomplete record proves neither.
+	matches := valid && record.Complete() &&
+		(*record.Generation == antispam.Generation(installed) || *record.Generation == generation)
 	opts, err := t.eximSettings(t.fwd)
 	if err != nil {
 		return failed(StepPreconditions, err)

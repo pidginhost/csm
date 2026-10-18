@@ -668,8 +668,8 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 		w := t.writes[i]
 		before := w.before
 		switch {
-		case w.path == t.h.path(antispam.FeedRBLPath):
-			// Rollback can put the DQS key back into this file, so it never
+		case slices.Contains(antispam.SecretPaths(), strings.TrimPrefix(w.path, t.h.root)):
+			// Rollback can put secrets back into this file, so it never
 			// keeps a mode someone loosened meanwhile: it gets the private
 			// metadata this apply wrote, or the snapshot's.
 			if w.next.metadata {
