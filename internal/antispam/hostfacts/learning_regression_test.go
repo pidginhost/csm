@@ -35,7 +35,7 @@ func TestLearningUnreadableFacts(t *testing.T) {
 		for _, data := range []string{"", "unexpected\n", udpHeader + "truncated\n", udpHeader + "1: invalid 00000000:0000 07\n"} {
 			c, _ := learningCollector(t, &fakeRun{})
 			write(t, c.layout.ProcNetUDP, data)
-			if _, err := c.fuzzyListening(); err == nil {
+			if _, _, err := c.fuzzyListening(979); err == nil {
 				t.Errorf("invalid UDP table accepted: %q", data)
 			}
 		}

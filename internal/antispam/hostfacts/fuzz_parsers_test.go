@@ -39,11 +39,12 @@ func FuzzLearningUDP(f *testing.F) {
 	f.Add(udpHeader + "12: 0100007F:2C47 00000000:0000 07 0:0 0:0 0 979 0 1\n")
 	f.Add("")
 	f.Fuzz(func(t *testing.T, data string) {
-		found, err := parseFuzzyListening(data)
-		if err != nil && found {
+		trusted := func(uid int) bool { return uid == 0 || uid == 979 }
+		found, foreign, err := parseFuzzyListening(data, trusted)
+		if err != nil && (found || foreign) {
 			t.Fatal("unreadable UDP table reported a listener")
 		}
-		if _, err := parseFuzzyListening(data + "\ntruncated\n"); err == nil {
+		if _, _, err := parseFuzzyListening(data+"\ntruncated\n", trusted); err == nil {
 			t.Fatal("truncated UDP table accepted")
 		}
 	})

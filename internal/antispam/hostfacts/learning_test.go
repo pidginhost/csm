@@ -3,6 +3,7 @@ package hostfacts
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,30 +33,46 @@ func learningCollector(t *testing.T, run *fakeRun) (collector, string) {
 const udpHeader = "   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n"
 
 func TestCollectFuzzyListening(t *testing.T) {
+	const rspamd = 979
+	line := func(addr, state string, uid int) string {
+		return fmt.Sprintf("  12: %s 00000000:0000 %s 00000000:00000000 00:00000000 00000000 %5d        0 1 2 0000000000000000 0\n", addr, state, uid)
+	}
 	for name, tc := range map[string]struct {
-		udp  string
-		want bool
+		udp                string
+		listening, foreign bool
 	}{
-		"listening":   {udpHeader + "  12: 0100007F:2C47 00000000:0000 07 00000000:00000000 00:00000000 00000000   979        0 1 2 0000000000000000 0\n", true},
-		"other port":  {udpHeader + "  12: 0100007F:2C46 00000000:0000 07 00000000:00000000 00:00000000 00000000   979        0 1 2 0000000000000000 0\n", false},
-		"any address": {udpHeader + "  12: 00000000:2C47 00000000:0000 07 00000000:00000000 00:00000000 00000000   979        0 1 2 0000000000000000 0\n", false},
-		"wrong state": {udpHeader + "  12: 0100007F:2C47 00000000:0000 01 00000000:00000000 00:00000000 00000000   979        0 1 2 0000000000000000 0\n", false},
-		"header only": {udpHeader, false},
+		"listening":   {udpHeader + line("0100007F:2C47", "07", rspamd), true, false},
+		"root":        {udpHeader + line("0100007F:2C47", "07", 0), true, false},
+		"other port":  {udpHeader + line("0100007F:2C46", "07", 4321), false, false},
+		"wrong state": {udpHeader + line("0100007F:2C47", "01", rspamd), false, false},
+		"header only": {udpHeader, false, false},
+		// A tenant can bind the unprivileged port while the worker is gone,
+		// or next to it: its datagrams would reach the tenant.
+		"tenant only":     {udpHeader + line("0100007F:2C47", "07", 4321), false, true},
+		"tenant co-bound": {udpHeader + line("0100007F:2C47", "07", rspamd) + line("0100007F:2C47", "07", 4321), true, true},
+		"tenant wildcard": {udpHeader + line("0100007F:2C47", "07", rspamd) + line("00000000:2C47", "07", 4321), true, true},
+		"rspamd wildcard": {udpHeader + line("00000000:2C47", "07", rspamd), false, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, _ := learningCollector(t, &fakeRun{})
 			if err := os.WriteFile(c.layout.ProcNetUDP, []byte(tc.udp), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			got, err := c.fuzzyListening()
-			if err != nil || got != tc.want {
-				t.Fatalf("listening=%v err=%v, want %v", got, err, tc.want)
+			listening, foreign, err := c.fuzzyListening(rspamd)
+			if err != nil || listening != tc.listening || foreign != tc.foreign {
+				t.Fatalf("listening=%v foreign=%v err=%v, want %v %v", listening, foreign, err, tc.listening, tc.foreign)
 			}
 		})
 	}
 	c, _ := learningCollector(t, &fakeRun{})
-	if _, err := c.fuzzyListening(); err == nil {
+	if _, _, err := c.fuzzyListening(rspamd); err == nil {
 		t.Fatal("missing /proc/net/udp read as not listening")
+	}
+	if err := os.WriteFile(c.layout.ProcNetUDP, []byte(udpHeader+line("0100007F:2C47", "07", rspamd)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.fuzzyListening(-1); err == nil {
+		t.Fatal("unknown rspamd uid judged the listener")
 	}
 }
 

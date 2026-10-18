@@ -185,15 +185,18 @@ type HostFacts struct {
 	LearningKeys    LearningKeys
 	LearningKeysErr error
 	// Learning prerequisites, collected only while learning is requested.
-	LearningDumps   LearningDumps
-	ControlSocket   SocketFacts
-	Redis           RedisFacts
-	FuzzyListening  bool
-	FuzzyListenErr  error
-	CageFS          CageFSFacts
-	Roundcube       RoundcubeFacts
-	AccountNames    map[string]bool
-	AccountNamesErr error
+	LearningDumps  LearningDumps
+	ControlSocket  SocketFacts
+	Redis          RedisFacts
+	FuzzyListening bool
+	// FuzzyListenForeign is set when another user's socket shares the
+	// fuzzy worker's port.
+	FuzzyListenForeign bool
+	FuzzyListenErr     error
+	CageFS             CageFSFacts
+	Roundcube          RoundcubeFacts
+	AccountNames       map[string]bool
+	AccountNamesErr    error
 	// RedisGuardPaused is the pass's last memory-guard state, so the guard
 	// keeps its hysteresis between passes.
 	RedisGuardPaused bool

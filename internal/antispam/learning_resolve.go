@@ -95,6 +95,8 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 	checkLearningConflicts(&c, f)
 	if f.FuzzyListenErr != nil {
 		c.add(ReasonBackendUnavailable, "CSM cannot read the UDP socket table to find the fuzzy worker")
+	} else if f.FuzzyListenForeign {
+		c.add(ReasonUnsafe, "a process of another user listens on the fuzzy worker's port 11335")
 	}
 
 	gate := LearningGate{}

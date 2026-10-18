@@ -27,6 +27,8 @@ const (
 	roundcubeIncludeGlob = `glob("/usr/local/cpanel/base/3rdparty/roundcube/config/inc.d/*.php")`
 	// fuzzyListenAddr is 127.0.0.1:11335 as /proc/net/udp prints it.
 	fuzzyListenAddr = "0100007F:2C47"
+	// fuzzyWildcardAddr is 0.0.0.0:11335, which also receives its datagrams.
+	fuzzyWildcardAddr = "00000000:2C47"
 )
 
 // CollectLearning adds the learning prerequisites to f, which must already
@@ -40,7 +42,7 @@ func (c collector) learningFacts(ctx context.Context, f *antispam.HostFacts) {
 	c.controlSocket(f)
 	c.controlSocketGroup(f)
 	c.logGroups(f)
-	f.FuzzyListening, f.FuzzyListenErr = c.fuzzyListening()
+	f.FuzzyListening, f.FuzzyListenForeign, f.FuzzyListenErr = c.fuzzyListening(f.Socket.RspamdUID)
 	f.CageFS = c.cageFS(ctx)
 	f.Roundcube = c.roundcube(*f)
 	f.AccountNames, f.AccountNamesErr = c.accountNames()
@@ -162,24 +164,29 @@ func (c collector) logGroups(f *antispam.HostFacts) {
 	}
 }
 
-// fuzzyListening reports whether a UDP socket is bound to 127.0.0.1:11335.
-// rspamd does not respawn a fuzzy worker that exited (spike S4).
-func (c collector) fuzzyListening() (bool, error) {
+// fuzzyListening reports whether rspamd (or root) has a UDP socket bound to
+// 127.0.0.1:11335, and whether any other user's socket sits on that port of
+// the loopback or wildcard address. The port is unprivileged: a tenant socket
+// there would receive scan and learning datagrams. rspamd does not respawn a
+// fuzzy worker that exited (spike S4).
+func (c collector) fuzzyListening(rspamdUID int) (listening, foreign bool, err error) {
+	if rspamdUID < 0 {
+		return false, false, errors.New("rspamd's service user is unknown, so the fuzzy worker's socket cannot be judged")
+	}
 	data, err := readText(c.layout.ProcNetUDP)
 	if err != nil {
-		return false, errors.New("cannot read the UDP socket table")
+		return false, false, errors.New("cannot read the UDP socket table")
 	}
-	return parseFuzzyListening(data)
+	return parseFuzzyListening(data, func(uid int) bool { return uid == 0 || uid == rspamdUID })
 }
 
-func parseFuzzyListening(data string) (bool, error) {
+func parseFuzzyListening(data string, trusted func(uid int) bool) (listening, foreign bool, err error) {
 	lines := strings.Split(data, "\n")
 	header := strings.Fields(lines[0])
 	bad := errors.New("the UDP socket table is not readable")
 	if len(header) < 4 || strings.Join(header[:4], " ") != "sl local_address rem_address st" {
-		return false, bad
+		return false, false, bad
 	}
-	found := false
 	for _, line := range lines[1:] {
 		fields := strings.Fields(line)
 		if len(fields) == 0 {
@@ -187,19 +194,27 @@ func parseFuzzyListening(data string) (bool, error) {
 		}
 		if len(fields) < 10 || !strings.HasSuffix(fields[0], ":") ||
 			!udpAddress(fields[1]) || !udpAddress(fields[2]) || len(fields[3]) != 2 {
-			return false, bad
+			return false, false, bad
 		}
 		if _, err := strconv.ParseUint(strings.TrimSuffix(fields[0], ":"), 10, 64); err != nil {
-			return false, bad
+			return false, false, bad
 		}
 		if _, err := strconv.ParseUint(fields[3], 16, 8); err != nil {
-			return false, bad
+			return false, false, bad
 		}
-		if fields[1] == fuzzyListenAddr && fields[3] == "07" {
-			found = true
+		uid, err := strconv.Atoi(fields[7])
+		if err != nil || uid < 0 {
+			return false, false, bad
+		}
+		onPort := fields[1] == fuzzyListenAddr || fields[1] == fuzzyWildcardAddr
+		switch {
+		case onPort && !trusted(uid):
+			foreign = true
+		case fields[1] == fuzzyListenAddr && fields[3] == "07":
+			listening = true
 		}
 	}
-	return found, nil
+	return listening, foreign, nil
 }
 
 func udpAddress(value string) bool {
