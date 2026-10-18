@@ -2,10 +2,15 @@ package hostfacts
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestControllerGetReadsReply(t *testing.T) {
@@ -65,15 +70,40 @@ func TestControllerGetNoForwardedHeaders(t *testing.T) {
 // After an rspamd restart a squatter could answer at the socket path; CSM
 // talks only to the socket's expected owner.
 func TestControllerGetRejectsWrongPeer(t *testing.T) {
-	called := false
-	sock := serve(t, t.TempDir(), func(w http.ResponseWriter, r *http.Request) {
-		called = true
-		_, _ = w.Write([]byte("[]"))
-	})
+	sock := filepath.Join(t.TempDir(), "controller.sock")
+	listener, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listener.Close() }()
+	received := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			received <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if err = conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			received <- err
+			return
+		}
+		var b [1]byte
+		n, err := conn.Read(b[:])
+		if n != 0 {
+			err = errors.New("the rejected peer received request bytes")
+		}
+		received <- err
+	}()
 	if _, err := ControllerGet(context.Background(), sock, "/symbols", 1<<20, os.Getuid()+1); err == nil {
 		t.Fatal("a socket served by another user answered")
 	}
-	if called {
-		t.Fatal("the request reached a peer that is not rspamd")
+	select {
+	case err := <-received:
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("rejected connection did not close without sending a byte: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the peer check did not connect to the listener")
 	}
 }

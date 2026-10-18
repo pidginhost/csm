@@ -493,3 +493,26 @@ func TestResolveLearningRoundcubeForeignInclude(t *testing.T) {
 		t.Fatalf("detail = %q", problems[0].Detail)
 	}
 }
+
+func TestResolveLearningForeignListenerWithProbeFailure(t *testing.T) {
+	for _, installed := range []bool{false, true} {
+		f := safeLearningFacts()
+		if installed {
+			withLoadedLearning(t, &f)
+		}
+		f.FuzzyListenForeign = true
+		f.FuzzyListenErr = errors.New("the other UDP table could not be read")
+		s, gate, problems := ResolveLearning(learningSettings(), f)
+		if s.Learning || gate != (LearningGate{}) {
+			t.Fatalf("installed=%v: foreign listener left learning enabled: %+v", installed, gate)
+		}
+		var unsafe, unavailable bool
+		for _, p := range problems {
+			unsafe = unsafe || p.Key == ReasonUnsafe
+			unavailable = unavailable || p.Key == ReasonBackendUnavailable
+		}
+		if len(problems) != 2 || !unsafe || !unavailable {
+			t.Fatalf("installed=%v: problems=%+v, want unsafe listener and probe failure", installed, problems)
+		}
+	}
+}

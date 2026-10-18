@@ -50,6 +50,23 @@ func FuzzLearningUDP(f *testing.F) {
 	})
 }
 
+func FuzzLearningUDP6(f *testing.F) {
+	f.Add(udp6Header)
+	f.Add(udp6Header + "12: 0000000000000000FFFF00000100007F:2C47 00000000000000000000000000000000:0000 07 0:0 0:0 0 4321 0 1\n")
+	f.Add(udp6Header + "12: 00000000000000000000000001000000:2C47 00000000000000000000000000000000:0000 07 0:0 0:0 0 979 0 1\n")
+	f.Add("")
+	f.Fuzz(func(t *testing.T, data string) {
+		trusted := func(uid int) bool { return uid == 0 || uid == 979 }
+		foreign, err := parseUDP6Foreign(data, trusted)
+		if err != nil && foreign {
+			t.Fatal("unreadable UDP6 table reported a listener")
+		}
+		if _, err := parseUDP6Foreign(data+"\ntruncated\n", trusted); err == nil {
+			t.Fatal("truncated UDP6 table accepted")
+		}
+	})
+}
+
 func FuzzRedisInfo(f *testing.F) {
 	for _, data := range []string{"used_memory:0\r\n", "used_memory:\n", "used_memory:1\nused_memory:2\n", ""} {
 		f.Add(data)

@@ -412,8 +412,8 @@ func TestCollectCageFSNotInstalled(t *testing.T) {
 // udp6Header is /proc/net/udp6's header line.
 const udp6Header = "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n"
 
-// A dual-stack or IPv6 socket of another user on the port also receives the
-// worker's traffic. A missing udp6 table means IPv6 is off.
+// Dual-stack and mapped IPv4 sockets can receive the worker's IPv4 traffic;
+// a native IPv6 address cannot. A missing udp6 table means IPv6 is off.
 func TestCollectFuzzyListeningIPv6(t *testing.T) {
 	const rspamd = 979
 	v4 := udpHeader + fmt.Sprintf("  12: 0100007F:2C47 00000000:0000 07 00000000:00000000 00:00000000 00000000 %5d        0 1 2 0000000000000000 0\n", rspamd)
@@ -424,12 +424,13 @@ func TestCollectFuzzyListeningIPv6(t *testing.T) {
 		udp6    string
 		foreign bool
 	}{
-		"rspamd wildcard":   {udp6Header + line6("00000000000000000000000000000000:2C47", rspamd), false},
-		"tenant wildcard":   {udp6Header + line6("00000000000000000000000000000000:2C47", 4321), true},
-		"tenant mapped":     {udp6Header + line6("0000000000000000FFFF00000100007F:2C47", 4321), true},
-		"tenant loopback":   {udp6Header + line6("00000000000000000000000001000000:2C47", 4321), true},
-		"tenant mapped any": {udp6Header + line6("0000000000000000FFFF000000000000:2C47", 4321), true},
-		"tenant other":      {udp6Header + line6("00000000000000000000000000000000:2C46", 4321), false},
+		"rspamd wildcard":     {udp6Header + line6("00000000000000000000000000000000:2C47", rspamd), false},
+		"tenant wildcard":     {udp6Header + line6("00000000000000000000000000000000:2C47", 4321), true},
+		"tenant mapped":       {udp6Header + line6("0000000000000000FFFF00000100007F:2C47", 4321), true},
+		"tenant loopback":     {udp6Header + line6("00000000000000000000000001000000:2C47", 4321), false},
+		"tenant mapped other": {udp6Header + line6("0000000000000000FFFF00000200007F:2C47", 4321), false},
+		"tenant mapped any":   {udp6Header + line6("0000000000000000FFFF000000000000:2C47", 4321), true},
+		"tenant other":        {udp6Header + line6("00000000000000000000000000000000:2C46", 4321), false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, _ := learningCollector(t, &fakeRun{})
@@ -449,6 +450,39 @@ func TestCollectFuzzyListeningIPv6(t *testing.T) {
 	write(t, c.layout.ProcNetUDP6, "garbage\n")
 	if _, _, err := c.fuzzyListening(rspamd); err == nil {
 		t.Fatal("unreadable udp6 table accepted")
+	}
+}
+
+// Failure to inspect one address family must not hide a foreign listener
+// already proven by the other family.
+func TestCollectFuzzyListeningPreservesForeignOnProbeFailure(t *testing.T) {
+	for _, broken := range []string{"udp", "udp6"} {
+		for _, failure := range []string{"read", "parse"} {
+			t.Run(broken+"/"+failure, func(t *testing.T) {
+				c, _ := learningCollector(t, &fakeRun{})
+				v4 := udpHeader + "12: 0100007F:2C47 00000000:0000 07 0:0 0:0 0 4321 0 1\n"
+				v6 := udp6Header + "40: 0000000000000000FFFF00000100007F:2C47 00000000000000000000000000000000:0000 07 0:0 0:0 0 4321 0 1\n"
+				for _, table := range []struct{ path, data, family string }{
+					{c.layout.ProcNetUDP, v4, "udp"},
+					{c.layout.ProcNetUDP6, v6, "udp6"},
+				} {
+					switch {
+					case table.family != broken:
+						write(t, table.path, table.data)
+					case failure == "read":
+						if err := os.Mkdir(table.path, 0o700); err != nil {
+							t.Fatal(err)
+						}
+					default:
+						write(t, table.path, "unreadable table\n")
+					}
+				}
+				listening, foreign, err := c.fuzzyListening(979)
+				if err == nil || !foreign || listening {
+					t.Fatalf("listening=%v foreign=%v err=%v, want foreign listener and probe error", listening, foreign, err)
+				}
+			})
+		}
 	}
 }
 

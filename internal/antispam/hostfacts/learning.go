@@ -199,36 +199,33 @@ func (c collector) fuzzyListening(rspamdUID int) (listening, foreign bool, err e
 		return false, false, errors.New("rspamd's service user is unknown, so the fuzzy worker's socket cannot be judged")
 	}
 	trusted := func(uid int) bool { return uid == 0 || uid == rspamdUID }
-	data, err := readText(c.layout.ProcNetUDP)
-	if err != nil {
-		return false, false, errors.New("cannot read the UDP socket table")
+	data, readErr := readText(c.layout.ProcNetUDP)
+	if readErr != nil {
+		err = errors.New("cannot read the UDP socket table")
+	} else {
+		listening, foreign, err = parseFuzzyListening(data, trusted)
 	}
-	if listening, foreign, err = parseFuzzyListening(data, trusted); err != nil {
-		return false, false, err
-	}
+	// Each table is independent evidence: a failed read of one must not
+	// hide another user's listener in the other.
 	// Without IPv6 there is no udp6 table; any other failure is unknown.
-	data6, err := readText(c.layout.ProcNetUDP6)
+	data6, readErr := readText(c.layout.ProcNetUDP6)
 	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return listening, foreign, nil
-	case err != nil:
-		return false, false, errors.New("cannot read the UDP6 socket table")
+	case errors.Is(readErr, fs.ErrNotExist):
+		return listening, foreign, err
+	case readErr != nil:
+		return listening, foreign, errors.Join(err, errors.New("cannot read the UDP6 socket table"))
 	}
-	foreign6, err := parseUDP6Foreign(data6, trusted)
-	if err != nil {
-		return false, false, err
-	}
-	return listening, foreign || foreign6, nil
+	foreign6, err6 := parseUDP6Foreign(data6, trusted)
+	return listening, foreign || foreign6, errors.Join(err, err6)
 }
 
 // IPv6 bindings on the fuzzy port, as /proc prints them, that can receive
 // traffic for 127.0.0.1:11335: the wildcard (dual-stack), IPv4-mapped
-// 127.0.0.1 and 0.0.0.0, and ::1. Other 127/8 addresses receive none of it.
+// 127.0.0.1 and 0.0.0.0. Native IPv6 and other 127/8 addresses receive none.
 var fuzzyPort6Addrs = map[string]bool{
 	"00000000000000000000000000000000:2C47": true,
 	"0000000000000000FFFF00000100007F:2C47": true,
 	"0000000000000000FFFF000000000000:2C47": true,
-	"00000000000000000000000001000000:2C47": true,
 }
 
 // parseUDP6Foreign reports whether another user's IPv6 socket sits on one of
