@@ -341,7 +341,7 @@ func currentLedger(tx *bolt.Tx) (bool, error) {
 			return false, admission.ErrCorruptRecord
 		}
 		return false, nil
-	case len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaShadow:
+	case len(schema) != 1 || schema[0] < admissionSchemaVersion || schema[0] > admissionSchemaDisabled:
 		return false, ErrAdmissionSchema
 	case intents == nil:
 		return false, admission.ErrCorruptRecord

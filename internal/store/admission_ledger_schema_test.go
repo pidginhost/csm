@@ -604,11 +604,10 @@ func TestAdmissionLedgerUpgradeSweepsBeforeEnqueue(t *testing.T) {
 	}
 }
 
-// Schema 8 and 9 add record values, not buckets. This build opens schema
-// 7, 8 and 9 without rewriting a record, and so does a read without a
-// handle; only a write that needs a later schema raises the marker.
-func TestAdmissionLedgerOpensSchemasSevenToNineUnchanged(t *testing.T) {
-	for _, schema := range []byte{admissionSchemaVersion, admissionSchemaLinked, admissionSchemaShadow} {
+// Later schemas add record values, not buckets. Opening or reading a
+// supported ledger must not rewrite it or raise its marker.
+func TestAdmissionLedgerOpensSchemasSevenToTenUnchanged(t *testing.T) {
+	for _, schema := range []byte{admissionSchemaVersion, admissionSchemaLinked, admissionSchemaShadow, admissionSchemaDisabled} {
 		f := newLedgerFixture(t)
 		f.queued()
 		if err := f.db.bolt.Update(func(tx *bolt.Tx) error {

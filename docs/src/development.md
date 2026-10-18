@@ -526,19 +526,26 @@ the pick linked in the same transaction, or leaves it
 failed on its last attempt. A historical result cannot end a later retry;
 a repeated linked ending must name the same block and expiry instant. A linked record is candidate version 2 and an
 admitted candidate's history pays for its bytes; without room the
-transaction changes nothing. The first linked record moves the ledger to
-schema 8, with the same buckets; this build opens schema 7, 8 and 9 without
-rewriting them, and older builds refuse a schema they do not know rather
-than misread it. A ledger stays at schema 7, and can be read by an older
-build, until something is linked. A write never lowers the schema.
+transaction changes nothing. A linked record requires at least schema 8,
+with the same buckets; this build opens schemas 7 to 10 without rewriting
+them, and older builds refuse an unknown schema rather than misread it.
+An unchanged schema-7 ledger stays readable by older builds until a write
+needs a newer format. A write never lowers the schema.
 
 A panel verdict that allows a queued candidate ends it refused as
 `verdict_allow`, like any other refusal: no attempt, charge or history
 allocation, one ended count, and the notice that Critical or C3 work raises
 when it is refused. A retry keeps the charge of its failed attempt. The
 episode is not answered, so a later observation can queue the next
-generation. The first such record moves the ledger to schema 9, with the
-same buckets; older builds refuse it.
+generation. Such a record requires at least schema 9, with the same
+buckets; a later schema is retained and older readers refuse unknown schemas.
+
+Queued work whose response the configuration no longer allows ends refused
+as `disabled`: no attempt, charge or history allocation, one ended count and
+no notice, since the operator turned the response off. The episode is not
+answered. The first such record moves the ledger to schema 10, with the same
+buckets; older builds refuse it. A full outcome bucket, every key at its
+largest count, is now 32872 bytes against a bound of 33 KiB.
 
 `EndDryRun` ends queued work that dry-run mode forecast instead of running:
 the candidate moves to `dry_run` without an attempt, ceiling charge,
@@ -548,8 +555,8 @@ attempts, their charges and the history they paid for, which ends; roots it
 gained while it waited are dropped as on other endings. The work must be
 ready as a reservation requires: a retry waits out its backoff, an
 unresolved attempt still holds the target, and stale work is refused. The
-same ending again changes nothing. The episode is not answered, and the
-first dry-run ending also moves the ledger to schema 9.
+same ending again changes nothing. The episode is not answered. A dry-run
+ending requires at least schema 9 and retains any later schema.
 
 `SchedulePreview` selects queued work for a dry-run forecast. It is not
 admission: spent live ceiling and history budgets do not stop it, and it

@@ -122,6 +122,7 @@ func TestPersistedEnumValuesAreFrozen(t *testing.T) {
 		"ReasonCeiling":                {uint8(ReasonCeiling), 1},
 		"ReasonIngressInterruption":    {uint8(ReasonIngressInterruption), 18},
 		"ReasonVerdictAllow":           {uint8(ReasonVerdictAllow), 19},
+		"ReasonDisabled":               {uint8(ReasonDisabled), 20},
 		"ReasonUnsupportedContainment": {uint8(ReasonUnsupportedContainment), 15},
 		"PartitionGeneral":             {uint8(PartitionGeneral), 1},
 		"PartitionReserved":            {uint8(PartitionReserved), 2},
@@ -299,7 +300,7 @@ func TestAdmissionEffectAndDispositionValidity(t *testing.T) {
 func TestReasonVocabulary(t *testing.T) {
 	groups := map[Disposition][]string{
 		DispositionDeferred: {"ceiling", "set_full", "storage_share", "engine_unavailable", "pending_recovery"},
-		DispositionRefused:  {"protected", "attribution", "invalid", "policy", "stale_identity", "existing_effect", "verdict_allow"},
+		DispositionRefused:  {"protected", "attribution", "invalid", "policy", "stale_identity", "existing_effect", "verdict_allow", "disabled"},
 		DispositionWithheld: {"collateral", "breaker", "envelope_no_alternative", "unsupported_containment"},
 		DispositionDropped:  {"queue_overflow", "stale", "ingress_interruption"},
 	}

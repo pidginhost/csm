@@ -65,6 +65,8 @@ func TestStateDispositionAndReason(t *testing.T) {
 		{StateDryRun, DispositionDryRun, ReasonCeiling, false},
 		{StateDryRun, DispositionRefused, 0, false},
 		{StateRefused, DispositionRefused, ReasonVerdictAllow, true},
+		{StateRefused, DispositionRefused, ReasonDisabled, true},
+		{StateQueued, 0, ReasonDisabled, false},
 		{StateQueued, 0, ReasonVerdictAllow, false},
 	} {
 		if got := terminalDisposition(c.s, c.d) && stateReason(c.s, c.r); got != c.ok {
