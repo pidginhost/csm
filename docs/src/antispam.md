@@ -515,6 +515,66 @@ Sessions opened before removal retain their old hooks and may still scan.
 Those scans use operator or default rspamd settings after CSM's settings are
 removed; scores can change and external lists can become active again.
 
+## rspamd admin interface
+
+rspamd's controller answers admin and statistics requests. By default it
+trusts every connection from `127.0.0.1` and `::1` without a password, and
+every process on the server can connect there, including customer scripts.
+Such a process could read rspamd's history, which lists senders and
+recipients of scanned mail, or change scores and actions at runtime.
+
+While antispam is enabled, CSM reports each controller listener that other
+users may reach as an `antispam_controller_open` finding. The finding names
+the listener and the reason, including cases where CSM cannot prove isolation:
+
+- a trusted address that local processes can use (loopback, a wildcard, or
+  one of the server's own addresses);
+- a trust entry CSM cannot resolve, such as a map file or a hostname;
+- no controller password at all, only an enable password, or an empty
+  password;
+- a controller configuration CSM cannot read in full, such as an unreadable
+  worker type, an unsupported `enabled` or `count` value, a systemd socket,
+  or a second controller worker;
+- a Unix socket, or one of its parent directories, that other users can
+  write to, or whose access CSM cannot verify.
+
+For symlinked Unix sockets, a private directory protects only its own
+descendants. CSM also checks the resolved socket path: a private directory
+on a detour does not hide a socket reachable through its real path.
+
+These warnings also update in observe mode and when an apply is busy. When
+`rspamadm` cannot run, CSM keeps the previous warnings until it can.
+Turning antispam off clears them even if CSM cannot cancel pending changes.
+
+To close TCP access, keep a controller password set and put this in
+`/etc/rspamd/override.d/worker-controller.inc`:
+
+```
+secure_ip = [];
+```
+
+rspamd ships with the placeholder password `q1`, which it rejects as client
+authentication, so this also works without setting your own. With both
+`password` and `enable_password` unset, an empty `secure_ip` opens every
+command to everyone. Setting only `enable_password` leaves read-only access
+open.
+
+For local administration add a private Unix socket in the same file. Direct
+Unix socket connections get admin access without a password. Forwarded
+headers trigger additional trust and password checks, so local clients must
+send no forwarded headers. Keep the socket and its parent directories owned
+by root or rspamd, with no extended ACLs. Use socket mode 0600 and non-symlink
+directories that other users cannot write to. Socket mode alone does not
+protect a replaceable parent:
+
+```
+bind_socket = "/run/rspamd/csm-controller.sock mode=0600";
+bind_socket = "localhost:11334";
+secure_ip = [];
+```
+
+Reload rspamd after the change. CSM never edits the controller settings.
+
 ## Findings
 
 | Check | Severity | Meaning |
@@ -524,6 +584,7 @@ removed; scores can change and external lists can become active again.
 | `antispam_rspamd_down` | Warning | Three probes of the scan socket in a row failed. CSM probes every 20 seconds while antispam is enabled. |
 | `antispam_rspamd_recovered` | Warning | Two probes in a row succeeded after an outage. |
 | `antispam_scan_error` | Warning | Exim logged a failed scan. One finding covers every failure until a scan succeeds. |
+| `antispam_controller_open` | Warning | Other users may reach rspamd's admin or read-only interface, or CSM cannot verify isolation. See [rspamd admin interface](#rspamd-admin-interface). |
 | `antispam_feed` | Warning, or Critical when a list answers for everything | A feed or map redirect is off, loaded rules differ, a list misbehaves, or rspamd still fetches maps from rspamd.com. These findings alone do not disable filtering. See [Feeds](#feeds). |
 | `antispam_ip_map` | Warning | The IP map could not be written, or rspamd has not confirmed the current map 5 minutes after a write. Core filtering is unaffected. See [CSM IP map](#csm-ip-map). |
 

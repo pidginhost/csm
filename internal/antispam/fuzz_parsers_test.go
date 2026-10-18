@@ -753,3 +753,80 @@ func FuzzParseScan(f *testing.F) {
 		}
 	})
 }
+
+func FuzzParseControllerConfig(f *testing.F) {
+	for _, seed := range []string{
+		workerDump(`{"bind_socket":"localhost:11334","count":1,"password":"q1","secure_ip":["127.0.0.1","::1"]}`),
+		workerDump(`{"bind_socket":["/run/rspamd/csm-controller.sock mode=0600","localhost:11334"],"secure_ip":[]}`),
+		`{"worker":{"controller":{"bind_socket":"*:11334"}}}`,
+		workerDump(`{"bind_socket":"[::1]:11334 ssl","password":null}`),
+		workerDump(`{"bind_socket":"/run/x.sock,owner=_rspamd,MODE=0600"}`),
+		workerDump(`{"bind_socket":"systemd:0"}`),
+		workerDump(`{"bind_socket":"[2001:db8::1]:11334","secure_ip":[null]}`),
+		workerDump(`{"bind_socket":"localhost:11334","password":"x","pass\u0077ord":""}`),
+		`{"worker":[{"controller":{"bind_socket":"/run/x.sock mode=`,
+		`{}`,
+		``,
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, dump string) {
+		cfg, err := ParseControllerConfig([]byte(dump))
+		if err != nil {
+			if !reflect.DeepEqual(cfg, ControllerConfig{}) {
+				t.Fatal("error returned a partial controller config")
+			}
+			return
+		}
+		for _, l := range cfg.Listeners {
+			if l.Unix && (l.Path == "" || !strings.HasPrefix(l.Path, "/")) {
+				t.Fatalf("Unix listener without an absolute path: %+v", l)
+			}
+			if !l.Unix && l.HostPort == "" {
+				t.Fatalf("TCP listener without host:port: %+v", l)
+			}
+			if l.Unix && (len(l.Path) > maxSocketPath || l.HostPort != "") {
+				t.Fatal("Unix listener has an oversized path or TCP address")
+			}
+			if !l.Unix && (strings.HasPrefix(l.HostPort, "systemd:") || l.Path != "" || l.Mode != 0) {
+				t.Fatal("TCP listener contains an unresolved endpoint or Unix fields")
+			}
+		}
+		if cfg.Present && len(cfg.Listeners) == 0 {
+			t.Fatalf("controller present without listeners: %+v", cfg)
+		}
+	})
+}
+
+func FuzzControllerTrustEntries(f *testing.F) {
+	for _, entry := range []string{
+		"203.0.113.10", "203.0.113.129/24", "::ffff:203.0.113.10",
+		"::ffff:203.0.113.129/120", "::ffff:203.0.113.10/95", "::/0",
+		"::1%lo", "2001:db8::10%eth0/128", "file:///trusted.map", "",
+	} {
+		f.Add(entry, uint8(10))
+	}
+	f.Fuzz(func(t *testing.T, entry string, last uint8) {
+		addr := netip.AddrFrom4([4]byte{203, 0, 113, last})
+		facts := hostFacts()
+		facts.Addrs = []netip.Prefix{netip.PrefixFrom(addr, 32)}
+		cfg := tcpController([]string{entry}, true, true)
+		got := ControllerExposure(cfg, facts)
+		facts.Addrs = []netip.Prefix{netip.PrefixFrom(netip.AddrFrom16(addr.As16()), 128)}
+		if mapped := ControllerExposure(cfg, facts); !reflect.DeepEqual(got, mapped) {
+			t.Fatalf("mapped interface changed exposure: %+v != %+v", got, mapped)
+		}
+		prefix, ok := trustPrefix(entry)
+		if !ok {
+			onlyReason(t, got, "localhost:11334", exposureUnresolved)
+			return
+		}
+		if !prefix.IsValid() || prefix != prefix.Masked() || strings.Contains(entry, "%") {
+			t.Fatal("accepted a zoned address or produced a non-canonical prefix")
+		}
+		cfg.TrustEntries = []string{prefix.String()}
+		if canonical := ControllerExposure(cfg, facts); !reflect.DeepEqual(got, canonical) {
+			t.Fatalf("canonical trust changed exposure: %+v != %+v", got, canonical)
+		}
+	})
+}

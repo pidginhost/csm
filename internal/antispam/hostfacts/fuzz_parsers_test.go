@@ -5,11 +5,42 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
+
+func FuzzParseGroupMembers(f *testing.F) {
+	f.Add("service:x:974:_rspamd,tenant\n", "primary:x:1001:974::/:/bin/false\n")
+	f.Add("service:x:974:\n", "")
+	f.Add("alias:x:974:_rspamd\nservice:x:974:tenant\n", "")
+	f.Add("service:x:974:_rspamd\n", "truncated:x:1001\n")
+	f.Add("service:x:974:tenant\x00\n", "")
+	f.Fuzz(func(t *testing.T, groups, passwd string) {
+		want := map[int]bool{974: true}
+		got := parseGroupMembers(groups, passwd, want)
+		for gid, members := range got {
+			if gid != 974 {
+				t.Fatal("unrequested group returned")
+			}
+			for _, member := range members {
+				if member == "" || strings.ContainsAny(member, ":,\x00 \t\r\n\v\f") {
+					t.Fatal("invalid account name returned")
+				}
+			}
+		}
+		if len(parseGroupMembers(groups+"\nmalformed", passwd, want)) != 0 ||
+			len(parseGroupMembers(groups, passwd+"\nmalformed", want)) != 0 {
+			t.Fatal("malformed account record left a trusted membership list")
+		}
+		withPrimary := parseGroupMembers(groups, passwd+"\nprobe:x:1001:974::/:/bin/false\n", want)
+		if withPrimary != nil && !slices.Contains(withPrimary[974], "probe") {
+			t.Fatal("complete account data lost a primary-group member")
+		}
+	})
+}
 
 func FuzzParseProbeReply(f *testing.F) {
 	question := dnsmessage.Question{Name: dnsmessage.MustNewName("probe.example."), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}

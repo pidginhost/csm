@@ -99,6 +99,11 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	if err := invalidateErr; err != nil {
 		out := Outcome{Retry: BusyRetry}
+		if !d.Enabled {
+			// Disabling this warning depends only on configuration, not
+			// on whether pending mail configuration changes can be canceled.
+			out.Checks = []string{CheckControllerOpen}
+		}
 		if !errors.Is(err, eximlock.ErrBusy) {
 			retryDetails := "CSM retries shortly."
 			if !d.Enabled {
@@ -147,6 +152,22 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	a := assess(d.Enabled, settings, f)
 	now := r.Now()
 	out := Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed}}
+	// Controller exposure needs no install: it is reported whenever
+	// antispam is on and cleared when it is off. An unreadable controller
+	// keeps the last result.
+	controllerSettled := !d.Enabled || f.ControllerErr == nil
+	if controllerSettled {
+		out.Checks = append(out.Checks, CheckControllerOpen)
+	}
+	switch {
+	case !d.Enabled || f.ControllerErr != nil:
+	case f.ControllerUnverifiable != nil:
+		out.Findings = append(out.Findings, controllerFinding(antispam.ControllerUnverifiableProblem(), now))
+	default:
+		for _, p := range antispam.ControllerExposure(f.Controller, f.ControllerHost) {
+			out.Findings = append(out.Findings, controllerFinding(p, now))
+		}
+	}
 	for _, p := range a.Problems {
 		if p.Code == antispam.CodeFeed {
 			feedProblems = append(feedProblems, p)
@@ -209,6 +230,9 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if result.Busy {
 		out.Retry = BusyRetry
 		out.Checks = []string{CheckPrecondition, CheckFeed}
+		if controllerSettled {
+			out.Checks = append(out.Checks, CheckControllerOpen)
+		}
 	}
 	if result.FailedStep == antispam.FeedsCheckStep {
 		r.Feeds.hold(d.Settings)

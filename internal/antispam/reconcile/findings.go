@@ -22,6 +22,7 @@ const (
 	CheckScanError       = "antispam_scan_error"
 	CheckFeed            = "antispam_feed"
 	CheckIPMap           = "antispam_ip_map"
+	CheckControllerOpen  = "antispam_controller_open"
 )
 
 // clean escapes control and non-ASCII characters: problem details and
@@ -40,6 +41,22 @@ func feedFinding(p antispam.Problem, now time.Time) alert.Finding {
 		DedupKey:  p.Key,
 		Message:   "Antispam feed problem: " + clean(p.Key),
 		Details:   clean(p.Detail) + ". Core spam filtering is unaffected.",
+		Timestamp: now,
+	}
+}
+
+// controllerFinding reports one rspamd controller listener that tenant
+// processes can use for admin or read-only requests (learning spec 9).
+func controllerFinding(p antispam.Problem, now time.Time) alert.Finding {
+	return alert.Finding{
+		Severity: alert.Warning,
+		Check:    CheckControllerOpen,
+		DedupKey: clean(p.Key),
+		Message:  "rspamd controller may be reachable by other users: " + clean(p.Key),
+		Details: clean(p.Detail) + ". Local processes, including customer scripts, may use this listener to read " +
+			"rspamd's history or change its settings. For TCP, set secure_ip = []; in override.d/worker-controller.inc " +
+			"while a controller password is set. For Unix sockets, use mode 0600 and root or rspamd ownership " +
+			"for the socket and parent directories. Keep those directories unwritable by other users and remove extended ACLs.",
 		Timestamp: now,
 	}
 }

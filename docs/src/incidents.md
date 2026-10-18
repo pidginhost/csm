@@ -609,6 +609,7 @@ Attribution gaps:
 | `af_alg_enforcement_corrected` | ignored | self-health |  |
 | `af_alg_socket_use` | security event |  |  |
 | `antispam_apply_failed` | ignored | self-health |  |
+| `antispam_controller_open` | ignored | self-health |  |
 | `antispam_feed` | ignored | self-health |  |
 | `antispam_ip_map` | ignored | self-health |  |
 | `antispam_precondition` | ignored | self-health |  |

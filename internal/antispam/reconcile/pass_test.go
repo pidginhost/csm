@@ -87,7 +87,11 @@ func TestPassRetriesInvalidationBeforeReadingHost(t *testing.T) {
 				if !busy && !enabled {
 					wantRetry = 0
 				}
-				if out.Retry != wantRetry || len(out.Checks) != 0 ||
+				var wantChecks []string
+				if !enabled {
+					wantChecks = []string{CheckControllerOpen}
+				}
+				if out.Retry != wantRetry || !reflect.DeepEqual(out.Checks, wantChecks) ||
 					h.invalidated != 1 || h.installed != 0 || len(h.collected) != 0 || len(h.requests) != 0 {
 					t.Fatalf("outcome=%+v host=%+v, want retry %v", out, h, wantRetry)
 				}
@@ -332,7 +336,7 @@ func TestPassReportsWorkerTimeout(t *testing.T) {
 	out := h.reconciler().Pass(context.Background(), desired(true))
 	if !errors.Is(out.Err, context.DeadlineExceeded) || out.Retry != 0 || len(out.Findings) != 1 ||
 		out.Findings[0].Check != CheckApplyFailed || out.Findings[0].Message != "Antispam apply returned no result" ||
-		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed}) {
+		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckControllerOpen}) {
 		t.Fatalf("outcome %+v", out)
 	}
 }
@@ -357,7 +361,7 @@ func TestPassKeepsWorkerResultAfterCancellation(t *testing.T) {
 	if out.Err != nil || out.Retry != 0 || len(out.Findings) != 1 ||
 		out.Findings[0].Check != CheckApplyFailed || out.Findings[0].Severity != alert.Critical ||
 		!strings.Contains(out.Findings[0].Details, "could not confirm") ||
-		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed}) {
+		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckControllerOpen}) {
 		t.Fatalf("outcome %+v", out)
 	}
 }
@@ -404,7 +408,7 @@ func TestPassObservePreconditionsDescribeNoChanges(t *testing.T) {
 // settled. A canceled pass settles nothing, and a busy one leaves the last
 // apply result in place until the retry.
 func TestPassNamesTheChecksItSettled(t *testing.T) {
-	both := []string{CheckPrecondition, CheckApplyFailed, CheckFeed}
+	both := []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckControllerOpen}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, tc := range []struct {
@@ -426,7 +430,7 @@ func TestPassNamesTheChecksItSettled(t *testing.T) {
 			context.Background(), Desired{Observe: true}, both},
 		{"busy", &fakeHost{assessment: antispam.Assessment{Action: antispam.Install},
 			result: antispam.Result{Operation: antispam.OpApply, Busy: true, FailedStep: "lock", Rollback: antispam.RollbackNone}},
-			context.Background(), desired(true), []string{CheckPrecondition, CheckFeed}},
+			context.Background(), desired(true), []string{CheckPrecondition, CheckFeed, CheckControllerOpen}},
 		{"canceled", &fakeHost{}, canceled, desired(true), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

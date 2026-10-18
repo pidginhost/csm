@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"os/user"
@@ -50,8 +51,13 @@ type collector struct {
 	lookPath func(string) (string, error)
 	uid      func(name string) (int, error)
 	gid      func(name string) (int, error)
+	userName func(uid string) (string, error)
 	// primaryGID is a user's primary group.
 	primaryGID func(user string) (int, error)
+	// interfaceAddrs, readGroup and readPasswd feed controller exposure.
+	interfaceAddrs func() ([]net.Addr, error)
+	readGroup      func() ([]byte, error)
+	readPasswd     func() ([]byte, error)
 }
 
 func live() collector {
@@ -66,13 +72,17 @@ func live() collector {
 			Targets:       antispam.MutationTargets(),
 			IPMap:         ipmap.DefaultPath,
 		},
-		cpanel:     func() bool { return platform.Detect().IsCPanel() },
-		eximMTA:    func() bool { return platform.DetectMTA() == platform.MTAExim },
-		run:        runCommand,
-		lookPath:   exec.LookPath,
-		uid:        lookupUID,
-		gid:        lookupGID,
-		primaryGID: lookupPrimaryGID,
+		cpanel:         func() bool { return platform.Detect().IsCPanel() },
+		eximMTA:        func() bool { return platform.DetectMTA() == platform.MTAExim },
+		run:            runCommand,
+		lookPath:       exec.LookPath,
+		uid:            lookupUID,
+		gid:            lookupGID,
+		userName:       lookupUserName,
+		primaryGID:     lookupPrimaryGID,
+		interfaceAddrs: net.InterfaceAddrs,
+		readGroup:      func() ([]byte, error) { return readAccountFile("/etc/group") },
+		readPasswd:     func() ([]byte, error) { return readAccountFile("/etc/passwd") },
 	}
 }
 
@@ -142,6 +152,7 @@ func (c collector) collect(ctx context.Context, socket string) antispam.HostFact
 	f.RspamdGID = c.serviceGroup(f.RspamdService)
 	f.Socket.EximUID = id(settings["exim_user"], c.uid)
 	f.Socket.EximGID = id(settings["exim_group"], c.gid)
+	c.controllerFacts(&f)
 	return f
 }
 
@@ -234,6 +245,14 @@ func lookupUID(name string) (int, error) {
 		return -1, err
 	}
 	return strconv.Atoi(u.Uid)
+}
+
+func lookupUserName(uid string) (string, error) {
+	u, err := user.LookupId(uid)
+	if err != nil {
+		return "", err
+	}
+	return u.Username, nil
 }
 
 func lookupGID(name string) (int, error) {

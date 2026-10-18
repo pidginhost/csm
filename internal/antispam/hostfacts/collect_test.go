@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,13 +55,17 @@ func testCollector(d string, run *fakeRun) collector {
 			Record:        filepath.Join(d, "installed.json"),
 			ResolvConf:    filepath.Join(d, "resolv.conf"),
 		},
-		cpanel:     func() bool { return true },
-		eximMTA:    func() bool { return true },
-		run:        run.run,
-		lookPath:   func(string) (string, error) { return "/usr/bin/systemd-run", nil },
-		uid:        lookup(map[string]int{"_rspamd": 979, "mailnull": 47}),
-		gid:        lookup(map[string]int{"mail": 12}),
-		primaryGID: lookup(map[string]int{"_rspamd": 974}),
+		cpanel:         func() bool { return true },
+		eximMTA:        func() bool { return true },
+		run:            run.run,
+		lookPath:       func(string) (string, error) { return "/usr/bin/systemd-run", nil },
+		uid:            lookup(map[string]int{"_rspamd": 979, "mailnull": 47}),
+		gid:            lookup(map[string]int{"mail": 12}),
+		userName:       func(string) (string, error) { return "", errors.New("unknown uid") },
+		primaryGID:     lookup(map[string]int{"_rspamd": 974}),
+		interfaceAddrs: func() ([]net.Addr, error) { return nil, nil },
+		readGroup:      func() ([]byte, error) { return nil, nil },
+		readPasswd:     func() ([]byte, error) { return nil, nil },
 	}
 }
 

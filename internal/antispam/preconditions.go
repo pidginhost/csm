@@ -51,6 +51,7 @@ const (
 	CodeEximLog        = "exim_log"
 	CodeSystemd        = "systemd"
 	CodeFeed           = "feed"
+	CodeControllerOpen = "controller_open"
 )
 
 const (
@@ -170,6 +171,15 @@ type HostFacts struct {
 	Socket          SocketFacts
 	// Targets describe the files CSM writes, in MutationTargets order.
 	Targets []TargetFacts
+	// Controller is the loaded controller worker, parsed from RspamdConfig.
+	// ControllerErr is set when it could not be read, so exposure is unknown.
+	Controller     ControllerConfig
+	ControllerErr  error
+	ControllerHost ControllerHostFacts
+	// ControllerUnverifiable is set when the dump was read but the
+	// controller in it could not be understood; unlike ControllerErr it is
+	// reported, not waited out.
+	ControllerUnverifiable error
 }
 
 // CheckHost evaluates the host preconditions of spec section 6.2 that hold
