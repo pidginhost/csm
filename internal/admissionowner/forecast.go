@@ -34,7 +34,7 @@ func (o *Owner) beginForecast() error {
 		o.noteForecastError(forecastSessionID)
 		return fmt.Errorf("naming a forecast session: %w", err)
 	}
-	ceiling, charges, err := o.ledger.CeilingSnapshot()
+	ceiling, charges, err := o.ledger.ForecastSeed()
 	if err != nil {
 		o.noteForecastError(forecastLedgerUnavailable)
 		return fmt.Errorf("reading the ceiling for a forecast: %w", err)

@@ -102,6 +102,10 @@ type AdmissionLedger struct {
 
 	inv atomic.Pointer[ledgerInventory]
 
+	// previewsEnd is set while observe previews do not answer their
+	// episodes: a forecasting owner sets it (section 8, row 3).
+	previewsEnd atomic.Bool
+
 	// held is the recovery hold: how many intents name each target key.
 	// Every intent belongs to an unresolved attempt (opening proves it), so
 	// a counted key is held. Opening derives it once; heldDelta collects a

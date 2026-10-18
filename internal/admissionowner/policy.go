@@ -125,6 +125,7 @@ func (o *Owner) refreshPolicy() error {
 		if o.policyErr != before && o.current.Load() != nil {
 			o.publishExecutionHold()
 		}
+		o.syncPreviews()
 	}()
 	if o.opts.Policy == nil {
 		o.policyErr = fmt.Errorf("%w: no policy provider", ErrPolicy)
@@ -170,6 +171,14 @@ func (o *Owner) refreshPolicy() error {
 	}
 	o.startVerdicts()
 	return nil
+}
+
+// syncPreviews tells the ledger whether observe previews answer their
+// episodes: they do unless the owner forecasts (section 8, row 3).
+func (o *Owner) syncPreviews() {
+	if o.ledger != nil {
+		o.ledger.PreviewsAnswer(!o.forecasting())
+	}
 }
 
 // ceilingConfig is the configured hourly ceiling and its source. An

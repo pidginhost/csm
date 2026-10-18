@@ -195,6 +195,49 @@ func (l *AdmissionLedger) CeilingSnapshot() (admission.CeilingState, []admission
 	return s, charges, nil
 }
 
+// ForecastSeed is the ceiling and the retained charges a forecast session
+// starts from (spec 3.4): the committed state without the charges of
+// observe previews, which are comparison work, not responses (section 8,
+// row 3). Their units leave the window and their credit returns, up to the
+// bucket's cap. Charges of the imported legacy hour and of genuine attempts
+// stay. The committed ceiling is not changed.
+func (l *AdmissionLedger) ForecastSeed() (admission.CeilingState, []admission.Charge, error) {
+	var s admission.CeilingState
+	var kept []admission.Charge
+	err := l.db.bolt.View(func(tx *bolt.Tx) error {
+		var err error
+		if s, err = loadCeiling(tx); err != nil {
+			return err
+		}
+		charges, err := loadCharges(tx)
+		if err != nil {
+			return err
+		}
+		attempts := tx.Bucket([]byte(admissionAttemptsBucket))
+		for _, c := range charges {
+			// A legacy hour's charge names no recorded attempt.
+			if attempts.Get([]byte(c.Action)) != nil {
+				a, decodeErr := loadAttempt(tx, c.Action)
+				if decodeErr != nil {
+					return decodeErr
+				}
+				if a.State == admission.StateObserved {
+					if s, err = s.Uncharge(c.Lane, c.Cost); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+			kept = append(kept, c)
+		}
+		return nil
+	})
+	if err != nil {
+		return admission.CeilingState{}, nil, err
+	}
+	return s, kept, nil
+}
+
 // laneFits checks that a queued candidate may be reserved on lane. Any
 // candidate may use the general lane. A reserved lane is rechecked against
 // the candidate's assessment at now, since the pick was made in an earlier

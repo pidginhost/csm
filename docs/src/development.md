@@ -904,9 +904,21 @@ Under a dry-run policy the owner forecasts instead of running. It selects
 work with `SchedulePreview`, whatever the live budgets, and ends each pick
 as a dry run with a prediction: no attempt, charge, history, audit row or
 mutating engine call. A forecast session starts at startup or on entry into
-dry-run from the committed ceiling and its retained charges, then lives in
-memory apart from it: the same committed clock meters it, a new limit
-applies without new credit, and live credit is never copied over it. One
+dry-run from the committed ceiling and its retained charges
+(`ForecastSeed`), then lives in memory apart from it: the same committed
+clock meters it, a new limit applies without new credit, and live credit is
+never copied over it. The seed leaves out the charges of observe previews,
+which are comparison work, not responses: their units leave the window and
+their credit returns to its lane up to the bucket's cap (`Uncharge`);
+legacy and genuine charges stay. Ceiling, charges and keyed attempts come
+from one read-only transaction; damaged records refuse the seed without
+changing committed state. While the owner forecasts, the ledger also
+stops counting a preview as the answer of its block line
+(`PreviewsAnswer`), so an address previewed before the session queues its
+next generation on a new observation and is forecast; a verified block,
+or its remembered answer, still answers until its expiry, and challenge
+lines keep following their previews. Leaving dry run turns previews back
+on. One
 read-only admission snapshot answers a turn's `block_ip` picks, with the
 real temporary occupancy and the real blocks of forecast addresses. A
 refused target ends or waits as a live check has it. A real block that

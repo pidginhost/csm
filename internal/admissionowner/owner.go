@@ -425,6 +425,7 @@ func (o *Owner) start() error {
 		}
 		o.ledger = l
 	}
+	o.syncPreviews()
 	// An existing ledger records elapsed time under its saved limit before
 	// a new limit applies (O13).
 	reading, err := o.readTick()

@@ -262,6 +262,21 @@ func (s CeilingState) Release(l Lane, cost uint32) (CeilingState, error) {
 	return s, nil
 }
 
+// Uncharge removes a charge a model does not count: its units leave the
+// window and its credit returns to its lane, never past the bucket's cap.
+// A forecast seeds itself without preview charges this way; the committed
+// ceiling never uncharges.
+func (s CeilingState) Uncharge(l Lane, cost uint32) (CeilingState, error) {
+	next, err := s.Release(l, cost)
+	if err != nil {
+		return s, err
+	}
+	a := next.meter(l)
+	full := uint64(BucketCap(a.size)) * unitTicks
+	a.m.Credit = min(full, a.m.Credit+uint64(cost)*unitTicks)
+	return next, nil
+}
+
 type ceilingStateRecord struct {
 	V              uint8  `json:"v"`
 	Limit          uint32 `json:"limit,omitempty"`
