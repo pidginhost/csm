@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io/fs"
 	"net/netip"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 )
+
+// Bound allocations before decoding the full dump, including unrelated sections.
+const maxControllerDumpBytes = 16 << 20
 
 // ControllerListener is one bind_socket entry of the loaded controller
 // worker. Raw is the entry as rspamd printed it, used as the finding key.
@@ -37,6 +39,9 @@ type ControllerConfig struct {
 // `rspamadm configdump -j` output. Errors name the field, never a value.
 func ParseControllerConfig(fullDump []byte) (ControllerConfig, error) {
 	var cfg ControllerConfig
+	if len(fullDump) > maxControllerDumpBytes {
+		return cfg, errors.New("configdump worker controller: dump is too large")
+	}
 	root, err := dumpObjectAs[json.RawMessage](fullDump, "worker")
 	if err != nil {
 		return cfg, err
@@ -62,9 +67,9 @@ func ParseControllerConfig(fullDump []byte) (ControllerConfig, error) {
 		return ControllerConfig{}, errors.New("configdump worker controller: bind_socket is missing")
 	}
 	for _, b := range binds {
-		l, err := parseControllerBind(b)
-		if err != nil {
-			return ControllerConfig{}, err
+		l, bindErr := parseControllerBind(b)
+		if bindErr != nil {
+			return ControllerConfig{}, bindErr
 		}
 		cfg.Listeners = append(cfg.Listeners, l)
 	}
@@ -116,15 +121,22 @@ func stringOrList(fields map[string]json.RawMessage, name string) ([]string, err
 	if !ok {
 		return nil, nil
 	}
-	var one string
-	if err := json.Unmarshal(raw, &one); err == nil {
-		return []string{one}, nil
+	var one *string
+	if err := json.Unmarshal(raw, &one); err == nil && one != nil {
+		return []string{*one}, nil
 	}
-	var many []string
-	if err := json.Unmarshal(raw, &many); err != nil {
+	var many []*string
+	if err := json.Unmarshal(raw, &many); err != nil || many == nil {
 		return nil, fmt.Errorf("configdump worker controller: %s is not a string or a list of strings", name)
 	}
-	return many, nil
+	values := make([]string, 0, len(many))
+	for _, value := range many {
+		if value == nil {
+			return nil, fmt.Errorf("configdump worker controller: %s contains a non-string entry", name)
+		}
+		values = append(values, *value)
+	}
+	return values, nil
 }
 
 func passwordSet(fields map[string]json.RawMessage, name string) (bool, error) {
@@ -132,40 +144,72 @@ func passwordSet(fields map[string]json.RawMessage, name string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
+	var value *string
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
 		return false, fmt.Errorf("configdump worker controller: %s is not a string", name)
 	}
-	return value != "", nil
+	return *value != "", nil
 }
 
-// parseControllerBind splits "path option=value ..." for Unix sockets and
-// keeps host:port forms whole. Only mode= matters for exposure.
 func parseControllerBind(raw string) (ControllerListener, error) {
 	l := ControllerListener{Raw: raw}
-	parts := strings.Fields(raw)
-	if len(parts) == 0 {
+	for _, c := range raw {
+		if c < ' ' || c == 0x7f {
+			return ControllerListener{}, errors.New("configdump worker controller: bind_socket contains a control character")
+		}
+	}
+	addr := strings.Trim(raw, " ")
+	// TLS does not change the listener address or the controller's auth policy.
+	if len(addr) > 4 && strings.EqualFold(addr[len(addr)-4:], " ssl") {
+		addr = addr[:len(addr)-4]
+	}
+	if addr == "" {
 		return l, errors.New("configdump worker controller: empty bind_socket entry")
 	}
-	addr := parts[0]
+	if strings.HasPrefix(addr, "systemd:") {
+		// The dump does not say whether the inherited descriptor is TCP or Unix.
+		return ControllerListener{}, errors.New("configdump worker controller: bind_socket systemd endpoint is unresolved")
+	}
 	if !strings.HasPrefix(addr, "/") {
-		if strings.Contains(addr, "/") || len(parts) > 1 {
+		if !controllerTCPAddress(addr) {
 			return l, errors.New("configdump worker controller: bind_socket entry is neither an absolute Unix path nor host:port")
 		}
 		l.HostPort = addr
 		return l, nil
 	}
-	l.Unix, l.Path = true, filepath.Clean(addr)
+	// Rspamd separates Unix options with spaces or commas. Cleaning the path
+	// would change its target when a component before ".." is a symlink.
+	parts := strings.FieldsFunc(addr, func(r rune) bool { return r == ' ' || r == ',' })
+	if len(parts[0]) > maxSocketPath {
+		return ControllerListener{}, errors.New("configdump worker controller: bind_socket Unix path is too long")
+	}
+	l.Unix, l.Path = true, parts[0]
 	for _, opt := range parts[1:] {
-		value, ok := strings.CutPrefix(opt, "mode=")
-		if !ok {
+		name, value, ok := strings.Cut(opt, "=")
+		if !ok || !strings.EqualFold(name, "mode") {
 			continue
 		}
-		mode, err := strconv.ParseUint(value, 8, 32)
-		if err != nil || mode > 0o7777 {
-			return l, errors.New("configdump worker controller: bind_socket mode is not an octal file mode")
+		// Rspamd uses strtoul with base 0: only a leading zero means octal.
+		base := 10
+		if strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X") {
+			base, value = 16, value[2:]
+		} else if strings.HasPrefix(value, "0") {
+			base = 8
 		}
-		l.Mode = fs.FileMode(mode)
+		mode, err := strconv.ParseUint(value, base, 32)
+		if err != nil || mode == 0 || mode > 0o7777 {
+			return ControllerListener{}, errors.New("configdump worker controller: bind_socket mode is not a valid file mode")
+		}
+		l.Mode = fs.FileMode(mode & 0o777)
+		if mode&0o4000 != 0 {
+			l.Mode |= fs.ModeSetuid
+		}
+		if mode&0o2000 != 0 {
+			l.Mode |= fs.ModeSetgid
+		}
+		if mode&0o1000 != 0 {
+			l.Mode |= fs.ModeSticky
+		}
 	}
 	return l, nil
 }
@@ -312,4 +356,53 @@ func (f ControllerHostFacts) groupHasOthers(gid int) bool {
 		}
 	}
 	return false
+}
+
+// Validate syntax without resolving hostnames or opening sockets. Rspamd permits
+// omitted ports and an optional numeric priority after an explicit port.
+func controllerTCPAddress(addr string) bool {
+	var host, suffix string
+	if strings.HasPrefix(addr, "[") {
+		var ok bool
+		host, suffix, ok = strings.Cut(addr[1:], "]")
+		ip, err := netip.ParseAddr(host)
+		if !ok || err != nil || !ip.Is6() {
+			return false
+		}
+	} else {
+		host, suffix, _ = strings.Cut(addr, ":")
+		if len(host) != len(addr) {
+			suffix = ":" + suffix
+		}
+		switch strings.ToLower(host) {
+		case "*", "*v4", "*v6":
+		default:
+			if host == "" || strings.HasPrefix(host, ".") {
+				return false
+			}
+			for _, c := range host {
+				switch {
+				case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-', c == '_', c == '.':
+				default:
+					return false
+				}
+			}
+		}
+	}
+	if suffix == "" {
+		return true
+	}
+	if !strings.HasPrefix(suffix, ":") {
+		return false
+	}
+	port, priority, hasPriority := strings.Cut(suffix[1:], ":")
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		return false
+	}
+	if hasPriority {
+		if _, err := strconv.ParseUint(priority, 10, 32); err != nil {
+			return false
+		}
+	}
+	return true
 }

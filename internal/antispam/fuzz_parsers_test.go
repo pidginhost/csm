@@ -759,6 +759,11 @@ func FuzzParseControllerConfig(f *testing.F) {
 		workerDump(`{"bind_socket":"localhost:11334","count":1,"password":"q1","secure_ip":["127.0.0.1","::1"]}`),
 		workerDump(`{"bind_socket":["/run/rspamd/csm-controller.sock mode=0600","localhost:11334"],"secure_ip":[]}`),
 		`{"worker":{"controller":{"bind_socket":"*:11334"}}}`,
+		workerDump(`{"bind_socket":"[::1]:11334 ssl","password":null}`),
+		workerDump(`{"bind_socket":"/run/x.sock,owner=_rspamd,MODE=0600"}`),
+		workerDump(`{"bind_socket":"systemd:0"}`),
+		workerDump(`{"bind_socket":"[2001:db8::1]:11334","secure_ip":[null]}`),
+		workerDump(`{"bind_socket":"localhost:11334","password":"x","pass\u0077ord":""}`),
 		`{"worker":[{"controller":{"bind_socket":"/run/x.sock mode=`,
 		`{}`,
 		``,
@@ -768,6 +773,9 @@ func FuzzParseControllerConfig(f *testing.F) {
 	f.Fuzz(func(t *testing.T, dump string) {
 		cfg, err := ParseControllerConfig([]byte(dump))
 		if err != nil {
+			if !reflect.DeepEqual(cfg, ControllerConfig{}) {
+				t.Fatal("error returned a partial controller config")
+			}
 			return
 		}
 		for _, l := range cfg.Listeners {
@@ -776,6 +784,12 @@ func FuzzParseControllerConfig(f *testing.F) {
 			}
 			if !l.Unix && l.HostPort == "" {
 				t.Fatalf("TCP listener without host:port: %+v", l)
+			}
+			if l.Unix && (len(l.Path) > maxSocketPath || l.HostPort != "") {
+				t.Fatal("Unix listener has an oversized path or TCP address")
+			}
+			if !l.Unix && (strings.HasPrefix(l.HostPort, "systemd:") || l.Path != "" || l.Mode != 0) {
+				t.Fatal("TCP listener contains an unresolved endpoint or Unix fields")
 			}
 		}
 		if cfg.Present && len(cfg.Listeners) == 0 {

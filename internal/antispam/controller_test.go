@@ -1,10 +1,12 @@
 package antispam
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -17,6 +19,107 @@ func workerDump(controller string) string {
 		`{"normal":{"bind_socket":"/run/rspamd/csm-normal.sock mode=0666","mime":true}},` +
 		`{"controller":` + controller + `},` +
 		`{"rspamd_proxy":{"bind_socket":"localhost:11332","milter":true}}]}`
+}
+
+func TestParseControllerRejectsNullFields(t *testing.T) {
+	for _, field := range []string{"bind_socket", "secure_ip", "password", "enable_password"} {
+		for _, value := range []string{`null`, `[null]`, `["localhost:11334",null]`} {
+			t.Run(field+"/"+value, func(t *testing.T) {
+				fields := `"` + field + `":` + value
+				if field != "bind_socket" {
+					fields += `,"bind_socket":"localhost:11334"`
+				}
+				cfg, err := ParseControllerConfig([]byte(workerDump(`{` + fields + `}`)))
+				if err == nil || !strings.Contains(err.Error(), field) {
+					t.Fatalf("expected error naming %s", field)
+				}
+				if !reflect.DeepEqual(cfg, ControllerConfig{}) {
+					t.Fatal("error returned a partial controller config")
+				}
+			})
+		}
+	}
+}
+
+func TestParseControllerBindSyntax(t *testing.T) {
+	for _, tt := range []struct {
+		name, raw, path, host string
+		mode                  fs.FileMode
+	}{
+		{name: "IPv6", raw: "[2001:db8::1]:11334", host: "[2001:db8::1]:11334"},
+		{name: "mapped IPv6", raw: "[::ffff:192.0.2.1]:11334", host: "[::ffff:192.0.2.1]:11334"},
+		{name: "TLS", raw: "[::1]:11334 ssl", host: "[::1]:11334"},
+		{name: "TLS uppercase", raw: "localhost:11334 SSL", host: "localhost:11334"},
+		{name: "wildcard v4", raw: "*v4:11334", host: "*v4:11334"},
+		{name: "wildcard v6", raw: "*v6:11334", host: "*v6:11334"},
+		{name: "default port", raw: "localhost", host: "localhost"},
+		{name: "IPv6 default port", raw: "[::1]", host: "[::1]"},
+		{name: "priority", raw: "localhost:11334:10", host: "localhost:11334:10"},
+		{name: "no mode", raw: "/run/controller.sock", path: "/run/controller.sock"},
+		{name: "ownership", raw: "/run/controller.sock owner=_rspamd mode=0600 group=_rspamd", path: "/run/controller.sock", mode: 0o600},
+		{name: "commas", raw: "/run/controller.sock,owner=_rspamd,mode=0600,group=_rspamd", path: "/run/controller.sock", mode: 0o600},
+		{name: "mixed separators", raw: "/run/controller.sock owner=_rspamd, mode=0660", path: "/run/controller.sock", mode: 0o660},
+		{name: "uppercase mode", raw: "/run/controller.sock MODE=0600", path: "/run/controller.sock", mode: 0o600},
+		{name: "decimal mode", raw: "/run/controller.sock mode=384", path: "/run/controller.sock", mode: 0o600},
+		{name: "no octal prefix", raw: "/run/controller.sock mode=600", path: "/run/controller.sock", mode: 0o130 | fs.ModeSticky},
+		{name: "hex mode", raw: "/run/controller.sock mode=0x180", path: "/run/controller.sock", mode: 0o600},
+		{name: "special bits", raw: "/run/controller.sock mode=07600", path: "/run/controller.sock", mode: 0o600 | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky},
+		{name: "last mode", raw: "/run/controller.sock mode=0600 mode=0666", path: "/run/controller.sock", mode: 0o666},
+		{name: "preserve path", raw: "/run/link/../controller.sock mode=0600", path: "/run/link/../controller.sock", mode: 0o600},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			bind, err := json.Marshal(tt.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":` + string(bind) + `}`)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := ControllerListener{Raw: tt.raw, Unix: tt.path != "", Path: tt.path, HostPort: tt.host, Mode: tt.mode}
+			if !cfg.Present || !reflect.DeepEqual(cfg.Listeners, []ControllerListener{want}) {
+				t.Fatalf("listeners = %+v, want %+v", cfg.Listeners, want)
+			}
+		})
+	}
+}
+
+func TestParseControllerRejectsUnknownBinds(t *testing.T) {
+	for _, raw := range []string{
+		"systemd:0", "systemd:rspamd.socket", "systemd:0 ssl",
+		"localhost:", "localhost:notaport", "localhost:65536",
+		"[::1", "[::1]garbage", "[not-an-ip]:11334", "::1:11334",
+		"*:11334 garbage", "http://localhost:11334", "./controller.sock", ".",
+		"/run/controller.sock\x00ignored", "/run/controller.sock\tmode=0600",
+		"/" + strings.Repeat("x", 107), "/run/controller.sock mode=0000",
+	} {
+		t.Run(fmt.Sprintf("%q", raw), func(t *testing.T) {
+			bind, err := json.Marshal(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":` + string(bind) + `}`)))
+			if err == nil || !strings.Contains(err.Error(), "bind_socket") {
+				t.Fatal("expected bind_socket error")
+			}
+			if !reflect.DeepEqual(cfg, ControllerConfig{}) {
+				t.Fatal("error returned a partial controller config")
+			}
+		})
+	}
+}
+
+func TestParseControllerDumpSize(t *testing.T) {
+	// Keep the resource boundary independent of the implementation constant.
+	const limit = 16 << 20
+	dump := workerDump(`{"bind_socket":"localhost:11334"}`)
+	data := []byte(dump + strings.Repeat(" ", limit-len(dump)))
+	if cfg, err := ParseControllerConfig(data); err != nil || !cfg.Present {
+		t.Fatalf("dump at the limit: present=%v err=%v", cfg.Present, err)
+	}
+	if cfg, err := ParseControllerConfig(append(data, ' ')); err == nil || !reflect.DeepEqual(cfg, ControllerConfig{}) {
+		t.Fatal("oversized dump did not fail without partial config")
+	}
 }
 
 func TestParseControllerStock(t *testing.T) {
@@ -126,19 +229,68 @@ func TestParseControllerNeverKeepsPasswords(t *testing.T) {
 	}
 	for _, s := range []string{fmt.Sprintf("%v", cfg), fmt.Sprintf("%+v", cfg), fmt.Sprintf("%#v", cfg)} {
 		if strings.Contains(s, secret) {
-			t.Fatalf("formatted config carries the password: %s", s)
+			t.Fatal("formatted config carries the password")
 		}
+	}
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), secret) {
+		t.Fatal("JSON config carries the password")
 	}
 	bad := workerDump(`{"bind_socket":"","password":"` + secret + `"}`)
 	if _, err := ParseControllerConfig([]byte(bad)); err == nil {
 		t.Fatal("empty bind_socket accepted")
 	} else if strings.Contains(err.Error(), secret) {
-		t.Fatalf("error carries the password: %v", err)
+		t.Fatal("error carries the password")
 	}
 	if _, err := ParseControllerConfig([]byte(`{"worker":[{"controller":{"password":"` + secret + `",`)); err == nil {
 		t.Fatal("truncated dump accepted")
 	} else if strings.Contains(err.Error(), secret) {
-		t.Fatalf("error carries the password: %v", err)
+		t.Fatal("error carries the password")
+	}
+}
+
+func TestParseControllerRejectsDuplicatesWithoutValues(t *testing.T) {
+	const marker = "synthetic-controller-value"
+	for name, dump := range map[string]string{
+		"root":          `{"worker":{"controller":{"bind_socket":"` + marker + `"}},"worker":[]}`,
+		"worker object": `{"worker":{"controller":{"password":"` + marker + `"},"controller":{"bind_socket":"localhost:11334"}}}`,
+		"worker list":   `{"worker":[{"controller":{"password":"` + marker + `"},"controller":{"bind_socket":"localhost:11334"}}]}`,
+		"escaped field": workerDump(`{"bind_socket":"localhost:11334","password":"` + marker + `","pass\u0077ord":""}`),
+		"trust":         workerDump(`{"bind_socket":"localhost:11334","secure_ip":"` + marker + `","secure_ip":[]}`),
+		"key":           workerDump(`{"bind_socket":"localhost:11334","` + marker + `":0,"` + marker + `":1}`),
+		"password type": workerDump(`{"bind_socket":"localhost:11334","password":{"` + marker + `":1}}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := ParseControllerConfig([]byte(dump))
+			if err == nil {
+				t.Fatal("malformed dump accepted")
+			}
+			if strings.Contains(err.Error(), marker) {
+				t.Fatal("error includes a config value or key")
+			}
+			if !reflect.DeepEqual(cfg, ControllerConfig{}) {
+				t.Fatal("error returned a partial config")
+			}
+		})
+	}
+}
+
+func TestParseControllerPasswordPresence(t *testing.T) {
+	for _, value := range []string{"", " ", "synthetic-controller-value"} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"localhost:11334","password":` + string(encoded) + `,"enable_password":` + string(encoded) + `}`)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.PasswordSet != (value != "") || cfg.EnablePasswordSet != (value != "") {
+			t.Fatal("password presence did not match string emptiness")
+		}
 	}
 }
 
