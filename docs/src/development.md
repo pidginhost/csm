@@ -832,10 +832,17 @@ failed apply keeps its cause and backoff through state repair, ledger refusals
 and member refusals until an applied effect proves recovery. Hold changes copy
 the cached owner status without rereading the ledger. Status
 (`admission.owner.execution_held`) and the `csm doctor` row `admission
-execution` name the cause. An owner with `Options.Blocks` publishes
-`admission.owner.executing`; `admission.DoctorImpact` then closes every
+execution` name the cause. An owner publishes `admission.owner.executing`
+only while it runs block picks: it has `Options.Blocks`, `liveExecution` is
+on and its policy is not a dry run. `admission.DoctorImpact` then closes every
 admission row with `ExecutionAffected` instead of `PreviewUnaffected` and
-turns the outages that stop automatic blocks from warnings into failures.
+turns the outages that stop automatic blocks, held execution included, from
+warnings into failures. `liveExecution` is a package variable that stays false
+until plan 1.4c-2b removes it: under a live policy an owner with an engine
+then previews its block picks as one without an engine does, asks no panel
+and holds a refused policy's picks; a dry-run policy still forecasts. No
+configuration reaches it, an architecture test refuses any production write,
+and the package's tests turn it on to exercise execution.
 A degraded admission clock cannot bound a lease, so
 it defers block picks the same way. One batch starts a second at most; with an
 engine, a drain that queues new work runs the schedule at once instead of

@@ -329,7 +329,7 @@ func fitResult(r *verdictResult) {
 // have returned, so no more than verdictWorkers calls ever run.
 func (o *Owner) startVerdicts() {
 	v := &o.verdicts
-	if v.stage != nil || v.retiring != nil || o.policyErr != nil || !o.policy.VerdictEnabled {
+	if v.stage != nil || v.retiring != nil || !o.asksVerdicts() {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -616,7 +616,7 @@ func (o *Owner) verdictStatus() *health.AdmissionVerdict {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	s := &health.AdmissionVerdict{
-		Enabled: o.policyErr == nil && o.policy.VerdictEnabled, Epoch: o.policy.Epoch,
+		Enabled: o.asksVerdicts(), Epoch: o.policy.Epoch,
 		Pending: len(v.pending), InFlight: t.inFlight, Ready: len(v.ready), StageRetiring: v.retiring != nil,
 		Asked: t.asked, ResponsesAllow: t.allow, ResponsesDefault: t.deflt, Failed: t.failed, Cancelled: t.cancelled,
 		Discarded: t.discarded, ReadyEvicted: t.evicted, AllowEndings: t.endings,

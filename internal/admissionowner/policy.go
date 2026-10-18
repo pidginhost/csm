@@ -75,6 +75,36 @@ func (p ExecutionPolicy) same(q ExecutionPolicy) bool {
 // executable reports whether the owner runs block picks (Options.Blocks).
 func (o *Owner) executable() bool { return o.opts.Blocks != nil }
 
+// liveExecution lets an executable owner run block picks under a live
+// policy. Until plan 1.4c-2b removes it, it stays false and such an owner
+// previews them as an owner without an engine does; a dry-run policy still
+// forecasts (ruling C2). No configuration reaches it; this package's tests
+// turn it on to exercise execution.
+var liveExecution = false
+
+// executing reports whether block picks run live: an engine, live
+// execution and a policy that is not a dry run. A later refused policy
+// holds that execution without ending it (heldCause).
+func (o *Owner) executing() bool {
+	return liveExecution && o.executable() && !o.policy.DryRun
+}
+
+// mayExecute reports whether block picks, probes and repairs may run now:
+// live execution under a valid installed policy.
+func (o *Owner) mayExecute() bool { return o.executing() && o.policyErr == nil }
+
+// mayRetire reports whether earlier real attempts retire now: an engine
+// under a valid installed policy that runs live or forecasts.
+func (o *Owner) mayRetire() bool {
+	return o.executable() && o.policyErr == nil && (liveExecution || o.forecasting())
+}
+
+// asksVerdicts reports whether picks ask the installed policy's callback:
+// only a forecast or live execution does.
+func (o *Owner) asksVerdicts() bool {
+	return o.policyErr == nil && o.policy.VerdictEnabled && (o.forecasting() || o.executing())
+}
+
 // refreshPolicy reads the published policy at a turn boundary and installs
 // a newer one; the installed policy then serves the whole turn. An older
 // epoch is ignored and the same one again changes nothing. Different

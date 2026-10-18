@@ -788,14 +788,14 @@ func (o *Owner) drainHeld() (err error) {
 // schedule period, as a failing notice delivery is.
 func (o *Owner) schedule() {
 	o.expireVerdicts()
-	probeDue := o.execHold != nil && !monoNow().Before(o.probeAt)
-	// Without an engine there is nothing to probe. Once one starts, the
-	// old hold's deadline must not delay its first turn.
-	if errors.Is(o.execHold, errNoEngine) {
-		probeDue = o.opts.Blocks() != nil
+	probeDue := false
+	if o.executing() && o.policyErr == nil && o.execHold != nil {
+		probeDue = !monoNow().Before(o.probeAt)
+		// A newly published engine need not wait for the old retry deadline.
+		if errors.Is(o.execHold, errNoEngine) {
+			probeDue = o.opts.Blocks() != nil
+		}
 	}
-	// Only a valid live policy may probe or repair a retained engine hold.
-	probeDue = probeDue && o.policyErr == nil && !o.forecasting()
 	// A policy change can resume held work or probes without an arrival,
 	// reload or ledger deadline, including after an idle dry run.
 	policyDue := o.executable() && o.opts.Policy().Epoch > o.seenEpoch
@@ -918,7 +918,7 @@ func (o *Owner) serve() error {
 			err = o.preview(pick)
 		case o.policyErr != nil:
 			err = o.holdForPolicy(pick)
-		case c.Key.Kind == admission.KindBlockIP:
+		case c.Key.Kind == admission.KindBlockIP && o.executing():
 			blocks = append(blocks, pick)
 		default:
 			err = o.preview(pick)
@@ -930,7 +930,7 @@ func (o *Owner) serve() error {
 	switch {
 	case len(blocks) > 0:
 		return o.execute(blocks)
-	case o.executable() && o.policyErr == nil && o.execHold != nil:
+	case o.executing() && o.policyErr == nil && o.execHold != nil:
 		if o.ready(o.opts.Blocks(), false) && o.execHold != nil {
 			o.hold(o.execHold, o.applyHold != nil)
 		}
@@ -1121,7 +1121,7 @@ func (o *Owner) status() *health.AdmissionStatus {
 // ledger's read takes no lock and needs no current clock.
 func (o *Owner) refreshStatus() {
 	s := &health.AdmissionStatus{CheckedAt: time.Now(), Owner: &health.AdmissionOwner{
-		Executing:     o.opts.Blocks != nil,
+		Executing:     o.executing(),
 		ClockDegraded: o.degraded, LastTick: o.lastTick, CeilingSource: o.source,
 		Import: o.imported, InventoryAt: o.inventoryAt,
 	}}

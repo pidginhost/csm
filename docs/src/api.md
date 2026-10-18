@@ -332,10 +332,10 @@ scan-driven block budget. After editing the configuration, run
 Existing blocking paths still decide every block; see
 [automatic response](auto-response.md) for the scope of the current budget.
 
-While admission previews, existing blocking paths still decide every
-block. Admission rows say existing blocking is unaffected, except the rows of
-an owner that runs blocks: `admission execution` fails while execution is
-held, and the dry-run rows (`admission dry run`, `admission dry-run
+While admission previews or forecasts, existing blocking paths still decide
+every block. Admission rows say existing blocking is unaffected, and
+`admission execution` warns while execution is held. The dry-run rows of an
+owner that forecasts (`admission dry run`, `admission dry-run
 capacity` and `admission dry-run examples`) show the forecast's session,
 real against predicted capacity and lost examples. A dry run alone is not a
 failure; a held forecast, model limits, waits the model predicts and lost
@@ -347,11 +347,10 @@ show a degraded clock, a clamped ceiling, a ceiling of 1 (only the reserved
 lane runs), a legacy hourly count that could not be read, a failed
 inventory read and automatic blocks with an unproven outcome, which hold
 their addresses until they expire and the firewall shows nothing of them.
-The `admission execution` row fails while automatic blocks are held. Once
-`owner.executing` is set, rows say admission decides automatic blocks, and
-a stopped owner, a refused clock reading, a damaged ledger, stopped
-admission, discarded responses, a Critical gap in the last hour and a ledger
-the firewall could not read at startup fail.
+Once `owner.executing` is set, rows say admission decides automatic blocks,
+and held execution, a stopped owner, a refused clock reading, a damaged
+ledger, stopped admission, discarded responses, a Critical gap in the last
+hour and a ledger the firewall could not read at startup fail.
 
 `admission.audit` and `admission.notices` in `queues` report the delivery of
 admission records to the [action log](action-log.md) and of admission notices.
