@@ -2,16 +2,19 @@ package reconcile
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/eximlock"
 )
-
-const syntheticControllerPassword = "syntheticControllerSecret99"
 
 func stockControllerFacts() antispam.HostFacts {
 	f := goodFeedFacts()
@@ -104,18 +107,119 @@ func TestPassControllerClearedWhenDisabled(t *testing.T) {
 }
 
 func TestControllerFindingNeverCarriesPassword(t *testing.T) {
+	password, enablePassword := rand.Text(), rand.Text()
+	dump := fmt.Sprintf(`{"worker":{"controller":{"bind_socket":"localhost:11334","secure_ip":["127.0.0.1"],"password":%q,"enable_password":%q}}}`, password, enablePassword)
 	f := stockControllerFacts()
+	var err error
+	f.Controller, err = antispam.ParseControllerConfig([]byte(dump))
+	if err != nil {
+		t.Fatal("could not parse controller fixture")
+	}
+	// The full dump also remains in the collected host facts.
+	f.RspamdConfig.Stdout = dump
 	out := passWithFacts(f, antispam.Keep)
+	if len(controllerFindings(out)) != 1 {
+		t.Fatal("expected one controller finding")
+	}
 	for _, finding := range out.Findings {
-		for _, s := range []string{finding.Message, finding.Details, finding.DedupKey} {
-			if strings.Contains(s, syntheticControllerPassword) {
-				t.Fatalf("finding carries a password: %+v", finding)
+		encoded, err := json.Marshal(finding)
+		if err != nil {
+			t.Fatal("could not encode finding")
+		}
+		if strings.Contains(string(encoded), password) || strings.Contains(string(encoded), enablePassword) {
+			t.Fatal("finding carries a controller password")
+		}
+	}
+}
+
+func TestControllerFindingEscapesControlCharacters(t *testing.T) {
+	controls := "\x00\t\r\n\x1b[2J\x7f\u0085\u2028\u202e"
+	p := antispam.Problem{Code: antispam.CodeControllerOpen, Severity: antispam.Warning, Key: "localhost:11334" + controls, Detail: "reason" + controls}
+	cf := controllerFinding(p, testNow)
+	for _, s := range []string{cf.Message, cf.Details, cf.DedupKey} {
+		for _, c := range s {
+			if unicode.IsControl(c) || c > unicode.MaxASCII {
+				t.Fatal("finding keeps a control or non-ASCII character")
 			}
 		}
 	}
-	p := antispam.Problem{Code: antispam.CodeControllerOpen, Severity: antispam.Warning, Key: "localhost:11334\x1b[2J", Detail: "no passwords configured"}
-	cf := controllerFinding(p, testNow)
-	if strings.ContainsRune(cf.Message+cf.Details+cf.DedupKey, '\x1b') {
-		t.Fatalf("finding keeps a control character: %+v", cf)
+	if cf.DedupKey == "localhost:11334" || !strings.Contains(cf.Message, cf.DedupKey) {
+		t.Fatal("escaping lost the listener identity")
+	}
+}
+
+func TestPassControllerClearedWhenDisabledInvalidationFails(t *testing.T) {
+	for _, failure := range []error{eximlock.ErrBusy, errors.New("read-only state directory")} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			h := &fakeHost{}
+			r := h.reconciler()
+			r.Invalidate = func(context.Context) error { return failure }
+			out := r.Pass(context.Background(), desired(false))
+			if !slices.Equal(out.Checks, []string{CheckControllerOpen}) || len(controllerFindings(out)) != 0 {
+				t.Fatalf("disabled pass left controller warnings unsettled: %+v", out)
+			}
+			if h.installed != 0 || len(h.collected) != 0 || len(h.requests) != 0 {
+				t.Fatal("failed invalidation must still prevent host reads and worker requests")
+			}
+		})
+	}
+}
+
+func TestPassControllerObserveAndBusyLifecycle(t *testing.T) {
+	for _, observe := range []bool{false, true} {
+		for _, state := range []string{"open", "closed", "unreadable", "disabled"} {
+			t.Run(fmt.Sprintf("observe=%t/%s", observe, state), func(t *testing.T) {
+				f := stockControllerFacts()
+				f.Controller.Listeners = append(f.Controller.Listeners, antispam.ControllerListener{Raw: "[::1]:11334", HostPort: "[::1]:11334"})
+				switch state {
+				case "closed":
+					f.Controller.TrustEntries = nil
+				case "unreadable", "disabled":
+					f.ControllerErr = errors.New("controller dump unavailable")
+				}
+				action, operation := antispam.Install, antispam.OpApply
+				if state == "disabled" {
+					action, operation = antispam.Uninstall, antispam.OpRemove
+				}
+				h := &fakeHost{
+					assessment: antispam.Assessment{Action: action},
+					result:     antispam.Result{Operation: operation, Busy: true, FailedStep: "lock", Rollback: antispam.RollbackNone},
+				}
+				r := h.reconciler()
+				r.Collect = func(context.Context, string) antispam.HostFacts { return f }
+				r.Installed = func() antispam.HostFacts { return f }
+				d := desired(state != "disabled")
+				d.Observe = observe
+				out := r.Pass(context.Background(), d)
+				if settled := slices.Contains(out.Checks, CheckControllerOpen); settled != (state != "unreadable") {
+					t.Fatalf("settled=%t for %s", settled, state)
+				}
+				got := controllerFindings(out)
+				if state == "open" {
+					if len(got) != 2 || got[0].DedupKey != "localhost:11334" || got[1].DedupKey != "[::1]:11334" {
+						t.Fatalf("want one finding per listener, got %+v", got)
+					}
+				} else if len(got) != 0 {
+					t.Fatalf("unexpected controller findings: %+v", got)
+				}
+				if observe && len(h.requests) != 0 || !observe && (len(h.requests) != 1 || out.Retry != BusyRetry) {
+					t.Fatalf("requests=%d retry=%s", len(h.requests), out.Retry)
+				}
+			})
+		}
+	}
+}
+
+func TestControllerFindingExplainsUnixProtection(t *testing.T) {
+	f := stockControllerFacts()
+	f.Controller.Listeners = []antispam.ControllerListener{{Raw: "/run/rspamd/controller.sock mode=0600", Unix: true, Path: "/run/rspamd/controller.sock"}}
+	got := controllerFindings(passWithFacts(f, antispam.Keep))
+	if len(got) != 1 {
+		t.Fatalf("want one finding for unavailable socket facts, got %d", len(got))
+	}
+	for _, want := range []string{"owner", "parent directories", "ACL"} {
+		if !strings.Contains(got[0].Details, want) {
+			t.Errorf("socket guidance is missing %q", want)
+		}
 	}
 }

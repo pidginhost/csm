@@ -87,7 +87,11 @@ func TestPassRetriesInvalidationBeforeReadingHost(t *testing.T) {
 				if !busy && !enabled {
 					wantRetry = 0
 				}
-				if out.Retry != wantRetry || len(out.Checks) != 0 ||
+				var wantChecks []string
+				if !enabled {
+					wantChecks = []string{CheckControllerOpen}
+				}
+				if out.Retry != wantRetry || !reflect.DeepEqual(out.Checks, wantChecks) ||
 					h.invalidated != 1 || h.installed != 0 || len(h.collected) != 0 || len(h.requests) != 0 {
 					t.Fatalf("outcome=%+v host=%+v, want retry %v", out, h, wantRetry)
 				}

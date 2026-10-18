@@ -99,6 +99,11 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	if err := invalidateErr; err != nil {
 		out := Outcome{Retry: BusyRetry}
+		if !d.Enabled {
+			// Disabling this warning depends only on configuration, not
+			// on whether pending mail configuration changes can be canceled.
+			out.Checks = []string{CheckControllerOpen}
+		}
 		if !errors.Is(err, eximlock.ErrBusy) {
 			retryDetails := "CSM retries shortly."
 			if !d.Enabled {

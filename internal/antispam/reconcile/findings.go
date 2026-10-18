@@ -52,10 +52,11 @@ func controllerFinding(p antispam.Problem, now time.Time) alert.Finding {
 		Severity: alert.Warning,
 		Check:    CheckControllerOpen,
 		DedupKey: clean(p.Key),
-		Message:  "rspamd controller reachable by other users: " + clean(p.Key),
-		Details: clean(p.Detail) + ". Local processes, including customer scripts, can use this listener to read " +
-			"rspamd's history or change its settings. Set secure_ip = []; in override.d/worker-controller.inc while a " +
-			"controller password is set, and use a private Unix socket (mode 0600) for local administration.",
+		Message:  "rspamd controller may be reachable by other users: " + clean(p.Key),
+		Details: clean(p.Detail) + ". Local processes, including customer scripts, may use this listener to read " +
+			"rspamd's history or change its settings. For TCP, set secure_ip = []; in override.d/worker-controller.inc " +
+			"while a controller password is set. For Unix sockets, use mode 0600 and root or rspamd ownership " +
+			"for the socket and parent directories. Keep those directories unwritable by other users and remove extended ACLs.",
 		Timestamp: now,
 	}
 }

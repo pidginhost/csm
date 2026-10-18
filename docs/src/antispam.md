@@ -524,15 +524,19 @@ Such a process could read rspamd's history, which lists senders and
 recipients of scanned mail, or change scores and actions at runtime.
 
 While antispam is enabled, CSM reports each controller listener that other
-users can reach as an `antispam_controller_open` finding. The finding names
-the listener and the reason:
+users may reach as an `antispam_controller_open` finding. The finding names
+the listener and the reason, including cases where CSM cannot prove isolation:
 
 - a trusted address that local processes can use (loopback, a wildcard, or
   one of the server's own addresses);
 - a trust entry CSM cannot resolve, such as a map file or a hostname;
 - no controller password at all, or only an enable password;
 - a Unix socket, or one of its parent directories, that other users can
-  write to.
+  write to, or whose access CSM cannot verify.
+
+These warnings also update in observe mode and when an apply is busy. An
+unreadable controller configuration leaves the previous warnings in place.
+Turning antispam off clears them even if CSM cannot cancel pending changes.
 
 To close TCP access, keep a controller password set and put this in
 `/etc/rspamd/override.d/worker-controller.inc`:
@@ -541,13 +545,19 @@ To close TCP access, keep a controller password set and put this in
 secure_ip = [];
 ```
 
-rspamd ships with a placeholder password that it refuses from every
-client, so this also works without setting your own. Without any password,
-an empty `secure_ip` opens every command to everyone.
+rspamd ships with the placeholder password `q1`, which it rejects as client
+authentication, so this also works without setting your own. With both
+`password` and `enable_password` unset, an empty `secure_ip` opens every
+command to everyone. Setting only `enable_password` leaves read-only access
+open.
 
-For local administration add a private Unix socket in the same file. A
-process that can connect to a Unix socket gets admin access without a
-password, so keep its mode at 0600:
+For local administration add a private Unix socket in the same file. Direct
+Unix socket connections get admin access without a password. Forwarded
+headers trigger additional trust and password checks, so local clients must
+send no forwarded headers. Keep the socket and its parent directories owned
+by root or rspamd, with no extended ACLs. Use socket mode 0600 and non-symlink
+directories that other users cannot write to. Socket mode alone does not
+protect a replaceable parent:
 
 ```
 bind_socket = "/run/rspamd/csm-controller.sock mode=0600";
@@ -566,7 +576,7 @@ Reload rspamd after the change. CSM never edits the controller settings.
 | `antispam_rspamd_down` | Warning | Three probes of the scan socket in a row failed. CSM probes every 20 seconds while antispam is enabled. |
 | `antispam_rspamd_recovered` | Warning | Two probes in a row succeeded after an outage. |
 | `antispam_scan_error` | Warning | Exim logged a failed scan. One finding covers every failure until a scan succeeds. |
-| `antispam_controller_open` | Warning | Other users on the server can reach rspamd's admin interface through the named listener. See [rspamd admin interface](#rspamd-admin-interface). |
+| `antispam_controller_open` | Warning | Other users may reach rspamd's admin or read-only interface, or CSM cannot verify isolation. See [rspamd admin interface](#rspamd-admin-interface). |
 | `antispam_feed` | Warning, or Critical when a list answers for everything | A feed or map redirect is off, loaded rules differ, a list misbehaves, or rspamd still fetches maps from rspamd.com. These findings alone do not disable filtering. See [Feeds](#feeds). |
 | `antispam_ip_map` | Warning | The IP map could not be written, or rspamd has not confirmed the current map 5 minutes after a write. Core filtering is unaffected. See [CSM IP map](#csm-ip-map). |
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"syscall"
 	"testing"
 	"testing/synctest"
@@ -209,7 +210,8 @@ func TestPassDuringTransactionCancelsAtOnce(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if out.Err != nil || out.Retry != reconcile.BusyRetry || len(out.Findings) != 0 || len(out.Checks) != 0 || reads != 0 {
+		if out.Err != nil || out.Retry != reconcile.BusyRetry || len(out.Findings) != 0 ||
+			!slices.Equal(out.Checks, []string{reconcile.CheckControllerOpen}) || reads != 0 {
 			t.Errorf("pass during a transaction: outcome=%+v reads=%d", out, reads)
 		}
 		if got, err := os.ReadFile(filepath.Join(requestDir, RequestFile)); err != nil || string(got) != "null" {
