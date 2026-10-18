@@ -105,26 +105,29 @@ type Outcome struct {
 // Pass brings the host towards d once (spec sections 6.1 and 6.5). A
 // disabled pass reads only CSM's own files and runs no command unless it
 // finds something to remove.
-func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
+func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
 	}
 	if !d.Enabled || d.Observe {
 		r.Feeds.setProbeScope([32]byte{})
 	}
-	if !d.Enabled {
+	if !d.Enabled || !d.Settings.Learning {
 		r.Learning.held("")
+		r.Learning.roundcubeHeld("")
 	}
 	invalidateErr := r.Invalidate(ctx)
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
 	}
 	if err := invalidateErr; err != nil {
-		out := Outcome{Retry: BusyRetry}
+		out = Outcome{Retry: BusyRetry}
 		if !d.Enabled {
-			// Disabling these warnings depends only on configuration, not
+			// Disabling this warning depends only on configuration, not
 			// on whether pending mail configuration changes can be canceled.
-			out.Checks = []string{CheckControllerOpen, CheckLearning}
+			// Learning findings wait for a completed pass: until removal
+			// runs they can still describe installed scoring.
+			out.Checks = []string{CheckControllerOpen}
 		}
 		if !errors.Is(err, eximlock.ErrBusy) {
 			retryDetails := "CSM retries shortly."
@@ -189,7 +192,25 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	a := assess(d.Enabled, settings, f)
 	now := r.Now()
-	out := Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning}, LearningGate: gate}
+	out = Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning}, LearningGate: gate}
+	// Prerequisites alone do not prove that the requested integration is
+	// active. A worker must finish an apply, or the installed state must
+	// already be current, before the learner may publish.
+	out.LearningGate.Publish = gate.Publish && a.Action == antispam.Keep && a.Installed && !blockingProblems(a.Problems)
+	if d.Observe || a.Action == antispam.Uninstall {
+		out.LearningGate = antispam.LearningGate{}
+	}
+	defer func() {
+		// Worker verification can add problems. Busy and canceled passes
+		// must not replace or add to the last completed learning findings.
+		if !slices.Contains(out.Checks, CheckLearning) {
+			return
+		}
+		out.LearningProblems = mergeByKey(learningProblems)
+		for _, p := range out.LearningProblems {
+			out.Findings = append(out.Findings, learningFinding(p, now))
+		}
+	}()
 	// Controller exposure needs no install: it is reported whenever
 	// antispam is on and cleared when it is off. An unreadable controller
 	// keeps the last result.
@@ -241,13 +262,11 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	// Learning off while rspamd still loads CSM's rules means a removal did
 	// not finish, for example because a foreign file replaced one CSM
-	// wrote. Judged from this pass's facts, so only when no removal runs now.
-	scoringLeft := d.Enabled && !settings.Learning && antispam.LearningScoringLoaded([]byte(f.RspamdConfig.Stdout))
-	if scoringLeft && a.Action == antispam.Keep {
+	// wrote. Judged from this pass's facts, so only when no removal succeeds.
+	scoringLeft := d.Enabled && !settings.Learning && f.RspamdConfig.Err == nil && antispam.LearningScoringLoaded([]byte(f.RspamdConfig.Stdout))
+	if scoringLeft && (d.Observe || a.Action == antispam.Keep) {
 		learningProblems = append(learningProblems, removalIncomplete())
 	}
-	out.LearningProblems = learningProblems
-	out.setLearningFindings(now)
 	if d.Observe {
 		if a.Installed {
 			out.Findings = append(out.Findings, problemFinding(antispam.Problem{
@@ -285,25 +304,27 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if result.FailedStep == antispam.FeedsCheckStep {
 		r.Feeds.hold(d.Settings)
 	}
+	out.LearningGate.Publish = gate.Publish && req.Operation == antispam.OpApply && err == nil && result.OK
 	if result.FailedStep == antispam.LearningCheckStep {
 		r.Learning.hold(learningGeneration(settings))
+		out.LearningGate = antispam.LearningGate{}
+		learningProblems = append(learningProblems, learningHoldProblem())
 	}
-	if result.OK && strings.HasPrefix(result.Roundcube, antispam.RoundcubeUnavailable) {
+	if strings.HasPrefix(result.Roundcube, antispam.RoundcubeUnavailable) {
 		why := strings.TrimPrefix(result.Roundcube, antispam.RoundcubeUnavailable)
+		p := antispam.Problem{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonRoundcube, Detail: why}
 		if req.Operation == antispam.OpApply && settings.Roundcube {
 			r.Learning.holdRoundcube(learningGeneration(settings), why)
+			p = roundcubeHoldProblem(why)
 		}
-		out.LearningProblems = mergeByKey(append(out.LearningProblems, antispam.Problem{
-			Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonRoundcube, Detail: why,
-		}))
-		out.setLearningFindings(now)
+		out.LearningGate.Roundcube = false
+		learningProblems = append(learningProblems, p)
 	}
 	if finding, ok := resultFinding(req.Operation, result, err, now); ok {
 		out.Findings = append(out.Findings, finding)
 	}
 	if scoringLeft && !result.Busy && (err != nil || !result.OK) {
-		out.LearningProblems = mergeByKey(append(out.LearningProblems, removalIncomplete()))
-		out.setLearningFindings(now)
+		learningProblems = append(learningProblems, removalIncomplete())
 	}
 	out.Err = err
 	r.settleIPMap(d, settings, a, err == nil && result.OK, &out)
@@ -355,6 +376,7 @@ func (r Reconciler) resolveLearningState(s antispam.Settings, f antispam.HostFac
 		return s, antispam.LearningGate{}, nil
 	}
 	s.LearningKeys = keys
+	generation := learningGeneration(s)
 	s, problems := r.Learning.applyLearningHold(s)
 	if !s.Learning {
 		return s, antispam.LearningGate{}, problems
@@ -368,7 +390,7 @@ func (r Reconciler) resolveLearningState(s antispam.Settings, f antispam.HostFac
 	if f.Redis.Err == nil && f.Redis.MaxMemoryKnown {
 		r.Learning.setRedisPaused(antispam.RedisGuard(f.Redis.Used, f.Redis.MaxMemory, f.RedisGuardPaused))
 	}
-	s, held := r.Learning.applyRoundcubeHold(s)
+	s, held := r.Learning.applyRoundcubeHold(s, generation)
 	if len(held) > 0 {
 		gate.Roundcube = false
 		problems = append(problems, held...)
@@ -379,20 +401,4 @@ func (r Reconciler) resolveLearningState(s antispam.Settings, f antispam.HostFac
 func removalIncomplete() antispam.Problem {
 	return antispam.Problem{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonRemovalIncomplete,
 		Detail: "learning is off but rspamd still loads CSM's learned scoring; a learning file CSM wrote may have been replaced, so CSM cannot remove it"}
-}
-
-// setLearningFindings replaces the outcome's learning findings with one per
-// learning problem, so a problem added after the apply merges with one the
-// resolver found earlier.
-func (out *Outcome) setLearningFindings(now time.Time) {
-	findings := out.Findings[:0:0]
-	for _, f := range out.Findings {
-		if f.Check != CheckLearning {
-			findings = append(findings, f)
-		}
-	}
-	for _, p := range out.LearningProblems {
-		findings = append(findings, learningFinding(p, now))
-	}
-	out.Findings = findings
 }

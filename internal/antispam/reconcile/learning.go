@@ -108,17 +108,27 @@ func (st *LearningState) applyLearningHold(s antispam.Settings) (antispam.Settin
 		return s, nil
 	}
 	s.Learning, s.Roundcube = false, false
-	return s, []antispam.Problem{{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonApplyFailed,
-		Detail: "rspamd did not load CSM's learning configuration as written; learning stays off until its configuration changes or CSM restarts"}}
+	return s, []antispam.Problem{learningHoldProblem()}
 }
 
 // applyRoundcubeHold turns the webmail include off while it is held.
-func (st *LearningState) applyRoundcubeHold(s antispam.Settings) (antispam.Settings, []antispam.Problem) {
-	why, held := st.roundcubeHeld(learningGeneration(s))
+func (st *LearningState) applyRoundcubeHold(s antispam.Settings, generation string) (antispam.Settings, []antispam.Problem) {
+	// A prerequisite failure can turn learning off without changing the
+	// desired configuration. It must not lift an unchanged include's hold.
+	why, held := st.roundcubeHeld(generation)
 	if !held || !s.Roundcube {
 		return s, nil
 	}
 	s.Roundcube = false
-	return s, []antispam.Problem{{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonRoundcube,
-		Detail: why + "; the webmail Junk-button include stays off until the learning configuration changes or CSM restarts"}}
+	return s, []antispam.Problem{roundcubeHoldProblem(why)}
+}
+
+func learningHoldProblem() antispam.Problem {
+	return antispam.Problem{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonApplyFailed,
+		Detail: "rspamd did not load CSM's learning configuration as written; learning stays off until its configuration changes or CSM restarts"}
+}
+
+func roundcubeHoldProblem(why string) antispam.Problem {
+	return antispam.Problem{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonRoundcube,
+		Detail: why + "; the webmail Junk-button include stays off until the learning configuration changes or CSM restarts"}
 }

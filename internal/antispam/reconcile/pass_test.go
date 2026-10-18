@@ -89,7 +89,7 @@ func TestPassRetriesInvalidationBeforeReadingHost(t *testing.T) {
 				}
 				var wantChecks []string
 				if !enabled {
-					wantChecks = []string{CheckControllerOpen, CheckLearning}
+					wantChecks = []string{CheckControllerOpen}
 				}
 				if out.Retry != wantRetry || !reflect.DeepEqual(out.Checks, wantChecks) ||
 					h.invalidated != 1 || h.installed != 0 || len(h.collected) != 0 || len(h.requests) != 0 {
