@@ -225,10 +225,10 @@ auto_response:
   virtual_patch_exposed_files: "off"
 
   # SAFETY DEFAULT: dry_run defaults to TRUE when this key is absent.
-  # In dry-run, BlockIP records the intended block to bbolt but does
-  # NOT touch nftables. Manual operator commands (`csm firewall ...`)
-  # bypass via BlockIPForce and always apply. Flip to false only after
-  # verifying the policy in dry-run.
+  # Automatic IP blocks do not touch nftables. Admission keeps bounded
+  # examples of successful capacity predictions, not every attempted block.
+  # Manual operator commands (`csm firewall ...`) bypass dry-run and apply.
+  # Flip to false only after verifying the policy in dry-run.
   dry_run: true
 
   # Advisory verdict callback. CSM POSTs each impending auto-block
@@ -262,11 +262,13 @@ All-in-One WP Migration rewrites the access file inside `wp-content/ai1wm-backup
 
 ### Dry-run safety default
 
-`auto_response.dry_run` defaults to `true` when the key is **absent**. This is deliberate: an operator who turns on `block_ips: true` without reviewing policy gets recorded-but-not-applied blocks. The dry-run count surfaces in `csm status --json` and `/api/v1/status` so dashboards can verify the policy before flipping live. CSM clears those records when auto-response starts or reloads in live mode, and ages out records older than a week while dry-run remains enabled.
+`auto_response.dry_run` defaults to `true` when the key is **absent**. This is deliberate: an operator who turns on `block_ips: true` without reviewing policy keeps automatic IP blocks unapplied while evaluating policy. The retained-example count surfaces in `csm status --json` and `/api/v1/status`; forecast status reports capacity decisions separately. On entry into live mode CSM requests a purge; owner-managed purges run in bounded passes and report stale examples until complete. While dry-run remains enabled, records older than a week age out.
+
+With the firewall on and outside observe mode, admission also forecasts each automatic IP block in dry run: whether it would fit the hourly ceiling and the temporary block set, behind the blocks and forecasts before it. Status, `csm doctor` and findings history show the forecast, with at most one summary a minute. Admission owns new examples, pruning and purge. New examples describe committed capacity predictions; the count also includes retained older examples until pruning or purge. It is not unique IPs or active predicted occupancy. Example loss and incomplete comparisons appear in status. A forecast is not a block; restart or re-entry into dry run starts a new session without restoring hypothetical leases from examples.
 
 This setting is not a universal simulation mode. It gates automatic firewall and related network enforcement paths plus web-exposed-file virtual patches. File quarantine, cleanup, permission changes, and process termination are controlled by their individual `auto_response` flags. Leave those flags off while evaluating block policy.
 
-IP auto-blocking still requires `firewall.enabled: true`. The firewall engine owns both live nftables mutations and dry-run block records; with the firewall disabled there is no engine to call, so `csm validate` warns on `auto_response.enabled: true` plus `block_ips: true`.
+IP auto-blocking still requires `firewall.enabled: true`. The firewall engine owns live nftables mutations and the dry-run gate; with the firewall disabled there is no engine to call, so `csm validate` warns on `auto_response.enabled: true` plus `block_ips: true`.
 
 Verify dry-run state explicitly:
 
@@ -293,9 +295,19 @@ omits both keeps working. The panel can return `{"verdict": "block"}`
 (apply), `{"verdict": "allow"}` (audit-only; CSM logs the decision and
 skips nftables), or attach metadata (`tenant_id`, `note`). The callback
 runs after local validation and infra-IP safety checks, and before the
-dry-run gate, so panels can observe dry-run decisions too.
+dry-run gate, so panels can observe dry-run decisions too. In dry run
+with the firewall on outside observe mode, admission also asks for each
+locally eligible block attempt, with `CSM auto-block: <check>` as the reason, up to four
+requests at a time, and uses the configured
+`allow_unsigned` and `require_response_signature` settings. An `allow` ends
+that forecast without a block. Until admission decides blocks, a panel can receive an additional request
+for the same automatic block. Local refusals, existing effects, capacity
+waits, coalescing and retries mean request counts need not be two per block.
+The v1 request has no dry-run field. Forecast examples and summaries are
+bounded, unsupported promotions are not simulated, and reload discards old
+policy answers.
 
-CSM fails open on hook errors (timeout, non-2xx, malformed body): the block continues as if the hook were disabled, or is recorded as dry-run when dry-run is active. The failure is written to the daemon log. Full request/response schema: [Verdict callback contract](verdict-callback-contract.md).
+CSM fails open on hook errors (timeout, non-2xx, malformed body): local admission continues, still subject to dry-run and capacity checks. An error proves neither a block nor a forecast example. The failure is written to the daemon log. Full request/response schema: [Verdict callback contract](verdict-callback-contract.md).
 
 ### Infrastructure IP DNS guard
 
@@ -384,8 +396,12 @@ applies at the owner's next clock tick; a failed change is retried on later
 ticks before admission resumes, with elapsed time credited at the saved
 ceiling before the new one applies. Existing blocking paths remain unchanged:
 every automatic response they select is also handed to the ledger, which
-previews it within this ceiling and never applies it. Status, `csm doctor`,
-findings history and the [action log](action-log.md) show the preview.
+previews it within this ceiling, or forecasts it in dry run, and never
+applies it. Queued responses disabled by the current policy end as `disabled`
+without a withheld alert. Turning a response back on requires a new eligible
+observation; ended work is not replayed. Status, `csm doctor` and findings
+history show the results. Forecast endings have no new per-attempt row in
+the [action log](action-log.md).
 
 The resulting `auto_block` findings are output evidence, not new local
 corroboration for central intelligence or incident correlation. They are

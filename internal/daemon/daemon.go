@@ -85,6 +85,9 @@ type Daemon struct {
 	ipList           *challenge.IPList
 	challengeGate    challenge.PortGate
 	fwEngine         *firewall.Engine
+	// blockEngine is fwEngine published for the admission owner, which
+	// starts before the firewall and reads it on its own goroutine.
+	blockEngine atomic.Pointer[firewall.Engine]
 	// fwActions retains the durable-action boundary even after failed startup,
 	// so pending actions remain recoverable while the firewall is unmanaged.
 	fwActions      firewallActionBoundary
@@ -556,6 +559,7 @@ func firewallMetricsRuleCounts() firewall.RuleCounts {
 
 func (d *Daemon) setFirewallEngine(engine *firewall.Engine) {
 	d.fwEngine = engine
+	d.blockEngine.Store(engine)
 	d.fwActions = nil
 	if boundary, ok := any(engine).(firewallActionBoundary); ok {
 		d.fwActions = boundary

@@ -313,7 +313,7 @@ Registered when `reputation.upstream.enabled: true`.
   `rate(csm_auto_response_actions_total[5m])`.
 - `csm_admission_handoff_seconds` (histogram): how long a response
   funnel waits to hand an automatic response to the admission ledger,
-  which only previews it for now. Preparing evidence for a possible later
+  which only previews or forecasts it for now. Preparing evidence for a possible later
   response adds no sample; selected refusals and responses each add one. Buckets: 0.001 s .. 1 s. The share of
   handoffs at or under 10 ms is
   `csm_admission_handoff_seconds_bucket{le="0.01"} / csm_admission_handoff_seconds_count`;

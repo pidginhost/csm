@@ -92,7 +92,10 @@ the step. A record is written durably before the ledger lets it go, so after a
 crash it can appear twice; drop a copy whose `action_id`, `action_version` and
 `ts` match another. Existing blocking paths still decide every block: the
 ledger previews each response they hand it, so an admitted response is
-`reserved` and then `observe`, and is never executed.
+`reserved` and then `observe`, and is never executed. In dry run with the
+firewall on outside observe mode, it forecasts block responses instead.
+Their terminal outcomes are counted in the ledger without a new per-attempt
+action-log row; bounded forecast examples and summaries are separate.
 
 `csm action show <id>` asks the daemon for what the ledger holds on one
 response, by the `action_id` of an admission record or by its candidate ID.

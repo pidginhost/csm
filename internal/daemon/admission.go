@@ -22,8 +22,17 @@ var _ health.AdmissionProvider = (*Daemon)(nil)
 
 // ownerKeepsDryRunExamples is set once an admission owner that runs blocks
 // starts. It then writes, prunes and purges the dry_run_blocks bucket alone
-// (spec 3.6), and the legacy prune and purge leave the bucket to it.
+// (spec 3.6), and the legacy recorder, prune and purge leave the bucket to
+// it.
 var ownerKeepsDryRunExamples atomic.Bool
+
+// recordLegacyDryRunBlock is the legacy engine's dry-run recorder: it keeps
+// the block a dry run skipped, unless an admission owner keeps the bucket.
+func recordLegacyDryRunBlock(ip, reason string, timeout time.Duration) {
+	if db := store.Global(); db != nil && !ownerKeepsDryRunExamples.Load() {
+		db.RecordDryRunBlock(ip, reason, timeout)
+	}
+}
 
 // pruneLegacyDryRunBlocks ages out dry_run_blocks records older than a
 // week, unless an admission owner keeps the bucket.
@@ -38,8 +47,10 @@ var setResponseAdmission = checks.SetResponseAdmission
 
 // startAdmission makes the daemon the owner of the admission ledger: the
 // one handle on the state database's ledger. Every automatic response the
-// legacy funnels select is also handed to it, which previews and never
-// executes it (R1).
+// legacy funnels select is also handed to it. With the firewall on and
+// outside observe mode the owner runs on the firewall engine: a dry-run
+// policy forecasts, and a live one previews until plan 1.4c-2b. Otherwise
+// it only previews. It never executes (R1).
 func (d *Daemon) startAdmission() {
 	d.startAdmissionWith(d.admissionOptions(store.Global()))
 }
@@ -47,6 +58,10 @@ func (d *Daemon) startAdmission() {
 func (d *Daemon) admissionOptions(db *store.DB) admissionowner.Options {
 	// The firewall reads its family settings at start, as this does.
 	ipv6 := d.cfg.Firewall != nil && d.cfg.Firewall.IPv6
+	var blocks func() admissionowner.BlockEngine
+	if d.cfg.Firewall != nil && d.cfg.Firewall.Enabled && !d.cfg.ObserveMode() {
+		blocks = d.admissionBlocks
+	}
 	return admissionowner.Options{
 		DB: db, StatePath: d.cfg.StatePath,
 		Ceiling:     func() (uint32, string) { return d.currentCfg().AdmissionCeiling() },
@@ -56,10 +71,27 @@ func (d *Daemon) admissionOptions(db *store.DB) admissionowner.Options {
 		WriteAudit:  actionlog.WriteDurableBatch,
 		Applied:     d.consumeAppliedBlocks,
 		Deliver:     d.deliverAdmissionNotices,
-		Expiry:      func(c admission.Candidate) time.Duration { return previewExpiry(d.currentCfg(), c) },
-		Caps:        func() admission.Caps { return admission.Caps{IPv6: ipv6} },
-		Policy:      d.executionPolicy,
+		Blocks:      blocks,
+		// A dry-run summary is a preview: history only.
+		DeliverSummary: func(ctx context.Context, f alert.Finding) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return d.store.AppendHistoryDurable([]alert.Finding{f})
+		},
+		Expiry: func(c admission.Candidate) time.Duration { return previewExpiry(d.currentCfg(), c) },
+		Caps:   func() admission.Caps { return admission.Caps{IPv6: ipv6} },
+		Policy: d.executionPolicy,
 	}
+}
+
+// admissionBlocks is the engine the admission owner runs on: none, as an
+// untyped nil, until the firewall has applied its state.
+func (d *Daemon) admissionBlocks() admissionowner.BlockEngine {
+	if e := d.blockEngine.Load(); e != nil {
+		return e
+	}
+	return nil
 }
 
 // executionPolicy is the execution policy of the live config, read with its

@@ -14,8 +14,9 @@ import (
 
 // ResponseAdmission is the admission owner as the response funnels see it.
 // Every automatic response the legacy funnels select is also handed to it,
-// where it is admitted and previewed but never executed; the legacy path
-// keeps every enforcement decision and never waits for admission.
+// where it is previewed, or forecast in dry run, but never executed; the
+// legacy path keeps every enforcement decision and never waits for
+// admission.
 type ResponseAdmission interface {
 	// Mint mints the evidence f's own observation supports for target. It
 	// counts nothing.

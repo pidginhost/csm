@@ -14,8 +14,8 @@ import (
 )
 
 // dryRunBlocksBucket holds examples of responses a dry run would have run:
-// the legacy firewall writer's and, while an admission owner runs blocks,
-// the owner's forecast examples (spec 3.6). Its count is a count of the
+// the legacy firewall writer's or, while an admission owner runs on the
+// firewall engine, only the owner's forecast examples (spec 3.6). Its count is a count of the
 // retained examples, not of addresses or predictions.
 const dryRunBlocksBucket = "dry_run_blocks"
 

@@ -272,8 +272,8 @@ The same view appears under `snapshot.admission` in `csm status --json` and as
 `admission` rows in `csm doctor`. The daemon reads it on a timer, so
 `checked_at` says how old it is. Existing blocking paths still decide every
 block. Every automatic response they select is also handed to the ledger,
-which admits and previews it but never applies it, so the view shows what
-the ledger would have done.
+which previews or forecasts eligible work and refuses disabled responses.
+It never applies them; the view is not an enforcement record.
 
 - `ledger` holds the stored admission time, queue, counters, hourly and daily
   outcomes, ingress generations, the hourly ceiling with its general and
@@ -291,10 +291,14 @@ the ledger would have done.
   which counts at least until an hour after `at`, or names why the count
   could not be read), the last inventory read and why responses naming a
   damaged record were discarded (`damage_error`).
-- An owner that runs automatic blocks itself, which no release enables yet,
-  adds `execution_held`, a `verdict` object for the panel verdict callback,
-  whose counters count this process and restart at zero, and a `dry_run`
-  object for its dry-run forecast, described below.
+- An owner that runs on the firewall engine, with the firewall on and
+  outside observe mode, adds `execution_held`, a `verdict` object for the
+  panel verdict callback, whose counters count this process and restart at
+  zero, and a `dry_run` object for its dry-run forecast, described below. This
+  build never lets it run automatic blocks itself (`executing`): under a
+  live policy it previews. This staging route does not advertise
+  `admission.dry_run_verdict.v1`; that capability requires the complete
+  admission-gates contract and activation evidence.
 
 `owner.dry_run` is a capacity forecast, not a record of blocks. `active` is
 true while the owner forecasts instead of blocking. `session_id`, `since`
