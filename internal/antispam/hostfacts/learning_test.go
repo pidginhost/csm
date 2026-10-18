@@ -304,11 +304,6 @@ func TestCollectRedisProbesOnlyProtectedSockets(t *testing.T) {
 		f.AccountNames, f.AccountNamesErr = c.accountNames()
 		return c, f, &probes
 	}
-	// The test's own uid owns the socket and its directories, as a redis
-	// user would; it is not root here.
-	prev := keyOwner
-	keyOwner = os.Getuid() + 1
-	t.Cleanup(func() { keyOwner = prev })
 	c, f, probes := setup(t, 0o750, "redis")
 	if r := c.redis(context.Background(), f); r.Err != nil || *probes != 1 {
 		t.Fatalf("protected socket: probes=%d facts=%+v", *probes, r)
@@ -318,7 +313,11 @@ func TestCollectRedisProbesOnlyProtectedSockets(t *testing.T) {
 		t.Fatalf("world-writable parent: probes=%d facts=%+v", *probes, r)
 	}
 	c, f, probes = setup(t, 0o750, "tenant", "tenant")
-	if r := c.redis(context.Background(), f); r.Err == nil || *probes != 0 {
+	wantProbes := 0
+	if os.Getuid() == 0 {
+		wantProbes = 1 // Root remains trusted regardless of account names.
+	}
+	if r := c.redis(context.Background(), f); (r.Err == nil) != (wantProbes == 1) || *probes != wantProbes {
 		t.Fatalf("account-owned socket: probes=%d facts=%+v", *probes, r)
 	}
 	// A cPanel account named redis is a tenant, not the service.
@@ -332,7 +331,7 @@ func TestCollectRedisProbesOnlyProtectedSockets(t *testing.T) {
 		t.Fatalf("socket owned by an unpinned user: probes=%d facts=%+v", *probes, r)
 	}
 	c, f, probes = setup(t, 0o750, "redis")
-	f.LearningDumps.Redis = []byte(`{"servers":"127.0.0.1:6379","password":"pw"}`)
+	f.LearningDumps.Redis = []byte(`{"servers":"192.0.2.1:6379","password":"pw"}`)
 	if r := c.redis(context.Background(), f); *probes != 0 || r.Unix {
 		t.Fatalf("TCP endpoint: probes=%d facts=%+v", *probes, r)
 	}

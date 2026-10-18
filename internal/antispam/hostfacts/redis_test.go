@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
 )
@@ -182,17 +183,47 @@ func TestRedisProbeErrorKeepsNoPassword(t *testing.T) {
 // A process that is not the expected Redis owner never receives the
 // password, even if it answers at the configured path.
 func TestRedisProbeRejectsWrongPeer(t *testing.T) {
-	srv := healthyRedis()
-	r := RedisProbe(context.Background(), srv.serve(t), antispam.NewSecret(srv.password), os.Getuid()+1)
-	if r.Err == nil {
+	sock := filepath.Join(t.TempDir(), "redis.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	type received struct {
+		connections int
+		bytes       int64
+		err         error
+	}
+	done := make(chan received, 1)
+	go func() {
+		var got received
+		defer func() { done <- got }()
+		for {
+			conn, err := l.Accept()
+			if err != nil {
+				return
+			}
+			got.connections++
+			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			n, err := io.Copy(io.Discard, conn)
+			_ = conn.Close()
+			got.bytes += n
+			if err != nil {
+				got.err = err
+				return
+			}
+		}
+	}()
+	r := RedisProbe(context.Background(), sock, antispam.NewSecret(healthyRedis().password), os.Getuid()+1)
+	_ = l.Close()
+	got := <-done
+	if r.Err == nil || r.ServiceUID != -1 {
 		t.Fatalf("facts = %+v, want a peer error", r)
 	}
-	srv.mu.Lock()
-	defer srv.mu.Unlock()
-	if len(srv.commands) != 0 {
-		t.Fatalf("an unverified peer received %q", srv.commands)
+	if got.err != nil || got.connections < 2 || got.bytes != 0 {
+		t.Fatalf("unverified peer: connections=%d bytes=%d err=%v", got.connections, got.bytes, got.err)
 	}
-	if r := RedisProbe(context.Background(), "127.0.0.1:6379", antispam.NewSecret(srv.password), 0); r.Err == nil {
+	if r := RedisProbe(context.Background(), "192.0.2.1:6379", antispam.NewSecret(healthyRedis().password), 0); r.Err == nil {
 		t.Fatal("a TCP endpoint was probed")
 	}
 }

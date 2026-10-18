@@ -232,7 +232,7 @@ func (c collector) redis(ctx context.Context, f antispam.HostFacts) antispam.Red
 	owner := r.Socket.Socket.UID
 	gid := r.Socket.Socket.GID
 	r.GroupMembers = c.groupMembers(map[int]bool{gid: true})[gid]
-	if !c.trustedRedisOwner(owner, f) || !protectedChain(r.Socket.Parents, r.Socket.Socket, owner) {
+	if !c.trustedRedisOwner(owner, f) || !protectedRedisPath(endpoint, owner, pathFacts) {
 		r.Unprotected = true
 		r.Err = errors.New("redis socket is not protected; CSM sends it no password")
 		return r
@@ -243,45 +243,49 @@ func (c collector) redis(ctx context.Context, f antispam.HostFacts) antispam.Red
 }
 
 // trustedRedisOwner reports whether uid may serve the Redis socket: root,
-// rspamd's service user or the system user named redis. Any other owner,
-// including shared users such as nobody that can run tenant code, gets no
-// password.
+// rspamd's service user or the system user named redis, and no cPanel
+// account shares the uid. Any other owner, including shared users such as
+// nobody that can run tenant code, gets no password.
 func (c collector) trustedRedisOwner(uid int, f antispam.HostFacts) bool {
-	if uid == 0 || uid == keyOwner {
-		return true
-	}
-	if f.Socket.RspamdUID >= 0 && uid == f.Socket.RspamdUID {
+	if uid == 0 {
 		return true
 	}
 	// A cPanel account can carry the name redis on a host without the
-	// service user; that account is a tenant.
+	// service user, and a uid can have several names; such a uid is a tenant.
 	if f.AccountNamesErr != nil || f.AccountNames["redis"] {
 		return false
+	}
+	for account := range f.AccountNames {
+		if accountUID, err := c.uid(account); err != nil || accountUID == uid {
+			return false
+		}
+	}
+	if f.Socket.RspamdUID >= 0 && uid == f.Socket.RspamdUID {
+		return true
 	}
 	redisUID, err := c.uid("redis")
 	return err == nil && redisUID >= 0 && uid == redisUID
 }
 
-// protectedChain reports whether only root or owner could have created the
-// socket: every directory looked up is theirs and closed to other writers,
-// except a sticky directory whose next entry is theirs, which others cannot
-// remove or rename.
-func protectedChain(parents []antispam.PathFacts, socket antispam.PathFacts, owner int) bool {
-	trusted := func(uid int) bool { return uid == 0 || uid == keyOwner || uid == owner }
-	for i, p := range parents {
-		if !p.Mode.IsDir() || p.ExtACL || !trusted(p.UID) {
-			return false
+// protectedRedisPath verifies each lookup, including symlinks and repeated
+// visits to a directory. Sticky protection depends on the entry being
+// looked up, not the directory or socket it eventually resolves to.
+func protectedRedisPath(endpoint string, owner int, stat func(string) (antispam.PathFacts, error)) bool {
+	trusted := func(uid int) bool { return uid == 0 || uid == owner }
+	unsafe := errors.New("redis socket path is not protected")
+	_, _, err := resolveChecked(endpoint, func(dir, next string) error {
+		p, err := stat(dir)
+		if err != nil || !p.Mode.IsDir() || p.ExtACL || !trusted(p.UID) {
+			return unsafe
 		}
 		if p.Mode.Perm()&0o022 == 0 {
-			continue
+			return nil
 		}
-		next := socket
-		if i+1 < len(parents) {
-			next = parents[i+1]
+		entry, err := stat(next)
+		if err != nil || p.Mode&fs.ModeSticky == 0 || !trusted(entry.UID) {
+			return unsafe
 		}
-		if p.Mode&fs.ModeSticky == 0 || !trusted(next.UID) {
-			return false
-		}
-	}
-	return len(parents) > 0
+		return nil
+	})
+	return err == nil
 }
