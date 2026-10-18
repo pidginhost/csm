@@ -189,9 +189,10 @@ func TestResolveLearningDefiniteFailures(t *testing.T) {
 		"ForeignFuzzyWorker": {func(f *HostFacts) {
 			f.LearningDumps.Worker = []byte(`[{"fuzzy": {"bind_socket": "localhost:11335", "count": 2}}]`)
 		}, ReasonConfigConflict},
-		"ForeignOptionalFile": {func(f *HostFacts) { setTarget(f, LearningWorkerPath, "count = 4;\n") }, ReasonConfigConflict},
-		"ForeignLuaFile":      {func(f *HostFacts) { setTarget(f, LearningLuaPath, "-- operator plugin\n") }, ReasonConfigConflict},
-		"KeysIncomplete":      {func(f *HostFacts) { f.LearningKeysErr = errors.New("learning keys are incomplete: missing prefix") }, ReasonStateMismatch},
+		"ForeignOptionalFile":  {func(f *HostFacts) { setTarget(f, LearningWorkerPath, "count = 4;\n") }, ReasonConfigConflict},
+		"ForeignLuaFile":       {func(f *HostFacts) { setTarget(f, LearningLuaPath, "-- operator plugin\n") }, ReasonConfigConflict},
+		"KeysIncomplete":       {func(f *HostFacts) { f.LearningKeysErr = errors.New("learning keys are incomplete: missing prefix") }, ReasonStateMismatch},
+		"FuzzyListenerForeign": {func(f *HostFacts) { f.FuzzyListenForeign = true }, ReasonUnsafe},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := safeLearningFacts()
@@ -226,7 +227,7 @@ func TestResolveLearningLogsCageFSProtected(t *testing.T) {
 }
 
 // rspamd prints rule as an object with one rule and as a list of single-key
-// objects with several (recorded on 4912 and cluster6).
+// objects with several (recorded on rspamd 4.2 hosts).
 func TestResolveLearningRuleListForm(t *testing.T) {
 	f := safeLearningFacts()
 	f.LearningDumps.FuzzyCheck = []byte(`{"rule": [{"rspamd.com": {}}, {"ops_rule": {}}]}`)
