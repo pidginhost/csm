@@ -351,7 +351,12 @@ func unixExposure(l ControllerListener, f ControllerHostFacts) string {
 			return exposureSocketParent
 		}
 		if !f.othersPermit(p, 0o1) {
-			return ""
+			// Only a real ancestor hides the socket. A directory met on a
+			// symlink detour does not: the real path stays usable.
+			if ancestorOf(p.Path, s.Socket.Path) {
+				return ""
+			}
+			continue
 		}
 		if f.othersPermit(p, 0o3) {
 			if p.Mode&fs.ModeSticky == 0 {
@@ -371,6 +376,17 @@ func unixExposure(l ControllerListener, f ControllerHostFacts) string {
 		return exposureSocket
 	}
 	return ""
+}
+
+func ancestorOf(dir, p string) bool {
+	for parent := filepath.Dir(p); ; parent = filepath.Dir(parent) {
+		if parent == dir {
+			return true
+		}
+		if parent == "/" || parent == "." {
+			return false
+		}
+	}
 }
 
 func directSocketPath(l ControllerListener, s SocketFacts) bool {

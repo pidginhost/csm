@@ -495,3 +495,37 @@ func TestControllerExposureMappedHostAddress(t *testing.T) {
 		t.Fatalf("mapped remote address: problems = %+v, want none", got)
 	}
 }
+
+// A directory tenants cannot search only blocks them when it is an ancestor
+// of the socket itself. One met on a symlink detour does not: the socket is
+// still reachable through its real path.
+func TestControllerExposureSymlinkDetourDoesNotHide(t *testing.T) {
+	f := hostFacts()
+	l := ControllerConfig{Present: true, Listeners: []ControllerListener{{Raw: "/run/private/ctl.sock", Unix: true, Path: "/run/private/ctl.sock"}}}
+	f.Sockets["/run/private/ctl.sock"] = SocketFacts{
+		Socket: PathFacts{Path: "/var/lib/rspamd/ctl.sock", UID: 990, GID: 990, Mode: fs.ModeSocket | 0o666},
+		Parents: []PathFacts{
+			{Path: "/", UID: 0, Mode: fs.ModeDir | 0o755},
+			{Path: "/run", UID: 0, Mode: fs.ModeDir | 0o755},
+			{Path: "/run/private", UID: 0, Mode: fs.ModeDir | 0o700},
+			{Path: "/var", UID: 0, Mode: fs.ModeDir | 0o755},
+			{Path: "/var/lib", UID: 0, Mode: fs.ModeDir | 0o755},
+			{Path: "/var/lib/rspamd", UID: 990, GID: 990, Mode: fs.ModeDir | 0o755},
+		},
+		RspamdUID: 990, PeerUID: -1,
+	}
+	onlyReason(t, ControllerExposure(l, f), "/run/private/ctl.sock", "socket reachable by other users")
+	// The same unsearchable directory as a real ancestor does block access.
+	f.Sockets["/run/private/ctl.sock"] = SocketFacts{
+		Socket: PathFacts{Path: "/run/private/ctl.sock", UID: 990, GID: 990, Mode: fs.ModeSocket | 0o666},
+		Parents: []PathFacts{
+			{Path: "/", UID: 0, Mode: fs.ModeDir | 0o755},
+			{Path: "/run", UID: 0, Mode: fs.ModeDir | 0o755},
+			{Path: "/run/private", UID: 0, Mode: fs.ModeDir | 0o700},
+		},
+		RspamdUID: 990, PeerUID: -1,
+	}
+	if got := ControllerExposure(l, f); len(got) != 0 {
+		t.Fatalf("socket behind an unsearchable ancestor: problems = %+v, want none", got)
+	}
+}
