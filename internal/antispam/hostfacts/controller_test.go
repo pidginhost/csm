@@ -338,10 +338,17 @@ func TestControllerFactsDoNotKeepPasswords(t *testing.T) {
 }
 
 func TestCollectControllerUnparseableIsUnverifiable(t *testing.T) {
-	d := t.TempDir()
-	dump := `{"worker":[{"controller":{"bind_socket":"systemd:controller","password":"x"}}]}`
-	f := testCollector(d, &fakeRun{results: map[string]antispam.CommandResult{"rspamadm configdump -j": {Stdout: dump}}}).collect(context.Background(), antispam.DefaultSocket)
-	if f.ControllerUnverifiable == nil || f.ControllerErr != nil {
-		t.Fatalf("ControllerUnverifiable = %v, ControllerErr = %v; want the dump flagged unverifiable, not transient", f.ControllerUnverifiable, f.ControllerErr)
+	for name, dump := range map[string]string{
+		"systemd":      `{"worker":[{"controller":{"bind_socket":"systemd:controller","password":"x"}}]}`,
+		"null enabled": `{"worker":{"controller":{"bind_socket":"localhost:11334","enabled":null}}}`,
+		"null count":   `{"worker":{"controller":{"bind_socket":"localhost:11334","count":null}}}`,
+		"unknown type": `{"worker":{"type":["controller"],"bind_socket":"localhost:11334"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := testCollector(t.TempDir(), &fakeRun{results: map[string]antispam.CommandResult{"rspamadm configdump -j": {Stdout: dump}}}).collect(context.Background(), antispam.DefaultSocket)
+			if f.ControllerUnverifiable == nil || f.ControllerErr != nil {
+				t.Fatalf("ControllerUnverifiable = %v, ControllerErr = %v; want the dump flagged unverifiable, not transient", f.ControllerUnverifiable, f.ControllerErr)
+			}
+		})
 	}
 }

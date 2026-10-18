@@ -532,8 +532,9 @@ the listener and the reason, including cases where CSM cannot prove isolation:
 - a trust entry CSM cannot resolve, such as a map file or a hostname;
 - no controller password at all, only an enable password, or an empty
   password;
-- a controller configuration CSM cannot read in full, such as a systemd
-  socket or a second controller worker;
+- a controller configuration CSM cannot read in full, such as an unreadable
+  worker type, an unsupported `enabled` or `count` value, a systemd socket,
+  or a second controller worker;
 - a Unix socket, or one of its parent directories, that other users can
   write to, or whose access CSM cannot verify.
 

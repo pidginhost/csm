@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"net/netip"
 	"path/filepath"
 	"strconv"
@@ -33,8 +34,8 @@ type ControllerConfig struct {
 	TrustEntries      []string
 	PasswordSet       bool
 	EnablePasswordSet bool
-	// PasswordEmpty and EnablePasswordEmpty mark a password given as an
-	// empty string: present, but no secret.
+	// PasswordEmpty and EnablePasswordEmpty mark a password rspamd reads
+	// as an empty string: present, but no secret.
 	PasswordEmpty       bool
 	EnablePasswordEmpty bool
 }
@@ -70,8 +71,8 @@ func ParseControllerConfig(fullDump []byte) (ControllerConfig, error) {
 		return cfg, err
 	}
 	// rspamd skips a worker with enabled = false or count <= 0.
-	if disabledWorker(fields) {
-		return cfg, nil
+	if disabled, workerErr := disabledWorker(fields); workerErr != nil || disabled {
+		return cfg, workerErr
 	}
 	cfg.Present = true
 	// rspamd looks the bind address up as bind_socket, then listen, then bind.
@@ -113,16 +114,35 @@ func ParseControllerConfig(fullDump []byte) (ControllerConfig, error) {
 	return cfg, nil
 }
 
-func disabledWorker(fields map[string]json.RawMessage) bool {
-	var enabled bool
-	if raw, ok := fields["enabled"]; ok && json.Unmarshal(raw, &enabled) == nil && !enabled {
-		return true
+func disabledWorker(fields map[string]json.RawMessage) (bool, error) {
+	enabled := true
+	if raw, ok := fields["enabled"]; ok {
+		var flag *bool
+		if json.Unmarshal(raw, &flag) == nil && flag != nil {
+			enabled = *flag
+		} else {
+			// Rspamd also accepts integers in its boolean fields.
+			var value *int32
+			if json.Unmarshal(raw, &value) != nil || value == nil {
+				return false, errors.New("configdump worker controller: enabled is not a boolean or supported integer")
+			}
+			enabled = *value != 0
+		}
 	}
-	var count float64
-	if raw, ok := fields["count"]; ok && json.Unmarshal(raw, &count) == nil && count <= 0 {
-		return true
+	count := 1.0
+	if raw, ok := fields["count"]; ok {
+		var value *float64
+		if json.Unmarshal(raw, &value) != nil || value == nil {
+			return false, errors.New("configdump worker controller: count is not a number")
+		}
+		// Rspamd truncates fractions and stores count in a signed short.
+		// Values outside that range cannot prove a worker is disabled.
+		count = math.Trunc(*value)
+		if count < math.MinInt16 || count > math.MaxInt16 {
+			return false, errors.New("configdump worker controller: count is outside the supported range")
+		}
 	}
-	return false
+	return !enabled || count <= 0, nil
 }
 
 // controllerSection returns the controller object from the worker section,
@@ -144,14 +164,23 @@ func controllerSection(section json.RawMessage) (json.RawMessage, error) {
 		if err != nil {
 			return nil, err
 		}
-		c, ok := workers["controller"]
-		if !ok {
-			// worker { type = "controller"; ... } keeps its fields in place.
+		var c json.RawMessage
+		if raw, typed := workers["type"]; typed {
+			// A type attribute makes this the worker itself, even if it
+			// also has a field named after a worker type.
 			var kind string
-			if raw, typed := workers["type"]; !typed || json.Unmarshal(raw, &kind) != nil || kind != "controller" {
+			if json.Unmarshal(raw, &kind) != nil || kind == "" || strings.ContainsRune(kind, '\x00') {
+				return nil, errors.New("configdump worker: type is not a non-empty string without NUL bytes")
+			}
+			if kind != "controller" {
 				continue
 			}
 			c = entry
+		} else {
+			var ok bool
+			if c, ok = workers["controller"]; !ok {
+				continue
+			}
 		}
 		if found != nil {
 			return nil, errors.New("configdump worker: more than one controller worker")
@@ -199,7 +228,9 @@ func passwordState(fields map[string]json.RawMessage, name string) (set, empty b
 	case nil:
 		return false, false, nil
 	case string:
-		return v != "", v == "", nil
+		// Rspamd copies the value as a NUL-terminated C string.
+		empty = v == "" || v[0] == 0
+		return !empty, empty, nil
 	case float64, bool:
 		return true, false, nil
 	}

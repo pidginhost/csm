@@ -563,6 +563,21 @@ func TestParseControllerEmptyPasswordFlagged(t *testing.T) {
 	}
 }
 
+func TestParseControllerNulPasswordIsEmpty(t *testing.T) {
+	for _, field := range []string{"password", "enable_password"} {
+		t.Run(field, func(t *testing.T) {
+			cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"localhost:11334","` + field + `":"\u0000"}`)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.PasswordSet || cfg.EnablePasswordSet || cfg.PasswordEmpty != (field == "password") || cfg.EnablePasswordEmpty != (field == "enable_password") {
+				t.Fatal("NUL password was not recorded as empty")
+			}
+			onlyReason(t, ControllerExposure(cfg, hostFacts()), "localhost:11334", "empty password configured")
+		})
+	}
+}
+
 func TestParseControllerTrustedIPsAlias(t *testing.T) {
 	cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"localhost:11334","password":"q1","secure_ip":[],"trusted_ips":"127.0.0.1"}`)))
 	if err != nil {
@@ -620,6 +635,79 @@ func TestParseControllerDisabledIsAbsent(t *testing.T) {
 	cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"localhost:11334","count":1,"enabled":true}`)))
 	if err != nil || !cfg.Present {
 		t.Fatalf("enabled controller: cfg=%+v err=%v", cfg, err)
+	}
+}
+
+func TestParseControllerWorkerControls(t *testing.T) {
+	for _, tt := range []struct {
+		name, fields string
+		present      bool
+	}{
+		{"integer off", `"enabled":0`, false},
+		{"integer on", `"enabled":1`, true},
+		{"negative integer on", `"enabled":-1`, true},
+		{"fractional count off", `"count":0.5`, false},
+		{"fractional count on", `"count":1.5`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"localhost:11334",` + tt.fields + `}`)))
+			if err != nil || cfg.Present != tt.present {
+				t.Fatalf("present=%t err=%v, want present=%t", cfg.Present, err, tt.present)
+			}
+			if tt.present {
+				onlyReason(t, ControllerExposure(cfg, hostFacts()), "localhost:11334", "no passwords configured")
+			} else if !reflect.DeepEqual(cfg, ControllerConfig{}) {
+				t.Fatal("disabled worker returned controller facts")
+			}
+		})
+	}
+}
+
+func TestParseControllerRejectsUnverifiableWorkerControls(t *testing.T) {
+	for field, values := range map[string][]string{
+		"enabled": {`null`, `"false"`, `[]`, `{}`, `0.5`, `4294967296`},
+		"count":   {`null`, `"0"`, `false`, `[]`, `{}`, `-65535`, `65537`},
+	} {
+		for _, value := range values {
+			t.Run(field+"/"+value, func(t *testing.T) {
+				cfg, err := ParseControllerConfig([]byte(workerDump(`{"bind_socket":"localhost:11334","` + field + `":` + value + `}`)))
+				if err == nil || !strings.Contains(err.Error(), field) {
+					t.Fatalf("want error naming %s, got %v", field, err)
+				}
+				if !reflect.DeepEqual(cfg, ControllerConfig{}) {
+					t.Fatal("unverifiable worker returned controller facts")
+				}
+			})
+		}
+	}
+}
+
+func TestParseControllerExplicitTypeTakesPrecedence(t *testing.T) {
+	for _, kind := range []string{"controller", "normal"} {
+		t.Run(kind, func(t *testing.T) {
+			dump := `{"worker":{"type":"` + kind + `","bind_socket":"localhost:11334","controller":{"enabled":false}}}`
+			cfg, err := ParseControllerConfig([]byte(dump))
+			if err != nil || cfg.Present != (kind == "controller") {
+				t.Fatalf("explicit type %s: present=%t err=%v", kind, cfg.Present, err)
+			}
+			if kind == "controller" {
+				onlyReason(t, ControllerExposure(cfg, hostFacts()), "localhost:11334", "no passwords configured")
+			}
+		})
+	}
+}
+
+func TestParseControllerRejectsUnreadableType(t *testing.T) {
+	for _, kind := range []string{`null`, `0`, `false`, `""`, `["controller"]`, `{}`, `"controller\u0000ignored"`} {
+		t.Run(kind, func(t *testing.T) {
+			cfg, err := ParseControllerConfig([]byte(`{"worker":{"type":` + kind + `,"bind_socket":"localhost:11334"}}`))
+			if err == nil || !strings.Contains(err.Error(), "type") {
+				t.Fatalf("want an error naming type, got %v", err)
+			}
+			if !reflect.DeepEqual(cfg, ControllerConfig{}) {
+				t.Fatal("unreadable worker type returned controller facts")
+			}
+		})
 	}
 }
 
