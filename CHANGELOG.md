@@ -42,7 +42,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
-- Queued automatic responses disabled in settings are now refused promptly, without delaying responses that remain enabled.
 - Dry-run automatic responses no longer mark addresses as auto-blocked in the attack database.
 - Firewall status and port listings now reflect applied peer changes and rollbacks without requiring a daemon restart.
 - `csm rehash` now refuses unknown options instead of re-signing the whole configuration.
