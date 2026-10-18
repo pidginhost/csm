@@ -480,18 +480,16 @@ func TestResolveLearningKeepVerifiesLoaded(t *testing.T) {
 	}
 }
 
-// A foreign include at CSM's path is reported with the settings Roundcube
-// loads from it (spec 6.4).
-func TestResolveLearningRoundcubeForeignReportsObserved(t *testing.T) {
+// A foreign include at CSM's path is reported as such; CSM never runs it.
+func TestResolveLearningRoundcubeForeignInclude(t *testing.T) {
 	f := safeLearningFacts()
 	setTarget(&f, RoundcubeIncludePath, "<?php\n$config['junk_mbox'] = 'Junk';\n")
-	f.Roundcube.Observed = &RoundcubeState{JunkMbox: "Junk", MarkAsJunk: true}
 	_, gate, problems := ResolveLearning(learningSettings(), f)
 	if !gate.Install || gate.Roundcube {
 		t.Fatalf("gate = %+v", gate)
 	}
 	onlyLearningReason(t, problems, ReasonRoundcube)
-	if !strings.Contains(problems[0].Detail, `junk_mbox "Junk"`) {
+	if !strings.Contains(problems[0].Detail, "another file holds") {
 		t.Fatalf("detail = %q", problems[0].Detail)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +46,9 @@ func TestRoundcubeScript(t *testing.T) {
 			run := func(ctx context.Context, limit time.Duration, _ string, args ...string) CommandResult {
 				ctx, cancel := context.WithTimeout(ctx, limit)
 				defer cancel()
-				phpArgs := append([]string(nil), args[2:]...)
+				// The test runs as its own user, so the privilege drop is
+				// skipped; only PHP's arguments are kept.
+				phpArgs := append([]string(nil), args[slices.Index(args, cpanelPHP)+1:]...)
 				root := strings.NewReplacer("\\", "\\\\", "'", "\\'").Replace(dir + "/")
 				phpArgs[len(phpArgs)-1] = strings.ReplaceAll(phpArgs[len(phpArgs)-1], roundcubeDir, root)
 				cmd := exec.CommandContext(ctx, "php", phpArgs...)
@@ -53,7 +56,7 @@ func TestRoundcubeScript(t *testing.T) {
 				stdout, err := cmd.Output()
 				return CommandResult{Stdout: string(stdout), Err: err}
 			}
-			got, err := RoundcubeEffective(context.Background(), run)
+			got, err := RoundcubeEffective(context.Background(), run, 65534, 65534)
 			if (err != nil) != tc.wantErr || got != tc.want {
 				t.Fatalf("state = %+v, err = %v; want %+v, error=%t", got, err, tc.want, tc.wantErr)
 			}

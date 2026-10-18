@@ -78,9 +78,15 @@ echo 'markasjunk=', in_array('markasjunk', $plugins, true) ? '1' : '0', "\n";
 `
 
 // RoundcubeEffective evaluates Roundcube's configuration with cPanel's PHP
-// and returns the loaded Junk settings.
-func RoundcubeEffective(ctx context.Context, run func(context.Context, time.Duration, string, ...string) CommandResult) (RoundcubeState, error) {
-	r := run(ctx, 30*time.Second, "env", "DNS=localhost", cpanelPHP, "-d", "display_errors=0", "-r", roundcubeScript)
+// the way a webmail request loads it, as the unprivileged uid and gid: the
+// includes it loads are never run as root. Webmail itself runs them as each
+// account's user.
+func RoundcubeEffective(ctx context.Context, run func(context.Context, time.Duration, string, ...string) CommandResult, uid, gid int) (RoundcubeState, error) {
+	if uid <= 0 || gid <= 0 {
+		return RoundcubeState{}, errors.New("CSM has no unprivileged account to run cPanel's PHP as")
+	}
+	r := run(ctx, 30*time.Second, "setpriv", "--reuid="+strconv.Itoa(uid), "--regid="+strconv.Itoa(gid), "--clear-groups", "--no-new-privs",
+		"env", "DNS=localhost", cpanelPHP, "-d", "display_errors=0", "-r", roundcubeScript)
 	if r.Err != nil {
 		return RoundcubeState{}, errors.New("cPanel's PHP could not load the Roundcube configuration")
 	}

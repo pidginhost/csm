@@ -20,7 +20,11 @@ func (t *tx) roundcube(changes []change) (string, error) {
 		}
 		// A failed check is reported, not returned: it never fails the
 		// transaction.
-		state, checkErr := antispam.RoundcubeEffective(t.fwd, t.cmd)
+		uid, gid, idErr := t.h.unprivileged()
+		if idErr != nil {
+			uid, gid = -1, -1
+		}
+		state, checkErr := antispam.RoundcubeEffective(t.fwd, t.cmd, uid, gid)
 		checked, install := checkErr == nil, c.next.exists
 		switch {
 		case !install && !checked:

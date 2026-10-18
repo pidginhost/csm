@@ -593,8 +593,8 @@ func roundcubeUsable(c *learningCheck, f HostFacts) bool {
 	rc := f.Roundcube
 	if rc.Err != nil || !rc.IncludeMechanism || !rc.PHP || OptionalUsable(rc.Include) != nil {
 		detail := "the webmail Junk-button include cannot be installed or verified; learning continues without it"
-		if rc.Observed != nil {
-			detail = "another file holds the webmail Junk-button include path; " + rc.Observed.Describe() + "; learning continues without CSM's include"
+		if inc := rc.Include; !inc.Missing && inc.Err == nil && inc.Content != "" && !ManagedFor(inc.Kind, inc.Content) {
+			detail = "another file holds the webmail Junk-button include path; learning continues without CSM's include"
 		}
 		c.add(ReasonRoundcube, detail)
 		return false

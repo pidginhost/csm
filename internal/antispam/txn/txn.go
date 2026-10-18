@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/user"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -71,6 +73,8 @@ type Host struct {
 	preflight func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem)
 	targets   func() []antispam.TargetFacts
 	ping      func(ctx context.Context, socket string) error
+	// unprivileged returns the uid and gid Roundcube's PHP runs as.
+	unprivileged func() (uid, gid int, err error)
 	// controllerGet reads one controller path over a private Unix socket.
 	controllerGet func(ctx context.Context, socket, path string, limit int64, peer int) ([]byte, error)
 	greet         func(ctx context.Context, addr string) error
@@ -101,6 +105,7 @@ func New() *Host {
 		},
 		greet:         smtpGreeting,
 		controllerGet: hostfacts.ControllerGet,
+		unprivileged:  nobody,
 		now:           time.Now,
 		rspamdWait:    rspamdWait,
 		eximWait:      eximWait,
@@ -832,4 +837,18 @@ func (t *tx) restoreRecord(ctx context.Context) error {
 		return ctx.Err()
 	}
 	return err
+}
+
+// nobody returns the nobody account's uid and gid.
+func nobody() (int, int, error) {
+	u, err := user.Lookup("nobody")
+	if err != nil {
+		return -1, -1, err
+	}
+	uid, uidErr := strconv.Atoi(u.Uid)
+	gid, gidErr := strconv.Atoi(u.Gid)
+	if uidErr != nil || gidErr != nil {
+		return -1, -1, errors.New("the nobody account has a non-numeric id")
+	}
+	return uid, gid, nil
 }

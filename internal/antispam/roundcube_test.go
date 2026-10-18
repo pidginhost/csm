@@ -52,12 +52,14 @@ func TestRoundcubeEffectiveRunsPHP(t *testing.T) {
 		}
 		return CommandResult{Stdout: "junk_mbox=INBOX.spam\nspam_mbox=INBOX.spam\nmarkasjunk=1\n"}
 	}
-	state, err := RoundcubeEffective(context.Background(), run)
+	state, err := RoundcubeEffective(context.Background(), run, 65534, 65534)
 	if err != nil || !state.MarkAsJunk {
 		t.Fatalf("state=%+v err=%v", state, err)
 	}
 	line := gotName + " " + strings.Join(gotArgs, " ")
-	for _, want := range []string{"env DNS=localhost /usr/local/cpanel/3rdparty/bin/php -d display_errors=0 -r ",
+	// Roundcube's includes are evaluated without root: a writable include
+	// must not become root code execution.
+	for _, want := range []string{"setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs env DNS=localhost /usr/local/cpanel/3rdparty/bin/php -d display_errors=0 -r ",
 		"RCMAIL_VERSION", "RCUBE_INSTALL_PATH", "config/config.inc.php", "junk_mbox=", "spam_mbox=", "markasjunk="} {
 		if !strings.Contains(line, want) {
 			t.Errorf("command lacks %q: %s", want, line)
@@ -71,8 +73,14 @@ func TestRoundcubeEffectiveRunsPHP(t *testing.T) {
 	failing := func(context.Context, time.Duration, string, ...string) CommandResult {
 		return CommandResult{Stdout: "junk_mbox=INBOX.spam\n", Err: errors.New("exit status 255")}
 	}
-	if _, err := RoundcubeEffective(context.Background(), failing); err == nil {
+	if _, err := RoundcubeEffective(context.Background(), failing, 65534, 65534); err == nil {
 		t.Fatal("failed PHP accepted")
+	}
+	for _, ids := range [][2]int{{0, 65534}, {65534, 0}, {-1, 65534}, {65534, -1}} {
+		gotName = ""
+		if _, err := RoundcubeEffective(context.Background(), run, ids[0], ids[1]); err == nil || gotName != "" {
+			t.Fatalf("ids %v: ran %q err=%v", ids, gotName, err)
+		}
 	}
 }
 

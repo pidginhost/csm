@@ -151,6 +151,7 @@ func (f *fakeHost) host() *Host {
 			}
 			return nil
 		},
+		unprivileged: func() (int, int, error) { return 65534, 65534, nil },
 		controllerGet: func(_ context.Context, socket, p string, _ int64, peer int) ([]byte, error) {
 			if socket != fakeControllerSocket || p != "/symbols" || peer != 979 {
 				return nil, errors.New("unexpected controller request")
@@ -217,7 +218,7 @@ func (f *fakeHost) run(ctx context.Context, limit time.Duration, name string, ar
 		return antispam.CommandResult{Stdout: `{}`}
 	case line == "rspamadm configdump -j actions":
 		return antispam.CommandResult{Stdout: f.dumpActions()}
-	case strings.HasPrefix(line, "env DNS=localhost /usr/local/cpanel/3rdparty/bin/php "):
+	case strings.HasPrefix(line, roundcubePHPCommand+" "):
 		return antispam.CommandResult{Stdout: f.roundcubeState()}
 	case line == "rspamadm configdump -j fuzzy_check":
 		return antispam.CommandResult{Stdout: f.loaded().fuzzyCheck}

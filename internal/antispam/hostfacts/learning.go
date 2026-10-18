@@ -46,7 +46,7 @@ func (c collector) learningFacts(ctx context.Context, f *antispam.HostFacts) {
 	c.logGroups(f)
 	f.FuzzyListening, f.FuzzyListenForeign, f.FuzzyListenErr = c.fuzzyListening(f.Socket.RspamdUID)
 	f.CageFS = c.cageFS(ctx)
-	f.Roundcube = c.roundcube(ctx, *f)
+	f.Roundcube = c.roundcube(*f)
 	f.AccountNames, f.AccountNamesErr = c.accountNames()
 	f.Redis = c.redis(ctx, *f)
 }
@@ -381,7 +381,7 @@ func (c collector) cageFS(ctx context.Context) antispam.CageFSFacts {
 
 // roundcube reads whether cPanel's Roundcube loads inc.d and whether
 // cPanel's PHP can verify the include.
-func (c collector) roundcube(ctx context.Context, f antispam.HostFacts) antispam.RoundcubeFacts {
+func (c collector) roundcube(f antispam.HostFacts) antispam.RoundcubeFacts {
 	var out antispam.RoundcubeFacts
 	for _, t := range f.Targets {
 		if t.Path == antispam.RoundcubeIncludePath {
@@ -403,13 +403,6 @@ func (c collector) roundcube(ctx context.Context, f antispam.HostFacts) antispam
 		out.PHP = info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 	case !errors.Is(err, fs.ErrNotExist):
 		out.Err = errors.Join(out.Err, errors.New("cannot check cPanel's PHP executable"))
-	}
-	// A foreign file at CSM's path is reported with what Roundcube loads.
-	inc := out.Include
-	if inc.Path != "" && !inc.Missing && inc.Err == nil && inc.Content != "" && !antispam.ManagedFor(inc.Kind, inc.Content) && out.PHP && out.IncludeMechanism {
-		if state, err := antispam.RoundcubeEffective(ctx, c.runLimit); err == nil {
-			out.Observed = &state
-		}
 	}
 	return out
 }

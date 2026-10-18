@@ -145,26 +145,26 @@ func TestCollectRoundcubeMechanism(t *testing.T) {
 		t.Fatal(err)
 	}
 	f := antispam.HostFacts{Targets: []antispam.TargetFacts{{Target: antispam.Target{Path: antispam.RoundcubeIncludePath, Kind: antispam.TargetRoundcube}, Missing: true}}}
-	got := c.roundcube(context.Background(), f)
+	got := c.roundcube(f)
 	if got.Err != nil || !got.IncludeMechanism || !got.PHP || got.Include.Path != antispam.RoundcubeIncludePath {
 		t.Fatalf("mechanism present: %+v", got)
 	}
 	if err := os.WriteFile(c.layout.RoundcubeConfig, []byte("<?php\n$config = [];\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := c.roundcube(context.Background(), f); got.IncludeMechanism {
+	if got := c.roundcube(f); got.IncludeMechanism {
 		t.Fatalf("mechanism absent: %+v", got)
 	}
 	if err := os.Chmod(c.layout.CPanelPHP, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := c.roundcube(context.Background(), f); got.PHP {
+	if got := c.roundcube(f); got.PHP {
 		t.Fatal("non-executable php counted")
 	}
 	if err := os.Remove(c.layout.RoundcubeConfig); err != nil {
 		t.Fatal(err)
 	}
-	if got := c.roundcube(context.Background(), f); got.IncludeMechanism || got.Err == nil {
+	if got := c.roundcube(f); got.IncludeMechanism || got.Err == nil {
 		t.Fatalf("missing Roundcube: %+v", got)
 	}
 }
@@ -505,10 +505,10 @@ func TestCollectLearningSymbols(t *testing.T) {
 	}
 }
 
-func TestCollectRoundcubeForeignObserved(t *testing.T) {
-	out := "junk_mbox=Junk\nspam_mbox=\nmarkasjunk=1\n"
-	results := map[string]antispam.CommandResult{}
-	run := &fakeRun{results: results}
+// The collector never runs Roundcube's PHP: a foreign include at CSM's path
+// is reported, not evaluated.
+func TestCollectRoundcubeNeverEvaluates(t *testing.T) {
+	run := &fakeRun{}
 	c, _ := learningCollector(t, run)
 	if err := os.MkdirAll(filepath.Dir(c.layout.RoundcubeConfig), 0o755); err != nil {
 		t.Fatal(err)
@@ -517,26 +517,13 @@ func TestCollectRoundcubeForeignObserved(t *testing.T) {
 	if err := os.WriteFile(c.layout.CPanelPHP, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	c.runLimit = func(_ context.Context, _ time.Duration, name string, args ...string) antispam.CommandResult {
-		if name != "env" || len(args) < 2 || args[0] != "DNS=localhost" {
-			t.Fatalf("ran %s %v", name, args)
-		}
-		return antispam.CommandResult{Stdout: out}
-	}
 	foreign := antispam.TargetFacts{Target: antispam.Target{Path: antispam.RoundcubeIncludePath, Kind: antispam.TargetRoundcube},
 		Content: "<?php\n$config['junk_mbox'] = 'Junk';\n", File: antispam.PathFacts{Path: antispam.RoundcubeIncludePath, Mode: 0o644}}
-	got := c.roundcube(context.Background(), antispam.HostFacts{Targets: []antispam.TargetFacts{foreign}})
-	if got.Observed == nil || got.Observed.JunkMbox != "Junk" {
-		t.Fatalf("observed = %+v", got.Observed)
+	got := c.roundcube(antispam.HostFacts{Targets: []antispam.TargetFacts{foreign}})
+	if got.Err != nil || !got.PHP || !got.IncludeMechanism {
+		t.Fatalf("facts = %+v", got)
 	}
-	owned := foreign
-	owned.Content = antispam.RenderRoundcube()
-	called := false
-	c.runLimit = func(context.Context, time.Duration, string, ...string) antispam.CommandResult {
-		called = true
-		return antispam.CommandResult{}
-	}
-	if got := c.roundcube(context.Background(), antispam.HostFacts{Targets: []antispam.TargetFacts{owned}}); got.Observed != nil || called {
-		t.Fatal("CSM's own include was evaluated by the collector")
+	if len(run.calls) != 0 {
+		t.Fatalf("collector ran %v", run.calls)
 	}
 }

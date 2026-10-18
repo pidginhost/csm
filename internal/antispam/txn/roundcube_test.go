@@ -1,6 +1,7 @@
 package txn
 
 import (
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
@@ -115,7 +116,7 @@ func TestRoundcubeVerifyApplied(t *testing.T) {
 	if r.Roundcube != "" || f.file(antispam.RoundcubeIncludePath) != antispam.RenderRoundcube() {
 		t.Fatalf("result %+v, include %q", r, f.file(antispam.RoundcubeIncludePath))
 	}
-	if f.count("env DNS=localhost /usr/local/cpanel/3rdparty/bin/php") != 1 {
+	if f.count(roundcubePHPCommand) != 1 {
 		t.Fatal("the include was not verified through cPanel's PHP")
 	}
 	if st, _ := readFile(f.root + antispam.RoundcubeIncludePath); st.perm != 0o644 {
@@ -165,7 +166,7 @@ func TestRoundcubeRemoveVerifiesAbsence(t *testing.T) {
 	if f.file(antispam.RoundcubeIncludePath) != "<absent>" || r.Roundcube != "" {
 		t.Fatalf("result %+v", r)
 	}
-	if f.count("env DNS=localhost /usr/local/cpanel/3rdparty/bin/php") != 1 {
+	if f.count(roundcubePHPCommand) != 1 {
 		t.Fatal("removal was not verified")
 	}
 	// Another include still routing Junk to INBOX.spam is reported, and
@@ -243,5 +244,25 @@ func TestRoundcubeOrphanRemovedWithoutRecord(t *testing.T) {
 	wantOK(t, f.host().Remove())
 	if f.file(antispam.RoundcubeIncludePath) != "<absent>" {
 		t.Fatal("remove without a record left the include")
+	}
+}
+
+// Without an unprivileged account CSM never evaluates Roundcube as root; the
+// include is restored and reported.
+func TestApplyRoundcubeWithoutUnprivilegedUser(t *testing.T) {
+	f := newFake(t)
+	s := learningApply(f)
+	s.Roundcube = true
+	h := f.host()
+	h.unprivileged = func() (int, int, error) { return 0, 0, errors.New("no nobody account") }
+	r := h.Apply(s)
+	if !r.OK || !strings.HasPrefix(r.Roundcube, antispam.RoundcubeUnavailable) {
+		t.Fatalf("result = %+v", r)
+	}
+	if f.count("/usr/local/cpanel/3rdparty/bin/php") != 0 {
+		t.Fatal("Roundcube was evaluated without dropping root")
+	}
+	if f.file(antispam.RoundcubeIncludePath) != "<absent>" {
+		t.Fatal("unverified include left in place")
 	}
 }

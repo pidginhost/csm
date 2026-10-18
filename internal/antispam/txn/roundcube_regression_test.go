@@ -11,7 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/antispam"
 )
 
-const roundcubePHPCommand = "env DNS=localhost /usr/local/cpanel/3rdparty/bin/php"
+const roundcubePHPCommand = "setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs env DNS=localhost /usr/local/cpanel/3rdparty/bin/php"
 
 func TestRoundcubeRemovalReportsVerification(t *testing.T) {
 	for _, operation := range []string{"disable", "remove"} {
