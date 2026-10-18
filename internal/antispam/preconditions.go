@@ -171,6 +171,11 @@ type HostFacts struct {
 	Socket          SocketFacts
 	// Targets describe the files CSM writes, in MutationTargets order.
 	Targets []TargetFacts
+	// Controller is the loaded controller worker, parsed from RspamdConfig.
+	// ControllerErr is set when it could not be read, so exposure is unknown.
+	Controller     ControllerConfig
+	ControllerErr  error
+	ControllerHost ControllerHostFacts
 }
 
 // CheckHost evaluates the host preconditions of spec section 6.2 that hold
