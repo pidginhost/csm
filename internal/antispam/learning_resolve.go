@@ -239,7 +239,7 @@ func checkLearningRedis(c *learningCheck, f HostFacts) {
 		c.add(ReasonUnsafe, "the Redis socket is open to other users or carries extra ACL entries")
 		return
 	}
-	if why := redisExposure(r, f.AccountNames, f.AccountNamesErr); why != "" {
+	if why := redisExposure(r, f.ControllerHost.RspamdUser); why != "" {
 		c.add(ReasonUnsafe, why)
 		return
 	}
@@ -260,19 +260,21 @@ func checkLearningRedis(c *learningCheck, f HostFacts) {
 }
 
 // redisExposure judges the Redis socket like a controller socket: its owner
-// and root are trusted, and a group member counts as another user only when
-// it is a cPanel account. Unknown group members count as other users.
-func redisExposure(r RedisFacts, accounts map[string]bool, accountsErr error) string {
+// and root are trusted, and a group member counts as another user unless it
+// is root, redis or rspamd's service user. Shared users such as nobody can
+// run tenant code, so only these names are trusted. Unknown group members
+// count as other users.
+func redisExposure(r RedisFacts, rspamdUser string) string {
 	owner := r.Socket.Socket.UID
 	host := ControllerHostFacts{Sockets: map[string]SocketFacts{r.Endpoint: r.Socket}, RspamdUID: owner, GroupMembers: map[int][]string{}}
-	if r.GroupMembers != nil && accountsErr == nil {
-		tenants := []string{}
+	if r.GroupMembers != nil {
+		others := []string{}
 		for _, m := range r.GroupMembers {
-			if accounts[m] {
-				tenants = append(tenants, m)
+			if m != "root" && m != "redis" && (rspamdUser == "" || m != rspamdUser) {
+				others = append(others, m)
 			}
 		}
-		host.GroupMembers[r.Socket.Socket.GID] = tenants
+		host.GroupMembers[r.Socket.Socket.GID] = others
 	}
 	why := unixExposure(ControllerListener{Unix: true, Path: r.Endpoint}, host)
 	if why == "" {

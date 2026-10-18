@@ -163,11 +163,13 @@ func TestResolveLearningDefiniteFailures(t *testing.T) {
 			f.Redis = RedisFacts{Endpoint: "127.0.0.1:6379", ServiceUID: -1}
 		}, ReasonUnsafe},
 		"RedisGroupMemberIsAccount": {func(f *HostFacts) { f.Redis.GroupMembers = []string{"redis", "alpha"} }, ReasonUnsafe},
-		"RedisGroupUnknown":         {func(f *HostFacts) { f.Redis.GroupMembers = nil }, ReasonUnsafe},
-		"RedisACL":                  {func(f *HostFacts) { f.Redis.Socket.Socket.ExtACL = true }, ReasonUnsafe},
-		"RedisParentACL":            {func(f *HostFacts) { f.Redis.Socket.Parents[2].ExtACL = true }, ReasonUnsafe},
-		"RedisParentWritable":       {func(f *HostFacts) { f.Redis.Socket.Parents[2].Mode = fs.ModeDir | 0o777 }, ReasonUnsafe},
-		"RedisSocketOthers":         {func(f *HostFacts) { f.Redis.Socket.Socket.Mode = fs.ModeSocket | 0o777 }, ReasonUnsafe},
+		// Tenant code can run as shared users such as nobody or mailnull.
+		"RedisGroupMemberShared": {func(f *HostFacts) { f.Redis.GroupMembers = []string{"redis", "_rspamd", "nobody"} }, ReasonUnsafe},
+		"RedisGroupUnknown":      {func(f *HostFacts) { f.Redis.GroupMembers = nil }, ReasonUnsafe},
+		"RedisACL":               {func(f *HostFacts) { f.Redis.Socket.Socket.ExtACL = true }, ReasonUnsafe},
+		"RedisParentACL":         {func(f *HostFacts) { f.Redis.Socket.Parents[2].ExtACL = true }, ReasonUnsafe},
+		"RedisParentWritable":    {func(f *HostFacts) { f.Redis.Socket.Parents[2].Mode = fs.ModeDir | 0o777 }, ReasonUnsafe},
+		"RedisSocketOthers":      {func(f *HostFacts) { f.Redis.Socket.Socket.Mode = fs.ModeSocket | 0o777 }, ReasonUnsafe},
 		"RedisUnprotected": {func(f *HostFacts) {
 			f.Redis.Unprotected, f.Redis.Err = true, errors.New("redis socket is not protected")
 		}, ReasonUnsafe},
