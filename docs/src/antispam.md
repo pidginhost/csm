@@ -579,36 +579,42 @@ Reload rspamd after the change. CSM never edits the controller settings.
 
 ## Learning from Spam folders
 
-`email_protection.antispam.learning.enabled: true` turns on learning from the
-mail users move to their Spam folder. Enabling it consents to CSM reading
-eligible mail in Spam folders and keeping one full message, headers and
-attachments included, for each group of similar reports. The account's Spam
-Filters switch still decides whether an account takes part. This release
-installs and checks the server side only.
+`email_protection.antispam.learning.enabled: true` prepares rspamd for
+learning from Spam folders. It is off by default and requires antispam to
+be enabled. This build installs the server configuration and checks its
+readiness. It does not read Spam folders, retain reported messages or
+publish learned hashes.
+
+Learning setup runs with either value of antispam's `dry_run` setting.
+Enabling it is refused in [observe mode](observe-mode.md).
 
 ### Prerequisites
 
-CSM checks these on every pass. A failed check turns learning off and leaves
-core filtering as it is, with an `antispam_learning` finding naming the
-reason:
+While learning is requested, CSM checks these during reconciliation.
+Definite failures request removal of the learning configuration. Temporary
+probe failures keep an existing installation. Learning findings do not
+disable core filtering; `antispam_learning` names the reason.
 
-- antispam enabled, rspamd 4.2 and Redis 5.0 or 6.2;
+- rspamd 4.2.x and Redis 5.0.x or 6.2.x; other versions are refused;
 - exactly one private controller Unix socket owned by rspamd, mode 0600, in
   directories only root and rspamd can write to, with no extended ACLs, and
-  no other controller listener that users can reach (see
+  no other controller listener granting other users admin or read-only
+  access (see
   [rspamd admin interface](#rspamd-admin-interface));
-- rspamd's control socket private to root and rspamd (the default
-  `/var/lib/rspamd/rspamd.sock mode=0600` is);
+- rspamd's control socket private to root and rspamd, with protected
+  directories and no extended ACLs. Check the effective `control_socket`
+  path and its permissions as well as the controller socket;
 - one Redis server for fuzzy storage, reached only through a Unix socket:
   `port 0` and `tls-port 0`, a socket owned by root, rspamd or the `redis`
-  user, a socket group with no members other than `root`, `redis` and
-  rspamd's user, protected directories, a finite `maxmemory` and
-  `maxmemory-policy noeviction`. Persistence (`appendonly yes`) is
-  recommended: without it CSM warns and rebuilds learned hashes from the
-  stored messages after a Redis restart;
+  service user, no access for other users or extended ACLs, and any group
+  access limited to `root`, `redis` and rspamd's service user. Service users
+  must not be hosting accounts. Parent directories must protect the socket
+  from replacement. Redis needs a positive `maxmemory` and
+  `maxmemory-policy noeviction`. A Redis build without TLS needs no
+  `tls-port` setting;
 - rspamd's log unreadable to other users, by file permissions or by CloudLinux
-  CageFS covering every account with no rspamd log in its skeleton. rspamd
-  logs the digest of each learned message;
+  CageFS. CageFS qualifies only for a file log under `/var/log/rspamd`, with
+  every account confined and that directory absent from its skeleton;
 - no local fuzzy rule and no enabled fuzzy worker of your own. CSM's files
   replace them, so CSM refuses instead. The stock rule for rspamd.com is
   replaced on purpose.
@@ -616,37 +622,75 @@ reason:
 CSM sends the Redis password only to a socket it has verified, and only on a
 connection served by that socket's owner.
 
+Redis persistence is recommended. CSM warns only when both append-only
+persistence (`appendonly yes`) and snapshots (`save`) are disabled. This
+build does not rebuild lost hashes after a Redis restart.
+
 ### What learning installs
 
 - `fuzzy_check.conf` and `worker-fuzzy.inc` in `/etc/rspamd/override.d`, mode
-  0640 for root and rspamd's group: a scan rule `csm` that only reads, a
-  learning rule `csm_learn` that only writes, and a fuzzy worker on
-  `127.0.0.1:11335` that accepts only encrypted traffic from CSM's keys;
+  0640 for root and rspamd's group: local fuzzy scoring and storage;
 - `fuzzy_group.conf` in `/etc/rspamd/local.d`: the `CSM_FUZZY_SPAM` score
-  and a group cap of 10;
-- `csm_learning.lua` in `/etc/rspamd/lua.local.d`: a controller plugin CSM
-  uses to inspect messages;
+  and its group cap;
+- `csm_learning.lua` in `/etc/rspamd/lua.local.d`: a controller plugin for
+  message inspection;
 - `/usr/local/cpanel/base/3rdparty/roundcube/config/inc.d/zz-csm-antispam.inc.php`,
   which points Roundcube's Junk button at the Spam folder. This changes the
-  Junk button for every webmail user on the server. CSM never touches a file
-  of its own at that path, and keeps learning on if Roundcube does not load
-  it, for example because another include sorts later.
+  Junk button for every webmail user on the server, regardless of the
+  account's Spam Filters switch. CSM leaves an operator-owned file at that
+  path alone. The `markasjunk` plugin must already be enabled; CSM does not
+  enable it.
+
+If Roundcube does not load the Junk settings, or cPanel's PHP cannot verify
+them, CSM restores the previous include and reports `roundcube_unavailable`.
+The rest of the learning configuration stays installed. Later passes omit
+CSM's include until the learning configuration changes or CSM restarts.
+A later include can override the settings.
 
 After writing these files CSM checks what rspamd loaded, including the
 effective `CSM_FUZZY_SPAM` weight the controller reports, which can differ
-from the files after a runtime weight change. A mismatch rolls the change
-back, and learning stays off until its configuration changes or CSM
-restarts. Learning-only changes reload rspamd and never rebuild Exim; the
-Roundcube include reloads nothing.
+from the files after a runtime weight change. A failed learning check
+attempts to roll back the change. Later passes omit learning until its
+configuration changes or CSM restarts. Fix the reported cause before
+restarting; reloading unchanged settings does not clear the hold.
 
-Keys live in `/var/lib/csm/antispam/learning/keys`, root only. CSM creates
-them once and never replaces part of a set: a missing key file is reported as
-`state_mismatch` and learning stays off. Do not delete the surviving keys to
-start over, because new keys cannot match hashes learned with the old ones.
+On an otherwise current, completed installation, changing only learning
+reloads rspamd without rebuilding Exim. Changing only the Roundcube include
+reloads neither service. An incomplete installation or Exim configuration
+drift can still require an Exim rebuild.
 
-New learned hashes pause when Redis reaches 75% of `maxmemory` and resume
-below 70%. Turning learning off removes the learning files and the Roundcube
-include and keeps the keys.
+Keys live in `/var/lib/csm/antispam/learning/keys`, root only: directories
+are mode 0700 and key files mode 0600. CSM creates a complete set when none
+exists. It refuses a partial or invalid set with `state_mismatch`, leaving
+learning off. Do not delete the surviving keys to start over: new keys
+cannot match hashes made with the old ones.
+
+The Redis capacity warning starts at 75% of `maxmemory` and clears below
+70%. It leaves installed learning configuration in place; this build has
+no hash publisher to pause.
+
+Turning learning off requests removal of CSM's learning files and Roundcube
+include, while keeping the keys. Conflicts or transaction failures can
+prevent removal. Check findings before assuming learned scoring is gone.
+
+### Learning findings
+
+Each `antispam_learning` finding names one reason. These describe server
+readiness, not a running mailbox learner.
+
+| Reason | Meaning |
+|---|---|
+| `unsupported` | An rspamd or Redis version is outside the supported versions above; learning is disabled. |
+| `unsafe_prerequisite` | Required isolation or Redis settings are unsafe or cannot be established; learning is disabled. |
+| `state_mismatch` | Learning keys could not be created or loaded safely; learning is disabled. |
+| `config_conflict` | Operator configuration conflicts with CSM's learning setup; learning is disabled. |
+| `apply_failed` | A learning check failed during apply; subsequent passes hold learning off until its configuration changes or CSM restarts. |
+| `backend_unavailable` | A probe failed temporarily; existing learning configuration is retained unless a definite failure also requires removal. A first installation waits. |
+| `worker_absent` | The installed fuzzy worker is not listening. Restart rspamd after fixing the cause; CSM leaves the configuration installed. |
+| `redis_capacity` | Redis has reached the capacity guard above; CSM leaves the configuration installed. |
+| `redis_persistence` | Redis has neither append-only persistence nor snapshots enabled; CSM warns without disabling learning. |
+| `roundcube_unavailable` | The Junk-button include could not be installed, verified or removed cleanly. The other learning files are unaffected. |
+| `removal_incomplete` | rspamd still loads CSM's learned scoring while learning is disabled; resolve the reported conflict or removal failure. |
 
 ## Findings
 
@@ -660,7 +704,7 @@ include and keeps the keys.
 | `antispam_controller_open` | Warning | Other users may reach rspamd's admin or read-only interface, or CSM cannot verify isolation. See [rspamd admin interface](#rspamd-admin-interface). |
 | `antispam_feed` | Warning, or Critical when a list answers for everything | A feed or map redirect is off, loaded rules differ, a list misbehaves, or rspamd still fetches maps from rspamd.com. These findings alone do not disable filtering. See [Feeds](#feeds). |
 | `antispam_ip_map` | Warning | The IP map could not be written, or rspamd has not confirmed the current map 5 minutes after a write. Core filtering is unaffected. See [CSM IP map](#csm-ip-map). |
-| `antispam_learning` | Warning | Learning is limited, one finding per reason: `unsupported`, `unsafe_prerequisite`, `state_mismatch` or `config_conflict` turn learning off; `apply_failed` holds it off after rspamd loaded something else; `backend_unavailable` keeps the installed files and pauses new hashes; `worker_absent` and `redis_capacity` pause new hashes; `redis_persistence` and `roundcube_unavailable` change nothing else; `removal_incomplete` means rspamd still loads CSM's learned scoring after learning was turned off. Core filtering is unaffected. See [Learning from Spam folders](#learning-from-spam-folders). |
+| `antispam_learning` | Warning | One finding per learning readiness or removal problem. Core filtering is unaffected. See [Learning findings](#learning-findings). |
 
 While rspamd is down or scans fail, mail is delivered without spam filtering.
 Exim adds no rejection for a scanner failure, and other mail checks keep

@@ -21,7 +21,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
-- Antispam can learn from mail users move to their Spam folder. This release installs the server side; enable it only after reading the learning prerequisites.
+- Antispam can set up rspamd for learning from mail users move to their Spam folder and reports any missing prerequisite.
 - With anti-spam on, CSM warns when other users on the server can reach rspamd's admin interface; hosts using rspamd's default local trust see this after upgrading.
 - Inbound spam filtering on cPanel through an rspamd you install, where each account's Spam Filters switch decides; existing hosts are unchanged until `email_protection.antispam.enabled` is set.
 - Antispam scores subjects that hide invisible characters inside Chinese, Japanese or Korean words, a common way to slip spam past filters.
