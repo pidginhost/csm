@@ -10,9 +10,9 @@
 # installs on every run (openssh-client, jq) for the same reason, and
 # node for the Web UI JavaScript tests the test: job runs.
 #
-# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.27.2-r1
+# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.27.2-r2
 # Build: docker build -f build/Dockerfile.ci-tools \
-#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.27.2-r1 .
+#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.27.2-r2 .
 # Push: triggered manually by build-ci-tools-image job in .gitlab-ci.yml
 #
 # Bump the tag suffix whenever a pinned tool version changes or a new
