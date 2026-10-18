@@ -445,15 +445,12 @@ those zones or of other configured resolvers.
   stay off unless a DNS feed is enabled. `regexp.conf` holds the
   `CSM_INVISIBLE_CJK_SUBJECT` rule: a Subject with an invisible character,
   such as a zero-width space, next to a Chinese, Japanese or Korean letter.
-  It checks decoded text, including MIME-encoded subjects, half-width kana,
-  Hangul jamo, Han iteration marks and supplementary Han and kana letters.
-  Combining accents, tone marks and variation selectors after a CJK letter
-  do not hide the match. Punctuation, unassigned code points and standalone
-  combining marks do not trigger it. Spam uses invisible characters to split
-  words so filters miss them. On its own the rule lifts a message above the
-  default `tag_score` but not to the default `reject_score`; other symbols
-  may raise or lower the final score. Keep your own regexp rules in
-  `/etc/rspamd/override.d/regexp.conf`;
+  It checks the decoded Subject, including MIME-encoded ones, and covers
+  kana, Han and Hangul letters with their half-width and supplementary
+  forms. Punctuation does not trigger it. Spam uses invisible characters to
+  split words so filters miss them. On its own the rule lifts a message
+  above the default `tag_score` but not to the default `reject_score`.
+  Keep your own regexp rules in `/etc/rspamd/override.d/regexp.conf`;
 - the map redirect files and, with a DNS feed, the blocklist files listed
   under [Feeds](#feeds);
 - a completion record in `/var/lib/csm/antispam`.

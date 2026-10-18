@@ -32,7 +32,7 @@ func TestRenderRspamdMatchesVerifiedFiles(t *testing.T) {
 			"  REDIRECTOR_FALSE = \"/etc/rspamd/maps.d/redirectors.inc\";\n" +
 			"  PHISHED_WHITELISTED = \"glob;/etc/rspamd/local.d/maps.d/phishing_whitelist.inc\";\n}\n",
 		"regexp.conf": "# csm-managed-version: 1\nCSM_INVISIBLE_CJK_SUBJECT {\n" +
-			"  re = 'Subject=/" + letters + "[" + letterMarks + "]*" +
+			"  re = 'Subject=/" + letters + `[\x{0300}-\x{036F}\x{302A}-\x{302F}\x{3099}-\x{309A}\x{FE00}-\x{FE0F}\x{FE20}-\x{FE2F}\x{E0100}-\x{E01EF}]*` +
 			"[\\x{200B}-\\x{200D}\\x{2060}\\x{FEFF}]|[\\x{200B}-\\x{200D}\\x{2060}\\x{FEFF}]" + letters + "/u';\n" +
 			"  score = 8.0;\n  description = \"Invisible character inside CJK text in Subject\";\n}\n",
 	}
@@ -94,7 +94,7 @@ var invisibleCJKSubjects = map[string]bool{
 	"\u4e00\u302a\u200b!":       true,  // ideographic tone mark
 	"\uac00\u302e\u200b!":       true,  // Hangul tone mark after a letter
 	"\u4e00\u0301\u3099\u200b!": true,  // multiple combining marks
-	"\u4e00\U0001d165\u200b!":   true,  // supplementary combining mark
+	"\u4e00\U0001d165\u200b!":   false, // musical notation mark, never in CJK text
 	"\ufa6e\u200b":              false, // compatibility ideograph gap
 	"\ufada\u200b":              false, // beyond compatibility ideographs
 	"\U0002a6e0\u200b":          false, // gap between Han extensions
@@ -134,8 +134,8 @@ func TestInvisibleCJKUnicodeClasses(t *testing.T) {
 		if got := letters.MatchString(string(r)); got != wantLetter {
 			t.Fatalf("letter %U = %v, want %v", r, got, wantLetter)
 		}
-		if got, want := marks.MatchString(string(r)), unicode.IsMark(r); got != want {
-			t.Fatalf("mark %U = %v, want %v", r, got, want)
+		if marks.MatchString(string(r)) && !unicode.IsMark(r) {
+			t.Fatalf("%U is in letterMarks but is not a mark", r)
 		}
 	}
 }
