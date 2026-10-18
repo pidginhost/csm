@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -231,6 +233,20 @@ func TestLoadLearningKeysRejectsWrongOwner(t *testing.T) {
 	}
 }
 
+func TestLoadLearningKeysRejectsRelativeSymlink(t *testing.T) {
+	dir := newKeySet(t)
+	p := antispam.LearningKeyPaths(dir)[antispam.KeyFuzzy]
+	if err := os.Rename(p, p+"-saved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(antispam.KeyFuzzy+"-saved", p); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadLearningKeys(dir); err == nil || !strings.Contains(err.Error(), antispam.KeyFuzzy) {
+		t.Fatal("relative key symlink accepted")
+	}
+}
+
 func TestLoadLearningKeysRejectsOversize(t *testing.T) {
 	dir := newKeySet(t)
 	p := antispam.LearningKeyPaths(dir)["prefix"]
@@ -297,7 +313,7 @@ func TestNewFuzzyKeypairParsesJSON(t *testing.T) {
 		}
 		_, err := NewFuzzyKeypair(context.Background(), run)
 		if err == nil || strings.Contains(err.Error(), priv) {
-			t.Fatalf("output %q: err = %v", out, err)
+			t.Fatal("invalid command output accepted or exposed in error")
 		}
 	}
 	failing := func(context.Context, time.Duration, string, ...string) antispam.CommandResult {
@@ -314,5 +330,249 @@ func TestEnsureLearningKeysCreatesMissingParent(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "antispam", "learning")
 	if created, err := EnsureLearningKeys(context.Background(), dir, fakeKeypairs(), rand.Reader); err != nil || !created {
 		t.Fatalf("created=%v err=%v", created, err)
+	}
+}
+
+func TestStoredKeypairRejectsTrailingData(t *testing.T) {
+	data, err := json.Marshal(storedKeypair{Pubkey: base32Key(1), Privkey: base32Key(2)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"}", "]", "\n}", "\n]", "{}", "null", "garbage"} {
+		if _, err := parseStoredKeypair(string(data) + suffix); err == nil {
+			t.Errorf("accepted trailing %q", suffix)
+		}
+	}
+	if _, err := parseStoredKeypair(string(data) + "\n\t "); err != nil {
+		t.Fatal("rejected trailing JSON whitespace")
+	}
+}
+
+func TestEnsureLearningKeysRejectsInvalidGenerationBeforeWriting(t *testing.T) {
+	for _, invalidCall := range []int{1, 2} {
+		t.Run(strconv.Itoa(invalidCall), func(t *testing.T) {
+			ownKeys(t)
+			dir := filepath.Join(t.TempDir(), "learning")
+			next := fakeKeypairs()
+			calls := 0
+			generate := func(ctx context.Context) (antispam.Keypair, error) {
+				calls++
+				kp, err := next(ctx)
+				if calls == invalidCall {
+					kp.Private = antispam.Secret{}
+				}
+				return kp, err
+			}
+			created, err := EnsureLearningKeys(context.Background(), dir, generate, rand.Reader)
+			if err == nil || created {
+				t.Fatal("invalid generated keypair accepted")
+			}
+			assertNoLearningKeyFiles(t, dir)
+		})
+	}
+}
+
+func assertNoLearningKeyFiles(t *testing.T, dir string) {
+	t.Helper()
+	for name, p := range antispam.LearningKeyPaths(dir) {
+		if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s exists after rejected generation", name)
+		}
+	}
+}
+
+func TestEnsureLearningKeysRedactsGeneratorError(t *testing.T) {
+	ownKeys(t)
+	dir := filepath.Join(t.TempDir(), "learning")
+	secret := base32Key(1)
+	generate := func(context.Context) (antispam.Keypair, error) {
+		return antispam.Keypair{}, errors.New("failed: " + secret)
+	}
+	created, err := EnsureLearningKeys(context.Background(), dir, generate, rand.Reader)
+	if err == nil || created {
+		t.Fatal("failed key generation accepted")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Error("generator error exposed key material")
+	}
+	assertNoLearningKeyFiles(t, dir)
+}
+
+func TestLearningKeysRejectSharedTransportCredentials(t *testing.T) {
+	for _, half := range []string{"public", "private", "both"} {
+		t.Run(half, func(t *testing.T) {
+			ownKeys(t)
+			ctx := context.Background()
+			next := fakeKeypairs()
+			read, _ := next(ctx)
+			write, _ := next(ctx)
+			if half == "public" || half == "both" {
+				write.Public = read.Public
+			}
+			if half == "private" || half == "both" {
+				write.Private = read.Private
+			}
+			dir := filepath.Join(t.TempDir(), "learning")
+			calls := 0
+			generate := func(context.Context) (antispam.Keypair, error) {
+				calls++
+				if calls == 1 {
+					return read, nil
+				}
+				return write, nil
+			}
+			if created, err := EnsureLearningKeys(ctx, dir, generate, rand.Reader); err == nil || created {
+				t.Error("shared transport credential generated")
+			}
+			assertNoLearningKeyFiles(t, dir)
+
+			existing := newKeySet(t)
+			paths := antispam.LearningKeyPaths(existing)
+			for name, kp := range map[string]antispam.Keypair{antispam.KeyRead: read, antispam.KeyWrite: write} {
+				data, err := json.Marshal(storedKeypair{Pubkey: kp.Public, Privkey: kp.Private.Reveal()})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(paths[name], data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := readKeyFiles(t, existing)
+			if _, err := LoadLearningKeys(existing); err == nil {
+				t.Error("shared transport credential loaded")
+			}
+			if created, err := EnsureLearningKeys(ctx, existing, fakeKeypairs(), rand.Reader); err == nil || created {
+				t.Error("shared stored transport credential accepted")
+			}
+			for name, after := range readKeyFiles(t, existing) {
+				if !bytes.Equal(before[name], after) {
+					t.Errorf("rejected set changed %s", name)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadLearningKeysRejectsUnsafeLearningDirectory(t *testing.T) {
+	for _, kind := range []string{"writable", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := newKeySet(t)
+			if kind == "writable" {
+				if err := os.Chmod(dir, 0o770); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				link := filepath.Join(t.TempDir(), "learning")
+				if err := os.Symlink(dir, link); err != nil {
+					t.Fatal(err)
+				}
+				dir = link
+			}
+			if _, err := LoadLearningKeys(dir); err == nil {
+				t.Error("unsafe learning directory loaded")
+			}
+			if created, err := EnsureLearningKeys(context.Background(), dir, fakeKeypairs(), rand.Reader); err == nil || created {
+				t.Error("unsafe existing learning directory accepted")
+			}
+		})
+	}
+}
+
+func TestEnsureLearningKeysChecksExactDirectoryModeBeforeGeneration(t *testing.T) {
+	ownKeys(t)
+	dir := filepath.Join(t.TempDir(), "learning")
+	keysDir := filepath.Join(dir, "keys")
+	if err := os.MkdirAll(keysDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(keysDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(keysDir, 0o700) })
+	calls := 0
+	next := fakeKeypairs()
+	generate := func(ctx context.Context) (antispam.Keypair, error) {
+		calls++
+		return next(ctx)
+	}
+	if created, err := EnsureLearningKeys(context.Background(), dir, generate, rand.Reader); err == nil || created {
+		t.Error("incorrect keys directory mode accepted")
+	}
+	if calls != 0 {
+		t.Error("generated credentials before rejecting the directory mode")
+	}
+	assertNoLearningKeyFiles(t, dir)
+}
+
+func TestEnsureLearningKeysDoesNotFollowReplacedKeysDirectory(t *testing.T) {
+	ownKeys(t)
+	dir := filepath.Join(t.TempDir(), "learning")
+	keysDir := filepath.Join(dir, "keys")
+	target := t.TempDir()
+	next := fakeKeypairs()
+	calls := 0
+	generate := func(ctx context.Context) (antispam.Keypair, error) {
+		calls++
+		if calls == 1 {
+			if err := os.Rename(keysDir, keysDir+"-saved"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, keysDir); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return next(ctx)
+	}
+	if created, err := EnsureLearningKeys(context.Background(), dir, generate, rand.Reader); err == nil || created {
+		t.Error("replaced keys directory accepted")
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatal("key material written through a replaced keys directory")
+	}
+}
+
+func TestEnsureLearningKeysKeepsPartialWriteWithoutPrefix(t *testing.T) {
+	ownKeys(t)
+	dir := filepath.Join(t.TempDir(), "learning")
+	paths := antispam.LearningKeyPaths(dir)
+	next := fakeKeypairs()
+	calls := 0
+	generate := func(ctx context.Context) (antispam.Keypair, error) {
+		calls++
+		if calls == 1 {
+			if err := os.Mkdir(paths[antispam.KeyWrite], 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return next(ctx)
+	}
+	created, err := EnsureLearningKeys(context.Background(), dir, generate, rand.Reader)
+	if err == nil || created || !strings.Contains(err.Error(), antispam.KeyWrite) {
+		t.Fatal("write conflict did not stop key creation")
+	}
+	if _, statErr := os.Lstat(paths[antispam.KeyPrefix]); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatal("prefix written before completing the key set")
+	}
+	before := map[string][]byte{}
+	for _, name := range []string{antispam.KeyFuzzy, antispam.KeyShingles, antispam.KeyRead} {
+		data, readErr := os.ReadFile(paths[name])
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		before[name] = data
+	}
+	created, err = EnsureLearningKeys(context.Background(), dir, generate, rand.Reader)
+	if err == nil || created || !strings.Contains(err.Error(), "incomplete") || calls != 2 {
+		t.Fatal("partial set was not refused before generation")
+	}
+	for name, want := range before {
+		got, err := os.ReadFile(paths[name])
+		if err != nil || !bytes.Equal(want, got) {
+			t.Errorf("partial set changed %s", name)
+		}
 	}
 }

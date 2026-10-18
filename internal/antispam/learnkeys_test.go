@@ -52,7 +52,7 @@ func TestLearningKeysNeverPrint(t *testing.T) {
 	out := fmt.Sprintf("%v %+v %#v %s %q %x", k, k, k, k, k, k) + string(data)
 	for _, s := range secrets {
 		if strings.Contains(out, s) {
-			t.Fatalf("formatted keys contain a secret: %s", out)
+			t.Fatal("formatted keys contain a secret")
 		}
 	}
 }

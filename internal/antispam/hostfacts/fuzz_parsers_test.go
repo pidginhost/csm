@@ -1,6 +1,7 @@
 package hostfacts
 
 import (
+	"encoding/json"
 	"io"
 	"net/netip"
 	"os"
@@ -11,6 +12,36 @@ import (
 
 	"golang.org/x/net/dns/dnsmessage"
 )
+
+func FuzzParseStoredKeypair(f *testing.F) {
+	data, err := json.Marshal(storedKeypair{Pubkey: base32Key(1), Privkey: base32Key(2)})
+	if err != nil {
+		f.Fatal(err)
+	}
+	for _, suffix := range []string{"", "\n", "}", "]", "{}", "null"} {
+		f.Add(string(data) + suffix)
+	}
+	f.Add(`{"pubkey":"invalid","privkey":"invalid"}`)
+	f.Add("")
+	f.Fuzz(func(t *testing.T, data string) {
+		kp, err := parseStoredKeypair(data)
+		if err != nil {
+			if kp.Public != "" || kp.Private.Reveal() != "" {
+				t.Fatal("rejected keypair returned key material")
+			}
+			switch err.Error() {
+			case "is not a keypair object", "public key is not a 52-character rspamd base32 key",
+				"private key is not a 52-character rspamd base32 key":
+			default:
+				t.Fatal("keypair error contains unexpected text")
+			}
+			return
+		}
+		if !json.Valid([]byte(data)) || kp.Validate() != nil {
+			t.Fatal("accepted malformed keypair")
+		}
+	})
+}
 
 func FuzzParseGroupMembers(f *testing.F) {
 	f.Add("service:x:974:_rspamd,tenant\n", "primary:x:1001:974::/:/bin/false\n")
