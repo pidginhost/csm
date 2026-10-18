@@ -10,7 +10,7 @@ local CHECK_TIMEOUT = 2.0
 local REPLY_TIMEOUT = 3.0
 
 local function valid_digest(h)
-  return #h == 128 and h:match('^[0-9a-f]+$') ~= nil
+  return type(h) == 'string' and #h == 128 and h:match('^[0-9a-f]+$') ~= nil
 end
 
 -- parse_digests returns the distinct digests and their count, or nil and an
@@ -33,6 +33,20 @@ local function parse_digests(param)
   return list, seen, n
 end
 
+local function valid_reply(r, exact)
+  if type(r.found) ~= 'boolean' or type(r.prob) ~= 'number' or
+      not (r.prob >= 0 and r.prob <= 1) or type(r.value) ~= 'number' or
+      not (r.value >= 0 and r.value < math.huge) or r.value % 1 ~= 0 then
+    return false
+  end
+  if not r.found then
+    -- Storage errors also arrive in successful callbacks, with nonzero values.
+    return r.prob == 0 and r.value == 0 and r.flag == 0
+  end
+  return valid_digest(r.digest) and r.confirmed == true and r.flag == 1 and
+    (not exact or r.digest == r.queried)
+end
+
 local function same_reply(a, b)
   return a.found == b.found and a.digest == b.digest and a.prob == b.prob and
     a.value == b.value and a.flag == b.flag and a.confirmed == b.confirmed
@@ -40,7 +54,7 @@ end
 
 local function inspect(task, conn, req_params)
   local fc = rspamd_plugins.fuzzy_check
-  local explicit, expected, distinct
+  local explicit, expected, distinct = nil, nil, 0
   if req_params.digests ~= nil then
     local list, seen, n = parse_digests(req_params.digests)
     if not list then
@@ -52,10 +66,11 @@ local function inspect(task, conn, req_params)
 
   local results, errors, replied = {}, {}, false
   local by_digest, received = {}, {}
+  local outstanding = 0
   local function reply()
     if replied then return end
     replied = true
-    local complete = #errors == 0 and #results == distinct
+    local complete = #errors == 0 and #results == distinct and outstanding == 0
     conn:send_ucl({ results = results, errors = errors, complete = complete, distinct = distinct })
   end
   local function fail(msg)
@@ -63,7 +78,15 @@ local function inspect(task, conn, req_params)
     reply()
   end
 
-  task:process_message()
+  if type(fc) ~= 'table' then
+    fail('fuzzy_check is not enabled')
+    return
+  end
+  local processed, ok = pcall(task.process_message, task)
+  if not processed or not ok then
+    fail('cannot process message')
+    return
+  end
   if not explicit then
     local ok, hashes = pcall(fc.hex_hashes, task, 1)
     if not ok or type(hashes) ~= 'table' then
@@ -89,6 +112,9 @@ local function inspect(task, conn, req_params)
     reply()
     return
   end
+  for _, n in pairs(expected) do
+    outstanding = outstanding + n
+  end
 
   local function on_reply(success, _addr, res)
     if replied then return end
@@ -98,6 +124,10 @@ local function inspect(task, conn, req_params)
     end
     if type(res) ~= 'table' or type(res.queried) ~= 'string' or expected[res.queried] == nil then
       fail('unexpected reply')
+      return
+    end
+    if not valid_reply(res, explicit ~= nil) then
+      fail('invalid reply')
       return
     end
     local q = res.queried
@@ -111,12 +141,14 @@ local function inspect(task, conn, req_params)
     if by_digest[q] then
       if not same_reply(by_digest[q], r) then
         fail('inconsistent replies')
+        return
       end
-      return
+    else
+      by_digest[q] = r
+      results[#results + 1] = r
     end
-    by_digest[q] = r
-    results[#results + 1] = r
-    if #results == distinct then
+    outstanding = outstanding - 1
+    if outstanding == 0 then
       reply()
     end
   end

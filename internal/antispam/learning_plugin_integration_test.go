@@ -49,7 +49,7 @@ func digest(c byte) string { return strings.Repeat(string(c), 128) }
 // runPlugin runs one scenario. hashes is a Lua table expression for
 // hex_hashes' result, check a Lua function body run as check(cb, digests),
 // params a Lua table expression for the request parameters.
-func runPlugin(t *testing.T, hashes, check, params string) pluginRun {
+func runPlugin(t *testing.T, hashes, check, params string, setup ...string) pluginRun {
 	t.Helper()
 	dir := t.TempDir()
 	plugin := filepath.Join(dir, "csm_learning.lua")
@@ -59,7 +59,7 @@ func runPlugin(t *testing.T, hashes, check, params string) pluginRun {
 	script := filepath.Join(dir, "harness.lua")
 	lua := fmt.Sprintf(`
 local ucl = require 'ucl'
-local timers, sent, calls = {}, {}, {}
+local timers, pending, sent, calls = {}, {}, {}, {}
 local task = {}
 function task:process_message() return true end
 function task:add_timer(_, cb) timers[#timers + 1] = cb end
@@ -75,16 +75,22 @@ rspamd_plugins.fuzzy_check = {
   end,
 }
 local conn = {
-  send_ucl = function(_, body) sent[#sent + 1] = { kind = 'ucl', body = body } end,
+  send_ucl = function(_, body)
+    local parser = ucl.parser()
+    assert(parser:parse_string(ucl.to_format(body, 'json-compact')))
+    sent[#sent + 1] = { kind = 'ucl', body = parser:get_object() }
+  end,
   send_error = function(_, code, msg) sent[#sent + 1] = { kind = 'error', code = code, msg = msg } end,
 }
 dofile(%q)
 assert(rspamd_plugins.csm_learning.webui.inspect.need_task == true)
 assert(rspamd_plugins.csm_learning.webui.inspect.enable == true)
+%s
 rspamd_plugins.csm_learning.webui.inspect.handler(task, conn, %s)
+for _, cb in ipairs(pending) do cb() end
 for _, cb in ipairs(timers) do cb() end
 print(ucl.to_format({ sent = sent, calls = calls }, 'json-compact'))
-`, check, hashes, plugin, params)
+`, check, hashes, plugin, strings.Join(setup, "\n"), params)
 	if err := os.WriteFile(script, []byte(lua), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +122,8 @@ func missReply(d string) string {
 
 func TestLearningPluginDeduplicatesDigests(t *testing.T) {
 	d := digest('a')
-	run := runPlugin(t, fmt.Sprintf("{ csm = { %q, %q } }", d, d), missReply(d)+"\nreturn true", "{}")
+	// Every queried MIME part must reply before the distinct result is complete.
+	run := runPlugin(t, fmt.Sprintf("{ csm = { %q, %q } }", d, d), missReply(d)+"\n"+missReply(d)+"\nreturn true", "{}")
 	body := oneUCL(t, run)
 	if body["complete"] != true || body["distinct"] != float64(1) || len(list(body["results"])) != 1 {
 		t.Fatalf("reply = %v", body)
@@ -125,10 +132,10 @@ func TestLearningPluginDeduplicatesDigests(t *testing.T) {
 	if r["queried"] != d || r["found"] != false || r["value"] != float64(0) {
 		t.Fatalf("result = %v", r)
 	}
-	// A duplicate MIME part may be answered twice; equal replies agree.
-	run = runPlugin(t, fmt.Sprintf("{ csm = { %q, %q } }", d, d), missReply(d)+"\n"+missReply(d)+"\nreturn true", "{}")
-	if body := oneUCL(t, run); body["complete"] != true {
-		t.Fatalf("echoed duplicate: %v", body)
+	// A missing echo leaves the inspection incomplete, even after a valid miss.
+	run = runPlugin(t, fmt.Sprintf("{ csm = { %q, %q } }", d, d), missReply(d)+"\nreturn true", "{}")
+	if body := oneUCL(t, run); body["complete"] != false || !strings.Contains(fmt.Sprint(body["errors"]), "timeout") {
+		t.Fatalf("missing echo: %v", body)
 	}
 }
 
@@ -244,5 +251,110 @@ func TestLearningPluginLoadsWithMarkerLine(t *testing.T) {
 	body := oneUCL(t, run)
 	if body["complete"] != true || body["distinct"] != float64(0) || len(run.Calls) != 0 {
 		t.Fatalf("empty message: %v", body)
+	}
+}
+
+func TestLearningPluginWaitsForAllMIMEReplies(t *testing.T) {
+	a, b := digest('a'), digest('b')
+	hit := fmt.Sprintf("cb(true, nil, { queried = %q, found = true, digest = %q, prob = 1, value = 2, flag = 1, confirmed = true })", a, a)
+	for name, tc := range map[string]struct {
+		hashes, replies string
+		complete        bool
+		distinct        int
+	}{
+		"missing echo":       {fmt.Sprintf("{ csm = { %q, %q } }", a, a), missReply(a), false, 1},
+		"failed echo":        {fmt.Sprintf("{ csm = { %q, %q } }", a, a), missReply(a) + "\ncb(false, nil, 'storage failed')", false, 1},
+		"conflicting echo":   {fmt.Sprintf("{ csm = { %q, %q } }", a, a), missReply(a) + "\n" + hit, false, 1},
+		"late conflict":      {fmt.Sprintf("{ csm = { %q, %q, %q } }", a, b, a), missReply(a) + "\n" + missReply(b) + "\n" + hit, false, 2},
+		"equal echoes":       {fmt.Sprintf("{ csm = { %q, %q } }", a, a), missReply(a) + "\nassert(#sent == 0)\n" + missReply(a), true, 1},
+		"interleaved echoes": {fmt.Sprintf("{ csm = { %q, %q, %q } }", a, b, a), missReply(a) + "\n" + missReply(b) + "\nassert(#sent == 0)\n" + missReply(a), true, 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			check := "pending[#pending + 1] = function()\n" + tc.replies + "\nend\nreturn true"
+			body := oneUCL(t, runPlugin(t, tc.hashes, check, "{}"))
+			if body["complete"] != tc.complete || body["distinct"] != float64(tc.distinct) {
+				t.Fatalf("reply = %v", body)
+			}
+			if tc.complete {
+				if len(list(body["errors"])) != 0 || len(list(body["results"])) != tc.distinct {
+					t.Fatalf("successful inspection = %v", body)
+				}
+			} else if len(list(body["errors"])) == 0 {
+				t.Fatalf("failed inspection has no error: %v", body)
+			}
+		})
+	}
+}
+
+func TestLearningPluginValidatesReplyContents(t *testing.T) {
+	a, b := digest('a'), digest('b')
+	for name, fields := range map[string]string{
+		"missing found":       "prob = 0, value = 0, flag = 0",
+		"wrong found type":    "found = 'false', prob = 0, value = 0, flag = 0",
+		"missing miss value":  "found = false, prob = 0, flag = 0",
+		"storage error":       "found = false, prob = 0, value = 503, flag = 0",
+		"miss probability":    "found = false, prob = 0.25, value = 0, flag = 0",
+		"missing hit digest":  "found = true, prob = 1, value = 2, flag = 1, confirmed = true",
+		"short hit digest":    "found = true, digest = 'abc', prob = 1, value = 2, flag = 1, confirmed = true",
+		"unconfirmed hit":     fmt.Sprintf("found = true, digest = %q, prob = 1, value = 2, flag = 1", a),
+		"wrong flag":          fmt.Sprintf("found = true, digest = %q, prob = 1, value = 2, flag = 2, confirmed = true", a),
+		"negative value":      fmt.Sprintf("found = true, digest = %q, prob = 1, value = -1, flag = 1, confirmed = true", a),
+		"fractional value":    fmt.Sprintf("found = true, digest = %q, prob = 1, value = 1.5, flag = 1, confirmed = true", a),
+		"missing probability": fmt.Sprintf("found = true, digest = %q, value = 2, flag = 1, confirmed = true", a),
+		"large probability":   fmt.Sprintf("found = true, digest = %q, prob = 1.1, value = 2, flag = 1, confirmed = true", a),
+		"nan probability":     fmt.Sprintf("found = true, digest = %q, prob = 0/0, value = 2, flag = 1, confirmed = true", a),
+		"infinite value":      fmt.Sprintf("found = true, digest = %q, prob = 1, value = math.huge, flag = 1, confirmed = true", a),
+	} {
+		t.Run(name, func(t *testing.T) {
+			check := fmt.Sprintf("cb(true, nil, { queried = %q, %s })\nreturn true", a, fields)
+			body := oneUCL(t, runPlugin(t, fmt.Sprintf("{ csm = { %q } }", a), check, "{}"))
+			if body["complete"] != false || len(list(body["errors"])) != 1 || len(list(body["results"])) != 0 {
+				t.Fatalf("invalid reply accepted: %v", body)
+			}
+		})
+	}
+	for _, explicit := range []bool{false, true} {
+		for _, stored := range []string{a, b} {
+			params := "{}"
+			if explicit {
+				params = fmt.Sprintf("{ digests = %q }", a)
+			}
+			check := fmt.Sprintf("cb(true, nil, { queried = %q, found = true, digest = %q, prob = 0.9, value = 2, flag = 1, confirmed = true })\nreturn true", a, stored)
+			body := oneUCL(t, runPlugin(t, fmt.Sprintf("{ csm = { %q } }", a), check, params))
+			want := !explicit || stored == a
+			if body["complete"] != want {
+				t.Fatalf("explicit=%v exact=%v: %v", explicit, stored == a, body)
+			}
+			if want {
+				results := list(body["results"])
+				if len(results) != 1 || len(list(body["errors"])) != 0 {
+					t.Fatalf("valid hit: %v", body)
+				}
+				r := results[0].(map[string]any)
+				if r["queried"] != a || r["digest"] != stored || r["found"] != true || r["confirmed"] != true ||
+					r["prob"] != 0.9 || r["value"] != float64(2) || r["flag"] != float64(1) {
+					t.Fatalf("hit fields changed: %v", r)
+				}
+			} else if len(list(body["errors"])) != 1 || len(list(body["results"])) != 0 {
+				t.Fatalf("exact check accepted near match: %v", body)
+			}
+		}
+	}
+}
+
+func TestLearningPluginReportsProcessingFailure(t *testing.T) {
+	for _, setup := range []string{
+		"function task:process_message() return false end",
+		"function task:process_message() return nil end",
+		"function task:process_message() error('parse failed') end",
+		"rspamd_plugins.fuzzy_check = nil",
+	} {
+		t.Run(setup, func(t *testing.T) {
+			run := runPlugin(t, "{ csm = {} }", "error('check called')", "{}", setup)
+			body := oneUCL(t, run)
+			if body["complete"] != false || body["distinct"] != float64(0) || len(list(body["errors"])) != 1 || len(list(body["results"])) != 0 || len(run.Calls) != 0 {
+				t.Fatalf("processing failure reported as empty message: %v", body)
+			}
+		})
 	}
 }

@@ -187,6 +187,32 @@ func TestRenderRspamdFuzzyToggle(t *testing.T) {
 	}
 }
 
+func TestRenderLearningRejectsInvalidKeys(t *testing.T) {
+	for name, set := range map[string]func(*LearningKeys, string){
+		"fuzzy":         func(k *LearningKeys, v string) { k.Fuzzy = NewSecret(v) },
+		"shingles":      func(k *LearningKeys, v string) { k.Shingles = NewSecret(v) },
+		"prefix":        func(k *LearningKeys, v string) { k.Prefix = v },
+		"read public":   func(k *LearningKeys, v string) { k.Read.Public = v },
+		"read private":  func(k *LearningKeys, v string) { k.Read.Private = NewSecret(v) },
+		"write public":  func(k *LearningKeys, v string) { k.Write.Public = v },
+		"write private": func(k *LearningKeys, v string) { k.Write.Private = NewSecret(v) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, invalid := range []string{"", "\"; injected = true;\n#", "bad\\escape", "bad\x00value"} {
+				s := learningSettings()
+				set(&s.LearningKeys, invalid)
+				files, err := RenderLearning(s)
+				if err == nil || len(files) != 0 {
+					t.Fatal("invalid key produced learning configuration")
+				}
+				if invalid != "" && strings.Contains(err.Error(), invalid) {
+					t.Fatal("validation error disclosed key content")
+				}
+			}
+		})
+	}
+}
+
 func TestManagedContentGenerationChangesWithKeys(t *testing.T) {
 	s := learningSettings()
 	a, err := ManagedContent(s)
