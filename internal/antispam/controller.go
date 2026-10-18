@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/netip"
-	"slices"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -218,8 +218,11 @@ func parseControllerBind(raw string) (ControllerListener, error) {
 // host addresses a trust entry could name, the facts of each Unix
 // controller socket, and the members of each group that could own one.
 type ControllerHostFacts struct {
-	Addrs        []netip.Prefix
-	Sockets      map[string]SocketFacts
+	// Addrs retains each assigned interface address, not its masked subnet.
+	Addrs   []netip.Prefix
+	Sockets map[string]SocketFacts
+	// GroupMembers includes primary and supplementary members. Omit a group
+	// when either inventory is unavailable; an empty list means no members.
 	GroupMembers map[int][]string
 	RspamdUID    int
 	RspamdGID    int
@@ -297,21 +300,31 @@ func trustPrefix(entry string) (netip.Prefix, bool) {
 	if p, err := netip.ParsePrefix(entry); err == nil {
 		return p.Masked(), true
 	}
-	if a, err := netip.ParseAddr(entry); err == nil {
+	// PrefixFrom discards zones, including arbitrary text after '%'. Such
+	// an entry is not an unambiguous address in a secure_ip network map.
+	if a, err := netip.ParseAddr(entry); err == nil && a.Zone() == "" {
 		return netip.PrefixFrom(a, a.BitLen()), true
 	}
 	return netip.Prefix{}, false
 }
 
-// reachable also compares each IPv4 address in its IPv4-mapped IPv6 form:
-// Overlaps never matches across families, and a trust entry may name a host
-// address either way.
+// reachable compares IPv4 addresses in both spellings: netip never matches
+// IPv4 against IPv4-mapped IPv6, and a trust entry may use either.
 func reachable(p netip.Prefix, hostAddrs []netip.Prefix) bool {
-	for _, local := range append(slices.Clone(localPrefixes), hostAddrs...) {
+	for _, local := range localPrefixes {
 		if p.Overlaps(local) {
 			return true
 		}
 		if local.Addr().Is4() && p.Overlaps(netip.PrefixFrom(netip.AddrFrom16(local.Addr().As16()), local.Bits()+96)) {
+			return true
+		}
+	}
+	for _, host := range hostAddrs {
+		// A local process can use the assigned address, not every neighbor
+		// on its subnet. netip treats IPv4 and mapped IPv6 as separate
+		// families, but both spellings identify the same local endpoint.
+		a := host.Addr().Unmap()
+		if p.Contains(a) || a.Is4() && p.Contains(netip.AddrFrom16(a.As16())) {
 			return true
 		}
 	}
@@ -326,21 +339,59 @@ func unixExposure(l ControllerListener, f ControllerHostFacts) string {
 	case s.Missing:
 		return ""
 	}
-	trusted := func(uid int) bool { return uid == 0 || uid == f.RspamdUID }
-	sock := s.Socket
-	perm := sock.Mode.Perm()
-	switch {
-	case !trusted(sock.UID), sock.ExtACL, perm&0o002 != 0:
-		return exposureSocket
-	case perm&0o020 != 0 && f.groupHasOthers(sock.GID):
-		return exposureSocket
+	if s.Socket.Mode.Type() != fs.ModeSocket || len(s.Parents) == 0 {
+		return exposureSocketUnknown
 	}
+	trusted := func(uid int) bool { return uid == 0 || uid == f.RspamdUID }
 	for _, p := range s.Parents {
-		if !trusted(p.UID) || p.ExtACL || p.Mode.Perm()&0o022 != 0 {
+		if !p.Mode.IsDir() {
+			return exposureSocketUnknown
+		}
+		if !trusted(p.UID) || p.ExtACL {
 			return exposureSocketParent
 		}
+		if !f.othersPermit(p, 0o1) {
+			return ""
+		}
+		if f.othersPermit(p, 0o3) {
+			if p.Mode&fs.ModeSticky == 0 {
+				return exposureSocketParent
+			}
+			// Sticky directories protect trusted children from replacement.
+			// Parents omits symlink ownership, so a redirected walk cannot
+			// prove that every child looked up here has a trusted owner.
+			if !directSocketPath(l, s) {
+				return exposureSocketUnknown
+			}
+			// The next directory or socket owner is checked below.
+		}
+	}
+	sock := s.Socket
+	if !trusted(sock.UID) || sock.ExtACL || f.othersPermit(sock, 0o2) {
+		return exposureSocket
 	}
 	return ""
+}
+
+func directSocketPath(l ControllerListener, s SocketFacts) bool {
+	if l.Path != s.Socket.Path {
+		return false
+	}
+	parent := filepath.Dir(s.Socket.Path)
+	for i := len(s.Parents) - 1; i >= 0; i-- {
+		if s.Parents[i].Path != parent {
+			return false
+		}
+		parent = filepath.Dir(parent)
+	}
+	return s.Parents[0].Path == "/"
+}
+
+// othersPermit requires all requested bits in the same permission class:
+// group write and other search do not combine into directory access.
+func (f ControllerHostFacts) othersPermit(p PathFacts, want fs.FileMode) bool {
+	perm := p.Mode.Perm()
+	return perm&want == want || perm>>3&want == want && f.groupHasOthers(p.GID)
 }
 
 // groupHasOthers reports whether a group could hold a tenant: any member

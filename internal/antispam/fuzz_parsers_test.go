@@ -797,3 +797,36 @@ func FuzzParseControllerConfig(f *testing.F) {
 		}
 	})
 }
+
+func FuzzControllerTrustEntries(f *testing.F) {
+	for _, entry := range []string{
+		"203.0.113.10", "203.0.113.129/24", "::ffff:203.0.113.10",
+		"::ffff:203.0.113.129/120", "::ffff:203.0.113.10/95", "::/0",
+		"::1%lo", "2001:db8::10%eth0/128", "file:///trusted.map", "",
+	} {
+		f.Add(entry, uint8(10))
+	}
+	f.Fuzz(func(t *testing.T, entry string, last uint8) {
+		addr := netip.AddrFrom4([4]byte{203, 0, 113, last})
+		facts := hostFacts()
+		facts.Addrs = []netip.Prefix{netip.PrefixFrom(addr, 32)}
+		cfg := tcpController([]string{entry}, true, true)
+		got := ControllerExposure(cfg, facts)
+		facts.Addrs = []netip.Prefix{netip.PrefixFrom(netip.AddrFrom16(addr.As16()), 128)}
+		if mapped := ControllerExposure(cfg, facts); !reflect.DeepEqual(got, mapped) {
+			t.Fatalf("mapped interface changed exposure: %+v != %+v", got, mapped)
+		}
+		prefix, ok := trustPrefix(entry)
+		if !ok {
+			onlyReason(t, got, "localhost:11334", exposureUnresolved)
+			return
+		}
+		if !prefix.IsValid() || prefix != prefix.Masked() || strings.Contains(entry, "%") {
+			t.Fatal("accepted a zoned address or produced a non-canonical prefix")
+		}
+		cfg.TrustEntries = []string{prefix.String()}
+		if canonical := ControllerExposure(cfg, facts); !reflect.DeepEqual(got, canonical) {
+			t.Fatalf("canonical trust changed exposure: %+v != %+v", got, canonical)
+		}
+	})
+}
