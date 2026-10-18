@@ -113,3 +113,25 @@ func TestAdmissionLedgerDisabledRefusalIsAtomic(t *testing.T) {
 		t.Fatalf("repeated refusal changed the ledger: %v", err)
 	}
 }
+
+// Reserved work is past the opt-out check: refusal leaves it and still ends
+// the queued work beside it.
+func TestAdmissionLedgerDisabledLeavesReservedWork(t *testing.T) {
+	f := newLedgerFixture(t)
+	reserved, _ := f.admitted(time.Hour)
+	f.nextGeneration()
+	id := f.queued()
+	before := f.candidateOf(reserved)
+	if before.State != admission.StateReserved {
+		t.Fatalf("fixture candidate is %s, want reserved", before.State)
+	}
+	if err := f.l.RefuseDisabled(func(admission.Candidate) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.candidateOf(reserved); !reflect.DeepEqual(got, before) {
+		t.Fatalf("reserved candidate = %+v, want %+v", got, before)
+	}
+	if c := f.candidateOf(id); c.State != admission.StateRefused || c.Reason != admission.ReasonDisabled {
+		t.Fatalf("queued candidate = %+v", c)
+	}
+}
