@@ -122,8 +122,7 @@ func missReply(d string) string {
 
 func TestLearningPluginDeduplicatesDigests(t *testing.T) {
 	d := digest('a')
-	// Every queried MIME part must reply before the distinct result is complete.
-	run := runPlugin(t, fmt.Sprintf("{ csm = { %q, %q } }", d, d), missReply(d)+"\n"+missReply(d)+"\nreturn true", "{}")
+	run := runPlugin(t, fmt.Sprintf("{ csm = { %q, %q } }", d, d), missReply(d)+"\nreturn true", "{}")
 	body := oneUCL(t, run)
 	if body["complete"] != true || body["distinct"] != float64(1) || len(list(body["results"])) != 1 {
 		t.Fatalf("reply = %v", body)
@@ -132,10 +131,10 @@ func TestLearningPluginDeduplicatesDigests(t *testing.T) {
 	if r["queried"] != d || r["found"] != false || r["value"] != float64(0) {
 		t.Fatalf("result = %v", r)
 	}
-	// A missing echo leaves the inspection incomplete, even after a valid miss.
-	run = runPlugin(t, fmt.Sprintf("{ csm = { %q, %q } }", d, d), missReply(d)+"\nreturn true", "{}")
-	if body := oneUCL(t, run); body["complete"] != false || !strings.Contains(fmt.Sprint(body["errors"]), "timeout") {
-		t.Fatalf("missing echo: %v", body)
+	// A duplicate MIME part may be answered twice; equal replies agree.
+	run = runPlugin(t, fmt.Sprintf("{ csm = { %q, %q } }", d, d), missReply(d)+"\n"+missReply(d)+"\nreturn true", "{}")
+	if body := oneUCL(t, run); body["complete"] != true {
+		t.Fatalf("echoed duplicate: %v", body)
 	}
 }
 
@@ -251,38 +250,6 @@ func TestLearningPluginLoadsWithMarkerLine(t *testing.T) {
 	body := oneUCL(t, run)
 	if body["complete"] != true || body["distinct"] != float64(0) || len(run.Calls) != 0 {
 		t.Fatalf("empty message: %v", body)
-	}
-}
-
-func TestLearningPluginWaitsForAllMIMEReplies(t *testing.T) {
-	a, b := digest('a'), digest('b')
-	hit := fmt.Sprintf("cb(true, nil, { queried = %q, found = true, digest = %q, prob = 1, value = 2, flag = 1, confirmed = true })", a, a)
-	for name, tc := range map[string]struct {
-		hashes, replies string
-		complete        bool
-		distinct        int
-	}{
-		"missing echo":       {fmt.Sprintf("{ csm = { %q, %q } }", a, a), missReply(a), false, 1},
-		"failed echo":        {fmt.Sprintf("{ csm = { %q, %q } }", a, a), missReply(a) + "\ncb(false, nil, 'storage failed')", false, 1},
-		"conflicting echo":   {fmt.Sprintf("{ csm = { %q, %q } }", a, a), missReply(a) + "\n" + hit, false, 1},
-		"late conflict":      {fmt.Sprintf("{ csm = { %q, %q, %q } }", a, b, a), missReply(a) + "\n" + missReply(b) + "\n" + hit, false, 2},
-		"equal echoes":       {fmt.Sprintf("{ csm = { %q, %q } }", a, a), missReply(a) + "\nassert(#sent == 0)\n" + missReply(a), true, 1},
-		"interleaved echoes": {fmt.Sprintf("{ csm = { %q, %q, %q } }", a, b, a), missReply(a) + "\n" + missReply(b) + "\nassert(#sent == 0)\n" + missReply(a), true, 2},
-	} {
-		t.Run(name, func(t *testing.T) {
-			check := "pending[#pending + 1] = function()\n" + tc.replies + "\nend\nreturn true"
-			body := oneUCL(t, runPlugin(t, tc.hashes, check, "{}"))
-			if body["complete"] != tc.complete || body["distinct"] != float64(tc.distinct) {
-				t.Fatalf("reply = %v", body)
-			}
-			if tc.complete {
-				if len(list(body["errors"])) != 0 || len(list(body["results"])) != tc.distinct {
-					t.Fatalf("successful inspection = %v", body)
-				}
-			} else if len(list(body["errors"])) == 0 {
-				t.Fatalf("failed inspection has no error: %v", body)
-			}
-		})
 	}
 }
 

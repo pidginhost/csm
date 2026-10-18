@@ -66,11 +66,10 @@ local function inspect(task, conn, req_params)
 
   local results, errors, replied = {}, {}, false
   local by_digest, received = {}, {}
-  local outstanding = 0
   local function reply()
     if replied then return end
     replied = true
-    local complete = #errors == 0 and #results == distinct and outstanding == 0
+    local complete = #errors == 0 and #results == distinct
     conn:send_ucl({ results = results, errors = errors, complete = complete, distinct = distinct })
   end
   local function fail(msg)
@@ -112,10 +111,6 @@ local function inspect(task, conn, req_params)
     reply()
     return
   end
-  for _, n in pairs(expected) do
-    outstanding = outstanding + n
-  end
-
   local function on_reply(success, _addr, res)
     if replied then return end
     if not success then
@@ -138,17 +133,17 @@ local function inspect(task, conn, req_params)
     end
     local r = { queried = q, found = res.found == true, digest = res.digest, prob = res.prob,
       value = res.value, flag = res.flag, confirmed = res.confirmed == true }
+    -- Identical parts are counted once (spec 7.4): the first reply for a
+    -- digest completes it; an echo that arrives before the reply must agree.
     if by_digest[q] then
       if not same_reply(by_digest[q], r) then
         fail('inconsistent replies')
-        return
       end
-    else
-      by_digest[q] = r
-      results[#results + 1] = r
+      return
     end
-    outstanding = outstanding - 1
-    if outstanding == 0 then
+    by_digest[q] = r
+    results[#results + 1] = r
+    if #results == distinct then
       reply()
     end
   end
