@@ -32,36 +32,7 @@ func TestRspamdInvisibleCJKSubject(t *testing.T) {
 		Want          bool
 	}
 	var samples []sample
-	for subject, want := range map[string]bool{
-		"\u304a\u77e5\u3089\u200b\u305b":                   true,
-		"\u200c\u91cd\u8981\u306a\u304a\u77e5\u3089\u305b": true,
-		"\u4ee4\u548c\ufeff7":                              true,
-		"\uc548\ub0b4\u2060\ub4dc\ub9bd\ub2c8\ub2e4":       true,
-		"\u30ab\u30bf\u30ab\u30ca\u200d!":                  true,
-		"\u304b\u3099\u200b!":                              true, // decomposed kana
-		"\u6f22\U000e0100\u200b!":                          true, // Han variation selector
-		"\uff76\u200b\uff80\uff76\uff85":                   true, // half-width kana
-		"\u200b\uff70":                                     true, // half-width prolonged sound mark
-		"\u30fc\u200b":                                     true, // prolonged sound mark
-		"\u3400\u200b\u3401":                               true, // Han extension A
-		"\U00020000\u200b\U00020001":                       true, // supplementary Han
-		"\u1100\u200b\u1161":                               true, // decomposed Hangul
-		"\u3131\u2060\u314f":                               true, // compatibility jamo
-		"\u304a\u77e5\u3089\u305b\u3067\u3059":             false,
-		"Retur\u200b produs":                               false,
-		"\U0001f468\u200d\U0001f469 family":                false,
-		"\u3010\u200b\u3011":                               false,
-		"Notice\u30fb\u200bupdate":                         false, // middle dot
-		"\u200b\u30a0":                                     false, // double hyphen
-		"\u309b\u200b":                                     false, // spacing dakuten
-		"\u200b\u3099":                                     false, // combining dakuten
-		"\u2f00\u200b":                                     false, // Han radical symbol, not a letter
-		"\u200b\u302e":                                     false, // Hangul tone mark
-		"\u200b\u3040":                                     false, // unassigned code point
-		"\ud7a4\u200b":                                     false, // beyond Hangul syllables
-		"Weekly digest":                                    false,
-		"":                                                 false,
-	} {
+	for subject, want := range invisibleCJKSubjects {
 		for name, header := range map[string]string{
 			"raw":              subject,
 			"base64":           mime.BEncoding.Encode("UTF-8", subject),

@@ -1,8 +1,10 @@
 package antispam
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // ManagedHeader is the first line of every rspamd file CSM owns.
@@ -20,24 +22,53 @@ const disabledModule = ManagedHeader + "\nenabled = false;\n"
 // invisibleCJK matches an invisible character next to a Chinese, Japanese
 // or Korean letter. Spam puts them inside subject words to split them for
 // filters; legitimate subjects use them beside Latin text or inside emoji.
-// Letters are code point ranges, not script properties, so RE2, PCRE and
-// Hyperscan read the same set: kana with the prolonged sound mark and
-// half-width forms, Han with its extensions and compatibility ideographs,
-// Hangul syllables and jamo. Punctuation, radicals and spacing marks stay
-// out. Kana voicing marks and variation selectors may follow a letter.
+// Explicit Unicode 17.0 letter ranges keep RE2, PCRE and Hyperscan independent
+// of the engine's Unicode version. Gaps must stay excluded: they contain
+// unassigned code points, not letters. Combining marks may follow a letter.
 const (
-	cjkLetters = `\x{3041}-\x{3096}\x{309D}-\x{309F}\x{30A1}-\x{30FA}\x{30FC}-\x{30FF}\x{31F0}-\x{31FF}\x{FF66}-\x{FF9D}` +
-		`\x{3400}-\x{4DBF}\x{4E00}-\x{9FFF}\x{F900}-\x{FAFF}\x{20000}-\x{323AF}` +
-		`\x{1100}-\x{11FF}\x{3131}-\x{318E}\x{A960}-\x{A97C}\x{AC00}-\x{D7A3}\x{D7B0}-\x{D7FB}\x{FFA0}-\x{FFDC}`
-	letterMarks    = `\x{3099}\x{309A}\x{FE00}-\x{FE0F}\x{E0100}-\x{E01EF}`
+	cjkLetters = `\x{1100}-\x{11FF}\x{3005}\x{303B}\x{3041}-\x{3096}\x{309D}-\x{309F}` +
+		`\x{30A1}-\x{30FA}\x{30FC}-\x{30FF}\x{3131}-\x{318E}\x{31F0}-\x{31FF}` +
+		`\x{3400}-\x{4DBF}\x{4E00}-\x{9FFF}\x{A960}-\x{A97C}\x{AC00}-\x{D7A3}` +
+		`\x{D7B0}-\x{D7C6}\x{D7CB}-\x{D7FB}\x{F900}-\x{FA6D}\x{FA70}-\x{FAD9}` +
+		`\x{FF66}-\x{FF9D}\x{FFA0}-\x{FFBE}\x{FFC2}-\x{FFC7}\x{FFCA}-\x{FFCF}\x{FFD2}-\x{FFD7}\x{FFDA}-\x{FFDC}` +
+		`\x{16FE3}\x{16FF2}-\x{16FF3}\x{1AFF0}-\x{1AFF3}\x{1AFF5}-\x{1AFFB}\x{1AFFD}-\x{1AFFE}` +
+		`\x{1B000}-\x{1B122}\x{1B132}\x{1B150}-\x{1B152}\x{1B155}\x{1B164}-\x{1B167}` +
+		`\x{20000}-\x{2A6DF}\x{2A700}-\x{2B81D}\x{2B820}-\x{2CEAD}\x{2CEB0}-\x{2EBE0}` +
+		`\x{2EBF0}-\x{2EE5D}\x{2F800}-\x{2FA1D}\x{30000}-\x{3134A}\x{31350}-\x{33479}`
 	invisibleChars = `\x{200B}-\x{200D}\x{2060}\x{FEFF}`
-	invisibleCJK   = `[` + cjkLetters + `][` + letterMarks + `]*[` + invisibleChars + `]|[` + invisibleChars + `][` + cjkLetters + `]`
 )
+
+var (
+	letterMarks  = unicodeMarkRanges()
+	invisibleCJK = `[` + cjkLetters + `][` + letterMarks + `]*[` + invisibleChars + `]|[` + invisibleChars + `][` + cjkLetters + `]`
+)
+
+// Expand marks to code points too, so an older rspamd Unicode table cannot
+// miss a mark that Go recognizes. Strided ranges contain gaps to preserve.
+func unicodeMarkRanges() string {
+	var b strings.Builder
+	appendRange := func(lo, hi, stride uint32) {
+		if stride == 1 {
+			fmt.Fprintf(&b, `\x{%X}-\x{%X}`, lo, hi)
+			return
+		}
+		for r := lo; r <= hi; r += stride {
+			fmt.Fprintf(&b, `\x{%X}`, r)
+		}
+	}
+	for _, span := range unicode.M.R16 {
+		appendRange(uint32(span.Lo), uint32(span.Hi), uint32(span.Stride))
+	}
+	for _, span := range unicode.M.R32 {
+		appendRange(span.Lo, span.Hi, span.Stride)
+	}
+	return b.String()
+}
 
 // subjectRules scores the decoded Subject. On its own the weight lifts an
 // authenticated message over the default tag score, not to the default
 // reject score.
-const subjectRules = ManagedHeader + "\nCSM_INVISIBLE_CJK_SUBJECT {\n" +
+var subjectRules = ManagedHeader + "\nCSM_INVISIBLE_CJK_SUBJECT {\n" +
 	"  re = 'Subject=/" + invisibleCJK + "/u';\n" +
 	"  score = 8.0;\n" +
 	"  description = \"Invisible character inside CJK text in Subject\";\n}\n"
