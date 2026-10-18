@@ -51,6 +51,7 @@ const (
 	CodeEximLog        = "exim_log"
 	CodeSystemd        = "systemd"
 	CodeFeed           = "feed"
+	CodeControllerOpen = "controller_open"
 )
 
 const (

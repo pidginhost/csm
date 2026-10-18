@@ -1,7 +1,10 @@
 package antispam
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -156,4 +159,178 @@ func TestParseControllerRejectsGarbage(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
+}
+
+func hostFacts() ControllerHostFacts {
+	return ControllerHostFacts{
+		Addrs:        []netip.Prefix{netip.MustParsePrefix("203.0.113.10/32"), netip.MustParsePrefix("2001:db8::10/128")},
+		Sockets:      map[string]SocketFacts{},
+		GroupMembers: map[int][]string{},
+		RspamdUID:    990,
+		RspamdGID:    990,
+		RspamdUser:   "_rspamd",
+	}
+}
+
+func tcpController(trust []string, password, enable bool) ControllerConfig {
+	return ControllerConfig{
+		Present:           true,
+		Listeners:         []ControllerListener{{Raw: "localhost:11334", HostPort: "localhost:11334"}},
+		TrustEntries:      trust,
+		PasswordSet:       password,
+		EnablePasswordSet: enable,
+	}
+}
+
+const unixPath = "/run/rspamd/csm-controller.sock"
+
+func unixController() ControllerConfig {
+	return ControllerConfig{Present: true, Listeners: []ControllerListener{{Raw: unixPath + " mode=0600", Unix: true, Path: unixPath, Mode: 0o600}}}
+}
+
+func unixSocket(uid, gid int, perm fs.FileMode, parents ...PathFacts) SocketFacts {
+	if parents == nil {
+		parents = []PathFacts{
+			{Path: "/", UID: 0, Mode: fs.ModeDir | 0o755},
+			{Path: "/run", UID: 0, Mode: fs.ModeDir | 0o755},
+			{Path: "/run/rspamd", UID: 990, GID: 990, Mode: fs.ModeDir | 0o755},
+		}
+	}
+	return SocketFacts{Socket: PathFacts{Path: unixPath, UID: uid, GID: gid, Mode: fs.ModeSocket | perm}, Parents: parents, RspamdUID: 990, PeerUID: -1}
+}
+
+func onlyReason(t *testing.T, got []Problem, key, reason string) {
+	t.Helper()
+	if len(got) != 1 {
+		t.Fatalf("problems = %+v, want exactly one", got)
+	}
+	p := got[0]
+	if p.Code != CodeControllerOpen || p.Severity != Warning || p.Key != key || p.Detail != reason {
+		t.Fatalf("problem = %+v, want %s/%s key %q reason %q", p, CodeControllerOpen, "Warning", key, reason)
+	}
+}
+
+func TestControllerExposureStockLoopbackTrust(t *testing.T) {
+	got := ControllerExposure(tcpController([]string{"127.0.0.1", "::1"}, true, false), hostFacts())
+	onlyReason(t, got, "localhost:11334", "trusted address reachable by local processes")
+}
+
+func TestControllerExposureEmptyTrustStockPassword(t *testing.T) {
+	if got := ControllerExposure(tcpController(nil, true, false), hostFacts()); len(got) != 0 {
+		t.Fatalf("problems = %+v, want none", got)
+	}
+}
+
+func TestControllerExposureNoPasswords(t *testing.T) {
+	onlyReason(t, ControllerExposure(tcpController(nil, false, false), hostFacts()), "localhost:11334", "no passwords configured")
+}
+
+func TestControllerExposureReadOnlyOpen(t *testing.T) {
+	onlyReason(t, ControllerExposure(tcpController(nil, false, true), hostFacts()), "localhost:11334", "read-only access without password")
+}
+
+func TestControllerExposureMappedLoopback(t *testing.T) {
+	onlyReason(t, ControllerExposure(tcpController([]string{"::ffff:127.0.0.1"}, true, true), hostFacts()), "localhost:11334", "trusted address reachable by local processes")
+}
+
+func TestControllerExposureWildcardTrust(t *testing.T) {
+	for _, entry := range []string{"0.0.0.0/0", "::/0"} {
+		onlyReason(t, ControllerExposure(tcpController([]string{entry}, true, true), hostFacts()), "localhost:11334", "trusted address reachable by local processes")
+	}
+}
+
+func TestControllerExposureHostAddressTrusted(t *testing.T) {
+	onlyReason(t, ControllerExposure(tcpController([]string{"203.0.113.10"}, true, true), hostFacts()), "localhost:11334", "trusted address reachable by local processes")
+	onlyReason(t, ControllerExposure(tcpController([]string{"2001:db8::/64"}, true, true), hostFacts()), "localhost:11334", "trusted address reachable by local processes")
+	if got := ControllerExposure(tcpController([]string{"198.51.100.7"}, true, true), hostFacts()); len(got) != 0 {
+		t.Fatalf("remote-only trust entry: problems = %+v, want none", got)
+	}
+}
+
+func TestControllerExposureUnresolvedTrust(t *testing.T) {
+	for _, entry := range []string{"file:///etc/rspamd/trusted.map", "localhost", "/etc/rspamd/trusted.map"} {
+		onlyReason(t, ControllerExposure(tcpController([]string{entry}, true, true), hostFacts()), "localhost:11334", "unresolved trust entry")
+	}
+}
+
+func TestControllerExposurePrivateUnixSocket(t *testing.T) {
+	f := hostFacts()
+	f.Sockets[unixPath] = unixSocket(990, 990, 0o600)
+	if got := ControllerExposure(unixController(), f); len(got) != 0 {
+		t.Fatalf("problems = %+v, want none", got)
+	}
+}
+
+func TestControllerExposureWorldUnixSocket(t *testing.T) {
+	f := hostFacts()
+	f.Sockets[unixPath] = unixSocket(990, 990, 0o666)
+	onlyReason(t, ControllerExposure(unixController(), f), unixPath+" mode=0600", "socket reachable by other users")
+}
+
+func TestControllerExposureForeignOwnerUnixSocket(t *testing.T) {
+	f := hostFacts()
+	f.Sockets[unixPath] = unixSocket(1001, 1001, 0o600)
+	onlyReason(t, ControllerExposure(unixController(), f), unixPath+" mode=0600", "socket reachable by other users")
+}
+
+func TestControllerExposureACLUnixSocket(t *testing.T) {
+	f := hostFacts()
+	s := unixSocket(990, 990, 0o600)
+	s.Socket.ExtACL = true
+	f.Sockets[unixPath] = s
+	onlyReason(t, ControllerExposure(unixController(), f), unixPath+" mode=0600", "socket reachable by other users")
+}
+
+func TestControllerExposureGroupUnixSocket(t *testing.T) {
+	f := hostFacts()
+	f.Sockets[unixPath] = unixSocket(990, 965, 0o660)
+	f.GroupMembers[965] = []string{"_rspamd", "tenant1"}
+	onlyReason(t, ControllerExposure(unixController(), f), unixPath+" mode=0600", "socket reachable by other users")
+	f.GroupMembers[965] = []string{"_rspamd", "root"}
+	if got := ControllerExposure(unixController(), f); len(got) != 0 {
+		t.Fatalf("group of rspamd and root only: problems = %+v, want none", got)
+	}
+}
+
+func TestControllerExposureReplaceableUnixSocket(t *testing.T) {
+	f := hostFacts()
+	f.Sockets[unixPath] = unixSocket(990, 990, 0o600,
+		PathFacts{Path: "/", UID: 0, Mode: fs.ModeDir | 0o755},
+		PathFacts{Path: "/run", UID: 0, Mode: fs.ModeDir | 0o777},
+		PathFacts{Path: "/run/rspamd", UID: 990, GID: 990, Mode: fs.ModeDir | 0o755})
+	onlyReason(t, ControllerExposure(unixController(), f), unixPath+" mode=0600", "socket parent writable by other users")
+}
+
+func TestControllerExposureMissingSocketFacts(t *testing.T) {
+	onlyReason(t, ControllerExposure(unixController(), hostFacts()), unixPath+" mode=0600", "socket facts unavailable")
+	f := hostFacts()
+	f.Sockets[unixPath] = SocketFacts{Err: errors.New("stat failed")}
+	onlyReason(t, ControllerExposure(unixController(), f), unixPath+" mode=0600", "socket facts unavailable")
+}
+
+func TestControllerExposureAbsentController(t *testing.T) {
+	if got := ControllerExposure(ControllerConfig{}, hostFacts()); len(got) != 0 {
+		t.Fatalf("problems = %+v, want none", got)
+	}
+}
+
+func TestControllerExposureOneProblemPerListener(t *testing.T) {
+	c := tcpController([]string{"127.0.0.1"}, false, false)
+	c.Listeners = append(c.Listeners, ControllerListener{Raw: "*:11334", HostPort: "*:11334"})
+	got := ControllerExposure(c, hostFacts())
+	if len(got) != 2 || got[0].Key != "localhost:11334" || got[1].Key != "*:11334" {
+		t.Fatalf("problems = %+v, want one per listener in order", got)
+	}
+}
+
+func TestControllerExposureAbsentSocketFile(t *testing.T) {
+	f := hostFacts()
+	f.Sockets[unixPath] = SocketFacts{Missing: true}
+	if got := ControllerExposure(unixController(), f); len(got) != 0 {
+		t.Fatalf("no socket file to connect to: problems = %+v, want none", got)
+	}
+}
+
+func TestControllerExposureNoPasswordsOutranksUnresolved(t *testing.T) {
+	onlyReason(t, ControllerExposure(tcpController([]string{"localhost"}, false, false), hostFacts()), "localhost:11334", "no passwords configured")
 }

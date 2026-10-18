@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/netip"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -166,4 +168,142 @@ func parseControllerBind(raw string) (ControllerListener, error) {
 		l.Mode = fs.FileMode(mode)
 	}
 	return l, nil
+}
+
+// ControllerHostFacts is what exposure needs beyond the loaded worker:
+// host addresses a trust entry could name, the facts of each Unix
+// controller socket, and the members of each group that could own one.
+type ControllerHostFacts struct {
+	Addrs        []netip.Prefix
+	Sockets      map[string]SocketFacts
+	GroupMembers map[int][]string
+	RspamdUID    int
+	RspamdGID    int
+	RspamdUser   string
+}
+
+// Exposure reasons. They are fixed strings so a finding never carries
+// configuration values.
+const (
+	exposureTrusted       = "trusted address reachable by local processes"
+	exposureUnresolved    = "unresolved trust entry"
+	exposureNoPasswords   = "no passwords configured"
+	exposureReadOnly      = "read-only access without password"
+	exposureSocket        = "socket reachable by other users"
+	exposureSocketParent  = "socket parent writable by other users"
+	exposureSocketUnknown = "socket facts unavailable"
+)
+
+// Local processes reach these through loopback, whatever the bind address.
+var localPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("::ffff:127.0.0.0/104"),
+}
+
+// ControllerExposure returns one Warning per controller listener that a
+// tenant process can use. Every TCP listener is reachable from the host, so
+// trust entries and passwords decide; a Unix listener grants admin to any
+// process that can connect, so its file access decides.
+func ControllerExposure(c ControllerConfig, f ControllerHostFacts) []Problem {
+	if !c.Present {
+		return nil
+	}
+	var out []Problem
+	for _, l := range c.Listeners {
+		var reason string
+		if l.Unix {
+			reason = unixExposure(l, f)
+		} else {
+			reason = tcpExposure(c, f)
+		}
+		if reason != "" {
+			out = append(out, Problem{Code: CodeControllerOpen, Severity: Warning, Key: l.Raw, Detail: reason})
+		}
+	}
+	return out
+}
+
+func tcpExposure(c ControllerConfig, f ControllerHostFacts) string {
+	unresolved := false
+	for _, entry := range c.TrustEntries {
+		prefix, ok := trustPrefix(entry)
+		if !ok {
+			unresolved = true
+			continue
+		}
+		if reachable(prefix, f.Addrs) {
+			return exposureTrusted
+		}
+	}
+	switch {
+	case !c.PasswordSet && !c.EnablePasswordSet:
+		return exposureNoPasswords
+	case unresolved:
+		return exposureUnresolved
+	case !c.PasswordSet:
+		return exposureReadOnly
+	}
+	return ""
+}
+
+// trustPrefix parses a secure_ip entry as an address or CIDR. Maps,
+// hostnames and file paths do not parse: CSM cannot see what they hold.
+func trustPrefix(entry string) (netip.Prefix, bool) {
+	if p, err := netip.ParsePrefix(entry); err == nil {
+		return p.Masked(), true
+	}
+	if a, err := netip.ParseAddr(entry); err == nil {
+		return netip.PrefixFrom(a, a.BitLen()), true
+	}
+	return netip.Prefix{}, false
+}
+
+func reachable(p netip.Prefix, hostAddrs []netip.Prefix) bool {
+	for _, local := range append(slices.Clone(localPrefixes), hostAddrs...) {
+		if p.Overlaps(local) {
+			return true
+		}
+	}
+	return false
+}
+
+func unixExposure(l ControllerListener, f ControllerHostFacts) string {
+	s, ok := f.Sockets[l.Path]
+	switch {
+	case !ok || s.Err != nil:
+		return exposureSocketUnknown
+	case s.Missing:
+		return ""
+	}
+	trusted := func(uid int) bool { return uid == 0 || uid == f.RspamdUID }
+	sock := s.Socket
+	perm := sock.Mode.Perm()
+	switch {
+	case !trusted(sock.UID), sock.ExtACL, perm&0o002 != 0:
+		return exposureSocket
+	case perm&0o020 != 0 && f.groupHasOthers(sock.GID):
+		return exposureSocket
+	}
+	for _, p := range s.Parents {
+		if !trusted(p.UID) || p.ExtACL || p.Mode.Perm()&0o022 != 0 {
+			return exposureSocketParent
+		}
+	}
+	return ""
+}
+
+// groupHasOthers reports whether a group could hold a tenant: any member
+// other than root and the rspamd user, or members CSM could not read.
+func (f ControllerHostFacts) groupHasOthers(gid int) bool {
+	members, ok := f.GroupMembers[gid]
+	if !ok {
+		return true
+	}
+	for _, m := range members {
+		if m != "root" && m != f.RspamdUser {
+			return true
+		}
+	}
+	return false
 }
