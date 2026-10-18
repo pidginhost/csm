@@ -221,6 +221,10 @@ func (l *AdmissionLedger) ForecastSeed() (admission.CeilingState, []admission.Ch
 				if decodeErr != nil {
 					return decodeErr
 				}
+				candidate, candidateErr := loadCandidate(tx, a.Attempt.Candidate)
+				if candidateErr != nil || !c.At.Equal(a.Reserved) || c.Lane != a.Lane || c.Cost != candidate.Key.Kind.CeilingCost() {
+					return admission.ErrCorruptRecord
+				}
 				if a.State == admission.StateObserved {
 					if s, err = s.Uncharge(c.Lane, c.Cost); err != nil {
 						return err

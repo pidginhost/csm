@@ -199,3 +199,64 @@ func TestAdmissionLedgerForecastSeedRejectsDamagedState(t *testing.T) {
 		})
 	}
 }
+
+// A decodable charge can still disagree with its attempt. Neither a preview
+// refund nor a retained genuine charge may seed a forecast from that damage.
+func TestAdmissionLedgerForecastSeedRejectsMismatchedCharges(t *testing.T) {
+	for _, state := range []string{"preview", "unknown"} {
+		for _, mismatch := range []string{"time", "lane", "cost"} {
+			t.Run(state+"/"+mismatch, func(t *testing.T) {
+				f := newLedgerFixture(t)
+				f.begin()
+				if state == "preview" {
+					f.observedArrival("192.0.2.10", "offset=1")
+				} else {
+					f.unknownAt("192.0.2.10", f.wall.Add(time.Hour))
+				}
+				charges := f.charges()
+				if len(charges) != 1 {
+					t.Fatalf("fixture charges = %+v", charges)
+				}
+				charge := charges[0]
+				if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+					s, err := loadCeiling(tx)
+					if err != nil {
+						return err
+					}
+					if s, err = s.Release(charge.Lane, charge.Cost); err != nil {
+						return err
+					}
+					if err = putCeilingState(tx, s); err != nil {
+						return err
+					}
+					key, err := charge.Key()
+					if err != nil {
+						return err
+					}
+					if err = tx.Bucket([]byte(admissionChargesBucket)).Delete(key); err != nil {
+						return err
+					}
+					switch mismatch {
+					case "time":
+						charge.At = charge.At.Add(time.Nanosecond)
+					case "lane":
+						charge.Lane = admission.LaneDirect
+					case "cost":
+						charge.Cost++
+					}
+					return putCharge(tx, charge, true)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				before := f.snapshot()
+				seed, kept, err := f.l.ForecastSeed()
+				if !errors.Is(err, admission.ErrCorruptRecord) || seed != (admission.CeilingState{}) || kept != nil {
+					t.Fatalf("mismatched charge returned a seed: %+v %+v, %v", seed, kept, err)
+				}
+				if !reflect.DeepEqual(before, f.snapshot()) {
+					t.Fatal("failed seed changed stored state")
+				}
+			})
+		}
+	}
+}

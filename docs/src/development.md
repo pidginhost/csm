@@ -911,9 +911,10 @@ never copied over it. The seed leaves out the charges of observe previews,
 which are comparison work, not responses: their units leave the window and
 their credit returns to its lane up to the bucket's cap (`Uncharge`);
 legacy and genuine charges stay. Ceiling, charges and keyed attempts come
-from one read-only transaction; damaged records refuse the seed without
-changing committed state. While the owner forecasts, the ledger also
-stops counting a preview as the answer of its block line
+from one read-only transaction. Each retained attempt's charge must match
+its reservation time, lane and response cost; damaged records refuse the
+seed without changing committed state. While the owner forecasts, the
+ledger also stops counting a preview as the answer of its block line
 (`PreviewsAnswer`), so an address previewed before the session queues its
 next generation on a new observation and is forecast; a verified block,
 or its remembered answer, still answers until its expiry, and challenge
