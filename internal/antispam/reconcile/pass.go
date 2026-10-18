@@ -31,7 +31,7 @@ type Desired struct {
 // DesiredFromConfig reads the antispam settings and mode from cfg.
 func DesiredFromConfig(cfg *config.Config) Desired {
 	as := cfg.EmailProtection.Antispam
-	return Desired{
+	d := Desired{
 		Enabled: as.Enabled,
 		Observe: cfg.ObserveMode(),
 		Settings: antispam.Settings{
@@ -41,6 +41,10 @@ func DesiredFromConfig(cfg *config.Config) Desired {
 			DQSKeyFile: as.Feeds.SpamhausDQSKeyFile,
 		},
 	}
+	if as.Learning.Enabled {
+		d.Settings.Learning, d.Settings.LearningDir = true, antispam.DefaultLearningDir
+	}
+	return d
 }
 
 // Reconciler runs one pass at a time against the host its functions read

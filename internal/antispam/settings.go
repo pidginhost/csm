@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"path"
 	"slices"
+	"strings"
+	"unicode"
 )
 
 const (
@@ -39,7 +41,16 @@ type Settings struct {
 	// content: the caller loads it, and it never travels in a request.
 	DQSKeyFile string
 	DQSKey     Secret
+	// Learning installs CSM's fuzzy rules and worker; LearningDir holds
+	// their keys, read by the worker and never carried in a request.
+	// Roundcube adds the webmail Junk-button include and needs Learning.
+	Learning    bool
+	LearningDir string
+	Roundcube   bool
 }
+
+// DefaultLearningDir holds learning state, inside CSM's state directory.
+const DefaultLearningDir = "/var/lib/csm/antispam/learning"
 
 // Validate checks every value that reaches a rendered file.
 func (s Settings) Validate() error {
@@ -52,7 +63,24 @@ func (s Settings) Validate() error {
 	if err := ValidateFeeds(s.Feeds, s.DQSKeyFile); err != nil {
 		return err
 	}
+	if err := validateLearning(s); err != nil {
+		return err
+	}
 	return ValidateSkipMaps(s.SkipMaps)
+}
+
+func validateLearning(s Settings) error {
+	if s.Roundcube && !s.Learning {
+		return errors.New("roundcube needs learning")
+	}
+	if !s.Learning {
+		return nil
+	}
+	dir := s.LearningDir
+	if !path.IsAbs(dir) || path.Clean(dir) != dir || strings.ContainsFunc(dir, unicode.IsControl) {
+		return errors.New("learning directory must be an absolute clean path")
+	}
+	return nil
 }
 
 // HasFeed reports whether name is among s.Feeds.

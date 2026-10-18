@@ -47,6 +47,11 @@ type Request struct {
 	Feeds      *string `json:"feeds,omitempty"`
 	SkipMaps   *string `json:"skip_maps,omitempty"`
 	DQSKeyFile *string `json:"dqs_key_file,omitempty"`
+	// Learning fields are omitted when learning is off, so older records
+	// keep their form.
+	Learning    *bool   `json:"learning,omitempty"`
+	LearningDir *string `json:"learning_dir,omitempty"`
+	Roundcube   *bool   `json:"roundcube,omitempty"`
 }
 
 // ApplyRequest is the request that installs s.
@@ -72,6 +77,14 @@ func ApplyRequest(s Settings) Request {
 		v := s.DQSKeyFile
 		r.DQSKeyFile = &v
 	}
+	if s.Learning {
+		learning, dir := true, s.LearningDir
+		r.Learning, r.LearningDir = &learning, &dir
+	}
+	if s.Roundcube {
+		roundcube := true
+		r.Roundcube = &roundcube
+	}
 	return r
 }
 
@@ -84,6 +97,7 @@ var requestKeys = map[string]bool{
 	"operation": true, "enabled": true, "dry_run": true,
 	"rspamd_socket": true, "reject_score": true, "tag_score": true,
 	"feeds": true, "skip_maps": true, "dqs_key_file": true,
+	"learning": true, "learning_dir": true, "roundcube": true,
 }
 
 // splitNames reads a comma-separated request field.
@@ -105,7 +119,7 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 	if err != nil {
 		return Request{}, Settings{}, err
 	}
-	for _, key := range []string{"feeds", "skip_maps", "dqs_key_file"} {
+	for _, key := range []string{"feeds", "skip_maps", "dqs_key_file", "learning_dir"} {
 		if value, present := fields[key]; present {
 			if _, ok := value.(string); !ok {
 				return Request{}, Settings{}, errors.New("request has a value of the wrong type")
@@ -128,6 +142,11 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 			Feeds: splitNames(r.Feeds), SkipMaps: splitNames(r.SkipMaps)}
 		if r.DQSKeyFile != nil {
 			s.DQSKeyFile = *r.DQSKeyFile
+		}
+		s.Learning = r.Learning != nil && *r.Learning
+		s.Roundcube = r.Roundcube != nil && *r.Roundcube
+		if r.LearningDir != nil {
+			s.LearningDir = *r.LearningDir
 		}
 		if err := s.Validate(); err != nil {
 			return Request{}, Settings{}, err

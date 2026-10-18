@@ -441,3 +441,18 @@ func TestPassNamesTheChecksItSettled(t *testing.T) {
 		})
 	}
 }
+
+func TestDesiredFromConfigLearning(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, RspamdSocket: antispam.DefaultSocket, RejectScore: 15, TagScore: 6,
+		Learning: config.AntispamLearningConfig{Enabled: true}}
+	got := DesiredFromConfig(cfg).Settings
+	if !got.Learning || got.LearningDir != antispam.DefaultLearningDir || got.Roundcube {
+		t.Fatalf("learning on: %+v", got)
+	}
+	cfg.EmailProtection.Antispam.Learning.Enabled = false
+	got = DesiredFromConfig(cfg).Settings
+	if got.Learning || got.LearningDir != "" || got.Roundcube {
+		t.Fatalf("learning off: %+v", got)
+	}
+}

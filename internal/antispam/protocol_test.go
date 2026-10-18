@@ -252,3 +252,58 @@ func TestDecodeRequestEmptyFeedFields(t *testing.T) {
 		t.Fatalf("expected default settings, got %+v, %v", s, err)
 	}
 }
+
+func TestRequestRoundTripLearning(t *testing.T) {
+	want := defaults(true)
+	want.Learning, want.LearningDir, want.Roundcube = true, DefaultLearningDir, true
+	data, err := json.Marshal(ApplyRequest(want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > MaxRequestBytes {
+		t.Fatalf("request is %d bytes", len(data))
+	}
+	if !strings.Contains(string(data), `"learning":true,"learning_dir":"/var/lib/csm/antispam/learning","roundcube":true`) {
+		t.Fatalf("wire form = %s", data)
+	}
+	_, got, err := DecodeRequest(data)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("DecodeRequest = %+v, %v", got, err)
+	}
+	if _, _, err := DecodeRequest([]byte(strings.Replace(string(data), `"roundcube"`, `"Roundcube"`, 1))); err == nil {
+		t.Fatal("case-folded key accepted")
+	}
+	for _, bad := range []string{`"learning":"true"`, `"learning_dir":7`, `"roundcube":1`, `"learning_keys":"x"`} {
+		body := validApply[:len(validApply)-1] + `,` + bad + `}`
+		if _, _, err := DecodeRequest([]byte(body)); err == nil {
+			t.Fatalf("accepted %s", bad)
+		}
+	}
+	off, _ := json.Marshal(ApplyRequest(defaults(true)))
+	if strings.Contains(string(off), "learning") || strings.Contains(string(off), "roundcube") {
+		t.Fatalf("request without learning changed format: %s", off)
+	}
+}
+
+func TestSettingsValidateLearningDir(t *testing.T) {
+	for _, dir := range []string{"", "relative/learning", "/var/lib/csm/../learning", "/var/lib/csm/learning/", "/var/lib/csm//learning", "/var/lib/csm/learn\ning"} {
+		s := defaults(true)
+		s.Learning, s.LearningDir = true, dir
+		if err := s.Validate(); err == nil {
+			t.Fatalf("LearningDir %q accepted", dir)
+		}
+	}
+	s := defaults(true)
+	s.Learning, s.LearningDir = true, DefaultLearningDir
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSettingsValidateRoundcubeNeedsLearning(t *testing.T) {
+	s := defaults(true)
+	s.Roundcube = true
+	if err := s.Validate(); err == nil {
+		t.Fatal("Roundcube without Learning accepted")
+	}
+}
