@@ -899,6 +899,8 @@ another attempt's recovery hold do not delay their refusal or generate
 capacity notices. The check visits only the bounded durable queue and
 leaves allowed work's scheduling turns and capacity checks intact. Refusing
 queued work never releases an earlier attempt's charge or recovery hold.
+Startup and ceiling reload also refuse disabled work before inventory or
+queue revalidation can report expired evidence as a withheld response.
 
 Under a dry-run policy the owner forecasts instead of running. It selects
 work with `SchedulePreview`, whatever the live budgets, and ends each pick

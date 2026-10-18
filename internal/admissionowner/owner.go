@@ -440,6 +440,11 @@ func (o *Owner) start() error {
 	if _, _, err = settleLedger(o.ledger); err != nil {
 		return fmt.Errorf("settling outstanding attempts: %w", err)
 	}
+	// Opted-out work must end silently before startup revalidation can
+	// report its expired evidence or changed ownership as a response gap.
+	if err = o.refuseDisabled(); err != nil {
+		return err
+	}
 	o.refreshInventory()
 	generation, err := o.ledger.BeginIngress()
 	if err != nil {
@@ -616,6 +621,9 @@ func (o *Owner) reloadCeiling() error {
 	// A forecast takes the new limit without new credit.
 	if o.shadow != nil && o.shadow.setLimit(limit) != nil {
 		o.dropForecast()
+	}
+	if err := o.refuseDisabled(); err != nil {
+		return err
 	}
 	if err := o.ledger.Revalidate(); err != nil {
 		return err
