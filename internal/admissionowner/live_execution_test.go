@@ -257,6 +257,11 @@ func TestLiveExecutionGuardRejectsWrites(t *testing.T) {
 		"parenthesized assignment": "package admissionowner\nvar liveExecution = false\nfunc f() { (liveExecution) = true }\n",
 		"parenthesized pointer":    "package admissionowner\nvar liveExecution = false\nfunc f() *bool { return &(liveExecution) }\n",
 		"pointer":                  "package admissionowner\nvar liveExecution = false\nfunc f() *bool { return &liveExecution }\n",
+		"increment":                "package admissionowner\nvar liveExecution = false\nfunc f() { liveExecution++ }\n",
+		"parenthesized decrement":  "package admissionowner\nvar liveExecution = false\nfunc f() { (liveExecution)-- }\n",
+		"range key":                "package admissionowner\nvar liveExecution = false\nfunc f() { for liveExecution = range map[bool]int{true: 1} {} }\n",
+		"range value":              "package admissionowner\nvar liveExecution = false\nfunc f() { for _, liveExecution = range []bool{true} {} }\n",
+		"parenthesized range":      "package admissionowner\nvar liveExecution = false\nfunc f() { for _, (liveExecution) = range []bool{true} {} }\n",
 		"on":                       "package admissionowner\nvar liveExecution = true\n",
 	} {
 		f, err := parser.ParseFile(token.NewFileSet(), "x.go", src, parser.SkipObjectResolution)
@@ -291,6 +296,16 @@ func liveExecutionUses(path string, f *ast.File) (int, []string) {
 				if id, ok := unparen(lhs).(*ast.Ident); ok && id.Name == "liveExecution" {
 					violations = append(violations, fmt.Sprintf("%s: assigns liveExecution", path))
 				}
+			}
+		case *ast.RangeStmt:
+			for _, lhs := range []ast.Expr{n.Key, n.Value} {
+				if id, ok := unparen(lhs).(*ast.Ident); ok && id.Name == "liveExecution" {
+					violations = append(violations, fmt.Sprintf("%s: assigns liveExecution in a range", path))
+				}
+			}
+		case *ast.IncDecStmt:
+			if id, ok := unparen(n.X).(*ast.Ident); ok && id.Name == "liveExecution" {
+				violations = append(violations, fmt.Sprintf("%s: changes liveExecution with %s", path, n.Tok))
 			}
 		case *ast.UnaryExpr:
 			if id, ok := unparen(n.X).(*ast.Ident); ok && n.Op == token.AND && id.Name == "liveExecution" {
