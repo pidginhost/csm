@@ -2,9 +2,124 @@ package admissionowner
 
 import (
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/admission"
 )
+
+// A capacity-blocked head in the same scope must not hide a disabled
+// lower-priority response from policy revalidation.
+func TestOwnerDisabledWorkBehindBlockedHead(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	policy := validPolicy(1)
+	policy.CeilingLimit = 2
+	policy.Allows = func(c admission.Candidate) bool {
+		addr, _ := c.Key.Target.Addr()
+		return addr.String() != "192.0.2.10"
+	}
+	o, _, mono := policyOwner(t, f, blocks, policy)
+	queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.11")
+	turn(t, o)
+	mono.advance(batchEvery)
+	on, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.12")
+	off, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	turn(t, o)
+	if c := candidate(t, o, off); c.State != admission.StateRefused || c.Reason != admission.ReasonDisabled || c.Attempts != 0 {
+		t.Fatalf("disabled work behind a blocked head = %s/%s, attempts %d", c.State, c.Reason, c.Attempts)
+	}
+	if c := candidate(t, o, on); c.State != admission.StateQueued || c.Reason != admission.ReasonCeiling || c.Attempts != 0 {
+		t.Fatalf("allowed work bypassed capacity: %+v", c)
+	}
+}
+
+// Retry pacing delays another execution, not refusal after an opt-out.
+func TestOwnerDisabledRetryDoesNotWaitForBackoff(t *testing.T) {
+	for _, dry := range []bool{false, true} {
+		t.Run(map[bool]string{false: "live", true: "forecast"}[dry], func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			first := validPolicy(1)
+			first.DryRun = dry
+			o, reader, _ := policyOwner(t, f, blocks, first)
+			id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+			if err := o.do(func() error {
+				_, a, _, err := o.ledger.Reserve(id, admission.LaneGeneral, o.now.Add(time.Hour))
+				if err != nil {
+					return err
+				}
+				_, _, err = o.ledger.Finish(a.Attempt.ID, admission.DispositionFailed)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			before := candidate(t, o, id)
+			if before.State != admission.StateQueued || !before.NotBefore.After(f.host.now()) {
+				t.Fatalf("fixture is not a waiting retry: %+v", before)
+			}
+			charged := ceiling(t, o)
+			next := first
+			next.Epoch++
+			next.Allows = func(admission.Candidate) bool { return false }
+			reader.publish(next)
+			turn(t, o)
+			if c := candidate(t, o, id); c.State != admission.StateRefused || c.Reason != admission.ReasonDisabled || c.Attempts != before.Attempts || !c.ExpiresAt.Equal(before.ExpiresAt) {
+				t.Fatalf("disabled retry = %+v", c)
+			}
+			checks, applies := blocks.calls()
+			if ceiling(t, o) != charged || len(checks) != 0 || len(applies) != 0 || len(blocks.snapshots) != 0 || f.db.DryRunBlocksCount() != 0 {
+				t.Fatal("disabled retry changed capacity or reached the engine")
+			}
+		})
+	}
+}
+
+// Refusing disabled work must not require or consume the scheduler's live
+// budget, including when another response spends its final unit.
+func TestOwnerDisabledWorkNeedsNoSchedulingCredit(t *testing.T) {
+	for _, live := range []bool{false, true} {
+		for _, spent := range []bool{false, true} {
+			t.Run(map[bool]string{false: "preview", true: "live"}[live]+"/"+map[bool]string{false: "last_unit", true: "spent"}[spent], func(t *testing.T) {
+				withLiveExecution(t, live)
+				p := withTestRegistry(t)
+				f := newOwnerFixture(t)
+				blocks := newFakeBlocks()
+				policy := validPolicy(1)
+				policy.CeilingLimit = 2
+				policy.Allows = func(c admission.Candidate) bool {
+					addr, _ := c.Key.Target.Addr()
+					return addr.String() != "192.0.2.10"
+				}
+				o, _, mono := policyOwner(t, f, blocks, policy)
+				on, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")
+				if spent {
+					turn(t, o)
+					if ceiling(t, o).Budget(admission.LaneGeneral) != 0 {
+						t.Fatal("fixture still has general credit")
+					}
+					mono.advance(batchEvery)
+				}
+				off, _ := queuedAt(t, o, p, f.host, admission.SeverityCritical, "192.0.2.10")
+				turn(t, o)
+				if c := candidate(t, o, off); c.State != admission.StateRefused || c.Reason != admission.ReasonDisabled || c.Attempts != 0 {
+					t.Errorf("disabled work = %s/%s, attempts %d", c.State, c.Reason, c.Attempts)
+				}
+				want := admission.StateObserved
+				if live {
+					want = admission.StateVerified
+				}
+				if c := candidate(t, o, on); c.State != want || c.Attempts != 1 {
+					t.Errorf("allowed work = %s/%s, attempts %d; want %s/1", c.State, c.Reason, c.Attempts, want)
+				}
+				if used := liveUsed(t, o); used != 1 {
+					t.Errorf("ceiling charged %d units, want 1", used)
+				}
+			})
+		}
+	}
+}
 
 // Admission-gates section 8, row 1: queued work whose response the
 // configuration no longer allows ends refused as disabled at its next

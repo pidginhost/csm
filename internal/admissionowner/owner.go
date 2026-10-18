@@ -902,6 +902,9 @@ func (o *Owner) runTurn(selecting bool) error {
 // pick is previewed. The schedule has already deferred the work its
 // budgets cannot serve and revalidated each pick under the same state.
 func (o *Owner) serve() error {
+	if err := o.refuseDisabled(); err != nil {
+		return err
+	}
 	picks, err := scheduleLedger(o.ledger, previewLimits, o.answers())
 	if err != nil {
 		return fmt.Errorf("scheduling the queue: %w", err)
@@ -913,12 +916,6 @@ func (o *Owner) serve() error {
 			return fmt.Errorf("reading pick %s: %w", p.ID, readErr)
 		}
 		pick := execPick{pick: p, c: c}
-		if o.executable() && o.policyErr == nil && !o.policy.Allows(c) {
-			if err = o.endPick(pick, admission.ReasonDisabled); err != nil {
-				return err
-			}
-			continue
-		}
 		switch {
 		case !o.executable() || c.Key.Kind == admission.KindChallenge:
 			err = o.preview(pick)

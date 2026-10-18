@@ -893,6 +893,13 @@ run. Most of these switches change only with an epoch; challenge, incident
 and central settings change only at a restart, which is why every pick is
 tested rather than every epoch.
 
+Disabled responses end together before capacity selection, including
+challenge previews. Spent ceiling or history budgets, retry backoff and
+another attempt's recovery hold do not delay their refusal or generate
+capacity notices. The check visits only the bounded durable queue and
+leaves allowed work's scheduling turns and capacity checks intact. Refusing
+queued work never releases an earlier attempt's charge or recovery hold.
+
 Under a dry-run policy the owner forecasts instead of running. It selects
 work with `SchedulePreview`, whatever the live budgets, and ends each pick
 as a dry run with a prediction: no attempt, charge, history, audit row or

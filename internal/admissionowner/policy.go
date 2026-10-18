@@ -189,6 +189,17 @@ func (o *Owner) expiry(c admission.Candidate) time.Duration {
 	return o.opts.Expiry(c)
 }
 
+// refuseDisabled runs before selection: an opt-out must not wait for the
+// capacity, retry timer or recovery hold that gates a new response.
+func (o *Owner) refuseDisabled() error {
+	if o.executable() && o.policyErr == nil {
+		if err := o.ledger.RefuseDisabled(o.policy.Allows); err != nil {
+			return fmt.Errorf("refusing disabled responses: %w", err)
+		}
+	}
+	return nil
+}
+
 // heldCause is why automatic execution is held, or nil.
 func (o *Owner) heldCause() error {
 	if o.policyErr != nil {

@@ -76,6 +76,10 @@ func (o *Owner) noteForecastError(e forecastError) {
 // kind ends as not_modelled; a challenge keeps its comparison preview.
 // Nothing is reserved, charged or applied, and the engine is only read.
 func (o *Owner) forecast() (err error) {
+	if err = o.refuseDisabled(); err != nil {
+		o.noteForecastError(forecastLedgerUnavailable)
+		return err
+	}
 	if err = o.beginForecast(); err != nil {
 		return err
 	}
@@ -102,8 +106,6 @@ func (o *Owner) forecast() (err error) {
 		}
 		pick := execPick{pick: p, c: c}
 		switch {
-		case !o.policy.Allows(c):
-			err = o.endPick(pick, admission.ReasonDisabled)
 		case c.Key.Kind == admission.KindBlockIP:
 			blocks = append(blocks, pick)
 		case c.Key.Kind == admission.KindChallenge:
