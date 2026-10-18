@@ -40,6 +40,9 @@ const (
 	// ending or a candidate the panel's verdict allowed. Its first such
 	// record writes it, with the same buckets.
 	admissionSchemaShadow = 9
+	// admissionSchemaDisabled is the schema of a ledger holding a candidate
+	// refused because the configuration turned its response off.
+	admissionSchemaDisabled = 10
 )
 
 var (
@@ -98,6 +101,10 @@ type AdmissionLedger struct {
 	revalidated bool
 
 	inv atomic.Pointer[ledgerInventory]
+
+	// previewsEnd is set while observe previews do not answer their
+	// episodes: a forecasting owner sets it (section 8, row 3).
+	previewsEnd atomic.Bool
 
 	// held is the recovery hold: how many intents name each target key.
 	// Every intent belongs to an unresolved attempt (opening proves it), so
@@ -273,7 +280,7 @@ func OpenAdmissionLedger(db *DB, reg *admission.Registry) (*AdmissionLedger, err
 				if err := upgradeLedgerToSchemaSeven(tx); err != nil {
 					return err
 				}
-			case len(schema) == 1 && schema[0] >= admissionSchemaVersion && schema[0] <= admissionSchemaShadow:
+			case len(schema) == 1 && schema[0] >= admissionSchemaVersion && schema[0] <= admissionSchemaDisabled:
 				if existing != len(admissionBuckets) {
 					return admission.ErrCorruptRecord
 				}

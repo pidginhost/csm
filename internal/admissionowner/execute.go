@@ -83,6 +83,9 @@ var refusalReasons = map[firewall.BlockRefusal]admission.Reason{
 // its charge and the ledger retries it after its backoff, and an unknown
 // outcome holds its address until recovery retires it.
 func (o *Owner) execute(picks []execPick) error {
+	if !o.mayExecute() {
+		return nil
+	}
 	engine := o.opts.Blocks()
 	// A degraded clock cannot bound a lease: the admission time stays at
 	// its high-water mark while the wall clock is behind it or disagrees
@@ -374,6 +377,9 @@ var logVerdictAllow = func(id admission.CandidateID, check string, r verdictResu
 // serve at once. When checking members next, keep the hold until that
 // check succeeds too: a probe alone cannot reset a failing turn's wait.
 func (o *Owner) ready(engine BlockEngine, checking bool) bool {
+	if !o.mayExecute() {
+		return false
+	}
 	if engine == nil {
 		if !errors.Is(o.execHold, errNoEngine) {
 			o.hold(errNoEngine, false)

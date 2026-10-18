@@ -13,6 +13,7 @@ import (
 )
 
 // Freeze the existing preview wording independently of the mode-aware renderer.
+// Held execution warns while admission previews or forecasts (ruling C2).
 func baselineOwnerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 	o := a.Owner
 	if o == nil {
@@ -75,7 +76,7 @@ func baselineOwnerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 	}
 	if o.ExecutionHeld != "" {
 		rows = append(rows, DoctorCheck{
-			Name: "admission execution", Status: "fail", Message: "automatic blocks are held: " + o.ExecutionHeld,
+			Name: "admission execution", Status: "warn", Message: "automatic blocks are held: " + o.ExecutionHeld + "; " + admission.PreviewUnaffected,
 			Fix: "admission probes the firewall from one second, backing off to once a minute and keeps uncertain actions held; check the firewall rows and the storage under the state directory",
 		})
 	}
@@ -117,10 +118,7 @@ func TestDoctorOwnerModeMatrix(t *testing.T) {
 			r := &want[i]
 			r.Message = strings.ReplaceAll(r.Message, admission.PreviewUnaffected, admission.ExecutionAffected)
 			r.Fix = strings.ReplaceAll(r.Fix, ", which existing blocking still uses", "")
-			if r.Name == "admission execution" {
-				r.Message += "; " + admission.ExecutionAffected
-			}
-			if r.Status == "warn" && (r.Name == "admission owner" || r.Name == "admission ledger damage" || (r.Name == "admission clock" && a.Owner.TickError != "")) {
+			if r.Status == "warn" && (r.Name == "admission owner" || r.Name == "admission execution" || r.Name == "admission ledger damage" || (r.Name == "admission clock" && a.Owner.TickError != "")) {
 				r.Status = "fail"
 			}
 		}

@@ -40,6 +40,9 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - With central blocking on, an address reported by several trusted nodes can now be blocked when local evidence agrees; an explicit `block_threshold` is kept.
 - After upgrade, IP response previews use a new storage format; going back to 4.3.0 or earlier stops the previews, while live blocking keeps working.
 - The phpanel agent profile no longer sets account roots; the agent supplies them to match the panel's home directory layout.
+- Dry-run hosts with the firewall on show automatic block capacity forecasts in status, diagnostics and findings history; their dry-run block count now covers forecast examples, not every skipped block.
+- Verdict callback panels can receive an additional request for an eligible dry-run block, using their configured signature settings.
+- With the firewall on, queued automatic responses the configuration no longer allows, for example after turning blocking off, are refused instead of forecast or previewed.
 
 ### Fixed
 

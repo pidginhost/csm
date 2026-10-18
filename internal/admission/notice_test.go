@@ -46,6 +46,8 @@ func TestGapNoticeClassifiesEvents(t *testing.T) {
 		{"critical allowed by the panel", GapEnded, ReasonVerdictAllow, 0, crit, NoticeWithheld},
 		{"c3 allowed by the panel", GapEnded, ReasonVerdictAllow, 0, c3, NoticeWithheldWarning},
 		{"c2 allowed by the panel", GapEnded, ReasonVerdictAllow, 0, c2, 0},
+		{"critical turned off", GapEnded, ReasonDisabled, 0, crit, 0},
+		{"c3 turned off", GapEnded, ReasonDisabled, 0, c3, 0},
 		{"critical dry run", GapOutcome, 0, DispositionDryRun, crit, 0},
 	} {
 		if got := GapNotice(tc.event, tc.reason, tc.outcome, tc.tier); got != tc.want {
@@ -108,6 +110,7 @@ func TestNoticeKeysValidateAndEncode(t *testing.T) {
 		"long check":                {Kind: NoticeWithheld, Reason: ReasonPolicy, Check: strings.Repeat("c", 65)},
 		"unknown effect":            {Kind: NoticeWithheld, Reason: ReasonPolicy, Effect: effectEnd},
 		"existing effect is no gap": {Kind: NoticeWithheld, Reason: ReasonExistingEffect},
+		"turned off is no gap":      {Kind: NoticeWithheld, Reason: ReasonDisabled},
 		"unknown reason":            {Kind: NoticeWithheld, Reason: reasonEnd},
 		"outcome with a reason":     {Kind: NoticeWithheld, Reason: ReasonStale, Outcome: DispositionUnknown},
 		"capacity for an outcome":   {Kind: NoticeCapacity, Outcome: DispositionFailed},
@@ -310,7 +313,7 @@ func TestNoticeRecordRoundTripsAndRefusesTampering(t *testing.T) {
 func TestNoticeRecordFitsItsSlot(t *testing.T) {
 	far := time.Unix(0, math.MaxInt64).UTC()
 	r := NoticeRecord{
-		Key:   NoticeKey{Kind: NoticeWithheldWarning, Reason: reasonEnd - 1, Check: strings.Repeat("c", 64), Effect: effectEnd - 1},
+		Key:   NoticeKey{Kind: NoticeWithheldWarning, Reason: ReasonVerdictAllow, Check: strings.Repeat("c", 64), Effect: effectEnd - 1},
 		Count: math.MaxUint64, Acked: math.MaxUint64 - MaxNoticeExamples - 1, First: far, Last: far, Sent: far,
 	}
 	for i := uint64(0); i < MaxNoticeExamples; i++ {

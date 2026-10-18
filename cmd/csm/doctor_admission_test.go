@@ -144,19 +144,28 @@ func TestDoctorOwnerFixesKeepTheStateDatabaseWhileAdmissionPreviews(t *testing.T
 	}
 }
 
-// Held execution fails its own row with the cause (P8); without a hold
-// there is no row.
+// Held execution has its own row naming the cause (P8). It fails once
+// admission executes and warns while existing blocking still decides
+// every block; without a hold there is no row.
 func TestDoctorReportsHeldExecution(t *testing.T) {
 	at := time.Now().UTC()
-	view := func(held string) *health.AdmissionStatus {
+	view := func(held string, executing bool) *health.AdmissionStatus {
 		return &health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{Admitting: true},
-			Owner: &health.AdmissionOwner{ExecutionHeld: held}}
+			Owner: &health.AdmissionOwner{ExecutionHeld: held, Executing: executing}}
 	}
-	row, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view("applying a block batch: blocked sets unavailable"))), "admission execution")
-	if !ok || row.Status != "fail" || !strings.Contains(row.Message, "blocked sets unavailable") || row.Fix == "" {
-		t.Fatalf("admission execution = %+v (%v)", row, ok)
+	for _, tc := range []struct {
+		executing      bool
+		status, ending string
+	}{
+		{false, "warn", admission.PreviewUnaffected},
+		{true, "fail", admission.ExecutionAffected},
+	} {
+		row, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view("applying a block batch: blocked sets unavailable", tc.executing))), "admission execution")
+		if !ok || row.Status != tc.status || !strings.Contains(row.Message, "blocked sets unavailable") || !strings.HasSuffix(row.Message, "; "+tc.ending) || row.Fix == "" {
+			t.Fatalf("executing %v: admission execution = %+v (%v)", tc.executing, row, ok)
+		}
 	}
-	if _, ok = doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view(""))), "admission execution"); ok {
+	if _, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view("", true))), "admission execution"); ok {
 		t.Fatal("execution that is not held printed a row")
 	}
 }
@@ -208,8 +217,9 @@ func TestDoctorRendersAHealthyDryRun(t *testing.T) {
 }
 
 // Spec 3.8: model limits, modelled waits, a held forecast and lost or
-// stale examples warn; they never hide a real safety failure, which still
-// fails its own row.
+// stale examples warn; they never hide held execution, which keeps its own
+// row. Existing blocking still decides while admission forecasts, so that
+// row warns too.
 func TestDoctorWarnsOnDryRunModelProblems(t *testing.T) {
 	at := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -241,7 +251,7 @@ func TestDoctorWarnsOnDryRunModelProblems(t *testing.T) {
 		if !ok || row.Status != "warn" || !strings.Contains(row.Message, tc.text) || row.Fix == "" {
 			t.Errorf("%s: %s = %+v (%v), want a warning naming %q with a fix", tc.name, tc.row, row, ok, tc.text)
 		}
-		if held, ok := doctorCheckNamed(report, "admission execution"); !ok || held.Status != "fail" {
+		if held, ok := doctorCheckNamed(report, "admission execution"); !ok || held.Status != "warn" {
 			t.Errorf("%s: a dry-run warning hid held execution: %+v", tc.name, held)
 		}
 	}

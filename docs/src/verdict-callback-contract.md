@@ -16,7 +16,16 @@ Two parts of CSM call the endpoint, told apart by the request `source`:
 
 - `auto_response`: each automatic block of a single address, after local
   validation and before the `auto_response.dry_run` gate. `severity` is
-  `"auto"`. An `allow` verdict skips that block.
+  `"auto"`. An `allow` verdict skips that block. In dry run with the
+  firewall on outside observe mode, the admission ledger also asks for
+  locally eligible block attempts, so one block can bring an additional request. Its requests carry
+  `CSM auto-block: <check>` as the `reason`, run up to four at a time and
+  honour `allow_unsigned` and
+  `require_response_signature`; an `allow` ends the forecast without an
+  example. Existing effects, protected targets and full capacity need no
+  owner request; retries ask anew and reload discards old policy answers.
+  The v1 request contains no dry-run field, and request totals are not an
+  exact multiple of legacy calls.
 - `bpf_enforcement`: only when `bpf_enforcement.verdict_callback: true` is
   also set. CSM asks about the destination of an outbound connection the BPF
   hook denied, or would have denied in dry-run. `reason` is
@@ -97,7 +106,7 @@ skew window. A legacy response that omits both fields keeps working.
 ```
 
 - `ip` (required): the address CSM is about to block, or for `bpf_enforcement` the connection's destination.
-- `reason` (required): short reason string (`mail_bruteforce`, `wp_login_bruteforce`, etc.).
+- `reason` (required): short reason string, for example `CSM auto-block: wp_login_bruteforce`.
 - `severity` (optional): `"auto"` for auto-response decisions; the finding's severity for `bpf_enforcement`.
 - `source` (optional): `"auto_response"` or `"bpf_enforcement"`; see [Callers](#callers).
 - `nonce` (always sent): a 128-bit hex random value unique to this call. The panel MUST echo it verbatim when response signing is on. When response signing is disabled, CSM still checks the value if the panel echoes it.

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,9 +17,9 @@ import (
 	"github.com/pidginhost/csm/internal/verdict"
 )
 
-// Admission accepts only signed, request-bound allows, even if the legacy
-// callback has explicitly opted out of signing.
-func TestExecutionPolicyRequiresSignedAllows(t *testing.T) {
+// Admission preserves the configured signature policy and the client
+// replay checks, including explicit signing and unsigned-response opt-outs.
+func TestExecutionPolicyPreservesSignaturePolicy(t *testing.T) {
 	previous := config.Active()
 	t.Cleanup(func() { config.SetActive(previous) })
 	key := make([]byte, 32)
@@ -30,10 +31,12 @@ func TestExecutionPolicyRequiresSignedAllows(t *testing.T) {
 	for _, tc := range []struct {
 		name, answer          string
 		secret, signed, bound bool
+		requireSignature      bool
 		want                  verdict.ErrorClass
 	}{
-		{name: "unsigned rollout", answer: "allow", want: verdict.ClassSignature},
-		{name: "signature opt-out", answer: "allow", secret: true, bound: true, want: verdict.ClassSignature},
+		{name: "unsigned rollout", answer: "allow"},
+		{name: "signature opt-out", answer: "allow", secret: true, bound: true},
+		{name: "signature required", answer: "allow", secret: true, bound: true, requireSignature: true, want: verdict.ClassSignature},
 		{name: "unbound signed allow", answer: "allow", secret: true, signed: true, want: verdict.ClassReplay},
 		{name: "signed allow", answer: "allow", secret: true, signed: true, bound: true},
 	} {
@@ -65,6 +68,9 @@ func TestExecutionPolicyRequiresSignedAllows(t *testing.T) {
 			if tc.secret {
 				body += "    hmac_secret_env: CSM_ADMISSION_TEST_HMAC\n"
 			}
+			if tc.requireSignature {
+				body = strings.Replace(body, "require_response_signature: false", "require_response_signature: true", 1)
+			}
 			publishTestConfig(t, body)
 			policy := (&Daemon{}).executionPolicy()
 			resp, err := policy.AskVerdict(context.Background(), "192.0.2.10", "CSM auto-block: ssh_brute")
@@ -72,7 +78,7 @@ func TestExecutionPolicyRequiresSignedAllows(t *testing.T) {
 				t.Fatalf("error class = %q, want %q", verdict.ClassOf(err), tc.want)
 			}
 			if tc.want == "" && resp.Verdict != "allow" {
-				t.Fatal("signed allow was not accepted")
+				t.Fatal("configured allow was not accepted")
 			}
 		})
 	}

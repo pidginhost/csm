@@ -34,7 +34,7 @@ func (o *Owner) beginForecast() error {
 		o.noteForecastError(forecastSessionID)
 		return fmt.Errorf("naming a forecast session: %w", err)
 	}
-	ceiling, charges, err := o.ledger.CeilingSnapshot()
+	ceiling, charges, err := o.ledger.ForecastSeed()
 	if err != nil {
 		o.noteForecastError(forecastLedgerUnavailable)
 		return fmt.Errorf("reading the ceiling for a forecast: %w", err)
@@ -76,6 +76,10 @@ func (o *Owner) noteForecastError(e forecastError) {
 // kind ends as not_modelled; a challenge keeps its comparison preview.
 // Nothing is reserved, charged or applied, and the engine is only read.
 func (o *Owner) forecast() (err error) {
+	if err = o.refuseDisabled(); err != nil {
+		o.noteForecastError(forecastLedgerUnavailable)
+		return err
+	}
 	if err = o.beginForecast(); err != nil {
 		return err
 	}

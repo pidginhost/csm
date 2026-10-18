@@ -67,7 +67,7 @@ const MaxOutcomeKeys = (int(queueEventEnd-EventRefused)*int(reasonEnd-ReasonCeil
 
 // MaxOutcomeBucketBytes bounds one encoded bucket: every key at its
 // largest count.
-const MaxOutcomeBucketBytes = 31 << 10
+const MaxOutcomeBucketBytes = 33 << 10
 
 // OutcomeCounts are saturating counts by OutcomeKey. The zero value is
 // empty and ready to use.

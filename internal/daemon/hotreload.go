@@ -246,7 +246,9 @@ func publishActiveConfig(cfg *config.Config, source string) {
 }
 
 func purgeDryRunBlocksIfAutoResponseLive(cfg *config.Config, source string) {
-	if cfg == nil || cfg.AutoResponseDryRunEnabled() || ownerKeepsDryRunExamples.Load() {
+	// Startup publishes the config before the owner starts. Reserve its
+	// examples now so even that first purge uses bounded owner maintenance.
+	if cfg == nil || cfg.AutoResponseDryRunEnabled() || ownerKeepsDryRunExamples.Load() || admissionUsesFirewall(cfg) {
 		return
 	}
 	if sdb := store.Global(); sdb != nil {

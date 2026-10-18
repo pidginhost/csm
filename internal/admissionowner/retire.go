@@ -23,7 +23,7 @@ const retireRecheck = time.Minute
 // second to a minute; a held attempt waits a minute on its own, so a held
 // batch cannot starve the intents behind it.
 func (o *Owner) retire() error {
-	if o.opts.Blocks == nil || monoNow().Before(o.retireAt) {
+	if !o.mayRetire() || monoNow().Before(o.retireAt) {
 		return nil
 	}
 	// Nothing noted runs the pass; otherwise it waits until the noted

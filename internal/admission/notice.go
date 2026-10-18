@@ -144,7 +144,9 @@ func GapNotice(event GapEvent, reason Reason, outcome Disposition, tier Tier) No
 		return NoticeWithheld
 	case GapEnded:
 		switch {
-		case reason == ReasonExistingEffect:
+		case reason == ReasonExistingEffect, reason == ReasonDisabled:
+			// An existing effect answers the work; the operator turned
+			// disabled work off. Neither withholds a wanted response.
 			return 0
 		case reason.Capacity():
 			if critical || c3 {
@@ -213,7 +215,7 @@ func (k NoticeKey) validate() error {
 		if k.Reason != 0 || k.Kind == NoticeCapacity || (k.Outcome != DispositionFailed && k.Outcome != DispositionUnknown) {
 			return bad("notice outcome is not a withheld response")
 		}
-	case !k.Reason.Valid() || k.Reason == ReasonExistingEffect:
+	case !k.Reason.Valid() || k.Reason == ReasonExistingEffect || k.Reason == ReasonDisabled:
 		return bad("notice reason is not a response gap")
 	case k.Reason.Capacity() != (k.Kind == NoticeCapacity):
 		return bad("notice kind does not match its reason")

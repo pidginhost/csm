@@ -191,11 +191,7 @@ func (d *Daemon) prepareFirewall(effectiveFirewall *firewall.FirewallConfig, ops
 	// engine treats dry-run as off and the block lands live, defeating
 	// the operator's stated intent. Wiring before exposure removes the
 	// boot-time race window entirely.
-	engine.SetDryRunRecorder(func(ip, reason string, timeout time.Duration) {
-		if db := store.Global(); db != nil {
-			db.RecordDryRunBlock(ip, reason, timeout)
-		}
-	})
+	engine.SetDryRunRecorder(recordLegacyDryRunBlock)
 	engine.SetDryRunEnabledFunc(d.autoResponseDryRunEnabled)
 	engine.SetVerdictAsker(d.askVerdictCallback)
 	// The auto-block path skips published-crawler IPs so a high-volume bot is

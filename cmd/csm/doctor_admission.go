@@ -107,12 +107,8 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 		})
 	}
 	if o.ExecutionHeld != "" {
-		message := "automatic blocks are held: " + o.ExecutionHeld
-		if o.Executing {
-			message += "; " + closing
-		}
 		rows = append(rows, DoctorCheck{
-			Name: "admission execution", Status: "fail", Message: message,
+			Name: "admission execution", Status: outage, Message: "automatic blocks are held: " + o.ExecutionHeld + "; " + closing,
 			Fix: "admission probes the firewall from one second, backing off to once a minute and keeps uncertain actions held; check the firewall rows and the storage under the state directory",
 		})
 	}

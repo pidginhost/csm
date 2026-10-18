@@ -15,7 +15,7 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 - **IPv6 dual-stack** with separate sets
 - **Commit-confirmed safety** - Juniper-style auto-rollback timer
 - **Infra IP protection** - refuses to block infrastructure IPs
-- **Auto-response dry-run** - safety default that records intended blocks without touching nftables
+- **Auto-response dry-run** - safety default that forecasts eligible IP blocks and retains bounded examples without applying them
 - **Verdict callback** - optional advisory hook to the panel before each auto-block (allow / block / attach metadata)
 - **cphulk integration** - unblock flushes cphulk too
 - **Audit trail** - JSONL log with 10MB rotation
@@ -338,10 +338,11 @@ Auto-block calls require `firewall.enabled: true` because they go through the fi
    infra-IP safety checks. When a secret is configured, CSM rejects
    unsigned callback replies by default. The panel can downgrade to
    `allow` (audit-only), attach `tenant_id` for downstream correlation,
-   or add a note. CSM fails open on hook errors. Wire contract:
+   or add a note. CSM fails open on hook errors. In dry run, admission
+   also asks the panel about each block it forecasts. Wire contract:
    [verdict callback contract](verdict-callback-contract.md).
 
-2. **`auto_response.dry_run`** - when true (or absent; safety default), `BlockIP()` records the intended block to bbolt and returns success without touching nftables. Manual `csm firewall ...` operator commands bypass via `BlockIPForce` and always apply. Verify with `csm firewall status` after policy changes; "Recently Blocked" timestamps newer than the last restart confirm live mode. See [Auto-response - Dry-run safety default](auto-response.md#dry-run-safety-default).
+2. **`auto_response.dry_run`** - when true (or absent; safety default), `BlockIP()` skips the automatic IP mutation. With the forecast owner active, only committed predictions that pass capacity checks create new bounded examples; a legacy dry-run outcome alone does not guarantee an example. Manual `csm firewall ...` operator commands bypass via `BlockIPForce` and always apply. Verify with `csm firewall status` after policy changes; "Recently Blocked" timestamps newer than the last restart confirm live mode. See [Auto-response - Dry-run safety default](auto-response.md#dry-run-safety-default).
 
 Subnet blocks refuse the default route and any range that contains an
 infrastructure IP, a resolved infra hostname, a local host address, a

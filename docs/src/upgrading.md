@@ -113,7 +113,15 @@ Then `systemctl daemon-reload && systemctl restart csm`. Verify with `systemctl 
 
 ## Auto-response dry-run safety default
 
-`auto_response.dry_run` defaults to `true` when the key is absent. The daemon records every IP it would have blocked but does not touch nftables. If your `auto_response:` block sets `enabled: true` and `block_ips: true` but does **not** set `dry_run`, **add `dry_run: false` explicitly** before relying on auto-block. Verify with:
+The first disabled queued response raises admission state to schema 10,
+which older binaries that read only schema 9 cannot open; they keep blocking
+with the legacy budget. In this release admission only previews and forecasts:
+it creates no genuine charge, attempt or unknown hold beyond the state legacy
+blocking keeps. Preview accounting is not enforcement state. This is not a
+downgrade guard for a ledger that has executed real actions. Never delete the
+state database or replace it with an older copy to get past the format check.
+
+`auto_response.dry_run` defaults to `true` when the key is absent. Automatic IP blocks are not applied. With the firewall on outside observe mode, the dry-run count holds retained forecast examples, including older entries until pruning; it is not active occupancy or a count of all attempted blocks. If your `auto_response:` block sets `enabled: true` and `block_ips: true` but does **not** set `dry_run`, **add `dry_run: false` explicitly** before relying on auto-block. Verify with:
 
 ```bash
 csm status --json | jq '.auto_response_dry_run, .dry_run_blocks'

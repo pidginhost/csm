@@ -425,6 +425,7 @@ func (o *Owner) start() error {
 		}
 		o.ledger = l
 	}
+	o.syncPreviews()
 	// An existing ledger records elapsed time under its saved limit before
 	// a new limit applies (O13).
 	reading, err := o.readTick()
@@ -438,6 +439,11 @@ func (o *Owner) start() error {
 	// handle reserves anything: nothing is dispatched again.
 	if _, _, err = settleLedger(o.ledger); err != nil {
 		return fmt.Errorf("settling outstanding attempts: %w", err)
+	}
+	// Opted-out work must end silently before startup revalidation can
+	// report its expired evidence or changed ownership as a response gap.
+	if err = o.refuseDisabled(); err != nil {
+		return err
 	}
 	o.refreshInventory()
 	generation, err := o.ledger.BeginIngress()
@@ -616,6 +622,9 @@ func (o *Owner) reloadCeiling() error {
 	if o.shadow != nil && o.shadow.setLimit(limit) != nil {
 		o.dropForecast()
 	}
+	if err := o.refuseDisabled(); err != nil {
+		return err
+	}
 	if err := o.ledger.Revalidate(); err != nil {
 		return err
 	}
@@ -788,14 +797,14 @@ func (o *Owner) drainHeld() (err error) {
 // schedule period, as a failing notice delivery is.
 func (o *Owner) schedule() {
 	o.expireVerdicts()
-	probeDue := o.execHold != nil && !monoNow().Before(o.probeAt)
-	// Without an engine there is nothing to probe. Once one starts, the
-	// old hold's deadline must not delay its first turn.
-	if errors.Is(o.execHold, errNoEngine) {
-		probeDue = o.opts.Blocks() != nil
+	probeDue := false
+	if o.executing() && o.policyErr == nil && o.execHold != nil {
+		probeDue = !monoNow().Before(o.probeAt)
+		// A newly published engine need not wait for the old retry deadline.
+		if errors.Is(o.execHold, errNoEngine) {
+			probeDue = o.opts.Blocks() != nil
+		}
 	}
-	// Only a valid live policy may probe or repair a retained engine hold.
-	probeDue = probeDue && o.policyErr == nil && !o.forecasting()
 	// A policy change can resume held work or probes without an arrival,
 	// reload or ledger deadline, including after an idle dry run.
 	policyDue := o.executable() && o.opts.Policy().Epoch > o.seenEpoch
@@ -902,6 +911,9 @@ func (o *Owner) runTurn(selecting bool) error {
 // pick is previewed. The schedule has already deferred the work its
 // budgets cannot serve and revalidated each pick under the same state.
 func (o *Owner) serve() error {
+	if err := o.refuseDisabled(); err != nil {
+		return err
+	}
 	picks, err := scheduleLedger(o.ledger, previewLimits, o.answers())
 	if err != nil {
 		return fmt.Errorf("scheduling the queue: %w", err)
@@ -918,7 +930,7 @@ func (o *Owner) serve() error {
 			err = o.preview(pick)
 		case o.policyErr != nil:
 			err = o.holdForPolicy(pick)
-		case c.Key.Kind == admission.KindBlockIP:
+		case c.Key.Kind == admission.KindBlockIP && o.executing():
 			blocks = append(blocks, pick)
 		default:
 			err = o.preview(pick)
@@ -930,7 +942,7 @@ func (o *Owner) serve() error {
 	switch {
 	case len(blocks) > 0:
 		return o.execute(blocks)
-	case o.executable() && o.policyErr == nil && o.execHold != nil:
+	case o.executing() && o.policyErr == nil && o.execHold != nil:
 		if o.ready(o.opts.Blocks(), false) && o.execHold != nil {
 			o.hold(o.execHold, o.applyHold != nil)
 		}
@@ -1121,7 +1133,7 @@ func (o *Owner) status() *health.AdmissionStatus {
 // ledger's read takes no lock and needs no current clock.
 func (o *Owner) refreshStatus() {
 	s := &health.AdmissionStatus{CheckedAt: time.Now(), Owner: &health.AdmissionOwner{
-		Executing:     o.opts.Blocks != nil,
+		Executing:     o.executing(),
 		ClockDegraded: o.degraded, LastTick: o.lastTick, CeilingSource: o.source,
 		Import: o.imported, InventoryAt: o.inventoryAt,
 	}}

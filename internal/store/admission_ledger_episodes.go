@@ -101,6 +101,14 @@ func proveEpisodes(tx *bolt.Tx) error {
 	})
 }
 
+// PreviewsAnswer sets whether an observe preview answers its episode's
+// line as a verified effect does. Previews answer while admission only
+// previews, so a comparison follows the episode. A forecasting owner turns
+// them off: an address previewed before its session is forecast again on
+// its next observation (section 8, row 3). Challenge lines always follow
+// their previews, which no forecast models.
+func (l *AdmissionLedger) PreviewsAnswer(on bool) { l.previewsEnd.Store(!on) }
+
 // takeEpisode names a new episode from the ledger's sequence.
 func (q *queueTx) takeEpisode() (admission.EpisodeID, error) {
 	s, err := loadEpisodeSequence(q.tx)
@@ -135,9 +143,12 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 	if found {
 		at = &cur
 		for _, line := range cur.Lines {
+			// Without previews answering, a remembered answer of a block
+			// line counts only for a verified block, which closes the episode.
+			ignore := l.previewsEnd.Load() && line.Kind != admission.KindChallenge
 			if line.Candidate == "" {
 				state := admission.LineEnded
-				if line.Answered {
+				if line.Answered && (!ignore || !cur.Verified.IsZero()) {
 					state = admission.LineAnswered
 				}
 				states = append(states, state)
@@ -158,7 +169,11 @@ func (l *AdmissionLedger) placeTx(q *queueTx, req admission.CandidateRequest, e 
 				}
 				retired = a.Retired
 			}
-			states = append(states, admission.LineStateOf(c, retired))
+			state := admission.LineStateOf(c, retired)
+			if ignore && c.State == admission.StateObserved {
+				state = admission.LineEnded
+			}
+			states = append(states, state)
 		}
 	}
 	choice, err := admission.Place(at, states, req.Kind, e.ObservedAt(), l.degraded, q.takeEpisode)

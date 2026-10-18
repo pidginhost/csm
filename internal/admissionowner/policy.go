@@ -35,6 +35,9 @@ type ExecutionPolicy struct {
 	// AskVerdict asks the callback this policy configures, with the
 	// client's own validation.
 	AskVerdict Asker
+	// Allows reports whether the configuration still allows the response
+	// a queued candidate asks for (admission-gates section 8, row 1).
+	Allows func(admission.Candidate) bool
 }
 
 // ErrPolicy marks an execution policy the owner refused to install.
@@ -52,8 +55,8 @@ func (p ExecutionPolicy) validate() error {
 		problem = "no policy is published"
 	case p.Observe:
 		problem = "mode: observe forbids automatic execution"
-	case p.Expiry == nil || p.AskVerdict == nil:
-		problem = "the policy has no expiry or verdict asker"
+	case p.Expiry == nil || p.AskVerdict == nil || p.Allows == nil:
+		problem = "the policy has no expiry, verdict asker or allowed responses"
 	case p.CeilingLimit == 0 || p.CeilingLimit > admission.MaxCeiling:
 		problem = "the hourly ceiling is out of range"
 	case p.VerdictTimeout < minVerdictTimeout || p.VerdictTimeout > maxVerdictTimeout:
@@ -75,6 +78,36 @@ func (p ExecutionPolicy) same(q ExecutionPolicy) bool {
 // executable reports whether the owner runs block picks (Options.Blocks).
 func (o *Owner) executable() bool { return o.opts.Blocks != nil }
 
+// liveExecution lets an executable owner run block picks under a live
+// policy. Until plan 1.4c-2b removes it, it stays false and such an owner
+// previews them as an owner without an engine does; a dry-run policy still
+// forecasts (ruling C2). No configuration reaches it; this package's tests
+// turn it on to exercise execution.
+var liveExecution = false
+
+// executing reports whether block picks run live: an engine, live
+// execution and a policy that is not a dry run. A later refused policy
+// holds that execution without ending it (heldCause).
+func (o *Owner) executing() bool {
+	return liveExecution && o.executable() && !o.policy.DryRun
+}
+
+// mayExecute reports whether block picks, probes and repairs may run now:
+// live execution under a valid installed policy.
+func (o *Owner) mayExecute() bool { return o.executing() && o.policyErr == nil }
+
+// mayRetire reports whether earlier real attempts retire now: an engine
+// under a valid installed policy that runs live or forecasts.
+func (o *Owner) mayRetire() bool {
+	return o.executable() && o.policyErr == nil && (liveExecution || o.forecasting())
+}
+
+// asksVerdicts reports whether picks ask the installed policy's callback:
+// only a forecast or live execution does.
+func (o *Owner) asksVerdicts() bool {
+	return o.policyErr == nil && o.policy.VerdictEnabled && (o.forecasting() || o.executing())
+}
+
 // refreshPolicy reads the published policy at a turn boundary and installs
 // a newer one; the installed policy then serves the whole turn. An older
 // epoch is ignored and the same one again changes nothing. Different
@@ -92,6 +125,7 @@ func (o *Owner) refreshPolicy() error {
 		if o.policyErr != before && o.current.Load() != nil {
 			o.publishExecutionHold()
 		}
+		o.syncPreviews()
 	}()
 	if o.opts.Policy == nil {
 		o.policyErr = fmt.Errorf("%w: no policy provider", ErrPolicy)
@@ -139,6 +173,14 @@ func (o *Owner) refreshPolicy() error {
 	return nil
 }
 
+// syncPreviews tells the ledger whether observe previews answer their
+// episodes: they do unless the owner forecasts (section 8, row 3).
+func (o *Owner) syncPreviews() {
+	if o.ledger != nil {
+		o.ledger.PreviewsAnswer(!o.forecasting())
+	}
+}
+
 // ceilingConfig is the configured hourly ceiling and its source. An
 // executable owner reads it from its installed policy.
 func (o *Owner) ceilingConfig() (uint32, string) {
@@ -154,6 +196,17 @@ func (o *Owner) expiry(c admission.Candidate) time.Duration {
 		return o.policy.Expiry(c)
 	}
 	return o.opts.Expiry(c)
+}
+
+// refuseDisabled runs before selection: an opt-out must not wait for the
+// capacity, retry timer or recovery hold that gates a new response.
+func (o *Owner) refuseDisabled() error {
+	if o.executable() && o.policyErr == nil {
+		if err := o.ledger.RefuseDisabled(o.policy.Allows); err != nil {
+			return fmt.Errorf("refusing disabled responses: %w", err)
+		}
+	}
+	return nil
 }
 
 // heldCause is why automatic execution is held, or nil.

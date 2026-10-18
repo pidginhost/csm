@@ -177,6 +177,13 @@ func (q *queueTx) countCheckpoint(previous, next *admission.IngressCheckpoint) e
 			continue
 		}
 		k, tier := row.Key, admission.Tier{Class: row.Key.Class, Severity: row.Key.Severity}
+		// No candidate is written for an ingress refusal, so its counts
+		// must raise the schema themselves before older readers see them.
+		if k.Reason == admission.ReasonDisabled {
+			if err = raiseSchema(q.tx, admissionSchemaDisabled); err != nil {
+				return err
+			}
+		}
 		if err = q.outcomes.AddCount(admission.QueueOutcome(k.Event, k.Reason, tier), n); err != nil {
 			return err
 		}

@@ -272,8 +272,8 @@ The same view appears under `snapshot.admission` in `csm status --json` and as
 `admission` rows in `csm doctor`. The daemon reads it on a timer, so
 `checked_at` says how old it is. Existing blocking paths still decide every
 block. Every automatic response they select is also handed to the ledger,
-which admits and previews it but never applies it, so the view shows what
-the ledger would have done.
+which previews or forecasts eligible work and refuses disabled responses.
+It never applies them; the view is not an enforcement record.
 
 - `ledger` holds the stored admission time, queue, counters, hourly and daily
   outcomes, ingress generations, the hourly ceiling with its general and
@@ -291,10 +291,14 @@ the ledger would have done.
   which counts at least until an hour after `at`, or names why the count
   could not be read), the last inventory read and why responses naming a
   damaged record were discarded (`damage_error`).
-- An owner that runs automatic blocks itself, which no release enables yet,
-  adds `execution_held`, a `verdict` object for the panel verdict callback,
-  whose counters count this process and restart at zero, and a `dry_run`
-  object for its dry-run forecast, described below.
+- An owner that runs on the firewall engine, with the firewall on and
+  outside observe mode, adds `execution_held`, a `verdict` object for the
+  panel verdict callback, whose counters count this process and restart at
+  zero, and a `dry_run` object for its dry-run forecast, described below. This
+  build never lets it run automatic blocks itself (`executing`): under a
+  live policy it previews. This staging route does not advertise
+  `admission.dry_run_verdict.v1`; that capability requires the complete
+  admission-gates contract and activation evidence.
 
 `owner.dry_run` is a capacity forecast, not a record of blocks. `active` is
 true while the owner forecasts instead of blocking. `session_id`, `since`
@@ -332,10 +336,10 @@ scan-driven block budget. After editing the configuration, run
 Existing blocking paths still decide every block; see
 [automatic response](auto-response.md) for the scope of the current budget.
 
-While admission previews, existing blocking paths still decide every
-block. Admission rows say existing blocking is unaffected, except the rows of
-an owner that runs blocks: `admission execution` fails while execution is
-held, and the dry-run rows (`admission dry run`, `admission dry-run
+While admission previews or forecasts, existing blocking paths still decide
+every block. Admission rows say existing blocking is unaffected, and
+`admission execution` warns while execution is held. The dry-run rows of an
+owner that forecasts (`admission dry run`, `admission dry-run
 capacity` and `admission dry-run examples`) show the forecast's session,
 real against predicted capacity and lost examples. A dry run alone is not a
 failure; a held forecast, model limits, waits the model predicts and lost
@@ -347,11 +351,10 @@ show a degraded clock, a clamped ceiling, a ceiling of 1 (only the reserved
 lane runs), a legacy hourly count that could not be read, a failed
 inventory read and automatic blocks with an unproven outcome, which hold
 their addresses until they expire and the firewall shows nothing of them.
-The `admission execution` row fails while automatic blocks are held. Once
-`owner.executing` is set, rows say admission decides automatic blocks, and
-a stopped owner, a refused clock reading, a damaged ledger, stopped
-admission, discarded responses, a Critical gap in the last hour and a ledger
-the firewall could not read at startup fail.
+Once `owner.executing` is set, rows say admission decides automatic blocks,
+and held execution, a stopped owner, a refused clock reading, a damaged
+ledger, stopped admission, discarded responses, a Critical gap in the last
+hour and a ledger the firewall could not read at startup fail.
 
 `admission.audit` and `admission.notices` in `queues` report the delivery of
 admission records to the [action log](action-log.md) and of admission notices.

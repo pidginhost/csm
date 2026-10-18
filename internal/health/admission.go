@@ -26,8 +26,9 @@ type AdmissionOwner struct {
 	// It clears only when a delivery pass succeeds.
 	AuditError string `json:"audit_error,omitempty"`
 	// Executing is set when admission runs automatic blocks rather than
-	// previewing them: an outage of admission is then an outage of
-	// automatic blocking, and doctor fails where a preview only warns.
+	// previewing or forecasting them: an outage of admission is then an
+	// outage of automatic blocking, and doctor fails where a preview only
+	// warns.
 	Executing bool `json:"executing"`
 	// Error is why the owner is not running; empty once it is.
 	Error string `json:"error,omitempty"`
@@ -54,9 +55,9 @@ type AdmissionOwner struct {
 	// ExecutionHeld is why automatic execution is held: block work waits,
 	// deferred as an unavailable engine, until a probe succeeds.
 	ExecutionHeld string `json:"execution_held,omitempty"`
-	// Verdict is the panel verdict stage of an owner that executes.
+	// Verdict is the panel verdict stage of an owner with an engine.
 	Verdict *AdmissionVerdict `json:"verdict,omitempty"`
-	// DryRun is the dry-run forecast of an owner that executes.
+	// DryRun is the dry-run forecast of an owner with an engine.
 	DryRun *AdmissionDryRun `json:"dry_run,omitempty"`
 }
 

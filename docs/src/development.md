@@ -526,19 +526,28 @@ the pick linked in the same transaction, or leaves it
 failed on its last attempt. A historical result cannot end a later retry;
 a repeated linked ending must name the same block and expiry instant. A linked record is candidate version 2 and an
 admitted candidate's history pays for its bytes; without room the
-transaction changes nothing. The first linked record moves the ledger to
-schema 8, with the same buckets; this build opens schema 7, 8 and 9 without
-rewriting them, and older builds refuse a schema they do not know rather
-than misread it. A ledger stays at schema 7, and can be read by an older
-build, until something is linked. A write never lowers the schema.
+transaction changes nothing. A linked record requires at least schema 8,
+with the same buckets; this build opens schemas 7 to 10 without rewriting
+them, and older builds refuse an unknown schema rather than misread it.
+An unchanged schema-7 ledger stays readable by older builds until a write
+needs a newer format. A write never lowers the schema.
 
 A panel verdict that allows a queued candidate ends it refused as
 `verdict_allow`, like any other refusal: no attempt, charge or history
 allocation, one ended count, and the notice that Critical or C3 work raises
 when it is refused. A retry keeps the charge of its failed attempt. The
 episode is not answered, so a later observation can queue the next
-generation. The first such record moves the ledger to schema 9, with the
-same buckets; older builds refuse it.
+generation. Such a record requires at least schema 9, with the same
+buckets; a later schema is retained and older readers refuse unknown schemas.
+
+Queued work whose response the configuration no longer allows ends refused
+as `disabled`: no attempt, charge or history allocation, one ended count and
+no notice, since the operator turned the response off. The episode is not
+answered. The first such record moves the ledger to schema 10, with the same
+buckets; older builds refuse it. An ingress checkpoint carrying disabled
+refusal counts also requires schema 10, even without a stored candidate.
+A full outcome bucket, every key at its largest count, is now 32872 bytes
+against a bound of 33 KiB.
 
 `EndDryRun` ends queued work that dry-run mode forecast instead of running:
 the candidate moves to `dry_run` without an attempt, ceiling charge,
@@ -548,8 +557,8 @@ attempts, their charges and the history they paid for, which ends; roots it
 gained while it waited are dropped as on other endings. The work must be
 ready as a reservation requires: a retry waits out its backoff, an
 unresolved attempt still holds the target, and stale work is refused. The
-same ending again changes nothing. The episode is not answered, and the
-first dry-run ending also moves the ledger to schema 9.
+same ending again changes nothing. The episode is not answered. A dry-run
+ending requires at least schema 9 and retains any later schema.
 
 `SchedulePreview` selects queued work for a dry-run forecast. It is not
 admission: spent live ceiling and history budgets do not stop it, and it
@@ -832,10 +841,17 @@ failed apply keeps its cause and backoff through state repair, ledger refusals
 and member refusals until an applied effect proves recovery. Hold changes copy
 the cached owner status without rereading the ledger. Status
 (`admission.owner.execution_held`) and the `csm doctor` row `admission
-execution` name the cause. An owner with `Options.Blocks` publishes
-`admission.owner.executing`; `admission.DoctorImpact` then closes every
+execution` name the cause. An owner publishes `admission.owner.executing`
+only while it runs block picks: it has `Options.Blocks`, `liveExecution` is
+on and its policy is not a dry run. `admission.DoctorImpact` then closes every
 admission row with `ExecutionAffected` instead of `PreviewUnaffected` and
-turns the outages that stop automatic blocks from warnings into failures.
+turns the outages that stop automatic blocks, held execution included, from
+warnings into failures. `liveExecution` is a package variable that stays false
+until plan 1.4c-2b removes it: under a live policy an owner with an engine
+then previews its block picks as one without an engine does, asks no panel
+and holds a refused policy's picks; a dry-run policy still forecasts. No
+configuration reaches it, an architecture test refuses any production write,
+and the package's tests turn it on to exercise execution.
 A degraded admission clock cannot bound a lease, so
 it defers block picks the same way. One batch starts a second at most; with an
 engine, a drain that queues new work runs the schedule at once instead of
@@ -866,13 +882,46 @@ checks for newer epochs even while idle, so a publication without a reload
 resumes held work and any probes suspended by dry-run. A challenge keeps
 its comparison preview. A comparison-only owner never reads the policy.
 
+The policy also carries whether the configuration still allows each queued
+response: `checks.AutomaticResponseAllowed`, the switches the legacy funnels
+test before they act (`auto_response.enabled` and `block_ips` for every
+firewall kind, `block_cpanel_logins` for the checks that need it, and each
+derived entry's own opt-in; challenges follow challenge routing). Under a
+valid policy, a pick it no longer allows ends refused as `disabled` before
+any panel ask, engine check, forecast, preview or reservation, live or dry
+run. Most of these switches change only with an epoch; challenge, incident
+and central settings change only at a restart, which is why every pick is
+tested rather than every epoch.
+
+Disabled responses end together before capacity selection, including
+challenge previews. Spent ceiling or history budgets, retry backoff and
+another attempt's recovery hold do not delay their refusal or generate
+capacity notices. The check visits only the bounded durable queue and
+leaves allowed work's scheduling turns and capacity checks intact. Refusing
+queued work never releases an earlier attempt's charge or recovery hold.
+Startup and ceiling reload also refuse disabled work before inventory or
+queue revalidation can report expired evidence as a withheld response.
+
 Under a dry-run policy the owner forecasts instead of running. It selects
 work with `SchedulePreview`, whatever the live budgets, and ends each pick
 as a dry run with a prediction: no attempt, charge, history, audit row or
 mutating engine call. A forecast session starts at startup or on entry into
-dry-run from the committed ceiling and its retained charges, then lives in
-memory apart from it: the same committed clock meters it, a new limit
-applies without new credit, and live credit is never copied over it. One
+dry-run from the committed ceiling and its retained charges
+(`ForecastSeed`), then lives in memory apart from it: the same committed
+clock meters it, a new limit applies without new credit, and live credit is
+never copied over it. The seed leaves out the charges of observe previews,
+which are comparison work, not responses: their units leave the window and
+their credit returns to its lane up to the bucket's cap (`Uncharge`);
+legacy and genuine charges stay. Ceiling, charges and keyed attempts come
+from one read-only transaction. Each retained attempt's charge must match
+its reservation time, lane and response cost; damaged records refuse the
+seed without changing committed state. While the owner forecasts, the
+ledger also stops counting a preview as the answer of its block line
+(`PreviewsAnswer`), so an address previewed before the session queues its
+next generation on a new observation and is forecast; a verified block,
+or its remembered answer, still answers until its expiry, and challenge
+lines keep following their previews. Leaving dry run turns previews back
+on. One
 read-only admission snapshot answers a turn's `block_ip` picks, with the
 real temporary occupancy and the real blocks of forecast addresses. A
 refused target ends or waits as a live check has it. A real block that
@@ -954,9 +1003,10 @@ canonical address, and stays queued; the schedule passes it over until
 the answer arrives. Workers, outstanding jobs and cached answers are bounded;
 a full stage leaves picks queued and is never read as an answer. Each answer
 is keyed by candidate, attempt and policy epoch and expires from completion,
-including time awaiting receipt. Admission requires a signed, request-bound
-allow even when legacy callback signing exceptions are configured. A valid
-allow ends the pick as one `verdict_allow` refusal with no attempt or charge,
+including time awaiting receipt. Admission uses the configured signature
+and replay validation, including explicit signing exceptions, through the
+same client as legacy blocking. A valid allow ends the pick as one
+`verdict_allow` refusal with no attempt or charge,
 even with the ceiling spent: the schedule picks it as uncharged work.
 Block, an empty verdict or a failed exchange continues the local path,
 and the reservation consumes the answer. Local checks run again before an
@@ -964,8 +1014,8 @@ answer is used. A pick that stops being eligible has its call cancelled.
 A new epoch, a mode change included, cancels every call, drops every
 answer and starts new workers only after the old ones return; Stop
 cancels the calls and joins the workers. A cancellation is never an
-answer. The owner status carries a `verdict` object for an executing
-owner: stage gauges, process counters and the last failure as a fixed
+answer. The owner status carries a `verdict` object for an owner with an
+engine provider: stage gauges, process counters and the last failure as a fixed
 class, never response text. Its outstanding jobs are also the
 `admission.verdicts` queue row. Workers count completed calls before delivery;
 late or duplicate results cannot count another call or consume a different job.
