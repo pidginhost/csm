@@ -1,10 +1,12 @@
 package store
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/admission"
+	bolt "go.etcd.io/bbolt"
 )
 
 // A response the operator turned off ends refused as disabled: no attempt,
@@ -82,5 +84,55 @@ func TestAdmissionLedgerDisabledRaisesTheSchemaOnce(t *testing.T) {
 	}
 	if got := f.schema(); got != admissionSchemaDisabled {
 		t.Fatalf("schema = %d, want %d", got, admissionSchemaDisabled)
+	}
+}
+
+// A checkpoint can carry a refusal without a candidate. Its counts still
+// require the new schema, atomically with the checkpoint and outcome windows.
+func TestAdmissionLedgerDisabledCheckpointRaisesTheSchema(t *testing.T) {
+	for _, schema := range []byte{admissionSchemaVersion, admissionSchemaLinked, admissionSchemaShadow, admissionSchemaDisabled} {
+		t.Run(fmt.Sprint(schema), func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.begin()
+			if err := f.db.bolt.Update(func(tx *bolt.Tx) error {
+				return tx.Bucket([]byte(admissionMetaBucket)).Put(admissionSchemaKey, []byte{schema})
+			}); err != nil {
+				t.Fatal(err)
+			}
+			in := f.ingress()
+			in.Refuse(&admission.Error{Reason: admission.ReasonDisabled}, admission.SeverityCritical)
+			checkpoint := in.Checkpoint()
+			before := f.snapshot()
+			f.failNext("group")
+			if _, err := in.Drain(f.l, 0, f.requestFor); err == nil || !reflect.DeepEqual(before, f.snapshot()) {
+				t.Fatal("failed checkpoint changed the ledger")
+			}
+			if _, err := in.Drain(f.l, 0, f.requestFor); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.schema(); got != admissionSchemaDisabled {
+				t.Fatalf("schema = %d, want %d", got, admissionSchemaDisabled)
+			}
+			snap, err := f.l.QueueSnapshot()
+			if err != nil || !reflect.DeepEqual(snap.Checkpoint, &checkpoint) {
+				t.Fatalf("checkpoint snapshot = %+v, %v", snap, err)
+			}
+			key := admission.QueueOutcome(admission.EventRefused, admission.ReasonDisabled, admission.Tier{})
+			for _, span := range admission.Spans() {
+				if got := f.outcomesAt(span, f.wall).Count(key); got != 1 {
+					t.Fatalf("%v count = %d, want 1", span, got)
+				}
+			}
+			if records, err := f.l.PendingNotices(); err != nil || len(records) != 0 {
+				t.Fatalf("notices = %+v, %v", records, err)
+			}
+			before = f.snapshot()
+			if _, _, err := f.l.EnqueueGroup(nil, &checkpoint); err != nil || !reflect.DeepEqual(before, f.snapshot()) {
+				t.Fatalf("repeated checkpoint changed the ledger: %v", err)
+			}
+			if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil || !reflect.DeepEqual(before, f.snapshot()) {
+				t.Fatalf("reopen changed the ledger: %v", err)
+			}
+		})
 	}
 }

@@ -544,8 +544,10 @@ Queued work whose response the configuration no longer allows ends refused
 as `disabled`: no attempt, charge or history allocation, one ended count and
 no notice, since the operator turned the response off. The episode is not
 answered. The first such record moves the ledger to schema 10, with the same
-buckets; older builds refuse it. A full outcome bucket, every key at its
-largest count, is now 32872 bytes against a bound of 33 KiB.
+buckets; older builds refuse it. An ingress checkpoint carrying disabled
+refusal counts also requires schema 10, even without a stored candidate.
+A full outcome bucket, every key at its largest count, is now 32872 bytes
+against a bound of 33 KiB.
 
 `EndDryRun` ends queued work that dry-run mode forecast instead of running:
 the candidate moves to `dry_run` without an attempt, ceiling charge,
