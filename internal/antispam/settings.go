@@ -47,6 +47,9 @@ type Settings struct {
 	Learning    bool
 	LearningDir string
 	Roundcube   bool
+	// LearningKeys are loaded from LearningDir by the caller, like DQSKey;
+	// they never travel in a request.
+	LearningKeys LearningKeys
 }
 
 // DefaultLearningDir holds learning state, inside CSM's state directory.
