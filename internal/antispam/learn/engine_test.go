@@ -417,3 +417,41 @@ func TestLearnSameIDDifferentSnapshotFails(t *testing.T) {
 		t.Fatalf("target %+v", got)
 	}
 }
+
+// A new cluster replacing a zero-target guard takes over the digest; the
+// guard's charge goes back to its account.
+func TestEngineSeedOverGuardCreditsGuard(t *testing.T) {
+	f := newAuditFixture(t)
+	guard := &Charge{UID: 1001, Usage: Usage{Aliases: 1}}
+	if err := f.ledger.Update(func(tx LedgerTx) error {
+		if err := tx.AddUsage(1001, false, guard.Usage); err != nil {
+			return err
+		}
+		return tx.PutTarget(Target{Digest: digest('s'), ClusterID: 9, T: 0, Revision: 3, Phase: PhaseIdle, GuardCharge: guard})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e := newTestEngine(t, f)
+	snap := []byte("fresh spam")
+	f.storage.bodies[string(snap)] = digest('s')
+	out, err := e.Submit(context.Background(), Candidate{UID: 1002, Snapshot: snap})
+	if err != nil || len(out.Committed) != 1 {
+		t.Fatalf("outcome %+v err %v", out, err)
+	}
+	got, _ := f.targetOf(t, digest('s'))
+	if got.T != 2 || got.Revision != 4 || got.GuardCharge != nil {
+		t.Fatalf("target %+v", got)
+	}
+	if err := f.ledger.View(func(v LedgerView) error {
+		old, err := v.Usage(1001, false)
+		if err != nil {
+			return err
+		}
+		if old != (Usage{}) {
+			t.Errorf("guard charge kept: %+v", old)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -611,6 +611,12 @@ func (e *Engine) reserve(src Source, a Admission, snapshot []byte, id string) (s
 			rev := uint64(1)
 			if ok {
 				rev = t.Revision + 1
+				// The live target replaces the zero-target guard and its charge.
+				if t.GuardCharge != nil {
+					if err := tx.credit(*t.GuardCharge); err != nil {
+						return err
+					}
+				}
 			}
 			if err := tx.PutCluster(Cluster{ID: seedID, Anchor: seed.Anchor, BodyLen: seed.BodyLen, BodySHA: seed.BodySHA, Revision: 1, Created: now, Operator: src.Operator}); err != nil {
 				return err
