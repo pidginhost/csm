@@ -155,6 +155,9 @@ filtering.
 
 The capabilities API lists `mail.antispam.v1` when a build supports this
 integration; it does not mean filtering is installed on the host.
+`mail.antispam.learning.v1` means the build can learn from Spam folders;
+while learning runs, `csm status --json` carries an `antispam_learning`
+block.
 
 ## Feeds
 

@@ -464,3 +464,33 @@ func TestPassIdleWhileDiscoveryClosed(t *testing.T) {
 		t.Fatal("an idle pass was recorded as completed")
 	}
 }
+
+func TestSchedulerReportsCommittedEngineSkipsAndOnPass(t *testing.T) {
+	f := newWatch(t, 1)
+	var reports []PassReport
+	f.cfg.OnPass = func(r PassReport) { reports = append(reports, r) }
+	f.restart()
+	f.pass()
+	f.deliver(0, "new", 1, "Subject: x\r\n\r\ntwo clusters")
+	f.deliver(0, "new", 1, "Subject: x\r\n\r\nbelow join")
+	f.engine.respond = func(c learn.Candidate) (learn.Outcome, error) {
+		if strings.Contains(string(c.Snapshot), "below join") {
+			return learn.Outcome{Skips: []learn.Skip{{Reason: learn.SkipBelowJoin}}}, nil
+		}
+		return learn.Outcome{Committed: []uint64{1, 2}}, nil
+	}
+	r := f.pass()
+	if r.Submitted != 2 || r.Committed != 2 || r.Skipped[learn.SkipBelowJoin] != 1 {
+		t.Fatalf("report %+v", r)
+	}
+	if len(reports) != 2 || reports[1].Committed != 2 {
+		t.Fatalf("OnPass reports %+v", reports)
+	}
+	f.cfg.CanDiscover = func() bool { return false }
+	f.restart()
+	f.w.cfg.OnPass = f.cfg.OnPass
+	f.pass()
+	if len(reports) != 2 {
+		t.Fatal("an idle pass reached OnPass")
+	}
+}

@@ -50,8 +50,10 @@ type WatcherConfig struct {
 	// CanDiscover false makes passes idle: nothing is listed or read.
 	// CanSubmit false keeps discovery and baselines but reads no message
 	// content and submits nothing.
-	CanDiscover   func() bool
-	CanSubmit     func() bool
+	CanDiscover func() bool
+	CanSubmit   func() bool
+	// OnPass sees every completed pass, not idle or busy ones.
+	OnPass        func(PassReport)
 	Chunk         int
 	SeenAllowance int
 }
@@ -60,8 +62,10 @@ type WatcherConfig struct {
 // Pending counts the reports known to wait; with Unfinished set some
 // folders were not enumerated, so it is a lower bound.
 type PassReport struct {
-	Accounts      int
-	Submitted     int
+	Accounts  int
+	Submitted int
+	// Committed counts the cluster contributions the engine committed.
+	Committed     int
 	Pending       int
 	Skipped       map[string]int
 	Unfinished    bool
@@ -147,6 +151,9 @@ func (w *Watcher) Pass(ctx context.Context) PassReport {
 	w.mu.Lock()
 	w.last, w.at = r, w.cfg.Now()
 	w.mu.Unlock()
+	if w.cfg.OnPass != nil {
+		w.cfg.OnPass(r)
+	}
 	return r
 }
 
@@ -644,6 +651,10 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 		rep.Skipped[learn.SkipAccountCapacity]++
 	default:
 		rep.Submitted++
+		rep.Committed += len(out.Committed)
+		for _, s := range out.Skips {
+			rep.Skipped[s.Reason]++
+		}
 		mark(StatusSubmitted)
 	}
 }

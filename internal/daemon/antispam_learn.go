@@ -21,6 +21,7 @@ type learnEngine interface {
 	Problems() []antispam.Problem
 	Operator(context.Context, learn.OperatorRequest) (learn.OperatorResult, error)
 	Submit(context.Context, learn.Candidate) (learn.Outcome, error)
+	Stats() (learn.Stats, error)
 }
 
 // newLearnEngine builds the learning engine; tests replace it.

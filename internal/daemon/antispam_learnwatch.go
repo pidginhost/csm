@@ -38,5 +38,11 @@ func newRunnerWatcher(db *store.DB, r *learnerRunner) learnWatcher {
 			g := r.currentGate()
 			return g.Install && g.Publish
 		},
+		OnPass: func(rep learnwatch.PassReport) {
+			recordLearningPass(rep, time.Now())
+			if st, err := r.engine.Stats(); err == nil {
+				recordLearningStats(st)
+			}
+		},
 	})
 }

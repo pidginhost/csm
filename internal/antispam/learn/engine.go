@@ -135,6 +135,9 @@ type Engine struct {
 	runCtx    context.Context
 	cancel    context.CancelFunc
 	published []antispam.Problem
+	// Audit progress for Stats.
+	statOldest, statAudit time.Time
+	statRepaired          uint64
 
 	// Owned by the engine goroutine.
 	seenEpoch    uint64
@@ -415,6 +418,13 @@ func (e *Engine) background(ctx context.Context) {
 	errs = append(errs, err)
 	if err == nil {
 		e.oldest = prog.OldestUnchecked
+		e.mu.Lock()
+		e.statOldest = prog.OldestUnchecked
+		e.statRepaired += uint64(prog.Repaired) // #nosec G115 -- a turn's repair count is non-negative
+		if prog.RotationDone {
+			e.statAudit = now
+		}
+		e.mu.Unlock()
 	}
 	_, err = e.pub.RepairTurn(ctx, RepairBatch)
 	errs = append(errs, err, e.resume(ctx))

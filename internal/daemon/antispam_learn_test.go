@@ -44,6 +44,8 @@ func (f *fakeEngine) Pause() { f.SetGate(antispam.LearningGate{}) }
 
 func (f *fakeEngine) Problems() []antispam.Problem { return nil }
 
+func (f *fakeEngine) Stats() (learn.Stats, error) { return learn.Stats{}, nil }
+
 // Submit records reports; respond, when set, decides the outcome.
 func (f *fakeEngine) Submit(_ context.Context, c learn.Candidate) (learn.Outcome, error) {
 	f.mu.Lock()
