@@ -63,3 +63,16 @@ func FuzzParseMailboxPasswd(f *testing.F) {
 		}
 	})
 }
+
+func FuzzParseVerdict(f *testing.F) {
+	for _, s := range []string{"Subject: x\r\n\r\nbody", " x\r\n", "X-Spam-Status: No\r\n\r\n", "a:b\nc"} {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_ = ParseVerdict(data)
+		tagged := append([]byte("X-Spam-Status: Yes\r\n"), data...)
+		if ParseVerdict(tagged) == VerdictEligible {
+			t.Fatalf("Yes verdict line read as eligible: %q", tagged)
+		}
+	})
+}
