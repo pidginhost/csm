@@ -89,6 +89,7 @@ type Seed struct {
 // IntentCluster is one cluster an intent changes, committed separately.
 type IntentCluster struct {
 	ClusterID uint64   `json:"cluster_id"`
+	Anchor    Digest   `json:"anchor"`
 	Revision  uint64   `json:"revision"`
 	Aliases   []Digest `json:"aliases,omitempty"`
 	NewT      int32    `json:"new_t"`

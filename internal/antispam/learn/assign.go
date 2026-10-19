@@ -57,13 +57,15 @@ type Skip struct {
 	Reason string
 }
 
-// Admission is what a report may reserve. Defer means reserve nothing and
-// re-inspect later; Mismatch names unknown stored digests (state_mismatch);
-// DeleteZero names zero-target digests that reappeared.
+// Admission is what a report may reserve. Duplicates names clusters the
+// reporter already voted on. Defer means reserve nothing and re-inspect
+// later; Mismatch names unknown stored digests (state_mismatch); DeleteZero
+// names zero-target digests that reappeared.
 type Admission struct {
 	Joins      []Join
 	Seed       *Seed
 	Skips      []Skip
+	Duplicates []uint64
 	Defer      bool
 	Mismatch   []Digest
 	DeleteZero []Digest
@@ -149,6 +151,7 @@ func Assign(insp Inspection, src Source, v LedgerReader, gaps map[uint64]bool) (
 		}
 		voted := slices.Contains(c.UIDs, src.UID) && !src.Operator || src.Operator && slices.Contains(c.Marks, src.MarkID)
 		if voted {
+			a.Duplicates = append(a.Duplicates, id)
 			for _, p := range parts {
 				if p.cluster == id {
 					a.Skips = append(a.Skips, Skip{Digest: p.digest, Reason: SkipDuplicate})

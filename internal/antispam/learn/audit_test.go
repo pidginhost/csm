@@ -20,6 +20,9 @@ type auditFixture struct {
 func newAuditFixture(t *testing.T) *auditFixture {
 	t.Helper()
 	l, _ := openLedger(t)
+	if err := l.Bind("gen1", "prefix1"); err != nil {
+		t.Fatal(err)
+	}
 	return &auditFixture{&publishFixture{ledger: l, bodies: testBodies(t), storage: newStorage()}}
 }
 

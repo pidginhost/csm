@@ -26,6 +26,15 @@ const (
 	ReasonRedisPersistence   = "redis_persistence"
 	ReasonRoundcube          = "roundcube_unavailable"
 	ReasonRemovalIncomplete  = "removal_incomplete"
+	// The learner's own (Plan B).
+	ReasonAnchorDrift       = "anchor_drift"
+	ReasonMutationUncertain = "mutation_uncertain"
+	ReasonAnchorBodyInvalid = "anchor_body_invalid"
+	ReasonStateIO           = "state_io"
+	ReasonAuditOverdue      = "audit_overdue"
+	ReasonRequestErrors     = "request_errors"
+	ReasonBackendRebuilding = "backend_rebuilding"
+	ReasonAccountCapacity   = "account_capacity"
 )
 
 // LearningGate says what learning may do this pass. Install: CSM's learning

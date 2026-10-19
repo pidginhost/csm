@@ -19,17 +19,28 @@ type fakeStorage struct {
 	bodies map[string]Digest
 	// onAdd and onDelete decide whether a mutation applies and what the
 	// caller hears; nil applies and succeeds.
-	onAdd     func(d Digest, w int32) (apply bool, err error)
-	onDelete  func(d Digest) (apply bool, err error)
-	readErr   error
-	adds      []int32
-	deletes   int
-	syncs     int
-	inspected int
+	onAdd    func(d Digest, w int32) (apply bool, err error)
+	onDelete func(d Digest) (apply bool, err error)
+	readErr  error
+	// inspect overrides a body inspection's results (near matches,
+	// several parts); addWait runs inside Add before it applies.
+	inspect      map[string][]Result
+	addWait      func(ctx context.Context) error
+	bodyInspects int
+	adds         []int32
+	deletes      int
+	syncs        int
+	inspected    int
 }
 
 func newStorage() *fakeStorage {
-	return &fakeStorage{values: map[Digest]int64{}, bodies: map[string]Digest{}}
+	return &fakeStorage{values: map[Digest]int64{}, bodies: map[string]Digest{}, inspect: map[string][]Result{}}
+}
+
+func (s *fakeStorage) native() (inspects, bodyInspects, adds, deletes int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inspected, s.bodyInspects, len(s.adds), s.deletes
 }
 
 func (s *fakeStorage) value(d Digest) (int64, bool) {
@@ -48,8 +59,12 @@ func (s *fakeStorage) set(d Digest, v int64) {
 func (s *fakeStorage) Inspect(_ context.Context, body []byte) (Inspection, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.bodyInspects++
 	if s.readErr != nil {
 		return Inspection{}, s.readErr
+	}
+	if rs, ok := s.inspect[string(body)]; ok {
+		return Inspection{Results: rs, Distinct: len(rs)}, nil
 	}
 	d, ok := s.bodies[string(body)]
 	if !ok {
@@ -80,12 +95,17 @@ func (s *fakeStorage) InspectDigests(_ context.Context, ds []Digest) (Inspection
 	return insp, nil
 }
 
-func (s *fakeStorage) Add(_ context.Context, body []byte, w int32) error {
+func (s *fakeStorage) Add(ctx context.Context, body []byte, w int32) error {
 	s.mu.Lock()
 	d := s.bodies[string(body)]
-	hook := s.onAdd
+	hook, wait := s.onAdd, s.addWait
 	s.adds = append(s.adds, w)
 	s.mu.Unlock()
+	if wait != nil {
+		if err := wait(ctx); err != nil {
+			return err
+		}
+	}
 	apply, err := true, error(nil)
 	if hook != nil {
 		apply, err = hook(d, w)

@@ -152,6 +152,9 @@ func TestAssignOneVotePerUIDPerCluster(t *testing.T) {
 	if len(a.Joins) != 0 || a.Seed != nil || !reflect.DeepEqual(a.Skips, []Skip{{Digest: digest('d'), Reason: SkipDuplicate}, {Digest: digest('a'), Reason: SkipDuplicate}}) {
 		t.Fatalf("repeat: %+v", a)
 	}
+	if !reflect.DeepEqual(a.Duplicates, []uint64{1}) {
+		t.Fatalf("duplicate clusters %v", a.Duplicates)
+	}
 }
 
 func TestAssignOperatorMarkOncePerCluster(t *testing.T) {
