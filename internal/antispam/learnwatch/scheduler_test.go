@@ -19,10 +19,25 @@ import (
 )
 
 type fakeEngine struct {
-	mu       sync.Mutex
-	calls    []int
-	respond  func(c learn.Candidate) (learn.Outcome, error)
-	onSubmit func(c learn.Candidate)
+	mu        sync.Mutex
+	calls     []int
+	respond   func(c learn.Candidate) (learn.Outcome, error)
+	onSubmit  func(c learn.Candidate)
+	cancels   []int
+	cancelErr error
+}
+
+func (e *fakeEngine) CancelUnsent(_ context.Context, uid int) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.cancels = append(e.cancels, uid)
+	return e.cancelErr
+}
+
+func (e *fakeEngine) cancelled() []int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.cancels)
 }
 
 func (e *fakeEngine) SubmitReport(_ context.Context, c learn.Candidate) (learn.Outcome, error) {
@@ -402,6 +417,40 @@ func TestSchedulerOptOutCancelsUnsent(t *testing.T) {
 	}
 	if f.pending(0) != 0 || r.Skipped[SkipOptedOut] != 1 {
 		t.Fatalf("opt-out: %d pending, report %+v", f.pending(0), r)
+	}
+}
+
+// Spec 5: an observed opt-out cancels the learner's unsent reservations
+// too, including when no folder state is left to reset.
+func TestSchedulerOptOutCancelsLearnerReservations(t *testing.T) {
+	f := newWatch(t, 2)
+	if err := os.Remove(filepath.Join(f.accounts[0].Home, ".spamassassinenable")); err != nil {
+		t.Fatal(err)
+	}
+	f.pass()
+	if got := f.engine.cancelled(); !slices.Equal(got, []int{1001}) {
+		t.Fatalf("cancelled %v", got)
+	}
+}
+
+func TestSchedulerFailedCancelRetries(t *testing.T) {
+	f := newWatch(t, 1)
+	f.pass()
+	if err := os.Remove(filepath.Join(f.accounts[0].Home, ".spamassassinenable")); err != nil {
+		t.Fatal(err)
+	}
+	f.engine.mu.Lock()
+	f.engine.cancelErr = learn.ErrStateIO
+	f.engine.mu.Unlock()
+	if r := f.pass(); r.Skipped[SkipStateUnavailable] != 1 || !r.Unfinished {
+		t.Fatalf("failed cancel not reported: %+v", r)
+	}
+	f.engine.mu.Lock()
+	f.engine.cancelErr = nil
+	f.engine.mu.Unlock()
+	f.pass()
+	if got := f.engine.cancelled(); !slices.Equal(got, []int{1001, 1001}) {
+		t.Fatalf("cancel not retried: %v", got)
 	}
 }
 

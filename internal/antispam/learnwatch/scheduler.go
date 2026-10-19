@@ -61,6 +61,7 @@ const (
 
 type submitter interface {
 	SubmitReport(context.Context, learn.Candidate) (learn.Outcome, error)
+	CancelUnsent(ctx context.Context, uid int) error
 }
 
 // WatcherConfig is what a watcher needs. Zero Chunk and SeenAllowance mean
@@ -451,7 +452,7 @@ func (r *accountRun) turn(ctx context.Context, rep *PassReport) {
 	r.turnOpens = 0
 	if !r.started {
 		r.started = true
-		if !r.start(rep) {
+		if !r.start(ctx, rep) {
 			r.done = true
 			return
 		}
@@ -493,7 +494,7 @@ func (r *accountRun) turn(ctx context.Context, rep *PassReport) {
 	}
 }
 
-func (r *accountRun) start(rep *PassReport) bool {
+func (r *accountRun) start(ctx context.Context, rep *PassReport) bool {
 	fsAccount := r.a
 	fsAccount.UID = ownerUID(r.a)
 	home, err := OpenHome(fsAccount)
@@ -503,7 +504,7 @@ func (r *accountRun) start(rep *PassReport) bool {
 		return false
 	}
 	r.home = home
-	if !r.eligible(rep) {
+	if !r.eligible(ctx, rep) {
 		return false
 	}
 	rep.Accounts++
@@ -530,8 +531,9 @@ func (r *accountRun) start(rep *PassReport) bool {
 }
 
 // eligible rechecks the Spam Filters switch. An opt-out cancels the
-// account's unsent work and starts new baselines on re-entry.
-func (r *accountRun) eligible(rep *PassReport) bool {
+// account's unsent work, the learner's reservations included, and starts
+// new baselines on re-entry.
+func (r *accountRun) eligible(ctx context.Context, rep *PassReport) bool {
 	global, err := GlobalOptIn(r.w.cfg.GlobalPath)
 	if err != nil {
 		rep.Skipped[SkipOptInUnreadable]++
@@ -548,6 +550,12 @@ func (r *accountRun) eligible(rep *PassReport) bool {
 		return true
 	}
 	rep.Skipped[reason]++
+	// Asked on every pass, since an explicit disable can drop the folder
+	// state of an account the learner still holds work for. A failure is
+	// retried by the next pass.
+	if r.stateFailed(r.w.cfg.Engine.CancelUnsent(ctx, r.a.UID), rep) {
+		return false
+	}
 	var has bool
 	if r.stateFailed(r.state().View(func(tx StateTx) (e error) { has, e = tx.HasState(r.a.UID); return e }), rep) {
 		return false
@@ -934,7 +942,7 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 		rep.Unfinished = true
 		return
 	}
-	if !r.eligible(rep) {
+	if !r.eligible(ctx, rep) {
 		_ = f.Close()
 		if len(r.queues) > 0 {
 			hold()
@@ -968,7 +976,7 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 		mark(SkippedStatus(v.String()))
 		return
 	}
-	if !r.eligible(rep) {
+	if !r.eligible(ctx, rep) {
 		if len(r.queues) > 0 {
 			hold()
 		}

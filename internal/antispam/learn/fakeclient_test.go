@@ -25,6 +25,8 @@ type fakeStorage struct {
 	onInspect func()
 	readErr   error
 	syncErr   error
+	// failRead fails exact checks that include a chosen digest.
+	failRead func([]Digest) error
 	// inspect overrides a body inspection's results (near matches,
 	// several parts); addWait runs inside Add before it applies.
 	inspect      map[string][]Result
@@ -96,6 +98,11 @@ func (s *fakeStorage) InspectDigests(_ context.Context, ds []Digest) (Inspection
 	s.inspected++
 	if s.readErr != nil {
 		return Inspection{}, s.readErr
+	}
+	if s.failRead != nil {
+		if err := s.failRead(ds); err != nil {
+			return Inspection{}, err
+		}
 	}
 	insp := Inspection{Distinct: len(ds)}
 	for _, d := range ds {

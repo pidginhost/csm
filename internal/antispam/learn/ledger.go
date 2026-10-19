@@ -212,6 +212,11 @@ func (tx LedgerTx) PutTarget(t Target) error {
 	return tx.put(store.LearnTargetsBucket, []byte(t.Digest), t)
 }
 
+// DeleteTarget removes the target of d.
+func (tx LedgerTx) DeleteTarget(d Digest) error {
+	return tx.tx.Delete(store.LearnTargetsBucket, []byte(d))
+}
+
 // PutIntent stores i.
 func (tx LedgerTx) PutIntent(i Intent) error {
 	return tx.put(store.LearnIntentsBucket, []byte(i.ID), i)

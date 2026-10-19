@@ -210,6 +210,9 @@ func (p *Publisher) setPhase(seen Target, phase Phase, edit func(*Target)) error
 
 var errTargetMoved = errors.New("target changed during the turn")
 
+// markSent journals that the target's current revision has a native write.
+func markSent(t *Target) { t.SentRevision = t.Revision }
+
 func (p *Publisher) complete(t Target, v int64) (TurnResult, error) {
 	err := p.setPhase(t, PhaseIdle, func(t *Target) {
 		t.ResetPending, t.RestoreT = false, 0
@@ -223,7 +226,7 @@ func (p *Publisher) complete(t Target, v int64) (TurnResult, error) {
 // sendDelete journals delete_sent, deletes by full digest, flushes and
 // waits for exact absence.
 func (p *Publisher) sendDelete(ctx context.Context, t Target) (bool, error) {
-	if err := p.setPhase(t, PhaseDeleteSent, nil); err != nil {
+	if err := p.setPhase(t, PhaseDeleteSent, markSent); err != nil {
 		return false, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -261,7 +264,7 @@ func (p *Publisher) sendAdd(ctx context.Context, t Target, v int64) (bool, error
 	if err != nil {
 		return false, err
 	}
-	if err := p.setPhase(t, PhaseAddSent, nil); err != nil {
+	if err := p.setPhase(t, PhaseAddSent, markSent); err != nil {
 		return false, err
 	}
 	sent := t

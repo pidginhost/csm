@@ -646,8 +646,9 @@ still follows the dry-run policy.
 
 Unless `/etc/global_spamassassin_enable` exists, turning an account's Spam
 Filters switch off stops CSM reading its folders at the next check and
-drops its unsent reports. A report already handed to the learner still
-completes. Turning the switch back on starts new baselines.
+drops its unsent reports, including reports the learner accepted but has
+not yet sent to rspamd. A report whose update rspamd may already have
+received still completes. Turning the switch back on starts new baselines.
 The global override prevents per-account opt-out, including learning.
 What the account already contributed stays until the cluster expires or an
 operator forgets it; opting out does not delete it sooner.

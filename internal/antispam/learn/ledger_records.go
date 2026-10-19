@@ -66,6 +66,9 @@ type Target struct {
 	// GuardCharge remains after body cleanup because a zero-target guard
 	// cannot be evicted to free capacity.
 	GuardCharge *Charge `json:"guard_charge,omitempty"`
+	// SentRevision is the revision of the last journaled native write. A
+	// reservation it has not reached has sent nothing.
+	SentRevision uint64 `json:"sent_revision,omitempty"`
 }
 
 // IntentKind names what an intent does.
@@ -97,6 +100,10 @@ type IntentCluster struct {
 	Aliases   []Digest `json:"aliases,omitempty"`
 	NewT      int32    `json:"new_t"`
 	Done      bool     `json:"done,omitempty"`
+	// Prior is the target this reservation replaced, restored if the
+	// reservation is cancelled before anything is sent; nil when it created
+	// the target.
+	Prior *Target `json:"prior,omitempty"`
 }
 
 // Intent is a durable reservation, written before any native send.

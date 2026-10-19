@@ -751,11 +751,12 @@ func (e *Engine) reserve(ctx context.Context, src Source, a Admission, snapshot 
 			if !ok || t.Phase != PhaseIdle {
 				return errTargetNotReady
 			}
+			prior := t
 			t.T, t.Revision, t.Phase, t.Updated = j.NewT, t.Revision+1, PhaseRead, now
 			if err := tx.PutTarget(t); err != nil {
 				return err
 			}
-			intent.Clusters = append(intent.Clusters, IntentCluster{ClusterID: j.ClusterID, Anchor: c.Anchor, Revision: t.Revision, Aliases: j.Aliases, NewT: j.NewT})
+			intent.Clusters = append(intent.Clusters, IntentCluster{ClusterID: j.ClusterID, Anchor: c.Anchor, Revision: t.Revision, Aliases: j.Aliases, NewT: j.NewT, Prior: &prior})
 			charge.Aliases += len(j.Aliases)
 		}
 		if seed != nil {
@@ -765,6 +766,8 @@ func (e *Engine) reserve(ctx context.Context, src Source, a Admission, snapshot 
 			}
 			rev := uint64(1)
 			if ok {
+				prior := t
+				intent.Clusters[0].Prior = &prior
 				rev = t.Revision + 1
 				// The live target replaces the zero-target guard and its charge.
 				if t.GuardCharge != nil {
