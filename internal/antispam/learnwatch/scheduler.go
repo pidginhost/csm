@@ -271,6 +271,19 @@ func (w *Watcher) pass(ctx context.Context) PassReport {
 	return r
 }
 
+// hostSideFailure reports failures a message cannot cause: cancellation by
+// the engine or daemon, a request never sent, a wrong controller peer and
+// local learning-state errors.
+func hostSideFailure(err error) bool {
+	for _, local := range []error{context.Canceled, hostfacts.ErrControllerNotSent, learn.ErrPeer,
+		learn.ErrStateIO, learn.ErrStateMismatch, learn.ErrBodyInvalid} {
+		if errors.Is(err, local) {
+			return true
+		}
+	}
+	return false
+}
+
 // nextAfter is the UID of the account after uid in the pass order, so a
 // pass stopped by one account's failing entry starts the next pass with
 // the others; zero when no account stopped the pass.
@@ -976,12 +989,11 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 			return
 		}
 		failure := errors.Join(err, out.Err)
-		// Canceled work, unsent requests and local state failures say
-		// nothing about this message's ability to be processed.
-		requestFailed := errors.Is(failure, learn.ErrReadFailed) || errors.Is(failure, learn.ErrMessageRejected) ||
-			errors.Is(failure, learn.ErrRejected) || errors.Is(failure, learn.ErrUncertain)
-		if !requestFailed || errors.Is(failure, context.Canceled) ||
-			errors.Is(failure, hostfacts.ErrControllerNotSent) || errors.Is(failure, learn.ErrPeer) {
+		// Fail closed: only failures known to come from the pass, the host or
+		// local learning state spare the message's allowance. A message
+		// cannot cancel a context or break the ledger; it can cause any
+		// other error.
+		if ctx.Err() != nil || hostSideFailure(failure) {
 			retry()
 			return
 		}

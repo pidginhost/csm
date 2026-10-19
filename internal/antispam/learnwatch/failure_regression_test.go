@@ -44,7 +44,7 @@ func TestSchedulerInterruptedSubmissionKeepsReport(t *testing.T) {
 }
 
 func TestSchedulerLearningStateFailureKeepsReport(t *testing.T) {
-	for _, failure := range []error{learn.ErrStateIO, learn.ErrStateMismatch, learn.ErrBodyInvalid, learn.ErrPeer, hostfacts.ErrControllerNotSent, context.Canceled, errors.New("learning state unavailable")} {
+	for _, failure := range []error{learn.ErrStateIO, learn.ErrStateMismatch, learn.ErrBodyInvalid, learn.ErrPeer, hostfacts.ErrControllerNotSent, context.Canceled} {
 		t.Run(failure.Error(), func(t *testing.T) {
 			f := newWatch(t, 1)
 			f.pass()
@@ -153,5 +153,25 @@ func TestSchedulerBackendRotationSurvivesDiscoveryDeadline(t *testing.T) {
 	f.restart()
 	if r := f.pass(); r.Submitted != 2 || countUID(f.engine.submitted(), 1003) != 1 {
 		t.Fatalf("next pass did not serve accounts skipped by the backend failure: %+v, calls %v", r, f.engine.submitted())
+	}
+}
+
+// Fail closed: an error the scheduler cannot attribute to the host or the
+// pass counts against the message, so no message can stop passes forever.
+func TestSchedulerUnknownErrorCountsAgainstEntry(t *testing.T) {
+	f := newWatch(t, 1)
+	f.pass()
+	f.deliver(0, "new", 1, spamBody)
+	f.engine.respond = func(learn.Candidate) (learn.Outcome, error) {
+		return learn.Outcome{Err: errors.New("unexpected learner failure")}, nil
+	}
+	for range MaxEntryErrors {
+		f.pass()
+	}
+	if f.pending(0) != 0 {
+		t.Fatal("a message failing with an unknown error was never given up")
+	}
+	if got := len(f.engine.submitted()); got != MaxEntryErrors {
+		t.Fatalf("submitted %d times", got)
 	}
 }
