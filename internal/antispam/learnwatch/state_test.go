@@ -1,6 +1,7 @@
 package learnwatch
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -53,13 +54,9 @@ func (f *stateFixture) open(t *testing.T, k FolderKey, id DirIdent) (baseline bo
 
 func (f *stateFixture) observe(t *testing.T, k FolderKey, name string, m Meta) bool {
 	t.Helper()
-	base, ok := BaseName(name)
-	if !ok {
-		t.Fatalf("bad name %q", name)
-	}
 	var cand bool
 	f.do(t, func(tx StateTx) (err error) {
-		cand, err = tx.Observe(k, base, m)
+		cand, _, err = tx.Observe(k, "cur", name, m)
 		return err
 	})
 	return cand
@@ -303,5 +300,140 @@ func TestOptOutReentryRebaselines(t *testing.T) {
 	}
 	if f.observe(t, spamKey, "unsent", meta(80)) {
 		t.Fatal("re-entry learned from the pre-baseline corpus")
+	}
+}
+
+func (f *stateFixture) pendingBases(t *testing.T, k FolderKey) []string {
+	t.Helper()
+	var bases []string
+	if err := f.View(func(tx StateTx) error {
+		items, err := tx.Pending(k)
+		for _, it := range items {
+			bases = append(bases, it.Base)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return bases
+}
+
+func TestPendingIndexFollowsStatus(t *testing.T) {
+	f := newState(t)
+	f.baselined(t, spamKey)
+	f.observe(t, spamKey, "a", meta(1))
+	f.observe(t, spamKey, "b:2,S", meta(2))
+	if got := fmt.Sprint(f.pendingBases(t, spamKey)); got != "[a b]" {
+		t.Fatalf("pending %s", got)
+	}
+	var it PendingItem
+	f.do(t, func(tx StateTx) error {
+		if err := tx.Retry(spamKey, "b"); err != nil {
+			return err
+		}
+		items, err := tx.Pending(spamKey)
+		it = items[1]
+		return err
+	})
+	if it.Base != "b" || it.Name != "b:2,S" || it.Sub != "cur" || it.Attempts != 1 || !it.LastAttempt.Equal(t0) {
+		t.Fatalf("retried item %+v", it)
+	}
+	f.do(t, func(tx StateTx) error { return tx.Mark(spamKey, "a", StatusSubmitted) })
+	f.do(t, func(tx StateTx) error { return tx.Forget(spamKey, "b") })
+	if got := f.pendingBases(t, spamKey); len(got) != 0 {
+		t.Fatalf("pending after mark and forget %v", got)
+	}
+	f.observe(t, spamKey, "c", meta(3))
+	f.do(t, func(tx StateTx) error { return tx.ResetOnOptOut(spamKey.UID) })
+	if got := f.pendingBases(t, spamKey); len(got) != 0 {
+		t.Fatalf("pending after opt-out %v", got)
+	}
+}
+
+func TestObserveTracksNameAndCreation(t *testing.T) {
+	f := newState(t)
+	f.baselined(t, spamKey)
+	var cand, created bool
+	observe := func(sub, name string, m Meta) {
+		f.do(t, func(tx StateTx) (err error) {
+			cand, created, err = tx.Observe(spamKey, sub, name, m)
+			return err
+		})
+	}
+	if observe("new", "x", meta(5)); !cand || !created {
+		t.Fatalf("first observation %v %v", cand, created)
+	}
+	if observe("cur", "x:2,S", meta(5)); !cand || created {
+		t.Fatalf("moved observation %v %v", cand, created)
+	}
+	if e, _ := f.entry(t, spamKey, "x"); e.Sub != "cur" || e.Name != "x:2,S" {
+		t.Fatalf("entry did not follow the move: %+v", e)
+	}
+	f.do(t, func(tx StateTx) error {
+		if _, _, err := tx.Observe(spamKey, "cur", "..", meta(6)); err == nil {
+			t.Error("unusable name observed")
+		}
+		return nil
+	})
+}
+
+func TestCursorCountAndHasState(t *testing.T) {
+	f := newState(t)
+	f.baselined(t, spamKey)
+	f.observe(t, spamKey, "a", meta(1))
+	f.observe(t, spamKey, "b", meta(2))
+	f.do(t, func(tx StateTx) error {
+		if err := tx.SetCursor(1002); err != nil {
+			return err
+		}
+		return tx.SetLastPrune(t0)
+	})
+	if err := f.View(func(tx StateTx) error {
+		cursor, err := tx.Cursor()
+		if err != nil || cursor != 1002 {
+			t.Errorf("cursor %d, %v", cursor, err)
+		}
+		last, err := tx.LastPrune()
+		if err != nil || !last.Equal(t0) {
+			t.Errorf("last prune %v, %v", last, err)
+		}
+		n, err := tx.CountSeen(spamKey.UID)
+		if err != nil || n != 2 {
+			t.Errorf("count %d, %v", n, err)
+		}
+		if n, _ = tx.CountSeen(1002); n != 0 {
+			t.Errorf("other account count %d", n)
+		}
+		has, err := tx.HasState(spamKey.UID)
+		if err != nil || !has {
+			t.Errorf("has state %v, %v", has, err)
+		}
+		if has, _ = tx.HasState(1002); has {
+			t.Error("account without state reported state")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenRescansAfterFullRescanEvery(t *testing.T) {
+	f := newState(t)
+	f.baselined(t, spamKey)
+	f.do(t, func(tx StateTx) error { return tx.Listed(spamKey, "cur", curDir) })
+	var unchanged bool
+	open := func() bool {
+		f.do(t, func(tx StateTx) (err error) {
+			_, unchanged, err = tx.Open(spamKey, "cur", curDir)
+			return err
+		})
+		return unchanged
+	}
+	if !open() {
+		t.Fatal("freshly listed folder reported changed")
+	}
+	f.now = t0.Add(FullRescanEvery)
+	if open() {
+		t.Fatal("folder not rescanned after FullRescanEvery")
 	}
 }

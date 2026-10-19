@@ -62,22 +62,28 @@ type DirIdent struct {
 // FolderState is one folder's baseline. Listed holds each subdirectory's
 // identity as of its last complete enumeration; Dirs its current one.
 type FolderState struct {
-	Dirs         map[string]DirIdent `json:"dirs"`
-	Listed       map[string]DirIdent `json:"listed,omitempty"`
-	BaselineDone bool                `json:"baseline_done"`
-	Epoch        uint64              `json:"epoch"`
+	Dirs         map[string]DirIdent  `json:"dirs"`
+	Listed       map[string]DirIdent  `json:"listed,omitempty"`
+	ListedAt     map[string]time.Time `json:"listed_at,omitempty"`
+	BaselineDone bool                 `json:"baseline_done"`
+	Epoch        uint64               `json:"epoch"`
 }
 
-// SeenEntry is one message identity of a folder.
+// SeenEntry is one message identity of a folder. Sub and Name are where
+// the last listing saw it; Attempts and LastAttempt order the retry queue.
 type SeenEntry struct {
-	Dev       uint64    `json:"dev"`
-	Ino       uint64    `json:"ino"`
-	Size      int64     `json:"size"`
-	MtimeNs   int64     `json:"mtime_ns"`
-	CtimeNs   int64     `json:"ctime_ns"`
-	Status    string    `json:"status"`
-	FirstSeen time.Time `json:"first_seen"`
-	LastSeen  time.Time `json:"last_seen"`
+	Sub         string    `json:"sub,omitempty"`
+	Name        string    `json:"name,omitempty"`
+	Attempts    int       `json:"attempts,omitempty"`
+	LastAttempt time.Time `json:"last_attempt,omitzero"`
+	Dev         uint64    `json:"dev"`
+	Ino         uint64    `json:"ino"`
+	Size        int64     `json:"size"`
+	MtimeNs     int64     `json:"mtime_ns"`
+	CtimeNs     int64     `json:"ctime_ns"`
+	Status      string    `json:"status"`
+	FirstSeen   time.Time `json:"first_seen"`
+	LastSeen    time.Time `json:"last_seen"`
 }
 
 func (e *SeenEntry) setMeta(m Meta) {
@@ -166,11 +172,11 @@ func (t StateTx) Open(k FolderKey, sub string, id DirIdent) (baseline, unchanged
 		// the sibling would make alternating opens restart it forever.
 		st.Epoch++
 		st.BaselineDone = false
-		st.Listed = nil
+		st.Listed, st.ListedAt = nil, nil
 		baseline = true
 	default:
 		baseline = !st.BaselineDone
-		unchanged = st.BaselineDone && st.Listed[sub] == id
+		unchanged = st.BaselineDone && st.Listed[sub] == id && t.now.Sub(st.ListedAt[sub]) < FullRescanEvery
 	}
 	if st.Dirs == nil {
 		st.Dirs = map[string]DirIdent{}
@@ -189,9 +195,9 @@ func (t StateTx) Listed(k FolderKey, sub string, id DirIdent) error {
 		return nil
 	}
 	if st.Listed == nil {
-		st.Listed = map[string]DirIdent{}
+		st.Listed, st.ListedAt = map[string]DirIdent{}, map[string]time.Time{}
 	}
-	st.Listed[sub] = id
+	st.Listed[sub], st.ListedAt[sub] = id, t.now
 	return putJSON(t.tx, store.LearnWatchFoldersBucket, k.key(), st)
 }
 
@@ -214,43 +220,65 @@ func (t StateTx) Seen(k FolderKey, base string) (SeenEntry, bool, error) {
 // Observe records a listed message and reports whether it is a candidate:
 // a new identity after the baseline, a different inode under a seen name,
 // or an entry still pending. An edit to a seen inode is not a candidate.
-func (t StateTx) Observe(k FolderKey, base string, m Meta) (bool, error) {
+// Created reports a new entry, which counts against the seen allowance.
+func (t StateTx) Observe(k FolderKey, sub, name string, m Meta) (candidate, created bool, err error) {
+	base, ok := BaseName(name)
+	if !ok {
+		return false, false, errors.New("learnwatch: unusable message name")
+	}
 	st, ok, err := t.Folder(k)
 	if err != nil || !ok {
-		return false, errors.Join(err, errNoFolder)
+		return false, false, errors.Join(err, errNoFolder)
 	}
-	key := seenKey(k, base)
 	e, found, err := t.Seen(k, base)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
+	fresh := !found || (e.Sub == sub && e.Name == name && t.now.Sub(e.LastSeen) < lastSeenRefresh)
 	switch {
 	case found && e.Status == StatusPending && !st.BaselineDone:
 		// A new baseline must not replay pending work from the old folder,
 		// even when a basename or inode is reused in its initial corpus.
-		e = SeenEntry{Status: StatusBaseline, FirstSeen: t.now, LastSeen: t.now}
-		e.setMeta(m)
-		return false, putJSON(t.tx, store.LearnWatchSeenBucket, key, e)
+		e = SeenEntry{Status: StatusBaseline, FirstSeen: t.now}
 	case found && e.Status == StatusPending:
-		if e.sameContent(m) && t.now.Sub(e.LastSeen) < lastSeenRefresh {
-			return true, nil
+		if fresh && e.sameContent(m) {
+			return true, false, nil
 		}
-		e.setMeta(m)
-		e.LastSeen = t.now
-		return true, putJSON(t.tx, store.LearnWatchSeenBucket, key, e)
 	case found && e.Dev == m.Dev && e.Ino == m.Ino:
-		if t.now.Sub(e.LastSeen) < lastSeenRefresh {
-			return false, nil
+		if fresh {
+			return false, false, nil
 		}
-		e.LastSeen = t.now
-		return false, putJSON(t.tx, store.LearnWatchSeenBucket, key, e)
-	}
-	e = SeenEntry{Status: StatusPending, FirstSeen: t.now, LastSeen: t.now}
-	if !st.BaselineDone {
-		e.Status = StatusBaseline
+	default:
+		e = SeenEntry{Status: StatusPending, FirstSeen: t.now}
+		if !st.BaselineDone {
+			e.Status = StatusBaseline
+		}
 	}
 	e.setMeta(m)
-	return e.Status == StatusPending, putJSON(t.tx, store.LearnWatchSeenBucket, key, e)
+	e.Sub, e.Name, e.LastSeen = sub, name, t.now
+	return e.Status == StatusPending, !found, t.putSeen(k, base, e)
+}
+
+// Pending index keys sit in the folders bucket after every folder key,
+// whose first byte is the high byte of a UID below 2^32; meta keys too.
+var (
+	cursorKey = []byte("\xfecursor")
+	pruneKey  = []byte("\xfeprune")
+)
+
+func pendingKey(k FolderKey, base string) []byte {
+	return append([]byte{0xff}, seenKey(k, base)...)
+}
+
+// putSeen stores e and keeps the pending index in step with its status.
+func (t StateTx) putSeen(k FolderKey, base string, e SeenEntry) error {
+	if err := putJSON(t.tx, store.LearnWatchSeenBucket, seenKey(k, base), e); err != nil {
+		return err
+	}
+	if e.Status == StatusPending {
+		return t.tx.Put(store.LearnWatchFoldersBucket, pendingKey(k, base), []byte{1})
+	}
+	return t.tx.Delete(store.LearnWatchFoldersBucket, pendingKey(k, base))
 }
 
 // Mark sets an existing entry's status.
@@ -260,12 +288,111 @@ func (t StateTx) Mark(k FolderKey, base, status string) error {
 		return errors.Join(err, errors.New("learnwatch: no seen entry to mark"))
 	}
 	e.Status = status
-	return putJSON(t.tx, store.LearnWatchSeenBucket, seenKey(k, base), e)
+	return t.putSeen(k, base, e)
+}
+
+// Retry records a failed attempt on a pending entry: it moves to the tail
+// of the retry queue.
+func (t StateTx) Retry(k FolderKey, base string) error {
+	e, found, err := t.Seen(k, base)
+	if err != nil || !found {
+		return errors.Join(err, errors.New("learnwatch: no seen entry to retry"))
+	}
+	e.Attempts++
+	e.LastAttempt = t.now
+	return t.putSeen(k, base, e)
 }
 
 // Forget drops an entry, as for a vanished message.
 func (t StateTx) Forget(k FolderKey, base string) error {
-	return t.tx.Delete(store.LearnWatchSeenBucket, seenKey(k, base))
+	if err := t.tx.Delete(store.LearnWatchSeenBucket, seenKey(k, base)); err != nil {
+		return err
+	}
+	return t.tx.Delete(store.LearnWatchFoldersBucket, pendingKey(k, base))
+}
+
+// PendingItem is a pending entry with its base name.
+type PendingItem struct {
+	Base string
+	SeenEntry
+}
+
+// Pending lists k's pending entries in base-name order.
+func (t StateTx) Pending(k FolderKey) ([]PendingItem, error) {
+	prefix := pendingKey(k, "")
+	var bases []string
+	err := t.tx.Scan(store.LearnWatchFoldersBucket, prefix[:len(prefix)-1], func(key, _ []byte) (bool, error) {
+		if !bytes.HasPrefix(key, prefix) {
+			return false, nil
+		}
+		bases = append(bases, string(key[len(prefix):]))
+		return true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	items := make([]PendingItem, 0, len(bases))
+	for _, base := range bases {
+		e, found, err := t.Seen(k, base)
+		if err != nil {
+			return nil, err
+		}
+		if found && e.Status == StatusPending {
+			items = append(items, PendingItem{Base: base, SeenEntry: e})
+		}
+	}
+	return items, nil
+}
+
+// CountSeen counts uid's seen entries, the measure of its allowance.
+func (t StateTx) CountSeen(uid int) (int, error) {
+	n := 0
+	prefix := append(uidPrefix(uid), 0)
+	err := t.tx.Scan(store.LearnWatchSeenBucket, prefix[:len(prefix)-1], func(k, _ []byte) (bool, error) {
+		if !bytes.HasPrefix(k, prefix) {
+			return false, nil
+		}
+		n++
+		return true, nil
+	})
+	return n, err
+}
+
+// HasState reports whether uid has any folder record.
+func (t StateTx) HasState(uid int) (bool, error) {
+	has := false
+	prefix := append(uidPrefix(uid), 0)
+	err := t.tx.Scan(store.LearnWatchFoldersBucket, prefix[:len(prefix)-1], func(k, _ []byte) (bool, error) {
+		has = bytes.HasPrefix(k, prefix)
+		return false, nil
+	})
+	return has, err
+}
+
+// Cursor is the UID the next pass starts at; zero starts at the lowest.
+func (t StateTx) Cursor() (int, error) {
+	raw, err := t.tx.Get(store.LearnWatchFoldersBucket, cursorKey)
+	if err != nil || len(raw) != 8 {
+		return 0, err
+	}
+	// #nosec G115 -- stored by SetCursor from a positive UID
+	return int(binary.BigEndian.Uint64(raw)), nil
+}
+
+// SetCursor persists the rotation cursor.
+func (t StateTx) SetCursor(uid int) error {
+	return t.tx.Put(store.LearnWatchFoldersBucket, cursorKey, uidPrefix(uid))
+}
+
+// LastPrune is when seen entries were last pruned.
+func (t StateTx) LastPrune() (time.Time, error) {
+	v, _, err := getJSON[time.Time](t.tx, store.LearnWatchFoldersBucket, pruneKey)
+	return v, err
+}
+
+// SetLastPrune records a prune.
+func (t StateTx) SetLastPrune(at time.Time) error {
+	return putJSON(t.tx, store.LearnWatchFoldersBucket, pruneKey, at)
 }
 
 // Prune drops entries absent from their folder for SeenRetention. Pending
@@ -302,7 +429,7 @@ func (t StateTx) ResetOnOptOut(uid int) error {
 			return err
 		}
 	}
-	return nil
+	return t.deletePrefix(store.LearnWatchFoldersBucket, append(append([]byte{0xff}, uidPrefix(uid)...), 0))
 }
 
 func (t StateTx) deletePrefix(bucket string, prefix []byte) error {
