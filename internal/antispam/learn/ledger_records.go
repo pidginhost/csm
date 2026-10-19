@@ -25,8 +25,8 @@ type Cluster struct {
 	// Operator: created by an operator request, charged to the operator
 	// allowance.
 	Operator bool `json:"operator,omitempty"`
-	// Charges is what each contributor was charged for this cluster,
-	// credited back when retirement or forget removes the cluster.
+	// Charges is what each contributor was charged for this cluster.
+	// A retired cluster holds only the charges still awaiting cleanup.
 	Charges []Charge `json:"charges,omitempty"`
 	// Retired: the zero target is durable; the record stays only as the
 	// cleanup reference until the body is unlinked.
@@ -63,6 +63,9 @@ type Target struct {
 	ResetPending bool      `json:"reset_pending,omitempty"`
 	RestoreT     int32     `json:"restore_t,omitempty"`
 	Updated      time.Time `json:"updated"`
+	// GuardCharge remains after body cleanup because a zero-target guard
+	// cannot be evicted to free capacity.
+	GuardCharge *Charge `json:"guard_charge,omitempty"`
 }
 
 // IntentKind names what an intent does.

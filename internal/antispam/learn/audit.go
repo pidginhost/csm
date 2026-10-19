@@ -117,12 +117,12 @@ func (p *Publisher) AuditTurn(ctx context.Context, batch int, now time.Time) (Au
 	prog := AuditProgress{OldestUnchecked: cur.PrevStart, RotationDone: !more}
 	if len(targets) > 0 {
 		lost, err := p.check(ctx, targets, &prog)
-		if err != nil {
-			return AuditProgress{}, err
-		}
 		if lost {
 			p.audit.rebuilding = true
 			p.owe(cur.After)
+		}
+		if err != nil {
+			return AuditProgress{}, err
 		}
 	}
 	next := cur
@@ -138,7 +138,7 @@ func (p *Publisher) AuditTurn(ctx context.Context, batch int, now time.Time) (Au
 	}
 	if p.audit.coverPending {
 		switch {
-		case !more && p.audit.coverFrom == "":
+		case !more && (p.audit.coverFrom == "" || p.audit.wrapped):
 			p.audit.coverPending = false
 		case !more:
 			p.audit.wrapped = true
@@ -166,10 +166,13 @@ func (p *Publisher) check(ctx context.Context, targets []Target, prog *AuditProg
 	if err != nil {
 		return false, fmt.Errorf("%w: %w", ErrReadFailed, err)
 	}
+	// Observe the entire batch before journaling repairs. A failed commit
+	// must not hide a missing anchor from the fresh-matching gate.
+	var drifted []Target
 	for _, t := range targets {
 		v, present, err := insp.ExactValue(t.Digest)
 		if err != nil {
-			return false, fmt.Errorf("%w: %w", ErrReadFailed, err)
+			return lost, fmt.Errorf("%w: %w", ErrReadFailed, err)
 		}
 		prog.Checked++
 		exact := t.T == 0 && !present || t.T > 0 && present && v == int64(t.T)
@@ -177,21 +180,53 @@ func (p *Publisher) check(ctx context.Context, targets []Target, prog *AuditProg
 			continue
 		}
 		prog.Repaired++
-		// Only an anchor already verified present can be lost; one being
-		// reset or awaiting its first add is absent by design.
-		lost = lost || t.Phase == PhaseIdle && t.T > 0 && !present
+		if t.T > 0 && !present {
+			missing, err := p.missingLiveAnchor(t)
+			if err != nil {
+				return lost, err
+			}
+			lost = lost || missing
+		}
 		if t.Phase != PhaseIdle {
 			continue // already pending repair or publication
+		}
+		drifted = append(drifted, t)
+	}
+	for _, t := range drifted {
+		if err := p.setPhase(t, PhaseRead, nil); err != nil {
+			return lost, err
 		}
 		if p.audit.drift == nil {
 			p.audit.drift = map[Digest]int{}
 		}
 		p.audit.drift[t.Digest]++
-		if err := p.setPhase(t, PhaseRead, nil); err != nil {
-			return false, err
-		}
 	}
 	return lost, nil
+}
+
+// A pending contribution can lose a previously published anchor too.
+// Reset gaps and a seed's first add are expected absences; committed
+// contributors distinguish a live anchor from an unpublished seed.
+func (p *Publisher) missingLiveAnchor(t Target) (bool, error) {
+	if t.Phase == PhaseIdle {
+		return true, nil
+	}
+	if t.ResetPending || t.RestoreT != 0 || t.Phase != PhaseRead && t.Phase != PhaseAddSent {
+		return false, nil
+	}
+	var c Cluster
+	var ok bool
+	if err := p.ledger.View(func(v LedgerView) error {
+		var err error
+		c, ok, err = v.Cluster(t.ClusterID)
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("%w: %w", ErrStateIO, err)
+	}
+	if !ok || c.Anchor != t.Digest {
+		return false, fmt.Errorf("%w: target has no cluster for its anchor", ErrStateMismatch)
+	}
+	return len(c.UIDs) > 0 || len(c.Marks) > 0, nil
 }
 
 // settle allows fresh matching once the owed rotation is over and no target
@@ -233,11 +268,22 @@ func (p *Publisher) pending() ([]Digest, error) {
 // RepairTurn runs one publication turn for up to max pending targets,
 // continuing from a persisted cursor. It returns how many it turned.
 func (p *Publisher) RepairTurn(ctx context.Context, max int) (int, error) {
+	if max <= 0 || max > MaxExplicitDigests {
+		max = AuditBatch
+	}
+	// Retention supersedes pending publications before any body can be
+	// used to reconstruct an expired anchor.
+	if _, err := p.retireDue(p.now()); err != nil {
+		return 0, err
+	}
 	pending, err := p.pending()
 	if err != nil {
 		return 0, err
 	}
 	if len(pending) == 0 {
+		if err := p.cleanup(); err != nil {
+			return 0, err
+		}
 		return 0, p.settle()
 	}
 	var cur auditCursor
@@ -264,6 +310,12 @@ func (p *Publisher) RepairTurn(ctx context.Context, max int) (int, error) {
 	}); err != nil {
 		errs = append(errs, fmt.Errorf("%w: %w", ErrStateIO, err))
 	}
+	if err := p.cleanup(); err != nil {
+		errs = append(errs, err)
+	}
+	if len(errs) == 0 {
+		errs = append(errs, p.settle())
+	}
 	return len(order), errors.Join(errs...)
 }
 
@@ -272,6 +324,16 @@ func (p *Publisher) RepairTurn(ctx context.Context, max int) (int, error) {
 // unlinks its body and credits its charges. Storage TTLs play no part. A
 // wall clock behind the persisted watermark retires nothing new.
 func (p *Publisher) RetireDue(now time.Time) ([]uint64, error) {
+	retired, err := p.retireDue(now)
+	if err != nil {
+		return nil, err
+	}
+	return retired, p.cleanup()
+}
+
+// Keep the durable retirement separate from filesystem cleanup so a body
+// unlink failure cannot prevent publication of the zero target.
+func (p *Publisher) retireDue(now time.Time) ([]uint64, error) {
 	now = now.UTC()
 	var retired []uint64
 	err := p.ledger.Update(func(tx LedgerTx) error {
@@ -307,7 +369,7 @@ func (p *Publisher) RetireDue(now time.Time) ([]uint64, error) {
 			return err
 		}
 		for _, c := range due {
-			if err := supersede(tx, c, p.now().UTC()); err != nil {
+			if err := supersede(tx, c, now); err != nil {
 				return err
 			}
 			retired = append(retired, c.ID)
@@ -317,7 +379,7 @@ func (p *Publisher) RetireDue(now time.Time) ([]uint64, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrStateIO, err)
 	}
-	return retired, p.cleanup()
+	return retired, nil
 }
 
 // reservedAdmissions maps each cluster to its latest open reservation.
@@ -328,7 +390,7 @@ func reservedAdmissions(tx LedgerTx) (map[uint64]time.Time, error) {
 		if err := json.Unmarshal(data, &i); err != nil {
 			return errors.New("learning ledger intent is unreadable")
 		}
-		if i.Done {
+		if i.Done || i.Kind != IntentReport && i.Kind != IntentOperator {
 			return nil
 		}
 		for _, ic := range i.Clusters {
@@ -352,7 +414,18 @@ func supersede(tx LedgerTx, c Cluster, now time.Time) error {
 	if !ok {
 		t = Target{Digest: c.Anchor, ClusterID: c.ID}
 	}
-	t.T, t.Revision, t.Phase, t.ResetPending, t.RestoreT, t.Updated = 0, t.Revision+1, PhaseRead, false, 0, now
+	c.Revision = max(c.Revision, t.Revision) + 1
+	t.T, t.Revision, t.Phase, t.ResetPending, t.RestoreT, t.Updated = 0, c.Revision, PhaseRead, false, 0, now
+	// The anchor's permanent guard still consumes the creator's allowance.
+	// Transfer one alias charge to it; cleanup refunds only the remainder.
+	for i := range c.Charges {
+		ch := &c.Charges[i]
+		if ch.Usage.Aliases > 0 {
+			t.GuardCharge = &Charge{UID: ch.UID, Operator: ch.Operator, Usage: Usage{Aliases: 1}}
+			ch.Usage.Aliases--
+			break
+		}
+	}
 	if err := tx.PutTarget(t); err != nil {
 		return err
 	}

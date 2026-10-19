@@ -2,6 +2,8 @@ package learn
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -24,6 +26,12 @@ func newAuditFixture(t *testing.T) *auditFixture {
 		t.Fatal(err)
 	}
 	return &auditFixture{&publishFixture{ledger: l, bodies: testBodies(t), storage: newStorage()}}
+}
+
+func (f *auditFixture) publisher() *Publisher {
+	p := f.publishFixture.publisher()
+	p.now = func() time.Time { return t0 }
+	return p
 }
 
 // add stores cluster id with anchor d at target tv, verified, and the
@@ -224,11 +232,11 @@ func TestRetireAt90DaysFromAdmission(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if alias || cluster || usage != (Usage{}) {
+	if alias || cluster || usage != (Usage{Aliases: 1}) {
 		t.Fatalf("alias %v cluster %v usage %+v left after retirement", alias, cluster, usage)
 	}
-	if _, err := f.bodies.Read(1, 1, ""); err == nil {
-		t.Fatal("body left after retirement")
+	if _, err := os.Stat(filepath.Join(f.bodies.Dir, BodyName(1))); !os.IsNotExist(err) {
+		t.Fatalf("body left after retirement: %v", err)
 	}
 }
 
