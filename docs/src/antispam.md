@@ -702,16 +702,24 @@ csm antispam learn --forget <file>...
 
 The daemon must be running with learning enabled; observe mode refuses
 both. Each file must be a regular file with one link, at most 10 MiB, and
-is sent to the daemon as bytes. `--spam` gives each matching cluster one
+unchanged during reading. Symlinks anywhere in its path are refused. The
+snapshot is sent to the daemon as bytes. `--spam` gives each matching cluster one
 operator mark, which weighs as much as nine reporting accounts. `--forget`
 removes the clusters a file matches, with every account's contribution to
 them, and deletes their stored message. Other learned messages may still
 score similar mail.
 
-Each file gets a request ID, printed before it is sent. If the command is
-interrupted, look the ID up with `csm actions --op integrate.antispam_learn`;
-running the command again makes a new request. The exit status is 0 only
-when every file was learned, already learned, forgotten or matched nothing.
+Each file gets a request ID, printed before it is sent. If printing fails,
+that file is not sent. A lost or truncated reply is retried once with the
+same ID and snapshot. Refusals and completed replies are not retried.
+
+If the command is interrupted, look the ID up with
+`csm actions --op integrate.antispam_learn --json`. JSON records include the
+request ID, escaped basename, outcome and all available full digests, never
+message content or headers. Refused or unreadable requests may have no
+digests. A missing record does not prove that no change occurred. Running
+the command again makes a new request. The exit status is 0 only when every
+file was learned, already learned, forgotten or matched nothing.
 
 ### Learning findings
 

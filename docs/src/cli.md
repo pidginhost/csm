@@ -158,7 +158,7 @@ Teaches or corrects [learning from Spam folders](antispam.md#teaching-and-correc
 | `csm antispam learn --spam <file>...` | Learn each saved message as spam; every cluster it matches gains one operator mark. |
 | `csm antispam learn --forget <file>...` | Remove the learned clusters each message matches, including every account's contribution to them. |
 
-Each file gets a request ID, printed before it is sent; `csm actions --op integrate.antispam_learn` shows its recorded outcome. The exit status is 0 only when every file was learned, already learned, forgotten or matched nothing.
+Each file gets a request ID, printed before it is sent; `csm actions --op integrate.antispam_learn --json` shows its recorded outcome and full digests. A lost or truncated reply is retried once with the same ID and snapshot. The exit status is 0 only when every file was learned, already learned, forgotten or matched nothing.
 
 ## Firewall
 

@@ -1,11 +1,16 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -19,6 +24,90 @@ type fakeLearner struct {
 	got   learn.OperatorRequest
 	res   learn.OperatorResult
 	err   error
+}
+
+func TestControlLearnMalformedRequestAudited(t *testing.T) {
+	d := newDaemonForListener(t)
+	fake := &fakeLearner{}
+	withLearner(t, fake)
+	for _, raw := range []json.RawMessage{
+		json.RawMessage(`{"action":"spam","request_id":"abcdef","name":"mail.eml","snapshot":{}}`),
+		json.RawMessage(`{"snapshot":"private-body-marker`),
+	} {
+		recs := captureActions(t)
+		_, err := (&ControlListener{d: d}).handleAntispamLearn(raw)
+		if err == nil || len(*recs) != 1 || (*recs)[0].Result != actionlog.Refused {
+			t.Fatalf("error %v, records %+v", err, *recs)
+		}
+		data, err := json.Marshal((*recs)[0])
+		if err != nil || strings.Contains(string(data), "private-body-marker") || !strings.Contains((*recs)[0].Reason, "outcome refused") {
+			t.Fatalf("invalid audit record: %s, %v", data, err)
+		}
+	}
+	if fake.calls != 0 {
+		t.Fatal("malformed request reached the learner")
+	}
+}
+
+func TestControlLearnPersistsEveryDigest(t *testing.T) {
+	d := newDaemonForListener(t)
+	d.cfg.EmailProtection.Antispam.Enabled = true
+	d.cfg.EmailProtection.Antispam.Learning.Enabled = true
+	digests := make([]learn.Digest, learn.MaxExplicitDigests)
+	for i := range digests {
+		digests[i] = learn.Digest(fmt.Sprintf("%0128x", i))
+	}
+	withLearner(t, &fakeLearner{res: learn.OperatorResult{Digests: digests, Outcome: learn.ResultCommitted, ExitOK: true}})
+	path := filepath.Join(t.TempDir(), "actions.jsonl")
+	actionlog.SetSink(actionlog.NewFileSink(func() string { return path }, nil), "")
+	t.Cleanup(func() { actionlog.SetSink(nil, "") })
+	if _, err := (&ControlListener{d: d}).handleAntispamLearn(learnArgs(t, learn.ActionSpam, "/mail/private/sample.eml", "body")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec actionlog.Record
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Target != `"sample.eml"` {
+		t.Errorf("target %q is not a JSON-escaped basename", rec.Target)
+	}
+	for _, digest := range digests {
+		if !strings.Contains(string(data), string(digest)) {
+			t.Fatalf("full digest %s is missing from persisted record", digest)
+		}
+	}
+}
+
+func TestControlLearnMaximumSnapshotRoundTrip(t *testing.T) {
+	d := newDaemonForListener(t)
+	d.cfg.EmailProtection.Antispam.Enabled = true
+	d.cfg.EmailProtection.Antispam.Learning.Enabled = true
+	fake := &fakeLearner{res: learn.OperatorResult{Outcome: learn.ResultCommitted, ExitOK: true}}
+	withLearner(t, fake)
+	server, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		(&ControlListener{d: d}).handleConnection(server)
+	}()
+	t.Cleanup(func() { _ = client.Close(); <-done })
+	body := bytes.Repeat([]byte("x"), learn.MaxBody)
+	req := control.Request{Cmd: control.CmdAntispamLearn, Args: learnArgs(t, learn.ActionSpam, "max.eml", string(body))}
+	if err := json.NewEncoder(client).Encode(req); err != nil {
+		t.Fatal(err)
+	}
+	var resp control.Response
+	if err := json.NewDecoder(client).Decode(&resp); err != nil || !resp.OK {
+		t.Fatalf("response %+v, error %v", resp, err)
+	}
+	<-done
+	if fake.calls != 1 || !bytes.Equal(fake.got.Snapshot, body) {
+		t.Fatal("maximum snapshot did not reach the learner intact")
+	}
 }
 
 func (f *fakeLearner) Operator(_ context.Context, r learn.OperatorRequest) (learn.OperatorResult, error) {
@@ -126,7 +215,7 @@ func TestControlLearnAuditRecord(t *testing.T) {
 		rec.ActorDetail != "csm antispam learn" || rec.Target != `"in \"box\".eml"` || rec.Result != actionlog.Applied {
 		t.Fatalf("record %+v", rec)
 	}
-	if !strings.Contains(rec.Reason, strings.Repeat("ab", 16)) || !strings.Contains(rec.Reason, string(digest)) || !strings.Contains(rec.Reason, "committed") {
+	if !strings.Contains(rec.Reason, strings.Repeat("ab", 16)) || len(rec.Digests) != 1 || rec.Digests[0] != string(digest) || !strings.Contains(rec.Reason, "committed") {
 		t.Fatalf("reason %q", rec.Reason)
 	}
 	data, _ := json.Marshal(rec)

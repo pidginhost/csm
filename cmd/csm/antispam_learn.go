@@ -11,15 +11,19 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/antispam/learn"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // antispamEUID reads the effective uid; tests replace it.
 var antispamEUID = os.Geteuid
+
+var learnReadAll = io.ReadAll
 
 // learnTimeout bounds one file's request; the daemon gives up first and
 // keeps the outcome under the printed request ID.
@@ -115,7 +119,10 @@ func learnFile(action, path string, out, errOut io.Writer) bool {
 	sum := sha256.Sum256(snapshot)
 	args := control.AntispamLearnArgs{Action: action, RequestID: hex.EncodeToString(id[:]), Name: filepath.Base(path),
 		SnapshotSHA: hex.EncodeToString(sum[:]), Snapshot: snapshot}
-	fmt.Fprintf(out, "%s: request %s\n", name, args.RequestID)
+	if _, printErr := fmt.Fprintf(out, "%s: request %s\n", name, args.RequestID); printErr != nil {
+		fmt.Fprintf(errOut, "csm: %s: cannot print request ID: %v\n", name, printErr)
+		return false
+	}
 	raw, err := learnSend(args)
 	if errors.Is(err, errLearnTransport) {
 		// The daemon may have acted; the same ID returns what it recorded.
@@ -151,34 +158,40 @@ func learnFile(action, path string, out, errOut io.Writer) bool {
 // candidate (spec 7.1): a regular file, never a symlink, with one link,
 // within the size limit, unchanged while it is read.
 func readLearnFile(path string) ([]byte, error) {
-	before, err := os.Lstat(path)
+	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return nil, errors.New("cannot read the file")
+		return nil, errors.New("cannot resolve the file")
 	}
-	if !before.Mode().IsRegular() {
-		return nil, errors.New("not a regular file (symlinks are refused)")
-	}
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- an operator-named file, checked below
+	dir, err := safepath.OpenDirNoFollow(filepath.Dir(absolute))
 	if err != nil {
-		return nil, errors.New("cannot open the file")
+		return nil, errors.New("cannot open the parent directory without following symlinks")
+	}
+	defer func() { _ = dir.Close() }()
+	f, err := dir.OpenFile(filepath.Base(absolute), os.O_RDONLY, 0)
+	if err != nil {
+		return nil, errors.New("cannot open the file without following symlinks")
 	}
 	defer func() { _ = f.Close() }()
-	opened, err := f.Stat()
-	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
-		return nil, errors.New("the file changed while it was opened")
+	var before, after unix.Stat_t
+	// #nosec G115 -- an open descriptor fits in int on supported Unix hosts.
+	fd := int(f.Fd())
+	if statErr := unix.Fstat(fd, &before); statErr != nil || before.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil, errors.New("not a readable regular file")
 	}
-	if st, ok := opened.Sys().(*syscall.Stat_t); !ok || st.Nlink != 1 {
-		return nil, errors.New("the file has more than one link; copy it first")
+	if before.Nlink != 1 {
+		return nil, errors.New("the file must have exactly one link; copy it first")
 	}
-	if opened.Size() > learn.MaxBody {
+	if before.Size > learn.MaxBody {
 		return nil, fmt.Errorf("the file is larger than %d MiB", learn.MaxBody>>20)
 	}
-	data, err := io.ReadAll(io.LimitReader(f, learn.MaxBody+1))
+	data, err := learnReadAll(io.LimitReader(f, learn.MaxBody+1))
 	if err != nil {
 		return nil, errors.New("cannot read the file")
 	}
-	after, err := f.Stat()
-	if err != nil || int64(len(data)) != opened.Size() || after.Size() != opened.Size() || !after.ModTime().Equal(opened.ModTime()) {
+	if err := unix.Fstat(fd, &after); err != nil || int64(len(data)) != before.Size ||
+		before.Dev != after.Dev || before.Ino != after.Ino || before.Uid != after.Uid || before.Gid != after.Gid ||
+		before.Nlink != after.Nlink || before.Mode != after.Mode || before.Size != after.Size ||
+		before.Mtim != after.Mtim || before.Ctim != after.Ctim {
 		return nil, errors.New("the file changed while it was read")
 	}
 	return data, nil

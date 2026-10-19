@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,14 +36,21 @@ var antispamLearnOperator = func(d *Daemon) learnOperator {
 // with its request ID and digests but never message content.
 func (c *ControlListener) handleAntispamLearn(argsRaw json.RawMessage) (any, error) {
 	var args control.AntispamLearnArgs
-	if err := json.Unmarshal(argsRaw, &args); err != nil {
-		return nil, fmt.Errorf("parsing args: %w", err)
+	parseErr := json.Unmarshal(argsRaw, &args)
+	name := args.Name
+	if name != "" {
+		name = filepath.Base(name)
 	}
-	target, _ := json.Marshal(args.Name)
+	target, _ := json.Marshal(name)
 	rec := actionlog.Record{Op: "integrate.antispam_learn", Action: args.Action, Actor: actionlog.CLI,
 		ActorDetail: "csm antispam learn", Target: string(target), Result: actionlog.Refused}
-	res, err := c.antispamLearn(args)
-	rec.Reason = learnReason(args.RequestID, res)
+	var res learn.OperatorResult
+	var err error
+	if parseErr != nil {
+		err = fmt.Errorf("%w: malformed learning arguments", errLearnRefused)
+	} else {
+		res, err = c.antispamLearn(args)
+	}
 	switch {
 	case err != nil:
 		if !errors.Is(err, errLearnRefused) {
@@ -54,6 +62,16 @@ func (c *ControlListener) handleAntispamLearn(argsRaw json.RawMessage) (any, err
 	default:
 		rec.Result = actionlog.Failed
 		rec.Error = "outcome " + res.Outcome
+	}
+	if res.Outcome == "" {
+		res.Outcome = string(rec.Result)
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			res.Outcome = learn.ResultPending
+		}
+	}
+	rec.Reason = learnReason(args.RequestID, res)
+	for _, d := range res.Digests {
+		rec.Digests = append(rec.Digests, string(d))
 	}
 	actionlog.Write(rec)
 	if err != nil {
@@ -92,7 +110,8 @@ func (c *ControlListener) antispamLearn(args control.AntispamLearnArgs) (learn.O
 	return res, err
 }
 
-// learnReason names the request, outcome, clusters and full digests.
+// learnReason names the request, outcome and clusters. Full digests live
+// outside Reason because the file sink bounds free-form explanations.
 func learnReason(requestID string, res learn.OperatorResult) string {
 	var b strings.Builder
 	b.WriteString("request " + requestID)
@@ -105,9 +124,6 @@ func learnReason(requestID string, res learn.OperatorResult) string {
 		} else {
 			fmt.Fprintf(&b, "; cluster %d %s", cl.ClusterID, cl.Result)
 		}
-	}
-	for _, d := range res.Digests {
-		b.WriteString("; digest " + string(d))
 	}
 	return b.String()
 }

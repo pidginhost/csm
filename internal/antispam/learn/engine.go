@@ -463,6 +463,11 @@ func (e *Engine) admit(ctx context.Context, src Source, snapshot []byte, intentI
 	if err = ctx.Err(); err != nil {
 		return admitResult{deferred: true, digests: digests}, err
 	}
+	if src.Operator {
+		if recordErr := e.recordOperatorDigests(intentID, digests); recordErr != nil {
+			return admitResult{deferred: true, digests: digests}, recordErr
+		}
+	}
 	gaps, err := e.gaps()
 	if err != nil {
 		return admitResult{deferred: true, digests: digests}, err
@@ -874,6 +879,25 @@ func (e *Engine) Operator(ctx context.Context, r OperatorRequest) (OperatorResul
 	return res, opErr
 }
 
+// Keep the inspected digests before native writes. A pending intent can
+// outlive a failed outcome commit and resume without another inspection.
+func (e *Engine) recordOperatorDigests(id string, digests []Digest) error {
+	if err := e.cfg.Ledger.Update(func(tx LedgerTx) error {
+		o, _, err := tx.Op(id)
+		if err != nil {
+			return err
+		}
+		if o.Outcome == nil {
+			o.Outcome = &OpOutcome{}
+		}
+		o.Outcome.Digests = digests
+		return tx.PutOp(o)
+	}); err != nil {
+		return fmt.Errorf("%w: %w", ErrStateIO, err)
+	}
+	return nil
+}
+
 func validateRequest(r OperatorRequest) error {
 	if r.Action != ActionSpam && r.Action != ActionForget {
 		return errors.New("unknown learning action")
@@ -928,6 +952,10 @@ func (e *Engine) operator(caller context.Context, r OperatorRequest) (OperatorRe
 		if prior.Action != r.Action || prior.SnapshotSHA != r.SnapshotSHA {
 			return res, ErrRequestReused
 		}
+		if prior.Outcome != nil {
+			// A failing retry still reports what the first attempt inspected.
+			res.Digests = prior.Outcome.Digests
+		}
 		if prior.Done && prior.Outcome != nil {
 			o := prior.Outcome
 			return OperatorResult{RequestID: r.RequestID, Clusters: o.Clusters, Digests: o.Digests, Outcome: o.Outcome, ExitOK: o.ExitOK}, nil
@@ -954,7 +982,9 @@ func (e *Engine) operator(caller context.Context, r OperatorRequest) (OperatorRe
 	} else {
 		update, digests, err = e.forget(ctx, r)
 	}
-	res.Digests = digests
+	if len(digests) > 0 {
+		res.Digests = digests
+	}
 	if err != nil {
 		e.note(err)
 		return res, err
@@ -1100,7 +1130,7 @@ func admissionOutcomes(a admitResult) []ClusterOutcome {
 	add(a.pending, ResultPending)
 	for _, s := range a.skips {
 		if s.Reason == SkipDuplicate {
-			continue
+			continue // The cluster already reports this as a successful duplicate.
 		}
 		out = append(out, ClusterOutcome{Result: ResultSkipped + ":" + s.Reason})
 	}
@@ -1131,6 +1161,9 @@ func (e *Engine) forget(ctx context.Context, r OperatorRequest) ([]ClusterOutcom
 			return nil, digests, fmt.Errorf("%w: %w", ErrReadFailed, err)
 		}
 		digests = digestsOf(insp)
+		if recordErr := e.recordOperatorDigests(r.RequestID, digests); recordErr != nil {
+			return nil, digests, recordErr
+		}
 		if insp.Distinct == 0 {
 			return nil, digests, ErrNoDigest
 		}

@@ -52,6 +52,8 @@ var controlSocketPath = control.DefaultSocketPath
 // translate this into the operator-visible "daemon not running" exit.
 var errDaemonNotRunning = errors.New("daemon not running")
 
+var errControlResponseTooLarge = errors.New("response exceeds size limit")
+
 // sendControl dispatches cmd+args to the daemon with the default
 // short-op read ceiling. Use sendControlWithTimeout for long-running
 // tier scans.
@@ -110,13 +112,16 @@ func sendControlWithTimeout(cmd string, args any, readTimeout time.Duration) (js
 	_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 	line, readErr := readControlResponseLine(bufio.NewReader(conn), controlMaxResponseBytes)
 	if readErr != nil {
+		if errors.Is(readErr, errControlResponseTooLarge) {
+			return nil, readErr
+		}
 		if errors.Is(readErr, io.EOF) {
 			return nil, transportError{errors.New("empty response from daemon")}
 		}
 		return nil, transportError{fmt.Errorf("reading response: %w", readErr)}
 	}
 	if len(line) == 0 {
-		return nil, transportError{errors.New("empty response from daemon")}
+		return nil, errors.New("empty response from daemon")
 	}
 
 	var resp control.Response
@@ -144,7 +149,7 @@ func readControlResponseLine(r *bufio.Reader, maxBytes int) ([]byte, error) {
 		chunk, err := r.ReadSlice('\n')
 		if len(chunk) > 0 {
 			if len(out)+len(chunk) > maxBytes {
-				return nil, fmt.Errorf("response exceeds %d bytes", maxBytes)
+				return nil, fmt.Errorf("%w (%d bytes)", errControlResponseTooLarge, maxBytes)
 			}
 			out = append(out, chunk...)
 		}
@@ -157,7 +162,7 @@ func readControlResponseLine(r *bufio.Reader, maxBytes int) ([]byte, error) {
 			if len(out) == 0 {
 				return nil, io.EOF
 			}
-			return out, nil
+			return nil, io.ErrUnexpectedEOF
 		default:
 			return nil, err
 		}

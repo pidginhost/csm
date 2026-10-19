@@ -98,6 +98,8 @@ type Record struct {
 	Target  string `json:"target"`
 	Account string `json:"account,omitempty"`
 	Reason  string `json:"reason,omitempty"`
+	// Digests holds full content identifiers separately from bounded prose.
+	Digests []string `json:"digests,omitempty"`
 	// Command is the exact argv when CSM ran a program. Empty when the action
 	// was performed through system calls.
 	Command []string `json:"command,omitempty"`
@@ -187,6 +189,7 @@ func prepareRecord(r Record, h string, a Actor) Record {
 	}
 	// A timed-out write can outlive the caller's buffers.
 	r.Command = append([]string(nil), r.Command...)
+	r.Digests = append([]string(nil), r.Digests...)
 	if r.Before != nil {
 		before := *r.Before
 		r.Before = &before

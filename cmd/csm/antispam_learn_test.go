@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/control"
 )
@@ -17,6 +20,160 @@ import (
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
+}
+
+func TestLearnRejectsSymlinkAncestor(t *testing.T) {
+	file := mailFile(t, "a.eml", "spam")
+	link := filepath.Join(t.TempDir(), "mail")
+	if err := os.Symlink(filepath.Dir(file), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readLearnFile(filepath.Join(link, "a.eml")); err == nil {
+		t.Fatal("followed a symlink ancestor")
+	}
+}
+
+func TestLearnRejectsChangesDuringRead(t *testing.T) {
+	for _, change := range []string{"restored mtime", "new link", "unlinked"} {
+		t.Run(change, func(t *testing.T) {
+			file := mailFile(t, "a.eml", "original")
+			before, err := os.Stat(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved := learnReadAll
+			learnReadAll = func(r io.Reader) ([]byte, error) {
+				data, err := io.ReadAll(r)
+				if err != nil {
+					return nil, err
+				}
+				switch change {
+				case "restored mtime":
+					if err := os.WriteFile(file, []byte("modified"), 0600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Chtimes(file, before.ModTime(), before.ModTime()); err != nil {
+						t.Fatal(err)
+					}
+				case "new link":
+					if err := os.Link(file, file+".link"); err != nil {
+						t.Fatal(err)
+					}
+				case "unlinked":
+					if err := os.Remove(file); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return data, nil
+			}
+			t.Cleanup(func() { learnReadAll = saved })
+			if _, err := readLearnFile(file); err == nil {
+				t.Fatal("accepted a changed snapshot")
+			}
+		})
+	}
+}
+
+type failedLearnOutput struct{}
+
+func (failedLearnOutput) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestLearnDoesNotSendWithoutPrintedID(t *testing.T) {
+	asRoot(t)
+	saved := learnSend
+	calls := 0
+	learnSend = func(control.AntispamLearnArgs) (json.RawMessage, error) {
+		calls++
+		return json.RawMessage(`{"exit_ok":true}`), nil
+	}
+	t.Cleanup(func() { learnSend = saved })
+	var errOut bytes.Buffer
+	code := antispamLearn([]string{"--spam", mailFile(t, "a.eml", "spam")}, failedLearnOutput{}, &errOut)
+	if code == 0 || calls != 0 || errOut.Len() == 0 {
+		t.Fatalf("code %d, requests %d, stderr %q", code, calls, errOut.String())
+	}
+}
+
+func TestLearnReplyRetryClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name, reply string
+		calls, code int
+	}{
+		{"truncated", `{"ok":true,"result":`, 2, 0},
+		{"malformed line", "{\n", 1, 1},
+		{"empty line", "\n", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			asRoot(t)
+			file := mailFile(t, "a.eml", "spam")
+			listener, err := net.Listen("unix", shortSockPath(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved := controlSocketPath
+			controlSocketPath = listener.Addr().String()
+			done := make(chan []control.AntispamLearnArgs, 1)
+			go func() {
+				var seen []control.AntispamLearnArgs
+				defer func() { done <- seen }()
+				for i := 0; i < 2; i++ {
+					conn, err := listener.Accept()
+					if err != nil {
+						return
+					}
+					_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+					var req control.Request
+					if err := json.NewDecoder(conn).Decode(&req); err != nil {
+						t.Error(err)
+						_ = conn.Close()
+						return
+					}
+					var args control.AntispamLearnArgs
+					if err := json.Unmarshal(req.Args, &args); err != nil {
+						t.Error(err)
+					}
+					seen = append(seen, args)
+					if i == 0 {
+						if err := os.WriteFile(file, []byte("changed after submission"), 0600); err != nil {
+							t.Error(err)
+						}
+						_, _ = io.WriteString(conn, tc.reply)
+					} else {
+						_ = json.NewEncoder(conn).Encode(learnResponse(t, control.AntispamLearnResult{RequestID: args.RequestID, Outcome: "committed", ExitOK: true}))
+					}
+					_ = conn.Close()
+				}
+			}()
+			t.Cleanup(func() { controlSocketPath = saved })
+			var out, errOut bytes.Buffer
+			code := antispamLearn([]string{"--spam", file}, &out, &errOut)
+			_ = listener.Close()
+			seen := <-done
+			if code != tc.code || len(seen) != tc.calls {
+				t.Fatalf("code %d, requests %d, stderr %q", code, len(seen), errOut.String())
+			}
+			if len(seen) == 2 && (seen[0].RequestID != seen[1].RequestID || seen[0].SnapshotSHA != seen[1].SnapshotSHA || !bytes.Equal(seen[0].Snapshot, seen[1].Snapshot)) {
+				t.Fatal("transport retry changed the request")
+			}
+		})
+	}
+}
+
+func TestLearnDoesNotRetryDefiniteFailure(t *testing.T) {
+	asRoot(t)
+	for _, reply := range []control.Response{
+		{OK: false, Error: "learning disabled"},
+		learnResponse(t, control.AntispamLearnResult{Outcome: "pending"}),
+	} {
+		var calls atomic.Int32
+		cleanup := fakeDaemon(t, func(control.Request) control.Response { calls.Add(1); return reply })
+		var out, errOut bytes.Buffer
+		code := antispamLearn([]string{"--spam", mailFile(t, "a.eml", "spam")}, &out, &errOut)
+		cleanup()
+		if code == 0 || calls.Load() != 1 {
+			t.Fatalf("code %d, requests %d", code, calls.Load())
+		}
+	}
 }
 
 func (b *syncBuffer) Write(p []byte) (int, error) {
