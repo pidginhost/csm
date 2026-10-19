@@ -107,3 +107,46 @@ func TestControllerGetRejectsWrongPeer(t *testing.T) {
 		t.Fatal("the peer check did not connect to the listener")
 	}
 }
+
+func TestControllerDoSendsHeadersAndBody(t *testing.T) {
+	var method, path, flag, body string
+	sock := serve(t, t.TempDir(), func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		method, path, flag, body = r.Method, r.URL.RequestURI(), r.Header.Get("Flag"), string(data)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"refused"}`))
+	})
+	status, reply, err := ControllerDo(context.Background(), sock, os.Getuid(), http.MethodPost, "/fuzzyadd?x=1", map[string]string{"Flag": "1"}, []byte("message"), 1024)
+	if err != nil || status != http.StatusInternalServerError || string(reply) != `{"error":"refused"}` {
+		t.Fatalf("status=%d reply=%q err=%v", status, reply, err)
+	}
+	if method != http.MethodPost || path != "/fuzzyadd?x=1" || flag != "1" || body != "message" {
+		t.Fatalf("sent %s %s flag=%q body=%q", method, path, flag, body)
+	}
+	for _, hdr := range []map[string]string{{"Flag": "1\r\nX: y"}, {"Bad Name": "1"}, {"": "1"}} {
+		if _, _, err := ControllerDo(context.Background(), sock, os.Getuid(), http.MethodPost, "/fuzzyadd", hdr, nil, 1024); !errors.Is(err, ErrControllerNotSent) {
+			t.Fatalf("header %q: err=%v", hdr, err)
+		}
+	}
+}
+
+// Once a request is written, a missing reply leaves its outcome unknown;
+// before that, nothing reached rspamd.
+func TestControllerDoSeparatesNotSentFromNoReply(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.sock")
+	if _, _, err := ControllerDo(context.Background(), missing, os.Getuid(), http.MethodPost, "/fuzzyadd", nil, nil, 1024); !errors.Is(err, ErrControllerNotSent) || errors.Is(err, ErrControllerNoReply) {
+		t.Fatalf("connect failure: %v", err)
+	}
+	sock := serve(t, t.TempDir(), func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		time.Sleep(300 * time.Millisecond)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, _, err := ControllerDo(ctx, sock, os.Getuid(), http.MethodPost, "/fuzzyadd", nil, []byte("m"), 1024); !errors.Is(err, ErrControllerNoReply) || errors.Is(err, ErrControllerNotSent) {
+		t.Fatalf("timeout after send: %v", err)
+	}
+	if _, _, err := ControllerDo(context.Background(), sock, os.Getuid()+1, http.MethodPost, "/fuzzyadd", nil, nil, 1024); !errors.Is(err, ErrControllerPeer) || !errors.Is(err, ErrControllerNotSent) {
+		t.Fatalf("wrong peer: %v", err)
+	}
+}
