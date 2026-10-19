@@ -37,13 +37,13 @@ type learnerRunner struct {
 // no new read or send starts, then waits for calls in flight to end within
 // their deadlines.
 func (d *Daemon) syncLearner(out reconcile.Outcome) {
-	if !slices.Contains(out.Checks, reconcile.CheckLearning) {
+	// Config decides before pass timing: a busy or canceled pass must not
+	// keep a learner running that observe mode or disable stopped.
+	if !d.learningWanted() {
+		d.stopLearner()
 		return
 	}
-	cfg := d.currentCfg()
-	as := cfg.EmailProtection.Antispam
-	if !as.Enabled || !as.Learning.Enabled || cfg.ObserveMode() {
-		d.stopLearner()
+	if !slices.Contains(out.Checks, reconcile.CheckLearning) {
 		return
 	}
 	cur := d.antispamLearner.Load()
@@ -64,6 +64,13 @@ func (d *Daemon) syncLearner(out reconcile.Outcome) {
 		}
 	}
 	cur.engine.SetGate(out.LearningGate)
+}
+
+// learningWanted reports whether the current config asks for learning.
+func (d *Daemon) learningWanted() bool {
+	cfg := d.currentCfg()
+	as := cfg.EmailProtection.Antispam
+	return as.Enabled && as.Learning.Enabled && !cfg.ObserveMode()
 }
 
 // startLearning starts an engine for target with a closed gate.

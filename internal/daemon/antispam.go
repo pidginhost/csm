@@ -296,6 +296,10 @@ func ipmapSources(now time.Time, infra []string) ipmap.Sources {
 // reconcileAntispam applies a config reload: health tracking follows the
 // new switch and socket at once, and a pass reads the new config.
 func (d *Daemon) reconcileAntispam() {
+	// Observe mode and disable stop the learner at once, before any pass.
+	if !d.learningWanted() {
+		d.stopLearner()
+	}
 	if loop := d.antispamLoop.Load(); loop != nil {
 		d.syncAntispamHealth()
 		loop.Trigger()

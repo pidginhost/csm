@@ -190,3 +190,35 @@ func TestLearningStopsInObserveMode(t *testing.T) {
 		t.Fatal("observe mode started a learner")
 	}
 }
+
+// Config wins over pass timing: observe mode or disabled learning stops the
+// learner on reload and on a busy or canceled pass, not at the next
+// completed pass.
+func TestLearningStopsWithoutCompletedPass(t *testing.T) {
+	for name, change := range map[string]func(d *Daemon){
+		"observe":      func(d *Daemon) { d.cfg.Mode = "observe" },
+		"learning off": func(d *Daemon) { d.cfg.EmailProtection.Antispam.Learning.Enabled = false },
+		"antispam off": func(d *Daemon) { d.cfg.EmailProtection.Antispam.Enabled = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, trigger := range []func(d *Daemon){
+				func(d *Daemon) { d.syncLearner(reconcile.Outcome{}) },
+				func(d *Daemon) { d.reconcileAntispam() },
+			} {
+				engines := withFakeEngines(t)
+				d := newLearningDaemon(t)
+				d.syncLearner(learnedOutcome(antispam.LearningGate{Install: true, Publish: true}, testTarget))
+				change(d)
+				trigger(d)
+				select {
+				case <-(*engines)[0].stopped:
+				default:
+					t.Fatal("the learner kept running")
+				}
+				if d.antispamLearner.Load() != nil {
+					t.Fatal("a stopped learner is still published")
+				}
+			}
+		})
+	}
+}
