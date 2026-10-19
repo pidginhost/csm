@@ -295,6 +295,9 @@ func (e *Engine) start() {
 		e.started, e.startedAt = true, e.cfg.Now()
 	}
 	e.bindErr = e.cfg.Ledger.Bind(e.cfg.HashGeneration, e.cfg.Prefix)
+	if e.bindErr != nil && !errors.Is(e.bindErr, ErrStateMismatch) {
+		e.bindErr = fmt.Errorf("%w: %w", ErrStateIO, e.bindErr)
+	}
 	e.refresh()
 }
 
