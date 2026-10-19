@@ -462,16 +462,36 @@ func (t StateTx) Prune(folders []FolderKey) (int, error) {
 
 // PruneAbsentFolders drops folders not opened for SeenRetention, such as
 // deleted mailboxes and accounts, with every seen and pending entry: they
-// can never be served and would hold the account's allowance.
-func (t StateTx) PruneAbsentFolders() (int, error) {
+// can never be served and would hold the account's allowance. Failed or
+// incomplete inventories cannot establish absence and keep their state.
+func (t StateTx) PruneAbsentFolders(uncheckedAccounts []int, unreadableFolders []FolderKey) (int, error) {
+	accounts := make(map[string]bool, len(uncheckedAccounts))
+	for _, uid := range uncheckedAccounts {
+		accounts[string(uidPrefix(uid))] = true
+	}
+	folders := make(map[string]bool, len(unreadableFolders))
+	for _, k := range unreadableFolders {
+		folders[string(k.key())] = true
+	}
 	var stale [][]byte
+	undated := map[string]FolderState{}
 	err := t.tx.ForEach(store.LearnWatchFoldersBucket, func(k, v []byte) error {
 		if len(k) == 0 || k[0] == 0xfe || k[0] == 0xff {
+			return nil
+		}
+		if (len(k) >= 8 && accounts[string(k[:8])]) || folders[string(k)] {
 			return nil
 		}
 		var st FolderState
 		if err := json.Unmarshal(v, &st); err != nil {
 			return err
+		}
+		// Older state has no presence timestamp. Start its retention clock
+		// here instead of treating the zero time as proven absence.
+		if st.PresentAt.IsZero() {
+			st.PresentAt = t.now
+			undated[string(k)] = st
+			return nil
 		}
 		if t.now.Sub(st.PresentAt) > SeenRetention {
 			stale = append(stale, bytes.Clone(k))
@@ -480,6 +500,11 @@ func (t StateTx) PruneAbsentFolders() (int, error) {
 	})
 	if err != nil {
 		return 0, err
+	}
+	for k, st := range undated {
+		if err = putJSON(t.tx, store.LearnWatchFoldersBucket, []byte(k), st); err != nil {
+			return 0, err
+		}
 	}
 	for _, k := range stale {
 		if err = t.tx.Delete(store.LearnWatchFoldersBucket, k); err != nil {

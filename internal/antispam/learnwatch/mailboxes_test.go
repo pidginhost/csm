@@ -15,6 +15,30 @@ import (
 	"testing"
 )
 
+func TestMailboxReadBudgetIncludesGrowingLists(t *testing.T) {
+	remaining, bytesLeft := MaxMailboxes, int64(MaxAccountMailboxListBytes)
+	for attempt := 0; bytesLeft > 0 && attempt < 5; attempt++ {
+		// The tenant can grow the file after its size check. A rejected
+		// oversized list must still consume the account's read budget.
+		r := bytes.NewReader(bytes.Repeat([]byte{'x'}, MaxMailboxListBytes+1))
+		before := bytesLeft
+		_, skips, err := readMailboxData(r, &remaining, &bytesLeft)
+		if err != nil {
+			t.Fatal(err)
+		}
+		consumed := int64(r.Size()) - int64(r.Len())
+		if before-bytesLeft != consumed {
+			t.Fatalf("read %d bytes but charged %d", consumed, before-bytesLeft)
+		}
+		if bytesLeft <= 0 && !slices.Contains(skips, Skip{Reason: SkipMailboxLimit}) {
+			t.Fatalf("exhausted budget did not stop account traversal: %+v", skips)
+		}
+	}
+	if bytesLeft > 0 {
+		t.Fatalf("rejected lists left %d bytes of budget", bytesLeft)
+	}
+}
+
 func TestValidDomainRules(t *testing.T) {
 	label63 := strings.Repeat("a", 63)
 	// 63+1+63+1+63+1+61 = 253 bytes.

@@ -15,6 +15,8 @@ func FuzzParseInspection(f *testing.F) {
 	f.Add([]byte{}, "")
 	f.Add([]byte(`{"results":{},"errors":{},"complete":true,"distinct":null}`), "")
 	f.Add([]byte(`{"results":{ },"errors":{ },"complete":true,"distinct":0}`), "")
+	f.Add([]byte(`{"results":{},"errors":["too many digests"],"complete":false,"distinct":65}`), "")
+	f.Add([]byte(`{"results":{},"errors":["cannot process message"],"complete":false,"distinct":0}`), "")
 	f.Add([]byte(strings.Replace(string(reply(f, miss(a))), `"value":0`, `"value":503,"value":0`, 1)), "")
 	f.Add([]byte(strings.Replace(string(reply(f, miss(a))), `"value":0`, `"value":1e-400`, 1)), "")
 	f.Fuzz(func(t *testing.T, body []byte, explicit string) {

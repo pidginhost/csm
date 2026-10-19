@@ -15,7 +15,7 @@ import (
 )
 
 // Mailbox discovery reads each passwd file up to MaxMailboxListBytes and
-// inspects at most MaxMailboxes nonempty records across the account. Invalid
+// inspects at most MaxMailboxes records across the account. Invalid, empty
 // and duplicate records consume the same budget as accepted names. Directory
 // enumeration has a separate MaxMailboxes bound.
 const (
@@ -82,7 +82,7 @@ func ValidMailbox(s string) bool {
 }
 
 // ParseMailboxPasswd returns the sorted distinct valid names from at most
-// limit nonempty records of a cPanel mailbox passwd file.
+// limit records of a cPanel mailbox passwd file, including empty lines.
 func ParseMailboxPasswd(data []byte, limit int) ([]string, []Skip) {
 	return parseMailboxPasswd(data, &limit)
 }
@@ -237,17 +237,22 @@ func readMailboxList(etc *safepath.Dir, domain string, remaining *int, bytesLeft
 	if fi.Size() > *bytesLeft {
 		return nil, []Skip{{Reason: SkipMailboxLimit}}, nil
 	}
-	data, err := io.ReadAll(io.LimitReader(f, min(MaxMailboxListBytes, *bytesLeft)+1))
+	return readMailboxData(f, remaining, bytesLeft)
+}
+
+func readMailboxData(r io.Reader, remaining *int, bytesLeft *int64) ([]string, []Skip, error) {
+	data, err := io.ReadAll(io.LimitReader(r, min(MaxMailboxListBytes, *bytesLeft)+1))
+	// A tenant can grow a list after stat; rejected reads cost bytes too.
+	*bytesLeft -= int64(len(data))
 	if err != nil {
 		return nil, nil, err
 	}
 	switch {
+	case *bytesLeft < 0:
+		return nil, []Skip{{Reason: SkipMailboxLimit}}, nil
 	case len(data) > MaxMailboxListBytes:
 		return nil, []Skip{{Reason: SkipMailboxListTooLarge}}, nil
-	case int64(len(data)) > *bytesLeft:
-		return nil, []Skip{{Reason: SkipMailboxLimit}}, nil
 	}
-	*bytesLeft -= int64(len(data))
 	names, skips := parseMailboxPasswd(data, remaining)
 	return names, skips, nil
 }

@@ -656,6 +656,21 @@ Turning learning off keeps stored messages, keys and the learning ledger,
 but clears folder baselines and unsent reports; re-enabling starts new
 baselines. Observe mode keeps everything and resumes where it stopped.
 
+Folders absent for 90 days are forgotten with their pending reports.
+Unresolved accounts, unreadable homes, incomplete mailbox lists and unsafe
+or unreadable folders keep their state until they can be checked again.
+Older folder records without a presence timestamp receive a full retention
+period when first checked for expiry.
+
+Mailbox discovery counts all bytes read against the account's allowance,
+including lists rejected because they grew during the read. Capacity
+warnings count an account once even when both its folder state and learning
+ledger are full.
+
+A backend error stops further submissions for that pass. A message rspamd
+cannot process, hash or accept within its digest limit stays pending without
+stopping other accounts' reports.
+
 ### Prerequisites
 
 While learning is requested, CSM checks these during reconciliation.
@@ -877,7 +892,7 @@ reports server readiness; the running learner adds the reasons from
 | `audit_overdue` | The check of every learned value has not finished a round within 24 hours. |
 | `request_errors` | Learning requests to rspamd failed three times in a row. |
 | `backend_rebuilding` | Learned values are missing from storage, for example after Redis lost its data. CSM restores them from the stored messages and holds new clusters until it is done. |
-| `account_capacity` | An account, or the operator, reached its learning allowance, or an account's Spam folder state reached its limit of 65536 messages. Its new reports are skipped or wait; existing learning stays. Folders absent for 90 days are forgotten, which frees their share. |
+| `account_capacity` | An account, or the operator, reached its learning allowance, or an account's Spam folder state reached its limit of 65536 messages. Its new reports are skipped or wait; existing learning stays. Confirmed absent folders are forgotten after 90 days, which frees their share. |
 
 ## Findings
 

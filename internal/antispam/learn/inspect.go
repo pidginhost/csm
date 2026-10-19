@@ -26,6 +26,10 @@ type Inspection struct {
 	Distinct int
 }
 
+// ErrMessageRejected identifies a body the plugin could not process. It
+// still invalidates the inspection, but says nothing about backend health.
+var ErrMessageRejected = errors.New("inspection rejected the message")
+
 // rawResult keeps every field optional so absence is detectable.
 type rawResult struct {
 	Queried   *string         `json:"queried"`
@@ -49,6 +53,9 @@ func ParseInspection(body []byte, explicit []Digest) (Inspection, error) {
 	var complete bool
 	var distinct int
 	if json.Unmarshal(fields["complete"], &complete) != nil || !complete {
+		if bytes.Equal(fields["complete"], []byte("false")) && explicit == nil && rejectedMessage(fields) {
+			return Inspection{}, ErrMessageRejected
+		}
 		return Inspection{}, errors.New("inspection is incomplete")
 	}
 	if json.Unmarshal(fields["distinct"], &distinct) != nil || distinct < 0 || distinct > MaxExplicitDigests {
@@ -95,6 +102,30 @@ func ParseInspection(body []byte, explicit []Digest) (Inspection, error) {
 		insp.Results = append(insp.Results, r)
 	}
 	return insp, nil
+}
+
+// Only the plugin's pre-query body failures are local to one report.
+// Exact checks, storage errors and malformed replies still stop submissions.
+func rejectedMessage(fields map[string]json.RawMessage) bool {
+	var problems, results []json.RawMessage
+	var distinct int
+	if uclList(fields["errors"], &problems) != nil || len(problems) != 1 ||
+		uclList(fields["results"], &results) != nil || len(results) != 0 ||
+		json.Unmarshal(fields["distinct"], &distinct) != nil {
+		return false
+	}
+	var reason string
+	if json.Unmarshal(problems[0], &reason) != nil {
+		return false
+	}
+	switch reason {
+	case "cannot process message", "cannot hash message":
+		return distinct == 0
+	case "too many digests":
+		return distinct > MaxExplicitDigests
+	default:
+		return false
+	}
 }
 
 func parseResult(raw json.RawMessage) (Result, error) {

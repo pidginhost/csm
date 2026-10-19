@@ -250,7 +250,7 @@ func (w *Watcher) pass(ctx context.Context) PassReport {
 	}
 	w.saveCursor(0, &r)
 	w.tally(runs, &r)
-	w.prune(runs, &r)
+	w.prune(runs, &r, len(skips) == 0)
 	return r
 }
 
@@ -269,12 +269,20 @@ func (w *Watcher) saveCursor(uid int, r *PassReport) {
 	}
 }
 
-func (w *Watcher) prune(runs []*accountRun, r *PassReport) {
+func (w *Watcher) prune(runs []*accountRun, r *PassReport, accountsComplete bool) {
 	var folders []FolderKey
+	var uncheckedAccounts []int
+	var unreadableFolders []FolderKey
 	for _, run := range runs {
+		if !run.inventoryComplete {
+			uncheckedAccounts = append(uncheckedAccounts, run.a.UID)
+		}
 		for k, done := range run.subsDone {
 			if done == len(Subdirs) && !run.subsFailed[k] {
 				folders = append(folders, k)
+			}
+			if run.subsFailed[k] {
+				unreadableFolders = append(unreadableFolders, k)
 			}
 		}
 	}
@@ -289,8 +297,12 @@ func (w *Watcher) prune(runs []*accountRun, r *PassReport) {
 			if _, pruneErr := tx.Prune(folders); pruneErr != nil {
 				return pruneErr
 			}
-			if _, pruneErr := tx.PruneAbsentFolders(); pruneErr != nil {
-				return pruneErr
+			// A registry name without a usable UID cannot be distinguished
+			// from a deleted account by the UID-keyed persisted state.
+			if accountsComplete {
+				if _, pruneErr := tx.PruneAbsentFolders(uncheckedAccounts, unreadableFolders); pruneErr != nil {
+					return pruneErr
+				}
 			}
 			return tx.SetLastPrune(tx.now)
 		})
@@ -354,6 +366,8 @@ type accountRun struct {
 	turnOpens     int
 	seenCount     int
 	capReported   bool
+
+	inventoryComplete bool
 }
 
 func (r *accountRun) close() {
@@ -376,6 +390,7 @@ func (r *accountRun) stateFailed(err error, rep *PassReport) bool {
 	rep.Skipped[SkipStateUnavailable]++
 	rep.Unfinished = true
 	r.done = true
+	r.inventoryComplete = false
 	return true
 }
 
@@ -441,6 +456,7 @@ func (r *accountRun) start(rep *PassReport) bool {
 	}
 	rep.Accounts++
 	boxes, skips, err := home.Mailboxes()
+	r.inventoryComplete = err == nil && len(skips) == 0
 	for _, s := range skips {
 		rep.Skipped[s.Reason]++
 		if s.Reason == SkipMailboxLimit || s.Reason == SkipMailboxListTooLarge || s.Reason == SkipUnsafePath {
@@ -671,6 +687,10 @@ func (r *accountRun) capped(rep *PassReport) {
 	r.curIncomplete = true
 	r.cappedFolders[r.curKey] = true
 	rep.Unfinished = true
+	r.reportCapacity(rep)
+}
+
+func (r *accountRun) reportCapacity(rep *PassReport) {
 	if !r.capReported {
 		r.capReported = true
 		rep.Skipped[learn.SkipAccountCapacity]++
@@ -911,13 +931,13 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 	switch {
 	case err != nil || out.Err != nil:
 		retry()
-		r.w.submitStopped = true
+		r.w.submitStopped = err != nil || !errors.Is(out.Err, learn.ErrMessageRejected)
 	case out.Deferred:
 		retry()
 	case slices.ContainsFunc(out.Skips, func(s learn.Skip) bool { return s.Reason == learn.SkipAccountCapacity }):
 		retry()
 		r.paused = true
-		rep.Skipped[learn.SkipAccountCapacity]++
+		r.reportCapacity(rep)
 	default:
 		rep.Submitted++
 		rep.Committed += len(out.Committed)

@@ -2,10 +2,36 @@ package learn
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 )
+
+func TestParseInspectionMessageRejection(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		body     string
+		explicit []Digest
+		rejected bool
+	}{
+		{"digest limit", `{"results":{},"errors":["too many digests"],"complete":false,"distinct":65}`, nil, true},
+		{"parse failure", `{"results":[],"errors":["cannot process message"],"complete":false,"distinct":0}`, nil, true},
+		{"hash failure", `{"results":{},"errors":["cannot hash message"],"complete":false,"distinct":0}`, nil, true},
+		{"backend timeout", `{"results":{},"errors":["timeout"],"complete":false,"distinct":1}`, nil, false},
+		{"mixed errors", `{"results":{},"errors":["cannot hash message","timeout"],"complete":false,"distinct":0}`, nil, false},
+		{"invalid count", `{"results":{},"errors":["too many digests"],"complete":false,"distinct":0}`, nil, false},
+		{"invalid results", `{"results":false,"errors":["cannot process message"],"complete":false,"distinct":0}`, nil, false},
+		{"exact check", `{"results":{},"errors":["cannot process message"],"complete":false,"distinct":0}`, []Digest{digest('a')}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			insp, err := ParseInspection([]byte(tc.body), tc.explicit)
+			if err == nil || len(insp.Results) != 0 || errors.Is(err, ErrMessageRejected) != tc.rejected {
+				t.Fatalf("inspection %+v, error %v; want message rejection %v", insp, err, tc.rejected)
+			}
+		})
+	}
+}
 
 func digest(c byte) Digest { return Digest(strings.Repeat(string(c), 128)) }
 

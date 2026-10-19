@@ -454,3 +454,42 @@ func TestListedAcceptsStateWithoutListingTimes(t *testing.T) {
 		return err
 	})
 }
+
+func TestPruneAbsentFoldersKeepsStateWithoutPresenceTime(t *testing.T) {
+	f := newState(t)
+	f.baselined(t, spamKey)
+	f.observe(t, spamKey, "waiting", meta(90))
+	f.do(t, func(tx StateTx) error {
+		st, _, err := tx.Folder(spamKey)
+		if err != nil {
+			return err
+		}
+		st.PresentAt = time.Time{}
+		return putJSON(tx.tx, store.LearnWatchFoldersBucket, spamKey.key(), st)
+	})
+	f.now = t0.Add(time.Hour)
+	f.do(t, func(tx StateTx) error {
+		n, err := tx.PruneAbsentFolders(nil, nil)
+		if n != 0 {
+			t.Errorf("pruned %d folders without an established absence time", n)
+		}
+		return err
+	})
+	if items := f.pendingBases(t, spamKey); len(items) != 1 || items[0] != "waiting" {
+		t.Fatalf("lost recent pending report: %v", items)
+	}
+	f.now = f.now.Add(SeenRetention + time.Hour)
+	f.do(t, func(tx StateTx) error {
+		n, err := tx.PruneAbsentFolders(nil, nil)
+		if n != 1 {
+			t.Errorf("pruned %d folders after retention; want 1", n)
+		}
+		return err
+	})
+	if _, ok := f.entry(t, spamKey, "waiting"); ok {
+		t.Fatal("absent folder kept its seen entry after retention")
+	}
+	if items := f.pendingBases(t, spamKey); len(items) != 0 {
+		t.Fatalf("absent folder kept pending index: %v", items)
+	}
+}

@@ -174,23 +174,137 @@ func (f *watchFixture) seenCount() int {
 }
 
 func TestSchedulerBackendErrorStopsSubmissionsForPass(t *testing.T) {
-	f := newWatch(t, 2)
+	for _, outcomeError := range []bool{false, true} {
+		t.Run(fmt.Sprintf("outcome=%t", outcomeError), func(t *testing.T) {
+			f := newWatch(t, 2)
+			f.pass()
+			f.deliver(0, "new", 2, spamBody)
+			f.deliver(1, "new", 2, spamBody)
+			f.engine.respond = func(learn.Candidate) (learn.Outcome, error) {
+				err := errors.New("controller timed out")
+				if outcomeError {
+					return learn.Outcome{Err: err}, nil
+				}
+				return learn.Outcome{}, err
+			}
+			r := f.pass()
+			if got := len(f.engine.submitted()); got != 1 {
+				t.Fatalf("a failing backend took %d requests in one pass", got)
+			}
+			if r.Pending != 4 {
+				t.Fatalf("discovery stopped with submissions: %+v", r)
+			}
+			f.engine.respond = nil
+			f.pass()
+			if got := len(f.engine.submitted()); got != 5 {
+				t.Fatalf("after recovery %d requests in total", got)
+			}
+		})
+	}
+}
+
+func TestSchedulerCapacityCountsAccountsOnce(t *testing.T) {
+	f := newWatch(t, 1)
+	f.cfg.SeenAllowance = 1
+	f.restart()
 	f.pass()
 	f.deliver(0, "new", 2, spamBody)
-	f.deliver(1, "new", 2, spamBody)
 	f.engine.respond = func(learn.Candidate) (learn.Outcome, error) {
-		return learn.Outcome{}, errors.New("controller timed out")
+		return learn.Outcome{Skips: []learn.Skip{{Reason: learn.SkipAccountCapacity}}}, nil
 	}
 	r := f.pass()
-	if got := len(f.engine.submitted()); got != 1 {
-		t.Fatalf("a failing backend took %d requests in one pass", got)
+	if n := r.Skipped[learn.SkipAccountCapacity]; n != 1 {
+		t.Fatalf("one account hit both allowances but was counted %d times", n)
 	}
-	if r.Pending != 4 {
-		t.Fatalf("discovery stopped with submissions: %+v", r)
-	}
-	f.engine.respond = nil
+}
+
+func TestSchedulerRejectedMessageDoesNotStopOtherAccounts(t *testing.T) {
+	f := newWatch(t, 2)
 	f.pass()
-	if got := len(f.engine.submitted()); got != 5 {
-		t.Fatalf("after recovery %d requests in total", got)
+	f.deliver(0, "new", 1, spamBody)
+	f.deliver(1, "new", 1, spamBody)
+	f.engine.respond = func(c learn.Candidate) (learn.Outcome, error) {
+		if c.UID == f.accounts[0].UID {
+			_, err := learn.ParseInspection([]byte(`{"results":{},"errors":["too many digests"],"complete":false,"distinct":65}`), nil)
+			if err == nil {
+				t.Fatal("rejected message accepted as an inspection")
+			}
+			return learn.Outcome{Err: fmt.Errorf("%w: %w", learn.ErrReadFailed, err)}, nil
+		}
+		return learn.Outcome{Committed: []uint64{1}}, nil
+	}
+	if r := f.pass(); r.Submitted != 1 || r.Pending != 1 || countUID(f.engine.submitted(), 1002) != 1 {
+		t.Fatalf("one rejected message stopped other accounts: %+v, calls %v", r, f.engine.submitted())
+	}
+}
+
+func TestSchedulerPrunePreservesUncheckedFolders(t *testing.T) {
+	for _, block := range []string{"home", "mailboxes", "folder"} {
+		t.Run(block, func(t *testing.T) {
+			f := newWatch(t, 2)
+			f.addMailbox(0, "example.com", "user")
+			f.pass()
+			f.submit = false
+			mail := filepath.Join(f.accounts[0].Home, "mail/example.com/user/.spam")
+			writeMsg(t, filepath.Join(mail, "new/report"), []byte(spamBody))
+			f.pass()
+			f.now = t0.Add(SeenRetention + 48*time.Hour)
+			var path string
+			switch block {
+			case "home":
+				path = f.accounts[0].Home
+			case "mailboxes":
+				path = filepath.Join(f.accounts[0].Home, "etc/example.com/passwd")
+			case "folder":
+				path = mail
+			}
+			if err := os.Rename(path, path+"-saved"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(path+"-saved", path); err != nil {
+				t.Fatal(err)
+			}
+			// A different, deleted account can still be pruned while this
+			// account's inventory cannot establish absence.
+			f.cfg.Source = fakeSource{users: []string{f.accounts[0].Name}, passwd: fmt.Sprintf("%s:x:1001:1001::%s:/bin/bash\n", f.accounts[0].Name, f.accounts[0].Home)}
+			f.restart()
+			if r := f.pass(); !r.Unfinished {
+				t.Fatalf("unchecked folder reported complete: %+v", r)
+			}
+			k := FolderKey{UID: 1001, Domain: "example.com", Box: "user", Folder: ".spam"}
+			if err := f.cfg.State.View(func(tx StateTx) error {
+				items, err := tx.Pending(k)
+				if err != nil {
+					return err
+				}
+				if len(items) != 1 || items[0].Base != "report" {
+					t.Errorf("unchecked folder lost pending report: %+v", items)
+				}
+				_, found, err := tx.Folder(FolderKey{UID: 1002, Folder: ".spam"})
+				if found {
+					t.Error("deleted account was not pruned")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestSchedulerPrunePreservesUnresolvedAccounts(t *testing.T) {
+	f := newWatch(t, 1)
+	f.pass()
+	f.submit = false
+	f.deliver(0, "new", 1, spamBody)
+	f.pass()
+	f.now = t0.Add(SeenRetention + 48*time.Hour)
+	f.cfg.Source = fakeSource{users: []string{f.accounts[0].Name}}
+	f.restart()
+	if r := f.pass(); r.Skipped[SkipNoPasswd] != 1 {
+		t.Fatalf("missing passwd entry was not reported: %+v", r)
+	}
+	if n := f.pending(0); n != 1 {
+		t.Fatalf("unresolved account lost pending report: %d", n)
 	}
 }
