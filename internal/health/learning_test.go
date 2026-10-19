@@ -19,11 +19,11 @@ func TestBuildCarriesLearningStatus(t *testing.T) {
 	if plain.AntispamLearning != nil {
 		t.Fatal("a provider without a learner reported learning")
 	}
-	pending := 0
-	want := &LearningStatus{LastPass: time.Unix(100, 0).UTC(), PendingReports: &pending, LiveClusters: 3}
+	pending, live := 0, 3
+	want := &LearningStatus{LastPass: time.Unix(100, 0).UTC(), PendingReports: &pending, LiveClusters: &live}
 	snap := Build(learningFakeProvider{&fakeProvider{}, want}, "v", nil)
-	want.LiveClusters = 9
-	if snap.AntispamLearning == nil || snap.AntispamLearning.LiveClusters != 3 || *snap.AntispamLearning.PendingReports != 0 {
+	*want.LiveClusters = 9
+	if snap.AntispamLearning == nil || *snap.AntispamLearning.LiveClusters != 3 || *snap.AntispamLearning.PendingReports != 0 {
 		t.Fatalf("learning = %+v", snap.AntispamLearning)
 	}
 	data, err := json.Marshal(snap)

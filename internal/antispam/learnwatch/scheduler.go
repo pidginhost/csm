@@ -398,7 +398,9 @@ func (r *accountRun) start(rep *PassReport) bool {
 	boxes, skips, err := home.Mailboxes()
 	for _, s := range skips {
 		rep.Skipped[s.Reason]++
-		rep.Unfinished = true
+		if s.Reason == SkipMailboxLimit || s.Reason == SkipMailboxListTooLarge || s.Reason == SkipUnsafePath {
+			rep.Unfinished = true
+		}
 	}
 	if err != nil {
 		rep.Skipped[SkipFolderUnreadable]++

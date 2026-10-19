@@ -18,6 +18,7 @@ type learnEngine interface {
 	Run(context.Context)
 	SetGate(antispam.LearningGate)
 	Pause()
+	Publishing() bool
 	Problems() []antispam.Problem
 	Operator(context.Context, learn.OperatorRequest) (learn.OperatorResult, error)
 	Submit(context.Context, learn.Candidate) (learn.Outcome, error)
@@ -147,6 +148,7 @@ func (d *Daemon) startLearning(ctx context.Context, target reconcile.LearnerTarg
 		Bodies:         &learn.Bodies{Dir: learn.DefaultBodiesDir},
 		HashGeneration: target.HashGeneration,
 		Prefix:         target.Prefix,
+		OnReportCommit: func() { learningMetricsSet().Committed.Inc() },
 	})
 	runCtx, cancel := context.WithCancel(ctx)
 	r := &learnerRunner{target: target, engine: engine, cancel: cancel}

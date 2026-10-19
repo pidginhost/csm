@@ -17,8 +17,8 @@ type Stats struct {
 	BodyBytes        int64
 	OldestUnchecked  time.Time
 	AuditCompleted   time.Time
-	// Reconstructed counts anchors scheduled for repair since the engine
-	// started.
+	// Reconstructed counts missing live anchors newly scheduled for repair
+	// since the engine started.
 	Reconstructed uint64
 }
 

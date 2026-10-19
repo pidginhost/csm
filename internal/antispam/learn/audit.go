@@ -43,14 +43,15 @@ type auditCursor struct {
 // auditState is in memory on purpose: after a restart fresh matching waits
 // for a complete rotation again.
 type auditState struct {
-	init         bool
-	coverPending bool   // a full rotation is still owed
-	coverFrom    Digest // cursor when the rotation became owed
-	wrapped      bool
-	coverReached bool
-	covered      bool // fresh matching allowed
-	rebuilding   bool
-	drift        map[Digest]int
+	init          bool
+	coverPending  bool   // a full rotation is still owed
+	coverFrom     Digest // cursor when the rotation became owed
+	wrapped       bool
+	coverReached  bool
+	covered       bool // fresh matching allowed
+	rebuilding    bool
+	drift         map[Digest]int
+	reconstructed uint64 // missing live anchors newly scheduled for repair
 }
 
 // FreshMatchingAllowed reports whether a full audit and repair rotation has
@@ -172,6 +173,7 @@ func (p *Publisher) check(ctx context.Context, targets []Target, prog *AuditProg
 	// Observe the entire batch before journaling repairs. A failed commit
 	// must not hide a missing anchor from the fresh-matching gate.
 	var drifted []Target
+	missing := map[Digest]bool{}
 	for _, t := range targets {
 		v, present, err := insp.ExactValue(t.Digest)
 		if err != nil {
@@ -184,11 +186,12 @@ func (p *Publisher) check(ctx context.Context, targets []Target, prog *AuditProg
 		}
 		prog.Repaired++
 		if t.T > 0 && !present {
-			missing, err := p.missingLiveAnchor(t)
+			live, err := p.missingLiveAnchor(t)
 			if err != nil {
 				return lost, err
 			}
-			lost = lost || missing
+			lost = lost || live
+			missing[t.Digest] = live
 		}
 		if t.Phase != PhaseIdle {
 			continue // already pending repair or publication
@@ -198,6 +201,9 @@ func (p *Publisher) check(ctx context.Context, targets []Target, prog *AuditProg
 	for _, t := range drifted {
 		if err := p.setPhase(t, PhaseRead, nil); err != nil {
 			return lost, err
+		}
+		if missing[t.Digest] {
+			p.audit.reconstructed++
 		}
 		if p.audit.drift == nil {
 			p.audit.drift = map[Digest]int{}

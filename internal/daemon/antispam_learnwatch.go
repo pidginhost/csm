@@ -59,6 +59,8 @@ func newRunnerWatcher(db *store.DB, r *learnerRunner) learnWatcher {
 			recordLearningPass(rep, time.Now())
 			if st, err := r.engine.Stats(); err == nil {
 				recordLearningStats(st)
+			} else {
+				invalidateLearningStats()
 			}
 		},
 	})

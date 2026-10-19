@@ -587,7 +587,7 @@ func TestEnginePauseKeepsFreshMatching(t *testing.T) {
 	f.add(t, 1, digest('a'), 2, t0, 2002)
 	e := newTestEngine(t, f)
 	e.Pause()
-	if e.publishing() {
+	if e.Publishing() {
 		t.Fatal("a paused learner still publishes")
 	}
 	e.SetGate(openGate)

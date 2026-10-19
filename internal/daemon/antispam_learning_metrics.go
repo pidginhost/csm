@@ -1,9 +1,11 @@
 package daemon
 
 import (
+	"math"
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/antispam/learn"
 	"github.com/pidginhost/csm/internal/antispam/learnwatch"
 	"github.com/pidginhost/csm/internal/health"
@@ -76,7 +78,6 @@ func learningMetricsSet() *learningMetrics {
 func recordLearningPass(r learnwatch.PassReport, now time.Time) {
 	m := learningMetricsSet()
 	m.Admitted.Add(float64(r.Submitted))
-	m.Committed.Add(float64(r.Committed))
 	for reason, n := range r.Skipped {
 		m.Skips.With(reason).Add(float64(n))
 	}
@@ -108,6 +109,13 @@ func recordLearningStats(s learn.Stats) {
 	m.Reconstructed.Set(float64(s.Reconstructed))
 }
 
+func invalidateLearningStats() {
+	m := learningMetricsSet()
+	for _, g := range []*metrics.Gauge{m.LiveClusters, m.ZeroTargets, m.BodyBytes, m.Uncertain, m.OldestUnchecked, m.AuditCompleted, m.Reconstructed} {
+		g.Set(math.NaN())
+	}
+}
+
 // LearningStatus is the learner's health for status output, paused or
 // not; nil while learning does not run.
 func (d *Daemon) LearningStatus() *health.LearningStatus {
@@ -115,10 +123,9 @@ func (d *Daemon) LearningStatus() *health.LearningStatus {
 	if r == nil {
 		return nil
 	}
-	g := r.currentGate()
 	rep, at := r.watcher.Last()
 	s := &health.LearningStatus{
-		Publishing:     g.Install && g.Publish,
+		Publishing:     r.engine.Publishing(),
 		LastPass:       at,
 		PassUnfinished: rep.Unfinished,
 		OldestPending:  rep.OldestPending,
@@ -128,8 +135,10 @@ func (d *Daemon) LearningStatus() *health.LearningStatus {
 		s.PendingReports = &n
 	}
 	if st, err := r.engine.Stats(); err == nil {
-		s.LiveClusters, s.ZeroTargets, s.UncertainIntents = st.LiveClusters, st.ZeroTargets, st.UncertainIntents
-		s.BodyBytes, s.OldestUnchecked, s.AuditCompleted = st.BodyBytes, st.OldestUnchecked, st.AuditCompleted
+		s.LiveClusters, s.ZeroTargets, s.UncertainIntents = &st.LiveClusters, &st.ZeroTargets, &st.UncertainIntents
+		s.BodyBytes, s.OldestUnchecked, s.AuditCompleted = &st.BodyBytes, st.OldestUnchecked, st.AuditCompleted
+	} else {
+		s.StateError = antispam.ReasonStateIO
 	}
 	return s
 }

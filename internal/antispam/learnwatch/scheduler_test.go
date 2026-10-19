@@ -494,3 +494,31 @@ func TestSchedulerReportsCommittedEngineSkipsAndOnPass(t *testing.T) {
 		t.Fatal("an idle pass reached OnPass")
 	}
 }
+
+func TestSchedulerEnumerationFailuresLeaveBacklogUnknown(t *testing.T) {
+	for _, kind := range []string{"home", "folder", "capacity"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newWatch(t, 1)
+			f.cfg.SeenAllowance = 1
+			f.restart()
+			f.pass()
+			f.deliver(0, "new", 2, spamBody)
+			switch kind {
+			case "home":
+				home := f.accounts[0].Home
+				if err := os.Rename(home, home+"-moved"); err != nil {
+					t.Fatal(err)
+				}
+			case "folder":
+				path := filepath.Join(f.accounts[0].Home, "mail/.spam/new")
+				if err := os.Rename(path, path+"-moved"); err != nil {
+					t.Fatal(err)
+				}
+				writeMsg(t, path, nil)
+			}
+			if r := f.pass(); !r.Unfinished {
+				t.Fatalf("incomplete discovery reported a known backlog: %+v", r)
+			}
+		})
+	}
+}

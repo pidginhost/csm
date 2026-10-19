@@ -4,14 +4,19 @@ package daemon
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
+	"math"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/antispam/learn"
 	"github.com/pidginhost/csm/internal/antispam/learnwatch"
 	"github.com/pidginhost/csm/internal/metrics"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // lastWatcher reports a fixed last pass.
@@ -59,16 +64,65 @@ func TestLearningStatusUnfinishedPassHasNoPendingCount(t *testing.T) {
 	}
 }
 
+func TestLearningStatusReportsReconcilePause(t *testing.T) {
+	d := newLearningDaemon(t)
+	// Use the daemon's real ledger without starting background work.
+	e := learn.NewEngine(learn.EngineConfig{Ledger: learn.Open(store.Global())})
+	r := &learnerRunner{engine: e, watcher: &fakeWatcher{}}
+	r.setGate(antispam.LearningGate{Install: true, Publish: true})
+	d.antispamLearner.Store(r)
+	t.Cleanup(func() { d.antispamLearner.Store(nil) })
+	if !d.LearningStatus().Publishing {
+		t.Fatal("open engine did not report publishing")
+	}
+	d.pauseLearner()
+	if d.LearningStatus().Publishing {
+		t.Fatal("paused engine still reports publishing")
+	}
+	r.setGate(antispam.LearningGate{Install: true, Publish: true})
+	if !d.LearningStatus().Publishing {
+		t.Fatal("resumed engine did not report publishing")
+	}
+}
+
+type statsFailureEngine struct{ fakeEngine }
+
+func (*statsFailureEngine) Stats() (learn.Stats, error) {
+	return learn.Stats{}, errors.New("unreadable ledger")
+}
+
+func TestLearningStatusDoesNotReportZeroOnStateError(t *testing.T) {
+	d := &Daemon{}
+	d.antispamLearner.Store(&learnerRunner{engine: &statsFailureEngine{}, watcher: &fakeWatcher{}})
+	data, err := json.Marshal(d.LearningStatus())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["state_error"] != "state_io" {
+		t.Fatalf("state failure is not visible: %s", data)
+	}
+	for _, name := range []string{"live_clusters", "zero_target_records", "uncertain_intents", "body_bytes"} {
+		if _, ok := got[name]; ok {
+			t.Errorf("unavailable %s reported as a count: %s", name, data)
+		}
+	}
+}
+
 var labelSet = regexp.MustCompile(`\{([^}]*)\}`)
 
 func TestLearningMetricsHaveNoTenantLabels(t *testing.T) {
 	m := learningMetricsSet()
+	admitted, committed := m.Admitted.Value(), m.Committed.Value()
 	recordLearningPass(learnwatch.PassReport{
 		Accounts: 1, Submitted: 2, Committed: 3, Pending: 1,
 		Skipped:       map[string]int{"tagged": 1, learnwatch.SkipOptedOut: 2},
 		OldestPending: time.Now().Add(-time.Minute),
 	}, time.Now())
-	if m.Admitted.Value() < 2 || m.Committed.Value() < 3 {
+	if m.Admitted.Value()-admitted != 2 || m.Committed.Value() != committed {
 		t.Fatalf("counters %v %v", m.Admitted.Value(), m.Committed.Value())
 	}
 	var buf bytes.Buffer
@@ -96,5 +150,41 @@ func TestLearningMetricsHaveNoTenantLabels(t *testing.T) {
 	}
 	if seen == 0 {
 		t.Fatal("no learning metrics written")
+	}
+}
+
+func TestLearningCommitMetricsUseEngineNotifications(t *testing.T) {
+	engines := withFakeEngines(t)
+	withFakeWatchers(t)
+	d := newLearningDaemon(t)
+	d.syncLearner(learnedOutcome(antispam.LearningGate{Install: true, Publish: true}, testTarget))
+	callback := (*engines)[0].cfg.OnReportCommit
+	if callback == nil {
+		t.Fatal("engine commits are not wired to metrics")
+	}
+	m := learningMetricsSet()
+	before := m.Committed.Value()
+	callback()
+	callback()
+	if got := m.Committed.Value() - before; got != 2 {
+		t.Fatalf("commit counter increment = %v, want 2", got)
+	}
+}
+
+func TestLearningMetricsInvalidateUnreadableState(t *testing.T) {
+	watchers := withFakeWatchers(t)
+	r := &learnerRunner{engine: &statsFailureEngine{}}
+	newRunnerWatcher(nil, r)
+	m := learningMetricsSet()
+	recordLearningStats(learn.Stats{LiveClusters: 7, BodyBytes: 123})
+	(*watchers)[0].cfg.OnPass(learnwatch.PassReport{})
+	for _, g := range []*metrics.Gauge{m.LiveClusters, m.ZeroTargets, m.BodyBytes, m.Uncertain, m.OldestUnchecked, m.AuditCompleted, m.Reconstructed} {
+		if !math.IsNaN(g.Value()) {
+			t.Errorf("unavailable engine state reported as %v", g.Value())
+		}
+	}
+	recordLearningStats(learn.Stats{})
+	if m.LiveClusters.Value() != 0 || m.Uncertain.Value() != 0 {
+		t.Fatal("successful read did not restore empty counts")
 	}
 }

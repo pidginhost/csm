@@ -381,18 +381,23 @@ All series are prefixed `csm_php_relay_`. Registered when `email_protection.php_
 
 ### Anti-spam learning
 
-All series are prefixed `csm_antispam_learning_`. They update after each completed Spam folder pass while learning runs; no series carries an account, mailbox or UID label. See [Anti-spam](antispam.md).
+All series are prefixed `csm_antispam_learning_`. Pass totals and state gauges update after each completed Spam folder pass while learning runs. Contributions are counted when committed, including background retries. No series carries an account, mailbox or UID label. See [Anti-spam](antispam.md).
 
 - `csm_antispam_learning_reports_admitted_total` (counter): Spam folder reports the learner accepted.
 - `csm_antispam_learning_contributions_committed_total` (counter): cluster contributions committed from those reports.
 - `csm_antispam_learning_skips_total{reason}` (counter): entries and reports skipped. `reason` is a fixed code such as `tagged`, `malformed`, `opted_out`, `oversize` or `account_capacity`.
-- `csm_antispam_learning_pending_reports` (gauge): reports waiting after the last pass. When the pass ended before every folder was listed, this is a lower bound.
+- `csm_antispam_learning_pending_reports` (gauge): reports waiting after the last pass. When discovery was incomplete, including unreadable folders or discovery limits, this is a lower bound.
 - `csm_antispam_learning_backlog_age_seconds` (gauge): age of the oldest waiting report at the last pass.
 - `csm_antispam_learning_last_pass_timestamp_seconds` (gauge): when the last pass completed.
 - `csm_antispam_learning_live_clusters`, `csm_antispam_learning_zero_target_records`, `csm_antispam_learning_body_bytes` (gauges): learned clusters, zero-target guards and stored anchor message bytes.
 - `csm_antispam_learning_uncertain_intents` (gauge): anchor writes whose outcome is still being reconciled.
 - `csm_antispam_learning_oldest_unchecked_timestamp_seconds`, `csm_antispam_learning_audit_completed_timestamp_seconds` (gauges): anchor audit progress.
-- `csm_antispam_learning_reconstructed_clusters` (gauge): anchors scheduled for reconstruction since the learner started.
+- `csm_antispam_learning_reconstructed_clusters` (gauge): missing live anchors newly scheduled for reconstruction since the learner started. Retries, ordinary value corrections and removal of retired anchors do not increase it.
+
+If the learning ledger cannot be read after a pass, the engine-state gauges
+(`live_clusters`, `zero_target_records`, `body_bytes`, `uncertain_intents`,
+`oldest_unchecked_timestamp_seconds`, `audit_completed_timestamp_seconds`
+and `reconstructed_clusters`) report `NaN` until a successful read.
 
 ### Signature retroactive rescans
 

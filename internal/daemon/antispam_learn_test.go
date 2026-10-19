@@ -46,6 +46,16 @@ func (f *fakeEngine) Problems() []antispam.Problem { return nil }
 
 func (f *fakeEngine) Stats() (learn.Stats, error) { return learn.Stats{}, nil }
 
+func (f *fakeEngine) Publishing() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.gates) == 0 {
+		return false
+	}
+	g := f.gates[len(f.gates)-1]
+	return g.Install && g.Publish
+}
+
 // Submit records reports; respond, when set, decides the outcome.
 func (f *fakeEngine) Submit(_ context.Context, c learn.Candidate) (learn.Outcome, error) {
 	f.mu.Lock()

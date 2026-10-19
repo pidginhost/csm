@@ -110,6 +110,9 @@ type EngineConfig struct {
 	Now func() time.Time
 	// TickEvery spaces background turns; zero means EngineTick.
 	TickEvery time.Duration
+	// OnReportCommit observes a durable Spam folder contribution, including
+	// one completed by a background retry. It must not block the owner.
+	OnReportCommit func()
 }
 
 type request struct {
@@ -231,7 +234,9 @@ func (e *Engine) stopLocked(stop bool) {
 	}
 }
 
-func (e *Engine) publishing() bool {
+// Publishing reports whether the reconcile gate allows native work and
+// no reconciliation pause is holding it.
+func (e *Engine) Publishing() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.gate.Install && e.gate.Publish && !e.paused
@@ -416,16 +421,16 @@ func (e *Engine) background(ctx context.Context) {
 	now := e.cfg.Now()
 	prog, err := e.pub.AuditTurn(ctx, AuditBatch, now)
 	errs = append(errs, err)
+	e.mu.Lock()
+	e.statRepaired = e.pub.audit.reconstructed
 	if err == nil {
 		e.oldest = prog.OldestUnchecked
-		e.mu.Lock()
 		e.statOldest = prog.OldestUnchecked
-		e.statRepaired += uint64(prog.Repaired) // #nosec G115 -- a turn's repair count is non-negative
 		if prog.RotationDone {
 			e.statAudit = now
 		}
-		e.mu.Unlock()
 	}
+	e.mu.Unlock()
 	_, err = e.pub.RepairTurn(ctx, RepairBatch)
 	errs = append(errs, err, e.resume(ctx))
 	err = errors.Join(errs...)
@@ -461,7 +466,7 @@ func (e *Engine) resume(ctx context.Context) error {
 // without reading the snapshot.
 func (e *Engine) Submit(ctx context.Context, c Candidate) (Outcome, error) {
 	out := Outcome{Ref: c.Ref, Deferred: true}
-	if !e.publishing() {
+	if !e.Publishing() {
 		return out, nil
 	}
 	if err := e.do(ctx, func() { out = e.report(ctx, c) }); err != nil {
@@ -855,12 +860,14 @@ func (e *Engine) publishIntent(ctx context.Context, id string) (committed, pendi
 // retirement) ends the contribution without a vote and returns its charge.
 func (e *Engine) commit(id string, k int) (bool, error) {
 	committed := false
+	report := false
 	err := e.cfg.Ledger.Update(func(tx LedgerTx) error {
 		intent, ok, err := tx.Intent(id)
 		if err != nil || !ok || k >= len(intent.Clusters) || intent.Clusters[k].Done {
 			return err
 		}
 		ic := &intent.Clusters[k]
+		report = intent.Kind == IntentReport
 		ch := Charge{UID: intent.UID, Operator: intent.Kind == IntentOperator, Usage: Usage{Aliases: len(ic.Aliases)}}
 		if intent.Seed != nil && k == 0 {
 			ch.Usage.BodyBytes = intent.Seed.BodyLen
@@ -919,13 +926,16 @@ func (e *Engine) commit(id string, k int) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("%w: %w", ErrStateIO, err)
 	}
+	if committed && report && e.cfg.OnReportCommit != nil {
+		e.cfg.OnReportCommit()
+	}
 	return committed, nil
 }
 
 // Operator runs one operator request through the owner.
 func (e *Engine) Operator(ctx context.Context, r OperatorRequest) (OperatorResult, error) {
 	res := OperatorResult{RequestID: r.RequestID}
-	if !e.publishing() {
+	if !e.Publishing() {
 		return res, ErrLearningOff
 	}
 	if err := validateRequest(r); err != nil {
