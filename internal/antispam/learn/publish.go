@@ -247,14 +247,19 @@ func (p *Publisher) sendDelete(ctx context.Context, t Target) (bool, error) {
 // sendAdd checks the anchor body, journals add_sent and sends one add: T-V
 // on the plain path, the whole T after a verified deletion.
 func (p *Publisher) sendAdd(ctx context.Context, t Target, v int64) (bool, error) {
+	resetAdd := t.Phase == PhaseAddPending
+	weight := t.T
+	if !resetAdd {
+		// The caller sends T-V only for 0 <= V < T; anything else is never
+		// a weight.
+		if v < 0 || v >= int64(t.T) {
+			return false, fmt.Errorf("%w: stored value outside the add range", ErrStateMismatch)
+		}
+		weight = t.T - int32(v) // #nosec G115 -- 0 <= v < t.T, so v fits in int32
+	}
 	body, err := p.anchorBody(ctx, t)
 	if err != nil {
 		return false, err
-	}
-	weight := t.T - int32(v)
-	resetAdd := t.Phase == PhaseAddPending
-	if resetAdd {
-		weight = t.T
 	}
 	if err := p.setPhase(t, PhaseAddSent, nil); err != nil {
 		return false, err

@@ -294,3 +294,17 @@ func TestPublishExactTargetAndRequiredReset(t *testing.T) {
 		}
 	}
 }
+
+// An add's weight is T-V; a value outside [0, T) never becomes a send.
+func TestSendAddRefusesOutOfRangeDelta(t *testing.T) {
+	f := newPublishFixture(t, 2)
+	p := f.publisher()
+	for _, v := range []int64{2, 5, -1, 1 << 40} {
+		if _, err := p.sendAdd(context.Background(), f.target(t), v); err == nil {
+			t.Fatalf("value %d accepted", v)
+		}
+	}
+	if adds, _ := f.storage.counts(); len(adds) != 0 {
+		t.Fatalf("sent adds %v", adds)
+	}
+}
