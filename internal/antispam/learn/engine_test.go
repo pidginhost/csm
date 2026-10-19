@@ -232,6 +232,9 @@ func TestEngineOperatorSpamAddsMark(t *testing.T) {
 	if got, _ := f.targetOf(t, digest('a')); got.T != 20 {
 		t.Fatalf("target %+v", got)
 	}
+	if !reflect.DeepEqual(res.Digests, []Digest{digest('a')}) {
+		t.Fatalf("audited digests %v", res.Digests)
+	}
 	again, err := e.Operator(context.Background(), req)
 	if err != nil || !reflect.DeepEqual(again, res) {
 		t.Fatalf("retry %+v err %v", again, err)
@@ -386,5 +389,31 @@ func TestEngineOperatorRetryKeepsSkippedParts(t *testing.T) {
 	want := []ClusterOutcome{{ClusterID: 1, Result: ResultCommitted}, {Result: ResultSkipped + ":" + SkipBelowJoin}}
 	if err != nil || res.ExitOK || res.Outcome != ResultPartial || !reflect.DeepEqual(res.Clusters, want) {
 		t.Fatalf("retry %+v err %v", res, err)
+	}
+}
+
+// Review focus 4: a request ID is bound to its file; reuse with other bytes
+// fails and changes nothing.
+func TestLearnSameIDDifferentSnapshotFails(t *testing.T) {
+	f := newAuditFixture(t)
+	f.add(t, 1, digest('a'), 2, t0, 2002)
+	e := newTestEngine(t, f)
+	snap := f.report("operator sample", digest('a'), digest('a'), 1)
+	req := OperatorRequest{Action: ActionSpam, RequestID: "0123456789abcdef0123456789abcdef", Snapshot: snap, SnapshotSHA: sha(snap)}
+	if _, err := e.Operator(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	other := f.report("another sample", digest('a'), digest('a'), 1)
+	changed := OperatorRequest{Action: ActionSpam, RequestID: req.RequestID, Snapshot: other, SnapshotSHA: sha(other)}
+	if _, err := e.Operator(context.Background(), changed); !errors.Is(err, ErrRequestReused) {
+		t.Fatalf("err %v", err)
+	}
+	forget := req
+	forget.Action = ActionForget
+	if _, err := e.Operator(context.Background(), forget); !errors.Is(err, ErrRequestReused) {
+		t.Fatalf("action change: err %v", err)
+	}
+	if got, _ := f.targetOf(t, digest('a')); got.T != 20 {
+		t.Fatalf("target %+v", got)
 	}
 }

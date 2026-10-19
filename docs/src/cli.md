@@ -149,6 +149,17 @@ Operator controls for the email PHP-relay detector. Talks to the daemon's contro
 | `csm phprelay dry-run on\|off\|reset [--persist]` | Override the auto-freeze dry-run state at runtime. `on` = freeze findings emitted but no `exim -Mf` runs; `off` = live freezes; `reset` clears the runtime override and falls back to bbolt or `csm.yaml`. Precedence: runtime > bbolt > yaml. `--persist` writes the `on`/`off` choice to the bbolt `phprelay:settings` bucket so it survives restarts; on `reset --persist` the bbolt row is also deleted. |
 | `csm phprelay thaw <msgID>` | Manually thaw a frozen Exim message. Wraps `exim -Mt` with msgID validation (rejects anything that isn't `[A-Za-z0-9-]{16,32}`) and writes a `thaw` entry to the auto-freeze JSONL audit at `/var/log/csm/php_relay_audit.jsonl`. |
 
+## Antispam learning (cPanel only)
+
+Teaches or corrects [learning from Spam folders](antispam.md#teaching-and-correcting-learning). Runs as root against the running daemon while learning is enabled; observe mode refuses it.
+
+| Command | Description |
+|---------|-------------|
+| `csm antispam learn --spam <file>...` | Learn each saved message as spam; every cluster it matches gains one operator mark. |
+| `csm antispam learn --forget <file>...` | Remove the learned clusters each message matches, including every account's contribution to them. |
+
+Each file gets a request ID, printed before it is sent; `csm actions --op integrate.antispam_learn` shows its recorded outcome. The exit status is 0 only when every file was learned, already learned, forgotten or matched nothing.
+
 ## Firewall
 
 See [Firewall](firewall.md) for the full reference.

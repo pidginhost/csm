@@ -104,19 +104,19 @@ func sendControlWithTimeout(cmd string, args any, readTimeout time.Duration) (js
 
 	_ = conn.SetWriteDeadline(time.Now().Add(controlDialTimeout))
 	if _, writeErr := conn.Write(reqBytes); writeErr != nil {
-		return nil, fmt.Errorf("writing request: %w", writeErr)
+		return nil, transportError{fmt.Errorf("writing request: %w", writeErr)}
 	}
 
 	_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 	line, readErr := readControlResponseLine(bufio.NewReader(conn), controlMaxResponseBytes)
 	if readErr != nil {
 		if errors.Is(readErr, io.EOF) {
-			return nil, fmt.Errorf("empty response from daemon")
+			return nil, transportError{errors.New("empty response from daemon")}
 		}
-		return nil, fmt.Errorf("reading response: %w", readErr)
+		return nil, transportError{fmt.Errorf("reading response: %w", readErr)}
 	}
 	if len(line) == 0 {
-		return nil, fmt.Errorf("empty response from daemon")
+		return nil, transportError{errors.New("empty response from daemon")}
 	}
 
 	var resp control.Response
@@ -128,6 +128,12 @@ func sendControlWithTimeout(cmd string, args any, readTimeout time.Duration) (js
 	}
 	return resp.Result, nil
 }
+
+// transportError marks a request that may have reached the daemon without
+// its reply arriving.
+type transportError struct{ error }
+
+func (e transportError) Unwrap() error { return e.error }
 
 func readControlResponseLine(r *bufio.Reader, maxBytes int) ([]byte, error) {
 	if maxBytes <= 0 {

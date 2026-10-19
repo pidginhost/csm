@@ -83,6 +83,10 @@ const (
 	// whitelist entry, only the attack record that ranks the address.
 	CmdThreatForget = "threat.forget"
 
+	// CmdAntispamLearn submits one operator file to the antispam learner,
+	// as spam or to forget what it taught.
+	CmdAntispamLearn = "antispam.learn"
+
 	// Phase 2 incident correlation.
 	CmdIncidentsList       = "incidents.list"
 	CmdIncidentsShow       = "incidents.show"
@@ -263,6 +267,35 @@ type ThreatForgetResult struct {
 	Score   int    `json:"score"`
 	Events  int    `json:"events"`
 	Message string `json:"message"`
+}
+
+// AntispamLearnArgs carries one file for CmdAntispamLearn. The snapshot
+// travels as bytes, never a path the daemon would open. RequestID is
+// random per file and reused only by transport retries; SnapshotSHA binds
+// it to the bytes. Name is the file's basename, for the action record.
+type AntispamLearnArgs struct {
+	Action      string `json:"action"`
+	RequestID   string `json:"request_id"`
+	Name        string `json:"name"`
+	SnapshotSHA string `json:"snapshot_sha"`
+	Snapshot    []byte `json:"snapshot"`
+}
+
+// AntispamLearnCluster is one cluster's result; ClusterID 0 is a part that
+// resolved to no cluster (a skip).
+type AntispamLearnCluster struct {
+	ClusterID uint64 `json:"cluster_id,omitempty"`
+	Result    string `json:"result"`
+}
+
+// AntispamLearnResult is the outcome of one file. ExitOK is false for any
+// skipped, failed, partial or pending file.
+type AntispamLearnResult struct {
+	RequestID string                 `json:"request_id"`
+	Clusters  []AntispamLearnCluster `json:"clusters,omitempty"`
+	Digests   []string               `json:"digests,omitempty"`
+	Outcome   string                 `json:"outcome"`
+	ExitOK    bool                   `json:"exit_ok"`
 }
 
 // FirewallRollbackStatus reports the pending tentative-apply state for

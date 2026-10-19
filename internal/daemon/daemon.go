@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/admissionowner"
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/antispam/learn"
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/auditd"
@@ -129,6 +130,9 @@ type Daemon struct {
 	// antispamLoop runs antispam reconcile passes on a cPanel host. It
 	// stays nil elsewhere and until startup reaches it.
 	antispamLoop atomic.Pointer[reconcile.Loop]
+	// antispamLearner is the running learning engine, nil while learning is
+	// stopped.
+	antispamLearner atomic.Pointer[learn.Engine]
 	// antispamHealth tracks rspamd's scan socket and Exim's scan markers
 	// while antispam is enabled.
 	antispamHealth antispamHealthState

@@ -86,9 +86,11 @@ type OperatorRequest struct {
 }
 
 // OperatorResult is the per-cluster outcome of one operator request.
+// Digests are the file's full text digests, for the audit record.
 type OperatorResult struct {
 	RequestID string
 	Clusters  []ClusterOutcome
+	Digests   []Digest
 	Outcome   string
 	ExitOK    bool
 }
@@ -393,7 +395,16 @@ func (e *Engine) report(c Candidate) Outcome {
 type admitResult struct {
 	committed, duplicates, pending []uint64
 	skips                          []Skip
+	digests                        []Digest
 	deferred                       bool
+}
+
+func digestsOf(insp Inspection) []Digest {
+	ds := make([]Digest, 0, len(insp.Results))
+	for _, r := range insp.Results {
+		ds = append(ds, r.Queried)
+	}
+	return ds
 }
 
 // admit inspects, assigns, reserves and publishes one snapshot.
@@ -407,10 +418,11 @@ func (e *Engine) admit(ctx context.Context, src Source, snapshot []byte, intentI
 		return admitResult{deferred: true}, fmt.Errorf("%w: %w", ErrReadFailed, err)
 	}
 	e.requestFails = 0
+	digests := digestsOf(insp)
 	gaps, err := e.gaps()
 	if err != nil {
 		e.note(err)
-		return admitResult{deferred: true}, err
+		return admitResult{deferred: true, digests: digests}, err
 	}
 	var a Admission
 	if viewErr := e.cfg.Ledger.View(func(v LedgerView) error {
@@ -422,15 +434,15 @@ func (e *Engine) admit(ctx context.Context, src Source, snapshot []byte, intentI
 		e.note(err)
 		return admitResult{deferred: true}, err
 	}
-	res := admitResult{skips: a.Skips, duplicates: a.Duplicates}
+	res := admitResult{skips: a.Skips, duplicates: a.Duplicates, digests: digests}
 	switch {
 	case len(a.Mismatch) > 0:
 		e.frozen = true
-		return admitResult{deferred: true}, nil
+		return admitResult{deferred: true, digests: digests}, nil
 	case len(a.DeleteZero) > 0:
-		return admitResult{deferred: true}, e.scheduleZero(a.DeleteZero)
+		return admitResult{deferred: true, digests: digests}, e.scheduleZero(a.DeleteZero)
 	case a.Defer:
-		return admitResult{deferred: true}, nil
+		return admitResult{deferred: true, digests: digests}, nil
 	}
 	key := src.UID
 	if src.Operator {
@@ -449,11 +461,11 @@ func (e *Engine) admit(ctx context.Context, src Source, snapshot []byte, intentI
 	}
 	id, err := e.reserve(src, a, snapshot, intentID)
 	if errors.Is(err, errDeferSeed) || errors.Is(err, errTargetNotReady) {
-		return admitResult{deferred: true}, nil
+		return admitResult{deferred: true, digests: digests}, nil
 	}
 	if err != nil {
 		e.note(err)
-		return admitResult{deferred: true}, err
+		return admitResult{deferred: true, digests: digests}, err
 	}
 	e.stateErr = nil
 	res.committed, res.pending, err = e.publishIntent(ctx, id)
@@ -782,6 +794,7 @@ func (e *Engine) operator(r OperatorRequest) (OperatorResult, error) {
 	// The request ID is bound to its action and file on first sight; a
 	// pending request keeps its partial outcome for the retry.
 	var prior []ClusterOutcome
+	var priorDigests []Digest
 	var recorded *OpOutcome
 	if err := e.cfg.Ledger.Update(func(tx LedgerTx) error {
 		o, found, err := tx.Op(r.RequestID)
@@ -795,7 +808,7 @@ func (e *Engine) operator(r OperatorRequest) (OperatorResult, error) {
 			return ErrRequestReused
 		}
 		if o.Outcome != nil {
-			prior = o.Outcome.Clusters
+			prior, priorDigests = o.Outcome.Clusters, o.Outcome.Digests
 			if o.Done {
 				recorded = o.Outcome
 			}
@@ -810,15 +823,20 @@ func (e *Engine) operator(r OperatorRequest) (OperatorResult, error) {
 		return res, err
 	}
 	if recorded != nil {
-		return OperatorResult{RequestID: r.RequestID, Clusters: recorded.Clusters, Outcome: recorded.Outcome, ExitOK: recorded.ExitOK}, nil
+		return OperatorResult{RequestID: r.RequestID, Clusters: recorded.Clusters, Digests: recorded.Digests, Outcome: recorded.Outcome, ExitOK: recorded.ExitOK}, nil
 	}
 	var update []ClusterOutcome
+	var digests []Digest
 	var final string
 	var err error
 	if r.Action == ActionSpam {
-		update, err = e.operatorSpam(ctx, r)
+		update, digests, err = e.operatorSpam(ctx, r)
 	} else {
-		update, final, err = e.forget(ctx, r)
+		update, digests, final, err = e.forget(ctx, r)
+	}
+	res.Digests = digests
+	if len(res.Digests) == 0 {
+		res.Digests = priorDigests
 	}
 	if err != nil {
 		e.note(err)
@@ -830,7 +848,7 @@ func (e *Engine) operator(r OperatorRequest) (OperatorResult, error) {
 		res.Outcome, res.ExitOK = final, final == ResultNoMatch
 	}
 	rec := OpRecord{RequestID: r.RequestID, Action: r.Action, SnapshotSHA: r.SnapshotSHA, Done: res.Outcome != ResultPending,
-		Outcome: &OpOutcome{Clusters: res.Clusters, Outcome: res.Outcome, ExitOK: res.ExitOK}}
+		Outcome: &OpOutcome{Clusters: res.Clusters, Digests: res.Digests, Outcome: res.Outcome, ExitOK: res.ExitOK}}
 	if err := e.cfg.Ledger.Update(func(tx LedgerTx) error { return tx.PutOp(rec) }); err != nil {
 		err = fmt.Errorf("%w: %w", ErrStateIO, err)
 		e.note(err)
@@ -894,14 +912,14 @@ func summarize(action string, cs []ClusterOutcome) (string, bool) {
 
 // operatorSpam admits the file with one operator mark per resolved cluster,
 // or resumes the request's pending intent.
-func (e *Engine) operatorSpam(ctx context.Context, r OperatorRequest) ([]ClusterOutcome, error) {
+func (e *Engine) operatorSpam(ctx context.Context, r OperatorRequest) ([]ClusterOutcome, []Digest, error) {
 	var resumed bool
 	if err := e.cfg.Ledger.View(func(v LedgerView) error {
 		_, ok, err := v.Intent(r.RequestID)
 		resumed = ok
 		return err
 	}); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrStateIO, err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrStateIO, err)
 	}
 	var a admitResult
 	if resumed {
@@ -912,7 +930,7 @@ func (e *Engine) operatorSpam(ctx context.Context, r OperatorRequest) ([]Cluster
 		var err error
 		a, err = e.admit(ctx, Source{Operator: true, MarkID: r.RequestID, BodyLen: int64(len(r.Snapshot))}, r.Snapshot, r.RequestID)
 		if err != nil && a.deferred {
-			return nil, err
+			return nil, a.digests, err
 		}
 	}
 	var out []ClusterOutcome
@@ -927,14 +945,14 @@ func (e *Engine) operatorSpam(ctx context.Context, r OperatorRequest) ([]Cluster
 	for _, s := range a.skips {
 		out = append(out, ClusterOutcome{Result: ResultSkipped + ":" + s.Reason})
 	}
-	return out, nil
+	return out, a.digests, nil
 }
 
 // forget resolves accepted aliases first, then live anchors matched at or
 // above the join boundary, supersedes each resolved cluster with T=0 and
 // waits for verified absence and body removal (spec 8). final is set when
 // the file resolved to nothing to delete.
-func (e *Engine) forget(ctx context.Context, r OperatorRequest) (out []ClusterOutcome, final string, err error) {
+func (e *Engine) forget(ctx context.Context, r OperatorRequest) (out []ClusterOutcome, digests []Digest, final string, err error) {
 	var intent Intent
 	var resumed bool
 	if err := e.cfg.Ledger.View(func(v LedgerView) error {
@@ -942,29 +960,30 @@ func (e *Engine) forget(ctx context.Context, r OperatorRequest) (out []ClusterOu
 		intent, resumed, err = v.Intent(r.RequestID)
 		return err
 	}); err != nil {
-		return nil, "", fmt.Errorf("%w: %w", ErrStateIO, err)
+		return nil, nil, "", fmt.Errorf("%w: %w", ErrStateIO, err)
 	}
 	if !resumed {
 		insp, err := e.cfg.Client.Inspect(ctx, r.Snapshot)
 		if err != nil {
 			e.requestFails++
-			return nil, "", fmt.Errorf("%w: %w", ErrReadFailed, err)
+			return nil, nil, "", fmt.Errorf("%w: %w", ErrReadFailed, err)
 		}
 		e.requestFails = 0
+		digests = digestsOf(insp)
 		if insp.Distinct == 0 {
-			return nil, "", ErrNoDigest
+			return nil, nil, "", ErrNoDigest
 		}
 		ids, skipped, err := e.resolveForget(insp)
 		if err != nil {
-			return nil, "", err
+			return nil, digests, "", err
 		}
 		out = skipped
 		if len(ids) == 0 {
 			if len(skipped) > 0 {
-				return out, "", nil
+				return out, digests, "", nil
 			}
 			// Every part was a complete miss on a current ledger.
-			return nil, ResultNoMatch, nil
+			return nil, digests, ResultNoMatch, nil
 		}
 		intent = Intent{ID: r.RequestID, Kind: IntentForget}
 		if err := e.cfg.Ledger.Update(func(tx LedgerTx) error {
@@ -994,7 +1013,7 @@ func (e *Engine) forget(ctx context.Context, r OperatorRequest) (out []ClusterOu
 			}
 			return tx.PutIntent(intent)
 		}); err != nil {
-			return nil, "", fmt.Errorf("%w: %w", ErrStateIO, err)
+			return nil, digests, "", fmt.Errorf("%w: %w", ErrStateIO, err)
 		}
 	}
 	var errs []error
@@ -1032,7 +1051,7 @@ func (e *Engine) forget(ctx context.Context, r OperatorRequest) (out []ClusterOu
 		}
 		out = append(out, ClusterOutcome{ClusterID: ic.ClusterID, Result: result})
 	}
-	return out, "", nil
+	return out, digests, "", nil
 }
 
 type forgetTarget struct {

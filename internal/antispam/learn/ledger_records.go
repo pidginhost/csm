@@ -122,6 +122,7 @@ type OpRecord struct {
 // cannot copy arbitrary message fields into the ledger.
 type OpOutcome struct {
 	Clusters []ClusterOutcome `json:"clusters,omitempty"`
+	Digests  []Digest         `json:"digests,omitempty"`
 	Outcome  string           `json:"outcome"`
 	ExitOK   bool             `json:"exit_ok"`
 }
