@@ -225,7 +225,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	}
 	if wantLearning && !d.Observe && keysErr == nil {
 		if socket, uid, ok := antispam.LearnerEndpoint(f); ok {
-			out.Learner = LearnerTarget{Controller: socket, RspamdUID: uid, HashGeneration: keys.HashGeneration(), Prefix: keys.Prefix}
+			out.Learner = LearnerTarget{Controller: socket, RspamdUID: uid, HashGeneration: antispam.HashGeneration(keys), Prefix: keys.Prefix}
 		}
 	}
 	defer func() {

@@ -623,8 +623,8 @@ CSM sends the Redis password only to a socket it has verified, and only on a
 connection served by that socket's owner.
 
 Redis persistence is recommended. CSM warns only when both append-only
-persistence (`appendonly yes`) and snapshots (`save`) are disabled. This
-build does not rebuild lost hashes after a Redis restart.
+persistence (`appendonly yes`) and snapshots (`save`) are disabled. While
+learning is active, CSM rebuilds missing learned values from stored messages.
 
 ### What learning installs
 
@@ -666,6 +666,8 @@ are mode 0700 and key files mode 0600. CSM creates a complete set when none
 exists. It refuses a partial or invalid set with `state_mismatch`, leaving
 learning off. Do not delete the surviving keys to start over: new keys
 cannot match hashes made with the old ones.
+The learning ledger is bound to the hash keys and hash settings. A changed
+generation stops learning instead of reusing the previous learning state.
 
 The Redis capacity warning starts at 75% of `maxmemory` and clears below
 70%. It leaves installed learning configuration in place and pauses the
@@ -674,6 +676,10 @@ learner, including pending changes, until usage falls.
 Turning learning off requests removal of CSM's learning files and Roundcube
 include, while keeping the keys. Conflicts or transaction failures can
 prevent removal. Check findings before assuming learned scoring is gone.
+Disabling learning or entering observe mode stops native learning calls
+before configuration reconciliation. Calls already in flight are canceled
+and drained within their deadlines. Reconciliation pauses the learner until
+a completed pass confirms that learning can resume.
 
 ### Stored messages
 
@@ -684,6 +690,8 @@ whole, headers and attachments included, under
 deletes it when the cluster retires, 90 days after its last report, or
 when an operator forgets it. Backups and file system snapshots can keep a
 copy longer.
+Disabling learning, observe mode or unmet prerequisites can delay retirement
+and message deletion. Turning learning off keeps stored messages and state.
 
 CSM's state archive (`csm store export`) leaves learning state out. To
 back learning up, stop the daemon and copy the state database, the

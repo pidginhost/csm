@@ -39,8 +39,10 @@ type learnerRunner struct {
 func (d *Daemon) syncLearner(out reconcile.Outcome) {
 	// Config decides before pass timing: a busy or canceled pass must not
 	// keep a learner running that observe mode or disable stopped.
+	d.antispamLearnerMu.Lock()
+	defer d.antispamLearnerMu.Unlock()
 	if !d.learningWanted() {
-		d.stopLearner()
+		d.stopLearnerLocked()
 		return
 	}
 	if !slices.Contains(out.Checks, reconcile.CheckLearning) {
@@ -55,22 +57,41 @@ func (d *Daemon) syncLearner(out reconcile.Outcome) {
 		return
 	}
 	if cur != nil && cur.target != out.Learner {
-		d.stopLearner()
+		d.stopLearnerLocked()
 		cur = nil
 	}
 	if cur == nil {
+		// Draining the old engine can overlap a config reload.
+		if !d.learningWanted() {
+			return
+		}
 		if cur = d.startLearning(d.scanContext(), out.Learner); cur == nil {
 			return
 		}
 	}
+	if !d.learningWanted() {
+		d.stopLearnerLocked()
+		return
+	}
 	cur.engine.SetGate(out.LearningGate)
 }
 
-// learningWanted reports whether the current config asks for learning.
+// learningWanted reports whether the current config asks for learning and
+// the daemon is not shutting down.
 func (d *Daemon) learningWanted() bool {
 	cfg := d.currentCfg()
 	as := cfg.EmailProtection.Antispam
-	return as.Enabled && as.Learning.Enabled && !cfg.ObserveMode()
+	return as.Enabled && as.Learning.Enabled && !cfg.ObserveMode() && d.scanContext().Err() == nil
+}
+
+// pauseLearner drains native work before a pass can change rspamd's
+// configuration. A busy or canceled pass leaves the gate closed.
+func (d *Daemon) pauseLearner() {
+	d.antispamLearnerMu.Lock()
+	defer d.antispamLearnerMu.Unlock()
+	if r := d.antispamLearner.Load(); r != nil {
+		r.engine.SetGate(antispam.LearningGate{})
+	}
 }
 
 // startLearning starts an engine for target with a closed gate.
@@ -102,6 +123,12 @@ func (d *Daemon) startLearning(ctx context.Context, target reconcile.LearnerTarg
 
 // stopLearner stops the running engine, if any, and waits for it.
 func (d *Daemon) stopLearner() {
+	d.antispamLearnerMu.Lock()
+	defer d.antispamLearnerMu.Unlock()
+	d.stopLearnerLocked()
+}
+
+func (d *Daemon) stopLearnerLocked() {
 	r := d.antispamLearner.Swap(nil)
 	if r == nil {
 		return

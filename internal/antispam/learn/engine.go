@@ -184,17 +184,25 @@ func (e *Engine) Run(ctx context.Context) {
 }
 
 // SetGate applies the reconcile pass's gate. Closing it cancels native
-// calls in flight; they return within their own deadlines.
+// calls and waits for their turn to finish within their own deadlines.
 func (e *Engine) SetGate(g antispam.LearningGate) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.gate.Install && e.gate.Publish && (!g.Install || !g.Publish) {
 		e.gateEpoch++
 	}
 	e.gate = g
-	if (!g.Install || !g.Publish) && e.cancel != nil {
+	closed := !g.Install || !g.Publish
+	if closed && e.cancel != nil {
 		e.cancel()
 		e.cancel = nil
+	}
+	running := e.runCtx != nil
+	e.mu.Unlock()
+	if closed && running {
+		// A barrier on the existing owner queue waits for the journal and
+		// problem snapshot as well as the canceled call. A stopped owner
+		// has already drained its work.
+		_ = e.do(context.Background(), func() {})
 	}
 }
 
@@ -407,8 +415,10 @@ func (e *Engine) Submit(ctx context.Context, c Candidate) (Outcome, error) {
 	if !e.publishing() {
 		return out, nil
 	}
-	err := e.do(ctx, func() { out = e.report(ctx, c) })
-	return out, err
+	if err := e.do(ctx, func() { out = e.report(ctx, c) }); err != nil {
+		return Outcome{Ref: c.Ref, Deferred: true}, err
+	}
+	return out, nil
 }
 
 func (e *Engine) report(caller context.Context, c Candidate) Outcome {

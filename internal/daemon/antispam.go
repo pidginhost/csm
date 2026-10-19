@@ -104,6 +104,7 @@ func (d *Daemon) startAntispam() {
 	r := d.withIPMap(antispamReconciler())
 	r.Learner = d.learnerProblems
 	loop := reconcile.NewLoop(func(ctx context.Context) reconcile.Outcome {
+		d.pauseLearner()
 		return r.Pass(ctx, reconcile.DesiredFromConfig(d.currentCfg()))
 	}, d.reportAntispam)
 	d.antispamLoop.Store(loop)
@@ -114,6 +115,7 @@ func (d *Daemon) startAntispam() {
 	d.wg.Add(3)
 	obs.Go("antispam-reconcile", func() {
 		defer d.wg.Done()
+		defer d.stopLearner()
 		loop.Run(ctx)
 	})
 	obs.Go("antispam-health", func() {
@@ -296,10 +298,9 @@ func ipmapSources(now time.Time, infra []string) ipmap.Sources {
 // reconcileAntispam applies a config reload: health tracking follows the
 // new switch and socket at once, and a pass reads the new config.
 func (d *Daemon) reconcileAntispam() {
-	// Observe mode and disable stop the learner at once, before any pass.
-	if !d.learningWanted() {
-		d.stopLearner()
-	}
+	// Observe mode and disable stop the learner at once: they cannot wait
+	// for a pass, a worker lock or alert delivery.
+	d.syncLearner(reconcile.Outcome{})
 	if loop := d.antispamLoop.Load(); loop != nil {
 		d.syncAntispamHealth()
 		loop.Trigger()
@@ -434,10 +435,10 @@ func (d *Daemon) reportAntispamHealth(findings []alert.Finding) {
 // reportAntispam keeps the findings of the checks a pass settled in the
 // latest set, alerts on new ones, and logs a pass that did not complete.
 func (d *Daemon) reportAntispam(out reconcile.Outcome) {
+	d.syncLearner(out)
 	if out.Err != nil && !errors.Is(out.Err, context.Canceled) {
 		// A worker error can carry the worker's diagnostics across lines.
 		csmlog.Warn("antispam reconcile did not complete", "err", strconv.Quote(out.Err.Error()))
 	}
 	d.processScanFindings(d.currentCfg(), out.Findings, out.Checks, "antispam")
-	d.syncLearner(out)
 }

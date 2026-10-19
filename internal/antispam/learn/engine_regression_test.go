@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -105,7 +106,7 @@ func TestEngineGateClosureStopsAdmissionAfterInspection(t *testing.T) {
 	f.storage.bodies[string(snap)] = digest('a')
 	client := inspectionHook{nativeClient: f.storage, inspect: func(ctx context.Context, b []byte) (Inspection, error) {
 		result, err := f.storage.Inspect(ctx, b)
-		e.SetGate(antispam.LearningGate{})
+		setGateFromHook(e, antispam.LearningGate{})
 		return result, err
 	}}
 	engineTurn(t, e, func() { e.cfg.Client = client; e.pub.client = client })
@@ -124,7 +125,10 @@ func TestEngineGateClosureStopsCallsAfterSend(t *testing.T) {
 	e := newTestEngine(t, f)
 	snap := []byte("fresh sample")
 	f.storage.bodies[string(snap)] = digest('a')
-	f.storage.onAdd = func(Digest, int32) (bool, error) { e.SetGate(antispam.LearningGate{Install: true}); return true, nil }
+	f.storage.onAdd = func(Digest, int32) (bool, error) {
+		setGateFromHook(e, antispam.LearningGate{Install: true})
+		return true, nil
+	}
 	out, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
 	if err != nil || !reflect.DeepEqual(out.Pending, []uint64{1}) {
 		t.Fatalf("outcome %+v err=%v", out, err)
@@ -417,7 +421,7 @@ func TestEngineGateClosureStopsBodyCommitAndCleanup(t *testing.T) {
 		snap := []byte("new anchor")
 		f.storage.bodies[string(snap)] = digest('a')
 		f.bodies.writeFile = func(file *os.File, b []byte) error {
-			e.SetGate(antispam.LearningGate{})
+			setGateFromHook(e, antispam.LearningGate{})
 			return writeSync(file, b)
 		}
 		got, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
@@ -454,7 +458,7 @@ func TestEngineGateClosureStopsBodyCommitAndCleanup(t *testing.T) {
 					return err
 				}
 				if c.Retired {
-					e.SetGate(antispam.LearningGate{})
+					setGateFromHook(e, antispam.LearningGate{})
 				}
 				return nil
 			}
@@ -620,5 +624,21 @@ func TestEngineForgetTerminatesSupersededOperatorMark(t *testing.T) {
 	c, _ := f.cluster(t, 2)
 	if _, _, after, _ := f.storage.native(); after != before || len(c.Marks) != 0 {
 		t.Fatalf("old mark affected new cluster: %+v", c)
+	}
+}
+
+// setGateFromHook changes the gate the way a reconcile pass does, from
+// another goroutine, and returns once it applies. Hooks run on the engine
+// goroutine, which SetGate's drain waits for.
+func setGateFromHook(e *Engine, g antispam.LearningGate) {
+	go e.SetGate(g)
+	for {
+		e.mu.Lock()
+		applied := e.gate == g
+		e.mu.Unlock()
+		if applied {
+			return
+		}
+		runtime.Gosched()
 	}
 }

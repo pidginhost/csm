@@ -32,14 +32,14 @@ func TestLearnerEndpoint(t *testing.T) {
 func TestHashGenerationIdentifiesKeys(t *testing.T) {
 	a := LearningKeys{Fuzzy: NewSecret(strings.Repeat("8e", 32)), Shingles: NewSecret(strings.Repeat("9f", 32)), Prefix: "csmfz_x"}
 	b := a
-	if a.HashGeneration() != b.HashGeneration() || len(a.HashGeneration()) != 64 {
-		t.Fatalf("generation %q", a.HashGeneration())
+	if HashGeneration(a) != HashGeneration(b) || len(HashGeneration(a)) != 64 {
+		t.Fatalf("generation %q", HashGeneration(a))
 	}
 	b.Shingles = NewSecret(strings.Repeat("7d", 32))
-	if a.HashGeneration() == b.HashGeneration() {
+	if HashGeneration(a) == HashGeneration(b) {
 		t.Fatal("different shingle keys share a generation")
 	}
-	if strings.Contains(a.HashGeneration(), "8e8e") || strings.Contains(a.HashGeneration(), "9f9f") {
+	if strings.Contains(HashGeneration(a), "8e8e") || strings.Contains(HashGeneration(a), "9f9f") {
 		t.Fatal("generation exposes key material")
 	}
 }

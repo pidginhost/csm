@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"slices"
 	"strings"
 	"testing"
@@ -455,5 +456,36 @@ func TestObserveSuspendsNativeCalls(t *testing.T) {
 	out := h.reconciler().Pass(context.Background(), d)
 	if out.LearningGate != (antispam.LearningGate{}) || out.Learner != (LearnerTarget{}) {
 		t.Fatalf("observe outcome gate %+v learner %+v", out.LearningGate, out.Learner)
+	}
+}
+
+func TestLearnerTargetUsesHashConfigurationGeneration(t *testing.T) {
+	h := newLearningHost(antispam.Assessment{Action: antispam.Keep, Installed: true})
+	r := h.reconciler()
+	const socket = "/run/rspamd/controller.sock"
+	const uid = 979
+	r.CollectLearning = func(_ context.Context, f *antispam.HostFacts) {
+		f.Controller = antispam.ControllerConfig{Listeners: []antispam.ControllerListener{{Unix: true, Path: socket}}}
+		f.ControllerHost = antispam.ControllerHostFacts{
+			RspamdUID: uid,
+			Sockets: map[string]antispam.SocketFacts{socket: {
+				Socket: antispam.PathFacts{Path: socket, UID: uid, Mode: fs.ModeSocket | 0o600},
+				Parents: []antispam.PathFacts{
+					{Path: "/", Mode: fs.ModeDir | 0o755},
+					{Path: "/run", Mode: fs.ModeDir | 0o755},
+					{Path: "/run/rspamd", Mode: fs.ModeDir | 0o755},
+				},
+			}},
+		}
+	}
+	out := r.Pass(context.Background(), learningDesired())
+	k := syntheticKeys()
+	if out.Learner.Controller != socket || out.Learner.RspamdUID != uid || out.Learner.Prefix != k.Prefix {
+		t.Fatalf("unexpected learner target %+v", out.Learner)
+	}
+	// The shared generation includes the pinned hash options, not just
+	// the keys. A changed digest recipe must not reuse the old ledger.
+	if out.Learner.HashGeneration != antispam.HashGeneration(k) {
+		t.Fatal("learner binding omits the hash configuration")
 	}
 }

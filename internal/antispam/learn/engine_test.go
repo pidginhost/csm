@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -195,6 +196,50 @@ func TestEngineGateInstallFalseStops(t *testing.T) {
 	}
 }
 
+func TestEngineGateWaitsForInFlightCall(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newAuditFixture(t)
+		e := newTestEngine(t, f)
+		snap := []byte("synthetic spam")
+		f.storage.bodies[string(snap)] = digest('s')
+		started, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		f.storage.addWait = func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			close(canceled)
+			<-release
+			return ErrUncertain
+		}
+		result := make(chan Outcome, 1)
+		go func() {
+			out, _ := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+			result <- out
+		}()
+		<-started
+		closed := make(chan struct{})
+		go func() {
+			e.SetGate(antispam.LearningGate{})
+			close(closed)
+		}()
+		<-canceled
+		synctest.Wait()
+		select {
+		case <-closed:
+			t.Error("gate closure returned while a native call was still in flight")
+		default:
+		}
+		close(release)
+		<-closed
+		out := <-result
+		if len(out.Committed) != 0 || len(out.Pending) != 1 {
+			t.Fatalf("canceled publication outcome %+v", out)
+		}
+		if got, _ := f.targetOf(t, digest('s')); got.Phase != PhaseAddSent {
+			t.Fatalf("uncertain write lost its journal: %+v", got)
+		}
+	})
+}
+
 // Review focus 3: a write the ledger cannot commit sends no mutation.
 func TestEngineStateIOStopsMutations(t *testing.T) {
 	f := newAuditFixture(t)
@@ -245,6 +290,73 @@ func TestEngineOperatorSpamAddsMark(t *testing.T) {
 	c, _ := f.cluster(t, 1)
 	if !reflect.DeepEqual(c.Marks, []string{req.RequestID}) {
 		t.Fatalf("marks %v", c.Marks)
+	}
+}
+
+func TestEngineOperatorCancelKeepsRequestForRetry(t *testing.T) {
+	f := newAuditFixture(t)
+	f.add(t, 1, digest('a'), 2, t0, 2002)
+	e := newTestEngine(t, f)
+	snap := f.report("operator sample", digest('a'), digest('a'), 1)
+	req := OperatorRequest{Action: ActionSpam, RequestID: "0123456789abcdef0123456789abcdef", Snapshot: snap, SnapshotSHA: sha(snap)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.storage.onInspect = cancel
+	res, err := e.Operator(ctx, req)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if errors.Is(err, context.Canceled) && (res.RequestID != req.RequestID || len(res.Clusters) != 0 || res.ExitOK) {
+		t.Fatalf("canceled caller received an unfinished result: %+v", res)
+	}
+	// The owner finishes and records the operation even after its caller
+	// stops waiting. Retrying the same request must not add another mark.
+	if err = e.do(context.Background(), func() {}); err != nil {
+		t.Fatal(err)
+	}
+	f.storage.onInspect = nil
+	res, err = e.Operator(context.Background(), req)
+	if err != nil || !res.ExitOK || !reflect.DeepEqual(res.Clusters, []ClusterOutcome{{ClusterID: 1, Result: ResultCommitted}}) {
+		t.Fatalf("retry result %+v err %v", res, err)
+	}
+	if _, _, adds, _ := f.storage.native(); adds != 1 {
+		t.Fatalf("retry sent another mark: %d adds", adds)
+	}
+}
+
+func TestEngineSubmitCancelKeepsContribution(t *testing.T) {
+	f := newAuditFixture(t)
+	f.add(t, 1, digest('a'), 2, t0, 2002)
+	e := newTestEngine(t, f)
+	c := Candidate{UID: 1001, Snapshot: f.report("report sample", digest('a'), digest('a'), 1), Ref: "report"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.storage.onInspect = cancel
+	out, err := e.Submit(ctx, c)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if errors.Is(err, context.Canceled) && (out.Ref != c.Ref || !out.Deferred || len(out.Committed) != 0) {
+		t.Fatalf("canceled caller received an unfinished result: %+v", out)
+	}
+	if err = e.do(context.Background(), func() {}); err != nil {
+		t.Fatal(err)
+	}
+	f.storage.onInspect = nil
+	first := out
+	out, err = e.Submit(context.Background(), c)
+	// Cancellation either stopped the first attempt before it reserved
+	// anything, or let it finish: exactly one attempt commits the vote.
+	committedOnce := len(first.Committed) == 1 && reflect.DeepEqual(out.Duplicates, []uint64{1}) && len(out.Committed) == 0 ||
+		len(first.Committed) == 0 && reflect.DeepEqual(out.Committed, []uint64{1})
+	if err != nil || !committedOnce {
+		t.Fatalf("first %+v, retry %+v err %v", first, out, err)
+	}
+	if _, _, adds, _ := f.storage.native(); adds != 1 {
+		t.Fatalf("cancel and retry sent %d contributions", adds)
+	}
+	if c, _ := f.cluster(t, 1); countOf(c.UIDs, 1001) != 1 {
+		t.Fatalf("vote counted twice: %v", c.UIDs)
 	}
 }
 
@@ -454,4 +566,14 @@ func TestEngineSeedOverGuardCreditsGuard(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func countOf(xs []int, x int) int {
+	n := 0
+	for _, v := range xs {
+		if v == x {
+			n++
+		}
+	}
+	return n
 }
