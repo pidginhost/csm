@@ -680,7 +680,7 @@ email_protection:
       enabled: []                       # optional feeds, e.g. [mailspike, psbl]; see docs/src/antispam.md
       spamhaus_dqs_key_file: ""         # root-owned file holding the Spamhaus DQS key; needed only for spamhaus_dqs
     learning:
-      enabled: false                    # learn from mail users move to Spam; needs antispam; see docs/src/antispam.md
+      enabled: false                    # learn from mail users move to Spam and keep one message per cluster; needs antispam; see docs/src/antispam.md
 
 # --- Firewall ---
 firewall:

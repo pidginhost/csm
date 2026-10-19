@@ -21,7 +21,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
-- Antispam can set up rspamd to learn from mail users move to their Spam folder and reports missing prerequisites; it stays off until `email_protection.antispam.learning.enabled` is set.
+- Anti-spam learns from messages users move to their Spam folder: when several accounts report the same content, later copies score higher. Off by default; see the learning prerequisites.
 - Root can teach antispam learning a saved spam message, or remove what one taught, with `csm antispam learn` while learning is enabled.
 - With anti-spam on, CSM warns when other users on the server can reach rspamd's admin interface; hosts using rspamd's default local trust see this after upgrading.
 - Inbound spam filtering on cPanel through an rspamd you install, where each account's Spam Filters switch decides; existing hosts are unchanged until `email_protection.antispam.enabled` is set.

@@ -582,14 +582,76 @@ Reload rspamd after the change. CSM never edits the controller settings.
 
 ## Learning from Spam folders
 
-`email_protection.antispam.learning.enabled: true` prepares rspamd for
-learning from Spam folders. It is off by default and requires antispam to
-be enabled. This build installs the server configuration, checks its
-readiness and runs the learner for files operators submit with
-`csm antispam learn`. It does not read Spam folders yet.
+`email_protection.antispam.learning.enabled: true` makes rspamd learn from
+mail users move to their Spam folder. When several accounts report the same
+content, later copies of it score higher. Learning is off by default and
+requires antispam to be enabled. Enabling it is refused in
+[observe mode](observe-mode.md).
 
-Learning setup runs with either value of antispam's `dry_run` setting.
-Enabling it is refused in [observe mode](observe-mode.md).
+Enabling learning is consent to two things: CSM reads new messages in the
+Spam folders of participating accounts, and it keeps one full message per
+learned cluster for up to 90 days after the cluster's last report (see
+[Stored messages](#stored-messages)).
+
+### How reports are found
+
+Every five minutes CSM checks the main mailbox and each domain mailbox of
+every account whose Spam Filters switch is on, or of every account when
+`/etc/global_spamassassin_enable` exists. It looks at the `new` and `cur`
+directories of `.spam`, the folder spam-box delivery and the webmail Junk
+button use, and `.Junk`, which many mail clients use. Folders are read
+without following links; CSM never creates folders or changes permissions.
+
+The first pass over a folder records what is already there without reading
+it. Only messages that arrive after that are reports, so existing mail is
+never learned retroactively. Moving a message within the folder or
+changing its flags does not report it again. A pass reads at most 20
+reports per account, takes turns between accounts, and stops before the
+next one is due; the rest wait for the next pass.
+
+### What counts as a report
+
+A report is a regular file owned by the account, at most 10 MiB, that did
+not change while CSM read it. A message still linked from another folder
+waits for the next pass. Messages are skipped when any `X-Spam-Status`
+header says `Yes`, when that header cannot be parsed, and when the header
+block is malformed or too large.
+
+Reports are not authenticated. Tenants control their own mail: they can
+move any message they received, or deliver one locally, and a forged
+`X-Spam-Status: Yes` header keeps a message from being learned. In dry run
+senders' headers are not removed, so forged headers have this effect on
+any message.
+
+### Scores and limits
+
+Each reporting account adds a fixed weight to the cluster. One, two, three
+and four accounts give `CSM_FUZZY_SPAM` scores of about 2.9, 5.4, 7.2 and
+8.4, so with the default tag score of 6 a message needs reports from about
+three accounts to be tagged on that evidence alone. An operator mark from
+`csm antispam learn --spam` weighs as much as nine accounts.
+
+Messages that share most of their text join the same cluster, so later
+variants of a campaign score too. Newsletters built from one template can
+also be close enough to join. Lowering or correcting a learned value
+removes and re-adds it, which can leave a short gap in which the message
+scores lower.
+
+Learning writes scores with either value of antispam's `dry_run` setting.
+In dry run they affect the measured score; what happens to the message
+still follows the dry-run policy.
+
+### Opt-out, disable and retention
+
+When an account turns its Spam Filters switch off, CSM stops reading its
+folders at the next check and drops its unsent reports. Turning the switch
+back on starts new baselines. What the account already contributed stays
+until the cluster expires or an operator forgets it; opting out does not
+delete it sooner.
+
+Turning learning off keeps stored messages, keys and the learning ledger,
+but clears folder baselines and unsent reports; re-enabling starts new
+baselines. Observe mode keeps everything and resumes where it stopped.
 
 ### Prerequisites
 
@@ -739,9 +801,19 @@ command is interrupted, look its ID up there, or in the action log with
 `csm actions --op integrate.antispam_learn --json`, which records the
 request ID, escaped basename, outcome and full digests, never message
 content or headers. A missing record does not prove that no change
-occurred. Running the command again makes a new request. The exit status
-is 0 only when every file was learned, already learned, forgotten or
-matched nothing.
+occurred. Running the command again makes a new request.
+
+Forgetting works for the whole server: the clusters a file matches lose
+every account's contribution. CSM keeps a zero-value record for each
+forgotten value and keeps auditing it, so a late write cannot bring the
+score back unnoticed. Forget is not a permanent allowlist; new reports of
+the same content start a new cluster.
+
+| Exit status | Meaning |
+|---|---|
+| 0 | Every file was learned, already learned, forgotten or matched nothing; `--status` and `--fresh-namespace` succeeded. |
+| 1 | At least one file was refused, failed or is still pending, or the daemon could not complete the request. |
+| 2 | The command line is not valid. |
 
 ### Backup, restore and a fresh namespace
 
@@ -749,9 +821,10 @@ matched nothing.
 state database and `/var/lib/csm/antispam/learning`, which holds the hash
 keys, transport keys and stored messages. `csm restore` brings the bundle
 back and moves any learning directory it replaces to
-`learning.old-<UTC time>`. Restored learning state holds new reports until
-the daemon has run with learning disabled; enable learning again only when
-the backup is the current bundle. CSM cannot tell an old backup from the
+`learning.old-<UTC time>-<suffix>`. A failed restore leaves the previous
+bundle in place. Restored learning state holds new reports until the daemon
+has run with learning disabled outside observe mode; enable learning again
+only when the backup is the current bundle. CSM cannot tell an old backup from the
 current one by comparing scores.
 
 If the backup is older, or storage was lost along with the keys, start a
@@ -761,8 +834,10 @@ fresh namespace instead. With learning disabled, run:
 csm antispam learn --fresh-namespace
 ```
 
-It moves `/var/lib/csm/antispam/learning` to `learning.old-<UTC time>` and
-empties the learning and Spam folder state. The next enable creates new
+It waits for an active reconciliation pass, moves
+`/var/lib/csm/antispam/learning` to `learning.old-<UTC time>` and empties
+the learning and Spam folder state. If emptying fails, the directory is
+moved back. The next enable creates new
 keys and a new storage prefix, and every folder starts a new baseline. Old
 reports are not replayed. The old directory still holds full messages;
 remove it once you no longer need it. CSM never flushes Redis; old hashes
@@ -778,7 +853,7 @@ reports server readiness; the running learner adds the reasons from
 |---|---|
 | `unsupported` | An rspamd or Redis version is outside the supported versions above; learning is disabled. |
 | `unsafe_prerequisite` | Required isolation or Redis settings are unsafe or cannot be established; learning is disabled. |
-| `state_mismatch` | Learning keys could not be created or loaded safely, or the learner found its state out of step with its storage; learning is disabled and nothing is adopted or deleted. |
+| `state_mismatch` | Learning keys could not be created or loaded safely, restored learning state awaits confirmation, or the learner found its state out of step with its storage; learning is disabled and nothing is adopted or deleted. |
 | `config_conflict` | Operator configuration conflicts with CSM's learning setup; learning is disabled. |
 | `apply_failed` | A learning check failed during apply; subsequent passes hold learning off until its configuration changes or CSM restarts. |
 | `backend_unavailable` | A probe failed temporarily; existing learning configuration is retained unless a definite failure also requires removal. A first installation waits. |
