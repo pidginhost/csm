@@ -78,6 +78,7 @@ type SeenEntry struct {
 	Sub         string    `json:"sub,omitempty"`
 	Name        string    `json:"name,omitempty"`
 	Attempts    int       `json:"attempts,omitempty"`
+	Errors      int       `json:"errors,omitempty"`
 	LastAttempt time.Time `json:"last_attempt,omitzero"`
 	Dev         uint64    `json:"dev"`
 	Ino         uint64    `json:"ino"`
@@ -335,6 +336,24 @@ func (t StateTx) Retry(k FolderKey, base string) error {
 	e.Attempts++
 	e.LastAttempt = t.now
 	return t.putSeen(k, base, e)
+}
+
+// Fail records a failed submission. After MaxEntryErrors failures the
+// entry becomes skipped:failed and gaveUp is true; otherwise it moves to the
+// tail of the retry queue.
+func (t StateTx) Fail(k FolderKey, base string) (gaveUp bool, err error) {
+	e, found, err := t.Seen(k, base)
+	if err != nil || !found {
+		return false, errors.Join(err, errors.New("learnwatch: no seen entry to fail"))
+	}
+	e.Attempts++
+	e.Errors++
+	e.LastAttempt = t.now
+	if e.Errors >= MaxEntryErrors {
+		e.Status = SkippedStatus(SkipFailed)
+		gaveUp = true
+	}
+	return gaveUp, t.putSeen(k, base, e)
 }
 
 // Forget drops an entry, as for a vanished message.

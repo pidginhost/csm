@@ -659,17 +659,11 @@ baselines. Observe mode keeps everything and resumes where it stopped.
 Folders absent for 90 days are forgotten with their pending reports.
 Unresolved accounts, unreadable homes, incomplete mailbox lists and unsafe
 or unreadable folders keep their state until they can be checked again.
-Older folder records without a presence timestamp receive a full retention
-period when first checked for expiry.
 
-Mailbox discovery counts all bytes read against the account's allowance,
-including lists rejected because they grew during the read. Capacity
-warnings count an account once even when both its folder state and learning
-ledger are full.
-
-A backend error stops further submissions for that pass. A message rspamd
-cannot process, hash or accept within its digest limit stays pending without
-stopping other accounts' reports.
+A backend error stops further submissions for that pass; the next pass
+starts with the accounts after the one that failed. A message rspamd cannot
+process stays pending without stopping other accounts' reports. A message
+that fails three times is skipped as `failed`.
 
 ### Prerequisites
 

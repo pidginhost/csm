@@ -23,6 +23,9 @@ const (
 	// PassEvery and MaxAttempts are the spec's schedule and budget.
 	PassEvery   = 5 * time.Minute
 	MaxAttempts = 20
+	// MaxEntryErrors bounds the failed submissions of one entry, so a
+	// message that breaks the backend cannot stop every pass.
+	MaxEntryErrors = 3
 	// PassDeadline leaves time between passes even when discovery runs long;
 	// baselining a 51217-entry folder (spike S8's largest) took 1.5 s.
 	PassDeadline = 4 * time.Minute
@@ -51,6 +54,8 @@ const (
 	SkipFolderUnreadable   = "folder_unreadable"
 	SkipRegistryUnreadable = "registry_unreadable"
 	SkipStateUnavailable   = "state_unavailable"
+	// SkipFailed: an entry failed MaxEntryErrors submissions.
+	SkipFailed = "failed"
 )
 
 type submitter interface {
@@ -110,6 +115,7 @@ type Watcher struct {
 	// but submits nothing more, so a hung controller costs one request
 	// timeout per pass. Owned by the single active pass.
 	submitStopped bool
+	stoppedBy     int
 
 	mu   sync.Mutex
 	last PassReport
@@ -189,7 +195,7 @@ func (w *Watcher) Pass(ctx context.Context) PassReport {
 }
 
 func (w *Watcher) pass(ctx context.Context) PassReport {
-	w.submitStopped = false
+	w.submitStopped, w.stoppedBy = false, 0
 	r := PassReport{Skipped: map[string]int{}}
 	deadline := w.cfg.Now().Add(PassDeadline)
 	accounts, skips, err := Accounts(w.cfg.Source)
@@ -248,10 +254,25 @@ func (w *Watcher) pass(ctx context.Context) PassReport {
 		}
 		active = next
 	}
-	w.saveCursor(0, &r)
+	w.saveCursor(nextAfter(runs, w.stoppedBy), &r)
 	w.tally(runs, &r)
 	w.prune(runs, &r, len(skips) == 0)
 	return r
+}
+
+// nextAfter is the UID of the account after uid in the pass order, so a
+// pass stopped by one account's failing entry starts the next pass with
+// the others; zero when no account stopped the pass.
+func nextAfter(runs []*accountRun, uid int) int {
+	if uid == 0 {
+		return 0
+	}
+	for i, run := range runs {
+		if run.a.UID == uid {
+			return runs[(i+1)%len(runs)].a.UID
+		}
+	}
+	return 0
 }
 
 func (w *Watcher) saveCursor(uid int, r *PassReport) {
@@ -930,8 +951,17 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 	out, err := r.w.cfg.Engine.SubmitReport(ctx, learn.Candidate{UID: r.a.UID, Snapshot: snap})
 	switch {
 	case err != nil || out.Err != nil:
-		retry()
-		r.w.submitStopped = err != nil || !errors.Is(out.Err, learn.ErrMessageRejected)
+		// A message can make the backend fail too, so each entry gets
+		// MaxEntryErrors tries, and the next pass starts after its account.
+		var gaveUp bool
+		if r.stateFailed(r.state().Update(func(tx StateTx) (e error) { gaveUp, e = tx.Fail(k, it.Base); return e }), rep) || !gaveUp {
+			hold()
+		} else {
+			rep.Skipped[SkipFailed]++
+		}
+		if err != nil || !errors.Is(out.Err, learn.ErrMessageRejected) {
+			r.w.submitStopped, r.w.stoppedBy = true, r.a.UID
+		}
 	case out.Deferred:
 		retry()
 	case slices.ContainsFunc(out.Skips, func(s learn.Skip) bool { return s.Reason == learn.SkipAccountCapacity }):

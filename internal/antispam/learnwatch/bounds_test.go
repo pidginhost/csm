@@ -308,3 +308,39 @@ func TestSchedulerPrunePreservesUnresolvedAccounts(t *testing.T) {
 		t.Fatalf("unresolved account lost pending report: %d", n)
 	}
 }
+
+// A message that times out the controller every time stops one pass at a
+// time, rotates the next pass past its account, and is given up after
+// MaxEntryErrors errors.
+func TestSchedulerRepeatedBackendErrorEntryIsBounded(t *testing.T) {
+	f := newWatch(t, 2)
+	f.pass()
+	f.deliver(0, "new", 1, "Subject: x\r\n\r\nslow")
+	f.deliver(1, "new", 1, spamBody)
+	f.engine.respond = func(c learn.Candidate) (learn.Outcome, error) {
+		if strings.Contains(string(c.Snapshot), "slow") {
+			return learn.Outcome{}, fmt.Errorf("%w: %w", learn.ErrReadFailed, learn.ErrUncertain)
+		}
+		return learn.Outcome{Committed: []uint64{1}}, nil
+	}
+	f.pass()
+	f.pass()
+	if got := countUID(f.engine.submitted(), 1002); got != 1 {
+		t.Fatalf("the next pass did not rotate past the failing account: %v", f.engine.submitted())
+	}
+	for range MaxEntryErrors + 2 {
+		f.pass()
+	}
+	if got := countUID(f.engine.submitted(), 1001); got != MaxEntryErrors {
+		t.Fatalf("a failing entry was tried %d times", got)
+	}
+	if err := f.cfg.State.View(func(tx StateTx) (err error) {
+		items, err := tx.Pending(FolderKey{UID: 1001, Folder: ".spam"})
+		if len(items) != 0 {
+			t.Errorf("failing entry still pending: %+v", items)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
