@@ -184,7 +184,7 @@ func TestRetireAt90DaysFromAdmission(t *testing.T) {
 	p := f.publisher()
 	retire := func(now time.Time) []uint64 {
 		t.Helper()
-		ids, err := p.RetireDue(now)
+		ids, err := p.RetireDue(context.Background(), now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -248,7 +248,7 @@ func TestRebuildAfterFlush(t *testing.T) {
 	f.storage.values = map[Digest]int64{}
 	f.storage.mu.Unlock()
 	p := f.publisher()
-	if ids, err := p.RetireDue(t0); err != nil || !reflect.DeepEqual(ids, []uint64{2}) {
+	if ids, err := p.RetireDue(context.Background(), t0); err != nil || !reflect.DeepEqual(ids, []uint64{2}) {
 		t.Fatalf("retired %v err %v", ids, err)
 	}
 	if _, err := p.AuditTurn(context.Background(), AuditBatch, t0); err != nil {

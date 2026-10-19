@@ -158,6 +158,9 @@ func (p *Publisher) AuditTurn(ctx context.Context, batch int, now time.Time) (Au
 // check inspects targets exactly and marks the unclean ones for repair.
 // lost reports a live anchor missing from storage.
 func (p *Publisher) check(ctx context.Context, targets []Target, prog *AuditProgress) (lost bool, err error) {
+	if err = ctx.Err(); err != nil {
+		return false, err
+	}
 	ds := make([]Digest, len(targets))
 	for i, t := range targets {
 		ds[i] = t.Digest
@@ -281,7 +284,7 @@ func (p *Publisher) RepairTurn(ctx context.Context, max int) (int, error) {
 		return 0, err
 	}
 	if len(pending) == 0 {
-		if err := p.cleanup(); err != nil {
+		if err := p.cleanup(ctx); err != nil {
 			return 0, err
 		}
 		return 0, p.settle()
@@ -310,7 +313,7 @@ func (p *Publisher) RepairTurn(ctx context.Context, max int) (int, error) {
 	}); err != nil {
 		errs = append(errs, fmt.Errorf("%w: %w", ErrStateIO, err))
 	}
-	if err := p.cleanup(); err != nil {
+	if err := p.cleanup(ctx); err != nil {
 		errs = append(errs, err)
 	}
 	if len(errs) == 0 {
@@ -323,12 +326,12 @@ func (p *Publisher) RepairTurn(ctx context.Context, max int) (int, error) {
 // admission is Retention old with a zero target, removes its aliases, then
 // unlinks its body and credits its charges. Storage TTLs play no part. A
 // wall clock behind the persisted watermark retires nothing new.
-func (p *Publisher) RetireDue(now time.Time) ([]uint64, error) {
+func (p *Publisher) RetireDue(ctx context.Context, now time.Time) ([]uint64, error) {
 	retired, err := p.retireDue(now)
 	if err != nil {
 		return nil, err
 	}
-	return retired, p.cleanup()
+	return retired, p.cleanup(ctx)
 }
 
 // Keep the durable retirement separate from filesystem cleanup so a body
@@ -444,7 +447,7 @@ func supersede(tx LedgerTx, c Cluster, now time.Time) error {
 
 // cleanup finishes retired clusters: unlink and sync the body, then credit
 // charges and drop the record. A crash in between repeats harmlessly.
-func (p *Publisher) cleanup() error {
+func (p *Publisher) cleanup(ctx context.Context) error {
 	var refs []Cluster
 	if err := p.ledger.View(func(v LedgerView) error {
 		return v.tx.ForEach(store.LearnClustersBucket, func(_, data []byte) error {
@@ -461,8 +464,11 @@ func (p *Publisher) cleanup() error {
 		return fmt.Errorf("%w: %w", ErrStateIO, err)
 	}
 	for _, c := range refs {
-		if err := p.bodies.Remove(c.ID); err != nil {
+		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if err := p.bodies.Remove(c.ID); err != nil {
+			return fmt.Errorf("%w: %w", ErrStateIO, err)
 		}
 		if err := p.ledger.Update(func(tx LedgerTx) error {
 			for _, ch := range c.Charges {

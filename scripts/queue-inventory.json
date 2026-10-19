@@ -206,7 +206,7 @@
       "source": "make(chan struct{})",
       "capacity": "0",
       "class": "lifecycle",
-      "rationale": "Closed by the learning engine goroutine when it has served one request, so the caller reads the result it wrote; the caller stops waiting if its context ends or the engine stops."
+      "rationale": "Closed by the learning engine goroutine when it has served one request. After handoff the caller waits for completion, including cancellation, before reusing its snapshot or reading the result."
     },
     {
       "id": "internal/antispam/learn/engine.go::NewEngine::done::channel::1",

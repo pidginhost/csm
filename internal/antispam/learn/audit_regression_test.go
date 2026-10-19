@@ -242,7 +242,7 @@ func TestRetirementCountsOnlyOpenAdmissions(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			ids, err := f.publisher().RetireDue(t0.Add(Retention))
+			ids, err := f.publisher().RetireDue(context.Background(), t0.Add(Retention))
 			if err != nil || (len(ids) == 0) != tc.keepsAlive {
 				t.Fatalf("retired %v, keepsAlive %v, error %v", ids, tc.keepsAlive, err)
 			}
@@ -284,7 +284,7 @@ func TestRetirementKeepsGuardCharge(t *testing.T) {
 				t.Fatal(err)
 			}
 			p := f.publisher()
-			if ids, err := p.RetireDue(t0.Add(Retention)); err != nil || !reflect.DeepEqual(ids, []uint64{1}) {
+			if ids, err := p.RetireDue(context.Background(), t0.Add(Retention)); err != nil || !reflect.DeepEqual(ids, []uint64{1}) {
 				t.Fatalf("retired %v, error %v", ids, err)
 			}
 			if err := f.ledger.View(func(v LedgerView) error {
@@ -306,7 +306,7 @@ func TestRetirementKeepsGuardCharge(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := p.RetireDue(t0.Add(Retention + day)); err != nil {
+			if _, err := p.RetireDue(context.Background(), t0.Add(Retention+day)); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -328,7 +328,7 @@ func TestRetirementCleanupSurvivesUnlinkFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := f.publisher()
-	if ids, err := p.RetireDue(t0.Add(Retention)); err == nil || !reflect.DeepEqual(ids, []uint64{1}) {
+	if ids, err := p.RetireDue(context.Background(), t0.Add(Retention)); err == nil || !reflect.DeepEqual(ids, []uint64{1}) {
 		t.Fatalf("retired %v, error %v", ids, err)
 	}
 	if err := f.ledger.View(func(v LedgerView) error {
@@ -368,7 +368,7 @@ func TestRetirementCleanupSurvivesUnlinkFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Restart and retry under a backward clock: existing cleanup still runs.
-	if ids, err := f.publisher().RetireDue(t0); err != nil || len(ids) != 0 {
+	if ids, err := f.publisher().RetireDue(context.Background(), t0); err != nil || len(ids) != 0 {
 		t.Fatalf("cleanup retry: %v, %v", ids, err)
 	}
 	if _, err := os.Stat(bodyPath); !os.IsNotExist(err) {
@@ -392,7 +392,7 @@ func TestRetirementUsesTurnTime(t *testing.T) {
 	now := t0.Add(Retention)
 	p := f.publisher()
 	p.now = func() time.Time { return now.Add(-time.Hour) }
-	if _, err := p.RetireDue(now); err != nil {
+	if _, err := p.RetireDue(context.Background(), now); err != nil {
 		t.Fatal(err)
 	}
 	if target, _ := f.targetOf(t, digest('a')); !target.Updated.Equal(now) {
@@ -414,7 +414,7 @@ func TestRetirementCleanupCommitFailureRetriesOnce(t *testing.T) {
 	}
 	base := f.ledger.db
 	f.ledger.db = &failAuditUpdate{kv: base, at: 2}
-	if ids, err := f.publisher().RetireDue(t0); !errors.Is(err, ErrStateIO) || !reflect.DeepEqual(ids, []uint64{1}) {
+	if ids, err := f.publisher().RetireDue(context.Background(), t0); !errors.Is(err, ErrStateIO) || !reflect.DeepEqual(ids, []uint64{1}) {
 		t.Fatalf("cleanup commit: retired %v, error %v", ids, err)
 	}
 	if _, err := os.Stat(filepath.Join(f.bodies.Dir, BodyName(1))); !os.IsNotExist(err) {
@@ -438,7 +438,7 @@ func TestRetirementCleanupCommitFailureRetriesOnce(t *testing.T) {
 	}
 	f.ledger.db = base
 	for range 2 {
-		if _, err := f.publisher().RetireDue(t0); err != nil {
+		if _, err := f.publisher().RetireDue(context.Background(), t0); err != nil {
 			t.Fatal(err)
 		}
 	}

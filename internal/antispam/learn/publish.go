@@ -171,6 +171,9 @@ func (p *Publisher) target(d Digest) (Target, error) {
 
 // read returns d's exact stored value; a verified miss is absence.
 func (p *Publisher) read(ctx context.Context, d Digest) (int64, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, false, err
+	}
 	insp, err := p.client.InspectDigests(ctx, []Digest{d})
 	if err != nil {
 		return 0, false, fmt.Errorf("%w: %w", ErrReadFailed, err)
@@ -223,6 +226,9 @@ func (p *Publisher) sendDelete(ctx context.Context, t Target) (bool, error) {
 	if err := p.setPhase(t, PhaseDeleteSent, nil); err != nil {
 		return false, err
 	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if err := p.client.DeleteHash(ctx, t.Digest); err != nil {
 		if errors.Is(err, ErrRejected) {
 			sent := t
@@ -255,6 +261,9 @@ func (p *Publisher) sendAdd(ctx context.Context, t Target, v int64) (bool, error
 	}
 	sent := t
 	sent.Phase = PhaseAddSent
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	if err := p.client.Add(ctx, body, weight); err != nil {
 		if errors.Is(err, ErrRejected) {
 			// An observed backend write failure: rebuild the anchor rather
@@ -289,8 +298,14 @@ func (p *Publisher) anchorBody(ctx context.Context, t Target) ([]byte, error) {
 	if !ok || c.Anchor != t.Digest {
 		return nil, fmt.Errorf("%w: target has no cluster for its anchor", ErrStateMismatch)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	body, err := p.bodies.Read(c.ID, c.BodyLen, c.BodySHA)
 	if err != nil {
+		return nil, err
+	}
+	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
 	insp, err := p.client.Inspect(ctx, body)
@@ -306,6 +321,9 @@ func (p *Publisher) anchorBody(ctx context.Context, t Target) ([]byte, error) {
 // verify flushes and polls exact checks until done reports true or the
 // deadline passes. A failed flush or read leaves the outcome open.
 func (p *Publisher) verify(ctx context.Context, d Digest, done func(v int64, present bool) bool) (bool, error) {
+	if ctx.Err() != nil {
+		return false, nil
+	}
 	if err := p.client.Sync(ctx); err != nil {
 		return false, nil
 	}
