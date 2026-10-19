@@ -2,6 +2,7 @@ package learn
 
 import (
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 )
@@ -14,6 +15,14 @@ type fakeView struct {
 	usage    map[int]Usage
 	operator Usage
 	err      error
+	readErr  func(kind string, key any) error
+}
+
+func (v *fakeView) readError(kind string, key any) error {
+	if v.readErr != nil {
+		return v.readErr(kind, key)
+	}
+	return v.err
 }
 
 func newView() *fakeView {
@@ -29,24 +38,24 @@ func (v *fakeView) cluster(id uint64, anchor Digest, t int32, uids ...int) {
 
 func (v *fakeView) Alias(d Digest) (uint64, bool, error) {
 	id, ok := v.aliases[d]
-	return id, ok, v.err
+	return id, ok, v.readError("alias", d)
 }
 
 func (v *fakeView) Cluster(id uint64) (Cluster, bool, error) {
 	c, ok := v.clusters[id]
-	return c, ok, v.err
+	return c, ok, v.readError("cluster", id)
 }
 
 func (v *fakeView) Target(d Digest) (Target, bool, error) {
 	t, ok := v.targets[d]
-	return t, ok, v.err
+	return t, ok, v.readError("target", d)
 }
 
 func (v *fakeView) Usage(uid int, operator bool) (Usage, error) {
 	if operator {
-		return v.operator, v.err
+		return v.operator, v.readError("usage", uid)
 	}
-	return v.usage[uid], v.err
+	return v.usage[uid], v.readError("usage", uid)
 }
 
 func inspection(results ...Result) Inspection {
@@ -198,6 +207,36 @@ func TestAssignOverflowRejectsAll(t *testing.T) {
 	}
 }
 
+func TestAssignOverflowDiscardsEarlierJoin(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		source Source
+		weight int32
+	}{
+		{"tenant", tenant, UIDWeight},
+		{"operator", Source{Operator: true, MarkID: "req-1"}, OperatorWeight},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := newView()
+			v.cluster(1, digest('a'), 2, 2002)
+			v.cluster(2, digest('c'), math.MaxInt32-1-tc.weight, 2002)
+			report := inspection(hitResult(digest('b'), digest('a'), 1), hitResult(digest('d'), digest('c'), 1))
+			want := Admission{Joins: []Join{
+				{ClusterID: 1, Aliases: []Digest{digest('b')}, NewT: 2 + tc.weight},
+				{ClusterID: 2, Aliases: []Digest{digest('d')}, NewT: math.MaxInt32 - 1},
+			}}
+			if a := assign(t, report, tc.source, v, nil); !reflect.DeepEqual(a, want) {
+				t.Fatalf("largest representable target: got %+v, want %+v", a, want)
+			}
+			v.cluster(2, digest('c'), math.MaxInt32-tc.weight+1, 2002)
+			want = Admission{Skips: []Skip{{Digest: digest('b'), Reason: SkipOverflow}, {Digest: digest('d'), Reason: SkipOverflow}}}
+			if a := assign(t, report, tc.source, v, nil); !reflect.DeepEqual(a, want) {
+				t.Fatalf("overflow in the second cluster: got %+v, want %+v", a, want)
+			}
+		})
+	}
+}
+
 func TestAssignDefersDuringGap(t *testing.T) {
 	v := newView()
 	v.cluster(1, digest('a'), 2, 2002)
@@ -220,6 +259,54 @@ func TestAssignDefersDuringGap(t *testing.T) {
 	}
 	if a := assign(t, inspection(hitResult(digest('a'), digest('a'), 1)), tenant, v, gaps); !a.Defer {
 		t.Fatalf("alias on the gap cluster joined: %+v", a)
+	}
+}
+
+func TestAssignBelowJoinWaitsForGapRepair(t *testing.T) {
+	for _, stored := range []Digest{digest('a'), digest('c')} {
+		t.Run(string(stored[:1]), func(t *testing.T) {
+			v := newView()
+			v.cluster(1, digest('a'), 2, 2002)
+			v.cluster(2, digest('c'), 2, 2002)
+			report := inspection(hitResult(digest('b'), stored, 0.5))
+			if a := assign(t, report, tenant, v, map[uint64]bool{1: true}); !reflect.DeepEqual(a, Admission{Defer: true}) {
+				t.Fatalf("low-probability hit during a gap: %+v", a)
+			}
+			mixed := inspection(missResult(digest('c')), report.Results[0])
+			if a := assign(t, mixed, tenant, v, map[uint64]bool{1: true}); !reflect.DeepEqual(a, Admission{Defer: true}) {
+				t.Fatalf("mixed report during a gap: %+v", a)
+			}
+			// Restoring the missing anchor can change the best match.
+			repaired := inspection(hitResult(digest('b'), digest('a'), 0.9))
+			want := Admission{Joins: []Join{{ClusterID: 1, Aliases: []Digest{digest('b')}, NewT: 4}}}
+			if a := assign(t, repaired, tenant, v, nil); !reflect.DeepEqual(a, want) {
+				t.Fatalf("reinspection after repair: got %+v, want %+v", a, want)
+			}
+			want = Admission{Skips: []Skip{{Digest: digest('b'), Reason: SkipBelowJoin}}}
+			if a := assign(t, report, tenant, v, nil); !reflect.DeepEqual(a, want) {
+				t.Fatalf("low-probability hit without a gap: got %+v, want %+v", a, want)
+			}
+		})
+	}
+}
+
+func TestAssignClearedGapsAllowFreshAssignments(t *testing.T) {
+	v := newView()
+	v.cluster(1, digest('a'), 2, 2002)
+	gaps := map[uint64]bool{1: false}
+	for _, tc := range []struct {
+		name   string
+		report Inspection
+		want   Admission
+	}{
+		{"join", inspection(hitResult(digest('b'), digest('a'), 0.9)), Admission{Joins: []Join{{ClusterID: 1, Aliases: []Digest{digest('b')}, NewT: 4}}}},
+		{"seed", inspection(missResult(digest('b'))), Admission{Seed: &Seed{Anchor: digest('b'), T: 2}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if a := assign(t, tc.report, tenant, v, gaps); !reflect.DeepEqual(a, tc.want) {
+				t.Fatalf("cleared gap: got %+v, want %+v", a, tc.want)
+			}
+		})
 	}
 }
 
@@ -259,5 +346,38 @@ func TestAssignLedgerErrorDefers(t *testing.T) {
 	v.err = errors.New("read failed")
 	if _, err := Assign(inspection(missResult(digest('a'))), tenant, v, nil); err == nil {
 		t.Fatal("ledger read error ignored")
+	}
+}
+
+func TestAssignLedgerErrorsDiscardAdmission(t *testing.T) {
+	readErr := errors.New("read failed")
+	for _, tc := range []struct {
+		name   string
+		kind   string
+		key    any
+		report Inspection
+	}{
+		{"alias", "alias", digest('b'), inspection(missResult(digest('b')))},
+		{"matched target", "target", digest('a'), inspection(hitResult(digest('b'), digest('a'), 1))},
+		{"cluster after join", "cluster", uint64(2), inspection(missResult(digest('a')), missResult(digest('c')))},
+		{"anchor target after join", "target", digest('c'), inspection(missResult(digest('a')), missResult(digest('c')))},
+		{"usage after joins", "usage", tenant.UID, inspection(missResult(digest('a')), missResult(digest('c')))},
+		{"usage after seed", "usage", tenant.UID, inspection(missResult(digest('b')))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := newView()
+			v.cluster(1, digest('a'), 2, 2002)
+			v.cluster(2, digest('c'), 2, 2002)
+			v.readErr = func(kind string, key any) error {
+				if kind == tc.kind && key == tc.key {
+					return readErr
+				}
+				return nil
+			}
+			a, err := Assign(tc.report, tenant, v, nil)
+			if !errors.Is(err, readErr) || !reflect.DeepEqual(a, Admission{}) {
+				t.Fatalf("ledger failure: admission %+v, error %v", a, err)
+			}
+		})
 	}
 }

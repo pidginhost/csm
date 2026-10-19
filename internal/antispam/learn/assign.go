@@ -110,9 +110,16 @@ func Assign(insp Inspection, src Source, v LedgerReader, gaps map[uint64]bool) (
 	if len(a.Mismatch) > 0 || len(a.DeleteZero) > 0 {
 		return Admission{Mismatch: a.Mismatch, DeleteZero: a.DeleteZero, Defer: true}, nil
 	}
+	hasGap := false
+	for _, gap := range gaps {
+		if gap {
+			hasGap = true
+			break
+		}
+	}
 	for _, p := range parts {
-		fresh := p.miss || (p.cluster != 0 && !p.alias)
-		if gaps[p.cluster] || (fresh && len(gaps) > 0) {
+		// A below-boundary hit may be a fallback for a missing anchor.
+		if gaps[p.cluster] || (!p.alias && hasGap) {
 			return Admission{Defer: true}, nil
 		}
 	}
