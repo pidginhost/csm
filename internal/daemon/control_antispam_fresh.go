@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/pidginhost/csm/internal/actionlog"
@@ -47,8 +48,10 @@ func (c *ControlListener) handleAntispamLearnFresh(_ json.RawMessage) (any, erro
 }
 
 func (d *Daemon) freshLearningNamespace(now time.Time) (control.AntispamLearnFreshResult, error) {
-	// Holding the learner lock keeps a reload from starting a learner
-	// against the state being replaced.
+	// A pass may still be generating keys from before learning was disabled.
+	// Wait for it and its learner result before replacing the namespace.
+	d.antispamReconcileMu.Lock()
+	defer d.antispamReconcileMu.Unlock()
 	d.antispamLearnerMu.Lock()
 	defer d.antispamLearnerMu.Unlock()
 	var res control.AntispamLearnFreshResult
@@ -74,8 +77,34 @@ func (d *Daemon) freshLearningNamespace(now time.Time) (control.AntispamLearnFre
 	case !os.IsNotExist(err):
 		return res, fmt.Errorf("checking the learning directory: %w", err)
 	}
+	restore := func(err error) (control.AntispamLearnFreshResult, error) {
+		if res.Archived != "" {
+			if restoreErr := os.Rename(res.Archived, learningDir); restoreErr != nil {
+				return res, errors.Join(err, fmt.Errorf("restoring the learning directory: %w", restoreErr))
+			}
+			res.Archived = ""
+			err = errors.Join(err, syncLearningParent())
+		}
+		return res, err
+	}
+	// Persist the move before clearing the ledger: a crash must not bring
+	// the old keys back beside an empty ledger.
+	if res.Archived != "" {
+		if err := syncLearningParent(); err != nil {
+			return restore(fmt.Errorf("persisting the archived learning directory: %w", err))
+		}
+	}
 	if err := db.ResetLearning(); err != nil {
-		return res, fmt.Errorf("clearing learning state: %w", err)
+		return restore(fmt.Errorf("clearing learning state: %w", err))
 	}
 	return res, nil
+}
+
+func syncLearningParent() error {
+	f, err := os.Open(filepath.Dir(learningDir))
+	if err != nil {
+		return err
+	}
+	err = f.Sync()
+	return errors.Join(err, f.Close())
 }

@@ -104,8 +104,12 @@ func (d *Daemon) startAntispam() {
 	r := d.withIPMap(antispamReconciler())
 	r.Learner = d.learnerProblems
 	loop := reconcile.NewLoop(func(ctx context.Context) reconcile.Outcome {
+		d.antispamReconcileMu.Lock()
+		defer d.antispamReconcileMu.Unlock()
 		d.pauseLearner()
-		return r.Pass(ctx, reconcile.DesiredFromConfig(d.currentCfg()))
+		out := r.Pass(ctx, reconcile.DesiredFromConfig(d.currentCfg()))
+		d.syncLearner(out)
+		return out
 	}, d.reportAntispam)
 	d.antispamLoop.Store(loop)
 	// Publish the reload target before reading initial health config so a
@@ -435,7 +439,6 @@ func (d *Daemon) reportAntispamHealth(findings []alert.Finding) {
 // reportAntispam keeps the findings of the checks a pass settled in the
 // latest set, alerts on new ones, and logs a pass that did not complete.
 func (d *Daemon) reportAntispam(out reconcile.Outcome) {
-	d.syncLearner(out)
 	if out.Err != nil && !errors.Is(out.Err, context.Canceled) {
 		// A worker error can carry the worker's diagnostics across lines.
 		csmlog.Warn("antispam reconcile did not complete", "err", strconv.Quote(out.Err.Error()))

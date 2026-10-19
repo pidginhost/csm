@@ -191,14 +191,19 @@ func (d *Daemon) stopLearnerLocked() {
 // engine runs, a restored ledger awaiting confirmation already holds
 // learning, so restored keys are never installed for a pass.
 func (d *Daemon) learnerProblems() []antispam.Problem {
-	if r := d.antispamLearner.Load(); r != nil {
-		return r.engine.Problems()
-	}
 	if db := store.Global(); db != nil {
-		if held, err := learn.Open(db).DeclaredRestore(); err == nil && held {
+		held, err := learn.Open(db).DeclaredRestore()
+		if err != nil {
+			return []antispam.Problem{{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonStateMismatch,
+				Detail: "cannot read restored learning state; learning stays off: " + err.Error()}}
+		}
+		if held {
 			return []antispam.Problem{{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonStateMismatch,
 				Detail: "restored learning state awaits confirmation: disable learning, then enable it again, or run csm antispam learn --fresh-namespace"}}
 		}
+	}
+	if r := d.antispamLearner.Load(); r != nil {
+		return r.engine.Problems()
 	}
 	return nil
 }
@@ -207,8 +212,9 @@ func (d *Daemon) learnerProblems() []antispam.Problem {
 // confirmation of a restore (spec 7.4): the next enable resumes the
 // restored ledger. Observe mode and shutdown confirm nothing.
 func (d *Daemon) confirmRestoreIfDisabled() {
-	as := d.currentCfg().EmailProtection.Antispam
-	if (as.Enabled && as.Learning.Enabled) || d.scanContext().Err() != nil {
+	cfg := d.currentCfg()
+	as := cfg.EmailProtection.Antispam
+	if (as.Enabled && as.Learning.Enabled) || cfg.ObserveMode() || d.scanContext().Err() != nil {
 		return
 	}
 	if db := store.Global(); db != nil {

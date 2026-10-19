@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,7 +14,9 @@ import (
 	"github.com/pidginhost/csm/internal/antispam/learn"
 	"github.com/pidginhost/csm/internal/antispam/learnwatch"
 	"github.com/pidginhost/csm/internal/antispam/reconcile"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -133,6 +138,108 @@ func TestDeclaredRestoreHoldsLearningUntilDisabled(t *testing.T) {
 	d.cfg.EmailProtection.Antispam.Learning.Enabled = true
 	if mismatch() {
 		t.Fatal("re-enabled learning still held")
+	}
+}
+
+func TestFreshNamespaceResetFailureRestoresKeys(t *testing.T) {
+	d := newDaemonForListener(t)
+	db, closeDB := openTestBoltStore(t, t.TempDir())
+	t.Cleanup(closeDB)
+	dir := useLearningDir(t)
+	writeKeys(t, dir, "csmfz_old")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.freshLearningNamespace(t0Fresh); err == nil {
+		t.Fatal("reset with a closed database succeeded")
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "keys", antispam.KeyPrefix)); err != nil || string(got) != "csmfz_old" {
+		t.Fatalf("failed reset moved the keys: %q, %v", got, err)
+	}
+}
+
+func TestDeclaredRestoreReadFailureHoldsLearning(t *testing.T) {
+	d := newLearningDaemon(t)
+	if err := store.Global().LearnUpdate(func(tx store.LearnTx) error {
+		return tx.Put(store.LearnMetaBucket, []byte("declared_restore"), []byte("invalid"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	problems := d.learnerProblems()
+	if len(problems) != 1 || problems[0].Key != antispam.ReasonStateMismatch {
+		t.Fatalf("unreadable restore hold permits installation: %+v", problems)
+	}
+}
+
+func TestDeclaredRestoreObserveDoesNotConfirm(t *testing.T) {
+	d := newLearningDaemon(t)
+	ledger := learn.Open(store.Global())
+	if err := ledger.MarkDeclaredRestore(t0Fresh); err != nil {
+		t.Fatal(err)
+	}
+	d.cfg.Mode = "observe"
+	d.cfg.EmailProtection.Antispam.Learning.Enabled = false
+	d.syncLearner(reconcile.Outcome{})
+	if held, err := ledger.DeclaredRestore(); err != nil || !held {
+		t.Fatalf("observe mode confirmed restore: held=%v, err=%v", held, err)
+	}
+}
+
+func TestFreshNamespaceWaitsForReconcile(t *testing.T) {
+	d := newLearningDaemon(t)
+	dir := useLearningDir(t)
+	writeKeys(t, dir, "csmfz_old")
+	d.stopCh = make(chan struct{})
+	usePanel(t, platform.PanelCPanel)
+	useActiveConfig(t, d.cfg)
+	stop := antispamTestShutdown(t, d)
+	entered, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(unblock)
+	useAntispamReconciler(t, reconcile.Reconciler{
+		EnsureKeys: func(context.Context, string) (bool, error) {
+			close(entered)
+			<-release
+			if err := os.MkdirAll(filepath.Join(dir, "keys"), 0o700); err != nil {
+				return false, err
+			}
+			if err := os.WriteFile(filepath.Join(dir, "keys", antispam.KeyPrefix), []byte("csmfz_inflight"), 0o600); err != nil {
+				return false, err
+			}
+			return false, errors.New("key generation did not complete")
+		},
+		LoadKeys: func(string) (antispam.LearningKeys, error) {
+			return antispam.LearningKeys{}, errors.New("unexpected key read")
+		},
+		Collect: func(context.Context, string) antispam.HostFacts {
+			return antispam.HostFacts{Record: antispam.RecordFacts{Missing: true}}
+		},
+		Now: time.Now,
+	})
+	d.startAntispam()
+	waitPass(t, entered)
+	cfg := *d.currentCfg()
+	cfg.EmailProtection.Antispam.Learning.Enabled = false
+	config.SetActive(&cfg)
+	d.syncLearner(reconcile.Outcome{})
+	finished := make(chan error, 1)
+	go func() {
+		_, err := d.freshLearningNamespace(t0Fresh)
+		finished <- err
+	}()
+	select {
+	case err := <-finished:
+		t.Errorf("reset overtook a pass that can still write keys: %v", err)
+		finished <- err
+	case <-time.After(100 * time.Millisecond):
+	}
+	unblock()
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	stop()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("an old reconcile pass recreated reset keys: %v", err)
 	}
 }
 
