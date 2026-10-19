@@ -112,7 +112,7 @@ func folderPath(m Mailbox, folder, sub string) (string, error) {
 	switch {
 	case m == Mailbox{}:
 		return "mail/" + folder + "/" + sub, nil
-	case plainName(m.Domain) && plainName(m.Box):
+	case ValidDomain(m.Domain) && ValidMailbox(m.Box):
 		return "mail/" + m.Domain + "/" + m.Box + "/" + folder + "/" + sub, nil
 	}
 	return "", fmt.Errorf("%w: unsupported mailbox name", ErrUnsafePath)

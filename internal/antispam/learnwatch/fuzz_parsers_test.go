@@ -44,3 +44,22 @@ func FuzzParsePasswd(f *testing.F) {
 		}
 	})
 }
+
+func FuzzParseMailboxPasswd(f *testing.F) {
+	f.Add([]byte("user:x:1:1::/x:/x\n../../x:x\n"), 3)
+	f.Add([]byte("a\x00b:x\n\xff:x\n"), 1)
+	f.Fuzz(func(t *testing.T, data []byte, limit int) {
+		if limit < 0 || limit > 1000 {
+			return
+		}
+		names, _ := ParseMailboxPasswd(data, limit)
+		if len(names) > limit {
+			t.Fatalf("%d names over limit %d", len(names), limit)
+		}
+		for _, n := range names {
+			if !ValidMailbox(n) {
+				t.Fatalf("invalid name %q returned", n)
+			}
+		}
+	})
+}
