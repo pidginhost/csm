@@ -188,3 +188,19 @@ func TestLearningMetricsInvalidateUnreadableState(t *testing.T) {
 		t.Fatal("successful read did not restore empty counts")
 	}
 }
+
+func TestLearningCapacityWarningFromWatcher(t *testing.T) {
+	withFakeEngines(t)
+	withLastWatcher(t, learnwatch.PassReport{Skipped: map[string]int{learn.SkipAccountCapacity: 2}}, time.Now())
+	d := newLearningDaemon(t)
+	d.syncLearner(learnedOutcome(antispam.LearningGate{Install: true, Publish: true}, testTarget))
+	var found []antispam.Problem
+	for _, p := range d.learnerProblems() {
+		if p.Key == antispam.ReasonAccountCapacity {
+			found = append(found, p)
+		}
+	}
+	if len(found) != 1 || found[0].Severity != antispam.Warning || found[0].Code != antispam.CodeLearning || !strings.Contains(found[0].Detail, "2") {
+		t.Fatalf("capacity problems %+v", found)
+	}
+}

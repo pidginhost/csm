@@ -21,6 +21,9 @@ import (
 const (
 	MaxMailboxListBytes = 1 << 20
 	MaxMailboxes        = 10000
+	// MaxAccountMailboxListBytes bounds all of one account's lists; real
+	// lists take a few hundred bytes per mailbox.
+	MaxAccountMailboxListBytes = 4 << 20
 )
 
 // Mailbox discovery skip reasons. Skips carry no tenant-supplied names.
@@ -88,15 +91,21 @@ func parseMailboxPasswd(data []byte, remaining *int) ([]string, []Skip) {
 	seen := map[string]bool{}
 	var names []string
 	var skips []Skip
+	data = bytes.TrimSuffix(data, []byte{'\n'})
+	if len(data) == 0 {
+		return nil, nil
+	}
+	// Every line costs a record, empty ones included, so a list of
+	// newlines cannot buy unbounded parsing.
 	for line := range bytes.SplitSeq(data, []byte{'\n'}) {
-		if len(line) == 0 {
-			continue
-		}
 		if *remaining <= 0 {
 			skips = append(skips, Skip{Reason: SkipMailboxLimit})
 			break
 		}
 		*remaining--
+		if len(line) == 0 {
+			continue
+		}
 		raw, _, found := bytes.Cut(line, []byte{':'})
 		name := string(raw)
 		switch {
@@ -138,13 +147,13 @@ func (h *Home) Mailboxes() ([]Mailbox, []Skip, error) {
 	if err != nil {
 		return out, skips, err
 	}
-	remaining := MaxMailboxes
+	remaining, bytesLeft := MaxMailboxes, int64(MaxAccountMailboxListBytes)
 	for _, d := range domains {
 		if remaining == 0 {
 			skips = append(skips, Skip{Reason: SkipMailboxLimit})
 			break
 		}
-		boxes, s, err := readMailboxList(etc, d, &remaining)
+		boxes, s, err := readMailboxList(etc, d, &remaining, &bytesLeft)
 		skips = append(skips, s...)
 		if err != nil {
 			return out, skips, err
@@ -194,7 +203,7 @@ func domainDirs(etc *safepath.Dir) ([]string, []Skip, error) {
 }
 
 // readMailboxList reads ~/etc/<domain>/passwd without following links.
-func readMailboxList(etc *safepath.Dir, domain string, remaining *int) ([]string, []Skip, error) {
+func readMailboxList(etc *safepath.Dir, domain string, remaining *int, bytesLeft *int64) ([]string, []Skip, error) {
 	dir, err := etc.Walk(domain)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -222,13 +231,23 @@ func readMailboxList(etc *safepath.Dir, domain string, remaining *int) ([]string
 	if !fi.Mode().IsRegular() {
 		return nil, []Skip{{Reason: SkipUnsafePath}}, nil
 	}
-	data, err := io.ReadAll(io.LimitReader(f, MaxMailboxListBytes+1))
+	if fi.Size() > MaxMailboxListBytes {
+		return nil, []Skip{{Reason: SkipMailboxListTooLarge}}, nil
+	}
+	if fi.Size() > *bytesLeft {
+		return nil, []Skip{{Reason: SkipMailboxLimit}}, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(f, min(MaxMailboxListBytes, *bytesLeft)+1))
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(data) > MaxMailboxListBytes {
+	switch {
+	case len(data) > MaxMailboxListBytes:
 		return nil, []Skip{{Reason: SkipMailboxListTooLarge}}, nil
+	case int64(len(data)) > *bytesLeft:
+		return nil, []Skip{{Reason: SkipMailboxLimit}}, nil
 	}
+	*bytesLeft -= int64(len(data))
 	names, skips := parseMailboxPasswd(data, remaining)
 	return names, skips, nil
 }

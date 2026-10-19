@@ -646,7 +646,8 @@ still follows the dry-run policy.
 
 Unless `/etc/global_spamassassin_enable` exists, turning an account's Spam
 Filters switch off stops CSM reading its folders at the next check and
-drops its unsent reports. Turning the switch back on starts new baselines.
+drops its unsent reports. A report already handed to the learner still
+completes. Turning the switch back on starts new baselines.
 The global override prevents per-account opt-out, including learning.
 What the account already contributed stays until the cluster expires or an
 operator forgets it; opting out does not delete it sooner.
@@ -876,7 +877,7 @@ reports server readiness; the running learner adds the reasons from
 | `audit_overdue` | The check of every learned value has not finished a round within 24 hours. |
 | `request_errors` | Learning requests to rspamd failed three times in a row. |
 | `backend_rebuilding` | Learned values are missing from storage, for example after Redis lost its data. CSM restores them from the stored messages and holds new clusters until it is done. |
-| `account_capacity` | An account, or the operator, reached its learning allowance. Its new reports are skipped; existing learning stays. |
+| `account_capacity` | An account, or the operator, reached its learning allowance, or an account's Spam folder state reached its limit of 65536 messages. Its new reports are skipped or wait; existing learning stays. Folders absent for 90 days are forgotten, which frees their share. |
 
 ## Findings
 

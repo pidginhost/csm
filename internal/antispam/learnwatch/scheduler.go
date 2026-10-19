@@ -38,6 +38,10 @@ const (
 	// fresh for the 90-day prune; relisting the large folder takes seconds.
 	FullRescanEvery = 24 * time.Hour
 	pruneEvery      = 24 * time.Hour
+	// FolderOpensPerTurn bounds the folders one account turn opens, so many
+	// mailboxes cost turns like a large folder does; an open walks a few
+	// path components and settling an unchanged folder writes nothing.
+	FolderOpensPerTurn = 256
 )
 
 // Pass skip reasons beyond the registry, eligibility and discovery ones.
@@ -70,6 +74,9 @@ type WatcherConfig struct {
 	OnPass        func(PassReport)
 	Chunk         int
 	SeenAllowance int
+	// FolderOpens bounds folder opens per account turn; zero means
+	// FolderOpensPerTurn.
+	FolderOpens int
 }
 
 // PassReport summarizes one pass. Skipped counts reasons, never names.
@@ -99,6 +106,10 @@ var turnHook = func(uid int, kind string) {}
 type Watcher struct {
 	cfg  WatcherConfig
 	busy atomic.Bool
+	// submitStopped: a backend error this pass; the pass keeps discovering
+	// but submits nothing more, so a hung controller costs one request
+	// timeout per pass. Owned by the single active pass.
+	submitStopped bool
 
 	mu   sync.Mutex
 	last PassReport
@@ -118,6 +129,9 @@ func NewWatcher(cfg WatcherConfig) *Watcher {
 	}
 	if cfg.Chunk <= 0 {
 		cfg.Chunk = DiscoveryChunk
+	}
+	if cfg.FolderOpens <= 0 {
+		cfg.FolderOpens = FolderOpensPerTurn
 	}
 	if cfg.SeenAllowance <= 0 {
 		cfg.SeenAllowance = AccountSeenAllowance
@@ -175,6 +189,7 @@ func (w *Watcher) Pass(ctx context.Context) PassReport {
 }
 
 func (w *Watcher) pass(ctx context.Context) PassReport {
+	w.submitStopped = false
 	r := PassReport{Skipped: map[string]int{}}
 	deadline := w.cfg.Now().Add(PassDeadline)
 	accounts, skips, err := Accounts(w.cfg.Source)
@@ -240,7 +255,15 @@ func (w *Watcher) pass(ctx context.Context) PassReport {
 }
 
 func (w *Watcher) saveCursor(uid int, r *PassReport) {
-	if err := w.cfg.State.Update(func(tx StateTx) error { return tx.SetCursor(uid) }); err != nil {
+	var cur int
+	err := w.cfg.State.View(func(tx StateTx) (e error) { cur, e = tx.Cursor(); return e })
+	if err == nil && cur == uid {
+		return
+	}
+	if err == nil {
+		err = w.cfg.State.Update(func(tx StateTx) error { return tx.SetCursor(uid) })
+	}
+	if err != nil {
 		r.Skipped[SkipStateUnavailable]++
 		r.Unfinished = true
 	}
@@ -255,16 +278,24 @@ func (w *Watcher) prune(runs []*accountRun, r *PassReport) {
 			}
 		}
 	}
-	if err := w.cfg.State.Update(func(tx StateTx) error {
+	due := false
+	err := w.cfg.State.View(func(tx StateTx) error {
 		last, err := tx.LastPrune()
-		if err != nil || tx.now.Sub(last) < pruneEvery {
-			return err
-		}
-		if _, err = tx.Prune(folders); err != nil {
-			return err
-		}
-		return tx.SetLastPrune(tx.now)
-	}); err != nil {
+		due = err == nil && tx.now.Sub(last) >= pruneEvery
+		return err
+	})
+	if err == nil && due {
+		err = w.cfg.State.Update(func(tx StateTx) error {
+			if _, pruneErr := tx.Prune(folders); pruneErr != nil {
+				return pruneErr
+			}
+			if _, pruneErr := tx.PruneAbsentFolders(); pruneErr != nil {
+				return pruneErr
+			}
+			return tx.SetLastPrune(tx.now)
+		})
+	}
+	if err != nil {
 		r.Skipped[SkipStateUnavailable]++
 		r.Unfinished = true
 	}
@@ -320,6 +351,7 @@ type accountRun struct {
 	queues        []*folderQueue
 	qi            int
 	attempts      int
+	turnOpens     int
 	seenCount     int
 	capReported   bool
 }
@@ -355,6 +387,7 @@ func (r *accountRun) turn(ctx context.Context, rep *PassReport) {
 	if ctx.Err() != nil || !r.w.cfg.CanDiscover() {
 		return
 	}
+	r.turnOpens = 0
 	if !r.started {
 		r.started = true
 		if !r.start(rep) {
@@ -518,8 +551,13 @@ func (r *accountRun) discover(rep *PassReport) {
 // unsafe and unchanged ones on the way.
 func (r *accountRun) openNext(rep *PassReport) {
 	for !r.done && r.cur == nil && r.fi < len(r.folders) && r.w.cfg.CanDiscover() {
+		if r.turnOpens >= r.w.cfg.FolderOpens {
+			return
+		}
+		r.turnOpens++
 		k, sub := r.folders[r.fi], Subdirs[r.si]
 		r.advance()
+		turnHook(r.a.UID, "open")
 		f, err := r.home.OpenFolder(mailboxOf(k), k.Folder, sub)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
@@ -537,7 +575,11 @@ func (r *accountRun) openNext(rep *PassReport) {
 		dev, ino, mtime, ctime := f.Identity()
 		id := DirIdent{Dev: dev, Ino: ino, MtimeNs: mtime, CtimeNs: ctime}
 		var unchanged bool
-		if err = r.state().Update(func(tx StateTx) (e error) { _, unchanged, e = tx.Open(k, sub, id); return e }); err != nil {
+		err = r.state().View(func(tx StateTx) (e error) { unchanged, e = tx.Unchanged(k, sub, id); return e })
+		if err == nil && !unchanged {
+			err = r.state().Update(func(tx StateTx) (e error) { _, unchanged, e = tx.Open(k, sub, id); return e })
+		}
+		if err != nil {
 			_ = f.Close()
 			r.stateFailed(err, rep)
 			return
@@ -648,22 +690,19 @@ func (r *accountRun) subComplete(k FolderKey, rep *PassReport) {
 		return
 	}
 	var items []PendingItem
-	err := r.state().Update(func(tx StateTx) error {
+	finish := false
+	err := r.state().View(func(tx StateTx) error {
 		st, ok, err := tx.Folder(k)
 		if err != nil || !ok {
 			return err
 		}
-		if !st.BaselineDone {
-			if r.subsFailed[k] || r.cappedFolders[k] {
-				return nil
-			}
-			if err = tx.FinishBaseline(k); err != nil {
-				return err
-			}
-		}
+		finish = !st.BaselineDone && !r.subsFailed[k] && !r.cappedFolders[k]
 		items, err = tx.Pending(k)
 		return err
 	})
+	if err == nil && finish {
+		err = r.state().Update(func(tx StateTx) error { return tx.FinishBaseline(k) })
+	}
 	if r.stateFailed(err, rep) || len(items) == 0 {
 		return
 	}
@@ -694,7 +733,7 @@ func (q *folderQueue) oldestTurn() time.Time {
 func (r *accountRun) canAttempt() bool {
 	// Complete discovery before spending the attempt budget, so a slow
 	// later folder gets the same share as the first one.
-	if r.discovering() || r.paused || r.attempts >= MaxAttempts || !r.w.cfg.CanDiscover() || !r.w.cfg.CanSubmit() {
+	if r.discovering() || r.paused || r.w.submitStopped || r.attempts >= MaxAttempts || !r.w.cfg.CanDiscover() || !r.w.cfg.CanSubmit() {
 		return false
 	}
 	for _, q := range r.queues {
@@ -870,7 +909,10 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 	turnHook(r.a.UID, "submit")
 	out, err := r.w.cfg.Engine.SubmitReport(ctx, learn.Candidate{UID: r.a.UID, Snapshot: snap})
 	switch {
-	case err != nil || out.Deferred || out.Err != nil:
+	case err != nil || out.Err != nil:
+		retry()
+		r.w.submitStopped = true
+	case out.Deferred:
 		retry()
 	case slices.ContainsFunc(out.Skips, func(s learn.Skip) bool { return s.Reason == learn.SkipAccountCapacity }):
 		retry()

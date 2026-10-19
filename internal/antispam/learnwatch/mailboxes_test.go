@@ -154,7 +154,10 @@ func TestParseMailboxPasswdBoundsRecords(t *testing.T) {
 		{"negative", "../x:x\na:x\n", -1, nil, []Skip{{Reason: SkipMailboxLimit}}},
 		{"exact", "b:x\na:x\n", 2, []string{"a", "b"}, nil},
 		{"exact duplicates", "a:x\na:x\n", 2, []string{"a"}, nil},
-		{"empty lines", "\na:x\n\n", 1, []string{"a"}, nil},
+		// Empty lines cost a record too, so newlines cannot buy unbounded
+		// parsing; one trailing newline ends the file without a record.
+		{"empty lines", "\na:x\n\n", 3, []string{"a"}, nil},
+		{"empty lines exhaust", "\na:x\n\n", 1, nil, []Skip{{Reason: SkipMailboxLimit}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, skips := ParseMailboxPasswd([]byte(tc.data), tc.limit)

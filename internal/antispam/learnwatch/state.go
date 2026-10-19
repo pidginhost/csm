@@ -62,11 +62,14 @@ type DirIdent struct {
 // FolderState is one folder's baseline. Listed holds each subdirectory's
 // identity as of its last complete enumeration; Dirs its current one.
 type FolderState struct {
-	Dirs         map[string]DirIdent  `json:"dirs"`
-	Listed       map[string]DirIdent  `json:"listed,omitempty"`
-	ListedAt     map[string]time.Time `json:"listed_at,omitempty"`
-	BaselineDone bool                 `json:"baseline_done"`
-	Epoch        uint64               `json:"epoch"`
+	Dirs     map[string]DirIdent  `json:"dirs"`
+	Listed   map[string]DirIdent  `json:"listed,omitempty"`
+	ListedAt map[string]time.Time `json:"listed_at,omitempty"`
+	// PresentAt is when the folder was last opened, refreshed at most
+	// daily; a folder absent for SeenRetention is pruned with its entries.
+	PresentAt    time.Time `json:"present_at"`
+	BaselineDone bool      `json:"baseline_done"`
+	Epoch        uint64    `json:"epoch"`
 }
 
 // SeenEntry is one message identity of a folder. Sub and Name are where
@@ -193,7 +196,24 @@ func (t StateTx) Open(k FolderKey, sub string, id DirIdent) (baseline, unchanged
 		st.Dirs = map[string]DirIdent{}
 	}
 	st.Dirs[sub] = DirIdent{Dev: id.Dev, Ino: id.Ino}
+	st.PresentAt = t.now
 	return baseline, unchanged, putJSON(t.tx, store.LearnWatchFoldersBucket, k.key(), st)
+}
+
+// Unchanged is Open's unchanged answer without a write: the baseline is
+// done, sub has its recorded identity and timestamps since a recent
+// complete listing, and the folder's presence was recorded within a day.
+// Callers write through Open only when it is false, so a pass over
+// unchanged folders writes nothing.
+func (t StateTx) Unchanged(k FolderKey, sub string, id DirIdent) (bool, error) {
+	st, ok, err := t.Folder(k)
+	if err != nil || !ok {
+		return false, err
+	}
+	known, listed := st.Dirs[sub]
+	return listed && st.BaselineDone && known.Dev == id.Dev && known.Ino == id.Ino &&
+		st.Listed[sub] == id && t.now.Sub(st.ListedAt[sub]) < FullRescanEvery &&
+		t.now.Sub(st.PresentAt) < lastSeenRefresh, nil
 }
 
 // Listed records a complete enumeration of sub at identity id.
@@ -434,6 +454,41 @@ func (t StateTx) Prune(folders []FolderKey) (int, error) {
 	}
 	for _, k := range stale {
 		if err := t.tx.Delete(store.LearnWatchSeenBucket, k); err != nil {
+			return 0, err
+		}
+	}
+	return len(stale), nil
+}
+
+// PruneAbsentFolders drops folders not opened for SeenRetention, such as
+// deleted mailboxes and accounts, with every seen and pending entry: they
+// can never be served and would hold the account's allowance.
+func (t StateTx) PruneAbsentFolders() (int, error) {
+	var stale [][]byte
+	err := t.tx.ForEach(store.LearnWatchFoldersBucket, func(k, v []byte) error {
+		if len(k) == 0 || k[0] == 0xfe || k[0] == 0xff {
+			return nil
+		}
+		var st FolderState
+		if err := json.Unmarshal(v, &st); err != nil {
+			return err
+		}
+		if t.now.Sub(st.PresentAt) > SeenRetention {
+			stale = append(stale, bytes.Clone(k))
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	for _, k := range stale {
+		if err = t.tx.Delete(store.LearnWatchFoldersBucket, k); err != nil {
+			return 0, err
+		}
+		if err = t.deletePrefix(store.LearnWatchSeenBucket, append(bytes.Clone(k), 0)); err != nil {
+			return 0, err
+		}
+		if err = t.deletePrefix(store.LearnWatchFoldersBucket, append(append([]byte{0xff}, k...), 0)); err != nil {
 			return 0, err
 		}
 	}

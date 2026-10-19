@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"slices"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -203,9 +204,27 @@ func (d *Daemon) learnerProblems() []antispam.Problem {
 		}
 	}
 	if r := d.antispamLearner.Load(); r != nil {
-		return r.engine.Problems()
+		return withWatcherCapacity(r.engine.Problems(), r.watcher)
 	}
 	return nil
+}
+
+// withWatcherCapacity adds the accounts whose Spam folder state reached its
+// allowance in the last pass to the engine's account_capacity Warning.
+func withWatcherCapacity(problems []antispam.Problem, w learnWatcher) []antispam.Problem {
+	rep, _ := w.Last()
+	n := rep.Skipped[learn.SkipAccountCapacity]
+	if n == 0 {
+		return problems
+	}
+	detail := strconv.Itoa(n) + " accounts reached their Spam folder learning allowance in the last pass; their new reports wait"
+	for i, p := range problems {
+		if p.Key == antispam.ReasonAccountCapacity {
+			problems[i].Detail = p.Detail + "; " + detail
+			return problems
+		}
+	}
+	return append(problems, antispam.Problem{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonAccountCapacity, Detail: detail})
 }
 
 // confirmRestoreIfDisabled treats learning seen disabled as the operator's
