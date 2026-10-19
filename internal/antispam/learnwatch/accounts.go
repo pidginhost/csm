@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -95,6 +96,7 @@ func Accounts(src Source) ([]Account, []Skip, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot list cPanel accounts: %w", err)
 	}
+	names = slices.Clone(names)
 	data, err := src.Passwd()
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot read the password database: %w", err)
@@ -120,6 +122,19 @@ func Accounts(src Source) ([]Account, []Skip, error) {
 		default:
 			out = append(out, Account{Name: name, UID: e.uid, GID: e.gid, Home: e.home})
 		}
+	}
+	// A rename or UID reuse between the two reads must not make a held
+	// UID appear removed. Retry the pass instead of joining mixed lists.
+	after, err := src.CPanelUsers()
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot recheck cPanel accounts: %w", err)
+	}
+	after = slices.Clone(after)
+	before := slices.Clone(names)
+	slices.Sort(before)
+	slices.Sort(after)
+	if !slices.Equal(before, after) {
+		return nil, nil, errors.New("cPanel account registry changed during read")
 	}
 	return out, skips, nil
 }

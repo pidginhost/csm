@@ -54,6 +54,18 @@ func TestAccountsIncludesHome2(t *testing.T) {
 	}
 }
 
+func TestAccountsPreservesRegistryOrder(t *testing.T) {
+	users := []string{"tenant2", "tenant1"}
+	got, skips, err := Accounts(fakeSource{users: users, passwd: passwd})
+	want := []Account{
+		{Name: "tenant2", UID: 1002, GID: 1002, Home: "/home2/tenant2"},
+		{Name: "tenant1", UID: 1001, GID: 1001, Home: "/home/tenant1"},
+	}
+	if err != nil || len(skips) != 0 || !slices.Equal(got, want) || !slices.Equal(users, []string{"tenant2", "tenant1"}) {
+		t.Fatalf("accounts %+v, skips %+v, source order %v, error %v", got, skips, users, err)
+	}
+}
+
 func TestAccountsSkipsMissingPasswd(t *testing.T) {
 	got, skips := accountsOf(t, "tenant1", "ghost")
 	if len(got) != 1 || got[0].Name != "tenant1" {

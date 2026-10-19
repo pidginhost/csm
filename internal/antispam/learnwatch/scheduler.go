@@ -61,7 +61,7 @@ const (
 
 type submitter interface {
 	SubmitReport(context.Context, learn.Candidate) (learn.Outcome, error)
-	CancelUnsent(ctx context.Context, uid int) error
+	CancelUnsent(ctx context.Context, uid int, confirm func() (bool, error)) error
 	ReportUIDs(context.Context) ([]int, error)
 }
 
@@ -201,7 +201,8 @@ func (w *Watcher) Pass(ctx context.Context) PassReport {
 // registry: a removed account has lost its eligibility (spec 7.4). Only a
 // complete registry read gets here. An account CSM cannot read still holds
 // its UID, and a reused UID keeps the reservation. Failures retry next pass.
-func (w *Watcher) cancelRemoved(ctx context.Context, accounts []Account, skips []Skip, r *PassReport) {
+// False stops the pass so stale account data cannot authorize later opt-outs.
+func (w *Watcher) cancelRemoved(ctx context.Context, accounts []Account, skips []Skip, r *PassReport) bool {
 	held := map[int]bool{}
 	for _, a := range accounts {
 		held[a.UID] = true
@@ -212,15 +213,46 @@ func (w *Watcher) cancelRemoved(ctx context.Context, accounts []Account, skips [
 		}
 	}
 	uids, err := w.cfg.Engine.ReportUIDs(ctx)
+	if err != nil {
+		r.Skipped[SkipStateUnavailable]++
+		r.Unfinished = true
+		return true
+	}
+	proceed := true
 	for _, uid := range uids {
+		if ctx.Err() != nil || !w.cfg.CanDiscover() {
+			r.Unfinished = true
+			proceed = false
+			break
+		}
 		if !held[uid] {
-			err = errors.Join(err, w.cfg.Engine.CancelUnsent(ctx, uid))
+			var registryErr error
+			cancelErr := w.cfg.Engine.CancelUnsent(ctx, uid, func() (bool, error) {
+				// The owner may have been busy publishing. Do not cancel a
+				// newly created account or a reused UID from the pass snapshot.
+				var current []Account
+				var skipped []Skip
+				current, skipped, registryErr = Accounts(w.cfg.Source)
+				if registryErr != nil {
+					return false, registryErr
+				}
+				return !slices.ContainsFunc(current, func(a Account) bool { return a.UID == uid }) &&
+					!slices.ContainsFunc(skipped, func(s Skip) bool { return s.Reason == SkipBadHome && s.UID == uid }), nil
+			})
+			if registryErr != nil {
+				r.Skipped[SkipRegistryUnreadable]++
+				r.Unfinished = true
+				proceed = false
+				break
+			}
+			err = errors.Join(err, cancelErr)
 		}
 	}
 	if err != nil {
 		r.Skipped[SkipStateUnavailable]++
 		r.Unfinished = true
 	}
+	return proceed
 }
 
 func (w *Watcher) pass(ctx context.Context) PassReport {
@@ -240,7 +272,9 @@ func (w *Watcher) pass(ctx context.Context) PassReport {
 		r.Unfinished = true
 		return r
 	}
-	w.cancelRemoved(ctx, accounts, skips, &r)
+	if !w.cancelRemoved(ctx, accounts, skips, &r) {
+		return r
+	}
 	_, err = GlobalOptIn(w.cfg.GlobalPath)
 	if err != nil {
 		r.Skipped[SkipOptInUnreadable]++
@@ -583,7 +617,7 @@ func (r *accountRun) eligible(ctx context.Context, rep *PassReport) bool {
 	// retried by the next pass.
 	// The folder baseline must reset even if the learner cannot cancel its
 	// reservations. Otherwise re-entry could submit mail from the opt-out.
-	r.stateFailed(r.w.cfg.Engine.CancelUnsent(ctx, r.a.UID), rep)
+	r.stateFailed(r.w.cfg.Engine.CancelUnsent(ctx, r.a.UID, nil), rep)
 	var has bool
 	if r.stateFailed(r.state().View(func(tx StateTx) (e error) { has, e = tx.HasState(r.a.UID); return e }), rep) {
 		return false

@@ -35,7 +35,12 @@ func (e *fakeEngine) ReportUIDs(context.Context) ([]int, error) {
 	return slices.Clone(e.held), nil
 }
 
-func (e *fakeEngine) CancelUnsent(_ context.Context, uid int) error {
+func (e *fakeEngine) CancelUnsent(_ context.Context, uid int, confirm func() (bool, error)) error {
+	if confirm != nil {
+		if cancel, err := confirm(); err != nil || !cancel {
+			return err
+		}
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.cancels = append(e.cancels, uid)

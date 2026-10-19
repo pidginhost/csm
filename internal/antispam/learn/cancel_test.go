@@ -67,13 +67,13 @@ func TestEngineCancelUnsentRestoresJoinedTarget(t *testing.T) {
 		t.Fatalf("reservation not left unsent: %+v", out)
 	}
 	f.healReads()
-	if err := e.CancelUnsent(ctx, 1003); err != nil {
+	if err := e.CancelUnsent(ctx, 1003, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := f.targetOf(t, digest('a')); got.T != 4 || f.intents(t) != 1 {
 		t.Fatalf("another account's opt-out changed the reservation: %+v", got)
 	}
-	if err := e.CancelUnsent(ctx, 1001); err != nil {
+	if err := e.CancelUnsent(ctx, 1001, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := f.targetOf(t, digest('a')); got.T != 2 || got.Revision != 3 {
@@ -113,7 +113,7 @@ func TestEngineCancelUnsentKeepsSentContribution(t *testing.T) {
 		t.Fatalf("add not left uncertain: %+v", out)
 	}
 	f.healReads()
-	if err := e.CancelUnsent(ctx, 1001); err != nil {
+	if err := e.CancelUnsent(ctx, 1001, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := f.targetOf(t, digest('a')); got.T != 4 || f.intents(t) != 1 {
@@ -158,7 +158,7 @@ func TestEngineCancelUnsentKeepsVerifiedContribution(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.CancelUnsent(ctx, 1001); err != nil {
+	if err := e.CancelUnsent(ctx, 1001, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := f.targetOf(t, digest('a')); got.T != 4 || f.intents(t) != 1 {
@@ -192,7 +192,7 @@ func TestEngineCancelUnsentRestoresReplacedGuard(t *testing.T) {
 	}
 	seed := out.Pending[0]
 	f.healReads()
-	if err := e.CancelUnsent(ctx, 1002); err != nil {
+	if err := e.CancelUnsent(ctx, 1002, nil); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := f.targetOf(t, digest('s'))
@@ -232,7 +232,7 @@ func TestEngineCancelUnsentDropsNewSeed(t *testing.T) {
 		t.Fatalf("seed not left unsent: %+v", out)
 	}
 	f.healReads()
-	if err := e.CancelUnsent(ctx, 1002); err != nil {
+	if err := e.CancelUnsent(ctx, 1002, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, ok := f.targetOf(t, digest('s')); ok {
@@ -269,7 +269,7 @@ func TestEngineCancelUnsentKeepsCommittedClusters(t *testing.T) {
 		t.Fatalf("outcome %+v", out)
 	}
 	f.healReads()
-	if err := e.CancelUnsent(ctx, 1001); err != nil {
+	if err := e.CancelUnsent(ctx, 1001, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := f.targetOf(t, digest('b')); got.T != 2 || f.intents(t) != 0 {
@@ -295,7 +295,7 @@ func TestEngineCancelUnsentWithoutReservationsSkipsOwner(t *testing.T) {
 	f := newAuditFixture(t)
 	e, stop := startTestEngine(t, f)
 	stop()
-	if err := e.CancelUnsent(context.Background(), 1001); err != nil {
+	if err := e.CancelUnsent(context.Background(), 1001, nil); err != nil {
 		t.Fatal(err)
 	}
 }

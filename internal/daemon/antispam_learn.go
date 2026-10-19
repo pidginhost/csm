@@ -23,7 +23,7 @@ type learnEngine interface {
 	Problems() []antispam.Problem
 	Operator(context.Context, learn.OperatorRequest) (learn.OperatorResult, error)
 	SubmitReport(context.Context, learn.Candidate) (learn.Outcome, error)
-	CancelUnsent(ctx context.Context, uid int) error
+	CancelUnsent(ctx context.Context, uid int, confirm func() (bool, error)) error
 	ReportUIDs(context.Context) ([]int, error)
 	Stats() (learn.Stats, error)
 }

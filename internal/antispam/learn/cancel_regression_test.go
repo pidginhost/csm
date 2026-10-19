@@ -7,9 +7,79 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"testing/synctest"
 
 	"github.com/pidginhost/csm/internal/store"
 )
+
+// Confirmation must run after the owner queue, where a UID may have been
+// reassigned while another request was publishing.
+func TestCancelUnsentConfirmsOnOwner(t *testing.T) {
+	for _, result := range []string{"removed", "reassigned", "unreadable", "cancelled"} {
+		t.Run(result, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newAuditFixture(t)
+				f.add(t, 1, digest('a'), 2, t0, 2002)
+				e := newTestEngine(t, f)
+				f.failReads(digest('a'))
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				out, err := e.SubmitReport(ctx, Candidate{UID: 1001, Snapshot: f.report("variant", digest('v'), digest('a'), 1)})
+				if err != nil || !slices.Equal(out.Pending, []uint64{1}) {
+					t.Fatalf("reservation: %+v, %v", out, err)
+				}
+				before, _ := f.targetOf(t, digest('a'))
+				entered, release := make(chan struct{}), make(chan struct{})
+				ownerDone := make(chan error, 1)
+				go func() {
+					ownerDone <- e.do(ctx, func() { close(entered); <-release })
+				}()
+				<-entered
+				checked, reassigned := false, false
+				unreadable := errors.New("registry unreadable")
+				done := make(chan error, 1)
+				go func() {
+					done <- e.CancelUnsent(ctx, 1001, func() (bool, error) {
+						checked = true
+						switch result {
+						case "unreadable":
+							return false, unreadable
+						case "cancelled":
+							cancel()
+						}
+						return !reassigned, nil
+					})
+				}()
+				synctest.Wait()
+				if checked {
+					t.Error("confirmed removal before reaching the owner")
+				}
+				reassigned = result == "reassigned"
+				close(release)
+				err = <-done
+				<-ownerDone
+				var wantErr error
+				switch result {
+				case "unreadable":
+					wantErr = unreadable
+				case "cancelled":
+					wantErr = context.Canceled
+				}
+				if !checked || !errors.Is(err, wantErr) {
+					t.Fatalf("confirmation checked=%v error=%v, want %v", checked, err, wantErr)
+				}
+				after, _ := f.targetOf(t, digest('a'))
+				if result == "removed" {
+					if after.T != 2 || f.intents(t) != 0 || f.usage(t, 1001) != (Usage{}) {
+						t.Fatalf("confirmed removal kept the reservation: %+v", after)
+					}
+				} else if !reflect.DeepEqual(after, before) || f.intents(t) != 1 || f.usage(t, 1001) != (Usage{Aliases: 1}) {
+					t.Fatalf("unconfirmed removal changed the reservation: %+v", after)
+				}
+			})
+		})
+	}
+}
 
 // A sent reservation cannot be cancelled. Checking it must not wait for
 // the owner, which may be blocked on unrelated native requests.
@@ -39,7 +109,7 @@ func TestCancelUnsentSentOnlySkipsOwner(t *testing.T) {
 				t.Fatalf("write was not journaled: %+v", before)
 			}
 			stop()
-			if err := e.CancelUnsent(context.Background(), 1001); err != nil {
+			if err := e.CancelUnsent(context.Background(), 1001, nil); err != nil {
 				t.Fatal(err)
 			}
 			if after, _ := f.targetOf(t, digest('a')); !reflect.DeepEqual(after, before) || f.intents(t) != 1 {
@@ -74,7 +144,7 @@ func TestCancelUnsentMixedDeleteAndReadFailure(t *testing.T) {
 	if sent.Phase != PhaseDeletePending || sent.SentRevision != sent.Revision {
 		t.Fatalf("delete journal lost on rejection: %+v", sent)
 	}
-	if err := e.CancelUnsent(ctx, 1001); err != nil {
+	if err := e.CancelUnsent(ctx, 1001, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := f.targetOf(t, digest('a')); !reflect.DeepEqual(got, sent) {
@@ -116,7 +186,7 @@ func TestCancelUnsentAfterEarlierRevisionSent(t *testing.T) {
 	if err != nil || !slices.Equal(out.Pending, []uint64{1}) {
 		t.Fatalf("second reservation: %+v, %v", out, err)
 	}
-	if err := e.CancelUnsent(ctx, 1002); err != nil {
+	if err := e.CancelUnsent(ctx, 1002, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := f.targetOf(t, digest('a')); got.T != 4 || got.Revision != 4 || got.SentRevision != 2 {
@@ -179,14 +249,14 @@ func TestCancelUnsentRollsBackOnCommitFailure(t *testing.T) {
 	engineTurn(t, e, func() {
 		fault.reject = func(store.LearnTx) error { return errors.New("commit failed") }
 	})
-	if err := e.CancelUnsent(ctx, 1001); !errors.Is(err, ErrStateIO) {
+	if err := e.CancelUnsent(ctx, 1001, nil); !errors.Is(err, ErrStateIO) {
 		t.Fatalf("cancel failure: %v", err)
 	}
 	if got, _ := f.targetOf(t, digest('a')); !reflect.DeepEqual(got, before) || f.intents(t) != 1 || f.usage(t, 1001) != (Usage{Aliases: 1}) {
 		t.Fatalf("partial cancellation escaped rollback: %+v", got)
 	}
 	engineTurn(t, e, func() { fault.reject = nil })
-	if err := e.CancelUnsent(ctx, 1001); err != nil {
+	if err := e.CancelUnsent(ctx, 1001, nil); err != nil {
 		t.Fatal(err)
 	}
 	if f.intents(t) != 0 || f.usage(t, 1001) != (Usage{}) {
@@ -212,7 +282,7 @@ func TestCancelUnsentSharesReservationLookup(t *testing.T) {
 	e := NewEngine(EngineConfig{Ledger: f.ledger})
 	ctx := context.Background()
 	for uid := 1001; uid <= 1010; uid++ {
-		if err := e.CancelUnsent(ctx, uid); err != nil {
+		if err := e.CancelUnsent(ctx, uid, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -251,7 +321,7 @@ func TestCancelUnsentSharesReservationLookup(t *testing.T) {
 	if err := f.ledger.Update(func(tx LedgerTx) error { return tx.DeleteIntent(intent.ID) }); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.CancelUnsent(ctx, 1001); err != nil {
+	if err := e.CancelUnsent(ctx, 1001, nil); err != nil {
 		t.Fatalf("deleted reservation still requires the owner: %v", err)
 	}
 }
@@ -279,7 +349,7 @@ func BenchmarkCancelUnsentPass(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		for uid := 1000; uid < 1000+accounts; uid++ {
-			if err := e.CancelUnsent(context.Background(), uid); err != nil {
+			if err := e.CancelUnsent(context.Background(), uid, nil); err != nil {
 				b.Fatal(err)
 			}
 		}

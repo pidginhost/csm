@@ -654,7 +654,9 @@ the account stays opted out. Turning the switch back on starts new
 baselines.
 The global override prevents per-account opt-out, including learning.
 Removing a cPanel account drops its learner reports the same way, once its
-UID belongs to no remaining account.
+UID belongs to no remaining account. An account whose home directory CSM
+cannot use keeps them. While the account list is changing or cannot be
+read, every account keeps them and CSM retries at the next check.
 What the account already contributed stays until the cluster expires or an
 operator forgets it; opting out or removal does not delete it sooner.
 

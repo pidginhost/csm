@@ -16,8 +16,9 @@ import (
 // under their revision (spec 5: an observed opt-out cancels unsent work).
 // Their targets return to what they replaced. Sent clusters keep
 // publishing and committed ones keep their votes. Only the ledger changes,
-// so it runs whatever the gate.
-func (e *Engine) CancelUnsent(ctx context.Context, uid int) error {
+// so it runs whatever the gate. When supplied, confirm rechecks eligibility
+// on the owner immediately before cancellation; false or an error keeps work.
+func (e *Engine) CancelUnsent(ctx context.Context, uid int, confirm func() (bool, error)) error {
 	// Accounts with no cancellable work need no owner turn. In particular,
 	// sent work must not hold up each opt-out pass on native request delays.
 	ids, err := e.unsentReportIntents(ctx, uid)
@@ -25,7 +26,18 @@ func (e *Engine) CancelUnsent(ctx context.Context, uid int) error {
 		return err
 	}
 	var cancelErr error
-	if err := e.do(ctx, func() { cancelErr = e.cancelUnsent(ids) }); err != nil {
+	if err := e.do(ctx, func() {
+		if confirm != nil {
+			var cancel bool
+			cancel, cancelErr = confirm()
+			if cancelErr != nil || !cancel {
+				return
+			}
+		}
+		if cancelErr = ctx.Err(); cancelErr == nil {
+			cancelErr = e.cancelUnsent(ids)
+		}
+	}); err != nil {
 		return err
 	}
 	return cancelErr
