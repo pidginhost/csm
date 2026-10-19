@@ -19,9 +19,12 @@ type fakeStorage struct {
 	bodies map[string]Digest
 	// onAdd and onDelete decide whether a mutation applies and what the
 	// caller hears; nil applies and succeeds.
-	onAdd    func(d Digest, w int32) (apply bool, err error)
-	onDelete func(d Digest) (apply bool, err error)
-	readErr  error
+	onAdd     func(d Digest, w int32) (apply bool, err error)
+	onDelete  func(d Digest) (apply bool, err error)
+	onRead    func()
+	onInspect func()
+	readErr   error
+	syncErr   error
 	// inspect overrides a body inspection's results (near matches,
 	// several parts); addWait runs inside Add before it applies.
 	inspect      map[string][]Result
@@ -57,6 +60,9 @@ func (s *fakeStorage) set(d Digest, v int64) {
 }
 
 func (s *fakeStorage) Inspect(_ context.Context, body []byte) (Inspection, error) {
+	if s.onInspect != nil {
+		s.onInspect()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.bodyInspects++
@@ -82,6 +88,9 @@ func (s *fakeStorage) result(d Digest) Result {
 }
 
 func (s *fakeStorage) InspectDigests(_ context.Context, ds []Digest) (Inspection, error) {
+	if s.onRead != nil {
+		s.onRead()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.inspected++
@@ -139,7 +148,7 @@ func (s *fakeStorage) Sync(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.syncs++
-	return nil
+	return s.syncErr
 }
 
 func (s *fakeStorage) counts() (adds []int32, deletes int) {

@@ -15,9 +15,8 @@ const (
 	VerifyDeadline      = 5 * time.Second
 )
 
-// Publication errors. ErrReadFailed: the exact value could not be read, so
-// nothing was sent. ErrStateIO: the ledger could not record a phase, so
-// nothing was sent.
+// Publication errors. A failed inspection or phase commit prevents a send.
+// Ledger failures after a send leave its recorded phase unresolved.
 var (
 	ErrReadFailed = errors.New("cannot read the anchor's stored value")
 	ErrStateIO    = errors.New("cannot record learning state")
@@ -79,12 +78,20 @@ func (p *Publisher) Turn(ctx context.Context, d Digest) (TurnResult, error) {
 			return res, err
 		}
 		res.Value = v
+		reset := t.ResetPending || present && v <= 0
+		switch {
+		case t.T == 0 && !present:
+			return p.complete(t, 0)
+		case t.T > 0 && present && v == int64(t.T) && t.Phase != PhaseAddPending &&
+			(!reset || t.Phase == PhaseAddSent && t.ResetPending):
+			// A recorded reset add followed by exact T finishes the reset;
+			// merely entering the reset phase does not. AddPending must
+			// still delete a digest that reappeared before its reset add.
+			return p.complete(t, v)
+		}
 		switch t.Phase {
 		case PhaseDeletePending, PhaseDeleteSent:
 			if !present {
-				if t.T == 0 {
-					return p.complete(t, 0)
-				}
 				if err = p.setPhase(t, PhaseAddPending, nil); err != nil {
 					return res, err
 				}
@@ -93,21 +100,15 @@ func (p *Publisher) Turn(ctx context.Context, d Digest) (TurnResult, error) {
 		case PhaseAddPending:
 			if present {
 				// A late write arrived before the re-add: delete it first.
-				if err = p.setPhase(t, PhaseDeletePending, nil); err != nil {
+				if err = p.setPhase(t, PhaseDeletePending, func(t *Target) {
+					t.ResetPending, t.RestoreT = true, t.T
+				}); err != nil {
 					return res, err
 				}
 				continue
 			}
 		default:
-			reset := t.ResetPending || present && v <= 0
-			switch {
-			case t.T == 0 && !present:
-				return p.complete(t, 0)
-			case present && v == int64(t.T) && (!reset || t.Phase == PhaseAddSent && t.ResetPending):
-				// A recorded reset add followed by exact T finishes the reset;
-				// merely entering the reset phase does not.
-				return p.complete(t, v)
-			case t.T == 0 || reset || v > int64(t.T):
+			if t.T == 0 || reset || v > int64(t.T) {
 				if err = p.setPhase(t, PhaseDeletePending, func(t *Target) {
 					t.ResetPending = t.ResetPending || present && v <= 0
 					t.RestoreT = t.T
@@ -130,12 +131,13 @@ func (p *Publisher) Turn(ctx context.Context, d Digest) (TurnResult, error) {
 			verified, err = p.sendAdd(ctx, t, v)
 		}
 		if err != nil || !verified {
-			res, _ = p.result(d, res)
-			res.Uncertain = err == nil || errors.Is(err, ErrUncertain)
+			var stateErr error
+			res, stateErr = p.result(d, res)
+			res.Uncertain = err == nil || errors.Is(err, ErrUncertain) && !errors.Is(err, ErrReadFailed)
 			if res.Uncertain {
 				err = nil
 			}
-			return res, err
+			return res, errors.Join(err, stateErr)
 		}
 	}
 	t, err := p.target(d)
@@ -222,6 +224,15 @@ func (p *Publisher) sendDelete(ctx context.Context, t Target) (bool, error) {
 		return false, err
 	}
 	if err := p.client.DeleteHash(ctx, t.Digest); err != nil {
+		if errors.Is(err, ErrRejected) {
+			sent := t
+			sent.Phase = PhaseDeleteSent
+			if perr := p.setPhase(sent, PhaseDeletePending, func(t *Target) {
+				t.ResetPending, t.RestoreT = true, t.T
+			}); perr != nil {
+				return false, errors.Join(err, perr)
+			}
+		}
 		return false, err
 	}
 	return p.verify(ctx, t.Digest, func(_ int64, present bool) bool { return !present })

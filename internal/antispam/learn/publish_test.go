@@ -3,6 +3,7 @@ package learn
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -201,5 +202,95 @@ func TestPublishPersistsPhaseBeforeSend(t *testing.T) {
 	}
 	if atDelete != PhaseDeleteSent || atAdd != PhaseAddSent {
 		t.Fatalf("phase at delete %s, at add %s", atDelete, atAdd)
+	}
+}
+
+func (f *publishFixture) editTarget(t *testing.T, edit func(*Target)) {
+	t.Helper()
+	if err := f.ledger.Update(func(tx LedgerTx) error {
+		cur, ok, err := tx.Target(f.anchor)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("fixture target missing")
+		}
+		edit(&cur)
+		return tx.PutTarget(cur)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPublishZeroTargetRequiresAbsenceInEveryPhase(t *testing.T) {
+	phases := []Phase{PhaseIdle, PhaseRead, PhaseAddSent, PhaseDeletePending, PhaseDeleteSent, PhaseAddPending}
+	for _, phase := range phases {
+		for _, reset := range []bool{false, true} {
+			for _, value := range []int64{-1, 0, 2} {
+				t.Run(fmt.Sprintf("%s/reset=%t/value=%d", phase, reset, value), func(t *testing.T) {
+					f := newPublishFixture(t, 0)
+					// -1 denotes absence; a stored zero is still a hit.
+					if value >= 0 {
+						f.storage.set(f.anchor, value)
+					}
+					f.editTarget(t, func(cur *Target) {
+						cur.Phase, cur.ResetPending, cur.RestoreT = phase, reset, 2
+					})
+					// Forget may already have removed the body; only the digest is needed.
+					if err := f.bodies.Remove(1); err != nil {
+						t.Fatal(err)
+					}
+					res, err := turn(t, f.publisher(), f.anchor)
+					if err != nil || !res.Done || res.Value != 0 || res.Phase != PhaseIdle {
+						t.Fatalf("res %+v err %v", res, err)
+					}
+					if _, present := f.storage.value(f.anchor); present {
+						t.Fatal("completed while the zero target was still present")
+					}
+					wantDeletes := 0
+					if value >= 0 {
+						wantDeletes = 1
+					}
+					if adds, deletes := f.storage.counts(); len(adds) != 0 || deletes != wantDeletes {
+						t.Fatalf("adds %v deletes %d; want no adds, %d deletes", adds, deletes, wantDeletes)
+					}
+					if got := f.target(t); got.ResetPending || got.RestoreT != 0 || got.T != 0 {
+						t.Fatalf("target %+v", got)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestPublishExactTargetAndRequiredReset(t *testing.T) {
+	phases := []Phase{PhaseIdle, PhaseRead, PhaseAddSent, PhaseDeletePending, PhaseDeleteSent, PhaseAddPending}
+	for _, phase := range phases {
+		for _, reset := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reset=%t", phase, reset), func(t *testing.T) {
+				f := newPublishFixture(t, 8)
+				f.storage.set(f.anchor, 8)
+				f.editTarget(t, func(cur *Target) {
+					cur.Phase, cur.ResetPending, cur.RestoreT = phase, reset, 8
+				})
+				res, err := turn(t, f.publisher(), f.anchor)
+				if err != nil || !res.Done || res.Value != 8 {
+					t.Fatalf("res %+v err %v", res, err)
+				}
+				adds, deletes := f.storage.counts()
+				// A resumed reset add may finish, but add_pending must delete a new hit.
+				mustReset := phase == PhaseAddPending || reset && phase != PhaseAddSent
+				if mustReset {
+					if !reflect.DeepEqual(adds, []int32{8}) || deletes != 1 {
+						t.Fatalf("reset unfinished: adds %v deletes %d", adds, deletes)
+					}
+				} else if len(adds) != 0 || deletes != 0 {
+					t.Fatalf("exact target mutated: adds %v deletes %d", adds, deletes)
+				}
+				if got := f.target(t); got.Phase != PhaseIdle || got.ResetPending || got.RestoreT != 0 {
+					t.Fatalf("target %+v", got)
+				}
+			})
+		}
 	}
 }
