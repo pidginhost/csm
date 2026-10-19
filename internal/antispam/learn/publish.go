@@ -43,6 +43,7 @@ type Publisher struct {
 	poll     time.Duration
 	deadline time.Duration
 	attempts int
+	audit    auditState
 }
 
 // NewPublisher returns a publisher with the spec's limits.

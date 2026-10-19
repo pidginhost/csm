@@ -213,3 +213,42 @@ func assertNoLearningRecords(t *testing.T, db *DB) {
 		t.Fatal(err)
 	}
 }
+
+func TestLearnTxScanResumesAfterKey(t *testing.T) {
+	db, openErr := Open(t.TempDir())
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.LearnUpdate(func(tx LearnTx) error {
+		for _, k := range []string{"a", "b", "c", "d"} {
+			if err := tx.Put(LearnTargetsBucket, []byte(k), []byte(k)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	if err := db.LearnView(func(tx LearnTx) error {
+		return tx.Scan(LearnTargetsBucket, []byte("a"), func(k, _ []byte) (bool, error) {
+			got = append(got, string(k))
+			return len(got) < 2, nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "b" || got[1] != "c" {
+		t.Fatalf("scanned %v", got)
+	}
+	got = nil
+	if err := db.LearnView(func(tx LearnTx) error {
+		return tx.Scan(LearnTargetsBucket, nil, func(k, _ []byte) (bool, error) {
+			got = append(got, string(k))
+			return true, nil
+		})
+	}); err != nil || len(got) != 4 {
+		t.Fatalf("full scan %v err %v", got, err)
+	}
+}

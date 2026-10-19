@@ -85,6 +85,30 @@ func (t LearnTx) ForEach(bucket string, fn func(k, v []byte) error) error {
 	return b.ForEach(fn)
 }
 
+// Scan visits keys strictly after after (from the first key when after is
+// empty) in order until fn returns false. fn must not keep k or v.
+func (t LearnTx) Scan(bucket string, after []byte, fn func(k, v []byte) (bool, error)) error {
+	b, err := t.bucket(bucket)
+	if err != nil {
+		return err
+	}
+	c := b.Cursor()
+	k, v := c.First()
+	if len(after) > 0 {
+		k, v = c.Seek(after)
+		if k != nil && string(k) == string(after) {
+			k, v = c.Next()
+		}
+	}
+	for ; k != nil; k, v = c.Next() {
+		more, err := fn(k, v)
+		if err != nil || !more {
+			return err
+		}
+	}
+	return nil
+}
+
 // NextSequence returns the bucket's next sequence number. Numbers are never
 // reused, even after their records are deleted.
 func (t LearnTx) NextSequence(bucket string) (uint64, error) {

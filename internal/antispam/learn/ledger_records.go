@@ -25,6 +25,19 @@ type Cluster struct {
 	// Operator: created by an operator request, charged to the operator
 	// allowance.
 	Operator bool `json:"operator,omitempty"`
+	// Charges is what each contributor was charged for this cluster,
+	// credited back when retirement or forget removes the cluster.
+	Charges []Charge `json:"charges,omitempty"`
+	// Retired: the zero target is durable; the record stays only as the
+	// cleanup reference until the body is unlinked.
+	Retired bool `json:"retired,omitempty"`
+}
+
+// Charge is one contributor's charge for one cluster.
+type Charge struct {
+	UID      int   `json:"uid"`
+	Operator bool  `json:"operator,omitempty"`
+	Usage    Usage `json:"usage"`
 }
 
 // Phase is a target's publication phase (spec 7.4 "Publishing a target").
