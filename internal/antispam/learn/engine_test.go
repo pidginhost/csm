@@ -577,3 +577,31 @@ func countOf(xs []int, x int) int {
 	}
 	return n
 }
+
+// Review fix: the daemon pauses the learner around every reconcile pass. A
+// routine pause loses no verified target, so it must not make new clusters
+// wait for another full audit rotation; a real gate closure still does.
+func TestEnginePauseKeepsFreshMatching(t *testing.T) {
+	f := newAuditFixture(t)
+	f.add(t, 1, digest('a'), 2, t0, 2002)
+	e := newTestEngine(t, f)
+	e.Pause()
+	if e.publishing() {
+		t.Fatal("a paused learner still publishes")
+	}
+	e.SetGate(openGate)
+	snap := []byte("fresh spam")
+	f.storage.bodies[string(snap)] = digest('s')
+	out, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+	if err != nil || out.Deferred || !reflect.DeepEqual(out.Committed, []uint64{2}) {
+		t.Fatalf("a routine pause blocked a new cluster: %+v err %v", out, err)
+	}
+	e.SetGate(antispam.LearningGate{Install: true})
+	e.SetGate(openGate)
+	other := []byte("other spam")
+	f.storage.bodies[string(other)] = digest('o')
+	out, err = e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: other})
+	if err != nil || !out.Deferred {
+		t.Fatalf("a real closure did not owe an audit rotation: %+v err %v", out, err)
+	}
+}

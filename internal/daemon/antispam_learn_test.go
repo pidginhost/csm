@@ -37,6 +37,9 @@ func (f *fakeEngine) SetGate(g antispam.LearningGate) {
 	f.gates = append(f.gates, g)
 }
 
+// Pause records the closed state a pause holds.
+func (f *fakeEngine) Pause() { f.SetGate(antispam.LearningGate{}) }
+
 func (f *fakeEngine) Problems() []antispam.Problem { return nil }
 
 func (f *fakeEngine) Operator(context.Context, learn.OperatorRequest) (learn.OperatorResult, error) {

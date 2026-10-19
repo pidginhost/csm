@@ -16,6 +16,7 @@ import (
 type learnEngine interface {
 	Run(context.Context)
 	SetGate(antispam.LearningGate)
+	Pause()
 	Problems() []antispam.Problem
 	Operator(context.Context, learn.OperatorRequest) (learn.OperatorResult, error)
 }
@@ -90,7 +91,7 @@ func (d *Daemon) pauseLearner() {
 	d.antispamLearnerMu.Lock()
 	defer d.antispamLearnerMu.Unlock()
 	if r := d.antispamLearner.Load(); r != nil {
-		r.engine.SetGate(antispam.LearningGate{})
+		r.engine.Pause()
 	}
 }
 

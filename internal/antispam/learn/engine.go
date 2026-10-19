@@ -126,6 +126,9 @@ type Engine struct {
 	mu        sync.Mutex
 	gate      antispam.LearningGate
 	gateEpoch uint64
+	// paused: the daemon holds native work for a reconcile pass. Unlike a
+	// closed gate it owes no audit rotation; the next SetGate lifts it.
+	paused    bool
 	runCtx    context.Context
 	cancel    context.CancelFunc
 	published []antispam.Problem
@@ -183,22 +186,38 @@ func (e *Engine) Run(ctx context.Context) {
 	}
 }
 
-// SetGate applies the reconcile pass's gate. Closing it cancels native
-// calls and waits for their turn to finish within their own deadlines.
+// SetGate applies the reconcile pass's gate and lifts a pause. Closing it
+// cancels native calls and waits for their turn to finish within their own
+// deadlines; reopening a closed gate owes a full audit rotation before
+// fresh matching, as after a restart.
 func (e *Engine) SetGate(g antispam.LearningGate) {
 	e.mu.Lock()
 	if e.gate.Install && e.gate.Publish && (!g.Install || !g.Publish) {
 		e.gateEpoch++
 	}
-	e.gate = g
-	closed := !g.Install || !g.Publish
-	if closed && e.cancel != nil {
+	e.gate, e.paused = g, false
+	e.stopLocked(!g.Install || !g.Publish)
+}
+
+// Pause holds native work while the daemon reconciles rspamd, draining
+// calls in flight like a closed gate. A pause loses no verified target, so
+// it owes no audit rotation.
+func (e *Engine) Pause() {
+	e.mu.Lock()
+	e.paused = true
+	e.stopLocked(true)
+}
+
+// stopLocked cancels native work when stop is set, unlocks e.mu, and waits
+// for the owner to finish its current turn.
+func (e *Engine) stopLocked(stop bool) {
+	if stop && e.cancel != nil {
 		e.cancel()
 		e.cancel = nil
 	}
 	running := e.runCtx != nil
 	e.mu.Unlock()
-	if closed && running {
+	if stop && running {
 		// A barrier on the existing owner queue waits for the journal and
 		// problem snapshot as well as the canceled call. A stopped owner
 		// has already drained its work.
@@ -209,14 +228,14 @@ func (e *Engine) SetGate(g antispam.LearningGate) {
 func (e *Engine) publishing() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.gate.Install && e.gate.Publish
+	return e.gate.Install && e.gate.Publish && !e.paused
 }
 
 // turnCtx starts native work if the gate allows it.
 func (e *Engine) turnCtx(caller context.Context) (context.Context, func(), bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if !e.gate.Install || !e.gate.Publish || caller.Err() != nil {
+	if !e.gate.Install || !e.gate.Publish || e.paused || caller.Err() != nil {
 		return nil, nil, false
 	}
 	parent := e.runCtx
