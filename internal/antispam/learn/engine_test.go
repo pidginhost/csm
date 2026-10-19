@@ -115,7 +115,7 @@ func TestEngineSerializesReports(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			out, err := e.Submit(context.Background(), Candidate{UID: uid, Snapshot: snap, Ref: "ref"})
+			out, err := e.SubmitReport(context.Background(), Candidate{UID: uid, Snapshot: snap, Ref: "ref"})
 			if err != nil {
 				t.Error(err)
 			}
@@ -151,7 +151,7 @@ func TestEngineGateClosedQueuesWithoutReading(t *testing.T) {
 	e := newTestEngine(t, f)
 	e.SetGate(antispam.LearningGate{Install: true})
 	before, beforeBody, _, _ := f.storage.native()
-	out, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: f.report("variant", digest('v'), digest('a'), 0.9)})
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: f.report("variant", digest('v'), digest('a'), 0.9)})
 	if err != nil || !out.Deferred {
 		t.Fatalf("outcome %+v err %v", out, err)
 	}
@@ -173,7 +173,7 @@ func TestEngineGateInstallFalseStops(t *testing.T) {
 	}
 	result := make(chan Outcome, 1)
 	go func() {
-		out, _ := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+		out, _ := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: snap})
 		result <- out
 	}()
 	<-started
@@ -194,7 +194,7 @@ func TestEngineGateInstallFalseStops(t *testing.T) {
 	}
 	f.storage.addWait = nil
 	_, _, adds, _ := f.storage.native()
-	out, err := e.Submit(context.Background(), Candidate{UID: 1002, Snapshot: snap})
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1002, Snapshot: snap})
 	if err != nil || !out.Deferred {
 		t.Fatalf("outcome after disable %+v err %v", out, err)
 	}
@@ -219,7 +219,7 @@ func TestEngineGateWaitsForInFlightCall(t *testing.T) {
 		}
 		result := make(chan Outcome, 1)
 		go func() {
-			out, _ := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+			out, _ := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: snap})
 			result <- out
 		}()
 		<-started
@@ -256,7 +256,7 @@ func TestEngineStateIOStopsMutations(t *testing.T) {
 	snap := []byte("fresh spam")
 	f.storage.bodies[string(snap)] = digest('s')
 	fail.fail.Store(true)
-	out, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: snap})
 	if err == nil && out.Err == nil {
 		t.Fatalf("state failure ignored: %+v", out)
 	}
@@ -339,7 +339,7 @@ func TestEngineSubmitCancelKeepsContribution(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	f.storage.onInspect = cancel
-	out, err := e.Submit(ctx, c)
+	out, err := e.SubmitReport(ctx, c)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestEngineSubmitCancelKeepsContribution(t *testing.T) {
 	// Cancellation may land before the reservation or after it. A reserved
 	// contribution survives and the next background turn finishes it.
 	engineTurn(t, e, func() { e.background(context.Background()) })
-	out, err = e.Submit(context.Background(), c)
+	out, err = e.SubmitReport(context.Background(), c)
 	committedOnce := reflect.DeepEqual(out.Duplicates, []uint64{1}) && len(out.Committed) == 0 ||
 		len(first.Committed) == 0 && reflect.DeepEqual(out.Committed, []uint64{1})
 	if err != nil || !committedOnce {
@@ -414,7 +414,7 @@ func TestEngineProblemsStableKeys(t *testing.T) {
 	e := newTestEngine(t, f)
 	f.storage.readErr = errors.New("timeout")
 	for range RequestErrorPasses {
-		if _, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: []byte("x")}); err != nil {
+		if _, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: []byte("x")}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -433,7 +433,7 @@ func TestEngineProblemsStableKeys(t *testing.T) {
 		seen[p.Key] = true
 	}
 	f.storage.readErr = nil
-	if _, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: f.report("variant", digest('v'), digest('a'), 0.9)}); err != nil {
+	if _, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: f.report("variant", digest('v'), digest('a'), 0.9)}); err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(problemKeys(e), antispam.ReasonRequestErrors) {
@@ -445,7 +445,7 @@ func TestEngineProblemsStableKeys(t *testing.T) {
 func TestEngineBindMismatchFreezes(t *testing.T) {
 	f := newAuditFixture(t)
 	e := newTestEngine(t, f, "other")
-	out, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: []byte("x")})
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: []byte("x")})
 	if err != nil || !out.Deferred {
 		t.Fatalf("outcome %+v err %v", out, err)
 	}
@@ -554,7 +554,7 @@ func TestEngineSeedOverGuardCreditsGuard(t *testing.T) {
 	e := newTestEngine(t, f)
 	snap := []byte("fresh spam")
 	f.storage.bodies[string(snap)] = digest('s')
-	out, err := e.Submit(context.Background(), Candidate{UID: 1002, Snapshot: snap})
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1002, Snapshot: snap})
 	if err != nil || len(out.Committed) != 1 {
 		t.Fatalf("outcome %+v err %v", out, err)
 	}
@@ -600,7 +600,7 @@ func TestEnginePauseKeepsFreshMatching(t *testing.T) {
 	e.SetGate(openGate)
 	snap := []byte("fresh spam")
 	f.storage.bodies[string(snap)] = digest('s')
-	out, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: snap})
 	if err != nil || out.Deferred || !reflect.DeepEqual(out.Committed, []uint64{2}) {
 		t.Fatalf("a routine pause blocked a new cluster: %+v err %v", out, err)
 	}
@@ -608,7 +608,7 @@ func TestEnginePauseKeepsFreshMatching(t *testing.T) {
 	e.SetGate(openGate)
 	other := []byte("other spam")
 	f.storage.bodies[string(other)] = digest('o')
-	out, err = e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: other})
+	out, err = e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: other})
 	if err != nil || !out.Deferred {
 		t.Fatalf("a real closure did not owe an audit rotation: %+v err %v", out, err)
 	}

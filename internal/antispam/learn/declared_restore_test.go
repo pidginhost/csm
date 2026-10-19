@@ -18,7 +18,7 @@ func TestEngineFrozenAfterDeclaredRestore(t *testing.T) {
 	}
 	e := newTestEngine(t, f)
 	snapshot := f.report("tenant report", digest('a'), digest('a'), 1)
-	out, err := e.Submit(context.Background(), Candidate{UID: 2003, Snapshot: snapshot})
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 2003, Snapshot: snapshot})
 	if len(out.Committed)+len(out.Duplicates)+len(out.Pending) != 0 {
 		t.Fatalf("a declared restore admitted a report: %+v, %v", out, err)
 	}

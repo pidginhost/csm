@@ -49,7 +49,7 @@ func TestReportCommitNotificationIncludesBackgroundRetry(t *testing.T) {
 	snap := []byte("synthetic spam")
 	f.storage.bodies[string(snap)] = digest('s')
 	f.storage.onAdd = func(Digest, int32) (bool, error) { return true, ErrUncertain }
-	out, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: snap})
 	if err != nil || len(out.Pending) != 1 || len(out.Committed) != 0 || commits.Load() != 0 {
 		t.Fatalf("pending outcome %+v, error %v, commits %d", out, err, commits.Load())
 	}
@@ -62,11 +62,11 @@ func TestReportCommitNotificationIncludesBackgroundRetry(t *testing.T) {
 	if got := commits.Load(); got != 1 {
 		t.Fatalf("background commits = %d, want 1", got)
 	}
-	out, err = e.Submit(context.Background(), Candidate{UID: 1002, Snapshot: snap})
+	out, err = e.SubmitReport(context.Background(), Candidate{UID: 1002, Snapshot: snap})
 	if err != nil || len(out.Committed) != 1 || commits.Load() != 2 {
 		t.Fatalf("immediate outcome %+v, error %v, commits %d", out, err, commits.Load())
 	}
-	out, err = e.Submit(context.Background(), Candidate{UID: 1002, Snapshot: snap})
+	out, err = e.SubmitReport(context.Background(), Candidate{UID: 1002, Snapshot: snap})
 	if err != nil || len(out.Duplicates) != 1 || commits.Load() != 2 {
 		t.Fatalf("duplicate outcome %+v, error %v, commits %d", out, err, commits.Load())
 	}

@@ -25,7 +25,7 @@ type fakeEngine struct {
 	onSubmit func(c learn.Candidate)
 }
 
-func (e *fakeEngine) Submit(_ context.Context, c learn.Candidate) (learn.Outcome, error) {
+func (e *fakeEngine) SubmitReport(_ context.Context, c learn.Candidate) (learn.Outcome, error) {
 	e.mu.Lock()
 	e.calls = append(e.calls, c.UID)
 	respond, hook := e.respond, e.onSubmit

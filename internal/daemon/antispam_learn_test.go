@@ -56,8 +56,8 @@ func (f *fakeEngine) Publishing() bool {
 	return g.Install && g.Publish
 }
 
-// Submit records reports; respond, when set, decides the outcome.
-func (f *fakeEngine) Submit(_ context.Context, c learn.Candidate) (learn.Outcome, error) {
+// SubmitReport records reports; respond, when set, decides the outcome.
+func (f *fakeEngine) SubmitReport(_ context.Context, c learn.Candidate) (learn.Outcome, error) {
 	f.mu.Lock()
 	f.submits = append(f.submits, c)
 	respond := f.respond

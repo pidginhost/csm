@@ -21,7 +21,7 @@ type learnEngine interface {
 	Publishing() bool
 	Problems() []antispam.Problem
 	Operator(context.Context, learn.OperatorRequest) (learn.OperatorResult, error)
-	Submit(context.Context, learn.Candidate) (learn.Outcome, error)
+	SubmitReport(context.Context, learn.Candidate) (learn.Outcome, error)
 	Stats() (learn.Stats, error)
 }
 

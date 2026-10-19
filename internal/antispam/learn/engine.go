@@ -463,9 +463,9 @@ func (e *Engine) resume(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// Submit admits one report. A closed gate or frozen ledger defers it
+// SubmitReport admits one report. A closed gate or frozen ledger defers it
 // without reading the snapshot.
-func (e *Engine) Submit(ctx context.Context, c Candidate) (Outcome, error) {
+func (e *Engine) SubmitReport(ctx context.Context, c Candidate) (Outcome, error) {
 	out := Outcome{Ref: c.Ref, Deferred: true}
 	if !e.Publishing() {
 		return out, nil

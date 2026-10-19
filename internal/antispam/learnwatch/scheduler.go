@@ -50,7 +50,7 @@ const (
 )
 
 type submitter interface {
-	Submit(context.Context, learn.Candidate) (learn.Outcome, error)
+	SubmitReport(context.Context, learn.Candidate) (learn.Outcome, error)
 }
 
 // WatcherConfig is what a watcher needs. Zero Chunk and SeenAllowance mean
@@ -868,7 +868,7 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 		return
 	}
 	turnHook(r.a.UID, "submit")
-	out, err := r.w.cfg.Engine.Submit(ctx, learn.Candidate{UID: r.a.UID, Snapshot: snap})
+	out, err := r.w.cfg.Engine.SubmitReport(ctx, learn.Candidate{UID: r.a.UID, Snapshot: snap})
 	switch {
 	case err != nil || out.Deferred || out.Err != nil:
 		retry()

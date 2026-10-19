@@ -177,7 +177,7 @@ func BenchmarkPublishTurn(b *testing.B) {
 		e, stop := startTestEngine(b, f)
 		snapshot := f.report("report", digest('b'), digest('a'), 0.9)
 		b.StartTimer()
-		out, err := e.Submit(context.Background(), Candidate{UID: 3000, Snapshot: snapshot})
+		out, err := e.SubmitReport(context.Background(), Candidate{UID: 3000, Snapshot: snapshot})
 		b.StopTimer()
 		stop()
 		if err != nil || out.Err != nil || out.Deferred || !slices.Equal(out.Committed, []uint64{1}) || len(out.Pending)+len(out.Skips)+len(out.Duplicates) != 0 {

@@ -89,7 +89,7 @@ func TestEngineCancelledCallerWaitsForSnapshotRelease(t *testing.T) {
 				if operator {
 					_, err = e.Operator(ctx, opRequest(ActionSpam, []byte("sample")))
 				} else {
-					_, err = e.Submit(ctx, Candidate{UID: 1001, Snapshot: []byte("sample")})
+					_, err = e.SubmitReport(ctx, Candidate{UID: 1001, Snapshot: []byte("sample")})
 				}
 				if !errors.Is(err, context.Canceled) || !released.Load() {
 					t.Errorf("returned before releasing caller snapshot: released=%v err=%v", released.Load(), err)
@@ -110,7 +110,7 @@ func TestEngineGateClosureStopsAdmissionAfterInspection(t *testing.T) {
 		return result, err
 	}}
 	engineTurn(t, e, func() { e.cfg.Client = client; e.pub.client = client })
-	out, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: snap})
 	if err != nil || !out.Deferred || len(out.Pending) != 0 {
 		t.Errorf("admitted after gate closure: %+v err=%v", out, err)
 	}
@@ -129,7 +129,7 @@ func TestEngineGateClosureStopsCallsAfterSend(t *testing.T) {
 		setGateFromHook(e, antispam.LearningGate{Install: true})
 		return true, nil
 	}
-	out, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: snap})
 	if err != nil || !reflect.DeepEqual(out.Pending, []uint64{1}) {
 		t.Fatalf("outcome %+v err=%v", out, err)
 	}
@@ -179,12 +179,12 @@ func TestEnginePendingVoteBlocksReadmission(t *testing.T) {
 			return nil
 		}
 	})
-	out, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: snap})
 	if err != nil || !errors.Is(out.Err, ErrStateIO) || !reflect.DeepEqual(out.Pending, []uint64{1}) {
 		t.Fatalf("first outcome %+v err=%v", out, err)
 	}
 	engineTurn(t, e, func() { fault.reject = nil })
-	out, err = e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+	out, err = e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: snap})
 	if err != nil || !out.Deferred {
 		t.Errorf("uncommitted vote admitted again: %+v err=%v", out, err)
 	}
@@ -368,7 +368,7 @@ func TestEngineRetiresBeforeAdmittingExpiredCluster(t *testing.T) {
 	f.add(t, 1, digest('a'), 2, t0, 2002)
 	e := newTestEngine(t, f)
 	engineTurn(t, e, func() { e.cfg.Now = func() time.Time { return t0.Add(Retention) }; e.pub.now = e.cfg.Now })
-	out, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: f.report("sample", digest('v'), digest('a'), 1)})
+	out, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: f.report("sample", digest('v'), digest('a'), 1)})
 	if err != nil || !out.Deferred || len(out.Committed) != 0 {
 		t.Errorf("expired cluster admitted report: %+v err=%v", out, err)
 	}
@@ -439,7 +439,7 @@ func TestEngineReenableRequiresFreshAudit(t *testing.T) {
 	snap := []byte("variant during rebuild")
 	f.storage.bodies[string(snap)] = digest('v')
 	e.SetGate(openGate)
-	got, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+	got, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: snap})
 	if err != nil || !got.Deferred || len(got.Committed) != 0 {
 		t.Fatalf("seeded before reenable audit: %+v err=%v", got, err)
 	}
@@ -474,7 +474,7 @@ func TestEngineGateClosureStopsBodyCommitAndCleanup(t *testing.T) {
 			setGateFromHook(e, antispam.LearningGate{})
 			return writeSync(file, b)
 		}
-		got, err := e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: snap})
+		got, err := e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: snap})
 		if err != nil || !got.Deferred || len(got.Pending) != 0 {
 			t.Errorf("reserved after gate closed during staging: %+v err=%v", got, err)
 		}
@@ -513,7 +513,7 @@ func TestEngineGateClosureStopsBodyCommitAndCleanup(t *testing.T) {
 				return nil
 			}
 		})
-		_, _ = e.Submit(context.Background(), Candidate{UID: 1001, Snapshot: []byte("sample")})
+		_, _ = e.SubmitReport(context.Background(), Candidate{UID: 1001, Snapshot: []byte("sample")})
 		if _, statErr := os.Stat(filepath.Join(f.bodies.Dir, BodyName(1))); statErr != nil {
 			t.Fatalf("unlinked after gate closure: %v", statErr)
 		}
@@ -629,7 +629,7 @@ func TestEngineCancellationDoesNotReportBackendFailure(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		client := inspectionHook{nativeClient: f.storage, inspect: func(context.Context, []byte) (Inspection, error) { cancel(); return Inspection{}, context.Canceled }}
 		engineTurn(t, e, func() { e.cfg.Client = client; e.pub.client = client })
-		_, err := e.Submit(ctx, Candidate{UID: 1001, Snapshot: []byte("sample")})
+		_, err := e.SubmitReport(ctx, Candidate{UID: 1001, Snapshot: []byte("sample")})
 		cancel()
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancel err=%v", err)
@@ -662,7 +662,7 @@ func TestEngineForgetTerminatesSupersededOperatorMark(t *testing.T) {
 	delete(f.storage.inspect, string(snap))
 	f.storage.bodies[string(snap)] = digest('a')
 	f.storage.mu.Unlock()
-	if got, err := e.Submit(context.Background(), Candidate{UID: 1003, Snapshot: snap}); err != nil || !reflect.DeepEqual(got.Committed, []uint64{2}) {
+	if got, err := e.SubmitReport(context.Background(), Candidate{UID: 1003, Snapshot: snap}); err != nil || !reflect.DeepEqual(got.Committed, []uint64{2}) {
 		t.Fatalf("new cluster %+v err=%v", got, err)
 	}
 	_, _, before, _ := f.storage.native()
