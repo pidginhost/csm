@@ -2,6 +2,7 @@ package learn
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -127,5 +128,71 @@ func TestParseInspectionRejects(t *testing.T) {
 		if _, err := ParseInspection([]byte(tc.body), tc.explicit); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// Invalid fields must not turn an incomplete inspection into an empty result
+// or a storage failure into an absent digest.
+func TestParseInspectionStrictFields(t *testing.T) {
+	a := digest('a')
+	validMiss := string(reply(t, miss(a)))
+	validHit := string(reply(t, hit(a, a, 1, 2)))
+	cases := map[string]string{
+		"null count":                     `{"results":{},"errors":{},"complete":true,"distinct":null}`,
+		"missing miss confirmation":      strings.Replace(validMiss, `"confirmed":false,`, "", 1),
+		"null miss confirmation":         strings.Replace(validMiss, `"confirmed":false`, `"confirmed":null`, 1),
+		"confirmed miss":                 strings.Replace(validMiss, `"confirmed":false`, `"confirmed":true`, 1),
+		"miss digest":                    strings.Replace(validMiss, `"found":false`, `"found":false,"digest":"`+string(a)+`"`, 1),
+		"null miss digest":               strings.Replace(validMiss, `"found":false`, `"found":false,"digest":null`, 1),
+		"duplicate found":                strings.Replace(validMiss, `"found":false`, `"found":true,"found":false`, 1),
+		"duplicate error value":          strings.Replace(validMiss, `"value":0`, `"value":503,"value":0`, 1),
+		"duplicate hit confirmation":     strings.Replace(validHit, `"confirmed":true`, `"confirmed":false,"confirmed":true`, 1),
+		"case folded key":                strings.Replace(validMiss, `"found":false`, `"Found":false`, 1),
+		"escaped duplicate key":          strings.Replace(validMiss, `"value":0`, `"value":503,"\u0076alue":0`, 1),
+		"string value":                   strings.Replace(validMiss, `"value":0`, `"value":"0"`, 1),
+		"string flag":                    strings.Replace(validMiss, `"flag":0`, `"flag":"0"`, 1),
+		"underflow value":                strings.Replace(validMiss, `"value":0`, `"value":1e-400`, 1),
+		"underflow probability":          strings.Replace(validMiss, `"prob":0`, `"prob":1e-400`, 1),
+		"negative underflow probability": strings.Replace(validHit, `"prob":1`, `"prob":-1e-400`, 1),
+		"rounded probability":            strings.Replace(validHit, `"prob":1`, `"prob":1.00000000000000001`, 1),
+		"rounded flag":                   strings.Replace(validHit, `"flag":1`, `"flag":1.00000000000000001`, 1),
+		"rounded value":                  strings.Replace(validHit, `"value":2`, `"value":2.00000000000000001`, 1),
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			insp, err := ParseInspection([]byte(body), nil)
+			if err == nil || insp.Distinct != 0 || len(insp.Results) != 0 {
+				t.Fatalf("malformed inspection returned results: %+v, %v", insp, err)
+			}
+		})
+	}
+}
+
+func TestParseInspectionUCLWhitespace(t *testing.T) {
+	body := []byte("{\n\"results\": { \n },\"errors\": {\t },\"complete\":true,\"distinct\":0}")
+	insp, err := ParseInspection(body, nil)
+	if err != nil || insp.Distinct != 0 || len(insp.Results) != 0 {
+		t.Fatalf("empty Lua tables rejected: %+v, %v", insp, err)
+	}
+}
+
+func TestParseInspectionWholeNumbers(t *testing.T) {
+	a := digest('a')
+	body := string(reply(t, hit(a, a, 1, 2)))
+	for _, value := range []string{"2", "2.0", "2e0", "0.2e1"} {
+		insp, err := ParseInspection([]byte(strings.Replace(body, `"value":2`, `"value":`+value, 1)), []Digest{a})
+		if err != nil || len(insp.Results) != 1 || insp.Results[0].Value != 2 {
+			t.Fatalf("whole number %s: %+v, %v", value, insp, err)
+		}
+	}
+}
+
+func TestParseInspectionRejectsExcessDigests(t *testing.T) {
+	results := make([]map[string]any, MaxExplicitDigests+1)
+	for i := range results {
+		results[i] = miss(Digest(fmt.Sprintf("%0128x", i)))
+	}
+	if insp, err := ParseInspection(reply(t, results...), nil); err == nil || len(insp.Results) != 0 {
+		t.Fatalf("accepted excess digests: count=%d, err=%v", len(insp.Results), err)
 	}
 }

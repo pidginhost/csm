@@ -2,6 +2,7 @@ package learn
 
 import (
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,10 @@ func FuzzParseInspection(f *testing.F) {
 	f.Add(reply(f, miss(a)), string(a))
 	f.Add([]byte("garbage"), "")
 	f.Add([]byte{}, "")
+	f.Add([]byte(`{"results":{},"errors":{},"complete":true,"distinct":null}`), "")
+	f.Add([]byte(`{"results":{ },"errors":{ },"complete":true,"distinct":0}`), "")
+	f.Add([]byte(strings.Replace(string(reply(f, miss(a))), `"value":0`, `"value":503,"value":0`, 1)), "")
+	f.Add([]byte(strings.Replace(string(reply(f, miss(a))), `"value":0`, `"value":1e-400`, 1)), "")
 	f.Fuzz(func(t *testing.T, body []byte, explicit string) {
 		var ds []Digest
 		if explicit != "" {
@@ -19,12 +24,23 @@ func FuzzParseInspection(f *testing.F) {
 		}
 		insp, err := ParseInspection(body, ds)
 		if err != nil {
+			if insp.Distinct != 0 || len(insp.Results) != 0 {
+				t.Fatal("failed inspection returned partial results")
+			}
 			return
 		}
-		if insp.Distinct != len(insp.Results) {
+		if insp.Distinct < 0 || insp.Distinct > MaxExplicitDigests || insp.Distinct != len(insp.Results) {
 			t.Fatal("distinct count differs from results")
 		}
+		if ds != nil && (insp.Distinct != 1 || insp.Results[0].Queried != ds[0]) {
+			t.Fatal("explicit inspection answered another digest set")
+		}
+		seen := map[Digest]bool{}
 		for _, r := range insp.Results {
+			if seen[r.Queried] {
+				t.Fatal("duplicate result accepted")
+			}
+			seen[r.Queried] = true
 			if _, err := ParseDigest(string(r.Queried)); err != nil {
 				t.Fatal("invalid queried digest accepted")
 			}
@@ -36,7 +52,7 @@ func FuzzParseInspection(f *testing.F) {
 				if ds != nil && r.Stored != r.Queried {
 					t.Fatal("explicit near match accepted")
 				}
-			} else if r.Value != 0 || r.Prob != 0 || r.Stored != "" {
+			} else if r.Value != 0 || r.Prob != 0 || r.Stored != "" || r.Flag != 0 || r.Confirmed {
 				t.Fatalf("invalid miss accepted: %+v", r)
 			}
 		}

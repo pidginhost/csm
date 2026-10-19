@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
+	"math/big"
 )
 
 // Result is one digest's reply from the inspection plugin. Stored is the
@@ -28,13 +28,13 @@ type Inspection struct {
 
 // rawResult keeps every field optional so absence is detectable.
 type rawResult struct {
-	Queried   *string      `json:"queried"`
-	Found     *bool        `json:"found"`
-	Digest    *string      `json:"digest"`
-	Prob      *float64     `json:"prob"`
-	Value     *json.Number `json:"value"`
-	Flag      *json.Number `json:"flag"`
-	Confirmed *bool        `json:"confirmed"`
+	Queried   *string         `json:"queried"`
+	Found     *bool           `json:"found"`
+	Digest    *string         `json:"digest"`
+	Prob      json.RawMessage `json:"prob"`
+	Value     json.RawMessage `json:"value"`
+	Flag      json.RawMessage `json:"flag"`
+	Confirmed *bool           `json:"confirmed"`
 }
 
 // ParseInspection validates a plugin reply (spec 7.4). explicit is the
@@ -43,15 +43,15 @@ type rawResult struct {
 // inspection; it never reads as a miss. Errors are fixed text.
 func ParseInspection(body []byte, explicit []Digest) (Inspection, error) {
 	fields, err := objectFields(body, "results", "errors", "complete", "distinct")
-	if err != nil {
-		return Inspection{}, err
+	if err != nil || len(fields) != 4 {
+		return Inspection{}, errors.New("inspection reply is malformed")
 	}
 	var complete bool
 	var distinct int
 	if json.Unmarshal(fields["complete"], &complete) != nil || !complete {
 		return Inspection{}, errors.New("inspection is incomplete")
 	}
-	if json.Unmarshal(fields["distinct"], &distinct) != nil || distinct < 0 {
+	if json.Unmarshal(fields["distinct"], &distinct) != nil || distinct < 0 || distinct > MaxExplicitDigests {
 		return Inspection{}, errors.New("inspection has an invalid digest count")
 	}
 	var problems []json.RawMessage
@@ -98,57 +98,65 @@ func ParseInspection(body []byte, explicit []Digest) (Inspection, error) {
 }
 
 func parseResult(raw json.RawMessage) (Result, error) {
+	fields, err := objectFields(raw, "queried", "found", "digest", "prob", "value", "flag", "confirmed")
+	if err != nil {
+		return Result{}, err
+	}
 	var rr rawResult
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&rr); err != nil || rr.Queried == nil || rr.Found == nil || rr.Prob == nil || rr.Value == nil || rr.Flag == nil {
+	if err = json.Unmarshal(raw, &rr); err != nil || rr.Queried == nil || rr.Found == nil || rr.Prob == nil || rr.Value == nil || rr.Flag == nil || rr.Confirmed == nil {
 		return Result{}, errors.New("inspection result is malformed")
 	}
 	q, err := ParseDigest(*rr.Queried)
 	if err != nil {
 		return Result{}, errors.New("inspection result has an invalid digest")
 	}
-	value, okValue := wholeNumber(*rr.Value)
-	flag, okFlag := wholeNumber(*rr.Flag)
-	prob := *rr.Prob
-	if !okValue || !okFlag || math.IsNaN(prob) || prob < 0 || prob > 1 || value < 0 {
+	value, okValue := wholeNumber(rr.Value)
+	flag, okFlag := wholeNumber(rr.Flag)
+	prob, okProb := inspectionNumber(rr.Prob)
+	if !okValue || !okFlag || !okProb || prob.Sign() < 0 || prob.Cmp(big.NewRat(1, 1)) > 0 || value < 0 {
 		return Result{}, errors.New("inspection result has invalid values")
 	}
-	r := Result{Queried: q, Found: *rr.Found, Prob: prob, Value: value, Flag: int(flag)}
+	p, _ := prob.Float64()
+	r := Result{Queried: q, Found: *rr.Found, Prob: p, Value: value}
 	if !r.Found {
-		if value != 0 || prob != 0 || flag != 0 {
+		if value != 0 || prob.Sign() != 0 || flag != 0 || *rr.Confirmed || fields["digest"] != nil {
 			return Result{}, errors.New("inspection miss carries a value")
 		}
 		return r, nil
 	}
-	if rr.Digest == nil || rr.Confirmed == nil || !*rr.Confirmed || flag != 1 {
+	if rr.Digest == nil || !*rr.Confirmed || flag != 1 {
 		return Result{}, errors.New("inspection hit is not a confirmed CSM digest")
 	}
 	if r.Stored, err = ParseDigest(*rr.Digest); err != nil {
 		return Result{}, errors.New("inspection hit has an invalid stored digest")
 	}
-	r.Confirmed = true
+	r.Confirmed, r.Flag = true, 1
 	return r, nil
 }
 
 // wholeNumber reads a nonfractional JSON number; Lua numbers may arrive as
 // 2 or 2.0.
-func wholeNumber(n json.Number) (int64, bool) {
-	if i, err := n.Int64(); err == nil {
-		return i, true
-	}
-	f, err := n.Float64()
-	if err != nil || f != math.Trunc(f) || math.Abs(f) > 1<<53 {
+func wholeNumber(raw json.RawMessage) (int64, bool) {
+	n, ok := inspectionNumber(raw)
+	if !ok || !n.IsInt() || !n.Num().IsInt64() {
 		return 0, false
 	}
-	return int64(f), true
+	return n.Num().Int64(), true
+}
+
+// Validate the decimal value before rounding it to float64; rounding can
+// turn a fractional value into an integer or a nonzero miss into zero.
+func inspectionNumber(raw json.RawMessage) (*big.Rat, bool) {
+	if len(raw) == 0 || (raw[0] != '-' && (raw[0] < '0' || raw[0] > '9')) {
+		return nil, false
+	}
+	return new(big.Rat).SetString(string(raw))
 }
 
 // uclList decodes a list, reading rspamd's {} encoding of an empty Lua table
 // as an empty list.
 func uclList(raw json.RawMessage, out *[]json.RawMessage) error {
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("{}")) {
+	if fields, err := objectFields(raw); err == nil && len(fields) == 0 {
 		*out = nil
 		return nil
 	}
@@ -158,8 +166,8 @@ func uclList(raw json.RawMessage, out *[]json.RawMessage) error {
 	return json.Unmarshal(raw, out)
 }
 
-// objectFields reads one JSON object holding exactly the named fields, with
-// no duplicates and nothing after it.
+// objectFields reads one JSON object allowing only the named fields, with
+// no duplicates, null values or trailing data. Callers check required fields.
 func objectFields(data []byte, names ...string) (map[string]json.RawMessage, error) {
 	malformed := errors.New("inspection reply is malformed")
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -178,7 +186,7 @@ func objectFields(data []byte, names ...string) (map[string]json.RawMessage, err
 			return nil, malformed
 		}
 		var v json.RawMessage
-		if err := dec.Decode(&v); err != nil {
+		if err := dec.Decode(&v); err != nil || bytes.Equal(v, []byte("null")) {
 			return nil, malformed
 		}
 		fields[key] = v
@@ -186,7 +194,7 @@ func objectFields(data []byte, names ...string) (map[string]json.RawMessage, err
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
 		return nil, malformed
 	}
-	if _, err := dec.Token(); err != io.EOF || len(fields) != len(names) {
+	if _, err := dec.Token(); err != io.EOF {
 		return nil, malformed
 	}
 	return fields, nil

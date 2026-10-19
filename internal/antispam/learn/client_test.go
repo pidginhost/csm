@@ -201,3 +201,72 @@ func TestSyncRunsControlCommand(t *testing.T) {
 		t.Fatal("failed sync accepted")
 	}
 }
+
+func TestMutationHTTPReplies(t *testing.T) {
+	for _, tc := range []struct {
+		name, response string
+		want           error
+	}{
+		{"continue then success", "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\n{\"success\":true}", nil},
+		{"early hints then success", "HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\n{\"success\":true}", nil},
+		{"continue without final", "HTTP/1.1 100 Continue\r\n\r\n", ErrUncertain},
+		{"unsupported upgrade", "HTTP/1.1 101 Switching Protocols\r\n\r\n", ErrUncertain},
+		{"truncated body", "HTTP/1.1 200 OK\r\nContent-Length: 17\r\n\r\n{\"success\":true}", ErrUncertain},
+		{"truncated chunk", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n10\r\n{\"success\":true}\r\n", ErrUncertain},
+		{"invalid headers", "HTTP/1.1 200 OK\r\ninvalid reply data\r\n\r\n", ErrUncertain},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sock, calls := serveController(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.ReadAll(r.Body)
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				_, _ = io.WriteString(conn, tc.response)
+			})
+			err := testClient(sock).Add(context.Background(), []byte("anchor"), 2)
+			if !errors.Is(err, tc.want) || calls.Load() != 1 {
+				t.Fatalf("err=%v, want=%v, requests=%d", err, tc.want, calls.Load())
+			}
+		})
+	}
+}
+
+func TestMutationRejectsAmbiguousSuccess(t *testing.T) {
+	for _, body := range []string{
+		`{"success":false,"success":true}`,
+		`{"success":true,"success":null}`,
+		`{"Success":true}`,
+		`{"success":true,"error":"refused"}`,
+		`{"success":`,
+		`{}`,
+		`{"success":"true"}`,
+		`{"success":true,"hashes":"invalid"}`,
+		`{"success":true,"hashes":[null]}`,
+		`{"success":true,"hashes":["abc"]}`,
+		`{"success":true,"extra":1}`,
+		`{"error":null}`,
+		`{"error":{}}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			sock, calls := serveController(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(body))
+			})
+			err := testClient(sock).Add(context.Background(), []byte("anchor"), 2)
+			if !errors.Is(err, ErrUncertain) || errors.Is(err, ErrRejected) || calls.Load() != 1 {
+				t.Fatalf("err=%v requests=%d", err, calls.Load())
+			}
+		})
+	}
+}
+
+func TestMutationAcceptsNativeHashes(t *testing.T) {
+	sock, calls := serveController(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"success":true,"hashes":["`+string(digest('a'))+`","`+string(digest('b'))+`"]}`)
+	})
+	if err := testClient(sock).Add(context.Background(), []byte("anchor"), 2); err != nil || calls.Load() != 1 {
+		t.Fatalf("native success reply: %v, requests=%d", err, calls.Load())
+	}
+}

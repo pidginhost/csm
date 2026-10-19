@@ -122,11 +122,41 @@ func (c Client) mutate(ctx context.Context, path string, hdr map[string]string, 
 	if err != nil {
 		return err
 	}
-	var r struct {
-		Success bool `json:"success"`
+	if status != http.StatusOK {
+		return fmt.Errorf("%w: mutation returned HTTP %d", ErrRejected, status)
 	}
-	if status != http.StatusOK || json.Unmarshal(reply, &r) != nil || !r.Success {
-		return fmt.Errorf("%w: %s returned HTTP %d without success", ErrRejected, path, status)
+	fields, err := objectFields(reply, "success", "hashes", "error")
+	if err != nil {
+		return ErrUncertain
+	}
+	if fields["error"] != nil {
+		var message string
+		if fields["success"] == nil && json.Unmarshal(fields["error"], &message) == nil && message != "" {
+			return ErrRejected
+		}
+		return ErrUncertain
+	}
+	var success bool
+	if json.Unmarshal(fields["success"], &success) != nil {
+		return ErrUncertain
+	}
+	if !success {
+		return ErrRejected
+	}
+	if raw := fields["hashes"]; raw != nil {
+		var hashes []json.RawMessage
+		if uclList(raw, &hashes) != nil {
+			return ErrUncertain
+		}
+		for _, rawHash := range hashes {
+			var hash string
+			if json.Unmarshal(rawHash, &hash) != nil {
+				return ErrUncertain
+			}
+			if _, err := ParseDigest(hash); err != nil {
+				return ErrUncertain
+			}
+		}
 	}
 	return nil
 }

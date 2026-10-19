@@ -67,16 +67,27 @@ func ControllerDo(ctx context.Context, socket string, peer int, method, path str
 	}
 	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
 	defer stop()
-	// A partly written request may still reach rspamd whole from the
-	// kernel's buffer, so any failure from here on leaves the outcome open.
-	if _, err = conn.Write(request); err != nil {
-		return 0, nil, fmt.Errorf("%w: cannot send the request", ErrControllerNoReply)
+	if err = writeControllerRequest(conn, request); err != nil {
+		return 0, nil, err
 	}
 	// Framing gets its own allowance, as for /ping.
 	reply := &io.LimitedReader{R: conn, N: 2*limit + 1}
-	resp, err := http.ReadResponse(bufio.NewReader(reply), nil)
-	if err != nil {
-		return 0, nil, fmt.Errorf("%w: invalid HTTP response", ErrControllerNoReply)
+	reader := bufio.NewReader(reply)
+	var resp *http.Response
+	for {
+		resp, err = http.ReadResponse(reader, nil)
+		if err != nil {
+			return 0, nil, fmt.Errorf("%w: invalid HTTP response", ErrControllerNoReply)
+		}
+		if resp.StatusCode >= http.StatusOK {
+			break
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode < http.StatusContinue || resp.StatusCode == http.StatusSwitchingProtocols {
+			return 0, nil, fmt.Errorf("%w: unexpected HTTP status", ErrControllerNoReply)
+		}
+		// Informational responses do not settle a mutation's outcome. Keep
+		// the same reader and byte budget until a final response arrives.
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
@@ -87,6 +98,18 @@ func ControllerDo(ctx context.Context, socket string, peer int, method, path str
 		return 0, nil, fmt.Errorf("%w: the reply is too large", ErrControllerNoReply)
 	}
 	return resp.StatusCode, data, nil
+}
+
+func writeControllerRequest(w io.Writer, request []byte) error {
+	if n, err := w.Write(request); err != nil {
+		if n == 0 {
+			return fmt.Errorf("%w: cannot send the request", ErrControllerNotSent)
+		}
+		// A partial write is not safe to repeat: rspamd may have received
+		// enough of the request to act before the connection failed.
+		return fmt.Errorf("%w: cannot send the request", ErrControllerNoReply)
+	}
+	return nil
 }
 
 // controllerRequest builds the request bytes, refusing anything that could
@@ -115,7 +138,8 @@ func controllerRequest(method, path string, hdr map[string]string, body []byte) 
 			return nil, errors.New("invalid request header")
 		}
 		switch strings.ToLower(name) {
-		case "host", "connection", "content-length", "transfer-encoding":
+		case "host", "connection", "content-length", "transfer-encoding",
+			"x-forwarded-for", "x-real-ip", "forwarded", "password", "authorization", "proxy-authorization":
 			return nil, errors.New("reserved request header")
 		}
 		b.WriteString(name + ": " + hdr[name] + "\r\n")

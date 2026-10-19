@@ -150,3 +150,68 @@ func TestControllerDoSeparatesNotSentFromNoReply(t *testing.T) {
 		t.Fatalf("wrong peer: %v", err)
 	}
 }
+
+func TestControllerDoOversizeClosesBeforeDraining(t *testing.T) {
+	release := make(chan struct{})
+	sock := serve(t, t.TempDir(), func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Length", "4096")
+		_, _ = w.Write([]byte(strings.Repeat("x", 1025)))
+		w.(http.Flusher).Flush()
+		<-release
+	})
+	defer close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := ControllerDo(ctx, sock, os.Getuid(), http.MethodPost, "/fuzzyadd", nil, []byte("anchor"), 1024)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrControllerNoReply) || errors.Is(err, ErrControllerNotSent) {
+			t.Fatalf("oversized reply: %v", err)
+		}
+	case <-time.After(time.Second):
+		cancel()
+		<-done
+		t.Fatal("oversized reply blocked while draining the body")
+	}
+}
+
+type controllerWriteResult struct {
+	n   int
+	err error
+}
+
+func (w controllerWriteResult) Write([]byte) (int, error) { return w.n, w.err }
+
+func TestControllerWriteClassifiesSentBytes(t *testing.T) {
+	request := []byte("request")
+	for _, tc := range []struct {
+		name  string
+		write controllerWriteResult
+		want  error
+	}{
+		{"nothing sent", controllerWriteResult{0, io.ErrClosedPipe}, ErrControllerNotSent},
+		{"partly sent", controllerWriteResult{1, io.ErrClosedPipe}, ErrControllerNoReply},
+		{"all sent with error", controllerWriteResult{len(request), io.ErrClosedPipe}, ErrControllerNoReply},
+		{"sent", controllerWriteResult{len(request), nil}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := writeControllerRequest(tc.write, request)
+			if !errors.Is(err, tc.want) || (tc.want == ErrControllerNoReply && errors.Is(err, ErrControllerNotSent)) {
+				t.Fatalf("err=%v want=%v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestControllerRequestRejectsIdentityHeaders(t *testing.T) {
+	for _, name := range []string{"X-Forwarded-For", "x-real-ip", "Forwarded", "pAsSwOrD", "Authorization", "Proxy-Authorization"} {
+		if _, err := controllerRequest(http.MethodPost, "/fuzzyadd", map[string]string{name: ""}, nil); err == nil {
+			t.Errorf("accepted identity header %s", name)
+		}
+	}
+}
