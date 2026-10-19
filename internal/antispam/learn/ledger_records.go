@@ -1,0 +1,114 @@
+package learn
+
+import (
+	"encoding/json"
+	"time"
+)
+
+// Binding ties the ledger to one hash-key generation and storage prefix.
+type Binding struct {
+	HashGeneration string    `json:"hash_generation"`
+	Prefix         string    `json:"prefix"`
+	Created        time.Time `json:"created"`
+}
+
+// Cluster is one anchored cluster: an immutable anchor digest and body, its
+// contributors and accepted aliases.
+type Cluster struct {
+	ID         uint64    `json:"id"`
+	Anchor     Digest    `json:"anchor"`
+	BodyLen    int64     `json:"body_len"`
+	BodySHA    string    `json:"body_sha"`
+	UIDs       []int     `json:"uids,omitempty"`
+	Marks      []string  `json:"marks,omitempty"`
+	Aliases    []Digest  `json:"aliases,omitempty"`
+	Revision   uint64    `json:"revision"`
+	Created    time.Time `json:"created"`
+	LastReport time.Time `json:"last_report"`
+	// Operator: created by an operator request, charged to the operator
+	// allowance.
+	Operator bool `json:"operator,omitempty"`
+}
+
+// Phase is a target's publication phase (spec 7.4 "Publishing a target").
+type Phase string
+
+// Publication phases. The phase is persisted before every native send.
+const (
+	PhaseIdle          Phase = "idle"
+	PhaseRead          Phase = "read"
+	PhaseAddSent       Phase = "add_sent"
+	PhaseDeletePending Phase = "delete_pending"
+	PhaseDeleteSent    Phase = "delete_sent"
+	PhaseAddPending    Phase = "add_pending"
+)
+
+// Target is the one current target per digest; T=0 is a zero-target guard.
+type Target struct {
+	Digest       Digest    `json:"digest"`
+	ClusterID    uint64    `json:"cluster_id"`
+	T            int32     `json:"t"`
+	Revision     uint64    `json:"revision"`
+	Phase        Phase     `json:"phase"`
+	ResetPending bool      `json:"reset_pending,omitempty"`
+	RestoreT     int32     `json:"restore_t,omitempty"`
+	Updated      time.Time `json:"updated"`
+}
+
+// IntentKind names what an intent does.
+type IntentKind string
+
+// Intent kinds.
+const (
+	IntentReport   IntentKind = "report"
+	IntentOperator IntentKind = "operator_spam"
+	IntentForget   IntentKind = "forget"
+	IntentRetire   IntentKind = "retire"
+)
+
+// Seed is a new cluster's anchor and first target. Staged, BodyLen and
+// BodySHA name the anchor body staged for it.
+type Seed struct {
+	Anchor  Digest `json:"anchor"`
+	T       int32  `json:"t"`
+	Staged  string `json:"staged,omitempty"`
+	BodyLen int64  `json:"body_len,omitempty"`
+	BodySHA string `json:"body_sha,omitempty"`
+}
+
+// IntentCluster is one cluster an intent changes, committed separately.
+type IntentCluster struct {
+	ClusterID uint64   `json:"cluster_id"`
+	Revision  uint64   `json:"revision"`
+	Aliases   []Digest `json:"aliases,omitempty"`
+	NewT      int32    `json:"new_t"`
+	Done      bool     `json:"done,omitempty"`
+}
+
+// Intent is a durable reservation, written before any native send.
+type Intent struct {
+	ID       string          `json:"id"`
+	Kind     IntentKind      `json:"kind"`
+	UID      int             `json:"uid"`
+	MarkID   string          `json:"mark_id,omitempty"`
+	Admitted time.Time       `json:"admitted"`
+	Clusters []IntentCluster `json:"clusters,omitempty"`
+	Seed     *Seed           `json:"seed,omitempty"`
+	Done     bool            `json:"done,omitempty"`
+}
+
+// OpRecord binds an operator request ID to its action and snapshot hash and
+// keeps its terminal outcome.
+type OpRecord struct {
+	RequestID   string          `json:"request_id"`
+	Action      string          `json:"action"`
+	SnapshotSHA string          `json:"snapshot_sha"`
+	Outcome     json.RawMessage `json:"outcome,omitempty"`
+	Done        bool            `json:"done,omitempty"`
+}
+
+// Usage is the learning state charged to one account or the operator.
+type Usage struct {
+	BodyBytes int64 `json:"body_bytes"`
+	Aliases   int   `json:"aliases"`
+}

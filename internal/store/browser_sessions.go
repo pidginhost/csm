@@ -178,8 +178,11 @@ func (db *DB) ClearBrowserSessions() error {
 	})
 }
 
-// DisarmBrowserSessionsSnapshot strips verifiers from a private, stopped
-// snapshot. It must never be called on the daemon's live database.
+// DisarmBrowserSessionsSnapshot strips session verifiers and the antispam
+// learning ledger from a private, stopped snapshot. The ledger cannot be
+// restored without its anchor bodies and hash keys, and an old one resumed
+// against live storage would steer audits back to stale targets. It must
+// never be called on the daemon's live database.
 func DisarmBrowserSessionsSnapshot(path string) error {
 	file, err := os.CreateTemp(filepath.Dir(path), ".session-free-*")
 	if err != nil {
@@ -198,6 +201,9 @@ func DisarmBrowserSessionsSnapshot(path string) error {
 		defer func() { result = errors.Join(result, snapshot.Close()) }()
 		db := &DB{bolt: snapshot, path: path}
 		if clearErr := db.ClearBrowserSessions(); clearErr != nil {
+			return clearErr
+		}
+		if clearErr := db.clearLearning(); clearErr != nil {
 			return clearErr
 		}
 		// Compact even if the bucket was already absent: earlier revocations

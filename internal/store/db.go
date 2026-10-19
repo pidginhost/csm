@@ -51,6 +51,14 @@ var bucketNames = []string{
 	"scan_jobs",
 	"scan_job_findings",
 	scanCursorBucket,
+	LearnMetaBucket,
+	LearnClustersBucket,
+	LearnAliasesBucket,
+	LearnTargetsBucket,
+	LearnIntentsBucket,
+	LearnOpsBucket,
+	LearnUsageBucket,
+	LearnCursorBucket,
 }
 
 // DB wraps a bbolt database.
