@@ -61,7 +61,7 @@ const (
 var readStatusNames = [...]string{"ok", "linked", "changed", "gone", "not_regular", "wrong_owner", "oversize", "symlink"}
 
 func (s ReadStatus) String() string {
-	if int(s) < len(readStatusNames) {
+	if s >= 0 && int(s) < len(readStatusNames) {
 		return readStatusNames[s]
 	}
 	return fmt.Sprintf("status(%d)", int(s))
@@ -119,18 +119,19 @@ func folderPath(m Mailbox, folder, sub string) (string, error) {
 }
 
 // OpenFolder opens one observed Maildir subdirectory beneath the home, one
-// no-follow component at a time. A missing folder wraps fs.ErrNotExist.
+// no-follow component at a time. A missing folder wraps fs.ErrNotExist;
+// symlinks and non-directories wrap ErrUnsafePath. Other errors are retryable.
 func (h *Home) OpenFolder(m Mailbox, folder, sub string) (*Folder, error) {
 	rel, err := folderPath(m, folder, sub)
 	if err != nil {
 		return nil, err
 	}
 	d, err := h.dir.Walk(rel)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, err
-	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrUnsafePath, err)
+		if errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.ELOOP) {
+			return nil, fmt.Errorf("%w: %w", ErrUnsafePath, err)
+		}
+		return nil, err
 	}
 	fi, err := d.Info()
 	var ident Meta
@@ -271,6 +272,9 @@ func fstatMeta(file *os.File, uid int) (Meta, ReadStatus, error) {
 // BaseName is the folder-scoped Maildir identity: the name before the
 // ":2," info suffix, which flag renames and new-to-cur moves keep.
 func BaseName(name string) (string, bool) {
+	if !plainName(name) {
+		return "", false
+	}
 	base, _, _ := strings.Cut(name, ":2,")
 	if !plainName(base) {
 		return "", false

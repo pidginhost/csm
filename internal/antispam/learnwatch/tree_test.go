@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -91,6 +92,57 @@ func TestTreeRefusesSymlinkedFolder(t *testing.T) {
 	if errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("symlinked folder reported as missing: %v", err)
 	}
+	if !errors.Is(err, ErrUnsafePath) {
+		t.Fatalf("symlinked folder not reported as unsafe: %v", err)
+	}
+}
+
+// Exhaust descriptors only in a child so other tests retain their limits.
+func TestOpenFolderResourceErrorIsNotUnsafePath(t *testing.T) {
+	if os.Getenv("CSM_LEARNWATCH_TEST_NOFILE") != "1" {
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(self, "-test.run=^TestOpenFolderResourceErrorIsNotUnsafePath$")
+		cmd.Env = append(os.Environ(), "CSM_LEARNWATCH_TEST_NOFILE=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("limited reader: %v\n%s", err, out)
+		}
+		return
+	}
+	a := tenantHome(t)
+	h, err := OpenHome(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = h.Close() }()
+	var limit syscall.Rlimit
+	if err = syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
+		t.Fatal(err)
+	}
+	limited := limit
+	limited.Cur = 0
+	if err = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &limited); err != nil {
+		t.Fatal(err)
+	}
+	f, openErr := h.OpenFolder(Mailbox{}, ".spam", "cur")
+	if err = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
+		t.Fatal(err)
+	}
+	if f != nil {
+		_ = f.Close()
+		t.Fatal("opened folder without an available descriptor")
+	}
+	if !errors.Is(openErr, syscall.EMFILE) || errors.Is(openErr, ErrUnsafePath) {
+		t.Fatalf("resource exhaustion must stay retryable: %v", openErr)
+	}
+	// Recovery must allow the same, unchanged folder to open.
+	f, err = h.OpenFolder(Mailbox{}, ".spam", "cur")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
 }
 
 func TestTreeRefusesSymlinkedMailboxDir(t *testing.T) {
@@ -323,10 +375,28 @@ func TestBaseNameParsing(t *testing.T) {
 		"..:2,":         "",
 		"a/b":           "",
 		"a\x00b":        "",
+		"a:2,S/b":       "",
+		"a:2,S\x00":     "",
 	} {
 		got, ok := BaseName(name)
 		if got != want || ok != (want != "") {
 			t.Errorf("BaseName(%q) = %q, %v", name, got, ok)
+		}
+	}
+}
+
+func TestReadStatusString(t *testing.T) {
+	for _, tc := range []struct {
+		status ReadStatus
+		want   string
+	}{
+		{ReadOK, "ok"},
+		{ReadSkipSymlink, "symlink"},
+		{ReadStatus(-1), "status(-1)"},
+		{ReadStatus(99), "status(99)"},
+	} {
+		if got := fmt.Sprint(tc.status); got != tc.want {
+			t.Errorf("status %d formatted as %q, want %q", int(tc.status), got, tc.want)
 		}
 	}
 }

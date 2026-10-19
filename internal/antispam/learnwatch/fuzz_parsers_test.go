@@ -10,7 +10,7 @@ import (
 )
 
 func FuzzBaseName(f *testing.F) {
-	for _, s := range []string{"1.M1.host:2,S", "a:2,", "..", "", "a/b:2,"} {
+	for _, s := range []string{"1.M1.host:2,S", "a:2,", "..", "", "a/b:2,", "a:2,S/b", "a:2,S\x00"} {
 		f.Add(s)
 	}
 	f.Fuzz(func(t *testing.T, name string) {
@@ -18,7 +18,7 @@ func FuzzBaseName(f *testing.F) {
 		if !ok {
 			return
 		}
-		if base == "" || base == "." || base == ".." || strings.ContainsAny(base, "/\x00") || !strings.HasPrefix(name, base) {
+		if base == "" || base == "." || base == ".." || strings.ContainsAny(name, "/\x00") || !strings.HasPrefix(name, base) {
 			t.Fatalf("BaseName(%q) = %q", name, base)
 		}
 	})
