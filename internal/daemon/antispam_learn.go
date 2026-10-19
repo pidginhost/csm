@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/antispam/learn"
@@ -19,17 +20,34 @@ type learnEngine interface {
 	Pause()
 	Problems() []antispam.Problem
 	Operator(context.Context, learn.OperatorRequest) (learn.OperatorResult, error)
+	Submit(context.Context, learn.Candidate) (learn.Outcome, error)
 }
 
 // newLearnEngine builds the learning engine; tests replace it.
 var newLearnEngine = func(cfg learn.EngineConfig) learnEngine { return learn.NewEngine(cfg) }
 
-// learnerRunner is one running engine and what it was built for.
+// learnerRunner is one running engine, its Spam folder watcher and what
+// they were built for.
 type learnerRunner struct {
-	target reconcile.LearnerTarget
-	engine learnEngine
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	target  reconcile.LearnerTarget
+	engine  learnEngine
+	watcher learnWatcher
+	gate    atomic.Pointer[antispam.LearningGate]
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+}
+
+// setGate passes g to the engine and to the watcher's gates.
+func (r *learnerRunner) setGate(g antispam.LearningGate) {
+	r.gate.Store(&g)
+	r.engine.SetGate(g)
+}
+
+func (r *learnerRunner) currentGate() antispam.LearningGate {
+	if g := r.gate.Load(); g != nil {
+		return *g
+	}
+	return antispam.LearningGate{}
 }
 
 // syncLearner follows a completed reconcile pass: it starts the learning
@@ -53,7 +71,7 @@ func (d *Daemon) syncLearner(out reconcile.Outcome) {
 	if out.Learner == (reconcile.LearnerTarget{}) {
 		// Wanted, but this pass could not name its controller or keys.
 		if cur != nil {
-			cur.engine.SetGate(antispam.LearningGate{})
+			cur.setGate(antispam.LearningGate{})
 		}
 		return
 	}
@@ -74,7 +92,7 @@ func (d *Daemon) syncLearner(out reconcile.Outcome) {
 		d.stopLearnerLocked()
 		return
 	}
-	cur.engine.SetGate(out.LearningGate)
+	cur.setGate(out.LearningGate)
 }
 
 // learningWanted reports whether the current config asks for learning and
@@ -95,7 +113,8 @@ func (d *Daemon) pauseLearner() {
 	}
 }
 
-// startLearning starts an engine for target with a closed gate.
+// startLearning starts an engine and its watcher for target with a closed
+// gate.
 func (d *Daemon) startLearning(ctx context.Context, target reconcile.LearnerTarget) *learnerRunner {
 	db := store.Global()
 	if db == nil {
@@ -111,12 +130,18 @@ func (d *Daemon) startLearning(ctx context.Context, target reconcile.LearnerTarg
 	})
 	runCtx, cancel := context.WithCancel(ctx)
 	r := &learnerRunner{target: target, engine: engine, cancel: cancel}
-	r.wg.Add(1)
-	d.wg.Add(1)
+	r.watcher = newRunnerWatcher(db, r)
+	r.wg.Add(2)
+	d.wg.Add(2)
 	obs.Go("antispam-learn", func() {
 		defer d.wg.Done()
 		defer r.wg.Done()
 		engine.Run(runCtx)
+	})
+	obs.Go("antispam-learnwatch", func() {
+		defer d.wg.Done()
+		defer r.wg.Done()
+		r.watcher.Run(runCtx)
 	})
 	d.antispamLearner.Store(r)
 	return r
@@ -134,7 +159,7 @@ func (d *Daemon) stopLearnerLocked() {
 	if r == nil {
 		return
 	}
-	r.engine.SetGate(antispam.LearningGate{})
+	r.setGate(antispam.LearningGate{})
 	r.cancel()
 	r.wg.Wait()
 }

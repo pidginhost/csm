@@ -451,3 +451,16 @@ func TestSchedulerForgetsPendingOfVanishedFolder(t *testing.T) {
 		t.Fatalf("vanished folder: %d submitted, %d pending", len(f.engine.submitted()), f.pending(0))
 	}
 }
+
+func TestPassIdleWhileDiscoveryClosed(t *testing.T) {
+	f := newWatch(t, 1)
+	f.cfg.CanDiscover = func() bool { return false }
+	f.restart()
+	f.deliver(0, "new", 1, spamBody)
+	if r := f.pass(); r.Accounts != 0 || len(f.trace()) != 0 {
+		t.Fatalf("closed gate pass ran: %+v, trace %v", r, f.trace())
+	}
+	if _, at := f.w.Last(); !at.IsZero() {
+		t.Fatal("an idle pass was recorded as completed")
+	}
+}

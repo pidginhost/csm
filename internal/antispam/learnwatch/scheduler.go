@@ -47,8 +47,10 @@ type WatcherConfig struct {
 	State      *State
 	Engine     submitter
 	Now        func() time.Time
+	// CanDiscover false makes passes idle: nothing is listed or read.
 	// CanSubmit false keeps discovery and baselines but reads no message
 	// content and submits nothing.
+	CanDiscover   func() bool
 	CanSubmit     func() bool
 	Chunk         int
 	SeenAllowance int
@@ -85,10 +87,13 @@ type Watcher struct {
 	at   time.Time
 }
 
-// NewWatcher fills defaults.
+// NewWatcher fills defaults; nil gates are open.
 func NewWatcher(cfg WatcherConfig) *Watcher {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.CanDiscover == nil {
+		cfg.CanDiscover = func() bool { return true }
 	}
 	if cfg.CanSubmit == nil {
 		cfg.CanSubmit = func() bool { return true }
@@ -126,12 +131,16 @@ func (w *Watcher) Last() (PassReport, time.Time) {
 	return w.last, w.at
 }
 
-// Pass runs one rotation-fair pass. A concurrent call returns Busy.
+// Pass runs one rotation-fair pass. A concurrent call returns Busy; a
+// closed discovery gate makes it idle and unrecorded.
 func (w *Watcher) Pass(ctx context.Context) PassReport {
 	if !w.busy.CompareAndSwap(false, true) {
 		return PassReport{Busy: true}
 	}
 	defer w.busy.Store(false)
+	if !w.cfg.CanDiscover() {
+		return PassReport{}
+	}
 	ctx, cancel := context.WithTimeout(ctx, PassDeadline)
 	defer cancel()
 	r := w.pass(ctx)

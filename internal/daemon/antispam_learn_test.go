@@ -18,6 +18,8 @@ type fakeEngine struct {
 	gates   []antispam.LearningGate
 	running bool
 	stopped chan struct{}
+	submits []learn.Candidate
+	respond func(learn.Candidate) (learn.Outcome, error)
 }
 
 func (f *fakeEngine) Run(ctx context.Context) {
@@ -41,6 +43,18 @@ func (f *fakeEngine) SetGate(g antispam.LearningGate) {
 func (f *fakeEngine) Pause() { f.SetGate(antispam.LearningGate{}) }
 
 func (f *fakeEngine) Problems() []antispam.Problem { return nil }
+
+// Submit records reports; respond, when set, decides the outcome.
+func (f *fakeEngine) Submit(_ context.Context, c learn.Candidate) (learn.Outcome, error) {
+	f.mu.Lock()
+	f.submits = append(f.submits, c)
+	respond := f.respond
+	f.mu.Unlock()
+	if respond != nil {
+		return respond(c)
+	}
+	return learn.Outcome{Ref: c.Ref, Committed: []uint64{1}}, nil
+}
 
 func (f *fakeEngine) Operator(context.Context, learn.OperatorRequest) (learn.OperatorResult, error) {
 	return learn.OperatorResult{}, nil
