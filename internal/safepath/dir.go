@@ -54,6 +54,12 @@ func (d *Dir) Info() (os.FileInfo, error) { return d.file.Stat() }
 
 func (d *Dir) ReadDir() ([]os.DirEntry, error) { return d.file.ReadDir(-1) }
 
+// ReadDirN reads at most n entries; io.EOF follows the last batch.
+func (d *Dir) ReadDirN(n int) ([]os.DirEntry, error) { return d.file.ReadDir(n) }
+
+// Walk opens a descendant directory one no-follow component at a time.
+func (d *Dir) Walk(relative string) (*Dir, error) { return d.walk(relative, false) }
+
 // SameFile reports whether two pinned handles name the same directory.
 func (d *Dir) SameFile(other *Dir) (bool, error) {
 	want, err := d.file.Stat()
