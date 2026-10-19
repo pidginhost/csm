@@ -14,14 +14,14 @@ const (
 	OperatorWeight = 18
 )
 
-// Per-account and operator state allowances. A cluster with 8 aliases
-// costs about 2.8 KB of ledger (BenchmarkClusterBytes).
+// Per-account and operator state allowances. BenchmarkClusterBytes measured
+// 3317 logical ledger bytes per cluster of 8 aliases, charges included, for
+// one contributor mix; shared clusters and bbolt overhead vary independently.
 const (
 	// AccountBodyBytes holds six anchors at the 10 MiB message limit, or
 	// thousands of typical 4 to 20 KiB spam messages.
 	AccountBodyBytes = 64 << 20
-	// AccountAliases bounds an account's ledger at about 1.4 MB (512
-	// clusters of 8 aliases).
+	// AccountAliases limits charged aliases, not the ledger's byte size.
 	AccountAliases = 4096
 	// The operator's allowances are eight times an account's.
 	OperatorBodyBytes = 512 << 20

@@ -36,6 +36,14 @@ func (f *failingKV) LearnUpdate(fn func(store.LearnTx) error) error {
 // rotation and running with an open gate.
 func newTestEngine(t testing.TB, f *auditFixture, gen ...string) *Engine {
 	t.Helper()
+	e, stop := startTestEngine(t, f, gen...)
+	t.Cleanup(stop)
+	return e
+}
+
+// Benchmarks stop each engine before resetting their reusable ledger.
+func startTestEngine(t testing.TB, f *auditFixture, gen ...string) (*Engine, func()) {
+	t.Helper()
 	g := "gen1"
 	if len(gen) > 0 {
 		g = gen[0]
@@ -56,11 +64,10 @@ func newTestEngine(t testing.TB, f *auditFixture, gen ...string) *Engine {
 		defer close(done)
 		e.Run(ctx)
 	}()
-	t.Cleanup(func() {
+	return e, func() {
 		cancel()
 		<-done
-	})
-	return e
+	}
 }
 
 // report maps a snapshot to a near match of anchor at prob.

@@ -16,24 +16,26 @@ import (
 	"github.com/pidginhost/csm/internal/antispam/learn"
 )
 
-// Scheduler constants (spec 7.5). Workloads are from bench_test.go on an
-// 8-core host with the state database on SSD.
+// Scheduler constants (spec 7.5). bench_test.go measures fixed synthetic
+// workloads on an 8-core development host with SSD storage; listing
+// latency depends on the host and filesystem.
 const (
 	// PassEvery and MaxAttempts are the spec's schedule and budget.
 	PassEvery   = 5 * time.Minute
 	MaxAttempts = 20
-	// PassDeadline ends a pass a minute before the next one; baselining
-	// S8's largest folder (51217 entries) took 1.5 s.
+	// PassDeadline leaves time between passes even when discovery runs long;
+	// baselining a 51217-entry folder (spike S8's largest) took 1.5 s.
 	PassDeadline = 4 * time.Minute
-	// DiscoveryChunk entries take about 15 ms to list, stat and record (30
-	// microseconds each), so one discovery turn holds a rotation briefly; a
-	// second account was submitted 13 to 34 ms into a 51217-entry flood.
+	// DiscoveryChunk bounds the listing work before another account's turn:
+	// about 15 ms per chunk at 29 microseconds per entry; during a
+	// 51217-entry flood a second account was submitted after 15 to 19 ms.
 	DiscoveryChunk = 512
-	// AccountSeenAllowance covers S8's 51217-entry folder; at 353 bytes per
-	// seen entry it bounds one account at about 23 MB of state.
+	// AccountSeenAllowance limits identities, not database bytes; it covers
+	// S8's 51217-entry folder. A synthetic entry took 353 logical bytes;
+	// names, statuses and bbolt page overhead change the cost per entry.
 	AccountSeenAllowance = 65536
 	// FullRescanEvery relists unchanged folders daily so presence stays
-	// fresh for the 90-day prune; relisting the largest folder costs 1.5 s.
+	// fresh for the 90-day prune; relisting the large folder takes seconds.
 	FullRescanEvery = 24 * time.Hour
 	pruneEvery      = 24 * time.Hour
 )

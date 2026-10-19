@@ -12,9 +12,10 @@ import (
 )
 
 // AuditBatch is the number of targets one audit turn checks, in one exact
-// inspection. A rotation over 10000 live and 10000 zero targets takes 400
-// turns (BenchmarkAuditRotation): about 67 minutes at one turn per
-// EngineTick, so AuditOverdueAfter allows about 430000 targets.
+// inspection. BenchmarkAuditRotation took 400 turns for 10000 live and
+// 10000 zero targets, about 67 minutes at one turn per EngineTick.
+// OldestUnchecked can span two rotations, so single-rotation throughput
+// alone does not bound the age used by AuditOverdueAfter.
 const AuditBatch = 50
 
 // Retention is how long a cluster lives after its latest committed or

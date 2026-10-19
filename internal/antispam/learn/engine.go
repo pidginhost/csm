@@ -19,9 +19,9 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// Engine limits. One tick runs an audit and a repair turn; one report
-// costs about 3 ms of ledger work (BenchmarkPublishTurn) plus about 2 ms of
-// native calls (spike S8).
+// Engine limits. BenchmarkPublishTurn took 2.5 to 3.4 ms of ledger work for
+// a report joining a single-anchor ledger; spike S8 measured about 2 ms of
+// native calls per report. Larger ledgers need separate measurements.
 const (
 	EngineTick         = 10 * time.Second
 	RepairBatch        = 10

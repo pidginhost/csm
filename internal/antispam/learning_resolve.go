@@ -139,9 +139,8 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 
 // RedisGuard reports whether new publications pause: at 75% of maxmemory,
 // staying paused until usage falls below 70%. No limit always pauses. The
-// reserve covers S8's sync peak, about four times a batch's steady growth
-// of 7 KiB per learned message; on a 4 GiB instance it is about 150000
-// messages.
+// reserve is headroom for synchronization peaks, not a fixed message count:
+// spike S8 saw a peak about four times a batch's steady growth.
 func RedisGuard(used, max uint64, paused bool) bool {
 	if max == 0 {
 		return true
