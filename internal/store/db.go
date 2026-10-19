@@ -59,6 +59,8 @@ var bucketNames = []string{
 	LearnOpsBucket,
 	LearnUsageBucket,
 	LearnCursorBucket,
+	LearnWatchFoldersBucket,
+	LearnWatchSeenBucket,
 }
 
 // DB wraps a bbolt database.

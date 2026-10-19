@@ -27,13 +27,24 @@ var LearnBuckets = []string{
 	LearnIntentsBucket, LearnOpsBucket, LearnUsageBucket, LearnCursorBucket,
 }
 
-// LearnTx is a bbolt transaction limited to the learning buckets.
+// Spam folder watcher buckets (spec 7.2): folder identities, baselines,
+// scheduler cursors and seen message identities. They share LearnTx and
+// leave exports with the ledger.
+const (
+	LearnWatchFoldersBucket = "antispam:learnwatch:folders"
+	LearnWatchSeenBucket    = "antispam:learnwatch:seen"
+)
+
+// WatchBuckets lists every watcher bucket.
+var WatchBuckets = []string{LearnWatchFoldersBucket, LearnWatchSeenBucket}
+
+// LearnTx is a bbolt transaction limited to the learning and watcher buckets.
 type LearnTx struct {
 	tx *bolt.Tx
 }
 
 func (t LearnTx) bucket(name string) (*bolt.Bucket, error) {
-	if !slices.Contains(LearnBuckets, name) {
+	if !slices.Contains(LearnBuckets, name) && !slices.Contains(WatchBuckets, name) {
 		return nil, fmt.Errorf("learning: bucket %q is not a learning bucket", name)
 	}
 	b := t.tx.Bucket([]byte(name))
@@ -129,10 +140,11 @@ func (db *DB) LearnView(fn func(LearnTx) error) error {
 	return db.bolt.View(func(tx *bolt.Tx) error { return fn(LearnTx{tx: tx}) })
 }
 
-// clearLearning drops every learning record from a private snapshot.
+// clearLearning drops every learning and watcher record from a private
+// snapshot.
 func (db *DB) clearLearning() error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
-		for _, name := range LearnBuckets {
+		for _, name := range slices.Concat(LearnBuckets, WatchBuckets) {
 			if tx.Bucket([]byte(name)) == nil {
 				continue
 			}
