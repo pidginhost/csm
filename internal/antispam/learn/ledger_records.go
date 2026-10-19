@@ -1,9 +1,6 @@
 package learn
 
-import (
-	"encoding/json"
-	"time"
-)
+import "time"
 
 // Binding ties the ledger to one hash-key generation and storage prefix.
 type Binding struct {
@@ -100,11 +97,25 @@ type Intent struct {
 // OpRecord binds an operator request ID to its action and snapshot hash and
 // keeps its terminal outcome.
 type OpRecord struct {
-	RequestID   string          `json:"request_id"`
-	Action      string          `json:"action"`
-	SnapshotSHA string          `json:"snapshot_sha"`
-	Outcome     json.RawMessage `json:"outcome,omitempty"`
-	Done        bool            `json:"done,omitempty"`
+	RequestID   string     `json:"request_id"`
+	Action      string     `json:"action"`
+	SnapshotSHA string     `json:"snapshot_sha"`
+	Outcome     *OpOutcome `json:"outcome,omitempty"`
+	Done        bool       `json:"done,omitempty"`
+}
+
+// OpOutcome keeps only learning results, so serializing an operator reply
+// cannot copy arbitrary message fields into the ledger.
+type OpOutcome struct {
+	Clusters []ClusterOutcome `json:"clusters,omitempty"`
+	Outcome  string           `json:"outcome"`
+	ExitOK   bool             `json:"exit_ok"`
+}
+
+// ClusterOutcome records the result for one cluster in an operator request.
+type ClusterOutcome struct {
+	ClusterID uint64 `json:"cluster_id"`
+	Result    string `json:"result"`
 }
 
 // Usage is the learning state charged to one account or the operator.

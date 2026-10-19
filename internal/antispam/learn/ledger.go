@@ -73,9 +73,6 @@ func (l *Ledger) Bind(gen, prefix string) error {
 			return nil
 		}
 		for _, name := range store.LearnBuckets {
-			if name == store.LearnMetaBucket {
-				continue
-			}
 			empty := true
 			if err := tx.tx.ForEach(name, func(_, _ []byte) error { empty = false; return errStop }); err != nil && !errors.Is(err, errStop) {
 				return err

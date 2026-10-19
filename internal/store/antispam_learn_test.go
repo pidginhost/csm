@@ -1,8 +1,13 @@
 package store
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -71,15 +76,26 @@ func TestArchiveExportOmitsLearningLedger(t *testing.T) {
 		t.Fatal(openErr)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := db.LearnUpdate(func(tx LearnTx) error { return tx.Put(LearnClustersBucket, []byte("c"), []byte("cluster")) }); err != nil {
-		t.Fatal(err)
-	}
+	seedLearningRecords(t, db)
 	archivePath := filepath.Join(t.TempDir(), "snapshot.csmbak")
 	if _, err := db.Export(ExportOptions{StatePath: statePath, DstPath: archivePath, Manifest: defaultManifest()}); err != nil {
 		t.Fatal(err)
 	}
+	var manifest Manifest
+	if err := json.Unmarshal(archiveEntryBytes(t, archivePath, manifestEntry), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	for _, bucket := range LearnBuckets {
+		if slices.Contains(manifest.BboltBuckets, bucket) {
+			t.Errorf("export manifest contains %s", bucket)
+		}
+	}
 	snapshotDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(snapshotDir, "csm.db"), archiveEntryBytes(t, archivePath, bboltSnapshotEntry), 0o600); err != nil {
+	snapshotBytes := archiveEntryBytes(t, archivePath, bboltSnapshotEntry)
+	if bytes.Contains(snapshotBytes, []byte("learning-test-record")) {
+		t.Error("exported snapshot retained learning data in its pages")
+	}
+	if err := os.WriteFile(filepath.Join(snapshotDir, "csm.db"), snapshotBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, snapErr := Open(snapshotDir)
@@ -87,10 +103,110 @@ func TestArchiveExportOmitsLearningLedger(t *testing.T) {
 		t.Fatal(snapErr)
 	}
 	t.Cleanup(func() { _ = snapshot.Close() })
-	if err := snapshot.LearnView(func(tx LearnTx) error {
-		v, err := tx.Get(LearnClustersBucket, []byte("c"))
-		if err != nil || v != nil {
-			t.Errorf("exported snapshot kept a learning record: %v", err)
+	assertNoLearningRecords(t, snapshot)
+	if err := db.LearnView(func(tx LearnTx) error {
+		for _, bucket := range LearnBuckets {
+			v, err := tx.Get(bucket, []byte("record"))
+			if err != nil || string(v) != "learning-test-record" {
+				t.Errorf("export changed live learning data in %s: %v", bucket, err)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArchiveImportOmitsLearningFromOlderArchive(t *testing.T) {
+	statePath := t.TempDir()
+	db, openErr := Open(statePath)
+	if openErr != nil {
+		t.Fatal(openErr)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	seedLearningRecords(t, db)
+	archivePath := filepath.Join(t.TempDir(), "snapshot.csmbak")
+	if _, err := db.Export(ExportOptions{StatePath: statePath, DstPath: archivePath, Manifest: defaultManifest()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	unsanitized, readErr := os.ReadFile(filepath.Join(statePath, "csm.db"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	hash := sha256.Sum256(unsanitized)
+	legacyArchive := filepath.Join(t.TempDir(), "legacy.csmbak")
+	rewriteArchive(t, archivePath, legacyArchive, func(name string, data []byte) ([]byte, bool) {
+		switch name {
+		case manifestEntry:
+			var manifest Manifest
+			if err := json.Unmarshal(data, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			manifest.BboltSHA256 = hex.EncodeToString(hash[:])
+			manifest.BboltBuckets = append(manifest.BboltBuckets, LearnBuckets...)
+			encoded, err := json.Marshal(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return encoded, true
+		case bboltSnapshotEntry:
+			return unsanitized, true
+		default:
+			return data, true
+		}
+	})
+	restoredState := t.TempDir()
+	result, err := Import(ImportOptions{SrcPath: legacyArchive, StatePath: restoredState, Only: "all", CurrentPlatform: defaultPlatform()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bucket := range LearnBuckets {
+		if slices.Contains(result.BucketsRestored, bucket) {
+			t.Errorf("import reported stripped bucket %s as restored", bucket)
+		}
+	}
+	restoredBytes, err := os.ReadFile(filepath.Join(restoredState, "csm.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(restoredBytes, []byte("learning-test-record")) {
+		t.Error("import retained learning data in its pages")
+	}
+	restoredDB, err := Open(restoredState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restoredDB.Close() })
+	assertNoLearningRecords(t, restoredDB)
+}
+
+func seedLearningRecords(t *testing.T, db *DB) {
+	t.Helper()
+	if err := db.LearnUpdate(func(tx LearnTx) error {
+		for _, bucket := range LearnBuckets {
+			if err := tx.Put(bucket, []byte("record"), []byte("learning-test-record")); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertNoLearningRecords(t *testing.T, db *DB) {
+	t.Helper()
+	if err := db.LearnView(func(tx LearnTx) error {
+		for _, bucket := range LearnBuckets {
+			if err := tx.ForEach(bucket, func(_, _ []byte) error {
+				t.Errorf("snapshot kept a learning record in %s", bucket)
+				return nil
+			}); err != nil {
+				return err
+			}
 		}
 		return nil
 	}); err != nil {
