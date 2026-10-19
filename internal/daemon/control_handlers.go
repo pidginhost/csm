@@ -51,6 +51,8 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleThreatForget(req.Args)
 	case control.CmdAntispamLearn:
 		result, err = c.handleAntispamLearn(req.Args)
+	case control.CmdAntispamLearnStatus:
+		result, err = c.handleAntispamLearnStatus(req.Args)
 	case control.CmdFirewallStatus:
 		result, err = c.handleFirewallStatus(req.Args)
 	case control.CmdFirewallPorts:

@@ -12,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/actionlog"
 	"github.com/pidginhost/csm/internal/antispam/learn"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // learnOperatorTimeout ends the wait before the CLI's own; the learner
@@ -128,4 +129,47 @@ func learnReason(requestID string, res learn.OperatorResult) string {
 		}
 	}
 	return b.String()
+}
+
+// maxStatusRequests bounds one status query.
+const maxStatusRequests = 100
+
+// handleAntispamLearnStatus reads recorded outcomes of operator requests
+// from the learning ledger, or lists the unfinished ones (spec 8). It reads
+// only, so it answers in any mode and with no learner running.
+func (c *ControlListener) handleAntispamLearnStatus(argsRaw json.RawMessage) (any, error) {
+	var args control.AntispamLearnStatusArgs
+	if len(argsRaw) > 0 {
+		if err := json.Unmarshal(argsRaw, &args); err != nil {
+			return nil, fmt.Errorf("parsing args: %w", err)
+		}
+	}
+	if len(args.RequestIDs) > maxStatusRequests {
+		return nil, fmt.Errorf("at most %d request IDs per query", maxStatusRequests)
+	}
+	for _, id := range args.RequestIDs {
+		if len(id) != 32 || strings.Trim(id, "0123456789abcdef") != "" {
+			return nil, errors.New("a request ID is 32 lowercase hex digits")
+		}
+	}
+	db := store.Global()
+	if db == nil {
+		return nil, errors.New("the state database is not open")
+	}
+	statuses, err := learn.RequestStatus(learn.Open(db), args.RequestIDs)
+	if err != nil {
+		return nil, err
+	}
+	res := control.AntispamLearnStatusResult{Requests: []control.AntispamLearnStatus{}}
+	for _, s := range statuses {
+		out := control.AntispamLearnStatus{RequestID: s.RequestID, Action: s.Action, Found: s.Found, Done: s.Done, ExitOK: s.ExitOK, Outcome: s.Outcome}
+		for _, d := range s.Digests {
+			out.Digests = append(out.Digests, string(d))
+		}
+		for _, cl := range s.Clusters {
+			out.Clusters = append(out.Clusters, control.AntispamLearnStatusCluster{ClusterID: cl.ClusterID, Result: cl.Result, Phase: string(cl.Phase)})
+		}
+		res.Requests = append(res.Requests, out)
+	}
+	return res, nil
 }

@@ -384,3 +384,35 @@ func TestLearnDeferredAsksForANewRun(t *testing.T) {
 		t.Fatalf("output %q", out.String())
 	}
 }
+
+func TestLearnStatusPrintsOutcome(t *testing.T) {
+	asRoot(t)
+	id := strings.Repeat("ab", 16)
+	var sent control.AntispamLearnStatusArgs
+	t.Cleanup(fakeDaemon(t, func(req control.Request) control.Response {
+		if req.Cmd != control.CmdAntispamLearnStatus {
+			return control.Response{OK: false, Error: "unexpected command"}
+		}
+		_ = json.Unmarshal(req.Args, &sent)
+		data, _ := json.Marshal(control.AntispamLearnStatusResult{Requests: []control.AntispamLearnStatus{{
+			RequestID: id, Action: "spam", Found: true, Outcome: "pending",
+			Clusters: []control.AntispamLearnStatusCluster{{ClusterID: 4, Result: "pending", Phase: "add_sent"}}}}})
+		return control.Response{OK: true, Result: data}
+	}))
+	var out, errOut bytes.Buffer
+	if code := antispamLearn([]string{"--status", id}, &out, &errOut); code != 0 {
+		t.Fatalf("code %d stderr %q", code, errOut.String())
+	}
+	if len(sent.RequestIDs) != 1 || sent.RequestIDs[0] != id {
+		t.Fatalf("sent %+v", sent)
+	}
+	if !strings.Contains(out.String(), "cluster 4: pending (add_sent)") || !strings.Contains(out.String(), "pending") {
+		t.Fatalf("output %q", out.String())
+	}
+	saved := antispamEUID
+	antispamEUID = func() int { return 1000 }
+	defer func() { antispamEUID = saved }()
+	if code := antispamLearn([]string{"--status"}, &out, &errOut); code == 0 {
+		t.Fatal("status ran without root")
+	}
+}

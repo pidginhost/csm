@@ -86,6 +86,9 @@ const (
 	// CmdAntispamLearn submits one operator file to the antispam learner,
 	// as spam or to forget what it taught.
 	CmdAntispamLearn = "antispam.learn"
+	// CmdAntispamLearnStatus reads recorded outcomes of operator learning
+	// requests, or lists the unfinished ones.
+	CmdAntispamLearnStatus = "antispam.learn_status"
 
 	// Phase 2 incident correlation.
 	CmdIncidentsList       = "incidents.list"
@@ -296,6 +299,37 @@ type AntispamLearnResult struct {
 	Digests   []string               `json:"digests,omitempty"`
 	Outcome   string                 `json:"outcome"`
 	ExitOK    bool                   `json:"exit_ok"`
+}
+
+// AntispamLearnStatusArgs names request IDs; none lists every unfinished
+// request.
+type AntispamLearnStatusArgs struct {
+	RequestIDs []string `json:"request_ids,omitempty"`
+}
+
+// AntispamLearnStatusCluster is one cluster's recorded result; Phase is set
+// while its publication is unfinished.
+type AntispamLearnStatusCluster struct {
+	ClusterID uint64 `json:"cluster_id,omitempty"`
+	Result    string `json:"result"`
+	Phase     string `json:"phase,omitempty"`
+}
+
+// AntispamLearnStatus is what the daemon recorded for one request ID.
+type AntispamLearnStatus struct {
+	RequestID string                       `json:"request_id"`
+	Action    string                       `json:"action,omitempty"`
+	Found     bool                         `json:"found"`
+	Done      bool                         `json:"done"`
+	ExitOK    bool                         `json:"exit_ok"`
+	Outcome   string                       `json:"outcome,omitempty"`
+	Digests   []string                     `json:"digests,omitempty"`
+	Clusters  []AntispamLearnStatusCluster `json:"clusters,omitempty"`
+}
+
+// AntispamLearnStatusResult answers CmdAntispamLearnStatus.
+type AntispamLearnStatusResult struct {
+	Requests []AntispamLearnStatus `json:"requests"`
 }
 
 // FirewallRollbackStatus reports the pending tentative-apply state for

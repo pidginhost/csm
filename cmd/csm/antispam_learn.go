@@ -43,9 +43,12 @@ var learnSend = func(args control.AntispamLearnArgs) (json.RawMessage, error) {
 
 const learnUsage = `Usage: csm antispam learn --spam <file>...
        csm antispam learn --forget <file>...
+       csm antispam learn --status [<request-id>...]
 
 --spam    learn each file as spam with one operator mark per matched cluster
 --forget  remove the learned clusters each file matches
+--status  show what the daemon recorded for request IDs, or list the
+          requests that are still pending
 
 Runs as root against the running daemon with antispam learning enabled.
 Each file gets a request ID, printed before it is sent; the daemon keeps
@@ -68,7 +71,7 @@ func antispamLearn(args []string, out, errOut io.Writer) int {
 	var files []string
 	for _, a := range args {
 		switch a {
-		case "--spam", "--forget":
+		case "--spam", "--forget", "--status":
 			if action != "" {
 				_, _ = fmt.Fprint(errOut, learnUsage)
 				return 2
@@ -85,13 +88,16 @@ func antispamLearn(args []string, out, errOut io.Writer) int {
 			files = append(files, a)
 		}
 	}
-	if action == "" || len(files) == 0 {
+	if action == "" || len(files) == 0 && action != "status" {
 		_, _ = fmt.Fprint(errOut, learnUsage)
 		return 2
 	}
 	if antispamEUID() != 0 {
 		fmt.Fprintln(errOut, "csm: antispam learn must run as root")
 		return 1
+	}
+	if action == "status" {
+		return learnStatus(files, out, errOut)
 	}
 	status := 0
 	for _, path := range files {
@@ -199,4 +205,50 @@ func readLearnFile(path string) ([]byte, error) {
 		return nil, errors.New("the file changed while it was read")
 	}
 	return data, nil
+}
+
+// learnStatus prints what the daemon recorded for request IDs, or lists
+// the unfinished requests when none are named.
+func learnStatus(ids []string, out, errOut io.Writer) int {
+	raw, err := sendControl(control.CmdAntispamLearnStatus, control.AntispamLearnStatusArgs{RequestIDs: ids})
+	if err != nil {
+		if errors.Is(err, errDaemonNotRunning) {
+			err = errors.New("the CSM daemon is not running")
+		}
+		fmt.Fprintf(errOut, "csm: %v\n", err)
+		return 1
+	}
+	var res control.AntispamLearnStatusResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		fmt.Fprintln(errOut, "csm: unexpected daemon reply")
+		return 1
+	}
+	if len(ids) == 0 && len(res.Requests) == 0 {
+		fmt.Fprintln(out, "no pending learning requests")
+	}
+	for _, r := range res.Requests {
+		if !r.Found {
+			fmt.Fprintf(out, "%s: no record\n", r.RequestID)
+			continue
+		}
+		outcome := r.Outcome
+		if outcome == "" {
+			outcome = "received, nothing recorded yet"
+		}
+		fmt.Fprintf(out, "%s: %s %s\n", r.RequestID, r.Action, outcome)
+		for _, c := range r.Clusters {
+			switch {
+			case c.ClusterID == 0:
+				fmt.Fprintf(out, "  part: %s\n", c.Result)
+			case c.Phase != "":
+				fmt.Fprintf(out, "  cluster %d: %s (%s)\n", c.ClusterID, c.Result, c.Phase)
+			default:
+				fmt.Fprintf(out, "  cluster %d: %s\n", c.ClusterID, c.Result)
+			}
+		}
+		for _, d := range r.Digests {
+			fmt.Fprintf(out, "  digest %s\n", d)
+		}
+	}
+	return 0
 }

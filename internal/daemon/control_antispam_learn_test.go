@@ -249,3 +249,31 @@ func TestControlLearnDeferredIsRefused(t *testing.T) {
 		t.Fatalf("records %+v", *recs)
 	}
 }
+
+func TestControlLearnStatus(t *testing.T) {
+	d := newDaemonForListener(t)
+	db, closeDB := openTestBoltStore(t, t.TempDir())
+	t.Cleanup(closeDB)
+	id := strings.Repeat("ab", 16)
+	if err := learn.Open(db).Update(func(tx learn.LedgerTx) error {
+		return tx.PutOp(learn.OpRecord{RequestID: id, Action: learn.ActionSpam, Done: true,
+			Outcome: &learn.OpOutcome{Clusters: []learn.ClusterOutcome{{ClusterID: 2, Result: learn.ResultCommitted}}, Outcome: learn.ResultCommitted, ExitOK: true}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cl := &ControlListener{d: d}
+	args, _ := json.Marshal(control.AntispamLearnStatusArgs{RequestIDs: []string{id}})
+	raw, err := cl.handleAntispamLearnStatus(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := raw.(control.AntispamLearnStatusResult)
+	if len(res.Requests) != 1 || !res.Requests[0].Found || res.Requests[0].Outcome != learn.ResultCommitted ||
+		len(res.Requests[0].Clusters) != 1 || res.Requests[0].Clusters[0].ClusterID != 2 {
+		t.Fatalf("status %+v", res)
+	}
+	bad, _ := json.Marshal(control.AntispamLearnStatusArgs{RequestIDs: []string{"not-an-id"}})
+	if _, err := cl.handleAntispamLearnStatus(bad); err == nil {
+		t.Fatal("malformed request ID accepted")
+	}
+}

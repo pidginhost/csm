@@ -706,6 +706,7 @@ Root can learn a saved message as spam, or remove what one taught:
 ```
 csm antispam learn --spam <file>...
 csm antispam learn --forget <file>...
+csm antispam learn --status [<request-id>...]
 ```
 
 The daemon must be running with learning enabled; observe mode refuses
@@ -721,13 +722,21 @@ Each file gets a request ID, printed before it is sent. If printing fails,
 that file is not sent. A lost or truncated reply is retried once with the
 same ID and snapshot. Refusals and completed replies are not retried.
 
-If the command is interrupted, look the ID up with
-`csm actions --op integrate.antispam_learn --json`. JSON records include the
-request ID, escaped basename, outcome and all available full digests, never
-message content or headers. Refused or unreadable requests may have no
-digests. A missing record does not prove that no change occurred. Running
-the command again makes a new request. The exit status is 0 only when every
-file was learned, already learned, forgotten or matched nothing.
+A file reported as `pending` was reserved; the daemon keeps publishing it
+in the background. A file reported as `deferred` changed nothing, because
+learning was busy or waiting on another change; run the command again
+later.
+
+`csm antispam learn --status <request-id>` shows what the daemon recorded
+for a request, including clusters still publishing and their phase.
+Without an ID it lists the requests that are not finished. If the command
+is interrupted, look its ID up there, or in the action log with
+`csm actions --op integrate.antispam_learn --json`, which records the
+request ID, escaped basename, outcome and full digests, never message
+content or headers. A missing record does not prove that no change
+occurred. Running the command again makes a new request. The exit status
+is 0 only when every file was learned, already learned, forgotten or
+matched nothing.
 
 ### Learning findings
 
