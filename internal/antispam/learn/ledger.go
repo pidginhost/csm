@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/store"
@@ -32,6 +33,10 @@ type kv interface {
 // Ledger owns the learning buckets. Only the engine writes it.
 type Ledger struct {
 	db kv
+	// Opt-out checks share the report lookup until an intent transaction
+	// commits. Native phase changes do not change report ownership.
+	intentsMu sync.Mutex
+	reportIDs map[int][]string
 }
 
 // Open returns the ledger stored in db.
@@ -47,6 +52,7 @@ type LedgerView struct {
 // LedgerTx reads and writes the ledger in one transaction.
 type LedgerTx struct {
 	LedgerView
+	intentsChanged *bool
 }
 
 // View runs fn in a read-only transaction.
@@ -56,7 +62,16 @@ func (l *Ledger) View(fn func(LedgerView) error) error {
 
 // Update runs fn in one read-write transaction; an error rolls it back.
 func (l *Ledger) Update(fn func(LedgerTx) error) error {
-	return l.db.LearnUpdate(func(tx store.LearnTx) error { return fn(LedgerTx{LedgerView{tx: tx}}) })
+	l.intentsMu.Lock()
+	defer l.intentsMu.Unlock()
+	changed := false
+	err := l.db.LearnUpdate(func(tx store.LearnTx) error {
+		return fn(LedgerTx{LedgerView: LedgerView{tx: tx}, intentsChanged: &changed})
+	})
+	if err == nil && changed {
+		l.reportIDs = nil
+	}
+	return err
 }
 
 // Bind records the hash generation and prefix on first use and refuses a
@@ -219,11 +234,13 @@ func (tx LedgerTx) DeleteTarget(d Digest) error {
 
 // PutIntent stores i.
 func (tx LedgerTx) PutIntent(i Intent) error {
+	*tx.intentsChanged = true
 	return tx.put(store.LearnIntentsBucket, []byte(i.ID), i)
 }
 
 // DeleteIntent removes intent id.
 func (tx LedgerTx) DeleteIntent(id string) error {
+	*tx.intentsChanged = true
 	return tx.tx.Delete(store.LearnIntentsBucket, []byte(id))
 }
 

@@ -17,9 +17,9 @@ import (
 // publishing and committed ones keep their votes. Only the ledger changes,
 // so it runs whatever the gate.
 func (e *Engine) CancelUnsent(ctx context.Context, uid int) error {
-	// Most opted-out accounts hold no reservation; a direct ledger read
-	// spares them a turn of the owner.
-	ids, err := e.reportIntents(uid)
+	// Accounts with no cancellable work need no owner turn. In particular,
+	// sent work must not hold up each opt-out pass on native request delays.
+	ids, err := e.unsentReportIntents(ctx, uid)
 	if err != nil || len(ids) == 0 {
 		return err
 	}
@@ -30,24 +30,85 @@ func (e *Engine) CancelUnsent(ctx context.Context, uid int) error {
 	return cancelErr
 }
 
-func (e *Engine) reportIntents(uid int) ([]string, error) {
+func (e *Engine) unsentReportIntents(ctx context.Context, uid int) ([]string, error) {
+	candidates, lookupErr := e.cfg.Ledger.reportIntents(ctx, uid)
+	if lookupErr != nil {
+		return nil, fmt.Errorf("%w: %w", ErrStateIO, lookupErr)
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
 	var ids []string
 	err := e.cfg.Ledger.View(func(v LedgerView) error {
-		return v.tx.ForEach(store.LearnIntentsBucket, func(k, data []byte) error {
-			var i Intent
-			if err := json.Unmarshal(data, &i); err != nil {
-				return errors.New("learning ledger intent is unreadable")
+		for _, id := range candidates {
+			if err := ctx.Err(); err != nil {
+				return err
 			}
-			if i.Kind == IntentReport && i.UID == uid {
-				ids = append(ids, string(k))
+			i, ok, err := v.Intent(id)
+			if err != nil {
+				return err
 			}
-			return nil
-		})
+			if ok {
+				for _, ic := range i.Clusters {
+					if ic.Done {
+						continue
+					}
+					t, ok, err := v.Target(ic.Anchor)
+					if err != nil {
+						return err
+					}
+					if ok && unsentTarget(t, ic) {
+						ids = append(ids, id)
+						break
+					}
+				}
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrStateIO, err)
 	}
 	return ids, nil
+}
+
+// reportIntents indexes only ownership. Targets are read again on every
+// check and on the owner so a cached entry cannot authorize cancellation.
+func (l *Ledger) reportIntents(ctx context.Context, uid int) ([]string, error) {
+	l.intentsMu.Lock()
+	defer l.intentsMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if l.reportIDs == nil {
+		ids := map[int][]string{}
+		if err := l.View(func(v LedgerView) error {
+			return v.tx.ForEach(store.LearnIntentsBucket, func(k, data []byte) error {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				var owner struct {
+					Kind IntentKind `json:"kind"`
+					UID  int        `json:"uid"`
+				}
+				if err := json.Unmarshal(data, &owner); err != nil {
+					return errors.New("learning ledger intent is unreadable")
+				}
+				if owner.Kind == IntentReport {
+					ids[owner.UID] = append(ids[owner.UID], string(k))
+				}
+				return nil
+			})
+		}); err != nil {
+			return nil, err
+		}
+		l.reportIDs = ids
+	}
+	return slices.Clone(l.reportIDs[uid]), nil
+}
+
+func unsentTarget(t Target, ic IntentCluster) bool {
+	return t.ClusterID == ic.ClusterID && t.Revision == ic.Revision && t.SentRevision != t.Revision
 }
 
 // cancelUnsent runs on the owner, so no turn can send between its check
@@ -103,7 +164,7 @@ func cancelCluster(tx LedgerTx, intent Intent, k int, now time.Time) (bool, erro
 		return false, err
 	}
 	// A superseded target ends the contribution when it is published.
-	if !ok || t.ClusterID != ic.ClusterID || t.Revision != ic.Revision || t.SentRevision == t.Revision {
+	if !ok || !unsentTarget(t, ic) {
 		return false, nil
 	}
 	seed := intent.Seed != nil && k == 0

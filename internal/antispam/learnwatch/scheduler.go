@@ -553,9 +553,9 @@ func (r *accountRun) eligible(ctx context.Context, rep *PassReport) bool {
 	// Asked on every pass, since an explicit disable can drop the folder
 	// state of an account the learner still holds work for. A failure is
 	// retried by the next pass.
-	if r.stateFailed(r.w.cfg.Engine.CancelUnsent(ctx, r.a.UID), rep) {
-		return false
-	}
+	// The folder baseline must reset even if the learner cannot cancel its
+	// reservations. Otherwise re-entry could submit mail from the opt-out.
+	r.stateFailed(r.w.cfg.Engine.CancelUnsent(ctx, r.a.UID), rep)
 	var has bool
 	if r.stateFailed(r.state().View(func(tx StateTx) (e error) { has, e = tx.HasState(r.a.UID); return e }), rep) {
 		return false
