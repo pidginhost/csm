@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -13,9 +14,10 @@ import (
 	"github.com/pidginhost/csm/internal/safepath"
 )
 
-// Mailbox list bounds (spec 7.1): one ~/etc/<domain>/passwd file is read
-// up to MaxMailboxListBytes and yields at most MaxMailboxes names; at most
-// MaxMailboxes entries of ~/etc are considered.
+// Mailbox discovery reads each passwd file up to MaxMailboxListBytes and
+// inspects at most MaxMailboxes nonempty records across the account. Invalid
+// and duplicate records consume the same budget as accepted names. Directory
+// enumeration has a separate MaxMailboxes bound.
 const (
 	MaxMailboxListBytes = 1 << 20
 	MaxMailboxes        = 10000
@@ -76,9 +78,13 @@ func ValidMailbox(s string) bool {
 	return true
 }
 
-// ParseMailboxPasswd returns the sorted distinct valid names of a cPanel
-// mailbox passwd file, at most limit of them.
+// ParseMailboxPasswd returns the sorted distinct valid names from at most
+// limit nonempty records of a cPanel mailbox passwd file.
 func ParseMailboxPasswd(data []byte, limit int) ([]string, []Skip) {
+	return parseMailboxPasswd(data, &limit)
+}
+
+func parseMailboxPasswd(data []byte, remaining *int) ([]string, []Skip) {
 	seen := map[string]bool{}
 	var names []string
 	var skips []Skip
@@ -86,18 +92,19 @@ func ParseMailboxPasswd(data []byte, limit int) ([]string, []Skip) {
 		if len(line) == 0 {
 			continue
 		}
-		raw, _, _ := bytes.Cut(line, []byte{':'})
+		if *remaining <= 0 {
+			skips = append(skips, Skip{Reason: SkipMailboxLimit})
+			break
+		}
+		*remaining--
+		raw, _, found := bytes.Cut(line, []byte{':'})
 		name := string(raw)
 		switch {
-		case !ValidMailbox(name):
+		case !found || !ValidMailbox(name):
 			skips = append(skips, Skip{Reason: SkipUnsupportedName})
 			continue
 		case seen[name]:
 			continue
-		case len(names) >= limit:
-			skips = append(skips, Skip{Reason: SkipMailboxLimit})
-			sort.Strings(names)
-			return names, skips
 		}
 		seen[name] = true
 		names = append(names, name)
@@ -112,9 +119,9 @@ func unsafeErr(err error) bool {
 }
 
 // Mailboxes lists the main mailbox and every valid mailbox of every valid
-// domain directory under ~/etc. It never lists ~/mail, so the virtual
-// namespace is never followed. Unsafe or unsupported entries are skipped;
-// a transient failure is an error.
+// domain directory under ~/etc, within the discovery bounds. It never lists
+// ~/mail, so the virtual namespace is never followed. Unsafe or unsupported
+// entries are skipped; a transient failure is an error.
 func (h *Home) Mailboxes() ([]Mailbox, []Skip, error) {
 	out := []Mailbox{{}}
 	etc, err := h.dir.Walk("etc")
@@ -131,14 +138,22 @@ func (h *Home) Mailboxes() ([]Mailbox, []Skip, error) {
 	if err != nil {
 		return out, skips, err
 	}
+	remaining := MaxMailboxes
 	for _, d := range domains {
-		boxes, s, err := readMailboxList(etc, d)
+		if remaining == 0 {
+			skips = append(skips, Skip{Reason: SkipMailboxLimit})
+			break
+		}
+		boxes, s, err := readMailboxList(etc, d, &remaining)
 		skips = append(skips, s...)
 		if err != nil {
 			return out, skips, err
 		}
 		for _, b := range boxes {
 			out = append(out, Mailbox{Domain: d, Box: b})
+		}
+		if slices.Contains(s, Skip{Reason: SkipMailboxLimit}) {
+			break
 		}
 	}
 	return out, skips, nil
@@ -179,7 +194,7 @@ func domainDirs(etc *safepath.Dir) ([]string, []Skip, error) {
 }
 
 // readMailboxList reads ~/etc/<domain>/passwd without following links.
-func readMailboxList(etc *safepath.Dir, domain string) ([]string, []Skip, error) {
+func readMailboxList(etc *safepath.Dir, domain string, remaining *int) ([]string, []Skip, error) {
 	dir, err := etc.Walk(domain)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -214,6 +229,6 @@ func readMailboxList(etc *safepath.Dir, domain string) ([]string, []Skip, error)
 	if len(data) > MaxMailboxListBytes {
 		return nil, []Skip{{Reason: SkipMailboxListTooLarge}}, nil
 	}
-	names, skips := ParseMailboxPasswd(data, MaxMailboxes)
+	names, skips := parseMailboxPasswd(data, remaining)
 	return names, skips, nil
 }

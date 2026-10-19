@@ -5,10 +5,13 @@ package learnwatch
 import (
 	"bytes"
 	"fmt"
+	"maps"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -135,6 +138,139 @@ func TestParseMailboxPasswdLimit(t *testing.T) {
 	names, skips := ParseMailboxPasswd(b.Bytes(), MaxMailboxes)
 	if len(names) != MaxMailboxes || !slices.Equal(skips, []Skip{{Reason: SkipMailboxLimit}}) {
 		t.Fatalf("%d names, skips %+v", len(names), skips)
+	}
+}
+
+func TestParseMailboxPasswdBoundsRecords(t *testing.T) {
+	for _, tc := range []struct {
+		name, data string
+		limit      int
+		want       []string
+		skips      []Skip
+	}{
+		{"duplicates", "a:x\na:x\nb:x\n", 2, []string{"a"}, []Skip{{Reason: SkipMailboxLimit}}},
+		{"invalid", "../x:x\n../x:x\nb:x\n", 2, nil, []Skip{{Reason: SkipUnsupportedName}, {Reason: SkipUnsupportedName}, {Reason: SkipMailboxLimit}}},
+		{"zero", "../x:x\na:x\n", 0, nil, []Skip{{Reason: SkipMailboxLimit}}},
+		{"negative", "../x:x\na:x\n", -1, nil, []Skip{{Reason: SkipMailboxLimit}}},
+		{"exact", "b:x\na:x\n", 2, []string{"a", "b"}, nil},
+		{"exact duplicates", "a:x\na:x\n", 2, []string{"a"}, nil},
+		{"empty lines", "\na:x\n\n", 1, []string{"a"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, skips := ParseMailboxPasswd([]byte(tc.data), tc.limit)
+			if !slices.Equal(got, tc.want) || !slices.Equal(skips, tc.skips) {
+				t.Fatalf("names %v, skips %+v; want %v, %+v", got, skips, tc.want, tc.skips)
+			}
+		})
+	}
+}
+
+func TestParseMailboxPasswdRequiresSeparator(t *testing.T) {
+	got, skips := ParseMailboxPasswd([]byte("truncated\nuser:x:1:1::/x:/x\n"), 10)
+	if !slices.Equal(got, []string{"user"}) || !slices.Equal(skips, []Skip{{Reason: SkipUnsupportedName}}) {
+		t.Fatalf("names %v, skips %+v", got, skips)
+	}
+}
+
+func TestMailboxesBoundsAccountRecords(t *testing.T) {
+	for _, kind := range []string{"valid", "invalid", "duplicate"} {
+		t.Run(kind, func(t *testing.T) {
+			a, h := openTenant(t)
+			want := []Mailbox{{}}
+			for domainIndex, domain := range []string{"a.example.com", "b.example.com"} {
+				var data bytes.Buffer
+				for i := range MaxMailboxes/2 + 1 {
+					name := fmt.Sprintf("box%05d", i)
+					switch kind {
+					case "invalid":
+						name = "../x"
+					case "duplicate":
+						name = "user"
+					}
+					fmt.Fprintf(&data, "%s:x\n", name)
+					if domainIndex*(MaxMailboxes/2+1)+i < MaxMailboxes && (kind == "valid" || kind == "duplicate" && i == 0) {
+						want = append(want, Mailbox{Domain: domain, Box: name})
+					}
+				}
+				writeFile(t, filepath.Join(a.Home, "etc", domain, "passwd"), data.Bytes())
+			}
+			got, skips, err := h.Mailboxes()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("mailboxes differ: got %d, want %d", len(got), len(want))
+			}
+			wantReasons := map[string]int{SkipMailboxLimit: 1}
+			if kind == "invalid" {
+				wantReasons[SkipUnsupportedName] = MaxMailboxes
+			}
+			if r := reasons(skips); !maps.Equal(r, wantReasons) {
+				t.Fatalf("skip counts %v; want %v", r, wantReasons)
+			}
+		})
+	}
+}
+
+func TestMailboxesAccountLimitBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		extra      bool
+		nextDomain bool
+	}{
+		{"exact", false, false},
+		{"next domain", false, true},
+		{"overflow and next domain", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, h := openTenant(t)
+			var data bytes.Buffer
+			for range MaxMailboxes {
+				data.WriteString("user:x\n")
+			}
+			if tc.extra {
+				data.WriteString("extra:x\n")
+			}
+			writeFile(t, filepath.Join(a.Home, "etc/a.example.com/passwd"), data.Bytes())
+			if tc.nextDomain {
+				writeFile(t, filepath.Join(a.Home, "etc/b.example.com/passwd"), []byte("other:x\n"))
+			}
+			got, skips, err := h.Mailboxes()
+			want := []Mailbox{{}, {Domain: "a.example.com", Box: "user"}}
+			var wantSkips []Skip
+			if tc.nextDomain || tc.extra {
+				wantSkips = []Skip{{Reason: SkipMailboxLimit}}
+			}
+			if err != nil || !slices.Equal(got, want) || !slices.Equal(skips, wantSkips) {
+				t.Fatalf("mailboxes %+v, skips %+v, error %v", got, skips, err)
+			}
+		})
+	}
+}
+
+func TestMailboxesSkipsNonRegularLists(t *testing.T) {
+	a, h := openTenant(t)
+	for _, domain := range []string{"directory.example.com", "fifo.example.com", "socket.example.com"} {
+		if err := os.MkdirAll(filepath.Join(a.Home, "etc", domain), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(a.Home, "etc/directory.example.com/passwd"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(a.Home, "etc/fifo.example.com/passwd"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	socket, err := net.Listen("unix", filepath.Join(a.Home, "etc/socket.example.com/passwd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = socket.Close() })
+	writeFile(t, filepath.Join(a.Home, "etc/valid.example.com/passwd"), []byte("user:x\n"))
+	got, skips, err := h.Mailboxes()
+	want := []Mailbox{{}, {Domain: "valid.example.com", Box: "user"}}
+	if err != nil || !slices.Equal(got, want) || len(skips) != 3 || reasons(skips)[SkipUnsafePath] != 3 {
+		t.Fatalf("mailboxes %+v, skips %+v, error %v", got, skips, err)
 	}
 }
 

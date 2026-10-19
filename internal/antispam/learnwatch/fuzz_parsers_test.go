@@ -3,6 +3,7 @@ package learnwatch
 import (
 	"math"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -48,13 +49,21 @@ func FuzzParsePasswd(f *testing.F) {
 func FuzzParseMailboxPasswd(f *testing.F) {
 	f.Add([]byte("user:x:1:1::/x:/x\n../../x:x\n"), 3)
 	f.Add([]byte("a\x00b:x\n\xff:x\n"), 1)
+	f.Add([]byte("a:x\na:x\nb:x\n"), 2)
+	f.Add([]byte("../x:x\n../x:x\n../x:x\n"), 1)
 	f.Fuzz(func(t *testing.T, data []byte, limit int) {
 		if limit < 0 || limit > 1000 {
 			return
 		}
-		names, _ := ParseMailboxPasswd(data, limit)
+		names, skips := ParseMailboxPasswd(data, limit)
 		if len(names) > limit {
 			t.Fatalf("%d names over limit %d", len(names), limit)
+		}
+		if len(names)+len(skips) > limit+1 {
+			t.Fatalf("%d names and %d skips over record limit %d", len(names), len(skips), limit)
+		}
+		if !slices.IsSorted(names) || len(slices.Compact(slices.Clone(names))) != len(names) {
+			t.Fatalf("names are not sorted and distinct: %v", names)
 		}
 		for _, n := range names {
 			if !ValidMailbox(n) {
