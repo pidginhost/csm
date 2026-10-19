@@ -17,6 +17,11 @@ var ErrStateMismatch = errors.New("learning ledger does not match the current st
 
 const bindingKey = "binding"
 
+// declaredRestoreKey marks a ledger that csm restore brought back. It holds
+// admissions with state_mismatch until learning has been seen disabled,
+// the operator's confirmation, or a fresh namespace replaces the ledger.
+const declaredRestoreKey = "declared_restore"
+
 // kv is the store's learning transaction API; tests wrap it to inject
 // commit failures.
 type kv interface {
@@ -62,6 +67,10 @@ func (l *Ledger) Bind(gen, prefix string) error {
 		return errors.New("learning binding needs a hash generation and prefix")
 	}
 	return l.Update(func(tx LedgerTx) error {
+		var at time.Time
+		if held, err := tx.get(store.LearnMetaBucket, []byte(declaredRestoreKey), &at); err != nil || held {
+			return errors.Join(err, fmt.Errorf("%w: restored learning state awaits confirmation", ErrStateMismatch))
+		}
 		b, ok, err := tx.Binding()
 		if err != nil {
 			return err
@@ -243,4 +252,34 @@ func (tx LedgerTx) Reserve(i Intent, uid int, operator bool, charge Usage) (Inte
 		return Intent{}, err
 	}
 	return i, tx.PutIntent(i)
+}
+
+// MarkDeclaredRestore records that this ledger was restored from a backup.
+func (l *Ledger) MarkDeclaredRestore(at time.Time) error {
+	return l.Update(func(tx LedgerTx) error {
+		return tx.put(store.LearnMetaBucket, []byte(declaredRestoreKey), at.UTC())
+	})
+}
+
+// DeclaredRestore reports whether a restore still awaits confirmation.
+func (l *Ledger) DeclaredRestore() (bool, error) {
+	var held bool
+	err := l.View(func(v LedgerView) error {
+		var at time.Time
+		var err error
+		held, err = v.get(store.LearnMetaBucket, []byte(declaredRestoreKey), &at)
+		return err
+	})
+	return held, err
+}
+
+// ClearDeclaredRestore confirms a restore; it writes only when marked.
+func (l *Ledger) ClearDeclaredRestore() error {
+	held, err := l.DeclaredRestore()
+	if err != nil || !held {
+		return err
+	}
+	return l.Update(func(tx LedgerTx) error {
+		return tx.tx.Delete(store.LearnMetaBucket, []byte(declaredRestoreKey))
+	})
 }

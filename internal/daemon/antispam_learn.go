@@ -63,6 +63,7 @@ func (d *Daemon) syncLearner(out reconcile.Outcome) {
 	defer d.antispamLearnerMu.Unlock()
 	if !d.learningWanted() {
 		d.stopLearnerLocked()
+		d.confirmRestoreIfDisabled()
 		return
 	}
 	if !slices.Contains(out.Checks, reconcile.CheckLearning) {
@@ -165,10 +166,33 @@ func (d *Daemon) stopLearnerLocked() {
 	r.wg.Wait()
 }
 
-// learnerProblems is the reconcile pass's view of the engine.
+// learnerProblems is the reconcile pass's view of the engine. Before an
+// engine runs, a restored ledger awaiting confirmation already holds
+// learning, so restored keys are never installed for a pass.
 func (d *Daemon) learnerProblems() []antispam.Problem {
 	if r := d.antispamLearner.Load(); r != nil {
 		return r.engine.Problems()
 	}
+	if db := store.Global(); db != nil {
+		if held, err := learn.Open(db).DeclaredRestore(); err == nil && held {
+			return []antispam.Problem{{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonStateMismatch,
+				Detail: "restored learning state awaits confirmation: disable learning, then enable it again, or run csm antispam learn --fresh-namespace"}}
+		}
+	}
 	return nil
+}
+
+// confirmRestoreIfDisabled treats learning seen disabled as the operator's
+// confirmation of a restore (spec 7.4): the next enable resumes the
+// restored ledger. Observe mode and shutdown confirm nothing.
+func (d *Daemon) confirmRestoreIfDisabled() {
+	as := d.currentCfg().EmailProtection.Antispam
+	if (as.Enabled && as.Learning.Enabled) || d.scanContext().Err() != nil {
+		return
+	}
+	if db := store.Global(); db != nil {
+		if err := learn.Open(db).ClearDeclaredRestore(); err != nil {
+			csmlog.Warn("antispam learning: cannot confirm the restored learning state", "error", err)
+		}
+	}
 }

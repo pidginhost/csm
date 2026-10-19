@@ -89,6 +89,9 @@ const (
 	// CmdAntispamLearnStatus reads recorded outcomes of operator learning
 	// requests, or lists the unfinished ones.
 	CmdAntispamLearnStatus = "antispam.learn_status"
+	// CmdAntispamLearnFresh moves the learning state aside and empties the
+	// learning ledger, refused while learning is enabled.
+	CmdAntispamLearnFresh = "antispam.learn_fresh_namespace"
 
 	// Phase 2 incident correlation.
 	CmdIncidentsList       = "incidents.list"
@@ -330,6 +333,12 @@ type AntispamLearnStatus struct {
 // AntispamLearnStatusResult answers CmdAntispamLearnStatus.
 type AntispamLearnStatusResult struct {
 	Requests []AntispamLearnStatus `json:"requests"`
+}
+
+// AntispamLearnFreshResult answers CmdAntispamLearnFresh: where the old
+// learning directory went, empty when there was none.
+type AntispamLearnFreshResult struct {
+	Archived string `json:"archived,omitempty"`
 }
 
 // FirewallRollbackStatus reports the pending tentative-apply state for

@@ -698,11 +698,9 @@ and reports the cleanup error. New reports wait until cleanup succeeds.
 Disabling learning, observe mode or unmet prerequisites can delay retirement
 and message deletion. Turning learning off keeps stored messages and state.
 
-CSM's state archive (`csm store export`) leaves learning state out. To
-back learning up, stop the daemon and copy the state database, the
-learning directory and its keys together. Restore only the latest
-complete copy, with learning disabled and its scoring confirmed gone: an
-older copy cannot be reconciled with storage that kept learning.
+CSM's state archive (`csm store export`) leaves learning state out;
+`csm backup` includes it, see
+[Backup, restore and a fresh namespace](#backup-restore-and-a-fresh-namespace).
 
 ### Teaching and correcting learning
 
@@ -712,6 +710,7 @@ Root can learn a saved message as spam, or remove what one taught:
 csm antispam learn --spam <file>...
 csm antispam learn --forget <file>...
 csm antispam learn --status [<request-id>...]
+csm antispam learn --fresh-namespace
 ```
 
 The daemon must be running. `--spam` and `--forget` require learning enabled
@@ -743,6 +742,31 @@ content or headers. A missing record does not prove that no change
 occurred. Running the command again makes a new request. The exit status
 is 0 only when every file was learned, already learned, forgotten or
 matched nothing.
+
+### Backup, restore and a fresh namespace
+
+`csm backup` stores the learning state as one bundle: the ledger in the
+state database and `/var/lib/csm/antispam/learning`, which holds the hash
+keys, transport keys and stored messages. `csm restore` brings the bundle
+back and moves any learning directory it replaces to
+`learning.old-<UTC time>`. Restored learning state holds new reports until
+the daemon has run with learning disabled; enable learning again only when
+the backup is the current bundle. CSM cannot tell an old backup from the
+current one by comparing scores.
+
+If the backup is older, or storage was lost along with the keys, start a
+fresh namespace instead. With learning disabled, run:
+
+```
+csm antispam learn --fresh-namespace
+```
+
+It moves `/var/lib/csm/antispam/learning` to `learning.old-<UTC time>` and
+empties the learning and Spam folder state. The next enable creates new
+keys and a new storage prefix, and every folder starts a new baseline. Old
+reports are not replayed. The old directory still holds full messages;
+remove it once you no longer need it. CSM never flushes Redis; old hashes
+stay under the old prefix until they expire.
 
 ### Learning findings
 

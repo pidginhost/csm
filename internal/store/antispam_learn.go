@@ -3,7 +3,9 @@ package store
 import (
 	"errors"
 	"fmt"
+	"os"
 	"slices"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
@@ -154,4 +156,49 @@ func (db *DB) clearLearning() error {
 		}
 		return nil
 	})
+}
+
+// ResetLearning empties every learning and watcher bucket of the live
+// database in one transaction, for a fresh learning namespace.
+func (db *DB) ResetLearning() error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		for _, name := range slices.Concat(LearnBuckets, WatchBuckets) {
+			if tx.Bucket([]byte(name)) != nil {
+				if err := tx.DeleteBucket([]byte(name)); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.CreateBucket([]byte(name)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// LearningStatePresent reports whether the database file at path holds any
+// learning ledger record, opening it read-only so the file is unchanged.
+// A missing file holds none.
+func LearningStatePresent(path string) (bool, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return false, nil
+	}
+	b, err := bolt.Open(path, 0o600, &bolt.Options{ReadOnly: true, Timeout: time.Second})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = b.Close() }()
+	present := false
+	err = b.View(func(tx *bolt.Tx) error {
+		for _, name := range LearnBuckets {
+			if bucket := tx.Bucket([]byte(name)); bucket != nil {
+				if k, _ := bucket.Cursor().First(); k != nil {
+					present = true
+					return nil
+				}
+			}
+		}
+		return nil
+	})
+	return present, err
 }

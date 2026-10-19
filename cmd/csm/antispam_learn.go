@@ -44,11 +44,16 @@ var learnSend = func(args control.AntispamLearnArgs) (json.RawMessage, error) {
 const learnUsage = `Usage: csm antispam learn --spam <file>...
        csm antispam learn --forget <file>...
        csm antispam learn --status [<request-id>...]
+       csm antispam learn --fresh-namespace
 
 --spam    learn each file as spam with one operator mark per matched cluster
 --forget  remove the learned clusters each file matches
 --status  show what the daemon recorded for request IDs, or list the
           requests that are still pending
+--fresh-namespace
+          with learning disabled, move the learning keys and stored
+          messages aside and empty the learning state; the next enable
+          starts a new, empty namespace
 
 Runs as root against the running daemon with antispam learning enabled.
 Each file gets a request ID, printed before it is sent; the daemon keeps
@@ -71,7 +76,7 @@ func antispamLearn(args []string, out, errOut io.Writer) int {
 	var files []string
 	for _, a := range args {
 		switch a {
-		case "--spam", "--forget", "--status":
+		case "--spam", "--forget", "--status", "--fresh-namespace":
 			if action != "" {
 				_, _ = fmt.Fprint(errOut, learnUsage)
 				return 2
@@ -88,7 +93,7 @@ func antispamLearn(args []string, out, errOut io.Writer) int {
 			files = append(files, a)
 		}
 	}
-	if action == "" || len(files) == 0 && action != "status" {
+	if action == "" || len(files) == 0 && action != "status" && action != "fresh-namespace" || len(files) > 0 && action == "fresh-namespace" {
 		_, _ = fmt.Fprint(errOut, learnUsage)
 		return 2
 	}
@@ -96,8 +101,11 @@ func antispamLearn(args []string, out, errOut io.Writer) int {
 		fmt.Fprintln(errOut, "csm: antispam learn must run as root")
 		return 1
 	}
-	if action == "status" {
+	switch action {
+	case "status":
 		return learnStatus(files, out, errOut)
+	case "fresh-namespace":
+		return learnFresh(out, errOut)
 	}
 	status := 0
 	for _, path := range files {
@@ -250,5 +258,32 @@ func learnStatus(ids []string, out, errOut io.Writer) int {
 			fmt.Fprintf(out, "  digest %s\n", d)
 		}
 	}
+	return 0
+}
+
+// learnFreshSend asks the daemon for a fresh namespace; tests replace it.
+var learnFreshSend = func() (json.RawMessage, error) {
+	return sendControl(control.CmdAntispamLearnFresh, nil)
+}
+
+// learnFresh runs csm antispam learn --fresh-namespace.
+func learnFresh(out, errOut io.Writer) int {
+	raw, err := learnFreshSend()
+	if err != nil {
+		if errors.Is(err, errDaemonNotRunning) {
+			err = errors.New("the CSM daemon is not running")
+		}
+		fmt.Fprintf(errOut, "csm: %v\n", err)
+		return 1
+	}
+	var res control.AntispamLearnFreshResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		fmt.Fprintln(errOut, "csm: unexpected daemon reply")
+		return 1
+	}
+	if res.Archived != "" {
+		fmt.Fprintf(out, "previous learning keys and stored messages moved to %s; remove it once its retention is no longer needed\n", res.Archived)
+	}
+	fmt.Fprintln(out, "learning state emptied; the next enable creates new keys and a new namespace")
 	return 0
 }

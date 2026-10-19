@@ -53,6 +53,8 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleAntispamLearn(req.Args)
 	case control.CmdAntispamLearnStatus:
 		result, err = c.handleAntispamLearnStatus(req.Args)
+	case control.CmdAntispamLearnFresh:
+		result, err = c.handleAntispamLearnFresh(req.Args)
 	case control.CmdFirewallStatus:
 		result, err = c.handleFirewallStatus(req.Args)
 	case control.CmdFirewallPorts:
