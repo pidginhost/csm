@@ -314,7 +314,7 @@ func TestEngineForgetMissWaitsForCurrentLedger(t *testing.T) {
 	engineTurn(t, e, func() { e.pub.owe("") })
 	req := opRequest(ActionForget, snap)
 	got, err := e.Operator(context.Background(), req)
-	if err != nil || got.ExitOK || got.Outcome != ResultPending {
+	if err != nil || got.ExitOK || got.Outcome != ResultDeferred {
 		t.Fatalf("stale no-match %+v err=%v", got, err)
 	}
 	if operatorRecord(t, f.ledger, req.RequestID).Done {

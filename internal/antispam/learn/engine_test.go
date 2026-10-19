@@ -344,10 +344,11 @@ func TestEngineSubmitCancelKeepsContribution(t *testing.T) {
 	}
 	f.storage.onInspect = nil
 	first := out
+	// Cancellation may land before the reservation or after it. A reserved
+	// contribution survives and the next background turn finishes it.
+	engineTurn(t, e, func() { e.background(context.Background()) })
 	out, err = e.Submit(context.Background(), c)
-	// Cancellation either stopped the first attempt before it reserved
-	// anything, or let it finish: exactly one attempt commits the vote.
-	committedOnce := len(first.Committed) == 1 && reflect.DeepEqual(out.Duplicates, []uint64{1}) && len(out.Committed) == 0 ||
+	committedOnce := reflect.DeepEqual(out.Duplicates, []uint64{1}) && len(out.Committed) == 0 ||
 		len(first.Committed) == 0 && reflect.DeepEqual(out.Committed, []uint64{1})
 	if err != nil || !committedOnce {
 		t.Fatalf("first %+v, retry %+v err %v", first, out, err)
@@ -463,7 +464,7 @@ func TestEngineOperatorDeferredIsNotRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := e.Operator(context.Background(), req)
-	if err != nil || res.ExitOK || res.Outcome != ResultPending {
+	if err != nil || res.ExitOK || res.Outcome != ResultDeferred || len(res.Clusters) != 0 {
 		t.Fatalf("result %+v err %v", res, err)
 	}
 	if err = f.ledger.Update(func(tx LedgerTx) error {

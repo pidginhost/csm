@@ -341,6 +341,7 @@ func TestLearnExitCodes(t *testing.T) {
 		"forgotten": {learnResponse(t, control.AntispamLearnResult{Outcome: "forgotten", ExitOK: true}), 0},
 		"no-match":  {learnResponse(t, control.AntispamLearnResult{Outcome: "no-match", ExitOK: true}), 0},
 		"pending":   {learnResponse(t, control.AntispamLearnResult{Outcome: "pending"}), 1},
+		"deferred":  {learnResponse(t, control.AntispamLearnResult{Outcome: "deferred"}), 1},
 		"partial":   {learnResponse(t, control.AntispamLearnResult{Outcome: "partial"}), 1},
 		"skipped":   {learnResponse(t, control.AntispamLearnResult{Outcome: "skipped"}), 1},
 		"refused":   {control.Response{OK: false, Error: "antispam learning is not enabled"}, 1},
@@ -365,5 +366,21 @@ func TestLearnExitCodes(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "committed") {
 		t.Fatalf("the readable file was not sent: %q", out.String())
+	}
+}
+
+// A deferred file changed nothing: the CLI says so and asks for a new run,
+// since nothing will finish it in the background.
+func TestLearnDeferredAsksForANewRun(t *testing.T) {
+	asRoot(t)
+	t.Cleanup(fakeDaemon(t, func(control.Request) control.Response {
+		return learnResponse(t, control.AntispamLearnResult{Outcome: "deferred"})
+	}))
+	var out, errOut bytes.Buffer
+	if code := antispamLearn([]string{"--spam", mailFile(t, "a.eml", "x")}, &out, &errOut); code == 0 {
+		t.Fatal("a deferred file exited 0")
+	}
+	if !strings.Contains(out.String(), "nothing changed") || !strings.Contains(out.String(), "run the command again") {
+		t.Fatalf("output %q", out.String())
 	}
 }

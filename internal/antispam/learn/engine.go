@@ -40,6 +40,9 @@ const (
 	ResultCommitted = "committed"
 	ResultDuplicate = "duplicate"
 	ResultPending   = "pending"
+	// ResultDeferred: nothing was reserved or changed, so nothing finishes
+	// the request in the background; a new run is needed.
+	ResultDeferred  = "deferred"
 	ResultForgotten = "forgotten"
 	ResultNoMatch   = "no-match"
 	ResultPartial   = "partial"
@@ -1056,7 +1059,7 @@ func recordOutcome(tx LedgerTx, id string, update []ClusterOutcome, digests []Di
 		cs := mergeOutcomes(prior, update)
 		outcome, exitOK := summarize(o.Action, cs)
 		o.Outcome = &OpOutcome{Clusters: cs, Digests: digests, Outcome: outcome, ExitOK: exitOK}
-		o.Done = outcome != ResultPending
+		o.Done = outcome != ResultPending && outcome != ResultDeferred
 		if err := tx.PutOp(o); err != nil {
 			return OperatorResult{}, err
 		}
@@ -1103,7 +1106,9 @@ func summarize(action string, cs []ClusterOutcome) (string, bool) {
 	}
 	done := count[ResultCommitted] + count[ResultDuplicate] + count[ResultForgotten] + count[ResultNoMatch]
 	switch {
-	case len(cs) == 0 || count[ResultPending] > 0:
+	case len(cs) == 0:
+		return ResultDeferred, false
+	case count[ResultPending] > 0:
 		return ResultPending, false
 	case count[ResultSkipped] > 0 && done > 0:
 		return ResultPartial, false

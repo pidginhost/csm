@@ -150,6 +150,10 @@ func learnFile(action, path string, out, errOut io.Writer) bool {
 	if action == learn.ActionForget && len(res.Clusters) > 0 {
 		fmt.Fprintf(out, "%s: every contributor to these clusters is affected\n", name)
 	}
+	if res.Outcome == learn.ResultDeferred {
+		fmt.Fprintf(out, "%s: deferred: nothing changed; learning is busy, run the command again later\n", name)
+		return false
+	}
 	fmt.Fprintf(out, "%s: %s\n", name, res.Outcome)
 	return res.ExitOK
 }

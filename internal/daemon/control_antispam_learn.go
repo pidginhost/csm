@@ -59,6 +59,8 @@ func (c *ControlListener) handleAntispamLearn(argsRaw json.RawMessage) (any, err
 		rec.Error = err.Error()
 	case res.ExitOK:
 		rec.Result = actionlog.Applied
+	case res.Outcome == learn.ResultDeferred:
+		rec.Error = "deferred: nothing changed"
 	default:
 		rec.Result = actionlog.Failed
 		rec.Error = "outcome " + res.Outcome

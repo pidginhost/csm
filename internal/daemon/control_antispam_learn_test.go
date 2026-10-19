@@ -231,3 +231,21 @@ func TestControlLearnAuditRecord(t *testing.T) {
 		t.Fatalf("records %+v", *recs)
 	}
 }
+
+// A deferred request changed nothing; its action record says it was held
+// back, not that it failed.
+func TestControlLearnDeferredIsRefused(t *testing.T) {
+	d := newDaemonForListener(t)
+	d.cfg.EmailProtection.Antispam.Enabled = true
+	d.cfg.EmailProtection.Antispam.Learning.Enabled = true
+	withLearner(t, &fakeLearner{res: learn.OperatorResult{RequestID: strings.Repeat("ab", 16), Outcome: learn.ResultDeferred}})
+	recs := captureActions(t)
+	cl := &ControlListener{d: d}
+	raw, err := cl.handleAntispamLearn(learnArgs(t, learn.ActionSpam, "x.eml", "body"))
+	if err != nil || raw.(control.AntispamLearnResult).Outcome != learn.ResultDeferred {
+		t.Fatalf("result %+v err %v", raw, err)
+	}
+	if len(*recs) != 1 || (*recs)[0].Result != actionlog.Refused {
+		t.Fatalf("records %+v", *recs)
+	}
+}
