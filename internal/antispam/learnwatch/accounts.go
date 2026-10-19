@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -54,7 +55,7 @@ type LiveSource struct {
 // DefaultSource is the host's registry.
 var DefaultSource = LiveSource{UsersDir: "/var/cpanel/users", PasswdPath: "/etc/passwd"}
 
-// CPanelUsers lists the registry's file names.
+// CPanelUsers lists regular account records without following symlinks.
 func (s LiveSource) CPanelUsers() ([]string, error) {
 	entries, err := os.ReadDir(s.UsersDir)
 	if err != nil {
@@ -62,7 +63,9 @@ func (s LiveSource) CPanelUsers() ([]string, error) {
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
-		names = append(names, e.Name())
+		if e.Type().IsRegular() {
+			names = append(names, e.Name())
+		}
 	}
 	return names, nil
 }
@@ -110,7 +113,7 @@ func Accounts(src Source) ([]Account, []Skip, error) {
 			skips = append(skips, Skip{Name: name, Reason: SkipNoPasswd})
 		case e.uid == 0:
 			skips = append(skips, Skip{Name: name, Reason: SkipRootUID})
-		case !filepath.IsAbs(e.home) || e.home == "/" || filepath.Clean(e.home) != e.home:
+		case !filepath.IsAbs(e.home) || e.home == "/" || filepath.Clean(e.home) != e.home || strings.ContainsRune(e.home, 0):
 			skips = append(skips, Skip{Name: name, Reason: SkipBadHome})
 		default:
 			out = append(out, Account{Name: name, UID: e.uid, GID: e.gid, Home: e.home})
@@ -133,6 +136,10 @@ func parsePasswd(data []byte) map[string]pwEntry {
 		uid, err1 := strconv.Atoi(f[2])
 		gid, err2 := strconv.Atoi(f[3])
 		if err1 != nil || err2 != nil || uid < 0 || gid < 0 {
+			continue
+		}
+		// Linux IDs are 32-bit; the all-ones value is a syscall sentinel.
+		if int64(uid) >= math.MaxUint32 || int64(gid) >= math.MaxUint32 {
 			continue
 		}
 		out[f[0]] = pwEntry{uid: uid, gid: gid, home: f[5]}

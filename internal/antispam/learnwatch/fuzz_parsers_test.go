@@ -1,8 +1,12 @@
 package learnwatch
 
 import (
+	"math"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/admission"
 )
 
 func FuzzBaseName(f *testing.F) {
@@ -16,6 +20,27 @@ func FuzzBaseName(f *testing.F) {
 		}
 		if base == "" || base == "." || base == ".." || strings.ContainsAny(base, "/\x00") || !strings.HasPrefix(name, base) {
 			t.Fatalf("BaseName(%q) = %q", name, base)
+		}
+	})
+}
+
+func FuzzParsePasswd(f *testing.F) {
+	f.Add([]byte(passwd), "tenant1")
+	f.Add([]byte("a:b:c"), "a")
+	f.Add([]byte("tenant1:x:4294967296:1001::/home/tenant1:/bin/bash\n"), "tenant1")
+	f.Add([]byte("tenant1:x:1001:4294967295::/home/tenant1:/bin/bash\n"), "tenant1")
+	f.Add([]byte("tenant1:x:1001:1001::/home/tenant1\x00other:/bin/bash\n"), "tenant1")
+	f.Fuzz(func(t *testing.T, data []byte, name string) {
+		got, _, err := Accounts(fakeSource{users: []string{name}, passwd: string(data)})
+		if err != nil {
+			return
+		}
+		for _, a := range got {
+			if a.Name != name || a.Name == "root" || !admission.ValidAccountName(a.Name) ||
+				a.UID <= 0 || int64(a.UID) >= math.MaxUint32 || a.GID < 0 || int64(a.GID) >= math.MaxUint32 ||
+				!filepath.IsAbs(a.Home) || a.Home == "/" || filepath.Clean(a.Home) != a.Home || strings.ContainsRune(a.Home, 0) {
+				t.Fatalf("bad account %+v", a)
+			}
 		}
 	})
 }
