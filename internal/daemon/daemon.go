@@ -134,6 +134,9 @@ type Daemon struct {
 	antispamLearner atomic.Pointer[learnerRunner]
 	// antispamLearnerMu serializes reloads, pass results and shutdown.
 	antispamLearnerMu sync.Mutex
+	// antispamWatchReset keeps a failed disable reset pending before any
+	// re-enable. Protected by antispamLearnerMu.
+	antispamWatchReset bool
 	// antispamHealth tracks rspamd's scan socket and Exim's scan markers
 	// while antispam is enabled.
 	antispamHealth antispamHealthState

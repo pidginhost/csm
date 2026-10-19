@@ -121,8 +121,8 @@ func TestWatcherObserveNoReads(t *testing.T) {
 	}
 }
 
-// watchHome is one opted-in account owned by the test process, served to
-// the real watcher through the daemon's account source.
+// watchHome is one opted-in non-root account, served to the real watcher
+// through the daemon's account source.
 type watchHome struct {
 	home string
 	uid  int
@@ -141,6 +141,13 @@ func newWatchHome(t *testing.T) watchHome {
 		t.Fatal(err)
 	}
 	uid := os.Getuid()
+	if uid == 0 {
+		// The watcher correctly refuses root accounts; CI may run as root.
+		uid = 1001
+		if err := os.Chown(home, uid, uid); err != nil {
+			t.Fatal(err)
+		}
+	}
 	src, global := learnwatchSource, learnwatchGlobal
 	t.Cleanup(func() { learnwatchSource, learnwatchGlobal = src, global })
 	learnwatchSource = staticSource{users: []string{"tenant1"}, passwd: fmt.Sprintf("tenant1:x:%d:%d::%s:/bin/bash\n", uid, uid, home)}
@@ -158,8 +165,14 @@ func (s staticSource) Passwd() ([]byte, error)        { return []byte(s.passwd),
 
 func (h watchHome) deliver(t *testing.T, name, body string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(h.home, "mail/.spam/new", name), []byte(body), 0o600); err != nil {
+	path := filepath.Join(h.home, "mail/.spam/new", name)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	if h.uid != os.Getuid() {
+		if err := os.Chown(path, h.uid, h.uid); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -173,6 +186,18 @@ func startWatching(t *testing.T, d *Daemon) learnWatcher {
 	}
 	waitFor(t, func() bool { _, at := r.watcher.Last(); return !at.IsZero() })
 	return r.watcher
+}
+
+// Last can publish just before Pass releases its busy guard. A manual
+// pass must wait for that guard without counting Busy as completed work.
+func watcherPass(t *testing.T, w learnWatcher) learnwatch.PassReport {
+	t.Helper()
+	var report learnwatch.PassReport
+	waitFor(t, func() bool {
+		report = w.Pass(context.Background())
+		return !report.Busy
+	})
+	return report
 }
 
 func TestWatcherRestartResumesBaseline(t *testing.T) {
@@ -214,7 +239,7 @@ func TestWatcherSubmitsOutcomeMarksSeen(t *testing.T) {
 	for _, kind := range []string{"committed", "duplicate", "skip", "deferred"} {
 		h.deliver(t, kind+".M1.host", "Subject: "+kind+"\r\n\r\n"+kind)
 	}
-	if r := w.Pass(context.Background()); r.Busy || r.Submitted != 3 {
+	if r := watcherPass(t, w); r.Submitted != 3 {
 		t.Fatalf("pass %+v", r)
 	}
 	state := learnwatch.NewState(store.Global(), nil)

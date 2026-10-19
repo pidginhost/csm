@@ -146,7 +146,7 @@ func (w *Watcher) Pass(ctx context.Context) PassReport {
 		return PassReport{Busy: true}
 	}
 	defer w.busy.Store(false)
-	if !w.cfg.CanDiscover() {
+	if ctx.Err() != nil || !w.cfg.CanDiscover() {
 		return PassReport{}
 	}
 	ctx, cancel := context.WithTimeout(ctx, PassDeadline)
@@ -173,6 +173,10 @@ func (w *Watcher) pass(ctx context.Context) PassReport {
 	}
 	for _, s := range skips {
 		r.Skipped[s.Reason]++
+	}
+	if ctx.Err() != nil || !w.cfg.CanDiscover() {
+		r.Unfinished = true
+		return r
 	}
 	_, err = GlobalOptIn(w.cfg.GlobalPath)
 	if err != nil {
@@ -201,7 +205,7 @@ func (w *Watcher) pass(ctx context.Context) PassReport {
 	for active := slices.Clone(runs); len(active) > 0; {
 		next := active[:0]
 		for _, run := range active {
-			if ctx.Err() != nil || !w.cfg.Now().Before(deadline) {
+			if ctx.Err() != nil || !w.cfg.CanDiscover() || !w.cfg.Now().Before(deadline) {
 				r.Unfinished = true
 				w.saveCursor(run.a.UID, &r)
 				w.tally(runs, &r)
@@ -336,6 +340,9 @@ func (r *accountRun) expired(ctx context.Context) bool {
 }
 
 func (r *accountRun) turn(ctx context.Context, rep *PassReport) {
+	if ctx.Err() != nil || !r.w.cfg.CanDiscover() {
+		return
+	}
 	if !r.started {
 		r.started = true
 		if !r.start(rep) {
@@ -456,6 +463,9 @@ func (r *accountRun) discover(rep *PassReport) {
 		return
 	}
 	turnHook(r.a.UID, "chunk")
+	if !r.w.cfg.CanDiscover() {
+		return
+	}
 	names, err := r.cur.Next(r.w.cfg.Chunk)
 	r.observe(names, rep)
 	if r.done {
@@ -463,6 +473,9 @@ func (r *accountRun) discover(rep *PassReport) {
 	}
 	if err == nil && len(names) < r.w.cfg.Chunk {
 		// A short batch ends the directory; confirm it in this turn.
+		if !r.w.cfg.CanDiscover() {
+			return
+		}
 		names, err = r.cur.Next(r.w.cfg.Chunk)
 		r.observe(names, rep)
 	}
@@ -490,7 +503,7 @@ func (r *accountRun) discover(rep *PassReport) {
 // openNext opens the next folder that needs listing, settling missing,
 // unsafe and unchanged ones on the way.
 func (r *accountRun) openNext(rep *PassReport) {
-	for !r.done && r.cur == nil && r.fi < len(r.folders) {
+	for !r.done && r.cur == nil && r.fi < len(r.folders) && r.w.cfg.CanDiscover() {
 		k, sub := r.folders[r.fi], Subdirs[r.si]
 		r.advance()
 		f, err := r.home.OpenFolder(mailboxOf(k), k.Folder, sub)
@@ -667,7 +680,7 @@ func (q *folderQueue) oldestTurn() time.Time {
 func (r *accountRun) canAttempt() bool {
 	// Complete discovery before spending the attempt budget, so a slow
 	// later folder gets the same share as the first one.
-	if r.discovering() || r.paused || r.attempts >= MaxAttempts || !r.w.cfg.CanSubmit() {
+	if r.discovering() || r.paused || r.attempts >= MaxAttempts || !r.w.cfg.CanDiscover() || !r.w.cfg.CanSubmit() {
 		return false
 	}
 	for _, q := range r.queues {
@@ -729,7 +742,7 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 			hold()
 			return false
 		}
-		if !r.w.cfg.CanSubmit() {
+		if !r.w.cfg.CanDiscover() || !r.w.cfg.CanSubmit() {
 			hold()
 			r.paused = true
 			return false
@@ -810,6 +823,9 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 	}
 	snap, _, st, err := f.ReadMessage(it.Name, ownerUID(r.a))
 	_ = f.Close()
+	if !allowed() {
+		return
+	}
 	switch {
 	case err != nil, st == ReadPendingLinked, st == ReadPendingChanged:
 		retry()

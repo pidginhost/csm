@@ -40,8 +40,10 @@ type learnerRunner struct {
 
 // setGate passes g to the engine and to the watcher's gates.
 func (r *learnerRunner) setGate(g antispam.LearningGate) {
-	r.gate.Store(&g)
+	// Do not let the watcher read while the engine is still changing gates.
+	r.gate.Store(nil)
 	r.engine.SetGate(g)
+	r.gate.Store(&g)
 }
 
 func (r *learnerRunner) currentGate() antispam.LearningGate {
@@ -61,9 +63,20 @@ func (d *Daemon) syncLearner(out reconcile.Outcome) {
 	// keep a learner running that observe mode or disable stopped.
 	d.antispamLearnerMu.Lock()
 	defer d.antispamLearnerMu.Unlock()
-	if !d.learningWanted() {
+	cfg := d.currentCfg()
+	as := cfg.EmailProtection.Antispam
+	if !cfg.ObserveMode() && (!as.Enabled || !as.Learning.Enabled) {
+		d.antispamWatchReset = true
+	}
+	if !as.Enabled || !as.Learning.Enabled || cfg.ObserveMode() || d.scanContext().Err() != nil {
 		d.stopLearnerLocked()
 		d.confirmRestoreIfDisabled()
+		if d.antispamWatchReset && !cfg.ObserveMode() && d.scanContext().Err() == nil {
+			d.resetLearningWatcher()
+		}
+		return
+	}
+	if d.antispamWatchReset && !d.resetLearningWatcher() {
 		return
 	}
 	if !slices.Contains(out.Checks, reconcile.CheckLearning) {
@@ -86,9 +99,13 @@ func (d *Daemon) syncLearner(out reconcile.Outcome) {
 		if !d.learningWanted() {
 			return
 		}
-		if cur = d.startLearning(d.scanContext(), out.Learner); cur == nil {
+		if cur = d.startLearning(d.scanContext(), out.Learner, out.LearningGate); cur == nil {
 			return
 		}
+		if !d.learningWanted() {
+			d.stopLearnerLocked()
+		}
+		return
 	}
 	if !d.learningWanted() {
 		d.stopLearnerLocked()
@@ -111,13 +128,14 @@ func (d *Daemon) pauseLearner() {
 	d.antispamLearnerMu.Lock()
 	defer d.antispamLearnerMu.Unlock()
 	if r := d.antispamLearner.Load(); r != nil {
+		r.gate.Store(nil)
 		r.engine.Pause()
 	}
 }
 
-// startLearning starts an engine and its watcher for target with a closed
-// gate.
-func (d *Daemon) startLearning(ctx context.Context, target reconcile.LearnerTarget) *learnerRunner {
+// startLearning applies the first gate before launching either loop, so
+// the watcher's immediate pass cannot miss an already open gate.
+func (d *Daemon) startLearning(ctx context.Context, target reconcile.LearnerTarget, gate antispam.LearningGate) *learnerRunner {
 	db := store.Global()
 	if db == nil {
 		csmlog.Warn("antispam learning cannot start: the state database is not open")
@@ -132,6 +150,7 @@ func (d *Daemon) startLearning(ctx context.Context, target reconcile.LearnerTarg
 	})
 	runCtx, cancel := context.WithCancel(ctx)
 	r := &learnerRunner{target: target, engine: engine, cancel: cancel}
+	r.setGate(gate)
 	r.watcher = newRunnerWatcher(db, r)
 	r.wg.Add(2)
 	d.wg.Add(2)

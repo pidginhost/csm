@@ -4,8 +4,57 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
+
+func TestResetLearnWatchKeepsLedger(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err = db.LearnUpdate(func(tx LearnTx) error {
+		for _, b := range slices.Concat(LearnBuckets, WatchBuckets) {
+			if putErr := tx.Put(b, []byte("record"), []byte("keep")); putErr != nil {
+				return putErr
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err = db.ResetLearnWatch(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = db.LearnUpdate(func(tx LearnTx) error {
+		for _, b := range LearnBuckets {
+			v, getErr := tx.Get(b, []byte("record"))
+			if getErr != nil {
+				return getErr
+			}
+			if string(v) != "keep" {
+				t.Errorf("reset changed ledger bucket %s", b)
+			}
+		}
+		for _, b := range WatchBuckets {
+			if iterErr := tx.ForEach(b, func(_, _ []byte) error {
+				t.Errorf("reset kept a watcher record in %s", b)
+				return nil
+			}); iterErr != nil {
+				return iterErr
+			}
+			if putErr := tx.Put(b, []byte("new"), []byte("baseline")); putErr != nil {
+				return putErr
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // The watcher's folder and seen state follows the learning ledger: created
 // on open, reachable through LearnTx, and never carried by an export.

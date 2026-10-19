@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/antispam/learnwatch"
+	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -23,6 +24,22 @@ var (
 	learnwatchSource learnwatch.Source = learnwatch.DefaultSource
 	learnwatchGlobal                   = learnwatch.GlobalOptInPath
 )
+
+// resetLearningWatcher cancels unsent reports on explicit disable, even
+// when the daemon started with learning off. Shutdown and observe retain
+// the watcher state. The caller holds antispamLearnerMu and has stopped it.
+func (d *Daemon) resetLearningWatcher() bool {
+	db := store.Global()
+	if db == nil {
+		return false
+	}
+	if err := db.ResetLearnWatch(); err != nil {
+		csmlog.Warn("antispam learning cannot reset Spam folder baselines", "err", err)
+		return false
+	}
+	d.antispamWatchReset = false
+	return true
+}
 
 // newRunnerWatcher builds r's watcher. It lists folders only while r's gate
 // allows installs and reads or submits reports only while it also allows
