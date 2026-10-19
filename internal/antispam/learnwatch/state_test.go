@@ -249,7 +249,7 @@ func TestPruneAfter90Days(t *testing.T) {
 	f.now = t0.Add(SeenRetention + time.Hour)
 	var pruned int
 	f.do(t, func(tx StateTx) (err error) {
-		pruned, err = tx.Prune()
+		pruned, err = tx.Prune([]FolderKey{spamKey})
 		return err
 	})
 	if pruned != 1 {
@@ -275,7 +275,7 @@ func TestObserveRefreshesLastSeenDaily(t *testing.T) {
 		f.now = t0.Add(time.Duration(day) * 24 * time.Hour)
 		f.observe(t, spamKey, "kept:2,S", meta(70))
 	}
-	f.do(t, func(tx StateTx) error { _, err := tx.Prune(); return err })
+	f.do(t, func(tx StateTx) error { _, err := tx.Prune([]FolderKey{spamKey}); return err })
 	if _, ok := f.entry(t, spamKey, "kept"); !ok {
 		t.Fatal("an entry still present in its folder was pruned")
 	}
@@ -436,4 +436,21 @@ func TestOpenRescansAfterFullRescanEvery(t *testing.T) {
 	if open() {
 		t.Fatal("folder not rescanned after FullRescanEvery")
 	}
+}
+
+func TestListedAcceptsStateWithoutListingTimes(t *testing.T) {
+	f := newState(t)
+	f.do(t, func(tx StateTx) error {
+		return putJSON(tx.tx, store.LearnWatchFoldersBucket, spamKey.key(), FolderState{
+			Dirs: map[string]DirIdent{"cur": curDir}, Listed: map[string]DirIdent{"cur": curDir}, BaselineDone: true,
+		})
+	})
+	f.do(t, func(tx StateTx) error { return tx.Listed(spamKey, "cur", curDir) })
+	f.do(t, func(tx StateTx) error {
+		st, _, err := tx.Folder(spamKey)
+		if err == nil && !st.ListedAt["cur"].Equal(t0) {
+			t.Errorf("listing time=%v, want %v", st.ListedAt["cur"], t0)
+		}
+		return err
+	})
 }

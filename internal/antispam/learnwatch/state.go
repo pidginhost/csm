@@ -174,6 +174,17 @@ func (t StateTx) Open(k FolderKey, sub string, id DirIdent) (baseline, unchanged
 		st.BaselineDone = false
 		st.Listed, st.ListedAt = nil, nil
 		baseline = true
+		// The sibling may already have been listed or skipped this pass.
+		// Cancel its old pending work too, before completing this baseline.
+		items, e := t.Pending(k)
+		if e != nil {
+			return false, false, e
+		}
+		for _, it := range items {
+			if e = t.Mark(k, it.Base, StatusBaseline); e != nil {
+				return false, false, e
+			}
+		}
 	default:
 		baseline = !st.BaselineDone
 		unchanged = st.BaselineDone && st.Listed[sub] == id && t.now.Sub(st.ListedAt[sub]) < FullRescanEvery
@@ -195,7 +206,10 @@ func (t StateTx) Listed(k FolderKey, sub string, id DirIdent) error {
 		return nil
 	}
 	if st.Listed == nil {
-		st.Listed, st.ListedAt = map[string]DirIdent{}, map[string]time.Time{}
+		st.Listed = map[string]DirIdent{}
+	}
+	if st.ListedAt == nil {
+		st.ListedAt = map[string]time.Time{}
 	}
 	st.Listed[sub], st.ListedAt[sub] = id, t.now
 	return putJSON(t.tx, store.LearnWatchFoldersBucket, k.key(), st)
@@ -395,22 +409,28 @@ func (t StateTx) SetLastPrune(at time.Time) error {
 	return putJSON(t.tx, store.LearnWatchFoldersBucket, pruneKey, at)
 }
 
-// Prune drops entries absent from their folder for SeenRetention. Pending
-// entries are never pruned.
-func (t StateTx) Prune() (int, error) {
+// Prune drops entries absent for SeenRetention from folders whose presence
+// checks completed this pass. Pending entries are never pruned.
+func (t StateTx) Prune(folders []FolderKey) (int, error) {
 	var stale [][]byte
-	err := t.tx.ForEach(store.LearnWatchSeenBucket, func(k, v []byte) error {
-		var e SeenEntry
-		if err := json.Unmarshal(v, &e); err != nil {
-			return err
+	for _, folder := range folders {
+		prefix := seenKey(folder, "")
+		err := t.tx.Scan(store.LearnWatchSeenBucket, folder.key(), func(k, v []byte) (bool, error) {
+			if !bytes.HasPrefix(k, prefix) {
+				return false, nil
+			}
+			var e SeenEntry
+			if err := json.Unmarshal(v, &e); err != nil {
+				return false, err
+			}
+			if e.Status != StatusPending && t.now.Sub(e.LastSeen) > SeenRetention {
+				stale = append(stale, bytes.Clone(k))
+			}
+			return true, nil
+		})
+		if err != nil {
+			return 0, err
 		}
-		if e.Status != StatusPending && t.now.Sub(e.LastSeen) > SeenRetention {
-			stale = append(stale, bytes.Clone(k))
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, err
 	}
 	for _, k := range stale {
 		if err := t.tx.Delete(store.LearnWatchSeenBucket, k); err != nil {
