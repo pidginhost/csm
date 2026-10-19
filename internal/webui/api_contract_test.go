@@ -37,7 +37,9 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 				ModelledKinds: []string{"block_ip"}, PredictionScope: "ceiling_and_temporary_capacity",
 				Occupancy: &health.AdmissionDryRunOccupancy{Actual: 8}, Ceiling: &health.AdmissionDryRunCeiling{Limit: 5},
 				Picks: map[string]uint64{"capacity_admit": 1}, LastHour: map[string]uint64{"capacity_admit": 1}}}}
-	s.SetHealthProvider(admissionStatusProvider{status: adm, statusFakeProvider: statusFakeProvider{
+	pending, live := 2, 5
+	learning := &health.LearningStatus{Publishing: true, LastPass: now, PendingReports: &pending, OldestPending: now.Add(-time.Hour), LiveClusters: &live}
+	s.SetHealthProvider(learningStatusProvider{learning: learning, admissionStatusProvider: admissionStatusProvider{status: adm, statusFakeProvider: statusFakeProvider{
 		wordpress:            map[string]health.WPVerificationCounts{"core": {Verified: 3, Unverified: 2, LastAttempt: now}},
 		queues:               queues,
 		bpfEnforcementActive: true,
@@ -76,7 +78,7 @@ func TestAPIStatusCarriesHealthSnapshotContract(t *testing.T) {
 			ActiveSetUpdates: 3,
 			Since:            now,
 		},
-	}})
+	}}})
 
 	rec := httptest.NewRecorder()
 	s.apiStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
@@ -328,3 +330,11 @@ func assertJSONKeys(t *testing.T, raw map[string]any, keys []string) {
 		}
 	}
 }
+
+// learningStatusProvider adds the learner's status to the admission fixture.
+type learningStatusProvider struct {
+	admissionStatusProvider
+	learning *health.LearningStatus
+}
+
+func (p learningStatusProvider) LearningStatus() *health.LearningStatus { return p.learning }
