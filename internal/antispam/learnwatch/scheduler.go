@@ -772,11 +772,11 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 		if sub == it.Sub {
 			continue
 		}
-		sibling, err := r.home.OpenFolder(mailboxOf(k), k.Folder, sub)
-		if errors.Is(err, fs.ErrNotExist) {
+		sibling, openErr := r.home.OpenFolder(mailboxOf(k), k.Folder, sub)
+		if errors.Is(openErr, fs.ErrNotExist) {
 			continue
 		}
-		if err != nil {
+		if openErr != nil {
 			_ = f.Close()
 			retry()
 			return
@@ -792,9 +792,9 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 			if !exists {
 				continue
 			}
-			b, _, err := tx.Open(k, sub, id)
-			if err != nil {
-				return err
+			b, _, openErr := tx.Open(k, sub, id)
+			if openErr != nil {
+				return openErr
 			}
 			baseline = baseline || b
 		}
