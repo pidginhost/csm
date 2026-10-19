@@ -275,7 +275,7 @@ func (t StateTx) Observe(k FolderKey, sub, name string, m Meta) (candidate, crea
 		// A new baseline must not replay pending work from the old folder,
 		// even when a basename or inode is reused in its initial corpus.
 		e = SeenEntry{Status: StatusBaseline, FirstSeen: t.now}
-	case found && e.Status == StatusPending:
+	case found && e.Status == StatusPending && e.Dev == m.Dev && e.Ino == m.Ino:
 		if fresh && e.sameContent(m) {
 			return true, false, nil
 		}

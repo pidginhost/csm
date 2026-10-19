@@ -124,6 +124,20 @@ func TestAddTimeoutIsUncertain(t *testing.T) {
 	}
 }
 
+func TestInspectPreservesCancellationCause(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sock, calls := serveController(t, func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		cancel()
+		<-r.Context().Done()
+	})
+	_, err := testClient(sock).Inspect(ctx, []byte("report"))
+	if calls.Load() != 1 || !errors.Is(err, context.Canceled) || !errors.Is(err, ErrUncertain) {
+		t.Fatalf("canceled inspection lost its cause or send status: calls=%d err=%v", calls.Load(), err)
+	}
+}
+
 func TestAddErrorReplyIsRejected(t *testing.T) {
 	for _, h := range []http.HandlerFunc{
 		func(w http.ResponseWriter, r *http.Request) {

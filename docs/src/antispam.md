@@ -663,7 +663,8 @@ or unreadable folders keep their state until they can be checked again.
 A backend error stops further submissions for that pass; the next pass
 starts with the accounts after the one that failed. A message rspamd cannot
 process stays pending without stopping other accounts' reports. A message
-that fails three times is skipped as `failed`.
+that fails three requests is skipped as `failed`; canceled passes,
+reconciliation pauses and local state failures do not count against it.
 
 ### Prerequisites
 

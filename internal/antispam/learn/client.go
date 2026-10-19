@@ -165,6 +165,11 @@ func (c Client) do(ctx context.Context, path string, hdr map[string]string, body
 	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
 	status, reply, err := hostfacts.ControllerDo(ctx, c.Controller, c.RspamdUID, http.MethodPost, path, hdr, body, limit)
+	if err != nil {
+		// The sanitized transport error keeps send status but drops the
+		// cause. Cancellation must not spend a message's retry allowance.
+		err = errors.Join(err, ctx.Err())
+	}
 	switch {
 	case errors.Is(err, hostfacts.ErrControllerPeer):
 		return 0, nil, ErrPeer

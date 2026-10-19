@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pidginhost/csm/internal/antispam/hostfacts"
 	"github.com/pidginhost/csm/internal/antispam/learn"
 )
 
@@ -228,7 +229,13 @@ func (w *Watcher) pass(ctx context.Context) PassReport {
 	accounts = append(accounts[start:], accounts[:start]...)
 	runs := make([]*accountRun, 0, len(accounts))
 	for _, a := range accounts {
-		runs = append(runs, &accountRun{w: w, a: a, deadline: deadline})
+		run := &accountRun{w: w, a: a, deadline: deadline}
+		if cursor != 0 && len(runs) > 0 {
+			// Rotation must govern the first attempts too: a small account
+			// must not overtake accounts still discovering their mailboxes.
+			run.waitFor = runs[len(runs)-1]
+		}
+		runs = append(runs, run)
 	}
 	defer func() {
 		for _, run := range runs {
@@ -240,7 +247,11 @@ func (w *Watcher) pass(ctx context.Context) PassReport {
 		for _, run := range active {
 			if ctx.Err() != nil || !w.cfg.CanDiscover() || !w.cfg.Now().Before(deadline) {
 				r.Unfinished = true
-				w.saveCursor(run.a.UID, &r)
+				nextUID := nextAfter(runs, w.stoppedBy)
+				if nextUID == 0 {
+					nextUID = run.a.UID
+				}
+				w.saveCursor(nextUID, &r)
 				w.tally(runs, &r)
 				return r
 			}
@@ -384,6 +395,7 @@ type accountRun struct {
 	queues        []*folderQueue
 	qi            int
 	attempts      int
+	waitFor       *accountRun
 	turnOpens     int
 	seenCount     int
 	capReported   bool
@@ -455,6 +467,12 @@ func (r *accountRun) turn(ctx context.Context, rep *PassReport) {
 		})
 	}
 	if !r.done && r.canAttempt() {
+		for r.waitFor != nil {
+			if !r.waitFor.done && r.waitFor.attempts == 0 {
+				return
+			}
+			r.waitFor = r.waitFor.waitFor
+		}
 		r.attempt(ctx, rep)
 	}
 	if !r.done && !r.discovering() && !r.canAttempt() {
@@ -951,6 +969,22 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 	out, err := r.w.cfg.Engine.SubmitReport(ctx, learn.Candidate{UID: r.a.UID, Snapshot: snap})
 	switch {
 	case err != nil || out.Err != nil:
+		if err != nil || !errors.Is(out.Err, learn.ErrMessageRejected) {
+			r.w.submitStopped, r.w.stoppedBy = true, r.a.UID
+		}
+		if !allowed() {
+			return
+		}
+		failure := errors.Join(err, out.Err)
+		// Canceled work, unsent requests and local state failures say
+		// nothing about this message's ability to be processed.
+		requestFailed := errors.Is(failure, learn.ErrReadFailed) || errors.Is(failure, learn.ErrMessageRejected) ||
+			errors.Is(failure, learn.ErrRejected) || errors.Is(failure, learn.ErrUncertain)
+		if !requestFailed || errors.Is(failure, context.Canceled) ||
+			errors.Is(failure, hostfacts.ErrControllerNotSent) || errors.Is(failure, learn.ErrPeer) {
+			retry()
+			return
+		}
 		// A message can make the backend fail too, so each entry gets
 		// MaxEntryErrors tries, and the next pass starts after its account.
 		var gaveUp bool
@@ -958,9 +992,6 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 			hold()
 		} else {
 			rep.Skipped[SkipFailed]++
-		}
-		if err != nil || !errors.Is(out.Err, learn.ErrMessageRejected) {
-			r.w.submitStopped, r.w.stoppedBy = true, r.a.UID
 		}
 	case out.Deferred:
 		retry()
