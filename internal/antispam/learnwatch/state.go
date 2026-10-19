@@ -162,7 +162,11 @@ func (t StateTx) Open(k FolderKey, sub string, id DirIdent) (baseline, unchanged
 		st = FolderState{Epoch: 1}
 		baseline = true
 	case !known || prev.Dev != id.Dev || prev.Ino != id.Ino:
-		st = FolderState{Epoch: st.Epoch + 1}
+		// Both Maildir subdirectories belong to this baseline. Forgetting
+		// the sibling would make alternating opens restart it forever.
+		st.Epoch++
+		st.BaselineDone = false
+		st.Listed = nil
 		baseline = true
 	default:
 		baseline = !st.BaselineDone
@@ -221,6 +225,12 @@ func (t StateTx) Observe(k FolderKey, base string, m Meta) (bool, error) {
 		return false, err
 	}
 	switch {
+	case found && e.Status == StatusPending && !st.BaselineDone:
+		// A new baseline must not replay pending work from the old folder,
+		// even when a basename or inode is reused in its initial corpus.
+		e = SeenEntry{Status: StatusBaseline, FirstSeen: t.now, LastSeen: t.now}
+		e.setMeta(m)
+		return false, putJSON(t.tx, store.LearnWatchSeenBucket, key, e)
 	case found && e.Status == StatusPending:
 		if e.sameContent(m) && t.now.Sub(e.LastSeen) < lastSeenRefresh {
 			return true, nil
