@@ -11,12 +11,12 @@ import (
 	"testing"
 )
 
-func testBodies(t *testing.T) *Bodies {
+func testBodies(t testing.TB) *Bodies {
 	t.Helper()
 	return &Bodies{Dir: filepath.Join(t.TempDir(), "anchors"), owner: os.Getuid()}
 }
 
-func stageCommit(t *testing.T, b *Bodies, body []byte, id uint64) Staged {
+func stageCommit(t testing.TB, b *Bodies, body []byte, id uint64) Staged {
 	t.Helper()
 	s, err := b.Stage(body)
 	if err != nil {

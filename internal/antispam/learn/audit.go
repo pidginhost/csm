@@ -11,8 +11,10 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// AuditBatch is the number of targets one audit turn checks. Provisional
-// until Plan C's benchmark records a measurement.
+// AuditBatch is the number of targets one audit turn checks, in one exact
+// inspection. A rotation over 10000 live and 10000 zero targets takes 400
+// turns (BenchmarkAuditRotation): about 67 minutes at one turn per
+// EngineTick, so AuditOverdueAfter allows about 430000 targets.
 const AuditBatch = 50
 
 // Retention is how long a cluster lives after its latest committed or

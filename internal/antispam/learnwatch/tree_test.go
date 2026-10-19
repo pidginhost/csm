@@ -18,7 +18,7 @@ import (
 
 // tenantHome builds a home owned by the test's own UID with the main
 // mailbox's .spam/cur and one virtual mailbox's .Junk/new.
-func tenantHome(t *testing.T) Account {
+func tenantHome(t testing.TB) Account {
 	t.Helper()
 	home := filepath.Join(t.TempDir(), "tenant1")
 	for _, d := range []string{"mail/.spam/cur", "mail/.spam/new", "mail/example.com/user/.Junk/new"} {
@@ -44,7 +44,7 @@ func openSpam(t *testing.T, a Account, sub string) *Folder {
 	return f
 }
 
-func writeMsg(t *testing.T, path string, body []byte) {
+func writeMsg(t testing.TB, path string, body []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, body, 0o600); err != nil {
 		t.Fatal(err)

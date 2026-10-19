@@ -16,16 +16,26 @@ import (
 	"github.com/pidginhost/csm/internal/antispam/learn"
 )
 
-// Scheduler constants (spec 7.5). Provisional until the benchmarks of
-// plan Task 11 measure them.
+// Scheduler constants (spec 7.5). Workloads are from bench_test.go on an
+// 8-core host with the state database on SSD.
 const (
-	PassEvery            = 5 * time.Minute
-	PassDeadline         = 4 * time.Minute
-	MaxAttempts          = 20
-	DiscoveryChunk       = 512
+	// PassEvery and MaxAttempts are the spec's schedule and budget.
+	PassEvery   = 5 * time.Minute
+	MaxAttempts = 20
+	// PassDeadline ends a pass a minute before the next one; baselining
+	// S8's largest folder (51217 entries) took 1.5 s.
+	PassDeadline = 4 * time.Minute
+	// DiscoveryChunk entries take about 15 ms to list, stat and record (30
+	// microseconds each), so one discovery turn holds a rotation briefly; a
+	// second account was submitted 13 to 34 ms into a 51217-entry flood.
+	DiscoveryChunk = 512
+	// AccountSeenAllowance covers S8's 51217-entry folder; at 353 bytes per
+	// seen entry it bounds one account at about 23 MB of state.
 	AccountSeenAllowance = 65536
-	FullRescanEvery      = 24 * time.Hour
-	pruneEvery           = 24 * time.Hour
+	// FullRescanEvery relists unchanged folders daily so presence stays
+	// fresh for the 90-day prune; relisting the largest folder costs 1.5 s.
+	FullRescanEvery = 24 * time.Hour
+	pruneEvery      = 24 * time.Hour
 )
 
 // Pass skip reasons beyond the registry, eligibility and discovery ones.

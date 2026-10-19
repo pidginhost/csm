@@ -46,7 +46,7 @@ func (e *fakeEngine) submitted() []int {
 }
 
 type watchFixture struct {
-	t        *testing.T
+	t        testing.TB
 	accounts []Account
 	db       *store.DB
 	engine   *fakeEngine
@@ -60,7 +60,7 @@ type watchFixture struct {
 
 // newWatch builds n opted-in accounts with UIDs 1001.. whose homes the
 // test process owns.
-func newWatch(t *testing.T, n int) *watchFixture {
+func newWatch(t testing.TB, n int) *watchFixture {
 	t.Helper()
 	old := ownerUID
 	t.Cleanup(func() { ownerUID = old })

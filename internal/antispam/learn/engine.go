@@ -19,8 +19,9 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// Engine limits. Provisional until Plan C's benchmark records a
-// measurement.
+// Engine limits. One tick runs an audit and a repair turn; one report
+// costs about 3 ms of ledger work (BenchmarkPublishTurn) plus about 2 ms of
+// native calls (spike S8).
 const (
 	EngineTick         = 10 * time.Second
 	RepairBatch        = 10

@@ -34,7 +34,7 @@ func (f *failingKV) LearnUpdate(fn func(store.LearnTx) error) error {
 
 // newTestEngine returns an engine over f, primed with one clean audit
 // rotation and running with an open gate.
-func newTestEngine(t *testing.T, f *auditFixture, gen ...string) *Engine {
+func newTestEngine(t testing.TB, f *auditFixture, gen ...string) *Engine {
 	t.Helper()
 	g := "gen1"
 	if len(gen) > 0 {

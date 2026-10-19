@@ -19,7 +19,7 @@ type auditFixture struct {
 	*publishFixture
 }
 
-func newAuditFixture(t *testing.T) *auditFixture {
+func newAuditFixture(t testing.TB) *auditFixture {
 	t.Helper()
 	l, _ := openLedger(t)
 	if err := l.Bind("gen1", "prefix1"); err != nil {
@@ -36,7 +36,7 @@ func (f *auditFixture) publisher() *Publisher {
 
 // add stores cluster id with anchor d at target tv, verified, and the
 // matching value in storage.
-func (f *auditFixture) add(t *testing.T, id uint64, d Digest, tv int32, last time.Time, uids ...int) {
+func (f *auditFixture) add(t testing.TB, id uint64, d Digest, tv int32, last time.Time, uids ...int) {
 	t.Helper()
 	body := []byte("From: x@example.com\r\n\r\nanchor " + string(d[:4]) + "\r\n")
 	f.storage.bodies[string(body)] = d

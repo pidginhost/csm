@@ -12,7 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-func openLedger(t *testing.T) (*Ledger, *store.DB) {
+func openLedger(t testing.TB) (*Ledger, *store.DB) {
 	t.Helper()
 	db, err := store.Open(t.TempDir())
 	if err != nil {
