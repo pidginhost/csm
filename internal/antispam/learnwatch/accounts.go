@@ -34,10 +34,12 @@ type Account struct {
 	Home     string
 }
 
-// Skip is a name left out, with the reason.
+// Skip is a name left out, with the reason. UID is the passwd UID when
+// known: a skipped account still exists and holds it.
 type Skip struct {
 	Name   string
 	Reason string
+	UID    int
 }
 
 // Source supplies the account registry and the password database.
@@ -114,7 +116,7 @@ func Accounts(src Source) ([]Account, []Skip, error) {
 		case e.uid == 0:
 			skips = append(skips, Skip{Name: name, Reason: SkipRootUID})
 		case !filepath.IsAbs(e.home) || e.home == "/" || filepath.Clean(e.home) != e.home || strings.ContainsRune(e.home, 0):
-			skips = append(skips, Skip{Name: name, Reason: SkipBadHome})
+			skips = append(skips, Skip{Name: name, Reason: SkipBadHome, UID: e.uid})
 		default:
 			out = append(out, Account{Name: name, UID: e.uid, GID: e.gid, Home: e.home})
 		}

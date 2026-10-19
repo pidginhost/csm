@@ -71,9 +71,9 @@ func TestAccountsSkipsRootAndRelativeHome(t *testing.T) {
 	}
 	want := []Skip{
 		{Name: "tenant3", Reason: SkipRootUID},
-		{Name: "tenant4", Reason: SkipBadHome},
-		{Name: "tenant5", Reason: SkipBadHome},
-		{Name: "tenant6", Reason: SkipBadHome},
+		{Name: "tenant4", Reason: SkipBadHome, UID: 1004},
+		{Name: "tenant5", Reason: SkipBadHome, UID: 1005},
+		{Name: "tenant6", Reason: SkipBadHome, UID: 1006},
 	}
 	if !slices.Equal(skips, want) {
 		t.Fatalf("skips %+v", skips)
@@ -134,7 +134,7 @@ func TestAccountsRejectsNULHome(t *testing.T) {
 		users:  []string{"tenant1"},
 		passwd: "tenant1:x:1001:1001::/home/tenant1\x00other:/bin/bash\n",
 	})
-	if err != nil || len(got) != 0 || !slices.Equal(skips, []Skip{{Name: "tenant1", Reason: SkipBadHome}}) {
+	if err != nil || len(got) != 0 || !slices.Equal(skips, []Skip{{Name: "tenant1", Reason: SkipBadHome, UID: 1001}}) {
 		t.Fatalf("accounts %+v, skips %+v, error %v", got, skips, err)
 	}
 }

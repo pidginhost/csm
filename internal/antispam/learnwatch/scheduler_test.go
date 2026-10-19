@@ -25,6 +25,14 @@ type fakeEngine struct {
 	onSubmit  func(c learn.Candidate)
 	cancels   []int
 	cancelErr error
+	// held lists the UIDs ReportUIDs reports as holding reservations.
+	held []int
+}
+
+func (e *fakeEngine) ReportUIDs(context.Context) ([]int, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return slices.Clone(e.held), nil
 }
 
 func (e *fakeEngine) CancelUnsent(_ context.Context, uid int) error {

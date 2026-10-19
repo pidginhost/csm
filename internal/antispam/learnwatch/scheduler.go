@@ -62,6 +62,7 @@ const (
 type submitter interface {
 	SubmitReport(context.Context, learn.Candidate) (learn.Outcome, error)
 	CancelUnsent(ctx context.Context, uid int) error
+	ReportUIDs(context.Context) ([]int, error)
 }
 
 // WatcherConfig is what a watcher needs. Zero Chunk and SeenAllowance mean
@@ -196,6 +197,32 @@ func (w *Watcher) Pass(ctx context.Context) PassReport {
 	return r
 }
 
+// cancelRemoved cancels the unsent reservations of accounts gone from the
+// registry: a removed account has lost its eligibility (spec 7.4). Only a
+// complete registry read gets here. An account CSM cannot read still holds
+// its UID, and a reused UID keeps the reservation. Failures retry next pass.
+func (w *Watcher) cancelRemoved(ctx context.Context, accounts []Account, skips []Skip, r *PassReport) {
+	held := map[int]bool{}
+	for _, a := range accounts {
+		held[a.UID] = true
+	}
+	for _, s := range skips {
+		if s.Reason == SkipBadHome {
+			held[s.UID] = true
+		}
+	}
+	uids, err := w.cfg.Engine.ReportUIDs(ctx)
+	for _, uid := range uids {
+		if !held[uid] {
+			err = errors.Join(err, w.cfg.Engine.CancelUnsent(ctx, uid))
+		}
+	}
+	if err != nil {
+		r.Skipped[SkipStateUnavailable]++
+		r.Unfinished = true
+	}
+}
+
 func (w *Watcher) pass(ctx context.Context) PassReport {
 	w.submitStopped, w.stoppedBy = false, 0
 	r := PassReport{Skipped: map[string]int{}}
@@ -213,6 +240,7 @@ func (w *Watcher) pass(ctx context.Context) PassReport {
 		r.Unfinished = true
 		return r
 	}
+	w.cancelRemoved(ctx, accounts, skips, &r)
 	_, err = GlobalOptIn(w.cfg.GlobalPath)
 	if err != nil {
 		r.Skipped[SkipOptInUnreadable]++

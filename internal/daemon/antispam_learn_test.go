@@ -70,6 +70,8 @@ func (f *fakeEngine) SubmitReport(_ context.Context, c learn.Candidate) (learn.O
 
 func (f *fakeEngine) CancelUnsent(context.Context, int) error { return nil }
 
+func (f *fakeEngine) ReportUIDs(context.Context) ([]int, error) { return nil, nil }
+
 func (f *fakeEngine) Operator(context.Context, learn.OperatorRequest) (learn.OperatorResult, error) {
 	return learn.OperatorResult{}, nil
 }

@@ -653,8 +653,10 @@ learner cannot cancel, CSM reports it and retries at the next check while
 the account stays opted out. Turning the switch back on starts new
 baselines.
 The global override prevents per-account opt-out, including learning.
+Removing a cPanel account drops its learner reports the same way, once its
+UID belongs to no remaining account.
 What the account already contributed stays until the cluster expires or an
-operator forgets it; opting out does not delete it sooner.
+operator forgets it; opting out or removal does not delete it sooner.
 
 Turning learning off keeps stored messages, keys and the learning ledger,
 but clears folder baselines and unsent reports; re-enabling starts new

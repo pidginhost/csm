@@ -24,6 +24,7 @@ type learnEngine interface {
 	Operator(context.Context, learn.OperatorRequest) (learn.OperatorResult, error)
 	SubmitReport(context.Context, learn.Candidate) (learn.Outcome, error)
 	CancelUnsent(ctx context.Context, uid int) error
+	ReportUIDs(context.Context) ([]int, error)
 	Stats() (learn.Stats, error)
 }
 

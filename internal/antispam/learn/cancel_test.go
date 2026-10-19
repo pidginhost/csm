@@ -299,3 +299,22 @@ func TestEngineCancelUnsentWithoutReservationsSkipsOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEngineReportUIDsListsReservationHolders(t *testing.T) {
+	f := newAuditFixture(t)
+	f.add(t, 1, digest('a'), 2, t0, 2002)
+	e := newTestEngine(t, f)
+	ctx := context.Background()
+	f.failReads(digest('a'))
+	if out, _ := e.SubmitReport(ctx, Candidate{UID: 1001, Snapshot: f.report("variant", digest('v'), digest('a'), 0.9)}); len(out.Pending) != 1 {
+		t.Fatalf("reservation not left pending: %+v", out)
+	}
+	if uids, err := e.ReportUIDs(ctx); err != nil || !slices.Equal(uids, []int{1001}) {
+		t.Fatalf("holders %v err %v", uids, err)
+	}
+	f.healReads()
+	engineTurn(t, e, func() { e.background(ctx) })
+	if uids, err := e.ReportUIDs(ctx); err != nil || len(uids) != 0 {
+		t.Fatalf("committed reservation still listed: %v err %v", uids, err)
+	}
+}

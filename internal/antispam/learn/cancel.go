@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -72,11 +73,29 @@ func (e *Engine) unsentReportIntents(ctx context.Context, uid int) ([]string, er
 	return ids, nil
 }
 
-// reportIntents indexes only ownership. Targets are read again on every
-// check and on the owner so a cached entry cannot authorize cancellation.
+// ReportUIDs lists the accounts holding Spam folder reservations, sent or
+// not, so the watcher can cancel those of removed accounts.
+func (e *Engine) ReportUIDs(ctx context.Context) ([]int, error) {
+	e.cfg.Ledger.intentsMu.Lock()
+	defer e.cfg.Ledger.intentsMu.Unlock()
+	ids, err := e.cfg.Ledger.reportIndex(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrStateIO, err)
+	}
+	return slices.Sorted(maps.Keys(ids)), nil
+}
+
 func (l *Ledger) reportIntents(ctx context.Context, uid int) ([]string, error) {
 	l.intentsMu.Lock()
 	defer l.intentsMu.Unlock()
+	ids, err := l.reportIndex(ctx)
+	return slices.Clone(ids[uid]), err
+}
+
+// reportIndex maps UIDs to their report intents; the caller holds
+// intentsMu. It indexes only ownership. Targets are read again on every
+// check and on the owner so a cached entry cannot authorize cancellation.
+func (l *Ledger) reportIndex(ctx context.Context) (map[int][]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -104,7 +123,7 @@ func (l *Ledger) reportIntents(ctx context.Context, uid int) ([]string, error) {
 		}
 		l.reportIDs = ids
 	}
-	return slices.Clone(l.reportIDs[uid]), nil
+	return l.reportIDs, nil
 }
 
 func unsentTarget(t Target, ic IntentCluster) bool {
