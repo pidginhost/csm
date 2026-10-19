@@ -1,8 +1,11 @@
 package learn
 
 import (
+	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // Spec 8: root-only status exposes pending request IDs and per-cluster
@@ -27,6 +30,7 @@ func TestRequestStatusReportsPhases(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	assertStatusDoesNotWrite(t, f.ledger)
 	got, err := RequestStatus(f.ledger, []string{pendingID, doneID, "00000000000000000000000000000000"})
 	if err != nil {
 		t.Fatal(err)
@@ -44,5 +48,34 @@ func TestRequestStatusReportsPhases(t *testing.T) {
 	all, err := RequestStatus(f.ledger, nil)
 	if err != nil || len(all) != 1 || all[0].RequestID != pendingID {
 		t.Fatalf("pending list %+v err %v", all, err)
+	}
+}
+
+func assertStatusDoesNotWrite(t *testing.T, l *Ledger) {
+	t.Helper()
+	l.db = readOnlyStatusKV{kv: l.db, t: t}
+}
+
+type readOnlyStatusKV struct {
+	kv
+	t *testing.T
+}
+
+func (s readOnlyStatusKV) LearnUpdate(func(store.LearnTx) error) error {
+	s.t.Error("status attempted a ledger write")
+	return errors.New("status must only read")
+}
+
+func TestRequestStatusBeforeLearningStarts(t *testing.T) {
+	l, _ := openLedger(t)
+	assertStatusDoesNotWrite(t, l)
+	for _, ids := range [][]string{nil, {"0123456789abcdef0123456789abcdef"}} {
+		got, err := RequestStatus(l, ids)
+		if err != nil || len(got) != len(ids) {
+			t.Fatalf("status before startup: %+v, %v", got, err)
+		}
+		if len(ids) > 0 && (got[0].Found || got[0].RequestID != ids[0]) {
+			t.Fatalf("invented a request before startup: %+v", got[0])
+		}
 	}
 }

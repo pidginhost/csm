@@ -378,6 +378,56 @@ func TestEngineRetiresBeforeAdmittingExpiredCluster(t *testing.T) {
 	}
 }
 
+func TestEngineRetirementPublishesDespiteCleanupFailure(t *testing.T) {
+	for name, recovered := range map[string]bool{"running": true, "recovery pending": false} {
+		t.Run(name, func(t *testing.T) {
+			f := newAuditFixture(t)
+			f.add(t, 1, digest('a'), 2, t0, 2002)
+			e := newTestEngine(t, f)
+			if err := os.Chmod(f.bodies.Dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(f.bodies.Dir, 0o700) })
+			engineTurn(t, e, func() {
+				e.recovered = recovered
+				e.cfg.Now = func() time.Time { return t0.Add(Retention) }
+				e.pub.now = e.cfg.Now
+				e.background(context.Background())
+				e.refresh()
+			})
+			if v, present := f.storage.value(digest('a')); present {
+				t.Errorf("expired anchor still scores %d after body cleanup failed", v)
+			}
+			if target, _ := f.targetOf(t, digest('a')); target.T != 0 || target.Phase != PhaseIdle {
+				t.Errorf("retirement was not published: %+v", target)
+			}
+			if c, ok := f.cluster(t, 1); !ok || !c.Retired {
+				t.Fatal("lost the pending body cleanup reference")
+			}
+			body := filepath.Join(f.bodies.Dir, BodyName(1))
+			if _, err := os.Stat(body); err != nil {
+				t.Fatalf("body changed during failed cleanup: %v", err)
+			}
+			if !slices.Contains(problemKeys(e), antispam.ReasonStateIO) {
+				t.Fatal("cleanup failure was not reported")
+			}
+			if err := os.Chmod(f.bodies.Dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			engineTurn(t, e, func() { e.background(context.Background()); e.refresh() })
+			if _, ok := f.cluster(t, 1); ok {
+				t.Fatal("cleanup did not finish after recovery")
+			}
+			if _, err := os.Stat(body); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("body remains after cleanup: %v", err)
+			}
+			if slices.Contains(problemKeys(e), antispam.ReasonStateIO) {
+				t.Fatal("cleanup warning stayed after recovery")
+			}
+		})
+	}
+}
+
 func TestEngineReenableRequiresFreshAudit(t *testing.T) {
 	f := newAuditFixture(t)
 	f.add(t, 1, digest('a'), 2, t0, 2002)

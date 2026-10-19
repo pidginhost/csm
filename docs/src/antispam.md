@@ -690,6 +690,8 @@ whole, headers and attachments included, under
 deletes it when the cluster retires, 90 days after its last report, or
 when an operator forgets it. Backups and file system snapshots can keep a
 copy longer.
+If deleting a retained message fails, CSM still removes its retired score
+and reports the cleanup error. New reports wait until cleanup succeeds.
 Disabling learning, observe mode or unmet prerequisites can delay retirement
 and message deletion. Turning learning off keeps stored messages and state.
 
@@ -709,9 +711,9 @@ csm antispam learn --forget <file>...
 csm antispam learn --status [<request-id>...]
 ```
 
-The daemon must be running with learning enabled; observe mode refuses
-both. Each file must be a regular file with one link, at most 10 MiB, and
-unchanged during reading. Symlinks anywhere in its path are refused. The
+The daemon must be running. `--spam` and `--forget` require learning enabled
+and refuse observe mode. Each file must be regular with one link, at most
+10 MiB, and unchanged during reading. Symlinks anywhere in its path are refused. The
 snapshot is sent to the daemon as bytes. `--spam` gives each matching cluster one
 operator mark, which weighs as much as nine reporting accounts. `--forget`
 removes the clusters a file matches, with every account's contribution to
@@ -729,8 +731,9 @@ later.
 
 `csm antispam learn --status <request-id>` shows what the daemon recorded
 for a request, including clusters still publishing and their phase.
-Without an ID it lists the requests that are not finished. If the command
-is interrupted, look its ID up there, or in the action log with
+Status only reads the ledger and works with learning disabled or in observe
+mode. Without an ID it lists the requests that are not finished. If the
+command is interrupted, look its ID up there, or in the action log with
 `csm actions --op integrate.antispam_learn --json`, which records the
 request ID, escaped basename, outcome and full digests, never message
 content or headers. A missing record does not prove that no change

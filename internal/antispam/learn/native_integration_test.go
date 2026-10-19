@@ -503,19 +503,17 @@ func TestNativeOOMKeepsTarget(t *testing.T) {
 func TestNativeConcurrentScansDuringReset(t *testing.T) {
 	e := native(t)
 	d := e.anchor(t, message(e.text(150)), 8)
-	stop := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	var seen sync.Map
 	var bad atomic.Int64
 	done := make(chan struct{})
+	ready := make(chan struct{})
+	t.Cleanup(func() { cancel(); <-done })
 	go func() {
 		defer close(done)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			insp, err := e.client.InspectDigests(context.Background(), []Digest{d})
+		first := true
+		for ctx.Err() == nil {
+			insp, err := e.client.InspectDigests(ctx, []Digest{d})
 			if err != nil {
 				continue
 			}
@@ -527,13 +525,22 @@ func TestNativeConcurrentScansDuringReset(t *testing.T) {
 				v = 0
 			}
 			seen.Store(v, true)
+			if first {
+				close(ready)
+				first = false
+			}
 			if v > 8+2 {
 				bad.Store(v)
 			}
 		}
 	}()
+	select {
+	case <-ready:
+	case <-time.After(10 * time.Second):
+		t.Fatal("concurrent scanner never read the anchor")
+	}
 	e.setT(t, d, 2)
-	close(stop)
+	cancel()
 	<-done
 	var values []int64
 	seen.Range(func(k, _ any) bool { values = append(values, k.(int64)); return true })

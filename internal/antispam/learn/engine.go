@@ -291,6 +291,18 @@ func (e *Engine) start() {
 
 // prepare recovers and retires before admitting work, including between ticks.
 func (e *Engine) prepare(ctx context.Context) error {
+	if err := e.prepareState(ctx); err != nil {
+		return err
+	}
+	if err := e.recover(ctx); err != nil {
+		return err
+	}
+	return e.pub.cleanup(ctx)
+}
+
+// Durable retirement must precede publication even when retained bodies
+// cannot be cleaned up. Otherwise expired anchors keep scoring mail.
+func (e *Engine) prepareState(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -309,17 +321,21 @@ func (e *Engine) prepare(ctx context.Context) error {
 	if e.frozen {
 		return ErrStateMismatch
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := e.pub.retireDue(e.cfg.Now())
+	return err
+}
+
+func (e *Engine) recover(ctx context.Context) error {
 	if !e.recovered {
 		if err := e.recoverBodies(ctx); err != nil {
 			return err
 		}
 		e.recovered = true
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	_, err := e.pub.RetireDue(ctx, e.cfg.Now())
-	return err
+	return nil
 }
 
 // note turns an error into the problem state it reveals.
@@ -388,13 +404,14 @@ func (e *Engine) recoverBodies(ctx context.Context) error {
 // background runs retirement before reconstruction, one audit turn, one
 // repair turn and the open intents.
 func (e *Engine) background(ctx context.Context) {
-	if err := e.prepare(ctx); err != nil {
+	if err := e.prepareState(ctx); err != nil {
 		e.note(err)
 		return
 	}
+	// Cleanup failures hold admissions, but must not hold native deletion.
+	errs := []error{e.recover(ctx)}
 	now := e.cfg.Now()
 	prog, err := e.pub.AuditTurn(ctx, AuditBatch, now)
-	var errs []error
 	errs = append(errs, err)
 	if err == nil {
 		e.oldest = prog.OldestUnchecked
