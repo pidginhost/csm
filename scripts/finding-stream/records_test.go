@@ -43,7 +43,7 @@ var recordFieldClasses = map[string]fieldClass{
 	"v": classNumber, "ts": classTime, "hostname": classFree, "op": classEnum, "action": classEnum,
 	"actor": classEnum, "actor_detail": classFree, "finding_id": classID, "incident_id": classID,
 	"action_id": classID, "action_version": classNumber, "undo_of": classID, "target": classTarget,
-	"account": classFree, "reason": classFree, "command": classFree, "before": classNested,
+	"account": classFree, "reason": classFree, "digests": classFree, "command": classFree, "before": classNested,
 	"after": classNested, "result": classEnum, "error": classFree, "undo": classFree, "recovery_path": classFree,
 	"count": classNumber, "prediction": classEnum,
 }
@@ -102,6 +102,7 @@ func fullRecord() actionlog.Record {
 		ActionID: "action-raw-0001", ActionVersion: 3, UndoOf: "action-raw-0000", Target: "203.0.113.9", Account: "alice",
 		Reason:  "CSM auto-block: brute force from 203.0.113.9 on alice",
 		Command: []string{"nft", "add", "element", "203.0.113.9"},
+		Digests: []string{strings.Repeat("c", 128)},
 		Before:  &actionlog.FileState{Exists: true, Digest: strings.Repeat("a", 64), Size: 10, Mode: "-rw-r--r--", UID: 1003, GID: 1003},
 		After:   &actionlog.FileState{Exists: false}, Result: actionlog.Applied, Error: "nft: /home/alice/x failed",
 		Undo: "csm firewall unblock 203.0.113.9", RecoveryPath: "/var/lib/csm/quarantine/alice/x",
@@ -363,7 +364,7 @@ func seedBaseRecord() actionlog.Record {
 	return actionlog.Record{
 		V: 1, Timestamp: recordTS, Hostname: "h1.example.net", Op: "respond.quarantine_file", Actor: actionlog.Daemon,
 		ActorDetail: "x", FindingID: "f", IncidentID: "i", ActionID: "a", ActionVersion: 1, UndoOf: "u",
-		Target: "/home/bob/x.php", Account: "bob", Reason: "r", Command: []string{"c"},
+		Target: "/home/bob/x.php", Account: "bob", Reason: "r", Digests: []string{"g"}, Command: []string{"c"},
 		Before: &actionlog.FileState{Exists: true, Digest: "d", Size: 1, Mode: "m", UID: 1, GID: 1},
 		After:  &actionlog.FileState{Exists: true, Digest: "d", Size: 1, Mode: "m", UID: 1, GID: 1},
 		Result: actionlog.Applied, Error: "e", Undo: "u", RecoveryPath: "p",
@@ -389,7 +390,7 @@ func TestActionTransformSeedsEveryStringSlot(t *testing.T) {
 			}
 			slots = append(slots, slot{key + ".unknown", classEnum, func(m map[string]any, v string) { m[key].(map[string]any)["extra"] = v }})
 			slots = append(slots, slot{key + ".marker-key", classEnum, func(m map[string]any, v string) { m[key].(map[string]any)[v] = "x" }})
-		case "command":
+		case "command", "digests":
 			slots = append(slots, slot{key, class, func(m map[string]any, v string) { m[key].([]any)[0] = v }})
 		default:
 			slots = append(slots, slot{key, class, func(m map[string]any, v string) { m[key] = v }})
