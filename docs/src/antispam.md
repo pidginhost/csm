@@ -590,7 +590,8 @@ requires antispam to be enabled. Enabling it is refused in
 
 Enabling learning is consent to two things: CSM reads new messages in the
 Spam folders of participating accounts, and it keeps one full message per
-learned cluster for up to 90 days after the cluster's last report (see
+learned cluster. Clusters normally retire 90 days after their last report,
+but pauses and cleanup failures can retain messages longer (see
 [Stored messages](#stored-messages)).
 
 ### How reports are found
@@ -643,11 +644,12 @@ still follows the dry-run policy.
 
 ### Opt-out, disable and retention
 
-When an account turns its Spam Filters switch off, CSM stops reading its
-folders at the next check and drops its unsent reports. Turning the switch
-back on starts new baselines. What the account already contributed stays
-until the cluster expires or an operator forgets it; opting out does not
-delete it sooner.
+Unless `/etc/global_spamassassin_enable` exists, turning an account's Spam
+Filters switch off stops CSM reading its folders at the next check and
+drops its unsent reports. Turning the switch back on starts new baselines.
+The global override prevents per-account opt-out, including learning.
+What the account already contributed stays until the cluster expires or an
+operator forgets it; opting out does not delete it sooner.
 
 Turning learning off keeps stored messages, keys and the learning ledger,
 but clears folder baselines and unsent reports; re-enabling starts new
@@ -821,10 +823,14 @@ the same content start a new cluster.
 state database and `/var/lib/csm/antispam/learning`, which holds the hash
 keys, transport keys and stored messages. `csm restore` brings the bundle
 back and moves any learning directory it replaces to
-`learning.old-<UTC time>-<suffix>`. A failed restore leaves the previous
-bundle in place. Restored learning state holds new reports until the daemon
-has run with learning disabled outside observe mode; enable learning again
-only when the backup is the current bundle. CSM cannot tell an old backup from the
+`learning.old-<UTC time>-<suffix>`. Installation failures trigger rollback,
+but rollback itself can fail. Cleanup errors can also occur after the new
+bundle is installed. After any restore error, check the reported paths and
+resolve it before restarting CSM.
+
+Restored learning state holds new reports until the daemon has run with
+learning disabled outside observe mode; enable learning again only when
+the backup is the current bundle. CSM cannot tell an old backup from the
 current one by comparing scores.
 
 If the backup is older, or storage was lost along with the keys, start a
@@ -836,9 +842,10 @@ csm antispam learn --fresh-namespace
 
 It waits for an active reconciliation pass, moves
 `/var/lib/csm/antispam/learning` to `learning.old-<UTC time>` and empties
-the learning and Spam folder state. If emptying fails, the directory is
-moved back. The next enable creates new
-keys and a new storage prefix, and every folder starts a new baseline. Old
+the learning and Spam folder state. If emptying fails, CSM attempts to move
+the directory back and reports any failure to do so. Resolve that failure
+before enabling learning. After a successful reset, the next enable creates
+new keys and a new storage prefix, and every folder starts a new baseline. Old
 reports are not replayed. The old directory still holds full messages;
 remove it once you no longer need it. CSM never flushes Redis; old hashes
 stay under the old prefix until they expire.
