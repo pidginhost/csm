@@ -74,7 +74,11 @@ func FuzzParseMailboxPasswd(f *testing.F) {
 }
 
 func FuzzParseVerdict(f *testing.F) {
-	for _, s := range []string{"Subject: x\r\n\r\nbody", " x\r\n", "X-Spam-Status: No\r\n\r\n", "a:b\nc"} {
+	for _, s := range []string{
+		"Subject: x\r\n\r\nbody", " x\r\n", "X-Spam-Status: No\r\n\r\n", "a:b\nc",
+		"Subject: x\rX-Spam-Status: Yes\r\n\r\n",
+		"X-Spam-Status: No,\x00\r\n\r\n", "X-Spam-Status: No\r",
+	} {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -82,6 +86,13 @@ func FuzzParseVerdict(f *testing.F) {
 		tagged := append([]byte("X-Spam-Status: Yes\r\n"), data...)
 		if ParseVerdict(tagged) == VerdictEligible {
 			t.Fatalf("Yes verdict line read as eligible: %q", tagged)
+		}
+		for _, bad := range []byte{'\r', '\x00'} {
+			malformed := append([]byte("X-Spam-Status: No, "), bad, 'x')
+			malformed = append(malformed, data...)
+			if got := ParseVerdict(malformed); got != VerdictMalformed {
+				t.Fatalf("invalid header read as %v: %q", got, malformed)
+			}
 		}
 	})
 }

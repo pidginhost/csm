@@ -54,6 +54,10 @@ func ParseVerdict(snapshot []byte) Verdict {
 // Whitespace-only lines continue the previous field, so a field that some
 // parser might still read is never hidden behind one.
 func spamStatuses(b []byte) ([][]byte, bool) {
+	// Bound the newline search too, retaining one byte to detect overflow.
+	if len(b) > MaxHeaderBytes {
+		b = b[:MaxHeaderBytes+1]
+	}
 	var values [][]byte
 	fields, consumed := 0, 0
 	inStatus := false
@@ -67,7 +71,13 @@ func spamStatuses(b []byte) ([][]byte, bool) {
 			return nil, false
 		}
 		b = rest
-		line = bytes.TrimSuffix(line, []byte{'\r'})
+		if found {
+			line = bytes.TrimSuffix(line, []byte{'\r'})
+		}
+		// Bare CR and NUL can hide a field from this line-oriented parser.
+		if bytes.ContainsAny(line, "\r\x00") {
+			return nil, false
+		}
 		if len(line) == 0 {
 			break
 		}

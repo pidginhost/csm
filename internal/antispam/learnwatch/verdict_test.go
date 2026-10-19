@@ -94,6 +94,87 @@ func TestVerdictMalformed(t *testing.T) {
 	}
 }
 
+func TestVerdictInvalidHeaderBytes(t *testing.T) {
+	for _, bad := range []byte{'\r', '\x00'} {
+		for _, format := range []string{
+			"Subject: x%cX-Spam-Status: Yes\r\n\r\n",
+			"Subject: x\r\n %cX-Spam-Status: Yes\r\n\r\n",
+			"X-Spam-Status: No%c\r\n\r\n",
+			"X-Spam-Status: No, score=0%cX-Spam-Status: Yes\r\n\r\n",
+			"X-Spam-Status: No,\r\n score=0%cX-Spam-Status: Yes\r\n\r\n",
+		} {
+			msg := fmt.Sprintf(format, bad)
+			if got := verdictOf(msg); got != VerdictMalformed {
+				t.Errorf("%q: %v, want malformed", msg, got)
+			}
+		}
+	}
+	for _, msg := range []string{"\r", "Subject: x\r", "X-Spam-Status: No\r", "X-Spam-Status: No\n\r"} {
+		if got := verdictOf(msg); got != VerdictMalformed {
+			t.Errorf("bare CR at EOF %q: %v, want malformed", msg, got)
+		}
+	}
+}
+
+func TestVerdictBodyIsOpaque(t *testing.T) {
+	for _, newline := range []string{"\r\n", "\n"} {
+		msg := "Subject: caf\xc3\xa9" + newline + "\tcontinued" + newline +
+			"X-Spam-Status: No," + newline + "\tscore=0" + newline + newline +
+			"\x00\rX-Spam-Status: Yes\n\xff"
+		if got := verdictOf(msg); got != VerdictEligible {
+			t.Errorf("%q: %v, want eligible", msg, got)
+		}
+	}
+}
+
+func TestVerdictByteBoundary(t *testing.T) {
+	for _, ending := range []string{"", "\n", "\r\n", "\n\n", "\r\n\r\n"} {
+		for _, delta := range []int{-1, 0, 1} {
+			msg := "X: " + strings.Repeat("a", MaxHeaderBytes-len("X: ")-len(ending)+delta) + ending
+			want := VerdictEligible
+			if delta > 0 {
+				want = VerdictMalformed
+			}
+			if got := verdictOf(msg); got != want {
+				t.Errorf("ending %q, size %d: %v, want %v", ending, len(msg), got, want)
+			}
+		}
+	}
+	// A truncated header must not become eligible just because the visible
+	// prefix was a valid field. The body, in contrast, is outside the limit.
+	header := "X-Spam-Status: No, " + strings.Repeat("a", MaxHeaderBytes-len("X-Spam-Status: No, ")-4)
+	for _, tc := range []struct {
+		name string
+		msg  string
+		want Verdict
+	}{
+		{"body", header + "\r\n\r\n" + strings.Repeat("b", MaxHeaderBytes), VerdictEligible},
+		{"next field", header + "\r\nX-Spam-Status: Yes\r\n\r\n", VerdictMalformed},
+		{"continuation", header + "\r\n " + strings.Repeat("a", 8) + "\r\n\r\n", VerdictMalformed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := verdictOf(tc.msg); got != tc.want {
+				t.Errorf("verdict %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func BenchmarkVerdictLongLine(b *testing.B) {
+	for _, size := range []int{2 * MaxHeaderBytes, 40 * MaxHeaderBytes} {
+		b.Run(fmt.Sprint(size), func(b *testing.B) {
+			msg := []byte("Subject: " + strings.Repeat("a", size))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if got := ParseVerdict(msg); got != VerdictMalformed {
+					b.Fatalf("verdict %v, want malformed", got)
+				}
+			}
+		})
+	}
+}
+
 func TestVerdictLimits(t *testing.T) {
 	long := "X-Long: " + strings.Repeat("a", MaxHeaderBytes) + "\r\n\r\n"
 	if v := verdictOf(long); v != VerdictMalformed {
