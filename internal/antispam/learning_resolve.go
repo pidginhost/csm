@@ -97,6 +97,9 @@ func ResolveLearning(s Settings, f HostFacts) (Settings, LearningGate, []Problem
 	if f.LearningKeysErr != nil {
 		c.add(ReasonStateMismatch, "the learning keys are missing or invalid; CSM never replaces part of a key set")
 	}
+	if f.LearnerMismatch {
+		c.add(ReasonStateMismatch, "learning state does not match its storage; new reports are held and nothing is adopted or deleted")
+	}
 	checkLearningVersions(&c, f)
 	checkLearningController(&c, f)
 	checkLearningRedis(&c, f)
@@ -268,6 +271,16 @@ func privateControllerSockets(f HostFacts) []string {
 		}
 	}
 	return out
+}
+
+// LearnerEndpoint returns the private controller socket and the uid that
+// must serve it, for the learner's native calls.
+func LearnerEndpoint(f HostFacts) (socket string, uid int, ok bool) {
+	socket, ok = PrivateControllerSocket(f)
+	if !ok || f.ControllerHost.RspamdUID < 0 {
+		return "", 0, false
+	}
+	return socket, f.ControllerHost.RspamdUID, true
 }
 
 // PrivateControllerSocket returns the one private controller socket learning

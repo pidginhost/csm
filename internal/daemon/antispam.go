@@ -102,6 +102,7 @@ func (d *Daemon) startAntispam() {
 	checks.StoreLatestScanFindings(d.store, antispamHealthChecks, nil)
 	d.store.RearmAbsentDedupFindings(antispamHealthChecks, nil)
 	r := d.withIPMap(antispamReconciler())
+	r.Learner = d.learnerProblems
 	loop := reconcile.NewLoop(func(ctx context.Context) reconcile.Outcome {
 		return r.Pass(ctx, reconcile.DesiredFromConfig(d.currentCfg()))
 	}, d.reportAntispam)
@@ -434,4 +435,5 @@ func (d *Daemon) reportAntispam(out reconcile.Outcome) {
 		csmlog.Warn("antispam reconcile did not complete", "err", strconv.Quote(out.Err.Error()))
 	}
 	d.processScanFindings(d.currentCfg(), out.Findings, out.Checks, "antispam")
+	d.syncLearner(out)
 }

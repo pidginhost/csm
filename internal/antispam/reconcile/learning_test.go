@@ -409,3 +409,51 @@ func TestPassReportsRoundcubeResultImmediately(t *testing.T) {
 		})
 	}
 }
+
+// The learner's problems are this pass's learning findings, one per reason;
+// they clear once the learner reports them no more.
+func TestLearnerProblemsBecomeFindings(t *testing.T) {
+	h := newLearningHost(antispam.Assessment{Action: antispam.Keep, Installed: true})
+	r := h.reconciler()
+	learner := []antispam.Problem{
+		{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonAnchorDrift, Detail: "2 anchors drifted from their target more than once"},
+		{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonMutationUncertain, Detail: "1 anchor writes have an unknown outcome"},
+	}
+	r.Learner = func() []antispam.Problem { return learner }
+	out := r.Pass(context.Background(), learningDesired())
+	got := learningFindings(out)
+	for _, reason := range []string{antispam.ReasonAnchorDrift, antispam.ReasonMutationUncertain} {
+		f, ok := got[reason]
+		if !ok || f.Severity != alert.Warning || f.DedupKey != "learning:"+reason {
+			t.Fatalf("finding for %s: %+v (all %+v)", reason, f, got)
+		}
+	}
+	learner = nil
+	if got := learningFindings(r.Pass(context.Background(), learningDesired())); len(got) != 0 {
+		t.Fatalf("resolved learner problems still reported: %+v", got)
+	}
+}
+
+// A learner state mismatch reaches the resolver as a host fact.
+func TestPassPassesLearnerMismatch(t *testing.T) {
+	h := newLearningHost(antispam.Assessment{Action: antispam.Keep, Installed: true})
+	r := h.reconciler()
+	r.Learner = func() []antispam.Problem {
+		return []antispam.Problem{{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonStateMismatch, Detail: "frozen"}}
+	}
+	r.Pass(context.Background(), learningDesired())
+	if len(h.resolved) != 1 || !h.resolved[0].LearnerMismatch {
+		t.Fatalf("resolver facts %+v", h.resolved)
+	}
+}
+
+// Observe mode never runs the learner: no gate and no engine target.
+func TestObserveSuspendsNativeCalls(t *testing.T) {
+	h := newLearningHost(antispam.Assessment{Action: antispam.Keep, Installed: true})
+	d := learningDesired()
+	d.Observe = true
+	out := h.reconciler().Pass(context.Background(), d)
+	if out.LearningGate != (antispam.LearningGate{}) || out.Learner != (LearnerTarget{}) {
+		t.Fatalf("observe outcome gate %+v learner %+v", out.LearningGate, out.Learner)
+	}
+}

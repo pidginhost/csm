@@ -184,6 +184,9 @@ type HostFacts struct {
 	// requested; LearningKeysErr says why they could not be.
 	LearningKeys    LearningKeys
 	LearningKeysErr error
+	// LearnerMismatch: the running learner found its ledger out of step
+	// with storage (state_mismatch) and froze admissions.
+	LearnerMismatch bool
 	// Learning prerequisites, collected only while learning is requested.
 	LearningDumps  LearningDumps
 	ControlSocket  SocketFacts

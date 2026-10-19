@@ -78,6 +78,9 @@ type Reconciler struct {
 	EnsureKeys      func(ctx context.Context, dir string) (bool, error)
 	LoadKeys        func(dir string) (antispam.LearningKeys, error)
 	CollectLearning func(ctx context.Context, f *antispam.HostFacts)
+	// Learner returns the running learning engine's problems; nil when no
+	// engine runs.
+	Learner func() []antispam.Problem
 	// resolveLearning replaces antispam.ResolveLearning in tests.
 	resolveLearning func(s antispam.Settings, f antispam.HostFacts) (antispam.Settings, antispam.LearningGate, []antispam.Problem)
 	// assess replaces antispam.Assess in tests.
@@ -100,6 +103,19 @@ type Outcome struct {
 	LearningProblems []antispam.Problem
 	// LearningGate says what learning may do after this pass.
 	LearningGate antispam.LearningGate
+	// Learner is where the learning engine runs, zero when no engine
+	// should: learning not requested, observe mode, unreadable keys or no
+	// private controller socket.
+	Learner LearnerTarget
+}
+
+// LearnerTarget is what a learning engine is built for. A change means a
+// new engine.
+type LearnerTarget struct {
+	Controller     string
+	RspamdUID      int
+	HashGeneration string
+	Prefix         string
 }
 
 // Pass brings the host towards d once (spec sections 6.1 and 6.5). A
@@ -150,8 +166,12 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	wantLearning := d.Enabled && d.Settings.Learning
 	var keys antispam.LearningKeys
 	var keysErr error
+	var learnerProblems []antispam.Problem
 	if wantLearning {
 		keys, keysErr = r.learningKeys(ctx, d.Settings.LearningDir)
+		if r.Learner != nil {
+			learnerProblems = r.Learner()
+		}
 	}
 	if d.Enabled {
 		writable, _ := r.Feeds.apply(d.Settings, d.Settings, nil)
@@ -170,6 +190,9 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 			}
 			f.LearningKeys, f.LearningKeysErr = keys, keysErr
 			f.RedisGuardPaused = r.Learning.redisPaused()
+			f.LearnerMismatch = slices.ContainsFunc(learnerProblems, func(p antispam.Problem) bool {
+				return p.Key == antispam.ReasonStateMismatch
+			})
 		}
 	} else {
 		f = r.Installed()
@@ -200,13 +223,18 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	if d.Observe || a.Action == antispam.Uninstall {
 		out.LearningGate = antispam.LearningGate{}
 	}
+	if wantLearning && !d.Observe && keysErr == nil {
+		if socket, uid, ok := antispam.LearnerEndpoint(f); ok {
+			out.Learner = LearnerTarget{Controller: socket, RspamdUID: uid, HashGeneration: keys.HashGeneration(), Prefix: keys.Prefix}
+		}
+	}
 	defer func() {
 		// Worker verification can add problems. Busy and canceled passes
 		// must not replace or add to the last completed learning findings.
 		if !slices.Contains(out.Checks, CheckLearning) {
 			return
 		}
-		out.LearningProblems = mergeByKey(learningProblems)
+		out.LearningProblems = mergeByKey(append(learningProblems, learnerProblems...))
 		for _, p := range out.LearningProblems {
 			out.Findings = append(out.Findings, learningFinding(p, now))
 		}

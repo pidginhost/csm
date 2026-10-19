@@ -581,9 +581,9 @@ Reload rspamd after the change. CSM never edits the controller settings.
 
 `email_protection.antispam.learning.enabled: true` prepares rspamd for
 learning from Spam folders. It is off by default and requires antispam to
-be enabled. This build installs the server configuration and checks its
-readiness. It does not read Spam folders, retain reported messages or
-publish learned hashes.
+be enabled. This build installs the server configuration, checks its
+readiness and runs the learner for files operators submit with
+`csm antispam learn`. It does not read Spam folders yet.
 
 Learning setup runs with either value of antispam's `dry_run` setting.
 Enabling it is refused in [observe mode](observe-mode.md).
@@ -668,12 +668,28 @@ learning off. Do not delete the surviving keys to start over: new keys
 cannot match hashes made with the old ones.
 
 The Redis capacity warning starts at 75% of `maxmemory` and clears below
-70%. It leaves installed learning configuration in place; this build has
-no hash publisher to pause.
+70%. It leaves installed learning configuration in place and pauses the
+learner, including pending changes, until usage falls.
 
 Turning learning off requests removal of CSM's learning files and Roundcube
 include, while keeping the keys. Conflicts or transaction failures can
 prevent removal. Check findings before assuming learned scoring is gone.
+
+### Stored messages
+
+Each learned cluster keeps one message, the first one reported, so the
+learner can restore its value if Redis loses it. The message is stored
+whole, headers and attachments included, under
+`/var/lib/csm/antispam/learning/anchors`, readable only by root. CSM
+deletes it when the cluster retires, 90 days after its last report, or
+when an operator forgets it. Backups and file system snapshots can keep a
+copy longer.
+
+CSM's state archive (`csm store export`) leaves learning state out. To
+back learning up, stop the daemon and copy the state database, the
+learning directory and its keys together. Restore only the latest
+complete copy, with learning disabled and its scoring confirmed gone: an
+older copy cannot be reconciled with storage that kept learning.
 
 ### Teaching and correcting learning
 
@@ -699,14 +715,15 @@ when every file was learned, already learned, forgotten or matched nothing.
 
 ### Learning findings
 
-Each `antispam_learning` finding names one reason. These describe server
-readiness, not a running mailbox learner.
+Each `antispam_learning` finding names one reason. Each reconcile pass
+reports server readiness; the running learner adds the reasons from
+`anchor_drift` on.
 
 | Reason | Meaning |
 |---|---|
 | `unsupported` | An rspamd or Redis version is outside the supported versions above; learning is disabled. |
 | `unsafe_prerequisite` | Required isolation or Redis settings are unsafe or cannot be established; learning is disabled. |
-| `state_mismatch` | Learning keys could not be created or loaded safely; learning is disabled. |
+| `state_mismatch` | Learning keys could not be created or loaded safely, or the learner found its state out of step with its storage; learning is disabled and nothing is adopted or deleted. |
 | `config_conflict` | Operator configuration conflicts with CSM's learning setup; learning is disabled. |
 | `apply_failed` | A learning check failed during apply; subsequent passes hold learning off until its configuration changes or CSM restarts. |
 | `backend_unavailable` | A probe failed temporarily; existing learning configuration is retained unless a definite failure also requires removal. A first installation waits. |
@@ -715,6 +732,14 @@ readiness, not a running mailbox learner.
 | `redis_persistence` | Redis has neither append-only persistence nor snapshots enabled; CSM warns without disabling learning. |
 | `roundcube_unavailable` | The Junk-button include could not be installed, verified or removed cleanly. The other learning files are unaffected. |
 | `removal_incomplete` | rspamd still loads CSM's learned scoring while learning is disabled; resolve the reported conflict or removal failure. |
+| `anchor_drift` | A learned value moved away from its target more than once. CSM keeps correcting it; repeated drift means something else writes to the learning storage. |
+| `mutation_uncertain` | A write to the learning storage got no answer. CSM reads the stored value before it sends anything else. |
+| `anchor_body_invalid` | A stored message is missing or changed. That cluster's value is held until it is forgotten. |
+| `state_io` | Learning state could not be written, for example on a full disk. Nothing unrecorded is sent and installed scores stay. |
+| `audit_overdue` | The check of every learned value has not finished a round within 24 hours. |
+| `request_errors` | Learning requests to rspamd failed three times in a row. |
+| `backend_rebuilding` | Learned values are missing from storage, for example after Redis lost its data. CSM restores them from the stored messages and holds new clusters until it is done. |
+| `account_capacity` | An account, or the operator, reached its learning allowance. Its new reports are skipped; existing learning stays. |
 
 ## Findings
 

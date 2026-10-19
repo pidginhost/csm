@@ -24,8 +24,8 @@ type learnOperator interface {
 // antispamLearnOperator returns the running learner, or nil; tests replace
 // it.
 var antispamLearnOperator = func(d *Daemon) learnOperator {
-	if e := d.antispamLearner.Load(); e != nil {
-		return e
+	if r := d.antispamLearner.Load(); r != nil {
+		return r.engine
 	}
 	return nil
 }

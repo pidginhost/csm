@@ -46,6 +46,13 @@ type LearningKeys struct {
 	Prefix          string
 }
 
+// HashGeneration identifies the two hash keys without revealing them: the
+// learner's ledger is bound to it, so a new key set never reuses old state.
+func (k LearningKeys) HashGeneration() string {
+	sum := sha256.Sum256([]byte("csm-learning-hash-keys\x00" + k.Fuzzy.Reveal() + "\x00" + k.Shingles.Reveal()))
+	return hex.EncodeToString(sum[:])
+}
+
 // rspamdKeyLen is the base32 length of a 32-byte curve25519 key.
 const rspamdKeyLen = 52
 
