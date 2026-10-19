@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/safepath"
 )
 
 // DefaultBodiesDir holds one anchor body per cluster (spec 7.4).
@@ -27,7 +28,7 @@ const stagePrefix = ".stage-"
 var ErrBodyInvalid = errors.New("anchor body is missing or changed")
 
 // Bodies stores immutable anchor bodies: stored mail, root-only, never
-// logged. Errors never carry content.
+// logged. Errors never carry content or paths.
 type Bodies struct {
 	Dir string
 	// owner is the uid that must own the directory and files: root, except
@@ -49,17 +50,28 @@ func BodyName(clusterID uint64) string {
 	return strconv.FormatUint(clusterID, 10) + ".msg"
 }
 
-// dir creates the directory on first use and checks it on every call:
-// a real directory, the expected owner, no group or other access.
-func (b *Bodies) dir() (string, error) {
+// Keep the checked directory open so cleanup, rename and sync cannot be
+// redirected by a replacement of its path.
+func (b *Bodies) dir() (*safepath.Dir, error) {
 	if err := os.MkdirAll(b.Dir, 0o700); err != nil {
-		return "", errors.New("cannot create the anchor body directory")
+		return nil, errors.New("cannot create the anchor body directory")
 	}
-	info, err := os.Lstat(b.Dir)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 || ownerOf(info) != b.owner {
-		return "", errors.New("anchor body directory is not private to CSM")
+	// A trailing slash makes Lstat follow a directory symlink.
+	path := filepath.Clean(b.Dir)
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 || ownerOf(info) != b.owner {
+		return nil, errors.New("anchor body directory is not private to CSM")
 	}
-	return b.Dir, nil
+	dir, err := safepath.OpenDir(path)
+	if err != nil {
+		return nil, errors.New("cannot open the anchor body directory")
+	}
+	current, err := dir.Info()
+	if err != nil || !os.SameFile(info, current) || current.Mode().Perm() != 0o700 || ownerOf(current) != b.owner {
+		_ = dir.Close()
+		return nil, errors.New("anchor body directory changed while opening")
+	}
+	return dir, nil
 }
 
 func ownerOf(info os.FileInfo) int {
@@ -79,9 +91,9 @@ func (b *Bodies) Stage(body []byte) (Staged, error) {
 	if err != nil {
 		return Staged{}, err
 	}
+	defer func() { _ = dir.Close() }()
 	name := stagePrefix + rand.Text()
-	path := filepath.Join(dir, name)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600) // #nosec G304 -- fixed directory, random name
+	f, err := dir.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return Staged{}, fmt.Errorf("cannot stage an anchor body: %w", unwrapErrno(err))
 	}
@@ -89,13 +101,20 @@ func (b *Bodies) Stage(body []byte) (Staged, error) {
 	if write == nil {
 		write = writeSync
 	}
-	err = write(f, body)
+	// The process umask may remove owner permissions at creation.
+	err = f.Chmod(0o600)
+	if err == nil {
+		err = write(f, body)
+	}
 	if closeErr := f.Close(); err == nil {
 		err = closeErr
 	}
 	if err != nil {
-		_ = os.Remove(path)
-		return Staged{}, fmt.Errorf("cannot stage an anchor body: %w", unwrapErrno(err))
+		stageErr := fmt.Errorf("cannot stage an anchor body: %w", unwrapErrno(err))
+		if removeErr := dir.Remove(name); removeErr != nil {
+			return Staged{}, errors.Join(stageErr, fmt.Errorf("cannot remove a staged anchor body: %w", unwrapErrno(removeErr)))
+		}
+		return Staged{}, errors.Join(stageErr, syncDir(dir))
 	}
 	sum := sha256.Sum256(body)
 	return Staged{Name: name, Len: int64(len(body)), SHA: hex.EncodeToString(sum[:])}, nil
@@ -120,18 +139,15 @@ func unwrapErrno(err error) error {
 // Commit gives a staged body its cluster's name and syncs the directory.
 // It never replaces an existing body.
 func (b *Bodies) Commit(s Staged, clusterID uint64) error {
-	if !strings.HasPrefix(s.Name, stagePrefix) || filepath.Base(s.Name) != s.Name {
+	if !isStagedName(s.Name) {
 		return errors.New("not a staged anchor body")
 	}
 	dir, err := b.dir()
 	if err != nil {
 		return err
 	}
-	staged, final := filepath.Join(dir, s.Name), filepath.Join(dir, BodyName(clusterID))
-	if err := os.Link(staged, final); err != nil {
-		return fmt.Errorf("cannot commit an anchor body: %w", unwrapErrno(err))
-	}
-	if err := os.Remove(staged); err != nil {
+	defer func() { _ = dir.Close() }()
+	if err := dir.RenameTo(s.Name, dir, BodyName(clusterID)); err != nil {
 		return fmt.Errorf("cannot commit an anchor body: %w", unwrapErrno(err))
 	}
 	return syncDir(dir)
@@ -142,12 +158,13 @@ func (b *Bodies) Commit(s Staged, clusterID uint64) error {
 func (b *Bodies) Read(clusterID uint64, wantLen int64, wantSHA string) ([]byte, error) {
 	dir, err := b.dir()
 	if err != nil {
-		return nil, err
+		return nil, ErrBodyInvalid
 	}
+	defer func() { _ = dir.Close() }()
 	if wantLen < 0 || wantLen > MaxBody {
 		return nil, ErrBodyInvalid
 	}
-	f, err := os.OpenFile(filepath.Join(dir, BodyName(clusterID)), os.O_RDONLY|syscall.O_NOFOLLOW, 0) // #nosec G304 -- fixed directory, numeric name
+	f, err := dir.OpenFile(BodyName(clusterID), os.O_RDONLY, 0)
 	if err != nil {
 		return nil, ErrBodyInvalid
 	}
@@ -171,7 +188,8 @@ func (b *Bodies) Remove(clusterID uint64) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(filepath.Join(dir, BodyName(clusterID))); err != nil && !os.IsNotExist(err) {
+	defer func() { _ = dir.Close() }()
+	if err := dir.Remove(BodyName(clusterID)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("cannot remove an anchor body: %w", unwrapErrno(err))
 	}
 	return syncDir(dir)
@@ -184,18 +202,15 @@ func (b *Bodies) Orphans(referenced func(name string) bool) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(dir)
+	defer func() { _ = dir.Close() }()
+	entries, err := dir.ReadDir()
 	if err != nil {
 		return nil, errors.New("cannot list anchor bodies")
 	}
 	var out []string
 	for _, e := range entries {
 		name := e.Name()
-		id, isBody := strings.CutSuffix(name, ".msg")
-		if _, err := strconv.ParseUint(id, 10, 64); err != nil {
-			isBody = false
-		}
-		if (isBody || strings.HasPrefix(name, stagePrefix)) && !referenced(name) {
+		if !e.IsDir() && isBodyName(name) && !referenced(name) {
 			out = append(out, name)
 		}
 	}
@@ -205,29 +220,36 @@ func (b *Bodies) Orphans(referenced func(name string) bool) ([]string, error) {
 
 // RemoveOrphan unlinks one name Orphans returned.
 func (b *Bodies) RemoveOrphan(name string) error {
-	if filepath.Base(name) != name || name == "" {
+	if !isBodyName(name) {
 		return errors.New("not an anchor body name")
 	}
 	dir, err := b.dir()
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+	defer func() { _ = dir.Close() }()
+	if err := dir.Remove(name); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("cannot remove an anchor body: %w", unwrapErrno(err))
 	}
 	return syncDir(dir)
 }
 
-func syncDir(dir string) error {
-	d, err := os.Open(dir) // #nosec G304 -- the checked anchor directory
-	if err != nil {
-		return fmt.Errorf("cannot sync the anchor directory: %w", unwrapErrno(err))
+func isStagedName(name string) bool {
+	return strings.HasPrefix(name, stagePrefix) && len(name) > len(stagePrefix) &&
+		filepath.Base(name) == name && !strings.ContainsRune(name, '\x00')
+}
+
+func isBodyName(name string) bool {
+	if isStagedName(name) {
+		return true
 	}
-	err = d.Sync()
-	if closeErr := d.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
+	id, ok := strings.CutSuffix(name, ".msg")
+	n, err := strconv.ParseUint(id, 10, 64)
+	return ok && err == nil && BodyName(n) == name
+}
+
+func syncDir(dir *safepath.Dir) error {
+	if err := dir.Sync(); err != nil {
 		return fmt.Errorf("cannot sync the anchor directory: %w", unwrapErrno(err))
 	}
 	return nil

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -80,8 +81,8 @@ func TestStageRejectsOversize(t *testing.T) {
 	if _, err := b.Stage(make([]byte, MaxBody+1)); err == nil {
 		t.Fatal("oversized body staged")
 	}
-	if entries, _ := os.ReadDir(b.Dir); len(entries) != 0 {
-		t.Fatalf("left %d files", len(entries))
+	if entries, err := os.ReadDir(b.Dir); len(entries) != 0 || err != nil && !os.IsNotExist(err) {
+		t.Fatalf("left %d files, err=%v", len(entries), err)
 	}
 }
 
@@ -94,7 +95,7 @@ func TestReadDetectsCorruption(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(b.Dir, BodyName(1)), []byte("anchor bodx"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Read(1, s.Len, s.SHA); !errors.Is(err, ErrBodyInvalid) {
+	if got, err := b.Read(1, s.Len, s.SHA); !errors.Is(err, ErrBodyInvalid) || got != nil {
 		t.Fatalf("changed bytes: %v", err)
 	}
 	if _, err := b.Read(9, s.Len, s.SHA); !errors.Is(err, ErrBodyInvalid) {
@@ -163,8 +164,9 @@ func TestOrphansOnlyUnreferenced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]bool{BodyName(2): true, staged.Name: true}
-	if len(got) != len(want) || !want[got[0]] || !want[got[1]] {
+	want := []string{BodyName(2), staged.Name}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
 		t.Fatalf("orphans %v", got)
 	}
 	for _, name := range got {
@@ -187,7 +189,241 @@ func TestStageBodyENOSPCSendsNothing(t *testing.T) {
 	if !errors.Is(err, syscall.ENOSPC) || s != (Staged{}) {
 		t.Fatalf("staged %+v err %v", s, err)
 	}
-	if entries, _ := os.ReadDir(b.Dir); len(entries) != 0 {
-		t.Fatalf("left %d files", len(entries))
+	if entries, err := os.ReadDir(b.Dir); err != nil || len(entries) != 0 {
+		t.Fatalf("left %d files, err=%v", len(entries), err)
+	}
+}
+
+func TestStageFailureCleansPinnedDirectory(t *testing.T) {
+	b := testBodies(t)
+	moved := b.Dir + "-moved"
+	var name string
+	b.writeFile = func(f *os.File, body []byte) error {
+		name = filepath.Base(f.Name())
+		if _, err := f.Write(body[:3]); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(b.Dir, moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(b.Dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(b.Dir, name), []byte("replacement"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return &os.PathError{Op: "write", Path: f.Name(), Err: syscall.EIO}
+	}
+	s, err := b.Stage([]byte("anchor body"))
+	if !errors.Is(err, syscall.EIO) || s != (Staged{}) {
+		t.Fatalf("failed stage returned %+v, %v", s, err)
+	}
+	if _, err := os.Lstat(filepath.Join(moved, name)); !os.IsNotExist(err) {
+		t.Errorf("failed stage left the partial body: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(b.Dir, name)); err != nil || string(got) != "replacement" {
+		t.Errorf("cleanup changed the replacement directory: %v", err)
+	}
+}
+
+func TestReadUnsafeDirectoryIsBodyInvalid(t *testing.T) {
+	for _, kind := range []string{"mode", "owner", "symlink", "symlink-trailing-slash"} {
+		t.Run(kind, func(t *testing.T) {
+			b := testBodies(t)
+			s := stageCommit(t, b, []byte("anchor body"), 1)
+			switch kind {
+			case "mode":
+				if err := os.Chmod(b.Dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			case "owner":
+				b.owner++
+			case "symlink", "symlink-trailing-slash":
+				moved := b.Dir + "-moved"
+				if err := os.Rename(b.Dir, moved); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(moved, b.Dir); err != nil {
+					t.Fatal(err)
+				}
+				if kind == "symlink-trailing-slash" {
+					b.Dir += string(filepath.Separator)
+				}
+			}
+			if got, err := b.Read(1, s.Len, s.SHA); !errors.Is(err, ErrBodyInvalid) || got != nil {
+				t.Fatalf("unsafe directory: returned bytes=%t, err=%v", got != nil, err)
+			}
+		})
+	}
+}
+
+func TestStageRejectsWrongDirectoryMode(t *testing.T) {
+	b := testBodies(t)
+	if err := os.Mkdir(b.Dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(b.Dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := os.Chmod(b.Dir, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := b.Stage([]byte("anchor body")); err == nil || s != (Staged{}) {
+		t.Fatalf("accepted a directory without mode 0700: %+v, %v", s, err)
+	}
+}
+
+func TestRemoveOrphanRejectsNonBodyNames(t *testing.T) {
+	for _, name := range []string{".", "..", "notes", ".stage-", "01.msg", "+1.msg", "../1.msg", ""} {
+		t.Run(name, func(t *testing.T) {
+			b := testBodies(t)
+			if err := os.Mkdir(b.Dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := b.RemoveOrphan(name); err == nil {
+				t.Error("accepted a non-body name")
+			}
+			if info, err := os.Stat(b.Dir); err != nil || !info.IsDir() {
+				t.Errorf("removed the body directory: %v", err)
+			}
+		})
+	}
+}
+
+func TestOrphansIgnoreUnrelatedEntries(t *testing.T) {
+	b := testBodies(t)
+	stageCommit(t, b, []byte("anchor body"), 1)
+	for _, name := range []string{"notes", ".stage-", "01.msg", "+1.msg"} {
+		if err := os.WriteFile(filepath.Join(b.Dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"2.msg", ".stage-directory"} {
+		if err := os.Mkdir(filepath.Join(b.Dir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := b.Orphans(func(string) bool { return false })
+	if err != nil || !slices.Equal(got, []string{BodyName(1)}) {
+		t.Fatalf("orphans = %v, err=%v", got, err)
+	}
+}
+
+func TestRemoveDoesNotRemoveDirectories(t *testing.T) {
+	b := testBodies(t)
+	path := filepath.Join(b.Dir, BodyName(1))
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Remove(1); err == nil {
+		t.Fatal("removed a directory as a body")
+	}
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		t.Fatalf("body directory changed: %v", err)
+	}
+}
+
+func TestStageFailuresLeaveNoBodyOrPrivateError(t *testing.T) {
+	for _, kind := range []string{"ENOSPC", "EIO", "opaque", "close"} {
+		t.Run(kind, func(t *testing.T) {
+			b := testBodies(t)
+			body := []byte("synthetic private message")
+			var name string
+			b.writeFile = func(f *os.File, body []byte) error {
+				name = f.Name()
+				if _, err := f.Write(body[:3]); err != nil {
+					t.Fatal(err)
+				}
+				switch kind {
+				case "ENOSPC":
+					return &os.PathError{Op: "write", Path: name, Err: syscall.ENOSPC}
+				case "EIO":
+					return &os.PathError{Op: "sync", Path: name, Err: syscall.EIO}
+				case "opaque":
+					return errors.New(name + string(body))
+				default:
+					return f.Close()
+				}
+			}
+			s, err := b.Stage(body)
+			if err == nil || s != (Staged{}) {
+				t.Fatal("failed staging returned success or body metadata")
+			}
+			if strings.Contains(err.Error(), name) || strings.Contains(err.Error(), b.Dir) || strings.Contains(err.Error(), string(body)) {
+				t.Fatal("stage error exposed message data")
+			}
+			var pathErr *os.PathError
+			if errors.As(err, &pathErr) {
+				t.Fatal("stage error retained a private path")
+			}
+			if kind == "ENOSPC" && !errors.Is(err, syscall.ENOSPC) || kind == "EIO" && !errors.Is(err, syscall.EIO) {
+				t.Fatal("stage error lost its errno")
+			}
+			entries, err := os.ReadDir(b.Dir)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("failed staging left entries: count=%d err=%v", len(entries), err)
+			}
+		})
+	}
+}
+
+func TestReadNeverReturnsUnverifiedBytes(t *testing.T) {
+	b := testBodies(t)
+	s := stageCommit(t, b, []byte("anchor body"), 1)
+	for _, tc := range []struct {
+		name string
+		len  int64
+		sha  string
+	}{
+		{"negative", -1, s.SHA},
+		{"oversize", MaxBody + 1, s.SHA},
+		{"truncated", s.Len - 1, s.SHA},
+		{"longer", s.Len + 1, s.SHA},
+		{"hash", s.Len, strings.Repeat("0", 64)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := b.Read(1, tc.len, tc.sha); !errors.Is(err, ErrBodyInvalid) || got != nil {
+				t.Fatalf("unverified read: returned bytes=%t, err=%v", got != nil, err)
+			}
+		})
+	}
+	if err := os.Mkdir(filepath.Join(b.Dir, BodyName(2)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := b.Read(2, 0, ""); !errors.Is(err, ErrBodyInvalid) || got != nil {
+		t.Fatalf("directory read: returned bytes=%t, err=%v", got != nil, err)
+	}
+}
+
+func TestPinnedBodyDirectoryMetadataAndListing(t *testing.T) {
+	b := testBodies(t)
+	s, err := b.Stage([]byte("anchor body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := b.dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dir.Close() }()
+	want, err := dir.Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renameErr := os.Rename(b.Dir, b.Dir+"-moved"); renameErr != nil {
+		t.Fatal(renameErr)
+	}
+	if mkdirErr := os.Mkdir(b.Dir, 0o700); mkdirErr != nil {
+		t.Fatal(mkdirErr)
+	}
+	got, err := dir.Info()
+	if err != nil || !os.SameFile(want, got) {
+		t.Fatalf("metadata followed the replacement directory: %v", err)
+	}
+	entries, err := dir.ReadDir()
+	if err != nil || len(entries) != 1 || entries[0].Name() != s.Name {
+		t.Fatalf("listing followed the replacement directory: count=%d, err=%v", len(entries), err)
 	}
 }

@@ -50,6 +50,10 @@ func (d *Dir) Close() error { return d.file.Close() }
 
 func (d *Dir) Sync() error { return d.file.Sync() }
 
+func (d *Dir) Info() (os.FileInfo, error) { return d.file.Stat() }
+
+func (d *Dir) ReadDir() ([]os.DirEntry, error) { return d.file.ReadDir(-1) }
+
 // SameFile reports whether two pinned handles name the same directory.
 func (d *Dir) SameFile(other *Dir) (bool, error) {
 	want, err := d.file.Stat()
