@@ -68,21 +68,26 @@ test('a load started by a live update counts as a data load', async () => {
     assert.ok(page.window.CSM.refresh.lastFetchAt > 0);
 });
 
-test('timers slow down while the stream is connected and speed up when it drops', async () => {
+test('timers slow down while the stream is connected and speed up when it drops', (t) => {
+    // Mocked clocks: on a loaded machine a real 15 ms timer can fire late
+    // enough that a 60 ms wait sees only one run. A timer re-armed during a
+    // tick counts from the tick's end, so advance 1 ms at a time.
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    const advance = ms => { for (let i = 0; i < ms; i++) t.mock.timers.tick(1); };
     const { streams, globals } = streamGlobals();
     const page = loadPage('', SHARED, { globals });
     let runs = 0;
     const handle = page.window.CSM.refresh.interval(() => { runs++; }, 15, { whileLive: 10000 });
-    await wait(60);
+    advance(60);
     const fast = runs;
     assert.ok(fast >= 2, 'fast interval did not run: ' + fast);
     const s = connect(page, streams);
     runs = 0;
-    await wait(60);
+    advance(60);
     assert.equal(runs, 0, 'the interval kept its fast pace while live');
     s.readyState = 2;
     s.onerror();
-    await wait(60);
+    advance(60);
     assert.ok(runs >= 2, 'the interval did not speed up after the stream dropped: ' + runs);
     handle.stop();
 });
