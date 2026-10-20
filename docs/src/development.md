@@ -425,7 +425,16 @@ them as coalesced notices, one record per reason, check and action family,
 with a bounded count of examples, a fixed overflow record per kind and a
 fixed Critical summary that no flood can refuse. Records may use only a
 fixed share of the reserve, a key is due for delivery at most once an hour
-and a summary once a minute after acknowledged delivery. Acknowledgements
+and a summary once a minute after acknowledged delivery. While the owner
+previews or forecasts, ledger notices go to findings history only, as
+Warnings starting "Admission preview:". The independent stopped-admission
+notice still reaches alert channels as a Warning saying existing blocking
+is unaffected. While it executes (never in this build, see `liveExecution`),
+a gap is an outage of automatic blocking: notices go to the alert channels
+with their kind's severity and no preview prefix, and the stopped-admission
+notice is Critical. The mode is read at each delivery, including a retried
+stop notice, so a record raised before a mode change is delivered in the new
+mode. Stop retries retain their original timestamp, cause and stop identity. Acknowledgements
 carry the count and first-event time of the record read, so a repeated
 acknowledgement cannot consume a later record under a reused key. An audit
 row's acknowledgement carries the row's time as well, so one held past the

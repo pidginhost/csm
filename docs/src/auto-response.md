@@ -397,8 +397,8 @@ ticks before admission resumes, with elapsed time credited at the saved
 ceiling before the new one applies. Existing blocking paths remain unchanged:
 every automatic response they select is also handed to the ledger, which
 previews it within this ceiling, or forecasts it in dry run, and never
-applies it. Queued responses disabled by the current policy end as `disabled`
-without a withheld alert, including when their evidence expires before a
+applies it. With the firewall on, queued responses disabled by the current
+policy end as `disabled` without a withheld alert, including when their evidence expires before a
 restart or configuration reload. Turning a response back on requires a new
 eligible observation; ended work is not replayed. Status, `csm doctor` and findings
 history show the results. Forecast endings have no new per-attempt row in

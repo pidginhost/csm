@@ -106,7 +106,8 @@ func (s *sender) cycle() {
 		s.observe()
 	}
 	var l *store.AdmissionLedger
-	if s.o.do(func() error { l = s.o.ledger; return nil }) != nil || l == nil {
+	var live bool
+	if s.o.do(func() error { l, live = s.o.ledger, s.o.executing(); return nil }) != nil || l == nil {
 		return
 	}
 	due, err := l.PendingNotices()
@@ -122,10 +123,10 @@ func (s *sender) cycle() {
 	findings := make([]alert.Finding, len(due))
 	acks := make([]admission.NoticeAck, len(due))
 	for i, r := range due {
-		findings[i] = noticeFinding(r, now)
+		findings[i] = noticeFinding(r, now, live)
 		acks[i] = admission.NoticeAck{Key: r.Key, First: r.First, Count: r.Count}
 	}
-	if !s.deliver(&s.ledgerRetry, findings, true) {
+	if !s.deliver(&s.ledgerRetry, findings, !live) {
 		return
 	}
 	s.delivered += uint64(len(due))
@@ -152,8 +153,9 @@ func (s *sender) observe() {
 
 // announceStop sends one notice when the ingress stops admitting, naming
 // the cause the owner recorded (ruling 8, O52). The ledger may be the
-// damaged part, so nothing here writes it. It warns: legacy blocking
-// enforces while admission previews (R10).
+// damaged part, so nothing here writes it. It warns while legacy blocking
+// enforces and admission previews (R10); while the owner executes, a stop
+// stops automatic blocking and the notice is Critical (design C10).
 func (s *sender) announceStop() bool {
 	if s.pendingStop != nil && s.sendStop() {
 		return true
@@ -193,6 +195,18 @@ func (s *sender) announceStop() bool {
 }
 
 func (s *sender) sendStop() bool {
+	var live bool
+	if err := s.o.do(func() error { live = s.o.executing(); return nil }); err != nil {
+		return true
+	}
+	// A pending delivery can outlive a policy change. Keep its identity
+	// and details, but describe the mode in which it is sent.
+	s.pendingStop.Severity = alert.Warning
+	s.pendingStop.Message = "Automatic response admission preview stopped; existing blocking is unaffected"
+	if live {
+		s.pendingStop.Severity = alert.Critical
+		s.pendingStop.Message = "Automatic response admission stopped; automatic blocks are not applied"
+	}
 	s.observe()
 	if !s.deliver(&s.stopRetry, []alert.Finding{*s.pendingStop}, false) {
 		return true
@@ -220,11 +234,13 @@ func (s *sender) deliver(retry *retryBackoff, findings []alert.Finding, preview 
 	return true
 }
 
-// noticeFinding is the preview record of one notice: its registered check,
-// and in its details the events no delivery covered, their key and their
-// example candidates. Legacy blocking enforces while admission previews,
-// so every record warns, whatever its kind's severity (R10).
-func noticeFinding(r admission.NoticeRecord, now time.Time) alert.Finding {
+// noticeFinding is the record of one notice: its registered check, and in
+// its details the events no delivery covered, their key and their example
+// candidates. Legacy blocking enforces while admission previews, so a
+// preview record warns, whatever its kind's severity (R10). While the owner
+// executes (live) a gap is an outage of automatic blocking: the record
+// carries its kind's severity and no preview prefix (design C10).
+func noticeFinding(r admission.NoticeRecord, now time.Time, live bool) alert.Finding {
 	var b strings.Builder
 	fmt.Fprintf(&b, "events=%d first=%s last=%s", r.Unsent(), r.First.UTC().Format(time.RFC3339), r.Last.UTC().Format(time.RFC3339))
 	if r.Key.Kind.Keyed() && r.Key.Fixed() {
@@ -249,5 +265,16 @@ func noticeFinding(r admission.NoticeRecord, now time.Time) alert.Finding {
 		}
 		b.WriteString(" examples=" + strings.Join(ids, ","))
 	}
+	if live {
+		return alert.Finding{Check: r.Key.Kind.Check(), Severity: alertSeverity(r.Key.Kind), Message: noticeMessages[r.Key.Kind], Details: b.String(), Timestamp: now}
+	}
 	return alert.Finding{Check: r.Key.Kind.Check(), Severity: alert.Warning, Message: "Admission preview: " + noticeMessages[r.Key.Kind], Details: b.String(), Timestamp: now}
+}
+
+// alertSeverity is the severity a notice of k alerts with.
+func alertSeverity(k admission.NoticeKind) alert.Severity {
+	if k.Severity() == admission.SeverityCritical {
+		return alert.Critical
+	}
+	return alert.Warning
 }
