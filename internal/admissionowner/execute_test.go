@@ -657,12 +657,12 @@ func TestOwnerFinishesLaterMembersAfterOneFinishFails(t *testing.T) {
 	previous := finishLedger
 	calls := 0
 	failure := errors.New("outcome store unavailable")
-	setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+	setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 		calls++
 		if calls == 1 {
 			return admission.Candidate{}, admission.AttemptRecord{}, failure
 		}
-		return previous(l, id, d)
+		return previous(l, id, d, lead)
 	})
 	ids := []admission.CandidateID{}
 	for _, addr := range []string{"192.0.2.10", "192.0.2.11"} {

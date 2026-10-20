@@ -1156,3 +1156,95 @@ func TestAdmissionLedgerOnlyAVerifiedBlockEndsItsEpisode(t *testing.T) {
 		}
 	}
 }
+
+// An attempt whose expiry was set on the engine's lease clock, lead ahead
+// of admission time, ends its verified episode when its kernel element
+// expires in admission time: the expiry less the lead (design C6). The
+// block keeps its engine expiry. A lead at or below zero ends the episode
+// at the expiry itself, never later. A lead longer than the block's life
+// ends the episode at once: the next observation opens a new one.
+func TestAdmissionLedgerVerifiedEpisodeEndsInAdmissionTime(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		lead, end time.Duration
+	}{
+		{"ahead", 30 * time.Minute, 20 * time.Minute},
+		{"level", 0, 50 * time.Minute},
+		{"behind", -time.Minute, 50 * time.Minute},
+		{"past", 2 * time.Hour, -70 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newLedgerFixture(t)
+			f.begin()
+			first := f.arrive(f.arrival(evidenceSpec{cursor: "offset=1"}))[0].Candidate
+			expires := ledgerT0.Add(50 * time.Minute)
+			_, a, _, err := f.l.Reserve(first, admission.LaneGeneral, expires)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, _, err = f.l.Execute(a.Attempt.ID); err != nil {
+				t.Fatal(err)
+			}
+			if in := f.intents()[a.Attempt.ID]; !in.ExpiresAt.Equal(expires) {
+				t.Fatalf("intent expiry = %v, want %v", in.ExpiresAt, expires)
+			}
+			if _, _, err = f.l.FinishOnLease(a.Attempt.ID, admission.DispositionApplied, tc.lead); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := f.l.Attempt(a.Attempt.ID); err != nil || !got.ExpiresAt.Equal(expires) {
+				t.Fatalf("attempt expiry = %v, error %v", got.ExpiresAt, err)
+			}
+			rows := f.pendingAudit()
+			if len(rows) != 3 {
+				t.Fatalf("audit rows = %d, want reserve, execute and finish", len(rows))
+			}
+			for _, row := range rows {
+				if !row.ExpiresAt.Equal(expires) {
+					t.Fatalf("audit expiry = %v, want %v", row.ExpiresAt, expires)
+				}
+			}
+			if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+				t.Fatalf("reopen with converted episode: %v", err)
+			}
+			end := ledgerT0.Add(tc.end)
+			if row, _ := f.episodeAt("192.0.2.10"); !row.Verified.Equal(end) {
+				t.Fatalf("verified end = %v, want %v", row.Verified, end)
+			}
+			if c := f.candidateOf(first); !c.ExpiresAt.Equal(expires) {
+				t.Fatalf("the block's expiry moved to %v", c.ExpiresAt)
+			}
+			if end.After(f.wall) {
+				f.tickAt(end.Add(-time.Second))
+				wantLedgerReason(t, "before the end", f.arrive(f.arrival(evidenceSpec{cursor: "offset=2"}))[0].Err, admission.ReasonExistingEffect)
+				f.tickAt(end)
+			} else {
+				f.tickAt(f.wall.Add(time.Second))
+			}
+			if next := f.arrive(f.arrival(evidenceSpec{cursor: "offset=3"}))[0]; next.Err != nil || !next.Created {
+				t.Fatalf("at the end = %+v", next)
+			}
+		})
+	}
+}
+
+// The converted episode boundary cannot retire an unknown lease early.
+// Reopening must still prove both the audit time and retired flag.
+func TestAdmissionLedgerLeaseRetirementProofSurvivesConversion(t *testing.T) {
+	f := newLedgerFixture(t)
+	expires := ledgerT0.Add(2 * time.Hour)
+	u := f.unknownAt("192.0.2.114", expires)
+	f.ackAll()
+	f.tickAt(ledgerT0.Add(time.Hour))
+	_, _, _, err := f.l.RetireUnproven(u.Attempt.ID)
+	wantLedgerErr(t, "converted boundary is too early", err, admission.ErrNotReady)
+	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatalf("reopen before lease expiry: %v", err)
+	}
+	f.tickAt(expires)
+	if _, a, changed, err := f.l.RetireUnproven(u.Attempt.ID); err != nil || !changed || !a.Retired || !a.ExpiresAt.Equal(expires) {
+		t.Fatalf("retirement at lease expiry = %+v, %v, %v", a, changed, err)
+	}
+	if _, err := OpenAdmissionLedger(f.db, f.reg); err != nil {
+		t.Fatalf("reopen after lease retirement: %v", err)
+	}
+}

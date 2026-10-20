@@ -59,7 +59,7 @@ var (
 	// executeLedger records a batch as running; tests make it refuse.
 	executeLedger   = (*store.AdmissionLedger).ExecuteBatch
 	reserveLedger   = (*store.AdmissionLedger).Reserve
-	finishLedger    = (*store.AdmissionLedger).Finish
+	finishLedger    = (*store.AdmissionLedger).FinishOnLease
 	terminateLedger = (*store.AdmissionLedger).Terminate
 	// finishExistingLedger and terminateExistingLedger end a pick linked to
 	// the block that already enforces it; tests make them fail.

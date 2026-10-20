@@ -515,7 +515,12 @@ new episode, so a retired candidate's ID is never minted again. A
 verified block ends its episode at the block's original expiry instead of
 an hour after the last observation, even while work of another kind is
 queued or in flight; an unknown outcome or a response of another kind does
-not end it.
+not end it. The expiry is set on the engine's lease clock, which after a
+wall clock step back leads admission time; the owner passes that lead to
+`FinishOnLease`, so the episode ends when the kernel element expires in
+admission time, and an isolated member's isolation ends the same way.
+Retirement and retry staleness stay on the lease frame: late retirement
+only holds an address longer, and the engine refuses an expired member.
 
 A candidate refused as an existing effect can name the block that enforces
 it: the admission action that wrote it, or the firewall's `eff_` name of an

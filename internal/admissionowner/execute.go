@@ -58,6 +58,10 @@ type pendingFinish struct {
 	// block instead of retrying against it.
 	existing bool
 	member   firewall.BlockMember
+	// lead is how far the engine's lease clock ran ahead of admission
+	// time when the member ran: its block ends that much earlier in
+	// admission time (design C6).
+	lead time.Duration
 }
 
 // refusalReasons are the admission reasons for the engine's refusals of a
@@ -101,6 +105,7 @@ func (o *Owner) execute(picks []execPick) error {
 	// After a step back the engine's clock leads the wall clock: an expiry
 	// set on the admission clock would lose that lead from its lifetime.
 	lease := engine.LeaseNow()
+	lead := lease.Sub(o.now)
 	if o.policy.VerdictEnabled {
 		var err error
 		if picks, err = o.gateVerdicts(engine, picks, lease); err != nil || len(picks) == 0 {
@@ -225,7 +230,7 @@ func (o *Owner) execute(picks []execPick) error {
 			id: ids[k], disposition: effectDisposition(r.Effect),
 			rejected: r.Effect == firewall.BlockFailed && errors.Is(r.Err, firewall.ErrBlockBatchRejected),
 			existing: r.Effect == firewall.BlockFailed && r.Refusal == firewall.BlockRefusedExisting,
-			member:   batch[k],
+			member:   batch[k], lead: lead,
 		})
 	}
 	switch {
@@ -600,7 +605,7 @@ func (o *Owner) finishPending() error {
 			}
 		}
 		if !linked {
-			c, a, finishErr = finishLedger(o.ledger, outcome.id, outcome.disposition)
+			c, a, finishErr = finishLedger(o.ledger, outcome.id, outcome.disposition, outcome.lead)
 		}
 		if finishErr != nil {
 			err = errors.Join(err, fmt.Errorf("finishing %s: %w", outcome.id, finishErr))
@@ -620,7 +625,8 @@ func (o *Owner) finishPending() error {
 			if o.isolated == nil {
 				o.isolated = map[admission.CandidateID]time.Time{}
 			}
-			expires := c.ExpiresAt
+			// Isolation lasts the block's lifetime in admission time.
+			expires := c.ExpiresAt.Add(-max(outcome.lead, 0))
 			if c.AgeOut.Before(expires) {
 				expires = c.AgeOut
 			}

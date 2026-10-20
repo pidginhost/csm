@@ -720,12 +720,12 @@ func TestOwnerFinishesLiveWorkAfterAFlipToDryRun(t *testing.T) {
 	o, r, mono := policyOwner(t, f, blocks, validPolicy(1))
 	failed := false
 	finish := finishLedger
-	setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+	setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 		if d == admission.DispositionApplied && !failed {
 			failed = true
 			return admission.Candidate{}, admission.AttemptRecord{}, errors.New("disk full")
 		}
-		return finish(l, id, d)
+		return finish(l, id, d, lead)
 	})
 	applied, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 	unknown, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.11")

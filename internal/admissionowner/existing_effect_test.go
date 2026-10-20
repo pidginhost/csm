@@ -46,12 +46,12 @@ func TestOwnerExistingEffectWriteFailuresConverge(t *testing.T) {
 				}
 				return finishExisting(l, id, link)
 			})
-			setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+			setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 				if failFinish {
 					failFinish = false
 					return admission.Candidate{}, admission.AttemptRecord{}, failure
 				}
-				return finish(l, id, d)
+				return finish(l, id, d, lead)
 			})
 			setOwnerHook(t, o, &terminateExistingLedger, func(l *store.AdmissionLedger, id admission.CandidateID, link admission.EffectLink) (admission.Candidate, error) {
 				if failTerminate {
@@ -274,12 +274,12 @@ func TestOwnerExistingEffectFallbackClearsPending(t *testing.T) {
 				}
 				return admission.Candidate{}, admission.AttemptRecord{}, failure
 			})
-			setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, action admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+			setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, action admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 				plainCalls++
 				if tc.delayed && plainCalls == 1 {
 					return admission.Candidate{}, admission.AttemptRecord{}, failure
 				}
-				return finish(l, action, d)
+				return finish(l, action, d, lead)
 			})
 			setOwnerHook(t, o, &terminateExistingLedger, func(l *store.AdmissionLedger, candidateID admission.CandidateID, link admission.EffectLink) (admission.Candidate, error) {
 				terminateCalls++

@@ -526,13 +526,23 @@ func (l *AdmissionLedger) attemptStep(op string, id admission.ActionID, now func
 // unknown outcome ends it without a retry. An ended candidate releases its
 // queue position in the same transaction. A preview is recorded by Observe.
 func (l *AdmissionLedger) Finish(id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+	return l.FinishOnLease(id, d, 0)
+}
+
+// FinishOnLease is Finish for an attempt whose expiry was set on the
+// engine's lease clock, lead ahead of admission time when it ran. A
+// verified block's episode ends when its kernel element expires in
+// admission time, its expiry less the lead (design C6); the block keeps
+// its expiry. A lead at or below zero ends the episode at the expiry
+// itself, never later.
+func (l *AdmissionLedger) FinishOnLease(id admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 	switch d {
 	case admission.DispositionApplied, admission.DispositionNarrowed, admission.DispositionFailed, admission.DispositionUnknown:
 	default:
 		return admission.Candidate{}, admission.AttemptRecord{}, refusal(admission.ReasonInvalid, "disposition is not an attempt outcome")
 	}
 	cand, att, _, err := l.attemptStep("finish", id, l.recordedClock, func(q *queueTx, a *admission.AttemptRecord, c *admission.Candidate) (bool, error) {
-		return q.finishAttempt(a, c, d)
+		return q.finishAttempt(a, c, d, lead)
 	})
 	return cand, att, err
 }
@@ -575,7 +585,7 @@ func (l *AdmissionLedger) FinishExisting(id admission.ActionID, link admission.E
 			return loadErr
 		}
 		from := c.State
-		changed, stepErr := q.finishAttempt(&a, &c, admission.DispositionFailed)
+		changed, stepErr := q.finishAttempt(&a, &c, admission.DispositionFailed, 0)
 		if stepErr != nil {
 			return stepErr
 		}
@@ -661,7 +671,7 @@ func (l *AdmissionLedger) Settle() (failed, unknown int, err error) {
 			} else {
 				failed++
 			}
-			if _, txErr = q.finishAttempt(&a, &c, d); txErr != nil {
+			if _, txErr = q.finishAttempt(&a, &c, d, 0); txErr != nil {
 				return txErr
 			}
 			c.Transitions++
@@ -705,7 +715,7 @@ func (l *AdmissionLedger) Observe(id admission.CandidateID, lane admission.Lane,
 			return txErr
 		}
 		from := c.State
-		if _, txErr = q.finishAttempt(&a, &c, admission.DispositionObserve); txErr != nil {
+		if _, txErr = q.finishAttempt(&a, &c, admission.DispositionObserve, 0); txErr != nil {
 			return txErr
 		}
 		if !admission.CanTransition(from, c.State) {
@@ -728,7 +738,7 @@ func (l *AdmissionLedger) Observe(id admission.CandidateID, lane admission.Lane,
 // finishAttempt records outcome d of the candidate's current attempt a and
 // reports whether it changed anything. The caller counts the transition
 // and stores both records.
-func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candidate, d admission.Disposition) (bool, error) {
+func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candidate, d admission.Disposition, lead time.Duration) (bool, error) {
 	var state admission.State
 	switch d {
 	case admission.DispositionApplied, admission.DispositionNarrowed:
@@ -810,7 +820,7 @@ func (q *queueTx) finishAttempt(a *admission.AttemptRecord, c *admission.Candida
 		return false, err
 	}
 	if c.State == admission.StateVerified {
-		if err = q.closeEpisode(*c); err != nil {
+		if err = q.closeEpisode(*c, lead); err != nil {
 			return false, err
 		}
 		err = q.raise(admission.NoticeKey{Kind: admission.NoticeAppliedSummary}, a.Attempt.Candidate, c.Transitions+1)

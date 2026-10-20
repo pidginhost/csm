@@ -88,12 +88,12 @@ func killEngine(_ *testing.T, _ *Owner, blocks *fakeBlocks) {
 func killFinish(n int, committed bool) func(*testing.T, *Owner, *fakeBlocks) {
 	return func(t *testing.T, o *Owner, _ *fakeBlocks) {
 		finish, calls := finishLedger, 0
-		setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+		setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 			if calls++; calls != n {
-				return finish(l, id, d)
+				return finish(l, id, d, lead)
 			}
 			if committed {
-				if _, _, err := finish(l, id, d); err != nil {
+				if _, _, err := finish(l, id, d, lead); err != nil {
 					t.Errorf("finishing %s: %v", id, err)
 				}
 			}
