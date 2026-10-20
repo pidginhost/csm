@@ -2526,6 +2526,9 @@ func (e *Engine) PromoteToPermanentBlockWithFindingID(ip, reason, findingID stri
 	wasTemporary := false
 	for _, b := range priorState.Blocked {
 		if sameIPString(b.IP, ip) && !b.Unverified {
+			if b.ActionID != "" {
+				return fmt.Errorf("cannot promote %s: %w", ip, ErrAdmissionOwnsBlock)
+			}
 			found = true
 			wasTemporary = !b.ExpiresAt.IsZero()
 			entry.BlockedAt = b.BlockedAt
@@ -2927,6 +2930,12 @@ func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipEx
 
 	cachedBlockMissingLive := false
 	if skipExisting && firewallStateHasBlocked(st, ip) {
+		// An automatic block never replaces a row an admission action
+		// wrote, even one whose element is gone or unproven: the owner
+		// retires it (design C8).
+		if row, _ := blockedStateEntry(st, ip); row.ActionID != "" {
+			return targetSet, key, true, "", nil
+		}
 		liveBlocked, liveErr := e.isBlockedLiveLocked(ip)
 		if liveErr != nil || liveBlocked {
 			// Treat a probe error as "still blocked" so we never demote a
@@ -2980,7 +2989,7 @@ func (e *Engine) blockIPTargetFromState(ip string, timeout time.Duration, skipEx
 		if timeout > 0 && e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit {
 			// Validation must stay read-only because verdict and dry-run gates run
 			// after it. The live block path applies this eviction target.
-			victim, ok := e.evictionVictimLocked(st, ip)
+			victim, ok := e.evictionVictimLocked(st, ip, skipExisting)
 			if !ok {
 				return nil, nil, false, "", fmt.Errorf("temporary deny limit reached (%d) and no temp entry to evict", e.cfg.DenyTempIPLimit)
 			}

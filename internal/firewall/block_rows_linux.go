@@ -85,9 +85,11 @@ func (e *Engine) BlockActionsUnproven() error {
 }
 
 // evictionVictimLocked picks the temporary block a new one replaces at the
-// cap, leaving out the rows of unproven attempts.
-func (e *Engine) evictionVictimLocked(st FirewallState, excludeIP string) (string, bool) {
-	if e.blockActionsUnproven != nil {
+// cap. It leaves out the rows admission actions wrote while their attempts
+// are unproven, and always for an automatic block, which never removes a
+// block admission owns (design C8).
+func (e *Engine) evictionVictimLocked(st FirewallState, excludeIP string, automatic bool) (string, bool) {
+	if e.blockActionsUnproven != nil || automatic {
 		var kept []BlockedEntry
 		for _, row := range st.Blocked {
 			if row.ActionID == "" {

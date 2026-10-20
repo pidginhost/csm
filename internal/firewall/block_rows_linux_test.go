@@ -495,7 +495,7 @@ func TestUnprovenBlockActionsAreNeverEvicted(t *testing.T) {
 	}}
 	e := &Engine{statePath: t.TempDir(), cfg: &FirewallConfig{}, expiryClock: func() time.Time { return at }}
 	e.mu.Lock()
-	victim, ok := e.evictionVictimLocked(state, "")
+	victim, ok := e.evictionVictimLocked(state, "", false)
 	e.mu.Unlock()
 	if !ok || victim != "192.0.2.30" {
 		t.Fatalf("victim = %q, %t; want the soonest row while the ledger was read", victim, ok)
@@ -512,8 +512,8 @@ func TestUnprovenBlockActionsAreNeverEvicted(t *testing.T) {
 		t.Fatalf("BlockActionsUnproven = %v, want the cause", e.BlockActionsUnproven())
 	}
 	e.mu.Lock()
-	victim, ok = e.evictionVictimLocked(state, "")
-	onlyActions, onlyOK := e.evictionVictimLocked(FirewallState{Blocked: state.Blocked[:1]}, "")
+	victim, ok = e.evictionVictimLocked(state, "", false)
+	onlyActions, onlyOK := e.evictionVictimLocked(FirewallState{Blocked: state.Blocked[:1]}, "", false)
 	e.mu.Unlock()
 	if !ok || victim != "203.0.113.30" || onlyOK {
 		t.Fatalf("victims = %q, %t and %q, %t; want only the row no attempt wrote", victim, ok, onlyActions, onlyOK)

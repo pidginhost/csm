@@ -15,6 +15,10 @@ var ErrPermanentBlock = errors.New("IP is permanently blocked; unblock it explic
 // ErrLongerBlock requires an explicit unblock before shortening a timed block.
 var ErrLongerBlock = errors.New("IP has a longer block; unblock it explicitly before shortening its lifetime")
 
+// ErrAdmissionOwnsBlock refuses an automatic rewrite of a block an
+// admission action wrote: its owner retires it (design C8).
+var ErrAdmissionOwnsBlock = errors.New("an admission action owns the block")
+
 // ErrBlockChanged prevents undo from replacing a later firewall decision.
 var ErrBlockChanged = errors.New("block changed since the action; undo is no longer available")
 

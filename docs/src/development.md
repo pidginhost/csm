@@ -769,6 +769,12 @@ tracker entries. They do not count as enforced blocks or select threat evidence
 for operator flush cleanup. Live deny limits count their kernel elements using
 kernel timeouts rather than the unresolved rows' requested lifetimes, including
 replacement accounting. Permanent promotion requires a verified block row.
+A row an admission action wrote belongs to the owner: an automatic legacy
+block of its address ends as already blocked, even when the row is unproven
+or its element is gone, never evicts it at the temporary cap, and permanent
+promotion refuses it (`ErrAdmissionOwnsBlock`). Operator blocks, unblocks,
+allows, flushes and undo keep their authority over it. This build does not execute admission batches; the guard also protects any
+action rows already present in restored state.
 An executed admission block writes no legacy tracker (`blocked_ips.json`)
 entry. Reputation, alert suppression and its injected loader, flush cleanup,
 threat lookups and the blocked list read the verified firewall row instead,
