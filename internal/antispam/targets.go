@@ -34,10 +34,52 @@ const (
 	// or map redirect needs it. A file CSM cannot own never blocks core: the
 	// daemon leaves the feed or redirect out instead (feeds spec 5.3).
 	TargetRspamdOptional
+	// TargetLuaOptional is an rspamd Lua plugin CSM owns outright while
+	// learning needs it. Its marker is a Lua comment.
+	TargetLuaOptional
+	// TargetRoundcube is the webmail include CSM owns outright while
+	// learning sets the Junk button's folder. It needs no service reload.
+	TargetRoundcube
 )
 
+// RoundcubeIncludePath is the Roundcube include that points the Junk button
+// at the Spam folder learning reads (spec 6.4).
+const RoundcubeIncludePath = "/usr/local/cpanel/base/3rdparty/roundcube/config/inc.d/zz-csm-antispam.inc.php"
+
 // WholeFile reports whether CSM owns the target's entire content.
-func (k TargetKind) WholeFile() bool { return k == TargetRspamd || k == TargetRspamdOptional }
+func (k TargetKind) WholeFile() bool {
+	return k == TargetRspamd || k.Optional()
+}
+
+// Optional reports whether CSM writes the target only while a feature
+// needs it; the daemon decides whether it may (OptionalUsable).
+func (k TargetKind) Optional() bool {
+	return k == TargetRspamdOptional || k == TargetLuaOptional || k == TargetRoundcube
+}
+
+// ReloadsRspamd reports whether a change to the target needs an rspamd
+// reload.
+func (k TargetKind) ReloadsRspamd() bool {
+	return k == TargetRspamd || k == TargetRspamdOptional || k == TargetLuaOptional
+}
+
+// ManagedFor reports whether content is a whole file CSM wrote for a target
+// of kind k, by the marker that kind's syntax allows. Shared Exim files
+// carry blocks, never a whole-file marker.
+func ManagedFor(k TargetKind, content string) bool {
+	switch k {
+	case TargetRspamd, TargetRspamdOptional:
+		return IsManaged(content)
+	case TargetLuaOptional:
+		first, _, _ := strings.Cut(content, "\n")
+		return first == LuaManagedHeader
+	case TargetRoundcube:
+		first, rest, _ := strings.Cut(content, "\n")
+		second, _, _ := strings.Cut(rest, "\n")
+		return first == "<?php" && second == ManagedHeader
+	}
+	return false
+}
 
 // Target is one file CSM writes.
 type Target struct {
@@ -49,14 +91,23 @@ type Target struct {
 // transaction (spec section 6.3).
 func MutationTargets() []Target {
 	optional := OptionalRspamdPaths()
-	out := make([]Target, 0, len(RspamdFiles)+len(optional)+4)
+	learning := LearningPaths()
+	out := make([]Target, 0, len(RspamdFiles)+len(optional)+len(learning)+5)
 	for _, name := range RspamdFiles {
 		out = append(out, Target{Path: path.Join(RspamdLocalDir, name), Kind: TargetRspamd})
 	}
 	for _, p := range optional {
 		out = append(out, Target{Path: p, Kind: TargetRspamdOptional})
 	}
+	for _, p := range learning {
+		kind := TargetRspamdOptional
+		if p == LearningLuaPath {
+			kind = TargetLuaOptional
+		}
+		out = append(out, Target{Path: p, Kind: kind})
+	}
 	return append(out,
+		Target{Path: RoundcubeIncludePath, Kind: TargetRoundcube},
 		Target{Path: HookRCPTPath, Kind: TargetEximHook},
 		Target{Path: HookScanPath, Kind: TargetEximHook},
 		Target{Path: HookPostPath, Kind: TargetEximHook},
@@ -107,7 +158,7 @@ func checkTargets(targets []TargetFacts, removal bool) []Problem {
 	for _, t := range targets {
 		// Optional files are the daemon's to judge (OptionalUsable). Removal
 		// edits only files CSM wrote, and must not do so through an unsafe path.
-		if t.Kind == TargetRspamdOptional && (!removal || !IsManaged(t.Content)) {
+		if t.Kind.Optional() && (!removal || !ManagedFor(t.Kind, t.Content)) {
 			continue
 		}
 		safe := true
@@ -131,7 +182,7 @@ func checkTargets(targets []TargetFacts, removal bool) []Problem {
 		// A later read error must not hide unsafe metadata already collected.
 		// Removal only deletes an optional file, which needs a safe
 		// directory, not a safe file: a loosened one must still go.
-		if !t.Missing && t.File.Path != "" && (!removal || t.Kind != TargetRspamdOptional) {
+		if !t.Missing && t.File.Path != "" && (!removal || !t.Kind.Optional()) {
 			if !t.File.Mode.IsRegular() {
 				add(CodeTargets, Definite, "%s is not a regular file; CSM does not write through symbolic links", t.Path)
 				continue
@@ -161,8 +212,8 @@ func checkTargets(targets []TargetFacts, removal bool) []Problem {
 			continue
 		}
 		switch t.Kind {
-		case TargetRspamd, TargetRspamdOptional:
-			if !removal && !IsManaged(t.Content) {
+		case TargetRspamd, TargetRspamdOptional, TargetLuaOptional, TargetRoundcube:
+			if !removal && !ManagedFor(t.Kind, t.Content) {
 				add(CodeTargets, Definite, "%s is not managed by CSM; remove or rename it so CSM can write its own", t.Path)
 			}
 		case TargetEximLocal:

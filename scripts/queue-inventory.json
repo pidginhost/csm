@@ -198,6 +198,39 @@
       "rationale": "Completes bounded HTTP response-body draining after the webhook attempt; carries no finding."
     },
     {
+      "id": "internal/antispam/learn/engine.go::*Engine.do::done::channel::1",
+      "path": "internal/antispam/learn/engine.go",
+      "owner": "*Engine.do",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Closed by the learning engine goroutine when it has served one request. After handoff the caller waits for completion, including cancellation, before reusing its snapshot or reading the result."
+    },
+    {
+      "id": "internal/antispam/learn/engine.go::NewEngine::done::channel::1",
+      "path": "internal/antispam/learn/engine.go",
+      "owner": "NewEngine",
+      "target": "done",
+      "kind": "channel",
+      "source": "make(chan struct{})",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Closed when the learning engine goroutine exits, so waiting callers return."
+    },
+    {
+      "id": "internal/antispam/learn/engine.go::NewEngine::requests::channel::1",
+      "path": "internal/antispam/learn/engine.go",
+      "owner": "NewEngine",
+      "target": "requests",
+      "kind": "channel",
+      "source": "make(chan request)",
+      "capacity": "0",
+      "class": "lifecycle",
+      "rationale": "Hands one report or operator request to the learning engine goroutine, the only writer of the learning ledger; the caller waits for the engine and holds its own snapshot. Nothing queues."
+    },
+    {
       "id": "internal/antispam/reconcile/loop.go::NewLoop::wake::channel::1",
       "path": "internal/antispam/reconcile/loop.go",
       "owner": "NewLoop",

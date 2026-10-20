@@ -1662,12 +1662,19 @@ type ForwardGuardConfig struct {
 // the master switch (default off); DryRun (default true) scans and logs
 // without changing delivery.
 type AntispamConfig struct {
-	Enabled      bool                `yaml:"enabled"`
-	DryRun       bool                `yaml:"dry_run"`
-	RspamdSocket string              `yaml:"rspamd_socket"`
-	RejectScore  int                 `yaml:"reject_score"`
-	TagScore     int                 `yaml:"tag_score"`
-	Feeds        AntispamFeedsConfig `yaml:"feeds"`
+	Enabled      bool                   `yaml:"enabled"`
+	DryRun       bool                   `yaml:"dry_run"`
+	RspamdSocket string                 `yaml:"rspamd_socket"`
+	RejectScore  int                    `yaml:"reject_score"`
+	TagScore     int                    `yaml:"tag_score"`
+	Feeds        AntispamFeedsConfig    `yaml:"feeds"`
+	Learning     AntispamLearningConfig `yaml:"learning"`
+}
+
+// AntispamLearningConfig turns on learning from the mail users move to
+// their Spam folder. It requires antispam and is off by default.
+type AntispamLearningConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // AntispamFeedsConfig selects optional anti-spam data sources. Every feed
@@ -2408,6 +2415,11 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 			return presence, err
 		}
 	}
+	if node, ok := as["learning"]; ok && !yamlNodeIsNull(&node) {
+		if err := validateAntispamLearningTypes(node); err != nil {
+			return presence, err
+		}
+	}
 	presence.antispam = antispamPresence{
 		dryRun:      set("dry_run"),
 		socket:      set("rspamd_socket"),
@@ -2556,6 +2568,10 @@ func applyAntispamDefaults(as *AntispamConfig, p antispamPresence) {
 // operator from turning filtering off; YAML type errors still fail the load.
 func validateAntispam(cfg *Config) error {
 	as := cfg.EmailProtection.Antispam
+	// Checked even when antispam is off: learning has nothing to run on.
+	if as.Learning.Enabled && !as.Enabled {
+		return errors.New("email_protection.antispam.learning.enabled requires email_protection.antispam.enabled")
+	}
 	if !as.Enabled {
 		return nil
 	}

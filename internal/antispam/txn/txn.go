@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/user"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,9 +43,22 @@ const (
 	StepEximBuild     = "exim_build"
 	StepEximReload    = "exim_reload"
 	StepEximProbe     = "exim_probe"
+	StepRoundcube     = "roundcube_files"
 	StepComplete      = "complete"
 	StepFeedsCheck    = antispam.FeedsCheckStep
+	StepLearningCheck = antispam.LearningCheckStep
+	StepLearningProbe = antispam.LearningProbeStep
 )
+
+// errLearningLoaded distinguishes learning verification failures.
+var errLearningLoaded = errors.New("rspamd's loaded learning configuration could not be verified against CSM's files")
+
+// errLearningProbe marks a learning check that could not read rspamd's
+// loaded configuration at all.
+var errLearningProbe = errors.New("rspamd's loaded learning configuration could not be read")
+
+// maxSymbolsReply bounds the controller's /symbols reply.
+const maxSymbolsReply = 4 << 20
 
 // errFeedsLoaded distinguishes feed verification failures from core failures.
 var errFeedsLoaded = errors.New("rspamd feed rules could not be verified against CSM's settings")
@@ -58,8 +73,12 @@ type Host struct {
 	preflight func(ctx context.Context, s antispam.Settings) (antispam.HostFacts, []antispam.Problem)
 	targets   func() []antispam.TargetFacts
 	ping      func(ctx context.Context, socket string) error
-	greet     func(ctx context.Context, addr string) error
-	now       func() time.Time
+	// unprivileged returns the uid and gid Roundcube's PHP runs as.
+	unprivileged func() (uid, gid int, err error)
+	// controllerGet reads one controller path over a private Unix socket.
+	controllerGet func(ctx context.Context, socket, path string, limit int64, peer int) ([]byte, error)
+	greet         func(ctx context.Context, addr string) error
+	now           func() time.Time
 	// rspamdWait and eximWait bound the service probes after a reload.
 	rspamdWait, eximWait time.Duration
 }
@@ -74,6 +93,9 @@ func New() *Host {
 			if s.HasFeed(antispam.FeedSpamhausDQS) {
 				f.DQSKey = hostfacts.ReadDQSKey(s.DQSKeyFile)
 			}
+			if s.Learning {
+				f.LearningKeys, f.LearningKeysErr = hostfacts.LoadLearningKeys(s.LearningDir)
+			}
 			return f, antispam.CheckHost(f)
 		},
 		targets: func() []antispam.TargetFacts { return hostfacts.Targets(antispam.MutationTargets()) },
@@ -81,10 +103,12 @@ func New() *Host {
 			_, err := hostfacts.Ping(ctx, socket)
 			return err
 		},
-		greet:      smtpGreeting,
-		now:        time.Now,
-		rspamdWait: rspamdWait,
-		eximWait:   eximWait,
+		greet:         smtpGreeting,
+		controllerGet: hostfacts.ControllerGet,
+		unprivileged:  nobody,
+		now:           time.Now,
+		rspamdWait:    rspamdWait,
+		eximWait:      eximWait,
 	}
 }
 
@@ -190,7 +214,7 @@ func plan(targets []antispam.TargetFacts, managed map[string]string) ([]change, 
 	for _, t := range targets {
 		before := fileState{exists: !t.Missing, content: t.Content}
 		switch {
-		case t.Kind == antispam.TargetRspamdOptional && managed != nil:
+		case t.Kind.Optional() && managed != nil:
 			want, wanted := managed[t.Path]
 			switch {
 			case wanted:
@@ -202,7 +226,7 @@ func plan(targets []antispam.TargetFacts, managed map[string]string) ([]change, 
 				if !sameContent(before, fileState{exists: true, content: want}) {
 					out = append(out, change{t, fileState{exists: true, content: want}})
 				}
-			case !t.Missing && antispam.IsManaged(t.Content):
+			case !t.Missing && antispam.ManagedFor(t.Kind, t.Content):
 				out = append(out, change{t, fileState{}})
 			}
 		case t.Kind.WholeFile() && managed != nil:
@@ -210,7 +234,7 @@ func plan(targets []antispam.TargetFacts, managed map[string]string) ([]change, 
 				out = append(out, change{t, fileState{exists: true, content: want}})
 			}
 		case t.Kind.WholeFile():
-			if !t.Missing && antispam.IsManaged(t.Content) {
+			if !t.Missing && antispam.ManagedFor(t.Kind, t.Content) {
 				out = append(out, change{t, fileState{}})
 			}
 		case t.Missing && managed == nil:
@@ -231,38 +255,50 @@ func plan(targets []antispam.TargetFacts, managed map[string]string) ([]change, 
 	return out, nil
 }
 
-// secureSecret gives override.d/rbl.conf the group and mode that keep the
-// DQS key from other users, also when only its mode or group is wrong.
+// secureSecret gives each secret file in paths the group and mode that keep
+// its secret from other users, also when only its mode or group is wrong.
 // The worker runs as root, so uid -1 keeps root as owner.
-func secureSecret(changes []change, targets []antispam.TargetFacts, gid int) []change {
+func secureSecret(changes []change, targets []antispam.TargetFacts, gid int, paths []string) []change {
 	meta := func(content string) fileState {
 		return fileState{exists: true, content: content, uid: -1, gid: gid, perm: antispam.SecretFileMode, metadata: true}
 	}
+	for _, p := range paths {
+		changes = secureOne(changes, targets, p, meta)
+	}
+	return changes
+}
+
+func secureOne(changes []change, targets []antispam.TargetFacts, p string, meta func(string) fileState) []change {
 	for i, c := range changes {
-		if c.target.Path == antispam.FeedRBLPath && c.next.exists {
+		if c.target.Path == p && c.next.exists {
 			changes[i].next = meta(c.next.content)
 			return changes
 		}
 	}
 	for _, t := range targets {
-		if t.Path == antispam.FeedRBLPath && !t.Missing &&
-			(t.File.GID != gid || t.File.Mode != antispam.SecretFileMode) {
-			return append(changes, change{t, meta(t.Content)})
+		if t.Path == p && !t.Missing {
+			if want := meta(t.Content); t.File.GID != want.gid || t.File.Mode != antispam.SecretFileMode {
+				return append(changes, change{t, want})
+			}
 		}
 	}
 	return changes
 }
 
-// split separates rspamd edits from Exim edits.
-func split(changes []change) (rspamd, exim []change) {
+// split separates edits that need an rspamd reload, edits that need an Exim
+// rebuild, and Roundcube edits that need neither.
+func split(changes []change) (rspamd, exim, roundcube []change) {
 	for _, c := range changes {
-		if c.target.Kind.WholeFile() {
+		switch {
+		case c.target.Kind.ReloadsRspamd():
 			rspamd = append(rspamd, c)
-		} else {
+		case c.target.Kind == antispam.TargetRoundcube:
+			roundcube = append(roundcube, c)
+		default:
 			exim = append(exim, c)
 		}
 	}
-	return rspamd, exim
+	return rspamd, exim, roundcube
 }
 
 // write applies one planned edit unless another writer changed the file
@@ -559,6 +595,9 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 	if err != nil {
 		return errors.New("rspamadm configdump -m: rspamd configuration conflict")
 	}
+	if s.Learning && !enabled["fuzzy_check"] {
+		return errors.Join(errLearningLoaded, errors.New("rspamd module fuzzy_check is disabled"))
+	}
 	acts := t.cmd(ctx, commandLimit, "rspamadm", "configdump", "-j", "actions")
 	if acts.Err != nil {
 		return cmdErr("rspamadm configdump -j actions", acts)
@@ -598,6 +637,63 @@ func (t *tx) checkRspamd(ctx context.Context, s *antispam.Settings) error {
 		}
 	}
 	return nil
+}
+
+// checkLearning compares what rspamd loaded after the reload with CSM's
+// learning files, including the effective weight only the controller shows.
+// Errors carry no command output: the dumps hold keys.
+func (t *tx) checkLearning(ctx context.Context, f antispam.HostFacts, keys antispam.LearningKeys) error {
+	socket, ok := antispam.PrivateControllerSocket(f)
+	if !ok {
+		return errors.Join(errLearningLoaded, errors.New("learning needs one private controller socket"))
+	}
+	dump := func(args ...string) (string, error) {
+		r := t.cmd(ctx, commandLimit, "rspamadm", append([]string{"configdump", "-j"}, args...)...)
+		if r.Err != nil {
+			return "", errors.Join(errLearningProbe, cmdErr("rspamadm configdump -j "+strings.Join(args, " "), r))
+		}
+		return r.Stdout, nil
+	}
+	fuzzyCheck, err := dump("fuzzy_check")
+	if err != nil {
+		return err
+	}
+	full, err := dump()
+	if err != nil {
+		return err
+	}
+	group, err := dump("group")
+	if err != nil {
+		return err
+	}
+	acts, err := dump("actions")
+	if err != nil {
+		return err
+	}
+	root, err := antispam.ParseRspamdDumpObject([]byte(full))
+	if err != nil {
+		return errors.Join(errLearningLoaded, errors.New("rspamadm configdump -j is not readable"))
+	}
+	actions, err := antispam.ParseActions([]byte(acts))
+	if err != nil {
+		return errors.Join(errLearningLoaded, errors.New("rspamd's actions are not readable"))
+	}
+	// A successful scan ping can still come from the old workers while the
+	// controller is reloading. Use the same bounded service-probe window.
+	err = retry(ctx, t.h.rspamdWait, func(ctx context.Context) error {
+		symbols, getErr := t.h.controllerGet(ctx, socket, "/symbols", maxSymbolsReply, f.ControllerHost.RspamdUID)
+		if getErr != nil {
+			return errors.Join(errLearningProbe, getErr)
+		}
+		return antispam.CheckLearningLoaded([]byte(fuzzyCheck), root["worker"], []byte(group), symbols, actions, keys)
+	})
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, errLearningProbe):
+		return err
+	}
+	return errors.Join(errLearningLoaded, err)
 }
 
 // reloadRspamd reloads rspamd and waits for its probe (spec 6.3 step 2).
@@ -652,8 +748,8 @@ func (t *tx) rollback() (state string, rollbackErr error) {
 		w := t.writes[i]
 		before := w.before
 		switch {
-		case w.path == t.h.path(antispam.FeedRBLPath):
-			// Rollback can put the DQS key back into this file, so it never
+		case slices.Contains(antispam.SecretPaths(), strings.TrimPrefix(w.path, t.h.root)):
+			// Rollback can put secrets back into this file, so it never
 			// keeps a mode someone loosened meanwhile: it gets the private
 			// metadata this apply wrote, or the snapshot's.
 			if w.next.metadata {
@@ -741,4 +837,18 @@ func (t *tx) restoreRecord(ctx context.Context) error {
 		return ctx.Err()
 	}
 	return err
+}
+
+// nobody returns the nobody account's uid and gid.
+func nobody() (int, int, error) {
+	u, err := user.Lookup("nobody")
+	if err != nil {
+		return -1, -1, err
+	}
+	uid, uidErr := strconv.Atoi(u.Uid)
+	gid, gidErr := strconv.Atoi(u.Gid)
+	if uidErr != nil || gidErr != nil {
+		return -1, -1, errors.New("the nobody account has a non-numeric id")
+	}
+	return uid, gid, nil
 }

@@ -102,8 +102,9 @@ func TestInventoryMatchesRuntimeContracts(t *testing.T) {
 		{"respond.af_alg_marker", "checks/af_alg_enforce.go: repairs marker inside daemon sandbox", "auto_response.disable_enforce_af_alg", "true", []Privilege{Root}, []string{"/etc/modprobe.d"}},
 		{"respond.forward_guard", "daemon/forward_guard.go: disabled guard still removes configuration", "mode", "observe", []Privilege{Root}, []string{"/etc/exim.conf.local", "/var/lib/csm"}},
 		{"respond.forward_guard_check", "mailfwd/adapter/service.go: Apply and Remove record the request under the shared Exim lock, Remove checks for an installed rule, and observe mode cancels pending requests without that lock inside the daemon sandbox", "", "", []Privilege{Root}, []string{"/var/lib/csm/forward_guard"}},
-		{"integrate.antispam", "daemon/antispam.go: disabled antispam still removes the integration; observe mode only reports", "mode", "observe", []Privilege{Root}, []string{"/etc/rspamd/local.d", "/etc/rspamd/override.d", "/usr/local/cpanel/etc/exim/acls", "/etc/exim.conf.local", "/etc/exim.conf", "/var/lib/csm"}},
+		{"integrate.antispam", "daemon/antispam.go: disabled antispam still removes the integration; observe mode only reports", "mode", "observe", []Privilege{Root}, []string{"/etc/rspamd/local.d", "/etc/rspamd/override.d", "/etc/rspamd/lua.local.d", "/usr/local/cpanel/base/3rdparty/roundcube/config/inc.d", "/usr/local/cpanel/etc/exim/acls", "/etc/exim.conf.local", "/etc/exim.conf", "/var/lib/csm"}},
 		{"integrate.antispam_ip_map", "daemon/antispam.go: a feed list without csm_ip_map still deletes a leftover map; observe mode leaves it", "mode", "observe", []Privilege{Root}, []string{"/var/lib/csm-rspamd"}},
+		{"integrate.antispam_learn", "daemon/control_antispam_learn.go: refused unless antispam learning is enabled outside observe mode", "email_protection.antispam.learning.enabled", "false", []Privilege{Root}, []string{"/var/lib/csm/antispam/learning", "rspamd:fuzzy storage"}},
 		{"integrate.antispam_record", "antispam/reconcile/pass.go: every pass invalidates pending workers under the shared Exim lock, including disabled antispam and observe mode", "", "", []Privilege{Root}, []string{"/var/lib/csm/forward_guard"}},
 		{"respond.bpf_deny_egress", "daemon/connection_bpf.go: cgroup socket program", "bpf_enforcement.enabled", "false", []Privilege{"CAP_BPF", "CAP_NET_ADMIN"}, nil},
 		{"respond.mail_delivery_gate", "daemon/spoolwatch.go: FAN_DENY on scanner failure in tempfail mode", "email_av.enabled", "false", []Privilege{CapSysAdmin}, []string{"fanotify:mail delivery decisions"}},
@@ -351,6 +352,7 @@ func TestAuditedOperationsArePinned(t *testing.T) {
 		}
 	}
 	want := []string{
+		"integrate.antispam_learn",
 		"integrate.firewall_ruleset",
 		"operate.manual_firewall",
 		"respond.block_ip",
@@ -464,6 +466,7 @@ var reviewedRiskTiers = map[string]RiskTier{
 	"integrate.auditd_rules":        RiskDestructive,
 	"integrate.antispam":            RiskDestructive,
 	"integrate.antispam_ip_map":     RiskReversible,
+	"integrate.antispam_learn":      RiskReversible,
 	"integrate.antispam_record":     RiskObserve,
 	"integrate.challenge_port_gate": RiskReversible,
 	"integrate.challenge_snippet":   RiskDestructive,
@@ -550,6 +553,7 @@ var reviewedRecoveryGaps = map[string]string{
 	"detect.process_exec":           "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 	"detect.sensitive_file_writes":  "This inventory does not yet specify verified detach, map restoration and crash recovery for these kernel hooks.",
 	"integrate.antispam":            "Rollback cannot change existing SMTP sessions; failed rollback or an interrupted worker needs another apply or remove transaction.",
+	"integrate.antispam_learn":      "Forget removes CSM's contribution but cannot restore the near-match coverage other learned messages lost to it, and a lost reply is settled by reconciliation, not undone.",
 	"integrate.auditd_rules":        "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 	"integrate.modsec_section":      "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",
 	"integrate.panel_plugin":        "This inventory does not specify an action-wide snapshot and verified rollback of configuration, service and external-tool side effects.",

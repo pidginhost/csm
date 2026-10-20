@@ -81,8 +81,8 @@ The same evidence appears in `csm status --json` and the HTTP status response.
 
 | Command | Description |
 |---------|-------------|
-| `csm backup <path>` | Bundle `csm.yaml`, `/etc/csm/conf.d/`, and the state directory into a tar.gz at `<path>`. Runtime lock files, in-progress export staging, and unconfirmed firewall rollback artifacts are omitted. The daemon must be stopped; the command verifies both the control socket and state lock before reading data. |
-| `csm restore <archive>` | Validate and stage the complete archive before atomically replacing the live `csm.yaml`, `conf.d`, and state directory. Restore rolls back failed replacements, removes stale state entries, and refuses a running or starting daemon. Stop the daemon first. |
+| `csm backup <path>` | Bundle `csm.yaml`, `/etc/csm/conf.d/`, the state directory and the antispam learning directory into a tar.gz at `<path>`. Runtime lock files, in-progress export staging, and unconfirmed firewall rollback artifacts are omitted. The daemon must be stopped; the command verifies both the control socket and state lock before reading data. |
+| `csm restore <archive>` | Validate and stage the complete archive before atomically replacing the live `csm.yaml`, `conf.d`, state directory and antispam learning directory; the replaced learning directory is kept aside and restored learning waits for confirmation. Restore rolls back failed replacements, removes stale state entries, and refuses a running or starting daemon. Stop the daemon first. |
 
 `csm store export` / `csm store import` (below) is the lower-level alternative: tar+zstd, sha256-verified, finer-grained `--only=` flags. `csm backup`/`restore` is the convenience wrapper most operators want.
 
@@ -148,6 +148,19 @@ Operator controls for the email PHP-relay detector. Talks to the daemon's contro
 | `csm phprelay ignore-list` | List all active ignores as JSON: scriptKey, expiresAt, addedBy, reason. |
 | `csm phprelay dry-run on\|off\|reset [--persist]` | Override the auto-freeze dry-run state at runtime. `on` = freeze findings emitted but no `exim -Mf` runs; `off` = live freezes; `reset` clears the runtime override and falls back to bbolt or `csm.yaml`. Precedence: runtime > bbolt > yaml. `--persist` writes the `on`/`off` choice to the bbolt `phprelay:settings` bucket so it survives restarts; on `reset --persist` the bbolt row is also deleted. |
 | `csm phprelay thaw <msgID>` | Manually thaw a frozen Exim message. Wraps `exim -Mt` with msgID validation (rejects anything that isn't `[A-Za-z0-9-]{16,32}`) and writes a `thaw` entry to the auto-freeze JSONL audit at `/var/log/csm/php_relay_audit.jsonl`. |
+
+## Antispam learning (cPanel only)
+
+Teaches or corrects [learning from Spam folders](antispam.md#teaching-and-correcting-learning). Runs as root against the running daemon while learning is enabled; observe mode refuses it.
+
+| Command | Description |
+|---------|-------------|
+| `csm antispam learn --spam <file>...` | Learn each saved message as spam; every cluster it matches gains one operator mark. |
+| `csm antispam learn --forget <file>...` | Remove the learned clusters each message matches, including every account's contribution to them. |
+| `csm antispam learn --status [<request-id>...]` | Show what the daemon recorded for request IDs, including clusters still publishing; without an ID, list unfinished requests. |
+| `csm antispam learn --fresh-namespace` | With learning disabled, move the learning keys and stored messages aside and empty the learning state; the next enable starts a new namespace. |
+
+Each file gets a request ID, printed before it is sent; `csm actions --op integrate.antispam_learn --json` shows its recorded outcome and full digests. A lost or truncated reply is retried once with the same ID and snapshot. The exit status is 0 only when every file was learned, already learned, forgotten or matched nothing.
 
 ## Firewall
 

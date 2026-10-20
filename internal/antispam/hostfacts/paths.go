@@ -64,6 +64,12 @@ func chain(dir string) ([]antispam.PathFacts, error) {
 // repeats. A followed symlink's own directory is among them: whoever can
 // write there can redirect the path.
 func resolve(p string) (string, []string, error) {
+	return resolveChecked(p, nil)
+}
+
+// resolveChecked checks each directory entry before following it. The
+// deduplicated directory list alone cannot prove ownership of symlinks.
+func resolveChecked(p string, check func(dir, next string) error) (string, []string, error) {
 	var dirs []string
 	seen := make(map[string]bool)
 	cur, rest, links := "/", lookupNames(p), 0
@@ -74,6 +80,12 @@ func resolve(p string) (string, []string, error) {
 			seen[cur] = true
 			dirs = append(dirs, cur)
 		}
+		next := filepath.Join(cur, name)
+		if check != nil {
+			if err := check(cur, next); err != nil {
+				return next, dirs, err
+			}
+		}
 		switch name {
 		case ".":
 			continue
@@ -81,7 +93,6 @@ func resolve(p string) (string, []string, error) {
 			cur = filepath.Dir(cur)
 			continue
 		}
-		next := filepath.Join(cur, name)
 		info, err := os.Lstat(next)
 		if err != nil {
 			return next, dirs, err
@@ -177,12 +188,12 @@ func targetFacts(t antispam.Target) antispam.TargetFacts {
 }
 
 // ContentReadable reports whether the collector reads target f's content.
-// An optional rspamd file is read whenever its directories are protected,
-// even if the file itself was loosened: CSM must still recognise its own
-// file, which can hold the DQS key, to delete or replace it. Deciding that
-// needs only a safe directory, and the file is never edited in place.
+// An optional file is read whenever its directories are protected, even if
+// the file itself was loosened: CSM must still recognise its own file, which
+// can hold a secret, to delete or replace it. Deciding that needs only a
+// safe directory, and the file is never edited in place.
 func ContentReadable(f antispam.TargetFacts) bool {
-	if f.Kind != antispam.TargetRspamdOptional {
+	if !f.Kind.Optional() {
 		return targetSafeToRead(f)
 	}
 	relaxed := f

@@ -336,7 +336,7 @@ func TestPassReportsWorkerTimeout(t *testing.T) {
 	out := h.reconciler().Pass(context.Background(), desired(true))
 	if !errors.Is(out.Err, context.DeadlineExceeded) || out.Retry != 0 || len(out.Findings) != 1 ||
 		out.Findings[0].Check != CheckApplyFailed || out.Findings[0].Message != "Antispam apply returned no result" ||
-		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckControllerOpen}) {
+		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning, CheckControllerOpen}) {
 		t.Fatalf("outcome %+v", out)
 	}
 }
@@ -361,7 +361,7 @@ func TestPassKeepsWorkerResultAfterCancellation(t *testing.T) {
 	if out.Err != nil || out.Retry != 0 || len(out.Findings) != 1 ||
 		out.Findings[0].Check != CheckApplyFailed || out.Findings[0].Severity != alert.Critical ||
 		!strings.Contains(out.Findings[0].Details, "could not confirm") ||
-		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckControllerOpen}) {
+		!reflect.DeepEqual(out.Checks, []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning, CheckControllerOpen}) {
 		t.Fatalf("outcome %+v", out)
 	}
 }
@@ -408,7 +408,7 @@ func TestPassObservePreconditionsDescribeNoChanges(t *testing.T) {
 // settled. A canceled pass settles nothing, and a busy one leaves the last
 // apply result in place until the retry.
 func TestPassNamesTheChecksItSettled(t *testing.T) {
-	both := []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckControllerOpen}
+	both := []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning, CheckControllerOpen}
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
 	for _, tc := range []struct {
@@ -439,5 +439,20 @@ func TestPassNamesTheChecksItSettled(t *testing.T) {
 				t.Fatalf("checks %q, want %q (outcome %+v)", out.Checks, tc.want, out)
 			}
 		})
+	}
+}
+
+func TestDesiredFromConfigLearning(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.EmailProtection.Antispam = config.AntispamConfig{Enabled: true, RspamdSocket: antispam.DefaultSocket, RejectScore: 15, TagScore: 6,
+		Learning: config.AntispamLearningConfig{Enabled: true}}
+	got := DesiredFromConfig(cfg).Settings
+	if !got.Learning || got.LearningDir != antispam.DefaultLearningDir || got.Roundcube {
+		t.Fatalf("learning on: %+v", got)
+	}
+	cfg.EmailProtection.Antispam.Learning.Enabled = false
+	got = DesiredFromConfig(cfg).Settings
+	if got.Learning || got.LearningDir != "" || got.Roundcube {
+		t.Fatalf("learning off: %+v", got)
 	}
 }

@@ -222,3 +222,85 @@ func TestLoadBytesAntispamFeedsDefaultsEmpty(t *testing.T) {
 		t.Fatalf("feeds = %+v", f)
 	}
 }
+
+func TestAntispamLearningDefaultsOff(t *testing.T) {
+	for _, body := range []string{"{}", "email_protection:\n  antispam:\n    enabled: true\n    learning:\n", "email_protection:\n  antispam:\n    enabled: true\n    learning:\n      enabled:\n"} {
+		cfg, err := LoadBytes([]byte(body))
+		if err != nil {
+			t.Fatalf("%q: %v", body, err)
+		}
+		if cfg.EmailProtection.Antispam.Learning.Enabled {
+			t.Fatalf("%q: learning enabled by default", body)
+		}
+	}
+}
+
+func TestAntispamLearningRequiresAntispam(t *testing.T) {
+	for _, body := range []string{
+		"    enabled: false\n    learning:\n      enabled: true\n",
+		"    learning:\n      enabled: true\n",
+	} {
+		_, err := loadAntispam(t, body)
+		if err == nil || !strings.Contains(err.Error(), "email_protection.antispam.learning.enabled") {
+			t.Fatalf("%q: err = %v, want error naming email_protection.antispam.learning.enabled", body, err)
+		}
+	}
+	cfg, err := loadAntispam(t, "    enabled: true\n    learning:\n      enabled: true\n")
+	if err != nil || !cfg.EmailProtection.Antispam.Learning.Enabled {
+		t.Fatalf("enabled antispam with learning: cfg=%+v err=%v", cfg, err)
+	}
+}
+
+func TestAntispamLearningRejectsNonBool(t *testing.T) {
+	for _, value := range []string{`"yes"`, `1`, `"true"`, `[true]`} {
+		for _, enabled := range []string{"true", "false"} {
+			_, err := loadAntispam(t, "    enabled: "+enabled+"\n    learning:\n      enabled: "+value+"\n")
+			if err == nil || !strings.Contains(err.Error(), "email_protection.antispam.learning.enabled") {
+				t.Fatalf("antispam %s, learning %s: err = %v, want type error", enabled, value, err)
+			}
+		}
+	}
+}
+
+func TestAntispamLearningObserveConflict(t *testing.T) {
+	_, err := LoadBytes([]byte("mode: observe\nemail_protection:\n  antispam:\n    enabled: true\n    learning:\n      enabled: true\n"))
+	if err == nil || !strings.Contains(err.Error(), "email_protection.antispam.learning.enabled") {
+		t.Fatalf("err = %v, want observe conflict naming email_protection.antispam.learning.enabled", err)
+	}
+}
+
+func TestAntispamLearningHotReloadable(t *testing.T) {
+	load := func(body string) *Config {
+		cfg, err := LoadBytes([]byte("hostname: x\nemail_protection:\n  antispam:\n    enabled: true\n" + body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	off := load("")
+	on := load("    learning:\n      enabled: true\n")
+	if RestartRequired(Diff(off, on)) {
+		t.Fatal("learning changes must apply on reload; the reconciler handles them")
+	}
+}
+
+func TestLoadWithDirAntispamLearningFragment(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	confd := filepath.Join(dir, "conf.d")
+	must(t, os.MkdirAll(confd, 0o700))
+	must(t, os.WriteFile(main, []byte("email_protection:\n  antispam:\n    enabled: true\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(confd, "20-learning.yaml"), []byte("email_protection:\n  antispam:\n    learning:\n      enabled: true\n"), 0o600))
+	cfg, err := LoadWithDir(main, confd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	as := cfg.EmailProtection.Antispam
+	if !as.Enabled || !as.Learning.Enabled || !as.DryRun {
+		t.Fatalf("fragment merge: %+v", as)
+	}
+	must(t, os.WriteFile(filepath.Join(confd, "20-learning.yaml"), []byte("email_protection:\n  antispam:\n    learning:\n      enabled: 1\n"), 0o600))
+	if _, err := LoadWithDir(main, confd); err == nil || !strings.Contains(err.Error(), "email_protection.antispam.learning.enabled") {
+		t.Fatalf("fragment type coercion: err = %v", err)
+	}
+}

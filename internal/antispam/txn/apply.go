@@ -46,6 +46,12 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 		}
 		s.DQSKey = key
 	}
+	if s.Learning {
+		if f.LearningKeysErr != nil {
+			return failed(StepPreconditions, f.LearningKeysErr)
+		}
+		s.LearningKeys = f.LearningKeys
+	}
 	installed := antispam.InstalledContent(f.Targets)
 	rollbackSocket := s.Socket
 	// An update can select a new socket. Rollback must probe the scanner
@@ -70,20 +76,22 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	if err != nil {
 		return failed(StepPreconditions, err)
 	}
-	if s.HasFeed(antispam.FeedSpamhausDQS) {
+	if secrets := s.SecretTargets(); len(secrets) > 0 {
 		if f.RspamdGID < 0 {
-			return failed(StepPreconditions, errors.New("rspamd's group is unknown, so the DQS key file cannot be restricted to it"))
+			return failed(StepPreconditions, errors.New("rspamd's group is unknown, so secret files cannot be restricted to it"))
 		}
-		changes = secureSecret(changes, f.Targets, f.RspamdGID)
+		changes = secureSecret(changes, f.Targets, f.RspamdGID, secrets)
 	}
-	rspamdChanges, eximChanges := split(changes)
+	rspamdChanges, eximChanges, roundcubeChanges := split(changes)
 	record, valid, err := t.readRecord()
 	if err != nil {
 		return failed(StepRecord, err)
 	}
-	// A complete record that matches the installed text proves the last
-	// transaction reloaded both services with it.
-	matches := valid && record.Complete() && *record.Generation == antispam.Generation(installed)
+	// A completed installed or desired generation proves the unchanged
+	// services were already reloaded. Repairing drift in just one target
+	// must not reload the others. An incomplete record proves neither.
+	matches := valid && record.Complete() &&
+		(*record.Generation == antispam.Generation(installed) || *record.Generation == generation)
 	opts, err := t.eximSettings(t.fwd)
 	if err != nil {
 		return failed(StepPreconditions, err)
@@ -93,7 +101,7 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 	generated := err == nil && antispam.CheckGenerated(current.content, hooks, opts["acl_smtp_rcpt"], opts["acl_smtp_data"]) == nil
 	reloadRspamd := len(rspamdChanges) > 0 || !matches
 	rebuildExim := len(eximChanges) > 0 || !matches || !generated
-	if !reloadRspamd && !rebuildExim {
+	if !reloadRspamd && !rebuildExim && len(roundcubeChanges) == 0 {
 		return antispam.Result{OK: true, Generation: generation}
 	}
 	if err := t.listenerProbe(opts); err != nil {
@@ -116,11 +124,22 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 			step := StepRspamdCheck
 			if errors.Is(err, errFeedsLoaded) {
 				step = StepFeedsCheck
+			} else if errors.Is(err, errLearningLoaded) {
+				step = StepLearningCheck
 			}
 			return t.fail(step, err)
 		}
 		if err := t.reloadRspamd(t.fwd, t.rspamdProbe); err != nil {
 			return t.fail(StepRspamdReload, err)
+		}
+		if s.Learning {
+			if err := t.checkLearning(t.fwd, f, s.LearningKeys); err != nil {
+				step := StepLearningCheck
+				if errors.Is(err, errLearningProbe) {
+					step = StepLearningProbe
+				}
+				return t.fail(step, err)
+			}
 		}
 	}
 	if rebuildExim {
@@ -131,8 +150,22 @@ func (h *Host) Apply(s antispam.Settings) antispam.Result {
 			return t.fail(step, err)
 		}
 	}
+	roundcube, rcErr := t.roundcube(roundcubeChanges)
+	if rcErr != nil {
+		return t.fail(StepRoundcube, rcErr)
+	}
+	if roundcube != "" && s.Roundcube {
+		// Verification restored the snapshot, which may hold an older
+		// owned include rather than absence. Record that exact state.
+		if prior, present := installed[antispam.RoundcubeIncludePath]; present {
+			managed[antispam.RoundcubeIncludePath] = prior
+		} else {
+			delete(managed, antispam.RoundcubeIncludePath)
+		}
+		generation = antispam.Generation(managed)
+	}
 	if err := t.writeRecord(generation); err != nil {
 		return t.fail(StepComplete, err)
 	}
-	return antispam.Result{OK: true, Generation: generation}
+	return antispam.Result{OK: true, Generation: generation, Roundcube: roundcube}
 }

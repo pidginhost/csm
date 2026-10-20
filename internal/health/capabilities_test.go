@@ -196,3 +196,9 @@ func TestConfdRehashFragmentCapabilityAlwaysPresent(t *testing.T) {
 		t.Error("confd.rehash.fragment.v1 capability missing")
 	}
 }
+
+func TestCapabilitiesIncludeLearning(t *testing.T) {
+	if !contains(Capabilities(), "mail.antispam.learning.v1") {
+		t.Fatal("mail.antispam.learning.v1 capability missing")
+	}
+}

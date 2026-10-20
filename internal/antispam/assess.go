@@ -99,7 +99,7 @@ func leftovers(f HostFacts) bool {
 		return true
 	}
 	for _, t := range f.Targets {
-		if t.Kind.WholeFile() && IsManaged(t.Content) || !t.Kind.WholeFile() && hasMarker(t.Content) {
+		if t.Kind.WholeFile() && ManagedFor(t.Kind, t.Content) || !t.Kind.WholeFile() && hasMarker(t.Content) {
 			return true
 		}
 	}
@@ -126,8 +126,10 @@ func current(s Settings, f HostFacts) bool {
 	if err != nil || !r.Complete() || *r.Generation != want {
 		return false
 	}
-	if s.HasFeed(FeedSpamhausDQS) && !secretFileOK(f) {
-		return false
+	for _, p := range s.SecretTargets() {
+		if !secretFileOK(f, p) {
+			return false
+		}
 	}
 	hooks, err := RenderExim(s)
 	if err != nil || f.GeneratedErr != nil || f.EximSettings.Err != nil {

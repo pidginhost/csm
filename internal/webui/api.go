@@ -129,6 +129,9 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	if snap.Admission != nil {
 		resp["admission"] = snap.Admission
 	}
+	if snap.AntispamLearning != nil {
+		resp["antispam_learning"] = snap.AntispamLearning
+	}
 	writeJSON(w, resp)
 }
 

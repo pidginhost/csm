@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"net/netip"
 	"slices"
@@ -75,6 +76,15 @@ var antispamReconciler = func() reconcile.Reconciler {
 		ReadKey:    hostfacts.ReadDQSKey,
 		Probe:      hostfacts.QueryDNS,
 		Feeds:      reconcile.NewFeedState(),
+		Learning:   reconcile.NewLearningState(),
+		EnsureKeys: func(ctx context.Context, dir string) (bool, error) {
+			newKeypair := func(ctx context.Context) (antispam.Keypair, error) {
+				return hostfacts.NewFuzzyKeypair(ctx, hostfacts.RunCommand)
+			}
+			return hostfacts.EnsureLearningKeys(ctx, dir, newKeypair, rand.Reader)
+		},
+		LoadKeys:        hostfacts.LoadLearningKeys,
+		CollectLearning: hostfacts.CollectLearning,
 	}
 }
 
@@ -92,8 +102,14 @@ func (d *Daemon) startAntispam() {
 	checks.StoreLatestScanFindings(d.store, antispamHealthChecks, nil)
 	d.store.RearmAbsentDedupFindings(antispamHealthChecks, nil)
 	r := d.withIPMap(antispamReconciler())
+	r.Learner = d.learnerProblems
 	loop := reconcile.NewLoop(func(ctx context.Context) reconcile.Outcome {
-		return r.Pass(ctx, reconcile.DesiredFromConfig(d.currentCfg()))
+		d.antispamReconcileMu.Lock()
+		defer d.antispamReconcileMu.Unlock()
+		d.pauseLearner()
+		out := r.Pass(ctx, reconcile.DesiredFromConfig(d.currentCfg()))
+		d.syncLearner(out)
+		return out
 	}, d.reportAntispam)
 	d.antispamLoop.Store(loop)
 	// Publish the reload target before reading initial health config so a
@@ -103,6 +119,7 @@ func (d *Daemon) startAntispam() {
 	d.wg.Add(3)
 	obs.Go("antispam-reconcile", func() {
 		defer d.wg.Done()
+		defer d.stopLearner()
 		loop.Run(ctx)
 	})
 	obs.Go("antispam-health", func() {
@@ -285,6 +302,9 @@ func ipmapSources(now time.Time, infra []string) ipmap.Sources {
 // reconcileAntispam applies a config reload: health tracking follows the
 // new switch and socket at once, and a pass reads the new config.
 func (d *Daemon) reconcileAntispam() {
+	// Observe mode and disable stop the learner at once: they cannot wait
+	// for a pass, a worker lock or alert delivery.
+	d.syncLearner(reconcile.Outcome{})
 	if loop := d.antispamLoop.Load(); loop != nil {
 		d.syncAntispamHealth()
 		loop.Trigger()

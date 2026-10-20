@@ -102,15 +102,17 @@ func TestParseResult(t *testing.T) {
 
 func TestParseResultRoundTrip(t *testing.T) {
 	for name, want := range map[string]Result{
-		"apply":         {Operation: OpApply, OK: true, Generation: "g1"},
-		"remove":        {Operation: OpRemove, OK: true},
-		"unchanged":     {Operation: OpApply, OK: true, Rollback: RollbackNone, Generation: "g1"},
-		"request error": {FailedStep: "request", Rollback: RollbackNone, Error: "invalid request"},
-		"lock error":    {Operation: OpRemove, FailedStep: "lock", Rollback: RollbackNone, Error: "cannot lock"},
-		"busy":          {Operation: OpApply, Busy: true, FailedStep: "lock", Rollback: RollbackNone, Error: "held"},
-		"precondition":  {Operation: OpApply, FailedStep: "preconditions", Rollback: RollbackNone},
-		"rolled back":   {Operation: OpRemove, FailedStep: "reload", Rollback: RollbackVerified, Error: "reload failed"},
-		"unverified":    {Operation: OpApply, FailedStep: "probe", Rollback: RollbackFailed, Error: "probe failed"},
+		"apply":            {Operation: OpApply, OK: true, Generation: "g1"},
+		"remove":           {Operation: OpRemove, OK: true},
+		"unchanged":        {Operation: OpApply, OK: true, Rollback: RollbackNone, Generation: "g1"},
+		"request error":    {FailedStep: "request", Rollback: RollbackNone, Error: "invalid request"},
+		"lock error":       {Operation: OpRemove, FailedStep: "lock", Rollback: RollbackNone, Error: "cannot lock"},
+		"busy":             {Operation: OpApply, Busy: true, FailedStep: "lock", Rollback: RollbackNone, Error: "held"},
+		"precondition":     {Operation: OpApply, FailedStep: "preconditions", Rollback: RollbackNone},
+		"rolled back":      {Operation: OpRemove, FailedStep: "reload", Rollback: RollbackVerified, Error: "reload failed"},
+		"unverified":       {Operation: OpApply, FailedStep: "probe", Rollback: RollbackFailed, Error: "probe failed"},
+		"Roundcube apply":  {Operation: OpApply, OK: true, Generation: "g1", Roundcube: RoundcubeUnavailable + "PHP failed"},
+		"Roundcube remove": {Operation: OpRemove, OK: true, Roundcube: RoundcubeUnavailable + "another include sets the folder"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			data, err := json.Marshal(want)
@@ -154,6 +156,8 @@ func TestParseResultRejectsMalformedReports(t *testing.T) {
 		"busy outside lock":         `{"operation":"apply","ok":false,"busy":true,"failed_step":"probe","rollback":"none"}`,
 		"request changed state":     `{"ok":false,"failed_step":"request","rollback":"failed"}`,
 		"lock changed state":        `{"operation":"remove","ok":false,"failed_step":"lock","rollback":"verified"}`,
+		"Roundcube unknown":         `{"operation":"remove","ok":true,"roundcube":"installed"}`,
+		"Roundcube failed":          `{"operation":"remove","ok":false,"failed_step":"probe","rollback":"failed","roundcube":"unavailable: PHP failed"}`,
 		"trailing null":             success + `null`,
 		"trailing junk":             success + `x`,
 	} {
@@ -164,7 +168,7 @@ func TestParseResultRejectsMalformedReports(t *testing.T) {
 			}
 		})
 	}
-	for _, field := range []string{"operation", "ok", "busy", "failed_step", "rollback", "generation", "error"} {
+	for _, field := range []string{"operation", "ok", "busy", "failed_step", "rollback", "generation", "error", "roundcube"} {
 		for name, value := range map[string]any{"null": nil, "wrong type": 123, "nested": map[string]any{"x": true}} {
 			t.Run(name+" "+field, func(t *testing.T) {
 				fields := map[string]any{"operation": "remove", "ok": false, "failed_step": "lock", "rollback": "none"}
@@ -250,5 +254,76 @@ func TestDecodeRequestEmptyFeedFields(t *testing.T) {
 	req, s, err := DecodeRequest([]byte(body))
 	if err != nil || req.Operation != OpApply || !reflect.DeepEqual(s, defaults(false)) {
 		t.Fatalf("expected default settings, got %+v, %v", s, err)
+	}
+}
+
+func TestRequestRoundTripLearning(t *testing.T) {
+	want := defaults(true)
+	want.Learning, want.LearningDir, want.Roundcube = true, DefaultLearningDir, true
+	data, err := json.Marshal(ApplyRequest(want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) > MaxRequestBytes {
+		t.Fatalf("request is %d bytes", len(data))
+	}
+	if !strings.Contains(string(data), `"learning":true,"learning_dir":"/var/lib/csm/antispam/learning","roundcube":true`) {
+		t.Fatalf("wire form = %s", data)
+	}
+	_, got, err := DecodeRequest(data)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("DecodeRequest = %+v, %v", got, err)
+	}
+	if _, _, err := DecodeRequest([]byte(strings.Replace(string(data), `"roundcube"`, `"Roundcube"`, 1))); err == nil {
+		t.Fatal("case-folded key accepted")
+	}
+	for _, bad := range []string{`"learning":"true"`, `"learning":null`, `"learning_dir":7`, `"roundcube":1`, `"roundcube":null`, `"learning_keys":"x"`} {
+		body := validApply[:len(validApply)-1] + `,` + bad + `}`
+		if _, _, err := DecodeRequest([]byte(body)); err == nil {
+			t.Fatalf("accepted %s", bad)
+		}
+	}
+	off, _ := json.Marshal(ApplyRequest(defaults(true)))
+	if strings.Contains(string(off), "learning") || strings.Contains(string(off), "roundcube") {
+		t.Fatalf("request without learning changed format: %s", off)
+	}
+}
+
+func TestDecodeRequestInactiveLearningDir(t *testing.T) {
+	for _, flags := range []string{"", `,"learning":false,"roundcube":false`} {
+		t.Run(flags, func(t *testing.T) {
+			body := strings.TrimSuffix(validApply, "}") + flags + `,"learning_dir":"/var/lib/csm/antispam/learning"}`
+			_, got, err := DecodeRequest([]byte(body))
+			if err != nil || !reflect.DeepEqual(got, defaults(false)) {
+				t.Fatalf("inactive learning changed settings: %+v, %v", got, err)
+			}
+			encoded, err := json.Marshal(ApplyRequest(got))
+			if err != nil || string(encoded) != validApply {
+				t.Fatalf("inactive learning changed request: %s, %v", encoded, err)
+			}
+		})
+	}
+}
+
+func TestSettingsValidateLearningDir(t *testing.T) {
+	for _, dir := range []string{"", "relative/learning", "/var/lib/csm/../learning", "/var/lib/csm/learning/", "/var/lib/csm//learning", "/var/lib/csm/learn\ning"} {
+		s := defaults(true)
+		s.Learning, s.LearningDir = true, dir
+		if err := s.Validate(); err == nil {
+			t.Fatalf("LearningDir %q accepted", dir)
+		}
+	}
+	s := defaults(true)
+	s.Learning, s.LearningDir = true, DefaultLearningDir
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSettingsValidateRoundcubeNeedsLearning(t *testing.T) {
+	s := defaults(true)
+	s.Roundcube = true
+	if err := s.Validate(); err == nil {
+		t.Fatal("Roundcube without Learning accepted")
 	}
 }

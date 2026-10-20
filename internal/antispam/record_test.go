@@ -62,10 +62,18 @@ func TestGenerationIsCanonical(t *testing.T) {
 	}
 }
 
-func TestManagedContentCoversEveryTarget(t *testing.T) {
-	// A DNS feed makes every optional file wanted.
+// everyOptional wants every optional file: a DNS feed, learning and the
+// Roundcube include.
+func everyOptional() Settings {
 	s := enforceSettings()
 	s.Feeds = []string{FeedPSBL}
+	s.Learning, s.LearningDir, s.Roundcube = true, DefaultLearningDir, true
+	s.LearningKeys = syntheticLearningKeys()
+	return s
+}
+
+func TestManagedContentCoversEveryTarget(t *testing.T) {
+	s := everyOptional()
 	content, err := ManagedContent(s)
 	if err != nil {
 		t.Fatal(err)
@@ -132,8 +140,7 @@ func TestInstalledContentMatchesManagedContent(t *testing.T) {
 }
 
 func TestInstalledContentSkipsForeignAndMissing(t *testing.T) {
-	s := enforceSettings()
-	s.Feeds = []string{FeedPSBL}
+	s := everyOptional()
 	targets := installedTargets(t, s)
 	targets[0].Content = "reject = 15;\n"
 	targets[1].Missing = true

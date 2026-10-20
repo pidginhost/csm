@@ -53,25 +53,30 @@ func target(f *HostFacts, k TargetKind) *TargetFacts {
 
 func TestMutationTargetsCoverSpecFiles(t *testing.T) {
 	want := map[string]TargetKind{
-		"/etc/rspamd/local.d/actions.conf":           TargetRspamd,
-		"/etc/rspamd/local.d/greylist.conf":          TargetRspamd,
-		"/etc/rspamd/local.d/rbl.conf":               TargetRspamd,
-		"/etc/rspamd/local.d/emails.conf":            TargetRspamd,
-		"/etc/rspamd/local.d/fuzzy_check.conf":       TargetRspamd,
-		"/etc/rspamd/local.d/asn.conf":               TargetRspamd,
-		"/etc/rspamd/local.d/phishing.conf":          TargetRspamd,
-		"/etc/rspamd/local.d/regexp.conf":            TargetRspamd,
-		"/etc/rspamd/override.d/rbl.conf":            TargetRspamdOptional,
-		"/etc/rspamd/override.d/rbl_group.conf":      TargetRspamdOptional,
-		"/etc/rspamd/local.d/forged_recipients.conf": TargetRspamdOptional,
-		"/etc/rspamd/local.d/mid.conf":               TargetRspamdOptional,
-		"/etc/rspamd/local.d/mime_types.conf":        TargetRspamdOptional,
-		"/etc/rspamd/local.d/whitelist.conf":         TargetRspamdOptional,
-		"/etc/rspamd/local.d/multimap.conf":          TargetRspamdOptional,
+		"/etc/rspamd/local.d/actions.conf":                                                             TargetRspamd,
+		"/etc/rspamd/local.d/greylist.conf":                                                            TargetRspamd,
+		"/etc/rspamd/local.d/rbl.conf":                                                                 TargetRspamd,
+		"/etc/rspamd/local.d/emails.conf":                                                              TargetRspamd,
+		"/etc/rspamd/local.d/fuzzy_check.conf":                                                         TargetRspamd,
+		"/etc/rspamd/local.d/asn.conf":                                                                 TargetRspamd,
+		"/etc/rspamd/local.d/phishing.conf":                                                            TargetRspamd,
+		"/etc/rspamd/local.d/regexp.conf":                                                              TargetRspamd,
+		"/etc/rspamd/override.d/rbl.conf":                                                              TargetRspamdOptional,
+		"/etc/rspamd/override.d/rbl_group.conf":                                                        TargetRspamdOptional,
+		"/etc/rspamd/local.d/forged_recipients.conf":                                                   TargetRspamdOptional,
+		"/etc/rspamd/local.d/mid.conf":                                                                 TargetRspamdOptional,
+		"/etc/rspamd/local.d/mime_types.conf":                                                          TargetRspamdOptional,
+		"/etc/rspamd/local.d/whitelist.conf":                                                           TargetRspamdOptional,
+		"/etc/rspamd/local.d/multimap.conf":                                                            TargetRspamdOptional,
+		"/etc/rspamd/override.d/fuzzy_check.conf":                                                      TargetRspamdOptional,
+		"/etc/rspamd/override.d/worker-fuzzy.inc":                                                      TargetRspamdOptional,
+		"/etc/rspamd/local.d/fuzzy_group.conf":                                                         TargetRspamdOptional,
+		"/etc/rspamd/lua.local.d/csm_learning.lua":                                                     TargetLuaOptional,
+		"/usr/local/cpanel/base/3rdparty/roundcube/config/inc.d/zz-csm-antispam.inc.php":               TargetRoundcube,
 		"/usr/local/cpanel/etc/exim/acls/ACL_SPAM_SCAN_CHECK_BLOCK/custom_begin_spam_scan_check":       TargetEximHook,
 		"/usr/local/cpanel/etc/exim/acls/ACL_SPAM_SCAN_BLOCK/custom_begin_spam_scan":                   TargetEximHook,
 		"/usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_POST_BLOCK/custom_begin_check_message_post": TargetEximHook,
-		"/etc/exim.conf.local": TargetEximLocal,
+		"/etc/exim.conf.local":                                                                         TargetEximLocal,
 	}
 	got := MutationTargets()
 	if len(got) != len(want) {
@@ -420,7 +425,8 @@ func TestMutationTargetsListOptionalFiles(t *testing.T) {
 			optional = append(optional, tgt.Path)
 		}
 	}
-	if !slices.Equal(optional, OptionalRspamdPaths()) {
+	want := append(OptionalRspamdPaths(), LearningCheckPath, LearningWorkerPath, LearningGroupPath)
+	if !slices.Equal(optional, want) {
 		t.Fatalf("optional targets = %v", optional)
 	}
 }
@@ -496,5 +502,71 @@ func TestCheckTargetsLetsRemovalDeleteLoosenedOptionalFiles(t *testing.T) {
 	}
 	if problems := checkTargets(targets, true); len(problems) == 0 || problems[0].Severity != Definite {
 		t.Fatalf("removal through an unsafe directory must stay refused: %+v", problems)
+	}
+}
+
+func TestManagedForKinds(t *testing.T) {
+	for _, tc := range []struct {
+		kind    TargetKind
+		content string
+		want    bool
+	}{
+		{TargetRspamd, ManagedHeader + "\nenabled = false;\n", true},
+		{TargetRspamd, "enabled = false;\n", false},
+		{TargetRspamdOptional, ManagedHeader + "\n", true},
+		{TargetRspamdOptional, LuaManagedHeader + "\n", false},
+		{TargetLuaOptional, LuaManagedHeader + "\nlocal x = 1\n", true},
+		{TargetLuaOptional, ManagedHeader + "\n", false},
+		{TargetLuaOptional, " " + LuaManagedHeader + "\n", false},
+		{TargetLuaOptional, "local x = 1\n" + LuaManagedHeader + "\n", false},
+		{TargetRoundcube, "<?php\n" + ManagedHeader + "\n$config['junk_mbox'] = 'INBOX.spam';\n", true},
+		{TargetRoundcube, ManagedHeader + "\n<?php\n", false},
+		{TargetRoundcube, "<?php\n\n" + ManagedHeader + "\n", false},
+		{TargetRoundcube, "<?php " + ManagedHeader + "\n", false},
+		{TargetRoundcube, "<?php\n", false},
+		{TargetRoundcube, "\n" + ManagedHeader + "\n", false},
+		{TargetEximHook, ManagedHeader + "\n", false},
+		{TargetEximLocal, ManagedHeader + "\n", false},
+	} {
+		if got := ManagedFor(tc.kind, tc.content); got != tc.want {
+			t.Errorf("ManagedFor(%d, %q) = %v, want %v", tc.kind, tc.content, got, tc.want)
+		}
+	}
+}
+
+func TestTargetKindPredicates(t *testing.T) {
+	for _, tc := range []struct {
+		kind                        TargetKind
+		whole, optional, reloadsRsp bool
+	}{
+		{TargetRspamd, true, false, true},
+		{TargetRspamdOptional, true, true, true},
+		{TargetLuaOptional, true, true, true},
+		{TargetRoundcube, true, true, false},
+		{TargetEximHook, false, false, false},
+		{TargetEximLocal, false, false, false},
+	} {
+		if tc.kind.WholeFile() != tc.whole || tc.kind.Optional() != tc.optional || tc.kind.ReloadsRspamd() != tc.reloadsRsp {
+			t.Errorf("kind %d: whole %v optional %v reloads %v", tc.kind, tc.kind.WholeFile(), tc.kind.Optional(), tc.kind.ReloadsRspamd())
+		}
+	}
+}
+
+func TestSecretPaths(t *testing.T) {
+	if got := SecretPaths(); len(got) != 3 || got[0] != FeedRBLPath || got[1] != LearningCheckPath || got[2] != LearningWorkerPath {
+		t.Fatalf("SecretPaths = %v", got)
+	}
+	s := defaults(true)
+	if len(s.SecretTargets()) != 0 {
+		t.Fatal("core settings carry no secret file")
+	}
+	s.Feeds, s.DQSKeyFile = []string{FeedSpamhausDQS}, "/etc/csm/k"
+	s.Learning, s.LearningDir = true, DefaultLearningDir
+	if got := s.SecretTargets(); len(got) != 3 {
+		t.Fatalf("SecretTargets = %v", got)
+	}
+	s.Feeds, s.DQSKeyFile = []string{FeedPSBL}, ""
+	if got := s.SecretTargets(); len(got) != 2 || got[0] != LearningCheckPath {
+		t.Fatalf("learning only: %v", got)
 	}
 }

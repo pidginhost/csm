@@ -11,7 +11,10 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/pidginhost/csm/internal/antispam"
+	"github.com/pidginhost/csm/internal/antispam/learn"
 	"github.com/pidginhost/csm/internal/state"
 	csmstore "github.com/pidginhost/csm/internal/store"
 	"golang.org/x/sys/unix"
@@ -51,7 +54,73 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 	} else if !os.IsNotExist(statErr) {
 		return fmt.Errorf("inspecting restored state database: %w", statErr)
 	}
-	return commitBackupRestore(staged, dst)
+	if staged.hasLearning && !staged.hasState && dst.StateDir != "" {
+		if err := stageLearningOnlyDatabase(stageRoot, dst.StateDir); err != nil {
+			return err
+		}
+		staged.learningDBOnly = true
+	}
+	if staged.hasState || staged.learningDBOnly {
+		if err := markRestoredLearning(filepath.Join(stageRoot, "state"), staged.hasLearning); err != nil {
+			return err
+		}
+	}
+	if err := commitBackupRestore(staged, dst); err != nil {
+		return err
+	}
+	return nil
+}
+
+// A learning-only archive must hold the existing ledger in the same
+// replacement transaction as the keys, without replacing unrelated state.
+//
+// #nosec G703 -- source is the fixed csm.db name in the operator's state
+// directory; the rename only installs a private copy beneath stageRoot.
+func stageLearningOnlyDatabase(stageRoot, stateDir string) error {
+	source := filepath.Join(stateDir, "csm.db")
+	info, err := os.Lstat(source)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("existing state database is not a regular file")
+	}
+	target := filepath.Join(stageRoot, "state", "csm.db")
+	prepared, err := prepareRestoreReplacement(source, target, false)
+	if err != nil {
+		return err
+	}
+	return os.Rename(prepared, target)
+}
+
+// markRestoredLearning holds restored learning state (spec 7.4): a
+// restored ledger or key set waits for the operator's confirmation before
+// the learner resumes it.
+func markRestoredLearning(stateDir string, restoredKeys bool) error {
+	if !restoredKeys {
+		present, err := csmstore.LearningStatePresent(filepath.Join(stateDir, "csm.db"))
+		if err != nil {
+			return fmt.Errorf("inspecting restored learning state: %w", err)
+		}
+		if !present {
+			return nil
+		}
+	}
+	db, err := csmstore.Open(stateDir)
+	if err != nil {
+		return fmt.Errorf("opening the restored state database to hold learning: %w", err)
+	}
+	err = learn.Open(db).MarkDeclaredRestore(time.Now())
+	if closeErr := db.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("holding restored learning state: %w", err)
+	}
+	return nil
 }
 
 // restoreStagingRoot creates the staging directory next to the state
@@ -74,11 +143,20 @@ func restoreStagingRoot(dst BackupSources) (string, error) {
 }
 
 type stagedBackupRestore struct {
-	root      string
-	hasConfig bool
-	hasConf   bool
-	hasState  bool
+	root           string
+	hasConfig      bool
+	hasConf        bool
+	hasState       bool
+	hasLearning    bool
+	learningDBOnly bool
 }
+
+// learningArchiveDir holds the antispam learning keys and anchors in a
+// backup; stagedLearningDir is its staging name.
+const (
+	learningArchiveDir = "antispam/learning"
+	stagedLearningDir  = "antispam-learning"
+)
 
 func extractBackupArchive(archive, stageRoot string, maxBytes int64) (_ stagedBackupRestore, err error) {
 	staged := stagedBackupRestore{root: stageRoot}
@@ -149,6 +227,11 @@ func extractBackupArchive(archive, stageRoot string, maxBytes int64) (_ stagedBa
 				if mkdirErr := os.MkdirAll(filepath.Join(stageRoot, "state"), 0o700); mkdirErr != nil {
 					return staged, mkdirErr
 				}
+			case learningArchiveDir:
+				staged.hasLearning = true
+				if mkdirErr := os.MkdirAll(filepath.Join(stageRoot, stagedLearningDir), 0o700); mkdirErr != nil {
+					return staged, mkdirErr
+				}
 			}
 			continue
 		}
@@ -166,6 +249,10 @@ func extractBackupArchive(archive, stageRoot string, maxBytes int64) (_ stagedBa
 			anchor = filepath.Join(stageRoot, "state")
 			target = filepath.Join(anchor, strings.TrimPrefix(clean, "state/"))
 			staged.hasState = true
+		case strings.HasPrefix(clean, learningArchiveDir+"/"):
+			anchor = filepath.Join(stageRoot, stagedLearningDir)
+			target = filepath.Join(anchor, strings.TrimPrefix(clean, learningArchiveDir+"/"))
+			staged.hasLearning = true
 		case clean == "manifest.txt":
 			if hdr.Size > maxRestoreManifestSize {
 				return staged, fmt.Errorf("backup manifest exceeds %d bytes", maxRestoreManifestSize)
@@ -250,6 +337,7 @@ type restoreReplacement struct {
 	backup     string
 	hadOld     bool
 	deleteOnly bool
+	keepOld    bool
 }
 
 func commitBackupRestore(staged stagedBackupRestore, dst BackupSources) error {
@@ -258,6 +346,8 @@ func commitBackupRestore(staged stagedBackupRestore, dst BackupSources) error {
 		target     string
 		isDir      bool
 		deleteOnly bool
+		// keepOld moves the replaced target aside instead of deleting it.
+		keepOld bool
 	}
 	var candidates []candidate
 	if staged.hasConfig && dst.ConfigPath != "" {
@@ -265,6 +355,17 @@ func commitBackupRestore(staged stagedBackupRestore, dst BackupSources) error {
 	}
 	if staged.hasConf && dst.ConfDir != "" {
 		candidates = append(candidates, candidate{source: filepath.Join(staged.root, "conf.d"), target: dst.ConfDir, isDir: true})
+	}
+	if staged.hasLearning && dst.LearningDir != "" {
+		// The replaced keys and anchors stay until the operator approves
+		// their privacy cleanup (spec 7.4).
+		if err := os.MkdirAll(filepath.Dir(dst.LearningDir), 0o700); err != nil {
+			return err
+		}
+		candidates = append(candidates, candidate{source: filepath.Join(staged.root, stagedLearningDir), target: dst.LearningDir, isDir: true, keepOld: true})
+	}
+	if staged.learningDBOnly {
+		candidates = append(candidates, candidate{source: filepath.Join(staged.root, "state", "csm.db"), target: filepath.Join(dst.StateDir, "csm.db")})
 	}
 	if staged.hasState && dst.StateDir != "" {
 		if err := rejectRestoreSymlinks(dst.StateDir); err != nil {
@@ -317,7 +418,7 @@ func commitBackupRestore(staged stagedBackupRestore, dst BackupSources) error {
 				return err
 			}
 		}
-		replacements = append(replacements, restoreReplacement{prepared: prepared, target: item.target, deleteOnly: item.deleteOnly})
+		replacements = append(replacements, restoreReplacement{prepared: prepared, target: item.target, deleteOnly: item.deleteOnly, keepOld: item.keepOld})
 	}
 	defer func() {
 		for _, replacement := range replacements {
@@ -331,7 +432,13 @@ func commitBackupRestore(staged stagedBackupRestore, dst BackupSources) error {
 	for i := range replacements {
 		replacement := &replacements[i]
 		if _, err := os.Lstat(replacement.target); err == nil {
-			backup, reserveErr := reserveRestorePath(filepath.Dir(replacement.target), ".csm-restore-old-*")
+			pattern := ".csm-restore-old-*"
+			if replacement.keepOld {
+				// Reserve the final archive name before any old targets are
+				// discarded, so failures can still roll back the whole restore.
+				pattern = filepath.Base(replacement.target) + ".old-" + time.Now().UTC().Format("20060102T150405Z") + "-*"
+			}
+			backup, reserveErr := reserveRestorePath(filepath.Dir(replacement.target), pattern)
 			if reserveErr != nil {
 				return errors.Join(reserveErr, rollbackRestoreReplacements(replacements[:committed]))
 			}
@@ -390,6 +497,9 @@ func commitBackupRestore(staged stagedBackupRestore, dst BackupSources) error {
 		committed++
 	}
 	for _, replacement := range replacements {
+		if replacement.keepOld {
+			continue
+		}
 		if replacement.hadOld {
 			if err := os.RemoveAll(replacement.backup); err != nil {
 				return fmt.Errorf("removing previous restore target %s: %w", replacement.backup, err)
@@ -402,6 +512,9 @@ func commitBackupRestore(staged stagedBackupRestore, dst BackupSources) error {
 	return nil
 }
 
+// #nosec G703 -- source is private staging or the stopped daemon's fixed
+// database path. target is an operator-selected restore destination; writes
+// and cleanup here use only private temporary paths created beside it.
 func prepareRestoreReplacement(source, target string, isDir bool) (string, error) {
 	parent := filepath.Dir(target)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
@@ -419,7 +532,9 @@ func prepareRestoreReplacement(source, target string, isDir bool) (string, error
 		return prepared, nil
 	}
 
-	in, err := os.Open(source) // #nosec G304 -- source is under the private restore staging directory.
+	// #nosec G304 -- source is private restore staging or the fixed live
+	// csm.db path, read only while the daemon is stopped.
+	in, err := os.Open(source)
 	if err != nil {
 		return "", err
 	}
@@ -716,10 +831,11 @@ func runRestore() {
 		os.Exit(1)
 	}
 	dst := BackupSources{
-		ConfigPath: cfg.ConfigFile,
-		ConfDir:    cfg.ConfigDir,
-		StateDir:   cfg.StatePath,
-		MaxBytes:   maxBytes,
+		ConfigPath:  cfg.ConfigFile,
+		ConfDir:     cfg.ConfigDir,
+		StateDir:    cfg.StatePath,
+		LearningDir: antispam.DefaultLearningDir,
+		MaxBytes:    maxBytes,
 	}
 	if err := restoreBackupArchiveGuarded(archive, dst); err != nil {
 		// Keep the refusal wording aligned with `csm store import`.

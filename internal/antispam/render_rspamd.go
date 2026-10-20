@@ -68,6 +68,11 @@ func RenderRspamd(s Settings) (map[string]string, error) {
 	if len(s.DNSFeeds()) > 0 {
 		files["rbl.conf"] = ManagedHeader + "\nenabled = true;\n"
 	}
+	// Learning queries only CSM's loopback worker; the override drops every
+	// other fuzzy rule, including rspamd.com's.
+	if s.Learning {
+		files["fuzzy_check.conf"] = ManagedHeader + "\nenabled = true;\n"
+	}
 	files["actions.conf"] = ManagedHeader + "\n" +
 		"reject = " + strconv.Itoa(s.RejectScore) + ";\n" +
 		"add_header = " + strconv.Itoa(s.TagScore) + ";\n" +

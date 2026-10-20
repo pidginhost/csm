@@ -51,6 +51,10 @@ func Build(p Provider, version string, capabilities []string) Snapshot {
 	if ap, ok := p.(AdmissionProvider); ok {
 		adm = ap.AdmissionStatus().Clone()
 	}
+	var learning *LearningStatus
+	if lp, ok := p.(LearningProvider); ok {
+		learning = lp.LearningStatus().Clone()
+	}
 	return Snapshot{
 		WordPressVerification:  wordpress,
 		Queues:                 maps.Clone(p.QueueStatuses()),
@@ -77,6 +81,7 @@ func Build(p Provider, version string, capabilities []string) Snapshot {
 		Mode:                   p.Mode(),
 		CorrelationAttribution: cloneCorrelationAttribution(p.CorrelationAttribution()),
 		Admission:              adm,
+		AntispamLearning:       learning,
 	}
 }
 

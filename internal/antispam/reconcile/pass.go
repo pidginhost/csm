@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -31,7 +32,7 @@ type Desired struct {
 // DesiredFromConfig reads the antispam settings and mode from cfg.
 func DesiredFromConfig(cfg *config.Config) Desired {
 	as := cfg.EmailProtection.Antispam
-	return Desired{
+	d := Desired{
 		Enabled: as.Enabled,
 		Observe: cfg.ObserveMode(),
 		Settings: antispam.Settings{
@@ -41,6 +42,10 @@ func DesiredFromConfig(cfg *config.Config) Desired {
 			DQSKeyFile: as.Feeds.SpamhausDQSKeyFile,
 		},
 	}
+	if as.Learning.Enabled {
+		d.Settings.Learning, d.Settings.LearningDir = true, antispam.DefaultLearningDir
+	}
+	return d
 }
 
 // Reconciler runs one pass at a time against the host its functions read
@@ -65,6 +70,19 @@ type Reconciler struct {
 	Probe func(ctx context.Context, server netip.AddrPort, name string) antispam.ProbeAnswer
 	// IPMap writes and removes the CSM IP map; unset hooks do nothing.
 	IPMap IPMapHooks
+	// Learning remembers a learning configuration held after a failed check.
+	Learning *LearningState
+	// EnsureKeys creates the learning keys once and LoadKeys reads them;
+	// CollectLearning adds the learning prerequisites to the core facts.
+	// All run only while learning is requested.
+	EnsureKeys      func(ctx context.Context, dir string) (bool, error)
+	LoadKeys        func(dir string) (antispam.LearningKeys, error)
+	CollectLearning func(ctx context.Context, f *antispam.HostFacts)
+	// Learner returns the running learning engine's problems; nil when no
+	// engine runs.
+	Learner func() []antispam.Problem
+	// resolveLearning replaces antispam.ResolveLearning in tests.
+	resolveLearning func(s antispam.Settings, f antispam.HostFacts) (antispam.Settings, antispam.LearningGate, []antispam.Problem)
 	// assess replaces antispam.Assess in tests.
 	assess func(enabled bool, s antispam.Settings, f antispam.HostFacts) antispam.Assessment
 }
@@ -81,27 +99,50 @@ type Outcome struct {
 	// latest findings with Findings. A canceled pass settles none, and a
 	// busy one leaves the last apply result until its retry.
 	Checks []string
+	// LearningProblems are this pass's learning conditions.
+	LearningProblems []antispam.Problem
+	// LearningGate says what learning may do after this pass.
+	LearningGate antispam.LearningGate
+	// Learner is where the learning engine runs, zero when no engine
+	// should: learning not requested, observe mode, unreadable keys or no
+	// private controller socket.
+	Learner LearnerTarget
+}
+
+// LearnerTarget is what a learning engine is built for. A change means a
+// new engine.
+type LearnerTarget struct {
+	Controller     string
+	RspamdUID      int
+	HashGeneration string
+	Prefix         string
 }
 
 // Pass brings the host towards d once (spec sections 6.1 and 6.5). A
 // disabled pass reads only CSM's own files and runs no command unless it
 // finds something to remove.
-func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
+func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
 	}
 	if !d.Enabled || d.Observe {
 		r.Feeds.setProbeScope([32]byte{})
 	}
+	if !d.Enabled || !d.Settings.Learning {
+		r.Learning.held("")
+		r.Learning.roundcubeHeld("")
+	}
 	invalidateErr := r.Invalidate(ctx)
 	if err := ctx.Err(); err != nil {
 		return Outcome{Err: err}
 	}
 	if err := invalidateErr; err != nil {
-		out := Outcome{Retry: BusyRetry}
+		out = Outcome{Retry: BusyRetry}
 		if !d.Enabled {
 			// Disabling this warning depends only on configuration, not
 			// on whether pending mail configuration changes can be canceled.
+			// Learning findings wait for a completed pass: until removal
+			// runs they can still describe installed scoring.
 			out.Checks = []string{CheckControllerOpen}
 		}
 		if !errors.Is(err, eximlock.ErrBusy) {
@@ -122,6 +163,16 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 		return out
 	}
 	var f antispam.HostFacts
+	wantLearning := d.Enabled && d.Settings.Learning
+	var keys antispam.LearningKeys
+	var keysErr error
+	var learnerProblems []antispam.Problem
+	if wantLearning {
+		keys, keysErr = r.learningKeys(ctx, d.Settings.LearningDir)
+		if r.Learner != nil {
+			learnerProblems = r.Learner()
+		}
+	}
 	if d.Enabled {
 		writable, _ := r.Feeds.apply(d.Settings, d.Settings, nil)
 		if !d.Observe && writable.HasFeed(antispam.FeedCSMIPMap) && r.IPMap.Write != nil {
@@ -132,6 +183,16 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 		f = r.Collect(ctx, d.Settings.Socket)
 		if d.Settings.HasFeed(antispam.FeedSpamhausDQS) && r.ReadKey != nil {
 			f.DQSKey = r.ReadKey(d.Settings.DQSKeyFile)
+		}
+		if wantLearning {
+			if r.CollectLearning != nil {
+				r.CollectLearning(ctx, &f)
+			}
+			f.LearningKeys, f.LearningKeysErr = keys, keysErr
+			f.RedisGuardPaused = r.Learning.redisPaused()
+			f.LearnerMismatch = slices.ContainsFunc(learnerProblems, func(p antispam.Problem) bool {
+				return p.Key == antispam.ReasonStateMismatch
+			})
 		}
 	} else {
 		f = r.Installed()
@@ -145,13 +206,39 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 		assess = antispam.Assess
 	}
 	settings, feedProblems := d.Settings, []antispam.Problem(nil)
+	var learningProblems []antispam.Problem
+	var gate antispam.LearningGate
 	if d.Enabled {
 		settings, feedProblems = antispam.ResolveFeeds(d.Settings, f)
 		settings, feedProblems = r.Feeds.apply(d.Settings, settings, feedProblems)
+		settings, gate, learningProblems = r.resolveLearningState(settings, f, keys)
 	}
 	a := assess(d.Enabled, settings, f)
 	now := r.Now()
-	out := Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed}}
+	out = Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning}, LearningGate: gate}
+	// Prerequisites alone do not prove that the requested integration is
+	// active. A worker must finish an apply, or the installed state must
+	// already be current, before the learner may publish.
+	out.LearningGate.Publish = gate.Publish && a.Action == antispam.Keep && a.Installed && !blockingProblems(a.Problems)
+	if d.Observe || a.Action == antispam.Uninstall {
+		out.LearningGate = antispam.LearningGate{}
+	}
+	if wantLearning && !d.Observe && keysErr == nil {
+		if socket, uid, ok := antispam.LearnerEndpoint(f); ok {
+			out.Learner = LearnerTarget{Controller: socket, RspamdUID: uid, HashGeneration: antispam.HashGeneration(keys), Prefix: keys.Prefix}
+		}
+	}
+	defer func() {
+		// Worker verification can add problems. Busy and canceled passes
+		// must not replace or add to the last completed learning findings.
+		if !slices.Contains(out.Checks, CheckLearning) {
+			return
+		}
+		out.LearningProblems = mergeByKey(append(learningProblems, learnerProblems...))
+		for _, p := range out.LearningProblems {
+			out.Findings = append(out.Findings, learningFinding(p, now))
+		}
+	}()
 	// Controller exposure needs no install: it is reported whenever
 	// antispam is on and cleared when it is off. An unreadable controller
 	// keeps the last result.
@@ -201,6 +288,13 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 		}
 		out.Findings = append(out.Findings, finding)
 	}
+	// Learning off while rspamd still loads CSM's rules means a removal did
+	// not finish, for example because a foreign file replaced one CSM
+	// wrote. Judged from this pass's facts, so only when no removal succeeds.
+	scoringLeft := d.Enabled && !settings.Learning && f.RspamdConfig.Err == nil && antispam.LearningScoringLoaded([]byte(f.RspamdConfig.Stdout))
+	if scoringLeft && (d.Observe || a.Action == antispam.Keep) {
+		learningProblems = append(learningProblems, removalIncomplete())
+	}
 	if d.Observe {
 		if a.Installed {
 			out.Findings = append(out.Findings, problemFinding(antispam.Problem{
@@ -229,6 +323,7 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	}
 	if result.Busy {
 		out.Retry = BusyRetry
+		// Learning findings depend on the apply as well; keep the last.
 		out.Checks = []string{CheckPrecondition, CheckFeed}
 		if controllerSettled {
 			out.Checks = append(out.Checks, CheckControllerOpen)
@@ -237,8 +332,30 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) Outcome {
 	if result.FailedStep == antispam.FeedsCheckStep {
 		r.Feeds.hold(d.Settings)
 	}
+	out.LearningGate.Publish = gate.Publish && req.Operation == antispam.OpApply && err == nil && result.OK
+	switch result.FailedStep {
+	case antispam.LearningCheckStep:
+		r.Learning.hold(learningGeneration(settings))
+		out.LearningGate = antispam.LearningGate{}
+		learningProblems = append(learningProblems, learningHoldProblem())
+	case antispam.LearningProbeStep:
+		learningProblems = append(learningProblems, learningProbeProblem())
+	}
+	if strings.HasPrefix(result.Roundcube, antispam.RoundcubeUnavailable) {
+		why := strings.TrimPrefix(result.Roundcube, antispam.RoundcubeUnavailable)
+		p := antispam.Problem{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonRoundcube, Detail: why}
+		if req.Operation == antispam.OpApply && settings.Roundcube {
+			r.Learning.holdRoundcube(learningGeneration(settings), why)
+			p = roundcubeHoldProblem(why)
+		}
+		out.LearningGate.Roundcube = false
+		learningProblems = append(learningProblems, p)
+	}
 	if finding, ok := resultFinding(req.Operation, result, err, now); ok {
 		out.Findings = append(out.Findings, finding)
+	}
+	if scoringLeft && !result.Busy && (err != nil || !result.OK) {
+		learningProblems = append(learningProblems, removalIncomplete())
 	}
 	out.Err = err
 	r.settleIPMap(d, settings, a, err == nil && result.OK, &out)
@@ -268,4 +385,51 @@ func (r Reconciler) settleIPMap(d Desired, settings antispam.Settings, a antispa
 			})
 		}
 	}
+}
+
+// learningKeys creates the keys on first use and reads them. A failure is
+// returned for the resolver, which reports it as state_mismatch.
+func (r Reconciler) learningKeys(ctx context.Context, dir string) (antispam.LearningKeys, error) {
+	if r.EnsureKeys == nil || r.LoadKeys == nil {
+		return antispam.LearningKeys{}, errors.New("learning keys are not available in this build")
+	}
+	if _, err := r.EnsureKeys(ctx, dir); err != nil {
+		return antispam.LearningKeys{}, err
+	}
+	return r.LoadKeys(dir)
+}
+
+// resolveLearningState applies the learning hold, the prerequisites and the
+// Roundcube hold, in that order, and remembers the Redis guard state.
+func (r Reconciler) resolveLearningState(s antispam.Settings, f antispam.HostFacts, keys antispam.LearningKeys) (antispam.Settings, antispam.LearningGate, []antispam.Problem) {
+	if !s.Learning {
+		s.Roundcube = false
+		return s, antispam.LearningGate{}, nil
+	}
+	s.LearningKeys = keys
+	generation := learningGeneration(s)
+	s, problems := r.Learning.applyLearningHold(s)
+	if !s.Learning {
+		return s, antispam.LearningGate{}, problems
+	}
+	resolve := r.resolveLearning
+	if resolve == nil {
+		resolve = antispam.ResolveLearning
+	}
+	s, gate, found := resolve(s, f)
+	problems = append(problems, found...)
+	if f.Redis.Err == nil && f.Redis.MaxMemoryKnown {
+		r.Learning.setRedisPaused(antispam.RedisGuard(f.Redis.Used, f.Redis.MaxMemory, f.RedisGuardPaused))
+	}
+	s, held := r.Learning.applyRoundcubeHold(s, generation)
+	if len(held) > 0 {
+		gate.Roundcube = false
+		problems = append(problems, held...)
+	}
+	return s, gate, problems
+}
+
+func removalIncomplete() antispam.Problem {
+	return antispam.Problem{Code: antispam.CodeLearning, Severity: antispam.Warning, Key: antispam.ReasonRemovalIncomplete,
+		Detail: "learning is off but rspamd still loads CSM's learned scoring; a learning file CSM wrote may have been replaced, so CSM cannot remove it"}
 }

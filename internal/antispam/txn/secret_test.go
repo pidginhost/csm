@@ -124,7 +124,7 @@ func TestSecureSecretPlansGroupOnlyRepair(t *testing.T) {
 		File:    antispam.PathFacts{Path: antispam.FeedRBLPath, UID: 0, GID: 974, Mode: antispam.SecretFileMode},
 		Content: antispam.ManagedHeader + "\n",
 	}
-	changes := secureSecret(nil, []antispam.TargetFacts{target}, 975)
+	changes := secureSecret(nil, []antispam.TargetFacts{target}, 975, []string{antispam.FeedRBLPath})
 	if len(changes) != 1 {
 		t.Fatalf("group-only drift planned %d writes, want one", len(changes))
 	}
@@ -227,7 +227,7 @@ func TestSecretMetadataDriftPlansOnlyRBLReplacement(t *testing.T) {
 			if err != nil || len(changes) != 0 {
 				t.Fatal("unchanged content produced edits or failed planning")
 			}
-			changes = secureSecret(changes, targets, serviceGID)
+			changes = secureSecret(changes, targets, serviceGID, []string{antispam.FeedRBLPath})
 			if len(changes) != 1 || changes[0].target.Path != antispam.FeedRBLPath {
 				t.Fatal("metadata drift must replace only the DQS configuration")
 			}
