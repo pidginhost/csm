@@ -35,7 +35,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Changed
 
-- Developer documentation now clarifies recovery behavior for failed automatic blocks.
 - After the system clock is set back, new temporary blocks show expiry times later by that step, and the journal notes it once per start.
 - Deep phishing scans use less memory and CPU per page.
 - With central blocking on, an address reported by several trusted nodes can now be blocked when local evidence agrees; an explicit `block_threshold` is kept.
