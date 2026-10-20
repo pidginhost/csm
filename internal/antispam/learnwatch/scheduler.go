@@ -119,6 +119,10 @@ type Watcher struct {
 	// timeout per pass. Owned by the single active pass.
 	submitStopped bool
 	stoppedBy     int
+	// answered: the backend answered a submission earlier this pass, so a
+	// later failure can be the message's fault (spec 7.5: a backend
+	// failure leaves work pending).
+	answered bool
 
 	mu   sync.Mutex
 	last PassReport
@@ -256,7 +260,7 @@ func (w *Watcher) cancelRemoved(ctx context.Context, accounts []Account, skips [
 }
 
 func (w *Watcher) pass(ctx context.Context) PassReport {
-	w.submitStopped, w.stoppedBy = false, 0
+	w.submitStopped, w.stoppedBy, w.answered = false, 0, false
 	r := PassReport{Skipped: map[string]int{}}
 	deadline := w.cfg.Now().Add(PassDeadline)
 	accounts, skips, err := Accounts(w.cfg.Source)
@@ -1052,23 +1056,27 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 	out, err := r.w.cfg.Engine.SubmitReport(ctx, learn.Candidate{UID: r.a.UID, Snapshot: snap})
 	switch {
 	case err != nil || out.Err != nil:
-		if err != nil || !errors.Is(out.Err, learn.ErrMessageRejected) {
+		rejected := err == nil && errors.Is(out.Err, learn.ErrMessageRejected)
+		if rejected {
+			r.w.answered = true
+		} else {
 			r.w.submitStopped, r.w.stoppedBy = true, r.a.UID
 		}
 		if !allowed() {
 			return
 		}
 		failure := errors.Join(err, out.Err)
-		// Fail closed: only failures known to come from the pass, the host or
-		// local learning state spare the message's allowance. A message
+		// Only failures known to come from the pass, the host or local
+		// learning state always spare the message's allowance. A message
 		// cannot cancel a context or break the ledger; it can cause any
-		// other error.
-		if ctx.Err() != nil || hostSideFailure(failure) {
+		// other error, but so can an outage. Charge one only when the
+		// backend answered earlier in this pass; the next pass starts after
+		// this account, so other accounts' answers come first.
+		if ctx.Err() != nil || hostSideFailure(failure) || !rejected && !r.w.answered {
 			retry()
 			return
 		}
-		// A message can make the backend fail too, so each entry gets
-		// MaxEntryErrors tries, and the next pass starts after its account.
+		// Each entry gets MaxEntryErrors charged tries.
 		var gaveUp bool
 		if r.stateFailed(r.state().Update(func(tx StateTx) (e error) { gaveUp, e = tx.Fail(k, it.Base); return e }), rep) || !gaveUp {
 			hold()
@@ -1078,10 +1086,12 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 	case out.Deferred:
 		retry()
 	case slices.ContainsFunc(out.Skips, func(s learn.Skip) bool { return s.Reason == learn.SkipAccountCapacity }):
+		r.w.answered = true
 		retry()
 		r.paused = true
 		r.reportCapacity(rep)
 	default:
+		r.w.answered = true
 		rep.Submitted++
 		rep.Committed += len(out.Committed)
 		for _, s := range out.Skips {

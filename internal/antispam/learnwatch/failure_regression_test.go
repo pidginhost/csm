@@ -198,15 +198,48 @@ func TestSchedulerBackendRotationSurvivesDiscoveryDeadline(t *testing.T) {
 	}
 }
 
-// Fail closed: an error the scheduler cannot attribute to the host or the
-// pass counts against the message, so no message can stop passes forever.
-func TestSchedulerUnknownErrorCountsAgainstEntry(t *testing.T) {
+// Spec 7.5: backend failure leaves work pending. While nothing gets an
+// answer, failures are not charged to the messages, however long it lasts.
+func TestSchedulerBackendOutageKeepsReports(t *testing.T) {
 	for _, outcomeError := range []bool{false, true} {
 		t.Run(fmt.Sprintf("outcome=%t", outcomeError), func(t *testing.T) {
 			f := newWatch(t, 1)
 			f.pass()
-			f.deliver(0, "new", 1, spamBody)
+			f.deliver(0, "new", 2, spamBody)
 			f.engine.respond = func(learn.Candidate) (learn.Outcome, error) {
+				err := fmt.Errorf("%w: %w", learn.ErrReadFailed, learn.ErrUncertain)
+				if outcomeError {
+					return learn.Outcome{Err: err}, nil
+				}
+				return learn.Outcome{}, err
+			}
+			for pass := range MaxEntryErrors + 2 {
+				if r := f.pass(); r.Pending != 2 || r.Skipped[SkipFailed] != 0 || f.pending(0) != 2 {
+					t.Fatalf("pass %d of an outage dropped a report: %+v", pass+1, r)
+				}
+				f.restart()
+			}
+			f.engine.respond = nil
+			if r := f.pass(); r.Submitted != 2 || r.Pending != 0 {
+				t.Fatalf("reports did not resume after the outage: %+v", r)
+			}
+		})
+	}
+}
+
+// Fail closed: an error the scheduler cannot attribute to the host or the
+// pass counts against the message once the backend answers others, so no
+// message can stop other accounts' passes forever.
+func TestSchedulerUnknownErrorCountsAgainstEntry(t *testing.T) {
+	for _, outcomeError := range []bool{false, true} {
+		t.Run(fmt.Sprintf("outcome=%t", outcomeError), func(t *testing.T) {
+			f := newWatch(t, 2)
+			f.pass()
+			f.deliver(1, "new", 1, spamBody)
+			f.engine.respond = func(c learn.Candidate) (learn.Outcome, error) {
+				if c.UID != f.accounts[1].UID {
+					return learn.Outcome{Committed: []uint64{1}}, nil
+				}
 				err := errors.New("unexpected learner failure")
 				if outcomeError {
 					return learn.Outcome{Err: err}, nil
@@ -214,11 +247,12 @@ func TestSchedulerUnknownErrorCountsAgainstEntry(t *testing.T) {
 				return learn.Outcome{}, err
 			}
 			for attempt := range MaxEntryErrors {
+				f.deliver(0, "new", 1, spamBody)
 				pending, failed := 1, 0
 				if attempt == MaxEntryErrors-1 {
 					pending, failed = 0, 1
 				}
-				if r := f.pass(); r.Submitted != 0 || r.Pending != pending || r.Skipped[SkipFailed] != failed || f.pending(0) != pending {
+				if r := f.pass(); r.Submitted != 1 || r.Pending != pending || r.Skipped[SkipFailed] != failed || f.pending(1) != pending {
 					t.Fatalf("attempt %d: unexpected retry accounting: %+v", attempt+1, r)
 				}
 				f.restart()
@@ -226,7 +260,7 @@ func TestSchedulerUnknownErrorCountsAgainstEntry(t *testing.T) {
 			if r := f.pass(); r.Submitted != 0 || r.Pending != 0 || r.Skipped[SkipFailed] != 0 {
 				t.Fatalf("failed report was retried: %+v", r)
 			}
-			if got := len(f.engine.submitted()); got != MaxEntryErrors {
+			if got := countUID(f.engine.submitted(), f.accounts[1].UID); got != MaxEntryErrors {
 				t.Fatalf("submitted %d times", got)
 			}
 		})

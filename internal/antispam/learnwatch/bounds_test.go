@@ -311,7 +311,7 @@ func TestSchedulerPrunePreservesUnresolvedAccounts(t *testing.T) {
 
 // A message that times out the controller every time stops one pass at a
 // time, rotates the next pass past its account, and is given up after
-// MaxEntryErrors errors.
+// MaxEntryErrors errors charged while other accounts get answers.
 func TestSchedulerRepeatedBackendErrorEntryIsBounded(t *testing.T) {
 	f := newWatch(t, 2)
 	f.pass()
@@ -329,9 +329,11 @@ func TestSchedulerRepeatedBackendErrorEntryIsBounded(t *testing.T) {
 		t.Fatalf("the next pass did not rotate past the failing account: %v", f.engine.submitted())
 	}
 	for range MaxEntryErrors + 2 {
+		f.deliver(1, "new", 1, spamBody)
 		f.pass()
 	}
-	if got := countUID(f.engine.submitted(), 1001); got != MaxEntryErrors {
+	// The first try came before any answer, so it was not charged.
+	if got := countUID(f.engine.submitted(), 1001); got != MaxEntryErrors+1 {
 		t.Fatalf("a failing entry was tried %d times", got)
 	}
 	if err := f.cfg.State.View(func(tx StateTx) (err error) {
