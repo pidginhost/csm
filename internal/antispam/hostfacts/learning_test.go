@@ -341,14 +341,15 @@ func TestCollectRedisProbesOnlyProtectedSockets(t *testing.T) {
 	if r := c.redis(context.Background(), f); (r.Err == nil) != (wantProbes == 1) || *probes != wantProbes {
 		t.Fatalf("account-owned socket: probes=%d facts=%+v", *probes, r)
 	}
-	// A cPanel account named redis is a tenant, not the service.
+	// A cPanel account named redis is a tenant, not the service. Root stays
+	// trusted; TestTrustedRedisOwner covers these names for other uids.
 	c, f, probes = setup(t, 0o750, "redis", "redis")
-	if r := c.redis(context.Background(), f); r.Err == nil || *probes != 0 {
+	if r := c.redis(context.Background(), f); (r.Err == nil) != (wantProbes == 1) || *probes != wantProbes {
 		t.Fatalf("account named redis: probes=%d facts=%+v", *probes, r)
 	}
 	// Tenant code can run as shared service users such as nobody.
 	c, f, probes = setup(t, 0o750, "nobody")
-	if r := c.redis(context.Background(), f); r.Err == nil || *probes != 0 {
+	if r := c.redis(context.Background(), f); (r.Err == nil) != (wantProbes == 1) || *probes != wantProbes {
 		t.Fatalf("socket owned by an unpinned user: probes=%d facts=%+v", *probes, r)
 	}
 	c, f, probes = setup(t, 0o750, "redis")
@@ -363,7 +364,9 @@ func TestCollectControlSocketGroup(t *testing.T) {
 	sock := serve(t, d, pong)
 	gid := os.Getgid()
 	c.readGroup = func() ([]byte, error) { return []byte("ctl:x:" + strconv.Itoa(gid) + ":member\n"), nil }
-	c.readPasswd = func() ([]byte, error) { return []byte("root:x:0:0::/root:/bin/sh\n"), nil }
+	// Root's primary group must differ from the socket's, which is 0 when
+	// the tests run as root.
+	c.readPasswd = func() ([]byte, error) { return []byte("root:x:0:" + strconv.Itoa(gid+1) + "::/root:/bin/sh\n"), nil }
 	f := antispam.HostFacts{RspamdOptions: antispam.CommandResult{Stdout: `{"control_socket": "` + sock + `"}`}}
 	c.controlSocket(&f)
 	c.controlSocketGroup(&f)

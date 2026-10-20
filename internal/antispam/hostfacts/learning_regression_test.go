@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/antispam"
@@ -178,8 +179,16 @@ func TestRedisUnknownGroupMembership(t *testing.T) {
 		LearningDumps: antispam.LearningDumps{Redis: []byte(`{"servers":"` + sock + `"}`)},
 		RspamdConfig:  antispam.CommandResult{Stdout: fuzzyWorkerDump("")},
 	}
+	// Unknown membership stays nil, which the resolver counts as other
+	// users (RedisGroupUnknown); an empty list would claim no members.
 	c.readGroup = func() ([]byte, error) { return nil, errors.New("unreadable") }
-	if got := c.redis(context.Background(), f); got.Err == nil {
-		t.Fatal("unknown Redis group membership returned no error")
+	if got := c.redis(context.Background(), f); got.GroupMembers != nil {
+		t.Fatalf("unknown Redis group membership reported as %v", got.GroupMembers)
+	}
+	gid := os.Getgid()
+	c.readGroup = func() ([]byte, error) { return []byte("g:x:" + strconv.Itoa(gid) + ":\n"), nil }
+	c.readPasswd = func() ([]byte, error) { return []byte("svc:x:4242:" + strconv.Itoa(gid+1) + "::/:/bin/sh\n"), nil }
+	if got := c.redis(context.Background(), f); got.GroupMembers == nil {
+		t.Fatal("a readable group without members was reported as unknown")
 	}
 }
