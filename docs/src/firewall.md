@@ -280,6 +280,24 @@ csm firewall update-geoip                        # Download country IP blocks
 csm firewall cf-status                           # Show Cloudflare IP whitelist status
 ```
 
+### CLI confirmation window
+
+`csm firewall apply-confirmed <minutes>` applies the firewall settings from
+disk with a rollback timer. `csm firewall confirm` accepts the current
+ruleset and engine configuration and cancels that timer. While confirmation
+remains pending, `csm firewall restart` and another `apply-confirmed` are refused.
+
+If startup cannot read the saved engine configuration, the kernel rollback
+still runs, but the window remains pending. Inspect the current ruleset and
+configuration before confirming: confirmation accepts the current state; it
+does not recover the unreadable settings. To retry recovery instead, repair
+the saved configuration and restart the daemon. Confirmation or rollback
+can report a leftover snapshot cleanup error after ending the window. Fix
+that cleanup error before starting another window.
+
+This CLI window is separate from the Web UI config rollback below, which
+uses `csm firewall rollback status|confirm|revert`.
+
 ## Configuration
 
 Firewall defaults can be edited in two places:

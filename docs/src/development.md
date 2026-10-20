@@ -856,7 +856,20 @@ and member refusals until an applied effect proves recovery. Its probe is one
 member: every pick is checked and refusals end, but only the first accepted
 pick is reserved and applied, and the rest wait untouched for the batch after
 it applies. An isolated retry does not narrow these probe checks; it still
-runs alone if selected. Hold changes copy
+runs alone if selected. An apply-confirmed firewall window holds the engine's member
+checks, batches, probes and retirements (`ErrConfirmPending`) from before its
+snapshot until it is confirmed or rolled back, so its rollback cannot erase a
+block the owner wrote inside it; a batch in flight finishes first and lands in
+the snapshot. A restart with a window pending holds them before the owner sees
+the engine, until startup recovery settles the window. The read-only
+admission snapshot of a forecast still answers. A kernel rollback alone
+does not release the hold when the saved engine configuration is unreadable;
+the confirmation remains pending until recovery succeeds or the operator
+confirms it. Keep its state snapshot through partial recovery, so another
+rollback restores the same state even after intervening legacy writes.
+Failed marker removal keeps the hold. Once the marker is gone,
+the hold and recovery fault clear even if snapshot cleanup fails; that error
+is still reported. Hold changes copy
 the cached owner status without rereading the ledger. Status
 (`admission.owner.execution_held`) and the `csm doctor` row `admission
 execution` name the cause. An owner publishes `admission.owner.executing`

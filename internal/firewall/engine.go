@@ -34,6 +34,7 @@ type Engine struct {
 	failedBlockActions     map[string]bool
 	blockActionsUnproven   error
 	blockBatchStateErr     error
+	blockBatchesHeld       bool
 	blockRemovalPending    bool
 	stateRevision          uint64
 	stateReadErr           error

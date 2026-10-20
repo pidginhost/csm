@@ -15,6 +15,10 @@ var ErrPermanentBlock = errors.New("IP is permanently blocked; unblock it explic
 // ErrLongerBlock requires an explicit unblock before shortening a timed block.
 var ErrLongerBlock = errors.New("IP has a longer block; unblock it explicitly before shortening its lifetime")
 
+// ErrConfirmPending refuses admission's block batches while an
+// apply-confirmed window can roll the firewall back (design C9).
+var ErrConfirmPending = errors.New("a firewall change awaits confirmation")
+
 // ErrAdmissionOwnsBlock refuses an automatic rewrite of a block an
 // admission action wrote: its owner retires it (design C8).
 var ErrAdmissionOwnsBlock = errors.New("an admission action owns the block")

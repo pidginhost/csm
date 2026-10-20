@@ -88,6 +88,9 @@ func (e *Engine) RetireBlockActions(actions []BlockAction) ([]bool, error) {
 		unread[i] = addr.Is6() && (!e.cfg.IPv6 || e.setBlocked6 == nil)
 		canonical[i] = BlockAction{Action: m.Action, IP: addr.String()}
 	}
+	if e.blockBatchesHeld {
+		return nil, ErrConfirmPending
+	}
 	if err := e.checkpointBlockRemovalLocked(); err != nil {
 		return nil, err
 	}
