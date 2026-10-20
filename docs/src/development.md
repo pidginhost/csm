@@ -870,7 +870,11 @@ checks, batches, probes and retirements (`ErrConfirmPending`) from before its
 snapshot until it is confirmed or rolled back, so its rollback cannot erase a
 block the owner wrote inside it; a batch in flight finishes first and lands in
 the snapshot. A restart with a window pending holds them before the owner sees
-the engine, until startup recovery settles the window. The read-only
+the engine, until startup recovery settles the window. A window opened between
+member checks and apply also holds execution, but is not an apply fault:
+after it ends, a successful snapshot probe clears that hold even on an idle
+turn. Any earlier apply fault still needs a successful one-member apply.
+The read-only
 admission snapshot of a forecast still answers. A kernel rollback alone
 does not release the hold when the saved engine configuration is unreadable;
 the confirmation remains pending until recovery succeeds or the operator
