@@ -262,3 +262,32 @@ func TestWatcherSubmitsOutcomeMarksSeen(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDeclaredRestoreHoldsLearningUntilDisabled(t *testing.T) {
+	withFakeEngines(t)
+	withFakeWatchers(t)
+	d := newLearningDaemon(t)
+	if err := learn.Open(store.Global()).MarkDeclaredRestore(t0Fresh); err != nil {
+		t.Fatal(err)
+	}
+	mismatch := func() bool {
+		for _, p := range d.learnerProblems() {
+			if p.Key == antispam.ReasonStateMismatch {
+				return true
+			}
+		}
+		return false
+	}
+	if !mismatch() {
+		t.Fatal("a declared restore did not hold learning before the engine started")
+	}
+	d.cfg.EmailProtection.Antispam.Learning.Enabled = false
+	d.syncLearner(learnedOutcome(antispam.LearningGate{}, reconcile.LearnerTarget{}))
+	if held, err := learn.Open(store.Global()).DeclaredRestore(); err != nil || held {
+		t.Fatalf("disabling learning did not confirm the restore: %v, %v", held, err)
+	}
+	d.cfg.EmailProtection.Antispam.Learning.Enabled = true
+	if mismatch() {
+		t.Fatal("re-enabled learning still held")
+	}
+}
