@@ -119,7 +119,7 @@ type Watcher struct {
 	// timeout per pass. Owned by the single active pass.
 	submitStopped bool
 	stoppedBy     int
-	// answered: the backend answered a submission earlier this pass, so a
+	// answered: storage answered a digest query earlier this pass, so a
 	// later failure can be the message's fault (spec 7.5: a backend
 	// failure leaves work pending).
 	answered bool
@@ -1057,9 +1057,7 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 	switch {
 	case err != nil || out.Err != nil:
 		rejected := err == nil && errors.Is(out.Err, learn.ErrMessageRejected)
-		if rejected {
-			r.w.answered = true
-		} else {
+		if !rejected {
 			r.w.submitStopped, r.w.stoppedBy = true, r.a.UID
 		}
 		if !allowed() {
@@ -1069,9 +1067,10 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 		// Only failures known to come from the pass, the host or local
 		// learning state always spare the message's allowance. A message
 		// cannot cancel a context or break the ledger; it can cause any
-		// other error, but so can an outage. Charge one only when the
-		// backend answered earlier in this pass; the next pass starts after
-		// this account, so other accounts' answers come first.
+		// other error, but so can an outage. Charge an ambiguous failure
+		// only when storage answered earlier in this pass; pre-query
+		// rejections say nothing about its health. The next pass starts
+		// after this account, so other accounts' answers come first.
 		if ctx.Err() != nil || hostSideFailure(failure) || !rejected && !r.w.answered {
 			retry()
 			return
@@ -1091,7 +1090,11 @@ func (r *accountRun) attempt(ctx context.Context, rep *PassReport) {
 		r.paused = true
 		r.reportCapacity(rep)
 	default:
-		r.w.answered = true
+		// An empty inspection needs no storage query. Preserve any earlier
+		// answer, but do not infer storage health from this report.
+		if !slices.ContainsFunc(out.Skips, func(s learn.Skip) bool { return s.Reason == learn.SkipNoDigest }) {
+			r.w.answered = true
+		}
 		rep.Submitted++
 		rep.Committed += len(out.Committed)
 		for _, s := range out.Skips {

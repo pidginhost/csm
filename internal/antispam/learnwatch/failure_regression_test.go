@@ -49,14 +49,18 @@ func TestSchedulerInterruptedSubmissionKeepsReport(t *testing.T) {
 func TestSchedulerLearningStateFailureKeepsReport(t *testing.T) {
 	for _, failure := range []error{learn.ErrStateIO, learn.ErrStateMismatch, learn.ErrBodyInvalid, learn.ErrPeer, hostfacts.ErrControllerNotSent, context.Canceled} {
 		t.Run(failure.Error(), func(t *testing.T) {
-			f := newWatch(t, 1)
+			f := newWatch(t, 2)
 			f.pass()
-			f.deliver(0, "new", 1, spamBody)
-			f.engine.respond = func(learn.Candidate) (learn.Outcome, error) {
+			f.deliver(1, "new", 1, spamBody)
+			f.engine.respond = func(c learn.Candidate) (learn.Outcome, error) {
+				if c.UID == f.accounts[0].UID {
+					return learn.Outcome{Committed: []uint64{1}}, nil
+				}
 				return learn.Outcome{Deferred: true, Err: fmt.Errorf("learning unavailable: %w", failure)}, nil
 			}
 			for range MaxEntryErrors + 1 {
-				if r := f.pass(); r.Pending != 1 || r.Skipped[SkipFailed] != 0 || f.pending(0) != 1 {
+				f.deliver(0, "new", 1, spamBody)
+				if r := f.pass(); r.Submitted != 1 || r.Pending != 1 || r.Skipped[SkipFailed] != 0 || f.pending(1) != 1 {
 					t.Fatalf("local backend failure discarded the report: %+v", r)
 				}
 				f.restart()
@@ -224,6 +228,137 @@ func TestSchedulerBackendOutageKeepsReports(t *testing.T) {
 				t.Fatalf("reports did not resume after the outage: %+v", r)
 			}
 		})
+	}
+}
+
+// A controller can reject a body or find no digest without querying
+// storage. Those replies must not spend other reports' error allowance.
+func TestSchedulerPreQueryRepliesKeepOutageReports(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reply string
+	}{
+		{"parse failure", `{"results":[],"errors":["cannot process message"],"complete":false,"distinct":0}`},
+		{"hash failure", `{"results":[],"errors":["cannot hash message"],"complete":false,"distinct":0}`},
+		{"digest limit", `{"results":[],"errors":["too many digests"],"complete":false,"distinct":65}`},
+		{"no digest", `{"results":[],"errors":[],"complete":true,"distinct":0}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newWatch(t, 2)
+			f.pass()
+			f.deliver(1, "new", 2, spamBody)
+			f.engine.respond = func(c learn.Candidate) (learn.Outcome, error) {
+				if c.UID == f.accounts[1].UID {
+					return learn.Outcome{Err: fmt.Errorf("%w: %w", learn.ErrReadFailed, learn.ErrUncertain)}, nil
+				}
+				insp, err := learn.ParseInspection([]byte(tc.reply), nil)
+				if err != nil {
+					if !errors.Is(err, learn.ErrMessageRejected) {
+						t.Fatalf("unexpected inspection error: %v", err)
+					}
+					return learn.Outcome{Err: fmt.Errorf("%w: %w", learn.ErrReadFailed, err)}, nil
+				}
+				admission, err := learn.Assign(insp, learn.Source{UID: c.UID}, nil, nil)
+				return learn.Outcome{Skips: admission.Skips, Err: err}, nil
+			}
+			for pass := range 2*MaxEntryErrors + 2 {
+				f.now = f.now.Add(PassEvery)
+				f.deliver(0, "new", 1, spamBody)
+				if r := f.pass(); f.pending(1) != 2 {
+					t.Fatalf("pass %d discarded reports during an outage: %+v", pass+1, r)
+				}
+				if got := countUID(f.engine.submitted(), f.accounts[1].UID); got != pass+1 {
+					t.Fatalf("pass %d made %d total storage attempts", pass+1, got)
+				}
+				if err := f.cfg.State.View(func(tx StateTx) error {
+					items, err := tx.Pending(FolderKey{UID: f.accounts[1].UID, Folder: ".spam"})
+					for _, it := range items {
+						if it.Errors != 0 {
+							t.Errorf("pre-query reply charged an outage: %+v", it)
+						}
+					}
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				f.restart()
+			}
+			before := countUID(f.engine.submitted(), f.accounts[1].UID)
+			f.engine.respond = nil
+			if r := f.pass(); r.Pending != 0 || f.pending(1) != 0 ||
+				countUID(f.engine.submitted(), f.accounts[1].UID) != before+2 {
+				t.Fatalf("outage reports did not resume after recovery: %+v", r)
+			}
+		})
+	}
+}
+
+// Rotation and fresh/retry alternation must let successful storage queries
+// precede a poison report, even when another account's first turn defers.
+func TestSchedulerMixedQueuesBoundPoisonReport(t *testing.T) {
+	f := newWatch(t, 3)
+	f.pass()
+	const deferredBody = "Subject: waiting\r\n\r\nwaiting"
+	f.deliver(1, "new", 1, deferredBody)
+	healthy := 0
+	f.engine.respond = func(c learn.Candidate) (learn.Outcome, error) {
+		switch {
+		case c.UID == f.accounts[0].UID:
+			return learn.Outcome{Err: fmt.Errorf("%w: %w", learn.ErrReadFailed, learn.ErrUncertain)}, nil
+		case string(c.Snapshot) == deferredBody:
+			return learn.Outcome{Deferred: true}, nil
+		case c.UID == f.accounts[2].UID:
+			return learn.Outcome{Skips: []learn.Skip{{Reason: learn.SkipNoDigest}}}, nil
+		default:
+			healthy++
+			return learn.Outcome{Committed: []uint64{1}}, nil
+		}
+	}
+	if r := f.pass(); r.Pending != 1 {
+		t.Fatalf("did not seed the retry queue: %+v", r)
+	}
+	f.deliver(0, "new", 1, spamBody)
+	passes := 0
+	for pass := range 2*MaxEntryErrors + 1 {
+		passes++
+		f.now = f.now.Add(PassEvery)
+		f.deliver(1, "new", 1, spamBody)
+		f.deliver(2, "new", 1, spamBody)
+		r := f.pass()
+		wantFailed := 0
+		if healthy == MaxEntryErrors {
+			wantFailed = 1
+		}
+		if pass < 2 && healthy != 0 || healthy > MaxEntryErrors ||
+			f.pending(0) != 1-wantFailed || r.Skipped[SkipFailed] != wantFailed {
+			t.Fatalf("pass %d: healthy=%d poison pending=%d report=%+v", pass+1, healthy, f.pending(0), r)
+		}
+		if err := f.cfg.State.View(func(tx StateTx) error {
+			items, err := tx.Pending(FolderKey{UID: f.accounts[0].UID, Folder: ".spam"})
+			for _, it := range items {
+				if it.Errors != healthy {
+					t.Errorf("pass %d: poison charged %d times after %d successful queries", pass+1, it.Errors, healthy)
+				}
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		f.restart()
+		if wantFailed == 1 {
+			break
+		}
+	}
+	if healthy != MaxEntryErrors || f.pending(0) != 0 {
+		t.Fatalf("poison report still pending after %d passes and %d healthy queries", passes, healthy)
+	}
+	before := countUID(f.engine.submitted(), f.accounts[0].UID)
+	if before != passes {
+		t.Fatalf("poison report attempted %d times in %d passes", before, passes)
+	}
+	if r := f.pass(); healthy != passes || r.Skipped[SkipFailed] != 0 ||
+		countUID(f.engine.submitted(), f.accounts[0].UID) != before {
+		t.Fatalf("failed report retried or healthy queue did not drain: healthy=%d report=%+v", healthy, r)
 	}
 }
 

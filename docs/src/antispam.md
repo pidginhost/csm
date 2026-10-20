@@ -670,13 +670,14 @@ or unreadable folders keep their state until they can be checked again.
 
 A backend error stops further submissions for that pass; the next pass
 starts with the accounts after the one that failed. Reports stay pending
-while rspamd answers no request, however long that lasts. A failure counts
-against a message only when rspamd answered another request earlier in the
-same pass, or when rspamd cannot process the message; such a message does
-not stop other accounts' reports. A message with three counted failures,
-including unclassified learner errors, is skipped as `failed`. Canceled
-passes, reconciliation pauses, unsent controller requests, a wrong
-controller peer and local state failures never count. Unreadable learning
+while rspamd's fuzzy storage answers no lookup, however long that lasts. A
+failure counts against a message only when storage answered a lookup for
+another report earlier in the same pass, or when rspamd cannot process the
+message; such a message does not stop other accounts' reports. A message
+with three counted failures, including unclassified learner errors, is
+skipped as `failed`. Canceled passes, reconciliation pauses, unsent
+controller requests, a wrong controller peer and local state failures
+never count. Unreadable learning
 state holds reports even when the learner cannot finish startup; the
 reports resume once the state is available.
 
