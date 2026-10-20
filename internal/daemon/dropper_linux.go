@@ -84,14 +84,15 @@ func (fm *FileMonitor) initDropperDetector(cfg *config.Config) {
 		ttl + time.Duration(maxDropperProbeAttempts)*dropperProbeInterval(ttl) + dropperGraceWindow,
 	)
 	fm.dropperHandlerCache = make(map[string]dropperPHPHandlerCacheEntry)
-	fm.dropperDocroots.Store(checks.ResolveWebRoots(cfg))
+	fm.setDropperDocroots(checks.ResolveWebRoots(cfg))
 }
 
-func (fm *FileMonitor) currentDropperDocroots() []string {
-	if v, ok := fm.dropperDocroots.Load().([]string); ok {
-		return v
-	}
-	return nil
+func (fm *FileMonitor) setDropperDocroots(docroots []string) {
+	fm.dropperDocroots.Store(newDropperDocrootIndex(docroots))
+}
+
+func (fm *FileMonitor) dropperDocrootFor(path string) string {
+	return fm.dropperDocroots.Load().lookup(path)
 }
 
 // isDropperInteresting admits paths that the normal content filter deliberately
@@ -102,7 +103,7 @@ func (fm *FileMonitor) isDropperInteresting(path string, fd int) (interesting, p
 	if fm.dropper == nil {
 		return false, false
 	}
-	docroot := dropperDocrootFor(path, fm.currentDropperDocroots())
+	docroot := fm.dropperDocrootFor(path)
 	if docroot == "" {
 		return false, false
 	}
@@ -165,7 +166,7 @@ func (fm *FileMonitor) observeDropperCandidate(event fileEvent, procInfo string)
 	if fm.dropper == nil {
 		return nil
 	}
-	docroot := dropperDocrootFor(event.path, fm.currentDropperDocroots())
+	docroot := fm.dropperDocrootFor(event.path)
 	if docroot == "" {
 		return nil
 	}
@@ -359,7 +360,7 @@ func (fm *FileMonitor) dropperProbeLoop() {
 		case <-fm.stopCh:
 			return
 		case <-refresh.C:
-			fm.dropperDocroots.Store(checks.ResolveWebRoots(fm.currentCfg()))
+			fm.setDropperDocroots(checks.ResolveWebRoots(fm.currentCfg()))
 		case <-ticker.C:
 			now := time.Now()
 			fm.dropper.probeStep(now, prober, now)

@@ -199,7 +199,7 @@ func TestEventCountersIncludeDropperOnlyAdmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	fm.dropper = &dropperEngine{}
-	fm.dropperDocroots.Store([]string{dir})
+	fm.setDropperDocroots([]string{dir})
 	fm.handleEvent(fd, 0, FAN_CLOSE_WRITE)
 	stats := fm.EventStats()
 	if stats.Received != 1 || stats.Admitted != 1 || stats.Dropped != 0 || stats.Filtered() != 0 {

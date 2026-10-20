@@ -1208,27 +1208,46 @@ func dropperPrintable(b []byte, max int) string {
 	return string(out)
 }
 
-// dropperDocrootFor returns the longest configured web document root that
-// contains path, or "" when the path is not inside any docroot. Matching is
-// component-safe: /home/a/public_html_old is not inside /home/a/public_html.
-func dropperDocrootFor(path string, docroots []string) string {
+// dropperDocrootIndex holds the configured web document roots, normalized
+// once per refresh. Lookups run on every file event, so they walk the path's
+// ancestors instead of the root list: the cost follows path depth, not the
+// number of docroots on the host.
+type dropperDocrootIndex struct {
+	roots map[string]struct{}
+}
+
+func newDropperDocrootIndex(docroots []string) *dropperDocrootIndex {
+	idx := &dropperDocrootIndex{roots: make(map[string]struct{}, len(docroots))}
+	for _, configuredRoot := range docroots {
+		root := filepath.Clean(configuredRoot)
+		if filepath.IsAbs(root) {
+			idx.roots[root] = struct{}{}
+		}
+	}
+	return idx
+}
+
+// lookup returns the longest docroot that contains path, or "" when the path
+// is not inside any docroot. Matching is component-safe:
+// /home/a/public_html_old is not inside /home/a/public_html.
+func (idx *dropperDocrootIndex) lookup(path string) string {
+	if idx == nil || len(idx.roots) == 0 {
+		return ""
+	}
 	path = filepath.Clean(path)
 	if !filepath.IsAbs(path) {
 		return ""
 	}
-	best := ""
-	for _, configuredRoot := range docroots {
-		root := filepath.Clean(configuredRoot)
-		if !filepath.IsAbs(root) {
-			continue
+	// The first ancestor found is the deepest, so the longest root wins. A
+	// path equal to a root is not inside it, so the walk starts at the parent.
+	for dir := path; ; {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			continue
+		if _, ok := idx.roots[parent]; ok {
+			return parent
 		}
-		if len(root) > len(best) {
-			best = root
-		}
+		dir = parent
 	}
-	return best
 }

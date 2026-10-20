@@ -391,10 +391,10 @@ type FileMonitor struct {
 	// admitted from the analyzer path and probed for deletion after a TTL by
 	// dropperProbeLoop. nil when thresholds.dropper_detection is off.
 	dropper *dropperEngine
-	// dropperDocroots is the cached web-document-root list the admission
-	// gate matches paths against, refreshed on the probe loop's cadence so
+	// dropperDocroots indexes the web document roots the admission gate
+	// matches paths against, refreshed on the probe loop's cadence so
 	// account add/remove is picked up without a restart.
-	dropperDocroots atomic.Value // []string
+	dropperDocroots atomic.Pointer[dropperDocrootIndex]
 	// dropperQuarantines records exact snapshots of files CSM moved out of
 	// their original paths, so the later absence probe does not misclassify
 	// CSM's own remediation as attacker self-deletion.
