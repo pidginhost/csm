@@ -255,7 +255,7 @@ func (c *ControlListener) handleFirewallConfirm(_ json.RawMessage) (any, error) 
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("checking confirm marker: %w", err)
 		}
-		if cleanupErr := removeFirewallRollbackFiles(rollbackFile, legacyRollbackFile); cleanupErr != nil {
+		if cleanupErr := settleFirewallDeadmanLocked(confirmFile, rollbackFile, legacyRollbackFile); cleanupErr != nil {
 			return nil, cleanupErr
 		}
 		return control.FirewallAckResult{
@@ -263,11 +263,11 @@ func (c *ControlListener) handleFirewallConfirm(_ json.RawMessage) (any, error) 
 		}, nil
 	}
 
-	if err := removeFirewallRollbackFiles(confirmFile, rollbackFile, legacyRollbackFile); err != nil {
+	// Confirmation accepts the current engine configuration, even when
+	// startup could not recover the old configuration.
+	if err := settleFirewallDeadmanLocked(confirmFile, rollbackFile, legacyRollbackFile); err != nil {
 		return nil, err
 	}
-	// Confirmed: the candidate ruleset input stays in the engine.
-	firewallDeadmanOnRollback = nil
 	return control.FirewallAckResult{
 		Message: "Firewall confirmed. Rollback timer cancelled.",
 	}, nil
@@ -299,18 +299,27 @@ func applyFirewallDeadmanPrepared(confirmFile, rollbackFile, legacyRollbackFile 
 	if err := rejectPendingFirewallConfirmation(confirmFile); err != nil {
 		return err
 	}
+	firewallDeadmanConfigErr = nil
+	// Preparation can swap engine configuration; it shares the window hold.
+	holdFirewallBatchesLocked(true)
 	var rollbackConfig *firewall.FirewallConfig
 	if prepare != nil {
 		var err error
 		rollbackConfig, err = prepare()
 		if err != nil {
+			holdFirewallBatchesLocked(false)
 			return err
 		}
 		firewallDeadmanOnRollback = func() { restore(rollbackConfig) }
 	}
+	// A batch in flight finished before preparation and lands in the
+	// snapshot; none runs until the window ends.
 	restorePrepared := func() {
 		if prepare != nil {
 			runFirewallDeadmanOnRollbackLocked()
+		}
+		if _, err := os.Stat(confirmFile); os.IsNotExist(err) {
+			holdFirewallBatchesLocked(false)
 		}
 	}
 	if err := removeFirewallRollbackFiles(rollbackFile, legacyRollbackFile); err != nil {
@@ -381,6 +390,56 @@ func setFirewallDeadmanOnRollback(fn func()) {
 	firewallDeadmanMu.Lock()
 	defer firewallDeadmanMu.Unlock()
 	firewallDeadmanOnRollback = fn
+	firewallDeadmanConfigErr = nil
+}
+
+// firewallBatchHold holds or releases admission's block batches on the
+// engine (design C9): a window holds them from before its snapshot until
+// it is confirmed or rolled back, so a rollback cannot erase a row the
+// owner wrote inside it. Guarded by firewallDeadmanMu.
+var firewallBatchHold func(bool)
+
+// An unreadable configuration proof cannot release admission after
+// only the kernel snapshot was restored. Guarded by firewallDeadmanMu.
+var firewallDeadmanConfigErr error
+
+// settleFirewallDeadmanLocked disarms rollback before clearing the hold.
+// Snapshot cleanup can fail after the marker is gone; debris must not keep
+// admission held without a pending window. Caller holds firewallDeadmanMu.
+func settleFirewallDeadmanLocked(confirmFile, rollbackFile, legacyRollbackFile string) error {
+	if err := removeFileIfExists(confirmFile); err != nil {
+		return err
+	}
+	firewallDeadmanOnRollback = nil
+	firewallDeadmanConfigErr = nil
+	holdFirewallBatchesLocked(false)
+	return removeFirewallRollbackFiles(rollbackFile, legacyRollbackFile)
+}
+
+func setFirewallBatchHold(fn func(bool)) {
+	firewallDeadmanMu.Lock()
+	defer firewallDeadmanMu.Unlock()
+	firewallBatchHold = fn
+}
+
+// holdFirewallBatchesLocked: caller holds firewallDeadmanMu.
+func holdFirewallBatchesLocked(held bool) {
+	if firewallBatchHold != nil {
+		firewallBatchHold(held)
+	}
+}
+
+// holdFirewallBatchesForWindow installs engine's batch hold and holds it
+// while a window a restart interrupted is pending, or its marker cannot be
+// read; startup recovery then settles the window.
+func holdFirewallBatchesForWindow(statePath string, engine *firewall.Engine) {
+	firewallDeadmanMu.Lock()
+	defer firewallDeadmanMu.Unlock()
+	firewallBatchHold = engine.HoldBlockBatches
+	confirmFile, _, _ := firewallRollbackFiles(statePath)
+	if _, err := os.Stat(confirmFile); !os.IsNotExist(err) {
+		engine.HoldBlockBatches(true)
+	}
 }
 
 // runFirewallDeadmanOnRollbackLocked invokes and clears the rollback hook.
@@ -425,13 +484,14 @@ func (d *Daemon) recoverFirewallApplyConfirmed() {
 		// No marker means no candidate reached the kernel with a pending
 		// window (the marker is written before the apply), so a leftover
 		// snapshot is debris from an aborted handler run.
-		if cleanupErr := removeFirewallRollbackFiles(rollbackFile, legacyRollbackFile); cleanupErr != nil {
+		if cleanupErr := settleFirewallDeadmanLocked(confirmFile, rollbackFile, legacyRollbackFile); cleanupErr != nil {
 			csmlog.Warn("firewall rollback snapshot cleanup failed", "err", cleanupErr)
 		}
 		return
 	}
-	if err := installFirewallConfigRollbackHook(d, rollbackFile); err != nil {
-		csmlog.Warn("firewall configuration rollback snapshot unreadable", "err", err)
+	firewallDeadmanConfigErr = installFirewallConfigRollbackHook(d, rollbackFile)
+	if firewallDeadmanConfigErr != nil {
+		csmlog.Warn("firewall configuration rollback snapshot unreadable", "err", firewallDeadmanConfigErr)
 	}
 
 	deadline, parseErr := parseFirewallConfirmDeadline(marker)
@@ -517,6 +577,9 @@ func restoreFirewallRollback(confirmFile, rollbackFile string, expectedMarker []
 	raw, err := os.ReadFile(confirmFile) // #nosec G304 -- CSM-owned marker under the state dir.
 	if err != nil {
 		if os.IsNotExist(err) {
+			firewallDeadmanOnRollback = nil
+			firewallDeadmanConfigErr = nil
+			holdFirewallBatchesLocked(false)
 			return nil
 		}
 		return fmt.Errorf("checking confirm marker: %w", err)
@@ -530,11 +593,14 @@ func restoreFirewallRollback(confirmFile, rollbackFile string, expectedMarker []
 	if err := applyFirewallRollbackFile(rollbackFile); err != nil {
 		return err
 	}
+	if firewallDeadmanConfigErr != nil {
+		return fmt.Errorf("restoring firewall configuration: %w", firewallDeadmanConfigErr)
+	}
 	// The kernel is back on the snapshot; put the engine's ruleset input
 	// back too, or the next Apply rebuilds the unconfirmed candidate.
 	runFirewallDeadmanOnRollbackLocked()
 
-	return removeFirewallRollbackFiles(confirmFile, rollbackFile, legacyRollbackFileFor(rollbackFile))
+	return settleFirewallDeadmanLocked(confirmFile, rollbackFile, legacyRollbackFileFor(rollbackFile))
 }
 
 func applyFirewallRollbackFile(rollbackFile string) (resultErr error) {

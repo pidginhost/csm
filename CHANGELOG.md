@@ -46,6 +46,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 - Dry-run hosts with the firewall on show automatic block capacity forecasts in status, diagnostics and findings history; their dry-run block count now covers forecast examples, not every skipped block.
 - Verdict callback panels can receive an additional request for an eligible dry-run block, using their configured signature settings.
 - With the firewall on, queued automatic responses the configuration no longer allows, for example after turning blocking off, are refused instead of forecast or previewed.
+- Diagnostics distinguish admission turn failures, retirement faults and execution holds; failed turns retry sooner after prolonged faults.
+- Interrupted firewall changes stay pending when their saved configuration is unreadable, until recovery succeeds or an operator confirms them.
 
 ### Fixed
 

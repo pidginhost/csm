@@ -97,8 +97,11 @@ func TestOwnerRetirementKeepsFaultWaitAfterRepair(t *testing.T) {
 			})
 			f.host.advance(25 * time.Hour)
 			mono.advance(25 * time.Hour)
-			if err := o.do(o.turn); !errors.Is(err, cause) {
-				t.Fatalf("first fault = %v, want %v", err, cause)
+			if err := o.do(o.turn); err != nil {
+				t.Fatalf("first fault failed the turn: %v", err)
+			}
+			if got := o.status().Owner.RetirementError; !strings.Contains(got, cause.Error()) {
+				t.Fatalf("first fault = %q, want %v", got, cause)
 			}
 			setOwnerHook(t, o, &retireLedger, retire)
 			f.host.advance(retireRecheck - time.Nanosecond)
@@ -148,9 +151,11 @@ func TestOwnerRetirementSharesClockAndEngineBackoff(t *testing.T) {
 				return err
 			}
 			o.degraded = i == 0
-			if err := o.retire(); err != nil {
-				return err
+			err := o.retire()
+			if (i == 1) != (err != nil) {
+				t.Errorf("pass %d: retirement report = %v", i, err)
 			}
+			o.reportRetirement(err)
 			if o.retireWait != wait || !o.retireAt.Equal(mono.read().Add(wait)) {
 				t.Errorf("pass %d: backoff = %v until %v, want %v", i, o.retireWait, o.retireAt, wait)
 			}
@@ -371,9 +376,11 @@ func TestOwnerRetirementReportsADamagedRecordOnce(t *testing.T) {
 	}
 }
 
-// A turn that fails after its retirement pass still reports the pass's
-// error, whether the schedule or the block batch fails (1.5c-3a review M7).
-func TestOwnerTurnKeepsItsRetirementError(t *testing.T) {
+// A turn that fails after its retirement pass reports the pass's error
+// apart, whether the schedule or the block batch fails: the turn fails
+// with its own step's error and status keeps the retirement fault
+// (1.5c-3a review M7, C4).
+func TestOwnerTurnReportsItsRetirementErrorApart(t *testing.T) {
 	for _, step := range []string{"schedule", "execute", "publish"} {
 		t.Run(step, func(t *testing.T) {
 			p := withTestRegistry(t)
@@ -415,8 +422,11 @@ func TestOwnerTurnKeepsItsRetirementError(t *testing.T) {
 				})
 			}
 			err := o.do(o.turn)
-			if !errors.Is(err, retireCause) || !errors.Is(err, stepCause) {
-				t.Fatalf("turn error = %v; want both the retirement and the %s failure", err, step)
+			if errors.Is(err, retireCause) || !errors.Is(err, stepCause) {
+				t.Fatalf("turn error = %v; want the %s failure alone", err, step)
+			}
+			if got := o.status().Owner.RetirementError; !strings.Contains(got, retireCause.Error()) {
+				t.Fatalf("retirement error = %q", got)
 			}
 		})
 	}
@@ -486,9 +496,9 @@ func TestOwnerRetirementLedgerBackoffKeepsWakeAndScanGate(t *testing.T) {
 	}
 }
 
-// A dry-run policy still retires earlier unknown blocks, so a forecast
-// failure keeps the turn's retirement error too.
-func TestOwnerForecastTurnKeepsItsRetirementError(t *testing.T) {
+// A dry-run policy still retires earlier unknown blocks; a forecast
+// failure is the turn's error and the retirement fault stays apart.
+func TestOwnerForecastTurnReportsItsRetirementErrorApart(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
@@ -508,7 +518,10 @@ func TestOwnerForecastTurnKeepsItsRetirementError(t *testing.T) {
 	f.host.advance(25 * time.Hour)
 	mono.advance(25 * time.Hour)
 	err := o.do(o.turn)
-	if !errors.Is(err, retireCause) || !errors.Is(err, forecastCause) {
-		t.Fatalf("turn error = %v; want both the retirement and the forecast failure", err)
+	if errors.Is(err, retireCause) || !errors.Is(err, forecastCause) {
+		t.Fatalf("turn error = %v; want the forecast failure alone", err)
+	}
+	if got := o.status().Owner.RetirementError; !strings.Contains(got, retireCause.Error()) {
+		t.Fatalf("retirement error = %q", got)
 	}
 }

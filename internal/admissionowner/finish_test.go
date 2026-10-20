@@ -61,7 +61,7 @@ func TestOwnerRetriesUnwrittenOutcomes(t *testing.T) {
 			failure := errors.New("outcome store unavailable")
 			var held admission.ActionID
 			tries := 0
-			setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+			setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 				if held == "" {
 					held = id
 				}
@@ -72,14 +72,14 @@ func TestOwnerRetriesUnwrittenOutcomes(t *testing.T) {
 					}
 					if tries <= 2 {
 						if phase == "committed" {
-							if _, _, err := finish(l, id, d); err != nil {
+							if _, _, err := finish(l, id, d, lead); err != nil {
 								return admission.Candidate{}, admission.AttemptRecord{}, err
 							}
 						}
 						return admission.Candidate{}, admission.AttemptRecord{}, failure
 					}
 				}
-				return finish(l, id, d)
+				return finish(l, id, d, lead)
 			})
 			var ids []admission.CandidateID
 			for _, ip := range []string{"192.0.2.10", "192.0.2.11"} {
@@ -127,12 +127,12 @@ func TestOwnerStopRetriesUnwrittenOutcome(t *testing.T) {
 	o := f.start(executeOptions(f, blocks))
 	finish := finishLedger
 	tries := 0
-	setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+	setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 		tries++
 		if tries == 1 {
 			return admission.Candidate{}, admission.AttemptRecord{}, errors.New("outcome store unavailable")
 		}
-		return finish(l, id, d)
+		return finish(l, id, d, lead)
 	})
 	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 	if err := o.do(o.turn); err == nil {
@@ -153,12 +153,12 @@ func TestOwnerPendingOutcomesBlockNewWorkAndSurviveClockFailure(t *testing.T) {
 	finish := finishLedger
 	tries := 0
 	failure := errors.New("outcome store unavailable")
-	setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+	setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 		tries++
 		if tries <= 2 {
 			return admission.Candidate{}, admission.AttemptRecord{}, failure
 		}
-		return finish(l, id, d)
+		return finish(l, id, d, lead)
 	})
 	first, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 	if err := o.do(o.turn); !errors.Is(err, failure) {
@@ -217,7 +217,7 @@ func TestOwnerDropsOutcomesTheLedgerCannotRecord(t *testing.T) {
 			finish := finishLedger
 			var held admission.ActionID
 			tries := 0
-			setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+			setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 				if held == "" {
 					held = id
 				}
@@ -225,7 +225,7 @@ func TestOwnerDropsOutcomesTheLedgerCannotRecord(t *testing.T) {
 					tries++
 					return admission.Candidate{}, admission.AttemptRecord{}, tc.err
 				}
-				return finish(l, id, d)
+				return finish(l, id, d, lead)
 			})
 			first, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
 			if err := o.do(o.turn); !errors.Is(err, tc.err) {
@@ -276,7 +276,7 @@ func TestOwnerStopDrainsDespiteAnUnwrittenOutcome(t *testing.T) {
 	blocks := newFakeBlocks()
 	o := f.start(executeOptions(f, blocks))
 	failure := errors.New("outcome store unavailable")
-	setOwnerHook(t, o, &finishLedger, func(*store.AdmissionLedger, admission.ActionID, admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+	setOwnerHook(t, o, &finishLedger, func(*store.AdmissionLedger, admission.ActionID, admission.Disposition, time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 		return admission.Candidate{}, admission.AttemptRecord{}, failure
 	})
 	id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")

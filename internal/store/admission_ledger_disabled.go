@@ -1,15 +1,22 @@
 package store
 
 import (
+	"errors"
+
 	"github.com/pidginhost/csm/internal/admission"
 	bolt "go.etcd.io/bbolt"
 )
+
+// errNothingDisabled rolls back a refusal pass that ended nothing, so a
+// turn whose policy allows its whole queue commits no write.
+var errNothingDisabled = errors.New("no queued response is disabled")
 
 // RefuseDisabled ends queued responses the current policy forbids before
 // capacity scheduling. Like queue revalidation, it visits at most the
 // durable queue bound. It cannot touch in-flight attempts or let disabled
 // work consume the turns or capacity of allowed work. All endings commit
-// together, including their counters and schema marker.
+// together, including their counters and schema marker; a pass that ends
+// nothing commits nothing.
 func (l *AdmissionLedger) RefuseDisabled(allows func(admission.Candidate) bool) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -17,7 +24,7 @@ func (l *AdmissionLedger) RefuseDisabled(allows func(admission.Candidate) bool) 
 	if err != nil {
 		return err
 	}
-	return l.update("disabled", func(tx *bolt.Tx) error {
+	updateErr := l.update("disabled", func(tx *bolt.Tx) error {
 		q, err := l.openQueue(tx, now)
 		if err != nil {
 			return err
@@ -26,13 +33,22 @@ func (l *AdmissionLedger) RefuseDisabled(allows func(admission.Candidate) bool) 
 		if err != nil {
 			return err
 		}
+		ended := false
 		for _, lc := range live {
 			if lc.c.State == admission.StateQueued && !allows(lc.c) {
 				if err = q.end(lc, admission.ReasonDisabled); err != nil {
 					return err
 				}
+				ended = true
 			}
+		}
+		if !ended {
+			return errNothingDisabled
 		}
 		return q.flush()
 	})
+	if errors.Is(updateErr, errNothingDisabled) {
+		return nil
+	}
+	return updateErr
 }

@@ -138,7 +138,7 @@ func (o *Owner) summaryDelivered(s *dryRunSummary, err error) {
 		st.retry = retryBackoff{}
 		return
 	}
-	st.retry.fail(monoNow(), defaultNoticeEvery)
+	st.retry.fail(monoNow(), defaultNoticeEvery, maxRetryWait)
 	if later := st.pending; later != nil {
 		o.mergeSummary(s, later)
 	}

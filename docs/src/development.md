@@ -447,7 +447,16 @@ them as coalesced notices, one record per reason, check and action family,
 with a bounded count of examples, a fixed overflow record per kind and a
 fixed Critical summary that no flood can refuse. Records may use only a
 fixed share of the reserve, a key is due for delivery at most once an hour
-and a summary once a minute after acknowledged delivery. Acknowledgements
+and a summary once a minute after acknowledged delivery. While the owner
+previews or forecasts, ledger notices go to findings history only, as
+Warnings starting "Admission preview:". The independent stopped-admission
+notice still reaches alert channels as a Warning saying existing blocking
+is unaffected. While it executes (never in this build, see `liveExecution`),
+a gap is an outage of automatic blocking: notices go to the alert channels
+with their kind's severity and no preview prefix, and the stopped-admission
+notice is Critical. The mode is read at each delivery, including a retried
+stop notice, so a record raised before a mode change is delivered in the new
+mode. Stop retries retain their original timestamp, cause and stop identity. Acknowledgements
 carry the count and first-event time of the record read, so a repeated
 acknowledgement cannot consume a later record under a reused key. An audit
 row's acknowledgement carries the row's time as well, so one held past the
@@ -537,7 +546,12 @@ new episode, so a retired candidate's ID is never minted again. A
 verified block ends its episode at the block's original expiry instead of
 an hour after the last observation, even while work of another kind is
 queued or in flight; an unknown outcome or a response of another kind does
-not end it.
+not end it. The expiry is set on the engine's lease clock, which after a
+wall clock step back leads admission time; the owner passes that lead to
+`FinishOnLease`, so the episode ends when the kernel element expires in
+admission time, and an isolated member's isolation ends the same way.
+Retirement and retry staleness stay on the lease frame: late retirement
+only holds an address longer, and the engine refuses an expired member.
 
 A candidate refused as an existing effect can name the block that enforces
 it: the admission action that wrote it, or the firewall's `eff_` name of an
@@ -786,6 +800,12 @@ tracker entries. They do not count as enforced blocks or select threat evidence
 for operator flush cleanup. Live deny limits count their kernel elements using
 kernel timeouts rather than the unresolved rows' requested lifetimes, including
 replacement accounting. Permanent promotion requires a verified block row.
+A row an admission action wrote belongs to the owner: an automatic legacy
+block of its address ends as already blocked, even when the row is unproven
+or its element is gone, never evicts it at the temporary cap, and permanent
+promotion refuses it (`ErrAdmissionOwnsBlock`). Operator blocks, unblocks,
+allows, flushes and undo keep their authority over it. This build does not execute admission batches; the guard also protects any
+action rows already present in restored state.
 An executed admission block writes no legacy tracker (`blocked_ips.json`)
 entry. Reputation, alert suppression and its injected loader, flush cleanup,
 threat lookups and the blocked list read the verified firewall row instead,
@@ -834,15 +854,18 @@ nothing; the next pass waits one second, doubling to a minute. An attempt
 whose retirement the ledger refuses (undelivered outcomes, or a ledger clock
 that cannot yet prove the expiry) is asked again after one second, doubling
 to a minute. A damaged record or an attempt that ended another way is asked
-again a minute later and reported once, so it does not fail every turn. A
+again a minute later; any other fault, such as a failed write, retries that
+attempt after one second, doubling to a minute. A
 missing or unreadable attempt uses the same wait without preventing other
-attempts from retiring. An unreadable intent list delays the whole pass;
-damage is reported once until a readable list proves recovery. A stop
+attempts from retiring. An unreadable intent list delays the whole pass.
+Each fault is reported once, in `admission.owner.retirement_error` and the
+doctor row `admission retirement`, until no attempt, list read or engine
+retirement check is left faulted; no retirement fault fails a turn. A stop
 between the row removal and the ledger retirement leaves a
 row-less unknown that the next pass retires. The turn wakes for the earliest
 expiry or monotonic retry. With one noted, a turn lists no intents until it
 is due; with none noted, every turn lists them. A turn that fails after its
-retirement pass still reports that pass's error. It never rebases a retry on
+retirement pass fails with its own step's error. It never rebases a retry on
 admission time or adds time spent inside
 an engine call. Expiry conversion uses a monotonic sample taken before reading
 the admission clock, so a slow tick or later call cannot postpone another
@@ -860,7 +883,28 @@ pauses and resumes on the first schedule check that finds an engine, without
 waiting for the old probe deadline. Other idle holds still probe on their
 waits; successful snapshots cannot reset a failing member check's backoff. A
 failed apply keeps its cause and backoff through state repair, ledger refusals
-and member refusals until an applied effect proves recovery. Hold changes copy
+and member refusals until an applied effect proves recovery. Its probe is one
+member: every pick is checked and refusals end, but only the first accepted
+pick is reserved and applied, and the rest wait untouched for the batch after
+it applies. An isolated retry does not narrow these probe checks; it still
+runs alone if selected. An apply-confirmed firewall window holds the engine's member
+checks, batches, probes and retirements (`ErrConfirmPending`) from before its
+snapshot until it is confirmed or rolled back, so its rollback cannot erase a
+block the owner wrote inside it; a batch in flight finishes first and lands in
+the snapshot. A restart with a window pending holds them before the owner sees
+the engine, until startup recovery settles the window. A window opened between
+member checks and apply also holds execution, but is not an apply fault:
+after it ends, a successful snapshot probe clears that hold even on an idle
+turn. Any earlier apply fault still needs a successful one-member apply.
+The read-only
+admission snapshot of a forecast still answers. A kernel rollback alone
+does not release the hold when the saved engine configuration is unreadable;
+the confirmation remains pending until recovery succeeds or the operator
+confirms it. Keep its state snapshot through partial recovery, so another
+rollback restores the same state even after intervening legacy writes.
+Failed marker removal keeps the hold. Once the marker is gone,
+the hold and recovery fault clear even if snapshot cleanup fails; that error
+is still reported. Hold changes copy
 the cached owner status without rereading the ledger. Status
 (`admission.owner.execution_held`) and the `csm doctor` row `admission
 execution` name the cause. An owner publishes `admission.owner.executing`
@@ -1233,7 +1277,7 @@ Imported legacy usage retains its accounting-window charge after an attempt is r
 
 The scheduler records only ceiling, history-budget and recovery-reserve deferrals, once per changed reason. Fair turns, member bounds and retry backoff produce no deferral; a cleared budget reason produces no new gap notice. Challenges spend fair turns and history without spending block credit, and bounded durable holds preserve the earned turn of charged work while challenges proceed.
 
-The owner schedules queued preview work on its timer and uses the next ledger wake even when no new arrival appears. Reloads recompute that wake under the current ceiling. It preserves the legacy-selected absolute expiry, including on retries, observes each pick transactionally and continues delivery retries independently of scheduling. A refused preview ends only its own queued work, so an invalid expiry cannot starve other picks; a storage failure retries the turn, twice at once and then after waits that double up to an hour, as a failing notice delivery is retried.
+The owner schedules queued preview work on its timer and uses the next ledger wake even when no new arrival appears. Reloads recompute that wake under the current ceiling. It preserves the legacy-selected absolute expiry, including on retries, observes each pick transactionally and continues delivery retries independently of scheduling. A refused preview ends only its own queued work, so an invalid expiry cannot starve other picks; a storage failure retries the turn, twice at once and then after waits that double up to a minute, as a held probe is, and shows as `admission.owner.turn_error` and the doctor row `admission turns` rather than a stopped owner.
 
 Held responses coalesce by evidence, kind and effective entry, whether the root entry is named explicitly or omitted. Derived entries validate their producer binding before fresh placement, coalescing and answered results, including direct queue requests. Retained queued work also revalidates its entry binding before scheduling or coalescing. The first selected temporary lifetime is durable and cannot be extended by a later report of the same candidate; absent metadata retains the configuration-selected lifetime.
 

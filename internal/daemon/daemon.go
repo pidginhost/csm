@@ -569,6 +569,12 @@ func firewallMetricsRuleCounts() firewall.RuleCounts {
 }
 
 func (d *Daemon) setFirewallEngine(engine *firewall.Engine) {
+	// A confirmation window a restart interrupted can still roll the
+	// firewall back: hold admission's batches before the owner can see the
+	// engine, until startup recovery settles the window (design C9).
+	if engine != nil && d.cfg != nil {
+		holdFirewallBatchesForWindow(d.cfg.StatePath, engine)
+	}
 	d.fwEngine = engine
 	d.blockEngine.Store(engine)
 	d.fwActions = nil

@@ -86,6 +86,26 @@ func (snap blockSnapshot) proves(row BlockedEntry, observed blockObservation, pr
 	return earliest > 0 && earliest-left <= blockReadbackSlack && latest-left >= -blockReadbackSlack
 }
 
+// HoldBlockBatches holds admission's member checks, batches, probes and
+// retirements while an apply-confirmed window is open: its rollback
+// restores the firewall from a snapshot and would erase the rows they
+// write (design C9). The read-only admission snapshot of a forecast still
+// answers. It waits for a call in flight.
+func (e *Engine) HoldBlockBatches(held bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.blockBatchesHeld = held
+}
+
+// blockBatchSnapshotLocked is the snapshot of a call that leads to or makes
+// a firewall change, refused while batches are held.
+func (e *Engine) blockBatchSnapshotLocked() (blockSnapshot, error) {
+	if e.blockBatchesHeld {
+		return blockSnapshot{}, ErrConfirmPending
+	}
+	return e.blockSnapshotLocked()
+}
+
 func (e *Engine) blockSnapshotLocked() (blockSnapshot, error) {
 	if e.blockBatchStateErr != nil {
 		return blockSnapshot{}, e.blockBatchStateErr
@@ -293,7 +313,7 @@ func (e *Engine) CheckBlockBatchEffects(members []BlockMember) ([]BlockCheck, er
 	verified := e.verifiedRanges(members)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	snap, err := e.blockSnapshotLocked()
+	snap, err := e.blockBatchSnapshotLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -476,7 +496,7 @@ func (e *Engine) ApplyBlockBatch(members []BlockMember) ([]BlockResult, error) {
 	verified := e.verifiedRanges(members)
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	snap, err := e.blockSnapshotLocked()
+	snap, err := e.blockBatchSnapshotLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -667,6 +687,6 @@ func blockSetIP(set *nftables.Set, key []byte) (string, bool) {
 func (e *Engine) ProbeBlockState() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	_, err := e.blockSnapshotLocked()
+	_, err := e.blockBatchSnapshotLocked()
 	return err
 }

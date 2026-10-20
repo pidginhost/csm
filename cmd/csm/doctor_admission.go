@@ -31,9 +31,10 @@ func admissionExecuting(a *health.AdmissionStatus) bool {
 }
 
 // ownerDoctorChecks renders what only the ledger's owner knows: whether it
-// runs, its clock, the ceiling's source, the legacy import and the
-// inventory reads. Once admission executes, a stopped owner, a refused
-// clock reading and discarded responses stop automatic blocks and fail.
+// runs, its clock, its turns, the ceiling's source, the legacy import and
+// the inventory reads. Once admission executes, a stopped owner, a refused
+// clock reading, a failing turn and discarded responses stop automatic
+// blocks and fail.
 func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 	o := a.Owner
 	if o == nil {
@@ -66,6 +67,18 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 		}
 	}
 	rows := []DoctorCheck{owner, clock}
+	if o.TurnError != "" {
+		rows = append(rows, DoctorCheck{
+			Name: "admission turns", Status: outage, Message: "the last admission turn failed: " + o.TurnError + "; " + closing,
+			Fix: "the owner retries from one second, backing off to once a minute; " + keep + ", and report the error",
+		})
+	}
+	if o.RetirementError != "" {
+		rows = append(rows, DoctorCheck{
+			Name: "admission retirement", Status: "warn", Message: "retiring uncertain blocks failed: " + o.RetirementError + "; " + closing,
+			Fix: "each uncertain block stays held and is retried, backing off to once a minute; " + keep + ", and report the error",
+		})
+	}
 	if o.AuditError != "" {
 		rows = append(rows, DoctorCheck{
 			Name: "admission audit delivery", Status: "warn",
@@ -107,9 +120,13 @@ func ownerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 		})
 	}
 	if o.ExecutionHeld != "" {
+		fix := "admission probes the firewall from one second, backing off to once a minute, and keeps uncertain actions held; an apply fault clears when the next batch applies; check the firewall rows and the storage under the state directory"
+		if o.ExecutionHeldBy == "policy" {
+			fix = "correct the setting the message names; held block work waits until the daemon installs a valid policy"
+		}
 		rows = append(rows, DoctorCheck{
 			Name: "admission execution", Status: outage, Message: "automatic blocks are held: " + o.ExecutionHeld + "; " + closing,
-			Fix: "admission probes the firewall from one second, backing off to once a minute and keeps uncertain actions held; check the firewall rows and the storage under the state directory",
+			Fix: fix,
 		})
 	}
 	if o.DamageError != "" {

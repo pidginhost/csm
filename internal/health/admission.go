@@ -32,6 +32,14 @@ type AdmissionOwner struct {
 	Executing bool `json:"executing"`
 	// Error is why the owner is not running; empty once it is.
 	Error string `json:"error,omitempty"`
+	// TurnError is why the owner's last turn failed while the owner runs.
+	// The turn is retried from one second, backing off to once a minute;
+	// it clears when a turn succeeds.
+	TurnError string `json:"turn_error,omitempty"`
+	// RetirementError is the last fault reported while retiring uncertain
+	// blocks. Each affected block stays held and is retried; it clears once
+	// none is left faulted.
+	RetirementError string `json:"retirement_error,omitempty"`
 	// TickError is why the last clock reading was refused. Nothing is
 	// admitted until a reading succeeds.
 	TickError string `json:"tick_error,omitempty"`
@@ -55,6 +63,9 @@ type AdmissionOwner struct {
 	// ExecutionHeld is why automatic execution is held: block work waits,
 	// deferred as an unavailable engine, until a probe succeeds.
 	ExecutionHeld string `json:"execution_held,omitempty"`
+	// ExecutionHeldBy names what holds execution: "policy" for a refused
+	// execution policy, "firewall" for the firewall engine.
+	ExecutionHeldBy string `json:"execution_held_by,omitempty"`
 	// Verdict is the panel verdict stage of an owner with an engine.
 	Verdict *AdmissionVerdict `json:"verdict,omitempty"`
 	// DryRun is the dry-run forecast of an owner with an engine.

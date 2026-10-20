@@ -3,6 +3,7 @@ package admissionowner
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -190,8 +191,11 @@ func TestOwnerRetirementConvergesAfterACrash(t *testing.T) {
 	})
 	mono.advance(25 * time.Hour)
 	f.host.advance(25 * time.Hour)
-	if err := o.do(o.turn); !errors.Is(err, crash) {
-		t.Fatalf("missing retirement write failure: %v", err)
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	if got := o.status().Owner.RetirementError; !strings.Contains(got, crash.Error()) {
+		t.Fatalf("missing retirement write failure: %q", got)
 	}
 	o.halt(false)
 	o = f.start(executeOptions(f, blocks))

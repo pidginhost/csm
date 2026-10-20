@@ -58,6 +58,10 @@ type pendingFinish struct {
 	// block instead of retrying against it.
 	existing bool
 	member   firewall.BlockMember
+	// lead is how far the engine's lease clock ran ahead of admission
+	// time when the member ran: its block ends that much earlier in
+	// admission time (design C6).
+	lead time.Duration
 }
 
 // refusalReasons are the admission reasons for the engine's refusals of a
@@ -79,9 +83,10 @@ var refusalReasons = map[firewall.BlockRefusal]admission.Reason{
 // start per turn, one in flight). The engine checks every member against
 // one snapshot before anything is reserved; the members it accepts are
 // reserved and charged, recorded as running with their intents, applied
-// and finished by their own effect. Nothing runs again: a failure keeps
-// its charge and the ledger retries it after its backoff, and an unknown
-// outcome holds its address until recovery retires it.
+// and finished by their own effect. Under an apply hold the batch is one
+// member. Nothing runs again: a failure keeps its charge and the ledger
+// retries it after its backoff, and an unknown outcome holds its address
+// until recovery retires it.
 func (o *Owner) execute(picks []execPick) error {
 	if !o.mayExecute() {
 		return nil
@@ -100,13 +105,18 @@ func (o *Owner) execute(picks []execPick) error {
 	// After a step back the engine's clock leads the wall clock: an expiry
 	// set on the admission clock would lose that lead from its lifetime.
 	lease := engine.LeaseNow()
+	lead := lease.Sub(o.now)
 	if o.policy.VerdictEnabled {
 		var err error
 		if picks, err = o.gateVerdicts(engine, picks, lease); err != nil || len(picks) == 0 {
 			return err
 		}
 	}
-	picks = o.isolate(picks)
+	// An apply probe already runs one member, so an isolated retry cannot
+	// endanger its peers. Keep every pick for checks and refusal endings.
+	if o.applyHold == nil {
+		picks = o.isolate(picks)
+	}
 	members := make([]firewall.BlockMember, len(picks))
 	for i, p := range picks {
 		m, err := o.memberOf(p, lease)
@@ -137,6 +147,12 @@ func (o *Owner) execute(picks []execPick) error {
 			break
 		}
 		if refused {
+			continue
+		}
+		// While an apply fault is unproven the probe is one member (P8):
+		// the other picks stay queued, untouched, for the batch after it
+		// applies. Refusals still end this turn.
+		if o.applyHold != nil && len(run) > 0 {
 			continue
 		}
 		_, a, granted, reserveErr := reserveLedger(o.ledger, p.pick.ID, p.pick.Lane, members[i].ExpiresAt)
@@ -198,7 +214,10 @@ func (o *Owner) execute(picks []execPick) error {
 	}
 	if err != nil {
 		// An error means nothing was written or sent.
-		o.hold(fmt.Errorf("applying a block batch: %w", err), !errors.Is(err, firewall.ErrBlockBatchState))
+		// A confirmation window can begin after the member check. It
+		// needs no apply proof and must preserve any earlier apply fault.
+		applyFault := !errors.Is(err, firewall.ErrBlockBatchState) && !errors.Is(err, firewall.ErrConfirmPending)
+		o.hold(fmt.Errorf("applying a block batch: %w", err), applyFault)
 		return errors.Join(stopped, o.finishAll(ids, admission.DispositionFailed))
 	}
 	var stateErr, applyErr error
@@ -214,7 +233,7 @@ func (o *Owner) execute(picks []execPick) error {
 			id: ids[k], disposition: effectDisposition(r.Effect),
 			rejected: r.Effect == firewall.BlockFailed && errors.Is(r.Err, firewall.ErrBlockBatchRejected),
 			existing: r.Effect == firewall.BlockFailed && r.Refusal == firewall.BlockRefusedExisting,
-			member:   batch[k],
+			member:   batch[k], lead: lead,
 		})
 	}
 	switch {
@@ -390,8 +409,13 @@ func (o *Owner) ready(engine BlockEngine, checking bool) bool {
 	case o.execHold == nil:
 		return true
 	case errors.Is(o.execHold, errNoEngine):
-		o.release()
-		return true
+		if o.applyHold == nil {
+			o.release()
+			return true
+		}
+		// A returning engine does not prove that an earlier apply fault
+		// recovered. Let it probe now, retaining the one-member hold.
+		o.execHold = o.applyHold
 	case monoNow().Before(o.probeAt):
 		return false
 	case errors.Is(o.execHold, firewall.ErrBlockBatchState):
@@ -443,9 +467,9 @@ func (o *Owner) release() {
 func (o *Owner) publishExecutionHold() {
 	previous := o.current.Load()
 	snapshot, owner := *previous, *previous.Owner
-	owner.ExecutionHeld = ""
+	owner.ExecutionHeld, owner.ExecutionHeldBy = "", ""
 	if cause := o.heldCause(); cause != nil {
-		owner.ExecutionHeld = cause.Error()
+		owner.ExecutionHeld, owner.ExecutionHeldBy = cause.Error(), o.heldBy()
 	}
 	snapshot.Owner = &owner
 	o.current.Store(&snapshot)
@@ -584,7 +608,7 @@ func (o *Owner) finishPending() error {
 			}
 		}
 		if !linked {
-			c, a, finishErr = finishLedger(o.ledger, outcome.id, outcome.disposition)
+			c, a, finishErr = finishLedger(o.ledger, outcome.id, outcome.disposition, outcome.lead)
 		}
 		if finishErr != nil {
 			err = errors.Join(err, fmt.Errorf("finishing %s: %w", outcome.id, finishErr))
@@ -604,7 +628,8 @@ func (o *Owner) finishPending() error {
 			if o.isolated == nil {
 				o.isolated = map[admission.CandidateID]time.Time{}
 			}
-			expires := c.ExpiresAt
+			// Isolation lasts the block's lifetime in admission time.
+			expires := c.ExpiresAt.Add(-max(outcome.lead, 0))
 			if c.AgeOut.Before(expires) {
 				expires = c.AgeOut
 			}

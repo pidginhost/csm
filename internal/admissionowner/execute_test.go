@@ -16,8 +16,11 @@ var _ BlockEngine = (*firewall.Engine)(nil)
 
 // fakeBlocks is an engine whose answers the test scripts by address.
 type fakeBlocks struct {
-	mu       sync.Mutex
-	refuse   map[string]firewall.BlockRefusal
+	mu     sync.Mutex
+	refuse map[string]firewall.BlockRefusal
+	// refuseAt refuses the members of every check at these positions,
+	// whichever addresses the schedule put there.
+	refuseAt map[int]firewall.BlockRefusal
 	existing map[string]firewall.ExistingBlock
 	results  map[string]firewall.BlockResult
 	// afterApply runs, under the lock, once a batch has its results.
@@ -69,6 +72,9 @@ func (f *fakeBlocks) CheckBlockBatchEffects(members []firewall.BlockMember) ([]f
 	out := make([]firewall.BlockCheck, len(members))
 	for i, m := range members {
 		out[i].Refusal = f.refuse[m.IP]
+		if r, ok := f.refuseAt[i]; ok {
+			out[i].Refusal = r
+		}
 		if out[i].Refusal == firewall.BlockRefusedExisting {
 			out[i].Existing = fakeExisting
 			if named, ok := f.existing[m.IP]; ok {
@@ -347,13 +353,14 @@ func TestOwnerMapsEngineRefusals(t *testing.T) {
 
 // Each member ends by its own effect: applied is applied, a proven failure
 // keeps its charge and retries after the backoff, and an uncertain one ends
-// unknown and holds its address.
+// unknown and holds its address. The uncertain member carries no apply
+// error (a readback that disagrees), so no hold makes the retry a probe.
 func TestOwnerFinishesEachMemberByItsEffect(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
 	blocks := newFakeBlocks()
 	blocks.results["192.0.2.11"] = firewall.BlockResult{Effect: firewall.BlockFailed, Refusal: firewall.BlockRefusedFull}
-	blocks.results["192.0.2.12"] = firewall.BlockResult{Effect: firewall.BlockUnknown, Err: errors.New("readback lost")}
+	blocks.results["192.0.2.12"] = firewall.BlockResult{Effect: firewall.BlockUnknown}
 	o := f.start(executeOptions(f, blocks))
 	mono := heldMono(t, o)
 	applied, now := queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
@@ -650,12 +657,12 @@ func TestOwnerFinishesLaterMembersAfterOneFinishFails(t *testing.T) {
 	previous := finishLedger
 	calls := 0
 	failure := errors.New("outcome store unavailable")
-	setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+	setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, id admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 		calls++
 		if calls == 1 {
 			return admission.Candidate{}, admission.AttemptRecord{}, failure
 		}
-		return previous(l, id, d)
+		return previous(l, id, d, lead)
 	})
 	ids := []admission.CandidateID{}
 	for _, addr := range []string{"192.0.2.10", "192.0.2.11"} {

@@ -38,7 +38,10 @@ func TestFirewallRollbackSnapshotCarriesStateJSON(t *testing.T) {
 	if err != nil || string(got) != before {
 		t.Fatalf("state.json after rollback = %q, %v; want the pre-window content", got, err)
 	}
-	if _, err := os.Stat(firewallStateSnapshotPath(rollbackFile)); !os.IsNotExist(err) {
-		t.Fatalf("state snapshot left behind after restore: %v", err)
+	requirePathExists(t, firewallStateSnapshotPath(rollbackFile))
+	// Only the window owner can discard recovery evidence after disarming it.
+	if err := removeFirewallRollbackFiles(rollbackFile); err != nil {
+		t.Fatal(err)
 	}
+	requirePathMissing(t, firewallStateSnapshotPath(rollbackFile))
 }

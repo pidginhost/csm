@@ -40,7 +40,7 @@ func TestOwnerExistingEffectEndsInOneWrite(t *testing.T) {
 				}
 				return finishExisting(l, action, link)
 			})
-			setOwnerHook(t, o, &finishLedger, func(*store.AdmissionLedger, admission.ActionID, admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+			setOwnerHook(t, o, &finishLedger, func(*store.AdmissionLedger, admission.ActionID, admission.Disposition, time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 				t.Error("successful linked ending used a separate outcome write")
 				return admission.Candidate{}, admission.AttemptRecord{}, errors.New("unexpected plain finish")
 			})
@@ -84,11 +84,11 @@ func TestOwnerExistingEffectPendingCannotEndNewerAttempt(t *testing.T) {
 				}
 				return finishExisting(l, action, link)
 			})
-			setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, action admission.ActionID, d admission.Disposition) (admission.Candidate, admission.AttemptRecord, error) {
+			setOwnerHook(t, o, &finishLedger, func(l *store.AdmissionLedger, action admission.ActionID, d admission.Disposition, lead time.Duration) (admission.Candidate, admission.AttemptRecord, error) {
 				if failWrites {
 					return admission.Candidate{}, admission.AttemptRecord{}, failure
 				}
-				return finish(l, action, d)
+				return finish(l, action, d, lead)
 			})
 			if err := o.do(o.turn); !errors.Is(err, failure) {
 				t.Fatalf("missing outcome failure: %v", err)
@@ -98,7 +98,7 @@ func TestOwnerExistingEffectPendingCannotEndNewerAttempt(t *testing.T) {
 					return errors.New("missing pending outcome")
 				}
 				old := o.finishes[0].id
-				c, _, err := finish(o.ledger, old, admission.DispositionFailed)
+				c, _, err := finish(o.ledger, old, admission.DispositionFailed, 0)
 				if err != nil {
 					return err
 				}
@@ -117,7 +117,7 @@ func TestOwnerExistingEffectPendingCannotEndNewerAttempt(t *testing.T) {
 				case "executing":
 					_, _, _, err = o.ledger.Execute(a.Attempt.ID)
 				case "queued", "linked":
-					_, _, err = finish(o.ledger, a.Attempt.ID, admission.DispositionFailed)
+					_, _, err = finish(o.ledger, a.Attempt.ID, admission.DispositionFailed, 0)
 					if err == nil && state == "linked" {
 						_, err = o.ledger.TerminateExisting(id, admission.EffectLink{Effect: "eff_0123456789abcdef0123456789abcdef"})
 					}

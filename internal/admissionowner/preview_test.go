@@ -154,8 +154,8 @@ func TestOwnerPreviewsDeferredWorkAtTheLedgerWakeTime(t *testing.T) {
 	}
 }
 
-// A schedule the ledger refuses is the owner's error until a later turn
-// succeeds; the turn is retried.
+// A schedule the ledger refuses is the turn's error, not a stopped owner,
+// until a later turn succeeds; the turn is retried (C4).
 func TestOwnerReportsAFailedSchedule(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		p := withTestRegistry(t)
@@ -175,21 +175,21 @@ func TestOwnerReportsAFailedSchedule(t *testing.T) {
 		}
 		time.Sleep(2 * time.Second)
 		synctest.Wait()
-		if s := o.Status().Owner; !strings.Contains(s.Error, failing.Error()) {
-			t.Fatalf("owner error = %q", s.Error)
+		if s := o.Status().Owner; !strings.Contains(s.TurnError, failing.Error()) || s.Error != "" {
+			t.Fatalf("turn error = %q, owner error = %q", s.TurnError, s.Error)
 		}
 		setOwnerHook(t, o, &scheduleLedger, prev)
 		time.Sleep(time.Second)
 		synctest.Wait()
-		if s := o.Status().Owner; s.Error != "" || outcomes(ledgerStatus(t, o), admission.DispositionObserve) != 1 {
-			t.Fatalf("after recovery: error %q, %d previews", s.Error, outcomes(ledgerStatus(t, o), admission.DispositionObserve))
+		if s := o.Status().Owner; s.TurnError != "" || outcomes(ledgerStatus(t, o), admission.DispositionObserve) != 1 {
+			t.Fatalf("after recovery: turn error %q, %d previews", s.TurnError, outcomes(ledgerStatus(t, o), admission.DispositionObserve))
 		}
 	})
 }
 
-// A preview turn that keeps failing is not retried every second, as a
-// failing notice channel is not: the next two turns retry at once, each
-// later attempt waits twice as long as the one before, up to an hour, and a
+// A preview turn that keeps failing is not retried every second: the next
+// two turns retry at once, each later attempt waits twice as long as the
+// one before, up to a minute as a held probe does (spec 5.16, C4), and a
 // turn that succeeds restores prompt retries.
 func TestOwnerBacksOffAFailingPreviewTurn(t *testing.T) {
 	p := withTestRegistry(t)
@@ -212,39 +212,42 @@ func TestOwnerBacksOffAFailingPreviewTurn(t *testing.T) {
 	}
 	start := mono.read()
 	var at []time.Duration
-	for range 2 * 3600 {
-		before := attempts.Load()
+	for range 600 {
+		before, writes := attempts.Load(), f.db.WriteTxID()
 		turn()
+		if got, want := uint64(f.db.WriteTxID()-writes), uint64(attempts.Load()-before); got != want {
+			t.Fatalf("failing turn committed %d writes for %d attempts", got, want)
+		}
 		if attempts.Load() != before {
 			at = append(at, mono.read().Sub(start))
 		}
 		mono.advance(time.Second)
 	}
 	var want []time.Duration
-	for _, s := range []int{0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096} {
+	for _, s := range []int{0, 1, 2, 4, 8, 16, 32, 64, 124, 184, 244, 304, 364, 424, 484, 544} {
 		want = append(want, time.Duration(s)*time.Second)
 	}
 	if !reflect.DeepEqual(at, want) {
-		t.Fatalf("attempts over two hours at %v, want %v", at, want)
+		t.Fatalf("attempts over ten minutes at %v, want %v", at, want)
 	}
-	if o.status().Owner.Error == "" {
-		t.Fatal("a failing turn left no owner error")
+	if o.status().Owner.TurnError == "" {
+		t.Fatal("a failing turn left no turn error")
 	}
-	// The attempt after 4096 s waits the hour cap, not 4096 s more.
+	// The attempt after 544 s waits the minute cap, until 604 s.
 	setOwnerHook(t, o, &scheduleLedger, func(l *store.AdmissionLedger, limits admission.ScheduleLimits, pending map[admission.CandidateID]admission.Answer) ([]admission.Pick, error) {
 		attempts.Add(1)
 		return prevSchedule(l, limits, pending)
 	})
-	mono.advance(4096*time.Second + time.Hour - 2*time.Hour - time.Second)
+	mono.advance(3 * time.Second)
 	before := attempts.Load()
 	turn()
 	if attempts.Load() != before {
-		t.Fatal("retried before the hour cap")
+		t.Fatal("retried before the minute cap")
 	}
 	mono.advance(time.Second)
 	turn()
-	if attempts.Load() != before+1 || o.status().Owner.Error != "" {
-		t.Fatalf("the hour-late retry: %d attempts, owner error %q", attempts.Load()-before, o.status().Owner.Error)
+	if attempts.Load() != before+1 || o.status().Owner.TurnError != "" {
+		t.Fatalf("the minute-late retry: %d attempts, turn error %q", attempts.Load()-before, o.status().Owner.TurnError)
 	}
 	setOwnerHook(t, o, &scheduleLedger, failing)
 	submitTo(t, o, p, "192.0.2.10", f.host.now())

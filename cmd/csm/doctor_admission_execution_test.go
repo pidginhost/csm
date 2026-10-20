@@ -25,11 +25,13 @@ func TestDoctorFailsAdmissionOutagesWhileExecuting(t *testing.T) {
 		CheckedAt: at, Ledger: ledger, Ingress: &admission.IngressHealth{Admitting: true},
 		Owner: &health.AdmissionOwner{
 			Executing: true, Error: "fixture owner stop", TickError: "fixture clock refusal", CeilingSource: "default",
+			TurnError: "fixture turn failure", RetirementError: "fixture retirement fault",
 			InventoryError: "fixture registry unreadable", DamageError: "fixture damaged record", Import: &health.AdmissionImport{Units: 2, At: at},
 		},
 	}))
 	for name, status := range map[string]string{
 		"admission owner": "fail", "admission clock": "fail", "admission ledger damage": "fail",
+		"admission turns": "fail", "admission retirement": "warn",
 		"admission inventory": "warn", "admission ceiling": "ok", "admission legacy import": "ok", "admission ledger": "ok",
 	} {
 		row, ok := doctorCheckNamed(report, name)
