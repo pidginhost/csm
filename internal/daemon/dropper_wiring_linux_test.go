@@ -44,7 +44,7 @@ func newDropperWiringTestMonitor(docroot string, ttl time.Duration) *FileMonitor
 	}
 	fm.dropper = newDropperEngine(dropperEngineConfig{ttl: ttl, selfPID: 99999})
 	fm.dropperQuarantines = newDropperQuarantineLedger(ttl + time.Minute)
-	fm.dropperDocroots.Store([]string{docroot})
+	fm.setDropperDocroots([]string{docroot})
 	return fm
 }
 

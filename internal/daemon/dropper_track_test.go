@@ -3,6 +3,7 @@ package daemon
 import (
 	"crypto/sha256"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -12,7 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/wpcheck"
 )
 
-func TestDropperDocrootFor(t *testing.T) {
+func TestDropperDocrootIndexLookup(t *testing.T) {
 	docroots := []string{
 		"/home/alice/public_html",
 		"/home/alice/public_html/sub.example.com",
@@ -29,24 +30,80 @@ func TestDropperDocrootFor(t *testing.T) {
 		{"sibling dir sharing docroot prefix", "/home/alice/public_html_old/x.php", ""},
 		{"path equal to docroot is not under it", "/home/bob/public_html", ""},
 		{"other account docroot", "/home/bob/public_html/index.php", "/home/bob/public_html"},
+		{"unclean event path", "/home/bob/public_html/a/../index.php", "/home/bob/public_html"},
+		{"relative event path", "home/bob/public_html/index.php", ""},
+		{"filesystem root", "/", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := dropperDocrootFor(tc.path, docroots); got != tc.want {
-				t.Errorf("dropperDocrootFor(%q) = %q, want %q", tc.path, got, tc.want)
+			if got := newDropperDocrootIndex(docroots).lookup(tc.path); got != tc.want {
+				t.Errorf("lookup(%q) = %q, want %q", tc.path, got, tc.want)
 			}
 		})
 	}
 
-	t.Run("normalizes configured roots", func(t *testing.T) {
-		got := dropperDocrootFor(
-			"/home/carol/public_html/index.php",
-			[]string{"relative/public_html", "/home/carol/public_html/"},
-		)
-		if got != "/home/carol/public_html" {
-			t.Fatalf("dropperDocrootFor() = %q, want normalized absolute root", got)
+	t.Run("root directory as docroot", func(t *testing.T) {
+		idx := newDropperDocrootIndex([]string{"/"})
+		if got := idx.lookup("/srv/index.php"); got != "/" {
+			t.Fatalf("lookup() = %q, want /", got)
+		}
+		if got := idx.lookup("/"); got != "" {
+			t.Fatalf("lookup(/) = %q, want empty", got)
 		}
 	})
+
+	t.Run("no docroots", func(t *testing.T) {
+		var missing *dropperDocrootIndex
+		if got := missing.lookup("/home/bob/public_html/index.php"); got != "" {
+			t.Fatalf("nil index lookup = %q", got)
+		}
+	})
+
+	t.Run("normalizes configured roots", func(t *testing.T) {
+		idx := newDropperDocrootIndex([]string{"relative/public_html", "/home/carol/public_html/"})
+		got := idx.lookup("/home/carol/public_html/index.php")
+		if got != "/home/carol/public_html" {
+			t.Fatalf("lookup() = %q, want normalized absolute root", got)
+		}
+	})
+}
+
+// manyDropperDocroots models a shared host: every account has a primary
+// docroot plus addon domains, so the list runs to hundreds of entries.
+func manyDropperDocroots(n int) []string {
+	roots := make([]string, 0, n)
+	for i := 0; len(roots) < n; i++ {
+		home := "/home/user" + strconv.Itoa(i)
+		roots = append(roots, home+"/public_html", home+"/public_html/addon.example.com")
+	}
+	return roots[:n]
+}
+
+// The lookup runs on every fanotify event, so its cost must not grow with the
+// number of docroots on the host.
+func TestDropperDocrootLookupDoesNotAllocate(t *testing.T) {
+	idx := newDropperDocrootIndex(manyDropperDocroots(600))
+	for _, path := range []string{
+		"/home/user42/public_html/addon.example.com/wp-content/uploads/x.php",
+		"/home/user42/mail/new/1700000000.M1.host",
+		"/tmp/php-upload-x",
+	} {
+		allocs := testing.AllocsPerRun(100, func() {
+			_ = idx.lookup(path)
+		})
+		if allocs != 0 {
+			t.Errorf("lookup of %q allocated %.0f times per event", path, allocs)
+		}
+	}
+}
+
+func BenchmarkDropperDocrootLookup(b *testing.B) {
+	idx := newDropperDocrootIndex(manyDropperDocroots(600))
+	path := "/home/user42/public_html/wp-content/plugins/x/x.php"
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = idx.lookup(path)
+	}
 }
 
 func freshDropperCandidate(now time.Time) dropperCandidate {
