@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/admission"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 func executionHeld(t *testing.T, o *Owner) string {
@@ -231,10 +232,119 @@ func TestOwnerHoldsBackoffAcrossSuccessfulChecks(t *testing.T) {
 			if err := o.do(o.turn); err != nil {
 				t.Fatal(err)
 			}
+			if held := executionHeld(t, o); held != "" {
+				t.Fatalf("the recovery probe kept the hold: %q", held)
+			}
+			// An apply probe runs one member; the rest run in the next batch.
+			mono.advance(batchEvery)
+			f.host.advance(batchEvery)
+			if err := o.do(o.turn); err != nil {
+				t.Fatal(err)
+			}
 			if c := candidate(t, o, recovered); c.State != admission.StateVerified || executionHeld(t, o) != "" {
 				t.Fatalf("recovery: %+v held=%q", c, executionHeld(t, o))
 			}
 		})
+	}
+}
+
+// While an apply fault is unproven the probe is one member (P8, design C5):
+// a fault the snapshot cannot see costs one attempt per wait, not a whole
+// batch. The rest stay queued and run once that member applies.
+func TestOwnerProbesAnApplyFaultWithOneMember(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.applyErr = errors.New("batch transport unavailable")
+	o := f.start(executeOptions(f, blocks))
+	mono := heldMono(t, o)
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	if held := executionHeld(t, o); !strings.Contains(held, "batch transport unavailable") {
+		t.Fatalf("execution held = %q", held)
+	}
+	var waiting []admission.CandidateID
+	for _, ip := range []string{"192.0.2.11", "192.0.2.12", "192.0.2.13"} {
+		id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, ip)
+		waiting = append(waiting, id)
+	}
+	blocks.set(func(b *fakeBlocks) { b.applyErr = nil })
+	mono.advance(firstProbeWait)
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	checks, applies := blocks.calls()
+	if len(applies) != 2 || len(applies[1]) != 1 || len(checks) != 2 || len(checks[1]) != 3 {
+		t.Fatalf("probe: checks %v, applies %v", checks, applies)
+	}
+	queued := 0
+	for _, id := range waiting {
+		if c := candidate(t, o, id); c.State == admission.StateQueued && c.Attempts == 0 && c.Reason == 0 {
+			queued++
+		}
+	}
+	if queued != 2 {
+		t.Fatalf("%d members wait untouched behind the probe, want 2", queued)
+	}
+	if held := executionHeld(t, o); held != "" {
+		t.Fatalf("an applied probe kept the hold: %q", held)
+	}
+	mono.advance(batchEvery)
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	if _, applies = blocks.calls(); len(applies) != 3 || len(applies[2]) != 2 {
+		t.Fatalf("after recovery, batch sizes = %v", applies)
+	}
+	for _, id := range waiting {
+		if c := candidate(t, o, id); c.State != admission.StateVerified || c.Attempts != 1 {
+			t.Fatalf("waiting member: %+v", c)
+		}
+	}
+}
+
+// A probe member the engine refuses does not spend the probe: refusals
+// before and after it end this turn, the first accepted pick is the one
+// member applied and the next waits untouched.
+func TestOwnerApplyProbeSkipsRefusedPicks(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	blocks.applyErr = errors.New("batch transport unavailable")
+	o := f.start(executeOptions(f, blocks))
+	mono := heldMono(t, o)
+	queuedAt(t, o, p, f.host, admission.SeverityHigh, "192.0.2.10")
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	var picks []admission.CandidateID
+	for _, ip := range []string{"192.0.2.11", "192.0.2.12", "192.0.2.13", "192.0.2.14"} {
+		id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, ip)
+		picks = append(picks, id)
+	}
+	blocks.set(func(b *fakeBlocks) {
+		b.applyErr = nil
+		b.refuseAt = map[int]firewall.BlockRefusal{0: firewall.BlockRefusedProtected, 3: firewall.BlockRefusedProtected}
+	})
+	mono.advance(firstProbeWait)
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	ended := map[admission.State]int{}
+	for _, id := range picks {
+		c := candidate(t, o, id)
+		if c.State == admission.StateRefused && c.Reason != admission.ReasonProtected {
+			t.Fatalf("refused pick = %+v", c)
+		}
+		ended[c.State]++
+	}
+	if ended[admission.StateRefused] != 2 || ended[admission.StateVerified] != 1 || ended[admission.StateQueued] != 1 {
+		t.Fatalf("probe turn ended %v; want two refused, one applied, one waiting", ended)
+	}
+	if held := executionHeld(t, o); held != "" {
+		t.Fatalf("an applied probe kept the hold: %q", held)
 	}
 }
 
@@ -417,8 +527,8 @@ func TestOwnerWithoutAnEngineIdlesUntilItStarts(t *testing.T) {
 	}
 }
 
-// Engine availability ends an idle no-engine hold even before the probe
-// deadline inherited from an earlier fault.
+// Engine availability permits an idle scratch probe before the old
+// deadline, but cannot clear an earlier apply fault without an apply.
 func TestOwnerStartsEngineBeforeIdleProbeDeadline(t *testing.T) {
 	p := withTestRegistry(t)
 	f := newOwnerFixture(t)
@@ -440,6 +550,10 @@ func TestOwnerStartsEngineBeforeIdleProbeDeadline(t *testing.T) {
 	if err := o.do(run); err != nil {
 		t.Fatal(err)
 	}
+	applyCause := executionHeld(t, o)
+	if applyCause == "" {
+		t.Fatal("missing initial apply hold")
+	}
 	mono.advance(firstProbeWait)
 	if err := o.do(func() error { running = false; return run() }); err != nil {
 		t.Fatal(err)
@@ -460,12 +574,25 @@ func TestOwnerStartsEngineBeforeIdleProbeDeadline(t *testing.T) {
 	if f.db.WriteTxID() != writes {
 		t.Fatal("idle owner wrote without an engine")
 	}
-	if err := o.do(func() error { running = true; return run() }); err != nil {
+	if err := o.do(func() error {
+		wait := o.probeWait
+		running = true
+		err := run()
+		if o.probeWait != min(2*wait, maxProbeWait) || !o.probeAt.Equal(mono.read().Add(o.probeWait)) {
+			t.Errorf("engine return doubled its backoff more than once: %v from %v", o.probeWait, wait)
+		}
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if held := executionHeld(t, o); held != "" || f.db.WriteTxID() == writes {
-		t.Fatalf("a started engine waited for the old probe deadline: held %q", held)
+	if held := executionHeld(t, o); held != applyCause || f.db.WriteTxID() == writes {
+		t.Fatalf("engine return lost its apply hold or delayed its probe: held %q, want %q", held, applyCause)
 	}
+	blocks.set(func(b *fakeBlocks) {
+		if b.stateProbes != 1 {
+			t.Errorf("engine return made %d scratch probes, want one", b.stateProbes)
+		}
+	})
 	writes = f.db.WriteTxID()
 	if err := o.do(run); err != nil {
 		t.Fatal(err)
@@ -518,5 +645,88 @@ func TestOwnerStatusSaysWhetherItExecutes(t *testing.T) {
 	o = f.start(executeOptions(f, newFakeBlocks()))
 	if s := o.Status(); s == nil || s.Owner == nil || !s.Owner.Executing {
 		t.Fatalf("executing owner status = %+v", s)
+	}
+}
+
+// A refused dispatch and a pending verdict do not prove apply recovery.
+// Neither may release the hold or spend a full probe batch.
+func TestOwnerApplyProbeKeepsHoldWithoutAnAppliedMember(t *testing.T) {
+	for _, phase := range []string{"ledger", "verdict"} {
+		t.Run(phase, func(t *testing.T) {
+			p := withTestRegistry(t)
+			f := newOwnerFixture(t)
+			blocks := newFakeBlocks()
+			panel := newFakePanel("block")
+			panel.hold = make(chan struct{})
+			policy := validPolicy(1)
+			if phase == "verdict" {
+				policy = verdictPolicy(1, panel)
+			}
+			o, _, mono := policyOwner(t, f, blocks, policy)
+			var ids []admission.CandidateID
+			for _, ip := range []string{"192.0.2.110", "192.0.2.111", "192.0.2.112"} {
+				id, _ := queuedAt(t, o, p, f.host, admission.SeverityHigh, ip)
+				ids = append(ids, id)
+			}
+			if phase == "ledger" {
+				setOwnerHook(t, o, &executeLedger, func(_ *store.AdmissionLedger, members []admission.ActionID) ([]admission.Intent, bool, error) {
+					if len(members) != 1 {
+						t.Errorf("probe dispatch has %d members", len(members))
+					}
+					return nil, false, &admission.Error{Reason: admission.ReasonPendingRecovery}
+				})
+			}
+			cause := errors.New("unproven apply fault")
+			if err := o.do(func() error { o.hold(cause, true); return nil }); err != nil {
+				t.Fatal(err)
+			}
+			mono.advance(firstProbeWait)
+			if err := o.do(o.turn); err != nil {
+				t.Fatal(err)
+			}
+			if err := o.do(func() error {
+				if !errors.Is(o.applyHold, cause) || o.execHold == nil || o.probeWait != 2*firstProbeWait || !o.probeAt.Equal(mono.read().Add(o.probeWait)) {
+					t.Errorf("unapplied probe lost its hold or wait: %v, %v", o.execHold, o.probeWait)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			attempts := uint32(0)
+			for _, id := range ids {
+				attempts += uint32(candidate(t, o, id).Attempts)
+			}
+			want := uint32(0)
+			if phase == "ledger" {
+				want = 1
+			}
+			if _, applied := blocks.calls(); len(applied) != 0 || attempts != want {
+				t.Fatalf("probe: applies %d, attempts %d, want %d", len(applied), attempts, want)
+			}
+		})
+	}
+}
+
+func TestOwnerApplyProbeAfterEngineReturns(t *testing.T) {
+	p := withTestRegistry(t)
+	f := newOwnerFixture(t)
+	blocks := newFakeBlocks()
+	o := f.start(executeOptions(f, blocks))
+	heldMono(t, o)
+	if err := o.do(func() error {
+		o.hold(errors.New("unproven apply fault"), true)
+		o.ready(nil, true)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, ip := range []string{"192.0.2.115", "192.0.2.116", "192.0.2.117"} {
+		queuedAt(t, o, p, f.host, admission.SeverityHigh, ip)
+	}
+	if err := o.do(o.turn); err != nil {
+		t.Fatal(err)
+	}
+	if _, applies := blocks.calls(); len(applies) != 1 || len(applies[0]) != 1 {
+		t.Fatalf("returning engine lost the one-member probe: %v", applies)
 	}
 }

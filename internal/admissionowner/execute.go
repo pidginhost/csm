@@ -79,9 +79,10 @@ var refusalReasons = map[firewall.BlockRefusal]admission.Reason{
 // start per turn, one in flight). The engine checks every member against
 // one snapshot before anything is reserved; the members it accepts are
 // reserved and charged, recorded as running with their intents, applied
-// and finished by their own effect. Nothing runs again: a failure keeps
-// its charge and the ledger retries it after its backoff, and an unknown
-// outcome holds its address until recovery retires it.
+// and finished by their own effect. Under an apply hold the batch is one
+// member. Nothing runs again: a failure keeps its charge and the ledger
+// retries it after its backoff, and an unknown outcome holds its address
+// until recovery retires it.
 func (o *Owner) execute(picks []execPick) error {
 	if !o.mayExecute() {
 		return nil
@@ -137,6 +138,12 @@ func (o *Owner) execute(picks []execPick) error {
 			break
 		}
 		if refused {
+			continue
+		}
+		// While an apply fault is unproven the probe is one member (P8):
+		// the other picks stay queued, untouched, for the batch after it
+		// applies. Refusals still end this turn.
+		if o.applyHold != nil && len(run) > 0 {
 			continue
 		}
 		_, a, granted, reserveErr := reserveLedger(o.ledger, p.pick.ID, p.pick.Lane, members[i].ExpiresAt)
@@ -390,8 +397,13 @@ func (o *Owner) ready(engine BlockEngine, checking bool) bool {
 	case o.execHold == nil:
 		return true
 	case errors.Is(o.execHold, errNoEngine):
-		o.release()
-		return true
+		if o.applyHold == nil {
+			o.release()
+			return true
+		}
+		// A returning engine does not prove that an earlier apply fault
+		// recovered. Let it probe now, retaining the one-member hold.
+		o.execHold = o.applyHold
 	case monoNow().Before(o.probeAt):
 		return false
 	case errors.Is(o.execHold, firewall.ErrBlockBatchState):

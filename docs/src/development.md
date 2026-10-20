@@ -841,7 +841,10 @@ pauses and resumes on the first schedule check that finds an engine, without
 waiting for the old probe deadline. Other idle holds still probe on their
 waits; successful snapshots cannot reset a failing member check's backoff. A
 failed apply keeps its cause and backoff through state repair, ledger refusals
-and member refusals until an applied effect proves recovery. Hold changes copy
+and member refusals until an applied effect proves recovery. Its probe is one
+member: every pick is checked and refusals end, but only the first accepted
+pick is reserved and applied, and the rest wait untouched for the batch after
+it applies. Hold changes copy
 the cached owner status without rereading the ledger. Status
 (`admission.owner.execution_held`) and the `csm doctor` row `admission
 execution` name the cause. An owner publishes `admission.owner.executing`
