@@ -107,7 +107,11 @@ func (o *Owner) execute(picks []execPick) error {
 			return err
 		}
 	}
-	picks = o.isolate(picks)
+	// An apply probe already runs one member, so an isolated retry cannot
+	// endanger its peers. Keep every pick for checks and refusal endings.
+	if o.applyHold == nil {
+		picks = o.isolate(picks)
+	}
 	members := make([]firewall.BlockMember, len(picks))
 	for i, p := range picks {
 		m, err := o.memberOf(p, lease)

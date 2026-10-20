@@ -844,7 +844,8 @@ failed apply keeps its cause and backoff through state repair, ledger refusals
 and member refusals until an applied effect proves recovery. Its probe is one
 member: every pick is checked and refusals end, but only the first accepted
 pick is reserved and applied, and the rest wait untouched for the batch after
-it applies. Hold changes copy
+it applies. An isolated retry does not narrow these probe checks; it still
+runs alone if selected. Hold changes copy
 the cached owner status without rereading the ledger. Status
 (`admission.owner.execution_held`) and the `csm doctor` row `admission
 execution` name the cause. An owner publishes `admission.owner.executing`
