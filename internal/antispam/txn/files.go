@@ -202,12 +202,11 @@ func publishFile(p string, tmp *os.File, perm fs.FileMode, uid, gid int, replace
 
 // deleteFile removes CSM's own file p, if present, durably.
 func deleteFile(p string) error {
-	if err := os.Remove(p); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
+	if err := os.Remove(p); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
+	// A retry after a sync failure sees absence, but still has to make the
+	// earlier removal durable before rollback can be called verified.
 	if err := syncDir(filepath.Dir(p)); err != nil {
 		return fmt.Errorf("%w: %w", errDurability, err)
 	}

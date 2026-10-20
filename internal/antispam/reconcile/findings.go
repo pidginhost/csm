@@ -23,6 +23,7 @@ const (
 	CheckFeed            = "antispam_feed"
 	CheckIPMap           = "antispam_ip_map"
 	CheckControllerOpen  = "antispam_controller_open"
+	CheckLearning        = "antispam_learning"
 )
 
 // clean escapes control and non-ASCII characters: problem details and
@@ -147,5 +148,17 @@ func scanErrorFinding(count int, first, last time.Time) alert.Finding {
 		Message: "Antispam scans are failing",
 		Details: fmt.Sprintf("Exim logged %d failed %s since %s, the last at %s. Mail is delivered without spam filtering while scans fail; check rspamd's log.",
 			count, scans, first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339)),
+	}
+}
+
+// learningFinding reports one learning condition, one finding per reason.
+func learningFinding(p antispam.Problem, now time.Time) alert.Finding {
+	return alert.Finding{
+		Severity:  alert.Warning,
+		Check:     CheckLearning,
+		Message:   "Antispam learning: " + p.Key,
+		Details:   clean(p.Detail),
+		DedupKey:  "learning:" + clean(p.Key),
+		Timestamp: now,
 	}
 }

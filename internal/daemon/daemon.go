@@ -129,6 +129,17 @@ type Daemon struct {
 	// antispamLoop runs antispam reconcile passes on a cPanel host. It
 	// stays nil elsewhere and until startup reaches it.
 	antispamLoop atomic.Pointer[reconcile.Loop]
+	// Namespace replacement must wait for passes that can still create keys
+	// or publish a learner target. Reloads can still stop learning at once.
+	antispamReconcileMu sync.Mutex
+	// antispamLearner is the running learning engine, nil while learning is
+	// stopped.
+	antispamLearner atomic.Pointer[learnerRunner]
+	// antispamLearnerMu serializes reloads, pass results and shutdown.
+	antispamLearnerMu sync.Mutex
+	// antispamWatchReset keeps a failed disable reset pending before any
+	// re-enable. Protected by antispamLearnerMu.
+	antispamWatchReset bool
 	// antispamHealth tracks rspamd's scan socket and Exim's scan markers
 	// while antispam is enabled.
 	antispamHealth antispamHealthState

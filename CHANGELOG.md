@@ -21,6 +21,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Added
 
+- Anti-spam can learn from messages users move to their Spam folder, so content several accounts report scores higher. Off until `email_protection.antispam.learning.enabled` is set.
+- Root can teach antispam learning a saved spam message, or remove what one taught, with `csm antispam learn` while learning is enabled.
 - With anti-spam on, CSM warns when other users on the server can reach rspamd's admin interface; hosts using rspamd's default local trust see this after upgrading.
 - Inbound spam filtering on cPanel through an rspamd you install, where each account's Spam Filters switch decides; existing hosts are unchanged until `email_protection.antispam.enabled` is set.
 - Antispam scores subjects that hide invisible characters inside Chinese, Japanese or Korean words, a common way to slip spam past filters.
@@ -35,6 +37,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Changed
 
+- Antispam repairs a changed or missing file by reloading only the service that reads it, instead of also reloading rspamd and rebuilding Exim.
 - After the system clock is set back, new temporary blocks show expiry times later by that step, and the journal notes it once per start.
 - Deep phishing scans use less memory and CPU per page.
 - With central blocking on, an address reported by several trusted nodes can now be blocked when local evidence agrees; an explicit `block_threshold` is kept.

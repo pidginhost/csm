@@ -180,6 +180,29 @@ type HostFacts struct {
 	// controller in it could not be understood; unlike ControllerErr it is
 	// reported, not waited out.
 	ControllerUnverifiable error
+	// LearningKeys are loaded from the learning directory when learning is
+	// requested; LearningKeysErr says why they could not be.
+	LearningKeys    LearningKeys
+	LearningKeysErr error
+	// LearnerMismatch: the running learner found its ledger out of step
+	// with storage (state_mismatch) and froze admissions.
+	LearnerMismatch bool
+	// Learning prerequisites, collected only while learning is requested.
+	LearningDumps  LearningDumps
+	ControlSocket  SocketFacts
+	Redis          RedisFacts
+	FuzzyListening bool
+	// FuzzyListenForeign is set when another user's socket shares the
+	// fuzzy worker's port.
+	FuzzyListenForeign bool
+	FuzzyListenErr     error
+	CageFS             CageFSFacts
+	Roundcube          RoundcubeFacts
+	AccountNames       map[string]bool
+	AccountNamesErr    error
+	// RedisGuardPaused is the pass's last memory-guard state, so the guard
+	// keeps its hysteresis between passes.
+	RedisGuardPaused bool
 }
 
 // CheckHost evaluates the host preconditions of spec section 6.2 that hold
@@ -462,4 +485,64 @@ func checkRspamdVersions(daemon, adm CommandResult) []Problem {
 		add(Temporary, "rspamd %s and rspamadm %s differ; wait for any upgrade to finish", dv, av)
 	}
 	return out
+}
+
+// LearningDumps are the loaded rspamd sections learning checks: the
+// fuzzy_check module, the full dump's worker section, the symbol groups and
+// the Redis settings. They can hold keys and passwords, so they stay in
+// memory and never reach a finding or log.
+type LearningDumps struct {
+	FuzzyCheck, Worker, Group, Redis []byte
+	Err                              error
+	// Symbols is the controller's /symbols reply, read while CSM's learning
+	// worker file is installed; it shows runtime weight changes.
+	Symbols    []byte
+	SymbolsErr error
+}
+
+// RedisFacts are the live values of the Redis instance the fuzzy worker
+// stores hashes in. Save is meaningful only when SaveKnown.
+type RedisFacts struct {
+	Endpoint string
+	Unix     bool
+	Socket   SocketFacts
+	Port     string
+	// TLSPort is empty when CONFIG GET reports no TLS port setting (Redis 5).
+	TLSPort    string
+	Policy     string
+	AppendOnly string
+	Save       string
+	SaveKnown  bool
+	Version    string
+	MaxMemory  uint64
+	// MaxMemoryKnown distinguishes a measured zero limit from a failed probe.
+	MaxMemoryKnown bool
+	Used           uint64
+	GroupMembers   []string
+	// ServiceUID is the uid of the process serving the socket, or -1.
+	ServiceUID int
+	// Unprotected is set when the collector refused to send the password:
+	// the socket's owner, directories or peer do not prove who serves it.
+	Unprotected bool
+	Err         error
+}
+
+// CageFSFacts say whether CloudLinux CageFS confines every account and
+// whether its skeleton exposes rspamd's log directory.
+type CageFSFacts struct {
+	Enabled              bool
+	DisabledUsers        int
+	SkeletonHasRspamdLog bool
+	// ExcludedLogDir is the host log directory checked in the skeleton.
+	ExcludedLogDir string
+	Err            error
+}
+
+// RoundcubeFacts describe cPanel's Roundcube include mechanism and the
+// include CSM owns.
+type RoundcubeFacts struct {
+	Include          TargetFacts
+	IncludeMechanism bool
+	PHP              bool
+	Err              error
 }

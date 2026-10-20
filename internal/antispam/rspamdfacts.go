@@ -11,6 +11,12 @@ import (
 
 var rspamdVersionRe = regexp.MustCompile(`(?i)\brspam(?:d daemon version|adm)\s+(\d{1,4})\.(\d{1,4})(?:\.(\d{1,4}))?(?:[ \t\r\n+-]|$)`)
 
+// ParseRspamdDumpObject rejects ambiguous fields while preserving nested
+// settings for the caller. Parse errors never include the dump's contents.
+func ParseRspamdDumpObject(out []byte) (map[string]json.RawMessage, error) {
+	return dumpObjectAs[json.RawMessage](out, "object")
+}
+
 // ParseRspamdVersion reads `rspamd --version` or `rspamadm --version` and
 // returns the dotted version and its major number.
 func ParseRspamdVersion(out string) (string, int, error) {
@@ -49,18 +55,19 @@ func EnabledModules(out string) (map[string]bool, error) {
 // action is disabled or absent.
 type Actions struct {
 	Reject, AddHeader, Greylist, RewriteSubject *float64
+	// GrowFactor rescales scores above the reject threshold; learning's
+	// score table assumes none (spec 6.2).
+	GrowFactor *float64
 }
 
 // ParseActions reads `rspamadm configdump -j actions`. Keys other than the
-// four CSM sets are ignored. Both underscored and spaced names are accepted;
-// ambiguous aliases or a non-numeric, non-null value are errors.
+// four CSM sets and grow_factor are ignored. Underscored and spaced names
+// are accepted; duplicate fields, ambiguous aliases and non-numeric,
+// non-null values are errors.
 func ParseActions(out []byte) (Actions, error) {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return Actions{}, fmt.Errorf("configdump actions: %w", err)
-	}
-	if raw == nil {
-		return Actions{}, errors.New("configdump actions: expected an object")
+	raw, err := dumpObjectAs[json.RawMessage](out, "actions")
+	if err != nil {
+		return Actions{}, err
 	}
 	get := func(key string) (*float64, error) {
 		names := []string{key}
@@ -75,8 +82,8 @@ func ParseActions(out []byte) (Actions, error) {
 				continue
 			}
 			var f *float64
-			if err := json.Unmarshal(v, &f); err != nil {
-				return nil, fmt.Errorf("configdump action %s: %w", name, err)
+			if decodeErr := json.Unmarshal(v, &f); decodeErr != nil {
+				return nil, fmt.Errorf("configdump action %s: %w", name, decodeErr)
 			}
 			same := value == nil && f == nil || value != nil && f != nil && *value == *f
 			if seen && !same {
@@ -88,11 +95,10 @@ func ParseActions(out []byte) (Actions, error) {
 		return value, nil
 	}
 	var a Actions
-	var err error
 	for _, field := range []struct {
 		key string
 		dst **float64
-	}{{"reject", &a.Reject}, {"add_header", &a.AddHeader}, {"greylist", &a.Greylist}, {"rewrite_subject", &a.RewriteSubject}} {
+	}{{"reject", &a.Reject}, {"add_header", &a.AddHeader}, {"greylist", &a.Greylist}, {"rewrite_subject", &a.RewriteSubject}, {"grow_factor", &a.GrowFactor}} {
 		if *field.dst, err = get(field.key); err != nil {
 			return Actions{}, err
 		}
@@ -131,6 +137,11 @@ func checkRspamdModules(enabled map[string]bool, s Settings) []string {
 	for _, m := range modulesOff {
 		// With a DNS feed rbl runs CSM's rules; CheckFeedsLoaded checks them.
 		if m == "rbl" && dns {
+			continue
+		}
+		// With learning fuzzy_check runs CSM's rules; learning verifies it,
+		// and a learning fault never removes core filtering.
+		if m == "fuzzy_check" && s.Learning {
 			continue
 		}
 		if enabled[m] {

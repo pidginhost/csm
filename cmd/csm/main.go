@@ -137,6 +137,8 @@ func main() {
 		runDBClean()
 	case "scan":
 		runScanAccount()
+	case "antispam":
+		runAntispam()
 	case "firewall":
 		runFirewall()
 	case "harden":
@@ -227,6 +229,7 @@ Commands:
   store reset-bot-verify  Drop cached bot PTR verification results (daemon must be stopped)
   export --since <when> Dump audit-log events for SIEM backfill (RFC 3339 ts or duration)
   scan <user>   Scan a single cPanel account (add --alert to send alerts)
+  antispam learn --spam|--forget <file>...  Learn files as spam, or forget what they taught
   firewall ...  Firewall management (deny, allow, status, ports, etc.)
   harden        Apply targeted hardening policies (run csm harden for list)
   incidents     List, show, and update correlated security incidents

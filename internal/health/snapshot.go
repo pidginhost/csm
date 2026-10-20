@@ -58,6 +58,10 @@ type Snapshot struct {
 	// Admission is the admission ledger and ingress view; nil when the
 	// daemon owns no ledger.
 	Admission *AdmissionStatus `json:"admission,omitempty"`
+
+	// AntispamLearning is the learner's health; nil while learning does not
+	// run.
+	AntispamLearning *LearningStatus `json:"antispam_learning,omitempty"`
 }
 
 // AutomationStatus summarizes the live automation safety state. It is

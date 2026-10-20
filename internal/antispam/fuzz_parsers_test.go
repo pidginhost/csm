@@ -352,6 +352,7 @@ func FuzzEnabledModules(f *testing.F) {
 
 func FuzzParseActions(f *testing.F) {
 	for _, seed := range []string{
+		`{"reject":15,"add_header":6,"grow_factor":1.5}`,
 		`{"reject":15,"add_header":6,"greylist":null,"rewrite_subject":null}`,
 		`{"reject":20.5,"add header":8,"rewrite subject":10}`,
 		`{"rewrite_subject":null,"rewrite subject":8}`,
@@ -369,7 +370,7 @@ func FuzzParseActions(f *testing.F) {
 		}
 		encoded, err := json.Marshal(map[string]*float64{
 			"reject": a.Reject, "add_header": a.AddHeader,
-			"greylist": a.Greylist, "rewrite_subject": a.RewriteSubject,
+			"greylist": a.Greylist, "rewrite_subject": a.RewriteSubject, "grow_factor": a.GrowFactor,
 		})
 		if err != nil {
 			t.Fatalf("parsed non-JSON thresholds: %v", err)
@@ -498,6 +499,9 @@ func FuzzDecodeRequest(f *testing.F) {
 		strings.TrimSuffix(validApply, "}") + `,"feeds":null}`,
 		strings.TrimSuffix(validApply, "}") + `,"skip_maps":null}`,
 		strings.TrimSuffix(validApply, "}") + `,"dqs_key_file":null}`,
+		strings.TrimSuffix(validApply, "}") + `,"learning":true,"learning_dir":"/var/lib/csm/antispam/learning","roundcube":true}`,
+		strings.TrimSuffix(validApply, "}") + `,"learning_dir":"/var/lib/csm/antispam/learning"}`,
+		strings.TrimSuffix(validApply, "}") + `,"learning":false,"learning_dir":"/var/lib/csm/antispam/learning"}`,
 		strings.TrimSuffix(validApply, "}") + `,"feeds":"psbl,"}`,
 		`{"operation":"remove"}`,
 		`{"operation":"remove","operation":"apply"}`,
@@ -827,6 +831,64 @@ func FuzzControllerTrustEntries(f *testing.F) {
 		cfg.TrustEntries = []string{prefix.String()}
 		if canonical := ControllerExposure(cfg, facts); !reflect.DeepEqual(got, canonical) {
 			t.Fatalf("canonical trust changed exposure: %+v != %+v", got, canonical)
+		}
+	})
+}
+
+func FuzzFuzzyWorkerEnabled(f *testing.F) {
+	for _, seed := range []string{
+		`{"fuzzy":{"count":-1}}`, `{"type":"fuzzy","count":1}`,
+		`{"fuzzy":{"count":1,"count":-1}}`, `null`, `[]`,
+		`{"type":null}`, `{"type":"normal","fuzzy":{"count":1}}`,
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, entry string) {
+		// No preceding worker may hide a later enabled fuzzy worker. Parse
+		// failures are safe because the resolver treats them as conflicts.
+		section := []byte("[" + entry + `,{"fuzzy":{"count":1}}]`)
+		if enabled, err := fuzzyWorkerEnabled(section); err == nil && !enabled {
+			t.Fatal("accepted a worker section without detecting its enabled fuzzy worker")
+		}
+		if enabled, err := fuzzyWorkerEnabled([]byte(entry)); err == nil && enabled {
+			if !json.Valid([]byte(entry)) {
+				t.Fatal("accepted malformed JSON")
+			}
+		}
+	})
+}
+
+func FuzzCheckLearningLoaded(f *testing.F) {
+	d := newLoadedDumps(syntheticLearningKeys())
+	enc := func(v any) []byte { b, _ := json.Marshal(v); return b }
+	var group []byte
+	for _, g := range d.groups {
+		group = append(group, enc(g)...)
+	}
+	baseline := [][]byte{enc(d.fuzzyCheck), enc(d.worker), group, enc(d.symbols)}
+	for i, data := range baseline {
+		f.Add(uint8(i), data)
+		f.Add(uint8(i), []byte(`null`))
+		f.Add(uint8(i), []byte(`{"weight":20,"weight":10}`))
+	}
+	f.Fuzz(func(t *testing.T, section uint8, data []byte) {
+		inputs := slices.Clone(baseline)
+		inputs[int(section)%len(inputs)] = data
+		err := CheckLearningLoaded(inputs[0], inputs[1], inputs[2], inputs[3], Actions{}, d.keys)
+		if err != nil {
+			for _, key := range []string{d.keys.Fuzzy.Reveal(), d.keys.Shingles.Reveal(), d.keys.Read.Private.Reveal(), d.keys.Write.Private.Reveal()} {
+				if strings.Contains(err.Error(), key) {
+					t.Fatal("verification error disclosed key material")
+				}
+			}
+			return
+		}
+		// Even self-consistent dumps must be bound to the installation's
+		// keys rather than treating the loaded values as their own authority.
+		other := d.keys
+		other.Fuzzy = NewSecret(strings.Repeat("7a", 32))
+		if CheckLearningLoaded(inputs[0], inputs[1], inputs[2], inputs[3], Actions{}, other) == nil {
+			t.Fatal("accepted the same dumps for a different hash generation")
 		}
 	})
 }

@@ -93,6 +93,28 @@ The separate [kernel gate](production-tests.md#kernel-runner) requires an
 isolated Linux runner with the documented boot capabilities. A successful
 macOS or default-tag suite does not demonstrate BPF LSM attachment.
 
+### Antispam learning benchmarks
+
+Run the learning benchmarks on Linux with repeated iterations:
+
+```bash
+TMPDIR=/var/tmp/csm-gotest go test ./internal/antispam/learn ./internal/antispam/learnwatch -run '^$' -bench . -benchtime=3x -count=3
+```
+
+Each publication iteration starts with one live anchor and adds one new
+contributor. Each flood iteration starts from an empty baseline before new
+messages arrive. Database state is reset between iterations; setup and cleanup
+are excluded from timings. The flood wait metric is the mean across iterations.
+The benchmarks check that publication commits, discovery visits the corpus,
+the second account submits before the flood finishes, and audit coverage completes.
+
+Storage metrics count logical keys and values, including contribution charges,
+account usage and pending-message indexes. They exclude bbolt page overhead and
+anchor message bodies. These fixed workloads do not establish maximum database
+sizes or production latency: message names, contributor mixes, filesystem
+performance and native rspamd calls change the cost. Runtime allowances remain
+unchanged.
+
 ## Fuzz
 
 CSM has fuzz targets for parsers that read attacker-controlled input, including Exim mainlog lines, Dovecot maillog lines, Apache Combined Log Format, /proc/net/tcp rows, wp-config.php bodies, /etc/shadow, auditd comm fields, and finding messages coming back from the WebUI.

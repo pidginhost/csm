@@ -32,3 +32,19 @@ func validateAntispamFeedTypes(node yaml.Node) error {
 	}
 	return nil
 }
+
+// Enabling learning is consent to reading Spam mail, so only a YAML boolean
+// counts; yaml.v3 would otherwise coerce values such as 1.
+func validateAntispamLearningTypes(node yaml.Node) error {
+	if yamlResolvedTag(&node) != "!!map" {
+		return errors.New("email_protection.antispam.learning must be a mapping")
+	}
+	var fields map[string]yaml.Node
+	if err := node.Decode(&fields); err != nil {
+		return err
+	}
+	if enabled, ok := fields["enabled"]; ok && !yamlNodeIsNull(&enabled) && yamlResolvedTag(&enabled) != "!!bool" {
+		return errors.New("email_protection.antispam.learning.enabled must be true or false")
+	}
+	return nil
+}

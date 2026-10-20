@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/pidginhost/csm/internal/antispam"
 	csmstore "github.com/pidginhost/csm/internal/store"
 )
 
@@ -32,7 +33,10 @@ type BackupSources struct {
 	ConfigPath string // main csm.yaml path
 	ConfDir    string // /etc/csm/conf.d/
 	StateDir   string // /var/lib/csm/state/
-	MaxBytes   int64
+	// LearningDir holds the antispam learning keys and anchor messages,
+	// part of the learning bundle with the ledger in the state database.
+	LearningDir string
+	MaxBytes    int64
 }
 
 // WriteBackupArchive bundles every source path into a tar+gzip file at out.
@@ -121,6 +125,11 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 			if err := addFile(tw, stateDBSnapshot, "state/csm.db"); err != nil {
 				return err
 			}
+		}
+	}
+	if src.LearningDir != "" {
+		if err := addDir(tw, src.LearningDir, learningArchiveDir, []string{outAbs, tmpPath}); err != nil && !os.IsNotExist(err) {
+			return err
 		}
 	}
 	body := fmt.Sprintf("backup_ts=%s\nschema=1\n", time.Now().UTC().Format(time.RFC3339))
@@ -310,10 +319,11 @@ func runBackup() {
 		os.Exit(1)
 	}
 	src := BackupSources{
-		ConfigPath: cfg.ConfigFile,
-		ConfDir:    cfg.ConfigDir,
-		StateDir:   cfg.StatePath,
-		MaxBytes:   maxBytes,
+		ConfigPath:  cfg.ConfigFile,
+		ConfDir:     cfg.ConfigDir,
+		StateDir:    cfg.StatePath,
+		LearningDir: antispam.DefaultLearningDir,
+		MaxBytes:    maxBytes,
 	}
 	if backupErr := writeBackupArchiveGuarded(out, src); backupErr != nil {
 		fmt.Fprintf(os.Stderr, "backup failed: %v\n", backupErr)

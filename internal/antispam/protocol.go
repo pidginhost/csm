@@ -34,8 +34,8 @@ const FeedsCheckStep = "feeds_check"
 
 // Request is the one JSON object the daemon sends to the antispam worker. It
 // carries settings only: no command or Exim text. Its paths are the scan
-// socket and the DQS key file; the key itself never travels, because the
-// request is recorded on disk.
+// socket, DQS key file and learning directory; keys never travel, because
+// the request is recorded on disk.
 type Request struct {
 	Operation    string  `json:"operation"`
 	Enabled      *bool   `json:"enabled,omitempty"`
@@ -47,6 +47,11 @@ type Request struct {
 	Feeds      *string `json:"feeds,omitempty"`
 	SkipMaps   *string `json:"skip_maps,omitempty"`
 	DQSKeyFile *string `json:"dqs_key_file,omitempty"`
+	// Learning fields are omitted when learning is off, so older records
+	// keep their form.
+	Learning    *bool   `json:"learning,omitempty"`
+	LearningDir *string `json:"learning_dir,omitempty"`
+	Roundcube   *bool   `json:"roundcube,omitempty"`
 }
 
 // ApplyRequest is the request that installs s.
@@ -72,6 +77,14 @@ func ApplyRequest(s Settings) Request {
 		v := s.DQSKeyFile
 		r.DQSKeyFile = &v
 	}
+	if s.Learning {
+		learning, dir := true, s.LearningDir
+		r.Learning, r.LearningDir = &learning, &dir
+	}
+	if s.Roundcube {
+		roundcube := true
+		r.Roundcube = &roundcube
+	}
 	return r
 }
 
@@ -84,6 +97,7 @@ var requestKeys = map[string]bool{
 	"operation": true, "enabled": true, "dry_run": true,
 	"rspamd_socket": true, "reject_score": true, "tag_score": true,
 	"feeds": true, "skip_maps": true, "dqs_key_file": true,
+	"learning": true, "learning_dir": true, "roundcube": true,
 }
 
 // splitNames reads a comma-separated request field.
@@ -105,9 +119,15 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 	if err != nil {
 		return Request{}, Settings{}, err
 	}
-	for _, key := range []string{"feeds", "skip_maps", "dqs_key_file"} {
+	for _, key := range []string{"feeds", "skip_maps", "dqs_key_file", "learning_dir", "learning", "roundcube"} {
 		if value, present := fields[key]; present {
-			if _, ok := value.(string); !ok {
+			var valid bool
+			if key == "learning" || key == "roundcube" {
+				_, valid = value.(bool)
+			} else {
+				_, valid = value.(string)
+			}
+			if !valid {
 				return Request{}, Settings{}, errors.New("request has a value of the wrong type")
 			}
 		}
@@ -128,6 +148,11 @@ func DecodeRequest(data []byte) (Request, Settings, error) {
 			Feeds: splitNames(r.Feeds), SkipMaps: splitNames(r.SkipMaps)}
 		if r.DQSKeyFile != nil {
 			s.DQSKeyFile = *r.DQSKeyFile
+		}
+		s.Learning = r.Learning != nil && *r.Learning
+		s.Roundcube = r.Roundcube != nil && *r.Roundcube
+		if s.Learning && r.LearningDir != nil {
+			s.LearningDir = *r.LearningDir
 		}
 		if err := s.Validate(); err != nil {
 			return Request{}, Settings{}, err
@@ -193,6 +218,9 @@ type Result struct {
 	// Generation identifies the installed content after a successful apply.
 	Generation string `json:"generation,omitempty"`
 	Error      string `json:"error,omitempty"`
+	// Roundcube is set when a successful transaction could not verify the
+	// webmail include; the rest of the change stands (spec 6.4).
+	Roundcube string `json:"roundcube,omitempty"`
 }
 
 // ErrorSummary keeps Result.Error on one line for logs and findings.
@@ -202,7 +230,7 @@ func ErrorSummary(s string) string {
 
 var resultKeys = map[string]bool{
 	"operation": true, "ok": true, "busy": true, "failed_step": true,
-	"rollback": true, "generation": true, "error": true,
+	"rollback": true, "generation": true, "error": true, "roundcube": true,
 }
 
 // ParseResult reads one unambiguous worker report. Invalid or contradictory
@@ -242,6 +270,9 @@ func (r Result) Validate() error {
 	if r.Operation != OpApply && r.Operation != OpRemove &&
 		(r.Operation != "" || r.OK || r.FailedStep != "request") {
 		return errors.New("worker result has an unsupported operation")
+	}
+	if r.Roundcube != "" && (!r.OK || !strings.HasPrefix(r.Roundcube, RoundcubeUnavailable)) {
+		return errors.New("worker result reports an unexpected Roundcube state")
 	}
 	if r.OK {
 		if r.Busy || r.FailedStep != "" || r.Error != "" || (r.Rollback != "" && r.Rollback != RollbackNone) {
