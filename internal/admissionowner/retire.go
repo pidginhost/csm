@@ -38,13 +38,13 @@ func (o *Owner) retire() error {
 		if errors.Is(err, admission.ErrCorruptRecord) {
 			o.retireAt = monoNow().Add(retireRecheck)
 			o.noteRetirementRetry(o.retireAt)
-			if o.retireReadFault {
-				return nil
-			}
-			o.retireReadFault = true
 		} else {
 			o.backoffRetirement()
 		}
+		if o.retireReadFault {
+			return nil
+		}
+		o.retireReadFault = true
 		return fmt.Errorf("reading unresolved intents: %w", err)
 	}
 	o.retireReadFault = false
@@ -100,6 +100,9 @@ func (o *Owner) retire() error {
 		due = append(due, in)
 	}
 	if len(due) == 0 {
+		if len(intents) == 0 {
+			o.retireCheckFault = false
+		}
 		return errs
 	}
 	if o.degraded {
@@ -116,9 +119,9 @@ func (o *Owner) retire() error {
 		addr, _ := in.Target.Addr()
 		members[i] = firewall.BlockAction{Action: string(in.Action), IP: addr.String()}
 	}
-	gone, checked := o.checkRetirements(engine, members)
+	gone, checked, checkErr := o.checkRetirements(engine, members)
 	if !checked {
-		return errs
+		return errors.Join(errs, checkErr)
 	}
 	o.retireAfter = due[len(due)-1].Action
 	for i, in := range due {
@@ -135,41 +138,66 @@ func (o *Owner) retire() error {
 	return errs
 }
 
-// Reads and writes share the same retry policy: damage must not fail every
-// turn or keep unrelated attempts from reaching the engine.
+// Reads and writes share the same retry policy: a fault must not fail any
+// turn or keep unrelated attempts from reaching the engine. Each faulted
+// attempt is retried on its own and reported once (C4).
 func (o *Owner) retirementResult(id admission.ActionID, err error) error {
 	switch _, refused := admission.ReasonOf(err); {
 	case err == nil:
 		delete(o.retireDelay, id)
 		delete(o.retireFaults, id)
-	case errors.Is(err, admission.ErrCorruptRecord), errors.Is(err, admission.ErrTransitionConflict):
-		reported := o.retireFaults[id]
-		o.retireFaults[id] = true
-		o.retryRetirement(id, retireRecheck)
-		if !reported {
-			return err
-		}
+		return nil
 	case errors.Is(err, admission.ErrNotReady), refused:
 		// Delivery or the ledger clock has not caught up. Keep a future
 		// wake even if no new candidates arrive.
 		o.retryRetirementLater(id)
+		return nil
+	case errors.Is(err, admission.ErrCorruptRecord), errors.Is(err, admission.ErrTransitionConflict):
+		// Retrying soon cannot repair damage.
+		o.retryRetirement(id, retireRecheck)
 	default:
 		o.retryRetirementLater(id)
-		return err
 	}
-	return nil
+	if o.retireFaults[id] {
+		return nil
+	}
+	o.retireFaults[id] = true
+	return err
+}
+
+// reportRetirement keeps a newly reported retirement fault for status
+// until no attempt, intent list read or engine check is left faulted.
+func (o *Owner) reportRetirement(err error) {
+	was := o.retireErr
+	switch {
+	case err != nil:
+		o.retireErr = err
+	case len(o.retireFaults) == 0 && !o.retireReadFault && !o.retireCheckFault:
+		o.retireErr = nil
+	}
+	if o.retireErr != was {
+		o.refreshStatus()
+	}
 }
 
 // checkRetirements asks the engine about members. A failed or short answer
 // backs off without failing the turn.
-func (o *Owner) checkRetirements(engine BlockEngine, members []firewall.BlockAction) ([]bool, bool) {
+func (o *Owner) checkRetirements(engine BlockEngine, members []firewall.BlockAction) ([]bool, bool, error) {
 	gone, err := engine.RetireBlockActions(members)
-	if err != nil || len(gone) != len(members) {
-		o.backoffRetirement()
-		return nil, false
+	if err == nil && len(gone) != len(members) {
+		err = fmt.Errorf("%d retirement answers for %d members", len(gone), len(members))
 	}
+	if err != nil {
+		o.backoffRetirement()
+		if o.retireCheckFault {
+			return nil, false, nil
+		}
+		o.retireCheckFault = true
+		return nil, false, fmt.Errorf("checking block retirements: %w", err)
+	}
+	o.retireCheckFault = false
 	o.retireWait, o.retireAt = 0, time.Time{}
-	return gone, true
+	return gone, true, nil
 }
 
 // backoffRetirement delays the next pass while nothing can be checked: an

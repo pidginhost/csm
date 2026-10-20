@@ -216,3 +216,15 @@ func (o *Owner) heldCause() error {
 	}
 	return o.execHold
 }
+
+// heldBy names what heldCause comes from, so doctor can say what to
+// repair: the configuration or the firewall.
+func (o *Owner) heldBy() string {
+	switch {
+	case o.policyErr != nil:
+		return "policy"
+	case o.execHold != nil:
+		return "firewall"
+	}
+	return ""
+}

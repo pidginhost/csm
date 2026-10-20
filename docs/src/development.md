@@ -812,15 +812,18 @@ nothing; the next pass waits one second, doubling to a minute. An attempt
 whose retirement the ledger refuses (undelivered outcomes, or a ledger clock
 that cannot yet prove the expiry) is asked again after one second, doubling
 to a minute. A damaged record or an attempt that ended another way is asked
-again a minute later and reported once, so it does not fail every turn. A
+again a minute later; any other fault, such as a failed write, retries that
+attempt after one second, doubling to a minute. A
 missing or unreadable attempt uses the same wait without preventing other
-attempts from retiring. An unreadable intent list delays the whole pass;
-damage is reported once until a readable list proves recovery. A stop
+attempts from retiring. An unreadable intent list delays the whole pass.
+Each fault is reported once, in `admission.owner.retirement_error` and the
+doctor row `admission retirement`, until no attempt, list read or engine
+retirement check is left faulted; no retirement fault fails a turn. A stop
 between the row removal and the ledger retirement leaves a
 row-less unknown that the next pass retires. The turn wakes for the earliest
 expiry or monotonic retry. With one noted, a turn lists no intents until it
 is due; with none noted, every turn lists them. A turn that fails after its
-retirement pass still reports that pass's error. It never rebases a retry on
+retirement pass fails with its own step's error. It never rebases a retry on
 admission time or adds time spent inside
 an engine call. Expiry conversion uses a monotonic sample taken before reading
 the admission clock, so a slow tick or later call cannot postpone another
@@ -1211,7 +1214,7 @@ Imported legacy usage retains its accounting-window charge after an attempt is r
 
 The scheduler records only ceiling, history-budget and recovery-reserve deferrals, once per changed reason. Fair turns, member bounds and retry backoff produce no deferral; a cleared budget reason produces no new gap notice. Challenges spend fair turns and history without spending block credit, and bounded durable holds preserve the earned turn of charged work while challenges proceed.
 
-The owner schedules queued preview work on its timer and uses the next ledger wake even when no new arrival appears. Reloads recompute that wake under the current ceiling. It preserves the legacy-selected absolute expiry, including on retries, observes each pick transactionally and continues delivery retries independently of scheduling. A refused preview ends only its own queued work, so an invalid expiry cannot starve other picks; a storage failure retries the turn, twice at once and then after waits that double up to an hour, as a failing notice delivery is retried.
+The owner schedules queued preview work on its timer and uses the next ledger wake even when no new arrival appears. Reloads recompute that wake under the current ceiling. It preserves the legacy-selected absolute expiry, including on retries, observes each pick transactionally and continues delivery retries independently of scheduling. A refused preview ends only its own queued work, so an invalid expiry cannot starve other picks; a storage failure retries the turn, twice at once and then after waits that double up to a minute, as a held probe is, and shows as `admission.owner.turn_error` and the doctor row `admission turns` rather than a stopped owner.
 
 Held responses coalesce by evidence, kind and effective entry, whether the root entry is named explicitly or omitted. Derived entries validate their producer binding before fresh placement, coalescing and answered results, including direct queue requests. Retained queued work also revalidates its entry binding before scheduling or coalescing. The first selected temporary lifetime is durable and cannot be extended by a later report of the same candidate; absent metadata retains the configuration-selected lifetime.
 

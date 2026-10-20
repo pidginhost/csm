@@ -135,3 +135,26 @@ func TestAdmissionLedgerDisabledLeavesReservedWork(t *testing.T) {
 		t.Fatalf("queued candidate = %+v", c)
 	}
 }
+
+// A turn whose policy still allows every queued response commits nothing:
+// the refusal pass runs before each selection and must not cost a write.
+func TestAdmissionLedgerDisabledCommitsNothingWhenAllAllowed(t *testing.T) {
+	f := newLedgerFixture(t)
+	id := f.queued()
+	before := f.db.WriteTxID()
+	if err := f.l.RefuseDisabled(func(admission.Candidate) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.db.WriteTxID(); got != before {
+		t.Fatalf("an allowed queue committed %d writes", got-before)
+	}
+	if c := f.candidateOf(id); c.State != admission.StateQueued {
+		t.Fatalf("allowed candidate = %+v", c)
+	}
+	if err := f.l.RefuseDisabled(func(admission.Candidate) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	if c := f.candidateOf(id); c.State != admission.StateRefused || f.db.WriteTxID() == before {
+		t.Fatalf("a disabled candidate was not ended: %+v", c)
+	}
+}

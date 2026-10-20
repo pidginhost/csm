@@ -170,6 +170,22 @@ func TestDoctorReportsHeldExecution(t *testing.T) {
 	}
 }
 
+// The execution row's fix follows its cause: a refused policy is repaired
+// in the configuration, an engine hold in the firewall (C4).
+func TestDoctorNamesWhatHoldsExecution(t *testing.T) {
+	at := time.Now().UTC()
+	for by, want := range map[string]string{
+		"policy": "correct the setting the message names", "firewall": "probes the firewall", "": "probes the firewall",
+	} {
+		view := &health.AdmissionStatus{CheckedAt: at, Ingress: &admission.IngressHealth{Admitting: true},
+			Owner: &health.AdmissionOwner{ExecutionHeld: "fixture hold", ExecutionHeldBy: by}}
+		row, ok := doctorCheckNamed(doctorReportForSnapshot(t, admissionSnapshot(view)), "admission execution")
+		if !ok || !strings.Contains(row.Fix, want) {
+			t.Errorf("held by %q: admission execution = %+v (%v)", by, row, ok)
+		}
+	}
+}
+
 // dryRunView is an owner forecasting in dry run with a healthy model.
 func dryRunView(at time.Time) *health.AdmissionStatus {
 	id, reset := "0123456789abcdef0123456789abcdef", "startup"

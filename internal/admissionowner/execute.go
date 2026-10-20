@@ -443,9 +443,9 @@ func (o *Owner) release() {
 func (o *Owner) publishExecutionHold() {
 	previous := o.current.Load()
 	snapshot, owner := *previous, *previous.Owner
-	owner.ExecutionHeld = ""
+	owner.ExecutionHeld, owner.ExecutionHeldBy = "", ""
 	if cause := o.heldCause(); cause != nil {
-		owner.ExecutionHeld = cause.Error()
+		owner.ExecutionHeld, owner.ExecutionHeldBy = cause.Error(), o.heldBy()
 	}
 	snapshot.Owner = &owner
 	o.current.Store(&snapshot)

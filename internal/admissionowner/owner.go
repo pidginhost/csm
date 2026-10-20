@@ -250,12 +250,17 @@ type Owner struct {
 	// Per-action monotonic waits keep held entries from monopolizing a batch.
 	retireRetry map[admission.ActionID]time.Time
 	// retireDelay is each action's current wait while the ledger refuses
-	// its retirement; retireFaults names the actions whose damaged record
-	// was already reported.
+	// its retirement; retireFaults names the actions whose fault was
+	// already reported.
 	retireDelay  map[admission.ActionID]time.Duration
 	retireFaults map[admission.ActionID]bool
-	// A damaged intent list has no readable action to key a fault by.
+	// An unreadable intent list has no readable action to key a fault by.
 	retireReadFault bool
+	// An engine check fault has no single attempt to key a fault by.
+	retireCheckFault bool
+	// retireErr is the last retirement fault reported while one stands.
+	// Retirement never fails a turn (C4).
+	retireErr error
 	// Resume after the last checked action even if its retry is already due.
 	retireAfter admission.ActionID
 }
@@ -794,7 +799,8 @@ func (o *Owner) drainHeld() (err error) {
 // schedule runs a turn when work was drained or the ledger's wake time has
 // come, and keeps the cause of a failed turn for status until one
 // succeeds. A turn that keeps failing is backed off from the default
-// schedule period, as a failing notice delivery is.
+// schedule period to a minute, as a held probe is (spec 5.16): the turn
+// also picks up policy changes and runs the probes.
 func (o *Owner) schedule() {
 	o.expireVerdicts()
 	probeDue := false
@@ -825,7 +831,7 @@ func (o *Owner) schedule() {
 	err := o.runTurn(selecting)
 	if err != nil {
 		o.scheduleDue = true
-		o.scheduleWait.fail(monoNow(), defaultScheduleEvery)
+		o.scheduleWait.fail(monoNow(), defaultScheduleEvery, maxProbeWait)
 	} else {
 		o.scheduleWait = retryBackoff{}
 	}
@@ -863,8 +869,8 @@ func (o *Owner) runTurn(selecting bool) error {
 		return err
 	}
 	// Retirement first: it can release the holds pending_recovery waits on.
-	// Its error is kept when a later step fails.
-	retireErr := o.retire()
+	// Its faults are reported apart and never fail the turn (C4).
+	o.reportRetirement(o.retire())
 	if o.executable() {
 		o.sweepVerdicts()
 	}
@@ -877,19 +883,19 @@ func (o *Owner) runTurn(selecting bool) error {
 		o.scheduleDue = true
 	case o.forecasting():
 		if err := o.forecast(); err != nil {
-			return errors.Join(retireErr, err)
+			return err
 		}
 	default:
 		if err := o.serve(); err != nil {
-			return errors.Join(retireErr, err)
+			return err
 		}
 	}
 	if err := o.publish(); err != nil {
-		return errors.Join(retireErr, err)
+		return err
 	}
 	wake, ok, err := nextWake(o.ledger, o.answers())
 	if err != nil {
-		return errors.Join(retireErr, fmt.Errorf("reading the next wake time: %w", err))
+		return fmt.Errorf("reading the next wake time: %w", err)
 	}
 	if ok {
 		if d := wake.Sub(o.now); d > 0 {
@@ -903,7 +909,7 @@ func (o *Owner) runTurn(selecting bool) error {
 			o.wakeAt = at
 		}
 	}
-	return retireErr
+	return nil
 }
 
 // serve runs the schedule's picks. With an engine its block_ip picks run
@@ -1144,8 +1150,12 @@ func (o *Owner) refreshStatus() {
 		s.Owner.Error = o.drainErr.Error()
 	case o.snapshotErr != nil:
 		s.Owner.Error = o.snapshotErr.Error()
-	case o.scheduleErr != nil:
-		s.Owner.Error = o.scheduleErr.Error()
+	}
+	if o.scheduleErr != nil {
+		s.Owner.TurnError = o.scheduleErr.Error()
+	}
+	if o.retireErr != nil {
+		s.Owner.RetirementError = o.retireErr.Error()
 	}
 	if o.auditErr != nil {
 		s.Owner.AuditError = o.auditErr.Error()
@@ -1160,7 +1170,7 @@ func (o *Owner) refreshStatus() {
 		s.Owner.DamageError = o.damageErr.Error()
 	}
 	if cause := o.heldCause(); cause != nil {
-		s.Owner.ExecutionHeld = cause.Error()
+		s.Owner.ExecutionHeld, s.Owner.ExecutionHeldBy = cause.Error(), o.heldBy()
 	}
 	if o.executable() {
 		s.Owner.Verdict, s.Owner.DryRun = o.verdictStatus(), o.dryRunStatus()

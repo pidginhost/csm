@@ -57,7 +57,7 @@ type sender struct {
 
 // retryBackoff spaces the attempts of work that keeps failing: the next
 // two attempts run at once, then each waits twice as long as the one before,
-// from base up to maxRetryWait. A success restores prompt attempts.
+// from base up to ceiling. A success restores prompt attempts.
 type retryBackoff struct {
 	failures int
 	at       time.Time
@@ -65,10 +65,10 @@ type retryBackoff struct {
 
 func (r *retryBackoff) due(now time.Time) bool { return !now.Before(r.at) }
 
-func (r *retryBackoff) fail(now time.Time, base time.Duration) {
+func (r *retryBackoff) fail(now time.Time, base, ceiling time.Duration) {
 	r.failures++
 	if r.failures > 2 {
-		r.at = now.Add(min(base<<min(r.failures-2, 20), maxRetryWait))
+		r.at = now.Add(min(base<<min(r.failures-2, 20), ceiling))
 	}
 }
 
@@ -213,7 +213,7 @@ func (s *sender) deliver(retry *retryBackoff, findings []alert.Finding, preview 
 		return false
 	}
 	if err := s.o.opts.Deliver(findings, preview); err != nil {
-		retry.fail(deliveryNow(), defaultNoticeEvery)
+		retry.fail(deliveryNow(), defaultNoticeEvery, maxRetryWait)
 		return false
 	}
 	*retry = retryBackoff{}

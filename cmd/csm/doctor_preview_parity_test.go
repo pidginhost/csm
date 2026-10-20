@@ -41,6 +41,18 @@ func baselineOwnerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 		}
 	}
 	rows := []DoctorCheck{owner, clock}
+	if o.TurnError != "" {
+		rows = append(rows, DoctorCheck{
+			Name: "admission turns", Status: "warn", Message: "the last admission turn failed: " + o.TurnError + "; " + admission.PreviewUnaffected,
+			Fix: "the owner retries from one second, backing off to once a minute; keep the state database, which existing blocking still uses, and report the error",
+		})
+	}
+	if o.RetirementError != "" {
+		rows = append(rows, DoctorCheck{
+			Name: "admission retirement", Status: "warn", Message: "retiring uncertain blocks failed: " + o.RetirementError + "; " + admission.PreviewUnaffected,
+			Fix: "each uncertain block stays held and is retried, backing off to once a minute; keep the state database, which existing blocking still uses, and report the error",
+		})
+	}
 	if a.Ledger != nil && a.Ledger.Ceiling.Error == "" && a.Ledger.Ceiling.Limit > 0 {
 		limit := a.Ledger.Ceiling.Limit
 		c := DoctorCheck{Name: "admission ceiling", Status: "ok", Message: fmt.Sprintf("%d automatic responses per hour (%s)", limit, o.CeilingSource) + "; " + admission.PreviewUnaffected}
@@ -75,9 +87,13 @@ func baselineOwnerDoctorChecks(a *health.AdmissionStatus) []DoctorCheck {
 		})
 	}
 	if o.ExecutionHeld != "" {
+		fix := "admission probes the firewall from one second, backing off to once a minute, and keeps uncertain actions held; an apply fault clears when the next batch applies; check the firewall rows and the storage under the state directory"
+		if o.ExecutionHeldBy == "policy" {
+			fix = "correct the setting the message names; held block work waits until the daemon installs a valid policy"
+		}
 		rows = append(rows, DoctorCheck{
 			Name: "admission execution", Status: "warn", Message: "automatic blocks are held: " + o.ExecutionHeld + "; " + admission.PreviewUnaffected,
-			Fix: "admission probes the firewall from one second, backing off to once a minute and keeps uncertain actions held; check the firewall rows and the storage under the state directory",
+			Fix: fix,
 		})
 	}
 	if o.DamageError != "" {
@@ -96,12 +112,17 @@ func TestDoctorOwnerModeMatrix(t *testing.T) {
 		func(a *health.AdmissionStatus) { a.Owner.Error = "fixture stop" },
 		func(a *health.AdmissionStatus) { a.Owner.TickError = "fixture clock" },
 		func(a *health.AdmissionStatus) { a.Owner.ClockDegraded = true },
+		func(a *health.AdmissionStatus) { a.Owner.TurnError = "fixture turn" },
+		func(a *health.AdmissionStatus) { a.Owner.RetirementError = "fixture retirement" },
 		func(a *health.AdmissionStatus) { a.Owner.CeilingSource = config.CeilingClamped },
 		func(a *health.AdmissionStatus) { a.Ledger.Ceiling.Limit = 1 },
 		func(a *health.AdmissionStatus) { a.Owner.Import.Error = "fixture import" },
 		func(a *health.AdmissionStatus) { a.Owner.Import.Units = 2 },
 		func(a *health.AdmissionStatus) { a.Owner.InventoryError = "fixture inventory" },
 		func(a *health.AdmissionStatus) { a.Owner.ExecutionHeld = "fixture hold" },
+		func(a *health.AdmissionStatus) {
+			a.Owner.ExecutionHeld, a.Owner.ExecutionHeldBy = "fixture policy", "policy"
+		},
 		func(a *health.AdmissionStatus) { a.Owner.DamageError = "fixture damage" },
 	} {
 		a := &health.AdmissionStatus{CheckedAt: at,
@@ -118,7 +139,7 @@ func TestDoctorOwnerModeMatrix(t *testing.T) {
 			r := &want[i]
 			r.Message = strings.ReplaceAll(r.Message, admission.PreviewUnaffected, admission.ExecutionAffected)
 			r.Fix = strings.ReplaceAll(r.Fix, ", which existing blocking still uses", "")
-			if r.Status == "warn" && (r.Name == "admission owner" || r.Name == "admission execution" || r.Name == "admission ledger damage" || (r.Name == "admission clock" && a.Owner.TickError != "")) {
+			if r.Status == "warn" && (r.Name == "admission owner" || r.Name == "admission turns" || r.Name == "admission execution" || r.Name == "admission ledger damage" || (r.Name == "admission clock" && a.Owner.TickError != "")) {
 				r.Status = "fail"
 			}
 		}

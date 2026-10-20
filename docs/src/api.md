@@ -284,17 +284,23 @@ It never applies them; the view is not an enforcement record.
 - `ingress` says whether automatic responses are admitted and, while they are
   not, since when and how many Critical arrivals were refused.
 - `owner` says whether admission runs automatic blocks (`executing`) and
-  names why the ledger owner is not running (`error`), why the last
-  clock reading was refused (`tick_error`), whether the clock is degraded,
+  names why the ledger owner is not running (`error`), why its last turn
+  failed while it runs (`turn_error`), the last fault met while retiring
+  uncertain blocks (`retirement_error`, kept until none is left faulted), why
+  the last clock reading was refused (`tick_error`), whether the clock is degraded,
   where the ceiling came from (`ceiling_source`: `default`, `configured` or
   `clamped`), the legacy hourly count imported at the first start (`import`,
   which counts at least until an hour after `at`, or names why the count
   could not be read), the last inventory read and why responses naming a
   damaged record were discarded (`damage_error`).
 - An owner that runs on the firewall engine, with the firewall on and
-  outside observe mode, adds `execution_held`, a `verdict` object for the
-  panel verdict callback, whose counters count this process and restart at
-  zero, and a `dry_run` object for its dry-run forecast, described below. This
+  outside observe mode, adds `execution_held` with `execution_held_by`
+  (`policy` for a refused execution policy, `firewall` for the firewall
+  engine), a `verdict` object for the panel verdict callback, whose counters
+  count this process and restart at zero, and a `dry_run` object for its
+  dry-run forecast, described below. `verdict.enabled` is true only while the
+  owner itself asks the panel, during a dry-run forecast; under a live policy
+  it reads false even with the callback configured. This
   build never lets it run automatic blocks itself (`executing`): under a
   live policy it previews. This staging route does not advertise
   `admission.dry_run_verdict.v1`; that capability requires the complete
@@ -345,16 +351,19 @@ real against predicted capacity and lost examples. A dry run alone is not a
 failure; a held forecast, model limits, waits the model predicts and lost
 or stale examples warn. Rows warn when
 the ledger owner is not running, its clock reading
-is refused, the ledger is damaged, admission has stopped or a Critical
+is refused, an owner turn fails (`admission turns`), retiring an uncertain
+block fails (`admission retirement`), the ledger is damaged, admission has stopped or a Critical
 finding would not have received its response in the last hour. They also
 show a degraded clock, a clamped ceiling, a ceiling of 1 (only the reserved
 lane runs), a legacy hourly count that could not be read, a failed
 inventory read and automatic blocks with an unproven outcome, which hold
 their addresses until they expire and the firewall shows nothing of them.
 Once `owner.executing` is set, rows say admission decides automatic blocks,
-and held execution, a stopped owner, a refused clock reading, a damaged
-ledger, stopped admission, discarded responses, a Critical gap in the last
-hour and a ledger the firewall could not read at startup fail.
+and held execution, a stopped owner, a refused clock reading, a failing
+turn, a damaged ledger, stopped admission, discarded responses, a Critical
+gap in the last hour and a ledger the firewall could not read at startup
+fail. The `admission execution` fix names the configuration for a refused
+policy and the firewall otherwise.
 
 `admission.audit` and `admission.notices` in `queues` report the delivery of
 admission records to the [action log](action-log.md) and of admission notices.
