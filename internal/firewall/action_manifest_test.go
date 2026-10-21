@@ -67,6 +67,59 @@ func TestSameManifestComparesHeaderMembersOrderAndEffects(t *testing.T) {
 	}
 }
 
+func TestSameManifestComparesVictimTimesByInstant(t *testing.T) {
+	for name, field := range map[string]func(*BlockedEntry) *time.Time{
+		"blocked at": func(v *BlockedEntry) *time.Time { return &v.BlockedAt },
+		"expires at": func(v *BlockedEntry) *time.Time { return &v.ExpiresAt },
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, b := manifestBatch(), manifestBatch()
+			left, right := field(&a.Members[0].Victims[0]), field(&b.Members[0].Victims[0])
+			*right = left.In(time.FixedZone("offset", 3600))
+			if !a.SameManifest(b) || !b.SameManifest(a) {
+				t.Error("the same instant with a different offset changed the manifest")
+			}
+			*right = right.Add(time.Nanosecond)
+			if a.SameManifest(b) || b.SameManifest(a) {
+				t.Error("a changed instant kept the manifest")
+			}
+			*left = time.Now()
+			*right = left.Round(0)
+			if !a.SameManifest(b) || !b.SameManifest(a) {
+				t.Error("removing monotonic clock data changed the manifest")
+			}
+		})
+	}
+}
+
+func TestSameManifestComparesVictimMetadataExactly(t *testing.T) {
+	for name, field := range map[string]func(*BlockedEntry) *string{
+		"ip":        func(v *BlockedEntry) *string { return &v.IP },
+		"reason":    func(v *BlockedEntry) *string { return &v.Reason },
+		"source":    func(v *BlockedEntry) *string { return &v.Source },
+		"action id": func(v *BlockedEntry) *string { return &v.ActionID },
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, b := manifestBatch(), manifestBatch()
+			left, right := field(&a.Members[0].Victims[0]), field(&b.Members[0].Victims[0])
+			*right += "changed"
+			if a.SameManifest(b) || b.SameManifest(a) {
+				t.Error("changed victim metadata kept the manifest")
+			}
+			// JSON replaces both distinct bytes with the same replacement rune.
+			*left, *right = "value\xff", "value\xfe"
+			if a.SameManifest(b) || b.SameManifest(a) {
+				t.Error("distinct victim bytes kept the manifest")
+			}
+		})
+	}
+	a, b := manifestBatch(), manifestBatch()
+	b.Members[0].Victims[0].Unverified = true
+	if a.SameManifest(b) || b.SameManifest(a) {
+		t.Fatal("changed victim verification status kept the manifest")
+	}
+}
+
 func TestIsRequestAcceptsOnlyTheOneMemberAction(t *testing.T) {
 	req := ActionRequest{ID: "request-one", Operation: "unblock", Target: "203.0.113.90", Actor: "cli", Source: "scan"}
 	if !(FirewallAction{Request: req}).IsRequest(req) {

@@ -1,7 +1,6 @@
 package firewall
 
 import (
-	"encoding/json"
 	"errors"
 	"slices"
 	"sync"
@@ -92,7 +91,7 @@ func (a FirewallAction) ActionMembers() []ActionMember {
 // compared: a replay in a later window keeps the charge taken first.
 func (a FirewallAction) SameManifest(b FirewallAction) bool {
 	return a.Request == b.Request && slices.EqualFunc(a.ActionMembers(), b.ActionMembers(), func(x, y ActionMember) bool {
-		return x.Request == y.Request && sameVictims(x.Victims, y.Victims)
+		return x.Request == y.Request && slices.EqualFunc(x.Victims, y.Victims, SameBlockedEntry)
 	})
 }
 
@@ -101,18 +100,6 @@ func (a FirewallAction) SameManifest(b FirewallAction) bool {
 func (a FirewallAction) IsRequest(req ActionRequest) bool {
 	members := a.ActionMembers()
 	return a.Request == req && len(members) == 1 && members[0].Request == req
-}
-
-func sameVictims(a, b []BlockedEntry) bool {
-	if len(a) == 0 || len(b) == 0 {
-		return len(a) == len(b)
-	}
-	left, err := json.Marshal(a)
-	if err != nil {
-		return false
-	}
-	right, err := json.Marshal(b)
-	return err == nil && string(left) == string(right)
 }
 
 // ActionStore owns atomic admission, accounting, outcome and audit delivery
