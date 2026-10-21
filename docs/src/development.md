@@ -941,7 +941,9 @@ observe previews, so the next observation of a previewed address queues a
 new generation, or a new episode when no other candidate kept the old one;
 challenge previews and verified blocks keep their answers. It clears the
 notice records raised while admission previewed, so none goes out as a live
-alert or delays a key's first live notice, and makes the previews' history
+alert or delays a key's first live notice. The sender discards the preview
+delivery retry delay once it sees that committed start; later live delivery
+failures keep their own backoff. The start also makes the previews' history
 eligible at once. Until it runs, an executing owner delivers no ledger
 notice; with execution enabled the sender reads the mode and the due notices
 together, and an acknowledgement taken before the live start never covers a

@@ -52,8 +52,11 @@ type sender struct {
 	// The independent stop alert must not inherit a ledger delivery's wait,
 	// and its successful delivery must not reset that ledger retry.
 	ledgerRetry retryBackoff
-	stopRetry   retryBackoff
-	done        chan struct{}
+	// ledgerStarted binds the retry delay to the notice stream: clearing
+	// preview records at live start also discards their delivery failures.
+	ledgerStarted bool
+	stopRetry     retryBackoff
+	done          chan struct{}
 }
 
 // retryBackoff spaces the attempts of work that keeps failing: the next
@@ -134,6 +137,10 @@ func (s *sender) cycle() {
 	}
 	if err != nil {
 		return
+	}
+	if started != s.ledgerStarted {
+		s.ledgerRetry = retryBackoff{}
+		s.ledgerStarted = started
 	}
 	s.ledgerPending = len(due)
 	s.observe()
