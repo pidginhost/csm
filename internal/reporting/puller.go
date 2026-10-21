@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -95,7 +96,12 @@ func (p *Puller) Refresh(ctx context.Context, current ScoredSnapshot) (ScoredSna
 	// #nosec G704 -- central set URL is operator config, signature-verified.
 	resp, err := client.Do(req)
 	if err != nil {
-		return current, false, err
+		// url.Error quotes the request URL, query and any operator token included.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return current, false, fmt.Errorf("reporting: scored-set pull: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 

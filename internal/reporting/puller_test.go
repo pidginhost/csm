@@ -478,3 +478,25 @@ func TestSignedPullDecodedPath(t *testing.T) {
 		})
 	}
 }
+
+// A transport failure must not log set_url, which may carry an operator token.
+func TestPullerTransportErrorDoesNotExposeURL(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	setURL := srv.URL + "/decisions?token=synthetic-operator-token"
+	srv.Close()
+	node, _ := goldenNode()
+	for name, p := range map[string]*Puller{
+		"signed":   NewSignedPuller(nil, setURL, "", node, nil),
+		"unsigned": NewPuller(nil, setURL, ""),
+	} {
+		for _, version := range []uint64{0, 7} {
+			_, changed, err := p.Refresh(context.Background(), ScoredSnapshot{Version: version})
+			if err == nil || changed {
+				t.Fatalf("%s v%d: changed=%v err=%v, want a transport error", name, version, changed, err)
+			}
+			if strings.Contains(err.Error(), "synthetic-operator-token") || strings.Contains(err.Error(), "/decisions") {
+				t.Fatalf("%s v%d: error exposes the URL: %v", name, version, err)
+			}
+		}
+	}
+}

@@ -24,6 +24,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Fixed
 
+- Failed central list downloads no longer write the download URL, or any token in it, to the log.
 - The PHP end-of-life audit no longer says old branches get no security fixes; it points to vendor backports instead.
 
 ## [4.4.1] - 2026-10-21
