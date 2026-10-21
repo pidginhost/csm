@@ -1,6 +1,9 @@
 package firewall
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	// ErrStateCommitUncertain means the transaction body succeeded but storage
@@ -13,6 +16,9 @@ var (
 	ErrStateConflict = errors.New("firewall state revision conflict")
 	// ErrStateCorrupt means stored state cannot safely be used or overwritten.
 	ErrStateCorrupt = errors.New("firewall state is corrupt or unsupported")
+	// ErrStateUnsupported means a newer build wrote the stored value. It is
+	// refused like corruption: this build can neither read nor overwrite it.
+	ErrStateUnsupported = fmt.Errorf("%w: written by a newer build", ErrStateCorrupt)
 )
 
 // StateStore is the firewall-owned, lossless persistence contract. It does not

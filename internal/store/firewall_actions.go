@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/netip"
 	"slices"
 	"time"
 	"unicode/utf8"
@@ -21,6 +22,10 @@ const firewallAuditBucket = "fw:action_audit"
 const firewallActionIndexBucket = "fw:action_index"
 const firewallBudgetIndexBucket = "fw:budget_index"
 const firewallScanWindowLayout = "2006-01-02T15"
+
+// An action with a manifest is stored as version 2. One without stays version
+// 1, the only format earlier builds read, so its encoding never changes.
+const firewallManifestVersion = 2
 
 var _ firewall.ActionStore = (*DB)(nil)
 
@@ -47,15 +52,96 @@ func validateFirewallAdmission(a firewall.FirewallAction) error {
 			return errors.New("firewall action time cannot round-trip")
 		}
 	}
-	if a.Budget != nil {
-		if a.Request.Source != "scan" || a.Budget.Limit <= 0 {
-			return errors.New("invalid firewall scan admission")
+	if err := validateFirewallBudget(a.Request.Source, a.Budget); err != nil {
+		return err
+	}
+	return validateFirewallManifest(a)
+}
+
+func validateFirewallBudget(source string, budget *firewall.ScanAdmission) error {
+	if budget == nil {
+		return nil
+	}
+	if source != "scan" || budget.Limit <= 0 {
+		return errors.New("invalid firewall scan admission")
+	}
+	if _, err := time.Parse(firewallScanWindowLayout, budget.Window); err != nil {
+		return errors.New("invalid firewall scan window")
+	}
+	return nil
+}
+
+var errInvalidFirewallManifest = errors.New("invalid firewall batch manifest")
+
+// A manifest names each member once. One member repeats its header and
+// charge. A larger batch holds automatic temporary blocks under a header that
+// carries no target, link or charge of its own. Only a block removes rows.
+func validateFirewallManifest(a firewall.FirewallAction) error {
+	if a.Members == nil {
+		return nil
+	}
+	if len(a.Members) == 0 || len(a.Members) > firewall.MaxActionMembers {
+		return errInvalidFirewallManifest
+	}
+	header := a.Request
+	if len(a.Members) == 1 {
+		if a.Members[0].Request != header || !sameFirewallBudget(a.Members[0].Budget, a.Budget) {
+			return errInvalidFirewallManifest
 		}
-		if _, err := time.Parse(firewallScanWindowLayout, a.Budget.Window); err != nil {
-			return errors.New("invalid firewall scan window")
+	} else if header.Operation != "block" || !header.Automatic || header.Target != "" || header.Reason != "" || header.FindingID != "" || header.IncidentID != "" || header.UndoOf != "" || header.TTL != 0 || a.Budget != nil {
+		return errInvalidFirewallManifest
+	}
+	ids, targets, victims := map[string]bool{header.ID: true}, map[string]bool{}, map[string]bool{}
+	limits := map[string]int{}
+	for i, m := range a.Members {
+		r := m.Request
+		if i > 0 || len(a.Members) > 1 {
+			if r.ID == "" || len(r.ID) > 128 || ids[r.ID] || r.Operation != "block" || !r.Automatic || r.TTL <= 0 || !canonicalFirewallAddress(r.Target) || targets[r.Target] || r.UndoOf != "" || r.Actor != header.Actor || r.ActorDetail != header.ActorDetail || r.Source != header.Source {
+				return errInvalidFirewallManifest
+			}
+			for _, value := range []string{r.ID, r.Target, r.Reason, r.FindingID, r.IncidentID} {
+				if !utf8.ValidString(value) {
+					return errInvalidFirewallManifest
+				}
+			}
+		}
+		ids[r.ID], targets[r.Target] = true, true
+		if err := validateFirewallBudget(r.Source, m.Budget); err != nil {
+			return err
+		}
+		if m.Budget != nil {
+			if limit, seen := limits[m.Budget.Window]; seen && limit != m.Budget.Limit {
+				return errInvalidFirewallManifest
+			}
+			limits[m.Budget.Window] = m.Budget.Limit
+		}
+		if len(m.Victims) > 0 && r.Operation != "block" {
+			return errInvalidFirewallManifest
+		}
+		for _, v := range m.Victims {
+			if !canonicalFirewallAddress(v.IP) || v.ExpiresAt.IsZero() || victims[v.IP] || !validFirewallRowEncoding(v) {
+				return errInvalidFirewallManifest
+			}
+			victims[v.IP] = true
+		}
+	}
+	for ip := range victims {
+		if targets[ip] {
+			return errInvalidFirewallManifest
 		}
 	}
 	return nil
+}
+
+// canonicalFirewallAddress accepts one address in its only spelling, so no
+// two members or victims can name the same address differently.
+func canonicalFirewallAddress(ip string) bool {
+	addr, err := netip.ParseAddr(ip)
+	return err == nil && addr.Zone() == "" && addr.Unmap().String() == ip
+}
+
+func sameFirewallBudget(a, b *firewall.ScanAdmission) bool {
+	return a == b || a != nil && b != nil && *a == *b
 }
 
 // Journal envelopes detect valid-JSON corruption before recovery or typed undo
@@ -67,24 +153,48 @@ type firewallJournalEnvelope struct {
 }
 
 func encodeFirewallJournal(value any) ([]byte, error) {
+	return encodeFirewallJournalVersion(value, 1)
+}
+
+func encodeFirewallJournalVersion(value any, version uint64) ([]byte, error) {
 	payload, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
 	digest := sha256.Sum256(payload)
-	return json.Marshal(firewallJournalEnvelope{Version: 1, Payload: payload, SHA256: fmt.Sprintf("%x", digest)})
+	return json.Marshal(firewallJournalEnvelope{Version: version, Payload: payload, SHA256: fmt.Sprintf("%x", digest)})
+}
+
+func encodeFirewallActionRecord(a firewall.FirewallAction) ([]byte, error) {
+	if a.Members == nil {
+		return encodeFirewallJournal(a)
+	}
+	return encodeFirewallJournalVersion(a, firewallManifestVersion)
 }
 
 func decodeFirewallJournal(raw []byte) ([]byte, error) {
+	payload, _, err := decodeFirewallJournalVersion(raw, 1)
+	return payload, err
+}
+
+// decodeFirewallJournalVersion accepts envelopes up to newest. A higher
+// version is refused as unsupported before its payload is interpreted.
+func decodeFirewallJournalVersion(raw []byte, newest uint64) ([]byte, uint64, error) {
 	var envelope firewallJournalEnvelope
-	if !validFirewallJSONText(raw) || json.Unmarshal(raw, &envelope) != nil || envelope.Version != 1 || !bytes.HasPrefix(bytes.TrimSpace(envelope.Payload), []byte("{")) {
-		return nil, firewall.ErrStateCorrupt
+	if !validFirewallJSONText(raw) || json.Unmarshal(raw, &envelope) != nil || envelope.Version == 0 {
+		return nil, 0, firewall.ErrStateCorrupt
+	}
+	if envelope.Version > newest {
+		return nil, 0, firewall.ErrStateUnsupported
+	}
+	if !bytes.HasPrefix(bytes.TrimSpace(envelope.Payload), []byte("{")) {
+		return nil, 0, firewall.ErrStateCorrupt
 	}
 	digest := sha256.Sum256(envelope.Payload)
 	if envelope.SHA256 != fmt.Sprintf("%x", digest) {
-		return nil, firewall.ErrStateCorrupt
+		return nil, 0, firewall.ErrStateCorrupt
 	}
-	return envelope.Payload, nil
+	return envelope.Payload, envelope.Version, nil
 }
 
 func decodeFirewallAction(raw []byte) (firewall.FirewallAction, error) {
@@ -92,19 +202,24 @@ func decodeFirewallAction(raw []byte) (firewall.FirewallAction, error) {
 	if len(raw) == 0 {
 		return a, ErrFirewallActionMissing
 	}
-	var err error
-	raw, err = decodeFirewallJournal(raw)
+	raw, version, err := decodeFirewallJournalVersion(raw, firewallManifestVersion)
 	if err != nil {
 		return firewall.FirewallAction{}, err
 	}
 	var evidence struct {
-		Before json.RawMessage `json:"before"`
-		After  json.RawMessage `json:"after"`
+		Before  json.RawMessage `json:"before"`
+		After   json.RawMessage `json:"after"`
+		Members json.RawMessage `json:"members"`
 	}
 	if json.Unmarshal(raw, &evidence) != nil || !bytes.HasPrefix(bytes.TrimSpace(evidence.Before), []byte("{")) || !bytes.HasPrefix(bytes.TrimSpace(evidence.After), []byte("{")) {
 		return firewall.FirewallAction{}, firewall.ErrStateCorrupt
 	}
 	if !validFirewallJSONText(raw) || json.Unmarshal(raw, &a) != nil || validateFirewallAdmission(a) != nil || a.UpdatedAt.IsZero() || a.AuditVersion == 0 || a.AuditAck > a.AuditVersion {
+		return firewall.FirewallAction{}, firewall.ErrStateCorrupt
+	}
+	// Version 1 never carries a manifest and version 2 always does, so a
+	// record is never read as a different batch than the one written.
+	if (version == 1) != (evidence.Members == nil) || version == firewallManifestVersion && len(a.Members) == 0 {
 		return firewall.FirewallAction{}, firewall.ErrStateCorrupt
 	}
 	if !firewallActionPending(a.Phase) && a.Phase != "verified" && a.Phase != "failed" {
@@ -132,7 +247,7 @@ func readFirewallAction(tx *bolt.Tx, id string) (firewall.FirewallAction, error)
 }
 
 func writeFirewallAction(tx *bolt.Tx, a firewall.FirewallAction) (int, error) {
-	raw, err := encodeFirewallJournal(a)
+	raw, err := encodeFirewallActionRecord(a)
 	if err != nil {
 		return 0, err
 	}
@@ -212,6 +327,9 @@ func indexedPendingFirewallAction(tx *bolt.Tx, index firewallJournalIndex) (fire
 		return firewall.FirewallAction{}, nil
 	}
 	a, err := readFirewallAction(tx, index.PendingID)
+	if errors.Is(err, firewall.ErrStateUnsupported) {
+		return firewall.FirewallAction{}, err
+	}
 	if err != nil || !firewallActionPending(a.Phase) {
 		return firewall.FirewallAction{}, firewall.ErrStateCorrupt
 	}
@@ -379,7 +497,7 @@ func (db *DB) AdmitFirewallAction(in firewall.FirewallAction) (result firewall.F
 		}
 		existing, readErr := readFirewallAction(tx, in.Request.ID)
 		if readErr == nil {
-			if existing.Request != in.Request {
+			if !existing.SameManifest(in) {
 				return fmt.Errorf("%w: request ID reused", firewall.ErrStateConflict)
 			}
 			result = existing
@@ -538,6 +656,9 @@ func decodeFirewallAuditEvent(key, raw []byte) (firewallAuditEvent, firewall.Fir
 		return event, firewall.FirewallAction{}, firewall.ErrStateCorrupt
 	}
 	a, err := decodeFirewallAction(event.Action)
+	if errors.Is(err, firewall.ErrStateUnsupported) {
+		return event, firewall.FirewallAction{}, err
+	}
 	if err != nil || !firewallAuditPhase(a.Phase) || !bytes.Equal(key, firewallAuditKey(a.Request.ID, a.AuditVersion)) {
 		return event, firewall.FirewallAction{}, firewall.ErrStateCorrupt
 	}
@@ -548,7 +669,7 @@ func writeFirewallAuditEvent(tx *bolt.Tx, a firewall.FirewallAction) error {
 	if !firewallAuditPhase(a.Phase) {
 		return nil
 	}
-	action, err := encodeFirewallJournal(a)
+	action, err := encodeFirewallActionRecord(a)
 	if err != nil {
 		return err
 	}
@@ -581,11 +702,17 @@ func (db *DB) FirewallAuditPending() ([]firewall.FirewallAction, error) {
 			}
 			key := firewallAuditKey(ref.ID, ref.Version)
 			event, a, decodeErr := decodeFirewallAuditEvent(key, b.Get(key))
+			if errors.Is(decodeErr, firewall.ErrStateUnsupported) {
+				return decodeErr
+			}
 			if decodeErr != nil || event.Acknowledged {
 				return firewall.ErrStateCorrupt
 			}
 			current, readErr := readFirewallAction(tx, ref.ID)
-			if readErr != nil || current.Request != a.Request || a.AuditVersion > current.AuditVersion {
+			if errors.Is(readErr, firewall.ErrStateUnsupported) {
+				return readErr
+			}
+			if readErr != nil || !current.SameManifest(a) || a.AuditVersion > current.AuditVersion {
 				return firewall.ErrStateCorrupt
 			}
 			pending = append(pending, a)
@@ -761,7 +888,7 @@ func (db *DB) AcknowledgeFirewallAudit(id string, version uint64) (err error) {
 		if err != nil {
 			return err
 		}
-		if eventAction.Request != a.Request {
+		if !eventAction.SameManifest(a) {
 			return firewall.ErrStateCorrupt
 		}
 		if event.Acknowledged {

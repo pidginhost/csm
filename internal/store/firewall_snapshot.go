@@ -161,6 +161,9 @@ func readFirewallSnapshotMeta(tx *bolt.Tx) (firewallSnapshotMeta, error) {
 	if err := json.Unmarshal(raw, &meta); err != nil {
 		return meta, fmt.Errorf("%w: metadata decode: %v", firewall.ErrStateCorrupt, err)
 	}
+	if meta.Version > firewallSnapshotVersion {
+		return meta, firewall.ErrStateUnsupported
+	}
 	if meta.Version != firewallSnapshotVersion || meta.Revision == 0 || len(meta.Collections) != len(firewallSnapshotBuckets) {
 		return meta, fmt.Errorf("%w: metadata version, revision or collections", firewall.ErrStateCorrupt)
 	}
@@ -361,7 +364,7 @@ func validFirewallRowEncoding(entry any) bool {
 	switch e := entry.(type) {
 	case firewall.BlockedEntry:
 		times = []time.Time{e.BlockedAt, e.ExpiresAt}
-		fields = []string{e.IP, e.Reason, e.Source}
+		fields = []string{e.IP, e.Reason, e.Source, e.ActionID}
 	case firewall.SubnetEntry:
 		times = []time.Time{e.BlockedAt, e.ExpiresAt}
 		fields = []string{e.CIDR, e.Reason, e.Source}
