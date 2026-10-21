@@ -40,8 +40,8 @@ type AdmissionOwner struct {
 	// blocks. Each affected block stays held and is retried; it clears once
 	// none is left faulted.
 	RetirementError string `json:"retirement_error,omitempty"`
-	// TickError is why the last clock reading was refused. Nothing is
-	// admitted until a reading succeeds.
+	// TickError is why the last clock reading or its live start failed.
+	// Nothing is admitted until both succeed.
 	TickError string `json:"tick_error,omitempty"`
 	// ClockDegraded is set while the wall clock is behind the ledger's
 	// high-water mark or disagrees with the time since boot (spec 5.4).

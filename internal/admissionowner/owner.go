@@ -491,7 +491,8 @@ func (o *Owner) applyCeiling(now time.Time) error {
 		if restoreErr != nil {
 			return fmt.Errorf("reading imported legacy spend: %w", restoreErr)
 		}
-		if retained.Units > 0 {
+		// A startup retry must keep a committed handover's read error.
+		if retained.Units > 0 && (o.imported == nil || o.imported.Error == "") {
 			o.imported = &health.AdmissionImport{Units: retained.Units, At: retained.At}
 		}
 		o.limit, o.source = limit, source
@@ -524,13 +525,15 @@ func (o *Owner) startLive() error {
 	if !o.executing() || o.ledger.LiveStarted() {
 		return nil
 	}
-	h, err := o.opts.LegacyHandover(o.opts.StatePath, o.lastTick)
-	if err != nil {
+	h, readErr := o.opts.LegacyHandover(o.opts.StatePath, o.lastTick)
+	if readErr != nil {
 		h = admission.LegacyHandover{Spend: admission.LegacySpend{Unknown: true}}
-		o.imported = &health.AdmissionImport{Error: err.Error()}
 	}
-	if err = startLiveLedger(o.ledger, h); err != nil {
+	if err := startLiveLedger(o.ledger, h); err != nil {
 		return fmt.Errorf("starting live execution: %w", err)
+	}
+	if readErr != nil {
+		o.imported = &health.AdmissionImport{Error: readErr.Error()}
 	}
 	return nil
 }
@@ -556,9 +559,9 @@ func (o *Owner) readTick() (admission.ClockReading, error) {
 	return reading, nil
 }
 
-// tick records a reading. A refused reading stops admission: the ingress
-// would judge arrivals against a stale time (O6). The next good reading
-// publishes a fresh snapshot.
+// tick records a reading. A refused reading or live start stops admission:
+// the ingress cannot use the unfinished tick's snapshot (O6). The next
+// good tick publishes a fresh snapshot.
 func (o *Owner) tick() error {
 	defer o.writeComparison(false)
 	admitting := o.ingress.Health().Admitting
@@ -572,9 +575,11 @@ func (o *Owner) tick() error {
 		return err
 	}
 	// A live policy installed since the last reading starts live before
-	// any later drain or turn; a drain that cannot start it fails, which
+	// any later drain or turn; a tick that cannot start it fails, which
 	// closes admission.
 	if err := o.startLive(); err != nil {
+		o.tickErr = err
+		o.ingress.Publish(nil)
 		return err
 	}
 	// A ceiling changed by any config path, not only a reload, applies

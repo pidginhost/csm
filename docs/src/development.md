@@ -949,7 +949,10 @@ record raised after it. It writes schema 11, which earlier builds refuse,
 and leaves `blocked_ips.json` in place. A legacy state file it cannot read
 keeps no saved credit, and `admission.owner.import.error` names the error.
 A failed live start fails the turn, reload or drain that ran it, and a
-failed drain closes admission.
+failed tick or drain closes admission. A failed live-start tick reports its
+cause through `tick_error` and the stopped-admission notice until a later
+tick succeeds. The import error describes a committed handover: an aborted
+transaction does not replace it, and later startup retries do not erase it.
 
 An owner with an engine binds to one execution policy: the dry-run mode,
 the verdict callback and its timeout, the hourly ceiling and the response
