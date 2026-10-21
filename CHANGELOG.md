@@ -20,6 +20,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - WordPress findings, such as outdated plugins, no longer stay listed after the site is updated or deleted.
+- Exposed-file findings, such as leaked backups, no longer stay listed after the file or its site is removed.
 
 ## [4.4.0] - 2026-10-20
 

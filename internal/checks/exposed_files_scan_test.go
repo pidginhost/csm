@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -246,11 +247,14 @@ func TestScanVhostsPreservesFindingsWhenProbeIsPartial(t *testing.T) {
 }
 
 func TestScanVhostsPreservesFindingsWhenDocrootIsUnreadable(t *testing.T) {
+	docroot := t.TempDir()
+	withMockOS(t, &mockOS{readDir: func(name string) ([]os.DirEntry, error) {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
+	}})
 	ctx, collector := withIncompleteCheckCollector(context.Background())
-	missing := filepath.Join(t.TempDir(), "missing-docroot")
 
 	findings := scanVhostsForExposure(ctx, []vhost{{
-		domain: "example.com", user: "alice", typ: "main", docroot: missing, ip: "192.0.2.10",
+		domain: "example.com", user: "alice", typ: "main", docroot: docroot, ip: "192.0.2.10",
 	}}, nil)
 
 	if len(findings) != 0 {
