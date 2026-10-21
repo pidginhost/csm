@@ -3,6 +3,7 @@
 package mailstats
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,29 +21,33 @@ func LineTime(line string, loc *time.Location, fallback time.Time) time.Time {
 }
 
 func lineTime(line string, loc *time.Location, fallback time.Time) (time.Time, bool) {
-	first, _, _ := strings.Cut(line, " ")
+	first, rest, _ := strings.Cut(line, " ")
 	if t, err := time.Parse(time.RFC3339, first); err == nil {
 		return t, true
 	}
-	if len(line) >= 25 {
-		if t, err := time.Parse(time.DateTime+" -0700", line[:25]); err == nil {
-			return t, true
-		}
+	clock, rest, _ := strings.Cut(rest, " ")
+	stamp := first + " " + clock
+	zone, _, _ := strings.Cut(rest, " ")
+	if strings.HasPrefix(zone, "+") || strings.HasPrefix(zone, "-") {
+		t, err := time.Parse(time.DateTime+" -0700", stamp+" "+zone)
+		return t, err == nil
 	}
-	if len(line) >= 19 {
-		if t, err := time.ParseInLocation(time.DateTime, line[:19], loc); err == nil {
-			return t, true
-		}
+	if t, err := time.ParseInLocation(time.DateTime, stamp, loc); err == nil {
+		return t, true
 	}
-	if len(line) >= 15 {
+	if len(line) >= 15 && (len(line) == 15 || line[15] == ' ') {
 		if t, err := time.ParseInLocation(time.Stamp, line[:15], loc); err == nil {
 			// A syslog stamp has no year. A stamp that lands more than a
 			// day ahead of fallback was written last year.
-			t = time.Date(fallback.In(loc).Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, loc)
+			year := fallback.In(loc).Year()
+			t = time.Date(year, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, loc)
 			if t.Sub(fallback) > 24*time.Hour {
-				t = t.AddDate(-1, 0, 0)
+				year--
 			}
-			return t, true
+			// Parsing with the inferred year rejects February 29 in a
+			// non-leap year instead of normalizing it to March 1.
+			t, err = time.ParseInLocation("2006 "+time.Stamp, strconv.Itoa(year)+" "+line[:15], loc)
+			return t, err == nil
 		}
 	}
 	return time.Time{}, false

@@ -98,30 +98,35 @@ func ParseReject(line string, loc *time.Location, fallback time.Time) (Reject, b
 	if len(verbs) == 0 {
 		return Reject{}, false
 	}
-	v, fieldsEnd, sender := verbs[0], verbs[0][0], ""
+	boundary := rejectBoundary(peer, verbs)
+	if boundary < 0 {
+		return Reject{}, false
+	}
+	verb, fieldsEnd, sender := boundary, boundary, ""
 	// The sender is the last field before the verb, but for the A= field
 	// Exim adds for an authenticated client. A verb inside a quoted sender
 	// comes first, so the real one is looked for after the sender.
-	if f := strings.Index(peer, " F=<"); f >= 0 && f < v[0] {
-		start := f + len(" F=<")
+	if strings.HasPrefix(peer[boundary:], " F=<") {
+		start := boundary + len(" F=<")
 		n := unquotedIndex(peer[start:], '>')
 		if n < 0 {
 			return Reject{}, false
 		}
-		verb := start + n + 1
+		verb = start + n + 1
 		if auth, ok := strings.CutPrefix(peer[verb:], " A="); ok {
-			sp := strings.IndexByte(auth, ' ')
+			sp := unquotedIndex(auth, ' ')
 			if sp <= 0 {
 				return Reject{}, false
 			}
 			verb += len(" A=") + sp
 		}
-		i := slices.IndexFunc(verbs, func(m []int) bool { return m[0] == verb })
-		if i < 0 {
-			return Reject{}, false
-		}
-		v, fieldsEnd, sender = verbs[i], f, peer[start:start+n]
+		sender = peer[start : start+n]
 	}
+	i := slices.IndexFunc(verbs, func(m []int) bool { return m[0] == verb })
+	if i < 0 {
+		return Reject{}, false
+	}
+	v := verbs[i]
 	ip, end := readPeer(peer[:fieldsEnd])
 	if end == 0 {
 		return Reject{}, false
@@ -153,6 +158,43 @@ func ParseReject(line string, loc *time.Location, fallback time.Time) (Reject, b
 	return r, true
 }
 
+// The HELO and quoted TLS fields can contain both field and verb text.
+// Locate the metadata boundary before interpreting either as Exim syntax.
+func rejectBoundary(peer string, verbs [][]int) int {
+	depth, nextVerb := 0, 0
+	quoted := false
+	for i := 0; i < len(peer); i++ {
+		for nextVerb < len(verbs) && verbs[nextVerb][0] < i {
+			nextVerb++
+		}
+		if quoted {
+			switch peer[i] {
+			case '\\':
+				i++
+			case '"':
+				quoted = false
+			}
+			continue
+		}
+		if depth == 0 && (strings.HasPrefix(peer[i:], " F=<") ||
+			(nextVerb < len(verbs) && verbs[nextVerb][0] == i)) {
+			return i
+		}
+		switch peer[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth == 0 {
+				return -1
+			}
+			depth--
+		case '"':
+			quoted = depth == 0
+		}
+	}
+	return -1
+}
+
 // rejectPrefix reads what Exim writes before the peer: date, time,
 // optional zone and PID, and the message ID an after-DATA reject carries.
 func rejectPrefix(prefix string) (msgID string, ok bool) {
@@ -175,6 +217,9 @@ func readPeer(s string) (ip string, end int) {
 	rest := s[end:]
 	if port, cut := strings.CutPrefix(rest, ":"); cut {
 		rest = strings.TrimLeft(port, "0123456789")
+	}
+	if after, ok := strings.CutPrefix(rest, " TFO"); ok {
+		rest = strings.TrimPrefix(after, "*")
 	}
 	for rest != "" {
 		if !fieldStart(rest) {

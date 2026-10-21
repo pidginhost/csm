@@ -19,6 +19,38 @@ func TestLineTimeExim(t *testing.T) {
 	}
 }
 
+func TestLineTimeEximFractionalSeconds(t *testing.T) {
+	loc := time.FixedZone("host", 3*3600)
+	fb := time.Date(2026, 10, 20, 12, 5, 0, 0, time.UTC)
+	for _, stamp := range []string{
+		"2026-10-20 15:00:00.123456",
+		"2026-10-20 12:00:00.123456 +0000",
+		"2026-10-20 09:00:00.123456 -0300",
+	} {
+		got := LineTime(stamp+" 1tAbCd-000001-Ab x", loc, fb)
+		want := time.Date(2026, 10, 20, 12, 0, 0, 123456000, time.UTC)
+		if !got.Equal(want) {
+			t.Errorf("%q: got %v want %v", stamp, got, want)
+		}
+	}
+}
+
+func TestLineTimeRejectsMalformedStamp(t *testing.T) {
+	fb := time.Date(2026, 10, 20, 12, 5, 0, 0, time.UTC)
+	for _, stamp := range []string{
+		"2026-10-20 12:00:000",
+		"2026-10-20 12:00:00junk",
+		"2026-10-20 12:00:00 +2500",
+		"2026-10-20 12:00:00 +0300junk",
+		"Feb 29 12:00:00",
+		"Oct 20 12:00:000",
+	} {
+		if got := LineTime(stamp+" host x", time.UTC, fb); !got.Equal(fb) {
+			t.Errorf("%q: got %v want fallback %v", stamp, got, fb)
+		}
+	}
+}
+
 func TestLineTimeSyslog(t *testing.T) {
 	loc := time.FixedZone("host", 3*3600)
 	fb := time.Date(2026, 10, 20, 12, 5, 0, 0, time.UTC)

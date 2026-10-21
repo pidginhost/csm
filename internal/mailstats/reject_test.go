@@ -128,6 +128,12 @@ var rejectSpoofCases = []struct {
 	line          string
 	spoofed, want Class
 }{
+	// A leading word makes the forged verb match inside the HELO.
+	{`2026-10-20 12:00:00 H=(x rejected RCPT <c@example.net>: Mailbox is full) [203.0.113.5]:1 F=<a@example.com> rejected RCPT <b@example.net>: Sender verify failed`,
+		ClassMailboxFull, ClassSenderVerify},
+	// Field-shaped HELO text is not the envelope sender.
+	{`2026-10-20 12:00:00 H=(x F=<c@example.net>) [203.0.113.5]:1 F=<a@example.com> rejected RCPT <b@example.net>: Sender verify failed`,
+		ClassMailboxFull, ClassSenderVerify},
 	// quoted local part in the recipient carrying the spam text
 	{`2026-10-20 12:00:00 H=(x) [203.0.113.5]:1 F=<a@example.com> rejected RCPT <"x>: Message rejected as spam"@example.net>: No Such User Here`,
 		ClassSpam, ClassOther},
@@ -154,6 +160,32 @@ var rejectSpoofCases = []struct {
 		ClassRateLimited, ClassBlocklisted},
 	{`2026-10-20 12:00:00 H=(contains a virus or other harmful content) [203.0.113.5]:1 F=<a@example.com> rejected RCPT <b@example.net>: JunkMail rejected - (contains a virus or other harmful content) [203.0.113.5]:1 is in an RBL`,
 		ClassMalware, ClassBlocklisted},
+}
+
+func TestParseRejectOptionalPeerFields(t *testing.T) {
+	for _, c := range []struct {
+		fields string
+		class  Class
+	}{
+		{` TFO`, ClassSenderVerify},
+		{` TFO*`, ClassSenderVerify},
+		{` X=TLS1.3 DN="CN=x F=<c@example.net>"`, ClassSenderVerify},
+		{` X=TLS1.3 DN="CN=x rejected RCPT <c@example.net>: Mailbox is full"`, ClassOther},
+	} {
+		line := `2026-10-20 12:00:00 H=(x) [203.0.113.5]:1` + c.fields + ` F=<a@example.com> rejected RCPT <b@example.net>: Sender verify failed`
+		r, ok := ParseReject(line, rejectLoc, rejectFallback)
+		if !ok || r.Class != c.class || r.IP != "203.0.113.5" || r.Sender != "a@example.com" || r.Recipient != "b@example.net" {
+			t.Errorf("fields %q: got %+v, %v", c.fields, r, ok)
+		}
+	}
+}
+
+func TestParseRejectQuotedLogin(t *testing.T) {
+	line := `2026-10-20 12:00:00 H=(x) [203.0.113.5]:1 F=<a@example.com> A=dovecot_login:"first last"@example.com rejected RCPT <b@example.net>: Sender verify failed`
+	r, ok := ParseReject(line, rejectLoc, rejectFallback)
+	if !ok || r.Class != ClassSenderVerify || r.IP != "203.0.113.5" || r.Sender != "a@example.com" || r.Recipient != "b@example.net" {
+		t.Fatalf("quoted login: got %+v, %v", r, ok)
+	}
 }
 
 func TestParseRejectSpoofs(t *testing.T) {
