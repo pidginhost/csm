@@ -3,6 +3,8 @@ package mailstats
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -40,7 +42,7 @@ func TestOverviewTotalsAndPoints(t *testing.T) {
 	now := time.Date(2026, 10, 20, 12, 10, 0, 0, time.UTC)
 	c := New(func() time.Time { return now })
 	c.RecordReject(Reject{At: now, Class: ClassMalware})
-	c.RecordQuarantine(now)
+	c.RecordQuarantine(now, "")
 	c.RecordReject(Reject{At: now, Class: ClassSenderVerify})
 	c.RecordReject(Reject{At: now, Class: ClassRateLimited, Temporary: true})
 	c.RecordReject(Reject{At: now, Class: ClassSpam})
@@ -262,7 +264,7 @@ func TestOldRecordsDropped(t *testing.T) {
 	c.RecordScan(old, antispam.Scan{OK: true, Mode: "enforce", Decision: "none"})
 	c.RecordReject(Reject{At: old, Class: ClassSpam})
 	c.RecordLoginFailure(old, true, 2)
-	c.RecordQuarantine(old)
+	c.RecordQuarantine(old, "")
 	ov := c.Overview(now.Add(-40*24*time.Hour), now)
 	if ov.Totals.Scanned != 0 || len(ov.Totals.Rejects) != 0 || ov.Totals.LoginsMailbox != 0 || ov.Totals.Quarantined != 0 || len(ov.Series) != 0 {
 		t.Fatalf("%+v", ov)
@@ -280,7 +282,7 @@ func TestCounterConcurrentUse(t *testing.T) {
 				c.RecordReject(Reject{At: now, Class: ClassSpam, MsgID: fmt.Sprintf("1tAbCd-%06d-Ab", j)})
 				c.RecordReject(Reject{At: now, Class: ClassRateLimited, Temporary: true})
 				c.RecordLoginFailure(now, true, 1)
-				c.RecordQuarantine(now)
+				c.RecordQuarantine(now, "")
 				c.Overview(now.Add(-time.Hour), now.Add(time.Hour))
 				c.Rejects(now.Add(-time.Hour), now.Add(time.Hour), nil, 10)
 			}
@@ -331,7 +333,7 @@ func TestFutureRecordsDropped(t *testing.T) {
 	c.RecordScan(late, antispam.Scan{OK: true, Mode: "enforce", Decision: "none"})
 	c.RecordReject(Reject{At: late, Class: ClassSpam})
 	c.RecordLoginFailure(late, true, 2)
-	c.RecordQuarantine(late)
+	c.RecordQuarantine(late, "")
 	c.RecordScan(now.Add(time.Hour), antispam.Scan{OK: true, Mode: "enforce", Decision: "tag"})
 
 	ov := c.Overview(now.Add(-time.Hour), now.Add(48*time.Hour))
@@ -375,7 +377,7 @@ func TestBucketsStayBoundedWithoutFlush(t *testing.T) {
 	c := New(func() time.Time { return now })
 	const limit = 2880
 	for i := 0; i < limit+10; i++ {
-		c.RecordQuarantine(now)
+		c.RecordQuarantine(now, "")
 		if len(c.buckets) > limit || len(c.dirty) > limit {
 			t.Fatalf("record %d: %d buckets, %d dirty, limit %d", i, len(c.buckets), len(c.dirty), limit)
 		}
@@ -383,13 +385,13 @@ func TestBucketsStayBoundedWithoutFlush(t *testing.T) {
 	}
 	// Late records cannot evict more recent buckets from a full counter.
 	now = now.Add(-BucketSeconds * time.Second)
-	c.RecordQuarantine(now.Add(-Retention))
+	c.RecordQuarantine(now.Add(-Retention), "")
 	if _, ok := c.buckets[bucketKey(now.Add(-Retention))]; ok {
 		t.Fatal("late record evicted a newer bucket")
 	}
 	now = now.Add(BucketSeconds * time.Second)
 	for i := 0; i <= 4; i++ {
-		c.RecordQuarantine(now.Add(time.Duration(i) * BucketSeconds * time.Second))
+		c.RecordQuarantine(now.Add(time.Duration(i)*BucketSeconds*time.Second), "")
 	}
 	ov := c.Overview(now.Add(-2*Retention), now.Add(2*time.Hour))
 	wantOldest := bucketKey(now.Add(time.Hour)) - (limit-1)*BucketSeconds
@@ -419,4 +421,143 @@ func TestRejectRingKeepsNewestByEventTime(t *testing.T) {
 	if n := c.Overview(now.Add(-RingAge), now.Add(time.Minute)).Totals.Rejects[ClassSpam]; n != RingSize+2 {
 		t.Fatalf("counted %d rejects, want %d", n, RingSize+2)
 	}
+}
+
+// checkMalwareMove fails t unless the overview of the hour before now has
+// exactly these totals and series.
+func checkMalwareMove(t *testing.T, c *Counter, now time.Time, want Totals, wantSeries []Point) {
+	t.Helper()
+	ov := c.Overview(now.Add(-time.Hour), now)
+	if !reflect.DeepEqual(ov.Totals, want) {
+		t.Errorf("totals %+v\nwant   %+v", ov.Totals, want)
+	}
+	if !slices.Equal(ov.Series, wantSeries) {
+		t.Errorf("series %+v\nwant   %+v", ov.Series, wantSeries)
+	}
+}
+
+// Exim logs the scan marker in the DATA ACL, before the antivirus deny, so a
+// malware reject follows the scan of its message. That scan stays scanned
+// but no longer counts as clean, tagged, rejected, would-tag or would-reject.
+func TestMalwareRejectMovesScanOutOfClean(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 40, 0, 0, time.UTC)
+	scanAt := time.Date(2026, 10, 20, 12, 14, 59, 0, time.UTC)
+	const id = "1tAbCd-000001-Ab"
+	for _, s := range []antispam.Scan{
+		{OK: true, Mode: "enforce", Policy: "on", Decision: "none"},
+		{OK: true, Mode: "enforce", Policy: "off", Decision: "unfiltered"},
+		{OK: true, Mode: "enforce", Policy: "on", Decision: "tag"},
+		{OK: true, Mode: "enforce", Policy: "on", Decision: "reject"},
+		{OK: true, Mode: "dry-run", Policy: "on", Decision: "tag"},
+		{OK: true, Mode: "dry-run", Policy: "on", Decision: "reject"},
+	} {
+		t.Run(s.Mode+":"+s.Decision, func(t *testing.T) {
+			c := New(func() time.Time { return now })
+			s.MsgID = id
+			c.RecordScan(scanAt, s)
+			if tot := c.Overview(now.Add(-time.Hour), now).Totals; tot.Scanned != 1 {
+				t.Fatalf("before the reject: %+v", tot)
+			}
+			// The reject lands in the next bucket.
+			c.RecordReject(Reject{At: scanAt.Add(time.Second), Class: ClassMalware, MsgID: id})
+			checkMalwareMove(t, c, now,
+				Totals{Scanned: 1, Rejects: map[Class]int{ClassMalware: 1}, Temporary: map[Class]int{}},
+				[]Point{{T: bucketKey(scanAt)}, {T: bucketKey(scanAt) + BucketSeconds, Malware: 1}})
+		})
+	}
+}
+
+// The spool watcher quarantines a message after Exim accepted it, so its
+// scan marker counted it as clean.
+func TestQuarantineMovesScanOutOfClean(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 40, 0, 0, time.UTC)
+	scanAt := time.Date(2026, 10, 20, 12, 14, 59, 0, time.UTC)
+	const id = "1tAbCd-000001-Ab"
+	c := New(func() time.Time { return now })
+	c.RecordScan(scanAt, antispam.Scan{OK: true, Mode: "enforce", Policy: "on", Decision: "none", MsgID: id})
+	c.RecordQuarantine(scanAt.Add(time.Second), id)
+	checkMalwareMove(t, c, now,
+		Totals{Scanned: 1, Quarantined: 1, Rejects: map[Class]int{}, Temporary: map[Class]int{}},
+		[]Point{{T: bucketKey(scanAt)}, {T: bucketKey(scanAt) + BucketSeconds, Malware: 1}})
+}
+
+// A repeated malware line, or a reject and a quarantine of one message, moves
+// its scan once. Another clean scan in the same bucket stays clean.
+func TestMalwareMoveOnlyOnce(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 10, 0, 0, time.UTC)
+	const id = "1tAbCd-000001-Ab"
+	c := New(func() time.Time { return now })
+	c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Policy: "on", Decision: "none", MsgID: id})
+	c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Policy: "on", Decision: "none", MsgID: "1tAbCd-000002-Ab"})
+	c.RecordReject(Reject{At: now, Class: ClassMalware, MsgID: id})
+	c.RecordReject(Reject{At: now, Class: ClassMalware, MsgID: id})
+	c.RecordQuarantine(now, id)
+	checkMalwareMove(t, c, now.Add(time.Minute),
+		Totals{Scanned: 2, Clean: 1, Quarantined: 1, Rejects: map[Class]int{ClassMalware: 2}, Temporary: map[Class]int{}},
+		[]Point{{T: bucketKey(now), Clean: 1, Malware: 3}})
+}
+
+// Without a known scan of the message nothing moves and the malware still
+// counts. A failed scan never counted as clean, so it stays a scan error.
+func TestMalwareMoveUnknownMsgID(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 10, 0, 0, time.UTC)
+	c := New(func() time.Time { return now })
+	c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Policy: "on", Decision: "none", MsgID: "1tAbCd-000001-Ab"})
+	c.RecordScan(now, antispam.Scan{Mode: "enforce", Policy: "on", Decision: "none", MsgID: "1tAbCd-000002-Ab"})
+	c.RecordReject(Reject{At: now, Class: ClassMalware, MsgID: "1tAbCd-000002-Ab"})
+	c.RecordReject(Reject{At: now, Class: ClassMalware, MsgID: "1tAbCd-000003-Ab"})
+	c.RecordReject(Reject{At: now, Class: ClassMalware})
+	c.RecordQuarantine(now, "1tAbCd-000004-Ab")
+	c.RecordQuarantine(now, "")
+	checkMalwareMove(t, c, now.Add(time.Minute),
+		Totals{Scanned: 2, Clean: 1, ScanErrors: 1, Quarantined: 2, Rejects: map[Class]int{ClassMalware: 3}, Temporary: map[Class]int{}},
+		[]Point{{T: bucketKey(now), Clean: 1, Malware: 5}})
+}
+
+// A temporary reject defers the message rather than deciding it, so its scan
+// stays where it counted until a permanent reject follows.
+func TestTemporaryMalwareRejectDoesNotMove(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 10, 0, 0, time.UTC)
+	const id = "1tAbCd-000001-Ab"
+	c := New(func() time.Time { return now })
+	c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Policy: "on", Decision: "none", MsgID: id})
+	c.RecordReject(Reject{At: now, Class: ClassMalware, MsgID: id, Temporary: true})
+	checkMalwareMove(t, c, now.Add(time.Minute),
+		Totals{Scanned: 1, Clean: 1, Rejects: map[Class]int{ClassMalware: 1}, Temporary: map[Class]int{ClassMalware: 1}},
+		[]Point{{T: bucketKey(now), Clean: 1}})
+
+	c.RecordReject(Reject{At: now, Class: ClassMalware, MsgID: id})
+	checkMalwareMove(t, c, now.Add(time.Minute),
+		Totals{Scanned: 1, Rejects: map[Class]int{ClassMalware: 2}, Temporary: map[Class]int{ClassMalware: 1}},
+		[]Point{{T: bucketKey(now), Malware: 1}})
+}
+
+// The scan's bucket can be gone by the time the malware line is read:
+// pruned past retention, or evicted from a full counter and made again,
+// empty, by a later record. The malware still counts and no scan count
+// goes below zero.
+func TestMalwareMoveSkipsDroppedScanBucket(t *testing.T) {
+	start := time.Date(2026, 10, 20, 12, 10, 0, 0, time.UTC)
+	const id = "1tAbCd-000001-Ab"
+	scan := antispam.Scan{OK: true, Mode: "enforce", Policy: "on", Decision: "none", MsgID: id}
+
+	now := start
+	c := New(func() time.Time { return now })
+	c.RecordScan(now, scan)
+	now = now.Add(Retention + time.Hour)
+	c.Prune(now)
+	c.RecordReject(Reject{At: now, Class: ClassMalware, MsgID: id})
+	c.RecordQuarantine(now, id)
+	checkMalwareMove(t, c, now.Add(time.Minute),
+		Totals{Quarantined: 1, Rejects: map[Class]int{ClassMalware: 1}, Temporary: map[Class]int{}},
+		[]Point{{T: bucketKey(now), Malware: 2}})
+
+	now = start
+	c = New(func() time.Time { return now })
+	c.RecordScan(now, scan)
+	delete(c.buckets, bucketKey(now))
+	c.RecordQuarantine(now, id)
+	checkMalwareMove(t, c, now.Add(time.Minute),
+		Totals{Quarantined: 1, Rejects: map[Class]int{}, Temporary: map[Class]int{}},
+		[]Point{{T: bucketKey(now), Malware: 1}})
 }

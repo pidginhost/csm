@@ -49,6 +49,26 @@ func TestHandleEximLineCountsMarkersAndRejects(t *testing.T) {
 	}
 }
 
+// The scan marker and the antivirus reject of one message carry the same
+// message ID, so the counter takes that scan out of clean.
+func TestHandleEximLineMovesMalwareScanOutOfClean(t *testing.T) {
+	now := mailStatsTestNow
+	d := newMailStatsTestDaemon(t, &now)
+	for _, line := range []string{
+		`2026-10-20 12:10:00 1tAbCd-000002-Ab CSM-ANTISPAM event=scan mode=enforce policy=on result=ok score=12 action="no action" decision=none ip=203.0.113.8`,
+		`2026-10-20 12:10:01 1tAbCd-000002-Ab H=(mx.example.net) [203.0.113.8]:25 F=<a@example.com> rejected after DATA: This message contains a virus or other harmful content (Example.Test-1)`,
+	} {
+		d.handleEximLine(line, alert.Observation{ObservedAt: now}, &config.Config{})
+	}
+	ov := d.mailStats.Overview(now.Add(-time.Hour), now)
+	if ov.Totals.Scanned != 1 || ov.Totals.Clean != 0 || ov.Totals.Rejects[mailstats.ClassMalware] != 1 {
+		t.Fatalf("totals = %+v, want the scan counted but not as clean", ov.Totals)
+	}
+	if len(ov.Series) != 1 || ov.Series[0].Clean != 0 || ov.Series[0].Malware != 1 {
+		t.Fatalf("series = %+v, want one malware message and nothing clean", ov.Series)
+	}
+}
+
 func TestHandleMailLineCountsAttempts(t *testing.T) {
 	now := mailStatsTestNow
 	d := newMailStatsTestDaemon(t, &now)
@@ -152,7 +172,7 @@ func TestMailStatsRetriesFailedLoad(t *testing.T) {
 	if err = saved.Load(db, now); err != nil {
 		t.Fatal(err)
 	}
-	saved.RecordQuarantine(now)
+	saved.RecordQuarantine(now, "")
 	if err = saved.Flush(db, now); err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +268,7 @@ func TestStartLogWatchersRestoresMailStats(t *testing.T) {
 	if err := saved.Load(db, now); err != nil {
 		t.Fatal(err)
 	}
-	saved.RecordQuarantine(now)
+	saved.RecordQuarantine(now, "")
 	if err := saved.Flush(db, now); err != nil {
 		t.Fatal(err)
 	}

@@ -144,7 +144,7 @@ func TestFlushLoadRoundTrip(t *testing.T) {
 	c.RecordReject(Reject{At: now, Class: ClassMalware, Detail: "third"})
 	c.RecordLoginFailure(now, false, 2)
 	c.RecordLoginFailure(now, true, 5)
-	c.RecordQuarantine(now)
+	c.RecordQuarantine(now, "")
 	if err := c.Flush(db, now); err != nil {
 		t.Fatal(err)
 	}
@@ -860,7 +860,7 @@ func TestLoadBoundsBuckets(t *testing.T) {
 		db.buckets[bucketKey(at)] = []byte(`{"Quarantined":1}`)
 	}
 	c := New(func() time.Time { return now })
-	c.RecordQuarantine(now)
+	c.RecordQuarantine(now, "")
 	mustLoad(t, c, db, now)
 	ov := c.Overview(now.Add(-Retention), now.Add(2*time.Hour))
 	const limit = 2880
@@ -904,5 +904,30 @@ func TestLoadFlushRemovesExpiredStoredRejects(t *testing.T) {
 	}
 	if got := string(db.rings[string(ClassSpam)]); got != "[]" {
 		t.Fatalf("expired reject details remain stored: %s", got)
+	}
+}
+
+// A move after the scan's bucket was saved marks that bucket for the next
+// save, so a restart keeps the scan out of clean.
+func TestMalwareMovePersists(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 20, 0, 0, time.UTC)
+	const id = "1tAbCd-000001-Ab"
+	db := newFakeStore()
+	c := New(func() time.Time { return now })
+	mustLoad(t, c, db, now)
+	c.RecordScan(now.Add(-10*time.Minute), antispam.Scan{OK: true, Mode: "enforce", Policy: "on", Decision: "none", MsgID: id})
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+	c.RecordQuarantine(now, id)
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := New(func() time.Time { return now })
+	mustLoad(t, restarted, db, now)
+	tot := restarted.Overview(now.Add(-time.Hour), now.Add(time.Hour)).Totals
+	if tot.Scanned != 1 || tot.Clean != 0 || tot.Quarantined != 1 {
+		t.Fatalf("restored totals %+v, want the scan out of clean", tot)
 	}
 }
