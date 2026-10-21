@@ -53,8 +53,8 @@ func (d *Daemon) recordMailStatsMail(line string, at time.Time) {
 // watchers start. Counting starts now, not when the counter was built, so
 // the stop the load records ends here; a retried load keeps that end.
 func (d *Daemon) restoreMailStats() {
+	d.mailStats.SetStart(d.mailStatsNow())
 	if sdb := store.Global(); sdb != nil {
-		d.mailStats.SetStart(d.mailStatsNow())
 		d.loadMailStats(sdb)
 	}
 }

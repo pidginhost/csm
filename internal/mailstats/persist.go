@@ -52,10 +52,16 @@ func (c *Counter) Load(db Store, now time.Time) error {
 	for _, p := range pairs {
 		gaps = append(gaps, Span{time.Unix(p[0], 0).UTC(), time.Unix(p[1], 0).UTC()})
 	}
-	end := time.Unix(c.start.Unix(), 0).UTC()
+	end := c.start.UTC()
 	flushed, ferr := time.Parse(time.RFC3339, db.GetMetaString(metaFlushedAt))
 	newGap := ferr == nil && end.After(flushed)
 	if newGap {
+		// Gap storage has second precision. Round outward so a positive
+		// stop within one second survives both this load and later restarts.
+		flushed = flushed.UTC().Truncate(time.Second)
+		if rounded := end.Truncate(time.Second); rounded.Before(end) {
+			end = rounded.Add(time.Second)
+		}
 		gaps = append(gaps, Span{flushed, end})
 	}
 	since, serr := time.Parse(time.RFC3339, db.GetMetaString(metaSince))
@@ -144,7 +150,7 @@ func (c *Counter) Flush(db Store, now time.Time) error {
 		c.mu.Unlock()
 		return err
 	}
-	return db.SetMetaString(metaFlushedAt, now.UTC().Format(time.RFC3339))
+	return db.SetMetaString(metaFlushedAt, now.UTC().Format(time.RFC3339Nano))
 }
 
 // Prune drops buckets past Retention, ring entries past RingAge and gaps
@@ -267,5 +273,9 @@ func clipGaps(gaps []Span, from, to time.Time) ([]Span, int) {
 		total += g.End.Sub(g.Start)
 		out = append(out, g)
 	}
-	return out, int(total.Round(time.Minute) / time.Minute)
+	if total > 0 {
+		// Even a short restart loses coverage; zero would hide it in the UI.
+		return out, max(1, int(total.Round(time.Minute)/time.Minute))
+	}
+	return out, 0
 }

@@ -1256,6 +1256,12 @@ covering subnet. Missing addresses, truncated or stale history, successful
 logins, and account sprays stay unhandled. Unreadable firewall state sets
 `blocks_unavailable: true` and leaves every group unhandled.
 
+The overview's `counting_since` begins when mail counting starts and survives
+restarts. Stops appear in `gaps`, ending when counting resumes even if loading
+saved counts needs a retry. Gap bounds round outward to whole seconds so
+short stops remain visible. `uncounted_minutes` rounds the total gap duration
+to the nearest minute, with a minimum of one for any positive duration.
+
 The overview reads queue depth on every request. Queue detail is refreshed
 at most once per minute, even if the queue empties and refills. An empty queue
 discards its previous detail; new mail has `detail_unavailable: true` until

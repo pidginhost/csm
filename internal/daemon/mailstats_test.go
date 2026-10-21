@@ -109,6 +109,35 @@ func TestRestoreMailStatsGapEndsAtRestore(t *testing.T) {
 	}
 }
 
+func TestRestoreMailStatsWithoutStoreKeepsStartOnRetry(t *testing.T) {
+	db := openStoreForTest(t)
+	built := mailStatsTestNow
+	flushed := built.Add(-10 * time.Minute)
+	if err := db.SetMetaString("mailstats:flushed_at", flushed.UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	now := built
+	d := newMailStatsTestDaemon(t, &now)
+	store.SetGlobal(nil)
+	started := built.Add(5 * time.Minute)
+	now = started
+	d.restoreMailStats()
+	if got := d.mailStats.Overview(built, now).CountingSince; !got.Equal(started) {
+		t.Errorf("memory counting since %v, want reader start %v", got, started)
+	}
+
+	store.SetGlobal(db)
+	now = started.Add(10 * time.Minute)
+	d.persistMailStats()
+	ov := d.mailStats.Overview(flushed, now)
+	if ov.UncountedMinutes != 15 || len(ov.Gaps) != 1 || !ov.Gaps[0].Start.Equal(flushed) || !ov.Gaps[0].End.Equal(started) {
+		t.Fatalf("uncounted %d, gaps %+v, want 15 minutes ending when readers started", ov.UncountedMinutes, ov.Gaps)
+	}
+	if !ov.CountingSince.Equal(started) {
+		t.Errorf("restored counting since %v, want reader start %v", ov.CountingSince, started)
+	}
+}
+
 // One store error at startup must not leave the run memory-only: each save
 // retries the load, which merges the stored counts once, and the save then
 // writes. Only the first failure and the recovery are logged.

@@ -74,6 +74,9 @@ func (f *fakeStore) AddMailStatsGap(start, end int64) error {
 	if f.gapErr != nil {
 		return f.gapErr
 	}
+	if old, ok := f.gaps[end]; ok {
+		start = min(start, old)
+	}
 	f.gaps[end] = start
 	return nil
 }
@@ -255,6 +258,8 @@ func TestLoadRecordsShortStop(t *testing.T) {
 		stop    time.Duration
 		minutes int
 	}{
+		"1s":     {now.Add(-time.Second).Format(time.RFC3339), time.Second, 1},
+		"29s":    {now.Add(-29 * time.Second).Format(time.RFC3339), 29 * time.Second, 1},
 		"90s":    {now.Add(-90 * time.Second).Format(time.RFC3339), 90 * time.Second, 2},
 		"2m":     {now.Add(-2 * time.Minute).Format(time.RFC3339), 2 * time.Minute, 2},
 		"now":    {now.Format(time.RFC3339), 0, 0},
@@ -307,6 +312,68 @@ func TestLoadGapEndsAtSetStart(t *testing.T) {
 	ov := c.Overview(built.Add(-time.Hour), now)
 	if ov.UncountedMinutes != 15 || len(ov.Gaps) != 1 || !ov.Gaps[0].End.Equal(started) {
 		t.Fatalf("uncounted %d, gaps %+v, want 15 minutes ending when counting began", ov.UncountedMinutes, ov.Gaps)
+	}
+}
+
+func TestLoadRecordsSubsecondStop(t *testing.T) {
+	flushed := time.Date(2026, 10, 20, 12, 0, 0, 100000000, time.UTC)
+	for _, stop := range []time.Duration{0, 10 * time.Millisecond} {
+		t.Run(stop.String(), func(t *testing.T) {
+			db := newFakeStore()
+			first := New(func() time.Time { return flushed })
+			mustLoad(t, first, db, flushed)
+			if err := first.Flush(db, flushed); err != nil {
+				t.Fatal(err)
+			}
+			started := flushed.Add(stop)
+			second := New(func() time.Time { return started })
+			mustLoad(t, second, db, started)
+			ov := second.Overview(flushed.Add(-time.Minute), started.Add(time.Minute))
+			if stop == 0 {
+				if len(ov.Gaps) != 0 || ov.UncountedMinutes != 0 || len(db.gaps) != 0 {
+					t.Fatalf("no elapsed stop, got %+v and stored gaps %v", ov, db.gaps)
+				}
+				return
+			}
+			start := flushed.Truncate(time.Second)
+			end := start.Add(time.Second)
+			if ov.UncountedMinutes != 1 || len(ov.Gaps) != 1 || !ov.Gaps[0].Start.Equal(start) || !ov.Gaps[0].End.Equal(end) {
+				t.Fatalf("subsecond stop disappeared: minutes %d, gaps %+v", ov.UncountedMinutes, ov.Gaps)
+			}
+			if len(db.gaps) != 1 || db.gaps[end.Unix()] != start.Unix() {
+				t.Fatalf("stored gaps %v, want the second containing the stop", db.gaps)
+			}
+		})
+	}
+}
+
+func TestRapidRestartsPreserveEarlierGap(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	base := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	flushed := base.Add(-time.Hour)
+	first := New(func() time.Time { return flushed })
+	mustLoad(t, first, db, flushed)
+	if err := first.Flush(db, flushed); err != nil {
+		t.Fatal(err)
+	}
+	for _, offset := range []time.Duration{100, 200} {
+		started := base.Add(offset * time.Millisecond)
+		c := New(func() time.Time { return started })
+		mustLoad(t, c, db, started)
+		if err := c.Flush(db, started.Add(10*time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := base.Add(time.Second)
+	c := New(func() time.Time { return started })
+	mustLoad(t, c, db, started)
+	ov := c.Overview(flushed, started)
+	if ov.UncountedMinutes != 60 || len(ov.Gaps) != 1 || !ov.Gaps[0].Start.Equal(flushed) || !ov.Gaps[0].End.Equal(started) {
+		t.Fatalf("rapid restarts lost the earlier outage: minutes %d, gaps %+v", ov.UncountedMinutes, ov.Gaps)
 	}
 }
 

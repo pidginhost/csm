@@ -144,6 +144,9 @@ func (c *Counter) SetStart(t time.Time) {
 	defer c.persistMu.Unlock()
 	if !c.loaded {
 		c.start = t
+		c.mu.Lock()
+		c.since = t
+		c.mu.Unlock()
 	}
 }
 

@@ -370,7 +370,7 @@
             var e = Math.min(Date.parse(g.end), period.end);
             if (e > s) ms += e - s;
         });
-        return Math.round(ms / 60000);
+        return ms > 0 ? Math.max(1, Math.round(ms / 60000)) : 0;
     }
 
     function themeColor(name, fallback) {

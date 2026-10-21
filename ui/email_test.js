@@ -250,6 +250,23 @@ test('the chart notes time CSM did not count', async () => {
     assert.equal(footer([{ dataIndex: 3 }]), '');
 });
 
+test('the chart keeps a short stop visible', async () => {
+    const page = emailPage();
+    await settle();
+    const req = page.pending('/api/v1/email/overview')[0];
+    const from = Date.parse(query(req.url).get('from'));
+    const gapStart = from + 2 * HOUR_MS + 10 * 60000;
+    page.respond('/api/v1/email/overview', 200, overview({}, {
+        uncounted_minutes: 1,
+        gaps: [{ start: new Date(gapStart).toISOString(), end: new Date(gapStart + 1000).toISOString() }]
+    }));
+    await settle();
+    assert.match(page.document.getElementById('email-chart-note').textContent, /Not counted while CSM was stopped: 1 min/);
+    const footer = page.Chart.charts.at(-1).options.plugins.tooltip.callbacks.footer;
+    assert.equal(footer([{ dataIndex: 2 }]), 'Not counted: 1 min');
+    assert.equal(footer([{ dataIndex: 3 }]), '');
+});
+
 test('an empty range says so plainly', async () => {
     const page = emailPage();
     page.respond('/api/v1/email/overview', 200, overview({}));

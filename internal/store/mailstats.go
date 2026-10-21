@@ -80,7 +80,14 @@ func (db *DB) MailStats() (buckets map[int64][]byte, rejects map[string][]byte, 
 // AddMailStatsGap stores a stretch the counter did not see.
 func (db *DB) AddMailStatsGap(start, end int64) error {
 	return db.bolt.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket([]byte(mailGapsBucket)).Put(unixKey(end), unixKey(start))
+		gaps := tx.Bucket([]byte(mailGapsBucket))
+		key := unixKey(end)
+		// Rapid restarts can end in the same stored second. A later stop
+		// must not shorten the outage already recorded under that key.
+		if old := gaps.Get(key); len(old) == 8 {
+			start = min(start, keyUnix(old))
+		}
+		return gaps.Put(key, unixKey(start))
 	})
 }
 
