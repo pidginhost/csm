@@ -369,3 +369,54 @@ func TestRejectsWithoutLimitMarshalsEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestBucketsStayBoundedWithoutFlush(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	c := New(func() time.Time { return now })
+	const limit = 2880
+	for i := 0; i < limit+10; i++ {
+		c.RecordQuarantine(now)
+		if len(c.buckets) > limit || len(c.dirty) > limit {
+			t.Fatalf("record %d: %d buckets, %d dirty, limit %d", i, len(c.buckets), len(c.dirty), limit)
+		}
+		now = now.Add(BucketSeconds * time.Second)
+	}
+	// Late records cannot evict more recent buckets from a full counter.
+	now = now.Add(-BucketSeconds * time.Second)
+	c.RecordQuarantine(now.Add(-Retention))
+	if _, ok := c.buckets[bucketKey(now.Add(-Retention))]; ok {
+		t.Fatal("late record evicted a newer bucket")
+	}
+	now = now.Add(BucketSeconds * time.Second)
+	for i := 0; i <= 4; i++ {
+		c.RecordQuarantine(now.Add(time.Duration(i) * BucketSeconds * time.Second))
+	}
+	ov := c.Overview(now.Add(-2*Retention), now.Add(2*time.Hour))
+	wantOldest := bucketKey(now.Add(time.Hour)) - (limit-1)*BucketSeconds
+	if len(ov.Series) != limit {
+		t.Fatalf("kept %d buckets, want %d", len(ov.Series), limit)
+	}
+	if ov.Series[0].T != wantOldest || ov.Totals.Quarantined != limit {
+		t.Fatalf("kept %d buckets, first %d, quarantined %d", len(ov.Series), ov.Series[0].T, ov.Totals.Quarantined)
+	}
+}
+
+func TestRejectRingKeepsNewestByEventTime(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	c := New(func() time.Time { return now })
+	for i := 0; i < RingSize; i++ {
+		c.RecordReject(Reject{At: now.Add(-time.Duration(i) * time.Minute), Class: ClassSpam, Detail: fmt.Sprint(i)})
+	}
+	c.RecordReject(Reject{At: now.Add(-6 * 24 * time.Hour), Class: ClassSpam, Detail: "late oldest"})
+	c.RecordReject(Reject{At: now.Add(-30 * time.Second), Class: ClassSpam, Detail: "late recent"})
+	got := c.Rejects(now.Add(-RingAge), now.Add(time.Minute), nil, RingSize+1)
+	if len(got) != RingSize {
+		t.Fatalf("kept %d rejects, want %d", len(got), RingSize)
+	}
+	if got[0].Detail != "0" || got[1].Detail != "late recent" || got[len(got)-1].Detail != "198" {
+		t.Fatalf("ring lost newer rejects: first %q, second %q, last %q", got[0].Detail, got[1].Detail, got[len(got)-1].Detail)
+	}
+	if n := c.Overview(now.Add(-RingAge), now.Add(time.Minute)).Totals.Rejects[ClassSpam]; n != RingSize+2 {
+		t.Fatalf("counted %d rejects, want %d", n, RingSize+2)
+	}
+}

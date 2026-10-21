@@ -21,6 +21,7 @@ const (
 	RingAge       = 7 * 24 * time.Hour
 
 	scoreJoinSize = 1024
+	bucketLimit   = int(Retention / (BucketSeconds * time.Second))
 )
 
 // Span is a stretch of time.
@@ -168,11 +169,15 @@ func (c *Counter) RecordReject(r Reject) {
 		r.Detail = fmt.Sprintf("score %.1f", float64(score)/10)
 	}
 	c.seq++
-	c.rings[r.Class] = append(c.rings[r.Class], ringEntry{Reject: r, Seq: c.seq})
+	ring := c.rings[r.Class]
+	// Equal timestamps keep arrival order, including across classes.
+	entry := ringEntry{Reject: r, Seq: c.seq}
+	i, _ := slices.BinarySearchFunc(ring, entry, func(x, y ringEntry) int {
+		return cmp.Or(x.At.Compare(y.At), cmp.Compare(x.Seq, y.Seq))
+	})
+	ring = slices.Insert(ring, i, entry)
+	c.rings[r.Class] = slices.Delete(ring, 0, max(0, len(ring)-RingSize))
 	c.ringDirty[r.Class] = true
-	if ring := c.rings[r.Class]; len(ring) > RingSize {
-		c.rings[r.Class] = ring[len(ring)-RingSize:]
-	}
 }
 
 // RecordLoginFailure counts n failed logins, SMTP or mailbox.
@@ -209,15 +214,29 @@ func (c *Counter) bucketAt(at time.Time) *bucket {
 		return nil
 	}
 	k := at.Unix() / BucketSeconds * BucketSeconds
-	c.dirty[k] = true
-	return c.bucket(k)
+	b := c.bucket(k)
+	if b != nil {
+		c.dirty[k] = true
+	}
+	return b
 }
 
-// bucket returns the bucket that starts at k, creating it. The caller holds
-// c.mu.
+// bucket keeps the newest bucketLimit buckets even if persistence is stalled.
+// A late record must not evict a newer bucket. The caller holds c.mu.
 func (c *Counter) bucket(k int64) *bucket {
 	b := c.buckets[k]
 	if b == nil {
+		if len(c.buckets) == bucketLimit {
+			oldest := k
+			for start := range c.buckets {
+				oldest = min(oldest, start)
+			}
+			if oldest == k {
+				return nil
+			}
+			delete(c.buckets, oldest)
+			delete(c.dirty, oldest)
+		}
 		b = &bucket{Scans: map[string]int{}, Rejects: map[Class]int{}, Temporary: map[Class]int{}}
 		c.buckets[k] = b
 	}

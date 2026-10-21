@@ -31,8 +31,8 @@ const (
 // already have been counted, restores the reject rings and gaps, and
 // records the time since the last flush as a gap when CSM was stopped
 // longer than gapMin. A corrupt entry, an unknown class or an entry out of
-// range is skipped. Once a Load has merged, later calls do nothing; an
-// error after the merge is a failed gap or since write.
+// range is skipped. A failed load leaves live counts unchanged and can be
+// retried. Once a Load succeeds, later calls do nothing.
 func (c *Counter) Load(db Store, now time.Time) error {
 	c.persistMu.Lock()
 	defer c.persistMu.Unlock()
@@ -66,16 +66,9 @@ func (c *Counter) Load(db Store, now time.Time) error {
 	if serr != nil {
 		since = c.since.UTC().Truncate(time.Second)
 	}
-	c.since = since
-	for k, b := range buckets {
-		c.bucket(k).add(b)
-	}
-	c.mergeRings(restored)
-	c.gaps = append(c.gaps, gaps...)
-	slices.SortFunc(c.gaps, func(x, y Span) int { return x.Start.Compare(y.Start) })
 	c.mu.Unlock()
-	c.loaded = true
-
+	// Commit startup metadata before merging. On failure Flush must remain
+	// memory-only, and a retry must not add the stored counts twice.
 	var errs []error
 	if newGap {
 		errs = append(errs, db.AddMailStatsGap(flushed.Unix(), end.Unix()))
@@ -83,7 +76,31 @@ func (c *Counter) Load(db Store, now time.Time) error {
 	if serr != nil {
 		errs = append(errs, db.SetMetaString(metaSince, since.Format(time.RFC3339)))
 	}
-	return errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	c.since = since
+	for k, b := range buckets {
+		if live := c.bucket(k); live != nil {
+			live.add(b)
+		}
+	}
+	c.mergeRings(restored)
+	// Re-numbering changes ties across classes. Persist every restored ring,
+	// including ones whose entries all expired, so disk matches memory.
+	for class := range rings {
+		if slices.Contains(Classes, Class(class)) {
+			c.ringDirty[Class(class)] = true
+		}
+	}
+	c.gaps = append(c.gaps, gaps...)
+	slices.SortFunc(c.gaps, func(x, y Span) int { return x.Start.Compare(y.Start) })
+	c.mu.Unlock()
+	c.loaded = true
+
+	return nil
 }
 
 // Flush prunes the counter, writes the buckets and rings that changed since

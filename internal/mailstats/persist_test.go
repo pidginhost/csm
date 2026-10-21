@@ -34,6 +34,7 @@ type fakeStore struct {
 	putErr  error
 	readErr error
 	gapErr  error
+	metaErr error
 	onPut   func() // runs before a write, outside mu
 }
 
@@ -98,6 +99,9 @@ func (f *fakeStore) GetMetaString(key string) string {
 func (f *fakeStore) SetMetaString(key, val string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.metaErr != nil {
+		return f.metaErr
+	}
 	f.meta[key] = val
 	return nil
 }
@@ -671,23 +675,101 @@ func TestFailedLoadKeepsCounterInMemory(t *testing.T) {
 	}
 }
 
-func TestLoadGapWriteFailureStillFlushes(t *testing.T) {
+func TestLoadMetadataFailureKeepsStoreUntilRetry(t *testing.T) {
+	for _, stage := range []string{"gap", "since"} {
+		t.Run(stage, func(t *testing.T) {
+			now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+			db := newFakeStore()
+			lastFlush := now.Add(-30 * time.Minute).Format(time.RFC3339)
+			db.meta[metaFlushedAt] = lastFlush
+			const stored = `{"Scans":{"enforce:none":2}}`
+			db.buckets[bucketKey(now)] = []byte(stored)
+			writeErr := errors.New("write failed")
+			if stage == "gap" {
+				db.gapErr = writeErr
+			} else {
+				db.metaErr = writeErr
+			}
+			c := New(func() time.Time { return now })
+			c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Decision: "none"})
+			if err := c.Load(db, now); !errors.Is(err, writeErr) {
+				t.Fatalf("Load error = %v, want %v", err, writeErr)
+			}
+			if got := c.Overview(now.Add(-time.Hour), now.Add(time.Hour)).Totals.Scanned; got != 1 {
+				t.Fatalf("failed Load changed live count to %d", got)
+			}
+			if err := c.Flush(db, now); err != nil {
+				t.Errorf("memory-only flush: %v", err)
+			}
+			if len(db.puts) != 0 || string(db.buckets[bucketKey(now)]) != stored || db.meta[metaFlushedAt] != lastFlush {
+				t.Fatal("Flush wrote after a failed Load")
+			}
+			db.gapErr, db.metaErr = nil, nil
+			mustLoad(t, c, db, now)
+			mustLoad(t, c, db, now)
+			if err := c.Flush(db, now); err != nil {
+				t.Fatal(err)
+			}
+			restarted := New(func() time.Time { return now })
+			mustLoad(t, restarted, db, now)
+			ov := restarted.Overview(now.Add(-time.Hour), now.Add(time.Hour))
+			if ov.Totals.Scanned != 3 || ov.UncountedMinutes != 30 || len(ov.Gaps) != 1 || !ov.CountingSince.Equal(now) {
+				t.Fatalf("retry lost or duplicated data: %+v", ov)
+			}
+		})
+	}
+}
+
+func TestLoadBoundsBuckets(t *testing.T) {
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	db := newFakeStore()
-	db.meta["mailstats:flushed_at"] = now.Add(-30 * time.Minute).Format(time.RFC3339)
-	db.gapErr = errors.New("write failed")
-	c := New(func() time.Time { return now })
-	if err := c.Load(db, now); err == nil {
-		t.Fatal("Load hid the gap write error")
+	for at := now.Add(-Retention); !at.After(now.Add(time.Hour)); at = at.Add(BucketSeconds * time.Second) {
+		db.buckets[bucketKey(at)] = []byte(`{"Quarantined":1}`)
 	}
-	c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Decision: "none"})
+	c := New(func() time.Time { return now })
+	c.RecordQuarantine(now)
+	mustLoad(t, c, db, now)
+	ov := c.Overview(now.Add(-Retention), now.Add(2*time.Hour))
+	const limit = 2880
+	if len(c.buckets) != limit || len(ov.Series) != limit || ov.Totals.Quarantined != limit+1 {
+		t.Fatalf("loaded %d buckets, %d points, %d quarantines", len(c.buckets), len(ov.Series), ov.Totals.Quarantined)
+	}
+	wantOldest := bucketKey(now.Add(time.Hour)) - (limit-1)*BucketSeconds
+	if ov.Series[0].T != wantOldest {
+		t.Fatalf("oldest bucket %d, want %d", ov.Series[0].T, wantOldest)
+	}
+}
+
+func TestRestoredRingTiesSurviveAnotherRestart(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	db := newFakeStore()
+	for i, class := range []Class{ClassSpam, ClassMalware} {
+		db.rings[string(class)] = []byte(jsonOf(t, []ringEntry{{Reject: Reject{At: now, Class: class, Detail: string(class)}, Seq: uint64((i + 1) * 50)}}))
+	}
+	c := New(func() time.Time { return now })
+	mustLoad(t, c, db, now)
+	c.RecordReject(Reject{At: now, Class: ClassSpam, Detail: "newest"})
 	if err := c.Flush(db, now); err != nil {
 		t.Fatal(err)
 	}
-	if len(db.puts) != 1 || len(db.puts[0].buckets) != 1 || db.meta["mailstats:flushed_at"] != now.Format(time.RFC3339) {
-		t.Fatalf("%d puts, flushed_at %q", len(db.puts), db.meta["mailstats:flushed_at"])
+	restarted := New(func() time.Time { return now })
+	mustLoad(t, restarted, db, now)
+	got := restarted.Rejects(now, now.Add(time.Minute), nil, 10)
+	if len(got) != 3 || got[0].Detail != "newest" || got[1].Detail != "malware" || got[2].Detail != "spam" {
+		t.Fatalf("arrival order changed after restart: %+v", got)
 	}
-	if ov := c.Overview(now.Add(-time.Hour), now); ov.UncountedMinutes != 30 {
-		t.Fatalf("uncounted %d", ov.UncountedMinutes)
+}
+
+func TestLoadFlushRemovesExpiredStoredRejects(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	db := newFakeStore()
+	db.rings[string(ClassSpam)] = []byte(jsonOf(t, []ringEntry{{Reject: Reject{At: now.Add(-RingAge - time.Second), Class: ClassSpam, Sender: "a@example.com"}, Seq: 1}}))
+	c := New(func() time.Time { return now })
+	mustLoad(t, c, db, now)
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(db.rings[string(ClassSpam)]); got != "[]" {
+		t.Fatalf("expired reject details remain stored: %s", got)
 	}
 }
