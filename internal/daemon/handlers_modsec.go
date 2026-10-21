@@ -46,6 +46,7 @@ type modsecEscalationOutcome struct {
 	escalate      bool // fire the Critical auto-block escalation finding
 	lowConfBurst  bool // fire the non-actioned low-confidence-burst visibility finding
 	classifierGap bool // fire the non-actioned classifier-gap finding (new unknown rule)
+	singleHit     bool // escalation came from an exploit-specific deny, not the hit count
 }
 
 type modsecWindowSummary struct {
@@ -53,6 +54,7 @@ type modsecWindowSummary struct {
 	lowConfBlock    int
 	highEvidence    bool
 	unknownEvidence bool
+	singleHit       bool
 }
 
 var (
@@ -468,7 +470,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 			results = append(results, alert.Finding{
 				Severity: alert.Critical,
 				Check:    check,
-				Message:  fmt.Sprintf("%s escalation: %d+ denies from %s within %v", label, hits, ip, win),
+				Message:  modsecEscalationMessage(label, ip, hits, win, outcome.singleHit),
 				Details:  truncateDaemon(line, 400),
 				SourceIP: ip,
 				Domain:   f.Domain,
@@ -584,6 +586,7 @@ func recordModSecEventWithRearm(ip string, now time.Time, rule int, conf modsecC
 		ctr.escalated = true
 		ctr.lastEscalated = now
 		out.escalate = true
+		out.singleHit = summary.singleHit && summary.totalBlock < hits
 		return out
 	}
 
@@ -608,6 +611,9 @@ func summarizeModSecEvents(events []modsecDenyEvent) modsecWindowSummary {
 			continue
 		}
 		summary.totalBlock++
+		if modsecSingleHitRules[e.rule] {
+			summary.singleHit = true
+		}
 		if e.conf == modsecConfLow {
 			summary.lowConfBlock++
 		}
@@ -616,9 +622,16 @@ func summarizeModSecEvents(events []modsecDenyEvent) modsecWindowSummary {
 }
 
 func modsecTriggerStates(summary modsecWindowSummary, hits, lowConfHits int) (normalFire, backstopFire bool) {
-	normalFire = summary.totalBlock >= hits && (summary.highEvidence || summary.unknownEvidence)
+	normalFire = summary.singleHit || (summary.totalBlock >= hits && (summary.highEvidence || summary.unknownEvidence))
 	backstopFire = !summary.highEvidence && !summary.unknownEvidence && lowConfHits > 0 && summary.lowConfBlock >= lowConfHits
 	return normalFire, backstopFire
+}
+
+func modsecEscalationMessage(label, ip string, hits int, win time.Duration, singleHit bool) string {
+	if singleHit {
+		return fmt.Sprintf("%s escalation: exploit-specific deny from %s", label, ip)
+	}
+	return fmt.Sprintf("%s escalation: %d+ denies from %s within %v", label, hits, ip, win)
 }
 
 func modsecEscalationRearmDue(lastEscalated, now time.Time, rearmAfter time.Duration) bool {

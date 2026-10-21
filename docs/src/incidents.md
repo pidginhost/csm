@@ -312,7 +312,11 @@ low-confidence rules is still banned once it reaches the
 30). Unknown blocking rules are escalation-eligible (fail-secure) and
 raise a `modsec_classifier_gap` finding once per rule for the whole host
 (repeated daily while the rule stays unclassified) so a new vendor rule
-pack is noticed rather than silently given a no-ban path.
+pack is noticed rather than silently given a no-ban path. A few CSM rules
+that match one specific exploit's request shape (for example the PHP2Shell
+upload progress field) escalate on their first deny, whatever the hit
+threshold; turning firewall escalation off for that rule on the
+ModSecurity rules page opts out.
 
 ## Kinds
 
