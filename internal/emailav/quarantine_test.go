@@ -538,3 +538,47 @@ func TestCleanExpiredReportsEntriesItCouldNotRemove(t *testing.T) {
 		t.Fatalf("cleaned = %d, want 0", cleaned)
 	}
 }
+
+// Each quarantined item reports the size of its -D file, read with stat when
+// the item is read, so entries quarantined before the field existed have it
+// too. A partial entry with no -D file reports 0.
+func TestQuarantineItemSize(t *testing.T) {
+	qDir := filepath.Join(t.TempDir(), "quarantine", "email")
+	msgID := "2jKPFm-000abc-1X"
+	spoolDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(spoolDir, msgID+"-H"), []byte("header"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spoolDir, msgID+"-D"), []byte(strings.Repeat("b", 4321)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	q := NewQuarantine(qDir)
+	q.allowedSpoolDirs = []string{spoolDir}
+	result := &ScanResult{MessageID: msgID, Infected: true, Findings: []Finding{{Filename: "f.exe", Engine: "clamav", Signature: "Sig", Severity: "critical"}}}
+	if err := q.QuarantineMessage(msgID, spoolDir, result, QuarantineEnvelope{From: "a@example.com", To: []string{"b@example.net"}}); err != nil {
+		t.Fatalf("QuarantineMessage: %v", err)
+	}
+
+	msgs, err := q.ListMessages()
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("ListMessages = %v, %v; want one message", msgs, err)
+	}
+	if msgs[0].Size != 4321 {
+		t.Errorf("listed size = %d, want 4321", msgs[0].Size)
+	}
+	raw, err := json.Marshal(msgs[0])
+	if err != nil || !strings.Contains(string(raw), `"size":4321`) {
+		t.Errorf("item JSON = %s, %v; want size 4321", raw, err)
+	}
+	meta, err := q.GetMessage(msgID)
+	if err != nil || meta.Size != 4321 {
+		t.Errorf("GetMessage = %+v, %v; want size 4321", meta, err)
+	}
+
+	if err := os.Remove(filepath.Join(qDir, msgID, msgID+"-D")); err != nil {
+		t.Fatal(err)
+	}
+	if meta, err := q.GetMessage(msgID); err != nil || meta.Size != 0 {
+		t.Errorf("without a -D file: %+v, %v; want size 0", meta, err)
+	}
+}

@@ -13,10 +13,11 @@ import (
 )
 
 type emailRejectsBody struct {
-	Items    []mailstats.Reject `json:"items"`
-	Class    string             `json:"class"`
-	Limit    int                `json:"limit"`
-	KeptDays int                `json:"kept_days"`
+	Items    []mailstats.Reject      `json:"items"`
+	Class    string                  `json:"class"`
+	Limit    int                     `json:"limit"`
+	KeptDays int                     `json:"kept_days"`
+	Totals   map[mailstats.Class]int `json:"totals"`
 }
 
 func serveRejects(s *Server, method, token, query string) *httptest.ResponseRecorder {
@@ -182,5 +183,45 @@ func TestEmailRejectsAdminOnly(t *testing.T) {
 		if tc.want != http.StatusOK && strings.Contains(w.Body.String(), "example.com") {
 			t.Errorf("%s token=%q: refused response carries addresses: %s", tc.method, tc.token, w.Body.String())
 		}
+	}
+}
+
+// totals counts the permanent rejects of every class in the range, whatever
+// class the list shows, from the same buckets as the overview: its rejects
+// less its temporary ones.
+func TestRejectsTotalsMatchOverview(t *testing.T) {
+	stubQueue(t, "0\n", "")
+	s := newTestServer(t, "tok")
+	c := rejectsCounter()
+	at := time.Date(2026, 10, 20, 10, 45, 0, 0, time.UTC)
+	c.RecordReject(mailstats.Reject{At: at, Class: mailstats.ClassSpam, Detail: "spam detected"})
+	c.RecordReject(mailstats.Reject{At: at, Class: mailstats.ClassSpam, Temporary: true, Detail: "try later"})
+	c.RecordReject(mailstats.Reject{At: at, Class: mailstats.ClassRateLimited, Temporary: true, Detail: "slow down"})
+	// Outside the range.
+	c.RecordReject(mailstats.Reject{At: at.Add(-3 * time.Hour), Class: mailstats.ClassMalware, Detail: "malware found"})
+	s.SetMailStats(c)
+
+	body, _ := getRejects(t, s, "?class=malware&"+rejectsRange)
+	ov, _ := getOverview(t, s, "?"+rejectsRange)
+
+	for _, class := range mailstats.Classes {
+		want := ov.Totals.Rejects[class] - ov.Totals.Temporary[class]
+		if got, ok := body.Totals[class]; !ok || got != want {
+			t.Errorf("totals[%s] = %d (present %v), want %d from the overview", class, got, ok, want)
+		}
+	}
+	if len(body.Totals) != len(mailstats.Classes) {
+		t.Errorf("totals = %v, want one entry per class", body.Totals)
+	}
+	want := map[mailstats.Class]int{mailstats.ClassSpam: 2, mailstats.ClassMalware: 1, mailstats.ClassSenderVerify: 1, mailstats.ClassRateLimited: 0}
+	for class, n := range want {
+		if body.Totals[class] != n {
+			t.Errorf("totals[%s] = %d, want %d", class, body.Totals[class], n)
+		}
+	}
+
+	none, raw := getRejects(t, newTestServer(t, "tok"), "?"+rejectsRange)
+	if len(none.Totals) != len(mailstats.Classes) || none.Totals[mailstats.ClassSpam] != 0 {
+		t.Errorf("without a counter: totals = %s, want every class at 0", raw)
 	}
 }

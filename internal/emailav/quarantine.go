@@ -49,6 +49,9 @@ type QuarantineMetadata struct {
 	Findings         []Finding `json:"findings"`
 	PartialScan      bool      `json:"partial_scan"`
 	EnginesUsed      []string  `json:"engines_used"`
+	// Size is the -D file's size, taken with stat whenever the entry is
+	// read; the value stored in the sidecar is never used.
+	Size int64 `json:"size"`
 }
 
 // Quarantine manages the per-message email quarantine directory.
@@ -268,6 +271,10 @@ func (q *Quarantine) readMetadata(msgID string) (*QuarantineMetadata, error) {
 	var meta QuarantineMetadata
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return nil, err
+	}
+	meta.Size = 0
+	if info, err := os.Lstat(filepath.Join(q.baseDir, msgID, msgID+"-D")); err == nil && info.Mode().IsRegular() {
+		meta.Size = info.Size()
 	}
 	return &meta, nil
 }

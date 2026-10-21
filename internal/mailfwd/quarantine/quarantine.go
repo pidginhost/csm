@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"mime"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 // Control headers the exim transport adds and CSM parses. They are stripped
@@ -38,6 +40,7 @@ type HeldMessage struct {
 	Recipient string    `json:"recipient"` // external destination that was held
 	Sender    string    `json:"sender"`    // envelope sender ("" = null-sender bounce)
 	Reasons   []string  `json:"reasons"`
+	Subject   string    `json:"subject"`
 	HeldAt    time.Time `json:"held_at"`
 	Size      int64     `json:"size"`
 }
@@ -114,22 +117,76 @@ func (q *Quarantine) List() ([]HeldMessage, error) {
 	return out, nil
 }
 
+// Listing reads at most maxHeaderRead bytes of each held copy: the control
+// headers and the message's own headers come first, and the body is not
+// needed. maxSubjectLen bounds the subject the list shows.
+const (
+	maxHeaderRead = 64 << 10
+	maxSubjectLen = 160
+)
+
 func (q *Quarantine) read(dir, id string) (HeldMessage, error) {
-	path := filepath.Join(q.sub(dir), id)
-	data, info, err := readMessageFile(path)
+	f, info, err := openMessageFile(filepath.Join(q.sub(dir), id))
 	if err != nil {
 		return HeldMessage{}, err
 	}
-	hdr := parseControlHeaders(data)
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxHeaderRead))
+	if err != nil {
+		return HeldMessage{}, err
+	}
+	header := data[:headerBlockEnd(data)]
+	hdr := parseControlHeaders(header)
 	return HeldMessage{
 		ID:        id,
 		Forwarder: hdr[hdrForwarder],
 		Recipient: hdr[hdrRecipient],
 		Sender:    hdr[hdrSender],
 		Reasons:   splitReasons(hdr[hdrReasons]),
+		Subject:   heldSubject(header),
 		HeldAt:    info.ModTime(),
 		Size:      info.Size(),
 	}, nil
+}
+
+// heldSubject returns the first Subject field of a header block, unfolded,
+// with RFC 2047 encoded words decoded. The subject is the sender's text and
+// the web UI shows it, so control characters become spaces, runs of space
+// collapse, and it is cut to maxSubjectLen runes. A charset the decoder does
+// not know leaves the field as sent.
+func heldSubject(header []byte) string {
+	var raw strings.Builder
+	found := false
+	for _, line := range strings.Split(string(header), "\n") {
+		line = strings.TrimRight(line, "\r")
+		folded := line != "" && (line[0] == ' ' || line[0] == '\t')
+		if found {
+			if !folded {
+				break
+			}
+			raw.WriteString(line)
+			continue
+		}
+		name, value, ok := strings.Cut(line, ":")
+		if ok && !folded && strings.EqualFold(strings.TrimRight(name, " \t"), "Subject") {
+			raw.WriteString(value)
+			found = true
+		}
+	}
+	subject := raw.String()
+	if decoded, err := new(mime.WordDecoder).DecodeHeader(subject); err == nil {
+		subject = decoded
+	}
+	subject = strings.Join(strings.Fields(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, subject)), " ")
+	if r := []rune(subject); len(r) > maxSubjectLen {
+		subject = string(r[:maxSubjectLen])
+	}
+	return subject
 }
 
 // Release re-injects the held copy to its original external recipient (operator
@@ -230,25 +287,36 @@ func (q *Quarantine) locate(id string) (dir, path string) {
 }
 
 func readMessageFile(path string) ([]byte, os.FileInfo, error) {
+	f, info, err := openMessageFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, info, nil
+}
+
+// openMessageFile opens a held copy for reading. The caller closes it.
+func openMessageFile(path string) (*os.File, os.FileInfo, error) {
 	// #nosec G304 -- path is a located Maildir entry under the CSM-owned base;
 	// O_NOFOLLOW rejects symlink entries and symlink swaps before reading.
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
+		_ = f.Close()
 		return nil, nil, err
 	}
 	if !info.Mode().IsRegular() {
+		_ = f.Close()
 		return nil, nil, fmt.Errorf("held message %q is not a regular file", filepath.Base(path))
 	}
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return nil, nil, err
-	}
-	return data, info, nil
+	return f, info, nil
 }
 
 // headerValue collapses a control-header value to a single safe line (no CR/LF

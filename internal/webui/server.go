@@ -368,6 +368,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/email/groups", s.requireRead(http.HandlerFunc(s.apiEmailGroups)))
 	mux.Handle("/api/v1/email/overview", s.requireRead(http.HandlerFunc(s.apiEmailOverview)))
 	mux.Handle("/api/v1/email/rejects", s.requireAuth(getOnly(http.HandlerFunc(s.apiEmailRejects))))
+	mux.Handle("/api/v1/email/senders", s.requireAuth(getOnly(http.HandlerFunc(s.apiEmailSenders))))
 	mux.Handle("/api/v1/email/rspamd", s.requireRead(http.HandlerFunc(s.apiEmailRspamd)))
 	mux.Handle("/api/v1/email/relay-abuse", s.requireRead(http.HandlerFunc(s.apiEmailRelayAbuse)))
 	mux.Handle("/api/v1/email/forwarders", s.requireRead(http.HandlerFunc(s.apiEmailForwarders)))

@@ -348,3 +348,29 @@ func TestEmailOverviewReadScope(t *testing.T) {
 		}
 	}
 }
+
+// With only to, the range is the 24 h before it, on every counted view.
+func TestOverviewOneSidedTo(t *testing.T) {
+	stubQueue(t, "0\n", "")
+	s := newTestServer(t, "tok")
+	s.SetMailStats(rejectsCounter())
+
+	resp, _ := getOverview(t, s, "?to=2026-10-20T13:00:00Z")
+	from, to := time.Date(2026, 10, 19, 13, 0, 0, 0, time.UTC), time.Date(2026, 10, 20, 13, 0, 0, 0, time.UTC)
+	if !resp.From.Equal(from) || !resp.To.Equal(to) {
+		t.Errorf("overview range = %v .. %v, want %v .. %v", resp.From, resp.To, from, to)
+	}
+
+	// The 10:00 spam reject falls in the 24 h before 10:15; the 10:30 and
+	// 11:00 rejects come after it.
+	body, _ := getRejects(t, s, "?class=all&to=2026-10-20T10:15:00Z")
+	if got := rejectClassesOf(body.Items); len(got) != 1 || got[0] != mailstats.ClassSpam {
+		t.Errorf("rejects with only to: classes = %v, want the 10:00 spam reject", got)
+	}
+
+	// from alone still runs to now.
+	resp, _ = getOverview(t, s, "?from=2026-10-20T12:00:00Z")
+	if !resp.From.Equal(time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)) || time.Since(resp.To) > time.Minute {
+		t.Errorf("overview with only from = %v .. %v, want from 12:00 to now", resp.From, resp.To)
+	}
+}

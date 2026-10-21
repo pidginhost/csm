@@ -2,6 +2,7 @@ package webui
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -82,17 +83,31 @@ func antispamMode(cfg *config.Config) string {
 	return "enforce"
 }
 
-// apiEmailOverview handles GET /api/v1/email/overview: the mail decision
-// counts for from/to (default the last 24 h), the live queue and the
-// mail-related firewall blocks.
-func (s *Server) apiEmailOverview(w http.ResponseWriter, r *http.Request) {
-	now := time.Now()
-	from, to, ok := historyRangeQuery(w, r.URL.Query(), now.Add(-24*time.Hour), now)
+// emailRange reads from/to for the Email page's counted views: the last
+// 24 h by default, the 24 h before to when only to is given, and to now
+// when only from is. A reversed range is swapped.
+func emailRange(w http.ResponseWriter, q url.Values, now time.Time) (from, to time.Time, ok bool) {
+	from, to, ok = historyRangeQuery(w, q, time.Time{}, now)
 	if !ok {
-		return
+		return from, to, false
+	}
+	if from.IsZero() {
+		from = to.Add(-24 * time.Hour)
 	}
 	if to.Before(from) {
 		from, to = to, from
+	}
+	return from, to, true
+}
+
+// apiEmailOverview handles GET /api/v1/email/overview: the mail decision
+// counts for from/to (see emailRange), the live queue and the mail-related
+// firewall blocks.
+func (s *Server) apiEmailOverview(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	from, to, ok := emailRange(w, r.URL.Query(), now)
+	if !ok {
+		return
 	}
 
 	cfg := s.liveCfg()

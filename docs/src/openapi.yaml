@@ -310,7 +310,12 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: Success.
+          description: >-
+            Deferrals by provider and by sending IP. The provider comes
+            from the deferring MX host when it is a known provider's, else
+            from the recipient domain. window_start and window_end are the
+            times of the first and last log lines read; both are left out
+            when no line carries a time.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }
@@ -325,7 +330,10 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: Success.
+          description: >-
+            Held forward copies, each with the decoded subject of the
+            original message (control characters removed, at most 160
+            characters) and the file size.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }
@@ -545,10 +553,41 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: Success.
+          description: >-
+            Rejects newest first, plus totals: the permanent rejects of
+            every class in the range, whatever class is listed.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/senders":
+    get:
+      operationId: get_email_senders
+      summary: "Messages each hosting account sent in from/to, busiest first, and the outbound abuse event count (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: from
+          in: query
+          description: Calendar date or RFC 3339 time. Without it the range is the 24 h before to.
+          schema: { type: string }
+        - name: to
+          in: query
+          description: Calendar date or RFC 3339 time. Without it the range ends now.
+          schema: { type: string }
+      responses:
+        "200":
+          description: >-
+            accounts (up to 100 rows of account and messages), total (every
+            message with a submitter), unresolved (messages whose submitter
+            matched no account) and abuse_events (the outbound abuse events
+            relay-abuse lists for the range).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "400": { description: Invalid from or to. }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/email/relay-abuse":
@@ -590,7 +629,8 @@ paths:
         - bearerAuth: []
       responses:
         "200":
-          description: Success.
+          description: >-
+            Quarantined messages, each with size, the size of its spooled body.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/JSONObject" }

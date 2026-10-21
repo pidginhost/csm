@@ -1,6 +1,7 @@
 package quarantine
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -328,3 +329,53 @@ type injectTestError struct{}
 func (injectTestError) Error() string { return "sendmail boom" }
 
 var errInjectTest = injectTestError{}
+
+// The held list shows each copy's subject: the first Subject field of the
+// message's own header block, unfolded, with RFC 2047 encoded words decoded.
+// The subject is the sender's text and the page renders it, so it comes back
+// without control characters and cut to maxSubjectLen runes. Only a bounded
+// prefix of the file is read; the size is still the whole file.
+func TestHeldMessageSubject(t *testing.T) {
+	filler := "X-Filler: " + strings.Repeat("f", 200) + "\r\n"
+	cases := []struct {
+		name, header, want string
+	}{
+		{"plain", "Subject: cheap watches\r\n", "cheap watches"},
+		{"encoded words over a fold", "subject: =?UTF-8?B?w45uY8SDIG8=?=\r\n =?UTF-8?Q?_ofert=C4=83?=\r\n", "\u00cenc\u0103 o ofert\u0103"},
+		{"latin-1", "Subject: =?ISO-8859-1?Q?caf=E9?= menu\r\n", "caf\u00e9 menu"},
+		{"folded plain text", "Subject: part one\r\n\tpart two\r\n", "part one part two"},
+		{"control characters", "Subject: =?UTF-8?B?YRtbMzFtYgBjDQpkCWU=?=\r\n", "a [31mb c d e"},
+		{"unknown charset kept as sent", "Subject: =?x-unknown?Q?abc?=\r\n", "=?x-unknown?Q?abc?="},
+		{"long", "Subject: " + strings.Repeat("\u0103", 300) + "\r\n", strings.Repeat("\u0103", maxSubjectLen)},
+		{"continuation is not a field", "X-Note: hi\r\n Subject: spoofed\r\nSubject: real\r\n", "real"},
+		{"first field wins", "Subject: first\r\nSubject: second\r\n", "first"},
+		{"none", "From: a@example.com\r\n", ""},
+		{"beyond the read bound", strings.Repeat(filler, maxHeaderRead/len(filler)+1) + "Subject: late\r\n", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := New(t.TempDir())
+			body := []byte(tc.header + "\r\nSubject: in the body\r\n" + strings.Repeat("b", 2*maxHeaderRead))
+			if _, err := q.Hold(held(), body); err != nil {
+				t.Fatal(err)
+			}
+			msgs, err := q.List()
+			if err != nil || len(msgs) != 1 {
+				t.Fatalf("list = %v, %v; want one message", msgs, err)
+			}
+			if msgs[0].Subject != tc.want {
+				t.Errorf("subject = %q, want %q", msgs[0].Subject, tc.want)
+			}
+			if msgs[0].Forwarder != "sales@shop.example" {
+				t.Errorf("control headers lost: %+v", msgs[0])
+			}
+			if msgs[0].Size <= int64(len(body)) {
+				t.Errorf("size = %d, want the whole file (body alone is %d)", msgs[0].Size, len(body))
+			}
+		})
+	}
+	raw, err := json.Marshal(HeldMessage{Subject: "s"})
+	if err != nil || !strings.Contains(string(raw), `"subject":"s"`) {
+		t.Errorf("held message JSON = %s, %v; want a subject field", raw, err)
+	}
+}

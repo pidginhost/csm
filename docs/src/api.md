@@ -230,7 +230,8 @@ GET  /api/v1/hardening           Last stored hardening audit report (admin scope
 ### Date ranges
 
 `/api/v1/history`, `/api/v1/email/groups`, `/api/v1/email/overview`,
-`/api/v1/email/rejects` and `/api/v1/email/relay-abuse` take `from` and `to` as
+`/api/v1/email/rejects`, `/api/v1/email/senders` and
+`/api/v1/email/relay-abuse` take `from` and `to` as
 a calendar date (`YYYY-MM-DD`) or an RFC 3339 time. A date is
 a day in the server's time zone, and `to` includes the whole day. An RFC 3339
 `to` is exclusive. The web UI sends RFC 3339 times so a day follows the
@@ -238,7 +239,9 @@ operator's time zone preference. A value in neither form is rejected with 400.
 An empty or whitespace-only bound is treated as absent. Calendar days start at
 their first valid local time, including when midnight is skipped or repeated;
 a skipped calendar date covers an empty range. Fractional seconds are preserved
-when filtering RFC 3339 bounds.
+when filtering RFC 3339 bounds. On `/api/v1/email/overview`,
+`/api/v1/email/rejects` and `/api/v1/email/senders`, a `to` without `from`
+covers the 24 hours before `to`.
 
 ### WordPress verification coverage
 
@@ -1242,22 +1245,23 @@ DELETE /api/v1/suppressions      Delete a suppression rule by id
 ```
 GET  /api/v1/email/stats         Email scanning statistics
 GET  /api/v1/email/forwarders    Mail forwarder inventory with destination providers and local-copy flags (read scope)
-GET  /api/v1/email/deferrals     Outbound deferral rollup by provider and sending IP with reason codes, parsed from exim_mainlog (read scope)
+GET  /api/v1/email/deferrals     Outbound deferral rollup by provider and sending IP with reason codes, parsed from exim_mainlog, with window_start/window_end, the times of the first and last lines read (read scope)
 GET  /api/v1/email/queue-composition  Mail queue makeup: real vs null-sender bounce backscatter, frozen count, oldest age, top stuck recipients (read scope)
 POST /api/v1/email/queue/flush-backscatter  Request removal of frozen null-sender messages from the exim queue on cPanel hosts; returns the count of targeted messages no longer queued, reports incomplete verification as 500, or returns 503 when unavailable (admin scope, CSRF)
 GET  /api/v1/email/queue         One page of the exim queue on cPanel hosts, oldest first, each message with why it is stuck; page (default 1), limit (default 25, max 100), filter=all|frozen|backscatter, q (sender or recipient substring) (admin scope)
 GET  /api/v1/email/queue/{id}    One queued message with all undelivered recipients (up to 1,000), why it is stuck and the last 20 lines of its msglog; 404 when it is not queued (admin scope)
 POST /api/v1/email/queue/{id}/{action}  retry, bounce (return to sender), delete or thaw one queued message; answers the outcome the queue shows afterwards (admin scope, CSRF)
-GET  /api/v1/email/held          Forward copies held by the forward guard (admin scope)
+GET  /api/v1/email/held          Forward copies held by the forward guard, each with its decoded subject and size (admin scope)
 POST /api/v1/email/held/{id}/release   Re-inject a held forward copy to its external recipient (admin scope, CSRF)
 DELETE /api/v1/email/held/{id}   Discard a held forward copy (admin scope, CSRF)
 GET  /api/v1/email/checks        Email checks the Email page shows, each with its group kind ("" = never grouped) (read scope)
 GET  /api/v1/email/groups        Server-grouped action rows (kind=compromised_account|spam_outbreak|auth_failure|queue_alert|malware) with from/to/limit (read scope)
 GET  /api/v1/email/overview      Mail decision totals and 15-minute chart series for from/to (default the last 24 h), antispam mode, live queue and mail-related block counts (read scope)
-GET  /api/v1/email/rejects       Recent rejected mail (time, class, sender, recipient, source IP, detail), newest first, kept 7 days; class=content (spam and malware, default)|all|<class>, from/to (default the last 24 h), limit (default 50, max 200) (admin scope)
+GET  /api/v1/email/rejects       Recent rejected mail (time, class, sender, recipient, source IP, detail), newest first, kept 7 days; class=content (spam and malware, default)|all|<class>, from/to (default the last 24 h), limit (default 50, max 200); totals has the permanent rejects of every class in the range (admin scope)
+GET  /api/v1/email/senders       Messages each hosting account sent in from/to (default the last 24 h), busiest first, up to 100 rows, with total, unresolved and abuse_events, the outbound abuse events relay-abuse lists for the range (admin scope)
 GET  /api/v1/email/relay-abuse   Outbound PHP-mail abuse detections (spam outbreaks, high-volume scripts/accounts) with per-site script breakdown; from/to/limit (read scope)
 GET  /api/v1/email/rspamd       rspamd status (up|down|off), antispam mode, version and rspamd's counters since it started (scanned, learned, actions, top 8 rules), read from its controller without a password and cached 60 s; available false with a reason when they cannot be read (read scope)
-GET  /api/v1/email/quarantine    Quarantined email list
+GET  /api/v1/email/quarantine    Quarantined email list, each with the size of its spooled body
 GET  /api/v1/email/av/status     Email AV watcher status
 GET  /api/v1/email/quarantine/{id}          One quarantined message
 POST /api/v1/email/quarantine/{id}/release  Release a quarantined message (admin scope, CSRF)
@@ -1300,9 +1304,17 @@ queue shows the change, and `unchanged` with an error otherwise. Every
 attempt is written to the UI audit log as `email_queue_<action>` with the
 message ID and the outcome.
 
+Deferrals are grouped under the provider whose MX host deferred them
+(Google, Microsoft and Yahoo hosts), so a business domain those providers
+host counts under them. The recipient's domain decides when the log line
+names no MX or an unknown one.
+
 The rspamd status follows live health probes. Dismissing an outage finding
 does not change it to `up`. Version display strings are bounded whether
-they come from the controller or the installed program.
+they come from the controller or the installed program. A read of rspamd's
+controller finishes even when the request that started it goes away, so its
+result is cached for the other requests; a failed read is logged once per
+cache period.
 
 ## Hardening
 
