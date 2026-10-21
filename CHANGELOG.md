@@ -12,15 +12,18 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - CSM is now built with Go 1.27.3, which rejects certificates chained through intermediate authorities that are no longer trusted.
+- Web firewall rules now block requests that reach PHP's session upload-progress handler, the reported entry point of the PHP2Shell attacks.
 
 ### Changed
 
 - Firewall confirmation windows show in status and doctor; one whose saved configuration is unreadable rolls back once and stays pending until confirmed, keeping later blocks.
+- The hardening audit warns while PHP session upload progress is on or cannot be confirmed off, and honors PHP's additional config files.
 
 ### Fixed
 
 - WordPress findings, such as outdated plugins, no longer stay listed after the site is updated or deleted.
 - Exposed-file findings, such as leaked backups, no longer stay listed after the file or its site is removed.
+- The hardening audit reports PHP 8.1 as end of life and retires later PHP versions when their security support ends.
 
 ## [4.4.0] - 2026-10-20
 

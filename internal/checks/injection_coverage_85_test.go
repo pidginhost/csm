@@ -480,9 +480,10 @@ func TestCheckUnnecessaryServicesExercise(t *testing.T) {
 // ==========================================================================
 
 func TestAuditPHPEA4MultipleVersions(t *testing.T) {
+	withPHPAuditNow(t, time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)) // 8.1 still supported
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
-			if strings.Contains(pattern, "ea-php") {
+			if pattern == "/opt/cpanel/ea-php*/root/etc/php.ini" {
 				return []string{
 					"/opt/cpanel/ea-php74/root/etc/php.ini",
 					"/opt/cpanel/ea-php81/root/etc/php.ini",
