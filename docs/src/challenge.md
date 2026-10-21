@@ -313,4 +313,4 @@ csm store import /var/backups/csm-2026-04-27.csmbak
 systemctl start csm
 ```
 
-Partial restore: `--only=baseline` restores only the file-hash state (useful after a full re-install where firewall and history should stay fresh); `--only=firewall` merges the firewall buckets into an existing daemon (useful for cloning blocklists across a cluster).
+Partial restore: `--only=baseline` restores only the file-hash state (useful after a full re-install where firewall and history should stay fresh); `--only=firewall` merges the firewall buckets into an existing daemon (useful for cloning blocklists across a cluster). It refuses while either side has a durable firewall action unresolved or its audit undelivered.
