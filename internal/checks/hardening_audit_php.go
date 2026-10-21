@@ -2,7 +2,13 @@ package checks
 
 import "strings"
 
-const phpUploadProgressKey = "session.upload_progress.enabled"
+const (
+	phpUploadProgressKey       = "session.upload_progress.enabled"
+	phpFatalErrorBacktracesKey = "fatal_error_backtraces"
+)
+
+// FPM pool overrides are tracked only for the settings the audit evaluates.
+var phpAuditPoolSettings = []string{phpUploadProgressKey, phpFatalErrorBacktracesKey}
 
 // Keep conditional settings separate: disabling one site does not disable
 // other sites that inherit PHP's global value.
@@ -49,12 +55,7 @@ func (ini phpAuditINI) merge(content string, pools bool) {
 			value += "\n" + strings.Join(lines[start+1:i+1], "\n")
 		}
 		if pools {
-			switch key {
-			case "php_value[" + phpUploadProgressKey + "]", "php_flag[" + phpUploadProgressKey + "]":
-				key = "value"
-			case "php_admin_value[" + phpUploadProgressKey + "]", "php_admin_flag[" + phpUploadProgressKey + "]":
-				key = "admin"
-			default:
+			if key = phpAuditPoolKey(key); key == "" {
 				continue
 			}
 		}
@@ -89,20 +90,36 @@ func phpAuditQuoteState(value string, quote byte) byte {
 	return quote
 }
 
-func (ini phpAuditINI) uploadProgressDisabled(pools phpAuditINI) bool {
-	value, set := ini[""][phpUploadProgressKey]
+// phpAuditPoolKey maps a tracked pool directive to "admin:<setting>" or
+// "value:<setting>", and anything else to "".
+func phpAuditPoolKey(directive string) string {
+	for _, setting := range phpAuditPoolSettings {
+		switch directive {
+		case "php_value[" + setting + "]", "php_flag[" + setting + "]":
+			return "value:" + setting
+		case "php_admin_value[" + setting + "]", "php_admin_flag[" + setting + "]":
+			return "admin:" + setting
+		}
+	}
+	return ""
+}
+
+// settingDisabled reports whether a boolean setting that defaults to on is
+// explicitly off globally and not turned back on by any section or pool.
+func (ini phpAuditINI) settingDisabled(key string, pools phpAuditINI) bool {
+	value, set := ini[""][key]
 	if !set || !phpAuditBoolDisabled(value) {
 		return false
 	}
 	for _, settings := range ini {
-		if value, set := settings[phpUploadProgressKey]; set && !phpAuditBoolDisabled(value) {
+		if value, set := settings[key]; set && !phpAuditBoolDisabled(value) {
 			return false
 		}
 	}
 	for _, settings := range pools {
-		value, set := settings["admin"]
+		value, set := settings["admin:"+key]
 		if !set {
-			value, set = settings["value"]
+			value, set = settings["value:"+key]
 		}
 		if set && !phpAuditBoolDisabled(value) {
 			return false

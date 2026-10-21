@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,17 +309,17 @@ func TestAuditPHPUploadProgressDisabledSyntax(t *testing.T) {
 func TestPHPAuditScopesPreservePrecedence(t *testing.T) {
 	settings := phpAuditINI{"": {}}
 	settings.merge("session.upload_progress.enabled = Off\n[PATH=/srv/www/]\nsession.upload_progress.enabled = On\n[Session]\nsession.upload_progress.enabled = Off\n", false)
-	if settings.uploadProgressDisabled(nil) {
+	if settings.settingDisabled(phpUploadProgressKey, nil) {
 		t.Fatal("global off must not hide conditional on")
 	}
 	settings.merge("[PATH = /srv/www]\nsession.upload_progress.enabled = Off\n", false)
 	pools := phpAuditINI{}
 	pools.merge("[www]\nphp_admin_flag[session.upload_progress.enabled] = Off\nphp_flag[session.upload_progress.enabled] = On\n", true)
-	if !settings.uploadProgressDisabled(pools) {
+	if !settings.settingDisabled(phpUploadProgressKey, pools) {
 		t.Fatal("later conditional off and admin off must take precedence")
 	}
 	pools.merge("[www]\nphp_admin_value[session.upload_progress.enabled] = On\n", true)
-	if settings.uploadProgressDisabled(pools) {
+	if settings.settingDisabled(phpUploadProgressKey, pools) {
 		t.Fatal("later pool admin on must take precedence")
 	}
 }
@@ -337,5 +338,75 @@ func TestPHPAuditScannedFiles(t *testing.T) {
 		if known != tc.known || !slices.Equal(files, tc.files) {
 			t.Fatalf("%q: got %v, %v; want %v, %v", tc.info, files, known, tc.files, tc.known)
 		}
+	}
+}
+
+func TestAuditPHPFatalErrorBacktraces(t *testing.T) {
+	const ini = "/opt/cpanel/ea-php85/root/etc/php.ini"
+	const scan = "/opt/cpanel/ea-php85/root/etc/php.d/"
+	const pools = "/opt/cpanel/ea-php85/root/etc/php-fpm.d/"
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"default on", map[string]string{ini: ""}, "warn"},
+		{"explicit on", map[string]string{ini: "fatal_error_backtraces = On\n"}, "warn"},
+		{"off in scan dir", map[string]string{
+			ini:             "",
+			scan + "zz.ini": "fatal_error_backtraces = Off\n",
+		}, "pass"},
+		{"pool turns it on", map[string]string{
+			ini:                "fatal_error_backtraces = Off\n",
+			pools + "www.conf": "[www]\nphp_admin_flag[fatal_error_backtraces] = On\n",
+		}, "warn"},
+		{"pool keeps it off", map[string]string{
+			ini:                "fatal_error_backtraces = Off\n",
+			pools + "www.conf": "[www]\nphp_value[fatal_error_backtraces] = Off\n",
+		}, "pass"},
+		{"host section on", map[string]string{
+			ini: "fatal_error_backtraces = Off\n[HOST=one.example]\nfatal_error_backtraces = 1\n",
+		}, "warn"},
+		{"upload progress pool value does not leak", map[string]string{
+			ini:                "fatal_error_backtraces = Off\n",
+			pools + "www.conf": "[www]\nphp_admin_flag[session.upload_progress.enabled] = On\n",
+		}, "pass"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withFakePHPFiles(t, tc.files)
+			withMockCmd(t, &mockCmd{})
+			r, ok := auditResultByName(auditPHP("cpanel"), "php_fatal_error_backtraces_85")
+			if !ok || r.Status != tc.want {
+				t.Fatalf("got %+v, present %v; want %s", r, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestAuditPHPFatalErrorBacktracesOnlyFromPHP85(t *testing.T) {
+	withFakePHPFiles(t, map[string]string{
+		"/opt/cpanel/ea-php84/root/etc/php.ini": "",
+		"/opt/cpanel/ea-php86/root/etc/php.ini": "",
+	})
+	withMockCmd(t, &mockCmd{})
+	results := auditPHP("cpanel")
+	if r, ok := auditResultByName(results, "php_fatal_error_backtraces_84"); ok {
+		t.Errorf("PHP 8.4 has no fatal_error_backtraces setting, got %+v", r)
+	}
+	if r, ok := auditResultByName(results, "php_fatal_error_backtraces_86"); !ok || r.Status != "warn" {
+		t.Errorf("PHP 8.6 default must warn: %+v, present %v", r, ok)
+	}
+}
+
+func TestAuditPHPVersionEOLPointsToVendorBackports(t *testing.T) {
+	withFakePHPFiles(t, map[string]string{"/opt/cpanel/ea-php74/root/etc/php.ini": ""})
+	withMockCmd(t, &mockCmd{})
+	withPHPAuditNow(t, time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC))
+	r, ok := auditResultByName(auditPHP("cpanel"), "php_version_74")
+	if !ok || r.Status != "fail" {
+		t.Fatalf("PHP 7.4 must fail as end of life: %+v, present %v", r, ok)
+	}
+	if strings.Contains(r.Fix, "receive no security patches") || !strings.Contains(r.Fix, "backport") {
+		t.Errorf("EOL fix text must point to vendor backports, got %q", r.Fix)
 	}
 }

@@ -427,6 +427,7 @@ func FuzzPHPAuditINI(f *testing.F) {
 	f.Add("session.upload_progress.enabled = Off\n", false)
 	f.Add("[HOST=one.example]\nsession.upload_progress.enabled = 0|1\n", false)
 	f.Add("[www]\nphp_admin_flag[session.upload_progress.enabled] = On\n", true)
+	f.Add("[www]\nphp_admin_flag[fatal_error_backtraces] = On\n", true)
 	f.Add("value = \"multiline\nsession.upload_progress.enabled = Off\n\"\n", false)
 	f.Fuzz(func(t *testing.T, content string, pools bool) {
 		settings := phpAuditINI{"": {}}
@@ -434,7 +435,7 @@ func FuzzPHPAuditINI(f *testing.F) {
 		if len(settings) > strings.Count(content, "\n")+2 {
 			t.Fatal("more scopes than input lines")
 		}
-		if settings.uploadProgressDisabled(nil) {
+		if settings.settingDisabled(phpUploadProgressKey, nil) {
 			value, set := settings[""][phpUploadProgressKey]
 			if !set || !phpAuditBoolDisabled(value) {
 				t.Fatal("reported disabled without an explicit global off setting")
@@ -442,7 +443,7 @@ func FuzzPHPAuditINI(f *testing.F) {
 		}
 		// A conditional off never disables the default global setting.
 		delete(settings[""], phpUploadProgressKey)
-		if settings.uploadProgressDisabled(nil) {
+		if settings.settingDisabled(phpUploadProgressKey, nil) {
 			t.Fatal("conditional settings disabled the global default")
 		}
 	})

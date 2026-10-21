@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md), [3.30 to 3.39](docs/changelog/3.30-3.39.md), [3.20 to 3.29](docs/changelog/3.20-3.29.md), [3.10 to 3.19](docs/changelog/3.10-3.19.md), [3.0 to 3.9](docs/changelog/3.0-3.9.md), [2.x](docs/changelog/2.x.md).
 
+## [Unreleased]
+
+### Changed
+
+- The hardening audit warns on PHP 8.5 and later while fatal error backtraces are on, a setting the PHP2Shell advisory says to turn off.
+
+### Fixed
+
+- The PHP end-of-life audit no longer says old branches get no security fixes; it points to vendor backports instead.
+
 ## [4.4.1] - 2026-10-21
 
 ### Security
