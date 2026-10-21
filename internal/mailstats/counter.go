@@ -87,13 +87,15 @@ type bucket struct {
 	Quarantined   int
 }
 
-// scanRef is what the join keeps of a successful scan: its score, and the
-// bucket and Scans key it counted under until a malware outcome moved it.
+// scanRef is what the join keeps of a message: the score of its successful
+// scan and the bucket and Scans key that scan counted under. Key is empty
+// while no scan has been seen. Malware is set once a malware reject or
+// quarantine of the message took its scan out of clean, or will.
 type scanRef struct {
-	score  int
-	bucket int64
-	key    string
-	moved  bool
+	score   int
+	bucket  int64
+	key     string
+	malware bool
 }
 
 // ringEntry is a reject in its class ring. Seq orders entries with the
@@ -174,10 +176,16 @@ func (c *Counter) RecordScan(at time.Time, s antispam.Scan) {
 		return
 	}
 	key := s.Mode + ":" + outcome
-	b.Scans[key]++
 	if s.OK && s.MsgID != "" {
-		c.rememberScan(s.MsgID, scanRef{score: s.Score, bucket: bucketStart(at), key: key})
+		ref := scanRef{score: s.Score, bucket: bucketStart(at), key: key}
+		if prev := c.scans[s.MsgID]; prev.malware && prev.key == "" {
+			// Quarantined before the log watcher read this marker.
+			ref.key, ref.malware = s.Mode+":malware", true
+		}
+		c.rememberScan(s.MsgID, ref)
+		key = ref.key
 	}
+	b.Scans[key]++
 }
 
 // RecordReject counts one reject and keeps it in its class ring when it is
@@ -231,14 +239,23 @@ func (c *Counter) RecordLoginFailure(at time.Time, mailbox bool, n int) {
 	}
 }
 
-// RecordQuarantine counts one message CSM quarantined.
+// RecordQuarantine counts one message CSM quarantined. The spool watcher
+// quarantines as soon as Exim accepts the message, often before the log
+// watcher reads its scan marker; RecordScan then counts that scan as
+// malware.
 func (c *Counter) RecordQuarantine(at time.Time, msgID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if b := c.bucketAt(at); b != nil {
-		b.Quarantined++
-		c.moveToMalware(msgID)
+	b := c.bucketAt(at)
+	if b == nil {
+		return
 	}
+	b.Quarantined++
+	if _, ok := c.scans[msgID]; !ok && msgID != "" {
+		c.rememberScan(msgID, scanRef{malware: true})
+		return
+	}
+	c.moveToMalware(msgID)
 }
 
 // moveToMalware recounts the scan of msgID as a malware outcome. Exim logs
@@ -248,7 +265,7 @@ func (c *Counter) RecordQuarantine(at time.Time, msgID string) {
 // holds, or whose bucket is gone, stays as it is. The caller holds c.mu.
 func (c *Counter) moveToMalware(msgID string) {
 	ref, ok := c.scans[msgID]
-	if !ok || ref.moved {
+	if !ok || ref.malware {
 		return
 	}
 	b := c.buckets[ref.bucket]
@@ -259,7 +276,7 @@ func (c *Counter) moveToMalware(msgID string) {
 	b.Scans[ref.key]--
 	b.Scans[mode+":malware"]++
 	c.dirty[ref.bucket] = true
-	ref.moved = true
+	ref.malware = true
 	c.scans[msgID] = ref
 }
 
@@ -303,8 +320,8 @@ func (c *Counter) bucket(k int64) *bucket {
 	return b
 }
 
-// rememberScan keeps the last scanJoinSize successful scans by message ID.
-// The caller holds c.mu.
+// rememberScan keeps the last scanJoinSize messages seen in a successful
+// scan or a quarantine, by message ID. The caller holds c.mu.
 func (c *Counter) rememberScan(msgID string, ref scanRef) {
 	if _, ok := c.scans[msgID]; !ok {
 		if len(c.scanIDs) == scanJoinSize {

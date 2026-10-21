@@ -481,6 +481,48 @@ func TestQuarantineMovesScanOutOfClean(t *testing.T) {
 		[]Point{{T: bucketKey(scanAt)}, {T: bucketKey(scanAt) + BucketSeconds, Malware: 1}})
 }
 
+// The spool watcher can quarantine a message before the log watcher reads
+// its scan marker. The scan then counts as malware straight away.
+func TestQuarantineBeforeScanCountsMalware(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 40, 0, 0, time.UTC)
+	scanAt := time.Date(2026, 10, 20, 12, 14, 59, 0, time.UTC)
+	const id = "1tAbCd-000001-Ab"
+	for _, s := range []antispam.Scan{
+		{OK: true, Mode: "enforce", Policy: "on", Decision: "none"},
+		{OK: true, Mode: "enforce", Policy: "off", Decision: "unfiltered"},
+		{OK: true, Mode: "enforce", Policy: "on", Decision: "tag"},
+		{OK: true, Mode: "enforce", Policy: "on", Decision: "reject"},
+		{OK: true, Mode: "dry-run", Policy: "on", Decision: "tag"},
+		{OK: true, Mode: "dry-run", Policy: "on", Decision: "reject"},
+	} {
+		t.Run(s.Mode+":"+s.Decision, func(t *testing.T) {
+			c := New(func() time.Time { return now })
+			c.RecordQuarantine(scanAt.Add(time.Second), id)
+			s.MsgID = id
+			c.RecordScan(scanAt, s)
+			checkMalwareMove(t, c, now,
+				Totals{Scanned: 1, Quarantined: 1, Rejects: map[Class]int{}, Temporary: map[Class]int{}},
+				[]Point{{T: bucketKey(scanAt)}, {T: bucketKey(scanAt) + BucketSeconds, Malware: 1}})
+		})
+	}
+}
+
+// A quarantine read before the scan already took that scan out of clean, so
+// a later malware reject of the message moves nothing. Another clean scan in
+// the same bucket stays clean.
+func TestQuarantineScanRejectMovesOnce(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 10, 0, 0, time.UTC)
+	const id = "1tAbCd-000001-Ab"
+	c := New(func() time.Time { return now })
+	c.RecordQuarantine(now, id)
+	c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Policy: "on", Decision: "none", MsgID: id})
+	c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Policy: "on", Decision: "none", MsgID: "1tAbCd-000002-Ab"})
+	c.RecordReject(Reject{At: now, Class: ClassMalware, MsgID: id})
+	checkMalwareMove(t, c, now.Add(time.Minute),
+		Totals{Scanned: 2, Clean: 1, Quarantined: 1, Rejects: map[Class]int{ClassMalware: 1}, Temporary: map[Class]int{}},
+		[]Point{{T: bucketKey(now), Clean: 1, Malware: 2}})
+}
+
 // A repeated malware line, or a reject and a quarantine of one message, moves
 // its scan once. Another clean scan in the same bucket stays clean.
 func TestMalwareMoveOnlyOnce(t *testing.T) {
