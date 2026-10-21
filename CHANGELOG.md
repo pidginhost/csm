@@ -12,7 +12,6 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Security
 
 - CSM is now built with Go 1.27.3, which rejects certificates chained through intermediate authorities that are no longer trusted.
-- Exposed-file findings stay active when a site's removal cannot be confirmed.
 
 ### Changed
 
