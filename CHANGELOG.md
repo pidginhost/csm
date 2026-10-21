@@ -27,6 +27,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - The PHP end-of-life audit no longer says old branches get no security fixes; it points to vendor backports instead.
 - Local IPv6 logins no longer raise login alerts, and the daemon log now says once when sshd sends host names CSM cannot track.
+- Mail login tracking now skips private IPv6 clients as it already skipped private IPv4 ranges, so internal clients are not blocked.
 
 ## [4.4.1] - 2026-10-21
 
