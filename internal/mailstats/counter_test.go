@@ -3,12 +3,14 @@ package mailstats
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/pidginhost/csm/internal/antispam"
 )
@@ -661,5 +663,32 @@ func TestRecordSendSumsByAccount(t *testing.T) {
 	}
 	if got := jsonOf(t, New(time.Now).TopSenders(from, to, 0)); got != `{"accounts":[],"total":0,"unresolved":0}` {
 		t.Fatalf("empty: %s", got)
+	}
+}
+
+// The owner lookups return slices of a log line or of the whole userdomains
+// file. A map key that kept the caller's string would pin that buffer for
+// the life of the bucket. Assigning to an existing string key stores the
+// new string, so every send, not only the first, must hand the map a copy.
+func TestRecordSendKeepsNoCallerString(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	c := New(func() time.Time { return now })
+	for i := range 2 {
+		line := strings.Repeat("x", 1<<16) + " alpha"
+		account := line[len(line)-len("alpha"):]
+		c.RecordSend(now, account)
+		c.mu.Lock()
+		sends := maps.Clone(c.buckets[bucketStart(now)].Sends)
+		var stored string
+		for k := range sends {
+			stored = k
+		}
+		c.mu.Unlock()
+		if len(sends) != 1 || sends["alpha"] != i+1 {
+			t.Fatalf("send %d: %v", i+1, sends)
+		}
+		if unsafe.StringData(stored) == unsafe.StringData(account) {
+			t.Fatalf("send %d: stored key shares the caller's buffer", i+1)
+		}
 	}
 }

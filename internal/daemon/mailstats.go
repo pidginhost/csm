@@ -21,12 +21,17 @@ var mailStatsPersistInterval = time.Minute
 // page. Every Exim line comes through here, so a parser runs only for a line
 // that holds its marker. The login count does not depend on the IP or infra
 // filters, so it matches a grep of the log. An arrival counts as a send of
-// its submitter's hosting account. Inbound mail has no submitter, and a
-// bounce or DSN from the null sender is Exim's own mail, not a send.
+// its submitter's hosting account; inbound mail has no submitter. A
+// null-sender arrival counts only when its submitter resolves to an
+// account: Exim's own bounces come from mailnull, which resolves to none,
+// and an account must not hide its mail behind <>.
 func (d *Daemon) recordMailStatsExim(line string, at time.Time) {
-	if strings.Contains(line, " <= ") && extractEximSender(line) != "<>" {
+	if i := strings.Index(line, " <= "); i >= 0 {
 		if id := eximlog.Submitter(line); id != "" {
-			d.mailStats.RecordSend(mailstats.LineTime(line, time.Local, at), mailAccountOwner(id))
+			owner := mailAccountOwner(id)
+			if owner != "" || !strings.HasPrefix(line[i+len(" <= "):], "<> ") {
+				d.mailStats.RecordSend(mailstats.LineTime(line, time.Local, at), owner)
+			}
 		}
 	}
 	if strings.Contains(line, " CSM-ANTISPAM ") {

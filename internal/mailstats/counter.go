@@ -288,7 +288,10 @@ func (c *Counter) RecordSend(at time.Time, account string) {
 	if b.Sends == nil {
 		b.Sends = map[string]int{}
 	}
-	b.Sends[account]++
+	// The owner lookups return slices of a log line or a whole host file,
+	// and assigning to an existing key stores the new string. Copy on every
+	// send so a bucket never pins those buffers.
+	b.Sends[strings.Clone(account)]++
 }
 
 // moveToMalware recounts the scan of msgID as a malware outcome. Exim logs
