@@ -15,6 +15,9 @@ import (
 type emailBlockCounts struct {
 	Active  int `json:"active"`
 	InRange int `json:"in_range"`
+	// Unavailable marks the counts as meaningless because the firewall
+	// state could not be read. A missing state file is not an error.
+	Unavailable bool `json:"unavailable"`
 }
 
 // emailOverviewResponse is the Email page's headline numbers and chart. The
@@ -48,12 +51,13 @@ func mailRelatedReason(reason string) bool {
 }
 
 // mailBlockCounts counts the active mail-related IP blocks in the firewall
-// state, and those placed in [from, to). A state that cannot be read counts
-// as none.
+// state, and those placed in [from, to). A state that cannot be read is
+// unavailable: zero would tell the operator nothing is blocked.
 func mailBlockCounts(statePath string, from, to, now time.Time) emailBlockCounts {
 	var counts emailBlockCounts
 	st, err := firewall.LoadState(statePath)
 	if err != nil {
+		counts.Unavailable = true
 		return counts
 	}
 	for _, b := range st.Blocked {

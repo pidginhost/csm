@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
 )
@@ -29,7 +28,7 @@ func withEximProbe(t *testing.T, lookPath func(string) (string, error), run func
 func clearQueueDetail() {
 	queueDetail.Lock()
 	defer queueDetail.Unlock()
-	queueDetail.at, queueDetail.frozen, queueDetail.oldest = time.Time{}, 0, ""
+	queueDetail.state = queueDetailState{}
 }
 
 // The daemon serves this API from inside ProtectSystem=strict, where exim

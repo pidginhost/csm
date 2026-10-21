@@ -333,49 +333,74 @@ type emailQueueState struct {
 	Warn        int  `json:"warn"`
 	Crit        int  `json:"crit"`
 	Frozen      int  `json:"frozen"`
-	// OldestAgeSeconds is left out when the queue is empty or was never
-	// listed.
+	// OldestAgeSeconds is left out when the queue is empty, holds no dated
+	// message, or the detail is unavailable.
 	OldestAgeSeconds *int `json:"oldest_age_seconds,omitempty"`
+	// DetailUnavailable marks frozen and oldest as unknown: no listing has
+	// succeeded within queueDetailMaxAge.
+	DetailUnavailable bool `json:"detail_unavailable"`
 }
 
-// queueDetailTTL is how long a queue listing is reused. exim -bp reads every
-// queued message, which takes seconds on a deep queue, while the Email page
-// polls; the depth from exim -bpc stays live.
-const queueDetailTTL = time.Minute
+const (
+	// queueDetailTTL spaces queue listings. exim -bp reads every queued
+	// message, which takes seconds on a deep queue, while the Email page
+	// polls; the depth from exim -bpc stays live.
+	queueDetailTTL = time.Minute
+	// queueDetailMaxAge is how long the last good listing is served while
+	// newer ones fail. A deep queue is when listings time out and when a
+	// stale frozen count misleads most.
+	queueDetailMaxAge = 10 * time.Minute
+)
 
-// queueDetail is the last queue listing. Its lock is held while a listing
+// queueDetail caches the queue listing. Its lock is held while a listing
 // runs, so concurrent polls wait for one listing instead of each starting
 // their own.
 var queueDetail struct {
 	sync.Mutex
-	at     time.Time
+	state queueDetailState
+}
+
+type queueDetailState struct {
+	tried  time.Time // last listing attempt
+	listed time.Time // last successful listing
 	frozen int
-	oldest string
+	// oldestQueued is when the oldest listed message was queued, the age
+	// the listing gave counted back from listed; zero when it gave none.
+	oldestQueued time.Time
 }
 
 // queueSnapshot reads the queue depth on every call and lists the queue at
-// most once per queueDetailTTL. A failed listing keeps the previous detail
-// until the next listing is due, so a listing that times out on a deep queue
-// does not run on every poll. Only a failed depth marks the queue
-// unavailable. The caller fills Warn and Crit.
+// most once per queueDetailTTL, failed attempts included. Frozen and oldest
+// come from the last good listing, with oldest aged to now, for up to
+// queueDetailMaxAge; past that DetailUnavailable is set. An empty depth
+// drops the listing, which describes mail that is gone. Only a failed depth
+// marks the queue unavailable. The caller fills Warn and Crit.
 func queueSnapshot(now time.Time) emailQueueState {
 	size, ok := eximQueueSize()
 	q := emailQueueState{Size: size, Unavailable: !ok}
-	if ok && size == 0 {
-		// Nothing queued: nothing is frozen, whatever the last listing said.
-		return q
-	}
 	queueDetail.Lock()
 	defer queueDetail.Unlock()
-	if queueDetail.at.IsZero() || now.Sub(queueDetail.at) >= queueDetailTTL {
-		if frozen, oldest, ok := eximQueueDetails(); ok {
-			queueDetail.frozen, queueDetail.oldest = frozen, oldest
-		}
-		queueDetail.at = now
+	d := &queueDetail.state
+	if ok && size == 0 {
+		*d = queueDetailState{}
+		return q
 	}
-	q.Frozen = queueDetail.frozen
-	if queueDetail.oldest != "" {
-		secs := intel.AgeToSeconds(queueDetail.oldest)
+	if d.tried.IsZero() || now.Sub(d.tried) >= queueDetailTTL {
+		d.tried = now
+		if frozen, oldest, ok := eximQueueDetails(); ok {
+			d.listed, d.frozen, d.oldestQueued = now, frozen, time.Time{}
+			if oldest != "" {
+				d.oldestQueued = now.Add(-time.Duration(intel.AgeToSeconds(oldest)) * time.Second)
+			}
+		}
+	}
+	if d.listed.IsZero() || now.Sub(d.listed) > queueDetailMaxAge {
+		q.DetailUnavailable = true
+		return q
+	}
+	q.Frozen = d.frozen
+	if !d.oldestQueued.IsZero() {
+		secs := int(now.Sub(d.oldestQueued) / time.Second)
 		q.OldestAgeSeconds = &secs
 	}
 	return q

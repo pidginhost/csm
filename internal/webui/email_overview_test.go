@@ -114,10 +114,12 @@ func TestEmailOverviewQueueDetailCached(t *testing.T) {
 	if st.calls["-bpc"] != 2 || st.calls["-bp"] != 1 {
 		t.Fatalf("calls = %v, want -bpc twice and -bp once", st.calls)
 	}
-	for _, q := range []emailQueueState{first, second} {
-		if q.Size != 2 || q.Frozen != 1 || q.OldestAgeSeconds == nil || *q.OldestAgeSeconds != 4*86400 {
-			t.Errorf("snapshot = %+v, want size 2, one frozen, oldest 4d", q)
-		}
+	if first.Size != 2 || first.Frozen != 1 || first.OldestAgeSeconds == nil || *first.OldestAgeSeconds != 4*86400 {
+		t.Errorf("first snapshot = %+v, want size 2, one frozen, oldest 4d", first)
+	}
+	// The reused listing's oldest message ages with the clock.
+	if second.DetailUnavailable || second.Frozen != 1 || second.OldestAgeSeconds == nil || *second.OldestAgeSeconds != 4*86400+10 {
+		t.Errorf("second snapshot = %+v, want one frozen, oldest 4d plus 10 s", second)
 	}
 	queueSnapshot(t0.Add(time.Minute))
 	if st.calls["-bp"] != 2 {
@@ -125,32 +127,44 @@ func TestEmailOverviewQueueDetailCached(t *testing.T) {
 	}
 }
 
-// A listing that fails, as it can by timing out on a deep queue, must not
-// run again on every poll or erase what the last listing found. Only a
+// A listing that fails, as it can by timing out on a deep queue, is retried
+// no more than once a minute. The last good listing is served, aged, for ten
+// minutes; after that the detail is unavailable rather than stale. Only a
 // failed count makes the queue unavailable.
-func TestQueueSnapshotFailedListingKeepsDetail(t *testing.T) {
+func TestQueueSnapshotFailedListing(t *testing.T) {
 	st := stubQueue(t, "2\n", queueListing)
 	t0 := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	queueSnapshot(t0)
 
 	st.listing = "fail"
-	q := queueSnapshot(t0.Add(time.Minute))
-	if q.Unavailable || q.Frozen != 1 || q.OldestAgeSeconds == nil || *q.OldestAgeSeconds != 4*86400 {
-		t.Errorf("after a failed listing: %+v, want the previous detail and an available queue", q)
+	q := queueSnapshot(t0.Add(5 * time.Minute))
+	if q.Unavailable || q.DetailUnavailable || q.Frozen != 1 || q.OldestAgeSeconds == nil || *q.OldestAgeSeconds != 4*86400+300 {
+		t.Errorf("5 min after the last listing: %+v, want its frozen count and an oldest age 5 min older", q)
 	}
-	queueSnapshot(t0.Add(90 * time.Second))
+	queueSnapshot(t0.Add(5*time.Minute + 30*time.Second))
 	if st.calls["-bp"] != 2 {
-		t.Errorf("-bp ran %d times, want the failed listing left alone for a minute", st.calls["-bp"])
+		t.Errorf("-bp ran %d times, want a failed listing retried no sooner than a minute later", st.calls["-bp"])
+	}
+
+	q = queueSnapshot(t0.Add(11 * time.Minute))
+	if st.calls["-bp"] != 3 || q.Unavailable || !q.DetailUnavailable || q.Frozen != 0 || q.OldestAgeSeconds != nil {
+		t.Errorf("11 min after the last listing: %+v after %d listings, want detail unavailable with no frozen or oldest", q, st.calls["-bp"])
 	}
 
 	st.count = "fail"
-	if q := queueSnapshot(t0.Add(100 * time.Second)); !q.Unavailable {
+	if q := queueSnapshot(t0.Add(12 * time.Minute)); !q.Unavailable {
 		t.Errorf("failed count served as %+v, want unavailable", q)
+	}
+
+	stubQueue(t, "2\n", "fail")
+	if q := queueSnapshot(t0); !q.DetailUnavailable || q.Frozen != 0 || q.OldestAgeSeconds != nil {
+		t.Errorf("never listed: %+v, want detail unavailable", q)
 	}
 }
 
-// An empty queue holds nothing frozen, whatever a listing from up to a
-// minute ago said, and needs no listing.
+// An empty queue holds nothing frozen, and a listing taken before it emptied
+// describes mail that is gone, so a queue that goes 2, 0, 1 within a minute
+// is listed afresh.
 func TestQueueSnapshotEmptyQueue(t *testing.T) {
 	st := stubQueue(t, "2\n", queueListing)
 	t0 := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
@@ -158,12 +172,17 @@ func TestQueueSnapshotEmptyQueue(t *testing.T) {
 
 	st.count = "0\n"
 	q := queueSnapshot(t0.Add(10 * time.Second))
-	if q.Size != 0 || q.Unavailable || q.Frozen != 0 || q.OldestAgeSeconds != nil {
+	if q.Size != 0 || q.Unavailable || q.DetailUnavailable || q.Frozen != 0 || q.OldestAgeSeconds != nil {
 		t.Errorf("empty queue served as %+v, want size 0 with no frozen or oldest", q)
 	}
-	queueSnapshot(t0.Add(2 * time.Minute))
 	if st.calls["-bp"] != 1 {
-		t.Errorf("-bp ran %d times on an empty queue, want only the first listing", st.calls["-bp"])
+		t.Errorf("-bp ran %d times, want an empty queue left unlisted", st.calls["-bp"])
+	}
+
+	st.count, st.listing = "1\n", "10m  1.0K 1tQxZb-000GhI-56 <>\n          new@example.net\n"
+	q = queueSnapshot(t0.Add(20 * time.Second))
+	if st.calls["-bp"] != 2 || q.Frozen != 0 || q.OldestAgeSeconds == nil || *q.OldestAgeSeconds != 600 {
+		t.Errorf("after 2, 0, 1: %+v after %d listings, want a fresh listing of the new message", q, st.calls["-bp"])
 	}
 }
 
@@ -268,6 +287,14 @@ func TestMailBlockCounts(t *testing.T) {
 
 	if got := mailBlockCounts(dir, from, to, now); got != (emailBlockCounts{Active: 2, InRange: 1}) {
 		t.Errorf("counts = %+v, want 2 active and 1 in range", got)
+	}
+
+	// A state file that cannot be read must not read as nothing blocked.
+	if err := os.WriteFile(filepath.Join(dir, "firewall", "state.json"), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := mailBlockCounts(dir, from, to, now); got != (emailBlockCounts{Unavailable: true}) {
+		t.Errorf("unreadable state: %+v, want unavailable with no counts", got)
 	}
 }
 
