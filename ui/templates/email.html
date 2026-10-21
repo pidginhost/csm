@@ -4,12 +4,114 @@
     <div class="csm-page-header mb-3">
         <div class="csm-page-header__main">
             <h1 class="csm-page-header__title"><i class="ti ti-mail"></i>&nbsp;Email Security</h1>
-            <div class="csm-page-header__subtitle" id="email-subtitle">Loading mail surface...</div>
+            <div class="csm-page-header__subtitle" id="email-subtitle">Loading mail numbers...</div>
         </div>
         <div class="csm-page-header__actions">
-            <button type="button" class="btn btn-ghost-secondary btn-sm" id="email-refresh" title="Refresh email surface" aria-label="Refresh email surface">
+            <select id="email-range" class="form-select form-select-sm csm-auto-width" aria-label="Time range" title="Time range">
+                <option value="24h">Last 24 hours</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+            </select>
+            <button type="button" class="btn btn-ghost-secondary btn-sm" id="email-refresh" title="Refresh the email page" aria-label="Refresh the email page">
                 <i class="ti ti-refresh"></i>
             </button>
+        </div>
+    </div>
+
+    <!-- Headline numbers for the selected range -->
+    <div class="row row-deck row-cards mb-3" id="email-kpis">
+        <div class="col-6 col-lg" id="kpi-scanned">
+            <div class="card stat-card">
+                <div class="card-body">
+                    <div class="subheader">Mail scanned</div>
+                    <div class="h1 mb-0" data-kpi-value>-</div>
+                    <div class="text-muted small" data-kpi-sub></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg" id="kpi-spam">
+            <div class="card stat-card">
+                <div class="card-body">
+                    <div class="subheader">Spam rejected</div>
+                    <div class="d-flex align-items-center flex-wrap gap-2">
+                        <div class="h1 mb-0" data-kpi-value>-</div>
+                        <span class="badge" data-kpi-badge></span>
+                    </div>
+                    <div class="text-muted small" data-kpi-sub></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg" id="kpi-tagged">
+            <div class="card stat-card">
+                <div class="card-body">
+                    <div class="subheader">Spam tagged</div>
+                    <div class="h1 mb-0" data-kpi-value>-</div>
+                    <div class="text-muted small" data-kpi-sub></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg" id="kpi-malware">
+            <div class="card stat-card">
+                <div class="card-body">
+                    <div class="subheader">Malware</div>
+                    <div class="h1 mb-0" data-kpi-value>-</div>
+                    <div class="text-muted small" data-kpi-sub></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg" id="kpi-other">
+            <div class="card stat-card">
+                <div class="card-body">
+                    <div class="subheader">Other rejects</div>
+                    <div class="h1 mb-0" data-kpi-value>-</div>
+                    <div class="text-muted small" data-kpi-sub></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg" id="kpi-logins">
+            <div class="card stat-card">
+                <div class="card-body">
+                    <div class="subheader">Failed logins</div>
+                    <div class="h1 mb-0" data-kpi-value>-</div>
+                    <div class="text-muted small" data-kpi-sub></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg" id="kpi-queue">
+            <a href="#email-tab-queue" class="card card-link stat-card" title="Mail queue: open the Queue tab">
+                <div class="card-body">
+                    <div class="subheader">Queue</div>
+                    <div class="h1 mb-0" data-kpi-value>-</div>
+                    <div class="text-muted small" data-kpi-sub></div>
+                </div>
+            </a>
+        </div>
+    </div>
+
+    <!-- Mail decisions chart (left) + rspamd (right) -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title"><i class="ti ti-chart-bar"></i>&nbsp;Mail decisions</h2>
+                </div>
+                <div class="card-body d-flex flex-column">
+                    <div class="csm-chart-md flex-grow-1">
+                        <canvas id="email-decisions-chart" role="img" aria-label="Chart of mail decisions over the selected range: clean, tagged, spam rejected, malware and other rejects"></canvas>
+                    </div>
+                    <div class="text-muted small mt-2" id="email-chart-note"></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title"><i class="ti ti-filter"></i>&nbsp;rspamd</h2>
+                </div>
+                <div class="card-body" id="email-rspamd">
+                    <div class="text-muted small">Loading rspamd...</div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -340,6 +442,7 @@
     </div>
 {{end}}
 {{define "scripts"}}
+<script src="{{asset "js/chart.min.js"}}"></script>
 <script src="{{asset "js/email.js"}}"></script>
 {{end}}
 {{template "layout" .}}

@@ -112,7 +112,7 @@ test('firewall expiry and audit lifetimes come from instants and seconds', async
 test('the mail queue age comes from seconds', async () => {
     const page = loadPage(templateBody('email'), SHARED.concat(['email.js']));
     page.document.dispatchEvent(new page.window.Event('DOMContentLoaded'));
-    await answerAll(page, { '/api/v1/email/stats': { queue_size: 3, frozen_count: 1, oldest_age_seconds: 4 * DAY, smtp_allow_users: [], smtp_ports: [], port_flood: [], top_senders: [] } });
+    await answerAll(page, { '/api/v1/email/overview': { queue: { size: 3, frozen: 1, oldest_age_seconds: 4 * DAY } } });
     assert.match(page.document.body.textContent, /4d/);
 });
 

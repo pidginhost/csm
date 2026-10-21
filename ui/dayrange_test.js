@@ -136,16 +136,31 @@ test('email asks for the chosen days in the operator zone', async () => {
         assert.equal(query(r.url).get('from'), DAY_START, r.url);
         assert.equal(query(r.url).get('to'), NEXT_DAY_START, r.url);
     }
+    assert.equal(page.document.getElementById('email-range').value, 'custom');
 });
 
-test('email filters default to today in the operator zone', async () => {
-    for (const tz of ['Pacific/Kiritimati', 'Etc/GMT+12']) {
-        const want = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-        const page = loadPage(templateBody('email'), SHARED.concat(['email.js']), { storage: zone(tz) });
-        await settle();
-        assert.equal(page.document.getElementById('filter-from').value, want, tz);
-        assert.equal(page.document.getElementById('filter-to').value, want, tz);
-    }
+// offsetMinutes is how far tz is ahead of UTC at the instant ms.
+function offsetMinutes(tz, ms) {
+    const p = {};
+    new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit' }).formatToParts(new Date(ms)).forEach(x => { p[x.type] = x.value; });
+    return Math.round((Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute) - Math.floor(ms / 60000) * 60000) / 60000);
+}
+
+test('email defaults to the last 24 hours in the operator zone', async () => {
+    const page = loadPage(templateBody('email'), SHARED.concat(['email.js']), { storage: CHATHAM });
+    await settle();
+    const now = Date.now();
+    assert.equal(page.document.getElementById('email-range').value, '24h');
+    const reqs = page.pending('/api/v1/email/overview');
+    assert.equal(reqs.length, 1, 'overview not requested');
+    const from = Date.parse(query(reqs[0].url).get('from'));
+    // The start of the current Chatham hour, 23 hours back. Chatham is
+    // UTC+12:45 or +13:45, so its hours start a quarter past the UTC hour.
+    const offset = offsetMinutes('Pacific/Chatham', from);
+    assert.equal(new Date(from).getUTCMinutes(), (60 - offset % 60) % 60);
+    assert.equal(new Date(from).getUTCSeconds(), 0);
+    assert.ok(now - from >= 23 * 3600000 && now - from <= 24 * 3600000, new Date(from).toISOString());
 });
 
 test('quarantine date filters use days in the operator zone', async () => {

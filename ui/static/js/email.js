@@ -1,5 +1,6 @@
-// CSM Email Workbench (phase 8.3)
-// Layout: status strip + action groups + protection state + tabs
+// CSM Email Security page.
+// Layout: range header, headline numbers, mail decisions chart and rspamd,
+// status strip, action groups, protection state, tabs.
 (function() {
     'use strict';
 
@@ -65,6 +66,476 @@
     if (checkEl && CSM.urlState.get('check')) checkEl.value = CSM.urlState.get('check');
     if (searchEl && CSM.urlState.get('search')) searchEl.value = CSM.urlState.get('search');
     var initialTab = CSM.urlState.get('tab');
+
+    // ---------- Range ----------
+
+    var RANGE_KEY = 'csm-email-range';
+    var RANGE_WORDS = { '24h': 'in the last 24 hours', '7d': 'in the last 7 days', '30d': 'in the last 30 days' };
+    var rangeEl = document.getElementById('email-range');
+
+    function knownRange(key) {
+        return Object.prototype.hasOwnProperty.call(RANGE_WORDS, key);
+    }
+
+    // Links from before the range select carry days in from/to; they open a
+    // Custom range over those days. A missing side is today, as the old date
+    // inputs had it.
+    var linkFrom = CSM.urlState.get('from') || '';
+    var linkTo = CSM.urlState.get('to') || '';
+    var customRange = null;
+    if (linkFrom || linkTo) {
+        var linked = CSM.prefs.dayRange(linkFrom || today, linkTo || today);
+        if (linked.from && linked.to) {
+            customRange = { from: Date.parse(linked.from), to: Date.parse(linked.to),
+                label: (linkFrom || today) === (linkTo || today) ? (linkFrom || today) : (linkFrom || today) + ' to ' + (linkTo || today) };
+        }
+    }
+    if (rangeEl) {
+        if (customRange) {
+            var customOpt = document.createElement('option');
+            customOpt.value = 'custom';
+            customOpt.textContent = customRange.label;
+            rangeEl.appendChild(customOpt);
+            rangeEl.value = 'custom';
+        } else {
+            var stored = null;
+            try { stored = window.localStorage.getItem(RANGE_KEY); } catch (e) { /* storage unavailable */ }
+            rangeEl.value = knownRange(stored) ? stored : '24h';
+        }
+    }
+
+    // daysBefore returns the day n days before day, both YYYY-MM-DD.
+    function daysBefore(day, n) {
+        var p = day.split('-');
+        return new Date(Date.UTC(+p[0], +p[1] - 1, +p[2] - n)).toISOString().slice(0, 10);
+    }
+
+    // hourStart returns the start of the operator-zone hour holding ms.
+    function hourStart(ms) {
+        var wall = CSM.prefs.formatDateTime(new Date(ms));
+        return Math.floor(ms / 1000) * 1000 - (+wall.slice(14, 16) * 60 + +wall.slice(17, 19)) * 1000;
+    }
+
+    // currentRange returns the selected range: the last 24 operator-zone
+    // hours, the last 7 or 30 operator-zone days up to now, or the days of
+    // a Custom link.
+    function currentRange() {
+        var key = rangeEl ? rangeEl.value : '24h';
+        var now = Date.now();
+        if (key === 'custom' && customRange) {
+            return { key: key, from: new Date(customRange.from), to: new Date(customRange.to) };
+        }
+        if (key === '7d' || key === '30d') {
+            var first = daysBefore(CSM.prefs.today(), key === '7d' ? 6 : 29);
+            return { key: key, from: new Date(CSM.prefs.dayBoundary(first, false)), to: new Date(now) };
+        }
+        return { key: '24h', from: new Date(hourStart(now) - 23 * 3600000), to: new Date(now) };
+    }
+
+    function rangeQuery(range, base) {
+        return (base ? base + '&' : '') + 'from=' + encodeURIComponent(range.from.toISOString()) +
+            '&to=' + encodeURIComponent(range.to.toISOString());
+    }
+
+    function rangeWords(range) {
+        return range.key === 'custom' ? 'for ' + customRange.label : RANGE_WORDS[range.key];
+    }
+
+    // ---------- Headline numbers ----------
+
+    // Labels for the reject classes the overview counts.
+    var REJECT_CLASS_LABELS = {
+        spam: 'Spam',
+        malware: 'Malware',
+        unknown_recipient: 'Unknown recipient',
+        sender_verify: 'Sender verification',
+        bad_helo: 'Bad HELO',
+        relay_denied: 'Relay denied',
+        auth_required: 'Auth required',
+        suspended: 'Suspended account',
+        mailbox_full: 'Mailbox full',
+        blocklisted: 'Blocklisted',
+        rate_limited: 'Rate limited (temporary)',
+        other: 'Other'
+    };
+
+    function rejectClassLabel(cls) {
+        return Object.prototype.hasOwnProperty.call(REJECT_CLASS_LABELS, cls) ? REJECT_CLASS_LABELS[cls] : cls;
+    }
+
+    var MODE_BADGES = { 'enforce': 'bg-green-lt', 'dry-run': 'bg-yellow-lt', 'off': 'bg-secondary-lt' };
+
+    function modeBadgeClass(mode) {
+        return 'badge ' + (Object.prototype.hasOwnProperty.call(MODE_BADGES, mode) ? MODE_BADGES[mode] : 'bg-secondary-lt');
+    }
+
+    var num = function(n) { return CSM.formatNumber(n || 0); };
+
+    var _overview = null;
+    var _overviewRange = null;
+    var _overviewSeq = 0;
+    var _rspamd = null;
+
+    function loadOverview() {
+        var range = currentRange();
+        var seq = ++_overviewSeq;
+        CSM.get('/api/v1/email/overview?' + rangeQuery(range))
+            .then(function(ov) {
+                if (seq !== _overviewSeq) return;
+                _overview = ov;
+                _overviewRange = range;
+                CSM.clearLoadError(document.getElementById('email-kpis'));
+                renderKPIs(ov);
+                renderChart(ov, range);
+                renderSubtitle();
+            })
+            .catch(function(err) {
+                if (seq !== _overviewSeq) return;
+                CSM.loadError(document.getElementById('email-kpis'), loadOverview, { title: 'Failed to load mail numbers', error: err });
+            });
+    }
+
+    // setKPI fills one headline card. Seven cards share a row, so a count
+    // of six figures or more is shortened ("1.2M") and the exact count goes
+    // in the title.
+    function setKPI(id, value, sub, valueClass) {
+        var card = document.getElementById(id);
+        if (!card) return;
+        var v = card.querySelector('[data-kpi-value]');
+        var text = value, title = '';
+        if (typeof value === 'number') {
+            text = num(value);
+            if (value >= 100000) {
+                title = text;
+                text = value.toLocaleString(undefined, { notation: 'compact', maximumFractionDigits: 1 });
+            }
+        }
+        v.textContent = text;
+        if (title) v.setAttribute('title', title); else v.removeAttribute('title');
+        v.className = 'h1 mb-0' + (valueClass ? ' ' + valueClass : '');
+        card.querySelector('[data-kpi-sub]').textContent = sub;
+    }
+
+    // otherRejects sums the permanent rejects outside spam and malware, the
+    // same count the chart's Other rejects series shows: a temporary reject
+    // defers the message, which comes back and is decided later.
+    function otherRejects(t) {
+        var rejects = t.rejects || {}, temporary = t.temporary || {};
+        var out = { total: 0, top: '', topCount: 0 };
+        Object.keys(rejects).forEach(function(cls) {
+            if (cls === 'spam' || cls === 'malware') return;
+            var n = (rejects[cls] || 0) - (temporary[cls] || 0);
+            if (n <= 0) return;
+            out.total += n;
+            if (n > out.topCount) { out.top = cls; out.topCount = n; }
+        });
+        return out;
+    }
+
+    function renderKPIs(ov) {
+        var t = ov.totals || {};
+        var scanned = t.scanned || 0;
+        var scannedSub = scanned > 0 ? Math.floor((t.clean || 0) / scanned * 100) + '% clean' : 'nothing scanned';
+        if (t.scan_errors > 0) scannedSub += ', ' + num(t.scan_errors) + ' scan errors';
+        setKPI('kpi-scanned', scanned, scannedSub);
+
+        setKPI('kpi-spam', t.rejected || 0, t.would_reject > 0 ? 'would reject ' + num(t.would_reject) : 'at SMTP time');
+        var badge = document.querySelector('#kpi-spam [data-kpi-badge]');
+        if (badge) {
+            badge.className = modeBadgeClass(ov.mode);
+            badge.textContent = ov.mode || '';
+        }
+        setKPI('kpi-tagged', t.tagged || 0, t.would_tag > 0 ? 'would tag ' + num(t.would_tag) : 'delivered, marked as spam');
+
+        var rejects = t.rejects || {}, temporary = t.temporary || {};
+        var smtpMalware = (rejects.malware || 0) - (temporary.malware || 0);
+        setKPI('kpi-malware', smtpMalware + (t.quarantined || 0),
+            num(smtpMalware) + ' rejected at SMTP, ' + num(t.quarantined) + ' quarantined');
+
+        var other = otherRejects(t);
+        setKPI('kpi-other', other.total, other.top ? rejectClassLabel(other.top) + ' ' + num(other.topCount) : 'none');
+
+        var blocks = ov.blocks || {};
+        var blocked = blocks.in_range || 0;
+        setKPI('kpi-logins', (t.logins_smtp || 0) + (t.logins_mailbox || 0),
+            blocks.unavailable ? 'block count unavailable' : num(blocked) + (blocked === 1 ? ' IP blocked' : ' IPs blocked'));
+
+        renderQueueKPI(ov.queue || {});
+    }
+
+    // The queue is colored from the thresholds the mail_queue check alerts
+    // on, so the card and the alert agree.
+    function renderQueueKPI(q) {
+        if (q.unavailable) {
+            setKPI('kpi-queue', '--', 'queue size unknown', 'text-warning');
+            return;
+        }
+        var size = q.size || 0;
+        var cls = '';
+        if (q.crit > 0 && size >= q.crit) cls = 'text-danger';
+        else if (q.warn > 0 && size >= q.warn) cls = 'text-warning';
+        var sub;
+        if (size === 0) sub = 'empty';
+        else if (q.detail_unavailable) sub = 'oldest unknown';
+        else {
+            sub = q.oldest_age_seconds != null ? 'oldest ' + CSM.formatDuration(q.oldest_age_seconds) : 'no dated message';
+            if (q.frozen > 0) sub += ', ' + num(q.frozen) + ' frozen';
+        }
+        setKPI('kpi-queue', size, sub, cls);
+    }
+
+    // stateLine says in one sentence how mail is doing over the range.
+    function stateLine(ov, rs, range) {
+        var parts = [];
+        if (rs && rs.status === 'down') parts.push('rspamd is down.');
+        else if (ov.mode === 'off') parts.push('Antispam is off.');
+        var t = ov.totals || {};
+        var words = rangeWords(range);
+        if (!t.scanned) {
+            parts.push('No mail scanned ' + words + '.');
+        } else if (ov.mode === 'dry-run') {
+            parts.push('Mail flowing. Dry run: ' + num(t.would_reject) + ' would be rejected and ' + num(t.would_tag) + ' tagged ' + words + '.');
+        } else {
+            parts.push('Mail flowing. ' + num(t.rejected) + ' spam rejected and ' + num(t.tagged) + ' tagged ' + words + '.');
+        }
+        var q = ov.queue || {};
+        if (q.unavailable) parts.push('Queue size unknown.');
+        else if (!q.size) parts.push('Queue empty.');
+        else if (q.oldest_age_seconds != null && !q.detail_unavailable) parts.push('Queue ' + num(q.size) + ', oldest ' + CSM.formatDuration(q.oldest_age_seconds) + '.');
+        else parts.push('Queue ' + num(q.size) + '.');
+        return parts.join(' ');
+    }
+
+    function renderSubtitle() {
+        var el = document.getElementById('email-subtitle');
+        if (el && _overview) el.textContent = stateLine(_overview, _rspamd, _overviewRange);
+    }
+
+    // ---------- Mail decisions chart ----------
+
+    var decisionsChart = null;
+    var _chartGapMinutes = [];
+
+    // chartPeriods returns the bars of a range: operator-zone hours for 24
+    // hours, operator-zone days otherwise. Hour bars step 3600 s from the
+    // first hour start; clock changes move by whole hours, so every step
+    // lands on the next hour start.
+    function chartPeriods(range) {
+        var from = range.from.getTime(), to = range.to.getTime();
+        var periods = [];
+        if (range.key === '24h') {
+            for (var t = from; t < to; t += 3600000) {
+                periods.push({ start: t, end: t + 3600000, label: CSM.prefs.formatDateTime(new Date(t)).slice(11, 16) });
+            }
+            return periods;
+        }
+        var day = CSM.prefs.formatDateTime(range.from).slice(0, 10);
+        for (var start = from; start < to;) {
+            var next = CSM.prefs.dayBoundary(day, true);
+            if (next === null || next <= start) break;
+            periods.push({ start: start, end: next, label: day.slice(5) });
+            day = daysBefore(day, -1);
+            start = next;
+        }
+        return periods;
+    }
+
+    var SERIES_KEYS = ['clean', 'tagged', 'rejected', 'malware', 'other'];
+
+    // groupSeries sums the 15-minute buckets, sorted by time, into periods.
+    function groupSeries(series, periods) {
+        var out = {};
+        SERIES_KEYS.forEach(function(k) { out[k] = periods.map(function() { return 0; }); });
+        var j = 0;
+        (series || []).forEach(function(p) {
+            var ms = p.t * 1000;
+            while (j < periods.length && ms >= periods[j].end) j++;
+            if (j === periods.length || ms < periods[j].start) return;
+            SERIES_KEYS.forEach(function(k) { out[k][j] += p[k] || 0; });
+        });
+        return out;
+    }
+
+    function gapMinutes(gaps, period) {
+        var ms = 0;
+        (gaps || []).forEach(function(g) {
+            var s = Math.max(Date.parse(g.start), period.start);
+            var e = Math.min(Date.parse(g.end), period.end);
+            if (e > s) ms += e - s;
+        });
+        return Math.round(ms / 60000);
+    }
+
+    function themeColor(name, fallback) {
+        var v = getComputedStyle(document.documentElement).getPropertyValue(name);
+        return (v && v.trim()) || fallback;
+    }
+
+    function renderChartNote(ov, range) {
+        var note = document.getElementById('email-chart-note');
+        if (!note) return;
+        var parts = [];
+        if (!ov.counting_since) parts.push('Counting has not started.');
+        else if (Date.parse(ov.counting_since) > range.from.getTime()) parts.push('Counting since ' + CSM.fmtDate(ov.counting_since) + '.');
+        if (ov.uncounted_minutes > 0) parts.push('Not counted while CSM was stopped: ' + num(ov.uncounted_minutes) + ' min.');
+        note.textContent = parts.join(' ');
+    }
+
+    function renderChart(ov, range) {
+        renderChartNote(ov, range);
+        var canvas = document.getElementById('email-decisions-chart');
+        if (!canvas || typeof Chart === 'undefined') return;
+        var periods = chartPeriods(range);
+        var sums = groupSeries(ov.series, periods);
+        _chartGapMinutes = periods.map(function(p) { return gapMinutes(ov.gaps, p); });
+        var data = {
+            labels: periods.map(function(p) { return p.label; }),
+            datasets: [
+                { label: 'Clean', data: sums.clean, backgroundColor: themeColor('--csm-success', '#2fb344') },
+                { label: 'Tagged', data: sums.tagged, backgroundColor: themeColor('--csm-warning', '#f59f00') },
+                { label: 'Spam rejected', data: sums.rejected, backgroundColor: themeColor('--csm-high', '#f76707') },
+                { label: 'Malware', data: sums.malware, backgroundColor: themeColor('--csm-critical', '#d63939') },
+                { label: 'Other rejects', data: sums.other, backgroundColor: themeColor('--csm-secondary', '#6c757d') }
+            ]
+        };
+        if (decisionsChart) {
+            decisionsChart.data = data;
+            decisionsChart.update();
+            return;
+        }
+        CSM.applyChartTheme();
+        var theme = CSM.chartTheme();
+        decisionsChart = new Chart(canvas, {
+            type: 'bar',
+            data: data,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: { position: 'top', labels: { boxWidth: 10, boxHeight: 10 } },
+                    tooltip: Object.assign({}, theme.tooltip, {
+                        borderWidth: 1,
+                        callbacks: {
+                            footer: function(items) {
+                                var n = items.length ? _chartGapMinutes[items[0].dataIndex] : 0;
+                                return n > 0 ? 'Not counted: ' + n + ' min' : '';
+                            }
+                        }
+                    })
+                },
+                scales: {
+                    x: { stacked: true, grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true } },
+                    y: { stacked: true, beginAtZero: true, grid: { color: theme.grid }, ticks: { precision: 0 } }
+                }
+            }
+        });
+    }
+
+    // ---------- rspamd card ----------
+
+    var STATUS_DOTS = { up: 'status-green', down: 'status-red' };
+
+    function node(tag, cls, text) {
+        var el = document.createElement(tag);
+        if (cls) el.className = cls;
+        if (text != null) el.textContent = text;
+        return el;
+    }
+
+    // sinceStart words rspamd's uptime so its numbers are not read as the
+    // page range.
+    function sinceStart(seconds) {
+        if (!(seconds > 0)) return 'since rspamd started';
+        var n, unit;
+        if (seconds >= 86400) { n = Math.floor(seconds / 86400); unit = 'day'; }
+        else if (seconds >= 3600) { n = Math.floor(seconds / 3600); unit = 'hour'; }
+        else { n = Math.max(1, Math.floor(seconds / 60)); unit = 'minute'; }
+        return 'since rspamd started ' + n + ' ' + unit + (n === 1 ? '' : 's') + ' ago';
+    }
+
+    function loadRspamd() {
+        CSM.get('/api/v1/email/rspamd')
+            .then(function(r) {
+                _rspamd = r;
+                renderRspamd(r);
+                renderSubtitle();
+            })
+            .catch(function(err) {
+                CSM.loadError(document.getElementById('email-rspamd'), loadRspamd, { title: 'Failed to load rspamd status', error: err });
+            });
+    }
+
+    function renderRspamd(r) {
+        var card = document.getElementById('email-rspamd');
+        if (!card) return;
+        r = r || {};
+        card.replaceChildren();
+        var status = r.status || 'unknown';
+        var head = node('div', 'd-flex align-items-center flex-wrap gap-2 mb-2');
+        head.appendChild(node('span', 'status-dot ' + (Object.prototype.hasOwnProperty.call(STATUS_DOTS, status) ? STATUS_DOTS[status] : '')));
+        head.appendChild(node('span', 'fw-bold', 'rspamd ' + status));
+        if (r.mode) head.appendChild(node('span', modeBadgeClass(r.mode), r.mode));
+        if (r.version) head.appendChild(node('span', 'text-muted small ms-auto', 'version ' + r.version));
+        card.appendChild(head);
+
+        var s = r.stats;
+        if (!r.available || !s) {
+            card.appendChild(node('div', 'text-muted small', 'Stats unavailable' + (r.reason ? ': ' + r.reason : '') + '.'));
+            return;
+        }
+        card.appendChild(node('div', 'text-muted small mb-2', 'Counts ' + sinceStart(s.uptime_seconds) + '.'));
+        var nums = node('div', 'row g-2 mb-2');
+        [['Scanned', s.scanned], ['Learned ham', s.ham_count], ['Learned spam', s.spam_count]].forEach(function(m) {
+            var col = node('div', 'col-auto me-3');
+            col.appendChild(node('div', 'small text-muted', m[0]));
+            col.appendChild(node('div', 'h3 mb-0', num(m[1])));
+            nums.appendChild(col);
+        });
+        card.appendChild(nums);
+
+        var rules = (Array.isArray(s.top_rules) ? s.top_rules : []).slice(0, 8);
+        if (rules.length === 0) return;
+        card.appendChild(node('div', 'subheader mb-1', 'Top rules'));
+        var list = node('div', 'list-group list-group-flush');
+        rules.forEach(function(rule) {
+            var row = node('div', 'list-group-item py-1 px-0 d-flex gap-2');
+            row.appendChild(node('span', 'font-monospace small text-truncate', rule.symbol));
+            row.appendChild(node('span', 'ms-auto small text-muted', num(rule.hits)));
+            list.appendChild(row);
+        });
+        card.appendChild(list);
+    }
+
+    if (rangeEl) {
+        rangeEl.addEventListener('change', function() {
+            if (rangeEl.value === 'custom') {
+                CSM.urlState.set({ from: linkFrom, to: linkTo });
+            } else {
+                try { window.localStorage.setItem(RANGE_KEY, rangeEl.value); } catch (e) { /* storage unavailable */ }
+                CSM.urlState.set({ from: '', to: '' });
+            }
+            loadOverview();
+            loadActionGroups();
+            authGroupsLoaded = false;
+            outboundAbuseLoaded = false;
+            var tab = activeEmailTab();
+            if (tab === 'auth' || tab === 'outbound-abuse') loadActiveEmailTab(true);
+        });
+    }
+
+    // A theme change repaints the axes and tooltip, and the series colors
+    // with them.
+    new MutationObserver(function(mutations) {
+        mutations.forEach(function(m) {
+            if (m.attributeName !== 'class') return;
+            CSM.applyChartTheme();
+            if (decisionsChart && _overview) renderChart(_overview, _overviewRange);
+        });
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+
+    var queueCard = document.querySelector('#kpi-queue a');
+    if (queueCard) queueCard.addEventListener('click', function() { activateTab('queue'); });
 
     // ---------- Status strip (replaces 6-card stat row) ----------
 
@@ -157,13 +628,7 @@
     var _pendingSenders = null;
 
     function emailDateQuery(base) {
-        var qs = base || '';
-        var range = CSM.prefs.dayRange(
-            (document.getElementById('filter-from') || {}).value || '',
-            (document.getElementById('filter-to') || {}).value || '');
-        if (range.from) qs += (qs ? '&' : '') + 'from=' + encodeURIComponent(range.from);
-        if (range.to) qs += (qs ? '&' : '') + 'to=' + encodeURIComponent(range.to);
-        return qs;
+        return rangeQuery(currentRange(), base);
     }
 
     function renderProtectionQueue(data, targetId) {
@@ -1407,6 +1872,8 @@
     var refreshBtn = document.getElementById('email-refresh');
     if (refreshBtn) {
         refreshBtn.addEventListener('click', function() {
+            loadOverview();
+            loadRspamd();
             loadEmailStats();
             loadAVStatus();
             loadActionGroups();
@@ -1440,13 +1907,17 @@
     // ---------- Initialize ----------
 
     if (initialTab) activateTab(initialTab);
+    loadOverview();
+    loadRspamd();
     loadEmailStats();
     loadAVStatus();
     loadActionGroups();
     loadFindings();
     loadActiveEmailTab(false);
 
-    // Polling: refresh stats / groups / findings every 30s when tab is visible.
+    // Polling while the tab is visible: the numbers and the queue every 30 s,
+    // rspamd and AV every 60 s (rspamd's own figures are cached that long),
+    // and the action groups every 60 s.
     var _emailIntervals = [];
     function _stopEmailIntervals() {
         for (var i = 0; i < _emailIntervals.length; i++) _emailIntervals[i].stop();
@@ -1455,11 +1926,11 @@
 
     function _startEmailPolling() {
         _emailIntervals.push(CSM.refresh.interval(function() {
-            try { loadEmailStats(); } catch(e) {}
+            try { loadOverview(); loadEmailStats(); } catch(e) {}
         }, 30000));
         _emailIntervals.push(CSM.refresh.interval(function() {
-            try { loadAVStatus(); } catch(e) {}
-        }, 30000));
+            try { loadRspamd(); loadAVStatus(); } catch(e) {}
+        }, 60000));
         _emailIntervals.push(CSM.refresh.interval(function() {
             try { loadActionGroups(); } catch(e) {}
         }, 60000));
@@ -1468,7 +1939,4 @@
     window.addEventListener('beforeunload', function() {
         _stopEmailIntervals();
     });
-
-    var subtitle = document.getElementById('email-subtitle');
-    if (subtitle) subtitle.textContent = 'Grouped action queue, mail protection state, and per-tab raw findings.';
 })();
