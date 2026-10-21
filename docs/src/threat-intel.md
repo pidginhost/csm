@@ -225,6 +225,14 @@ The central abuse database refuses unsigned downloads. The target must use
 `auth_target` unset only for a central service that serves the list
 without signatures.
 
+Signed downloads work with `reputation.report.enabled: false`; keep the
+target configured even when the node does not send reports. If the target
+is missing, duplicated, not Ed25519, or its key is unset or invalid, the
+central consumer stays off with one log line naming
+`reputation.central.auth_target`. CSM never falls back to unsigned
+downloads while `auth_target` is set. The settings page refuses a
+`set_url` or `auth_target` change that breaks the same-origin rule.
+
 If the service refuses a download, CSM keeps its last verified list, tries
 again at the next refresh, and logs
 `central-intel: pull unauthorized; check node enrollment, node clock and reputation.central.auth_target`.

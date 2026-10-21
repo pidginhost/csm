@@ -228,8 +228,13 @@ func centralSigner(name string, cfgTargets []reportTargetConfig) (reporting.Targ
 		err != nil || len(raw) != ed25519.PrivateKeySize {
 		return reporting.Target{}, false
 	}
+	key := ed25519.PrivateKey(raw)
+	// A mismatched public-key suffix produces signatures that cannot verify.
+	if !key.Equal(ed25519.NewKeyFromSeed(raw[:ed25519.SeedSize])) {
+		return reporting.Target{}, false
+	}
 	return reporting.Target{
 		Name: ct.Name, URL: ct.URL, Transport: reporting.TransportEd25519,
-		NodeID: ct.NodeID, KeyID: ct.KeyID, Ed25519Key: ed25519.PrivateKey(raw),
+		NodeID: ct.NodeID, KeyID: ct.KeyID, Ed25519Key: key,
 	}, true
 }

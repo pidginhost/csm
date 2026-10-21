@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -415,6 +416,12 @@ func TestStartCentralConsumeSignerMustSign(t *testing.T) {
 	_, nodePriv, _ := ed25519.GenerateKey(rand.Reader)
 	t.Setenv("CSM_TEST_NODE_KEY", hex.EncodeToString(nodePriv))
 	t.Setenv("CSM_TEST_BAD_KEY", "abcd")
+	t.Setenv("CSM_TEST_UNSET_KEY", "")
+	t.Setenv("CSM_TEST_NON_HEX_KEY", strings.Repeat("z", ed25519.PrivateKeySize*2))
+	t.Setenv("CSM_TEST_SEED_KEY", hex.EncodeToString(nodePriv.Seed()))
+	inconsistentKey := append(ed25519.PrivateKey(nil), nodePriv...)
+	inconsistentKey[ed25519.SeedSize] ^= 1
+	t.Setenv("CSM_TEST_INCONSISTENT_KEY", hex.EncodeToString(inconsistentKey))
 
 	target := func(name, transport, keyEnv string) reportTargetConfig {
 		return reportTargetConfig{Name: name, URL: "https://central.example/report", Transport: transport,
@@ -431,6 +438,9 @@ func TestStartCentralConsumeSignerMustSign(t *testing.T) {
 		{"hmac target", []reportTargetConfig{target("central", "hmac", "CSM_TEST_NODE_KEY")}, false},
 		{"key unset", []reportTargetConfig{target("central", "ed25519", "CSM_TEST_UNSET_KEY")}, false},
 		{"key malformed", []reportTargetConfig{target("central", "ed25519", "CSM_TEST_BAD_KEY")}, false},
+		{"key not hex", []reportTargetConfig{target("central", "ed25519", "CSM_TEST_NON_HEX_KEY")}, false},
+		{"seed without public key", []reportTargetConfig{target("central", "ed25519", "CSM_TEST_SEED_KEY")}, false},
+		{"inconsistent public key", []reportTargetConfig{target("central", "ed25519", "CSM_TEST_INCONSISTENT_KEY")}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var buf bytes.Buffer
@@ -444,14 +454,17 @@ func TestStartCentralConsumeSignerMustSign(t *testing.T) {
 			cfg.Reputation.Central.AuthTarget = "central"
 			cfg.Reputation.Report.Targets = c.targets
 			loop := New(cfg, nil, nil, "").startCentralConsume()
+			if strings.Contains(buf.String(), hex.EncodeToString(nodePriv)) || strings.Contains(buf.String(), hex.EncodeToString(inconsistentKey)) {
+				t.Fatal("log printed the node key")
+			}
 			if (loop != nil) != c.on || (alert.CentralHook != nil) != c.on {
 				t.Fatalf("consumer on=%v hook=%v, want %v; log=%q", loop != nil, alert.CentralHook != nil, c.on, buf.String())
 			}
 			if mentions := strings.Contains(buf.String(), "reputation.central.auth_target"); mentions == c.on {
 				t.Fatalf("log = %q; the auth_target line must appear only when the consumer stays off", buf.String())
 			}
-			if strings.Contains(buf.String(), hex.EncodeToString(nodePriv)) {
-				t.Fatal("log printed the node key")
+			if !c.on && strings.Count(buf.String(), "\n") != 1 {
+				t.Fatalf("rejected signer must emit exactly one log line, got %q", buf.String())
 			}
 		})
 	}
@@ -472,6 +485,92 @@ func TestLogCentralRefreshError(t *testing.T) {
 		"central-intel: refresh failed: boom\n"
 	if buf.String() != want {
 		t.Fatalf("log = %q, want %q", buf.String(), want)
+	}
+}
+
+func TestStartCentralConsumeSignsWithReportingDisabled(t *testing.T) {
+	prevHook := alert.CentralHook
+	t.Cleanup(func() { alert.SetCentralHook(prevHook) })
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, nodeKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CSM_TEST_CENTRAL_PUB", hex.EncodeToString(pub))
+	t.Setenv("CSM_TEST_NODE_KEY", hex.EncodeToString(nodeKey))
+
+	requests := make(chan *http.Request, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.Clone(context.Background())
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := &config.Config{}
+	cfg.Reputation.Report.Enabled = false
+	cfg.Reputation.Report.Targets = []reportTargetConfig{
+		{Name: "other", URL: srv.URL + "/report", Transport: "hmac"},
+		{Name: "central", URL: srv.URL + "/report", Transport: "ed25519",
+			NodeID: "n_000000000000000000000001", KeyID: "k_000000000000000000000002", KeyEnv: "CSM_TEST_NODE_KEY"},
+	}
+	cfg.Reputation.Central.Enabled = true
+	cfg.Reputation.Central.SetURL = srv.URL + "/decisions"
+	cfg.Reputation.Central.PubkeyEnv = "CSM_TEST_CENTRAL_PUB"
+	cfg.Reputation.Central.AuthTarget = "central"
+	d := New(cfg, nil, nil, "")
+	loop := d.startCentralConsume()
+	if loop == nil {
+		t.Fatal("signed consumption must not require reporting to be enabled")
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		loop()
+	}()
+	t.Cleanup(func() {
+		close(d.stopCh)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("central consumer did not stop")
+		}
+	})
+
+	var req *http.Request
+	select {
+	case req = <-requests:
+	case <-time.After(5 * time.Second):
+		t.Fatal("central consumer did not pull")
+	}
+	target := cfg.Reputation.Report.Targets[1]
+	if req.Method != http.MethodGet || req.URL.Path != "/decisions" || req.URL.RawQuery != "" || req.ContentLength != 0 {
+		t.Fatal("initial pull must be a bodiless GET of the full scored set")
+	}
+	if req.Header.Get("X-CSM-Node") != target.NodeID || req.Header.Get("X-CSM-Key") != target.KeyID {
+		t.Fatal("pull did not use the selected target's identity")
+	}
+	if req.Header.Get("Authorization") != "" {
+		t.Fatal("pull must not carry bearer authorization")
+	}
+	ts, err := strconv.ParseInt(req.Header.Get("X-CSM-Timestamp"), 10, 64)
+	if err != nil {
+		t.Fatal("pull has no valid timestamp")
+	}
+	nonce := req.Header.Get("X-CSM-Nonce")
+	if raw, decodeErr := hex.DecodeString(nonce); decodeErr != nil || len(raw) != 16 {
+		t.Fatal("pull has no valid nonce")
+	}
+	expected, err := reporting.SignEd25519(reporting.Envelope{
+		NodeID: target.NodeID, KeyID: target.KeyID, Method: http.MethodGet,
+		Path: "/decisions", BodyHash: reporting.HashBody(nil), Timestamp: ts, Nonce: nonce,
+	}, nodeKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.Header.Get("X-CSM-Signature") != "ed25519="+hex.EncodeToString(expected) {
+		t.Fatal("pull was not signed with the selected target's node key")
 	}
 }
 

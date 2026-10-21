@@ -83,6 +83,7 @@ func centralRefresh(store *reporting.CentralStore) func(context.Context) error {
 		if err := store.Refresh(ctx); err != nil {
 			return err
 		}
+		// #nosec G706 -- version is uint64 formatted as decimal, with no log control characters.
 		log.Printf("central-intel: refresh complete (version=%d)", store.Version())
 		return nil
 	}
