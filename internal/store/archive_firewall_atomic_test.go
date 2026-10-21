@@ -10,7 +10,6 @@ import (
 
 	"github.com/pidginhost/csm/internal/firewall"
 	bolt "go.etcd.io/bbolt"
-	bolterrors "go.etcd.io/bbolt/errors"
 )
 
 type firewallImportImage struct {
@@ -179,7 +178,7 @@ func TestArchiveImportFirewallRejectsSourceBeforeCreatingTarget(t *testing.T) {
 	assertFirewallImportUnchanged(t, existingPath, before)
 }
 
-func TestArchiveImportFirewallLateFailureRollsBack(t *testing.T) {
+func TestArchiveImportFirewallMalformedTargetPreservesRollback(t *testing.T) {
 	for _, failure := range []string{"copy", "disarm"} {
 		t.Run(failure, func(t *testing.T) {
 			sourcePath, source := firewallJournalHost(t, completeFirewallState(), "batch-a", true, true, "member-1", "member-2")
@@ -216,8 +215,8 @@ func TestArchiveImportFirewallLateFailureRollsBack(t *testing.T) {
 				t.Fatal(err)
 			}
 			before := readFirewallImportImage(t, targetPath)
-			if err := importFirewallArchive(archive, targetPath); !errors.Is(err, bolterrors.ErrIncompatibleValue) {
-				t.Fatalf("late %s failure = %v, want incompatible value", failure, err)
+			if err := importFirewallArchive(archive, targetPath); !errors.Is(err, firewall.ErrStateCorrupt) {
+				t.Fatalf("malformed %s target = %v, want corruption refusal", failure, err)
 			}
 			assertFirewallImportUnchanged(t, targetPath, before)
 		})
@@ -394,6 +393,33 @@ func TestArchiveImportFirewallRejectsNestedSourceBuckets(t *testing.T) {
 			if _, err := os.Stat(absent); !errors.Is(err, os.ErrNotExist) {
 				t.Error("nested source created destination")
 			}
+		})
+	}
+}
+
+func TestArchiveImportFirewallRejectsNestedTargetBuckets(t *testing.T) {
+	for _, bucket := range []string{"fw:extra", firewallActionsBucket, firewallMemberIndexBucket, firewallBatchMembersBucket, firewallBudgetBucket, firewallBudgetIndexBucket, firewallActionHistoryBucket, firewallSnapshotBucket} {
+		t.Run(bucket, func(t *testing.T) {
+			sourcePath, source := firewallJournalHost(t, completeFirewallState(), "batch-a", true, true, "member-1", "member-2")
+			archive := exportFirewallArchive(t, source, sourcePath)
+			targetPath, target := firewallJournalHost(t, targetFirewallState(), "batch-t", true, true, "member-8", "member-9")
+			if err := target.bolt.Update(func(tx *bolt.Tx) error {
+				nested, err := tx.Bucket([]byte(bucket)).CreateBucket([]byte("nested"))
+				if err != nil {
+					return err
+				}
+				return nested.Put([]byte("evidence"), []byte("must not disappear"))
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := target.Close(); err != nil {
+				t.Fatal(err)
+			}
+			before := readFirewallImportImage(t, targetPath)
+			if err := importFirewallArchive(archive, targetPath); !errors.Is(err, firewall.ErrStateCorrupt) {
+				t.Errorf("nested target imported: %v, want corruption refusal", err)
+			}
+			assertFirewallImportUnchanged(t, targetPath, before)
 		})
 	}
 }

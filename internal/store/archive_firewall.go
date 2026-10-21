@@ -59,8 +59,8 @@ func firewallImportJournal(tx *bolt.Tx) (bool, error) {
 	return true, nil
 }
 
-// Firewall buckets contain flat rows. Copying a nested bucket's nil value
-// would silently discard its contents, so reject it before opening the target.
+// Firewall buckets contain flat rows. Nested data must neither be copied as
+// an empty value nor silently discarded when replacing a target journal.
 func validateFirewallImportBuckets(tx *bolt.Tx) error {
 	return tx.ForEach(func(name []byte, bucket *bolt.Bucket) error {
 		if !isFirewallBucket(string(name)) {
@@ -101,15 +101,21 @@ func mergeFirewallBucketsFromSnapshot(snapshotPath, statePath string) ([]string,
 		if mkdirErr := os.MkdirAll(statePath, 0700); mkdirErr != nil {
 			return fmt.Errorf("creating target directory: %w", mkdirErr)
 		}
-		dst, openErr := bolt.Open(filepath.Join(statePath, "csm.db"), 0600, &bolt.Options{Timeout: 5 * time.Second})
+		// bbolt otherwise commits during Open if the file has no persisted
+		// freelist. Defer that write to the import's validated transaction.
+		dst, openErr := bolt.Open(filepath.Join(statePath, "csm.db"), 0600, &bolt.Options{Timeout: 5 * time.Second, NoFreelistSync: true})
 		if openErr != nil {
 			return fmt.Errorf("opening target: %w", openErr)
 		}
 		defer func() { _ = dst.Close() }()
+		dst.NoFreelistSync = false
 		return dst.Update(func(dtx *bolt.Tx) error {
 			local, localErr := firewallImportJournal(dtx)
 			if localErr != nil {
 				return fmt.Errorf("local firewall journal: %w", localErr)
+			}
+			if shapeErr := validateFirewallImportBuckets(dtx); shapeErr != nil {
+				return fmt.Errorf("local firewall buckets: %w", shapeErr)
 			}
 			if incoming {
 				// Collect names first: deleting while visiting the root cursor
