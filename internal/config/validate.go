@@ -154,6 +154,7 @@ func Validate(cfg *Config) []ValidationResult {
 				results = append(results, ValidationResult{"warn", "webui.tokens", "no admin-scope token configured; browser login and admin API calls are disabled"})
 			}
 		}
+		results = append(results, webUIExposureResults(cfg)...)
 	}
 
 	// --- Trusted countries ---
@@ -695,6 +696,48 @@ func webUITokenCounts(cfg *Config) (tokens, admins int) {
 		}
 	}
 	return tokens, admins
+}
+
+// webUIExposureResults warns when the root-equivalent web UI answers on a
+// non-loopback address with neither the CSM firewall nor address-limited
+// admin tokens in front of it. A host firewall or proxy CSM cannot see may
+// still restrict it, so this is never an error.
+func webUIExposureResults(cfg *Config) []ValidationResult {
+	if (cfg.Firewall != nil && cfg.Firewall.Enabled) || webUIListensOnLoopback(cfg.WebUI.Listen) || !hasUnrestrictedAdminToken(cfg) {
+		return nil
+	}
+	listen := cfg.WebUI.Listen
+	if listen == "" {
+		listen = "0.0.0.0:9443"
+	}
+	return []ValidationResult{{"warn", "webui.listen",
+		fmt.Sprintf("web UI listens on %s with the CSM firewall off and no allowed_ips on an admin token; only a host firewall keeps it off public networks", listen)}}
+}
+
+func webUIListensOnLoopback(listen string) bool {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.IsLoopback()
+}
+
+// hasUnrestrictedAdminToken mirrors webUITokenCounts: a legacy auth_token is
+// an admin token, and it cannot carry allowed_ips.
+func hasUnrestrictedAdminToken(cfg *Config) bool {
+	if len(cfg.WebUI.Tokens) == 0 && cfg.WebUI.AuthToken != "" {
+		return true
+	}
+	for _, tok := range cfg.WebUI.Tokens {
+		if tok.Token != "" && tok.Scope == "admin" && len(tok.AllowedIPs) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func blockEscalationResults(cfg *Config) []ValidationResult {
