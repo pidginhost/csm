@@ -28,7 +28,7 @@ const CASES = [
       item: { key: 'k1', account: 'alice', schema: 'alice_wp', kind: 'TRIGGER', name: 'evil_trigger', dropped_at: AT, body_bytes: 10, restored: false },
       host: 'cleanup-db-content', text: 'evil_trigger' },
     { name: 'email action groups', page: 'email', scripts: ['email.js'], route: u => u.includes('/api/v1/email/groups?') && !u.includes('auth_failure'),
-      item: { kind: 'spam_outbreak', severity: 'HIGH', title: 'outbreak@example.com', summary: 'two messages', count: 2, last_seen: AT },
+      item: { kind: 'spam_outbreak', severity: 'HIGH', title: 'outbreak@example.com', summary: 'two messages', count: 2, last_seen: AT, block_state: 'no_ip', handled: false },
       host: 'email-action-groups', text: 'outbreak@example.com' },
     { name: 'email findings', page: 'email', scripts: ['email.js'], route: '/api/v1/history?',
       item: { severity: 2, check: 'email_spam_outbreak', message: 'history row message', timestamp: AT },

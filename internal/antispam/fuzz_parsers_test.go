@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func FuzzCheckIPMapLoaded(f *testing.F) {
@@ -889,6 +890,66 @@ func FuzzCheckLearningLoaded(f *testing.F) {
 		other.Fuzzy = NewSecret(strings.Repeat("7a", 32))
 		if CheckLearningLoaded(inputs[0], inputs[1], inputs[2], inputs[3], Actions{}, other) == nil {
 			t.Fatal("accepted the same dumps for a different hash generation")
+		}
+	})
+}
+
+func FuzzParseRspamdStat(f *testing.F) {
+	for _, seed := range []string{
+		`{"scanned":1200,"learned":30,"ham_count":20,"spam_count":10,"uptime":86400.5,"version":"3.9.1","actions":{"reject":41,"add header":9}}`,
+		`{"scanned":"many"}`, `{"uptime":-1}`, `{}`, `[]`, `null`, ``,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, body []byte) {
+		s, err := ParseRspamdStat(body)
+		if err != nil {
+			if !reflect.DeepEqual(s, RspamdStats{}) {
+				t.Fatalf("error returned partial stats %+v", s)
+			}
+			return
+		}
+		if s.UptimeSeconds < 0 || s.TopRules != nil || utf8.RuneCountInString(s.Version) > maxStatsVersion {
+			t.Fatalf("parsed %+v", s)
+		}
+		for name := range s.Actions {
+			if utf8.RuneCountInString(name) > maxStatsAction {
+				t.Fatalf("kept action name of %d characters", utf8.RuneCountInString(name))
+			}
+		}
+		var object map[string]json.RawMessage
+		if json.Unmarshal(body, &object) != nil || object == nil {
+			t.Fatal("accepted a reply that is not a JSON object")
+		}
+	})
+}
+
+func FuzzParseRspamdCounters(f *testing.F) {
+	for _, seed := range []string{
+		`[{"symbol":"R_A","weight":1,"frequency":0.1,"hits":5,"time":0.001},{"symbol":"R_B","hits":5},{"hits":9},null]`,
+		`[{"symbol":"R_GHOST","hits":0.0},{"symbol":"R_K","hits":12.0},{"symbol":"R_F","hits":2.5}]`,
+		`[{"symbol":"R_A","hits":"many"}]`, `[1]`, `{}`, `null`, ``,
+	} {
+		f.Add([]byte(seed))
+	}
+	f.Fuzz(func(t *testing.T, body []byte) {
+		rules, err := ParseRspamdCounters(body, 8)
+		if err != nil {
+			if rules != nil {
+				t.Fatalf("error returned partial rules %+v", rules)
+			}
+			return
+		}
+		if len(rules) > 8 {
+			t.Fatalf("%d rules, want at most 8", len(rules))
+		}
+		for i, r := range rules {
+			if r.Symbol == "" || utf8.RuneCountInString(r.Symbol) > maxStatsSymbol || r.Hits <= 0 {
+				t.Fatalf("kept %+v", r)
+			}
+			if i > 0 && (rules[i-1].Hits < r.Hits || rules[i-1].Hits == r.Hits && rules[i-1].Symbol > r.Symbol) {
+				t.Fatalf("rules out of order: %+v", rules)
+			}
 		}
 	})
 }

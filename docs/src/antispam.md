@@ -580,6 +580,11 @@ secure_ip = [];
 
 Reload rspamd after the change. CSM never edits the controller settings.
 
+The Email Security page reads rspamd's counters through a Unix controller
+socket owned by rspamd, such as the private socket above, or else a loopback
+listener that `secure_ip` trusts, and shows "Stats unavailable" without
+either; CSM never uses the controller password.
+
 ## Learning from Spam folders
 
 `email_protection.antispam.learning.enabled: true` makes rspamd learn from

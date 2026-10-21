@@ -286,6 +286,21 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/checks":
+    get:
+      operationId: get_email_checks
+      summary: "get /api/v1/email/checks (scope: read)"
+      x-csm-scope: read
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/email/deferrals":
     get:
       operationId: get_email_deferrals
@@ -410,10 +425,55 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/overview":
+    get:
+      operationId: get_email_overview
+      summary: "get /api/v1/email/overview (scope: read)"
+      x-csm-scope: read
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/rejects":
+    get:
+      operationId: get_email_rejects
+      summary: "get /api/v1/email/rejects (scope: admin)"
+      x-csm-scope: admin
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/email/relay-abuse":
     get:
       operationId: get_email_relay_abuse
       summary: "get /api/v1/email/relay-abuse (scope: read)"
+      x-csm-scope: read
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/rspamd":
+    get:
+      operationId: get_email_rspamd
+      summary: "get /api/v1/email/rspamd (scope: read)"
       x-csm-scope: read
       security:
         - bearerAuth: []

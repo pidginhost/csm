@@ -43,7 +43,7 @@ scope. The header links to session management.
 | **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/blocks/allow/config/audit/danger`; `?ip=<address>` opens the lookup for that address): blocked IPs/subnets with GeoIP, bulk unblock of selected rows (with undo), the whitelist and allow rules (Allow Rules tab), search, audit log; the lookup links to Threat Intel for the same address; destructive actions live under the Danger tab |
 | **ModSecurity** | `/modsec` | WAF workbench: status strip, Active WAF pressure summary list (top attackers by hits), top rules / domains side panel, Blocked IPs / Events tabs, and a Manage Rules link to ModSecurity Rules. Block detail panels show first-seen, top URIs, sample events, and direct links to Threat Intel, Firewall lookup, and rule management |
 | **ModSecurity Rules** | `/modsec/rules` | Enable or disable CSM rules (applied with one reload) and firewall escalation exclusions; the exclusion list works even when rule management is not configured |
-| **Email Security** | `/email` | Mail queue and AV status, grouped account/auth/queue/malware findings, quarantine, senders, forwarders, provider deferrals, and PHP-relay abuse. Queue actions distinguish real mail from frozen null-sender backscatter; held external forward copies can be released or deleted without affecting the local delivery. |
+| **Email Security** | `/email` | Mail decisions, recent rejects, rspamd and AV status, and groups needing attention. Findings, Quarantine, Queue, Outbound, and Deliverability tabs hold the detailed views. Outbound includes senders, abuse, forwarders, and held copies. Queue actions distinguish real mail from frozen null-sender backscatter; held copies can be released or deleted without affecting local delivery. |
 | **Verified Bots** | `/verified-bots` | Editor for the verified-crawler allowlist (`reputation.verified_bots`): UA, reverse-DNS suffix, and IP-range identities, plus auto-update posture, with apply-and-reload. Admin scope |
 | **Threat Intelligence** | `/threat` | IP lookup with scoring/GeoIP/ASN (`?ip=<address>` runs it on load), 24 hour and permanent block and whitelist actions (single and bulk), top attackers, attack type charts, trends; the lookup links to Firewall for the same address, and the whitelist itself is kept under Firewall > Allow Rules |
 | **Server Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
@@ -85,6 +85,11 @@ unavailable, new renders use the preference without forcing a reload.
 Days with a midnight clock change start at the first valid time of that day;
 a repeated midnight uses its first occurrence.
 
+Email chart hours also follow partial-hour daylight saving changes. Custom
+date links include both selected days, even when supplied in reverse order.
+Long custom ranges group adjacent days into labeled spans without dropping
+counts. Changing the range discards pending results for the previous range.
+
 ## Live updates
 
 The Web UI keeps an event stream open (`/api/v1/events`) and shows a Live
@@ -119,6 +124,10 @@ such as Sessions, reload.
 A panel that fails to load says what failed and why, with a Retry button that
 loads only that panel again. The panel's earlier content returns once a later
 load succeeds.
+
+On Email Security, failed refreshes mark protection status as unavailable
+and hide stale chart data. An older response cannot overwrite newer health
+status or the selected outbound abuse range.
 
 The visible History tab refreshes with its current filters and page size.
 Editors wait for an ongoing save or load before accepting another refresh;

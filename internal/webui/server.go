@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/broadcast"
 	"github.com/pidginhost/csm/internal/checks"
@@ -31,6 +32,7 @@ import (
 	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/mailfwd/intel"
 	"github.com/pidginhost/csm/internal/mailfwd/inventory"
+	"github.com/pidginhost/csm/internal/mailstats"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/session"
 	"github.com/pidginhost/csm/internal/state"
@@ -108,11 +110,13 @@ type Server struct {
 	logWatcherCount func() int  // live daemon reader; nil outside the daemon
 	blocker         IPBlocker
 	geoIPDB         atomic.Pointer[geoip.DB]
-	// emailQuarantine and emailAVWatcherMode are installed by the daemon
-	// after the listener already serves; request goroutines read them, so
-	// they are held atomically and read through the accessors below.
+	// emailQuarantine, emailAVWatcherMode and the mail decision counter
+	// mailStats are installed by the daemon after the listener already
+	// serves; request goroutines read them, so they are held atomically and
+	// read through the accessors below.
 	emailQuarantine    atomic.Pointer[emailav.Quarantine]
 	emailAVWatcherMode atomic.Value // string
+	mailStats          atomic.Pointer[mailstats.Counter]
 	forwarderSource    inventory.Source
 	deferralReporter   intel.Reporter
 	queueReporter      intel.QueueReporter
@@ -155,6 +159,11 @@ type Server struct {
 	statsMemo    historyMemo
 	timelineMemo historyMemo
 	emailMemos   historyMemos
+	// rspamdSource is set before Start. rspamdMu guards rspamdCache and
+	// is held across a controller read.
+	rspamdSource func() (ep antispam.StatsEndpoint, reason string, down bool)
+	rspamdMu     sync.Mutex
+	rspamdCache  rspamdFetch
 	// accountRoots and scanAccounts are the platform's account inventory;
 	// per server so handler tests can supply their own tree.
 	accountRoots func() []string
@@ -350,7 +359,11 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/email/quarantine", s.requireAuth(http.HandlerFunc(s.apiEmailQuarantineList)))
 	mux.Handle("/api/v1/email/quarantine/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailQuarantineAction))))
 	mux.Handle("/api/v1/email/av/status", s.requireAuth(http.HandlerFunc(s.apiEmailAVStatus)))
+	mux.Handle("/api/v1/email/checks", s.requireRead(http.HandlerFunc(s.apiEmailChecks)))
 	mux.Handle("/api/v1/email/groups", s.requireRead(http.HandlerFunc(s.apiEmailGroups)))
+	mux.Handle("/api/v1/email/overview", s.requireRead(http.HandlerFunc(s.apiEmailOverview)))
+	mux.Handle("/api/v1/email/rejects", s.requireAuth(getOnly(http.HandlerFunc(s.apiEmailRejects))))
+	mux.Handle("/api/v1/email/rspamd", s.requireRead(http.HandlerFunc(s.apiEmailRspamd)))
 	mux.Handle("/api/v1/email/relay-abuse", s.requireRead(http.HandlerFunc(s.apiEmailRelayAbuse)))
 	mux.Handle("/api/v1/email/forwarders", s.requireRead(http.HandlerFunc(s.apiEmailForwarders)))
 	mux.Handle("/api/v1/email/deferrals", s.requireRead(http.HandlerFunc(s.apiEmailDeferrals)))
@@ -758,6 +771,26 @@ func (s *Server) SetEmailAVWatcherMode(mode string) {
 // before the daemon installs one.
 func (s *Server) emailQuarantineHandle() *emailav.Quarantine {
 	return s.emailQuarantine.Load()
+}
+
+// SetMailStats installs the mail decision counter the Email Security page
+// reads.
+func (s *Server) SetMailStats(c *mailstats.Counter) {
+	s.mailStats.Store(c)
+}
+
+// mailStatsCounter returns the installed mail decision counter, or nil
+// before the daemon installs one.
+func (s *Server) mailStatsCounter() *mailstats.Counter {
+	return s.mailStats.Load()
+}
+
+// SetRspamdSource installs the daemon's answer to where rspamd's
+// controller can be read without a password, from the last completed
+// antispam pass, and why not when it cannot. The down flag comes from live
+// probe health, independent of dismissed findings. Call it before Start.
+func (s *Server) SetRspamdSource(fn func() (antispam.StatsEndpoint, string, bool)) {
+	s.rspamdSource = fn
 }
 
 // emailAVMode returns the installed AV watcher mode, "" before it is set.

@@ -28,10 +28,21 @@ type historyMemo struct {
 }
 
 func (m *historyMemo) get(mark string, compute func() any) any {
+	return m.getWithin(mark, memoMinAge, compute)
+}
+
+// fresh is get without the memoMinAge throttle, for a caller that cannot
+// use a result built before mark. Callers at the same mark still share one
+// computation.
+func (m *historyMemo) fresh(mark string, compute func() any) any {
+	return m.getWithin(mark, 0, compute)
+}
+
+func (m *historyMemo) getWithin(mark string, minAge time.Duration, compute func() any) any {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	age := time.Since(m.at)
-	if m.valid && age < memoMaxAge && (mark == m.mark || age < memoMinAge) {
+	if m.valid && age < memoMaxAge && (mark == m.mark || age < minAge) {
 		return m.value
 	}
 	m.value = compute()

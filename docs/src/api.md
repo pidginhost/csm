@@ -201,8 +201,9 @@ GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix inf
                                  block_ip is set only for checks that report an attacker address,
                                  the same evidence auto-block acts on
 GET  /api/v1/finding-detail      Finding detail with action history (?check=&message=)
-GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&severity=&search=&checks=).
+GET  /api/v1/history             Paginated history (?limit=&offset=&from=&to=&severity=&search=&checks=&scope=).
                                  checks is a comma-separated list of check names to include.
+                                 scope=email limits results to the /api/v1/email/checks list when checks is absent.
                                  total counts every match; truncated is true when matches exist past the page
 GET  /api/v1/history/csv         CSV export of the newest 5,000 entries matching the /history filters
 GET  /api/v1/stats               24h severity counts, accounts at risk, auto-response summary
@@ -228,8 +229,9 @@ GET  /api/v1/hardening           Last stored hardening audit report (admin scope
 
 ### Date ranges
 
-`/api/v1/history`, `/api/v1/email/groups` and `/api/v1/email/relay-abuse` take
-`from` and `to` as a calendar date (`YYYY-MM-DD`) or an RFC 3339 time. A date is
+`/api/v1/history`, `/api/v1/email/groups`, `/api/v1/email/overview`,
+`/api/v1/email/rejects` and `/api/v1/email/relay-abuse` take `from` and `to` as
+a calendar date (`YYYY-MM-DD`) or an RFC 3339 time. A date is
 a day in the server's time zone, and `to` includes the whole day. An RFC 3339
 `to` is exclusive. The web UI sends RFC 3339 times so a day follows the
 operator's time zone preference. A value in neither form is rejected with 400.
@@ -1246,14 +1248,39 @@ POST /api/v1/email/queue/flush-backscatter  Request removal of frozen null-sende
 GET  /api/v1/email/held          Forward copies held by the forward guard (admin scope)
 POST /api/v1/email/held/{id}/release   Re-inject a held forward copy to its external recipient (admin scope, CSRF)
 DELETE /api/v1/email/held/{id}   Discard a held forward copy (admin scope, CSRF)
+GET  /api/v1/email/checks        Email checks the Email page shows, each with its group kind ("" = never grouped) (read scope)
 GET  /api/v1/email/groups        Server-grouped action rows (kind=compromised_account|spam_outbreak|auth_failure|queue_alert|malware) with from/to/limit (read scope)
+GET  /api/v1/email/overview      Mail decision totals and 15-minute chart series for from/to (default the last 24 h), antispam mode, live queue and mail-related block counts (read scope)
+GET  /api/v1/email/rejects       Recent rejected mail (time, class, sender, recipient, source IP, detail), newest first, kept 7 days; class=content (spam and malware, default)|all|<class>, from/to (default the last 24 h), limit (default 50, max 200) (admin scope)
 GET  /api/v1/email/relay-abuse   Outbound PHP-mail abuse detections (spam outbreaks, high-volume scripts/accounts) with per-site script breakdown; from/to/limit (read scope)
+GET  /api/v1/email/rspamd       rspamd status (up|down|off), antispam mode, version and rspamd's counters since it started (scanned, learned, actions, top 8 rules), read from its controller without a password and cached 60 s; available false with a reason when they cannot be read (read scope)
 GET  /api/v1/email/quarantine    Quarantined email list
 GET  /api/v1/email/av/status     Email AV watcher status
 GET  /api/v1/email/quarantine/{id}          One quarantined message
 POST /api/v1/email/quarantine/{id}/release  Release a quarantined message (admin scope, CSRF)
 DELETE /api/v1/email/quarantine/{id}        Delete a quarantined message (admin scope, CSRF)
 ```
+
+Email groups report `handled: true` only for auth failures whose complete,
+current history is answered by active blocks on every attacker address or
+covering subnet. Missing addresses, truncated or stale history, successful
+logins, and account sprays stay unhandled. Unreadable firewall state sets
+`blocks_unavailable: true` and leaves every group unhandled.
+
+The overview's `counting_since` begins when mail counting starts and survives
+restarts. Stops appear in `gaps`, ending when counting resumes even if loading
+saved counts needs a retry. Gap bounds round outward to whole seconds so
+short stops remain visible. `uncounted_minutes` rounds the total gap duration
+to the nearest minute, with a minimum of one for any positive duration.
+
+The overview reads queue depth on every request. Queue detail is refreshed
+at most once per minute, even if the queue empties and refills. An empty queue
+discards its previous detail; new mail has `detail_unavailable: true` until
+the next listing. Failed listings can reuse detail for at most ten minutes.
+
+The rspamd status follows live health probes. Dismissing an outage finding
+does not change it to `up`. Version display strings are bounded whether
+they come from the controller or the installed program.
 
 ## Hardening
 

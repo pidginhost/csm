@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -55,16 +56,9 @@ func (s *Server) apiEmailStats(w http.ResponseWriter, _ *http.Request) {
 		QueueCrit: cfg.Thresholds.MailQueueCrit,
 	}
 
-	// Live queue size and frozen/oldest via exim
-	var queueKnown bool
-	resp.QueueSize, queueKnown = eximQueueSize()
-	resp.QueueUnavailable = !queueKnown
-	var oldestAge string
-	resp.FrozenCount, oldestAge = eximQueueDetails()
-	if oldestAge != "" {
-		secs := intel.AgeToSeconds(oldestAge)
-		resp.OldestAgeSeconds = &secs
-	}
+	q := queueSnapshot(time.Now())
+	resp.QueueSize, resp.QueueUnavailable = q.Size, q.Unavailable
+	resp.FrozenCount, resp.OldestAgeSeconds = q.Frozen, q.OldestAgeSeconds
 
 	// Firewall config
 	fw := cfg.Firewall
@@ -303,11 +297,12 @@ func eximQueueSize() (int, bool) {
 }
 
 // eximQueueDetails returns the frozen message count and the age of the oldest
-// message in the queue. Uses `exim -bp` which lists all queued messages.
-func eximQueueDetails() (frozen int, oldestAge string) {
+// message in the queue. Uses `exim -bp` which lists all queued messages. ok is
+// false when the listing could not be read.
+func eximQueueDetails() (frozen int, oldestAge string, ok bool) {
 	out, err := runExim(10*time.Second, "-bp")
 	if err != nil {
-		return 0, ""
+		return 0, "", false
 	}
 	lines := strings.Split(string(out), "\n")
 	for _, line := range lines {
@@ -326,7 +321,95 @@ func eximQueueDetails() (frozen int, oldestAge string) {
 			}
 		}
 	}
-	return frozen, oldestAge
+	return frozen, oldestAge, true
+}
+
+// emailQueueState is the live queue the Email page shows.
+type emailQueueState struct {
+	Size int `json:"size"`
+	// Unavailable marks size as meaningless because the depth could not be
+	// read.
+	Unavailable bool `json:"unavailable"`
+	Warn        int  `json:"warn"`
+	Crit        int  `json:"crit"`
+	Frozen      int  `json:"frozen"`
+	// OldestAgeSeconds is left out when the queue is empty, holds no dated
+	// message, or the detail is unavailable.
+	OldestAgeSeconds *int `json:"oldest_age_seconds,omitempty"`
+	// DetailUnavailable marks frozen and oldest as unknown: no listing has
+	// succeeded within queueDetailMaxAge.
+	DetailUnavailable bool `json:"detail_unavailable"`
+}
+
+const (
+	// queueDetailTTL spaces queue listings. exim -bp reads every queued
+	// message, which takes seconds on a deep queue, while the Email page
+	// polls; the depth from exim -bpc stays live.
+	queueDetailTTL = time.Minute
+	// queueDetailMaxAge is how long the last good listing is served while
+	// newer ones fail. A deep queue is when listings time out and when a
+	// stale frozen count misleads most.
+	queueDetailMaxAge = 10 * time.Minute
+)
+
+// queueDetail caches the queue listing. Its lock is held while a listing
+// runs, so concurrent polls wait for one listing instead of each starting
+// their own.
+var queueDetail struct {
+	sync.Mutex
+	state queueDetailState
+}
+
+type queueDetailState struct {
+	tried  time.Time // last listing attempt
+	listed time.Time // last successful listing
+	frozen int
+	// oldestQueued is when the oldest listed message was queued, the age
+	// the listing gave counted back from listed; zero when it gave none.
+	oldestQueued time.Time
+}
+
+// queueSnapshot reads the queue depth on every call and lists the queue at
+// most once per queueDetailTTL, failed attempts included. Frozen and oldest
+// come from the last good listing, with oldest aged to now, for up to
+// queueDetailMaxAge; past that DetailUnavailable is set. An empty depth
+// drops the listing, which describes mail that is gone. Only a failed depth
+// marks the queue unavailable. The caller fills Warn and Crit.
+func queueSnapshot(now time.Time) emailQueueState {
+	size, ok := eximQueueSize()
+	q := emailQueueState{Size: size, Unavailable: !ok}
+	queueDetail.Lock()
+	defer queueDetail.Unlock()
+	d := &queueDetail.state
+	if ok && size == 0 {
+		*d = queueDetailState{tried: d.tried}
+		return q
+	}
+	if d.tried.IsZero() || now.Sub(d.tried) >= queueDetailTTL {
+		d.tried = now
+		if frozen, oldest, ok := eximQueueDetails(); ok {
+			d.listed, d.frozen, d.oldestQueued = now, frozen, time.Time{}
+			if oldest != "" {
+				d.oldestQueued = now.Add(-time.Duration(intel.AgeToSeconds(oldest)) * time.Second)
+			}
+		}
+	}
+	if d.listed.IsZero() || now.Sub(d.listed) > queueDetailMaxAge {
+		q.DetailUnavailable = true
+		return q
+	}
+	q.Frozen = d.frozen
+	if !d.oldestQueued.IsZero() {
+		// A request that waited on the lock can hold a now from before the
+		// listing; age from the listing then, never below what it showed.
+		at := now
+		if at.Before(d.listed) {
+			at = d.listed
+		}
+		secs := int(at.Sub(d.oldestQueued) / time.Second)
+		q.OldestAgeSeconds = &secs
+	}
+	return q
 }
 
 // topMailSenders parses the last N lines of exim_mainlog and returns the

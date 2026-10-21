@@ -107,6 +107,11 @@ type Outcome struct {
 	// should: learning not requested, observe mode, unreadable keys or no
 	// private controller socket.
 	Learner LearnerTarget
+	// Stats is where the web UI reads rspamd's counters, and StatsReason
+	// why there is no such place. Zero in a pass that did not collect the
+	// controller.
+	Stats       antispam.StatsEndpoint
+	StatsReason string
 }
 
 // LearnerTarget is what a learning engine is built for. A change means a
@@ -216,6 +221,9 @@ func (r Reconciler) Pass(ctx context.Context, d Desired) (out Outcome) {
 	a := assess(d.Enabled, settings, f)
 	now := r.Now()
 	out = Outcome{Checks: []string{CheckPrecondition, CheckApplyFailed, CheckFeed, CheckLearning}, LearningGate: gate}
+	if d.Enabled {
+		out.Stats, out.StatsReason = antispam.StatsEndpointFor(f)
+	}
 	// Prerequisites alone do not prove that the requested integration is
 	// active. A worker must finish an apply, or the installed state must
 	// already be current, before the learner may publish.
