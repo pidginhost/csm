@@ -291,7 +291,8 @@ func TestStartLogWatchersRestoresMailStats(t *testing.T) {
 // An arrival counts for the hosting account of its submitter: the domain
 // owner of an authenticated mailbox, or the local caller when it is a
 // hosting account. A submitter that resolves to no account counts only as
-// unresolved, and inbound mail has no submitter.
+// unresolved. Inbound mail has no submitter, and a bounce from the null
+// sender is not a send.
 func TestEximArrivalCountsSubmitterAccount(t *testing.T) {
 	t.Cleanup(checks.SetAccountOwnerLookupForTest(func(domain string) (string, bool) {
 		if domain == "example.com" {
@@ -310,6 +311,7 @@ func TestEximArrivalCountsSubmitterAccount(t *testing.T) {
 	for _, line := range []string{
 		`2026-10-20 12:10:00 1tAbCd-000011-Ab <= user@example.com H=(client.example.net) [203.0.113.20]:50000 P=esmtpsa A=dovecot_login:user@example.com S=1200 for b@example.net`,
 		`2026-10-20 12:10:30 1tAbCd-000012-Ab <= exampleacct@host.example.com U=exampleacct P=local S=800 for b@example.net`,
+		`2026-10-20 12:10:45 1tAbCd-000015-Ab <= <> R=1tAbCd-000012-Ab U=mailnull P=local S=1500 for exampleacct@host.example.com`,
 		`2026-10-20 12:11:00 1tAbCd-000013-Ab <= other@example.net H=(client.example.net) [203.0.113.21]:50001 P=esmtpsa A=dovecot_login:other@example.net S=900 for b@example.net`,
 		`2026-10-20 12:11:30 1tAbCd-000014-Ab <= a@example.net H=mx.example.net [198.51.100.9]:41000 P=esmtps S=2000 for user@example.com`,
 		`2026-10-20 12:12:00 1tAbCd-000011-Ab => b@example.net R=dkim_lookuphost T=dkim_remote_smtp H=mx.example.net [198.51.100.10]`,
