@@ -196,9 +196,10 @@ X-CSM-Signature: ed25519=<128 hex characters>
 
 The signed message is built as in [Signature](#signature), with method
 `GET`, the decoded path of the download URL, and the SHA-256 of an empty
-body. The query string is not signed. CSM sends no body, no bearer token and
-no other `X-CSM-` headers, and it does not follow redirects. A full download
-carries no `since`; a later one carries exactly one.
+body. The query string is not signed. Each request has a fresh nonce. CSM
+sends no body, no bearer token, no credentials from the URL and no other
+`X-CSM-` headers, and it does not follow redirects. A full download carries
+no `since`; a later one carries exactly one.
 
 | Answer | What CSM does |
 |---|---|

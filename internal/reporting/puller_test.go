@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -248,15 +249,27 @@ func goldenNode() (Target, ed25519.PublicKey) {
 // with t.Error, never t.Fatal.
 func requireSignedPull(t *testing.T, r *http.Request, node Target, nodePub ed25519.PublicKey) string {
 	t.Helper()
-	if r.Header.Get("Authorization") != "" {
-		t.Error("pull sent the report target's bearer token")
+	if r.Method != http.MethodGet {
+		t.Errorf("method = %q, want GET", r.Method)
 	}
-	if body, _ := io.ReadAll(r.Body); len(body) != 0 || r.ContentLength > 0 {
-		t.Errorf("pull sent a body: %q", body)
+	if r.Header.Get("Authorization") != "" {
+		t.Error("signed pull sent Authorization")
+	}
+	if body, err := io.ReadAll(r.Body); err != nil || len(body) != 0 || r.ContentLength > 0 {
+		t.Errorf("pull body = %q, err=%v, want an empty body", body, err)
 	}
 	for _, h := range []string{"X-CSM-Node", "X-CSM-Key", "X-CSM-Timestamp", "X-CSM-Nonce", "X-CSM-Signature"} {
 		if n := len(r.Header.Values(h)); n != 1 {
 			t.Errorf("%s sent %d times", h, n)
+		}
+	}
+	for h := range r.Header {
+		if strings.HasPrefix(strings.ToLower(h), "x-csm-") {
+			switch strings.ToLower(h) {
+			case "x-csm-node", "x-csm-key", "x-csm-timestamp", "x-csm-nonce", "x-csm-signature":
+			default:
+				t.Errorf("unexpected node header %q", h)
+			}
 		}
 	}
 	if r.Header.Get("X-CSM-Node") != node.NodeID || r.Header.Get("X-CSM-Key") != node.KeyID ||
@@ -271,7 +284,7 @@ func requireSignedPull(t *testing.T, r *http.Request, node Target, nodePub ed255
 	nonce := r.Header.Get("X-CSM-Nonce")
 	e := Envelope{NodeID: node.NodeID, KeyID: node.KeyID, Method: http.MethodGet, Path: r.URL.Path,
 		BodyHash: HashBody(nil), Timestamp: pullClock.Unix(), Nonce: nonce}
-	msg, _ := e.canonical()
+	msg := manualCanonical(e)
 	if !ed25519.Verify(nodePub, msg, sig) {
 		t.Error("pull signature does not verify over GET, the path and an empty body")
 	}
@@ -369,8 +382,8 @@ func TestPullUnauthorized(t *testing.T) {
 		"unsigned": NewPuller(srv.Client(), srv.URL+"/decisions", hex.EncodeToString(setPub)),
 	} {
 		got, changed, err := p.Refresh(context.Background(), current)
-		if !errors.Is(err, ErrPullUnauthorized) || changed || got.Version != current.Version {
-			t.Fatalf("%s: got v%d changed=%v err=%v, want ErrPullUnauthorized and the current set", name, got.Version, changed, err)
+		if !errors.Is(err, ErrPullUnauthorized) || changed || !reflect.DeepEqual(got, current) {
+			t.Fatalf("%s: got %+v changed=%v err=%v, want ErrPullUnauthorized and the current set", name, got, changed, err)
 		}
 	}
 }
@@ -396,5 +409,72 @@ func TestPullerColdPullRejectsMalformedQuery(t *testing.T) {
 	p := NewPuller(srv.Client(), srv.URL+"/decisions?token=a;b", hex.EncodeToString(pub))
 	if _, changed, err := p.Refresh(context.Background(), ScoredSnapshot{}); err == nil || changed || called {
 		t.Fatalf("changed=%v err=%v called=%v, want a URL error and no request", changed, err, called)
+	}
+}
+
+func TestPullerMalformedURLDoesNotExposeURL(t *testing.T) {
+	const rawURL = "https://example.invalid/%zz?filter=example"
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("invalid URL reached transport")
+		return nil, nil
+	})}
+	p := NewPuller(client, rawURL, "")
+	for _, version := range []uint64{0, 1} {
+		if _, changed, err := p.Refresh(context.Background(), ScoredSnapshot{Version: version}); !errors.Is(err, ErrInsecureURL) || changed {
+			t.Fatalf("version %d: malformed URL must return ErrInsecureURL without URL contents", version)
+		}
+	}
+}
+
+func TestPullURLUserinfo(t *testing.T) {
+	node, nodePub := goldenNode()
+	for _, signed := range []bool{true, false} {
+		t.Run(strconv.FormatBool(signed), func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if signed {
+					requireSignedPull(t, r, node, nodePub)
+				} else if username, _, ok := r.BasicAuth(); !ok || username != "n_test" {
+					t.Error("unsigned pull lost URL authentication")
+				}
+				w.WriteHeader(http.StatusNotModified)
+			}))
+			defer srv.Close()
+			u, err := url.Parse(srv.URL + "/decisions")
+			if err != nil {
+				t.Fatal(err)
+			}
+			u.User = url.User("n_test")
+			p := NewPuller(srv.Client(), u.String(), "")
+			if signed {
+				p = NewSignedPuller(srv.Client(), u.String(), "", node, func() time.Time { return pullClock })
+			}
+			if _, changed, err := p.Refresh(context.Background(), ScoredSnapshot{}); err != nil || changed || calls != 1 {
+				t.Fatalf("changed=%v err=%v calls=%d, want one unchanged pull", changed, err, calls)
+			}
+		})
+	}
+}
+
+func TestSignedPullDecodedPath(t *testing.T) {
+	node, nodePub := goldenNode()
+	for _, path := range []string{"", "/decisions", "/feed%2fdecisions", "/%64ecisions", "/feed%20name/decisions"} {
+		t.Run(path, func(t *testing.T) {
+			calls := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				requireSignedPull(t, r, node, nodePub)
+				if got := r.URL.Query().Get("filter"); got != "one two" {
+					t.Errorf("filter = %q, want %q", got, "one two")
+				}
+				w.WriteHeader(http.StatusNotModified)
+			}))
+			defer srv.Close()
+			p := NewSignedPuller(srv.Client(), srv.URL+path+"?filter=one%20two", "", node, func() time.Time { return pullClock })
+			if _, changed, err := p.Refresh(context.Background(), ScoredSnapshot{}); err != nil || changed || calls != 1 {
+				t.Fatalf("changed=%v err=%v calls=%d, want one unchanged pull", changed, err, calls)
+			}
+		})
 	}
 }

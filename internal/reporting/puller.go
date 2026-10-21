@@ -79,11 +79,13 @@ func (p *Puller) Refresh(ctx context.Context, current ScoredSnapshot) (ScoredSna
 	}
 	client := p.client
 	if p.node != nil {
+		// http.Client would turn URL credentials into Basic Authorization.
+		req.URL.User = nil
 		if signErr := p.sign(req); signErr != nil {
 			return current, false, signErr
 		}
-		// The signature is for this host and path, so never follow a redirect
-		// with it. A copy keeps the shared client's own policy.
+		// A redirect could disclose the signed headers to another endpoint.
+		// A copy keeps the shared client's own policy.
 		c := *p.client
 		c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 		client = &c
@@ -152,7 +154,8 @@ func readScoredSetBody(r io.Reader, limit int64) ([]byte, error) {
 func pullURL(base string, version uint64) (string, error) {
 	u, err := url.Parse(base)
 	if err != nil {
-		return "", err
+		// url.Error quotes the whole URL, which may carry an operator token.
+		return "", ErrInsecureURL
 	}
 	q, err := url.ParseQuery(u.RawQuery)
 	if err != nil {
