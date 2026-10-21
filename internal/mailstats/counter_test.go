@@ -323,3 +323,49 @@ func TestOverviewRangeAndJSON(t *testing.T) {
 		t.Errorf("zero counting_since in JSON: %s", b)
 	}
 }
+
+func TestFutureRecordsDropped(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	c := New(func() time.Time { return now })
+	late := now.Add(time.Hour + time.Second)
+	c.RecordScan(late, antispam.Scan{OK: true, Mode: "enforce", Decision: "none"})
+	c.RecordReject(Reject{At: late, Class: ClassSpam})
+	c.RecordLoginFailure(late, true, 2)
+	c.RecordQuarantine(late)
+	c.RecordScan(now.Add(time.Hour), antispam.Scan{OK: true, Mode: "enforce", Decision: "tag"})
+
+	ov := c.Overview(now.Add(-time.Hour), now.Add(48*time.Hour))
+	if ov.Totals.Scanned != 1 || ov.Totals.Tagged != 1 || len(ov.Totals.Rejects) != 0 || ov.Totals.LoginsMailbox != 0 ||
+		ov.Totals.Quarantined != 0 || len(ov.Series) != 1 {
+		t.Fatalf("%+v", ov)
+	}
+	if got := c.Rejects(now.Add(-time.Hour), now.Add(48*time.Hour), nil, 10); len(got) != 0 {
+		t.Fatalf("ring %+v", got)
+	}
+}
+
+func TestLoginFailureWithoutCountIgnored(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	c := New(func() time.Time { return now })
+	c.RecordLoginFailure(now, true, 0)
+	c.RecordLoginFailure(now, false, -3)
+	ov := c.Overview(now.Add(-time.Hour), now.Add(time.Hour))
+	if len(ov.Series) != 0 || ov.Totals.LoginsSMTP != 0 || ov.Totals.LoginsMailbox != 0 {
+		t.Fatalf("%+v", ov)
+	}
+}
+
+func TestRejectsWithoutLimitMarshalsEmpty(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	c := New(func() time.Time { return now })
+	c.RecordReject(Reject{At: now, Class: ClassSpam})
+	for _, limit := range []int{0, -1} {
+		b, err := json.Marshal(c.Rejects(now.Add(-time.Hour), now.Add(time.Hour), nil, limit))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(b) != "[]" {
+			t.Errorf("limit %d: %s", limit, b)
+		}
+	}
+}

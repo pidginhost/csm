@@ -84,34 +84,44 @@ type bucket struct {
 	Quarantined   int
 }
 
-// ringEntry is a reject in its class ring. seq orders entries with the
+// ringEntry is a reject in its class ring. Seq orders entries with the
 // same time across rings by arrival.
 type ringEntry struct {
 	Reject
-	seq uint64
+	Seq uint64 `json:"seq"`
 }
 
 // Counter counts mail decisions in memory by the time the log line gives.
 type Counter struct {
 	now func() time.Time
 
-	mu       sync.Mutex
-	since    time.Time
-	buckets  map[int64]*bucket
-	rings    map[Class][]ringEntry
-	seq      uint64
-	scores   map[string]int
-	scoreIDs []string // FIFO of the keys of scores, oldest first
+	// persistMu serializes Load and Flush. A Flush that writes between
+	// Load's read and its merge, or two Flushes that write out of order,
+	// would store stale counts.
+	persistMu sync.Mutex
+
+	mu        sync.Mutex
+	since     time.Time
+	buckets   map[int64]*bucket
+	dirty     map[int64]bool // buckets changed since the last stored write
+	rings     map[Class][]ringEntry
+	ringDirty map[Class]bool
+	seq       uint64
+	gaps      []Span // stretches CSM was stopped, by start
+	scores    map[string]int
+	scoreIDs  []string // FIFO of the keys of scores, oldest first
 }
 
 // New returns an empty counter that has counted since now().
 func New(now func() time.Time) *Counter {
 	return &Counter{
-		now:     now,
-		since:   now(),
-		buckets: map[int64]*bucket{},
-		rings:   map[Class][]ringEntry{},
-		scores:  map[string]int{},
+		now:       now,
+		since:     now(),
+		buckets:   map[int64]*bucket{},
+		dirty:     map[int64]bool{},
+		rings:     map[Class][]ringEntry{},
+		ringDirty: map[Class]bool{},
+		scores:    map[string]int{},
 	}
 }
 
@@ -154,7 +164,8 @@ func (c *Counter) RecordReject(r Reject) {
 		r.Detail = fmt.Sprintf("score %.1f", float64(score)/10)
 	}
 	c.seq++
-	c.rings[r.Class] = append(c.rings[r.Class], ringEntry{Reject: r, seq: c.seq})
+	c.rings[r.Class] = append(c.rings[r.Class], ringEntry{Reject: r, Seq: c.seq})
+	c.ringDirty[r.Class] = true
 	if ring := c.rings[r.Class]; len(ring) > RingSize {
 		c.rings[r.Class] = ring[len(ring)-RingSize:]
 	}
@@ -162,6 +173,9 @@ func (c *Counter) RecordReject(r Reject) {
 
 // RecordLoginFailure counts n failed logins, SMTP or mailbox.
 func (c *Counter) RecordLoginFailure(at time.Time, mailbox bool, n int) {
+	if n <= 0 {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	b := c.bucketAt(at)
@@ -184,12 +198,20 @@ func (c *Counter) RecordQuarantine(at time.Time) {
 }
 
 // bucketAt returns the bucket at falls in, creating it, or nil when at is
-// more than Retention old. The caller holds c.mu.
+// more than Retention old or, like LineTime, more than an hour ahead. The
+// caller holds c.mu.
 func (c *Counter) bucketAt(at time.Time) *bucket {
-	if at.Before(c.now().Add(-Retention)) {
+	if now := c.now(); at.Before(now.Add(-Retention)) || at.Sub(now) > time.Hour {
 		return nil
 	}
 	k := at.Unix() / BucketSeconds * BucketSeconds
+	c.dirty[k] = true
+	return c.bucket(k)
+}
+
+// bucket returns the bucket that starts at k, creating it. The caller holds
+// c.mu.
+func (c *Counter) bucket(k int64) *bucket {
 	b := c.buckets[k]
 	if b == nil {
 		b = &bucket{Scans: map[string]int{}, Rejects: map[Class]int{}, Temporary: map[Class]int{}}
@@ -219,7 +241,7 @@ func (c *Counter) Overview(from, to time.Time) Overview {
 	}
 	var in []keyed
 	c.mu.Lock()
-	since := c.since
+	since, gaps := c.since, slices.Clone(c.gaps)
 	for k, b := range c.buckets {
 		if start := time.Unix(k, 0); !start.Before(from) && start.Before(to) {
 			cp := *b
@@ -230,8 +252,9 @@ func (c *Counter) Overview(from, to time.Time) Overview {
 	c.mu.Unlock()
 
 	slices.SortFunc(in, func(x, y keyed) int { return cmp.Compare(x.t, y.t) })
-	ov := Overview{From: from, To: to, CountingSince: since, Gaps: []Span{},
+	ov := Overview{From: from, To: to, CountingSince: since,
 		Totals: Totals{Rejects: map[Class]int{}, Temporary: map[Class]int{}}, Series: make([]Point, 0, len(in))}
+	ov.Gaps, ov.UncountedMinutes = clipGaps(gaps, from, to)
 	tot := &ov.Totals
 	for _, e := range in {
 		p := Point{T: e.t}
@@ -290,7 +313,7 @@ func (c *Counter) Overview(from, to time.Time) Overview {
 // arrival first.
 func (c *Counter) Rejects(from, to time.Time, classes []Class, limit int) []Reject {
 	if limit <= 0 {
-		return nil
+		return []Reject{}
 	}
 	var got []ringEntry
 	c.mu.Lock()
@@ -308,7 +331,7 @@ func (c *Counter) Rejects(from, to time.Time, classes []Class, limit int) []Reje
 	c.mu.Unlock()
 
 	slices.SortFunc(got, func(x, y ringEntry) int {
-		return cmp.Or(y.At.Compare(x.At), cmp.Compare(y.seq, x.seq))
+		return cmp.Or(y.At.Compare(x.At), cmp.Compare(y.Seq, x.Seq))
 	})
 	out := make([]Reject, 0, min(limit, len(got)))
 	for _, e := range got[:min(limit, len(got))] {
