@@ -177,9 +177,10 @@ dropdown that applies one fix to every matching finding at once:
   under the `# CSM WP-Cron` marker are touched; customer-authored cron entries
   are never rewritten.
 
-These actions are limited to configured account roots, reject symlinks and
-unsupported file types, and remove the fixed row from the active findings
-view after a successful edit.
+These actions are limited to configured account roots, reject symlinks
+anywhere in the path and unsupported file types, refuse a file that changes
+before the edit lands, and remove the fixed row from the active findings view
+after a successful edit.
 
 ### WP-Cron fix settings
 

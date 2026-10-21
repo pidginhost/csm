@@ -46,11 +46,11 @@ var (
 	eximSpoolDirs              = []string{"/var/spool/exim/input", "/var/spool/exim4/input"}
 )
 
-// chmodFunc performs the permission change for fixPermissions. It is a var so
-// tests can simulate failures (e.g. a read-only mount returning EROFS) without
-// an actual read-only filesystem, and assert an already-compliant file is
-// never chmodded.
-var chmodFunc = os.Chmod
+// chmodFunc performs the permission change for fixPermissions on the pinned
+// descriptor. It is a var so tests can simulate failures (e.g. a read-only
+// mount returning EROFS) without an actual read-only filesystem, and assert an
+// already-compliant file is never chmodded.
+var chmodFunc = (*os.File).Chmod
 
 // RemediationResult describes the outcome of a fix action.
 type RemediationResult struct {
@@ -176,16 +176,31 @@ func ApplyFix(ctx context.Context, checkType, message, details string, filePath 
 // hits when they manually correct perms and then click "Apply automated fix":
 // rather than erroring, the finding clears.
 func fixPermissions(path, checkType string) RemediationResult {
+	result, _ := applyPermissionFix(path, checkType)
+	return result
+}
+
+// applyPermissionFix is fixPermissions that also returns the mode it
+// replaced, or 0 when it changed nothing.
+func applyPermissionFix(path, checkType string) (RemediationResult, os.FileMode) {
 	if path == "" {
-		return RemediationResult{Error: "could not extract file path from finding"}
+		return RemediationResult{Error: "could not extract file path from finding"}, 0
 	}
 
 	path, info, err := resolveExistingFixPath(path, effectiveFixRoots(fixPermissionsAllowedRoots))
 	if err != nil {
-		return RemediationResult{Error: err.Error()}
+		return RemediationResult{Error: err.Error()}, 0
 	}
+	target, err := openFixTarget(path, info)
+	if err != nil {
+		return RemediationResult{
+			Refused: errors.Is(fileResponseSourceError(err), errFileResponseRefused),
+			Error:   fmt.Sprintf("cannot open %s: %v", path, err),
+		}, 0
+	}
+	defer target.Close()
 
-	oldMode := info.Mode().Perm()
+	oldMode := target.Info.Mode().Perm()
 	dangerBit, label := os.FileMode(0002), "world-writable"
 	if checkType == "group_writable_php" {
 		dangerBit, label = 0020, "group-writable"
@@ -195,27 +210,27 @@ func fixPermissions(path, checkType string) RemediationResult {
 			Success:     true,
 			Action:      fmt.Sprintf("verified %s: no longer %s (mode %o)", path, label, oldMode),
 			Description: fmt.Sprintf("File is already not %s; no change needed", label),
-		}
+		}, 0
 	}
 
 	// #nosec G302 -- Intentional: this is the remediation that sets the
 	// canonical "safe web content" mode on a user file after we flagged
 	// the file as having dangerous perms (e.g. 0777). 0644 is what the
 	// webserver needs to serve static content as the file owner.
-	if err := chmodFunc(path, 0644); err != nil {
+	if err := chmodFunc(target.File, 0644); err != nil {
 		if errors.Is(err, syscall.EROFS) {
 			return RemediationResult{Error: fmt.Sprintf(
 				"cannot fix %s: the file is on a read-only mount (e.g. a backup snapshot or bind mount), not the live site. Dismiss or suppress this finding instead.",
-				path)}
+				path)}, 0
 		}
-		return RemediationResult{Error: fmt.Sprintf("chmod failed: %v", err)}
+		return RemediationResult{Error: fmt.Sprintf("chmod failed: %v", err)}, 0
 	}
 
 	return RemediationResult{
 		Success:     true,
 		Action:      fmt.Sprintf("chmod 644 %s", path),
 		Description: fmt.Sprintf("Changed permissions from %o to 644", oldMode),
-	}
+	}, oldMode
 }
 
 // fixQuarantine moves a file or directory to quarantine.
@@ -443,7 +458,26 @@ func resolveExistingFixPath(path string, allowedRoots []string) (string, os.File
 		return "", nil, refuseFileResponse(fmt.Errorf("symlinked paths are not eligible for automated remediation: %s", resolved))
 	}
 
+	fixAfterPathResolved(resolved)
 	return resolved, resolvedInfo, nil
+}
+
+// fixAfterPathResolved lets a test act as the account owner right after the
+// path check, where a real swap would have to win a race.
+var fixAfterPathResolved = func(string) {}
+
+// openFixTarget pins the file resolveExistingFixPath admitted. Another inode
+// at that name means the owner swapped it after the check.
+func openFixTarget(path string, expected os.FileInfo) (*cleanTarget, error) {
+	target, err := openCleanTarget(path)
+	if err != nil {
+		return nil, err
+	}
+	if !sameFileIdentity(target.Info, expected) {
+		target.Close()
+		return nil, refuseFileResponse(errors.New("file changed during remediation"))
+	}
+	return target, nil
 }
 
 func sanitizeFixPath(path string, allowedRoots []string) (string, error) {

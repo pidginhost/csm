@@ -13,6 +13,8 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - Failed central list downloads no longer write the download URL, or any token in it, to the log.
 - PHP hardening audits no longer pass when a PHP-FPM pool still turns the checked setting on through quoted or repeated entries.
+- Account owners can no longer trick the display_errors, WP-Cron or file permission fixes into changing files outside their account.
+- Account owners can no longer steer .htaccess or PHP file cleaning into another account's files.
 
 ### Added
 
@@ -26,6 +28,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 ### Fixed
 
 - The PHP end-of-life audit no longer says old branches get no security fixes; it points to vendor backports instead.
+- Automatic permission fixes no longer change a file that stopped being world- or group-writable after the scan.
 
 ## [4.4.1] - 2026-10-21
 

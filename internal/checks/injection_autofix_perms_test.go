@@ -81,6 +81,9 @@ func TestAutoFixPermissionsChmodsAndReportsAction(t *testing.T) {
 	if err := os.WriteFile(target, []byte("<?php"), 0666); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(target, 0666); err != nil { // defeat umask; stay world-writable
+		t.Fatal(err)
+	}
 
 	cfg := &config.Config{}
 	cfg.AutoResponse.Enabled = true

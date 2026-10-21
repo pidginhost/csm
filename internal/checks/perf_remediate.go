@@ -99,9 +99,12 @@ func FixDisplayErrorsOnInRoots(path string, allowedRoots []string) RemediationRe
 		return RemediationResult{Error: fmt.Sprintf("automated display_errors fix only supports .user.ini, php.ini, and .htaccess (got %s)", base)}
 	}
 
-	// #nosec G304 -- path was validated by resolveExistingFixPath against
-	// the supplied remediation roots; symlinks already rejected.
-	data, err := readFilePreservingIdentity(resolved, info)
+	target, err := openFixTarget(resolved, info)
+	if err != nil {
+		return RemediationResult{Error: fmt.Sprintf("read failed: %v", err)}
+	}
+	defer target.Close()
+	data, err := io.ReadAll(target.File)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("read failed: %v", err)}
 	}
@@ -120,7 +123,7 @@ func FixDisplayErrorsOnInRoots(path string, allowedRoots []string) RemediationRe
 	// Preserve ownership + mode. Write atomically via a sibling temp file +
 	// rename so a partial write does not leave the operator with a broken
 	// config.
-	if err := writeFilePreservingOwner(resolved, rewritten, info); err != nil {
+	if err := writeCleanedFileAtomic(target, rewritten); err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
 
@@ -192,8 +195,8 @@ func appendOverrideLine(data []byte, directive, marker string) []byte {
 	return out.Bytes()
 }
 
-// These helpers re-check the target inode after the initial path validation
-// so a file swap between validation and mutation fails closed.
+// truncateFilePreservingIdentity re-checks the target inode after the initial
+// path validation so a file swap between validation and mutation fails closed.
 func truncateFilePreservingIdentity(path string, expected os.FileInfo) error {
 	// #nosec G304 -- path was validated by resolveExistingFixPath against
 	// the per-account remediation roots; the open uses O_NOFOLLOW and the
@@ -211,72 +214,6 @@ func truncateFilePreservingIdentity(path string, expected os.FileInfo) error {
 		return fmt.Errorf("file changed during remediation")
 	}
 	return f.Truncate(0)
-}
-
-func readFilePreservingIdentity(path string, expected os.FileInfo) ([]byte, error) {
-	// #nosec G304 -- path was validated by resolveExistingFixPath against
-	// the per-account remediation roots; the open uses O_NOFOLLOW and the
-	// subsequent sameFileIdentity check fails closed on inode swap.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !sameFileIdentity(info, expected) {
-		return nil, fmt.Errorf("file changed during remediation")
-	}
-	return io.ReadAll(f)
-}
-
-func writeFilePreservingOwner(path string, data []byte, original os.FileInfo) error {
-	dir := filepath.Dir(path)
-	tmp, createErr := os.CreateTemp(dir, ".csm-perf-fix-*")
-	if createErr != nil {
-		return fmt.Errorf("create temp: %v", createErr)
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() { _ = os.Remove(tmpPath) }
-	if _, werr := tmp.Write(data); werr != nil {
-		_ = tmp.Close()
-		cleanup()
-		return fmt.Errorf("write temp: %v", werr)
-	}
-	if cerr := tmp.Close(); cerr != nil {
-		cleanup()
-		return fmt.Errorf("close temp: %v", cerr)
-	}
-	if merr := os.Chmod(tmpPath, original.Mode().Perm()); merr != nil {
-		cleanup()
-		return fmt.Errorf("chmod temp: %v", merr)
-	}
-	info, statErr := os.Lstat(path)
-	if statErr != nil {
-		cleanup()
-		return fmt.Errorf("stat original: %v", statErr)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		cleanup()
-		return fmt.Errorf("original became a symlink during remediation")
-	}
-	if !sameFileIdentity(info, original) {
-		cleanup()
-		return fmt.Errorf("file changed during remediation")
-	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		if chownErr := os.Chown(tmpPath, int(stat.Uid), int(stat.Gid)); chownErr != nil {
-			cleanup()
-			return fmt.Errorf("chown temp: %v", chownErr)
-		}
-	}
-	if renameErr := os.Rename(tmpPath, path); renameErr != nil {
-		cleanup()
-		return fmt.Errorf("rename: %v", renameErr)
-	}
-	return nil
 }
 
 func sameFileIdentity(a, b os.FileInfo) bool {

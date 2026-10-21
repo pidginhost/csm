@@ -13,7 +13,7 @@ import (
 // can simulate a read-only mount (EROFS) or other chmod failures without an
 // actual read-only filesystem, and assert that an already-compliant file is
 // never chmodded at all.
-func withChmodFunc(t *testing.T, fn func(string, os.FileMode) error) {
+func withChmodFunc(t *testing.T, fn func(*os.File, os.FileMode) error) {
 	t.Helper()
 	old := chmodFunc
 	chmodFunc = fn
@@ -28,7 +28,7 @@ func TestFixPermissionsAlreadyCompliantIsResolved(t *testing.T) {
 	withSimulatedProcessSignal(t)
 	tmp := t.TempDir()
 	withFixPermissionsAllowedRoots(t, tmp)
-	withChmodFunc(t, func(string, os.FileMode) error {
+	withChmodFunc(t, func(*os.File, os.FileMode) error {
 		t.Error("chmod must not run for an already-compliant file")
 		return nil
 	})
@@ -61,7 +61,7 @@ func TestFixPermissionsGroupWritableAlreadyCompliant(t *testing.T) {
 	withSimulatedProcessSignal(t)
 	tmp := t.TempDir()
 	withFixPermissionsAllowedRoots(t, tmp)
-	withChmodFunc(t, func(string, os.FileMode) error {
+	withChmodFunc(t, func(*os.File, os.FileMode) error {
 		t.Error("chmod must not run for an already-compliant file")
 		return nil
 	})
@@ -126,7 +126,7 @@ func TestFixPermissionsResolvedWhenOnlyOtherWriteBitRemains(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tmp := t.TempDir()
 			withFixPermissionsAllowedRoots(t, tmp)
-			withChmodFunc(t, func(string, os.FileMode) error {
+			withChmodFunc(t, func(*os.File, os.FileMode) error {
 				t.Error("chmod must not run when the finding's write bit is gone")
 				return nil
 			})
@@ -199,8 +199,8 @@ func TestFixPermissionsReadOnlyMountFriendlyError(t *testing.T) {
 	if err := os.Chmod(target, 0666); err != nil { // defeat umask; stay world-writable
 		t.Fatal(err)
 	}
-	withChmodFunc(t, func(path string, _ os.FileMode) error {
-		return &os.PathError{Op: "chmod", Path: path, Err: syscall.EROFS}
+	withChmodFunc(t, func(f *os.File, _ os.FileMode) error {
+		return &os.PathError{Op: "chmod", Path: f.Name(), Err: syscall.EROFS}
 	})
 
 	res := ApplyFix(context.Background(), "world_writable_php", "", "", target)
@@ -230,7 +230,7 @@ func TestFixPermissionsOtherChmodErrorSurfaced(t *testing.T) {
 	if err := os.Chmod(target, 0666); err != nil { // defeat umask; stay world-writable
 		t.Fatal(err)
 	}
-	withChmodFunc(t, func(string, os.FileMode) error { return syscall.EPERM })
+	withChmodFunc(t, func(*os.File, os.FileMode) error { return syscall.EPERM })
 
 	res := ApplyFix(context.Background(), "world_writable_php", "", "", target)
 	if res.Success {
