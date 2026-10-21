@@ -56,7 +56,8 @@ confirms each candidate with a live request to the site rather than by reading
 the file. A cycle that skips it on that interval leaves its existing findings
 in place. The interval starts only after a complete exposure scan; an incomplete
 attempt can retry on the next cycle, including after switching between full and
-reduced scans.
+reduced scans. A domain the panel still lists after its document root was
+deleted serves nothing and does not make the exposure scan incomplete.
 
 Account discovery failures, unreadable directories or files, and truncated
 backdoor candidate lists leave the affected scan incomplete. Its earlier

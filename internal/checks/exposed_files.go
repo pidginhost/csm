@@ -228,6 +228,12 @@ func walkExposureCandidatesLimit(ctx context.Context, docroot string, maxDepth, 
 		queue = queue[1:]
 		entries, err := osFS.ReadDir(dir.path)
 		if err != nil {
+			// A document root that no longer exists serves nothing, though the
+			// panel may still map a domain to it. A subdirectory that vanished
+			// after its listing may have moved, so it stays a gap.
+			if dir.depth == 0 && errors.Is(err, fs.ErrNotExist) {
+				return nil, true
+			}
 			complete = false
 			continue
 		}
