@@ -751,7 +751,7 @@ func (e *Engine) replayActionLocked(req ActionRequest) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if previous.Request != req {
+	if !previous.IsRequest(req) {
 		return true, ErrStateConflict
 	}
 	result, executeErr := e.lifecycle.Execute(previous, engineActionKernel{e})

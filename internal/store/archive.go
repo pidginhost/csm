@@ -478,16 +478,9 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 			return nil, fmt.Errorf("restoring csm.db: %w", err)
 		}
 	case "firewall":
-		restored, err := mergeBucketsFromSnapshot(stagedBbolt, opts.StatePath, isFirewallBucket)
+		restored, err := mergeFirewallBucketsFromSnapshot(stagedBbolt, opts.StatePath)
 		if err != nil {
 			return nil, fmt.Errorf("merging firewall buckets: %w", err)
-		}
-		// The merge deliberately keeps destination-only firewall keys, but a
-		// tentative config rollback is process-lifetime state, not durable
-		// firewall data. Clear any local pending record as well as the one
-		// removed from the imported snapshot.
-		if err := DisarmFirewallRollbackSnapshot(filepath.Join(opts.StatePath, "csm.db")); err != nil {
-			return nil, fmt.Errorf("disarming target firewall rollback: %w", err)
 		}
 		res.BucketsRestored = restored
 	case "baseline":
@@ -677,51 +670,6 @@ func atomicReplace(src, dst string) error {
 	}
 	defer parent.Close()
 	return parent.Sync()
-}
-
-// mergeBucketsFromSnapshot opens the snapshot bbolt read-only, iterates
-// matching buckets, and copies their key/value pairs into the target
-// bbolt at statePath/csm.db. The target may or may not exist; Open
-// creates it. Returns the bucket names actually merged.
-func mergeBucketsFromSnapshot(snapshotPath, statePath string, match func(string) bool) ([]string, error) {
-	src, err := bolt.Open(snapshotPath, 0600, &bolt.Options{Timeout: 5 * time.Second, ReadOnly: true})
-	if err != nil {
-		return nil, fmt.Errorf("opening snapshot: %w", err)
-	}
-	defer func() { _ = src.Close() }()
-
-	dst, err := Open(statePath)
-	if err != nil {
-		return nil, fmt.Errorf("opening target: %w", err)
-	}
-	defer func() { _ = dst.Close() }()
-
-	merged := []string{}
-	err = src.View(func(stx *bolt.Tx) error {
-		return stx.ForEach(func(name []byte, sb *bolt.Bucket) error {
-			if !match(string(name)) {
-				return nil
-			}
-			if upErr := dst.bolt.Update(func(dtx *bolt.Tx) error {
-				db, berr := dtx.CreateBucketIfNotExists(name)
-				if berr != nil {
-					return berr
-				}
-				return sb.ForEach(func(k, v []byte) error {
-					return db.Put(append([]byte(nil), k...), append([]byte(nil), v...))
-				})
-			}); upErr != nil {
-				return upErr
-			}
-			merged = append(merged, string(name))
-			return nil
-		})
-	})
-	if err != nil {
-		return merged, err
-	}
-	sort.Strings(merged)
-	return merged, nil
 }
 
 func isFirewallBucket(name string) bool {

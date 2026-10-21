@@ -158,6 +158,9 @@ func readFirewallSnapshotMeta(tx *bolt.Tx) (firewallSnapshotMeta, error) {
 	if raw == nil {
 		return meta, fmt.Errorf("%w: missing metadata", firewall.ErrStateCorrupt)
 	}
+	if _, err := decodeFirewallVersion(raw, firewallSnapshotVersion); err != nil {
+		return meta, err
+	}
 	if err := json.Unmarshal(raw, &meta); err != nil {
 		return meta, fmt.Errorf("%w: metadata decode: %v", firewall.ErrStateCorrupt, err)
 	}
@@ -361,7 +364,7 @@ func validFirewallRowEncoding(entry any) bool {
 	switch e := entry.(type) {
 	case firewall.BlockedEntry:
 		times = []time.Time{e.BlockedAt, e.ExpiresAt}
-		fields = []string{e.IP, e.Reason, e.Source}
+		fields = []string{e.IP, e.Reason, e.Source, e.ActionID}
 	case firewall.SubnetEntry:
 		times = []time.Time{e.BlockedAt, e.ExpiresAt}
 		fields = []string{e.CIDR, e.Reason, e.Source}

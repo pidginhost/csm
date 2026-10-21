@@ -35,6 +35,18 @@ against actual host state before any retry; an uncertain outcome stays
 visible until it can be proved. A stable ID supports deduplication, not a
 promise of exactly-once host effects.
 
+A firewall action can carry a batch: a header and a manifest of
+single-target members, each with its own charge and the rows it removes to
+make room. Each member ID belongs to exactly one batch. Admitting a known ID
+with any change to the members, their order or their effects is refused, and
+a refused batch charges nothing. Actions written before batches read as
+one-member batches and keep their stored format. A record written by a newer
+build is refused as unsupported, never read or overwritten. A firewall-only
+import moves the durable journal and its snapshot as one unit, and refuses
+while either database has an unresolved action or undelivered audit. A
+refusal, including one for nested firewall buckets on either side, leaves the
+target database unchanged.
+
 If intent or budget persistence fails, new automated mutations are refused
 and the finding is retained. If outcome persistence fails after mutation, the
 pending intent is preserved, action health reports degraded, and

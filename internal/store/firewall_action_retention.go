@@ -161,6 +161,9 @@ func undeliveredFirewallAuditIDs(index firewallJournalIndex) map[string]bool {
 // deleteFirewallAction removes one retained outcome with every event that
 // refers to it. Undelivered outcomes are never passed here.
 func deleteFirewallAction(tx *bolt.Tx, entry firewallActionHistoryEntry) error {
+	if err := releaseFirewallBatchMembers(tx, entry.id); err != nil {
+		return err
+	}
 	if b := tx.Bucket([]byte(firewallAuditBucket)); b != nil {
 		prefix := append([]byte(entry.id), 0)
 		// Collect first: acknowledgement rewrites an audit leaf in this
