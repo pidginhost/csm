@@ -49,25 +49,41 @@ func (d *Daemon) recordMailStatsMail(line string, at time.Time) {
 	d.mailStats.RecordLoginFailure(mailstats.LineTime(line, time.Local, at), true, dovecotFailedAttempts(line))
 }
 
-// restoreMailStats merges the stored counts into the counter. A load that
-// fails before merging leaves the counter in memory only: Flush writes
-// nothing to the store until a load has merged.
+// restoreMailStats merges the stored counts into the counter before the log
+// watchers start.
 func (d *Daemon) restoreMailStats() {
 	if sdb := store.Global(); sdb != nil {
-		if err := d.mailStats.Load(sdb, d.mailStatsNow()); err != nil {
-			csmlog.Warn("mail stats load failed", "err", err)
-		}
+		d.loadMailStats(sdb)
 	}
 }
 
-// persistMailStats saves the counter. Without a state store it only prunes,
-// so memory stays bounded.
+// loadMailStats merges the stored counts once. Until a load succeeds the
+// counter runs in memory only, since Flush writes nothing to the store
+// before a load has merged; every save retries, and a load that already
+// succeeded does nothing. Only the first failure and the recovery are
+// logged.
+func (d *Daemon) loadMailStats(sdb *store.DB) {
+	err := d.mailStats.Load(sdb, d.mailStatsNow())
+	switch {
+	case err != nil && !d.mailStatsLoadFailing.Load():
+		d.mailStatsLoadFailing.Store(true)
+		csmlog.Warn("mail stats load failed, counting in memory until a retry succeeds", "err", err)
+	case err == nil && d.mailStatsLoadFailing.Load():
+		d.mailStatsLoadFailing.Store(false)
+		csmlog.Info("mail stats load succeeded on retry")
+	}
+}
+
+// persistMailStats saves the counter, loading the stored counts first if
+// that has not succeeded yet. Without a state store it only prunes, so
+// memory stays bounded.
 func (d *Daemon) persistMailStats() {
 	sdb := store.Global()
 	if sdb == nil {
 		d.mailStats.Prune(d.mailStatsNow())
 		return
 	}
+	d.loadMailStats(sdb)
 	if err := d.mailStats.Flush(sdb, d.mailStatsNow()); err != nil {
 		csmlog.Warn("mail stats persistence failed", "err", err)
 	}

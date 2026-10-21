@@ -29,10 +29,12 @@ const (
 
 // Load adds the stored counts to what the counter holds, since lines may
 // already have been counted, restores the reject rings and gaps, and
-// records the time since the last flush as a gap when CSM was stopped
-// longer than gapMin. A corrupt entry, an unknown class or an entry out of
-// range is skipped. A failed load leaves live counts unchanged and can be
-// retried. Once a Load succeeds, later calls do nothing.
+// records the stretch from the last flush to the counter's start as a gap
+// when CSM was stopped longer than gapMin. Ending it at the start rather
+// than at now keeps a retried Load from counting time already counted. A
+// corrupt entry, an unknown class or an entry out of range is skipped. A
+// failed load leaves live counts unchanged and can be retried. Once a Load
+// succeeds, later calls do nothing.
 func (c *Counter) Load(db Store, now time.Time) error {
 	c.persistMu.Lock()
 	defer c.persistMu.Unlock()
@@ -52,7 +54,7 @@ func (c *Counter) Load(db Store, now time.Time) error {
 	for _, p := range pairs {
 		gaps = append(gaps, Span{time.Unix(p[0], 0).UTC(), time.Unix(p[1], 0).UTC()})
 	}
-	end := time.Unix(now.Unix(), 0).UTC()
+	end := time.Unix(c.start.Unix(), 0).UTC()
 	flushed, ferr := time.Parse(time.RFC3339, db.GetMetaString(metaFlushedAt))
 	newGap := ferr == nil && end.Sub(flushed) > gapMin
 	if newGap {

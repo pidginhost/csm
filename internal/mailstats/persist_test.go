@@ -221,6 +221,26 @@ func TestLoadRecordsGapSinceLastFlush(t *testing.T) {
 	}
 }
 
+// A Load retried after a failure must not count the time the counter was
+// already counting in memory as a gap: the gap ends where the counter
+// started.
+func TestLoadGapEndsAtCounterStart(t *testing.T) {
+	start := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	now := start
+	c := New(func() time.Time { return now })
+	db := newFakeStore()
+	db.meta["mailstats:flushed_at"] = start.Add(-30 * time.Minute).Format(time.RFC3339)
+	now = start.Add(10 * time.Minute)
+	mustLoad(t, c, db, now)
+	ov := c.Overview(start.Add(-time.Hour), now)
+	if ov.UncountedMinutes != 30 || len(ov.Gaps) != 1 || !ov.Gaps[0].End.Equal(start) {
+		t.Fatalf("uncounted %d, gaps %+v, want 30 minutes ending at the counter start", ov.UncountedMinutes, ov.Gaps)
+	}
+	if db.gaps[start.Unix()] != start.Add(-30*time.Minute).Unix() || len(db.gaps) != 1 {
+		t.Fatalf("stored gaps %v", db.gaps)
+	}
+}
+
 func TestLoadNoGapAfterShortStop(t *testing.T) {
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	for name, flushed := range map[string]string{

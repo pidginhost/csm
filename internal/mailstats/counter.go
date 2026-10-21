@@ -95,6 +95,9 @@ type ringEntry struct {
 // Counter counts mail decisions in memory by the time the log line gives.
 type Counter struct {
 	now func() time.Time
+	// start is when New ran and so the end of any stop Load records.
+	// Unlike since, Load never replaces it.
+	start time.Time
 
 	// persistMu serializes Load and Flush. A Flush that writes between
 	// Load's read and its merge, or two Flushes that write out of order,
@@ -119,9 +122,11 @@ type Counter struct {
 
 // New returns an empty counter that has counted since now().
 func New(now func() time.Time) *Counter {
+	start := now()
 	return &Counter{
 		now:       now,
-		since:     now(),
+		start:     start,
+		since:     start,
 		buckets:   map[int64]*bucket{},
 		dirty:     map[int64]bool{},
 		rings:     map[Class][]ringEntry{},

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -86,6 +87,66 @@ func TestMailStatsPersistAcrossRestart(t *testing.T) {
 	}
 	if got := second.mailStats.Rejects(now.Add(-time.Hour), now, nil, 10); len(got) != 1 || got[0].IP != "203.0.113.7" {
 		t.Fatalf("restored reject ring = %+v", got)
+	}
+}
+
+// One store error at startup must not leave the run memory-only: each save
+// retries the load, which merges the stored counts once, and the save then
+// writes. Only the first failure and the recovery are logged.
+func TestMailStatsRetriesFailedLoad(t *testing.T) {
+	now := mailStatsTestNow
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := mailstats.New(func() time.Time { return now })
+	if err = saved.Load(db, now); err != nil {
+		t.Fatal(err)
+	}
+	saved.RecordQuarantine(now)
+	if err = saved.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+	// Reads through a closed handle fail, the way a broken store does.
+	_ = db.Close()
+	prevStore := store.Global()
+	t.Cleanup(func() { store.SetGlobal(prevStore) })
+	store.SetGlobal(db)
+
+	logs := captureCSMLog(t)
+	t.Cleanup(func() { logs() })
+	d := newMailStatsTestDaemon(t, &now)
+	d.restoreMailStats()
+	d.handleEximLine(mailStatsRejectLine, alert.Observation{ObservedAt: now}, &config.Config{})
+	d.persistMailStats()
+
+	reopened, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	store.SetGlobal(reopened)
+	d.persistMailStats()
+	d.persistMailStats()
+
+	from, to := now.Add(-time.Hour), now.Add(time.Hour)
+	if got := d.mailStats.Overview(from, to).Totals; got.Quarantined != 1 || got.Rejects[mailstats.ClassSpam] != 1 {
+		t.Fatalf("totals after the retry = %+v, want the stored quarantine merged once plus the live reject", got)
+	}
+	fresh := mailstats.New(func() time.Time { return now })
+	if err = fresh.Load(reopened, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := fresh.Overview(from, to).Totals; got.Quarantined != 1 || got.Rejects[mailstats.ClassSpam] != 1 {
+		t.Fatalf("stored totals = %+v, want the merged counts written", got)
+	}
+	out := logs()
+	if n := strings.Count(out, "mail stats load failed"); n != 1 {
+		t.Fatalf("load failure logged %d times, want once:\n%s", n, out)
+	}
+	if n := strings.Count(out, "mail stats load succeeded"); n != 1 {
+		t.Fatalf("load recovery logged %d times, want once:\n%s", n, out)
 	}
 }
 

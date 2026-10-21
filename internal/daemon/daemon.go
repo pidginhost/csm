@@ -134,6 +134,9 @@ type Daemon struct {
 	// clock mailStatsNow, which also times its restore, saves and pruning.
 	mailStats    *mailstats.Counter
 	mailStatsNow func() time.Time
+	// mailStatsLoadFailing is set from a logged load failure until a retry
+	// merges, so each outcome is logged once.
+	mailStatsLoadFailing atomic.Bool
 
 	// antispamLoop runs antispam reconcile passes on a cPanel host. It
 	// stays nil elsewhere and until startup reaches it.
