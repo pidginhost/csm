@@ -203,6 +203,20 @@ func buildDoctorReport(loadConfig func() (*config.Config, error), readStatus fun
 		}
 	}
 
+	if w := sr.Snapshot.Automation.FirewallConfirmation; w != nil {
+		check := DoctorCheck{
+			Name: "firewall confirmation", Status: "warn",
+			Message: "an apply-confirmed firewall change waits for confirmation and rolls back at " + w.Deadline.UTC().Format(time.RFC3339),
+			Fix:     "run `csm firewall confirm` to keep it, or let it roll back",
+		}
+		if w.Error != "" {
+			check.Status = "fail"
+			check.Message = "an apply-confirmed firewall change cannot settle by itself: " + w.Error
+			check.Fix = "inspect `nft list ruleset` and the firewall settings, then run `csm firewall confirm` to accept the current state; repair the reported recovery problem and restart the daemon to retry"
+		}
+		report.Checks = append(report.Checks, check)
+	}
+
 	// Termination depends on a kernel that can pin a process handle. Report it
 	// only where it is configured, so hosts that never kill processes are not
 	// asked to act on a capability they do not use.

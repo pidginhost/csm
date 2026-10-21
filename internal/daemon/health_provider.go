@@ -262,6 +262,9 @@ func (d *Daemon) AutomationStatus() health.AutomationStatus {
 	}
 	out.ChallengeEscalated = challengeEscalatedCount()
 	out.ChallengePortGateActive = d.challengeGate != nil
+	if cfg != nil {
+		out.FirewallConfirmation = firewallConfirmationStatus(cfg.StatePath)
+	}
 	if cfg != nil && cfg.Firewall != nil {
 		out.FirewallEnabled = cfg.Firewall.Enabled
 		if out.FirewallEnabled {

@@ -776,6 +776,14 @@ func printAutomationStatusHuman(a health.AutomationStatus) {
 	} else {
 		fmt.Println("firewall rollback: none")
 	}
+	switch w := a.FirewallConfirmation; {
+	case w == nil:
+		fmt.Println("firewall confirm: none")
+	case w.Error != "":
+		fmt.Printf("firewall confirm: pending (%s)\n", w.Error)
+	default:
+		fmt.Printf("firewall confirm: pending (rolls back at %s)\n", w.Deadline.UTC().Format(time.RFC3339))
+	}
 	if a.LastAction != nil {
 		fmt.Printf("last automation:  %s at %s - %s\n",
 			a.LastAction.Check,

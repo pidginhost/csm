@@ -93,16 +93,27 @@ type AutomationStatus struct {
 	// not read; the firewall then runs without the entries that file held.
 	// FirewallLedgerError says why startup could not read the ledger: rows
 	// its attempts wrote were restored without proof of their outcome.
-	FirewallEnabled               bool              `json:"firewall_enabled"`
-	FirewallManaged               bool              `json:"firewall_managed"`
-	FirewallStartupError          string            `json:"firewall_startup_error,omitempty"`
-	FirewallStateSetAside         string            `json:"firewall_state_set_aside,omitempty"`
-	FirewallLedgerError           string            `json:"firewall_ledger_error,omitempty"`
-	FirewallBlockedIPs            int               `json:"firewall_blocked_ips"`
-	FirewallBlockedSubnets        int               `json:"firewall_blocked_subnets"`
-	FirewallRollbackPending       bool              `json:"firewall_rollback_pending"`
-	FirewallRollbackSecondsRemain int64             `json:"firewall_rollback_remaining_seconds,omitempty"`
-	LastAction                    *AutomationAction `json:"last_action,omitempty"`
+	FirewallEnabled               bool   `json:"firewall_enabled"`
+	FirewallManaged               bool   `json:"firewall_managed"`
+	FirewallStartupError          string `json:"firewall_startup_error,omitempty"`
+	FirewallStateSetAside         string `json:"firewall_state_set_aside,omitempty"`
+	FirewallLedgerError           string `json:"firewall_ledger_error,omitempty"`
+	FirewallBlockedIPs            int    `json:"firewall_blocked_ips"`
+	FirewallBlockedSubnets        int    `json:"firewall_blocked_subnets"`
+	FirewallRollbackPending       bool   `json:"firewall_rollback_pending"`
+	FirewallRollbackSecondsRemain int64  `json:"firewall_rollback_remaining_seconds,omitempty"`
+	// FirewallConfirmation is a pending `csm firewall apply-confirmed`
+	// window; nil when none is.
+	FirewallConfirmation *FirewallConfirmation `json:"firewall_confirmation,omitempty"`
+	LastAction           *AutomationAction     `json:"last_action,omitempty"`
+}
+
+// FirewallConfirmation is a pending CLI confirmation window: when its
+// rollback is due, and why it cannot settle without `csm firewall confirm`
+// when it cannot.
+type FirewallConfirmation struct {
+	Deadline time.Time `json:"deadline,omitzero"`
+	Error    string    `json:"error,omitempty"`
 }
 
 // AutomationAction is the newest action-like finding CSM recorded.

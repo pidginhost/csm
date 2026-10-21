@@ -182,10 +182,15 @@ csm firewall rollback status|confirm|revert
 ```
 
 `csm firewall apply-confirmed` and `csm firewall restart` refuse a pending
-CLI confirmation window. If startup cannot read its saved configuration,
-rollback still attempts kernel recovery, but the window stays pending. Inspect
-the current firewall before `csm firewall confirm`, which accepts the current
-ruleset and engine configuration; it does not recover unreadable settings.
-Or repair the saved configuration and restart the daemon to retry recovery.
+CLI confirmation window and say whether waiting for its rollback still helps.
+If startup cannot read its saved configuration, rollback restores the kernel
+ruleset and state and the window stays pending; once that restore is
+recorded, later restarts keep the blocks added since and apply the
+configured settings. `csm status` and `csm doctor` show the window. Inspect
+the current firewall before `csm firewall confirm`, which accepts the
+current ruleset and engine configuration; it does not recover unreadable
+settings. Or repair the saved configuration and restart the daemon, which
+restores it and rebuilds the ruleset with the current blocks; removing it
+does not end a recorded window, even one whose marker was empty or corrupt.
 See [CLI confirmation window](firewall.md#cli-confirmation-window). The
 separate Web UI config timer uses `csm firewall rollback`.

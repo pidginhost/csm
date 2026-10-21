@@ -101,3 +101,67 @@ func TestDoctorWarnsFirewallLedgerUnreadable(t *testing.T) {
 		}
 	}
 }
+
+// Operator ruling 6: doctor shows a pending CLI confirmation window. One
+// whose rollback is scheduled warns with its deadline; one that cannot
+// settle by itself fails and names why, and confirmation is the fix.
+func TestDoctorReportsAPendingFirewallConfirmation(t *testing.T) {
+	deadline := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		window  *health.FirewallConfirmation
+		status  string
+		message string
+		enabled bool
+	}{
+		{"none", nil, "", "", true},
+		{"scheduled", &health.FirewallConfirmation{Deadline: deadline}, "warn", "2026-10-20T12:00:00Z", true},
+		{"stuck", &health.FirewallConfirmation{Deadline: deadline, Error: "fixture reason"}, "fail", "fixture reason", true},
+		{"disabled with pending window", &health.FirewallConfirmation{Deadline: deadline, Error: "fixture reason"}, "fail", "fixture reason", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, err := json.Marshal(control.StatusResult{Snapshot: &health.Snapshot{
+				StartedAt: time.Now(), StoreHealthy: true, Watchers: map[string]bool{"file": true},
+				Automation: health.AutomationStatus{FirewallEnabled: tc.enabled, FirewallManaged: tc.enabled, FirewallConfirmation: tc.window},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			report := buildDoctorReport(func() (*config.Config, error) { return validDoctorConfig(), nil }, func() ([]byte, error) { return payload, nil }, integrityOK)
+			var rows []DoctorCheck
+			for _, check := range report.Checks {
+				if check.Name == "firewall confirmation" {
+					rows = append(rows, check)
+				}
+			}
+			if tc.window == nil {
+				if len(rows) != 0 {
+					t.Fatalf("no window reported %+v", rows)
+				}
+				return
+			}
+			if len(rows) != 1 || rows[0].Status != tc.status || !strings.Contains(rows[0].Message, tc.message) || !strings.Contains(rows[0].Fix, "csm firewall confirm") {
+				t.Fatalf("rows = %+v", rows)
+			}
+		})
+	}
+}
+
+// `csm status` prints a pending CLI confirmation window apart from the
+// Web UI rollback timer.
+func TestStatusPrintsAPendingFirewallConfirmation(t *testing.T) {
+	deadline := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		window *health.FirewallConfirmation
+		want   string
+	}{
+		{nil, "firewall confirm: none\n"},
+		{&health.FirewallConfirmation{Deadline: deadline}, "firewall confirm: pending (rolls back at 2026-10-20T12:00:00Z)\n"},
+		{&health.FirewallConfirmation{Deadline: deadline, Error: "fixture reason"}, "firewall confirm: pending (fixture reason)\n"},
+	} {
+		out := captureStdout(t, func() { printAutomationStatusHuman(health.AutomationStatus{FirewallConfirmation: tc.window}) })
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("status output = %q, want %q", out, tc.want)
+		}
+	}
+}

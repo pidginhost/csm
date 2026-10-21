@@ -265,6 +265,15 @@ installations share it. These findings are separate from queue health:
 a command that completed with a refusal did not lose queue work. Existing queue
 loss accounting remains responsible for interrupted or missing command work.
 
+### Firewall confirmation
+
+`automation.firewall_confirmation` describes a pending CLI `apply-confirmed`
+window, also when the firewall is disabled or its engine failed to start; it
+is absent when none is pending. `deadline` is the saved deadline in UTC when
+it can be read, and `error` says why the window cannot settle without
+`csm firewall confirm` or repair of the reported recovery problem. It is
+separate from the Web UI configuration rollback timer.
+
 ### Automatic response admission
 
 `status.admission.v1` advertises the `admission` object on status responses.
