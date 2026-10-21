@@ -158,11 +158,11 @@ func readFirewallSnapshotMeta(tx *bolt.Tx) (firewallSnapshotMeta, error) {
 	if raw == nil {
 		return meta, fmt.Errorf("%w: missing metadata", firewall.ErrStateCorrupt)
 	}
+	if _, err := decodeFirewallVersion(raw, firewallSnapshotVersion); err != nil {
+		return meta, err
+	}
 	if err := json.Unmarshal(raw, &meta); err != nil {
 		return meta, fmt.Errorf("%w: metadata decode: %v", firewall.ErrStateCorrupt, err)
-	}
-	if meta.Version > firewallSnapshotVersion {
-		return meta, firewall.ErrStateUnsupported
 	}
 	if meta.Version != firewallSnapshotVersion || meta.Revision == 0 || len(meta.Collections) != len(firewallSnapshotBuckets) {
 		return meta, fmt.Errorf("%w: metadata version, revision or collections", firewall.ErrStateCorrupt)

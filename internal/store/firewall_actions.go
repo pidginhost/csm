@@ -174,27 +174,46 @@ func encodeFirewallActionRecord(a firewall.FirewallAction) ([]byte, error) {
 
 func decodeFirewallJournal(raw []byte) ([]byte, error) {
 	payload, _, err := decodeFirewallJournalVersion(raw, 1)
-	return payload, err
+	if err != nil {
+		return nil, err
+	}
+	if !validFirewallJSONText(raw) {
+		return nil, firewall.ErrStateCorrupt
+	}
+	return payload, nil
 }
 
-// decodeFirewallJournalVersion accepts envelopes up to newest. A higher
-// version is refused as unsupported before its payload is interpreted.
+// Only the version belongs to every schema. Newer records may change any
+// other field, including its type or text encoding.
+func decodeFirewallVersion(raw []byte, newest uint64) (uint64, error) {
+	var header struct {
+		Version uint64 `json:"version"`
+	}
+	if json.Unmarshal(raw, &header) != nil || header.Version == 0 {
+		return 0, firewall.ErrStateCorrupt
+	}
+	if header.Version > newest {
+		return 0, firewall.ErrStateUnsupported
+	}
+	return header.Version, nil
+}
+
+// Text validation belongs to the reader, after any nested version checks:
+// a supported audit envelope can contain an unsupported action envelope.
 func decodeFirewallJournalVersion(raw []byte, newest uint64) ([]byte, uint64, error) {
+	version, err := decodeFirewallVersion(raw, newest)
+	if err != nil {
+		return nil, 0, err
+	}
 	var envelope firewallJournalEnvelope
-	if !validFirewallJSONText(raw) || json.Unmarshal(raw, &envelope) != nil || envelope.Version == 0 {
-		return nil, 0, firewall.ErrStateCorrupt
-	}
-	if envelope.Version > newest {
-		return nil, 0, firewall.ErrStateUnsupported
-	}
-	if !bytes.HasPrefix(bytes.TrimSpace(envelope.Payload), []byte("{")) {
+	if json.Unmarshal(raw, &envelope) != nil || !bytes.HasPrefix(bytes.TrimSpace(envelope.Payload), []byte("{")) {
 		return nil, 0, firewall.ErrStateCorrupt
 	}
 	digest := sha256.Sum256(envelope.Payload)
 	if envelope.SHA256 != fmt.Sprintf("%x", digest) {
 		return nil, 0, firewall.ErrStateCorrupt
 	}
-	return envelope.Payload, envelope.Version, nil
+	return envelope.Payload, version, nil
 }
 
 func decodeFirewallAction(raw []byte) (firewall.FirewallAction, error) {
@@ -202,10 +221,14 @@ func decodeFirewallAction(raw []byte) (firewall.FirewallAction, error) {
 	if len(raw) == 0 {
 		return a, ErrFirewallActionMissing
 	}
-	raw, version, err := decodeFirewallJournalVersion(raw, firewallManifestVersion)
+	payload, version, err := decodeFirewallJournalVersion(raw, firewallManifestVersion)
 	if err != nil {
 		return firewall.FirewallAction{}, err
 	}
+	if !validFirewallJSONText(raw) {
+		return firewall.FirewallAction{}, firewall.ErrStateCorrupt
+	}
+	raw = payload
 	var evidence struct {
 		Before  json.RawMessage `json:"before"`
 		After   json.RawMessage `json:"after"`
@@ -214,7 +237,7 @@ func decodeFirewallAction(raw []byte) (firewall.FirewallAction, error) {
 	if json.Unmarshal(raw, &evidence) != nil || !bytes.HasPrefix(bytes.TrimSpace(evidence.Before), []byte("{")) || !bytes.HasPrefix(bytes.TrimSpace(evidence.After), []byte("{")) {
 		return firewall.FirewallAction{}, firewall.ErrStateCorrupt
 	}
-	if !validFirewallJSONText(raw) || json.Unmarshal(raw, &a) != nil || validateFirewallAdmission(a) != nil || a.UpdatedAt.IsZero() || a.AuditVersion == 0 || a.AuditAck > a.AuditVersion {
+	if json.Unmarshal(raw, &a) != nil || validateFirewallAdmission(a) != nil || a.UpdatedAt.IsZero() || a.AuditVersion == 0 || a.AuditAck > a.AuditVersion {
 		return firewall.FirewallAction{}, firewall.ErrStateCorrupt
 	}
 	// Version 1 never carries a manifest and version 2 always does, so a
@@ -647,19 +670,18 @@ func firewallAuditKey(id string, version uint64) []byte {
 
 func decodeFirewallAuditEvent(key, raw []byte) (firewallAuditEvent, firewall.FirewallAction, error) {
 	var event firewallAuditEvent
-	var err error
-	raw, err = decodeFirewallJournal(raw)
+	payload, _, err := decodeFirewallJournalVersion(raw, 1)
 	if err != nil {
 		return event, firewall.FirewallAction{}, err
 	}
-	if !validFirewallJSONText(raw) || json.Unmarshal(raw, &event) != nil {
+	if json.Unmarshal(payload, &event) != nil {
 		return event, firewall.FirewallAction{}, firewall.ErrStateCorrupt
 	}
 	a, err := decodeFirewallAction(event.Action)
 	if errors.Is(err, firewall.ErrStateUnsupported) {
 		return event, firewall.FirewallAction{}, err
 	}
-	if err != nil || !firewallAuditPhase(a.Phase) || !bytes.Equal(key, firewallAuditKey(a.Request.ID, a.AuditVersion)) {
+	if err != nil || !validFirewallJSONText(raw) || !firewallAuditPhase(a.Phase) || !bytes.Equal(key, firewallAuditKey(a.Request.ID, a.AuditVersion)) {
 		return event, firewall.FirewallAction{}, firewall.ErrStateCorrupt
 	}
 	return event, a, nil

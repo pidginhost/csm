@@ -54,5 +54,10 @@ required recovery evidence. Backup restore must not resurrect pending actions,
 jobs or sessions as executable or authenticated live state; what is disarmed
 and what requires review is defined per record type.
 
+The firewall store checks record versions before interpreting their schemas.
+Newer journal records and snapshots return an unsupported-version error,
+including through recovery and audit delivery. An audit envelope keeps its
+embedded action opaque until that action's version is supported.
+
 The open work is tracked in the
 [roadmap](https://github.com/pidginhost/csm/blob/main/ROADMAP.md#action-log-covers-seven-of-43-host-changing-operations).
