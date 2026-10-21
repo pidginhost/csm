@@ -164,3 +164,49 @@ func TestFirewallAuditRejectsSupportedInvalidText(t *testing.T) {
 		t.Fatal("invalid audit was acknowledged")
 	}
 }
+
+func TestFirewallJournalRejectsSupportedInvalidText(t *testing.T) {
+	cases := []struct {
+		name, bucket, key string
+		in                firewall.FirewallAction
+		read              func(*DB) error
+	}{
+		{"batch action", firewallActionsBucket, "batch-one", batchFixture(), func(db *DB) error {
+			_, err := db.ReadFirewallAction("batch-one")
+			return err
+		}},
+		{"earlier action", firewallActionsBucket, "request-one", admissionFixture(), func(db *DB) error {
+			_, err := db.ReadFirewallAction("request-one")
+			return err
+		}},
+		{"journal index", firewallActionIndexBucket, "index", admissionFixture(), func(db *DB) error {
+			_, err := db.PendingFirewallActions()
+			return err
+		}},
+		{"scan budget", firewallBudgetBucket, "2026-01-02T03", admissionFixture(), func(db *DB) error {
+			_, err := db.ReadFirewallScanBudget("2026-01-02T03")
+			return err
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			db := openSnapshotDB(t)
+			admitFixture(t, db, c.in)
+			if err := db.bolt.Update(func(tx *bolt.Tx) error {
+				b := tx.Bucket([]byte(c.bucket))
+				version, fields := storedEnvelope(t, b.Get([]byte(c.key)))
+				fields["extra"] = json.RawMessage(`"\ud800"`)
+				raw, err := encodeFirewallJournalVersion(fields, version)
+				if err != nil {
+					return err
+				}
+				return b.Put([]byte(c.key), raw)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.read(db); !errors.Is(err, firewall.ErrStateCorrupt) || errors.Is(err, firewall.ErrStateUnsupported) {
+				t.Fatalf("supported record with invalid text returned %v", err)
+			}
+		})
+	}
+}
