@@ -167,6 +167,8 @@ type Daemon struct {
 	ipmapCanarySocket string
 	// antispamFeeds is also read by the mail log path before startup finishes.
 	antispamFeeds atomic.Pointer[reconcile.FeedState]
+	// rspamdStats is written by reconcile passes and read by web UI requests.
+	rspamdStats atomic.Pointer[rspamdStatsSource]
 	// forwardGuardMu prevents overlapping attempts from applying stale config.
 	forwardGuardMu sync.Mutex
 	// forwardGuardRetry retains failed or deferred reconcile requests.
@@ -2530,6 +2532,7 @@ func (d *Daemon) startWebUI() {
 	d.webServer = srv
 	srv.SetHealthProvider(d)
 	srv.SetMailStats(d.mailStats)
+	srv.SetRspamdEndpoint(d.rspamdStatsEndpoint)
 	srv.SetFindingBus(d.findingBus)
 	if d.scanJobs != nil {
 		srv.SetScanJobs(d.scanJobs)

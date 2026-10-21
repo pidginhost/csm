@@ -357,6 +357,35 @@ func TestReportAntispamReplacesSettledChecks(t *testing.T) {
 	}
 }
 
+// The web UI reads rspamd's numbers where the last completed pass found
+// the controller; a pass that settled no check keeps that answer.
+func TestReportAntispamPublishesStatsEndpoint(t *testing.T) {
+	d := newTestDaemon(t)
+	if ep, reason := d.rspamdStatsEndpoint(); ep != (antispam.StatsEndpoint{}) || reason != "" {
+		t.Fatalf("before any pass: %+v %q, want zero values", ep, reason)
+	}
+
+	ep := antispam.StatsEndpoint{Unix: true, Address: "/run/rspamd/controller.sock", RspamdUID: 990, Version: "3.9.1"}
+	d.reportAntispam(reconcile.Outcome{Checks: []string{reconcile.CheckPrecondition}, Stats: ep})
+	if got, reason := d.rspamdStatsEndpoint(); got != ep || reason != "" {
+		t.Fatalf("after a completed pass: %+v %q, want %+v", got, reason, ep)
+	}
+
+	for _, out := range []reconcile.Outcome{{Err: context.Canceled}, {Retry: reconcile.BusyRetry}} {
+		d.reportAntispam(out)
+		if got, reason := d.rspamdStatsEndpoint(); got != ep || reason != "" {
+			t.Fatalf("after %+v: %+v %q, want the previous endpoint", out, got, reason)
+		}
+	}
+
+	const why = "CSM cannot read rspamd's controller configuration"
+	none := antispam.StatsEndpoint{Version: "3.9.1"}
+	d.reportAntispam(reconcile.Outcome{Checks: []string{reconcile.CheckPrecondition}, Stats: none, StatsReason: why})
+	if got, reason := d.rspamdStatsEndpoint(); got != none || reason != why {
+		t.Fatalf("after a pass without an endpoint: %+v %q, want %+v %q", got, reason, none, why)
+	}
+}
+
 const (
 	testScanSocket = "/run/rspamd/csm-normal.sock"
 	scanErrorLine  = `2026-10-13 09:00:00 1xF5ol-00000000SdK-2TMA CSM-ANTISPAM event=scan mode=enforce policy=on result=error score=none action="unavailable" decision=none`

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/antispam"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/broadcast"
 	"github.com/pidginhost/csm/internal/checks"
@@ -158,6 +159,11 @@ type Server struct {
 	statsMemo    historyMemo
 	timelineMemo historyMemo
 	emailMemos   historyMemos
+	// rspamdEndpoint is set before Start. rspamdMu guards rspamdCache and
+	// is held across a controller read.
+	rspamdEndpoint func() (antispam.StatsEndpoint, string)
+	rspamdMu       sync.Mutex
+	rspamdCache    rspamdFetch
 	// accountRoots and scanAccounts are the platform's account inventory;
 	// per server so handler tests can supply their own tree.
 	accountRoots func() []string
@@ -357,6 +363,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/email/groups", s.requireRead(http.HandlerFunc(s.apiEmailGroups)))
 	mux.Handle("/api/v1/email/overview", s.requireRead(http.HandlerFunc(s.apiEmailOverview)))
 	mux.Handle("/api/v1/email/rejects", s.requireAuth(getOnly(http.HandlerFunc(s.apiEmailRejects))))
+	mux.Handle("/api/v1/email/rspamd", s.requireRead(http.HandlerFunc(s.apiEmailRspamd)))
 	mux.Handle("/api/v1/email/relay-abuse", s.requireRead(http.HandlerFunc(s.apiEmailRelayAbuse)))
 	mux.Handle("/api/v1/email/forwarders", s.requireRead(http.HandlerFunc(s.apiEmailForwarders)))
 	mux.Handle("/api/v1/email/deferrals", s.requireRead(http.HandlerFunc(s.apiEmailDeferrals)))
@@ -776,6 +783,13 @@ func (s *Server) SetMailStats(c *mailstats.Counter) {
 // before the daemon installs one.
 func (s *Server) mailStatsCounter() *mailstats.Counter {
 	return s.mailStats.Load()
+}
+
+// SetRspamdEndpoint installs the daemon's answer to where rspamd's
+// controller can be read without a password, from the last completed
+// antispam pass, and why not when it cannot. Call it before Start.
+func (s *Server) SetRspamdEndpoint(fn func() (antispam.StatsEndpoint, string)) {
+	s.rspamdEndpoint = fn
 }
 
 // emailAVMode returns the installed AV watcher mode, "" before it is set.

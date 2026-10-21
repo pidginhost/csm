@@ -1242,6 +1242,7 @@ GET  /api/v1/email/groups        Server-grouped action rows (kind=compromised_ac
 GET  /api/v1/email/overview      Mail decision totals and 15-minute chart series for from/to (default the last 24 h), antispam mode, live queue and mail-related block counts (read scope)
 GET  /api/v1/email/rejects       Recent rejected mail (time, class, sender, recipient, source IP, detail), newest first, kept 7 days; class=content (spam and malware, default)|all|<class>, from/to (default the last 24 h), limit (default 50, max 200) (admin scope)
 GET  /api/v1/email/relay-abuse   Outbound PHP-mail abuse detections (spam outbreaks, high-volume scripts/accounts) with per-site script breakdown; from/to/limit (read scope)
+GET  /api/v1/email/rspamd       rspamd status (up|down|off), antispam mode, version and rspamd's counters since it started (scanned, learned, actions, top 8 rules), read from its controller without a password and cached 60 s; available false with a reason when they cannot be read (read scope)
 GET  /api/v1/email/quarantine    Quarantined email list
 GET  /api/v1/email/av/status     Email AV watcher status
 GET  /api/v1/email/quarantine/{id}          One quarantined message

@@ -470,6 +470,21 @@ paths:
               schema: { $ref: "#/components/schemas/JSONObject" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+  "/api/v1/email/rspamd":
+    get:
+      operationId: get_email_rspamd
+      summary: "get /api/v1/email/rspamd (scope: read)"
+      x-csm-scope: read
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Success.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/JSONObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
   "/api/v1/email/quarantine":
     get:
       operationId: get_email_quarantine
