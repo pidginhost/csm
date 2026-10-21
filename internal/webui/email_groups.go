@@ -416,9 +416,15 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 	// The memo holds every group. Block state changes while history does
 	// not, so marking, ordering and the limit happen on each request, on a
 	// copy of the shared groups.
-	resp := s.emailMemo("groups?"+q.Encode(), func() any {
-		return s.buildEmailGroupsResponse(from, to, kindFilter)
-	}).(emailGroupsResponse)
+	key := "groups?" + q.Encode()
+	compute := func() any { return s.buildEmailGroupsResponse(from, to, kindFilter) }
+	resp := s.emailMemo(key, compute).(emailGroupsResponse)
+	// A throttled result can miss a new attacker, so it cannot mark groups
+	// handled. Any check's finding moves the mark; recompute rather than
+	// show every handled group as needing attention.
+	if s.store != nil && resp.historyMark != s.store.HistoryMark() {
+		resp = s.emailMemos.memo(key).fresh(s.store.HistoryMark(), compute).(emailGroupsResponse)
+	}
 	resp.Groups = slices.Clone(resp.Groups)
 	if ips, nets, err := activeBlocks(s.cfg.StatePath, now); err != nil {
 		resp.BlocksUnavailable = true
@@ -429,7 +435,8 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 	for i := range resp.Groups {
 		g := &resp.Groups[i]
 		// Before the response limit is applied, Truncated means history
-		// was cut short. A throttled memo can also omit new attackers.
+		// was cut short. History that changed after the result was built
+		// can also hold new attackers.
 		if incomplete {
 			g.Handled = false
 		}

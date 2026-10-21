@@ -623,13 +623,55 @@ func TestEmailGroupsStaleHistoryIsNotHandled(t *testing.T) {
 	if resp := getEmailGroups(t, s, ""); len(resp.Groups) != 1 || !resp.Groups[0].Handled || resp.HandledCount != 1 {
 		t.Fatalf("complete history should be handled: %+v", resp)
 	}
+	// A new unblocked attacker inside the memo window shows on the next
+	// request rather than hiding behind the throttled result.
 	s.store.AppendHistory([]alert.Finding{emailFinding("mail_bruteforce", alert.High, "user@example.com", "", "198.51.100.8", now.Add(time.Second))})
 	resp := getEmailGroups(t, s, "")
-	if len(resp.Groups) != 1 || resp.Groups[0].Count != 1 {
-		t.Fatalf("expected the throttled history snapshot: %+v", resp)
+	if len(resp.Groups) != 1 || resp.Groups[0].Count != 2 || resp.Groups[0].BlockState != "some" {
+		t.Fatalf("expected the group with the new attacker: %+v", resp)
 	}
 	if resp.Groups[0].Handled || resp.HandledCount != 0 {
-		t.Fatalf("known stale attacker history marked handled: %+v", resp)
+		t.Fatalf("group with an unblocked attacker marked handled: %+v", resp)
+	}
+}
+
+// A result built from history older than the current mark can miss a new
+// attacker, as when history changes while the groups are recomputed. It
+// never marks a group handled.
+func TestEmailGroupsResultOlderThanHistoryIsNotHandled(t *testing.T) {
+	withMemoAges(t, time.Hour, time.Hour)
+	s := newTestServerWithBbolt(t, "tok")
+	now := time.Now().Add(-time.Minute)
+	s.store.AppendHistory([]alert.Finding{emailFinding("mail_bruteforce", alert.High, "user@example.com", "", "203.0.113.7", now)})
+	writeFirewallState(t, s.cfg.StatePath, firewall.FirewallState{Blocked: []firewall.BlockedEntry{{IP: "203.0.113.7"}}})
+	stale := s.buildEmailGroupsResponse(now.Add(-time.Hour), time.Now(), "")
+	s.store.AppendHistory([]alert.Finding{emailFinding("mail_bruteforce", alert.High, "user@example.com", "", "198.51.100.8", now.Add(time.Second))})
+	s.emailMemos.memo("groups?").get(s.store.HistoryMark(), func() any { return stale })
+
+	resp := getEmailGroups(t, s, "")
+	if len(resp.Groups) != 1 || resp.Groups[0].Count != 1 || resp.Groups[0].BlockState != "all" {
+		t.Fatalf("expected the older result: %+v", resp)
+	}
+	if resp.Groups[0].Handled || resp.HandledCount != 0 {
+		t.Fatalf("result older than history marked handled: %+v", resp)
+	}
+}
+
+// History changes on every append from any check. An unrelated finding
+// inside the memo window must not bring handled groups back.
+func TestEmailGroupsUnrelatedHistoryKeepsHandled(t *testing.T) {
+	withMemoAges(t, time.Hour, time.Hour)
+	s := newTestServerWithBbolt(t, "tok")
+	now := time.Now().Add(-time.Minute)
+	s.store.AppendHistory([]alert.Finding{emailFinding("mail_bruteforce", alert.High, "user@example.com", "", "203.0.113.7", now)})
+	writeFirewallState(t, s.cfg.StatePath, firewall.FirewallState{Blocked: []firewall.BlockedEntry{{IP: "203.0.113.7"}}})
+	if resp := getEmailGroups(t, s, ""); len(resp.Groups) != 1 || !resp.Groups[0].Handled || resp.HandledCount != 1 {
+		t.Fatalf("complete history should be handled: %+v", resp)
+	}
+	s.store.AppendHistory([]alert.Finding{{Severity: alert.Warning, Check: "waf_status", Message: "WAF off", Timestamp: now.Add(time.Second)}})
+	resp := getEmailGroups(t, s, "")
+	if len(resp.Groups) != 1 || !resp.Groups[0].Handled || resp.HandledCount != 1 {
+		t.Fatalf("unrelated finding unhandled a blocked group: %+v", resp)
 	}
 }
 

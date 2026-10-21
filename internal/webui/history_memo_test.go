@@ -48,6 +48,22 @@ func TestHistoryMemoReusesAResultUntilHistoryChanges(t *testing.T) {
 	}
 }
 
+// fresh skips the minimum age but still shares one result per mark.
+func TestHistoryMemoFreshIgnoresMinimumAge(t *testing.T) {
+	var m historyMemo
+	calls := 0
+	compute := func() any { calls++; return calls }
+
+	withMemoAges(t, time.Hour, time.Hour)
+	m.get("a", compute)
+	if got := m.fresh("b", compute); got != 2 {
+		t.Fatalf("fresh on a new mark returned %v, want a new result", got)
+	}
+	if got := m.fresh("b", compute); got != 2 || calls != 2 {
+		t.Fatalf("fresh on the same mark returned %v after %d computes, want the stored result", got, calls)
+	}
+}
+
 func TestHistoryMemosDropTheOldestKey(t *testing.T) {
 	var ms historyMemos
 	first := ms.memo("k0")
