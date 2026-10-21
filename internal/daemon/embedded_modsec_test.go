@@ -23,6 +23,22 @@ func TestEmbeddedModSecBlocksWP2ShellUserAgent(t *testing.T) {
 	}
 }
 
+// PHP parses multipart bodies during request startup, before any script or
+// auto_prepend file runs, so the session upload-progress trigger can only be
+// dropped at the web server. The match must survive quoting variants: PHP
+// accepts a single-quoted field name that ModSecurity keeps verbatim.
+func TestEmbeddedModSecBlocksPHPUploadProgressField(t *testing.T) {
+	conf := string(embeddedModSec)
+	const rule = `SecRule ARGS_NAMES "@contains php_session_upload_progress" \` + "\n" +
+		`    "id:900133,phase:2,deny,status:403,log,t:none,t:lowercase,`
+	if !strings.Contains(conf, rule) {
+		t.Error("modsec ruleset does not block the PHP session upload progress field")
+	}
+	if got := strings.Count(conf, "id:900133,"); got != 1 {
+		t.Errorf("found %d upload progress rule IDs, want 1", got)
+	}
+}
+
 func TestEmbeddedModSecRateLimitsRESTBatchEndpoint(t *testing.T) {
 	conf := string(embeddedModSec)
 	const marker = "# --- Rate-limit WordPress REST batch endpoint"
@@ -392,7 +408,16 @@ func liteSpeedSimulationChains(t *testing.T) [][]string {
 	if start < 0 {
 		t.Fatal("LiteSpeed simulation rules missing")
 	}
-	conf = strings.ReplaceAll(conf[start:], "\\\n", "")
+	conf = conf[start:]
+	// Bound the slice to the CVE-2024-28000 blocks so a rule appended later in
+	// the file cannot change the link count.
+	for _, m := range regexp.MustCompile(`(?m)^# --- `).FindAllStringIndex(conf, -1) {
+		if !strings.HasPrefix(conf[m[0]:], "# --- CVE-2024-28000") {
+			conf = conf[:m[0]]
+			break
+		}
+	}
+	conf = strings.ReplaceAll(conf, "\\\n", "")
 	links := regexp.MustCompile(`(?m)^SecRule (?:"([^"]+)"|(\S+)) "([^"]+)"\s+"([^"]+)"`).FindAllStringSubmatch(conf, -1)
 	if len(links) != 6 {
 		t.Fatalf("got %d chain links, want two complete three-link rules", len(links))

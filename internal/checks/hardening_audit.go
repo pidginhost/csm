@@ -1272,6 +1272,27 @@ func auditCloudLinux() []store.AuditResult {
 
 // --- PHP checks ---
 
+var phpAuditNow = time.Now
+
+// phpSecuritySupportEnds is the last day each PHP branch gets upstream
+// security fixes (php.net/supported-versions.php). Branches older than the
+// oldest entry are long past end of life; newer ones are still supported.
+var phpSecuritySupportEnds = map[string]time.Time{
+	"8.1": time.Date(2025, 12, 31, 0, 0, 0, 0, time.UTC),
+	"8.2": time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC),
+	"8.3": time.Date(2027, 12, 31, 0, 0, 0, 0, time.UTC),
+	"8.4": time.Date(2028, 12, 31, 0, 0, 0, 0, time.UTC),
+	"8.5": time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC),
+}
+
+func phpBranchEOL(major, minor int, now time.Time) bool {
+	end, ok := phpSecuritySupportEnds[fmt.Sprintf("%d.%d", major, minor)]
+	if !ok {
+		return major < 8 || (major == 8 && minor < 1)
+	}
+	return !now.Before(end.AddDate(0, 0, 1))
+}
+
 func auditPHP(serverType string) []store.AuditResult {
 	var results []store.AuditResult
 
@@ -1279,6 +1300,7 @@ func auditPHP(serverType string) []store.AuditResult {
 		version string // e.g. "8.1"
 		shortID string // e.g. "81"
 		iniPath string
+		scanDir string // additional .ini files PHP parses after iniPath
 		fpmDir  string // for FPM pool override merging
 	}
 
@@ -1298,6 +1320,7 @@ func auditPHP(serverType string) []store.AuditResult {
 				version: ver,
 				shortID: shortID,
 				iniPath: ini,
+				scanDir: filepath.Join(dir, "root", "etc", "php.d"),
 				fpmDir:  fpmDir,
 			})
 		}
@@ -1315,6 +1338,8 @@ func auditPHP(serverType string) []store.AuditResult {
 			shortID := strings.TrimPrefix(base, "php")
 			if len(shortID) >= 2 {
 				ver := shortID[:len(shortID)-1] + "." + shortID[len(shortID)-1:]
+				// No scanDir: alt-php scans a per-user CageFS link, and the
+				// PHP Selector writes global settings into php.ini itself.
 				installs = append(installs, phpInstall{
 					version: ver,
 					shortID: shortID,
@@ -1328,7 +1353,15 @@ func auditPHP(serverType string) []store.AuditResult {
 	if len(installs) == 0 {
 		out, err := auditRunCmd("php", "-i")
 		if err == nil {
+			scanDir := ""
 			for _, line := range strings.Split(string(out), "\n") {
+				if strings.HasPrefix(line, "Scan this dir for additional .ini files") {
+					if parts := strings.SplitN(line, "=>", 2); len(parts) == 2 {
+						if dir := strings.TrimSpace(parts[1]); dir != "(none)" {
+							scanDir = dir
+						}
+					}
+				}
 				if strings.HasPrefix(line, "Loaded Configuration File") {
 					parts := strings.SplitN(line, "=>", 2)
 					if len(parts) == 2 {
@@ -1342,6 +1375,9 @@ func auditPHP(serverType string) []store.AuditResult {
 						}
 					}
 				}
+			}
+			if len(installs) > 0 {
+				installs[0].scanDir = scanDir
 			}
 		}
 		// Try to get version for bare
@@ -1368,6 +1404,22 @@ func auditPHP(serverType string) []store.AuditResult {
 			continue
 		}
 		ini := parsePHPIni(string(data))
+
+		// PHP reads the scan dir in name order after php.ini, so a later
+		// file overrides an earlier one.
+		if inst.scanDir != "" {
+			extra, _ := osFS.Glob(filepath.Join(inst.scanDir, "*.ini"))
+			slices.Sort(extra)
+			for _, f := range extra {
+				edata, eerr := osFS.ReadFile(f)
+				if eerr != nil {
+					continue
+				}
+				for k, v := range parsePHPIni(string(edata)) {
+					ini[k] = v
+				}
+			}
+		}
 
 		// Merge FPM pool overrides if available
 		if inst.fpmDir != "" {
@@ -1405,11 +1457,11 @@ func auditPHP(serverType string) []store.AuditResult {
 		// php_version check
 		major, minor := parsePHPVersion(inst.version)
 		if major > 0 {
-			if major < 8 || (major == 8 && minor < 1) {
+			if phpBranchEOL(major, minor, phpAuditNow()) {
 				results = append(results, store.AuditResult{
 					Category: "php", Name: "php_version_" + suffix, Title: fmt.Sprintf("PHP %s Version", inst.version),
 					Status: "fail", Message: fmt.Sprintf("PHP %s is end-of-life", inst.version),
-					Fix: fmt.Sprintf("Upgrade PHP %s to 8.1 or later. EOL versions receive no security patches.", inst.version),
+					Fix: fmt.Sprintf("Upgrade PHP %s to a supported branch. EOL versions receive no security patches.", inst.version),
 				})
 			} else {
 				results = append(results, store.AuditResult{
@@ -1478,6 +1530,27 @@ func auditPHP(serverType string) []store.AuditResult {
 				Status: "pass", Message: "enable_dl is off",
 			})
 		}
+
+		// php_upload_progress: on by default, and its handler runs on any
+		// multipart POST during request startup, before any script or
+		// auto_prepend file, so only this switch removes that code path.
+		upload, set := ini["session.upload_progress.enabled"]
+		if !set || phpIniBool(upload) {
+			fix := fmt.Sprintf("Set session.upload_progress.enabled = Off in %s", inst.iniPath)
+			if inst.scanDir != "" {
+				fix = fmt.Sprintf("Add session.upload_progress.enabled = Off to an .ini file in %s", inst.scanDir)
+			}
+			results = append(results, store.AuditResult{
+				Category: "php", Name: "php_upload_progress_" + suffix, Title: fmt.Sprintf("PHP %s session upload progress", inst.version),
+				Status: "warn", Message: "session.upload_progress.enabled is on",
+				Fix: fix + " unless a site shows upload progress bars, then restart PHP.",
+			})
+		} else {
+			results = append(results, store.AuditResult{
+				Category: "php", Name: "php_upload_progress_" + suffix, Title: fmt.Sprintf("PHP %s session upload progress", inst.version),
+				Status: "pass", Message: "session.upload_progress.enabled is off",
+			})
+		}
 	}
 
 	return results
@@ -1497,6 +1570,19 @@ func parsePHPIni(content string) map[string]string {
 		}
 	}
 	return ini
+}
+
+// phpIniBool follows PHP's boolean ini parsing: on, yes, true or a non-zero
+// number is true; off, no, false, none and empty are false.
+func phpIniBool(raw string) bool {
+	v, _, _ := strings.Cut(raw, ";")
+	v = strings.ToLower(strings.Trim(strings.TrimSpace(v), `"'`))
+	switch v {
+	case "on", "yes", "true":
+		return true
+	}
+	n, _ := strconv.Atoi(v)
+	return n != 0
 }
 
 func parsePHPVersion(ver string) (int, int) {

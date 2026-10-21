@@ -533,6 +533,7 @@ func TestAuditPHPWithSecureConfig(t *testing.T) {
 }
 
 func TestAuditPHPWithCloudLinuxAltPHP(t *testing.T) {
+	withPHPAuditNow(t, time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)) // 8.1 still supported
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
 			if strings.Contains(pattern, "ea-php") {
