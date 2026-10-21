@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,18 +309,22 @@ func TestAuditPHPUploadProgressDisabledSyntax(t *testing.T) {
 func TestPHPAuditScopesPreservePrecedence(t *testing.T) {
 	settings := phpAuditINI{"": {}}
 	settings.merge("session.upload_progress.enabled = Off\n[PATH=/srv/www/]\nsession.upload_progress.enabled = On\n[Session]\nsession.upload_progress.enabled = Off\n", false)
-	if settings.uploadProgressDisabled(nil) {
+	if settings.settingDisabled(phpUploadProgressKey, nil) {
 		t.Fatal("global off must not hide conditional on")
 	}
 	settings.merge("[PATH = /srv/www]\nsession.upload_progress.enabled = Off\n", false)
 	pools := phpAuditINI{}
 	pools.merge("[www]\nphp_admin_flag[session.upload_progress.enabled] = Off\nphp_flag[session.upload_progress.enabled] = On\n", true)
-	if !settings.uploadProgressDisabled(pools) {
+	if !settings.settingDisabled(phpUploadProgressKey, pools) {
 		t.Fatal("later conditional off and admin off must take precedence")
 	}
 	pools.merge("[www]\nphp_admin_value[session.upload_progress.enabled] = On\n", true)
-	if settings.uploadProgressDisabled(pools) {
-		t.Fatal("later pool admin on must take precedence")
+	if !settings.settingDisabled(phpUploadProgressKey, pools) {
+		t.Fatal("first pool admin value must take precedence over duplicates")
+	}
+	pools.merge("[other]\nphp_admin_value[session.upload_progress.enabled] = On\n", true)
+	if settings.settingDisabled(phpUploadProgressKey, pools) {
+		t.Fatal("one pool's admin off must not hide another pool's admin on")
 	}
 }
 
@@ -337,5 +342,167 @@ func TestPHPAuditScannedFiles(t *testing.T) {
 		if known != tc.known || !slices.Equal(files, tc.files) {
 			t.Fatalf("%q: got %v, %v; want %v, %v", tc.info, files, known, tc.files, tc.known)
 		}
+	}
+}
+
+func TestAuditPHPFatalErrorBacktraces(t *testing.T) {
+	const ini = "/opt/cpanel/ea-php85/root/etc/php.ini"
+	const scan = "/opt/cpanel/ea-php85/root/etc/php.d/"
+	const pools = "/opt/cpanel/ea-php85/root/etc/php-fpm.d/"
+	for _, tc := range []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"default on", map[string]string{ini: ""}, "warn"},
+		{"explicit on", map[string]string{ini: "fatal_error_backtraces = On\n"}, "warn"},
+		{"off in scan dir", map[string]string{
+			ini:             "",
+			scan + "zz.ini": "fatal_error_backtraces = Off\n",
+		}, "pass"},
+		{"pool turns it on", map[string]string{
+			ini:                "fatal_error_backtraces = Off\n",
+			pools + "www.conf": "[www]\nphp_admin_flag[fatal_error_backtraces] = On\n",
+		}, "warn"},
+		{"pool keeps it off", map[string]string{
+			ini:                "fatal_error_backtraces = Off\n",
+			pools + "www.conf": "[www]\nphp_value[fatal_error_backtraces] = Off\n",
+		}, "pass"},
+		{"host section on", map[string]string{
+			ini: "fatal_error_backtraces = Off\n[HOST=one.example]\nfatal_error_backtraces = 1\n",
+		}, "warn"},
+		{"upload progress pool value does not leak", map[string]string{
+			ini:                "fatal_error_backtraces = Off\n",
+			pools + "www.conf": "[www]\nphp_admin_flag[session.upload_progress.enabled] = On\n",
+		}, "pass"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withFakePHPFiles(t, tc.files)
+			withMockCmd(t, &mockCmd{})
+			r, ok := auditResultByName(auditPHP("cpanel"), "php_fatal_error_backtraces_85")
+			if !ok || r.Status != tc.want {
+				t.Fatalf("got %+v, present %v; want %s", r, ok, tc.want)
+			}
+		})
+	}
+}
+
+func TestAuditPHPFatalErrorBacktracesOnlyFromPHP85(t *testing.T) {
+	withFakePHPFiles(t, map[string]string{
+		"/opt/cpanel/ea-php84/root/etc/php.ini": "",
+		"/opt/cpanel/ea-php86/root/etc/php.ini": "",
+	})
+	withMockCmd(t, &mockCmd{})
+	results := auditPHP("cpanel")
+	if r, ok := auditResultByName(results, "php_fatal_error_backtraces_84"); ok {
+		t.Errorf("PHP 8.4 has no fatal_error_backtraces setting, got %+v", r)
+	}
+	if r, ok := auditResultByName(results, "php_fatal_error_backtraces_86"); !ok || r.Status != "warn" {
+		t.Errorf("PHP 8.6 default must warn: %+v, present %v", r, ok)
+	}
+}
+
+func TestAuditPHPFPMSettingSyntax(t *testing.T) {
+	for _, setting := range []struct{ key, result string }{
+		{phpFatalErrorBacktracesKey, "php_fatal_error_backtraces_85"},
+		{phpUploadProgressKey, "php_upload_progress_85"},
+	} {
+		for _, directive := range []string{"php_value", "php_flag", "php_admin_value", "php_admin_flag"} {
+			for _, spelling := range []string{
+				directive + "[\"" + setting.key + "\"]",
+				directive + "['" + setting.key + "']",
+				directive + " [ " + setting.key + "]",
+				directive + "[\"" + setting.key + "\" \t]",
+				directive + "[\"" + setting.key[:4] + "\"" + setting.key[4:] + "]",
+			} {
+				t.Run(spelling, func(t *testing.T) {
+					withFakePHPFiles(t, map[string]string{
+						"/opt/cpanel/ea-php85/root/etc/php.ini":            setting.key + " = Off\n",
+						"/opt/cpanel/ea-php85/root/etc/php-fpm.d/www.conf": "[www]\n" + spelling + " = On\n",
+					})
+					withMockCmd(t, &mockCmd{})
+					r, ok := auditResultByName(auditPHP("cpanel"), setting.result)
+					if !ok || r.Status != "warn" {
+						t.Fatalf("enabled pool override must warn: %+v, present %v", r, ok)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestAuditPHPFPMDuplicateSettings(t *testing.T) {
+	const ini = "/opt/cpanel/ea-php85/root/etc/php.ini"
+	const pools = "/opt/cpanel/ea-php85/root/etc/php-fpm.d/"
+	for _, tc := range []struct {
+		name, first, second, want string
+	}{
+		{"value on first", "php_value[fatal_error_backtraces] = On", "php_flag[fatal_error_backtraces] = Off", "warn"},
+		{"value off first", "php_flag[fatal_error_backtraces] = Off", "php_value[fatal_error_backtraces] = On", "pass"},
+		{"admin on first", "php_admin_flag[fatal_error_backtraces] = On", "php_admin_value[fatal_error_backtraces] = Off", "warn"},
+		{"admin off first", "php_admin_value[fatal_error_backtraces] = Off", "php_admin_flag[fatal_error_backtraces] = On", "pass"},
+		{"admin off before value on", "php_admin_value[fatal_error_backtraces] = Off", "php_value[fatal_error_backtraces] = On", "pass"},
+		{"admin off after value on", "php_flag[fatal_error_backtraces] = On", "php_admin_flag[fatal_error_backtraces] = Off", "pass"},
+		{"admin on before value off", "php_admin_flag[fatal_error_backtraces] = On", "php_flag[fatal_error_backtraces] = Off", "warn"},
+		{"admin on after value off", "php_value[fatal_error_backtraces] = Off", "php_admin_value[fatal_error_backtraces] = On", "warn"},
+	} {
+		for _, split := range []bool{false, true} {
+			name := tc.name + "/same file"
+			if split {
+				name = tc.name + "/separate files"
+			}
+			t.Run(name, func(t *testing.T) {
+				files := map[string]string{
+					ini:               "fatal_error_backtraces = Off\n",
+					pools + "10.conf": "[www]\n" + tc.first + "\n",
+				}
+				if split {
+					files[pools+"20.conf"] = "[www]\n" + tc.second + "\n"
+				} else {
+					files[pools+"10.conf"] += tc.second + "\n"
+				}
+				withFakePHPFiles(t, files)
+				withMockCmd(t, &mockCmd{})
+				r, ok := auditResultByName(auditPHP("cpanel"), "php_fatal_error_backtraces_85")
+				if !ok || r.Status != tc.want {
+					t.Fatalf("got %+v, present %v; want %s", r, ok, tc.want)
+				}
+			})
+		}
+	}
+}
+
+func TestAuditPHPFPMUnrelatedSettings(t *testing.T) {
+	for _, key := range []string{
+		"fatal_error_backtraces ",
+		`"fatal_error_backtraces "`,
+		"fatal_error_backtraces_extra",
+		"session.upload_progress.enabled",
+	} {
+		t.Run(key, func(t *testing.T) {
+			withFakePHPFiles(t, map[string]string{
+				"/opt/cpanel/ea-php85/root/etc/php.ini": "fatal_error_backtraces = Off\n",
+				"/opt/cpanel/ea-php85/root/etc/php-fpm.d/www.conf": "[www]\n" +
+					"php_flag[fatal_error_backtraces] = On\nphp_admin_flag[" + key + "] = Off\n",
+			})
+			withMockCmd(t, &mockCmd{})
+			r, ok := auditResultByName(auditPHP("cpanel"), "php_fatal_error_backtraces_85")
+			if !ok || r.Status != "warn" {
+				t.Fatalf("unrelated admin value must not hide enabled setting: %+v, present %v", r, ok)
+			}
+		})
+	}
+}
+
+func TestAuditPHPVersionEOLPointsToVendorBackports(t *testing.T) {
+	withFakePHPFiles(t, map[string]string{"/opt/cpanel/ea-php74/root/etc/php.ini": ""})
+	withMockCmd(t, &mockCmd{})
+	withPHPAuditNow(t, time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC))
+	r, ok := auditResultByName(auditPHP("cpanel"), "php_version_74")
+	if !ok || r.Status != "fail" {
+		t.Fatalf("PHP 7.4 must fail as end of life: %+v, present %v", r, ok)
+	}
+	if strings.Contains(r.Fix, "receive no security patches") || !strings.Contains(r.Fix, "backport") {
+		t.Errorf("EOL fix text must point to vendor backports, got %q", r.Fix)
 	}
 }

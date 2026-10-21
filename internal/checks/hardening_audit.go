@@ -1489,7 +1489,7 @@ func auditPHP(serverType string) []store.AuditResult {
 				results = append(results, store.AuditResult{
 					Category: "php", Name: "php_version_" + suffix, Title: fmt.Sprintf("PHP %s Version", inst.version),
 					Status: "fail", Message: fmt.Sprintf("PHP %s is end-of-life", inst.version),
-					Fix: fmt.Sprintf("Upgrade PHP %s to a supported branch. EOL versions receive no security patches.", inst.version),
+					Fix: fmt.Sprintf("Upgrade PHP %s to a supported branch. Upstream no longer releases fixes for it; confirm any vendor backport in the package changelog.", inst.version),
 				})
 			} else {
 				results = append(results, store.AuditResult{
@@ -1559,14 +1559,18 @@ func auditPHP(serverType string) []store.AuditResult {
 			})
 		}
 
+		offFix := func(setting string) string {
+			if inst.scanDir != "" && !strings.Contains(inst.scanDir, string(filepath.ListSeparator)) {
+				return fmt.Sprintf("Add %s = Off to an .ini file in %s", setting, inst.scanDir)
+			}
+			return fmt.Sprintf("Set %s = Off in %s", setting, inst.iniPath)
+		}
+
 		// php_upload_progress: on by default, and its handler runs on any
 		// multipart POST during request startup, before any script or
 		// auto_prepend file, so only this switch removes that code path.
-		if !complete || !settings.uploadProgressDisabled(pools) {
-			fix := fmt.Sprintf("Set session.upload_progress.enabled = Off in %s", inst.iniPath)
-			if inst.scanDir != "" && !strings.Contains(inst.scanDir, string(filepath.ListSeparator)) {
-				fix = fmt.Sprintf("Add session.upload_progress.enabled = Off to an .ini file in %s", inst.scanDir)
-			}
+		if !complete || !settings.settingDisabled(phpUploadProgressKey, pools) {
+			fix := offFix(phpUploadProgressKey)
 			results = append(results, store.AuditResult{
 				Category: "php", Name: "php_upload_progress_" + suffix, Title: fmt.Sprintf("PHP %s session upload progress", inst.version),
 				Status: "warn", Message: "session.upload_progress.enabled is on or could not be confirmed off in all inspected settings",
@@ -1577,6 +1581,27 @@ func auditPHP(serverType string) []store.AuditResult {
 				Category: "php", Name: "php_upload_progress_" + suffix, Title: fmt.Sprintf("PHP %s session upload progress", inst.version),
 				Status: "pass", Message: "session.upload_progress.enabled is off in all inspected settings",
 			})
+		}
+
+		// php_fatal_error_backtraces: PHP 8.5 added the setting, on by
+		// default. The CVE-2026-109619 advisory names turning it off as the
+		// mitigation for unpatched builds. Scripts can still enable it at
+		// runtime, so a pass means the configured default is off.
+		if major > 8 || (major == 8 && minor >= 5) {
+			name := "php_fatal_error_backtraces_" + suffix
+			title := fmt.Sprintf("PHP %s fatal error backtraces", inst.version)
+			if !complete || !settings.settingDisabled(phpFatalErrorBacktracesKey, pools) {
+				results = append(results, store.AuditResult{
+					Category: "php", Name: name, Title: title,
+					Status: "warn", Message: "fatal_error_backtraces is on or could not be confirmed off in all inspected settings",
+					Fix: offFix(phpFatalErrorBacktracesKey) + ", check site and FPM pool overrides, then restart PHP.",
+				})
+			} else {
+				results = append(results, store.AuditResult{
+					Category: "php", Name: name, Title: title,
+					Status: "pass", Message: "fatal_error_backtraces is off in all inspected settings; scripts can still enable it at runtime",
+				})
+			}
 		}
 	}
 
