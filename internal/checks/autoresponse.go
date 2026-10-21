@@ -256,7 +256,7 @@ func AutoFixPermissions(cfg *config.Config, findings []alert.Finding) (actions [
 				Timestamp: time.Now(),
 			})
 		}
-		fixedKeys = append(fixedKeys, f.Check+":"+f.Message)
+		fixedKeys = append(fixedKeys, f.Key())
 	}
 
 	return actions, fixedKeys

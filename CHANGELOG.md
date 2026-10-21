@@ -29,6 +29,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - The PHP end-of-life audit no longer says old branches get no security fixes; it points to vendor backports instead.
 - Automatic permission fixes no longer change a file that stopped being world- or group-writable after the scan.
+- Findings resolved by the automatic permission fix now leave the Findings page instead of staying listed until the next scan.
 
 ## [4.4.1] - 2026-10-21
 
