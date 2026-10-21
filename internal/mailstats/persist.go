@@ -31,10 +31,14 @@ const (
 // already have been counted, restores the reject rings and gaps, and
 // records the time since the last flush as a gap when CSM was stopped
 // longer than gapMin. A corrupt entry, an unknown class or an entry out of
-// range is skipped. Call it once per counter.
+// range is skipped. Once a Load has merged, later calls do nothing; an
+// error after the merge is a failed gap or since write.
 func (c *Counter) Load(db Store, now time.Time) error {
 	c.persistMu.Lock()
 	defer c.persistMu.Unlock()
+	if c.loaded {
+		return nil
+	}
 
 	stored, rings, err := db.MailStats()
 	if err != nil {
@@ -70,6 +74,7 @@ func (c *Counter) Load(db Store, now time.Time) error {
 	c.gaps = append(c.gaps, gaps...)
 	slices.SortFunc(c.gaps, func(x, y Span) int { return x.Start.Compare(y.Start) })
 	c.mu.Unlock()
+	c.loaded = true
 
 	var errs []error
 	if newGap {
@@ -83,12 +88,16 @@ func (c *Counter) Load(db Store, now time.Time) error {
 
 // Flush prunes the counter, writes the buckets and rings that changed since
 // the last successful write, prunes the store past Retention and records
-// the flush time. After a failed write the changes stay marked for the next
-// Flush.
+// the flush time. Before a Load has merged it only prunes memory, so the
+// store is never overwritten with live counts alone. After a failed write
+// the changes stay marked for the next Flush.
 func (c *Counter) Flush(db Store, now time.Time) error {
 	c.persistMu.Lock()
 	defer c.persistMu.Unlock()
 	c.Prune(now)
+	if !c.loaded {
+		return nil
+	}
 
 	c.mu.Lock()
 	buckets := make(map[int64][]byte, len(c.dirty))

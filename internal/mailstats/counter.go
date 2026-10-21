@@ -99,6 +99,10 @@ type Counter struct {
 	// Load's read and its merge, or two Flushes that write out of order,
 	// would store stale counts.
 	persistMu sync.Mutex
+	// loaded is set once Load has merged the stored counts. Until then a
+	// write would replace stored counts with live ones. Guarded by
+	// persistMu.
+	loaded bool
 
 	mu        sync.Mutex
 	since     time.Time

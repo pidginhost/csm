@@ -32,6 +32,8 @@ type fakeStore struct {
 	meta    map[string]string
 	puts    []fakePut
 	putErr  error
+	readErr error
+	gapErr  error
 	onPut   func() // runs before a write, outside mu
 }
 
@@ -59,12 +61,18 @@ func (f *fakeStore) PutMailStats(buckets map[int64][]byte, rejects map[string][]
 func (f *fakeStore) MailStats() (map[int64][]byte, map[string][]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.readErr != nil {
+		return nil, nil, f.readErr
+	}
 	return maps.Clone(f.buckets), maps.Clone(f.rings), nil
 }
 
 func (f *fakeStore) AddMailStatsGap(start, end int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.gapErr != nil {
+		return f.gapErr
+	}
 	f.gaps[end] = start
 	return nil
 }
@@ -104,6 +112,13 @@ func jsonOf(t *testing.T, v any) string {
 }
 
 func bucketKey(at time.Time) int64 { return at.Unix() / BucketSeconds * BucketSeconds }
+
+func mustLoad(t *testing.T, c *Counter, db Store, now time.Time) {
+	t.Helper()
+	if err := c.Load(db, now); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestFlushLoadRoundTrip(t *testing.T) {
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
@@ -146,6 +161,7 @@ func TestFlushWritesDirtyBucketsOnly(t *testing.T) {
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	db := newFakeStore()
 	c := New(func() time.Time { return now })
+	mustLoad(t, c, db, now)
 	scan := antispam.Scan{OK: true, Mode: "enforce", Decision: "none"}
 	c.RecordScan(now.Add(-20*time.Minute), scan)
 	c.RecordScan(now, scan)
@@ -373,6 +389,7 @@ func TestLoadKeepsNewerLiveRejects(t *testing.T) {
 	clock := func() time.Time { return now }
 	db := newFakeStore()
 	prev := New(clock)
+	mustLoad(t, prev, db, now)
 	prev.RecordReject(Reject{At: now.Add(-2 * time.Minute), Class: ClassMalware, Detail: "restored old"})
 	prev.RecordReject(Reject{At: now, Class: ClassMalware, Detail: "restored tie"})
 	prev.RecordReject(Reject{At: now, Class: ClassSpam, Detail: "restored spam"})
@@ -451,6 +468,7 @@ func TestFlushPrunesMemoryWhenWriteFails(t *testing.T) {
 	now := t0
 	db := newFakeStore()
 	c := New(func() time.Time { return now })
+	mustLoad(t, c, db, now)
 	c.RecordScan(t0, antispam.Scan{OK: true, Mode: "enforce", Decision: "none"})
 	c.RecordReject(Reject{At: t0, Class: ClassSpam})
 
@@ -507,6 +525,7 @@ func TestFlushConcurrentWithRecords(t *testing.T) {
 	clock := func() time.Time { return now }
 	db := newFakeStore()
 	c := New(clock)
+	mustLoad(t, c, db, now)
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
 		wg.Go(func() {
@@ -543,6 +562,7 @@ func TestFlushesDoNotOverlap(t *testing.T) {
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	db := newFakeStore()
 	c := New(func() time.Time { return now })
+	mustLoad(t, c, db, now)
 	scan := antispam.Scan{OK: true, Mode: "enforce", Decision: "none"}
 	entered, release := make(chan struct{}), make(chan struct{})
 	var mu sync.Mutex
@@ -575,5 +595,99 @@ func TestFlushesDoNotOverlap(t *testing.T) {
 	var b bucket
 	if err := json.Unmarshal(db.buckets[bucketKey(now)], &b); err != nil || b.Scans["enforce:none"] != 2 || overlap {
 		t.Fatalf("stored %+v (%v), overlap %v", b, err, overlap)
+	}
+}
+
+func TestSecondLoadIsIgnored(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	db := newFakeStore()
+	db.buckets[bucketKey(now)] = []byte(`{"Scans":{"enforce:none":2}}`)
+	db.meta["mailstats:flushed_at"] = now.Add(-30 * time.Minute).Format(time.RFC3339)
+	c := New(func() time.Time { return now })
+	mustLoad(t, c, db, now)
+	c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Decision: "none"})
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+	later := now.Add(10 * time.Minute)
+	mustLoad(t, c, db, later)
+
+	ov := c.Overview(now.Add(-time.Hour), later)
+	if ov.Totals.Scanned != 3 || ov.UncountedMinutes != 30 || len(ov.Gaps) != 1 || len(db.gaps) != 1 {
+		t.Fatalf("scanned %d, uncounted %d, gaps %+v, stored gaps %v", ov.Totals.Scanned, ov.UncountedMinutes, ov.Gaps, db.gaps)
+	}
+}
+
+func TestFlushBeforeLoadKeepsStore(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	db := newFakeStore()
+	db.buckets[bucketKey(now)] = []byte(`{"Scans":{"enforce:none":2}}`)
+	c := New(func() time.Time { return now })
+	c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Decision: "none"})
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(db.puts) != 0 || string(db.buckets[bucketKey(now)]) != `{"Scans":{"enforce:none":2}}` {
+		t.Fatalf("flush before load wrote %d times, stored %s", len(db.puts), db.buckets[bucketKey(now)])
+	}
+	if _, ok := db.meta["mailstats:flushed_at"]; ok {
+		t.Fatal("flushed_at written before load")
+	}
+
+	mustLoad(t, c, db, now)
+	if n := c.Overview(now.Add(-time.Hour), now.Add(time.Hour)).Totals.Scanned; n != 3 {
+		t.Fatalf("scanned %d after load", n)
+	}
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+	var b bucket
+	if err := json.Unmarshal(db.buckets[bucketKey(now)], &b); err != nil || b.Scans["enforce:none"] != 3 {
+		t.Fatalf("stored %+v (%v)", b, err)
+	}
+}
+
+func TestFailedLoadKeepsCounterInMemory(t *testing.T) {
+	t0 := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	now := t0
+	db := newFakeStore()
+	db.buckets[bucketKey(t0)] = []byte(`{"Scans":{"enforce:none":2}}`)
+	db.readErr = errors.New("read failed")
+	c := New(func() time.Time { return now })
+	if err := c.Load(db, now); err == nil {
+		t.Fatal("Load hid the read error")
+	}
+	c.RecordScan(t0, antispam.Scan{OK: true, Mode: "enforce", Decision: "none"})
+	now = t0.Add(31 * 24 * time.Hour)
+	c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Decision: "tag"})
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(db.puts) != 0 || len(db.buckets) != 1 {
+		t.Fatalf("flush after a failed load wrote %d times, store has %d buckets", len(db.puts), len(db.buckets))
+	}
+	if _, ok := c.buckets[bucketKey(now)]; len(c.buckets) != 1 || !ok {
+		t.Fatalf("memory keeps %d buckets", len(c.buckets))
+	}
+}
+
+func TestLoadGapWriteFailureStillFlushes(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	db := newFakeStore()
+	db.meta["mailstats:flushed_at"] = now.Add(-30 * time.Minute).Format(time.RFC3339)
+	db.gapErr = errors.New("write failed")
+	c := New(func() time.Time { return now })
+	if err := c.Load(db, now); err == nil {
+		t.Fatal("Load hid the gap write error")
+	}
+	c.RecordScan(now, antispam.Scan{OK: true, Mode: "enforce", Decision: "none"})
+	if err := c.Flush(db, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(db.puts) != 1 || len(db.puts[0].buckets) != 1 || db.meta["mailstats:flushed_at"] != now.Format(time.RFC3339) {
+		t.Fatalf("%d puts, flushed_at %q", len(db.puts), db.meta["mailstats:flushed_at"])
+	}
+	if ov := c.Overview(now.Add(-time.Hour), now); ov.UncountedMinutes != 30 {
+		t.Fatalf("uncounted %d", ov.UncountedMinutes)
 	}
 }
