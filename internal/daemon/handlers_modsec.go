@@ -138,11 +138,10 @@ func modsecEscalationRearmInterval(cfg *config.Config) time.Duration {
 // error logs and returns findings for blocked requests or warnings.
 func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	// Fast reject: not a ModSecurity line.
-	if !strings.Contains(line, "ModSecurity:") && !strings.Contains(line, "[MODSEC]") {
+	logMessage, isLiteSpeed := modsecLogMessage(line)
+	if logMessage == "" {
 		return nil
 	}
-
-	isLiteSpeed := strings.Contains(line, "[MODSEC]")
 
 	var ip, ruleID, msg, hostname, uri string
 
@@ -179,7 +178,8 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	// Determine check name.
 	//
 	// Apache mod_security writes the action verbatim into the message, so
-	// "Access denied" is a reliable block signal. LiteSpeed's mod_security
+	// "Access denied" at the start of its message is a block signal. Request
+	// fields later in the line can contain the same words. LiteSpeed's mod_security
 	// front-end writes every match as "triggered!" with no action context,
 	// regardless of whether the rule's declared action denied the request
 	// or merely incremented a counter. Without further context every match
@@ -190,9 +190,9 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	// populated registry stays conservative. When the registry is empty, the
 	// line remains a warning until a refresh loads rule actions.
 	check := "modsec_warning_realtime"
-	if strings.Contains(line, "Access denied") {
+	if strings.HasPrefix(logMessage, "Access denied") {
 		check = "modsec_block_realtime"
-	} else if isLiteSpeed && strings.Contains(line, "triggered!") {
+	} else if isLiteSpeed && strings.HasPrefix(logMessage, "mod_security rule ") && strings.Contains(logMessage, "triggered!") {
 		check = classifyLiteSpeedTrigger(ruleID)
 	}
 
@@ -244,6 +244,23 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 		SourceIP: ip,
 		Domain:   domainOrEmpty(hostname),
 	}}
+}
+
+// modsecLogMessage uses the first module marker so request text cannot change
+// the server format or supply an action by embedding another marker later.
+func modsecLogMessage(line string) (string, bool) {
+	const apache = "ModSecurity:"
+	const liteSpeed = "[MODSEC]"
+	a := strings.Index(line, apache)
+	l := strings.Index(line, liteSpeed)
+	if l >= 0 && (a < 0 || l < a) {
+		message := strings.TrimSpace(line[l+len(liteSpeed):])
+		return strings.TrimSpace(strings.TrimPrefix(message, apache)), true
+	}
+	if a >= 0 {
+		return strings.TrimSpace(line[a+len(apache):]), false
+	}
+	return "", false
 }
 
 // domainOrEmpty returns hostname unless it parses as a bare IP address
@@ -442,19 +459,12 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	tags := extractAllModSecFields(line, `[tag "`, `"]`)
 	conf := classifyModSecConfidence(ruleNum, msg, tags, extractModSecRuleFile(line))
 
-	// Operator override (Rules page): exclude a rule ID from escalation. Coarse
-	// and dual-use-unsafe on its own; the classifier is the primary control.
-	noEscalate := false
-	if db := store.Global(); db != nil {
-		noEscalate = db.GetModSecNoEscalateRules()[ruleNum]
-	}
-
 	// Feed the per-IP window with every blocking deny, plus high/unknown
 	// warnings, which supply attack evidence to a later anomaly-threshold deny
 	// in the same burst. LiteSpeed often omits msg/tag on pass-action attack
 	// rules; unknown must fail secure instead of disappearing before the low
 	// anomaly rule denies. Operator-excluded rules are not recorded at all.
-	if ip != "" && ruleID != "" && !noEscalate && (isBlock || conf == modsecConfHigh || conf == modsecConfUnknown) {
+	if ip != "" && ruleID != "" && (isBlock || conf == modsecConfHigh || conf == modsecConfUnknown) {
 		hits, win := modsecEscalationParams(cfg)
 		lowConfHits := modsecLowConfEscalationHits(cfg)
 		rearmAfter := modsecEscalationRearmInterval(cfg)
@@ -522,7 +532,8 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 //
 //   - escalate (Critical auto-block) fires when total blocking denies reach
 //     hits AND the window has high-confidence or unknown evidence; OR when
-//     low-confidence-only denies reach the lowConfHits backstop.
+//     low-confidence-only denies reach the lowConfHits backstop; OR when an
+//     exploit-specific rule in modsecSingleHitRules denies a request.
 //   - lowConfBurst (non-actioned visibility) fires when the hit count is reached
 //     with only low-confidence evidence and the backstop is not yet met.
 //   - classifierGap (non-actioned visibility) fires once per unknown rule ID
@@ -537,23 +548,20 @@ func recordModSecEvent(ip string, now time.Time, rule int, conf modsecConfidence
 }
 
 func recordModSecEventWithRearm(ip string, now time.Time, rule int, conf modsecConfidence, isBlock bool, hits, lowConfHits int, window, rearmAfter time.Duration) modsecEscalationOutcome {
+	excluded := modsecNoEscalateRules()
+	if excluded[rule] {
+		return modsecEscalationOutcome{}
+	}
 	val, _ := modsecBlockCount.LoadOrStore(ip, &modsecIPCounter{})
 	ctr := val.(*modsecIPCounter)
 
 	ctr.mu.Lock()
 	defer ctr.mu.Unlock()
 
-	// Prune entries older than the escalation window. Re-arm latches from the
+	// Prune expired and operator-excluded evidence. Re-arm latches from the
 	// pre-append window; otherwise a fresh event that takes the IP from below the
 	// trigger back to the trigger would keep the stale latch and never re-emit.
-	cutoff := now.Add(-window)
-	kept := ctr.events[:0]
-	for _, e := range ctr.events {
-		if !e.t.Before(cutoff) {
-			kept = append(kept, e)
-		}
-	}
-	ctr.events = kept
+	ctr.events = pruneModSecEvents(ctr.events, now.Add(-window), excluded)
 	if len(ctr.events) == 0 {
 		ctr.escalated = false
 		ctr.lastEscalated = time.Time{}
@@ -596,6 +604,25 @@ func recordModSecEventWithRearm(ip string, now time.Time, rule int, conf modsecC
 		out.lowConfBurst = true
 	}
 	return out
+}
+
+func modsecNoEscalateRules() map[int]bool {
+	if db := store.Global(); db != nil {
+		return db.GetModSecNoEscalateRules()
+	}
+	return nil
+}
+
+// Exclusions apply to retained evidence too, or another rule's event could
+// renew a ban based solely on an exploit deny the operator has since excluded.
+func pruneModSecEvents(events []modsecDenyEvent, cutoff time.Time, excluded map[int]bool) []modsecDenyEvent {
+	kept := events[:0]
+	for _, e := range events {
+		if !e.t.Before(cutoff) && !excluded[e.rule] {
+			kept = append(kept, e)
+		}
+	}
+	return kept
 }
 
 func summarizeModSecEvents(events []modsecDenyEvent) modsecWindowSummary {
@@ -706,15 +733,11 @@ func evictModSecStateWithLowConf(now time.Time, hits, lowConfHits int, window ti
 
 	// Prune counter entries.
 	cutoff := now.Add(-window)
+	excluded := modsecNoEscalateRules()
 	modsecBlockCount.Range(func(key, value any) bool {
 		ctr := value.(*modsecIPCounter)
 		ctr.mu.Lock()
-		kept := ctr.events[:0]
-		for _, e := range ctr.events {
-			if !e.t.Before(cutoff) {
-				kept = append(kept, e)
-			}
-		}
+		kept := pruneModSecEvents(ctr.events, cutoff, excluded)
 		ctr.events = kept
 		empty := len(kept) == 0
 		summary := summarizeModSecEvents(kept)

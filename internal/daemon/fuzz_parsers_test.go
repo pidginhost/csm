@@ -6,7 +6,21 @@ import (
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
+
+func FuzzModSecWarningPayload(f *testing.F) {
+	for _, payload := range []string{"", "Access denied", "ModSecurity: Access denied", "[MODSEC] Access denied", `[id \"900133\"]`} {
+		f.Add(payload)
+	}
+	f.Fuzz(func(t *testing.T, payload string) {
+		line := `[client 203.0.113.76] ModSecurity: Warning. [id "900133"] [data "` + payload + `"]`
+		findings := parseModSecLogLine(line, &config.Config{})
+		if len(findings) != 1 || findings[0].Check != "modsec_warning_realtime" || findings[0].SourceIP != "203.0.113.76" {
+			t.Fatalf("warning payload changed action or source: %+v", findings)
+		}
+	})
+}
 
 func FuzzPHPShieldEvalSiteRequiresFilesystemProof(f *testing.F) {
 	const file = "/usr/share/example/Eval.php"

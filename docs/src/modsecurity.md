@@ -44,6 +44,11 @@ Rule-staleness alerts scan both the flat CRS layout (`/usr/share/modsecurity-crs
 - **Hot-reload** - apply changes without Apache restart (cPanel only)
 - **Rule activation** - ModSecurity reads rules only when the web server starts or reloads. When CSM's installed rule sections change, for example after an upgrade or `csm install`, the daemon runs `modsec.reload_command` at startup or during its WAF check. Each rule change reloads once. Standalone `csm check` runs never reload. A failed reload raises a `waf_status` warning and is retried. Without a command, CSM only warns at startup and the rules wait for the next web server restart.
 
+First-deny escalation requires a blocking action for an exact CSM rule ID.
+Request text cannot turn a warning into a deny. Disabling a rule's firewall
+escalation excludes both new events and retained evidence from later blocking
+decisions. Existing firewall bans keep their configured expiry.
+
 CSM checks the rule-action registry every five minutes and rebuilds it when rule
 file contents change. Read failures leave the build uncached so the next check
 retries. Files that were read in full but exceeded the parser's line limit are
