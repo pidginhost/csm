@@ -4,12 +4,18 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // Helper: build a finding with the email-relevant identity fields.
@@ -337,6 +343,191 @@ func TestEmailGroupsSortByCountWithinSeverity(t *testing.T) {
 		if gotCounts[i] != wantCounts[i] {
 			t.Errorf("HIGH group order by count: got %v, want %v", gotCounts, wantCounts)
 			break
+		}
+	}
+}
+
+func writeFirewallState(t *testing.T, statePath string, st firewall.FirewallState) {
+	t.Helper()
+	raw, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(statePath, "firewall"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(statePath, "firewall", "state.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEmailGroupHandledNeedsEveryIPBlocked(t *testing.T) {
+	ips := map[netip.Addr]bool{netip.MustParseAddr("203.0.113.5"): true}
+	nets := []netip.Prefix{netip.MustParsePrefix("198.51.100.0/24")}
+	groups := []emailGroup{
+		{Title: "all", IPs: []string{"203.0.113.5", "198.51.100.7"}},
+		{Title: "some", IPs: []string{"203.0.113.5", "192.0.2.1"}},
+		{Title: "mapped", IPs: []string{"::ffff:203.0.113.5"}},
+		{Title: "noip", Kind: "compromised_account"},
+		{Title: "junk", IPs: []string{"not-an-ip"}},
+	}
+	annotateEmailGroups(groups, ips, nets)
+	want := map[string][2]any{"all": {"all", true}, "some": {"some", false}, "mapped": {"all", true},
+		"noip": {"no_ip", false}, "junk": {"none", false}}
+	for _, g := range groups {
+		if w := want[g.Title]; g.BlockState != w[0] || g.Handled != w[1] {
+			t.Errorf("%s: %s %v", g.Title, g.BlockState, g.Handled)
+		}
+	}
+}
+
+func TestActiveBlocksIgnoresDryRunExpiredUnverified(t *testing.T) {
+	loadedAt := time.Now()
+	// The request clock runs an hour ahead of the file read, so a block
+	// LoadState still holds can have lapsed by the request's now.
+	now := loadedAt.Add(time.Hour)
+	dir := t.TempDir()
+
+	ips, nets, err := activeBlocks(dir, now)
+	if err != nil || len(ips) != 0 || len(nets) != 0 {
+		t.Fatalf("no state file: %v %v %v, want nothing blocked and no error", ips, nets, err)
+	}
+
+	// A dry-run block is recorded in the store next to the firewall state,
+	// never in it.
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.RecordDryRunBlock("203.0.113.9", "SMTP AUTH brute force", time.Hour)
+	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeFirewallState(t, dir, firewall.FirewallState{
+		Blocked: []firewall.BlockedEntry{
+			{IP: "203.0.113.1", Reason: "smtp probe", ExpiresAt: now.Add(time.Hour)},
+			{IP: "203.0.113.2", Reason: "spam source"},
+			{IP: "203.0.113.3", Reason: "mail flood", ExpiresAt: loadedAt.Add(30 * time.Minute)},
+			{IP: "203.0.113.4", Reason: "smtp probe", Unverified: true},
+			{IP: "::ffff:203.0.113.5", Reason: "spam source"},
+			{IP: "not-an-ip", Reason: "spam source"},
+		},
+		BlockedNet: []firewall.SubnetEntry{
+			{CIDR: "192.0.2.0/24", Reason: "mail spray"},
+			{CIDR: "198.51.100.0/24", Reason: "mail spray", ExpiresAt: loadedAt.Add(30 * time.Minute)},
+			{CIDR: "2001:db8::/32", Reason: "mail spray", ExpiresAt: now.Add(time.Hour)},
+			{CIDR: "junk", Reason: "mail spray"},
+		},
+	})
+
+	ips, nets, err = activeBlocks(dir, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIPs := map[netip.Addr]bool{
+		netip.MustParseAddr("203.0.113.1"): true,
+		netip.MustParseAddr("203.0.113.2"): true,
+		netip.MustParseAddr("203.0.113.5"): true,
+	}
+	if len(ips) != len(wantIPs) {
+		t.Errorf("ips = %v, want %v", ips, wantIPs)
+	}
+	for ip := range wantIPs {
+		if !ips[ip] {
+			t.Errorf("ips = %v, missing %s", ips, ip)
+		}
+	}
+	if ips[netip.MustParseAddr("203.0.113.9")] {
+		t.Error("a dry-run block counted as enforced")
+	}
+	wantNets := []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24"), netip.MustParsePrefix("2001:db8::/32")}
+	if !slices.Equal(nets, wantNets) {
+		t.Errorf("nets = %v, want %v", nets, wantNets)
+	}
+
+	writeCorruptFirewallState(t, dir)
+	if _, _, err := activeBlocks(dir, now); err == nil {
+		t.Error("unreadable state read as nothing blocked")
+	}
+}
+
+func getEmailGroups(t *testing.T, s *Server, query string) emailGroupsResponse {
+	t.Helper()
+	w := httptest.NewRecorder()
+	s.apiEmailGroups(w, httptest.NewRequest(http.MethodGet, "/api/v1/email/groups"+query, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var resp emailGroupsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v\nbody: %s", err, w.Body.String())
+	}
+	return resp
+}
+
+func groupTitles(groups []emailGroup) []string {
+	out := make([]string, len(groups))
+	for i, g := range groups {
+		out[i] = g.Title
+	}
+	return out
+}
+
+func TestEmailGroupsUnhandledFirstThenLimit(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	now := time.Now()
+	var in []alert.Finding
+	for i := 0; i < 3; i++ {
+		in = append(in, emailFinding("email_auth_failure_realtime", alert.High, "a@example.com", "", "203.0.113.1", now.Add(-time.Minute)))
+	}
+	for i := 0; i < 2; i++ {
+		in = append(in, emailFinding("email_auth_failure_realtime", alert.High, "b@example.com", "", "198.51.100.7", now.Add(-time.Minute)))
+	}
+	in = append(in, emailFinding("email_auth_failure_realtime", alert.High, "c@example.com", "", "192.0.2.9", now.Add(-time.Minute)))
+	s.store.AppendHistory(in)
+	writeFirewallState(t, s.cfg.StatePath, firewall.FirewallState{
+		Blocked:    []firewall.BlockedEntry{{IP: "203.0.113.1", Reason: "SMTP AUTH brute force"}},
+		BlockedNet: []firewall.SubnetEntry{{CIDR: "198.51.100.0/24", Reason: "mail spray"}},
+	})
+
+	resp := getEmailGroups(t, s, "?limit=2")
+	if got := groupTitles(resp.Groups); !slices.Equal(got, []string{"c@example.com", "a@example.com"}) {
+		t.Fatalf("items = %v, want the unhandled group first, then the limit", got)
+	}
+	if g := resp.Groups[0]; g.Handled || g.BlockState != "none" {
+		t.Errorf("unhandled group: %s %v", g.BlockState, g.Handled)
+	}
+	if g := resp.Groups[1]; !g.Handled || g.BlockState != "all" {
+		t.Errorf("handled group: %s %v", g.BlockState, g.Handled)
+	}
+	if resp.HandledCount != 2 || resp.Total != 3 || !resp.Truncated || resp.BlocksUnavailable {
+		t.Errorf("handled_count %d total %d truncated %v unavailable %v, want 2, 3, true, false",
+			resp.HandledCount, resp.Total, resp.Truncated, resp.BlocksUnavailable)
+	}
+
+	// Block state changes while history does not: the memoised groups are
+	// annotated again, in their original order.
+	writeFirewallState(t, s.cfg.StatePath, firewall.FirewallState{
+		BlockedNet: []firewall.SubnetEntry{{CIDR: "198.51.100.0/24", Reason: "mail spray"}},
+	})
+	resp = getEmailGroups(t, s, "?limit=2")
+	if got := groupTitles(resp.Groups); !slices.Equal(got, []string{"a@example.com", "c@example.com"}) {
+		t.Fatalf("after unblock items = %v, want both unhandled groups in severity and count order", got)
+	}
+	if resp.HandledCount != 1 {
+		t.Errorf("after unblock handled_count = %d, want 1", resp.HandledCount)
+	}
+
+	// An unreadable firewall state hides nothing.
+	writeCorruptFirewallState(t, s.cfg.StatePath)
+	resp = getEmailGroups(t, s, "")
+	if !resp.BlocksUnavailable || resp.HandledCount != 0 || len(resp.Groups) != 3 {
+		t.Fatalf("unreadable state: unavailable %v handled_count %d items %d, want true, 0, 3",
+			resp.BlocksUnavailable, resp.HandledCount, len(resp.Groups))
+	}
+	for _, g := range resp.Groups {
+		if g.Handled || g.BlockState != "" {
+			t.Errorf("%s: %q %v, want no block state when it cannot be read", g.Title, g.BlockState, g.Handled)
 		}
 	}
 }
