@@ -279,6 +279,10 @@ func findAllWPInstalls(ctx context.Context) []string {
 	return results
 }
 
+// Only an absent directory component qualifies; a failed Readlink can mean
+// the account replaced a symlink while discovery was resolving it.
+var errWPDocrootMissing = errors.New("WordPress document-root component is missing")
+
 func canonicalWPInstallPath(wpConfig string) (string, error) {
 	clean := filepath.Clean(wpConfig)
 	dir := filepath.Dir(clean)
@@ -304,6 +308,9 @@ func canonicalWPInstallPath(wpConfig string) (string, error) {
 		candidate := filepath.Join(resolved, part)
 		info, err := osFS.Lstat(candidate)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return "", fmt.Errorf("%w: %s: %w", errWPDocrootMissing, candidate, err)
+			}
 			return "", fmt.Errorf("inspect WordPress document root %s: %w", candidate, err)
 		}
 		if info.Mode()&os.ModeSymlink == 0 {
