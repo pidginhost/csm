@@ -603,3 +603,41 @@ func TestMalwareMoveSkipsDroppedScanBucket(t *testing.T) {
 		Totals{Quarantined: 1, Rejects: map[Class]int{}, Temporary: map[Class]int{}},
 		[]Point{{T: bucketKey(now), Malware: 1}})
 }
+
+// Sends sum by account across buckets, most messages first and then by
+// name. A submitter that resolved to no account counts in the total but is
+// not a row, and the row limit leaves the totals whole.
+func TestRecordSendSumsByAccount(t *testing.T) {
+	now := time.Date(2026, 10, 20, 12, 40, 0, 0, time.UTC)
+	c := New(func() time.Time { return now })
+	early := now.Add(-30 * time.Minute)
+	for _, s := range []struct {
+		at      time.Time
+		account string
+	}{
+		{early, "bravo"}, {early, "bravo"}, {now, "bravo"},
+		{now, "charlie"}, {now, "charlie"}, {now, "charlie"},
+		{early, "delta"}, {now, "alpha"}, {early, ""}, {now, ""},
+	} {
+		c.RecordSend(s.at, s.account)
+	}
+	from, to := now.Add(-time.Hour), now.Add(time.Hour)
+
+	want := SendersReport{Accounts: []AccountSends{{"bravo", 3}, {"charlie", 3}, {"alpha", 1}, {"delta", 1}}, Total: 10, Unresolved: 2}
+	for _, n := range []int{0, -1, 4, 9} {
+		if got := c.TopSenders(from, to, n); !reflect.DeepEqual(got, want) {
+			t.Fatalf("n=%d: %+v, want %+v", n, got, want)
+		}
+	}
+	if got := jsonOf(t, c.TopSenders(from, to, 1)); got != `{"accounts":[{"account":"bravo","messages":3}],"total":10,"unresolved":2}` {
+		t.Fatalf("n=1: %s", got)
+	}
+	// Only the later bucket starts in the range.
+	late := SendersReport{Accounts: []AccountSends{{"charlie", 3}, {"alpha", 1}, {"bravo", 1}}, Total: 6, Unresolved: 1}
+	if got := c.TopSenders(time.Unix(bucketStart(now), 0), to, 0); !reflect.DeepEqual(got, late) {
+		t.Fatalf("later bucket: %+v, want %+v", got, late)
+	}
+	if got := jsonOf(t, New(time.Now).TopSenders(from, to, 0)); got != `{"accounts":[],"total":0,"unresolved":0}` {
+		t.Fatalf("empty: %s", got)
+	}
+}

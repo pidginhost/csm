@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/mailstats"
 	"github.com/pidginhost/csm/internal/store"
@@ -283,5 +285,40 @@ func TestStartLogWatchersRestoresMailStats(t *testing.T) {
 
 	if got := d.mailStats.Overview(now.Add(-time.Hour), now.Add(time.Hour)).Totals.Quarantined; got != 1 {
 		t.Fatalf("restored quarantines = %d, want 1", got)
+	}
+}
+
+// An arrival counts for the hosting account of its submitter: the domain
+// owner of an authenticated mailbox, or the local caller when it is a
+// hosting account. A submitter that resolves to no account counts only as
+// unresolved, and inbound mail has no submitter.
+func TestEximArrivalCountsSubmitterAccount(t *testing.T) {
+	t.Cleanup(checks.SetAccountOwnerLookupForTest(func(domain string) (string, bool) {
+		if domain == "example.com" {
+			return "exampleacct", true
+		}
+		return "", false
+	}))
+	t.Cleanup(checks.SetHostingAccountLookupForTest(func(name string) string {
+		if name == "exampleacct" {
+			return name
+		}
+		return ""
+	}))
+	now := mailStatsTestNow
+	d := newMailStatsTestDaemon(t, &now)
+	for _, line := range []string{
+		`2026-10-20 12:10:00 1tAbCd-000011-Ab <= user@example.com H=(client.example.net) [203.0.113.20]:50000 P=esmtpsa A=dovecot_login:user@example.com S=1200 for b@example.net`,
+		`2026-10-20 12:10:30 1tAbCd-000012-Ab <= exampleacct@host.example.com U=exampleacct P=local S=800 for b@example.net`,
+		`2026-10-20 12:11:00 1tAbCd-000013-Ab <= other@example.net H=(client.example.net) [203.0.113.21]:50001 P=esmtpsa A=dovecot_login:other@example.net S=900 for b@example.net`,
+		`2026-10-20 12:11:30 1tAbCd-000014-Ab <= a@example.net H=mx.example.net [198.51.100.9]:41000 P=esmtps S=2000 for user@example.com`,
+		`2026-10-20 12:12:00 1tAbCd-000011-Ab => b@example.net R=dkim_lookuphost T=dkim_remote_smtp H=mx.example.net [198.51.100.10]`,
+	} {
+		d.handleEximLine(line, alert.Observation{ObservedAt: now}, &config.Config{})
+	}
+	got := d.mailStats.TopSenders(now.Add(-time.Hour), now, 0)
+	want := mailstats.SendersReport{Accounts: []mailstats.AccountSends{{Account: "exampleacct", Messages: 2}}, Total: 3, Unresolved: 1}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("senders = %+v, want %+v", got, want)
 	}
 }

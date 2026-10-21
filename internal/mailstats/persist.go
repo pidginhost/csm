@@ -224,6 +224,12 @@ func (b *bucket) add(o *bucket) {
 	b.LoginsSMTP += o.LoginsSMTP
 	b.LoginsMailbox += o.LoginsMailbox
 	b.Quarantined += o.Quarantined
+	for k, n := range o.Sends {
+		if b.Sends == nil {
+			b.Sends = map[string]int{}
+		}
+		b.Sends[k] += n
+	}
 }
 
 // mergeRings merges restored entries into the live rings. Restored entries

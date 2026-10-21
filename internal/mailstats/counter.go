@@ -74,10 +74,27 @@ type Overview struct {
 	Series           []Point   `json:"series"`
 }
 
+// SendersReport is the outgoing mail of [from, to) by hosting account.
+// Total counts every message with a submitter, including the Unresolved
+// ones whose submitter matched no account and that no row holds.
+type SendersReport struct {
+	Accounts   []AccountSends `json:"accounts"`
+	Total      int            `json:"total"`
+	Unresolved int            `json:"unresolved"`
+}
+
+// AccountSends is the number of messages one hosting account sent.
+type AccountSends struct {
+	Account  string `json:"account"`
+	Messages int    `json:"messages"`
+}
+
 // bucket holds the counts of one BucketSeconds window. Scans is keyed by
 // mode + ":" + outcome, where outcome is the scan decision, "error", or
 // "malware" once a malware reject or quarantine of the message followed.
-// Temporary is the subset of Rejects that were temporary.
+// Temporary is the subset of Rejects that were temporary. Sends is keyed by
+// hosting account, "" for a submitter that matched none, and stays nil
+// until the window has a send.
 type bucket struct {
 	Scans         map[string]int
 	Rejects       map[Class]int
@@ -85,6 +102,7 @@ type bucket struct {
 	LoginsSMTP    int
 	LoginsMailbox int
 	Quarantined   int
+	Sends         map[string]int `json:",omitempty"`
 }
 
 // scanRef is what the join keeps of a message: the score of its successful
@@ -258,6 +276,21 @@ func (c *Counter) RecordQuarantine(at time.Time, msgID string) {
 	c.moveToMalware(msgID)
 }
 
+// RecordSend counts one message a hosting account sent. An empty account
+// is a submitter that matched no account.
+func (c *Counter) RecordSend(at time.Time, account string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b := c.bucketAt(at)
+	if b == nil {
+		return
+	}
+	if b.Sends == nil {
+		b.Sends = map[string]int{}
+	}
+	b.Sends[account]++
+}
+
 // moveToMalware recounts the scan of msgID as a malware outcome. Exim logs
 // the scan marker before the antivirus rejects the message, and the spool
 // watcher quarantines only accepted mail, so the scan counted the message
@@ -407,6 +440,37 @@ func (c *Counter) Overview(from, to time.Time) Overview {
 		ov.Series = append(ov.Series, p)
 	}
 	return ov
+}
+
+// TopSenders sums the sends of the buckets that start in [from, to). Rows
+// come most messages first, then by account; n > 0 keeps the first n rows
+// and leaves the totals whole.
+func (c *Counter) TopSenders(from, to time.Time, n int) SendersReport {
+	sums := map[string]int{}
+	c.mu.Lock()
+	for k, b := range c.buckets {
+		if start := time.Unix(k, 0); !start.Before(from) && start.Before(to) {
+			for account, m := range b.Sends {
+				sums[account] += m
+			}
+		}
+	}
+	c.mu.Unlock()
+
+	rep := SendersReport{Accounts: []AccountSends{}, Unresolved: sums[""]}
+	for account, m := range sums {
+		rep.Total += m
+		if account != "" {
+			rep.Accounts = append(rep.Accounts, AccountSends{account, m})
+		}
+	}
+	slices.SortFunc(rep.Accounts, func(x, y AccountSends) int {
+		return cmp.Or(cmp.Compare(y.Messages, x.Messages), strings.Compare(x.Account, y.Account))
+	})
+	if n > 0 && len(rep.Accounts) > n {
+		rep.Accounts = rep.Accounts[:n]
+	}
+	return rep
 }
 
 // Rejects returns up to limit ring entries of the given classes, every
