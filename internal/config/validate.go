@@ -699,11 +699,14 @@ func webUITokenCounts(cfg *Config) (tokens, admins int) {
 }
 
 // webUIExposureResults warns when the root-equivalent web UI answers on a
-// non-loopback address with neither the CSM firewall nor address-limited
-// admin tokens in front of it. A host firewall or proxy CSM cannot see may
+// non-loopback address with neither a restrictive CSM firewall policy nor
+// address-limited admin tokens in front of it. A host firewall or proxy may
 // still restrict it, so this is never an error.
 func webUIExposureResults(cfg *Config) []ValidationResult {
-	if (cfg.Firewall != nil && cfg.Firewall.Enabled) || webUIListensOnLoopback(cfg.WebUI.Listen) || !hasUnrestrictedAdminToken(cfg) {
+	v4, v6 := webUIListenFamilies(cfg.WebUI.Listen)
+	v4 = v4 && !webUIFirewallRestricts(cfg, false)
+	v6 = v6 && !webUIFirewallRestricts(cfg, true)
+	if webUIListensOnLoopback(cfg.WebUI.Listen) || !hasUnrestrictedAdminToken(cfg, v4, v6) {
 		return nil
 	}
 	listen := cfg.WebUI.Listen
@@ -711,7 +714,45 @@ func webUIExposureResults(cfg *Config) []ValidationResult {
 		listen = "0.0.0.0:9443"
 	}
 	return []ValidationResult{{"warn", "webui.listen",
-		fmt.Sprintf("web UI listens on %s with the CSM firewall off and no allowed_ips on an admin token; only a host firewall keeps it off public networks", listen)}}
+		fmt.Sprintf("web UI listens on %s with an unrestricted admin token and no restrictive CSM firewall policy for that address family; restrict access with a host firewall, the CSM firewall policy, or admin token allowed_ips", listen)}}
+}
+
+func webUIFirewallRestricts(cfg *Config, ipv6 bool) bool {
+	fw := cfg.Firewall
+	if fw == nil || !fw.Enabled || (ipv6 && !fw.IPv6) {
+		return false
+	}
+	port, known := webUIListenPort(cfg.WebUI.Listen)
+	if !known || port <= 0 || port > 65535 {
+		return false
+	}
+
+	// The passive range is accepted independently of restricted_tcp.
+	if fw.PassiveFTPStart > 0 && port >= fw.PassiveFTPStart && port <= fw.PassiveFTPEnd {
+		return false
+	}
+	if containsPort(fw.RestrictedTCP, port) {
+		return true
+	}
+	ports := fw.TCPIn
+	if ipv6 && len(fw.TCP6In) > 0 {
+		ports = fw.TCP6In
+	}
+	return !containsPort(ports, port)
+}
+
+func webUIListenFamilies(listen string) (v4, v6 bool) {
+	// Go's TCP listener can bind either wildcard as a dual-stack socket.
+	// Hostnames can resolve to either family; validation must not depend on
+	// a DNS answer that can change before the listener starts.
+	host, _, _ := net.SplitHostPort(listen)
+	if addr, err := netip.ParseAddr(host); err == nil {
+		addr = addr.Unmap()
+		if !addr.IsUnspecified() {
+			return addr.Is4(), addr.Is6()
+		}
+	}
+	return true, true
 }
 
 func webUIListensOnLoopback(listen string) bool {
@@ -728,13 +769,25 @@ func webUIListensOnLoopback(listen string) bool {
 
 // hasUnrestrictedAdminToken mirrors webUITokenCounts: a legacy auth_token is
 // an admin token, and it cannot carry allowed_ips.
-func hasUnrestrictedAdminToken(cfg *Config) bool {
+func hasUnrestrictedAdminToken(cfg *Config, v4, v6 bool) bool {
+	if !v4 && !v6 {
+		return false
+	}
 	if len(cfg.WebUI.Tokens) == 0 && cfg.WebUI.AuthToken != "" {
 		return true
 	}
 	for _, tok := range cfg.WebUI.Tokens {
-		if tok.Token != "" && tok.Scope == "admin" && len(tok.AllowedIPs) == 0 {
+		if tok.Token == "" || tok.Scope != "admin" {
+			continue
+		}
+		if len(tok.AllowedIPs) == 0 {
 			return true
+		}
+		for _, src := range tok.AllowedIPs {
+			if prefix, err := parseTokenSource(src); err == nil && prefix.Bits() == 0 &&
+				((v4 && prefix.Addr().Is4()) || (v6 && prefix.Addr().Is6())) {
+				return true
+			}
 		}
 	}
 	return false

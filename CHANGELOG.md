@@ -11,6 +11,7 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 ### Security
 
+- Web UI exposure warnings now remain visible when firewall or administrator access settings still permit public clients.
 - Failed central list downloads no longer write the download URL, or any token in it, to the log.
 - PHP hardening audits no longer pass when a PHP-FPM pool still turns the checked setting on through quoted or repeated entries.
 
