@@ -13,6 +13,10 @@ Releases before 4.0.0 are archived: [3.40 to 3.43](docs/changelog/3.40-3.43.md),
 
 - PHP hardening audits no longer pass when a PHP-FPM pool still turns the checked setting on through quoted or repeated entries.
 
+### Added
+
+- Central abuse database downloads can now be signed with a report target's node key; name that target in the central settings and restart.
+
 ### Changed
 
 - The Email Security page shows spam, malware and other reject counts, a chart, recent rejects and rspamd status; counting starts at upgrade. rspamd counters may need a private controller socket.

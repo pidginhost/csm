@@ -207,3 +207,29 @@ func buildReportTargets(cfgTargets []reportTargetConfig) []reporting.Target {
 	}
 	return targets
 }
+
+// centralSigner resolves reputation.central.auth_target to the report target
+// whose Ed25519 node key signs central pulls. It reports false when the name
+// matches no single target or that target cannot sign, so the caller never
+// falls back to unsigned pulls.
+func centralSigner(name string, cfgTargets []reportTargetConfig) (reporting.Target, bool) {
+	var found []reportTargetConfig
+	for _, ct := range cfgTargets {
+		if ct.Name == name {
+			found = append(found, ct)
+		}
+	}
+	if len(found) != 1 {
+		return reporting.Target{}, false
+	}
+	ct := found[0]
+	raw, err := hex.DecodeString(os.Getenv(ct.KeyEnv))
+	if reporting.Transport(ct.Transport) != reporting.TransportEd25519 || ct.NodeID == "" || ct.KeyID == "" ||
+		err != nil || len(raw) != ed25519.PrivateKeySize {
+		return reporting.Target{}, false
+	}
+	return reporting.Target{
+		Name: ct.Name, URL: ct.URL, Transport: reporting.TransportEd25519,
+		NodeID: ct.NodeID, KeyID: ct.KeyID, Ed25519Key: ed25519.PrivateKey(raw),
+	}, true
+}

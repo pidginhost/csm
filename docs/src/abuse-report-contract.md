@@ -180,6 +180,33 @@ grow while a collector keeps throttling.
   lost. Deduplicate on node and body hash, and answer 409
   for a body already stored.
 
+## Signed scored-set downloads
+
+When `reputation.central.auth_target` names an `ed25519` target, CSM signs
+each scored-set download with that target's node key:
+
+```
+GET <set_url>[?since=<version>]
+X-CSM-Node: <node_id>
+X-CSM-Key: <key_id>
+X-CSM-Timestamp: <unix seconds, UTC>
+X-CSM-Nonce: <32 lowercase hex characters>
+X-CSM-Signature: ed25519=<128 hex characters>
+```
+
+The signed message is built as in [Signature](#signature), with method
+`GET`, the decoded path of the download URL, and the SHA-256 of an empty
+body. The query string is not signed. CSM sends no body, no bearer token and
+no other `X-CSM-` headers, and it does not follow redirects. A full download
+carries no `since`; a later one carries exactly one.
+
+| Answer | What CSM does |
+|---|---|
+| 200 | Verifies the signed snapshot or diff, then uses it. |
+| 304 | Keeps its current list. |
+| 401 | Keeps its last verified list, logs that the node was refused, and tries again at the next refresh. |
+| Any other status, timeout or network error | Keeps its last verified list and tries again at the next refresh. |
+
 ## Sample collector (Go)
 
 This HMAC signature-verification skeleton is not a complete collector.

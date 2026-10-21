@@ -295,6 +295,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "central.enabled", Type: "bool", Label: "Consume central abuse database", FieldGroup: FieldGroupCentralDB},
 			{YAMLPath: "central.set_url", Type: "string", Label: "Scored-set URL", FieldGroup: FieldGroupCentralDB},
 			{YAMLPath: "central.pubkey_env", Type: "string", Label: "Central public-key env var", FieldGroup: FieldGroupCentralDB, FileOnly: true},
+			{YAMLPath: "central.auth_target", Type: "string", Label: "Signing report target", Help: "Name of the report target whose node key signs downloads; required by the central abuse database", FieldGroup: FieldGroupCentralDB},
 			{YAMLPath: "central.action", Type: "string", Label: "Action on listed IPs", Help: "off | challenge | block_if_local_corroborated", FieldGroup: FieldGroupCentralDB},
 			{YAMLPath: "central.block_threshold", Type: "int", Label: "Block score threshold", Min: int64p(0), Max: int64p(100), FieldGroup: FieldGroupCentralDB},
 			{YAMLPath: "central.refresh_interval", Type: "string", Label: "Refresh interval", Help: "e.g. 6h", FieldGroup: FieldGroupCentralDB},

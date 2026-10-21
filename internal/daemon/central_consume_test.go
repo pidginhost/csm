@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -399,5 +400,110 @@ func TestLogCentralBlockFailureSuppressesProtectedIPError(t *testing.T) {
 	logCentralBlockFailure("45.76.1.92", errors.New("nft failed"))
 	if !strings.Contains(buf.String(), "central-intel: block 45.76.1.92 failed: nft failed") {
 		t.Fatalf("non-protected central failure was not logged: %q", buf.String())
+	}
+}
+
+func TestStartCentralConsumeSignerMustSign(t *testing.T) {
+	prevHook, prevWriter, prevFlags := alert.CentralHook, log.Writer(), log.Flags()
+	t.Cleanup(func() {
+		alert.SetCentralHook(prevHook)
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+	})
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	t.Setenv("CSM_TEST_CENTRAL_PUB", hex.EncodeToString(pub))
+	_, nodePriv, _ := ed25519.GenerateKey(rand.Reader)
+	t.Setenv("CSM_TEST_NODE_KEY", hex.EncodeToString(nodePriv))
+	t.Setenv("CSM_TEST_BAD_KEY", "abcd")
+
+	target := func(name, transport, keyEnv string) reportTargetConfig {
+		return reportTargetConfig{Name: name, URL: "https://central.example/report", Transport: transport,
+			NodeID: "n_000000000000000000000001", KeyID: "k_000000000000000000000002", KeyEnv: keyEnv}
+	}
+	for _, c := range []struct {
+		name    string
+		targets []reportTargetConfig
+		on      bool
+	}{
+		{"usable key", []reportTargetConfig{target("central", "ed25519", "CSM_TEST_NODE_KEY")}, true},
+		{"no such target", []reportTargetConfig{target("other", "ed25519", "CSM_TEST_NODE_KEY")}, false},
+		{"two targets", []reportTargetConfig{target("central", "ed25519", "CSM_TEST_NODE_KEY"), target("central", "ed25519", "CSM_TEST_NODE_KEY")}, false},
+		{"hmac target", []reportTargetConfig{target("central", "hmac", "CSM_TEST_NODE_KEY")}, false},
+		{"key unset", []reportTargetConfig{target("central", "ed25519", "CSM_TEST_UNSET_KEY")}, false},
+		{"key malformed", []reportTargetConfig{target("central", "ed25519", "CSM_TEST_BAD_KEY")}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			log.SetOutput(&buf)
+			log.SetFlags(0)
+			alert.SetCentralHook(nil)
+			cfg := &config.Config{}
+			cfg.Reputation.Central.Enabled = true
+			cfg.Reputation.Central.SetURL = "https://central.example/decisions"
+			cfg.Reputation.Central.PubkeyEnv = "CSM_TEST_CENTRAL_PUB"
+			cfg.Reputation.Central.AuthTarget = "central"
+			cfg.Reputation.Report.Targets = c.targets
+			loop := New(cfg, nil, nil, "").startCentralConsume()
+			if (loop != nil) != c.on || (alert.CentralHook != nil) != c.on {
+				t.Fatalf("consumer on=%v hook=%v, want %v; log=%q", loop != nil, alert.CentralHook != nil, c.on, buf.String())
+			}
+			if mentions := strings.Contains(buf.String(), "reputation.central.auth_target"); mentions == c.on {
+				t.Fatalf("log = %q; the auth_target line must appear only when the consumer stays off", buf.String())
+			}
+			if strings.Contains(buf.String(), hex.EncodeToString(nodePriv)) {
+				t.Fatal("log printed the node key")
+			}
+		})
+	}
+}
+
+func TestLogCentralRefreshError(t *testing.T) {
+	prevWriter, prevFlags := log.Writer(), log.Flags()
+	t.Cleanup(func() {
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+	})
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	logCentralRefreshError("refresh failed", fmt.Errorf("pull: %w", reporting.ErrPullUnauthorized))
+	logCentralRefreshError("refresh failed", errors.New("boom"))
+	want := "central-intel: pull unauthorized; check node enrollment, node clock and reputation.central.auth_target\n" +
+		"central-intel: refresh failed: boom\n"
+	if buf.String() != want {
+		t.Fatalf("log = %q, want %q", buf.String(), want)
+	}
+}
+
+func TestCentralRefreshLogsVersion(t *testing.T) {
+	prevWriter, prevFlags := log.Writer(), log.Flags()
+	t.Cleanup(func() {
+		log.SetOutput(prevWriter)
+		log.SetFlags(prevFlags)
+	})
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	snap := reporting.ScoredSnapshot{Version: 7, Entries: []reporting.ScoredEntry{{
+		IP: "203.0.113.5", Score: 80, Classes: []reporting.Class{reporting.ClassBruteforce},
+		LastSeen: time.Unix(1_700_000_000, 0).UTC(),
+	}}}
+	payload, ok := reporting.MarshalScoredSnapshot(snap)
+	if !ok {
+		t.Fatal("marshal snapshot")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-CSM-Signature", "ed25519="+hex.EncodeToString(ed25519.Sign(priv, payload)))
+		w.Header().Set("X-CSM-Kind", "snapshot")
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+	store := reporting.NewCentralStore(reporting.NewPuller(srv.Client(), srv.URL+"/decisions", hex.EncodeToString(pub)))
+	if err := centralRefresh(store)(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if buf.String() != "central-intel: refresh complete (version=7)\n" {
+		t.Fatalf("log = %q", buf.String())
 	}
 }

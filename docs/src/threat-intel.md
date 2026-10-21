@@ -206,6 +206,7 @@ reporting off.
        enabled: true
        set_url: https://abuse.example.net/decisions
        pubkey_env: CSM_CENTRAL_PUBKEY
+       auth_target: central
        action: challenge
    ```
 
@@ -216,6 +217,18 @@ With `action: challenge`, a qualifying local attacker finding for an
 unprotected listed address adds it to the challenge list. This requires
 `challenge.enabled: true`, an active firewall and a working
 [challenge setup](challenge.md).
+
+`auth_target` names the report target whose node key signs each download.
+The central abuse database refuses unsigned downloads. The target must use
+`transport: ed25519`, and its URL must share scheme, host and port with
+`set_url`, so a signed request never goes to another host. Leave
+`auth_target` unset only for a central service that serves the list
+without signatures.
+
+If the service refuses a download, CSM keeps its last verified list, tries
+again at the next refresh, and logs
+`central-intel: pull unauthorized; check node enrollment, node clock and reputation.central.auth_target`.
+Each successful refresh logs `central-intel: refresh complete (version=N)`.
 
 With `action: block_if_local_corroborated`, CSM attempts a block instead
 once the central score reaches `reputation.central.block_threshold`;

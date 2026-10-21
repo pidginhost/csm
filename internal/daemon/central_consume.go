@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
@@ -75,6 +76,18 @@ func mustCIDRs(cidrs ...string) []*net.IPNet {
 	return out
 }
 
+// centralRefresh refreshes store and logs each success with its version, so an
+// operator can check from the log that a node's signed pulls work.
+func centralRefresh(store *reporting.CentralStore) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if err := store.Refresh(ctx); err != nil {
+			return err
+		}
+		log.Printf("central-intel: refresh complete (version=%d)", store.Version())
+		return nil
+	}
+}
+
 // startCentralConsume wires the central scored-set consumer: it pulls and
 // verifies the signed set on an interval and installs alert.CentralHook so a
 // finding whose IP is in the set is escalated per the configured action. It
@@ -111,9 +124,18 @@ func (d *Daemon) startCentralConsume() func() {
 		}
 	}
 
-	store := reporting.NewCentralStore(reporting.NewPuller(nil, cc.SetURL, pubHex))
+	puller := reporting.NewPuller(nil, cc.SetURL, pubHex)
+	if cc.AuthTarget != "" {
+		node, ok := centralSigner(cc.AuthTarget, d.cfg.Reputation.Report.Targets)
+		if !ok {
+			log.Printf("central-intel: reputation.central.auth_target %q has no usable Ed25519 node key; consumer stays off", cc.AuthTarget)
+			return nil
+		}
+		puller = reporting.NewSignedPuller(nil, cc.SetURL, pubHex, node, nil)
+	}
+	store := reporting.NewCentralStore(puller)
 	firebreak := d.centralFirebreak()
-	consumer := newCentralActionConsumer(d.stopCh, centralActionQueue, interval, store.Refresh, d.performCentralAction)
+	consumer := newCentralActionConsumer(d.stopCh, centralActionQueue, interval, centralRefresh(store), d.performCentralAction)
 	d.registerQueueSource("central", consumer)
 
 	alert.SetCentralHook(func(f alert.Finding) {
