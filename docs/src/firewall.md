@@ -290,9 +290,9 @@ remains pending, `csm firewall restart` and another `apply-confirmed` are refuse
 If startup cannot read the saved engine configuration, rollback still
 restores the kernel ruleset and state, but the window stays pending. Once
 that restore is recorded, later restarts keep the blocks added since instead
-of restoring the window's start again; without a matching record, the next
-restart restores again, also for a marker that was empty or corrupt when
-the restore was recorded. After such a ruleset-only rollback a restart
+of restoring the window's start again; a missing, truncated or mismatched
+record makes the next restart restore again, and an empty or corrupt marker
+is recorded like any other. After such a ruleset-only rollback a restart
 applies the configured settings, so the old kernel ruleset does not survive
 a reboot. `csm status` and `csm doctor` show a pending window, when it rolls
 back and why it cannot settle by itself. Inspect the current ruleset and
