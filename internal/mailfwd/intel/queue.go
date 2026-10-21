@@ -3,6 +3,7 @@ package intel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"os/exec"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/pidginhost/csm/internal/systemdrun"
 )
@@ -46,23 +48,28 @@ type QueueMessage struct {
 	LocalUser string `json:"local_user"` // the "(user)" marker, "" if absent
 	Frozen    bool   `json:"frozen"`
 	Bounce    bool   `json:"bounce"` // null sender <>
-	// Recipients holds the undelivered recipients, at most maxQueueRecipients.
-	Recipients []string `json:"recipients"`
-	Delivered  int      `json:"delivered"` // recipients exim marks D
+	// Recipients holds the first undelivered recipients: at most
+	// maxQueueRecipients in a list, maxDetailRecipients in a detail.
+	Recipients     []string `json:"recipients"`
+	RecipientCount int      `json:"recipient_count"` // every undelivered recipient
+	Delivered      int      `json:"delivered"`       // recipients exim marks D
 }
 
 const (
-	topRecipientLimit  = 10
-	maxQueueRecipients = 50
+	topRecipientLimit   = 10
+	maxQueueRecipients  = 50
+	maxDetailRecipients = 1000
 	// Queue headers are padded for age alignment. Recipient and continuation
 	// lines are indented much deeper and must not be parsed as new messages.
 	maxQueueHeaderIndent = 4
 )
 
 var (
-	// A queue header line: "<age> <size> <msgid> [(user)] <sender> [*** frozen ***]".
-	// Accept both the legacy 6-6-2 message id and the longer base62 form exim
-	// 4.97+ emits (6-11-4, e.g. "1wVR8E-0000000C9po-1DDg").
+	// A queue header line: "<age> <size> <msgid> <sender> [(login)] [*** frozen ***]",
+	// where exim adds "(login)" when an untrusted caller set the sender. The
+	// login is also accepted before the sender. Accept both the legacy 6-6-2
+	// message id and the longer base62 form exim 4.97+ emits (6-11-4, e.g.
+	// "1wVR8E-0000000C9po-1DDg").
 	queueMsgIDRe = regexp.MustCompile(`^[0-9A-Za-z]{6}-(?:[0-9A-Za-z]{6}-[0-9A-Za-z]{2}|[0-9A-Za-z]{11}-[0-9A-Za-z]{4})$`)
 	queueAgeRe   = regexp.MustCompile(`^\d+[smhdw]$`)
 	queueSizeRe  = regexp.MustCompile(`(?i)^\d+(?:\.\d+)?[kmgt]?$`)
@@ -110,7 +117,7 @@ func ParseQueue(out string) QueueComposition {
 	recipients := map[string]int{}
 	oldestSeconds := -1
 
-	for _, m := range parseQueueEntries(out) {
+	for _, m := range parseQueueEntries(out, math.MaxInt) {
 		comp.Total++
 		if m.Bounce {
 			comp.Bounce++
@@ -141,8 +148,26 @@ func ParseQueue(out string) QueueComposition {
 // keeping the first maxQueueRecipients undelivered recipients of each. Output
 // that holds text but no queue entry is an error, not an empty queue.
 func ParseQueueList(out []byte) ([]QueueMessage, error) {
+	return parseQueueMessages(out, maxQueueRecipients)
+}
+
+// ParseQueueDetail parses `exim -bp <id>` output for one message, keeping the
+// first maxDetailRecipients undelivered recipients. Anything but exactly one
+// message is an error.
+func ParseQueueDetail(out []byte) (QueueMessage, error) {
+	msgs, err := parseQueueMessages(out, maxDetailRecipients)
+	if err != nil {
+		return QueueMessage{}, err
+	}
+	if len(msgs) != 1 {
+		return QueueMessage{}, fmt.Errorf("exim -bp listed %d messages, want 1", len(msgs))
+	}
+	return msgs[0], nil
+}
+
+func parseQueueMessages(out []byte, keep int) ([]QueueMessage, error) {
 	text := string(out)
-	msgs := parseQueueEntries(text)
+	msgs := parseQueueEntries(text, keep)
 	if len(msgs) == 0 {
 		if strings.TrimSpace(text) != "" {
 			return nil, errors.New("exim -bp output holds no queue entry")
@@ -152,9 +177,6 @@ func ParseQueueList(out []byte) ([]QueueMessage, error) {
 	for i := range msgs {
 		m := &msgs[i]
 		m.Arrived, _ = ArrivalFromID(m.ID)
-		if len(m.Recipients) > maxQueueRecipients {
-			m.Recipients = m.Recipients[:maxQueueRecipients]
-		}
 		if m.Recipients == nil {
 			m.Recipients = []string{}
 		}
@@ -162,10 +184,11 @@ func ParseQueueList(out []byte) ([]QueueMessage, error) {
 	return msgs, nil
 }
 
-// parseQueueEntries walks `exim -bp` output into messages with every
-// undelivered recipient. Recipient lines are indented deeper than headers;
-// any other line ends the current message so stray text cannot attach to it.
-func parseQueueEntries(out string) []QueueMessage {
+// parseQueueEntries walks `exim -bp` output into messages, keeping the first
+// keep undelivered recipients of each and counting all of them. Recipient
+// lines are indented deeper than headers; any other line ends the current
+// message so stray text cannot attach to it.
+func parseQueueEntries(out string, keep int) []QueueMessage {
 	var msgs []QueueMessage
 	current := -1
 
@@ -187,13 +210,17 @@ func parseQueueEntries(out string) []QueueMessage {
 			current = -1
 			continue
 		}
+		m := &msgs[current]
 		// Exim prefixes an already-delivered recipient with "D"; it is not stuck.
 		if fields := strings.Fields(trimmed); len(fields) == 2 && fields[0] == "D" {
-			msgs[current].Delivered++
+			m.Delivered++
 			continue
 		}
 		if addr, ok := queueRecipientAddress(trimmed); ok {
-			msgs[current].Recipients = append(msgs[current].Recipients, addr)
+			m.RecipientCount++
+			if len(m.Recipients) < keep {
+				m.Recipients = append(m.Recipients, addr)
+			}
 		}
 	}
 	return msgs
@@ -203,37 +230,60 @@ func parseQueueHeader(line string) (QueueMessage, bool) {
 	if queueHeaderIndent(line) > maxQueueHeaderIndent {
 		return QueueMessage{}, false
 	}
-	fields := strings.Fields(line)
-	if len(fields) != 4 && len(fields) != 5 && len(fields) != 7 && len(fields) != 8 {
+	age, rest := cutQueueField(line)
+	size, rest := cutQueueField(rest)
+	id, rest := cutQueueField(rest)
+	if !queueAgeRe.MatchString(age) || !queueSizeRe.MatchString(size) || !queueMsgIDRe.MatchString(id) {
 		return QueueMessage{}, false
 	}
-	if !queueAgeRe.MatchString(fields[0]) || !queueSizeRe.MatchString(fields[1]) || !queueMsgIDRe.MatchString(fields[2]) {
-		return QueueMessage{}, false
+	m := QueueMessage{ID: id, AgeSeconds: AgeToSeconds(age), Size: queueSizeBytes(size)}
+
+	rest = strings.TrimSpace(rest)
+	if field, after := cutQueueField(rest); queueLocalUserField(field) {
+		m.LocalUser = field[1 : len(field)-1]
+		rest = strings.TrimSpace(after)
 	}
-	m := QueueMessage{ID: fields[2], AgeSeconds: AgeToSeconds(fields[0]), Size: queueSizeBytes(fields[1])}
-	senderIndex := 3
-	frozenIndex := 4
-	if len(fields) == 5 || len(fields) == 8 {
-		if !queueLocalUserField(fields[3]) {
+	var sender string
+	if strings.HasPrefix(rest, "<") {
+		// The sender may quote spaces or ">" in its local part. Exim's own
+		// markers after it never contain ">", so the last one closes it.
+		end := strings.LastIndexByte(rest, '>')
+		if end < 0 {
 			return QueueMessage{}, false
 		}
-		m.LocalUser = fields[3][1 : len(fields[3])-1]
-		senderIndex = 4
-		frozenIndex = 5
-	}
-	if len(fields) == 7 || len(fields) == 8 {
-		if fields[frozenIndex] != "***" || fields[frozenIndex+1] != "frozen" || fields[frozenIndex+2] != "***" {
+		sender, rest = rest[1:end], rest[end+1:]
+		m.Bounce = sender == ""
+	} else {
+		sender, rest = cutQueueField(rest)
+		if sender == "" {
 			return QueueMessage{}, false
 		}
-		m.Frozen = true
-	}
-	sender := fields[senderIndex]
-	m.Bounce = sender == "<>"
-	if len(sender) >= 2 && sender[0] == '<' && sender[len(sender)-1] == '>' {
-		sender = sender[1 : len(sender)-1]
 	}
 	m.Sender = sender
+
+	marks := strings.Fields(rest)
+	if len(marks) > 0 && m.LocalUser == "" && queueLocalUserField(marks[0]) {
+		m.LocalUser = marks[0][1 : len(marks[0])-1]
+		marks = marks[1:]
+	}
+	if len(marks) == 3 && marks[0] == "***" && marks[1] == "frozen" && marks[2] == "***" {
+		m.Frozen = true
+		marks = nil
+	}
+	if len(marks) != 0 {
+		return QueueMessage{}, false
+	}
 	return m, true
+}
+
+// cutQueueField returns the first whitespace-separated field of s and the
+// text after it.
+func cutQueueField(s string) (field, rest string) {
+	s = strings.TrimLeftFunc(s, unicode.IsSpace)
+	if i := strings.IndexFunc(s, unicode.IsSpace); i >= 0 {
+		return s[:i], s[i:]
+	}
+	return s, ""
 }
 
 // queueSizeBytes converts a size token that matched queueSizeRe ("800",

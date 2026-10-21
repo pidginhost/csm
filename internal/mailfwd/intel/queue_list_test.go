@@ -16,6 +16,12 @@ const eximBpListSample = ` 25m  2.9K 1wVR8E-0000000C9po-1DDg (mailman) <sender@e
 
   4d   800 1tAbCd-000001-Ab <>
           bounce@example.com
+
+  1h  1.2K 1tAbCd-000002-Ab <sender@example.com> (cpuser)
+          third@example.net
+
+  2h   900 1tAbCd-000003-Ab <sender@example.com> (cpuser) *** frozen ***
+          fourth@example.net
 `
 
 func TestParseQueueListFields(t *testing.T) {
@@ -23,29 +29,54 @@ func TestParseQueueListFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseQueueList: %v", err)
 	}
-	if len(msgs) != 2 {
-		t.Fatalf("messages = %d, want 2", len(msgs))
+	if len(msgs) != 4 {
+		t.Fatalf("messages = %d, want 4", len(msgs))
 	}
 
 	want := []QueueMessage{
 		{
-			ID:         "1wVR8E-0000000C9po-1DDg",
-			Arrived:    time.Date(2026, 6, 5, 9, 46, 26, 0, time.UTC),
-			AgeSeconds: 25 * 60,
-			Size:       2969,
-			Sender:     "sender@example.com",
-			LocalUser:  "mailman",
-			Frozen:     true,
-			Recipients: []string{"first@example.net", "second@example.net"},
-			Delivered:  1,
+			ID:             "1wVR8E-0000000C9po-1DDg",
+			Arrived:        time.Date(2026, 6, 5, 9, 46, 26, 0, time.UTC),
+			AgeSeconds:     25 * 60,
+			Size:           2969,
+			Sender:         "sender@example.com",
+			LocalUser:      "mailman",
+			Frozen:         true,
+			Recipients:     []string{"first@example.net", "second@example.net"},
+			RecipientCount: 2,
+			Delivered:      1,
 		},
 		{
-			ID:         "1tAbCd-000001-Ab",
-			Arrived:    time.Date(2024, 11, 11, 20, 40, 3, 0, time.UTC),
-			AgeSeconds: 4 * 86400,
-			Size:       800,
-			Bounce:     true,
-			Recipients: []string{"bounce@example.com"},
+			ID:             "1tAbCd-000001-Ab",
+			Arrived:        time.Date(2024, 11, 11, 20, 40, 3, 0, time.UTC),
+			AgeSeconds:     4 * 86400,
+			Size:           800,
+			Bounce:         true,
+			Recipients:     []string{"bounce@example.com"},
+			RecipientCount: 1,
+		},
+		// Exim prints the login after the sender when the sender was set
+		// by an untrusted caller, e.g. PHP mail() with -f.
+		{
+			ID:             "1tAbCd-000002-Ab",
+			Arrived:        time.Date(2024, 11, 11, 20, 40, 3, 0, time.UTC),
+			AgeSeconds:     3600,
+			Size:           1228,
+			Sender:         "sender@example.com",
+			LocalUser:      "cpuser",
+			Recipients:     []string{"third@example.net"},
+			RecipientCount: 1,
+		},
+		{
+			ID:             "1tAbCd-000003-Ab",
+			Arrived:        time.Date(2024, 11, 11, 20, 40, 3, 0, time.UTC),
+			AgeSeconds:     2 * 3600,
+			Size:           900,
+			Sender:         "sender@example.com",
+			LocalUser:      "cpuser",
+			Frozen:         true,
+			Recipients:     []string{"fourth@example.net"},
+			RecipientCount: 1,
 		},
 	}
 	for i := range want {
@@ -62,13 +93,13 @@ func TestParseQueueListFields(t *testing.T) {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"id", "arrived", "age_seconds", "size", "sender", "local_user", "frozen", "bounce", "recipients", "delivered"} {
+	for _, key := range []string{"id", "arrived", "age_seconds", "size", "sender", "local_user", "frozen", "bounce", "recipients", "recipient_count", "delivered"} {
 		if _, ok := fields[key]; !ok {
 			t.Errorf("JSON %s lacks %q", raw, key)
 		}
 	}
-	if len(fields) != 10 {
-		t.Errorf("JSON has %d keys, want 10: %s", len(fields), raw)
+	if len(fields) != 11 {
+		t.Errorf("JSON has %d keys, want 11: %s", len(fields), raw)
 	}
 }
 
@@ -96,8 +127,88 @@ func TestParseQueueListCapsRecipients(t *testing.T) {
 	if m.Recipients[0] != "rcpt00@example.net" || m.Recipients[49] != "rcpt49@example.net" {
 		t.Errorf("recipients = %s ... %s, want the first 50 in order", m.Recipients[0], m.Recipients[49])
 	}
+	if m.RecipientCount != 60 {
+		t.Errorf("recipient count = %d, want 60 (every undelivered recipient, including past the cap)", m.RecipientCount)
+	}
 	if m.Delivered != 3 {
 		t.Errorf("delivered = %d, want 3 (every D line, including past the cap)", m.Delivered)
+	}
+}
+
+func TestParseQueueListSenderWithSpacesAndBrackets(t *testing.T) {
+	// The sender is chosen by whoever submits the mail; a quoted local
+	// part may hold spaces, ">" or text shaped like exim's own markers.
+	in := `  2h   900 1tAbCd-000004-Ab <"a b"@example.com> (cpuser)
+          one@example.net
+
+  3h   900 1tAbCd-000005-Ab <"a>b"@example.com>
+          two@example.net
+
+  4h   900 1tAbCd-000006-Ab <"x *** frozen ***"@example.com>
+          three@example.net
+`
+	msgs, err := ParseQueueList([]byte(in))
+	if err != nil {
+		t.Fatalf("ParseQueueList: %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("messages = %d, want 3", len(msgs))
+	}
+	want := []struct {
+		sender, user string
+	}{
+		{`"a b"@example.com`, "cpuser"},
+		{`"a>b"@example.com`, ""},
+		{`"x *** frozen ***"@example.com`, ""},
+	}
+	for i, w := range want {
+		m := msgs[i]
+		if m.Sender != w.sender || m.LocalUser != w.user || m.Frozen || m.Bounce {
+			t.Errorf("message %d: sender %q user %q frozen %v bounce %v; want sender %q user %q, not frozen, not bounce",
+				i, m.Sender, m.LocalUser, m.Frozen, m.Bounce, w.sender, w.user)
+		}
+		if len(m.Recipients) != 1 {
+			t.Errorf("message %d recipients = %q, want one", i, m.Recipients)
+		}
+	}
+	if c := ParseQueue(in); c.Total != 3 || c.Frozen != 0 {
+		t.Errorf("composition total %d frozen %d, want 3 and 0", c.Total, c.Frozen)
+	}
+}
+
+func TestParseQueueDetail(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("  2h  25K 1tAbCd-000001-Ab <sender@example.com> (cpuser)\n")
+	for i := 0; i < 1200; i++ {
+		fmt.Fprintf(&b, "          rcpt%04d@example.net\n", i)
+	}
+	b.WriteString("          D done@example.net\n")
+
+	m, err := ParseQueueDetail([]byte(b.String()))
+	if err != nil {
+		t.Fatalf("ParseQueueDetail: %v", err)
+	}
+	if m.ID != "1tAbCd-000001-Ab" || m.Sender != "sender@example.com" || m.LocalUser != "cpuser" || m.Size != 25*1024 {
+		t.Errorf("detail header = %+v", m)
+	}
+	if len(m.Recipients) != 1000 || m.Recipients[999] != "rcpt0999@example.net" {
+		t.Errorf("recipients = %d, want the first 1000", len(m.Recipients))
+	}
+	if m.RecipientCount != 1200 || m.Delivered != 1 {
+		t.Errorf("recipient count %d delivered %d, want 1200 and 1", m.RecipientCount, m.Delivered)
+	}
+	if !m.Arrived.Equal(time.Date(2024, 11, 11, 20, 40, 3, 0, time.UTC)) {
+		t.Errorf("arrived = %v", m.Arrived)
+	}
+
+	for name, in := range map[string]string{
+		"empty":    "",
+		"two":      eximBpListSample,
+		"unparsed": "exim: message not found\n",
+	} {
+		if m, err := ParseQueueDetail([]byte(in)); err == nil {
+			t.Errorf("%s: ParseQueueDetail = %+v, nil; want an error unless exactly one message", name, m)
+		}
 	}
 }
 

@@ -75,20 +75,32 @@ func FuzzParseQueue(f *testing.F) {
 	})
 }
 
-// FuzzParseQueueList checks the per-message queue list against the
-// composition parser: both read the same headers, so their counts must agree,
-// and every listed field stays within its bound.
+// FuzzParseQueueList checks that every listed field stays within its bound.
+// The list, the detail view and the composition share one walker today; the
+// agreement checks guard a later refactor that would let them diverge.
 func FuzzParseQueueList(f *testing.F) {
 	f.Add(eximBpListSample)
 	f.Add(eximBpSample)
 	f.Add(eximBpSampleNewID)
 	f.Add("")
 	f.Add("garbage\nlines\nonly")
-	f.Add(" 1d 1K aaaaaa-bbbbbb-cc <>\n   a@b.example\n   D c@d.example")
-	f.Add(" 1d 99999999999999999999T aaaaaa-bbbbbb-cc (u) <s@example.com> *** frozen ***\n   a@b.example")
+	f.Add(" 1d 1K aaaaaa-bbbbbb-cc <>\n   a@example.net\n   D c@example.net")
+	f.Add(" 1d 99999999999999999999T aaaaaa-bbbbbb-cc (u) <s@example.com> *** frozen ***\n   a@example.net")
+	f.Add(" 1d 1K aaaaaa-bbbbbb-cc <s@example.com> (u) *** frozen ***\n   a@example.net")
+	f.Add(` 1d 1K aaaaaa-bbbbbb-cc <"a b>c"@example.com> (u)` + "\n   a@example.net")
+	f.Add("          early@example.net\n 1d 1K aaaaaa-bbbbbb-cc <s@example.com>\n   a@example.net")
+	f.Add(" 1d 1K")
 	f.Fuzz(func(t *testing.T, out string) {
 		msgs, err := ParseQueueList([]byte(out))
 		comp := ParseQueue(out)
+		detail, detailErr := ParseQueueDetail([]byte(out))
+		if (detailErr == nil) != (err == nil && len(msgs) == 1) {
+			t.Fatalf("detail error %v with %d listed messages (list error %v)", detailErr, len(msgs), err)
+		}
+		if detailErr == nil && (detail.ID != msgs[0].ID || detail.RecipientCount != msgs[0].RecipientCount ||
+			len(detail.Recipients) != min(detail.RecipientCount, maxDetailRecipients)) {
+			t.Fatalf("detail %+v disagrees with list %+v", detail, msgs[0])
+		}
 		if err != nil {
 			if len(msgs) != 0 || comp.Total != 0 {
 				t.Fatalf("error %v with %d listed and %d counted messages", err, len(msgs), comp.Total)
@@ -103,8 +115,8 @@ func FuzzParseQueueList(f *testing.F) {
 			if !ValidMessageID(m.ID) {
 				t.Fatalf("listed invalid message id %q", m.ID)
 			}
-			if m.Recipients == nil || len(m.Recipients) > maxQueueRecipients {
-				t.Fatalf("recipients = %d (nil %v), want a non-nil list of at most %d", len(m.Recipients), m.Recipients == nil, maxQueueRecipients)
+			if m.Recipients == nil || len(m.Recipients) != min(m.RecipientCount, maxQueueRecipients) {
+				t.Fatalf("recipients = %d (nil %v) of %d, want a non-nil list of the first %d", len(m.Recipients), m.Recipients == nil, m.RecipientCount, maxQueueRecipients)
 			}
 			for _, r := range m.Recipients {
 				if len(r) > maxAddressLen || !strings.Contains(r, "@") {
@@ -132,7 +144,8 @@ func FuzzParseQueueList(f *testing.F) {
 func FuzzMsglogReason(f *testing.F) {
 	for _, seed := range []string{
 		msglogRateLimited, msglogNoRoute, msglogFrozen, msglogReceivedOnly,
-		msglogOther, msglogRetryWait, "", "*** Frozen", "*** Frozen (",
+		msglogOther, msglogRetryWait, msglogKeywordAddress, msglogKeywordHost, msglogTwoRecipients,
+		msglogRateLimited + msglogOther, "", "*** Frozen", "*** Frozen (",
 		"2026-10-21 12:00:00 ", "H=", " defer", "2026-10-21 12:00:00 x defer " + strings.Repeat("\xff", 300),
 	} {
 		f.Add(seed)

@@ -126,6 +126,28 @@ func TestParseQueueAcceptsLocalUserSenderMarker(t *testing.T) {
 	}
 }
 
+func TestParseQueueCountsLoginAfterSender(t *testing.T) {
+	// Exim prints "(login)" after the sender, then the frozen marker.
+	in := `  1h  1.2K 1tAbCd-000002-Ab <sender@example.com> (cpuser)
+          rcpt@example.net
+
+  2h   900 1tAbCd-000003-Ab <> (cpuser) *** frozen ***
+          bounce@example.net
+`
+
+	c := ParseQueue(in)
+
+	if c.Total != 2 || c.Real != 1 || c.Bounce != 1 || c.Frozen != 1 || c.FlushableBackscatter != 1 {
+		t.Fatalf("composition = %+v, want 2 messages: 1 real, 1 frozen bounce", c)
+	}
+	if len(c.TopRecipients) != 2 {
+		t.Fatalf("top recipients = %+v, want both recipients counted", c.TopRecipients)
+	}
+	if ids := FrozenBackscatterIDs(in); len(ids) != 1 || ids[0] != "1tAbCd-000003-Ab" {
+		t.Fatalf("frozen backscatter = %v, want the frozen bounce", ids)
+	}
+}
+
 func TestParseQueueDoesNotCountHeaderShapedContinuation(t *testing.T) {
 	in := `  3d  4.3K 1wVR8E-0000000C9po-1DDg <sender@shop.example>
           1d 1K 1wVRAI-0000000CAT0-41m1 recipient@example.net

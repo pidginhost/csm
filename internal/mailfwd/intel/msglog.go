@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -53,6 +54,12 @@ var stuckTexts = map[string]string{
 
 var noAttemptReason = StuckReason{Class: "none", Text: "no delivery attempt logged yet"}
 
+// msglogNameRe matches what names a mailbox or host in a msglog line: <...>
+// paths, "host [ip]" pairs with or without H=, bare addresses and quoted
+// domains. Senders and recipient domains choose that text, so it is blanked
+// before keyword classification.
+var msglogNameRe = regexp.MustCompile(`<[^<>]*>|(?:H=)?[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+ \[(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9A-Fa-f]*:[0-9A-Fa-f:.]+)\]|\S+@\S+|'[A-Za-z0-9.-]+'`)
+
 // ReadMsglogReason reads the tail of a queued message's exim msglog and says
 // why the message is stuck, returning the last lines of that tail with it. A
 // message without a msglog has had no delivery attempt yet. A msglog that is
@@ -93,36 +100,44 @@ func readMsglogTail(path string) ([]string, error) {
 	return readFileTail(f, msglogTailBytes)
 }
 
-// msglogReason picks the reason from the newest msglog line that carries one.
-// The address-level deferral line can repeat only the host, so an unrecognized
-// error yields to a recognized one logged just before it. With nothing
-// recognized, the newest error line is reported as other.
+// msglogReason reads the reason from the newest delivery attempt. An attempt
+// is the newest error line, the address lines logged with it, and the host
+// lines just before them: the address line can repeat only the host, so the
+// host line may carry the reason. An earlier attempt never explains a newer
+// one; when nothing in the newest attempt is recognized, it is other.
 func msglogReason(lines []string) StuckReason {
-	var fallback string
-	haveFallback := false
-	for i := len(lines) - 1; i >= 0; i-- {
-		msg := stripMsglogTime(lines[i])
+	i := len(lines) - 1
+	for ; i >= 0; i-- {
+		_, msg := splitMsglogTime(lines[i])
 		if info, ok := strings.CutPrefix(msg, "*** Frozen"); ok {
-			if haveFallback {
-				break // a newer attempt failed after the message was thawed
-			}
 			return frozenReason(info, lines[:i])
 		}
+		if msglogErrorLine(msg) {
+			break
+		}
+	}
+	if i < 0 {
+		return noAttemptReason
+	}
+
+	attemptTime, newest := splitMsglogTime(lines[i])
+	sawHost := false
+	for j := i; j >= 0; j-- {
+		at, msg := splitMsglogTime(lines[j])
 		if !msglogErrorLine(msg) {
-			continue
+			break
+		}
+		if strings.HasPrefix(msg, "H=") {
+			sawHost = true
+		} else if sawHost || at != attemptTime {
+			break // an address line from an earlier attempt
 		}
 		errText := msglogErrText(msg)
-		if class, ok := stuckClasses[keywordReason(errText)]; ok {
+		if class, ok := stuckClasses[keywordReason(msglogNameRe.ReplaceAllString(errText, " "))]; ok {
 			return StuckReason{Class: class, Text: stuckTexts[class], Raw: boundText(errText)}
 		}
-		if !haveFallback {
-			fallback, haveFallback = errText, true
-		}
 	}
-	if haveFallback {
-		return StuckReason{Class: "other", Text: stuckTexts["other"], Raw: boundText(fallback)}
-	}
-	return noAttemptReason
+	return StuckReason{Class: "other", Text: stuckTexts["other"], Raw: boundText(msglogErrText(newest))}
 }
 
 // frozenReason reports a frozen message with the cause exim wrote after
@@ -137,7 +152,7 @@ func frozenReason(info string, older []string) StuckReason {
 		r.Text = boundText("frozen: " + info)
 	}
 	for i := len(older) - 1; i >= 0; i-- {
-		if msg := stripMsglogTime(older[i]); msglogErrorLine(msg) {
+		if _, msg := splitMsglogTime(older[i]); msglogErrorLine(msg) {
 			r.Raw = boundText(msglogErrText(msg))
 			break
 		}
@@ -145,30 +160,35 @@ func frozenReason(info string, older []string) StuckReason {
 	return r
 }
 
-func stripMsglogTime(line string) string {
+// splitMsglogTime splits the leading exim timestamp, if any, from the line.
+func splitMsglogTime(line string) (stamp, msg string) {
 	n := len(eximTimeLayout)
 	if len(line) > n && line[n] == ' ' {
 		if _, err := time.Parse(eximTimeLayout, line[:n]); err == nil {
-			return line[n+1:]
+			return line[:n], line[n+1:]
 		}
 	}
-	return line
+	return "", line
 }
 
 // msglogErrorLine reports whether a msglog line records a failed attempt: a
 // host-level error, an address deferral or an error reply. The arrival line
-// never counts because the sender chooses its subject.
+// never counts because the sender chooses its subject, and names are blanked
+// so an address such as error@ cannot make a delivery line look failed.
 func msglogErrorLine(msg string) bool {
 	if strings.HasPrefix(msg, "Received from ") {
 		return false
 	}
-	return strings.HasPrefix(msg, "H=") || strings.Contains(msg, " defer") ||
-		strings.Contains(strings.ToLower(msg), "error")
+	if strings.HasPrefix(msg, "H=") {
+		return true
+	}
+	text := msglogNameRe.ReplaceAllString(msg, " ")
+	return strings.Contains(text, " defer") || strings.Contains(strings.ToLower(text), "error")
 }
 
 // msglogErrText cuts a msglog line down to the error: from "SMTP error" when
-// present, else from the deferral keyword, else the whole line. Cutting
-// before the recipient keeps its address out of classification.
+// present, else from the deferral keyword, else the whole line. The result
+// still holds addresses and host names; classification blanks them first.
 func msglogErrText(msg string) string {
 	if i := strings.Index(msg, "SMTP error"); i >= 0 {
 		return msg[i:]

@@ -82,6 +82,39 @@ const (
 	msglogOther = `2026-10-21 13:00:00 H=mx9.example.net [203.0.113.28] SMTP error from remote mail server after end of data: 451 4.3.0 Temporary local problem
 2026-10-21 13:00:00 rcpt@example.net R=lookuphost T=remote_smtp defer H=mx9.example.net [203.0.113.28]: SMTP error from remote mail server after end of data: 451 4.3.0 Temporary local problem
 `
+	// Addresses, host names and quoted domains are chosen by senders and
+	// recipient domains; words inside them must not pick the class.
+	msglogKeywordAddress = `2026-10-21 14:00:00 H=mx6.example.net [203.0.113.25] SMTP error from remote mail server after RCPT TO:<complaints@example.net>: 451 4.7.1 Greylisted, please try again later
+2026-10-21 14:00:00 complaints@example.net R=lookuphost T=remote_smtp defer H=mx6.example.net [203.0.113.25]: SMTP error from remote mail server after RCPT TO:<complaints@example.net>: 451 4.7.1 Greylisted, please try again later
+`
+	msglogKeywordHost = `2026-10-21 14:10:00 H=mx.unlisted.example.net [203.0.113.25]: mx.unlisted.example.net [203.0.113.25]: No route to host
+2026-10-21 14:10:00 rcpt@example.net R=dkim_lookuphost T=dkim_remote_smtp defer H=mx.unlisted.example.net [203.0.113.25]: mx.unlisted.example.net [203.0.113.25]
+`
+	msglogKeywordDomain = `2026-10-21 14:20:00 rcpt@unlisted.example.net R=lookuphost T=remote_smtp defer (-53): retry time not reached for any host for 'unlisted.example.net'
+`
+	msglogRoutingOther = `2026-10-21 11:30:00 rcpt@example.net R=lookuphost defer (-1): temporary internal problem
+`
+	// One attempt to two recipients: both address lines come after the
+	// host line that explains them.
+	msglogTwoRecipients = `2026-10-21 15:00:00 H=mx5.example.net [203.0.113.24]: mx5.example.net [203.0.113.24]: No route to host
+2026-10-21 15:00:00 one@example.net R=dkim_lookuphost T=dkim_remote_smtp defer H=mx5.example.net [203.0.113.24]: mx5.example.net [203.0.113.24]
+2026-10-21 15:00:00 two@example.net R=dkim_lookuphost T=dkim_remote_smtp defer H=mx5.example.net [203.0.113.24]: mx5.example.net [203.0.113.24]
+`
+	// A delivery to another recipient after the deferral; its address
+	// holds the word error.
+	msglogDeliveredToError = msglogGreylisted + `2026-10-21 17:00:00 error@example.net R=lookuphost T=remote_smtp H=mx6.example.net [203.0.113.25] X=TLS1.3:TLS_AES_256_GCM_SHA384:256 CV=yes C="250 2.0.0 Ok: queued"
+`
+	// One delivery run to two domains in the same second: the newest
+	// recipient's own attempt decides, not the other domain's.
+	msglogTwoDomains = `2026-10-21 18:00:00 H=mx5.example.net [203.0.113.24]: mx5.example.net [203.0.113.24]: No route to host
+2026-10-21 18:00:00 one@example.net R=dkim_lookuphost T=dkim_remote_smtp defer H=mx5.example.net [203.0.113.24]: mx5.example.net [203.0.113.24]
+2026-10-21 18:00:00 H=mx9.example.com [203.0.113.28] SMTP error from remote mail server after end of data: 451 4.3.0 Temporary local problem
+2026-10-21 18:00:00 two@example.com R=lookuphost T=remote_smtp defer H=mx9.example.com [203.0.113.28]: SMTP error from remote mail server after end of data: 451 4.3.0 Temporary local problem
+`
+	// A connect timeout logs the host line well before the address line.
+	msglogSlowAttempt = `2026-10-21 16:00:00 H=mx1.example.net [203.0.113.20]: Connection timed out
+2026-10-21 16:05:00 rcpt@example.net R=lookuphost T=remote_smtp defer H=mx1.example.net [203.0.113.20]: mx1.example.net [203.0.113.20]
+`
 )
 
 func TestMsglogReasonClasses(t *testing.T) {
@@ -155,6 +188,42 @@ func TestMsglogReasonClasses(t *testing.T) {
 		}},
 		{"frozen without reason", "*** Frozen\n", StuckReason{
 			Class: "frozen", Text: "frozen",
+		}},
+		{"keyword in an address", msglogKeywordAddress, StuckReason{
+			Class: "greylisted", Text: "greylisted",
+			Raw: "SMTP error from remote mail server after RCPT TO:<complaints@example.net>: 451 4.7.1 Greylisted, please try again later",
+		}},
+		{"keyword in a host name", msglogKeywordHost, StuckReason{
+			Class: "host_not_found", Text: "receiving server not found or unreachable",
+			Raw: "H=mx.unlisted.example.net [203.0.113.25]: mx.unlisted.example.net [203.0.113.25]: No route to host",
+		}},
+		{"keyword in a quoted domain", msglogKeywordDomain, StuckReason{
+			Class: "retry_wait", Text: "retry time not reached",
+			Raw: "defer (-53): retry time not reached for any host for 'unlisted.example.net'",
+		}},
+		{"older recognized attempt does not explain a newer one", msglogRateLimited + msglogOther, StuckReason{
+			Class: "other", Text: "other",
+			Raw: "SMTP error from remote mail server after end of data: 451 4.3.0 Temporary local problem",
+		}},
+		{"older routing defer does not explain a newer one", msglogLookupFailed + msglogRoutingOther, StuckReason{
+			Class: "other", Text: "other",
+			Raw: "defer (-1): temporary internal problem",
+		}},
+		{"two recipients in one attempt", msglogTwoRecipients, StuckReason{
+			Class: "host_not_found", Text: "receiving server not found or unreachable",
+			Raw: "H=mx5.example.net [203.0.113.24]: mx5.example.net [203.0.113.24]: No route to host",
+		}},
+		{"two domains in one delivery run", msglogTwoDomains, StuckReason{
+			Class: "other", Text: "other",
+			Raw: "SMTP error from remote mail server after end of data: 451 4.3.0 Temporary local problem",
+		}},
+		{"delivery to an address named error", msglogDeliveredToError, StuckReason{
+			Class: "greylisted", Text: "greylisted",
+			Raw: "SMTP error from remote mail server after RCPT TO:<rcpt@example.net>: 451 4.7.1 Greylisted, please try again later",
+		}},
+		{"host line logged before a slow attempt ends", msglogSlowAttempt, StuckReason{
+			Class: "host_not_found", Text: "receiving server not found or unreachable",
+			Raw: "H=mx1.example.net [203.0.113.20]: Connection timed out",
 		}},
 	}
 	for _, tc := range cases {
