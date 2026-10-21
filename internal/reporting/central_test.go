@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -308,5 +309,68 @@ func waitForRefresh(t *testing.T, ch <-chan error) error {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for refresh")
 		return nil
+	}
+}
+
+// A refused pull keeps the verified set and is not retried as a full pull.
+func TestCentralRefreshUnauthorizedKeepsSetWithoutRetry(t *testing.T) {
+	setPub, setPriv, _ := ed25519.GenerateKey(rand.Reader)
+	node, _ := goldenNode()
+	snapBytes, _ := MarshalScoredSnapshot(sampleSnapshot())
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		if requests == 1 {
+			writeSigned(w, setPriv, snapBytes, "snapshot")
+			return
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	store := NewCentralStore(NewSignedPuller(srv.Client(), srv.URL+"/decisions", hex.EncodeToString(setPub), node, nil))
+	if err := store.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := store.Version()
+	if err := store.Refresh(context.Background()); !errors.Is(err, ErrPullUnauthorized) {
+		t.Fatalf("refresh = %v, want ErrPullUnauthorized", err)
+	}
+	if requests != 2 || store.Version() != want {
+		t.Fatalf("requests=%d version=%d, want 2 requests and version %d kept", requests, store.Version(), want)
+	}
+}
+
+// A version gap retries once as a full pull, signed with a fresh nonce.
+func TestCentralGapRetrySignsAfresh(t *testing.T) {
+	setPub, setPriv, _ := ed25519.GenerateKey(rand.Reader)
+	node, nodePub := goldenNode()
+	first := ScoredSnapshot{Version: 1, Entries: []ScoredEntry{{IP: "203.0.113.5", Score: 80, Classes: []Class{ClassBruteforce}, LastSeen: setTS}}}
+	firstBytes, _ := MarshalScoredSnapshot(first)
+	gapBytes, _ := MarshalScoredDiff(ScoredDiff{FromVersion: 5, ToVersion: 6})
+	full := first
+	full.Version = 6
+	fullBytes, _ := MarshalScoredSnapshot(full)
+	var nonces, queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nonces = append(nonces, requireSignedPull(t, r, node, nodePub))
+		queries = append(queries, r.URL.RawQuery)
+		switch len(nonces) {
+		case 1:
+			writeSigned(w, setPriv, firstBytes, "snapshot")
+		case 2:
+			writeSigned(w, setPriv, gapBytes, "diff")
+		default:
+			writeSigned(w, setPriv, fullBytes, "snapshot")
+		}
+	}))
+	defer srv.Close()
+	store := NewCentralStore(NewSignedPuller(srv.Client(), srv.URL+"/decisions", hex.EncodeToString(setPub), node, func() time.Time { return pullClock }))
+	for range 2 {
+		if err := store.Refresh(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if store.Version() != 6 || len(nonces) != 3 || queries[1] != "since=1" || queries[2] != "" || nonces[1] == nonces[2] {
+		t.Fatalf("version=%d queries=%q nonces=%q", store.Version(), queries, nonces)
 	}
 }
