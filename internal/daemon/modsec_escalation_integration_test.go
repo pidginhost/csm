@@ -231,8 +231,8 @@ func TestParseModSec_ConcurrentClassifierGapDoesNotSuppressEscalation(t *testing
 func TestParseModSec_SingleHitRuleEscalatesOnFirstDeny(t *testing.T) {
 	resetModSecState()
 	cfg := &config.Config{}
-	cfg.Thresholds.ModSecEscalationHits = 20
-	cfg.Thresholds.ModSecEscalationWindowMin = 240
+	cfg.Thresholds.ModSecEscalationHits = 10
+	cfg.Thresholds.ModSecEscalationWindowMin = 120
 	line := modsecApacheLine("203.0.113.63", "900133",
 		"CSM VP: PHP session upload progress field (PHP2Shell)", "")
 	var msg string
@@ -244,7 +244,7 @@ func TestParseModSec_SingleHitRuleEscalatesOnFirstDeny(t *testing.T) {
 	if msg == "" {
 		t.Fatal("first deny of an exploit-specific rule must escalate")
 	}
-	if strings.Contains(msg, "20+") {
+	if strings.Contains(msg, "10+") {
 		t.Fatalf("single-hit escalation must not claim the hit threshold: %q", msg)
 	}
 }

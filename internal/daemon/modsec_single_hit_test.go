@@ -60,8 +60,8 @@ func TestModSecSingleHitLiteSpeedActions(t *testing.T) {
 			}
 			installModSecRegistryForTest(t, actions)
 			cfg := &config.Config{}
-			cfg.Thresholds.ModSecEscalationHits = 20
-			cfg.Thresholds.ModSecEscalationWindowMin = 240
+			cfg.Thresholds.ModSecEscalationHits = 10
+			cfg.Thresholds.ModSecEscalationWindowMin = 120
 			line := strings.Replace(liteSpeedTriggerLine210710, `"210710"`, `"900133"`, 1)
 			counts := map[string]int{}
 			for _, f := range parseModSecLogLineDeduped(line, cfg) {
@@ -95,8 +95,8 @@ func TestModSecSingleHitExclusionDropsRetainedEvidence(t *testing.T) {
 		_ = db.Close()
 	})
 	cfg := &config.Config{}
-	cfg.Thresholds.ModSecEscalationHits = 20
-	cfg.Thresholds.ModSecEscalationWindowMin = 240
+	cfg.Thresholds.ModSecEscalationHits = 10
+	cfg.Thresholds.ModSecEscalationWindowMin = 120
 	cfg.AutoResponse.BlockExpiry = "1h"
 	ip := "203.0.113.72"
 	first := modsecApacheLine(ip, "900133", "CSM exploit-specific deny", "")
@@ -143,24 +143,24 @@ func TestModSecSingleHitLatchSurvivesEviction(t *testing.T) {
 			now := time.Unix(1_700_000_000, 0)
 			win := 10 * time.Minute
 			ip := "203.0.113.73"
-			if out := recordModSecEvent(ip, now, 900133, modsecConfHigh, true, 20, 30, win); !out.escalate {
+			if out := recordModSecEvent(ip, now, 900133, modsecConfHigh, true, 10, 30, win); !out.escalate {
 				t.Fatal("first deny did not escalate")
 			}
 			if evict {
-				evictModSecStateWithLowConf(now.Add(win), 20, 30, win)
+				evictModSecStateWithLowConf(now.Add(win), 10, 30, win)
 			}
 			// The boundary is inclusive. An ordinary deny cannot re-arm the
 			// latch while the original single-hit evidence is still retained.
-			if out := recordModSecEvent(ip, now.Add(win), 900116, modsecConfHigh, true, 20, 30, win); out.escalate {
+			if out := recordModSecEvent(ip, now.Add(win), 900116, modsecConfHigh, true, 10, 30, win); out.escalate {
 				t.Fatal("retained single-hit evidence emitted a duplicate escalation")
 			}
 			if evict {
-				evictModSecStateWithLowConf(now.Add(win+time.Second), 20, 30, win)
+				evictModSecStateWithLowConf(now.Add(win+time.Second), 10, 30, win)
 			}
-			if out := recordModSecEvent(ip, now.Add(win+time.Second), 900116, modsecConfHigh, true, 20, 30, win); out.escalate {
+			if out := recordModSecEvent(ip, now.Add(win+time.Second), 900116, modsecConfHigh, true, 10, 30, win); out.escalate {
 				t.Fatal("expired single-hit evidence escalated an ordinary deny")
 			}
-			if out := recordModSecEvent(ip, now.Add(win+2*time.Second), 900133, modsecConfHigh, true, 20, 30, win); !out.escalate {
+			if out := recordModSecEvent(ip, now.Add(win+2*time.Second), 900133, modsecConfHigh, true, 10, 30, win); !out.escalate {
 				t.Fatal("fresh single-hit evidence did not re-arm escalation")
 			}
 		})
@@ -182,15 +182,15 @@ func TestModSecSingleHitEvictionDropsExcludedEvidence(t *testing.T) {
 	})
 	now := time.Now()
 	ip := "203.0.113.77"
-	win := 4 * time.Hour
-	if out := recordModSecEvent(ip, now, 900133, modsecConfHigh, true, 20, 30, win); !out.escalate {
+	win := 2 * time.Hour
+	if out := recordModSecEvent(ip, now, 900133, modsecConfHigh, true, 10, 30, win); !out.escalate {
 		t.Fatal("first deny did not escalate")
 	}
-	recordModSecEvent(ip, now, 900116, modsecConfHigh, true, 20, 30, win)
+	recordModSecEvent(ip, now, 900116, modsecConfHigh, true, 10, 30, win)
 	if err := db.AddModSecNoEscalateRule(900133); err != nil {
 		t.Fatal(err)
 	}
-	evictModSecStateWithLowConf(now.Add(time.Minute), 20, 30, win)
+	evictModSecStateWithLowConf(now.Add(time.Minute), 10, 30, win)
 	value, ok := modsecBlockCount.Load(ip)
 	if !ok {
 		t.Fatal("eviction discarded evidence from another rule")
@@ -211,7 +211,7 @@ func TestModSecSingleHitRearmsAtBlockExpiry(t *testing.T) {
 		at   time.Duration
 		want bool
 	}{{0, true}, {time.Hour - time.Second, false}, {time.Hour, true}, {time.Hour + time.Second, false}} {
-		out := recordModSecEventWithRearm("203.0.113.74", now.Add(step.at), 900133, modsecConfHigh, true, 20, 30, 4*time.Hour, time.Hour)
+		out := recordModSecEventWithRearm("203.0.113.74", now.Add(step.at), 900133, modsecConfHigh, true, 10, 30, 2*time.Hour, time.Hour)
 		if out.escalate != step.want || out.singleHit != step.want {
 			t.Fatalf("step %d: outcome %+v, want escalation=%v", i, out, step.want)
 		}
@@ -230,7 +230,7 @@ func TestModSecSingleHitConcurrentDeniesEscalateOnce(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			if recordModSecEvent("203.0.113.75", now, 900133, modsecConfHigh, true, 20, 30, 4*time.Hour).escalate {
+			if recordModSecEvent("203.0.113.75", now, 900133, modsecConfHigh, true, 10, 30, 2*time.Hour).escalate {
 				escalations.Add(1)
 			}
 		}()

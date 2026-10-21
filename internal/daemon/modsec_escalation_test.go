@@ -44,19 +44,19 @@ func TestRecordModSecEvent_SingleHitRule_EscalatesOnFirstDeny(t *testing.T) {
 	resetModSecCounters()
 	defer resetModSecCounters()
 	now := time.Now()
-	win := 4 * time.Hour
+	win := 2 * time.Hour
 	ip := "203.0.113.60"
-	// A raised operator bar (20 in 4h) must not delay an exploit-specific rule.
-	out := recordModSecEvent(ip, now, 900133, modsecConfHigh, true, 20, 30, win)
+	// A raised operator bar (10 in 2h) must not delay an exploit-specific rule.
+	out := recordModSecEvent(ip, now, 900133, modsecConfHigh, true, 10, 30, win)
 	if !out.escalate || !out.singleHit {
 		t.Fatalf("first deny of an exploit-specific rule must escalate as a single hit, got %+v", out)
 	}
-	out = recordModSecEvent(ip, now.Add(time.Second), 900133, modsecConfHigh, true, 20, 30, win)
+	out = recordModSecEvent(ip, now.Add(time.Second), 900133, modsecConfHigh, true, 10, 30, win)
 	if out.escalate {
 		t.Fatal("a second deny inside the active window must not re-emit the escalation")
 	}
 	// Other high-confidence CSM rules still wait for the hit count.
-	out = recordModSecEvent("203.0.113.61", now, 900116, modsecConfHigh, true, 20, 30, win)
+	out = recordModSecEvent("203.0.113.61", now, 900116, modsecConfHigh, true, 10, 30, win)
 	if out.escalate {
 		t.Fatal("a rule outside the single-hit table must not escalate on one deny")
 	}
@@ -65,7 +65,7 @@ func TestRecordModSecEvent_SingleHitRule_EscalatesOnFirstDeny(t *testing.T) {
 func TestRecordModSecEvent_SingleHitRuleWarningDoesNotEscalate(t *testing.T) {
 	resetModSecCounters()
 	defer resetModSecCounters()
-	out := recordModSecEvent("203.0.113.62", time.Now(), 900133, modsecConfHigh, false, 20, 30, 4*time.Hour)
+	out := recordModSecEvent("203.0.113.62", time.Now(), 900133, modsecConfHigh, false, 10, 30, 2*time.Hour)
 	if out.escalate {
 		t.Fatal("a non-blocking match must not escalate on its own")
 	}
