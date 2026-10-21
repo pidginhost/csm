@@ -213,7 +213,7 @@ func TestResponsesUseUTCInstantsAndEmptyLists(t *testing.T) {
 		"/api/v1/modsec/blocks", "/api/v1/modsec/events",
 		"/api/v1/threat/top-attackers", "/api/v1/threat/ip?ip=203.0.113.9", "/api/v1/threat/stats",
 		"/api/v1/suppressions", "/api/v1/audit", "/api/v1/sessions", "/api/v1/prefs/views",
-		"/api/v1/email/groups", "/api/v1/email/relay-abuse", "/api/v1/verified-bots",
+		"/api/v1/email/groups", "/api/v1/email/overview", "/api/v1/email/relay-abuse", "/api/v1/verified-bots",
 		"/api/v1/rules/status", "/api/v1/performance", "/api/v1/threat/db-stats", "/api/v1/hardening",
 		"/api/v1/settings/firewall/rollback", "/api/v1/email/deferrals", "/api/v1/email/queue-composition",
 		"/api/v1/email/stats", "/api/v1/firewall/check?ip=203.0.113.9", "/api/v1/undo/pending",

@@ -229,8 +229,9 @@ GET  /api/v1/hardening           Last stored hardening audit report (admin scope
 
 ### Date ranges
 
-`/api/v1/history`, `/api/v1/email/groups` and `/api/v1/email/relay-abuse` take
-`from` and `to` as a calendar date (`YYYY-MM-DD`) or an RFC 3339 time. A date is
+`/api/v1/history`, `/api/v1/email/groups`, `/api/v1/email/overview` and
+`/api/v1/email/relay-abuse` take `from` and `to` as a calendar date
+(`YYYY-MM-DD`) or an RFC 3339 time. A date is
 a day in the server's time zone, and `to` includes the whole day. An RFC 3339
 `to` is exclusive. The web UI sends RFC 3339 times so a day follows the
 operator's time zone preference. A value in neither form is rejected with 400.
@@ -1238,6 +1239,7 @@ POST /api/v1/email/held/{id}/release   Re-inject a held forward copy to its exte
 DELETE /api/v1/email/held/{id}   Discard a held forward copy (admin scope, CSRF)
 GET  /api/v1/email/checks        Email checks the Email page shows, each with its group kind ("" = never grouped) (read scope)
 GET  /api/v1/email/groups        Server-grouped action rows (kind=compromised_account|spam_outbreak|auth_failure|queue_alert|malware) with from/to/limit (read scope)
+GET  /api/v1/email/overview      Mail decision totals and 15-minute chart series for from/to (default the last 24 h), antispam mode, live queue and mail-related block counts (read scope)
 GET  /api/v1/email/relay-abuse   Outbound PHP-mail abuse detections (spam outbreaks, high-volume scripts/accounts) with per-site script breakdown; from/to/limit (read scope)
 GET  /api/v1/email/quarantine    Quarantined email list
 GET  /api/v1/email/av/status     Email AV watcher status
